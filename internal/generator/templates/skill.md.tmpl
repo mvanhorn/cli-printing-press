@@ -492,7 +492,9 @@ Graceful degradation: if `learnings confirm` is an unknown command, you are driv
 - `similar_shape_different_entity:<canonical>` (top-level): a structurally matching row exists but its canonical entity differs from the live query's. Treated as cold start; the warning carries the conflicting canonical as a hint, but the row is NOT promoted into Results.
 - `ambiguous_alias` (top-level): a single query entity resolved to multiple canonicals (e.g., "Cards" → Arizona Cardinals + St. Louis Cardinals). Surface the ambiguity from context before committing to a resource.
 - `candidates_present` (top-level): the envelope carries a `candidates` section. Handle it via the candidates branch in Step 2 before anything else.
+{{- if .HasSync}}
 - `lookup_refresh_available` (top-level): an entity in the query has no lookup row yet, but synced data could provide one. Run `{{.Name}}-pp-cli sync` to refresh entity lookups.
+{{- end}}
 - Top-level `no_learnings_for_query_family`: the table had no rows above the Jaccard floor. Pure cold start.
 
 ### Step 4: `teach &` after finalizing your response - always

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -66,12 +67,21 @@ func TestGenerateZeroSyncableAPIOmitsSyncAndDoctorCache(t *testing.T) {
 
 	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "sync.go"))
 	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "search.go"))
+	require.FileExists(t, filepath.Join(outputDir, "internal", "cli", "data_source.go"))
 	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
 	doctorSrc := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
+	dataSourceSrc := readGeneratedFile(t, outputDir, "internal", "cli", "data_source.go")
+	syncHintSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync_hint.go")
+	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	require.NotContains(t, rootSrc, "newSyncCmd(flags)")
 	require.NotContains(t, rootSrc, "newSearchCmd(flags)")
 	require.NotContains(t, doctorSrc, `report["cache"]`)
 	require.NotContains(t, doctorSrc, "collectCacheReport")
+	require.NotContains(t, dataSourceSrc, "emitSyncHints")
+	require.NotContains(t, dataSourceSrc, "Run 'zero-syncable-query-pp-cli sync' first")
+	require.Equal(t, 4, strings.Count(dataSourceSrc, "Populate the local store through a custom store-backed command first."))
+	require.Contains(t, syncHintSrc, "const syncHintsEnabled = false")
+	require.Contains(t, mcpSrc, `mcplib.NewTool("sql"`)
 
 	requireGeneratedCompiles(t, outputDir)
 }
@@ -138,6 +148,37 @@ func TestConstrainVisionTemplatesLearnZeroSyncableKeepsStoreDropsSync(t *testing
 	require.False(t, visionSet.Search)
 	require.False(t, visionSet.Analytics)
 	require.Contains(t, buf.String(), "learn.enabled promotes VisionSet.Store=true")
+}
+
+func TestGenerateLearnZeroSyncableKeepsLearnStoreWithoutSyncBackedSurfaces(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := zeroSyncableQuerySpec("learn-only-store")
+	apiSpec.Learn.Enabled = true
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{MCP: true}
+	require.NoError(t, gen.Generate())
+
+	require.FileExists(t, filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "sync_hint.go"))
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "data_source.go"))
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "channel_workflow.go"))
+	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	require.NotContains(t, rootSrc, "newWorkflowCmd(flags)")
+	require.NotContains(t, rootSrc, `"data-source"`)
+
+	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+	require.NotContains(t, mcpSrc, `mcplib.NewTool("sql"`)
+	require.NotContains(t, mcpSrc, "Run learn-only-store-pp-cli sync")
+
+	recallSrc := readGeneratedFile(t, outputDir, "internal", "learn", "recall.go")
+	require.NotContains(t, recallSrc, "run sync to refresh entity lookups")
+	skillSrc := readGeneratedFile(t, outputDir, "SKILL.md")
+	require.NotContains(t, skillSrc, "Run `learn-only-store-pp-cli sync` to refresh entity lookups")
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // TestConstrainVisionTemplatesLearnDisabledDoesNotPromote pins that a spec

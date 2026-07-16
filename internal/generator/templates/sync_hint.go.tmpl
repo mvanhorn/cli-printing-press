@@ -20,14 +20,19 @@ type syncHintState struct {
 	lastSynced time.Time
 }
 
+const syncHintsEnabled = {{.HasSync}}
+
 func maybeEmitSyncHints(cmd *cobra.Command, db *store.Store, resourceType string, maxAge time.Duration) {
-	if cmd == nil {
+	if !syncHintsEnabled || cmd == nil {
 		return
 	}
 	emitSyncHints(cmd.ErrOrStderr(), db, resourceType, maxAge)
 }
 
 func emitSyncHints(w io.Writer, db *store.Store, resourceType string, maxAge time.Duration) {
+	if !syncHintsEnabled {
+		return
+	}
 	state, err := readSyncHintState(db, resourceType)
 	if err != nil || w == nil {
 		return
@@ -47,7 +52,7 @@ func emitSyncHints(w io.Writer, db *store.Store, resourceType string, maxAge tim
 }
 
 func hintIfUnsynced(cmd *cobra.Command, db *store.Store, resourceType string) bool {
-	if cmd == nil || db == nil {
+	if !syncHintsEnabled || cmd == nil || db == nil {
 		return false
 	}
 	state, err := readSyncHintState(db, resourceType)
@@ -59,7 +64,7 @@ func hintIfUnsynced(cmd *cobra.Command, db *store.Store, resourceType string) bo
 }
 
 func hintIfStale(cmd *cobra.Command, db *store.Store, resourceType string, maxAge time.Duration) bool {
-	if cmd == nil || db == nil || maxAge <= 0 {
+	if !syncHintsEnabled || cmd == nil || db == nil || maxAge <= 0 {
 		return false
 	}
 	state, err := readSyncHintState(db, resourceType)

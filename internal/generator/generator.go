@@ -160,6 +160,8 @@ type Generator struct {
 
 	htmlSyncStubComputed bool
 	htmlSyncStub         bool
+	htmlSyncStubSelected bool
+	learnStorePromoted   bool
 
 	mcpParamDescriptions *mcpdesc.ParamDescriptionCompactor
 }
@@ -795,6 +797,7 @@ type HelperFlags struct {
 	HasPathParams        bool // spec has path parameters → emit replacePathParam
 	HasMultiPositional   bool // spec has endpoints with 2+ positional params → emit usageErr
 	HasDataLayer         bool // CLI has a local store (sync/search) → emit provenance helpers
+	HasStorePath         bool // CLI has any local store, including a learn-only store
 	HasSyncHelpers       bool // generated sync implementation calls sync-only helpers
 	HasClientLimit       bool // at least one endpoint needs client-side limit truncation → emit truncateJSONArray
 	HasClientFilters     bool // at least one docs-derived endpoint needs client-side response filtering
@@ -1012,6 +1015,7 @@ type readmeTemplateData struct {
 	CompactDescription string
 	SkillDescription   string
 	HasDataLayer       bool
+	HasSync            bool
 	HasAsyncJobs       bool
 	HasWriteCommands   bool
 	HasCreateCommands  bool
@@ -1077,7 +1081,8 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		ProseName:             g.proseName(),
 		CompactDescription:    g.compactDescription(),
 		SkillDescription:      g.skillDescription(),
-		HasDataLayer:          g.VisionSet.Store,
+		HasDataLayer:          g.hasDataLayer(),
+		HasSync:               g.hasGeneratedSyncImplementation(),
 		HasAsyncJobs:          len(g.AsyncJobs) > 0,
 		HasWriteCommands:      hasWriteCommands(g.Spec.Resources),
 		HasCreateCommands:     hasCreateCommands(g.Spec.Resources),
@@ -1090,6 +1095,22 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		PromotedResourceNames: g.PromotedResourceNames,
 		PromotedEndpointNames: g.PromotedEndpointNames,
 	}
+}
+
+func (g *Generator) hasDataLayer() bool {
+	// Explicit store-only plans remain supported for custom population paths;
+	// zero-syncable learn stores must not advertise generic local-data surfaces.
+	return g != nil && g.VisionSet.Store && (!g.learnStorePromoted || g.hasGeneratedSyncImplementation() || hasSyncCommandResources(g.profile))
+}
+
+func (g *Generator) hasWorkflowSurface() bool {
+	return g != nil && (g.hasDataLayer() || g.htmlSyncStubSelected)
+}
+
+func (g *Generator) dataSurfaceVisionSet() VisionTemplateSet {
+	set := g.VisionSet
+	set.Store = g.hasDataLayer()
+	return set
 }
 
 func (g *Generator) compactDescription() string {
@@ -2200,7 +2221,7 @@ func (g *Generator) buildDomainContext() DomainContext {
 	}
 
 	// Add data layer tips when store is available
-	if g.VisionSet.Store {
+	if g.hasDataLayer() {
 		ctx.QueryTips = append(ctx.QueryTips,
 			"Use the sql tool for ad-hoc analysis on synced data. Run sync first to populate the local database.",
 			"Use the search tool for full-text search across all synced resources. Faster than iterating list endpoints.",
@@ -2296,7 +2317,12 @@ func (g *Generator) prepareOutput() error {
 		g.profile = profiler.Profile(g.Spec)
 		g.resetHTMLSyncStubCache()
 	}
+	storeSelectedBeforeConstrain := g.VisionSet.Store
+	g.htmlSyncStubSelected = g.VisionSet.Sync && g.shouldEmitHTMLSyncStub()
 	g.VisionSet = constrainVisionTemplates(g.Spec, g.VisionSet, g.profile, os.Stderr)
+	if g.Spec.Learn.Enabled && !storeSelectedBeforeConstrain && g.VisionSet.Store {
+		g.learnStorePromoted = true
+	}
 	if g.Spec.Learn.Enabled && !g.VisionSet.Store {
 		// Defensive: constrainVisionTemplates already promotes Store for
 		// learn-enabled specs, so this branch is unreachable through the
@@ -2391,10 +2417,11 @@ func (g *Generator) renderSingleFiles() error {
 			data = g.readmeData()
 		case "helpers.go.tmpl":
 			hFlags := computeHelperFlags(g.Spec)
-			applyPartialFailureFlags(&hFlags, g.Spec, g.PromotedCommands, g.PromotedEndpointNames, g.VisionSet.Store)
-			hFlags.HasDataLayer = g.VisionSet.Store
+			applyPartialFailureFlags(&hFlags, g.Spec, g.PromotedCommands, g.PromotedEndpointNames, g.hasDataLayer())
+			hFlags.HasDataLayer = g.hasDataLayer()
+			hFlags.HasStorePath = g.VisionSet.Store
 			hFlags.HasSyncHelpers = g.hasGeneratedSyncImplementation()
-			hFlags.HasResponseUnwrap = g.VisionSet.Store && promotedCommandsCanUnwrapResponse(g.PromotedCommands, g.Spec.Types)
+			hFlags.HasResponseUnwrap = g.hasDataLayer() && promotedCommandsCanUnwrapResponse(g.PromotedCommands, g.Spec.Types)
 			data = &helpersTemplateData{
 				APISpec:     g.Spec,
 				HelperFlags: hFlags,
@@ -2402,7 +2429,7 @@ func (g *Generator) renderSingleFiles() error {
 		case "doctor.go.tmpl":
 			data = &doctorTemplateData{
 				APISpec:        g.Spec,
-				HasStore:       g.VisionSet.Store,
+				HasStore:       g.hasDataLayer(),
 				HasCacheReport: g.hasGeneratedSyncImplementation(),
 				HasAuthCommand: g.shouldEmitAuth(),
 			}
@@ -2514,11 +2541,18 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
-	if g.VisionSet.Store {
-		if err := g.renderTemplate("sync_hint.go.tmpl", filepath.Join("internal", "cli", "sync_hint.go"), g.Spec); err != nil {
+	if g.hasDataLayer() {
+		syncHintData := struct {
+			*spec.APISpec
+			HasSync bool
+		}{
+			APISpec: g.Spec,
+			HasSync: g.hasGeneratedSyncImplementation(),
+		}
+		if err := g.renderTemplate("sync_hint.go.tmpl", filepath.Join("internal", "cli", "sync_hint.go"), syncHintData); err != nil {
 			return fmt.Errorf("rendering sync hint helper: %w", err)
 		}
-		if err := g.renderTemplate("sync_hint_test.go.tmpl", filepath.Join("internal", "cli", "sync_hint_test.go"), g.Spec); err != nil {
+		if err := g.renderTemplate("sync_hint_test.go.tmpl", filepath.Join("internal", "cli", "sync_hint_test.go"), syncHintData); err != nil {
 			return fmt.Errorf("rendering sync hint test: %w", err)
 		}
 	}
@@ -2842,6 +2876,13 @@ func (g *Generator) renderOptionalSupportFiles() error {
 // LearnConfig values, which the per-CLI startup wires via NewConfig
 // and SeedFromConfig at first run.
 func (g *Generator) renderLearnFiles() error {
+	learnData := struct {
+		*spec.APISpec
+		HasSync bool
+	}{
+		APISpec: g.Spec,
+		HasSync: g.hasGeneratedSyncImplementation(),
+	}
 	learnFiles := map[string]string{
 		"learn_entities/config.go.tmpl":       filepath.Join("internal", "learn", "entities", "config.go"),
 		"learn_entities/config_test.go.tmpl":  filepath.Join("internal", "learn", "entities", "config_test.go"),
@@ -2888,7 +2929,7 @@ func (g *Generator) renderLearnFiles() error {
 		"learn_patterns/apply_test.go.tmpl":   filepath.Join("internal", "learn", "patterns", "apply_test.go"),
 	}
 	for tmplName, outPath := range learnFiles {
-		if err := g.renderTemplate(tmplName, outPath, g.Spec); err != nil {
+		if err := g.renderTemplate(tmplName, outPath, learnData); err != nil {
 			return fmt.Errorf("rendering %s: %w", tmplName, err)
 		}
 	}
@@ -3043,7 +3084,7 @@ func (g *Generator) activeFrameworkCobraUseNames() map[string]struct{} {
 	if g.VisionSet.Analytics {
 		names["analytics"] = struct{}{}
 	}
-	if g.VisionSet.Store {
+	if g.hasDataLayer() {
 		names["workflow"] = struct{}{}
 	}
 	if g.Spec.Share.Enabled {
@@ -3496,7 +3537,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				EndpointName:  eName,
 				Endpoint:      endpoint,
 				Resource:      resource,
-				HasStore:      g.VisionSet.Store,
+				HasStore:      g.hasDataLayer(),
 				IsAsync:       isAsync,
 				Async:         asyncInfo,
 				PageSize:      g.paginationPageSizeForEndpoint(endpoint),
@@ -3556,7 +3597,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 					EndpointName:  eName,
 					Endpoint:      endpoint,
 					Resource:      effectiveResource,
-					HasStore:      g.VisionSet.Store,
+					HasStore:      g.hasDataLayer(),
 					IsAsync:       isAsync,
 					Async:         asyncInfo,
 					PageSize:      g.paginationPageSizeForEndpoint(endpoint),
@@ -3825,6 +3866,7 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 type visionRenderData struct {
 	*spec.APISpec
 	VisionSet                    VisionTemplateSet
+	HasSync                      bool
 	SyncableResources            []profiler.SyncableResource
 	DependentSyncResources       []profiler.DependentResource
 	TenantScopedParents          []profiler.TenantScopedParent
@@ -4135,6 +4177,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 	return visionRenderData{
 		APISpec:                      g.Spec,
 		VisionSet:                    g.VisionSet,
+		HasSync:                      g.hasGeneratedSyncImplementation(),
 		SyncableResources:            g.profile.SyncableResources,
 		DependentSyncResources:       g.profile.DependentSyncResources,
 		TenantScopedParents:          g.profile.TenantScopedParents(),
@@ -4153,7 +4196,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		SearchExampleType:            searchExampleType(g.Spec),
 		GraphQLFieldPaths:            gqlFieldPaths,
 		AgentMoneyWorkflow:           detectAgentMoneyWorkflow(g.Spec, g.PromotedEndpointNames),
-		HTMLSyncStub:                 g.shouldEmitHTMLSyncStub(),
+		HTMLSyncStub:                 g.htmlSyncStubSelected,
 		HTMLPageModeResources:        htmlPageModeResourceEntries(g.Spec, g.profile.SyncableResources, g.profile.DependentSyncResources),
 	}
 }
@@ -4348,14 +4391,15 @@ func (g *Generator) renderVisionCommands(visionData visionRenderData) error {
 
 func (g *Generator) renderWorkflowFiles(visionData visionRenderData) ([]string, error) {
 	// Render data source resolution template when store is enabled
-	if g.VisionSet.Store {
+	if g.hasDataLayer() {
 		if err := g.renderTemplate("data_source.go.tmpl", filepath.Join("internal", "cli", "data_source.go"), visionData); err != nil {
 			return nil, fmt.Errorf("rendering data_source: %w", err)
 		}
 	}
 
-	// Render workflow template when store is enabled (root.go registers it conditionally on VisionSet.Store)
-	if g.VisionSet.Store {
+	// HTML page-mode CLIs keep a workflow stub that explains how to add a
+	// site-specific sync command even though they have no generic sync surface.
+	if g.hasWorkflowSurface() {
 		workflowData := struct {
 			*spec.APISpec
 			SyncableResources  []profiler.SyncableResource
@@ -4653,7 +4697,7 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 			SyncableResources: g.profile.SyncableResources,
 			SearchableFields:  g.profile.SearchableFields,
 			Tables:            schema,
-			VisionSet:         g.VisionSet,
+			VisionSet:         g.dataSurfaceVisionSet(),
 			MCPTotalCount:     mcpTotal,
 			MCPPublicCount:    mcpPublic,
 			NovelFeatures:     g.NovelFeatures,
@@ -4664,7 +4708,7 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 		if err := g.renderTemplate("mcp_tools.go.tmpl", filepath.Join("internal", "mcp", "tools.go"), mcpData); err != nil {
 			return fmt.Errorf("rendering MCP tools: %w", err)
 		}
-		if g.VisionSet.Store {
+		if g.hasDataLayer() {
 			if err := g.renderTemplate("mcp_tools_test.go.tmpl", filepath.Join("internal", "mcp", "tools_test.go"), mcpData); err != nil {
 				return fmt.Errorf("rendering MCP tools tests: %w", err)
 			}
@@ -4732,14 +4776,14 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			EffectivePath: effectiveEndpointPath(resource, pc.Endpoint),
 			Endpoint:      pc.Endpoint,
 			EffectiveTier: g.Spec.EffectiveTier(resource, pc.Endpoint),
-			HasStore:      g.VisionSet.Store,
+			HasStore:      g.hasDataLayer(),
 			// Per-command: emit the extractResponseData call only on commands
 			// whose own response is envelope-shaped, so a non-envelope command
 			// in a mixed-envelope spec is never unwrapped. This is a subset of
 			// the CLI-level helper-emission gate (helpers.go emits the helper
 			// when ANY promoted command qualifies), so call ⊆ emit — no call to
 			// an unemitted helper.
-			HasResponseUnwrap: g.VisionSet.Store && !pc.Endpoint.UsesBinaryResponse() && endpointHasStatusDataEnvelope(pc.Endpoint, g.Spec.Types),
+			HasResponseUnwrap: g.hasDataLayer() && !pc.Endpoint.UsesBinaryResponse() && endpointHasStatusDataEnvelope(pc.Endpoint, g.Spec.Types),
 			PageSize:          g.paginationPageSizeForEndpoint(pc.Endpoint),
 			Resource:          resource,
 			FuncPrefix:        pc.ResourceName,
@@ -4861,7 +4905,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 	// undefined symbol when auth.go was skipped.
 	hasAuthCommand := g.shouldEmitAuth()
 	helperFlags := computeHelperFlags(g.Spec)
-	applyPartialFailureFlags(&helperFlags, g.Spec, promotedCommands, g.PromotedEndpointNames, g.VisionSet.Store)
+	applyPartialFailureFlags(&helperFlags, g.Spec, promotedCommands, g.PromotedEndpointNames, g.hasDataLayer())
 
 	rootData := struct {
 		*spec.APISpec
@@ -4882,10 +4926,11 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		HasDelete             bool
 		HasMutationEndpoints  bool
 		HasAutoRefresh        bool
+		HasWorkflow           bool
 		CompactDescription    string
 	}{
 		APISpec:               g.Spec,
-		VisionSet:             g.VisionSet,
+		VisionSet:             g.dataSurfaceVisionSet(),
 		VisionCmdNames:        g.VisionSet.CmdNames(),
 		WorkflowConstructors:  renderedWorkflowConstructors,
 		InsightConstructors:   renderedInsightConstructors,
@@ -4902,6 +4947,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		HasDelete:             helperFlags.HasDelete,
 		HasMutationEndpoints:  helperFlags.HasMutationEndpoints,
 		HasAutoRefresh:        g.hasAutoRefresh(),
+		HasWorkflow:           g.hasWorkflowSurface(),
 		CompactDescription:    g.compactDescription(),
 	}
 	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {
