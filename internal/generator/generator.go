@@ -3763,6 +3763,10 @@ func (g *Generator) schemaWithDependentParents() []TableDef {
 		}
 	}
 
+	// Reapply after dependent enrichment so parent_id cannot restore a reserved
+	// domain table routed through generic storage by BuildSchema.
+	routeReservedStoreTablesToGenericOnly(schema, reservedStoreObjectNames(g.Spec))
+
 	return schema
 }
 

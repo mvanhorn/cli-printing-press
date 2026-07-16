@@ -12389,6 +12389,134 @@ func TestGenerateReservedWordResourceTableNamesCompileAndMigrate(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/store")
 }
 
+func TestGenerateReservedStoreTableCollisionUsesGenericStore(t *testing.T) {
+	t.Parallel()
+
+	resource := func(path, item string) spec.Resource {
+		return spec.Resource{
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        path,
+					Description: "List items",
+					Response:    spec.ResponseDef{Type: "array", Item: item},
+				},
+			},
+		}
+	}
+	fields := []spec.TypeField{
+		{Name: "id", Type: "string"},
+		{Name: "name", Type: "string"},
+		{Name: "notes", Type: "string"},
+		{Name: "created_at", Type: "string", Format: "date-time"},
+	}
+	apiSpec := &spec.APISpec{
+		Name:    "store-collision",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/store-collision-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"resources":          resource("/resources", "Resource"),
+			"bookings":           resource("/bookings", "Booking"),
+			"idx_resources_type": resource("/indexed-resources", "IndexedResource"),
+		},
+		Types: map[string]spec.TypeDef{
+			"Resource":        {Fields: fields},
+			"Booking":         {Fields: fields},
+			"IndexedResource": {Fields: fields},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+	gen.profile = &profiler.APIProfile{
+		DependentSyncResources: []profiler.DependentResource{
+			{Name: "resources", ParentResource: "accounts", ParentIDParam: "accountId", Path: "/accounts/{accountId}/resources", Method: "GET"},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	store := string(storeSrc)
+	assert.NotContains(t, store, `CREATE TRIGGER IF NOT EXISTS "resources_ai"`)
+	assert.NotContains(t, store, "func (s *Store) upsertResourcesTx(")
+	assert.NotContains(t, store, "func (s *Store) SearchResources(")
+	assert.Contains(t, store, `"resources": "parent_id"`)
+	assert.NotContains(t, store, `CREATE TABLE IF NOT EXISTS "resources" (
+		id TEXT PRIMARY KEY,
+		data TEXT NOT NULL,
+		synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		parent_id TEXT`, "dependent-resource enrichment must not restore the reserved domain table")
+
+	runtimeTest := `package store
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"testing"
+)
+
+func TestReservedResourceNameDoesNotBreakStoreWrites(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	resourceA := json.RawMessage(` + "`" + `{"id":"resource-1","parent_id":"account-1","name":"Meeting room","notes":"Quiet floor"}` + "`" + `)
+	resourceB := json.RawMessage(` + "`" + `{"id":"resource-1","parent_id":"account-2","name":"Meeting room","notes":"Window floor"}` + "`" + `)
+	booking := json.RawMessage(` + "`" + `{"id":"booking-1","name":"Planning session","notes":"Meeting room"}` + "`" + `)
+	indexed := json.RawMessage(` + "`" + `{"id":"indexed-1","name":"Indexed room","notes":"Meeting room"}` + "`" + `)
+	if stored, failed, err := s.UpsertBatch("resources", []json.RawMessage{resourceA, resourceB}); err != nil {
+		t.Fatalf("upsert resources: %v", err)
+	} else if stored != 2 || failed != 0 {
+		t.Fatalf("upsert resources stored=%d failed=%d, want 2,0", stored, failed)
+	}
+	if stored, failed, err := s.UpsertBatch("bookings", []json.RawMessage{booking}); err != nil {
+		t.Fatalf("upsert bookings: %v", err)
+	} else if stored != 1 || failed != 0 {
+		t.Fatalf("upsert bookings stored=%d failed=%d, want 1,0", stored, failed)
+	}
+	if stored, failed, err := s.UpsertBatch("idx_resources_type", []json.RawMessage{indexed}); err != nil {
+		t.Fatalf("upsert indexed resources: %v", err)
+	} else if stored != 1 || failed != 0 {
+		t.Fatalf("upsert indexed resources stored=%d failed=%d, want 1,0", stored, failed)
+	}
+
+	wantRows := map[string]int{"resources": 2, "bookings": 1, "idx_resources_type": 1}
+	for _, resourceType := range []string{"resources", "bookings", "idx_resources_type"} {
+		rows, err := s.List(resourceType, 10)
+		if err != nil {
+			t.Fatalf("list %s: %v", resourceType, err)
+		}
+		if len(rows) != wantRows[resourceType] {
+			t.Fatalf("list %s returned %d rows, want %d", resourceType, len(rows), wantRows[resourceType])
+		}
+	}
+
+	for _, resourceType := range []string{"resources", "bookings", "idx_resources_type"} {
+		hits, err := s.Search("Meeting room", 10, resourceType)
+		if err != nil {
+			t.Fatalf("search %s: %v", resourceType, err)
+		}
+		if len(hits) != wantRows[resourceType] {
+			t.Fatalf("search %s returned %d rows, want %d", resourceType, len(hits), wantRows[resourceType])
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "store", "reserved_table_collision_test.go"), []byte(runtimeTest), 0o644))
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "TestReservedResourceNameDoesNotBreakStoreWrites", "-count=1")
+}
+
 func TestGeneratedSyncTreatsAccessDeniedAsWarning(t *testing.T) {
 	t.Parallel()
 
