@@ -31,6 +31,9 @@ func TestFilterFieldsEnvelopeDescent_EmittedHelper(t *testing.T) {
 
 import (
 	"encoding/json"
+	"io"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -70,10 +73,10 @@ func TestFilterFieldsEnvelopeDescent(t *testing.T) {
 			`+"`"+`{"items":[{"id":"a"}],"next_cursor":null}`+"`"+`,
 		},
 		{
-			"flat object no match returns empty",
+			"flat object no match preserves input",
 			`+"`"+`{"a":1,"b":2}`+"`"+`,
 			"c",
-			`+"`"+`{}`+"`"+`,
+			`+"`"+`{"a":1,"b":2}`+"`"+`,
 		},
 		{
 			"selector matches envelope key suppresses descent",
@@ -100,6 +103,41 @@ func TestFilterFieldsEnvelopeDescent(t *testing.T) {
 					tc.input, tc.fields, string(gotBytes), string(wantBytes))
 			}
 		})
+	}
+}
+
+func TestFilterFieldsEnvelopeDescent_UnknownSelector(t *testing.T) {
+	input := "{\"items\":[{\"id\":\"a\",\"name\":\"Alpha\"},{\"id\":\"b\",\"name\":\"Beta\"}]}"
+
+	oldStderr := os.Stderr
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() error: %v", err)
+	}
+	os.Stderr = write
+	got := filterFields(json.RawMessage(input), "missing")
+	_ = write.Close()
+	os.Stderr = oldStderr
+	warning, _ := io.ReadAll(read)
+	_ = read.Close()
+
+	var gotV, wantV interface{}
+	if err := json.Unmarshal(got, &gotV); err != nil {
+		t.Fatalf("invalid json output: %v (raw=%s)", err, string(got))
+	}
+	if err := json.Unmarshal([]byte(input), &wantV); err != nil {
+		t.Fatalf("invalid input json: %v", err)
+	}
+	gotBytes, _ := json.Marshal(gotV)
+	wantBytes, _ := json.Marshal(wantV)
+	if string(gotBytes) != string(wantBytes) {
+		t.Fatalf("unknown selector changed the payload: got %s, want %s", gotBytes, wantBytes)
+	}
+	if !strings.Contains(string(warning), "--select \"missing\" matched no fields") {
+		t.Fatalf("warning = %q, want unknown-selector warning", warning)
+	}
+	if !strings.Contains(string(warning), "valid fields: items") {
+		t.Fatalf("warning = %q, want valid top-level fields", warning)
 	}
 }
 `), 0o644))
