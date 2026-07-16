@@ -5688,7 +5688,7 @@ func resourceDetailPathEntries(data visionRenderData) []resourcePathEntry {
 		})
 		for _, endpointName := range endpointNames {
 			endpoint := resource.Endpoints[endpointName]
-			if !strings.EqualFold(endpoint.Method, "GET") || endpoint.Response.Type == "array" || endpoint.Pagination != nil || !strings.HasSuffix(endpoint.Path, "}") || strings.Count(endpoint.Path, "{") != 1 || strings.Count(endpoint.Path, "}") != 1 {
+			if !strings.EqualFold(endpoint.Method, "GET") || endpoint.Response.Type == "array" || endpoint.Pagination != nil || strings.Count(endpoint.Path, "{") != 1 || strings.Count(endpoint.Path, "}") != 1 {
 				continue
 			}
 			entries[name] = resourcePathEntry{Name: name, Path: endpoint.Path}

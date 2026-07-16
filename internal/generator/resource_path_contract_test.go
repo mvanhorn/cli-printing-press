@@ -73,6 +73,10 @@ func TestGeneratedResourceCommandsUseAuthoritativePaths(t *testing.T) {
 				Pagination: &spec.Pagination{Type: "cursor", CursorParam: "after", LimitParam: "limit", NextCursorPath: "meta.next", HasMoreField: "meta.more"},
 			},
 		}},
+		"suffixed-details": {Endpoints: map[string]spec.Endpoint{
+			"list":   {Method: "GET", Path: "/v3/items", Response: spec.ResponseDef{Type: "array"}},
+			"detail": {Method: "GET", Path: "/v3/items/{itemId}/details", Response: spec.ResponseDef{Type: "object"}},
+		}},
 	}
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
@@ -83,6 +87,7 @@ func TestGeneratedResourceCommandsUseAuthoritativePaths(t *testing.T) {
 	resourcePaths := readResourceContractGeneratedFile(t, outputDir, "internal", "cli", "resource_paths.go")
 	require.Contains(t, resourcePaths, `"dns-zones": "/v3/dnsZones"`)
 	require.Regexp(t, `"dns-zones":\s+"/v3/dnsZones/\{zoneId\}"`, resourcePaths)
+	require.Regexp(t, `"suffixed-details":\s+"/v3/items/\{itemId\}/details"`, resourcePaths)
 	require.NotContains(t, resourcePaths, `"scoped-records"`)
 	require.NotContains(t, resourcePaths, `"detail-only"`)
 	require.NotContains(t, resourcePaths, `"shared-a"`)
@@ -148,6 +153,10 @@ func TestResourceExportUsesMappedPathEnvelopeAndPagination(t *testing.T) {
 			fmt.Fprint(w, ` + "`" + `{"id":"zone-1","tags":["a","b"]}` + "`" + `)
 			return
 		}
+		if r.URL.Path == "/v3/items/item-1/details" {
+			fmt.Fprint(w, ` + "`" + `{"id":"item-1","detail":true}` + "`" + `)
+			return
+		}
 		if r.URL.Path != "/v3/dnsZones" {
 			t.Fatalf("path = %q, want mapped path", r.URL.Path)
 		}
@@ -190,6 +199,16 @@ func TestResourceExportUsesMappedPathEnvelopeAndPagination(t *testing.T) {
 		t.Fatalf("single export = %s", singleData)
 	}
 
+	suffixed := filepath.Join(t.TempDir(), "item-details.jsonl")
+	cmd = newExportCmd(&rootFlags{})
+	cmd.SetArgs([]string{"suffixed-details", "item-1", "--format", "jsonl", "--output", suffixed})
+	if err := cmd.Execute(); err != nil { t.Fatalf("suffixed detail export: %v", err) }
+	suffixedData, err := os.ReadFile(suffixed)
+	if err != nil { t.Fatal(err) }
+	if strings.TrimSpace(string(suffixedData)) != ` + "`" + `{"id":"item-1","detail":true}` + "`" + ` {
+		t.Fatalf("suffixed detail export = %s", suffixedData)
+	}
+
 	cursorOutput := filepath.Join(t.TempDir(), "cursor.jsonl")
 	cmd = newExportCmd(&rootFlags{})
 	cmd.SetArgs([]string{"cursor-zones", "--format", "jsonl", "--output", cursorOutput})
@@ -198,6 +217,34 @@ func TestResourceExportUsesMappedPathEnvelopeAndPagination(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	if cursorRequests != 2 || len(strings.Split(strings.TrimSpace(string(cursorData)), "\n")) != 2 {
 		t.Fatalf("cursor requests=%d output=%s", cursorRequests, cursorData)
+	}
+}
+
+func TestResourceExportAllowsIdenticalOffsetPages(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		fmt.Fprint(w, ` + "`" + `{"dnsZones":[` + "`" + `)
+		if offset < 200 {
+			for i := 0; i < 100; i++ {
+				if i > 0 { fmt.Fprint(w, ",") }
+				fmt.Fprint(w, ` + "`" + `{"id":1}` + "`" + `)
+			}
+		}
+		fmt.Fprint(w, ` + "`" + `],"totalResults":200}` + "`" + `)
+	}))
+	defer server.Close()
+	t.Setenv("RESOURCE_PATH_CONTRACT_BASE_URL", server.URL)
+
+	output := filepath.Join(t.TempDir(), "identical-offset-pages.jsonl")
+	cmd := newExportCmd(&rootFlags{})
+	cmd.SetArgs([]string{"dns-zones", "--format", "jsonl", "--output", output})
+	if err := cmd.Execute(); err != nil { t.Fatalf("export: %v", err) }
+	data, err := os.ReadFile(output)
+	if err != nil { t.Fatal(err) }
+	if requests != 3 || len(strings.Split(strings.TrimSpace(string(data)), "\n")) != 200 {
+		t.Fatalf("requests=%d output lines=%d", requests, len(strings.Split(strings.TrimSpace(string(data)), "\n")))
 	}
 }
 
@@ -297,6 +344,18 @@ func TestResourcePaginationUsesDeclaredFieldsAndStableOffsetStride(t *testing.T)
 	detail := []byte(` + "`" + `{"id":1,"children":[{"id":2}]}` + "`" + `)
 	items, _, _ = extractResourcePage(detail, resourceReadConfig{})
 	if items != nil { t.Fatalf("detail object misclassified as %d list items", len(items)) }
+}
+
+func TestResourcePaginationStopsWhenDeclaredHasMoreIsFalse(t *testing.T) {
+	data := []byte(` + "`" + `{"dnsZones":[{"id":1}],"meta":{"next":"cursor-2","more":false}}` + "`" + `)
+	config := resourceReadConfig{
+		responsePath: "dnsZones", paginationType: "cursor", cursorParam: "after",
+		nextCursorPath: "meta.next", hasMoreField: "meta.more",
+	}
+	_, next, more := extractResourcePage(data, config)
+	if next != "" || more {
+		t.Fatalf("next=%q more=%v, want empty cursor and false", next, more)
+	}
 }
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "resource_path_contract_test.go"), []byte(behaviorTest), 0o644))

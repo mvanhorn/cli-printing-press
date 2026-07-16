@@ -90,7 +90,6 @@ large datasets as it has no memory pressure.`,
 			config := resourceReadConfigFor(resource)
 			allItems := []json.RawMessage{}
 			var singlePayload json.RawMessage
-			var previousPage json.RawMessage
 			count, page, cursor := 0, 0, ""
 			for {
 				remaining := 0
@@ -114,11 +113,6 @@ large datasets as it has no memory pressure.`,
 					}
 					break
 				}
-				if len(previousPage) > 0 && string(previousPage) == string(data) {
-					return fmt.Errorf("export pagination for %q returned the same page without progress", resource)
-				}
-				previousPage = append(previousPage[:0], data...)
-
 				items, nextCursor, hasMore := extractResourcePage(data, config)
 				if items == nil {
 					items = []json.RawMessage{data}

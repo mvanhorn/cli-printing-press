@@ -146,6 +146,18 @@ func resourceJSONArray(data json.RawMessage) ([]json.RawMessage, bool) {
 }
 
 func resourcePagination(data json.RawMessage, envelope map[string]json.RawMessage, config resourceReadConfig) (string, bool) {
+	declaredMore := false
+	if config.hasMoreField != "" {
+		if raw, ok := responsePayloadAtPath(data, config.hasMoreField); ok {
+			var value bool
+			if json.Unmarshal(raw, &value) == nil {
+				if !value {
+					return "", false
+				}
+				declaredMore = true
+			}
+		}
+	}
 	if config.nextCursorPath != "" {
 		if raw, ok := responsePayloadAtPath(data, config.nextCursorPath); ok {
 			if value := resourceCursorValue(raw); value != "" {
@@ -176,13 +188,8 @@ func resourcePagination(data json.RawMessage, envelope map[string]json.RawMessag
 			}
 		}
 	}
-	if config.hasMoreField != "" {
-		if raw, ok := responsePayloadAtPath(data, config.hasMoreField); ok {
-			var value bool
-			if json.Unmarshal(raw, &value) == nil {
-				return "", value
-			}
-		}
+	if declaredMore {
+		return "", true
 	}
 	for _, candidate := range envelopes {
 		for _, key := range []string{"has_more", "hasMore", "has_next", "hasNext"} {
