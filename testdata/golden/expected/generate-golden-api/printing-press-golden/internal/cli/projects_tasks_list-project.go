@@ -61,7 +61,7 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "auto", "tasks", path, map[string]string{
+			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "live", "tasks", path, map[string]string{
 				"priority": formatCLIParamValue(flagPriority),
 				"limit":    formatCLIParamValue(flagLimit),
 				"cursor":   formatCLIParamValue(flagCursor),

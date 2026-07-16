@@ -67,6 +67,8 @@ func TestFlatReconcile_SkipOnUnknownTenant(t *testing.T) {
 		"sync.go must emit the flatReconcileDef lookup")
 	require.Contains(t, src, `"unknown-tenant"`,
 		"sync.go must emit the unknown-tenant skip reason")
+	require.Contains(t, src, `"unsupported-resource-shape"`,
+		"sync.go must make unsupported full-sync pruning observable")
 
 	inlineTest := `package cli
 
