@@ -18890,6 +18890,93 @@ func TestGeneratedCollectionNamedReadUsesLocalList(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+func TestLocalReadSupportedRejectsNestedSubresources(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		path      string
+		supported bool
+	}{
+		{name: "flat collection", path: "/stores", supported: true},
+		{name: "resource by ID", path: "/stores/{storeId}", supported: true},
+		{name: "nested collection", path: "/stores/{storeId}/disclaimers", supported: false},
+		{name: "nested item", path: "/stores/{storeId}/disclaimers/{disclaimerId}", supported: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.supported, localReadSupported(spec.Endpoint{Path: tc.path}))
+		})
+	}
+}
+
+func TestGeneratedNestedSubresourceRejectsLocalDataSource(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("nested-local")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources = map[string]spec.Resource{
+		"stores": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:   "GET",
+					Path:     "/stores",
+					Response: spec.ResponseDef{Type: "array", Item: "Store"},
+				},
+				"get-disclaimers": {
+					Method:   "GET",
+					Path:     "/stores/{storeId}/disclaimers",
+					Params:   []spec.Param{{Name: "storeId", Type: "string", Positional: true, PathParam: true}},
+					Response: spec.ResponseDef{Type: "array", Item: "Disclaimer"},
+					Pagination: &spec.Pagination{
+						Type:        "cursor",
+						CursorParam: "cursor",
+						LimitParam:  "limit",
+					},
+				},
+			},
+		},
+	}
+	apiSpec.Types = map[string]spec.TypeDef{
+		"Store":      {Fields: []spec.TypeField{{Name: "id", Type: "string"}}},
+		"Disclaimer": {Fields: []spec.TypeField{{Name: "id", Type: "string"}}},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
+	require.NoError(t, gen.Generate())
+	requireGeneratedCompiles(t, outputDir)
+
+	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+	cmd := exec.Command(binaryPath, "stores", "get-disclaimers", "store-123", "--data-source", "local")
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err)
+	assert.Contains(t, string(out), "no local data source for this command")
+}
+
+func TestGeneratedAutoRefreshRespectsNoLearn(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("no-learn-refresh")
+	apiSpec.Cache.Enabled = true
+	apiSpec.Learn.Enabled = true
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	autoRefreshTest, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auto_refresh_test.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(autoRefreshTest), "context.Background()")
+	assert.NotContains(t, string(autoRefreshTest), "t.Context()")
+
+	runGoCommand(t, outputDir, "test", "./internal/cli/...", "-run", "^TestAutoRefreshNoLearnDoesNotOpenStore$", "-count=1")
+}
+
 func TestGeneratedSyntheticAnchorCommandFallsBackToLocalStore(t *testing.T) {
 	t.Parallel()
 

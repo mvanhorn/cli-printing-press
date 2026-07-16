@@ -858,6 +858,11 @@ func syncResource(ctx context.Context, c interface {
 		} else {
 			fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"%s","reason":%q}`+"\n", resource, tenantUUID, outcome.reason)
 		}
+	} else if prune {
+		// Unpartitioned resources cannot be reconciled safely: the generated
+		// store only supports scoped mark-and-sweep deletion. Emit the decision
+		// so --full never implies that unsupported rows were pruned.
+		fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","reason":"unsupported-resource-shape"}`+"\n", resource)
 	}
 
 	// Final sync state: clear cursor on natural completion, but preserve the

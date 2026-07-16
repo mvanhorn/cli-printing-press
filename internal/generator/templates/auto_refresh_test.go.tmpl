@@ -11,6 +11,11 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+{{- if .Learn.Enabled}}
+	"context"
+	"{{modulePath}}/internal/cliutil"
+{{- end}}
 )
 
 // captureStderr returns the bytes written to os.Stderr while fn runs. Used
@@ -96,3 +101,26 @@ func TestEmitCacheRefreshFailedEvent_NilResources(t *testing.T) {
 		t.Errorf("resources key should be omitted on nil slice, got: %v", payload)
 	}
 }
+
+{{- if .Learn.Enabled}}
+func TestAutoRefreshNoLearnDoesNotOpenStore(t *testing.T) {
+	home := t.TempDir()
+	restore, err := cliutil.SetHomeOverride(home)
+	if err != nil {
+		t.Fatalf("set home override: %v", err)
+	}
+	defer restore()
+
+	meta := autoRefreshIfStale(context.Background(), &rootFlags{dataSource: "auto", noLearn: true}, []string{"items"})
+	if meta.Decision != "skipped" || meta.Reason != "no_learn" {
+		t.Fatalf("freshness = %+v, want skipped/no_learn", meta)
+	}
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatalf("read home: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("--no-learn created local-store files: %v", entries)
+	}
+}
+{{- end}}
