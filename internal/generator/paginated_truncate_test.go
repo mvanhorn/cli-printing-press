@@ -476,6 +476,32 @@ func TestPaginatedGetExtractsHALEmbeddedItems(t *testing.T) {
 }
 
 func TestPaginatedGetSelectsHALEmbeddedCollectionMatchingPath(t *testing.T) {
+	for _, requestPath := range []string{"/discovery/v2/events.json", "/events/search"} {
+		t.Run(requestPath, func(t *testing.T) {
+			client := &paginatedTestClient{responses: []json.RawMessage{
+				json.RawMessage(` + "`" + `{
+					"_embedded": {
+						"events": [{"id":"event-one"}],
+						"items": [{"id":"unrelated-item"}]
+					}
+				}` + "`" + `),
+			}}
+			data, err := paginatedGet(context.Background(), client, requestPath, map[string]string{"size":"2"}, nil, true, "page", "page", "size", 2, "", "")
+			if err != nil {
+				t.Fatalf("paginatedGet returned error: %v", err)
+			}
+			var got []map[string]string
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatalf("unmarshal data: %v", err)
+			}
+			if len(got) != 1 || got[0]["id"] != "event-one" {
+				t.Fatalf("got items %#v, want only the events collection", got)
+			}
+		})
+	}
+}
+
+func TestPaginatedGetKeepsUnmatchedHALEmbeddedCollectionsAmbiguous(t *testing.T) {
 	client := &paginatedTestClient{responses: []json.RawMessage{
 		json.RawMessage(` + "`" + `{
 			"_embedded": {
@@ -484,7 +510,7 @@ func TestPaginatedGetSelectsHALEmbeddedCollectionMatchingPath(t *testing.T) {
 			}
 		}` + "`" + `),
 	}}
-	data, err := paginatedGet(context.Background(), client, "/discovery/v2/events.json", map[string]string{"size":"2"}, nil, true, "page", "page", "size", 2, "", "")
+	data, err := paginatedGet(context.Background(), client, "/discovery/v2/catalog.json", map[string]string{"size":"2"}, nil, true, "page", "page", "size", 2, "", "")
 	if err != nil {
 		t.Fatalf("paginatedGet returned error: %v", err)
 	}
@@ -492,8 +518,8 @@ func TestPaginatedGetSelectsHALEmbeddedCollectionMatchingPath(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal data: %v", err)
 	}
-	if len(got) != 1 || got[0]["id"] != "event-one" {
-		t.Fatalf("got items %#v, want only the events collection", got)
+	if len(got) != 0 {
+		t.Fatalf("got items %#v, want ambiguous HAL collections left unselected", got)
 	}
 }
 

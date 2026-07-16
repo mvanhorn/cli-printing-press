@@ -864,16 +864,16 @@ func extractPaginatedItemsFromObject(obj map[string]json.RawMessage, requestPath
 		}
 	}
 
-	for _, field := range []string{"data", "items", "results", "messages", "members", "values"} {
-		if arr, ok := obj[field]; ok {
-			var nested []json.RawMessage
-			if json.Unmarshal(arr, &nested) == nil {
-				return nested, true
+	if allowEmbedded {
+		for _, field := range []string{"data", "items", "results", "messages", "members", "values"} {
+			if arr, ok := obj[field]; ok {
+				var nested []json.RawMessage
+				if json.Unmarshal(arr, &nested) == nil {
+					return nested, true
+				}
 			}
 		}
-	}
 
-	if allowEmbedded {
 		if raw, ok := obj["_embedded"]; ok {
 			var embedded map[string]json.RawMessage
 			if json.Unmarshal(raw, &embedded) == nil {
@@ -904,34 +904,31 @@ func extractPaginatedItemsFromObject(obj map[string]json.RawMessage, requestPath
 func extractPaginatedItemsMatchingPath(obj map[string]json.RawMessage, requestPath string) ([]json.RawMessage, bool) {
 	pathWithoutQuery := strings.SplitN(requestPath, "?", 2)[0]
 	segments := strings.Split(strings.Trim(pathWithoutQuery, "/"), "/")
-	collectionKey := ""
 	for i := len(segments) - 1; i >= 0; i-- {
-		segment := strings.TrimSpace(segments[i])
+		segment := strings.TrimSuffix(strings.TrimSpace(segments[i]), ".json")
 		if segment == "" || (strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}")) {
 			continue
 		}
-		collectionKey = strings.TrimSuffix(segment, ".json")
-		break
-	}
-	if collectionKey == "" {
-		return nil, false
-	}
 
-	var matched []json.RawMessage
-	matches := 0
-	for key, raw := range obj {
-		if !strings.EqualFold(key, collectionKey) {
-			continue
+		var matched []json.RawMessage
+		matches := 0
+		for key, raw := range obj {
+			if !strings.EqualFold(key, segment) {
+				continue
+			}
+			var items []json.RawMessage
+			if json.Unmarshal(raw, &items) != nil {
+				continue
+			}
+			matched = items
+			matches++
 		}
-		var items []json.RawMessage
-		if json.Unmarshal(raw, &items) != nil {
-			continue
+		if matches == 1 {
+			return matched, true
 		}
-		matched = items
-		matches++
-	}
-	if matches == 1 {
-		return matched, true
+		if matches > 1 {
+			return nil, false
+		}
 	}
 	return nil, false
 }
