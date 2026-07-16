@@ -65,18 +65,18 @@ func TestBuildSchemaRoutesReservedStoreTablesToGenericOnly(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		resource   string
-		streaming  bool
-		learn      bool
-		wantDomain bool
+		name      string
+		resource  string
+		streaming bool
+		learn     bool
 	}{
 		{name: "generic resources table", resource: "resources"},
 		{name: "fts shadow table", resource: "resources_fts_data"},
 		{name: "lazy learn table", resource: "learn_recall_misses", learn: true},
-		{name: "disabled learn table", resource: "search_learnings", wantDomain: true},
+		{name: "disabled learn table remains reserved", resource: "search_learnings"},
 		{name: "framework index", resource: "idx_resources_type"},
 		{name: "stream frames table", resource: "collision_a_p_i_stream_frames", streaming: true},
+		{name: "disabled stream table remains reserved", resource: "collision_a_p_i_stream_frames"},
 		{name: "stream metadata table", resource: "collision_a_p_i_stream_metadata", streaming: true},
 		{name: "stream rebase table", resource: "collision_a_p_i_rebase_log", streaming: true},
 		{name: "stream metadata index", resource: "collision_a_p_i_stream_metadata_status", streaming: true},
@@ -116,10 +116,6 @@ func TestBuildSchemaRoutesReservedStoreTablesToGenericOnly(t *testing.T) {
 
 			table := findTable(BuildSchema(apiSpec), tt.resource)
 			if !assert.NotNil(t, table) {
-				return
-			}
-			if tt.wantDomain {
-				assert.Greater(t, len(table.Columns), len(baseTableColumns))
 				return
 			}
 			assert.Equal(t, baseTableColumns, table.Columns)

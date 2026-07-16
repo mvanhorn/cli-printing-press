@@ -243,22 +243,18 @@ func reservedStoreObjectNames(s *spec.APISpec) map[string]struct{} {
 	for name := range frameworkStoreObjectNames {
 		names[name] = struct{}{}
 	}
-	if s.Learn.Enabled {
-		for name := range learnStoreObjectNames {
-			names[name] = struct{}{}
-		}
+	for name := range learnStoreObjectNames {
+		names[name] = struct{}{}
 	}
-	if s.Streaming.Enabled() {
-		prefix := naming.Snake(s.Name)
-		for _, suffix := range []string{
-			"_stream_frames",
-			"_stream_metadata",
-			"_rebase_log",
-			"_stream_metadata_status",
-			"_rebase_log_created",
-		} {
-			names[prefix+suffix] = struct{}{}
-		}
+	prefix := naming.Snake(s.Name)
+	for _, suffix := range []string{
+		"_stream_frames",
+		"_stream_metadata",
+		"_rebase_log",
+		"_stream_metadata_status",
+		"_rebase_log_created",
+	} {
+		names[prefix+suffix] = struct{}{}
 	}
 	return names
 }
