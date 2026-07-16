@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -77,6 +78,8 @@ func TestGenerateZeroSyncableAPIOmitsSyncAndDoctorCache(t *testing.T) {
 	require.NotContains(t, doctorSrc, `report["cache"]`)
 	require.NotContains(t, doctorSrc, "collectCacheReport")
 	require.NotContains(t, dataSourceSrc, "emitSyncHints")
+	require.NotContains(t, dataSourceSrc, "Run 'zero-syncable-query-pp-cli sync' first")
+	require.Equal(t, 4, strings.Count(dataSourceSrc, "Populate the local store through a custom store-backed command first."))
 	require.Contains(t, syncHintSrc, "const syncHintsEnabled = false")
 	require.Contains(t, mcpSrc, `mcplib.NewTool("sql"`)
 
