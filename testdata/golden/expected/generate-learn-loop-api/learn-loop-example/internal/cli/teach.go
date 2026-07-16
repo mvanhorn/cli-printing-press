@@ -334,7 +334,7 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 				writeTeachErrLog(fmt.Sprintf("teach: audit append: %v", auditErr))
 			}
 
-			if !quiet && flags.asJSON {
+			if flags.asJSON && !flags.quiet && !(quiet && cmd.Flags().Changed("quiet")) {
 				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 					"recorded":   true,
 					"query":      query,
