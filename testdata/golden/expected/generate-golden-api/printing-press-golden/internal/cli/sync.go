@@ -1802,7 +1802,7 @@ func hydratedItemPath(config itemHydrationConfig, id string) string {
 	if param == "" {
 		param = "id"
 	}
-	return strings.ReplaceAll(config.path, "{"+param+"}", url.PathEscape(id))
+	return strings.ReplaceAll(config.path, "{"+param+"}", cliutil.EscapePathParam(id))
 }
 
 func scalarItemID(item json.RawMessage) string {

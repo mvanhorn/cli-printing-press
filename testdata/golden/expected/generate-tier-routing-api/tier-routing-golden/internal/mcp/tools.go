@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -151,7 +150,7 @@ func formatMCPParamValue(v any) string {
 }
 
 func mcpPathValue(v any) string {
-	return url.PathEscape(formatMCPParamValue(v))
+	return cliutil.EscapePathParam(formatMCPParamValue(v))
 }
 
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.

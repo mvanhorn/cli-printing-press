@@ -43,7 +43,7 @@ func TestGeneratedNumericPathAndQueryParamsUsePlainDecimalFormatting(t *testing.
 
 	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	require.Contains(t, mcpSrc, "func formatMCPParamValue(v any) string")
-	require.Contains(t, mcpSrc, `return url.PathEscape(formatMCPParamValue(v))`)
+	require.Contains(t, mcpSrc, `return cliutil.EscapePathParam(formatMCPParamValue(v))`)
 	require.Contains(t, mcpSrc, `path = strings.Replace(path, placeholder, mcpPathValue(v), 1)`)
 	require.Contains(t, mcpSrc, `params[binding.WireName] = formatMCPParamValue(v)`)
 	require.NotContains(t, mcpSrc, `params[binding.WireName] = fmt.Sprintf("%v", v)`)
