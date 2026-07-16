@@ -135,10 +135,16 @@ func TestFilterFields(t *testing.T) {
 			want:   `{"projects":[{"id":"a"}]}`,
 		},
 		{
-			name:   "flat object no match returns empty (no array fallback)",
+			name:   "flat object no match preserves input",
 			input:  `{"a":1,"b":2}`,
 			fields: "c",
-			want:   `{}`,
+			want:   `{"a":1,"b":2}`,
+		},
+		{
+			name:   "unknown selector preserves nested array objects",
+			input:  `{"items":[{"id":"a","name":"Alpha"},{"id":"b","name":"Beta"}]}`,
+			fields: "missing",
+			want:   `{"items":[{"id":"a","name":"Alpha"},{"id":"b","name":"Beta"}]}`,
 		},
 		{
 			// Null pagination cursors are common envelope metadata.
@@ -152,12 +158,11 @@ func TestFilterFields(t *testing.T) {
 		},
 		{
 			// Without a real array sibling the envelope fallback does not
-			// fire, so a flat object whose only "extra" key is null still
-			// returns {} for a non-matching selector.
-			name:   "flat object with null sibling no match returns empty",
+			// fire, but an invalid selector still preserves the input.
+			name:   "flat object with null sibling no match preserves input",
 			input:  `{"a":1,"b":null}`,
 			fields: "c",
-			want:   `{}`,
+			want:   `{"a":1,"b":null}`,
 		},
 		{
 			// Multiple array siblings at the same level each receive the
@@ -172,13 +177,11 @@ func TestFilterFields(t *testing.T) {
 			// Envelope fallback is intentionally one level deep. A nested
 			// object envelope like {"data":{"items":[...]}} surfaces no
 			// array at the outer level, so the fallback does not fire and
-			// the result is the empty-object that flat-no-match would
-			// produce. Pins the boundary so a future deeper-walk change
-			// is an explicit decision, not an accident.
-			name:   "nested object envelope returns empty (one-level only)",
+			// an invalid selector preserves the input.
+			name:   "nested object envelope preserves input (one-level only)",
 			input:  `{"data":{"items":[{"id":"a","other":"y"}]}}`,
 			fields: "id",
-			want:   `{}`,
+			want:   `{"data":{"items":[{"id":"a","other":"y"}]}}`,
 		},
 	}
 	for _, tc := range cases {
