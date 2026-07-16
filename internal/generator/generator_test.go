@@ -12389,6 +12389,259 @@ func TestGenerateReservedWordResourceTableNamesCompileAndMigrate(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/store")
 }
 
+func TestGenerateReservedStoreTableCollisionUsesGenericStore(t *testing.T) {
+	t.Parallel()
+
+	resource := func(path, item string) spec.Resource {
+		return spec.Resource{
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        path,
+					Description: "List items",
+					Response:    spec.ResponseDef{Type: "array", Item: item},
+				},
+			},
+		}
+	}
+	fields := []spec.TypeField{
+		{Name: "id", Type: "string"},
+		{Name: "name", Type: "string"},
+		{Name: "notes", Type: "string"},
+		{Name: "created_at", Type: "string", Format: "date-time"},
+	}
+	apiSpec := &spec.APISpec{
+		Name:    "CollisionAPI",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/store-collision-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"resources":                     resource("/resources", "Resource"),
+			"sync_state":                    resource("/sync-state", "SyncState"),
+			"bookings":                      resource("/bookings", "Booking"),
+			"Reports":                       resource("/reports", "Report"),
+			"reportData":                    resource("/report-data", "ReportData"),
+			"reportdata":                    resource("/reportdata", "Reportdata"),
+			"idx_resources_type":            resource("/indexed-resources", "IndexedResource"),
+			"search_learnings":              resource("/search-learnings", "SearchLearning"),
+			"collision_a_p_i_stream_frames": resource("/stream-frames", "StreamFrame"),
+		},
+		Types: map[string]spec.TypeDef{
+			"Resource":        {Fields: fields},
+			"SyncState":       {Fields: fields},
+			"Booking":         {Fields: fields},
+			"Report":          {Fields: fields},
+			"ReportData":      {Fields: fields},
+			"Reportdata":      {Fields: fields},
+			"IndexedResource": {Fields: fields},
+			"SearchLearning":  {Fields: fields},
+			"StreamFrame":     {Fields: fields},
+		},
+	}
+	apiSpec.Learn.Disabled = true
+	resources := apiSpec.Resources["resources"]
+	resourcesList := resources.Endpoints["list"]
+	resourcesList.Path = "/accounts/{accountId}/resources"
+	resourcesList.Params = []spec.Param{{Name: "accountId", Type: "string", Required: true, Positional: true}}
+	resources.Endpoints["list"] = resourcesList
+	apiSpec.Resources["resources"] = resources
+	syncStateResource := apiSpec.Resources["sync_state"]
+	syncStateList := syncStateResource.Endpoints["list"]
+	syncStateList.Path = "/accounts/{accountId}/sync-state"
+	syncStateList.Params = []spec.Param{{Name: "accountId", Type: "string", Required: true, Positional: true}}
+	syncStateResource.Endpoints["list"] = syncStateList
+	apiSpec.Resources["sync_state"] = syncStateResource
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
+	gen.profile = &profiler.APIProfile{
+		SyncableResources: []profiler.SyncableResource{
+			{Name: "idx_resources_type", Path: "/indexed-resources", Method: "GET", ReconcileMode: "flat", TenantScopeColumn: "account_id"},
+		},
+		DependentSyncResources: []profiler.DependentResource{
+			{Name: "resources", ParentResource: "accounts", ParentIDParam: "accountId", Path: "/accounts/{accountId}/resources", Method: "GET", ReconcileMode: "per_parent"},
+			{Name: "sync_state", ParentResource: "accounts", ParentIDParam: "accountId", Path: "/accounts/{accountId}/sync-state", Method: "GET", ReconcileMode: "per_parent"},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	store := string(storeSrc)
+	assert.NotContains(t, store, `CREATE TRIGGER IF NOT EXISTS "resources_ai"`)
+	assert.NotContains(t, store, "func (s *Store) upsertResourcesTx(")
+	assert.NotContains(t, store, "func (s *Store) SearchResources(")
+	assert.NotContains(t, store, "func (s *Store) upsertSearchLearningsTx(",
+		"learn table names must stay reserved while learn is disabled")
+	assert.NotContains(t, store, "func (s *Store) upsertCollisionAPIStreamFramesTx(",
+		"stream table names must stay reserved while streaming is disabled")
+	assert.Regexp(t, `"resources":\s+"parent_id"`, store)
+	assert.NotContains(t, store, `CREATE TABLE IF NOT EXISTS "resources" (
+		id TEXT PRIMARY KEY,
+		data TEXT NOT NULL,
+		synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		parent_id TEXT`, "dependent-resource enrichment must not restore the reserved domain table")
+
+	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncSrc)
+	assert.Contains(t, syncContent, `seenIDs, reconcileTypedTable(resource), store.CascadeJunctionsFor(resource),`,
+		"flat reconcile must resolve its typed deletion target from the generated schema")
+	assert.Contains(t, syncContent, `seenIDs, reconcileTypedTable(dep.Name), store.CascadeJunctionsFor(dep.Name),`,
+		"dependent reconcile must resolve its typed deletion target from the generated schema")
+
+	runtimeTest := `package store
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"testing"
+)
+
+func TestReservedResourceNameDoesNotBreakStoreWrites(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	resourceA := json.RawMessage(` + "`" + `{"id":"resource-1","parent_id":"account-1","name":"Meeting room","notes":"Quiet floor"}` + "`" + `)
+	resourceB := json.RawMessage(` + "`" + `{"id":"resource-1","parent_id":"account-2","name":"Meeting room","notes":"Window floor"}` + "`" + `)
+	booking := json.RawMessage(` + "`" + `{"id":"booking-1","name":"Planning session","notes":"Meeting room"}` + "`" + `)
+	indexed := json.RawMessage(` + "`" + `{"id":"indexed-1","name":"Indexed room","notes":"Meeting room"}` + "`" + `)
+	learning := json.RawMessage(` + "`" + `{"id":"learning-1","name":"Learned room","notes":"Meeting room"}` + "`" + `)
+	frame := json.RawMessage(` + "`" + `{"id":"frame-1","name":"Streamed room","notes":"Meeting room"}` + "`" + `)
+	if stored, failed, err := s.UpsertBatch("resources", []json.RawMessage{resourceA, resourceB}); err != nil {
+		t.Fatalf("upsert resources: %v", err)
+	} else if stored != 2 || failed != 0 {
+		t.Fatalf("upsert resources stored=%d failed=%d, want 2,0", stored, failed)
+	}
+	if stored, failed, err := s.UpsertBatch("bookings", []json.RawMessage{booking}); err != nil {
+		t.Fatalf("upsert bookings: %v", err)
+	} else if stored != 1 || failed != 0 {
+		t.Fatalf("upsert bookings stored=%d failed=%d, want 1,0", stored, failed)
+	}
+	if stored, failed, err := s.UpsertBatch("idx_resources_type", []json.RawMessage{indexed}); err != nil {
+		t.Fatalf("upsert indexed resources: %v", err)
+	} else if stored != 1 || failed != 0 {
+		t.Fatalf("upsert indexed resources stored=%d failed=%d, want 1,0", stored, failed)
+	}
+	if stored, failed, err := s.UpsertBatch("search_learnings", []json.RawMessage{learning}); err != nil {
+		t.Fatalf("upsert search learnings: %v", err)
+	} else if stored != 1 || failed != 0 {
+		t.Fatalf("upsert search learnings stored=%d failed=%d, want 1,0", stored, failed)
+	}
+	if stored, failed, err := s.UpsertBatch("collision_a_p_i_stream_frames", []json.RawMessage{frame}); err != nil {
+		t.Fatalf("upsert stream frames: %v", err)
+	} else if stored != 1 || failed != 0 {
+		t.Fatalf("upsert stream frames stored=%d failed=%d, want 1,0", stored, failed)
+	}
+
+	wantRows := map[string]int{
+		"resources": 2, "bookings": 1, "idx_resources_type": 1,
+		"search_learnings": 1, "collision_a_p_i_stream_frames": 1,
+	}
+	resourceTypes := []string{
+		"resources", "bookings", "idx_resources_type",
+		"search_learnings", "collision_a_p_i_stream_frames",
+	}
+	for _, resourceType := range resourceTypes {
+		rows, err := s.List(resourceType, 10)
+		if err != nil {
+			t.Fatalf("list %s: %v", resourceType, err)
+		}
+		if len(rows) != wantRows[resourceType] {
+			t.Fatalf("list %s returned %d rows, want %d", resourceType, len(rows), wantRows[resourceType])
+		}
+	}
+
+	for _, resourceType := range resourceTypes {
+		hits, err := s.Search("Meeting room", 10, resourceType)
+		if err != nil {
+			t.Fatalf("search %s: %v", resourceType, err)
+		}
+		if len(hits) != wantRows[resourceType] {
+			t.Fatalf("search %s returned %d rows, want %d", resourceType, len(hits), wantRows[resourceType])
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "store", "reserved_table_collision_test.go"), []byte(runtimeTest), 0o644))
+
+	reconcileRuntimeTest := `package cli
+
+import "testing"
+
+func TestReservedReconcileUsesGenericOnlyStorage(t *testing.T) {
+	for _, resource := range []string{"resources", "idx_resources_type", "search_learnings", "collision_a_p_i_stream_frames"} {
+		if got := reconcileTypedTable(resource); got != "" {
+			t.Fatalf("reconcileTypedTable(%q) = %q, want empty generic-only target", resource, got)
+		}
+	}
+	if got := reconcileTypedTable("bookings"); got != "bookings" {
+		t.Fatalf("reconcileTypedTable(bookings) = %q, want bookings", got)
+	}
+	if got := reconcileTypedTable("reports"); got != "reports" {
+		t.Fatalf("reconcileTypedTable(reports) = %q, want reports", got)
+	}
+	if got := reconcileTypedTable("reportdata"); got != "" {
+		t.Fatalf("reconcileTypedTable(reportdata) = %q, want empty ambiguous target", got)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "reserved_reconcile_collision_test.go"), []byte(reconcileRuntimeTest), 0o644))
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "TestReservedResourceNameDoesNotBreakStoreWrites", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestReservedReconcileUsesGenericOnlyStorage", "-count=1")
+}
+
+func TestSchemaWithDependentParentsPreservesFrameworkSyncState(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("dependent-framework-schema")
+	apiSpec.Resources = map[string]spec.Resource{
+		"sync_state": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:   "GET",
+					Path:     "/accounts/{accountId}/resources",
+					Response: spec.ResponseDef{Type: "array"},
+				},
+			},
+		},
+	}
+	gen := New(apiSpec, t.TempDir())
+	gen.profile = &profiler.APIProfile{
+		DependentSyncResources: []profiler.DependentResource{{Name: "sync_state"}},
+	}
+
+	schema := gen.schemaWithDependentParents()
+	require.Len(t, schema, 2, "domain and framework sync_state definitions must remain distinct")
+	domainSyncState := schema[0]
+	assert.Equal(t, "sync_state", domainSyncState.Name)
+	assert.Equal(t, baseTableColumns, domainSyncState.Columns,
+		"colliding dependent API resource must remain generic-only after parent enrichment")
+	assert.Equal(t, "parent_id", domainSyncState.ParentKeyColumn,
+		"generic dependent resource must retain its parent identity mapping")
+
+	frameworkSyncState := schema[1]
+	assert.Equal(t, "sync_state", frameworkSyncState.Name)
+	assert.Equal(t, []ColumnDef{
+		{Name: "resource_type", Type: "TEXT", PrimaryKey: true},
+		{Name: "last_cursor", Type: "TEXT"},
+		{Name: "last_synced_at", Type: "DATETIME"},
+		{Name: "total_count", Type: "INTEGER DEFAULT 0"},
+	}, frameworkSyncState.Columns, "framework sync_state must keep its cursor/state schema")
+	assert.Empty(t, frameworkSyncState.ParentKeyColumn,
+		"framework sync_state must not be enriched as a dependent API table")
+}
+
 func TestGeneratedSyncTreatsAccessDeniedAsWarning(t *testing.T) {
 	t.Parallel()
 

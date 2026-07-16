@@ -477,9 +477,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		// dead tables (created but never written to) leak in for resources whose
 		// names hit the framework-cobra rename. JSONOnlyFallback intentionally
 		// keeps a writable per-resource table while dropping extracted columns.
-		"emitsDomainTable": func(t TableDef) bool {
-			return (len(t.Columns) > 3 || t.JSONOnlyFallback) && t.Name != "sync_state" && domainUpsertMethodName(t.Name) != "UpsertBatch"
-		},
+		"emitsDomainTable":           emitsDomainTable,
+		"reconcileTypedTableEntries": reconcileTypedTableEntries,
 		"pathContainsParam": func(path, name string) bool {
 			return strings.Contains(path, "{"+name+"}")
 		},
@@ -3716,6 +3715,10 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 // user-visible API.
 func (g *Generator) schemaWithDependentParents() []TableDef {
 	schema := BuildSchema(g.Spec)
+	// BuildSchema always appends the framework sync_state definition after API
+	// domain tables. Dependent enrichment and reserved-name routing apply only
+	// to the domain portion, including an API resource also named sync_state.
+	domainSchema := schema[:len(schema)-1]
 
 	// Add parent_id column to tables for dependent (parent-child) sync resources
 	if g.profile != nil {
@@ -3723,7 +3726,7 @@ func (g *Generator) schemaWithDependentParents() []TableDef {
 		for _, dep := range g.profile.DependentSyncResources {
 			depSet[dep.Name] = true
 		}
-		for i, table := range schema {
+		for i, table := range domainSchema {
 			if depSet[table.Name] {
 				if table.JSONOnlyFallback {
 					continue
@@ -3762,6 +3765,10 @@ func (g *Generator) schemaWithDependentParents() []TableDef {
 			}
 		}
 	}
+
+	// Reapply after dependent enrichment so parent_id cannot restore a reserved
+	// domain table routed through generic storage by BuildSchema.
+	routeReservedStoreTablesToGenericOnly(domainSchema, reservedStoreObjectNames(g.Spec))
 
 	return schema
 }
@@ -5187,6 +5194,47 @@ func toPascal(s string) string {
 
 func domainUpsertMethodName(tableName string) string {
 	return "Upsert" + toPascal(tableName)
+}
+
+func emitsDomainTable(t TableDef) bool {
+	return (len(t.Columns) > 3 || t.JSONOnlyFallback) && t.Name != "sync_state" && domainUpsertMethodName(t.Name) != "UpsertBatch"
+}
+
+type reconcileTypedTableEntry struct {
+	Resource string
+	Table    string
+}
+
+func reconcileTypedTableEntries(tables []TableDef) []reconcileTypedTableEntry {
+	byResource := make(map[string]string)
+	ambiguous := make(map[string]struct{})
+	for _, table := range tables {
+		if !emitsDomainTable(table) {
+			continue
+		}
+		resource := strings.ToLower(table.Resource)
+		if _, skip := ambiguous[resource]; skip {
+			continue
+		}
+		if existing, ok := byResource[resource]; ok && existing != table.Name {
+			delete(byResource, resource)
+			ambiguous[resource] = struct{}{}
+			continue
+		}
+		byResource[resource] = table.Name
+	}
+
+	resources := make([]string, 0, len(byResource))
+	for resource := range byResource {
+		resources = append(resources, resource)
+	}
+	sort.Strings(resources)
+
+	entries := make([]reconcileTypedTableEntry, 0, len(resources))
+	for _, resource := range resources {
+		entries = append(entries, reconcileTypedTableEntry{Resource: resource, Table: byResource[resource]})
+	}
+	return entries
 }
 
 // isIDParam returns true if the parameter name suggests it's an identifier

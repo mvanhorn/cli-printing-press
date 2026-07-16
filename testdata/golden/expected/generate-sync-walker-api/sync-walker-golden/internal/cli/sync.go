@@ -828,7 +828,7 @@ func syncResource(ctx context.Context, c interface {
 		} else if outcome.complete {
 			deleted, rerr := db.ReconcilePartition(
 				resource, "$."+def.BodyField, tenantUUID,
-				seenIDs, resource, store.CascadeJunctionsFor(resource),
+				seenIDs, reconcileTypedTable(resource), store.CascadeJunctionsFor(resource),
 			)
 			if rerr != nil {
 				fmt.Fprintf(syncEvents, `{"event":"reconcile_error","resource":"%s","scope":"%s","error":%q}`+"\n", resource, tenantUUID, rerr.Error())
@@ -2176,7 +2176,7 @@ func syncOneParent(
 	if prune && outcome.complete && dep.ReconcileMode == "per_parent" {
 		deleted, rerr := db.ReconcilePartition(
 			dep.Name, dep.GenericScopeJSONPath, outcome.scopeVal,
-			seenIDs, dep.Name, store.CascadeJunctionsFor(dep.Name),
+			seenIDs, reconcileTypedTable(dep.Name), store.CascadeJunctionsFor(dep.Name),
 		)
 		if rerr != nil {
 			fmt.Fprintf(syncEvents, `{"event":"reconcile_error","resource":"%s","scope":"%s","error":%q}`+"\n", dep.Name, outcome.scopeVal, rerr.Error())
@@ -2514,6 +2514,17 @@ var flatReconcileDefs = map[string]flatReconcileDefT{}
 // value when absent; the call site only reaches it for flatReconcilable resources).
 func flatReconcileDef(resource string) flatReconcileDefT {
 	return flatReconcileDefs[resource]
+}
+
+// reconcileTypedTables maps runtime resource keys to typed tables that are
+// actually emitted. Generic-only resources are absent and resolve to "" so
+// ReconcilePartition deletes only from the shared resources table.
+var reconcileTypedTables = map[string]string{
+	"leagues": "leagues",
+}
+
+func reconcileTypedTable(resource string) string {
+	return reconcileTypedTables[resource]
 }
 
 // resolveTenantID returns the active tenant's stable ID for tenant-scoped

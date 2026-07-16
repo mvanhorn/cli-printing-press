@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
@@ -54,6 +55,45 @@ var baseTableColumns = []ColumnDef{
 // SQLite defaults to SQLITE_MAX_COLUMN=2000. Keep typed domain tables below
 // that hard limit with room for generator-added columns and future schema drift.
 const maxStoreDomainTableColumns = 1500
+
+// frameworkStoreObjectNames owns SQLite schema names that domain projections
+// must not reuse. A collision is routed through the generic resources table so
+// the API resource remains syncable without colliding with framework tables or
+// indexes.
+var frameworkStoreObjectNames = map[string]struct{}{
+	"resources":             {},
+	"resources_fts":         {},
+	"resources_fts_data":    {},
+	"resources_fts_idx":     {},
+	"resources_fts_content": {},
+	"resources_fts_docsize": {},
+	"resources_fts_config":  {},
+	"resources_v2":          {},
+	"sync_state":            {},
+	"idx_resources_type":    {},
+	"idx_resources_synced":  {},
+}
+
+var learnStoreObjectNames = map[string]struct{}{
+	"search_learnings":               {},
+	"entity_lookups":                 {},
+	"search_patterns":                {},
+	"learning_playbooks":             {},
+	"learn_candidates":               {},
+	"learn_events":                   {},
+	"learn_recall_misses":            {},
+	"idx_learn_query":                {},
+	"idx_learn_unique":               {},
+	"idx_entity_lookup_canonical":    {},
+	"idx_entity_lookup_kind":         {},
+	"idx_patterns_query_template":    {},
+	"idx_patterns_unique":            {},
+	"idx_playbooks_source":           {},
+	"idx_playbooks_last_observed_at": {},
+	"idx_learn_candidates_status":    {},
+	"idx_learn_candidates_family":    {},
+	"idx_learn_events_event_ts":      {},
+}
 
 // BuildSchema generates domain-specific table definitions from the API spec.
 // High-gravity entities (many endpoints, text fields, temporal fields) get
@@ -182,6 +222,7 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 		}
 	}
 	tables = deduped
+	routeReservedStoreTablesToGenericOnly(tables, reservedStoreObjectNames(s))
 
 	tables = append(tables, TableDef{
 		Name:     "sync_state",
@@ -195,6 +236,42 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 	})
 
 	return tables
+}
+
+func reservedStoreObjectNames(s *spec.APISpec) map[string]struct{} {
+	names := make(map[string]struct{}, len(frameworkStoreObjectNames)+len(learnStoreObjectNames)+5)
+	for name := range frameworkStoreObjectNames {
+		names[name] = struct{}{}
+	}
+	for name := range learnStoreObjectNames {
+		names[name] = struct{}{}
+	}
+	prefix := naming.Snake(s.Name)
+	for _, suffix := range []string{
+		"_stream_frames",
+		"_stream_metadata",
+		"_rebase_log",
+		"_stream_metadata_status",
+		"_rebase_log_created",
+	} {
+		names[prefix+suffix] = struct{}{}
+	}
+	return names
+}
+
+func routeReservedStoreTablesToGenericOnly(tables []TableDef, reserved map[string]struct{}) {
+	for i := range tables {
+		if _, collision := reserved[tables[i].Name]; !collision {
+			continue
+		}
+		tables[i].Columns = append([]ColumnDef(nil), baseTableColumns...)
+		tables[i].Indexes = nil
+		tables[i].FTS5 = false
+		tables[i].FTS5Fields = nil
+		tables[i].FTS5Triggers = false
+		tables[i].JSONOnlyFallback = false
+		tables[i].OriginalColumnCount = 0
+	}
 }
 
 // computeDataGravity scores 0-12 based on endpoint count, response field

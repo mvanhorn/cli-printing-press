@@ -61,6 +61,72 @@ func TestSafeSQLNameAlwaysQuotes(t *testing.T) {
 	}
 }
 
+func TestBuildSchemaRoutesReservedStoreTablesToGenericOnly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		resource  string
+		streaming bool
+		learn     bool
+	}{
+		{name: "generic resources table", resource: "resources"},
+		{name: "fts shadow table", resource: "resources_fts_data"},
+		{name: "lazy learn table", resource: "learn_recall_misses", learn: true},
+		{name: "disabled learn table remains reserved", resource: "search_learnings"},
+		{name: "framework index", resource: "idx_resources_type"},
+		{name: "stream frames table", resource: "collision_a_p_i_stream_frames", streaming: true},
+		{name: "disabled stream table remains reserved", resource: "collision_a_p_i_stream_frames"},
+		{name: "stream metadata table", resource: "collision_a_p_i_stream_metadata", streaming: true},
+		{name: "stream rebase table", resource: "collision_a_p_i_rebase_log", streaming: true},
+		{name: "stream metadata index", resource: "collision_a_p_i_stream_metadata_status", streaming: true},
+		{name: "stream rebase index", resource: "collision_a_p_i_rebase_log_created", streaming: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apiSpec := &spec.APISpec{
+				Name: "CollisionAPI",
+				Resources: map[string]spec.Resource{
+					tt.resource: {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:   "GET",
+								Path:     "/items",
+								Response: spec.ResponseDef{Type: "array", Item: "Resource"},
+							},
+						},
+					},
+				},
+				Types: map[string]spec.TypeDef{
+					"Resource": {
+						Fields: []spec.TypeField{
+							{Name: "id", Type: "string"},
+							{Name: "name", Type: "string"},
+							{Name: "notes", Type: "string"},
+							{Name: "created_at", Type: "string", Format: "date-time"},
+						},
+					},
+				},
+			}
+			if tt.streaming {
+				apiSpec.Streaming = spec.StreamingConfig{Transport: "websocket"}
+			}
+			apiSpec.Learn.Enabled = tt.learn
+
+			table := findTable(BuildSchema(apiSpec), tt.resource)
+			if !assert.NotNil(t, table) {
+				return
+			}
+			assert.Equal(t, baseTableColumns, table.Columns)
+			assert.Empty(t, table.Indexes)
+			assert.False(t, table.FTS5)
+			assert.Empty(t, table.FTS5Fields)
+			assert.False(t, table.FTS5Triggers)
+		})
+	}
+}
+
 func TestCollectTextFieldNames(t *testing.T) {
 	// Fields like tag/label/category/metadata should be picked up for FTS5
 	// alongside the core text fields. Motivated by the ESPN retro where

@@ -1457,7 +1457,7 @@ var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", 
 // child's bare id and silently keep only the last synced parent.
 var resourceParentKeyColumns = map[string]string{
 {{- range .Tables}}
-{{- if and (emitsDomainTable .) .ParentKeyColumn}}
+{{- if .ParentKeyColumn}}
 	{{printf "%q" .Resource}}: {{printf "%q" .ParentKeyColumn}},
 {{- end}}
 {{- end}}
