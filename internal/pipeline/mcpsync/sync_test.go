@@ -355,6 +355,8 @@ func RegisterNovelFeatureTools() { shellOutToCLI("items list") }
 	require.NoError(t, err)
 	src := string(regenerated)
 	assert.Contains(t, src, "SanitizeErrorBody", "cliutil/text.go should be regenerated with SanitizeErrorBody")
+	assert.Contains(t, src, "func EscapePathParam(value string) string",
+		"cliutil/text.go should regenerate the shared path-param escaper")
 	assert.NotContains(t, src, "// CleanText is the only helper this older template emitted.", "stale stub content should be replaced")
 }
 

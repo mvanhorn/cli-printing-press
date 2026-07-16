@@ -11,7 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-{{- if or .HasEmbeddedPaged .HasPathParams (hasArrayQueryParams .APISpec)}}
+{{- if or .HasEmbeddedPaged (hasArrayQueryParams .APISpec)}}
 	"net/url"
 {{- end}}
 	"os"
@@ -30,7 +30,7 @@ import (
 {{- end}}
 	"unicode"
 
-{{- if or (and .Auth.Type (ne .Auth.Type "none")) .HasDataLayer}}
+{{- if or .HasPathParams (and .Auth.Type (ne .Auth.Type "none")) .HasDataLayer}}
 	"{{modulePath}}/internal/cliutil"
 {{- end}}
 {{- if .HasRequiredRoles}}
@@ -1080,10 +1080,10 @@ func newTabWriter(w io.Writer) *tabwriter.Writer {
 }
 
 {{- if .HasPathParams}}
-// replacePathParam percent-encodes value so path-reserved characters in
-// user input do not collapse into extra path segments.
+// replacePathParam escapes path-param values before substituting them so
+// reserved characters within each segment remain safe in the request URL.
 func replacePathParam(path, name, value string) string {
-	return strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(value))
+	return strings.ReplaceAll(path, "{"+name+"}", cliutil.EscapePathParam(value))
 }
 {{- end}}
 

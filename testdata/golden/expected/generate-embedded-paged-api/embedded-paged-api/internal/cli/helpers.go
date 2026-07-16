@@ -550,10 +550,10 @@ func newTabWriter(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 }
 
-// replacePathParam percent-encodes value so path-reserved characters in
-// user input do not collapse into extra path segments.
+// replacePathParam escapes path-param values before substituting them so
+// reserved characters within each segment remain safe in the request URL.
 func replacePathParam(path, name, value string) string {
-	return strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(value))
+	return strings.ReplaceAll(path, "{"+name+"}", cliutil.EscapePathParam(value))
 }
 
 // paginatedGet fetches pages and concatenates array results. The headers
