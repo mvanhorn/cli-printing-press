@@ -43,6 +43,10 @@ func ScrubTerminal(s string) string {
 func EscapePathParam(value string) string {
 	segments := strings.Split(value, "/")
 	for i, segment := range segments {
+		if segment == "." || segment == ".." {
+			segments[i] = strings.Repeat("%2E", len(segment))
+			continue
+		}
 		segments[i] = url.PathEscape(segment)
 	}
 	return strings.Join(segments, "/")

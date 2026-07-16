@@ -96,6 +96,8 @@ func TestReplacePathParamPreservesHierarchicalIdentifiers(t *testing.T) {
 		"opaque-id": "opaque-id",
 		"allenai/c4": "allenai/c4",
 		"src/main file.go": "src/main%20file.go",
+		"../secret": "%2E%2E/secret",
+		"./file": "%2E/file",
 		"a b?c#d": "a%20b%3Fc%23d",
 	}
 	for input, want := range tests {
@@ -117,6 +119,8 @@ func TestEscapePathParamPreservesHierarchicalIdentifiers(t *testing.T) {
 		"opaque-id": "opaque-id",
 		"allenai/c4": "allenai/c4",
 		"src/main file.go": "src/main%20file.go",
+		"../secret": "%2E%2E/secret",
+		"./file": "%2E/file",
 		"a b?c#d": "a%20b%3Fc%23d",
 	}
 	for input, want := range tests {
@@ -138,6 +142,8 @@ func TestMCPPathValuePercentEncodesReservedCharacters(t *testing.T) {
 		"opaque-id": "opaque-id",
 		"allenai/c4": "allenai/c4",
 		"src/main file.go": "src/main%20file.go",
+		"../secret": "%2E%2E/secret",
+		"./file": "%2E/file",
 		"a b?c#d": "a%20b%3Fc%23d",
 	}
 	for input, want := range tests {
@@ -223,6 +229,8 @@ func TestURLPathEscapeBehaviorPinsContract(t *testing.T) {
 		{"abc-123-def", "abc-123-def"},
 		{"2026-01-15", "2026-01-15"},
 		{"src/cli/main.go", "src/cli/main.go"},
+		{"../secret", "%2E%2E/secret"},
+		{"./file", "%2E/file"},
 		{"https://example.com/", "https://example.com/"},
 		{"sc-domain:example.com", "sc-domain:example.com"},
 	}
@@ -231,6 +239,10 @@ func TestURLPathEscapeBehaviorPinsContract(t *testing.T) {
 			t.Parallel()
 			parts := strings.Split(c.in, "/")
 			for i, part := range parts {
+				if part == "." || part == ".." {
+					parts[i] = strings.Repeat("%2E", len(part))
+					continue
+				}
 				parts[i] = url.PathEscape(part)
 			}
 			assert.Equal(t, c.want, strings.Join(parts, "/"))
