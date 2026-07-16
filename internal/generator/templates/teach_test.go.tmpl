@@ -103,6 +103,60 @@ func TestTeachCommand_SilentOnSuccess(t *testing.T) {
 	}
 }
 
+func TestTeachCommand_JSONOutputRespectsExplicitQuiet(t *testing.T) {
+	tests := []struct {
+		name       string
+		quietArg   string
+		rootQuiet  bool
+		wantOutput bool
+	}{
+		{name: "default quiet", wantOutput: true},
+		{name: "explicit quiet", quietArg: "--quiet", wantOutput: false},
+		{name: "explicit quiet false", quietArg: "--quiet=false", wantOutput: true},
+		{name: "root explicit quiet", rootQuiet: true, wantOutput: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := withTempLearnHome(t)
+			dbPath := filepath.Join(home, "data.db")
+			args := []string{
+				"teach",
+				"--query", "find all widgets in inventory",
+				"--resource", "widget-42",
+				"--resource-type", "items",
+				"--db", dbPath,
+				"--json",
+			}
+			if tt.quietArg != "" {
+				args = append(args, tt.quietArg)
+			}
+			if tt.rootQuiet {
+				args = append([]string{"--quiet"}, args...)
+			}
+
+			stdout, stderr, err := runRootArgs(t, args...)
+			if err != nil {
+				t.Fatalf("teach: %v (stderr=%q)", err, stderr)
+			}
+			if !tt.wantOutput {
+				if stdout != "" {
+					t.Errorf("teach should be silent with explicit quiet; stdout=%q", stdout)
+				}
+				return
+			}
+
+			var response map[string]any
+			if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+				t.Fatalf("teach JSON: %v (stdout=%q)", err, stdout)
+			}
+			if recorded, _ := response["recorded"].(bool); !recorded {
+				t.Errorf("teach JSON recorded = %v, want true", response["recorded"])
+			}
+		})
+	}
+}
+
 func TestTeachCommand_MissingResourceTypeErrors(t *testing.T) {
 	home := withTempLearnHome(t)
 	dbPath := filepath.Join(home, "data.db")
