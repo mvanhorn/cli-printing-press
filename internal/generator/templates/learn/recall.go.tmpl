@@ -577,12 +577,14 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 	// healing print-time seed staleness without a reprint. No candidate
 	// row backs this; the warning is recomputed each call and clears on
 	// its own once the entity resolves.
+	{{- if .HasSync}}
 	if !result.Found {
 		for _, e := range unresolvedEntities {
 			result.Warnings = append(result.Warnings,
 				fmt.Sprintf("%s:%s (run sync to refresh entity lookups)", TopWarningLookupRefreshAvailable, e))
 		}
 	}
+	{{- end}}
 
 	// Playbook + notes surface: orthogonal to the per-resource path.
 	// Look up the structural query family in learning_playbooks. A hit

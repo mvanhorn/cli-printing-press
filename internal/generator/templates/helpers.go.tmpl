@@ -15,7 +15,7 @@ import (
 	"net/url"
 {{- end}}
 	"os"
-{{- if .HasDataLayer}}
+{{- if or .HasDataLayer .HasStorePath}}
 	"path/filepath"
 {{- end}}
 {{- if and (and .Auth.Type (ne .Auth.Type "none")) .HasSyncHelpers}}
@@ -30,7 +30,7 @@ import (
 {{- end}}
 	"unicode"
 
-{{- if or .HasPathParams (and .Auth.Type (ne .Auth.Type "none")) .HasDataLayer}}
+{{- if or .HasPathParams (and .Auth.Type (ne .Auth.Type "none")) .HasDataLayer .HasStorePath}}
 	"{{modulePath}}/internal/cliutil"
 {{- end}}
 {{- if .HasRequiredRoles}}
@@ -3118,6 +3118,9 @@ func normalizeClientSideFilterValue(value string) string {
 }
 {{- end}}
 
+{{- end}}
+
+{{- if or .HasDataLayer .HasStorePath}}
 // defaultDBPath returns the canonical path for the local SQLite database.
 // The resolver already knows the app name on the happy path; name is only
 // used for the conservative fallback when the resolved data directory fails.

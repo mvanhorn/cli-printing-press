@@ -285,6 +285,7 @@ func TestRecall_ResourceNotInStoreWarning(t *testing.T) {
 	}
 }
 
+{{- if .HasSync}}
 // TestRecall_ColdUnresolvableEntityWarnsRunSyncAndRecordsMiss covers
 // the staleness-heal capture side: a cold recall whose entity has no
 // entity_lookups row under any source (1) surfaces the stateless
@@ -333,6 +334,7 @@ func TestRecall_ColdUnresolvableEntityWarnsRunSyncAndRecordsMiss(t *testing.T) {
 		t.Errorf("recorded miss = %q, want lowercased %q", entity, "zephyrium")
 	}
 }
+{{- end}}
 
 // TestRecall_SyncedLookupRowPromotesPreviouslyMissedEntity is the heal
 // half of the incident replay: after a synced-source row lands (what

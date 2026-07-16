@@ -66,12 +66,16 @@ func TestGenerateZeroSyncableAPIOmitsSyncAndDoctorCache(t *testing.T) {
 
 	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "sync.go"))
 	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "search.go"))
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "sync_hint.go"))
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "data_source.go"))
 	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
 	doctorSrc := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
+	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	require.NotContains(t, rootSrc, "newSyncCmd(flags)")
 	require.NotContains(t, rootSrc, "newSearchCmd(flags)")
 	require.NotContains(t, doctorSrc, `report["cache"]`)
 	require.NotContains(t, doctorSrc, "collectCacheReport")
+	require.NotContains(t, mcpSrc, `mcplib.NewTool("sql"`)
 
 	requireGeneratedCompiles(t, outputDir)
 }
@@ -138,6 +142,37 @@ func TestConstrainVisionTemplatesLearnZeroSyncableKeepsStoreDropsSync(t *testing
 	require.False(t, visionSet.Search)
 	require.False(t, visionSet.Analytics)
 	require.Contains(t, buf.String(), "learn.enabled promotes VisionSet.Store=true")
+}
+
+func TestGenerateLearnZeroSyncableKeepsLearnStoreWithoutSyncBackedSurfaces(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := zeroSyncableQuerySpec("learn-only-store")
+	apiSpec.Learn.Enabled = true
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{MCP: true}
+	require.NoError(t, gen.Generate())
+
+	require.FileExists(t, filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "sync_hint.go"))
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "data_source.go"))
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "channel_workflow.go"))
+	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	require.NotContains(t, rootSrc, "newWorkflowCmd(flags)")
+	require.NotContains(t, rootSrc, `"data-source"`)
+
+	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+	require.NotContains(t, mcpSrc, `mcplib.NewTool("sql"`)
+	require.NotContains(t, mcpSrc, "Run learn-only-store-pp-cli sync")
+
+	recallSrc := readGeneratedFile(t, outputDir, "internal", "learn", "recall.go")
+	require.NotContains(t, recallSrc, "run sync to refresh entity lookups")
+	skillSrc := readGeneratedFile(t, outputDir, "SKILL.md")
+	require.NotContains(t, skillSrc, "Run `learn-only-store-pp-cli sync` to refresh entity lookups")
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // TestConstrainVisionTemplatesLearnDisabledDoesNotPromote pins that a spec

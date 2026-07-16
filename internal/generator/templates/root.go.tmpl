@@ -319,8 +319,8 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 {{- if .HasMutationEndpoints}}
 	rootCmd.PersistentFlags().BoolVar(&flags.allowPartialFailure, "allow-partial-failure", false, "Downgrade response-body partial-failure (e.g. partialFailureError) to a warning instead of a non-zero exit")
 {{- end}}
-	rootCmd.PersistentFlags().StringVar(&flags.dataSource, "data-source", "auto", "Data source for read commands: auto (live with local fallback), live (API only), local (synced data only)")
 {{- if .VisionSet.Store}}
+	rootCmd.PersistentFlags().StringVar(&flags.dataSource, "data-source", "auto", "Data source for read commands: auto (live with local fallback), live (API only), local (synced data only)")
 	rootCmd.PersistentFlags().DurationVar(&flags.maxAge, "max-age", 30*time.Minute, "Maximum acceptable age of local-store data before a stderr hint suggests sync; 0 disables")
 {{- end}}
 	rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile (see '{{.Name}}-pp-cli profile list')")
@@ -403,12 +403,14 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 				noColor = true
 			}
 		}
+{{- if .VisionSet.Store}}
 		switch flags.dataSource {
 		case "auto", "live", "local":
 			// valid
 		default:
 			return fmt.Errorf("invalid --data-source value %q: must be auto, live, or local", flags.dataSource)
 		}
+{{- end}}
 {{- if .HasCostThrottling}}
 		switch flags.throttleMode {
 		case "strict", "lenient", "off":
@@ -484,7 +486,7 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 {{- if .VisionSet.Analytics}}
 	rootCmd.AddCommand(newAnalyticsCmd(flags))
 {{- end}}
-{{- if .VisionSet.Store}}
+{{- if .HasWorkflow}}
 	rootCmd.AddCommand(newWorkflowCmd(flags))
 {{- end}}
 {{- if .Share.Enabled}}
