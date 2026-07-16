@@ -36,14 +36,16 @@ but do not stop the import.`,
   cat data.jsonl | printing-press-golden-pp-cli import <resource> --input -`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			resource := args[0]
+			path, err := resourceWritePath(resource)
+			if err != nil {
+				return usageErr(err)
+			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
 			c.DryRun = dryRun
-
-			resource := args[0]
-			path := "/" + resource
 
 			var reader io.Reader
 			if inputFile == "-" || inputFile == "" {

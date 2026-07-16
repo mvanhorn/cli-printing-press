@@ -352,17 +352,20 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"graphqlFieldSelection": func(typeName string, types map[string]spec.TypeDef) []string {
 			return graphqlFieldSelection(typeName, types)
 		},
-		"isGraphQL":             isGraphQLSpec,
-		"localReadIsList":       localReadIsList,
-		"localReadSupported":    localReadSupported,
-		"dataSourceStrategy":    spec.EffectiveDataSourceStrategy,
-		"networkFallbackReason": networkFallbackReason,
-		"exportableResources":   exportableResources,
-		"backtick":              func() string { return "`" },
-		"kebab":                 toKebab,
-		"humanName":             naming.HumanName,
-		"envPrefix":             naming.EnvPrefix,
-		"mcpToolName":           naming.SnakeIdentifier,
+		"isGraphQL":                 isGraphQLSpec,
+		"localReadIsList":           localReadIsList,
+		"localReadSupported":        localReadSupported,
+		"dataSourceStrategy":        spec.EffectiveDataSourceStrategy,
+		"networkFallbackReason":     networkFallbackReason,
+		"exportableResources":       exportableResources,
+		"resourceReadPathEntries":   resourceReadPathEntries,
+		"resourceDetailPathEntries": resourceDetailPathEntries,
+		"resourceWritePathEntries":  resourceWritePathEntries,
+		"backtick":                  func() string { return "`" },
+		"kebab":                     toKebab,
+		"humanName":                 naming.HumanName,
+		"envPrefix":                 naming.EnvPrefix,
+		"mcpToolName":               naming.SnakeIdentifier,
 		"lookupEndpoint": func(api *spec.APISpec, ref string) templateEndpoint {
 			e, _ := lookupEndpointForTemplate(api, ref)
 			return e
@@ -4290,6 +4293,11 @@ func countResourceHTMLPageModeEndpoints(resource spec.Resource) (total int, html
 }
 
 func (g *Generator) renderVisionCommands(visionData visionRenderData) error {
+	if g.VisionSet.Export || g.VisionSet.Import || g.VisionSet.Tail {
+		if err := g.renderTemplate("resource_paths.go.tmpl", filepath.Join("internal", "cli", "resource_paths.go"), visionData); err != nil {
+			return fmt.Errorf("rendering resource paths: %w", err)
+		}
+	}
 	// Render vision CLI commands
 	visionCmds := map[string]string{
 		"export.go.tmpl":    filepath.Join("internal", "cli", "export.go"),
@@ -4322,7 +4330,7 @@ func (g *Generator) renderVisionCommands(visionData visionRenderData) error {
 			actualTmpl = "graphql_import.go.tmpl"
 		}
 		var tmplData any = g.Spec
-		if tmplName == "sync.go.tmpl" || tmplName == "search.go.tmpl" {
+		if tmplName == "sync.go.tmpl" || tmplName == "search.go.tmpl" || tmplName == "export.go.tmpl" || tmplName == "import.go.tmpl" || tmplName == "tail.go.tmpl" {
 			tmplData = visionData
 		}
 		if err := g.renderTemplate(actualTmpl, outPath, tmplData); err != nil {
@@ -5600,6 +5608,116 @@ func globalScopeEnvName(apiName string, p spec.Param) string {
 type responsePathCase struct {
 	Key          string
 	ResponsePath string
+}
+
+type resourcePathEntry struct {
+	Name         string
+	Path         string
+	ResponsePath string
+	Pagination   *spec.Pagination
+	PageSize     int
+}
+
+func resourceReadPathEntries(data visionRenderData) []resourcePathEntry {
+	entries := map[string]resourcePathEntry{}
+	pathCounts := map[string]int{}
+	for name, resource := range data.Resources {
+		endpoint, ok := resourceEndpointForMethod(resource, "GET")
+		if !ok {
+			continue
+		}
+		entries[name] = resourcePathEntry{
+			Name:         name,
+			Path:         endpoint.Path,
+			ResponsePath: endpoint.ResponsePath,
+			Pagination:   endpoint.Pagination,
+			PageSize:     resourcePathPageSize(data, endpoint),
+		}
+		pathCounts[endpoint.Path]++
+	}
+	for name, entry := range entries {
+		if pathCounts[entry.Path] > 1 {
+			delete(entries, name)
+		}
+	}
+	return sortedResourcePathEntries(entries)
+}
+
+func resourcePathPageSize(data visionRenderData, endpoint spec.Endpoint) int {
+	pageSize := data.Pagination.DefaultPageSize
+	if pageSize <= 0 {
+		pageSize = 100
+	}
+	if endpoint.Pagination == nil || endpoint.Pagination.LimitParam == "" {
+		return pageSize
+	}
+	limitParam, ok := endpointParamByName(endpoint, endpoint.Pagination.LimitParam)
+	if !ok {
+		return pageSize
+	}
+	if defaultPageSize, ok := positiveIntValue(limitParam.Default); ok {
+		pageSize = defaultPageSize
+	}
+	if maxPageSize, ok := paramMaxInt(limitParam); ok && maxPageSize < pageSize {
+		pageSize = maxPageSize
+	}
+	return pageSize
+}
+
+func resourceWritePathEntries(data visionRenderData) []resourcePathEntry {
+	entries := map[string]resourcePathEntry{}
+	for name, resource := range data.Resources {
+		endpoint, ok := resourceEndpointForMethod(resource, "POST")
+		if !ok {
+			continue
+		}
+		entries[name] = resourcePathEntry{Name: name, Path: endpoint.Path}
+	}
+	return sortedResourcePathEntries(entries)
+}
+
+func resourceDetailPathEntries(data visionRenderData) []resourcePathEntry {
+	entries := map[string]resourcePathEntry{}
+	for name, resource := range data.Resources {
+		endpointNames := make([]string, 0, len(resource.Endpoints))
+		for endpointName := range resource.Endpoints {
+			endpointNames = append(endpointNames, endpointName)
+		}
+		sort.SliceStable(endpointNames, func(i, j int) bool {
+			return resourceDetailEndpointRank(endpointNames[i]) < resourceDetailEndpointRank(endpointNames[j])
+		})
+		for _, endpointName := range endpointNames {
+			endpoint := resource.Endpoints[endpointName]
+			if !strings.EqualFold(endpoint.Method, "GET") || endpoint.Response.Type == "array" || endpoint.Pagination != nil || strings.Count(endpoint.Path, "{") != 1 || strings.Count(endpoint.Path, "}") != 1 {
+				continue
+			}
+			entries[name] = resourcePathEntry{Name: name, Path: endpoint.Path}
+			break
+		}
+	}
+	return sortedResourcePathEntries(entries)
+}
+
+func resourceDetailEndpointRank(name string) string {
+	preferred := "1"
+	switch strings.ToLower(name) {
+	case "get", "read", "retrieve", "show", "detail":
+		preferred = "0"
+	}
+	return preferred + "\x00" + name
+}
+
+func sortedResourcePathEntries(entries map[string]resourcePathEntry) []resourcePathEntry {
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]resourcePathEntry, 0, len(names))
+	for _, name := range names {
+		out = append(out, entries[name])
+	}
+	return out
 }
 
 // responsePathCases returns deterministic switch cases deduplicated by resource
