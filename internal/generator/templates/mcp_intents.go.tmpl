@@ -221,7 +221,7 @@ func callIntentEndpoint(ctx context.Context, c *client.Client, {{if .HasRequired
 	for k, v := range params {
 		placeholder := "{" + k + "}"
 		if strings.Contains(path, placeholder) {
-			path = strings.ReplaceAll(path, placeholder, formatMCPParamValue(v))
+			path = strings.ReplaceAll(path, placeholder, mcpPathValue(v))
 			continue
 		}
 		query[k] = formatMCPParamValue(v)

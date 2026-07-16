@@ -5,6 +5,7 @@ package cliutil
 
 import (
 	"html"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -35,6 +36,20 @@ func ScrubTerminal(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// EscapePathParam preserves slash separators in hierarchical IDs so reserved
+// characters within each segment remain safe in the request URL.
+func EscapePathParam(value string) string {
+	segments := strings.Split(value, "/")
+	for i, segment := range segments {
+		if segment == "." || segment == ".." {
+			segments[i] = strings.Repeat("%2E", len(segment))
+			continue
+		}
+		segments[i] = url.PathEscape(segment)
+	}
+	return strings.Join(segments, "/")
 }
 
 // ParseStoredTime parses timestamps read back from SQLite-backed generated

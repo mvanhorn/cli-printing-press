@@ -17243,6 +17243,8 @@ func TestGenerateMCPCodeOrchestrationEmitsSearchExecute(t *testing.T) {
 	} {
 		assert.Contains(t, body, want, "code_orch.go missing expected snippet %q", want)
 	}
+	assert.Contains(t, body, `path = strings.ReplaceAll(path, "{"+p+"}", mcpPathValue(v))`,
+		"code orchestration path params must use the shared MCP path-value helper")
 
 	toolsPath := filepath.Join(outputDir, "internal", "mcp", "tools.go")
 	toolsData, err := os.ReadFile(toolsPath)
@@ -17689,7 +17691,7 @@ func TestGenerateMCPHandlerFormatsNumericPathAndQueryScalars(t *testing.T) {
 	tools := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	assert.Contains(t, tools, "func formatMCPParamValue(v any) string",
 		"generated MCP handler must emit a scalar formatter shared by path and query binding")
-	assert.Contains(t, tools, `return url.PathEscape(formatMCPParamValue(v))`,
+	assert.Contains(t, tools, `return cliutil.EscapePathParam(formatMCPParamValue(v))`,
 		"path params must use scalar formatting before percent-encoding")
 	assert.Contains(t, tools, `path = strings.Replace(path, placeholder, mcpPathValue(v), 1)`,
 		"path params must use plain-decimal formatting and percent-encoding")
@@ -18145,6 +18147,8 @@ func TestGenerateMCPIntentsEmittedWhenDeclared(t *testing.T) {
 	} {
 		assert.Contains(t, body, want, "intents.go missing expected snippet %q", want)
 	}
+	assert.Contains(t, body, `path = strings.ReplaceAll(path, placeholder, mcpPathValue(v))`,
+		"intent path params must use the shared MCP path-value helper")
 
 	toolsPath := filepath.Join(outputDir, "internal", "mcp", "tools.go")
 	toolsData, err := os.ReadFile(toolsPath)

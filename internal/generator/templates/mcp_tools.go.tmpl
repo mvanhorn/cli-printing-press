@@ -22,7 +22,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	{{- if or (hasArrayQueryParams .APISpec) $hasFormRequest}}
 	"net/url"
+	{{- end}}
 {{- if or .VisionSet.Search .VisionSet.Store}}
 	"os"
 {{- end}}
@@ -257,7 +259,7 @@ func formatMCPParamValue(v any) string {
 }
 
 func mcpPathValue(v any) string {
-	return url.PathEscape(formatMCPParamValue(v))
+	return cliutil.EscapePathParam(formatMCPParamValue(v))
 }
 
 {{- if hasArrayQueryParams .APISpec}}
