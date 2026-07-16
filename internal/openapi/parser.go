@@ -8191,8 +8191,11 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	// the detected LimitParam/CursorParam preserves whatever the API
 	// expects (e.g. Google APIs reject `pagesize` but accept `pageSize`).
 	originalCase := map[string]string{}
+	paramsByLowerName := map[string]spec.Param{}
 	for _, p := range params {
-		originalCase[strings.ToLower(p.Name)] = p.Name
+		lowerName := strings.ToLower(p.Name)
+		originalCase[lowerName] = p.Name
+		paramsByLowerName[lowerName] = p
 	}
 
 	var pag spec.Pagination
@@ -8245,12 +8248,11 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 			}
 		}
 	}
-	// A standalone size parameter is ambiguous and cannot advance pages by
-	// itself. Treat it as a page-size parameter only when an advance parameter
-	// was detected as well.
+	// `size` is also a common domain filter, so require pagination wording in
+	// its description before treating it as the page length.
 	if pag.LimitParam == "" && pag.CursorParam != "" {
-		if orig, ok := originalCase["size"]; ok {
-			pag.LimitParam = orig
+		if sizeParam, ok := paramsByLowerName["size"]; ok && describesPageSize(sizeParam.Description) {
+			pag.LimitParam = sizeParam.Name
 		}
 	}
 
@@ -8366,6 +8368,25 @@ func successResponseSchema(op *openapi3.Operation) *openapi3.Schema {
 		return nil
 	}
 	return schemaRef.Value
+}
+
+func describesPageSize(description string) bool {
+	description = strings.ToLower(description)
+	if strings.Contains(description, "page size") ||
+		strings.Contains(description, "page-size") ||
+		strings.Contains(description, "size of the page") ||
+		strings.Contains(description, "size of a page") {
+		return true
+	}
+	if !strings.Contains(description, "per page") {
+		return false
+	}
+	for _, noun := range []string{"item", "result", "record", "entry", "object", "element", "resource", "row", "value"} {
+		if strings.Contains(description, noun) {
+			return true
+		}
+	}
+	return false
 }
 
 func detectPaginationResponseFields(schema *openapi3.Schema, prefix string, pag *spec.Pagination) {

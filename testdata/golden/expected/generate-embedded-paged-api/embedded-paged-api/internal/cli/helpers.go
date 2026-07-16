@@ -643,7 +643,7 @@ func paginatedGet(ctx context.Context, c interface {
 			var obj map[string]json.RawMessage
 			if json.Unmarshal(data, &obj) == nil {
 				itemCount := 0
-				if nested, ok := extractPaginatedItems(obj); ok {
+				if nested, ok := extractPaginatedItems(obj, path); ok {
 					allItems = append(allItems, nested...)
 					itemCount = len(nested)
 				}
@@ -853,11 +853,17 @@ func paginationCursorToken(raw json.RawMessage) string {
 	return ""
 }
 
-func extractPaginatedItems(obj map[string]json.RawMessage) ([]json.RawMessage, bool) {
-	return extractPaginatedItemsFromObject(obj, true)
+func extractPaginatedItems(obj map[string]json.RawMessage, requestPath string) ([]json.RawMessage, bool) {
+	return extractPaginatedItemsFromObject(obj, requestPath, true)
 }
 
-func extractPaginatedItemsFromObject(obj map[string]json.RawMessage, allowEmbedded bool) ([]json.RawMessage, bool) {
+func extractPaginatedItemsFromObject(obj map[string]json.RawMessage, requestPath string, allowEmbedded bool) ([]json.RawMessage, bool) {
+	if !allowEmbedded {
+		if nested, ok := extractPaginatedItemsMatchingPath(obj, requestPath); ok {
+			return nested, true
+		}
+	}
+
 	for _, field := range []string{"data", "items", "results", "messages", "members", "values"} {
 		if arr, ok := obj[field]; ok {
 			var nested []json.RawMessage
@@ -871,7 +877,7 @@ func extractPaginatedItemsFromObject(obj map[string]json.RawMessage, allowEmbedd
 		if raw, ok := obj["_embedded"]; ok {
 			var embedded map[string]json.RawMessage
 			if json.Unmarshal(raw, &embedded) == nil {
-				if nested, ok := extractPaginatedItemsFromObject(embedded, false); ok {
+				if nested, ok := extractPaginatedItemsFromObject(embedded, requestPath, false); ok {
 					return nested, true
 				}
 			}
@@ -891,6 +897,41 @@ func extractPaginatedItemsFromObject(obj map[string]json.RawMessage, allowEmbedd
 	}
 	if arrayCount == 1 {
 		return onlyArray, true
+	}
+	return nil, false
+}
+
+func extractPaginatedItemsMatchingPath(obj map[string]json.RawMessage, requestPath string) ([]json.RawMessage, bool) {
+	pathWithoutQuery := strings.SplitN(requestPath, "?", 2)[0]
+	segments := strings.Split(strings.Trim(pathWithoutQuery, "/"), "/")
+	collectionKey := ""
+	for i := len(segments) - 1; i >= 0; i-- {
+		segment := strings.TrimSpace(segments[i])
+		if segment == "" || (strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}")) {
+			continue
+		}
+		collectionKey = strings.TrimSuffix(segment, ".json")
+		break
+	}
+	if collectionKey == "" {
+		return nil, false
+	}
+
+	var matched []json.RawMessage
+	matches := 0
+	for key, raw := range obj {
+		if !strings.EqualFold(key, collectionKey) {
+			continue
+		}
+		var items []json.RawMessage
+		if json.Unmarshal(raw, &items) != nil {
+			continue
+		}
+		matched = items
+		matches++
+	}
+	if matches == 1 {
+		return matched, true
 	}
 	return nil, false
 }
@@ -967,7 +1008,7 @@ func fetchEmbeddedPagedSubresource(ctx context.Context, c interface {
 		if err := json.Unmarshal(data, &obj); err != nil {
 			return nil, fmt.Errorf("paginating embedded sub-resource %q page %d: unexpected response shape: %w", childPath, page+1, err)
 		}
-		if items, ok := extractPaginatedItems(obj); ok {
+		if items, ok := extractPaginatedItems(obj, childPath); ok {
 			all = append(all, items...)
 		}
 		if !nextIsURL {

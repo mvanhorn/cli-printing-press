@@ -475,6 +475,28 @@ func TestPaginatedGetExtractsHALEmbeddedItems(t *testing.T) {
 	}
 }
 
+func TestPaginatedGetSelectsHALEmbeddedCollectionMatchingPath(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{
+			"_embedded": {
+				"events": [{"id":"event-one"}],
+				"items": [{"id":"unrelated-item"}]
+			}
+		}` + "`" + `),
+	}}
+	data, err := paginatedGet(context.Background(), client, "/discovery/v2/events.json", map[string]string{"size":"2"}, nil, true, "page", "page", "size", 2, "", "")
+	if err != nil {
+		t.Fatalf("paginatedGet returned error: %v", err)
+	}
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if len(got) != 1 || got[0]["id"] != "event-one" {
+		t.Fatalf("got items %#v, want only the events collection", got)
+	}
+}
+
 func TestPaginatedGetFallsBackToCursorParamResponseField(t *testing.T) {
 	client := &paginatedTestClient{responses: []json.RawMessage{
 		json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"cursor":"page-2"}` + "`" + `),
