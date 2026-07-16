@@ -8,7 +8,7 @@ The Printing Press has a fast path and a managed path.
 
 The fast path is the `/printing-press` skill. It runs the flow end to end in one session, produces a CLI plus an MCP server, and reports back. The high-level step list lives in `README.md` under "How It Works."
 
-The managed path is the 9-phase pipeline. It breaks the same work into phases the user can stop at, resume, re-run, and inspect. Each phase has its own plan file, its own artifacts directory, and its own gate. This is what `printing-press pipeline` creates. It is also how this contract should be read: the fast path compresses these phases, it does not replace them.
+The managed path is the 9-phase pipeline. It breaks the same work into phases the user can stop at, resume, re-run, and inspect. Each phase has its own plan file, its own artifacts directory, and its own gate. This is what `printing-press print` creates. It is also how this contract should be read: the fast path compresses these phases, it does not replace them.
 
 Both paths converge on the same quality bar. A CLI produced by the fast path should score the same as one produced by the managed path.
 
