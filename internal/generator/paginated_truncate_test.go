@@ -442,6 +442,87 @@ func TestPaginatedGetAcceptsNumericNextCursor(t *testing.T) {
 	}
 }
 
+func TestPaginatedGetExtractsHALEmbeddedItems(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"_embedded":{"events":[{"id":"one"}]}}` + "`" + `),
+		json.RawMessage(` + "`" + `{"_embedded":{"events":[{"id":"two"}]}}` + "`" + `),
+		json.RawMessage(` + "`" + `{"_embedded":{"events":[]}}` + "`" + `),
+	}}
+	data, err := paginatedGet(context.Background(), client, "/events", map[string]string{"page":"1", "size":"0"}, nil, true, "page", "page", "size", 1, "", "")
+	if err != nil {
+		t.Fatalf("paginatedGet returned error: %v", err)
+	}
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d items, want 2; data=%s", len(got), data)
+	}
+	if got[0]["id"] != "one" || got[1]["id"] != "two" {
+		t.Fatalf("got items %#v, want one followed by two", got)
+	}
+	if len(client.params) != 3 {
+		t.Fatalf("got %d requests, want 3", len(client.params))
+	}
+	for i, wantPage := range []string{"1", "2", "3"} {
+		if client.params[i]["page"] != wantPage {
+			t.Fatalf("request %d page = %q, want %s", i+1, client.params[i]["page"], wantPage)
+		}
+		if client.params[i]["size"] != "1" {
+			t.Fatalf("request %d size = %q, want 1", i+1, client.params[i]["size"])
+		}
+	}
+}
+
+func TestPaginatedGetSelectsHALEmbeddedCollectionMatchingPath(t *testing.T) {
+	for _, requestPath := range []string{"/discovery/v2/events.json", "/events/search"} {
+		t.Run(requestPath, func(t *testing.T) {
+			client := &paginatedTestClient{responses: []json.RawMessage{
+				json.RawMessage(` + "`" + `{
+					"_embedded": {
+						"events": [{"id":"event-one"}],
+						"items": [{"id":"unrelated-item"}]
+					}
+				}` + "`" + `),
+			}}
+			data, err := paginatedGet(context.Background(), client, requestPath, map[string]string{"size":"2"}, nil, true, "page", "page", "size", 2, "", "")
+			if err != nil {
+				t.Fatalf("paginatedGet returned error: %v", err)
+			}
+			var got []map[string]string
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatalf("unmarshal data: %v", err)
+			}
+			if len(got) != 1 || got[0]["id"] != "event-one" {
+				t.Fatalf("got items %#v, want only the events collection", got)
+			}
+		})
+	}
+}
+
+func TestPaginatedGetKeepsUnmatchedHALEmbeddedCollectionsAmbiguous(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{
+			"_embedded": {
+				"events": [{"id":"event-one"}],
+				"items": [{"id":"unrelated-item"}]
+			}
+		}` + "`" + `),
+	}}
+	data, err := paginatedGet(context.Background(), client, "/discovery/v2/catalog.json", map[string]string{"size":"2"}, nil, true, "page", "page", "size", 2, "", "")
+	if err != nil {
+		t.Fatalf("paginatedGet returned error: %v", err)
+	}
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got items %#v, want ambiguous HAL collections left unselected", got)
+	}
+}
+
 func TestPaginatedGetFallsBackToCursorParamResponseField(t *testing.T) {
 	client := &paginatedTestClient{responses: []json.RawMessage{
 		json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"cursor":"page-2"}` + "`" + `),

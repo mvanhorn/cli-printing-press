@@ -39,7 +39,7 @@ func TestGenerateDeleteEndpointWithJSONBodyUsesRequestBody(t *testing.T) {
 
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "assets_delete.go")
 	assert.Contains(t, endpointSrc, `bodyMap := map[string]any{}`)
-	assert.Contains(t, endpointSrc, `bodyMap["ids"] = parsed`)
+	assert.Contains(t, endpointSrc, `bodyMap["ids"] = asArray`)
 	assert.Contains(t, endpointSrc, `if cmd.Flags().Changed("force")`)
 	assert.Contains(t, endpointSrc, `bodyMap["force"] = bodyForce`)
 	assert.Contains(t, endpointSrc, `c.DeleteWithBody(cmd.Context(), path, body)`)
@@ -201,7 +201,7 @@ func TestGeneratePromotedDeleteEndpointWithJSONBodyUsesRequestBody(t *testing.T)
 
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_assets.go")
 	assert.Contains(t, endpointSrc, `bodyMap := map[string]any{}`)
-	assert.Contains(t, endpointSrc, `bodyMap["ids"] = parsed`)
+	assert.Contains(t, endpointSrc, `bodyMap["ids"] = asArray`)
 	assert.Contains(t, endpointSrc, `c.DeleteWithBody(cmd.Context(), path, body)`)
 	assert.NotContains(t, endpointSrc, `params["ids"]`)
 
@@ -238,7 +238,7 @@ func TestGeneratePromotedDeleteEndpointWithJSONBodyAndParamsUsesRequestBodyAndQu
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_assets.go")
 	assert.Contains(t, endpointSrc, `params["mode"] = formatCLIParamValue(flagMode)`)
 	assert.Contains(t, endpointSrc, `bodyMap := map[string]any{}`)
-	assert.Contains(t, endpointSrc, `bodyMap["ids"] = parsed`)
+	assert.Contains(t, endpointSrc, `bodyMap["ids"] = asArray`)
 	assert.Contains(t, endpointSrc, `c.DeleteWithParamsAndBody(cmd.Context(), path, params, body)`)
 	assert.NotContains(t, endpointSrc, `params["ids"]`)
 

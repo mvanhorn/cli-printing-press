@@ -11999,6 +11999,51 @@ func TestDetectPaginationPreservesParameterCase(t *testing.T) {
 	}
 }
 
+func TestDetectPaginationRecognizesDescribedPageSizeWithAdvanceParam(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		paramName   string
+		description string
+	}{
+		{name: "page size", paramName: "SiZe", description: "Page size for the response."},
+		{name: "items per page", paramName: "SIZE", description: "Number of items per page."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pag := detectPagination([]spec.Param{
+				{Name: "page"},
+				{Name: tc.paramName, Description: tc.description},
+			}, nil)
+			require.NotNil(t, pag)
+			assert.Equal(t, "page", pag.CursorParam)
+			assert.Equal(t, "page", pag.Type)
+			assert.Equal(t, tc.paramName, pag.LimitParam)
+		})
+	}
+}
+
+func TestDetectPaginationDoesNotClassifyUnrelatedSizeWithAdvanceParam(t *testing.T) {
+	t.Parallel()
+
+	pag := detectPagination([]spec.Param{
+		{Name: "page"},
+		{Name: "SiZe", Description: "Minimum file size in bytes."},
+	}, nil)
+	require.NotNil(t, pag)
+	assert.Equal(t, "page", pag.CursorParam)
+	assert.Equal(t, "page", pag.Type)
+	assert.Empty(t, pag.LimitParam)
+}
+
+func TestDetectPaginationDoesNotClassifySizeOnly(t *testing.T) {
+	t.Parallel()
+
+	assert.Nil(t, detectPagination([]spec.Param{{Name: "size"}}, nil))
+}
+
 func TestDetectPaginationPreservesCursorParamCase(t *testing.T) {
 	t.Parallel()
 
