@@ -69,7 +69,11 @@ func TestBodyMap(t *testing.T) {
 				"\t\t\t\tif err := json.Unmarshal([]byte(bodyMetadata), &parsedMetadata); err != nil {\n" +
 				"\t\t\t\t\treturn fmt.Errorf(\"parsing --metadata JSON: %w\", err)\n" +
 				"\t\t\t\t}\n" +
-				"\t\t\t\tbody[\"metadata\"] = parsedMetadata\n" +
+				"\t\t\t\tasMap, ok := parsedMetadata.(map[string]any)\n" +
+				"\t\t\t\tif !ok {\n" +
+				"\t\t\t\t\treturn fmt.Errorf(\"--metadata must be a JSON object, got JSON %T\", parsedMetadata)\n" +
+				"\t\t\t\t}\n" +
+				"\t\t\t\tbody[\"metadata\"] = asMap\n" +
 				"\t\t\t}\n",
 		},
 		{
@@ -81,7 +85,11 @@ func TestBodyMap(t *testing.T) {
 				"\t\t\t\tif err := json.Unmarshal([]byte(bodyTags), &parsedTags); err != nil {\n" +
 				"\t\t\t\t\treturn fmt.Errorf(\"parsing --tags JSON: %w\", err)\n" +
 				"\t\t\t\t}\n" +
-				"\t\t\t\tbody[\"tags\"] = parsedTags\n" +
+				"\t\t\t\tasArray, ok := parsedTags.([]any)\n" +
+				"\t\t\t\tif !ok {\n" +
+				"\t\t\t\t\treturn fmt.Errorf(\"--tags must be a JSON array, got JSON %T\", parsedTags)\n" +
+				"\t\t\t\t}\n" +
+				"\t\t\t\tbody[\"tags\"] = asArray\n" +
 				"\t\t\t}\n",
 		},
 		{
@@ -135,7 +143,11 @@ func TestBodyMap(t *testing.T) {
 				"\t\tif err := json.Unmarshal([]byte(bodyTags), &parsedTags); err != nil {\n" +
 				"\t\t\treturn fmt.Errorf(\"parsing --tags JSON: %w\", err)\n" +
 				"\t\t}\n" +
-				"\t\tbody[\"tags\"] = parsedTags\n" +
+				"\t\tasArray, ok := parsedTags.([]any)\n" +
+				"\t\tif !ok {\n" +
+				"\t\t\treturn fmt.Errorf(\"--tags must be a JSON array, got JSON %T\", parsedTags)\n" +
+				"\t\t}\n" +
+				"\t\tbody[\"tags\"] = asArray\n" +
 				"\t}\n",
 		},
 		{
@@ -210,7 +222,7 @@ func TestBodyMap_BodyNameOverridesJSONKey(t *testing.T) {
 	if !strings.Contains(got, "bodyStartAfter") {
 		t.Errorf("expected public name to drive variable identity, got: %s", got)
 	}
-	if !strings.Contains(got, `body["searchAfter"] = parsedStartAfter`) {
+	if !strings.Contains(got, `body["searchAfter"] = asArray`) {
 		t.Errorf("expected body_name to drive JSON key, got: %s", got)
 	}
 	if strings.Contains(got, `body["startAfter"]`) {

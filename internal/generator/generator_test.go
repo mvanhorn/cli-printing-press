@@ -11628,9 +11628,9 @@ func TestGenerateObjectBodyDefaultsAreParsedAsJSON(t *testing.T) {
 	require.NotEmpty(t, content)
 	assert.Contains(t, content, `StringVar(&bodyVariables, "variables", "{\"date\":\"2026-04-22\"}"`)
 	assert.Contains(t, content, `json.Unmarshal([]byte(bodyVariables), &parsedVariables)`)
-	assert.Contains(t, content, `bodyMap["variables"] = parsedVariables`)
+	assert.Contains(t, content, `bodyMap["variables"] = asMap`)
 	assert.Contains(t, content, `json.Unmarshal([]byte(bodyExtensions), &parsedExtensions)`)
-	assert.Contains(t, content, `bodyMap["extensions"] = parsedExtensions`)
+	assert.Contains(t, content, `bodyMap["extensions"] = asMap`)
 	_, err = parser.ParseFile(token.NewFileSet(), "graphql_posts_today.go", content, parser.ParseComments)
 	require.NoError(t, err)
 
@@ -17855,8 +17855,8 @@ func TestGenerateBodyNameAcrossCLISurfaces(t *testing.T) {
 
 	searchSource := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_contacts.go")
 	assert.Contains(t, searchSource, `StringVar(&bodyStartAfter, "start-after", "", "Pagination cursor")`)
-	assert.Contains(t, searchSource, `bodyMap["searchAfter"] = parsedStartAfter`)
-	assert.NotContains(t, searchSource, `bodyMap["startAfter"] = parsedStartAfter`)
+	assert.Contains(t, searchSource, `bodyMap["searchAfter"] = asArray`)
+	assert.NotContains(t, searchSource, `bodyMap["startAfter"] = asArray`)
 
 	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	// CLI takes the array cursor as a JSON-string flag (StringVar + json.Unmarshal
