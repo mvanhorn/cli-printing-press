@@ -823,12 +823,18 @@ Rules:
 - The parser does not validate the URL shape.
 
 When the extension is absent and the spec has any auth, the parser falls back
-through the following sources in order and uses the first plausible HTTPS URL:
+through the following sources in order:
 
 1. The selected security scheme's `description` (extracted via regex).
 2. `info.description`, but only when the surrounding text mentions
    credential-related cues (`token`, `api key`, `credential`, `register`,
    `sign up`, etc.) so an unrelated URL doesn't get picked.
+
+Within either description, generic protocol references such as MDN, RFC/IETF,
+HTTPWG, and Wikipedia links are ignored. A clear credential-management surface
+(`console`, `dashboard`, `api-keys`/`apikeys`, or `settings/integrations`) wins
+over an earlier neutral URL; otherwise the first accepted non-generic URL is
+kept as the fallback.
 
 `externalDocs.url` and `info.contact.url` are intentionally **not** fallbacks
 for `KeyURL`. Those almost always point at the API's docs landing page or the

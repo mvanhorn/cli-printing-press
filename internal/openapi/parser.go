@@ -1696,35 +1696,93 @@ func inferAuthKeyURL(doc *openapi3.T, schemeName string) string {
 	if schemeName != "" && doc.Components != nil {
 		if ref, ok := doc.Components.SecuritySchemes[schemeName]; ok {
 			if scheme := securitySchemeValue(ref); scheme != nil {
-				if u := firstHTTPSURL(scheme.Description); u != "" {
+				if u := authKeyURLFromText(scheme.Description); u != "" {
 					return u
 				}
 			}
 		}
 	}
 	if doc.Info != nil {
-		if u := firstAuthRelatedURL(doc.Info.Description); u != "" {
+		if u := authRelatedURLFromText(doc.Info.Description); u != "" {
 			return u
 		}
 	}
 	return ""
 }
 
-var httpsURLPattern = regexp.MustCompile(`https://[^\s)>\]"',]+`)
+var (
+	httpsURLPattern = regexp.MustCompile(`https://[^\s)>\]"',]+`)
 
-// firstHTTPSURL returns the first https:// substring found in s, with trailing
-// sentence punctuation trimmed.
-func firstHTTPSURL(s string) string {
+	genericAuthReferenceHosts = []string{
+		"developer.mozilla.org",
+		"datatracker.ietf.org",
+		"rfc-editor.org",
+		"tools.ietf.org",
+		"httpwg.org",
+		"en.wikipedia.org",
+	}
+)
+
+// Prefer clear credential-management surfaces because generated auth hints
+// label this URL as where users get a key; generic references would misdirect.
+func authKeyURLFromText(s string) string {
 	if s == "" {
 		return ""
 	}
-	m := httpsURLPattern.FindString(s)
-	m = strings.TrimRight(m, ".,;:!?)")
-	if m == "" || strings.ContainsAny(m, "<>{}[]") || isPlaceholderURL(m) {
-		// Reject templated placeholders (e.g. https://<your-dashboard>/...).
-		return ""
+	var best string
+	bestScore := -1
+	for _, match := range httpsURLPattern.FindAllString(s, -1) {
+		candidate := strings.TrimRight(match, ".,;:!?)")
+		if candidate == "" || strings.ContainsAny(candidate, "<>{}[]") || isPlaceholderURL(candidate) || isGenericAuthReferenceURL(candidate) {
+			continue
+		}
+		score := credentialSurfaceScore(candidate)
+		if best == "" || score > bestScore {
+			best = candidate
+			bestScore = score
+		}
 	}
-	return m
+	return best
+}
+
+func isGenericAuthReferenceURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	for _, genericHost := range genericAuthReferenceHosts {
+		if host == genericHost || strings.HasSuffix(host, "."+genericHost) {
+			return true
+		}
+	}
+	return false
+}
+
+func credentialSurfaceScore(rawURL string) int {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return 0
+	}
+	tokens := strings.FieldsFunc(strings.ToLower(parsed.Hostname()+parsed.EscapedPath()), func(r rune) bool {
+		return r == '.' || r == '/'
+	})
+	hasSettings := false
+	hasIntegrations := false
+	for _, token := range tokens {
+		switch token {
+		case "console", "dashboard", "api-keys", "apikeys":
+			return 2
+		case "settings":
+			hasSettings = true
+		case "integrations":
+			hasIntegrations = true
+		}
+	}
+	if hasSettings && hasIntegrations {
+		return 2
+	}
+	return 0
 }
 
 func isPlaceholderURL(u string) bool {
@@ -1737,10 +1795,7 @@ func isPlaceholderURL(u string) bool {
 	}
 }
 
-// firstAuthRelatedURL returns the first HTTPS URL in s, but only when s also
-// contains language indicating the URL is about credentials. Avoids picking a
-// URL that happens to appear in a description of an unrelated feature.
-func firstAuthRelatedURL(s string) string {
+func authRelatedURLFromText(s string) string {
 	if s == "" {
 		return ""
 	}
@@ -1760,7 +1815,7 @@ func firstAuthRelatedURL(s string) string {
 	if !matched {
 		return ""
 	}
-	return firstHTTPSURL(s)
+	return authKeyURLFromText(s)
 }
 
 func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]any) {
