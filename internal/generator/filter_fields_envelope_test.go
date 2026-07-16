@@ -165,6 +165,44 @@ func TestFilterFieldsEnvelopeDescent_PartiallyInvalidSelectorWarns(t *testing.T)
 	}
 }
 
+func TestFilterFieldsEnvelopeDescent_EmptyEnvelopeSelectorWarnings(t *testing.T) {
+	input := `+"`"+`{"items":[]}`+"`"+`
+	cases := []struct {
+		name           string
+		fields         string
+		wantWarnings   []string
+		forbidWarnings []string
+	}{
+		{
+			name:           "known prefix and unrelated typo",
+			fields:         "items.id,naem",
+			wantWarnings:   []string{"naem"},
+			forbidWarnings: []string{"items.id"},
+		},
+		{
+			name:         "multiple unrelated selectors",
+			fields:       "naem,missing",
+			wantWarnings: []string{"naem", "missing"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, warning := filterFieldsWithWarning(t, input, tc.fields)
+			assertJSONEqual(t, got, input)
+			for _, field := range tc.wantWarnings {
+				if !strings.Contains(string(warning), "--select \""+field+"\" matched no fields") {
+					t.Fatalf("warning = %q, want warning naming %q", warning, field)
+				}
+			}
+			for _, field := range tc.forbidWarnings {
+				if strings.Contains(string(warning), "--select \""+field+"\" matched no fields") {
+					t.Fatalf("warning = %q, indeterminate selector %q must not be reported", warning, field)
+				}
+			}
+		})
+	}
+}
+
 func filterFieldsWithWarning(t *testing.T, input, fields string) (json.RawMessage, []byte) {
 	t.Helper()
 	oldStderr := os.Stderr
@@ -198,5 +236,5 @@ func assertJSONEqual(t *testing.T, got json.RawMessage, want string) {
 }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^(TestFilterFieldsEnvelopeDescent|TestFilterFieldsEnvelopeDescent_UnknownSelector|TestFilterFieldsEnvelopeDescent_EmptyCollectionsDoNotWarn|TestFilterFieldsEnvelopeDescent_PartiallyInvalidSelectorWarns)$", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^(TestFilterFieldsEnvelopeDescent|TestFilterFieldsEnvelopeDescent_UnknownSelector|TestFilterFieldsEnvelopeDescent_EmptyCollectionsDoNotWarn|TestFilterFieldsEnvelopeDescent_PartiallyInvalidSelectorWarns|TestFilterFieldsEnvelopeDescent_EmptyEnvelopeSelectorWarnings)$", "-count=1")
 }
