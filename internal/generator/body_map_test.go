@@ -222,7 +222,7 @@ func TestBodyMap_BodyNameOverridesJSONKey(t *testing.T) {
 	if !strings.Contains(got, "bodyStartAfter") {
 		t.Errorf("expected public name to drive variable identity, got: %s", got)
 	}
-	if !strings.Contains(got, `body["searchAfter"] = parsedStartAfter`) {
+	if !strings.Contains(got, `body["searchAfter"] = asArray`) {
 		t.Errorf("expected body_name to drive JSON key, got: %s", got)
 	}
 	if strings.Contains(got, `body["startAfter"]`) {
