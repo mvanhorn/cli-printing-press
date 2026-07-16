@@ -131,6 +131,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	} else {
 		report.Mode = "mock"
 	}
+	report.Results = append(report.Results, runResourcePathContractChecks(cfg.Dir)...)
 
 	// 3. Build the generated CLI binary
 	binaryPath, err := buildCLI(cfg.Dir)

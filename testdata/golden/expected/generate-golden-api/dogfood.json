@@ -35,7 +35,7 @@
     "state": "runtime_walking"
   },
   "naming_check": {
-    "checked": 45
+    "checked": 46
   },
   "novel_features_check": {
     "found": 0,
@@ -62,7 +62,7 @@
     "sync_resources_present": true
   },
   "print_json_filtered_check": {
-    "checked": 45
+    "checked": 46
   },
   "reimplementation_check": {
     "checked": 0,

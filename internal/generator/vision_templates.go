@@ -204,7 +204,7 @@ func constrainVisionTemplates(api *spec.APISpec, set VisionTemplateSet, profile 
 	if set.Export && len(exportableResources(api)) == 0 {
 		set.Export = false
 	}
-	if set.Import && !hasCreateCommands(api.Resources) {
+	if set.Import && len(importableResources(api)) == 0 {
 		set.Import = false
 	}
 	return set
@@ -259,9 +259,21 @@ func exportableResources(api *spec.APISpec) []string {
 	if api == nil {
 		return nil
 	}
-	names := make([]string, 0, len(api.Resources))
+	entries := resourceReadPathEntries(visionRenderData{APISpec: api})
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name)
+	}
+	return names
+}
+
+func importableResources(api *spec.APISpec) []string {
+	if api == nil {
+		return nil
+	}
+	var names []string
 	for name, resource := range api.Resources {
-		if hasBareCollectionEndpoint(name, resource) {
+		if _, ok := resourceEndpointForMethod(resource, "POST"); ok {
 			names = append(names, name)
 		}
 	}
@@ -269,14 +281,35 @@ func exportableResources(api *spec.APISpec) []string {
 	return names
 }
 
-func hasBareCollectionEndpoint(resourceName string, resource spec.Resource) bool {
-	wantPath := "/" + resourceName
-	for _, endpoint := range resource.Endpoints {
-		if strings.EqualFold(endpoint.Method, "GET") && endpoint.Path == wantPath {
-			return true
-		}
+func resourceEndpointForMethod(resource spec.Resource, method string) (spec.Endpoint, bool) {
+	names := make([]string, 0, len(resource.Endpoints))
+	for name := range resource.Endpoints {
+		names = append(names, name)
 	}
-	return false
+	sort.SliceStable(names, func(i, j int) bool {
+		return resourceEndpointRank(names[i], resource.Endpoints[names[i]]) < resourceEndpointRank(names[j], resource.Endpoints[names[j]])
+	})
+	for _, name := range names {
+		endpoint := resource.Endpoints[name]
+		if !strings.EqualFold(endpoint.Method, method) || strings.Contains(endpoint.Path, "{") {
+			continue
+		}
+		if strings.EqualFold(method, "GET") && name != "list" && !endpoint.Syncable && endpoint.Response.Type != "array" && endpoint.Pagination == nil {
+			continue
+		}
+		return endpoint, true
+	}
+	return spec.Endpoint{}, false
+}
+
+func resourceEndpointRank(name string, endpoint spec.Endpoint) string {
+	preferred := "2"
+	if name == "list" || name == "create" {
+		preferred = "0"
+	} else if endpoint.Syncable {
+		preferred = "1"
+	}
+	return preferred + "\x00" + name
 }
 
 func (s VisionTemplateSet) HasWorkflows() bool {

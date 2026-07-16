@@ -45,4 +45,5 @@ printing-press-golden/internal/cli/auto_refresh.go
 printing-press-golden/internal/cliutil/freshness.go
 printing-press-golden/internal/cli/api_discovery.go
 printing-press-golden/internal/cli/import.go
+printing-press-golden/internal/cli/resource_paths.go
 printing-press-golden/internal/cli/which.go

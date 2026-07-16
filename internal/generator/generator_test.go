@@ -81,6 +81,7 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/client/client_test.go",
 		"internal/client/client_verify_short_circuit_test.go",
 		"internal/config/config.go",
+		"internal/cli/resource_paths.go",
 		"internal/store/extras.go",
 		"internal/mcp/bound/bound.go",
 		"internal/mcp/bound/bound_test.go",
@@ -112,9 +113,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +1 more (A4): credentials_perms_test.go, the behavioral test proving the
 		// read-time guard is wired into cliutil.LoadCredentials — also auth-gated,
 		// so it lands for every token-bearing spec.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 148},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 152},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 150},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 149},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 153},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 151},
 	}
 
 	for _, tt := range tests {
