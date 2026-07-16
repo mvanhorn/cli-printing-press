@@ -1124,11 +1124,13 @@ func unwrapSingleKeyArray(data json.RawMessage) json.RawMessage {
 // Arrays are traversed element-wise: "events.shortName" keeps shortName on each event.
 func filterFields(data json.RawMessage, fields string) json.RawMessage {
 	var paths [][]string
+	var requestedPaths []string
 	for _, f := range strings.Split(fields, ",") {
 		f = strings.TrimSpace(f)
 		if f == "" {
 			continue
 		}
+		requestedPaths = append(requestedPaths, f)
 		parts := strings.Split(f, ".")
 		for i := range parts {
 			parts[i] = strings.ToLower(parts[i])
@@ -1138,13 +1140,22 @@ func filterFields(data json.RawMessage, fields string) json.RawMessage {
 	if len(paths) == 0 {
 		return data
 	}
-	filtered, matched := filterFieldsRec(data, paths)
-	if !matched {
-		valid := strings.Join(selectFieldKeys(data), ", ")
-		if valid == "" {
-			valid = "none"
+	filtered, matched, indeterminate := filterFieldsRec(data, paths)
+	valid := ""
+	for i, path := range paths {
+		_, pathMatched, pathIndeterminate := filterFieldsRec(data, [][]string{path})
+		if pathMatched || pathIndeterminate {
+			continue
 		}
-		fmt.Fprintf(os.Stderr, "warning: --select %q matched no fields; valid fields: %s\n", fields, valid)
+		if valid == "" {
+			valid = strings.Join(selectFieldKeys(data), ", ")
+			if valid == "" {
+				valid = "none"
+			}
+		}
+		fmt.Fprintf(os.Stderr, "warning: --select %q matched no fields; valid fields: %s\n", requestedPaths[i], valid)
+	}
+	if !matched && !indeterminate {
 		return data
 	}
 	return filtered
@@ -1179,19 +1190,24 @@ func selectFieldKeys(data json.RawMessage) []string {
 }
 
 // filterFieldsRec applies path filters to a JSON value. Each path is a list of
-// lowercase segments; arrays descend element-wise.
-func filterFieldsRec(data json.RawMessage, paths [][]string) (json.RawMessage, bool) {
+// lowercase segments; arrays descend element-wise. The final return value is
+// true when an empty array makes the requested path indeterminate rather than
+// definitively unmatched.
+func filterFieldsRec(data json.RawMessage, paths [][]string) (json.RawMessage, bool, bool) {
 	var arr []json.RawMessage
 	if err := json.Unmarshal(data, &arr); err == nil {
 		out := make([]json.RawMessage, len(arr))
 		matchedAny := false
+		indeterminateAny := len(arr) == 0
 		for i, el := range arr {
 			var matched bool
-			out[i], matched = filterFieldsRec(el, paths)
+			var indeterminate bool
+			out[i], matched, indeterminate = filterFieldsRec(el, paths)
 			matchedAny = matchedAny || matched
+			indeterminateAny = indeterminateAny || indeterminate
 		}
 		result, _ := json.Marshal(out)
-		return result, matchedAny
+		return result, matchedAny, indeterminateAny
 	}
 
 	var obj map[string]json.RawMessage
@@ -1212,6 +1228,7 @@ func filterFieldsRec(data json.RawMessage, paths [][]string) (json.RawMessage, b
 		filtered := map[string]json.RawMessage{}
 		headMatched := false
 		pathMatched := false
+		pathIndeterminate := false
 		for k, v := range obj {
 			matched := matchSelectSegment(k, keepWhole, subPaths)
 			if matched == "" {
@@ -1225,8 +1242,10 @@ func filterFieldsRec(data json.RawMessage, paths [][]string) (json.RawMessage, b
 			}
 			if subs := subPaths[matched]; subs != nil {
 				var childMatched bool
-				filtered[k], childMatched = filterFieldsRec(v, subs)
+				var childIndeterminate bool
+				filtered[k], childMatched, childIndeterminate = filterFieldsRec(v, subs)
 				pathMatched = pathMatched || childMatched
+				pathIndeterminate = pathIndeterminate || childIndeterminate
 			}
 		}
 		// Envelope fallback: when no top-level keys matched but at least one
@@ -1240,22 +1259,24 @@ func filterFieldsRec(data json.RawMessage, paths [][]string) (json.RawMessage, b
 		// which json.Unmarshal otherwise accepts into a []json.RawMessage
 		// as a nil slice and would coerce to `[]`.
 		if !headMatched {
-			if pending, foundArray, nestedMatched := filterListEnvelopeFields(obj, paths); foundArray {
+			if pending, foundArray, nestedMatched, nestedIndeterminate := filterListEnvelopeFields(obj, paths); foundArray {
 				filtered = pending
 				pathMatched = pathMatched || nestedMatched
+				pathIndeterminate = pathIndeterminate || nestedIndeterminate
 			}
 		}
 		result, _ := json.Marshal(filtered)
-		return result, pathMatched
+		return result, pathMatched, pathIndeterminate
 	}
 
-	return data, false
+	return data, false, false
 }
 
-func filterListEnvelopeFields(obj map[string]json.RawMessage, paths [][]string) (map[string]json.RawMessage, bool, bool) {
+func filterListEnvelopeFields(obj map[string]json.RawMessage, paths [][]string) (map[string]json.RawMessage, bool, bool, bool) {
 	pending := map[string]json.RawMessage{}
 	foundArray := false
 	matchedAny := false
+	indeterminateAny := false
 	for k, v := range obj {
 		if envelopeMetadataArrayKeys[k] {
 			pending[k] = v
@@ -1265,34 +1286,37 @@ func filterListEnvelopeFields(obj map[string]json.RawMessage, paths [][]string) 
 		if json.Unmarshal(v, &arr) == nil && arr != nil {
 			foundArray = true
 			var matched bool
-			pending[k], matched = filterFieldsRec(v, paths)
+			var indeterminate bool
+			pending[k], matched, indeterminate = filterFieldsRec(v, paths)
 			matchedAny = matchedAny || matched
+			indeterminateAny = indeterminateAny || indeterminate
 			continue
 		}
 		if k == "_embedded" {
-			if nested, ok, matched := filterNestedListEnvelopeFields(v, paths); ok {
+			if nested, ok, matched, indeterminate := filterNestedListEnvelopeFields(v, paths); ok {
 				foundArray = true
 				pending[k] = nested
 				matchedAny = matchedAny || matched
+				indeterminateAny = indeterminateAny || indeterminate
 				continue
 			}
 		}
 		pending[k] = v
 	}
-	return pending, foundArray, matchedAny
+	return pending, foundArray, matchedAny, indeterminateAny
 }
 
-func filterNestedListEnvelopeFields(data json.RawMessage, paths [][]string) (json.RawMessage, bool, bool) {
+func filterNestedListEnvelopeFields(data json.RawMessage, paths [][]string) (json.RawMessage, bool, bool, bool) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(data, &obj); err != nil {
-		return nil, false, false
+		return nil, false, false, false
 	}
-	filtered, found, matched := filterListEnvelopeFields(obj, paths)
+	filtered, found, matched, indeterminate := filterListEnvelopeFields(obj, paths)
 	if !found {
-		return nil, false, false
+		return nil, false, false, false
 	}
 	result, _ := json.Marshal(filtered)
-	return result, true, matched
+	return result, true, matched, indeterminate
 }
 
 // matchSelectSegment returns the matching lowercase segment, or "" if no match.
