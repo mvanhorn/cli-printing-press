@@ -18969,6 +18969,11 @@ func TestGeneratedAutoRefreshRespectsNoLearn(t *testing.T) {
 	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
+	autoRefreshTest, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auto_refresh_test.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(autoRefreshTest), "context.Background()")
+	assert.NotContains(t, string(autoRefreshTest), "t.Context()")
+
 	runGoCommand(t, outputDir, "test", "./internal/cli/...", "-run", "^TestAutoRefreshNoLearnDoesNotOpenStore$", "-count=1")
 }
 

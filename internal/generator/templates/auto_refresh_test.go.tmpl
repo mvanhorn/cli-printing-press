@@ -13,6 +13,7 @@ import (
 	"testing"
 
 {{- if .Learn.Enabled}}
+	"context"
 	"{{modulePath}}/internal/cliutil"
 {{- end}}
 )
@@ -110,7 +111,7 @@ func TestAutoRefreshNoLearnDoesNotOpenStore(t *testing.T) {
 	}
 	defer restore()
 
-	meta := autoRefreshIfStale(t.Context(), &rootFlags{dataSource: "auto", noLearn: true}, []string{"items"})
+	meta := autoRefreshIfStale(context.Background(), &rootFlags{dataSource: "auto", noLearn: true}, []string{"items"})
 	if meta.Decision != "skipped" || meta.Reason != "no_learn" {
 		t.Fatalf("freshness = %+v, want skipped/no_learn", meta)
 	}
