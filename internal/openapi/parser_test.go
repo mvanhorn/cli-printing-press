@@ -5327,6 +5327,27 @@ paths:
 	})
 }
 
+const authKeyURLSelectionOpenAPISpec = `openapi: "3.0.3"
+info:
+  title: Apify
+  version: "1.0.0"
+servers:
+  - url: https://api.apify.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Send the token in the Authorization header described at https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Authorization.
+        Create a token at https://console.apify.com/settings/integrations.
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`
+
 func TestOpenAPIAuthKeyURLInference(t *testing.T) {
 	t.Parallel()
 
@@ -5385,6 +5406,33 @@ paths:
         "200": { description: OK }
 `,
 			expected: "https://example.com/account/api-keys",
+		},
+		{
+			name:     "vendor credential URL wins over generic auth reference",
+			yaml:     authKeyURLSelectionOpenAPISpec,
+			expected: "https://console.apify.com/settings/integrations",
+		},
+		{
+			name: "generic auth reference without vendor credential URL is omitted",
+			yaml: `openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: http
+      scheme: bearer
+      description: "See https://datatracker.ietf.org/doc/html/rfc6750 for bearer token syntax."
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`,
+			expected: "",
 		},
 		{
 			name: "no inference when only externalDocs.url is set (docs URL is not a credentials page)",
@@ -5557,7 +5605,32 @@ paths:
 	}
 }
 
-func TestFirstHTTPSURLRejectsPlaceholders(t *testing.T) {
+func TestOpenAPIAuthKeyURLSelectionReachesGeneratedSurfaces(t *testing.T) {
+	parsed, err := Parse([]byte(authKeyURLSelectionOpenAPISpec))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(parsed.Name))
+	gen := generator.New(parsed, outputDir)
+	gen.VisionSet.MCP = true
+	require.NoError(t, gen.Generate())
+
+	for _, path := range []string{
+		"internal/cli/auth.go",
+		"internal/cli/doctor.go",
+		"internal/cli/helpers.go",
+		"internal/mcp/tools.go",
+	} {
+		content, err := os.ReadFile(filepath.Join(outputDir, path))
+		require.NoError(t, err)
+		assert.Contains(t, string(content), "https://console.apify.com/settings/integrations", path)
+		assert.NotContains(t, string(content), "developer.mozilla.org", path)
+	}
+
+	runGo(t, outputDir, "mod", "tidy")
+	runGo(t, outputDir, "build", "./...")
+}
+
+func TestAuthKeyURLFromTextFiltersInvalidCandidates(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -5585,12 +5658,80 @@ func TestFirstHTTPSURLRejectsPlaceholders(t *testing.T) {
 			in:   "Get your key at https://en.wikipedia.org/wiki/HATEOAS",
 			want: "",
 		},
+		{
+			name: "generic Wikipedia reference",
+			in:   "See https://en.wikipedia.org/wiki/Basic_access_authentication",
+			want: "",
+		},
+		{
+			name: "generic RFC reference",
+			in:   "See https://www.rfc-editor.org/rfc/rfc6750 for bearer token syntax",
+			want: "",
+		},
+		{
+			name: "generic MDN reference",
+			in:   "See https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Authorization",
+			want: "",
+		},
+		{
+			name: "generic IETF tools reference",
+			in:   "See https://tools.ietf.org/html/rfc6750",
+			want: "",
+		},
+		{
+			name: "generic HTTP working group reference",
+			in:   "See https://httpwg.org/specs/rfc7235.html",
+			want: "",
+		},
+		{
+			name: "vendor credential surface preferred",
+			in:   "Read https://docs.example.com/auth then create a key at https://dashboard.example.com/account/api-keys",
+			want: "https://dashboard.example.com/account/api-keys",
+		},
+		{
+			name: "first accepted fallback is stable",
+			in:   "See https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Authorization then https://vendor.example.com/token-guide and https://vendor.example.com/auth-guide",
+			want: "https://vendor.example.com/token-guide",
+		},
+		{
+			name: "ambiguous developers URL does not displace fallback",
+			in:   "Create a token at https://portal.example.com/security/tokens then read https://developers.example.com/docs",
+			want: "https://portal.example.com/security/tokens",
+		},
+		{
+			name: "account substring does not displace fallback",
+			in:   "Create a token at https://portal.example.com/security/tokens then read https://docs.example.com/accounting",
+			want: "https://portal.example.com/security/tokens",
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.want, firstHTTPSURL(tc.in))
+			assert.Equal(t, tc.want, authKeyURLFromText(tc.in))
+		})
+	}
+}
+
+func TestAuthKeyURLFromTextStrongCredentialCues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{name: "console host", url: "https://console.example.com/keys"},
+		{name: "dashboard host", url: "https://dashboard.example.com/keys"},
+		{name: "api keys path", url: "https://example.com/account/api-keys"},
+		{name: "apikeys path", url: "https://example.com/account/apikeys"},
+		{name: "settings integrations path", url: "https://example.com/settings/integrations"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			input := "Read https://docs.example.com/auth before opening " + tc.url
+			assert.Equal(t, tc.url, authKeyURLFromText(input))
 		})
 	}
 }
