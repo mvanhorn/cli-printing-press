@@ -319,14 +319,16 @@ Resource scoping:
 			// safety limit, which is a real anomaly worth surfacing.
 			effectiveLatestOnly := latestOnly && since == ""
 
-			// Resolve --since into an RFC3339 timestamp
+			// Resolve --since into an RFC3339 timestamp. Render in UTC so the
+			// zone is "Z" rather than a numeric offset like "-04:00"; some APIs
+			// reject the offset form of the temporal filter as an invalid date.
 			sinceTS := ""
 			if since != "" {
 				ts, err := parseSinceDuration(since)
 				if err != nil {
 					return fmt.Errorf("invalid --since value %q: %w", since, err)
 				}
-				sinceTS = ts.Format(time.RFC3339)
+				sinceTS = ts.UTC().Format(time.RFC3339)
 			}
 
 {{- if .Pagination.DateRangeParam}}
@@ -665,7 +667,8 @@ func syncResource(ctx context.Context, c interface {
 	sinceParam := syncResourceSinceParam(resource)
 	effectiveSince := sinceTS
 	if effectiveSince == "" && !lastSynced.IsZero() && !full {
-		effectiveSince = lastSynced.Format(time.RFC3339)
+		// UTC so the zone renders as "Z"; see the --since resolution above.
+		effectiveSince = lastSynced.UTC().Format(time.RFC3339)
 	}
 	// Resources whose list endpoint declares no temporal-filter parameter
 	// fall back to plain pagination — sending a synthetic since=... would
