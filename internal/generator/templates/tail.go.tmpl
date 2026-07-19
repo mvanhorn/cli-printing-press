@@ -92,6 +92,7 @@ native streaming instead of polling.`,
 			signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 
 			enc := json.NewEncoder(os.Stdout)
+			enc.SetEscapeHTML(false)
 
 			if follow {
 				fmt.Fprintf(os.Stderr, "Tailing %s every %s (Ctrl+C to stop)\n", resource, interval)

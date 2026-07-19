@@ -12,6 +12,7 @@ import (
 // printJSON writes v as indented JSON to stdout.
 func printJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
+	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
 }

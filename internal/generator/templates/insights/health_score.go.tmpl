@@ -108,6 +108,7 @@ A score of 100 means all items are fresh, assigned, and actively worked on.`,
 			if totalItems == 0 {
 				if flags.asJSON {
 					enc := json.NewEncoder(cmd.OutOrStdout())
+					enc.SetEscapeHTML(false)
 					enc.SetIndent("", "  ")
 					return enc.Encode(map[string]any{"health": 0, "error": "no items found"})
 				}
@@ -149,6 +150,7 @@ A score of 100 means all items are fresh, assigned, and actively worked on.`,
 					"recent_count":   recentCount,
 				}
 				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetEscapeHTML(false)
 				enc.SetIndent("", "  ")
 				return enc.Encode(result)
 			}

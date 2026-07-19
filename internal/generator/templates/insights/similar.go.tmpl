@@ -4,190 +4,205 @@
 package cli
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
 
 	"{{modulePath}}/internal/store"
 	"github.com/spf13/cobra"
 )
 
 func newSimilarCmd(flags *rootFlags) *cobra.Command {
-	var dbPath string
+	var id string
+	var resource string
 	var limit int
-	var resourceType string
+	var dbPath string
 
 	cmd := &cobra.Command{
-		Use:   "similar <item-id>",
-		Short: "Find potential duplicate items using full-text search",
-		Long: `Given an item ID, extract its title or name and use the FTS5 full-text
-search index to find other items with similar content. Helps identify duplicate
-work items, tickets, or tasks.`,
-		Example: `  # Find items similar to a given item
-  {{.Name}}-pp-cli similar abc123
+		Use:   "similar",
+		Short: "Find items similar to a given item using cosine similarity",
+		Long: `Find similar items by comparing text fields using cosine similarity on
+locally stored data. Requires a prior sync to populate the local store.`,
+		Example: `  # Find items similar to a specific item
+  {{.Name}}-pp-cli similar --id item_123
 
-  # Disambiguate when multiple resource types share the same ID
-  {{.Name}}-pp-cli similar abc123 --type issues
-
-  # Limit results
-  {{.Name}}-pp-cli similar abc123 --limit 5
-
-  # Output as JSON
-  {{.Name}}-pp-cli similar abc123 --json`,
-		Args: cobra.ExactArgs(1),
+  # Limit to 5 results for a specific resource
+  {{.Name}}-pp-cli similar --id item_123 --resource tasks --limit 5`,
+		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			itemID := args[0]
-
+			if id == "" {
+				return fmt.Errorf("--id is required")
+			}
 			if dbPath == "" {
 				dbPath = defaultDBPath("{{.Name}}-pp-cli")
 			}
 
 			db, err := store.OpenWithContext(cmd.Context(), dbPath)
 			if err != nil {
-				return fmt.Errorf("opening local database: %w\nRun '{{.Name}}-pp-cli sync' first.", err)
+				return fmt.Errorf("opening local database: %w\nRun sync first.", err)
 			}
 			defer db.Close()
 
-			// Get the source item's content.
-			var sourceData []byte
-			var sourceType string
-			if resourceType != "" {
-				sourceType = resourceType
-				err = db.DB().QueryRow(`SELECT data FROM resources WHERE resource_type = ? AND id = ?`, sourceType, itemID).Scan(&sourceData)
-			} else {
-				var matchCount int
-				err = db.DB().QueryRow(
-					`SELECT resource_type, data, (SELECT COUNT(*) FROM resources WHERE id = ?) AS matches
-					 FROM resources
-					 WHERE id = ?
-					 ORDER BY resource_type
-					 LIMIT 1`,
-					itemID, itemID,
-				).Scan(&sourceType, &sourceData, &matchCount)
-				if err == nil && matchCount > 1 {
-					return fmt.Errorf("item %q matches multiple resource types; rerun with --type", itemID)
-				}
+			query := `SELECT id, resource_type, data FROM resources`
+			var queryArgs []any
+			if resource != "" {
+				query += ` WHERE resource_type = ?`
+				queryArgs = append(queryArgs, resource)
 			}
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("item %q not found in local store", itemID)
-			}
+
+			rows, err := db.Query(query, queryArgs...)
 			if err != nil {
-				return fmt.Errorf("item %q not found in local store: %w", itemID, err)
-			}
-
-			var sourceObj map[string]any
-			if err := json.Unmarshal(sourceData, &sourceObj); err != nil {
-				return fmt.Errorf("parsing item data: %w", err)
-			}
-
-			// Extract searchable text from the source item
-			searchText := ""
-			for _, key := range []string{"title", "name", "subject", "summary", "description"} {
-				if v, ok := sourceObj[key]; ok && v != nil {
-					text := fmt.Sprintf("%v", v)
-					if text != "" {
-						searchText = text
-						break
-					}
-				}
-			}
-
-			if searchText == "" {
-				return fmt.Errorf("item %q has no searchable title or name", itemID)
-			}
-
-			// Use FTS5 to find similar items (exclude the source item)
-			query := `SELECT r.id, r.resource_type, r.data, fts.rank
-				FROM resources_fts fts
-				JOIN resources r ON r.id = fts.id AND r.resource_type = fts.resource_type
-				WHERE resources_fts MATCH ?
-				  AND NOT (r.id = ? AND r.resource_type = ?)
-				ORDER BY fts.rank
-				LIMIT ?`
-
-			rows, err := db.DB().Query(query, searchText, itemID, sourceType, limit)
-			if err != nil {
-				return fmt.Errorf("searching for similar items: %w", err)
+				return fmt.Errorf("querying items: %w", err)
 			}
 			defer rows.Close()
 
-			type similarItem struct {
-				ID           string  `json:"id"`
-				ResourceType string  `json:"resource_type"`
-				Title        string  `json:"title,omitempty"`
-				Rank         float64 `json:"relevance_rank"`
+			type item struct {
+				ID           string
+				ResourceType string
+				Text         string
+				Similarity   float64
 			}
 
-			var items []similarItem
+			var target *item
+			var allItems []item
+
 			for rows.Next() {
-				var id, resType string
+				var itemID, resourceType string
 				var data []byte
-				var rank float64
-				if err := rows.Scan(&id, &resType, &data, &rank); err != nil {
+				if err := rows.Scan(&itemID, &resourceType, &data); err != nil {
 					continue
 				}
+				text := extractTextForSimilarity(data)
+				it := item{ID: itemID, ResourceType: resourceType, Text: text}
+				if itemID == id {
+					target = &it
+				}
+				allItems = append(allItems, it)
+			}
 
-				var obj map[string]any
-				if err := json.Unmarshal(data, &obj); err != nil {
+			if target == nil {
+				return fmt.Errorf("item %q not found in local store; run sync first", id)
+			}
+
+			targetVec := tokenize(target.Text)
+			for i := range allItems {
+				if allItems[i].ID == id {
 					continue
 				}
+				itemVec := tokenize(allItems[i].Text)
+				allItems[i].Similarity = cosineSimilarity(targetVec, itemVec)
+			}
 
-				title := ""
-				for _, key := range []string{"title", "name", "subject", "summary"} {
-					if v, ok := obj[key]; ok {
-						title = fmt.Sprintf("%v", v)
-						break
-					}
+			sort.Slice(allItems, func(i, j int) bool {
+				return allItems[i].Similarity > allItems[j].Similarity
+			})
+
+			if limit > 0 && len(allItems) > limit {
+				allItems = allItems[:limit]
+			}
+
+			items := make([]map[string]any, 0, len(allItems))
+			for _, it := range allItems {
+				if it.ID == id {
+					continue
 				}
-
-				items = append(items, similarItem{
-					ID:           id,
-					ResourceType: resType,
-					Title:        title,
-					Rank:         rank,
+				items = append(items, map[string]any{
+					"id":            it.ID,
+					"resource_type": it.ResourceType,
+					"similarity":    math.Round(it.Similarity*1000) / 1000,
 				})
 			}
 
 			if flags.asJSON {
 				result := map[string]any{
-					"source_id":    itemID,
-					"source_type":  sourceType,
-					"search_text":  searchText,
-					"similar":      items,
+					"target_id":     id,
+					"similar":       items,
 					"result_count": len(items),
 				}
 				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetEscapeHTML(false)
 				enc.SetIndent("", "  ")
 				return enc.Encode(result)
 			}
-
-			sourceTitle := searchText
-			if len(sourceTitle) > 60 {
-				sourceTitle = sourceTitle[:57] + "..."
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Items similar to %s (%q):\n\n", itemID, sourceTitle)
 
 			if len(items) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No similar items found.")
 				return nil
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-15s %s\n", "ID", "TYPE", "TITLE")
-			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-15s %s\n", "----", "----", "-----")
-			for _, item := range items {
-				titleDisplay := item.Title
-				if len(titleDisplay) > 50 {
-					titleDisplay = titleDisplay[:47] + "..."
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-15s %s\n", item.ID, item.ResourceType, titleDisplay)
+			fmt.Fprintf(cmd.OutOrStdout(), "Items similar to %s:\n", id)
+			for _, it := range items {
+				fmt.Fprintf(cmd.OutOrStdout(), "  %-40s  %-20s  %.3f\n", it["id"], it["resource_type"], it["similarity"])
 			}
 			return nil
 		},
 	}
 
+	cmd.Flags().StringVar(&id, "id", "", "ID of the item to find similar items for (required)")
+	cmd.Flags().StringVar(&resource, "resource", "", "Filter by resource type")
+	cmd.Flags().IntVar(&limit, "limit", 10, "Maximum number of similar items to return")
 	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database file path (default: resolved data directory data.db)")
-	cmd.Flags().IntVar(&limit, "limit", 10, "Maximum number of similar items to show")
-	cmd.Flags().StringVar(&resourceType, "type", "", "Resource type for the source item when IDs overlap")
 
 	return cmd
+}
+
+// extractTextForSimilarity pulls human-readable text fields from a JSON blob.
+func extractTextForSimilarity(data []byte) string {
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return ""
+	}
+	var parts []string
+	for _, key := range []string{"title", "name", "description", "body", "content", "summary", "text"} {
+		if v, ok := obj[key]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				parts = append(parts, s)
+			}
+		}
+	}
+	return fmt.Sprintf("%s", parts)
+}
+
+// tokenize splits text into a word-frequency map.
+func tokenize(text string) map[string]float64 {
+	vec := make(map[string]float64)
+	word := ""
+	for _, r := range text {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			word += string(r)
+		} else if r >= 'A' && r <= 'Z' {
+			word += string(r + 32)
+		} else if word != "" {
+			vec[word]++
+			word = ""
+		}
+	}
+	if word != "" {
+		vec[word]++
+	}
+	return vec
+}
+
+// cosineSimilarity computes cosine similarity between two word-frequency maps.
+func cosineSimilarity(a, b map[string]float64) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	dot := 0.0
+	for k, v := range a {
+		dot += v * b[k]
+	}
+	magA := 0.0
+	for _, v := range a {
+		magA += v * v
+	}
+	magB := 0.0
+	for _, v := range b {
+		magB += v * v
+	}
+	if magA == 0 || magB == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(magA) * math.Sqrt(magB))
 }

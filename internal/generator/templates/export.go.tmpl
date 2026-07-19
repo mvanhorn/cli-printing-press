@@ -7,73 +7,73 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
-	"strconv"
 	"strings"
 
-	"{{modulePath}}/internal/cliutil"
+	"{{modulePath}}/internal/store"
 	"github.com/spf13/cobra"
 )
 
-{{- $exportableResources := exportableResources .APISpec}}
 func newExportCmd(flags *rootFlags) *cobra.Command {
+	var resource string
 	var format string
 	var outputFile string
+	var dbPath string
 	var limit int
-	var noCache bool
 
 	cmd := &cobra.Command{
-		Use:   "export <resource> [id]",
-		Short: "Export data to JSONL or JSON for backup, migration, or analysis",
-		Long: `Export paginated API data to a local file. Supports JSONL (one JSON object
-per line, streaming-friendly) and JSON (array). JSONL is recommended for
-large datasets as it has no memory pressure.`,
-		Example: `  # Export all items as JSONL (streaming, recommended for large datasets)
-  {{.Name}}-pp-cli export <resource> --format jsonl --output data.jsonl
+		Use:         "export",
+		Short:       "Export locally synced data to JSON or JSONL format",
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		Long: `Export synced data from the local store to a file or stdout.
+Supports JSON (pretty-printed array) and JSONL (one object per line) formats.
+Requires a prior sync to populate the local store.`,
+		Example: `  # Export all resources as JSON to stdout
+  {{.Name}}-pp-cli export
 
-  # Export with limit
-  {{.Name}}-pp-cli export <resource> --format jsonl --limit 1000
+  # Export a specific resource as JSONL to a file
+  {{.Name}}-pp-cli export --resource tasks --format jsonl --output tasks.jsonl
 
-  # Pipe to another tool
-  {{.Name}}-pp-cli export <resource> --format jsonl | jq '.id'`,
-		Args: cobra.RangeArgs(1, 2),
+  # Export up to 100 items
+  {{.Name}}-pp-cli export --resource issues --limit 100`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			validResources := map[string]bool{
-{{- range $exportableResources}}
-				{{printf "%q" .}}: true,
-{{- end}}
-			}
-			validResourceList := []string{
-{{- range $exportableResources}}
-				{{printf "%q" .}},
-{{- end}}
-			}
-			resource := args[0]
-			if !validResources[resource] {
-				return usageErr(fmt.Errorf("unknown resource %q; valid: %s", resource, strings.Join(validResourceList, ", ")))
+			if dbPath == "" {
+				dbPath = defaultDBPath("{{.Name}}-pp-cli")
 			}
 
-			c, err := flags.newClient()
+			db, err := store.OpenWithContext(cmd.Context(), dbPath)
 			if err != nil {
-				return err
+				return fmt.Errorf("opening local database: %w\nRun sync first.", err)
 			}
-			if noCache {
-				c.NoCache = true
+			defer db.Close()
+
+			query := `SELECT data FROM resources`
+			var queryArgs []any
+			if resource != "" {
+				query += ` WHERE resource_type = ?`
+				queryArgs = append(queryArgs, resource)
+			}
+			if limit > 0 {
+				query += fmt.Sprintf(` LIMIT %d`, limit)
 			}
 
-			path, err := resourceReadPath(resource)
+			rows, err := db.Query(query, queryArgs...)
 			if err != nil {
-				return usageErr(err)
+				return fmt.Errorf("querying items: %w", err)
 			}
-			singleItem := len(args) > 1
-			if len(args) > 1 {
-				path, err = resourceDetailPath(resource, cliutil.EscapePathParam(args[1]))
-				if err != nil {
-					return usageErr(err)
+			defer rows.Close()
+
+			var allItems []json.RawMessage
+			for rows.Next() {
+				var data []byte
+				if err := rows.Scan(&data); err != nil {
+					continue
 				}
+				allItems = append(allItems, json.RawMessage(data))
 			}
 
-			var writer *bufio.Writer
+			var writer io.Writer = cmd.OutOrStdout()
 			if outputFile != "" {
 				f, err := os.Create(outputFile)
 				if err != nil {
@@ -81,103 +81,37 @@ large datasets as it has no memory pressure.`,
 				}
 				defer f.Close()
 				writer = bufio.NewWriter(f)
-				defer writer.Flush()
-			} else {
-				writer = bufio.NewWriter(os.Stdout)
-				defer writer.Flush()
-			}
-
-			config := resourceReadConfigFor(resource)
-			allItems := []json.RawMessage{}
-			var singlePayload json.RawMessage
-			count, page, cursor := 0, 0, ""
-			for {
-				remaining := 0
-				if limit > 0 {
-					remaining = limit - count
-				}
-				params := map[string]string(nil)
-				if !singleItem && config.paginationType != "" {
-					params = resourcePageParams(config, cursor, page, remaining)
-				}
-				data, err := c.Get(cmd.Context(), path, params)
-				if err != nil {
-					return classifyAPIError(err, flags)
-				}
-				if singleItem {
-					count = 1
-					if format == "jsonl" {
-						fmt.Fprintln(writer, string(data))
-					} else {
-						singlePayload = data
-					}
-					break
-				}
-				items, nextCursor, hasMore := extractResourcePage(data, config)
-				if items == nil {
-					items = []json.RawMessage{data}
-				}
-				for _, item := range items {
-					if limit > 0 && count >= limit {
-						break
-					}
-					if format == "jsonl" {
-						fmt.Fprintln(writer, string(item))
-					} else {
-						allItems = append(allItems, item)
-					}
-					count++
-				}
-
-				if config.paginationType == "" || len(items) == 0 || (limit > 0 && count >= limit) {
-					break
-				}
-				page++
-				var stop bool
-				cursor, stop, err = resourceNextCursor(config, cursor, nextCursor, hasMore)
-				if err != nil {
-					return fmt.Errorf("export pagination for %q: %w", resource, err)
-				}
-				if stop {
-					break
-				}
-				if config.limitParam != "" && !hasMore {
-					requested, _ := strconv.Atoi(params[config.limitParam])
-					if requested > 0 && len(items) < requested {
-						break
-					}
-				}
-				if page > 100000 {
-					return fmt.Errorf("export pagination exceeded 100000 pages for %q", resource)
-				}
+				defer writer.(*bufio.Writer).Flush()
 			}
 
 			if format != "jsonl" {
 				enc := json.NewEncoder(writer)
+				enc.SetEscapeHTML(false)
 				enc.SetIndent("", "  ")
 				output := any(allItems)
-				if singleItem {
-					var value any
-					if err := json.Unmarshal(singlePayload, &value); err != nil {
-						return fmt.Errorf("decoding exported resource: %w", err)
-					}
-					output = value
+				if singleItem := len(allItems) == 1 && resource != ""; singleItem {
+					output = allItems[0]
 				}
-				if err := enc.Encode(output); err != nil {
+				return enc.Encode(output)
+			}
+
+			// JSONL: one raw object per line
+			bw := bufio.NewWriter(writer)
+			for _, item := range allItems {
+				line := strings.TrimRight(string(item), "\n") + "\n"
+				if _, err := bw.WriteString(line); err != nil {
 					return err
 				}
 			}
-			if outputFile != "" {
-				fmt.Fprintf(os.Stderr, "Exported %d records to %s\n", count, outputFile)
-			}
-			return nil
+			return bw.Flush()
 		},
 	}
 
-	cmd.Flags().StringVar(&format, "format", "jsonl", "Output format: jsonl or json")
-	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file path (default: stdout)")
-	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum records to export (0 = unlimited)")
-	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Bypass response cache for fresh data")
+	cmd.Flags().StringVar(&resource, "resource", "", "Resource type to export")
+	cmd.Flags().StringVar(&format, "format", "json", "Output format: json or jsonl")
+	cmd.Flags().StringVar(&outputFile, "output", "", "Output file path (default: stdout)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database file path (default: resolved data directory data.db)")
+	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum number of items to export (0 = all)")
 
 	return cmd
 }
