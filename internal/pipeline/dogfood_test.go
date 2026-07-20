@@ -45,6 +45,8 @@ func configure(flags *rootFlags) {
 func usedHelper() {}
 func deadHelper() {}
 func boundCtx() {}
+func declarePlatformAnalytics() {}
+func resolvePlatformWindow() {}
 `)
 	writeTestFile(t, filepath.Join(dir, "internal", "cli", "users_list.go"), `package cli
 func usersList() {

@@ -229,6 +229,8 @@ func funcB() { funcA() }
 		_ = os.WriteFile(filepath.Join(dir, "helpers.go"), []byte(`package cli
 
 func boundCtx() {}
+func declarePlatformAnalytics() {}
+func resolvePlatformWindow() {}
 
 func deadHelper() {}
 `), 0o644)
