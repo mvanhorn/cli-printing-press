@@ -325,7 +325,6 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.AddCommand(newDoctorCmd(flags))
 	if registeredPlatformSource != nil {
 		attachPlatformClientCommands(rootCmd, flags)
-		rootCmd.AddCommand(newPlatformWhoamiCmd(flags))
 	}
 	rootCmd.AddCommand(newAuthCmd(flags))
 	rootCmd.AddCommand(newAgentContextCmd(rootCmd))
@@ -355,6 +354,11 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.AddCommand(newPlaybookCmd(flags, learnCfg))
 	for _, hook := range novelCommandHooks {
 		hook(rootCmd, flags)
+	}
+	// Attach the conditional platform identity command last so ordinary,
+	// promoted, and novel API-owned `whoami` commands all win the name.
+	if registeredPlatformSource != nil {
+		attachPlatformWhoamiCommand(rootCmd, flags)
 	}
 
 	return rootCmd

@@ -3063,7 +3063,6 @@ func (g *Generator) activeFrameworkCobraUseNames() map[string]struct{} {
 		"profile":       {},
 		"version":       {},
 		"which":         {},
-		"whoami":        {},
 	}
 	if g.shouldEmitAuth() {
 		names["auth"] = struct{}{}

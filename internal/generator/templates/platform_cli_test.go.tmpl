@@ -41,6 +41,24 @@ func TestPlatformProviderClientCommandsStillRequireGate(t *testing.T) {
 	}
 }
 
+func TestPlatformWhoamiDoesNotShadowAPIResource(t *testing.T) {
+	root := &cobra.Command{Use: "sample-pp-cli"}
+	apiWhoami := &cobra.Command{Use: "whoami", Short: "API-owned identity resource"}
+	root.AddCommand(apiWhoami)
+
+	attachPlatformWhoamiCommand(root, &rootFlags{})
+
+	var matches []*cobra.Command
+	for _, command := range root.Commands() {
+		if command.Name() == "whoami" {
+			matches = append(matches, command)
+		}
+	}
+	if len(matches) != 1 || matches[0] != apiWhoami {
+		t.Fatalf("platform whoami shadowed API resource: %#v", matches)
+	}
+}
+
 type conformanceIdentityAdapter struct{ observed platform.ObservedIdentity }
 
 func (a conformanceIdentityAdapter) ProbeIdentity(context.Context, platform.ResolvedCredentials, platform.SourceProfile) (platform.ObservedIdentity, error) {

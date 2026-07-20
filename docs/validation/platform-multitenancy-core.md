@@ -52,6 +52,16 @@ also preserve both concurrent fresh-open retry and fast future-schema refusal.
 Window/truncation and silent-analytics helpers are primitives at this stage;
 adoption by every existing command remains rollout stage 5.
 
+## Review hardening
+
+Greptile's first pass found two blocking generator issues. Verified platform
+mutations now evict every potentially related HTTP projection inside only the
+current profile/source cache, while legacy clients retain narrow resource
+invalidation and non-cache state remains untouched. The generated `whoami`
+command is attached only when a published CLI registers a tenant adapter, and
+runtime attachment preserves an API-owned `whoami` resource because adapter
+presence cannot be inferred safely from the source specification.
+
 ## Local validation matrix
 
 | Check | Result |

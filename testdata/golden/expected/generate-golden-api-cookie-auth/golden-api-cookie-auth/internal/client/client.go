@@ -608,6 +608,22 @@ func (c *Client) invalidateCacheResource(path string) {
 	_ = os.RemoveAll(c.cacheResourceDir(path))
 }
 
+// invalidateCacheAfterMutation keeps the narrow legacy behavior for clients
+// without a verified platform session. In tenant-gated mode the generator has
+// no complete dependency graph for cross-resource projections, so the safe
+// fallback evicts every HTTP response namespace for this profile/source only.
+// Other profiles, local databases, and sibling state remain untouched.
+func (c *Client) invalidateCacheAfterMutation(path string) {
+	if c.cacheDir == "" {
+		return
+	}
+	if c.platformSession != nil {
+		_ = os.RemoveAll(filepath.Join(c.cacheDir, "resources"))
+		return
+	}
+	c.invalidateCacheResource(path)
+}
+
 func (c *Client) Post(ctx context.Context, path string, body any) (json.RawMessage, int, error) {
 	return c.do(ctx, "POST", path, nil, body, nil)
 }
@@ -977,7 +993,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		if resp.StatusCode < 400 {
 			c.limiter.OnSuccess()
 			if method != http.MethodGet && !c.DryRun {
-				c.invalidateCacheResource(path)
+				c.invalidateCacheAfterMutation(path)
 			}
 			// Non-textual bodies (PDF, zip, image, octet-stream) must not be
 			// run through the JSON sanitizer or returned as raw json.RawMessage

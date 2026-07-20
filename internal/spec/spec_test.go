@@ -5298,6 +5298,45 @@ resources:
 		assert.Contains(t, err.Error(), "shadow framework cobra command")
 	})
 
+	t.Run("whoami resource passes for a credential-free CLI", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  whoami:
+    description: Public identity metadata
+    endpoints:
+      get:
+        method: GET
+        path: /whoami
+        description: Get public identity metadata
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+
+	t.Run("whoami resource passes for an authenticated CLI without a known platform adapter", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  whoami:
+    description: API identity metadata
+    endpoints:
+      get:
+        method: GET
+        path: /whoami
+        description: Get API identity metadata
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+
 	t.Run("login resource is rejected for oauth2 auth-code CLIs", func(t *testing.T) {
 		t.Parallel()
 		input := `name: testapi

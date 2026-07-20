@@ -139,9 +139,16 @@ func TestTenantGateAndIsolationConformance(t *testing.T) {
 	ref := profile.Sources["klaviyo"].CredentialRef
 	resolver := fixtureResolver{ref: []byte("synthetic-credential-one")}
 	adapter := &fixtureAdapter{observed: ObservedIdentity{AccountID: "account-one", OrgName: "Synthetic Org"}}
-	session, err := VerifyProfileSource(context.Background(), "client-one", "sample-pp-cli", "klaviyo", resolver, adapter)
+	gateCtx, cancelGate := context.WithCancel(context.Background())
+	session, err := VerifyProfileSource(gateCtx, "client-one", "sample-pp-cli", "klaviyo", resolver, adapter)
 	if err != nil {
 		t.Fatal(err)
+	}
+	cancelGate()
+	select {
+	case <-session.Context().Done():
+	default:
+		t.Fatal("verified session did not retain command cancellation context")
 	}
 	defer session.ZeroCredentials()
 	if adapter.calls != 1 || session.GateOutcome != GateVerified {

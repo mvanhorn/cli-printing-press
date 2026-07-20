@@ -116,8 +116,19 @@ type Session struct {
 	Paths                 Paths
 	GateCheckedAt         time.Time
 	GateOutcome           GateOutcome
+	commandContext        context.Context
 	rateLimit             *rateLimitRecorder
 	outputMetadata        *outputMetadataRecorder
+}
+
+// Context returns the command or MCP invocation context that performed the
+// live tenant gate. Provider clients use it for rate waits and requests so a
+// canceled invocation cannot leave work running in the background.
+func (s *Session) Context() context.Context {
+	if s != nil && s.commandContext != nil {
+		return s.commandContext
+	}
+	return context.Background()
 }
 
 func (s *Session) ZeroCredentials() {
@@ -195,6 +206,7 @@ func VerifyPreparedProfileSource(ctx context.Context, session *Session, resolver
 	if session == nil || session.Profile == nil {
 		return errors.New("prepared client profile session is required")
 	}
+	session.commandContext = ctx
 	if adapter == nil {
 		return errors.New("tenant identity adapter is required")
 	}

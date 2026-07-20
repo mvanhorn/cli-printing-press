@@ -229,6 +229,19 @@ func attachPlatformClientCommands(root *cobra.Command, flags *rootFlags) {
 	root.AddCommand(management)
 }
 
+// attachPlatformWhoamiCommand exposes the live tenant identity command only
+// when a published CLI has registered an adapter. If the API itself already
+// owns `whoami`, preserve that resource rather than introducing a runtime
+// Cobra collision that the generator cannot predict from the source spec.
+func attachPlatformWhoamiCommand(root *cobra.Command, flags *rootFlags) {
+	for _, command := range root.Commands() {
+		if command.Name() == "whoami" {
+			return
+		}
+	}
+	root.AddCommand(newPlatformWhoamiCmd(flags))
+}
+
 type platformSourceFlags struct {
 	credentialRef       string
 	usernameRef         string

@@ -3055,7 +3055,6 @@ var ReservedCobraUseNames = map[string]struct{}{
 	"teach-playbook": {},
 	"version":        {},
 	"which":          {},
-	"whoami":         {},
 	"workflow":       {},
 }
 

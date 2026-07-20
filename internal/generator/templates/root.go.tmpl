@@ -486,7 +486,6 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	rootCmd.AddCommand(newDoctorCmd(flags))
 	if registeredPlatformSource != nil {
 		attachPlatformClientCommands(rootCmd, flags)
-		rootCmd.AddCommand(newPlatformWhoamiCmd(flags))
 	}
 {{- if .BearerRefresh.Enabled}}
 	rootCmd.AddCommand(newRefreshBearerCmd(flags))
@@ -564,6 +563,11 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 {{- end}}
 	for _, hook := range novelCommandHooks {
 		hook(rootCmd, flags)
+	}
+	// Attach the conditional platform identity command last so ordinary,
+	// promoted, and novel API-owned `whoami` commands all win the name.
+	if registeredPlatformSource != nil {
+		attachPlatformWhoamiCommand(rootCmd, flags)
 	}
 
 	return rootCmd

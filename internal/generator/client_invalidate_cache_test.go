@@ -14,7 +14,7 @@ import (
 
 // TestGenerateEmitsInvalidateCacheSymmetry guards #603's two-prong fix:
 // the generated client.go must contain BOTH the resource-scoped invalidation
-// method definition AND a matching call inside the do-family
+// primitive, the tenant-scoped projection fallback, AND a matching call inside the do-family
 // implementation's body. Method-presence alone is not enough — a future
 // refactor that drops the call but keeps the method would silently
 // re-introduce the stale-list-after-mutation bug. See
@@ -43,6 +43,10 @@ func TestGenerateEmitsInvalidateCacheSymmetry(t *testing.T) {
 	// Prong 1: method definition exists.
 	assert.Contains(t, clientGo, "func (c *Client) invalidateCacheResource(path string)",
 		"client.go must define resource-scoped invalidation (R1)")
+	assert.Contains(t, clientGo, "func (c *Client) invalidateCacheAfterMutation(path string)",
+		"client.go must define mutation invalidation with a tenant-scoped safety fallback")
+	assert.Contains(t, clientGo, "os.RemoveAll(filepath.Join(c.cacheDir, \"resources\"))",
+		"verified platform mutations must evict all potentially related projections inside only that profile/source cache")
 
 	// Prong 2: doInternal() must call invalidateCache. Bound the search
 	// to doInternal()'s body so a call site emitted at file scope (or in
@@ -56,10 +60,10 @@ func TestGenerateEmitsInvalidateCacheSymmetry(t *testing.T) {
 	if nextFunc != -1 {
 		implBody = implRest[:nextFunc+1]
 	}
-	assert.Contains(t, implBody, "c.invalidateCacheResource(path)",
-		"Client.doInternal must invalidate the mutated resource in its success branch (R2)")
+	assert.Contains(t, implBody, "c.invalidateCacheAfterMutation(path)",
+		"Client.doInternal must invalidate all potentially related cached projections in its success branch (R2)")
 	assert.NotContains(t, implBody, "c.invalidateCache()",
-		"a successful mutation must not evict unrelated resource caches")
+		"a successful mutation must not evict config, database, or state siblings outside the HTTP response namespace")
 
 	// do() and doRead() must remain thin wrappers around doInternal so
 	// the cache-invalidation call site stays single. A future edit that

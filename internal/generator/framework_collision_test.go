@@ -70,6 +70,53 @@ func TestGenerateRegistersHealthResourceWhenHealthCommandInactive(t *testing.T) 
 	runGoCommand(t, outputDir, "build", "./internal/cli")
 }
 
+func TestGeneratePreservesWhoamiResourceWhenPlatformAdapterIsUnknown(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("identityapi")
+	apiSpec.Auth = spec.AuthConfig{Type: "bearer_token", EnvVars: []string{"IDENTITY_API_TOKEN"}}
+	apiSpec.Resources = map[string]spec.Resource{
+		"whoami": {
+			Description: "API identity endpoint",
+			Endpoints: map[string]spec.Endpoint{
+				"get": {Method: "GET", Path: "/whoami", Description: "Get API identity"},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "identityapi-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	assert.Contains(t, rootSrc, "rootCmd.AddCommand(newWhoamiPromotedCmd(flags))")
+	assert.NotContains(t, sortedKeys(gen.activeFrameworkCobraUseNames()), "whoami")
+
+	const runtimeTest = `package cli
+
+import "testing"
+
+func TestGeneratedAPIWhoamiWinsWhenPlatformAdapterRegisters(t *testing.T) {
+	previous := registeredPlatformSource
+	t.Cleanup(func() { registeredPlatformSource = previous })
+	registeredPlatformSource = &platformSourceRegistration{Source: "test-source", Adapter: conformanceIdentityAdapter{}}
+
+	root := RootCmd()
+	var matches int
+	for _, command := range root.Commands() {
+		if command.Name() == "whoami" {
+			matches++
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("root contains %d whoami commands; API resource must win", matches)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "whoami_collision_runtime_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestGeneratedAPIWhoamiWinsWhenPlatformAdapterRegisters")
+}
+
 func TestActiveFrameworkCobraUseNamesMatchesGeneratedRoot(t *testing.T) {
 	t.Parallel()
 
