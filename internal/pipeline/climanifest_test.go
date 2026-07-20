@@ -69,6 +69,24 @@ func TestWriteCLIManifest(t *testing.T) {
 	assert.Contains(t, string(changelog), "printing-press-library release automation")
 }
 
+func TestWriteCLIManifestUsesOnlyClientProfileForPlatformRuntime(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "platform"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "platform", "profile.go"), []byte("package platform\n"), 0o644))
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: CurrentCLIManifestSchemaVersion, APIName: "shopify", CLIName: "shopify-pp-cli",
+		AuthType: "api_key", AuthEnvVars: []string{"SHOPIFY_ACCESS_TOKEN"},
+		AuthEnvVarSpecs: []spec.AuthEnvVar{{Name: "SHOPIFY_ACCESS_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true}},
+	}))
+	got, err := ReadCLIManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"PRINTING_PRESS_CLIENT_PROFILE"}, got.AuthEnvVars)
+	require.Len(t, got.AuthEnvVarSpecs, 1)
+	assert.Equal(t, "PRINTING_PRESS_CLIENT_PROFILE", got.AuthEnvVarSpecs[0].Name)
+	assert.True(t, got.AuthEnvVarSpecs[0].Required)
+	assert.False(t, got.AuthEnvVarSpecs[0].Sensitive)
+}
+
 func TestWriteCLIManifestPreservesExistingReleaseLedger(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIReleaseManifestFilename), []byte(`{"schema_version":1,"version":"2026.6.2"}`+"\n"), 0o644))
@@ -1364,6 +1382,25 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.True(t, key.Sensitive)
 		assert.True(t, key.Required, "api_key auth must be required")
 		assert.Contains(t, key.Description, "https://dashboard.stripe.com/apikeys")
+	})
+
+	t.Run("platform runtime emits only the non-secret client profile selector", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "platform"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "platform", "profile.go"), []byte("package platform\n"), 0o644))
+		writeManifest(t, dir, CLIManifest{
+			APIName: "shopify", DisplayName: "Shopify", MCPBinary: "shopify-pp-mcp", MCPReady: "full",
+			AuthType: "api_key", AuthEnvVars: []string{"SHOPIFY_ACCESS_TOKEN"}, EndpointTemplateVars: []string{"shop"},
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+		assert.Equal(t, map[string]string{"PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}"}, got.Server.MCPConfig.Env)
+		require.Len(t, got.UserConfig, 1)
+		profile := got.UserConfig["printing_press_client_profile"]
+		assert.Equal(t, "Client profile", profile.Title)
+		assert.True(t, profile.Required)
+		assert.False(t, profile.Sensitive)
 	})
 
 	t.Run("endpoint template vars emit required user_config fields", func(t *testing.T) {

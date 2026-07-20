@@ -56,6 +56,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cli/version.go",
 		"internal/cli/which.go",
 		"internal/cli/profile.go",
+		"internal/cli/platform_client.go",
+		"internal/cli/platform_cli_test.go",
 		"internal/cli/feedback.go",
 		"internal/cli/agent_context.go",
 		"internal/cli/root_test.go",
@@ -83,6 +85,13 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/config/config.go",
 		"internal/cli/resource_paths.go",
 		"internal/store/extras.go",
+		"internal/platform/profile.go",
+		"internal/platform/gate.go",
+		"internal/platform/metadata.go",
+		"internal/platform/ratelimit.go",
+		"internal/platform/receipt.go",
+		"internal/platform/doctor.go",
+		"internal/platform/conformance_test.go",
 		"internal/mcp/bound/bound.go",
 		"internal/mcp/bound/bound_test.go",
 		"internal/mcp/cobratree/walker.go",
@@ -113,9 +122,11 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +1 more (A4): credentials_perms_test.go, the behavioral test proving the
 		// read-time guard is wired into cliutil.LoadCredentials — also auth-gated,
 		// so it lands for every token-bearing spec.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 149},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 153},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 151},
+		// +9: shared platform multitenancy runtime, CLI integration, and
+		// black-box/conformance coverage emitted for every printed CLI.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 158},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 162},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 160},
 	}
 
 	for _, tt := range tests {
@@ -2537,7 +2548,10 @@ func runGeneratedBinary(t *testing.T, binaryPath string, args ...string) (string
 // --- Unit 1: Template Regression Tests ---
 
 func TestGenerateWithNoAuth(t *testing.T) {
-	t.Parallel()
+	// Validate invokes real module tooling, including the pinned govulncheck
+	// process. Keep this test serial so its external Go processes do not race
+	// the many generated-module tests that otherwise run in parallel and make
+	// the vulnerability gate fail nondeterministically under resource pressure.
 
 	apiSpec := &spec.APISpec{
 		Name:    "noauth",

@@ -162,6 +162,9 @@ func WriteMCPBManifestFromStruct(dir string, m CLIManifest) error {
 	if err := os.WriteFile(filepath.Join(dir, MCPBManifestFilename), out, 0o644); err != nil {
 		return err
 	}
+	if usesPlatformClientProfiles(dir) {
+		return nil
+	}
 	// Extend the just-written manifest with env vars read by
 	// internal/client/*.go that the spec-driven build didn't surface
 	// (credential-flow JWT refreshers, hand-written auth helpers, etc.).
@@ -199,6 +202,17 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 	if displayName == "" {
 		displayName = m.APIName
 	}
+	launchEnv := buildMCPBEnv(m)
+	userConfig := buildMCPBUserConfig(m)
+	if usesPlatformClientProfiles(dir) {
+		launchEnv = map[string]string{"PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}"}
+		userConfig = map[string]MCPBVar{
+			"printing_press_client_profile": {
+				Type: mcpbVarTypeString, Title: "Client profile", Required: true,
+				Description: "Binds the MCP server to an existing tenant-gated Printing Press client profile.",
+			},
+		}
+	}
 
 	return MCPBManifest{
 		ManifestVersion: MCPBManifestVersion,
@@ -217,15 +231,20 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 			MCPConfig: MCPBLaunchSpec{
 				Command: "${__dirname}/bin/" + m.MCPBinary,
 				Args:    []string{},
-				Env:     buildMCPBEnv(m),
+				Env:     launchEnv,
 			},
 		},
-		UserConfig: buildMCPBUserConfig(m),
+		UserConfig: userConfig,
 		Compatibility: &MCPBCompat{
 			ClaudeDesktop: minClaudeDesktopVersion,
 			Platforms:     defaultMCPBPlatforms,
 		},
 	}
+}
+
+func usesPlatformClientProfiles(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, "internal", "platform", "profile.go"))
+	return err == nil && !info.IsDir()
 }
 
 // bundleVersion returns the best known printed CLI bundle version at generate

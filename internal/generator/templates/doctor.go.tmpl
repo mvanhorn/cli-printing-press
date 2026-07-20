@@ -188,6 +188,19 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
   {{.Name}}-pp-cli doctor --fail-on warn
   {{.Name}}-pp-cli doctor --fail-on stale`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if registeredPlatformSource != nil {
+				if flags.platformSession == nil {
+					return errors.New("verified client profile session is required")
+				}
+				report, err := platformDoctorV2Report(cmd.Context(), flags.platformSession)
+				if err != nil {
+					return err
+				}
+				if err := flags.printJSON(cmd, report); err != nil {
+					return err
+				}
+				return flags.platformGateError
+			}
 			report := map[string]any{}
 			pathsReport := collectPathsReport()
 			report["paths"] = pathsReport
