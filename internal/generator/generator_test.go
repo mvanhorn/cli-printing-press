@@ -7221,7 +7221,7 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	require.NoError(t, err)
 	rootContent := string(rootGo)
 	assert.Contains(t, rootContent, `allow-partial-failure`)
-	assert.Contains(t, rootContent, `allowPartialFailure bool`)
+	assert.Regexp(t, regexp.MustCompile(`allowPartialFailure\s+bool`), rootContent)
 
 	// Envelope fires on --json and on piped output, but explicit format flags
 	// (--csv, --quiet, --plain) opt out of the auto-JSON path so piped agents
@@ -7237,8 +7237,10 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	assert.Contains(t, content, "filterFields(filtered, flags.selectFields)")
 	assert.Contains(t, content, `json.Unmarshal(filtered, &parsed)`)
 
-	// Envelope bypasses printOutputWithFlags to avoid double-filtering
-	assert.Contains(t, content, `printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)`)
+	// Envelope bypasses printOutputWithFlags to avoid double-filtering, then
+	// adopts the platform metadata wrapper before the final structured write.
+	assert.Contains(t, content, `wrapPlatformStructuredOutput(json.RawMessage(envelopeJSON), flags, resultKey)`)
+	assert.Contains(t, content, `printOutput(cmd.OutOrStdout(), structured, true)`)
 
 	// Dry-run is flagged honestly in the envelope
 	assert.Contains(t, content, `flags.dryRun`)
