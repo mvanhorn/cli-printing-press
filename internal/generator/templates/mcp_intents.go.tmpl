@@ -29,8 +29,10 @@ import (
 {{- if .MCP.Intents}}
 	"{{modulePath}}/internal/client"
 {{- end}}
-{{- if and .MCP.Intents .HasRequiredRoles}}
+{{- if .MCP.Intents}}
 	"{{modulePath}}/internal/cli"
+{{- end}}
+{{- if and .MCP.Intents .HasRequiredRoles}}
 	"{{modulePath}}/internal/config"
 {{- end}}
 {{- if .RecipeIntents}}
@@ -89,6 +91,9 @@ func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*m
 	}
 
 	input := req.GetArguments()
+	if err := cli.AdoptMCPOutputSemantics(platformSession, input); err != nil {
+		return mcplib.NewToolResultError(err.Error()), nil
+	}
 	scope := map[string]any{"input": input}
 
 {{range $i, $step := .Steps}}

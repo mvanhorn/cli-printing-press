@@ -24,10 +24,8 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"{{modulePath}}/internal/mcp/bound"
-{{ if .HasRequiredRoles}}
 	"{{modulePath}}/internal/cli"
-{{- end}}
+	"{{modulePath}}/internal/mcp/bound"
 )
 
 // RegisterCodeOrchestrationTools registers the two agent-facing tools that
@@ -301,6 +299,9 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 {{ end}}
 	if platformSession != nil {
 		defer platformSession.ZeroCredentials()
+	}
+	if err := cli.AdoptMCPOutputSemantics(platformSession, params); err != nil {
+		return mcplib.NewToolResultError(err.Error()), nil
 	}
 {{- if .HasTierRouting}}
 	c = c.WithTier(ep.Tier)

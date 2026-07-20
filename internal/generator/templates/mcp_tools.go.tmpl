@@ -841,7 +841,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			msg := err.Error()
 			switch {
 			case strings.Contains(msg, "HTTP 409"):
-				return mcplib.NewToolResultText("already exists (no-op)"), nil
+				return mcpToolTextWithPlatform("already exists (no-op)", platformSession), nil
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 			case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
 				return mcpToolError("authentication error: " + cliutil.SanitizeErrorBody(msg) +
@@ -905,7 +905,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 					{{printf "%q" (printf "\n      Run '%s-pp-cli doctor' to check auth status." .Name)}}), nil
 			case strings.Contains(msg, "HTTP 404"):
 				if method == "DELETE" {
-					return mcplib.NewToolResultText("already deleted (no-op)"), nil
+					return mcpToolTextWithPlatform("already deleted (no-op)", platformSession), nil
 				}
 				return mcpToolError("not found: " + msg), nil
 			case strings.Contains(msg, "HTTP 429"):
@@ -945,12 +945,16 @@ func mcpToolResultText(method string, data json.RawMessage) *mcplib.CallToolResu
 	return mcpToolResultTextWithPlatform(method, data, nil)
 }
 
-func mcpToolResultTextWithPlatform(method string, data json.RawMessage, platformSession *platform.Session) *mcplib.CallToolResult {
-	result := bound.EndpointResponse(method, data)
+func mcpToolTextWithPlatform(result string, platformSession *platform.Session) *mcplib.CallToolResult {
 	if platformSession != nil {
 		result = bound.WithMetadata(result, platformSession.OutputMetadata())
 	}
 	return mcplib.NewToolResultText(result)
+}
+
+func mcpToolResultTextWithPlatform(method string, data json.RawMessage, platformSession *platform.Session) *mcplib.CallToolResult {
+	result := bound.EndpointResponse(method, data)
+	return mcpToolTextWithPlatform(result, platformSession)
 }
 
 // mcpToolError keeps provider-controlled typed endpoint errors within the MCP

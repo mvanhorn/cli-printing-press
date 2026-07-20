@@ -44,6 +44,8 @@ func TestGeneratedOutputSemanticsPreserveCalendarAndStrictAnalytics(t *testing.T
 
 	mcpTools := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	require.Contains(t, mcpTools, "cli.AdoptMCPOutputSemantics(platformSession, args)")
+	require.Contains(t, mcpTools, `mcpToolTextWithPlatform("already exists (no-op)", platformSession)`)
+	require.Contains(t, mcpTools, `mcpToolTextWithPlatform("already deleted (no-op)", platformSession)`)
 
 	conformance := readGeneratedFile(t, outputDir, "internal", "platform", "conformance_test.go")
 	require.Contains(t, conformance, "TestResolvedWindowCalendarConformance")
@@ -55,4 +57,34 @@ func TestGeneratedOutputSemanticsPreserveCalendarAndStrictAnalytics(t *testing.T
 
 	requireGeneratedCompiles(t, outputDir)
 	runGoCommandRequired(t, outputDir, "test", "./internal/platform", "./internal/cli", "./internal/mcp", "-run", "^(TestResolvedWindowCalendarConformance|TestPlatform(Command|MCP)Window)", "-count=1")
+
+	codeSpec := minimalSpec("output-semantics-code")
+	codeSpec.MCP = spec.MCPConfig{Transport: []string{"stdio"}, Orchestration: "code"}
+	codeOutputDir := filepath.Join(t.TempDir(), naming.CLI(codeSpec.Name))
+	codeGen := New(codeSpec, codeOutputDir)
+	codeGen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
+	require.NoError(t, codeGen.Generate())
+	codeOrch := readGeneratedFile(t, codeOutputDir, "internal", "mcp", "code_orch.go")
+	require.Contains(t, codeOrch, "cli.AdoptMCPOutputSemantics(platformSession, params)")
+	requireGeneratedCompiles(t, codeOutputDir)
+
+	intentSpec := minimalSpec("output-semantics-intent")
+	intentSpec.MCP = spec.MCPConfig{
+		Transport:     []string{"stdio"},
+		Orchestration: "intent",
+		Intents: []spec.Intent{{
+			Name:        "recent_items",
+			Description: "List recent items in one resolved window.",
+			Params:      []spec.IntentParam{{Name: "since", Type: "string", Description: "Resolved lookback window."}},
+			Steps:       []spec.IntentStep{{Endpoint: "items.list", Capture: "items"}},
+			Returns:     "items",
+		}},
+	}
+	intentOutputDir := filepath.Join(t.TempDir(), naming.CLI(intentSpec.Name))
+	intentGen := New(intentSpec, intentOutputDir)
+	intentGen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
+	require.NoError(t, intentGen.Generate())
+	intents := readGeneratedFile(t, intentOutputDir, "internal", "mcp", "intents.go")
+	require.Contains(t, intents, "cli.AdoptMCPOutputSemantics(platformSession, input)")
+	requireGeneratedCompiles(t, intentOutputDir)
 }
