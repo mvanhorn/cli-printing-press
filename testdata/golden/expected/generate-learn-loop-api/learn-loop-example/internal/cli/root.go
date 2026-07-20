@@ -36,24 +36,27 @@ type rootFlags struct {
 	agent   bool
 	// noLearn disables both teach (write) and recall (read) for this
 	// invocation. Mirrors the LEARN_LOOP_EXAMPLE_NO_LEARN env var.
-	noLearn           bool
-	selectFields      string
-	configPath        string
-	homePath          string
-	runProfileName    string
-	clientProfileName string
-	platformSession   *platform.Session
-	platformGateError error
-	receiptEnabled    bool
-	receiptFile       string
-	auditDir          string
-	receiptWriter     *platform.ReceiptWriter
-	deliverSpec       string
-	timeout           time.Duration
-	rateLimit         float64
-	maxAge            time.Duration
-	dataSource        string
-	freshnessMeta     any
+	noLearn                 bool
+	selectFields            string
+	configPath              string
+	homePath                string
+	runProfileName          string
+	clientProfileName       string
+	platformSession         *platform.Session
+	platformAnalytics       *platform.AnalyticsDeclaration
+	platformGateError       error
+	platformMetadataWriter  io.Writer
+	receiptEnabled          bool
+	receiptFile             string
+	auditDir                string
+	receiptWriter           *platform.ReceiptWriter
+	platformMetadataEmitted bool
+	deliverSpec             string
+	timeout                 time.Duration
+	rateLimit               float64
+	maxAge                  time.Duration
+	dataSource              string
+	freshnessMeta           any
 
 	// deliverBuf captures command output when --deliver is set to a
 	// non-stdout sink. Flushed to the sink after Execute returns.
@@ -274,12 +277,17 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 			if err := preparePlatformSession(flags); err != nil {
 				return err
 			}
+			cmd.SetContext(platform.ContextWithSession(cmd.Context(), flags.platformSession))
 			if err := validatePlatformLegacyInputs(cmd, flags); err != nil {
 				return err
 			}
 			if err := initializePlatformReceipt(cmd, flags); err != nil {
 				return err
 			}
+			if err := adoptPlatformCommandWindow(cmd, flags); err != nil {
+				return err
+			}
+			flags.platformMetadataWriter = cmd.ErrOrStderr()
 			if err := verifyPlatformSession(cmd.Context(), flags); err != nil {
 				if platformCommandIsDoctor(cmd) {
 					flags.platformGateError = err

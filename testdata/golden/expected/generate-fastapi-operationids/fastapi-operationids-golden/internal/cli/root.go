@@ -43,24 +43,27 @@ type rootFlags struct {
 	// (e.g. Google Ads `partialFailureError`) from a non-zero exit to a
 	// stderr warning. Default false so silent partial successes surface as
 	// failures by default.
-	allowPartialFailure bool
-	selectFields        string
-	configPath          string
-	homePath            string
-	runProfileName      string
-	clientProfileName   string
-	platformSession     *platform.Session
-	platformGateError   error
-	receiptEnabled      bool
-	receiptFile         string
-	auditDir            string
-	receiptWriter       *platform.ReceiptWriter
-	deliverSpec         string
-	timeout             time.Duration
-	rateLimit           float64
-	maxAge              time.Duration
-	dataSource          string
-	freshnessMeta       any
+	allowPartialFailure     bool
+	selectFields            string
+	configPath              string
+	homePath                string
+	runProfileName          string
+	clientProfileName       string
+	platformSession         *platform.Session
+	platformAnalytics       *platform.AnalyticsDeclaration
+	platformGateError       error
+	platformMetadataWriter  io.Writer
+	receiptEnabled          bool
+	receiptFile             string
+	auditDir                string
+	receiptWriter           *platform.ReceiptWriter
+	platformMetadataEmitted bool
+	deliverSpec             string
+	timeout                 time.Duration
+	rateLimit               float64
+	maxAge                  time.Duration
+	dataSource              string
+	freshnessMeta           any
 
 	// deliverBuf captures command output when --deliver is set to a
 	// non-stdout sink. Flushed to the sink after Execute returns.
@@ -284,12 +287,17 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify auth and connectivity.
 			if err := preparePlatformSession(flags); err != nil {
 				return err
 			}
+			cmd.SetContext(platform.ContextWithSession(cmd.Context(), flags.platformSession))
 			if err := validatePlatformLegacyInputs(cmd, flags); err != nil {
 				return err
 			}
 			if err := initializePlatformReceipt(cmd, flags); err != nil {
 				return err
 			}
+			if err := adoptPlatformCommandWindow(cmd, flags); err != nil {
+				return err
+			}
+			flags.platformMetadataWriter = cmd.ErrOrStderr()
 			if err := verifyPlatformSession(cmd.Context(), flags); err != nil {
 				if platformCommandIsDoctor(cmd) {
 					flags.platformGateError = err

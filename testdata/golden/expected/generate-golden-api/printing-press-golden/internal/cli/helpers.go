@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"printing-press-golden-pp-cli/internal/client"
 	"printing-press-golden-pp-cli/internal/cliutil"
+	"printing-press-golden-pp-cli/internal/platform"
 	"regexp"
 	"sort"
 	"strconv"
@@ -660,7 +661,7 @@ func paginatedGet(ctx context.Context, c interface {
 		if err != nil {
 			return nil, err
 		}
-		emitTruncationWarning(data, cursorLookupPath, hasMoreField, paginationType)
+		emitTruncationWarning(ctx, data, cursorLookupPath, hasMoreField, paginationType)
 		return data, nil
 	}
 
@@ -709,7 +710,7 @@ func paginatedGet(ctx context.Context, c interface {
 			allItems = append(allItems, items...)
 			if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, len(items)); ok {
 				if page >= paginatedGetMaxPages {
-					emitPaginatedGetMaxPagesWarning()
+					emitPaginatedGetMaxPagesWarning(ctx)
 					break
 				}
 				clean[cursorParam] = next
@@ -731,6 +732,7 @@ func paginatedGet(ctx context.Context, c interface {
 						if token := paginationCursorToken(tokenRaw); token != "" {
 							foundCursorField = true
 							if _, seen := seenCursorTokens[token]; seen {
+								platform.MarkContextTruncated(ctx, platform.TruncationReason{Kind: "pagination_cursor_repeated", Configured: "unique_cursor", Observed: "repeated_cursor", MoreAvailable: true})
 								if humanFriendly {
 									fmt.Fprintf(os.Stderr, "warning: --all received the same pagination cursor twice; returning fetched pages only.\n")
 								} else {
@@ -740,7 +742,7 @@ func paginatedGet(ctx context.Context, c interface {
 							}
 							seenCursorTokens[token] = struct{}{}
 							if page >= paginatedGetMaxPages {
-								emitPaginatedGetMaxPagesWarning()
+								emitPaginatedGetMaxPagesWarning(ctx)
 								break
 							}
 							clean[cursorParam] = token
@@ -759,13 +761,13 @@ func paginatedGet(ctx context.Context, c interface {
 							if more {
 								if next, ok := nextClientSidePaginationCursor(clean, cursorParam, paginationType, pageSize); ok {
 									if page >= paginatedGetMaxPages {
-										emitPaginatedGetMaxPagesWarning()
+										emitPaginatedGetMaxPagesWarning(ctx)
 										break
 									}
 									clean[cursorParam] = next
 									continue
 								}
-								emitMissingPaginationCursorWarning(cursorLookupPath)
+								emitMissingPaginationCursorWarning(ctx, cursorLookupPath)
 								break
 							}
 							hasExplicitNoMore = true
@@ -775,7 +777,7 @@ func paginatedGet(ctx context.Context, c interface {
 				if !hasExplicitNoMore && nextCursorPath == "" && hasMoreField == "" {
 					if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, itemCount); ok {
 						if page >= paginatedGetMaxPages {
-							emitPaginatedGetMaxPagesWarning()
+							emitPaginatedGetMaxPagesWarning(ctx)
 							break
 						}
 						clean[cursorParam] = next
@@ -792,7 +794,7 @@ func paginatedGet(ctx context.Context, c interface {
 	}
 
 	if fetchAll && page == 1 && nextCursorPath == "" && !foundCursorField && hasMoreField == "" && paginationType != "offset" && paginationType != "page" {
-		emitMissingPaginationSignalWarning()
+		emitMissingPaginationSignalWarning(ctx)
 	}
 	if humanFriendly {
 		fmt.Fprintf(os.Stderr, "fetched %d items across %d pages\n", len(allItems), page)
@@ -849,7 +851,7 @@ func nextClientSidePaginationCursor(params map[string]string, cursorParam, pagin
 // Silent page-1 truncation is the worst-possible mode for agents,
 // who otherwise compute totals against an incomplete set without
 // passing --all.
-func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField, paginationType string) {
+func emitTruncationWarning(ctx context.Context, data json.RawMessage, nextCursorPath, hasMoreField, paginationType string) {
 	if nextCursorPath == "" && hasMoreField == "" {
 		return
 	}
@@ -872,6 +874,7 @@ func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField, p
 	if nextCursor == "" && !hasMore {
 		return
 	}
+	platform.MarkContextTruncated(ctx, platform.TruncationReason{Kind: "page_limit", Configured: 1, Observed: 1, MoreAvailable: true})
 	// --all advances when a next-cursor is configured, or when the endpoint
 	// uses client-side numeric page/offset advancement. Opaque cursor APIs
 	// still need a returned cursor to advance safely.
@@ -890,7 +893,8 @@ func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField, p
 	}
 }
 
-func emitMissingPaginationSignalWarning() {
+func emitMissingPaginationSignalWarning(ctx context.Context) {
+	platform.MarkContextTruncated(ctx, platform.TruncationReason{Kind: "pagination_signal_missing", Configured: "all_pages", Observed: 1, MoreAvailable: true})
 	if humanFriendly {
 		fmt.Fprintf(os.Stderr, "warning: --all requested, but this endpoint does not declare a next cursor or has-more field; returning page 1 only.\n")
 	} else {
@@ -898,7 +902,8 @@ func emitMissingPaginationSignalWarning() {
 	}
 }
 
-func emitPaginatedGetMaxPagesWarning() {
+func emitPaginatedGetMaxPagesWarning(ctx context.Context) {
+	platform.MarkContextTruncated(ctx, platform.TruncationReason{Kind: "max_pages", Configured: paginatedGetMaxPages, Observed: paginatedGetMaxPages, MoreAvailable: true})
 	if humanFriendly {
 		fmt.Fprintf(os.Stderr, "warning: --all reached the %d-page safety limit; returning fetched pages only.\n", paginatedGetMaxPages)
 	} else {
@@ -906,7 +911,8 @@ func emitPaginatedGetMaxPagesWarning() {
 	}
 }
 
-func emitMissingPaginationCursorWarning(nextCursorPath string) {
+func emitMissingPaginationCursorWarning(ctx context.Context, nextCursorPath string) {
+	platform.MarkContextTruncated(ctx, platform.TruncationReason{Kind: "pagination_cursor_missing", Configured: nextCursorPath, Observed: "missing", MoreAvailable: true})
 	if humanFriendly {
 		fmt.Fprintf(os.Stderr, "warning: --all requested, but the response indicated more pages without a usable next cursor; returning fetched pages only.\n")
 	} else if nextCursorPath != "" {
@@ -1106,6 +1112,104 @@ func printJSONFiltered(w io.Writer, v any, flags *rootFlags) error {
 		return err
 	}
 	return printOutputWithFlags(w, json.RawMessage(raw), flags)
+}
+
+func platformStructuredOutputSelected(w io.Writer, flags *rootFlags) bool {
+	if flags == nil {
+		return false
+	}
+	return flags.asJSON || flags.agent || (!isTerminal(w) && !flags.csv && !flags.quiet && !flags.plain)
+}
+
+func emitPlatformOutputMetadata(w io.Writer, flags *rootFlags) error {
+	if flags == nil || flags.platformSession == nil || flags.platformMetadataEmitted {
+		return nil
+	}
+	if w == nil {
+		w = os.Stderr
+	}
+	event := map[string]any{
+		"event": "output_metadata",
+		"meta":  flags.platformSession.OutputMetadata(),
+	}
+	encoder := json.NewEncoder(w)
+	if err := encoder.Encode(event); err != nil {
+		return err
+	}
+	flags.platformMetadataEmitted = true
+	return nil
+}
+
+func validatePlatformAnalytics(flags *rootFlags) error {
+	if flags == nil || flags.platformSession == nil || flags.platformAnalytics == nil {
+		return nil
+	}
+	declaration := *flags.platformAnalytics
+	declaration.ClientProfile = flags.platformSession.ProfileName
+	declaration.TenantIdentity = flags.platformSession.ObservedIdentity
+	if declaration.Window == nil {
+		declaration.Window = flags.platformSession.OutputMetadata().ResolvedWindow
+	}
+	return platform.ValidateAnalytics(declaration)
+}
+
+func declarePlatformAnalytics(flags *rootFlags, declaration platform.AnalyticsDeclaration) {
+	if flags == nil {
+		return
+	}
+	flags.platformAnalytics = &declaration
+}
+
+func resolvePlatformWindow(ctx context.Context, request platform.WindowRequest, policy platform.WindowPolicy) (platform.ResolvedWindow, error) {
+	window, err := platform.ResolveWindow(request, policy)
+	if err != nil {
+		return platform.ResolvedWindow{}, err
+	}
+	platform.SetContextResolvedWindow(ctx, window)
+	return window, nil
+}
+
+func wrapPlatformStructuredOutput(data json.RawMessage, flags *rootFlags, resultKey string) (json.RawMessage, error) {
+	if flags == nil || flags.platformSession == nil {
+		return data, nil
+	}
+	if resultKey == "" {
+		resultKey = "data"
+	}
+	metadataRaw, err := json.Marshal(flags.platformSession.OutputMetadata())
+	if err != nil {
+		return nil, err
+	}
+	var platformMeta map[string]any
+	if err := json.Unmarshal(metadataRaw, &platformMeta); err != nil {
+		return nil, err
+	}
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(data, &envelope) == nil && envelope["meta"] != nil && (envelope["data"] != nil || envelope["results"] != nil) {
+		var meta map[string]any
+		if err := json.Unmarshal(envelope["meta"], &meta); err != nil {
+			return nil, err
+		}
+		for key, value := range platformMeta {
+			meta[key] = value
+		}
+		mergedMeta, err := json.Marshal(meta)
+		if err != nil {
+			return nil, err
+		}
+		envelope["meta"] = mergedMeta
+		data, err = json.Marshal(envelope)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		data, err = json.Marshal(map[string]any{"meta": platformMeta, resultKey: data})
+		if err != nil {
+			return nil, err
+		}
+	}
+	flags.platformMetadataEmitted = true
+	return data, nil
 }
 
 // wrapAgentOutput gives --agent callers one parseable top-level envelope for
@@ -1410,6 +1514,9 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 }
 
 func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any) error {
+	if err := validatePlatformAnalytics(flags); err != nil {
+		return err
+	}
 	// --select wins over --compact when both are set: an explicit field list
 	// is the user's authoritative request, so the high-gravity allow-list
 	// must not strip those fields out before --select can pick them. When
@@ -1422,6 +1529,17 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 	}
 	if flags.agent && flags.asJSON && !flags.csv && !flags.plain && !flags.quiet {
 		wrapped, err := wrapAgentOutput(data, agentMeta)
+		if err != nil {
+			return err
+		}
+		data = wrapped
+	}
+	if platformStructuredOutputSelected(w, flags) && !flags.csv && !flags.plain && !flags.quiet {
+		resultKey := "data"
+		if flags.agent {
+			resultKey = "results"
+		}
+		wrapped, err := wrapPlatformStructuredOutput(data, flags, resultKey)
 		if err != nil {
 			return err
 		}

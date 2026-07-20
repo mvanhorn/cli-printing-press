@@ -52,7 +52,17 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 			// open-world; readOnlyHint stays unset because it does write.
 			options = append(options, mcplib.WithDestructiveHintAnnotation(false), mcplib.WithOpenWorldHintAnnotation(false))
 		}
-		s.AddTool(mcplib.NewTool(toolName, options...), shellOutToCLI(cliPath, path, blockedCLIArgs, allowedStructuredArgs, positionals, readOnly, positionalWriteSinkIndexes(cmd)))
+		tool := mcplib.NewTool(toolName, options...)
+		if tool.Meta == nil {
+			tool.Meta = &mcplib.Meta{}
+		}
+		if tool.Meta.AdditionalFields == nil {
+			tool.Meta.AdditionalFields = map[string]any{}
+		}
+		// The companion CLI owns the one live tenant gate for mirrored
+		// commands. The parent MCP middleware must not probe a second time.
+		tool.Meta.AdditionalFields["pp:tenant-gate"] = "child-cli"
+		s.AddTool(tool, shellOutToCLI(cliPath, path, blockedCLIArgs, allowedStructuredArgs, positionals, readOnly, positionalWriteSinkIndexes(cmd)))
 	})
 }
 
