@@ -1316,6 +1316,7 @@ func runMessages() {
 package cli
 
 func applyResponsePath() {}
+func declarePlatformAnalytics() {}
 func emitMissingPaginationCursorWarning() {}
 func emitMissingPaginationSignalWarning() {}
 func emitPaginatedGetMaxPagesWarning() {}
@@ -1328,6 +1329,7 @@ func nextFullPageOffsetCursor() {}
 func paginatedGet() {}
 func paginationCursorToken() {}
 func replacePathParam() {}
+func resolvePlatformWindow() {}
 func responsePayloadParentAtPath() {}
 func writeNoop() {}
 `)

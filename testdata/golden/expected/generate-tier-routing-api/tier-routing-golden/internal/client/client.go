@@ -92,8 +92,11 @@ func (c *Client) waitForPlatformBudget(ctx context.Context, endpointClass string
 	c.platformLimiterMu.Lock()
 	limiter := c.platformLimiters[endpointClass]
 	if limiter == nil {
-		budget := c.platformBudgetLocked(endpointClass)
-		var err error
+		budget, err := c.platformBudgetLocked(endpointClass)
+		if err != nil {
+			c.platformLimiterMu.Unlock()
+			return err
+		}
 		limiter, err = platform.NewEndpointLimiter(c.platformSession, budget)
 		if err != nil {
 			c.platformLimiterMu.Unlock()
@@ -108,16 +111,24 @@ func (c *Client) waitForPlatformBudget(ctx context.Context, endpointClass string
 	return err
 }
 
-func (c *Client) platformBudgetLocked(endpointClass string) platform.EndpointBudget {
+func (c *Client) platformBudgetLocked(endpointClass string) (platform.EndpointBudget, error) {
 	if budget, ok := c.platformBudgets[endpointClass]; ok {
-		return budget
+		return budget, nil
 	}
-	return platform.EndpointBudget{Class: endpointClass, Steady: 2, Interval: time.Second, Burst: 2, MaxAttempts: clientMaxRetries() + 1, RetryBudget: time.Minute}
+	if budget, ok := c.platformBudgets["*"]; ok {
+		budget.Class = endpointClass
+		return budget, nil
+	}
+	return platform.EndpointBudget{}, &platform.MissingEndpointBudgetError{EndpointClass: endpointClass}
 }
 
-func (c *Client) platformRetryPolicy(endpointClass string) platform.EndpointBudget {
+func (c *Client) platformRetryPolicy(endpointClass string) (platform.EndpointBudget, error) {
 	if c == nil || c.platformSession == nil {
-		return platform.EndpointBudget{Class: endpointClass, Steady: 1, Interval: time.Second, Burst: 1, MaxAttempts: clientMaxRetries() + 1, RetryBudget: time.Minute}
+		// Legacy/non-data calls do not have a verified tenant session and
+		// therefore do not consume a shared endpoint budget. Preserve their
+		// bounded retry contract; fail-closed budget lookup begins only after
+		// a live tenant gate binds the platform session.
+		return platform.EndpointBudget{Class: endpointClass, MaxAttempts: clientMaxRetries() + 1, RetryBudget: time.Minute}, nil
 	}
 	c.platformLimiterMu.Lock()
 	defer c.platformLimiterMu.Unlock()
@@ -953,7 +964,10 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	// failure or server error; a write may already have committed remotely.
 	canRetryAmbiguousFailure := readOnlyIntent || platform.CanRetryRequest(method, requestIdempotencyKey(c.Config, headerOverrides))
 	endpointClass := safeEndpointClass(method, path)
-	retryPolicy := c.platformRetryPolicy(endpointClass)
+	retryPolicy, err := c.platformRetryPolicy(endpointClass)
+	if err != nil {
+		return nil, 0, err
+	}
 	if retryPolicy.MaxAttempts > 0 && maxRetries > retryPolicy.MaxAttempts-1 {
 		maxRetries = retryPolicy.MaxAttempts - 1
 	}

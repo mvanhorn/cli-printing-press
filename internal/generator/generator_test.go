@@ -58,6 +58,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cli/profile.go",
 		"internal/cli/platform_client.go",
 		"internal/cli/platform_cli_test.go",
+		"internal/cli/platform_window.go",
+		"internal/cli/platform_window_test.go",
 		"internal/cli/feedback.go",
 		"internal/cli/agent_context.go",
 		"internal/cli/root_test.go",
@@ -81,6 +83,7 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cliutil/cliutil_test.go",
 		"internal/client/client.go",
 		"internal/client/client_test.go",
+		"internal/client/platform_rate_limit_test.go",
 		"internal/client/client_verify_short_circuit_test.go",
 		"internal/config/config.go",
 		"internal/cli/resource_paths.go",
@@ -88,12 +91,17 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/platform/profile.go",
 		"internal/platform/gate.go",
 		"internal/platform/metadata.go",
+		"internal/platform/migration.go",
 		"internal/platform/ratelimit.go",
 		"internal/platform/receipt.go",
+		"internal/platform/testdata/receipt-status-golden.json",
 		"internal/platform/doctor.go",
 		"internal/platform/conformance_test.go",
+		"internal/client/platform_budget_test.go",
 		"internal/mcp/bound/bound.go",
 		"internal/mcp/bound/bound_test.go",
+		"internal/mcp/platform_gate.go",
+		"internal/mcp/platform_gate_test.go",
 		"internal/mcp/cobratree/walker.go",
 		"internal/mcp/cobratree/classify.go",
 		"internal/mcp/cobratree/typemap.go",
@@ -122,11 +130,15 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +1 more (A4): credentials_perms_test.go, the behavioral test proving the
 		// read-time guard is wired into cliutil.LoadCredentials — also auth-gated,
 		// so it lands for every token-bearing spec.
-		// +9: shared platform multitenancy runtime, CLI integration, and
+		// +12: shared platform multitenancy runtime, CLI integration, migration,
+		// receipt goldens, and
 		// black-box/conformance coverage emitted for every printed CLI.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 158},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 162},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 160},
+		// +2: MCP tenant-gate middleware and its single-gate conformance tests.
+		// +1: fail-closed endpoint-budget lookup conformance coverage.
+		// +2: command and MCP platform-window adoption plus conformance tests.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 166},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 170},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 168},
 	}
 
 	for _, tt := range tests {
@@ -154,6 +166,7 @@ func TestGenerateProjectsCompile(t *testing.T) {
 
 			runGoCommand(t, outputDir, "mod", "tidy")
 			runGoCommand(t, outputDir, "build", "./...")
+			runGoCommand(t, outputDir, "test", "./internal/platform", "./internal/cli", "./internal/client")
 		})
 	}
 }
@@ -7208,7 +7221,7 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	require.NoError(t, err)
 	rootContent := string(rootGo)
 	assert.Contains(t, rootContent, `allow-partial-failure`)
-	assert.Contains(t, rootContent, `allowPartialFailure bool`)
+	assert.Regexp(t, regexp.MustCompile(`allowPartialFailure\s+bool`), rootContent)
 
 	// Envelope fires on --json and on piped output, but explicit format flags
 	// (--csv, --quiet, --plain) opt out of the auto-JSON path so piped agents
@@ -7224,8 +7237,10 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	assert.Contains(t, content, "filterFields(filtered, flags.selectFields)")
 	assert.Contains(t, content, `json.Unmarshal(filtered, &parsed)`)
 
-	// Envelope bypasses printOutputWithFlags to avoid double-filtering
-	assert.Contains(t, content, `printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)`)
+	// Envelope bypasses printOutputWithFlags to avoid double-filtering, then
+	// adopts the platform metadata wrapper before the final structured write.
+	assert.Contains(t, content, `wrapPlatformStructuredOutput(json.RawMessage(envelopeJSON), flags, resultKey, true)`)
+	assert.Contains(t, content, `printOutput(cmd.OutOrStdout(), structured, true)`)
 
 	// Dry-run is flagged honestly in the envelope
 	assert.Contains(t, content, `flags.dryRun`)

@@ -24,10 +24,8 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"{{modulePath}}/internal/mcp/bound"
-{{ if .HasRequiredRoles}}
 	"{{modulePath}}/internal/cli"
-{{- end}}
+	"{{modulePath}}/internal/mcp/bound"
 )
 
 // RegisterCodeOrchestrationTools registers the two agent-facing tools that
@@ -288,13 +286,23 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
 	c := newMCPClientFromConfig(cfg)
+	platformSession, err := cli.BindMCPClient(ctx, c)
+	if err != nil {
+		return mcplib.NewToolResultError(err.Error()), nil
+	}
 {{ else}}
 
-	c, err := newMCPClient(ctx)
+	c, platformSession, err := newMCPClient(ctx)
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
 {{ end}}
+	if platformSession != nil {
+		defer platformSession.ZeroCredentials()
+	}
+	if err := cli.AdoptMCPOutputSemantics(platformSession, params); err != nil {
+		return mcplib.NewToolResultError(err.Error()), nil
+	}
 {{- if .HasTierRouting}}
 	c = c.WithTier(ep.Tier)
 {{- end}}
@@ -396,7 +404,11 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
-	return mcplib.NewToolResultText(bound.EndpointResponse(ep.Method, data)), nil
+	text := bound.EndpointResponse(ep.Method, data)
+	if platformSession != nil {
+		text = bound.WithMetadata(text, platformSession.OutputMetadata())
+	}
+	return mcplib.NewToolResultText(text), nil
 }
 
 // codeOrchWriteBody returns the value handed to the client layer as the

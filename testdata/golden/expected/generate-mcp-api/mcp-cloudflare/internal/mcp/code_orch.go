@@ -24,6 +24,7 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"mcp-cloudflare-pp-cli/internal/cli"
 	"mcp-cloudflare-pp-cli/internal/mcp/bound"
 )
 
@@ -221,8 +222,15 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		params = map[string]any{}
 	}
 
-	c, err := newMCPClient(ctx)
+	c, platformSession, err := newMCPClient(ctx)
 	if err != nil {
+		return mcplib.NewToolResultError(err.Error()), nil
+	}
+
+	if platformSession != nil {
+		defer platformSession.ZeroCredentials()
+	}
+	if err := cli.AdoptMCPOutputSemantics(platformSession, params); err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
 
@@ -305,7 +313,11 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
-	return mcplib.NewToolResultText(bound.EndpointResponse(ep.Method, data)), nil
+	text := bound.EndpointResponse(ep.Method, data)
+	if platformSession != nil {
+		text = bound.WithMetadata(text, platformSession.OutputMetadata())
+	}
+	return mcplib.NewToolResultText(text), nil
 }
 
 // codeOrchWriteBody returns the value handed to the client layer as the

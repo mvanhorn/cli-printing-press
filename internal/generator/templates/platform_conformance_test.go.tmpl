@@ -9,10 +9,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -127,6 +129,16 @@ func TestProfileRejectsUnknownAndDuplicateNormalizedSources(t *testing.T) {
 	profile.Sources["KLAVIYO"] = profile.Sources["klaviyo"]
 	if err := profile.Validate(); err == nil {
 		t.Fatal("duplicate normalized source was accepted")
+	}
+}
+
+func TestCredentiallessSourceProfileRequiresIdentityButNotDummySecret(t *testing.T) {
+	profile := SourceProfile{ExpectedBaseURL: "https://tenant.example"}
+	if err := profile.Validate(); err != nil {
+		t.Fatalf("credentialless source profile with trusted identity = %v", err)
+	}
+	if err := (SourceProfile{}).Validate(); err == nil {
+		t.Fatal("credentialless source profile without expected identity was accepted")
 	}
 }
 
@@ -270,13 +282,70 @@ func TestProviderMismatchAndDatabaseOwnershipConformance(t *testing.T) {
 	}
 }
 
-func TestWindowTruncationAndAnalyticsConformance(t *testing.T) {
-	now := time.Date(2026, time.March, 15, 12, 0, 0, 0, time.UTC)
-	window, err := ResolveWindow(WindowRequest{Days: 90, Timezone: "UTC"}, WindowPolicy{Now: func() time.Time { return now }, Maximum: 30 * 24 * time.Hour, ProviderMaximumName: "30d", EndExclusive: true})
+func TestCrossSourceDatabaseRequiresSelectedProfileOwnership(t *testing.T) {
+	setPlatformRoots(t)
+	profile := &Profile{
+		SchemaVersion: ProfileSchemaVersion,
+		Name:          "tenant-a",
+		Sources: map[string]SourceProfile{
+			"meta-ads": {CredentialRef: "op://Synthetic/Meta/token", ExpectedAccountID: "meta-one"},
+			"shopify":  {CredentialRef: "op://Synthetic/Shopify/token", ExpectedStoreID: "shop-one", ExpectedStoreDomain: "tenant-a.myshopify.com"},
+		},
+	}
+	primary, err := PrepareProfileSourceFromConfig(profile, "meta-ads-pp-cli", "meta-ads")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !window.Clamped || window.End.Sub(window.Start) != 30*24*time.Hour {
+	primary.GateOutcome = GateVerified
+	primary.CredentialFingerprint = "meta-fingerprint"
+	primary.ObservedIdentity = map[string]string{"account_id": "meta-one"}
+	primary.GateCheckedAt = time.Unix(2, 0).UTC()
+	owner, err := PrepareProfileSourceFromConfig(profile, "shopify-pp-cli", "shopify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.GateOutcome = GateVerified
+	owner.CredentialFingerprint = "shopify-fingerprint"
+	owner.ObservedIdentity = map[string]string{"store_id": "shop-one", "store_domain": "tenant-a.myshopify.com"}
+	owner.GateCheckedAt = time.Unix(1, 0).UTC()
+
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "shopify.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := InitializeTenantMetadata(context.Background(), db, owner, "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyCrossSourceTenantMetadataReadOnly(context.Background(), db, primary, "shopify"); err != nil {
+		t.Fatalf("verified cross-source database rejected: %v", err)
+	}
+	wantPaths, err := PathsFor("tenant-a", "shopify-pp-cli", "shopify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := CrossSourceDataPath(primary, "shopify-pp-cli", "shopify"); err != nil || got != wantPaths.DataFile {
+		t.Fatalf("cross-source path = %q, %v; want %q", got, err, wantPaths.DataFile)
+	}
+	tampered := *primary
+	tamperedProfile := *profile
+	tamperedProfile.Sources = map[string]SourceProfile{
+		"meta-ads": profile.Sources["meta-ads"],
+		"shopify":  {CredentialRef: "op://Synthetic/Shopify/token", ExpectedStoreID: "shop-two", ExpectedStoreDomain: "tenant-b.myshopify.com"},
+	}
+	tampered.Profile = &tamperedProfile
+	if err := VerifyCrossSourceTenantMetadataReadOnly(context.Background(), db, &tampered, "shopify"); err == nil {
+		t.Fatal("cross-source database from another expected tenant was accepted")
+	}
+}
+
+func TestWindowTruncationAndAnalyticsConformance(t *testing.T) {
+	now := time.Date(2026, time.March, 15, 12, 0, 0, 0, time.UTC)
+	window, err := ResolveWindow(WindowRequest{Days: 90, Timezone: "UTC"}, WindowPolicy{Now: func() time.Time { return now }, MaximumDays: 30, ProviderMaximumName: "30d", EndExclusive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !window.Clamped || !window.Start.Equal(window.End.AddDate(0, 0, -30)) {
 		t.Fatalf("window was not clamped: %+v", window)
 	}
 	meta := OutputMetadata{}
@@ -287,15 +356,158 @@ func TestWindowTruncationAndAnalyticsConformance(t *testing.T) {
 	}
 
 	zero := 0.0
-	declaration := AnalyticsDeclaration{RequiredInputs: []string{"orders", "events"}, InputRows: map[string]int64{"orders": 2, "events": 2}, MatchedRows: 2, BusinessMetrics: map[string]*float64{"revenue": &zero}}
+	declaration := AnalyticsDeclaration{
+		ClientProfile:    "tenant-a",
+		TenantIdentity:   map[string]string{"account_id": "acct-a"},
+		DataSource:       "fixture",
+		RequiredInputs:   []string{"orders", "events"},
+		JoinKeys:         []string{"order_id"},
+		InputRows:        map[string]int64{"orders": 2, "events": 2},
+		ValidJoinKeys:    map[string]int64{"order_id": 2},
+		MissingJoinKeys:  map[string]int64{"order_id": 0},
+		MatchedRows:      2,
+		NewestRowAt:      map[string]time.Time{},
+		FreshnessStatus:  map[string]string{"orders": "unknown", "events": "unknown"},
+		BusinessMetrics:  map[string]*float64{"revenue": &zero},
+		MinimumInputRows: map[string]int64{"orders": 1, "events": 1},
+		Remediation:      "verify fixture inputs and join coverage",
+	}
 	var failure *AnalyticsFailure
 	if err := ValidateAnalytics(declaration); !errors.As(err, &failure) || failure.Reason != "all_business_metrics_zero_or_null" {
 		t.Fatalf("all-zero analytics error = %#v", err)
 	}
+	assertFailure := func(name, reason string, mutate func(*AnalyticsDeclaration)) {
+		t.Helper()
+		candidate := declaration
+		mutate(&candidate)
+		failure = nil
+		if err := ValidateAnalytics(candidate); !errors.As(err, &failure) || failure.Reason != reason {
+			t.Fatalf("%s analytics error = %#v, want %s", name, err, reason)
+		}
+	}
+	assertFailure("client profile", "missing_client_profile", func(candidate *AnalyticsDeclaration) { candidate.ClientProfile = "" })
+	assertFailure("tenant", "missing_verified_tenant", func(candidate *AnalyticsDeclaration) { candidate.TenantIdentity = nil })
+	assertFailure("data source", "missing_data_source", func(candidate *AnalyticsDeclaration) { candidate.DataSource = "" })
+	assertFailure("inputs", "missing_required_inputs", func(candidate *AnalyticsDeclaration) { candidate.RequiredInputs = nil })
+	assertFailure("join declaration", "missing_join_key_declaration", func(candidate *AnalyticsDeclaration) { candidate.JoinKeys = nil })
+	assertFailure("input counts", "missing_input_count_declaration", func(candidate *AnalyticsDeclaration) { candidate.InputRows = nil })
+	assertFailure("join diagnostics", "missing_join_key_diagnostics", func(candidate *AnalyticsDeclaration) { candidate.ValidJoinKeys = nil })
+	assertFailure("freshness diagnostics", "missing_freshness_diagnostics", func(candidate *AnalyticsDeclaration) { candidate.NewestRowAt = nil })
+	assertFailure("remediation", "missing_remediation", func(candidate *AnalyticsDeclaration) { candidate.Remediation = "" })
+	assertFailure("metrics", "missing_business_metrics", func(candidate *AnalyticsDeclaration) { candidate.BusinessMetrics = nil })
+	assertFailure("minimum", "missing_minimum_input_rows", func(candidate *AnalyticsDeclaration) { candidate.MinimumInputRows = map[string]int64{"orders": 1} })
+	assertFailure("freshness status", "missing_freshness_status", func(candidate *AnalyticsDeclaration) {
+		candidate.FreshnessStatus = map[string]string{"orders": "unknown"}
+	})
+	assertFailure("newest row", "missing_newest_row_at", func(candidate *AnalyticsDeclaration) {
+		candidate.FreshnessStatus = map[string]string{"orders": "observed", "events": "unknown"}
+	})
+	assertFailure("freshness value", "invalid_freshness_status", func(candidate *AnalyticsDeclaration) {
+		candidate.FreshnessStatus = map[string]string{"orders": "stale", "events": "unknown"}
+	})
+	assertFailure("minimum rows", "required_input_below_minimum", func(candidate *AnalyticsDeclaration) {
+		candidate.InputRows = map[string]int64{"orders": 0, "events": 2}
+	})
+	assertFailure("specific join key", "missing_join_key_diagnostics", func(candidate *AnalyticsDeclaration) { candidate.ValidJoinKeys = map[string]int64{} })
+	assertFailure("join matches", "nonempty_inputs_with_zero_join_matches", func(candidate *AnalyticsDeclaration) { candidate.MatchedRows = 0 })
 	value := 12.0
 	declaration.BusinessMetrics["revenue"] = &value
 	if err := ValidateAnalytics(declaration); err != nil {
 		t.Fatalf("valid analytics failed: %v", err)
+	}
+}
+
+func TestResolvedWindowCalendarConformance(t *testing.T) {
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolve := func(t *testing.T, request WindowRequest, policy WindowPolicy) ResolvedWindow {
+		t.Helper()
+		window, err := ResolveWindow(request, policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return window
+	}
+
+	t.Run("relative_spring_forward", func(t *testing.T) {
+		now := time.Date(2026, time.March, 8, 12, 0, 0, 0, location)
+		window := resolve(t, WindowRequest{Days: 1, Timezone: location.String()}, WindowPolicy{Now: func() time.Time { return now }, EndExclusive: true})
+		wantStart := time.Date(2026, time.March, 7, 12, 0, 0, 0, location)
+		if !window.Start.Equal(wantStart) || window.End.Sub(window.Start) != 23*time.Hour || window.Timezone != location.String() {
+			t.Fatalf("spring-forward calendar day = %+v", window)
+		}
+	})
+
+	t.Run("relative_fall_back", func(t *testing.T) {
+		now := time.Date(2026, time.November, 1, 12, 0, 0, 0, location)
+		window := resolve(t, WindowRequest{Days: 1, Timezone: location.String()}, WindowPolicy{Now: func() time.Time { return now }, EndExclusive: true})
+		wantStart := time.Date(2026, time.October, 31, 12, 0, 0, 0, location)
+		if !window.Start.Equal(wantStart) || window.End.Sub(window.Start) != 25*time.Hour {
+			t.Fatalf("fall-back calendar day = %+v", window)
+		}
+	})
+
+	t.Run("absolute_complete_calendar_days", func(t *testing.T) {
+		start := time.Date(2026, time.March, 7, 0, 0, 0, 0, location)
+		end := time.Date(2026, time.March, 10, 0, 0, 0, 0, location)
+		window := resolve(t, WindowRequest{Start: &start, End: &end, Timezone: location.String(), CompletePeriods: true}, WindowPolicy{EndExclusive: true})
+		if !window.CompletePeriods || !window.EndExclusive || window.End.Sub(window.Start) != 71*time.Hour {
+			t.Fatalf("absolute complete calendar days = %+v", window)
+		}
+	})
+
+	t.Run("calendar_complete_month", func(t *testing.T) {
+		window := resolve(t, WindowRequest{Month: "2026-03", Timezone: location.String()}, WindowPolicy{})
+		wantStart := time.Date(2026, time.March, 1, 0, 0, 0, 0, location)
+		wantEnd := time.Date(2026, time.April, 1, 0, 0, 0, 0, location)
+		if !window.Start.Equal(wantStart) || !window.End.Equal(wantEnd) || !window.CompletePeriods || !window.EndExclusive || window.Requested.Month != "2026-03" || window.End.Sub(window.Start) != 743*time.Hour {
+			t.Fatalf("complete calendar month = %+v", window)
+		}
+	})
+
+	t.Run("timezone_is_explicit", func(t *testing.T) {
+		tokyo, err := time.LoadLocation("Asia/Tokyo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Date(2026, time.July, 20, 9, 30, 0, 0, tokyo)
+		window := resolve(t, WindowRequest{Days: 2, Timezone: tokyo.String()}, WindowPolicy{Now: func() time.Time { return now }})
+		if window.Timezone != "Asia/Tokyo" || window.Start.Location().String() != tokyo.String() || window.End.Location().String() != tokyo.String() {
+			t.Fatalf("timezone resolution = %+v", window)
+		}
+	})
+
+	t.Run("provider_day_cap", func(t *testing.T) {
+		start := time.Date(2026, time.February, 6, 12, 0, 0, 0, location)
+		end := time.Date(2026, time.March, 9, 12, 0, 0, 0, location)
+		window := resolve(t, WindowRequest{Start: &start, End: &end, Timezone: location.String()}, WindowPolicy{MaximumDays: 30, ProviderMaximumName: "fixture_30_day_maximum"})
+		wantStart := time.Date(2026, time.February, 7, 12, 0, 0, 0, location)
+		if !window.Clamped || !window.Start.Equal(wantStart) || window.End.Sub(window.Start) != 719*time.Hour || window.ProviderMaximum != "fixture_30_day_maximum" || window.ClampReason != "requested_window_exceeds_provider_maximum" {
+			t.Fatalf("calendar provider cap = %+v", window)
+		}
+	})
+}
+
+func TestContextCarriesOutputMetadataRecorder(t *testing.T) {
+	setPlatformRoots(t)
+	profile := &Profile{
+		SchemaVersion: ProfileSchemaVersion,
+		Name:          "synthetic",
+		Sources: map[string]SourceProfile{
+			"sample": {CredentialRef: "op://Test Vault/Test Item/token", ExpectedAccountID: "one"},
+		},
+	}
+	session, err := PrepareProfileSourceFromConfig(profile, "sample-pp-cli", "sample")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := ContextWithSession(context.Background(), session)
+	MarkContextTruncated(ctx, TruncationReason{Kind: "max_pages", Configured: 50, Observed: 50, MoreAvailable: true})
+	metadata := session.OutputMetadata()
+	if !metadata.Truncated || len(metadata.TruncationReasons) != 1 || metadata.TruncationReasons[0].Kind != "max_pages" {
+		t.Fatalf("context truncation metadata = %+v", metadata)
 	}
 }
 
@@ -330,7 +542,7 @@ func TestSharedLimiterHonorsBurstAndCrossInstanceLedger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := &Session{ProfileName: "synthetic", Source: "sample", CredentialFingerprint: "fingerprint", GateOutcome: GateVerified, Paths: paths}
+	session := &Session{ProfileName: "synthetic", Source: "sample", CredentialFingerprint: "fingerprint", ObservedIdentity: map[string]string{"account_id": "one"}, GateOutcome: GateVerified, Paths: paths}
 	budget := EndpointBudget{Class: "GET /profiles", Steady: 1, Interval: time.Second, Burst: 2, MaxAttempts: 3, RetryBudget: 10 * time.Second}
 	first, err := NewEndpointLimiter(session, budget)
 	if err != nil {
@@ -406,5 +618,89 @@ func TestReceiptConformance(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(auditDir, "index.jsonl")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type receiptStatusGolden struct {
+	Name         string             `json:"name"`
+	Status       string             `json:"status"`
+	ExitCode     int                `json:"exit_code"`
+	Gate         GateOutcome        `json:"gate"`
+	Truncated    bool               `json:"truncated"`
+	CapsHit      []TruncationReason `json:"caps_hit"`
+	RateLimit    RateLimitMetadata  `json:"rate_limit"`
+	OutputSHA256 string             `json:"output_sha256"`
+	OutputBytes  int64              `json:"output_bytes"`
+}
+
+func TestReceiptStatusGoldenFixtures(t *testing.T) {
+	goldenData, err := os.ReadFile("testdata/receipt-status-golden.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var golden []receiptStatusGolden
+	if err := json.Unmarshal(goldenData, &golden); err != nil {
+		t.Fatal(err)
+	}
+	fixedStart := time.Date(2026, 7, 20, 0, 0, 0, 123000000, time.UTC)
+	window := &ResolvedWindow{
+		Requested: WindowRequest{Days: 1}, Start: fixedStart.Add(-24 * time.Hour), End: fixedStart,
+		Timezone: "UTC", StartInclusive: true, EndExclusive: true,
+	}
+	for _, expected := range golden {
+		t.Run(expected.Name, func(t *testing.T) {
+			paths, err := PathsFor("synthetic", "sample-pp-cli", "sample")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session := &Session{
+				Profile: &Profile{Name: "synthetic"}, ProfileName: "synthetic", CLI: "sample", Source: "sample",
+				GateOutcome: expected.Gate, ExpectedIdentity: map[string]string{"account_id": "one"}, ObservedIdentity: map[string]string{"account_id": "one"}, Paths: paths,
+			}
+			receiptPath := filepath.Join(t.TempDir(), expected.Name+".json")
+			writer, err := NewReceiptWriter(session, ReceiptOptions{
+				CLI:  ReceiptCLI{Name: "sample-pp-cli", Version: "test"},
+				Argv: []string{"sample-pp-cli", "--legacy-token", "must-not-survive"}, ReceiptFile: receiptPath, Window: window,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writer.Receipt.RunID = "run-" + expected.Name
+			writer.Receipt.StartedAt = fixedStart
+			writer.now = func() time.Time { return fixedStart.Add(3 * time.Second) }
+			writer.SetArgvRedactions([]int{2})
+			if _, err := writer.CaptureWriter("stdout", io.Discard).Write([]byte("fixture output\n")); err != nil {
+				t.Fatal(err)
+			}
+			metadata := OutputMetadata{ResolvedWindow: window, Truncated: expected.Truncated, TruncationReasons: expected.CapsHit}
+			if err := writer.Finalize(context.Background(), expected.Status, expected.ExitCode, map[string]RowCounts{}, metadata, expected.RateLimit); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(receiptPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "must-not-survive") || strings.Contains(string(data), "fixture output") {
+				t.Fatal("receipt retained a redacted argument or output payload")
+			}
+			var receipt Receipt
+			if err := json.Unmarshal(data, &receipt); err != nil {
+				t.Fatal(err)
+			}
+			if len(receipt.Outputs) != 1 || receipt.Window == nil || receipt.Window.Start != window.Start || receipt.Window.End != window.End || !receipt.StartedAt.Equal(fixedStart) || !receipt.FinishedAt.Equal(fixedStart.Add(3*time.Second)) || !reflect.DeepEqual(receipt.ArgvRedactions, []int{2}) {
+				t.Fatalf("receipt schema fields = %+v", receipt)
+			}
+			actual := receiptStatusGolden{
+				Name: expected.Name, Status: receipt.Status, ExitCode: receipt.ExitCode, Gate: receipt.Client.Gate,
+				Truncated: receipt.Truncated, CapsHit: receipt.CapsHit, RateLimit: receipt.RateLimit,
+				OutputSHA256: receipt.Outputs[0].SHA256, OutputBytes: receipt.Outputs[0].Bytes,
+			}
+			if actual.CapsHit == nil {
+				actual.CapsHit = []TruncationReason{}
+			}
+			if !reflect.DeepEqual(actual, expected) {
+				t.Fatalf("receipt golden mismatch\nactual:   %#v\nexpected: %#v", actual, expected)
+			}
+		})
 	}
 }

@@ -24,6 +24,7 @@ import (
 	"public-param-golden-pp-cli/internal/learn"
 	"public-param-golden-pp-cli/internal/mcp/bound"
 	"public-param-golden-pp-cli/internal/mcp/cobratree"
+	"public-param-golden-pp-cli/internal/platform"
 	"public-param-golden-pp-cli/internal/store"
 )
 
@@ -36,6 +37,7 @@ const (
 
 // RegisterTools registers all API operations as MCP tools.
 func RegisterTools(s *server.MCPServer) {
+	installFreshTenantGate(s)
 	s.AddTool(
 		mcplib.NewTool("stores_create",
 			mcplib.WithDescription("Create a store record. Required: store-code. Optional: dry_run. Returns the new Store."),
@@ -150,15 +152,21 @@ func mcpPathValue(v any) string {
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
 func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse bool, headerOverrides map[string]string, pageConfig mcpPageConfig, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-		c, err := newMCPClient(ctx)
+		c, platformSession, err := newMCPClient(ctx)
 		if err != nil {
 			return mcpToolError(err.Error()), nil
+		}
+		if platformSession != nil {
+			defer platformSession.ZeroCredentials()
 		}
 
 		// mcp-go v0.47+ made CallToolParams.Arguments an `any` to support
 		// non-map payloads; GetArguments() returns the map[string]any shape
 		// we rely on here (or an empty map when the payload is something else).
 		args := req.GetArguments()
+		if err := cli.AdoptMCPOutputSemantics(platformSession, args); err != nil {
+			return mcpToolError(err.Error()), nil
+		}
 
 		// positionalParams mixes real URL path params with CLI positional
 		// args that map to query params (e.g. `search <query>` -> ?query=);
@@ -303,7 +311,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			msg := err.Error()
 			switch {
 			case strings.Contains(msg, "HTTP 409"):
-				return mcplib.NewToolResultText("already exists (no-op)"), nil
+				return mcpToolTextWithPlatform("already exists (no-op)", platformSession), nil
 			case strings.Contains(msg, "HTTP 401"):
 				return mcpToolError("authentication failed: " + msg +
 					"\nhint: check your API credentials." +
@@ -314,7 +322,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 					"\n      Run 'public-param-golden-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 404"):
 				if method == "DELETE" {
-					return mcplib.NewToolResultText("already deleted (no-op)"), nil
+					return mcpToolTextWithPlatform("already deleted (no-op)", platformSession), nil
 				}
 				return mcpToolError("not found: " + msg), nil
 			case strings.Contains(msg, "HTTP 429"):
@@ -337,17 +345,33 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			if len(out) > bound.MaxBytes {
 				return mcpToolError(fmt.Sprintf("binary response is too large for MCP text output: %d response bytes encode to %d base64 bytes and %d MCP result bytes, exceeding the %d byte budget. Use the companion CLI command with --output <file> to save the payload locally.", len(data), len(encoded), len(out), bound.MaxBytes)), nil
 			}
-			return mcplib.NewToolResultText(string(out)), nil
+			result := string(out)
+			if platformSession != nil {
+				result = bound.WithMetadata(result, platformSession.OutputMetadata())
+			}
+			return mcplib.NewToolResultText(result), nil
 		}
 		if pageConfig.CursorParam != "" {
-			return mcpToolPageResultText(method, data, pageConfig, mcpCursor), nil
+			return mcpToolPageResultTextWithPlatform(method, data, pageConfig, mcpCursor, platformSession), nil
 		}
-		return mcpToolResultText(method, data), nil
+		return mcpToolResultTextWithPlatform(method, data, platformSession), nil
 	}
 }
 
 func mcpToolResultText(method string, data json.RawMessage) *mcplib.CallToolResult {
-	return mcplib.NewToolResultText(bound.EndpointResponse(method, data))
+	return mcpToolResultTextWithPlatform(method, data, nil)
+}
+
+func mcpToolTextWithPlatform(result string, platformSession *platform.Session) *mcplib.CallToolResult {
+	if platformSession != nil {
+		result = bound.WithMetadata(result, platformSession.OutputMetadata())
+	}
+	return mcplib.NewToolResultText(result)
+}
+
+func mcpToolResultTextWithPlatform(method string, data json.RawMessage, platformSession *platform.Session) *mcplib.CallToolResult {
+	result := bound.EndpointResponse(method, data)
+	return mcpToolTextWithPlatform(result, platformSession)
 }
 
 // mcpToolError keeps provider-controlled typed endpoint errors within the MCP
@@ -357,23 +381,32 @@ func mcpToolError(message string) *mcplib.CallToolResult {
 }
 
 func mcpToolPageResultText(method string, data json.RawMessage, pageConfig mcpPageConfig, cursor string) *mcplib.CallToolResult {
-	return mcplib.NewToolResultText(bound.EndpointPageResponse(method, data, bound.PageOptions{
+	return mcpToolPageResultTextWithPlatform(method, data, pageConfig, cursor, nil)
+}
+
+func mcpToolPageResultTextWithPlatform(method string, data json.RawMessage, pageConfig mcpPageConfig, cursor string, platformSession *platform.Session) *mcplib.CallToolResult {
+	result := bound.EndpointPageResponse(method, data, bound.PageOptions{
 		Cursor:         cursor,
 		CursorParam:    pageConfig.CursorParam,
 		NextCursorPath: pageConfig.NextCursorPath,
-	}))
+	})
+	if platformSession != nil {
+		result = bound.WithMetadata(result, platformSession.OutputMetadata())
+	}
+	return mcplib.NewToolResultText(result)
 }
 
-func newMCPClient(ctx context.Context) (*client.Client, error) {
+func newMCPClient(ctx context.Context) (*client.Client, *platform.Session, error) {
 	cfg, err := newMCPConfig()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	c := newMCPClientFromConfig(cfg)
-	if err := cli.BindMCPClient(ctx, c); err != nil {
-		return nil, err
+	session, err := cli.BindMCPClient(ctx, c)
+	if err != nil {
+		return nil, nil, err
 	}
-	return c, nil
+	return c, session, nil
 }
 
 func newMCPConfig() (*config.Config, error) {

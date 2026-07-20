@@ -1,0 +1,96 @@
+// Copyright {{currentYear}} {{copyrightHolder}}. Licensed under Apache-2.0. See LICENSE.
+
+package client
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"{{modulePath}}/internal/config"
+	"{{modulePath}}/internal/platform"
+)
+
+func TestPlatformRateLimitRetriesSafeRequestAndRecordsMetadata(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	client, session := platformRateLimitTestClient(t, server)
+	if _, err := client.Get(context.Background(), "/resource", nil); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d, want retry then success", calls.Load())
+	}
+	metadata := session.RateLimitMetadata()
+	if metadata.Requests != 2 || metadata.Retries != 1 || metadata.Exhausted {
+		t.Fatalf("rate metadata = %#v", metadata)
+	}
+}
+
+func TestPlatformRateLimitDoesNotReplayUnsafeWrite(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "0")
+		w.Header().Set("X-Request-ID", "safe-request-id")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client, session := platformRateLimitTestClient(t, server)
+	_, _, err := client.Post(context.Background(), "/mutation", map[string]any{"synthetic": true})
+	var limited *platform.RateLimitedError
+	if !errors.As(err, &limited) || limited.Attempts != 1 || limited.RequestID != "safe-request-id" {
+		t.Fatalf("rate-limit error = %#v (%v)", limited, err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("unsafe write calls = %d, want 1", calls.Load())
+	}
+	if !session.RateLimitMetadata().Exhausted {
+		t.Fatal("exhausted rate-limit metadata was not recorded")
+	}
+}
+
+func platformRateLimitTestClient(t *testing.T, server *httptest.Server) (*Client, *platform.Session) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	session, err := platform.PrepareProfileSourceFromConfig(&platform.Profile{
+		SchemaVersion: platform.ProfileSchemaVersion,
+		Name:          "tenant-a",
+		Sources: map[string]platform.SourceProfile{
+			"{{.Name}}": {CredentialRef: "op://Test Vault/Synthetic/token", ExpectedAccountID: "acct-a", ExpectedOrgName: "Tenant A", ExpectedStoreID: "store-a", ExpectedStoreDomain: "tenant-a.example.test", ExpectedPropertyID: "123", ExpectedBaseURL: "https://tenant-a.example.test"},
+		},
+	}, "{{.Name}}-pp-cli", "{{.Name}}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.GateOutcome = platform.GateVerified
+	session.CredentialFingerprint = "synthetic-fingerprint"
+	session.ObservedIdentity = map[string]string{"account_id": "acct-a"}
+	client := New(&config.Config{BaseURL: server.URL, AuthHeaderVal: "Bearer synthetic"}, 5*time.Second, 0)
+	client.HTTPClient = server.Client()
+	client.HTTPClient.Timeout = 5 * time.Second
+	if err := client.BindPlatformSession(session); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetPlatformEndpointBudget(platform.EndpointBudget{Class: "*", Steady: 60, Interval: time.Minute, Burst: 1, MaxAttempts: 2, RetryBudget: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	return client, session
+}

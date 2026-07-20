@@ -456,6 +456,85 @@ func InitializeTenantMetadata(ctx context.Context, db *sql.DB, session *Session,
 // expected tenant. Credential rotation is recorded only after the live gate
 // proved the same expected and observed identity.
 func VerifyTenantMetadata(ctx context.Context, db *sql.DB, session *Session) error {
+	return verifyTenantMetadata(ctx, db, session, true)
+}
+
+// VerifyTenantMetadataReadOnly validates ownership without attempting to
+// refresh gate timestamps or credential-rotation metadata on a read-only DB.
+func VerifyTenantMetadataReadOnly(ctx context.Context, db *sql.DB, session *Session) error {
+	return verifyTenantMetadata(ctx, db, session, false)
+}
+
+// CrossSourceDataPath resolves the profile-owned database path for another
+// source without accepting an arbitrary legacy path.
+func CrossSourceDataPath(session *Session, cliName, source string) (string, error) {
+	if session == nil || session.Profile == nil || session.GateOutcome != GateVerified {
+		return "", errors.New("verified primary platform session is required for a cross-source artifact")
+	}
+	source = normalizeSourceSlug(source)
+	sourceProfile, ok := lookupSource(session.Profile.Sources, source)
+	if !ok {
+		return "", fmt.Errorf("client profile %q has no source %q", session.ProfileName, source)
+	}
+	if err := validateRequiredIdentity(source, sourceProfile); err != nil {
+		return "", err
+	}
+	paths, err := PathsFor(session.ProfileName, cliName, source)
+	if err != nil {
+		return "", err
+	}
+	return paths.DataFile, nil
+}
+
+// VerifyCrossSourceTenantMetadataReadOnly proves that a read-only database was
+// produced for the selected client profile and the requested source. It trusts
+// only metadata written after that source's own live gate.
+func VerifyCrossSourceTenantMetadataReadOnly(ctx context.Context, db *sql.DB, session *Session, source string) error {
+	if session == nil || session.Profile == nil || session.GateOutcome != GateVerified {
+		return errors.New("verified primary platform session is required for a cross-source artifact")
+	}
+	source = normalizeSourceSlug(source)
+	sourceProfile, ok := lookupSource(session.Profile.Sources, source)
+	if !ok {
+		return fmt.Errorf("client profile %q has no source %q", session.ProfileName, source)
+	}
+	if err := validateRequiredIdentity(source, sourceProfile); err != nil {
+		return err
+	}
+	expected, err := json.Marshal(sourceProfile.ExpectedIdentity())
+	if err != nil {
+		return err
+	}
+	var got TenantMetadata
+	var checkedAt string
+	err = db.QueryRowContext(ctx, `SELECT schema_version, client_profile, source_slug, expected_identity,
+    observed_identity, credential_fingerprint, last_gate_at, migration_provenance
+    FROM pp_tenant_metadata WHERE id = 1`).Scan(&got.SchemaVersion, &got.ProfileName, &got.Source,
+		&got.ExpectedIdentityJSON, &got.ObservedIdentityJSON, &got.CredentialFingerprint, &checkedAt, &got.MigrationProvenance)
+	if err != nil {
+		return fmt.Errorf("cross-source database has no verified tenant metadata; migrate it with the owning CLI first: %w", err)
+	}
+	if got.SchemaVersion != 1 || got.ProfileName != session.ProfileName || got.Source != source || got.ExpectedIdentityJSON != string(expected) {
+		return errors.New("cross-source database tenant metadata does not match the selected client profile")
+	}
+	var observed ObservedIdentity
+	if err := json.Unmarshal([]byte(got.ObservedIdentityJSON), &observed); err != nil {
+		return errors.New("cross-source database observed identity metadata is malformed")
+	}
+	if err := compareIdentity(source, sourceProfile, observed); err != nil {
+		return fmt.Errorf("cross-source database observed identity is invalid: %w", err)
+	}
+	if strings.TrimSpace(got.CredentialFingerprint) == "" {
+		return errors.New("cross-source database has no credential fingerprint")
+	}
+	gateAt, err := time.Parse(time.RFC3339Nano, checkedAt)
+	if err != nil || gateAt.IsZero() {
+		return errors.New("cross-source database has no valid live-gate timestamp")
+	}
+	return nil
+}
+
+func verifyTenantMetadata(ctx context.Context, db *sql.DB, session *Session, updateGateMetadata bool) error {
 	want, err := metadataForSession(session, "")
 	if err != nil {
 		return err
@@ -473,7 +552,7 @@ func VerifyTenantMetadata(ctx context.Context, db *sql.DB, session *Session) err
 		got.ExpectedIdentityJSON != want.ExpectedIdentityJSON || got.ObservedIdentityJSON != want.ObservedIdentityJSON {
 		return errors.New("database tenant metadata does not match the verified client profile")
 	}
-	if got.CredentialFingerprint != want.CredentialFingerprint || checkedAt != want.LastGateAt.Format(time.RFC3339Nano) {
+	if updateGateMetadata && (got.CredentialFingerprint != want.CredentialFingerprint || checkedAt != want.LastGateAt.Format(time.RFC3339Nano)) {
 		_, err = db.ExecContext(ctx, `UPDATE pp_tenant_metadata SET credential_fingerprint = ?, last_gate_at = ? WHERE id = 1`,
 			want.CredentialFingerprint, want.LastGateAt.Format(time.RFC3339Nano))
 		if err != nil {

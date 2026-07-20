@@ -415,7 +415,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- if endpointNeedsClientLimit .Endpoint}}
 			// Honor --limit when the API accepts but ignores ?limit=N.
-			data = truncateJSONArray(data, flagLimit)
+			data = truncateJSONArray(cmd.Context(), data, flagLimit)
 {{- end}}
 
 {{- if .Endpoint.UsesHTMLResponse}}
@@ -480,6 +480,10 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 					filtered = compactFields(filtered)
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
+				if wrapErr != nil {
+					return wrapErr
+				}
+				wrapped, wrapErr = wrapPlatformStructuredOutput(wrapped, flags, "results", true)
 				if wrapErr != nil {
 					return wrapErr
 				}

@@ -168,9 +168,6 @@ func (p *Profile) Validate() error {
 
 func (s SourceProfile) Validate() error {
 	refs := s.References()
-	if len(refs) == 0 {
-		return errors.New("at least one exact credential reference is required")
-	}
 	for name, ref := range refs {
 		if err := ValidateCredentialReference(ref); err != nil {
 			return fmt.Errorf("%s: %w", name, err)

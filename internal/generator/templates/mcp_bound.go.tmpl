@@ -144,6 +144,77 @@ func Text(out string) string {
 	return previewEnvelope([]byte(out), textResultNote)
 }
 
+// WithMetadata applies the platform output contract after MCP bounding. It
+// keeps API-owned data/results/meta objects intact beneath data, records only
+// Printing Press compaction as a truncation reason, and never returns a result
+// above the MCP text budget.
+func WithMetadata(result string, metadata any) string {
+	metadataRaw, err := json.Marshal(metadata)
+	if err != nil {
+		return result
+	}
+	var meta map[string]any
+	if json.Unmarshal(metadataRaw, &meta) != nil {
+		return result
+	}
+	var payload any
+	if json.Unmarshal([]byte(result), &payload) != nil {
+		payload = result
+	}
+	if obj, ok := payload.(map[string]any); ok {
+		printingPressTruncated, _ := obj["_pp_truncated"].(bool)
+		if printingPressTruncated {
+			meta["truncated"] = true
+			if _, exists := meta["truncation_reasons"]; !exists {
+					meta["truncation_reasons"] = []map[string]any{
+						{
+							"kind": "mcp_output_limit", "configured": MaxBytes,
+							"observed": len(result), "more_available": true,
+						},
+				}
+			}
+			delete(obj, "_pp_truncated")
+		}
+	}
+	return marshalMetadataEnvelope(map[string]any{"data": payload, "meta": meta}, meta, result)
+}
+
+func marshalMetadataEnvelope(envelope map[string]any, meta map[string]any, original string) string {
+	if out, err := json.Marshal(envelope); err == nil && len(out) <= MaxBytes {
+		return string(out)
+	}
+	meta["truncated"] = true
+	meta["truncation_reasons"] = []map[string]any{
+		{
+			"kind": "mcp_output_limit", "configured": MaxBytes,
+			"observed": len(original), "more_available": true,
+		},
+	}
+	limit := maxPreviewBytes
+	if limit > len(original) {
+		limit = len(original)
+	}
+	for limit >= 0 {
+		out, err := json.Marshal(map[string]any{
+			"data": map[string]any{"preview": previewString([]byte(original), limit), "resumable": false},
+			"meta": meta,
+		})
+		if err == nil && len(out) <= MaxBytes {
+			return string(out)
+		}
+		if limit == 0 {
+			break
+		}
+		if limit < 512 {
+			limit = 0
+		} else {
+			limit -= 512
+		}
+	}
+	out, _ := json.Marshal(map[string]any{"data": map[string]any{"resumable": false}, "meta": meta})
+	return string(out)
+}
+
 func boundedSingleArrayObject(data json.RawMessage) ([]byte, bool) {
 	return boundedSingleArrayObjectWithNote(data, endpointListNote)
 }
@@ -242,6 +313,7 @@ func boundedListEnvelope(field string, items []json.RawMessage, originalBytes in
 		}
 		if len(subset) < len(items) {
 			out["truncated"] = true
+			out["_pp_truncated"] = true
 			out["returned_count"] = len(subset)
 			out["original_bytes"] = originalBytes
 			out["max_bytes"] = MaxBytes
@@ -292,6 +364,7 @@ func boundedPageListEnvelope(field string, items []json.RawMessage, original jso
 		}
 		if nextCursor != "" {
 			out["truncated"] = true
+			out["_pp_truncated"] = true
 			out["next_cursor"] = nextCursor
 			out["original_bytes"] = len(original)
 			out["max_bytes"] = MaxBytes
@@ -445,6 +518,7 @@ func previewEnvelope(data []byte, note string) string {
 	}
 	for limit >= 0 {
 		out, err := json.Marshal(map[string]any{
+			"_pp_truncated": true,
 			"truncated":      true,
 			"resumable":      false,
 			"original_bytes": len(data),
@@ -465,6 +539,7 @@ func previewEnvelope(data []byte, note string) string {
 		}
 	}
 	out, _ := json.Marshal(map[string]any{
+		"_pp_truncated": true,
 		"truncated":      true,
 		"resumable":      false,
 		"original_bytes": len(data),
