@@ -58,6 +58,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cli/profile.go",
 		"internal/cli/platform_client.go",
 		"internal/cli/platform_cli_test.go",
+		"internal/cli/platform_window.go",
+		"internal/cli/platform_window_test.go",
 		"internal/cli/feedback.go",
 		"internal/cli/agent_context.go",
 		"internal/cli/root_test.go",
@@ -133,9 +135,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// black-box/conformance coverage emitted for every printed CLI.
 		// +2: MCP tenant-gate middleware and its single-gate conformance tests.
 		// +1: fail-closed endpoint-budget lookup conformance coverage.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 164},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 168},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 166},
+		// +2: command and MCP platform-window adoption plus conformance tests.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 166},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 170},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 168},
 	}
 
 	for _, tt := range tests {
