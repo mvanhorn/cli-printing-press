@@ -4719,6 +4719,12 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 			RecipeIntents:     recipeIntents,
 			HasMCPIntents:     len(g.Spec.MCP.Intents) > 0 || len(recipeIntents) > 0,
 		}
+		if err := g.renderTemplate("mcp_platform_gate.go.tmpl", filepath.Join("internal", "mcp", "platform_gate.go"), mcpData); err != nil {
+			return fmt.Errorf("rendering MCP tenant gate: %w", err)
+		}
+		if err := g.renderTemplate("mcp_platform_gate_test.go.tmpl", filepath.Join("internal", "mcp", "platform_gate_test.go"), mcpData); err != nil {
+			return fmt.Errorf("rendering MCP tenant-gate tests: %w", err)
+		}
 		if err := g.renderTemplate("mcp_tools.go.tmpl", filepath.Join("internal", "mcp", "tools.go"), mcpData); err != nil {
 			return fmt.Errorf("rendering MCP tools: %w", err)
 		}

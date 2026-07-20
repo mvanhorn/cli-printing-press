@@ -214,6 +214,15 @@ func VerifyMCPInvocation(ctx context.Context) (*platform.Session, error) {
 	if bound == "" {
 		return nil, errors.New("MCP server has no bound client profile")
 	}
+	if session := platform.SessionFromContext(ctx); session != nil {
+		if session.GateOutcome != platform.GateVerified {
+			return nil, errors.New("MCP invocation context does not contain a verified tenant gate")
+		}
+		if session.ProfileName != bound || session.Source != registeredPlatformSource.Source {
+			return nil, errors.New("MCP invocation context does not match the server-bound client profile")
+		}
+		return session, nil
+	}
 	session, err := platform.PrepareProfileSource(bound, "{{.Name}}-pp-cli", registeredPlatformSource.Source)
 	if err != nil {
 		return nil, err
@@ -231,21 +240,27 @@ func VerifyMCPInvocation(ctx context.Context) (*platform.Session, error) {
 // resulting tenant/cache namespace to that invocation's HTTP client.
 func BindMCPClient(ctx context.Context, c *client.Client) (*platform.Session, error) {
 	if registeredPlatformSource == nil {
+		// A generated package has no provider identity adapter until the
+		// published CLI registers one. Still reuse an already verified internal
+		// middleware session so generated MCP conformance can prove the typed
+		// client path never performs a second gate.
+		if session := platform.SessionFromContext(ctx); session != nil {
+			if session.GateOutcome != platform.GateVerified {
+				return nil, errors.New("MCP invocation context does not contain a verified tenant gate")
+			}
+			if err := c.BindPlatformSession(session); err != nil {
+				return nil, err
+			}
+			return session, nil
+		}
 		return nil, nil
 	}
-	bound := strings.TrimSpace(os.Getenv(mcpBoundProfileEnv))
-	if bound == "" {
-		return nil, errors.New("MCP server has no bound client profile")
-	}
-	session, err := platform.PrepareProfileSource(bound, "{{.Name}}-pp-cli", registeredPlatformSource.Source)
+	session, err := VerifyMCPInvocation(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateRegisteredPlatformSourceProfile(session.SourceProfile); err != nil {
-		return nil, err
-	}
-	if err := platform.VerifyPreparedProfileSource(ctx, session, platformResolverFactory(), registeredPlatformSource.Adapter); err != nil {
-		return nil, err
+	if session == nil {
+		return nil, errors.New("MCP tenant gate is not configured")
 	}
 	if err := c.BindPlatformSession(session); err != nil {
 		session.ZeroCredentials()

@@ -59,6 +59,7 @@ const (
 
 // RegisterTools registers all API operations as MCP tools.
 func RegisterTools(s *server.MCPServer) {
+	installFreshTenantGate(s)
 {{- if .MCP.IsCodeOrchestration}}
 	// Code-orchestration mode — the full surface is covered by two tools
 	// (<api>_search + <api>_execute). Endpoint-mirror tools are suppressed.
