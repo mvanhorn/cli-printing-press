@@ -55,7 +55,7 @@ func newQuotesListCmd(flags *rootFlags) *cobra.Command {
 				if wrapErr != nil {
 					return wrapErr
 				}
-				wrapped, wrapErr = wrapPlatformStructuredOutput(wrapped, flags, "results")
+				wrapped, wrapErr = wrapPlatformStructuredOutput(wrapped, flags, "results", true)
 				if wrapErr != nil {
 					return wrapErr
 				}

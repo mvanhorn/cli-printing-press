@@ -207,7 +207,7 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 				if flags.agent {
 					resultKey = "results"
 				}
-				structured, err := wrapPlatformStructuredOutput(json.RawMessage(envelopeJSON), flags, resultKey)
+				structured, err := wrapPlatformStructuredOutput(json.RawMessage(envelopeJSON), flags, resultKey, true)
 				if err != nil {
 					return err
 				}
