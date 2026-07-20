@@ -293,9 +293,12 @@ func (values *platformSourceFlags) addFlags(command *cobra.Command) {
 }
 
 func (values platformSourceFlags) sourceProfile() platform.SourceProfile {
-	additional := make(map[string]string, len(values.additionalCredentialRef))
-	for name, ref := range values.additionalCredentialRef {
-		additional[name] = ref
+	var additional map[string]string
+	if len(values.additionalCredentialRef) > 0 {
+		additional = make(map[string]string, len(values.additionalCredentialRef))
+		for name, ref := range values.additionalCredentialRef {
+			additional[name] = ref
+		}
 	}
 	return platform.SourceProfile{
 		CredentialRef: values.credentialRef, UsernameRef: values.usernameRef, AdditionalCredentialRefs: additional,

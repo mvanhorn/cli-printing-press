@@ -57,6 +57,9 @@ func TestPlatformCredentiallessRegistrationIsExplicit(t *testing.T) {
 }
 
 func TestPlatformSourceFlagsPreserveNamedExactReferences(t *testing.T) {
+	if source := (platformSourceFlags{}).sourceProfile(); source.AdditionalCredentialRefs != nil {
+		t.Fatalf("empty named references must stay nil for migration idempotence: %#v", source.AdditionalCredentialRefs)
+	}
 	values := platformSourceFlags{
 		credentialRef: "op://Test Vault/Test Item/token",
 		additionalCredentialRef: map[string]string{
