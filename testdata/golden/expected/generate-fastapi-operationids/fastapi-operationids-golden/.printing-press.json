@@ -1,6 +1,17 @@
 {
   "api_name": "fastapi-operationids-golden",
   "api_version": "1.0",
+  "auth_env_var_specs": [
+    {
+      "kind": "per_call",
+      "name": "PRINTING_PRESS_CLIENT_PROFILE",
+      "required": true,
+      "sensitive": false
+    }
+  ],
+  "auth_env_vars": [
+    "PRINTING_PRESS_CLIENT_PROFILE"
+  ],
   "auth_type": "none",
   "cli_name": "fastapi-operationids-golden-pp-cli",
   "creator": {

@@ -19,9 +19,20 @@
     "entry_point": "bin/fastapi-operationids-golden-pp-mcp",
     "mcp_config": {
       "args": [],
-      "command": "${__dirname}/bin/fastapi-operationids-golden-pp-mcp"
+      "command": "${__dirname}/bin/fastapi-operationids-golden-pp-mcp",
+      "env": {
+        "PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}"
+      }
     },
     "type": "binary"
+  },
+  "user_config": {
+    "printing_press_client_profile": {
+      "description": "Binds the MCP server to an existing tenant-gated Printing Press client profile.",
+      "required": true,
+      "title": "Client profile",
+      "type": "string"
+    }
   },
   "version": "<PRINTING_PRESS_VERSION>"
 }

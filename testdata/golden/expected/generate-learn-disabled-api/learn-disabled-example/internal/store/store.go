@@ -136,6 +136,9 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 	}
 	hardenSQLiteFiles(dbPath)
 	defer hardenSQLiteFiles(dbPath)
+	if err := rejectNewerSchemaBeforeWAL(ctx, dbPath); err != nil {
+		return nil, err
+	}
 
 	// Pragma order is load-bearing: busy_timeout must engage BEFORE
 	// journal_mode(WAL) so the delete→WAL conversion (an exclusive
@@ -168,6 +171,40 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 	}
 
 	return s, nil
+}
+
+// rejectNewerSchemaBeforeWAL uses a lightweight read-only connection so an
+// old binary can reject a future schema before the read-write DSN attempts
+// journal_mode(WAL). The WAL conversion may wait behind a peer writer, but a
+// committed PRAGMA user_version remains readable while that writer is active.
+// Other probe errors are left to the normal open/migration path, which returns
+// the more precise corruption, permission, or lock error.
+func rejectNewerSchemaBeforeWAL(ctx context.Context, dbPath string) error {
+	info, err := os.Stat(dbPath)
+	if os.IsNotExist(err) || (err == nil && info.Size() == 0) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stating database for schema preflight: %w", err)
+	}
+	probe, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath)+"?mode=ro&_pragma=busy_timeout(1000)")
+	if err != nil {
+		return nil
+	}
+	defer probe.Close()
+	probe.SetMaxOpenConns(1)
+
+	var current int
+	if err := probe.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&current); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return nil
+	}
+	if current > StoreSchemaVersion {
+		return fmt.Errorf("database schema version %d is newer than supported version %d; upgrade the CLI binary or open an older database", current, StoreSchemaVersion)
+	}
+	return nil
 }
 
 // hardenSQLiteFiles is best-effort so stores on filesystems without Unix modes

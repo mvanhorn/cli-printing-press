@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/mark3labs/mcp-go/server"
+	"mcp-cloudflare-pp-cli/internal/cli"
 	mcptools "mcp-cloudflare-pp-cli/internal/mcp"
 )
 
@@ -30,6 +31,10 @@ func main() {
 	// Pin the learn-event surface for this process and every walker
 	// shell-out child, so usage events record surface=mcp.
 	_ = os.Setenv("MCP_CLOUDFLARE_LEARN_SURFACE", "mcp")
+	if err := cli.BindMCPServerProfile(); err != nil {
+		fmt.Fprintf(os.Stderr, "MCP client-profile bind failed: %v\n", err)
+		os.Exit(1)
+	}
 	s := server.NewMCPServer(
 		"Mcp Cloudflare",
 		version,

@@ -1,10 +1,16 @@
 {
   "api_name": "tier-routing-golden",
   "api_version": "1.0.0",
+  "auth_env_var_specs": [
+    {
+      "kind": "per_call",
+      "name": "PRINTING_PRESS_CLIENT_PROFILE",
+      "required": true,
+      "sensitive": false
+    }
+  ],
   "auth_env_vars": [
-    "TIER_GLOBAL_TOKEN",
-    "TIER_ENTERPRISE_TOKEN",
-    "TIER_PAID_KEY"
+    "PRINTING_PRESS_CLIENT_PROFILE"
   ],
   "auth_type": "bearer_token",
   "cli_name": "tier-routing-golden-pp-cli",

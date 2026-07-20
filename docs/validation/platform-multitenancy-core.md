@@ -60,6 +60,7 @@ adoption by every existing command remains rollout stage 5.
 | Generated platform and CLI conformance suites | PASS |
 | Focused manifest and MCP-sync profile-only auth tests | PASS |
 | Generated store contention and future-schema tests | PASS |
+| `bash scripts/golden.sh verify` after refreshing intentional generated-output fixtures | PASS; 32 cases |
 | `go test ./...` | PASS; generator package 301.517s |
 | `go test -race ./internal/generator ./internal/pipeline ./internal/spec ./internal/pipeline/mcpsync` | PASS; generator package 478.191s |
 | `go vet ./...` and `go build ./...` | PASS |

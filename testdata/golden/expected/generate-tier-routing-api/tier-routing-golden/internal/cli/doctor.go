@@ -147,6 +147,19 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
   tier-routing-golden-pp-cli doctor --fail-on warn
   tier-routing-golden-pp-cli doctor --fail-on stale`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if registeredPlatformSource != nil {
+				if flags.platformSession == nil {
+					return errors.New("verified client profile session is required")
+				}
+				report, err := platformDoctorV2Report(cmd.Context(), flags.platformSession)
+				if err != nil {
+					return err
+				}
+				if err := flags.printJSON(cmd, report); err != nil {
+					return err
+				}
+				return flags.platformGateError
+			}
 			report := map[string]any{}
 			pathsReport := collectPathsReport()
 			report["paths"] = pathsReport
