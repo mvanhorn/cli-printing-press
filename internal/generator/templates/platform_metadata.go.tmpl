@@ -14,18 +14,20 @@ import (
 )
 
 // WindowRequest is the caller's unambiguous requested form. Exactly one of an
-// explicit range, Days, or CompleteMonths should be used.
+// explicit range, Days, CompleteMonths, or Month should be used.
 type WindowRequest struct {
-	Start          *time.Time `json:"start,omitempty"`
-	End            *time.Time `json:"end,omitempty"`
-	Days           int        `json:"days,omitempty"`
-	CompleteMonths int        `json:"complete_months,omitempty"`
-	Timezone       string     `json:"timezone,omitempty"`
+	Start           *time.Time `json:"start,omitempty"`
+	End             *time.Time `json:"end,omitempty"`
+	Days            int        `json:"days,omitempty"`
+	CompleteMonths  int        `json:"complete_months,omitempty"`
+	Month           string     `json:"month,omitempty"`
+	Timezone        string     `json:"timezone,omitempty"`
+	CompletePeriods bool       `json:"complete_periods,omitempty"`
 }
 
 type WindowPolicy struct {
 	Now                 func() time.Time
-	Maximum             time.Duration
+	MaximumDays         int
 	ProviderMaximumName string
 	EndExclusive        bool
 }
@@ -67,6 +69,7 @@ func ResolveWindow(request WindowRequest, policy WindowPolicy) (ResolvedWindow, 
 		}
 		start = request.Start.In(location)
 		end = request.End.In(location)
+		complete = request.CompletePeriods
 	}
 	if request.Days != 0 {
 		forms++
@@ -87,8 +90,19 @@ func ResolveWindow(request WindowRequest, policy WindowPolicy) (ResolvedWindow, 
 		complete = true
 		endExclusive = true
 	}
+	if strings.TrimSpace(request.Month) != "" {
+		forms++
+		month, parseErr := time.ParseInLocation("2006-01", strings.TrimSpace(request.Month), location)
+		if parseErr != nil {
+			return ResolvedWindow{}, errors.New("calendar month must use YYYY-MM")
+		}
+		start = month
+		end = month.AddDate(0, 1, 0)
+		complete = true
+		endExclusive = true
+	}
 	if forms != 1 {
-		return ResolvedWindow{}, errors.New("window requires exactly one of explicit start/end, days, or complete months")
+		return ResolvedWindow{}, errors.New("window requires exactly one of explicit start/end, days, complete months, or calendar month")
 	}
 	if !start.Before(end) {
 		return ResolvedWindow{}, errors.New("window start must be before end")
@@ -103,8 +117,12 @@ func ResolveWindow(request WindowRequest, policy WindowPolicy) (ResolvedWindow, 
 		CompletePeriods: complete,
 		ProviderMaximum: policy.ProviderMaximumName,
 	}
-	if policy.Maximum > 0 && end.Sub(start) > policy.Maximum {
-		resolved.Start = end.Add(-policy.Maximum)
+	if policy.MaximumDays > 0 {
+		maximumStart := end.AddDate(0, 0, -policy.MaximumDays)
+		if !start.Before(maximumStart) {
+			return resolved, nil
+		}
+		resolved.Start = maximumStart
 		resolved.Clamped = true
 		resolved.ClampReason = "requested_window_exceeds_provider_maximum"
 	}
@@ -222,8 +240,10 @@ type AnalyticsDeclaration struct {
 	MissingJoinKeys  map[string]int64     `json:"missing_join_keys"`
 	MatchedRows      int64                `json:"matched_rows"`
 	NewestRowAt      map[string]time.Time `json:"newest_row_at,omitempty"`
+	FreshnessStatus  map[string]string    `json:"freshness_status"`
 	BusinessMetrics  map[string]*float64  `json:"business_metrics"`
 	MinimumInputRows map[string]int64     `json:"minimum_input_rows,omitempty"`
+	Remediation      string               `json:"remediation,omitempty"`
 }
 
 type AnalyticsFailure struct {
@@ -236,16 +256,67 @@ func (e *AnalyticsFailure) Error() string {
 }
 
 func ValidateAnalytics(declaration AnalyticsDeclaration) error {
-	if len(declaration.RequiredInputs) == 0 || len(declaration.BusinessMetrics) == 0 {
-		return errors.New("analytics declaration requires inputs and business metrics")
+	reject := func(reason string) error {
+		return &AnalyticsFailure{Reason: reason, Diagnostic: declaration}
+	}
+	if strings.TrimSpace(declaration.ClientProfile) == "" {
+		return reject("missing_client_profile")
+	}
+	if len(declaration.TenantIdentity) == 0 {
+		return reject("missing_verified_tenant")
+	}
+	if strings.TrimSpace(declaration.DataSource) == "" {
+		return reject("missing_data_source")
+	}
+	if len(declaration.RequiredInputs) == 0 {
+		return reject("missing_required_inputs")
+	}
+	if declaration.JoinKeys == nil {
+		return reject("missing_join_key_declaration")
+	}
+	if declaration.InputRows == nil || declaration.MinimumInputRows == nil {
+		return reject("missing_input_count_declaration")
+	}
+	if declaration.ValidJoinKeys == nil || declaration.MissingJoinKeys == nil {
+		return reject("missing_join_key_diagnostics")
+	}
+	if declaration.NewestRowAt == nil || declaration.FreshnessStatus == nil {
+		return reject("missing_freshness_diagnostics")
+	}
+	if strings.TrimSpace(declaration.Remediation) == "" {
+		return reject("missing_remediation")
+	}
+	if len(declaration.BusinessMetrics) == 0 {
+		return reject("missing_business_metrics")
 	}
 	for _, input := range declaration.RequiredInputs {
-		minimum := declaration.MinimumInputRows[input]
-		if minimum == 0 {
-			minimum = 1
+		minimum, declared := declaration.MinimumInputRows[input]
+		if !declared || minimum < 1 {
+			return reject("missing_minimum_input_rows")
+		}
+		status, declared := declaration.FreshnessStatus[input]
+		if !declared {
+			return reject("missing_freshness_status")
+		}
+		switch status {
+		case "observed":
+			if declaration.NewestRowAt[input].IsZero() {
+				return reject("missing_newest_row_at")
+			}
+		case "unknown", "not_applicable":
+		default:
+			return reject("invalid_freshness_status")
 		}
 		if declaration.InputRows[input] < minimum {
-			return &AnalyticsFailure{Reason: "required_input_below_minimum", Diagnostic: declaration}
+			return reject("required_input_below_minimum")
+		}
+	}
+	for _, key := range declaration.JoinKeys {
+		if _, ok := declaration.ValidJoinKeys[key]; !ok {
+			return reject("missing_join_key_diagnostics")
+		}
+		if _, ok := declaration.MissingJoinKeys[key]; !ok {
+			return reject("missing_join_key_diagnostics")
 		}
 	}
 	if declaration.MatchedRows == 0 {
@@ -254,9 +325,9 @@ func ValidateAnalytics(declaration AnalyticsDeclaration) error {
 			hasRows = hasRows || count > 0
 		}
 		if hasRows {
-			return &AnalyticsFailure{Reason: "nonempty_inputs_with_zero_join_matches", Diagnostic: declaration}
+			return reject("nonempty_inputs_with_zero_join_matches")
 		}
-		return &AnalyticsFailure{Reason: "empty_join", Diagnostic: declaration}
+		return reject("empty_join")
 	}
 	allZeroOrNull := true
 	metricNames := make([]string, 0, len(declaration.BusinessMetrics))
@@ -272,7 +343,7 @@ func ValidateAnalytics(declaration AnalyticsDeclaration) error {
 		}
 	}
 	if allZeroOrNull {
-		return &AnalyticsFailure{Reason: "all_business_metrics_zero_or_null", Diagnostic: declaration}
+		return reject("all_business_metrics_zero_or_null")
 	}
 	return nil
 }

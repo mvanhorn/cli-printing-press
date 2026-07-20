@@ -417,6 +417,9 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 			if err := initializePlatformReceipt(cmd, flags); err != nil {
 				return err
 			}
+			if err := adoptPlatformCommandWindow(cmd, flags); err != nil {
+				return err
+			}
 			flags.platformMetadataWriter = cmd.ErrOrStderr()
 			if err := verifyPlatformSession(cmd.Context(), flags); err != nil {
 				if platformCommandIsDoctor(cmd) {

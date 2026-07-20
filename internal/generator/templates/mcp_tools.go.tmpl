@@ -429,6 +429,9 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 		// non-map payloads; GetArguments() returns the map[string]any shape
 		// we rely on here (or an empty map when the payload is something else).
 		args := req.GetArguments()
+		if err := cli.AdoptMCPOutputSemantics(platformSession, args); err != nil {
+			return mcpToolError(err.Error()), nil
+		}
 
 		// positionalParams mixes real URL path params with CLI positional
 		// args that map to query params (e.g. `search <query>` -> ?query=);

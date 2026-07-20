@@ -2386,6 +2386,8 @@ func (g *Generator) renderSingleFiles() error {
 		"platform_doctor.go.tmpl":                  filepath.Join("internal", "platform", "doctor.go"),
 		"platform_cli.go.tmpl":                     filepath.Join("internal", "cli", "platform_client.go"),
 		"platform_cli_test.go.tmpl":                filepath.Join("internal", "cli", "platform_cli_test.go"),
+		"platform_window.go.tmpl":                  filepath.Join("internal", "cli", "platform_window.go"),
+		"platform_window_test.go.tmpl":             filepath.Join("internal", "cli", "platform_window_test.go"),
 		"platform_conformance_test.go.tmpl":        filepath.Join("internal", "platform", "conformance_test.go"),
 		"platform_receipt_status_golden.json.tmpl": filepath.Join("internal", "platform", "testdata", "receipt-status-golden.json"),
 		"client.go.tmpl":                           filepath.Join("internal", "client", "client.go"),

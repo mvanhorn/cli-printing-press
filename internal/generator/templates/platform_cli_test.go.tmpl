@@ -217,6 +217,9 @@ func TestPlatformCLIConformanceOutputMetadataAndAnalytics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	session.GateOutcome = platform.GateVerified
+	session.CredentialFingerprint = "fixture-fingerprint"
+	session.ObservedIdentity = map[string]string{"account_id": "acct-a"}
 	window, err := platform.ResolveWindow(platform.WindowRequest{Days: 7}, platform.WindowPolicy{
 		Now:          func() time.Time { return time.Date(2026, time.July, 20, 0, 0, 0, 0, time.UTC) },
 		EndExclusive: true,
@@ -265,10 +268,20 @@ func TestPlatformCLIConformanceOutputMetadataAndAnalytics(t *testing.T) {
 
 	zero := 0.0
 	declaration := platform.AnalyticsDeclaration{
-		RequiredInputs:  []string{"orders"},
-		InputRows:       map[string]int64{"orders": 2},
-		MatchedRows:     2,
-		BusinessMetrics: map[string]*float64{"net_sales": &zero},
+		ClientProfile:    "tenant-a",
+		TenantIdentity:   map[string]string{"account_id": "acct-a"},
+		DataSource:       "fixture",
+		RequiredInputs:   []string{"orders"},
+		JoinKeys:         []string{},
+		InputRows:        map[string]int64{"orders": 2},
+		ValidJoinKeys:    map[string]int64{},
+		MissingJoinKeys:  map[string]int64{},
+		MatchedRows:      2,
+		NewestRowAt:      map[string]time.Time{},
+		FreshnessStatus:  map[string]string{"orders": "unknown"},
+		BusinessMetrics:  map[string]*float64{"net_sales": &zero},
+		MinimumInputRows: map[string]int64{"orders": 1},
+		Remediation:      "verify fixture order input and net sales calculation",
 	}
 	formatFlags := make([]*rootFlags, 0, 4)
 	formatFlags = append(formatFlags,
