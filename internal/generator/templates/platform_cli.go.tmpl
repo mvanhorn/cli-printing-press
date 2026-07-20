@@ -269,19 +269,21 @@ func attachPlatformWhoamiCommand(root *cobra.Command, flags *rootFlags) {
 }
 
 type platformSourceFlags struct {
-	credentialRef       string
-	usernameRef         string
-	expectedAccountID   string
-	expectedOrgName     string
-	expectedStoreID     string
-	expectedStoreDomain string
-	expectedPropertyID  string
-	expectedBaseURL     string
+	credentialRef           string
+	usernameRef             string
+	additionalCredentialRef map[string]string
+	expectedAccountID       string
+	expectedOrgName         string
+	expectedStoreID         string
+	expectedStoreDomain     string
+	expectedPropertyID      string
+	expectedBaseURL         string
 }
 
 func (values *platformSourceFlags) addFlags(command *cobra.Command) {
 	command.Flags().StringVar(&values.credentialRef, "credential-ref", "", "Exact op:// credential reference")
 	command.Flags().StringVar(&values.usernameRef, "username-ref", "", "Exact op:// username reference")
+	command.Flags().StringToStringVar(&values.additionalCredentialRef, "additional-credential-ref", nil, "Named exact op:// credential references (name=reference)")
 	command.Flags().StringVar(&values.expectedAccountID, "expected-account-id", "", "Trusted immutable provider account ID")
 	command.Flags().StringVar(&values.expectedOrgName, "expected-org-name", "", "Exact expected organization name")
 	command.Flags().StringVar(&values.expectedStoreID, "expected-store-id", "", "Trusted immutable Shopify store ID")
@@ -291,8 +293,12 @@ func (values *platformSourceFlags) addFlags(command *cobra.Command) {
 }
 
 func (values platformSourceFlags) sourceProfile() platform.SourceProfile {
+	additional := make(map[string]string, len(values.additionalCredentialRef))
+	for name, ref := range values.additionalCredentialRef {
+		additional[name] = ref
+	}
 	return platform.SourceProfile{
-		CredentialRef: values.credentialRef, UsernameRef: values.usernameRef,
+		CredentialRef: values.credentialRef, UsernameRef: values.usernameRef, AdditionalCredentialRefs: additional,
 		ExpectedAccountID: values.expectedAccountID, ExpectedOrgName: values.expectedOrgName,
 		ExpectedStoreID: values.expectedStoreID, ExpectedStoreDomain: values.expectedStoreDomain,
 		ExpectedPropertyID: values.expectedPropertyID, ExpectedBaseURL: values.expectedBaseURL,

@@ -56,6 +56,24 @@ func TestPlatformCredentiallessRegistrationIsExplicit(t *testing.T) {
 	}
 }
 
+func TestPlatformSourceFlagsPreserveNamedExactReferences(t *testing.T) {
+	values := platformSourceFlags{
+		credentialRef: "op://Test Vault/Test Item/token",
+		additionalCredentialRef: map[string]string{
+			"client_id": "op://Test Vault/Test Item/client-id",
+			"secret":    "op://Test Vault/Test Item/secret",
+		},
+	}
+	source := values.sourceProfile()
+	if source.CredentialRef != values.credentialRef || source.AdditionalCredentialRefs["client_id"] != values.additionalCredentialRef["client_id"] || source.AdditionalCredentialRefs["secret"] != values.additionalCredentialRef["secret"] {
+		t.Fatalf("source flags lost named exact references: %#v", source)
+	}
+	values.additionalCredentialRef["secret"] = "changed-after-copy"
+	if source.AdditionalCredentialRefs["secret"] == values.additionalCredentialRef["secret"] {
+		t.Fatal("source profile aliases mutable flag storage")
+	}
+}
+
 func TestPlatformWhoamiDoesNotShadowAPIResource(t *testing.T) {
 	root := &cobra.Command{Use: "sample-pp-cli"}
 	apiWhoami := &cobra.Command{Use: "whoami", Short: "API-owned identity resource"}
