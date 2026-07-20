@@ -1,0 +1,243 @@
+// Copyright {{currentYear}} {{copyrightHolder}}. Licensed under Apache-2.0. See LICENSE.
+
+package platform
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+
+	_ "modernc.org/sqlite"
+)
+
+// LegacyMigrationState reports only artifact-level migration facts. Legacy
+// config contents and database rows are never copied into receipts.
+type LegacyMigrationState struct {
+	Status    string                   `json:"status"`
+	Preserved bool                     `json:"preserved"`
+	Reason    string                   `json:"reason"`
+	Config    *LegacyMigrationArtifact `json:"config,omitempty"`
+	Database  *LegacyMigrationArtifact `json:"database,omitempty"`
+}
+
+type LegacyMigrationArtifact struct {
+	Path        string `json:"path"`
+	Status      string `json:"status"`
+	Copied      bool   `json:"copied"`
+	Destination string `json:"destination,omitempty"`
+	BackupPath  string `json:"backup_path,omitempty"`
+}
+
+const legacyBackupSuffix = ".printing-press-backup"
+
+// InspectLegacyMigrationPaths performs only filesystem metadata checks. It is
+// safe before the live tenant gate because it never opens a config or database.
+func InspectLegacyMigrationPaths(configPath, databasePath string) (LegacyMigrationState, error) {
+	state := LegacyMigrationState{
+		Status:    "none",
+		Preserved: true,
+		Reason:    "legacy state is adopted only after a live tenant gate and verified database ownership",
+	}
+	for kind, raw := range map[string]string{"config": configPath, "database": databasePath} {
+		path := strings.TrimSpace(raw)
+		if path == "" {
+			continue
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				backupPath := path + legacyBackupSuffix
+				backupInfo, backupErr := os.Lstat(backupPath)
+				if backupErr == nil && backupInfo.Mode().IsRegular() && backupInfo.Mode()&os.ModeSymlink == 0 {
+					artifact := &LegacyMigrationArtifact{Path: path, Status: "backed_up", Copied: false, BackupPath: backupPath}
+					if kind == "config" {
+						state.Config = artifact
+					} else {
+						state.Database = artifact
+					}
+					state.Status = "preserved"
+					continue
+				}
+			}
+			return LegacyMigrationState{}, fmt.Errorf("inspect legacy %s: %w", kind, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return LegacyMigrationState{}, fmt.Errorf("legacy %s may not be a symlink", kind)
+		}
+		if !info.Mode().IsRegular() {
+			return LegacyMigrationState{}, fmt.Errorf("legacy %s must be a regular file", kind)
+		}
+		artifact := &LegacyMigrationArtifact{Path: path, Status: "preserved", Copied: false}
+		if kind == "config" {
+			state.Config = artifact
+		} else {
+			artifact.Status = "pending_verification"
+			state.Database = artifact
+		}
+		state.Status = "preserved"
+	}
+	return state, nil
+}
+
+// AdoptVerifiedLegacyDatabase copies a legacy SQLite database only when its
+// existing tenant metadata matches the freshly verified session. Missing,
+// malformed, mixed, and wrong-tenant databases are quarantined in place.
+func AdoptVerifiedLegacyDatabase(ctx context.Context, session *Session, state *LegacyMigrationState) error {
+	if state == nil || state.Database == nil {
+		return nil
+	}
+	if session == nil || session.GateOutcome != GateVerified {
+		return errors.New("verified tenant session is required before legacy database inspection")
+	}
+	sourcePath := state.Database.Path
+	targetPath := session.Paths.DataFile
+	if targetPath == "" {
+		return errors.New("profile-scoped migration destination is empty")
+	}
+	if filepath.Clean(sourcePath) == filepath.Clean(targetPath) {
+		return errors.New("legacy database must differ from the profile-scoped destination")
+	}
+	if state.Database.Status == "backed_up" {
+		target, err := sql.Open("sqlite", readOnlySQLiteDSN(targetPath))
+		if err != nil {
+			return fmt.Errorf("open existing migration destination: %w", err)
+		}
+		defer target.Close()
+		if err := VerifyTenantMetadataReadOnly(ctx, target, session); err != nil {
+			return fmt.Errorf("backed-up legacy database has no verified destination: %w", err)
+		}
+		state.Database.Status = "already_adopted"
+		state.Database.Destination = targetPath
+		state.Status = "adopted"
+		return nil
+	}
+
+	source, err := sql.Open("sqlite", readOnlySQLiteDSN(sourcePath))
+	if err != nil {
+		markLegacyDatabaseQuarantined(state)
+		return nil
+	}
+	defer source.Close()
+	if err := source.PingContext(ctx); err != nil {
+		markLegacyDatabaseQuarantined(state)
+		return nil
+	}
+	if err := VerifyTenantMetadataReadOnly(ctx, source, session); err != nil {
+		markLegacyDatabaseQuarantined(state)
+		return nil
+	}
+
+	if _, err := os.Lstat(targetPath); err == nil {
+		target, openErr := sql.Open("sqlite", readOnlySQLiteDSN(targetPath))
+		if openErr != nil {
+			return fmt.Errorf("open existing migration destination: %w", openErr)
+		}
+		defer target.Close()
+		if verifyErr := VerifyTenantMetadataReadOnly(ctx, target, session); verifyErr != nil {
+			return fmt.Errorf("existing migration destination is not owned by the verified tenant: %w", verifyErr)
+		}
+		state.Database.Status = "already_adopted"
+		state.Database.Copied = false
+		state.Database.Destination = targetPath
+		state.Status = "adopted"
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect migration destination: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
+		return fmt.Errorf("create migration destination directory: %w", err)
+	}
+	quotedTarget := strings.ReplaceAll(targetPath, "'", "''")
+	if _, err := source.ExecContext(ctx, "VACUUM INTO '"+quotedTarget+"'"); err != nil {
+		_ = os.Remove(targetPath)
+		return fmt.Errorf("copy verified legacy database: %w", err)
+	}
+	if err := os.Chmod(targetPath, 0o600); err != nil {
+		_ = os.Remove(targetPath)
+		return fmt.Errorf("secure migrated database: %w", err)
+	}
+	target, err := sql.Open("sqlite", targetPath)
+	if err != nil {
+		_ = os.Remove(targetPath)
+		return fmt.Errorf("open migrated database: %w", err)
+	}
+	if err := VerifyTenantMetadata(ctx, target, session); err != nil {
+		_ = target.Close()
+		_ = os.Remove(targetPath)
+		return fmt.Errorf("verify migrated database: %w", err)
+	}
+	if err := target.Close(); err != nil {
+		return fmt.Errorf("close migrated database: %w", err)
+	}
+	state.Database.Status = "adopted"
+	state.Database.Copied = true
+	state.Database.Destination = targetPath
+	state.Status = "adopted"
+	return nil
+}
+
+func markLegacyDatabaseQuarantined(state *LegacyMigrationState) {
+	state.Database.Status = "quarantined"
+	state.Database.Copied = false
+	state.Status = "quarantined"
+	state.Reason = "legacy database is missing matching verified tenant metadata; use a clean profile-scoped sync"
+}
+
+// BackupLegacyArtifacts is the explicit cleanup step. It never deletes legacy
+// state: verified artifacts are renamed beside the original path to a stable,
+// recoverable backup. Unverified databases must remain quarantined in place.
+func BackupLegacyArtifacts(state *LegacyMigrationState) error {
+	if state == nil {
+		return nil
+	}
+	if state.Database != nil && state.Database.Status == "quarantined" {
+		return errors.New("refusing cleanup of a quarantined legacy database")
+	}
+	artifacts := []*LegacyMigrationArtifact{state.Config, state.Database}
+	for _, artifact := range artifacts {
+		if artifact == nil || artifact.Status == "backed_up" || artifact.BackupPath != "" || artifact.Path == "" {
+			continue
+		}
+		backupPath := artifact.Path + legacyBackupSuffix
+		if _, err := os.Lstat(backupPath); err == nil {
+			return fmt.Errorf("legacy backup already exists: %s", backupPath)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect legacy backup: %w", err)
+		}
+	}
+	moved := make([]*LegacyMigrationArtifact, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact == nil || artifact.Status == "backed_up" || artifact.BackupPath != "" || artifact.Path == "" {
+			continue
+		}
+		backupPath := artifact.Path + legacyBackupSuffix
+		if err := os.Rename(artifact.Path, backupPath); err != nil {
+			for i := len(moved) - 1; i >= 0; i-- {
+				_ = os.Rename(moved[i].BackupPath, moved[i].Path)
+				moved[i].BackupPath = ""
+			}
+			return fmt.Errorf("back up legacy artifact: %w", err)
+		}
+		if err := os.Chmod(backupPath, 0o600); err != nil {
+			_ = os.Rename(backupPath, artifact.Path)
+			return fmt.Errorf("secure legacy backup: %w", err)
+		}
+		artifact.BackupPath = backupPath
+		artifact.Status = "backed_up"
+		moved = append(moved, artifact)
+	}
+	if len(moved) > 0 {
+		state.Status = "backed_up"
+		state.Reason = "legacy artifacts were preserved in explicit recoverable backups"
+	}
+	return nil
+}
+
+func readOnlySQLiteDSN(path string) string {
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro"}).String()
+}

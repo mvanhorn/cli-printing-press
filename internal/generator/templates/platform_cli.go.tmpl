@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 
@@ -25,6 +26,9 @@ type platformSourceRegistration struct {
 	Credentialless       bool
 	BindClient           func(*client.Client, *platform.Session) error
 	ResourceHealth       func(context.Context, *platform.Session) ([]platform.ResourceHealth, error)
+	WindowMaximumDays    int
+	WindowMaximumName    string
+	ValidateSourceProfile func(platform.SourceProfile) error
 	ValidateLegacyInputs func(*cobra.Command, *rootFlags, *platform.Session) error
 }
 
@@ -69,6 +73,9 @@ func validateRegisteredPlatformSourceProfile(source platform.SourceProfile) erro
 	if !registeredPlatformSource.Credentialless && len(source.References()) == 0 {
 		return fmt.Errorf("source %q requires at least one exact credential reference", registeredPlatformSource.Source)
 	}
+	if registeredPlatformSource.ValidateSourceProfile != nil {
+		return registeredPlatformSource.ValidateSourceProfile(source)
+	}
 	return nil
 }
 
@@ -89,10 +96,47 @@ func verifyPlatformSession(ctx context.Context, flags *rootFlags) error {
 }
 
 func validatePlatformLegacyInputs(cmd *cobra.Command, flags *rootFlags) error {
+	if err := validatePlatformArtifactOverrides(cmd, flags.platformSession); err != nil {
+		return err
+	}
 	if registeredPlatformSource == nil || registeredPlatformSource.ValidateLegacyInputs == nil {
 		return nil
 	}
 	return registeredPlatformSource.ValidateLegacyInputs(cmd, flags, flags.platformSession)
+}
+
+func validatePlatformArtifactOverrides(cmd *cobra.Command, session *platform.Session) error {
+	// Manually injected in-process fixtures have no loaded profile. Production
+	// CLI and MCP sessions always do, so artifact enforcement cannot be bypassed
+	// from an external invocation.
+	if cmd == nil || session == nil || session.Profile == nil {
+		return nil
+	}
+	expectedPaths := map[string]string{
+		"db": session.Paths.DataFile, "database": session.Paths.DataFile,
+		"data-file": session.Paths.DataFile, "store": session.Paths.DataFile,
+		"data-dir":  filepath.Dir(session.Paths.DataFile),
+		"state-dir": session.Paths.StateDir, "home": session.Paths.StateDir,
+		"cache-dir": session.Paths.CacheDir,
+	}
+	for name, expected := range expectedPaths {
+		flag := cmd.Flags().Lookup(name)
+		if flag == nil || !flag.Changed {
+			continue
+		}
+		actual := strings.TrimSpace(flag.Value.String())
+		if actual == "" || strings.TrimSpace(expected) == "" || filepath.Clean(actual) != filepath.Clean(expected) {
+			return fmt.Errorf("tenant artifact conflict: --%s must use the selected client profile path", name)
+		}
+	}
+	prefix := strings.ToUpper(strings.ReplaceAll(strings.TrimSuffix(session.CLI, "-pp-cli"), "-", "_"))
+	for _, suffix := range []string{"_DB", "_DATABASE", "_DATA_FILE", "_DATA_DIR", "_STATE_DIR", "_CACHE_DIR", "_HOME"} {
+		name := prefix + suffix
+		if strings.TrimSpace(os.Getenv(name)) != "" {
+			return fmt.Errorf("tenant artifact conflict: %s cannot override a selected client profile", name)
+		}
+	}
+	return nil
 }
 
 func platformCommandNeedsGate(cmd *cobra.Command) bool {
@@ -116,7 +160,7 @@ func platformCommandNeedsGate(cmd *cobra.Command) bool {
 			// explicitly named profile-management surface is a control command.
 			return true
 		}
-	case "profile", "auth", "agent-context", "feedback", "which", "version", "completion", "about":
+	case "profile", "auth", "agent-context", "feedback", "which", "version", "completion", "about", "api":
 		return false
 	default:
 		return true
@@ -158,6 +202,29 @@ func BindMCPServerProfile() error {
 		return err
 	}
 	return os.Setenv(mcpBoundProfileEnv, session.ProfileName)
+}
+
+// VerifyMCPInvocation runs the one live tenant gate shared by typed API and
+// local-store MCP tool invocations.
+func VerifyMCPInvocation(ctx context.Context) (*platform.Session, error) {
+	if registeredPlatformSource == nil {
+		return nil, nil
+	}
+	bound := strings.TrimSpace(os.Getenv(mcpBoundProfileEnv))
+	if bound == "" {
+		return nil, errors.New("MCP server has no bound client profile")
+	}
+	session, err := platform.PrepareProfileSource(bound, "{{.Name}}-pp-cli", registeredPlatformSource.Source)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateRegisteredPlatformSourceProfile(session.SourceProfile); err != nil {
+		return nil, err
+	}
+	if err := platform.VerifyPreparedProfileSource(ctx, session, platformResolverFactory(), registeredPlatformSource.Adapter); err != nil {
+		return nil, err
+	}
+	return session, nil
 }
 
 // BindMCPClient runs one live gate per typed MCP tool invocation and binds the
@@ -440,6 +507,7 @@ func newPlatformClientSetDefaultCmd(flags *rootFlags) *cobra.Command {
 func newPlatformClientMigrateCmd(flags *rootFlags) *cobra.Command {
 	var values platformSourceFlags
 	var legacyConfig, legacyDB string
+	var cleanupLegacy bool
 	command := &cobra.Command{Use: "migrate <name>", Short: "Create or add a source only after a live gate; preserve and quarantine unproven legacy state", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) (retErr error) {
 		if registeredPlatformSource == nil {
 			return errors.New("this CLI has no registered tenant identity adapter")
@@ -465,7 +533,7 @@ func newPlatformClientMigrateCmd(flags *rootFlags) *cobra.Command {
 		default:
 			return err
 		}
-		legacy, err := inspectLegacyMigrationState(legacyConfig, legacyDB)
+		legacy, err := platform.InspectLegacyMigrationPaths(legacyConfig, legacyDB)
 		if err != nil {
 			return err
 		}
@@ -486,6 +554,14 @@ func newPlatformClientMigrateCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 		}
+		if err := platform.AdoptVerifiedLegacyDatabase(cmd.Context(), session, &legacy); err != nil {
+			return err
+		}
+		if cleanupLegacy {
+			if err := platform.BackupLegacyArtifacts(&legacy); err != nil {
+				return err
+			}
+		}
 		return flags.printJSON(cmd, map[string]any{
 			"client_profile": profile.Name, "source": registeredPlatformSource.Source,
 			"gate": session.GateOutcome, "already_migrated": alreadyMigrated,
@@ -495,29 +571,8 @@ func newPlatformClientMigrateCmd(flags *rootFlags) *cobra.Command {
 	values.addFlags(command)
 	command.Flags().StringVar(&legacyConfig, "legacy-config", "", "Existing legacy config to preserve and mark as unadopted")
 	command.Flags().StringVar(&legacyDB, "legacy-db", "", "Existing legacy database to preserve and quarantine")
+	command.Flags().BoolVar(&cleanupLegacy, "cleanup-legacy", false, "Move verified legacy artifacts to recoverable .printing-press-backup files")
 	return command
-}
-
-func inspectLegacyMigrationState(legacyConfig, legacyDB string) (map[string]any, error) {
-	legacy := map[string]any{
-		"status": "none", "preserved": true,
-		"reason": "legacy state has no verified tenant metadata and is never adopted automatically; perform a clean profile-scoped sync",
-	}
-	for kind, path := range map[string]string{"config": legacyConfig, "database": legacyDB} {
-		if strings.TrimSpace(path) == "" {
-			continue
-		}
-		info, err := os.Lstat(path)
-		if err != nil {
-			return nil, fmt.Errorf("inspect legacy %s: %w", kind, err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("legacy %s may not be a symlink", kind)
-		}
-		legacy[kind] = map[string]any{"path": path, "status": "quarantined", "copied": false}
-		legacy["status"] = "quarantined"
-	}
-	return legacy, nil
 }
 
 func newPlatformClientDeleteCmd(flags *rootFlags) *cobra.Command {

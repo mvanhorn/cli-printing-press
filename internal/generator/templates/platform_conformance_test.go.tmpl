@@ -9,10 +9,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -280,6 +282,63 @@ func TestProviderMismatchAndDatabaseOwnershipConformance(t *testing.T) {
 	}
 }
 
+func TestCrossSourceDatabaseRequiresSelectedProfileOwnership(t *testing.T) {
+	setPlatformRoots(t)
+	profile := &Profile{
+		SchemaVersion: ProfileSchemaVersion,
+		Name:          "tenant-a",
+		Sources: map[string]SourceProfile{
+			"meta-ads": {CredentialRef: "op://Synthetic/Meta/token", ExpectedAccountID: "meta-one"},
+			"shopify":  {CredentialRef: "op://Synthetic/Shopify/token", ExpectedStoreID: "shop-one", ExpectedStoreDomain: "tenant-a.myshopify.com"},
+		},
+	}
+	primary, err := PrepareProfileSourceFromConfig(profile, "meta-ads-pp-cli", "meta-ads")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary.GateOutcome = GateVerified
+	primary.CredentialFingerprint = "meta-fingerprint"
+	primary.ObservedIdentity = map[string]string{"account_id": "meta-one"}
+	primary.GateCheckedAt = time.Unix(2, 0).UTC()
+	owner, err := PrepareProfileSourceFromConfig(profile, "shopify-pp-cli", "shopify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.GateOutcome = GateVerified
+	owner.CredentialFingerprint = "shopify-fingerprint"
+	owner.ObservedIdentity = map[string]string{"store_id": "shop-one", "store_domain": "tenant-a.myshopify.com"}
+	owner.GateCheckedAt = time.Unix(1, 0).UTC()
+
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "shopify.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := InitializeTenantMetadata(context.Background(), db, owner, "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyCrossSourceTenantMetadataReadOnly(context.Background(), db, primary, "shopify"); err != nil {
+		t.Fatalf("verified cross-source database rejected: %v", err)
+	}
+	wantPaths, err := PathsFor("tenant-a", "shopify-pp-cli", "shopify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := CrossSourceDataPath(primary, "shopify-pp-cli", "shopify"); err != nil || got != wantPaths.DataFile {
+		t.Fatalf("cross-source path = %q, %v; want %q", got, err, wantPaths.DataFile)
+	}
+	tampered := *primary
+	tamperedProfile := *profile
+	tamperedProfile.Sources = map[string]SourceProfile{
+		"meta-ads": profile.Sources["meta-ads"],
+		"shopify":  {CredentialRef: "op://Synthetic/Shopify/token", ExpectedStoreID: "shop-two", ExpectedStoreDomain: "tenant-b.myshopify.com"},
+	}
+	tampered.Profile = &tamperedProfile
+	if err := VerifyCrossSourceTenantMetadataReadOnly(context.Background(), db, &tampered, "shopify"); err == nil {
+		t.Fatal("cross-source database from another expected tenant was accepted")
+	}
+}
+
 func TestWindowTruncationAndAnalyticsConformance(t *testing.T) {
 	now := time.Date(2026, time.March, 15, 12, 0, 0, 0, time.UTC)
 	window, err := ResolveWindow(WindowRequest{Days: 90, Timezone: "UTC"}, WindowPolicy{Now: func() time.Time { return now }, Maximum: 30 * 24 * time.Hour, ProviderMaximumName: "30d", EndExclusive: true})
@@ -437,5 +496,89 @@ func TestReceiptConformance(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(auditDir, "index.jsonl")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type receiptStatusGolden struct {
+	Name         string             `json:"name"`
+	Status       string             `json:"status"`
+	ExitCode     int                `json:"exit_code"`
+	Gate         GateOutcome        `json:"gate"`
+	Truncated    bool               `json:"truncated"`
+	CapsHit      []TruncationReason `json:"caps_hit"`
+	RateLimit    RateLimitMetadata  `json:"rate_limit"`
+	OutputSHA256 string             `json:"output_sha256"`
+	OutputBytes  int64              `json:"output_bytes"`
+}
+
+func TestReceiptStatusGoldenFixtures(t *testing.T) {
+	goldenData, err := os.ReadFile("testdata/receipt-status-golden.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var golden []receiptStatusGolden
+	if err := json.Unmarshal(goldenData, &golden); err != nil {
+		t.Fatal(err)
+	}
+	fixedStart := time.Date(2026, 7, 20, 0, 0, 0, 123000000, time.UTC)
+	window := &ResolvedWindow{
+		Requested: WindowRequest{Days: 1}, Start: fixedStart.Add(-24 * time.Hour), End: fixedStart,
+		Timezone: "UTC", StartInclusive: true, EndExclusive: true,
+	}
+	for _, expected := range golden {
+		t.Run(expected.Name, func(t *testing.T) {
+			paths, err := PathsFor("synthetic", "sample-pp-cli", "sample")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session := &Session{
+				Profile: &Profile{Name: "synthetic"}, ProfileName: "synthetic", CLI: "sample", Source: "sample",
+				GateOutcome: expected.Gate, ExpectedIdentity: map[string]string{"account_id": "one"}, ObservedIdentity: map[string]string{"account_id": "one"}, Paths: paths,
+			}
+			receiptPath := filepath.Join(t.TempDir(), expected.Name+".json")
+			writer, err := NewReceiptWriter(session, ReceiptOptions{
+				CLI:  ReceiptCLI{Name: "sample-pp-cli", Version: "test"},
+				Argv: []string{"sample-pp-cli", "--legacy-token", "must-not-survive"}, ReceiptFile: receiptPath, Window: window,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writer.Receipt.RunID = "run-" + expected.Name
+			writer.Receipt.StartedAt = fixedStart
+			writer.now = func() time.Time { return fixedStart.Add(3 * time.Second) }
+			writer.SetArgvRedactions([]int{2})
+			if _, err := writer.CaptureWriter("stdout", io.Discard).Write([]byte("fixture output\n")); err != nil {
+				t.Fatal(err)
+			}
+			metadata := OutputMetadata{ResolvedWindow: window, Truncated: expected.Truncated, TruncationReasons: expected.CapsHit}
+			if err := writer.Finalize(context.Background(), expected.Status, expected.ExitCode, map[string]RowCounts{}, metadata, expected.RateLimit); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(receiptPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "must-not-survive") || strings.Contains(string(data), "fixture output") {
+				t.Fatal("receipt retained a redacted argument or output payload")
+			}
+			var receipt Receipt
+			if err := json.Unmarshal(data, &receipt); err != nil {
+				t.Fatal(err)
+			}
+			if len(receipt.Outputs) != 1 || receipt.Window == nil || receipt.Window.Start != window.Start || receipt.Window.End != window.End || !receipt.StartedAt.Equal(fixedStart) || !receipt.FinishedAt.Equal(fixedStart.Add(3*time.Second)) || !reflect.DeepEqual(receipt.ArgvRedactions, []int{2}) {
+				t.Fatalf("receipt schema fields = %+v", receipt)
+			}
+			actual := receiptStatusGolden{
+				Name: expected.Name, Status: receipt.Status, ExitCode: receipt.ExitCode, Gate: receipt.Client.Gate,
+				Truncated: receipt.Truncated, CapsHit: receipt.CapsHit, RateLimit: receipt.RateLimit,
+				OutputSHA256: receipt.Outputs[0].SHA256, OutputBytes: receipt.Outputs[0].Bytes,
+			}
+			if actual.CapsHit == nil {
+				actual.CapsHit = []TruncationReason{}
+			}
+			if !reflect.DeepEqual(actual, expected) {
+				t.Fatalf("receipt golden mismatch\nactual:   %#v\nexpected: %#v", actual, expected)
+			}
+		})
 	}
 }
