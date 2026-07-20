@@ -52,6 +52,15 @@ also preserve both concurrent fresh-open retry and fast future-schema refusal.
 Window/truncation and silent-analytics helpers are primitives at this stage;
 adoption by every existing command remains rollout stage 5.
 
+## Gorgias documented identity contract
+
+Live canary validation found that Gorgias's documented `GET /account` response
+contains the tenant `domain` but no immutable account ID. Generated platform
+contracts now require the canonical `expected_base_url` for Gorgias and reject
+`expected_account_id` rather than depending on undocumented provider metadata.
+The generated conformance suite proves canonical-domain mismatch remains a
+fail-closed tenant error.
+
 ## Review hardening
 
 Greptile's review found three blocking generator issues. Successful mutations

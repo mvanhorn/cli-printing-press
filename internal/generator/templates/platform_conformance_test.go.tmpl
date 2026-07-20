@@ -219,11 +219,21 @@ func TestGateTypedFailuresConformance(t *testing.T) {
 	}
 }
 
+func TestGorgiasUsesDocumentedBaseURLIdentityOnly(t *testing.T) {
+	if err := validateRequiredIdentity("gorgias", SourceProfile{ExpectedBaseURL: "https://tenant-a.gorgias.com/api"}); err != nil {
+		t.Fatal(err)
+	}
+	err := validateRequiredIdentity("gorgias", SourceProfile{ExpectedAccountID: "42", ExpectedBaseURL: "https://tenant-a.gorgias.com/api"})
+	if err == nil || !strings.Contains(err.Error(), "does not expose a documented immutable account ID") {
+		t.Fatalf("undocumented Gorgias account ID assertion = %#v", err)
+	}
+}
+
 func TestProviderMismatchAndDatabaseOwnershipConformance(t *testing.T) {
 	setPlatformRoots(t)
 	profile := &Profile{SchemaVersion: ProfileSchemaVersion, Name: "tenant-a", Sources: map[string]SourceProfile{
 		"shopify": {CredentialRef: "op://Synthetic/Shopify/token", ExpectedStoreID: "gid://shopify/Shop/1", ExpectedStoreDomain: "tenant-a.myshopify.com"},
-		"gorgias": {CredentialRef: "op://Synthetic/Gorgias/key", UsernameRef: "op://Synthetic/Gorgias/user", ExpectedAccountID: "42", ExpectedBaseURL: "https://tenant-a.gorgias.com/api"},
+		"gorgias": {CredentialRef: "op://Synthetic/Gorgias/key", UsernameRef: "op://Synthetic/Gorgias/user", ExpectedBaseURL: "https://tenant-a.gorgias.com/api"},
 	}}
 	if err := SaveProfile(profile); err != nil {
 		t.Fatal(err)
@@ -236,7 +246,7 @@ func TestProviderMismatchAndDatabaseOwnershipConformance(t *testing.T) {
 	}
 	gorgiasRefs := profile.Sources["gorgias"].References()
 	resolver := fixtureResolver{gorgiasRefs["credential"]: []byte("key"), gorgiasRefs["username"]: []byte("user")}
-	_, err = VerifyProfileSource(context.Background(), "tenant-a", "sample-pp-cli", "gorgias", resolver, &fixtureAdapter{observed: ObservedIdentity{AccountID: "43", BaseURL: "https://tenant-a.gorgias.com/api"}})
+	_, err = VerifyProfileSource(context.Background(), "tenant-a", "sample-pp-cli", "gorgias", resolver, &fixtureAdapter{observed: ObservedIdentity{BaseURL: "https://tenant-b.gorgias.com/api"}})
 	if !errors.As(err, &gateErr) || gateErr.Outcome != GateMismatch {
 		t.Fatalf("gorgias mismatch = %#v", err)
 	}

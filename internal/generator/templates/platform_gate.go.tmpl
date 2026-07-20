@@ -325,8 +325,11 @@ func validateRequiredIdentity(source string, expected SourceProfile) error {
 			return errors.New("google-analytics requires expected_property_id")
 		}
 	case "gorgias":
-		if !require(expected.ExpectedAccountID, expected.ExpectedBaseURL) {
-			return errors.New("gorgias requires expected_account_id and expected_base_url")
+		if !require(expected.ExpectedBaseURL) {
+			return errors.New("gorgias requires expected_base_url")
+		}
+		if strings.TrimSpace(expected.ExpectedAccountID) != "" {
+			return errors.New("gorgias does not expose a documented immutable account ID; remove expected_account_id")
 		}
 	}
 	return nil
