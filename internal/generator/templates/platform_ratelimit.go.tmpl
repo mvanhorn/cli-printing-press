@@ -46,6 +46,17 @@ func (b EndpointBudget) Validate() error {
 	return nil
 }
 
+// MissingEndpointBudgetError reports a provider endpoint class that has no
+// reviewed exact budget and no reviewed wildcard default. Requests fail closed
+// instead of inventing pacing or retry behavior.
+type MissingEndpointBudgetError struct {
+	EndpointClass string
+}
+
+func (e *MissingEndpointBudgetError) Error() string {
+	return fmt.Sprintf("no declared endpoint budget configured for %q; register the exact class or an explicit conservative wildcard via SetPlatformEndpointBudget", e.EndpointClass)
+}
+
 type EndpointLimiter struct {
 	budget EndpointBudget
 	path   string
@@ -61,7 +72,14 @@ func NewEndpointLimiter(session *Session, budget EndpointBudget) (*EndpointLimit
 	if err := budget.Validate(); err != nil {
 		return nil, err
 	}
-	logical := strings.Join([]string{session.Source, session.ProfileName, session.CredentialFingerprint, budget.Class}, "\x00")
+	if len(session.ObservedIdentity) == 0 {
+		return nil, errors.New("verified tenant identity is required for endpoint limiter")
+	}
+	observedIdentity, err := json.Marshal(session.ObservedIdentity)
+	if err != nil {
+		return nil, fmt.Errorf("encode verified tenant identity for endpoint limiter: %w", err)
+	}
+	logical := strings.Join([]string{session.Source, session.ProfileName, session.CredentialFingerprint, string(observedIdentity), budget.Class}, "\x00")
 	sum := sha256.Sum256([]byte(logical))
 	path := filepath.Join(session.Paths.StateDir, "rate-limits", hex.EncodeToString(sum[:16])+".json")
 	return &EndpointLimiter{budget: budget, path: path, now: time.Now, sleep: sleepWithContext}, nil

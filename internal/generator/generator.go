@@ -2390,6 +2390,7 @@ func (g *Generator) renderSingleFiles() error {
 		"platform_receipt_status_golden.json.tmpl": filepath.Join("internal", "platform", "testdata", "receipt-status-golden.json"),
 		"client.go.tmpl":                           filepath.Join("internal", "client", "client.go"),
 		"client_test.go.tmpl":                      filepath.Join("internal", "client", "client_test.go"),
+		"client_platform_budget_test.go.tmpl":      filepath.Join("internal", "client", "platform_budget_test.go"),
 		"client_platform_rate_limit_test.go.tmpl":  filepath.Join("internal", "client", "platform_rate_limit_test.go"),
 		"client_verify_short_circuit_test.go.tmpl": filepath.Join("internal", "client", "client_verify_short_circuit_test.go"),
 		"cliutil_fanout.go.tmpl":                   filepath.Join("internal", "cliutil", "fanout.go"),

@@ -89,5 +89,8 @@ func platformRateLimitTestClient(t *testing.T, server *httptest.Server) (*Client
 	if err := client.BindPlatformSession(session); err != nil {
 		t.Fatal(err)
 	}
+	if err := client.SetPlatformEndpointBudget(platform.EndpointBudget{Class: "*", Steady: 60, Interval: time.Minute, Burst: 1, MaxAttempts: 2, RetryBudget: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
 	return client, session
 }

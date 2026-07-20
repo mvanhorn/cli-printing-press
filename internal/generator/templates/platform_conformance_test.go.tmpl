@@ -420,7 +420,7 @@ func TestSharedLimiterHonorsBurstAndCrossInstanceLedger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := &Session{ProfileName: "synthetic", Source: "sample", CredentialFingerprint: "fingerprint", GateOutcome: GateVerified, Paths: paths}
+	session := &Session{ProfileName: "synthetic", Source: "sample", CredentialFingerprint: "fingerprint", ObservedIdentity: map[string]string{"account_id": "one"}, GateOutcome: GateVerified, Paths: paths}
 	budget := EndpointBudget{Class: "GET /profiles", Steady: 1, Interval: time.Second, Burst: 2, MaxAttempts: 3, RetryBudget: 10 * time.Second}
 	first, err := NewEndpointLimiter(session, budget)
 	if err != nil {

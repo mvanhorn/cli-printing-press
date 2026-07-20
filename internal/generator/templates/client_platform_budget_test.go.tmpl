@@ -1,0 +1,45 @@
+// Copyright {{currentYear}} {{copyrightHolder}}. Licensed under Apache-2.0. See LICENSE.
+
+package client
+
+import (
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"{{modulePath}}/internal/platform"
+)
+
+func TestPlatformBudgetLookupContract(t *testing.T) {
+	c := &Client{platformBudgets: map[string]platform.EndpointBudget{
+		"*":          {Class: "*", Steady: 7, Interval: 3 * time.Second, Burst: 5, MaxAttempts: 3, RetryBudget: 45 * time.Second},
+		"GET /exact": {Class: "GET /exact", Steady: 1, Interval: time.Minute, Burst: 1, MaxAttempts: 2, RetryBudget: 2 * time.Minute},
+	}}
+
+	exact, err := c.platformBudgetLocked("GET /exact")
+	if err != nil {
+		t.Fatalf("exact lookup: %v", err)
+	}
+	if exact.Class != "GET /exact" || exact.Steady != 1 || exact.Interval != time.Minute {
+		t.Fatalf("exact budget = %+v, want exact override", exact)
+	}
+
+	got, err := c.platformBudgetLocked("GET /declared-policy")
+	if err != nil {
+		t.Fatalf("wildcard lookup: %v", err)
+	}
+	if got.Class != "GET /declared-policy" || got.Steady != 7 || got.Interval != 3*time.Second || got.Burst != 5 {
+		t.Fatalf("wildcard budget = %+v, want provider default cloned with the actual endpoint class", got)
+	}
+
+	missingClient := &Client{platformBudgets: map[string]platform.EndpointBudget{}}
+	_, err = missingClient.platformBudgetLocked("DELETE /undeclared")
+	var missing *platform.MissingEndpointBudgetError
+	if !errors.As(err, &missing) {
+		t.Fatalf("missing lookup error = %T %v, want *platform.MissingEndpointBudgetError", err, err)
+	}
+	if missing.EndpointClass != "DELETE /undeclared" || !strings.Contains(err.Error(), "explicit conservative wildcard") {
+		t.Fatalf("missing lookup error is not actionable: %v", err)
+	}
+}

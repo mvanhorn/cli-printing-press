@@ -95,8 +95,11 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/platform/testdata/receipt-status-golden.json",
 		"internal/platform/doctor.go",
 		"internal/platform/conformance_test.go",
+		"internal/client/platform_budget_test.go",
 		"internal/mcp/bound/bound.go",
 		"internal/mcp/bound/bound_test.go",
+		"internal/mcp/platform_gate.go",
+		"internal/mcp/platform_gate_test.go",
 		"internal/mcp/cobratree/walker.go",
 		"internal/mcp/cobratree/classify.go",
 		"internal/mcp/cobratree/typemap.go",
@@ -128,9 +131,11 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +12: shared platform multitenancy runtime, CLI integration, migration,
 		// receipt goldens, and
 		// black-box/conformance coverage emitted for every printed CLI.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 161},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 165},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 163},
+		// +2: MCP tenant-gate middleware and its single-gate conformance tests.
+		// +1: fail-closed endpoint-budget lookup conformance coverage.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 164},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 168},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 166},
 	}
 
 	for _, tt := range tests {
