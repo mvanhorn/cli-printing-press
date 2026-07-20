@@ -130,6 +130,16 @@ func TestProfileRejectsUnknownAndDuplicateNormalizedSources(t *testing.T) {
 	}
 }
 
+func TestCredentiallessSourceProfileRequiresIdentityButNotDummySecret(t *testing.T) {
+	profile := SourceProfile{ExpectedBaseURL: "https://tenant.example"}
+	if err := profile.Validate(); err != nil {
+		t.Fatalf("credentialless source profile with trusted identity = %v", err)
+	}
+	if err := (SourceProfile{}).Validate(); err == nil {
+		t.Fatal("credentialless source profile without expected identity was accepted")
+	}
+}
+
 func TestTenantGateAndIsolationConformance(t *testing.T) {
 	setPlatformRoots(t)
 	profile := validKlaviyoProfile("client-one")

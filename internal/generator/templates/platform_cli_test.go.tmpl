@@ -42,6 +42,20 @@ func TestPlatformProviderClientCommandsStillRequireGate(t *testing.T) {
 	}
 }
 
+func TestPlatformCredentiallessRegistrationIsExplicit(t *testing.T) {
+	previousRegistration := registeredPlatformSource
+	t.Cleanup(func() { registeredPlatformSource = previousRegistration })
+	source := platform.SourceProfile{ExpectedBaseURL: "https://tenant.example"}
+	registeredPlatformSource = &platformSourceRegistration{Source: "credentialed", Adapter: conformanceIdentityAdapter{}}
+	if err := validateRegisteredPlatformSourceProfile(source); err == nil || !strings.Contains(err.Error(), "requires at least one exact credential reference") {
+		t.Fatalf("credentialed source accepted an empty reference set: %v", err)
+	}
+	registeredPlatformSource = &platformSourceRegistration{Source: "public-site", Adapter: conformanceIdentityAdapter{}, Credentialless: true}
+	if err := validateRegisteredPlatformSourceProfile(source); err != nil {
+		t.Fatalf("explicit credentialless source rejected: %v", err)
+	}
+}
+
 func TestPlatformWhoamiDoesNotShadowAPIResource(t *testing.T) {
 	root := &cobra.Command{Use: "sample-pp-cli"}
 	apiWhoami := &cobra.Command{Use: "whoami", Short: "API-owned identity resource"}

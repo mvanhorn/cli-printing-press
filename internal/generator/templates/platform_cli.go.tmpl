@@ -22,6 +22,7 @@ import (
 type platformSourceRegistration struct {
 	Source               string
 	Adapter              platform.IdentityAdapter
+	Credentialless       bool
 	BindClient           func(*client.Client, *platform.Session) error
 	ResourceHealth       func(context.Context, *platform.Session) ([]platform.ResourceHealth, error)
 	ValidateLegacyInputs func(*cobra.Command, *rootFlags, *platform.Session) error
@@ -54,7 +55,20 @@ func preparePlatformSession(flags *rootFlags) error {
 	if err != nil {
 		return err
 	}
+	if err := validateRegisteredPlatformSourceProfile(session.SourceProfile); err != nil {
+		return err
+	}
 	flags.platformSession = session
+	return nil
+}
+
+func validateRegisteredPlatformSourceProfile(source platform.SourceProfile) error {
+	if registeredPlatformSource == nil {
+		return nil
+	}
+	if !registeredPlatformSource.Credentialless && len(source.References()) == 0 {
+		return fmt.Errorf("source %q requires at least one exact credential reference", registeredPlatformSource.Source)
+	}
 	return nil
 }
 
@@ -140,6 +154,9 @@ func BindMCPServerProfile() error {
 	if err != nil {
 		return err
 	}
+	if err := validateRegisteredPlatformSourceProfile(session.SourceProfile); err != nil {
+		return err
+	}
 	return os.Setenv(mcpBoundProfileEnv, session.ProfileName)
 }
 
@@ -153,8 +170,14 @@ func BindMCPClient(ctx context.Context, c *client.Client) (*platform.Session, er
 	if bound == "" {
 		return nil, errors.New("MCP server has no bound client profile")
 	}
-	session, err := platform.VerifyProfileSource(ctx, bound, "{{.Name}}-pp-cli", registeredPlatformSource.Source, platformResolverFactory(), registeredPlatformSource.Adapter)
+	session, err := platform.PrepareProfileSource(bound, "{{.Name}}-pp-cli", registeredPlatformSource.Source)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateRegisteredPlatformSourceProfile(session.SourceProfile); err != nil {
+		return nil, err
+	}
+	if err := platform.VerifyPreparedProfileSource(ctx, session, platformResolverFactory(), registeredPlatformSource.Adapter); err != nil {
 		return nil, err
 	}
 	if err := c.BindPlatformSession(session); err != nil {
@@ -289,7 +312,11 @@ func newPlatformClientAddCmd(flags *rootFlags) *cobra.Command {
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
-			profile := &platform.Profile{SchemaVersion: platform.ProfileSchemaVersion, Name: args[0], Sources: map[string]platform.SourceProfile{registeredPlatformSource.Source: values.sourceProfile()}}
+			sourceProfile := values.sourceProfile()
+			if err := validateRegisteredPlatformSourceProfile(sourceProfile); err != nil {
+				return err
+			}
+			profile := &platform.Profile{SchemaVersion: platform.ProfileSchemaVersion, Name: args[0], Sources: map[string]platform.SourceProfile{registeredPlatformSource.Source: sourceProfile}}
 			if err := platform.SaveProfile(profile); err != nil {
 				return err
 			}
@@ -313,7 +340,11 @@ func newPlatformClientSourceSetCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			profile.Sources[registeredPlatformSource.Source] = values.sourceProfile()
+			sourceProfile := values.sourceProfile()
+			if err := validateRegisteredPlatformSourceProfile(sourceProfile); err != nil {
+				return err
+			}
+			profile.Sources[registeredPlatformSource.Source] = sourceProfile
 			if err := platform.SaveProfile(profile); err != nil {
 				return err
 			}
@@ -373,8 +404,14 @@ func newPlatformClientValidateCmd(flags *rootFlags) *cobra.Command {
 		if registeredPlatformSource == nil {
 			return errors.New("this CLI has no registered tenant identity adapter")
 		}
-		session, err := platform.VerifyProfileSource(cmd.Context(), args[0], "{{.Name}}-pp-cli", registeredPlatformSource.Source, platformResolverFactory(), registeredPlatformSource.Adapter)
+		session, err := platform.PrepareProfileSource(args[0], "{{.Name}}-pp-cli", registeredPlatformSource.Source)
 		if err != nil {
+			return err
+		}
+		if err := validateRegisteredPlatformSourceProfile(session.SourceProfile); err != nil {
+			return err
+		}
+		if err := platform.VerifyPreparedProfileSource(cmd.Context(), session, platformResolverFactory(), registeredPlatformSource.Adapter); err != nil {
 			return err
 		}
 		defer session.ZeroCredentials()
@@ -399,6 +436,9 @@ func newPlatformClientMigrateCmd(flags *rootFlags) *cobra.Command {
 			return errors.New("this CLI has no registered tenant identity adapter")
 		}
 		candidate := values.sourceProfile()
+		if err := validateRegisteredPlatformSourceProfile(candidate); err != nil {
+			return err
+		}
 		profile, err := platform.LoadProfile(args[0])
 		alreadyMigrated := false
 		switch {
