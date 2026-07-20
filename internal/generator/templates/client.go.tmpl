@@ -179,7 +179,11 @@ func (c *Client) platformBudgetLocked(endpointClass string) (platform.EndpointBu
 
 func (c *Client) platformRetryPolicy(endpointClass string) (platform.EndpointBudget, error) {
 	if c == nil || c.platformSession == nil {
-		return platform.EndpointBudget{Class: endpointClass}, nil
+		// Legacy/non-data calls do not have a verified tenant session and
+		// therefore do not consume a shared endpoint budget. Preserve their
+		// bounded retry contract; fail-closed budget lookup begins only after
+		// a live tenant gate binds the platform session.
+		return platform.EndpointBudget{Class: endpointClass, MaxAttempts: clientMaxRetries() + 1, RetryBudget: time.Minute}, nil
 	}
 	c.platformLimiterMu.Lock()
 	defer c.platformLimiterMu.Unlock()
