@@ -60,8 +60,8 @@ type mcpClientSurfaceRequirement struct {
 var mcpClientSurfaceRequirements = []mcpClientSurfaceRequirement{
 	{"BinaryResponseHeader", "const BinaryResponseHeader"},
 	{"New(config, timeout, rateLimit)", "func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client"},
-	{"Client.Config", "Config     *config.Config"},
-	{"Client.NoCache", "NoCache    bool"},
+	{"Client.Config", "field:Config:*config.Config"},
+	{"Client.NoCache", "field:NoCache:bool"},
 	{"Get(context.Context, ...)", "func (c *Client) Get(ctx context.Context,"},
 	{"GetWithHeaders(context.Context, ...)", "func (c *Client) GetWithHeaders(ctx context.Context,"},
 	{"PostWithParams(context.Context, ...)", "func (c *Client) PostWithParams(ctx context.Context,"},
@@ -121,7 +121,7 @@ func ensureMCPClientSurfaceCompatible(cliDir string) error {
 	src := string(data)
 	var missing []string
 	for _, requirement := range mcpClientSurfaceRequirements {
-		if !strings.Contains(src, requirement.marker) {
+		if !mcpClientSurfaceMarkerPresent(src, requirement.marker) {
 			missing = append(missing, requirement.name)
 		}
 	}
@@ -130,7 +130,7 @@ func ensureMCPClientSurfaceCompatible(cliDir string) error {
 			continue
 		}
 		for _, requirement := range conditional.requirements {
-			if !strings.Contains(src, requirement.marker) {
+			if !mcpClientSurfaceMarkerPresent(src, requirement.marker) {
 				missing = append(missing, requirement.name)
 			}
 		}
@@ -139,6 +139,18 @@ func ensureMCPClientSurfaceCompatible(cliDir string) error {
 		return fmt.Errorf("mcp-sync refused: target CLI client API is incompatible with the current MCP handler (missing %s); reprint required before regenerating tools.go", strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+func mcpClientSurfaceMarkerPresent(src, marker string) bool {
+	if !strings.HasPrefix(marker, "field:") {
+		return strings.Contains(src, marker)
+	}
+	parts := strings.Split(marker, ":")
+	if len(parts) != 3 {
+		return false
+	}
+	pattern := `(?m)^\s*` + regexp.QuoteMeta(parts[1]) + `\s+` + regexp.QuoteMeta(parts[2]) + `\s*$`
+	return regexp.MustCompile(pattern).MatchString(src)
 }
 
 func Sync(cliDir string, opts Options) (Result, error) {

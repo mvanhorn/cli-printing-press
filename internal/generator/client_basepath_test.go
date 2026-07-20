@@ -53,7 +53,7 @@ func TestClientHonorsSpecBasePath(t *testing.T) {
 	assert.Regexp(t, requestBaseURL, client,
 		"RequestBaseURL() should be emitted and return BaseURL+BasePath even without HTML extraction")
 
-	cacheKeyBody := clientCacheKeyBody(t, client)
+	cacheKeyBody := clientCacheKeyForBody(t, client)
 	assert.Contains(t, cacheKeyBody, `"|base_path=" + c.BasePath`,
 		"cache key should include BasePath so a config change invalidates correctly")
 

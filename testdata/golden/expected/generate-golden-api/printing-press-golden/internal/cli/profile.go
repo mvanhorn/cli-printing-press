@@ -115,10 +115,10 @@ func ApplyProfileToFlags(cmd *cobra.Command, profile *Profile) error {
 	// map must remain a superset of this set so saved profiles never carry
 	// values that apply would silently refuse.
 	reserved := map[string]bool{
-		"profile": true, "config": true, "home": true, "help": true,
+		"profile": true, "client-profile": true, "config": true, "home": true, "help": true,
 	}
 	for name, value := range profile.Values {
-		if reserved[name] {
+		if reserved[name] || credentialLikeRunProfileFlag(name) {
 			continue
 		}
 		flag := cmd.Flags().Lookup(name)
@@ -136,6 +136,16 @@ func ApplyProfileToFlags(cmd *cobra.Command, profile *Profile) error {
 		}
 	}
 	return nil
+}
+
+func credentialLikeRunProfileFlag(name string) bool {
+	name = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(name), "_", "-"))
+	for _, marker := range []string{"token", "secret", "password", "credential", "api-key", "apikey", "authorization", "cookie", "private-key", "client-secret"} {
+		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // ListProfileNames returns profile names sorted alphabetically. Used by the
@@ -203,14 +213,23 @@ captured: they control profile/config resolution and would never apply).`,
 			// Must stay a superset of ApplyProfileToFlags' reserved map for
 			// root flags: capturing a flag that apply refuses to overlay
 			// would store values that never take effect.
-			skip := map[string]bool{"profile": true, "config": true, "home": true, "help": true, "description": true}
+			skip := map[string]bool{"profile": true, "client-profile": true, "config": true, "home": true, "help": true, "description": true}
+			credentialFlags := []string{}
 			visit := func(fl *pflag.Flag) {
+				if fl.Changed && credentialLikeRunProfileFlag(fl.Name) {
+					credentialFlags = append(credentialFlags, fl.Name)
+					return
+				}
 				if fl.Changed && !skip[fl.Name] {
 					values[fl.Name] = fl.Value.String()
 				}
 			}
 			cmd.InheritedFlags().VisitAll(visit)
 			cmd.Flags().VisitAll(visit)
+			if len(credentialFlags) > 0 {
+				sort.Strings(credentialFlags)
+				return fmt.Errorf("run profiles may not store credential-like flags: %s; use --client-profile with exact external references", strings.Join(credentialFlags, ", "))
+			}
 			if len(values) == 0 {
 				return fmt.Errorf("no non-default flags set - pass at least one flag to save into %q", name)
 			}

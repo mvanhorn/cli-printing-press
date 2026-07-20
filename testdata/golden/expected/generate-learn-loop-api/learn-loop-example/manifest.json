@@ -21,17 +21,16 @@
       "args": [],
       "command": "${__dirname}/bin/learn-loop-example-pp-mcp",
       "env": {
-        "LEARN_LOOP_TOKEN": "${user_config.learn_loop_token}"
+        "PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}"
       }
     },
     "type": "binary"
   },
   "user_config": {
-    "learn_loop_token": {
-      "description": "Sets LEARN_LOOP_TOKEN for the Learn Loop Example MCP server.",
+    "printing_press_client_profile": {
+      "description": "Binds the MCP server to an existing tenant-gated Printing Press client profile.",
       "required": true,
-      "sensitive": true,
-      "title": "LEARN_LOOP_TOKEN",
+      "title": "Client profile",
       "type": "string"
     }
   },

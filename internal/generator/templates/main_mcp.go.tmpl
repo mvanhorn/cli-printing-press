@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/mark3labs/mcp-go/server"
+	"{{modulePath}}/internal/cli"
 	mcptools "{{modulePath}}/internal/mcp"
 )
 
@@ -34,6 +35,10 @@ func main() {
 	// shell-out child, so usage events record surface=mcp.
 	_ = os.Setenv("{{envPrefix .Name}}_LEARN_SURFACE", "mcp")
 {{- end}}
+	if err := cli.BindMCPServerProfile(); err != nil {
+		fmt.Fprintf(os.Stderr, "MCP client-profile bind failed: %v\n", err)
+		os.Exit(1)
+	}
 	s := server.NewMCPServer(
 		"{{.EffectiveDisplayName}}",
 		version,
@@ -83,6 +88,7 @@ import (
 	"os"
 
 	"github.com/mark3labs/mcp-go/server"
+	"{{modulePath}}/internal/cli"
 	mcptools "{{modulePath}}/internal/mcp"
 )
 
@@ -95,6 +101,10 @@ func main() {
 	// shell-out child, so usage events record surface=mcp.
 	_ = os.Setenv("{{envPrefix .Name}}_LEARN_SURFACE", "mcp")
 {{- end}}
+	if err := cli.BindMCPServerProfile(); err != nil {
+		fmt.Fprintf(os.Stderr, "MCP client-profile bind failed: %v\n", err)
+		os.Exit(1)
+	}
 	s := server.NewMCPServer(
 		"{{.EffectiveDisplayName}}",
 		version,

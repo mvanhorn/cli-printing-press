@@ -428,15 +428,17 @@ func TestSyncRefreshesProvenanceFromSpec(t *testing.T) {
 	assert.Equal(t, "https://example.com/get-a-token", prov.AuthKeyURL, "auth_key_url must refresh from spec.yaml on mcp-sync")
 	assert.True(t, prov.AuthOptional, "auth_optional must refresh from spec.yaml on mcp-sync")
 
-	// Step 6: verify the MCPB manifest also reflects the new spec — this
-	// is the user-visible failure mode (Configure modal wording / Required
-	// flag). Confirms the full chain spec.yaml → .printing-press.json →
-	// manifest.json works end-to-end.
+	// Step 6: verify the MCPB manifest keeps credentials behind the client
+	// profile boundary. The provenance manifest above still refreshes the
+	// source auth metadata, while the platform runtime exposes only the
+	// non-secret profile binding to MCP hosts.
 	manifestData, err := os.ReadFile(filepath.Join(cliDir, pipeline.MCPBManifestFilename))
 	require.NoError(t, err)
 	manifestStr := string(manifestData)
-	assert.Contains(t, manifestStr, "https://example.com/get-a-token", "manifest description should surface key_url after refresh")
-	assert.Contains(t, manifestStr, `"description": "Optional. Sets`, "manifest description should reflect auth_optional with the Optional. prefix")
+	assert.NotContains(t, manifestStr, "https://example.com/get-a-token", "platform MCP manifest must not surface credential acquisition metadata")
+	assert.NotContains(t, manifestStr, `"description": "Optional. Sets`, "platform MCP manifest must not expose raw credential configuration")
+	assert.Contains(t, manifestStr, `"PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}"`)
+	assert.Contains(t, manifestStr, `"required": true`)
 }
 
 // TestValidateSpecNameMatchesDirAccepts ensures matching name and dir

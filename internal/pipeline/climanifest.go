@@ -301,6 +301,14 @@ func RefreshCLIManifestFromSpec(dir string, parsed *spec.APISpec) error {
 // dir/.printing-press.json. It preserves existing release-ledger files because
 // the public library workflow owns updating them after merge.
 func WriteCLIManifest(dir string, m CLIManifest) error {
+	if usesPlatformClientProfiles(dir) {
+		m.AuthEnvVars = []string{"PRINTING_PRESS_CLIENT_PROFILE"}
+		m.AuthEnvVarSpecs = []spec.AuthEnvVar{{
+			Name: "PRINTING_PRESS_CLIENT_PROFILE", Kind: spec.AuthEnvVarKindPerCall,
+			Required: true, Sensitive: false,
+		}}
+		m.AuthAdditionalHeaders = nil
+	}
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling CLI manifest: %w", err)

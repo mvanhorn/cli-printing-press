@@ -54,7 +54,7 @@ func TestBinaryResponseHeaderBypassesJSONCache(t *testing.T) {
 	if seen != 3 {
 		t.Fatalf("server saw %d requests, want 3 because binary responses bypass cache reads and writes", seen)
 	}
-	if matches, err := filepath.Glob(filepath.Join(c.cacheDir, "*.json")); err != nil {
+	if matches, err := filepath.Glob(filepath.Join(c.cacheDir, "resources", "*", "*.json")); err != nil {
 		t.Fatalf("glob cache files: %v", err)
 	} else if len(matches) != 0 {
 		t.Fatalf("binary response wrote JSON cache files: %v", matches)
@@ -90,7 +90,7 @@ func TestConfigBinaryResponseHeaderBypassesJSONCache(t *testing.T) {
 	if seen != 3 {
 		t.Fatalf("server saw %d requests, want 3 because config binary responses bypass cache", seen)
 	}
-	if matches, err := filepath.Glob(filepath.Join(c.cacheDir, "*.json")); err != nil {
+	if matches, err := filepath.Glob(filepath.Join(c.cacheDir, "resources", "*", "*.json")); err != nil {
 		t.Fatalf("glob cache files: %v", err)
 	} else if len(matches) != 0 {
 		t.Fatalf("config binary response wrote JSON cache files: %v", matches)
@@ -127,7 +127,7 @@ func TestCaseVariantBinaryResponseHeadersAreDeterministic(t *testing.T) {
 	if seen != 2 {
 		t.Fatalf("server saw %d requests, want 2 because case-variant binary headers bypass cache", seen)
 	}
-	if matches, err := filepath.Glob(filepath.Join(c.cacheDir, "*.json")); err != nil {
+	if matches, err := filepath.Glob(filepath.Join(c.cacheDir, "resources", "*", "*.json")); err != nil {
 		t.Fatalf("glob cache files: %v", err)
 	} else if len(matches) != 0 {
 		t.Fatalf("case-variant binary response wrote JSON cache files: %v", matches)
@@ -155,7 +155,7 @@ func TestJSONResponseStillUsesJSONCache(t *testing.T) {
 	if seen != 1 {
 		t.Fatalf("server saw %d requests, want 1 because JSON response should be cached", seen)
 	}
-	if matches, err := filepath.Glob(filepath.Join(c.cacheDir, "*.json")); err != nil {
+	if matches, err := filepath.Glob(filepath.Join(c.cacheDir, "resources", "*", "*.json")); err != nil {
 		t.Fatalf("glob cache files: %v", err)
 	} else if len(matches) != 1 {
 		t.Fatalf("JSON response wrote %d cache files, want 1: %v", len(matches), matches)

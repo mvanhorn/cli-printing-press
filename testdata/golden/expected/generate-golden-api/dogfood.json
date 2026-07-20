@@ -12,7 +12,7 @@
   },
   "dead_flags": {
     "dead": 0,
-    "total": 22
+    "total": 26
   },
   "dead_functions": {
     "dead": 0,
@@ -35,7 +35,7 @@
     "state": "runtime_walking"
   },
   "naming_check": {
-    "checked": 46
+    "checked": 47
   },
   "novel_features_check": {
     "found": 0,
@@ -62,7 +62,7 @@
     "sync_resources_present": true
   },
   "print_json_filtered_check": {
-    "checked": 46
+    "checked": 47
   },
   "reimplementation_check": {
     "checked": 0,
@@ -70,8 +70,7 @@
     "skipped": true
   },
   "source_client_check": {
-    "checked": 0,
-    "skipped": true
+    "checked": 6
   },
   "spec_path": "<ARTIFACT_DIR>/generate-golden-api/printing-press-golden/spec.yaml",
   "spec_source": "bundled",
@@ -80,13 +79,13 @@
     "skipped": true
   },
   "test_presence": {
-    "checked": 1
+    "checked": 2
   },
   "verdict": "WARN",
   "wiring_check": {
     "command_tree": {
-      "defined": 61,
-      "registered": 61
+      "defined": 72,
+      "registered": 72
     },
     "config_consistency": {
       "consistent": true

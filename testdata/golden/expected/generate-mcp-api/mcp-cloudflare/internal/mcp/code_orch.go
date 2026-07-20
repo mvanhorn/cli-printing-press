@@ -221,7 +221,7 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		params = map[string]any{}
 	}
 
-	c, err := newMCPClient()
+	c, err := newMCPClient(ctx)
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}

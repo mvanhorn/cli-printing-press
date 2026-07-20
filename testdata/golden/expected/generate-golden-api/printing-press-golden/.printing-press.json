@@ -1,8 +1,16 @@
 {
   "api_name": "printing-press-golden",
   "api_version": "2026.04",
+  "auth_env_var_specs": [
+    {
+      "kind": "per_call",
+      "name": "PRINTING_PRESS_CLIENT_PROFILE",
+      "required": true,
+      "sensitive": false
+    }
+  ],
   "auth_env_vars": [
-    "PRINTING_PRESS_GOLDEN_API_KEY"
+    "PRINTING_PRESS_CLIENT_PROFILE"
   ],
   "auth_preference": "ApiKeyAuth",
   "auth_type": "api_key",

@@ -2281,6 +2281,7 @@ func (g *Generator) prepareOutput() error {
 		filepath.Join("internal", "config"),
 		filepath.Join("internal", "mcp", "bound"),
 		filepath.Join("internal", "mcp", "cobratree"),
+		filepath.Join("internal", "platform"),
 		filepath.Join("internal", "types"),
 	}
 	// Reserve the learn-package directory tree only when the spec opts
@@ -2375,6 +2376,15 @@ func (g *Generator) renderSingleFiles() error {
 		"which_test.go.tmpl":                       filepath.Join("internal", "cli", "which_test.go"),
 		"config.go.tmpl":                           filepath.Join("internal", "config", "config.go"),
 		"cache.go.tmpl":                            filepath.Join("internal", "cache", "cache.go"),
+		"platform_profile.go.tmpl":                 filepath.Join("internal", "platform", "profile.go"),
+		"platform_gate.go.tmpl":                    filepath.Join("internal", "platform", "gate.go"),
+		"platform_metadata.go.tmpl":                filepath.Join("internal", "platform", "metadata.go"),
+		"platform_ratelimit.go.tmpl":               filepath.Join("internal", "platform", "ratelimit.go"),
+		"platform_receipt.go.tmpl":                 filepath.Join("internal", "platform", "receipt.go"),
+		"platform_doctor.go.tmpl":                  filepath.Join("internal", "platform", "doctor.go"),
+		"platform_cli.go.tmpl":                     filepath.Join("internal", "cli", "platform_client.go"),
+		"platform_cli_test.go.tmpl":                filepath.Join("internal", "cli", "platform_cli_test.go"),
+		"platform_conformance_test.go.tmpl":        filepath.Join("internal", "platform", "conformance_test.go"),
 		"client.go.tmpl":                           filepath.Join("internal", "client", "client.go"),
 		"client_test.go.tmpl":                      filepath.Join("internal", "client", "client_test.go"),
 		"client_verify_short_circuit_test.go.tmpl": filepath.Join("internal", "client", "client_verify_short_circuit_test.go"),

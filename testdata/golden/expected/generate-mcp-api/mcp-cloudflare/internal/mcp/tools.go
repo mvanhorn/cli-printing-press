@@ -131,7 +131,7 @@ func mcpPathValue(v any) string {
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
 func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse bool, headerOverrides map[string]string, pageConfig mcpPageConfig, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-		c, err := newMCPClient()
+		c, err := newMCPClient(ctx)
 		if err != nil {
 			return mcpToolError(err.Error()), nil
 		}
@@ -352,12 +352,16 @@ func mcpToolPageResultText(method string, data json.RawMessage, pageConfig mcpPa
 	}))
 }
 
-func newMCPClient() (*client.Client, error) {
+func newMCPClient(ctx context.Context) (*client.Client, error) {
 	cfg, err := newMCPConfig()
 	if err != nil {
 		return nil, err
 	}
-	return newMCPClientFromConfig(cfg), nil
+	c := newMCPClientFromConfig(cfg)
+	if err := cli.BindMCPClient(ctx, c); err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 func newMCPConfig() (*config.Config, error) {

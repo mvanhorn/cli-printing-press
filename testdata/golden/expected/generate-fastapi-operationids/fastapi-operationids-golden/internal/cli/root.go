@@ -17,6 +17,7 @@ import (
 	"fastapi-operationids-golden-pp-cli/internal/cliutil"
 	"fastapi-operationids-golden-pp-cli/internal/config"
 	"fastapi-operationids-golden-pp-cli/internal/learn"
+	"fastapi-operationids-golden-pp-cli/internal/platform"
 	"fastapi-operationids-golden-pp-cli/internal/store"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -46,7 +47,14 @@ type rootFlags struct {
 	selectFields        string
 	configPath          string
 	homePath            string
-	profileName         string
+	runProfileName      string
+	clientProfileName   string
+	platformSession     *platform.Session
+	platformGateError   error
+	receiptEnabled      bool
+	receiptFile         string
+	auditDir            string
+	receiptWriter       *platform.ReceiptWriter
 	deliverSpec         string
 	timeout             time.Duration
 	rateLimit           float64
@@ -94,6 +102,7 @@ func RootCmd() *cobra.Command {
 func Execute() (retErr error) {
 	var flags rootFlags
 	rootCmd := newRootCmd(&flags)
+	defer finalizePlatformInvocation(&flags, &retErr)
 
 	executedCmd, err := rootCmd.ExecuteC()
 	var journalFailedFlag, journalSuggestedFlag string
@@ -212,6 +221,9 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify auth and connectivity.
 	rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", 60*time.Second, "Request timeout")
 	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Show request without sending")
 	rootCmd.PersistentFlags().BoolVar(&flags.noCache, "no-cache", false, "Bypass response cache")
+	rootCmd.PersistentFlags().BoolVar(&flags.receiptEnabled, "receipt", false, "Write an atomic private run receipt")
+	rootCmd.PersistentFlags().StringVar(&flags.receiptFile, "receipt-file", "", "Override the run receipt destination")
+	rootCmd.PersistentFlags().StringVar(&flags.auditDir, "audit-dir", "", "Aggregate the receipt and index under this audit directory")
 	rootCmd.PersistentFlags().BoolVar(&flags.noInput, "no-input", false, "Disable all interactive prompts (for CI/agents)")
 	rootCmd.PersistentFlags().BoolVar(&flags.idempotent, "idempotent", false, "Treat already-existing create results as a successful no-op")
 	rootCmd.PersistentFlags().BoolVar(&flags.ignoreMissing, "ignore-missing", false, "Treat missing delete targets as a successful no-op")
@@ -224,11 +236,20 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify auth and connectivity.
 	rootCmd.PersistentFlags().BoolVar(&flags.allowPartialFailure, "allow-partial-failure", false, "Downgrade response-body partial-failure (e.g. partialFailureError) to a warning instead of a non-zero exit")
 	rootCmd.PersistentFlags().StringVar(&flags.dataSource, "data-source", "auto", "Data source for read commands: auto (live with local fallback), live (API only), local (synced data only)")
 	rootCmd.PersistentFlags().DurationVar(&flags.maxAge, "max-age", 30*time.Minute, "Maximum acceptable age of local-store data before a stderr hint suggests sync; 0 disables")
-	rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile (see 'fastapi-operationids-golden-pp-cli profile list')")
+	rootCmd.PersistentFlags().StringVar(&flags.runProfileName, "profile", "", "Apply values from a saved run profile; this does not select a client (see 'fastapi-operationids-golden-pp-cli profile list')")
+	rootCmd.PersistentFlags().StringVar(&flags.clientProfileName, "client-profile", "", "Select the tenant-gated client profile (env: PRINTING_PRESS_CLIENT_PROFILE)")
+	if strings.TrimSpace(os.Getenv(mcpBoundProfileEnv)) != "" {
+		if flag := rootCmd.PersistentFlags().Lookup("client-profile"); flag != nil {
+			flag.Hidden = true
+		}
+	}
 	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")
 	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", 0, "Max requests per second (0 to disable)")
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if err := enforceMCPBoundProfile(cmd, flags); err != nil {
+			return err
+		}
 		if _, err := cliutil.SetHomeOverride(flags.homePath); err != nil {
 			return err
 		}
@@ -243,20 +264,38 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify auth and connectivity.
 				cmd.SetOut(io.MultiWriter(os.Stdout, flags.deliverBuf))
 			}
 		}
-		if flags.profileName != "" {
-			profile, err := GetProfile(flags.profileName)
+		if flags.runProfileName != "" {
+			profile, err := GetProfile(flags.runProfileName)
 			if err != nil {
 				return err
 			}
 			if profile == nil {
 				available := ListProfileNames()
 				if len(available) == 0 {
-					return fmt.Errorf("profile %q not found (no profiles saved yet; run '%s profile save <name> --<flag> <value>')", flags.profileName, cmd.Root().Name())
+					return fmt.Errorf("run profile %q not found (no profiles saved yet; run '%s profile save <name> --<flag> <value>')", flags.runProfileName, cmd.Root().Name())
 				}
-				return fmt.Errorf("profile %q not found; available: %s", flags.profileName, strings.Join(available, ", "))
+				return fmt.Errorf("run profile %q not found; available: %s", flags.runProfileName, strings.Join(available, ", "))
 			}
 			if err := ApplyProfileToFlags(cmd, profile); err != nil {
 				return err
+			}
+		}
+		if platformCommandNeedsGate(cmd) {
+			if err := preparePlatformSession(flags); err != nil {
+				return err
+			}
+			if err := validatePlatformLegacyInputs(cmd, flags); err != nil {
+				return err
+			}
+			if err := initializePlatformReceipt(cmd, flags); err != nil {
+				return err
+			}
+			if err := verifyPlatformSession(cmd.Context(), flags); err != nil {
+				if platformCommandIsDoctor(cmd) {
+					flags.platformGateError = err
+				} else {
+					return err
+				}
 			}
 		}
 		if flags.agent {
@@ -295,6 +334,9 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify auth and connectivity.
 	}
 	rootCmd.AddCommand(newQuotesCmd(flags))
 	rootCmd.AddCommand(newDoctorCmd(flags))
+	if registeredPlatformSource != nil {
+		attachPlatformClientCommands(rootCmd, flags)
+	}
 	rootCmd.AddCommand(newAgentContextCmd(rootCmd))
 	rootCmd.AddCommand(newProfileCmd(flags))
 	rootCmd.AddCommand(newFeedbackCmd(flags))
@@ -323,6 +365,11 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify auth and connectivity.
 	rootCmd.AddCommand(newPlaybookCmd(flags, learnCfg))
 	for _, hook := range novelCommandHooks {
 		hook(rootCmd, flags)
+	}
+	// Attach the conditional platform identity command last so ordinary,
+	// promoted, and novel API-owned `whoami` commands all win the name.
+	if registeredPlatformSource != nil {
+		attachPlatformWhoamiCommand(rootCmd, flags)
 	}
 
 	return rootCmd
@@ -559,6 +606,9 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	c := client.New(cfg, f.timeout, f.rateLimit)
 	c.DryRun = f.dryRun
 	c.NoCache = f.noCache
+	if err := bindPlatformClient(c, f); err != nil {
+		return nil, err
+	}
 	for _, hook := range clientHooks {
 		if err := hook(c); err != nil {
 			return nil, err

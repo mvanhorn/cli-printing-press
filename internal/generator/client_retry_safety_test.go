@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"retry-safety-pp-cli/internal/config"
+	"retry-safety-pp-cli/internal/platform"
 )
 
 type retryRoundTripFunc func(*http.Request) (*http.Response, error)
@@ -62,7 +63,7 @@ func newRetrySafetyClient(t *testing.T, transport http.RoundTripper) *Client {
 }
 
 func TestRetrySafety_MutatingMethodsDoNotRetryServerError(t *testing.T) {
-	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+	for _, method := range []string{http.MethodPost, http.MethodPatch} {
 		t.Run(method, func(t *testing.T) {
 			var calls int
 			c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -82,7 +83,7 @@ func TestRetrySafety_MutatingMethodsDoNotRetryServerError(t *testing.T) {
 }
 
 func TestRetrySafety_SafeMethodsRetryServerError(t *testing.T) {
-	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodDelete} {
 		t.Run(method, func(t *testing.T) {
 			var calls int
 			c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -104,7 +105,24 @@ func TestRetrySafety_SafeMethodsRetryServerError(t *testing.T) {
 	}
 }
 
-func TestRetrySafety_POSTRetriesRateLimit(t *testing.T) {
+func TestRetrySafety_POSTDoesNotRetryRateLimitWithoutIdempotencyKey(t *testing.T) {
+	var calls int
+	c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return retryResponse(req, http.StatusTooManyRequests), nil
+	}))
+
+	_, status, err := c.Post(context.Background(), "/items", map[string]string{"name": "one"})
+	var rateErr *platform.RateLimitedError
+	if !errors.As(err, &rateErr) || status != http.StatusTooManyRequests {
+		t.Fatalf("Post() = status %d, error %v; want typed HTTP 429", status, err)
+	}
+	if calls != 1 {
+		t.Fatalf("POST calls = %d, want 1", calls)
+	}
+}
+
+func TestRetrySafety_POSTRetriesRateLimitWithIdempotencyKey(t *testing.T) {
 	var calls int
 	c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		calls++
@@ -115,18 +133,15 @@ func TestRetrySafety_POSTRetriesRateLimit(t *testing.T) {
 		}
 		return retryResponse(req, http.StatusCreated), nil
 	}))
-
+	c.Config.Headers = map[string]string{"Idempotency-Key": "synthetic-operation"}
 	_, status, err := c.Post(context.Background(), "/items", map[string]string{"name": "one"})
-	if err != nil || status != http.StatusCreated {
-		t.Fatalf("Post() = status %d, error %v; want HTTP 201", status, err)
-	}
-	if calls != 2 {
-		t.Fatalf("POST calls = %d, want 2", calls)
+	if err != nil || status != http.StatusCreated || calls != 2 {
+		t.Fatalf("Post() = calls %d status %d error %v; want two calls and HTTP 201", calls, status, err)
 	}
 }
 
 func TestRetrySafety_TransportErrorsRespectMethodSafety(t *testing.T) {
-	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodDelete} {
 		t.Run(method+" retries with backoff", func(t *testing.T) {
 			var calls int
 			c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -151,7 +166,7 @@ func TestRetrySafety_TransportErrorsRespectMethodSafety(t *testing.T) {
 		})
 	}
 
-	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+	for _, method := range []string{http.MethodPost, http.MethodPatch} {
 		t.Run(method+" does not retry", func(t *testing.T) {
 			var calls int
 			c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {

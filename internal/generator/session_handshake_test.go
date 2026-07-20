@@ -91,7 +91,7 @@ func TestSessionHandshakeGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(clientContent), "Session    *SessionManager") {
+	if !strings.Contains(string(clientContent), "Session") || !strings.Contains(string(clientContent), "*SessionManager") {
 		t.Error("client.go missing Session field")
 	}
 	if !strings.Contains(string(clientContent), "c.Session.EnsureToken()") {

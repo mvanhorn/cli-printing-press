@@ -21,17 +21,16 @@
       "args": [],
       "command": "${__dirname}/bin/cafe-bistro-pp-mcp",
       "env": {
-        "CAFE_BISTRO_API_KEY": "${user_config.cafe_bistro_api_key}"
+        "PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}"
       }
     },
     "type": "binary"
   },
   "user_config": {
-    "cafe_bistro_api_key": {
-      "description": "Sets CAFE_BISTRO_API_KEY for the Café Bistro MCP server.",
+    "printing_press_client_profile": {
+      "description": "Binds the MCP server to an existing tenant-gated Printing Press client profile.",
       "required": true,
-      "sensitive": true,
-      "title": "CAFE_BISTRO_API_KEY",
+      "title": "Client profile",
       "type": "string"
     }
   },
