@@ -145,26 +145,29 @@ func BindMCPServerProfile() error {
 
 // BindMCPClient runs one live gate per typed MCP tool invocation and binds the
 // resulting tenant/cache namespace to that invocation's HTTP client.
-func BindMCPClient(ctx context.Context, c *client.Client) error {
+func BindMCPClient(ctx context.Context, c *client.Client) (*platform.Session, error) {
 	if registeredPlatformSource == nil {
-		return nil
+		return nil, nil
 	}
 	bound := strings.TrimSpace(os.Getenv(mcpBoundProfileEnv))
 	if bound == "" {
-		return errors.New("MCP server has no bound client profile")
+		return nil, errors.New("MCP server has no bound client profile")
 	}
 	session, err := platform.VerifyProfileSource(ctx, bound, "{{.Name}}-pp-cli", registeredPlatformSource.Source, platformResolverFactory(), registeredPlatformSource.Adapter)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer session.ZeroCredentials()
 	if err := c.BindPlatformSession(session); err != nil {
-		return err
+		session.ZeroCredentials()
+		return nil, err
 	}
 	if registeredPlatformSource.BindClient != nil {
-		return registeredPlatformSource.BindClient(c, session)
+		if err := registeredPlatformSource.BindClient(c, session); err != nil {
+			session.ZeroCredentials()
+			return nil, err
+		}
 	}
-	return nil
+	return session, nil
 }
 
 func enforceMCPBoundProfile(cmd *cobra.Command, flags *rootFlags) error {
@@ -555,6 +558,11 @@ func initializePlatformReceipt(cmd *cobra.Command, flags *rootFlags) error {
 func finalizePlatformInvocation(flags *rootFlags, retErr *error) {
 	if flags == nil {
 		return
+	}
+	if flags.platformSession != nil && !flags.platformMetadataEmitted {
+		if err := emitPlatformOutputMetadata(flags.platformMetadataWriter, flags); err != nil && retErr != nil && *retErr == nil {
+			*retErr = err
+		}
 	}
 	defer func() {
 		if flags.platformSession != nil {

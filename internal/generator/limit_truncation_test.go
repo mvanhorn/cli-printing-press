@@ -11,7 +11,7 @@ import (
 )
 
 // TestEndpointNeedsClientLimit verifies the gate that controls when
-// generated GET commands emit a `truncateJSONArray(data, flagLimit)` call
+// generated GET commands emit a `truncateJSONArray(cmd.Context(), data, flagLimit)` call
 // after the API response returns. This is the core decision behind
 // hackernews retro #350 finding F6 — APIs that accept ?limit=N without
 // honoring it (Firebase, file dumps, RSS) silently broke --limit until
@@ -131,7 +131,7 @@ func TestClientLimitGenerationEmitsHelperAndBuilds(t *testing.T) {
 	require.Contains(t, string(helpersSrc), "func truncateJSONArray(")
 
 	commandSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_orders.go")
-	require.Contains(t, commandSrc, "truncateJSONArray(data,",
+	require.Contains(t, commandSrc, "truncateJSONArray(cmd.Context(), data,",
 		"generated command should call truncateJSONArray for non-paginated limit endpoint")
 
 	runGoCommand(t, outputDir, "build", "./internal/cli")
@@ -140,7 +140,7 @@ func TestClientLimitGenerationEmitsHelperAndBuilds(t *testing.T) {
 // TestNumberTypedLimitParamCoercesToInt verifies that a spec declaring
 // `limit` as `number` (the LLM-derived `--docs`-mode shape from #1082)
 // still emits `var flagLimit int` and `IntVar`, so the generated
-// `truncateJSONArray(data, flagLimit)` call compiles. OpenAPI specs
+// `truncateJSONArray(cmd.Context(), data, flagLimit)` call compiles. OpenAPI specs
 // declare `integer` and exercise the same path; this test pins the
 // override that prevents `Float64Var`/`float64 flagLimit` regression.
 func TestNumberTypedLimitParamCoercesToInt(t *testing.T) {

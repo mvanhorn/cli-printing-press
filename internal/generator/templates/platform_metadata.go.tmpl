@@ -4,6 +4,7 @@
 package platform
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -128,6 +129,41 @@ type OutputMetadata struct {
 type outputMetadataRecorder struct {
 	mu       sync.Mutex
 	metadata OutputMetadata
+}
+
+type sessionContextKey struct{}
+
+// ContextWithSession attaches the invocation-local platform session to request
+// contexts so pagination and other deep helpers can record output semantics
+// without global state.
+func ContextWithSession(ctx context.Context, session *Session) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if session == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionContextKey{}, session)
+}
+
+func SessionFromContext(ctx context.Context) *Session {
+	if ctx == nil {
+		return nil
+	}
+	session, _ := ctx.Value(sessionContextKey{}).(*Session)
+	return session
+}
+
+func MarkContextTruncated(ctx context.Context, reason TruncationReason) {
+	if session := SessionFromContext(ctx); session != nil {
+		session.MarkOutputTruncated(reason)
+	}
+}
+
+func SetContextResolvedWindow(ctx context.Context, window ResolvedWindow) {
+	if session := SessionFromContext(ctx); session != nil {
+		session.SetResolvedWindow(window)
+	}
 }
 
 func newOutputMetadataRecorder() *outputMetadataRecorder { return &outputMetadataRecorder{} }

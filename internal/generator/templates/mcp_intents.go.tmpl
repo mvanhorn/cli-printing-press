@@ -74,12 +74,19 @@ func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*m
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
 	c := newMCPClientFromConfig(cfg)
+	platformSession, err := cli.BindMCPClient(ctx, c)
+	if err != nil {
+		return mcplib.NewToolResultError(err.Error()), nil
+	}
 {{- else}}
-	c, err := newMCPClient(ctx)
+	c, platformSession, err := newMCPClient(ctx)
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
 {{- end}}
+	if platformSession != nil {
+		defer platformSession.ZeroCredentials()
+	}
 
 	input := req.GetArguments()
 	scope := map[string]any{"input": input}
@@ -114,12 +121,19 @@ func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*m
 	}
 
 	if returnKey == "" {
-		return mcplib.NewToolResultText(`{"status":"ok"}`), nil
+		text := `{"status":"ok"}`
+		if platformSession != nil {
+			text = bound.WithMetadata(text, platformSession.OutputMetadata())
+		}
+		return mcplib.NewToolResultText(text), nil
 	}
 	out := scope[returnKey]
 	text, err := bound.JSON(out)
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("encoding %s result: %v", returnKey, err)), nil
+	}
+	if platformSession != nil {
+		text = bound.WithMetadata(text, platformSession.OutputMetadata())
 	}
 	return mcplib.NewToolResultText(text), nil
 }

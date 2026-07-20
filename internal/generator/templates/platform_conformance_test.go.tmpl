@@ -299,6 +299,27 @@ func TestWindowTruncationAndAnalyticsConformance(t *testing.T) {
 	}
 }
 
+func TestContextCarriesOutputMetadataRecorder(t *testing.T) {
+	setPlatformRoots(t)
+	profile := &Profile{
+		SchemaVersion: ProfileSchemaVersion,
+		Name:          "synthetic",
+		Sources: map[string]SourceProfile{
+			"sample": {CredentialRef: "op://Test Vault/Test Item/token", ExpectedAccountID: "one"},
+		},
+	}
+	session, err := PrepareProfileSourceFromConfig(profile, "sample-pp-cli", "sample")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := ContextWithSession(context.Background(), session)
+	MarkContextTruncated(ctx, TruncationReason{Kind: "max_pages", Configured: 50, Observed: 50, MoreAvailable: true})
+	metadata := session.OutputMetadata()
+	if !metadata.Truncated || len(metadata.TruncationReasons) != 1 || metadata.TruncationReasons[0].Kind != "max_pages" {
+		t.Fatalf("context truncation metadata = %+v", metadata)
+	}
+}
+
 func TestRateLimitConformance(t *testing.T) {
 	now := time.Date(2026, time.July, 20, 0, 0, 0, 0, time.UTC)
 	if got := RetryAfterDelay("12", 0, now, rand.New(rand.NewSource(1))); got != 12*time.Second {

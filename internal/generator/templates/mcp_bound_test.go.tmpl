@@ -11,6 +11,51 @@ import (
 	"unicode/utf8"
 )
 
+func TestWithMetadataWrapsSmallMCPResult(t *testing.T) {
+	text := WithMetadata(`[{"id":"one"}]`, map[string]any{"truncated": false})
+	var envelope struct {
+		Data []map[string]string `json:"data"`
+		Meta struct {
+			Truncated bool `json:"truncated"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("metadata result must remain valid JSON: %v: %s", err, text)
+	}
+	if envelope.Meta.Truncated || len(envelope.Data) != 1 || envelope.Data[0]["id"] != "one" {
+		t.Fatalf("metadata envelope = %+v", envelope)
+	}
+}
+
+func TestWithMetadataPromotesMCPCompactionToTruncationReason(t *testing.T) {
+	items := make([]string, 0, MaxItems+25)
+	for i := 0; i < MaxItems+25; i++ {
+		items = append(items, strings.Repeat("x", 1600))
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := WithMetadata(EndpointResponse("GET", data), map[string]any{"truncated": false})
+	if len(text) > MaxBytes {
+		t.Fatalf("metadata result length = %d, want <= %d", len(text), MaxBytes)
+	}
+	var envelope struct {
+		Meta struct {
+			Truncated bool `json:"truncated"`
+			Reasons   []struct {
+				Kind string `json:"kind"`
+			} `json:"truncation_reasons"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("metadata result must remain valid JSON: %v: %s", err, text)
+	}
+	if !envelope.Meta.Truncated || len(envelope.Meta.Reasons) != 1 || envelope.Meta.Reasons[0].Kind != "mcp_output_limit" {
+		t.Fatalf("metadata envelope = %+v", envelope.Meta)
+	}
+}
+
 func TestEndpointResponseBoundsListResponses(t *testing.T) {
 	items := make([]string, 0, MaxItems+25)
 	for i := 0; i < MaxItems+25; i++ {

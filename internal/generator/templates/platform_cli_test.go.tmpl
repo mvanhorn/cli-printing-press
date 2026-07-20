@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"{{modulePath}}/internal/platform"
@@ -141,6 +142,110 @@ func TestPlatformCLIConformanceSurfaceAndGate(t *testing.T) {
 	mcpRoot.SetArgs([]string{"whoami", "--client-profile", "other", "--json"})
 	if err := mcpRoot.Execute(); err == nil || !strings.Contains(err.Error(), "may not switch") {
 		t.Fatalf("MCP profile switch error = %v", err)
+	}
+}
+
+func TestPlatformCLIConformanceOutputMetadataAndAnalytics(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	profile := &platform.Profile{
+		SchemaVersion: platform.ProfileSchemaVersion,
+		Name:          "tenant-a",
+		Sources: map[string]platform.SourceProfile{
+			"test-source": {CredentialRef: "op://Test Vault/Test Item/token", ExpectedAccountID: "acct-a"},
+		},
+	}
+	session, err := platform.PrepareProfileSourceFromConfig(profile, "sample-pp-cli", "test-source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	window, err := platform.ResolveWindow(platform.WindowRequest{Days: 7}, platform.WindowPolicy{
+		Now:          func() time.Time { return time.Date(2026, time.July, 20, 0, 0, 0, 0, time.UTC) },
+		EndExclusive: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.SetResolvedWindow(window)
+	flags := &rootFlags{asJSON: true, platformSession: session}
+	var output bytes.Buffer
+	rows := make([]map[string]any, 0, 1)
+	rows = append(rows, map[string]any{"orders": 2})
+	if err := printJSONFiltered(&output, rows, flags); err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Data []map[string]any        `json:"data"`
+		Meta platform.OutputMetadata `json:"meta"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &envelope); err != nil {
+		t.Fatalf("structured output is not the platform envelope: %v: %s", err, output.String())
+	}
+	if envelope.Meta.Truncated || envelope.Meta.ResolvedWindow == nil || len(envelope.Data) != 1 {
+		t.Fatalf("platform output metadata = %+v data=%+v", envelope.Meta, envelope.Data)
+	}
+
+	agentFlags := &rootFlags{asJSON: true, agent: true, platformSession: session}
+	output.Reset()
+	if err := printJSONFiltered(&output, rows, agentFlags); err != nil {
+		t.Fatal(err)
+	}
+	var agentEnvelope struct {
+		Results []map[string]any `json:"results"`
+		Meta struct {
+			Source         string                   `json:"source"`
+			Truncated      bool                     `json:"truncated"`
+			ResolvedWindow *platform.ResolvedWindow `json:"resolved_window"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &agentEnvelope); err != nil {
+		t.Fatalf("agent output is not the platform envelope: %v: %s", err, output.String())
+	}
+	if agentEnvelope.Meta.Source != "local" || agentEnvelope.Meta.Truncated || agentEnvelope.Meta.ResolvedWindow == nil || len(agentEnvelope.Results) != 1 {
+		t.Fatalf("agent platform output metadata = %+v results=%+v", agentEnvelope.Meta, agentEnvelope.Results)
+	}
+
+	zero := 0.0
+	declaration := platform.AnalyticsDeclaration{
+		RequiredInputs:  []string{"orders"},
+		InputRows:       map[string]int64{"orders": 2},
+		MatchedRows:     2,
+		BusinessMetrics: map[string]*float64{"net_sales": &zero},
+	}
+	formatFlags := make([]*rootFlags, 0, 4)
+	formatFlags = append(formatFlags,
+		&rootFlags{asJSON: true, platformSession: session},
+		&rootFlags{csv: true, platformSession: session},
+		&rootFlags{plain: true, platformSession: session},
+		&rootFlags{asJSON: true, agent: true, platformSession: session},
+	)
+	for _, formatFlags := range formatFlags {
+		declarePlatformAnalytics(formatFlags, declaration)
+		output.Reset()
+		if err := printJSONFiltered(&output, map[string]any{"net_sales": 0}, formatFlags); err == nil || !strings.Contains(err.Error(), "all_business_metrics_zero_or_null") {
+			t.Fatalf("all-zero analytics output was not rejected for flags %+v: %v", formatFlags, err)
+		}
+	}
+
+	csvFlags := &rootFlags{csv: true, platformSession: session}
+	var event bytes.Buffer
+	csvFlags.platformMetadataWriter = &event
+	output.Reset()
+	if err := printJSONFiltered(&output, rows, csvFlags); err != nil {
+		t.Fatal(err)
+	}
+	var finalErr error
+	finalizePlatformInvocation(csvFlags, &finalErr)
+	if finalErr != nil {
+		t.Fatal(finalErr)
+	}
+	if got := output.String(); !strings.Contains(got, "orders") || !strings.Contains(got, "2") {
+		t.Fatalf("CSV output = %s", got)
+	}
+	if got := event.String(); !strings.Contains(got, `"event":"output_metadata"`) || !strings.Contains(got, `"truncated":false`) {
+		t.Fatalf("CSV output metadata event = %s", got)
 	}
 }
 

@@ -63,11 +63,14 @@ type rootFlags struct {
 	runProfileName string
 	clientProfileName string
 	platformSession *platform.Session
+	platformAnalytics *platform.AnalyticsDeclaration
 	platformGateError error
+	platformMetadataWriter io.Writer
 	receiptEnabled bool
 	receiptFile string
 	auditDir string
 	receiptWriter *platform.ReceiptWriter
+	platformMetadataEmitted bool
 	deliverSpec  string
 	timeout      time.Duration
 	rateLimit    float64
@@ -407,12 +410,14 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 			if err := preparePlatformSession(flags); err != nil {
 				return err
 			}
+			cmd.SetContext(platform.ContextWithSession(cmd.Context(), flags.platformSession))
 			if err := validatePlatformLegacyInputs(cmd, flags); err != nil {
 				return err
 			}
 			if err := initializePlatformReceipt(cmd, flags); err != nil {
 				return err
 			}
+			flags.platformMetadataWriter = cmd.ErrOrStderr()
 			if err := verifyPlatformSession(cmd.Context(), flags); err != nil {
 				if platformCommandIsDoctor(cmd) {
 					flags.platformGateError = err
