@@ -44,9 +44,9 @@ func TestGenerateEmitsInvalidateCacheSymmetry(t *testing.T) {
 	assert.Contains(t, clientGo, "func (c *Client) invalidateCacheResource(path string)",
 		"client.go must define resource-scoped invalidation (R1)")
 	assert.Contains(t, clientGo, "func (c *Client) invalidateCacheAfterMutation(path string)",
-		"client.go must define mutation invalidation with a tenant-scoped safety fallback")
+		"client.go must define mutation invalidation with an HTTP-namespace safety fallback")
 	assert.Contains(t, clientGo, "os.RemoveAll(filepath.Join(c.cacheDir, \"resources\"))",
-		"verified platform mutations must evict all potentially related projections inside only that profile/source cache")
+		"all mutations must evict potentially related projections inside only that API or profile/source cache")
 
 	// Prong 2: doInternal() must call invalidateCache. Bound the search
 	// to doInternal()'s body so a call site emitted at file scope (or in

@@ -150,6 +150,14 @@ func TestMutationInvalidatesOnlyItsResourceTag(t *testing.T) {
 	if _, err := os.Stat(c.cacheResourceDir("/v1/customers")); err != nil {
 		t.Fatalf("unrelated customers resource cache was removed: %v", err)
 	}
+	c.writeCache("/v1/orders", nil, json.RawMessage(`{"resource":"orders"}`){{if .HasHTMLExtraction}}, "application/json"{{end}})
+	c.invalidateCacheAfterMutation("/v1/orders/123")
+	if _, err := os.Stat(c.cacheResourceDir("/v1/orders")); !os.IsNotExist(err) {
+		t.Fatalf("mutation left the directly affected cache: %v", err)
+	}
+	if _, err := os.Stat(c.cacheResourceDir("/v1/customers")); !os.IsNotExist(err) {
+		t.Fatalf("mutation left a potentially related projection cache: %v", err)
+	}
 }
 
 func TestGetWithHeadersValuesPreservesRepeatedQueryParams(t *testing.T) {
