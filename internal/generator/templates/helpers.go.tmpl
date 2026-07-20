@@ -1753,7 +1753,7 @@ func resolvePlatformWindow(ctx context.Context, request platform.WindowRequest, 
 	return window, nil
 }
 
-func wrapPlatformStructuredOutput(data json.RawMessage, flags *rootFlags, resultKey string) (json.RawMessage, error) {
+func wrapPlatformStructuredOutput(data json.RawMessage, flags *rootFlags, resultKey string, mergeOwnedEnvelope bool) (json.RawMessage, error) {
 	if flags == nil || flags.platformSession == nil {
 		return data, nil
 	}
@@ -1769,7 +1769,7 @@ func wrapPlatformStructuredOutput(data json.RawMessage, flags *rootFlags, result
 		return nil, err
 	}
 	var envelope map[string]json.RawMessage
-	if json.Unmarshal(data, &envelope) == nil && envelope["meta"] != nil && (envelope["data"] != nil || envelope["results"] != nil) {
+	if mergeOwnedEnvelope && json.Unmarshal(data, &envelope) == nil && envelope["meta"] != nil && (envelope["data"] != nil || envelope["results"] != nil) {
 		var meta map[string]any
 		if err := json.Unmarshal(envelope["meta"], &meta); err != nil {
 			return nil, err
@@ -2123,7 +2123,7 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 		if flags.agent {
 			resultKey = "results"
 		}
-		wrapped, err := wrapPlatformStructuredOutput(data, flags, resultKey)
+		wrapped, err := wrapPlatformStructuredOutput(data, flags, resultKey, flags.agent)
 		if err != nil {
 			return err
 		}

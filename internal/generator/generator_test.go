@@ -7239,7 +7239,7 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 
 	// Envelope bypasses printOutputWithFlags to avoid double-filtering, then
 	// adopts the platform metadata wrapper before the final structured write.
-	assert.Contains(t, content, `wrapPlatformStructuredOutput(json.RawMessage(envelopeJSON), flags, resultKey)`)
+	assert.Contains(t, content, `wrapPlatformStructuredOutput(json.RawMessage(envelopeJSON), flags, resultKey, true)`)
 	assert.Contains(t, content, `printOutput(cmd.OutOrStdout(), structured, true)`)
 
 	// Dry-run is flagged honestly in the envelope

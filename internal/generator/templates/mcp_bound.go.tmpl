@@ -145,8 +145,9 @@ func Text(out string) string {
 }
 
 // WithMetadata applies the platform output contract after MCP bounding. It
-// preserves an existing data/results envelope, records MCP compaction as a
-// truncation reason, and never returns a result above the MCP text budget.
+// keeps API-owned data/results/meta objects intact beneath data, records only
+// Printing Press compaction as a truncation reason, and never returns a result
+// above the MCP text budget.
 func WithMetadata(result string, metadata any) string {
 	metadataRaw, err := json.Marshal(metadata)
 	if err != nil {
@@ -161,9 +162,8 @@ func WithMetadata(result string, metadata any) string {
 		payload = result
 	}
 	if obj, ok := payload.(map[string]any); ok {
-		truncated, _ := obj["truncated"].(bool)
-		legacyTruncated, _ := obj["_pp_truncated"].(bool)
-		if truncated || legacyTruncated {
+		printingPressTruncated, _ := obj["_pp_truncated"].(bool)
+		if printingPressTruncated {
 			meta["truncated"] = true
 			if _, exists := meta["truncation_reasons"]; !exists {
 					meta["truncation_reasons"] = []map[string]any{
@@ -171,24 +171,9 @@ func WithMetadata(result string, metadata any) string {
 							"kind": "mcp_output_limit", "configured": MaxBytes,
 							"observed": len(result), "more_available": true,
 						},
-					}
-			}
-		}
-		if existingMeta, hasMeta := obj["meta"].(map[string]any); hasMeta {
-			if _, hasData := obj["data"]; hasData {
-				for key, value := range meta {
-					existingMeta[key] = value
 				}
-				obj["meta"] = existingMeta
-				return marshalMetadataEnvelope(obj, meta, result)
 			}
-			if _, hasResults := obj["results"]; hasResults {
-				for key, value := range meta {
-					existingMeta[key] = value
-				}
-				obj["meta"] = existingMeta
-				return marshalMetadataEnvelope(obj, meta, result)
-			}
+			delete(obj, "_pp_truncated")
 		}
 	}
 	return marshalMetadataEnvelope(map[string]any{"data": payload, "meta": meta}, meta, result)
@@ -328,6 +313,7 @@ func boundedListEnvelope(field string, items []json.RawMessage, originalBytes in
 		}
 		if len(subset) < len(items) {
 			out["truncated"] = true
+			out["_pp_truncated"] = true
 			out["returned_count"] = len(subset)
 			out["original_bytes"] = originalBytes
 			out["max_bytes"] = MaxBytes
@@ -378,6 +364,7 @@ func boundedPageListEnvelope(field string, items []json.RawMessage, original jso
 		}
 		if nextCursor != "" {
 			out["truncated"] = true
+			out["_pp_truncated"] = true
 			out["next_cursor"] = nextCursor
 			out["original_bytes"] = len(original)
 			out["max_bytes"] = MaxBytes
@@ -531,6 +518,7 @@ func previewEnvelope(data []byte, note string) string {
 	}
 	for limit >= 0 {
 		out, err := json.Marshal(map[string]any{
+			"_pp_truncated": true,
 			"truncated":      true,
 			"resumable":      false,
 			"original_bytes": len(data),
@@ -551,6 +539,7 @@ func previewEnvelope(data []byte, note string) string {
 		}
 	}
 	out, _ := json.Marshal(map[string]any{
+		"_pp_truncated": true,
 		"truncated":      true,
 		"resumable":      false,
 		"original_bytes": len(data),

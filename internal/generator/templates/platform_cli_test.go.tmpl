@@ -266,6 +266,32 @@ func TestPlatformCLIConformanceOutputMetadataAndAnalytics(t *testing.T) {
 		t.Fatalf("agent platform output metadata = %+v results=%+v", agentEnvelope.Meta, agentEnvelope.Results)
 	}
 
+	// A native API response can legitimately use meta plus data/results and
+	// fields that collide with the platform contract. Raw responses must be
+	// wrapped, not mistaken for an envelope created by this CLI.
+	native := json.RawMessage(`{"meta":{"truncated":true,"resolved_window":"upstream-window","warnings":["upstream"]},"data":{"id":"native"}}`)
+	nativeWrapped, err := wrapPlatformStructuredOutput(native, flags, "data", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nativeEnvelope struct {
+		Meta platform.OutputMetadata `json:"meta"`
+		Data struct {
+			Meta struct {
+				Truncated      bool     `json:"truncated"`
+				ResolvedWindow string   `json:"resolved_window"`
+				Warnings       []string `json:"warnings"`
+			} `json:"meta"`
+			Data map[string]string `json:"data"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(nativeWrapped, &nativeEnvelope); err != nil {
+		t.Fatalf("native response wrapper is invalid: %v: %s", err, nativeWrapped)
+	}
+	if nativeEnvelope.Meta.Truncated || !nativeEnvelope.Data.Meta.Truncated || nativeEnvelope.Data.Meta.ResolvedWindow != "upstream-window" || len(nativeEnvelope.Data.Meta.Warnings) != 1 || nativeEnvelope.Data.Data["id"] != "native" {
+		t.Fatalf("native metadata was not preserved: %+v", nativeEnvelope)
+	}
+
 	zero := 0.0
 	declaration := platform.AnalyticsDeclaration{
 		ClientProfile:    "tenant-a",

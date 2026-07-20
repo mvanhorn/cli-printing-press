@@ -961,7 +961,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				if flags.agent {
 					resultKey = "results"
 				}
-				structured, err := wrapPlatformStructuredOutput(json.RawMessage(envelopeJSON), flags, resultKey)
+				structured, err := wrapPlatformStructuredOutput(json.RawMessage(envelopeJSON), flags, resultKey, true)
 				if err != nil {
 					return err
 				}
@@ -1002,7 +1002,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				if wrapErr != nil {
 					return wrapErr
 				}
-				wrapped, wrapErr = wrapPlatformStructuredOutput(wrapped, flags, "results")
+				wrapped, wrapErr = wrapPlatformStructuredOutput(wrapped, flags, "results", true)
 				if wrapErr != nil {
 					return wrapErr
 				}

@@ -56,7 +56,7 @@ func TestGeneratedOutputSemanticsPreserveCalendarAndStrictAnalytics(t *testing.T
 	require.Contains(t, windowTest, "TestPlatformMCPWindowPreservesCalendarMonthInput")
 
 	requireGeneratedCompiles(t, outputDir)
-	runGoCommandRequired(t, outputDir, "test", "./internal/platform", "./internal/cli", "./internal/mcp", "-run", "^(TestResolvedWindowCalendarConformance|TestPlatform(Command|MCP)Window)", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/platform", "./internal/cli", "./internal/mcp", "./internal/mcp/bound", "-run", "^(TestResolvedWindowCalendarConformance|TestPlatform(Command|MCP)Window|TestPlatformCLIConformanceOutputMetadataAndAnalytics|TestWithMetadata)", "-count=1")
 
 	codeSpec := minimalSpec("output-semantics-code")
 	codeSpec.MCP = spec.MCPConfig{Transport: []string{"stdio"}, Orchestration: "code"}
