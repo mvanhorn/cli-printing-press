@@ -82,17 +82,6 @@ func TestGeneratedClientQueryParamContractsPass(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "./internal/client", "-run", "Test(CacheKeyDelimitsSortedQueryParams|GetWithHeadersValuesPreservesRepeatedQueryParams)", "-count=1")
 }
 
-func clientCacheKeyBody(t *testing.T, content string) string {
-	t.Helper()
-	start := strings.Index(content, "func (c *Client) cacheKey(")
-	require.NotEqual(t, -1, start, "cacheKey function must be emitted")
-	body := content[start:]
-	if next := strings.Index(body[1:], "\nfunc "); next != -1 {
-		body = body[:next+1]
-	}
-	return body
-}
-
 func clientCacheKeyForBody(t *testing.T, content string) string {
 	t.Helper()
 	start := strings.Index(content, "func (c *Client) cacheKeyFor(")
