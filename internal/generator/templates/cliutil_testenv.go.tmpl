@@ -1,0 +1,101 @@
+// Package testenv sandboxes a test's user directories and proves the
+// sandbox holds.
+//
+// Only test files import it, so it never reaches the CLI binary.
+package testenv
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// homeVars lists every variable os.UserHomeDir consults: HOME on Unix,
+// USERPROFILE on Windows. Redirecting one and not the other leaves the
+// other platform resolving the operator's real home directory.
+var homeVars = []string{"HOME", "USERPROFILE"}
+
+// clearedVars are the per-CLI and XDG overrides that would otherwise
+// point a lookup back out of the sandbox.
+var clearedVars = []string{
+	"{{envName .Name}}_CONFIG",
+	"{{envName .Name}}_CONFIG_DIR",
+	"{{envName .Name}}_DATA_DIR",
+	"{{envName .Name}}_STATE_DIR",
+	"{{envName .Name}}_CACHE_DIR",
+	"{{envName .Name}}_HOME",
+	"XDG_CONFIG_HOME",
+	"XDG_DATA_HOME",
+	"XDG_STATE_HOME",
+	"XDG_CACHE_HOME",
+}
+
+// Isolate redirects user-directory lookups into a throwaway home and
+// returns it. Each resolver passed in is called and its result must
+// land inside that home.
+//
+// Resolving is the load-bearing half. Environment setup that misses a
+// variable fails silently: the test reads and writes the operator's
+// real config, state, or data directory, and every assertion it makes
+// still passes. Routing the check through the same lookups the CLI
+// uses turns a missed variable into a failed test at the point of
+// setup, before anything is written.
+//
+// Callers that manipulate the --home override should reset it before
+// calling Isolate, so the resolvers see the state the test will run
+// under.
+func Isolate(t *testing.T, resolvers ...func() (string, error)) string {
+	t.Helper()
+	home := t.TempDir()
+	for _, name := range homeVars {
+		t.Setenv(name, home)
+	}
+	for _, name := range clearedVars {
+		t.Setenv(name, "")
+	}
+	for _, resolve := range resolvers {
+		requireWithin(t, home, resolve)
+	}
+	return home
+}
+
+func requireWithin(t *testing.T, home string, resolve func() (string, error)) {
+	t.Helper()
+	path, err := resolve()
+	if err != nil {
+		t.Fatalf("resolve sandboxed directory: %v", err)
+	}
+	if !within(home, path) {
+		t.Fatalf("test sandbox escaped: lookup resolved %q, want a path under %q\n"+
+			"Some user-directory lookup is still reading a real environment variable, "+
+			"so this test would read and write the operator's own files.", path, home)
+	}
+}
+
+func within(root, path string) bool {
+	rel, err := filepath.Rel(resolveExisting(root), resolveExisting(path))
+	if err != nil {
+		return false
+	}
+	return rel == "." || !strings.HasPrefix(rel, "..")
+}
+
+// resolveExisting walks up to the deepest existing ancestor, resolves
+// symlinks there, and reattaches the rest. Comparing an unresolved
+// path against a resolved one would read a macOS /var vs /private/var
+// mismatch as an escape.
+func resolveExisting(path string) string {
+	path = filepath.Clean(path)
+	remainder := ""
+	for {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return filepath.Join(resolved, remainder)
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return filepath.Join(path, remainder)
+		}
+		remainder = filepath.Join(filepath.Base(path), remainder)
+		path = parent
+	}
+}

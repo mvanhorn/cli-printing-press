@@ -19,6 +19,7 @@ import (
 
 	"{{modulePath}}/internal/cli"
 	"{{modulePath}}/internal/cliutil"
+	"{{modulePath}}/internal/cliutil/testenv"
 	"{{modulePath}}/internal/learn"
 )
 
@@ -26,11 +27,7 @@ import (
 // switch cleared, so entries land in a fresh state dir.
 func withJournalHome(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	t.Setenv("{{envPrefix .Name}}_STATE_DIR", "")
-	t.Setenv("{{envPrefix .Name}}_HOME", "")
-	t.Setenv("XDG_STATE_HOME", "")
+	dir := testenv.Isolate(t, cliutil.StateDir)
 	t.Setenv("PRINTING_PRESS_VERIFY", "")
 	t.Setenv("PRINTING_PRESS_DOGFOOD", "")
 	t.Setenv("{{envPrefix .Name}}_NO_LEARN", "")

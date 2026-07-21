@@ -12,16 +12,12 @@ import (
 	"testing"
 
 	"{{modulePath}}/internal/cliutil"
+	"{{modulePath}}/internal/cliutil/testenv"
 )
 
 func withTempHomeForLog(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	t.Setenv("{{envPrefix .Name}}_STATE_DIR", "")
-	t.Setenv("{{envPrefix .Name}}_HOME", "")
-	t.Setenv("XDG_STATE_HOME", "")
-	return dir
+	return testenv.Isolate(t, cliutil.StateDir)
 }
 
 func teachLogPathForTest(t *testing.T) string {
