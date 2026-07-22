@@ -64,6 +64,13 @@ the staging copies. The scrub file expects `$STAGING_MANUSCRIPTS` and
 If the post-scrub verification reports unresolved secrets, **do not proceed with upload**.
 Save the zips locally and tell the user to review manually.
 
+Record the outcome so Step 5 can enforce it mechanically:
+
+```bash
+# Set ONLY if the post-scrub verification passed with zero unresolved findings
+SCRUB_VERIFIED=true
+```
+
 ## Step 4: Zip artifacts
 
 ```bash
@@ -82,7 +89,14 @@ fi
 
 ## Step 5: Upload to catbox.moe
 
-Upload each artifact and capture the returned URL:
+**Hard gate:** uploads publish to a public, anonymous file host. Only run this step if
+BOTH are true: (a) the user explicitly confirmed submission in Phase 6 Step 3, and
+(b) `$SCRUB_VERIFIED` is `true`. If either is missing, skip to Step 6 as a failure —
+save zips locally and stop.
+
+Upload each artifact and capture the returned URL. A successful catbox response is a
+bare `https://files.catbox.moe/<file>` URL and nothing else — validate against that
+exact shape, not just an `https://` prefix:
 
 ```bash
 MANUSCRIPTS_URL=""
@@ -90,38 +104,53 @@ CLI_SOURCE_URL=""
 RETRO_DOC_URL=""
 UPLOAD_FAILED=false
 
+if [ "${SCRUB_VERIFIED:-false}" != "true" ]; then
+  echo "REFUSING upload: secret-scrub verification did not pass."
+  UPLOAD_FAILED=true
+else
+
+catbox_upload() {
+  # $1 = path to file. Prints the URL on success, returns non-zero on failure.
+  local response
+  response=$(curl -sf -F "reqtype=fileupload" -F "fileToUpload=@$1" https://catbox.moe/user/api.php 2>/dev/null) || return 1
+  if printf '%s' "$response" | grep -Eq '^https://files\.catbox\.moe/[A-Za-z0-9._-]+$'; then
+    printf '%s' "$response"
+  else
+    return 1
+  fi
+}
+
 # Upload retro document (raw .md — viewable directly in browser)
-RESPONSE=$(curl -s -F "reqtype=fileupload" -F "fileToUpload=@$RETRO_PROOF_PATH" https://catbox.moe/user/api.php 2>/dev/null)
-if echo "$RESPONSE" | grep -q "^https://"; then
-  RETRO_DOC_URL="$RESPONSE"
+if RETRO_DOC_URL=$(catbox_upload "$RETRO_PROOF_PATH"); then
   echo "Retro document uploaded: $RETRO_DOC_URL"
 else
-  echo "WARNING: Failed to upload retro document to catbox.moe. Response: $RESPONSE"
+  echo "WARNING: Failed to upload retro document to catbox.moe."
+  RETRO_DOC_URL=""
   UPLOAD_FAILED=true
 fi
 
 # Upload manuscripts zip
-RESPONSE=$(curl -s -F "reqtype=fileupload" -F "fileToUpload=@$MANUSCRIPTS_ZIP" https://catbox.moe/user/api.php 2>/dev/null)
-if echo "$RESPONSE" | grep -q "^https://"; then
-  MANUSCRIPTS_URL="$RESPONSE"
+if MANUSCRIPTS_URL=$(catbox_upload "$MANUSCRIPTS_ZIP"); then
   echo "Manuscripts uploaded: $MANUSCRIPTS_URL"
 else
-  echo "WARNING: Failed to upload manuscripts to catbox.moe. Response: $RESPONSE"
+  echo "WARNING: Failed to upload manuscripts to catbox.moe."
+  MANUSCRIPTS_URL=""
   UPLOAD_FAILED=true
 fi
 
 # Upload CLI source (only if it was packaged)
 if [ -n "$CLI_SOURCE_ZIP" ] && [ -f "$CLI_SOURCE_ZIP" ]; then
-  RESPONSE=$(curl -s -F "reqtype=fileupload" -F "fileToUpload=@$CLI_SOURCE_ZIP" https://catbox.moe/user/api.php 2>/dev/null)
-  if echo "$RESPONSE" | grep -q "^https://"; then
-    CLI_SOURCE_URL="$RESPONSE"
+  if CLI_SOURCE_URL=$(catbox_upload "$CLI_SOURCE_ZIP"); then
     echo "CLI source uploaded: $CLI_SOURCE_URL"
   else
-    echo "WARNING: Failed to upload CLI source to catbox.moe. Response: $RESPONSE"
+    echo "WARNING: Failed to upload CLI source to catbox.moe."
+    CLI_SOURCE_URL=""
     UPLOAD_FAILED=true
   fi
 else
   echo "No CLI source to upload (manuscripts-only mode)."
+fi
+
 fi
 ```
 
@@ -172,6 +201,7 @@ eventually. Do not let cleanup failure block the rest of the workflow.
 | `$RETRO_DOC_URL` | catbox URL for retro .md file (viewable in browser), or empty if upload failed |
 | `$MANUSCRIPTS_URL` | catbox URL for manuscripts zip, or empty if upload failed |
 | `$CLI_SOURCE_URL` | catbox URL for CLI source zip, or empty if upload failed |
+| `$SCRUB_VERIFIED` | `true` only when Step 3's post-scrub verification passed; uploads are refused otherwise |
 | `$UPLOAD_FAILED` | `true` if any upload failed, `false` otherwise |
 | `$MANUSCRIPTS_ZIP` | Local path to manuscripts zip (in staging, deleted after cleanup) |
 | `$CLI_SOURCE_ZIP` | Local path to CLI source zip (in staging, deleted after cleanup) |
