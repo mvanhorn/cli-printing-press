@@ -11253,6 +11253,9 @@ func TestGenerate_CookieAuthUsesBrowserTemplate(t *testing.T) {
 	assert.Contains(t, content, "--chrome")
 	assert.Contains(t, content, "detectCookieTool")
 	assert.Contains(t, content, "extractCookies")
+	assert.Contains(t, content, "validateExtractedCookieHeader(cookies)")
+	assert.Contains(t, content, "http.ParseCookie(header)")
+	assert.Contains(t, content, "refusing to save credentials")
 	assert.Contains(t, content, "cookieToolSupportsProfiles")
 	assert.Contains(t, content, `"pycookiecheat-cli"`)
 	assert.Contains(t, content, `exec.LookPath("pycookiecheat")`)
@@ -11301,6 +11304,21 @@ func TestGenerate_CookieAuthUsesBrowserTemplate(t *testing.T) {
 	assert.Contains(t, doctorContent, "browser_session_proof")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
+	validationTest := `package cli
+
+import "testing"
+
+func TestGeneratedValidateExtractedCookieHeader(t *testing.T) {
+	if err := validateExtractedCookieHeader("session-id=abc; ubid-main=def"); err != nil {
+		t.Fatalf("valid Cookie header rejected: %v", err)
+	}
+	if err := validateExtractedCookieHeader("session-id=\x01\xffbinary"); err == nil {
+		t.Fatal("malformed Cookie header accepted")
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "auth_cookie_validation_test.go"), []byte(validationTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestGeneratedValidateExtractedCookieHeader")
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
