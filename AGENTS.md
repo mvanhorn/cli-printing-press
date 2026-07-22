@@ -92,19 +92,28 @@ If the "obvious" fix violates a parser, verifier, scorer, or printed-CLI invaria
 
 #### Emitted code that touches the developer's home requires a field proof
 
-CI proves the emitted code compiles and passes on a clean Linux runner. It does not prove the code leaves a populated home directory alone. When the change touches emitted code that resolves user paths or credentials (`HOME` / `USERPROFILE` lookups, `internal/cliutil` path and credential helpers, emitted `*_test.go` helpers), prove it against a real print before handoff:
+CI proves the emitted code compiles and passes on a clean Linux runner. It does not prove the code leaves a populated home directory alone. When the change touches emitted code that resolves user paths or credentials (`HOME` / `USERPROFILE` lookups, `internal/cliutil` path and credential helpers, emitted `*_test.go` helpers), prove it against a real print before handoff.
+
+Point the proof at a **decoy profile, never your own home**. The snapshot below detects an escape after it lands, so a run against live credentials destroys them and only then reports it.
 
 ```bash
+DECOY=$(mktemp -d)
+mkdir -p "$DECOY"/.config "$DECOY"/.local/share "$DECOY"/.local/state
+echo sentinel > "$DECOY"/.config/sentinel   # an escape needs something to clobber
+export HOME="$DECOY" USERPROFILE="$DECOY" \
+       XDG_CONFIG_HOME="$DECOY/.config" XDG_DATA_HOME="$DECOY/.local/share" \
+       XDG_STATE_HOME="$DECOY/.local/state" XDG_CACHE_HOME="$DECOY/.cache"
+
 go build -o ./cli-printing-press ./cmd/cli-printing-press
-./cli-printing-press generate --spec ./testdata/stytch.yaml --output <scratch>/stytch-pp-cli
-find ~/.config ~/.local/share -type f | sort | xargs md5sum > before.txt
-(cd <scratch>/stytch-pp-cli && go test ./...)
-find ~/.config ~/.local/share -type f | sort | xargs md5sum | diff before.txt -
+./cli-printing-press generate --spec ./testdata/stytch.yaml --output "$DECOY/print/stytch-pp-cli"
+find "$DECOY"/.config "$DECOY"/.local -type f | sort | xargs md5sum > "$DECOY/before.txt"
+(cd "$DECOY/print/stytch-pp-cli" && go test ./...)
+find "$DECOY"/.config "$DECOY"/.local -type f | sort | xargs md5sum | diff "$DECOY/before.txt" -
 ```
 
-A byte-identical snapshot is the pass condition. Back up live credentials first; a regression here overwrites them.
+A byte-identical snapshot is the pass condition.
 
-Never run the suite of a CLI printed by an older generator without overriding **both** `HOME` and `USERPROFILE`. On Windows the production resolver reads `USERPROFILE`, so a suite that sets only `HOME` escapes its sandbox and writes to the real profile.
+Redirect **both** `HOME` and `USERPROFILE`, plus the `XDG_*` variables. On Windows the production resolver reads `USERPROFILE`, so redirecting only `HOME` leaves the real profile exposed, which is the exact shape of the escape this proof exists to catch.
 
 ## Cross-repo dependency: published-library sweep tool
 
