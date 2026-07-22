@@ -90,6 +90,22 @@ Required before handoff:
 
 If the "obvious" fix violates a parser, verifier, scorer, or printed-CLI invariant, stop and resolve the invariant conflict rather than shipping a narrow band-aid.
 
+#### Emitted code that touches the developer's home requires a field proof
+
+CI proves the emitted code compiles and passes on a clean Linux runner. It does not prove the code leaves a populated home directory alone. When the change touches emitted code that resolves user paths or credentials (`HOME` / `USERPROFILE` lookups, `internal/cliutil` path and credential helpers, emitted `*_test.go` helpers), prove it against a real print before handoff:
+
+```bash
+go build -o ./cli-printing-press ./cmd/cli-printing-press
+./cli-printing-press generate --spec ./testdata/stytch.yaml --output <scratch>/stytch-pp-cli
+find ~/.config ~/.local/share -type f | sort | xargs md5sum > before.txt
+(cd <scratch>/stytch-pp-cli && go test ./...)
+find ~/.config ~/.local/share -type f | sort | xargs md5sum | diff before.txt -
+```
+
+A byte-identical snapshot is the pass condition. Back up live credentials first; a regression here overwrites them.
+
+Never run the suite of a CLI printed by an older generator without overriding **both** `HOME` and `USERPROFILE`. On Windows the production resolver reads `USERPROFILE`, so a suite that sets only `HOME` escapes its sandbox and writes to the real profile.
+
 ## Cross-repo dependency: published-library sweep tool
 
 When a change to `internal/generator/templates/readme.md.tmpl` or `skill.md.tmpl` shifts canonical published-library shape — install-block structure, top-of-README section ordering, presence/removal of `## ` sections, frontmatter top-level field set, install command syntax — also update `tools/sweep-canonical/main.go` in [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) so already-published CLIs can be retrofitted to match. Fresh prints get the new shape automatically; existing entries drift until the sweep runs.
