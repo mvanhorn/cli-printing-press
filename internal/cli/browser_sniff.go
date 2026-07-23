@@ -79,6 +79,7 @@ func newBrowserSniffCmd() *cobra.Command {
 			browsersniff.ApplyReachabilityDefaults(apiSpec, trafficAnalysis)
 
 			droppedEndpoints := browsersniff.FilterEndpointsByMinSamplesWithOptions(apiSpec, capture, minSamples, analyzeOptions)
+			browsersniff.AddReservedResourceNameWarnings(apiSpec, trafficAnalysis)
 
 			samplesWritten, err := writeBrowserSniffOutputs(apiSpec, trafficAnalysis, capture, outputPath, analysisOutputPath, samplesOutputPath, analyzeOptions)
 			if err != nil {

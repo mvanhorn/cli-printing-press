@@ -7,8 +7,62 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
+
+func TestDeclaredAPISurfaceReachable(t *testing.T) {
+	expected := []string{
+		"currencies",
+		"projects",
+		"projects avatar",
+		"projects avatar upload-project",
+		"projects create",
+		"projects get",
+		"projects list",
+		"projects tasks",
+		"projects tasks list-project",
+		"projects tasks update-project",
+		"public",
+		"reports",
+		"reports export",
+		"reports export report-year",
+		"reports summary",
+		"reports summary get-report-year",
+	}
+	actual := make(map[string]struct{}, len(expected))
+	type pendingCommand struct {
+		command *cobra.Command
+		path    string
+	}
+	queue := make([]pendingCommand, 0, len(expected))
+	for _, child := range RootCmd().Commands() {
+		queue = append(queue, pendingCommand{command: child, path: child.Name()})
+	}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		actual[current.path] = struct{}{}
+		for _, child := range current.command.Commands() {
+			queue = append(queue, pendingCommand{
+				command: child,
+				path:    strings.TrimSpace(current.path + " " + child.Name()),
+			})
+		}
+	}
+
+	var missing []string
+	for _, commandPath := range expected {
+		if _, ok := actual[commandPath]; !ok {
+			missing = append(missing, commandPath)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("declared API command paths missing from generated Cobra tree: %s", strings.Join(missing, ", "))
+	}
+}
 
 // TestIsCobraUsageError covers the six pre-RunE error shapes Cobra and
 // pflag can produce before any user RunE runs. Each must be detected so
