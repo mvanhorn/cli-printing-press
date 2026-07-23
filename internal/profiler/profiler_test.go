@@ -1682,6 +1682,64 @@ func TestProfileDependentResources_SharedSubResourceShardsByParent(t *testing.T)
 	assert.Equal(t, "/repos/{repo_id}/commits", reposDep.Path)
 }
 
+func TestUniquifyDependentResourceNamesUpdatesDescendantParents(t *testing.T) {
+	deps := []DependentResource{
+		{Name: "shared_child", ParentResource: "root", Path: "/root/{root_id}/alpha/child", Method: "GET"},
+		{Name: "shared_child", ParentResource: "root", Path: "/root/{root_id}/beta/child", Method: "GET"},
+		{Name: "grandchildren", ParentResource: "shared_child", Path: "/root/{root_id}/alpha/child/{child_id}/grandchildren", parentPath: "/root/{root_id}/alpha/child", Method: "GET"},
+	}
+
+	uniquifyDependentResourceNames(deps, nil)
+
+	assert.Equal(t, "root_alpha_child", deps[0].Name)
+	assert.Equal(t, "root_beta_child", deps[1].Name)
+	assert.Equal(t, "root_alpha_child", deps[2].ParentResource)
+}
+
+func TestUniquifyDependentResourceNamesPreservesSyncableParents(t *testing.T) {
+	deps := []DependentResource{
+		{Name: "accounts", ParentResource: "accounts", Path: "/accounts/{account_id}/nested", Method: "GET"},
+		{Name: "accounts", ParentResource: "accounts", Path: "/accounts/{account_id}/other", Method: "GET"},
+		{Name: "items", ParentResource: "accounts", Path: "/accounts/{account_id}/nested/{nested_id}/items", Method: "GET"},
+	}
+
+	deps[2].parentPath = "/accounts"
+	uniquifyDependentResourceNames(deps, map[string]syncableMeta{"accounts": {Path: "/accounts"}})
+
+	assert.Equal(t, "accounts_nested", deps[0].Name)
+	assert.Equal(t, "accounts_other", deps[1].Name)
+	assert.Equal(t, "accounts", deps[2].ParentResource)
+}
+
+func TestUniquifyDependentResourceNamesRewiresToSpecificDependentParent(t *testing.T) {
+	deps := []DependentResource{
+		{Name: "accounts", ParentResource: "accounts", Path: "/accounts/{account_id}/nested", Method: "GET"},
+		{Name: "accounts", ParentResource: "accounts", Path: "/accounts/{account_id}/other", Method: "GET"},
+		{Name: "items", ParentResource: "accounts", Path: "/accounts/{account_id}/nested/{nested_id}/items", parentPath: "/accounts/{account_id}/nested", Method: "GET"},
+	}
+
+	uniquifyDependentResourceNames(deps, map[string]syncableMeta{"accounts": {Path: "/accounts"}})
+
+	assert.Equal(t, "accounts_nested", deps[0].Name)
+	assert.Equal(t, "accounts_other", deps[1].Name)
+	assert.Equal(t, "accounts_nested", deps[2].ParentResource)
+}
+
+func TestUniquifyDependentResourceNamesUsesDeterministicFallbacks(t *testing.T) {
+	deps := []DependentResource{
+		{Name: "shared_child", Path: "/root/{root_id}/alpha/child", Method: "GET"},
+		{Name: "shared_child", Path: "/root/{root_id}/beta/child", Method: "GET"},
+	}
+
+	uniquifyDependentResourceNames(deps, map[string]syncableMeta{
+		"root_alpha_child":     {},
+		"root_alpha_child_get": {},
+	})
+
+	assert.Equal(t, "root_alpha_child_2", deps[0].Name)
+	assert.Equal(t, "root_beta_child", deps[1].Name)
+}
+
 // TestProfileDependentResources_MultiParamParentPath confirms the walk-context
 // parent (from the SubResources tree) wins over the path-param heuristic when
 // the path has multiple params and the first one does not match a syncable

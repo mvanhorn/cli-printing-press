@@ -205,6 +205,8 @@ type DependentResource struct {
 	Method         string
 	Tier           string
 	PathParams     []DependentPathParam
+	parentPath     string
+	parentPathLock bool
 
 	// IDField is the primary-key field name resolved from the spec
 	// (x-resource-id extension or the four-tier fallback chain). Empty when
@@ -675,6 +677,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 	p.DependentSyncResources = detectDependentResources(parameterized, syncable, shardedSubResources)
 	p.DependentSyncResources = applySpecWalkers(s, p.DependentSyncResources, syncable, s.Types, resourceNameIndex)
+	uniquifyDependentResourceNames(p.DependentSyncResources, syncable)
+	sortDependentResources(p.DependentSyncResources, nil)
 	addUnresolvedPathTemplateCollections(syncable, parameterized, p.DependentSyncResources)
 	p.SyncableResources = sortedSyncableResources(syncable)
 	// Flat tenant-scoped reconcile: a flat resource is reconcilable only when it
@@ -1580,6 +1584,87 @@ func detectDependentResources(parameterized map[string]parameterizedEntry, synca
 	return deps
 }
 
+func uniquifyDependentResourceNames(deps []DependentResource, syncable map[string]syncableMeta) {
+	originalNames := make([]string, len(deps))
+	counts := make(map[string]int, len(deps))
+	for i, dep := range deps {
+		originalNames[i] = dep.Name
+		counts[dep.Name]++
+	}
+
+	used := make(map[string]bool, len(syncable)+len(deps))
+	for name := range syncable {
+		used[name] = true
+	}
+	for name, count := range counts {
+		if count == 1 {
+			used[name] = true
+		}
+	}
+
+	for _, name := range sortedKeys(counts) {
+		count := counts[name]
+		if count < 2 {
+			continue
+		}
+		indices := make([]int, 0, count)
+		for i := range deps {
+			if deps[i].Name == name {
+				indices = append(indices, i)
+			}
+		}
+		sort.Slice(indices, func(i, j int) bool {
+			left, right := deps[indices[i]], deps[indices[j]]
+			if left.Path != right.Path {
+				return left.Path < right.Path
+			}
+			return left.Method < right.Method
+		})
+
+		for _, index := range indices {
+			candidate := dependentPathResourceName(deps[index])
+			if candidate == "" {
+				candidate = name
+			}
+			if used[candidate] {
+				base := candidate
+				if method := strings.ToLower(strings.TrimSpace(deps[index].Method)); method != "" {
+					candidate = base + "_" + spec.ToSnakeCase(method)
+				}
+				for suffix := 2; used[candidate]; suffix++ {
+					candidate = fmt.Sprintf("%s_%d", base, suffix)
+				}
+			}
+			deps[index].Name = candidate
+			used[candidate] = true
+		}
+	}
+	updateDependentParentNames(deps, originalNames)
+}
+
+func updateDependentParentNames(deps []DependentResource, originalNames []string) {
+	for i := range deps {
+		if deps[i].parentPathLock || deps[i].parentPath == "" {
+			continue
+		}
+		for j := range deps {
+			if originalNames[j] != deps[i].ParentResource || deps[j].Path != deps[i].parentPath {
+				continue
+			}
+			deps[i].ParentResource = deps[j].Name
+			break
+		}
+	}
+}
+
+func dependentPathResourceName(dep DependentResource) string {
+	segments := staticPathSegments(dep.Path)
+	if len(segments) == 0 {
+		return ""
+	}
+	return spec.ToSnakeCase(strings.Join(segments, "_"))
+}
+
 func addUnresolvedPathTemplateCollections(syncable map[string]syncableMeta, parameterized map[string]parameterizedEntry, deps []DependentResource) {
 	dependentPaths := make(map[string]struct{}, len(deps))
 	for _, dep := range deps {
@@ -1650,6 +1735,7 @@ func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[strin
 		Method:                entry.meta.Method,
 		Tier:                  entry.meta.Tier,
 		PathParams:            dependentPathParams(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam, keyField),
+		parentPath:            dependentParentPath(entry.meta.Path, ctx.parentPathSegment),
 		IDField:               entry.meta.IDField,
 		Critical:              entry.meta.Critical,
 		SinceParam:            entry.meta.SinceParam,
@@ -1866,6 +1952,8 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 			lookupKey := "GET " + e.Path
 			if idx, ok := byPath[lookupKey]; ok {
 				deps[idx].ParentResource = parent
+				deps[idx].parentPath = ""
+				deps[idx].parentPathLock = true
 				if keyParam != "" {
 					deps[idx].ParentIDParam = keyParam
 				}
@@ -1879,6 +1967,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				ParentResource:        parent,
 				ParentIDParam:         keyParam,
 				Path:                  e.Path,
+				parentPathLock:        true,
 				Method:                meta.Method,
 				Tier:                  meta.Tier,
 				PathParams:            dependentPathParams(e.Path, parent, keyParam, keyField),
@@ -1945,6 +2034,15 @@ func dependentParentIDParam(path, parentResource, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+func dependentParentPath(path, parentSegment string) string {
+	segments := pathSegments(path)
+	index := lastStaticSegmentIndex(segments, spec.ToSnakeCase(parentSegment))
+	if index < 0 {
+		return ""
+	}
+	return "/" + strings.Join(segments[:index+1], "/")
 }
 
 // parentFieldIrregulars maps plural parent resource names whose singular form a
