@@ -10,31 +10,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"{{modulePath}}/internal/cliutil/testenv"
 )
 
 func resetPathEnv(t *testing.T) string {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	for _, name := range []string{
-		envPrefix + "_CONFIG_DIR",
-		envPrefix + "_DATA_DIR",
-		envPrefix + "_STATE_DIR",
-		envPrefix + "_CACHE_DIR",
-		envPrefix + "_HOME",
-		"XDG_CONFIG_HOME",
-		"XDG_DATA_HOME",
-		"XDG_STATE_HOME",
-		"XDG_CACHE_HOME",
-	} {
-		t.Setenv(name, "")
-	}
 	restore, err := SetHomeOverride("")
 	if err != nil {
 		t.Fatalf("reset home override: %v", err)
 	}
 	t.Cleanup(restore)
-	return home
+	return testenv.Isolate(t, ConfigDir, DataDir, StateDir, CacheDir)
 }
 
 func TestKindDirDefaultsMatchLegacyLayout(t *testing.T) {

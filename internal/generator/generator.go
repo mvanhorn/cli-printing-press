@@ -2292,6 +2292,7 @@ func (g *Generator) prepareOutput() error {
 		filepath.Join("internal", "cache"),
 		filepath.Join("internal", "client"),
 		filepath.Join("internal", "cliutil"),
+		filepath.Join("internal", "cliutil", "testenv"),
 		filepath.Join("internal", "config"),
 		filepath.Join("internal", "mcp", "bound"),
 		filepath.Join("internal", "mcp", "cobratree"),
@@ -2416,6 +2417,7 @@ func (g *Generator) renderSingleFiles() error {
 		"cliutil_verifyenv.go.tmpl":                filepath.Join("internal", "cliutil", "verifyenv.go"),
 		"cliutil_paths.go.tmpl":                    filepath.Join("internal", "cliutil", "paths.go"),
 		"cliutil_paths_test.go.tmpl":               filepath.Join("internal", "cliutil", "paths_test.go"),
+		"cliutil_testenv.go.tmpl":                  filepath.Join("internal", "cliutil", "testenv", "testenv.go"),
 		"cliutil_extractnumber.go.tmpl":            filepath.Join("internal", "cliutil", "extractnumber.go"),
 		"cliutil_extractnumber_test.go.tmpl":       filepath.Join("internal", "cliutil", "extractnumber_test.go"),
 		"cliutil_jwtshape.go.tmpl":                 filepath.Join("internal", "cliutil", "jwtshape.go"),
@@ -3200,6 +3202,7 @@ func (g *Generator) GenerateMCPSurface() error {
 		"cliutil_verifyenv.go.tmpl":          filepath.Join("internal", "cliutil", "verifyenv.go"),
 		"cliutil_paths.go.tmpl":              filepath.Join("internal", "cliutil", "paths.go"),
 		"cliutil_paths_test.go.tmpl":         filepath.Join("internal", "cliutil", "paths_test.go"),
+		"cliutil_testenv.go.tmpl":            filepath.Join("internal", "cliutil", "testenv", "testenv.go"),
 		"cliutil_extractnumber.go.tmpl":      filepath.Join("internal", "cliutil", "extractnumber.go"),
 		"cliutil_extractnumber_test.go.tmpl": filepath.Join("internal", "cliutil", "extractnumber_test.go"),
 		"cliutil_jwtshape.go.tmpl":           filepath.Join("internal", "cliutil", "jwtshape.go"),
@@ -3732,6 +3735,7 @@ func (g *Generator) renderMCPEntrypoint() error {
 			filepath.Join("cmd", naming.MCP(g.Spec.Name)),
 			filepath.Join("internal", "mcp"),
 			filepath.Join("internal", "mcp", "bound"),
+			filepath.Join("internal", "cliutil", "testenv"),
 		}
 		for _, d := range mcpDirs {
 			if err := os.MkdirAll(filepath.Join(g.OutputDir, d), 0755); err != nil {
