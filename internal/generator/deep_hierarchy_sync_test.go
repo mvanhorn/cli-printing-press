@@ -17,12 +17,13 @@ func TestGeneratedSyncPreservesDeepHierarchyIdentity(t *testing.T) {
 
 	apiSpec := deepHierarchySpec()
 	profile := profiler.Profile(apiSpec)
-	require.Len(t, profile.DependentSyncResources, 3)
+	require.Len(t, profile.DependentSyncResources, 4)
 
 	depsByPath := make(map[string]profiler.DependentResource, len(profile.DependentSyncResources))
 	for _, dep := range profile.DependentSyncResources {
 		depsByPath[dep.Path] = dep
 	}
+	assert.Equal(t, "account_assets", depsByPath["/accounts/{accountId}/things"].Name)
 	assert.Equal(t, []profiler.DependentPathParam{
 		{Param: "accountId", Field: "accounts_id"},
 		{Param: "containerId", Field: "id"},
@@ -79,6 +80,11 @@ func deepHierarchySpec() *spec.APISpec {
 			"accounts": {
 				Endpoints: map[string]spec.Endpoint{
 					"list": list("/accounts"),
+				},
+			},
+			"account_assets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": list("/accounts/{accountId}/things", "accountId"),
 				},
 			},
 			"containers": {
@@ -141,6 +147,10 @@ func (c *deepHierarchyClient) Get(_ context.Context, path string, _ map[string]s
 		]` + "`" + `), nil
 	case "/flat-things":
 		return json.RawMessage(` + "`" + `[{"id":"flat-1","flatThingId":"flat-wrong","name":"Flat Thing"}]` + "`" + `), nil
+	case "/accounts/100/things":
+		return json.RawMessage(` + "`" + `[{"thingId":"thing-1","accountAssetId":"asset-wrong","name":"Account Thing"}]` + "`" + `), nil
+	case "/accounts/200/things":
+		return json.RawMessage(` + "`" + `[]` + "`" + `), nil
 	case "/accounts/100/containers":
 		return json.RawMessage(` + "`" + `[
 			{"accountId":"100","containerId":"c-1","name":"Web"},
@@ -202,9 +212,11 @@ func TestDeepHierarchySync(t *testing.T) {
 	assertResourceIDs(t, db, "flat_things", []string{"flat-1"})
 
 	defs := dependentResourceDefs()
-	var containersResource, customWorkspacesResource, tagsResource string
+	var accountAssetsResource, containersResource, customWorkspacesResource, tagsResource string
 	for _, def := range defs {
 		switch def.PathTemplate {
+		case "/accounts/{accountId}/things":
+			accountAssetsResource = def.Name
 		case "/accounts/{accountId}/containers":
 			containersResource = def.Name
 		case "/accounts/{accountId}/containers/{containerId}/custom-workspaces":
@@ -213,10 +225,11 @@ func TestDeepHierarchySync(t *testing.T) {
 			tagsResource = def.Name
 		}
 	}
-	if containersResource == "" || customWorkspacesResource == "" || tagsResource == "" {
+	if accountAssetsResource == "" || containersResource == "" || customWorkspacesResource == "" || tagsResource == "" {
 		t.Fatalf("missing generated dependent defs: %#v", defs)
 	}
 
+	assertResourceIDs(t, db, accountAssetsResource, []string{"thing-1\x00100"})
 	assertResourceIDs(t, db, containersResource, []string{
 		"c-1\x00100",
 		"c-1\x00200",

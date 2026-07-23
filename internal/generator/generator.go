@@ -4050,10 +4050,8 @@ func resourceParentKeyColumnEntries(tables []TableDef, dependent []profiler.Depe
 			return
 		}
 		values := columns[resource]
-		for _, existing := range values {
-			if existing == column {
-				return
-			}
+		if slices.Contains(values, column) {
+			return
 		}
 		if first {
 			columns[resource] = append([]string{column}, values...)
@@ -4112,8 +4110,8 @@ func dependentResourcePathLeaf(path string) string {
 		path = before
 	}
 	segments := strings.Split(strings.Trim(path, "/"), "/")
-	for i := len(segments) - 1; i >= 0; i-- {
-		segment := strings.TrimSpace(segments[i])
+	for _, segment := range slices.Backward(segments) {
+		segment = strings.TrimSpace(segment)
 		if segment == "" || (strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}")) {
 			continue
 		}
