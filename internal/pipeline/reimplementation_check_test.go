@@ -118,7 +118,7 @@ func TestCheckReimplementation_DataSourceStrategyAnnotationAfterCommentText(t *t
 
 import "github.com/spf13/cobra"
 
-// Novel feature: forecast a value from embedded policy. pp:data-source computed
+// Novel feature: forecast a value from embedded policy. pp:data-source computed.
 func newForecastCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use: "forecast",
@@ -245,8 +245,28 @@ func TestDeclaredDataSourceStrategyRejectsInvalidAndConflictingDirectives(t *tes
 		content string
 		want    string
 	}{
-		"invalid": {
+		"invalid leading": {
 			content: "package cli\n// pp:data-source unknown\n",
+			want:    "invalid // pp:data-source annotation",
+		},
+		"invalid leading complete token": {
+			content: "package cli\n// pp:data-source auto-ish\n",
+			want:    "invalid // pp:data-source annotation",
+		},
+		"invalid leading prefix": {
+			content: "package cli\n// pp:data-source auto.ish\n",
+			want:    "invalid // pp:data-source annotation",
+		},
+		"invalid trailing": {
+			content: "package cli\n// Novel feature: summarize locally. pp:data-source locla\n",
+			want:    "invalid // pp:data-source annotation",
+		},
+		"invalid trailing beside scaffold default": {
+			content: "package cli\n// pp:data-source auto\n// Novel feature: summarize locally. pp:data-source locla\n",
+			want:    "invalid // pp:data-source annotation",
+		},
+		"invalid trailing outside old character class beside scaffold default": {
+			content: "package cli\n// pp:data-source auto\n// Novel feature: summarize locally. pp:data-source auto1\n",
 			want:    "invalid // pp:data-source annotation",
 		},
 		"conflicting": {

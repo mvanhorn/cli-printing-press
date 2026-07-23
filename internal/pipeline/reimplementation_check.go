@@ -296,8 +296,8 @@ var novelStaticReferenceRe = regexp.MustCompile(`(?m)^\s*//\s*pp:novel-static-re
 var clientCallDirectiveRe = regexp.MustCompile(`(?m)^\s*//\s*pp:client-call\b`)
 
 var (
-	explicitDataSourceDirectiveRe = regexp.MustCompile(`(?i)^//\s*pp:data-source\s+([a-zA-Z_-]+)\b`)
-	trailingDataSourceDirectiveRe = regexp.MustCompile(`(?i)[.!?:;]\s+pp:data-source\s+(auto|local|live|computed)\s*[.!]?\s*$`)
+	explicitDataSourceDirectiveRe = regexp.MustCompile(`(?i)^//\s*pp:data-source\s+(\S+)`)
+	trailingDataSourceDirectiveRe = regexp.MustCompile(`(?i)[.!?:;]\s+pp:data-source\s+(\S+)(?:\s*[.!])?\s*$`)
 )
 
 // exemptionKind labels which carve-out vindicated a command, so the
@@ -465,17 +465,19 @@ func declaredDataSourceStrategy(content string) (string, string) {
 				continue
 			}
 
-			if match := explicitDataSourceDirectiveRe.FindStringSubmatch(comment.Text); len(match) > 1 {
+			match := explicitDataSourceDirectiveRe.FindStringSubmatch(comment.Text)
+			if len(match) == 0 {
+				match = trailingDataSourceDirectiveRe.FindStringSubmatch(comment.Text)
+			}
+			if len(match) > 1 {
 				strategy := strings.ToLower(match[1])
+				if strings.HasSuffix(strategy, ".") || strings.HasSuffix(strategy, "!") {
+					strategy = strategy[:len(strategy)-1]
+				}
 				if !validDataSourceStrategy(strategy) {
 					return "", "invalid // pp:data-source annotation: must be auto, local, live, or computed"
 				}
 				strategies[strategy] = struct{}{}
-				continue
-			}
-
-			if match := trailingDataSourceDirectiveRe.FindStringSubmatch(comment.Text); len(match) > 1 {
-				strategies[strings.ToLower(match[1])] = struct{}{}
 			}
 		}
 	}
