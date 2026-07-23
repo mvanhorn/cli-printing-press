@@ -1535,6 +1535,7 @@ func detectCapturedAuth(capture *AuthCapture, envPrefix string) spec.AuthConfig 
 				Header:       "Cookie",
 				In:           "cookie",
 				CookieDomain: capture.BoundDomain,
+				Cookies:      cookieNames(capture.Cookies),
 				EnvVars:      envVarsOrNil(envPrefix, "COOKIES"),
 			}
 		case "composed":
@@ -1556,6 +1557,7 @@ func detectCapturedAuth(capture *AuthCapture, envPrefix string) spec.AuthConfig 
 			Header:       "Cookie",
 			In:           "cookie",
 			CookieDomain: capture.BoundDomain,
+			Cookies:      cookieNames(capture.Cookies),
 			EnvVars:      envVarsOrNil(envPrefix, "COOKIES"),
 		}
 	}

@@ -54,6 +54,10 @@ func ApplyReachabilityDefaults(apiSpec *spec.APISpec, analysis *TrafficAnalysis)
 	if domain == "" {
 		return
 	}
+	cookies := reachabilityCookieNames(analysis)
+	if len(cookies) == 0 {
+		return
+	}
 
 	validationPath := firstBrowserSessionValidationPath(apiSpec)
 	apiSpec.Auth = spec.AuthConfig{
@@ -61,6 +65,7 @@ func ApplyReachabilityDefaults(apiSpec *spec.APISpec, analysis *TrafficAnalysis)
 		Header:                       "Cookie",
 		In:                           "cookie",
 		CookieDomain:                 domain,
+		Cookies:                      cookies,
 		EnvVars:                      envVarsOrNil(strings.ToUpper(strings.ReplaceAll(apiSpec.Name, "-", "_")), "COOKIES"),
 		RequiresBrowserSession:       validationPath != "",
 		BrowserSessionReason:         "browser clearance is required to replay captured website traffic",
@@ -69,6 +74,16 @@ func ApplyReachabilityDefaults(apiSpec *spec.APISpec, analysis *TrafficAnalysis)
 	if validationPath != "" {
 		apiSpec.Auth.BrowserSessionValidationMethod = "GET"
 	}
+}
+
+func reachabilityCookieNames(analysis *TrafficAnalysis) []string {
+	var names []string
+	for _, candidate := range analysis.Auth.Candidates {
+		if candidate.Type == "cookie" || candidate.Type == "composed" {
+			names = append(names, candidate.CookieNames...)
+		}
+	}
+	return uniqueStrings(names)
 }
 
 func hasExplicitAuth(auth spec.AuthConfig) bool {

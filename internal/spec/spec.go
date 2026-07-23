@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -1551,7 +1552,12 @@ func (c AuthConfig) HasCompanionHints() bool {
 // auth.cookies when they need jar plumbing, and a composed-auth spec
 // without auth.cookies has nothing to persist.
 func (c AuthConfig) HasCookies() bool {
-	return len(c.Cookies) > 0
+	for _, name := range c.Cookies {
+		if strings.TrimSpace(name) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // HasNonCookieAuth reports whether the auth block exposes at least one
@@ -1681,6 +1687,116 @@ func validateAuthSubtype(c AuthConfig) error {
 		return fmt.Errorf("auth.subtype %q is not recognized (valid: %q)",
 			c.Subtype, AuthSubtypeAuth0SPAInMemory)
 	}
+}
+
+func validateAuthConfig(context string, auth AuthConfig) error {
+	switch strings.ToLower(strings.TrimSpace(auth.Type)) {
+	case "cookie", "composed":
+		if !auth.HasCookies() {
+			return fmt.Errorf("%s.type is %q but %s.cookies is empty; the generated client would never send cookies", context, auth.Type, context)
+		}
+		for _, name := range auth.Cookies {
+			if strings.TrimSpace(name) == "" {
+				return fmt.Errorf("%s.cookies contains an empty cookie name", context)
+			}
+		}
+	}
+	return validateAuthFormat(context, auth)
+}
+
+func validateAuthFormat(context string, auth AuthConfig) error {
+	if auth.Format == "" {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(auth.Type)) {
+	case "api_key", "bearer_token", "oauth2", "oauth2_refresh":
+	default:
+		return nil
+	}
+
+	matches := authFormatPlaceholderRe.FindAllStringSubmatch(auth.Format, -1)
+	if len(matches) == 0 {
+		return fmt.Errorf("%s.format must contain a placeholder like {token} (got %q)", context, auth.Format)
+	}
+	if remaining := authFormatPlaceholderRe.ReplaceAllString(auth.Format, ""); strings.Contains(remaining, "{") {
+		return fmt.Errorf("%s.format contains invalid placeholder syntax (got %q)", context, auth.Format)
+	}
+
+	allowed := authFormatPlaceholderSet(auth)
+	if len(allowed) == 0 {
+		return fmt.Errorf("%s.format placeholder %q has no env_var mapping; declare an auth env-var credential", context, matches[0][0])
+	}
+	expected := make([]string, 0, len(allowed))
+	for placeholder := range allowed {
+		expected = append(expected, placeholder)
+	}
+	slices.Sort(expected)
+	for _, match := range matches {
+		if _, ok := allowed[match[1]]; !ok {
+			return fmt.Errorf("%s.format placeholder %q has no env_var mapping; expected one of: {%s}",
+				context, match[0], strings.Join(expected, ", "))
+		}
+	}
+	return nil
+}
+
+func authFormatPlaceholderSet(auth AuthConfig) map[string]struct{} {
+	allowed := make(map[string]struct{})
+	authType := strings.ToLower(strings.TrimSpace(auth.Type))
+
+	requestEnvVars := make([]AuthEnvVar, 0, len(auth.EnvVarSpecs))
+	for _, envVar := range auth.EnvVarSpecs {
+		if envVar.IsRequestCredential() {
+			requestEnvVars = append(requestEnvVars, envVar)
+		}
+	}
+	if len(requestEnvVars) == 0 && len(auth.EnvVarSpecs) == 0 {
+		for _, name := range auth.EnvVars {
+			requestEnvVars = append(requestEnvVars, AuthEnvVar{Name: name})
+		}
+	}
+
+	if authType != "api_key" || len(requestEnvVars) > 0 {
+		allowed["token"] = struct{}{}
+	}
+	basicAuth := authType == "api_key" && strings.Contains(strings.ToLower(auth.Format), "basic ")
+	if authType == "oauth2" || authType == "oauth2_refresh" || (authType == "bearer_token" && len(requestEnvVars) == 0) {
+		allowed["access_token"] = struct{}{}
+	}
+	if auth.IsAuthEnvVarORCase() && !basicAuth && len(requestEnvVars) > 1 {
+		return allowed
+	}
+	if authType == "bearer_token" && len(requestEnvVars) > 1 {
+		return allowed
+	}
+	if basicAuth {
+		if len(requestEnvVars) > 2 {
+			requestEnvVars = requestEnvVars[:2]
+		}
+		switch len(requestEnvVars) {
+		case 1:
+			allowed["access_token"] = struct{}{}
+		default:
+			if len(requestEnvVars) > 0 {
+				allowed["username"] = struct{}{}
+				allowed["user"] = struct{}{}
+			}
+			if len(requestEnvVars) > 1 {
+				allowed["password"] = struct{}{}
+				allowed["secret"] = struct{}{}
+				allowed["access_token"] = struct{}{}
+			}
+		}
+	}
+	for _, envVar := range requestEnvVars {
+		name := strings.TrimSpace(envVar.Name)
+		if name == "" {
+			continue
+		}
+		allowed[name] = struct{}{}
+		allowed[naming.EnvVarPlaceholder(name)] = struct{}{}
+	}
+	return allowed
 }
 
 // AuthConfig.Type is intentionally skipped: the field is ignored for
@@ -2922,6 +3038,16 @@ func validateRawSpecStructure(data []byte) error {
 		return fmt.Errorf("spec structural error: duplicate top-level key(s): %s", strings.Join(topLevelDuplicates, ", "))
 	}
 
+	if auth := mappingValue(root, "auth"); auth != nil {
+		unknown := unknownYAMLFields(auth, reflect.TypeFor[AuthConfig]())
+		if len(unknown) == 1 {
+			return fmt.Errorf("spec structural error: auth contains unknown field %q", unknown[0])
+		}
+		if len(unknown) > 1 {
+			return fmt.Errorf("spec structural error: auth contains unknown fields: %s", strings.Join(unknown, ", "))
+		}
+	}
+
 	types := mappingValue(root, "types")
 	if types == nil || types.Kind != yaml.MappingNode {
 		return nil
@@ -2939,6 +3065,47 @@ func validateRawSpecStructure(data []byte) error {
 		return fmt.Errorf("spec structural error: found resource-shaped entr%s under 'types:' (%s) - resources were likely appended at the wrong indentation level; move them under top-level 'resources:'", pluralSuffix(len(misplaced), "y", "ies"), strings.Join(misplaced, ", "))
 	}
 	return nil
+}
+
+func unknownYAMLFields(node *yaml.Node, structType reflect.Type) []string {
+	known := make(map[string]struct{}, structType.NumField())
+	for field := range structType.Fields() {
+		name := strings.Split(field.Tag.Get("yaml"), ",")[0]
+		if name != "" && name != "-" {
+			known[name] = struct{}{}
+		}
+	}
+	var unknown []string
+	collectUnknownYAMLFields(node, known, make(map[*yaml.Node]bool), &unknown)
+	slices.Sort(unknown)
+	return slices.Compact(unknown)
+}
+
+func collectUnknownYAMLFields(node *yaml.Node, known map[string]struct{}, visited map[*yaml.Node]bool, unknown *[]string) {
+	if node == nil || visited[node] {
+		return
+	}
+	visited[node] = true
+
+	switch node.Kind {
+	case yaml.AliasNode:
+		collectUnknownYAMLFields(node.Alias, known, visited, unknown)
+	case yaml.SequenceNode:
+		for _, child := range node.Content {
+			collectUnknownYAMLFields(child, known, visited, unknown)
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			name := node.Content[i].Value
+			if name == "<<" {
+				collectUnknownYAMLFields(node.Content[i+1], known, visited, unknown)
+				continue
+			}
+			if _, ok := known[name]; !ok {
+				*unknown = append(*unknown, name)
+			}
+		}
+	}
 }
 
 func yamlDocumentRoot(doc *yaml.Node) *yaml.Node {
@@ -3979,6 +4146,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateAuthSubtype(s.Auth); err != nil {
+		return err
+	}
+	if err := validateAuthConfig("auth", s.Auth); err != nil {
 		return err
 	}
 	if err := validateSessionHandshake(s.Auth); err != nil {
