@@ -14,32 +14,22 @@ import (
 	"time"
 
 	"printing-press-oauth2-pp-cli/internal/cliutil"
+	"printing-press-oauth2-pp-cli/internal/cliutil/testenv"
 	"printing-press-oauth2-pp-cli/internal/config"
 )
 
 func resetCredentialEnv(t *testing.T) (home, configPath string) {
 	t.Helper()
-	home = t.TempDir()
-	t.Setenv("HOME", home)
-	for _, name := range []string{
-		"PRINTING_PRESS_OAUTH2_CONFIG",
-		"PRINTING_PRESS_OAUTH2_CONFIG_DIR",
-		"PRINTING_PRESS_OAUTH2_DATA_DIR",
-		"PRINTING_PRESS_OAUTH2_STATE_DIR",
-		"PRINTING_PRESS_OAUTH2_CACHE_DIR",
-		"PRINTING_PRESS_OAUTH2_HOME",
-		"XDG_CONFIG_HOME",
-		"XDG_DATA_HOME",
-		"XDG_STATE_HOME",
-		"XDG_CACHE_HOME",
-		"PRINTING_PRESS_OAUTH2_OAUTH2_AUTH_CODE",
-	} {
-		t.Setenv(name, "")
-	}
 	if restore, err := cliutil.SetHomeOverride(""); err == nil {
 		t.Cleanup(restore)
 	} else {
 		t.Fatalf("reset home override: %v", err)
+	}
+	home = testenv.Isolate(t, cliutil.ConfigDir, cliutil.DataDir, cliutil.StateDir, cliutil.CacheDir)
+	for _, name := range []string{
+		"PRINTING_PRESS_OAUTH2_OAUTH2_AUTH_CODE",
+	} {
+		t.Setenv(name, "")
 	}
 	return home, filepath.Join(home, ".config", "printing-press-oauth2-pp-cli", "config.toml")
 }

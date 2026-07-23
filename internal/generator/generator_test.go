@@ -109,6 +109,7 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/mcp/cobratree/shellout_test.go",
 		"internal/mcp/cobratree/cli_path.go",
 		"internal/mcp/cobratree/names.go",
+		"internal/cliutil/testenv/testenv.go",
 	}
 
 	tests := []struct {
@@ -136,9 +137,11 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +2: MCP tenant-gate middleware and its single-gate conformance tests.
 		// +1: fail-closed endpoint-budget lookup conformance coverage.
 		// +2: command and MCP platform-window adoption plus conformance tests.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 166},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 170},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 168},
+		// +1: internal/cliutil/testenv, the sandbox helper every emitted test
+		// routes its HOME/USERPROFILE isolation through.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 167},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 171},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 169},
 	}
 
 	for _, tt := range tests {
@@ -2527,11 +2530,21 @@ func requireGeneratedCompiles(t *testing.T, dir string) {
 
 func runGoCommandRequired(t *testing.T, dir string, args ...string) {
 	t.Helper()
+	output, err := runGoCommandOutput(t, dir, args...)
+	require.NoError(t, err, output)
+}
+
+// runGoCommandOutput runs a go command in a generated module and hands
+// back its combined output and exit status. Callers that expect the
+// command to fail use this directly; runGoCommandRequired wraps it for
+// the usual must-succeed case.
+func runGoCommandOutput(t *testing.T, dir string, args ...string) (string, error) {
+	t.Helper()
 
 	// Generated-project compile tests exercise module resolution via -mod=mod;
 	// production Validate still owns the go mod tidy quality gate.
 	if len(args) >= 2 && args[0] == "mod" && args[1] == "tidy" {
-		return
+		return "", nil
 	}
 	if len(args) > 0 && (args[0] == "build" || args[0] == "test") {
 		args = append([]string{args[0], "-mod=mod"}, args[1:]...)
@@ -2542,8 +2555,36 @@ func runGoCommandRequired(t *testing.T, dir string, args ...string) {
 	cacheDir, err := goBuildCacheDir(dir)
 	require.NoError(t, err)
 	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+	cmd.Env = append(cmd.Env, sandboxHomeEnv(t)...)
 	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(output))
+	return string(output), err
+}
+
+// sandboxHomeEnv points a generated module's test run at a throwaway
+// home. Emitted tests resolve user directories from HOME on Unix and
+// USERPROFILE on Windows, so a run that inherits the real values reads
+// and writes the operator's own config, state, and data dirs. GOPATH
+// and GOMODCACHE stay on their real values: relocating them would
+// re-download the module cache on every case.
+func sandboxHomeEnv(t *testing.T) []string {
+	t.Helper()
+	home := t.TempDir()
+	env := []string{"HOME=" + home, "USERPROFILE=" + home}
+	for _, name := range []string{"GOPATH", "GOMODCACHE"} {
+		if value := goEnvValue(t, name); value != "" {
+			env = append(env, name+"="+value)
+		}
+	}
+	return env
+}
+
+func goEnvValue(t *testing.T, name string) string {
+	t.Helper()
+	out, err := exec.Command("go", "env", name).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func runGeneratedBinary(t *testing.T, binaryPath string, args ...string) (string, string) {
