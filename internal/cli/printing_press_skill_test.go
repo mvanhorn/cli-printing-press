@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -160,9 +161,18 @@ func TestPrintingPressSkillPhaseChainIntegrity(t *testing.T) {
 
 	router, err := os.ReadFile("../../skills/printing-press/SKILL.md")
 	require.NoError(t, err)
-	for _, name := range expected {
-		require.Contains(t, string(router), "phases/"+name, "router phase index must reference %s", name)
+
+	// The phase index is a table whose rows link each phase file. Parse the
+	// rows in document order and require a positional match, so a swapped row
+	// or a link whose text and target disagree fails rather than passing on a
+	// global substring.
+	rowPattern := regexp.MustCompile(`(?m)^\| \[phases/([^\]]+)\]\(phases/([^)]+)\) \|`)
+	var indexRows []string
+	for _, match := range rowPattern.FindAllStringSubmatch(string(router), -1) {
+		require.Equal(t, match[1], match[2], "phase index link text and target must agree")
+		indexRows = append(indexRows, match[1])
 	}
+	require.Equal(t, expected, indexRows, "router phase index rows must list every phase file in execution order")
 
 	for i, name := range expected {
 		data, err := os.ReadFile(filepath.Join("../../skills/printing-press/phases", name))
