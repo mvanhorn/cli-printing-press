@@ -1657,24 +1657,6 @@ func updateDependentParentNames(deps []DependentResource, originalNames []string
 	}
 }
 
-func dependentPathPrefix(parentPath, childPath string) bool {
-	parentSegments := pathSegments(parentPath)
-	childSegments := pathSegments(childPath)
-	if len(parentSegments) == 0 || len(parentSegments) >= len(childSegments) {
-		return false
-	}
-	for i, parentSegment := range parentSegments {
-		childSegment := childSegments[i]
-		if isPathPlaceholder(parentSegment) && isPathPlaceholder(childSegment) {
-			continue
-		}
-		if parentSegment != childSegment {
-			return false
-		}
-	}
-	return true
-}
-
 func dependentPathResourceName(dep DependentResource) string {
 	segments := staticPathSegments(dep.Path)
 	if len(segments) == 0 {
