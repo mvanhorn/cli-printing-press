@@ -2,6 +2,7 @@ package generator
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -172,6 +173,57 @@ func TestGenerateLearnSynonymsConcurrentRegistrationIsRaceSafe(t *testing.T) {
 	gen.VisionSet = VisionTemplateSet{Store: true}
 	require.NoError(t, gen.Generate())
 
-	runGoCommand(t, outputDir, "test", "-race", "-count=5", "-run",
-		"^TestPlaybookInit_ConcurrentSafe$", "./internal/cli")
+	const runtimeRaceTest = `package store
+
+import (
+	"sync"
+	"testing"
+)
+
+func TestRegisterQuerySynonymsConcurrentNormalize(t *testing.T) {
+	synonyms := map[string]string{"foo bar": "baz"}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < 200; j++ {
+				RegisterQuerySynonyms(synonyms)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < 200; j++ {
+				_ = NormalizeQuery("foo bar qux")
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	if got := NormalizeQuery("foo bar"); got != "baz" {
+		t.Fatalf("NormalizeQuery(foo bar) = %q, want baz", got)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(
+		filepath.Join(outputDir, "internal", "store", "query_synonyms_race_test.go"),
+		[]byte(runtimeRaceTest),
+		0o644,
+	))
+
+	cacheDir, err := goBuildCacheDir(outputDir)
+	require.NoError(t, err)
+	cmd := exec.Command("go", "test", "-mod=mod", "-race", "-count=5", "-v", "-run",
+		"^TestRegisterQuerySynonymsConcurrentNormalize$", "./internal/store")
+	cmd.Dir = outputDir
+	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "=== RUN   TestRegisterQuerySynonymsConcurrentNormalize")
+	require.Contains(t, string(output), "--- PASS: TestRegisterQuerySynonymsConcurrentNormalize")
 }
