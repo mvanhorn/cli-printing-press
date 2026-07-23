@@ -373,6 +373,135 @@ func TestDeriveAuthVerifyPath_NilSpec(t *testing.T) {
 	assert.Equal(t, "", deriveAuthVerifyPath(nil))
 }
 
+// TestDeriveAuthVerifyPath_SkipsHostRootPathAgainstPrefixedBase is the issue
+// #3701 repro. base_url carries a path prefix (`/api/v1/workspaces/{slug}`) and
+// the only me-shaped endpoint is stored host-root-relative (`/api/v1/users/me/`).
+// Appending that to base_url double-prefixes the shared `/api/v1` segment and
+// 404s, so the derivation must skip it and leave the honest "not verified"
+// branch authoritative rather than emit a knowingly-broken probe path.
+func TestDeriveAuthVerifyPath_SkipsHostRootPathAgainstPrefixedBase(t *testing.T) {
+	t.Parallel()
+
+	s := &spec.APISpec{
+		Name:    "prefixed-base",
+		BaseURL: "https://plane.example.com/api/v1/workspaces/{slug}",
+		Resources: map[string]spec.Resource{
+			"users": {Endpoints: map[string]spec.Endpoint{
+				"me": {Method: "GET", Path: "/api/v1/users/me/"},
+			}},
+		},
+	}
+	assert.Equal(t, "", deriveAuthVerifyPath(s),
+		"a host-root me path that re-enters the base_url prefix segment must not be emitted")
+	assert.Equal(t, "", deriveHealthCheckPath(s),
+		"the same un-composable candidate must not leak into the reachability probe")
+}
+
+// TestDeriveAuthVerifyPath_KeepsBaseRelativePathAgainstPrefixedBase is the
+// companion: a genuinely base-relative me endpoint under the same prefixed
+// base_url composes cleanly and must still be derived. The filter is narrow:
+// it only rejects paths that re-enter the base_url's leading path segment.
+func TestDeriveAuthVerifyPath_KeepsBaseRelativePathAgainstPrefixedBase(t *testing.T) {
+	t.Parallel()
+
+	s := &spec.APISpec{
+		Name:    "prefixed-base-ok",
+		BaseURL: "https://plane.example.com/api/v1/workspaces/{slug}",
+		Resources: map[string]spec.Resource{
+			"users": {Endpoints: map[string]spec.Endpoint{
+				"me": {Method: "GET", Path: "/users/me"},
+			}},
+		},
+	}
+	assert.Equal(t, "/users/me", deriveAuthVerifyPath(s),
+		"a base-relative me path composes cleanly and must still be derived")
+}
+
+func TestComposableAgainstBase(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		baseURL string
+		path    string
+		want    bool
+	}{
+		{"root base composes anything", "https://api.example.com", "/api/v1/users/me", true},
+		{"empty base composes anything", "", "/api/v1/users/me", true},
+		{"prefixed base, re-enters segment", "https://h.example.com/api/v1/workspaces/{slug}", "/api/v1/users/me/", false},
+		{"prefixed base, distinct segment", "https://h.example.com/api/v1/workspaces/{slug}", "/users/me", true},
+		{"single-segment base, re-enters", "https://h.example.com/v2", "/v2/user", false},
+		{"single-segment base, distinct", "https://h.example.com/v2", "/user", true},
+		{"segment boundary not substring", "https://h.example.com/api", "/apiary/me", true},
+		{"case-insensitive segment match", "https://h.example.com/API/v1", "/api/users/me", false},
+		{"http scheme prefix path", "http://h.example.com/gw", "/gw/me", false},
+		{"scheme-less base with path", "/api/v1", "/api/v1/me", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, composableAgainstBase(tc.baseURL, tc.path))
+		})
+	}
+}
+
+// TestGeneratedDoctor_SkipsHostRootVerifyPathAgainstPrefixedBase wires the
+// composability filter through Generate(): the emitted doctor.go must fall back
+// to the "present, not verified" branch instead of probing a double-prefixed
+// path that always 404s.
+func TestGeneratedDoctor_SkipsHostRootVerifyPathAgainstPrefixedBase(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("prefixed-skip")
+	apiSpec.BaseURL = "https://plane.example.com/api/v1/workspaces/{slug}"
+	apiSpec.Resources["users"] = spec.Resource{
+		Description: "Users",
+		Endpoints: map[string]spec.Endpoint{
+			"me": {Method: "GET", Path: "/api/v1/users/me/", Description: "Get current user"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "prefixed-skip-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	doctorGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	content := string(doctorGo)
+
+	assert.NotContains(t, content, `verifyPath := "/api/v1/users/me/"`,
+		"a host-root me path under a prefixed base_url must not be emitted as verifyPath")
+	assert.Equal(t, "", apiSpec.Auth.VerifyPath,
+		"derivation must leave Auth.VerifyPath empty for an un-composable candidate")
+}
+
+// TestGeneratedDoctor_UnverifiableProbeReportsWarnNotOk pins issue #3701's
+// defect 2: a probe that returns neither 2xx nor 401/403 (e.g. 404) must be
+// reported as not-verified at WARN, never `ok` at OK severity. Asserted on the
+// emitted doctor.go for a spec that does derive a verify path.
+func TestGeneratedDoctor_UnverifiableProbeReportsWarnNotOk(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("warn-probe")
+	apiSpec.Resources["users"] = spec.Resource{
+		Description: "Users",
+		Endpoints: map[string]spec.Endpoint{
+			"me": {Method: "GET", Path: "/users/me", Description: "Get current user"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "warn-probe-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	doctorGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	content := string(doctorGo)
+
+	assert.Contains(t, content, `"WARN not verified (HTTP %d from %s)`,
+		"the non-auth-status branch must report WARN not-verified, not ok")
+	assert.NotContains(t, content, `"ok (HTTP %d from %s, but auth was accepted)"`,
+		"the old false-positive ok verdict must be gone")
+}
+
 // TestGeneratedDoctor_DerivesAuthVerifyPathFromMeEndpoint wires the helper
 // through Generate(): a spec with a me-shaped GET and no explicit
 // Auth.VerifyPath must emit a doctor.go that actually probes that endpoint
