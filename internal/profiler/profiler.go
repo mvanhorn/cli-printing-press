@@ -675,6 +675,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 	p.DependentSyncResources = detectDependentResources(parameterized, syncable, shardedSubResources)
 	p.DependentSyncResources = applySpecWalkers(s, p.DependentSyncResources, syncable, s.Types, resourceNameIndex)
+	uniquifyDependentResourceNames(p.DependentSyncResources, syncable)
+	sortDependentResources(p.DependentSyncResources, nil)
 	addUnresolvedPathTemplateCollections(syncable, parameterized, p.DependentSyncResources)
 	p.SyncableResources = sortedSyncableResources(syncable)
 	// Flat tenant-scoped reconcile: a flat resource is reconcilable only when it
@@ -1578,6 +1580,109 @@ func detectDependentResources(parameterized map[string]parameterizedEntry, synca
 	}
 	sortDependentResources(deps, depthByResource)
 	return deps
+}
+
+func uniquifyDependentResourceNames(deps []DependentResource, syncable map[string]syncableMeta) {
+	originalNames := make([]string, len(deps))
+	counts := make(map[string]int, len(deps))
+	for i, dep := range deps {
+		originalNames[i] = dep.Name
+		counts[dep.Name]++
+	}
+
+	used := make(map[string]bool, len(syncable)+len(deps))
+	for name := range syncable {
+		used[name] = true
+	}
+	for name, count := range counts {
+		if count == 1 {
+			used[name] = true
+		}
+	}
+
+	for _, name := range sortedKeys(counts) {
+		count := counts[name]
+		if count < 2 {
+			continue
+		}
+		indices := make([]int, 0, count)
+		for i := range deps {
+			if deps[i].Name == name {
+				indices = append(indices, i)
+			}
+		}
+		sort.Slice(indices, func(i, j int) bool {
+			left, right := deps[indices[i]], deps[indices[j]]
+			if left.Path != right.Path {
+				return left.Path < right.Path
+			}
+			return left.Method < right.Method
+		})
+
+		for _, index := range indices {
+			candidate := dependentPathResourceName(deps[index])
+			if candidate == "" {
+				candidate = name
+			}
+			if used[candidate] {
+				base := candidate
+				if method := strings.ToLower(strings.TrimSpace(deps[index].Method)); method != "" {
+					candidate = base + "_" + spec.ToSnakeCase(method)
+				}
+				for suffix := 2; used[candidate]; suffix++ {
+					candidate = fmt.Sprintf("%s_%d", base, suffix)
+				}
+			}
+			deps[index].Name = candidate
+			used[candidate] = true
+		}
+	}
+	updateDependentParentNames(deps, originalNames)
+}
+
+func updateDependentParentNames(deps []DependentResource, originalNames []string) {
+	for i := range deps {
+		parentName := deps[i].ParentResource
+		bestIndex := -1
+		for j := range deps {
+			if originalNames[j] != parentName || !dependentPathPrefix(deps[j].Path, deps[i].Path) {
+				continue
+			}
+			if bestIndex < 0 || len(pathSegments(deps[j].Path)) > len(pathSegments(deps[bestIndex].Path)) ||
+				(len(pathSegments(deps[j].Path)) == len(pathSegments(deps[bestIndex].Path)) && deps[j].Name < deps[bestIndex].Name) {
+				bestIndex = j
+			}
+		}
+		if bestIndex >= 0 {
+			deps[i].ParentResource = deps[bestIndex].Name
+		}
+	}
+}
+
+func dependentPathPrefix(parentPath, childPath string) bool {
+	parentSegments := pathSegments(parentPath)
+	childSegments := pathSegments(childPath)
+	if len(parentSegments) == 0 || len(parentSegments) >= len(childSegments) {
+		return false
+	}
+	for i, parentSegment := range parentSegments {
+		childSegment := childSegments[i]
+		if isPathPlaceholder(parentSegment) && isPathPlaceholder(childSegment) {
+			continue
+		}
+		if parentSegment != childSegment {
+			return false
+		}
+	}
+	return true
+}
+
+func dependentPathResourceName(dep DependentResource) string {
+	segments := staticPathSegments(dep.Path)
+	if len(segments) == 0 {
+		return ""
+	}
+	return spec.ToSnakeCase(strings.Join(segments, "_"))
 }
 
 func addUnresolvedPathTemplateCollections(syncable map[string]syncableMeta, parameterized map[string]parameterizedEntry, deps []DependentResource) {
