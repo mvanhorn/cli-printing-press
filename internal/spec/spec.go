@@ -1745,6 +1745,10 @@ func validateAuthFormat(context string, auth AuthConfig) error {
 	}
 	switch strings.ToLower(strings.TrimSpace(auth.Type)) {
 	case "api_key", "bearer_token", "oauth2", "oauth2_refresh":
+	case "cookie":
+		if !isHeaderCarriedCookieAuth(auth) {
+			return nil
+		}
 	default:
 		return nil
 	}
@@ -1795,7 +1799,7 @@ func authFormatPlaceholderSet(auth AuthConfig) map[string]struct{} {
 		allowed["token"] = struct{}{}
 	}
 	basicAuth := authType == "api_key" && strings.Contains(strings.ToLower(auth.Format), "basic ")
-	if authType == "oauth2" || authType == "oauth2_refresh" || authType == "bearer_token" {
+	if authType == "oauth2" || authType == "oauth2_refresh" || authType == "bearer_token" || authType == "cookie" {
 		allowed["access_token"] = struct{}{}
 	}
 	if auth.IsAuthEnvVarORCase() && !basicAuth && len(requestEnvVars) > 1 {

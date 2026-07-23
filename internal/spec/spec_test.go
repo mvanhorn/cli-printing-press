@@ -950,6 +950,39 @@ func TestValidateAuthConfigRejectsUnusableDeclarations(t *testing.T) {
 			},
 		},
 		{
+			name: "header-carried cookie auth rejects format without placeholder",
+			auth: AuthConfig{
+				Type:    "cookie",
+				Header:  "Authorization",
+				In:      "header",
+				Format:  "Token ",
+				EnvVars: []string{"FOO_TOKEN"},
+			},
+			wantErr: `auth.format must contain a placeholder like {token} (got "Token ")`,
+		},
+		{
+			name: "header-carried cookie auth rejects malformed placeholder",
+			auth: AuthConfig{
+				Type:    "cookie",
+				Header:  "Authorization",
+				In:      "header",
+				Format:  "Token {token} {tenant-id}",
+				EnvVars: []string{"FOO_TOKEN"},
+			},
+			wantErr: `auth.format contains invalid placeholder syntax`,
+		},
+		{
+			name: "header-carried cookie auth rejects unmapped placeholder",
+			auth: AuthConfig{
+				Type:    "cookie",
+				Header:  "Authorization",
+				In:      "header",
+				Format:  "Token {missing}",
+				EnvVars: []string{"FOO_TOKEN"},
+			},
+			wantErr: `auth.format placeholder "{missing}" has no env_var mapping`,
+		},
+		{
 			name: "cookie auth without cookies still rejects Cookie header",
 			auth: AuthConfig{
 				Type:    "cookie",

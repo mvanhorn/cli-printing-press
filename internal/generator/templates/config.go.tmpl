@@ -769,7 +769,20 @@ func (c *Config) AuthHeader() string {
 		if c.AuthSource == "" {
 			c.AuthSource = "env:{{.Name}}"
 		}
+		{{- if $.Auth.Format}}
+		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
+			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
+			"{{.Name}}": c.{{resolveEnvVarField .Name}},
+			{{- if ne (envVarPlaceholder .Name) "token"}}
+			"token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
+			{{- if ne (envVarPlaceholder .Name) "access_token"}}
+			"access_token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
+		})
+		{{- else}}
 		return ensureAuthScheme("{{$.Auth.HeaderPrefix}}", c.{{resolveEnvVarField .Name}})
+		{{- end}}
 	}
 {{- end}}
 {{- else}}
@@ -778,7 +791,20 @@ func (c *Config) AuthHeader() string {
 		if c.AuthSource == "" {
 			c.AuthSource = "env:{{.Name}}"
 		}
+		{{- if $.Auth.Format}}
+		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
+			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
+			"{{.Name}}": c.{{resolveEnvVarField .Name}},
+			{{- if ne (envVarPlaceholder .Name) "token"}}
+			"token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
+			{{- if ne (envVarPlaceholder .Name) "access_token"}}
+			"access_token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
+		})
+		{{- else}}
 		return ensureAuthScheme("{{$.Auth.HeaderPrefix}}", c.{{resolveEnvVarField .Name}})
+		{{- end}}
 	}
 	{{- end}}
 {{- end}}
@@ -786,7 +812,11 @@ func (c *Config) AuthHeader() string {
 		if c.AuthSource == "" {
 			c.AuthSource = "browser"
 		}
+		{{- if .Auth.Format}}
+		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
+		{{- else}}
 		return ensureAuthScheme("{{.Auth.HeaderPrefix}}", c.AccessToken)
+		{{- end}}
 	}
 	return ""
 {{- else if eq .Auth.Type "composed"}}
