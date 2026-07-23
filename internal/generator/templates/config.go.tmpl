@@ -688,6 +688,9 @@ func (c *Config) AuthHeader() string {
 			{{- if ne (envVarPlaceholder .Name) "token"}}
 			"token": c.{{resolveEnvVarField .Name}},
 			{{- end}}
+			{{- if ne (envVarPlaceholder .Name) "access_token"}}
+			"access_token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
 		})
 		{{- else}}
 		return "{{$.Auth.HeaderPrefix}} " + c.{{resolveEnvVarField .Name}}
@@ -710,6 +713,9 @@ func (c *Config) AuthHeader() string {
 			{{- if ne (envVarPlaceholder .Name) "token"}}
 			"token": c.{{resolveEnvVarField .Name}},
 			{{- end}}
+			{{- if ne (envVarPlaceholder .Name) "access_token"}}
+			"access_token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
 		})
 		{{- else}}
 		return "{{$.Auth.HeaderPrefix}} " + c.{{resolveEnvVarField .Name}}
@@ -729,6 +735,9 @@ func (c *Config) AuthHeader() string {
 			"{{.Name}}": c.{{resolveEnvVarField .Name}},
 			{{- if ne (envVarPlaceholder .Name) "token"}}
 			"token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
+			{{- if ne (envVarPlaceholder .Name) "access_token"}}
+			"access_token": c.{{resolveEnvVarField .Name}},
 			{{- end}}
 		})
 		{{- else}}

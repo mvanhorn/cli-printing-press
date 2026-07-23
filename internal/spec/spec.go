@@ -1691,7 +1691,18 @@ func validateAuthSubtype(c AuthConfig) error {
 
 func validateAuthConfig(context string, auth AuthConfig) error {
 	switch strings.ToLower(strings.TrimSpace(auth.Type)) {
-	case "cookie", "composed":
+	case "cookie":
+		if !auth.HasCookies() {
+			if len(auth.Cookies) != 0 || !isHeaderCarriedCookieAuth(auth) {
+				return fmt.Errorf("%s.type is %q but %s.cookies is empty; the generated client would never send cookies", context, auth.Type, context)
+			}
+		}
+		for _, name := range auth.Cookies {
+			if strings.TrimSpace(name) == "" {
+				return fmt.Errorf("%s.cookies contains an empty cookie name", context)
+			}
+		}
+	case "composed":
 		if !auth.HasCookies() {
 			return fmt.Errorf("%s.type is %q but %s.cookies is empty; the generated client would never send cookies", context, auth.Type, context)
 		}
@@ -1702,6 +1713,30 @@ func validateAuthConfig(context string, auth AuthConfig) error {
 		}
 	}
 	return validateAuthFormat(context, auth)
+}
+
+func isHeaderCarriedCookieAuth(auth AuthConfig) bool {
+	header := strings.TrimSpace(auth.Header)
+	if !strings.EqualFold(strings.TrimSpace(auth.In), "header") ||
+		header == "" ||
+		strings.EqualFold(header, "Cookie") ||
+		strings.TrimSpace(auth.Format) == "" {
+		return false
+	}
+	for _, envVar := range auth.EnvVarSpecs {
+		if strings.TrimSpace(envVar.Name) != "" && envVar.IsRequestCredential() {
+			return true
+		}
+	}
+	if len(auth.EnvVarSpecs) != 0 {
+		return false
+	}
+	for _, envVar := range auth.EnvVars {
+		if strings.TrimSpace(envVar) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func validateAuthFormat(context string, auth AuthConfig) error {
@@ -1760,7 +1795,7 @@ func authFormatPlaceholderSet(auth AuthConfig) map[string]struct{} {
 		allowed["token"] = struct{}{}
 	}
 	basicAuth := authType == "api_key" && strings.Contains(strings.ToLower(auth.Format), "basic ")
-	if authType == "oauth2" || authType == "oauth2_refresh" || (authType == "bearer_token" && len(requestEnvVars) == 0) {
+	if authType == "oauth2" || authType == "oauth2_refresh" || authType == "bearer_token" {
 		allowed["access_token"] = struct{}{}
 	}
 	if auth.IsAuthEnvVarORCase() && !basicAuth && len(requestEnvVars) > 1 {

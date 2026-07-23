@@ -926,6 +926,76 @@ func TestValidateAuthConfigRejectsUnusableDeclarations(t *testing.T) {
 			wantErr: `auth.type is "cookie" but auth.cookies is empty`,
 		},
 		{
+			name: "header-carried cookie auth with request credential",
+			auth: AuthConfig{
+				Type:   "cookie",
+				Header: "Authorization",
+				In:     "header",
+				Format: "Bearer {token}",
+				EnvVarSpecs: []AuthEnvVar{{
+					Name:     "FOO_TOKEN",
+					Kind:     AuthEnvVarKindPerCall,
+					Required: true,
+				}},
+			},
+		},
+		{
+			name: "header-carried cookie auth with legacy env var",
+			auth: AuthConfig{
+				Type:    "cookie",
+				Header:  "X-API-Key",
+				In:      "header",
+				Format:  "{token}",
+				EnvVars: []string{"FOO_API_KEY"},
+			},
+		},
+		{
+			name: "cookie auth without cookies still rejects Cookie header",
+			auth: AuthConfig{
+				Type:    "cookie",
+				Header:  "Cookie",
+				In:      "header",
+				Format:  "{token}",
+				EnvVars: []string{"FOO_COOKIE"},
+			},
+			wantErr: `auth.type is "cookie" but auth.cookies is empty`,
+		},
+		{
+			name: "cookie auth without cookies rejects non-header placement",
+			auth: AuthConfig{
+				Type:    "cookie",
+				Header:  "Authorization",
+				In:      "cookie",
+				Format:  "Bearer {token}",
+				EnvVars: []string{"FOO_TOKEN"},
+			},
+			wantErr: `auth.type is "cookie" but auth.cookies is empty`,
+		},
+		{
+			name: "cookie auth without cookies rejects missing format",
+			auth: AuthConfig{
+				Type:    "cookie",
+				Header:  "Authorization",
+				In:      "header",
+				EnvVars: []string{"FOO_TOKEN"},
+			},
+			wantErr: `auth.type is "cookie" but auth.cookies is empty`,
+		},
+		{
+			name: "cookie auth without cookies rejects flow input",
+			auth: AuthConfig{
+				Type:   "cookie",
+				Header: "Authorization",
+				In:     "header",
+				Format: "Bearer {token}",
+				EnvVarSpecs: []AuthEnvVar{{
+					Name: "FOO_CLIENT_ID",
+					Kind: AuthEnvVarKindAuthFlowInput,
+				}},
+			},
+			wantErr: `auth.type is "cookie" but auth.cookies is empty`,
+		},
+		{
 			name:    "composed auth without cookies",
 			auth:    AuthConfig{Type: "composed"},
 			wantErr: `auth.type is "composed" but auth.cookies is empty`,
@@ -982,7 +1052,6 @@ func TestValidateAuthConfigRejectsUnusableDeclarations(t *testing.T) {
 					Required: true,
 				}},
 			},
-			wantErr: `auth.format placeholder "{access_token}" has no env_var mapping; expected one of: {FOO_TOKEN, token}`,
 		},
 		{
 			name: "canonical and raw env var placeholders",
