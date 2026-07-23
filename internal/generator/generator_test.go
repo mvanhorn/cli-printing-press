@@ -9426,7 +9426,7 @@ func TestGeneratedCommandExampleEscapesQuotedNarrativeArgs(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("narrative-quotes")
-	apiSpec.Resources["search"] = spec.Resource{
+	apiSpec.Resources["lookup"] = spec.Resource{
 		Description: "Search",
 		Endpoints: map[string]spec.Endpoint{
 			"list": {
@@ -9450,13 +9450,13 @@ func TestGeneratedCommandExampleEscapesQuotedNarrativeArgs(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	gen.Narrative = &ReadmeNarrative{
 		QuickStart: []QuickStartStep{
-			{Command: `narrative-quotes-pp-cli search list --query "peace dollar"`},
+			{Command: `narrative-quotes-pp-cli lookup list --query "peace dollar"`},
 		},
 	}
 	require.NoError(t, gen.Generate())
 
-	source := readGeneratedFile(t, outputDir, "internal", "cli", "search_list.go")
-	assert.Contains(t, source, `"  narrative-quotes-pp-cli search list --query \"peace dollar\""`)
+	source := readGeneratedFile(t, outputDir, "internal", "cli", "lookup_list.go")
+	assert.Contains(t, source, `"  narrative-quotes-pp-cli lookup list --query \"peace dollar\""`)
 	assert.NotContains(t, source, "--query example-value")
 }
 
@@ -10455,7 +10455,7 @@ func TestGeneratedOutput_AgentContextIncludesResourceGroups(t *testing.T) {
 	assert.NotEmpty(t, subs, "resource parent must report its endpoint subcommands")
 }
 
-func TestGeneratedOutput_PromotedCommandNotForBuiltins(t *testing.T) {
+func TestGeneratedOutput_RejectsBuiltinResourceCollision(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := &spec.APISpec{
@@ -10482,12 +10482,11 @@ func TestGeneratedOutput_PromotedCommandNotForBuiltins(t *testing.T) {
 
 	outputDir := filepath.Join(t.TempDir(), "builtintest-pp-cli")
 	gen := New(apiSpec, outputDir)
-	require.NoError(t, gen.Generate())
-
-	// "version" should NOT have a promoted command (collides with built-in)
-	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_version.go"))
-	// "users" SHOULD have a promoted command (shortcut for the resource group)
-	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_users.go"))
+	err := gen.Generate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `derived command path "version"`)
+	assert.Contains(t, err.Error(), `resource "version"`)
+	assert.Contains(t, err.Error(), "emitted framework command")
 }
 
 // --- Unit 3: Auth Error Handling Tests ---

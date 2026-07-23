@@ -1052,6 +1052,11 @@ type generatorTemplateData struct {
 	TrafficAnalysis    *trafficAnalysisTemplateData
 }
 
+type rootTestTemplateData struct {
+	*spec.APISpec
+	ExpectedCommandPaths []string
+}
+
 type trafficAnalysisTemplateData struct {
 	TargetURL         string
 	EntryCount        int
@@ -2445,6 +2450,11 @@ func (g *Generator) renderSingleFiles() error {
 				APISpec:     g.Spec,
 				HelperFlags: hFlags,
 			}
+		case "root_test.go.tmpl":
+			data = &rootTestTemplateData{
+				APISpec:              g.Spec,
+				ExpectedCommandPaths: expectedCommandPaths(buildCommandSurface(g.Spec, g.PromotedCommands)),
+			}
 		case "doctor.go.tmpl":
 			data = &doctorTemplateData{
 				APISpec:        g.Spec,
@@ -3002,6 +3012,9 @@ func (g *Generator) Generate() error {
 	// used to live, except the maps are now visible to readmeData() / template
 	// rendering.
 	g.PromotedCommands, g.PromotedResourceNames, g.PromotedEndpointNames = buildPromotedCommandPlan(g.Spec)
+	if err := validateCommandSurface(buildCommandSurface(g.Spec, g.PromotedCommands), g.activeFrameworkCobraUseNames()); err != nil {
+		return err
+	}
 
 	if err := g.renderSingleFiles(); err != nil {
 		return err
@@ -3033,7 +3046,7 @@ func (g *Generator) renameActiveFrameworkResourceCollisions() bool {
 	}
 	var renames []resourceRename
 	for name, resource := range g.Spec.Resources {
-		kebab := strings.ReplaceAll(strings.ToLower(name), "_", "-")
+		kebab := spec.NormalizeCobraCommandName(name)
 		if _, ok := active[kebab]; !ok {
 			continue
 		}
@@ -3159,6 +3172,9 @@ func (g *Generator) GenerateMCPSurface() error {
 		return err
 	}
 	g.PromotedCommands, g.PromotedResourceNames, g.PromotedEndpointNames = buildPromotedCommandPlan(g.Spec)
+	if err := validateCommandSurface(buildCommandSurface(g.Spec, g.PromotedCommands), g.activeFrameworkCobraUseNames()); err != nil {
+		return err
+	}
 	mcpFiles := map[string]string{
 		// cliutil files. Deliberately asymmetric with the marker-checked
 		// tools.go / handlers.go / root.go paths elsewhere in mcp-sync:
@@ -8355,31 +8371,7 @@ func goDurationExpr(d time.Duration) string {
 // toKebab converts PascalCase, camelCase, or mixed names to kebab-case.
 // It also strips a leading "I" if it looks like an interface prefix (e.g., ISteamUser → steam-user).
 func toKebab(s string) string {
-	// Strip leading "I" when followed by an uppercase letter (interface prefix convention)
-	if len(s) > 1 && s[0] == 'I' && unicode.IsUpper(rune(s[1])) {
-		s = s[1:]
-	}
-	var result strings.Builder
-	for i, r := range s {
-		// Snake-case underscores convert to dashes. Lets spec keys like
-		// `customer_feedback` and `slot_list_for_date` flow through to
-		// user-facing cobra `Use:` strings as `customer-feedback` and
-		// `slot-list-for-date` instead of preserving the snake form.
-		if r == '_' {
-			result.WriteByte('-')
-			continue
-		}
-		if unicode.IsUpper(r) && i > 0 {
-			prev := rune(s[i-1])
-			// Insert hyphen before uppercase letter if preceded by lowercase,
-			// or if preceding char is uppercase AND next char is lowercase (e.g., "APIKey" → "api-key")
-			if unicode.IsLower(prev) || (unicode.IsUpper(prev) && i+1 < len(s) && unicode.IsLower(rune(s[i+1]))) {
-				result.WriteByte('-')
-			}
-		}
-		result.WriteRune(unicode.ToLower(r))
-	}
-	return result.String()
+	return spec.NormalizeCobraCommandName(s)
 }
 
 // PromotedCommand represents a top-level user-friendly command that wraps a nested API endpoint.
