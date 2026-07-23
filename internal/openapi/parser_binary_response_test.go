@@ -174,11 +174,14 @@ func TestParseBinaryOnlyResponseEmitsAcceptOverride(t *testing.T) {
 		assert.False(t, has, "a JSON-reachable response must not be forced to octet-stream")
 	})
 
-	t.Run("text response gets no Accept override", func(t *testing.T) {
+	t.Run("text response pins its concrete Accept type without binary handling", func(t *testing.T) {
 		e, ok := endpointByPath(parsed, "/widgets/{id}/csv")
 		require.True(t, ok)
-		_, has := acceptOverride(e)
-		assert.False(t, has, "text responses must not be forced into the binary response path")
+		v, has := acceptOverride(e)
+		require.True(t, has)
+		assert.Equal(t, "text/csv", v)
+		assert.Equal(t, spec.ResponseFormatText, e.ResponseFormat)
+		assert.False(t, e.UsesBinaryResponse(), "text responses must not be forced into the binary response path")
 	})
 
 	t.Run("XML response gets an application/xml Accept override and xml format", func(t *testing.T) {

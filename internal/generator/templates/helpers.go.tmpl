@@ -55,6 +55,29 @@ func formatCLIParamValue(v any) string {
 	return fmt.Sprintf("%v", v)
 }
 
+{{- if .HasRawRequest}}
+func readRawRequestBody(filePath string, stdin bool) ([]byte, error) {
+	if stdin && filePath != "" && filePath != "-" {
+		return nil, fmt.Errorf("--file and --stdin are mutually exclusive")
+	}
+	if stdin || filePath == "-" {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return nil, fmt.Errorf("reading raw request body from stdin: %w", err)
+		}
+		return data, nil
+	}
+	if filePath == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("reading raw request body from %q: %w", filePath, err)
+	}
+	return data, nil
+}
+
+{{- end}}
 {{- if hasArrayQueryParams .APISpec}}
 func appendArrayQueryParam(path, name, raw, style string, explode bool) string {
 	values := make([]string, 0)

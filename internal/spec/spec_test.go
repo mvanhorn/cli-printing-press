@@ -6028,6 +6028,35 @@ func TestValidateRejectsBasePathWithProxyEnvelope(t *testing.T) {
 	assert.Contains(t, err.Error(), "base_path")
 }
 
+func TestValidateRejectsRawRequestWithProxyEnvelope(t *testing.T) {
+	t.Parallel()
+
+	s := &APISpec{
+		Name:          "proxyraw",
+		Version:       "0.1.0",
+		BaseURL:       "https://proxy.example.com",
+		ClientPattern: "proxy-envelope",
+		Resources: map[string]Resource{
+			"uploads": {
+				Endpoints: map[string]Endpoint{
+					"create": {
+						Method:             "POST",
+						Path:               "/uploads",
+						Description:        "Upload raw bytes",
+						RequestContentType: "application/octet-stream",
+						BodyRequired:       true,
+					},
+				},
+			},
+		},
+	}
+
+	err := s.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "proxy-envelope")
+	assert.Contains(t, err.Error(), "raw request bodies")
+}
+
 // TestValidateAcceptsResourceBaseURLWithoutProxyEnvelope — the same
 // resource override is accepted when client_pattern is not the proxy
 // flavor. Negative cases (no resource override, proxy-envelope alone)

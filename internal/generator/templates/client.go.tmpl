@@ -44,6 +44,9 @@ import (
 {{- $ccScopeUsesClientID := clientCredentialsScopeUsesClientID $ccScope}}
 
 const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
+{{- if .HasTextResponse}}
+const TextResponseHeader = "X-Printing-Press-Text-Response"
+{{- end}}
 
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 var ErrPlaceholderCredential = errors.New("auth placeholder credential")
@@ -1431,6 +1434,29 @@ func (c *Client) PatchQueryFormWithParamsAndHeaders(ctx context.Context, path st
 
 {{ end }}
 
+{{- if .HasRawRequest }}
+type rawRequestBody struct {
+	Data []byte
+}
+
+func (c *Client) SendRaw(ctx context.Context, method, path string, params map[string]string, body []byte, contentType string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do(ctx, method, path, params, rawRequestBody{Data: body}, rawRequestHeaders(headers, contentType))
+}
+
+func (c *Client) SendRawRead(ctx context.Context, method, path string, params map[string]string, body []byte, contentType string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, method, path, params, rawRequestBody{Data: body}, rawRequestHeaders(headers, contentType))
+}
+
+func rawRequestHeaders(headers map[string]string, contentType string) map[string]string {
+	out := make(map[string]string, len(headers)+1)
+	for key, value := range headers {
+		out[key] = value
+	}
+	out["Content-Type"] = contentType
+	return out
+}
+
+{{ end }}
 {{- if .HasMultipartRequest }}
 type multipartRequestBody struct {
 	Fields     map[string]string
@@ -1647,6 +1673,11 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	var contentType string
 {{- end}}
 	if body != nil {
+{{- if .HasRawRequest}}
+		if rawBody, ok := body.(rawRequestBody); ok {
+			bodyBytes = rawBody.Data
+		} else {
+{{- end}}
 {{- if .HasMultipartRequest}}
 		if multipartBody, ok := body.(multipartRequestBody); ok {
 			b, ct, err := encodeMultipartBody(multipartBody)
@@ -1671,6 +1702,9 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		bodyBytes = b
 {{- if or .HasMultipartRequest .HasFormRequest}}
 		contentType = "application/json"
+		}
+{{- end}}
+{{- if .HasRawRequest}}
 		}
 {{- end}}
 	}
@@ -1893,6 +1927,12 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		if binaryResponse {
 			req.Header.Del(BinaryResponseHeader)
 		}
+{{- if .HasTextResponse}}
+		textResponse := strings.EqualFold(req.Header.Get(TextResponseHeader), "true")
+		if textResponse {
+			req.Header.Del(TextResponseHeader)
+		}
+{{- end}}
 {{- if not .UsesBrowserManagedUserAgent}}
 		if req.Header.Get("User-Agent") == "" {
 {{- if .UsesBrowserLikeUserAgent}}
@@ -1990,6 +2030,22 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				}
 				return env, resp.StatusCode, nil
 			}
+{{- if .HasTextResponse}}
+			if textResponse {
+				contentType := strings.TrimSpace(strings.SplitN(resp.Header.Get("Content-Type"), ";", 2)[0])
+				if contentType == "" {
+					contentType = strings.TrimSpace(strings.SplitN(req.Header.Get("Accept"), ";", 2)[0])
+				}
+				env, encErr := json.Marshal(map[string]any{
+					"format": contentType,
+					"body":   string(respBody),
+				})
+				if encErr != nil {
+					return nil, 0, fmt.Errorf("encoding text response: %w", encErr)
+				}
+				return json.RawMessage(env), resp.StatusCode, nil
+			}
+{{- end}}
 {{- if .HasXMLResponse}}
 			// XML endpoints carry an application/xml Accept override. Use that
 			// per-request signal so mixed XML/JSON specs normalize only the XML
