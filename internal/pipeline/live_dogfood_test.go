@@ -1598,6 +1598,25 @@ func TestLiveDogfoodCommandMutatesPrefersEndpointMethod(t *testing.T) {
 	}))
 }
 
+func TestLiveDogfoodCommandMutatesHonorsLocalWrite(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, liveDogfoodCommandMutates(liveDogfoodCommand{
+		Path: []string{"teach"},
+		Annotations: map[string]string{
+			"pp:method":       "GET",
+			"mcp:local-write": "true",
+		},
+	}))
+	assert.False(t, liveDogfoodCommandMutates(liveDogfoodCommand{
+		Path: []string{"teach"},
+		Annotations: map[string]string{
+			"mcp:read-only":   "true",
+			"mcp:local-write": "true",
+		},
+	}))
+}
+
 func TestHappyPathFileFixtureSkip(t *testing.T) {
 	t.Parallel()
 

@@ -570,6 +570,9 @@ func liveDogfoodCommandMutates(command liveDogfoodCommand) bool {
 	if annotationIsTrueValue(command.Annotations[mcpReadOnlyAnnotation]) {
 		return false
 	}
+	if annotationIsTrueValue(command.Annotations[mcpLocalWriteAnnotation]) {
+		return true
+	}
 	if method := strings.ToUpper(strings.TrimSpace(command.Annotations[endpointMethodAnnotation])); method != "" {
 		return method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE"
 	}
@@ -1662,6 +1665,7 @@ const (
 	endpointMethodAnnotation   = "pp:method"
 	endpointPathAnnotation     = "pp:path"
 	mcpReadOnlyAnnotation      = "mcp:read-only"
+	mcpLocalWriteAnnotation    = "mcp:local-write"
 	destructiveAuthAnnotation  = "pp:destructive-auth"
 	noErrorPathProbeAnnotation = "pp:no-error-path-probe"
 	requiresTierAnnotation     = "pp:requires-tier"
