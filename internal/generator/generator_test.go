@@ -12549,7 +12549,7 @@ func TestGenerateReservedStoreTableCollisionUsesGenericStore(t *testing.T) {
 		"learn table names must stay reserved while learn is disabled")
 	assert.NotContains(t, store, "func (s *Store) upsertCollisionAPIStreamFramesTx(",
 		"stream table names must stay reserved while streaming is disabled")
-	assert.Regexp(t, `"resources":\s+"parent_id"`, store)
+	assert.Regexp(t, `"resources":\s*\{\s*"parent_id"`, store)
 	assert.NotContains(t, store, `CREATE TABLE IF NOT EXISTS "resources" (
 		id TEXT PRIMARY KEY,
 		data TEXT NOT NULL,
