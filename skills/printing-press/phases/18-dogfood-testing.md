@@ -104,6 +104,16 @@ failure), so the [Phase 5.6](20-promote-and-archive.md) gate always has a marker
 - For every command that supports `--json`, one JSON parse validation.
 - For write-side commands (when API key + user consent): create test entity with obviously-test data, verify in subsequent list/get, test one mutation, verify change.
 
+### Context budget for long matrices
+
+A full live matrix on a 35+ command CLI can outgrow a single agent's reliable context
+window (~200k tokens). When the testing agent approaches that budget: finish the current
+test row, append a handoff entry to `$PROOFS_DIR` (matrix position, failures found so
+far, fixes applied, acceptance-marker path), and continue in a fresh agent that reads
+only the handoff plus the dogfood results file — not the prior conversation. The
+runner's acceptance-marker workflow is unchanged by a handoff: markers are written by
+the runner on runner outcomes, never authored by an agent.
+
 ### Step 3: Fix issues inline
 
 When a test fails, fix it immediately — do not accumulate failures. Tag each fix:

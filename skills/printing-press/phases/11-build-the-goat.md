@@ -59,6 +59,27 @@ Priority 3 (polish):
 - tests for non-trivial store/workflow logic
 - enrich terse flag descriptions: review generated command flags. If any description is under 5 words or is generic spec-derived text (e.g., "access key", "The player"), improve it using the research brief. For example, change "access key" to "Steam API key (get one at steamcommunity.com/dev/apikey)". Focus on auth keys, IDs, and filter parameters.
 
+### Execution Context Budget (slicing rule)
+
+Phase 3's instructions are small; its execution is not. On a 35+ command CLI the build
+conversation alone can pass 300k tokens, roughly 2x the zone where instruction-following
+stays reliable, and quality degrades silently long before anything crashes.
+
+- **Budget per agent/segment: ~150-200k tokens.** Plan the build as slices that each fit
+  the budget before writing the first line of code.
+- **Canonical slice order:** (1) foundation — store/data layer, auth and config plumbing,
+  shared helpers; (2) core engine — the CLI's central workflow commands; (3) analytics
+  and read-side commands; (4) ingest/import, report/export, and phase close (completion
+  gate, build-log finalization).
+- **Every slice ends build-green.** `go build ./...` and `go vet ./...` must pass before
+  a slice hands off. A red build is not a slice boundary.
+- **Handoff is an artifact, not shared context.** Close each slice by appending a
+  build-log entry: manifest rows completed, files touched, decisions made, next slice
+  scope. The next slice starts from the build log and the absorb manifest, never from a
+  summary of the previous conversation.
+- Orchestrated runs assign one subagent per slice. Single-session runs use the same
+  boundaries as checkpoints.
+
 ### Agent Build Checklist (per command)
 
 After building each command in Priority 1 and Priority 2, verify these 13 principles are met. These map 1:1 to what [Phase 4.9](15-readme-skill-agents-correctness-audit.md)'s agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
