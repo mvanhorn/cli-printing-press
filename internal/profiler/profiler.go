@@ -1643,7 +1643,7 @@ func uniquifyDependentResourceNames(deps []DependentResource, syncable map[strin
 func updateDependentParentNames(deps []DependentResource, originalNames []string, syncable map[string]syncableMeta) {
 	for i := range deps {
 		parentName := deps[i].ParentResource
-		if _, ok := syncable[parentName]; ok {
+		if parent, ok := syncable[parentName]; ok && dependentPathPrefix(parent.Path, deps[i].Path) {
 			continue
 		}
 		bestIndex := -1
