@@ -83,8 +83,8 @@ func TestGenerateLearningsPlanUsesQualityGateCount(t *testing.T) {
 
 	content, err := os.ReadFile(outputPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(content), "Gates 6/9")
-	assert.NotContains(t, string(content), "Gates 6/8")
+	assert.Contains(t, string(content), "Gates 6/10")
+	assert.NotContains(t, string(content), "Gates 6/9")
 }
 
 func TestPrintComparisonTableRows(t *testing.T) {
@@ -129,7 +129,7 @@ func TestPrintComparisonTableRows(t *testing.T) {
 		last = idx
 	}
 
-	assert.Contains(t, table, "6/9 PASS")
+	assert.Contains(t, table, "6/10 PASS")
 	assert.Contains(t, table, "72/80 (72%)")
 	assert.Contains(t, table, "1/2")
 	assert.Contains(t, table, "PASS 100%")

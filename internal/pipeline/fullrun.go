@@ -16,7 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const fullRunQualityGateCount = 9
+const fullRunQualityGateCount = 10
 
 // FullRunResult holds everything the press produced for one API.
 type FullRunResult struct {
