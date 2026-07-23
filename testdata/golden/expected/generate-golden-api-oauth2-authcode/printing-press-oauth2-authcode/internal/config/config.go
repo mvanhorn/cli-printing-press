@@ -117,16 +117,27 @@ func Load(configPath string) (*Config, error) {
 	if cfg.AgentcookieManagedByExternalStore() {
 		cfg.markAgentcookieManaged()
 	} else {
-		creds, ok, err := cliutil.LoadCredentials()
-		if err != nil {
-			return nil, err
-		}
-		if ok && creds.HasValues() {
-			cfg.clearCredentialFields()
-			cfg.applyCredentials(creds)
-			if cfg.hasCredentialFields() {
-				cfg.AuthSource = "config"
-				cfg.CredentialSource = "credentials file"
+		if !cfg.hasCredentialFields() {
+			var creds *cliutil.Credentials
+			var ok bool
+			if explicitConfigFile {
+				creds, ok, err = cliutil.LoadCredentialsForConfig(path)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if !ok || creds == nil || !creds.HasValues() {
+				creds, ok, err = cliutil.LoadCredentials()
+				if err != nil {
+					return nil, err
+				}
+			}
+			if ok && creds.HasValues() {
+				cfg.applyCredentials(creds)
+				if cfg.hasCredentialFields() {
+					cfg.AuthSource = "config"
+					cfg.CredentialSource = "credentials file"
+				}
 			}
 		}
 	}
