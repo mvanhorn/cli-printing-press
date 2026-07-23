@@ -152,6 +152,10 @@ func RootCmd() *cobra.Command {
 	rootCmd.AddCommand(newEndpointCmd())
 	rootCmd.AddCommand(newAuthCmd())
 	rootCmd.AddCommand(newHiddenCmd())
+	rootCmd.AddCommand(newCobraHiddenGroupCmd())
+	rootCmd.AddCommand(newMCPHiddenGroupCmd())
+	rootCmd.AddCommand(newCobraHiddenFrameworkCmd())
+	rootCmd.AddCommand(newAPIResourceGroupCmd())
 	return rootCmd
 }
 
@@ -213,10 +217,72 @@ func newHiddenCmd() *cobra.Command {
 		RunE:        func(cmd *cobra.Command, args []string) error { return nil },
 	}
 }
+
+func newCobraHiddenGroupCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "orders", Hidden: true}
+	cmd.AddCommand(newCobraHiddenChildCmd())
+	return cmd
+}
+
+func newCobraHiddenChildCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "triage",
+		Short: "Triage orders.",
+		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+
+func newMCPHiddenGroupCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:         "secrets",
+		Annotations: map[string]string{"mcp:hidden": "true"},
+	}
+	cmd.AddCommand(newMCPHiddenChildCmd())
+	return cmd
+}
+
+func newMCPHiddenChildCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "inspect",
+		Short: "Inspect secrets.",
+		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+
+func newCobraHiddenFrameworkCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "auth", Hidden: true}
+	cmd.AddCommand(newCobraHiddenFrameworkChildCmd())
+	return cmd
+}
+
+func newCobraHiddenFrameworkChildCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Show auth status.",
+		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+
+func newAPIResourceGroupCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:         "catalog",
+		Annotations: map[string]string{"pp:api-resource": "true"},
+	}
+	cmd.AddCommand(newAPIResourceChildCmd())
+	return cmd
+}
+
+func newAPIResourceChildCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "summary",
+		Short: "Summarize the catalog.",
+		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
 `)
 
 	est := estimateMCPTokens(dir)
-	require.Equal(t, 4, est.ToolCount, "typed tool plus top-level and nested cobratree runtime tools should all count")
+	require.Equal(t, 6, est.ToolCount, "typed tool plus reachable cobratree runtime tools should all count")
 	names := make([]string, 0, len(est.PerTool))
 	for _, tool := range est.PerTool {
 		names = append(names, tool.Name)
@@ -225,7 +291,13 @@ func newHiddenCmd() *cobra.Command {
 	assert.Contains(t, names, "cobratree:digest")
 	assert.Contains(t, names, "cobratree:trends")
 	assert.Contains(t, names, "cobratree:items_search")
+	assert.Contains(t, names, "cobratree:orders_triage")
+	assert.Contains(t, names, "cobratree:catalog_summary")
 	assert.NotContains(t, names, "cobratree:auth")
+	assert.NotContains(t, names, "cobratree:orders")
+	assert.NotContains(t, names, "cobratree:secrets_inspect")
+	assert.NotContains(t, names, "cobratree:auth_status")
+	assert.NotContains(t, names, "cobratree:catalog")
 }
 
 func TestEstimateMCPTokens_CountsSharedConstructorsAtDistinctPaths(t *testing.T) {

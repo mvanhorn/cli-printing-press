@@ -230,6 +230,7 @@ type mcpCobraCommandKind int
 const (
 	mcpCobraNovel mcpCobraCommandKind = iota
 	mcpCobraEndpoint
+	mcpCobraGroup
 	mcpCobraFramework
 	mcpCobraHidden
 )
@@ -428,11 +429,14 @@ func estimateCobratreeCommandTool(cmd cobraCommandLiteral, path []string) (MCPTo
 
 func cobratreeCommandKind(cmd cobraCommandLiteral, depth int) mcpCobraCommandKind {
 	name := mcpCobraUseName(cmd.use)
-	if name == "" || cmd.hidden || annotationIsTrueValue(cmd.annotations["mcp:hidden"]) {
+	if name == "" || annotationIsTrueValue(cmd.annotations["mcp:hidden"]) {
 		return mcpCobraHidden
 	}
 	if strings.TrimSpace(cmd.annotations["pp:endpoint"]) != "" {
 		return mcpCobraEndpoint
+	}
+	if annotationIsTrueValue(cmd.annotations["pp:api-resource"]) {
+		return mcpCobraGroup
 	}
 	if depth == 1 && cobratreeFrameworkCommands[name] {
 		return mcpCobraFramework

@@ -83,14 +83,14 @@ func TestGenerateDigitLeadingPathSegmentsUseConsistentCommandIdentifiers(t *test
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Export: true}
+	gen.VisionSet = VisionTemplateSet{Export: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
 	promotedUser := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_user.go")
 	user2FAParent := readGeneratedFile(t, outputDir, "internal", "cli", "user_2fa.go")
 	userV2FAParent := readGeneratedFile(t, outputDir, "internal", "cli", "user_v2fa.go")
-	require.Contains(t, promotedUser, "sub := newUser2faCmd(flags)")
-	require.Contains(t, promotedUser, "sub := newUserV2faCmd(flags)")
+	require.Contains(t, promotedUser, "cmd.AddCommand(newUser2faCmd(flags))")
+	require.Contains(t, promotedUser, "cmd.AddCommand(newUserV2faCmd(flags))")
 	require.Contains(t, user2FAParent, "func newUser2faCmd(flags *rootFlags) *cobra.Command")
 	require.Contains(t, userV2FAParent, "func newUserV2faCmd(flags *rootFlags) *cobra.Command")
 
@@ -100,5 +100,5 @@ func TestGenerateDigitLeadingPathSegmentsUseConsistentCommandIdentifiers(t *test
 	require.Contains(t, promoted3DSecure, "func newV3dSecurePromotedCmd(flags *rootFlags) *cobra.Command")
 	assert.NotContains(t, root, "new3dSecure", "digit-leading resource must not produce an invalid constructor")
 
-	runGoCommand(t, outputDir, "build", "./internal/cli")
+	requireGeneratedCompiles(t, outputDir)
 }
