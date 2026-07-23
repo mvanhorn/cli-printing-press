@@ -122,6 +122,47 @@ func TestCredentialAliasFieldsRoundTripIndependently(t *testing.T) {
 	}
 }
 
+func TestGeneratedRequiredCredentialPairPassesCredentialTests(t *testing.T) {
+	t.Parallel()
+
+	for _, format := range []string{"json", "toml"} {
+		t.Run(format, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := minimalSpec("basic-pair-credentials-" + format)
+			apiSpec.Auth = spec.AuthConfig{
+				Type:    "api_key",
+				In:      "header",
+				Header:  "Authorization",
+				Format:  "Basic {username}:{password}",
+				EnvVars: []string{"BASIC_PAIR_USER", "BASIC_PAIR_PASSWORD"},
+				EnvVarSpecs: []spec.AuthEnvVar{
+					{Name: "BASIC_PAIR_USER", Kind: spec.AuthEnvVarKindPerCall, Required: true},
+					{Name: "BASIC_PAIR_PASSWORD", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+				},
+			}
+			apiSpec.Config = spec.ConfigSpec{
+				Format: format,
+				Path:   "~/.config/basic-pair-credentials/config." + format,
+			}
+
+			outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			credentialTests := readGeneratedFile(t, outputDir, "internal", "cliutil", "credentials_test.go")
+			require.Contains(t, credentialTests, `t.Setenv("BASIC_PAIR_USER", token)`)
+			require.Contains(t, credentialTests, `t.Setenv("BASIC_PAIR_PASSWORD", token+"-secondary")`)
+			require.Contains(t, credentialTests, "creds.BasicPairUser = token")
+			require.Contains(t, credentialTests, `creds.BasicPairPassword = token + "-secondary"`)
+			require.Contains(t, credentialTests, "base64.StdEncoding.EncodeToString")
+			require.Contains(t, credentialTests, "TestAuthHeaderRequiresEveryCredential")
+
+			requireGeneratedCompiles(t, outputDir)
+			runGoCommandRequired(t, outputDir, "test", "./internal/cliutil", "./internal/config")
+		})
+	}
+}
+
 func TestGeneratedCredentialStderrCaptureExercisesPipeCapacity(t *testing.T) {
 	t.Parallel()
 
