@@ -465,6 +465,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"substackPublicationIDTemplatePath":        substackPublicationIDTemplatePath,
 		"safeName":                                 safeSQLName,
 		"resourceIDFieldOverrideEntries":           resourceIDFieldOverrideEntries,
+		"resourceIDBaseOverrideEntries":            resourceIDBaseOverrideEntries,
+		"resourceParentKeyColumnEntries":           resourceParentKeyColumnEntries,
 		"criticalResourceEntries":                  criticalResourceEntries,
 		"isBackfillColumn":                         isStoreBackfillColumn,
 		"hasBackfillColumns":                       hasStoreBackfillColumns,
@@ -3911,6 +3913,11 @@ type resourceIDFieldOverrideEntry struct {
 	Value string
 }
 
+type resourceParentKeyColumnEntry struct {
+	Name   string
+	Values []string
+}
+
 type criticalResourceEntry struct {
 	Name string
 }
@@ -4034,6 +4041,85 @@ func resourceIDFieldOverrideEntries(syncable []profiler.SyncableResource, depend
 		entries[i] = resourceIDFieldOverrideEntry{Name: name, Value: overrides[name]}
 	}
 	return entries
+}
+
+func resourceParentKeyColumnEntries(tables []TableDef, dependent []profiler.DependentResource) []resourceParentKeyColumnEntry {
+	columns := make(map[string][]string)
+	add := func(resource, column string, first bool) {
+		if resource == "" || column == "" {
+			return
+		}
+		values := columns[resource]
+		for _, existing := range values {
+			if existing == column {
+				return
+			}
+		}
+		if first {
+			columns[resource] = append([]string{column}, values...)
+			return
+		}
+		columns[resource] = append(values, column)
+	}
+	for _, table := range tables {
+		if table.ParentKeyColumn != "" {
+			add(table.Resource, table.ParentKeyColumn, false)
+		}
+	}
+	for _, resource := range dependent {
+		add(resource.Name, "parent_id", true)
+	}
+
+	names := make([]string, 0, len(columns))
+	for name := range columns {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	entries := make([]resourceParentKeyColumnEntry, 0, len(names))
+	for _, name := range names {
+		entries = append(entries, resourceParentKeyColumnEntry{
+			Name:   name,
+			Values: columns[name],
+		})
+	}
+	return entries
+}
+
+func resourceIDBaseOverrideEntries(dependent []profiler.DependentResource) []resourceIDFieldOverrideEntry {
+	overrides := make(map[string]string)
+	for _, resource := range dependent {
+		if leaf := dependentResourcePathLeaf(resource.Path); leaf != "" {
+			overrides[resource.Name] = leaf
+		}
+	}
+
+	names := make([]string, 0, len(overrides))
+	for name := range overrides {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	entries := make([]resourceIDFieldOverrideEntry, len(names))
+	for i, name := range names {
+		entries[i] = resourceIDFieldOverrideEntry{Name: name, Value: overrides[name]}
+	}
+	return entries
+}
+
+func dependentResourcePathLeaf(path string) string {
+	if before, _, ok := strings.Cut(path, "?"); ok {
+		path = before
+	}
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	for i := len(segments) - 1; i >= 0; i-- {
+		segment := strings.TrimSpace(segments[i])
+		if segment == "" || (strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}")) {
+			continue
+		}
+		return spec.ToSnakeCase(segment)
+	}
+	return ""
 }
 
 func htmlPageModeResourceEntries(api *spec.APISpec, syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []criticalResourceEntry {

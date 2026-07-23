@@ -97,8 +97,8 @@ import (
 
 func TestCurrencyCodeSuffixExtractsResourceID(t *testing.T) {
 	obj := map[string]any{"currency_code": "USD", "name": "US Dollar"}
-	if got := ExtractResourceID("currencies", obj); got != "US Dollar" {
-		t.Fatalf("exact fallback should still prefer name before suffix scan, got %q", got)
+	if got := ExtractResourceID("currencies", obj); got != "USD" {
+		t.Fatalf("resource-specific id must win over display name, got %q", got)
 	}
 
 	obj = map[string]any{"currency_code": "USD", "symbol": "$"}

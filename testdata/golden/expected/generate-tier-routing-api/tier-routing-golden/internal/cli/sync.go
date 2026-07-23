@@ -1864,14 +1864,6 @@ var resolveTenantID = func() string { return "" }
 // fan-out. Empty when no parent is annotated.
 var parentTenantScopeColumns = map[string]string{}
 
-// genericIDFieldFallbacks is the runtime safety net for resources that did
-// NOT receive a templated IDField. API-specific names belong in spec
-// annotations (x-resource-id), not this list. Order matters: vendor
-// identifier names (gid, sid, uid, uuid, guid) take precedence over `name`
-// so APIs like Asana (gid) and Twilio (sid) don't fall through to a display
-// field and upsert on names — see #1394.
-var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "api_id", "name", "slug", "key", "code"}
-
 // pageItemKeys is scanned in priority order; lowercase REST-convention keys
 // come first, PascalCase .NET variants second. Without the PascalCase row,
 // {"Items": [...]} envelopes fall through to the ambiguity scan and a
@@ -1936,154 +1928,10 @@ var pageEnvelopeMetadataKeys = map[string]bool{
 // flat-resource critical failure.
 var criticalResources = map[string]bool{}
 
-// extractID resolves an item's primary-key field. It consults the
-// per-resource templated override first; on miss, it falls through to the
-// generic fallback list. resource may be empty for callers that don't have
-// a resource context (only the generic list applies in that case).
-//
-// Field lookups go through store.LookupFieldValue so snake_case overrides
-// match camelCase JSON renderings. UpsertBatch resolves fields the same
-// way — divergence between the two paths produces silent drops on
-// heterogeneous payloads.
+// extractID delegates the shared identity contract to the store so sync paths
+// and UpsertBatch cannot select different fields from the same payload.
 func extractID(resource string, obj map[string]any) string {
-	if override, ok := resourceIDFieldOverrides[resource]; ok && override != "" {
-		if v := store.LookupFieldValue(obj, override); v != nil {
-			s := store.ResourceIDString(v)
-			if s != "" && s != "<nil>" {
-				return s
-			}
-		}
-	}
-	for _, key := range genericIDFieldFallbacks {
-		if v := store.LookupFieldValue(obj, key); v != nil {
-			s := store.ResourceIDString(v)
-			if s != "" && s != "<nil>" {
-				return s
-			}
-		}
-	}
-	if s := suffixIDFieldFallback(resource, obj); s != "" {
-		return s
-	}
-	return ""
-}
-
-// suffixIDFieldFallback resolves an id-less resource that keys on its own
-// "<name>_code" / "<name>_id" / "<name>_key" / "<name>_slug" field (e.g. the
-// "currencies" resource keying on "currency_code" — see #2327). It is scoped to
-// the resource's OWN name so a foreign key like account_id/parent_id is never
-// promoted to the primary key, and it uses direct map lookups in a fixed suffix
-// order so the chosen id is deterministic.
-func suffixIDFieldFallback(resourceType string, obj map[string]any) string {
-	for _, base := range resourceIDBaseNames(resourceType) {
-		for _, suffix := range []string{"_id", "_code", "_key", "_slug"} {
-			if v, ok := obj[base+suffix]; ok {
-				if s := scalarIDString(v); s != "" && s != "<nil>" {
-					return s
-				}
-			}
-		}
-		camelBase := lowerCamelResourceIDBase(base)
-		for _, suffix := range []string{"Id", "Code", "Key", "Slug"} {
-			if v, ok := obj[camelBase+suffix]; ok {
-				if s := scalarIDString(v); s != "" && s != "<nil>" {
-					return s
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// resourceIDBaseNames returns lowercase candidate singular/plural stems of a
-// resource name to build "<base>_id"-style key probes from (e.g. "currencies"
-// -> ["currencies","currency"]). OpenAPI-/path-derived names can carry a
-// leading verb token ("get-currencies"), so the same probes are also attempted
-// on the de-verbed stem. Minimal English depluralization; the raw name is
-// always included so already-singular names work too.
-func resourceIDBaseNames(resourceType string) []string {
-	r := strings.ToLower(strings.TrimSpace(resourceType))
-	if r == "" {
-		return nil
-	}
-	stems := []string{r}
-	if d := stripLeadingResourceVerb(r); d != "" && d != r {
-		stems = append(stems, d)
-	}
-	var bases []string
-	seen := map[string]bool{}
-	add := func(s string) {
-		if s != "" && !seen[s] {
-			seen[s] = true
-			bases = append(bases, s)
-		}
-	}
-	for _, stem := range stems {
-		add(stem)
-		add(depluralizeResourceStem(stem))
-	}
-	return bases
-}
-
-func stripLeadingResourceVerb(r string) string {
-	for _, verb := range []string{"get", "list", "fetch", "find", "retrieve", "read", "show", "all"} {
-		for _, sep := range []string{"-", "_"} {
-			prefix := verb + sep
-			if strings.HasPrefix(r, prefix) && len(r) > len(prefix) {
-				return r[len(prefix):]
-			}
-		}
-	}
-	return ""
-}
-
-func depluralizeResourceStem(r string) string {
-	switch {
-	case strings.HasSuffix(r, "ies") && len(r) > 3:
-		return strings.TrimSuffix(r, "ies") + "y" // currencies -> currency
-	// Plurals formed by adding "es" to a base ending in s/x/z/ch/sh. The
-	// double-s "sses" guard (not bare "ses") keeps soft-e plurals — where the
-	// singular already ends in a silent "e" (cases, databases, licenses,
-	// purchases) — out of this branch; they fall through to the "-s" case below
-	// (cases -> case, not cas). Trade-off: a genuine "-es" plural of an s-ending
-	// singular (buses, statuses) depluralizes imperfectly, but those are rare as
-	// resource names and this stem only feeds best-effort id-field probing.
-	case strings.HasSuffix(r, "sses") || strings.HasSuffix(r, "xes") ||
-		strings.HasSuffix(r, "zes") || strings.HasSuffix(r, "ches") ||
-		strings.HasSuffix(r, "shes"):
-		return strings.TrimSuffix(r, "es") // classes -> class, boxes -> box, dishes -> dish
-	case strings.HasSuffix(r, "s") && !strings.HasSuffix(r, "ss") && len(r) > 1:
-		return strings.TrimSuffix(r, "s") // languages -> language, cases -> case
-	}
-	return r
-}
-
-func lowerCamelResourceIDBase(base string) string {
-	parts := strings.FieldsFunc(base, func(r rune) bool {
-		return r == '_' || r == '-'
-	})
-	if len(parts) == 0 {
-		return base
-	}
-	for i := range parts {
-		if i == 0 {
-			parts[i] = strings.ToLower(parts[i])
-			continue
-		}
-		parts[i] = strings.ToUpper(parts[i][:1]) + strings.ToLower(parts[i][1:])
-	}
-	return strings.Join(parts, "")
-}
-
-func scalarIDString(value any) string {
-	switch value.(type) {
-	case string, bool, int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64,
-		float32, float64, json.Number, []byte:
-		return store.ResourceIDString(value)
-	default:
-		return ""
-	}
+	return store.ExtractResourceID(resource, obj)
 }
 
 // lookupRefreshEntityFields names the generic identity-bearing JSON

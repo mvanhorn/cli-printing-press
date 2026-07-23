@@ -1390,19 +1390,22 @@ func (s *Store) UpsertWidgets(data json.RawMessage) error {
 // path-item.
 var resourceIDFieldOverrides = map[string]string{}
 
-// genericIDFieldFallbacks is the runtime safety net for resources that did
-// NOT receive a templated IDField. API-specific names belong in spec
-// annotations (x-resource-id), not this list. Order matters: vendor
-// identifier names (gid, sid, uid, uuid, guid) take precedence over `name`
-// so APIs like Asana (gid) and Twilio (sid) don't fall through to a display
-// field and upsert on names — see #1394.
-var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "api_id", "name", "slug", "key", "code"}
+// Generic ID fields are split around the resource-specific suffix probe.
+// Stable vendor identifiers win first; then fields derived from the resource
+// name (accountId, workspaceId); descriptive fallbacks are last. Keeping name
+// ahead of the resource-specific probe silently keys rows by display labels.
+var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "api_id"}
+var genericDescriptiveIDFieldFallbacks = []string{"name", "slug", "key", "code"}
+
+// resourceIDBaseOverrides preserves the complete final collection name for
+// composed dependents whose child segment is itself multiword.
+var resourceIDBaseOverrides = map[string]string{}
 
 // resourceParentKeyColumns identifies generated dependent resources whose
 // local mirror rows need the parent context in the storage key. Without this,
 // many-to-many sub-collections collapse every parent association onto the
 // child's bare id and silently keep only the last synced parent.
-var resourceParentKeyColumns = map[string]string{}
+var resourceParentKeyColumns = map[string][]string{}
 
 // ExtractResourceID resolves the bare resource id field that UpsertBatch
 // extracts from a resource item. For dependent resource types, UpsertBatch
@@ -1429,6 +1432,14 @@ func ExtractResourceID(resourceType string, obj map[string]any) string {
 	}
 	if s := suffixIDFieldFallback(resourceType, obj); s != "" {
 		return s
+	}
+	for _, key := range genericDescriptiveIDFieldFallbacks {
+		if v := lookupFieldValue(obj, key); v != nil {
+			s := ResourceIDString(v)
+			if s != "" && s != "<nil>" {
+				return s
+			}
+		}
 	}
 	return ""
 }
@@ -1462,18 +1473,32 @@ func suffixIDFieldFallback(resourceType string, obj map[string]any) string {
 
 // resourceIDBaseNames returns lowercase candidate singular/plural stems of a
 // resource name to build "<base>_id"-style key probes from (e.g. "currencies"
-// -> ["currencies","currency"]). OpenAPI-/path-derived names can carry a
-// leading verb token ("get-currencies"), so the same probes are also attempted
-// on the de-verbed stem. Minimal English depluralization; the raw name is
-// always included so already-singular names work too.
+// -> ["currencies","currency"]). Composed dependent names also probe their
+// final segment ("containers_workspaces" -> "workspaces","workspace"), which
+// is the child entity's own ID convention. OpenAPI-/path-derived names can
+// carry a leading verb token ("get-currencies"), so the same probes are also
+// attempted on the de-verbed stem.
 func resourceIDBaseNames(resourceType string) []string {
 	r := strings.ToLower(strings.TrimSpace(resourceType))
 	if r == "" {
 		return nil
 	}
-	stems := []string{r}
+	var stems []string
+	addStem := func(stem string) {
+		if stem == "" {
+			return
+		}
+		for _, existing := range stems {
+			if existing == stem {
+				return
+			}
+		}
+		stems = append(stems, stem)
+	}
+	addStem(resourceIDBaseOverrides[r])
+	addStem(r)
 	if d := stripLeadingResourceVerb(r); d != "" && d != r {
-		stems = append(stems, d)
+		addStem(d)
 	}
 	var bases []string
 	seen := map[string]bool{}
@@ -1486,6 +1511,11 @@ func resourceIDBaseNames(resourceType string) []string {
 	for _, stem := range stems {
 		add(stem)
 		add(depluralizeResourceStem(stem))
+		if i := strings.LastIndexAny(stem, "_-"); i >= 0 && i+1 < len(stem) {
+			leaf := stem[i+1:]
+			add(leaf)
+			add(depluralizeResourceStem(leaf))
+		}
 	}
 	return bases
 }
@@ -1552,15 +1582,13 @@ func scalarIDString(value any) string {
 }
 
 func resourceStorageID(resourceType, id string, obj map[string]any) string {
-	parentKey := resourceParentKeyColumns[resourceType]
-	if parentKey == "" {
-		return id
+	for _, parentKey := range resourceParentKeyColumns[resourceType] {
+		parentValue := ResourceIDString(lookupFieldValue(obj, parentKey))
+		if parentValue != "" && parentValue != "<nil>" {
+			return id + string([]byte{0}) + parentValue
+		}
 	}
-	parentValue := ResourceIDString(lookupFieldValue(obj, parentKey))
-	if parentValue == "" || parentValue == "<nil>" {
-		return id
-	}
-	return id + string([]byte{0}) + parentValue
+	return id
 }
 
 // BareResourceID strips the NUL-delimited parent suffix that resourceStorageID

@@ -5967,6 +5967,7 @@ func TestGenerateDependentSyncInjectsSubResourceParentFK(t *testing.T) {
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -6032,8 +6033,46 @@ func TestSyncDependentResourcePopulatesTypedParentFK(t *testing.T) {
 	if got["contact-injected\x00list-A"] != "list-A" {
 		t.Fatalf("injected contact lists_id = %q, want list-A", got["contact-injected\x00list-A"])
 	}
-	if got["contact-preserved\x00api-list"] != "api-list" {
-		t.Fatalf("preserved contact lists_id = %q, want api-list", got["contact-preserved\x00api-list"])
+	if got["contact-preserved\x00list-A"] != "api-list" {
+		t.Fatalf("preserved contact lists_id = %q, want api-list", got["contact-preserved\x00list-A"])
+	}
+}
+
+func TestStoreFallsBackToTypedParentKey(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	items := []json.RawMessage{
+		json.RawMessage(` + "`" + `{"id":"contact-shared","lists_id":"list-A","email":"a@example.test"}` + "`" + `),
+		json.RawMessage(` + "`" + `{"id":"contact-shared","lists_id":"list-B","email":"b@example.test"}` + "`" + `),
+	}
+	if _, _, err := db.UpsertBatch("contacts", items); err != nil {
+		t.Fatalf("upsert raw contacts: %v", err)
+	}
+
+	rows, err := db.DB().Query(` + "`" + `SELECT id FROM resources WHERE resource_type = 'contacts' ORDER BY id` + "`" + `)
+	if err != nil {
+		t.Fatalf("query contact ids: %v", err)
+	}
+	defer rows.Close()
+
+	var got []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan contact id: %v", err)
+		}
+		got = append(got, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate contact ids: %v", err)
+	}
+	want := []string{"contact-shared\x00list-A", "contact-shared\x00list-B"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("contact ids = %v, want %v", got, want)
 	}
 }
 `
@@ -6041,7 +6080,7 @@ func TestSyncDependentResourcePopulatesTypedParentFK(t *testing.T) {
 	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
-	runGoCommandRequired(t, outputDir, "test", "-run", "TestSyncDependentResourcePopulatesTypedParentFK", "./internal/cli")
+	runGoCommandRequired(t, outputDir, "test", "-run", "Test(SyncDependentResourcePopulatesTypedParentFK|StoreFallsBackToTypedParentKey)", "./internal/cli")
 }
 
 func TestSyncDependentResourceSubstitutesChainedPathParams(t *testing.T) {
@@ -6190,8 +6229,8 @@ func TestSyncDependentResourceSubstitutesChainedPathParams(t *testing.T) {
 	if err := rows.Scan(&id, &messagesID, &channelsID); err != nil {
 		t.Fatalf("scan reaction: %v", err)
 	}
-	if id != "react-1" || messagesID != "msg-1" || channelsID != "chan-1" {
-		t.Fatalf("row = (%q, %q, %q), want (react-1, msg-1, chan-1)", id, messagesID, channelsID)
+	if id != "react-1\x00msg-1" || messagesID != "msg-1" || channelsID != "chan-1" {
+		t.Fatalf("row = (%q, %q, %q), want (react-1\\x00msg-1, msg-1, chan-1)", id, messagesID, channelsID)
 	}
 }
 `
@@ -15211,14 +15250,17 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 		`"events": "event_id",`,
 		"store.go resourceIDFieldOverrides must include events: event_id")
 
-	// (b) Generic fallback list reduced — kalshi-specific names dropped.
+	// (b) Generic fallback lists reduced — kalshi-specific names dropped.
 	// The user owns the kalshi CLI and will regenerate with x-resource-id
 	// annotations; no other public-library CLIs depend on these names.
-	// Vendor identifiers (gid, sid, uid, uuid, guid) precede `name` so
-	// APIs like Asana don't fall through to a display field — see #1394.
+	// Vendor identifiers (gid, sid, uid, uuid, guid) and resource-specific
+	// suffixes precede descriptive fields so APIs do not key rows by names.
 	assert.Contains(t, storeContent,
-		`var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "api_id", "name", "slug", "key", "code"}`,
-		"store.go genericIDFieldFallbacks must include vendor identifiers before name")
+		`var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "api_id"}`,
+		"store.go genericIDFieldFallbacks must include stable vendor identifiers")
+	assert.Contains(t, storeContent,
+		`var genericDescriptiveIDFieldFallbacks = []string{"name", "slug", "key", "code"}`,
+		"store.go must keep descriptive fallbacks separate from stable identifiers")
 	// Negative: kalshi-specific names must not be in the fallback list.
 	// We assert a robust shape: no occurrence of "ticker" inside the fallback
 	// declaration. The generic check below also pins the absence at a
