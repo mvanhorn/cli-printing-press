@@ -84,18 +84,73 @@ func deriveAuthVerifyPath(s *spec.APISpec) string {
 }
 
 // findMeShapedEndpointPath walks the spec for the first GET endpoint whose
-// path matches one of meShapedPathTails (most-specific tail first). Returns
-// "" when no candidate qualifies — used as the shared heuristic step inside
-// the two derivation helpers above.
+// path matches one of meShapedPathTails (most-specific tail first) and whose
+// path still composes cleanly against base_url. Returns "" when no candidate
+// qualifies; used as the shared heuristic step inside the two derivation
+// helpers above.
+//
+// The composability filter matters because the derived path is emitted as
+// Auth.VerifyPath, which the runtime appends to base_url. A candidate whose
+// path re-enters the base_url path prefix (a host-root path masquerading as
+// base-relative) would double-prefix at probe time; skipping it here leaves
+// the doctor's honest "present, not verified" branch authoritative rather
+// than emitting a knowingly-404 probe path.
 func findMeShapedEndpointPath(s *spec.APISpec) string {
 	for _, tail := range meShapedPathTails {
 		if e, ok := findEndpointMatch(s, func(e spec.Endpoint) bool {
 			return isMeShapedEndpoint(e, tail)
 		}); ok {
-			return e.Path
+			if composableAgainstBase(s.BaseURL, e.Path) {
+				return e.Path
+			}
 		}
 	}
 	return ""
+}
+
+// composableAgainstBase reports whether path, appended to baseURL, reaches the
+// endpoint the spec author meant. Endpoint paths are base_url-relative by
+// contract (the runtime concatenates base_url + path), so a path that re-enters
+// the base_url's own leading path segment is a host-root path masquerading as
+// base-relative: appending it double-prefixes the shared segment (base
+// `/api/v1/workspaces/{slug}` + `/api/v1/users/me` -> `.../workspaces/{slug}/
+// api/v1/users/me`, a 404). When base_url carries no path prefix (the common
+// case where it equals the server root), every path composes cleanly.
+func composableAgainstBase(baseURL, path string) bool {
+	baseSeg := firstPathSegment(baseURLPathPrefix(baseURL))
+	if baseSeg == "" {
+		return true
+	}
+	return !strings.EqualFold(baseSeg, firstPathSegment(path))
+}
+
+// baseURLPathPrefix returns the path component of baseURL (everything from the
+// first "/" after the scheme+authority), or "" when baseURL is the server root.
+// Avoids url.Parse so template-var authorities like `https://{region}.host.com`
+// don't trip the parser; only the path portion is needed here.
+func baseURLPathPrefix(baseURL string) string {
+	b := baseURL
+	for _, scheme := range []string{"https://", "http://"} {
+		if len(b) >= len(scheme) && strings.EqualFold(b[:len(scheme)], scheme) {
+			rest := b[len(scheme):]
+			if i := strings.IndexByte(rest, '/'); i >= 0 {
+				return rest[i:]
+			}
+			return ""
+		}
+	}
+	// Scheme-less base (rare): a leading slash is itself the path prefix.
+	if strings.HasPrefix(b, "/") {
+		return b
+	}
+	return ""
+}
+
+// firstPathSegment returns the first non-empty "/"-delimited segment of p
+// (e.g. "/api/v1/users" -> "api"), or "" when p has no segment.
+func firstPathSegment(p string) string {
+	seg, _, _ := strings.Cut(strings.TrimLeft(p, "/"), "/")
+	return seg
 }
 
 func isMeShapedEndpoint(e spec.Endpoint, tail string) bool {

@@ -629,8 +629,13 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 							case authAPIErr.StatusCode == 403:
 								report["credentials"] = fmt.Sprintf("scope-limited (HTTP %d) — credentials are valid but lack permission for this endpoint. Check your dashboard's API key scope.", authAPIErr.StatusCode)
 							default:
-								// Non-auth HTTP error (404, 500, etc.) — don't blame credentials
-								report["credentials"] = fmt.Sprintf("ok (HTTP %d from %s, but auth was accepted)", authAPIErr.StatusCode, verifyPath)
+								// Non-auth HTTP status (404, 500, etc.): the probe never
+								// reached an authenticated resource, so auth was neither
+								// accepted nor rejected. "Don't blame the credentials" and
+								// "the credentials are ok" are different claims; only the
+								// first is supported here. Report not-verified at WARN so the
+								// verdict is honest and --fail-on warn can trip on it.
+								report["credentials"] = fmt.Sprintf("WARN not verified (HTTP %d from %s) — probe reached a non-auth endpoint; set auth.verify_path to a known-good authenticated GET", authAPIErr.StatusCode, verifyPath)
 							}
 						default:
 							report["credentials"] = fmt.Sprintf("error: %s", authErr)
@@ -662,7 +667,11 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 							case gqlAPIErr.StatusCode == 403:
 								report["credentials"] = fmt.Sprintf("scope-limited (HTTP %d) — credentials are valid but lack permission for this endpoint. Check your dashboard's API key scope.", gqlAPIErr.StatusCode)
 							default:
-								report["credentials"] = fmt.Sprintf("ok (HTTP %d from GraphQL probe, but auth was accepted)", gqlAPIErr.StatusCode)
+								// Non-auth HTTP status: the probe never reached the
+								// authenticated GraphQL surface, so auth was neither
+								// accepted nor rejected. Report not-verified at WARN
+								// (honest verdict; --fail-on warn can trip on it).
+								report["credentials"] = fmt.Sprintf("WARN not verified (HTTP %d from GraphQL probe) — auth was neither accepted nor rejected; set auth.verify_query to a known-good viewer query", gqlAPIErr.StatusCode)
 							}
 						default:
 							report["credentials"] = fmt.Sprintf("error: %s", gqlErr)
