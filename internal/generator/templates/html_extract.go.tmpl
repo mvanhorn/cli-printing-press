@@ -756,21 +756,31 @@ func splitRankedHTMLLinkText(value string) (int, string) {
 }
 
 func looksLikeHTMLChallenge(title string, raw string) bool {
-	combined := strings.ToLower(title + "\n" + raw)
-	markers := []string{
-		"<title>just a moment",
-		"cf-browser-verification",
-		"cf-challenge",
-		"cf-mitigated",
-		"_cf_chl_",
-		"challenge-platform",
+	title = strings.ToLower(title)
+	titleMarkers := []string{
+		"just a moment",
 		"verify you are human",
 	}
-	for _, marker := range markers {
-		if strings.Contains(combined, marker) {
+	for _, marker := range titleMarkers {
+		if strings.Contains(title, marker) {
 			return true
 		}
 	}
+
+	body := strings.ToLower(raw)
+	bodyMarkers := []string{
+		"cf-browser-verification",
+		"_cf_chl_",
+		"orchestrate/chl_page",
+		"checking your browser",
+		"ddos protection by cloudflare",
+	}
+	for _, marker := range bodyMarkers {
+		if strings.Contains(body, marker) {
+			return true
+		}
+	}
+
 	return false
 }
 
