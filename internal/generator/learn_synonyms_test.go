@@ -157,3 +157,21 @@ func TestGenerateLearnSynonymsCompileAndTest(t *testing.T) {
 		"TestLearnNormalizers_SynonymFoldSymmetry|TestLearnConfig_SpecSynonymsRegisteredBothSides",
 		"./internal/cli")
 }
+
+func TestGenerateLearnSynonymsConcurrentRegistrationIsRaceSafe(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("race test of emitted synonym registration skipped in -short mode")
+	}
+
+	apiSpec := minimalSpec("learn-syn-race")
+	apiSpec.Learn.Enabled = true
+	apiSpec.Learn.Synonyms = map[string]string{"foo bar": "baz"}
+	outputDir := filepath.Join(t.TempDir(), "learn-syn-race-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	runGoCommand(t, outputDir, "test", "-race", "-count=5", "-run",
+		"^TestPlaybookInit_ConcurrentSafe$", "./internal/cli")
+}
