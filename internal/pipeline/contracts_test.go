@@ -681,7 +681,7 @@ func TestPrintingPressSkillReprintPromoteRoutingHandlesRebuiltNovels(t *testing.
 	assert.Contains(t, promote, "A false Path A clobbers hand work; a")
 	assert.Contains(t, promote, "false Path B only asks for review")
 
-	assert.Contains(t, reprint, "Phase 5.6 first\ndry-runs `\"$PRINTING_PRESS_BIN\" regen-merge")
+	assert.Contains(t, reprint, "[Phase 5.6](../printing-press/phases/20-promote-and-archive.md) first\ndry-runs `\"$PRINTING_PRESS_BIN\" regen-merge")
 	assert.Contains(t, reprint, "fresh tree contains all prior novel work")
 	assert.Contains(t, reprint, "genuine `NOVEL-COLLISION` / missing-referent cases halt")
 	assert.Contains(t, reprint, "preserve the existing\nlibrary manifest's permanent `creator`")
@@ -1285,7 +1285,20 @@ func readContractFile(t *testing.T, path string) string {
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	return string(data)
+	content := string(data)
+
+	// The main printing-press skill is a router plus per-phase files; contract
+	// text may live in either, so read them as one bundle.
+	if filepath.ToSlash(path) == "../../skills/printing-press/SKILL.md" {
+		phasePaths, err := filepath.Glob(filepath.Join(filepath.Dir(path), "phases", "*.md"))
+		require.NoError(t, err)
+		for _, phasePath := range phasePaths {
+			phaseData, err := os.ReadFile(phasePath)
+			require.NoError(t, err)
+			content += "\n" + string(phaseData)
+		}
+	}
+	return content
 }
 
 func extractContractBlock(t *testing.T, content string) string {

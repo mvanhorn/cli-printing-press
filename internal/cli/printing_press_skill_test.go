@@ -122,3 +122,57 @@ func TestPrintingPressSkillRebuildsStaleRepoLocalBinary(t *testing.T) {
 	require.Contains(t, setupContent, "[local-binary-stale]` / `[local-binary-rebuilt]")
 	require.Contains(t, setupContent, "The repo-mode local binary was older than the checked-out source version")
 }
+
+func TestPrintingPressSkillPhaseChainIntegrity(t *testing.T) {
+	t.Parallel()
+
+	expected := []string{
+		"01-preflight.md",
+		"02-run-initialization.md",
+		"03-resolve-and-reuse.md",
+		"04-research-brief.md",
+		"05-pre-browser-sniff-auth-intelligence.md",
+		"06-browser-sniff-gate.md",
+		"07-crowd-sniff-gate.md",
+		"08-ecosystem-absorb-gate.md",
+		"09-api-reachability-gate.md",
+		"10-generate.md",
+		"11-build-the-goat.md",
+		"12-shipcheck.md",
+		"13-sync-param-drop-gate.md",
+		"14-agentic-skill-review.md",
+		"15-readme-skill-agents-correctness-audit.md",
+		"16-agentic-output-review.md",
+		"17-local-code-review.md",
+		"18-dogfood-testing.md",
+		"19-polish.md",
+		"20-promote-and-archive.md",
+		"21-next-steps.md",
+	}
+
+	paths, err := filepath.Glob("../../skills/printing-press/phases/*.md")
+	require.NoError(t, err)
+	var found []string
+	for _, path := range paths {
+		found = append(found, filepath.Base(path))
+	}
+	require.Equal(t, expected, found, "phases/ must contain exactly the expected files in order")
+
+	router, err := os.ReadFile("../../skills/printing-press/SKILL.md")
+	require.NoError(t, err)
+	for _, name := range expected {
+		require.Contains(t, string(router), "phases/"+name, "router phase index must reference %s", name)
+	}
+
+	for i, name := range expected {
+		data, err := os.ReadFile(filepath.Join("../../skills/printing-press/phases", name))
+		require.NoError(t, err)
+		lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+		last := lines[len(lines)-1]
+		if i == len(expected)-1 {
+			require.Equal(t, "Next: return to the router", last, "%s must close the chain", name)
+		} else {
+			require.Equal(t, "Next: phases/"+expected[i+1], last, "%s must point at the next phase", name)
+		}
+	}
+}
