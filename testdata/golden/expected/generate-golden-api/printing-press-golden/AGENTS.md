@@ -33,6 +33,16 @@ printing-press-golden-pp-cli <command> --dry-run --agent
 
 Use `--yes --no-input` only after the target, arguments, and side effects are clear.
 
+## Novel Command Data Sources
+
+Every hand-written novel command must declare its strategy in a Go line comment:
+
+```go
+// pp:data-source auto
+```
+
+Use exactly one of `auto`, `local`, `live`, or `computed`. Keep `auto` when the command honors `--data-source auto|local|live` by preferring live data with a local fallback; use `local` for local-only reads, `live` for remote-only reads, and `computed` for pure computation from embedded rules. Change a generated scaffold's `auto` default deliberately when its implementation has a narrower source, and reject incompatible `--data-source` requests with a clear error. TODO stubs still fail dogfood even when annotated.
+
 ## Self-Learning Loop
 
 This CLI ships a self-capturing teach/recall loop backed by the local SQLite store. The CLI journals every invocation, derives `flag_alias` candidates from failed-flag + corrected-retry pairs, and synthesizes a playbook candidate when a family is taught without one - no manual failure bookkeeping. The agent's role is judgment:

@@ -295,7 +295,10 @@ var novelStaticReferenceRe = regexp.MustCompile(`(?m)^\s*//\s*pp:novel-static-re
 // verify mechanically."
 var clientCallDirectiveRe = regexp.MustCompile(`(?m)^\s*//\s*pp:client-call\b`)
 
-var dataSourceDirectiveRe = regexp.MustCompile(`(?m)^\s*//\s*pp:data-source\s+([a-zA-Z_-]+)\b`)
+var (
+	explicitDataSourceDirectiveRe = regexp.MustCompile(`(?i)^//\s*pp:data-source\s+([a-zA-Z_-]+)\b`)
+	trailingDataSourceDirectiveRe = regexp.MustCompile(`(?i)[.!?:;]\s+pp:data-source\s+(auto|local|live|computed)\s*[.!]?\s*$`)
+)
 
 // exemptionKind labels which carve-out vindicated a command, so the
 // caller can route the bump to the right counter on
@@ -413,22 +416,17 @@ func dataSourceStrategyFinding(files []string, fileContent map[string]string) (R
 		if !ok || isGeneratedPrintingPressFile(content) {
 			continue
 		}
-		m := dataSourceDirectiveRe.FindStringSubmatch(content)
-		if len(m) == 0 {
+		strategy, invalidReason := declaredDataSourceStrategy(content)
+		if invalidReason != "" {
+			return ReimplementationFinding{File: f, Reason: invalidReason}, true
+		}
+		if strategy == "" {
 			if firstMissing == "" {
 				firstMissing = f
 			}
 			continue
 		}
-		switch strings.ToLower(strings.TrimSpace(m[1])) {
-		case "auto", "local", "live", "computed":
-			return ReimplementationFinding{}, false
-		default:
-			return ReimplementationFinding{
-				File:   f,
-				Reason: "invalid // pp:data-source annotation: must be auto, local, live, or computed",
-			}, true
-		}
+		return ReimplementationFinding{}, false
 	}
 	if firstMissing != "" {
 		return ReimplementationFinding{
@@ -440,13 +438,67 @@ func dataSourceStrategyFinding(files []string, fileContent map[string]string) (R
 }
 
 func computedDataSource(content string) bool {
-	m := dataSourceDirectiveRe.FindStringSubmatch(content)
-	return len(m) > 1 && strings.EqualFold(strings.TrimSpace(m[1]), "computed")
+	strategy, invalidReason := declaredDataSourceStrategy(content)
+	return invalidReason == "" && strategy == "computed"
 }
 
 func localDataSource(content string) bool {
-	m := dataSourceDirectiveRe.FindStringSubmatch(content)
-	return len(m) > 1 && strings.EqualFold(strings.TrimSpace(m[1]), "local")
+	strategy, invalidReason := declaredDataSourceStrategy(content)
+	return invalidReason == "" && strategy == "local"
+}
+
+// declaredDataSourceStrategy reads only parsed Go line comments. A directive
+// may lead the comment or follow punctuation in a descriptive comment;
+// comment-shaped strings and prose mentions are not declarations. When a
+// scaffold's auto default remains beside one narrower declaration, the narrower
+// strategy wins.
+func declaredDataSourceStrategy(content string) (string, string) {
+	parsed, err := parser.ParseFile(token.NewFileSet(), "", content, parser.ParseComments)
+	if err != nil {
+		return "", ""
+	}
+
+	strategies := make(map[string]struct{})
+	for _, group := range parsed.Comments {
+		for _, comment := range group.List {
+			if !strings.HasPrefix(comment.Text, "//") {
+				continue
+			}
+
+			if match := explicitDataSourceDirectiveRe.FindStringSubmatch(comment.Text); len(match) > 1 {
+				strategy := strings.ToLower(match[1])
+				if !validDataSourceStrategy(strategy) {
+					return "", "invalid // pp:data-source annotation: must be auto, local, live, or computed"
+				}
+				strategies[strategy] = struct{}{}
+				continue
+			}
+
+			if match := trailingDataSourceDirectiveRe.FindStringSubmatch(comment.Text); len(match) > 1 {
+				strategies[strings.ToLower(match[1])] = struct{}{}
+			}
+		}
+	}
+
+	if len(strategies) > 1 {
+		delete(strategies, "auto")
+	}
+	if len(strategies) > 1 {
+		return "", "conflicting // pp:data-source annotations: use exactly one of auto, local, live, or computed"
+	}
+	for strategy := range strategies {
+		return strategy, ""
+	}
+	return "", ""
+}
+
+func validDataSourceStrategy(strategy string) bool {
+	switch strategy {
+	case "auto", "local", "live", "computed":
+		return true
+	default:
+		return false
+	}
 }
 
 func isGeneratedPrintingPressFile(content string) bool {

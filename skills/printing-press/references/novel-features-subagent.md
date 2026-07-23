@@ -249,6 +249,9 @@ the command source file:
 // pp:data-source local
 ```
 
+Generated novel-command scaffolds already declare `auto`. Edit that existing
+directive when the implementation is narrower instead of adding a second one.
+
 Use exactly one of:
 - `auto` for commands that honor `--data-source auto|local|live` by choosing
   live data with local fallback.

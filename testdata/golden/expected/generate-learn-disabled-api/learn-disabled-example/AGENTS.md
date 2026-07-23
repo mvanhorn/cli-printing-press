@@ -33,6 +33,16 @@ learn-disabled-example-pp-cli <command> --dry-run --agent
 
 Use `--yes --no-input` only after the target, arguments, and side effects are clear.
 
+## Novel Command Data Sources
+
+Every hand-written novel command must declare its strategy in a Go line comment:
+
+```go
+// pp:data-source auto
+```
+
+Use exactly one of `auto`, `local`, `live`, or `computed`. Keep `auto` when the command honors `--data-source auto|local|live` by preferring live data with a local fallback; use `local` for local-only reads, `live` for remote-only reads, and `computed` for pure computation from embedded rules. Change a generated scaffold's `auto` default deliberately when its implementation has a narrower source, and reject incompatible `--data-source` requests with a clear error. TODO stubs still fail dogfood even when annotated.
+
 For install, auth, examples, and longer product guidance, read `README.md` and `SKILL.md`. This file intentionally stays small so repo-local agents get invariant local guidance without duplicating the generated docs.
 
 ## Release Ledger

@@ -749,11 +749,10 @@ func novelCommandDataSourceStrategies(cliDir string) map[string]string {
 			continue
 		}
 		content := string(data)
-		m := dataSourceDirectiveRe.FindStringSubmatch(content)
-		if len(m) < 2 {
+		strategy, invalidReason := declaredDataSourceStrategy(content)
+		if invalidReason != "" {
 			continue
 		}
-		strategy := strings.ToLower(strings.TrimSpace(m[1]))
 		if strategy != "auto" && strategy != "local" && strategy != "live" {
 			continue
 		}

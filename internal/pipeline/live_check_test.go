@@ -325,7 +325,7 @@ func TestLiveCheck_LocalDataSourceUnsyncedFailureSkipsAndExcludesPassRate(t *tes
 			dir := t.TempDir()
 			writeNovelCommandFile(t, dir, "tasks.go", `package cli
 
-// pp:data-source local
+// Reads only the synchronized store. pp:data-source local
 func newNovelTasksCmd() *cobra.Command {
 	return &cobra.Command{Use: "tasks"}
 }
