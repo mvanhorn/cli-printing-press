@@ -1132,30 +1132,6 @@ func extractObjectArray(raw json.RawMessage) ([]json.RawMessage, bool) {
 	return items, true
 }
 
-// isDryRunResponse detects the `{"dry_run": true}` sentinel that
-// client.dryRun returns instead of a real API response. The sync loop
-// uses this to short-circuit before the upsert path, which would
-// otherwise fail with "missing id for <resource>" against a sentinel
-// that has no items and no id. The check requires exactly one key
-// (dry_run) so a live API response that happens to include a top-level
-// dry_run field alongside real data isn't misclassified as the
-// sentinel and silently zero out the sync count.
-func isDryRunResponse(data json.RawMessage) bool {
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return false
-	}
-	if len(envelope) != 1 {
-		return false
-	}
-	raw, ok := envelope["dry_run"]
-	if !ok {
-		return false
-	}
-	var v bool
-	return json.Unmarshal(raw, &v) == nil && v
-}
-
 func isEmptyPageResponse(data json.RawMessage, responsePaths ...string) bool {
 	var direct []json.RawMessage
 	if err := json.Unmarshal(data, &direct); err == nil && !isJSONNull(data) {

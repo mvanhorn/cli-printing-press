@@ -577,6 +577,9 @@ func paginatedGet(ctx context.Context, c interface {
 		if err != nil {
 			return nil, err
 		}
+		if isDryRunResponse(data) {
+			return data, nil
+		}
 		emitTruncationWarning(ctx, data, cursorLookupPath, hasMoreField, paginationType)
 		return data, nil
 	}
@@ -618,6 +621,9 @@ func paginatedGet(ctx context.Context, c interface {
 		data, err := c.GetWithHeaders(ctx, path, clean, headers)
 		if err != nil {
 			return nil, err
+		}
+		if isDryRunResponse(data) {
+			return data, nil
 		}
 
 		// Try to extract items array
@@ -1427,6 +1433,20 @@ func camelToKebab(s string) string {
 // printOutputWithFlags routes output through the right format based on flags.
 func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) error {
 	return printOutputWithFlagsMeta(w, data, flags, map[string]any{"source": "local"})
+}
+
+// isDryRunResponse detects the exact sentinel returned by client.dryRun.
+func isDryRunResponse(data json.RawMessage) bool {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil || len(envelope) != 1 {
+		return false
+	}
+	raw, ok := envelope["dry_run"]
+	if !ok {
+		return false
+	}
+	var v bool
+	return json.Unmarshal(raw, &v) == nil && v
 }
 
 func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any) error {
