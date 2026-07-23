@@ -205,6 +205,8 @@ type DependentResource struct {
 	Method         string
 	Tier           string
 	PathParams     []DependentPathParam
+	parentPath     string
+	parentPathLock bool
 
 	// IDField is the primary-key field name resolved from the spec
 	// (x-resource-id extension or the four-tier fallback chain). Empty when
@@ -1637,27 +1639,20 @@ func uniquifyDependentResourceNames(deps []DependentResource, syncable map[strin
 			used[candidate] = true
 		}
 	}
-	updateDependentParentNames(deps, originalNames, syncable)
+	updateDependentParentNames(deps, originalNames)
 }
 
-func updateDependentParentNames(deps []DependentResource, originalNames []string, syncable map[string]syncableMeta) {
+func updateDependentParentNames(deps []DependentResource, originalNames []string) {
 	for i := range deps {
-		parentName := deps[i].ParentResource
-		if parent, ok := syncable[parentName]; ok && dependentPathPrefix(parent.Path, deps[i].Path) {
+		if deps[i].parentPathLock || deps[i].parentPath == "" {
 			continue
 		}
-		bestIndex := -1
 		for j := range deps {
-			if originalNames[j] != parentName || !dependentPathPrefix(deps[j].Path, deps[i].Path) {
+			if originalNames[j] != deps[i].ParentResource || deps[j].Path != deps[i].parentPath {
 				continue
 			}
-			if bestIndex < 0 || len(pathSegments(deps[j].Path)) > len(pathSegments(deps[bestIndex].Path)) ||
-				(len(pathSegments(deps[j].Path)) == len(pathSegments(deps[bestIndex].Path)) && deps[j].Name < deps[bestIndex].Name) {
-				bestIndex = j
-			}
-		}
-		if bestIndex >= 0 {
-			deps[i].ParentResource = deps[bestIndex].Name
+			deps[i].ParentResource = deps[j].Name
+			break
 		}
 	}
 }
@@ -1758,6 +1753,7 @@ func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[strin
 		Method:                entry.meta.Method,
 		Tier:                  entry.meta.Tier,
 		PathParams:            dependentPathParams(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam, keyField),
+		parentPath:            dependentParentPath(entry.meta.Path, ctx.parentPathSegment),
 		IDField:               entry.meta.IDField,
 		Critical:              entry.meta.Critical,
 		SinceParam:            entry.meta.SinceParam,
@@ -1974,6 +1970,8 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 			lookupKey := "GET " + e.Path
 			if idx, ok := byPath[lookupKey]; ok {
 				deps[idx].ParentResource = parent
+				deps[idx].parentPath = ""
+				deps[idx].parentPathLock = true
 				if keyParam != "" {
 					deps[idx].ParentIDParam = keyParam
 				}
@@ -1987,6 +1985,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				ParentResource:        parent,
 				ParentIDParam:         keyParam,
 				Path:                  e.Path,
+				parentPathLock:        true,
 				Method:                meta.Method,
 				Tier:                  meta.Tier,
 				PathParams:            dependentPathParams(e.Path, parent, keyParam, keyField),
@@ -2053,6 +2052,15 @@ func dependentParentIDParam(path, parentResource, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+func dependentParentPath(path, parentSegment string) string {
+	segments := pathSegments(path)
+	index := lastStaticSegmentIndex(segments, spec.ToSnakeCase(parentSegment))
+	if index < 0 {
+		return ""
+	}
+	return "/" + strings.Join(segments[:index+1], "/")
 }
 
 // parentFieldIrregulars maps plural parent resource names whose singular form a
