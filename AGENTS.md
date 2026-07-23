@@ -90,6 +90,31 @@ Required before handoff:
 
 If the "obvious" fix violates a parser, verifier, scorer, or printed-CLI invariant, stop and resolve the invariant conflict rather than shipping a narrow band-aid.
 
+#### Emitted code that touches the developer's home requires a field proof
+
+CI proves the emitted code compiles and passes on a clean Linux runner. It does not prove the code leaves a populated home directory alone. When the change touches emitted code that resolves user paths or credentials (`HOME` / `USERPROFILE` lookups, `internal/cliutil` path and credential helpers, emitted `*_test.go` helpers), prove it against a real print before handoff.
+
+Point the proof at a **decoy profile, never your own home**. The snapshot below detects an escape after it lands, so a run against live credentials destroys them and only then reports it.
+
+```bash
+DECOY=$(mktemp -d)
+mkdir -p "$DECOY"/.config "$DECOY"/.local/share "$DECOY"/.local/state
+echo sentinel > "$DECOY"/.config/sentinel   # an escape needs something to clobber
+export HOME="$DECOY" USERPROFILE="$DECOY" \
+       XDG_CONFIG_HOME="$DECOY/.config" XDG_DATA_HOME="$DECOY/.local/share" \
+       XDG_STATE_HOME="$DECOY/.local/state" XDG_CACHE_HOME="$DECOY/.cache"
+
+go build -o ./cli-printing-press ./cmd/cli-printing-press
+./cli-printing-press generate --spec ./testdata/stytch.yaml --output "$DECOY/print/stytch-pp-cli"
+find "$DECOY"/.config "$DECOY"/.local -type f | sort | xargs md5sum > "$DECOY/before.txt"
+(cd "$DECOY/print/stytch-pp-cli" && go test ./...)
+find "$DECOY"/.config "$DECOY"/.local -type f | sort | xargs md5sum | diff "$DECOY/before.txt" -
+```
+
+A byte-identical snapshot is the pass condition.
+
+Redirect **both** `HOME` and `USERPROFILE`, plus the `XDG_*` variables. On Windows the production resolver reads `USERPROFILE`, so redirecting only `HOME` leaves the real profile exposed, which is the exact shape of the escape this proof exists to catch.
+
 ## Cross-repo dependency: published-library sweep tool
 
 When a change to `internal/generator/templates/readme.md.tmpl` or `skill.md.tmpl` shifts canonical published-library shape — install-block structure, top-of-README section ordering, presence/removal of `## ` sections, frontmatter top-level field set, install command syntax — also update `tools/sweep-canonical/main.go` in [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) so already-published CLIs can be retrofitted to match. Fresh prints get the new shape automatically; existing entries drift until the sweep runs.
