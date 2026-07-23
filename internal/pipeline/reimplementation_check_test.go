@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 )
 
 // seedReimplementationFixture writes a minimal generated-CLI directory
@@ -107,6 +109,224 @@ func newTodayCmd(flags *rootFlags) *cobra.Command {
 	got := checkReimplementation(cliDir, pipelineDir)
 	if len(got.MissingDataSourceStrategy) != 0 {
 		t.Fatalf("MissingDataSourceStrategy: want 0, got %d (%v)", len(got.MissingDataSourceStrategy), got.MissingDataSourceStrategy)
+	}
+}
+
+func TestCheckReimplementation_DataSourceStrategyAnnotationAfterCommentText(t *testing.T) {
+	files := map[string]string{
+		"forecast.go": `package cli
+
+import "github.com/spf13/cobra"
+
+// Novel feature: forecast a value from embedded policy. pp:data-source computed.
+func newForecastCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "forecast",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.Println("forecast: stable")
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Forecast", Command: "forecast"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if len(got.MissingDataSourceStrategy) != 0 || len(got.Suspicious) != 0 {
+		t.Fatalf("descriptive line-comment directive should pass, got missing=%v suspicious=%v", got.MissingDataSourceStrategy, got.Suspicious)
+	}
+}
+
+func TestCheckReimplementation_DataSourceStrategyAnnotationAfterCode(t *testing.T) {
+	files := map[string]string{
+		"forecast.go": `package cli
+
+import "github.com/spf13/cobra"
+
+var forecastPolicy = "stable" // pp:data-source computed
+
+func newForecastCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "forecast",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.Println("forecast: " + forecastPolicy)
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Forecast", Command: "forecast"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if len(got.MissingDataSourceStrategy) != 0 || len(got.Suspicious) != 0 {
+		t.Fatalf("trailing line-comment directive should pass, got missing=%v suspicious=%v", got.MissingDataSourceStrategy, got.Suspicious)
+	}
+}
+
+func TestCheckReimplementation_DataSourceStrategyIgnoresCommentShapedText(t *testing.T) {
+	tests := map[string]string{
+		"raw string": `var help = ` + "`" + `
+// Novel feature: forecast values. pp:data-source computed
+` + "`" + ``,
+		"mid-comment prose": `// Unlike pp:data-source computed commands, this command returns a fixed value.`,
+		"trailing negation": `// This command does not use pp:data-source computed`,
+	}
+	for name, decoy := range tests {
+		t.Run(name, func(t *testing.T) {
+			files := map[string]string{
+				"forecast.go": `package cli
+
+import "github.com/spf13/cobra"
+
+` + decoy + `
+
+func newForecastCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "forecast",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.Println("forecast: stable")
+			return nil
+		},
+	}
+}
+`,
+			}
+			cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+				{Name: "Forecast", Command: "forecast"},
+			})
+
+			got := checkReimplementation(cliDir, pipelineDir)
+			if len(got.MissingDataSourceStrategy) != 1 || len(got.Suspicious) != 1 {
+				t.Fatalf("comment decoy must not declare a strategy, got missing=%v suspicious=%v", got.MissingDataSourceStrategy, got.Suspicious)
+			}
+		})
+	}
+}
+
+func TestCheckReimplementation_NarrowerDataSourceOverridesScaffoldAuto(t *testing.T) {
+	files := map[string]string{
+		"forecast.go": `package cli
+
+import "github.com/spf13/cobra"
+
+// pp:data-source auto
+// Supported strategies: auto, local, live, or computed. Change this default deliberately.
+
+// pp:data-source computed
+func newForecastCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "forecast",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.Println("forecast: stable")
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Forecast", Command: "forecast"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if len(got.MissingDataSourceStrategy) != 0 || len(got.Suspicious) != 0 {
+		t.Fatalf("narrower declaration should override scaffold auto, got missing=%v suspicious=%v", got.MissingDataSourceStrategy, got.Suspicious)
+	}
+}
+
+func TestDeclaredDataSourceStrategyRejectsInvalidAndConflictingDirectives(t *testing.T) {
+	tests := map[string]struct {
+		content string
+		want    string
+	}{
+		"invalid leading": {
+			content: "package cli\n// pp:data-source unknown\n",
+			want:    "invalid // pp:data-source annotation",
+		},
+		"invalid leading complete token": {
+			content: "package cli\n// pp:data-source auto-ish\n",
+			want:    "invalid // pp:data-source annotation",
+		},
+		"invalid leading prefix": {
+			content: "package cli\n// pp:data-source auto.ish\n",
+			want:    "invalid // pp:data-source annotation",
+		},
+		"invalid trailing": {
+			content: "package cli\n// Novel feature: summarize locally. pp:data-source locla\n",
+			want:    "invalid // pp:data-source annotation",
+		},
+		"invalid trailing beside scaffold default": {
+			content: "package cli\n// pp:data-source auto\n// Novel feature: summarize locally. pp:data-source locla\n",
+			want:    "invalid // pp:data-source annotation",
+		},
+		"invalid trailing outside old character class beside scaffold default": {
+			content: "package cli\n// pp:data-source auto\n// Novel feature: summarize locally. pp:data-source auto1\n",
+			want:    "invalid // pp:data-source annotation",
+		},
+		"conflicting": {
+			content: "package cli\n// pp:data-source local\n// pp:data-source computed\n",
+			want:    "conflicting // pp:data-source annotations",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			strategy, reason := declaredDataSourceStrategy(test.content)
+			if strategy != "" || !strings.Contains(reason, test.want) {
+				t.Fatalf("strategy=%q reason=%q, want empty strategy and reason containing %q", strategy, reason, test.want)
+			}
+		})
+	}
+}
+
+func TestDeclaredDataSourceStrategyIgnoresTrailingNegationBesideScaffoldDefault(t *testing.T) {
+	content := "package cli\n// pp:data-source auto\n// This command does not use pp:data-source computed\n"
+	strategy, reason := declaredDataSourceStrategy(content)
+	if strategy != "auto" || reason != "" {
+		t.Fatalf("strategy=%q reason=%q, want scaffold auto without an error", strategy, reason)
+	}
+}
+
+func TestGeneratedNovelFeatureScaffoldDeclaresDataSourceStrategy(t *testing.T) {
+	apiSpec := loadContractPetstoreSpec(t)
+	outputDir := filepath.Join(t.TempDir(), "petstore-pp-cli")
+	gen := generator.New(apiSpec, outputDir)
+	gen.NovelFeatures = []generator.NovelFeature{{
+		Name:        "Rollup",
+		Command:     "rollup",
+		Description: "Aggregate pet status locally.",
+	}}
+	if err := gen.Generate(); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	pipelineDir := filepath.Join(t.TempDir(), "pipeline")
+	if err := os.MkdirAll(pipelineDir, 0o755); err != nil {
+		t.Fatalf("mkdir pipeline: %v", err)
+	}
+	research, err := json.MarshalIndent(ResearchResult{NovelFeatures: []NovelFeature{{
+		Name:    "Rollup",
+		Command: "rollup",
+	}}}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal research: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pipelineDir, "research.json"), research, 0o644); err != nil {
+		t.Fatalf("write research.json: %v", err)
+	}
+
+	got := checkReimplementation(outputDir, pipelineDir)
+	if len(got.MissingDataSourceStrategy) != 0 {
+		t.Fatalf("generated scaffold must declare a data-source strategy, got %v", got.MissingDataSourceStrategy)
+	}
+	if len(got.Suspicious) != 1 || !strings.Contains(got.Suspicious[0].Reason, "TODO") {
+		t.Fatalf("generated scaffold must remain a TODO failure, got %v", got.Suspicious)
 	}
 }
 

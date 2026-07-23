@@ -30,6 +30,9 @@ func TestGeneratedAgentsGuideRendersPortableAgentContract(t *testing.T) {
 	assert.Contains(t, content, "finance-pp-cli <command> --help")
 	assert.Contains(t, content, "finance-pp-cli <command> --agent")
 	assert.Contains(t, content, "finance-pp-cli <command> --dry-run --agent")
+	assert.Contains(t, content, "## Novel Command Data Sources")
+	assert.Contains(t, content, "// pp:data-source auto")
+	assert.Contains(t, content, "Use exactly one of `auto`, `local`, `live`, or `computed`")
 	assert.Contains(t, content, "README.md")
 	assert.Contains(t, content, "SKILL.md")
 
