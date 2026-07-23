@@ -5524,6 +5524,28 @@ resources:
 		assert.Contains(t, err.Error(), "shadow framework cobra command", "error must explain the failure mode")
 	})
 
+	t.Run("CamelCase resource is normalized before framework collision check", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  AgentContext:
+    description: API agent context
+    endpoints:
+      list:
+        method: GET
+        path: /agent-context
+        description: List API agent context
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"AgentContext"`)
+		assert.Contains(t, err.Error(), `framework cobra command "agent-context"`)
+	})
+
 	t.Run("rename suggestion uses api slug when spec name is set", func(t *testing.T) {
 		t.Parallel()
 		input := `name: pokeapi

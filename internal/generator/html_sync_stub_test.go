@@ -45,7 +45,7 @@ func TestGenerateHTMLMajoritySyncOmittedWhenOnlyPageModeCandidates(t *testing.T)
 				},
 			},
 		},
-		"api": {
+		"typed_api": {
 			Description: "Typed API data",
 			Endpoints: map[string]spec.Endpoint{
 				"status": {
@@ -164,7 +164,7 @@ func TestHTMLSyncStubFallbackUsesInclusiveThreshold(t *testing.T) {
 				"seven": htmlPageEndpoint("/pages/{id}/seven", "Page seven", "object"),
 			},
 		},
-		"api": {
+		"typed_api": {
 			Description: "JSON API",
 			Endpoints: map[string]spec.Endpoint{
 				"one":   {Method: "GET", Path: "/api/one", Description: "API one", Response: spec.ResponseDef{Type: "object"}},
@@ -191,7 +191,7 @@ func TestGenerateEmbeddedJSONHTMLMajorityKeepsGenericSync(t *testing.T) {
 				"archive": embeddedJSONHTMLEndpoint("/archive", "List archived pages", "array"),
 			},
 		},
-		"api": {
+		"typed_api": {
 			Description: "Typed API data",
 			Endpoints: map[string]spec.Endpoint{
 				"status": {

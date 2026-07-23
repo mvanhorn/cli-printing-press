@@ -548,6 +548,35 @@ func WriteTrafficAnalysis(analysis *TrafficAnalysis, outputPath string) error {
 	return nil
 }
 
+// AddReservedResourceNameWarnings surfaces the rename while traffic context
+// can still suggest a domain-specific replacement; generation can only reject.
+func AddReservedResourceNameWarnings(apiSpec *spec.APISpec, analysis *TrafficAnalysis) {
+	if apiSpec == nil || analysis == nil {
+		return
+	}
+
+	resourceNames := make([]string, 0, len(apiSpec.Resources))
+	for name := range apiSpec.Resources {
+		resourceNames = append(resourceNames, name)
+	}
+	sort.Strings(resourceNames)
+	for _, name := range resourceNames {
+		resource := apiSpec.Resources[name]
+		if len(resource.Endpoints) == 0 && len(resource.SubResources) == 0 {
+			continue
+		}
+		if !apiSpec.ConflictsWithReservedCLIResourceName(name) && !apiSpec.ParseTimeReservedCobraUseName(name) {
+			continue
+		}
+		analysis.Warnings = append(analysis.Warnings, AnalysisWarning{
+			Type:       "reserved_resource_name",
+			Message:    fmt.Sprintf("resource name %q may conflict with a reserved Printing Press command or template; consider renaming it to a domain-specific command name", name),
+			Confidence: 1,
+		})
+	}
+	sortTrafficAnalysis(analysis)
+}
+
 func ReadTrafficAnalysis(inputPath string) (*TrafficAnalysis, error) {
 	if strings.TrimSpace(inputPath) == "" {
 		return nil, fmt.Errorf("input path is required")

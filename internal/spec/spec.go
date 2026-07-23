@@ -3270,7 +3270,7 @@ var ReservedCobraUseNames = map[string]struct{}{
 // profiling, so parsers must not reject or rename them before the generator
 // knows the actual root command set.
 func (s *APISpec) ParseTimeReservedCobraUseName(name string) bool {
-	kebab := snakeToKebab(name)
+	kebab := NormalizeCobraCommandName(name)
 	if kebab == "auth" {
 		return s.emitsAuthCommand()
 	}
@@ -3326,10 +3326,7 @@ func (s *APISpec) applyReservedResourceParentPrefixes() {
 
 	renames := map[string]string{}
 	for _, name := range keys {
-		if name == "auth" && !s.emitsAuthCommand() {
-			continue
-		}
-		if _, reserved := ReservedCLIResourceNames[name]; !reserved {
+		if !s.ConflictsWithReservedCLIResourceName(name) {
 			continue
 		}
 		candidate := s.uniqueReservedResourceParentPrefix(name, s.Resources[name], taken)
@@ -3440,16 +3437,23 @@ func (s *APISpec) emitsTopLevelOAuthLogin() bool {
 		(s.Auth.EffectiveOAuth2Grant() != OAuth2GrantClientCredentials || s.Auth.TokenURL == "")
 }
 
+// ConflictsWithReservedCLIResourceName reports whether a top-level resource
+// would collide with an emitted reserved Printing Press template.
+func (s *APISpec) ConflictsWithReservedCLIResourceName(name string) bool {
+	if name == "auth" && s != nil && !s.emitsAuthCommand() {
+		return false
+	}
+	_, reserved := ReservedCLIResourceNames[name]
+	return reserved
+}
+
 // validateReservedNames rejects specs whose top-level resource names would
 // collide with reserved Printing Press templates. Sub-resource names are not
 // checked because they emit under a parent prefix (`<parent>_<sub>.go`,
 // `new<Parent><Sub>Cmd`) that does not collide with single-file templates.
 func (s *APISpec) validateReservedNames() error {
 	for name := range s.Resources {
-		if name == "auth" && !s.emitsAuthCommand() {
-			continue
-		}
-		if _, reserved := ReservedCLIResourceNames[name]; reserved {
+		if s.ConflictsWithReservedCLIResourceName(name) {
 			return fmt.Errorf("resource name %q collides with reserved Printing Press template %q (would overwrite internal/cli/%s.go and produce a duplicate `new%sCmd` function). Rename to %q in your spec",
 				name, name, name, SnakeToPascal(name), name+"_resource")
 		}
@@ -3463,7 +3467,7 @@ func (s *APISpec) validateReservedNames() error {
 // root.
 func (s *APISpec) validateFrameworkCobraCollisions() error {
 	for name := range s.Resources {
-		kebab := snakeToKebab(name)
+		kebab := NormalizeCobraCommandName(name)
 		if s.ParseTimeReservedCobraUseName(kebab) {
 			suggestion := name + "_resource"
 			if s.Name != "" {
@@ -3474,6 +3478,30 @@ func (s *APISpec) validateFrameworkCobraCollisions() error {
 		}
 	}
 	return nil
+}
+
+// NormalizeCobraCommandName mirrors the command name emitted by the generator.
+// Sharing the interface-prefix and word-boundary rules keeps every collision
+// check aligned with the public Cobra surface.
+func NormalizeCobraCommandName(s string) string {
+	if len(s) > 1 && s[0] == 'I' && unicode.IsUpper(rune(s[1])) {
+		s = s[1:]
+	}
+	var result strings.Builder
+	for i, r := range s {
+		if r == '_' {
+			result.WriteByte('-')
+			continue
+		}
+		if unicode.IsUpper(r) && i > 0 {
+			previous := rune(s[i-1])
+			if unicode.IsLower(previous) || (unicode.IsUpper(previous) && i+1 < len(s) && unicode.IsLower(rune(s[i+1]))) {
+				result.WriteByte('-')
+			}
+		}
+		result.WriteRune(unicode.ToLower(r))
+	}
+	return result.String()
 }
 
 func snakeToKebab(s string) string {
