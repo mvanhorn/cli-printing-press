@@ -4,7 +4,7 @@ description: >
   Internal sub-skill: agentic review of a printed CLI's sampled command output for
   plausibility issues that rule-based checks can't encode (substring-match
   relevance, format bugs, silent source drops, ranking failures). Invoked via the
-  Skill tool by main printing-press SKILL.md (Phase 4.85) and printing-press-polish
+  Skill tool by main printing-press phases/16-agentic-output-review.md (Phase 4.85) and printing-press-polish
   SKILL.md during the diagnostic loop. Not for direct user invocation — its
   actionable wrappers are /printing-press and /printing-press-polish.
 context: fork
@@ -19,7 +19,7 @@ created_by: user
 
 Review the sampled outputs from a printed CLI for plausibility bugs that dogfood, verify, and the rule-based `scorecard --live-check` rules can't catch. Wave B policy: all findings surface as warnings, never errors.
 
-This skill is **internal-only** (`user-invocable: false`). It's invoked by parents — main printing-press skill at shipcheck Phase 4.85, polish skill during its diagnostic loop. Running it standalone would produce floating findings text with no ship verdict, no fixes applied, no publish offer; the actionable wrappers are `/printing-press` and `/printing-press-polish`. The skill carries `context: fork` so the reviewer agent's diagnostic chatter stays isolated from the calling skill's context.
+This skill is **internal-only** (`user-invocable: false`). It's invoked by parents — main printing-press skill at [shipcheck Phase 4.85](../printing-press/phases/16-agentic-output-review.md), polish skill during its diagnostic loop. Running it standalone would produce floating findings text with no ship verdict, no fixes applied, no publish offer; the actionable wrappers are `/printing-press` and `/printing-press-polish`. The skill carries `context: fork` so the reviewer agent's diagnostic chatter stays isolated from the calling skill's context.
 
 ## Input
 
@@ -67,7 +67,7 @@ Use the Agent tool (general-purpose) with this prompt contract:
 > Review the sampled outputs from the shipped CLI at `$CLI_DIR`. You have these ground-truth sources:
 >
 > - Sampled command output: read `/tmp/output-review-livecheck.json` and inspect the `live_check.features[]` array. Each entry has the command, example invocation, redacted stdout evidence (in `output_sample`, bounded to ~4 KiB), the redacted pass/fail reason, and a `warnings` array (populated by rule-based checks like the raw-HTML-entity detector). Treat `<redacted>` markers as privacy scrubbed values, not format bugs.
-> - **Review only `status: pass` entries.** Entries with `status: fail` either crashed, timed out, or had placeholder args (`<id>`, `<url>`) that never produced real output — their sample is empty and there's nothing for you to judge. Phase 5 dogfood handles test-coverage and exit-code concerns.
+> - **Review only `status: pass` entries.** Entries with `status: fail` either crashed, timed out, or had placeholder args (`<id>`, `<url>`) that never produced real output — their sample is empty and there's nothing for you to judge. [Phase 5 dogfood](../printing-press/phases/18-dogfood-testing.md) handles test-coverage and exit-code concerns.
 > - `$CLI_DIR/research.json` `novel_features` (planned behavior per feature) and `novel_features_built` (verified built commands).
 > - The CLI binary at `$CLI_DIR/<cli-name>-pp-cli` — you may invoke additional commands to gather more output when a finding needs verification.
 >
@@ -142,5 +142,5 @@ Output-plausibility questions are not pattern-matchable against source. Rule-bas
 - Can't verify numeric accuracy (prices, ratings, rankings vs ground-truth). If the CLI says a recipe has 4.8 stars and it actually has 4.2, this skill won't catch it.
 - Can't detect data-freshness issues (recipe published 2019 vs 2024). These need live comparison against authoritative sources.
 - Can't judge subjective preferences ("is this the *best* recipe for chocolate chip cookies?").
-- Sampled outputs only — covers the commands in `live_check.features[]`. Full command-tree coverage belongs in Phase 5 dogfood.
+- Sampled outputs only — covers the commands in `live_check.features[]`. Full command-tree coverage belongs in [Phase 5 dogfood](../printing-press/phases/18-dogfood-testing.md).
 - Non-English output: the reviewer's query-intent check assumes English-language query/output. For non-English CLIs, calibrate the prompt separately.

@@ -10,7 +10,7 @@ The shipped Printing Press skills are installed through the `skills` CLI. Claude
 
 When a machine change alters what an agent should do, what a command now guarantees, or where source-of-truth data lives, update the relevant `SKILL.md` in the same change. Don't leave the skill as a stale manual workaround for behavior the machine now owns.
 
-Check `skills/printing-press/SKILL.md` especially when touching generator, dogfood, verify, scorecard, publish, lock/promote, manuscript/runstate, or README/SKILL rendering behavior. If a machine step becomes deterministic, the skill should say the command owns it and reserve agentic review for the remaining semantic judgment. If a command's output, gate, phase order, or failure mode changes, update the phase instructions, reviewer prompt contracts, and fix-order guidance that mention it.
+Check `skills/printing-press/SKILL.md` and the applicable file under `skills/printing-press/phases/` especially when touching generator, dogfood, verify, scorecard, publish, lock/promote, manuscript/runstate, or README/SKILL rendering behavior. If a machine step becomes deterministic, the skill should say the command owns it and reserve agentic review for the remaining semantic judgment. If a command's output, gate, phase order, or failure mode changes, update the phase instructions, reviewer prompt contracts, and fix-order guidance that mention it.
 
 Decide responsibility explicitly:
 
@@ -25,7 +25,7 @@ wire names with `public-param-audit`, preserves evidence-backed skip decisions
 in a ledger, and propagates authored fields through generated CLI, docs, MCP,
 and manifest surfaces without inferring names itself.
 
-For any SKILL.md update, search for the old concept across the skill file, not just the paragraph closest to the code change. Agentic review prompts often duplicate workflow assumptions from earlier phase instructions.
+For any SKILL.md or phase-file update, search for the old concept across the router and all phase files, not just the paragraph closest to the code change. Agentic review prompts often duplicate workflow assumptions from earlier phase instructions.
 
 ## Reference File Pattern
 

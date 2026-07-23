@@ -342,8 +342,9 @@ and the shipped CLI:
    secondary is the first thing the user sees, flag it.
 
 Each of these is a **skill instruction gap** category finding. The durable fix lives
-in `skills/printing-press/SKILL.md` (the Multi-Source Priority Gate, the Priority
-inversion check before Phase Gate 1.5, and the brief's `## Source Priority` section)
+in the [Multi-Source Priority Gate](../printing-press/SKILL.md#multi-source-priority-gate),
+the [priority inversion check before Phase Gate 1.5](../printing-press/phases/08-ecosystem-absorb-gate.md),
+or the [brief's `## Source Priority` section](../printing-press/phases/04-research-brief.md),
 or in the generator if README ordering is template-driven.
 
 ## Phase 2.5: Triage candidates
