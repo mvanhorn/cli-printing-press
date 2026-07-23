@@ -998,6 +998,13 @@ func TestApplyReachabilityDefaultsAddsBrowserClearanceCookieAuth(t *testing.T) {
 			Mode:       "browser_clearance_http",
 			Confidence: 0.9,
 		},
+		Auth: AuthAnalysis{
+			Candidates: []AuthCandidate{{
+				Type:        "cookie",
+				Confidence:  0.8,
+				CookieNames: []string{"ph_session", "csrf"},
+			}},
+		},
 	}
 
 	ApplyReachabilityDefaults(apiSpec, analysis)
@@ -1006,10 +1013,38 @@ func TestApplyReachabilityDefaultsAddsBrowserClearanceCookieAuth(t *testing.T) {
 	assert.Equal(t, "cookie", apiSpec.Auth.Type)
 	assert.Equal(t, "Cookie", apiSpec.Auth.Header)
 	assert.Equal(t, ".producthunt.com", apiSpec.Auth.CookieDomain)
+	assert.Equal(t, []string{"csrf", "ph_session"}, apiSpec.Auth.Cookies)
 	assert.Equal(t, []string{"PRODUCTHUNT_COOKIES"}, apiSpec.Auth.EnvVars)
 	assert.True(t, apiSpec.Auth.RequiresBrowserSession)
 	assert.Equal(t, "/posts", apiSpec.Auth.BrowserSessionValidationPath)
 	assert.Equal(t, "GET", apiSpec.Auth.BrowserSessionValidationMethod)
+	require.NoError(t, apiSpec.Validate())
+}
+
+func TestApplyReachabilityDefaultsDoesNotInventCookieAuthWithoutNames(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:      "producthunt",
+		BaseURL:   "https://www.producthunt.com",
+		Auth:      spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{"posts": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/posts"}}}},
+	}
+	analysis := &TrafficAnalysis{
+		Summary: TrafficAnalysisSummary{
+			TargetURL: "https://www.producthunt.com",
+		},
+		Reachability: &ReachabilityAnalysis{
+			Mode:       "browser_clearance_http",
+			Confidence: 0.9,
+		},
+	}
+
+	ApplyReachabilityDefaults(apiSpec, analysis)
+
+	assert.Equal(t, "none", apiSpec.Auth.Type)
+	assert.Empty(t, apiSpec.Auth.Cookies)
+	require.NoError(t, apiSpec.Validate())
 }
 
 func TestApplyReachabilityDefaultsDoesNotRequireProofWithoutValidationPath(t *testing.T) {
@@ -1033,6 +1068,13 @@ func TestApplyReachabilityDefaultsDoesNotRequireProofWithoutValidationPath(t *te
 		Reachability: &ReachabilityAnalysis{
 			Mode:       "browser_clearance_http",
 			Confidence: 0.9,
+		},
+		Auth: AuthAnalysis{
+			Candidates: []AuthCandidate{{
+				Type:        "cookie",
+				Confidence:  0.8,
+				CookieNames: []string{"ph_session"},
+			}},
 		},
 	}
 

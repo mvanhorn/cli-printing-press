@@ -527,7 +527,7 @@ func (c *Config) AuthHeader() string {
 {{- range .Auth.EnvVarSpecs}}
 	if c.{{resolveEnvVarField .Name}} != "" {
 		{{- if $.Auth.Format}}
-		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
+		return applyAuthFormat({{printf "%q" $.Auth.Format}}, map[string]string{
 			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
 			"{{.Name}}": c.{{resolveEnvVarField .Name}},
 			{{- if ne (envVarPlaceholder .Name) "token"}}
@@ -593,7 +593,7 @@ func (c *Config) AuthHeader() string {
 	{{- end}}
 	{{- end}}
 	}
-	return applyAuthFormat("{{.Auth.Format}}", replacements)
+	return applyAuthFormat({{printf "%q" .Auth.Format}}, replacements)
 	{{- else if $canonicalEnvVar}}
 	{{- if .Auth.Prefix}}
 	return {{printf "%q" (printf "%s " .Auth.Prefix)}} + token
@@ -616,7 +616,7 @@ func (c *Config) AuthHeader() string {
 			c.AuthSource = "{{oauth2AuthSource .Auth}}"
 		}
 		{{- if .Auth.Format}}
-		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
+		return applyAuthFormat({{printf "%q" .Auth.Format}}, map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
 		{{- else}}
 		return "{{.Auth.HeaderPrefix}} " + c.AccessToken
 		{{- end}}
@@ -629,7 +629,7 @@ func (c *Config) AuthHeader() string {
 	// this fallback: their env-var kind excludes them from emission here.
 	if c.{{resolveEnvVarField .Name}} != "" {
 		{{- if $.Auth.Format}}
-		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
+		return applyAuthFormat({{printf "%q" $.Auth.Format}}, map[string]string{
 			"access_token": c.{{resolveEnvVarField .Name}},
 			"token":        c.{{resolveEnvVarField .Name}},
 			{{- if and (ne (envVarPlaceholder .Name) "token") (ne (envVarPlaceholder .Name) "access_token")}}
@@ -650,7 +650,7 @@ func (c *Config) AuthHeader() string {
 	if c.AccessToken != "" {
 		c.AuthSource = "bearer_refresh"
 		{{- if .Auth.Format}}
-		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
+		return applyAuthFormat({{printf "%q" .Auth.Format}}, map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
 		{{- else}}
 		return "{{.Auth.HeaderPrefix}} " + c.AccessToken
 		{{- end}}
@@ -665,7 +665,7 @@ func (c *Config) AuthHeader() string {
 			c.AuthSource = "{{oauth2AuthSource .Auth}}"
 		}
 		{{- if .Auth.Format}}
-		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
+		return applyAuthFormat({{printf "%q" .Auth.Format}}, map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
 		{{- else}}
 		return "{{.Auth.HeaderPrefix}} " + c.AccessToken
 		{{- end}}
@@ -682,11 +682,14 @@ func (c *Config) AuthHeader() string {
 			c.AuthSource = "env:{{.Name}}"
 		}
 		{{- if $.Auth.Format}}
-		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
+		return applyAuthFormat({{printf "%q" $.Auth.Format}}, map[string]string{
 			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
 			"{{.Name}}": c.{{resolveEnvVarField .Name}},
 			{{- if ne (envVarPlaceholder .Name) "token"}}
 			"token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
+			{{- if ne (envVarPlaceholder .Name) "access_token"}}
+			"access_token": c.{{resolveEnvVarField .Name}},
 			{{- end}}
 		})
 		{{- else}}
@@ -704,11 +707,14 @@ func (c *Config) AuthHeader() string {
 			c.AuthSource = "env:{{.Name}}"
 		}
 		{{- if $.Auth.Format}}
-		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
+		return applyAuthFormat({{printf "%q" $.Auth.Format}}, map[string]string{
 			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
 			"{{.Name}}": c.{{resolveEnvVarField .Name}},
 			{{- if ne (envVarPlaceholder .Name) "token"}}
 			"token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
+			{{- if ne (envVarPlaceholder .Name) "access_token"}}
+			"access_token": c.{{resolveEnvVarField .Name}},
 			{{- end}}
 		})
 		{{- else}}
@@ -724,11 +730,14 @@ func (c *Config) AuthHeader() string {
 			c.AuthSource = "env:{{.Name}}"
 		}
 		{{- if $.Auth.Format}}
-		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
+		return applyAuthFormat({{printf "%q" $.Auth.Format}}, map[string]string{
 			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
 			"{{.Name}}": c.{{resolveEnvVarField .Name}},
 			{{- if ne (envVarPlaceholder .Name) "token"}}
 			"token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
+			{{- if ne (envVarPlaceholder .Name) "access_token"}}
+			"access_token": c.{{resolveEnvVarField .Name}},
 			{{- end}}
 		})
 		{{- else}}
@@ -744,7 +753,7 @@ func (c *Config) AuthHeader() string {
 			c.AuthSource = "{{oauth2AuthSource .Auth}}"
 		}
 		{{- if .Auth.Format}}
-		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
+		return applyAuthFormat({{printf "%q" .Auth.Format}}, map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
 		{{- else}}
 		return "{{.Auth.HeaderPrefix}} " + c.AccessToken
 		{{- end}}
@@ -760,7 +769,20 @@ func (c *Config) AuthHeader() string {
 		if c.AuthSource == "" {
 			c.AuthSource = "env:{{.Name}}"
 		}
+		{{- if $.Auth.Format}}
+		return applyAuthFormat({{printf "%q" $.Auth.Format}}, map[string]string{
+			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
+			"{{.Name}}": c.{{resolveEnvVarField .Name}},
+			{{- if ne (envVarPlaceholder .Name) "token"}}
+			"token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
+			{{- if ne (envVarPlaceholder .Name) "access_token"}}
+			"access_token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
+		})
+		{{- else}}
 		return ensureAuthScheme("{{$.Auth.HeaderPrefix}}", c.{{resolveEnvVarField .Name}})
+		{{- end}}
 	}
 {{- end}}
 {{- else}}
@@ -769,7 +791,20 @@ func (c *Config) AuthHeader() string {
 		if c.AuthSource == "" {
 			c.AuthSource = "env:{{.Name}}"
 		}
+		{{- if $.Auth.Format}}
+		return applyAuthFormat({{printf "%q" $.Auth.Format}}, map[string]string{
+			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
+			"{{.Name}}": c.{{resolveEnvVarField .Name}},
+			{{- if ne (envVarPlaceholder .Name) "token"}}
+			"token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
+			{{- if ne (envVarPlaceholder .Name) "access_token"}}
+			"access_token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
+		})
+		{{- else}}
 		return ensureAuthScheme("{{$.Auth.HeaderPrefix}}", c.{{resolveEnvVarField .Name}})
+		{{- end}}
 	}
 	{{- end}}
 {{- end}}
@@ -777,7 +812,11 @@ func (c *Config) AuthHeader() string {
 		if c.AuthSource == "" {
 			c.AuthSource = "browser"
 		}
+		{{- if .Auth.Format}}
+		return applyAuthFormat({{printf "%q" .Auth.Format}}, map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
+		{{- else}}
 		return ensureAuthScheme("{{.Auth.HeaderPrefix}}", c.AccessToken)
+		{{- end}}
 	}
 	return ""
 {{- else if eq .Auth.Type "composed"}}

@@ -1176,6 +1176,15 @@ resources:
     "confidence": 0.9,
     "reasons": ["managed bot challenge observed"]
   },
+  "auth": {
+    "candidates": [
+      {
+        "type": "cookie",
+        "confidence": 0.8,
+        "cookie_names": ["ph_session"]
+      }
+    ]
+  },
   "generation_hints": ["browser_clearance_required", "graphql_persisted_query"]
 }`), 0o644))
 

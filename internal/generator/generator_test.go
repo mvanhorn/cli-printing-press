@@ -3082,6 +3082,7 @@ func TestGenerateCookieAuthDerivesCookieDomainFromBaseURL(t *testing.T) {
 		Type:    "cookie",
 		Header:  "Cookie",
 		In:      "cookie",
+		Cookies: []string{"session"},
 		EnvVars: []string{"COOKIEDOMAINDERIVE_COOKIES"},
 		// CookieDomain intentionally left empty — the generator must derive it.
 	}
