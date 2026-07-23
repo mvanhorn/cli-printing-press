@@ -1637,12 +1637,15 @@ func uniquifyDependentResourceNames(deps []DependentResource, syncable map[strin
 			used[candidate] = true
 		}
 	}
-	updateDependentParentNames(deps, originalNames)
+	updateDependentParentNames(deps, originalNames, syncable)
 }
 
-func updateDependentParentNames(deps []DependentResource, originalNames []string) {
+func updateDependentParentNames(deps []DependentResource, originalNames []string, syncable map[string]syncableMeta) {
 	for i := range deps {
 		parentName := deps[i].ParentResource
+		if _, ok := syncable[parentName]; ok {
+			continue
+		}
 		bestIndex := -1
 		for j := range deps {
 			if originalNames[j] != parentName || !dependentPathPrefix(deps[j].Path, deps[i].Path) {

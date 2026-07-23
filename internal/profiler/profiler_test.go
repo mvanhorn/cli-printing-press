@@ -1696,6 +1696,20 @@ func TestUniquifyDependentResourceNamesUpdatesDescendantParents(t *testing.T) {
 	assert.Equal(t, "root_alpha_child", deps[2].ParentResource)
 }
 
+func TestUniquifyDependentResourceNamesPreservesSyncableParents(t *testing.T) {
+	deps := []DependentResource{
+		{Name: "accounts", ParentResource: "accounts", Path: "/accounts/{account_id}/nested", Method: "GET"},
+		{Name: "accounts", ParentResource: "accounts", Path: "/accounts/{account_id}/other", Method: "GET"},
+		{Name: "items", ParentResource: "accounts", Path: "/accounts/{account_id}/nested/{nested_id}/items", Method: "GET"},
+	}
+
+	uniquifyDependentResourceNames(deps, map[string]syncableMeta{"accounts": {}})
+
+	assert.Equal(t, "accounts_nested", deps[0].Name)
+	assert.Equal(t, "accounts_other", deps[1].Name)
+	assert.Equal(t, "accounts", deps[2].ParentResource)
+}
+
 func TestUniquifyDependentResourceNamesUsesDeterministicFallbacks(t *testing.T) {
 	deps := []DependentResource{
 		{Name: "shared_child", Path: "/root/{root_id}/alpha/child", Method: "GET"},
