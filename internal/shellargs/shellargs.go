@@ -3,6 +3,7 @@ package shellargs
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // Split tokenizes the simple command examples the Printing Press emits in
@@ -202,4 +203,23 @@ func ArgsAfterBinary(example string) ([]string, error) {
 		return nil, fmt.Errorf("example has no subcommand: %q", example)
 	}
 	return tokens[1:], nil
+}
+
+// Join renders tokens as one POSIX-shell-safe command line that Split can
+// recover without losing token boundaries.
+func Join(tokens []string) string {
+	quoted := make([]string, len(tokens))
+	for i, token := range tokens {
+		quoted[i] = quote(token)
+	}
+	return strings.Join(quoted, " ")
+}
+
+func quote(token string) string {
+	if token != "" && strings.IndexFunc(token, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("_@%+=:,./-", r)
+	}) == -1 {
+		return token
+	}
+	return "'" + strings.ReplaceAll(token, "'", `'\''`) + "'"
 }

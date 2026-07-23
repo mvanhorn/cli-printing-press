@@ -542,10 +542,9 @@ func novelFeatureFlags(feature NovelFeature, commandPath []string, apiName strin
 	return flags
 }
 
-// novelFeatureExample returns the prefix-stripped runnable form of the
-// feature's research example, suitable for a Cobra Example field. Empty when
-// the feature has no example or the example yields no tokens after stripping
-// the binary/command-path prefix.
+// novelFeatureExample returns a complete invocation suitable for a Cobra
+// Example field. Empty when the feature has no example or the example yields
+// no arguments after stripping an existing binary/command-path prefix.
 func novelFeatureExample(feature NovelFeature, commandPath []string, apiName string) string {
 	if strings.TrimSpace(feature.Example) == "" {
 		return ""
@@ -555,7 +554,14 @@ func novelFeatureExample(feature NovelFeature, commandPath []string, apiName str
 		return ""
 	}
 	tokens = dropNovelFeatureExamplePrefix(tokens, commandPath, apiName)
-	return strings.Join(tokens, " ")
+	if len(tokens) == 0 {
+		return ""
+	}
+	invocation := make([]string, 0, 1+len(commandPath)+len(tokens))
+	invocation = append(invocation, naming.CLI(apiName))
+	invocation = append(invocation, commandPath...)
+	invocation = append(invocation, tokens...)
+	return "  " + shellargs.Join(invocation)
 }
 
 func dropNovelFeatureExamplePrefix(tokens []string, commandPath []string, apiName string) []string {

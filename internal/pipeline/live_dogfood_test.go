@@ -3,19 +3,163 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestLiveDogfoodParsesGeneratedRunnableExamples(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Name:      "runnable",
+		Version:   "0.1.0",
+		BaseURL:   "https://api.example.com",
+		Owner:     "test-owner",
+		OwnerName: "Test Author",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"RUNNABLE_TOKEN"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/runnable-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+				},
+			},
+		},
+	}
+	apiSpec.Learn.Enabled = true
+	outputDir := filepath.Join(t.TempDir(), "runnable-pp-cli")
+	gen := generator.New(apiSpec, outputDir)
+	gen.VisionSet = generator.VisionTemplateSet{Store: true}
+	gen.NovelFeatures = []generator.NovelFeature{
+		{
+			Name:        "Inspect state",
+			Command:     "inspect",
+			Description: "Inspect current state.",
+			Example:     `runnable-pp-cli inspect --query "weekly digest" --json`,
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	tests := []struct {
+		name        string
+		file        string
+		use         string
+		commandPath []string
+		want        []string
+	}{
+		{
+			name:        "teach",
+			file:        "teach.go",
+			use:         "teach",
+			commandPath: []string{"teach"},
+			want:        []string{"teach", "--query", "<question>", "--resource-type", "<type>", "--resource", "<id>", "--resource", "<id>", "&"},
+		},
+		{
+			name:        "teach pattern",
+			file:        "teach.go",
+			use:         "teach-pattern",
+			commandPath: []string{"teach-pattern"},
+			want:        []string{"teach-pattern", "--query-template", "items in {entity}", "--resource-template", "GROUP-{entity:category}", "--resource-type", "items", "--entity-kind", "category", "--strategy", "substitute"},
+		},
+		{
+			name:        "teach playbook",
+			file:        "teach_playbook.go",
+			use:         "teach-playbook",
+			commandPath: []string{"teach-playbook"},
+			want:        []string{"teach-playbook", "--query", "<question that anchors the family>", "--playbook-file", "~/playbooks/recipe.json", "--notes-file", "~/playbooks/recipe-notes.md"},
+		},
+		{
+			name:        "playbook amend",
+			file:        "teach_playbook.go",
+			use:         "amend",
+			commandPath: []string{"playbook", "amend"},
+			want:        []string{"playbook", "amend", "--query", "<exact recall query>", "--add-note", "summary endpoint envelope: data lives at .results.header, not .header"},
+		},
+		{
+			name:        "quoted novel feature",
+			file:        "inspect.go",
+			use:         "inspect",
+			commandPath: []string{"inspect"},
+			want:        []string{"inspect", "--query", "weekly digest", "--json"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			example := generatedCobraExample(t, filepath.Join(outputDir, "internal", "cli", tc.file), tc.use)
+			require.NotContains(t, example, "\n")
+
+			got, ok := liveDogfoodExampleArgs(liveDogfoodCommand{
+				Path: tc.commandPath,
+				Help: "Examples:\n" + example,
+			})
+			require.True(t, ok)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func generatedCobraExample(t *testing.T, filename, use string) string {
+	t.Helper()
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filename, nil, 0)
+	require.NoError(t, err)
+
+	var found string
+	ast.Inspect(file, func(node ast.Node) bool {
+		literal, ok := node.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		fields := make(map[string]string)
+		for _, element := range literal.Elts {
+			keyValue, ok := element.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			key, ok := keyValue.Key.(*ast.Ident)
+			if !ok || (key.Name != "Use" && key.Name != "Example") {
+				continue
+			}
+			value, ok := keyValue.Value.(*ast.BasicLit)
+			if !ok || value.Kind != token.STRING {
+				continue
+			}
+			unquoted, unquoteErr := strconv.Unquote(value.Value)
+			require.NoError(t, unquoteErr)
+			fields[key.Name] = unquoted
+		}
+		if fields["Use"] == use {
+			found = fields["Example"]
+			return false
+		}
+		return true
+	})
+	require.NotEmpty(t, found, "generated command %q has no Example", use)
+	return found
+}
 
 func TestRunLiveDogfoodDetectsJSONParseFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -1451,6 +1595,25 @@ func TestLiveDogfoodCommandMutatesPrefersEndpointMethod(t *testing.T) {
 	assert.True(t, liveDogfoodCommandMutates(liveDogfoodCommand{
 		Path:        []string{"accounts", "plain-name"},
 		Annotations: map[string]string{"pp:method": "POST"},
+	}))
+}
+
+func TestLiveDogfoodCommandMutatesHonorsLocalWrite(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, liveDogfoodCommandMutates(liveDogfoodCommand{
+		Path: []string{"teach"},
+		Annotations: map[string]string{
+			"pp:method":       "GET",
+			"mcp:local-write": "true",
+		},
+	}))
+	assert.False(t, liveDogfoodCommandMutates(liveDogfoodCommand{
+		Path: []string{"teach"},
+		Annotations: map[string]string{
+			"mcp:read-only":   "true",
+			"mcp:local-write": "true",
+		},
 	}))
 }
 

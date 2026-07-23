@@ -47,9 +47,7 @@ func TestGeneratorEmitsNovelFeatureCommandStubs(t *testing.T) {
 	assert.Contains(t, call, "// pp:data-source auto")
 	assert.Contains(t, call, "auto, local, live, or computed")
 	assert.Contains(t, call, `Use:         "call"`)
-	// The Cobra Example field carries the prefix-stripped runnable form of the
-	// research example (binary + command path dropped).
-	assert.Contains(t, call, `Example:     "apify/web-scraper --tag skill=reddit-digest --dedupe-key daily --ttl 24h --wait --agent"`)
+	assert.Contains(t, call, `Example:     "  apify-pp-cli call apify/web-scraper --tag skill=reddit-digest --dedupe-key daily --ttl 24h --wait --agent"`)
 	assert.Contains(t, call, `Annotations: map[string]string{"mcp:read-only": "false"}`)
 	assert.Contains(t, call, `StringSliceVar(&flagTag, "tag", nil`)
 	assert.Contains(t, call, `StringVar(&flagDedupeKey, "dedupe-key", ""`)
@@ -66,9 +64,7 @@ func TestGeneratorEmitsNovelFeatureCommandStubs(t *testing.T) {
 	classify := readGeneratedFile(t, outputDir, "internal", "cli", "runs_classify.go")
 	assert.Contains(t, classify, "// pp:data-source auto")
 	assert.Contains(t, classify, `Use:         "classify"`)
-	// Multi-segment command path: dropNovelFeatureExamplePrefix strips the
-	// binary AND both path segments ("runs classify"), leaving only the args.
-	assert.Contains(t, classify, `Example:     "run-123 --limit 10"`)
+	assert.Contains(t, classify, `Example:     "  apify-pp-cli runs classify run-123 --limit 10"`)
 	assert.Contains(t, classify, `Annotations: map[string]string{"mcp:read-only": "true"}`)
 	assert.Contains(t, classify, `StringVar(&flagLimit, "limit", ""`)
 	assert.Contains(t, classify, `TODO: implement novel feature %q", "runs classify"`)
@@ -111,6 +107,49 @@ func TestNovelFeatureStubsResolveAtRuntime(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "novel_stub_runtime_test.go"), []byte(runtimeTest.String()), 0o644))
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/cli")
+}
+
+func TestGeneratorNormalizesBareFlagNovelFeatureExample(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("bareflag")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{
+		{
+			Name:        "Inspect state",
+			Command:     "inspect",
+			Description: "Inspect current state.",
+			Example:     "--json",
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	inspect := readGeneratedFile(t, outputDir, "internal", "cli", "inspect.go")
+	assert.Contains(t, inspect, `Example:     "  bareflag-pp-cli inspect --json"`)
+	assert.NotContains(t, inspect, `Example:     "--json"`)
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratorPreservesQuotedNovelFeatureExampleArguments(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("quoted")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{
+		{
+			Name:        "Inspect state",
+			Command:     "inspect",
+			Description: "Inspect current state.",
+			Example:     `quoted-pp-cli inspect --query "weekly digest" --json`,
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	inspect := readGeneratedFile(t, outputDir, "internal", "cli", "inspect.go")
+	assert.Contains(t, inspect, `Example:     "  quoted-pp-cli inspect --query 'weekly digest' --json"`)
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGeneratorSanitizesNovelFeatureCommandStubFilenames(t *testing.T) {
