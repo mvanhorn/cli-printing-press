@@ -1137,7 +1137,7 @@ func TestIssue3497BareAllOffsetUsesEndpointPageSize(t *testing.T) {
 			}
 			require.NoError(t, gen.Generate())
 
-			generatedCLISourceContaining(t, outputDir, `flagAll, "offset", "offset", "limit", 2, "", ""`)
+			generatedCLISourceContaining(t, outputDir, `flagAll && !flags.dryRun, "offset", "offset", "limit", 2, "", ""`)
 
 			behaviorTest := `package cli
 

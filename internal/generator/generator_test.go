@@ -19538,20 +19538,23 @@ func TestStaleTemplateCoversCommonTimestampFields(t *testing.T) {
 // error.
 func TestSyncTemplateShortCircuitsOnDryRunSentinel(t *testing.T) {
 	t.Parallel()
-	data, err := os.ReadFile(filepath.Join("templates", "sync.go.tmpl"))
+	data, err := os.ReadFile(filepath.Join("templates", "helpers.go.tmpl"))
 	require.NoError(t, err)
 	body := string(data)
 
-	assert.Contains(t, body, "func isDryRunResponse(data json.RawMessage) bool",
-		"sync.go.tmpl must define isDryRunResponse helper that detects the client.dryRun sentinel")
-	assert.Contains(t, body, `"sync_dryrun"`,
+	assert.Contains(t, body, "func isDryRunResponse(dryRun bool, data json.RawMessage) bool",
+		"helpers.go.tmpl must define isDryRunResponse helper that detects the client.dryRun sentinel")
+	syncData, err := os.ReadFile(filepath.Join("templates", "sync.go.tmpl"))
+	require.NoError(t, err)
+	syncBody := string(syncData)
+	assert.Contains(t, syncBody, `"sync_dryrun"`,
 		"sync.go.tmpl must emit a sync_dryrun event on the short-circuit path so validate-narrative sees a structured success")
 
 	// Ordering pin: the dry-run check must run BEFORE upsertSingleObject,
 	// otherwise the sentinel reaches the upsert path and triggers a spurious
 	// "missing id for <resource>" error.
-	dryRunCheckIdx := strings.Index(body, "if isDryRunResponse(data)")
-	upsertSingleIdx := strings.Index(body, "if err := upsertSingleObject(db, resource, data)")
+	dryRunCheckIdx := strings.Index(syncBody, "if isDryRunResponseForClient(c, data)")
+	upsertSingleIdx := strings.Index(syncBody, "if err := upsertSingleObject(db, resource, data)")
 	require.GreaterOrEqual(t, dryRunCheckIdx, 0, "sync.go.tmpl must call isDryRunResponse on the response")
 	require.GreaterOrEqual(t, upsertSingleIdx, 0, "sync.go.tmpl must still call upsertSingleObject for live single-object responses")
 	assert.Less(t, dryRunCheckIdx, upsertSingleIdx,

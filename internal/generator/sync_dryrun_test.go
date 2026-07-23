@@ -59,7 +59,7 @@ func TestGeneratedSyncDryRunDoesNotMutateSyncState(t *testing.T) {
 	// Both the flat loop and the dependent loop must short-circuit on the
 	// dry-run sentinel before any SaveSyncState. The dependent guard is the
 	// #2935 fix; the flat guard pre-existed. Two occurrences == both guarded.
-	if n := strings.Count(syncSrc, "if isDryRunResponse(data) {"); n < 2 {
+	if n := strings.Count(syncSrc, "if isDryRunResponseForClient(c, data) {"); n < 2 {
 		t.Fatalf("expected the dry-run sentinel guard in both the flat and dependent sync loops (>=2 occurrences), found %d", n)
 	}
 	// The --full and --latest-only cursor clears must skip under --dry-run.

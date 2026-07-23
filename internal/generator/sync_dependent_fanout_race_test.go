@@ -117,6 +117,7 @@ import (
 // asserted for "each parent fetched exactly once"; respond returns the page body.
 type fakeDependentGetter struct {
 	mu      sync.Mutex
+	dryRun  bool
 	onGet   func(path string, params map[string]string)
 	respond func(path string, params map[string]string) (json.RawMessage, error)
 }
@@ -134,6 +135,7 @@ func (f *fakeDependentGetter) Get(_ context.Context, path string, params map[str
 }
 
 func (f *fakeDependentGetter) RateLimit() float64 { return 0 }
+func (f *fakeDependentGetter) IsDryRun() bool     { return f.dryRun }
 
 // modulesDep: a per_parent dependent keyed on projects.id, single path param.
 func modulesDep() dependentResourceDef {
@@ -227,6 +229,7 @@ func TestSyncDependentResource_DryRunShortCircuitsUnderConcurrency(t *testing.T)
 	defer db.Close()
 
 	fake := &fakeDependentGetter{
+		dryRun: true,
 		respond: func(_ string, _ map[string]string) (json.RawMessage, error) {
 			return json.RawMessage(` + "`" + `{"dry_run": true}` + "`" + `), nil
 		},

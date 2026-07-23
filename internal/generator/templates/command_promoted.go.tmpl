@@ -256,7 +256,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				"{{paramWireName .}}": formatCLIParamValue(flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", {{.PageSize}}, "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
+			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse}}headerOverrides{{else}}nil{{end}}, flagAll && !flags.dryRun, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", {{.PageSize}}, "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- end}}
 {{- else}}
 {{- if not $deleteBodyWithoutParams}}
@@ -398,6 +398,14 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
+{{- if and .IsReadOnly (not .HasStore)}}
+			if isDryRunResponse(c.IsDryRun(), data) {
+				if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !flags.csv && !flags.quiet && !flags.plain) {
+					return printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "dry-run"})
+				}
+				return nil
+			}
+{{- end}}
 {{- if and .HasStore (ne (upper .Endpoint.Method) "GET") (not $supportsAllPagination)}}
 			prov := attachFreshness(DataProvenance{Source: "live"}, flags)
 {{- end}}

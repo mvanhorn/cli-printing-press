@@ -50,6 +50,10 @@ type Client struct {
 	ccMu *sync.Mutex
 }
 
+func (c *Client) IsDryRun() bool {
+	return c != nil && c.DryRun
+}
+
 // BindPlatformSession installs the result of the live fail-closed tenant gate.
 // Cache and state paths are switched only after the gate has verified both the
 // credential and the immutable provider identity.
