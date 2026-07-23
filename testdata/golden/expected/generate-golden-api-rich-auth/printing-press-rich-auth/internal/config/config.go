@@ -115,9 +115,9 @@ func Load(configPath string) (*Config, error) {
 	if cfg.AgentcookieManagedByExternalStore() {
 		cfg.markAgentcookieManaged()
 	} else {
-		if !cfg.hasCredentialFields() {
-			var creds *cliutil.Credentials
-			var ok bool
+		var creds *cliutil.Credentials
+		var ok bool
+		if !cfg.hasCompleteCredentialFields() {
 			if explicitConfigFile {
 				creds, ok, err = cliutil.LoadCredentialsForConfig(path)
 				if err != nil {
@@ -353,6 +353,19 @@ func (c *Config) hasCredentialFields() bool {
 	return false
 }
 
+func (c *Config) hasCompleteCredentialFields() bool {
+	if c.AuthHeaderVal != "" {
+		return true
+	}
+	if c.RichAuthApiKey == "" {
+		return false
+	}
+	if c.RichAuthApiKey == "" {
+		return false
+	}
+	return true
+}
+
 func (c *Config) clearCredentialFields() {
 	c.AuthHeaderVal = ""
 	c.AccessToken = ""
@@ -391,19 +404,45 @@ func (c *Config) applyCredentials(creds *cliutil.Credentials) {
 	if creds == nil {
 		return
 	}
-	c.AuthHeaderVal = creds.AuthHeaderVal
-	c.AccessToken = creds.AccessToken
-	c.RefreshToken = creds.RefreshToken
-	c.TokenExpiry = creds.TokenExpiry
-	c.ClientID = creds.ClientID
-	c.ClientSecret = creds.ClientSecret
-	c.RichAuthApiKey = creds.RichAuthApiKey
-	c.RichAuthClientId = creds.RichAuthClientId
-	c.RichAuthClientSecret = creds.RichAuthClientSecret
-	c.RichAuthSessionCookie = creds.RichAuthSessionCookie
-	c.RichAuthOptionalToken = creds.RichAuthOptionalToken
-	c.RichAuthBotToken = creds.RichAuthBotToken
-	c.RichAuthUserToken = creds.RichAuthUserToken
+	if c.AuthHeaderVal == "" {
+		c.AuthHeaderVal = creds.AuthHeaderVal
+	}
+	if c.AccessToken == "" {
+		c.AccessToken = creds.AccessToken
+	}
+	if c.RefreshToken == "" {
+		c.RefreshToken = creds.RefreshToken
+	}
+	if c.TokenExpiry.IsZero() {
+		c.TokenExpiry = creds.TokenExpiry
+	}
+	if c.ClientID == "" {
+		c.ClientID = creds.ClientID
+	}
+	if c.ClientSecret == "" {
+		c.ClientSecret = creds.ClientSecret
+	}
+	if c.RichAuthApiKey == "" {
+		c.RichAuthApiKey = creds.RichAuthApiKey
+	}
+	if c.RichAuthClientId == "" {
+		c.RichAuthClientId = creds.RichAuthClientId
+	}
+	if c.RichAuthClientSecret == "" {
+		c.RichAuthClientSecret = creds.RichAuthClientSecret
+	}
+	if c.RichAuthSessionCookie == "" {
+		c.RichAuthSessionCookie = creds.RichAuthSessionCookie
+	}
+	if c.RichAuthOptionalToken == "" {
+		c.RichAuthOptionalToken = creds.RichAuthOptionalToken
+	}
+	if c.RichAuthBotToken == "" {
+		c.RichAuthBotToken = creds.RichAuthBotToken
+	}
+	if c.RichAuthUserToken == "" {
+		c.RichAuthUserToken = creds.RichAuthUserToken
+	}
 }
 
 func (c *Config) saveCredentialsFirst() error {

@@ -194,9 +194,9 @@ func Load(configPath string) (*Config, error) {
 	if cfg.AgentcookieManagedByExternalStore() {
 		cfg.markAgentcookieManaged()
 	} else {
-		if !cfg.hasCredentialFields() {
-			var creds *cliutil.Credentials
-			var ok bool
+		var creds *cliutil.Credentials
+		var ok bool
+		if !cfg.hasCompleteCredentialFields() {
 			if explicitConfigFile {
 				creds, ok, err = cliutil.LoadCredentialsForConfig(path)
 				if err != nil {
@@ -982,6 +982,106 @@ func (c *Config) hasCredentialFields() bool {
 	return false
 }
 
+func (c *Config) hasCompleteCredentialFields() bool {
+	if c.AuthHeaderVal != "" {
+		return true
+	}
+	{{- if eq .Auth.Type "api_key"}}
+	{{- $basicAuthEnvVars := basicAuthEnvVars .Auth}}
+	{{- if $basicAuthEnvVars}}
+	{{- range $basicAuthEnvVars}}
+	{{- if .Required}}
+	if c.{{resolveEnvVarField .Name}} == "" {
+		return false
+	}
+	{{- end}}
+	{{- end}}
+	return true
+	{{- else if .Auth.IsAuthEnvVarORCase}}
+	{{- if .Auth.EnvVarSpecs}}
+	{{- range .Auth.EnvVarSpecs}}
+	if c.{{resolveEnvVarField .Name}} != "" {
+		return true
+	}
+	{{- end}}
+	{{- else}}
+	{{- range .Auth.EnvVars}}
+	if c.{{resolveEnvVarField .}} != "" {
+		return true
+	}
+	{{- end}}
+	{{- end}}
+	return false
+	{{- else}}
+	{{- with .Auth.CanonicalEnvVar}}
+	if c.{{resolveEnvVarField .Name}} == "" {
+		return false
+	}
+	{{- end}}
+	{{- if .Auth.EnvVarSpecs}}
+	{{- range .Auth.EnvVarSpecs}}
+	{{- if and (eq .Kind "per_call") .Required}}
+	if c.{{resolveEnvVarField .Name}} == "" {
+		return false
+	}
+	{{- end}}
+	{{- end}}
+	{{- else}}
+	{{- range .Auth.EnvVars}}
+	if c.{{resolveEnvVarField .}} == "" {
+		return false
+	}
+	{{- end}}
+	{{- end}}
+	return true
+	{{- end}}
+	{{- else if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
+	if c.AccessToken != "" {
+		return true
+	}
+	return c.ClientID != "" && c.ClientSecret != ""
+	{{- else if oauth2AccessTokenAuth .Auth}}
+	if c.AccessToken != "" || c.RefreshToken != "" {
+		return true
+	}
+	{{- with .Auth.CanonicalEnvVar}}
+	if c.{{resolveEnvVarField .Name}} != "" {
+		return true
+	}
+	{{- end}}
+	{{- range .Auth.EnvVarSpecs}}
+	{{- if eq .Kind "per_call"}}
+	if c.{{resolveEnvVarField .Name}} != "" {
+		return true
+	}
+	{{- end}}
+	{{- end}}
+	return false
+	{{- else}}
+	if c.AccessToken != "" {
+		return true
+	}
+	{{- with .Auth.CanonicalEnvVar}}
+	if c.{{resolveEnvVarField .Name}} != "" {
+		return true
+	}
+	{{- end}}
+	{{- range .Auth.EnvVarSpecs}}
+	{{- if eq .Kind "per_call"}}
+	if c.{{resolveEnvVarField .Name}} != "" {
+		return true
+	}
+	{{- end}}
+	{{- end}}
+	{{- range .Auth.EnvVars}}
+	if c.{{resolveEnvVarField .}} != "" {
+		return true
+	}
+	{{- end}}
+	return false
+	{{- end}}
+}
+
 func (c *Config) clearCredentialFields() {
 	c.AuthHeaderVal = ""
 	c.AccessToken = ""
@@ -1018,17 +1118,33 @@ func (c *Config) applyCredentials(creds *cliutil.Credentials) {
 	if creds == nil {
 		return
 	}
-	c.AuthHeaderVal = creds.AuthHeaderVal
-	c.AccessToken = creds.AccessToken
-	c.RefreshToken = creds.RefreshToken
-	c.TokenExpiry = creds.TokenExpiry
+	if c.AuthHeaderVal == "" {
+		c.AuthHeaderVal = creds.AuthHeaderVal
+	}
+	if c.AccessToken == "" {
+		c.AccessToken = creds.AccessToken
+	}
+	if c.RefreshToken == "" {
+		c.RefreshToken = creds.RefreshToken
+	}
+	if c.TokenExpiry.IsZero() {
+		c.TokenExpiry = creds.TokenExpiry
+	}
 {{- if .BearerRefresh.Enabled}}
-	c.BearerTokenRefreshedAt = creds.BearerTokenRefreshedAt
+	if c.BearerTokenRefreshedAt.IsZero() {
+		c.BearerTokenRefreshedAt = creds.BearerTokenRefreshedAt
+	}
 {{- end}}
-	c.ClientID = creds.ClientID
-	c.ClientSecret = creds.ClientSecret
+	if c.ClientID == "" {
+		c.ClientID = creds.ClientID
+	}
+	if c.ClientSecret == "" {
+		c.ClientSecret = creds.ClientSecret
+	}
 {{- range .CredentialFields}}
-	c.{{.GoField}} = creds.{{.GoField}}
+	if c.{{.GoField}} == "" {
+		c.{{.GoField}} = creds.{{.GoField}}
+	}
 {{- end}}
 }
 
