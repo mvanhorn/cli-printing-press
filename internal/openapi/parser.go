@@ -3660,6 +3660,9 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			// templates do not re-walk schemas at generation time.
 			if responseUsesBinary(op) {
 				endpoint.ResponseFormat = spec.ResponseFormatBinary
+			} else if accept := textResponseAcceptType(op); accept != "" {
+				endpoint.ResponseFormat = spec.ResponseFormatText
+				endpoint.HeaderOverrides = upsertHeaderOverride(endpoint.HeaderOverrides, "Accept", accept)
 			} else if responseUsesXML(op) {
 				// XML-only success bodies are normalized to JSON by the
 				// generated client (response_format: xml). Pin Accept so the
@@ -5056,8 +5059,17 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 	}
 
 	requestContentType, media := requestBodyMediaType(requestBody.Content)
-	if media == nil || media.Schema == nil || media.Schema.Value == nil {
+	if media == nil {
 		return nil, "", false, false, false
+	}
+	if media.Schema == nil || media.Schema.Value == nil {
+		if isRawRequestContentType(requestContentType) {
+			return nil, requestContentType, false, requestBody.Required, false
+		}
+		return nil, "", false, false, false
+	}
+	if isRawRequestContentType(requestContentType) {
+		return nil, requestContentType, false, requestBody.Required, false
 	}
 
 	// Bare top-level array request body: no object properties to flatten to
@@ -5176,6 +5188,19 @@ func isJSONContentType(ct string) bool {
 	return strings.HasPrefix(ct, "application/") && strings.HasSuffix(ct, "+json")
 }
 
+func isRawRequestContentType(ct string) bool {
+	base := strings.ToLower(strings.TrimSpace(strings.SplitN(ct, ";", 2)[0]))
+	if base == "" || isJSONContentType(base) {
+		return false
+	}
+	switch base {
+	case "multipart/form-data", "application/x-www-form-urlencoded":
+		return false
+	default:
+		return true
+	}
+}
+
 func requestBodyMediaType(content openapi3.Content) (string, *openapi3.MediaType) {
 	if content == nil {
 		return "", nil
@@ -5198,6 +5223,11 @@ func requestBodyMediaType(content openapi3.Content) (string, *openapi3.MediaType
 	for _, contentType := range contentTypes {
 		media := content[contentType]
 		if media != nil && media.Schema != nil {
+			return contentType, media
+		}
+	}
+	for _, contentType := range contentTypes {
+		if media := content[contentType]; media != nil {
 			return contentType, media
 		}
 	}
@@ -5547,6 +5577,27 @@ func xmlResponseContentType(base string) bool {
 		return false
 	}
 	return base == "application/xml" || base == "text/xml" || strings.HasSuffix(base, "+xml")
+}
+
+func textResponseAcceptType(op *openapi3.Operation) string {
+	if op == nil || op.Responses == nil {
+		return ""
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil || len(success.Value.Content) == 0 {
+		return ""
+	}
+	contentTypes := sortedContentTypes(success.Value.Content)
+	for _, contentType := range contentTypes {
+		base := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
+		if !strings.HasPrefix(base, "text/") || base == "text/json" || base == "text/xml" {
+			return ""
+		}
+	}
+	if len(contentTypes) == 0 {
+		return ""
+	}
+	return contentTypes[0]
 }
 
 func binaryContentType(contentType string) bool {

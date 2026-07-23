@@ -51,6 +51,7 @@ const (
 	ResponseFormatHTML   = "html"
 	ResponseFormatXML    = "xml"
 	ResponseFormatBinary = "binary"
+	ResponseFormatText   = "text"
 )
 
 const (
@@ -965,6 +966,58 @@ func (s *APISpec) HasHTMLExtraction() bool {
 	}
 	for _, resource := range s.Resources {
 		if resourceHasHTMLExtraction(resource) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *APISpec) HasTextResponse() bool {
+	if s == nil {
+		return false
+	}
+	for _, resource := range s.Resources {
+		if resourceHasTextResponse(resource) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *APISpec) HasRawRequest() bool {
+	if s == nil {
+		return false
+	}
+	for _, resource := range s.Resources {
+		if resourceHasRawRequest(resource) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceHasRawRequest(resource Resource) bool {
+	for _, endpoint := range resource.Endpoints {
+		if endpoint.UsesRawRequestBody() {
+			return true
+		}
+	}
+	for _, sub := range resource.SubResources {
+		if resourceHasRawRequest(sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceHasTextResponse(resource Resource) bool {
+	for _, endpoint := range resource.Endpoints {
+		if endpoint.UsesTextResponse() {
+			return true
+		}
+	}
+	for _, sub := range resource.SubResources {
+		if resourceHasTextResponse(sub) {
 			return true
 		}
 	}
@@ -2229,7 +2282,7 @@ type Endpoint struct {
 	BodyIsArray        bool        `yaml:"body_is_array,omitempty" json:"body_is_array,omitempty"`
 	RequestContentType string      `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
 	Response           ResponseDef `yaml:"response" json:"response"`
-	ResponseFormat     string      `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default), csv, html, xml, or binary
+	ResponseFormat     string      `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default), csv, html, xml, binary, or text
 	// DataSourceStrategy declares how this endpoint's generated read command
 	// should interpret --data-source. Empty inherits the resource strategy,
 	// then defaults to "auto".
@@ -2430,6 +2483,24 @@ func (e Endpoint) UsesHTMLResponse() bool {
 
 func (e Endpoint) UsesBinaryResponse() bool {
 	return e.EffectiveResponseFormat() == ResponseFormatBinary
+}
+
+func (e Endpoint) UsesTextResponse() bool {
+	return e.EffectiveResponseFormat() == ResponseFormatText
+}
+
+func (e Endpoint) UsesRawRequestBody() bool {
+	contentType := strings.ToLower(strings.TrimSpace(e.RequestContentType))
+	if i := strings.Index(contentType, ";"); i >= 0 {
+		contentType = strings.TrimSpace(contentType[:i])
+	}
+	if contentType == "" ||
+		contentType == "application/json" ||
+		contentType == "text/json" ||
+		(strings.HasPrefix(contentType, "application/") && strings.HasSuffix(contentType, "+json")) {
+		return false
+	}
+	return contentType != "multipart/form-data" && contentType != "application/x-www-form-urlencoded"
 }
 
 func (e Endpoint) UsesCSVResponse() bool {
@@ -4242,6 +4313,9 @@ func (s *APISpec) Validate() error {
 	if s.ClientPattern == "proxy-envelope" && s.BasePath != "" {
 		return fmt.Errorf("base_path is incompatible with client_pattern=proxy-envelope; the proxy routes via the envelope's Service/Path fields, not a URL-level prefix — fold the prefix into base_url instead")
 	}
+	if s.ClientPattern == "proxy-envelope" && s.HasRawRequest() {
+		return fmt.Errorf("raw request bodies are incompatible with client_pattern=proxy-envelope; the proxy protocol serializes request bodies as JSON and cannot preserve an opaque content stream")
+	}
 	for name, r := range s.Resources {
 		if len(r.Endpoints) == 0 && len(r.SubResources) == 0 {
 			return fmt.Errorf("resource %q has no endpoints", name)
@@ -4952,9 +5026,9 @@ func validateTierRoutingResource(s *APISpec, resourcePath string, resource Resou
 
 func validateEndpointResponseFormat(e Endpoint) error {
 	switch e.ResponseFormat {
-	case "", ResponseFormatJSON, ResponseFormatCSV, ResponseFormatHTML, ResponseFormatXML, ResponseFormatBinary:
+	case "", ResponseFormatJSON, ResponseFormatCSV, ResponseFormatHTML, ResponseFormatXML, ResponseFormatBinary, ResponseFormatText:
 	default:
-		return fmt.Errorf("response_format must be one of: json, csv, html, xml, binary")
+		return fmt.Errorf("response_format must be one of: json, csv, html, xml, binary, text")
 	}
 	if !e.UsesHTMLResponse() {
 		return nil

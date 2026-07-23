@@ -16,6 +16,9 @@ package mcp
 
 import (
 	"context"
+{{- if hasRawRequest .APISpec}}
+	"encoding/base64"
+{{- end}}
 	"encoding/json"
 	"fmt"
 	neturl "net/url"
@@ -34,7 +37,7 @@ import (
 func RegisterCodeOrchestrationTools(s *server.MCPServer) {
 	s.AddTool(
 		mcplib.NewTool("{{snake .Name}}_search",
-			mcplib.WithDescription("Search the {{.Name}} API for endpoints matching a natural-language query. Returns a ranked list of {endpoint_id, method, path, summary} entries. Call this first to find the endpoint to execute."),
+			mcplib.WithDescription("Search the {{.Name}} API for endpoints matching a natural-language query. Returns a ranked list of {{if hasRawRequest .APISpec}}endpoint metadata, including request_body instructions for raw uploads{{else}}{endpoint_id, method, path, summary} entries{{end}}. Call this first to find the endpoint to execute."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Natural-language description of what you want to do.")),
 			mcplib.WithNumber("limit", mcplib.Description("Max endpoints to return (default 10).")),
 		),
@@ -45,7 +48,7 @@ func RegisterCodeOrchestrationTools(s *server.MCPServer) {
 		mcplib.NewTool("{{snake .Name}}_execute",
 			mcplib.WithDescription("Execute one {{.Name}} API endpoint by its endpoint_id (from {{snake .Name}}_search). Params are passed as a JSON object; path placeholders and query strings are resolved automatically."),
 			mcplib.WithString("endpoint_id", mcplib.Required(), mcplib.Description("Endpoint identifier returned by {{snake .Name}}_search (e.g., \"users.list\").")),
-			mcplib.WithObject("params", mcplib.Description("Parameters for the endpoint. Path placeholders match by name; remaining entries become query string on GET/DELETE or JSON body on POST/PUT/PATCH.")),
+			mcplib.WithObject("params", mcplib.Description("Parameters for the endpoint. Path placeholders match by name; remaining entries become query string on GET/DELETE or JSON body on POST/PUT/PATCH.{{if hasRawRequest .APISpec}} For raw endpoints, follow the search result's request_body instructions and pass body_base64 plus optional content_type.{{end}}")),
 		),
 		handleCodeOrchExecute,
 	)
@@ -79,6 +82,13 @@ type codeOrchEndpoint struct {
 	// threading these through, the code-orchestration execute path
 	// sends the client's default Accept and binary endpoints 406.
 	HeaderOverrides map[string]string
+{{- if hasRawRequest .APISpec}}
+	// RequestContentType marks an endpoint whose request body is an opaque
+	// byte stream rather than JSON. Agents supply that body as body_base64.
+	RequestContentType string
+	BodyRequired       bool
+	ReadOnly           bool
+{{- end}}
 	// BodyIsArray marks endpoints whose request body schema root is a
 	// bare top-level JSON array. The execute path then sends a top-level
 	// array (the agent supplies it as params["body"]) instead of the
@@ -105,6 +115,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- range $name, $resource := .Resources}}
 {{- range $eName, $endpoint := $resource.Endpoints}}
 {{- $path := effectiveEndpointPath $resource $endpoint}}
+{{- $isReadOnly := endpointIsReadCommand $endpoint $eName}}
 	{
 		ID:      "{{$name}}.{{$eName}}",
 		Method:  "{{upper $endpoint.Method}}",
@@ -122,8 +133,15 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- if $endpoint.BodyIsArray}}
 		BodyIsArray: true,
 {{- end}}
-{{- if $endpoint.HeaderOverrides}}
-		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}} },
+{{- if $endpoint.UsesRawRequestBody}}
+		RequestContentType: {{printf "%q" $endpoint.RequestContentType}},
+		BodyRequired: {{if $endpoint.BodyRequired}}true{{else}}false{{end}},
+{{- end}}
+{{- if and $endpoint.UsesRawRequestBody $isReadOnly}}
+		ReadOnly: true,
+{{- end}}
+{{- if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse}}
+		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}}{{if $endpoint.UsesTextResponse}}"X-Printing-Press-Text-Response": "true",{{end}} },
 {{- end}}
 		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" $path}}),
 	},
@@ -131,6 +149,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- range $subName, $subResource := $resource.SubResources}}
 {{- range $eName, $endpoint := $subResource.Endpoints}}
 {{- $path := effectiveSubEndpointPath $resource $subResource $endpoint}}
+{{- $isReadOnly := endpointIsReadCommand $endpoint $eName}}
 	{
 		ID:      "{{$name}}.{{$subName}}.{{$eName}}",
 		Method:  "{{upper $endpoint.Method}}",
@@ -148,8 +167,15 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- if $endpoint.BodyIsArray}}
 		BodyIsArray: true,
 {{- end}}
-{{- if $endpoint.HeaderOverrides}}
-		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}} },
+{{- if $endpoint.UsesRawRequestBody}}
+		RequestContentType: {{printf "%q" $endpoint.RequestContentType}},
+		BodyRequired: {{if $endpoint.BodyRequired}}true{{else}}false{{end}},
+{{- end}}
+{{- if and $endpoint.UsesRawRequestBody $isReadOnly}}
+		ReadOnly: true,
+{{- end}}
+{{- if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse}}
+		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}}{{if $endpoint.UsesTextResponse}}"X-Printing-Press-Text-Response": "true",{{end}} },
 {{- end}}
 		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" $path}}),
 	},
@@ -236,7 +262,11 @@ func handleCodeOrchSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcp
 
 	out := make([]map[string]any, 0, len(results))
 	for _, r := range results {
+{{- if hasRawRequest .APISpec}}
+		item := map[string]any{
+{{- else}}
 		out = append(out, map[string]any{
+{{- end}}
 			"endpoint_id": r.ep.ID,
 			"method":      r.ep.Method,
 			"path":        r.ep.Path,
@@ -245,7 +275,21 @@ func handleCodeOrchSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcp
 			"tier":        r.ep.Tier,
 {{- end}}
 			"score":       r.score,
+{{- if hasRawRequest .APISpec}}
+		}
+		if r.ep.RequestContentType != "" {
+			item["request_body"] = map[string]any{
+				"encoding":               "base64",
+				"parameter":              "body_base64",
+				"required":               r.ep.BodyRequired,
+				"default_content_type":   r.ep.RequestContentType,
+				"content_type_parameter": "content_type",
+			}
+		}
+		out = append(out, item)
+{{- else}}
 		})
+{{- end}}
 	}
 	text, err := bound.JSON(map[string]any{"count": len(out), "results": out})
 	if err != nil {
@@ -326,6 +370,28 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		}
 	}
 
+{{- if hasRawRequest .APISpec}}
+	var rawBody []byte
+	rawContentType := ep.RequestContentType
+	if ep.RequestContentType != "" {
+		encoded, _ := params["body_base64"].(string)
+		if encoded == "" && ep.BodyRequired {
+			return mcplib.NewToolResultError("body_base64 is required"), nil
+		}
+		if encoded != "" {
+			rawBody, err = base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				return mcplib.NewToolResultError("body_base64 must be valid base64: " + err.Error()), nil
+			}
+		}
+		if contentType, ok := params["content_type"].(string); ok && contentType != "" {
+			rawContentType = contentType
+		}
+		delete(params, "body_base64")
+		delete(params, "content_type")
+	}
+{{- end}}
+
 	// Route params to their runtime slots. GET/DELETE params are query
 	// strings; write methods split spec-declared query params from the
 	// remaining params used as the request body below.
@@ -372,12 +438,32 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 			data, err = c.Get(ctx, path, query)
 		}
 	case "DELETE":
+{{- if hasRawRequest .APISpec}}
+		if ep.RequestContentType != "" {
+			if ep.ReadOnly {
+				data, _, err = c.SendRawRead(ctx, ep.Method, path, query, rawBody, rawContentType, hdrs)
+			} else {
+				data, _, err = c.SendRaw(ctx, ep.Method, path, query, rawBody, rawContentType, hdrs)
+			}
+			break
+		}
+{{- end}}
 		if len(hdrs) > 0 {
 			data, _, err = c.DeleteWithParamsAndHeaders(ctx, path, query, hdrs)
 		} else {
 			data, _, err = c.DeleteWithParams(ctx, path, query)
 		}
 	case "POST":
+{{- if hasRawRequest .APISpec}}
+		if ep.RequestContentType != "" {
+			if ep.ReadOnly {
+				data, _, err = c.SendRawRead(ctx, ep.Method, path, query, rawBody, rawContentType, hdrs)
+			} else {
+				data, _, err = c.SendRaw(ctx, ep.Method, path, query, rawBody, rawContentType, hdrs)
+			}
+			break
+		}
+{{- end}}
 		body := writeBody()
 		if len(hdrs) > 0 {
 			data, _, err = c.PostWithHeaders(ctx, path, body, hdrs)
@@ -385,6 +471,16 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 			data, _, err = c.Post(ctx, path, body)
 		}
 	case "PUT":
+{{- if hasRawRequest .APISpec}}
+		if ep.RequestContentType != "" {
+			if ep.ReadOnly {
+				data, _, err = c.SendRawRead(ctx, ep.Method, path, query, rawBody, rawContentType, hdrs)
+			} else {
+				data, _, err = c.SendRaw(ctx, ep.Method, path, query, rawBody, rawContentType, hdrs)
+			}
+			break
+		}
+{{- end}}
 		body := writeBody()
 		if len(hdrs) > 0 {
 			data, _, err = c.PutWithHeaders(ctx, path, body, hdrs)
@@ -392,6 +488,16 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 			data, _, err = c.Put(ctx, path, body)
 		}
 	case "PATCH":
+{{- if hasRawRequest .APISpec}}
+		if ep.RequestContentType != "" {
+			if ep.ReadOnly {
+				data, _, err = c.SendRawRead(ctx, ep.Method, path, query, rawBody, rawContentType, hdrs)
+			} else {
+				data, _, err = c.SendRaw(ctx, ep.Method, path, query, rawBody, rawContentType, hdrs)
+			}
+			break
+		}
+{{- end}}
 		body := writeBody()
 		if len(hdrs) > 0 {
 			data, _, err = c.PatchWithHeaders(ctx, path, body, hdrs)

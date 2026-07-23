@@ -388,6 +388,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"bodyHasStringBackedBool":      bodyHasStringBackedBool,
 		"multipartBodyMaps":            multipartBodyMaps,
 		"endpointUsesMultipart":        endpointUsesMultipart,
+		"endpointUsesRawRequest":       endpointUsesRawRequest,
 		"endpointUsesCSVArray":         endpointUsesCSVArray,
 		"endpointHasQueryFlags":        endpointHasQueryFlags,
 		"endpointHasRequestParams":     endpointHasRequestParams,
@@ -395,6 +396,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointSkipsErrorPathProbe":  endpointSkipsErrorPathProbe,
 		"endpointIsReadCommand":        endpointIsReadCommand,
 		"hasMultipartRequest":          hasMultipartRequest,
+		"hasRawRequest":                hasRawRequest,
 		"formBodyMaps":                 formBodyMaps,
 		"endpointUsesForm":             endpointUsesForm,
 		"hasFormRequest":               hasFormRequest,
@@ -809,6 +811,7 @@ type HelperFlags struct {
 	HasPartialFailureErr bool // emitted command_endpoint.go command can call partialFailureErr
 	HasRequiredRoles     bool // spec has per-endpoint requires_role gates → emit persona helpers
 	HasCreateCommands    bool // spec has POST/PUT/PATCH write endpoints → emit create retry helpers
+	HasRawRequest        bool // spec has non-JSON request bodies → emit raw file/stdin reader
 }
 
 // computeHelperFlags scans the spec's resources to determine which helpers are needed.
@@ -823,6 +826,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 				}
 				if isMutationMethod(e.Method) {
 					flags.HasMutationEndpoints = true
+				}
+				if e.UsesRawRequestBody() {
+					flags.HasRawRequest = true
 				}
 				if strings.TrimSpace(e.RequiresRole) != "" {
 					flags.HasRequiredRoles = true
@@ -905,7 +911,7 @@ func partialFailureEmissionFlags(apiSpec *spec.APISpec, promotedCommands []Promo
 }
 
 func promotedCommandCanDetectPartialFailure(command PromotedCommand, hasStore bool) bool {
-	if !hasStore || command.Endpoint.UsesBinaryResponse() || endpointIsReadCommand(command.Endpoint, command.EndpointName) {
+	if !hasStore || command.Endpoint.UsesBinaryResponse() || command.Endpoint.UsesTextResponse() || endpointIsReadCommand(command.Endpoint, command.EndpointName) {
 		return false
 	}
 	method := strings.ToUpper(strings.TrimSpace(command.Endpoint.Method))
@@ -965,6 +971,7 @@ type clientTemplateData struct {
 	HasGraphQLPersistedQueries bool
 	HasMultipartRequest        bool
 	HasFormRequest             bool
+	HasRawRequest              bool
 	UseChromeImpersonation     bool
 	// Populated by Generator.shouldEmitAuth() so this template gate stays in
 	// sync with auth.go emission, root.go registration, and scoreAuth.
@@ -2473,6 +2480,7 @@ func (g *Generator) renderSingleFiles() error {
 				HasGraphQLPersistedQueries: g.hasTrafficAnalysisHint("graphql_persisted_query"),
 				HasMultipartRequest:        hasMultipartRequest(g.Spec),
 				HasFormRequest:             hasFormRequest(g.Spec),
+				HasRawRequest:              hasRawRequest(g.Spec),
 				UseChromeImpersonation:     g.shouldUseChromeImpersonation(),
 				HasAuthCommand:             g.shouldEmitAuth(),
 			}
@@ -3233,7 +3241,7 @@ func buildPromotedCommandPlan(apiSpec *spec.APISpec) ([]PromotedCommand, map[str
 
 func promotedCommandsCanUnwrapResponse(commands []PromotedCommand, types map[string]spec.TypeDef) bool {
 	for _, cmd := range commands {
-		if !cmd.Endpoint.UsesBinaryResponse() && endpointHasStatusDataEnvelope(cmd.Endpoint, types) {
+		if !cmd.Endpoint.UsesBinaryResponse() && !cmd.Endpoint.UsesTextResponse() && endpointHasStatusDataEnvelope(cmd.Endpoint, types) {
 			return true
 		}
 	}
@@ -4891,7 +4899,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			// the CLI-level helper-emission gate (helpers.go emits the helper
 			// when ANY promoted command qualifies), so call ⊆ emit — no call to
 			// an unemitted helper.
-			HasResponseUnwrap: g.hasDataLayer() && !pc.Endpoint.UsesBinaryResponse() && endpointHasStatusDataEnvelope(pc.Endpoint, g.Spec.Types),
+			HasResponseUnwrap: g.hasDataLayer() && !pc.Endpoint.UsesBinaryResponse() && !pc.Endpoint.UsesTextResponse() && endpointHasStatusDataEnvelope(pc.Endpoint, g.Spec.Types),
 			PageSize:          g.paginationPageSizeForEndpoint(pc.Endpoint),
 			Resource:          resource,
 			FuncPrefix:        pc.ResourceName,
@@ -6095,7 +6103,7 @@ func mcpEndpointPageable(endpoint spec.Endpoint) bool {
 	if strings.TrimSpace(endpoint.Pagination.CursorParam) == "" {
 		return false
 	}
-	return !endpoint.UsesBinaryResponse()
+	return !endpoint.UsesBinaryResponse() && !endpoint.UsesTextResponse()
 }
 
 func mcpPageConfig(endpoint spec.Endpoint) string {
@@ -7227,6 +7235,14 @@ func endpointUsesBodyJSONFallback(endpoint spec.Endpoint) bool {
 
 func hasBodyJSONFallback(apiSpec *spec.APISpec) bool {
 	return anyEndpointMatches(apiSpec, endpointUsesBodyJSONFallback)
+}
+
+func endpointUsesRawRequest(endpoint spec.Endpoint) bool {
+	return endpoint.UsesRawRequestBody()
+}
+
+func hasRawRequest(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointUsesRawRequest)
 }
 
 func anyEndpointMatches(apiSpec *spec.APISpec, predicate func(spec.Endpoint) bool) bool {
@@ -8539,6 +8555,9 @@ func localReadIsList(supportsAllPagination bool, apiSpec *spec.APISpec, endpoint
 }
 
 func localReadSupported(endpoint spec.Endpoint) bool {
+	if endpoint.UsesTextResponse() {
+		return false
+	}
 	segments := strings.Split(strings.Trim(strings.TrimSpace(endpoint.Path), "/"), "/")
 	for i, segment := range segments {
 		if strings.Contains(segment, "{") {
