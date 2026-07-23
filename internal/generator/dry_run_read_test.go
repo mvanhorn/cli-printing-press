@@ -83,7 +83,7 @@ func TestGeneratedDryRunReadGuardsEndpointAndPromotedOutputs(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	dataSourceSrc := readGeneratedFile(t, outputDir, "internal", "cli", "data_source.go")
-	dryRunIdx := strings.Index(dataSourceSrc, "if isDryRunResponse(data)")
+	dryRunIdx := strings.Index(dataSourceSrc, "if isDryRunResponse(c.IsDryRun(), data)")
 	cacheIdx := strings.Index(dataSourceSrc, "writeThroughCache(ctx, resourceType, data)")
 	require.GreaterOrEqual(t, dryRunIdx, 0)
 	require.GreaterOrEqual(t, cacheIdx, 0)
@@ -96,12 +96,12 @@ func TestGeneratedDryRunReadGuardsEndpointAndPromotedOutputs(t *testing.T) {
 	require.NoError(t, noStoreGen.Generate())
 
 	endpointSrc := readGeneratedFile(t, noStoreDir, "internal", "cli", "items_list.go")
-	assert.Contains(t, endpointSrc, "if isDryRunResponse(data)")
+	assert.Contains(t, endpointSrc, "if isDryRunResponse(c.IsDryRun(), data)")
 	assert.Contains(t, endpointSrc, `map[string]any{"source": "dry-run"}`)
 	assert.Contains(t, endpointSrc, "flagAll && !flags.dryRun")
 
 	promotedSrc := readGeneratedFile(t, noStoreDir, "internal", "cli", "promoted_widgets.go")
-	assert.Contains(t, promotedSrc, "if isDryRunResponse(data)")
+	assert.Contains(t, promotedSrc, "if isDryRunResponse(c.IsDryRun(), data)")
 	assert.Contains(t, promotedSrc, `map[string]any{"source": "dry-run"}`)
 	assert.Contains(t, promotedSrc, "flagAll && !flags.dryRun")
 }
@@ -248,10 +248,44 @@ func TestLiveReadsStillWriteThroughCache(t *testing.T) {
 		t.Fatalf("live read unexpectedly warned about cacheability: %s", stderr)
 	}
 }
+
+func TestLivePayloadMatchingDryRunSentinelRemainsLive(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(` + "`" + `{"dry_run":true}` + "`" + `))
+	}))
+	defer server.Close()
+	t.Setenv("DRY_RUN_READ_BASE_URL", server.URL)
+
+	stdout, _, err := executeDryRunRead(t, "--home", t.TempDir(), "--agent", "items", "list")
+	if err != nil {
+		t.Fatalf("live sentinel-shaped read: %v\nstdout=%s", err, stdout)
+	}
+	var payload struct {
+		Meta struct {
+			Source string ` + "`" + `json:"source"` + "`" + `
+		} ` + "`" + `json:"meta"` + "`" + `
+		Results json.RawMessage ` + "`" + `json:"results"` + "`" + `
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("parse live sentinel-shaped output: %v\n%s", err, stdout)
+	}
+	if payload.Meta.Source != "live" {
+		t.Fatalf("sentinel-shaped live meta.source = %q, want live; output=%s", payload.Meta.Source, stdout)
+	}
+	if !bytes.Contains(payload.Results, []byte(` + "`" + `"dry_run"` + "`" + `)) {
+		t.Fatalf("live response lost the sentinel-shaped payload: %s", payload.Results)
+	}
+	if calls != 1 {
+		t.Fatalf("live sentinel-shaped endpoint request count = %d, want 1", calls)
+	}
+}
 `
 	testPath := filepath.Join(outputDir, "internal", "cli", "dry_run_read_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(Promoted|Endpoint)DryRunReadDoesNotOpenStore|TestLiveReadsStillWriteThroughCache", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(Promoted|Endpoint)DryRunReadDoesNotOpenStore|TestLiveReadsStillWriteThroughCache|TestLivePayloadMatchingDryRunSentinelRemainsLive", "-count=1")
 }

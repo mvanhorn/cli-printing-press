@@ -19483,7 +19483,7 @@ func TestSyncTemplateShortCircuitsOnDryRunSentinel(t *testing.T) {
 	require.NoError(t, err)
 	body := string(data)
 
-	assert.Contains(t, body, "func isDryRunResponse(data json.RawMessage) bool",
+	assert.Contains(t, body, "func isDryRunResponse(dryRun bool, data json.RawMessage) bool",
 		"helpers.go.tmpl must define isDryRunResponse helper that detects the client.dryRun sentinel")
 	syncData, err := os.ReadFile(filepath.Join("templates", "sync.go.tmpl"))
 	require.NoError(t, err)
@@ -19494,7 +19494,7 @@ func TestSyncTemplateShortCircuitsOnDryRunSentinel(t *testing.T) {
 	// Ordering pin: the dry-run check must run BEFORE upsertSingleObject,
 	// otherwise the sentinel reaches the upsert path and triggers a spurious
 	// "missing id for <resource>" error.
-	dryRunCheckIdx := strings.Index(syncBody, "if isDryRunResponse(data)")
+	dryRunCheckIdx := strings.Index(syncBody, "if isDryRunResponseForClient(c, data)")
 	upsertSingleIdx := strings.Index(syncBody, "if err := upsertSingleObject(db, resource, data)")
 	require.GreaterOrEqual(t, dryRunCheckIdx, 0, "sync.go.tmpl must call isDryRunResponse on the response")
 	require.GreaterOrEqual(t, upsertSingleIdx, 0, "sync.go.tmpl must still call upsertSingleObject for live single-object responses")

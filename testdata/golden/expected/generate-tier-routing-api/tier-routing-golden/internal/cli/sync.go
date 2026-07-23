@@ -529,7 +529,7 @@ func syncResource(ctx context.Context, c interface {
 		// sentinel has no items and no id; emit a synthetic success event so
 		// validate-narrative --full-examples (which auto-appends --dry-run)
 		// sees a clean exit.
-		if isDryRunResponse(data) {
+		if isDryRunResponseForClient(c, data) {
 			if !humanFriendly {
 				fmt.Fprintf(syncEvents, `{"event":"sync_dryrun","resource":"%s"}`+"\n", resource)
 			}

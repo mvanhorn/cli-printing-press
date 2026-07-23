@@ -813,7 +813,7 @@ func syncResource(ctx context.Context, c interface {
 	// sentinel has no items and no id; emit a synthetic success event so
 	// validate-narrative --full-examples (which auto-appends --dry-run)
 	// sees a clean exit.
-	if isDryRunResponse(data) {
+	if isDryRunResponseForClient(c, data) {
 		if !humanFriendly {
 			fmt.Fprintf(syncEvents, `{"event":"sync_dryrun","resource":"%s"}`+"\n", resource)
 		}
@@ -3065,7 +3065,7 @@ func syncOneParent(
 		// of a real response when --dry-run is set. A preview must not mutate
 		// sync-state, so return before any reconcile; the aggregator emits the
 		// single sync_dryrun event. (issue #2935)
-		if isDryRunResponse(data) {
+		if isDryRunResponseForClient(c, data) {
 			rep.dryRun = true
 			return rep
 		}

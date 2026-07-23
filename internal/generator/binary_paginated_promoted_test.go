@@ -66,7 +66,7 @@ func TestGenerateBinaryPaginatedPromotedThreadsHeader(t *testing.T) {
 		"non-HasStore pagination must use paginatedGet")
 	assert.NotContains(t, endpointSrc, `}, nil, flagAll,`,
 		"paginated binary endpoint must pass headerOverrides, not nil")
-	assert.Contains(t, endpointSrc, `}, headerOverrides, flagAll,`,
+	assert.Contains(t, endpointSrc, `}, headerOverrides, flagAll && !flags.dryRun,`,
 		"paginated binary endpoint must thread headerOverrides into paginatedGet")
 }
 

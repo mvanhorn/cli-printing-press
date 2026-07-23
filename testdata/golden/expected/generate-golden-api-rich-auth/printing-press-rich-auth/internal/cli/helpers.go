@@ -577,7 +577,7 @@ func paginatedGet(ctx context.Context, c interface {
 		if err != nil {
 			return nil, err
 		}
-		if isDryRunResponse(data) {
+		if isDryRunResponseForClient(c, data) {
 			return data, nil
 		}
 		emitTruncationWarning(ctx, data, cursorLookupPath, hasMoreField, paginationType)
@@ -622,7 +622,7 @@ func paginatedGet(ctx context.Context, c interface {
 		if err != nil {
 			return nil, err
 		}
-		if isDryRunResponse(data) {
+		if isDryRunResponseForClient(c, data) {
 			return data, nil
 		}
 
@@ -1436,7 +1436,10 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 }
 
 // isDryRunResponse detects the exact sentinel returned by client.dryRun.
-func isDryRunResponse(data json.RawMessage) bool {
+func isDryRunResponse(dryRun bool, data json.RawMessage) bool {
+	if !dryRun {
+		return false
+	}
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(data, &envelope); err != nil || len(envelope) != 1 {
 		return false
@@ -1447,6 +1450,11 @@ func isDryRunResponse(data json.RawMessage) bool {
 	}
 	var v bool
 	return json.Unmarshal(raw, &v) == nil && v
+}
+
+func isDryRunResponseForClient(c any, data json.RawMessage) bool {
+	dryRunClient, ok := c.(interface{ IsDryRun() bool })
+	return ok && isDryRunResponse(dryRunClient.IsDryRun(), data)
 }
 
 func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any) error {

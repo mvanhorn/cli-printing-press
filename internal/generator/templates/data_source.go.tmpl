@@ -159,7 +159,7 @@ func resolveReadWithStrategyResponsePathAndJSONGuard(ctx context.Context, c *cli
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
-		if isDryRunResponse(data) {
+		if isDryRunResponse(c.IsDryRun(), data) {
 			return data, attachFreshness(DataProvenance{Source: "dry-run"}, flags), nil
 		}
 		if guardLiveJSON {
@@ -180,7 +180,7 @@ func resolveReadWithStrategyResponsePathAndJSONGuard(ctx context.Context, c *cli
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
-		if isDryRunResponse(data) {
+		if isDryRunResponse(c.IsDryRun(), data) {
 			return data, attachFreshness(DataProvenance{Source: "dry-run"}, flags), nil
 		}
 		if guardLiveJSON {
@@ -194,7 +194,7 @@ func resolveReadWithStrategyResponsePathAndJSONGuard(ctx context.Context, c *cli
 	default: // "auto"
 		data, err := c.GetWithHeaders(ctx, path, params, headers)
 		if err == nil {
-			if isDryRunResponse(data) {
+			if isDryRunResponse(c.IsDryRun(), data) {
 				return data, attachFreshness(DataProvenance{Source: "dry-run"}, flags), nil
 			}
 			if guardLiveJSON {
@@ -250,7 +250,7 @@ func resolvePaginatedReadWithStrategyAndJSONGuard(ctx context.Context, c *client
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
-		if isDryRunResponse(data) {
+		if isDryRunResponse(c.IsDryRun(), data) {
 			return data, attachFreshness(DataProvenance{Source: "dry-run"}, flags), nil
 		}
 		if guardLiveJSON {
@@ -273,7 +273,7 @@ func resolvePaginatedReadWithStrategyAndJSONGuard(ctx context.Context, c *client
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
-		if isDryRunResponse(data) {
+		if isDryRunResponse(c.IsDryRun(), data) {
 			return data, attachFreshness(DataProvenance{Source: "dry-run"}, flags), nil
 		}
 		if guardLiveJSON {
@@ -289,7 +289,7 @@ func resolvePaginatedReadWithStrategyAndJSONGuard(ctx context.Context, c *client
 		}
 		data, err := paginatedGet(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField)
 		if err == nil {
-			if isDryRunResponse(data) {
+			if isDryRunResponse(c.IsDryRun(), data) {
 				return data, attachFreshness(DataProvenance{Source: "dry-run"}, flags), nil
 			}
 			if guardLiveJSON {
