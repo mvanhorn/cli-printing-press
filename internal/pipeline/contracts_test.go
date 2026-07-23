@@ -1285,7 +1285,9 @@ func readContractFile(t *testing.T, path string) string {
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	content := string(data)
+
+	var content strings.Builder
+	content.Write(data)
 
 	// The main printing-press skill is a router plus per-phase files; contract
 	// text may live in either, so read them as one bundle.
@@ -1295,10 +1297,11 @@ func readContractFile(t *testing.T, path string) string {
 		for _, phasePath := range phasePaths {
 			phaseData, err := os.ReadFile(phasePath)
 			require.NoError(t, err)
-			content += "\n" + string(phaseData)
+			content.WriteByte('\n')
+			content.Write(phaseData)
 		}
 	}
-	return content
+	return content.String()
 }
 
 func extractContractBlock(t *testing.T, content string) string {
