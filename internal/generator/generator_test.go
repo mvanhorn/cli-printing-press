@@ -2571,7 +2571,7 @@ func TestGenerateWithNoAuth(t *testing.T) {
 		Version: "0.1.0",
 		BaseURL: "https://api.example.com",
 		Auth: spec.AuthConfig{
-			Type:    "",
+			Type:    "none",
 			EnvVars: nil,
 		},
 		Config: spec.ConfigSpec{

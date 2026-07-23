@@ -2560,18 +2560,11 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
-	if g.hasDataLayer() {
-		syncHintData := struct {
-			*spec.APISpec
-			HasSync bool
-		}{
-			APISpec: g.Spec,
-			HasSync: g.hasGeneratedSyncImplementation(),
-		}
-		if err := g.renderTemplate("sync_hint.go.tmpl", filepath.Join("internal", "cli", "sync_hint.go"), syncHintData); err != nil {
+	if g.hasGeneratedSyncImplementation() {
+		if err := g.renderTemplate("sync_hint.go.tmpl", filepath.Join("internal", "cli", "sync_hint.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering sync hint helper: %w", err)
 		}
-		if err := g.renderTemplate("sync_hint_test.go.tmpl", filepath.Join("internal", "cli", "sync_hint_test.go"), syncHintData); err != nil {
+		if err := g.renderTemplate("sync_hint_test.go.tmpl", filepath.Join("internal", "cli", "sync_hint_test.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering sync hint test: %w", err)
 		}
 	}
@@ -4466,7 +4459,7 @@ func (g *Generator) renderVisionCommands(visionData visionRenderData) error {
 			actualTmpl = "graphql_import.go.tmpl"
 		}
 		var tmplData any = g.Spec
-		if tmplName == "sync.go.tmpl" || tmplName == "search.go.tmpl" || tmplName == "export.go.tmpl" || tmplName == "import.go.tmpl" || tmplName == "tail.go.tmpl" {
+		if tmplName == "sync.go.tmpl" || tmplName == "search.go.tmpl" || tmplName == "export.go.tmpl" || tmplName == "import.go.tmpl" || tmplName == "tail.go.tmpl" || tmplName == "analytics.go.tmpl" {
 			tmplData = visionData
 		}
 		if err := g.renderTemplate(actualTmpl, outPath, tmplData); err != nil {

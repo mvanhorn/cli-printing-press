@@ -118,6 +118,100 @@ exit 0
 	assert.NotContains(t, string(calls), "verbose")
 }
 
+func TestValidateRunsGeneratedUnitTests(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell go binary is Unix-only")
+	}
+	outputDir := filepath.Join(t.TempDir(), "validate-pp-cli")
+	gen := New(minimalSpec("validate"), outputDir)
+	require.NoError(t, gen.Generate())
+
+	fakeBin := t.TempDir()
+	callsPath := filepath.Join(t.TempDir(), "go-calls.txt")
+	fakeGo := filepath.Join(fakeBin, "go")
+	require.NoError(t, os.WriteFile(fakeGo, []byte(`#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_GO_CALLS"
+if [ "$1" = "run" ]; then
+  echo "fake govulncheck failure" >&2
+  exit 42
+fi
+exit 0
+`), 0o755))
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_GO_CALLS", callsPath)
+
+	err := gen.Validate()
+	require.Error(t, err)
+
+	calls, err := os.ReadFile(callsPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(calls), "test ./...\n")
+}
+
+func TestValidateFailsWhenGeneratedUnitTestsFail(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell go binary is Unix-only")
+	}
+	outputDir := filepath.Join(t.TempDir(), "validate-pp-cli")
+	gen := New(minimalSpec("validate"), outputDir)
+	require.NoError(t, gen.Generate())
+
+	fakeBin := t.TempDir()
+	callsPath := filepath.Join(t.TempDir(), "go-calls.txt")
+	fakeGo := filepath.Join(fakeBin, "go")
+	require.NoError(t, os.WriteFile(fakeGo, []byte(`#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_GO_CALLS"
+if [ "$1" = "test" ]; then
+  echo "broken generated test" >&2
+  exit 42
+fi
+exit 0
+`), 0o755))
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_GO_CALLS", callsPath)
+
+	err := gen.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `gate "go test ./..." failed`)
+	assert.Contains(t, err.Error(), "broken generated test")
+
+	calls, err := os.ReadFile(callsPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(calls), "vet ./...\n")
+	assert.NotContains(t, string(calls), "build ")
+}
+
+func TestDeviceValidateRunsGeneratedUnitTests(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell go binary is Unix-only")
+	}
+	outputDir := t.TempDir()
+	gen := &DeviceGenerator{OutputDir: outputDir}
+
+	fakeBin := t.TempDir()
+	callsPath := filepath.Join(t.TempDir(), "go-calls.txt")
+	fakeGo := filepath.Join(fakeBin, "go")
+	require.NoError(t, os.WriteFile(fakeGo, []byte(`#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_GO_CALLS"
+if [ "$1" = "test" ]; then
+  echo "broken generated device test" >&2
+  exit 42
+fi
+exit 0
+`), 0o755))
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_GO_CALLS", callsPath)
+
+	err := gen.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "go test ./...")
+	assert.Contains(t, err.Error(), "broken generated device test")
+
+	calls, err := os.ReadFile(callsPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(calls), "build ")
+}
+
 func TestValidateBuildRunnableBinaryUsesReproducibleBuildFlags(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake shell go binary is Unix-only")

@@ -195,7 +195,9 @@ Run sync first to populate the local search index.`,
 			}
 			defer db.Close()
 
+			{{- if .HasSync }}
 			maybeEmitSyncHints(cmd, db, resourceType, flags.maxAge)
+			{{- end }}
 
 			var results []json.RawMessage
 			switch resourceType {

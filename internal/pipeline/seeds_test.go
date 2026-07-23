@@ -34,7 +34,9 @@ func TestRenderSeedProducesThinSeedTemplates(t *testing.T) {
 			require.Contains(t, rendered, "type: feat")
 			require.Contains(t, rendered, "date: ")
 			if phase == PhaseScaffold || phase == PhaseRegenerate {
-				require.Contains(t, rendered, "All eight")
+				require.Contains(t, rendered, "All ten")
+				require.Contains(t, rendered, "safe golang.org/x/net")
+				require.Contains(t, rendered, "generated go test")
 				require.Contains(t, rendered, "govulncheck")
 				require.NotContains(t, rendered, "All seven")
 			}

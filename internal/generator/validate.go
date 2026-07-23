@@ -56,6 +56,13 @@ func (g *Generator) Validate() error {
 			},
 		},
 		{
+			name: "go test ./...",
+			run: func() error {
+				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "test", "./...")
+				return err
+			},
+		},
+		{
 			name: "govulncheck ./...",
 			run: func() error {
 				env := govulncheck.ToolchainEnv(g.OutputDir)

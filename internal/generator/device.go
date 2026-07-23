@@ -166,6 +166,9 @@ func (g *DeviceGenerator) Validate() error {
 	if _, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "mod", "tidy"); err != nil {
 		return fmt.Errorf("go mod tidy: %w", err)
 	}
+	if _, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "test", "./..."); err != nil {
+		return fmt.Errorf("go test ./...: %w", err)
+	}
 	if _, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "build", "./..."); err != nil {
 		return fmt.Errorf("go build ./...: %w", err)
 	}
