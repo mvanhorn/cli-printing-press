@@ -60,6 +60,11 @@ func TestHTMLChallengeDetection(t *testing.T) {
 			raw:  ` + "`" + `<!doctype html><html><head><title>Catalog</title><script src="/cdn-cgi/challenge-platform/h/g/orchestrate/jsch/v1"></script></head><body>Products</body></html>` + "`" + `,
 		},
 		{
+			name:          "Cloudflare active challenge page script with alternate title",
+			raw:           ` + "`" + `<!doctype html><html><head><title>Security check</title><script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script></head><body></body></html>` + "`" + `,
+			wantChallenge: true,
+		},
+		{
 			name: "normal page mentioning Cloudflare labels",
 			raw:  ` + "`" + `<html><head><title>Cloudflare reference</title></head><body>Headers such as cf-challenge and cf-mitigated are documented here.</body></html>` + "`" + `,
 		},
