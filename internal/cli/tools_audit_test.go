@@ -724,6 +724,103 @@ func newReportRealCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
+func TestAuditCobraSourceDescendsThroughCobraHiddenAndPrunesMCPHidden(t *testing.T) {
+	root := t.TempDir()
+	cliDir := filepath.Join(root, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatalf("mkdir cli dir: %v", err)
+	}
+	src := `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "root"}
+	cmd.AddCommand(newCobraHiddenGroupCmd(), newMCPHiddenGroupCmd())
+	return cmd
+}
+func newCobraHiddenGroupCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "orders", Hidden: true}
+	cmd.AddCommand(newVisibleListCmd())
+	return cmd
+}
+func newVisibleListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "list", Short: "List", RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+func newMCPHiddenGroupCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "secrets", Annotations: map[string]string{"mcp:hidden": "true"}}
+	cmd.AddCommand(newPrunedListCmd())
+	return cmd
+}
+func newPrunedListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "show", Short: "Show", RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}`
+	if err := os.WriteFile(filepath.Join(cliDir, "groups.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	findings, err := auditCobraSource(root)
+	if err != nil {
+		t.Fatalf("auditCobraSource: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("findings = %+v, want thin-short and missing-read-only for visible descendant only", findings)
+	}
+	for _, finding := range findings {
+		if finding.Command != "list" {
+			t.Fatalf("unexpected finding from pruned command: %+v", finding)
+		}
+	}
+}
+
+func TestAuditCobraSourceAuditsConstructorWithVisibleAndMCPHiddenPaths(t *testing.T) {
+	root := t.TempDir()
+	cliDir := filepath.Join(root, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatalf("mkdir cli dir: %v", err)
+	}
+	src := `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "root"}
+	cmd.AddCommand(newVisibleGroupCmd(), newMCPHiddenGroupCmd())
+	return cmd
+}
+func newVisibleGroupCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "orders"}
+	cmd.AddCommand(newSharedReportCmd())
+	return cmd
+}
+func newMCPHiddenGroupCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "secrets", Annotations: map[string]string{"mcp:hidden": "true"}}
+	cmd.AddCommand(newSharedReportCmd())
+	return cmd
+}
+func newSharedReportCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "report", Short: "Report", RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}`
+	if err := os.WriteFile(filepath.Join(cliDir, "groups.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	findings, err := auditCobraSource(root)
+	if err != nil {
+		t.Fatalf("auditCobraSource: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("findings = %+v, want thin-short and missing-read-only for shared visible constructor", findings)
+	}
+	for _, finding := range findings {
+		if finding.Command != "report" {
+			t.Fatalf("unexpected finding: %+v", finding)
+		}
+	}
+}
+
 // TestInspectAnnotationsExplicitReadOnlyFalse pins the AST-level
 // helper: any value for `mcp:read-only` — including "false" — sets
 // hasExplicitReadOnly. The old behavior treated "false" as absent.
@@ -769,7 +866,7 @@ func TestInspectAnnotationsExplicitReadOnlyFalse(t *testing.T) {
 			if lit == nil {
 				t.Fatalf("no map literal found")
 			}
-			gotRO, _ := inspectAnnotations(lit)
+			gotRO, _, _ := inspectAnnotations(lit)
 			if gotRO != tc.wantSetRO {
 				t.Errorf("hasExplicitReadOnly = %v, want %v", gotRO, tc.wantSetRO)
 			}

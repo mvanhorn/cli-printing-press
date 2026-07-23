@@ -501,6 +501,42 @@ func TestRegisterAllPreservesTypedToolsAndExposesHandBuiltSearchWithoutTypedEqui
 	}
 }
 
+func TestRegisterAllDescendsThroughCobraHiddenButPrunesMCPHidden(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	cobraHidden := &cobra.Command{Use: "orders", Hidden: true}
+	cobraHidden.AddCommand(&cobra.Command{
+		Use:  "triage",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	})
+	mcpHidden := &cobra.Command{
+		Use:         "secrets",
+		Annotations: map[string]string{"mcp:hidden": "true"},
+	}
+	mcpHidden.AddCommand(&cobra.Command{
+		Use:  "inspect",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	})
+	hiddenFramework := &cobra.Command{Use: "auth", Hidden: true}
+	hiddenFramework.AddCommand(&cobra.Command{
+		Use:  "status",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	})
+	root.AddCommand(cobraHidden, mcpHidden, hiddenFramework)
+
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, root, func() (string, error) { return "missing-binary", nil })
+	tools := s.ListTools()
+
+	if _, ok := tools["orders_triage"]; !ok {
+		t.Fatalf("visible descendant under Cobra-hidden parent was not mirrored: %#v", tools)
+	}
+	for _, excluded := range []string{"orders", "secrets", "secrets_inspect", "auth_status"} {
+		if _, ok := tools[excluded]; ok {
+			t.Fatalf("excluded command %q was mirrored: %#v", excluded, tools)
+		}
+	}
+}
+
 func TestShellOutSinglePositionalArgsFieldPreservesWhitespace(t *testing.T) {
 	bin := writeArgvHelper(t)
 	positionals := []positionalArg{positionalArg{

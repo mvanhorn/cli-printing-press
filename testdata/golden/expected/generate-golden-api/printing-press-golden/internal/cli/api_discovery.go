@@ -35,7 +35,7 @@ Run 'api <interface>' to see that interface's methods.`,
 			if len(args) > 0 {
 				target := strings.ToLower(args[0])
 				for _, child := range root.Commands() {
-					if child.Hidden && strings.ToLower(child.Name()) == target {
+					if child.Annotations["pp:api-resource"] == "true" && strings.ToLower(child.Name()) == target {
 						methods := child.Commands()
 						// JSON envelope: {interface, short, methods: [{name, short}, ...]}.
 						if flags.asJSON {
@@ -75,7 +75,7 @@ Run 'api <interface>' to see that interface's methods.`,
 			}
 			var ifaces []ifaceEntry
 			for _, child := range root.Commands() {
-				if child.Hidden {
+				if child.Annotations["pp:api-resource"] == "true" {
 					ifaces = append(ifaces, ifaceEntry{Name: child.Name(), Short: child.Short})
 				}
 			}
@@ -86,13 +86,13 @@ Run 'api <interface>' to see that interface's methods.`,
 				out := map[string]any{"interfaces": ifaces}
 				if len(ifaces) == 0 {
 					out["interfaces"] = []ifaceEntry{}
-					out["note"] = "No hidden API interfaces found."
+					out["note"] = "No API interfaces found."
 				}
 				return printJSONFiltered(cmd.OutOrStdout(), out, flags)
 			}
 
 			if len(ifaces) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "No hidden API interfaces found.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No API interfaces found.")
 				return nil
 			}
 

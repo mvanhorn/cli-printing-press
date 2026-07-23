@@ -143,18 +143,17 @@ func TestGeneratedDoctor_SuggestReadCommandHelperGatesOnEndpointAndArgs(t *testi
 	assert.Contains(t, content, `cmd.Args(cmd, []string{}) == nil`,
 		"helper must probe the Args validator with an empty arg list as a final defense")
 
-	// Hidden-parent traversal: printed CLIs mark raw resource parents Hidden
-	// to keep --help curated, but their endpoint leaves stay runnable. The
-	// walk MUST recurse into hidden parents (otherwise the suggestion is ""
-	// in nearly every CLI), while isSuggestableReadLeaf MUST still reject a
-	// leaf that is itself hidden.
+	// Hidden-parent traversal: grouping commands can be hidden from help while
+	// their descendants remain directly runnable. The walk MUST recurse into
+	// hidden parents, while isSuggestableReadLeaf MUST still reject a leaf
+	// that is itself hidden.
 	assert.Contains(t, content, `if cmd == nil || cmd.Hidden || cmd.HasSubCommands() || !cmd.Runnable()`,
 		"isSuggestableReadLeaf must reject a leaf that is itself hidden")
 	assert.NotContains(t, content, `for _, child := range cmd.Commands() {
 			if child.Hidden {
 				continue
 			}`,
-		"the walk must recurse through hidden resource parents, not skip them — skipping makes the suggestion empty in nearly every CLI")
+		"the walk must recurse through hidden grouping commands")
 }
 
 // TestGeneratedDoctor_SuggestHelperOnlyEmittedWhenNeeded pins the template

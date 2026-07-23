@@ -1217,7 +1217,7 @@ func TestCheckCommandTree_IndirectWiring(t *testing.T) {
 	require.NoError(t, os.MkdirAll(cliDir, 0o755))
 
 	// Test indirect wiring: sub := newXxxCmd(flags); cmd.AddCommand(sub)
-	// This pattern is used by command_promoted.go.tmpl for multi-endpoint subresources.
+	// The command-tree audit supports this valid hand-authored wiring shape.
 	writeTestFile(t, filepath.Join(cliDir, "root.go"), `package cli
 func newRootCmd() {
 	rootCmd.AddCommand(newParentCmd(&flags))

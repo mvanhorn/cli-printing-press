@@ -3482,14 +3482,6 @@ func withoutOptionsEndpoints(r spec.Resource) spec.Resource {
 }
 
 func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool, promotedEndpointNames map[string]string) error {
-	// When the spec emits promoted commands, the generator also emits the api
-	// browser (api_discovery.go), whose RunE filters root.Commands() by
-	// child.Hidden. Mark the raw top-level resource groups Hidden so they
-	// surface there instead of cluttering --help. Direct invocation still
-	// works (Cobra's Hidden only suppresses listing). For specs without
-	// promoted commands the api browser is not generated, so leave resources
-	// visible.
-	hideTopLevelResources := len(g.PromotedCommands) > 0
 	var apiDescriptionShort string
 	if len(g.Spec.Resources) == 1 {
 		apiDescriptionShort = parentCommandInfoDescriptionShort(g.Spec.Description)
@@ -3517,7 +3509,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				Short         string
 				Resource      spec.Resource
 				NovelChildren []novelFeatureChildRender
-				Hidden        bool
+				APIResource   bool
 				*spec.APISpec
 			}{
 				ResourceName:  name,
@@ -3526,7 +3518,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				Short:         parentCommandShort(name, "", resource, apiDescriptionShort),
 				Resource:      resource,
 				NovelChildren: novelChildrenByParent[toKebab(name)],
-				Hidden:        hideTopLevelResources,
+				APIResource:   true,
 				APISpec:       g.Spec,
 			}
 			parentPath := filepath.Join("internal", "cli", safeResourceFileStem(name)+".go")
@@ -3579,7 +3571,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				Short         string
 				Resource      spec.Resource
 				NovelChildren []novelFeatureChildRender
-				Hidden        bool
+				APIResource   bool
 				*spec.APISpec
 			}{
 				ResourceName:  subName,
@@ -3588,7 +3580,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				Short:         parentCommandShort(subName, name, subResource, ""),
 				Resource:      subResource,
 				NovelChildren: novelChildrenByParent[toKebab(name)+" "+toKebab(subName)],
-				Hidden:        false,
+				APIResource:   false,
 				APISpec:       g.Spec,
 			}
 			subParentPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName)+".go")

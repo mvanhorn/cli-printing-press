@@ -123,12 +123,10 @@ func suggestReadCommand(root *cobra.Command) string {
 				found = strings.Join(childPath, " ")
 				return
 			}
-			// Recurse even into Hidden parents: printed CLIs mark raw
-			// resource parents Hidden to keep --help curated, but their
-			// endpoint leaves remain runnable (`<cli> projects list`
-			// works). Skipping hidden subtrees would make this return ""
-			// in nearly every CLI. isSuggestableReadLeaf still rejects a
-			// leaf that is itself Hidden.
+			// Recurse even into Hidden grouping commands because their
+			// descendants can remain runnable and discoverable by direct
+			// invocation. isSuggestableReadLeaf still rejects a leaf that
+			// is itself Hidden.
 			walk(child, childPath)
 			if found != "" {
 				return

@@ -10263,13 +10263,13 @@ func TestGeneratedOutput_PromotedCommand_TestResourceCompiles(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
-func TestGeneratedOutput_ResourceParentsHiddenWhenAPIBrowserGenerated(t *testing.T) {
+func TestGeneratedOutput_ResourceParentsVisibleWhenAPIBrowserGenerated(t *testing.T) {
 	t.Parallel()
 
 	// Multi-endpoint resource -> parent group; single-endpoint resource -> promoted command.
-	// The promoted command's presence is what triggers api_discovery.go emission, and the
-	// api browser's RunE filters on child.Hidden. Without this fix the browser was empty by
-	// construction (issue #872).
+	// The promoted command's presence triggers api_discovery.go emission, but resource
+	// parents must remain visible in root help. API discovery identifies them from command
+	// metadata instead of repurposing Cobra's Hidden bit.
 	apiSpec := &spec.APISpec{
 		Name:    "hiddentest",
 		Version: "0.1.0",
@@ -10302,8 +10302,24 @@ func TestGeneratedOutput_ResourceParentsHiddenWhenAPIBrowserGenerated(t *testing
 
 	orders, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "orders.go"))
 	require.NoError(t, err)
-	assert.Regexp(t, `Hidden:\s+true`, string(orders),
-		"raw resource parent must be Hidden so the api browser finds it")
+	assert.NotContains(t, string(orders), "Hidden: true",
+		"raw resource parents must remain visible when the api browser is generated")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	binaryPath := filepath.Join(outputDir, "hiddentest-pp-cli")
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/hiddentest-pp-cli")
+
+	helpOut, err := exec.Command(binaryPath, "--help").Output()
+	require.NoError(t, err)
+	assert.Contains(t, string(helpOut), "orders",
+		"root help must advertise raw resource parents")
+
+	apiOut, err := exec.Command(binaryPath, "api").Output()
+	require.NoError(t, err)
+	assert.Contains(t, string(apiOut), "orders",
+		"api discovery must still list visible resource parents")
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGeneratedOutput_ResourceParentsNotHiddenWithoutAPIBrowser(t *testing.T) {
@@ -10348,12 +10364,11 @@ func TestGeneratedOutput_ResourceParentsNotHiddenWithoutAPIBrowser(t *testing.T)
 		"raw resource parent must not be Hidden when no api browser is generated")
 }
 
-func TestGeneratedOutput_AgentContextIncludesHiddenResourceGroups(t *testing.T) {
+func TestGeneratedOutput_AgentContextIncludesResourceGroups(t *testing.T) {
 	t.Parallel()
 
-	// Cobra's Hidden flag is a --help curation tool; the agent-context surface
-	// must still enumerate hidden resource parents and their endpoint subcommands
-	// so agents can reach every action a CLI user could.
+	// The agent-context surface must enumerate resource parents and their
+	// endpoint subcommands so agents can reach every action a CLI user could.
 	apiSpec := &spec.APISpec{
 		Name:    "agentctxhide",
 		Version: "0.1.0",
@@ -10394,10 +10409,10 @@ func TestGeneratedOutput_AgentContextIncludesHiddenResourceGroups(t *testing.T) 
 	orders := findAgentContextCommand(payload["commands"], func(c map[string]any) bool {
 		return c["name"] == "orders"
 	})
-	require.NotNil(t, orders, "hidden resource parent must appear in agent-context")
+	require.NotNil(t, orders, "resource parent must appear in agent-context")
 	subs, ok := orders["subcommands"].([]any)
-	require.True(t, ok, "hidden resource parent must report its endpoint subcommands")
-	assert.NotEmpty(t, subs, "hidden resource parent must report its endpoint subcommands")
+	require.True(t, ok, "resource parent must report its endpoint subcommands")
+	assert.NotEmpty(t, subs, "resource parent must report its endpoint subcommands")
 }
 
 func TestGeneratedOutput_PromotedCommandNotForBuiltins(t *testing.T) {
@@ -11713,9 +11728,8 @@ func TestGenerateGraphQLBFFUsesSemanticCommandSurface(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/example-pp-cli")
 	helpOut, err := exec.Command(binaryPath, "--help").CombinedOutput()
 	require.NoError(t, err, string(helpOut))
-	// Multi-endpoint resources are now Hidden so the generated `api` browser can
-	// surface them; --help stays curated. Direct invocation and the api browser
-	// listing must both still work.
+	// GraphQL transport commands stay suppressed while generated resource
+	// parents remain directly invocable and available through the api browser.
 	assert.NotContains(t, string(helpOut), "graphql")
 	apiOut, err := exec.Command(binaryPath, "api").CombinedOutput()
 	require.NoError(t, err, string(apiOut))

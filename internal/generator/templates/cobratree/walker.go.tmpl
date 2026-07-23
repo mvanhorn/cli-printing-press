@@ -19,7 +19,7 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 		switch classify(cmd) {
 		case commandHidden:
 			return
-		case commandEndpoint, commandFramework:
+		case commandEndpoint, commandGroup, commandFramework:
 			return
 		}
 		if !cmd.Runnable() {
@@ -68,12 +68,14 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 
 func walk(cmd *cobra.Command, path []string, visit func(*cobra.Command, []string)) {
 	for _, child := range cmd.Commands() {
-		if child.Hidden || isMCPHidden(child) {
+		if isMCPHidden(child) {
 			continue
 		}
 		childPath := append(append([]string{}, path...), child.Name())
-		visit(child, childPath)
-		if kind := classify(child); kind != commandHidden && kind != commandFramework {
+		if !child.Hidden {
+			visit(child, childPath)
+		}
+		if !isTopLevelFrameworkCommand(child) {
 			walk(child, childPath, visit)
 		}
 	}
