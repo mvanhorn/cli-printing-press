@@ -217,7 +217,7 @@ Add tests for new non-trivial logic. Match the package's existing style (typical
 Run `go test ./...` before considering your work done.
 
 ## Quality Gates
-Generated CLIs must pass 8 gates: `go mod tidy`, `govulncheck`, `go vet`, `go build`, binary build, `--help`, `version`, and `doctor`.
+Generated CLIs must pass 9 gates: `go mod tidy`, generated `go test ./...`, `govulncheck`, `go vet`, `go build`, binary build, `--help`, `version`, and `doctor`.
 Run `govulncheck` in default mode only, scoped to the generated or publishing CLI module (`./...` from that CLI directory). Do not use `-show verbose` or a whole public-library scan as a blocking gate; blocking CI scans only added or changed CLI modules, leaving whole-library sweeps to scheduled/reporting workflows.
 - For CLIs with `auth.type` of `cookie` or `composed`, `press-auth` (`cmd/press-auth/`) is the canonical cookie capture path. The generated `auth login --chrome` prefers it; the legacy extraction chain (pycookiecheat / browser-use / etc.) is the fallback when press-auth isn't installed. See [`skills/printing-press/references/auth-companion.md`](skills/printing-press/references/auth-companion.md).
 

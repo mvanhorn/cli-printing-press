@@ -38,7 +38,9 @@ such as assignee, project, priority, or labels. Useful for triaging unowned work
 			}
 			defer db.Close()
 
+			{{- if .HasSync }}
 			maybeEmitSyncHints(cmd, db, "", flags.maxAge)
+			{{- end }}
 
 			// Fields that indicate an item is properly assigned/categorized
 			checkFields := []struct {

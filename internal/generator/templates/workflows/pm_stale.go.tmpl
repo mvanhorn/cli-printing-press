@@ -131,7 +131,9 @@ the specified number of days. Useful for identifying forgotten or blocked work.`
 			}
 			defer db.Close()
 
+			{{- if .HasSync }}
 			maybeEmitSyncHints(cmd, db, "", flags.maxAge)
+			{{- end }}
 
 			cutoffTime := time.Now().AddDate(0, 0, -days)
 			cutoffStr := cutoffTime.Format(time.RFC3339)
