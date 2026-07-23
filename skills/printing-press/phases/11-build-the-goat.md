@@ -1,5 +1,11 @@
 ## Phase 3: Build The GOAT
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "11-build-the-goat"
+```
+
 <!-- CODEX_PHASE3_START -->
 When `CODEX_MODE` is true, read [references/codex-delegation.md](../references/codex-delegation.md)
 for the delegation pattern, task type templates, and circuit breaker logic.
@@ -737,5 +743,11 @@ Endpoint-mirror tools the generator emits from the spec already get the right an
 
 Do not rationalize skipping transcendence features because "the CLI already works for live API interaction." The absorb manifest was approved by the user. Build what was approved.
 
+Before following `Next:`, record the durable handoff and point `--evidence` at
+the Phase 3 build log:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "11-build-the-goat" --evidence "$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-build-log.md"
+```
 
 Next: phases/12-shipcheck.md

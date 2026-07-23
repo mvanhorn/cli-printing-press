@@ -16,7 +16,7 @@ This rule applies to *all* generator command references in the rest of this docu
 
 ## 1. Refusal: missing prerequisite
 
-If the setup contract output contains a line starting with `[setup-error]`, a required prerequisite or environment floor is missing (for example: the cli-printing-press binary, the Go toolchain, an old Go toolchain under `GOTOOLCHAIN=local`, an incomplete Go standard library, or critically low disk space) and the contract has already exited non-zero.
+If the setup contract output contains a line starting with `[setup-error]`, a required prerequisite or environment floor is missing (for example: the cli-printing-press binary, the phase-receipt helper required by this skill, the Go toolchain, an old Go toolchain under `GOTOOLCHAIN=local`, an incomplete Go standard library, or critically low disk space) and the contract has already exited non-zero.
 
 **Stop the skill immediately.** Do not proceed to research, generation, or any other work. Surface the message the contract printed (it includes the exact install command or download URL) verbatim to the user.
 

@@ -28,6 +28,7 @@ PROOFS_DIR="$API_RUN_DIR/proofs"
 PIPELINE_DIR="$API_RUN_DIR/pipeline"
 DISCOVERY_DIR="$API_RUN_DIR/discovery"
 CLI_WORK_DIR="$API_RUN_DIR/working/<api>-pp-cli"
+PHASE_RECEIPT_LOG="$PIPELINE_DIR/phase-receipts.jsonl"
 STAMP="$(date +%Y-%m-%d-%H%M%S)"
 
 # Session state (live cookies, CSRF tokens captured during authenticated
@@ -63,6 +64,7 @@ Maintain a lightweight state file at `$STATE_FILE` so `/printing-press-score` ca
   "run_id": "$RUN_ID",
   "working_dir": "$CLI_WORK_DIR",
   "output_dir": "$CLI_WORK_DIR",
+  "phase_receipt_log": "$PHASE_RECEIPT_LOG",
   "spec_path": "<absolute spec path if known>"
 }
 ```
@@ -89,5 +91,20 @@ Examples of the current naming/layout:
 - `linear-pp-cli stale --days 30 --team ENG` — binary invocations use CLI name
 - `github.com/mvanhorn/discord-pp-cli` — Go module paths use CLI name
 
+After writing `$STATE_FILE`, initialize the phase receipt log. Substitute the
+captured absolute binary path for `$PRINTING_PRESS_BIN`. Initialization is the
+durable handoff from run setup to the first execution phase:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt init \
+  --file "$PHASE_RECEIPT_LOG" \
+  --run-id "$RUN_ID" \
+  --phase "02-run-initialization" \
+  --evidence "$STATE_FILE"
+```
+
+The command must succeed before continuing. Keep the receipt log under
+`$PIPELINE_DIR`; Phase 5.6 archives research, proofs, and discovery, not this
+disposable sequencing log.
 
 Next: phases/03-resolve-and-reuse.md

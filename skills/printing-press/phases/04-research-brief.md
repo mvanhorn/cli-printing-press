@@ -1,5 +1,11 @@
 ## Phase 1: Research Brief
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "04-research-brief"
+```
+
 **When `BROWSER_SNIFF_TARGET_URL` is set:** Skip spec/docs search and SDK wrapper search — none of these exist for an undocumented website feature. Focus research on understanding what the site/feature does, who uses it, what workflows it supports, and what competitors offer similar functionality. The spec will come from browser-sniffing in [Phase 1.7](06-browser-sniff-gate.md).
 
 Before reading documentation, read [references/fetch-docs.md](../references/fetch-docs.md). Use `fetch-docs.sh` for the API's primary docs, OpenAPI/Postman links, auth guides, error handling, rate limits, pagination, webhooks, and any per-endpoint reference page. Preserve exact status codes and inspect the returned local file directly so enum values, field constraints, casing, examples, and nav/link variants are not lost through summarization.
@@ -97,5 +103,11 @@ Suggested shape:
 
 **[Phase 1.5](08-ecosystem-absorb-gate.md) will refuse to proceed without a `browser-browser-sniff-gate.json` marker file.** [Phase 1.7](06-browser-sniff-gate.md) writes this file with one entry per source (one entry for single-source CLIs, one entry per named source for combo CLIs). Missing marker = HARD STOP back to [Phase 1.7](06-browser-sniff-gate.md). See the "Enforcement" section in [Phase 1.7](06-browser-sniff-gate.md) for the contract.
 
+Before following `Next:`, record the durable handoff and point `--evidence` at
+the completed research brief:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "04-research-brief" --evidence "$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-brief.md"
+```
 
 Next: phases/05-pre-browser-sniff-auth-intelligence.md

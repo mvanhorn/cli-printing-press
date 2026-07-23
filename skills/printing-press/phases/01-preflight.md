@@ -223,6 +223,26 @@ if [ "$_press_repo" = "true" ] && [ -x "$_scope_dir/cli-printing-press" ]; then
 else
   PRINTING_PRESS_BIN="$(_resolve_press_bin 2>/dev/null || true)"
 fi
+
+# This skill's phase handoffs are enforced by a hidden binary helper. A
+# repo-local binary can have the same source version while still predating an
+# uncommitted helper, so capability-check it instead of trusting semver alone.
+if ! "$PRINTING_PRESS_BIN" phase-receipt --help >/dev/null 2>&1; then
+  if [ "$_press_repo" = "true" ] && command -v go >/dev/null 2>&1 &&
+    (cd "$_scope_dir" && go build -o ./cli-printing-press ./cmd/cli-printing-press); then
+    PRINTING_PRESS_BIN="$_scope_dir/cli-printing-press"
+    echo "[local-binary-rebuilt] rebuilt $_scope_dir/cli-printing-press for phase receipt support"
+  fi
+fi
+if ! "$PRINTING_PRESS_BIN" phase-receipt --help >/dev/null 2>&1; then
+  echo ""
+  echo "[setup-error] cli-printing-press binary lacks the phase-receipt helper required by this skill."
+  echo "Run: go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest"
+  echo "Then re-run /printing-press."
+  echo ""
+  return 1 2>/dev/null || exit 1
+fi
+
 echo "PRINTING_PRESS_BIN=$PRINTING_PRESS_BIN"
 echo "PRESS_REPO_MODE=$_press_repo"
 
@@ -516,5 +536,7 @@ CODEX_CONSECUTIVE_FAILURES=0
 
 Only after preflight completes successfully (no `[setup-error]`; no `[upgrade-required]` left unresolved — the user either upgraded or the run was aborted; no global skill update that requires restart; any `[repo-upgrade-available]`, `[upgrade-available]`, or `[browser-tools-missing]` was offered to the user; `PRINTING_PRESS_BIN` is captured) should you proceed to [Orientation & Briefing](../SKILL.md#orientation--briefing) in the router.
 
+Phase receipts begin only after Phase 2 allocates a run ID and pipeline
+directory. Do not create a receipt during preflight.
 
 Next: phases/02-run-initialization.md

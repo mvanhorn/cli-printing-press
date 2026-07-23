@@ -1,5 +1,11 @@
 ## Phase 0: Resolve And Reuse
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "03-resolve-and-reuse"
+```
+
 Before new research:
 
 1. Resolve the spec source.
@@ -380,5 +386,12 @@ Token detection order:
 
 Resolve the API key gate (or skip it for public APIs) before moving to [Phase 1](04-research-brief.md).
 
+Before following `Next:`, record the durable handoff. Add `--evidence
+<existing-path>` for the resolved spec or state artifact and one short `--note`
+when a decision is not otherwise evident:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "03-resolve-and-reuse"
+```
 
 Next: phases/04-research-brief.md

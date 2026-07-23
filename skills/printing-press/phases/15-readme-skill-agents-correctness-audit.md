@@ -1,5 +1,11 @@
 ## Phase 4.9: README/SKILL/AGENTS Correctness Audit
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "15-readme-skill-agents-correctness-audit"
+```
+
 **Runs after [Phase 4.8](14-agentic-skill-review.md), before [Phase 5](18-dogfood-testing.md).** [Phase 4.8](14-agentic-skill-review.md) reviews whether the SKILL's trigger phrases and major claims match shipped behavior. Phase 4.9 reviews the user-facing artifacts as documents: README.md, SKILL.md, and AGENTS.md must not contain boilerplate that does not apply to this CLI.
 
 Use the Agent tool or review directly with this prompt contract:
@@ -35,5 +41,10 @@ their current local fix path.
 
 **Gate:** Any error finding is fix-before-Phase-5. Warnings may proceed only when they are explicitly explained in the acceptance report.
 
+Before following `Next:`, record the durable handoff with a short result note:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "15-readme-skill-agents-correctness-audit" --note "<pass or fixed finding count>"
+```
 
 Next: phases/16-agentic-output-review.md

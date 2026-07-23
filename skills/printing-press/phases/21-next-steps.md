@@ -1,5 +1,11 @@
 ## Phase 6: Next Steps
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "21-next-steps"
+```
+
 **This phase is NOT optional.** Every run MUST reach this point — both `ship` and `hold` verdicts get a menu. Do not skip it.
 
 After archiving, offer the user the next action. The menu shape is determined by the shipcheck verdict and (for ship runs) by polish's self-assessment.
@@ -246,5 +252,12 @@ Success is:
 - verification tools working against the same spec the user generated from
 - one or two fix loops, not a maze of re-entry phases
 - a CLI that is plausibly shippable today, not a perfect design memo
+
+After presenting and recording the user's next-step choice, close the disposable
+phase ledger:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "21-next-steps" --note "<chosen next step>"
+```
 
 Next: return to the router

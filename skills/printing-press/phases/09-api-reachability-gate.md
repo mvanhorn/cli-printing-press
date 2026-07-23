@@ -1,5 +1,11 @@
 ## Phase 1.9: API Reachability Gate
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "09-api-reachability-gate"
+```
+
 **MANDATORY. Do NOT skip this phase. Do NOT proceed to [Phase 2](10-generate.md) without running this check.**
 
 Before spending tokens on generation, verify the API actually responds to programmatic requests. One real HTTP call. If it fails, STOP.
@@ -197,5 +203,11 @@ Proceed silently to [Phase 2](10-generate.md).
 
 ---
 
+Before following `Next:`, record the successful reachability result in one
+short, credential-free note:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "09-api-reachability-gate" --note "<reachable surface and status only>"
+```
 
 Next: phases/10-generate.md

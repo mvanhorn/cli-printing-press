@@ -1,5 +1,11 @@
 ## Phase 4.7: Sync Param-Drop Gate
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "13-sync-param-drop-gate"
+```
+
 **Runs after shipcheck, before [Phase 4.8](14-agentic-skill-review.md).** Generated endpoint commands are param-cardinality-checked mechanically by `cobratree` against the spec — hand-authored sync / transcendence code is not. When the printed CLI's `internal/syncer/` calls `client.Get(<path>, params)` (or `Post`/`Put`/`Patch`/`Delete` with body params) against an endpoint the browser-sniff capture also observed, the gate compares the passed-key set against the captured-key set and flags any call where the capture is a strict superset of the code. Same JSON structure on both sides; only cardinality drift catches the "5 params here, 11 on the live site" failure mode.
 
 Skip the gate when there's no `traffic-analysis.json` for this CLI (vendor-spec CLIs without a browser-sniff phase). Otherwise:
@@ -28,5 +34,11 @@ The gate does not introspect response content. A passing gate proves request-key
 - Paths the capture never observed (synthetic / transcendence-only endpoints) are not flagged — the gate's question is "does the live site call this path with more keys," and absence of capture is a no-flag state.
 - A call that passes a key the capture never observed (extra-keys-from-code) is not flagged — exotic-mode params the public UI never exercised are out of scope.
 
+Before following `Next:`, record the durable handoff. If the gate had no
+traffic-analysis input, add `--skip --note "<allowed reason>"`:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "13-sync-param-drop-gate"
+```
 
 Next: phases/14-agentic-skill-review.md

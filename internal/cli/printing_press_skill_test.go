@@ -116,6 +116,8 @@ func TestPrintingPressSkillRebuildsStaleRepoLocalBinary(t *testing.T) {
 	require.Contains(t, content, "[local-binary-stale] local build v$_local_v is older than source v$_source_v")
 	require.Contains(t, content, "go build -o ./cli-printing-press ./cmd/cli-printing-press")
 	require.Contains(t, content, "[local-binary-rebuilt] rebuilt $_scope_dir/cli-printing-press")
+	require.Contains(t, content, `"$PRINTING_PRESS_BIN" phase-receipt --help`)
+	require.Contains(t, content, "binary lacks the phase-receipt helper required by this skill")
 	require.Contains(t, content, "hooks can be absent or")
 	require.NotContains(t, content, "always newer than the go-install version")
 
@@ -185,4 +187,63 @@ func TestPrintingPressSkillPhaseChainIntegrity(t *testing.T) {
 			require.Equal(t, "Next: phases/"+expected[i+1], last, "%s must point at the next phase", name)
 		}
 	}
+}
+
+func TestPrintingPressSkillPhaseReceiptsEnforceEveryHandoff(t *testing.T) {
+	t.Parallel()
+
+	expected := []string{
+		"02-run-initialization",
+		"03-resolve-and-reuse",
+		"04-research-brief",
+		"05-pre-browser-sniff-auth-intelligence",
+		"06-browser-sniff-gate",
+		"07-crowd-sniff-gate",
+		"08-ecosystem-absorb-gate",
+		"09-api-reachability-gate",
+		"10-generate",
+		"11-build-the-goat",
+		"12-shipcheck",
+		"13-sync-param-drop-gate",
+		"14-agentic-skill-review",
+		"15-readme-skill-agents-correctness-audit",
+		"16-agentic-output-review",
+		"17-local-code-review",
+		"18-dogfood-testing",
+		"19-polish",
+		"20-promote-and-archive",
+		"21-next-steps",
+	}
+
+	preflight, err := os.ReadFile("../../skills/printing-press/phases/01-preflight.md")
+	require.NoError(t, err)
+	require.NotContains(t, string(preflight), "phase-receipt enter")
+	require.Contains(t, string(preflight), "Phase receipts begin only after Phase 2")
+
+	for i, phase := range expected {
+		path := filepath.Join("../../skills/printing-press/phases", phase+".md")
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		content := string(data)
+		if i == 0 {
+			require.Contains(t, content, `phase-receipt init \`)
+			require.Contains(t, content, `--phase "02-run-initialization"`)
+			continue
+		}
+
+		require.Equal(t, 1, strings.Count(content, "phase-receipt enter"), "%s must record entry exactly once", phase)
+		require.Equal(t, 1, strings.Count(content, "phase-receipt complete"), "%s must record completion exactly once", phase)
+		require.Contains(t, content, `--phase "`+phase+`"`)
+		require.NotContains(t, content, "--phase-file")
+		require.NotContains(t, content, "--next")
+	}
+
+	router, err := os.ReadFile("../../skills/printing-press/SKILL.md")
+	require.NoError(t, err)
+	require.Contains(t, string(router), "Receipts own sequencing only")
+	require.Contains(t, string(router), "never copied into manuscripts")
+	require.Contains(t, string(router), "Never write secrets, credentials")
+	require.Contains(t, string(router), "`previous` receipt")
+	require.Contains(t, string(router), "`phase_receipt_log`")
+	require.Contains(t, string(router), "restart pointer")
 }

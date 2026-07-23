@@ -1,5 +1,11 @@
 ## Phase 5.5: Polish
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "19-polish"
+```
+
 **Always runs.** Invoke the `printing-press-polish` skill to run diagnostics, fix quality issues, and return a delta. The polish skill carries `context: fork` in its frontmatter, so its diagnostic-fix-rediagnose loop runs in a forked context — diagnostic spam, fix iterations, and re-audits stay scoped to the polish session and don't pollute this generation flow. The skill is autonomous — no user input needed. The goal is to ship the best CLI possible, not the fastest.
 
 Before invoking polish, collect the [Phase 3](11-build-the-goat.md) transcendence gate state and include
@@ -60,5 +66,11 @@ Write the polish skill's full response to:
 
 `$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-polish.md`
 
+Before following `Next:`, record the durable handoff and point `--evidence` at
+the polish proof:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "19-polish" --evidence "$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-polish.md"
+```
 
 Next: phases/20-promote-and-archive.md

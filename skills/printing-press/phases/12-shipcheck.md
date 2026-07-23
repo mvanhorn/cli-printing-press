@@ -1,5 +1,11 @@
 ## Phase 4: Shipcheck
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "12-shipcheck"
+```
+
 Run one combined verification block via the `shipcheck` umbrella, which runs all six legs (dogfood, verify, workflow-verify, verify-skill, validate-narrative, scorecard) in canonical order, propagates exit codes, and prints a per-leg verdict summary. The umbrella is the canonical Phase 4 invocation; running the legs individually is supported but not recommended (operators have skipped legs that way and shipped broken CLIs).
 
 Before running shipcheck, update the lock heartbeat:
@@ -100,5 +106,11 @@ If the final verdict is `hold`, release the lock without promoting to library:
 ```
 The working copy remains in `$CLI_WORK_DIR` for potential future retry. Proceed to [Phase 5.6](20-promote-and-archive.md) to archive manuscripts (archiving still happens on hold).
 
+Before following `Next:`, record the durable handoff and point `--evidence` at
+the shipcheck proof:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "12-shipcheck" --evidence "$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-shipcheck.md"
+```
 
 Next: phases/13-sync-param-drop-gate.md

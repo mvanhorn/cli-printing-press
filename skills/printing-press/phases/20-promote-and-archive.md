@@ -1,5 +1,11 @@
 ## Phase 5.6: Promote and Archive
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "20-promote-and-archive"
+```
+
 ### Acceptance gate check
 
 Before promoting, verify the [Phase 5](18-dogfood-testing.md) JSON gate marker:
@@ -226,5 +232,12 @@ rm -rf "$SESSION_DIR" 2>/dev/null || true
 ```
 
 **MANDATORY: After archiving, you MUST proceed to [Phase 6](21-next-steps.md). Do not print a summary and stop. Do not treat archiving as the end of the run. The run ends when the user has been asked about next steps via the ship-path or hold-path menu.**
+
+Before following `Next:`, record the durable handoff. Point `--evidence` at the
+promoted CLI for ship or the archived manuscript for hold:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "20-promote-and-archive" --evidence "<absolute-promoted-cli-or-manuscript-path>"
+```
 
 Next: phases/21-next-steps.md

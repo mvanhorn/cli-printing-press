@@ -1,5 +1,11 @@
 ## Phase 1.7: Browser-Sniff Gate
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "06-browser-sniff-gate"
+```
+
 After [Phase 1](04-research-brief.md) research, evaluate whether browser-sniffing the live site would improve the spec. This phase MUST produce a decision marker file for every source named in the briefing before [Phase 1.5](08-ecosystem-absorb-gate.md) can proceed.
 
 **Browser discovery is temporary discovery, not a printed-CLI runtime.** Use browser-use, agent-browser, the Claude chrome-MCP (`mcp__claude-in-chrome__*`, when the runtime exposes it), or a manual HAR (optionally augmented with computer-use screenshots for visual guidance, when `mcp__computer-use__*` is exposed) to learn the hidden web contract: URLs, methods, persisted GraphQL hashes, BFF envelopes, response shapes, cookies, CSRF/header construction, HTML/SSR/RSS/JSON-LD surfaces, and whether replay is viable. The final printed CLI must use replayable HTTP, Surf/browser-compatible HTTP, browser-clearance cookie import plus replay, or structured HTML/SSR/RSS extraction. If the only working path requires live page-context execution, HOLD or pivot scope — do not generate a resident browser sidecar transport.
@@ -239,5 +245,11 @@ Every source named in the briefing must have exactly one entry in `browser-brows
 
 ---
 
+Before following `Next:`, record the durable handoff and point `--evidence` at
+the browser-sniff gate marker:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "06-browser-sniff-gate" --evidence "$API_RUN_DIR/browser-browser-sniff-gate.json"
+```
 
 Next: phases/07-crowd-sniff-gate.md

@@ -1,5 +1,11 @@
 ## Phase 4.95: Local Code Review
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "17-local-code-review"
+```
+
 **Runs after [Phase 4.85](16-agentic-output-review.md), before [Phase 5](18-dogfood-testing.md).** Reviews the printed CLI source for security and correctness issues *before* any PR exists. This is the cheapest fix window in the pipeline — session context is hot, no PR feedback round-trip, no CI comments to chase. Catching issues here means they never become PR-time review comments, which is the wrong fix window for the same problems.
 
 **Target.** The generated CLI and MCP source under `$CLI_WORK_DIR`. In scope: `internal/cli/`, `internal/mcp/` (excluding `cobratree/`), `internal/store/`, `internal/client/`, and `cmd/`. **Out of scope:** `internal/cliutil/` and `internal/mcp/cobratree/` — these are generator-reserved packages. Any finding there is a machine bug; route to retro, do not patch in place.
@@ -65,5 +71,11 @@ The retro skill scans the template-shape and out-of-scope sections for candidate
 
 If a skip is genuinely warranted, the shipcheck report must state which review-shaped capabilities were searched and why none fit — not just "harness exemption."
 
+Before following `Next:`, record the durable handoff with a short result note.
+If the review was legitimately skipped, add `--skip --note "<allowed reason>"`:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "17-local-code-review"
+```
 
 Next: phases/18-dogfood-testing.md

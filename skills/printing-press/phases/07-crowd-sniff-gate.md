@@ -1,5 +1,11 @@
 ## Phase 1.8: Crowd-Sniff Gate
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "07-crowd-sniff-gate"
+```
+
 After [Phase 1.7](06-browser-sniff-gate.md) (Browser-Sniff Gate), evaluate whether mining community signals (npm SDKs and GitHub code search) would improve the spec. Skip this gate entirely if the user already passed `--spec` (spec source is already resolved and appears complete).
 
 **Time budget:** The crowd-sniff gate should complete within 10 minutes. If `cli-printing-press crowd-sniff` fails or times out, fall back immediately:
@@ -47,5 +53,12 @@ Proceed with whatever spec source exists. If no spec was found, fall back to `--
 
 ---
 
+Before following `Next:`, record the durable handoff. If this gate was skipped
+because a complete `--spec` was supplied, add `--skip --note "<allowed
+reason>"`:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "07-crowd-sniff-gate"
+```
 
 Next: phases/08-ecosystem-absorb-gate.md

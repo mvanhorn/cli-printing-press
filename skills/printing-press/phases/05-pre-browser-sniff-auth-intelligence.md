@@ -1,5 +1,11 @@
 ## Phase 1.6: Pre-Browser-Sniff Auth Intelligence
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "05-pre-browser-sniff-auth-intelligence"
+```
+
 After [Phase 1](04-research-brief.md) research completes, analyze findings to proactively assess what auth context the user could provide. This step uses research intelligence to ask the right question before browser-sniffing starts, rather than waiting for the user to volunteer "I logged in."
 
 **Skip this step if:** The briefing ([Orientation & Briefing](../SKILL.md#orientation--briefing) in the router) already captured auth context (`AUTH_CONTEXT` is set from the user selecting "I have an API key or I'm logged in").
@@ -42,5 +48,12 @@ Set `AUTH_SESSION_AVAILABLE=true` if the user selects option 1 or 2. The Browser
 
 ---
 
+Before following `Next:`, record the durable handoff. If this phase used its
+allowed skip, add `--skip --note "<allowed reason>"`; never put auth values in
+the note:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "05-pre-browser-sniff-auth-intelligence"
+```
 
 Next: phases/06-browser-sniff-gate.md

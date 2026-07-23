@@ -1,5 +1,11 @@
 ## Phase 4.8: Agentic SKILL Review
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "14-agentic-skill-review"
+```
+
 **Runs after shipcheck, before [Phase 5](18-dogfood-testing.md).** `verify-skill` ([Phase 4](12-shipcheck.md)) is a mechanical check — it catches wrong flags on wrong commands, undeclared flags, and positional-arg count mismatches. It cannot catch **semantic** issues that only a reader notices:
 
 - A trigger phrase promises behavior the CLI doesn't have ("plan dinners for the week" when there's no `meal-plan suggest`, only manual `meal-plan set`)
@@ -58,5 +64,10 @@ A template-level check would require every possible semantic mismatch to be patt
 
 The agent can't verify runtime behavior without running commands; stick to help-text and source-based claims. For runtime-behavior claims (e.g., "returns 5 matching recipes"), [Phase 5](18-dogfood-testing.md) dogfood is the right gate.
 
+Before following `Next:`, record the durable handoff with a short result note:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "14-agentic-skill-review" --note "<pass or fixed finding count>"
+```
 
 Next: phases/15-readme-skill-agents-correctness-audit.md

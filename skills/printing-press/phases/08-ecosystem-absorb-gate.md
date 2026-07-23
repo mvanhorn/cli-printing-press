@@ -1,5 +1,11 @@
 ## Phase 1.5: Ecosystem Absorb Gate
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "08-ecosystem-absorb-gate"
+```
+
 THIS IS A MANDATORY STOP GATE. Do not generate until this is complete and approved.
 
 ### Pre-flight check: browser-sniff-gate marker
@@ -354,5 +360,11 @@ WAIT for approval. Do NOT generate until approved.
 
 ---
 
+Before following `Next:`, record the durable handoff and point `--evidence` at
+the approved absorb manifest:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "08-ecosystem-absorb-gate" --evidence "$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-absorb-manifest.md"
+```
 
 Next: phases/09-api-reachability-gate.md

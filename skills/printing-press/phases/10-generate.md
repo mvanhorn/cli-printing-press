@@ -1,5 +1,11 @@
 ## Phase 2: Generate
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "10-generate"
+```
+
 ### Pre-Generation Category Enrichment
 
 Before generating, set the spec's top-level `category` before running
@@ -926,5 +932,11 @@ If generation fails:
   "$PRINTING_PRESS_BIN" lock release --cli <api>-pp-cli
   ```
 
+Before following `Next:`, record the durable handoff and point `--evidence` at
+the generated module:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "10-generate" --evidence "$CLI_WORK_DIR/go.mod"
+```
 
 Next: phases/11-build-the-goat.md

@@ -1,5 +1,11 @@
 ## Phase 5: Dogfood Testing
 
+**Receipt entry (required):**
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "18-dogfood-testing"
+```
+
 **MANDATORY when an API key is available. Do NOT skip or shortcut this phase.**
 
 Shipcheck verified commands start and return exit codes. Dogfood verifies the CLI
@@ -283,5 +289,12 @@ the LAN-only carve-out above. Do **not** use missing API key
 session-handshake auth; inject the session, or rely on the runner-emitted
 `cookie-auth-no-harness-session` skip when none is available.
 
+Before following `Next:`, record the durable handoff and point `--evidence` at
+the live dogfood acceptance JSON. If dogfood used an allowed skip, record it
+with `--skip --note "<allowed reason>"` and point at the skip marker instead:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "18-dogfood-testing" --evidence "$PROOFS_DIR/phase5-acceptance.json"
+```
 
 Next: phases/19-polish.md
