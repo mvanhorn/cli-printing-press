@@ -5068,6 +5068,9 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		}
 		return nil, "", false, false, false
 	}
+	if isRawRequestContentType(requestContentType) {
+		return nil, requestContentType, false, requestBody.Required, false
+	}
 
 	// Bare top-level array request body: no object properties to flatten to
 	// named params. Handled like the oneOf/anyOf fallback (emit the
@@ -5102,9 +5105,6 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 	}
 
 	if len(properties) == 0 {
-		if isRawRequestContentType(requestContentType) {
-			return nil, requestContentType, false, requestBody.Required, false
-		}
 		return nil, "", false, false, false
 	}
 	inferCSVArrays := isJSONContentType(requestContentType)
