@@ -149,11 +149,8 @@ func baseURLPathPrefix(baseURL string) string {
 // firstPathSegment returns the first non-empty "/"-delimited segment of p
 // (e.g. "/api/v1/users" -> "api"), or "" when p has no segment.
 func firstPathSegment(p string) string {
-	p = strings.TrimLeft(p, "/")
-	if i := strings.IndexByte(p, '/'); i >= 0 {
-		return p[:i]
-	}
-	return p
+	seg, _, _ := strings.Cut(strings.TrimLeft(p, "/"), "/")
+	return seg
 }
 
 func isMeShapedEndpoint(e spec.Endpoint, tail string) bool {
