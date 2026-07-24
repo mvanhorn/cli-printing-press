@@ -103,29 +103,29 @@ During Phase 5.6 in [phases/20-promote-and-archive.md](phases/20-promote-and-arc
 
 Start with preflight before any user-facing prompt. After preflight succeeds, return here and complete Orientation & Briefing. Then enter Run Initialization and continue in the file order below, following each file's final `Next:` pointer.
 
-| File | One-line purpose | Gates |
-|---|---|---|
-| [phases/01-preflight.md](phases/01-preflight.md) | Validate the binary, toolchain, disk, browser tools, and setup contract. | Yes |
-| [phases/02-run-initialization.md](phases/02-run-initialization.md) | Allocate run-scoped state and working paths. | No |
-| [phases/03-resolve-and-reuse.md](phases/03-resolve-and-reuse.md) | Resolve inputs, prior work, source priority, and auth. | Yes |
-| [phases/04-research-brief.md](phases/04-research-brief.md) | Produce the build-driving research brief. | No |
-| [phases/05-pre-browser-sniff-auth-intelligence.md](phases/05-pre-browser-sniff-auth-intelligence.md) | Gather auth context before capture. | No |
-| [phases/06-browser-sniff-gate.md](phases/06-browser-sniff-gate.md) | Decide and record browser discovery per source. | Yes |
-| [phases/07-crowd-sniff-gate.md](phases/07-crowd-sniff-gate.md) | Decide whether community code should enrich the spec. | Yes |
-| [phases/08-ecosystem-absorb-gate.md](phases/08-ecosystem-absorb-gate.md) | Approve the absorb and transcendence manifest. | Yes |
-| [phases/09-api-reachability-gate.md](phases/09-api-reachability-gate.md) | Prove a shippable runtime surface is reachable. | Yes |
-| [phases/10-generate.md](phases/10-generate.md) | Enrich the spec, lock, and generate the CLI. | No |
-| [phases/11-build-the-goat.md](phases/11-build-the-goat.md) | Implement every approved feature. | Yes |
-| [phases/12-shipcheck.md](phases/12-shipcheck.md) | Run verification and reach ship or hold. | Yes |
-| [phases/13-sync-param-drop-gate.md](phases/13-sync-param-drop-gate.md) | Compare authored and captured request keys. | Yes |
-| [phases/14-agentic-skill-review.md](phases/14-agentic-skill-review.md) | Review printed-SKILL claims against commands. | Yes |
-| [phases/15-readme-skill-agents-correctness-audit.md](phases/15-readme-skill-agents-correctness-audit.md) | Audit user-facing document correctness. | Yes |
-| [phases/16-agentic-output-review.md](phases/16-agentic-output-review.md) | Review live output for semantic bugs. | No |
-| [phases/17-local-code-review.md](phases/17-local-code-review.md) | Review and autofix source before live testing. | Yes |
-| [phases/18-dogfood-testing.md](phases/18-dogfood-testing.md) | Exercise real workflows through the live matrix. | Yes |
-| [phases/19-polish.md](phases/19-polish.md) | Run diagnostic, fix, and rediagnose. | Yes |
-| [phases/20-promote-and-archive.md](phases/20-promote-and-archive.md) | Enforce acceptance, promote, and archive evidence. | Yes |
-| [phases/21-next-steps.md](phases/21-next-steps.md) | Route outcomes to publish, polish, retro, journal, or done. | Yes |
+| Step | File | One-line purpose | Gates |
+|---:|---|---|---|
+| 1 | [phases/01-preflight.md](phases/01-preflight.md) | Validate the binary, toolchain, disk, browser tools, and setup contract. | Yes |
+| 2 | [phases/02-run-initialization.md](phases/02-run-initialization.md) | Allocate run-scoped state and working paths. | No |
+| 3 | [phases/03-resolve-and-reuse.md](phases/03-resolve-and-reuse.md) | Resolve inputs, prior work, source priority, and auth. | Yes |
+| 4 | [phases/04-research-brief.md](phases/04-research-brief.md) | Produce the build-driving research brief. | No |
+| 5 | [phases/05-pre-browser-sniff-auth-intelligence.md](phases/05-pre-browser-sniff-auth-intelligence.md) | Gather auth context before capture. | No |
+| 6 | [phases/06-browser-sniff-gate.md](phases/06-browser-sniff-gate.md) | Decide and record browser discovery per source. | Yes |
+| 7 | [phases/07-crowd-sniff-gate.md](phases/07-crowd-sniff-gate.md) | Decide whether community code should enrich the spec. | Yes |
+| 8 | [phases/08-ecosystem-absorb-gate.md](phases/08-ecosystem-absorb-gate.md) | Approve the absorb and transcendence manifest. | Yes |
+| 9 | [phases/09-api-reachability-gate.md](phases/09-api-reachability-gate.md) | Prove a shippable runtime surface is reachable. | Yes |
+| 10 | [phases/10-generate.md](phases/10-generate.md) | Enrich the spec, lock, and generate the CLI. | No |
+| 11 | [phases/11-build-the-goat.md](phases/11-build-the-goat.md) | Implement every approved feature. | Yes |
+| 12 | [phases/12-shipcheck.md](phases/12-shipcheck.md) | Run verification and reach ship or hold. | Yes |
+| 13 | [phases/13-sync-param-drop-gate.md](phases/13-sync-param-drop-gate.md) | Compare authored and captured request keys. | Yes |
+| 14 | [phases/14-agentic-skill-review.md](phases/14-agentic-skill-review.md) | Review printed-SKILL claims against commands. | Yes |
+| 15 | [phases/15-readme-skill-agents-correctness-audit.md](phases/15-readme-skill-agents-correctness-audit.md) | Audit user-facing document correctness. | Yes |
+| 16 | [phases/16-agentic-output-review.md](phases/16-agentic-output-review.md) | Review live output for semantic bugs. | No |
+| 17 | [phases/17-local-code-review.md](phases/17-local-code-review.md) | Review and autofix source before live testing. | Yes |
+| 18 | [phases/18-dogfood-testing.md](phases/18-dogfood-testing.md) | Exercise real workflows through the live matrix. | Yes |
+| 19 | [phases/19-polish.md](phases/19-polish.md) | Run diagnostic, fix, and rediagnose. | Yes |
+| 20 | [phases/20-promote-and-archive.md](phases/20-promote-and-archive.md) | Enforce acceptance, promote, and archive evidence. | Yes |
+| 21 | [phases/21-next-steps.md](phases/21-next-steps.md) | Route outcomes to publish, polish, retro, journal, or done. | Yes |
 
 ### Durable Phase Receipts
 

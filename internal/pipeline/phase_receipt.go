@@ -255,7 +255,9 @@ func ReadPhaseReceipts(path string) ([]PhaseReceipt, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening phase receipt ledger: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
 	var receipts []PhaseReceipt
 	scanner := bufio.NewScanner(file)
@@ -306,7 +308,7 @@ func newPhaseReceipt(sequence int, opts PhaseReceiptOptions, event, next string)
 	}
 }
 
-func appendPhaseReceipt(path string, receipt *PhaseReceipt) error {
+func appendPhaseReceipt(path string, receipt *PhaseReceipt) (returnErr error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("creating phase receipt directory: %w", err)
 	}
@@ -325,7 +327,11 @@ func appendPhaseReceipt(path string, receipt *PhaseReceipt) error {
 	if err != nil {
 		return fmt.Errorf("opening phase receipt ledger for append: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); returnErr == nil && err != nil {
+			returnErr = fmt.Errorf("closing phase receipt ledger: %w", err)
+		}
+	}()
 	if _, err := file.Write(data); err != nil {
 		return fmt.Errorf("appending phase receipt: %w", err)
 	}
