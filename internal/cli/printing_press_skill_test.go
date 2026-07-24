@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/stretchr/testify/require"
 )
 
@@ -130,28 +131,12 @@ func TestPrintingPressSkillRebuildsStaleRepoLocalBinary(t *testing.T) {
 func TestPrintingPressSkillPhaseChainIntegrity(t *testing.T) {
 	t.Parallel()
 
-	expected := []string{
-		"01-preflight.md",
-		"02-run-initialization.md",
-		"03-resolve-and-reuse.md",
-		"04-research-brief.md",
-		"05-pre-browser-sniff-auth-intelligence.md",
-		"06-browser-sniff-gate.md",
-		"07-crowd-sniff-gate.md",
-		"08-ecosystem-absorb-gate.md",
-		"09-api-reachability-gate.md",
-		"10-generate.md",
-		"11-build-the-goat.md",
-		"12-shipcheck.md",
-		"13-sync-param-drop-gate.md",
-		"14-agentic-skill-review.md",
-		"15-readme-skill-agents-correctness-audit.md",
-		"16-agentic-output-review.md",
-		"17-local-code-review.md",
-		"18-dogfood-testing.md",
-		"19-polish.md",
-		"20-promote-and-archive.md",
-		"21-next-steps.md",
+	// The phase files are the receipt phases plus preflight, which runs before a
+	// ledger exists. Source the receipt phases from the binary so this on-disk
+	// check stays pinned to the graph the state machine enforces.
+	expected := []string{"01-preflight.md"}
+	for _, phase := range pipeline.PrintingPressReceiptPhases() {
+		expected = append(expected, phase+".md")
 	}
 
 	paths, err := filepath.Glob("../../skills/printing-press/phases/*.md")
@@ -193,33 +178,25 @@ func TestPrintingPressSkillPhaseChainIntegrity(t *testing.T) {
 func TestPrintingPressSkillPhaseReceiptsEnforceEveryHandoff(t *testing.T) {
 	t.Parallel()
 
-	expected := []string{
-		"02-run-initialization",
-		"03-resolve-and-reuse",
-		"04-research-brief",
-		"05-pre-browser-sniff-auth-intelligence",
-		"06-browser-sniff-gate",
-		"07-crowd-sniff-gate",
-		"08-ecosystem-absorb-gate",
-		"09-api-reachability-gate",
-		"10-generate",
-		"11-build-the-goat",
-		"12-shipcheck",
-		"13-sync-param-drop-gate",
-		"14-agentic-skill-review",
-		"15-readme-skill-agents-correctness-audit",
-		"16-agentic-output-review",
-		"17-local-code-review",
-		"18-dogfood-testing",
-		"19-polish",
-		"20-promote-and-archive",
-		"21-next-steps",
-	}
+	// Source the canonical phase order from the binary so the skill files are
+	// checked against the graph the state machine actually enforces.
+	expected := pipeline.PrintingPressReceiptPhases()
 
 	preflight, err := os.ReadFile("../../skills/printing-press/phases/01-preflight.md")
 	require.NoError(t, err)
 	require.NotContains(t, string(preflight), "phase-receipt enter")
 	require.Contains(t, string(preflight), "Phase receipts begin only after Phase 2")
+
+	// Three phases carry a documented alternate handoff recorded with --next in
+	// addition to their canonical completion: shipcheck's hold path, the
+	// build-infeasible return to the absorb gate, and the promote-gate backtrack
+	// to dogfood. Those files carry a second `phase-receipt complete` block and
+	// the matching --next target; every other phase stays strictly canonical.
+	alternateNext := map[string]string{
+		"11-build-the-goat":      "08-ecosystem-absorb-gate",
+		"12-shipcheck":           "20-promote-and-archive",
+		"20-promote-and-archive": "18-dogfood-testing",
+	}
 
 	for i, phase := range expected {
 		path := filepath.Join("../../skills/printing-press/phases", phase+".md")
@@ -233,10 +210,15 @@ func TestPrintingPressSkillPhaseReceiptsEnforceEveryHandoff(t *testing.T) {
 		}
 
 		require.Equal(t, 1, strings.Count(content, "phase-receipt enter"), "%s must record entry exactly once", phase)
-		require.Equal(t, 1, strings.Count(content, "phase-receipt complete"), "%s must record completion exactly once", phase)
+		if alt, ok := alternateNext[phase]; ok {
+			require.Equal(t, 2, strings.Count(content, "phase-receipt complete"), "%s must record its canonical and its documented alternate handoff", phase)
+			require.Contains(t, content, `--next "`+alt+`"`, "%s must record its documented alternate handoff", phase)
+		} else {
+			require.Equal(t, 1, strings.Count(content, "phase-receipt complete"), "%s must record completion exactly once", phase)
+			require.NotContains(t, content, "--next")
+		}
 		require.Contains(t, content, `--phase "`+phase+`"`)
 		require.NotContains(t, content, "--phase-file")
-		require.NotContains(t, content, "--next")
 	}
 
 	router, err := os.ReadFile("../../skills/printing-press/SKILL.md")

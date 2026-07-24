@@ -13,12 +13,17 @@ import (
 
 const PhaseReceiptSchemaVersion = 1
 
+// PhaseReceiptEvent is the categorical status a receipt records. Its underlying
+// string type keeps the JSON encoding unchanged while the compiler enforces that
+// only these five values flow through the state machine.
+type PhaseReceiptEvent string
+
 const (
-	PhaseReceiptEntered   = "entered"
-	PhaseReceiptCompleted = "completed"
-	PhaseReceiptSkipped   = "skipped"
-	PhaseReceiptBlocked   = "blocked"
-	PhaseReceiptFailed    = "failed"
+	PhaseReceiptEntered   PhaseReceiptEvent = "entered"
+	PhaseReceiptCompleted PhaseReceiptEvent = "completed"
+	PhaseReceiptSkipped   PhaseReceiptEvent = "skipped"
+	PhaseReceiptBlocked   PhaseReceiptEvent = "blocked"
+	PhaseReceiptFailed    PhaseReceiptEvent = "failed"
 )
 
 var printingPressReceiptPhases = []string{
@@ -61,20 +66,34 @@ var printingPressAlternateNext = map[string][]string{
 	"20-promote-and-archive":   {"18-dogfood-testing"},
 }
 
+// PrintingPressReceiptPhases returns the canonical phase order the state machine
+// enforces. It returns a copy so callers, including the skill contract tests, can
+// check the on-disk phase files against the graph the binary actually enforces
+// without being able to mutate that single source of truth.
+func PrintingPressReceiptPhases() []string {
+	return append([]string(nil), printingPressReceiptPhases...)
+}
+
+// PrintingPressAlternateNextPhases returns the documented alternate handoffs for
+// a phase, or nil when it has none. It returns a copy for the same reason.
+func PrintingPressAlternateNextPhases(phase string) []string {
+	return append([]string(nil), printingPressAlternateNext[phase]...)
+}
+
 // PhaseReceipt is one append-only transition in a skill-run phase ledger.
 // Domain artifacts remain authoritative; receipts only record execution order
 // and point at the evidence a resumed agent should load.
 type PhaseReceipt struct {
-	SchemaVersion int       `json:"schema_version"`
-	Sequence      int       `json:"sequence"`
-	RunID         string    `json:"run_id"`
-	Phase         string    `json:"phase"`
-	Event         string    `json:"event"`
-	PhaseFile     string    `json:"phase_file,omitempty"`
-	Next          string    `json:"next,omitempty"`
-	Evidence      []string  `json:"evidence,omitempty"`
-	Note          string    `json:"note,omitempty"`
-	RecordedAt    time.Time `json:"recorded_at"`
+	SchemaVersion int               `json:"schema_version"`
+	Sequence      int               `json:"sequence"`
+	RunID         string            `json:"run_id"`
+	Phase         string            `json:"phase"`
+	Event         PhaseReceiptEvent `json:"event"`
+	PhaseFile     string            `json:"phase_file,omitempty"`
+	Next          string            `json:"next,omitempty"`
+	Evidence      []string          `json:"evidence,omitempty"`
+	Note          string            `json:"note,omitempty"`
+	RecordedAt    time.Time         `json:"recorded_at"`
 }
 
 type PhaseReceiptOptions struct {
@@ -332,7 +351,7 @@ func ReadPhaseReceipts(path string) ([]PhaseReceipt, error) {
 	return receipts, nil
 }
 
-func newPhaseReceipt(sequence int, opts PhaseReceiptOptions, event, next string) *PhaseReceipt {
+func newPhaseReceipt(sequence int, opts PhaseReceiptOptions, event PhaseReceiptEvent, next string) *PhaseReceipt {
 	phase := strings.TrimSpace(opts.Phase)
 	return &PhaseReceipt{
 		SchemaVersion: PhaseReceiptSchemaVersion,
