@@ -253,7 +253,7 @@ The skill enforces preflight checks invisible from this repo's CWD (printer sent
 This copies the skills to `~/.claude/skills/`.
 
 ## Skill Authoring
-When a machine change alters what an agent should do or what a command guarantees, update the relevant `SKILL.md` in the same change; do not leave the skill as a stale manual workaround for behavior the machine now owns.
+When a machine change alters what an agent should do or what a command guarantees, update the relevant `SKILL.md` router and its phase files under `skills/printing-press/phases/` in the same change; do not leave the skill as a stale manual workaround for behavior the machine now owns.
 Detail in [`docs/SKILLS.md`](docs/SKILLS.md): install targets, workflow parity, the reference-file pattern, and the `context: fork` / `user-invocable` frontmatter fields.
 
 ## Code & Comment Hygiene
