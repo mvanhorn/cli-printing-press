@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,11 @@ import (
 )
 
 const PhaseReceiptSchemaVersion = 1
+
+// phaseReceiptMaxLineBytes bounds a single ledger line for both the reader's
+// scanner and the writer's torn-tail repair, so the two paths agree on what
+// can possibly be a receipt.
+const phaseReceiptMaxLineBytes = 1024 * 1024
 
 // PhaseReceiptEvent is the categorical status a receipt records. Its underlying
 // string type keeps the JSON encoding unchanged while the compiler enforces that
@@ -321,7 +327,7 @@ func ReadPhaseReceipts(path string) ([]PhaseReceipt, error) {
 
 	var lines []string
 	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), phaseReceiptMaxLineBytes)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
@@ -387,7 +393,78 @@ func newPhaseReceipt(sequence int, opts PhaseReceiptOptions, event PhaseReceiptE
 	}
 }
 
-func appendPhaseReceipt(path string, receipt *PhaseReceipt) (returnErr error) {
+// repairPhaseReceiptTornTail truncates a torn final line before a new receipt
+// is appended. ReadPhaseReceipts tolerates a torn tail when a valid prefix
+// exists, but the fragment's bytes stay on disk — an O_APPEND write would fuse
+// the next receipt onto the fragment and corrupt the new record as well. The
+// writer owns file integrity, so the repair lives here and the read path stays
+// pure. Anything the read path treats as hard corruption is left untouched for
+// it to report.
+func repairPhaseReceiptTornTail(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading phase receipt ledger for repair: %w", err)
+	}
+
+	validEnd := 0   // byte offset just past the last valid, newline-terminated receipt
+	validCount := 0 // receipts in the valid prefix
+	for offset := 0; offset < len(data); {
+		lineEnd := len(data)
+		terminated := false
+		if nl := bytes.IndexByte(data[offset:], '\n'); nl >= 0 {
+			lineEnd = offset + nl
+			terminated = true
+		}
+		line := data[offset:lineEnd]
+
+		var receipt PhaseReceipt
+		if len(bytes.TrimSpace(line)) > 0 && len(line) <= phaseReceiptMaxLineBytes && json.Unmarshal(line, &receipt) == nil {
+			if validateStoredPhaseReceipt(receipt, validCount+1) != nil || receipt.Sequence != validCount+1 {
+				// The read path hard-errors on a parseable-but-invalid receipt
+				// even at the tail; leave the corruption for it to report. But
+				// never O_APPEND after an unterminated tail - that would fuse
+				// the new receipt onto the corrupt bytes and lose it too.
+				if !terminated {
+					return fmt.Errorf("phase receipt ledger is corrupted; refusing to append after unterminated invalid tail: %s", path)
+				}
+				return nil
+			}
+			if !terminated {
+				// A complete receipt that lost only its newline in an
+				// interrupted append. The read path already counts it as
+				// recorded, so finish the line instead of discarding it.
+				return appendPhaseReceiptBytes(path, []byte{'\n'})
+			}
+			validCount++
+			validEnd = lineEnd + 1
+			offset = validEnd
+			continue
+		}
+
+		// Blank or unparseable line. Only a final line behind a valid prefix
+		// is the torn append the read path tolerates (a fragment larger than
+		// the reader's line cap cannot be a torn append of a receipt this
+		// writer produced); anything else is hard corruption the reader must
+		// keep seeing. Even then, never O_APPEND after an unterminated tail.
+		isFinal := !terminated || lineEnd+1 >= len(data)
+		if !isFinal || validCount == 0 || len(line) > phaseReceiptMaxLineBytes {
+			if !terminated {
+				return fmt.Errorf("phase receipt ledger is corrupted; refusing to append after unreadable unterminated tail: %s", path)
+			}
+			return nil
+		}
+		if err := os.Truncate(path, int64(validEnd)); err != nil {
+			return fmt.Errorf("repairing torn phase receipt ledger: %w", err)
+		}
+		return nil
+	}
+	return nil
+}
+
+func appendPhaseReceipt(path string, receipt *PhaseReceipt) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("creating phase receipt directory: %w", err)
 	}
@@ -396,12 +473,17 @@ func appendPhaseReceipt(path string, receipt *PhaseReceipt) (returnErr error) {
 	} else if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("inspecting phase receipt ledger: %w", err)
 	}
+	if err := repairPhaseReceiptTornTail(path); err != nil {
+		return err
+	}
 	data, err := json.Marshal(receipt)
 	if err != nil {
 		return fmt.Errorf("encoding phase receipt: %w", err)
 	}
-	data = append(data, '\n')
+	return appendPhaseReceiptBytes(path, append(data, '\n'))
+}
 
+func appendPhaseReceiptBytes(path string, data []byte) (returnErr error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("opening phase receipt ledger for append: %w", err)

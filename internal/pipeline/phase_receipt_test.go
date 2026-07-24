@@ -578,6 +578,138 @@ func TestReadPhaseReceiptsSurvivesTornFinalLine(t *testing.T) {
 	assert.True(t, recorded)
 	assert.Equal(t, 4, receipt.Sequence)
 	assert.Equal(t, "04-research-brief", receipt.Phase)
+
+	// The append must have repaired the torn tail on disk, not written after
+	// it: re-reading the ledger returns the valid prefix plus the new receipt,
+	// and the torn fragment is gone rather than fused onto the new record.
+	receipts, err = ReadPhaseReceipts(path)
+	require.NoError(t, err)
+	require.Len(t, receipts, 4)
+	assert.Equal(t, "04-research-brief", receipts[3].Phase)
+	assert.Equal(t, PhaseReceiptEntered, receipts[3].Event)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), `"sequence":99`)
+}
+
+func TestAppendRepairsBlankFinalLineBeforeWriting(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
+	_, _, err := InitPhaseReceipts(receiptOptions(t, path, printingPressReceiptPhases[0]))
+	require.NoError(t, err)
+
+	// A torn write of just the record separator leaves a blank final line.
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
+
+	enter := receiptOptions(t, path, "03-resolve-and-reuse")
+	receipt, _, err := EnterPhase(enter)
+	require.NoError(t, err)
+	assert.Equal(t, 2, receipt.Sequence)
+
+	receipts, err := ReadPhaseReceipts(path)
+	require.NoError(t, err)
+	require.Len(t, receipts, 2)
+	assert.Equal(t, "03-resolve-and-reuse", receipts[1].Phase)
+}
+
+func TestAppendCompletesReceiptMissingOnlyItsNewline(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
+	_, _, err := InitPhaseReceipts(receiptOptions(t, path, printingPressReceiptPhases[0]))
+	require.NoError(t, err)
+	enter := receiptOptions(t, path, "03-resolve-and-reuse")
+	_, _, err = EnterPhase(enter)
+	require.NoError(t, err)
+
+	// Strip the final newline: the last receipt is complete JSON that lost only
+	// its record separator in an interrupted append. The reader counts it as
+	// recorded, so repair must finish the line, not discard the receipt.
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, byte('\n'), data[len(data)-1])
+	require.NoError(t, os.WriteFile(path, data[:len(data)-1], 0o600))
+
+	receipt, _, err := CompletePhase(enter, false)
+	require.NoError(t, err)
+	assert.Equal(t, 3, receipt.Sequence)
+
+	receipts, err := ReadPhaseReceipts(path)
+	require.NoError(t, err)
+	require.Len(t, receipts, 3)
+	assert.Equal(t, PhaseReceiptEntered, receipts[1].Event)
+	assert.Equal(t, PhaseReceiptCompleted, receipts[2].Event)
+}
+
+func TestAppendLeavesHardCorruptionForTheReader(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
+	_, _, err := InitPhaseReceipts(receiptOptions(t, path, printingPressReceiptPhases[0]))
+	require.NoError(t, err)
+	enter := receiptOptions(t, path, "03-resolve-and-reuse")
+	_, _, err = EnterPhase(enter)
+	require.NoError(t, err)
+
+	// Corruption in the middle of the ledger is a hard error, not a torn tail.
+	// The repair must not truncate it away; the writer surfaces the same error
+	// the reader reports.
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	lines := strings.Split(string(data), "\n")
+	injected := append([]string{lines[0], "{not-json"}, lines[1:]...)
+	corrupted := strings.Join(injected, "\n")
+	require.NoError(t, os.WriteFile(path, []byte(corrupted), 0o600))
+
+	_, _, err = CompletePhase(enter, false)
+	require.ErrorContains(t, err, "line 2")
+
+	// Even invoked directly, the repair refuses to touch corruption the reader
+	// hard-errors on: a malformed middle line, and a parseable final line whose
+	// contents fail receipt validation.
+	require.NoError(t, repairPhaseReceiptTornTail(path))
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, corrupted, string(after))
+
+	badFinal := lines[0] + "\n" + `{"schema_version":1,"sequence":7,"run_id":"run-123"}` + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(badFinal), 0o600))
+	require.NoError(t, repairPhaseReceiptTornTail(path))
+	after, err = os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, badFinal, string(after))
+}
+
+func TestRepairRefusesAppendAfterUnterminatedCorruption(t *testing.T) {
+	t.Parallel()
+
+	// Unrepairable states that do not end on a line boundary must refuse the
+	// append entirely: O_APPEND would fuse the new receipt onto bytes nobody
+	// can parse, silently losing the new record too. The reader hard-errors on
+	// all of these, so no state-machine writer reaches this path; the refusal
+	// guards direct callers of the append helper.
+	dir := t.TempDir()
+	valid := `{"schema_version":1,"sequence":1,"run_id":"run-123","phase":"02-run-initialization","event":"completed","phase_file":"phases/02-run-initialization.md","next":"03-resolve-and-reuse","recorded_at":"2026-07-22T00:00:00Z"}`
+
+	// A torn first receipt: no valid prefix exists, so there is nothing to
+	// truncate back to and the file must not be appended to.
+	tornFirst := filepath.Join(dir, "torn-first.jsonl")
+	require.NoError(t, os.WriteFile(tornFirst, []byte(`{"schema_version":1,"sequence":1`), 0o600))
+	err := repairPhaseReceiptTornTail(tornFirst)
+	require.ErrorContains(t, err, "refusing to append")
+	after, err := os.ReadFile(tornFirst)
+	require.NoError(t, err)
+	assert.Equal(t, `{"schema_version":1,"sequence":1`, string(after))
+
+	// A parseable-but-invalid unterminated tail: the reader hard-errors on the
+	// receipt itself, so repair must neither truncate nor allow the append.
+	invalidTail := filepath.Join(dir, "invalid-tail.jsonl")
+	require.NoError(t, os.WriteFile(invalidTail, []byte(valid+"\n"+`{"schema_version":1,"sequence":99,"run_id":"run-123"}`), 0o600))
+	err = repairPhaseReceiptTornTail(invalidTail)
+	require.ErrorContains(t, err, "refusing to append")
 }
 
 func TestReadPhaseReceiptsSurvivesBlankFinalLine(t *testing.T) {
