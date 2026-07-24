@@ -44,6 +44,23 @@ var printingPressReceiptPhases = []string{
 	"21-next-steps",
 }
 
+// printingPressAlternateNext is the skill's documented non-linear control-flow
+// graph: every handoff the phase text prescribes that departs from the canonical
+// linear order. The absorb and reachability gates route discovery rework back to
+// the sniff gates, a build that proves infeasible returns to the absorb gate for
+// re-approval, the shipcheck hold jumps straight to promote-and-archive, a local
+// code review that uncovers a scope change returns to the absorb gate, and the
+// promote gate backtracks to dogfood when an acceptance marker is missing. Every
+// other handoff stays on the canonical linear order.
+var printingPressAlternateNext = map[string][]string{
+	"08-ecosystem-absorb-gate": {"06-browser-sniff-gate", "07-crowd-sniff-gate"},
+	"09-api-reachability-gate": {"06-browser-sniff-gate"},
+	"11-build-the-goat":        {"08-ecosystem-absorb-gate"},
+	"12-shipcheck":             {"20-promote-and-archive"},
+	"17-local-code-review":     {"08-ecosystem-absorb-gate"},
+	"20-promote-and-archive":   {"18-dogfood-testing"},
+}
+
 // PhaseReceipt is one append-only transition in a skill-run phase ledger.
 // Domain artifacts remain authoritative; receipts only record execution order
 // and point at the evidence a resumed agent should load.
@@ -64,6 +81,7 @@ type PhaseReceiptOptions struct {
 	Path     string
 	RunID    string
 	Phase    string
+	Next     string
 	Evidence []string
 	Note     string
 	Resume   bool
@@ -74,6 +92,9 @@ type PhaseReceiptOptions struct {
 // run initialization is the first phase that can durably record a receipt.
 func InitPhaseReceipts(opts PhaseReceiptOptions) (*PhaseReceipt, bool, error) {
 	if err := validatePhaseReceiptIdentity(opts); err != nil {
+		return nil, false, err
+	}
+	if err := rejectExplicitNext(opts); err != nil {
 		return nil, false, err
 	}
 	if opts.Phase != printingPressReceiptPhases[0] {
@@ -119,6 +140,9 @@ func EnterPhase(opts PhaseReceiptOptions) (*PhaseReceipt, bool, error) {
 	if err := validatePhaseReceiptIdentity(opts); err != nil {
 		return nil, false, err
 	}
+	if err := rejectExplicitNext(opts); err != nil {
+		return nil, false, err
+	}
 	receipts, err := ReadPhaseReceipts(opts.Path)
 	if err != nil {
 		return nil, false, err
@@ -157,11 +181,21 @@ func CompletePhase(opts PhaseReceiptOptions, skipped bool) (*PhaseReceipt, bool,
 	if err := validatePhaseReceiptIdentity(opts); err != nil {
 		return nil, false, err
 	}
+	if skipped && strings.TrimSpace(opts.Next) != "" {
+		return nil, false, errors.New("--next cannot be combined with --skip")
+	}
 	if skipped && strings.TrimSpace(opts.Note) == "" {
 		return nil, false, errors.New("skipped phase requires --note")
 	}
 	if err := validateEvidence(opts.Evidence); err != nil {
 		return nil, false, err
+	}
+	next, err := resolveCompleteNext(opts.Phase, opts.Next)
+	if err != nil {
+		return nil, false, err
+	}
+	if next != expectedNextPhase(opts.Phase) && strings.TrimSpace(opts.Note) == "" {
+		return nil, false, fmt.Errorf("alternate handoff to %q requires --note", next)
 	}
 
 	receipts, err := ReadPhaseReceipts(opts.Path)
@@ -178,13 +212,16 @@ func CompletePhase(opts PhaseReceiptOptions, skipped bool) (*PhaseReceipt, bool,
 		event = PhaseReceiptSkipped
 	}
 	if last.Phase == opts.Phase && last.Event == event {
+		if last.Next != next {
+			return nil, false, fmt.Errorf("phase %q already completed with next %q; re-completing with %q is not allowed", opts.Phase, last.Next, next)
+		}
 		return last, false, nil
 	}
 	if last.Event != PhaseReceiptEntered || last.Phase != opts.Phase {
 		return nil, false, fmt.Errorf("cannot complete phase %q: latest receipt is %s for phase %q", opts.Phase, last.Event, last.Phase)
 	}
 
-	receipt := newPhaseReceipt(last.Sequence+1, opts, event, expectedNextPhase(opts.Phase))
+	receipt := newPhaseReceipt(last.Sequence+1, opts, event, next)
 	if err := appendPhaseReceipt(opts.Path, receipt); err != nil {
 		return nil, false, err
 	}
@@ -195,6 +232,9 @@ func CompletePhase(opts PhaseReceiptOptions, skipped bool) (*PhaseReceipt, bool,
 // a concise reason and deliberately carry no next phase.
 func StopPhase(opts PhaseReceiptOptions, failed bool) (*PhaseReceipt, bool, error) {
 	if err := validatePhaseReceiptIdentity(opts); err != nil {
+		return nil, false, err
+	}
+	if err := rejectExplicitNext(opts); err != nil {
 		return nil, false, err
 	}
 	if strings.TrimSpace(opts.Note) == "" {
@@ -504,8 +544,55 @@ func validateExpectedNext(phase, next string) error {
 	if expected == "" {
 		return fmt.Errorf("unknown Printing Press phase %q", phase)
 	}
-	if strings.TrimSpace(next) != expected {
-		return fmt.Errorf("phase %q must hand off to %q", phase, expected)
+	trimmed := strings.TrimSpace(next)
+	if trimmed == expected {
+		return nil
+	}
+	alternates := printingPressAlternateNext[phase]
+	for _, alternate := range alternates {
+		if trimmed == alternate {
+			return nil
+		}
+	}
+	if len(alternates) > 0 {
+		return fmt.Errorf("phase %q must hand off to %q or a documented alternate (%s)", phase, expected, strings.Join(alternates, ", "))
+	}
+	return fmt.Errorf("phase %q must hand off to %q", phase, expected)
+}
+
+// resolveCompleteNext picks the next phase a completion records. An empty request
+// keeps the canonical linear order; an explicit request must name either the
+// canonical next or one of the documented alternates for the phase.
+func resolveCompleteNext(phase, next string) (string, error) {
+	canonical := expectedNextPhase(phase)
+	if canonical == "" {
+		return "", fmt.Errorf("unknown Printing Press phase %q", phase)
+	}
+	trimmed := strings.TrimSpace(next)
+	if trimmed == "" || trimmed == canonical {
+		return canonical, nil
+	}
+	for _, alternate := range printingPressAlternateNext[phase] {
+		if trimmed == alternate {
+			return trimmed, nil
+		}
+	}
+	return "", fmt.Errorf("phase %q cannot hand off to %q; allowed: %s", phase, trimmed, strings.Join(allowedNextPhases(phase), ", "))
+}
+
+// allowedNextPhases orders the canonical next phase first so a rejected handoff
+// tells the caller the default route before the documented exceptions.
+func allowedNextPhases(phase string) []string {
+	allowed := []string{expectedNextPhase(phase)}
+	return append(allowed, printingPressAlternateNext[phase]...)
+}
+
+// rejectExplicitNext guards the paths that do not record a next phase. Init,
+// enter, and stop derive sequencing themselves, so a caller passing --next there
+// has misunderstood the command rather than requested a documented alternate.
+func rejectExplicitNext(opts PhaseReceiptOptions) error {
+	if strings.TrimSpace(opts.Next) != "" {
+		return errors.New("--next is only valid when completing a phase")
 	}
 	return nil
 }

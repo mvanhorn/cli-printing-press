@@ -12,6 +12,7 @@ type phaseReceiptFlags struct {
 	path     string
 	runID    string
 	phase    string
+	next     string
 	evidence []string
 	note     string
 	resume   bool
@@ -103,6 +104,7 @@ func newPhaseReceiptCompleteCmd() *cobra.Command {
 	addPhaseReceiptCommonFlags(cmd, &flags)
 	cmd.Flags().StringArrayVar(&flags.evidence, "evidence", nil, "Existing evidence path (repeatable)")
 	cmd.Flags().StringVar(&flags.note, "note", "", "Concise decision or skip reason")
+	cmd.Flags().StringVar(&flags.next, "next", "", "Documented alternate next phase (defaults to the canonical next)")
 	cmd.Flags().BoolVar(&flags.skip, "skip", false, "Record an explicit phase skip")
 	return cmd
 }
@@ -168,6 +170,7 @@ func (flags phaseReceiptFlags) options() pipeline.PhaseReceiptOptions {
 		Path:     flags.path,
 		RunID:    flags.runID,
 		Phase:    flags.phase,
+		Next:     flags.next,
 		Evidence: flags.evidence,
 		Note:     flags.note,
 		Resume:   flags.resume,
