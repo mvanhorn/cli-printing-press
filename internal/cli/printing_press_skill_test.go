@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -164,15 +165,15 @@ func TestPrintingPressSkillPhaseChainIntegrity(t *testing.T) {
 	router, err := os.ReadFile("../../skills/printing-press/SKILL.md")
 	require.NoError(t, err)
 
-	// The phase index is a table whose rows link each phase file. Parse the
-	// rows in document order and require a positional match, so a swapped row
-	// or a link whose text and target disagree fails rather than passing on a
-	// global substring.
-	rowPattern := regexp.MustCompile(`(?m)^\| \[phases/([^\]]+)\]\(phases/([^)]+)\) \|`)
+	// The phase index is a table whose rows number and link each phase file.
+	// Parse the rows in document order and require both the displayed step and
+	// file link to match their canonical positions.
+	rowPattern := regexp.MustCompile(`(?m)^\| ([0-9]+) \| \[phases/([^\]]+)\]\(phases/([^)]+)\) \|`)
 	var indexRows []string
-	for _, match := range rowPattern.FindAllStringSubmatch(string(router), -1) {
-		require.Equal(t, match[1], match[2], "phase index link text and target must agree")
-		indexRows = append(indexRows, match[1])
+	for i, match := range rowPattern.FindAllStringSubmatch(string(router), -1) {
+		require.Equal(t, strconv.Itoa(i+1), match[1], "phase index step must match its execution position")
+		require.Equal(t, match[2], match[3], "phase index link text and target must agree")
+		indexRows = append(indexRows, match[2])
 	}
 	require.Equal(t, expected, indexRows, "router phase index rows must list every phase file in execution order")
 
