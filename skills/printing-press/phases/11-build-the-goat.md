@@ -750,4 +750,10 @@ the Phase 3 build log:
 "$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "11-build-the-goat" --evidence "$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-build-log.md"
 ```
 
+That canonical completion is for a build that ships forward. If the Phase 3 Completion Gate instead forces a return to [Phase 1.5](08-ecosystem-absorb-gate.md) because a shipping-scope feature proved infeasible (the build-infeasible rule in SKILL.md), record that rework handoff instead of the canonical one, then re-enter the absorb gate rather than following the canonical `Next:` below:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "11-build-the-goat" --next "08-ecosystem-absorb-gate" --note "<why the manifest needs rework>"
+```
+
 Next: phases/12-shipcheck.md

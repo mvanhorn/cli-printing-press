@@ -178,6 +178,12 @@ The matrix below references `probe-reachability` `mode` for the bot-detection ro
 | 403 | No successful useful capture | No 403 research issues | **WARN** - ask user |
 | Timeout/DNS/connection refused | Any | Any | **WARN** - ask user |
 
+On a **RETURN TO PHASE 1.7** verdict, record the discovery-rework handoff so the receipt gate accepts the re-entry into the browser-sniff gate rather than treating it as an out-of-order jump, then re-enter [Phase 1.7](06-browser-sniff-gate.md) instead of following the canonical `Next:` below:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "09-api-reachability-gate" --next "06-browser-sniff-gate" --note "cleared-browser capture retry: <reason>"
+```
+
 ### On HARD STOP
 
 Present via `AskUserQuestion`:

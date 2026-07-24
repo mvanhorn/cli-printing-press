@@ -45,6 +45,12 @@ Surface to the user only when the fix requires a real tradeoff they have to make
 
 Treat agent judgment as sufficient here — these categories are distinguishable on inspection. Conservatism is the failure mode, not over-fixing. Drafting an AskUserQuestion because "the user might want to know" is premature; fix the issue and note it in the shipcheck report.
 
+When the shipping-scope-shrinks tradeoff sends the run back to [Phase 1.5](08-ecosystem-absorb-gate.md) for re-approval, record that scope-change handoff so the receipt gate accepts the re-entry rather than treating it as an out-of-order jump, then re-enter the absorb gate instead of following the canonical `Next:` below:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "17-local-code-review" --next "08-ecosystem-absorb-gate" --note "scope change: <feature>"
+```
+
 Re-run the review after each autofix round until findings clear. Cap at 3 rounds; if findings persist after round 3, stop and surface — autofix is not converging. Findings in out-of-scope paths (`internal/cliutil/`, `internal/mcp/cobratree/`) file as retro-candidates and do not count toward the convergence check or the 3-round cap; the convergence check applies only to in-scope findings.
 
 **Findings artifact.** Log to `manuscripts/<api>/<run>/proofs/phase-4.95-findings.md`. Skip the per-finding enumeration for fixed-in-place items — the commits and diffs are already the authoritative record. Specifically:

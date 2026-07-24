@@ -8,12 +8,20 @@
 
 ### Acceptance gate check
 
-Before promoting, verify the [Phase 5](18-dogfood-testing.md) JSON gate marker:
+This gate guards **promotion**, so it applies only when the shipcheck verdict is `ship` or `ship-with-gaps`. A `hold` run reaches this phase from [Phase 4](12-shipcheck.md) with no dogfood markers by design — it skips promotion entirely, archives manuscripts, and completes canonically to [Phase 6](21-next-steps.md). A hold must NOT take the backtrack to Phase 5 below; its missing markers are expected.
+
+For a ship-verdict run, verify the [Phase 5](18-dogfood-testing.md) JSON gate marker before promoting:
 
 - If `$PROOFS_DIR/phase5-acceptance.json` exists with `status: "pass"` → proceed to promote.
 - If `$PROOFS_DIR/phase5-acceptance.json` exists with `status: "fail"` → CLI is on hold. Do NOT promote. Proceed to Archive Manuscripts.
 - If `$PROOFS_DIR/phase5-skip.json` exists and the auth-aware skip is valid → proceed to promote.
 - If neither JSON marker exists → [Phase 5](18-dogfood-testing.md) was skipped or not recorded. Go back and run it, or write the valid skip marker. Do NOT promote without one.
+
+When a ship-verdict run has a missing marker and you go back to run [Phase 5](18-dogfood-testing.md), record the backtrack handoff so the receipt gate accepts the re-entry rather than treating it as an out-of-order jump:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "20-promote-and-archive" --next "18-dogfood-testing" --note "acceptance marker missing: <what dogfood must produce>"
+```
 
 ### Promote to Library
 

@@ -28,6 +28,12 @@ Do not proceed until every briefing source has a marker entry.
 
 **Pre-check (existing):** If no spec or HAR file has been resolved by this point and [Phase 1.7](06-browser-sniff-gate.md) (Browser-Sniff Gate) was not evaluated, STOP. Go back and run the browser-sniff gate decision matrix. The absorb manifest depends on knowing the API surface, which requires a spec.
 
+When any of the stop-gate checks at the top of this phase sends you back to Phase 1.7, record that discovery-rework handoff so the receipt gate accepts the re-entry rather than treating it as an out-of-order jump:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "08-ecosystem-absorb-gate" --next "06-browser-sniff-gate" --note "browser-sniff decision missing for <source>"
+```
+
 The GOAT CLI doesn't "find gaps." It absorbs EVERY feature from EVERY tool and then transcends with compound use cases nobody thought of. This phase builds the absorb manifest.
 
 ### Step 1.5a: Search for every tool that touches this API
@@ -312,9 +318,13 @@ When an inversion is detected, HALT before Phase Gate 1.5 and print:
 
 Then ask via `AskUserQuestion`:
 
-1. **Re-run discovery for <Source A>** — loop back to [Phase 1.7](06-browser-sniff-gate.md) browser-sniff or [Phase 1.8](07-crowd-sniff-gate.md) crowd-sniff for the primary source specifically.
+1. **Re-run discovery for <Source A>** — loop back to [Phase 1.7](06-browser-sniff-gate.md) browser-sniff or [Phase 1.8](07-crowd-sniff-gate.md) crowd-sniff for the primary source specifically. Record this discovery-rework handoff before re-entering the gate — for the browser-sniff loop use the receipt block after the stop-gate checks at the top of this phase; for the crowd-sniff loop:
 2. **Accept the inversion** — the user explicitly confirms they're fine with the secondary leading. Record this in `source-priority.json` as `inversion_accepted: true`.
 3. **Drop <Source B>** — remove the secondary from the manifest so it can't overshadow the primary.
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "08-ecosystem-absorb-gate" --next "07-crowd-sniff-gate" --note "crowd-sniff rework for <source>"
+```
 
 Do not proceed to the prose showcase until this is resolved.
 

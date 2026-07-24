@@ -187,16 +187,30 @@ func TestPrintingPressSkillPhaseReceiptsEnforceEveryHandoff(t *testing.T) {
 	require.NotContains(t, string(preflight), "phase-receipt enter")
 	require.Contains(t, string(preflight), "Phase receipts begin only after Phase 2")
 
-	// Three phases carry a documented alternate handoff recorded with --next in
-	// addition to their canonical completion: shipcheck's hold path, the
-	// build-infeasible return to the absorb gate, and the promote-gate backtrack
-	// to dogfood. Those files carry a second `phase-receipt complete` block and
-	// the matching --next target; every other phase stays strictly canonical.
-	alternateNext := map[string]string{
-		"11-build-the-goat":      "08-ecosystem-absorb-gate",
-		"12-shipcheck":           "20-promote-and-archive",
-		"20-promote-and-archive": "18-dogfood-testing",
+	// Six phases carry a documented alternate handoff recorded with --next in
+	// addition to their canonical completion: discovery rework from the absorb and
+	// reachability gates, the build-infeasible return to the absorb gate,
+	// shipcheck's hold jump, the local-code-review scope-change return, and the
+	// promote-gate backtrack to dogfood. The absorb gate records both rework
+	// targets (browser-sniff and crowd-sniff) as full commands, so it carries
+	// two extra blocks; every other phase carries one extra. All other phases
+	// stay strictly canonical. The block COUNT is on-disk truth asserted here;
+	// the --next TARGETS are read from the binary graph, so the files and the
+	// state machine cross-check.
+	completeBlocks := map[string]int{
+		"08-ecosystem-absorb-gate": 3,
+		"09-api-reachability-gate": 2,
+		"11-build-the-goat":        2,
+		"12-shipcheck":             2,
+		"17-local-code-review":     2,
+		"20-promote-and-archive":   2,
 	}
+
+	// Every `phase-receipt complete` occurrence in a phase file must be a full,
+	// executable command, not a prose fragment: it names the ledger, the run, and
+	// its own phase. This closes the hole where a bare substring match let a
+	// non-executable snippet satisfy the contract.
+	completeCommand := regexp.MustCompile(`phase-receipt complete[^\n]*`)
 
 	for i, phase := range expected {
 		path := filepath.Join("../../skills/printing-press/phases", phase+".md")
@@ -210,11 +224,27 @@ func TestPrintingPressSkillPhaseReceiptsEnforceEveryHandoff(t *testing.T) {
 		}
 
 		require.Equal(t, 1, strings.Count(content, "phase-receipt enter"), "%s must record entry exactly once", phase)
-		if alt, ok := alternateNext[phase]; ok {
-			require.Equal(t, 2, strings.Count(content, "phase-receipt complete"), "%s must record its canonical and its documented alternate handoff", phase)
-			require.Contains(t, content, `--next "`+alt+`"`, "%s must record its documented alternate handoff", phase)
+
+		wantBlocks := completeBlocks[phase]
+		if wantBlocks == 0 {
+			wantBlocks = 1
+		}
+		require.Equal(t, wantBlocks, strings.Count(content, "phase-receipt complete"), "%s must record exactly %d completion block(s)", phase, wantBlocks)
+
+		occurrences := completeCommand.FindAllString(content, -1)
+		require.Equal(t, wantBlocks, len(occurrences), "%s: every phase-receipt complete must be a single-line command", phase)
+		for _, occurrence := range occurrences {
+			require.Contains(t, occurrence, `--file "$PHASE_RECEIPT_LOG"`, "%s: complete command must name the ledger: %q", phase, occurrence)
+			require.Contains(t, occurrence, `--run-id "$RUN_ID"`, "%s: complete command must name the run: %q", phase, occurrence)
+			require.Contains(t, occurrence, `--phase "`+phase+`"`, "%s: complete command must name its own phase: %q", phase, occurrence)
+		}
+
+		alternates := pipeline.PrintingPressAlternateNextPhases(phase)
+		if len(alternates) > 0 {
+			for _, alt := range alternates {
+				require.Contains(t, content, `--next "`+alt+`"`, "%s must record its documented alternate handoff to %s", phase, alt)
+			}
 		} else {
-			require.Equal(t, 1, strings.Count(content, "phase-receipt complete"), "%s must record completion exactly once", phase)
 			require.NotContains(t, content, "--next")
 		}
 		require.Contains(t, content, `--phase "`+phase+`"`)

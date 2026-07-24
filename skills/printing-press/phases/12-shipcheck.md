@@ -104,10 +104,15 @@ If the final verdict is `hold`, release the lock without promoting to library:
 ```bash
 "$PRINTING_PRESS_BIN" lock release --cli <api>-pp-cli
 ```
-The working copy remains in `$CLI_WORK_DIR` for potential future retry. Proceed to [Phase 5.6](20-promote-and-archive.md) to archive manuscripts (archiving still happens on hold).
+The working copy remains in `$CLI_WORK_DIR` for potential future retry. A hold does not run the sync-param-drop gate, the review phases, or dogfood for a CLI that is not shipping — it jumps straight to [Phase 5.6](20-promote-and-archive.md) to archive manuscripts (archiving still happens on hold), bypassing the intervening review phases. Record that alternate handoff on the receipt instead of the canonical one:
 
-Before following `Next:`, record the durable handoff and point `--evidence` at
-the shipcheck proof:
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "12-shipcheck" --next "20-promote-and-archive" --note "hold: <one-line reason>"
+```
+
+Then proceed directly to [Phase 5.6](20-promote-and-archive.md) — do **not** follow the canonical `Next:` pointer below. The run arrives at [Phase 5.6](20-promote-and-archive.md) without dogfood markers; that phase documents why a hold archives without them.
+
+**Run exactly one of the two completion blocks: the hold block above, or the ship block below.** On a `ship` verdict, record the canonical handoff and point `--evidence` at the shipcheck proof before following `Next:`:
 
 ```bash
 "$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "12-shipcheck" --evidence "$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-shipcheck.md"

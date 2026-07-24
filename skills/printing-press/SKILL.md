@@ -67,7 +67,7 @@ See the `printing-press-polish` skill for details. It runs diagnostics, fixes ve
 
 - **Do not ship a CLI that hasn't been behaviorally tested against real targets.** `go build` and `verify` pass-rate are structural signals, not correctness signals. Phase 5's mechanical test matrix in [phases/18-dogfood-testing.md](phases/18-dogfood-testing.md) runs every subcommand + `--json` + error paths; if that matrix was not executed, the CLI is not shippable. Quick Check is the floor; Full Dogfood is required when the user asks for thoroughness.
 - **Bugs found during dogfood are fix-before-ship, not "file for v0.2".** If a 1-3 file edit resolves it, do it now. `ship-with-gaps` is deprecated as a default verdict (see Phase 4 in [phases/12-shipcheck.md](phases/12-shipcheck.md)). Context is freshest in-session; a v0.2 backlog that may never be revisited ships known-broken CLIs.
-- **Features approved in Phase 1.5 are shipping scope.** Do not downgrade a shipping-scope feature to a stub mid-build. If implementation becomes infeasible, return to Phase 1.5 in [phases/08-ecosystem-absorb-gate.md](phases/08-ecosystem-absorb-gate.md) with a revised manifest and get explicit re-approval.
+- **Features approved in Phase 1.5 are shipping scope.** Do not downgrade a shipping-scope feature to a stub mid-build. If implementation becomes infeasible, return to Phase 1.5 in [phases/08-ecosystem-absorb-gate.md](phases/08-ecosystem-absorb-gate.md) with a revised manifest and get explicit re-approval. Record the return with the alternate `--next` handoff shown in [phases/11-build-the-goat.md](phases/11-build-the-goat.md) before re-entering the gate.
 - **Do not quote human-time estimates for sub-tasks** ("~15-30 min", "~1 hour", "quick fix") in `AskUserQuestion` options, phase descriptions, or reference docs. The agent does the work, not the user; agent-fabricated estimates are notoriously bad and train users to distrust the prompt. Describe scope instead (lines of code, files touched, relative size). The carve-outs are wall-clock estimates for genuinely time-bound things: the whole-CLI run (set the user's expectation up front — most CLIs take 30+ minutes), tool installs (`go install` takes ~10 seconds), and printing-press subcommands that do network-bound work (crowd-sniff scans npm + GitHub, ~5-10 minutes). Anything bounded by agent reasoning time is not time-bound — describe scope.
 - **Use raw captures for contract research.** When reading official docs, auth/error/rate-limit pages, endpoint references, OpenAPI/Postman links, or source pages whose exact identifiers affect the generated CLI, read [references/fetch-docs.md](references/fetch-docs.md) and use its `fetch-docs.sh` helper. Reserve `WebFetch` for quick TL;DR reads where losing field-level details is acceptable.
 - Optimize for time-to-ship, not time-to-document.
@@ -140,7 +140,14 @@ At each phase boundary:
 2. On an ordinary handoff, confirm that `previous.next` names this phase. On an
    idempotent re-entry or explicit `--resume`, confirm that `previous.phase`
    names this phase. The binary derives the canonical phase file and next phase
-   itself and rejects any other ordering.
+   itself and rejects any other ordering. The only exceptions are the documented rework and hold handoffs,
+   recorded with `--next` — an alternate handoff always requires `--note` and
+   never combines with `--skip`:
+   - discovery rework — Phase 1.5 or the reachability gate back to Phase 1.7/1.8 (`08→06`, `08→07`, `09→06`)
+   - build infeasible — Phase 3 back to Phase 1.5 (`11→08`)
+   - shipcheck hold — Phase 4 straight to Phase 5.6 (`12→20`)
+   - scope change in review — Phase 4.95 back to Phase 1.5 (`17→08`)
+   - promote backtrack — Phase 5.6 back to Phase 5 (`20→18`)
 3. Do the phase work only after the entry receipt succeeds.
 4. Run `complete` before following the phase file's `Next:` pointer. Use
    `--skip --note "<allowed reason>"` for an allowed skip.
@@ -152,6 +159,13 @@ After context compaction or another interruption, read the current
 `state.json`, use its `run_id` and `phase_receipt_log` values to run
 `phase-receipt status`, and only then choose a phase file. The receipt's `next`
 field is the restart pointer; do not infer that pointer from the conversation.
+A mid-phase interruption has an empty `next`, because `entered`, `blocked`, and
+`failed` receipts carry none: when the latest event is `entered`, the restart
+pointer is that same phase (re-entering it is idempotent), and a `blocked` or
+`failed` receipt is resumed by re-entering the same phase with `--resume`. If a
+fresh conversation has lost the run entirely, find `state.json` at
+`$PRESS_RUNSTATE/runs/<run-id>/state.json` — [preflight](phases/01-preflight.md)
+defines `$PRESS_RUNSTATE`.
 
 Receipts own sequencing only. Existing artifacts remain the source of truth for
 specs, manifests, builds, proofs, acceptance, and promotion. Add `--evidence`
