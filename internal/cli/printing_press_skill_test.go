@@ -22,6 +22,18 @@ func TestPrintingPressSkillSideEffectNarrativeGuidance(t *testing.T) {
 	require.Contains(t, content, "Non-side-effect unsupported examples still fail strict mode")
 }
 
+func TestPrintingPressSkillDocumentsGeneratedHelpers(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile("../../skills/printing-press/SKILL.md")
+	require.NoError(t, err)
+
+	content := string(data)
+	require.Contains(t, content, "Helpers already emitted by the generator")
+	require.Contains(t, content, "internal/cli/helpers.go")
+	require.Contains(t, content, "Do not reinvent these helpers in novel command files")
+}
+
 func TestPrintingPressSkillMCPEnrichmentGate(t *testing.T) {
 	t.Parallel()
 
