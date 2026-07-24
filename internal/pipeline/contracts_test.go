@@ -681,7 +681,7 @@ func TestPrintingPressSkillReprintPromoteRoutingHandlesRebuiltNovels(t *testing.
 	assert.Contains(t, promote, "A false Path A clobbers hand work; a")
 	assert.Contains(t, promote, "false Path B only asks for review")
 
-	assert.Contains(t, reprint, "[Phase 5.6](../printing-press/phases/20-promote-and-archive.md) first\ndry-runs `\"$PRINTING_PRESS_BIN\" regen-merge")
+	assert.Contains(t, reprint, "Phase 5.6 first\ndry-runs `\"$PRINTING_PRESS_BIN\" regen-merge")
 	assert.Contains(t, reprint, "fresh tree contains all prior novel work")
 	assert.Contains(t, reprint, "genuine `NOVEL-COLLISION` / missing-referent cases halt")
 	assert.Contains(t, reprint, "preserve the existing\nlibrary manifest's permanent `creator`")
