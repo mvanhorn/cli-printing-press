@@ -32,6 +32,8 @@ func TestPrintingPressSkillDocumentsGeneratedHelpers(t *testing.T) {
 	require.Contains(t, content, "Helpers already emitted by the generator")
 	require.Contains(t, content, "internal/cli/helpers.go")
 	require.Contains(t, content, "Do not reinvent these helpers in novel command files")
+	require.Contains(t, content, "check `internal/cli/helpers.go` first")
+	require.Contains(t, content, "Put utilities shared by multiple novel commands in `internal/cli/helpers.go`")
 }
 
 func TestPrintingPressSkillMCPEnrichmentGate(t *testing.T) {

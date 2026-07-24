@@ -3382,6 +3382,8 @@ The generator handles Priority 0 (data layer) and most of Priority 1 (absorbed A
 
 **Helpers already emitted by the generator.** Do not reinvent these helpers in novel command files. They live in `internal/cli/helpers.go` after generation and are available to every hand-written command in package `cli`:
 
+Before defining any new utility in a novel command, check `internal/cli/helpers.go` first and reuse an existing package helper when it fits. Put utilities shared by multiple novel commands in `internal/cli/helpers.go`, not individual command files, so package-level symbols stay unique.
+
 - `printJSONFiltered(w io.Writer, v any, flags *rootFlags) error` - apply `--select`, `--compact`, `--csv`, and `--quiet` while writing JSON from a Go value.
 - `printAutoTable(w io.Writer, items []map[string]any) error` - render JSON-like rows as the generated human table format.
 - `defaultDBPath(name string) string` - resolve the local SQLite database path for `<name>`.
