@@ -418,7 +418,6 @@ func TestPhaseReceiptsAcceptEveryDocumentedAlternateHandoff(t *testing.T) {
 	}
 
 	for _, edge := range edges {
-		edge := edge
 		t.Run(edge.phase+"_to_"+edge.next, func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")

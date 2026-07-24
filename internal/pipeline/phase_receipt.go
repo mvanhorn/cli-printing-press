@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -568,10 +569,8 @@ func validateExpectedNext(phase, next string) error {
 		return nil
 	}
 	alternates := printingPressAlternateNext[phase]
-	for _, alternate := range alternates {
-		if trimmed == alternate {
-			return nil
-		}
+	if slices.Contains(alternates, trimmed) {
+		return nil
 	}
 	if len(alternates) > 0 {
 		return fmt.Errorf("phase %q must hand off to %q or a documented alternate (%s)", phase, expected, strings.Join(alternates, ", "))
@@ -591,10 +590,8 @@ func resolveCompleteNext(phase, next string) (string, error) {
 	if trimmed == "" || trimmed == canonical {
 		return canonical, nil
 	}
-	for _, alternate := range printingPressAlternateNext[phase] {
-		if trimmed == alternate {
-			return trimmed, nil
-		}
+	if slices.Contains(printingPressAlternateNext[phase], trimmed) {
+		return trimmed, nil
 	}
 	return "", fmt.Errorf("phase %q cannot hand off to %q; allowed: %s", phase, trimmed, strings.Join(allowedNextPhases(phase), ", "))
 }
