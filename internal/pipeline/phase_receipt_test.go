@@ -3,6 +3,7 @@ package pipeline
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -529,4 +530,112 @@ func TestPhaseReceiptsRefuseSymlinkedLedger(t *testing.T) {
 	opts := receiptOptions(t, link, "02-run-initialization")
 	_, _, err := InitPhaseReceipts(opts)
 	require.ErrorContains(t, err, "refusing symlinked")
+}
+
+// appendTornReceipt simulates an interrupted append: a partial JSON object with
+// no closing brace lands as the final line of the ledger, exactly what a torn
+// write from appendPhaseReceipt leaves behind when the process dies mid-write.
+func appendTornReceipt(t *testing.T, path string) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, file.Close()) }()
+	_, err = file.WriteString(`{"schema_version":1,"sequence":99,"run_id":"run-123"`)
+	require.NoError(t, err)
+}
+
+func TestReadPhaseReceiptsSurvivesTornFinalLine(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
+	_, _, err := InitPhaseReceipts(receiptOptions(t, path, printingPressReceiptPhases[0]))
+	require.NoError(t, err)
+
+	// Build a valid three-receipt prefix: init completed, then entered + completed
+	// for the resolve-and-reuse phase.
+	enter := receiptOptions(t, path, "03-resolve-and-reuse")
+	_, _, err = EnterPhase(enter)
+	require.NoError(t, err)
+	_, _, err = CompletePhase(enter, false)
+	require.NoError(t, err)
+
+	// A torn append leaves a truncated final line.
+	appendTornReceipt(t, path)
+
+	// The reader treats the truncated tail as a write that never happened and
+	// returns the valid prefix.
+	receipts, err := ReadPhaseReceipts(path)
+	require.NoError(t, err)
+	assert.Len(t, receipts, 3)
+	assert.Equal(t, 3, receipts[len(receipts)-1].Sequence)
+	assert.Equal(t, PhaseReceiptCompleted, receipts[len(receipts)-1].Event)
+
+	// Resuming the run must keep working: the next receipt appends with the
+	// sequence number that follows the valid prefix, not the torn tail.
+	enterNext := receiptOptions(t, path, "04-research-brief")
+	receipt, recorded, err := EnterPhase(enterNext)
+	require.NoError(t, err)
+	assert.True(t, recorded)
+	assert.Equal(t, 4, receipt.Sequence)
+	assert.Equal(t, "04-research-brief", receipt.Phase)
+}
+
+func TestReadPhaseReceiptsSurvivesBlankFinalLine(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
+	_, _, err := InitPhaseReceipts(receiptOptions(t, path, printingPressReceiptPhases[0]))
+	require.NoError(t, err)
+
+	// A newline-only trailing line is a torn write of just the record separator.
+	// The init receipt already ends in a newline, so one more yields a single
+	// blank final line.
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
+
+	receipts, err := ReadPhaseReceipts(path)
+	require.NoError(t, err)
+	assert.Len(t, receipts, 1)
+}
+
+func TestReadPhaseReceiptsRejectsMalformedMiddleLine(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
+	_, _, err := InitPhaseReceipts(receiptOptions(t, path, printingPressReceiptPhases[0]))
+	require.NoError(t, err)
+	enter := receiptOptions(t, path, "03-resolve-and-reuse")
+	_, _, err = EnterPhase(enter)
+	require.NoError(t, err)
+
+	// Inject a malformed line between the two valid receipts so the corruption
+	// is in the middle of the ledger, not at its tail.
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	lines := strings.Split(string(data), "\n")
+	injected := append([]string{lines[0], "{not-json"}, lines[1:]...)
+	require.NoError(t, os.WriteFile(path, []byte(strings.Join(injected, "\n")), 0o600))
+
+	_, err = ReadPhaseReceipts(path)
+	require.ErrorContains(t, err, "line 2")
+}
+
+func TestLatestPhaseReceiptReturnsLastValidOnTornLedger(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
+	_, _, err := InitPhaseReceipts(receiptOptions(t, path, printingPressReceiptPhases[0]))
+	require.NoError(t, err)
+	enter := receiptOptions(t, path, "03-resolve-and-reuse")
+	_, _, err = EnterPhase(enter)
+	require.NoError(t, err)
+
+	appendTornReceipt(t, path)
+
+	receipt, err := LatestPhaseReceipt(path, "run-123")
+	require.NoError(t, err)
+	assert.Equal(t, "03-resolve-and-reuse", receipt.Phase)
+	assert.Equal(t, PhaseReceiptEntered, receipt.Event)
+	assert.Equal(t, 2, receipt.Sequence)
 }

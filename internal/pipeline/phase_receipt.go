@@ -319,17 +319,39 @@ func ReadPhaseReceipts(path string) ([]PhaseReceipt, error) {
 		_ = file.Close()
 	}()
 
-	var receipts []PhaseReceipt
+	var lines []string
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	line := 0
 	for scanner.Scan() {
-		line++
-		if strings.TrimSpace(scanner.Text()) == "" {
+		lines = append(lines, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading phase receipt ledger: %w", err)
+	}
+
+	var receipts []PhaseReceipt
+	for i, raw := range lines {
+		line := i + 1
+		// A malformed or blank final line is a torn write from an interrupted
+		// append only when a valid prefix already exists - a torn append
+		// presupposes a ledger that was initialized. Without a prefix the line is
+		// plain corruption and stays a hard error.
+		isTornTail := i == len(lines)-1 && len(receipts) > 0
+		if strings.TrimSpace(raw) == "" {
+			if isTornTail {
+				// A newline-only final line: the receipt was never acknowledged to
+				// the caller, so it logically never happened. Drop it and return
+				// the valid prefix.
+				break
+			}
 			return nil, fmt.Errorf("parsing phase receipt ledger line %d: blank lines are not allowed", line)
 		}
 		var receipt PhaseReceipt
-		if err := json.Unmarshal(scanner.Bytes(), &receipt); err != nil {
+		if err := json.Unmarshal([]byte(raw), &receipt); err != nil {
+			if isTornTail {
+				// Truncated final line: a torn append that never happened.
+				break
+			}
 			return nil, fmt.Errorf("parsing phase receipt ledger line %d: %w", line, err)
 		}
 		if err := validateStoredPhaseReceipt(receipt, line); err != nil {
@@ -339,9 +361,6 @@ func ReadPhaseReceipts(path string) ([]PhaseReceipt, error) {
 			return nil, fmt.Errorf("parsing phase receipt ledger line %d: sequence is %d", line, receipt.Sequence)
 		}
 		receipts = append(receipts, receipt)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading phase receipt ledger: %w", err)
 	}
 	if len(receipts) == 0 {
 		return nil, errors.New("phase receipt ledger is empty")
