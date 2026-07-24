@@ -240,7 +240,7 @@ Age thresholds are rules of thumb, not gates:
 - over 120 days → redo recommended
 
 Don't predict API churn from age alone — describe the signals and let the
-user override. The [Phase 0 binary-version-bump revalidation](../printing-press/phases/03-resolve-and-reuse.md) in
+user override. The Phase 0 binary-version-bump revalidation in
 `/printing-press` handles the machine-delta side independently; don't
 duplicate it here.
 
@@ -248,7 +248,7 @@ Ask via `AskUserQuestion`:
 
 1. **Reuse prior research** — keep the prior brief; the subagent re-scores
    prior novel features against current personas
-2. **Redo research** — re-run [Phase 1](../printing-press/phases/04-research-brief.md) from scratch; the subagent still
+2. **Redo research** — re-run Phase 1 of `/printing-press` from scratch; the subagent still
    ingests prior novel features as Pass 2(d) input
 3. **Show me first** — display the prior brief's headline + novel-features
    list, then re-ask between options 1 and 2
@@ -289,11 +289,11 @@ pre-generation spec edit and skip dimensions that already score 10/10:
 
 - `mcp_remote_transport`, `mcp_token_efficiency`, `mcp_tool_design`, and
   `mcp_surface_strategy` below 10 can be lifted by the `/printing-press`
-  [Phase 2](../printing-press/phases/10-generate.md) section **Pre-Generation MCP Enrichment**. Examples:
+  Phase 2 section **Pre-Generation MCP Enrichment**. Examples:
   - remote transport is below 10: offer `mcp.transport: [stdio, http]` or the
     OpenAPI `x-mcp.transport` equivalent before regeneration.
   - token efficiency, tool design, or surface strategy is below 10: offer the
-    [Phase 2](../printing-press/phases/10-generate.md) MCP surface decision, including intents for clear multi-step
+    `/printing-press` Phase 2 MCP surface decision, including intents for clear multi-step
     workflows or the Cloudflare pattern for large surfaces.
 - `auth_protocol` below 10, or prior manifest evidence that the CLI used a
   slug-derived env var where the ecosystem has a canonical env var, can be
@@ -301,7 +301,7 @@ pre-generation spec edit and skip dimensions that already score 10/10:
   `auth.env_vars` or OpenAPI `x-auth-env-vars` guidance into the spec.
 - `data_pipeline_integrity` below 10 is only an enrichment opportunity when the
   prior CLI or research shows sync-eligible resources. In that case, point the
-  handoff at the relevant [Phase 2](../printing-press/phases/10-generate.md) sync/cache enrichment decision rather than
+  handoff at the relevant `/printing-press` Phase 2 sync/cache enrichment decision rather than
   treating the score alone as proof that a local store should exist.
 
 Use `AskUserQuestion` for each concrete opportunity before the handoff. Phrase
@@ -309,13 +309,13 @@ the question around the scorecard evidence and the named canonical section, not
 around a freeform rewrite. Example:
 
 > Prior scorecard shows `mcp_remote_transport: 5/10`. Offer MCP transport
-> enrichment before regenerating, using `/printing-press` [Phase 2](../printing-press/phases/10-generate.md)
+> enrichment before regenerating, using `/printing-press` Phase 2
 > **Pre-Generation MCP Enrichment** as the source of truth?
 
 Options:
 
 1. **Apply enrichment to the handoff** - include the selected spec edit in the
-   `/printing-press` prompt so [Phase 2](../printing-press/phases/10-generate.md) can update the spec before generation.
+   `/printing-press` prompt so Phase 2 can update the spec before generation.
 2. **Skip for this reprint** - leave the spec unchanged for this dimension.
 3. **Show score evidence first** - print the relevant scorecard lines and then
    re-ask between options 1 and 2.
@@ -324,17 +324,16 @@ Do not auto-apply enrichment. If the prior scorecard already has
 `mcp_remote_transport: 10/10`, do not ask the redundant MCP transport question.
 If the user accepts any opportunity, add a `## Reprint Spec Enrichment`
 section to the `/printing-press` handoff. Keep it brief: name the weak
-dimension, the accepted enrichment, and the canonical `/printing-press` [Phase 2](../printing-press/phases/10-generate.md)
+dimension, the accepted enrichment, and the canonical `/printing-press` Phase 2
 section to execute. Do not duplicate the canonical enrichment text here.
 
 Invoke `/printing-press <api>` and bundle these into the prompt:
 
 1. **A header line** stating the user already chose to regenerate, so
-   [Phase 0's library-check](../printing-press/phases/03-resolve-and-reuse.md) should select "Generate a fresh CLI" and not
+   `/printing-press` Phase 0's library-check should select "Generate a fresh CLI" and not
    re-prompt fresh-vs-improve.
-2. **Research mode** from Phase C (`reuse` or `redo`). [Phase 0's existing
-   reuse logic](../printing-press/phases/03-resolve-and-reuse.md)
-   consumes this.
+2. **Research mode** from Phase C (`reuse` or `redo`). `/printing-press` Phase 0's existing
+   reuse logic consumes this.
 3. **The user's freeform reprint reason**, verbatim, in a `User context`
    block. This propagates into the brief as `## User Vision` and becomes
    Pass 2(e) input to the novel-features subagent — the right hook for
@@ -392,19 +391,19 @@ via its own discovery snippet (see
 import populated in Phase A are exactly the paths it checks; Pass 2(d)
 fires whenever prior `research.json` exists.
 
-The library-preservation contract is owned by `/printing-press` [Phase 5.6](../printing-press/phases/20-promote-and-archive.md)
+The library-preservation contract is owned by `/printing-press` Phase 5.6
 ("Promote to Library"), not by this skill. When the existing library has
 `novel_features > 0` in its manifest (or hand-authored files under
-`internal/cli/`, `internal/syncer/`, or `internal/store/`), [Phase 5.6](../printing-press/phases/20-promote-and-archive.md) first
+`internal/cli/`, `internal/syncer/`, or `internal/store/`), Phase 5.6 first
 dry-runs `"$PRINTING_PRESS_BIN" regen-merge "$LIB_TARGET" --fresh "$CLI_WORK_DIR"
 --json` to decide whether the fresh tree rebuilt the prior novels. If the
-fresh tree contains all prior novel work, [Phase 5.6](../printing-press/phases/20-promote-and-archive.md) uses the swap path and
+fresh tree contains all prior novel work, Phase 5.6 uses the swap path and
 treats generated-file version drift as expected overwrite. Otherwise it routes
 promotion through `regen-merge --apply` so still-unique hand-authored novels
 survive the reprint and genuine `NOVEL-COLLISION` / missing-referent cases halt
 for review. This honors the prefer-`regen-merge` guidance under the
 **Hand-edits must be regen-mergeable.** section of
-[the Phase 3 build file](../printing-press/phases/11-build-the-goat.md#hand-edit-durability). If a future
+`/printing-press` Phase 3. If a future
 edit to that phase changes the routing rule, update this paragraph in the same
 PR -- the reprint skill is the dominant entry point that fires it.
 

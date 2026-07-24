@@ -1696,7 +1696,7 @@ a security incident — anyone can see it, even if the PR is later closed.
 
 ### What the Printing Press checks (deterministic)
 
-The generation skill (`/printing-press`) runs an exact-value scan during [Phase 5.6](../printing-press/phases/20-promote-and-archive.md)
+The generation skill (`/printing-press`) runs an exact-value scan during Phase 5.6
 if the user provided an API key. By the time publish runs, the Printing Press's own
 mistakes should already be caught. But the user may have edited files between
 generation and publish.
@@ -1705,7 +1705,7 @@ generation and publish.
 
 1. **Mandatory binary scan:** `cli-printing-press publish package` scans the staged CLI and manuscripts for live-looking vendor-prefix tokens (`sk-or-v1-*`, `sk_live_*`, `ghp_*`, `ghs_*`, `xoxb-*`, `AKIA*`, and similar). If it fails with `vendor-prefix tokens detected`, treat the package as unpublishable. Do not copy, commit, push, or open a PR until the reported file:line findings are removed or redacted.
 
-2. **If the user's exact API key value is known**, scan the packaged tree before creating the PR. This catches edits or manuscripts added after [Phase 5.6](../printing-press/phases/20-promote-and-archive.md):
+2. **If the user's exact API key value is known**, scan the packaged tree before creating the PR. This catches edits or manuscripts added after `/printing-press` Phase 5.6:
    ```bash
    if [ -n "$API_KEY_VALUE" ] && [ ${#API_KEY_VALUE} -ge 16 ]; then
      if grep -rF "$API_KEY_VALUE" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>" 2>/dev/null; then
@@ -1745,9 +1745,8 @@ to proceed. The user makes the final call on those non-mandatory findings.
 
 ### PII pattern scanning (mandatory)
 
-Beyond the secret scans above, run the **PII pattern scanning** step from
-[../printing-press/references/secret-protection.md](../printing-press/references/secret-protection.md#pii-pattern-scanning)
-(section "PII pattern scanning"). This catches PII captured during live dogfood
+Beyond the secret scans above, run the **PII pattern scanning** step defined in
+the main printing-press skill's secret-protection reference. This catches PII captured during live dogfood
 that the prose guidance missed — emails, real attendee names, account
 identifiers — before they ship to the public library repo.
 
