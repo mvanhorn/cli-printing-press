@@ -1,7 +1,6 @@
 package pipeline
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -317,56 +316,13 @@ func ReadPhaseReceipts(path string) ([]PhaseReceipt, error) {
 		return nil, fmt.Errorf("refusing symlinked phase receipt ledger: %s", path)
 	}
 
-	file, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("opening phase receipt ledger: %w", err)
-	}
-	defer func() {
-		_ = file.Close()
-	}()
-
-	var lines []string
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), phaseReceiptMaxLineBytes)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("reading phase receipt ledger: %w", err)
 	}
-
-	var receipts []PhaseReceipt
-	for i, raw := range lines {
-		line := i + 1
-		// A malformed or blank final line is a torn write from an interrupted
-		// append only when a valid prefix already exists - a torn append
-		// presupposes a ledger that was initialized. Without a prefix the line is
-		// plain corruption and stays a hard error.
-		isTornTail := i == len(lines)-1 && len(receipts) > 0
-		if strings.TrimSpace(raw) == "" {
-			if isTornTail {
-				// A newline-only final line: the receipt was never acknowledged to
-				// the caller, so it logically never happened. Drop it and return
-				// the valid prefix.
-				break
-			}
-			return nil, fmt.Errorf("parsing phase receipt ledger line %d: blank lines are not allowed", line)
-		}
-		var receipt PhaseReceipt
-		if err := json.Unmarshal([]byte(raw), &receipt); err != nil {
-			if isTornTail {
-				// Truncated final line: a torn append that never happened.
-				break
-			}
-			return nil, fmt.Errorf("parsing phase receipt ledger line %d: %w", line, err)
-		}
-		if err := validateStoredPhaseReceipt(receipt, line); err != nil {
-			return nil, err
-		}
-		if receipt.Sequence != line {
-			return nil, fmt.Errorf("parsing phase receipt ledger line %d: sequence is %d", line, receipt.Sequence)
-		}
-		receipts = append(receipts, receipt)
+	receipts, _, _, err := parsePhaseReceiptLedger(data)
+	if err != nil {
+		return nil, err
 	}
 	if len(receipts) == 0 {
 		return nil, errors.New("phase receipt ledger is empty")
@@ -375,6 +331,73 @@ func ReadPhaseReceipts(path string) ([]PhaseReceipt, error) {
 		return nil, err
 	}
 	return receipts, nil
+}
+
+type phaseReceiptTailState int
+
+const (
+	// phaseReceiptTailClean - the ledger ends exactly at a valid receipt's newline.
+	phaseReceiptTailClean phaseReceiptTailState = iota
+	// phaseReceiptTailTorn - an unterminated malformed fragment follows the valid
+	// prefix. Reads drop it; the append-path repair truncates it.
+	phaseReceiptTailTorn
+	// phaseReceiptTailMissingNewline - the final receipt is fully valid but lost
+	// its newline. Reads count it; the append-path repair completes the line.
+	phaseReceiptTailMissingNewline
+)
+
+// parsePhaseReceiptLedger is the single statement of ledger shape, shared by
+// the reader and the append-path repair. It returns the valid receipts, the
+// byte offset just past the last newline-terminated valid receipt, and the
+// tail state. The writer emits each receipt and its newline in one ordered
+// write, so an interrupted append can only leave an unterminated final
+// fragment - a malformed line that ends in a newline is genuine corruption
+// and stays a hard error, as does any fragment without a valid prefix.
+func parsePhaseReceiptLedger(data []byte) ([]PhaseReceipt, int, phaseReceiptTailState, error) {
+	var receipts []PhaseReceipt
+	validEnd := 0
+	for offset := 0; offset < len(data); {
+		line := len(receipts) + 1
+		lineEnd := len(data)
+		terminated := false
+		if nl := bytes.IndexByte(data[offset:], '\n'); nl >= 0 {
+			lineEnd = offset + nl
+			terminated = true
+		}
+		raw := data[offset:lineEnd]
+
+		var parseErr error
+		var receipt PhaseReceipt
+		if len(raw) > phaseReceiptMaxLineBytes {
+			parseErr = fmt.Errorf("line exceeds %d bytes", phaseReceiptMaxLineBytes)
+		} else if len(bytes.TrimSpace(raw)) == 0 {
+			parseErr = errors.New("blank lines are not allowed")
+		} else {
+			parseErr = json.Unmarshal(raw, &receipt)
+		}
+		if parseErr != nil {
+			if !terminated && len(receipts) > 0 && len(raw) <= phaseReceiptMaxLineBytes {
+				// Torn append: the interrupted write never completed its line,
+				// so the receipt was never acknowledged and logically never
+				// happened.
+				return receipts, validEnd, phaseReceiptTailTorn, nil
+			}
+			return nil, 0, phaseReceiptTailClean, fmt.Errorf("parsing phase receipt ledger line %d: %w", line, parseErr)
+		}
+		if err := validateStoredPhaseReceipt(receipt, line); err != nil {
+			return nil, 0, phaseReceiptTailClean, err
+		}
+		if receipt.Sequence != line {
+			return nil, 0, phaseReceiptTailClean, fmt.Errorf("parsing phase receipt ledger line %d: sequence is %d", line, receipt.Sequence)
+		}
+		receipts = append(receipts, receipt)
+		if !terminated {
+			return receipts, validEnd, phaseReceiptTailMissingNewline, nil
+		}
+		validEnd = lineEnd + 1
+		offset = validEnd
+	}
+	return receipts, validEnd, phaseReceiptTailClean, nil
 }
 
 func newPhaseReceipt(sequence int, opts PhaseReceiptOptions, event PhaseReceiptEvent, next string) *PhaseReceipt {
@@ -393,13 +416,14 @@ func newPhaseReceipt(sequence int, opts PhaseReceiptOptions, event PhaseReceiptE
 	}
 }
 
-// repairPhaseReceiptTornTail truncates a torn final line before a new receipt
-// is appended. ReadPhaseReceipts tolerates a torn tail when a valid prefix
-// exists, but the fragment's bytes stay on disk — an O_APPEND write would fuse
-// the next receipt onto the fragment and corrupt the new record as well. The
-// writer owns file integrity, so the repair lives here and the read path stays
-// pure. Anything the read path treats as hard corruption is left untouched for
-// it to report.
+// repairPhaseReceiptTornTail restores a clean line boundary before a new
+// receipt is appended. ReadPhaseReceipts tolerates a torn tail when a valid
+// prefix exists, but the fragment's bytes stay on disk — an O_APPEND write
+// would fuse the next receipt onto the fragment and corrupt the new record as
+// well. The writer owns file integrity, so the repair lives here and the read
+// path stays pure. Hard corruption is left untouched for the reader to report,
+// except that an append after an unterminated unreadable tail is refused
+// outright — it would fuse and silently lose the new receipt too.
 func repairPhaseReceiptTornTail(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -408,58 +432,22 @@ func repairPhaseReceiptTornTail(path string) error {
 		}
 		return fmt.Errorf("reading phase receipt ledger for repair: %w", err)
 	}
-
-	validEnd := 0   // byte offset just past the last valid, newline-terminated receipt
-	validCount := 0 // receipts in the valid prefix
-	for offset := 0; offset < len(data); {
-		lineEnd := len(data)
-		terminated := false
-		if nl := bytes.IndexByte(data[offset:], '\n'); nl >= 0 {
-			lineEnd = offset + nl
-			terminated = true
+	_, validEnd, tail, parseErr := parsePhaseReceiptLedger(data)
+	if parseErr != nil {
+		if len(data) > 0 && data[len(data)-1] != '\n' {
+			return fmt.Errorf("phase receipt ledger is corrupted; refusing to append after unreadable tail: %s", path)
 		}
-		line := data[offset:lineEnd]
-
-		var receipt PhaseReceipt
-		if len(bytes.TrimSpace(line)) > 0 && len(line) <= phaseReceiptMaxLineBytes && json.Unmarshal(line, &receipt) == nil {
-			if validateStoredPhaseReceipt(receipt, validCount+1) != nil || receipt.Sequence != validCount+1 {
-				// The read path hard-errors on a parseable-but-invalid receipt
-				// even at the tail; leave the corruption for it to report. But
-				// never O_APPEND after an unterminated tail - that would fuse
-				// the new receipt onto the corrupt bytes and lose it too.
-				if !terminated {
-					return fmt.Errorf("phase receipt ledger is corrupted; refusing to append after unterminated invalid tail: %s", path)
-				}
-				return nil
-			}
-			if !terminated {
-				// A complete receipt that lost only its newline in an
-				// interrupted append. The read path already counts it as
-				// recorded, so finish the line instead of discarding it.
-				return appendPhaseReceiptBytes(path, []byte{'\n'})
-			}
-			validCount++
-			validEnd = lineEnd + 1
-			offset = validEnd
-			continue
-		}
-
-		// Blank or unparseable line. Only a final line behind a valid prefix
-		// is the torn append the read path tolerates (a fragment larger than
-		// the reader's line cap cannot be a torn append of a receipt this
-		// writer produced); anything else is hard corruption the reader must
-		// keep seeing. Even then, never O_APPEND after an unterminated tail.
-		isFinal := !terminated || lineEnd+1 >= len(data)
-		if !isFinal || validCount == 0 || len(line) > phaseReceiptMaxLineBytes {
-			if !terminated {
-				return fmt.Errorf("phase receipt ledger is corrupted; refusing to append after unreadable unterminated tail: %s", path)
-			}
-			return nil
-		}
+		return nil
+	}
+	switch tail {
+	case phaseReceiptTailTorn:
 		if err := os.Truncate(path, int64(validEnd)); err != nil {
 			return fmt.Errorf("repairing torn phase receipt ledger: %w", err)
 		}
-		return nil
+	case phaseReceiptTailMissingNewline:
+		// The reader counts this receipt as recorded, so finish its line
+		// rather than discarding it.
+		return appendPhaseReceiptBytes(path, []byte{'\n'})
 	}
 	return nil
 }
@@ -603,9 +591,18 @@ func validateStoredPhaseReceipt(receipt PhaseReceipt, line int) error {
 		if err := validateExpectedNext(receipt.Phase, receipt.Next); err != nil {
 			return fmt.Errorf("parsing phase receipt ledger line %d: %w", line, err)
 		}
+		// Mirror the writer's guard: an alternate handoff is only recordable
+		// with an explanation.
+		if strings.TrimSpace(receipt.Next) != expectedNextPhase(receipt.Phase) && receipt.Note == "" {
+			return fmt.Errorf("parsing phase receipt ledger line %d: alternate handoff to %q requires a note", line, receipt.Next)
+		}
 	case PhaseReceiptSkipped:
-		if err := validateExpectedNext(receipt.Phase, receipt.Next); err != nil {
-			return fmt.Errorf("parsing phase receipt ledger line %d: %w", line, err)
+		// Mirror the writer's guard: a skip always follows the canonical
+		// linear order and never takes an alternate handoff.
+		if expected := expectedNextPhase(receipt.Phase); expected == "" {
+			return fmt.Errorf("parsing phase receipt ledger line %d: unknown Printing Press phase %q", line, receipt.Phase)
+		} else if strings.TrimSpace(receipt.Next) != expected {
+			return fmt.Errorf("parsing phase receipt ledger line %d: skipped receipt cannot take an alternate handoff", line)
 		}
 		if receipt.Note == "" {
 			return fmt.Errorf("parsing phase receipt ledger line %d: skipped receipt has no reason", line)

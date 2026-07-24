@@ -592,27 +592,24 @@ func TestReadPhaseReceiptsSurvivesTornFinalLine(t *testing.T) {
 	assert.NotContains(t, string(data), `"sequence":99`)
 }
 
-func TestAppendRepairsBlankFinalLineBeforeWriting(t *testing.T) {
+func TestReadPhaseReceiptsEnforcesAlternateHandoffInvariants(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
-	_, _, err := InitPhaseReceipts(receiptOptions(t, path, printingPressReceiptPhases[0]))
-	require.NoError(t, err)
 
-	// A torn write of just the record separator leaves a blank final line.
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
+	// A stored alternate handoff without a note must be rejected on read, the
+	// same way the writer refuses to record one.
+	noNote := `{"schema_version":1,"sequence":1,"run_id":"run-123","phase":"08-ecosystem-absorb-gate","event":"completed","phase_file":"phases/08-ecosystem-absorb-gate.md","next":"06-browser-sniff-gate","recorded_at":"2026-07-22T00:00:00Z"}`
+	require.NoError(t, os.WriteFile(path, []byte(noNote+"\n"), 0o600))
+	_, err := ReadPhaseReceipts(path)
+	require.ErrorContains(t, err, `alternate handoff to "06-browser-sniff-gate" requires a note`)
 
-	enter := receiptOptions(t, path, "03-resolve-and-reuse")
-	receipt, _, err := EnterPhase(enter)
-	require.NoError(t, err)
-	assert.Equal(t, 2, receipt.Sequence)
-
-	receipts, err := ReadPhaseReceipts(path)
-	require.NoError(t, err)
-	require.Len(t, receipts, 2)
-	assert.Equal(t, "03-resolve-and-reuse", receipts[1].Phase)
+	// A stored skip that takes an alternate handoff must be rejected on read,
+	// mirroring the writer's refusal of --next combined with --skip.
+	skipAlternate := `{"schema_version":1,"sequence":1,"run_id":"run-123","phase":"08-ecosystem-absorb-gate","event":"skipped","phase_file":"phases/08-ecosystem-absorb-gate.md","next":"06-browser-sniff-gate","note":"why","recorded_at":"2026-07-22T00:00:00Z"}`
+	require.NoError(t, os.WriteFile(path, []byte(skipAlternate+"\n"), 0o600))
+	_, err = ReadPhaseReceipts(path)
+	require.ErrorContains(t, err, "skipped receipt cannot take an alternate handoff")
 }
 
 func TestAppendCompletesReceiptMissingOnlyItsNewline(t *testing.T) {
@@ -712,23 +709,22 @@ func TestRepairRefusesAppendAfterUnterminatedCorruption(t *testing.T) {
 	require.ErrorContains(t, err, "refusing to append")
 }
 
-func TestReadPhaseReceiptsSurvivesBlankFinalLine(t *testing.T) {
+func TestReadPhaseReceiptsRejectsBlankFinalLine(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
 	_, _, err := InitPhaseReceipts(receiptOptions(t, path, printingPressReceiptPhases[0]))
 	require.NoError(t, err)
 
-	// A newline-only trailing line is a torn write of just the record separator.
-	// The init receipt already ends in a newline, so one more yields a single
-	// blank final line.
+	// The writer emits each receipt and its newline in one ordered write, so a
+	// torn append can never produce a newline-terminated blank line. A blank
+	// final line is genuine corruption, not a torn tail.
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
 
-	receipts, err := ReadPhaseReceipts(path)
-	require.NoError(t, err)
-	assert.Len(t, receipts, 1)
+	_, err = ReadPhaseReceipts(path)
+	require.ErrorContains(t, err, "blank lines are not allowed")
 }
 
 func TestReadPhaseReceiptsRejectsMalformedMiddleLine(t *testing.T) {
