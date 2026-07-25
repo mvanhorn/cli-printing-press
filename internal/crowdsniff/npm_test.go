@@ -430,7 +430,7 @@ func TestExtractTarball(t *testing.T) {
 		gw := gzip.NewWriter(&buf)
 		tw := tar.NewWriter(gw)
 		const perEntry = 4 * 1024 * 1024 // 4 MB x 3 = 12 MB > 10 MB
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			hdr := &tar.Header{
 				Name:     fmt.Sprintf("package/chunk%d.js", i),
 				Mode:     0o644,
