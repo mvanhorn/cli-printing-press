@@ -59,6 +59,7 @@ func NewNPMSource(opts NPMOptions) *NPMSource {
 	if client == nil {
 		client = &http.Client{Timeout: defaultHTTPTimeout}
 	}
+	client = withHTTPSRedirectPolicy(client)
 	cutoff := opts.RecencyCutoff
 	if cutoff == 0 {
 		cutoff = defaultRecencyCutoff
@@ -69,6 +70,27 @@ func NewNPMSource(opts NPMOptions) *NPMSource {
 		httpClient:       client,
 		recencyCutoff:    cutoff,
 	}
+}
+
+// withHTTPSRedirectPolicy returns a shallow copy of client whose CheckRedirect
+// rejects any redirect to a non-HTTPS URL. The initial tarball URL is validated
+// as HTTPS, but Go's default client follows redirects without revalidating the
+// scheme, so an HTTPS URL could otherwise redirect to plain HTTP and still be
+// downloaded. Any CheckRedirect the caller already set is preserved and runs
+// after the scheme check. The caller's client is not mutated.
+func withHTTPSRedirectPolicy(client *http.Client) *http.Client {
+	inner := client.CheckRedirect
+	c := *client
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if req.URL.Scheme != "https" {
+			return fmt.Errorf("refusing redirect to non-HTTPS URL: %s", req.URL.Redacted())
+		}
+		if inner != nil {
+			return inner(req, via)
+		}
+		return nil
+	}
+	return &c
 }
 
 // npmSearchResponse represents the npm registry search API response.

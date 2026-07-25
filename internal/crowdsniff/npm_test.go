@@ -792,7 +792,14 @@ func TestNewNPMSource_CustomOptions(t *testing.T) {
 	assert.Equal(t, "https://custom-registry.com", src.registryBaseURL)
 	assert.Equal(t, "https://custom-downloads.com", src.downloadsBaseURL)
 	assert.Equal(t, 90*24*time.Hour, src.recencyCutoff)
-	assert.Same(t, client, src.httpClient)
+
+	// The client is wrapped with an HTTPS-only redirect policy rather than
+	// stored verbatim, so it is a distinct value that preserves the caller's
+	// settings, gains a CheckRedirect, and leaves the caller's client unmutated.
+	assert.NotSame(t, client, src.httpClient)
+	assert.Equal(t, 30*time.Second, src.httpClient.Timeout)
+	assert.NotNil(t, src.httpClient.CheckRedirect)
+	assert.Nil(t, client.CheckRedirect, "caller-supplied client must not be mutated")
 }
 
 func TestNPMSource_RecencyCutoffFiltering(t *testing.T) {
@@ -1695,5 +1702,64 @@ func TestReadFileCapped(t *testing.T) {
 
 		_, err := readFileCapped("/nonexistent/file.txt", 1024)
 		assert.Error(t, err)
+	})
+}
+
+func TestProcessPackageTarball_RedirectPolicy(t *testing.T) {
+	t.Parallel()
+
+	tgz := buildTarball(t, map[string]string{
+		"package/index.js": `fetch("https://api.example.com/v1/things");`,
+	})
+
+	t.Run("rejects HTTPS-to-HTTP redirect before downloading", func(t *testing.T) {
+		t.Parallel()
+
+		var httpHit bool
+		httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			httpHit = true
+			_, _ = w.Write(tgz)
+		}))
+		defer httpSrv.Close()
+
+		tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, httpSrv.URL+"/package.tgz", http.StatusFound)
+		}))
+		defer tlsSrv.Close()
+
+		src := NewNPMSource(NPMOptions{HTTPClient: tlsSrv.Client()})
+		_, _, _, err := src.processPackageTarball(context.Background(), tlsSrv.URL+"/pkg.tgz", "pkg", "community", "example", 100)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "non-HTTPS")
+		assert.False(t, httpHit, "insecure HTTP redirect target must not be contacted")
+	})
+
+	t.Run("allows HTTPS-to-HTTPS redirect", func(t *testing.T) {
+		t.Parallel()
+
+		tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/package.tgz" {
+				_, _ = w.Write(tgz)
+				return
+			}
+			http.Redirect(w, r, "/package.tgz", http.StatusFound)
+		}))
+		defer tlsSrv.Close()
+
+		src := NewNPMSource(NPMOptions{HTTPClient: tlsSrv.Client()})
+		_, _, _, err := src.processPackageTarball(context.Background(), tlsSrv.URL+"/redirect", "pkg", "community", "example", 100)
+
+		require.NoError(t, err)
+	})
+
+	t.Run("rejects a direct HTTP tarball URL", func(t *testing.T) {
+		t.Parallel()
+
+		src := NewNPMSource(NPMOptions{})
+		_, _, _, err := src.processPackageTarball(context.Background(), "http://registry.example.com/pkg.tgz", "pkg", "community", "example", 100)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "HTTPS")
 	})
 }
