@@ -6702,11 +6702,18 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 		if isComplex || isJSONStringParam(p) {
 			// object/array: store the parsed value (so the API receives
 			// real JSON) after checking its top-level shape.
-			// jsonStringParam: validate then store the raw string (the API
-			// expects a JSON-encoded string field).
-			rhs := "body" + ident
-			if isComplex {
-				rhs = "parsed" + ident
+			// jsonStringParam: parse and store the decoded value too. These
+			// params are string-typed only because the spec author described
+			// the *flag input* as JSON ("as JSON", "JSON object of ...");
+			// JSON-body APIs expect the real object/array on the wire, and
+			// sending the raw flag bytes double-encodes the field (live-hit
+			// on two printed CLIs: Bird CRM returned 422 on contact create,
+			// Title Toolbox's backend expects a criteria object). Only
+			// params that explicitly declare an encoded-string wire format
+			// (isEncodedJSONStringParam) keep the user's exact bytes.
+			rhs := "parsed" + ident
+			if isEncodedJSONStringParam(p) {
+				rhs = "body" + ident
 			}
 			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
 			fmt.Fprintf(b, "%s\tvar parsed%s any\n", indent, ident)
@@ -7354,7 +7361,8 @@ func isJSONStringParam(p spec.Param) bool {
 
 	format := strings.ToLower(strings.TrimSpace(p.Format))
 	switch format {
-	case "json", "application/json":
+	case "json", "application/json",
+		"json-string", "json_string", "jsonstring", "json-encoded", "json_encoded":
 		return true
 	}
 
@@ -7377,6 +7385,37 @@ func isJSONStringParam(p spec.Param) bool {
 		"serialized json",
 	}
 	for _, marker := range jsonDescriptionMarkers {
+		if strings.Contains(lowerDescription, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// isEncodedJSONStringParam reports whether a JSON-string param explicitly
+// declares that the wire field carries a JSON-*encoded string* (double-encoded),
+// so the generated command must send the user's raw flag bytes instead of the
+// decoded value. This is the exception, not the default: description phrases
+// like "as JSON" or "JSON object of ..." describe the flag's input format and
+// map to the decoded value; only wording that names an encoded/serialized
+// string wire type ("JSON-encoded string", "serialized JSON string",
+// "stringified JSON") or an explicit encoded-string format keeps raw bytes.
+func isEncodedJSONStringParam(p spec.Param) bool {
+	if !isJSONStringParam(p) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(p.Format)) {
+	case "json-string", "json_string", "jsonstring", "json-encoded", "json_encoded":
+		return true
+	}
+	lowerDescription := strings.ToLower(strings.TrimSpace(p.Description))
+	encodedMarkers := []string{
+		"json-encoded string",
+		"json encoded string",
+		"serialized json string",
+		"stringified json",
+	}
+	for _, marker := range encodedMarkers {
 		if strings.Contains(lowerDescription, marker) {
 			return true
 		}
