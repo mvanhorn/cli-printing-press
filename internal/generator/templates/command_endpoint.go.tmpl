@@ -222,7 +222,14 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- end}}
 {{- range .Endpoint.Params}}
-{{- if isArrayQueryParam .}}
+{{- if isDeepObjectQueryParam .}}
+			if flag{{camel (paramIdent .)}} != "" {
+				path, err = appendDeepObjectQueryParam(path, "{{paramWireName .}}", flag{{camel (paramIdent .)}})
+				if err != nil {
+					return err
+				}
+			}
+{{- else if isArrayQueryParam .}}
 			if flag{{camel (paramIdent .)}} != "" {
 				path = appendArrayQueryParam(path, "{{paramWireName .}}", flag{{camel (paramIdent .)}}, "{{queryParamStyle .}}", {{queryParamExplodes .}})
 			}
@@ -238,7 +245,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 			htmlRequestParams["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
-{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
+{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .)) (not (isDeepObjectQueryParam .))}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
 				htmlRequestParams["{{.Name}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
@@ -372,7 +379,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
 {{- end}}
-{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
+{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .)) (not (isDeepObjectQueryParam .))}}
 				"{{paramWireName .}}": formatCLIParamValue(flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
@@ -390,7 +397,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
 {{- end}}
-{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
+{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .)) (not (isDeepObjectQueryParam .))}}
 				"{{paramWireName .}}": formatCLIParamValue(flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
@@ -402,7 +409,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
-{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
+{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .)) (not (isDeepObjectQueryParam .))}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
 				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
@@ -435,7 +442,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
-{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
+{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .)) (not (isDeepObjectQueryParam .))}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
 				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
@@ -521,7 +528,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
-{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
+{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .)) (not (isDeepObjectQueryParam .))}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
 				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
@@ -588,7 +595,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
-{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
+{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .)) (not (isDeepObjectQueryParam .))}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
 				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
@@ -681,7 +688,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
-{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
+{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .)) (not (isDeepObjectQueryParam .))}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
 				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
