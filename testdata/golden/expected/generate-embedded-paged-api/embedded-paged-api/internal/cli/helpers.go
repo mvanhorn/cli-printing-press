@@ -32,10 +32,21 @@ var As = errors.As
 const paginatedGetMaxPages = 100
 
 func formatCLIParamValue(v any) string {
-	if f, ok := v.(float64); ok {
-		return strconv.FormatFloat(f, 'f', -1, 64)
+	switch tv := v.(type) {
+	case float64:
+		return strconv.FormatFloat(tv, 'f', -1, 64)
+	case map[string]any, []any:
+		// Composite values (a decoded JSON object/array element bound to a
+		// query slot) must stay valid JSON on the wire; fmt's rendering would
+		// emit "map[...]"/"[a b c]" garbage. Mirrors formatMCPParamValue's
+		// composite branch so the CLI and MCP surfaces serialize identically.
+		if b, err := json.Marshal(tv); err == nil {
+			return string(b)
+		}
+		return fmt.Sprintf("%v", tv)
+	default:
+		return fmt.Sprintf("%v", v)
 	}
-	return fmt.Sprintf("%v", v)
 }
 
 // noColor is set by the --no-color flag

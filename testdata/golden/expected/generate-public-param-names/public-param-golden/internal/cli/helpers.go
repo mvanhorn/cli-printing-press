@@ -12,12 +12,12 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
-	"printing-press-golden-pp-cli/internal/client"
-	"printing-press-golden-pp-cli/internal/cliutil"
-	"printing-press-golden-pp-cli/internal/platform"
-	"regexp"
+	"public-param-golden-pp-cli/internal/client"
+	"public-param-golden-pp-cli/internal/cliutil"
+	"public-param-golden-pp-cli/internal/platform"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,6 +45,97 @@ func formatCLIParamValue(v any) string {
 		return fmt.Sprintf("%v", tv)
 	default:
 		return fmt.Sprintf("%v", v)
+	}
+}
+func appendArrayQueryParam(path, name, raw, style string, explode bool) string {
+	values := make([]string, 0)
+	var decoded []any
+	if json.Unmarshal([]byte(raw), &decoded) == nil {
+		for _, value := range decoded {
+			values = append(values, formatCLIParamValue(value))
+		}
+	} else {
+		for _, value := range strings.Split(raw, ",") {
+			if value = strings.TrimSpace(value); value != "" {
+				values = append(values, value)
+			}
+		}
+	}
+	if len(values) == 0 {
+		return path
+	}
+
+	query := url.Values{}
+	switch style {
+	case "spaceDelimited":
+		query.Set(name, strings.Join(values, " "))
+	case "pipeDelimited":
+		query.Set(name, strings.Join(values, "|"))
+	case "form":
+		if explode {
+			for _, value := range values {
+				query.Add(name, value)
+			}
+		} else {
+			query.Set(name, strings.Join(values, ","))
+		}
+	default:
+		query.Set(name, raw)
+	}
+
+	encoded := query.Encode()
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + encoded
+}
+
+// appendDeepObjectQueryParam appends one style=deepObject query param to the
+// request path as indexed bracket keys: objects -> name[field]=v, arrays ->
+// name[i]=v / name[i][field]=v. raw is the flag's JSON string.
+func appendDeepObjectQueryParam(path, name, raw string) (string, error) {
+	var decoded any
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return path, fmt.Errorf("--%s: expected JSON (e.g. [{\"field\":\"Name\",\"direction\":\"desc\"}] or {\"key\":\"value\"}): %w", name, err)
+	}
+	values := url.Values{}
+	expandDeepObjectValue(values, name, decoded)
+	if len(values) == 0 {
+		return path, nil
+	}
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + values.Encode(), nil
+}
+
+// expandDeepObjectValue expands one deepObject-style query param into indexed
+// keys: objects -> name[field]=v, arrays -> name[i]=v / name[i][field]=v.
+// Scalar leaves use formatCLIParamValue; anything nested deeper JSON-encodes
+// fail-soft rather than inventing deeper bracket grammar. URL size is bounded
+// only by the server (414), matching appendArrayQueryParam's posture. Keep
+// structurally in sync with the MCP twin expandMCPDeepObjectValue in
+// internal/mcp.
+func expandDeepObjectValue(values url.Values, name string, decoded any) {
+	switch v := decoded.(type) {
+	case map[string]any:
+		for k, item := range v {
+			values.Set(name+"["+k+"]", formatCLIParamValue(item))
+		}
+	case []any:
+		for i, item := range v {
+			if obj, ok := item.(map[string]any); ok {
+				for k, field := range obj {
+					values.Set(fmt.Sprintf("%s[%d][%s]", name, i, k), formatCLIParamValue(field))
+				}
+			} else {
+				values.Set(fmt.Sprintf("%s[%d]", name, i), formatCLIParamValue(item))
+			}
+		}
+	default:
+		values.Set(name, formatCLIParamValue(decoded))
 	}
 }
 
@@ -470,96 +561,11 @@ func (p *syncUserParams) validateResourceNames(known []string) error {
 		strings.Join(unknown, ", "), strings.Join(known, ", "))
 }
 
-// accessDenialPatterns matches API error bodies that indicate the request was
-// rejected for access-policy reasons rather than for input validity. Matching
-// is case-insensitive and uses word boundaries so common substrings inside
-// unrelated tokens (e.g. "author", "pagination_token", "insufficient_funds")
-// do not produce false positives. The set deliberately excludes brand names —
-// vendor-specific phrasings should be addressed at the spec/profiler level,
-// not in this universal classifier.
-var accessDenialPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\bforbidden\b`),
-	regexp.MustCompile(`\bunauthorized\b`),
-	regexp.MustCompile(`\bnot[\s_-]?authorized\b`),
-	regexp.MustCompile(`\bpermission[\s_-]?denied\b`),
-	regexp.MustCompile(`\baccess[\s_-]?denied\b`),
-	regexp.MustCompile(`\binsufficient[\s_-]?(scope|permission|privilege)`),
-	regexp.MustCompile(`\binvalid[\s_-]?scope\b`),
-	regexp.MustCompile(`\bmissing[\s_-]?scope\b`),
-	regexp.MustCompile(`\brequires?\s+(elevated|admin|enterprise|business|workspace|enterprise[\s_-]?tier)`),
-}
-
-// looksLikeAccessDenial reports whether body text describes an access-policy
-// rejection. Use it on response-body content (apiErr.Body), not on the full
-// error string — the request path can contain words like "auth" or "tokens"
-// that would produce false positives if the whole error message were scanned.
-func looksLikeAccessDenial(body string) bool {
-	lower := strings.ToLower(body)
-	for _, p := range accessDenialPatterns {
-		if p.MatchString(lower) {
-			return true
-		}
-	}
-	return false
-}
-
-// argumentMissingPatterns matches API error bodies that indicate the endpoint
-// requires a filter or identifier the vendor spec did not mark as required.
-// Each pattern keeps the missing/required/not-provided signal adjacent to an
-// argument noun so an unrelated 400 (e.g. "required field 'email' format is
-// invalid and the avatar is missing", "no results were provided") is not
-// demoted from a hard failure to a warning.
-var argumentMissingPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\bargument(?:\s+is)?\s+missing\b`),
-	regexp.MustCompile(`\bmissing\s+(?:a\s+|an\s+|the\s+)?(?:required\s+)?(?:argument|parameter|param|field|filter|identifier|id)\b`),
-	regexp.MustCompile(`\brequired\s+(?:argument|parameter|param|filter|identifier|id)\b[^.\n]*\b(?:is\s+)?(?:missing|not\s+provided|not\s+supplied)\b`),
-	regexp.MustCompile(`\b(?:argument|parameter|param|filter)\s+(?:is\s+)?required\b`),
-	regexp.MustCompile(`\bno\s+(?:argument|parameter|param|filter|identifier|id)\b[^.\n]*\bprovided\b`),
-}
-
-func looksLikeArgumentMissing(body string) bool {
-	lower := strings.ToLower(body)
-	for _, p := range argumentMissingPatterns {
-		if p.MatchString(lower) {
-			return true
-		}
-	}
-	return false
-}
-
-// isSyncAccessWarning classifies err as an access-denial warning suitable for
-// sync's warn-and-continue path. It returns nil, false for any error that
-// should remain a hard sync failure: HTTP 401 (token-level auth failure
-// requiring re-auth), 5xx, network errors, and HTTP 400 responses whose
-// bodies do not match an access-policy pattern.
-//
-// Recognized warning shapes:
-//   - HTTP 403 (per-resource ACL rejection)
-//   - HTTP 400 + access-denial body keyword (insufficient scope, etc.)
-//   - HTTP 400 + missing required argument body keyword
-//   - GraphQL response carrying only access-denial extension codes
-func isSyncAccessWarning(err error) (*accessWarning, bool) {
-	if err == nil {
-		return nil, false
-	}
-
-	var apiErr *client.APIError
-	if errors.As(err, &apiErr) {
-		switch apiErr.StatusCode {
-		case 403:
-			return &accessWarning{Status: 403, Reason: "forbidden", Message: apiErr.Body}, true
-		case 400:
-			if looksLikeAccessDenial(apiErr.Body) {
-				return &accessWarning{Status: 400, Reason: "insufficient_access", Message: apiErr.Body}, true
-			}
-			if looksLikeArgumentMissing(apiErr.Body) {
-				return &accessWarning{Status: 400, Reason: "argument_missing", Message: apiErr.Body}, true
-			}
-		}
-	}
-
-	return nil, false
-}
+// isSyncAccessWarning is a stub: this CLI has no auth, so the API cannot
+// reject sync requests on access-policy grounds. Every error stays a hard
+// failure. Defining the function unconditionally keeps sync.go agnostic to
+// auth presence.
+func isSyncAccessWarning(err error) (*accessWarning, bool) { return nil, false }
 
 type noopResult struct {
 	Status string `json:"status"`
@@ -600,22 +606,12 @@ func classifyAPIError(err error, flags *rootFlags) error {
 		classified := apiErr(err)
 		writeAPIErrorEnvelope(flags, classified, ExitCode(classified))
 		return classified
-	case errors.Is(err, client.ErrPlaceholderCredential):
-		return authErr(err)
-	case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
-		return authErr(fmt.Errorf("%w\nhint: the API rejected the request — this usually means auth is missing or invalid."+
-			"\n      Set your API key with: export PRINTING_PRESS_GOLDEN_API_KEY=\"your-token-here\""+
-			"\n      Run 'printing-press-golden-pp-cli doctor' to check auth status."+
-			"\n      Response: "+cliutil.SanitizeErrorBody(msg), err))
 	case strings.Contains(msg, "HTTP 401"):
-		return authErr(fmt.Errorf("%w\nhint: check your API key."+
-			" Set your API key with: export PRINTING_PRESS_GOLDEN_API_KEY=\"your-token-here\""+
-			"\n      Run 'printing-press-golden-pp-cli doctor' to check auth status.", err))
+		return authErr(fmt.Errorf("%w\nhint: check your API credentials."+
+			"\n      Run 'public-param-golden-pp-cli doctor' to check auth status.", err))
 	case strings.Contains(msg, "HTTP 403"):
-		return authErr(fmt.Errorf("%w\nhint: permission denied. Your credentials are valid but lack access to this resource."+
-			"\n      Check that your credentials have the required permissions and match the API's expected auth scheme."+
-			"\n      Set your API key with: export PRINTING_PRESS_GOLDEN_API_KEY=\"your-token-here\""+
-			"\n      Run 'printing-press-golden-pp-cli doctor' to check auth status.", err))
+		return authErr(fmt.Errorf("%w\nhint: permission denied. This API is configured without credentials, so the service may be blocking the request by rate limit, geography, bot protection, or endpoint policy."+
+			"\n      Run 'public-param-golden-pp-cli doctor' to check connectivity.", err))
 	case strings.Contains(msg, "HTTP 404"):
 		return notFoundErr(fmt.Errorf("%w\nhint: resource not found. Run the 'list' command to see available items", err))
 	case strings.Contains(msg, "HTTP 429"):
@@ -637,12 +633,6 @@ func truncate(s string, max int) string {
 
 func newTabWriter(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
-}
-
-// replacePathParam escapes path-param values before substituting them so
-// reserved characters within each segment remain safe in the request URL.
-func replacePathParam(path, name, value string) string {
-	return strings.ReplaceAll(path, "{"+name+"}", cliutil.EscapePathParam(value))
 }
 
 // paginatedGet fetches pages and concatenates array results. The headers
@@ -2456,7 +2446,7 @@ func printProvenance(cmd *cobra.Command, count int, prov DataProvenance) {
 func nonJSONPayloadError(data json.RawMessage) error {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) > 0 && trimmed[0] == '<' {
-		return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. " + "Set your API key with: export PRINTING_PRESS_GOLDEN_API_KEY=\"your-token-here\""))
+		return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. " + ""))
 	}
 	if len(trimmed) == 0 {
 		return apiErr(fmt.Errorf("API returned an empty response body; expected JSON"))

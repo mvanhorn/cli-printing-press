@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -50,15 +51,17 @@ func RegisterTools(s *server.MCPServer) {
 	)
 	s.AddTool(
 		mcplib.NewTool("stores_find",
-			mcplib.WithDescription("Find nearby stores by address. Required: address, city, locationId. Returns array of Store."),
+			mcplib.WithDescription("Find nearby stores by address. Required: address, city, locationId. Optional: recorded_by, sort (array of objects, e.g. [{'field':'...','direction':'...'}]). Returns array of Store."),
 			mcplib.WithString("address", mcplib.Required(), mcplib.Description("Street address")),
 			mcplib.WithString("city", mcplib.Required(), mcplib.Description("City, state, zip")),
 			mcplib.WithString("locationId", mcplib.Required(), mcplib.Description("Location identifier sent with this endpoint's snake-case query key")),
+			mcplib.WithArray("recorded_by", mcplib.Description("Filter by recorder emails, sent as repeated bracket query keys")),
+			mcplib.WithArray("sort", mcplib.Description("Sort specification sent as indexed deepObject query keys")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/power/store-locator", true, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "address", WireName: "s", Location: "query"}, {PublicName: "city", WireName: "c", Location: "query"}, {PublicName: "locationId", WireName: "location_id", Location: "query"}}, []string{}),
+		makeAPIHandler("GET", "/power/store-locator", true, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "address", WireName: "s", Location: "query"}, {PublicName: "city", WireName: "c", Location: "query"}, {PublicName: "locationId", WireName: "location_id", Location: "query"}, {PublicName: "recorded_by", WireName: "recorded_by[]", Location: "query", QueryArray: true, QueryStyle: "form", QueryExplode: true}, {PublicName: "sort", WireName: "sort", Location: "query", DeepObjectQuery: true}}, []string{}),
 	)
 	// Search tool — faster than iterating list endpoints for finding specific items
 	s.AddTool(
@@ -99,9 +102,14 @@ func RegisterTools(s *server.MCPServer) {
 }
 
 type mcpParamBinding struct {
-	PublicName string
-	WireName   string
-	Location   string
+	PublicName      string
+	WireName        string
+	Location        string
+	Format          string
+	QueryArray      bool
+	QueryStyle      string
+	QueryExplode    bool
+	DeepObjectQuery bool
 }
 
 type mcpPageConfig struct {
@@ -147,6 +155,114 @@ func formatMCPParamValue(v any) string {
 
 func mcpPathValue(v any) string {
 	return cliutil.EscapePathParam(formatMCPParamValue(v))
+}
+func appendMCPArrayQueryParam(path, name string, value any, style string, explode bool) string {
+	var values []string
+	switch typed := value.(type) {
+	case []any:
+		values = make([]string, 0, len(typed))
+		for _, item := range typed {
+			values = append(values, formatMCPParamValue(item))
+		}
+	case []string:
+		values = typed
+	default:
+		raw := formatMCPParamValue(value)
+		var decoded []any
+		if json.Unmarshal([]byte(raw), &decoded) == nil {
+			for _, item := range decoded {
+				values = append(values, formatMCPParamValue(item))
+			}
+		} else {
+			for _, item := range strings.Split(raw, ",") {
+				if item = strings.TrimSpace(item); item != "" {
+					values = append(values, item)
+				}
+			}
+		}
+	}
+	if len(values) == 0 {
+		return path
+	}
+
+	query := url.Values{}
+	switch style {
+	case "spaceDelimited":
+		query.Set(name, strings.Join(values, " "))
+	case "pipeDelimited":
+		query.Set(name, strings.Join(values, "|"))
+	case "form":
+		if explode {
+			for _, item := range values {
+				query.Add(name, item)
+			}
+		} else {
+			query.Set(name, strings.Join(values, ","))
+		}
+	default:
+		query.Set(name, formatMCPParamValue(value))
+	}
+
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + query.Encode()
+}
+
+// appendMCPDeepObjectQueryParam appends one style=deepObject query param to
+// the request path as indexed bracket keys: objects -> name[field]=v, arrays
+// -> name[i]=v / name[i][field]=v. value is the native MCP argument
+// (map[string]any / []any); a string value is JSON-decoded first so spec
+// defaults and string-typed agent inputs behave like the CLI's --flag JSON.
+// Shared by the per-endpoint handlers and codeOrchSplitQuery.
+func appendMCPDeepObjectQueryParam(path, name string, value any) (string, error) {
+	decoded := value
+	if raw, ok := value.(string); ok {
+		var parsed any
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+			return path, err
+		}
+		decoded = parsed
+	}
+	values := url.Values{}
+	expandMCPDeepObjectValue(values, name, decoded)
+	if len(values) == 0 {
+		return path, nil
+	}
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + values.Encode(), nil
+}
+
+// expandMCPDeepObjectValue expands one deepObject-style query param into
+// indexed keys: objects -> name[field]=v, arrays -> name[i]=v /
+// name[i][field]=v. Scalar leaves use formatMCPParamValue; anything nested
+// deeper JSON-encodes fail-soft rather than inventing deeper bracket grammar.
+// URL size is bounded only by the server (414), matching
+// appendMCPArrayQueryParam's posture. Keep structurally in sync with the CLI
+// twin expandDeepObjectValue in internal/cli.
+func expandMCPDeepObjectValue(values url.Values, name string, decoded any) {
+	switch v := decoded.(type) {
+	case map[string]any:
+		for k, item := range v {
+			values.Set(name+"["+k+"]", formatMCPParamValue(item))
+		}
+	case []any:
+		for i, item := range v {
+			if obj, ok := item.(map[string]any); ok {
+				for k, field := range obj {
+					values.Set(fmt.Sprintf("%s[%d][%s]", name, i, k), formatMCPParamValue(field))
+				}
+			} else {
+				values.Set(fmt.Sprintf("%s[%d]", name, i), formatMCPParamValue(item))
+			}
+		}
+	default:
+		values.Set(name, formatMCPParamValue(decoded))
+	}
 }
 
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
@@ -221,7 +337,17 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			case "body":
 				bodyArgs[binding.WireName] = v
 			default:
-				params[binding.WireName] = formatMCPParamValue(v)
+				if binding.DeepObjectQuery {
+					var derr error
+					path, derr = appendMCPDeepObjectQueryParam(path, binding.WireName, v)
+					if derr != nil {
+						return mcpToolError(fmt.Sprintf("%s: %v; expected JSON like [{\"field\":\"Name\",\"direction\":\"desc\"}] or {\"key\":\"value\"}", binding.PublicName, derr)), nil
+					}
+				} else if binding.QueryArray {
+					path = appendMCPArrayQueryParam(path, binding.WireName, v, binding.QueryStyle, binding.QueryExplode)
+				} else {
+					params[binding.WireName] = formatMCPParamValue(v)
+				}
 			}
 		}
 		for _, p := range positionalParams {
