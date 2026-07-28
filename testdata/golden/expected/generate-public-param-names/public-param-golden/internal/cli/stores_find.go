@@ -15,6 +15,8 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 	var flagS string
 	var flagC string
 	var flagLocationId string
+	var flagRecordedBy string
+	var flagSort string
 
 	cmd := &cobra.Command{
 		Use:   "find",
@@ -54,6 +56,15 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 			c, err := flags.newClient()
 			if err != nil {
 				return err
+			}
+			if flagRecordedBy != "" {
+				path = appendArrayQueryParam(path, "recorded_by[]", flagRecordedBy, "form", true)
+			}
+			if flagSort != "" {
+				path, err = appendDeepObjectQueryParam(path, "sort", flagSort)
+				if err != nil {
+					return err
+				}
 			}
 			params := map[string]string{}
 			if flagS != "" {
@@ -129,6 +140,8 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&flagC, "c", "", "City, state, zip")
 	_ = cmd.Flags().MarkHidden("c")
 	cmd.Flags().StringVar(&flagLocationId, "location-id", "", "Location identifier sent with this endpoint's snake-case query key")
+	cmd.Flags().StringVar(&flagRecordedBy, "recorded-by", "", "Filter by recorder emails, sent as repeated bracket query keys")
+	cmd.Flags().StringVar(&flagSort, "sort", "", "Sort specification sent as indexed deepObject query keys")
 
 	return cmd
 }

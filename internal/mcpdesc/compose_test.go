@@ -625,3 +625,29 @@ func TestCompose_DeepObjectObjectParamGetsObjectFormHint(t *testing.T) {
 	got := Compose(in)
 	assert.Equal(t, `List records. Optional: filter (e.g. {'key':'value'}). Returns array of Record.`, got)
 }
+
+// (iv) Negative pin: the shape hint is gated on style=deepObject, NOT on
+// array-ness. A plain array query param (form/explode — the repeated-key
+// wire form, e.g. recorded_by[]) keeps its unadorned public name; appending
+// a JSON-shape hint here would teach agents to send JSON where the emitter
+// expects a scalar list. Guards deepObjectHint's early return.
+func TestCompose_ArrayParamWithoutDeepObjectStyleGetsNoShapeHint(t *testing.T) {
+	t.Parallel()
+
+	explode := true
+	in := Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/records",
+			Description: "List records",
+			Params: []spec.Param{{
+				Name: "recorded_by[]", Type: "array", ItemType: "string",
+				QueryStyle: "form", QueryExplode: &explode,
+			}},
+			Response: spec.ResponseDef{Type: "array", Item: "Record"},
+		},
+		AuthType: "none",
+	}
+	got := Compose(in)
+	assert.Equal(t, `List records. Optional: recorded_by. Returns array of Record.`, got)
+}

@@ -12,12 +12,12 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
-	"printing-press-golden-pp-cli/internal/client"
-	"printing-press-golden-pp-cli/internal/cliutil"
-	"printing-press-golden-pp-cli/internal/platform"
-	"regexp"
+	"public-param-golden-pp-cli/internal/client"
+	"public-param-golden-pp-cli/internal/cliutil"
+	"public-param-golden-pp-cli/internal/platform"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,6 +45,97 @@ func formatCLIParamValue(v any) string {
 		return fmt.Sprintf("%v", tv)
 	default:
 		return fmt.Sprintf("%v", v)
+	}
+}
+func appendArrayQueryParam(path, name, raw, style string, explode bool) string {
+	values := make([]string, 0)
+	var decoded []any
+	if json.Unmarshal([]byte(raw), &decoded) == nil {
+		for _, value := range decoded {
+			values = append(values, formatCLIParamValue(value))
+		}
+	} else {
+		for _, value := range strings.Split(raw, ",") {
+			if value = strings.TrimSpace(value); value != "" {
+				values = append(values, value)
+			}
+		}
+	}
+	if len(values) == 0 {
+		return path
+	}
+
+	query := url.Values{}
+	switch style {
+	case "spaceDelimited":
+		query.Set(name, strings.Join(values, " "))
+	case "pipeDelimited":
+		query.Set(name, strings.Join(values, "|"))
+	case "form":
+		if explode {
+			for _, value := range values {
+				query.Add(name, value)
+			}
+		} else {
+			query.Set(name, strings.Join(values, ","))
+		}
+	default:
+		query.Set(name, raw)
+	}
+
+	encoded := query.Encode()
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + encoded
+}
+
+// appendDeepObjectQueryParam appends one style=deepObject query param to the
+// request path as indexed bracket keys: objects -> name[field]=v, arrays ->
+// name[i]=v / name[i][field]=v. raw is the flag's JSON string.
+func appendDeepObjectQueryParam(path, name, raw string) (string, error) {
+	var decoded any
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return path, fmt.Errorf("--%s: expected JSON (e.g. [{\"field\":\"Name\",\"direction\":\"desc\"}] or {\"key\":\"value\"}): %w", name, err)
+	}
+	values := url.Values{}
+	expandDeepObjectValue(values, name, decoded)
+	if len(values) == 0 {
+		return path, nil
+	}
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + values.Encode(), nil
+}
+
+// expandDeepObjectValue expands one deepObject-style query param into indexed
+// keys: objects -> name[field]=v, arrays -> name[i]=v / name[i][field]=v.
+// Scalar leaves use formatCLIParamValue; anything nested deeper JSON-encodes
+// fail-soft rather than inventing deeper bracket grammar. URL size is bounded
+// only by the server (414), matching appendArrayQueryParam's posture. Keep
+// structurally in sync with the MCP twin expandMCPDeepObjectValue in
+// internal/mcp.
+func expandDeepObjectValue(values url.Values, name string, decoded any) {
+	switch v := decoded.(type) {
+	case map[string]any:
+		for k, item := range v {
+			values.Set(name+"["+k+"]", formatCLIParamValue(item))
+		}
+	case []any:
+		for i, item := range v {
+			if obj, ok := item.(map[string]any); ok {
+				for k, field := range obj {
+					values.Set(fmt.Sprintf("%s[%d][%s]", name, i, k), formatCLIParamValue(field))
+				}
+			} else {
+				values.Set(fmt.Sprintf("%s[%d]", name, i), formatCLIParamValue(item))
+			}
+		}
+	default:
+		values.Set(name, formatCLIParamValue(decoded))
 	}
 }
 
@@ -211,7 +302,7 @@ func detectPartialFailure(data []byte) *partialFailureReport {
 //	        return cmd.Help()
 //	    }
 //	    if dryRunOK(flags) {
-//	        return writeDryRun(cmd.OutOrStdout(), flags, "<command name>")
+//	        return nil
 //	    }
 //	    // ... real work ...
 //	}
@@ -219,25 +310,6 @@ func detectPartialFailure(data []byte) *partialFailureReport {
 // See SKILL.md "Phase 3: Build The GOAT" for the full pattern.
 func dryRunOK(flags *rootFlags) bool {
 	return flags != nil && flags.dryRun
-}
-
-type dryRunResult struct {
-	DryRun bool   `json:"dry_run"`
-	Action string `json:"action"`
-	Would  string `json:"would"`
-}
-
-// writeDryRun ends a --dry-run short-circuit by reporting the action that was
-// skipped. Returning silently leaves a --json caller with empty stdout, which
-// is indistinguishable from a broken command rather than a deliberate no-op.
-// Callers pass cmd.OutOrStdout() so the report follows any redirected writer.
-func writeDryRun(w io.Writer, flags *rootFlags, action string) error {
-	would := "run " + action + "; no changes made"
-	if flags != nil && flags.asJSON {
-		return json.NewEncoder(w).Encode(dryRunResult{DryRun: true, Action: action, Would: would})
-	}
-	_, err := fmt.Fprintf(w, "dry-run: would %s\n", would)
-	return err
 }
 
 // boundCtx applies the root --timeout flag to hand-written command work that
@@ -489,96 +561,11 @@ func (p *syncUserParams) validateResourceNames(known []string) error {
 		strings.Join(unknown, ", "), strings.Join(known, ", "))
 }
 
-// accessDenialPatterns matches API error bodies that indicate the request was
-// rejected for access-policy reasons rather than for input validity. Matching
-// is case-insensitive and uses word boundaries so common substrings inside
-// unrelated tokens (e.g. "author", "pagination_token", "insufficient_funds")
-// do not produce false positives. The set deliberately excludes brand names —
-// vendor-specific phrasings should be addressed at the spec/profiler level,
-// not in this universal classifier.
-var accessDenialPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\bforbidden\b`),
-	regexp.MustCompile(`\bunauthorized\b`),
-	regexp.MustCompile(`\bnot[\s_-]?authorized\b`),
-	regexp.MustCompile(`\bpermission[\s_-]?denied\b`),
-	regexp.MustCompile(`\baccess[\s_-]?denied\b`),
-	regexp.MustCompile(`\binsufficient[\s_-]?(scope|permission|privilege)`),
-	regexp.MustCompile(`\binvalid[\s_-]?scope\b`),
-	regexp.MustCompile(`\bmissing[\s_-]?scope\b`),
-	regexp.MustCompile(`\brequires?\s+(elevated|admin|enterprise|business|workspace|enterprise[\s_-]?tier)`),
-}
-
-// looksLikeAccessDenial reports whether body text describes an access-policy
-// rejection. Use it on response-body content (apiErr.Body), not on the full
-// error string — the request path can contain words like "auth" or "tokens"
-// that would produce false positives if the whole error message were scanned.
-func looksLikeAccessDenial(body string) bool {
-	lower := strings.ToLower(body)
-	for _, p := range accessDenialPatterns {
-		if p.MatchString(lower) {
-			return true
-		}
-	}
-	return false
-}
-
-// argumentMissingPatterns matches API error bodies that indicate the endpoint
-// requires a filter or identifier the vendor spec did not mark as required.
-// Each pattern keeps the missing/required/not-provided signal adjacent to an
-// argument noun so an unrelated 400 (e.g. "required field 'email' format is
-// invalid and the avatar is missing", "no results were provided") is not
-// demoted from a hard failure to a warning.
-var argumentMissingPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\bargument(?:\s+is)?\s+missing\b`),
-	regexp.MustCompile(`\bmissing\s+(?:a\s+|an\s+|the\s+)?(?:required\s+)?(?:argument|parameter|param|field|filter|identifier|id)\b`),
-	regexp.MustCompile(`\brequired\s+(?:argument|parameter|param|filter|identifier|id)\b[^.\n]*\b(?:is\s+)?(?:missing|not\s+provided|not\s+supplied)\b`),
-	regexp.MustCompile(`\b(?:argument|parameter|param|filter)\s+(?:is\s+)?required\b`),
-	regexp.MustCompile(`\bno\s+(?:argument|parameter|param|filter|identifier|id)\b[^.\n]*\bprovided\b`),
-}
-
-func looksLikeArgumentMissing(body string) bool {
-	lower := strings.ToLower(body)
-	for _, p := range argumentMissingPatterns {
-		if p.MatchString(lower) {
-			return true
-		}
-	}
-	return false
-}
-
-// isSyncAccessWarning classifies err as an access-denial warning suitable for
-// sync's warn-and-continue path. It returns nil, false for any error that
-// should remain a hard sync failure: HTTP 401 (token-level auth failure
-// requiring re-auth), 5xx, network errors, and HTTP 400 responses whose
-// bodies do not match an access-policy pattern.
-//
-// Recognized warning shapes:
-//   - HTTP 403 (per-resource ACL rejection)
-//   - HTTP 400 + access-denial body keyword (insufficient scope, etc.)
-//   - HTTP 400 + missing required argument body keyword
-//   - GraphQL response carrying only access-denial extension codes
-func isSyncAccessWarning(err error) (*accessWarning, bool) {
-	if err == nil {
-		return nil, false
-	}
-
-	var apiErr *client.APIError
-	if errors.As(err, &apiErr) {
-		switch apiErr.StatusCode {
-		case 403:
-			return &accessWarning{Status: 403, Reason: "forbidden", Message: apiErr.Body}, true
-		case 400:
-			if looksLikeAccessDenial(apiErr.Body) {
-				return &accessWarning{Status: 400, Reason: "insufficient_access", Message: apiErr.Body}, true
-			}
-			if looksLikeArgumentMissing(apiErr.Body) {
-				return &accessWarning{Status: 400, Reason: "argument_missing", Message: apiErr.Body}, true
-			}
-		}
-	}
-
-	return nil, false
-}
+// isSyncAccessWarning is a stub: this CLI has no auth, so the API cannot
+// reject sync requests on access-policy grounds. Every error stays a hard
+// failure. Defining the function unconditionally keeps sync.go agnostic to
+// auth presence.
+func isSyncAccessWarning(err error) (*accessWarning, bool) { return nil, false }
 
 type noopResult struct {
 	Status string `json:"status"`
@@ -619,22 +606,12 @@ func classifyAPIError(err error, flags *rootFlags) error {
 		classified := apiErr(err)
 		writeAPIErrorEnvelope(flags, classified, ExitCode(classified))
 		return classified
-	case errors.Is(err, client.ErrPlaceholderCredential):
-		return authErr(err)
-	case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
-		return authErr(fmt.Errorf("%w\nhint: the API rejected the request — this usually means auth is missing or invalid."+
-			"\n      Set your API key with: export PRINTING_PRESS_GOLDEN_API_KEY=\"your-token-here\""+
-			"\n      Run 'printing-press-golden-pp-cli doctor' to check auth status."+
-			"\n      Response: "+cliutil.SanitizeErrorBody(msg), err))
 	case strings.Contains(msg, "HTTP 401"):
-		return authErr(fmt.Errorf("%w\nhint: check your API key."+
-			" Set your API key with: export PRINTING_PRESS_GOLDEN_API_KEY=\"your-token-here\""+
-			"\n      Run 'printing-press-golden-pp-cli doctor' to check auth status.", err))
+		return authErr(fmt.Errorf("%w\nhint: check your API credentials."+
+			"\n      Run 'public-param-golden-pp-cli doctor' to check auth status.", err))
 	case strings.Contains(msg, "HTTP 403"):
-		return authErr(fmt.Errorf("%w\nhint: permission denied. Your credentials are valid but lack access to this resource."+
-			"\n      Check that your credentials have the required permissions and match the API's expected auth scheme."+
-			"\n      Set your API key with: export PRINTING_PRESS_GOLDEN_API_KEY=\"your-token-here\""+
-			"\n      Run 'printing-press-golden-pp-cli doctor' to check auth status.", err))
+		return authErr(fmt.Errorf("%w\nhint: permission denied. This API is configured without credentials, so the service may be blocking the request by rate limit, geography, bot protection, or endpoint policy."+
+			"\n      Run 'public-param-golden-pp-cli doctor' to check connectivity.", err))
 	case strings.Contains(msg, "HTTP 404"):
 		return notFoundErr(fmt.Errorf("%w\nhint: resource not found. Run the 'list' command to see available items", err))
 	case strings.Contains(msg, "HTTP 429"):
@@ -656,64 +633,6 @@ func truncate(s string, max int) string {
 
 func newTabWriter(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
-}
-
-// replacePathParam escapes path-param values before substituting them so
-// reserved characters within each segment remain safe in the request URL.
-func replacePathParam(path, name, value string) string {
-	return strings.ReplaceAll(path, "{"+name+"}", cliutil.EscapePathParam(value))
-}
-
-const responsePathItemsKey = "__printing_press_response_path_items"
-
-type responsePathPaginatedClient struct {
-	client interface {
-		GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
-	}
-	responsePath string
-}
-
-func (c responsePathPaginatedClient) IsDryRun() bool {
-	dryRunClient, ok := c.client.(interface{ IsDryRun() bool })
-	return ok && dryRunClient.IsDryRun()
-}
-
-func (c responsePathPaginatedClient) GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
-	data, err := c.client.GetWithHeaders(ctx, path, params, headers)
-	if err != nil || isDryRunResponseForClient(c.client, data) {
-		return data, err
-	}
-	selected, ok := responsePayloadAtPath(data, c.responsePath)
-	if !ok {
-		return nil, fmt.Errorf("response_path %q not found in response", c.responsePath)
-	}
-	if !isJSONArray(selected) {
-		return nil, fmt.Errorf("response_path %q must resolve to an array", c.responsePath)
-	}
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(data, &root); err != nil {
-		return nil, fmt.Errorf("response_path %q requires an object response envelope: %w", c.responsePath, err)
-	}
-	root[responsePathItemsKey] = selected
-	transformed, err := json.Marshal(root)
-	if err != nil {
-		return nil, fmt.Errorf("wrap response_path %q: %w", c.responsePath, err)
-	}
-	return transformed, nil
-}
-
-func paginatedGetWithResponsePath(ctx context.Context, c interface {
-	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
-}, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam string, defaultPageSize int, nextCursorPath, hasMoreField, responsePath string) (json.RawMessage, error) {
-	if responsePath == "" {
-		return paginatedGet(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField)
-	}
-	wrapped := responsePathPaginatedClient{client: c, responsePath: responsePath}
-	data, err := paginatedGet(ctx, wrapped, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField)
-	if err != nil || fetchAll {
-		return data, err
-	}
-	return applyResponsePath(data, responsePath), nil
 }
 
 // paginatedGet fetches pages and concatenates array results. The headers
@@ -770,9 +689,6 @@ func paginatedGet(ctx context.Context, c interface {
 
 	// Fetch all pages
 	allItems := make([]json.RawMessage, 0)
-	var collectionEnvelope map[string]json.RawMessage
-	collectionField := ""
-	collectionShapeSet := false
 	seenCursorTokens := map[string]struct{}{}
 	if sentCursor := clean[cursorParam]; sentCursor != "" {
 		seenCursorTokens[sentCursor] = struct{}{}
@@ -798,10 +714,6 @@ func paginatedGet(ctx context.Context, c interface {
 		// Try to extract items array
 		var items []json.RawMessage
 		if json.Unmarshal(data, &items) == nil {
-			if collectionShapeSet && collectionField != "" {
-				return nil, fmt.Errorf("paginated response collection changed from %q to a bare array", collectionField)
-			}
-			collectionShapeSet = true
 			allItems = append(allItems, items...)
 			if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, len(items)); ok {
 				if page >= paginatedGetMaxPages {
@@ -816,24 +728,7 @@ func paginatedGet(ctx context.Context, c interface {
 			var obj map[string]json.RawMessage
 			if json.Unmarshal(data, &obj) == nil {
 				itemCount := 0
-				field, preserve := paginatedCollectionEnvelopeField(obj, path)
-				nested, ok := extractPaginatedItems(obj, path)
-				if !ok && preserve {
-					ok = json.Unmarshal(obj[field], &nested) == nil
-				}
-				if ok {
-					if !collectionShapeSet {
-						collectionShapeSet = true
-						if preserve {
-							collectionField = field
-							collectionEnvelope = cloneRawObject(obj)
-						}
-					} else if (collectionField != "" && (!preserve || !strings.EqualFold(collectionField, field))) || (collectionField == "" && preserve) {
-						if collectionField != "" {
-							return nil, fmt.Errorf("paginated response collection changed from %q", collectionField)
-						}
-						return nil, fmt.Errorf("paginated response collection changed from a canonical array to %q", field)
-					}
+				if nested, ok := extractPaginatedItems(obj, path); ok {
 					allItems = append(allItems, nested...)
 					itemCount = len(nested)
 				}
@@ -913,106 +808,10 @@ func paginatedGet(ctx context.Context, c interface {
 	} else {
 		fmt.Fprintf(os.Stderr, `{"event":"complete","total":%d,"pages":%d}`+"\n", len(allItems), page)
 	}
-	var result []byte
-	if collectionField != "" {
-		collectionEnvelope[collectionField], _ = json.Marshal(allItems)
-		deleteRawPath(collectionEnvelope, cursorLookupPath)
-		deleteRawPath(collectionEnvelope, hasMoreField)
-		if paginationType == "offset" || paginationType == "page" {
-			deleteRawPath(collectionEnvelope, cursorParam)
-		}
-		result, _ = json.Marshal(collectionEnvelope)
-	} else {
-		result, _ = json.Marshal(allItems)
-	}
+	result, _ := json.Marshal(allItems)
 	return json.RawMessage(result), nil
 }
 
-func cloneRawObject(obj map[string]json.RawMessage) map[string]json.RawMessage {
-	clone := make(map[string]json.RawMessage, len(obj))
-	for key, value := range obj {
-		clone[key] = append(json.RawMessage(nil), value...)
-	}
-	return clone
-}
-
-func paginatedCollectionEnvelopeField(obj map[string]json.RawMessage, requestPath string) (string, bool) {
-	for key, raw := range obj {
-		if canonicalPaginationCollectionKeys[key] && isJSONArray(raw) {
-			return "", false
-		}
-	}
-
-	pathWithoutQuery := strings.SplitN(requestPath, "?", 2)[0]
-	segments := strings.Split(strings.Trim(pathWithoutQuery, "/"), "/")
-	for i := len(segments) - 1; i >= 0; i-- {
-		segment := strings.TrimSuffix(strings.TrimSpace(segments[i]), ".json")
-		if segment == "" || (strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}")) {
-			continue
-		}
-		for key, raw := range obj {
-			if strings.EqualFold(key, segment) && isJSONArray(raw) && !envelopeMetadataArrayKeys[key] {
-				return key, true
-			}
-		}
-	}
-
-	var candidate string
-	for key, raw := range obj {
-		if envelopeMetadataArrayKeys[key] || canonicalPaginationCollectionKeys[key] || !isJSONArray(raw) {
-			continue
-		}
-		if _, ok := extractPaginatedObjectArray(raw); !ok {
-			continue
-		}
-		if candidate != "" {
-			return "", false
-		}
-		candidate = key
-	}
-	return candidate, candidate != ""
-}
-
-func isJSONArray(raw json.RawMessage) bool {
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || trimmed[0] != '[' {
-		return false
-	}
-	var items []json.RawMessage
-	return json.Unmarshal(raw, &items) == nil
-}
-
-var canonicalPaginationCollectionKeys = map[string]bool{
-	responsePathItemsKey: true,
-	"data":               true, "items": true, "results": true, "messages": true, "members": true, "values": true,
-}
-
-func deleteRawPath(obj map[string]json.RawMessage, path string) {
-	if path == "" {
-		return
-	}
-	parts := strings.Split(path, ".")
-	key := ""
-	for candidate := range obj {
-		if strings.EqualFold(candidate, parts[0]) {
-			key = candidate
-			break
-		}
-	}
-	if key == "" {
-		return
-	}
-	if len(parts) == 1 {
-		delete(obj, key)
-		return
-	}
-	var child map[string]json.RawMessage
-	if json.Unmarshal(obj[key], &child) != nil {
-		return
-	}
-	deleteRawPath(child, strings.Join(parts[1:], "."))
-	obj[key], _ = json.Marshal(child)
-}
 func nextFullPageOffsetCursor(params map[string]string, cursorParam, paginationType string, pageSize, itemCount int) (string, bool) {
 	if (paginationType != "offset" && paginationType != "page") || itemCount == 0 {
 		return "", false
@@ -1148,39 +947,6 @@ func extractPaginatedItems(obj map[string]json.RawMessage, requestPath string) (
 	return extractPaginatedItemsFromObject(obj, requestPath, true)
 }
 
-// collectionItemsForOutput projects a paginated collection envelope to the
-// array expected by table, CSV, and plain renderers. JSON output keeps the
-// original envelope so resource-named response shapes remain available to
-// callers that need them.
-func collectionItemsForOutput(data json.RawMessage, requestPath string) json.RawMessage {
-	var items []json.RawMessage
-	if json.Unmarshal(data, &items) == nil {
-		return data
-	}
-
-	var obj map[string]json.RawMessage
-	if json.Unmarshal(data, &obj) != nil {
-		return data
-	}
-	if field, preserve := paginatedCollectionEnvelopeField(obj, requestPath); preserve {
-		if json.Unmarshal(obj[field], &items) == nil {
-			projected, err := json.Marshal(items)
-			if err == nil {
-				return projected
-			}
-		}
-	}
-	items, ok := extractPaginatedItems(obj, requestPath)
-	if !ok {
-		return data
-	}
-	projected, err := json.Marshal(items)
-	if err != nil {
-		return data
-	}
-	return projected
-}
-
 func extractPaginatedItemsFromObject(obj map[string]json.RawMessage, requestPath string, allowEmbedded bool) ([]json.RawMessage, bool) {
 	if !allowEmbedded {
 		if nested, ok := extractPaginatedItemsMatchingPath(obj, requestPath); ok {
@@ -1189,7 +955,7 @@ func extractPaginatedItemsFromObject(obj map[string]json.RawMessage, requestPath
 	}
 
 	if allowEmbedded {
-		for _, field := range []string{responsePathItemsKey, "data", "items", "results", "messages", "members", "values"} {
+		for _, field := range []string{"data", "items", "results", "messages", "members", "values"} {
 			if arr, ok := obj[field]; ok {
 				var nested []json.RawMessage
 				if json.Unmarshal(arr, &nested) == nil {
@@ -2035,17 +1801,8 @@ func compactObjectArrayValue(v any) (any, bool) {
 // printCSV renders JSON arrays as CSV with header row.
 func printCSV(w io.Writer, data json.RawMessage) error {
 	var items []map[string]any
-	if err := json.Unmarshal(data, &items); err != nil {
-		// Single object or invalid JSON - just print as JSON
-		fmt.Fprintln(w, string(data))
-		return nil
-	}
-	if len(items) == 0 {
-		// A valid empty array is an empty CSV stream, not a JSON document.
-		// Keep the single-object fallback above for non-array payloads.
-		if bytes.HasPrefix(bytes.TrimSpace(data), []byte("[")) {
-			return nil
-		}
+	if err := json.Unmarshal(data, &items); err != nil || len(items) == 0 {
+		// Single object or empty - just print as JSON
 		fmt.Fprintln(w, string(data))
 		return nil
 	}
@@ -2689,7 +2446,7 @@ func printProvenance(cmd *cobra.Command, count int, prov DataProvenance) {
 func nonJSONPayloadError(data json.RawMessage) error {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) > 0 && trimmed[0] == '<' {
-		return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. " + "Set your API key with: export PRINTING_PRESS_GOLDEN_API_KEY=\"your-token-here\""))
+		return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. " + ""))
 	}
 	if len(trimmed) == 0 {
 		return apiErr(fmt.Errorf("API returned an empty response body; expected JSON"))
