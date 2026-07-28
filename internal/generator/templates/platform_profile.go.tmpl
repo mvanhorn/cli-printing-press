@@ -4,7 +4,6 @@
 package platform
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -14,11 +13,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -64,33 +63,130 @@ type CredentialResolver interface {
 	Resolve(context.Context, string) ([]byte, error)
 }
 
-// OnePasswordResolver delegates exact-reference reads to the existing
-// 1password-pp-cli policy surface. Only the non-secret reference enters argv.
-type OnePasswordResolver struct {
-	Binary string
+// CredentialScheme declares one secret manager's reference syntax.
+//
+// A reference is not itself a secret — that is the entire point of the
+// indirection — but it IS interpolated into a subprocess argument list or a
+// filesystem path, so the bounds here are load-bearing rather than cosmetic.
+type CredentialScheme struct {
+	// Prefix is the URI scheme including "://", e.g. "bws://".
+	Prefix string
+	// MinParts and MaxParts bound how many slash-separated components may
+	// follow the prefix. Both are inclusive and both must be set: an unbounded
+	// component count is not "flexible", it is an unvalidated string on its way
+	// to a subprocess.
+	MinParts int
+	MaxParts int
+	// Syntax is the human-readable form, used in error messages. A reference is
+	// written by hand into a profile file, so "that is wrong" without "here is
+	// the shape" is a dead end.
+	Syntax string
+	// Validate optionally replaces the default slash-component checks for
+	// schemes whose reference is not a sequence of opaque identifiers.
+	//
+	// A filesystem path is the motivating case: "file:///etc/key" splits to a
+	// leading EMPTY component, which the default rules reject — so every
+	// absolute path, i.e. every valid file reference, would fail. Such a scheme
+	// supplies its own rules rather than contorting the generic ones. When set,
+	// MinParts/MaxParts are not applied.
+	Validate func(ref string) error
 }
 
-func (r OnePasswordResolver) Resolve(ctx context.Context, ref string) ([]byte, error) {
+// registeredCredentialResolver pairs a scheme with the resolver that handles it.
+//
+// They are registered TOGETHER, and deliberately cannot be registered apart: a
+// scheme the validator accepts but no resolver handles is a reference that
+// passes validation and then fails at use, which is the worst time to find out.
+type registeredCredentialResolver struct {
+	Scheme   CredentialScheme
+	Resolver CredentialResolver
+}
+
+var (
+	credentialRegistryMu sync.RWMutex
+	credentialRegistry   []registeredCredentialResolver
+)
+
+// RegisterCredentialResolver adds a scheme and the resolver that handles it.
+// Registering a prefix that is already present replaces it, so a host
+// application can tighten or substitute a built-in rather than accumulating two
+// rules for one prefix.
+//
+// Printed CLIs call this from init() in the resolver files their spec selected;
+// see the auth.credential_resolvers spec field.
+func RegisterCredentialResolver(scheme CredentialScheme, resolver CredentialResolver) {
+	scheme.Prefix = strings.TrimSpace(scheme.Prefix)
+	if scheme.Prefix == "" || resolver == nil {
+		return
+	}
+	credentialRegistryMu.Lock()
+	defer credentialRegistryMu.Unlock()
+	for i := range credentialRegistry {
+		if credentialRegistry[i].Scheme.Prefix == scheme.Prefix {
+			credentialRegistry[i] = registeredCredentialResolver{Scheme: scheme, Resolver: resolver}
+			return
+		}
+	}
+	credentialRegistry = append(credentialRegistry, registeredCredentialResolver{Scheme: scheme, Resolver: resolver})
+}
+
+// CredentialSchemes returns the registered schemes, for diagnostics and help
+// text. Order is registration order.
+func CredentialSchemes() []CredentialScheme {
+	credentialRegistryMu.RLock()
+	defer credentialRegistryMu.RUnlock()
+	schemes := make([]CredentialScheme, 0, len(credentialRegistry))
+	for _, entry := range credentialRegistry {
+		schemes = append(schemes, entry.Scheme)
+	}
+	return schemes
+}
+
+// CredentialReferenceHint returns one example reference syntax, for flag help.
+// Help text is rendered before any command runs, so it reflects the resolvers
+// this binary was compiled with rather than a hardcoded vendor.
+func CredentialReferenceHint() string {
+	syntaxes := CredentialSyntaxes()
+	if len(syntaxes) == 0 {
+		return "(no credential resolvers are configured for this CLI)"
+	}
+	return strings.Join(syntaxes, " | ")
+}
+
+// CredentialSyntaxes returns the human-readable reference forms, for errors.
+func CredentialSyntaxes() []string {
+	syntaxes := []string{}
+	for _, scheme := range CredentialSchemes() {
+		syntaxes = append(syntaxes, scheme.Syntax)
+	}
+	return syntaxes
+}
+
+func lookupCredentialResolver(ref string) (registeredCredentialResolver, bool) {
+	credentialRegistryMu.RLock()
+	defer credentialRegistryMu.RUnlock()
+	for _, entry := range credentialRegistry {
+		if strings.HasPrefix(ref, entry.Scheme.Prefix) {
+			return entry, true
+		}
+	}
+	return registeredCredentialResolver{}, false
+}
+
+// RegistryResolver dispatches a reference to whichever registered resolver
+// handles its scheme. It is the CredentialResolver a printed CLI uses by
+// default; no single secret manager is privileged.
+type RegistryResolver struct{}
+
+func (RegistryResolver) Resolve(ctx context.Context, ref string) ([]byte, error) {
 	if err := ValidateCredentialReference(ref); err != nil {
 		return nil, err
 	}
-	binary := strings.TrimSpace(r.Binary)
-	if binary == "" {
-		binary = "1password-pp-cli"
+	entry, ok := lookupCredentialResolver(ref)
+	if !ok {
+		return nil, fmt.Errorf("no credential resolver registered for reference scheme")
 	}
-	cmd := exec.CommandContext(ctx, binary, "secrets", "read", ref, "--reveal") // #nosec G204 -- binary is operator-selected; credential value is never an argument.
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		// Provider stderr is intentionally suppressed: an external resolver may
-		// echo the resolved field while reporting an error.
-		return nil, fmt.Errorf("resolve exact 1Password reference: %w", err)
-	}
-	if stdout.Len() == 0 {
-		return nil, errors.New("resolve exact 1Password reference: empty value")
-	}
-	return bytes.Clone(stdout.Bytes()), nil
+	return entry.Resolver.Resolve(ctx, ref)
 }
 
 // ResolvedCredentials holds credential bytes only for the current process.
@@ -113,17 +209,35 @@ func ValidateProfileName(name string) error {
 	return nil
 }
 
-// ValidateCredentialReference accepts only complete exact op:// references.
+// ValidateCredentialReference accepts a complete, exact reference in any
+// registered scheme.
+//
+// No scheme is built in. A printed CLI registers the resolvers its spec asked
+// for (auth.credential_resolvers); with none registered, every reference is
+// rejected and the error says so — which is the correct behaviour for a CLI
+// that was never configured to reach a secret manager, and is strictly better
+// than silently binding to whichever vendor happened to be hardcoded.
 func ValidateCredentialReference(ref string) error {
-	if strings.TrimSpace(ref) != ref || !strings.HasPrefix(ref, "op://") {
-		return errors.New("credential reference must be an exact op://vault/item/field-or-document reference")
+	if strings.TrimSpace(ref) != ref {
+		return errors.New("credential reference must not have leading or trailing whitespace")
+	}
+	entry, ok := lookupCredentialResolver(ref)
+	if !ok {
+		syntaxes := CredentialSyntaxes()
+		if len(syntaxes) == 0 {
+			return errors.New("no credential resolvers are configured for this CLI; credential references cannot be used")
+		}
+		return fmt.Errorf("credential reference must be an exact reference in a known scheme (%s)", strings.Join(syntaxes, ", "))
 	}
 	if strings.ContainsAny(ref, "$\n\r\t") {
 		return errors.New("credential reference may not contain interpolation or control characters")
 	}
-	parts := strings.Split(strings.TrimPrefix(ref, "op://"), "/")
-	if len(parts) != 3 {
-		return errors.New("credential reference must contain vault, item, and field or document")
+	if entry.Scheme.Validate != nil {
+		return entry.Scheme.Validate(ref)
+	}
+	parts := strings.Split(strings.TrimPrefix(ref, entry.Scheme.Prefix), "/")
+	if len(parts) < entry.Scheme.MinParts || len(parts) > entry.Scheme.MaxParts {
+		return fmt.Errorf("credential reference must match %s", entry.Scheme.Syntax)
 	}
 	for _, part := range parts {
 		if strings.TrimSpace(part) == "" || part == "." || part == ".." {

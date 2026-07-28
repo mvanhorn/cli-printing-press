@@ -233,6 +233,13 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		templates: make(map[string]*template.Template),
 	}
 	g.funcs = template.FuncMap{
+		// credentialRefFixture yields a synthetic credential reference valid
+		// under the resolvers this spec selected, so generated conformance
+		// tests do not hardcode one vendor's syntax. Takes a name so distinct
+		// fixtures stay distinct.
+		"credentialRefFixture": func(name string) string {
+			return spec.SyntheticCredentialReference(g.Spec.Auth, name)
+		},
 		"title":                               cases.Title(language.English).String,
 		"lower":                               strings.ToLower,
 		"upper":                               strings.ToUpper,
@@ -2439,6 +2446,15 @@ func (g *Generator) renderSingleFiles() error {
 		"NOTICE.tmpl":                              "NOTICE",
 	}
 	maps.Copy(singleFiles, cobratreeWalkerTemplateFiles())
+
+	// Credential resolvers are emitted per spec (auth.credential_resolvers), so a
+	// printed CLI carries only the secret managers its operator actually uses.
+	// Before this, every CLI shipped a 1Password resolver and an op://-only
+	// reference validator whether or not 1Password was in play.
+	for _, tmplName := range g.Spec.Auth.CredentialResolverTemplates() {
+		outName := strings.TrimSuffix(strings.TrimPrefix(tmplName, "platform_"), ".tmpl")
+		singleFiles[tmplName] = filepath.Join("internal", "platform", outName)
+	}
 
 	for tmplName, outPath := range singleFiles {
 		if tmplName == "types.go.tmpl" && g.shouldPreserveExistingTypesFile(outPath) {

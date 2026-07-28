@@ -1222,6 +1222,17 @@ type AuthConfig struct {
 	// Used by the authorization_code flow only; ignored for other grants.
 	RefreshTokenMechanism string `yaml:"refresh_token_mechanism,omitempty" json:"refresh_token_mechanism,omitempty"`
 
+	// CredentialResolvers selects which secret-manager resolvers the printed
+	// CLI compiles in for the client-profile mechanism. Values are catalog
+	// names: "file", "bitwarden", "onepassword".
+	//
+	// Omitted, this defaults to ["file"], which depends on nothing installed. No
+	// vendor is built in: before this field existed, every printed CLI shipped a
+	// 1Password resolver and an op://-only reference validator, so the whole
+	// mechanism was unusable without 1Password whether or not the operator used
+	// it. Selecting a resolver is now a deliberate spec decision.
+	CredentialResolvers []string `yaml:"credential_resolvers,omitempty" json:"credential_resolvers,omitempty"`
+
 	// AdditionalHeaders carries per-call credentials from non-winning sibling
 	// security schemes. Composed apiKey + OAuth (or apiKey + bearer) shapes
 	// declare both schemes in components.securitySchemes; selectSecurityScheme
@@ -1765,6 +1776,9 @@ func validateAuthConfig(context string, auth AuthConfig) error {
 			}
 		}
 	}
+	if err := validateCredentialResolvers(context, auth); err != nil {
+		return err
+	}
 	return validateAuthFormat(context, auth)
 }
 
@@ -1790,6 +1804,13 @@ func isHeaderCarriedCookieAuth(auth AuthConfig) bool {
 		}
 	}
 	return false
+}
+
+func validateCredentialResolvers(context string, auth AuthConfig) error {
+	if err := ValidateCredentialResolvers(auth.CredentialResolvers); err != nil {
+		return fmt.Errorf("%s: %w", context, err)
+	}
+	return nil
 }
 
 func validateAuthFormat(context string, auth AuthConfig) error {

@@ -82,10 +82,10 @@ func TestPlatformSourceFlagsPreserveNamedExactReferences(t *testing.T) {
 		t.Fatalf("empty named references must stay nil for migration idempotence: %#v", source.AdditionalCredentialRefs)
 	}
 	values := platformSourceFlags{
-		credentialRef: "op://Test Vault/Test Item/token",
+		credentialRef: "{{credentialRefFixture "token"}}",
 		additionalCredentialRef: map[string]string{
-			"client_id": "op://Test Vault/Test Item/client-id",
-			"secret":    "op://Test Vault/Test Item/secret",
+			"client_id": "{{credentialRefFixture "client-id"}}",
+			"secret":    "{{credentialRefFixture "secret"}}",
 		},
 	}
 	source := values.sourceProfile()
@@ -136,7 +136,7 @@ func TestPlatformCLIConformanceSurfaceAndGate(t *testing.T) {
 		SchemaVersion: platform.ProfileSchemaVersion,
 		Name:          "tenant-a",
 		Sources: map[string]platform.SourceProfile{
-			"test-source": {CredentialRef: "op://Test Vault/Test Item/token", ExpectedAccountID: "acct-a"},
+			"test-source": {CredentialRef: "{{credentialRefFixture "token"}}", ExpectedAccountID: "acct-a"},
 		},
 	}
 	if err := platform.SaveProfile(profile); err != nil {
@@ -210,7 +210,7 @@ func TestPlatformCLIConformanceOutputMetadataAndAnalytics(t *testing.T) {
 		SchemaVersion: platform.ProfileSchemaVersion,
 		Name:          "tenant-a",
 		Sources: map[string]platform.SourceProfile{
-			"test-source": {CredentialRef: "op://Test Vault/Test Item/token", ExpectedAccountID: "acct-a"},
+			"test-source": {CredentialRef: "{{credentialRefFixture "token"}}", ExpectedAccountID: "acct-a"},
 		},
 	}
 	session, err := platform.PrepareProfileSourceFromConfig(profile, "sample-pp-cli", "test-source")
@@ -365,7 +365,7 @@ func TestPlatformCLIConformanceMismatchFailsBeforeCommand(t *testing.T) {
 	t.Setenv("PRINTING_PRESS_CLIENT_PROFILE", "")
 	if err := platform.SaveProfile(&platform.Profile{
 		SchemaVersion: platform.ProfileSchemaVersion, Name: "tenant-a",
-		Sources: map[string]platform.SourceProfile{"test-source": {CredentialRef: "op://Test Vault/Test Item/token", ExpectedAccountID: "acct-a"}},
+		Sources: map[string]platform.SourceProfile{"test-source": {CredentialRef: "{{credentialRefFixture "token"}}", ExpectedAccountID: "acct-a"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +411,7 @@ func TestPlatformMigrationIsVerifiedIdempotentAndQuarantinesLegacyState(t *testi
 		return conformanceResolver{value: []byte("migration-secret-never-print")}
 	}
 
-	args := []string{"client", "migrate", "tenant-a", "--credential-ref", "op://Test Vault/Test Item/token", "--expected-account-id", "acct-a", "--legacy-db", legacyDB, "--receipt-file", receiptPath, "--json"}
+	args := []string{"client", "migrate", "tenant-a", "--credential-ref", "{{credentialRefFixture "token"}}", "--expected-account-id", "acct-a", "--legacy-db", legacyDB, "--receipt-file", receiptPath, "--json"}
 	root := RootCmd()
 	var output bytes.Buffer
 	root.SetOut(&output)
@@ -458,7 +458,7 @@ func TestPlatformMigrationIsVerifiedIdempotentAndQuarantinesLegacyState(t *testi
 	}
 
 	conflict := RootCmd()
-	conflict.SetArgs([]string{"client", "migrate", "tenant-a", "--credential-ref", "op://Test Vault/Test Item/token", "--expected-account-id", "acct-b"})
+	conflict.SetArgs([]string{"client", "migrate", "tenant-a", "--credential-ref", "{{credentialRefFixture "token"}}", "--expected-account-id", "acct-b"})
 	if err := conflict.Execute(); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Fatalf("conflicting migration error = %v", err)
 	}
@@ -501,7 +501,7 @@ func TestPlatformMigrationAdoptsOnlyVerifiedTenantDatabase(t *testing.T) {
 	var output bytes.Buffer
 	root.SetOut(&output)
 	root.SetErr(&output)
-	migrationArgs := []string{"client", "migrate", "tenant-adopt", "--credential-ref", "op://Test Vault/Test Item/token", "--expected-account-id", "acct-a", "--legacy-db", legacyDB, "--json"}
+	migrationArgs := []string{"client", "migrate", "tenant-adopt", "--credential-ref", "{{credentialRefFixture "token"}}", "--expected-account-id", "acct-a", "--legacy-db", legacyDB, "--json"}
 	root.SetArgs(migrationArgs)
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
@@ -574,7 +574,7 @@ func TestPlatformMigrationWrongTenantCannotCreateProfile(t *testing.T) {
 	root := RootCmd()
 	root.SetOut(&bytes.Buffer{})
 	root.SetErr(&bytes.Buffer{})
-	root.SetArgs([]string{"client", "migrate", "tenant-rejected", "--credential-ref", "op://Test Vault/Test Item/token", "--expected-account-id", "acct-a", "--json"})
+	root.SetArgs([]string{"client", "migrate", "tenant-rejected", "--credential-ref", "{{credentialRefFixture "token"}}", "--expected-account-id", "acct-a", "--json"})
 	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "tenant gate mismatch") {
 		t.Fatalf("wrong-tenant migration error = %v", err)
 	}

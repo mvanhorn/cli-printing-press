@@ -48,6 +48,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 	mustInclude := []string{
 		"go.mod",
 		"Makefile",
+		// The default credential resolver. A spec selecting other resolvers
+		// (auth.credential_resolvers) adds files beside this one, but `file` is
+		// what a spec that says nothing gets, so every fixture ships it.
+		filepath.Join("internal", "platform", "resolver_file.go"),
 		"AGENTS.md",
 		"CLAUDE.md",
 		"README.md",
@@ -139,9 +143,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +2: command and MCP platform-window adoption plus conformance tests.
 		// +1: internal/cliutil/testenv, the sandbox helper every emitted test
 		// routes its HOME/USERPROFILE isolation through.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 167},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 171},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 169},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 168},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 172},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 170},
 	}
 
 	for _, tt := range tests {

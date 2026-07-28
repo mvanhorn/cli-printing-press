@@ -61,7 +61,7 @@ func validKlaviyoProfile(name string) *Profile {
 		Name:          name,
 		Sources: map[string]SourceProfile{
 			"klaviyo": {
-				CredentialRef:     "op://Synthetic/Klaviyo/private-api-key",
+				CredentialRef:     "{{credentialRefFixture "private-api-key"}}",
 				ExpectedAccountID: "account-one",
 				ExpectedOrgName:   "Synthetic Org",
 			},
@@ -87,7 +87,11 @@ func TestProfileParserAndSelectionConformance(t *testing.T) {
 		t.Fatalf("profile mode = %v, err = %v", info.Mode().Perm(), err)
 	}
 
-	for _, bad := range []string{"literal-secret", "$TOKEN", "${TOKEN}", "file:///tmp/key", "op://vault/item", "op://vault//field"} {
+	// Unsafe or unregistered in every resolver configuration: a bare literal, a
+	// shell interpolation, and references in a scheme this CLI was not built
+	// with. Do not add a well-formed reference in a scheme that MIGHT be
+	// selected — what is valid here depends on auth.credential_resolvers.
+	for _, bad := range []string{"literal-secret", "$TOKEN", "${TOKEN}", "made-up://vault/item", "  {{credentialRefFixture "leading-space"}}"} {
 		if err := ValidateCredentialReference(bad); err == nil {
 			t.Fatalf("unsafe credential reference accepted: %q", bad)
 		}
@@ -118,7 +122,7 @@ func TestProfileRejectsUnknownAndDuplicateNormalizedSources(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	unknown := []byte("schema_version = 1\nname = \"synthetic\"\nunknown = true\n[sources.klaviyo]\ncredential_ref = \"op://Synthetic/Klaviyo/key\"\nexpected_account_id = \"a\"\n")
+	unknown := []byte("schema_version = 1\nname = \"synthetic\"\nunknown = true\n[sources.klaviyo]\ncredential_ref = \"{{credentialRefFixture "klaviyo-key"}}\"\nexpected_account_id = \"a\"\n")
 	if err := os.WriteFile(path, unknown, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -244,8 +248,8 @@ func TestGorgiasUsesDocumentedBaseURLIdentityOnly(t *testing.T) {
 func TestProviderMismatchAndDatabaseOwnershipConformance(t *testing.T) {
 	setPlatformRoots(t)
 	profile := &Profile{SchemaVersion: ProfileSchemaVersion, Name: "tenant-a", Sources: map[string]SourceProfile{
-		"shopify": {CredentialRef: "op://Synthetic/Shopify/token", ExpectedStoreID: "gid://shopify/Shop/1", ExpectedStoreDomain: "tenant-a.myshopify.com"},
-		"gorgias": {CredentialRef: "op://Synthetic/Gorgias/key", UsernameRef: "op://Synthetic/Gorgias/user", ExpectedBaseURL: "https://tenant-a.gorgias.com/api"},
+		"shopify": {CredentialRef: "{{credentialRefFixture "token"}}", ExpectedStoreID: "gid://shopify/Shop/1", ExpectedStoreDomain: "tenant-a.myshopify.com"},
+		"gorgias": {CredentialRef: "{{credentialRefFixture "key"}}", UsernameRef: "{{credentialRefFixture "user"}}", ExpectedBaseURL: "https://tenant-a.gorgias.com/api"},
 	}}
 	if err := SaveProfile(profile); err != nil {
 		t.Fatal(err)
@@ -288,8 +292,8 @@ func TestCrossSourceDatabaseRequiresSelectedProfileOwnership(t *testing.T) {
 		SchemaVersion: ProfileSchemaVersion,
 		Name:          "tenant-a",
 		Sources: map[string]SourceProfile{
-			"meta-ads": {CredentialRef: "op://Synthetic/Meta/token", ExpectedAccountID: "meta-one"},
-			"shopify":  {CredentialRef: "op://Synthetic/Shopify/token", ExpectedStoreID: "shop-one", ExpectedStoreDomain: "tenant-a.myshopify.com"},
+			"meta-ads": {CredentialRef: "{{credentialRefFixture "token"}}", ExpectedAccountID: "meta-one"},
+			"shopify":  {CredentialRef: "{{credentialRefFixture "token"}}", ExpectedStoreID: "shop-one", ExpectedStoreDomain: "tenant-a.myshopify.com"},
 		},
 	}
 	primary, err := PrepareProfileSourceFromConfig(profile, "meta-ads-pp-cli", "meta-ads")
@@ -331,7 +335,7 @@ func TestCrossSourceDatabaseRequiresSelectedProfileOwnership(t *testing.T) {
 	tamperedProfile := *profile
 	tamperedProfile.Sources = map[string]SourceProfile{
 		"meta-ads": profile.Sources["meta-ads"],
-		"shopify":  {CredentialRef: "op://Synthetic/Shopify/token", ExpectedStoreID: "shop-two", ExpectedStoreDomain: "tenant-b.myshopify.com"},
+		"shopify":  {CredentialRef: "{{credentialRefFixture "token"}}", ExpectedStoreID: "shop-two", ExpectedStoreDomain: "tenant-b.myshopify.com"},
 	}
 	tampered.Profile = &tamperedProfile
 	if err := VerifyCrossSourceTenantMetadataReadOnly(context.Background(), db, &tampered, "shopify"); err == nil {
@@ -496,7 +500,7 @@ func TestContextCarriesOutputMetadataRecorder(t *testing.T) {
 		SchemaVersion: ProfileSchemaVersion,
 		Name:          "synthetic",
 		Sources: map[string]SourceProfile{
-			"sample": {CredentialRef: "op://Test Vault/Test Item/token", ExpectedAccountID: "one"},
+			"sample": {CredentialRef: "{{credentialRefFixture "token"}}", ExpectedAccountID: "one"},
 		},
 	}
 	session, err := PrepareProfileSourceFromConfig(profile, "sample-pp-cli", "sample")

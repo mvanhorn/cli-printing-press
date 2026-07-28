@@ -1693,3 +1693,58 @@ x-streaming:
     statuses: [live, pending]
     primary_key: event_id
 ```
+
+## `auth.credential_resolvers`
+
+Selects which secret-manager resolvers a printed CLI compiles in for the
+client-profile mechanism (`platform.SourceProfile`, `--credential-ref`).
+
+```yaml
+auth:
+  type: bearer_token
+  credential_resolvers: [bitwarden, file]
+```
+
+| Name | Scheme | Reference form | Needs |
+|---|---|---|---|
+| `file` | `file://` | `file:///absolute/path/to/secret` | nothing |
+| `bitwarden` | `bws://` | `bws://<secret-id>` or `bws://<project-id>/<secret-key>` | `bws` on PATH |
+| `onepassword` | `op://` | `op://<vault>/<item>/<field>` | `1password-pp-cli` on PATH |
+
+**Omitted, this defaults to `[file]`** — the one resolver that depends on
+nothing installed. No secret manager is built in.
+
+Before this field existed, every printed CLI shipped a 1Password resolver and a
+`ValidateCredentialReference` that rejected anything not starting with `op://`.
+That made the whole client-profile mechanism unusable without 1Password, and
+left a subprocess call to a password manager in the tree of every CLI whose
+operator had never heard of it. Choosing a resolver is now a deliberate spec
+decision, and choosing none but `file` is a perfectly good answer.
+
+An unknown name is a spec validation error, not a silent skip: a spec that asks
+for a resolver and does not get it produces a CLI that fails at credential-read
+time, which is the worst moment to discover a typo.
+
+### Adding a secret manager
+
+The validator, the registry and the dispatcher are vendor-agnostic. Adding one is:
+
+1. A template `internal/generator/templates/platform_resolver_<name>.go.tmpl`
+   that declares a `CredentialScheme`, implements `CredentialResolver`, and
+   registers both together from `init()` via `RegisterCredentialResolver`.
+2. An entry in `credentialResolverTemplates` in
+   `internal/spec/credential_resolvers.go`.
+
+Nothing else changes. Two rules for the resolver itself:
+
+- **Never put a credential value in argv.** Only the non-secret reference and
+  the operator-chosen binary name. Subprocess-backed resolvers should call the
+  shared `runCredentialCommand` helper, which enforces this.
+- **Never include the provider's stderr in an error.** A secret manager may echo
+  the resolved value while reporting an unrelated failure, and error strings
+  travel into logs and run receipts.
+
+If a scheme's reference is not a sequence of opaque identifiers — a filesystem
+path, say — set `CredentialScheme.Validate` and supply its own rules. The
+generic `MinParts`/`MaxParts` component checks reject a leading empty component,
+which every absolute path has.

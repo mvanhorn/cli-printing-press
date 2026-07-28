@@ -48,7 +48,11 @@ func registerPlatformSource(registration platformSourceRegistration) {
 }
 
 var platformResolverFactory = func() platform.CredentialResolver {
-	return platform.OnePasswordResolver{Binary: strings.TrimSpace(os.Getenv("PRINTING_PRESS_ONEPASSWORD_CLI"))}
+	// Dispatches to whichever resolvers this CLI was built with; see
+	// auth.credential_resolvers in the spec. No secret manager is privileged,
+	// and a CLI built with none rejects every credential reference with an
+	// error saying so.
+	return platform.RegistryResolver{}
 }
 
 func preparePlatformSession(flags *rootFlags) error {
@@ -363,9 +367,9 @@ type platformSourceFlags struct {
 }
 
 func (values *platformSourceFlags) addFlags(command *cobra.Command) {
-	command.Flags().StringVar(&values.credentialRef, "credential-ref", "", "Exact op:// credential reference")
-	command.Flags().StringVar(&values.usernameRef, "username-ref", "", "Exact op:// username reference")
-	command.Flags().StringToStringVar(&values.additionalCredentialRef, "additional-credential-ref", nil, "Named exact op:// credential references (name=reference)")
+	command.Flags().StringVar(&values.credentialRef, "credential-ref", "", "Exact credential reference, e.g. "+platform.CredentialReferenceHint())
+	command.Flags().StringVar(&values.usernameRef, "username-ref", "", "Exact username reference, e.g. "+platform.CredentialReferenceHint())
+	command.Flags().StringToStringVar(&values.additionalCredentialRef, "additional-credential-ref", nil, "Named exact credential references (name=reference), e.g. "+platform.CredentialReferenceHint())
 	command.Flags().StringVar(&values.expectedAccountID, "expected-account-id", "", "Trusted immutable provider account ID")
 	command.Flags().StringVar(&values.expectedOrgName, "expected-org-name", "", "Exact expected organization name")
 	command.Flags().StringVar(&values.expectedStoreID, "expected-store-id", "", "Trusted immutable Shopify store ID")
