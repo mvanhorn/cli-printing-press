@@ -208,3 +208,71 @@ func TestBracketHandlerWire(t *testing.T) {
 	require.Contains(t, output, "--- PASS: TestBracketHandlerWire",
 		"in-module registered-handler wire test must actually run and pass:\n%s", output)
 }
+
+// TestIntentEmissionPropertyKeysAreAnthropicSafe generates a spec with a legal
+// intent and applies the corpus-scan guard to the intents surface: every
+// mcplib.NewTool name and every mcplib.With* schema property key emitted into
+// internal/mcp/intents.go must match the Anthropic tool property-key grammar.
+// Illegal intent param names are rejected at spec validation, so this pins the
+// remaining half of the intents hardening — the %q-quoted emission renders
+// byte-identically for legal names and the generated module still compiles.
+func TestIntentEmissionPropertyKeysAreAnthropicSafe(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("intent-keys")
+	items := apiSpec.Resources["items"]
+	items.Endpoints["search"] = spec.Endpoint{
+		Method:      "GET",
+		Path:        "/items/search",
+		Description: "Search items",
+		Params: []spec.Param{
+			{Name: "q", Type: "string", Required: true, Description: "query"},
+		},
+	}
+	apiSpec.Resources["items"] = items
+	apiSpec.MCP = spec.MCPConfig{
+		Intents: []spec.Intent{
+			{
+				Name:        "search_items",
+				Description: "Search for items",
+				Params: []spec.IntentParam{
+					{Name: "q", Type: "string", Required: true, Description: "query"},
+					{Name: "limit", Type: "integer", Description: "max results"},
+					{Name: "dry_run", Type: "boolean", Description: "no-op flag"},
+				},
+				Steps: []spec.IntentStep{
+					{Endpoint: "items.search", Bind: map[string]string{"q": "${input.q}"}, Capture: "results"},
+				},
+				Returns: "results",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "intent-keys-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	intentsSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "intents.go")
+	// Every intent tool name registered via mcplib.NewTool must be legal.
+	toolNameRe := regexp.MustCompile(`mcplib\.NewTool\("([^"]+)"`)
+	nameMatches := toolNameRe.FindAllStringSubmatch(intentsSrc, -1)
+	require.NotEmpty(t, nameMatches, "expected mcplib.NewTool registrations in intents.go")
+	for _, m := range nameMatches {
+		assert.Regexp(t, spec.MCPPropertyKeyRe, m[1], "illegal MCP tool name emitted in intents.go: %q", m[1])
+	}
+	// Every quoted first argument of a mcplib.With* schema declaration must
+	// match the Anthropic grammar (the Task-2 corpus-scan idiom).
+	withKeyRe := regexp.MustCompile(`mcplib\.With(?:String|Number|Boolean|Array|Object)\("([^"]+)"`)
+	keyMatches := withKeyRe.FindAllStringSubmatch(intentsSrc, -1)
+	require.NotEmpty(t, keyMatches, "expected intent param schema declarations in intents.go")
+	for _, m := range keyMatches {
+		assert.Regexp(t, spec.MCPPropertyKeyRe, m[1], "illegal MCP schema key emitted in intents.go: %q", m[1])
+	}
+	// The concrete legal names render byte-identically under the %q emission.
+	require.Contains(t, intentsSrc, `mcplib.NewTool("search_items",`)
+	require.Contains(t, intentsSrc, `mcplib.WithString("q"`)
+	require.Contains(t, intentsSrc, `mcplib.WithNumber("limit"`)
+	require.Contains(t, intentsSrc, `mcplib.WithBoolean("dry_run"`)
+
+	// Proves the %q template change emits valid Go.
+	requireGeneratedCompiles(t, outputDir)
+}

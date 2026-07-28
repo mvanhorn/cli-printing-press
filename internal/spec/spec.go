@@ -5675,6 +5675,9 @@ func validateIntents(intents []Intent, resources map[string]Resource) error {
 			if p.Name == "" {
 				return fmt.Errorf("mcp.intents[%d] (%s): params[%d].name is required", i, intent.Name, pi)
 			}
+			if !MCPPropertyKeyRe.MatchString(p.Name) {
+				return fmt.Errorf("mcp.intents[%d] (%s): param name %q must match %s (1-64 chars): it is emitted as an MCP tool property key, and an illegal key bricks the calling agent session", i, intent.Name, p.Name, MCPPropertyKeyPattern)
+			}
 			if _, ok := allowedIntentParamTypes[p.Type]; !ok {
 				return fmt.Errorf("mcp.intents[%d] (%s): params[%d] (%s): type %q must be one of string, integer, boolean", i, intent.Name, pi, p.Name, p.Type)
 			}
