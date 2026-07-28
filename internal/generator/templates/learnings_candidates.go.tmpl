@@ -134,7 +134,7 @@ alter command behavior or recall's verified results on their own.`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(flags, "learnings candidates")
 			}
 			s, err := store.OpenWithContext(cmd.Context(), learnDBPath(dbPath))
 			if err != nil {
@@ -206,7 +206,7 @@ Usage errors (unknown id, non-open status) exit 2.`,
 		Annotations: map[string]string{"pp:typed-exit-codes": "0,2", "mcp:local-write": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(flags, "learnings confirm")
 			}
 			id, err := parseCandidateID(args)
 			if err != nil {
@@ -411,7 +411,7 @@ Usage errors (unknown id, no-reject-path candidates) exit 2.`,
 		Annotations: map[string]string{"pp:typed-exit-codes": "0,2"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(flags, "learnings reject")
 			}
 			id, err := parseCandidateID(args)
 			if err != nil {
@@ -489,7 +489,7 @@ purge also clears stale candidates nobody judged.`,
 		Annotations: map[string]string{"mcp:hidden": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(flags, "learnings purge")
 			}
 			s, err := store.OpenWithContext(cmd.Context(), learnDBPath(dbPath))
 			if err != nil {

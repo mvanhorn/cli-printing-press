@@ -126,7 +126,7 @@ func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
 //	        return cmd.Help()
 //	    }
 //	    if dryRunOK(flags) {
-//	        return nil
+//	        return writeDryRun(flags, "<command name>")
 //	    }
 //	    // ... real work ...
 //	}
@@ -134,6 +134,24 @@ func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
 // See SKILL.md "Phase 3: Build The GOAT" for the full pattern.
 func dryRunOK(flags *rootFlags) bool {
 	return flags != nil && flags.dryRun
+}
+
+type dryRunResult struct {
+	DryRun bool   `json:"dry_run"`
+	Action string `json:"action"`
+	Would  string `json:"would"`
+}
+
+// writeDryRun ends a --dry-run short-circuit by reporting the action that was
+// skipped. Returning silently leaves a --json caller with empty stdout, which
+// is indistinguishable from a broken command rather than a deliberate no-op.
+func writeDryRun(flags *rootFlags, action string) error {
+	would := "run " + action + "; no changes made"
+	if flags != nil && flags.asJSON {
+		return json.NewEncoder(os.Stdout).Encode(dryRunResult{DryRun: true, Action: action, Would: would})
+	}
+	fmt.Printf("dry-run: would %s\n", would)
+	return nil
 }
 
 // boundCtx applies the root --timeout flag to hand-written command work that
