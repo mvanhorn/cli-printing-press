@@ -11,7 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-{{- if or .HasEmbeddedPaged (hasArrayQueryParams .APISpec)}}
+{{- if or .HasEmbeddedPaged (hasIndexedOrArrayQueryParams .APISpec)}}
 	"net/url"
 {{- end}}
 	"os"
@@ -121,6 +121,56 @@ func appendArrayQueryParam(path, name, raw, style string, explode bool) string {
 		separator = "&"
 	}
 	return path + separator + encoded
+}
+
+{{- end}}
+{{- if hasDeepObjectQueryParams .APISpec}}
+// appendDeepObjectQueryParam appends one style=deepObject query param to the
+// request path as indexed bracket keys: objects -> name[field]=v, arrays ->
+// name[i]=v / name[i][field]=v. raw is the flag's JSON string.
+func appendDeepObjectQueryParam(path, name, raw string) (string, error) {
+	var decoded any
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return path, fmt.Errorf("--%s: expected JSON (e.g. [{\"field\":\"Name\",\"direction\":\"desc\"}] or {\"key\":\"value\"}): %w", name, err)
+	}
+	values := url.Values{}
+	expandDeepObjectValue(values, name, decoded)
+	if len(values) == 0 {
+		return path, nil
+	}
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + values.Encode(), nil
+}
+
+// expandDeepObjectValue expands one deepObject-style query param into indexed
+// keys: objects -> name[field]=v, arrays -> name[i]=v / name[i][field]=v.
+// Scalar leaves use formatCLIParamValue; anything nested deeper JSON-encodes
+// fail-soft rather than inventing deeper bracket grammar. URL size is bounded
+// only by the server (414), matching appendArrayQueryParam's posture. Keep
+// structurally in sync with the MCP twin expandMCPDeepObjectValue in
+// internal/mcp.
+func expandDeepObjectValue(values url.Values, name string, decoded any) {
+	switch v := decoded.(type) {
+	case map[string]any:
+		for k, item := range v {
+			values.Set(name+"["+k+"]", formatCLIParamValue(item))
+		}
+	case []any:
+		for i, item := range v {
+			if obj, ok := item.(map[string]any); ok {
+				for k, field := range obj {
+					values.Set(fmt.Sprintf("%s[%d][%s]", name, i, k), formatCLIParamValue(field))
+				}
+			} else {
+				values.Set(fmt.Sprintf("%s[%d]", name, i), formatCLIParamValue(item))
+			}
+		}
+	default:
+		values.Set(name, formatCLIParamValue(decoded))
+	}
 }
 
 {{- end}}
