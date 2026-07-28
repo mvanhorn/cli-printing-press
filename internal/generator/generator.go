@@ -2372,6 +2372,13 @@ func (g *Generator) prepareOutput() error {
 		return err
 	}
 
+	// Assert the FINAL per-endpoint MCP input-name set (post-dedup) is legal
+	// and collision-free before anything renders — an illegal or duplicate
+	// tool property key must fail generation, never ship (#165).
+	if err := g.validateMCPInputNames(); err != nil {
+		return err
+	}
+
 	g.dedupeTypeFieldIdentifiers()
 
 	return nil
