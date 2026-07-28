@@ -2633,6 +2633,52 @@ func (p Param) BodyWireName() string {
 	return p.Name
 }
 
+// MCPPropertyKeyPattern is the grammar Anthropic's Messages API enforces on
+// tool input_schema property keys. A generated MCP tool whose schema carries a
+// key outside this pattern bricks the calling agent session at schema load:
+// every subsequent turn fails with a 400 pattern-mismatch because the poisoned
+// tool definition rides along in every request (HelpFlow/aos-build#165).
+const MCPPropertyKeyPattern = `^[a-zA-Z0-9_.-]{1,64}$`
+
+// MCPPropertyKeyRe is the compiled form of MCPPropertyKeyPattern, shared by
+// the sanitizer below and the generator's post-dedup input-name assertion.
+var MCPPropertyKeyRe = regexp.MustCompile(MCPPropertyKeyPattern)
+
+// sanitizePublicInputName makes a wire parameter name safe to expose as a
+// model-facing MCP property key while leaving legal names byte-identical.
+// Each run of illegal characters becomes one "_", the result is trimmed of
+// leading/trailing "_", clamped to 64 chars, and re-trimmed. A name that
+// sanitizes to empty is returned RAW so the generator's post-dedup assertion
+// fails generation loudly instead of shipping an invented public name.
+func sanitizePublicInputName(name string) string {
+	if MCPPropertyKeyRe.MatchString(name) {
+		return name
+	}
+	var b strings.Builder
+	pendingSep := false
+	for _, r := range name {
+		legal := r == '.' || r == '-' || r == '_' ||
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if legal {
+			if pendingSep && b.Len() > 0 {
+				b.WriteByte('_')
+			}
+			pendingSep = false
+			b.WriteRune(r)
+		} else {
+			pendingSep = true
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if len(out) > 64 {
+		out = strings.Trim(out[:64], "_")
+	}
+	if out == "" {
+		return name
+	}
+	return out
+}
+
 func (p Param) PublicInputName() string {
 	if p.FlagName != "" {
 		return p.FlagName
@@ -2640,7 +2686,7 @@ func (p Param) PublicInputName() string {
 	if p.IdentName != "" {
 		return publicInputNameFromIdent(p.IdentName)
 	}
-	return p.Name
+	return sanitizePublicInputName(p.Name)
 }
 
 func publicInputNameFromIdent(name string) string {
