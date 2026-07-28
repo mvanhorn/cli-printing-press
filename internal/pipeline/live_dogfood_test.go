@@ -2337,6 +2337,7 @@ func TestLiveDogfoodUnavailableForRunnerDoesNotHideNotFound(t *testing.T) {
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "HTTP 403 permission denied"}))
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "your credentials are valid but lack access"}))
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: `HTTP 401: {"error":"Couldn't authenticate you"}`}))
+	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: `HTTP 401: {"code":124,"message":"Invalid access token."}`}))
 	assert.False(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "HTTP 404 NotFound"}))
 }
 
@@ -2363,8 +2364,23 @@ func TestLiveDogfoodAuth401OutputMatchesGooglePhrases(t *testing.T) {
 			want: true,
 		},
 		{
+			name:   "invalid access token",
+			output: `Error: GET /users/me returned HTTP 401: {"code":124,"message":"Invalid access token."}`,
+			want:   true,
+		},
+		{
+			name:   "bare unauthorized",
+			output: `Error: GET /users/me returned HTTP 401: {"error":"Unauthorized"}`,
+			want:   true,
+		},
+		{
 			name:   "non 401",
 			output: `Error: GET /widgets returned HTTP 404: {"error":"not found"}`,
+			want:   false,
+		},
+		{
+			name:   "404 with auth-ish wording",
+			output: `Error: GET /widgets returned HTTP 404: {"error":"invalid access token"}`,
 			want:   false,
 		},
 	}
@@ -2374,6 +2390,58 @@ func TestLiveDogfoodAuth401OutputMatchesGooglePhrases(t *testing.T) {
 			t.Parallel()
 
 			assert.Equal(t, tt.want, liveDogfoodAuth401Output(strings.ToLower(tt.output)))
+		})
+	}
+}
+
+func TestLiveDogfoodAuth401TypedExitCode(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		run  liveDogfoodRun
+		want bool
+	}{
+		{
+			name: "typed auth exit with unrecognized vendor wording",
+			run: liveDogfoodRun{
+				exitCode: liveDogfoodAuthExitCode,
+				stderr:   `Error: GET /users/me returned HTTP 401: {"code":9999,"message":"Nope."}`,
+			},
+			want: true,
+		},
+		{
+			name: "typed auth exit without a 401",
+			run: liveDogfoodRun{
+				exitCode: liveDogfoodAuthExitCode,
+				stderr:   `Error: no credentials configured`,
+			},
+			want: false,
+		},
+		{
+			name: "unrecognized wording on a generic failure exit",
+			run: liveDogfoodRun{
+				exitCode: 1,
+				stderr:   `Error: GET /users/me returned HTTP 401: {"code":9999,"message":"Nope."}`,
+			},
+			want: false,
+		},
+		{
+			name: "recognized wording on a generic failure exit",
+			run: liveDogfoodRun{
+				exitCode: 1,
+				stderr:   `Error: GET /users/me returned HTTP 401: {"code":124,"message":"Invalid access token."}`,
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, liveDogfoodAuth401(tt.run))
+			assert.Equal(t, tt.want, liveDogfoodUnavailableForRunner(tt.run))
 		})
 	}
 }

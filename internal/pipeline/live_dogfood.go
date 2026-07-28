@@ -1982,7 +1982,7 @@ func validLiveDogfoodJSONOutput(stdout string) bool {
 func liveDogfoodUnavailableForRunner(run liveDogfoodRun) bool {
 	output := strings.ToLower(run.stdout + run.stderr)
 	return strings.Contains(output, "http 403") ||
-		liveDogfoodAuth401Output(output) ||
+		liveDogfoodAuth401(run) ||
 		strings.Contains(output, "permission denied") ||
 		strings.Contains(output, "your credentials are valid but lack access")
 }
@@ -2041,19 +2041,39 @@ func liveDogfoodRequiresTierSkipReason(annotations map[string]string, activeTier
 	return fmt.Sprintf("blocked-fixture: requires auth tier %q", requiredTier)
 }
 
+// liveDogfoodAuthExitCode is the typed exit code a printed CLI returns from
+// authErr, so it is authoritative about the failure class regardless of how the
+// vendor worded the 401 body.
+const liveDogfoodAuthExitCode = 4
+
 func liveDogfoodAuth401(run liveDogfoodRun) bool {
-	return liveDogfoodAuth401Output(strings.ToLower(run.stdout + run.stderr))
+	output := strings.ToLower(run.stdout + run.stderr)
+	if run.exitCode == liveDogfoodAuthExitCode && strings.Contains(output, "http 401") {
+		return true
+	}
+	return liveDogfoodAuth401Output(output)
 }
 
 func liveDogfoodAuth401Output(output string) bool {
 	if !strings.Contains(output, "http 401") {
 		return false
 	}
-	return strings.Contains(output, "couldn't authenticate") ||
-		strings.Contains(output, "could not authenticate") ||
-		strings.Contains(output, "login required") ||
-		strings.Contains(output, "request is missing required authentication credential") ||
-		strings.Contains(output, "not authenticated")
+	return containsAnyOf(output, liveDogfoodAuth401Phrases)
+}
+
+// Vendor 401 bodies are unstandardized; each entry is a lowercase substring
+// observed in a real provider's unauthenticated response.
+var liveDogfoodAuth401Phrases = []string{
+	"couldn't authenticate",
+	"could not authenticate",
+	"login required",
+	"request is missing required authentication credential",
+	"not authenticated",
+	"invalid access token",
+	"invalid token",
+	"expired token",
+	"token expired",
+	"unauthorized",
 }
 
 func commandSupportsDryRun(help string) bool {
