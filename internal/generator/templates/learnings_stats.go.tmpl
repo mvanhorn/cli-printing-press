@@ -63,7 +63,7 @@ local-only: events never leave this machine.`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
-				return writeDryRun(flags, "learnings stats")
+				return writeDryRun(cmd.OutOrStdout(), flags, "learnings stats")
 			}
 			s, err := store.OpenWithContext(cmd.Context(), learnDBPath(dbPath))
 			if err != nil {

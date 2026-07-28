@@ -145,13 +145,14 @@ type dryRunResult struct {
 // writeDryRun ends a --dry-run short-circuit by reporting the action that was
 // skipped. Returning silently leaves a --json caller with empty stdout, which
 // is indistinguishable from a broken command rather than a deliberate no-op.
-func writeDryRun(flags *rootFlags, action string) error {
+// Callers pass cmd.OutOrStdout() so the report follows any redirected writer.
+func writeDryRun(w io.Writer, flags *rootFlags, action string) error {
 	would := "run " + action + "; no changes made"
 	if flags != nil && flags.asJSON {
-		return json.NewEncoder(os.Stdout).Encode(dryRunResult{DryRun: true, Action: action, Would: would})
+		return json.NewEncoder(w).Encode(dryRunResult{DryRun: true, Action: action, Would: would})
 	}
-	fmt.Printf("dry-run: would %s\n", would)
-	return nil
+	_, err := fmt.Fprintf(w, "dry-run: would %s\n", would)
+	return err
 }
 
 // boundCtx applies the root --timeout flag to hand-written command work that

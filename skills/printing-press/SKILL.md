@@ -3304,8 +3304,7 @@ func newScanFilterCmd(flags *rootFlags) *cobra.Command {
 				return cmd.Help()
 			}
 			if dryRunOK(flags) {
-				fmt.Fprintf(cmd.OutOrStdout(), "would scan up to %d pages for matching items\n", maxScanPages)
-				return writeDryRun(flags, "scan")
+				return writeDryRun(cmd.OutOrStdout(), flags, "scan")
 			}
 			if status == "" {
 				_ = cmd.Usage()
@@ -3378,7 +3377,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
         return cmd.Help()
     }
     if dryRunOK(flags) {
-        return writeDryRun(flags, "<command name>")
+        return writeDryRun(cmd.OutOrStdout(), flags, "<command name>")
     }
     if <required input missing> {
         _ = cmd.Usage()
@@ -3388,7 +3387,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
 }
 ```
 
-Why each branch exists: the `len(args) == 0 && cmd.Flags().NFlag() == 0` branch handles an interactive `<cli> mycommand` help-only invocation without treating help as an error. The `dryRunOK` branch handles verify's `<cli> mycommand <fixture> --dry-run` probes before network or filesystem IO; it must end in `writeDryRun(flags, "<command name>")` so `--dry-run --json` still produces a parseable envelope. The required-input branch handles non-help invocations where a mode or output flag is present (`--no-input`, `--agent`, `--json`) but the required ID, query, path, or other command input is still missing. Missing required input must print usage and return `usageErr(...)` so callers get exit code 2 instead of a silent rc=0 skip.
+Why each branch exists: the `len(args) == 0 && cmd.Flags().NFlag() == 0` branch handles an interactive `<cli> mycommand` help-only invocation without treating help as an error. The `dryRunOK` branch handles verify's `<cli> mycommand <fixture> --dry-run` probes before network or filesystem IO; it must end in `writeDryRun(cmd.OutOrStdout(), flags, "<command name>")` so `--dry-run --json` still produces a parseable envelope. The required-input branch handles non-help invocations where a mode or output flag is present (`--no-input`, `--agent`, `--json`) but the required ID, query, path, or other command input is still missing. Missing required input must print usage and return `usageErr(...)` so callers get exit code 2 instead of a silent rc=0 skip.
 
 For SQLite-backed novel commands only, add this missing-mirror guard after `dryRunOK(flags)`, after any required-input `usageErr(...)` check, and after `dbPath` is resolved, but before `store.OpenWithContext`, `store.OpenReadOnly`, `sql.Open`, or other SQLite access:
 
@@ -3520,7 +3519,7 @@ The generator handles Priority 0 (data layer) and most of Priority 1 (absorbed A
 - `printAutoTable(w io.Writer, items []map[string]any) error` - render JSON-like rows as the generated human table format.
 - `defaultDBPath(name string) string` - resolve the local SQLite database path for `<name>`.
 - `dryRunOK(flags *rootFlags) bool` - detect verify-friendly `--dry-run` short-circuits before network, store, or filesystem work.
-- `writeDryRun(flags *rootFlags, action string) error` - end a `--dry-run` short-circuit with a `{"dry_run":true,"action":...,"would":...}` envelope under `--json` and a prose line otherwise. Never `return nil` silently from a dry-run branch: empty stdout under `--json` fails the live-dogfood `json_fidelity` check.
+- `writeDryRun(w io.Writer, flags *rootFlags, action string) error` - end a `--dry-run` short-circuit with a `{"dry_run":true,"action":...,"would":...}` envelope under `--json` and a prose line otherwise; pass `cmd.OutOrStdout()`. Never `return nil` silently from a dry-run branch: empty stdout under `--json` fails the live-dogfood `json_fidelity` check. Let it own the whole dry-run output — an extra prose write before it makes stdout unparseable under `--json`.
 - `boundCtx(parent context.Context, flags *rootFlags) (context.Context, context.CancelFunc)` - apply root `--timeout` to hand-written commands that call sibling typed clients instead of the generated `internal/client`.
 - `filterFields(data json.RawMessage, fields string) json.RawMessage` - apply `--select` to a JSON blob.
 - `compactFields(data json.RawMessage) json.RawMessage` - apply `--compact` to a JSON blob.
@@ -3581,8 +3580,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	}
 	if dryRunOK(flags) {
-		fmt.Fprintln(cmd.OutOrStdout(), "would fetch <resource>")
-		return writeDryRun(flags, "<command name>")
+		return writeDryRun(cmd.OutOrStdout(), flags, "<command name>")
 	}
 	ctx, cancel := boundCtx(cmd.Context(), flags)
 	defer cancel()
@@ -3630,8 +3628,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	}
 	if dryRunOK(flags) {
-		fmt.Fprintln(cmd.OutOrStdout(), "would fetch <resource> details")
-		return writeDryRun(flags, "<command name>")
+		return writeDryRun(cmd.OutOrStdout(), flags, "<command name>")
 	}
 	ctx, cancel := boundCtx(cmd.Context(), flags)
 	defer cancel()
@@ -3733,8 +3730,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	}
 	if dryRunOK(flags) {
-		fmt.Fprintln(cmd.OutOrStdout(), "would query local store")
-		return writeDryRun(flags, "<command name>")
+		return writeDryRun(cmd.OutOrStdout(), flags, "<command name>")
 	}
 	ctx, cancel := boundCtx(cmd.Context(), flags)
 	defer cancel()

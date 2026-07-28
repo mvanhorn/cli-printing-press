@@ -84,12 +84,12 @@ func TestLearnTemplatesHaveNoSilentDryRunReturns(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
-	require.Contains(t, helpers, "func writeDryRun(flags *rootFlags, action string) error")
+	require.Contains(t, helpers, "func writeDryRun(w io.Writer, flags *rootFlags, action string) error")
 	require.Contains(t, helpers, `json:"dry_run"`)
 
 	for _, name := range []string{"teach.go", "teach_playbook.go", "learnings_candidates.go", "learnings_stats.go"} {
 		src := readGeneratedFile(t, outputDir, "internal", "cli", name)
-		require.Contains(t, src, "return writeDryRun(flags,", "%s must report its dry-run short-circuit", name)
+		require.Contains(t, src, "return writeDryRun(cmd.OutOrStdout(), flags,", "%s must report its dry-run short-circuit", name)
 		require.NotContains(t, src, "if dryRunOK(flags) {\n\t\t\t\treturn nil\n", "%s still has a silent dry-run return", name)
 	}
 }
