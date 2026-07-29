@@ -189,6 +189,17 @@ func TestConfigSaveFailureLeavesOriginalParseable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory permission failure is POSIX-specific")
 	}
+	// This test makes save() fail by removing write permission from the config
+	// directory. Root ignores that: CAP_DAC_OVERRIDE bypasses the DAC check, so
+	// the temp file is created anyway, save() succeeds, and the assertion below
+	// fails for a reason that has nothing to do with the code under test.
+	//
+	// Same category as the Windows skip above — the mechanism the test depends
+	// on does not exist in this environment. Skipping is honest; weakening the
+	// assertion to accept a nil error would delete the coverage everywhere.
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: a read-only directory cannot make the write fail")
+	}
 	home, _ := resetPathTestEnv(t)
 	configPath := filepath.Join(home, "atomic", "config.toml")
 	configDir := filepath.Dir(configPath)
