@@ -273,7 +273,7 @@ Resource scoping:
 					if firstPlaceholderErr == nil && errors.Is(res.Err, client.ErrPlaceholderCredential) {
 						firstPlaceholderErr = res.Err
 					}
-					if criticalResources[res.Resource] {
+					if isSyncStatePersistenceError(res.Err) || criticalResources[res.Resource] {
 						criticalErrCount++
 						criticalFailedResources = append(criticalFailedResources, res.Resource)
 					}
@@ -1974,6 +1974,13 @@ var pageEnvelopeMetadataKeys = map[string]bool{
 	"response_metadata": true, "paging": true,
 	// links shape
 	"next": true, "prev": true, "previous": true, "first": true, "last": true,
+}
+
+// isSyncStatePersistenceError reports failures to persist sync checkpoints.
+// These are always treated as critical because a silent exit 0 would leave
+// resume cursors inconsistent with stored data.
+func isSyncStatePersistenceError(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "saving sync state for ")
 }
 
 // criticalResources is the template-time projection of per-resource Critical

@@ -15183,8 +15183,8 @@ func TestGeneratedSyncExitPolicy(t *testing.T) {
 	// criticalResources map. This pins the lookup mechanism so a refactor
 	// can't accidentally drop the per-resource classification.
 	assert.Contains(t, syncContent,
-		`if criticalResources[res.Resource] {`,
-		"sync.go must classify each errored resource against criticalResources")
+		`isSyncStatePersistenceError(res.Err) || criticalResources[res.Resource]`,
+		"sync.go must classify each errored resource against persistence failures and criticalResources")
 
 	// (d) In-band default-flip signal. Fires once when the new default
 	// suppressed a non-zero exit under the old contract.

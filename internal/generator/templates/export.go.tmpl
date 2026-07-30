@@ -81,6 +81,7 @@ large datasets as it has no memory pressure.`,
 					return fmt.Errorf("creating output file: %w", err)
 				}
 				outFile = f
+				defer outFile.Close()
 				writer = bufio.NewWriter(f)
 			} else {
 				writer = bufio.NewWriter(os.Stdout)
@@ -88,11 +89,6 @@ large datasets as it has no memory pressure.`,
 			finishExport := func() error {
 				if err := writer.Flush(); err != nil {
 					return fmt.Errorf("flushing export: %w", err)
-				}
-				if outFile != nil {
-					if err := outFile.Close(); err != nil {
-						return fmt.Errorf("closing export file: %w", err)
-					}
 				}
 				return nil
 			}
