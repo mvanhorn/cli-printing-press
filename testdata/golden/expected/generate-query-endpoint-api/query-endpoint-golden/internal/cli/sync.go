@@ -149,7 +149,9 @@ Resource scoping:
 			// Skip under --dry-run: a preview must not mutate sync-state (issue #2935).
 			if full && !c.DryRun {
 				for _, resource := range resources {
-					_ = db.SaveSyncState(resource, "", 0)
+					if err := db.SaveSyncState(resource, "", 0); err != nil {
+						return fmt.Errorf("clearing sync state for %s: %w", resource, err)
+					}
 				}
 			}
 
@@ -174,7 +176,9 @@ Resource scoping:
 						for _, resource := range resources {
 							existing, _, _, _ := db.GetSyncState(resource)
 							if existing != "" {
-								_ = db.SaveSyncState(resource, "", 0)
+								if err := db.SaveSyncState(resource, "", 0); err != nil {
+									return fmt.Errorf("clearing sync state for %s: %w", resource, err)
+								}
 							}
 						}
 					}
@@ -874,7 +878,9 @@ func syncResource(ctx context.Context, c interface {
 	if capExitHit {
 		finalCursor = capExitCursor
 	}
-	_ = db.SaveSyncState(resource, finalCursor, totalCount)
+	if err := db.SaveSyncState(resource, finalCursor, totalCount); err != nil {
+		return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, err), Duration: time.Since(started)}
+	}
 
 	// F4b symptom probe: if items were consumed and successfully
 	// extracted (extractFailures < consumed) but nothing landed in

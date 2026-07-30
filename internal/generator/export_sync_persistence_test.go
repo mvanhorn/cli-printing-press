@@ -1,0 +1,53 @@
+package generator
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestExportTemplate_PropagatesPersistenceErrors(t *testing.T) {
+	t.Parallel()
+
+	src, err := os.ReadFile(filepath.Join("templates", "export.go.tmpl"))
+	require.NoError(t, err)
+	content := string(src)
+
+	require.NotContains(t, content, "defer writer.Flush()",
+		"export must check flush errors explicitly, not defer-discard them")
+	require.Contains(t, content, "finishExport")
+	require.Contains(t, content, `fmt.Errorf("flushing export: %w", err)`)
+	require.Contains(t, content, `fmt.Errorf("writing export: %w", err)`)
+}
+
+func TestSyncTemplates_DoNotDiscardSaveSyncStateErrors(t *testing.T) {
+	t.Parallel()
+
+	for _, tmpl := range []string{"sync.go.tmpl", "graphql_sync.go.tmpl"} {
+		tmpl := tmpl
+		t.Run(tmpl, func(t *testing.T) {
+			t.Parallel()
+			src, err := os.ReadFile(filepath.Join("templates", tmpl))
+			require.NoError(t, err)
+			content := string(src)
+			require.NotContains(t, content, "_ = db.SaveSyncState",
+				"%s must propagate SaveSyncState errors", tmpl)
+			require.True(t, strings.Contains(content, "saving sync state for"),
+				"%s should wrap final SaveSyncState failures", tmpl)
+		})
+	}
+}
+
+func TestGeneratedExport_FinishExportBeforeSuccessMessage(t *testing.T) {
+	t.Parallel()
+
+	outputDir := generatePetstore(t)
+	exportGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "export.go"))
+	require.NoError(t, err)
+	content := string(exportGo)
+	require.Contains(t, content, "finishExport")
+	require.NotContains(t, content, "defer writer.Flush()")
+}
