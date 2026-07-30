@@ -37,7 +37,7 @@ large datasets as it has no memory pressure.`,
   # Pipe to another tool
   {{.Name}}-pp-cli export <resource> --format jsonl | jq '.id'`,
 		Args: cobra.RangeArgs(1, 2),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			validResources := map[string]bool{
 {{- range $exportableResources}}
 				{{printf "%q" .}}: true,
@@ -81,14 +81,24 @@ large datasets as it has no memory pressure.`,
 					return fmt.Errorf("creating output file: %w", err)
 				}
 				outFile = f
-				defer outFile.Close()
 				writer = bufio.NewWriter(f)
+				defer func() {
+					if err != nil && outFile != nil {
+						_ = outFile.Close()
+					}
+				}()
 			} else {
 				writer = bufio.NewWriter(os.Stdout)
 			}
 			finishExport := func() error {
 				if err := writer.Flush(); err != nil {
 					return fmt.Errorf("flushing export: %w", err)
+				}
+				if outFile != nil {
+					if err := outFile.Close(); err != nil {
+						return fmt.Errorf("closing export file: %w", err)
+					}
+					outFile = nil
 				}
 				return nil
 			}

@@ -19,7 +19,10 @@ func TestExportTemplate_PropagatesPersistenceErrors(t *testing.T) {
 	require.NotContains(t, content, "defer writer.Flush()",
 		"export must check flush errors explicitly, not defer-discard them")
 	require.Contains(t, content, "finishExport")
-	require.Contains(t, content, "defer outFile.Close()")
+	require.NotContains(t, content, "defer outFile.Close()",
+		"export must check close errors in finishExport before success, not defer-discard them")
+	require.Contains(t, content, `fmt.Errorf("closing export file: %w", err)`)
+	require.Contains(t, content, "if err != nil && outFile != nil")
 	require.Contains(t, content, `fmt.Errorf("flushing export: %w", err)`)
 	require.Contains(t, content, `fmt.Errorf("writing export: %w", err)`)
 }
@@ -60,5 +63,9 @@ func TestGeneratedExport_FinishExportBeforeSuccessMessage(t *testing.T) {
 	require.NoError(t, err)
 	content := string(exportGo)
 	require.Contains(t, content, "finishExport")
+	require.Contains(t, content, `fmt.Errorf("closing export file: %w", err)`)
 	require.NotContains(t, content, "defer writer.Flush()")
+	successIdx := strings.Index(content, "Exported %d records")
+	finishIdx := strings.LastIndex(content, "finishExport()")
+	require.Greater(t, successIdx, finishIdx, "success message must follow finishExport in generated export")
 }
