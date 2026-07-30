@@ -55,6 +55,17 @@ func TestSyncTemplate_TreatsPersistenceErrorsAsCritical(t *testing.T) {
 	require.Contains(t, content, "isSyncStatePersistenceError(res.Err) || criticalResources[res.Resource]")
 }
 
+func TestWorkflowArchiveTemplate_FailsOnPersistenceErrors(t *testing.T) {
+	t.Parallel()
+
+	src, err := os.ReadFile(filepath.Join("templates", "channel_workflow.go.tmpl"))
+	require.NoError(t, err)
+	content := string(src)
+
+	require.Contains(t, content, "isSyncStatePersistenceError(res.Err)")
+	require.Contains(t, content, `return fmt.Errorf("archiving %s: %w", resource, res.Err)`)
+}
+
 func TestGeneratedExport_FinishExportBeforeSuccessMessage(t *testing.T) {
 	t.Parallel()
 

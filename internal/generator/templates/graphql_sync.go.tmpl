@@ -692,3 +692,9 @@ func parseSinceDuration(s string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("unknown unit %q", matches[2])
 	}
 }
+
+// isSyncStatePersistenceError reports failures to persist sync checkpoints.
+// Shared with workflow archive and the primary sync command's exit policy.
+func isSyncStatePersistenceError(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "saving sync state for ")
+}
