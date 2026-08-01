@@ -4277,6 +4277,40 @@ func TestMCPIntentsValidation(t *testing.T) {
 	}
 }
 
+// TestValidateIntentsRejectsIllegalParamName pins that intent param names are
+// validated against the Anthropic MCP tool property-key grammar
+// (MCPPropertyKeyPattern): intent params are emitted verbatim as MCP schema
+// keys, and an illegal key (e.g. the fathom-style recorded_by[]) bricks the
+// calling agent session at schema load (HelpFlow/aos-build#165).
+func TestValidateIntentsRejectsIllegalParamName(t *testing.T) {
+	t.Parallel()
+	s := APISpec{
+		Name:    "demo",
+		BaseURL: "http://x",
+		Resources: map[string]Resource{
+			"items": {
+				Endpoints: map[string]Endpoint{
+					"get":  {Method: "GET", Path: "/items/{id}"},
+					"list": {Method: "GET", Path: "/items"},
+				},
+			},
+		},
+		MCP: MCPConfig{Intents: []Intent{{
+			Name:        "get_item",
+			Description: "Get an item",
+			Params:      []IntentParam{{Name: "recorded_by[]", Type: "string", Required: true, Description: "id"}},
+			Steps: []IntentStep{
+				{Endpoint: "items.get", Capture: "item"},
+			},
+			Returns: "item",
+		}}},
+	}
+	err := s.Validate()
+	require.Error(t, err)
+	require.ErrorContains(t, err, "recorded_by[]")
+	require.ErrorContains(t, err, MCPPropertyKeyPattern)
+}
+
 func TestMCPOrchestrationValidation(t *testing.T) {
 	base := func(mcp MCPConfig) APISpec {
 		return APISpec{
