@@ -998,7 +998,9 @@ func ftsMatchQuery(query string) string {
 func extractObjectID(obj map[string]any) string {
 	for _, key := range []string{"id", "Id", "ID", "_id", "uuid", "slug", "name"} {
 		if v, ok := obj[key]; ok {
-			return ResourceIDString(v)
+			if id := ResourceIDString(v); id != "" && id != "<nil>" {
+				return id
+			}
 		}
 	}
 	return ""
