@@ -104,21 +104,21 @@ func newStaleCmd(flags *rootFlags) *cobra.Command {
 	var limit int
 
 	cmd := &cobra.Command{
-		Use:   "stale",
+		Use:   {{printf "%q" (index .CommandNames "stale")}},
 		Short: "Find items with no updates in N days",
 		Long: `Scan locally synced data for items that have not been updated within
 the specified number of days. Useful for identifying forgotten or blocked work.`,
 		Example: `  # Find items not updated in 30 days (default)
-  {{.Name}}-pp-cli stale
+  {{.Name}}-pp-cli {{index .CommandNames "stale"}}
 
   # Find items not updated in 14 days
-  {{.Name}}-pp-cli stale --days 14
+  {{.Name}}-pp-cli {{index .CommandNames "stale"}} --days 14
 
   # Filter by team
-  {{.Name}}-pp-cli stale --days 7 --team backend
+  {{.Name}}-pp-cli {{index .CommandNames "stale"}} --days 7 --team backend
 
   # Output as JSON
-  {{.Name}}-pp-cli stale --days 30 --json`,
+  {{.Name}}-pp-cli {{index .CommandNames "stale"}} --days 30 --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dbPath == "" {

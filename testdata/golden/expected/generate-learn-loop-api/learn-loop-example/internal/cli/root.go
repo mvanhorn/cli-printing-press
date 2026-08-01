@@ -75,6 +75,15 @@ func registerNovelCommand(hook func(root *cobra.Command, flags *rootFlags)) {
 	novelCommandHooks = append(novelCommandHooks, hook)
 }
 
+func addNovelCommandIfAbsent(parent *cobra.Command, candidate *cobra.Command) {
+	for _, existing := range parent.Commands() {
+		if existing.Name() == candidate.Name() {
+			return
+		}
+	}
+	parent.AddCommand(candidate)
+}
+
 // clientHooks let preserved package-local extensions configure a newly-created
 // client without editing generated code. Hooks are additive and run once per
 // client construction; they must not perform provider-specific behavior here.

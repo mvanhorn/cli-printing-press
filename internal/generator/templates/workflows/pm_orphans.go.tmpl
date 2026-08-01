@@ -17,15 +17,15 @@ func newOrphansCmd(flags *rootFlags) *cobra.Command {
 	var limit int
 
 	cmd := &cobra.Command{
-		Use:   "orphans",
+		Use:   {{printf "%q" (index .CommandNames "orphans")}},
 		Short: "Find items missing key fields like assignee or project",
 		Long: `Scan locally synced data for items that are missing important fields
 such as assignee, project, priority, or labels. Useful for triaging unowned work.`,
 		Example: `  # Find orphaned items
-  {{.Name}}-pp-cli orphans
+  {{.Name}}-pp-cli {{index .CommandNames "orphans"}}
 
   # Output as JSON
-  {{.Name}}-pp-cli orphans --json`,
+  {{.Name}}-pp-cli {{index .CommandNames "orphans"}} --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dbPath == "" {
