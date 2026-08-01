@@ -67,7 +67,7 @@ agents can record playbooks without a file on disk.`,
 				return nil
 			}
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(cmd.OutOrStdout(), flags, "teach-playbook")
 			}
 			if strings.TrimSpace(query) == "" {
 				return usageErr(fmt.Errorf("--query is required"))
@@ -204,7 +204,7 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 				return nil
 			}
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(cmd.OutOrStdout(), flags, "playbook amend")
 			}
 			if strings.TrimSpace(query) == "" {
 				writeTeachErrLog(fmt.Sprintf("playbook amend: missing --query (args=%v)", args))
@@ -286,7 +286,7 @@ func newPlaybookListCmd(flags *rootFlags) *cobra.Command {
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(cmd.OutOrStdout(), flags, "playbook list")
 			}
 			dbPath = learnDBPath(dbPath)
 			s, err := store.OpenWithContext(cmd.Context(), dbPath)
