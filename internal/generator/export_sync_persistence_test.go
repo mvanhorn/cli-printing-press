@@ -38,6 +38,10 @@ func TestSyncTemplates_DoNotDiscardSaveSyncStateErrors(t *testing.T) {
 			content := string(src)
 			require.NotContains(t, content, "_ = db.SaveSyncState",
 				"%s must propagate SaveSyncState errors", tmpl)
+			require.NotContains(t, content, "warning: failed to save sync state",
+				"%s must not downgrade checkpoint failures to warnings", tmpl)
+			require.Equal(t, 4, strings.Count(content, "if err := db.SaveSyncState(resource"),
+				"%s must check reset, latest-only, per-page, and final checkpoints", tmpl)
 			require.True(t, strings.Contains(content, "saving sync state for"),
 				"%s should wrap final SaveSyncState failures", tmpl)
 		})
@@ -79,4 +83,17 @@ func TestGeneratedExport_FinishExportBeforeSuccessMessage(t *testing.T) {
 	successIdx := strings.Index(content, "Exported %d records")
 	finishIdx := strings.LastIndex(content, "finishExport()")
 	require.Greater(t, successIdx, finishIdx, "success message must follow finishExport in generated export")
+}
+
+func TestGeneratedSync_PropagatesEveryResourceCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	outputDir := generatePetstore(t)
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	content := string(syncGo)
+
+	require.NotContains(t, content, "warning: failed to save sync state")
+	require.Equal(t, 4, strings.Count(content, "if err := db.SaveSyncState(resource"))
+	require.Contains(t, content, `return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, err)`)
 }

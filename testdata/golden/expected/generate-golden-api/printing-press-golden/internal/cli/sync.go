@@ -812,8 +812,7 @@ func syncResource(ctx context.Context, c interface {
 
 		// Save cursor after each page for resumability
 		if err := db.SaveSyncState(resource, nextCursor, totalCount); err != nil {
-			// Non-fatal: log and continue
-			fmt.Fprintf(os.Stderr, "\nwarning: failed to save sync state for %s: %v\n", resource, err)
+			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
 		cursor = nextCursor
