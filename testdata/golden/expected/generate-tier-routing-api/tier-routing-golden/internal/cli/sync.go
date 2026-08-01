@@ -149,7 +149,9 @@ Resource scoping:
 			// Skip under --dry-run: a preview must not mutate sync-state (issue #2935).
 			if full && !c.DryRun {
 				for _, resource := range resources {
-					_ = db.SaveSyncState(resource, "", 0)
+					if err := db.SaveSyncState(resource, "", 0); err != nil {
+						return fmt.Errorf("clearing sync state for %s: %w", resource, err)
+					}
 				}
 			}
 
@@ -174,7 +176,9 @@ Resource scoping:
 						for _, resource := range resources {
 							existing, _, _, _ := db.GetSyncState(resource)
 							if existing != "" {
-								_ = db.SaveSyncState(resource, "", 0)
+								if err := db.SaveSyncState(resource, "", 0); err != nil {
+									return fmt.Errorf("clearing sync state for %s: %w", resource, err)
+								}
 							}
 						}
 					}
@@ -269,7 +273,7 @@ Resource scoping:
 					if firstPlaceholderErr == nil && errors.Is(res.Err, client.ErrPlaceholderCredential) {
 						firstPlaceholderErr = res.Err
 					}
-					if criticalResources[res.Resource] {
+					if isSyncStatePersistenceError(res.Err) || criticalResources[res.Resource] {
 						criticalErrCount++
 						criticalFailedResources = append(criticalFailedResources, res.Resource)
 					}
@@ -769,8 +773,7 @@ func syncResource(ctx context.Context, c interface {
 
 		// Save cursor after each page for resumability
 		if err := db.SaveSyncState(resource, nextCursor, totalCount); err != nil {
-			// Non-fatal: log and continue
-			fmt.Fprintf(os.Stderr, "\nwarning: failed to save sync state for %s: %v\n", resource, err)
+			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
 		cursor = nextCursor
@@ -815,7 +818,9 @@ func syncResource(ctx context.Context, c interface {
 	if capExitHit {
 		finalCursor = capExitCursor
 	}
-	_ = db.SaveSyncState(resource, finalCursor, totalCount)
+	if err := db.SaveSyncState(resource, finalCursor, totalCount); err != nil {
+		return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, err), Duration: time.Since(started)}
+	}
 
 	// F4b symptom probe: if items were consumed and successfully
 	// extracted (extractFailures < consumed) but nothing landed in
@@ -1895,6 +1900,13 @@ var pageEnvelopeMetadataKeys = map[string]bool{
 	"response_metadata": true, "paging": true,
 	// links shape
 	"next": true, "prev": true, "previous": true, "first": true, "last": true,
+}
+
+// isSyncStatePersistenceError reports failures to persist sync checkpoints.
+// These are always treated as critical because a silent exit 0 would leave
+// resume cursors inconsistent with stored data.
+func isSyncStatePersistenceError(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "saving sync state for ")
 }
 
 // criticalResources is the template-time projection of per-resource Critical

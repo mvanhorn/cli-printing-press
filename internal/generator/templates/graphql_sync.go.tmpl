@@ -98,7 +98,9 @@ Exit codes & warnings:
 			// --full: clear all sync cursors before starting
 			if full {
 				for _, resource := range resources {
-					_ = db.SaveSyncState(resource, "", 0)
+					if err := db.SaveSyncState(resource, "", 0); err != nil {
+						return fmt.Errorf("clearing sync state for %s: %w", resource, err)
+					}
 				}
 			}
 
@@ -115,7 +117,9 @@ Exit codes & warnings:
 					for _, resource := range resources {
 						existing, _, _, _ := db.GetSyncState(resource)
 						if existing != "" {
-							_ = db.SaveSyncState(resource, "", 0)
+							if err := db.SaveSyncState(resource, "", 0); err != nil {
+								return fmt.Errorf("clearing sync state for %s: %w", resource, err)
+							}
 						}
 					}
 				} else if humanFriendly {
@@ -416,7 +420,7 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 
 		// Save cursor after each page for resumability
 		if err := db.SaveSyncState(resource, conn.PageInfo.EndCursor, totalCount); err != nil {
-			fmt.Fprintf(os.Stderr, "\nwarning: failed to save sync state for %s: %v\n", resource, err)
+			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
 		pagesFetched++
@@ -448,7 +452,9 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 	if capExitHit {
 		finalCursor = capExitCursor
 	}
-	_ = db.SaveSyncState(resource, finalCursor, totalCount)
+	if err := db.SaveSyncState(resource, finalCursor, totalCount); err != nil {
+		return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, err), Duration: time.Since(started)}
+	}
 
 	// F4b symptom probe: rows extracted successfully but none landed.
 	// Likely cause is below the PK-extraction layer (FTS5 trigger,
@@ -685,4 +691,10 @@ func parseSinceDuration(s string) (time.Time, error) {
 	default:
 		return time.Time{}, fmt.Errorf("unknown unit %q", matches[2])
 	}
+}
+
+// isSyncStatePersistenceError reports failures to persist sync checkpoints.
+// Shared with workflow archive and the primary sync command's exit policy.
+func isSyncStatePersistenceError(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "saving sync state for ")
 }
