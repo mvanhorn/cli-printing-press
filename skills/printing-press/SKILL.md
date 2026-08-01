@@ -2310,6 +2310,10 @@ browser-sniffed and crowd-sniffed specs where the mechanical auth detection may 
 - For internal YAML specs: look for `auth:` section with `type:` not equal to `"none"`
 - For OpenAPI specs: look for `components.securitySchemes` or `security` sections
 
+| Spec signal | Generator auth path |
+|---|---|
+| Provider-specific OAuth2 server or auth marker identifies a service-account JWT bearer flow | Emit the guarded service-account scaffold. It accepts the provider's credential file or pre-minted bearer override, exchanges service-account JWTs for cached bearer tokens, and preserves generic OAuth2 behavior for other hosts. |
+
 **If auth is missing** (`type: none` or no auth section) AND Phase 1 research found
 auth signals, enrich the spec before generation:
 

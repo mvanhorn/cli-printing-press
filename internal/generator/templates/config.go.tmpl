@@ -86,6 +86,10 @@ type Config struct {
 	// pattern as AuthorizationURL.
 	TokenURL       string `{{configTag .Config.Format}}:"token_url,omitempty"`
 {{- end}}
+{{- if eq .Auth.Subtype "google_service_account"}}
+	GoogleImpersonate string   `{{configTag .Config.Format}}:"google_impersonate,omitempty"`
+	GoogleScopes     []string `{{configTag .Config.Format}}:"google_scopes,omitempty"`
+{{- end}}
 {{- end}}
 	Path           string `{{configTag .Config.Format}}:"-"`
 	envOverrides   map[string]bool `{{configTag .Config.Format}}:"-"`
@@ -616,7 +620,17 @@ func (c *Config) AuthHeader() string {
 	{{- end}}
 {{- end}}
 {{- else if or (eq .Auth.Type "bearer_token") (eq .Auth.Type "oauth2") (eq .Auth.Type "oauth2_refresh")}}
-{{- if oauth2AccessTokenAuth .Auth}}
+{{- if eq .Auth.Subtype "google_service_account"}}
+	// GOOGLE_OAUTH_ACCESS_TOKEN is a pre-minted bearer override. A service
+	// account key is exchanged by the generated client instead.
+	if token := c.{{resolveEnvVarField "GOOGLE_OAUTH_ACCESS_TOKEN"}}; token != "" {
+		if c.AuthSource == "" {
+			c.AuthSource = "env:GOOGLE_OAUTH_ACCESS_TOKEN"
+		}
+		return "Bearer " + token
+	}
+	return ""
+{{- else if oauth2AccessTokenAuth .Auth}}
 	// Under OAuth2 (and bearer_token specs running OAuth grants such as
 	// client_credentials or device_code) the configured env vars hold flow
 	// inputs, not a usable bearer; the minted AccessToken must win. Sending
@@ -1089,6 +1103,10 @@ func (c *Config) clearCredentialFields() {
 	c.TokenExpiry = time.Time{}
 	c.ClientID = ""
 	c.ClientSecret = ""
+{{- if eq .Auth.Subtype "google_service_account"}}
+	c.GoogleImpersonate = ""
+	c.GoogleScopes = nil
+{{- end}}
 {{- if .BearerRefresh.Enabled}}
 	c.BearerTokenRefreshedAt = time.Time{}
 {{- end}}
@@ -1160,6 +1178,23 @@ func (c *Config) saveCredentialsFirst() error {
 	c.CredentialSource = "credentials file"
 	return nil
 }
+
+{{- if eq .Auth.Subtype "google_service_account"}}
+
+// SetGoogleServiceAccount records the service-account exchange inputs. The
+// access token itself is persisted through SaveTokens so both the key path and
+// the token follow the generated credential-storage policy.
+func (c *Config) SetGoogleServiceAccount(keyPath, subject string, scopes []string) {
+	c.{{resolveEnvVarField "GOOGLE_APPLICATION_CREDENTIALS"}} = keyPath
+	delete(c.envOverrides, "{{resolveEnvVarField "GOOGLE_APPLICATION_CREDENTIALS"}}")
+	c.updateFileConfigField("{{resolveEnvVarField "GOOGLE_APPLICATION_CREDENTIALS"}}")
+	c.GoogleImpersonate = strings.TrimSpace(subject)
+	c.GoogleScopes = append([]string(nil), scopes...)
+	c.updateFileConfigField("GoogleImpersonate")
+	c.updateFileConfigField("GoogleScopes")
+}
+
+{{- end}}
 
 func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken string, expiry time.Time) error {
 	c.ClientID = clientID
@@ -1313,6 +1348,10 @@ func (c *Config) ClearTokens() error {
 	c.TokenExpiry = time.Time{}
 	c.ClientID = ""
 	c.ClientSecret = ""
+{{- if eq .Auth.Subtype "google_service_account"}}
+	c.GoogleImpersonate = ""
+	c.GoogleScopes = nil
+{{- end}}
 	delete(c.envOverrides, "AuthHeaderVal")
 	delete(c.envOverrides, "AccessToken")
 	delete(c.envOverrides, "RefreshToken")
@@ -1325,6 +1364,10 @@ func (c *Config) ClearTokens() error {
 	c.updateFileConfigField("TokenExpiry")
 	c.updateFileConfigField("ClientID")
 	c.updateFileConfigField("ClientSecret")
+{{- if eq .Auth.Subtype "google_service_account"}}
+	c.updateFileConfigField("GoogleImpersonate")
+	c.updateFileConfigField("GoogleScopes")
+{{- end}}
 {{- if .HasRequiredRoles}}
 	c.AuthRole = ""
 	delete(c.envOverrides, "AuthRole")
@@ -1453,6 +1496,12 @@ func (c *Config) updateFileConfigField(field string) {
 		c.fileConfig.ClientID = c.ClientID
 	case "ClientSecret":
 		c.fileConfig.ClientSecret = c.ClientSecret
+{{- if eq .Auth.Subtype "google_service_account"}}
+	case "GoogleImpersonate":
+		c.fileConfig.GoogleImpersonate = c.GoogleImpersonate
+	case "GoogleScopes":
+		c.fileConfig.GoogleScopes = append([]string(nil), c.GoogleScopes...)
+{{- end}}
 {{- if .BearerRefresh.Enabled}}
 	case "BearerTokenRefreshedAt":
 		c.fileConfig.BearerTokenRefreshedAt = c.BearerTokenRefreshedAt
@@ -1594,6 +1643,10 @@ type persistedConfig struct {
 {{- if .Auth.TokenURL}}
 	TokenURL string `{{configTag .Config.Format}}:"token_url,omitempty"`
 {{- end}}
+{{- if eq .Auth.Subtype "google_service_account"}}
+	GoogleImpersonate string `{{configTag .Config.Format}}:"google_impersonate,omitempty"`
+	GoogleScopes []string `{{configTag .Config.Format}}:"google_scopes,omitempty"`
+{{- end}}
 {{- if or .EndpointTemplateVars .GlobalPathTemplateVars}}
 	TemplateVars map[string]string `{{configTag .Config.Format}}:"template_vars,omitempty"`
 {{- end}}
@@ -1623,6 +1676,10 @@ func (c *Config) persisted() persistedConfig {
 {{- end}}
 {{- if .Auth.TokenURL}}
 		TokenURL: c.TokenURL,
+{{- end}}
+{{- if eq .Auth.Subtype "google_service_account"}}
+		GoogleImpersonate: c.GoogleImpersonate,
+		GoogleScopes: append([]string(nil), c.GoogleScopes...),
 {{- end}}
 {{- if or .EndpointTemplateVars .GlobalPathTemplateVars}}
 		TemplateVars: c.TemplateVars,

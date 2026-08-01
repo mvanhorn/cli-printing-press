@@ -167,6 +167,7 @@ type Generator struct {
 }
 
 func New(s *spec.APISpec, outputDir string) *Generator {
+	normalizeGoogleServiceAccountAuth(s)
 	s.InferEndpointTemplateVarsFromBaseURLs()
 	s.EnrichPathParams()
 	s.PromoteGlobalPathTemplateVars()
@@ -662,6 +663,15 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"firstCommandExample": firstCommandExample,
 	}
 	return g
+}
+
+func normalizeGoogleServiceAccountAuth(s *spec.APISpec) {
+	if s == nil || s.Auth.Subtype != spec.AuthSubtypeGoogleServiceAccount {
+		return
+	}
+	s.Auth.AuthorizationURL = ""
+	s.Auth.EnvVars = []string{"GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_OAUTH_ACCESS_TOKEN"}
+	s.Auth.EnvVarSpecs = spec.NewORCaseEnvVarSpecs(s.Auth.EnvVars)
 }
 
 func endpointTemplateVarsAny(vars []string, s *spec.APISpec, predicate func(string) bool) bool {
@@ -1277,6 +1287,8 @@ func authHarvestedEnvHint(auth spec.AuthConfig) string {
 	switch {
 	case auth.Type == "cookie" || auth.Type == "composed":
 		return "populated automatically by auth login --chrome"
+	case auth.Subtype == spec.AuthSubtypeGoogleServiceAccount:
+		return "set GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_OAUTH_ACCESS_TOKEN"
 	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && auth.TokenURL != "":
 		return "populated automatically by auth login --client-id/--client-secret"
 	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && auth.DeviceAuthorizationURL != "" && auth.TokenURL != "":
@@ -1756,6 +1768,9 @@ func authErrorCheckHint(auth spec.AuthConfig) string {
 }
 
 func authSetupHint(auth spec.AuthConfig, cliName string) string {
+	if auth.Subtype == spec.AuthSubtypeGoogleServiceAccount {
+		return fmt.Sprintf("Run '%s-pp-cli auth service-account --key <service-account.json>' or set GOOGLE_OAUTH_ACCESS_TOKEN.", cliName)
+	}
 	switch auth.Type {
 	case "", "none":
 		return ""

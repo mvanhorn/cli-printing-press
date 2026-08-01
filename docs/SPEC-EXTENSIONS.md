@@ -909,12 +909,13 @@ components:
 ### `x-auth-subtype`
 
 Refines `Auth.Type` for runtime flows that need a different credential-capture
-path than the base type implies. Today the only recognized value is
-`auth0_spa_in_memory`: a bearer-token spec whose access token is held by the
-Auth0 SPA SDK with `cacheLocation: memory`. Cookie/localStorage extractors have
-no path to such a token (it lives in JS heap only), so the generator emits a
-`--auth0-spa` flag on `auth login --chrome` that drives a Chrome DevTools
-Protocol outbound-Authorization interceptor instead.
+path than the base type implies. Recognized values include
+`google_service_account`, which selects the generated Google service-account
+JWT bearer exchange scaffold, and `auth0_spa_in_memory`, a bearer-token spec
+whose access token is held by the Auth0 SPA SDK with `cacheLocation: memory`.
+Cookie/localStorage extractors have no path to the latter token (it lives in JS
+heap only), so the generator emits a `--auth0-spa` flag on `auth login --chrome`
+that drives a Chrome DevTools Protocol outbound-Authorization interceptor.
 
 Parsed field: `APISpec.Auth.Subtype`
 
@@ -922,9 +923,13 @@ Rules:
 
 - Optional.
 - Must be a string.
-- Recognized values: `auth0_spa_in_memory`. Other values are silently dropped
+- Recognized values: `google_service_account`, `auth0_spa_in_memory`. Other values are silently dropped
   by the parser; the in-spec value never round-trips unless it matches a known
   subtype.
+- `google_service_account` is valid only with a bearer-token auth type. It
+  emits `auth service-account`, accepts a service-account JSON key through
+  `GOOGLE_APPLICATION_CREDENTIALS`, and supports a pre-minted bearer override
+  through `GOOGLE_OAUTH_ACCESS_TOKEN`.
 - Spec-level validation rejects `auth.subtype: auth0_spa_in_memory` paired with
   any non-empty `auth.type` other than `bearer_token`. Auth0 SPA tokens are
   always Authorization-bearer values; combining the subtype with `api_key` or

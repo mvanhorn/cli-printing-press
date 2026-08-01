@@ -1304,8 +1304,24 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 	applyAuthEnvVarDefaults(&auth, envPrefix)
 	applyAuthVarsRichOverride(&auth, scheme.Extensions, fmt.Sprintf("components.securitySchemes.%s.%s", schemeName, extensionAuthVars))
 	applyAuthCompanionFromInfo(&auth, doc)
+	if isGoogleServiceAccountOAuth2(doc, scheme, auth) || auth.Subtype == spec.AuthSubtypeGoogleServiceAccount {
+		applyGoogleServiceAccountAuth(&auth)
+	}
 	auth.AdditionalHeaders = collectAdditionalAuthHeaders(doc, schemeName, envPrefix)
 	return auth
+}
+
+func applyGoogleServiceAccountAuth(auth *spec.AuthConfig) {
+	if auth == nil {
+		return
+	}
+	auth.Subtype = spec.AuthSubtypeGoogleServiceAccount
+	// Google service-account JWT exchange is a non-interactive bearer flow.
+	// Keep the OAuth2 scheme's token URL and scopes, but remove the browser
+	// authorization URL so the generator selects the service-account scaffold.
+	auth.AuthorizationURL = ""
+	auth.EnvVars = []string{"GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_OAUTH_ACCESS_TOKEN"}
+	auth.EnvVarSpecs = spec.NewORCaseEnvVarSpecs(auth.EnvVars)
 }
 
 // collectAdditionalAuthHeaders scans AND-group siblings of the winning
@@ -1852,6 +1868,8 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 		// keeps the error close to the typo, matching how unknown auth types are
 		// handled elsewhere in this parser.
 		switch subtype {
+		case spec.AuthSubtypeGoogleServiceAccount:
+			auth.Subtype = subtype
 		case spec.AuthSubtypeAuth0SPAInMemory:
 			auth.Subtype = subtype
 		}
@@ -7689,6 +7707,16 @@ func isGoogleAPIsServerURL(raw string) bool {
 		}
 	}
 	return false
+}
+
+// isGoogleServiceAccountOAuth2 narrows the Google auth scaffold to OAuth2
+// schemes. A plain bearer scheme on a Google-hosted proxy still represents a
+// user-supplied token and must keep the normal bearer path.
+func isGoogleServiceAccountOAuth2(doc *openapi3.T, scheme *openapi3.SecurityScheme, auth spec.AuthConfig) bool {
+	if scheme == nil || !strings.EqualFold(strings.TrimSpace(scheme.Type), "oauth2") || auth.Type != "bearer_token" {
+		return false
+	}
+	return hasGoogleAPIsServer(doc)
 }
 
 func operationIDResourceVariants(resourceName string) []string {
