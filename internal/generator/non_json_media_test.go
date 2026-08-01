@@ -109,7 +109,7 @@ func TestGeneratedCommandsHonorNonJSONRequestAndResponseMediaTypes(t *testing.T)
 	assert.Contains(t, codeOrchSource, `rawBody, err = base64.StdEncoding.DecodeString(encoded)`)
 	assert.Contains(t, codeOrchSource, `data, _, err = c.SendRaw(ctx, ep.Method, path, query, rawBody, rawContentType, hdrs)`)
 	assert.Contains(t, codeOrchSource, `"request_body"] = map[string]any`)
-	assert.Contains(t, codeOrchSource, `"default_content_type":   r.ep.RequestContentType`)
+	assert.Contains(t, codeOrchSource, `"default_content_type":   ep.RequestContentType`)
 	assert.Contains(t, codeOrchSource, `"X-Printing-Press-Text-Response": "true"`)
 
 	codeOrchRuntimeTest := `package mcp

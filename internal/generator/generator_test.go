@@ -17618,13 +17618,13 @@ func assertMCPMainUsesVersionVar(t *testing.T, body string) {
 	assert.NotContains(t, body, "\n\t\t\"1.0.0\",\n\t\tserver.WithToolCapabilities(false),")
 }
 
-// TestGenerateMCPCodeOrchestrationEmitsSearchExecute proves that when the
-// spec opts into code-orchestration, the generator emits only
-// <api>_search and <api>_execute as MCP tools, covering every endpoint via
-// a single registry. This is the thin surface pattern referenced by
+// TestGenerateMCPCodeOrchestrationEmitsRegistryTools proves that when the
+// spec opts into code-orchestration, the generator emits only the registry
+// tools <api>_search, <api>_get, and <api>_execute as MCP tools, covering every
+// endpoint via a single registry. This is the thin surface pattern referenced by
 // Anthropic's 2026-04-22 post (Cloudflare's ~2,500-endpoint server in ~1K
 // tokens).
-func TestGenerateMCPCodeOrchestrationEmitsSearchExecute(t *testing.T) {
+func TestGenerateMCPCodeOrchestrationEmitsRegistryTools(t *testing.T) {
 	t.Parallel()
 
 	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
@@ -17643,6 +17643,7 @@ func TestGenerateMCPCodeOrchestrationEmitsSearchExecute(t *testing.T) {
 	for _, want := range []string{
 		`func RegisterCodeOrchestrationTools(`,
 		`mcplib.NewTool("loops_search"`,
+		`mcplib.NewTool("loops_get"`,
 		`mcplib.NewTool("loops_execute"`,
 		`codeOrchEndpoints = []codeOrchEndpoint`,
 		`func handleCodeOrchSearch(`,
