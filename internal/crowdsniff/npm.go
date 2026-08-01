@@ -22,6 +22,7 @@ const (
 	defaultDownloadsBaseURL  = "https://api.npmjs.org"
 	defaultRecencyCutoff     = 180 * 24 * time.Hour // 6 months
 	defaultHTTPTimeout       = 15 * time.Second
+	maxHTTPRedirects         = 10
 	maxTarballSize           = 10 * 1024 * 1024 // 10 MB
 	maxDownloadsResponseSize = 2 * 1024 * 1024  // 2 MB
 	maxSearchResults         = 25
@@ -61,6 +62,7 @@ func NewNPMSource(opts NPMOptions) *NPMSource {
 	if client == nil {
 		client = &http.Client{Timeout: defaultHTTPTimeout}
 	}
+	client = withHTTPSRedirectPolicy(client)
 	cutoff := opts.RecencyCutoff
 	if cutoff == 0 {
 		cutoff = defaultRecencyCutoff
@@ -71,6 +73,37 @@ func NewNPMSource(opts NPMOptions) *NPMSource {
 		httpClient:       client,
 		recencyCutoff:    cutoff,
 	}
+}
+
+// withHTTPSRedirectPolicy returns a shallow copy of client whose CheckRedirect
+// rejects any redirect to a non-HTTPS URL. The initial tarball URL is validated
+// as HTTPS, but Go's default client follows redirects without revalidating the
+// scheme, so an HTTPS URL could otherwise redirect to plain HTTP and still be
+// downloaded. Any CheckRedirect the caller already set is preserved and runs
+// after the scheme check. The caller's client is not mutated.
+func withHTTPSRedirectPolicy(client *http.Client) *http.Client {
+	inner := client.CheckRedirect
+	c := *client
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= maxHTTPRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxHTTPRedirects)
+		}
+		if req.URL.Scheme != "https" {
+			return fmt.Errorf("refusing redirect to non-HTTPS URL: %s", req.URL.Redacted())
+		}
+		if inner != nil {
+			if err := inner(req, via); err != nil {
+				return err
+			}
+			// Re-check after the caller's hook in case it modified the
+			// request URL before returning nil.
+			if req.URL.Scheme != "https" {
+				return fmt.Errorf("refusing redirect to non-HTTPS URL: %s", req.URL.Redacted())
+			}
+		}
+		return nil
+	}
+	return &c
 }
 
 // npmSearchResponse represents the npm registry search API response.
