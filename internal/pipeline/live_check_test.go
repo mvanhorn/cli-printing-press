@@ -44,6 +44,17 @@ func writeTestResearchJSON(t *testing.T, cliDir string, features []NovelFeature)
 	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "research.json"), body, 0o644))
 }
 
+func writeTestResearchState(t *testing.T, runRoot, cliDir string) {
+	t.Helper()
+	data, err := json.Marshal(PipelineState{
+		APIName:    "live-check-test",
+		RunID:      "live-check-run",
+		WorkingDir: cliDir,
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(runRoot, "state.json"), data, 0o644))
+}
+
 func writeNovelCommandFile(t *testing.T, cliDir, name, body string) {
 	t.Helper()
 	path := filepath.Join(cliDir, "internal", "cli", name)
@@ -131,6 +142,7 @@ func TestLiveCheck_FindsResearchInParentDir(t *testing.T) {
 	writeTestResearchJSON(t, runRoot, []NovelFeature{
 		{Name: "Feature A", Command: "foo", Description: "no example"},
 	})
+	writeTestResearchState(t, runRoot, cliDir)
 
 	// CLIDir is two levels under the dir holding research.json. The live
 	// check should walk up, locate it, and surface the next failure gate
@@ -155,6 +167,7 @@ func TestLiveCheck_ParentWalkStopsAtBound(t *testing.T) {
 		writeTestResearchJSON(t, root, []NovelFeature{
 			{Name: "Feature A", Command: "foo", Description: "no example"},
 		})
+		writeTestResearchState(t, root, atBound)
 
 		result := RunLiveCheck(LiveCheckOptions{CLIDir: atBound, BinaryName: "bin", Timeout: time.Second})
 		require.True(t, result.Unable)
@@ -820,6 +833,7 @@ func TestLiveCheck_RelativeCLIDirFindsParentResearch(t *testing.T) {
 	writeTestResearchJSON(t, runRoot, []NovelFeature{
 		{Name: "List items", Command: "items list", Example: "stub items list --json"},
 	})
+	writeTestResearchState(t, runRoot, cliDir)
 
 	result := RunLiveCheck(LiveCheckOptions{
 		CLIDir:     "live-check-test-pp-cli",

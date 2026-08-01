@@ -78,22 +78,18 @@ func researchBelongsToTarget(researchDir, cliDir string) bool {
 	}
 
 	state, hasState := loadResearchState(researchDir)
-	if hasState {
-		workingDir, err := ResolveTargetDir(state.EffectiveWorkingDir())
-		if err != nil || workingDir != cliDir || strings.TrimSpace(state.APIName) != expectedAPI {
-			return false
-		}
-		if manifestErr == nil && strings.TrimSpace(manifest.RunID) != "" &&
-			strings.TrimSpace(state.RunID) != strings.TrimSpace(manifest.RunID) {
-			return false
-		}
-		return true
+	if !hasState {
+		return false
 	}
-
-	// A generated manifest has a run identity even when its state file is no
-	// longer adjacent. Without that state, accepting an ancestor would make it
-	// impossible to distinguish separate runs of the same API.
-	return manifestErr != nil || strings.TrimSpace(manifest.RunID) == ""
+	workingDir, err := ResolveTargetDir(state.EffectiveWorkingDir())
+	if err != nil || workingDir != cliDir || strings.TrimSpace(state.APIName) != expectedAPI {
+		return false
+	}
+	if manifestErr == nil && strings.TrimSpace(manifest.RunID) != "" &&
+		strings.TrimSpace(state.RunID) != strings.TrimSpace(manifest.RunID) {
+		return false
+	}
+	return true
 }
 
 func loadResearchState(researchDir string) (PipelineState, bool) {

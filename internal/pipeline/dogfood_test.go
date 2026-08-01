@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -1848,6 +1849,13 @@ func newHealthCmd() *cobra.Command {
 			},
 		}
 		require.NoError(t, writeResearchJSON(research, runRoot))
+		stateData, err := json.Marshal(PipelineState{
+			APIName:    "demo",
+			RunID:      "dogfood-run",
+			WorkingDir: cliDir,
+		})
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(runRoot, "state.json"), stateData, 0o644))
 
 		result := checkNovelFeatures("demo-pp-cli", "")
 		assert.False(t, result.Skipped)
