@@ -326,9 +326,12 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"paramIdent":                          paramIdent,
 		"paramWireName":                       paramWireName,
 		"isArrayQueryParam":                   isArrayQueryParam,
+		"isDeepObjectQueryParam":              isDeepObjectQueryParam,
 		"queryParamStyle":                     queryParamStyle,
 		"queryParamExplodes":                  queryParamExplodes,
 		"hasArrayQueryParams":                 hasArrayQueryParams,
+		"hasDeepObjectQueryParams":            hasDeepObjectQueryParams,
+		"hasIndexedOrArrayQueryParams":        hasIndexedOrArrayQueryParams,
 		"typeFieldIdent":                      typeFieldIdent,
 		"typeFieldJSONTagComment":             typeFieldJSONTagComment,
 		"safeTypeName":                        safeTypeName,
@@ -2394,6 +2397,13 @@ func (g *Generator) prepareOutput() error {
 	// reserved name (pagination's flagAll, async's flagWait*). Must run after
 	// AsyncJobs detection so async endpoints reserve the wait identifiers.
 	if err := g.dedupeFlagIdentifiers(); err != nil {
+		return err
+	}
+
+	// Assert the FINAL per-endpoint MCP input-name set (post-dedup) is legal
+	// and collision-free before anything renders — an illegal or duplicate
+	// tool property key must fail generation, never ship (#165).
+	if err := g.validateMCPInputNames(); err != nil {
 		return err
 	}
 
@@ -6148,6 +6158,7 @@ type mcpParamBinding struct {
 	QueryArray         bool
 	QueryStyle         string
 	QueryExplode       bool
+	DeepObjectQuery    bool
 	RequestContentType string
 	Default            string
 }
@@ -6197,7 +6208,12 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 		// must match the cobra default rendering for CLI/MCP wire parity; keep in
 		// sync with that path (and cf. pipeline.stringifyParamDefault).
 		if loc == "query" || loc == "header" {
-			if isArrayQueryParam(p) {
+			// deepObject wins over the array marker: an array-typed
+			// style=deepObject param routes through the indexed-key emitter
+			// only, never the repeated/joined array path (deliberate).
+			if loc == "query" && isDeepObjectQueryParam(p) {
+				binding.DeepObjectQuery = true
+			} else if isArrayQueryParam(p) {
 				binding.QueryArray = true
 				binding.QueryStyle = queryParamStyle(p)
 				binding.QueryExplode = queryParamExplodes(p)
@@ -7787,6 +7803,33 @@ func hasArrayQueryParams(apiSpec *spec.APISpec) bool {
 	return anyEndpointMatches(apiSpec, func(endpoint spec.Endpoint) bool {
 		return slices.ContainsFunc(endpoint.Params, isArrayQueryParam)
 	})
+}
+
+// isDeepObjectQueryParam reports whether p is a query parameter declared with
+// OpenAPI style=deepObject — an array- or object-typed param whose wire form
+// is indexed bracket keys (name[i][field]=v / name[key]=v), never a repeated
+// or delimiter-joined value list. The parser stores serialization.Style
+// verbatim, so this compares against the literal (case-insensitively, to
+// tolerate hand-authored specs).
+func isDeepObjectQueryParam(p spec.Param) bool {
+	if p.Positional || p.PathParam {
+		return false
+	}
+	kind := primitiveKind(p.Type)
+	return (kind == "array" || kind == "object") && strings.EqualFold(strings.TrimSpace(p.QueryStyle), "deepObject")
+}
+
+func hasDeepObjectQueryParams(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, func(endpoint spec.Endpoint) bool {
+		return slices.ContainsFunc(endpoint.Params, isDeepObjectQueryParam)
+	})
+}
+
+// hasIndexedOrArrayQueryParams gates the generated-code surfaces shared by
+// the repeated/joined array emission and the indexed deepObject emission:
+// the net/url imports and codeOrchSplitQuery's path-returning form.
+func hasIndexedOrArrayQueryParams(apiSpec *spec.APISpec) bool {
+	return hasArrayQueryParams(apiSpec) || hasDeepObjectQueryParams(apiSpec)
 }
 
 func csvArrayValueExpr(p spec.Param, inputExpr string) string {

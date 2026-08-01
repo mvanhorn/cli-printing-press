@@ -454,14 +454,56 @@ func appendMethodMarker(desc, method string) string {
 }
 
 func formatParam(p spec.Param) string {
-	if p.Default == nil {
-		return p.PublicInputName()
+	name := p.PublicInputName()
+	if p.Default != nil {
+		if val, ok := formatDefault(p.Default); ok {
+			name += " (default: " + val + ")"
+		}
 	}
-	val, ok := formatDefault(p.Default)
-	if !ok {
-		return p.PublicInputName()
+	if hint := deepObjectHint(p); hint != "" {
+		name += " (" + hint + ")"
 	}
-	return p.PublicInputName() + " (default: " + val + ")"
+	return name
+}
+
+// deepObjectHint returns the input-shape teaching hint for a style=deepObject
+// query param, or "" for every other param. deepObject params take structured
+// JSON input that the generated emitters expand into indexed bracket keys
+// (sort[0][field]=Name); without a shape example in the description, agents
+// guess flat scalars and get 4xxs. The example is built from up to two of the
+// param's Fields names, with a generic fallback when the spec carries no
+// field detail; object-typed params get the object form without the array
+// wrapper.
+func deepObjectHint(p spec.Param) string {
+	if !strings.EqualFold(strings.TrimSpace(p.QueryStyle), "deepObject") {
+		return ""
+	}
+	example := deepObjectExampleObject(p.Fields)
+	if strings.EqualFold(strings.TrimSpace(p.Type), "array") {
+		return "array of objects, e.g. [" + example + "]"
+	}
+	return "e.g. " + example
+}
+
+// deepObjectExampleObject builds a one-line JSON object example from up to
+// two field names, falling back to a generic {"key":"value"} when the spec
+// declares no fields (an empty {} would teach nothing).
+func deepObjectExampleObject(fields []spec.Param) string {
+	var parts []string
+	for _, f := range fields {
+		name := strings.TrimSpace(f.Name)
+		if name == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%q:%q", name, "..."))
+		if len(parts) == 2 {
+			break
+		}
+	}
+	if len(parts) == 0 {
+		return `{"key":"value"}`
+	}
+	return "{" + strings.Join(parts, ",") + "}"
 }
 
 // formatDefault returns the value and true when usable inline, or
