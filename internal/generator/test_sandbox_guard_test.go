@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -42,6 +43,60 @@ func TestGeneratedTestsIsolateThroughTestenv(t *testing.T) {
 		require.Contains(t, source, "testenv.Isolate(t",
 			"%s must sandbox its user directories through testenv.Isolate", rel)
 	}
+}
+
+func TestGeneratedTestEnvPlatformSandboxContracts(t *testing.T) {
+	t.Parallel()
+
+	outputDir := generatePetstore(t)
+	unixSource := readGeneratedFile(t, outputDir, "internal", "cliutil", "testenv", "sandbox_unix.go")
+	windowsSource := readGeneratedFile(t, outputDir, "internal", "cliutil", "testenv", "sandbox_windows.go")
+
+	require.Contains(t, unixSource, "//go:build !windows")
+	require.Contains(t, unixSource, "os.Chmod(path, 0o700)")
+	require.NotContains(t, unixSource, "golang.org/x/sys/windows")
+
+	require.Contains(t, windowsSource, "//go:build windows")
+	require.Contains(t, windowsSource, "golang.org/x/sys/windows")
+	require.Contains(t, windowsSource, `fmt.Sprintf("O:%sD:PAI(A;OICI;FA;;;%s)", sid, sid)`)
+	require.Contains(t, windowsSource, "windows.PROTECTED_DACL_SECURITY_INFORMATION")
+	require.Contains(t, windowsSource, "windows.OWNER_SECURITY_INFORMATION")
+	require.Contains(t, windowsSource, "windows.SetNamedSecurityInfo(")
+}
+
+func TestGeneratedTestEnvUnixSandboxMode(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix mode bits are not meaningful on Windows")
+	}
+
+	outputDir := generatePetstore(t)
+
+	inlineTest := `package testenv_test
+
+import (
+	"os"
+	"testing"
+
+	"petstore-pp-cli/internal/cliutil/testenv"
+)
+
+func TestUnixSandboxIsOwnerOnly(t *testing.T) {
+	home := testenv.Isolate(t)
+	info, err := os.Stat(home)
+	if err != nil {
+		t.Fatalf("stat sandbox: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("sandbox mode = %04o, want 0700", got)
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cliutil", "testenv", "sandbox_mode_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	output, err := runGoCommandOutput(t, outputDir, "test", "./internal/cliutil/testenv", "-run", "TestUnixSandboxIsOwnerOnly")
+	require.NoError(t, err, output)
 }
 
 // TestGeneratedTestEnvDetectsSandboxEscape is the load-bearing proof:
