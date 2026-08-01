@@ -42,6 +42,19 @@ for skill in skills/*/SKILL.md; do
     echo "::error file=$skill::SKILL.md frontmatter must be valid YAML with name and description"
     status=1
   fi
+
+  if ! awk '
+    BEGIN { inside_bash = 0; found = 0 }
+    /^[[:space:]]*```(bash|sh|shell)[[:space:]]*$/ { inside_bash = 1; next }
+    /^[[:space:]]*```[[:space:]]*$/ { inside_bash = 0; next }
+    inside_bash && (/\$[[:digit:]]/ || /\$\{[[:digit:]]/) {
+      printf "::error file=%s,line=%d::bash fence contains a dollar-digit token: %s\n", FILENAME, FNR, $0
+      found = 1
+    }
+    END { exit found }
+  ' "$skill"; then
+    status=1
+  fi
 done
 
 node .github/scripts/validate-printing-press-skill-list.mjs || status=1

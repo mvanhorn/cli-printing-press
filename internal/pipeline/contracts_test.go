@@ -141,7 +141,8 @@ func TestSkillsEnforceCurrencyFloor(t *testing.T) {
 	assert.Contains(t, ppBlock, "PRESS_REQUIRED_INSTALLED=")
 	assert.Contains(t, ppBlock, "PRESS_REQUIRED_REASON=")
 	assert.Contains(t, ppBlock, `[ "$_press_repo" != "true" ] && [ -f "$PRESS_VERCHECK_FILE" ]`)
-	assert.Contains(t, ppBlock, `! _semver_lt "$_floor_latest" "$_floor_min"`)
+	assert.Contains(t, ppBlock, `PP_SEMVER_A="$_floor_installed" PP_SEMVER_B="$_floor_min" _semver_lt`)
+	assert.Contains(t, ppBlock, `! PP_SEMVER_A="$_floor_latest" PP_SEMVER_B="$_floor_min" _semver_lt`)
 
 	// setup-checks.md documents the hard gate as upgrade-or-abort, distinct from
 	// the soft [upgrade-available] advisory.
@@ -161,7 +162,8 @@ func TestSkillsEnforceCurrencyFloor(t *testing.T) {
 	assert.Contains(t, amendBlock, "PRESS_REQUIRED_MIN=")
 	assert.Contains(t, amendBlock, "PRESS_REQUIRED_INSTALLED=")
 	assert.Contains(t, amendBlock, "PRESS_REQUIRED_REASON=")
-	assert.Contains(t, amendBlock, `! _semver_lt "$_floor_latest" "$_floor_min"`)
+	assert.Contains(t, amendBlock, `PP_SEMVER_A="$_floor_installed" PP_SEMVER_B="$_floor_min" _semver_lt`)
+	assert.Contains(t, amendBlock, `! PP_SEMVER_A="$_floor_latest" PP_SEMVER_B="$_floor_min" _semver_lt`)
 	assert.Contains(t, amend, "no skip-and-continue")
 }
 
