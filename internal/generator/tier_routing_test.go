@@ -143,7 +143,7 @@ func TestTierRoutingEmitsTierAwareClientAndCommands(t *testing.T) {
 	cmd.Env = append(os.Environ(), "TIERED_ENTERPRISE_TOKEN=enterprise-secret")
 	output, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
-	require.Contains(t, string(output), "Authorization: ****cret")
+	require.Contains(t, string(output), "Authorization: ****")
 
 	codeSpec := minimalSpec("tiered-code")
 	codeSpec.TierRouting = apiSpec.TierRouting

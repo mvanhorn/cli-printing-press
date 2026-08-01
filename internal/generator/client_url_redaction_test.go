@@ -85,9 +85,21 @@ func TestCredentialMaskingHandlesPrefixOverlaps(t *testing.T) {
 
 	got := c.maskCredentialText("raw="+long+"&escaped="+url.QueryEscape(long)+"&short="+short, short)
 
-	assertCredentialMasked(t, "prefix-overlap text", got, long, "****ac==", "****6a0d")
+	assertCredentialMasked(t, "prefix-overlap long credential", got, long, "****")
+	assertCredentialMasked(t, "prefix-overlap short credential", got, short, "****")
 	if strings.Contains(got, "/8e81") || strings.Contains(got, "%2F8e81") {
 		t.Fatalf("prefix-overlap text leaked long credential suffix: %s", got)
+	}
+}
+
+func TestCredentialMaskingDoesNotRevealTokenLength(t *testing.T) {
+	for _, secret := range []string{"a", "a2d16a0d", "a2d16a0d/8e81+e7fb9e6437ac=="} {
+		if got := maskToken(secret); got != "****" {
+			t.Errorf("maskToken(%q) = %q, want fixed mask", secret, got)
+		}
+	}
+	if got := maskToken(""); got != "" {
+		t.Errorf("maskToken(\"\") = %q, want empty string", got)
 	}
 }
 
@@ -137,7 +149,7 @@ func TestDryRunMasksCredentialEmbeddedInURLPath(t *testing.T) {
 		}
 	})
 
-	assertCredentialMasked(t, "dry-run stderr", stderr, secret, "/v6/****ac==/codes", "echo=****ac==", "api_key=****ac==")
+	assertCredentialMasked(t, "dry-run stderr", stderr, secret, "/v6/****/codes", "echo=****", "api_key=****")
 }
 
 func TestAPIErrorMasksCredentialEmbeddedInURLPath(t *testing.T) {
@@ -149,7 +161,7 @@ func TestAPIErrorMasksCredentialEmbeddedInURLPath(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected API error")
 	}
-	assertCredentialMasked(t, "APIError", err.Error(), secret, "/v6/****ac==/codes", "forbidden for token ****ac==")
+	assertCredentialMasked(t, "APIError", err.Error(), secret, "/v6/****/codes", "forbidden for token ****")
 }
 
 func TestTransportErrorMasksCredentialInWrappedURLError(t *testing.T) {
@@ -163,7 +175,7 @@ func TestTransportErrorMasksCredentialInWrappedURLError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected transport error")
 	}
-	assertCredentialMasked(t, "transport error", err.Error(), secret, "/v6/****ac==/pair/USD/EUR", "api_key=****ac==")
+	assertCredentialMasked(t, "transport error", err.Error(), secret, "/v6/****/pair/USD/EUR", "api_key=****")
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
 		t.Fatalf("transport error exposed unredacted URL error through unwrap chain: %v", urlErr)

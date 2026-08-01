@@ -1298,15 +1298,12 @@ func sanitizeJSONResponse(body []byte) []byte {
 	return body
 }
 
-// maskToken redacts all but the last 4 characters of a token for safe display.
+// maskToken returns a fixed placeholder for a non-empty token.
 func maskToken(token string) string {
 	if token == "" {
 		return ""
 	}
-	if len(token) <= 4 {
-		return "****"
-	}
-	return "****" + token[len(token)-4:]
+	return "****"
 }
 
 type maskedError struct {
