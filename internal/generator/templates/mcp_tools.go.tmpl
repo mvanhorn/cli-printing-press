@@ -571,6 +571,11 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				}
 				c.Config.TemplateVars[binding.WireName] = formatMCPParamValue(v)
 {{- end}}
+			case "header":
+				if headers == nil {
+					headers = map[string]string{}
+				}
+				headers[binding.WireName] = formatMCPParamValue(v)
 			case "body":
 {{- if $hasMCPJSONOrScalar}}
 				bodyValue, err := coerceMCPBodyValue(binding, v)

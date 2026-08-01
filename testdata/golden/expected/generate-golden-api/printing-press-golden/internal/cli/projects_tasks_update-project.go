@@ -13,6 +13,7 @@ import (
 )
 
 func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
+	var flagXApiVersion string
 	var flagNotify bool
 	var bodyCompleted bool
 	var bodyPriority string
@@ -20,10 +21,11 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 	var stdinBody bool
 
 	cmd := &cobra.Command{
-		Use:         "update-project <projectId> <taskId>",
-		Aliases:     []string{"update"},
-		Short:       "Update project task",
-		Example:     "  printing-press-golden-pp-cli projects tasks update-project 550e8400-e29b-41d4-a716-446655440000 550e8400-e29b-41d4-a716-446655440000",
+		Use:     "update-project <projectId> <taskId>",
+		Aliases: []string{"update"},
+		Short:   "Update project task",
+		// TODO: replace placeholder example values before relying on this for live dogfood.
+		Example:     "  printing-press-golden-pp-cli projects tasks update-project 550e8400-e29b-41d4-a716-446655440000 550e8400-e29b-41d4-a716-446655440000 --x-api-version example-value",
 		Annotations: map[string]string{"pp:endpoint": "tasks.update-project", "pp:method": "PATCH", "pp:path": "/projects/{projectId}/tasks/{taskId}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -56,8 +58,14 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			headerOverrides := map[string]string{}
+
+			if cmd.Flags().Changed("x-api-version") || flagXApiVersion != "" {
+				headerOverrides["X-Api-Version"] = formatCLIParamValue(flagXApiVersion)
+			}
+
 			params := map[string]string{}
-			if flagNotify != false {
+			if cmd.Flags().Changed("notify") || flagNotify != false {
 				params["notify"] = formatCLIParamValue(flagNotify)
 			}
 			var body any
@@ -77,14 +85,14 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 				if cmd.Flags().Changed("completed") {
 					bodyMap["completed"] = bodyCompleted
 				}
-				if bodyPriority != "" {
+				if cmd.Flags().Changed("priority") || bodyPriority != "" {
 					bodyMap["priority"] = bodyPriority
 				}
-				if bodyTitle != "" {
+				if cmd.Flags().Changed("title") || bodyTitle != "" {
 					bodyMap["title"] = bodyTitle
 				}
 			}
-			data, statusCode, err := c.PatchWithParams(cmd.Context(), path, params, body)
+			data, statusCode, err := c.PatchWithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -235,6 +243,7 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&flagXApiVersion, "x-api-version", "2026-04-01", "Required API version header.")
 	cmd.Flags().BoolVar(&flagNotify, "notify", false, "Notify")
 	cmd.Flags().BoolVar(&bodyCompleted, "completed", false, "Completed")
 	cmd.Flags().StringVar(&bodyPriority, "priority", "", "Priority")

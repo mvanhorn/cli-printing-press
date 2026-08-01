@@ -205,6 +205,11 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				placeholder := "{" + binding.WireName + "}"
 				pathParams[binding.PublicName] = true
 				path = strings.Replace(path, placeholder, mcpPathValue(v), 1)
+			case "header":
+				if headers == nil {
+					headers = map[string]string{}
+				}
+				headers[binding.WireName] = formatMCPParamValue(v)
 			case "body":
 				bodyArgs[binding.WireName] = v
 			default:

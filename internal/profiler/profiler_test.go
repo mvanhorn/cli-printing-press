@@ -1249,7 +1249,17 @@ func TestProfileRequiredParamResourcesStayExplicitOnlyByDefault(t *testing.T) {
 		Resources: map[string]spec.Resource{
 			"items": {
 				Endpoints: map[string]spec.Endpoint{
-					"list": {Method: "GET", Path: "/items", Response: spec.ResponseDef{Type: "array"}},
+					"list": {
+						Method:   "GET",
+						Path:     "/items",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{{
+							Name:     "api_version",
+							In:       "header",
+							Type:     "string",
+							Required: true,
+						}},
+					},
 				},
 			},
 			"batch_prices": {

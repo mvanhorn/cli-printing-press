@@ -123,6 +123,15 @@ func TestBuildPath(t *testing.T) {
 	}
 }
 
+func TestBuildPathPreserveEmpty(t *testing.T) {
+	t.Parallel()
+
+	got := BuildPathPreserveEmpty("/api/things", map[string]string{"mode": ""})
+	if got != "/api/things?mode=" {
+		t.Fatalf("BuildPathPreserveEmpty() = %q, want /api/things?mode=", got)
+	}
+}
+
 // TestBuildPath_Deterministic asserts the same input produces the same
 // output across calls. The prior map-range implementation was non-stable
 // on multi-key inputs, which broke fingerprint-based caching anywhere

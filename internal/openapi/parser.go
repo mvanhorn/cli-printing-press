@@ -4303,7 +4303,7 @@ func classifyGlobalParams(resources map[string]spec.Resource) {
 
 		seen := map[string]struct{}{}
 		for _, param := range endpoint.Params {
-			if isPathSubstitutionParam(param) {
+			if isPathSubstitutionParam(param) || !isQueryParamLocation(param) {
 				continue
 			}
 			key := strings.ToLower(param.Name)
@@ -4437,7 +4437,12 @@ func isGlobalFilterCandidate(param spec.Param) bool {
 	// access scope that defaults true) is not silently stripped, while plain
 	// high-frequency boilerplate (prettyPrint, quotaUser) with no default is
 	// still dropped.
-	return !isPathSubstitutionParam(param) && !param.Required && param.Default == nil
+	return isQueryParamLocation(param) && !isPathSubstitutionParam(param) && !param.Required && param.Default == nil
+}
+
+func isQueryParamLocation(param spec.Param) bool {
+	loc := strings.TrimSpace(param.In)
+	return loc == "" || strings.EqualFold(loc, "query")
 }
 
 func isRetainableSoleGlobalInputParam(param spec.Param) bool {
@@ -4638,7 +4643,7 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) ([]spec.
 		if parameter == nil {
 			continue
 		}
-		if parameter.In != openapi3.ParameterInPath && parameter.In != openapi3.ParameterInQuery {
+		if parameter.In != openapi3.ParameterInPath && parameter.In != openapi3.ParameterInQuery && parameter.In != openapi3.ParameterInHeader {
 			continue
 		}
 
@@ -4660,6 +4665,7 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) ([]spec.
 		}
 		param := spec.Param{
 			Name:        paramName,
+			In:          string(parameter.In),
 			Type:        mapSchemaType(schema),
 			Required:    parameter.Required,
 			Positional:  parameter.In == openapi3.ParameterInPath,
@@ -8284,6 +8290,9 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	originalCase := map[string]string{}
 	paramsByLowerName := map[string]spec.Param{}
 	for _, p := range params {
+		if !isQueryParamLocation(p) || isPathSubstitutionParam(p) {
+			continue
+		}
 		lowerName := strings.ToLower(p.Name)
 		originalCase[lowerName] = p.Name
 		paramsByLowerName[lowerName] = p

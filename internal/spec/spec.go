@@ -2562,6 +2562,7 @@ func (h *HTMLExtract) EffectiveScriptSelector() string {
 
 type Param struct {
 	Name         string   `yaml:"name" json:"name"`
+	In           string   `yaml:"in,omitempty" json:"in,omitempty"` // parameter location: path, query, or header
 	FlagName     string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
 	URLName      string   `yaml:"url_name,omitempty" json:"url_name,omitempty"`   // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
 	BodyName     string   `yaml:"body_name,omitempty" json:"body_name,omitempty"` // optional override for request-body field emission while keeping the public name
@@ -4092,7 +4093,7 @@ func promoteEndpointParamsToBody(e *Endpoint) {
 	keep := make([]Param, 0, len(e.Params))
 	promote := make([]Param, 0, len(e.Params))
 	for _, p := range e.Params {
-		if p.PathParam || p.Positional {
+		if p.PathParam || p.Positional || strings.EqualFold(p.In, "query") || strings.EqualFold(p.In, "header") {
 			keep = append(keep, p)
 			continue
 		}

@@ -71,6 +71,9 @@ type codeOrchEndpoint struct {
 	// string instead of dumping them into the JSON body. Derived from the
 	// same mcpParamBindings location data the per-endpoint tools use.
 	QueryParams []codeOrchParamBinding
+	// Keep declared headers out of query/body routing so execution sends them
+	// through the request-header map.
+	HeaderParams []codeOrchParamBinding
 	// HeaderOverrides carries per-endpoint request headers (e.g. an
 	// Accept override for binary-only response endpoints). Without
 	// threading these through, the code-orchestration execute path
@@ -88,6 +91,7 @@ type codeOrchEndpoint struct {
 type codeOrchParamBinding struct {
 	PublicName string
 	WireName   string
+	Default    string
 }
 
 // codeOrchEndpoints is the generator-populated registry covering every
@@ -102,6 +106,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		Positional:     []string{},
 		TemplateParams: []codeOrchParamBinding{},
 		QueryParams:    []codeOrchParamBinding{},
+		HeaderParams:   []codeOrchParamBinding{},
 		keywords:       codeOrchKeywords("items", "list", "List items", "/items"),
 	},
 }
@@ -236,10 +241,30 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 
 	path := ep.Path
 	for _, p := range ep.Positional {
-		if v, ok := params[p]; ok {
+		if v, ok := params[p]; ok && strings.Contains(path, "{"+p+"}") {
 			path = strings.ReplaceAll(path, "{"+p+"}", mcpPathValue(v))
 			delete(params, p)
 		}
+	}
+
+	hdrs := make(map[string]string, len(ep.HeaderOverrides)+len(ep.HeaderParams))
+	for k, v := range ep.HeaderOverrides {
+		hdrs[k] = v
+	}
+	for _, binding := range ep.HeaderParams {
+		if binding.Default != "" {
+			hdrs[binding.WireName] = binding.Default
+		}
+		for _, key := range []string{binding.PublicName, binding.WireName} {
+			if v, ok := params[key]; ok {
+				hdrs[binding.WireName] = formatMCPParamValue(v)
+				delete(params, key)
+				break
+			}
+		}
+	}
+	if len(hdrs) == 0 {
+		hdrs = nil
 	}
 
 	// Route params to their runtime slots. GET/DELETE params are query
@@ -265,7 +290,6 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		}
 	}
 
-	hdrs := ep.HeaderOverrides
 	writeBody := func() any {
 		if ep.BodyIsArray {
 			return codeOrchArrayBody(params)

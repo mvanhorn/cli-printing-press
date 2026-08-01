@@ -246,20 +246,27 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"goStructType":                        goStructType,
 		"goTypeForParam":                      goTypeForParam,
 		"goTypeForParamRequired":              goTypeForParamRequired,
+		"goTypeForBodyParam":                  goTypeForBodyParam,
 		"goStoreType":                         goStoreType,
 		"cobraFlagFunc":                       cobraFlagFunc,
 		"cobraFlagFuncForParam":               cobraFlagFuncForParam,
 		"cobraFlagFuncForParamRequired":       cobraFlagFuncForParamRequired,
+		"cobraFlagFuncForBodyParam":           cobraFlagFuncForBodyParam,
 		"mcpBindingFunc":                      mcpBindingFunc,
 		"recipeParamTypeString":               func(t RecipeIntentParamType) string { return string(t) },
 		"defaultVal":                          defaultVal,
 		"defaultValForParam":                  defaultValForParam,
 		"defaultValForParamRequired":          defaultValForParamRequired,
+		"defaultValForBodyParam":              defaultValForBodyParam,
 		"hasDefault":                          paramHasDefault,
 		"isConstDefault":                      paramIsConstDefault,
 		"zeroVal":                             zeroVal,
 		"zeroValForParam":                     zeroValForParam,
 		"zeroValForParamRequired":             zeroValForParamRequired,
+		"zeroValForBodyParam":                 zeroValForBodyParam,
+		"paramIsHeader":                       paramIsHeader,
+		"paramPresenceExpr":                   paramPresenceExpr,
+		"endpointHasHeaderParams":             endpointHasHeaderParams,
 		"positionalArgs":                      positionalArgs,
 		"configTag":                           configTag,
 		"camelToJSON":                         camelToJSON,
@@ -5681,6 +5688,17 @@ func goTypeForParamRequired(name, t string, required bool, hasDefault bool) stri
 	return goType(t)
 }
 
+// Body fields preserve their declared scalar type in JSON. The identifier,
+// cursor, and limit overrides are for URL-facing flags; applying them to a
+// JSON body changes the payload type. Required booleans still use a string
+// backing value so omitted and explicit false remain distinguishable.
+func goTypeForBodyParam(p spec.Param) string {
+	if isStringBackedBoolParam(p) {
+		return "string"
+	}
+	return goType(p.Type)
+}
+
 // cobraFlagFuncForParam returns the cobra flag function, overriding BoolVar→StringVar
 // for required bools without defaults, IntVar→StringVar for ID-like parameters,
 // Float64Var/IntVar→StringVar for pagination cursors,
@@ -5704,6 +5722,13 @@ func cobraFlagFuncForParamRequired(name, t string, required bool, hasDefault boo
 		return "IntVar"
 	}
 	return cobraFlagFunc(t)
+}
+
+func cobraFlagFuncForBodyParam(p spec.Param) string {
+	if isStringBackedBoolParam(p) {
+		return "StringVar"
+	}
+	return cobraFlagFunc(p.Type)
 }
 
 // defaultValForParam returns the default value for a flag parameter,
@@ -5740,6 +5765,13 @@ func defaultValForParamRequired(p spec.Param, required bool, hasDefault bool) st
 	return defaultVal(p)
 }
 
+func defaultValForBodyParam(p spec.Param) string {
+	if isStringBackedBoolParam(p) {
+		return `""`
+	}
+	return defaultVal(p)
+}
+
 func zeroValForParam(name, t string) string {
 	return zeroValForParamRequired(name, t, false, false)
 }
@@ -5756,6 +5788,13 @@ func zeroValForParamRequired(name, t string, required bool, hasDefault bool) str
 		return `""`
 	}
 	return zeroVal(t)
+}
+
+func zeroValForBodyParam(p spec.Param) string {
+	if isStringBackedBoolParam(p) {
+		return `""`
+	}
+	return zeroVal(p.Type)
 }
 
 func paramHasDefault(p spec.Param) bool {
@@ -6054,12 +6093,16 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 		if isMCPPaginationCursorParam(endpoint, p) {
 			continue
 		}
-		loc := "query"
-		if strings.Contains(pathTemplate, "{"+p.Name+"}") {
+		declaredLoc := strings.ToLower(strings.TrimSpace(p.In))
+		loc := declaredLoc
+		if loc == "" {
+			loc = "query"
+		}
+		if p.PathParam || (strings.Contains(pathTemplate, "{"+p.Name+"}") && (declaredLoc == "" || declaredLoc == "path")) {
 			loc = "path"
 		}
 		wireName := p.WireName()
-		if loc == "path" {
+		if loc == "path" || loc == "header" {
 			wireName = p.Name
 		}
 		binding := mcpParamBinding{
@@ -6072,7 +6115,7 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 		// omitted arg sends the same value the cobra flag would (#2679). Format
 		// must match the cobra default rendering for CLI/MCP wire parity; keep in
 		// sync with that path (and cf. pipeline.stringifyParamDefault).
-		if loc == "query" {
+		if loc == "query" || loc == "header" {
 			if isArrayQueryParam(p) {
 				binding.QueryArray = true
 				binding.QueryStyle = queryParamStyle(p)
@@ -6146,10 +6189,15 @@ func isMCPPaginationCursorParam(endpoint spec.Endpoint, p spec.Param) bool {
 	if !mcpEndpointPageable(endpoint) {
 		return false
 	}
-	if p.PathParam || p.Positional {
+	if p.PathParam || p.Positional || paramIsHeader(p) || !isQueryParamLocation(p) {
 		return false
 	}
 	return p.Name == endpoint.Pagination.CursorParam || p.WireName() == endpoint.Pagination.CursorParam
+}
+
+func isQueryParamLocation(p spec.Param) bool {
+	loc := strings.TrimSpace(p.In)
+	return loc == "" || strings.EqualFold(loc, "query")
 }
 
 func mcpGlobalTemplateInputParams(endpoint spec.Endpoint, pathTemplate string, vars []string) []spec.Param {
@@ -6775,10 +6823,14 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 }
 
 func bodyLeafPresenceExpr(p spec.Param, ident, flag string) string {
-	if (p.Type == "boolean" || p.Type == "bool") && (!p.Required || p.Default != nil) {
-		return fmt.Sprintf("cmd.Flags().Changed(%q)", flag)
+	changed := fmt.Sprintf("cmd.Flags().Changed(%q)", flag)
+	if flag == publicFlagName(p) {
+		changed = flagChangedExpr(p)
 	}
-	return fmt.Sprintf("body%s != %s", ident, zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
+	if (p.Type == "boolean" || p.Type == "bool") && (!p.Required || p.Default != nil) {
+		return changed
+	}
+	return fmt.Sprintf("(%s || body%s != %s)", changed, ident, zeroValForBodyParam(p))
 }
 
 func bodyHasStringBackedBool(endpoint spec.Endpoint) bool {
@@ -6830,7 +6882,7 @@ func bodyVarDecls(endpoint spec.Endpoint) string {
 	}
 	if bodyUsesFlatEmission(endpoint) {
 		for _, p := range endpoint.Body {
-			fmt.Fprintf(&b, "\n\tvar body%s %s", toCamel(paramIdent(p)), goTypeForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
+			fmt.Fprintf(&b, "\n\tvar body%s %s", toCamel(paramIdent(p)), goTypeForBodyParam(p))
 		}
 		return b.String()
 	}
@@ -6857,7 +6909,7 @@ func renderBodyVarDecls(b *strings.Builder, body []spec.Param, depth int, identP
 			renderBodyVarDecls(b, p.Fields, depth+1, ident)
 			continue
 		}
-		fmt.Fprintf(b, "\n\tvar body%s %s", ident, goTypeForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
+		fmt.Fprintf(b, "\n\tvar body%s %s", ident, goTypeForBodyParam(p))
 	}
 }
 
@@ -6914,11 +6966,11 @@ func renderFlatBodyFlagReg(b *strings.Builder, p spec.Param, identPrefix, flagPr
 	flag := joinFlag(flagPrefix, publicFlagName(p))
 	desc := naming.OneLine(p.Description)
 	fmt.Fprintf(b, "\n\tcmd.Flags().%s(&body%s, \"%s\", %s, \"%s\")",
-		cobraFlagFuncForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)), ident, flag, defaultValForParamRequired(p, p.Required, paramHasDefault(p)), desc)
+		cobraFlagFuncForBodyParam(p), ident, flag, defaultValForBodyParam(p), desc)
 	if topLevel {
 		for _, alias := range publicFlagAliases(p) {
 			fmt.Fprintf(b, "\n\tcmd.Flags().%s(&body%s, \"%s\", %s, \"%s\")",
-				cobraFlagFuncForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)), ident, alias, defaultValForParamRequired(p, p.Required, paramHasDefault(p)), desc)
+				cobraFlagFuncForBodyParam(p), ident, alias, defaultValForBodyParam(p), desc)
 			fmt.Fprintf(b, "\n\t_ = cmd.Flags().MarkHidden(\"%s\")", alias)
 		}
 	}
@@ -7069,7 +7121,7 @@ func multipartBodyMaps(body []spec.Param, indent string) string {
 		ident := toCamel(id)
 		flag := publicFlagName(p)
 		if isComplexBodyField(p) || isJSONStringParam(p) {
-			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
 			fmt.Fprintf(&b, "%s\tif !json.Valid([]byte(body%s)) {\n", indent, ident)
 			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: invalid JSON\")\n", indent, flag)
 			fmt.Fprintf(&b, "%s\t}\n", indent)
@@ -7078,22 +7130,34 @@ func multipartBodyMaps(body []spec.Param, indent string) string {
 			continue
 		}
 		if isBinaryParam(p) {
-			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
 			fmt.Fprintf(&b, "%s\tfileFields[%q] = body%s\n", indent, p.BodyWireName(), ident)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
 		if p.Type == "string" {
-			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
 			fmt.Fprintf(&b, "%s\tfields[%q] = body%s\n", indent, p.BodyWireName(), ident)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
-		fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
+		fmt.Fprintf(&b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
 		fmt.Fprintf(&b, "%s\tfields[%q] = fmt.Sprintf(\"%%v\", body%s)\n", indent, p.BodyWireName(), ident)
 		fmt.Fprintf(&b, "%s}\n", indent)
 	}
 	return b.String()
+}
+
+func paramIsHeader(p spec.Param) bool {
+	return strings.EqualFold(strings.TrimSpace(p.In), "header")
+}
+
+func paramPresenceExpr(p spec.Param) string {
+	return fmt.Sprintf("(%s || flag%s != %s)", flagChangedExpr(p), toCamel(paramIdent(p)), zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
+}
+
+func endpointHasHeaderParams(endpoint spec.Endpoint) bool {
+	return slices.ContainsFunc(endpoint.Params, paramIsHeader)
 }
 
 // endpointHasQueryFlags reports whether the endpoint declares any non-positional,
@@ -7104,7 +7168,7 @@ func multipartBodyMaps(body []spec.Param, indent string) string {
 // instead of being silently dropped into the JSON body or omitted.
 func endpointHasQueryFlags(endpoint spec.Endpoint) bool {
 	for _, p := range endpoint.Params {
-		if !p.Positional && !p.PathParam {
+		if !p.Positional && !p.PathParam && !paramIsHeader(p) {
 			return true
 		}
 	}
@@ -7193,7 +7257,7 @@ func freeTextStringParam(p spec.Param) bool {
 // consumed by the URL path.
 func endpointHasRequestParams(endpoint spec.Endpoint) bool {
 	for _, p := range endpoint.Params {
-		if !p.PathParam {
+		if !p.PathParam && !paramIsHeader(p) {
 			return true
 		}
 	}
@@ -7335,7 +7399,7 @@ func formBodyMaps(body []spec.Param, indent string) string {
 		ident := toCamel(id)
 		flag := publicFlagName(p)
 		if isComplexBodyField(p) || isJSONStringParam(p) {
-			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
 			fmt.Fprintf(&b, "%s\tif !json.Valid([]byte(body%s)) {\n", indent, ident)
 			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: invalid JSON\")\n", indent, flag)
 			fmt.Fprintf(&b, "%s\t}\n", indent)
@@ -7344,12 +7408,12 @@ func formBodyMaps(body []spec.Param, indent string) string {
 			continue
 		}
 		if p.Type == "string" {
-			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
 			fmt.Fprintf(&b, "%s\tfields.Set(%q, body%s)\n", indent, p.BodyWireName(), ident)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
-		fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
+		fmt.Fprintf(&b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
 		fmt.Fprintf(&b, "%s\tfields.Set(%q, fmt.Sprintf(\"%%v\", body%s))\n", indent, p.BodyWireName(), ident)
 		fmt.Fprintf(&b, "%s}\n", indent)
 	}
@@ -7584,7 +7648,7 @@ func isStringCSVArrayParam(p spec.Param) bool {
 }
 
 func isArrayQueryParam(p spec.Param) bool {
-	return !p.Positional && !p.PathParam && primitiveKind(p.Type) == "array"
+	return !p.Positional && !p.PathParam && !paramIsHeader(p) && primitiveKind(p.Type) == "array"
 }
 
 func queryParamStyle(p spec.Param) string {

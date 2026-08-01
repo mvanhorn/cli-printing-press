@@ -1574,6 +1574,15 @@ func sleepContext(ctx context.Context, wait time.Duration) error {
 	}
 }
 
+{{- if eq .ClientPattern "proxy-envelope"}}
+func buildClientPath(method, path string, params map[string]string) string {
+	if method == "GET" {
+		return cliutil.BuildPath(path, params)
+	}
+	return cliutil.BuildPathPreserveEmpty(path, params)
+}
+{{- end}}
+
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
@@ -1818,7 +1827,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		envelope := proxyEnvelope{
 			Service: serviceForPath(path),
 			Method:  method,
-			Path:    cliutil.BuildPath(path, params),
+			Path:    buildClientPath(method, path, params),
 		}
 		if bodyBytes != nil {
 			envelope.Body = json.RawMessage(bodyBytes)
@@ -1854,7 +1863,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		if params != nil {
 			q := req.URL.Query()
 			for k, v := range params {
-				if v != "" {
+				if v != "" || method != "GET" {
 					q.Set(k, v)
 				}
 			}
@@ -2210,7 +2219,7 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 	envelope := proxyEnvelope{
 		Service: serviceForPath(path),
 		Method:  method,
-		Path:    c.displayURL(cliutil.BuildPath(path, params), authHeader),
+		Path:    c.displayURL(buildClientPath(method, path, params), authHeader),
 	}
 	if body != nil {
 		envelope.Body = json.RawMessage(body)
@@ -2224,7 +2233,7 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 	if params != nil {
 		keys := make([]string, 0, len(params))
 		for k := range params {
-			if params[k] != "" {
+			if params[k] != "" || method != "GET" {
 				keys = append(keys, k)
 			}
 		}

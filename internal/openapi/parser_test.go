@@ -52,6 +52,134 @@ func TestParsePetstore(t *testing.T) {
 	assert.Contains(t, parsed.Types, "Pet")
 }
 
+func TestParseOperationPreservesHeaderAndWriteOnlyRequestFields(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Parameter Pipeline API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /users/{id}:
+    patch:
+      operationId: resetUserPassword
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-Request-ID
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, password]
+              properties:
+                currentPassword:
+                  type: string
+                  writeOnly: true
+                password:
+                  type: string
+                  writeOnly: true
+      responses:
+        "200":
+          description: ok
+`))
+	require.NoError(t, err)
+
+	var endpoint spec.Endpoint
+	for _, resource := range parsed.Resources {
+		for _, candidate := range resource.Endpoints {
+			if candidate.Method == "PATCH" {
+				endpoint = candidate
+			}
+		}
+	}
+	require.Equal(t, "PATCH", endpoint.Method)
+
+	var header spec.Param
+	for _, param := range endpoint.Params {
+		if param.Name == "X-Request-ID" {
+			header = param
+		}
+	}
+	require.Equal(t, "header", header.In)
+
+	bodyNames := make(map[string]bool, len(endpoint.Body))
+	for _, param := range endpoint.Body {
+		bodyNames[param.Name] = true
+	}
+	assert.True(t, bodyNames["currentPassword"])
+	assert.True(t, bodyNames["password"])
+}
+
+func TestGlobalParameterFilteringDoesNotDropRepeatedHeaders(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Repeated Header API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /one:
+    get:
+      parameters:
+        - name: X-Request-ID
+          in: header
+          schema: {type: string}
+        - name: filter_one
+          in: query
+          schema: {type: string}
+      responses: {"200": {description: ok}}
+  /two:
+    get:
+      parameters:
+        - name: X-Request-ID
+          in: header
+          schema: {type: string}
+        - name: filter_two
+          in: query
+          schema: {type: string}
+      responses: {"200": {description: ok}}
+  /three:
+    get:
+      parameters:
+        - name: X-Request-ID
+          in: header
+          schema: {type: string}
+        - name: filter_three
+          in: query
+          schema: {type: string}
+      responses: {"200": {description: ok}}
+`))
+	require.NoError(t, err)
+	for _, resource := range parsed.Resources {
+		for _, endpoint := range resource.Endpoints {
+			var found bool
+			for _, param := range endpoint.Params {
+				if param.Name == "X-Request-ID" {
+					found = true
+					assert.Equal(t, "header", param.In)
+				}
+			}
+			assert.True(t, found, "repeated header should remain on %s", endpoint.Path)
+		}
+	}
+}
+
 func TestParseStreamingExtension(t *testing.T) {
 	t.Parallel()
 
