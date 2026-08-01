@@ -2204,7 +2204,11 @@ func validLiveDogfoodJSONFile(path string) bool {
 }
 
 func validLiveDogfoodJSONReader(reader io.Reader) bool {
-	decoder := json.NewDecoder(reader)
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	documents := 0
 	for {
 		if err := consumeLiveDogfoodJSONValue(decoder); err != nil {
@@ -2214,6 +2218,29 @@ func validLiveDogfoodJSONReader(reader io.Reader) bool {
 			return false
 		}
 		documents++
+
+		// Multiple top-level JSON documents are valid only as JSONL. The
+		// decoder accepts adjacent values, so explicitly require a newline
+		// between documents rather than treating concatenated JSON as valid.
+		offset := decoder.InputOffset()
+		hasNextDocument := false
+		hasNewline := false
+		for i := int(offset); i < len(data); i++ {
+			switch data[i] {
+			case ' ', '\t', '\r':
+				continue
+			case '\n':
+				hasNewline = true
+			default:
+				hasNextDocument = true
+			}
+			if hasNextDocument {
+				break
+			}
+		}
+		if hasNextDocument && !hasNewline {
+			return false
+		}
 	}
 }
 

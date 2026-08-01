@@ -2382,6 +2382,14 @@ func TestValidLiveDogfoodJSONOutputAcceptsNDJSON(t *testing.T) {
 	assert.False(t, validLiveDogfoodJSONOutput(""))
 }
 
+func TestValidLiveDogfoodJSONReaderRequiresJSONLBoundaries(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, validLiveDogfoodJSONReader(strings.NewReader(`{"event":"start"}`)))
+	assert.True(t, validLiveDogfoodJSONReader(strings.NewReader("{\"event\":\"start\"}\n{\"event\":\"done\"}\n")))
+	assert.False(t, validLiveDogfoodJSONReader(strings.NewReader(`{"event":"start"}{"event":"done"}`)))
+}
+
 func TestLiveDogfoodUnavailableForRunnerDoesNotHideNotFound(t *testing.T) {
 	t.Parallel()
 
