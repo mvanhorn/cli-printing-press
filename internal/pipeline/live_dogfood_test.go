@@ -191,7 +191,7 @@ func TestRunLiveDogfoodDetectsJSONParseFailure(t *testing.T) {
 	assert.Contains(t, jsonFailure.Reason, "invalid JSON")
 }
 
-func TestRunLiveDogfoodDetectsTruncatedJSONOutput(t *testing.T) {
+func TestRunLiveDogfoodAcceptsJSONOutputBeyondDisplaySampleCap(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
@@ -207,8 +207,58 @@ func TestRunLiveDogfoodDetectsTruncatedJSONOutput(t *testing.T) {
 
 	result := findResultByCommandKind(report, "widgets large", LiveDogfoodTestJSON)
 	require.NotNil(t, result)
-	assert.Equal(t, LiveDogfoodStatusFail, result.Status)
-	assert.Equal(t, "output exceeded capture cap", result.Reason)
+	assert.Equal(t, LiveDogfoodStatusPass, result.Status, result.Reason)
+	assert.Contains(t, result.OutputSample, `"name":"<redacted>"`)
+	assert.Contains(t, result.OutputSample, "…[truncated]")
+}
+
+func TestRunLiveDogfoodSkipsUnsynthesizableBody(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodUnsynthesizableBodyFixture(t, false)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	for _, kind := range []LiveDogfoodTestKind{LiveDogfoodTestHappy, LiveDogfoodTestJSON} {
+		result := findResultByCommandKind(report, "widgets create", kind)
+		require.NotNil(t, result, "missing %s result", kind)
+		assert.Equal(t, LiveDogfoodStatusSkip, result.Status)
+		assert.Equal(t, reasonUnsynthesizableBody, result.Reason)
+		assert.Empty(t, result.Args)
+	}
+	assert.GreaterOrEqual(t, report.Skipped, 2, report.Tests)
+}
+
+func TestRunLiveDogfoodRunsBodyFixtureWhenHappyArgsProvided(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodUnsynthesizableBodyFixture(t, true)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	for _, kind := range []LiveDogfoodTestKind{LiveDogfoodTestHappy, LiveDogfoodTestJSON} {
+		result := findResultByCommandKind(report, "widgets create", kind)
+		require.NotNil(t, result, "missing %s result", kind)
+		assert.Equal(t, LiveDogfoodStatusPass, result.Status, result.Reason)
+		require.GreaterOrEqual(t, len(result.Args), 4)
+		assert.Equal(t, []string{"widgets", "create", "--dry-run", "true"}, result.Args[:4])
+	}
 }
 
 func TestRunLiveDogfoodWritesAcceptanceMarkerOnPass(t *testing.T) {
@@ -1514,11 +1564,12 @@ printf '"}'
 `, liveDogfoodMaxOutputBytes+1024)
 	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o700))
 
-	run := runLiveDogfoodProcess(binPath, dir, nil, 30*time.Second)
+	run := runLiveDogfoodProcess(binPath, dir, []string{"--json"}, 30*time.Second)
 	require.NoError(t, run.err)
 	assert.True(t, run.stdoutTruncated)
+	assert.True(t, run.stdoutJSONCheck)
+	assert.True(t, run.stdoutJSONValid)
 	assert.False(t, validLiveDogfoodJSONOutput(run.stdout))
-	assert.Equal(t, "output exceeded capture cap", liveDogfoodInvalidJSONReason(run, "invalid JSON"))
 }
 
 func TestLiveDogfoodResultRedactsOutputSamplePII(t *testing.T) {
@@ -3888,7 +3939,7 @@ fi
 
 if [ "$1" = "widgets" ] && [ "$2" = "large" ]; then
   if [ "${3:-}" = "--json" ]; then
-    printf '{"id":"first"}\n'
+			printf '{"id":"first","name":"Jane Doe"}\n'
     printf '{"data":"'
     head -c %d /dev/zero | tr '\0' 'x'
     printf '"}\n'
@@ -3901,6 +3952,97 @@ fi
 echo "unexpected args: $*" >&2
 exit 99
 `, liveDogfoodMaxOutputBytes+1024)
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
+
+func writeLiveDogfoodUnsynthesizableBodyFixture(t *testing.T, happyArgs bool) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+	specHappyArgs := ""
+	if happyArgs {
+		specHappyArgs = "        happy_args: \"--dry-run=true\"\n"
+	}
+	spec := fmt.Sprintf(`name: body-fixture
+version: "0.1.0"
+base_url: "https://api.example.com"
+auth:
+  type: none
+config:
+  format: toml
+  path: "~/.config/body-fixture/config.toml"
+resources:
+  widgets:
+    description: "Manage widgets"
+    endpoints:
+      create:
+        method: POST
+        path: "/widgets"
+        description: "Create a widget"
+%s        body:
+          - name: payload
+            type: object
+            required: true
+        response:
+          type: object
+`, specHappyArgs)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "spec.yaml"), []byte(spec), 0o644))
+
+	annotation := ""
+	if happyArgs {
+		annotation = `,"pp:happy-args":"--dry-run=true"`
+	}
+
+	binPath := filepath.Join(dir, binaryName)
+	script := fmt.Sprintf(`#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"widgets","subcommands":[
+      {"name":"create","annotations":{"pp:endpoint":"widgets.create","pp:method":"POST","pp:path":"/widgets"%s}}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "create" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Create a widget.
+
+Usage:
+  fixture-pp-cli widgets create [flags]
+
+Examples:
+  fixture-pp-cli widgets create --dry-run
+
+Flags:
+      --json    Output JSON
+
+Global Flags:
+      --dry-run  Preview without sending
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "create" ]; then
+  case " $* " in
+    *" --json "*) echo '{"ok":true}' ;;
+    *) echo 'dry-run' ;;
+  esac
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`, annotation)
 	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
 	return dir, binaryName
 }
