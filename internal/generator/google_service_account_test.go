@@ -203,6 +203,21 @@ func TestGoogleServiceAccountAuthHeader(t *testing.T) {
 	if requests != 1 {
 		t.Fatalf("token endpoint requests = %%d, want 1", requests)
 	}
+
+	// An expired persisted token must not be returned by the authHeader fast
+	// path; it should fall through to the expiry-aware service-account exchange.
+	c.Config.AuthHeaderVal = "Bearer stale-token"
+	c.Config.TokenExpiry = time.Now().Add(-time.Minute)
+	header, err = c.authHeader(ctx)
+	if err != nil {
+		t.Fatalf("expired auth header: %%v", err)
+	}
+	if header != "Bearer runtime-token" {
+		t.Fatalf("expired header = %%q", header)
+	}
+	if requests != 2 {
+		t.Fatalf("token endpoint requests after expiry = %%d, want 2", requests)
+	}
 }
 
 `, `{"access_token":"runtime-token","token_type":"Bearer","expires_in":3600}`, keyPath)

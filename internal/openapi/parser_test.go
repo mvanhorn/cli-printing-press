@@ -1826,17 +1826,14 @@ func TestParseGmailOAuth2(t *testing.T) {
 
 	assert.Equal(t, "bearer_token", parsed.Auth.Type)
 	assert.Equal(t, "Authorization", parsed.Auth.Header)
-	assert.Equal(t, spec.AuthSubtypeGoogleServiceAccount, parsed.Auth.Subtype)
-	assert.Empty(t, parsed.Auth.AuthorizationURL, "Google service-account auth must not select a browser redirect")
+	assert.Empty(t, parsed.Auth.Subtype, "interactive Gmail OAuth must not select service-account auth")
+	assert.Equal(t, "https://accounts.google.com/o/oauth2/auth", parsed.Auth.AuthorizationURL)
 	assert.Equal(t, "https://accounts.google.com/o/oauth2/token", parsed.Auth.TokenURL)
-	assert.Equal(t, []string{"GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_OAUTH_ACCESS_TOKEN"}, parsed.Auth.EnvVars)
 	assert.NotEmpty(t, parsed.Auth.Scopes)
-	// The source uses authorization_code, but the Google service-account
-	// scaffold deliberately replaces the interactive grant at generation time.
 	assert.Equal(t, "", parsed.Auth.OAuth2Grant)
 }
 
-func TestParseGoogleServiceAccountAuthByServerHost(t *testing.T) {
+func TestParseGoogleHostInteractiveOAuth2PreservesBrowserAuth(t *testing.T) {
 	t.Parallel()
 
 	specBytes := []byte(`openapi: "3.0.3"
@@ -1852,6 +1849,41 @@ components:
       flows:
         authorizationCode:
           authorizationUrl: https://accounts.google.com/o/oauth2/auth
+          tokenUrl: https://oauth2.googleapis.com/token
+          scopes:
+            https://www.googleapis.com/auth/cloud-platform: Cloud platform
+paths:
+  /v1/items:
+    get:
+      security:
+        - OAuth2: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Empty(t, parsed.Auth.Subtype)
+	assert.Equal(t, "https://oauth2.googleapis.com/token", parsed.Auth.TokenURL)
+	assert.Equal(t, []string{"https://www.googleapis.com/auth/cloud-platform"}, parsed.Auth.Scopes)
+	assert.Equal(t, "https://accounts.google.com/o/oauth2/auth", parsed.Auth.AuthorizationURL)
+}
+
+func TestParseGoogleServiceAccountAuthByServerHostForClientCredentials(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: GoogleService
+  version: "1.0"
+servers:
+  - url: https://example.googleapis.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
           tokenUrl: https://oauth2.googleapis.com/token
           scopes:
             https://www.googleapis.com/auth/cloud-platform: Cloud platform

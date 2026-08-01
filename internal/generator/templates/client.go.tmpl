@@ -2469,7 +2469,12 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 	// configured, exchange it lazily and reuse the resulting token until its
 	// expiry window is reached.
 	if header := c.Config.AuthHeader(); header != "" {
-		return header, nil
+		// A persisted service-account token must not bypass the expiry-aware
+		// exchange below. Explicit environment overrides have no persisted
+		// expiry, so they remain a valid fast path.
+		if strings.HasPrefix(c.Config.AuthSource, "env:") || c.Config.TokenExpiry.IsZero() || time.Until(c.Config.TokenExpiry) >= 60*time.Second {
+			return header, nil
+		}
 	}
 	return c.googleServiceAccountAuthHeader(ctx)
 {{- else if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}

@@ -7716,6 +7716,11 @@ func isGoogleServiceAccountOAuth2(doc *openapi3.T, scheme *openapi3.SecuritySche
 	if scheme == nil || !strings.EqualFold(strings.TrimSpace(scheme.Type), "oauth2") || auth.Type != "bearer_token" {
 		return false
 	}
+	// Preserve an explicitly declared browser flow. Google-hosted APIs can
+	// expose ordinary user OAuth alongside service-account-compatible scopes.
+	if strings.TrimSpace(auth.AuthorizationURL) != "" {
+		return false
+	}
 	return hasGoogleAPIsServer(doc)
 }
 
