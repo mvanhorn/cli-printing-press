@@ -38,3 +38,35 @@ func TestFindResearchDirAcceptsMatchingTargetOwnership(t *testing.T) {
 
 	require.Equal(t, runRoot, FindResearchDir(cliDir))
 }
+
+func TestFindResearchDirRejectsDifferentRunForSameAPI(t *testing.T) {
+	runRoot := t.TempDir()
+	cliDir := filepath.Join(runRoot, "working", "demo-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	manifestData, err := json.Marshal(CLIManifest{APIName: "demo", RunID: "current-run"})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, CLIManifestFilename), manifestData, 0o644))
+	require.NoError(t, writeResearchJSON(&ResearchResult{APIName: "demo"}, runRoot))
+	state := PipelineState{APIName: "demo", RunID: "previous-run", WorkingDir: cliDir}
+	stateData, err := json.Marshal(state)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(runRoot, "state.json"), stateData, 0o644))
+
+	require.Equal(t, cliDir, FindResearchDir(cliDir))
+}
+
+func TestFindResearchDirAcceptsMatchingRunForSameAPI(t *testing.T) {
+	runRoot := t.TempDir()
+	cliDir := filepath.Join(runRoot, "working", "demo-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	manifestData, err := json.Marshal(CLIManifest{APIName: "demo", RunID: "current-run"})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, CLIManifestFilename), manifestData, 0o644))
+	require.NoError(t, writeResearchJSON(&ResearchResult{APIName: "demo"}, runRoot))
+	state := PipelineState{APIName: "demo", RunID: "current-run", WorkingDir: cliDir}
+	stateData, err := json.Marshal(state)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(runRoot, "state.json"), stateData, 0o644))
+
+	require.Equal(t, runRoot, FindResearchDir(cliDir))
+}

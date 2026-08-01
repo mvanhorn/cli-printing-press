@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -68,8 +69,41 @@ func researchBelongsToTarget(researchDir, cliDir string) bool {
 	}
 
 	expectedAPI := naming.TrimCLISuffix(filepath.Base(cliDir))
-	if manifest, err := ReadCLIManifest(cliDir); err == nil && strings.TrimSpace(manifest.APIName) != "" {
+	manifest, manifestErr := ReadCLIManifest(cliDir)
+	if manifestErr == nil && strings.TrimSpace(manifest.APIName) != "" {
 		expectedAPI = strings.TrimSpace(manifest.APIName)
 	}
-	return strings.TrimSpace(research.APIName) == expectedAPI
+	if strings.TrimSpace(research.APIName) != expectedAPI {
+		return false
+	}
+
+	state, hasState := loadResearchState(researchDir)
+	if hasState {
+		workingDir, err := ResolveTargetDir(state.EffectiveWorkingDir())
+		if err != nil || workingDir != cliDir || strings.TrimSpace(state.APIName) != expectedAPI {
+			return false
+		}
+		if manifestErr == nil && strings.TrimSpace(manifest.RunID) != "" &&
+			strings.TrimSpace(state.RunID) != strings.TrimSpace(manifest.RunID) {
+			return false
+		}
+		return true
+	}
+
+	// A generated manifest has a run identity even when its state file is no
+	// longer adjacent. Without that state, accepting an ancestor would make it
+	// impossible to distinguish separate runs of the same API.
+	return manifestErr != nil || strings.TrimSpace(manifest.RunID) == ""
+}
+
+func loadResearchState(researchDir string) (PipelineState, bool) {
+	data, err := os.ReadFile(filepath.Join(researchDir, "state.json"))
+	if err != nil {
+		return PipelineState{}, false
+	}
+	var state PipelineState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return PipelineState{}, false
+	}
+	return state, true
 }
