@@ -47,6 +47,7 @@ var clearedVars = []string{
 func Isolate(t *testing.T, resolvers ...func() (string, error)) string {
 	t.Helper()
 	home := t.TempDir()
+	lockSandbox(t, home)
 	for _, name := range homeVars {
 		t.Setenv(name, home)
 	}
