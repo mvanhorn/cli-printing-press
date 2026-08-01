@@ -295,8 +295,12 @@ type APISpec struct {
 	Source        string `yaml:"source,omitempty" json:"source,omitempty"`                 // source archetype; local-sqlite declares an operator-local SQLite source with no HTTP base URL
 	SpecSource    string `yaml:"spec_source,omitempty" json:"spec_source,omitempty"`       // official, community, sniffed, docs — affects generated client defaults
 	ClientPattern string `yaml:"client_pattern,omitempty" json:"client_pattern,omitempty"` // rest (default), proxy-envelope — affects generated HTTP client
-	HTTPTransport string `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-http, browser-chrome, browser-chrome-h2, or browser-chrome-h3
-	RateClass     string `yaml:"rate_class,omitempty" json:"rate_class,omitempty"`         // per-second, daily, monthly, or unlimited — affects generated sync concurrency defaults
+	// ResponseEnvelopeKey opts the generated HTTP client into unwrapping a
+	// single-key JSON response object whose key is known from the API spec.
+	// Empty leaves the response body unchanged.
+	ResponseEnvelopeKey string `yaml:"response_envelope_key,omitempty" json:"response_envelope_key,omitempty"`
+	HTTPTransport       string `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-http, browser-chrome, browser-chrome-h2, or browser-chrome-h3
+	RateClass           string `yaml:"rate_class,omitempty" json:"rate_class,omitempty"`         // per-second, daily, monthly, or unlimited — affects generated sync concurrency defaults
 	// DefaultRateLimit sets the built-in default for the generated CLI's
 	// --rate-limit flag. "auto" selects the header-driven adaptive limiter
 	// (client.RateLimitAuto) so the CLI paces itself to the server's
@@ -4214,6 +4218,7 @@ func singularize(s string) string {
 func (s *APISpec) Validate() error {
 	s.NormalizeAuthEnvVarSpecs()
 	s.NormalizeCookieDomain()
+	s.ResponseEnvelopeKey = strings.TrimSpace(s.ResponseEnvelopeKey)
 	s.InferEndpointTemplateVarsFromBaseURLs()
 	if s.Name == "" {
 		return fmt.Errorf("name is required")

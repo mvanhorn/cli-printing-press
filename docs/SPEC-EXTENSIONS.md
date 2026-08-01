@@ -24,6 +24,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-cache` | root or `info` | `APISpec.Cache` | No |
 | `x-learn` | root or `info` | `APISpec.Learn` | No |
 | `x-pp-query` | root | `APISpec.QuerySync` | No |
+| `x-pp-response-envelope` | root or `info` | `APISpec.ResponseEnvelopeKey` | No |
 | `x-auth-type` | `components.securitySchemes.<name>` | `APISpec.Auth.Type` | No |
 | `x-auth-format` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
 | `x-prefix` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
@@ -411,6 +412,30 @@ paths:
         - { name: channelId, in: query, required: false, schema: { type: string } }
         - { name: handle, in: query, required: false, schema: { type: string } }
         - { name: url, in: query, required: false, schema: { type: string } }
+```
+
+### `x-pp-response-envelope`
+
+Declares the exact top-level key used by an API's single-key JSON response
+wrapper, such as `result` in `{"result": {"items": [...]}}`. The generated
+client removes that wrapper before the response reaches commands, pagination,
+or sync. This is opt-in because a top-level key can also be part of a
+legitimate payload.
+
+Parsed field: `APISpec.ResponseEnvelopeKey`
+
+Rules:
+- Optional. Specs without this extension keep the response body unchanged.
+- Declared at the OpenAPI root or under `info`.
+- Must be a string; surrounding whitespace is trimmed.
+- Unwrapping applies only to successful JSON responses whose body is an object
+  with exactly one property matching the configured key. Other bodies pass
+  through unchanged.
+
+Example:
+
+```yaml
+x-pp-response-envelope: result
 ```
 
 ### `x-pp-query`
