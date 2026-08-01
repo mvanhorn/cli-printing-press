@@ -46,6 +46,9 @@ func writeTestResearchJSON(t *testing.T, cliDir string, features []NovelFeature)
 
 func writeTestResearchState(t *testing.T, runRoot, cliDir string) {
 	t.Helper()
+	manifestData, err := json.Marshal(CLIManifest{APIName: "live-check-test", RunID: "live-check-run"})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, CLIManifestFilename), manifestData, 0o644))
 	data, err := json.Marshal(PipelineState{
 		APIName:    "live-check-test",
 		RunID:      "live-check-run",

@@ -1849,6 +1849,9 @@ func newHealthCmd() *cobra.Command {
 			},
 		}
 		require.NoError(t, writeResearchJSON(research, runRoot))
+		manifestData, err := json.Marshal(CLIManifest{APIName: "demo", RunID: "dogfood-run"})
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(cliDir, CLIManifestFilename), manifestData, 0o644))
 		stateData, err := json.Marshal(PipelineState{
 			APIName:    "demo",
 			RunID:      "dogfood-run",

@@ -78,14 +78,14 @@ func researchBelongsToTarget(researchDir, cliDir string) bool {
 	}
 
 	state, hasState := loadResearchState(researchDir)
-	if !hasState {
+	if !hasState || manifestErr != nil || strings.TrimSpace(manifest.RunID) == "" {
 		return false
 	}
 	workingDir, err := ResolveTargetDir(state.EffectiveWorkingDir())
 	if err != nil || workingDir != cliDir || strings.TrimSpace(state.APIName) != expectedAPI {
 		return false
 	}
-	if manifestErr == nil && strings.TrimSpace(manifest.RunID) != "" &&
+	if strings.TrimSpace(state.RunID) == "" ||
 		strings.TrimSpace(state.RunID) != strings.TrimSpace(manifest.RunID) {
 		return false
 	}
