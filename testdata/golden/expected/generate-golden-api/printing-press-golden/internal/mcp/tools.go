@@ -40,37 +40,42 @@ func RegisterTools(s *server.MCPServer) {
 	installFreshTenantGate(s)
 	s.AddTool(
 		mcplib.NewTool("currencies_list",
-			mcplib.WithDescription("List supported currencies. Returns array of Currency."),
+			mcplib.WithDescription("List supported currencies. Required: X-Api-Version (default: 2026-04-01). Returns array of Currency."),
+			mcplib.WithString("X-Api-Version", mcplib.Required(), mcplib.Description("Required API version header.")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/currencies", true, false, nil, mcpPageConfig{}, []mcpParamBinding{}, []string{}),
+		makeAPIHandler("GET", "/currencies", true, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "X-Api-Version", WireName: "X-Api-Version", Location: "header", Default: "2026-04-01"}}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_create",
-			mcplib.WithDescription("Create project. Required: name, visibility. Optional: owner_email. Returns the new Project."),
+			mcplib.WithDescription("Create project. Required: X-Api-Version (default: 2026-04-01), name, visibility. Optional: X-Request-Id, owner_email. Returns the new Project."),
+			mcplib.WithString("X-Api-Version", mcplib.Required(), mcplib.Description("Required API version header.")),
+			mcplib.WithString("X-Request-Id", mcplib.Description("Optional per-request correlation ID.")),
 			mcplib.WithString("name", mcplib.Required(), mcplib.Description("Name")),
 			mcplib.WithString("owner_email", mcplib.Description("Owner email")),
 			mcplib.WithString("visibility", mcplib.Required(), mcplib.Description("Visibility")),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("POST", "/projects", false, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "name", WireName: "name", Location: "body"}, {PublicName: "owner_email", WireName: "owner_email", Location: "body"}, {PublicName: "visibility", WireName: "visibility", Location: "body"}}, []string{}),
+		makeAPIHandler("POST", "/projects", false, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "X-Api-Version", WireName: "X-Api-Version", Location: "header", Default: "2026-04-01"}, {PublicName: "X-Request-Id", WireName: "X-Request-Id", Location: "header"}, {PublicName: "name", WireName: "name", Location: "body"}, {PublicName: "owner_email", WireName: "owner_email", Location: "body"}, {PublicName: "visibility", WireName: "visibility", Location: "body"}}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_get",
-			mcplib.WithDescription("Get project. Required: projectId."),
+			mcplib.WithDescription("Get project. Required: X-Api-Version (default: 2026-04-01), projectId."),
+			mcplib.WithString("X-Api-Version", mcplib.Required(), mcplib.Description("Required API version header.")),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/projects/{projectId}", true, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}}, []string{"projectId"}),
+		makeAPIHandler("GET", "/projects/{projectId}", true, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "X-Api-Version", WireName: "X-Api-Version", Location: "header", Default: "2026-04-01"}, {PublicName: "projectId", WireName: "projectId", Location: "path"}}, []string{"projectId"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_list",
-			mcplib.WithDescription("List projects. Optional: status, limit (default: 25), cursor. Returns array of Project."),
+			mcplib.WithDescription("List projects. Required: X-Api-Version (default: 2026-04-01). Optional: status, limit (default: 25), cursor. Returns array of Project."),
+			mcplib.WithString("X-Api-Version", mcplib.Required(), mcplib.Description("Required API version header.")),
 			mcplib.WithString("status", mcplib.Description("Status")),
 			mcplib.WithNumber("limit", mcplib.Description("Limit")),
 			mcplib.WithString("cursor", mcplib.Description("Opaque pagination cursor returned by a previous MCP response")),
@@ -78,22 +83,24 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/projects", true, false, nil, mcpPageConfig{CursorParam: "cursor", NextCursorPath: "cursor"}, []mcpParamBinding{{PublicName: "status", WireName: "status", Location: "query"}, {PublicName: "limit", WireName: "limit", Location: "query", Default: "25"}}, []string{}),
+		makeAPIHandler("GET", "/projects", true, false, nil, mcpPageConfig{CursorParam: "cursor", NextCursorPath: "cursor"}, []mcpParamBinding{{PublicName: "X-Api-Version", WireName: "X-Api-Version", Location: "header", Default: "2026-04-01"}, {PublicName: "status", WireName: "status", Location: "query"}, {PublicName: "limit", WireName: "limit", Location: "query", Default: "25"}}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_avatar_upload-project",
-			mcplib.WithDescription("Upload project avatar. Required: projectId. Optional: overwrite, caption, file."),
+			mcplib.WithDescription("Upload project avatar. Required: X-Api-Version (default: 2026-04-01), projectId. Optional: overwrite, caption, file."),
+			mcplib.WithString("X-Api-Version", mcplib.Required(), mcplib.Description("Required API version header.")),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
 			mcplib.WithBoolean("overwrite", mcplib.Description("Overwrite")),
 			mcplib.WithString("caption", mcplib.Description("Caption")),
 			mcplib.WithString("file", mcplib.Description("File")),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("PUT", "/projects/{projectId}/avatar", false, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path", RequestContentType: "multipart/form-data"}, {PublicName: "overwrite", WireName: "overwrite", Location: "query", RequestContentType: "multipart/form-data"}, {PublicName: "caption", WireName: "caption", Location: "body", RequestContentType: "multipart/form-data"}, {PublicName: "file", WireName: "file", Location: "body", Format: "binary", RequestContentType: "multipart/form-data"}}, []string{"projectId"}),
+		makeAPIHandler("PUT", "/projects/{projectId}/avatar", false, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "X-Api-Version", WireName: "X-Api-Version", Location: "header", RequestContentType: "multipart/form-data", Default: "2026-04-01"}, {PublicName: "projectId", WireName: "projectId", Location: "path", RequestContentType: "multipart/form-data"}, {PublicName: "overwrite", WireName: "overwrite", Location: "query", RequestContentType: "multipart/form-data"}, {PublicName: "caption", WireName: "caption", Location: "body", RequestContentType: "multipart/form-data"}, {PublicName: "file", WireName: "file", Location: "body", Format: "binary", RequestContentType: "multipart/form-data"}}, []string{"projectId"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_tasks_list-project",
-			mcplib.WithDescription("List project tasks. Required: projectId. Optional: priority, limit (default: 50), cursor. Returns array of Task."),
+			mcplib.WithDescription("List project tasks. Required: X-Api-Version (default: 2026-04-01), projectId. Optional: priority, limit (default: 50), cursor. Returns array of Task."),
+			mcplib.WithString("X-Api-Version", mcplib.Required(), mcplib.Description("Required API version header.")),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
 			mcplib.WithString("priority", mcplib.Description("Priority")),
 			mcplib.WithNumber("limit", mcplib.Description("Limit")),
@@ -102,11 +109,12 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/projects/{projectId}/tasks", true, false, nil, mcpPageConfig{CursorParam: "cursor", NextCursorPath: "cursor"}, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "priority", WireName: "priority", Location: "query"}, {PublicName: "limit", WireName: "limit", Location: "query", Default: "50"}}, []string{"projectId"}),
+		makeAPIHandler("GET", "/projects/{projectId}/tasks", true, false, nil, mcpPageConfig{CursorParam: "cursor", NextCursorPath: "cursor"}, []mcpParamBinding{{PublicName: "X-Api-Version", WireName: "X-Api-Version", Location: "header", Default: "2026-04-01"}, {PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "priority", WireName: "priority", Location: "query"}, {PublicName: "limit", WireName: "limit", Location: "query", Default: "50"}}, []string{"projectId"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_tasks_update-project",
-			mcplib.WithDescription("Update project task. Required: projectId, taskId. Optional: notify, completed, priority (plus 1 more). Partial update."),
+			mcplib.WithDescription("Update project task. Required: X-Api-Version (default: 2026-04-01), projectId, taskId. Optional: notify, completed, priority (plus 1 more). Partial update."),
+			mcplib.WithString("X-Api-Version", mcplib.Required(), mcplib.Description("Required API version header.")),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
 			mcplib.WithString("taskId", mcplib.Required(), mcplib.Description("Task id")),
 			mcplib.WithBoolean("notify", mcplib.Description("Notify")),
@@ -115,7 +123,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("title", mcplib.Description("Title")),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("PATCH", "/projects/{projectId}/tasks/{taskId}", false, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "taskId", WireName: "taskId", Location: "path"}, {PublicName: "notify", WireName: "notify", Location: "query"}, {PublicName: "completed", WireName: "completed", Location: "body"}, {PublicName: "priority", WireName: "priority", Location: "body"}, {PublicName: "title", WireName: "title", Location: "body"}}, []string{"projectId", "taskId"}),
+		makeAPIHandler("PATCH", "/projects/{projectId}/tasks/{taskId}", false, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "X-Api-Version", WireName: "X-Api-Version", Location: "header", Default: "2026-04-01"}, {PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "taskId", WireName: "taskId", Location: "path"}, {PublicName: "notify", WireName: "notify", Location: "query"}, {PublicName: "completed", WireName: "completed", Location: "body"}, {PublicName: "priority", WireName: "priority", Location: "body"}, {PublicName: "title", WireName: "title", Location: "body"}}, []string{"projectId", "taskId"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("public_get-status",
@@ -128,23 +136,25 @@ func RegisterTools(s *server.MCPServer) {
 	)
 	s.AddTool(
 		mcplib.NewTool("reports_export_report-year",
-			mcplib.WithDescription("Download the annual report as a binary file. Required: year."),
+			mcplib.WithDescription("Download the annual report as a binary file. Required: X-Api-Version (default: 2026-04-01), year."),
+			mcplib.WithString("X-Api-Version", mcplib.Required(), mcplib.Description("Required API version header.")),
 			mcplib.WithNumber("year", mcplib.Required(), mcplib.Description("Year")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/reports/{year}/export", true, true, map[string]string{"Accept": "application/octet-stream"}, mcpPageConfig{}, []mcpParamBinding{{PublicName: "year", WireName: "year", Location: "path"}}, []string{"year"}),
+		makeAPIHandler("GET", "/reports/{year}/export", true, true, map[string]string{"Accept": "application/octet-stream"}, mcpPageConfig{}, []mcpParamBinding{{PublicName: "X-Api-Version", WireName: "X-Api-Version", Location: "header", Default: "2026-04-01"}, {PublicName: "year", WireName: "year", Location: "path"}}, []string{"year"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("reports_summary_get-report-year",
-			mcplib.WithDescription("Get a report summary for a year. Required: year."),
+			mcplib.WithDescription("Get a report summary for a year. Required: X-Api-Version (default: 2026-04-01), year."),
+			mcplib.WithString("X-Api-Version", mcplib.Required(), mcplib.Description("Required API version header.")),
 			mcplib.WithNumber("year", mcplib.Required(), mcplib.Description("Year")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/reports/{year}/summary", true, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "year", WireName: "year", Location: "path"}}, []string{"year"}),
+		makeAPIHandler("GET", "/reports/{year}/summary", true, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "X-Api-Version", WireName: "X-Api-Version", Location: "header", Default: "2026-04-01"}, {PublicName: "year", WireName: "year", Location: "path"}}, []string{"year"}),
 	)
 	// Search tool — faster than iterating list endpoints for finding specific items
 	s.AddTool(
@@ -326,6 +336,11 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				placeholder := "{" + binding.WireName + "}"
 				pathParams[binding.PublicName] = true
 				path = strings.Replace(path, placeholder, mcpPathValue(v), 1)
+			case "header":
+				if headers == nil {
+					headers = map[string]string{}
+				}
+				headers[binding.WireName] = formatMCPParamValue(v)
 			case "body":
 				bodyArgs[binding.WireName] = v
 				if multipart {
@@ -989,6 +1004,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 				"description": "Manage currencies",
 				"endpoints":   []string{"list"},
 				"syncable":    true,
+				"searchable":  true,
 			},
 			{
 				"name":        "projects",

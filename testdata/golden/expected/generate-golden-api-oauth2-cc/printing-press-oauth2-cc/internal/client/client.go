@@ -913,7 +913,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		if params != nil {
 			q := req.URL.Query()
 			for k, v := range params {
-				if v != "" {
+				if v != "" || method != "GET" {
 					q.Set(k, v)
 				}
 			}
@@ -1124,7 +1124,7 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 	if params != nil {
 		keys := make([]string, 0, len(params))
 		for k := range params {
-			if params[k] != "" {
+			if params[k] != "" || method != "GET" {
 				keys = append(keys, k)
 			}
 		}

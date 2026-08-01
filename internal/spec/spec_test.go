@@ -7212,6 +7212,42 @@ resources:
 		assert.Equal(t, "name", ep.Body[0].Name)
 	})
 
+	t.Run("POST endpoint keeps explicit query and header params", func(t *testing.T) {
+		t.Parallel()
+		input := header + `  messages:
+    description: Message endpoints
+    endpoints:
+      create:
+        method: POST
+        path: /messages
+        description: Create message
+        params:
+          - name: mode
+            in: query
+            type: string
+          - name: X-Request-ID
+            in: header
+            type: string
+          - name: text
+            type: string
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["messages"].Endpoints["create"]
+		require.Len(t, ep.Params, 2)
+		assert.ElementsMatch(t, []string{"mode", "X-Request-ID"}, []string{ep.Params[0].Name, ep.Params[1].Name})
+		require.Len(t, ep.Body, 1)
+		assert.Equal(t, "text", ep.Body[0].Name)
+		for _, param := range ep.Params {
+			if param.Name == "mode" {
+				assert.Equal(t, "query", param.In)
+			}
+			if param.Name == "X-Request-ID" {
+				assert.Equal(t, "header", param.In)
+			}
+		}
+	})
+
 	t.Run("GET endpoint params are not promoted", func(t *testing.T) {
 		t.Parallel()
 		input := header + `  lookup:
