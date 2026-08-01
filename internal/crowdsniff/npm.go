@@ -486,7 +486,9 @@ func (s *NPMSource) processPackageTarball(ctx context.Context, tarballURL, pkgNa
 // extractTarball extracts a gzipped tar archive to the destination directory.
 // Security: rejects symlinks, hard links, path traversal, and limits total size.
 func extractTarball(r io.Reader, destDir string) error {
-	// Limit total bytes read.
+	// Bound the compressed input as a coarse first guard. This alone is not
+	// enough: a small gzip stream can expand far past maxTarballSize, so the
+	// decompressed output is bounded separately below.
 	limited := io.LimitReader(r, maxTarballSize)
 
 	gz, err := gzip.NewReader(limited)
@@ -500,6 +502,11 @@ func extractTarball(r io.Reader, destDir string) error {
 	if err != nil {
 		return fmt.Errorf("resolving dest dir: %w", err)
 	}
+
+	// remaining is the decompressed-byte budget shared across every extracted
+	// regular file, so a decompression bomb cannot exceed maxTarballSize in
+	// aggregate no matter how many entries it is split across.
+	remaining := int64(maxTarballSize)
 
 	for {
 		header, err := tr.Next()
@@ -543,20 +550,41 @@ func extractTarball(r io.Reader, destDir string) error {
 			return fmt.Errorf("creating parent dir for %s: %w", header.Name, err)
 		}
 
+		// Reject an entry whose declared size alone would blow the remaining
+		// decompressed budget, before creating the file.
+		if header.Size > remaining {
+			return fmt.Errorf("tarball exceeds decompressed size limit of %d bytes", maxTarballSize)
+		}
+
 		f, err := os.Create(absTarget)
 		if err != nil {
 			return fmt.Errorf("creating file %s: %w", header.Name, err)
 		}
 
-		// Copy with size limit per file (same global limit via LimitReader on outer reader).
-		if _, err := io.Copy(f, tr); err != nil {
+		written, err := copyTarEntryWithBudget(f, tr, remaining)
+		if err != nil {
 			_ = f.Close()
+			_ = os.Remove(absTarget)
 			return fmt.Errorf("writing file %s: %w", header.Name, err)
 		}
 		_ = f.Close()
+		remaining -= written
 	}
 
 	return nil
+}
+
+func copyTarEntryWithBudget(dst io.Writer, src io.Reader, remaining int64) (int64, error) {
+	// Read one byte past the budget so an overlong stream is distinguishable
+	// from an entry that ends exactly at the limit.
+	written, err := io.Copy(dst, io.LimitReader(src, remaining+1))
+	if err != nil {
+		return written, err
+	}
+	if written > remaining {
+		return written, fmt.Errorf("tarball exceeds decompressed size limit of %d bytes", maxTarballSize)
+	}
+	return written, nil
 }
 
 // classifyPackage determines whether a package is an official or community SDK.
