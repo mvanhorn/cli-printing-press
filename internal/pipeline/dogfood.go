@@ -270,6 +270,12 @@ func (s *openAPISpec) IsSynthetic() bool {
 }
 
 func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, error) {
+	canonicalDir, err := ResolveTargetDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	dir = canonicalDir
+
 	releaseHome, err := scopeSubprocessHome(findCLINames(dir)...)
 	if err != nil {
 		return nil, err
@@ -279,6 +285,13 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	cfg := dogfoodConfig{}
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if cfg.researchDir != "" {
+		canonicalResearchDir, err := ResolveTargetDir(cfg.researchDir)
+		if err != nil {
+			return nil, err
+		}
+		cfg.researchDir = canonicalResearchDir
 	}
 
 	resolvedSpec, specSource, overriddenCaller := resolveDogfoodSpec(dir, specPath)
@@ -457,8 +470,11 @@ func checkMCPSurfaceParity(cliDir string) MCPSurfaceResult {
 // the verified list back as novel_features_built so downstream consumers
 // (README, publish) only claim what actually exists.
 func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
+	if canonicalDir, err := ResolveTargetDir(cliDir); err == nil {
+		cliDir = canonicalDir
+	}
 	if researchDir == "" {
-		return NovelFeaturesCheckResult{Skipped: true}
+		researchDir = FindResearchDir(cliDir)
 	}
 	research, err := LoadResearch(researchDir)
 	if err != nil || len(research.NovelFeatures) == 0 {

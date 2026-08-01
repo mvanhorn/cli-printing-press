@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -1826,6 +1827,43 @@ func TestCheckNovelFeatures(t *testing.T) {
 		require.NoError(t, writeResearchJSON(research, researchDir))
 		result := checkNovelFeatures(t.TempDir(), researchDir)
 		assert.True(t, result.Skipped)
+	})
+
+	t.Run("finds parent research without an explicit directory", func(t *testing.T) {
+		runRoot := t.TempDir()
+		workingDir := filepath.Join(runRoot, "working")
+		cliDir := filepath.Join(workingDir, "demo-pp-cli")
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		t.Chdir(workingDir)
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}`)
+
+		research := &ResearchResult{
+			APIName: "demo",
+			NovelFeatures: []NovelFeature{
+				{Name: "Health dashboard", Command: "health"},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, runRoot))
+		manifestData, err := json.Marshal(CLIManifest{APIName: "demo", RunID: "dogfood-run"})
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(cliDir, CLIManifestFilename), manifestData, 0o644))
+		stateData, err := json.Marshal(PipelineState{
+			APIName:    "demo",
+			RunID:      "dogfood-run",
+			WorkingDir: cliDir,
+		})
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(runRoot, "state.json"), stateData, 0o644))
+
+		result := checkNovelFeatures("demo-pp-cli", "")
+		assert.False(t, result.Skipped)
+		assert.Equal(t, 1, result.Planned)
+		assert.Equal(t, 1, result.Found)
 	})
 
 	t.Run("finds matching commands", func(t *testing.T) {

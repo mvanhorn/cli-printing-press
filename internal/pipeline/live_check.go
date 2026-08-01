@@ -143,7 +143,7 @@ type LiveCheckOptions struct {
 	// directory the run state owns (where research.json lives next to the
 	// run's manuscripts) and the printed CLI hasn't been promoted to its
 	// final library location. When blank the live check looks under CLIDir
-	// and then walks up a few parent levels (see findResearchDir) so the
+	// and then walks up a few parent levels (see FindResearchDir) so the
 	// standard pipeline layout — research.json at the run-dir level, CLI
 	// under <runRoot>/working/<api>-pp-cli — works without an explicit
 	// override.
@@ -167,10 +167,21 @@ type LiveCheckOptions struct {
 // check doesn't penalize the CLI.
 func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 	out := &LiveCheckResult{RanAt: time.Now().UTC()}
-	if opts.CLIDir == "" {
+	cliDir, err := ResolveTargetDir(opts.CLIDir)
+	if err != nil {
 		out.Unable = true
-		out.Reason = "CLIDir is required"
+		out.Reason = err.Error()
 		return out
+	}
+	opts.CLIDir = cliDir
+	if opts.ResearchDir != "" {
+		researchDir, err := ResolveTargetDir(opts.ResearchDir)
+		if err != nil {
+			out.Unable = true
+			out.Reason = fmt.Errorf("resolving research directory: %w", err).Error()
+			return out
+		}
+		opts.ResearchDir = researchDir
 	}
 	releaseHome, err := scopeSubprocessHome(findCLINames(opts.CLIDir)...)
 	if err != nil {
@@ -182,7 +193,7 @@ func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 
 	researchDir := opts.ResearchDir
 	if researchDir == "" {
-		researchDir = findResearchDir(opts.CLIDir)
+		researchDir = FindResearchDir(opts.CLIDir)
 	}
 	research, err := LoadResearch(researchDir)
 	if err != nil {
@@ -254,41 +265,6 @@ func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 		out.PassRate = float64(out.Passed) / float64(total)
 	}
 	return out
-}
-
-// researchParentWalkDepth bounds how far above CLIDir the live check looks
-// for research.json. The standard pipeline lays out
-// <runRoot>/working/<api>-pp-cli, putting research.json two levels above
-// CLIDir; three is a small margin for layouts that add a wrapper directory
-// without inviting scans that could pick up unrelated research.json files
-// far above the working tree.
-const researchParentWalkDepth = 3
-
-// findResearchDir returns a directory containing research.json that the
-// live check can hand to LoadResearch. It first checks cliDir itself, then
-// walks up the parent chain up to researchParentWalkDepth levels. If no
-// research.json is found, cliDir is returned so the caller's error message
-// stays "no research.json: ... <cliDir>/research.json".
-//
-// The walk handles the canonical non-OpenAPI layout where research.json
-// sits at the run-dir level while the printed CLI lives under
-// <runRoot>/working/<api>-pp-cli.
-func findResearchDir(cliDir string) string {
-	if cliDir == "" {
-		return cliDir
-	}
-	dir := cliDir
-	for steps := 0; steps <= researchParentWalkDepth; steps++ {
-		if _, err := os.Stat(filepath.Join(dir, "research.json")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	return cliDir
 }
 
 func refreshLiveCheckStageBinary(cliDir, name string) (LiveCheckBinaryRefresh, error) {
@@ -1343,19 +1319,26 @@ func InsightCapFromLiveCheck(r *LiveCheckResult) *int {
 	return &cap
 }
 
-// MarshalJSON emits a rounded pass_rate_pct alongside the raw counters so
-// JSON consumers don't have to deal with floating-point noise. PassRate is
+// MarshalJSON emits a status and rounded pass_rate_pct alongside the raw
+// counters so JSON consumers can distinguish an unavailable probe from an
+// available probe without dealing with floating-point noise. PassRate is
 // hidden via json:"-" on the struct; this method computes the percentage
 // once using an alias to avoid infinite recursion.
 func (r *LiveCheckResult) MarshalJSON() ([]byte, error) {
 	type alias LiveCheckResult
+	status := "available"
+	if r == nil || r.Unable {
+		status = "unavailable"
+	}
 	return json.Marshal(&struct {
 		*alias
-		Checked     int `json:"checked"`
-		Evaluated   int `json:"evaluated"`
-		PassRatePct int `json:"pass_rate_pct"`
+		Status      string `json:"status"`
+		Checked     int    `json:"checked"`
+		Evaluated   int    `json:"evaluated"`
+		PassRatePct int    `json:"pass_rate_pct"`
 	}{
 		alias:       (*alias)(r),
+		Status:      status,
 		Checked:     r.Checked(),
 		Evaluated:   r.Evaluated(),
 		PassRatePct: int(r.PassRate*100 + 0.5),
