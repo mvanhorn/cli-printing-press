@@ -390,7 +390,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				return fmt.Errorf("no local data source for this command; use --data-source live or --data-source auto")
 			}
 {{- end}}
-			data, err := paginatedGet(cmd.Context(), c, path, map[string]string{
+			data, err := paginatedGetWithResponsePath(cmd.Context(), c, path, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],

@@ -84,6 +84,19 @@ func TestGeneratedPaginatedCommandsEmitResponsePath(t *testing.T) {
 	assert.Contains(t, endpointSrc, `"", "payload.has_more", "payload.records", cmd.ErrOrStderr())`)
 	requireGeneratedCompiles(t, outputDir)
 
+	apiSpec.Learn.Disabled = true
+	apiSpec.Learn.Enabled = false
+	apiSpec.Learn.EnabledSet = false
+	noStoreOutputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	noStoreGen := New(apiSpec, noStoreOutputDir)
+	noStoreGen.VisionSet = VisionTemplateSet{MCP: true}
+	require.NoError(t, noStoreGen.Generate())
+	noStorePromotedSrc := readGeneratedFile(t, noStoreOutputDir, "internal", "cli", "promoted_items.go")
+	assert.Contains(t, noStorePromotedSrc, `paginatedGetWithResponsePath(cmd.Context(), c, path`)
+	noStoreEndpointSrc := readGeneratedFile(t, noStoreOutputDir, "internal", "cli", "catalog_lookup.go")
+	assert.Contains(t, noStoreEndpointSrc, `paginatedGetWithResponsePath(cmd.Context(), c, path`)
+	requireGeneratedCompiles(t, noStoreOutputDir)
+
 	behaviorTest := `package cli
 
 import (
@@ -128,6 +141,22 @@ func TestPaginatedResponsePathAggregatesPages(t *testing.T) {
     }
     if len(client.params) != 2 || client.params[1]["after"] != "token-2" {
         t.Fatalf("params = %#v, want the declared nested cursor on page two", client.params)
+    }
+
+    client.responses = []json.RawMessage{
+        json.RawMessage("{\"results\":[{\"id\":\"item-single\"}],\"paging\":{\"next\":{\"after\":\"token-ignored\"}}}"),
+    }
+    client.params = nil
+    data, err = paginatedGetWithResponsePath(context.Background(), client, "/items", nil, nil, false, "after", "cursor", "limit", 100, "paging.next.after", "", "results")
+    if err != nil {
+        t.Fatalf("single-page paginatedGetWithResponsePath: %v", err)
+    }
+    var page []map[string]string
+    if err := json.Unmarshal(data, &page); err != nil {
+        t.Fatalf("decode single projected page: %v; data=%s", err, data)
+    }
+    if len(page) != 1 || page[0]["id"] != "item-single" {
+        t.Fatalf("single page = %#v, want response_path projection", page)
     }
 }
 `
