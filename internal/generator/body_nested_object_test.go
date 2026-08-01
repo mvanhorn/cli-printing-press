@@ -95,7 +95,7 @@ func TestGenerateNestedObjectBodyEmitsFieldFlags(t *testing.T) {
 	// Required-flag validation: the nested requirement applies only when the
 	// optional start object is populated, and the parent-prefixed flag in the
 	// error message matches the registered flag name.
-	require.Contains(t, got, `if bodyStartDateTime != "" || bodyStartTimeZone != "" {`)
+	require.Contains(t, got, `if (cmd.Flags().Changed("start-date-time") || bodyStartDateTime != "") || (cmd.Flags().Changed("start-time-zone") || bodyStartTimeZone != "") {`)
 	require.Contains(t, got, `cmd.Flags().Changed("start-date-time")`, "required check must use parent-prefixed flag")
 	require.Contains(t, got, `"required flag \"%s\" not set", "start-date-time"`)
 
@@ -178,7 +178,7 @@ func TestOptionalNestedRequiredRuntime(t *testing.T) {
 	promotedOutputDir := filepath.Join(t.TempDir(), "nested-body-promoted-pp-cli")
 	require.NoError(t, New(promotedSpec, promotedOutputDir).Generate())
 	promoted := readGeneratedFile(t, promotedOutputDir, "internal", "cli", "promoted_events.go")
-	require.Contains(t, promoted, `if bodyStartDateTime != "" || bodyStartTimeZone != "" {`)
+	require.Contains(t, promoted, `if (cmd.Flags().Changed("start-date-time") || bodyStartDateTime != "") || (cmd.Flags().Changed("start-time-zone") || bodyStartTimeZone != "") {`)
 	require.Contains(t, promoted, `if !cmd.Flags().Changed("start-date-time") && !flags.dryRun {`)
 	requireGeneratedCompiles(t, promotedOutputDir)
 }

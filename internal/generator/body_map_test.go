@@ -580,7 +580,7 @@ func TestBodyRequiredChecks_OptionalNestedObject(t *testing.T) {
 			},
 		}},
 	}, "\t\t\t")
-	require.Contains(t, got, `if bodyStartDateTime != "" || bodyStartTimeZone != "" {`)
+	require.Contains(t, got, `if (cmd.Flags().Changed("start-date-time") || bodyStartDateTime != "") || (cmd.Flags().Changed("start-time-zone") || bodyStartTimeZone != "") {`)
 	require.Contains(t, got, `if !cmd.Flags().Changed("start-date-time") && !flags.dryRun {`)
 	require.Contains(t, got, `"required flag \"%s\" not set", "start-date-time"`)
 }
@@ -597,7 +597,7 @@ func TestBodyRequiredChecks_OptionalNestedObjectDefaultActivatesParent(t *testin
 			},
 		}},
 	}, "\t\t\t")
-	require.Contains(t, got, `if bodyStartDateTime != "" || bodyStartTimeZone != "" {`)
+	require.Contains(t, got, `if (cmd.Flags().Changed("start-date-time") || bodyStartDateTime != "") || (cmd.Flags().Changed("start-time-zone") || bodyStartTimeZone != "") {`)
 	require.Contains(t, got, `if !cmd.Flags().Changed("start-date-time") && !flags.dryRun {`)
 }
 
@@ -620,8 +620,8 @@ func TestBodyRequiredChecks_RecursiveOptionalObjects(t *testing.T) {
 			},
 		}},
 	}, "\t\t\t")
-	require.Contains(t, got, `if bodyOuterLabel != "" || bodyOuterConfigMode != "" || bodyOuterConfigNote != "" {`)
-	require.Contains(t, got, `if bodyOuterConfigMode != "" || bodyOuterConfigNote != "" {`)
+	require.Contains(t, got, `if (cmd.Flags().Changed("outer-label") || bodyOuterLabel != "") || (cmd.Flags().Changed("outer-config-mode") || bodyOuterConfigMode != "") || (cmd.Flags().Changed("outer-config-note") || bodyOuterConfigNote != "") {`)
+	require.Contains(t, got, `if (cmd.Flags().Changed("outer-config-mode") || bodyOuterConfigMode != "") || (cmd.Flags().Changed("outer-config-note") || bodyOuterConfigNote != "") {`)
 	require.Contains(t, got, `if !cmd.Flags().Changed("outer-config-mode") && !flags.dryRun {`)
 }
 
