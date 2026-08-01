@@ -20,9 +20,12 @@ import (
 // platformSourceRegistration is intentionally package-local: a preserved
 // provider adapter registers one source without exposing credential-bearing
 // hooks outside the CLI process.
+type CredentialResolverFactory func() platform.CredentialResolver
+
 type platformSourceRegistration struct {
 	Source               string
 	Adapter              platform.IdentityAdapter
+	CredentialResolverFactory CredentialResolverFactory
 	Credentialless       bool
 	BindClient           func(*client.Client, *platform.Session) error
 	ResourceHealth       func(context.Context, *platform.Session) ([]platform.ResourceHealth, error)
@@ -47,10 +50,6 @@ func registerPlatformSource(registration platformSourceRegistration) {
 	registeredPlatformSource = &registration
 }
 
-var platformResolverFactory = func() platform.CredentialResolver {
-	return platform.OnePasswordResolver{Binary: strings.TrimSpace(os.Getenv("PRINTING_PRESS_ONEPASSWORD_CLI"))}
-}
-
 func preparePlatformSession(flags *rootFlags) error {
 	if registeredPlatformSource == nil || flags.platformSession != nil {
 		return nil
@@ -59,24 +58,79 @@ func preparePlatformSession(flags *rootFlags) error {
 	if err != nil {
 		return err
 	}
-	if err := validateRegisteredPlatformSourceProfile(session.SourceProfile); err != nil {
+	resolver, err := platformCredentialResolver(session.SourceProfile)
+	if err != nil {
 		return err
 	}
 	flags.platformSession = session
+	flags.platformResolver = resolver
+	flags.platformResolverReady = true
 	return nil
 }
 
 func validateRegisteredPlatformSourceProfile(source platform.SourceProfile) error {
+	references := source.References()
+	if err := validateRegisteredPlatformSourceProfileWithReferences(source, references); err != nil {
+		return err
+	}
+	if len(references) == 0 {
+		return nil
+	}
+	return requirePlatformCredentialResolverFactory()
+}
+
+func validateRegisteredPlatformSourceProfileWithReferences(source platform.SourceProfile, references map[string]string) error {
 	if registeredPlatformSource == nil {
 		return nil
 	}
-	if !registeredPlatformSource.Credentialless && len(source.References()) == 0 {
-		return fmt.Errorf("source %q requires at least one exact credential reference", registeredPlatformSource.Source)
+	if len(references) == 0 {
+		return nil
 	}
-	if registeredPlatformSource.ValidateSourceProfile != nil {
-		return registeredPlatformSource.ValidateSourceProfile(source)
+	if registeredPlatformSource.ValidateSourceProfile == nil {
+		return fmt.Errorf("source %q has credential references but no ValidateSourceProfile hook in platformSourceRegistration", registeredPlatformSource.Source)
 	}
-	return nil
+	return registeredPlatformSource.ValidateSourceProfile(source)
+}
+
+func requirePlatformCredentialResolverFactory() error {
+	if registeredPlatformSource == nil || registeredPlatformSource.CredentialResolverFactory != nil {
+		return nil
+	}
+	return fmt.Errorf("source %q has credential references but no CredentialResolverFactory in platformSourceRegistration", registeredPlatformSource.Source)
+}
+
+func isNilCredentialResolver(resolver platform.CredentialResolver) bool {
+	if resolver == nil {
+		return true
+	}
+	value := reflect.ValueOf(resolver)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+func platformCredentialResolver(source platform.SourceProfile) (platform.CredentialResolver, error) {
+	if registeredPlatformSource == nil {
+		return nil, nil
+	}
+	references := source.References()
+	if err := validateRegisteredPlatformSourceProfileWithReferences(source, references); err != nil {
+		return nil, err
+	}
+	if len(references) == 0 {
+		return nil, nil
+	}
+	if err := requirePlatformCredentialResolverFactory(); err != nil {
+		return nil, err
+	}
+	resolver := registeredPlatformSource.CredentialResolverFactory()
+	if isNilCredentialResolver(resolver) {
+		return nil, fmt.Errorf("source %q has credential references but CredentialResolverFactory returned nil", registeredPlatformSource.Source)
+	}
+	return resolver, nil
 }
 
 func verifyPlatformSession(ctx context.Context, flags *rootFlags) error {
@@ -92,7 +146,17 @@ func verifyPlatformSession(ctx context.Context, flags *rootFlags) error {
 	if flags.platformSession.GateOutcome == platform.GateVerified {
 		return nil
 	}
-	return platform.VerifyPreparedProfileSource(ctx, flags.platformSession, platformResolverFactory(), registeredPlatformSource.Adapter)
+	resolver := flags.platformResolver
+	if !flags.platformResolverReady {
+		var err error
+		resolver, err = platformCredentialResolver(flags.platformSession.SourceProfile)
+		if err != nil {
+			return err
+		}
+	}
+	flags.platformResolver = nil
+	flags.platformResolverReady = false
+	return platform.VerifyPreparedProfileSource(ctx, flags.platformSession, resolver, registeredPlatformSource.Adapter)
 }
 
 func validatePlatformLegacyInputs(cmd *cobra.Command, flags *rootFlags) error {
@@ -188,8 +252,9 @@ func bindPlatformClient(c *client.Client, flags *rootFlags) error {
 	return nil
 }
 
-// BindMCPServerProfile resolves and validates the non-secret profile at server
-// startup. Each tool invocation still performs a fresh live identity gate.
+// BindMCPServerProfile validates the non-secret profile and registration at
+// server startup. Each tool invocation constructs a fresh resolver and runs a
+// live identity gate.
 func BindMCPServerProfile() error {
 	if registeredPlatformSource == nil {
 		return nil
@@ -227,10 +292,11 @@ func VerifyMCPInvocation(ctx context.Context) (*platform.Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := validateRegisteredPlatformSourceProfile(session.SourceProfile); err != nil {
+	resolver, err := platformCredentialResolver(session.SourceProfile)
+	if err != nil {
 		return nil, err
 	}
-	if err := platform.VerifyPreparedProfileSource(ctx, session, platformResolverFactory(), registeredPlatformSource.Adapter); err != nil {
+	if err := platform.VerifyPreparedProfileSource(ctx, session, resolver, registeredPlatformSource.Adapter); err != nil {
 		return nil, err
 	}
 	return session, nil
@@ -363,9 +429,9 @@ type platformSourceFlags struct {
 }
 
 func (values *platformSourceFlags) addFlags(command *cobra.Command) {
-	command.Flags().StringVar(&values.credentialRef, "credential-ref", "", "Exact op:// credential reference")
-	command.Flags().StringVar(&values.usernameRef, "username-ref", "", "Exact op:// username reference")
-	command.Flags().StringToStringVar(&values.additionalCredentialRef, "additional-credential-ref", nil, "Named exact op:// credential references (name=reference)")
+	command.Flags().StringVar(&values.credentialRef, "credential-ref", "", "Credential reference")
+	command.Flags().StringVar(&values.usernameRef, "username-ref", "", "Username reference")
+	command.Flags().StringToStringVar(&values.additionalCredentialRef, "additional-credential-ref", nil, "Named credential references (name=reference)")
 	command.Flags().StringVar(&values.expectedAccountID, "expected-account-id", "", "Trusted immutable provider account ID")
 	command.Flags().StringVar(&values.expectedOrgName, "expected-org-name", "", "Exact expected organization name")
 	command.Flags().StringVar(&values.expectedStoreID, "expected-store-id", "", "Trusted immutable Shopify store ID")
@@ -404,7 +470,7 @@ func newPlatformClientAddCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			sourceProfile := values.sourceProfile()
-			if err := validateRegisteredPlatformSourceProfile(sourceProfile); err != nil {
+			if _, err := platformCredentialResolver(sourceProfile); err != nil {
 				return err
 			}
 			profile := &platform.Profile{SchemaVersion: platform.ProfileSchemaVersion, Name: args[0], Sources: map[string]platform.SourceProfile{registeredPlatformSource.Source: sourceProfile}}
@@ -432,7 +498,7 @@ func newPlatformClientSourceSetCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			sourceProfile := values.sourceProfile()
-			if err := validateRegisteredPlatformSourceProfile(sourceProfile); err != nil {
+			if _, err := platformCredentialResolver(sourceProfile); err != nil {
 				return err
 			}
 			profile.Sources[registeredPlatformSource.Source] = sourceProfile
@@ -499,10 +565,11 @@ func newPlatformClientValidateCmd(flags *rootFlags) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if err := validateRegisteredPlatformSourceProfile(session.SourceProfile); err != nil {
+		resolver, err := platformCredentialResolver(session.SourceProfile)
+		if err != nil {
 			return err
 		}
-		if err := platform.VerifyPreparedProfileSource(cmd.Context(), session, platformResolverFactory(), registeredPlatformSource.Adapter); err != nil {
+		if err := platform.VerifyPreparedProfileSource(cmd.Context(), session, resolver, registeredPlatformSource.Adapter); err != nil {
 			return err
 		}
 		defer session.ZeroCredentials()
@@ -528,9 +595,6 @@ func newPlatformClientMigrateCmd(flags *rootFlags) *cobra.Command {
 			return errors.New("this CLI has no registered tenant identity adapter")
 		}
 		candidate := values.sourceProfile()
-		if err := validateRegisteredPlatformSourceProfile(candidate); err != nil {
-			return err
-		}
 		profile, err := platform.LoadProfile(args[0])
 		alreadyMigrated := false
 		switch {
@@ -548,6 +612,10 @@ func newPlatformClientMigrateCmd(flags *rootFlags) *cobra.Command {
 		default:
 			return err
 		}
+		resolver, err := platformCredentialResolver(candidate)
+		if err != nil {
+			return err
+		}
 		legacy, err := platform.InspectLegacyMigrationPaths(legacyConfig, legacyDB)
 		if err != nil {
 			return err
@@ -561,7 +629,7 @@ func newPlatformClientMigrateCmd(flags *rootFlags) *cobra.Command {
 			return err
 		}
 		defer finalizePlatformInvocation(flags, &retErr)
-		if err := platform.VerifyPreparedProfileSource(cmd.Context(), session, platformResolverFactory(), registeredPlatformSource.Adapter); err != nil {
+		if err := platform.VerifyPreparedProfileSource(cmd.Context(), session, resolver, registeredPlatformSource.Adapter); err != nil {
 			return err
 		}
 		if !alreadyMigrated {
