@@ -333,3 +333,50 @@ func TestExtractYAML(t *testing.T) {
 		})
 	}
 }
+
+func TestGroupByResourceNoNameCollisionDrop(t *testing.T) {
+	// A generated disambiguation suffix must not overwrite another route whose
+	// natural name already equals that suffix. All documented routes must
+	// survive with distinct endpoint names.
+	endpoints := []rawEndpoint{
+		{Method: "GET", Path: "/users"},         // -> get_users
+		{Method: "GET", Path: "/users/{id}"},    // -> get_users (disambiguated)
+		{Method: "GET", Path: "/users/users_2"}, // natural name -> get_users_2
+	}
+
+	resources := groupByResource(endpoints)
+
+	res, ok := resources["users"]
+	require.True(t, ok, "expected a users resource")
+	assert.Len(t, res.Endpoints, 3, "all three routes must be preserved, none overwritten")
+
+	// Every documented path must appear exactly once across the generated names.
+	gotPaths := map[string]int{}
+	for _, ep := range res.Endpoints {
+		gotPaths[ep.Path]++
+	}
+	assert.Equal(t, 1, gotPaths["/users"])
+	assert.Equal(t, 1, gotPaths["/users/{id}"])
+	assert.Equal(t, 1, gotPaths["/users/users_2"])
+
+	// Names are unique by construction (map keys), and deterministic in doc order.
+	assert.Contains(t, res.Endpoints, "get_users")
+	assert.Contains(t, res.Endpoints, "get_users_2")
+	assert.Contains(t, res.Endpoints, "get_users_2_2")
+}
+
+func TestGroupByResourceDeterministicSuffixing(t *testing.T) {
+	// Plain repeated collisions keep the existing _2, _3 ... sequence so the
+	// fix does not perturb ordinary disambiguation.
+	endpoints := []rawEndpoint{
+		{Method: "GET", Path: "/items"},
+		{Method: "GET", Path: "/items/{id}"},   // last param -> derives get_items
+		{Method: "GET", Path: "/items/{name}"}, // last param -> derives get_items too
+	}
+	resources := groupByResource(endpoints)
+	res := resources["items"]
+	require.Len(t, res.Endpoints, 3)
+	assert.Contains(t, res.Endpoints, "get_items")
+	assert.Contains(t, res.Endpoints, "get_items_2")
+	assert.Contains(t, res.Endpoints, "get_items_3")
+}
