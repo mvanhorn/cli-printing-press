@@ -6208,11 +6208,13 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 			// style=deepObject param routes through the indexed-key emitter
 			// only, never the repeated/joined array path (deliberate).
 			binding.DeepObjectQuery = true
-		} else if (loc == "query" || loc == "header") && isArrayQueryParam(p) {
-				binding.QueryArray = true
-				binding.QueryStyle = queryParamStyle(p)
-				binding.QueryExplode = queryParamExplodes(p)
-			}
+		}
+		if (loc == "query" || loc == "header") && !binding.DeepObjectQuery && isArrayQueryParam(p) {
+			binding.QueryArray = true
+			binding.QueryStyle = queryParamStyle(p)
+			binding.QueryExplode = queryParamExplodes(p)
+		}
+		if loc == "query" || loc == "header" {
 			if def, ok := mcpParamDefaultValue(p); ok {
 				binding.Default = def
 			}
