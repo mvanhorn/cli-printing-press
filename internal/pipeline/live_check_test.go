@@ -125,7 +125,7 @@ func TestLiveCheck_ResearchDirOverride(t *testing.T) {
 func TestLiveCheck_FindsResearchInParentDir(t *testing.T) {
 	runRoot := t.TempDir()
 	workingDir := filepath.Join(runRoot, "working")
-	cliDir := filepath.Join(workingDir, "demo-pp-cli")
+	cliDir := filepath.Join(workingDir, "live-check-test-pp-cli")
 	require.NoError(t, os.MkdirAll(cliDir, 0o755))
 	writeStubBinary(t, cliDir, "bin", `exit 0`)
 	writeTestResearchJSON(t, runRoot, []NovelFeature{
@@ -149,7 +149,7 @@ func TestLiveCheck_FindsResearchInParentDir(t *testing.T) {
 func TestLiveCheck_ParentWalkStopsAtBound(t *testing.T) {
 	t.Run("at bound is found", func(t *testing.T) {
 		root := t.TempDir()
-		atBound := filepath.Join(root, "a", "b", "cli")
+		atBound := filepath.Join(root, "a", "b", "live-check-test-pp-cli")
 		require.NoError(t, os.MkdirAll(atBound, 0o755))
 		writeStubBinary(t, atBound, "bin", `exit 0`)
 		writeTestResearchJSON(t, root, []NovelFeature{
@@ -168,7 +168,7 @@ func TestLiveCheck_ParentWalkStopsAtBound(t *testing.T) {
 		// fake root so any stray host-filesystem research.json above
 		// t.TempDir() can't be picked up by the walk. The walk should
 		// stop before reaching it — that's what this assertion proves.
-		pastBound := filepath.Join(root, "a", "b", "c", "cli")
+		pastBound := filepath.Join(root, "a", "b", "c", "live-check-test-pp-cli")
 		require.NoError(t, os.MkdirAll(pastBound, 0o755))
 		writeTestResearchJSON(t, root, []NovelFeature{
 			{Name: "Feature A", Command: "foo", Description: "no example"},
@@ -812,7 +812,7 @@ func TestLiveCheck_RelativeCLIDirFindsParentResearch(t *testing.T) {
 
 	runRoot := t.TempDir()
 	workingDir := filepath.Join(runRoot, "working")
-	cliDir := filepath.Join(workingDir, "demo-pp-cli")
+	cliDir := filepath.Join(workingDir, "live-check-test-pp-cli")
 	require.NoError(t, os.MkdirAll(cliDir, 0o755))
 	t.Chdir(workingDir)
 
@@ -822,7 +822,7 @@ func TestLiveCheck_RelativeCLIDirFindsParentResearch(t *testing.T) {
 	})
 
 	result := RunLiveCheck(LiveCheckOptions{
-		CLIDir:     "demo-pp-cli",
+		CLIDir:     "live-check-test-pp-cli",
 		BinaryName: "stub",
 		Timeout:    liveCheckIntegrationTimeout,
 	})

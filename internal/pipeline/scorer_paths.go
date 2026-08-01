@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 )
 
 // researchParentWalkDepth bounds fallback discovery to the generated CLI's
@@ -41,7 +43,7 @@ func FindResearchDir(cliDir string) string {
 
 	dir := canonical
 	for steps := 0; steps <= researchParentWalkDepth; steps++ {
-		if _, err := os.Stat(filepath.Join(dir, "research.json")); err == nil {
+		if researchBelongsToTarget(dir, canonical) {
 			return dir
 		}
 		parent := filepath.Dir(dir)
@@ -51,4 +53,23 @@ func FindResearchDir(cliDir string) string {
 		dir = parent
 	}
 	return canonical
+}
+
+// researchBelongsToTarget prevents implicit ancestor discovery from adopting
+// a research artifact for another CLI. Explicit research directories remain
+// caller-owned; this guard applies only to the blank-directory fallback.
+func researchBelongsToTarget(researchDir, cliDir string) bool {
+	if _, err := os.Stat(filepath.Join(researchDir, "research.json")); err != nil {
+		return false
+	}
+	research, err := LoadResearch(researchDir)
+	if err != nil || strings.TrimSpace(research.APIName) == "" {
+		return false
+	}
+
+	expectedAPI := naming.TrimCLISuffix(filepath.Base(cliDir))
+	if manifest, err := ReadCLIManifest(cliDir); err == nil && strings.TrimSpace(manifest.APIName) != "" {
+		expectedAPI = strings.TrimSpace(manifest.APIName)
+	}
+	return strings.TrimSpace(research.APIName) == expectedAPI
 }

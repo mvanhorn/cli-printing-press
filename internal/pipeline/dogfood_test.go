@@ -1842,7 +1842,7 @@ func newHealthCmd() *cobra.Command {
 }`)
 
 		research := &ResearchResult{
-			APIName: "test",
+			APIName: "demo",
 			NovelFeatures: []NovelFeature{
 				{Name: "Health dashboard", Command: "health"},
 			},
