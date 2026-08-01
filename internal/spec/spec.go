@@ -3002,6 +3002,44 @@ type Pagination struct {
 	HasMoreField   string `yaml:"has_more_field" json:"has_more_field"`     // response field indicating more pages (has_more)
 }
 
+type paginationWire struct {
+	Type           string `yaml:"type" json:"type"`
+	LimitParam     string `yaml:"limit_param" json:"limit_param"`
+	CursorParam    string `yaml:"cursor_param" json:"cursor_param"`
+	NextCursorPath string `yaml:"next_cursor_path" json:"next_cursor_path"`
+	CursorField    string `yaml:"cursor_field" json:"cursor_field"`
+	HasMoreField   string `yaml:"has_more_field" json:"has_more_field"`
+}
+
+func (p *Pagination) UnmarshalYAML(value *yaml.Node) error {
+	var wire paginationWire
+	if err := value.Decode(&wire); err != nil {
+		return err
+	}
+	p.assignPaginationWire(wire)
+	return nil
+}
+
+func (p *Pagination) UnmarshalJSON(data []byte) error {
+	var wire paginationWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	p.assignPaginationWire(wire)
+	return nil
+}
+
+func (p *Pagination) assignPaginationWire(wire paginationWire) {
+	p.Type = wire.Type
+	p.LimitParam = wire.LimitParam
+	p.CursorParam = wire.CursorParam
+	p.NextCursorPath = wire.NextCursorPath
+	if p.NextCursorPath == "" {
+		p.NextCursorPath = wire.CursorField
+	}
+	p.HasMoreField = wire.HasMoreField
+}
+
 // QuerySyncConfig declares the SQL-query-endpoint sync shape: an API where every
 // list resource is read through one shared endpoint with an injected SELECT-style
 // query, results wrapped in an entity-named envelope, and paging carried inside
