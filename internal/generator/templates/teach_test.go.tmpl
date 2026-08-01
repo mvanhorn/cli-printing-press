@@ -529,7 +529,7 @@ func TestSkipLearnHook_NovelCommandsNotSkipped(t *testing.T) {
 }
 
 func TestSkipLearnHook_FrameworkCommandsDoNotCreateDefaultDB(t *testing.T) {
-	home := withTempLearnHome(t)
+	withTempLearnHome(t)
 	learnInitOnce = sync.Once{}
 
 	cases := [][]string{
@@ -541,10 +541,11 @@ func TestSkipLearnHook_FrameworkCommandsDoNotCreateDefaultDB(t *testing.T) {
 	}
 	for _, args := range cases {
 		_, _, _ = runRootArgs(t, args...)
-		if _, err := os.Stat(defaultDBPath("{{.Name}}-pp-cli")); err == nil {
-			t.Fatalf("%s created default DB under %s", strings.Join(args, " "), home)
+		dbPath := defaultDBPath("{{.Name}}-pp-cli")
+		if _, err := os.Stat(dbPath); err == nil {
+			t.Fatalf("%s created default DB at %s", strings.Join(args, " "), dbPath)
 		} else if !os.IsNotExist(err) {
-			t.Fatalf("%s stat default DB: %v", strings.Join(args, " "), err)
+			t.Fatalf("%s stat default DB at %s: %v", strings.Join(args, " "), dbPath, err)
 		}
 	}
 }
