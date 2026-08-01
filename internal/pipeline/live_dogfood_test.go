@@ -2419,6 +2419,14 @@ func TestLiveDogfoodAuth401TypedExitCode(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "typed auth exit with auth wording on a non-401",
+			run: liveDogfoodRun{
+				exitCode: liveDogfoodAuthExitCode,
+				stderr:   `Error: GET /users/me returned HTTP 404: {"message":"Invalid access token."}`,
+			},
+			want: false,
+		},
+		{
 			name: "unrecognized wording on a generic failure exit",
 			run: liveDogfoodRun{
 				exitCode: 1,
