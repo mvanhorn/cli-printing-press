@@ -19,6 +19,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"{{modulePath}}/internal/cliutil"
+	"{{modulePath}}/internal/cliutil/testenv"
 )
 
 // sampleReadPermsSecret is an exposed on-disk token value. It is written into
@@ -26,12 +29,13 @@ import (
 // refusal assertions never depend on a spec-specific field name.
 const sampleReadPermsSecret = "RT-LIVE-90DAY-SECRET-DO-NOT-LEAK"
 
-// clearCredEnv unsets every credential env var Load reads AFTER the file, so
-// the silent-miss / hit assertions are deterministic regardless of the
-// developer's or CI's ambient environment (an ambient PAT would otherwise
-// re-seed a "miss" and make hasCredentialFields() true).
+// clearCredEnv isolates every path Load can use before unsetting credential
+// values. LoadCredentials can fall through from config.Load to the separate
+// credentials store, so clearing auth variables alone would still allow an
+// ambient credentials file to re-seed a supposed miss.
 func clearCredEnv(t *testing.T) {
 	t.Helper()
+	testenv.Isolate(t, cliutil.DataDir)
 {{- if .Auth.EnvVarSpecs}}
 {{- range .Auth.EnvVarSpecs}}
 	t.Setenv("{{.Name}}", "")
@@ -182,6 +186,7 @@ func TestLoad_RefusesOverPermissiveConfigOnRead(t *testing.T) {
 // operator is left with a working tool, never using the exposed on-disk token.
 func TestLoad_ReseedsFromEnvAfterOverPermissiveRefusal(t *testing.T) {
 	const envValue = "PAT-FROM-ENV-BOOTSTRAP"
+	clearCredEnv(t)
 	t.Setenv("{{if .Auth.EnvVarSpecs}}{{(index .Auth.EnvVarSpecs 0).Name}}{{else}}{{index .Auth.EnvVars 0}}{{end}}", envValue)
 	dir := t.TempDir()
 	p := filepath.Join(dir, configFileName())
