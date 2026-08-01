@@ -238,7 +238,7 @@ func TestGenerateTeachPlaybookInlineJSON(t *testing.T) {
 // TestGenerateLearnMCPParity_CodeOrchestrationExposesLearnTools is the U12
 // empirical check: a spec with mcp.orchestration="code" must still expose
 // the learn loop (teach/recall/learnings) as MCP tools alongside the
-// search/execute pair. The registration is runtime (the cobratree walker
+// registry tools. The registration is runtime (the cobratree walker
 // mirrors the Cobra tree at server start), so the static contract pinned
 // here is that the emitted RegisterTools calls BOTH the code-orchestration
 // pair AND the unconditional cobratree walker + context tool, and that the
@@ -256,7 +256,7 @@ func TestGenerateLearnMCPParity_CodeOrchestrationExposesLearnTools(t *testing.T)
 
 	mcpSrc := readEmitted(t, outputDir, "internal", "mcp", "tools.go")
 	require.Contains(t, mcpSrc, "RegisterCodeOrchestrationTools(s)",
-		"code orchestration must register the search/execute pair")
+		"code orchestration must register its registry tools")
 	require.Contains(t, mcpSrc, "cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)",
 		"the runtime Cobra-tree mirror must still run under code orchestration so learn commands surface as MCP tools")
 	require.Contains(t, mcpSrc, "learn.RecallFirstProtocol",
