@@ -3395,14 +3395,14 @@ For SQLite-backed novel commands only, add this missing-mirror guard after `dryR
 ```go
 if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
 	fmt.Fprintf(cmd.ErrOrStderr(), "no local mirror at %s\nrun: <cli> sync --resources <resource> --db %s\n", dbPath, dbPath)
-	if flags.asJSON || flags.agent {
-		fmt.Fprintln(cmd.OutOrStdout(), "[]")
+	if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+		return printJSONFiltered(cmd.OutOrStdout(), make([]yourRowType, 0), flags)
 	}
 	return nil
 }
 ```
 
-The missing-mirror branch covers a different probe layer from `dryRunOK`: live execution without `--dry-run`, before the user has run `sync`. Return empty JSON (`[]`) for `--json` / `--agent` so agents receive a valid empty result instead of a SQLite open failure; print a human hint to stderr that names the sync command needed to populate the mirror. The unconditional `return nil` is intentional for both machine and human paths: a missing local mirror is an empty local-cache state, not a usage or API failure. Do not add this branch to novel commands that call live API endpoints directly or do not use the local store.
+The missing-mirror branch covers a different probe layer from `dryRunOK`: live execution without `--dry-run`, before the user has run `sync`. Route every non-human format through `printJSONFiltered` so agents receive a valid empty result instead of a SQLite open failure; print a human hint to stderr that names the sync command needed to populate the mirror. The unconditional `return nil` is intentional for both machine and human paths: a missing local mirror is an empty local-cache state, not a usage or API failure. Do not add this branch to novel commands that call live API endpoints directly or do not use the local store.
 
 Multi-positional commands (N >= 2 required args) must use a two-check shape so only the bare help probe returns exit 0:
 
@@ -3526,6 +3526,34 @@ The generator handles Priority 0 (data layer) and most of Priority 1 (absorbed A
 - `isTerminal(w io.Writer) bool` - detect terminal output versus pipes.
 - `wantsHumanTable(w io.Writer, flags *rootFlags) bool` - detect when output should use the generated human table instead of machine JSON.
 
+**Empty results and output modes.** Any novel command that can return zero rows
+MUST choose the output mode before printing empty-result prose. Initialize
+list-shaped results with `make(..., 0)` so JSON mode emits `[]`, never `null`.
+Route JSON, agent, and CSV output through the generated helpers, and keep
+human-only empty-result prose inside the human branch:
+
+```go
+rows := make([]yourRowType, 0)
+// populate rows...
+if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+	return printJSONFiltered(cmd.OutOrStdout(), rows, flags)
+}
+if len(rows) == 0 {
+	// human-only empty-result prose; never write this before the machine branch
+	fmt.Fprintln(cmd.OutOrStdout(), "No matching items found.")
+	return nil
+}
+// Render the non-empty human table here.
+return nil
+```
+
+Do not put a `len(rows) == 0` prose return before the mode check, and do not
+manually branch only on `flags.asJSON`. `wantsHumanTable` covers `--json`,
+`--agent`, `--csv`, `--plain`, `--quiet`, `--compact`, `--select`, and piped
+output. The Phase 5 dogfood run must exercise a known zero-result case when
+available: `--json` and `--agent` stdout must parse as JSON, `--csv` must be an
+empty or valid CSV stream, and human mode may retain the explanatory prose.
+
 ```go
 // internal/cli/<command>.go — replace <command> with the kebab leaf
 // of NovelFeature.Command (e.g., "issues stale" → "issues_stale.go").
@@ -3609,10 +3637,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	// text extracted from HTML or schema.org JSON-LD; re-implementing
 	// HTML-entity unescape inline is the &#39; bug class.
 	var view yourViewType // = parse(data)
-	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		return enc.Encode(view)
+	if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+		return printJSONFiltered(cmd.OutOrStdout(), view, flags)
 	}
 	// Human/terminal output (table or pretty print).
 	return nil
@@ -3700,10 +3726,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		AverageMetric: safeAverage(total, denominator),
 		FetchFailures: failures, // json tag: `json:"fetch_failures,omitempty"`
 	}
-	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		return enc.Encode(view)
+	if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+		return printJSONFiltered(cmd.OutOrStdout(), view, flags)
 	}
 	// Human/terminal output, including a visible partial-failure note.
 	for _, entry := range view.Items {
@@ -3746,8 +3770,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	}
 	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
 		fmt.Fprintf(cmd.ErrOrStderr(), "no local mirror at %s\nrun: <cli> sync --resources <resource> --db %s\n", dbPath, dbPath)
-		if flags.asJSON || flags.agent {
-			fmt.Fprintln(cmd.OutOrStdout(), "[]")
+		if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+			return printJSONFiltered(cmd.OutOrStdout(), make([]yourRowType, 0), flags)
 		}
 		return nil
 	}
@@ -3798,10 +3822,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		// Resolve IDs, expand child rows, or perform local joins, then append.
 		_ = raw
 	}
-	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		return enc.Encode(results)
+	if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+		return printJSONFiltered(cmd.OutOrStdout(), results, flags)
 	}
 	// Human/terminal output.
 	return nil
