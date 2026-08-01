@@ -1939,12 +1939,21 @@ func TestAuthSubtypeValidate(t *testing.T) {
 			auth: AuthConfig{Type: "bearer_token", Subtype: AuthSubtypeAuth0SPAInMemory},
 		},
 		{
+			name: "google_service_account with bearer_token is valid",
+			auth: AuthConfig{Type: "bearer_token", Subtype: AuthSubtypeGoogleServiceAccount},
+		},
+		{
 			name: "auth0_spa_in_memory with empty Type is valid",
 			auth: AuthConfig{Subtype: AuthSubtypeAuth0SPAInMemory},
 		},
 		{
 			name:    "auth0_spa_in_memory with api_key is rejected",
 			auth:    AuthConfig{Type: "api_key", Subtype: AuthSubtypeAuth0SPAInMemory},
+			wantErr: `requires auth.type "bearer_token"`,
+		},
+		{
+			name:    "google_service_account with api_key is rejected",
+			auth:    AuthConfig{Type: "api_key", Subtype: AuthSubtypeGoogleServiceAccount},
 			wantErr: `requires auth.type "bearer_token"`,
 		},
 		{

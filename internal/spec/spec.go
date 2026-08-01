@@ -1129,7 +1129,7 @@ func (c BearerRefreshConfig) Enabled() bool {
 
 type AuthConfig struct {
 	Type                   string       `yaml:"type" json:"type"`                           // api_key, oauth2, oauth2_refresh, bearer_token, cookie, composed, session_handshake, none
-	Subtype                string       `yaml:"subtype,omitempty" json:"subtype,omitempty"` // optional refinement of Type. Currently used for "auth0_spa_in_memory": bearer_token whose JWT lives in JS heap (Auth0 SPA SDK v2+ with cacheLocation: memory) and is reachable only via CDP runtime interception, not via cookie/localStorage extraction. Mirrors x-auth-subtype on the OpenAPI security scheme.
+	Subtype                string       `yaml:"subtype,omitempty" json:"subtype,omitempty"` // optional refinement of Type. Recognized values include "google_service_account" for service-account JWT exchange and "auth0_spa_in_memory" for bearer tokens whose JWT lives in JS heap (Auth0 SPA SDK v2+ with cacheLocation: memory) and is reachable only via CDP runtime interception, not via cookie/localStorage extraction. Mirrors x-auth-subtype on the OpenAPI security scheme.
 	Header                 string       `yaml:"header" json:"header"`
 	Prefix                 string       `yaml:"prefix,omitempty" json:"prefix,omitempty"` // Authorization scheme word (e.g., "Token", "PRIVATE-TOKEN"); empty defaults to "Bearer". Ignored when Format is set.
 	Format                 string       `yaml:"format" json:"format"`
@@ -1247,6 +1247,10 @@ const (
 	RefreshTokenMechanismKindScope = "scope"
 	RefreshTokenMechanismKindQuery = "query"
 )
+
+// AuthSubtypeGoogleServiceAccount marks a Google OAuth2 bearer spec whose
+// generated CLI can exchange a service-account JSON key for a bearer token.
+const AuthSubtypeGoogleServiceAccount = "google_service_account"
 
 // AuthSubtypeAuth0SPAInMemory marks a bearer_token spec whose access token is
 // held in JS heap by the Auth0 SPA SDK (cacheLocation: memory) and is reachable
@@ -1719,14 +1723,18 @@ func validateAuthPrefix(c AuthConfig) error {
 }
 
 // validateAuthSubtype rejects unrecognized auth.subtype values so authoring
-// typos fail fast rather than silently bypassing the runtime emission. Only
-// auth0_spa_in_memory is recognized today; the field is otherwise expected to
-// be empty.
+// typos fail fast rather than silently bypassing the runtime emission.
 func validateAuthSubtype(c AuthConfig) error {
 	if c.Subtype == "" {
 		return nil
 	}
 	switch c.Subtype {
+	case AuthSubtypeGoogleServiceAccount:
+		if c.Type != "" && c.Type != "bearer_token" {
+			return fmt.Errorf("auth.subtype %q requires auth.type %q (got %q)",
+				c.Subtype, "bearer_token", c.Type)
+		}
+		return nil
 	case AuthSubtypeAuth0SPAInMemory:
 		// Subtype refines bearer_token; reject the combination if the
 		// underlying type doesn't fit. Auth0 SPA tokens are always
@@ -1737,8 +1745,8 @@ func validateAuthSubtype(c AuthConfig) error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("auth.subtype %q is not recognized (valid: %q)",
-			c.Subtype, AuthSubtypeAuth0SPAInMemory)
+		return fmt.Errorf("auth.subtype %q is not recognized (valid: %q, %q)",
+			c.Subtype, AuthSubtypeGoogleServiceAccount, AuthSubtypeAuth0SPAInMemory)
 	}
 }
 
