@@ -557,6 +557,55 @@ func replacePathParam(path, name, value string) string {
 	return strings.ReplaceAll(path, "{"+name+"}", cliutil.EscapePathParam(value))
 }
 
+const responsePathItemsKey = "__printing_press_response_path_items"
+
+type responsePathPaginatedClient struct {
+	client interface {
+		GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+	}
+	responsePath string
+}
+
+func (c responsePathPaginatedClient) IsDryRun() bool {
+	dryRunClient, ok := c.client.(interface{ IsDryRun() bool })
+	return ok && dryRunClient.IsDryRun()
+}
+
+func (c responsePathPaginatedClient) GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+	data, err := c.client.GetWithHeaders(ctx, path, params, headers)
+	if err != nil || isDryRunResponseForClient(c.client, data) {
+		return data, err
+	}
+	selected, ok := responsePayloadAtPath(data, c.responsePath)
+	if !ok {
+		return data, nil
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		return data, nil
+	}
+	root[responsePathItemsKey] = selected
+	transformed, err := json.Marshal(root)
+	if err != nil {
+		return data, nil
+	}
+	return transformed, nil
+}
+
+func paginatedGetWithResponsePath(ctx context.Context, c interface {
+	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+}, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam string, defaultPageSize int, nextCursorPath, hasMoreField, responsePath string) (json.RawMessage, error) {
+	if responsePath == "" {
+		return paginatedGet(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField)
+	}
+	wrapped := responsePathPaginatedClient{client: c, responsePath: responsePath}
+	data, err := paginatedGet(ctx, wrapped, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField)
+	if err != nil || fetchAll {
+		return data, err
+	}
+	return applyResponsePath(data, responsePath), nil
+}
+
 // paginatedGet fetches pages and concatenates array results. The headers
 // argument carries per-endpoint required headers (e.g. cal-api-version) that
 // must be sent on every page request, including the first; pass nil when the
@@ -824,7 +873,8 @@ func isJSONArray(raw json.RawMessage) bool {
 }
 
 var canonicalPaginationCollectionKeys = map[string]bool{
-	"data": true, "items": true, "results": true, "messages": true, "members": true, "values": true,
+	responsePathItemsKey: true,
+	"data":               true, "items": true, "results": true, "messages": true, "members": true, "values": true,
 }
 
 func deleteRawPath(obj map[string]json.RawMessage, path string) {
@@ -1029,7 +1079,7 @@ func extractPaginatedItemsFromObject(obj map[string]json.RawMessage, requestPath
 	}
 
 	if allowEmbedded {
-		for _, field := range []string{"data", "items", "results", "messages", "members", "values"} {
+		for _, field := range []string{responsePathItemsKey, "data", "items", "results", "messages", "members", "values"} {
 			if arr, ok := obj[field]; ok {
 				var nested []json.RawMessage
 				if json.Unmarshal(arr, &nested) == nil {

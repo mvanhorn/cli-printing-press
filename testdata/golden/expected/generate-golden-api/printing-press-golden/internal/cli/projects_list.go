@@ -53,7 +53,7 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 				"status": formatCLIParamValue(flagStatus),
 				"limit":  formatCLIParamValue(flagLimit),
 				"cursor": formatCLIParamValue(flagCursor),
-			}, headerOverrides, flagAll, "cursor", "cursor", "limit", 25, "", "", cmd.ErrOrStderr())
+			}, headerOverrides, flagAll, "cursor", "cursor", "limit", 25, "", "", "", cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

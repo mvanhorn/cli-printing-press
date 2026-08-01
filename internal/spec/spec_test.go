@@ -190,6 +190,39 @@ resources:
 	assert.Equal(t, "per_page", list.Pagination.LimitParam)
 }
 
+func TestParsePaginationCursorFieldAlias(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: cursor-pagination
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  contacts:
+    endpoints:
+      list:
+        method: GET
+        path: /contacts
+        response:
+          type: array
+          item: Contact
+        response_path: results
+        pagination:
+          type: cursor
+          cursor_param: after
+          cursor_field: paging.next.after
+          limit_param: limit
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	list := s.Resources["contacts"].Endpoints["list"]
+	require.NotNil(t, list.Pagination)
+	assert.Equal(t, "paging.next.after", list.Pagination.NextCursorPath)
+	assert.Equal(t, "results", list.ResponsePath)
+}
+
 func TestParseEndpointExampleAndHappyArgs(t *testing.T) {
 	t.Parallel()
 
