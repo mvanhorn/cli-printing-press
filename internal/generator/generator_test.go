@@ -5606,6 +5606,12 @@ func TestExtractObjectIDPascalCaseIdWinsOverUppercaseID(t *testing.T) {
 		t.Fatalf("PascalCase Id must precede uppercase ID: got %q", got)
 	}
 }
+
+func TestExtractObjectIDMongoID(t *testing.T) {
+	if got := extractObjectID(map[string]any{"_id": "mongo-1", "name": "Jack's"}); got != "mongo-1" {
+		t.Fatalf("MongoDB _id must precede display name: got %q", got)
+	}
+}
 `
 	storeTestPath := filepath.Join(outputDir, "internal", "store", "store_pascalcase_test.go")
 	require.NoError(t, os.WriteFile(storeTestPath, []byte(storeInlineTest), 0o644))
@@ -6425,6 +6431,76 @@ func TestWriteThroughCachePopulatesTypedTable(t *testing.T) {
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
 	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCachePopulatesTypedTable", "./internal/cli")
+}
+
+// TestGeneratedTypedSingleObjectSkipsEmptyIDForMongoFallback guards the
+// typed single-object path: an empty or null canonical id must not prevent a
+// valid MongoDB _id from being normalized and used as the row key.
+func TestGeneratedTypedSingleObjectSkipsEmptyIDForMongoFallback(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := adsCampaignSpec()
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	inlineTest := `package cli
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+func TestUpsertSingleObjectSkipsEmptyIDForMongoFallback(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	cases := []struct {
+		name string
+		data string
+		want string
+	}{
+		{
+			name: "empty id",
+			data: "{\"id\":\"\",\"_id\":{\"$oid\":\"mongo-empty\"},\"name\":\"Empty\"}",
+			want: "mongo-empty",
+		},
+		{
+			name: "null id",
+			data: "{\"id\":null,\"_id\":\"mongo-null\",\"name\":\"Null\"}",
+			want: "mongo-null",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := upsertSingleObject(db, "campaigns", json.RawMessage(tc.data)); err != nil {
+				t.Fatalf("upsertSingleObject: %v", err)
+			}
+
+			var count int
+			if err := db.DB().QueryRow("SELECT COUNT(*) FROM campaigns WHERE id = ?", tc.want).Scan(&count); err != nil {
+				t.Fatalf("query typed campaigns: %v", err)
+			}
+			if count != 1 {
+				t.Fatalf("typed campaigns for %q = %d, want 1", tc.want, count)
+			}
+		})
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "typed_single_object_id_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestUpsertSingleObjectSkipsEmptyIDForMongoFallback", "./internal/cli")
 }
 
 // TestWriteThroughCacheNonIDPrimaryKeyResponse guards #1439: the previous
@@ -10265,6 +10341,268 @@ func TestGeneratedOutput_WorkflowArchiveJSONKeepsSyncEventsOffStdout(t *testing.
 	assert.NotContains(t, stdout, `"event":"sync_`,
 		"human-friendly sync should not emit sync NDJSON on stdout")
 	assert.Contains(t, stderr, "Sync complete:")
+}
+
+func TestGeneratedOutput_WorkflowBoundaries(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Name:    "workflowboundary",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/workflowboundary-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"alpha":   workflowBoundaryResource("/alpha"),
+			"bravo":   workflowBoundaryResource("/bravo"),
+			"charlie": workflowBoundaryResource("/charlie"),
+			"delta":   workflowBoundaryResource("/delta"),
+		},
+	}
+	apiSpec.Learn.Disabled = true
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	workflowGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "channel_workflow.go"))
+	require.NoError(t, err)
+	src := string(workflowGo)
+	assert.Contains(t, src, `"os"`, "workflow status needs os.Stat for the missing-store preflight")
+	assert.Contains(t, src, `store.OpenReadOnlyContext(cmd.Context(), dbPath)`,
+		"workflow status must use the context-aware read-only store open")
+	assert.Contains(t, src, `schemaVersion, err := s.SchemaVersion()`,
+		"workflow status must inspect the schema without running migrations")
+	assert.Contains(t, src, `local store schema version %d requires migration`,
+		"workflow status must explain why an older store cannot be inspected read-only")
+	assert.Contains(t, src, `local store schema version %d is newer than supported version`,
+		"workflow status must reject stores newer than the generated schema")
+	assert.Contains(t, src, `"workflowboundary-pp-cli/internal/cliutil"`,
+		"workflow archive must import the generated dogfood environment helper")
+	assert.Contains(t, src, `archiveMaxPages := 100`,
+		"workflow archive must keep its normal page limit explicit")
+	assert.Contains(t, src, `if cliutil.IsDogfoodEnv()`,
+		"workflow archive must enter its bounded dogfood path")
+	assert.Contains(t, src, `resources = resources[:3]`,
+		"workflow archive must cap the resource list under dogfood")
+	assert.Contains(t, src, `archiveMaxPages, false`,
+		"workflow archive must pass the dogfood-aware page limit to syncResource")
+
+	syncDisabledDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name)+"-nosync")
+	syncDisabledGen := New(apiSpec, syncDisabledDir)
+	syncDisabledGen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+	require.NoError(t, syncDisabledGen.Generate())
+	syncDisabledWorkflow, err := os.ReadFile(filepath.Join(syncDisabledDir, "internal", "cli", "channel_workflow.go"))
+	require.NoError(t, err)
+	syncDisabledSrc := string(syncDisabledWorkflow)
+	assert.Contains(t, syncDisabledSrc, "this read-only command cannot migrate it",
+		"store-only workflow status needs valid migration guidance")
+	assert.NotContains(t, syncDisabledSrc, "run 'workflow archive' to migrate it",
+		"store-only workflow status must not suggest an absent archive command")
+	requireGeneratedCompiles(t, syncDisabledDir)
+
+	behaviorTest := `package cli
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"workflowboundary-pp-cli/internal/store"
+)
+
+func runWorkflowBoundaryCommand(args ...string) (string, string, error) {
+	root := RootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs(args)
+	err := root.Execute()
+	return stdout.String(), stderr.String(), err
+}
+
+func TestWorkflowStatusDoesNotCreateColdStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+
+	stdout, stderr, err := runWorkflowBoundaryCommand("workflow", "status")
+	if err != nil {
+		t.Fatalf("cold status: %v; stderr=%s", err, stderr)
+	}
+	if !strings.Contains(stdout, "No archived data") {
+		t.Fatalf("cold status stdout = %q, want empty-store message", stdout)
+	}
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatalf("read cold home: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("cold status created home entries: %v", entries)
+	}
+}
+
+func TestWorkflowStatusReadsCompatibleStoreAndRejectsMigration(t *testing.T) {
+	compatiblePath := filepath.Join(t.TempDir(), "compatible.db")
+	db, err := store.OpenWithContext(context.Background(), compatiblePath)
+	if err != nil {
+		t.Fatalf("create compatible store: %v", err)
+	}
+	if _, err := db.DB().Exec("INSERT INTO resources (id, resource_type, data) VALUES (?, ?, ?)", "item-1", "items", "{\"id\":\"item-1\"}"); err != nil {
+		db.Close()
+		t.Fatalf("seed compatible store: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close compatible store: %v", err)
+	}
+
+	stdout, stderr, err := runWorkflowBoundaryCommand("workflow", "status", "--db", compatiblePath)
+	if err != nil {
+		t.Fatalf("compatible status: %v; stderr=%s", err, stderr)
+	}
+	if !strings.Contains(stdout, "items") || !strings.Contains(stdout, "1 items") {
+		t.Fatalf("compatible status stdout = %q, want item count", stdout)
+	}
+
+	migrationPath := filepath.Join(t.TempDir(), "migration.db")
+	db, err = store.OpenWithContext(context.Background(), migrationPath)
+	if err != nil {
+		t.Fatalf("create migration store: %v", err)
+	}
+	if _, err := db.DB().Exec("PRAGMA user_version = 1"); err != nil {
+		db.Close()
+		t.Fatalf("mark migration store old: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close migration store: %v", err)
+	}
+
+	_, stderr, err = runWorkflowBoundaryCommand("workflow", "status", "--db", migrationPath)
+	if err == nil || !strings.Contains(err.Error(), "requires migration") {
+		t.Fatalf("migration status error = %v, stderr=%s, want actionable migration error", err, stderr)
+	}
+	ro, err := store.OpenReadOnlyContext(context.Background(), migrationPath)
+	if err != nil {
+		t.Fatalf("reopen migration store read-only: %v", err)
+	}
+	version, err := ro.SchemaVersion()
+	if closeErr := ro.Close(); closeErr != nil {
+		t.Fatalf("close read-only migration store: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("read migration store version: %v", err)
+	}
+	if version != 1 {
+		t.Fatalf("migration store version = %d, want status to leave it at 1", version)
+	}
+
+	futurePath := filepath.Join(t.TempDir(), "future.db")
+	db, err = store.OpenWithContext(context.Background(), futurePath)
+	if err != nil {
+		t.Fatalf("create future store: %v", err)
+	}
+	if _, err := db.DB().Exec(fmt.Sprintf("PRAGMA user_version = %d", store.StoreSchemaVersion+1)); err != nil {
+		db.Close()
+		t.Fatalf("mark future store newer: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close future store: %v", err)
+	}
+
+	_, stderr, err = runWorkflowBoundaryCommand("workflow", "status", "--db", futurePath)
+	if err == nil || !strings.Contains(err.Error(), "newer than supported") {
+		t.Fatalf("future status error = %v, stderr=%s, want newer-schema error", err, stderr)
+	}
+	ro, err = store.OpenReadOnlyContext(context.Background(), futurePath)
+	if err != nil {
+		t.Fatalf("reopen future store read-only: %v", err)
+	}
+	version, err = ro.SchemaVersion()
+	if closeErr := ro.Close(); closeErr != nil {
+		t.Fatalf("close read-only future store: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("read future store version: %v", err)
+	}
+	if version != store.StoreSchemaVersion+1 {
+		t.Fatalf("future store version = %d, want status to leave it at %d", version, store.StoreSchemaVersion+1)
+	}
+}
+
+func TestWorkflowArchiveCurtailsOnlyUnderDogfood(t *testing.T) {
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("cursor") == "" {
+			_, _ = w.Write([]byte("{\"items\":[{\"id\":\"item-1\"}],\"has_more\":true,\"next_cursor\":\"page-2\"}"))
+			return
+		}
+		_, _ = w.Write([]byte("{\"items\":[{\"id\":\"item-2\"}],\"has_more\":false,\"next_cursor\":\"\"}"))
+	}))
+	defer server.Close()
+	t.Setenv("WORKFLOWBOUNDARY_BASE_URL", server.URL)
+
+	t.Setenv("PRINTING_PRESS_DOGFOOD", "1")
+	stdout, stderr, err := runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "dogfood.db"))
+	if err != nil {
+		t.Fatalf("dogfood archive: %v; stdout=%s stderr=%s", err, stdout, stderr)
+	}
+	if got := atomic.LoadInt32(&requests); got != 3 {
+		t.Fatalf("dogfood archive requests = %d, want one page for each of 3 resources", got)
+	}
+	if !strings.Contains(stdout, "across 3 resources") {
+		t.Fatalf("dogfood archive stdout = %q, want curtailed resource count", stdout)
+	}
+
+	atomic.StoreInt32(&requests, 0)
+	t.Setenv("PRINTING_PRESS_DOGFOOD", "")
+	stdout, stderr, err = runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "normal.db"))
+	if err != nil {
+		t.Fatalf("normal archive: %v; stdout=%s stderr=%s", err, stdout, stderr)
+	}
+	if got := atomic.LoadInt32(&requests); got != 8 {
+		t.Fatalf("normal archive requests = %d, want two pages for each of 4 resources", got)
+	}
+	if !strings.Contains(stdout, "across 4 resources") {
+		t.Fatalf("normal archive stdout = %q, want all-resource count", stdout)
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "workflow_boundary_runtime_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestWorkflow(Status|Archive)")
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func workflowBoundaryResource(path string) spec.Resource {
+	return spec.Resource{
+		Description: "Workflow boundary test resource",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {
+				Method:       "GET",
+				Path:         path,
+				Response:     spec.ResponseDef{Type: "array"},
+				ResponsePath: "items",
+				Pagination: &spec.Pagination{
+					Type:           "cursor",
+					CursorParam:    "cursor",
+					NextCursorPath: "next_cursor",
+					HasMoreField:   "has_more",
+				},
+			},
+		},
+	}
 }
 
 func TestGeneratedOutput_PromotedCommandCompiles(t *testing.T) {
@@ -15329,7 +15667,7 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 	// Vendor identifiers (gid, sid, uid, uuid, guid) and resource-specific
 	// suffixes precede descriptive fields so APIs do not key rows by names.
 	assert.Contains(t, storeContent,
-		`var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "api_id"}`,
+		`var genericIDFieldFallbacks = []string{"id", "ID", "_id", "gid", "sid", "uid", "uuid", "guid", "api_id"}`,
 		"store.go genericIDFieldFallbacks must include stable vendor identifiers")
 	assert.Contains(t, storeContent,
 		`var genericDescriptiveIDFieldFallbacks = []string{"name", "slug", "key", "code"}`,
@@ -17356,13 +17694,13 @@ func assertMCPMainUsesVersionVar(t *testing.T, body string) {
 	assert.NotContains(t, body, "\n\t\t\"1.0.0\",\n\t\tserver.WithToolCapabilities(false),")
 }
 
-// TestGenerateMCPCodeOrchestrationEmitsSearchExecute proves that when the
-// spec opts into code-orchestration, the generator emits only
-// <api>_search and <api>_execute as MCP tools, covering every endpoint via
-// a single registry. This is the thin surface pattern referenced by
+// TestGenerateMCPCodeOrchestrationEmitsRegistryTools proves that when the
+// spec opts into code-orchestration, the generator emits only the registry
+// tools <api>_search, <api>_get, and <api>_execute as MCP tools, covering every
+// endpoint via a single registry. This is the thin surface pattern referenced by
 // Anthropic's 2026-04-22 post (Cloudflare's ~2,500-endpoint server in ~1K
 // tokens).
-func TestGenerateMCPCodeOrchestrationEmitsSearchExecute(t *testing.T) {
+func TestGenerateMCPCodeOrchestrationEmitsRegistryTools(t *testing.T) {
 	t.Parallel()
 
 	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
@@ -17381,6 +17719,7 @@ func TestGenerateMCPCodeOrchestrationEmitsSearchExecute(t *testing.T) {
 	for _, want := range []string{
 		`func RegisterCodeOrchestrationTools(`,
 		`mcplib.NewTool("loops_search"`,
+		`mcplib.NewTool("loops_get"`,
 		`mcplib.NewTool("loops_execute"`,
 		`codeOrchEndpoints = []codeOrchEndpoint`,
 		`func handleCodeOrchSearch(`,

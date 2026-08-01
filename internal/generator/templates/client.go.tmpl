@@ -30,6 +30,9 @@ import (
 	"sync"
 	"time"
 
+{{- if eq .Auth.Subtype "google_service_account"}}
+	"golang.org/x/oauth2/google"
+{{- end}}
 {{- if .UsesBrowserHTTPTransport}}
 	enetxhttp "github.com/enetx/http"
 	"github.com/enetx/surf"
@@ -82,6 +85,11 @@ type Client struct {
 	// API calls inside the 60s pre-expiry window don't all dial the token
 	// endpoint and race on Config field writes / file persistence.
 	ccMu *sync.Mutex
+{{- end}}
+{{- if eq .Auth.Subtype "google_service_account"}}
+	// googleMu serializes service-account token loading and keeps one reusable
+	// token cache per client so concurrent requests share the TTL cache.
+	googleMu           *sync.RWMutex
 {{- end}}
 {{- if eq .Auth.Type "session_handshake"}}
 	Session    *SessionManager
@@ -590,6 +598,9 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
 		ccMu:       &sync.Mutex{},
 {{- end}}
+{{- if eq .Auth.Subtype "google_service_account"}}
+		googleMu:   &sync.RWMutex{},
+{{- end}}
 		Session:    sess,
 {{- if .HasCostThrottling}}
 		Throttle:     NewThrottleState(),
@@ -628,6 +639,9 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- end}}
 {{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
 		ccMu:       &sync.Mutex{},
+{{- end}}
+{{- if eq .Auth.Subtype "google_service_account"}}
+		googleMu:   &sync.RWMutex{},
 {{- end}}
 {{- if .HasCostThrottling}}
 		Throttle:     NewThrottleState(),
@@ -1560,6 +1574,15 @@ func sleepContext(ctx context.Context, wait time.Duration) error {
 	}
 }
 
+{{- if eq .ClientPattern "proxy-envelope"}}
+func buildClientPath(method, path string, params map[string]string) string {
+	if method == "GET" {
+		return cliutil.BuildPath(path, params)
+	}
+	return cliutil.BuildPathPreserveEmpty(path, params)
+}
+{{- end}}
+
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
@@ -1804,7 +1827,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		envelope := proxyEnvelope{
 			Service: serviceForPath(path),
 			Method:  method,
-			Path:    cliutil.BuildPath(path, params),
+			Path:    buildClientPath(method, path, params),
 		}
 		if bodyBytes != nil {
 			envelope.Body = json.RawMessage(bodyBytes)
@@ -1840,7 +1863,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		if params != nil {
 			q := req.URL.Query()
 			for k, v := range params {
-				if v != "" {
+				if v != "" || method != "GET" {
 					q.Set(k, v)
 				}
 			}
@@ -2058,7 +2081,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				return cliutil.XMLToJSON(json.RawMessage(respBody)), resp.StatusCode, nil
 			}
 {{- end}}
-			return json.RawMessage(sanitizeJSONResponse(respBody)), resp.StatusCode, nil
+			return json.RawMessage({{if and .ResponseEnvelopeKey (not .IsGraphQL)}}unwrapResponseEnvelope(sanitizeJSONResponse(respBody)){{else}}sanitizeJSONResponse(respBody){{end}}), resp.StatusCode, nil
 		}
 
 		if !binaryResponse {
@@ -2196,7 +2219,7 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 	envelope := proxyEnvelope{
 		Service: serviceForPath(path),
 		Method:  method,
-		Path:    c.displayURL(cliutil.BuildPath(path, params), authHeader),
+		Path:    c.displayURL(buildClientPath(method, path, params), authHeader),
 	}
 	if body != nil {
 		envelope.Body = json.RawMessage(body)
@@ -2210,7 +2233,7 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 	if params != nil {
 		keys := make([]string, 0, len(params))
 		for k := range params {
-			if params[k] != "" {
+			if params[k] != "" || method != "GET" {
 				keys = append(keys, k)
 			}
 		}
@@ -2450,7 +2473,20 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 	if c.Config == nil {
 		return "", nil
 	}
-{{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
+{{- if eq .Auth.Subtype "google_service_account"}}
+	// A pre-minted token is the fast path. When only a service-account key is
+	// configured, exchange it lazily and reuse the resulting token until its
+	// expiry window is reached.
+	if header := c.Config.AuthHeader(); header != "" {
+		// A persisted service-account token must not bypass the expiry-aware
+		// exchange below. Explicit environment overrides have no persisted
+		// expiry, so they remain a valid fast path.
+		if strings.HasPrefix(c.Config.AuthSource, "env:") || c.Config.TokenExpiry.IsZero() || time.Until(c.Config.TokenExpiry) >= 60*time.Second {
+			return header, nil
+		}
+	}
+	return c.googleServiceAccountAuthHeader(ctx)
+{{- else if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
 	if c.Config.AccessToken == "" && cliutil.IsVerifyEnv() {
 		c.Config.AccessToken = "mock-token-for-testing"
 		return c.Config.AuthHeader(), nil
@@ -2499,6 +2535,69 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 {{- end}}
 	return authHeader, nil
 }
+
+{{- if eq .Auth.Subtype "google_service_account"}}
+
+func (c *Client) googleServiceAccountAuthHeader(ctx context.Context) (string, error) {
+	if c == nil || c.Config == nil {
+		return "", nil
+	}
+	if c.googleMu == nil {
+		c.googleMu = &sync.RWMutex{}
+	}
+
+	c.googleMu.RLock()
+	if c.Config.AccessToken != "" && (c.Config.TokenExpiry.IsZero() || time.Until(c.Config.TokenExpiry) >= 60*time.Second) {
+		header := "Bearer " + c.Config.AccessToken
+		c.googleMu.RUnlock()
+		return header, nil
+	}
+	c.googleMu.RUnlock()
+	c.googleMu.Lock()
+	defer c.googleMu.Unlock()
+
+	if c.Config.AccessToken != "" && (c.Config.TokenExpiry.IsZero() || time.Until(c.Config.TokenExpiry) >= 60*time.Second) {
+		return "Bearer " + c.Config.AccessToken, nil
+	}
+	keyPath := strings.TrimSpace(c.Config.{{resolveEnvVarField "GOOGLE_APPLICATION_CREDENTIALS"}})
+	if keyPath == "" {
+		return "", nil
+	}
+	keyJSON, err := os.ReadFile(keyPath)
+	if err != nil {
+		return "", fmt.Errorf("reading Google service-account key %q: %w", keyPath, err)
+	}
+	scopes := append([]string(nil), c.Config.GoogleScopes...)
+	if len(scopes) == 0 {
+		scopes = []string{ {{- range .Auth.Scopes}}{{printf "%q" .}}, {{end}} }
+	}
+	jwtConfig, err := google.JWTConfigFromJSON(keyJSON, scopes...)
+	if err != nil {
+		return "", fmt.Errorf("parsing Google service-account key: %w", err)
+	}
+	jwtConfig.Subject = strings.TrimSpace(c.Config.GoogleImpersonate)
+{{- if .Auth.TokenURL}}
+	if tokenURL := strings.TrimSpace(c.Config.TokenURL); tokenURL != "" {
+		jwtConfig.TokenURL = tokenURL
+	} else {
+		jwtConfig.TokenURL = {{printf "%q" .Auth.TokenURL}}
+	}
+{{- end}}
+	exchangeCtx, cancel := context.WithTimeout(ctx, c.ConfiguredTimeout())
+	defer cancel()
+	token, err := jwtConfig.TokenSource(exchangeCtx).Token()
+	if err != nil {
+		return "", fmt.Errorf("exchanging Google service-account JWT: %w", err)
+	}
+	if token == nil || strings.TrimSpace(token.AccessToken) == "" {
+		return "", errors.New("Google service-account token response missing access_token")
+	}
+	c.Config.AccessToken = token.AccessToken
+	c.Config.TokenExpiry = token.Expiry
+	return "Bearer " + token.AccessToken, nil
+}
+
+{{- end}}
 
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 
@@ -2920,16 +3019,28 @@ func sanitizeJSONResponse(body []byte) []byte {
 	return body
 }
 
+{{- if and .ResponseEnvelopeKey (not .IsGraphQL)}}
+// unwrapResponseEnvelope removes the explicitly configured single-key JSON
+// wrapper while leaving unrelated objects and malformed bodies untouched.
+func unwrapResponseEnvelope(body []byte) []byte {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil || len(envelope) != 1 {
+		return body
+	}
+	if payload, ok := envelope[{{printf "%q" .ResponseEnvelopeKey}}]; ok {
+		return payload
+	}
+	return body
+}
+{{- end}}
 
-// maskToken redacts all but the last 4 characters of a token for safe display.
+
+// maskToken returns a fixed placeholder for a non-empty token.
 func maskToken(token string) string {
 	if token == "" {
 		return ""
 	}
-	if len(token) <= 4 {
-		return "****"
-	}
-	return "****" + token[len(token)-4:]
+	return "****"
 }
 
 type maskedError struct {

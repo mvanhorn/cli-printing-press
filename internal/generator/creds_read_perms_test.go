@@ -4,6 +4,7 @@ package generator
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,6 +55,9 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 
 	_, err = os.Stat(filepath.Join(outputDir, "internal", "config", "config_perms_test.go"))
 	require.NoError(t, err, "config.Load read-time perms behavioral test must be emitted")
+	configPermsSrc := readGeneratedFile(t, outputDir, "internal", "config", "config_perms_test.go")
+	require.Contains(t, configPermsSrc, "internal/cliutil/testenv", "config permission tests must use the shared path sandbox")
+	require.Contains(t, configPermsSrc, "testenv.Isolate(t, cliutil.DataDir)", "config permission tests must isolate the credentials store")
 
 	// A4: cliutil.LoadCredentials reads a SEPARATE credentials file that also
 	// holds a live token, so it must apply the same read-time guard. Because
@@ -84,6 +88,55 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 	require.NotEmpty(t, sysLine, "go.mod must require golang.org/x/sys for a token-bearing spec")
 	require.NotContains(t, sysLine, "// indirect",
 		"golang.org/x/sys must be a DIRECT require for a token-bearing spec (creds_perms_windows.go imports golang.org/x/sys/windows)")
+}
+
+func TestGeneratedConfigPermissionTestsIgnoreSeededCredentialsStore(t *testing.T) {
+	if testing.Short() {
+		t.Skip("generated CLI compile tests run in the full generated-test CI lane")
+	}
+	t.Parallel()
+
+	apiSpec, err := openapi.ParseFile(filepath.Join("..", "..", "testdata", "golden", "fixtures", "golden-api-oauth2-cc.yaml"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	envPrefix := naming.EnvPrefix(apiSpec.Name)
+	operatorHome := t.TempDir()
+	credentialsPath := filepath.Join(operatorHome, ".local", "share", naming.CLI(apiSpec.Name), "credentials.toml")
+	ambientDataDir := filepath.Dir(credentialsPath)
+	ambientXDGDataHome := filepath.Dir(ambientDataDir)
+	require.NoError(t, os.MkdirAll(filepath.Dir(credentialsPath), 0o700))
+	require.NoError(t, os.WriteFile(credentialsPath, []byte("access_token = \"AMBIENT-CREDENTIAL\"\n"), 0o600))
+
+	cacheDir, err := goBuildCacheDir(outputDir)
+	require.NoError(t, err)
+	cmd := exec.Command("go", "test", "-mod=mod", "./internal/config", "-run", "TestLoad_RefusesOverPermissiveConfigOnRead|TestLoad_ReseedsFromEnvAfterOverPermissiveRefusal|TestLoad_RefusesSymlinkToLoosePermsTarget|TestLoad_DanglingSymlinkIsMiss", "-count=1")
+	cmd.Dir = outputDir
+	cmd.Env = append(os.Environ(),
+		"HOME="+operatorHome,
+		"USERPROFILE="+operatorHome,
+		envPrefix+"_HOME=",
+		envPrefix+"_CONFIG=",
+		envPrefix+"_DATA_DIR="+ambientDataDir,
+		envPrefix+"_CONFIG_DIR="+filepath.Join(operatorHome, ".config"),
+		envPrefix+"_STATE_DIR="+filepath.Join(operatorHome, ".local", "state"),
+		envPrefix+"_CACHE_DIR="+filepath.Join(operatorHome, ".cache"),
+		"XDG_CONFIG_HOME="+filepath.Join(operatorHome, ".config"),
+		"XDG_DATA_HOME="+ambientXDGDataHome,
+		"XDG_STATE_HOME="+filepath.Join(operatorHome, ".local", "state"),
+		"XDG_CACHE_HOME="+filepath.Join(operatorHome, ".cache"),
+		"GOCACHE="+cacheDir,
+	)
+	for _, name := range []string{"GOPATH", "GOMODCACHE"} {
+		if value := goEnvValue(t, name); value != "" {
+			cmd.Env = append(cmd.Env, name+"="+value)
+		}
+	}
+
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "generated config permission tests must ignore ambient credentials:\n%s", output)
 }
 
 // TestGenerate_NoCredsPermsForNonAuthSpec proves the guard is gated on

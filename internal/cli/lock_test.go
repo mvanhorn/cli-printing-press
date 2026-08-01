@@ -177,11 +177,35 @@ func TestLockPromote_Success(t *testing.T) {
 	var result map[string]any
 	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
 	assert.Equal(t, true, result["promoted"])
+	assert.Equal(t, []any{}, result["preserved_patches"])
 
 	// Verify library dir exists (slug-keyed).
 	libDir := filepath.Join(pipeline.PublishedLibraryRoot(), "test")
 	_, err := os.Stat(filepath.Join(libDir, "go.mod"))
 	assert.NoError(t, err)
+}
+
+func TestLockPromote_ReportsPreservedPatches(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	workPatches := filepath.Join(workDir, pipeline.PatchesDirName)
+	libPatches := filepath.Join(pipeline.PublishedLibraryRoot(), "test", pipeline.PatchesDirName)
+	require.NoError(t, os.MkdirAll(workPatches, 0o755))
+	require.NoError(t, os.MkdirAll(libPatches, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workPatches, "staged.json"), []byte("staged\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(libPatches, "library-only.json"), []byte("library\n"), 0o644))
+
+	stdout, code := runLockCmd("promote", "--cli", "test-pp-cli", "--dir", workDir)
+	assert.Equal(t, 0, code)
+	var result map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
+	assert.Equal(t, []any{"library-only.json"}, result["preserved_patches"])
 }
 
 func writeLockPhase5Pass(t *testing.T, state *pipeline.PipelineState) {

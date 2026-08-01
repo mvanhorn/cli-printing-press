@@ -190,6 +190,39 @@ resources:
 	assert.Equal(t, "per_page", list.Pagination.LimitParam)
 }
 
+func TestParsePaginationCursorFieldAlias(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: cursor-pagination
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  contacts:
+    endpoints:
+      list:
+        method: GET
+        path: /contacts
+        response:
+          type: array
+          item: Contact
+        response_path: results
+        pagination:
+          type: cursor
+          cursor_param: after
+          cursor_field: paging.next.after
+          limit_param: limit
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	list := s.Resources["contacts"].Endpoints["list"]
+	require.NotNil(t, list.Pagination)
+	assert.Equal(t, "paging.next.after", list.Pagination.NextCursorPath)
+	assert.Equal(t, "results", list.ResponsePath)
+}
+
 func TestParseEndpointExampleAndHappyArgs(t *testing.T) {
 	t.Parallel()
 
@@ -1939,12 +1972,21 @@ func TestAuthSubtypeValidate(t *testing.T) {
 			auth: AuthConfig{Type: "bearer_token", Subtype: AuthSubtypeAuth0SPAInMemory},
 		},
 		{
+			name: "google_service_account with bearer_token is valid",
+			auth: AuthConfig{Type: "bearer_token", Subtype: AuthSubtypeGoogleServiceAccount},
+		},
+		{
 			name: "auth0_spa_in_memory with empty Type is valid",
 			auth: AuthConfig{Subtype: AuthSubtypeAuth0SPAInMemory},
 		},
 		{
 			name:    "auth0_spa_in_memory with api_key is rejected",
 			auth:    AuthConfig{Type: "api_key", Subtype: AuthSubtypeAuth0SPAInMemory},
+			wantErr: `requires auth.type "bearer_token"`,
+		},
+		{
+			name:    "google_service_account with api_key is rejected",
+			auth:    AuthConfig{Type: "api_key", Subtype: AuthSubtypeGoogleServiceAccount},
 			wantErr: `requires auth.type "bearer_token"`,
 		},
 		{
@@ -7210,6 +7252,42 @@ resources:
 		assert.Equal(t, "org_id", ep.Params[0].Name)
 		require.Len(t, ep.Body, 1)
 		assert.Equal(t, "name", ep.Body[0].Name)
+	})
+
+	t.Run("POST endpoint keeps explicit query and header params", func(t *testing.T) {
+		t.Parallel()
+		input := header + `  messages:
+    description: Message endpoints
+    endpoints:
+      create:
+        method: POST
+        path: /messages
+        description: Create message
+        params:
+          - name: mode
+            in: query
+            type: string
+          - name: X-Request-ID
+            in: header
+            type: string
+          - name: text
+            type: string
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["messages"].Endpoints["create"]
+		require.Len(t, ep.Params, 2)
+		assert.ElementsMatch(t, []string{"mode", "X-Request-ID"}, []string{ep.Params[0].Name, ep.Params[1].Name})
+		require.Len(t, ep.Body, 1)
+		assert.Equal(t, "text", ep.Body[0].Name)
+		for _, param := range ep.Params {
+			if param.Name == "mode" {
+				assert.Equal(t, "query", param.In)
+			}
+			if param.Name == "X-Request-ID" {
+				assert.Equal(t, "header", param.In)
+			}
+		}
 	})
 
 	t.Run("GET endpoint params are not promoted", func(t *testing.T) {

@@ -15,7 +15,9 @@ import (
 	"strings"
 	"time"
 
+	openapiparser "github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/piiplaceholders"
+	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 type LiveDogfoodStatus string
@@ -65,6 +67,7 @@ const reasonRequiredParamFixture = "blocked-fixture: required API parameter"
 const reasonFeatureAbsentFixture = "blocked-fixture: feature absent for runner credentials"
 const reasonNoErrorPathProbeAnnotation = "no-error-path-probe annotation"
 const reasonInteractiveCommand = "interactive command requires human input"
+const reasonUnsynthesizableBody = "unsynthesizable-body"
 
 // dogfoodEnvVar is the env signal every live-dogfood subprocess
 // inherits. Generated commands with a long-running happy path detect
@@ -124,6 +127,8 @@ type liveDogfoodRun struct {
 	stdout          string
 	stderr          string
 	stdoutTruncated bool
+	stdoutJSONValid bool
+	stdoutJSONCheck bool
 	exitCode        int
 	err             error
 }
@@ -202,6 +207,7 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		authTier:         resolveLiveDogfoodAuthTier(opts.AuthTier),
 		allowDestructive: opts.AllowDestructive,
 		storeDBPath:      liveDogfoodDefaultDBPath(liveDogfoodCLINameForStore(binaryPath, opts.BinaryName)),
+		bodyFixtures:     loadLiveDogfoodBodyFixtures(opts.CLIDir),
 	}
 	runLiveDogfoodPreSync(commands, ctx)
 
@@ -609,6 +615,13 @@ type resolveCtx struct {
 	authTier         string
 	allowDestructive bool
 	storeDBPath      string
+	bodyFixtures     []liveDogfoodBodyFixture
+}
+
+type liveDogfoodBodyFixture struct {
+	names  []string
+	method string
+	path   string
 }
 
 func newCompanionCache() *companionCache {
@@ -1245,6 +1258,165 @@ func collectLiveDogfoodCommands(prefix []string, command dogfoodAgentCommand, cm
 	}
 }
 
+func loadLiveDogfoodBodyFixtures(cliDir string) []liveDogfoodBodyFixture {
+	for _, specPath := range liveDogfoodBundledSpecPaths(cliDir) {
+		data, err := openapiparser.LoadSpecBytes(specPath, false, false)
+		if err != nil {
+			continue
+		}
+
+		parsed, err := apispec.ParseBytes(data)
+		if err != nil {
+			parsed, err = openapiparser.ParseWithOptions(data, openapiparser.ParseOptions{
+				Path:    specPath,
+				Lenient: true,
+			})
+		}
+		if err != nil || parsed == nil {
+			continue
+		}
+
+		var fixtures []liveDogfoodBodyFixture
+		for resourceName, resource := range parsed.Resources {
+			fixtures = appendLiveDogfoodBodyFixtures(fixtures, []string{resourceName}, resource, "")
+		}
+		return fixtures
+	}
+	return nil
+}
+
+func liveDogfoodBundledSpecPaths(cliDir string) []string {
+	paths := make([]string, 0, 3)
+	for _, name := range []string{"spec.json", "spec.yaml", "spec.yml"} {
+		path := filepath.Join(cliDir, name)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+func appendLiveDogfoodBodyFixtures(fixtures []liveDogfoodBodyFixture, prefix []string, resource apispec.Resource, inheritedBaseURL string) []liveDogfoodBodyFixture {
+	for endpointName, endpoint := range resource.Endpoints {
+		if !liveDogfoodEndpointHasUnsynthesizableBody(endpoint) {
+			continue
+		}
+		fullName := append(append([]string{}, prefix...), endpointName)
+		names := []string{strings.Join(fullName, ".")}
+		for start := 1; start < len(fullName)-1; start++ {
+			names = append(names, strings.Join(fullName[start:], "."))
+		}
+		baseURL := strings.TrimSpace(endpoint.BaseURL)
+		if baseURL == "" {
+			baseURL = strings.TrimSpace(resource.BaseURL)
+		}
+		if baseURL == "" {
+			baseURL = inheritedBaseURL
+		}
+		fixtures = append(fixtures, liveDogfoodBodyFixture{
+			names:  names,
+			method: strings.ToUpper(strings.TrimSpace(endpoint.Method)),
+			path:   normalizeLiveDogfoodPathWithBase(baseURL, endpoint.Path),
+		})
+	}
+	for subName, subResource := range resource.SubResources {
+		childPrefix := append(append([]string{}, prefix...), subName)
+		fixtures = appendLiveDogfoodBodyFixtures(fixtures, childPrefix, subResource, inheritedBaseURL)
+	}
+	return fixtures
+}
+
+func normalizeLiveDogfoodPathWithBase(baseURL, path string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	path = strings.TrimSpace(path)
+	if baseURL != "" && !strings.HasPrefix(path, "https://") && !strings.HasPrefix(path, "http://") {
+		path = baseURL + path
+	}
+	return normalizeLiveDogfoodPath(path)
+}
+
+func liveDogfoodEndpointHasUnsynthesizableBody(endpoint apispec.Endpoint) bool {
+	if endpoint.BodyJSONFallback {
+		return endpoint.BodyRequired
+	}
+	for _, param := range endpoint.Body {
+		if param.Required && liveDogfoodAggregateBodyParam(param) && !liveDogfoodBodyParamHasScalarLeaf(param) {
+			return true
+		}
+	}
+	return false
+}
+
+func liveDogfoodAggregateBodyParam(param apispec.Param) bool {
+	typ := strings.ToLower(strings.TrimSpace(param.Type))
+	return typ == "object" || typ == "array"
+}
+
+func liveDogfoodBodyParamHasScalarLeaf(param apispec.Param) bool {
+	typ := strings.ToLower(strings.TrimSpace(param.Type))
+	if typ == "array" && strings.TrimSpace(param.ItemType) != "" {
+		itemType := strings.ToLower(strings.TrimSpace(param.ItemType))
+		if itemType != "object" && itemType != "array" {
+			return true
+		}
+	}
+	for _, field := range param.Fields {
+		if !liveDogfoodAggregateBodyParam(field) || liveDogfoodBodyParamHasScalarLeaf(field) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeLiveDogfoodPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	path = strings.TrimRight(path, "/")
+	if path == "" {
+		return "/"
+	}
+	return path
+}
+
+func liveDogfoodUnsynthesizableBodyFixtureSkip(command liveDogfoodCommand, fixtures []liveDogfoodBodyFixture) string {
+	if strings.TrimSpace(command.Annotations[happyArgsAnnotation]) == "" {
+		endpointName := strings.TrimSpace(command.Annotations[endpointAnnotation])
+		if endpointName == "" {
+			return ""
+		}
+
+		method := strings.ToUpper(strings.TrimSpace(command.Annotations[endpointMethodAnnotation]))
+		path := normalizeLiveDogfoodPath(command.Annotations[endpointPathAnnotation])
+		var matches []liveDogfoodBodyFixture
+		for _, fixture := range fixtures {
+			nameMatch := slices.ContainsFunc(fixture.names, func(name string) bool {
+				return strings.EqualFold(name, endpointName)
+			})
+			pathMatch := method != "" && path != "" && method == fixture.method && path == fixture.path
+			if nameMatch || pathMatch {
+				matches = append(matches, fixture)
+			}
+		}
+		if len(matches) == 1 {
+			return reasonUnsynthesizableBody
+		}
+		if len(matches) > 1 && path != "" {
+			pathMatches := 0
+			for _, match := range matches {
+				if method == match.method && path == match.path {
+					pathMatches++
+				}
+			}
+			if pathMatches == 1 {
+				return reasonUnsynthesizableBody
+			}
+		}
+	}
+	return ""
+}
+
 func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDogfoodTestResult {
 	commandName := strings.Join(command.Path, " ")
 
@@ -1319,8 +1491,17 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		return results
 	}
 
+	bodyFixtureSkip := liveDogfoodUnsynthesizableBodyFixtureSkip(command, ctx.bodyFixtures)
 	happyArgs, ok, parsedHappyArgs := liveDogfoodHappyArgsParsed(command)
 	if !ok {
+		if bodyFixtureSkip != "" {
+			results = append(results,
+				skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, bodyFixtureSkip),
+				skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, bodyFixtureSkip),
+				skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, bodyFixtureSkip),
+			)
+			return results
+		}
 		if mutating {
 			results = append(results,
 				skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonMutatingRunnableFixture),
@@ -1344,6 +1525,11 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		syntheticParamSkip = happyPathSyntheticParamFixtureSkip(command, resolvedArgs)
 	}
 	switch {
+	case bodyFixtureSkip != "":
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, bodyFixtureSkip),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, bodyFixtureSkip),
+		)
 	case fixtureSkip != "":
 		results = append(results,
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, fixtureSkip),
@@ -1398,9 +1584,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun)
 			jsonResult.FixtureSource = fixtureSource
 			if jsonRun.exitCode == 0 {
-				if jsonRun.stdoutTruncated || !validLiveDogfoodJSONOutput(jsonRun.stdout) {
+				if !liveDogfoodJSONValid(jsonRun) {
 					jsonResult.Status = LiveDogfoodStatusFail
-					jsonResult.Reason = liveDogfoodInvalidJSONReason(jsonRun, "invalid JSON")
+					jsonResult.Reason = "invalid JSON"
 				} else {
 					jsonResult.Status = LiveDogfoodStatusPass
 					jsonResult.Reason = ""
@@ -1474,12 +1660,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 				case errorRun.exitCode != 0:
 					errorResult.Status = LiveDogfoodStatusPass
 					errorResult.Reason = ""
-				case suppliedJSON && errorRun.stdoutTruncated:
+				case suppliedJSON && !liveDogfoodJSONValid(errorRun):
 					errorResult.Status = LiveDogfoodStatusFail
-					errorResult.Reason = liveDogfoodInvalidJSONReason(errorRun, "invalid JSON under --json")
-				case suppliedJSON && !json.Valid([]byte(errorRun.stdout)):
-					errorResult.Status = LiveDogfoodStatusFail
-					errorResult.Reason = liveDogfoodInvalidJSONReason(errorRun, "invalid JSON under --json")
+					errorResult.Reason = "invalid JSON under --json"
 				default:
 					errorResult.Status = LiveDogfoodStatusPass
 					errorResult.Reason = ""
@@ -1578,18 +1761,41 @@ func runLiveDogfoodProcessOnce(binaryPath, cliDir string, args []string, timeout
 	// The transport-layer short-circuit is for verify mock-mode only.
 	cmd.Env = filterVerifyEnv(cmd.Env)
 	cmd.Env = append(cmd.Env, dogfoodEnvVar+"=1")
-	stdout := &bytes.Buffer{}
+	stdoutSample := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	stdoutCap := &limitedWriter{w: stdout, remaining: liveDogfoodMaxOutputBytes}
+	stdoutCap := &limitedWriter{w: stdoutSample, remaining: liveDogfoodMaxOutputBytes}
 	stderrCap := &limitedWriter{w: stderr, remaining: MaxErrorOutputBytes}
-	cmd.Stdout = stdoutCap
+	jsonRequested := liveDogfoodJSONRequested(args)
+	var rawStdout *os.File
+	if jsonRequested {
+		var err error
+		rawStdout, err = os.CreateTemp("", "printing-press-live-dogfood-stdout-*")
+		if err != nil {
+			return liveDogfoodRun{exitCode: -1, err: fmt.Errorf("create raw stdout capture: %w", err)}
+		}
+		cmd.Stdout = io.MultiWriter(rawStdout, stdoutCap)
+	} else {
+		cmd.Stdout = stdoutCap
+	}
 	cmd.Stderr = stderrCap
 
 	err := cmd.Run()
+	rawJSONValid := false
+	if rawStdout != nil {
+		rawPath := rawStdout.Name()
+		closeErr := rawStdout.Close()
+		if err == nil {
+			err = closeErr
+		}
+		rawJSONValid = validLiveDogfoodJSONFile(rawPath)
+		_ = os.Remove(rawPath)
+	}
 	result := liveDogfoodRun{
-		stdout:          stdout.String(),
+		stdout:          stdoutSample.String(),
 		stderr:          stderr.String(),
 		stdoutTruncated: stdoutCap.truncated,
+		stdoutJSONValid: rawJSONValid,
+		stdoutJSONCheck: jsonRequested,
 		exitCode:        0,
 		err:             err,
 	}
@@ -1616,11 +1822,20 @@ func liveDogfoodRetryableAuth401(run liveDogfoodRun) bool {
 	return liveDogfoodAuth401(run)
 }
 
-func liveDogfoodInvalidJSONReason(run liveDogfoodRun, fallback string) string {
-	if run.stdoutTruncated {
-		return "output exceeded capture cap"
+func liveDogfoodJSONRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "--json" || strings.HasPrefix(arg, "--json=") {
+			return true
+		}
 	}
-	return fallback
+	return false
+}
+
+func liveDogfoodJSONValid(run liveDogfoodRun) bool {
+	if run.stdoutJSONCheck {
+		return run.stdoutJSONValid
+	}
+	return validLiveDogfoodJSONOutput(run.stdout)
 }
 
 func liveDogfoodResult(command string, kind LiveDogfoodTestKind, args []string, run liveDogfoodRun) LiveDogfoodTestResult {
@@ -1977,6 +2192,103 @@ func validLiveDogfoodJSONOutput(stdout string) bool {
 		}
 	}
 	return true
+}
+
+func validLiveDogfoodJSONFile(path string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = file.Close() }()
+	return validLiveDogfoodJSONReader(file)
+}
+
+func validLiveDogfoodJSONReader(reader io.Reader) bool {
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	documents := 0
+	for {
+		if err := consumeLiveDogfoodJSONValue(decoder); err != nil {
+			if errors.Is(err, io.EOF) {
+				return documents > 0
+			}
+			return false
+		}
+		documents++
+
+		// Multiple top-level JSON documents are valid only as JSONL. The
+		// decoder accepts adjacent values, so explicitly require a newline
+		// between documents rather than treating concatenated JSON as valid.
+		offset := decoder.InputOffset()
+		hasNextDocument := false
+		hasNewline := false
+		for i := int(offset); i < len(data); i++ {
+			switch data[i] {
+			case ' ', '\t', '\r':
+				continue
+			case '\n':
+				hasNewline = true
+			default:
+				hasNextDocument = true
+			}
+			if hasNextDocument {
+				break
+			}
+		}
+		if hasNextDocument && !hasNewline {
+			return false
+		}
+	}
+}
+
+func consumeLiveDogfoodJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+
+	var closing json.Delim
+	switch delim {
+	case '{':
+		closing = '}'
+		for decoder.More() {
+			key, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if _, ok := key.(string); !ok {
+				return fmt.Errorf("JSON object key is %T", key)
+			}
+			if err := consumeLiveDogfoodJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+	case '[':
+		closing = ']'
+		for decoder.More() {
+			if err := consumeLiveDogfoodJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delim)
+	}
+
+	end, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if end != closing {
+		return fmt.Errorf("expected JSON delimiter %q, got %v", closing, end)
+	}
+	return nil
 }
 
 func liveDogfoodUnavailableForRunner(run liveDogfoodRun) bool {

@@ -1072,6 +1072,12 @@ func hasRequiredScopeParamsForSync(endpoint spec.Endpoint, allowEnumExpansion bo
 		"key": true, "format": true,
 	}
 	for _, param := range endpoint.Params {
+		// Headers are transport inputs, not caller-supplied resource scope.
+		// They were historically absent from parsed endpoint params; preserve
+		// that sync classification now that OpenAPI header params are retained.
+		if loc := strings.TrimSpace(param.In); loc != "" && !strings.EqualFold(loc, "query") {
+			continue
+		}
 		if param.Required && !param.Positional && !param.PathParam {
 			if param.GlobalScope && strings.EqualFold(param.Type, "string") {
 				continue

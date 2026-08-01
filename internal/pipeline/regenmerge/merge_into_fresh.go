@@ -66,7 +66,8 @@ var regenmergeGeneratorOwnedDirs = map[string]struct{}{
 // preserved; TEMPLATED-WITH-ADDITIONS, TEMPLATED-BODY-DRIFT, and
 // TEMPLATED-VALUE-DRIFT files are left as fresh emitted them unless the file
 // is a generated editable hook whose whole purpose is to carry agent-authored
-// additions. Lost AddCommand re-injection is skipped. The non-classified file
+// additions. Lost AddCommand re-injection still runs when its constructor is
+// preserved in the merged novel files. The non-classified file
 // sweep and go.mod merge still run because both are spec-orthogonal — non-Go
 // files and go.mod require additions are valid preservation targets even when
 // the fresh spec differs from the snapshot's.
@@ -104,18 +105,29 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 		}
 	}
 
-	if !opts.NovelOnly {
-		for i := range report.LostRegistrations {
-			lr := &report.LostRegistrations[i]
-			if len(lr.Calls) == 0 {
-				continue
-			}
-			hostPath := filepath.Join(freshDir, lr.HostFile)
-			if err := injectAddCommands(hostPath, lr.Calls, lr.EnclosingFunc); err != nil {
-				return fmt.Errorf("re-injecting AddCommand into %s: %w", lr.HostFile, err)
-			}
-			lr.Applied = true
+	var novelDecls declSet
+	if opts.NovelOnly {
+		var err error
+		novelDecls, err = collectDeclsFromDir(filepath.Join(snapshotDir, "internal", "cli"), true)
+		if err != nil {
+			return fmt.Errorf("collecting preserved novel command declarations: %w", err)
 		}
+	}
+	for i := range report.LostRegistrations {
+		lr := &report.LostRegistrations[i]
+		calls := lr.Calls
+		if opts.NovelOnly {
+			calls = novelOnlyRegistrationCalls(calls, novelDecls)
+			lr.Calls = calls
+		}
+		if len(calls) == 0 {
+			continue
+		}
+		hostPath := filepath.Join(freshDir, lr.HostFile)
+		if err := injectAddCommands(hostPath, calls, lr.EnclosingFunc); err != nil {
+			return fmt.Errorf("re-injecting AddCommand into %s: %w", lr.HostFile, err)
+		}
+		lr.Applied = true
 	}
 
 	if err := pruneFreshDeclCollisions(freshDir, report); err != nil {

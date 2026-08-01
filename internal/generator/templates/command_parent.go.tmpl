@@ -21,7 +21,7 @@ func new{{cmdIdent .FuncPrefix}}Cmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(new{{cmdIdent $.FuncPrefix $subName}}Cmd(flags))
 {{- end}}
 {{- range .NovelChildren}}
-	cmd.AddCommand(newNovel{{.Ident}}Cmd(flags))
+	addNovelCommandIfAbsent(cmd, newNovel{{.Ident}}Cmd(flags))
 {{- end}}
 	return cmd
 }

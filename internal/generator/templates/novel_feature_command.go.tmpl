@@ -60,7 +60,7 @@ func newNovel{{.Ident}}Cmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- range .Children}}
-	cmd.AddCommand(newNovel{{.Ident}}Cmd(flags))
+	addNovelCommandIfAbsent(cmd, newNovel{{.Ident}}Cmd(flags))
 {{- end}}
 	return cmd
 }

@@ -1052,7 +1052,7 @@ resources:
 
 	parent, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "promoted_items.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(parent), "cmd.AddCommand(newNovelItemsInsightCmd(flags))")
+	assert.Contains(t, string(parent), "addNovelCommandIfAbsent(cmd, newNovelItemsInsightCmd(flags))")
 	stub, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items_insight.go"))
 	require.NoError(t, err)
 	assert.Contains(t, string(stub), `Use:         "insight"`)

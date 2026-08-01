@@ -60,3 +60,57 @@ paths:
 		assert.Contains(t, err.Error(), "non-negative")
 	})
 }
+
+func TestParseResponseEnvelopeExtension(t *testing.T) {
+	t.Parallel()
+
+	base := func(ext string) []byte {
+		return []byte(`
+openapi: 3.0.3
+` + ext + `
+info:
+  title: Envelope API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          description: ok
+`)
+	}
+
+	t.Run("root extension is parsed and trimmed", func(t *testing.T) {
+		parsed, err := Parse(base(`x-pp-response-envelope: "  result  "`))
+		require.NoError(t, err)
+		assert.Equal(t, "result", parsed.ResponseEnvelopeKey)
+	})
+	t.Run("info extension is parsed", func(t *testing.T) {
+		parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Envelope API
+  version: 1.0.0
+  x-pp-response-envelope: data
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          description: ok
+`))
+		require.NoError(t, err)
+		assert.Equal(t, "data", parsed.ResponseEnvelopeKey)
+	})
+	t.Run("non-string extension is rejected", func(t *testing.T) {
+		_, err := Parse(base("x-pp-response-envelope: [result]"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "x-pp-response-envelope must be a string")
+	})
+}

@@ -12,28 +12,28 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newSimilarCmd(flags *rootFlags) *cobra.Command {
+func new{{.CommandConstructor}}Cmd(flags *rootFlags) *cobra.Command {
 	var dbPath string
 	var limit int
 	var resourceType string
 
 	cmd := &cobra.Command{
-		Use:   "similar <item-id>",
+		Use:   {{printf "%q" (printf "%s <item-id>" (index .CommandNames "similar"))}},
 		Short: "Find potential duplicate items using full-text search",
 		Long: `Given an item ID, extract its title or name and use the FTS5 full-text
 search index to find other items with similar content. Helps identify duplicate
 work items, tickets, or tasks.`,
 		Example: `  # Find items similar to a given item
-  {{.Name}}-pp-cli similar abc123
+  {{.Name}}-pp-cli {{index .CommandNames "similar"}} abc123
 
   # Disambiguate when multiple resource types share the same ID
-  {{.Name}}-pp-cli similar abc123 --type issues
+  {{.Name}}-pp-cli {{index .CommandNames "similar"}} abc123 --type issues
 
   # Limit results
-  {{.Name}}-pp-cli similar abc123 --limit 5
+  {{.Name}}-pp-cli {{index .CommandNames "similar"}} abc123 --limit 5
 
   # Output as JSON
-  {{.Name}}-pp-cli similar abc123 --json`,
+  {{.Name}}-pp-cli {{index .CommandNames "similar"}} abc123 --json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			itemID := args[0]

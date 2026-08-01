@@ -68,6 +68,7 @@ const (
 	extensionLearn                 = "x-learn"
 	extensionStreaming             = "x-streaming"
 	extensionPPQuery               = "x-pp-query"
+	extensionPPResponseEnvelope    = "x-pp-response-envelope"
 	extensionPPSyncable            = "x-pp-syncable"
 	extensionPPPagination          = "x-pp-pagination"
 	extensionSyncWalker            = "x-pp-sync-walker"
@@ -635,6 +636,11 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	if err != nil {
 		return nil, err
 	}
+	responseEnvelopeKey, err := parseStringOpenAPIExtension(doc, extensionPPResponseEnvelope)
+	if err != nil {
+		return nil, err
+	}
+	responseEnvelopeKey = strings.TrimSpace(responseEnvelopeKey)
 	roles, err := parseStringListOpenAPIExtension(doc, extensionRoles)
 	if err != nil {
 		return nil, err
@@ -682,6 +688,7 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 		ProxyRoutes:                  proxyRoutes,
 		RateClass:                    rateClass,
 		DefaultRateLimit:             defaultRateLimit,
+		ResponseEnvelopeKey:          responseEnvelopeKey,
 		Auth:                         auth,
 		Roles:                        roles,
 		TierRouting:                  tierRouting,
@@ -1304,8 +1311,24 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 	applyAuthEnvVarDefaults(&auth, envPrefix)
 	applyAuthVarsRichOverride(&auth, scheme.Extensions, fmt.Sprintf("components.securitySchemes.%s.%s", schemeName, extensionAuthVars))
 	applyAuthCompanionFromInfo(&auth, doc)
+	if isGoogleServiceAccountOAuth2(doc, scheme, auth) || auth.Subtype == spec.AuthSubtypeGoogleServiceAccount {
+		applyGoogleServiceAccountAuth(&auth)
+	}
 	auth.AdditionalHeaders = collectAdditionalAuthHeaders(doc, schemeName, envPrefix)
 	return auth
+}
+
+func applyGoogleServiceAccountAuth(auth *spec.AuthConfig) {
+	if auth == nil {
+		return
+	}
+	auth.Subtype = spec.AuthSubtypeGoogleServiceAccount
+	// Google service-account JWT exchange is a non-interactive bearer flow.
+	// Keep the OAuth2 scheme's token URL and scopes, but remove the browser
+	// authorization URL so the generator selects the service-account scaffold.
+	auth.AuthorizationURL = ""
+	auth.EnvVars = []string{"GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_OAUTH_ACCESS_TOKEN"}
+	auth.EnvVarSpecs = spec.NewORCaseEnvVarSpecs(auth.EnvVars)
 }
 
 // collectAdditionalAuthHeaders scans AND-group siblings of the winning
@@ -1852,6 +1875,8 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 		// keeps the error close to the typo, matching how unknown auth types are
 		// handled elsewhere in this parser.
 		switch subtype {
+		case spec.AuthSubtypeGoogleServiceAccount:
+			auth.Subtype = subtype
 		case spec.AuthSubtypeAuth0SPAInMemory:
 			auth.Subtype = subtype
 		}
@@ -4278,7 +4303,7 @@ func classifyGlobalParams(resources map[string]spec.Resource) {
 
 		seen := map[string]struct{}{}
 		for _, param := range endpoint.Params {
-			if isPathSubstitutionParam(param) {
+			if isPathSubstitutionParam(param) || !isQueryParamLocation(param) {
 				continue
 			}
 			key := strings.ToLower(param.Name)
@@ -4412,7 +4437,12 @@ func isGlobalFilterCandidate(param spec.Param) bool {
 	// access scope that defaults true) is not silently stripped, while plain
 	// high-frequency boilerplate (prettyPrint, quotaUser) with no default is
 	// still dropped.
-	return !isPathSubstitutionParam(param) && !param.Required && param.Default == nil
+	return isQueryParamLocation(param) && !isPathSubstitutionParam(param) && !param.Required && param.Default == nil
+}
+
+func isQueryParamLocation(param spec.Param) bool {
+	loc := strings.TrimSpace(param.In)
+	return loc == "" || strings.EqualFold(loc, "query")
 }
 
 func isRetainableSoleGlobalInputParam(param spec.Param) bool {
@@ -4613,7 +4643,7 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) ([]spec.
 		if parameter == nil {
 			continue
 		}
-		if parameter.In != openapi3.ParameterInPath && parameter.In != openapi3.ParameterInQuery {
+		if parameter.In != openapi3.ParameterInPath && parameter.In != openapi3.ParameterInQuery && parameter.In != openapi3.ParameterInHeader {
 			continue
 		}
 
@@ -4635,6 +4665,7 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) ([]spec.
 		}
 		param := spec.Param{
 			Name:        paramName,
+			In:          string(parameter.In),
 			Type:        mapSchemaType(schema),
 			Required:    parameter.Required,
 			Positional:  parameter.In == openapi3.ParameterInPath,
@@ -7691,6 +7722,21 @@ func isGoogleAPIsServerURL(raw string) bool {
 	return false
 }
 
+// isGoogleServiceAccountOAuth2 narrows the Google auth scaffold to OAuth2
+// schemes. A plain bearer scheme on a Google-hosted proxy still represents a
+// user-supplied token and must keep the normal bearer path.
+func isGoogleServiceAccountOAuth2(doc *openapi3.T, scheme *openapi3.SecurityScheme, auth spec.AuthConfig) bool {
+	if scheme == nil || !strings.EqualFold(strings.TrimSpace(scheme.Type), "oauth2") || auth.Type != "bearer_token" {
+		return false
+	}
+	// Preserve an explicitly declared browser flow. Google-hosted APIs can
+	// expose ordinary user OAuth alongside service-account-compatible scopes.
+	if strings.TrimSpace(auth.AuthorizationURL) != "" {
+		return false
+	}
+	return hasGoogleAPIsServer(doc)
+}
+
 func operationIDResourceVariants(resourceName string) []string {
 	resource := toSnakeCase(strings.TrimSpace(resourceName))
 	if resource == "" {
@@ -8244,6 +8290,9 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	originalCase := map[string]string{}
 	paramsByLowerName := map[string]spec.Param{}
 	for _, p := range params {
+		if !isQueryParamLocation(p) || isPathSubstitutionParam(p) {
+			continue
+		}
 		lowerName := strings.ToLower(p.Name)
 		originalCase[lowerName] = p.Name
 		paramsByLowerName[lowerName] = p

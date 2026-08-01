@@ -567,6 +567,75 @@ func TestNPMSource_FetchDownloads(t *testing.T) {
 		assert.Equal(t, 50, result["pkg-b"])
 	})
 
+	t.Run("parses a bare-count bulk package named downloads", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"downloads":21,"pkg-b":50}`))
+		}))
+		defer server.Close()
+
+		src := NewNPMSource(NPMOptions{DownloadsBaseURL: server.URL})
+		result := src.fetchDownloads(context.Background(), []npmPackageInfo{
+			{Name: "downloads"},
+			{Name: "pkg-b"},
+		})
+
+		assert.Equal(t, 21, result["downloads"])
+		assert.Equal(t, 50, result["pkg-b"])
+	})
+
+	t.Run("parses single-package downloads", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Contains(t, r.URL.Path, "/downloads/point/last-week/")
+			_, _ = w.Write([]byte(`{"downloads":21,"package":"pkg-a"}`))
+		}))
+		defer server.Close()
+
+		src := NewNPMSource(NPMOptions{DownloadsBaseURL: server.URL})
+		result := src.fetchDownloads(context.Background(), []npmPackageInfo{
+			{Name: "pkg-a"},
+		})
+
+		assert.Equal(t, 21, result["pkg-a"])
+	})
+
+	t.Run("parses bare counts in a bulk response", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"pkg-a":21}`))
+		}))
+		defer server.Close()
+
+		src := NewNPMSource(NPMOptions{DownloadsBaseURL: server.URL})
+		result := src.fetchDownloads(context.Background(), []npmPackageInfo{
+			{Name: "pkg-a"},
+		})
+
+		assert.Equal(t, 21, result["pkg-a"])
+	})
+
+	t.Run("keeps valid counts when a bulk entry is malformed", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"pkg-a":{"downloads":21,"package":"pkg-a"},"bad":"not-a-count"}`))
+		}))
+		defer server.Close()
+
+		src := NewNPMSource(NPMOptions{DownloadsBaseURL: server.URL})
+		result := src.fetchDownloads(context.Background(), []npmPackageInfo{
+			{Name: "pkg-a"},
+			{Name: "bad"},
+		})
+
+		assert.Equal(t, 21, result["pkg-a"])
+		assert.NotContains(t, result, "bad")
+	})
+
 	t.Run("handles API error gracefully", func(t *testing.T) {
 		t.Parallel()
 

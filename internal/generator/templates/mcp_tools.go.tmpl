@@ -62,8 +62,8 @@ const (
 func RegisterTools(s *server.MCPServer) {
 	installFreshTenantGate(s)
 {{- if .MCP.IsCodeOrchestration}}
-	// Code-orchestration mode — the full surface is covered by two tools
-	// (<api>_search + <api>_execute). Endpoint-mirror tools are suppressed.
+	// Code-orchestration mode — the full surface is covered by registry tools
+	// (<api>_search, <api>_get, and <api>_execute). Endpoint-mirror tools are suppressed.
 	RegisterCodeOrchestrationTools(s)
 {{- else}}
 {{- if and (ne .MCP.EndpointTools "hidden") (not .APISpec.IsLocalSQLiteSource)}}
@@ -571,6 +571,11 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				}
 				c.Config.TemplateVars[binding.WireName] = formatMCPParamValue(v)
 {{- end}}
+			case "header":
+				if headers == nil {
+					headers = map[string]string{}
+				}
+				headers[binding.WireName] = formatMCPParamValue(v)
 			case "body":
 {{- if $hasMCPJSONOrScalar}}
 				bodyValue, err := coerceMCPBodyValue(binding, v)

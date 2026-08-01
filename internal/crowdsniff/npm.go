@@ -2,6 +2,7 @@ package crowdsniff
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -17,16 +18,17 @@ import (
 )
 
 const (
-	defaultRegistryBaseURL  = "https://registry.npmjs.org"
-	defaultDownloadsBaseURL = "https://api.npmjs.org"
-	defaultRecencyCutoff    = 180 * 24 * time.Hour // 6 months
-	defaultHTTPTimeout      = 15 * time.Second
-	maxHTTPRedirects        = 10
-	maxTarballSize          = 10 * 1024 * 1024 // 10 MB
-	maxSearchResults        = 25
-	maxPackagesToProcess    = 10
-	maxBulkDownloadPackages = 128
-	maxReadmeSize           = 100 * 1024 // 100 KB
+	defaultRegistryBaseURL   = "https://registry.npmjs.org"
+	defaultDownloadsBaseURL  = "https://api.npmjs.org"
+	defaultRecencyCutoff     = 180 * 24 * time.Hour // 6 months
+	defaultHTTPTimeout       = 15 * time.Second
+	maxHTTPRedirects         = 10
+	maxTarballSize           = 10 * 1024 * 1024 // 10 MB
+	maxDownloadsResponseSize = 2 * 1024 * 1024  // 2 MB
+	maxSearchResults         = 25
+	maxPackagesToProcess     = 10
+	maxBulkDownloadPackages  = 128
+	maxReadmeSize            = 100 * 1024 // 100 KB
 )
 
 // NPMOptions configures the NPM source.
@@ -276,18 +278,77 @@ func (s *NPMSource) fetchDownloads(ctx context.Context, packages []npmPackageInf
 		return result
 	}
 
-	var bulk npmBulkDownloadsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&bulk); err != nil {
-		fmt.Fprintf(os.Stderr, "crowd-sniff: failed to decode downloads response: %v\n", err)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDownloadsResponseSize))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "crowd-sniff: failed to read downloads response: %v\n", err)
 		return result
 	}
 
-	for name, data := range bulk {
-		if data != nil {
+	decoded, err := decodeDownloadsResponse(body, names)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "crowd-sniff: failed to decode downloads response: %v\n", err)
+		return decoded
+	}
+	return decoded
+}
+
+// decodeDownloadsResponse accepts both the bulk npm response and the
+// single-package response returned when the request contains one package.
+// Some compatible endpoints also return counts directly instead of wrapping
+// them in an object, so those shapes are accepted in the bulk response.
+func decodeDownloadsResponse(body []byte, packageNames []string) (map[string]int, error) {
+	result := make(map[string]int)
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return result, fmt.Errorf("empty response")
+	}
+
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(body, &object); err != nil {
+		return result, err
+	}
+
+	if raw, isSingle := object["downloads"]; isSingle && len(packageNames) == 1 && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		var count int
+		if err := json.Unmarshal(raw, &count); err == nil {
+			var data npmDownloadsResponse
+			if err := json.Unmarshal(body, &data); err != nil {
+				return result, err
+			}
+			name := data.Package
+			if name == "" && len(packageNames) == 1 {
+				name = packageNames[0]
+			}
+			if name == "" {
+				return result, fmt.Errorf("single-package response has no package name")
+			}
 			result[name] = data.Downloads
+			return result, nil
 		}
 	}
-	return result
+
+	var decodeErr error
+	for name, raw := range object {
+		trimmed := bytes.TrimSpace(raw)
+		if bytes.Equal(trimmed, []byte("null")) {
+			continue
+		}
+		var count int
+		if err := json.Unmarshal(trimmed, &count); err == nil {
+			result[name] = count
+			continue
+		}
+
+		var data npmDownloadsResponse
+		if err := json.Unmarshal(raw, &data); err != nil {
+			if decodeErr == nil {
+				decodeErr = fmt.Errorf("package %q: %w", name, err)
+			}
+			continue
+		}
+		result[name] = data.Downloads
+	}
+	return result, decodeErr
 }
 
 // fetchTarballURL gets the tarball download URL for a specific package version.

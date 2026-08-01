@@ -167,6 +167,43 @@ type addCommandCall struct {
 	enclosingFunc   string // name of the FuncDecl the call sits in; "" if not inside one
 }
 
+func novelOnlyRegistrationCalls(calls []string, novelDecls declSet) []string {
+	kept := make([]string, 0, len(calls))
+	for _, source := range calls {
+		constructor := constructorNameFromAddCommandSource(source)
+		if constructor == "" {
+			// Inline command literals have no declaration to classify. Keep them
+			// because the lost registration itself is the only preservation signal.
+			kept = append(kept, source)
+			continue
+		}
+		if _, ok := novelDecls[constructor]; ok {
+			kept = append(kept, source)
+		}
+	}
+	return kept
+}
+
+func constructorNameFromAddCommandSource(source string) string {
+	expr, err := parser.ParseExpr(source)
+	if err != nil {
+		return ""
+	}
+	call, ok := expr.(*ast.CallExpr)
+	if !ok || len(call.Args) == 0 {
+		return ""
+	}
+	switch arg := call.Args[0].(type) {
+	case *ast.CallExpr:
+		if id, ok := arg.Fun.(*ast.Ident); ok {
+			return id.Name
+		}
+	case *ast.Ident:
+		return arg.Name
+	}
+	return ""
+}
+
 // collectAddCommandCalls walks all .go files under dir and collects calls of
 // the form `<recv>.AddCommand(<arg>)`. Returns:
 //   - calls: map of file path → list of calls in that file
