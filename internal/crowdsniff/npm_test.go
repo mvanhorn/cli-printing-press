@@ -3,10 +3,12 @@ package crowdsniff
 import (
 	"archive/tar"
 	"bytes"
+	"compress/flate"
 	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -386,6 +388,101 @@ func TestExtractTarball(t *testing.T) {
 		assert.FileExists(t, tmpDir+"/package/index.js")
 		// Symlink should NOT exist.
 		assert.NoFileExists(t, tmpDir+"/package/evil-link")
+	})
+
+	t.Run("rejects decompression bomb exceeding decompressed limit", func(t *testing.T) {
+		t.Parallel()
+
+		// One highly compressible entry whose decompressed size exceeds
+		// maxTarballSize while the compressed archive stays well under it.
+		var buf bytes.Buffer
+		gw := gzip.NewWriter(&buf)
+		tw := tar.NewWriter(gw)
+		oversized := int64(maxTarballSize) + 2*1024*1024
+		hdr := &tar.Header{
+			Name:     "package/huge.js",
+			Mode:     0o644,
+			Size:     oversized,
+			Typeflag: tar.TypeReg,
+		}
+		require.NoError(t, tw.WriteHeader(hdr))
+		_, err := io.Copy(tw, io.LimitReader(zeroReader{}, oversized))
+		require.NoError(t, err)
+		require.NoError(t, tw.Close())
+		require.NoError(t, gw.Close())
+
+		require.Less(t, buf.Len(), maxTarballSize, "compressed archive should stay under the limit")
+
+		tmpDir := t.TempDir()
+		err = extractTarball(bytes.NewReader(buf.Bytes()), tmpDir)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decompressed size limit")
+		// No oversized partial file should remain after rejection.
+		assert.NoFileExists(t, tmpDir+"/package/huge.js")
+	})
+
+	t.Run("rejects cumulative decompressed size across entries", func(t *testing.T) {
+		t.Parallel()
+
+		// Several entries each under the limit whose cumulative size exceeds it.
+		var buf bytes.Buffer
+		gw := gzip.NewWriter(&buf)
+		tw := tar.NewWriter(gw)
+		const perEntry = 4 * 1024 * 1024 // 4 MB x 3 = 12 MB > 10 MB
+		for i := range 3 {
+			hdr := &tar.Header{
+				Name:     fmt.Sprintf("package/chunk%d.js", i),
+				Mode:     0o644,
+				Size:     perEntry,
+				Typeflag: tar.TypeReg,
+			}
+			require.NoError(t, tw.WriteHeader(hdr))
+			_, err := io.Copy(tw, io.LimitReader(zeroReader{}, perEntry))
+			require.NoError(t, err)
+		}
+		require.NoError(t, tw.Close())
+		require.NoError(t, gw.Close())
+
+		tmpDir := t.TempDir()
+		err := extractTarball(bytes.NewReader(buf.Bytes()), tmpDir)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decompressed size limit")
+		assert.FileExists(t, tmpDir+"/package/chunk0.js")
+		assert.FileExists(t, tmpDir+"/package/chunk1.js")
+		assert.NoFileExists(t, tmpDir+"/package/chunk2.js")
+	})
+
+	t.Run("cleans up partial file when entry stream fails", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		gw, err := gzip.NewWriterLevel(&buf, flate.NoCompression)
+		require.NoError(t, err)
+		tw := tar.NewWriter(gw)
+		payload := make([]byte, 64*1024)
+		for i := range payload {
+			payload[i] = byte(i)
+		}
+		hdr := &tar.Header{
+			Name:     "package/partial.js",
+			Mode:     0o644,
+			Size:     int64(len(payload)),
+			Typeflag: tar.TypeReg,
+		}
+		require.NoError(t, tw.WriteHeader(hdr))
+		_, err = tw.Write(payload)
+		require.NoError(t, err)
+		require.NoError(t, tw.Close())
+		require.NoError(t, gw.Close())
+
+		truncated := buf.Bytes()[:len(buf.Bytes())/2]
+		tmpDir := t.TempDir()
+		err = extractTarball(bytes.NewReader(truncated), tmpDir)
+
+		require.Error(t, err)
+		assert.NoFileExists(t, tmpDir+"/package/partial.js")
 	})
 
 	t.Run("rejects path traversal", func(t *testing.T) {
@@ -1765,4 +1862,26 @@ func TestReadFileCapped(t *testing.T) {
 		_, err := readFileCapped("/nonexistent/file.txt", 1024)
 		assert.Error(t, err)
 	})
+}
+
+// zeroReader yields an endless stream of zero bytes. Paired with io.LimitReader
+// it builds highly compressible fixed-size payloads for decompression-limit tests.
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
+func TestCopyTarEntryWithBudget(t *testing.T) {
+	t.Parallel()
+
+	var dst bytes.Buffer
+	written, err := copyTarEntryWithBudget(&dst, strings.NewReader("12345"), 4)
+
+	require.Error(t, err)
+	assert.Equal(t, int64(5), written)
+	assert.Equal(t, "12345", dst.String())
 }
