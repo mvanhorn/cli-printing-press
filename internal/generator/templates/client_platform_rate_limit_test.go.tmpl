@@ -74,7 +74,7 @@ func platformRateLimitTestClient(t *testing.T, server *httptest.Server) (*Client
 		SchemaVersion: platform.ProfileSchemaVersion,
 		Name:          "tenant-a",
 		Sources: map[string]platform.SourceProfile{
-			"{{.Name}}": {CredentialRef: "op://Test Vault/Synthetic/token", ExpectedAccountID: "acct-a", ExpectedOrgName: "Tenant A", ExpectedStoreID: "store-a", ExpectedStoreDomain: "tenant-a.example.test", ExpectedPropertyID: "123", ExpectedBaseURL: "https://tenant-a.example.test"},
+			"{{.Name}}": {CredentialRef: "fixture://Test/Synthetic/token", ExpectedAccountID: "acct-a", ExpectedOrgName: "Tenant A", ExpectedStoreID: "store-a", ExpectedStoreDomain: "tenant-a.example.test", ExpectedPropertyID: "123", ExpectedBaseURL: "https://tenant-a.example.test"},
 		},
 	}, "{{.Name}}-pp-cli", "{{.Name}}")
 	if err != nil {

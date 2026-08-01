@@ -38,6 +38,8 @@ type rootFlags struct {
 	runProfileName          string
 	clientProfileName       string
 	platformSession         *platform.Session
+	platformResolver        platform.CredentialResolver
+	platformResolverReady   bool
 	platformAnalytics       *platform.AnalyticsDeclaration
 	platformGateError       error
 	platformMetadataWriter  io.Writer

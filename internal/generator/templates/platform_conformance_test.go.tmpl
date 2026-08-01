@@ -32,14 +32,31 @@ func (r fixtureResolver) Resolve(_ context.Context, ref string) ([]byte, error) 
 	return bytes.Clone(value), nil
 }
 
+type zeroOnFailureResolver struct {
+	values  map[string][]byte
+	failRef string
+	returned [][]byte
+}
+
+func (r *zeroOnFailureResolver) Resolve(_ context.Context, ref string) ([]byte, error) {
+	if ref == r.failRef {
+		return nil, errors.New("synthetic resolver failure")
+	}
+	value := bytes.Clone(r.values[ref])
+	r.returned = append(r.returned, value)
+	return value, nil
+}
+
 type fixtureAdapter struct {
 	observed ObservedIdentity
 	err      error
 	calls    int
+	credentials ResolvedCredentials
 }
 
-func (a *fixtureAdapter) ProbeIdentity(_ context.Context, _ ResolvedCredentials, _ SourceProfile) (ObservedIdentity, error) {
+func (a *fixtureAdapter) ProbeIdentity(_ context.Context, credentials ResolvedCredentials, _ SourceProfile) (ObservedIdentity, error) {
 	a.calls++
+	a.credentials = credentials
 	return a.observed, a.err
 }
 
@@ -55,13 +72,13 @@ func setPlatformRoots(t *testing.T) string {
 	return root
 }
 
-func validKlaviyoProfile(name string) *Profile {
+func validSyntheticProfile(name string) *Profile {
 	return &Profile{
 		SchemaVersion: 1,
 		Name:          name,
 		Sources: map[string]SourceProfile{
-			"klaviyo": {
-				CredentialRef:     "op://Synthetic/Klaviyo/private-api-key",
+			"sample": {
+				CredentialRef:     "fixture://Synthetic/sample/private-api-key",
 				ExpectedAccountID: "account-one",
 				ExpectedOrgName:   "Synthetic Org",
 			},
@@ -71,7 +88,7 @@ func validKlaviyoProfile(name string) *Profile {
 
 func TestProfileParserAndSelectionConformance(t *testing.T) {
 	setPlatformRoots(t)
-	profile := validKlaviyoProfile("synthetic")
+	profile := validSyntheticProfile("synthetic")
 	if err := SaveProfile(profile); err != nil {
 		t.Fatal(err)
 	}
@@ -87,9 +104,10 @@ func TestProfileParserAndSelectionConformance(t *testing.T) {
 		t.Fatalf("profile mode = %v, err = %v", info.Mode().Perm(), err)
 	}
 
-	for _, bad := range []string{"literal-secret", "$TOKEN", "${TOKEN}", "file:///tmp/key", "op://vault/item", "op://vault//field"} {
-		if err := ValidateCredentialReference(bad); err == nil {
-			t.Fatalf("unsafe credential reference accepted: %q", bad)
+	for _, reference := range []string{"literal-secret", "$TOKEN", "${TOKEN}", "file:///tmp/key", "opaque://vault/item", "opaque://vault//field"} {
+		profile := SourceProfile{CredentialRef: reference, ExpectedBaseURL: "https://tenant.example"}
+		if err := profile.Validate(); err != nil {
+			t.Fatalf("opaque credential reference rejected: %q: %v", reference, err)
 		}
 	}
 	for _, bad := range []string{"../escape", "UPPER", "", strings.Repeat("a", 64)} {
@@ -118,15 +136,15 @@ func TestProfileRejectsUnknownAndDuplicateNormalizedSources(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	unknown := []byte("schema_version = 1\nname = \"synthetic\"\nunknown = true\n[sources.klaviyo]\ncredential_ref = \"op://Synthetic/Klaviyo/key\"\nexpected_account_id = \"a\"\n")
+	unknown := []byte("schema_version = 1\nname = \"synthetic\"\nunknown = true\n[sources.sample]\ncredential_ref = \"fixture://Synthetic/sample/key\"\nexpected_account_id = \"a\"\n")
 	if err := os.WriteFile(path, unknown, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadProfile("synthetic"); err == nil {
 		t.Fatal("unknown profile field was accepted")
 	}
-	profile := validKlaviyoProfile("synthetic")
-	profile.Sources["KLAVIYO"] = profile.Sources["klaviyo"]
+	profile := validSyntheticProfile("synthetic")
+	profile.Sources["SAMPLE"] = profile.Sources["sample"]
 	if err := profile.Validate(); err == nil {
 		t.Fatal("duplicate normalized source was accepted")
 	}
@@ -142,17 +160,126 @@ func TestCredentiallessSourceProfileRequiresIdentityButNotDummySecret(t *testing
 	}
 }
 
-func TestTenantGateAndIsolationConformance(t *testing.T) {
+func TestSourceProfileValidatesOnlyStructuralReferenceRules(t *testing.T) {
+	for name, source := range map[string]SourceProfile{
+		"empty additional name": {
+			AdditionalCredentialRefs: map[string]string{"": "fixture://opaque/value"},
+			ExpectedBaseURL:           "https://tenant.example",
+		},
+		"whitespace additional name": {
+			AdditionalCredentialRefs: map[string]string{"  ": "fixture://opaque/value"},
+			ExpectedBaseURL:           "https://tenant.example",
+		},
+		"empty additional value": {
+			AdditionalCredentialRefs: map[string]string{"token": ""},
+			ExpectedBaseURL:           "https://tenant.example",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := source.Validate(); err == nil {
+				t.Fatal("malformed additional reference was accepted")
+			}
+		})
+	}
+}
+
+func TestProfilePreservesOpaqueSiblingReferences(t *testing.T) {
 	setPlatformRoots(t)
-	profile := validKlaviyoProfile("client-one")
+	profile := &Profile{
+		SchemaVersion: ProfileSchemaVersion,
+		Name:          "shared",
+		Sources: map[string]SourceProfile{
+			"selected": {CredentialRef: "fixture://selected/value", ExpectedBaseURL: "https://selected.example"},
+			"sibling":  {CredentialRef: "opaque://sibling/opaque/value", UsernameRef: "file:///tmp/sibling-user", ExpectedBaseURL: "https://sibling.example"},
+		},
+	}
 	if err := SaveProfile(profile); err != nil {
 		t.Fatal(err)
 	}
-	ref := profile.Sources["klaviyo"].CredentialRef
+	loaded, err := LoadProfile(profile.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Sources["sibling"]; got.CredentialRef != profile.Sources["sibling"].CredentialRef || got.UsernameRef != profile.Sources["sibling"].UsernameRef {
+		t.Fatalf("opaque sibling references changed: %#v", got)
+	}
+}
+
+func TestCredentialResolutionAllowsEmptyReferencesWithoutResolver(t *testing.T) {
+	setPlatformRoots(t)
+	if err := SaveProfile(&Profile{
+		SchemaVersion: ProfileSchemaVersion,
+		Name:          "synthetic",
+		Sources:       map[string]SourceProfile{"sample": {ExpectedBaseURL: "https://tenant.example"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	credentials, err := resolveCredentials(context.Background(), nil, SourceProfile{ExpectedBaseURL: "https://tenant.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credentials == nil || len(credentials) != 0 {
+		t.Fatalf("empty credential map = %#v", credentials)
+	}
+
+	adapter := &fixtureAdapter{observed: ObservedIdentity{BaseURL: "https://tenant.example"}}
+	session, err := VerifyProfileSource(context.Background(), "synthetic", "sample-pp-cli", "sample", nil, adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.ZeroCredentials()
+	if adapter.calls != 1 || adapter.credentials == nil || len(adapter.credentials) != 0 {
+		t.Fatalf("credentialless gate adapter input = calls:%d credentials:%#v", adapter.calls, adapter.credentials)
+	}
+}
+
+func TestCredentialResolutionFailsBeforeProbeWithoutResolver(t *testing.T) {
+	setPlatformRoots(t)
+	profile := &Profile{
+		SchemaVersion: ProfileSchemaVersion,
+		Name:          "synthetic",
+		Sources: map[string]SourceProfile{
+			"sample": {CredentialRef: "fixture://selected/value", ExpectedBaseURL: "https://tenant.example"},
+		},
+	}
+	if err := SaveProfile(profile); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &fixtureAdapter{observed: ObservedIdentity{BaseURL: "https://tenant.example"}}
+	_, err := VerifyProfileSource(context.Background(), profile.Name, "sample-pp-cli", "sample", nil, adapter)
+	var gateErr *GateError
+	if !errors.As(err, &gateErr) || !strings.Contains(err.Error(), "credential resolver is required") || adapter.calls != 0 {
+		t.Fatalf("missing resolver error=%v gate=%#v adapter_calls=%d", err, gateErr, adapter.calls)
+	}
+}
+
+func TestCredentialResolutionZerosPriorValuesOnFailure(t *testing.T) {
+	resolver := &zeroOnFailureResolver{
+		values:  map[string][]byte{"fixture://first": []byte("first-secret")},
+		failRef: "fixture://second",
+	}
+	_, err := resolveCredentials(context.Background(), resolver, SourceProfile{AdditionalCredentialRefs: map[string]string{
+		"first": "fixture://first", "second": "fixture://second",
+	}})
+	if err == nil || !strings.Contains(err.Error(), "resolve second reference") {
+		t.Fatalf("resolver failure = %v", err)
+	}
+	if len(resolver.returned) != 1 || !bytes.Equal(resolver.returned[0], make([]byte, len("first-secret"))) {
+		t.Fatalf("resolved credential was not zeroed: %q", resolver.returned)
+	}
+}
+
+func TestTenantGateAndIsolationConformance(t *testing.T) {
+	setPlatformRoots(t)
+	profile := validSyntheticProfile("client-one")
+	if err := SaveProfile(profile); err != nil {
+		t.Fatal(err)
+	}
+	ref := profile.Sources["sample"].CredentialRef
 	resolver := fixtureResolver{ref: []byte("synthetic-credential-one")}
 	adapter := &fixtureAdapter{observed: ObservedIdentity{AccountID: "account-one", OrgName: "Synthetic Org"}}
 	gateCtx, cancelGate := context.WithCancel(context.Background())
-	session, err := VerifyProfileSource(gateCtx, "client-one", "sample-pp-cli", "klaviyo", resolver, adapter)
+	session, err := VerifyProfileSource(gateCtx, "client-one", "sample-pp-cli", "sample", resolver, adapter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +296,7 @@ func TestTenantGateAndIsolationConformance(t *testing.T) {
 	if strings.Contains(session.CredentialFingerprint, "synthetic-credential") {
 		t.Fatal("credential fingerprint exposed credential bytes")
 	}
-	repeated, err := VerifyProfileSource(context.Background(), "client-one", "sample-pp-cli", "klaviyo", resolver, adapter)
+	repeated, err := VerifyProfileSource(context.Background(), "client-one", "sample-pp-cli", "sample", resolver, adapter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +316,7 @@ func TestTenantGateAndIsolationConformance(t *testing.T) {
 		t.Fatalf("cache fingerprint key mode = %v", info.Mode().Perm())
 	}
 
-	otherPaths, err := PathsFor("client-two", "sample-pp-cli", "klaviyo")
+	otherPaths, err := PathsFor("client-two", "sample-pp-cli", "sample")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,13 +325,13 @@ func TestTenantGateAndIsolationConformance(t *testing.T) {
 	}
 
 	wrong := &fixtureAdapter{observed: ObservedIdentity{AccountID: "account-two", OrgName: "Synthetic Org"}}
-	_, err = VerifyProfileSource(context.Background(), "client-one", "sample-pp-cli", "klaviyo", resolver, wrong)
+	_, err = VerifyProfileSource(context.Background(), "client-one", "sample-pp-cli", "sample", resolver, wrong)
 	var gateErr *GateError
 	if !errors.As(err, &gateErr) || gateErr.Outcome != GateMismatch {
 		t.Fatalf("same-name wrong account error = %#v", err)
 	}
 
-	rotated, err := VerifyProfileSource(context.Background(), "client-one", "sample-pp-cli", "klaviyo", fixtureResolver{ref: []byte("synthetic-credential-two")}, adapter)
+	rotated, err := VerifyProfileSource(context.Background(), "client-one", "sample-pp-cli", "sample", fixtureResolver{ref: []byte("synthetic-credential-two")}, adapter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,14 +343,14 @@ func TestTenantGateAndIsolationConformance(t *testing.T) {
 
 func TestGateTypedFailuresConformance(t *testing.T) {
 	setPlatformRoots(t)
-	profile := validKlaviyoProfile("synthetic")
+	profile := validSyntheticProfile("synthetic")
 	if err := SaveProfile(profile); err != nil {
 		t.Fatal(err)
 	}
-	ref := profile.Sources["klaviyo"].CredentialRef
+	ref := profile.Sources["sample"].CredentialRef
 	for _, outcome := range []GateOutcome{GateInvalidCredentials, GateInsufficientScope, GateRateLimited, GateUnavailable, GateIndeterminate} {
 		adapter := &fixtureAdapter{err: &ProbeFailure{Outcome: outcome, Err: errors.New("synthetic probe failure")}}
-		_, err := VerifyProfileSource(context.Background(), "synthetic", "sample-pp-cli", "klaviyo", fixtureResolver{ref: []byte("synthetic")}, adapter)
+		_, err := VerifyProfileSource(context.Background(), "synthetic", "sample-pp-cli", "sample", fixtureResolver{ref: []byte("synthetic")}, adapter)
 		var gateErr *GateError
 		if !errors.As(err, &gateErr) || gateErr.Outcome != outcome {
 			t.Fatalf("outcome %s classified as %#v", outcome, err)
@@ -244,8 +371,8 @@ func TestGorgiasUsesDocumentedBaseURLIdentityOnly(t *testing.T) {
 func TestProviderMismatchAndDatabaseOwnershipConformance(t *testing.T) {
 	setPlatformRoots(t)
 	profile := &Profile{SchemaVersion: ProfileSchemaVersion, Name: "tenant-a", Sources: map[string]SourceProfile{
-		"shopify": {CredentialRef: "op://Synthetic/Shopify/token", ExpectedStoreID: "gid://shopify/Shop/1", ExpectedStoreDomain: "tenant-a.myshopify.com"},
-		"gorgias": {CredentialRef: "op://Synthetic/Gorgias/key", UsernameRef: "op://Synthetic/Gorgias/user", ExpectedBaseURL: "https://tenant-a.gorgias.com/api"},
+		"shopify": {CredentialRef: "fixture://Synthetic/Shopify/token", ExpectedStoreID: "gid://shopify/Shop/1", ExpectedStoreDomain: "tenant-a.myshopify.com"},
+		"gorgias": {CredentialRef: "fixture://Synthetic/Gorgias/key", UsernameRef: "fixture://Synthetic/Gorgias/user", ExpectedBaseURL: "https://tenant-a.gorgias.com/api"},
 	}}
 	if err := SaveProfile(profile); err != nil {
 		t.Fatal(err)
@@ -288,8 +415,8 @@ func TestCrossSourceDatabaseRequiresSelectedProfileOwnership(t *testing.T) {
 		SchemaVersion: ProfileSchemaVersion,
 		Name:          "tenant-a",
 		Sources: map[string]SourceProfile{
-			"meta-ads": {CredentialRef: "op://Synthetic/Meta/token", ExpectedAccountID: "meta-one"},
-			"shopify":  {CredentialRef: "op://Synthetic/Shopify/token", ExpectedStoreID: "shop-one", ExpectedStoreDomain: "tenant-a.myshopify.com"},
+			"meta-ads": {CredentialRef: "fixture://Synthetic/Meta/token", ExpectedAccountID: "meta-one"},
+			"shopify":  {CredentialRef: "fixture://Synthetic/Shopify/token", ExpectedStoreID: "shop-one", ExpectedStoreDomain: "tenant-a.myshopify.com"},
 		},
 	}
 	primary, err := PrepareProfileSourceFromConfig(profile, "meta-ads-pp-cli", "meta-ads")
@@ -331,7 +458,7 @@ func TestCrossSourceDatabaseRequiresSelectedProfileOwnership(t *testing.T) {
 	tamperedProfile := *profile
 	tamperedProfile.Sources = map[string]SourceProfile{
 		"meta-ads": profile.Sources["meta-ads"],
-		"shopify":  {CredentialRef: "op://Synthetic/Shopify/token", ExpectedStoreID: "shop-two", ExpectedStoreDomain: "tenant-b.myshopify.com"},
+			"shopify":  {CredentialRef: "fixture://Synthetic/Shopify/token", ExpectedStoreID: "shop-two", ExpectedStoreDomain: "tenant-b.myshopify.com"},
 	}
 	tampered.Profile = &tamperedProfile
 	if err := VerifyCrossSourceTenantMetadataReadOnly(context.Background(), db, &tampered, "shopify"); err == nil {
@@ -496,7 +623,7 @@ func TestContextCarriesOutputMetadataRecorder(t *testing.T) {
 		SchemaVersion: ProfileSchemaVersion,
 		Name:          "synthetic",
 		Sources: map[string]SourceProfile{
-			"sample": {CredentialRef: "op://Test Vault/Test Item/token", ExpectedAccountID: "one"},
+			"sample": {CredentialRef: "fixture://Test/sample/token", ExpectedAccountID: "one"},
 		},
 	}
 	session, err := PrepareProfileSourceFromConfig(profile, "sample-pp-cli", "sample")

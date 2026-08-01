@@ -63,6 +63,20 @@ The store's schema stamp is one-way: once this binary opens the database, an old
 
 Disable the loop with `--no-learn` per-invocation or `LEARN_LOOP_EXAMPLE_NO_LEARN=true` for the whole session - useful for deterministic agent flows that don't want a learning row to silently change subsequent query results.
 
+## Platform Credential References
+
+Normal API authentication is separate from optional platform-source credential
+resolution. If this CLI uses indirect references for a tenant-gated platform
+source, add the downstream registration in a preserved hand-authored file
+under `internal/cli/` and provide both `CredentialResolverFactory` and
+`ValidateSourceProfile` on `platformSourceRegistration` for any selected source
+that has references. A source with no references may omit both hooks and receives
+an empty credential map. Keep reference values opaque to shared profile code,
+validate only the selected source in the downstream hook, and never persist
+resolved credential bytes. Do not edit generator-owned `internal/platform`
+packages; a reprint refreshes those files while retaining the downstream
+registration file.
+
 For install, auth, examples, and longer product guidance, read `README.md` and `SKILL.md`. This file intentionally stays small so repo-local agents get invariant local guidance without duplicating the generated docs.
 
 ## Release Ledger

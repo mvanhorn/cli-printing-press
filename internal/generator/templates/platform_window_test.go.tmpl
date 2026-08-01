@@ -63,7 +63,7 @@ func TestPlatformCommandWindowPreservesCalendarInputs(t *testing.T) {
 }
 
 func TestPlatformMCPWindowPreservesCalendarMonthInput(t *testing.T) {
-	profile := &platform.Profile{SchemaVersion: platform.ProfileSchemaVersion, Name: "tenant-a", Sources: map[string]platform.SourceProfile{"test-source": {CredentialRef: "op://Test Vault/Test Item/token", ExpectedAccountID: "acct-a"}}}
+	profile := &platform.Profile{SchemaVersion: platform.ProfileSchemaVersion, Name: "tenant-a", Sources: map[string]platform.SourceProfile{"test-source": {CredentialRef: "fixture://Test/sample/token", ExpectedAccountID: "acct-a"}}}
 	session, err := platform.PrepareProfileSourceFromConfig(profile, "fixture-pp-cli", "test-source")
 	if err != nil {
 		t.Fatal(err)

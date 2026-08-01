@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,17 +64,347 @@ func TestPlatformArtifactOverridesCannotEscapeSelectedProfile(t *testing.T) {
 	}
 }
 
-func TestPlatformCredentiallessRegistrationIsExplicit(t *testing.T) {
+func TestPlatformCredentiallessRegistrationAllowsEmptyReferences(t *testing.T) {
 	previousRegistration := registeredPlatformSource
 	t.Cleanup(func() { registeredPlatformSource = previousRegistration })
 	source := platform.SourceProfile{ExpectedBaseURL: "https://tenant.example"}
 	registeredPlatformSource = &platformSourceRegistration{Source: "credentialed", Adapter: conformanceIdentityAdapter{}}
-	if err := validateRegisteredPlatformSourceProfile(source); err == nil || !strings.Contains(err.Error(), "requires at least one exact credential reference") {
-		t.Fatalf("credentialed source accepted an empty reference set: %v", err)
-	}
-	registeredPlatformSource = &platformSourceRegistration{Source: "public-site", Adapter: conformanceIdentityAdapter{}, Credentialless: true}
 	if err := validateRegisteredPlatformSourceProfile(source); err != nil {
-		t.Fatalf("explicit credentialless source rejected: %v", err)
+		t.Fatalf("source without references rejected: %v", err)
+	}
+
+	registeredPlatformSource = &platformSourceRegistration{Source: "public-site", Adapter: conformanceIdentityAdapter{}, Credentialless: true}
+	withReference := platform.SourceProfile{CredentialRef: "fixture://selected/token", ExpectedBaseURL: "https://tenant.example"}
+	if _, err := platformCredentialResolver(withReference); err == nil || !strings.Contains(err.Error(), "ValidateSourceProfile") {
+		t.Fatalf("credentialless source bypassed selected-source hooks: %v", err)
+	}
+}
+
+func TestPlatformReferencedSourceRequiresResolverAndValidatorPair(t *testing.T) {
+	previousRegistration := registeredPlatformSource
+	t.Cleanup(func() { registeredPlatformSource = previousRegistration })
+	source := platform.SourceProfile{CredentialRef: "fixture://selected/token", ExpectedBaseURL: "https://tenant.example"}
+	validator := func(platform.SourceProfile) error { return nil }
+	factory := func() platform.CredentialResolver { return conformanceResolver{value: []byte("fixture-secret")} }
+	var typedNilResolver *conformanceResolver
+
+	tests := []struct {
+		name       string
+		registration platformSourceRegistration
+		want       string
+	}{
+		{
+			name: "missing both",
+			registration: platformSourceRegistration{Source: "selected", Adapter: conformanceIdentityAdapter{}},
+			want: "ValidateSourceProfile",
+		},
+		{
+			name: "missing validator",
+			registration: platformSourceRegistration{Source: "selected", Adapter: conformanceIdentityAdapter{}, CredentialResolverFactory: factory},
+			want: "ValidateSourceProfile",
+		},
+		{
+			name: "missing resolver factory",
+			registration: platformSourceRegistration{Source: "selected", Adapter: conformanceIdentityAdapter{}, ValidateSourceProfile: validator},
+			want: "CredentialResolverFactory",
+		},
+		{
+			name: "nil resolver",
+			registration: platformSourceRegistration{
+				Source: "selected", Adapter: conformanceIdentityAdapter{}, CredentialResolverFactory: func() platform.CredentialResolver { return nil }, ValidateSourceProfile: validator,
+			},
+			want: "CredentialResolverFactory returned nil",
+		},
+		{
+			name: "typed nil resolver",
+			registration: platformSourceRegistration{
+				Source: "selected", Adapter: conformanceIdentityAdapter{}, CredentialResolverFactory: func() platform.CredentialResolver { return typedNilResolver }, ValidateSourceProfile: validator,
+			},
+			want: "CredentialResolverFactory returned nil",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registeredPlatformSource = &tt.registration
+			if _, err := platformCredentialResolver(source); err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), "selected") {
+				t.Fatalf("resolver configuration error = %v", err)
+			}
+		})
+	}
+
+	registeredPlatformSource = &platformSourceRegistration{
+		Source: "selected", Adapter: conformanceIdentityAdapter{}, CredentialResolverFactory: factory, ValidateSourceProfile: validator,
+	}
+	resolver, err := platformCredentialResolver(source)
+	if err != nil || resolver == nil {
+		t.Fatalf("complete resolver registration = %v resolver=%T", err, resolver)
+	}
+	validatorCalled := false
+	resolverCalled := false
+	registeredPlatformSource = &platformSourceRegistration{
+		Source: "selected", Adapter: conformanceIdentityAdapter{},
+		CredentialResolverFactory: func() platform.CredentialResolver {
+			resolverCalled = true
+			return factory()
+		},
+		ValidateSourceProfile: func(platform.SourceProfile) error {
+			validatorCalled = true
+			return errors.New("synthetic selected-source validation failure")
+		},
+	}
+	if _, err := platformCredentialResolver(source); err == nil || !strings.Contains(err.Error(), "selected-source validation failure") || !validatorCalled || resolverCalled {
+		t.Fatalf("selected-source validation ordering error=%v validator_called=%v resolver_called=%v", err, validatorCalled, resolverCalled)
+	}
+}
+
+type recordingIdentityAdapter struct {
+	observed    platform.ObservedIdentity
+	calls       int
+	credentials platform.ResolvedCredentials
+}
+
+func (a *recordingIdentityAdapter) ProbeIdentity(_ context.Context, credentials platform.ResolvedCredentials, _ platform.SourceProfile) (platform.ObservedIdentity, error) {
+	a.calls++
+	a.credentials = credentials
+	return a.observed, nil
+}
+
+func (*recordingIdentityAdapter) EndpointClass() string { return "GET /identity" }
+
+func TestPlatformCredentiallessCLIAndMCPUseEmptyCredentials(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRINTING_PRESS_CLIENT_PROFILE", "tenant-a")
+	t.Setenv(mcpBoundProfileEnv, "")
+	if err := platform.SaveProfile(&platform.Profile{
+		SchemaVersion: platform.ProfileSchemaVersion,
+		Name:          "tenant-a",
+		Sources:       map[string]platform.SourceProfile{"public-site": {ExpectedBaseURL: "https://tenant.example"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &recordingIdentityAdapter{observed: platform.ObservedIdentity{BaseURL: "https://tenant.example"}}
+	previousRegistration := registeredPlatformSource
+	t.Cleanup(func() { registeredPlatformSource = previousRegistration })
+	registeredPlatformSource = &platformSourceRegistration{Source: "public-site", Adapter: adapter, Credentialless: true}
+
+	root := RootCmd()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"whoami", "--client-profile", "tenant-a", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.calls != 1 || adapter.credentials == nil || len(adapter.credentials) != 0 {
+		t.Fatalf("CLI credentialless gate calls=%d credentials=%#v", adapter.calls, adapter.credentials)
+	}
+
+	if err := BindMCPServerProfile(); err != nil {
+		t.Fatal(err)
+	}
+	session, err := VerifyMCPInvocation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.ZeroCredentials()
+	if adapter.calls != 2 || session.Credentials == nil || len(session.Credentials) != 0 {
+		t.Fatalf("MCP credentialless gate calls=%d credentials=%#v", adapter.calls, session.Credentials)
+	}
+}
+
+func TestPlatformReferencedSourceWithoutResolverFailsBeforeProbe(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRINTING_PRESS_CLIENT_PROFILE", "")
+	t.Setenv(mcpBoundProfileEnv, "")
+	if err := platform.SaveProfile(&platform.Profile{
+		SchemaVersion: platform.ProfileSchemaVersion,
+		Name:          "tenant-a",
+		Sources:       map[string]platform.SourceProfile{"selected": {CredentialRef: "fixture://selected/token", ExpectedBaseURL: "https://tenant.example"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &recordingIdentityAdapter{observed: platform.ObservedIdentity{BaseURL: "https://tenant.example"}}
+	previousRegistration := registeredPlatformSource
+	t.Cleanup(func() { registeredPlatformSource = previousRegistration })
+	registeredPlatformSource = &platformSourceRegistration{
+		Source: "selected", Adapter: adapter, ValidateSourceProfile: func(platform.SourceProfile) error { return nil },
+	}
+
+	root := RootCmd()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	receiptPath := filepath.Join(t.TempDir(), "missing-resolver-receipt.json")
+	root.SetArgs([]string{"whoami", "--client-profile", "tenant-a", "--receipt-file", receiptPath, "--json"})
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "CredentialResolverFactory") || !strings.Contains(err.Error(), "selected") || adapter.calls != 0 {
+		t.Fatalf("missing resolver error=%v adapter_calls=%d", err, adapter.calls)
+	}
+	if _, err := os.Stat(receiptPath); !os.IsNotExist(err) {
+		t.Fatalf("normal CLI wrote a receipt after resolver failure: %v", err)
+	}
+	validateRoot := RootCmd()
+	validateRoot.SetOut(&bytes.Buffer{})
+	validateRoot.SetErr(&bytes.Buffer{})
+	validateRoot.SetArgs([]string{"client", "validate", "tenant-a", "--json"})
+	err = validateRoot.Execute()
+	if err == nil || !strings.Contains(err.Error(), "CredentialResolverFactory") || adapter.calls != 0 {
+		t.Fatalf("client validate missing resolver error=%v adapter_calls=%d", err, adapter.calls)
+	}
+
+	t.Setenv("PRINTING_PRESS_CLIENT_PROFILE", "tenant-a")
+	if err := BindMCPServerProfile(); err == nil || !strings.Contains(err.Error(), "CredentialResolverFactory") || adapter.calls != 0 {
+		t.Fatalf("MCP missing resolver error=%v adapter_calls=%d", err, adapter.calls)
+	}
+}
+
+func TestPlatformMCPBindingDoesNotConsumeResolverFactory(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRINTING_PRESS_CLIENT_PROFILE", "tenant-a")
+	t.Setenv(mcpBoundProfileEnv, "")
+	if err := platform.SaveProfile(&platform.Profile{
+		SchemaVersion: platform.ProfileSchemaVersion,
+		Name:          "tenant-a",
+		Sources:       map[string]platform.SourceProfile{"selected": {CredentialRef: "fixture://selected/token", ExpectedBaseURL: "https://tenant.example"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &recordingIdentityAdapter{observed: platform.ObservedIdentity{BaseURL: "https://tenant.example"}}
+	factoryCalls := 0
+	previousRegistration := registeredPlatformSource
+	t.Cleanup(func() { registeredPlatformSource = previousRegistration })
+	registeredPlatformSource = &platformSourceRegistration{
+		Source: "selected", Adapter: adapter,
+		CredentialResolverFactory: func() platform.CredentialResolver {
+			factoryCalls++
+			return conformanceResolver{value: []byte("fixture-secret")}
+		},
+		ValidateSourceProfile: func(platform.SourceProfile) error { return nil },
+	}
+	if err := BindMCPServerProfile(); err != nil {
+		t.Fatal(err)
+	}
+	if factoryCalls != 0 {
+		t.Fatalf("MCP binding consumed the resolver factory %d times", factoryCalls)
+	}
+	first, err := VerifyMCPInvocation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.ZeroCredentials()
+	second, err := VerifyMCPInvocation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.ZeroCredentials()
+	if factoryCalls != 2 || adapter.calls != 2 {
+		t.Fatalf("MCP verification factory_calls=%d adapter_calls=%d", factoryCalls, adapter.calls)
+	}
+}
+
+func TestPlatformMCPNilResolverFailsBeforeProbe(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRINTING_PRESS_CLIENT_PROFILE", "tenant-a")
+	t.Setenv(mcpBoundProfileEnv, "")
+	if err := platform.SaveProfile(&platform.Profile{
+		SchemaVersion: platform.ProfileSchemaVersion,
+		Name:          "tenant-a",
+		Sources:       map[string]platform.SourceProfile{"selected": {CredentialRef: "fixture://selected/token", ExpectedBaseURL: "https://tenant.example"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &recordingIdentityAdapter{observed: platform.ObservedIdentity{BaseURL: "https://tenant.example"}}
+	previousRegistration := registeredPlatformSource
+	t.Cleanup(func() { registeredPlatformSource = previousRegistration })
+	registeredPlatformSource = &platformSourceRegistration{
+		Source: "selected", Adapter: adapter,
+		CredentialResolverFactory: func() platform.CredentialResolver { return nil },
+		ValidateSourceProfile:     func(platform.SourceProfile) error { return nil },
+	}
+	if err := BindMCPServerProfile(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyMCPInvocation(context.Background()); err == nil || !strings.Contains(err.Error(), "CredentialResolverFactory returned nil") || adapter.calls != 0 {
+		t.Fatalf("MCP nil resolver error=%v adapter_calls=%d", err, adapter.calls)
+	}
+}
+
+func TestPlatformReferencedProfileWritesFailBeforePersistence(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRINTING_PRESS_CLIENT_PROFILE", "")
+	adapter := &recordingIdentityAdapter{observed: platform.ObservedIdentity{BaseURL: "https://tenant.example"}}
+	previousRegistration := registeredPlatformSource
+	t.Cleanup(func() { registeredPlatformSource = previousRegistration })
+	registeredPlatformSource = &platformSourceRegistration{
+		Source: "selected", Adapter: adapter, ValidateSourceProfile: func(platform.SourceProfile) error { return nil },
+	}
+
+	newProfile := func(commandArgs []string) error {
+		root := RootCmd()
+		root.SetOut(&bytes.Buffer{})
+		root.SetErr(&bytes.Buffer{})
+		root.SetArgs(commandArgs)
+		return root.Execute()
+	}
+	credentialArgs := []string{"--credential-ref", "fixture://selected/token", "--expected-base-url", "https://tenant.example", "--json"}
+	if err := newProfile(append([]string{"client", "add", "new-profile"}, credentialArgs...)); err == nil || !strings.Contains(err.Error(), "CredentialResolverFactory") {
+		t.Fatalf("client add missing resolver error = %v", err)
+	}
+	if _, err := platform.LoadProfile("new-profile"); !os.IsNotExist(err) {
+		t.Fatalf("client add persisted a profile after resolver failure: %v", err)
+	}
+
+	registeredPlatformSource.CredentialResolverFactory = func() platform.CredentialResolver { return nil }
+	if err := newProfile(append([]string{"client", "add", "nil-factory-profile"}, credentialArgs...)); err == nil || !strings.Contains(err.Error(), "CredentialResolverFactory returned nil") {
+		t.Fatalf("client add nil resolver error = %v", err)
+	}
+	if _, err := platform.LoadProfile("nil-factory-profile"); !os.IsNotExist(err) {
+		t.Fatalf("client add persisted a profile after nil resolver failure: %v", err)
+	}
+	registeredPlatformSource.CredentialResolverFactory = nil
+
+	if err := platform.SaveProfile(&platform.Profile{
+		SchemaVersion: platform.ProfileSchemaVersion,
+		Name:          "existing",
+		Sources:       map[string]platform.SourceProfile{"selected": {CredentialRef: "fixture://selected/old", ExpectedBaseURL: "https://tenant.example"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := newProfile(append([]string{"client", "source", "set", "existing"}, credentialArgs...)); err == nil || !strings.Contains(err.Error(), "CredentialResolverFactory") {
+		t.Fatalf("client source set missing resolver error = %v", err)
+	}
+	existing, err := platform.LoadProfile("existing")
+	if err != nil || existing.Sources["selected"].CredentialRef != "fixture://selected/old" {
+		t.Fatalf("client source set changed profile after resolver failure: profile=%#v err=%v", existing, err)
+	}
+
+	receiptPath := filepath.Join(t.TempDir(), "missing-receipt.json")
+	migrateArgs := append([]string{"client", "migrate", "migrated"}, credentialArgs...)
+	migrateArgs = append(migrateArgs, "--receipt-file", receiptPath)
+	if err := newProfile(migrateArgs); err == nil || !strings.Contains(err.Error(), "CredentialResolverFactory") {
+		t.Fatalf("client migrate missing resolver error = %v", err)
+	}
+	if _, err := platform.LoadProfile("migrated"); !os.IsNotExist(err) {
+		t.Fatalf("client migrate persisted a profile after resolver failure: %v", err)
+	}
+	if _, err := os.Stat(receiptPath); !os.IsNotExist(err) {
+		t.Fatalf("client migrate wrote a receipt after resolver failure: %v", err)
+	}
+	if adapter.calls != 0 {
+		t.Fatalf("resolver configuration failure reached identity adapter %d times", adapter.calls)
 	}
 }
 
@@ -82,10 +413,10 @@ func TestPlatformSourceFlagsPreserveNamedExactReferences(t *testing.T) {
 		t.Fatalf("empty named references must stay nil for migration idempotence: %#v", source.AdditionalCredentialRefs)
 	}
 	values := platformSourceFlags{
-		credentialRef: "op://Test Vault/Test Item/token",
+		credentialRef: "fixture://Test/sample/token",
 		additionalCredentialRef: map[string]string{
-			"client_id": "op://Test Vault/Test Item/client-id",
-			"secret":    "op://Test Vault/Test Item/secret",
+			"client_id": "fixture://Test/sample/client-id",
+			"secret":    "fixture://Test/sample/secret",
 		},
 	}
 	source := values.sourceProfile()
@@ -136,7 +467,7 @@ func TestPlatformCLIConformanceSurfaceAndGate(t *testing.T) {
 		SchemaVersion: platform.ProfileSchemaVersion,
 		Name:          "tenant-a",
 		Sources: map[string]platform.SourceProfile{
-			"test-source": {CredentialRef: "op://Test Vault/Test Item/token", ExpectedAccountID: "acct-a"},
+			"test-source": {CredentialRef: "fixture://Test/sample/token", ExpectedAccountID: "acct-a"},
 		},
 	}
 	if err := platform.SaveProfile(profile); err != nil {
@@ -144,17 +475,15 @@ func TestPlatformCLIConformanceSurfaceAndGate(t *testing.T) {
 	}
 
 	previousRegistration := registeredPlatformSource
-	previousResolver := platformResolverFactory
 	t.Cleanup(func() {
 		registeredPlatformSource = previousRegistration
-		platformResolverFactory = previousResolver
 	})
 	registeredPlatformSource = &platformSourceRegistration{
-		Source:  "test-source",
-		Adapter: conformanceIdentityAdapter{observed: platform.ObservedIdentity{AccountID: "acct-a"}},
-	}
-	platformResolverFactory = func() platform.CredentialResolver {
-		return conformanceResolver{value: []byte("credential-bytes-never-print")}
+		Source: "test-source", Adapter: conformanceIdentityAdapter{observed: platform.ObservedIdentity{AccountID: "acct-a"}},
+		CredentialResolverFactory: func() platform.CredentialResolver {
+			return conformanceResolver{value: []byte("credential-bytes-never-print")}
+		},
+		ValidateSourceProfile: func(platform.SourceProfile) error { return nil },
 	}
 
 	root := RootCmd()
@@ -210,7 +539,7 @@ func TestPlatformCLIConformanceOutputMetadataAndAnalytics(t *testing.T) {
 		SchemaVersion: platform.ProfileSchemaVersion,
 		Name:          "tenant-a",
 		Sources: map[string]platform.SourceProfile{
-			"test-source": {CredentialRef: "op://Test Vault/Test Item/token", ExpectedAccountID: "acct-a"},
+			"test-source": {CredentialRef: "fixture://Test/sample/token", ExpectedAccountID: "acct-a"},
 		},
 	}
 	session, err := platform.PrepareProfileSourceFromConfig(profile, "sample-pp-cli", "test-source")
@@ -365,16 +694,18 @@ func TestPlatformCLIConformanceMismatchFailsBeforeCommand(t *testing.T) {
 	t.Setenv("PRINTING_PRESS_CLIENT_PROFILE", "")
 	if err := platform.SaveProfile(&platform.Profile{
 		SchemaVersion: platform.ProfileSchemaVersion, Name: "tenant-a",
-		Sources: map[string]platform.SourceProfile{"test-source": {CredentialRef: "op://Test Vault/Test Item/token", ExpectedAccountID: "acct-a"}},
+		Sources: map[string]platform.SourceProfile{"test-source": {CredentialRef: "fixture://Test/sample/token", ExpectedAccountID: "acct-a"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	previousRegistration := registeredPlatformSource
-	previousResolver := platformResolverFactory
-	t.Cleanup(func() { registeredPlatformSource = previousRegistration; platformResolverFactory = previousResolver })
-	registeredPlatformSource = &platformSourceRegistration{Source: "test-source", Adapter: conformanceIdentityAdapter{observed: platform.ObservedIdentity{AccountID: "acct-b"}}}
-	platformResolverFactory = func() platform.CredentialResolver { return conformanceResolver{value: []byte("secret")} }
+	t.Cleanup(func() { registeredPlatformSource = previousRegistration })
+	registeredPlatformSource = &platformSourceRegistration{
+		Source: "test-source", Adapter: conformanceIdentityAdapter{observed: platform.ObservedIdentity{AccountID: "acct-b"}},
+		CredentialResolverFactory: func() platform.CredentialResolver { return conformanceResolver{value: []byte("secret")} },
+		ValidateSourceProfile:     func(platform.SourceProfile) error { return nil },
+	}
 
 	root := RootCmd()
 	var output bytes.Buffer
@@ -404,14 +735,16 @@ func TestPlatformMigrationIsVerifiedIdempotentAndQuarantinesLegacyState(t *testi
 	receiptPath := filepath.Join(t.TempDir(), "migration-receipt.json")
 
 	previousRegistration := registeredPlatformSource
-	previousResolver := platformResolverFactory
-	t.Cleanup(func() { registeredPlatformSource = previousRegistration; platformResolverFactory = previousResolver })
-	registeredPlatformSource = &platformSourceRegistration{Source: "test-source", Adapter: conformanceIdentityAdapter{observed: platform.ObservedIdentity{AccountID: "acct-a"}}}
-	platformResolverFactory = func() platform.CredentialResolver {
-		return conformanceResolver{value: []byte("migration-secret-never-print")}
+	t.Cleanup(func() { registeredPlatformSource = previousRegistration })
+	registeredPlatformSource = &platformSourceRegistration{
+		Source: "test-source", Adapter: conformanceIdentityAdapter{observed: platform.ObservedIdentity{AccountID: "acct-a"}},
+		CredentialResolverFactory: func() platform.CredentialResolver {
+			return conformanceResolver{value: []byte("migration-secret-never-print")}
+		},
+		ValidateSourceProfile: func(platform.SourceProfile) error { return nil },
 	}
 
-	args := []string{"client", "migrate", "tenant-a", "--credential-ref", "op://Test Vault/Test Item/token", "--expected-account-id", "acct-a", "--legacy-db", legacyDB, "--receipt-file", receiptPath, "--json"}
+	args := []string{"client", "migrate", "tenant-a", "--credential-ref", "fixture://Test/sample/token", "--expected-account-id", "acct-a", "--legacy-db", legacyDB, "--receipt-file", receiptPath, "--json"}
 	root := RootCmd()
 	var output bytes.Buffer
 	root.SetOut(&output)
@@ -458,7 +791,7 @@ func TestPlatformMigrationIsVerifiedIdempotentAndQuarantinesLegacyState(t *testi
 	}
 
 	conflict := RootCmd()
-	conflict.SetArgs([]string{"client", "migrate", "tenant-a", "--credential-ref", "op://Test Vault/Test Item/token", "--expected-account-id", "acct-b"})
+	conflict.SetArgs([]string{"client", "migrate", "tenant-a", "--credential-ref", "fixture://Test/sample/token", "--expected-account-id", "acct-b"})
 	if err := conflict.Execute(); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Fatalf("conflicting migration error = %v", err)
 	}
@@ -492,16 +825,19 @@ func TestPlatformMigrationAdoptsOnlyVerifiedTenantDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	previousRegistration, previousResolver := registeredPlatformSource, platformResolverFactory
-	t.Cleanup(func() { registeredPlatformSource, platformResolverFactory = previousRegistration, previousResolver })
-	registeredPlatformSource = &platformSourceRegistration{Source: "test-source", Adapter: conformanceIdentityAdapter{observed: platform.ObservedIdentity{AccountID: "acct-a"}}}
-	platformResolverFactory = func() platform.CredentialResolver { return conformanceResolver{value: []byte("new-credential")} }
+	previousRegistration := registeredPlatformSource
+	t.Cleanup(func() { registeredPlatformSource = previousRegistration })
+	registeredPlatformSource = &platformSourceRegistration{
+		Source: "test-source", Adapter: conformanceIdentityAdapter{observed: platform.ObservedIdentity{AccountID: "acct-a"}},
+		CredentialResolverFactory: func() platform.CredentialResolver { return conformanceResolver{value: []byte("new-credential")} },
+		ValidateSourceProfile:     func(platform.SourceProfile) error { return nil },
+	}
 
 	root := RootCmd()
 	var output bytes.Buffer
 	root.SetOut(&output)
 	root.SetErr(&output)
-	migrationArgs := []string{"client", "migrate", "tenant-adopt", "--credential-ref", "op://Test Vault/Test Item/token", "--expected-account-id", "acct-a", "--legacy-db", legacyDB, "--json"}
+	migrationArgs := []string{"client", "migrate", "tenant-adopt", "--credential-ref", "fixture://Test/sample/token", "--expected-account-id", "acct-a", "--legacy-db", legacyDB, "--json"}
 	root.SetArgs(migrationArgs)
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
@@ -564,17 +900,20 @@ func TestPlatformMigrationWrongTenantCannotCreateProfile(t *testing.T) {
 	t.Setenv("PRINTING_PRESS_CLIENT_PROFILE", "")
 	t.Setenv(mcpBoundProfileEnv, "")
 
-	previousRegistration, previousResolver := registeredPlatformSource, platformResolverFactory
-	t.Cleanup(func() { registeredPlatformSource, platformResolverFactory = previousRegistration, previousResolver })
-	registeredPlatformSource = &platformSourceRegistration{Source: "test-source", Adapter: conformanceIdentityAdapter{observed: platform.ObservedIdentity{AccountID: "acct-b"}}}
-	platformResolverFactory = func() platform.CredentialResolver {
-		return conformanceResolver{value: []byte("wrong-tenant-credential")}
+	previousRegistration := registeredPlatformSource
+	t.Cleanup(func() { registeredPlatformSource = previousRegistration })
+	registeredPlatformSource = &platformSourceRegistration{
+		Source: "test-source", Adapter: conformanceIdentityAdapter{observed: platform.ObservedIdentity{AccountID: "acct-b"}},
+		CredentialResolverFactory: func() platform.CredentialResolver {
+			return conformanceResolver{value: []byte("wrong-tenant-credential")}
+		},
+		ValidateSourceProfile: func(platform.SourceProfile) error { return nil },
 	}
 
 	root := RootCmd()
 	root.SetOut(&bytes.Buffer{})
 	root.SetErr(&bytes.Buffer{})
-	root.SetArgs([]string{"client", "migrate", "tenant-rejected", "--credential-ref", "op://Test Vault/Test Item/token", "--expected-account-id", "acct-a", "--json"})
+	root.SetArgs([]string{"client", "migrate", "tenant-rejected", "--credential-ref", "fixture://Test/sample/token", "--expected-account-id", "acct-a", "--json"})
 	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "tenant gate mismatch") {
 		t.Fatalf("wrong-tenant migration error = %v", err)
 	}
