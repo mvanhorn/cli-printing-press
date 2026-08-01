@@ -467,25 +467,30 @@ func extractTarball(r io.Reader, destDir string) error {
 			return fmt.Errorf("creating file %s: %w", header.Name, err)
 		}
 
-		// Copy under a hard cap of the remaining budget, independent of the
-		// declared header size, so misleading tar metadata that understates the
-		// real payload still cannot write past the aggregate limit. Reading one
-		// byte past the budget is enough to detect the overflow.
-		written, err := io.Copy(f, io.LimitReader(tr, remaining+1))
+		written, err := copyTarEntryWithBudget(f, tr, remaining)
 		if err != nil {
 			_ = f.Close()
 			_ = os.Remove(absTarget)
 			return fmt.Errorf("writing file %s: %w", header.Name, err)
 		}
 		_ = f.Close()
-		if written > remaining {
-			_ = os.Remove(absTarget)
-			return fmt.Errorf("tarball exceeds decompressed size limit of %d bytes", maxTarballSize)
-		}
 		remaining -= written
 	}
 
 	return nil
+}
+
+func copyTarEntryWithBudget(dst io.Writer, src io.Reader, remaining int64) (int64, error) {
+	// Read one byte past the budget so an overlong stream is distinguishable
+	// from an entry that ends exactly at the limit.
+	written, err := io.Copy(dst, io.LimitReader(src, remaining+1))
+	if err != nil {
+		return written, err
+	}
+	if written > remaining {
+		return written, fmt.Errorf("tarball exceeds decompressed size limit of %d bytes", maxTarballSize)
+	}
+	return written, nil
 }
 
 // classifyPackage determines whether a package is an official or community SDK.
