@@ -39,6 +39,11 @@ func newScorecardCmd() *cobra.Command {
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
 			}
+			canonicalDir, err := pipeline.ResolveTargetDir(dir)
+			if err != nil {
+				return &ExitError{Code: ExitInputError, Err: err}
+			}
+			dir = canonicalDir
 
 			// Use a temp pipeline dir for the scorecard output
 			pipelineDir, err := os.MkdirTemp("", "scorecard-*")
@@ -90,6 +95,7 @@ func newScorecardCmd() *cobra.Command {
 					fmt.Println()
 				}
 				if live.Unable {
+					fmt.Printf("  Status: unavailable\n")
 					fmt.Printf("  Unable to run: %s\n", live.Reason)
 				} else {
 					fmt.Printf("  Passed: %d/%d  (%d%% pass rate, %d skipped)\n", live.Passed, live.Evaluated(), int(live.PassRate*100+0.5), live.Skipped)

@@ -1828,6 +1828,33 @@ func TestCheckNovelFeatures(t *testing.T) {
 		assert.True(t, result.Skipped)
 	})
 
+	t.Run("finds parent research without an explicit directory", func(t *testing.T) {
+		runRoot := t.TempDir()
+		workingDir := filepath.Join(runRoot, "working")
+		cliDir := filepath.Join(workingDir, "demo-pp-cli")
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		t.Chdir(workingDir)
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}`)
+
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Health dashboard", Command: "health"},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, runRoot))
+
+		result := checkNovelFeatures("demo-pp-cli", "")
+		assert.False(t, result.Skipped)
+		assert.Equal(t, 1, result.Planned)
+		assert.Equal(t, 1, result.Found)
+	})
+
 	t.Run("finds matching commands", func(t *testing.T) {
 		// Set up a CLI dir with a command file
 		cliDir := t.TempDir()

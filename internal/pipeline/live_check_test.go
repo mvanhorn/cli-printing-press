@@ -555,8 +555,13 @@ func TestLiveCheckMarshalJSON(t *testing.T) {
 	body, err := json.Marshal(r)
 	require.NoError(t, err)
 	require.Contains(t, string(body), `"pass_rate_pct":67`)
+	require.Contains(t, string(body), `"status":"available"`)
 	require.Contains(t, string(body), `"evaluated":2`)
 	require.NotContains(t, string(body), "0.6666")
+
+	body, err = json.Marshal(&LiveCheckResult{Unable: true, Reason: "no research.json"})
+	require.NoError(t, err)
+	require.Contains(t, string(body), `"status":"unavailable"`)
 }
 
 // smoke test that ties research, a stub binary, and the full RunLiveCheck
@@ -797,6 +802,31 @@ func TestLiveCheck_RelativeCLIDirRunsResolvedBinary(t *testing.T) {
 
 	result := RunLiveCheck(LiveCheckOptions{CLIDir: cliDir, BinaryName: "stub", Timeout: liveCheckIntegrationTimeout})
 	require.False(t, result.Unable, "check was Unable: %s", result.Reason)
+	require.Equal(t, 1, result.Passed)
+}
+
+func TestLiveCheck_RelativeCLIDirFindsParentResearch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+
+	runRoot := t.TempDir()
+	workingDir := filepath.Join(runRoot, "working")
+	cliDir := filepath.Join(workingDir, "demo-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	t.Chdir(workingDir)
+
+	writeStubBinary(t, cliDir, "stub", `echo '{"data":[{"id":"1"}]}'`)
+	writeTestResearchJSON(t, runRoot, []NovelFeature{
+		{Name: "List items", Command: "items list", Example: "stub items list --json"},
+	})
+
+	result := RunLiveCheck(LiveCheckOptions{
+		CLIDir:     "demo-pp-cli",
+		BinaryName: "stub",
+		Timeout:    liveCheckIntegrationTimeout,
+	})
+	require.False(t, result.Unable, "relative target should resolve all live-check paths: %s", result.Reason)
 	require.Equal(t, 1, result.Passed)
 }
 
