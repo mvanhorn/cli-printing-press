@@ -86,7 +86,14 @@ func withHTTPSRedirectPolicy(client *http.Client) *http.Client {
 			return fmt.Errorf("refusing redirect to non-HTTPS URL: %s", req.URL.Redacted())
 		}
 		if inner != nil {
-			return inner(req, via)
+			if err := inner(req, via); err != nil {
+				return err
+			}
+			// Re-check after the caller's hook in case it modified the
+			// request URL before returning nil.
+			if req.URL.Scheme != "https" {
+				return fmt.Errorf("refusing redirect to non-HTTPS URL: %s", req.URL.Redacted())
+			}
 		}
 		return nil
 	}

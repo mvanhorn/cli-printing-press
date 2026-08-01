@@ -802,6 +802,46 @@ func TestNewNPMSource_CustomOptions(t *testing.T) {
 	assert.Nil(t, client.CheckRedirect, "caller-supplied client must not be mutated")
 }
 
+func TestWithHTTPSRedirectPolicy_PreservesCallerCheckRedirect(t *testing.T) {
+	t.Parallel()
+
+	t.Run("preserves caller errors", func(t *testing.T) {
+		called := false
+		client := &http.Client{
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				called = true
+				assert.Equal(t, "https", req.URL.Scheme)
+				return http.ErrUseLastResponse
+			},
+		}
+
+		wrapped := withHTTPSRedirectPolicy(client)
+		req := httptest.NewRequest(http.MethodGet, "https://example.com/redirect", nil)
+
+		err := wrapped.CheckRedirect(req, nil)
+
+		assert.ErrorIs(t, err, http.ErrUseLastResponse)
+		assert.True(t, called)
+	})
+
+	t.Run("rechecks a URL changed by the caller", func(t *testing.T) {
+		client := &http.Client{
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				req.URL.Scheme = "http"
+				return nil
+			},
+		}
+
+		wrapped := withHTTPSRedirectPolicy(client)
+		req := httptest.NewRequest(http.MethodGet, "https://example.com/redirect", nil)
+
+		err := wrapped.CheckRedirect(req, nil)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "non-HTTPS")
+	})
+}
+
 func TestNPMSource_RecencyCutoffFiltering(t *testing.T) {
 	t.Parallel()
 
