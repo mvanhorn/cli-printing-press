@@ -161,7 +161,7 @@ func TestTierRoutingEmitsTierAwareClientAndCommands(t *testing.T) {
 	codeOrchSrc := readGeneratedFile(t, codeOutputDir, "internal", "mcp", "code_orch.go")
 	require.Regexp(t, `\bTier\s+string\b`, codeOrchSrc)
 	require.Regexp(t, `Tier:\s+"paid"`, codeOrchSrc)
-	require.Regexp(t, `"tier":\s+r\.ep\.Tier`, codeOrchSrc)
+	require.Regexp(t, `out\["tier"\]\s*=\s*ep\.Tier`, codeOrchSrc)
 	require.Contains(t, codeOrchSrc, `c = c.WithTier(ep.Tier)`)
 }
 
