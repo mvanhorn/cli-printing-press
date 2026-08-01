@@ -31,9 +31,9 @@ learn-loop-example/internal/cli/learnings_stats.go
 # this file.
 learn-loop-example/internal/cli/root.go
 
-# Store schema v9: StoreSchemaVersion = 9 + CREATE TABLE statements for
-# search_patterns, entity_lookups, teach_log_metadata, learning_playbooks,
-# learn_candidates, and learn_events.
+# Store schema v10: StoreSchemaVersion = 10, the parent-key storage-id
+# migration, and CREATE TABLE statements for search_patterns, entity_lookups,
+# learning_playbooks, learn_candidates, and learn_events.
 learn-loop-example/internal/store/store.go
 learn-loop-example/internal/store/extras.go
 learn-loop-example/internal/store/candidates.go

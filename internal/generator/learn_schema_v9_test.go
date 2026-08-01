@@ -31,16 +31,15 @@ func generateLearnStore(t *testing.T, name string, learnEnabled bool) (string, s
 	return string(storeGo), outputDir
 }
 
-// TestLearnSchemaV9_EnabledEmitsV9WithCandidateAndEventTables pins the v9
-// schema bump: a learn-enabled store advances StoreSchemaVersion to 9 and
-// carries the learn_candidates and learn_events tables (with their CHECK
-// constraints and indexes) as additive CREATE IF NOT EXISTS migrations.
-func TestLearnSchemaV9_EnabledEmitsV9WithCandidateAndEventTables(t *testing.T) {
+// TestLearnSchemaV9_EnabledEmitsCandidateAndEventTables pins the tables
+// introduced at v9 while allowing later store migrations to advance the
+// current schema version.
+func TestLearnSchemaV9_EnabledEmitsCandidateAndEventTables(t *testing.T) {
 	t.Parallel()
 
 	src, _ := generateLearnStore(t, "learn-v9-enabled", true)
 
-	require.Contains(t, src, "const StoreSchemaVersion = 9")
+	require.Contains(t, src, "const StoreSchemaVersion = 10")
 	require.NotContains(t, src, "const StoreSchemaVersion = 8")
 	for _, want := range []string{
 		"CREATE TABLE IF NOT EXISTS learn_candidates",
@@ -62,7 +61,7 @@ func TestLearnSchemaV9_EnabledEmitsV9WithCandidateAndEventTables(t *testing.T) {
 // resourcesFTSContentSchemaVersion stays 4 in BOTH learn shapes. The old
 // conditional 8 rode the learn bump by accident and forced a full FTS
 // content rewrite on every v4-v7 learn store open; with the pin, v4 and v8
-// stores opened by a v9 binary take the additive-only migration path.
+// stores opened by the current binary take the additive-only FTS path.
 func TestLearnSchemaV9_FTSContentPinIsUnconditional(t *testing.T) {
 	t.Parallel()
 
@@ -72,7 +71,7 @@ func TestLearnSchemaV9_FTSContentPinIsUnconditional(t *testing.T) {
 
 	disabled, _ := generateLearnStore(t, "learn-v9-fts-disabled", false)
 	require.Contains(t, disabled, "const resourcesFTSContentSchemaVersion = 4")
-	require.Contains(t, disabled, "const StoreSchemaVersion = 4")
+	require.Contains(t, disabled, "const StoreSchemaVersion = 5")
 	for _, gone := range []string{"learn_candidates", "learn_events"} {
 		require.NotContains(t, disabled, gone,
 			"learn-disabled spec must not emit the %s migration", gone)
@@ -95,9 +94,9 @@ func TestLearnSchemaV9_ReadmeDocumentsOneWayStamp(t *testing.T) {
 
 // TestLearnSchemaV9_EmittedStoreTestsPass runs the emitted store package
 // tests under -race. This executes the emitted migration scenarios for real:
-// fresh v9 open with both new tables, the v4->v9 additive open with the FTS
-// content preserved (no rewrite), the v8->v9 additive upgrade with learn
-// data intact, and the newer-store refusal.
+// a fresh current-version open with both v9 tables, the v4->current additive
+// open with FTS content preserved, the v8->current additive upgrade with
+// learn data intact, and the newer-store refusal.
 func TestLearnSchemaV9_EmittedStoreTestsPass(t *testing.T) {
 	t.Parallel()
 
