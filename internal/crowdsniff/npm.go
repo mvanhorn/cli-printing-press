@@ -21,6 +21,7 @@ const (
 	defaultDownloadsBaseURL = "https://api.npmjs.org"
 	defaultRecencyCutoff    = 180 * 24 * time.Hour // 6 months
 	defaultHTTPTimeout      = 15 * time.Second
+	maxHTTPRedirects        = 10
 	maxTarballSize          = 10 * 1024 * 1024 // 10 MB
 	maxSearchResults        = 25
 	maxPackagesToProcess    = 10
@@ -82,6 +83,9 @@ func withHTTPSRedirectPolicy(client *http.Client) *http.Client {
 	inner := client.CheckRedirect
 	c := *client
 	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= maxHTTPRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxHTTPRedirects)
+		}
 		if req.URL.Scheme != "https" {
 			return fmt.Errorf("refusing redirect to non-HTTPS URL: %s", req.URL.Redacted())
 		}

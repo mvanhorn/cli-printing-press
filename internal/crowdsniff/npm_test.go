@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -839,6 +840,22 @@ func TestWithHTTPSRedirectPolicy_PreservesCallerCheckRedirect(t *testing.T) {
 
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "non-HTTPS")
+	})
+
+	t.Run("stops after ten HTTPS redirects", func(t *testing.T) {
+		var requests atomic.Int32
+		tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+			http.Redirect(w, r, r.URL.String(), http.StatusFound)
+		}))
+		defer tlsSrv.Close()
+
+		src := NewNPMSource(NPMOptions{HTTPClient: tlsSrv.Client()})
+		_, _, _, err := src.processPackageTarball(context.Background(), tlsSrv.URL+"/loop", "pkg", "community", "example", 100)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "stopped after 10 redirects")
+		assert.Equal(t, int32(maxHTTPRedirects), requests.Load(), "the wrapped client should retain Go's redirect limit")
 	})
 }
 
