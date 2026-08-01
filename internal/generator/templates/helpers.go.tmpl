@@ -1165,6 +1165,9 @@ func paginatedGet(ctx context.Context, c interface {
 
 	// Fetch all pages
 	allItems := make([]json.RawMessage, 0)
+	var collectionEnvelope map[string]json.RawMessage
+	collectionField := ""
+	collectionShapeSet := false
 	seenCursorTokens := map[string]struct{}{}
 	if sentCursor := clean[cursorParam]; sentCursor != "" {
 		seenCursorTokens[sentCursor] = struct{}{}
@@ -1190,6 +1193,10 @@ func paginatedGet(ctx context.Context, c interface {
 		// Try to extract items array
 		var items []json.RawMessage
 		if json.Unmarshal(data, &items) == nil {
+			if collectionShapeSet && collectionField != "" {
+				return nil, fmt.Errorf("paginated response collection changed from %q to a bare array", collectionField)
+			}
+			collectionShapeSet = true
 			allItems = append(allItems, items...)
 			if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, len(items)); ok {
 				if page >= paginatedGetMaxPages {
@@ -1204,7 +1211,24 @@ func paginatedGet(ctx context.Context, c interface {
 			var obj map[string]json.RawMessage
 			if json.Unmarshal(data, &obj) == nil {
 				itemCount := 0
-				if nested, ok := extractPaginatedItems(obj, path); ok {
+				field, preserve := paginatedCollectionEnvelopeField(obj, path)
+				nested, ok := extractPaginatedItems(obj, path)
+				if !ok && preserve {
+					ok = json.Unmarshal(obj[field], &nested) == nil
+				}
+				if ok {
+					if !collectionShapeSet {
+						collectionShapeSet = true
+						if preserve {
+							collectionField = field
+							collectionEnvelope = cloneRawObject(obj)
+						}
+					} else if (collectionField != "" && (!preserve || !strings.EqualFold(collectionField, field))) || (collectionField == "" && preserve) {
+						if collectionField != "" {
+							return nil, fmt.Errorf("paginated response collection changed from %q", collectionField)
+						}
+						return nil, fmt.Errorf("paginated response collection changed from a canonical array to %q", field)
+					}
 					allItems = append(allItems, nested...)
 					itemCount = len(nested)
 				}
@@ -1284,10 +1308,105 @@ func paginatedGet(ctx context.Context, c interface {
 	} else {
 		fmt.Fprintf(os.Stderr, `{"event":"complete","total":%d,"pages":%d}`+"\n", len(allItems), page)
 	}
-	result, _ := json.Marshal(allItems)
+	var result []byte
+	if collectionField != "" {
+		collectionEnvelope[collectionField], _ = json.Marshal(allItems)
+		deleteRawPath(collectionEnvelope, cursorLookupPath)
+		deleteRawPath(collectionEnvelope, hasMoreField)
+		if paginationType == "offset" || paginationType == "page" {
+			deleteRawPath(collectionEnvelope, cursorParam)
+		}
+		result, _ = json.Marshal(collectionEnvelope)
+	} else {
+		result, _ = json.Marshal(allItems)
+	}
 	return json.RawMessage(result), nil
 }
 
+func cloneRawObject(obj map[string]json.RawMessage) map[string]json.RawMessage {
+	clone := make(map[string]json.RawMessage, len(obj))
+	for key, value := range obj {
+		clone[key] = append(json.RawMessage(nil), value...)
+	}
+	return clone
+}
+
+func paginatedCollectionEnvelopeField(obj map[string]json.RawMessage, requestPath string) (string, bool) {
+	for key, raw := range obj {
+		if canonicalPaginationCollectionKeys[key] && isJSONArray(raw) {
+			return "", false
+		}
+	}
+
+	pathWithoutQuery := strings.SplitN(requestPath, "?", 2)[0]
+	segments := strings.Split(strings.Trim(pathWithoutQuery, "/"), "/")
+	for i := len(segments) - 1; i >= 0; i-- {
+		segment := strings.TrimSuffix(strings.TrimSpace(segments[i]), ".json")
+		if segment == "" || (strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}")) {
+			continue
+		}
+		for key, raw := range obj {
+			if strings.EqualFold(key, segment) && isJSONArray(raw) && !envelopeMetadataArrayKeys[key] {
+				return key, true
+			}
+		}
+	}
+
+	var candidate string
+	for key, raw := range obj {
+		if envelopeMetadataArrayKeys[key] || canonicalPaginationCollectionKeys[key] || !isJSONArray(raw) {
+			continue
+		}
+		if _, ok := extractPaginatedObjectArray(raw); !ok {
+			continue
+		}
+		if candidate != "" {
+			return "", false
+		}
+		candidate = key
+	}
+	return candidate, candidate != ""
+}
+
+func isJSONArray(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return false
+	}
+	var items []json.RawMessage
+	return json.Unmarshal(raw, &items) == nil
+}
+
+var canonicalPaginationCollectionKeys = map[string]bool{
+	"data": true, "items": true, "results": true, "messages": true, "members": true, "values": true,
+}
+
+func deleteRawPath(obj map[string]json.RawMessage, path string) {
+	if path == "" {
+		return
+	}
+	parts := strings.Split(path, ".")
+	key := ""
+	for candidate := range obj {
+		if strings.EqualFold(candidate, parts[0]) {
+			key = candidate
+			break
+		}
+	}
+	if key == "" {
+		return
+	}
+	if len(parts) == 1 {
+		delete(obj, key)
+		return
+	}
+	var child map[string]json.RawMessage
+	if json.Unmarshal(obj[key], &child) != nil {
+		return
+	}
+	deleteRawPath(child, strings.Join(parts[1:], "."))
+	obj[key], _ = json.Marshal(child)
+}
 func nextFullPageOffsetCursor(params map[string]string, cursorParam, paginationType string, pageSize, itemCount int) (string, bool) {
 	if (paginationType != "offset" && paginationType != "page") || itemCount == 0 {
 		return "", false

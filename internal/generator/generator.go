@@ -968,6 +968,7 @@ type authTemplateData struct {
 // the generated HTTP client.
 type clientTemplateData struct {
 	*spec.APISpec
+	IsGraphQL                  bool
 	HasGraphQLPersistedQueries bool
 	HasMultipartRequest        bool
 	HasFormRequest             bool
@@ -2479,6 +2480,7 @@ func (g *Generator) renderSingleFiles() error {
 		case "client.go.tmpl":
 			data = &clientTemplateData{
 				APISpec:                    g.Spec,
+				IsGraphQL:                  isGraphQLSpec(g.Spec),
 				HasGraphQLPersistedQueries: g.hasTrafficAnalysisHint("graphql_persisted_query"),
 				HasMultipartRequest:        hasMultipartRequest(g.Spec),
 				HasFormRequest:             hasFormRequest(g.Spec),

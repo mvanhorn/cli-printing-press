@@ -2058,7 +2058,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				return cliutil.XMLToJSON(json.RawMessage(respBody)), resp.StatusCode, nil
 			}
 {{- end}}
-			return json.RawMessage(sanitizeJSONResponse(respBody)), resp.StatusCode, nil
+			return json.RawMessage({{if and .ResponseEnvelopeKey (not .IsGraphQL)}}unwrapResponseEnvelope(sanitizeJSONResponse(respBody)){{else}}sanitizeJSONResponse(respBody){{end}}), resp.StatusCode, nil
 		}
 
 		if !binaryResponse {
@@ -2919,6 +2919,21 @@ func sanitizeJSONResponse(body []byte) []byte {
 	}
 	return body
 }
+
+{{- if and .ResponseEnvelopeKey (not .IsGraphQL)}}
+// unwrapResponseEnvelope removes the explicitly configured single-key JSON
+// wrapper while leaving unrelated objects and malformed bodies untouched.
+func unwrapResponseEnvelope(body []byte) []byte {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil || len(envelope) != 1 {
+		return body
+	}
+	if payload, ok := envelope[{{printf "%q" .ResponseEnvelopeKey}}]; ok {
+		return payload
+	}
+	return body
+}
+{{- end}}
 
 
 // maskToken redacts all but the last 4 characters of a token for safe display.

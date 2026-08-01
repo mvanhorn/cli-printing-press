@@ -54,6 +54,92 @@ func TestPaginatedGetEmitsTruncationWarning(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./internal/cli")
 }
 
+func TestPaginatedGetPreservesResourceNamedEnvelopeForSelection(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("paginate-envelope")
+	apiSpec.Resources = map[string]spec.Resource{
+		"services": {
+			Description: "Manage services",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/services",
+					Description: "List services",
+					Pagination: &spec.Pagination{
+						Type:           "cursor",
+						CursorParam:    "pageToken",
+						NextCursorPath: "nextPageToken",
+					},
+					Response: spec.ResponseDef{Type: "array", Item: "Service"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "paginate-envelope-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir)
+
+	behaviorTest := `package cli
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+)
+
+type envelopePaginationClient struct {
+	responses []json.RawMessage
+}
+
+func (c *envelopePaginationClient) GetWithHeaders(_ context.Context, _ string, _ map[string]string, _ map[string]string) (json.RawMessage, error) {
+	response := c.responses[0]
+	c.responses = c.responses[1:]
+	return response, nil
+}
+
+func TestPaginatedEnvelopeSelection(t *testing.T) {
+	client := &envelopePaginationClient{responses: []json.RawMessage{
+		json.RawMessage("{\"services\":[{\"name\":\"web\",\"status\":\"ready\"}],\"nextPageToken\":\"page-2\"}"),
+		json.RawMessage("{\"services\":[{\"name\":\"worker\",\"status\":\"ready\"}]}"),
+	}}
+	data, err := paginatedGet(context.Background(), client, "/services", nil, nil, true, "pageToken", "cursor", "", 100, "nextPageToken", "")
+	if err != nil {
+		t.Fatalf("paginatedGet: %v", err)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v; data=%s", err, data)
+	}
+	var services []map[string]any
+	if err := json.Unmarshal(envelope["services"], &services); err != nil || len(services) != 2 {
+		t.Fatalf("services = %v, err=%v; want two resources", services, err)
+	}
+	if _, ok := envelope["nextPageToken"]; ok {
+		t.Fatalf("fully consumed nextPageToken remained in envelope: %s", data)
+	}
+
+	selected := filterFields(data, "services.name")
+	var selectedEnvelope map[string][]map[string]any
+	if err := json.Unmarshal(selected, &selectedEnvelope); err != nil || len(selectedEnvelope["services"]) != 2 {
+		t.Fatalf("selected envelope = %s, err=%v", selected, err)
+	}
+	if selectedEnvelope["services"][0]["name"] != "web" || selectedEnvelope["services"][1]["name"] != "worker" {
+		t.Fatalf("selected services lost names: %s", selected)
+	}
+
+	compacted := compactFields(data)
+	var compactEnvelope map[string][]map[string]any
+	if err := json.Unmarshal(compacted, &compactEnvelope); err != nil || len(compactEnvelope["services"]) != 2 {
+		t.Fatalf("compact envelope = %s, err=%v", compacted, err)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "pagination_envelope_test.go"), []byte(behaviorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPaginatedEnvelopeSelection", "-count=1")
+}
+
 func TestGeneratedSyncShortPageTerminationRespectsPaginationType(t *testing.T) {
 	t.Parallel()
 
@@ -1047,9 +1133,13 @@ func TestPaginatedGetMergesDomainSpecificWrappedArrayWithMetadataArrays(t *testi
 	if string(data) == "null" {
 		t.Fatalf("paginatedGet returned null for populated wrapped pages")
 	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v\n%s", err, data)
+	}
 	var got []map[string]any
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal data: %v\n%s", err, data)
+	if err := json.Unmarshal(envelope["charges"], &got); err != nil {
+		t.Fatalf("unmarshal charges: %v\n%s", err, data)
 	}
 	if len(got) != 2 {
 		t.Fatalf("got %d items, want 2; data=%s", len(got), data)
@@ -1057,11 +1147,57 @@ func TestPaginatedGetMergesDomainSpecificWrappedArrayWithMetadataArrays(t *testi
 	if got[0]["id"] != "ch_1" || got[1]["id"] != "ch_2" {
 		t.Fatalf("merged wrong collection: %#v", got)
 	}
+	if _, ok := envelope["warnings"]; !ok {
+		t.Fatalf("preserved envelope missing warnings: %s", data)
+	}
+	if _, ok := envelope["cursor"]; ok {
+		t.Fatalf("consumed cursor leaked into preserved envelope: %s", data)
+	}
 	if len(client.params) != 2 {
 		t.Fatalf("got %d requests, want 2", len(client.params))
 	}
 	if client.params[1]["cursor"] != "next-token" {
 		t.Fatalf("second request cursor = %q, want next-token", client.params[1]["cursor"])
+	}
+}
+
+func TestPaginatedGetRemovesPageEnvelopeMetadata(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"charges":[{"id":"ch_1"}],"page":1,"has_more":true}` + "`" + `),
+		json.RawMessage(` + "`" + `{"charges":[{"id":"ch_2"}],"page":2,"has_more":false}` + "`" + `),
+	}}
+	data, err := paginatedGet(context.Background(), client, "/charges", map[string]string{"limit":"1"}, nil, true, "page", "page", "limit", 1, "", "has_more")
+	if err != nil {
+		t.Fatalf("paginatedGet returned error: %v", err)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v\n%s", err, data)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(envelope["charges"], &got); err != nil {
+		t.Fatalf("unmarshal charges: %v\n%s", err, data)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d items, want 2; data=%s", len(got), data)
+	}
+	for _, key := range []string{"page", "has_more"} {
+		if _, ok := envelope[key]; ok {
+			t.Fatalf("consumed %s metadata leaked into envelope: %s", key, data)
+		}
+	}
+}
+
+func TestPaginatedGetRejectsMixedEnvelopeShape(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"charges":[{"id":"ch_1"}],"cursor":"next-token"}` + "`" + `),
+		json.RawMessage(` + "`" + `[{
+			"id":"ch_2"
+		}]` + "`" + `),
+	}}
+	_, err := paginatedGet(context.Background(), client, "/charges", map[string]string{"limit":"1"}, nil, true, "cursor", "cursor", "limit", 100, "cursor", "")
+	if err == nil || !strings.Contains(err.Error(), "collection changed") {
+		t.Fatalf("paginatedGet error = %v, want mixed collection shape error", err)
 	}
 }
 

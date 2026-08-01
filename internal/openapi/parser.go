@@ -68,6 +68,7 @@ const (
 	extensionLearn                 = "x-learn"
 	extensionStreaming             = "x-streaming"
 	extensionPPQuery               = "x-pp-query"
+	extensionPPResponseEnvelope    = "x-pp-response-envelope"
 	extensionPPSyncable            = "x-pp-syncable"
 	extensionPPPagination          = "x-pp-pagination"
 	extensionSyncWalker            = "x-pp-sync-walker"
@@ -635,6 +636,11 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	if err != nil {
 		return nil, err
 	}
+	responseEnvelopeKey, err := parseStringOpenAPIExtension(doc, extensionPPResponseEnvelope)
+	if err != nil {
+		return nil, err
+	}
+	responseEnvelopeKey = strings.TrimSpace(responseEnvelopeKey)
 	roles, err := parseStringListOpenAPIExtension(doc, extensionRoles)
 	if err != nil {
 		return nil, err
@@ -682,6 +688,7 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 		ProxyRoutes:                  proxyRoutes,
 		RateClass:                    rateClass,
 		DefaultRateLimit:             defaultRateLimit,
+		ResponseEnvelopeKey:          responseEnvelopeKey,
 		Auth:                         auth,
 		Roles:                        roles,
 		TierRouting:                  tierRouting,
