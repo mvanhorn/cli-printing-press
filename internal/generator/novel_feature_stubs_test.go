@@ -185,7 +185,7 @@ func TestGeneratorRenamesPatternPackCommandCollidingWithNovelCommand(t *testing.
 	orphans := readGeneratedFile(t, outputDir, "internal", "cli", "pm_orphans.go")
 	assert.Contains(t, orphans, `Use:   "pattern-pack-collision-orphans"`)
 	root := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
-	assert.Contains(t, root, "newOrphansCmd(flags)")
+	assert.Contains(t, root, "newPatternPackCollisionOrphansCmd(flags)")
 	assert.Contains(t, root, "newNovelOrphansCmd(flags)")
 
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "pattern_pack_collision_test.go"), []byte(`package cli
@@ -213,6 +213,43 @@ func TestPatternPackAndNovelCommandsAreBothReachable(t *testing.T) {
 }
 `), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPatternPackAndNovelCommandsAreBothReachable")
+}
+
+func TestGeneratorRenamesPatternPackConstructorWhenThreeWayNamesCollide(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("three-way-collision")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources = map[string]spec.Resource{
+		"health": {
+			Description: "API health endpoint",
+			Endpoints: map[string]spec.Endpoint{
+				"get":    {Method: "GET", Path: "/health", Description: "Health"},
+				"status": {Method: "GET", Path: "/health/status", Description: "Health status"},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{
+		Store:    true,
+		Sync:     true,
+		Insights: []string{"insights/health_score.go.tmpl"},
+	}
+	gen.NovelFeatures = []NovelFeature{{
+		Name:        "Health command",
+		Command:     "health",
+		Description: "Show health information.",
+		Example:     "three-way-collision-pp-cli health",
+	}}
+	require.NoError(t, gen.Generate())
+
+	insight := readGeneratedFile(t, outputDir, "internal", "cli", "health_score.go")
+	assert.Contains(t, insight, "func newThreeWayCollisionHealthCmd(flags *rootFlags) *cobra.Command")
+	root := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	assert.Contains(t, root, "rootCmd.AddCommand(newThreeWayCollisionHealthCmd(flags))")
+
+	runGoCommand(t, outputDir, "build", "./internal/cli")
 }
 
 func TestGeneratorNormalizesBareFlagNovelFeatureExample(t *testing.T) {

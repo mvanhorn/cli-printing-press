@@ -3980,6 +3980,7 @@ type visionRenderData struct {
 	*spec.APISpec
 	VisionSet                    VisionTemplateSet
 	CommandNames                 map[string]string
+	CommandConstructor           string
 	HasSync                      bool
 	SyncableResources            []profiler.SyncableResource
 	DependentSyncResources       []profiler.DependentResource
@@ -4622,12 +4623,14 @@ func (g *Generator) renderWorkflowFiles(visionData visionRenderData) ([]string, 
 	for _, tmpl := range g.VisionSet.Workflows {
 		outName := strings.TrimSuffix(filepath.Base(tmpl), ".tmpl")
 		outPath := filepath.Join("internal", "cli", outName)
-		if err := g.renderTemplate(tmpl, outPath, visionData); err != nil {
+		templateData := visionData
+		templateData.CommandConstructor = g.resolvedVisionCommandConstructor(tmpl)
+		if err := g.renderTemplate(tmpl, outPath, templateData); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: skipping workflow template %s: %v\n", tmpl, err)
 			continue
 		}
-		if constructor := commandConstructorForTemplate(tmpl); constructor != "" {
-			renderedWorkflowConstructors = append(renderedWorkflowConstructors, constructor)
+		if templateData.CommandConstructor != "" {
+			renderedWorkflowConstructors = append(renderedWorkflowConstructors, templateData.CommandConstructor)
 		}
 	}
 
@@ -4858,12 +4861,14 @@ func (g *Generator) renderInsightFiles(visionData visionRenderData) []string {
 	for _, tmpl := range g.VisionSet.Insights {
 		outName := strings.TrimSuffix(filepath.Base(tmpl), ".tmpl")
 		outPath := filepath.Join("internal", "cli", outName)
-		if err := g.renderTemplate(tmpl, outPath, visionData); err != nil {
+		templateData := visionData
+		templateData.CommandConstructor = g.resolvedVisionCommandConstructor(tmpl)
+		if err := g.renderTemplate(tmpl, outPath, templateData); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: skipping insight template %s: %v\n", tmpl, err)
 			continue
 		}
-		if constructor := commandConstructorForTemplate(tmpl); constructor != "" {
-			renderedInsightConstructors = append(renderedInsightConstructors, constructor)
+		if templateData.CommandConstructor != "" {
+			renderedInsightConstructors = append(renderedInsightConstructors, templateData.CommandConstructor)
 		}
 	}
 
@@ -5237,6 +5242,19 @@ func commandConstructorForTemplate(tmpl string) string {
 	default:
 		return ""
 	}
+}
+
+func (g *Generator) resolvedVisionCommandConstructor(tmpl string) string {
+	constructor := commandConstructorForTemplate(tmpl)
+	if constructor == "" {
+		return ""
+	}
+	bare := frameworkUseNameForTemplate(tmpl)
+	resolved := g.resolvedVisionCommandName(tmpl)
+	if resolved == "" || resolved == bare {
+		return constructor
+	}
+	return commandIdent(resolved)
 }
 
 func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {

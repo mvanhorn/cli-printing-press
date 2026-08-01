@@ -12,7 +12,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newHealthCmd(flags *rootFlags) *cobra.Command {
+func new{{.CommandConstructor}}Cmd(flags *rootFlags) *cobra.Command {
 	var dbPath string
 
 	cmd := &cobra.Command{

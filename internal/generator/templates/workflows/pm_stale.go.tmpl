@@ -97,7 +97,7 @@ func buildStaleTimestampPredicate() (whereClause, orderClause string, placeholde
 		len(whereParts)
 }
 
-func newStaleCmd(flags *rootFlags) *cobra.Command {
+func new{{.CommandConstructor}}Cmd(flags *rootFlags) *cobra.Command {
 	var days int
 	var team string
 	var dbPath string
