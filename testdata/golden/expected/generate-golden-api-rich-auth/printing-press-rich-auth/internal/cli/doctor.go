@@ -737,7 +737,10 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 	switch {
 	case !haveAny && len(resources) == 0:
 		report["status"] = "empty"
-		report["hint"] = "Cache is empty; run 'printing-press-rich-pp-cli sync' to hydrate."
+		// Only sync-tracked resources are counted here. A store seeded by
+		// other paths (built-in reference data, local writes) can hold rows
+		// while sync_state stays empty, so say what was measured.
+		report["hint"] = "No sync recorded; run 'printing-press-rich-pp-cli sync' to hydrate API-backed resources. Rows written by other paths are not tracked in sync_state."
 	case fresh:
 		report["status"] = "fresh"
 	default:
