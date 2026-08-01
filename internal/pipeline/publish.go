@@ -209,7 +209,9 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 	// parsing is unavailable or lossy for the original spec format. NovelFeatures
 	// is carried forward as a defensive fallback in case research.json is absent;
 	// when both are available, research.json wins as the post-dogfood source of truth.
+	var existingRaw map[string]json.RawMessage
 	if existingData, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename)); err == nil {
+		_ = json.Unmarshal(existingData, &existingRaw)
 		var existing CLIManifest
 		if json.Unmarshal(existingData, &existing) == nil {
 			if state.RunID == "" && existing.RunID != "" {
@@ -399,7 +401,14 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		}
 	}
 
-	return WriteCLIManifest(dir, m)
+	clearFields := map[string]struct{}{}
+	if m.SpecURL != "" && m.SpecPath == "" {
+		clearFields["spec_path"] = struct{}{}
+	}
+	if m.SpecPath != "" && m.SpecURL == "" {
+		clearFields["spec_url"] = struct{}{}
+	}
+	return writeCLIManifestPreservingRawFields(dir, m, existingRaw, clearFields)
 }
 
 func archivedSpecDescription(data []byte) string {

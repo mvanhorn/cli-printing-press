@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,6 +30,14 @@ func restorePermanentCreatorForPromote(stagingDir, libraryDir, apiName string) e
 	if err != nil {
 		return fmt.Errorf("reading staged manifest: %w", err)
 	}
+	stagedData, err := os.ReadFile(filepath.Join(stagingDir, CLIManifestFilename))
+	if err != nil {
+		return fmt.Errorf("reading staged manifest fields: %w", err)
+	}
+	var stagedRaw map[string]json.RawMessage
+	if err := json.Unmarshal(stagedData, &stagedRaw); err != nil {
+		return fmt.Errorf("parsing staged manifest fields: %w", err)
+	}
 	if staged.Creator == nil || staged.Creator.IsZero() || spec.SamePerson(*staged.Creator, *existing.Creator) {
 		return nil
 	}
@@ -54,7 +63,7 @@ func restorePermanentCreatorForPromote(stagingDir, libraryDir, apiName string) e
 	if err := rewriteGeneratedAttribution(stagingDir, priorCreator, restoredCreator, priorContributors, staged.Contributors); err != nil {
 		return err
 	}
-	if err := WriteCLIManifest(stagingDir, staged); err != nil {
+	if err := writeCLIManifestPreservingRaw(stagingDir, staged, stagedRaw); err != nil {
 		return err
 	}
 	return nil
