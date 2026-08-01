@@ -4036,6 +4036,8 @@ var reservedRootFlagFieldNames = map[string]struct{}{
 	"clientProfileName":       {},
 	"platformGateError":       {},
 	"platformSession":         {},
+	"platformResolver":        {},
+	"platformResolverReady":   {},
 	"platformAnalytics":       {},
 	"platformMetadataWriter":  {},
 	"platformMetadataEmitted": {},
