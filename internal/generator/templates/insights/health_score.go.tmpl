@@ -12,11 +12,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newHealthCmd(flags *rootFlags) *cobra.Command {
+func new{{.CommandConstructor}}Cmd(flags *rootFlags) *cobra.Command {
 	var dbPath string
 
 	cmd := &cobra.Command{
-		Use:   "health",
+		Use:   {{printf "%q" (index .CommandNames "health")}},
 		Short: "Compute a composite workspace health score (0-100)",
 		Long: `Analyze locally synced data to produce a health score based on:
   - Stale ratio: percentage of items not updated in 30+ days (weight: 35%)
@@ -25,10 +25,10 @@ func newHealthCmd(flags *rootFlags) *cobra.Command {
 
 A score of 100 means all items are fresh, assigned, and actively worked on.`,
 		Example: `  # Show workspace health score
-  {{.Name}}-pp-cli health
+  {{.Name}}-pp-cli {{index .CommandNames "health"}}
 
   # Output as JSON
-  {{.Name}}-pp-cli health --json`,
+  {{.Name}}-pp-cli {{index .CommandNames "health"}} --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dbPath == "" {
 				dbPath = defaultDBPath("{{.Name}}-pp-cli")

@@ -198,8 +198,9 @@ type Options struct {
 
 	// NovelOnly restricts MergeIntoFreshTree to preserve only NOVEL and
 	// NOVEL-COLLISION files; TEMPLATED-WITH-ADDITIONS, TEMPLATED-BODY-DRIFT,
-	// and TEMPLATED-VALUE-DRIFT are left as fresh emitted them, and lost
-	// AddCommand re-injection is skipped. Used by the cross-spec fallback
+	// and TEMPLATED-VALUE-DRIFT are left as fresh emitted them. Lost
+	// AddCommand calls whose constructors are preserved in the novel files are
+	// still re-injected. Used by the cross-spec fallback
 	// path in `generate --force` where the classifier's heuristics aren't
 	// valid across different specs but novel hand-written files (no marker)
 	// remain user-owned regardless of spec lineage.

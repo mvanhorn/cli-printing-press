@@ -12,6 +12,8 @@ func isAllowedDeadHelper(name string) bool {
 		"resolvePlatformWindow": // resolved-window hook for hand-written novel commands
 		return true
 	case "applyResponsePath",
+		"cloneRawObject",
+		"deleteRawPath",
 		"emitMissingPaginationCursorWarning",
 		"emitMissingPaginationSignalWarning",
 		"emitPaginatedGetMaxPagesWarning",
@@ -19,9 +21,11 @@ func isAllowedDeadHelper(name string) bool {
 		"extractGraphQLConnection",
 		"extractGraphQLObject",
 		"formatCLIParamValue",
+		"isJSONArray",
 		"nextClientSidePaginationCursor",
 		"nextFullPageOffsetCursor",
 		"paginatedGet",
+		"paginatedCollectionEnvelopeField",
 		"paginationCursorToken",
 		"replacePathParam",
 		"responsePayloadParentAtPath",

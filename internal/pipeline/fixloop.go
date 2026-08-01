@@ -176,7 +176,9 @@ func applyFix(fix Fix, dir string) error {
 	var target string
 	switch method {
 	case "GET":
-		if strings.Contains(src, "data, err := paginatedGet(") {
+		if strings.Contains(src, "data, err := paginatedGetWithResponsePath(") {
+			target = "data, err := paginatedGetWithResponsePath("
+		} else if strings.Contains(src, "data, err := paginatedGet(") {
 			target = "data, err := paginatedGet("
 		} else {
 			target = "data, err := c.Get("
@@ -278,7 +280,7 @@ func detectHTTPMethod(src string) string {
 			return strings.ToUpper(candidate)
 		}
 	}
-	if strings.Contains(src, "paginatedGet(") {
+	if strings.Contains(src, "paginatedGetWithResponsePath(") || strings.Contains(src, "paginatedGet(") {
 		return "GET"
 	}
 	return ""

@@ -143,7 +143,7 @@ func TestTierRoutingEmitsTierAwareClientAndCommands(t *testing.T) {
 	cmd.Env = append(os.Environ(), "TIERED_ENTERPRISE_TOKEN=enterprise-secret")
 	output, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
-	require.Contains(t, string(output), "Authorization: ****cret")
+	require.Contains(t, string(output), "Authorization: ****")
 
 	codeSpec := minimalSpec("tiered-code")
 	codeSpec.TierRouting = apiSpec.TierRouting
@@ -161,7 +161,7 @@ func TestTierRoutingEmitsTierAwareClientAndCommands(t *testing.T) {
 	codeOrchSrc := readGeneratedFile(t, codeOutputDir, "internal", "mcp", "code_orch.go")
 	require.Regexp(t, `\bTier\s+string\b`, codeOrchSrc)
 	require.Regexp(t, `Tier:\s+"paid"`, codeOrchSrc)
-	require.Regexp(t, `"tier":\s+r\.ep\.Tier`, codeOrchSrc)
+	require.Regexp(t, `out\["tier"\]\s*=\s*ep\.Tier`, codeOrchSrc)
 	require.Contains(t, codeOrchSrc, `c = c.WithTier(ep.Tier)`)
 }
 

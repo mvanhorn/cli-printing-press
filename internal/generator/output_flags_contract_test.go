@@ -15,6 +15,7 @@ func TestGeneratedHelpersHonorPlainAndHumanFriendlyFlags(t *testing.T) {
 	apiSpec := minimalSpec("output-flags")
 	outputDir := filepath.Join(t.TempDir(), "output-flags-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir)
 
 	testPath := filepath.Join(outputDir, "internal", "cli", "output_flags_runtime_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(`package cli
@@ -52,6 +53,61 @@ func TestPrintOutputWithFlagsPlainEmptyArrayIsEmpty(t *testing.T) {
 	}
 	if got := out.String(); got != "" {
 		t.Fatalf("--plain should render empty arrays as an empty stream, got %q", got)
+	}
+}
+
+func TestPrintOutputWithFlagsCSVEmptyArrayIsEmpty(t *testing.T) {
+	data := json.RawMessage("[]")
+	var out bytes.Buffer
+
+	if err := printOutputWithFlags(&out, data, &rootFlags{csv: true}); err != nil {
+		t.Fatalf("printOutputWithFlags returned error: %v", err)
+	}
+	if got := out.String(); got != "" {
+		t.Fatalf("--csv should render an empty array as an empty CSV stream, got %q", got)
+	}
+}
+
+func TestPrintOutputWithFlagsCSVNonEmptyArrayUsesCSV(t *testing.T) {
+	data := json.RawMessage("[{\"id\":\"one\",\"name\":\"Alpha\"}]")
+	var out bytes.Buffer
+
+	if err := printOutputWithFlags(&out, data, &rootFlags{csv: true}); err != nil {
+		t.Fatalf("printOutputWithFlags returned error: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "id,name\n") || !strings.Contains(got, "one,Alpha\n") {
+		t.Fatalf("--csv should keep non-empty arrays in CSV form, got %q", got)
+	}
+	if strings.Contains(got, "[") || strings.Contains(got, "{") {
+		t.Fatalf("--csv should not fall back to JSON for non-empty arrays, got %q", got)
+	}
+}
+
+func TestPrintOutputWithFlagsMachineEmptyArrayIsValidJSON(t *testing.T) {
+	for _, flags := range []*rootFlags{
+		{asJSON: true},
+		{asJSON: true, agent: true},
+	} {
+		var out bytes.Buffer
+		if err := printOutputWithFlags(&out, json.RawMessage("[]"), flags); err != nil {
+			t.Fatalf("printOutputWithFlags returned error: %v", err)
+		}
+		if !json.Valid(out.Bytes()) {
+			t.Fatalf("machine output should be valid JSON for empty arrays, got %q", out.String())
+		}
+	}
+}
+
+func TestPrintOutputWithFlagsCSVSingleObjectKeepsJSONFallback(t *testing.T) {
+	data := json.RawMessage("{\"id\":\"one\"}")
+	var out bytes.Buffer
+
+	if err := printOutputWithFlags(&out, data, &rootFlags{csv: true}); err != nil {
+		t.Fatalf("printOutputWithFlags returned error: %v", err)
+	}
+	if got, want := out.String(), "{\"id\":\"one\"}\n"; got != want {
+		t.Fatalf("--csv should keep the single-object JSON fallback, got %q want %q", got, want)
 	}
 }
 
@@ -152,7 +208,7 @@ func TestTerminalControlCharactersRemainInJSONOutput(t *testing.T) {
 }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintOutputWithFlagsPlainRendersTSV|TestPrintOutputWithFlagsPlainEmptyArrayIsEmpty|TestHumanFriendlyForcesTableAndNoColorStripsANSI|TestTerminalControl", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintOutputWithFlagsPlainRendersTSV|TestPrintOutputWithFlagsPlainEmptyArrayIsEmpty|TestPrintOutputWithFlagsCSVEmptyArrayIsEmpty|TestPrintOutputWithFlagsCSVNonEmptyArrayUsesCSV|TestPrintOutputWithFlagsMachineEmptyArrayIsValidJSON|TestPrintOutputWithFlagsCSVSingleObjectKeepsJSONFallback|TestHumanFriendlyForcesTableAndNoColorStripsANSI|TestTerminalControl", "-count=1")
 }
 
 func TestLocalAnalysisTemplatesRouteMachineFormatsThroughSharedGate(t *testing.T) {

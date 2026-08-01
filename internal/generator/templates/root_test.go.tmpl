@@ -51,6 +51,33 @@ func TestDeclaredAPISurfaceReachable(t *testing.T) {
 	}
 }
 
+func TestNoDuplicateCommandNames(t *testing.T) {
+	type pendingCommand struct {
+		command *cobra.Command
+		path    string
+	}
+	queue := []pendingCommand{}
+	queue = append(queue, pendingCommand{command: RootCmd(), path: ""})
+	var duplicates []string
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		seen := map[string]struct{}{}
+		for _, child := range current.command.Commands() {
+			childPath := strings.TrimSpace(current.path + " " + child.Name())
+			if _, exists := seen[child.Name()]; exists {
+				duplicates = append(duplicates, childPath)
+			} else {
+				seen[child.Name()] = struct{}{}
+			}
+			queue = append(queue, pendingCommand{command: child, path: childPath})
+		}
+	}
+	if len(duplicates) > 0 {
+		t.Fatalf("generated Cobra tree contains duplicate sibling command names: %s", strings.Join(duplicates, ", "))
+	}
+}
+
 // TestIsCobraUsageError covers the six pre-RunE error shapes Cobra and
 // pflag can produce before any user RunE runs. Each must be detected so
 // the caller can wrap in usageErr() and yield exit code 2.

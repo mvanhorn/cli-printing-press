@@ -331,6 +331,29 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			}
 {{- else}}
 			if cfg != nil {
+				{{- if eq .Auth.Subtype "google_service_account"}}
+				googleKeyPath := strings.TrimSpace(cfg.{{resolveEnvVarField "GOOGLE_APPLICATION_CREDENTIALS"}})
+				if googleKeyPath != "" && cfg.AuthHeader() == "" && cfg.AccessToken == "" {
+					if _, statErr := os.Stat(googleKeyPath); statErr != nil {
+						report["auth"] = "misconfigured (Google service-account key is not readable)"
+						report["auth_hint"] = "set GOOGLE_APPLICATION_CREDENTIALS to a readable service-account JSON file"
+					} else {
+						authConfigured = true
+						report["auth"] = "configured (Google service account; token exchange deferred until request)"
+						report["auth_source"] = "google_service_account"
+					}
+				} else {
+					header := cfg.AuthHeader()
+					if header == "" && cfg.AccessToken == "" {
+						report["auth"] = "not configured"
+						report["auth_hint"] = "{{.Name}}-pp-cli auth service-account --key <service-account.json>"
+					} else {
+						authConfigured = true
+						report["auth"] = "configured"
+						report["auth_source"] = cfg.AuthSource
+					}
+				}
+				{{- else}}
 				header := cfg.AuthHeader()
 				if header == "" {
 {{- if .Auth.Optional}}
@@ -358,6 +381,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					report["auth"] = "configured"
 					report["auth_source"] = cfg.AuthSource
 				}
+				{{- end}}
 			}
 {{- end}}
 {{- if not (or .Auth.EnvVarSpecs .Auth.EnvVars .Auth.AdditionalHeaders)}}

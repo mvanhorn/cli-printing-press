@@ -48,19 +48,19 @@ var cobratreeOnlyNames = map[string]struct{}{
 	"sql":   {},
 }
 
-// workflowInsightConstructors are registered by root.go.tmpl via
+// workflowInsightTemplateConstructors are registered by root.go.tmpl via
 // `range .WorkflowConstructors` / `range .InsightConstructors` — template
 // ranges whose constructor names come from generator's
 // commandConstructorForTemplate switch in internal/generator/generator.go.
 // The static-AddCommand scan filters out lines containing `{{`, so these
-// dynamic registrations need their own list. Update this set in lockstep
+// dynamic registrations need their own map. Update this map in lockstep
 // with commandConstructorForTemplate.
-var workflowInsightConstructors = map[string]struct{}{
-	"Stale":   {},
-	"Orphans": {},
-	"Load":    {},
-	"Health":  {},
-	"Similar": {},
+var workflowInsightTemplateConstructors = map[string]string{
+	"pm_stale.go.tmpl":     "Stale",
+	"pm_orphans.go.tmpl":   "Orphans",
+	"pm_load.go.tmpl":      "Load",
+	"health_score.go.tmpl": "Health",
+	"similar.go.tmpl":      "Similar",
 }
 
 // TestReservedCobraUseNames_CoversFrameworkConstructors asserts that every
@@ -97,7 +97,7 @@ func allFrameworkConstructors(t *testing.T) []string {
 	for _, c := range readStaticConstructors(t) {
 		seen[c] = struct{}{}
 	}
-	for c := range workflowInsightConstructors {
+	for _, c := range workflowInsightTemplateConstructors {
 		seen[c] = struct{}{}
 	}
 	out := make([]string, 0, len(seen))
@@ -227,6 +227,13 @@ func readConstructorUseLiterals(t *testing.T) map[string]string {
 					continue
 				}
 				useLiteralsCache[ctor] = use
+			}
+			base := filepath.Base(path)
+			if ctor, ok := workflowInsightTemplateConstructors[base]; ok && strings.Contains(string(data), "func new{{.CommandConstructor}}Cmd") {
+				nameMatches := regexp.MustCompile(`index \.CommandNames "([^"]+)"`).FindStringSubmatch(string(data))
+				if len(nameMatches) == 2 {
+					useLiteralsCache[ctor] = nameMatches[1]
+				}
 			}
 			return nil
 		})

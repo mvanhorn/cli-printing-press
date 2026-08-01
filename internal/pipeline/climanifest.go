@@ -55,6 +55,10 @@ const PatchesDirName = ".printing-press-patches"
 // tracked by git (which does not track empty directories).
 const PatchesGitKeepName = ".gitkeep"
 
+// PatchesMetadataFilename stores directory-level patch metadata and is not an
+// individual applied patch record.
+const PatchesMetadataFilename = "_meta.json"
+
 // CurrentPatchesIndexSchemaVersion is the schema version stamped into per-patch
 // files authored against the directory layout. Matches the shape documented in
 // internal/generator/templates/agents.md.tmpl.
@@ -301,6 +305,21 @@ func RefreshCLIManifestFromSpec(dir string, parsed *spec.APISpec) error {
 // dir/.printing-press.json. It preserves existing release-ledger files because
 // the public library workflow owns updating them after merge.
 func WriteCLIManifest(dir string, m CLIManifest) error {
+	m = normalizeCLIManifestForWrite(dir, m)
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling CLI manifest: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644); err != nil {
+		return fmt.Errorf("writing CLI manifest: %w", err)
+	}
+	if err := WriteReleaseLedgerSkeleton(dir, m); err != nil {
+		return err
+	}
+	return nil
+}
+
+func normalizeCLIManifestForWrite(dir string, m CLIManifest) CLIManifest {
 	if usesPlatformClientProfiles(dir) {
 		m.AuthEnvVars = []string{"PRINTING_PRESS_CLIENT_PROFILE"}
 		m.AuthEnvVarSpecs = []spec.AuthEnvVar{{
@@ -309,11 +328,28 @@ func WriteCLIManifest(dir string, m CLIManifest) error {
 		}}
 		m.AuthAdditionalHeaders = nil
 	}
-	data, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling CLI manifest: %w", err)
+	return m
+}
+
+func writeCLIManifestPreservingRaw(dir string, m CLIManifest, existingRaw map[string]json.RawMessage) error {
+	return writeCLIManifestPreservingRawFields(dir, m, existingRaw, nil)
+}
+
+func writeCLIManifestPreservingRawFields(dir string, m CLIManifest, existingRaw map[string]json.RawMessage, clearFields map[string]struct{}) error {
+	if len(existingRaw) == 0 {
+		return WriteCLIManifest(dir, m)
 	}
-	if err := os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644); err != nil {
+
+	m = normalizeCLIManifestForWrite(dir, m)
+	merged, err := mergeRawCLIManifestFields(existingRaw, m, clearFields)
+	if err != nil {
+		return err
+	}
+	data, err := marshalCLIManifestObject(merged)
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomic(filepath.Join(dir, CLIManifestFilename), data, 0o644); err != nil {
 		return fmt.Errorf("writing CLI manifest: %w", err)
 	}
 	if err := WriteReleaseLedgerSkeleton(dir, m); err != nil {
@@ -646,6 +682,20 @@ func marshalCLIManifestFields(m CLIManifest) (map[string]json.RawMessage, error)
 		return nil, fmt.Errorf("parsing CLI manifest fields: %w", err)
 	}
 	return raw, nil
+}
+
+func mergeRawCLIManifestFields(existingRaw map[string]json.RawMessage, m CLIManifest, clearFields map[string]struct{}) (map[string]json.RawMessage, error) {
+	generatedFields, err := marshalCLIManifestFields(m)
+	if err != nil {
+		return nil, err
+	}
+	merged := maps.Clone(existingRaw)
+	for key := range clearFields {
+		delete(merged, key)
+	}
+	delete(merged, "catalog_entry")
+	maps.Copy(merged, generatedFields)
+	return merged, nil
 }
 
 func marshalCLIManifestObject(raw map[string]json.RawMessage) ([]byte, error) {
@@ -1240,16 +1290,10 @@ func writeCLIManifestForGenerate(dir string, m CLIManifest, existingRaw map[stri
 	if len(existingRaw) == 0 {
 		return WriteCLIManifest(dir, m)
 	}
-	generatedFields, err := marshalCLIManifestFields(m)
+	merged, err := mergeRawCLIManifestFields(existingRaw, m, clearFields)
 	if err != nil {
 		return err
 	}
-	merged := maps.Clone(existingRaw)
-	for key := range clearFields {
-		delete(merged, key)
-	}
-	delete(merged, "catalog_entry")
-	maps.Copy(merged, generatedFields)
 	data, err := marshalCLIManifestObject(merged)
 	if err != nil {
 		return err

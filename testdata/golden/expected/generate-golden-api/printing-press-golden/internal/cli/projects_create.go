@@ -13,15 +13,18 @@ import (
 )
 
 func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
+	var flagXApiVersion string
+	var flagXRequestId string
 	var bodyName string
 	var bodyOwnerEmail string
 	var bodyVisibility string
 	var stdinBody bool
 
 	cmd := &cobra.Command{
-		Use:         "create",
-		Short:       "Create project",
-		Example:     "  printing-press-golden-pp-cli projects create --name example-resource",
+		Use:   "create",
+		Short: "Create project",
+		// TODO: replace placeholder example values before relying on this for live dogfood.
+		Example:     "  printing-press-golden-pp-cli projects create --x-api-version example-value --name example-resource",
 		Annotations: map[string]string{"pp:endpoint": "projects.create", "pp:method": "POST", "pp:path": "/projects"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Bare invocation of a command with required input prints help
@@ -55,6 +58,16 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			headerOverrides := map[string]string{}
+
+			if cmd.Flags().Changed("x-api-version") || flagXApiVersion != "" {
+				headerOverrides["X-Api-Version"] = formatCLIParamValue(flagXApiVersion)
+			}
+
+			if cmd.Flags().Changed("x-request-id") || flagXRequestId != "" {
+				headerOverrides["X-Request-Id"] = formatCLIParamValue(flagXRequestId)
+			}
+
 			params := map[string]string{}
 			var body any
 			if stdinBody {
@@ -70,17 +83,17 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 			} else {
 				bodyMap := map[string]any{}
 				body = bodyMap
-				if bodyName != "" {
+				if cmd.Flags().Changed("name") || bodyName != "" {
 					bodyMap["name"] = bodyName
 				}
-				if bodyOwnerEmail != "" {
+				if cmd.Flags().Changed("owner-email") || bodyOwnerEmail != "" {
 					bodyMap["owner_email"] = bodyOwnerEmail
 				}
-				if bodyVisibility != "" {
+				if cmd.Flags().Changed("visibility") || bodyVisibility != "" {
 					bodyMap["visibility"] = bodyVisibility
 				}
 			}
-			data, statusCode, err := c.PostWithParams(cmd.Context(), path, params, body)
+			data, statusCode, err := c.PostWithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -231,6 +244,8 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&flagXApiVersion, "x-api-version", "2026-04-01", "Required API version header.")
+	cmd.Flags().StringVar(&flagXRequestId, "x-request-id", "", "Optional per-request correlation ID.")
 	cmd.Flags().StringVar(&bodyName, "name", "", "Name")
 	cmd.Flags().StringVar(&bodyOwnerEmail, "owner-email", "", "Owner email")
 	cmd.Flags().StringVar(&bodyVisibility, "visibility", "", "Visibility")

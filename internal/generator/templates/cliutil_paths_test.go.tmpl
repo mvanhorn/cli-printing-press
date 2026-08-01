@@ -187,6 +187,25 @@ func TestSetHomeOverrideExpandsTildeAndCleans(t *testing.T) {
 	}
 }
 
+func TestHomeOverrideWinsForDefaultBaseAndTildeExpansion(t *testing.T) {
+	resetPathEnv(t)
+	override := t.TempDir()
+	restore, err := SetHomeOverride(override)
+	if err != nil {
+		t.Fatalf("SetHomeOverride() error = %v", err)
+	}
+	defer restore()
+
+	if got, want := expandTilde("~/nested"), filepath.Join(override, "nested"); got != want {
+		t.Fatalf("expandTilde() = %q, want %q", got, want)
+	}
+	if got, err := defaultBase(PathKindData); err != nil {
+		t.Fatalf("defaultBase() error = %v", err)
+	} else if want := filepath.Join(override, ".local", "share"); got != want {
+		t.Fatalf("defaultBase() = %q, want %q", got, want)
+	}
+}
+
 func assertDataDir(t *testing.T, want string) {
 	t.Helper()
 	got, err := DataDir()

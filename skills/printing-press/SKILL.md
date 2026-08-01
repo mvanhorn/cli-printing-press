@@ -146,7 +146,11 @@ _resolve_press_bin() {
 # suffixes collapse to their GA counterpart (acceptable: we ship no pre-release
 # tags).
 _semver_lt() {
-  awk -v a="$1" -v b="$2" 'BEGIN {
+  if [ -z "${PP_SEMVER_A:-}" ] || [ -z "${PP_SEMVER_B:-}" ]; then
+    echo "[setup-error] semver comparison inputs are missing." >&2
+    return 2
+  fi
+  awk -v a="${PP_SEMVER_A:-}" -v b="${PP_SEMVER_B:-}" 'BEGIN {
     split(a, x, ".")
     split(b, y, ".")
     for (i = 1; i <= 3; i++) {
@@ -169,7 +173,12 @@ _rebuild_local_press_bin_if_stale() {
 
   _local_v="$("$_scope_dir/cli-printing-press" version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')"
   _source_v="$(_source_press_version)"
-  if [ -z "$_local_v" ] || [ -z "$_source_v" ] || ! _semver_lt "$_local_v" "$_source_v"; then
+  if [ -z "$_local_v" ] || [ -z "$_source_v" ]; then
+    return 0
+  fi
+  PP_SEMVER_A="$_local_v"
+  PP_SEMVER_B="$_source_v"
+  if ! _semver_lt; then
     return 0
   fi
 
@@ -326,7 +335,7 @@ echo "PRINTING_PRESS_BIN=$PRINTING_PRESS_BIN"
 echo "PRESS_REPO_MODE=$_press_repo"
 
 _pp_go_version_norm() {
-  printf '%s\n' "$1" | sed -nE 's/.*go([0-9]+)\.([0-9]+)(\.([0-9]+))?.*/\1.\2.\4/p' | awk -F. 'NF >= 2 { printf "%d.%d.%d\n", $1, $2, ($3 == "" ? 0 : $3) }'
+  printf '%s\n' "${PP_GO_VERSION_INPUT:-}" | sed -nE 's/.*go([0-9]+)\.([0-9]+)(\.([0-9]+))?.*/\1.\2.\4/p' | sed -E 's/\.$/.0/'
 }
 
 _pp_check_go_currency() {
@@ -334,9 +343,11 @@ _pp_check_go_currency() {
     return 0
   fi
 
-  _pp_go_installed="$(_pp_go_version_norm "$(go env GOVERSION 2>/dev/null)")"
-  _pp_go_required="$(_pp_go_version_norm "$(go version "$PRINTING_PRESS_BIN" 2>/dev/null)")"
-  if [ -z "$_pp_go_installed" ] || [ -z "$_pp_go_required" ] || ! _semver_lt "$_pp_go_installed" "$_pp_go_required"; then
+  _pp_go_installed="$(PP_GO_VERSION_INPUT="$(go env GOVERSION 2>/dev/null)" _pp_go_version_norm)"
+  _pp_go_required="$(PP_GO_VERSION_INPUT="$(go version "$PRINTING_PRESS_BIN" 2>/dev/null)" _pp_go_version_norm)"
+  PP_SEMVER_A="$_pp_go_installed"
+  PP_SEMVER_B="$_pp_go_required"
+  if [ -z "$_pp_go_installed" ] || [ -z "$_pp_go_required" ] || ! _semver_lt; then
     return 0
   fi
 
@@ -408,7 +419,11 @@ _pp_check_disk_space() {
     _pp_disk_path="$(dirname "$_pp_disk_path")"
   done
 
-  _pp_disk_avail_kb="$(df -Pk "$_pp_disk_path" 2>/dev/null | awk 'NR == 2 { print $4; exit }')"
+  _pp_disk_avail_kb="$(df -Pk "$_pp_disk_path" 2>/dev/null | awk 'BEGIN {
+    if ((getline header) <= 0 || (getline record) <= 0) exit
+    field_count = split(record, fields)
+    if (field_count >= 4) print fields[4]
+  }')"
   case "$_pp_disk_avail_kb" in
     ""|*[!0-9]*) return 0 ;;
   esac
@@ -447,7 +462,7 @@ _now_ts=$(date +%s)
 
 _should_check=true
 if [ -f "$PRESS_VERCHECK_FILE" ] && [ -z "$PRESS_VERCHECK_FORCE" ]; then
-  _last_ts=$(awk -F= '/^last_check=/{print $2}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
+  _last_ts=$(sed -nE 's/^last_check=//p' "$PRESS_VERCHECK_FILE" 2>/dev/null | head -n 1)
   if [ -n "$_last_ts" ] && [ "$((_now_ts - _last_ts))" -lt "$PRESS_VERCHECK_TTL" ]; then
     _should_check=false
   fi
@@ -462,7 +477,7 @@ if [ "$_press_repo" = "true" ]; then
     _main_rev=$(git -C "$_scope_dir" rev-parse origin/main 2>/dev/null || true)
     _skipped_repo_main=""
     if [ -f "$PRESS_VERCHECK_FILE" ] && [ -z "$PRESS_VERCHECK_FORCE" ]; then
-      _skipped_repo_main=$(awk -F= '/^skipped_repo_main=/{value=$2} END{print value}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
+      _skipped_repo_main=$(sed -nE 's/^skipped_repo_main=//p' "$PRESS_VERCHECK_FILE" 2>/dev/null | tail -n 1)
     fi
     if [ -n "$_head_rev" ] && [ -n "$_main_rev" ] &&
        [ "$_head_rev" != "$_main_rev" ] &&
@@ -483,15 +498,7 @@ elif [ "$_should_check" = "true" ] && command -v go >/dev/null 2>&1; then
   _latest=""
 
   if [ -n "$_installed" ]; then
-    _latest=$(go list -m -json github.com/mvanhorn/cli-printing-press/v4@latest 2>/dev/null | awk '
-      /"Version":/ {
-        version=$2
-        gsub(/[",]/, "", version)
-        sub(/^v/, "", version)
-        print version
-        exit
-      }
-    ')
+    _latest=$(go list -m -json github.com/mvanhorn/cli-printing-press/v4@latest 2>/dev/null | sed -nE 's/^[[:space:]]*"Version":[[:space:]]*"v?([^"]+)".*/\1/p' | head -n 1)
   fi
 
   # Currency floor: the lowest release still considered safe to generate with,
@@ -504,12 +511,14 @@ elif [ "$_should_check" = "true" ] && command -v go >/dev/null 2>&1; then
     _floor_doc=$(curl -fsSL --max-time 5 \
       https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/supported-versions.txt 2>/dev/null || true)
     if [ -n "$_floor_doc" ]; then
-      _min_supported=$(printf '%s\n' "$_floor_doc" | awk -F= '/^min_supported=/{print $2; exit}')
+      _min_supported=$(printf '%s\n' "$_floor_doc" | sed -nE 's/^min_supported=//p' | head -n 1)
       _min_reason=$(printf '%s\n' "$_floor_doc" | sed -nE 's/^reason=//p' | head -n 1)
     fi
   fi
 
-  if [ -n "$_installed" ] && [ -n "$_latest" ] && _semver_lt "$_installed" "$_latest"; then
+  PP_SEMVER_A="$_installed"
+  PP_SEMVER_B="$_latest"
+  if [ -n "$_installed" ] && [ -n "$_latest" ] && _semver_lt; then
     # Marker for the skill prose below to detect and offer an interactive upgrade.
     # The skill reads PRESS_UPGRADE_AVAILABLE / PRESS_UPGRADE_INSTALLED from this output.
     echo ""
@@ -531,13 +540,13 @@ fi
 # is itself <= latest, so a typo'd or tampered floor above the newest release
 # cannot brick every install.
 if [ "$_press_repo" != "true" ] && [ -f "$PRESS_VERCHECK_FILE" ]; then
-  _floor_min=$(awk -F= '/^min_supported=/{print $2; exit}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
-  _floor_latest=$(awk -F= '/^latest=/{print $2; exit}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
+  _floor_min=$(sed -nE 's/^min_supported=//p' "$PRESS_VERCHECK_FILE" 2>/dev/null | head -n 1)
+  _floor_latest=$(sed -nE 's/^latest=//p' "$PRESS_VERCHECK_FILE" 2>/dev/null | head -n 1)
   _floor_reason=$(sed -nE 's/^reason=//p' "$PRESS_VERCHECK_FILE" 2>/dev/null | head -n 1)
   _floor_installed=$("$PRINTING_PRESS_BIN" version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')
   if [ -n "$_floor_min" ] && [ -n "$_floor_installed" ] && [ -n "$_floor_latest" ] &&
-     _semver_lt "$_floor_installed" "$_floor_min" &&
-     ! _semver_lt "$_floor_latest" "$_floor_min"; then
+     PP_SEMVER_A="$_floor_installed" PP_SEMVER_B="$_floor_min" _semver_lt &&
+     ! PP_SEMVER_A="$_floor_latest" PP_SEMVER_B="$_floor_min" _semver_lt; then
     echo ""
     echo "[upgrade-required] printing-press v$_floor_min is the minimum supported version (you have v$_floor_installed)"
     echo "PRESS_REQUIRED_MIN=$_floor_min"
@@ -2310,6 +2319,10 @@ browser-sniffed and crowd-sniffed specs where the mechanical auth detection may 
 - For internal YAML specs: look for `auth:` section with `type:` not equal to `"none"`
 - For OpenAPI specs: look for `components.securitySchemes` or `security` sections
 
+| Spec signal | Generator auth path |
+|---|---|
+| Provider-specific OAuth2 server or auth marker identifies a service-account JWT bearer flow | Emit the guarded service-account scaffold. It accepts the provider's credential file or pre-minted bearer override, exchanges service-account JWTs for cached bearer tokens, and preserves generic OAuth2 behavior for other hosts. |
+
 **If auth is missing** (`type: none` or no auth section) AND Phase 1 research found
 auth signals, enrich the spec before generation:
 
@@ -3395,14 +3408,14 @@ For SQLite-backed novel commands only, add this missing-mirror guard after `dryR
 ```go
 if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
 	fmt.Fprintf(cmd.ErrOrStderr(), "no local mirror at %s\nrun: <cli> sync --resources <resource> --db %s\n", dbPath, dbPath)
-	if flags.asJSON || flags.agent {
-		fmt.Fprintln(cmd.OutOrStdout(), "[]")
+	if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+		return printJSONFiltered(cmd.OutOrStdout(), make([]yourRowType, 0), flags)
 	}
 	return nil
 }
 ```
 
-The missing-mirror branch covers a different probe layer from `dryRunOK`: live execution without `--dry-run`, before the user has run `sync`. Return empty JSON (`[]`) for `--json` / `--agent` so agents receive a valid empty result instead of a SQLite open failure; print a human hint to stderr that names the sync command needed to populate the mirror. The unconditional `return nil` is intentional for both machine and human paths: a missing local mirror is an empty local-cache state, not a usage or API failure. Do not add this branch to novel commands that call live API endpoints directly or do not use the local store.
+The missing-mirror branch covers a different probe layer from `dryRunOK`: live execution without `--dry-run`, before the user has run `sync`. Route every non-human format through `printJSONFiltered` so agents receive a valid empty result instead of a SQLite open failure; print a human hint to stderr that names the sync command needed to populate the mirror. The unconditional `return nil` is intentional for both machine and human paths: a missing local mirror is an empty local-cache state, not a usage or API failure. Do not add this branch to novel commands that call live API endpoints directly or do not use the local store.
 
 Multi-positional commands (N >= 2 required args) must use a two-check shape so only the bare help probe returns exit 0:
 
@@ -3526,6 +3539,34 @@ The generator handles Priority 0 (data layer) and most of Priority 1 (absorbed A
 - `isTerminal(w io.Writer) bool` - detect terminal output versus pipes.
 - `wantsHumanTable(w io.Writer, flags *rootFlags) bool` - detect when output should use the generated human table instead of machine JSON.
 
+**Empty results and output modes.** Any novel command that can return zero rows
+MUST choose the output mode before printing empty-result prose. Initialize
+list-shaped results with `make(..., 0)` so JSON mode emits `[]`, never `null`.
+Route JSON, agent, and CSV output through the generated helpers, and keep
+human-only empty-result prose inside the human branch:
+
+```go
+rows := make([]yourRowType, 0)
+// populate rows...
+if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+	return printJSONFiltered(cmd.OutOrStdout(), rows, flags)
+}
+if len(rows) == 0 {
+	// human-only empty-result prose; never write this before the machine branch
+	fmt.Fprintln(cmd.OutOrStdout(), "No matching items found.")
+	return nil
+}
+// Render the non-empty human table here.
+return nil
+```
+
+Do not put a `len(rows) == 0` prose return before the mode check, and do not
+manually branch only on `flags.asJSON`. `wantsHumanTable` covers `--json`,
+`--agent`, `--csv`, `--plain`, `--quiet`, `--compact`, `--select`, and piped
+output. The Phase 5 dogfood run must exercise a known zero-result case when
+available: `--json` and `--agent` stdout must parse as JSON, `--csv` must be an
+empty or valid CSV stream, and human mode may retain the explanatory prose.
+
 ```go
 // internal/cli/<command>.go — replace <command> with the kebab leaf
 // of NovelFeature.Command (e.g., "issues stale" → "issues_stale.go").
@@ -3558,18 +3599,21 @@ func newNovelXxxCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// Multi-word Commands like "issues stale": this constructor is registered as
-// a child of the matching spec-resource parent (newIssuesCmd) — wire the
-// AddCommand call inside root.go via local-variable capture:
-//   issuesCmd := newIssuesCmd(flags)
-//   issuesCmd.AddCommand(newNovelIssuesStaleCmd(flags))
-//   rootCmd.AddCommand(issuesCmd)
+// Multi-word Commands like "issues stale": register the child from the
+// preserved file through the novel hook. Resolve the generated parent by
+// its command path and use the duplicate-safe helper:
+//   registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+//       issuesCmd, _, err := root.Find([]string{"issues"})
+//       if err == nil {
+//           addNovelCommandIfAbsent(issuesCmd, newNovelIssuesStaleCmd(flags))
+//       }
+//   })
 // Leaf commands must declare every non-root flag used in their examples.
 // Use kebab-case flag names, such as --max-age instead of --maxAge, so the
 // generated CLI convention and verify-skill flag scanner stay aligned.
 // Do not rely on parent-local flags like --org or --project being accepted by
 // child commands unless the parent registered them with PersistentFlags().
-// Single-word Commands register directly: rootCmd.AddCommand(newNovelXxxCmd(flags)).
+// Single-word Commands use the same hook: addNovelCommandIfAbsent(root, newNovelXxxCmd(flags)).
 ```
 
 **RunE skeleton — API-call shape** (live data via a sibling typed client):
@@ -3609,10 +3653,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	// text extracted from HTML or schema.org JSON-LD; re-implementing
 	// HTML-entity unescape inline is the &#39; bug class.
 	var view yourViewType // = parse(data)
-	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		return enc.Encode(view)
+	if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+		return printJSONFiltered(cmd.OutOrStdout(), view, flags)
 	}
 	// Human/terminal output (table or pretty print).
 	return nil
@@ -3700,10 +3742,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		AverageMetric: safeAverage(total, denominator),
 		FetchFailures: failures, // json tag: `json:"fetch_failures,omitempty"`
 	}
-	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		return enc.Encode(view)
+	if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+		return printJSONFiltered(cmd.OutOrStdout(), view, flags)
 	}
 	// Human/terminal output, including a visible partial-failure note.
 	for _, entry := range view.Items {
@@ -3746,8 +3786,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	}
 	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
 		fmt.Fprintf(cmd.ErrOrStderr(), "no local mirror at %s\nrun: <cli> sync --resources <resource> --db %s\n", dbPath, dbPath)
-		if flags.asJSON || flags.agent {
-			fmt.Fprintln(cmd.OutOrStdout(), "[]")
+		if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+			return printJSONFiltered(cmd.OutOrStdout(), make([]yourRowType, 0), flags)
 		}
 		return nil
 	}
@@ -3798,10 +3838,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		// Resolve IDs, expand child rows, or perform local joins, then append.
 		_ = raw
 	}
-	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		return enc.Encode(results)
+	if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+		return printJSONFiltered(cmd.OutOrStdout(), results, flags)
 	}
 	// Human/terminal output.
 	return nil
@@ -3856,7 +3894,7 @@ For an extension to be durable, put it in its own file beside the emitted one:
 - **Custom request headers** (vendor fingerprint, `X-CSRF`, app-version, signed timestamps): create `internal/client/<api>_headers.go` exporting a func that builds the header map; novel code passes that map to `client.GetWithHeaders` / `PostWithHeaders` when it calls the API. The generated `client.go` has no global request mutator, so this pattern only covers requests made directly from novel code — it does not intercept calls from generated endpoint commands. Do not edit the templated header block in `client.go`.
 - **Custom auth flow** (browser-sniffed sessions, vendor SSO, refresh hooks beyond OAuth2): create `internal/cli/<api>_auth.go` (package `cli`, same as the generated `auth.go`) with the API-specific token capture or refresh, and wire it from a novel command rather than editing the templated `auth.go` constructor functions (`newAuthLoginCmd`, `newAuthSetupCmd`, etc.). If the custom flow implements OAuth2 Authorization Code + PKCE, read [references/oauth2-pkce-cli-checklist.md](references/oauth2-pkce-cli-checklist.md) before writing or reviewing the command.
 - **Extended store schema** (typed tables beyond `resources`, vendor JSON columns, full-text indexes): create `internal/store/<api>_migrations.go` running its own `CREATE TABLE ... IF NOT EXISTS` from a lazy init invoked by the novel commands that need it. Do not edit the migration slice in `store.go`.
-- **New novel command:** put the command body in its own `internal/cli/<feature>.go` file. Generated TODO scaffolds may refresh on `generate --force`; once you replace the TODO body with a real implementation, regen preserves that hand-authored file instead of re-emitting the scaffold. The `AddCommand` call wiring it into the Cobra tree still goes in `root.go` per the Phase 3 novel-command skeleton above; `cli-printing-press generate --force` re-injects it via the lost-registration merge path. Use standalone `regen-merge` when you want to inspect the merge report before applying. Spec-declared commands are picked up by the generator's typed-tool path and need no hand-wired `AddCommand` at all.
+- **New novel command:** put the command body and its `registerNovelCommand` hook in their own `internal/cli/<feature>.go` file. Generated TODO scaffolds may refresh on `generate --force`; once you replace the TODO body with a real implementation, regen preserves that hand-authored file instead of re-emitting the scaffold. Do not edit `root.go` for novel wiring. The hook file is preserved, and `generate --force` also re-injects any lost `AddCommand` call whose constructor remains in a preserved novel file. Use standalone `regen-merge` when you want to inspect the merge report before applying. Spec-declared commands are picked up by the generator's typed-tool path and need no hand-wired `AddCommand` at all.
 
 If an extension genuinely cannot live in a separate file (a `case` branch in a templated method switch, an inline modification to a generated handler with no registry hook), file a generator issue requesting the hook rather than depending on repeated conflict-prone merges. The `AddCommand` case above is covered by the merge path.
 

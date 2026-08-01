@@ -561,6 +561,58 @@ func newTabWriter(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 }
 
+const responsePathItemsKey = "__printing_press_response_path_items"
+
+type responsePathPaginatedClient struct {
+	client interface {
+		GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+	}
+	responsePath string
+}
+
+func (c responsePathPaginatedClient) IsDryRun() bool {
+	dryRunClient, ok := c.client.(interface{ IsDryRun() bool })
+	return ok && dryRunClient.IsDryRun()
+}
+
+func (c responsePathPaginatedClient) GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+	data, err := c.client.GetWithHeaders(ctx, path, params, headers)
+	if err != nil || isDryRunResponseForClient(c.client, data) {
+		return data, err
+	}
+	selected, ok := responsePayloadAtPath(data, c.responsePath)
+	if !ok {
+		return nil, fmt.Errorf("response_path %q not found in response", c.responsePath)
+	}
+	if !isJSONArray(selected) {
+		return nil, fmt.Errorf("response_path %q must resolve to an array", c.responsePath)
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("response_path %q requires an object response envelope: %w", c.responsePath, err)
+	}
+	root[responsePathItemsKey] = selected
+	transformed, err := json.Marshal(root)
+	if err != nil {
+		return nil, fmt.Errorf("wrap response_path %q: %w", c.responsePath, err)
+	}
+	return transformed, nil
+}
+
+func paginatedGetWithResponsePath(ctx context.Context, c interface {
+	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+}, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam string, defaultPageSize int, nextCursorPath, hasMoreField, responsePath string) (json.RawMessage, error) {
+	if responsePath == "" {
+		return paginatedGet(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField)
+	}
+	wrapped := responsePathPaginatedClient{client: c, responsePath: responsePath}
+	data, err := paginatedGet(ctx, wrapped, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField)
+	if err != nil || fetchAll {
+		return data, err
+	}
+	return applyResponsePath(data, responsePath), nil
+}
+
 // paginatedGet fetches pages and concatenates array results. The headers
 // argument carries per-endpoint required headers (e.g. cal-api-version) that
 // must be sent on every page request, including the first; pass nil when the
@@ -615,6 +667,9 @@ func paginatedGet(ctx context.Context, c interface {
 
 	// Fetch all pages
 	allItems := make([]json.RawMessage, 0)
+	var collectionEnvelope map[string]json.RawMessage
+	collectionField := ""
+	collectionShapeSet := false
 	seenCursorTokens := map[string]struct{}{}
 	if sentCursor := clean[cursorParam]; sentCursor != "" {
 		seenCursorTokens[sentCursor] = struct{}{}
@@ -640,6 +695,10 @@ func paginatedGet(ctx context.Context, c interface {
 		// Try to extract items array
 		var items []json.RawMessage
 		if json.Unmarshal(data, &items) == nil {
+			if collectionShapeSet && collectionField != "" {
+				return nil, fmt.Errorf("paginated response collection changed from %q to a bare array", collectionField)
+			}
+			collectionShapeSet = true
 			allItems = append(allItems, items...)
 			if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, len(items)); ok {
 				if page >= paginatedGetMaxPages {
@@ -654,7 +713,24 @@ func paginatedGet(ctx context.Context, c interface {
 			var obj map[string]json.RawMessage
 			if json.Unmarshal(data, &obj) == nil {
 				itemCount := 0
-				if nested, ok := extractPaginatedItems(obj, path); ok {
+				field, preserve := paginatedCollectionEnvelopeField(obj, path)
+				nested, ok := extractPaginatedItems(obj, path)
+				if !ok && preserve {
+					ok = json.Unmarshal(obj[field], &nested) == nil
+				}
+				if ok {
+					if !collectionShapeSet {
+						collectionShapeSet = true
+						if preserve {
+							collectionField = field
+							collectionEnvelope = cloneRawObject(obj)
+						}
+					} else if (collectionField != "" && (!preserve || !strings.EqualFold(collectionField, field))) || (collectionField == "" && preserve) {
+						if collectionField != "" {
+							return nil, fmt.Errorf("paginated response collection changed from %q", collectionField)
+						}
+						return nil, fmt.Errorf("paginated response collection changed from a canonical array to %q", field)
+					}
 					allItems = append(allItems, nested...)
 					itemCount = len(nested)
 				}
@@ -734,10 +810,106 @@ func paginatedGet(ctx context.Context, c interface {
 	} else {
 		fmt.Fprintf(os.Stderr, `{"event":"complete","total":%d,"pages":%d}`+"\n", len(allItems), page)
 	}
-	result, _ := json.Marshal(allItems)
+	var result []byte
+	if collectionField != "" {
+		collectionEnvelope[collectionField], _ = json.Marshal(allItems)
+		deleteRawPath(collectionEnvelope, cursorLookupPath)
+		deleteRawPath(collectionEnvelope, hasMoreField)
+		if paginationType == "offset" || paginationType == "page" {
+			deleteRawPath(collectionEnvelope, cursorParam)
+		}
+		result, _ = json.Marshal(collectionEnvelope)
+	} else {
+		result, _ = json.Marshal(allItems)
+	}
 	return json.RawMessage(result), nil
 }
 
+func cloneRawObject(obj map[string]json.RawMessage) map[string]json.RawMessage {
+	clone := make(map[string]json.RawMessage, len(obj))
+	for key, value := range obj {
+		clone[key] = append(json.RawMessage(nil), value...)
+	}
+	return clone
+}
+
+func paginatedCollectionEnvelopeField(obj map[string]json.RawMessage, requestPath string) (string, bool) {
+	for key, raw := range obj {
+		if canonicalPaginationCollectionKeys[key] && isJSONArray(raw) {
+			return "", false
+		}
+	}
+
+	pathWithoutQuery := strings.SplitN(requestPath, "?", 2)[0]
+	segments := strings.Split(strings.Trim(pathWithoutQuery, "/"), "/")
+	for i := len(segments) - 1; i >= 0; i-- {
+		segment := strings.TrimSuffix(strings.TrimSpace(segments[i]), ".json")
+		if segment == "" || (strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}")) {
+			continue
+		}
+		for key, raw := range obj {
+			if strings.EqualFold(key, segment) && isJSONArray(raw) && !envelopeMetadataArrayKeys[key] {
+				return key, true
+			}
+		}
+	}
+
+	var candidate string
+	for key, raw := range obj {
+		if envelopeMetadataArrayKeys[key] || canonicalPaginationCollectionKeys[key] || !isJSONArray(raw) {
+			continue
+		}
+		if _, ok := extractPaginatedObjectArray(raw); !ok {
+			continue
+		}
+		if candidate != "" {
+			return "", false
+		}
+		candidate = key
+	}
+	return candidate, candidate != ""
+}
+
+func isJSONArray(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return false
+	}
+	var items []json.RawMessage
+	return json.Unmarshal(raw, &items) == nil
+}
+
+var canonicalPaginationCollectionKeys = map[string]bool{
+	responsePathItemsKey: true,
+	"data":               true, "items": true, "results": true, "messages": true, "members": true, "values": true,
+}
+
+func deleteRawPath(obj map[string]json.RawMessage, path string) {
+	if path == "" {
+		return
+	}
+	parts := strings.Split(path, ".")
+	key := ""
+	for candidate := range obj {
+		if strings.EqualFold(candidate, parts[0]) {
+			key = candidate
+			break
+		}
+	}
+	if key == "" {
+		return
+	}
+	if len(parts) == 1 {
+		delete(obj, key)
+		return
+	}
+	var child map[string]json.RawMessage
+	if json.Unmarshal(obj[key], &child) != nil {
+		return
+	}
+	deleteRawPath(child, strings.Join(parts[1:], "."))
+	obj[key], _ = json.Marshal(child)
+}
 func nextFullPageOffsetCursor(params map[string]string, cursorParam, paginationType string, pageSize, itemCount int) (string, bool) {
 	if (paginationType != "offset" && paginationType != "page") || itemCount == 0 {
 		return "", false
@@ -873,6 +1045,39 @@ func extractPaginatedItems(obj map[string]json.RawMessage, requestPath string) (
 	return extractPaginatedItemsFromObject(obj, requestPath, true)
 }
 
+// collectionItemsForOutput projects a paginated collection envelope to the
+// array expected by table, CSV, and plain renderers. JSON output keeps the
+// original envelope so resource-named response shapes remain available to
+// callers that need them.
+func collectionItemsForOutput(data json.RawMessage, requestPath string) json.RawMessage {
+	var items []json.RawMessage
+	if json.Unmarshal(data, &items) == nil {
+		return data
+	}
+
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(data, &obj) != nil {
+		return data
+	}
+	if field, preserve := paginatedCollectionEnvelopeField(obj, requestPath); preserve {
+		if json.Unmarshal(obj[field], &items) == nil {
+			projected, err := json.Marshal(items)
+			if err == nil {
+				return projected
+			}
+		}
+	}
+	items, ok := extractPaginatedItems(obj, requestPath)
+	if !ok {
+		return data
+	}
+	projected, err := json.Marshal(items)
+	if err != nil {
+		return data
+	}
+	return projected
+}
+
 func extractPaginatedItemsFromObject(obj map[string]json.RawMessage, requestPath string, allowEmbedded bool) ([]json.RawMessage, bool) {
 	if !allowEmbedded {
 		if nested, ok := extractPaginatedItemsMatchingPath(obj, requestPath); ok {
@@ -881,7 +1086,7 @@ func extractPaginatedItemsFromObject(obj map[string]json.RawMessage, requestPath
 	}
 
 	if allowEmbedded {
-		for _, field := range []string{"data", "items", "results", "messages", "members", "values"} {
+		for _, field := range []string{responsePathItemsKey, "data", "items", "results", "messages", "members", "values"} {
 			if arr, ok := obj[field]; ok {
 				var nested []json.RawMessage
 				if json.Unmarshal(arr, &nested) == nil {
@@ -1727,8 +1932,17 @@ func compactObjectArrayValue(v any) (any, bool) {
 // printCSV renders JSON arrays as CSV with header row.
 func printCSV(w io.Writer, data json.RawMessage) error {
 	var items []map[string]any
-	if err := json.Unmarshal(data, &items); err != nil || len(items) == 0 {
-		// Single object or empty - just print as JSON
+	if err := json.Unmarshal(data, &items); err != nil {
+		// Single object or invalid JSON - just print as JSON
+		fmt.Fprintln(w, string(data))
+		return nil
+	}
+	if len(items) == 0 {
+		// A valid empty array is an empty CSV stream, not a JSON document.
+		// Keep the single-object fallback above for non-array payloads.
+		if bytes.HasPrefix(bytes.TrimSpace(data), []byte("[")) {
+			return nil
+		}
 		fmt.Fprintln(w, string(data))
 		return nil
 	}

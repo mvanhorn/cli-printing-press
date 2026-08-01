@@ -448,7 +448,7 @@ func newPlatformClientSourceSetCmd(flags *rootFlags) *cobra.Command {
 }
 
 func newPlatformClientListCmd(flags *rootFlags) *cobra.Command {
-	return &cobra.Command{Use: "list", Short: "List client profiles", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+	return &cobra.Command{Use: "list", Short: "List client profiles", Args: cobra.NoArgs, Annotations: map[string]string{"mcp:read-only": "true"}, RunE: func(cmd *cobra.Command, args []string) error {
 		names, err := platform.ListProfiles()
 		if err != nil {
 			return err
@@ -459,7 +459,7 @@ func newPlatformClientListCmd(flags *rootFlags) *cobra.Command {
 
 func newPlatformClientShowCmd(flags *rootFlags) *cobra.Command {
 	var refs string
-	command := &cobra.Command{Use: "show <name>", Short: "Show non-secret client profile configuration", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "show <name>", Short: "Show non-secret client profile configuration", Args: cobra.ExactArgs(1), Annotations: map[string]string{"mcp:read-only": "true"}, RunE: func(cmd *cobra.Command, args []string) error {
 		profile, err := platform.LoadProfile(args[0])
 		if err != nil {
 			return err
