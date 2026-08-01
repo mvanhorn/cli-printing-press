@@ -110,6 +110,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/mcp/cobratree/cli_path.go",
 		"internal/mcp/cobratree/names.go",
 		"internal/cliutil/testenv/testenv.go",
+		"internal/cliutil/testenv/sandbox_unix.go",
+		"internal/cliutil/testenv/sandbox_windows.go",
 	}
 
 	tests := []struct {
@@ -139,9 +141,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +2: command and MCP platform-window adoption plus conformance tests.
 		// +1: internal/cliutil/testenv, the sandbox helper every emitted test
 		// routes its HOME/USERPROFILE isolation through.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 167},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 171},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 169},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 169},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 173},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 171},
 	}
 
 	for _, tt := range tests {
