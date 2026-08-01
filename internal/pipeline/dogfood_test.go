@@ -3857,6 +3857,33 @@ func TestDogfoodExampleCommandPathsFromAgentContext(t *testing.T) {
 	}, paths)
 }
 
+func TestDogfoodExampleCommandPathsRejectsDuplicateSiblingNames(t *testing.T) {
+	payload := []byte("{\n" +
+		"\t\"commands\": [\n" +
+		"\t\t{\"name\": \"root\", \"subcommands\": [\n" +
+		"\t\t\t{\"name\": \"status\"},\n" +
+		"\t\t\t{\"name\": \"status\"}\n" +
+		"\t\t]}\n" +
+		"\t]\n" +
+		"}")
+
+	paths, err := dogfoodExampleCommandPathsFromAgentContext(payload)
+	require.Error(t, err)
+	assert.Nil(t, paths)
+	assert.Contains(t, err.Error(), "root status")
+}
+
+func TestDogfoodExampleCommandPathsRejectsDuplicateRootNames(t *testing.T) {
+	payload := []byte("{\n" +
+		"\t\"commands\": [{\"name\": \"status\"}, {\"name\": \"status\"}]\n" +
+		"}")
+
+	paths, err := dogfoodExampleCommandPathsFromAgentContext(payload)
+	require.Error(t, err)
+	assert.Nil(t, paths)
+	assert.Contains(t, err.Error(), "status")
+}
+
 // passingDogfoodReport returns a DogfoodReport populated with the minimum
 // set of passing sub-check values so deriveDogfoodVerdict returns PASS by
 // default. Tests compose on top of this to isolate the one field they're

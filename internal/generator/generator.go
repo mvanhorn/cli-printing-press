@@ -128,16 +128,17 @@ type PlaybookEntry struct {
 }
 
 type Generator struct {
-	Spec            *spec.APISpec
-	OutputDir       string
-	VisionSet       VisionTemplateSet
-	FixtureSet      *browsersniff.FixtureSet
-	TrafficAnalysis *browsersniff.TrafficAnalysis
-	Sources         []ReadmeSource          // Ecosystem tools to credit in README
-	DiscoveryPages  []string                // Pages visited during browser-sniff discovery
-	NovelFeatures   []NovelFeature          // Transcendence features for README/SKILL
-	Narrative       *ReadmeNarrative        // LLM-authored prose for README/SKILL; optional
-	AsyncJobs       map[string]AsyncJobInfo // Detected async-job endpoints, keyed by "<resource>/<endpoint>"
+	Spec               *spec.APISpec
+	OutputDir          string
+	VisionSet          VisionTemplateSet
+	visionCommandNames map[string]string
+	FixtureSet         *browsersniff.FixtureSet
+	TrafficAnalysis    *browsersniff.TrafficAnalysis
+	Sources            []ReadmeSource          // Ecosystem tools to credit in README
+	DiscoveryPages     []string                // Pages visited during browser-sniff discovery
+	NovelFeatures      []NovelFeature          // Transcendence features for README/SKILL
+	Narrative          *ReadmeNarrative        // LLM-authored prose for README/SKILL; optional
+	AsyncJobs          map[string]AsyncJobInfo // Detected async-job endpoints, keyed by "<resource>/<endpoint>"
 
 	// ModulePath overrides the Go module import path emitted by templates that
 	// reference internal packages (`{{modulePath}}/internal/client`, etc.).
@@ -2371,6 +2372,7 @@ func (g *Generator) prepareOutput() error {
 		g.VisionSet.Store = true
 		fmt.Fprint(os.Stderr, learnStorePromotionInfo)
 	}
+	g.resolveVisionCommandNames()
 	if g.renameActiveFrameworkResourceCollisions() {
 		g.profile = profiler.Profile(g.Spec)
 		g.resetHTMLSyncStubCache()
@@ -3153,13 +3155,68 @@ func (g *Generator) activeFrameworkCobraUseNames() map[string]struct{} {
 		names["api"] = struct{}{}
 	}
 	for _, tmpl := range g.VisionSet.Workflows {
-		if name := frameworkUseNameForTemplate(tmpl); name != "" {
+		if name := g.resolvedVisionCommandName(tmpl); name != "" {
 			names[name] = struct{}{}
 		}
 	}
 	for _, tmpl := range g.VisionSet.Insights {
-		if name := frameworkUseNameForTemplate(tmpl); name != "" {
+		if name := g.resolvedVisionCommandName(tmpl); name != "" {
 			names[name] = struct{}{}
+		}
+	}
+	return names
+}
+
+func (g *Generator) resolveVisionCommandNames() {
+	g.visionCommandNames = make(map[string]string)
+	novelNames := g.novelFeatureRootCommandNames()
+	reserved := maps.Clone(novelNames)
+	for name := range g.Spec.Resources {
+		reserved[spec.NormalizeCobraCommandName(name)] = struct{}{}
+	}
+	for _, tmpl := range append(slices.Clone(g.VisionSet.Workflows), g.VisionSet.Insights...) {
+		bare := frameworkUseNameForTemplate(tmpl)
+		if bare == "" {
+			continue
+		}
+		name := bare
+		if _, collides := novelNames[bare]; collides {
+			name = g.uniqueFrameworkCommandName(bare, reserved)
+			fmt.Fprintf(os.Stderr, "warning: pattern-pack command %q would shadow novel command %q; renamed to %q\n", bare, bare, name)
+		}
+		g.visionCommandNames[bare] = name
+		reserved[name] = struct{}{}
+	}
+}
+
+func (g *Generator) resolvedVisionCommandName(tmpl string) string {
+	bare := frameworkUseNameForTemplate(tmpl)
+	if name, ok := g.visionCommandNames[bare]; ok {
+		return name
+	}
+	return bare
+}
+
+func (g *Generator) uniqueFrameworkCommandName(original string, reserved map[string]struct{}) string {
+	candidate := g.Spec.UniqueFrameworkCollisionResourceName(original)
+	if _, exists := reserved[candidate]; !exists {
+		return candidate
+	}
+	base := candidate
+	for suffix := 2; ; suffix++ {
+		candidate = fmt.Sprintf("%s-%d", base, suffix)
+		if _, exists := reserved[candidate]; !exists {
+			return candidate
+		}
+	}
+}
+
+func (g *Generator) novelFeatureRootCommandNames() map[string]struct{} {
+	names := make(map[string]struct{})
+	for _, feature := range g.NovelFeatures {
+		parts := novelFeatureCommandParts(feature.Command)
+		if len(parts) > 0 {
+			names[parts[0]] = struct{}{}
 		}
 	}
 	return names
@@ -3789,7 +3846,7 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 	if err != nil {
 		return err
 	}
-	insightConstructors := g.renderInsightFiles()
+	insightConstructors := g.renderInsightFiles(visionData)
 
 	if err := g.renderMCPToolFiles(schema); err != nil {
 		return err
@@ -3922,6 +3979,8 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 type visionRenderData struct {
 	*spec.APISpec
 	VisionSet                    VisionTemplateSet
+	CommandNames                 map[string]string
+	CommandConstructor           string
 	HasSync                      bool
 	SyncableResources            []profiler.SyncableResource
 	DependentSyncResources       []profiler.DependentResource
@@ -4315,6 +4374,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 	return visionRenderData{
 		APISpec:                      g.Spec,
 		VisionSet:                    g.VisionSet,
+		CommandNames:                 maps.Clone(g.visionCommandNames),
 		HasSync:                      g.hasGeneratedSyncImplementation(),
 		SyncableResources:            g.profile.SyncableResources,
 		DependentSyncResources:       g.profile.DependentSyncResources,
@@ -4563,12 +4623,14 @@ func (g *Generator) renderWorkflowFiles(visionData visionRenderData) ([]string, 
 	for _, tmpl := range g.VisionSet.Workflows {
 		outName := strings.TrimSuffix(filepath.Base(tmpl), ".tmpl")
 		outPath := filepath.Join("internal", "cli", outName)
-		if err := g.renderTemplate(tmpl, outPath, visionData); err != nil {
+		templateData := visionData
+		templateData.CommandConstructor = g.resolvedVisionCommandConstructor(tmpl)
+		if err := g.renderTemplate(tmpl, outPath, templateData); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: skipping workflow template %s: %v\n", tmpl, err)
 			continue
 		}
-		if constructor := commandConstructorForTemplate(tmpl); constructor != "" {
-			renderedWorkflowConstructors = append(renderedWorkflowConstructors, constructor)
+		if templateData.CommandConstructor != "" {
+			renderedWorkflowConstructors = append(renderedWorkflowConstructors, templateData.CommandConstructor)
 		}
 	}
 
@@ -4792,19 +4854,21 @@ func sortedResourceNames(resources map[string]spec.Resource) []string {
 	return names
 }
 
-func (g *Generator) renderInsightFiles() []string {
+func (g *Generator) renderInsightFiles(visionData visionRenderData) []string {
 	var renderedInsightConstructors []string
 
 	// Render insight templates
 	for _, tmpl := range g.VisionSet.Insights {
 		outName := strings.TrimSuffix(filepath.Base(tmpl), ".tmpl")
 		outPath := filepath.Join("internal", "cli", outName)
-		if err := g.renderTemplate(tmpl, outPath, g.Spec); err != nil {
+		templateData := visionData
+		templateData.CommandConstructor = g.resolvedVisionCommandConstructor(tmpl)
+		if err := g.renderTemplate(tmpl, outPath, templateData); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: skipping insight template %s: %v\n", tmpl, err)
 			continue
 		}
-		if constructor := commandConstructorForTemplate(tmpl); constructor != "" {
-			renderedInsightConstructors = append(renderedInsightConstructors, constructor)
+		if templateData.CommandConstructor != "" {
+			renderedInsightConstructors = append(renderedInsightConstructors, templateData.CommandConstructor)
 		}
 	}
 
@@ -5178,6 +5242,19 @@ func commandConstructorForTemplate(tmpl string) string {
 	default:
 		return ""
 	}
+}
+
+func (g *Generator) resolvedVisionCommandConstructor(tmpl string) string {
+	constructor := commandConstructorForTemplate(tmpl)
+	if constructor == "" {
+		return ""
+	}
+	bare := frameworkUseNameForTemplate(tmpl)
+	resolved := g.resolvedVisionCommandName(tmpl)
+	if resolved == "" || resolved == bare {
+		return constructor
+	}
+	return commandIdent(resolved)
 }
 
 func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {
