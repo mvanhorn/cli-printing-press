@@ -193,7 +193,7 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 				return nil
 			}
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(cmd.OutOrStdout(), flags, "teach")
 			}
 			if strings.TrimSpace(query) == "" {
 				writeTeachErrLog(fmt.Sprintf("teach: missing --query (args=%v resources=%v)", args, resources))
@@ -474,7 +474,7 @@ when learnings exist.`,
 				return cmd.Help()
 			}
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(cmd.OutOrStdout(), flags, "recall")
 			}
 			query := strings.Join(args, " ")
 			envelope := recallEnvelope{
@@ -697,7 +697,7 @@ func newLearningsListCmd(flags *rootFlags) *cobra.Command {
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(cmd.OutOrStdout(), flags, "learnings list")
 			}
 			if warningsOnly {
 				var filterIDs []string
@@ -806,7 +806,7 @@ Requires at least one of --resource, --action, or --all.`,
 				return cmd.Help()
 			}
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(cmd.OutOrStdout(), flags, "learnings forget")
 			}
 			query := strings.Join(args, " ")
 			dbPath = learnDBPath(dbPath)
@@ -897,7 +897,7 @@ a whole family.`,
 		Example: `  learn-loop-example-pp-cli teach-pattern --query-template "items in {entity}" --resource-template "GROUP-{entity:category}" --resource-type "items" --entity-kind "category" --strategy substitute`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(cmd.OutOrStdout(), flags, "teach-pattern")
 			}
 			if noLearnActive(flags) {
 				return nil
@@ -981,7 +981,7 @@ cannot be taught — they are derived from the canonical input.`,
 		Example: `  learn-loop-example-pp-cli teach-lookup --kind country --canonical "United States" --value USA`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(cmd.OutOrStdout(), flags, "teach-lookup")
 			}
 			if noLearnActive(flags) {
 				return nil
