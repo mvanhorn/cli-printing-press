@@ -16,6 +16,17 @@ import (
 func TestBodyMap(t *testing.T) {
 	t.Parallel()
 
+	encodedSettingsPresence := bodyLeafPresenceExpr(spec.Param{
+		Name:        "settings",
+		Type:        "string",
+		Description: "JSON-encoded string of widget settings",
+	}, "Settings", "settings")
+	encodedPayloadPresence := bodyLeafPresenceExpr(spec.Param{
+		Name:   "payload",
+		Type:   "string",
+		Format: "json-string",
+	}, "Payload", "payload")
+
 	cases := []struct {
 		name   string
 		body   []spec.Param
@@ -94,10 +105,12 @@ func TestBodyMap(t *testing.T) {
 		},
 		{
 			// JSON-string params: type is "string" but the format/description
-			// signal JSON content. The branch validates JSON before sending
-			// but stores the raw string (not the parsed value) so the API
-			// receives the user's exact bytes.
-			name:   "jsonString branch validates but stores raw",
+			// signal JSON content — spec authors write these when describing
+			// the *flag input* format. JSON-body APIs expect the decoded
+			// object/array on the wire; storing the raw flag bytes double-
+			// encodes the field (live-hit: Bird CRM 422 on contact create,
+			// Title Toolbox farm create).
+			name:   "jsonString branch validates and stores the decoded value",
 			body:   []spec.Param{{Name: "config", Type: "string", Format: "json"}},
 			indent: "\t\t\t",
 			want: "\t\t\tif (cmd.Flags().Changed(\"config\") || bodyConfig != \"\") {\n" +
@@ -105,7 +118,40 @@ func TestBodyMap(t *testing.T) {
 				"\t\t\t\tif err := json.Unmarshal([]byte(bodyConfig), &parsedConfig); err != nil {\n" +
 				"\t\t\t\t\treturn fmt.Errorf(\"parsing --config JSON: %w\", err)\n" +
 				"\t\t\t\t}\n" +
-				"\t\t\t\tbody[\"config\"] = bodyConfig\n" +
+				"\t\t\t\tbody[\"config\"] = parsedConfig\n" +
+				"\t\t\t}\n",
+		},
+		{
+			// Params that explicitly declare an encoded-string wire type
+			// keep the user's exact bytes: the API field genuinely carries
+			// a JSON-encoded string, so decoding it would change the wire
+			// value.
+			name: "explicitly JSON-encoded string param keeps raw bytes",
+			body: []spec.Param{{
+				Name:        "settings",
+				Type:        "string",
+				Description: "JSON-encoded string of widget settings",
+			}},
+			indent: "\t\t\t",
+			want: "\t\t\tif " + encodedSettingsPresence + " {\n" +
+				"\t\t\t\tvar parsedSettings any\n" +
+				"\t\t\t\tif err := json.Unmarshal([]byte(bodySettings), &parsedSettings); err != nil {\n" +
+				"\t\t\t\t\treturn fmt.Errorf(\"parsing --settings JSON: %w\", err)\n" +
+				"\t\t\t\t}\n" +
+				"\t\t\t\tbody[\"settings\"] = bodySettings\n" +
+				"\t\t\t}\n",
+		},
+		{
+			// Same exception via an explicit format value.
+			name:   "format json-string keeps raw bytes",
+			body:   []spec.Param{{Name: "payload", Type: "string", Format: "json-string"}},
+			indent: "\t\t\t",
+			want: "\t\t\tif " + encodedPayloadPresence + " {\n" +
+				"\t\t\t\tvar parsedPayload any\n" +
+				"\t\t\t\tif err := json.Unmarshal([]byte(bodyPayload), &parsedPayload); err != nil {\n" +
+				"\t\t\t\t\treturn fmt.Errorf(\"parsing --payload JSON: %w\", err)\n" +
+				"\t\t\t\t}\n" +
+				"\t\t\t\tbody[\"payload\"] = bodyPayload\n" +
 				"\t\t\t}\n",
 		},
 		{
