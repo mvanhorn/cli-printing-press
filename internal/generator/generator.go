@@ -7383,6 +7383,7 @@ func isJSONStringParam(p spec.Param) bool {
 		"json-formatted",
 		"json formatted",
 		"serialized json",
+		"stringified json",
 	}
 	for _, marker := range jsonDescriptionMarkers {
 		if strings.Contains(lowerDescription, marker) {

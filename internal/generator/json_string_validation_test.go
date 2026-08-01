@@ -198,6 +198,7 @@ func TestEncodedJSONStringBodyParamKeepsRawBytes(t *testing.T) {
 				Description: "Create item",
 				Body: []spec.Param{
 					{Name: "metadata", Type: "string", Description: "Metadata as a JSON-encoded string"},
+					{Name: "settings", Type: "string", Description: "Settings as a stringified JSON"},
 				},
 			},
 		},
@@ -213,6 +214,9 @@ func TestEncodedJSONStringBodyParamKeepsRawBytes(t *testing.T) {
 	require.Contains(t, code, `json.Unmarshal([]byte(bodyMetadata), &parsedMetadata)`)
 	require.Contains(t, code, `bodyMap["metadata"] = bodyMetadata`)
 	require.NotContains(t, code, `bodyMap["metadata"] = parsedMetadata`)
+	require.Contains(t, code, `json.Unmarshal([]byte(bodySettings), &parsedSettings)`)
+	require.Contains(t, code, `bodyMap["settings"] = bodySettings`)
+	require.NotContains(t, code, `bodyMap["settings"] = parsedSettings`)
 }
 
 func TestHTMLStringBodyParamDoesNotEmitJSONValidation(t *testing.T) {
