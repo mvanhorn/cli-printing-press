@@ -5606,6 +5606,12 @@ func TestExtractObjectIDPascalCaseIdWinsOverUppercaseID(t *testing.T) {
 		t.Fatalf("PascalCase Id must precede uppercase ID: got %q", got)
 	}
 }
+
+func TestExtractObjectIDMongoID(t *testing.T) {
+	if got := extractObjectID(map[string]any{"_id": "mongo-1", "name": "Jack's"}); got != "mongo-1" {
+		t.Fatalf("MongoDB _id must precede display name: got %q", got)
+	}
+}
 `
 	storeTestPath := filepath.Join(outputDir, "internal", "store", "store_pascalcase_test.go")
 	require.NoError(t, os.WriteFile(storeTestPath, []byte(storeInlineTest), 0o644))
@@ -6425,6 +6431,76 @@ func TestWriteThroughCachePopulatesTypedTable(t *testing.T) {
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
 	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCachePopulatesTypedTable", "./internal/cli")
+}
+
+// TestGeneratedTypedSingleObjectSkipsEmptyIDForMongoFallback guards the
+// typed single-object path: an empty or null canonical id must not prevent a
+// valid MongoDB _id from being normalized and used as the row key.
+func TestGeneratedTypedSingleObjectSkipsEmptyIDForMongoFallback(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := adsCampaignSpec()
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	inlineTest := `package cli
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+func TestUpsertSingleObjectSkipsEmptyIDForMongoFallback(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	cases := []struct {
+		name string
+		data string
+		want string
+	}{
+		{
+			name: "empty id",
+			data: "{\"id\":\"\",\"_id\":{\"$oid\":\"mongo-empty\"},\"name\":\"Empty\"}",
+			want: "mongo-empty",
+		},
+		{
+			name: "null id",
+			data: "{\"id\":null,\"_id\":\"mongo-null\",\"name\":\"Null\"}",
+			want: "mongo-null",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := upsertSingleObject(db, "campaigns", json.RawMessage(tc.data)); err != nil {
+				t.Fatalf("upsertSingleObject: %v", err)
+			}
+
+			var count int
+			if err := db.DB().QueryRow("SELECT COUNT(*) FROM campaigns WHERE id = ?", tc.want).Scan(&count); err != nil {
+				t.Fatalf("query typed campaigns: %v", err)
+			}
+			if count != 1 {
+				t.Fatalf("typed campaigns for %q = %d, want 1", tc.want, count)
+			}
+		})
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "typed_single_object_id_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestUpsertSingleObjectSkipsEmptyIDForMongoFallback", "./internal/cli")
 }
 
 // TestWriteThroughCacheNonIDPrimaryKeyResponse guards #1439: the previous
@@ -15591,7 +15667,7 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 	// Vendor identifiers (gid, sid, uid, uuid, guid) and resource-specific
 	// suffixes precede descriptive fields so APIs do not key rows by names.
 	assert.Contains(t, storeContent,
-		`var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "api_id"}`,
+		`var genericIDFieldFallbacks = []string{"id", "ID", "_id", "gid", "sid", "uid", "uuid", "guid", "api_id"}`,
 		"store.go genericIDFieldFallbacks must include stable vendor identifiers")
 	assert.Contains(t, storeContent,
 		`var genericDescriptiveIDFieldFallbacks = []string{"name", "slug", "key", "code"}`,
