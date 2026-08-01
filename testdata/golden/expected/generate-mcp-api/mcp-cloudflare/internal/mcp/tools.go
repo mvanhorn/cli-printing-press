@@ -38,8 +38,8 @@ const (
 // RegisterTools registers all API operations as MCP tools.
 func RegisterTools(s *server.MCPServer) {
 	installFreshTenantGate(s)
-	// Code-orchestration mode — the full surface is covered by two tools
-	// (<api>_search + <api>_execute). Endpoint-mirror tools are suppressed.
+	// Code-orchestration mode — the full surface is covered by registry tools
+	// (<api>_search, <api>_get, and <api>_execute). Endpoint-mirror tools are suppressed.
 	RegisterCodeOrchestrationTools(s)
 	// Search tool — faster than iterating list endpoints for finding specific items
 	s.AddTool(
@@ -199,6 +199,11 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				placeholder := "{" + binding.WireName + "}"
 				pathParams[binding.PublicName] = true
 				path = strings.Replace(path, placeholder, mcpPathValue(v), 1)
+			case "header":
+				if headers == nil {
+					headers = map[string]string{}
+				}
+				headers[binding.WireName] = formatMCPParamValue(v)
 			case "body":
 				bodyArgs[binding.WireName] = v
 			default:

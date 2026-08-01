@@ -295,8 +295,12 @@ type APISpec struct {
 	Source        string `yaml:"source,omitempty" json:"source,omitempty"`                 // source archetype; local-sqlite declares an operator-local SQLite source with no HTTP base URL
 	SpecSource    string `yaml:"spec_source,omitempty" json:"spec_source,omitempty"`       // official, community, sniffed, docs — affects generated client defaults
 	ClientPattern string `yaml:"client_pattern,omitempty" json:"client_pattern,omitempty"` // rest (default), proxy-envelope — affects generated HTTP client
-	HTTPTransport string `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-http, browser-chrome, browser-chrome-h2, or browser-chrome-h3
-	RateClass     string `yaml:"rate_class,omitempty" json:"rate_class,omitempty"`         // per-second, daily, monthly, or unlimited — affects generated sync concurrency defaults
+	// ResponseEnvelopeKey opts the generated HTTP client into unwrapping a
+	// single-key JSON response object whose key is known from the API spec.
+	// Empty leaves the response body unchanged.
+	ResponseEnvelopeKey string `yaml:"response_envelope_key,omitempty" json:"response_envelope_key,omitempty"`
+	HTTPTransport       string `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-http, browser-chrome, browser-chrome-h2, or browser-chrome-h3
+	RateClass           string `yaml:"rate_class,omitempty" json:"rate_class,omitempty"`         // per-second, daily, monthly, or unlimited — affects generated sync concurrency defaults
 	// DefaultRateLimit sets the built-in default for the generated CLI's
 	// --rate-limit flag. "auto" selects the header-driven adaptive limiter
 	// (client.RateLimitAuto) so the CLI paces itself to the server's
@@ -1129,7 +1133,7 @@ func (c BearerRefreshConfig) Enabled() bool {
 
 type AuthConfig struct {
 	Type                   string       `yaml:"type" json:"type"`                           // api_key, oauth2, oauth2_refresh, bearer_token, cookie, composed, session_handshake, none
-	Subtype                string       `yaml:"subtype,omitempty" json:"subtype,omitempty"` // optional refinement of Type. Currently used for "auth0_spa_in_memory": bearer_token whose JWT lives in JS heap (Auth0 SPA SDK v2+ with cacheLocation: memory) and is reachable only via CDP runtime interception, not via cookie/localStorage extraction. Mirrors x-auth-subtype on the OpenAPI security scheme.
+	Subtype                string       `yaml:"subtype,omitempty" json:"subtype,omitempty"` // optional refinement of Type. Recognized values include "google_service_account" for service-account JWT exchange and "auth0_spa_in_memory" for bearer tokens whose JWT lives in JS heap (Auth0 SPA SDK v2+ with cacheLocation: memory) and is reachable only via CDP runtime interception, not via cookie/localStorage extraction. Mirrors x-auth-subtype on the OpenAPI security scheme.
 	Header                 string       `yaml:"header" json:"header"`
 	Prefix                 string       `yaml:"prefix,omitempty" json:"prefix,omitempty"` // Authorization scheme word (e.g., "Token", "PRIVATE-TOKEN"); empty defaults to "Bearer". Ignored when Format is set.
 	Format                 string       `yaml:"format" json:"format"`
@@ -1247,6 +1251,10 @@ const (
 	RefreshTokenMechanismKindScope = "scope"
 	RefreshTokenMechanismKindQuery = "query"
 )
+
+// AuthSubtypeGoogleServiceAccount marks a Google OAuth2 bearer spec whose
+// generated CLI can exchange a service-account JSON key for a bearer token.
+const AuthSubtypeGoogleServiceAccount = "google_service_account"
 
 // AuthSubtypeAuth0SPAInMemory marks a bearer_token spec whose access token is
 // held in JS heap by the Auth0 SPA SDK (cacheLocation: memory) and is reachable
@@ -1719,14 +1727,18 @@ func validateAuthPrefix(c AuthConfig) error {
 }
 
 // validateAuthSubtype rejects unrecognized auth.subtype values so authoring
-// typos fail fast rather than silently bypassing the runtime emission. Only
-// auth0_spa_in_memory is recognized today; the field is otherwise expected to
-// be empty.
+// typos fail fast rather than silently bypassing the runtime emission.
 func validateAuthSubtype(c AuthConfig) error {
 	if c.Subtype == "" {
 		return nil
 	}
 	switch c.Subtype {
+	case AuthSubtypeGoogleServiceAccount:
+		if c.Type != "" && c.Type != "bearer_token" {
+			return fmt.Errorf("auth.subtype %q requires auth.type %q (got %q)",
+				c.Subtype, "bearer_token", c.Type)
+		}
+		return nil
 	case AuthSubtypeAuth0SPAInMemory:
 		// Subtype refines bearer_token; reject the combination if the
 		// underlying type doesn't fit. Auth0 SPA tokens are always
@@ -1737,8 +1749,8 @@ func validateAuthSubtype(c AuthConfig) error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("auth.subtype %q is not recognized (valid: %q)",
-			c.Subtype, AuthSubtypeAuth0SPAInMemory)
+		return fmt.Errorf("auth.subtype %q is not recognized (valid: %q, %q)",
+			c.Subtype, AuthSubtypeGoogleServiceAccount, AuthSubtypeAuth0SPAInMemory)
 	}
 }
 
@@ -2550,6 +2562,7 @@ func (h *HTMLExtract) EffectiveScriptSelector() string {
 
 type Param struct {
 	Name         string   `yaml:"name" json:"name"`
+	In           string   `yaml:"in,omitempty" json:"in,omitempty"` // parameter location: path, query, or header
 	FlagName     string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
 	URLName      string   `yaml:"url_name,omitempty" json:"url_name,omitempty"`   // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
 	BodyName     string   `yaml:"body_name,omitempty" json:"body_name,omitempty"` // optional override for request-body field emission while keeping the public name
@@ -2987,6 +3000,44 @@ type Pagination struct {
 	CursorParam    string `yaml:"cursor_param" json:"cursor_param"`         // query param name for cursor (after, pageToken, offset, page)
 	NextCursorPath string `yaml:"next_cursor_path" json:"next_cursor_path"` // response field with next cursor (nextPageToken, cursor)
 	HasMoreField   string `yaml:"has_more_field" json:"has_more_field"`     // response field indicating more pages (has_more)
+}
+
+type paginationWire struct {
+	Type           string `yaml:"type" json:"type"`
+	LimitParam     string `yaml:"limit_param" json:"limit_param"`
+	CursorParam    string `yaml:"cursor_param" json:"cursor_param"`
+	NextCursorPath string `yaml:"next_cursor_path" json:"next_cursor_path"`
+	CursorField    string `yaml:"cursor_field" json:"cursor_field"`
+	HasMoreField   string `yaml:"has_more_field" json:"has_more_field"`
+}
+
+func (p *Pagination) UnmarshalYAML(value *yaml.Node) error {
+	var wire paginationWire
+	if err := value.Decode(&wire); err != nil {
+		return err
+	}
+	p.assignPaginationWire(wire)
+	return nil
+}
+
+func (p *Pagination) UnmarshalJSON(data []byte) error {
+	var wire paginationWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	p.assignPaginationWire(wire)
+	return nil
+}
+
+func (p *Pagination) assignPaginationWire(wire paginationWire) {
+	p.Type = wire.Type
+	p.LimitParam = wire.LimitParam
+	p.CursorParam = wire.CursorParam
+	p.NextCursorPath = wire.NextCursorPath
+	if p.NextCursorPath == "" {
+		p.NextCursorPath = wire.CursorField
+	}
+	p.HasMoreField = wire.HasMoreField
 }
 
 // QuerySyncConfig declares the SQL-query-endpoint sync shape: an API where every
@@ -4080,7 +4131,7 @@ func promoteEndpointParamsToBody(e *Endpoint) {
 	keep := make([]Param, 0, len(e.Params))
 	promote := make([]Param, 0, len(e.Params))
 	for _, p := range e.Params {
-		if p.PathParam || p.Positional {
+		if p.PathParam || p.Positional || strings.EqualFold(p.In, "query") || strings.EqualFold(p.In, "header") {
 			keep = append(keep, p)
 			continue
 		}
@@ -4206,6 +4257,7 @@ func singularize(s string) string {
 func (s *APISpec) Validate() error {
 	s.NormalizeAuthEnvVarSpecs()
 	s.NormalizeCookieDomain()
+	s.ResponseEnvelopeKey = strings.TrimSpace(s.ResponseEnvelopeKey)
 	s.InferEndpointTemplateVarsFromBaseURLs()
 	if s.Name == "" {
 		return fmt.Errorf("name is required")

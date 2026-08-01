@@ -996,9 +996,11 @@ func ftsMatchQuery(query string) string {
 }
 
 func extractObjectID(obj map[string]any) string {
-	for _, key := range []string{"id", "Id", "ID", "uuid", "slug", "name"} {
+	for _, key := range []string{"id", "Id", "ID", "_id", "uuid", "slug", "name"} {
 		if v, ok := obj[key]; ok {
-			return ResourceIDString(v)
+			if id := ResourceIDString(v); id != "" && id != "<nil>" {
+				return id
+			}
 		}
 	}
 	return ""
@@ -1087,6 +1089,10 @@ func ResourceIDString(v any) string {
 	switch t := v.(type) {
 	case nil:
 		return ""
+	case string:
+		return extendedJSONIDString(t)
+	case map[string]any:
+		return extendedJSONIDMapString(t)
 	case json.Number:
 		return strings.TrimSpace(t.String())
 	case float64:
@@ -1107,6 +1113,30 @@ func ResourceIDString(v any) string {
 	}
 }
 
+func extendedJSONIDString(value string) string {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "{") {
+		return value
+	}
+	var object map[string]any
+	if err := json.Unmarshal([]byte(value), &object); err != nil {
+		return value
+	}
+	if id := extendedJSONIDMapString(object); id != "" {
+		return id
+	}
+	return value
+}
+
+func extendedJSONIDMapString(object map[string]any) string {
+	for _, key := range []string{"$oid", "$numberLong", "$numberInt"} {
+		if value, ok := object[key]; ok {
+			return ResourceIDString(value)
+		}
+	}
+	return ""
+}
+
 // resourceIDFieldOverrides projects per-resource IDField (set by the profiler
 // from x-resource-id or response-schema fallback) into a runtime lookup map.
 // UpsertBatch consults this first so the templated path wins over the
@@ -1124,7 +1154,7 @@ var resourceIDFieldOverrides = map[string]string{
 // Stable vendor identifiers win first; then fields derived from the resource
 // name (accountId, workspaceId); descriptive fallbacks are last. Keeping name
 // ahead of the resource-specific probe silently keys rows by display labels.
-var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "api_id"}
+var genericIDFieldFallbacks = []string{"id", "ID", "_id", "gid", "sid", "uid", "uuid", "guid", "api_id"}
 var genericDescriptiveIDFieldFallbacks = []string{"name", "slug", "key", "code"}
 
 // resourceIDBaseOverrides preserves the complete final collection name for

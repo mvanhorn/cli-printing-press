@@ -1442,6 +1442,12 @@ func compatibleOAuthScopeAuth(base, incoming spec.AuthConfig) bool {
 	if len(incoming.Scopes) == 0 {
 		return false
 	}
+	if base.Subtype == spec.AuthSubtypeGoogleServiceAccount && incoming.Subtype == spec.AuthSubtypeGoogleServiceAccount {
+		if base.Type != incoming.Type || base.EffectiveOAuth2Grant() != incoming.EffectiveOAuth2Grant() {
+			return false
+		}
+		return normalizeAuthURL(base.TokenURL) == normalizeAuthURL(incoming.TokenURL)
+	}
 	if strings.TrimSpace(base.AuthorizationURL) == "" {
 		return false
 	}

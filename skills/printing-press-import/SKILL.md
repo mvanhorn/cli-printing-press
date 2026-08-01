@@ -49,7 +49,7 @@ library" or "from the repo", suggest running this skill first.
 PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 PRESS_LIBRARY="$PRESS_HOME/library"
 PRESS_MANUSCRIPTS="$PRESS_HOME/manuscripts"
-SCRIPTS_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")/references"
+SCRIPTS_DIR="$(dirname "${BASH_SOURCE[0]:-.}")/references"
 
 if ! command -v go >/dev/null 2>&1; then
   echo ""
@@ -75,7 +75,11 @@ _pp_check_disk_space() {
     _pp_disk_path="$(dirname "$_pp_disk_path")"
   done
 
-  _pp_disk_avail_kb="$(df -Pk "$_pp_disk_path" 2>/dev/null | awk 'NR == 2 { print $4; exit }')"
+  _pp_disk_avail_kb="$(df -Pk "$_pp_disk_path" 2>/dev/null | awk 'BEGIN {
+    if ((getline header) <= 0 || (getline record) <= 0) exit
+    field_count = split(record, fields)
+    if (field_count >= 4) print fields[4]
+  }')"
   case "$_pp_disk_avail_kb" in
     ""|*[!0-9]*) return 0 ;;
   esac

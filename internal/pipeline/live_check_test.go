@@ -44,6 +44,20 @@ func writeTestResearchJSON(t *testing.T, cliDir string, features []NovelFeature)
 	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "research.json"), body, 0o644))
 }
 
+func writeTestResearchState(t *testing.T, runRoot, cliDir string) {
+	t.Helper()
+	manifestData, err := json.Marshal(CLIManifest{APIName: "live-check-test", RunID: "live-check-run"})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, CLIManifestFilename), manifestData, 0o644))
+	data, err := json.Marshal(PipelineState{
+		APIName:    "live-check-test",
+		RunID:      "live-check-run",
+		WorkingDir: cliDir,
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(runRoot, "state.json"), data, 0o644))
+}
+
 func writeNovelCommandFile(t *testing.T, cliDir, name, body string) {
 	t.Helper()
 	path := filepath.Join(cliDir, "internal", "cli", name)
@@ -125,12 +139,13 @@ func TestLiveCheck_ResearchDirOverride(t *testing.T) {
 func TestLiveCheck_FindsResearchInParentDir(t *testing.T) {
 	runRoot := t.TempDir()
 	workingDir := filepath.Join(runRoot, "working")
-	cliDir := filepath.Join(workingDir, "demo-pp-cli")
+	cliDir := filepath.Join(workingDir, "live-check-test-pp-cli")
 	require.NoError(t, os.MkdirAll(cliDir, 0o755))
 	writeStubBinary(t, cliDir, "bin", `exit 0`)
 	writeTestResearchJSON(t, runRoot, []NovelFeature{
 		{Name: "Feature A", Command: "foo", Description: "no example"},
 	})
+	writeTestResearchState(t, runRoot, cliDir)
 
 	// CLIDir is two levels under the dir holding research.json. The live
 	// check should walk up, locate it, and surface the next failure gate
@@ -149,12 +164,13 @@ func TestLiveCheck_FindsResearchInParentDir(t *testing.T) {
 func TestLiveCheck_ParentWalkStopsAtBound(t *testing.T) {
 	t.Run("at bound is found", func(t *testing.T) {
 		root := t.TempDir()
-		atBound := filepath.Join(root, "a", "b", "cli")
+		atBound := filepath.Join(root, "a", "b", "live-check-test-pp-cli")
 		require.NoError(t, os.MkdirAll(atBound, 0o755))
 		writeStubBinary(t, atBound, "bin", `exit 0`)
 		writeTestResearchJSON(t, root, []NovelFeature{
 			{Name: "Feature A", Command: "foo", Description: "no example"},
 		})
+		writeTestResearchState(t, root, atBound)
 
 		result := RunLiveCheck(LiveCheckOptions{CLIDir: atBound, BinaryName: "bin", Timeout: time.Second})
 		require.True(t, result.Unable)
@@ -168,7 +184,7 @@ func TestLiveCheck_ParentWalkStopsAtBound(t *testing.T) {
 		// fake root so any stray host-filesystem research.json above
 		// t.TempDir() can't be picked up by the walk. The walk should
 		// stop before reaching it — that's what this assertion proves.
-		pastBound := filepath.Join(root, "a", "b", "c", "cli")
+		pastBound := filepath.Join(root, "a", "b", "c", "live-check-test-pp-cli")
 		require.NoError(t, os.MkdirAll(pastBound, 0o755))
 		writeTestResearchJSON(t, root, []NovelFeature{
 			{Name: "Feature A", Command: "foo", Description: "no example"},
@@ -555,8 +571,13 @@ func TestLiveCheckMarshalJSON(t *testing.T) {
 	body, err := json.Marshal(r)
 	require.NoError(t, err)
 	require.Contains(t, string(body), `"pass_rate_pct":67`)
+	require.Contains(t, string(body), `"status":"available"`)
 	require.Contains(t, string(body), `"evaluated":2`)
 	require.NotContains(t, string(body), "0.6666")
+
+	body, err = json.Marshal(&LiveCheckResult{Unable: true, Reason: "no research.json"})
+	require.NoError(t, err)
+	require.Contains(t, string(body), `"status":"unavailable"`)
 }
 
 // smoke test that ties research, a stub binary, and the full RunLiveCheck
@@ -797,6 +818,32 @@ func TestLiveCheck_RelativeCLIDirRunsResolvedBinary(t *testing.T) {
 
 	result := RunLiveCheck(LiveCheckOptions{CLIDir: cliDir, BinaryName: "stub", Timeout: liveCheckIntegrationTimeout})
 	require.False(t, result.Unable, "check was Unable: %s", result.Reason)
+	require.Equal(t, 1, result.Passed)
+}
+
+func TestLiveCheck_RelativeCLIDirFindsParentResearch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+
+	runRoot := t.TempDir()
+	workingDir := filepath.Join(runRoot, "working")
+	cliDir := filepath.Join(workingDir, "live-check-test-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	t.Chdir(workingDir)
+
+	writeStubBinary(t, cliDir, "stub", `echo '{"data":[{"id":"1"}]}'`)
+	writeTestResearchJSON(t, runRoot, []NovelFeature{
+		{Name: "List items", Command: "items list", Example: "stub items list --json"},
+	})
+	writeTestResearchState(t, runRoot, cliDir)
+
+	result := RunLiveCheck(LiveCheckOptions{
+		CLIDir:     "live-check-test-pp-cli",
+		BinaryName: "stub",
+		Timeout:    liveCheckIntegrationTimeout,
+	})
+	require.False(t, result.Unable, "relative target should resolve all live-check paths: %s", result.Reason)
 	require.Equal(t, 1, result.Passed)
 }
 

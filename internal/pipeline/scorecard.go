@@ -135,6 +135,12 @@ type CompScore struct {
 // RunScorecard evaluates generated CLI files and produces a scorecard.
 // If verifyReport is non-nil, verify results calibrate the final score.
 func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyReport) (*Scorecard, error) {
+	canonicalDir, err := ResolveTargetDir(outputDir)
+	if err != nil {
+		return nil, err
+	}
+	outputDir = canonicalDir
+
 	// Strip the CLI suffix because outputDir from fullrun (paths.WorkingCLIDir)
 	// and library checkouts both end in -pp-cli; APIName is the API slug,
 	// not the binary name, and lands in user-visible output (Markdown

@@ -270,6 +270,12 @@ func (s *openAPISpec) IsSynthetic() bool {
 }
 
 func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, error) {
+	canonicalDir, err := ResolveTargetDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	dir = canonicalDir
+
 	releaseHome, err := scopeSubprocessHome(findCLINames(dir)...)
 	if err != nil {
 		return nil, err
@@ -279,6 +285,13 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	cfg := dogfoodConfig{}
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if cfg.researchDir != "" {
+		canonicalResearchDir, err := ResolveTargetDir(cfg.researchDir)
+		if err != nil {
+			return nil, err
+		}
+		cfg.researchDir = canonicalResearchDir
 	}
 
 	resolvedSpec, specSource, overriddenCaller := resolveDogfoodSpec(dir, specPath)
@@ -457,8 +470,11 @@ func checkMCPSurfaceParity(cliDir string) MCPSurfaceResult {
 // the verified list back as novel_features_built so downstream consumers
 // (README, publish) only claim what actually exists.
 func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
+	if canonicalDir, err := ResolveTargetDir(cliDir); err == nil {
+		cliDir = canonicalDir
+	}
 	if researchDir == "" {
-		return NovelFeaturesCheckResult{Skipped: true}
+		researchDir = FindResearchDir(cliDir)
 	}
 	research, err := LoadResearch(researchDir)
 	if err != nil || len(research.NovelFeatures) == 0 {
@@ -3028,6 +3044,19 @@ func dogfoodExampleCommandPathsFromAgentContext(data []byte) ([][]string, error)
 	if err := json.Unmarshal(data, &ctx); err != nil {
 		return nil, err
 	}
+	var duplicates []string
+	seenRootNames := make(map[string]struct{}, len(ctx.Commands))
+	for _, command := range ctx.Commands {
+		if _, exists := seenRootNames[command.Name]; exists {
+			duplicates = append(duplicates, command.Name)
+		} else {
+			seenRootNames[command.Name] = struct{}{}
+		}
+		collectDuplicateDogfoodCommandNames(nil, command, &duplicates)
+	}
+	if len(duplicates) > 0 {
+		return nil, fmt.Errorf("duplicate sibling command names in agent-context: %s", strings.Join(duplicates, ", "))
+	}
 	var paths [][]string
 	for _, command := range ctx.Commands {
 		collectDogfoodExampleCommandPaths(nil, command, &paths)
@@ -3036,6 +3065,19 @@ func dogfoodExampleCommandPathsFromAgentContext(data []byte) ([][]string, error)
 		return strings.Join(paths[i], " ") < strings.Join(paths[j], " ")
 	})
 	return paths, nil
+}
+
+func collectDuplicateDogfoodCommandNames(prefix []string, command dogfoodAgentCommand, duplicates *[]string) {
+	seen := make(map[string]struct{}, len(command.Subcommands))
+	parentPath := strings.Join(append(prefix, command.Name), " ")
+	for _, subcommand := range command.Subcommands {
+		if _, exists := seen[subcommand.Name]; exists {
+			*duplicates = append(*duplicates, strings.TrimSpace(parentPath+" "+subcommand.Name))
+		} else {
+			seen[subcommand.Name] = struct{}{}
+		}
+		collectDuplicateDogfoodCommandNames(append(prefix, command.Name), subcommand, duplicates)
+	}
 }
 
 var dogfoodExampleCommandSkip = map[string]bool{

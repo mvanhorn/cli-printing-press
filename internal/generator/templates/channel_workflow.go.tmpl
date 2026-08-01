@@ -10,6 +10,7 @@ import (
 {{- end}}
 	"encoding/json"
 	"fmt"
+	"os"
 {{- if .AgentMoneyWorkflow.Enabled}}
 	"strings"
 {{- end}}
@@ -18,6 +19,9 @@ import (
 {{- end}}
 
 	"{{modulePath}}/internal/store"
+{{- if .SyncEnabled}}
+	"{{modulePath}}/internal/cliutil"
+{{- end}}
 	"github.com/spf13/cobra"
 )
 
@@ -278,6 +282,13 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			defer s.Close()
 
 			resources := []string{ {{- range .SyncableResources}}{{if not .SkipDefaultSync}}"{{.Name}}", {{end}}{{end}} }
+			archiveMaxPages := 100
+			if cliutil.IsDogfoodEnv() {
+				archiveMaxPages = 1
+				if len(resources) > 3 {
+					resources = resources[:3]
+				}
+			}
 			totalSynced := 0
 {{- if not (isGraphQL .APISpec)}}
 			syncEventWriter := cmd.OutOrStdout()
@@ -304,7 +315,7 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 					}
 				}
 {{- end}}
-				res := syncResource(cmd.Context(), {{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, s, resource, "", full, 100, false{{if not (isGraphQL .APISpec)}}, false{{end}}{{if .Pagination.DateRangeParam}}, ""{{end}}{{if not (isGraphQL .APISpec)}}, nil, syncEventWriter{{end}})
+				res := syncResource(cmd.Context(), {{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, s, resource, "", full, archiveMaxPages, false{{if not (isGraphQL .APISpec)}}, false{{end}}{{if .Pagination.DateRangeParam}}, ""{{end}}{{if not (isGraphQL .APISpec)}}, nil, syncEventWriter{{end}})
 				if res.Err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "  %s: error: %v\n", resource, res.Err)
 					continue
@@ -356,15 +367,36 @@ func newWorkflowStatusCmd(flags *rootFlags) *cobra.Command {
 			if dbPath == "" {
 				dbPath = defaultDBPath("{{.Name}}-pp-cli")
 			}
-			s, err := store.OpenWithContext(cmd.Context(), dbPath)
-			if err != nil {
-				return fmt.Errorf("opening store: %w", err)
-			}
-			defer s.Close()
 
-			status, err := s.Status()
-			if err != nil {
-				return err
+			status := map[string]int{}
+			if _, err := os.Stat(dbPath); err == nil {
+				s, err := store.OpenReadOnlyContext(cmd.Context(), dbPath)
+				if err != nil {
+					return fmt.Errorf("opening store read-only: %w", err)
+				}
+				defer s.Close()
+
+				schemaVersion, err := s.SchemaVersion()
+				if err != nil {
+					return fmt.Errorf("checking store schema read-only: %w", err)
+				}
+				if schemaVersion < store.StoreSchemaVersion {
+					{{if .SyncEnabled}}
+					return fmt.Errorf("local store schema version %d requires migration to %d; run 'workflow archive' to migrate it", schemaVersion, store.StoreSchemaVersion)
+					{{else}}
+					return fmt.Errorf("local store schema version %d requires migration to %d; this read-only command cannot migrate it; run the command that writes this store", schemaVersion, store.StoreSchemaVersion)
+					{{end}}
+				}
+				if schemaVersion > store.StoreSchemaVersion {
+					return fmt.Errorf("local store schema version %d is newer than supported version %d; upgrade the CLI binary", schemaVersion, store.StoreSchemaVersion)
+				}
+
+				status, err = s.Status()
+				if err != nil {
+					return err
+				}
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("checking store path: %w", err)
 			}
 
 			if flags.asJSON {

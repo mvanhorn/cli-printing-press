@@ -97,7 +97,11 @@ fi
 echo "PRINTING_PRESS_BIN=$PRINTING_PRESS_BIN"
 
 _pp_semver_lt() {
-  awk -v a="$1" -v b="$2" 'BEGIN {
+  if [ -z "${PP_SEMVER_A:-}" ] || [ -z "${PP_SEMVER_B:-}" ]; then
+    echo "[setup-error] semver comparison inputs are missing." >&2
+    return 2
+  fi
+  awk -v a="${PP_SEMVER_A:-}" -v b="${PP_SEMVER_B:-}" 'BEGIN {
     split(a, x, "."); split(b, y, ".")
     for (i = 1; i <= 3; i++) {
       if ((x[i] + 0) < (y[i] + 0)) exit 0
@@ -108,13 +112,15 @@ _pp_semver_lt() {
 }
 
 _pp_go_version_norm() {
-  printf '%s\n' "$1" | sed -nE 's/.*go([0-9]+)\.([0-9]+)(\.([0-9]+))?.*/\1.\2.\4/p' | awk -F. 'NF >= 2 { printf "%d.%d.%d\n", $1, $2, ($3 == "" ? 0 : $3) }'
+  printf '%s\n' "${PP_GO_VERSION_INPUT:-}" | sed -nE 's/.*go([0-9]+)\.([0-9]+)(\.([0-9]+))?.*/\1.\2.\4/p' | sed -E 's/\.$/.0/'
 }
 
 _pp_check_go_currency() {
-  _pp_go_installed="$(_pp_go_version_norm "$(go env GOVERSION 2>/dev/null)")"
-  _pp_go_required="$(_pp_go_version_norm "$(go version "$PRINTING_PRESS_BIN" 2>/dev/null)")"
-  if [ -z "$_pp_go_installed" ] || [ -z "$_pp_go_required" ] || ! _pp_semver_lt "$_pp_go_installed" "$_pp_go_required"; then
+  _pp_go_installed="$(PP_GO_VERSION_INPUT="$(go env GOVERSION 2>/dev/null)" _pp_go_version_norm)"
+  _pp_go_required="$(PP_GO_VERSION_INPUT="$(go version "$PRINTING_PRESS_BIN" 2>/dev/null)" _pp_go_version_norm)"
+  PP_SEMVER_A="$_pp_go_installed"
+  PP_SEMVER_B="$_pp_go_required"
+  if [ -z "$_pp_go_installed" ] || [ -z "$_pp_go_required" ] || ! _pp_semver_lt; then
     return 0
   fi
 
@@ -160,7 +166,11 @@ _pp_check_disk_space() {
     _pp_disk_path="$(dirname "$_pp_disk_path")"
   done
 
-  _pp_disk_avail_kb="$(df -Pk "$_pp_disk_path" 2>/dev/null | awk 'NR == 2 { print $4; exit }')"
+  _pp_disk_avail_kb="$(df -Pk "$_pp_disk_path" 2>/dev/null | awk 'BEGIN {
+    if ((getline header) <= 0 || (getline record) <= 0) exit
+    field_count = split(record, fields)
+    if (field_count >= 4) print fields[4]
+  }')"
   case "$_pp_disk_avail_kb" in
     ""|*[!0-9]*) return 0 ;;
   esac
@@ -199,7 +209,11 @@ mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT
 # cost is not worth its own cache here.
 if [ "$_press_repo" != "true" ] && command -v curl >/dev/null 2>&1; then
   _semver_lt() {
-    awk -v a="$1" -v b="$2" 'BEGIN {
+    if [ -z "${PP_SEMVER_A:-}" ] || [ -z "${PP_SEMVER_B:-}" ]; then
+      echo "[setup-error] semver comparison inputs are missing." >&2
+      return 2
+    fi
+    awk -v a="${PP_SEMVER_A:-}" -v b="${PP_SEMVER_B:-}" 'BEGIN {
       split(a, x, "."); split(b, y, ".")
       for (i = 1; i <= 3; i++) {
         if ((x[i] + 0) < (y[i] + 0)) exit 0
@@ -211,15 +225,15 @@ if [ "$_press_repo" != "true" ] && command -v curl >/dev/null 2>&1; then
   _floor_installed=$("$PRINTING_PRESS_BIN" version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')
   _floor_doc=$(curl -fsSL --max-time 5 \
     https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/supported-versions.txt 2>/dev/null || true)
-  _floor_min=$(printf '%s\n' "$_floor_doc" | awk -F= '/^min_supported=/{print $2; exit}')
+  _floor_min=$(printf '%s\n' "$_floor_doc" | sed -nE 's/^min_supported=//p' | head -n 1)
   _floor_reason=$(printf '%s\n' "$_floor_doc" | sed -nE 's/^reason=//p' | head -n 1)
   _floor_latest=""
   if command -v go >/dev/null 2>&1; then
-    _floor_latest=$(go list -m -json github.com/mvanhorn/cli-printing-press/v4@latest 2>/dev/null | awk '/"Version":/{v=$2; gsub(/[",]/,"",v); sub(/^v/,"",v); print v; exit}')
+    _floor_latest=$(go list -m -json github.com/mvanhorn/cli-printing-press/v4@latest 2>/dev/null | sed -nE 's/^[[:space:]]*"Version":[[:space:]]*"v?([^"]+)".*/\1/p' | head -n 1)
   fi
   if [ -n "$_floor_min" ] && [ -n "$_floor_installed" ] && [ -n "$_floor_latest" ] &&
-     _semver_lt "$_floor_installed" "$_floor_min" &&
-     ! _semver_lt "$_floor_latest" "$_floor_min"; then
+     PP_SEMVER_A="$_floor_installed" PP_SEMVER_B="$_floor_min" _semver_lt &&
+     ! PP_SEMVER_A="$_floor_latest" PP_SEMVER_B="$_floor_min" _semver_lt; then
     echo ""
     echo "[upgrade-required] printing-press v$_floor_min is the minimum supported version (you have v$_floor_installed)"
     echo "PRESS_REQUIRED_MIN=$_floor_min"

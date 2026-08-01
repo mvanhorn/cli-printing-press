@@ -51,7 +51,7 @@ func TestGenerateBinaryPaginatedPromotedThreadsHeader(t *testing.T) {
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
-	// Force no-store so the paginatedGet branch is exercised; resolvePaginatedRead
+	// Force no-store so the direct paginated response-path helper branch is exercised; resolvePaginatedRead
 	// would be wired the same way (both accept the headers map). Export keeps
 	// VisionSet.IsZero() false so the generator doesn't recompute from profile.
 	gen.VisionSet = VisionTemplateSet{Export: true}
@@ -62,12 +62,12 @@ func TestGenerateBinaryPaginatedPromotedThreadsHeader(t *testing.T) {
 		"binary paginated promoted must declare headerOverrides")
 	assert.Contains(t, endpointSrc, `"X-Printing-Press-Binary-Response": "true",`,
 		"binary paginated promoted must include the binary sentinel")
-	assert.Contains(t, endpointSrc, `paginatedGet(cmd.Context(), c, path, map[string]string{`,
-		"non-HasStore pagination must use paginatedGet")
+	assert.Contains(t, endpointSrc, `paginatedGetWithResponsePath(cmd.Context(), c, path, map[string]string{`,
+		"non-HasStore pagination must use paginatedGetWithResponsePath")
 	assert.NotContains(t, endpointSrc, `}, nil, flagAll,`,
 		"paginated binary endpoint must pass headerOverrides, not nil")
 	assert.Contains(t, endpointSrc, `}, headerOverrides, flagAll && !flags.dryRun,`,
-		"paginated binary endpoint must thread headerOverrides into paginatedGet")
+		"paginated binary endpoint must thread headerOverrides into paginatedGetWithResponsePath")
 }
 
 // Regression: store-backed binary GET previously passed nil to resolveRead,
