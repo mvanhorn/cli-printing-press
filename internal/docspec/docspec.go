@@ -129,13 +129,19 @@ func groupByResource(endpoints []rawEndpoint) map[string]spec.Resource {
 			Description: fmt.Sprintf("Operations on %s", seg),
 			Endpoints:   map[string]spec.Endpoint{},
 		}
-		nameCount := map[string]int{}
+		// Allocate names against the set already used in this resource, not a
+		// per-base-name counter: a generated suffix (get_users_2) can otherwise
+		// collide with another route's natural name and silently overwrite it in
+		// the endpoints map. Iterating eps in documentation order keeps naming
+		// deterministic.
+		used := map[string]bool{}
 		for _, ep := range eps {
-			name := endpointName(ep.Method, ep.Path)
-			nameCount[name]++
-			if nameCount[name] > 1 {
-				name = fmt.Sprintf("%s_%d", name, nameCount[name])
+			base := endpointName(ep.Method, ep.Path)
+			name := base
+			for i := 2; used[name]; i++ {
+				name = fmt.Sprintf("%s_%d", base, i)
 			}
+			used[name] = true
 
 			pathParams := extractPathParams(ep.Path)
 
