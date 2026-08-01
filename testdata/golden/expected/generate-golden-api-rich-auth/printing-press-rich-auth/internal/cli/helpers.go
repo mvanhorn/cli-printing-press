@@ -571,16 +571,19 @@ func (c responsePathPaginatedClient) GetWithHeaders(ctx context.Context, path st
 	}
 	selected, ok := responsePayloadAtPath(data, c.responsePath)
 	if !ok {
-		return data, nil
+		return nil, fmt.Errorf("response_path %q not found in response", c.responsePath)
+	}
+	if !isJSONArray(selected) {
+		return nil, fmt.Errorf("response_path %q must resolve to an array", c.responsePath)
 	}
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(data, &root); err != nil {
-		return data, nil
+		return nil, fmt.Errorf("response_path %q requires an object response envelope: %w", c.responsePath, err)
 	}
 	root[responsePathItemsKey] = selected
 	transformed, err := json.Marshal(root)
 	if err != nil {
-		return data, nil
+		return nil, fmt.Errorf("wrap response_path %q: %w", c.responsePath, err)
 	}
 	return transformed, nil
 }

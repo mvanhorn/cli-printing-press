@@ -100,9 +100,10 @@ func TestGeneratedPaginatedCommandsEmitResponsePath(t *testing.T) {
 	behaviorTest := `package cli
 
 import (
-    "context"
-    "encoding/json"
-    "testing"
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
 )
 
 type responsePathPaginationClient struct {
@@ -159,8 +160,40 @@ func TestPaginatedResponsePathAggregatesPages(t *testing.T) {
         t.Fatalf("single page = %#v, want response_path projection", page)
     }
 }
+
+func TestPaginatedResponsePathRejectsInvalidDeclarations(t *testing.T) {
+    tests := []struct {
+        name     string
+        response string
+        path     string
+        want     string
+    }{
+        {
+            name:     "missing path",
+            response: "{\"items\":[{\"id\":\"item-1\"}]}",
+            path:     "results",
+            want:     "response_path \"results\" not found in response",
+        },
+        {
+            name:     "non-array path",
+            response: "{\"results\":{\"id\":\"item-1\"}}",
+            path:     "results",
+            want:     "response_path \"results\" must resolve to an array",
+        },
+    }
+
+    for _, test := range tests {
+        t.Run(test.name, func(t *testing.T) {
+            client := &responsePathPaginationClient{responses: []json.RawMessage{json.RawMessage(test.response)}}
+            _, err := paginatedGetWithResponsePath(context.Background(), client, "/items", nil, nil, false, "after", "cursor", "limit", 100, "", "", test.path)
+            if err == nil || !strings.Contains(err.Error(), test.want) {
+                t.Fatalf("error = %v, want substring %q", err, test.want)
+            }
+        })
+    }
+}
 `
 	testPath := filepath.Join(outputDir, "internal", "cli", "pagination_declarations_runtime_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPaginatedResponsePathAggregatesPages", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPaginatedResponsePath", "-count=1")
 }
