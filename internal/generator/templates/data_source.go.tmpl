@@ -373,7 +373,7 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 		var envelope map[string]json.RawMessage
 		if json.Unmarshal(data, &envelope) == nil {
 			matchedListEnvelope := false
-			if extracted, ok := extractWriteThroughListItems(envelope); ok {
+			if extracted, ok := extractWriteThroughListItems(resourceType, envelope); ok {
 				matchedListEnvelope = true
 				items = extracted
 			}
@@ -433,8 +433,11 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 
 type writeThroughArrayDecoder func(json.RawMessage) ([]json.RawMessage, bool)
 
-func extractWriteThroughListItems(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+func extractWriteThroughListItems(resourceType string, envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
 	if items, ok := extractWriteThroughListWrapperItems(envelope, decodeWriteThroughNonEmptyArray); ok {
+		return items, true
+	}
+	if items, ok := extractWriteThroughResourceItems(resourceType, envelope); ok {
 		return items, true
 	}
 
@@ -453,6 +456,29 @@ func extractWriteThroughListItems(envelope map[string]json.RawMessage) ([]json.R
 	}
 
 	return extractWriteThroughSingleArraySibling(envelope, decodeWriteThroughNonEmptyArray)
+}
+
+func extractWriteThroughResourceItems(resourceType string, envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	var envelopeObject map[string]any
+	envelopeJSON, err := json.Marshal(envelope)
+	if err != nil || json.Unmarshal(envelopeJSON, &envelopeObject) != nil {
+		return nil, false
+	}
+	if store.ExtractResourceID(resourceType, envelopeObject) != "" {
+		return nil, false
+	}
+
+	for key, raw := range envelope {
+		if !strings.EqualFold(key, resourceType) {
+			continue
+		}
+		items, ok := decodeWriteThroughArray(raw)
+		if !ok || !writeThroughArrayItemsAreObjects(items) {
+			return nil, false
+		}
+		return items, true
+	}
+	return nil, false
 }
 
 func extractNestedWriteThroughListItems(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {

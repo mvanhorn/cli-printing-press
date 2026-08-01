@@ -79,6 +79,27 @@ func TestPaginatedGetPreservesResourceNamedEnvelopeForSelection(t *testing.T) {
 
 	outputDir := filepath.Join(t.TempDir(), "paginate-envelope-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
+	var endpointSrc string
+	err := filepath.Walk(filepath.Join(outputDir, "internal", "cli"), func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(content), "collectionItemsForOutput(data, path)") {
+			endpointSrc = string(content)
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, endpointSrc, "generated services list command should exist")
+	require.Contains(t, endpointSrc, "outputData := collectionItemsForOutput(data, path)")
+	require.Contains(t, endpointSrc, "formatData = outputData")
 	requireGeneratedCompiles(t, outputDir)
 
 	behaviorTest := `package cli
@@ -133,6 +154,12 @@ func TestPaginatedEnvelopeSelection(t *testing.T) {
 	var compactEnvelope map[string][]map[string]any
 	if err := json.Unmarshal(compacted, &compactEnvelope); err != nil || len(compactEnvelope["services"]) != 2 {
 		t.Fatalf("compact envelope = %s, err=%v", compacted, err)
+	}
+
+	outputData := collectionItemsForOutput(data, "/services")
+	var outputItems []map[string]any
+	if err := json.Unmarshal(outputData, &outputItems); err != nil || len(outputItems) != 2 {
+		t.Fatalf("output items = %s, err=%v; want two resources", outputData, err)
 	}
 }
 `

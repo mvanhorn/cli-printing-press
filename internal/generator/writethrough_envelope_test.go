@@ -67,6 +67,7 @@ func TestWriteThroughCacheEnvelopeExtractionParity(t *testing.T) {
 	ctx := context.Background()
 
 	writeThroughCache(ctx, "events", json.RawMessage(`+"`"+`{"events":[{"id":1,"name":"launch"}]}`+"`"+`))
+	writeThroughCache(ctx, "eventsmixed", json.RawMessage(`+"`"+`{"eventsmixed":[{"id":2,"name":"deploy"}],"request_id":"req-1"}`+"`"+`))
 	writeThroughCache(ctx, "results", json.RawMessage(`+"`"+`{"results":[{"id":"r1","name":"ok"}]}`+"`"+`))
 	writeThroughCache(ctx, "orders", json.RawMessage(`+"`"+`{"id":"x","items":[],"status":"y"}`+"`"+`))
 	// Detail object carrying ONE multi-element object-array alongside a scalar
@@ -91,6 +92,14 @@ func TestWriteThroughCacheEnvelopeExtractionParity(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("expected 1 cached events row, got %d", len(events))
+	}
+
+	eventsMixed, err := db.List("eventsmixed", 10)
+	if err != nil {
+		t.Fatalf("list eventsmixed: %v", err)
+	}
+	if len(eventsMixed) != 1 {
+		t.Fatalf("resource-named envelope with metadata should cache its items, got %d rows", len(eventsMixed))
 	}
 
 	results, err := db.List("results", 10)

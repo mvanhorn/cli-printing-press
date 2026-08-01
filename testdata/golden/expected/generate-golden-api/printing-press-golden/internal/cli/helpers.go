@@ -1065,6 +1065,39 @@ func extractPaginatedItems(obj map[string]json.RawMessage, requestPath string) (
 	return extractPaginatedItemsFromObject(obj, requestPath, true)
 }
 
+// collectionItemsForOutput projects a paginated collection envelope to the
+// array expected by table, CSV, and plain renderers. JSON output keeps the
+// original envelope so resource-named response shapes remain available to
+// callers that need them.
+func collectionItemsForOutput(data json.RawMessage, requestPath string) json.RawMessage {
+	var items []json.RawMessage
+	if json.Unmarshal(data, &items) == nil {
+		return data
+	}
+
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(data, &obj) != nil {
+		return data
+	}
+	if field, preserve := paginatedCollectionEnvelopeField(obj, requestPath); preserve {
+		if json.Unmarshal(obj[field], &items) == nil {
+			projected, err := json.Marshal(items)
+			if err == nil {
+				return projected
+			}
+		}
+	}
+	items, ok := extractPaginatedItems(obj, requestPath)
+	if !ok {
+		return data
+	}
+	projected, err := json.Marshal(items)
+	if err != nil {
+		return data
+	}
+	return projected
+}
+
 func extractPaginatedItemsFromObject(obj map[string]json.RawMessage, requestPath string, allowEmbedded bool) ([]json.RawMessage, bool) {
 	if !allowEmbedded {
 		if nested, ok := extractPaginatedItemsMatchingPath(obj, requestPath); ok {
