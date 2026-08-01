@@ -16,6 +16,17 @@ import (
 func TestBodyMap(t *testing.T) {
 	t.Parallel()
 
+	encodedSettingsPresence := bodyLeafPresenceExpr(spec.Param{
+		Name:        "settings",
+		Type:        "string",
+		Description: "JSON-encoded string of widget settings",
+	}, "Settings", "settings")
+	encodedPayloadPresence := bodyLeafPresenceExpr(spec.Param{
+		Name:   "payload",
+		Type:   "string",
+		Format: "json-string",
+	}, "Payload", "payload")
+
 	cases := []struct {
 		name   string
 		body   []spec.Param
@@ -122,7 +133,7 @@ func TestBodyMap(t *testing.T) {
 				Description: "JSON-encoded string of widget settings",
 			}},
 			indent: "\t\t\t",
-			want: "\t\t\tif bodySettings != \"\" {\n" +
+			want: "\t\t\tif " + encodedSettingsPresence + " {\n" +
 				"\t\t\t\tvar parsedSettings any\n" +
 				"\t\t\t\tif err := json.Unmarshal([]byte(bodySettings), &parsedSettings); err != nil {\n" +
 				"\t\t\t\t\treturn fmt.Errorf(\"parsing --settings JSON: %w\", err)\n" +
@@ -135,7 +146,7 @@ func TestBodyMap(t *testing.T) {
 			name:   "format json-string keeps raw bytes",
 			body:   []spec.Param{{Name: "payload", Type: "string", Format: "json-string"}},
 			indent: "\t\t\t",
-			want: "\t\t\tif bodyPayload != \"\" {\n" +
+			want: "\t\t\tif " + encodedPayloadPresence + " {\n" +
 				"\t\t\t\tvar parsedPayload any\n" +
 				"\t\t\t\tif err := json.Unmarshal([]byte(bodyPayload), &parsedPayload); err != nil {\n" +
 				"\t\t\t\t\treturn fmt.Errorf(\"parsing --payload JSON: %w\", err)\n" +
