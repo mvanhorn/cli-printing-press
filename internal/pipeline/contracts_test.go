@@ -574,7 +574,9 @@ func TestRetroIssueTaxonomyAndRelationshipContracts(t *testing.T) {
 	assert.Contains(t, createBlock, "--add-blocked-by")
 	assert.Contains(t, createBlock, "Related-area references")
 	assert.Contains(t, createBlock, "declare -A OUTCOME_ISSUE_NUM_BY_WU_ID SORTED_WU_ID_SEEN")
-	assert.Contains(t, createBlock, "SORTED_WU_IDS")
+	assert.Contains(t, createBlock, "extract_wu_id")
+	assert.Contains(t, issueTemplate, "never sort a work-unit array and an ID array independently")
+	assert.NotContains(t, createBlock, "SORTED_WU_IDS")
 	assert.Contains(t, createBlock, "WU-2|wu:WU-1")
 	assert.Contains(t, createBlock, "OUTCOME_ISSUE_NUM_BY_WU_ID[$dependent_id]")
 	assert.Contains(t, createBlock, "OUTCOME_ISSUE_NUM_BY_WU_ID[$prerequisite_id]")
@@ -582,8 +584,8 @@ func TestRetroIssueTaxonomyAndRelationshipContracts(t *testing.T) {
 	assert.NotContains(t, createBlock, "dependent_wu_index|wu:<prerequisite_wu_index>")
 	assert.NotContains(t, createBlock, "OUTCOME_ISSUE_NUM[$")
 	assert.Contains(t, issueTemplate, "Apply labels: $RETRO_PROVENANCE_LABEL, bug or enhancement")
-	assert.Contains(t, issueTemplate, "stable WU-N identifiers from each")
-	assert.Contains(t, issueTemplate, "Dependency edges use these stable IDs, never sorted array positions")
+	assert.Contains(t, issueTemplate, "Each record retains its own `Stable ID: WU-N` field")
+	assert.Contains(t, issueTemplate, "Dependency edges use the stable ID extracted from each sorted record")
 }
 
 func TestRetroDependencyStableIDsSurvivePriorityReorder(t *testing.T) {

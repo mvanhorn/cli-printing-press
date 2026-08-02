@@ -175,10 +175,11 @@ but the skill may have intentionally ordered them by dependency — preserve
 that).
 
 ```bash
-# SORTED_WORK_UNITS is populated from $WORK_UNITS sorted P1 → P3.
-# SORTED_WU_IDS is the parallel list of stable WU-N identifiers from each
-# record before sorting; each entry stays paired with SORTED_WORK_UNITS.
-# Dependency edges use these stable IDs, never sorted array positions.
+# SORTED_WORK_UNITS is populated by sorting the complete WU records from
+# $WORK_UNITS P1 → P3. Each record retains its own `Stable ID: WU-N` field;
+# never sort a work-unit array and an ID array independently.
+# Dependency edges use the stable ID extracted from each sorted record, never
+# a sorted array position.
 ```
 
 ## Step 2.5: Dedup against open issues
@@ -448,11 +449,17 @@ declare -a WU_DEPENDENCY_EDGES
 declare -a FAILED_ISSUES
 declare -A OUTCOME_ISSUE_NUM_BY_WU_ID SORTED_WU_ID_SEEN
 
+extract_wu_id() {
+  printf '%s\n' "$1" \
+    | sed -nE 's/^- \*\*Stable ID:\*\* (WU-[1-9][0-9]*)([[:space:]].*)?$/\1/p' \
+    | head -1
+}
+
 ISSUE_TMPDIR=$(mktemp -d)
 ISSUE_RUN_START_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
-  WU_ID="${SORTED_WU_IDS[$wu_idx]-}"
+  WU_ID="$(extract_wu_id "${SORTED_WORK_UNITS[$wu_idx]}")"
   if [[ ! "$WU_ID" =~ ^WU-[1-9][0-9]*$ ]]; then
     echo "ERROR: sorted WU $wu_idx has missing or duplicate stable ID: ${WU_ID:-<empty>}" >&2
     exit 1
@@ -467,7 +474,7 @@ done
 for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
   (
     WU="${SORTED_WORK_UNITS[$wu_idx]}"
-    WU_ID="${SORTED_WU_IDS[$wu_idx]}"
+    WU_ID="$(extract_wu_id "$WU")"
     DEDUP="${WU_DEDUP[$wu_idx]}"  # "comment:NN" or empty
 
     # Each WU contributes: $WU_ID, $WU_TITLE, $WU_BODY, $WU_COMMENT_BODY,
@@ -623,7 +630,7 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
     IFS= read -r FAIL_MSG
   } < "$ISSUE_TMPDIR/issue-$wu_idx"
 
-  EXPECTED_WU_ID="${SORTED_WU_IDS[$wu_idx]-}"
+  EXPECTED_WU_ID="$(extract_wu_id "${SORTED_WORK_UNITS[$wu_idx]}")"
   if [[ "$WU_ID" != "$EXPECTED_WU_ID" ]]; then
     FAILED_ISSUES+=("sorted WU $wu_idx returned stable ID ${WU_ID:-<empty>}, expected ${EXPECTED_WU_ID:-<empty>}")
     continue
@@ -743,8 +750,7 @@ Failure modes:
 | `$RETRO_SCRATCH_PATH` | SKILL.md Phase 5 | Path to temp retro copy under `/tmp/printing-press/retro/` |
 | `$RETRO_PROVENANCE_LABEL` | This file Step 1 | Available write marker: canonical `source:retro`, or legacy `retro` only during cutover fallback |
 | `$WORK_UNITS` | SKILL.md Phase 5.5 | Array of WU records |
-| `$SORTED_WORK_UNITS` | This file Step 2 | `$WORK_UNITS` sorted P1 → P3 |
-| `$SORTED_WU_IDS` | This file Step 2 | Stable WU-N identifiers kept parallel with `$SORTED_WORK_UNITS` after priority sorting |
+| `$SORTED_WORK_UNITS` | This file Step 2 | Complete `$WORK_UNITS` records sorted P1 → P3; each record retains its own stable WU-N identifier |
 | `$EXISTING_OPEN_RETROS` | This file Step 2.5 | De-duplicated JSON of open issues carrying `source:retro` or legacy `retro` |
 | `$WU_DEDUP` | This file Step 2.5 | Per-WU dedup decision: `comment:NN` or empty |
 | `$WU_RELATED` | This file Step 2.5 + Phase 3 Step D | Per-WU comma-separated related-issue numbers (annotated for the body) |
