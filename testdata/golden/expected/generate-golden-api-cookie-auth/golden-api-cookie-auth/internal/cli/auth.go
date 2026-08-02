@@ -318,8 +318,8 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			w := cmd.OutOrStdout()
-			header := cfg.AuthHeader()
-			if header == "" {
+			credentialConfigured := cfg.CredentialConfigured()
+			if !credentialConfigured {
 				if v := os.Getenv("COOKIE_AUTH_SESSION"); v != "" {
 					fmt.Fprintln(w, green("Authenticated"))
 					fmt.Fprintf(w, "  Source: %s env var\n", "COOKIE_AUTH_SESSION")

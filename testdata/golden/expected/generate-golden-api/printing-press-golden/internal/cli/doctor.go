@@ -20,6 +20,22 @@ import (
 	"printing-press-golden-pp-cli/internal/store"
 )
 
+// Hand-coded auth flows can report credentials that are intentionally not
+// represented by the generated Config fields. Assign this from a same-package
+// author file after generation. This is a presence signal only; custom flows
+// own their transport and credential-probe validation.
+var doctorAuthConfiguredHook func() (bool, string)
+
+func doctorAuthConfiguredState(cfg *config.Config) (bool, string) {
+	if cfg != nil && cfg.CredentialConfigured() {
+		return true, cfg.AuthSource
+	}
+	if doctorAuthConfiguredHook != nil {
+		return doctorAuthConfiguredHook()
+	}
+	return false, ""
+}
+
 // looksLikeDoctorInterstitial reports whether the response body matches a known
 // bot-detection challenge page (Cloudflare, Akamai, Vercel, AWS WAF, DataDome,
 // PerimeterX). Only fires on the doctor probe — used to distinguish "transport
@@ -188,14 +204,14 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// Check auth
 			authConfigured := false
 			if cfg != nil {
-				header := cfg.AuthHeader()
-				if header == "" {
+				configured, authSource := doctorAuthConfiguredState(cfg)
+				if !configured {
 					report["auth"] = "not configured"
 					report["auth_hint"] = "Set your API key with: export PRINTING_PRESS_GOLDEN_API_KEY=\"your-token-here\""
 				} else {
 					authConfigured = true
 					report["auth"] = "configured"
-					report["auth_source"] = cfg.AuthSource
+					report["auth_source"] = authSource
 				}
 			}
 
