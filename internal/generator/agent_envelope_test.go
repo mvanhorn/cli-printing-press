@@ -244,7 +244,7 @@ func TestGeneratedNoStoreEndpointAgentWrapsFallthroughOutput(t *testing.T) {
 		case "/items":
 			_, _ = w.Write([]byte(`[{"id":"one","name":"Alpha"}]`))
 		case "/widgets":
-			_, _ = w.Write([]byte(`{"meta":{"total":1,"page":1},"results":[{"id":"nested","name":"Nested shape"}]}`))
+			_, _ = w.Write([]byte(`{"meta":{"total":1,"page":1},"results":[{"id":"nested","name":"Nested shape"}],"kind":"widgets"}`))
 		case "/gadgets":
 			_, _ = w.Write([]byte(`{"results":[{"id":"flat","name":"Single-key wrapper"}]}`))
 		default:

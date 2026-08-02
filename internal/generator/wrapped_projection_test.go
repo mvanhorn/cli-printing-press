@@ -20,6 +20,8 @@ func TestWrappedArrayProjectionHelpers_EmittedRuntime(t *testing.T) {
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -83,6 +85,86 @@ func TestCompactFieldsProjectsDomainSpecificArrayWrapper(t *testing.T) {
 	}
 	if got["request_id"] != "req-1" {
 		t.Fatalf("compact should preserve scalar envelope metadata, got %#v", got["request_id"])
+	}
+}
+
+func TestCompactFieldsProjectsNestedDomainSpecificArrayWrapper(t *testing.T) {
+	input := json.RawMessage(`+"`"+`{
+		"meta": {"total": 1},
+		"links": {"next": "/artists?page=2"},
+		"artists": {
+			"items": [
+				{"id":"artist-1","name":"Radiohead","description":"verbose"}
+			]
+		}
+	}`+"`"+`)
+
+	got := decodeObject(t, compactFields(input))
+	meta, ok := got["meta"].(map[string]any)
+	if !ok || meta["total"] != float64(1) {
+		t.Fatalf("compact should preserve nested envelope metadata, got %#v", got["meta"])
+	}
+	links, ok := got["links"].(map[string]any)
+	if !ok || links["next"] != "/artists?page=2" {
+		t.Fatalf("compact should preserve links metadata, got %#v", got["links"])
+	}
+	artists, ok := got["artists"].(map[string]any)
+	if !ok {
+		t.Fatalf("artists = %#v, want nested object envelope", got["artists"])
+	}
+	items, ok := artists["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("artists.items = %#v, want one item", artists["items"])
+	}
+	first := items[0].(map[string]any)
+	if first["id"] != "artist-1" || first["name"] != "Radiohead" {
+		t.Fatalf("nested compact row lost identity fields: %#v", first)
+	}
+	if _, ok := first["description"]; ok {
+		t.Fatalf("nested compact row kept verbose description: %#v", first)
+	}
+}
+
+func TestCompactFieldsPreservesNestedDetailPayload(t *testing.T) {
+	input := json.RawMessage(`+"`"+`{
+		"data": {
+			"id": "issue-1",
+			"description": "actual answer",
+			"tags": [{"id": "tag-1", "label": "bug"}]
+		}
+	}`+"`"+`)
+
+	got := decodeObject(t, compactFields(input))
+	data, ok := got["data"].(map[string]any)
+	if !ok || data["description"] != "actual answer" {
+		t.Fatalf("nested detail payload was stripped: %#v", got["data"])
+	}
+}
+
+func TestCompactFieldsStopsAtDepthBound(t *testing.T) {
+	var input strings.Builder
+	for i := 0; i < 33; i++ {
+		fmt.Fprintf(&input, `+"`"+`{"level%d":`+"`"+`, i)
+	}
+	input.WriteString(`+"`"+`{"items":[{"id":"artist-1","description":"verbose"}]}`+"`"+`)
+	for i := 0; i < 33; i++ {
+		input.WriteByte('}')
+	}
+
+	current := decodeObject(t, compactFields(json.RawMessage(input.String())))
+	for i := 0; i < 33; i++ {
+		var ok bool
+		current, ok = current[fmt.Sprintf("level%d", i)].(map[string]any)
+		if !ok {
+			t.Fatalf("level%d was not preserved while depth bound stopped descent", i)
+		}
+	}
+	items, ok := current["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("deep items = %#v, want one unprojected item", current["items"])
+	}
+	if items[0].(map[string]any)["description"] != "verbose" {
+		t.Fatalf("overly deep compact envelope was unexpectedly traversed: %#v", items[0])
 	}
 }
 

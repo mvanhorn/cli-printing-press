@@ -31,6 +31,7 @@ func TestFilterFieldsEnvelopeDescent_EmittedHelper(t *testing.T) {
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -67,6 +68,12 @@ func TestFilterFieldsEnvelopeDescent(t *testing.T) {
 			`+"`"+`{"items":[{"id":"a"}],"total_count":2}`+"`"+`,
 		},
 		{
+			"nested type-keyed envelope preserves metadata",
+			`+"`"+`{"artists":{"items":[{"id":"a","name":"Radiohead","other":"y"}]},"meta":{"total":1},"links":{"next":"/artists?page=2"}}`+"`"+`,
+			"id,name",
+			`+"`"+`{"artists":{"items":[{"id":"a","name":"Radiohead"}]},"meta":{"total":1},"links":{"next":"/artists?page=2"}}`+"`"+`,
+		},
+		{
 			"envelope preserves null pagination cursor verbatim",
 			`+"`"+`{"items":[{"id":"a"}],"next_cursor":null}`+"`"+`,
 			"id",
@@ -77,6 +84,12 @@ func TestFilterFieldsEnvelopeDescent(t *testing.T) {
 			`+"`"+`{"a":1,"b":2}`+"`"+`,
 			"c",
 			`+"`"+`{"a":1,"b":2}`+"`"+`,
+		},
+		{
+			"nested object without collection preserves input",
+			`+"`"+`{"artist":{"name":"Radiohead"}}`+"`"+`,
+			"id",
+			`+"`"+`{"artist":{"name":"Radiohead"}}`+"`"+`,
 		},
 		{
 			"selector matches envelope key suppresses descent",
@@ -127,6 +140,22 @@ func TestFilterFieldsEnvelopeDescent_UnknownSelector(t *testing.T) {
 	}
 	if !strings.Contains(string(warning), "valid fields: items") {
 		t.Fatalf("warning = %q, want valid top-level fields", warning)
+	}
+}
+
+func TestFilterFieldsEnvelopeDescent_StopsAtDepthBound(t *testing.T) {
+	var input strings.Builder
+	for i := 0; i < 33; i++ {
+		fmt.Fprintf(&input, `+"`"+`{"level%d":`+"`"+`, i)
+	}
+	input.WriteString(`+"`"+`{"items":[{"id":"a","extra":"b"}]}`+"`"+`)
+	for i := 0; i < 33; i++ {
+		input.WriteByte('}')
+	}
+
+	got := filterFields(json.RawMessage(input.String()), "id")
+	if string(got) != input.String() {
+		t.Fatalf("overly deep envelope was unexpectedly traversed: got %s", got)
 	}
 }
 
