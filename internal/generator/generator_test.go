@@ -8443,6 +8443,7 @@ func TestUnwrapSingleKeyArray_KnownWrapperKeysUnwrap(t *testing.T) {
 		{"nodes", ` + "`{\"nodes\":[]}`" + `, ` + "`[]`" + `},
 		{"entries", ` + "`{\"entries\":[\"x\"]}`" + `, ` + "`[\"x\"]`" + `},
 		{"records", ` + "`{\"records\":[null]}`" + `, ` + "`[null]`" + `},
+		{"results with pagination metadata sibling", ` + "`{\"results\":[{\"id\":\"a\"}],\"paging\":{\"next\":{\"after\":\"1\"}}}`" + `, ` + "`[{\"id\":\"a\"}]`" + `},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -8462,6 +8463,10 @@ func TestUnwrapSingleKeyArray_PassThroughs(t *testing.T) {
 	}{
 		{"bare array", ` + "`[{\"id\":\"a\"}]`" + `},
 		{"multi-key object preserves cursor", ` + "`{\"results\":[],\"next_page_token\":\"abc\"}`" + `},
+		{"two collection siblings", ` + "`{\"results\":[],\"items\":[]}`" + `},
+		{"empty key alongside collection", ` + "`{\"\":[],\"results\":[]}`" + `},
+		{"unknown wrapper with pagination metadata", ` + "`{\"payload\":[],\"paging\":{\"next\":{}}}`" + `},
+		{"metadata without collection", ` + "`{\"paging\":{\"next\":{}}}`" + `},
 		{"unknown wrapper key", ` + "`{\"payload\":[1,2]}`" + `},
 		{"single key but not array value", ` + "`{\"data\":{\"issues\":{\"nodes\":[]}}}`" + `},
 		{"single key but value is null", ` + "`{\"results\":null}`" + `},

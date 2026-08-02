@@ -1180,6 +1180,22 @@ var envelopeMetadataArrayKeys = map[string]bool{
 	"warnings": true, "Warnings": true,
 }
 
+// envelopeMetadataKeys lists pagination and collection-envelope metadata
+// siblings to ignore when recognizing a wrapped array. Projection helpers
+// preserve these keys while filtering or compacting the collection.
+// Keep this data-driven so the envelope helpers do not depend on one API's
+// response vocabulary.
+var envelopeMetadataKeys = map[string]bool{
+	"paging": true, "pagination": true,
+	"_links": true, "links": true,
+	"meta": true, "metadata": true,
+	"total": true, "totalCount": true, "total_count": true,
+	"hasMore": true, "has_more": true,
+	"offset":   true,
+	"nextPage": true, "next_page": true,
+	"cursor": true,
+}
+
 func extractPaginatedObjectArray(raw json.RawMessage) ([]json.RawMessage, bool) {
 	var items []json.RawMessage
 	// Empty fallback arrays are deliberately ignored: without an object item,
@@ -1398,9 +1414,10 @@ func wrapAgentOutput(data json.RawMessage, meta map[string]any) (json.RawMessage
 
 // unwrapSingleKeyArray flattens single-key collection envelopes
 // ({"results":[...]}, {"data":[...]}, etc.) so the agent envelope
-// emits a stable .results[] across APIs. Multi-key objects pass
-// through so cursor/pagination fields stay accessible; non-array
-// values pass through so non-collection responses aren't reshaped.
+// emits a stable .results[] across APIs. Known pagination metadata siblings
+// do not prevent a recognized collection wrapper from being flattened;
+// unrelated multi-key objects still pass through so non-collection responses
+// aren't reshaped.
 //
 // The wrapper-key set is intentionally narrower than
 // extractPaginatedItems (which also walks domain-specific keys like
@@ -1416,20 +1433,28 @@ func unwrapSingleKeyArray(data json.RawMessage) json.RawMessage {
 	if err := json.Unmarshal(data, &obj); err != nil {
 		return data
 	}
-	if len(obj) != 1 {
+	var collectionKey string
+	var collectionValue json.RawMessage
+	foundCollection := false
+	for key, val := range obj {
+		if envelopeMetadataKeys[key] {
+			continue
+		}
+		if foundCollection {
+			return data
+		}
+		foundCollection = true
+		collectionKey = key
+		collectionValue = val
+	}
+	if collectionKey != "results" && collectionKey != "data" && collectionKey != "items" && collectionKey != "nodes" && collectionKey != "entries" && collectionKey != "records" {
 		return data
 	}
-	for key, val := range obj {
-		if key != "results" && key != "data" && key != "items" && key != "nodes" && key != "entries" && key != "records" {
-			return data
-		}
-		trimmed := bytes.TrimLeft(val, " \t\r\n")
-		if len(trimmed) == 0 || trimmed[0] != '[' {
-			return data
-		}
-		return val
+	trimmed := bytes.TrimLeft(collectionValue, " \t\r\n")
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return data
 	}
-	return data
+	return collectionValue
 }
 
 // filterFields keeps only the specified fields (comma-separated) from JSON objects/arrays.
@@ -1509,6 +1534,10 @@ type selectMatchState struct {
 	fallbackIndeterminate bool
 }
 
+// maxListEnvelopeDepth bounds generic object descent so malformed or hostile
+// JSON cannot force unbounded recursion in selector or compact projection.
+const maxListEnvelopeDepth = 32
+
 func (s *selectMatchState) merge(other selectMatchState) {
 	s.matched = s.matched || other.matched
 	s.anchoredIndeterminate = s.anchoredIndeterminate || other.anchoredIndeterminate
@@ -1520,6 +1549,10 @@ func (s *selectMatchState) merge(other selectMatchState) {
 // empty arrays reached through a known selector prefix from empty arrays found
 // only by the list-envelope fallback.
 func filterFieldsRec(data json.RawMessage, paths [][]string, pathAnchored bool) (json.RawMessage, selectMatchState) {
+	return filterFieldsRecAtDepth(data, paths, pathAnchored, 0)
+}
+
+func filterFieldsRecAtDepth(data json.RawMessage, paths [][]string, pathAnchored bool, envelopeDepth int) (json.RawMessage, selectMatchState) {
 	var arr []json.RawMessage
 	if err := json.Unmarshal(data, &arr); err == nil {
 		out := make([]json.RawMessage, len(arr))
@@ -1529,7 +1562,7 @@ func filterFieldsRec(data json.RawMessage, paths [][]string, pathAnchored bool) 
 		}
 		for i, el := range arr {
 			var childState selectMatchState
-			out[i], childState = filterFieldsRec(el, paths, pathAnchored)
+			out[i], childState = filterFieldsRecAtDepth(el, paths, pathAnchored, envelopeDepth)
 			state.merge(childState)
 		}
 		result, _ := json.Marshal(out)
@@ -1567,7 +1600,7 @@ func filterFieldsRec(data json.RawMessage, paths [][]string, pathAnchored bool) 
 			}
 			if subs := subPaths[matched]; subs != nil {
 				var childState selectMatchState
-				filtered[k], childState = filterFieldsRec(v, subs, true)
+				filtered[k], childState = filterFieldsRecAtDepth(v, subs, true, envelopeDepth)
 				state.merge(childState)
 			}
 		}
@@ -1582,7 +1615,7 @@ func filterFieldsRec(data json.RawMessage, paths [][]string, pathAnchored bool) 
 		// which json.Unmarshal otherwise accepts into a []json.RawMessage
 		// as a nil slice and would coerce to `[]`.
 		if !headMatched {
-			if pending, foundArray, nestedState := filterListEnvelopeFields(obj, paths); foundArray {
+			if pending, foundArray, nestedState := filterListEnvelopeFields(obj, paths, envelopeDepth); foundArray {
 				filtered = pending
 				state.merge(nestedState)
 			}
@@ -1594,29 +1627,37 @@ func filterFieldsRec(data json.RawMessage, paths [][]string, pathAnchored bool) 
 	return data, selectMatchState{}
 }
 
-func filterListEnvelopeFields(obj map[string]json.RawMessage, paths [][]string) (map[string]json.RawMessage, bool, selectMatchState) {
+func filterListEnvelopeFields(obj map[string]json.RawMessage, paths [][]string, envelopeDepth int) (map[string]json.RawMessage, bool, selectMatchState) {
 	pending := map[string]json.RawMessage{}
 	foundArray := false
 	state := selectMatchState{}
 	for k, v := range obj {
-		if envelopeMetadataArrayKeys[k] {
+		if envelopeMetadataArrayKeys[k] || envelopeMetadataKeys[k] {
 			pending[k] = v
 			continue
 		}
-		var arr []json.RawMessage
-		if json.Unmarshal(v, &arr) == nil && arr != nil {
-			foundArray = true
-			var childState selectMatchState
-			pending[k], childState = filterFieldsRec(v, paths, false)
-			state.merge(childState)
-			continue
-		}
-		if k == "_embedded" {
-			if nested, ok, nestedState := filterNestedListEnvelopeFields(v, paths); ok {
-				foundArray = true
-				pending[k] = nested
-				state.merge(nestedState)
-				continue
+		trimmed := bytes.TrimLeft(v, " \t\r\n")
+		if len(trimmed) > 0 {
+			switch trimmed[0] {
+			case '[':
+				var arr []json.RawMessage
+				if json.Unmarshal(v, &arr) == nil && arr != nil {
+					foundArray = true
+					var childState selectMatchState
+					pending[k], childState = filterFieldsRecAtDepth(v, paths, false, envelopeDepth)
+					state.merge(childState)
+					continue
+				}
+			case '{':
+				var nestedObj map[string]json.RawMessage
+				if json.Unmarshal(v, &nestedObj) == nil && nestedObj != nil {
+					if nested, ok, nestedState := filterNestedListEnvelopeFields(v, paths, envelopeDepth); ok {
+						foundArray = true
+						pending[k] = nested
+						state.merge(nestedState)
+						continue
+					}
+				}
 			}
 		}
 		pending[k] = v
@@ -1624,12 +1665,15 @@ func filterListEnvelopeFields(obj map[string]json.RawMessage, paths [][]string) 
 	return pending, foundArray, state
 }
 
-func filterNestedListEnvelopeFields(data json.RawMessage, paths [][]string) (json.RawMessage, bool, selectMatchState) {
+func filterNestedListEnvelopeFields(data json.RawMessage, paths [][]string, envelopeDepth int) (json.RawMessage, bool, selectMatchState) {
+	if envelopeDepth >= maxListEnvelopeDepth {
+		return nil, false, selectMatchState{}
+	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(data, &obj); err != nil {
 		return nil, false, selectMatchState{}
 	}
-	filtered, found, state := filterListEnvelopeFields(obj, paths)
+	filtered, found, state := filterListEnvelopeFields(obj, paths, envelopeDepth+1)
 	if !found {
 		return nil, false, selectMatchState{}
 	}
@@ -1882,7 +1926,7 @@ func isCompactScalar(v any) bool {
 // under `--agent`/`--compact` is a silent loss; agents who want to omit them
 // can pass `--select` to specify only the fields they need.
 func compactObjectFields(obj map[string]any) json.RawMessage {
-	if compacted, ok := compactListEnvelopeObject(obj); ok {
+	if compacted, ok := compactListEnvelopeObjectAtDepth(obj, 0); ok {
 		result, _ := json.Marshal(compacted)
 		return result
 	}
@@ -1896,14 +1940,14 @@ func compactObjectFields(obj map[string]any) json.RawMessage {
 	return result
 }
 
-func compactListEnvelopeObject(obj map[string]any) (map[string]any, bool) {
+func compactListEnvelopeObjectAtDepth(obj map[string]any, envelopeDepth int) (map[string]any, bool) {
 	out := map[string]any{}
 	foundArray := false
 	for k, v := range obj {
-		if compactVerboseObjectFields[k] {
+		if envelopeDepth == 0 && compactVerboseObjectFields[k] {
 			continue
 		}
-		if envelopeMetadataArrayKeys[k] {
+		if envelopeMetadataArrayKeys[k] || envelopeMetadataKeys[k] {
 			out[k] = v
 			continue
 		}
@@ -1912,11 +1956,13 @@ func compactListEnvelopeObject(obj map[string]any) (map[string]any, bool) {
 			out[k] = compacted
 			continue
 		}
-		if nested, ok := v.(map[string]any); ok && k == "_embedded" {
-			if compacted, ok := compactListEnvelopeObject(nested); ok {
-				foundArray = true
-				out[k] = compacted
-				continue
+		if nested, ok := v.(map[string]any); ok {
+			if envelopeDepth < maxListEnvelopeDepth {
+				if compacted, ok := compactListEnvelopeObjectAtDepth(nested, envelopeDepth+1); ok {
+					foundArray = true
+					out[k] = compacted
+					continue
+				}
 			}
 		}
 		out[k] = v

@@ -240,14 +240,13 @@ func TestFilterFields(t *testing.T) {
 			want:   `{"events":[{"id":"e1"}],"speakers":[{"id":"s1"}]}`,
 		},
 		{
-			// Envelope fallback is intentionally one level deep. A nested
-			// object envelope like {"data":{"items":[...]}} surfaces no
-			// array at the outer level, so the fallback does not fire and
-			// an invalid selector preserves the input.
-			name:   "nested object envelope preserves input (one-level only)",
+			// Generic object descent supports type-keyed envelopes such as
+			// {"data":{"items":[...]}} while keeping the fail-closed
+			// behavior for objects with no collection below them.
+			name:   "nested object envelope descends into collection",
 			input:  `{"data":{"items":[{"id":"a","other":"y"}]}}`,
 			fields: "id",
-			want:   `{"data":{"items":[{"id":"a","other":"y"}]}}`,
+			want:   `{"data":{"items":[{"id":"a"}]}}`,
 		},
 	}
 	for _, tc := range cases {
