@@ -1959,6 +1959,13 @@ func (s *Store) Search{{pascal .Name}}(query string, limit int) ([]json.RawMessa
 {{- end}}
 
 func (s *Store) SaveSyncState(resourceType, cursor string, count int) error {
+	return s.SaveSyncStateAt(resourceType, cursor, count, time.Now().UTC())
+}
+
+// SaveSyncStateAt stores both pagination progress and the incremental
+// watermark represented by at. Callers use this when the watermark belongs to
+// the data just fetched rather than to the instant the checkpoint is written.
+func (s *Store) SaveSyncStateAt(resourceType, cursor string, count int, at time.Time) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	_, err := s.db.Exec(
@@ -1966,7 +1973,23 @@ func (s *Store) SaveSyncState(resourceType, cursor string, count int) error {
 		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT(resource_type) DO UPDATE SET last_cursor = excluded.last_cursor,
 		 last_synced_at = excluded.last_synced_at, total_count = excluded.total_count`,
-		resourceType, cursor, time.Now().UTC().Format(time.RFC3339), count,
+		resourceType, cursor, at.UTC().Format(time.RFC3339), count,
+	)
+	return err
+}
+
+// SaveSyncProgress stores pagination progress without changing the
+// incremental watermark. A new row gets a parseable zero timestamp so
+// GetSyncState can scan it into time.Time without a NULL conversion error.
+func (s *Store) SaveSyncProgress(resourceType, cursor string, count int) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(resource_type) DO UPDATE SET last_cursor = excluded.last_cursor,
+		 total_count = excluded.total_count`,
+		resourceType, cursor, time.Time{}.UTC().Format(time.RFC3339), count,
 	)
 	return err
 }

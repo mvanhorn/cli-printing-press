@@ -444,6 +444,410 @@ func TestSyncResourceDoesNotAdvancePastNullItems(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+func TestGeneratedSyncNormalizesPagePaginationProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		page spec.Pagination
+		want string
+	}{
+		{name: "missing type", page: spec.Pagination{CursorParam: "page", LimitParam: "per_page"}, want: "page"},
+		{name: "offset type on page parameter", page: spec.Pagination{Type: "offset", CursorParam: "page", LimitParam: "per_page"}, want: "page"},
+		{name: "page type on offset parameter", page: spec.Pagination{Type: "page", CursorParam: "offset", LimitParam: "limit"}, want: "offset"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			apiSpec := minimalSpec("page-profile-" + strings.ReplaceAll(tc.name, " ", "-"))
+			apiSpec.Resources = map[string]spec.Resource{
+				"items": {
+					Description: "Manage items",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:      "GET",
+							Path:        "/items",
+							Description: "List items",
+							Params:      []spec.Param{{Name: "page", Type: "integer"}, {Name: "per_page", Type: "integer"}},
+							Pagination:  &tc.page,
+							Response:    spec.ResponseDef{Type: "array"},
+						},
+					},
+				},
+			}
+
+			outputDir := filepath.Join(t.TempDir(), "page-profile-pp-cli")
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+			syncSrc := readGeneratedCLIFileContaining(t, outputDir, "func determinePaginationDefaults")
+			require.Contains(t, syncSrc, fmt.Sprintf(`cursorType:  %q`, tc.want), "generated sync must use the normalized pagination strategy")
+			requireGeneratedCompiles(t, outputDir)
+		})
+	}
+}
+
+func TestGeneratedSyncPreservesWatermarkAcrossPaginationCaps(t *testing.T) {
+	apiSpec := minimalSpec("sync-watermark")
+	apiSpec.Resources = map[string]spec.Resource{
+		"items": {
+			Description: "Manage items",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/items",
+					Description: "List items updated after a timestamp, sorted by updated_at ascending.",
+					Params: []spec.Param{
+						{Name: "after", Type: "string"},
+						{Name: "limit", Type: "integer", Default: 2},
+						{Name: "updated_after", Type: "string"},
+						{Name: "sort", Type: "string", Default: "updated_at:asc", Description: "Sort by updated_at ascending."},
+					},
+					Pagination: &spec.Pagination{
+						Type:           "cursor",
+						CursorParam:    "after",
+						LimitParam:     "limit",
+						NextCursorPath: "next_cursor",
+						HasMoreField:   "has_more",
+					},
+					Response: spec.ResponseDef{Type: "array"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "sync-watermark-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	syncSrc := readGeneratedCLIFileContaining(t, outputDir, "func syncResourceSortParam")
+	require.Contains(t, syncSrc, "func syncResourceSortParam(resource string) string")
+	require.Contains(t, syncSrc, "db.SaveSyncStateAt(resource, finalCursor, cachedCount, watermark)")
+	require.Contains(t, syncSrc, "db.SaveSyncProgress(resource, nextCursor, totalCount)")
+	requireGeneratedCompiles(t, outputDir)
+
+	goMod, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))
+	require.NoError(t, err)
+	modulePath := strings.TrimPrefix(strings.SplitN(string(goMod), "\n", 2)[0], "module ")
+	behaviorTest := `package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	` + fmt.Sprintf("%q", modulePath+"/internal/store") + `
+)
+
+type watermarkPagerClient struct {
+	responses []json.RawMessage
+	params    []map[string]string
+}
+
+func (c *watermarkPagerClient) Get(_ context.Context, _ string, params map[string]string) (json.RawMessage, error) {
+	copied := make(map[string]string, len(params))
+	for key, value := range params {
+		copied[key] = value
+	}
+	c.params = append(c.params, copied)
+	response := c.responses[0]
+	c.responses = c.responses[1:]
+	return response, nil
+}
+
+func (c *watermarkPagerClient) RateLimit() float64 { return 0 }
+
+func seedWatermark(t *testing.T, db *store.Store, at time.Time) {
+	t.Helper()
+	if err := db.Upsert("items", "existing", []byte("{\"id\":\"existing\",\"updated_at\":\"2025-12-31T00:00:00Z\"}")); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	if err := db.SaveSyncStateAt("items", "", 1, at); err != nil {
+		t.Fatalf("seed sync state: %v", err)
+	}
+}
+
+func readWatermark(t *testing.T, db *store.Store) (string, time.Time, int) {
+	t.Helper()
+	cursor, synced, count, err := db.GetSyncState("items")
+	if err != nil {
+		t.Fatalf("read sync state: %v", err)
+	}
+	return cursor, synced, count
+}
+
+func TestCappedOrderedPageAdvancesToNewestStored(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	old := time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC)
+	seedWatermark(t, db, old)
+	client := &watermarkPagerClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[{\"id\":\"one\",\"updated_at\":\"2026-01-02T00:00:00Z\"},{\"id\":\"two\",\"updated_at\":\"2026-01-03T00:00:00Z\"}],\"next_cursor\":\"page-2\",\"has_more\":true}"),
+	}}
+	result := syncResource(context.Background(), client, db, "items", old.Format(time.RFC3339), false, 1, false, false, &syncUserParams{}, io.Discard)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%v warning=%v", result.Err, result.Warn)
+	}
+	if client.params[0]["sort"] != "updated_at:asc" {
+		t.Fatalf("sort param = %q, want updated_at:asc", client.params[0]["sort"])
+	}
+	cursor, synced, count := readWatermark(t, db)
+	want := time.Date(2026, 1, 2, 23, 59, 59, 0, time.UTC)
+	if cursor != "" || !synced.Equal(want) || count != 3 {
+		t.Fatalf("sync state = cursor %q, synced %s, count %d; want empty cursor, %s, 3", cursor, synced, count, want)
+	}
+}
+
+func TestCappedNestedTimestampUsesRecordTimestamp(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	old := time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC)
+	seedWatermark(t, db, old)
+	client := &watermarkPagerClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[{\"id\":\"first\",\"updated_at\":\"2026-01-01T00:00:00Z\"},{\"id\":\"nested\",\"updated_at\":\"2026-01-02T00:00:00Z\",\"children\":[{\"updated_at\":\"2026-06-01T00:00:00Z\"}]}],\"next_cursor\":\"page-2\",\"has_more\":true}"),
+	}}
+	if timestamp, ok := restSyncTimestamp(json.RawMessage("{\"id\":\"nested\",\"updated_at\":\"2026-01-02T00:00:00Z\",\"children\":[{\"updated_at\":\"2026-06-01T00:00:00Z\"}]}")); !ok || !timestamp.Equal(time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("record timestamp = %s, ok=%v; want 2026-01-02, true", timestamp, ok)
+	}
+	var events bytes.Buffer
+	result := syncResource(context.Background(), client, db, "items", old.Format(time.RFC3339), false, 1, false, false, &syncUserParams{}, &events)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%v warning=%v", result.Err, result.Warn)
+	}
+	cursor, synced, count := readWatermark(t, db)
+	want := time.Date(2026, 1, 1, 23, 59, 59, 0, time.UTC)
+	if cursor != "" || !synced.Equal(want) || count != 3 {
+		t.Fatalf("sync state = cursor %q, synced %s, count %d; want empty cursor, %s, 3; events=%s", cursor, synced, count, want, events.String())
+	}
+}
+
+func TestCappedPageWithUnstoredItemRetainsWatermark(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	old := time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC)
+	seedWatermark(t, db, old)
+	client := &watermarkPagerClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[{\"id\":\"stored\",\"updated_at\":\"2026-01-02T00:00:00Z\"},{\"updated_at\":\"2026-01-03T00:00:00Z\"}],\"next_cursor\":\"page-2\",\"has_more\":true}"),
+	}}
+	result := syncResource(context.Background(), client, db, "items", old.Format(time.RFC3339), false, 1, false, false, &syncUserParams{}, io.Discard)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%v warning=%v", result.Err, result.Warn)
+	}
+	cursor, synced, count := readWatermark(t, db)
+	if cursor != "page-2" || !synced.Equal(old) || count != 2 {
+		t.Fatalf("sync state = cursor %q, synced %s, count %d; want page-2, %s, 2", cursor, synced, count, old)
+	}
+}
+
+func TestCappedUnorderedPageRetainsWatermark(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	old := time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC)
+	seedWatermark(t, db, old)
+	client := &watermarkPagerClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[{\"id\":\"two\",\"updated_at\":\"2026-01-03T00:00:00Z\"},{\"id\":\"one\",\"updated_at\":\"2026-01-02T00:00:00Z\"}],\"next_cursor\":\"page-2\",\"has_more\":true}"),
+	}}
+	result := syncResource(context.Background(), client, db, "items", old.Format(time.RFC3339), false, 1, false, false, &syncUserParams{}, io.Discard)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%v warning=%v", result.Err, result.Warn)
+	}
+	cursor, synced, count := readWatermark(t, db)
+	if cursor != "page-2" || !synced.Equal(old) || count != 3 {
+		t.Fatalf("sync state = cursor %q, synced %s, count %d; want page-2, %s, 3", cursor, synced, count, old)
+	}
+}
+
+func TestDrainedSyncUsesRequestWatermark(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	old := time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC)
+	seedWatermark(t, db, old)
+	before := time.Now().UTC().Add(-2 * time.Second)
+	client := &watermarkPagerClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[{\"id\":\"one\",\"updated_at\":\"2026-01-02T00:00:00Z\"},{\"id\":\"two\",\"updated_at\":\"2026-01-03T00:00:00Z\"}],\"next_cursor\":\"page-2\",\"has_more\":true}"),
+		json.RawMessage("{\"items\":[{\"id\":\"three\",\"updated_at\":\"2026-01-04T00:00:00Z\"}],\"has_more\":false}"),
+	}}
+	result := syncResource(context.Background(), client, db, "items", old.Format(time.RFC3339), false, 0, false, false, &syncUserParams{}, io.Discard)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%v warning=%v", result.Err, result.Warn)
+	}
+	cursor, synced, count := readWatermark(t, db)
+	if cursor != "" || !synced.After(before) || !synced.Before(time.Now().UTC().Add(time.Second)) || count != 4 {
+		t.Fatalf("sync state = cursor %q, synced %s, count %d; want drained request watermark and count 4", cursor, synced, count)
+	}
+}
+
+func TestLatestOnlySinglePageIsNaturalEnd(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	old := time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC)
+	seedWatermark(t, db, old)
+	if err := db.SaveSyncStateAt("items", "", 0, time.Time{}); err != nil {
+		t.Fatalf("clear latest-only state: %v", err)
+	}
+	var events bytes.Buffer
+	client := &watermarkPagerClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[{\"id\":\"head\",\"updated_at\":\"2026-01-05T00:00:00Z\"}],\"has_more\":false}"),
+	}}
+	result := syncResource(context.Background(), client, db, "items", "", false, 1, true, false, &syncUserParams{}, &events)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%v warning=%v", result.Err, result.Warn)
+	}
+	if strings.Contains(events.String(), "max_pages_cap_hit") {
+		t.Fatalf("latest-only natural end emitted a cap warning: %s", events.String())
+	}
+	if _, ok := client.params[0]["sort"]; ok {
+		t.Fatalf("latest-only unexpectedly sent sort=%q", client.params[0]["sort"])
+	}
+	if _, ok := client.params[0]["updated_after"]; ok {
+		t.Fatalf("latest-only unexpectedly sent updated_after=%q", client.params[0]["updated_after"])
+	}
+	_, synced, _ := readWatermark(t, db)
+	if !synced.After(old) {
+		t.Fatalf("latest-only watermark = %s, want it advanced past %s", synced, old)
+	}
+}
+
+func TestFullSyncOmitsIncrementalSort(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	client := &watermarkPagerClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[{\"id\":\"one\",\"updated_at\":\"2026-01-02T00:00:00Z\"}],\"has_more\":false}"),
+	}}
+	result := syncResource(context.Background(), client, db, "items", "", true, 0, false, false, &syncUserParams{}, io.Discard)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%v warning=%v", result.Err, result.Warn)
+	}
+	if _, ok := client.params[0]["sort"]; ok {
+		t.Fatalf("full sync unexpectedly sent sort=%q", client.params[0]["sort"])
+	}
+	if _, ok := client.params[0]["updated_after"]; ok {
+		t.Fatalf("full sync unexpectedly sent updated_after=%q", client.params[0]["updated_after"])
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_watermark_test.go"), []byte(behaviorTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(Capped|Drained|LatestOnly|FullSync)", "-count=1")
+}
+
+func TestGeneratedSyncClearsOffsetCursorWhenWatermarkMoves(t *testing.T) {
+	apiSpec := minimalSpec("sync-watermark-offset")
+	apiSpec.Resources = map[string]spec.Resource{
+		"items": {
+			Description: "Manage items",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/items",
+					Description: "List items updated after a timestamp, sorted by updated_at ascending.",
+					Params: []spec.Param{
+						{Name: "offset", Type: "integer"},
+						{Name: "limit", Type: "integer", Default: 2},
+						{Name: "updated_after", Type: "string"},
+						{Name: "sort", Type: "string", Default: "updated_at:asc", Description: "Sort by updated_at ascending."},
+					},
+					Pagination: &spec.Pagination{
+						Type:           "offset",
+						CursorParam:    "offset",
+						LimitParam:     "limit",
+						HasMoreField:   "has_more",
+						NextCursorPath: "",
+					},
+					Response: spec.ResponseDef{Type: "array"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "sync-watermark-offset-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir)
+
+	goMod, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))
+	require.NoError(t, err)
+	modulePath := strings.TrimPrefix(strings.SplitN(string(goMod), "\n", 2)[0], "module ")
+	behaviorTest := `package cli
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"path/filepath"
+	"testing"
+	"time"
+
+	` + fmt.Sprintf("%q", modulePath+"/internal/store") + `
+)
+
+type offsetWatermarkClient struct {
+	response json.RawMessage
+	params   []map[string]string
+}
+
+func (c *offsetWatermarkClient) Get(_ context.Context, _ string, params map[string]string) (json.RawMessage, error) {
+	copied := make(map[string]string, len(params))
+	for key, value := range params {
+		copied[key] = value
+	}
+	c.params = append(c.params, copied)
+	return c.response, nil
+}
+
+func (c *offsetWatermarkClient) RateLimit() float64 { return 0 }
+
+func TestOffsetWatermarkDoesNotKeepOldPosition(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	old := time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC)
+	if err := db.Upsert("items", "existing", []byte("{\"id\":\"existing\"}")); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	if err := db.SaveSyncStateAt("items", "", 1, old); err != nil {
+		t.Fatalf("seed sync state: %v", err)
+	}
+	client := &offsetWatermarkClient{response: json.RawMessage("{\"items\":[{\"id\":\"one\",\"updated_at\":\"2026-01-02T00:00:00Z\"},{\"id\":\"two\",\"updated_at\":\"2026-01-03T00:00:00Z\"}],\"has_more\":true}")}
+	result := syncResource(context.Background(), client, db, "items", old.Format(time.RFC3339), false, 1, false, false, &syncUserParams{}, io.Discard)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%v warning=%v", result.Err, result.Warn)
+	}
+	cursor, synced, count, err := db.GetSyncState("items")
+	if err != nil {
+		t.Fatalf("read sync state: %v", err)
+	}
+	want := time.Date(2026, 1, 2, 23, 59, 59, 0, time.UTC)
+	if cursor != "" || !synced.Equal(want) || count != 3 {
+		t.Fatalf("sync state = cursor %q, synced %s, count %d; want empty cursor, %s, 3", cursor, synced, count, want)
+	}
+	if offset, ok := client.params[0]["offset"]; ok && offset != "0" {
+		t.Fatalf("first offset = %q, want absent or 0", offset)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_watermark_offset_test.go"), []byte(behaviorTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestOffsetWatermarkDoesNotKeepOldPosition", "-count=1")
+}
+
 func TestPaginatedGetHandlesNumericCursorAndMissingAllSignal(t *testing.T) {
 	t.Parallel()
 

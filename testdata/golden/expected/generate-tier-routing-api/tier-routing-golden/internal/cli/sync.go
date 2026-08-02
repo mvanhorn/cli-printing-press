@@ -45,6 +45,8 @@ type syncResult struct {
 	Duration time.Duration
 }
 
+const syncWatermarkOverlap = time.Second
+
 func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var resources []string
 	var full bool
@@ -149,7 +151,7 @@ Resource scoping:
 			// Skip under --dry-run: a preview must not mutate sync-state (issue #2935).
 			if full && !c.DryRun {
 				for _, resource := range resources {
-					if err := db.SaveSyncState(resource, "", 0); err != nil {
+					if err := db.SaveSyncStateAt(resource, "", 0, time.Time{}); err != nil {
 						return fmt.Errorf("clearing sync state for %s: %w", resource, err)
 					}
 				}
@@ -170,15 +172,14 @@ Resource scoping:
 					maxPages = 1
 					// Clear the cursor so we start from the head each time;
 					// the goal of --latest-only is "refresh the top" not
-					// "resume from wherever I left off". Skip under --dry-run:
+					// "resume from wherever I left off". Clear the watermark too,
+					// so the head request does not inherit an old incremental window.
+					// Skip under --dry-run:
 					// a preview must not mutate sync-state (issue #2935).
 					if !c.DryRun {
 						for _, resource := range resources {
-							existing, _, _, _ := db.GetSyncState(resource)
-							if existing != "" {
-								if err := db.SaveSyncState(resource, "", 0); err != nil {
-									return fmt.Errorf("clearing sync state for %s: %w", resource, err)
-								}
+							if err := db.SaveSyncStateAt(resource, "", 0, time.Time{}); err != nil {
+								return fmt.Errorf("clearing sync state for %s: %w", resource, err)
 							}
 						}
 					}
@@ -432,6 +433,7 @@ func syncResource(ctx context.Context, c interface {
 	}
 
 	var totalCount int
+	requestedAt := started.UTC()
 
 	// Resume cursor from sync_state (unless --full cleared it)
 	existingCursor, lastSynced, _, _ := db.GetSyncState(resource)
@@ -475,6 +477,11 @@ func syncResource(ctx context.Context, c interface {
 	lastNextCursor := ""
 	capExitHit := false
 	capExitCursor := ""
+	capTruncated := false
+	var previousStoredAt time.Time
+	var newestStoredAt time.Time
+	timestampOrderSafe := true
+	timestampEvidence := false
 	// extractFailureTotal accumulates per-item primary-key extraction
 	// misses across pages within this resource sync. Resource-level
 	// concurrency is 1 (one goroutine per resource via the work channel)
@@ -510,6 +517,9 @@ func syncResource(ctx context.Context, c interface {
 		// Set since filter
 		if effectiveSince != "" {
 			params[sinceParam] = effectiveSince
+			if sortParam := syncResourceSortParam(resource); sortParam != "" {
+				params[sortParam] = syncResourceSortValue(resource)
+			}
 		}
 		// Apply user-supplied --param / --resource-param overrides last so they
 		// win over spec-derived defaults (e.g. forcing mine=true on a list
@@ -546,6 +556,23 @@ func syncResource(ctx context.Context, c interface {
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
 		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, responsePathForResource(resource, path)...)
+		if effectiveSince != "" && syncResourceSortParam(resource) != "" && maxPages > 0 {
+			for _, item := range items {
+				itemTimestamp, ok := restSyncTimestamp(item)
+				if !ok {
+					timestampOrderSafe = false
+					continue
+				}
+				timestampEvidence = true
+				if !previousStoredAt.IsZero() && itemTimestamp.Before(previousStoredAt) {
+					timestampOrderSafe = false
+				}
+				previousStoredAt = itemTimestamp
+				if newestStoredAt.IsZero() || itemTimestamp.After(newestStoredAt) {
+					newestStoredAt = itemTimestamp
+				}
+			}
+		}
 
 		// Page-int paginator fallback: when the API paginates by integer
 		// ?page=N and emits no body cursor, treat a full page as a signal
@@ -627,6 +654,11 @@ func syncResource(ctx context.Context, c interface {
 		extractFailureTotal += extractFailures + hydrateFailures
 		hydrateFailureTotal += hydrateFailures
 		pageFailureCount := extractFailures + hydrateFailures
+		if pageFailureCount > 0 {
+			// A timestamp from an item that did not reach the store cannot safely
+			// advance the incremental watermark past that item.
+			timestampOrderSafe = false
+		}
 
 		if fetchedThisPage > 0 && stored == 0 {
 			reason := "all_items_failed_id_extraction"
@@ -701,6 +733,7 @@ func syncResource(ctx context.Context, c interface {
 		if maxPages > 0 && pagesFetched >= maxPages {
 			truncatedByCap := resourceSupportsPagination(resource) && hasMore
 			truncatedByCap = truncatedByCap && !shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, pageSize.limit)
+			capResumed := false
 			if truncatedByCap {
 				capExitCursor = nextCursor
 			}
@@ -712,7 +745,14 @@ func syncResource(ctx context.Context, c interface {
 					truncatedByCap = false
 				}
 			}
-			if truncatedByCap && capExitCursor != cursor {
+			capResumed = truncatedByCap && capExitCursor != cursor
+			capPageLimit := pageSize.limit
+			// A resume cursor alone does not prove that the page window was
+			// truncated. Only a full page with a real continuation advances a
+			// watermark; short cursor pages retain the cursor but leave the
+			// watermark unchanged.
+			capTruncated = capResumed && fetchedThisPage >= capPageLimit
+			if capResumed {
 				if !latestOnly {
 					capExitHit = true
 					if humanFriendly {
@@ -722,10 +762,17 @@ func syncResource(ctx context.Context, c interface {
 					}
 				}
 			}
-			// A cap break ends enumeration before exhausting the partition; mirror
-			// the dependent loop and treat it as incomplete (reconcile SKIPS). Safe
-			// default: when the cap may have truncated, never prune.
-			outcome.reason = "max_pages_cap"
+			// A cap break is incomplete when it has a continuation. A short
+			// page for page/offset pagination is a proven natural end even when
+			// the operator's page ceiling fired on that same request.
+			if capResumed {
+				outcome.reason = "max_pages_cap"
+			} else if !hasMore ||
+				shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, capPageLimit) {
+				outcome.complete = true
+			} else {
+				outcome.reason = "max_pages_cap"
+			}
 			break
 		}
 
@@ -772,8 +819,8 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		// Save cursor after each page for resumability
-		if err := db.SaveSyncState(resource, nextCursor, totalCount); err != nil {
-			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, err), Duration: time.Since(started)}
+		if err := db.SaveSyncProgress(resource, nextCursor, totalCount); err != nil {
+			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync progress for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
 		cursor = nextCursor
@@ -812,14 +859,37 @@ func syncResource(ctx context.Context, c interface {
 		fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","reason":"unsupported-resource-shape"}`+"\n", resource)
 	}
 
-	// Final sync state: clear cursor on natural completion, but preserve the
-	// resume cursor when an operator intentionally capped the page budget.
+	// Final sync state separates pagination progress from the incremental
+	// watermark. A checkpoint after a capped page may retain a resume cursor
+	// without claiming that records on pages we did not fetch were observed.
 	finalCursor := ""
 	if capExitHit {
 		finalCursor = capExitCursor
 	}
-	if err := db.SaveSyncState(resource, finalCursor, totalCount); err != nil {
-		return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, err), Duration: time.Since(started)}
+	cachedCount, countErr := db.Count(resource)
+	if countErr != nil {
+		return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("counting stored %s rows: %w", resource, countErr), Duration: time.Since(started)}
+	}
+	watermark := time.Time{}
+	if outcome.complete {
+		watermark = requestedAt.Add(-syncWatermarkOverlap)
+	} else if capTruncated && effectiveSince != "" && syncResourceSortParam(resource) != "" && timestampOrderSafe && timestampEvidence && !newestStoredAt.IsZero() {
+		watermark = newestStoredAt.Add(-syncWatermarkOverlap)
+	}
+	if !watermark.IsZero() {
+		// A positional or opaque cursor was issued for the old since window.
+		// Restart from the new watermark instead of combining two incompatible
+		// result windows on the next run.
+		finalCursor = ""
+	}
+	var stateErr error
+	if watermark.IsZero() {
+		stateErr = db.SaveSyncProgress(resource, finalCursor, cachedCount)
+	} else {
+		stateErr = db.SaveSyncStateAt(resource, finalCursor, cachedCount, watermark)
+	}
+	if stateErr != nil {
+		return syncResult{Resource: resource, Count: cachedCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, stateErr), Duration: time.Since(started)}
 	}
 
 	// F4b symptom probe: if items were consumed and successfully
@@ -838,7 +908,7 @@ func syncResource(ctx context.Context, c interface {
 	}
 
 	if !humanFriendly {
-		fmt.Fprintf(syncEvents, `{"event":"sync_complete","resource":"%s","total":%d,"duration_ms":%d}`+"\n", resource, totalCount, time.Since(started).Milliseconds())
+		fmt.Fprintf(syncEvents, `{"event":"sync_complete","resource":"%s","total":%d,"duration_ms":%d}`+"\n", resource, cachedCount, time.Since(started).Milliseconds())
 	}
 
 	if consumedTotal > 0 && totalCount == 0 && extractFailureTotal >= consumedTotal {
@@ -854,7 +924,7 @@ func syncResource(ctx context.Context, c interface {
 		}
 	}
 
-	return syncResult{Resource: resource, Count: totalCount, Duration: time.Since(started)}
+	return syncResult{Resource: resource, Count: cachedCount, Duration: time.Since(started)}
 }
 
 // paginationDefaults holds the resolved pagination parameter names and page size.
@@ -906,6 +976,22 @@ func resourceSupportsPagination(resource string) bool {
 // endpoint declares none. Skipping the param for "" resources avoids
 // validation-error 400s on APIs that reject unknown query keys.
 func syncResourceSinceParam(resource string) string {
+	switch resource {
+	}
+	return ""
+}
+
+// syncResourceSortParam and syncResourceSortValue describe a spec-declared
+// ascending last-modified ordering. Sync adds them only when it sends a since
+// filter, because applying a sort to a full sync can change API behavior and
+// does not improve the watermark proof.
+func syncResourceSortParam(resource string) string {
+	switch resource {
+	}
+	return ""
+}
+
+func syncResourceSortValue(resource string) string {
 	switch resource {
 	}
 	return ""
@@ -1642,6 +1728,64 @@ func parseSinceDuration(s string) (time.Time, error) {
 	default:
 		return time.Time{}, fmt.Errorf("unknown unit %q", matches[2])
 	}
+}
+
+// restSyncTimestamp extracts a record-level last-modified timestamp from one
+// REST item. Nested child or metadata timestamps are deliberately ignored:
+// the incremental filter applies to the resource record, not its embedded
+// objects. Multiple candidate top-level timestamps are also rejected because
+// the generator cannot prove which one the endpoint sorts and filters on.
+func restSyncTimestamp(data json.RawMessage) (time.Time, bool) {
+	var value map[string]any
+	if err := json.Unmarshal(data, &value); err != nil {
+		return time.Time{}, false
+	}
+	var newest time.Time
+	var found bool
+	matches := 0
+	for fieldName, child := range value {
+		if !restSyncTimestampField(fieldName) {
+			continue
+		}
+		text, ok := child.(string)
+		if !ok {
+			continue
+		}
+		ts, ok := parseRestSyncTimestamp(text)
+		if !ok {
+			continue
+		}
+		matches++
+		if !found || ts.After(newest) {
+			newest = ts
+			found = true
+		}
+	}
+	if matches != 1 {
+		return time.Time{}, false
+	}
+	return newest, true
+}
+
+func restSyncTimestampField(name string) bool {
+	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(name))
+	return strings.Contains(normalized, "updated") ||
+		strings.Contains(normalized, "modified") ||
+		strings.Contains(normalized, "lastchanged") ||
+		strings.Contains(normalized, "lastmodified")
+}
+
+func parseRestSyncTimestamp(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02"} {
+		if ts, err := time.Parse(layout, value); err == nil {
+			return ts, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func defaultSyncResources() []string {

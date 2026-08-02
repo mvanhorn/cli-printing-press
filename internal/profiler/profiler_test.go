@@ -3349,6 +3349,99 @@ func TestProfilePagination_ExplicitBlockWinsOverInference(t *testing.T) {
 	assert.Equal(t, "bar", profile.Pagination.PageSizeParam, "explicit limit_param must win")
 }
 
+func TestProfilePaginationKeepsPageProfilesInternallyConsistent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		page spec.Pagination
+		want string
+	}{
+		{
+			name: "missing type",
+			page: spec.Pagination{CursorParam: "page", LimitParam: "per_page"},
+			want: "page",
+		},
+		{
+			name: "offset type on page parameter",
+			page: spec.Pagination{Type: "offset", CursorParam: "page", LimitParam: "per_page"},
+			want: "page",
+		},
+		{
+			name: "page type on offset parameter",
+			page: spec.Pagination{Type: "page", CursorParam: "offset", LimitParam: "limit"},
+			want: "offset",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &spec.APISpec{
+				Name: "consistent-page-profile",
+				Resources: map[string]spec.Resource{
+					"items": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/items",
+								Params:     []spec.Param{{Name: "page", Type: "integer"}, {Name: "per_page", Type: "integer"}},
+								Pagination: &tc.page,
+								Response:   spec.ResponseDef{Type: "array"},
+							},
+						},
+					},
+				},
+			}
+
+			profile := Profile(s)
+			assert.Equal(t, tc.want, profile.Pagination.CursorType)
+			require.Len(t, profile.SyncableResources, 1)
+			assert.Equal(t, tc.want, profile.SyncableResources[0].PaginationCursorType)
+		})
+	}
+}
+
+func TestProfilePaginationDetectsAscendingLastModifiedSort(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "sorted-incremental",
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/items",
+						Params: []spec.Param{
+							{Name: "after", Type: "string"},
+							{Name: "limit", Type: "integer"},
+							{Name: "updated_after", Type: "string"},
+							{Name: "sort", Type: "string", Default: "updated_at:asc", Description: "Sort by updated_at ascending."},
+						},
+						Pagination: &spec.Pagination{Type: "cursor", CursorParam: "after", LimitParam: "limit"},
+						Response:   spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	assert.Equal(t, "sort", profile.Pagination.SortParam)
+	assert.Equal(t, "updated_at:asc", profile.Pagination.SortValue)
+	require.Len(t, profile.SyncableResources, 1)
+	assert.Equal(t, "sort", profile.SyncableResources[0].PaginationSortParam)
+	assert.Equal(t, "updated_at:asc", profile.SyncableResources[0].PaginationSortValue)
+}
+
+func TestDetectEndpointSyncSortRejectsDescendingDefault(t *testing.T) {
+	endpoint := spec.Endpoint{
+		Description: "List items updated after a timestamp; ascending unless prefixed with -.",
+		Params: []spec.Param{
+			{Name: "updated_after", Type: "string"},
+			{Name: "sort", Type: "string", Default: "-updated_at", Description: "Sort by updated_at; ascending unless prefixed with -."},
+		},
+	}
+
+	param, value := detectEndpointSyncSort(endpoint)
+	assert.Empty(t, param)
+	assert.Empty(t, value)
+}
+
 func TestProfileSyncableResourcePaginationDefaultsPreserveEndpointParams(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "mixed-pagination",
