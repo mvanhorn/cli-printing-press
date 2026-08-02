@@ -123,7 +123,7 @@ func generateScaffoldPlan(ctx PlanContext) (string, error) {
 
 	b.WriteString("## What This Phase Must Produce\n\n")
 	fmt.Fprintf(&b, "- Generated CLI source tree in %s\n", ctx.SeedData.OutputDir)
-	b.WriteString("- All ten generator quality gates passing, including safe golang.org/x/net, generated go test, and default-mode govulncheck\n")
+	b.WriteString("- All ten generator quality gates passing, including safe golang.org/x/net, fresh generated go test (-count=1 ./...), and default-mode govulncheck\n")
 	fmt.Fprintf(&b, "- Working CLI binary for %s\n\n", ctx.SeedData.APIName)
 
 	b.WriteString("## Codebase Pointers\n\n")

@@ -34,10 +34,39 @@ func writeTestManifest(t *testing.T, dir string, m pipeline.CLIManifest) {
 
 func writeTestPhase5GateMarker(t *testing.T, proofsDir, name string, marker pipeline.Phase5GateMarker) {
 	t.Helper()
+	if marker.SourceFingerprint == "" {
+		if sourceDir := phase5TestSourceDir(proofsDir, marker.APIName); sourceDir != "" {
+			source, err := pipeline.CaptureSourceFingerprint(sourceDir)
+			require.NoError(t, err)
+			marker.SourceFingerprint = source.Digest
+			marker.SourceFiles = source.Files
+		}
+	}
 	require.NoError(t, os.MkdirAll(proofsDir, 0o755))
 	data, err := json.MarshalIndent(marker, "", "  ")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(proofsDir, name), data, 0o644))
+}
+
+func phase5TestSourceDir(proofsDir, apiName string) string {
+	for dir := filepath.Clean(proofsDir); dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+		if filepath.Base(dir) == ".manuscripts" {
+			candidate := filepath.Dir(dir)
+			if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+				return candidate
+			}
+		}
+	}
+	if apiName == "" {
+		return ""
+	}
+	manuscriptsRoot := filepath.Dir(filepath.Dir(filepath.Dir(proofsDir)))
+	home := filepath.Dir(manuscriptsRoot)
+	candidate := filepath.Join(home, "library", apiName+"-pp-cli")
+	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+		return candidate
+	}
+	return ""
 }
 
 func TestLibraryListJSONWithManifests(t *testing.T) {

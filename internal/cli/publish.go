@@ -749,7 +749,7 @@ func runPackageValidation(dir, selectedManuscriptsDir, selectedRunID string) Val
 			continue
 		}
 		proofsDir := filepath.Join(selectedManuscriptsDir, selectedRunID, "proofs")
-		result.Checks[i] = checkPhase5GateAt(proofsDir, manifest)
+		result.Checks[i] = checkPhase5GateAt(proofsDir, manifest, dir)
 		result.Passed = true
 		for _, check := range result.Checks {
 			if !check.Passed {
@@ -1294,11 +1294,11 @@ func checkPhase5Gate(dir string, manifest pipeline.CLIManifest) CheckResult {
 		return CheckResult{Name: "phase5", Passed: false, Error: "manifest missing run_id; cannot locate Phase 5 gate proof"}
 	}
 
-	return checkPhase5GateAt(phase5ProofsDir(dir, manifest), manifest)
+	return checkPhase5GateAt(phase5ProofsDir(dir, manifest), manifest, dir)
 }
 
-func checkPhase5GateAt(proofsDir string, manifest pipeline.CLIManifest) CheckResult {
-	result := pipeline.ValidatePhase5Gate(proofsDir, manifest)
+func checkPhase5GateAt(proofsDir string, manifest pipeline.CLIManifest, sourceDir string) CheckResult {
+	result := pipeline.ValidatePhase5Gate(proofsDir, manifest, sourceDir)
 	if !result.Passed {
 		return CheckResult{Name: "phase5", Passed: false, Error: result.Detail}
 	}

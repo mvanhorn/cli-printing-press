@@ -135,6 +135,14 @@ if [ "$1" = "run" ]; then
   echo "fake govulncheck failure" >&2
   exit 42
 fi
+if [ "$1" = "test" ]; then
+  if [ "$2" != "-count=1" ]; then
+    # Simulate a stale cached green result. A fresh run exposes the failure.
+    exit 0
+  fi
+  echo "fresh generated test failure" >&2
+  exit 43
+fi
 exit 0
 `), 0o755))
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -142,10 +150,11 @@ exit 0
 
 	err := gen.Validate()
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fresh generated test failure")
 
 	calls, err := os.ReadFile(callsPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(calls), "test ./...\n")
+	assert.Contains(t, string(calls), "test -count=1 ./...\n")
 }
 
 func TestValidateFailsWhenGeneratedUnitTestsFail(t *testing.T) {
@@ -177,6 +186,7 @@ exit 0
 
 	calls, err := os.ReadFile(callsPath)
 	require.NoError(t, err)
+	assert.Contains(t, string(calls), "test -count=1 ./...\n")
 	assert.NotContains(t, string(calls), "vet ./...\n")
 	assert.NotContains(t, string(calls), "build ")
 }
@@ -209,6 +219,7 @@ exit 0
 
 	calls, err := os.ReadFile(callsPath)
 	require.NoError(t, err)
+	assert.Contains(t, string(calls), "test -count=1 ./...\n")
 	assert.NotContains(t, string(calls), "build ")
 }
 

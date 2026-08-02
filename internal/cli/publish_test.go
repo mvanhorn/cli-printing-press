@@ -2131,6 +2131,26 @@ func setPublishableTestRunID(t *testing.T, cliDir, runID string) {
 	writeTestManifest(t, cliDir, manifest)
 }
 
+func TestPublishValidateRejectsPhase5ProofAfterSourceDrift(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	manifest, err := pipeline.ReadCLIManifest(cliDir)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "README.md"), []byte("documentation-only edit\n"), 0o644))
+
+	check := checkPhase5Gate(cliDir, manifest)
+	require.True(t, check.Passed, check.Error)
+
+	rootPath := filepath.Join(cliDir, "internal", "cli", "root.go")
+	require.NoError(t, os.WriteFile(rootPath, []byte("package cli\n\nvar drifted = true\n"), 0o644))
+	check = checkPhase5Gate(cliDir, manifest)
+	assert.False(t, check.Passed)
+	assert.Contains(t, check.Error, "source fingerprint")
+	assert.Contains(t, check.Error, "internal/cli/root.go")
+}
+
 func writePublishablePhase5Pass(t *testing.T) {
 	t.Helper()
 	home := os.Getenv("PRINTING_PRESS_HOME")

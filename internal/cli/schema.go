@@ -211,7 +211,7 @@ const phase5MarkerSchemaJSON = `{
   "title": "CLI Printing Press phase5-acceptance.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "api_name", "run_id", "status", "level", "matrix_size"],
+  "required": ["schema_version", "api_name", "run_id", "status", "level", "matrix_size", "source_fingerprint"],
   "properties": {
     "schema_version": {"type": "integer", "const": 1},
     "api_name": {"type": "string", "minLength": 1},
@@ -227,7 +227,9 @@ const phase5MarkerSchemaJSON = `{
     "completed_at": {"type": "string", "format": "date-time"},
     "summary": {"type": "string"},
     "auth_context": {"$ref": "#/$defs/auth_context"},
-    "failure_summary": {"$ref": "#/$defs/failure_summary"}
+    "failure_summary": {"$ref": "#/$defs/failure_summary"},
+    "source_fingerprint": {"type": "string", "minLength": 1},
+    "source_files": {"type": "object", "additionalProperties": {"type": "string"}}
   },
   "allOf": [
     {
@@ -268,7 +270,7 @@ const phase5SkipSchemaJSON = `{
   "title": "CLI Printing Press phase5-skip.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "api_name", "run_id", "status", "skip_reason"],
+  "required": ["schema_version", "api_name", "run_id", "status", "skip_reason", "source_fingerprint"],
   "properties": {
     "schema_version": {"type": "integer", "const": 1},
     "api_name": {"type": "string", "minLength": 1},
@@ -276,7 +278,9 @@ const phase5SkipSchemaJSON = `{
     "run_id": {"type": "string", "minLength": 1},
     "status": {"type": "string", "const": "skip"},
     "skip_reason": {"type": "string", "minLength": 1},
-    "auth_context": {"$ref": "#/$defs/auth_context"}
+    "auth_context": {"$ref": "#/$defs/auth_context"},
+    "source_fingerprint": {"type": "string", "minLength": 1},
+    "source_files": {"type": "object", "additionalProperties": {"type": "string"}}
   },
   "$defs": {
     "auth_context": {
