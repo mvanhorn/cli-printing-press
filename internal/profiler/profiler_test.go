@@ -3469,6 +3469,19 @@ func TestDetectEndpointSyncSortRequiresMatchingSinceField(t *testing.T) {
 	assert.Empty(t, value)
 }
 
+func TestDetectEndpointSyncSortRequiresKnownSinceField(t *testing.T) {
+	endpoint := spec.Endpoint{
+		Params: []spec.Param{
+			{Name: "since", Type: "string"},
+			{Name: "sort", Type: "string", Default: "updated_at:asc"},
+		},
+	}
+
+	param, value := detectEndpointSyncSort(endpoint)
+	assert.Empty(t, param, "a generic since filter cannot prove which temporal field is sorted")
+	assert.Empty(t, value)
+}
+
 func TestProfileSyncableResourcePaginationDefaultsPreserveEndpointParams(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "mixed-pagination",

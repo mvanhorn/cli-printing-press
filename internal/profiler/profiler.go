@@ -2856,7 +2856,7 @@ func detectEndpointSyncSort(endpoint spec.Endpoint) (string, string) {
 			if sortField == "" || !describesLastModifiedSort(sortField) || !isAscendingSortValue(value) {
 				continue
 			}
-			if sinceField != "" && !temporalFieldsMatch(sortField, sinceField) {
+			if !temporalFieldsMatch(sortField, sinceField) {
 				continue
 			}
 			return param.WireName(), value
