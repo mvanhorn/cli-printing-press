@@ -158,7 +158,8 @@ func TestPersistScorecardToManifestWritesScoreAndBuiltFeatures(t *testing.T) {
 	}, researchDir))
 
 	sc := &Scorecard{
-		OverallGrade: "A",
+		OverallGrade:         "A",
+		UnverifiedDimensions: []string{DimLiveAPIVerification},
 		Steinberger: SteinerScore{
 			Percentage: 96,
 			Total:      96,
@@ -178,6 +179,7 @@ func TestPersistScorecardToManifestWritesScoreAndBuiltFeatures(t *testing.T) {
 	steinberger := scorecard["steinberger"].(map[string]any)
 	assert.Equal(t, float64(96), steinberger["percentage"])
 	assert.Equal(t, "A", steinberger["grade"])
+	assert.Equal(t, []any{DimLiveAPIVerification}, scorecard["unverified_dimensions"])
 	assert.Equal(t, "keep me", raw["description"])
 
 	built := raw["novel_features_built"].([]any)
@@ -190,12 +192,15 @@ func TestPersistVerifyToManifestWritesVerifySummary(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(`{"schema_version":1,"api_name":"example"}`+"\n"), 0o644))
 
 	changed, err := PersistVerifyToManifest(filepath.Join(dir, CLIManifestFilename), &VerifyReport{
-		Mode:     "live",
-		Total:    8,
-		Passed:   7,
-		Failed:   1,
-		PassRate: 87.5,
-		Verdict:  "WARN",
+		Mode:                   "live",
+		Total:                  8,
+		Passed:                 7,
+		Failed:                 1,
+		PassRate:               87.5,
+		DataPipeline:           true,
+		BrowserSessionRequired: true,
+		BrowserSessionProof:    "valid",
+		Verdict:                "WARN",
 	})
 	require.NoError(t, err)
 	require.True(t, changed)
@@ -210,7 +215,19 @@ func TestPersistVerifyToManifestWritesVerifySummary(t *testing.T) {
 	assert.Equal(t, float64(87.5), verify["pass_rate"])
 	assert.Equal(t, float64(7), verify["passed"])
 	assert.Equal(t, float64(8), verify["total"])
+	assert.Equal(t, true, verify["data_pipeline"])
+	assert.Equal(t, true, verify["browser_session_required"])
+	assert.Equal(t, "valid", verify["browser_session_proof"])
 	assert.Equal(t, "WARN", verify["verdict"])
+
+	loaded, err := LoadVerifyReportFromManifest(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+	assert.Equal(t, "live", loaded.Mode)
+	assert.Equal(t, 87.5, loaded.PassRate)
+	assert.True(t, loaded.DataPipeline)
+	assert.True(t, loaded.BrowserSessionRequired)
+	assert.Equal(t, "valid", loaded.BrowserSessionProof)
 }
 
 func TestPersistVerifyToManifestNoopsWhenManifestMissing(t *testing.T) {

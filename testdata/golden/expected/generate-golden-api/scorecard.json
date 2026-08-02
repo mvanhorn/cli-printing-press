@@ -5,7 +5,7 @@
     "gap_report": [
       "MCP: 10 tools (1 public, 9 auth-required) — readiness: full"
     ],
-    "overall_grade": "A",
+    "overall_grade": "A (3 of 25 dimensions unverified: path_validity, auth_protocol, live_api_verification)",
     "steinberger": {
       "agent_native": 10,
       "agent_workflow_readiness": 9,
@@ -40,6 +40,11 @@
     "unscored_dimensions": [
       "mcp_tool_design",
       "mcp_surface_strategy",
+      "path_validity",
+      "auth_protocol",
+      "live_api_verification"
+    ],
+    "unverified_dimensions": [
       "path_validity",
       "auth_protocol",
       "live_api_verification"

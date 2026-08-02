@@ -210,15 +210,34 @@ func shipcheckShouldVerifyNoSpec(dir string) bool {
 
 // shipcheckLegResult is the per-leg outcome of one umbrella run.
 type shipcheckLegResult struct {
-	Name      string
-	Argv      []string
-	ExitCode  int
-	StartedAt time.Time
-	Elapsed   time.Duration
+	Name       string
+	Argv       []string
+	ExitCode   int
+	Unverified bool
+	Detail     string
+	StartedAt  time.Time
+	Elapsed    time.Duration
 }
 
 // Passed reports whether the leg exited 0.
-func (r shipcheckLegResult) Passed() bool { return r.ExitCode == 0 }
+func (r shipcheckLegResult) Passed() bool { return r.EffectiveExitCode() == 0 }
+
+func (r shipcheckLegResult) EffectiveExitCode() int {
+	if r.Unverified && r.ExitCode == 0 {
+		return ExitGenerationError
+	}
+	return r.ExitCode
+}
+
+func (r shipcheckLegResult) Verdict() string {
+	if r.Unverified && r.ExitCode == 0 {
+		return "HOLD"
+	}
+	if r.Passed() {
+		return "PASS"
+	}
+	return "FAIL"
+}
 
 // resolveSelfBinary returns the path to the currently-running
 // printing-press binary so the umbrella can spawn itself for each leg.
@@ -300,26 +319,30 @@ func renderShipcheckSummary(w *os.File, results []shipcheckLegResult) {
 	fmt.Fprintln(w, "=================")
 	fmt.Fprintf(w, "  %-16s  %-6s  %-8s  %s\n", "LEG", "RESULT", "EXIT", "ELAPSED")
 	for _, r := range results {
-		verdict := "PASS"
-		if !r.Passed() {
-			verdict = "FAIL"
-		}
 		fmt.Fprintf(w, "  %-16s  %-6s  %-8d  %s\n",
 			r.Name,
-			verdict,
-			r.ExitCode,
+			r.Verdict(),
+			r.EffectiveExitCode(),
 			r.Elapsed.Round(time.Millisecond),
 		)
+		if r.Unverified && r.Detail != "" {
+			fmt.Fprintf(w, "    %s: %s\n", strings.ToLower(r.Verdict()), r.Detail)
+		}
 	}
 	failing := 0
+	holds := 0
 	for _, r := range results {
-		if !r.Passed() {
+		if r.Unverified && r.ExitCode == 0 {
+			holds++
+		} else if !r.Passed() {
 			failing++
 		}
 	}
 	fmt.Fprintln(w, "")
-	if failing == 0 {
+	if failing == 0 && holds == 0 {
 		fmt.Fprintf(w, "Verdict: PASS (%d/%d legs passed)\n", len(results), len(results))
+	} else if failing == 0 {
+		fmt.Fprintf(w, "Verdict: HOLD (unverified: %d/%d legs)\n", holds, len(results))
 	} else {
 		fmt.Fprintf(w, "Verdict: FAIL (%d/%d legs failed)\n", failing, len(results))
 	}
@@ -331,11 +354,73 @@ func renderShipcheckSummary(w *os.File, results []shipcheckLegResult) {
 func shipcheckUmbrellaCode(results []shipcheckLegResult) int {
 	max := 0
 	for _, r := range results {
-		if r.ExitCode > max {
-			max = r.ExitCode
+		if code := r.EffectiveExitCode(); code > max {
+			max = code
 		}
 	}
 	return max
+}
+
+func shipcheckFailureCount(results []shipcheckLegResult) int {
+	count := 0
+	for _, result := range results {
+		if result.ExitCode != 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func shipcheckHoldReason(results []shipcheckLegResult) string {
+	for _, result := range results {
+		if result.Unverified && result.Detail != "" {
+			return result.Detail
+		}
+	}
+	return ""
+}
+
+func markShipcheckScorecardHold(results []shipcheckLegResult, detail string) {
+	for i := range results {
+		if results[i].Name == "scorecard" && results[i].ExitCode == 0 {
+			results[i].Unverified = true
+			results[i].Detail = detail
+			return
+		}
+	}
+}
+
+func applyShipcheckScorecardHold(results []shipcheckLegResult, dir string) {
+	manifest, err := pipeline.ReadCLIManifest(dir)
+	if err != nil {
+		markShipcheckScorecardHold(results, "scorecard hold: manifest evidence unavailable")
+		return
+	}
+	if manifest.Scorecard == nil {
+		markShipcheckScorecardHold(results, "scorecard hold: unverified dimensions were not persisted")
+		return
+	}
+	if len(manifest.Scorecard.UnverifiedDimensions) == 0 {
+		return
+	}
+	// Only evidence-bearing API dimensions should hold shipping. Optional
+	// scorecard dimensions can be legitimately N/A without blocking a CLI.
+	relevant := map[string]bool{
+		pipeline.DimPathValidity:        true,
+		pipeline.DimAuthProtocol:        true,
+		pipeline.DimLiveAPIVerification: true,
+	}
+	var dimensions []string
+	for _, dimension := range manifest.Scorecard.UnverifiedDimensions {
+		if relevant[dimension] {
+			dimensions = append(dimensions, dimension)
+		}
+	}
+	if len(dimensions) == 0 {
+		return
+	}
+	reason := fmt.Sprintf("scorecard hold: unverified dimensions: %s", strings.Join(dimensions, ", "))
+	markShipcheckScorecardHold(results, reason)
 }
 
 // shipcheckJSONLeg is one entry in the JSON envelope's legs[] array.
@@ -345,6 +430,8 @@ type shipcheckJSONLeg struct {
 	Name      string `json:"name"`
 	ExitCode  int    `json:"exit_code"`
 	Passed    bool   `json:"passed"`
+	Verdict   string `json:"verdict"`
+	Detail    string `json:"detail,omitempty"`
 	StartedAt string `json:"started_at"`
 	ElapsedMS int64  `json:"elapsed_ms"`
 	Command   string `json:"command"`
@@ -356,6 +443,8 @@ type shipcheckJSONLeg struct {
 type shipcheckJSONEnvelope struct {
 	Passed    bool               `json:"passed"`
 	ExitCode  int                `json:"exit_code"`
+	Verdict   string             `json:"verdict"`
+	Reason    string             `json:"reason,omitempty"`
 	StartedAt string             `json:"started_at"`
 	ElapsedMS int64              `json:"elapsed_ms"`
 	Legs      []shipcheckJSONLeg `json:"legs"`
@@ -364,9 +453,19 @@ type shipcheckJSONEnvelope struct {
 // renderShipcheckJSON marshals the envelope to w. Each leg's `command`
 // field shows the argv used for that leg with sensitive flag values redacted.
 func renderShipcheckJSON(w *os.File, binPath string, results []shipcheckLegResult, runStartedAt time.Time, runElapsed time.Duration) error {
+	exitCode := shipcheckUmbrellaCode(results)
+	verdict := "PASS"
+	if exitCode != 0 {
+		verdict = "FAIL"
+		if reason := shipcheckHoldReason(results); reason != "" && shipcheckFailureCount(results) == 0 {
+			verdict = "HOLD"
+		}
+	}
 	env := shipcheckJSONEnvelope{
-		Passed:    shipcheckUmbrellaCode(results) == 0,
-		ExitCode:  shipcheckUmbrellaCode(results),
+		Passed:    exitCode == 0,
+		ExitCode:  exitCode,
+		Verdict:   verdict,
+		Reason:    shipcheckHoldReason(results),
 		StartedAt: runStartedAt.UTC().Format(time.RFC3339),
 		ElapsedMS: runElapsed.Milliseconds(),
 		Legs:      make([]shipcheckJSONLeg, 0, len(results)),
@@ -374,8 +473,10 @@ func renderShipcheckJSON(w *os.File, binPath string, results []shipcheckLegResul
 	for _, r := range results {
 		env.Legs = append(env.Legs, shipcheckJSONLeg{
 			Name:      r.Name,
-			ExitCode:  r.ExitCode,
+			ExitCode:  r.EffectiveExitCode(),
 			Passed:    r.Passed(),
+			Verdict:   r.Verdict(),
+			Detail:    r.Detail,
 			StartedAt: r.StartedAt.UTC().Format(time.RFC3339),
 			ElapsedMS: r.Elapsed.Milliseconds(),
 			Command:   renderShipcheckCommand(binPath, r.Argv),
@@ -499,6 +600,7 @@ Each leg remains callable standalone — this command is additive orchestration.
 				}
 				results = append(results, res)
 			}
+			applyShipcheckScorecardHold(results, opts.dir)
 			runElapsed := time.Since(runStart)
 
 			if opts.asJSON {
@@ -511,10 +613,12 @@ Each leg remains callable standalone — this command is additive orchestration.
 
 			code := shipcheckUmbrellaCode(results)
 			if code != 0 {
-				failing := 0
-				for _, r := range results {
-					if !r.Passed() {
-						failing++
+				failing := shipcheckFailureCount(results)
+				if failing == 0 {
+					return &ExitError{
+						Code:   code,
+						Err:    fmt.Errorf("shipcheck held: unverified"),
+						Silent: true,
 					}
 				}
 				return &ExitError{

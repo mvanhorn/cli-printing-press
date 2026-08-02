@@ -44,18 +44,21 @@ type Phase5AuthContext struct {
 }
 
 type Phase5GateMarker struct {
-	SchemaVersion  int                   `json:"schema_version"`
-	APIName        string                `json:"api_name,omitempty"`
-	RunID          string                `json:"run_id,omitempty"`
-	Status         string                `json:"status"`
-	Level          string                `json:"level,omitempty"`
-	MatrixSize     int                   `json:"matrix_size,omitempty"`
-	TestsPassed    int                   `json:"tests_passed,omitempty"`
-	TestsSkipped   int                   `json:"tests_skipped,omitempty"`
-	TestsFailed    int                   `json:"tests_failed,omitempty"`
-	AuthContext    Phase5AuthContext     `json:"auth_context,omitzero"`
-	SkipReason     string                `json:"skip_reason,omitempty"`
-	FailureSummary *Phase5FailureSummary `json:"failure_summary,omitempty"`
+	SchemaVersion   int                   `json:"schema_version"`
+	APIName         string                `json:"api_name,omitempty"`
+	RunID           string                `json:"run_id,omitempty"`
+	Status          string                `json:"status"`
+	Level           string                `json:"level,omitempty"`
+	MatrixSize      int                   `json:"matrix_size,omitempty"`
+	TestsPassed     int                   `json:"tests_passed,omitempty"`
+	TestsSkipped    int                   `json:"tests_skipped,omitempty"`
+	TestsUnverified int                   `json:"tests_unverified,omitempty"`
+	TestsFailed     int                   `json:"tests_failed,omitempty"`
+	CoverageHollow  bool                  `json:"coverage_hollow,omitempty"`
+	HollowFeatures  []string              `json:"hollow_features,omitempty"`
+	AuthContext     Phase5AuthContext     `json:"auth_context,omitzero"`
+	SkipReason      string                `json:"skip_reason,omitempty"`
+	FailureSummary  *Phase5FailureSummary `json:"failure_summary,omitempty"`
 }
 
 // Phase5FailureSummary groups failed tests by category so a human reviewing

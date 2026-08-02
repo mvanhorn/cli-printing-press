@@ -24,9 +24,10 @@ import (
 type LiveDogfoodStatus string
 
 const (
-	LiveDogfoodStatusPass LiveDogfoodStatus = "pass"
-	LiveDogfoodStatusFail LiveDogfoodStatus = "fail"
-	LiveDogfoodStatusSkip LiveDogfoodStatus = "skip"
+	LiveDogfoodStatusPass       LiveDogfoodStatus = "pass"
+	LiveDogfoodStatusFail       LiveDogfoodStatus = "fail"
+	LiveDogfoodStatusSkip       LiveDogfoodStatus = "skip"
+	LiveDogfoodStatusUnverified LiveDogfoodStatus = "unverified"
 )
 
 type LiveDogfoodTestKind string
@@ -47,6 +48,7 @@ const reasonMutatingDryRunOnly = "mutating command dry-run only"
 const reasonMutatingErrorPath = "mutating command; error_path would call live API without --dry-run"
 const reasonMutatingRunnableFixture = "blocked-fixture: mutating command requires runnable example"
 const reasonNoLiveSignal = "no live happy/json pass; credential-unavailable skips cannot certify acceptance"
+const reasonUnverifiedNeedsAccess = "unverified-needs-access"
 
 // reasonCookieAuthNoHarnessSession is the Skip reason emitted when a
 // cookie/composed/session_handshake CLI yields no live signal because the
@@ -84,6 +86,7 @@ type LiveDogfoodOptions struct {
 	BinaryName          string
 	Level               string
 	Timeout             time.Duration
+	ResearchDir         string
 	WriteAcceptancePath string
 	AuthEnv             string
 	AuthTier            string
@@ -94,17 +97,21 @@ type LiveDogfoodOptions struct {
 }
 
 type LiveDogfoodReport struct {
-	Dir        string                  `json:"dir"`
-	Binary     string                  `json:"binary"`
-	Level      string                  `json:"level"`
-	Verdict    string                  `json:"verdict"`
-	MatrixSize int                     `json:"matrix_size"`
-	Passed     int                     `json:"passed"`
-	Failed     int                     `json:"failed"`
-	Skipped    int                     `json:"skipped"`
-	Commands   []string                `json:"commands"`
-	Tests      []LiveDogfoodTestResult `json:"tests"`
-	RanAt      time.Time               `json:"ran_at"`
+	Dir            string                  `json:"dir"`
+	Binary         string                  `json:"binary"`
+	Level          string                  `json:"level"`
+	Verdict        string                  `json:"verdict"`
+	MatrixSize     int                     `json:"matrix_size"`
+	Passed         int                     `json:"passed"`
+	Failed         int                     `json:"failed"`
+	Skipped        int                     `json:"skipped"`
+	Unverified     int                     `json:"unverified"`
+	PassRate       float64                 `json:"pass_rate"`
+	CoverageHollow bool                    `json:"coverage_hollow,omitempty"`
+	HollowFeatures []string                `json:"hollow_features,omitempty"`
+	Commands       []string                `json:"commands"`
+	Tests          []LiveDogfoodTestResult `json:"tests"`
+	RanAt          time.Time               `json:"ran_at"`
 }
 
 type LiveDogfoodTestResult struct {
@@ -146,11 +153,13 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		// is the real Phase 5 gate for device CLIs) instead of crashing on the
 		// missing agent-context command or failing a meaningless matrix.
 		return &LiveDogfoodReport{
-			Dir:     opts.CLIDir,
-			Level:   opts.Level,
-			Verdict: "unverified-device",
-			Skipped: 1,
-			RanAt:   time.Now().UTC(),
+			Dir:        opts.CLIDir,
+			Level:      opts.Level,
+			Verdict:    "unverified-device",
+			Skipped:    1,
+			Unverified: 1,
+			PassRate:   0,
+			RanAt:      time.Now().UTC(),
 			Tests: []LiveDogfoodTestResult{{
 				Command: "(device CLI)",
 				Status:  LiveDogfoodStatusSkip,
@@ -190,7 +199,6 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	if len(commands) == 0 {
 		return nil, fmt.Errorf("no live dogfood command leaves discovered")
 	}
-
 	report := &LiveDogfoodReport{
 		Dir:     opts.CLIDir,
 		Binary:  binaryPath,
@@ -220,6 +228,7 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 
 	_, _, authType := resolveLiveDogfoodAcceptanceIdentity(opts.CLIDir)
 	finalizeLiveDogfoodReport(report, authType)
+	finalizeLiveDogfoodCoverage(report, opts.ResearchDir)
 	// The Phase 5.6 acceptance gate's contract is "marker from the runner on
 	// every outcome": pass → promote, fail → hold-path, missing → "Phase 5
 	// was skipped or not recorded." Writing only on PASS forced operators to
@@ -1562,6 +1571,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		if successCodes[happyRun.exitCode] {
 			happyResult.Status = LiveDogfoodStatusPass
 			happyResult.Reason = ""
+		} else if liveDogfoodUnverifiedNeedsAccess(happyRun) {
+			happyResult.Status = LiveDogfoodStatusUnverified
+			happyResult.Reason = reasonUnverifiedNeedsAccess
 		} else if liveDogfoodUnavailableForRunner(happyRun) {
 			happyResult.Status = LiveDogfoodStatusSkip
 			happyResult.Reason = reasonUnavailableRunnerCredentials
@@ -1574,11 +1586,15 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		}
 		results = append(results, happyResult)
 
-		if happyResult.Status == LiveDogfoodStatusSkip &&
+		if (happyResult.Status == LiveDogfoodStatusSkip || happyResult.Status == LiveDogfoodStatusUnverified) &&
 			(happyResult.Reason == reasonUnavailableRunnerCredentials ||
+				happyResult.Reason == reasonUnverifiedNeedsAccess ||
 				happyResult.Reason == reasonRequiredParamFixture ||
 				happyResult.Reason == reasonFeatureAbsentFixture) {
 			jsonResult := skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, happyResult.Reason)
+			if happyResult.Status == LiveDogfoodStatusUnverified {
+				jsonResult.Status = LiveDogfoodStatusUnverified
+			}
 			jsonResult.FixtureSource = fixtureSource
 			results = append(results, jsonResult)
 		} else if commandSupportsJSON(command.Help) {
@@ -1605,6 +1621,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 				// json_fidelity failure.
 				jsonResult.Status = LiveDogfoodStatusPass
 				jsonResult.Reason = ""
+			} else if liveDogfoodUnverifiedNeedsAccess(jsonRun) {
+				jsonResult.Status = LiveDogfoodStatusUnverified
+				jsonResult.Reason = reasonUnverifiedNeedsAccess
 			} else if liveDogfoodUnavailableForRunner(jsonRun) {
 				jsonResult.Status = LiveDogfoodStatusSkip
 				jsonResult.Reason = reasonUnavailableRunnerCredentials
@@ -2534,10 +2553,34 @@ func consumeLiveDogfoodJSONValue(decoder *json.Decoder) error {
 
 func liveDogfoodUnavailableForRunner(run liveDogfoodRun) bool {
 	output := strings.ToLower(run.stdout + run.stderr)
+	// A non-typed process failure that happens to print 403/permission text is
+	// not enough to excuse the command. The runner may skip clean output or the
+	// generated auth exit code, but a crash must remain a matrix failure.
+	if run.exitCode != 0 && run.exitCode != liveDogfoodAuthExitCode {
+		return false
+	}
+	if liveDogfoodAuth401(run) {
+		return true
+	}
 	return strings.Contains(output, "http 403") ||
-		liveDogfoodAuth401(run) ||
 		strings.Contains(output, "permission denied") ||
 		strings.Contains(output, "your credentials are valid but lack access")
+}
+
+// liveDogfoodUnverifiedNeedsAccess recognizes a clean permission denial from
+// the generated CLI. The typed auth exit code is the important boundary: a
+// process crash that happens to print 401/403 remains a real failure, while a
+// command that returned the CLI's documented auth/permission code is evidence
+// that the runner lacks access to the target account or tier.
+func liveDogfoodUnverifiedNeedsAccess(run liveDogfoodRun) bool {
+	if run.exitCode != liveDogfoodAuthExitCode {
+		return false
+	}
+	output := strings.ToLower(run.stdout + " " + run.stderr)
+	return strings.Contains(output, "http 401") ||
+		strings.Contains(output, "http 403") ||
+		strings.Contains(output, "permission denied") ||
+		strings.Contains(output, "forbidden")
 }
 
 func liveDogfoodRequiredParamFixtureReason(run liveDogfoodRun) string {
@@ -2700,6 +2743,7 @@ func liveDogfoodUsageSuffix(help string) string {
 
 func finalizeLiveDogfoodReport(report *LiveDogfoodReport, authType string) {
 	hasUnavailableRunnerSkip := false
+	hasUnverifiedAccess := false
 	hasLiveHappyOrJSONPass := false
 	for _, result := range report.Tests {
 		switch result.Status {
@@ -2712,14 +2756,18 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport, authType string) {
 		case LiveDogfoodStatusFail:
 			report.Failed++
 			report.MatrixSize++
-		default:
+		case LiveDogfoodStatusSkip, LiveDogfoodStatusUnverified:
 			report.Skipped++
+			report.Unverified++
 			if result.Reason == reasonUnavailableRunnerCredentials {
 				hasUnavailableRunnerSkip = true
 			}
+			if result.Status == LiveDogfoodStatusUnverified || result.Reason == reasonUnverifiedNeedsAccess {
+				hasUnverifiedAccess = true
+			}
 		}
 	}
-	if hasUnavailableRunnerSkip && !hasLiveHappyOrJSONPass {
+	if (hasUnavailableRunnerSkip || hasUnverifiedAccess) && !hasLiveHappyOrJSONPass {
 		// Browser-session auth (cookie/composed/session_handshake) cannot be
 		// exercised by the sandboxed dogfood HOME: it carries no captured
 		// session, so every command 401s. That is a harness artifact, not a CLI
@@ -2740,6 +2788,7 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport, authType string) {
 				Status:  LiveDogfoodStatusSkip,
 				Reason:  reasonCookieAuthNoHarnessSession,
 			})
+			refreshLiveDogfoodCoverageCounts(report)
 			report.Verdict = liveDogfoodVerdictCookieAuthNoSession
 			return
 		}
@@ -2752,6 +2801,7 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport, authType string) {
 			Reason:  reasonNoLiveSignal,
 		})
 	}
+	refreshLiveDogfoodCoverageCounts(report)
 	// Failed-or-empty wins. Skips are non-failures, but quick acceptance still
 	// needs enough counted signal before it can write an acceptance marker.
 	switch {
@@ -2762,6 +2812,84 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport, authType string) {
 	case report.Level == "quick":
 		report.Verdict = "FAIL"
 	}
+}
+
+func refreshLiveDogfoodCoverageCounts(report *LiveDogfoodReport) {
+	if report == nil {
+		return
+	}
+	report.Passed = 0
+	report.Failed = 0
+	report.Skipped = 0
+	report.MatrixSize = 0
+	report.Unverified = 0
+	for _, result := range report.Tests {
+		switch result.Status {
+		case LiveDogfoodStatusPass:
+			report.Passed++
+			report.MatrixSize++
+		case LiveDogfoodStatusFail:
+			report.Failed++
+			report.MatrixSize++
+		case LiveDogfoodStatusSkip, LiveDogfoodStatusUnverified:
+			report.Skipped++
+			report.Unverified++
+		}
+	}
+	if report.Passed+report.Failed == 0 {
+		report.PassRate = 0
+		return
+	}
+	report.PassRate = float64(report.Passed) / float64(report.Passed+report.Failed) * 100
+}
+
+// finalizeLiveDogfoodCoverage compares planned novel-feature commands with
+// the checks that actually reached a happy_path pass. A feature can be
+// present in research.json and still have only help or skipped checks, which
+// must be visible instead of disappearing into the headline pass rate.
+func finalizeLiveDogfoodCoverage(report *LiveDogfoodReport, researchDir string) {
+	if report == nil || strings.TrimSpace(researchDir) == "" {
+		return
+	}
+	research, err := LoadResearch(researchDir)
+	if err != nil || len(research.NovelFeatures) == 0 {
+		return
+	}
+
+	paths := make(map[string]bool, len(report.Commands))
+	leaves := make(map[string]bool, len(report.Commands))
+	for _, command := range report.Commands {
+		path := commandPath(command)
+		if path == "" {
+			continue
+		}
+		paths[path] = true
+		_, leaf := splitCommandPath(path)
+		leaves[leaf] = true
+	}
+
+	for _, feature := range research.NovelFeatures {
+		if !matchNovelFeature(feature, paths, leaves) {
+			report.HollowFeatures = append(report.HollowFeatures, feature.Command)
+			continue
+		}
+		featurePassed := false
+		for _, result := range report.Tests {
+			if result.Kind != LiveDogfoodTestHappy || result.Status != LiveDogfoodStatusPass || slices.Contains(result.Args, "--dry-run") {
+				continue
+			}
+			candidate := map[string]bool{commandPath(result.Command): true}
+			if matchNovelFeature(feature, candidate, nil) {
+				featurePassed = true
+				break
+			}
+		}
+		if !featurePassed {
+			report.HollowFeatures = append(report.HollowFeatures, feature.Command)
+		}
+	}
+	sort.Strings(report.HollowFeatures)
+	report.CoverageHollow = len(report.HollowFeatures) > 0
 }
 
 // isBrowserSessionAuthType reports whether the auth type relies on a captured
@@ -2820,15 +2948,18 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 	}
 
 	marker := Phase5GateMarker{
-		SchemaVersion: 1,
-		APIName:       apiName,
-		RunID:         runID,
-		Status:        status,
-		Level:         report.Level,
-		MatrixSize:    report.MatrixSize,
-		TestsPassed:   report.Passed,
-		TestsSkipped:  report.Skipped,
-		TestsFailed:   report.Failed,
+		SchemaVersion:   1,
+		APIName:         apiName,
+		RunID:           runID,
+		Status:          status,
+		Level:           report.Level,
+		MatrixSize:      report.MatrixSize,
+		TestsPassed:     report.Passed,
+		TestsSkipped:    report.Skipped,
+		TestsUnverified: report.Unverified,
+		TestsFailed:     report.Failed,
+		CoverageHollow:  report.CoverageHollow,
+		HollowFeatures:  append([]string(nil), report.HollowFeatures...),
 		AuthContext: Phase5AuthContext{
 			Type:            authType,
 			APIKeyAvailable: opts.AuthEnv != "" && os.Getenv(opts.AuthEnv) != "",

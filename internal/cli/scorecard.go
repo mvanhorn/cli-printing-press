@@ -52,7 +52,11 @@ func newScorecardCmd() *cobra.Command {
 			}
 			defer func() { _ = os.RemoveAll(pipelineDir) }()
 
-			sc, err := pipeline.RunScorecard(dir, pipelineDir, specPath, nil)
+			verifyReport, err := pipeline.LoadVerifyReportFromManifest(writeManifest)
+			if err != nil {
+				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("loading verify evidence: %w", err)}
+			}
+			sc, err := pipeline.RunScorecard(dir, pipelineDir, specPath, verifyReport)
 			if err != nil {
 				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("running scorecard: %w", err)}
 			}
@@ -208,5 +212,8 @@ func renderHumanScorecard(w io.Writer, sc *pipeline.Scorecard) {
 	fmt.Fprintf(w, "\n  Total: %d/100 - Grade %s\n", s.Total, sc.OverallGrade)
 	if len(sc.UnscoredDimensions) > 0 {
 		fmt.Fprintf(w, "  Note: omitted from denominator: %s\n", strings.Join(sc.UnscoredDimensions, ", "))
+	}
+	if len(sc.UnverifiedDimensions) > 0 {
+		fmt.Fprintf(w, "  Hold: unverified dimensions: %s\n", strings.Join(sc.UnverifiedDimensions, ", "))
 	}
 }
