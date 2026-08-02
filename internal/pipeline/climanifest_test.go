@@ -230,6 +230,20 @@ func TestPersistVerifyToManifestWritesVerifySummary(t *testing.T) {
 	assert.Equal(t, "valid", loaded.BrowserSessionProof)
 }
 
+func TestLoadVerifyReportFromManifestUsesExactPath(t *testing.T) {
+	dir := t.TempDir()
+	defaultPath := filepath.Join(dir, CLIManifestFilename)
+	customPath := filepath.Join(dir, "custom-manifest.json")
+
+	require.NoError(t, os.WriteFile(defaultPath, []byte(`{"schema_version":1,"verify":{"mode":"default"}}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(customPath, []byte(`{"schema_version":1,"verify":{"mode":"custom"}}`+"\n"), 0o644))
+
+	loaded, err := LoadVerifyReportFromManifest(customPath)
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+	assert.Equal(t, "custom", loaded.Mode)
+}
+
 func TestPersistVerifyToManifestNoopsWhenManifestMissing(t *testing.T) {
 	changed, err := PersistVerifyToManifest(filepath.Join(t.TempDir(), CLIManifestFilename), &VerifyReport{
 		Total:    1,

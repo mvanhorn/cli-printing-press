@@ -223,6 +223,9 @@ func validatePhase5PassMarkerIssues(marker Phase5GateMarker) []string {
 }
 
 func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
+	if marker.CoverageHollow {
+		return false, fmt.Sprintf("phase5 acceptance has hollow coverage for: %s", strings.Join(marker.HollowFeatures, ", "))
+	}
 	level := phase5Level(marker)
 	switch level {
 	case phase5AcceptanceLevelQuick:

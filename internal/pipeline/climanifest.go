@@ -266,7 +266,11 @@ func isSafeCLIBinaryName(name string) bool {
 
 // ReadCLIManifest decodes dir/.printing-press.json.
 func ReadCLIManifest(dir string) (CLIManifest, error) {
-	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	return readCLIManifestFile(filepath.Join(dir, CLIManifestFilename))
+}
+
+func readCLIManifestFile(path string) (CLIManifest, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return CLIManifest{}, err
 	}
@@ -663,7 +667,7 @@ func LoadVerifyReportFromManifest(manifestPath string) (*VerifyReport, error) {
 	if strings.TrimSpace(manifestPath) == "" {
 		return nil, nil
 	}
-	manifest, err := ReadCLIManifest(filepath.Dir(manifestPath))
+	manifest, err := readCLIManifestFile(manifestPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
