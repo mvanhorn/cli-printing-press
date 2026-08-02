@@ -1687,6 +1687,11 @@ func TestHappyPathFileFixtureSkip(t *testing.T) {
 			wantSkip: false,
 		},
 		{
+			name:     "boolean csv followed by another flag",
+			args:     []string{"items", "list", "--csv", "--limit", "10"},
+			wantSkip: false,
+		},
+		{
 			name:       "missing csv fixture",
 			args:       []string{"vet", "--csv", "prospects.csv"},
 			wantSkip:   true,
@@ -1756,7 +1761,7 @@ func TestHappyPathFileFixtureSkip(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := happyPathFileFixtureSkip(tc.args, cliDir)
+			got := happyPathFileFixtureSkipForCommand(liveDogfoodCommand{}, tc.args, cliDir)
 			if tc.wantSkip {
 				assert.NotEmpty(t, got, "expected skip reason")
 				if tc.wantPrefix != "" {
@@ -1767,6 +1772,187 @@ func TestHappyPathFileFixtureSkip(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHappyPathFileFixtureSkipDetectsPositionalFiles(t *testing.T) {
+	t.Parallel()
+
+	cliDir := t.TempDir()
+	command := liveDogfoodCommand{
+		Path: []string{"notes", "ingest"},
+		Help: "Usage:\n  cli notes ingest <pdf-or-docx> [flags]\n",
+	}
+
+	got := happyPathFileFixtureSkipForCommand(command, []string{"notes", "ingest", "report.pdf"}, cliDir)
+	assert.Equal(t, "file fixture required: <pdf-or-docx> report.pdf", got)
+
+	existing := filepath.Join(cliDir, "report.pdf")
+	require.NoError(t, os.WriteFile(existing, []byte("fixture"), 0o600))
+	assert.Empty(t, happyPathFileFixtureSkipForCommand(command, []string{"notes", "ingest", "report.pdf"}, cliDir))
+
+	command.Annotations = map[string]string{happyArgsAnnotation: "<pdf-or-docx>=missing.docx"}
+	args, ok := liveDogfoodHappyArgs(command)
+	require.True(t, ok)
+	assert.Equal(t, "file fixture required: <pdf-or-docx> missing.docx",
+		happyPathFileFixtureSkipForCommand(command, args, cliDir))
+
+	for _, name := range []string{"document-id", "doctor-id"} {
+		command.Help = fmt.Sprintf("Usage:\n  cli notes ingest <%s> [flags]\n", name)
+		assert.Empty(t, happyPathFileFixtureSkipForCommand(command,
+			[]string{"notes", "ingest", "doc-123"}, cliDir), name)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{name: "documentID", value: "doc-123"},
+		{name: "user-profile", value: "alice"},
+		{name: "json", value: "{\"title\":\"inline\"}"},
+		{name: "yaml", value: "title: inline"},
+	} {
+		command.Help = fmt.Sprintf("Usage:\n  cli notes ingest <%s> [flags]\n", tc.name)
+		assert.Empty(t, happyPathFileFixtureSkipForCommand(command,
+			[]string{"notes", "ingest", tc.value}, cliDir), tc.name)
+	}
+
+	command.Help = "Usage:\n  cli items get <id> [flags]\n\nFlags:\n      --csv   Output CSV\n"
+	assert.Empty(t, happyPathFileFixtureSkipForCommand(command,
+		[]string{"items", "get", "--csv", "item-123"}, cliDir))
+
+	command.Help = "Usage:\n  cli notes ingest <path> [flags]\n"
+	assert.Empty(t, happyPathFileFixtureSkipForCommand(command,
+		[]string{"notes", "ingest", "/v1/documents"}, cliDir))
+	assert.Equal(t, "file fixture required: <path> /tmp/missing.pdf",
+		happyPathFileFixtureSkipForCommand(command,
+			[]string{"notes", "ingest", "/tmp/missing.pdf"}, cliDir))
+
+	command.Help = "Usage:\n  cli notes ingest <inputFile> [flags]\n\nFlags:\n      --verbose   Show progress\n"
+	assert.Equal(t, "file fixture required: <inputfile> missing.pdf",
+		happyPathFileFixtureSkipForCommand(command,
+			[]string{"notes", "ingest", "--verbose", "missing.pdf"}, cliDir))
+
+	command.Help = "Usage:\n  cli notes ingest [inputFile] [flags]\n\nFlags:\n      --limit int   Maximum records\n"
+	assert.Empty(t, happyPathFileFixtureSkipForCommand(command,
+		[]string{"notes", "ingest", "--limit", "1"}, cliDir))
+
+	command.Help = "Usage:\n  cli notes ingest <pdf-or-docx> [flags]\n\nFlags:\n      --format string   Output format\n"
+	assert.Equal(t, "file fixture required: <pdf-or-docx> missing.pdf",
+		happyPathFileFixtureSkipForCommand(command,
+			[]string{"notes", "ingest", "--format", "csv", "missing.pdf"}, cliDir))
+}
+
+func TestRunLiveDogfoodSkipsMissingPositionalFileFixture(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "fixture-pp-cli")
+	script := `#!/bin/sh
+if [ "$1" = "notes" ] && [ "$2" = "ingest" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Ingest a note.
+
+Usage:
+  fixture-pp-cli notes ingest <pdf-or-docx> [flags]
+
+Examples:
+  fixture-pp-cli notes ingest missing.pdf
+
+Flags:
+      --json   Output JSON
+HELP
+  exit 0
+fi
+echo "unexpected invocation: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binaryPath, []byte(script), 0o755))
+
+	results := runLiveDogfoodCommand(liveDogfoodCommand{
+		Path: []string{"notes", "ingest"},
+		Annotations: map[string]string{
+			noErrorPathProbeAnnotation: "true",
+		},
+	}, resolveCtx{
+		binaryPath: binaryPath,
+		cliDir:     dir,
+		cache:      newCompanionCache(),
+		timeout:    5 * time.Second,
+	})
+
+	var happy *LiveDogfoodTestResult
+	var jsonResult *LiveDogfoodTestResult
+	for i := range results {
+		switch results[i].Kind {
+		case LiveDogfoodTestHappy:
+			happy = &results[i]
+		case LiveDogfoodTestJSON:
+			jsonResult = &results[i]
+		}
+	}
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, "file fixture required: <pdf-or-docx> missing.pdf", happy.Reason)
+
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
+	assert.Equal(t, happy.Reason, jsonResult.Reason)
+}
+
+func TestLiveDogfoodHappyArgsReplacesNegativeExampleValues(t *testing.T) {
+	command := liveDogfoodCommand{
+		Path: []string{"map"},
+		Help: `Usage:
+  cli map [flags]
+
+Examples:
+  cli map --south 34.5 --west -122.1 --north 35.6 --east -121.9
+`,
+		Annotations: map[string]string{
+			happyArgsAnnotation: "--south=34.5;--west=139.0;--north=35.6;--east=140.9",
+		},
+	}
+
+	args, ok := liveDogfoodHappyArgs(command)
+	require.True(t, ok)
+	assert.Equal(t,
+		[]string{"map", "--south", "34.5", "--west", "139.0", "--north", "35.6", "--east", "140.9"},
+		args,
+	)
+
+	command.Annotations[happyArgsAnnotation] = "--west=-122.1"
+	args, ok = liveDogfoodHappyArgs(command)
+	require.True(t, ok)
+	assert.Equal(t, []string{"map", "--south", "34.5", "--west=-122.1", "--north", "35.6", "--east=-121.9"}, args)
+
+	booleanExample := liveDogfoodCommand{
+		Path: []string{"items", "get"},
+		Help: `Usage:
+  cli items get <value> [flags]
+
+Examples:
+  cli items get --verbose -1
+`,
+	}
+	args, ok = liveDogfoodHappyArgs(booleanExample)
+	require.True(t, ok)
+	assert.Equal(t, []string{"items", "get", "--verbose", "-1"}, args)
+
+	valueBeforePositional := liveDogfoodCommand{
+		Path: []string{"items", "get"},
+		Help: `Usage:
+  cli items get <id> [flags]
+
+Examples:
+  cli items get --tags a,b
+`,
+		Annotations: map[string]string{happyArgsAnnotation: "<id>=real-123"},
+	}
+	args, ok = liveDogfoodHappyArgs(valueBeforePositional)
+	require.True(t, ok)
+	assert.Equal(t, []string{"items", "get", "real-123", "--tags", "a,b"}, args)
 }
 
 func TestRunLiveDogfoodHappyPathHandlesShellCommentInExample(t *testing.T) {
@@ -3600,6 +3786,144 @@ func TestAppendDryRunArg(t *testing.T) {
 		got := appendDryRunArg([]string{"widgets", "create", "--dry-run-output", "preview.json"})
 		assert.Equal(t, []string{"widgets", "create", "--dry-run-output", "preview.json", "--dry-run"}, got)
 	})
+}
+
+func TestAppendJSONArgDoesNotOverrideExplicitOutputMode(t *testing.T) {
+	assert.Equal(t, []string{"items", "list", "--csv"}, appendJSONArg([]string{"items", "list", "--csv"}))
+	assert.Equal(t, []string{"items", "list", "--quiet"}, appendJSONArg([]string{"items", "list", "--quiet"}))
+	assert.Equal(t, []string{"items", "list", "--agent"}, appendJSONArg([]string{"items", "list", "--agent"}))
+	assert.Equal(t, []string{"items", "list", "--format", "csv", "--json"}, appendJSONArg([]string{"items", "list", "--format", "csv"}))
+	assert.Equal(t, []string{"export", "items", "--output", "data.jsonl"}, appendJSONArg([]string{"export", "items", "--output", "data.jsonl"}))
+	assert.Equal(t, []string{"export", "items", "--format", "jsonl", "--json"},
+		appendJSONArg(removeNonJSONOutputModes([]string{"export", "items", "--format", "jsonl", "--output", "data.jsonl"})))
+	assert.Equal(t, []string{"items", "list", "--csv=false", "--json"}, appendJSONArg([]string{"items", "list", "--csv=false"}))
+	assert.Equal(t, []string{"items", "list", "--json=false", "--json"}, appendJSONArg([]string{"items", "list", "--json=false"}))
+	assert.Equal(t, []string{"items", "list", "--json"}, appendJSONArg([]string{"items", "list", "--json"}))
+	assert.Equal(t, []string{"items", "list", "--json", "--csv"}, appendJSONArg([]string{"items", "list", "--json", "--csv"}))
+	assert.Equal(t, []string{"items", "list", "--json", "--", "-122.1"}, appendJSONArg([]string{"items", "list", "--", "-122.1"}))
+}
+
+func TestProtectLiveDogfoodNegativeNumericPositionals(t *testing.T) {
+	args := []string{"map", "--verbose", "-122.1", "--json"}
+	assert.Equal(t,
+		[]string{"map", "--verbose", "--json", "--", "-122.1"},
+		protectLiveDogfoodNegativeNumericPositionals(args, []string{"map"}, 1, nil),
+	)
+	assert.Equal(t, []string{"map", "--west", "-122.1"},
+		protectLiveDogfoodNegativeNumericPositionals([]string{"map", "--west", "-122.1"}, []string{"map"}, 0, nil),
+	)
+
+	valueFlags := map[string]struct{}{"west": {}}
+	normalized := normalizeLiveDogfoodNegativeNumericArgs(
+		[]string{"map", "--west", "-122.1"}, []string{"map"}, 1, valueFlags)
+	assert.Equal(t, []string{"map", "--west=-122.1"}, normalized)
+	assert.Equal(t, normalized,
+		protectLiveDogfoodNegativeNumericPositionals(normalized, []string{"map"}, 1, valueFlags),
+	)
+	ambiguous := []string{"forecast", "--units", "metric", "-122.3"}
+	assert.Equal(t, ambiguous,
+		protectLiveDogfoodNegativeNumericPositionals(ambiguous, []string{"forecast"}, 2, nil))
+}
+
+func TestHasExplicitNonJSONOutputMode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "csv", args: []string{"items", "list", "--csv"}, want: true},
+		{name: "plain", args: []string{"items", "list", "--plain"}, want: true},
+		{name: "quiet", args: []string{"items", "list", "--quiet"}, want: true},
+		{name: "json", args: []string{"items", "list", "--json"}, want: false},
+		{name: "agent", args: []string{"items", "list", "--agent"}, want: false},
+		{name: "domain format flag", args: []string{"items", "list", "--format", "csv"}, want: false},
+		{name: "output destination", args: []string{"export", "items", "--output", "data.jsonl"}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, hasExplicitNonJSONOutputMode(tc.args))
+		})
+	}
+}
+
+func TestLiveDogfoodFlagValueNames(t *testing.T) {
+	help := `Flags:
+	      --west float   Western longitude
+	      --verbose      Show progress
+	      --format string Output format
+      --resources strings Resource names
+`
+	valueFlags := liveDogfoodFlagValueNames(help)
+	assert.Contains(t, valueFlags, "west")
+	assert.Contains(t, valueFlags, "format")
+	assert.Contains(t, valueFlags, "resources")
+	assert.NotContains(t, valueFlags, "verbose")
+}
+
+func TestRunLiveDogfoodRunsJSONProbeWithoutConflictingOutputMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "fixture-pp-cli")
+	script := `#!/bin/sh
+if [ "$1" = "items" ] && [ "$2" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List items.
+
+Usage:
+  fixture-pp-cli items list [flags]
+
+Examples:
+  fixture-pp-cli items list --csv
+
+Flags:
+      --csv     Output CSV
+      --json    Output JSON
+HELP
+  exit 0
+fi
+if [ "$1" = "items" ] && [ "$2" = "list" ] && [ "${3:-}" = "--csv" ]; then
+  echo 'id,name'
+  exit 0
+fi
+if [ "$1" = "items" ] && [ "$2" = "list" ] && [ "${3:-}" = "--json" ]; then
+  echo '{"items":[]}'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binaryPath, []byte(script), 0o755))
+
+	command := liveDogfoodCommand{
+		Path: []string{"items", "list"},
+		Annotations: map[string]string{
+			"pp:method": "GET",
+		},
+	}
+	results := runLiveDogfoodCommand(command, resolveCtx{
+		binaryPath: binaryPath,
+		cliDir:     dir,
+		cache:      newCompanionCache(),
+		timeout:    5 * time.Second,
+	})
+
+	var happy, jsonResult *LiveDogfoodTestResult
+	for i := range results {
+		result := &results[i]
+		switch result.Kind {
+		case LiveDogfoodTestHappy:
+			happy = result
+		case LiveDogfoodTestJSON:
+			jsonResult = result
+		}
+	}
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status, happy.Reason)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusPass, jsonResult.Status, jsonResult.Reason)
+	assert.Equal(t, []string{"items", "list", "--json"}, jsonResult.Args)
 }
 
 func TestCommandSupportsDryRun(t *testing.T) {
