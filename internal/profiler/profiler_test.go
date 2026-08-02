@@ -3426,6 +3426,7 @@ func TestProfilePaginationDetectsAscendingLastModifiedSort(t *testing.T) {
 	require.Len(t, profile.SyncableResources, 1)
 	assert.Equal(t, "sort", profile.SyncableResources[0].PaginationSortParam)
 	assert.Equal(t, "updated_at:asc", profile.SyncableResources[0].PaginationSortValue)
+	assert.Equal(t, "updated_at", profile.SyncableResources[0].PaginationSortField)
 }
 
 func TestDetectEndpointSyncSortRejectsDescendingDefault(t *testing.T) {

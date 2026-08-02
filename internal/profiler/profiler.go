@@ -146,6 +146,10 @@ type SyncableResource struct {
 	// that is safe to send alongside an incremental temporal filter.
 	PaginationSortParam string
 	PaginationSortValue string
+	// PaginationSortField is the temporal response field named by
+	// PaginationSortValue. It is the only field the generated sync may use for
+	// a capped watermark; another recognized timestamp is not an equivalent.
+	PaginationSortField string
 
 	// UsesHTMLResponse and HTMLExtract mirror the chosen list endpoint's
 	// response_format/html_extract contract so sync can normalize HTML into
@@ -2312,6 +2316,7 @@ type syncableMeta struct {
 	PaginationPageSize    int
 	PaginationSortParam   string
 	PaginationSortValue   string
+	PaginationSortField   string
 	UsesHTMLResponse      bool
 	HTMLExtract           *spec.HTMLExtract
 	BodyFields            []SyncBodyField
@@ -2351,6 +2356,7 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 	sinceParam, sinceParamFormat := detectEndpointSinceParamAndFormat(e, types)
 	paginationCursorParam, paginationCursorType, paginationLimitParam, paginationPageSize := syncPaginationDefaultsFromEndpoint(e)
 	paginationSortParam, paginationSortValue := detectEndpointSyncSort(e)
+	paginationSortField := temporalSortField(paginationSortValue)
 	hydratePath, hydrateIDParam := scalarIDHydrationTarget(s, resourceName, e, types)
 	return syncableMeta{
 		Path:                  e.Path,
@@ -2368,6 +2374,7 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		PaginationPageSize:    paginationPageSize,
 		PaginationSortParam:   paginationSortParam,
 		PaginationSortValue:   paginationSortValue,
+		PaginationSortField:   paginationSortField,
 		UsesHTMLResponse:      e.UsesHTMLResponse(),
 		HTMLExtract:           e.HTMLExtract,
 		BodyFields:            syncBodyFieldsFromEndpoint(e),
@@ -3356,6 +3363,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			PaginationPageSize:    meta.PaginationPageSize,
 			PaginationSortParam:   meta.PaginationSortParam,
 			PaginationSortValue:   meta.PaginationSortValue,
+			PaginationSortField:   meta.PaginationSortField,
 			UsesHTMLResponse:      meta.UsesHTMLResponse,
 			HTMLExtract:           meta.HTMLExtract,
 			BodyFields:            meta.BodyFields,

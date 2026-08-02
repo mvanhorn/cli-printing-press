@@ -514,6 +514,8 @@ func TestGeneratedSyncPreservesWatermarkAcrossPaginationCaps(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 	syncSrc := readGeneratedCLIFileContaining(t, outputDir, "func syncResourceSortParam")
 	require.Contains(t, syncSrc, "func syncResourceSortParam(resource string) string")
+	require.Contains(t, syncSrc, "func syncResourceSortField(resource string) string")
+	require.Contains(t, syncSrc, "restSyncTimestamp(item, sortField)")
 	require.Contains(t, syncSrc, "db.SaveSyncStateAt(resource, finalCursor, cachedCount, watermark)")
 	require.Contains(t, syncSrc, "db.SaveSyncProgress(resource, nextCursor, totalCount)")
 	requireGeneratedCompiles(t, outputDir)
@@ -609,7 +611,7 @@ func TestCappedNestedTimestampUsesRecordTimestamp(t *testing.T) {
 	client := &watermarkPagerClient{responses: []json.RawMessage{
 		json.RawMessage("{\"items\":[{\"id\":\"first\",\"updated_at\":\"2026-01-01T00:00:00Z\"},{\"id\":\"nested\",\"updated_at\":\"2026-01-02T00:00:00Z\",\"children\":[{\"updated_at\":\"2026-06-01T00:00:00Z\"}]}],\"next_cursor\":\"page-2\",\"has_more\":true}"),
 	}}
-	if timestamp, ok := restSyncTimestamp(json.RawMessage("{\"id\":\"nested\",\"updated_at\":\"2026-01-02T00:00:00Z\",\"children\":[{\"updated_at\":\"2026-06-01T00:00:00Z\"}]}")); !ok || !timestamp.Equal(time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)) {
+	if timestamp, ok := restSyncTimestamp(json.RawMessage("{\"id\":\"nested\",\"updated_at\":\"2026-01-02T00:00:00Z\",\"children\":[{\"updated_at\":\"2026-06-01T00:00:00Z\"}]}"), "updated_at"); !ok || !timestamp.Equal(time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("record timestamp = %s, ok=%v; want 2026-01-02, true", timestamp, ok)
 	}
 	var events bytes.Buffer
@@ -621,6 +623,58 @@ func TestCappedNestedTimestampUsesRecordTimestamp(t *testing.T) {
 	want := time.Date(2026, 1, 1, 23, 59, 59, 0, time.UTC)
 	if cursor != "" || !synced.Equal(want) || count != 3 {
 		t.Fatalf("sync state = cursor %q, synced %s, count %d; want empty cursor, %s, 3; events=%s", cursor, synced, count, want, events.String())
+	}
+}
+
+func TestCappedMismatchedTimestampRetainsWatermark(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	old := time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC)
+	seedWatermark(t, db, old)
+	client := &watermarkPagerClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[{\"id\":\"one\",\"modified_at\":\"2026-06-01T00:00:00Z\"},{\"id\":\"two\",\"modified_at\":\"2026-06-02T00:00:00Z\"}],\"next_cursor\":\"page-2\",\"has_more\":true}"),
+	}}
+	result := syncResource(context.Background(), client, db, "items", old.Format(time.RFC3339), false, 1, false, false, &syncUserParams{}, io.Discard)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%v warning=%v", result.Err, result.Warn)
+	}
+	cursor, synced, count := readWatermark(t, db)
+	if cursor != "page-2" || !synced.Equal(old) || count != 3 {
+		t.Fatalf("sync state = cursor %q, synced %s, count %d; want page-2, %s, 3", cursor, synced, count, old)
+	}
+}
+
+func TestCappedTimestampUsesExpectedFieldWithUnrelatedTimestamp(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	old := time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC)
+	seedWatermark(t, db, old)
+	client := &watermarkPagerClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[{\"id\":\"one\",\"updated_at\":\"2026-01-02T00:00:00Z\",\"modified_at\":\"2026-06-01T00:00:00Z\"},{\"id\":\"two\",\"updated_at\":\"2026-01-03T00:00:00Z\",\"modified_at\":\"2026-06-02T00:00:00Z\"}],\"next_cursor\":\"page-2\",\"has_more\":true}"),
+	}}
+	result := syncResource(context.Background(), client, db, "items", old.Format(time.RFC3339), false, 1, false, false, &syncUserParams{}, io.Discard)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%v warning=%v", result.Err, result.Warn)
+	}
+	cursor, synced, count := readWatermark(t, db)
+	want := time.Date(2026, 1, 2, 23, 59, 59, 0, time.UTC)
+	if cursor != "" || !synced.Equal(want) || count != 3 {
+		t.Fatalf("sync state = cursor %q, synced %s, count %d; want empty cursor, %s, 3", cursor, synced, count, want)
+	}
+}
+
+func TestRestSyncTimestampRequiresExpectedField(t *testing.T) {
+	if timestamp, ok := restSyncTimestamp(json.RawMessage("{\"modified_at\":\"2026-06-01T00:00:00Z\"}"), "updated_at"); ok || !timestamp.IsZero() {
+		t.Fatalf("mismatched timestamp = %s, ok=%v; want zero, false", timestamp, ok)
+	}
+	if timestamp, ok := restSyncTimestamp(json.RawMessage("{\"updatedAt\":\"2026-01-02T00:00:00Z\",\"modified_at\":\"2026-06-01T00:00:00Z\"}"), "updated_at"); !ok || !timestamp.Equal(time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("normalized timestamp = %s, ok=%v; want 2026-01-02, true", timestamp, ok)
 	}
 }
 
@@ -780,7 +834,7 @@ func TestFullSyncOmitsIncrementalSort(t *testing.T) {
 }
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_watermark_test.go"), []byte(behaviorTest), 0o644))
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(Capped|Drained|LatestOnly|FullSync)", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(Capped|Drained|LatestOnly|FullSync|RestSync)", "-count=1")
 }
 
 func TestGeneratedSyncClearsOffsetCursorWhenWatermarkMoves(t *testing.T) {

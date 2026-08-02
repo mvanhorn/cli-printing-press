@@ -513,6 +513,7 @@ func syncResource(ctx context.Context, c interface {
 	pageSize := determinePaginationDefaults(resource)
 	sortParam := syncResourceSortParam(resource)
 	sortValue := syncResourceSortValue(resource)
+	sortField := syncResourceSortField(resource)
 	sortEffective := false
 	var progressCount int64
 	pagesFetched := 0
@@ -567,7 +568,7 @@ func syncResource(ctx context.Context, c interface {
 		// win over spec-derived defaults (e.g. forcing mine=true on a list
 		// endpoint whose OpenAPI spec marks the filter optional).
 		userParams.applyTo(resource, params, false)
-		sortEffective = effectiveSince != "" && sortParam != "" && sortValue != "" && params[sortParam] == sortValue
+		sortEffective = effectiveSince != "" && sortParam != "" && sortValue != "" && sortField != "" && params[sortParam] == sortValue
 
 		data, err := c.Get(ctx, path, params)
 		if err != nil {
@@ -601,7 +602,7 @@ func syncResource(ctx context.Context, c interface {
 		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, responsePathForResource(resource, path)...)
 		if sortEffective && maxPages > 0 {
 			for _, item := range items {
-				itemTimestamp, ok := restSyncTimestamp(item)
+				itemTimestamp, ok := restSyncTimestamp(item, sortField)
 				if !ok {
 					timestampOrderSafe = false
 					continue
@@ -1026,6 +1027,12 @@ func syncResourceSortParam(resource string) string {
 }
 
 func syncResourceSortValue(resource string) string {
+	switch resource {
+	}
+	return ""
+}
+
+func syncResourceSortField(resource string) string {
 	switch resource {
 	}
 	return ""
@@ -1766,21 +1773,24 @@ func parseSinceDuration(s string) (time.Time, error) {
 	}
 }
 
-// restSyncTimestamp extracts a record-level last-modified timestamp from one
-// REST item. Nested child or metadata timestamps are deliberately ignored:
-// the incremental filter applies to the resource record, not its embedded
-// objects. Multiple candidate top-level timestamps are also rejected because
-// the generator cannot prove which one the endpoint sorts and filters on.
-func restSyncTimestamp(data json.RawMessage) (time.Time, bool) {
+// restSyncTimestamp extracts the record-level timestamp for the exact field
+// used by the endpoint's incremental sort. Nested child or metadata timestamps
+// are deliberately ignored: the incremental filter applies to the resource
+// record, not its embedded objects. A missing or unparseable expected field is
+// unsafe, so this helper never falls back to another recognized timestamp.
+func restSyncTimestamp(data json.RawMessage, expectedField string) (time.Time, bool) {
 	var value map[string]any
 	if err := json.Unmarshal(data, &value); err != nil {
 		return time.Time{}, false
 	}
-	var newest time.Time
-	var found bool
+	expectedField = normalizeRestSyncTimestampField(expectedField)
+	if expectedField == "" || !restSyncTimestampField(expectedField) {
+		return time.Time{}, false
+	}
+	var timestamp time.Time
 	matches := 0
 	for fieldName, child := range value {
-		if !restSyncTimestampField(fieldName) {
+		if normalizeRestSyncTimestampField(fieldName) != expectedField {
 			continue
 		}
 		text, ok := child.(string)
@@ -1792,19 +1802,20 @@ func restSyncTimestamp(data json.RawMessage) (time.Time, bool) {
 			continue
 		}
 		matches++
-		if !found || ts.After(newest) {
-			newest = ts
-			found = true
-		}
+		timestamp = ts
 	}
 	if matches != 1 {
 		return time.Time{}, false
 	}
-	return newest, true
+	return timestamp, true
+}
+
+func normalizeRestSyncTimestampField(name string) string {
+	return strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(name))
 }
 
 func restSyncTimestampField(name string) bool {
-	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(name))
+	normalized := normalizeRestSyncTimestampField(name)
 	return strings.Contains(normalized, "updated") ||
 		strings.Contains(normalized, "modified") ||
 		strings.Contains(normalized, "lastchanged") ||
