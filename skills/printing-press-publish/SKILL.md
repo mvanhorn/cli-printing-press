@@ -510,6 +510,9 @@ fi
 mkdir -p "$PROOFS_DIR"
 
 RESEARCH_DIR="$(dirname "$PROOFS_DIR")/research"
+if [ ! -f "$RESEARCH_DIR/research.json" ] && [ -f "$(dirname "$PROOFS_DIR")/research.json" ]; then
+  RESEARCH_DIR="$(dirname "$PROOFS_DIR")"
+fi
 if [ ! -f "$RESEARCH_DIR/research.json" ]; then
   echo "ERROR: publish live gate requires the run research.json at $RESEARCH_DIR." >&2
   exit 1
