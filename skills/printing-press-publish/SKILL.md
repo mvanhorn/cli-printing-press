@@ -582,9 +582,9 @@ SOURCE_FINGERPRINT=$(
   while IFS= read -r SOURCE_FILE; do
     [ -z "$SOURCE_FILE" ] && continue
     SOURCE_REL="${SOURCE_FILE#"$CLI_DIR"/}"
-    SOURCE_HASH=$(shasum -a 256 "$SOURCE_FILE" | awk '{print $1}')
+    SOURCE_HASH=$(shasum -a 256 "$SOURCE_FILE" | sed 's/[[:space:]].*//')
     printf '%s\0%s\n' "$SOURCE_REL" "$SOURCE_HASH"
-  done <<EOF | shasum -a 256 | awk '{print $1}'
+  done <<EOF | shasum -a 256 | sed 's/[[:space:]].*//'
 $SOURCE_FILES
 EOF
 )
