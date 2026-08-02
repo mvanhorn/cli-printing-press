@@ -52,7 +52,10 @@ type Phase5GateMarker struct {
 	MatrixSize        int                   `json:"matrix_size,omitempty"`
 	TestsPassed       int                   `json:"tests_passed,omitempty"`
 	TestsSkipped      int                   `json:"tests_skipped,omitempty"`
+	TestsUnverified   int                   `json:"tests_unverified,omitempty"`
 	TestsFailed       int                   `json:"tests_failed,omitempty"`
+	CoverageHollow    bool                  `json:"coverage_hollow,omitempty"`
+	HollowFeatures    []string              `json:"hollow_features,omitempty"`
 	AuthContext       Phase5AuthContext     `json:"auth_context,omitzero"`
 	SkipReason        string                `json:"skip_reason,omitempty"`
 	FailureSummary    *Phase5FailureSummary `json:"failure_summary,omitempty"`
@@ -251,6 +254,9 @@ func validatePhase5PassMarkerIssues(marker Phase5GateMarker) []string {
 }
 
 func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
+	if marker.CoverageHollow {
+		return false, fmt.Sprintf("phase5 acceptance has hollow coverage for: %s", strings.Join(marker.HollowFeatures, ", "))
+	}
 	level := phase5Level(marker)
 	switch level {
 	case phase5AcceptanceLevelQuick:

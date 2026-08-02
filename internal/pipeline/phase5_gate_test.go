@@ -40,6 +40,28 @@ func TestValidatePhase5Gate_PassMarker(t *testing.T) {
 	assert.Equal(t, filepath.Join(proofsDir, Phase5AcceptanceFilename), result.MarkerPath)
 }
 
+func TestValidatePhase5Gate_FullPassRejectsHollowCoverage(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion:  1,
+		APIName:        "test",
+		RunID:          "run-1",
+		Status:         "pass",
+		Level:          "full",
+		MatrixSize:     1,
+		TestsPassed:    1,
+		CoverageHollow: true,
+		HollowFeatures: []string{"widgets list"},
+		AuthContext:    Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "hollow coverage")
+	assert.Contains(t, result.Detail, "widgets list")
+}
+
 func TestValidatePhase5Gate_QuickPassRejectsFailures(t *testing.T) {
 	proofsDir := t.TempDir()
 	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}

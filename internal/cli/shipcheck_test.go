@@ -35,6 +35,9 @@ func fakeCLIDir(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module fake\n"), 0o644); err != nil {
 		t.Fatalf("writing fake go.mod: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, pipeline.CLIManifestFilename), []byte(`{"api_name":"example","scorecard":{"unverified_dimensions":[]}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("writing fake CLI manifest: %v", err)
+	}
 	return dir
 }
 
@@ -770,6 +773,137 @@ func TestShipcheck_JSONEnvelope_OneFailure(t *testing.T) {
 	}
 	if failingLeg.ExitCode != 1 {
 		t.Errorf("verify-skill leg should have exit_code=1; got %d", failingLeg.ExitCode)
+	}
+}
+
+func TestShipcheck_HoldsOnUnverifiedScorecard(t *testing.T) {
+	h := newShipcheckHarness(t)
+	if err := os.WriteFile(filepath.Join(h.dir, pipeline.CLIManifestFilename), []byte(`{
+  "api_name": "example",
+  "scorecard": {
+    "unverified_dimensions": ["auth_protocol", "live_api_verification"]
+  }
+}
+`), 0o644); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		err := runShipcheckCmd(t, "--dir", h.dir)
+		if err == nil {
+			t.Fatal("expected shipcheck hold")
+		}
+		exitErr, ok := err.(*ExitError)
+		if !ok {
+			t.Fatalf("expected *ExitError; got %T", err)
+		}
+		if exitErr.Code != ExitGenerationError {
+			t.Fatalf("hold exit code = %d, want %d", exitErr.Code, ExitGenerationError)
+		}
+	})
+
+	if !strings.Contains(out, "HOLD") {
+		t.Errorf("shipcheck output missing HOLD: %q", out)
+	}
+	if !strings.Contains(out, "unverified") {
+		t.Errorf("shipcheck output missing unverified detail: %q", out)
+	}
+}
+
+func TestShipcheck_HoldsWithoutScorecardManifestEvidence(t *testing.T) {
+	h := newShipcheckHarness(t)
+	if err := os.Remove(filepath.Join(h.dir, pipeline.CLIManifestFilename)); err != nil {
+		t.Fatalf("removing manifest: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		err := runShipcheckCmd(t, "--dir", h.dir)
+		if err == nil {
+			t.Fatal("expected shipcheck hold")
+		}
+		exitErr, ok := err.(*ExitError)
+		if !ok {
+			t.Fatalf("expected *ExitError; got %T", err)
+		}
+		if exitErr.Code != ExitGenerationError {
+			t.Fatalf("hold exit code = %d, want %d", exitErr.Code, ExitGenerationError)
+		}
+	})
+
+	if !strings.Contains(out, "HOLD") || !strings.Contains(out, "manifest evidence") {
+		t.Errorf("shipcheck output missing manifest-evidence hold: %q", out)
+	}
+}
+
+func TestShipcheck_JSONEnvelope_HoldsOnUnverifiedScorecard(t *testing.T) {
+	h := newShipcheckHarness(t)
+	if err := os.WriteFile(filepath.Join(h.dir, pipeline.CLIManifestFilename), []byte(`{
+  "api_name": "example",
+  "scorecard": {"unverified_dimensions": ["auth_protocol"]}
+}
+`), 0o644); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runShipcheckCmd(t, "--dir", h.dir, "--json"); err == nil {
+			t.Fatal("expected shipcheck hold")
+		}
+	})
+	var env shipcheckJSONEnvelope
+	if err := json.Unmarshal([]byte(extractFinalJSONObject(t, out)), &env); err != nil {
+		t.Fatalf("envelope is not valid JSON: %v", err)
+	}
+	if env.Passed || env.Verdict != "HOLD" || env.ExitCode != ExitGenerationError {
+		t.Fatalf("unexpected hold envelope: %+v", env)
+	}
+	if !strings.Contains(env.Reason, "auth_protocol") {
+		t.Fatalf("hold envelope missing dimension reason: %+v", env)
+	}
+	var scorecardLeg *shipcheckJSONLeg
+	for i := range env.Legs {
+		if env.Legs[i].Name == "scorecard" {
+			scorecardLeg = &env.Legs[i]
+			break
+		}
+	}
+	if scorecardLeg == nil || scorecardLeg.Verdict != "HOLD" || scorecardLeg.Passed || scorecardLeg.ExitCode != ExitGenerationError {
+		t.Fatalf("unexpected scorecard leg: %+v", scorecardLeg)
+	}
+}
+
+func TestShipcheck_JSONEnvelopeFailureTakesPrecedenceOverHold(t *testing.T) {
+	h := newShipcheckHarness(t)
+	t.Setenv("STUB_EXIT_VERIFY_SKILL", "1")
+	if err := os.WriteFile(filepath.Join(h.dir, pipeline.CLIManifestFilename), []byte(`{
+  "api_name": "example",
+  "scorecard": {"unverified_dimensions": ["auth_protocol"]}
+}
+`), 0o644); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runShipcheckCmd(t, "--dir", h.dir, "--json"); err == nil {
+			t.Fatal("expected shipcheck failure")
+		}
+	})
+	var env shipcheckJSONEnvelope
+	if err := json.Unmarshal([]byte(extractFinalJSONObject(t, out)), &env); err != nil {
+		t.Fatalf("envelope is not valid JSON: %v", err)
+	}
+	if env.Passed || env.Verdict != "FAIL" || env.ExitCode != ExitGenerationError {
+		t.Fatalf("genuine failure must take precedence over hold: %+v", env)
+	}
+	var failedLeg *shipcheckJSONLeg
+	for i := range env.Legs {
+		if env.Legs[i].Name == "verify-skill" {
+			failedLeg = &env.Legs[i]
+			break
+		}
+	}
+	if failedLeg == nil || failedLeg.Verdict != "FAIL" || failedLeg.Passed {
+		t.Fatalf("unexpected genuine failure leg: %+v", failedLeg)
 	}
 }
 

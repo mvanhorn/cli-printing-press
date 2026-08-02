@@ -46,6 +46,7 @@ func newDogfoodCmd() *cobra.Command {
 					CLIDir:              dir,
 					Level:               level,
 					Timeout:             timeout,
+					ResearchDir:         researchDir,
 					WriteAcceptancePath: writeAcceptance,
 					AuthEnv:             authEnv,
 					AuthTier:            authTier,
@@ -117,7 +118,15 @@ func printLiveDogfoodReport(report *pipeline.LiveDogfoodReport) {
 	fmt.Printf("Level:      %s\n", report.Level)
 	fmt.Printf("Verdict:    %s%s\n", report.Verdict, liveDogfoodVerdictQualifier(report))
 	fmt.Printf("Commands:   %d\n", len(report.Commands))
-	fmt.Printf("Tests:      %d passed, %d failed, %d skipped\n", report.Passed, report.Failed, report.Skipped)
+	fmt.Printf("Tests:      %d passed, %d failed, %d skipped (%d unverified)\n", report.Passed, report.Failed, report.Skipped, report.Unverified)
+	fmt.Printf("Pass rate:  %.0f%% of %d evaluated checks\n", report.PassRate, report.MatrixSize)
+	if report.Verdict == "unverified-device" {
+		fmt.Println("Coverage:   UNVERIFIED - device CLI requires manual live testing")
+	} else if report.CoverageHollow {
+		fmt.Printf("Coverage:   HOLLOW - %d novel feature(s) never executed: %s\n", len(report.HollowFeatures), strings.Join(report.HollowFeatures, ", "))
+	} else {
+		fmt.Println("Coverage:   headline novel features executed")
+	}
 	fmt.Println()
 	for _, result := range report.Tests {
 		status := strings.ToUpper(string(result.Status))
