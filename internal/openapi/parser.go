@@ -69,6 +69,7 @@ const (
 	extensionStreaming             = "x-streaming"
 	extensionPPQuery               = "x-pp-query"
 	extensionPPResponseEnvelope    = "x-pp-response-envelope"
+	extensionPPMutation            = "x-pp-mutation"
 	extensionPPSyncable            = "x-pp-syncable"
 	extensionPPPagination          = "x-pp-pagination"
 	extensionSyncWalker            = "x-pp-sync-walker"
@@ -3710,6 +3711,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			endpoint.TenantScopeColumn = pathTenantScopeColumn
 			endpoint.MembershipField = pathMembershipField
 			endpoint.Critical = pathCritical
+			endpoint.Mutation, _ = boolExtension(op.Extensions, extensionPPMutation)
 			opSyncable, _ := boolExtension(op.Extensions, extensionPPSyncable)
 			endpoint.Syncable = pathSyncable || opSyncable
 			endpoint.Walker = readWalkerExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))

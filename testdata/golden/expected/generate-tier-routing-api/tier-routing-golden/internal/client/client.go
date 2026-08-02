@@ -420,6 +420,18 @@ func (c *Client) GetWithHeadersValues(ctx context.Context, path string, params u
 	return c.GetWithHeaders(ctx, pathWithQueryValues(path, params), nil, headers)
 }
 
+// GetMutating issues a GET whose endpoint is explicitly classified as a
+// state-changing action. It deliberately bypasses the response cache and
+// carries mutation intent into the verify-mode transport gate.
+func (c *Client) GetMutating(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
+	return c.GetMutatingWithHeaders(ctx, path, params, nil)
+}
+
+func (c *Client) GetMutatingWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+	result, _, err := c.doMutation(ctx, "GET", path, params, nil, headers)
+	return result, err
+}
+
 // GetNoCache issues a GET that bypasses the cache read for this call only,
 // then refreshes the cache with the fresh response on success. Use for
 // polling-until-terminal patterns where every call must reflect current
@@ -897,7 +909,7 @@ func sleepContext(ctx context.Context, wait time.Duration) error {
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
-	return c.doInternal(ctx, method, path, params, body, headerOverrides, false)
+	return c.doInternal(ctx, method, path, params, body, headerOverrides, false, false)
 }
 
 // doRead is do() minus the verify-mode mutating-verb gate. Used by the
@@ -907,17 +919,25 @@ func (c *Client) do(ctx context.Context, method, path string, params map[string]
 // but the verify-mode short-circuit does not fire because the operation
 // does not mutate remote state.
 func (c *Client) doRead(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
-	return c.doInternal(ctx, method, path, params, body, headerOverrides, true)
+	return c.doInternal(ctx, method, path, params, body, headerOverrides, true, false)
 }
 
-// doInternal is the shared implementation behind do() and doRead(). The
+func (c *Client) doMutation(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+	return c.doInternal(ctx, method, path, params, body, headerOverrides, false, true)
+}
+
+// doInternal is the shared implementation behind do(), doRead(), and
+// doMutation().
 // readOnlyIntent flag is set by doRead() callers (read-only POST/PUT/PATCH
 // operations like GraphQL queries) to skip the mutating-verb verify-mode
 // gate. Plain do() callers leave it false and get the usual short-circuit.
-func (c *Client) doInternal(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string, readOnlyIntent bool) (json.RawMessage, int, error) {
+// mutationIntent extends that gate to GET action endpoints whose wire method
+// is not itself a mutating verb.
+func (c *Client) doInternal(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string, readOnlyIntent bool, mutationIntent bool) (json.RawMessage, int, error) {
 	// Verify-mode transport-layer gate. When the verifier (or any consumer
-	// that sets PRINTING_PRESS_VERIFY=1) drives a mutating verb without
-	// the LIVE_HTTP=1 opt-in, return a synthetic envelope without dialing,
+	// that sets PRINTING_PRESS_VERIFY=1) drives a mutating verb or explicit
+	// mutation intent without the LIVE_HTTP=1 opt-in, return a synthetic
+	// envelope without dialing,
 	// minting auth, or touching the cache. The verify pipeline itself
 	// sets both env vars in mock mode so its httptest server still sees
 	// real requests; every other consumer gets a safe no-op.
@@ -931,7 +951,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	// minting, and the success-branch invalidateCache() call below — so
 	// no cache invalidation runs (no remote state changed) and no
 	// client_credentials mint happens unnecessarily.
-	if !readOnlyIntent && isMutatingVerb(method) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
+	if !readOnlyIntent && (mutationIntent || isMutatingVerb(method)) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
 		return verifyShortCircuitEnvelope(method, path), http.StatusOK, nil
 	}
 	if err := rejectUnresolvedPathParams(path, nil); err != nil {
@@ -965,9 +985,10 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	}
 
 	maxRetries := clientMaxRetries()
-	// Retry only methods that are safe to replay after an ambiguous transport
-	// failure or server error; a write may already have committed remotely.
-	canRetryAmbiguousFailure := readOnlyIntent || platform.CanRetryRequest(method, requestIdempotencyKey(c.Config, headerOverrides))
+	// Retry only operations that are safe to replay after an ambiguous
+	// transport failure or server error; a write may already have committed
+	// remotely even when its wire method is GET.
+	canRetryAmbiguousFailure := readOnlyIntent || (!mutationIntent && platform.CanRetryRequest(method, requestIdempotencyKey(c.Config, headerOverrides)))
 	endpointClass := safeEndpointClass(method, path)
 	retryPolicy, err := c.platformRetryPolicy(endpointClass)
 	if err != nil {
@@ -1103,7 +1124,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		// Success
 		if resp.StatusCode < 400 {
 			c.limiter.OnSuccess()
-			if method != http.MethodGet && !c.DryRun {
+			if !readOnlyIntent && (mutationIntent || method != http.MethodGet) && !c.DryRun {
 				c.invalidateCacheAfterMutation(path)
 			}
 			// Non-textual bodies (PDF, zip, image, octet-stream) must not be

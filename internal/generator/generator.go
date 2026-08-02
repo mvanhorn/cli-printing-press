@@ -1945,6 +1945,47 @@ var readOperationIDPrefixes = map[string]bool{
 	"fetch":    true,
 }
 
+// mutationOperationIDPrefixes are conservative action tokens for GET-based
+// RPC endpoints. HTTP method remains the default signal; these leading tokens
+// only opt a GET into the write path when an operation name clearly describes
+// a state-changing action.
+var mutationOperationIDPrefixes = map[string]bool{
+	"activate":   true,
+	"add":        true,
+	"approve":    true,
+	"archive":    true,
+	"cancel":     true,
+	"create":     true,
+	"deactivate": true,
+	"delete":     true,
+	"deploy":     true,
+	"disable":    true,
+	"enable":     true,
+	"execute":    true,
+	"insert":     true,
+	"pause":      true,
+	"publish":    true,
+	"put":        true,
+	"reject":     true,
+	"remove":     true,
+	"restart":    true,
+	"restore":    true,
+	"resume":     true,
+	"revoke":     true,
+	"rotate":     true,
+	"run":        true,
+	"save":       true,
+	"send":       true,
+	"set":        true,
+	"start":      true,
+	"stop":       true,
+	"sync":       true,
+	"trigger":    true,
+	"unpublish":  true,
+	"update":     true,
+	"upsert":     true,
+}
+
 // writeOperationIDFragments name mutations. When a read-shaped leading token
 // is followed by one of these (e.g. getOrCreate, fetchAndUpdate), the
 // classifier flips back to write — the leading verb was misleading.
@@ -1984,19 +2025,27 @@ var readBodyParamNames = map[string]bool{
 }
 
 // endpointIsWriteCommand returns true when the endpoint mutates external
-// state. Read signals are checked in cost order: annotation, verb, name
-// token, body shape. Fail-closed when none fire so unknown shapes stay
-// classified as writes.
+// state. Read signals are checked in cost order: read-only annotation,
+// explicit mutation signal, verb, name token, body shape. The read-only
+// annotation remains the strongest override so an explicitly safe endpoint
+// cannot be made destructive by a broad fallback. Unknown GET shapes remain
+// read-only unless the spec or operation name supplies a mutation signal.
 //
 // opName is the map key from Resource.Endpoints (the operation id).
 func endpointIsWriteCommand(endpoint spec.Endpoint, opName string) bool {
 	if v, ok := endpoint.Meta["mcp:read-only"]; ok && strings.EqualFold(strings.TrimSpace(v), "true") {
 		return false
 	}
-	if !methodIsWrite(endpoint.Method) {
-		return false
+	if endpoint.Mutation {
+		return true
 	}
 	tokens := camelCaseTokens(strings.TrimSpace(opName))
+	if !methodIsWrite(endpoint.Method) {
+		if !strings.EqualFold(strings.TrimSpace(endpoint.Method), "GET") {
+			return false
+		}
+		return len(tokens) > 0 && mutationOperationIDPrefixes[strings.ToLower(tokens[0])]
+	}
 	if len(tokens) > 0 && readOperationIDPrefixes[strings.ToLower(tokens[0])] {
 		for _, tok := range tokens[1:] {
 			if writeOperationIDFragments[strings.ToLower(tok)] {
@@ -2167,14 +2216,15 @@ func safeDisplayURL(value string) string {
 }
 
 // resourceHasMutation reports whether the resource has any mutating endpoint
-// (POST/PUT/PATCH/DELETE) directly on itself. Each sub-resource is surfaced as
-// its own taxonomy entry and evaluated independently, so this deliberately does
-// NOT recurse into r.SubResources — a read-only parent must not inherit a
-// child's writability, and vice versa.
+// directly on itself. This uses the same classifier as command generation so
+// explicit and conservative GET mutation signals are reflected in agent
+// context. Each sub-resource is surfaced as its own taxonomy entry and
+// evaluated independently, so this deliberately does NOT recurse into
+// r.SubResources — a read-only parent must not inherit a child's writability,
+// and vice versa.
 func resourceHasMutation(r spec.Resource) bool {
-	for _, e := range r.Endpoints {
-		switch strings.ToUpper(e.Method) {
-		case "POST", "PUT", "PATCH", "DELETE":
+	for name, endpoint := range r.Endpoints {
+		if endpointIsWriteCommand(endpoint, name) {
 			return true
 		}
 	}

@@ -5,7 +5,7 @@
 {{- $isForm := endpointUsesForm .Endpoint}}
 {{- $isRaw := endpointUsesRawRequest .Endpoint}}
 {{- $hasJSONBody := and (or .Endpoint.Body .Endpoint.BodyJSONFallback) (not $isMultipart) (not $isForm)}}
-{{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk")}}
+{{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk") (or (not (eq .Endpoint.Method "GET")) .IsReadOnly)}}
 {{- $dataSourceStrategy := dataSourceStrategy .Resource .Endpoint}}
 
 package cli
@@ -273,7 +273,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 
 {{- if or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")}}
-{{- if and $isGraphQLEndpoint (eq .EndpointName "list")}}
+{{- if and $isGraphQLEndpoint (eq .EndpointName "list") .IsReadOnly}}
 {{- if .HasStore}}
 			if err := validateDataSourceStrategy(flags, "{{$dataSourceStrategy}}"); err != nil {
 				return err
@@ -336,7 +336,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				}
 			}
 {{- end}}
-{{- else if and $isGraphQLEndpoint (eq .EndpointName "get")}}
+{{- else if and $isGraphQLEndpoint (eq .EndpointName "get") .IsReadOnly}}
 {{- if .HasStore}}
 			if err := validateDataSourceStrategy(flags, "{{$dataSourceStrategy}}"); err != nil {
 				return err
@@ -421,10 +421,26 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- end}}
 {{- if .HasStore}}
+{{- if .IsReadOnly}}
 {{- if eq .Endpoint.ResponseFormat "html"}}
 			data, prov, err := resolveReadWithStrategyResponsePathAndJSONGuard(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, false, cmd.ErrOrStderr())
 {{- else}}
 			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, cmd.ErrOrStderr())
+{{- end}}
+{{- else}}
+{{- if .HasStore}}
+			var prov DataProvenance
+{{- end}}
+{{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}
+			data, err := c.GetMutatingWithHeaders(cmd.Context(), path, params, headerOverrides)
+{{- else}}
+			data, err := c.GetMutating(cmd.Context(), path, params)
+{{- end}}
+{{- if .HasStore}}
+			if err == nil {
+				prov = attachFreshness(DataProvenance{Source: "live"}, flags)
+			}
+{{- end}}
 {{- end}}
 {{- else}}
 {{- if eq $dataSourceStrategy "local"}}
@@ -435,9 +451,17 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			}
 {{- end}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}
+			{{- if .IsReadOnly}}
 			data, err := c.GetWithHeaders(cmd.Context(), path, params, headerOverrides)
+			{{- else}}
+			data, err := c.GetMutatingWithHeaders(cmd.Context(), path, params, headerOverrides)
+			{{- end}}
 {{- else}}
+			{{- if .IsReadOnly}}
 			data, err := c.Get(cmd.Context(), path, params)
+			{{- else}}
+			data, err := c.GetMutating(cmd.Context(), path, params)
+			{{- end}}
 {{- end}}
 {{- end}}
 {{- end}}

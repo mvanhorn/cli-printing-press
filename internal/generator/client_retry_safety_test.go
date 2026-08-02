@@ -354,6 +354,56 @@ func TestRetrySafety_ReadOnlyMutatingVerbHelpersRetryAmbiguousFailures(t *testin
 		})
 	}
 }
+
+func TestRetrySafety_GetMutationDoesNotRetryAmbiguousFailures(t *testing.T) {
+	t.Run("server error", func(t *testing.T) {
+		var calls int
+		c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			return retryResponse(req, http.StatusBadGateway), nil
+		}))
+
+		_, status, err := c.doMutation(context.Background(), http.MethodGet, "/items/start", nil, nil, nil)
+		if err == nil || status != http.StatusBadGateway || calls != 1 {
+			t.Fatalf("GET mutation = calls %d status %d error %v; want one HTTP 502 attempt", calls, status, err)
+		}
+	})
+
+	t.Run("transport error", func(t *testing.T) {
+		var calls int
+		c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			return nil, errors.New("connection reset")
+		}))
+
+		_, status, err := c.doMutation(context.Background(), http.MethodGet, "/items/start", nil, nil, nil)
+		if err == nil || status != 0 || calls != 1 {
+			t.Fatalf("GET mutation = calls %d status %d error %v; want one transport attempt", calls, status, err)
+		}
+	})
+}
+
+func TestRetrySafety_GetMutationVerifyShortCircuitsWithoutDial(t *testing.T) {
+	var calls int
+	c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return retryResponse(req, http.StatusInternalServerError), nil
+	}))
+	t.Setenv("PRINTING_PRESS_VERIFY", "1")
+	t.Setenv("PRINTING_PRESS_VERIFY_LIVE_HTTP", "")
+
+	data, status, err := c.doMutation(context.Background(), http.MethodGet, "/items/start", nil, nil, nil)
+	if err != nil || status != http.StatusOK || calls != 0 {
+		t.Fatalf("GET mutation verify result = status %d error %v calls %d; want synthetic HTTP 200 without dialing", status, err, calls)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("verify envelope is not JSON: %v", err)
+	}
+	if envelope["__pp_verify_synthetic__"] != true {
+		t.Fatalf("verify envelope = %#v; want synthetic sentinel", envelope)
+	}
+}
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "retry_safety_test.go"), []byte(runtimeTest), 0o644))
 
