@@ -172,7 +172,7 @@ func TestGeneratedSyncShortPageTerminationRespectsPaginationType(t *testing.T) {
 
 	templateSrc, err := os.ReadFile(filepath.Join("templates", "sync.go.tmpl"))
 	require.NoError(t, err)
-	require.Equal(t, 11, strings.Count(string(templateSrc), "shortPageEndsPagination("),
+	require.Equal(t, 13, strings.Count(string(templateSrc), "shortPageEndsPagination("),
 		"the helper definition and every termination and cap-classification variant must stay cursor-aware")
 	require.Equal(t, 3, strings.Count(string(templateSrc), "cursorPageHasContinuation("),
 		"the helper definition and both flat and dependent empty-page branches must preserve cursor continuation")
@@ -663,6 +663,41 @@ func TestCappedUnorderedPageRetainsWatermark(t *testing.T) {
 	cursor, synced, count := readWatermark(t, db)
 	if cursor != "page-2" || !synced.Equal(old) || count != 3 {
 		t.Fatalf("sync state = cursor %q, synced %s, count %d; want page-2, %s, 3", cursor, synced, count, old)
+	}
+}
+
+func TestCappedSortOverrideRetainsWatermark(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		userParams *syncUserParams
+	}{
+		{name: "param", userParams: &syncUserParams{flatGlobal: map[string]string{"sort": "name:asc"}}},
+		{name: "global-param", userParams: &syncUserParams{trueGlobal: map[string]string{"sort": "name:asc"}}},
+		{name: "resource-param", userParams: &syncUserParams{perResource: map[string]map[string]string{"items": {"sort": "name:asc"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+			if err != nil {
+				t.Fatalf("open store: %v", err)
+			}
+			defer db.Close()
+			old := time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC)
+			seedWatermark(t, db, old)
+			client := &watermarkPagerClient{responses: []json.RawMessage{
+				json.RawMessage("{\"items\":[{\"id\":\"one\",\"updated_at\":\"2026-01-02T00:00:00Z\"},{\"id\":\"two\",\"updated_at\":\"2026-01-03T00:00:00Z\"}],\"next_cursor\":\"page-2\",\"has_more\":true}"),
+			}}
+			result := syncResource(context.Background(), client, db, "items", old.Format(time.RFC3339), false, 1, false, false, tc.userParams, io.Discard)
+			if result.Err != nil || result.Warn != nil {
+				t.Fatalf("sync result error=%v warning=%v", result.Err, result.Warn)
+			}
+			if client.params[0]["sort"] != "name:asc" {
+				t.Fatalf("sort param = %q, want name:asc", client.params[0]["sort"])
+			}
+			cursor, synced, count := readWatermark(t, db)
+			if cursor != "page-2" || !synced.Equal(old) || count != 3 {
+				t.Fatalf("sync state = cursor %q, synced %s, count %d; want page-2, %s, 3", cursor, synced, count, old)
+			}
+		})
 	}
 }
 

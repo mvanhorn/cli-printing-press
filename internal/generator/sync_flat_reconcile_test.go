@@ -85,14 +85,23 @@ import (
 // When fullPage is true the first page is treated as "exactly the limit" so a
 // maxPages cap can hit with outcome.complete still false.
 type stubFlatClient struct {
-	items []json.RawMessage
-	calls int
+	items           []json.RawMessage
+	calls           int
+	hasMore         bool
 }
 
 func (s *stubFlatClient) Get(_ context.Context, _ string, _ map[string]string) (json.RawMessage, error) {
 	s.calls++
 	if s.calls > 1 {
 		return json.RawMessage("[]"), nil
+	}
+	if s.hasMore {
+		payload, _ := json.Marshal(map[string]any{
+			"items":       s.items,
+			"next_cursor": "page-2",
+			"has_more":    true,
+		})
+		return json.RawMessage(payload), nil
 	}
 	payload, _ := json.Marshal(s.items)
 	return json.RawMessage(payload), nil
@@ -214,7 +223,7 @@ func TestFlatReconcile_CapHitPrunesNothing(t *testing.T) {
 		raw, _ := json.Marshal(map[string]any{"id": "p1", "workspace": "ws-A", "name": "proj-p1"})
 		page = append(page, json.RawMessage(raw))
 	}
-	client := &stubFlatClient{items: page}
+	client := &stubFlatClient{items: page, hasMore: true}
 
 	prev := resolveTenantID
 	resolveTenantID = func() string { return "ws-A" }

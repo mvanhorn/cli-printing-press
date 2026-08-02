@@ -511,6 +511,9 @@ func syncResource(ctx context.Context, c interface {
 
 	cursor := existingCursor
 	pageSize := determinePaginationDefaults(resource)
+	sortParam := syncResourceSortParam(resource)
+	sortValue := syncResourceSortValue(resource)
+	sortEffective := false
 	var progressCount int64
 	pagesFetched := 0
 	lastNextCursor := ""
@@ -556,14 +559,15 @@ func syncResource(ctx context.Context, c interface {
 		// Set since filter
 		if effectiveSince != "" {
 			params[sinceParam] = effectiveSince
-			if sortParam := syncResourceSortParam(resource); sortParam != "" {
-				params[sortParam] = syncResourceSortValue(resource)
+			if sortParam != "" {
+				params[sortParam] = sortValue
 			}
 		}
 		// Apply user-supplied --param / --resource-param overrides last so they
 		// win over spec-derived defaults (e.g. forcing mine=true on a list
 		// endpoint whose OpenAPI spec marks the filter optional).
 		userParams.applyTo(resource, params, false)
+		sortEffective = effectiveSince != "" && sortParam != "" && sortValue != "" && params[sortParam] == sortValue
 
 		data, err := c.Get(ctx, path, params)
 		if err != nil {
@@ -595,7 +599,7 @@ func syncResource(ctx context.Context, c interface {
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
 		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, responsePathForResource(resource, path)...)
-		if effectiveSince != "" && syncResourceSortParam(resource) != "" && maxPages > 0 {
+		if sortEffective && maxPages > 0 {
 			for _, item := range items {
 				itemTimestamp, ok := restSyncTimestamp(item)
 				if !ok {
@@ -912,7 +916,7 @@ func syncResource(ctx context.Context, c interface {
 	watermark := time.Time{}
 	if outcome.complete {
 		watermark = requestedAt.Add(-syncWatermarkOverlap)
-	} else if capTruncated && effectiveSince != "" && syncResourceSortParam(resource) != "" && timestampOrderSafe && timestampEvidence && !newestStoredAt.IsZero() {
+	} else if capTruncated && sortEffective && timestampOrderSafe && timestampEvidence && !newestStoredAt.IsZero() {
 		watermark = newestStoredAt.Add(-syncWatermarkOverlap)
 	}
 	if !watermark.IsZero() {

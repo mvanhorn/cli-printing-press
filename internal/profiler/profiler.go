@@ -2836,7 +2836,6 @@ func detectEndpointSyncSort(endpoint spec.Endpoint) (string, string) {
 		if param.PathParam || param.Positional || !isSyncSortParamName(param.Name) {
 			continue
 		}
-		description := strings.ToLower(strings.TrimSpace(param.Description + " " + endpoint.Description))
 		defaultValue, hasDefault := stringParamDefault(param.Default)
 		values := make([]string, 0, len(param.Enum)+1)
 		if hasDefault {
@@ -2848,13 +2847,13 @@ func detectEndpointSyncSort(endpoint spec.Endpoint) (string, string) {
 			if value == "" {
 				continue
 			}
-			evidence := description + " " + strings.ToLower(value)
-			if !describesLastModifiedSort(evidence) || !describesAscendingSort(evidence) {
+			// The wire value must name the temporal field itself. Prose on the
+			// endpoint or sort parameter cannot prove that a generic value such
+			// as name:asc orders by the field used by the since filter.
+			if !describesLastModifiedSort(strings.ToLower(value)) || !isAscendingSortValue(value) {
 				continue
 			}
-			if isAscendingSortValue(value) {
-				return param.WireName(), value
-			}
+			return param.WireName(), value
 		}
 	}
 	return "", ""
@@ -2881,13 +2880,6 @@ func describesLastModifiedSort(text string) bool {
 	return containsAny(text, []string{
 		"updated", "modified", "last changed", "lastchanged", "last_modified", "lastmodified",
 	})
-}
-
-func describesAscendingSort(text string) bool {
-	if containsAny(text, []string{"descending", "newest first", "most recent first"}) {
-		return false
-	}
-	return containsAny(text, []string{"ascending", "oldest first", "chronological order"})
 }
 
 func isAscendingSortValue(value string) bool {

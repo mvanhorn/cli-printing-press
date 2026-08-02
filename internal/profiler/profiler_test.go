@@ -3442,6 +3442,20 @@ func TestDetectEndpointSyncSortRejectsDescendingDefault(t *testing.T) {
 	assert.Empty(t, value)
 }
 
+func TestDetectEndpointSyncSortDoesNotConflateEndpointDescription(t *testing.T) {
+	endpoint := spec.Endpoint{
+		Description: "List items updated after a timestamp.",
+		Params: []spec.Param{
+			{Name: "updated_after", Type: "string"},
+			{Name: "sort", Type: "string", Default: "name:asc", Description: "Sort by any field in ascending order."},
+		},
+	}
+
+	param, value := detectEndpointSyncSort(endpoint)
+	assert.Empty(t, param, "an unrelated ascending field must not become watermark-safe")
+	assert.Empty(t, value)
+}
+
 func TestProfileSyncableResourcePaginationDefaultsPreserveEndpointParams(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "mixed-pagination",
