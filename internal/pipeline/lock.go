@@ -509,7 +509,7 @@ func validatePhase5GateForPromote(workingDir string, state *PipelineState) error
 		manifest.SpecKind = existing.SpecKind
 	}
 
-	result := ValidatePhase5Gate(state.ProofsDir(), manifest)
+	result := ValidatePhase5Gate(state.ProofsDir(), manifest, workingDir)
 	if result.Passed {
 		return nil
 	}

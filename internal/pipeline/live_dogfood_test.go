@@ -22,6 +22,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestRunLiveDogfoodRejectsNonDirectorySourceRoot(t *testing.T) {
+	notADirectory := filepath.Join(t.TempDir(), "cli")
+	require.NoError(t, os.WriteFile(notADirectory, []byte("not a directory\n"), 0o644))
+
+	_, err := RunLiveDogfood(LiveDogfoodOptions{CLIDir: notADirectory})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "capturing phase5 source fingerprint")
+}
+
 func TestLiveDogfoodParsesGeneratedRunnableExamples(t *testing.T) {
 	apiSpec := &spec.APISpec{
 		Name:      "runnable",
@@ -295,8 +304,9 @@ func TestRunLiveDogfoodWritesAcceptanceMarkerOnPass(t *testing.T) {
 	assert.Equal(t, report.MatrixSize, marker.MatrixSize)
 	assert.Equal(t, report.Passed, marker.TestsPassed)
 	assert.Equal(t, 0, marker.TestsFailed)
+	assert.NotEmpty(t, marker.SourceFingerprint)
 
-	validation := ValidatePhase5Gate(filepath.Dir(markerPath), CLIManifest{APIName: marker.APIName, RunID: marker.RunID, AuthType: "none"})
+	validation := ValidatePhase5Gate(filepath.Dir(markerPath), CLIManifest{APIName: marker.APIName, RunID: marker.RunID, AuthType: "none"}, dir)
 	assert.True(t, validation.Passed, validation.Detail)
 }
 
@@ -774,11 +784,12 @@ exit 99
 	assert.Equal(t, "skip", marker.Status)
 	assert.Equal(t, phase5SkipReasonCookieAuthNoHarnessSession, marker.SkipReason)
 	assert.Equal(t, "cookie", marker.AuthContext.Type)
+	assert.NotEmpty(t, marker.SourceFingerprint)
 
 	// The promote gate accepts the skip marker.
 	validation := ValidatePhase5Gate(filepath.Dir(skipPath), CLIManifest{
 		APIName: marker.APIName, RunID: marker.RunID, AuthType: "cookie",
-	})
+	}, dir)
 	assert.True(t, validation.Passed, validation.Detail)
 	assert.Equal(t, "skip", validation.Status)
 }

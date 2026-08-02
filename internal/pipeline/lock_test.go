@@ -873,17 +873,21 @@ func TestPromoteWorkingCLI_AllowsSyntheticExternalCredentialPhase5Skip(t *testin
 	}))
 
 	state := NewStateWithRun("aws-billing", workDir, "run-synthetic-skip", "test-scope")
+	source, err := CaptureSourceFingerprint(workDir)
+	require.NoError(t, err)
 	writePhase5GateMarker(t, state.ProofsDir(), Phase5SkipFilename, Phase5GateMarker{
-		SchemaVersion: 1,
-		APIName:       state.APIName,
-		RunID:         state.RunID,
-		Status:        "skip",
-		Level:         "none",
-		SkipReason:    phase5SkipReasonExternalCredentialsUnavailable,
-		AuthContext:   Phase5AuthContext{Type: "oauth2", APIKeyAvailable: false},
+		SchemaVersion:     1,
+		APIName:           state.APIName,
+		RunID:             state.RunID,
+		Status:            "skip",
+		Level:             "none",
+		SkipReason:        phase5SkipReasonExternalCredentialsUnavailable,
+		SourceFingerprint: source.Digest,
+		SourceFiles:       source.Files,
+		AuthContext:       Phase5AuthContext{Type: "oauth2", APIKeyAvailable: false},
 	})
 
-	err := PromoteWorkingCLI("aws-billing-pp-cli", workDir, state)
+	err = PromoteWorkingCLI("aws-billing-pp-cli", workDir, state)
 	require.NoError(t, err)
 
 	libDir := filepath.Join(PublishedLibraryRoot(), "aws-billing")
@@ -1096,16 +1100,20 @@ func TestIsStale(t *testing.T) {
 
 func writePhase5PassForState(t *testing.T, state *PipelineState, authType string) {
 	t.Helper()
+	source, err := CaptureSourceFingerprint(state.EffectiveWorkingDir())
+	require.NoError(t, err)
 	writePhase5GateMarker(t, state.ProofsDir(), Phase5AcceptanceFilename, Phase5GateMarker{
-		SchemaVersion: 1,
-		APIName:       state.APIName,
-		RunID:         state.RunID,
-		Status:        "pass",
-		Level:         "full",
-		MatrixSize:    1,
-		TestsPassed:   1,
-		TestsFailed:   0,
-		AuthContext:   Phase5AuthContext{Type: authType},
+		SchemaVersion:     1,
+		APIName:           state.APIName,
+		RunID:             state.RunID,
+		Status:            "pass",
+		Level:             "full",
+		MatrixSize:        1,
+		TestsPassed:       1,
+		TestsFailed:       0,
+		SourceFingerprint: source.Digest,
+		SourceFiles:       source.Files,
+		AuthContext:       Phase5AuthContext{Type: authType},
 	})
 }
 

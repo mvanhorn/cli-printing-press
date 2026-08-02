@@ -4,7 +4,7 @@
   "title": "CLI Printing Press phase5-acceptance.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "api_name", "run_id", "status", "level", "matrix_size"],
+  "required": ["schema_version", "api_name", "run_id", "status", "level", "matrix_size", "source_fingerprint"],
   "properties": {
     "schema_version": {"type": "integer", "const": 1},
     "api_name": {"type": "string", "minLength": 1},
@@ -20,7 +20,9 @@
     "completed_at": {"type": "string", "format": "date-time"},
     "summary": {"type": "string"},
     "auth_context": {"$ref": "#/$defs/auth_context"},
-    "failure_summary": {"$ref": "#/$defs/failure_summary"}
+    "failure_summary": {"$ref": "#/$defs/failure_summary"},
+    "source_fingerprint": {"type": "string", "minLength": 1},
+    "source_files": {"type": "object", "additionalProperties": {"type": "string"}}
   },
   "allOf": [
     {

@@ -210,16 +210,20 @@ func TestLockPromote_ReportsPreservedPatches(t *testing.T) {
 
 func writeLockPhase5Pass(t *testing.T, state *pipeline.PipelineState) {
 	t.Helper()
+	source, err := pipeline.CaptureSourceFingerprint(state.EffectiveWorkingDir())
+	require.NoError(t, err)
 	writeTestPhase5GateMarker(t, state.ProofsDir(), pipeline.Phase5AcceptanceFilename, pipeline.Phase5GateMarker{
-		SchemaVersion: 1,
-		APIName:       state.APIName,
-		RunID:         state.RunID,
-		Status:        "pass",
-		Level:         "full",
-		MatrixSize:    1,
-		TestsPassed:   1,
-		TestsFailed:   0,
-		AuthContext:   pipeline.Phase5AuthContext{Type: "none"},
+		SchemaVersion:     1,
+		APIName:           state.APIName,
+		RunID:             state.RunID,
+		Status:            "pass",
+		Level:             "full",
+		MatrixSize:        1,
+		TestsPassed:       1,
+		TestsFailed:       0,
+		SourceFingerprint: source.Digest,
+		SourceFiles:       source.Files,
+		AuthContext:       pipeline.Phase5AuthContext{Type: "none"},
 	})
 }
 
