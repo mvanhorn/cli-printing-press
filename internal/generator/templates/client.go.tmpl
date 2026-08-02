@@ -3183,7 +3183,7 @@ func isPermanentDNSError(err error) bool {
 		return false
 	}
 	reason := strings.ToLower(strings.TrimSpace(dnsErr.Err))
-	// The standard resolver reports DNS RCODE_REFUSED as "server misbehaving";
-	// other platforms may include "refused" in the reason string.
-	return reason == "server misbehaving" || strings.Contains(reason, "refused")
+	// The generic "server misbehaving" text is also used for transient
+	// SERVFAIL responses, so only explicit refusal text is terminal here.
+	return strings.Contains(reason, "refused")
 }

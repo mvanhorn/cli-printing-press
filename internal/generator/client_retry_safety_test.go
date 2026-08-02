@@ -223,9 +223,18 @@ func TestRetrySafety_DNSFailureClassification(t *testing.T) {
 			wantCalls:  1,
 		},
 		{
-			name: "REFUSED is terminal",
+			name: "SERVFAIL retries",
 			err: &net.DNSError{
 				Err:  "server misbehaving",
+				Name: "api.example.invalid",
+			},
+			wantCalls:  2,
+			wantResult: http.StatusOK,
+		},
+		{
+			name: "explicit REFUSED is terminal",
+			err: &net.DNSError{
+				Err:  "query refused",
 				Name: "api.example.invalid",
 			},
 			wantCalls: 1,
