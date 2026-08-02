@@ -2081,8 +2081,8 @@ func endpointIsReadCommand(endpoint spec.Endpoint, opName string) bool {
 }
 
 // camelCaseTokens splits "getOrCreate" → ["get", "Or", "Create"] and
-// "searchAll" → ["search", "All"]. Non-letter runes (digits, separators)
-// stay attached to the preceding token.
+// "searchAll" → ["search", "All"]. Digits stay attached to the preceding
+// token, while punctuation separators create a new token.
 func camelCaseTokens(s string) []string {
 	if s == "" {
 		return nil
@@ -2090,6 +2090,13 @@ func camelCaseTokens(s string) []string {
 	var tokens []string
 	var cur []rune
 	for _, r := range s {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			if len(cur) > 0 {
+				tokens = append(tokens, string(cur))
+				cur = nil
+			}
+			continue
+		}
 		if unicode.IsUpper(r) && len(cur) > 0 {
 			tokens = append(tokens, string(cur))
 			cur = []rune{r}

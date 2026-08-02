@@ -49,6 +49,12 @@ func TestEndpointIsWriteCommand(t *testing.T) {
 			want:     true,
 		},
 		{
+			name:     "GET action with kebab-case leading mutation token is write",
+			opName:   "restart-job",
+			endpoint: spec.Endpoint{Method: "GET", Path: "/applications/{id}/restart"},
+			want:     true,
+		},
+		{
 			name:     "HEAD endpoint is read",
 			opName:   "headStatus",
 			endpoint: spec.Endpoint{Method: "HEAD", Path: "/status"},
