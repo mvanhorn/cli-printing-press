@@ -3807,10 +3807,10 @@ func TestProtectLiveDogfoodNegativeNumericPositionals(t *testing.T) {
 	args := []string{"map", "--verbose", "-122.1", "--json"}
 	assert.Equal(t,
 		[]string{"map", "--verbose", "--json", "--", "-122.1"},
-		protectLiveDogfoodNegativeNumericPositionals(args, []string{"map"}, 1, nil),
+		protectLiveDogfoodNegativeNumericPositionals(args, []string{"map"}, 1, nil, nil),
 	)
 	assert.Equal(t, []string{"map", "--west", "-122.1"},
-		protectLiveDogfoodNegativeNumericPositionals([]string{"map", "--west", "-122.1"}, []string{"map"}, 0, nil),
+		protectLiveDogfoodNegativeNumericPositionals([]string{"map", "--west", "-122.1"}, []string{"map"}, 0, nil, nil),
 	)
 
 	valueFlags := map[string]struct{}{"west": {}}
@@ -3818,11 +3818,16 @@ func TestProtectLiveDogfoodNegativeNumericPositionals(t *testing.T) {
 		[]string{"map", "--west", "-122.1"}, []string{"map"}, 1, valueFlags)
 	assert.Equal(t, []string{"map", "--west=-122.1"}, normalized)
 	assert.Equal(t, normalized,
-		protectLiveDogfoodNegativeNumericPositionals(normalized, []string{"map"}, 1, valueFlags),
+		protectLiveDogfoodNegativeNumericPositionals(normalized, []string{"map"}, 1, valueFlags, nil),
 	)
 	ambiguous := []string{"forecast", "--units", "metric", "-122.3"}
 	assert.Equal(t, ambiguous,
-		protectLiveDogfoodNegativeNumericPositionals(ambiguous, []string{"forecast"}, 2, nil))
+		protectLiveDogfoodNegativeNumericPositionals(ambiguous, []string{"forecast"}, 2, nil, nil))
+	assert.Equal(t,
+		[]string{"forecast", "--verbose", "--", "city", "-122.3"},
+		protectLiveDogfoodNegativeNumericPositionals(
+			[]string{"forecast", "--verbose", "city", "-122.3"}, []string{"forecast"}, 2, nil,
+			map[string]struct{}{"verbose": {}}))
 }
 
 func TestHasExplicitNonJSONOutputMode(t *testing.T) {

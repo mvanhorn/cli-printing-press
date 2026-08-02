@@ -1554,7 +1554,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			runArgs = appendDryRunArg(happyArgs)
 		}
 		runArgs = protectLiveDogfoodNegativeNumericPositionals(runArgs, command.Path,
-			len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))), liveDogfoodFlagValueNames(command.Help))
+			len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))), liveDogfoodFlagValueNames(command.Help), liveDogfoodFlagNames(command.Help))
 
 		happyRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, runArgs, ctx.timeout)
 		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, happyRun)
@@ -2185,7 +2185,7 @@ func normalizeLiveDogfoodNegativeNumericArgs(args, commandPath []string, positio
 	return out
 }
 
-func protectLiveDogfoodNegativeNumericPositionals(args, commandPath []string, positionalCount int, valueFlags map[string]struct{}) []string {
+func protectLiveDogfoodNegativeNumericPositionals(args, commandPath []string, positionalCount int, valueFlags, flagNames map[string]struct{}) []string {
 	if positionalCount == 0 {
 		return args
 	}
@@ -2208,7 +2208,10 @@ func protectLiveDogfoodNegativeNumericPositionals(args, commandPath []string, po
 					continue
 				}
 				if !isNegativeNumericArg(args[i+1]) {
-					return args
+					flagName := strings.ToLower(strings.TrimPrefix(arg, "--"))
+					if _, known := flagNames[flagName]; !known {
+						return args
+					}
 				}
 			}
 			flags = append(flags, arg)
@@ -2330,6 +2333,14 @@ func liveDogfoodFlagValueNames(help string) map[string]struct{} {
 		}
 	}
 	return valueFlags
+}
+
+func liveDogfoodFlagNames(help string) map[string]struct{} {
+	flagNames := make(map[string]struct{})
+	for _, name := range extractFlagNames(help) {
+		flagNames[name] = struct{}{}
+	}
+	return flagNames
 }
 
 func isLiveDogfoodFlagValueType(value string) bool {
