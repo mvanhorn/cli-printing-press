@@ -2868,8 +2868,8 @@ func detectEndpointSyncSort(endpoint spec.Endpoint) (string, string) {
 func temporalSinceField(name string) string {
 	normalized := normalizeTemporalFieldName(name)
 	for _, suffix := range []string{"after", "since", "gte", "gt", "lte", "lt"} {
-		if strings.HasSuffix(normalized, suffix) {
-			return strings.TrimSuffix(normalized, suffix)
+		if prefix, ok := strings.CutSuffix(normalized, suffix); ok {
+			return prefix
 		}
 	}
 	if normalized == "since" {
