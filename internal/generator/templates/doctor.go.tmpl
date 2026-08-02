@@ -53,6 +53,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Hand-coded auth flows can report credentials that are intentionally not
+// represented by the generated Config fields. Assign this from a same-package
+// author file after generation. This is a presence signal only; custom flows
+// own their transport and credential-probe validation.
+var doctorAuthConfiguredHook func() (bool, string)
+
+func doctorAuthConfiguredState(cfg *config.Config) (bool, string) {
+	if cfg != nil && cfg.CredentialConfigured() {
+		return true, cfg.AuthSource
+	}
+	if doctorAuthConfiguredHook != nil {
+		return doctorAuthConfiguredHook()
+	}
+	return false, ""
+}
+
 // looksLikeDoctorInterstitial reports whether the response body matches a known
 // bot-detection challenge page (Cloudflare, Akamai, Vercel, AWS WAF, DataDome,
 // PerimeterX). Only fires on the doctor probe — used to distinguish "transport
@@ -261,17 +277,22 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				report["auth"] = "inferred (not configured)"
 			}
 {{- else if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
-			if cfg != nil {
-				header := cfg.AuthHeader()
-				if header == "" {
-					report["auth"] = "not configured"
-					report["auth_hint"] = "{{.Name}}-pp-cli auth login --chrome"
-				} else {
-					authConfigured = true
+			credentialConfigured, authSource := doctorAuthConfiguredState(cfg)
+			if !credentialConfigured {
+				report["auth"] = "not configured"
+				report["auth_hint"] = "{{.Name}}-pp-cli auth login --chrome"
+			} else {
+				authConfigured = true
+				report["auth"] = "configured"
+				report["auth_source"] = authSource
+				if cfg != nil && cfg.CredentialConfigured() {
 					report["auth"] = "configured (browser session)"
-					report["auth_source"] = cfg.AuthSource
 					report["auth_domain"] = "{{.Auth.CookieDomain}}"
 {{- if .Auth.RequiresBrowserSession}}
+					header := cfg.AuthHeader()
+					if header == "" {
+						header = cfg.CookieCredential()
+					}
 					if proofOK, proofDetail := browserSessionProofStatus(cfg, header); proofOK {
 						report["browser_session_proof"] = "valid"
 						report["browser_session_proof_detail"] = proofDetail
@@ -354,8 +375,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					}
 				}
 				{{- else}}
-				header := cfg.AuthHeader()
-				if header == "" {
+				configured, authSource := doctorAuthConfiguredState(cfg)
+				if !configured {
 {{- if .Auth.Optional}}
 					report["auth"] = "optional — not configured"
 {{- else}}
@@ -379,7 +400,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				} else {
 					authConfigured = true
 					report["auth"] = "configured"
-					report["auth_source"] = cfg.AuthSource
+					report["auth_source"] = authSource
 				}
 				{{- end}}
 			}
@@ -593,6 +614,11 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 
 					// Step 2: Validate credentials with an authenticated probe.
 					authHeader := cfg.AuthHeader()
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+					if authHeader == "" {
+						authHeader = cfg.CookieCredential()
+					}
+{{- end}}
 					if authHeader == "" {
 						// No auth configured — skip credential validation
 {{- if .Auth.RequiresBrowserSession}}

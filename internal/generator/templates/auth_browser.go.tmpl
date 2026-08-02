@@ -1308,8 +1308,8 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			w := cmd.OutOrStdout()
-			header := cfg.AuthHeader()
-			if header == "" {
+			credentialConfigured := cfg.CredentialConfigured()
+			if !credentialConfigured {
 {{- if eq .Auth.Type "none"}}
 				// This CLI ships with auth.type:none — no credentials are ever
 				// required. Report ok status so agents don't treat `auth status`
