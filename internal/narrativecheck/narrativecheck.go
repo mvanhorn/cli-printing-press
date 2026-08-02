@@ -769,7 +769,7 @@ func readCLIManifestNearBinary(binaryPath string) (pipeline.CLIManifest, error) 
 	var lastErr error
 	// Cover a direct binary, bin/, and build/stage/bin/ without inheriting a
 	// manifest from an unrelated parent directory.
-	for depth := 0; depth < 4; depth++ {
+	for range 4 {
 		manifest, err := pipeline.ReadCLIManifest(dir)
 		if err == nil {
 			return manifest, nil
