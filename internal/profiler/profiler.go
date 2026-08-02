@@ -43,13 +43,15 @@ type DomainSignals struct {
 
 // PaginationProfile describes the detected pagination patterns across the API.
 type PaginationProfile struct {
-	CursorParam     string `json:"cursor_param"`      // most common cursor param name (after, cursor, page_token, offset)
-	CursorType      string `json:"cursor_type"`       // most common paginator class (cursor, page_token, offset, page, id_walk); drives runtime iteration strategy
-	PageSizeParam   string `json:"page_size_param"`   // most common page size param (limit, per_page, page_size, first)
-	SinceParam      string `json:"since_param"`       // temporal filter param (since, updated_after, modified_since)
-	DateRangeParam  string `json:"date_range_param"`  // date-range filter param (dates, date_range, dateRange)
-	ItemsKey        string `json:"items_key"`         // response array key (data, results, items, or "" for root array)
-	DefaultPageSize int    `json:"default_page_size"` // detected or default 100
+	CursorParam     string `json:"cursor_param"`         // most common cursor param name (after, cursor, page_token, offset)
+	CursorType      string `json:"cursor_type"`          // most common paginator class (cursor, page_token, offset, page, id_walk); drives runtime iteration strategy
+	PageSizeParam   string `json:"page_size_param"`      // most common page size param (limit, per_page, page_size, first)
+	SinceParam      string `json:"since_param"`          // temporal filter param (since, updated_after, modified_since)
+	SortParam       string `json:"sort_param,omitempty"` // sort parameter used to request ascending last-modified order
+	SortValue       string `json:"sort_value,omitempty"` // value that requests ascending last-modified order
+	DateRangeParam  string `json:"date_range_param"`     // date-range filter param (dates, date_range, dateRange)
+	ItemsKey        string `json:"items_key"`            // response array key (data, results, items, or "" for root array)
+	DefaultPageSize int    `json:"default_page_size"`    // detected or default 100
 }
 
 // SearchBodyField describes an additional body field needed for POST search endpoints.
@@ -140,6 +142,14 @@ type SyncableResource struct {
 	PaginationCursorType  string
 	PaginationLimitParam  string
 	PaginationPageSize    int
+	// PaginationSort* describe an explicit ascending last-modified ordering
+	// that is safe to send alongside an incremental temporal filter.
+	PaginationSortParam string
+	PaginationSortValue string
+	// PaginationSortField is the temporal response field named by
+	// PaginationSortValue. It is the only field the generated sync may use for
+	// a capped watermark; another recognized timestamp is not an equivalent.
+	PaginationSortField string
 
 	// UsesHTMLResponse and HTMLExtract mirror the chosen list endpoint's
 	// response_format/html_extract contract so sync can normalize HTML into
@@ -364,6 +374,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 	cursorTypes := make(map[string]int)
 	pageSizeParams := make(map[string]int)
 	sinceParams := make(map[string]int)
+	sortSpecs := make(map[string]int)
 	dateRangeParams := make(map[string]int)
 	responsePaths := make(map[string]int)
 
@@ -577,8 +588,11 @@ func Profile(s *spec.APISpec) *APIProfile {
 				if isRuntimePagination(endpoint.Pagination) && endpoint.Pagination.CursorParam != "" {
 					cursorParams[endpoint.Pagination.CursorParam]++
 				}
-				if isRuntimePagination(endpoint.Pagination) && endpoint.Pagination.Type != "" {
-					cursorTypes[endpoint.Pagination.Type]++
+				if isRuntimePagination(endpoint.Pagination) {
+					_, cursorType, _, _ := syncPaginationDefaultsFromEndpoint(endpoint)
+					if cursorType != "" {
+						cursorTypes[cursorType]++
+					}
 				}
 				if isRuntimePagination(endpoint.Pagination) && endpoint.Pagination.LimitParam != "" {
 					pageSizeParams[endpoint.Pagination.LimitParam]++
@@ -604,6 +618,9 @@ func Profile(s *spec.APISpec) *APIProfile {
 			}
 			if sinceParam, _ := detectEndpointSinceParamAndFormat(endpoint, s.Types); sinceParam != "" {
 				sinceParams[sinceParam]++
+			}
+			if sortParam, sortValue := detectEndpointSyncSort(endpoint); sortParam != "" && sortValue != "" {
+				sortSpecs[sortParam+"\x00"+sortValue]++
 			}
 			for _, param := range endpoint.Params {
 				name := strings.ToLower(param.Name)
@@ -711,11 +728,14 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 	p.Domain = detectDomainSignals(s)
 
+	sortParam, sortValue := mostCommonSort(sortSpecs)
 	p.Pagination = PaginationProfile{
 		CursorParam:     mostCommon(cursorParams, "after"),
 		CursorType:      mostCommon(cursorTypes, ""),
 		PageSizeParam:   mostCommon(pageSizeParams, "limit"),
 		SinceParam:      mostCommon(sinceParams, ""),
+		SortParam:       sortParam,
+		SortValue:       sortValue,
 		DateRangeParam:  mostCommon(dateRangeParams, ""),
 		ItemsKey:        mostCommon(responsePaths, ""),
 		DefaultPageSize: 100,
@@ -2294,6 +2314,9 @@ type syncableMeta struct {
 	PaginationCursorType  string
 	PaginationLimitParam  string
 	PaginationPageSize    int
+	PaginationSortParam   string
+	PaginationSortValue   string
+	PaginationSortField   string
 	UsesHTMLResponse      bool
 	HTMLExtract           *spec.HTMLExtract
 	BodyFields            []SyncBodyField
@@ -2332,6 +2355,8 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 	idWalkFilterParam, idWalkLimitParam, idWalkPageSize := detectIDWalkParams(e)
 	sinceParam, sinceParamFormat := detectEndpointSinceParamAndFormat(e, types)
 	paginationCursorParam, paginationCursorType, paginationLimitParam, paginationPageSize := syncPaginationDefaultsFromEndpoint(e)
+	paginationSortParam, paginationSortValue := detectEndpointSyncSort(e)
+	paginationSortField := temporalSortField(paginationSortValue)
 	hydratePath, hydrateIDParam := scalarIDHydrationTarget(s, resourceName, e, types)
 	return syncableMeta{
 		Path:                  e.Path,
@@ -2347,6 +2372,9 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		PaginationCursorType:  paginationCursorType,
 		PaginationLimitParam:  paginationLimitParam,
 		PaginationPageSize:    paginationPageSize,
+		PaginationSortParam:   paginationSortParam,
+		PaginationSortValue:   paginationSortValue,
+		PaginationSortField:   paginationSortField,
 		UsesHTMLResponse:      e.UsesHTMLResponse(),
 		HTMLExtract:           e.HTMLExtract,
 		BodyFields:            syncBodyFieldsFromEndpoint(e),
@@ -2746,6 +2774,15 @@ func syncPaginationDefaultsFromEndpoint(endpoint spec.Endpoint) (string, string,
 	if cursorType == "" {
 		cursorType = inferPaginationType(cursorParam)
 	}
+	// Canonical page and offset parameter names are stronger evidence than an
+	// inconsistent explicit type. Letting a page-named cursor reach offset
+	// arithmetic silently repeats page one or skips pages, and the inverse
+	// mismatch makes offset APIs advance with the wrong strategy.
+	inferredType := inferPaginationType(cursorParam)
+	if (inferredType == "page" || inferredType == "offset") &&
+		(cursorType == "page" || cursorType == "offset") {
+		cursorType = inferredType
+	}
 	pageSize := 100
 	if defaultSize, ok := paginationLimitDefault(endpoint, limitParam); ok {
 		pageSize = defaultSize
@@ -2782,7 +2819,7 @@ func inferPaginationType(cursorParam string) string {
 	switch strings.ToLower(strings.TrimSpace(cursorParam)) {
 	case "":
 		return ""
-	case "page", "page_number", "pagenumber":
+	case "page", "page_number", "pagenumber", "page[number]":
 		return "page"
 	case "offset", "skip":
 		return "offset"
@@ -2791,6 +2828,115 @@ func inferPaginationType(cursorParam string) string {
 	default:
 		return "cursor"
 	}
+}
+
+// detectEndpointSyncSort finds a spec-declared ordering that makes an
+// incremental page walk safe to checkpoint at the newest stored record. It
+// intentionally requires both temporal and ascending-order evidence; a plain
+// sort parameter is not enough to prove that a capped sync has a monotonic
+// watermark.
+func detectEndpointSyncSort(endpoint spec.Endpoint) (string, string) {
+	sinceParam, _ := detectEndpointSinceParamAndFormat(endpoint, nil)
+	if sinceParam == "" {
+		return "", ""
+	}
+	sinceField := temporalSinceField(sinceParam)
+	for _, param := range endpoint.Params {
+		if param.PathParam || param.Positional || !isSyncSortParamName(param.Name) {
+			continue
+		}
+		defaultValue, hasDefault := stringParamDefault(param.Default)
+		values := make([]string, 0, len(param.Enum)+1)
+		if hasDefault {
+			values = append(values, defaultValue)
+		}
+		values = append(values, param.Enum...)
+		for _, value := range values {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			// The wire value must name the temporal field itself. Prose on the
+			// endpoint or sort parameter cannot prove that a generic value such
+			// as name:asc orders by the field used by the since filter.
+			sortField := temporalSortField(value)
+			if sortField == "" || !describesLastModifiedSort(sortField) || !isAscendingSortValue(value) {
+				continue
+			}
+			if !temporalFieldsMatch(sortField, sinceField) {
+				continue
+			}
+			return param.WireName(), value
+		}
+	}
+	return "", ""
+}
+
+func temporalSinceField(name string) string {
+	normalized := normalizeTemporalFieldName(name)
+	for _, suffix := range []string{"after", "since", "gte", "gt", "lte", "lt"} {
+		if prefix, ok := strings.CutSuffix(normalized, suffix); ok {
+			return prefix
+		}
+	}
+	if normalized == "since" {
+		return ""
+	}
+	return normalized
+}
+
+func temporalSortField(value string) string {
+	parts := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(value)), func(r rune) bool {
+		return r == ':' || r == ',' || r == ' ' || r == '\t'
+	})
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.TrimLeft(parts[0], "+-")
+}
+
+func temporalFieldsMatch(a, b string) bool {
+	a = normalizeTemporalFieldName(a)
+	b = normalizeTemporalFieldName(b)
+	if a == b {
+		return true
+	}
+	for _, suffix := range []string{"at", "date", "time"} {
+		if strings.TrimSuffix(a, suffix) == b || strings.TrimSuffix(b, suffix) == a {
+			return true
+		}
+	}
+	return false
+}
+
+func isSyncSortParamName(name string) bool {
+	switch normalizeTemporalFieldName(name) {
+	case "sort", "sortby", "order", "orderby", "ordering":
+		return true
+	default:
+		return false
+	}
+}
+
+func stringParamDefault(value any) (string, bool) {
+	if value == nil {
+		return "", false
+	}
+	text, ok := value.(string)
+	return text, ok && strings.TrimSpace(text) != ""
+}
+
+func describesLastModifiedSort(text string) bool {
+	return containsAny(text, []string{
+		"updated", "modified", "last changed", "lastchanged", "last_modified", "lastmodified",
+	})
+}
+
+func isAscendingSortValue(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	return lower == "asc" || strings.Contains(lower, "ascending") ||
+		strings.Contains(lower, ":asc") || strings.HasSuffix(lower, "_asc") ||
+		strings.HasPrefix(lower, "+") || strings.Contains(lower, "oldest")
 }
 
 func detectEndpointSinceParamAndFormat(endpoint spec.Endpoint, types map[string]spec.TypeDef) (string, string) {
@@ -3215,6 +3361,9 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			PaginationCursorType:  meta.PaginationCursorType,
 			PaginationLimitParam:  meta.PaginationLimitParam,
 			PaginationPageSize:    meta.PaginationPageSize,
+			PaginationSortParam:   meta.PaginationSortParam,
+			PaginationSortValue:   meta.PaginationSortValue,
+			PaginationSortField:   meta.PaginationSortField,
 			UsesHTMLResponse:      meta.UsesHTMLResponse,
 			HTMLExtract:           meta.HTMLExtract,
 			BodyFields:            meta.BodyFields,
@@ -3362,4 +3511,23 @@ func mostCommon(counts map[string]int, fallback string) string {
 		}
 	}
 	return best
+}
+
+func mostCommonSort(counts map[string]int) (string, string) {
+	best := ""
+	bestCount := 0
+	for key, count := range counts {
+		if count > bestCount || (count == bestCount && count > 0 && (best == "" || key < best)) {
+			best = key
+			bestCount = count
+		}
+	}
+	if best == "" {
+		return "", ""
+	}
+	param, value, ok := strings.Cut(best, "\x00")
+	if !ok {
+		return "", ""
+	}
+	return param, value
 }
