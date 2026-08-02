@@ -1,5 +1,22 @@
 # Changelog
 
+## [4.30.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.30.0...v4.30.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* **cli:** align generated auth diagnostics ([#3934](https://github.com/mvanhorn/cli-printing-press/issues/3934)) ([748c6dc](https://github.com/mvanhorn/cli-printing-press/commit/748c6dc0c0014331134fb9a6f69ebf969ebf7b53))
+* **cli:** bind scorer proofs to fresh source ([#3928](https://github.com/mvanhorn/cli-printing-press/issues/3928)) ([8f03678](https://github.com/mvanhorn/cli-printing-press/commit/8f0367836ecf29854f11bf3000bfdd1b42ceb6f1))
+* **cli:** classify DNS failures and expose typed rate-limit errors ([#3919](https://github.com/mvanhorn/cli-printing-press/issues/3919)) ([b8a95a8](https://github.com/mvanhorn/cli-printing-press/commit/b8a95a85f5e751931994e1961f39a104a111eb05))
+* **cli:** classify GET mutations safely ([#3929](https://github.com/mvanhorn/cli-printing-press/issues/3929)) ([69bf9bb](https://github.com/mvanhorn/cli-printing-press/commit/69bf9bb58a684315604fe61da6fb498d13a0fe9d))
+* **cli:** handle generated collection envelopes consistently ([#3920](https://github.com/mvanhorn/cli-printing-press/issues/3920)) ([04b9208](https://github.com/mvanhorn/cli-printing-press/commit/04b92085b2b60387b68d58e4524c231b1cb732d6))
+* **cli:** harden happy-path argv handling ([#3926](https://github.com/mvanhorn/cli-printing-press/issues/3926)) ([8887152](https://github.com/mvanhorn/cli-printing-press/commit/8887152487a3e057a09cb3fd75d89fa3fc7205a7))
+* **cli:** preserve sync watermarks across pagination caps ([#3932](https://github.com/mvanhorn/cli-printing-press/issues/3932)) ([23fdeb4](https://github.com/mvanhorn/cli-printing-press/commit/23fdeb445133fc6a79e7f5a99e8825eca1f6c7a7))
+* **cli:** preserve unverified scorer coverage ([#3933](https://github.com/mvanhorn/cli-printing-press/issues/3933)) ([f41c5c8](https://github.com/mvanhorn/cli-printing-press/commit/f41c5c829fb748b1acbb6d16716ad56aa66ff619))
+* **cli:** remove generated 1Password resolver coupling ([#3915](https://github.com/mvanhorn/cli-printing-press/issues/3915)) ([4b2640f](https://github.com/mvanhorn/cli-printing-press/commit/4b2640f26f5a2ad5f38fb78099ddd721863048ab))
+* **cli:** stabilize live-check binary lifecycle ([#3921](https://github.com/mvanhorn/cli-printing-press/issues/3921)) ([7b0461f](https://github.com/mvanhorn/cli-printing-press/commit/7b0461faff64e5bff47528d6fb74bd431c613ab0))
+* **skills:** migrate retro issue taxonomy labels ([#3937](https://github.com/mvanhorn/cli-printing-press/issues/3937)) ([2fab24e](https://github.com/mvanhorn/cli-printing-press/commit/2fab24eb167bc2e8a76467fca9dd1689ba4138ef))
+
 ## [4.30.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.29.0...v4.30.0) (2026-08-01)
 
 
