@@ -15,6 +15,7 @@ import (
 	"io"
 	"math"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -1077,7 +1078,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			// timeout). Back off before retrying — same exponential schedule as
 			// the 5xx path below — so a brief outage does not burn every attempt
 			// in a tight loop. ctx cancellation breaks out of the wait at once.
-			if attempt < maxRetries && canRetryAmbiguousFailure {
+			if attempt < maxRetries && canRetryAmbiguousFailure && !isPermanentDNSError(err) {
 				wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 				if !retryWithinBudget(wait) {
 					return nil, 0, lastErr
@@ -1162,6 +1163,12 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			return nil, resp.StatusCode, &platform.RateLimitedError{
 				EndpointClass: endpointClass, Attempts: attempt + 1,
 				RetryAfter: wait, RequestID: requestID,
+				Cause: &cliutil.RateLimitError{
+					URL:        apiErr.Path,
+					RetryAfter: wait,
+					Body:       apiErr.Body,
+					Cause:      apiErr,
+				},
 			}
 		}
 
@@ -1508,4 +1515,24 @@ func clientMaxRetries() int {
 		return 0
 	}
 	return 3
+}
+
+// isPermanentDNSError identifies known resolver failures that cannot succeed
+// by replaying the request. Timeouts, explicitly temporary failures, and
+// otherwise unclassified DNS errors remain retryable.
+func isPermanentDNSError(err error) bool {
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) {
+		return false
+	}
+	if dnsErr.IsNotFound {
+		return true
+	}
+	if dnsErr.IsTimeout || dnsErr.IsTemporary {
+		return false
+	}
+	reason := strings.ToLower(strings.TrimSpace(dnsErr.Err))
+	// The standard resolver reports DNS RCODE_REFUSED as "server misbehaving";
+	// other platforms may include "refused" in the reason string.
+	return reason == "server misbehaving" || strings.Contains(reason, "refused")
 }

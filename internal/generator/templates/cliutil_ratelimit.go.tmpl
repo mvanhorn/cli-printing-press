@@ -221,6 +221,7 @@ type RateLimitError struct {
 	URL        string
 	RetryAfter time.Duration
 	Body       string
+	Cause      error
 }
 
 func (e *RateLimitError) Error() string {
@@ -233,6 +234,8 @@ func (e *RateLimitError) Error() string {
 	}
 	return msg
 }
+
+func (e *RateLimitError) Unwrap() error { return e.Cause }
 
 // ParseRateLimitHeaders reads the X-Ratelimit-Remaining and X-Ratelimit-Reset
 // headers many APIs (Plane among them) emit on every response. Remaining is the
