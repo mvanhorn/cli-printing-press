@@ -176,6 +176,9 @@ that).
 
 ```bash
 # SORTED_WORK_UNITS is populated from $WORK_UNITS sorted P1 → P3.
+# SORTED_WU_IDS is the parallel list of stable WU-N identifiers from each
+# record before sorting; each entry stays paired with SORTED_WORK_UNITS.
+# Dependency edges use these stable IDs, never sorted array positions.
 ```
 
 ## Step 2.5: Dedup against open issues
@@ -440,19 +443,34 @@ trail for anyone who wants more context.
 ### Parallel execution
 
 ```bash
-declare -a OUTCOME_KIND OUTCOME_URL OUTCOME_TITLE OUTCOME_PRIORITY OUTCOME_COMP OUTCOME_COMPLEXITY OUTCOME_ISSUE_NUM
+declare -a OUTCOME_KIND OUTCOME_URL OUTCOME_TITLE OUTCOME_PRIORITY OUTCOME_COMP OUTCOME_COMPLEXITY
 declare -a WU_DEPENDENCY_EDGES
 declare -a FAILED_ISSUES
+declare -A OUTCOME_ISSUE_NUM_BY_WU_ID SORTED_WU_ID_SEEN
 
 ISSUE_TMPDIR=$(mktemp -d)
 ISSUE_RUN_START_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
+  WU_ID="${SORTED_WU_IDS[$wu_idx]-}"
+  if [[ ! "$WU_ID" =~ ^WU-[1-9][0-9]*$ ]]; then
+    echo "ERROR: sorted WU $wu_idx has missing or duplicate stable ID: ${WU_ID:-<empty>}" >&2
+    exit 1
+  fi
+  if [[ -n "${SORTED_WU_ID_SEEN[$WU_ID]+x}" ]]; then
+    echo "ERROR: sorted WU $wu_idx has duplicate stable ID: $WU_ID" >&2
+    exit 1
+  fi
+  SORTED_WU_ID_SEEN["$WU_ID"]=1
+done
+
+for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
   (
     WU="${SORTED_WORK_UNITS[$wu_idx]}"
+    WU_ID="${SORTED_WU_IDS[$wu_idx]}"
     DEDUP="${WU_DEDUP[$wu_idx]}"  # "comment:NN" or empty
 
-    # Each WU contributes: $WU_TITLE, $WU_BODY, $WU_COMMENT_BODY,
+    # Each WU contributes: $WU_ID, $WU_TITLE, $WU_BODY, $WU_COMMENT_BODY,
     # $WU_PRIORITY_NUM, $WU_PRIORITY_LABEL, $WU_TYPE_LABEL, $WU_COMP_SLUG,
     # $WU_COMPLEXITY.
 
@@ -524,6 +542,7 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
     fi
 
     {
+      printf '%s\n' "$WU_ID"
       printf '%s\n' "$KIND"
       printf '%s\n' "$URL"
       printf '%s\n' "$WU_TITLE"
@@ -548,6 +567,7 @@ EXPECTED_ISSUE_NUMBERS=$(
   for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
     if [ -f "$ISSUE_TMPDIR/issue-$wu_idx" ]; then
       {
+        IFS= read -r WU_ID_TMP
         IFS= read -r KIND_TMP
         IFS= read -r URL_TMP
       } < "$ISSUE_TMPDIR/issue-$wu_idx"
@@ -593,6 +613,7 @@ fi
 
 for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
   {
+    IFS= read -r WU_ID
     IFS= read -r KIND
     IFS= read -r URL
     IFS= read -r TITLE
@@ -602,6 +623,12 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
     IFS= read -r FAIL_MSG
   } < "$ISSUE_TMPDIR/issue-$wu_idx"
 
+  EXPECTED_WU_ID="${SORTED_WU_IDS[$wu_idx]-}"
+  if [[ "$WU_ID" != "$EXPECTED_WU_ID" ]]; then
+    FAILED_ISSUES+=("sorted WU $wu_idx returned stable ID ${WU_ID:-<empty>}, expected ${EXPECTED_WU_ID:-<empty>}")
+    continue
+  fi
+
   OUTCOME_KIND+=("$KIND")
   OUTCOME_URL+=("$URL")
   OUTCOME_TITLE+=("$TITLE")
@@ -609,11 +636,11 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
   OUTCOME_COMP+=("$COMP")
   OUTCOME_COMPLEXITY+=("$COMPLEXITY")
   if [[ "$URL" =~ /issues/([0-9]+) ]]; then
-    OUTCOME_ISSUE_NUM[$wu_idx]="${BASH_REMATCH[1]}"
+    OUTCOME_ISSUE_NUM_BY_WU_ID["$WU_ID"]="${BASH_REMATCH[1]}"
   elif [[ "${WU_DEDUP[$wu_idx]}" == comment:* ]]; then
-    OUTCOME_ISSUE_NUM[$wu_idx]="${WU_DEDUP[$wu_idx]#comment:}"
+    OUTCOME_ISSUE_NUM_BY_WU_ID["$WU_ID"]="${WU_DEDUP[$wu_idx]#comment:}"
   else
-    OUTCOME_ISSUE_NUM[$wu_idx]=""
+    OUTCOME_ISSUE_NUM_BY_WU_ID["$WU_ID"]=""
   fi
 
   case "$KIND" in
@@ -629,19 +656,40 @@ done
 
 # Apply only explicitly declared prerequisite edges, after all creates and
 # dedup decisions have produced issue numbers. Each edge is
-# `dependent_wu_index|wu:<prerequisite_wu_index>` or
-# `dependent_wu_index|issue:<existing_issue_number>`. Related-area references
-# never enter this array.
+# `WU-2|wu:WU-1` or `WU-2|issue:123`. IDs are stable WU-N values, so this
+# remains correct when a P1 WU-2 sorts before a P2 WU-1. Resolve both endpoints
+# through the associative outcome map; never use sorted array positions.
+# Related-area references never enter this array; they remain prose links.
 for edge in "${WU_DEPENDENCY_EDGES[@]}"; do
-  IFS='|' read -r dependent_idx prerequisite_ref <<< "$edge"
-  dependent_issue="${OUTCOME_ISSUE_NUM[$dependent_idx]-}"
+  IFS='|' read -r dependent_id prerequisite_ref <<< "$edge"
+  if [[ ! "$dependent_id" =~ ^WU-[1-9][0-9]*$ ]]; then
+    FAILED_ISSUES+=("dependency edge $edge — unknown or malformed dependent stable WU ID")
+    continue
+  fi
+  if [[ -z "${SORTED_WU_ID_SEEN[$dependent_id]+x}" ]]; then
+    FAILED_ISSUES+=("dependency edge $edge — unknown dependent stable WU ID")
+    continue
+  fi
+  dependent_issue="${OUTCOME_ISSUE_NUM_BY_WU_ID[$dependent_id]-}"
   case "$prerequisite_ref" in
     wu:*)
-      prerequisite_idx="${prerequisite_ref#wu:}"
-      prerequisite_issue="${OUTCOME_ISSUE_NUM[$prerequisite_idx]-}"
+      prerequisite_id="${prerequisite_ref#wu:}"
+      if [[ ! "$prerequisite_id" =~ ^WU-[1-9][0-9]*$ ]]; then
+        FAILED_ISSUES+=("dependency edge $edge — unknown or malformed prerequisite stable WU ID")
+        continue
+      fi
+      if [[ -z "${SORTED_WU_ID_SEEN[$prerequisite_id]+x}" ]]; then
+        FAILED_ISSUES+=("dependency edge $edge — unknown prerequisite stable WU ID")
+        continue
+      fi
+      prerequisite_issue="${OUTCOME_ISSUE_NUM_BY_WU_ID[$prerequisite_id]-}"
       ;;
     issue:*)
       prerequisite_issue="${prerequisite_ref#issue:}"
+      if [[ ! "$prerequisite_issue" =~ ^[1-9][0-9]*$ ]]; then
+        FAILED_ISSUES+=("dependency edge $edge — malformed existing issue number")
+        continue
+      fi
       ;;
     *)
       prerequisite_issue=""
@@ -696,10 +744,12 @@ Failure modes:
 | `$RETRO_PROVENANCE_LABEL` | This file Step 1 | Available write marker: canonical `source:retro`, or legacy `retro` only during cutover fallback |
 | `$WORK_UNITS` | SKILL.md Phase 5.5 | Array of WU records |
 | `$SORTED_WORK_UNITS` | This file Step 2 | `$WORK_UNITS` sorted P1 → P3 |
+| `$SORTED_WU_IDS` | This file Step 2 | Stable WU-N identifiers kept parallel with `$SORTED_WORK_UNITS` after priority sorting |
 | `$EXISTING_OPEN_RETROS` | This file Step 2.5 | De-duplicated JSON of open issues carrying `source:retro` or legacy `retro` |
 | `$WU_DEDUP` | This file Step 2.5 | Per-WU dedup decision: `comment:NN` or empty |
 | `$WU_RELATED` | This file Step 2.5 + Phase 3 Step D | Per-WU comma-separated related-issue numbers (annotated for the body) |
-| `$WU_DEPENDENCY_EDGES` | SKILL.md Phase 5.5 + this file Step 3 | Explicit prerequisite edges applied with native `--add-blocked-by`; related-area references are excluded |
+| `$WU_DEPENDENCY_EDGES` | SKILL.md Phase 5.5 + this file Step 3 | Explicit stable-ID prerequisite edges such as `WU-2|wu:WU-1` applied with native `--add-blocked-by`; related-area references are excluded |
+| `$OUTCOME_ISSUE_NUM_BY_WU_ID` | This file Step 3 | Issue numbers keyed by stable WU-N, independent of sorted array positions |
 | `$WU_TYPE_LABEL` | Each sorted WU record | Exactly one mapped real issue type: `bug` or `enhancement` |
 | All retro findings | SKILL.md Phase 4 | Used to populate each issue's "Findings absorbed" section |
 

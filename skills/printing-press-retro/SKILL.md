@@ -730,6 +730,8 @@ For each "Do" finding or group of related findings:
 
 ```markdown
 ### WU-1: <Title> (from F1, F3, ...)
+- **Stable ID:** WU-1 *(preserve this identifier when sorting; dependency edges
+  use the stable ID rather than a post-sort array position)*
 - **Priority:** P1 / P2 / P3 *(max priority among absorbed findings — P1 if any
   absorbed finding is P1, else P2 if any is P2, else P3)*
 - **Type:** bug / enhancement *(use the deterministic category mapping above;
@@ -745,8 +747,11 @@ For each "Do" finding or group of related findings:
 - **Scope boundary:** What this does NOT include
 - **Dependencies:** None, unless another work unit or issue is a real
   prerequisite. Explicit prerequisites become native GitHub `blocked-by` /
-  `blocking` relationships after issue numbers are known; related-area context
-  stays prose in `Related issues`.
+  `blocking` relationships after issue numbers are known. Encode work-unit
+  edges as `WU-2|wu:WU-1` (dependent stable ID first); existing issues use
+  `WU-2|issue:123`. The executor validates that every WU ID is known and
+  resolves both endpoints by stable ID after priority sorting. Related-area
+  context stays prose in `Related issues`.
 - **Complexity:** small / medium / large
 ```
 

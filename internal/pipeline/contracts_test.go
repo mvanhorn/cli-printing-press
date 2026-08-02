@@ -573,7 +573,35 @@ func TestRetroIssueTaxonomyAndRelationshipContracts(t *testing.T) {
 	assert.Contains(t, createBlock, "--remove-label enhancement")
 	assert.Contains(t, createBlock, "--add-blocked-by")
 	assert.Contains(t, createBlock, "Related-area references")
+	assert.Contains(t, createBlock, "declare -A OUTCOME_ISSUE_NUM_BY_WU_ID SORTED_WU_ID_SEEN")
+	assert.Contains(t, createBlock, "SORTED_WU_IDS")
+	assert.Contains(t, createBlock, "WU-2|wu:WU-1")
+	assert.Contains(t, createBlock, "OUTCOME_ISSUE_NUM_BY_WU_ID[$dependent_id]")
+	assert.Contains(t, createBlock, "OUTCOME_ISSUE_NUM_BY_WU_ID[$prerequisite_id]")
+	assert.Contains(t, createBlock, "remains correct when a P1 WU-2 sorts before a P2 WU-1")
+	assert.NotContains(t, createBlock, "dependent_wu_index|wu:<prerequisite_wu_index>")
+	assert.NotContains(t, createBlock, "OUTCOME_ISSUE_NUM[$")
 	assert.Contains(t, issueTemplate, "Apply labels: $RETRO_PROVENANCE_LABEL, bug or enhancement")
+	assert.Contains(t, issueTemplate, "stable WU-N identifiers from each")
+	assert.Contains(t, issueTemplate, "Dependency edges use these stable IDs, never sorted array positions")
+}
+
+func TestRetroDependencyStableIDsSurvivePriorityReorder(t *testing.T) {
+	// WU-2 was originally second, but its P1 priority sorts it before WU-1.
+	sortedWUIds := []string{"WU-2", "WU-1"}
+	issueNumbersByWUId := map[string]string{
+		"WU-2": "202",
+		"WU-1": "201",
+	}
+
+	edgeParts := strings.SplitN("WU-2|wu:WU-1", "|", 2)
+	dependentID := edgeParts[0]
+	prerequisiteID := strings.TrimPrefix(edgeParts[1], "wu:")
+
+	assert.Equal(t, "WU-2", sortedWUIds[0])
+	assert.Equal(t, "202", issueNumbersByWUId[dependentID])
+	assert.Equal(t, "201", issueNumbersByWUId[prerequisiteID])
+	assert.NotEqual(t, issueNumbersByWUId[dependentID], issueNumbersByWUId[prerequisiteID])
 }
 
 func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
