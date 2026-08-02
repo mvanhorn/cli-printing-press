@@ -163,10 +163,13 @@ type CLIManifest struct {
 	AuthOptional               bool                        `json:"auth_optional,omitempty"`
 	ReviewedSecretSuppressions []ReviewedSecretSuppression `json:"reviewed_secret_suppressions,omitempty"`
 	NovelFeatures              []NovelFeatureManifest      `json:"novel_features,omitempty"`
+	Scorecard                  *CLIManifestScorecard       `json:"scorecard,omitempty"`
+	Verify                     *CLIManifestVerify          `json:"verify,omitempty"`
 }
 
 type CLIManifestScorecard struct {
-	Steinberger CLIManifestSteinbergerScore `json:"steinberger"`
+	Steinberger          CLIManifestSteinbergerScore `json:"steinberger"`
+	UnverifiedDimensions []string                    `json:"unverified_dimensions,omitempty"`
 }
 
 type CLIManifestSteinbergerScore struct {
@@ -176,12 +179,15 @@ type CLIManifestSteinbergerScore struct {
 }
 
 type CLIManifestVerify struct {
-	Mode     string  `json:"mode,omitempty"`
-	PassRate float64 `json:"pass_rate"`
-	Passed   int     `json:"passed"`
-	Total    int     `json:"total"`
-	Failed   int     `json:"failed,omitempty"`
-	Verdict  string  `json:"verdict,omitempty"`
+	Mode                   string  `json:"mode,omitempty"`
+	PassRate               float64 `json:"pass_rate"`
+	Passed                 int     `json:"passed"`
+	Total                  int     `json:"total"`
+	Failed                 int     `json:"failed,omitempty"`
+	DataPipeline           bool    `json:"data_pipeline,omitempty"`
+	BrowserSessionRequired bool    `json:"browser_session_required,omitempty"`
+	BrowserSessionProof    string  `json:"browser_session_proof,omitempty"`
+	Verdict                string  `json:"verdict,omitempty"`
 }
 
 type ReviewedSecretSuppression struct {
@@ -260,7 +266,11 @@ func isSafeCLIBinaryName(name string) bool {
 
 // ReadCLIManifest decodes dir/.printing-press.json.
 func ReadCLIManifest(dir string) (CLIManifest, error) {
-	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	return readCLIManifestFile(filepath.Join(dir, CLIManifestFilename))
+}
+
+func readCLIManifestFile(path string) (CLIManifest, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return CLIManifest{}, err
 	}
@@ -616,6 +626,7 @@ func PersistScorecardToManifest(manifestPath string, sc *Scorecard, researchDir 
 				Grade:      sc.OverallGrade,
 				Total:      sc.Steinberger.Total,
 			},
+			UnverifiedDimensions: append([]string(nil), sc.UnverifiedDimensions...),
 		},
 	}
 	if researchDir != "" {
@@ -636,14 +647,47 @@ func PersistVerifyToManifest(manifestPath string, report *VerifyReport) (bool, e
 	}
 	return mergeCLIManifestFields(manifestPath, map[string]any{
 		"verify": CLIManifestVerify{
-			Mode:     report.Mode,
-			PassRate: report.PassRate,
-			Passed:   report.Passed,
-			Total:    report.Total,
-			Failed:   report.Failed,
-			Verdict:  report.Verdict,
+			Mode:                   report.Mode,
+			PassRate:               report.PassRate,
+			Passed:                 report.Passed,
+			Total:                  report.Total,
+			Failed:                 report.Failed,
+			DataPipeline:           report.DataPipeline,
+			BrowserSessionRequired: report.BrowserSessionRequired,
+			BrowserSessionProof:    report.BrowserSessionProof,
+			Verdict:                report.Verdict,
 		},
 	})
+}
+
+// LoadVerifyReportFromManifest restores the verification evidence that a
+// preceding shipcheck verify leg persisted. Older manifests simply return no
+// report, preserving standalone scorecard behavior.
+func LoadVerifyReportFromManifest(manifestPath string) (*VerifyReport, error) {
+	if strings.TrimSpace(manifestPath) == "" {
+		return nil, nil
+	}
+	manifest, err := readCLIManifestFile(manifestPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if manifest.Verify == nil {
+		return nil, nil
+	}
+	return &VerifyReport{
+		Mode:                   manifest.Verify.Mode,
+		PassRate:               manifest.Verify.PassRate,
+		Passed:                 manifest.Verify.Passed,
+		Total:                  manifest.Verify.Total,
+		Failed:                 manifest.Verify.Failed,
+		DataPipeline:           manifest.Verify.DataPipeline,
+		BrowserSessionRequired: manifest.Verify.BrowserSessionRequired,
+		BrowserSessionProof:    manifest.Verify.BrowserSessionProof,
+		Verdict:                manifest.Verify.Verdict,
+	}, nil
 }
 
 func mergeCLIManifestFields(manifestPath string, updates map[string]any) (bool, error) {

@@ -508,6 +508,15 @@ elif [ ! -d "$PROOFS_DIR" ] && [ -n "$CLI_NAME" ] && [ -d "$PRESS_MANUSCRIPTS/$C
   PROOFS_DIR="$PRESS_MANUSCRIPTS/$CLI_NAME/$RUN_ID/proofs"
 fi
 mkdir -p "$PROOFS_DIR"
+
+RESEARCH_DIR="$(dirname "$PROOFS_DIR")/research"
+if [ ! -f "$RESEARCH_DIR/research.json" ] && [ -f "$(dirname "$PROOFS_DIR")/research.json" ]; then
+  RESEARCH_DIR="$(dirname "$PROOFS_DIR")"
+fi
+if [ ! -f "$RESEARCH_DIR/research.json" ]; then
+  echo "ERROR: publish live gate requires the run research.json at $RESEARCH_DIR." >&2
+  exit 1
+fi
 ```
 
 Phase 5 markers are bound to the source tree that was exercised. The live
@@ -528,6 +537,7 @@ LIVE_GATE_ARGS=(
   --live
   --level full
   --timeout 120s
+  --research-dir "$RESEARCH_DIR"
   --write-acceptance "$PROOFS_DIR/phase5-acceptance.json"
   --json
 )

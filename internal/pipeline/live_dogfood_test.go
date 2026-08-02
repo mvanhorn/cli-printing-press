@@ -303,6 +303,9 @@ func TestRunLiveDogfoodWritesAcceptanceMarkerOnPass(t *testing.T) {
 	assert.Equal(t, "full", marker.Level)
 	assert.Equal(t, report.MatrixSize, marker.MatrixSize)
 	assert.Equal(t, report.Passed, marker.TestsPassed)
+	assert.Equal(t, report.Unverified, marker.TestsUnverified)
+	assert.Equal(t, report.CoverageHollow, marker.CoverageHollow)
+	assert.Equal(t, report.HollowFeatures, marker.HollowFeatures)
 	assert.Equal(t, 0, marker.TestsFailed)
 	assert.NotEmpty(t, marker.SourceFingerprint)
 
@@ -754,7 +757,7 @@ fi
 
 if [ "$1" = "account" ] && [ "$2" = "show" ]; then
   echo "HTTP 401: couldn't authenticate; login required" >&2
-  exit 1
+  exit 4
 fi
 
 echo "unexpected args: $*" >&2
@@ -772,6 +775,13 @@ exit 99
 	require.NoError(t, err)
 	assert.Equal(t, liveDogfoodVerdictCookieAuthNoSession, report.Verdict, report.Tests)
 	assert.Equal(t, 0, report.Failed, "cookie-auth 401s must not count as failures")
+	countedSkips := 0
+	for _, result := range report.Tests {
+		if result.Status == LiveDogfoodStatusSkip || result.Status == LiveDogfoodStatusUnverified {
+			countedSkips++
+		}
+	}
+	assert.Equal(t, countedSkips, report.Skipped, "report skipped count must match persisted test evidence")
 
 	// The runner writes the skip marker, not the fail acceptance marker.
 	_, err = os.Stat(markerPath)
@@ -1039,7 +1049,7 @@ printf '{"ok":true}'
 	assert.Equal(t, "2", string(count), "auth-shaped 401 should be retried once")
 }
 
-func TestRunLiveDogfoodSkipsPersistentAuth401AsRunnerCredentialUnavailable(t *testing.T) {
+func TestRunLiveDogfoodClassifiesTypedAuth401AsUnverifiedNeedsAccess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
@@ -1082,7 +1092,7 @@ fi
 count=$((count + 1))
 printf '%s' "$count" > "$count_file"
 echo 'Error: GET /api/v2/account/settings returned HTTP 401: {"error":"Could not authenticate you"}' >&2
-exit 1
+exit 4
 `)
 
 	report, err := RunLiveDogfood(LiveDogfoodOptions{
@@ -1095,17 +1105,52 @@ exit 1
 
 	happy := findResultByCommandKind(report, "account show-settings", LiveDogfoodTestHappy)
 	require.NotNil(t, happy, "expected account show-settings happy_path result")
-	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
-	assert.Equal(t, reasonUnavailableRunnerCredentials, happy.Reason)
+	assert.Equal(t, LiveDogfoodStatusUnverified, happy.Status)
+	assert.Equal(t, reasonUnverifiedNeedsAccess, happy.Reason)
 
 	jsonResult := findResultByCommandKind(report, "account show-settings", LiveDogfoodTestJSON)
 	require.NotNil(t, jsonResult, "expected account show-settings json_fidelity result")
-	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
-	assert.Equal(t, reasonUnavailableRunnerCredentials, jsonResult.Reason)
+	assert.Equal(t, LiveDogfoodStatusUnverified, jsonResult.Status)
+	assert.Equal(t, reasonUnverifiedNeedsAccess, jsonResult.Reason)
 
 	count, err := os.ReadFile(filepath.Join(dir, "count"))
 	require.NoError(t, err)
-	assert.Equal(t, "2", string(count), "persistent auth-shaped 401 should retry once before skip classification")
+	assert.Equal(t, "2", string(count), "typed auth denial may retry once before classification")
+}
+
+func TestLiveDogfoodUnverifiedNeedsAccessRequiresTypedAuthExit(t *testing.T) {
+	tests := []struct {
+		name string
+		run  liveDogfoodRun
+		want bool
+	}{
+		{
+			name: "typed 401",
+			run:  liveDogfoodRun{exitCode: liveDogfoodAuthExitCode, stderr: "HTTP 401: unauthorized"},
+			want: true,
+		},
+		{
+			name: "typed 403 permission denial",
+			run:  liveDogfoodRun{exitCode: liveDogfoodAuthExitCode, stderr: "HTTP 403: permission denied"},
+			want: true,
+		},
+		{
+			name: "crash with 403 is a real failure",
+			run:  liveDogfoodRun{exitCode: 1, stderr: "HTTP 403: permission denied"},
+			want: false,
+		},
+		{
+			name: "typed auth exit without denial is not access unverified",
+			run:  liveDogfoodRun{exitCode: liveDogfoodAuthExitCode, stderr: "authentication failed"},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, liveDogfoodUnverifiedNeedsAccess(tt.run))
+		})
+	}
 }
 
 func TestRunLiveDogfoodRefreshesStageBinaryBeforeResolving(t *testing.T) {
@@ -2591,6 +2636,8 @@ func TestLiveDogfoodUnavailableForRunnerDoesNotHideNotFound(t *testing.T) {
 	t.Parallel()
 
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "HTTP 403 permission denied"}))
+	assert.False(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{exitCode: 1, stderr: "HTTP 403 permission denied"}))
+	assert.False(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{exitCode: 1, stderr: `HTTP 401: {"error":"Couldn't authenticate you"}`}))
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "your credentials are valid but lack access"}))
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: `HTTP 401: {"error":"Couldn't authenticate you"}`}))
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: `HTTP 401: {"code":124,"message":"Invalid access token."}`}))
@@ -2654,9 +2701,10 @@ func TestLiveDogfoodAuth401TypedExitCode(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name string
-		run  liveDogfoodRun
-		want bool
+		name           string
+		run            liveDogfoodRun
+		wantAuth401    bool
+		wantRunnerSkip bool
 	}{
 		{
 			name: "typed auth exit with unrecognized vendor wording",
@@ -2664,7 +2712,8 @@ func TestLiveDogfoodAuth401TypedExitCode(t *testing.T) {
 				exitCode: liveDogfoodAuthExitCode,
 				stderr:   `Error: GET /users/me returned HTTP 401: {"code":9999,"message":"Nope."}`,
 			},
-			want: true,
+			wantAuth401:    true,
+			wantRunnerSkip: true,
 		},
 		{
 			name: "typed auth exit without a 401",
@@ -2672,7 +2721,8 @@ func TestLiveDogfoodAuth401TypedExitCode(t *testing.T) {
 				exitCode: liveDogfoodAuthExitCode,
 				stderr:   `Error: no credentials configured`,
 			},
-			want: false,
+			wantAuth401:    false,
+			wantRunnerSkip: false,
 		},
 		{
 			name: "typed auth exit with auth wording on a non-401",
@@ -2680,7 +2730,8 @@ func TestLiveDogfoodAuth401TypedExitCode(t *testing.T) {
 				exitCode: liveDogfoodAuthExitCode,
 				stderr:   `Error: GET /users/me returned HTTP 404: {"message":"Invalid access token."}`,
 			},
-			want: false,
+			wantAuth401:    false,
+			wantRunnerSkip: false,
 		},
 		{
 			name: "unrecognized wording on a generic failure exit",
@@ -2688,7 +2739,8 @@ func TestLiveDogfoodAuth401TypedExitCode(t *testing.T) {
 				exitCode: 1,
 				stderr:   `Error: GET /users/me returned HTTP 401: {"code":9999,"message":"Nope."}`,
 			},
-			want: false,
+			wantAuth401:    false,
+			wantRunnerSkip: false,
 		},
 		{
 			name: "recognized wording on a generic failure exit",
@@ -2696,7 +2748,8 @@ func TestLiveDogfoodAuth401TypedExitCode(t *testing.T) {
 				exitCode: 1,
 				stderr:   `Error: GET /users/me returned HTTP 401: {"code":124,"message":"Invalid access token."}`,
 			},
-			want: true,
+			wantAuth401:    true,
+			wantRunnerSkip: false,
 		},
 	}
 
@@ -2704,8 +2757,8 @@ func TestLiveDogfoodAuth401TypedExitCode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tt.want, liveDogfoodAuth401(tt.run))
-			assert.Equal(t, tt.want, liveDogfoodUnavailableForRunner(tt.run))
+			assert.Equal(t, tt.wantAuth401, liveDogfoodAuth401(tt.run))
+			assert.Equal(t, tt.wantRunnerSkip, liveDogfoodUnavailableForRunner(tt.run))
 		})
 	}
 }
@@ -3127,6 +3180,86 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 				report.Passed, report.Failed, report.Skipped, report.MatrixSize)
 		})
 	}
+}
+
+func TestFinalizeLiveDogfoodReportTracksUnverifiedCoverage(t *testing.T) {
+	report := &LiveDogfoodReport{
+		Level:   "full",
+		Verdict: "PASS",
+		Tests: []LiveDogfoodTestResult{
+			{Status: LiveDogfoodStatusPass, Kind: LiveDogfoodTestHappy, Args: []string{"widgets", "list"}},
+			{Status: LiveDogfoodStatusFail},
+			{Status: LiveDogfoodStatusUnverified, Reason: reasonUnverifiedNeedsAccess},
+			{Status: LiveDogfoodStatusSkip, Reason: reasonRequiredParamFixture},
+		},
+	}
+
+	finalizeLiveDogfoodReport(report, "")
+
+	assert.Equal(t, 2, report.MatrixSize)
+	assert.Equal(t, 1, report.Passed)
+	assert.Equal(t, 1, report.Failed)
+	assert.Equal(t, 2, report.Skipped)
+	assert.Equal(t, 2, report.Unverified)
+	assert.Equal(t, 50.0, report.PassRate)
+}
+
+func TestFinalizeLiveDogfoodCoverageReportsHollowNovelFeatures(t *testing.T) {
+	researchDir := t.TempDir()
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		NovelFeatures: []NovelFeature{{Name: "Digest", Command: "digest"}},
+	}, researchDir))
+
+	report := &LiveDogfoodReport{
+		Commands: []string{"digest"},
+		Tests: []LiveDogfoodTestResult{
+			{Command: "digest", Kind: LiveDogfoodTestHelp, Status: LiveDogfoodStatusPass},
+			{Command: "digest", Kind: LiveDogfoodTestHappy, Status: LiveDogfoodStatusSkip, Reason: reasonRequiredParamFixture},
+		},
+	}
+
+	finalizeLiveDogfoodCoverage(report, researchDir)
+
+	assert.True(t, report.CoverageHollow)
+	assert.Equal(t, []string{"digest"}, report.HollowFeatures)
+}
+
+func TestFinalizeLiveDogfoodCoverageDoesNotCountDryRunAsExecution(t *testing.T) {
+	researchDir := t.TempDir()
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		NovelFeatures: []NovelFeature{{Name: "Digest", Command: "digest"}},
+	}, researchDir))
+
+	report := &LiveDogfoodReport{
+		Commands: []string{"digest"},
+		Tests: []LiveDogfoodTestResult{
+			{Command: "digest", Kind: LiveDogfoodTestHappy, Status: LiveDogfoodStatusPass, Args: []string{"digest", "--dry-run"}},
+		},
+	}
+
+	finalizeLiveDogfoodCoverage(report, researchDir)
+
+	assert.True(t, report.CoverageHollow)
+	assert.Equal(t, []string{"digest"}, report.HollowFeatures)
+}
+
+func TestFinalizeLiveDogfoodCoverageRecognizesLiveNovelFeatureExecution(t *testing.T) {
+	researchDir := t.TempDir()
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		NovelFeatures: []NovelFeature{{Name: "Digest", Command: "digest"}},
+	}, researchDir))
+
+	report := &LiveDogfoodReport{
+		Commands: []string{"digest"},
+		Tests: []LiveDogfoodTestResult{
+			{Command: "digest", Kind: LiveDogfoodTestHappy, Status: LiveDogfoodStatusPass, Args: []string{"digest"}},
+		},
+	}
+
+	finalizeLiveDogfoodCoverage(report, researchDir)
+
+	assert.False(t, report.CoverageHollow)
+	assert.Empty(t, report.HollowFeatures)
 }
 
 func TestLiveDogfoodQuickCommandsSamplesAcrossFamilies(t *testing.T) {
