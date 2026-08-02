@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -457,9 +458,7 @@ func runSideEffectSafeCommandTests(binary string, cmd discoveredCommand, env []s
 
 	positionals, flags := sideEffectSafeInvocationInputs(cmd)
 
-	dryArgs := append([]string{cmd.Name}, positionals...)
-	dryArgs = append(dryArgs, flags...)
-	dryArgs = append(dryArgs, "--dry-run")
+	dryArgs := buildRuntimeTestArgs(cmd.Name, positionals, flags, "--dry-run")
 	if err := runCLI(binary, dryArgs, env, 10*time.Second); err == nil || isIntentionalStubExit(err) {
 		result.DryRun = true
 	}
@@ -505,11 +504,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 
 	// Build positional args + flags for test invocations
 	buildTestArgs := func(cmdName string, positionalArgs, flags []string, extra ...string) []string {
-		args := []string{cmdName}
-		args = append(args, positionalArgs...)
-		args = append(args, flags...)
-		args = append(args, extra...)
-		return args
+		return buildRuntimeTestArgs(cmdName, positionalArgs, flags, extra...)
 	}
 
 	// Test 2: --dry-run (skip for local/data-layer commands that don't make API calls)
@@ -527,7 +522,11 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	} else if mode == "live" && cmd.Kind == "write" {
 		result.Execute = true // skip writes on live = pass (tested via dry-run)
 	} else {
-		args := buildTestArgs(cmd.Name, positionals, extraFlags, "--json")
+		extra := []string{"--json"}
+		if hasExplicitOutputMode(extraFlags) {
+			extra = nil
+		}
+		args := buildTestArgs(cmd.Name, positionals, extraFlags, extra...)
 		err := runCLI(binary, args, env, 15*time.Second)
 		result.Execute = err == nil || isIntentionalStubExit(err) || isDocumentedSuccessExit(err, typedCodes)
 	}
@@ -546,6 +545,20 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	result.Score = score
 
 	return result
+}
+
+func buildRuntimeTestArgs(cmdName string, positionalArgs, flags []string, extra ...string) []string {
+	args := []string{cmdName}
+	if slices.ContainsFunc(positionalArgs, isNegativeNumericArg) {
+		args = appendRuntimeFlagArgs(args, flags)
+		args = append(args, extra...)
+		args = append(args, "--")
+		return append(args, positionalArgs...)
+	}
+	args = append(args, positionalArgs...)
+	args = appendRuntimeFlagArgs(args, flags)
+	args = append(args, extra...)
+	return args
 }
 
 func isIntentionalStubExit(err error) bool {

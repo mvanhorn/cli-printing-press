@@ -1599,8 +1599,12 @@ Rules:
 - Must be on an operation, not the root, `info`, or path item.
 - Must be a string in the runtime annotation format consumed by
   `pp:happy-args`.
-- Tokens are semicolon-separated. `<label>=value` overlays synthesized
-  positional args, and `--flag=value` overlays or adds flag/value pairs.
+- Tokens are separated by unescaped semicolons. Escape a literal semicolon as
+  `\;` (write `\\;` inside a YAML double-quoted string). `<label>=value`
+  overlays synthesized positional args, and `--flag=value` replaces the
+  matching example flag or adds a new flag/value pair.
+- Negative numeric flag values are emitted in `--flag=-12.3` form so Cobra
+  does not parse the value as a shorthand flag cluster.
 - Empty or whitespace-only values behave the same as absence.
 
 Example:
