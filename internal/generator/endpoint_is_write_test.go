@@ -3,8 +3,10 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,9 +33,37 @@ func TestEndpointIsWriteCommand(t *testing.T) {
 			want:     false,
 		},
 		{
+			name:   "GET action explicitly marked mutation is write",
+			opName: "restartApplication",
+			endpoint: spec.Endpoint{
+				Method:   "GET",
+				Path:     "/applications/{id}/restart",
+				Mutation: true,
+			},
+			want: true,
+		},
+		{
+			name:     "GET action with leading mutation token is write",
+			opName:   "deployApplication",
+			endpoint: spec.Endpoint{Method: "GET", Path: "/applications/{id}/deploy"},
+			want:     true,
+		},
+		{
+			name:     "GET action with kebab-case leading mutation token is write",
+			opName:   "restart-job",
+			endpoint: spec.Endpoint{Method: "GET", Path: "/applications/{id}/restart"},
+			want:     true,
+		},
+		{
 			name:     "HEAD endpoint is read",
 			opName:   "headStatus",
 			endpoint: spec.Endpoint{Method: "HEAD", Path: "/status"},
+			want:     false,
+		},
+		{
+			name:     "HEAD action token stays read without explicit signal",
+			opName:   "restartApplication",
+			endpoint: spec.Endpoint{Method: "HEAD", Path: "/applications/{id}/restart"},
 			want:     false,
 		},
 		{
@@ -270,6 +300,7 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 		resourceName string
 		endpointName string
 		endpoint     spec.Endpoint
+		useStore     bool
 		mustContain  []string
 		mustNotHave  []string
 	}{
@@ -314,6 +345,49 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 			mustNotHave: []string{"c.Post(", "c.Put(", "c.Patch("},
 		},
 		{
+			name:         "GET action mutation uses the mutation client path",
+			apiName:      "get-action-promoted",
+			resourceName: "applications",
+			endpointName: "restartApplication",
+			endpoint: spec.Endpoint{
+				Method:      "GET",
+				Path:        "/applications/{id}/restart",
+				Description: "Restart an application",
+				Mutation:    true,
+			},
+			mustContain: []string{"c.GetMutating(cmd.Context(), path, params)"},
+			mustNotHave: []string{"resolveReadWithStrategyAndResponsePath", "c.Get(cmd.Context(), path, params)"},
+		},
+		{
+			name:         "GET action mutation bypasses pagination helpers",
+			apiName:      "get-action-pagination",
+			resourceName: "applications",
+			endpointName: "restartApplication",
+			endpoint: spec.Endpoint{
+				Method:      "GET",
+				Path:        "/applications/{id}/restart",
+				Description: "Restart an application",
+				Mutation:    true,
+				Pagination:  &spec.Pagination{Type: "cursor", CursorParam: "cursor", LimitParam: "limit"},
+			},
+			useStore:    true,
+			mustContain: []string{"c.GetMutating(cmd.Context(), path, params)"},
+			mustNotHave: []string{"paginatedGetWithResponsePath", "resolvePaginatedReadWithStrategy", "Fetch all pages"},
+		},
+		{
+			name:         "GET action leading token uses the mutation client path",
+			apiName:      "get-action-inferred",
+			resourceName: "applications",
+			endpointName: "deployApplication",
+			endpoint: spec.Endpoint{
+				Method:      "GET",
+				Path:        "/applications/{id}/deploy",
+				Description: "Deploy an application",
+			},
+			mustContain: []string{"c.GetMutating(cmd.Context(), path, params)"},
+			mustNotHave: []string{"resolveReadWithStrategyAndResponsePath", "c.Get(cmd.Context(), path, params)"},
+		},
+		{
 			// HEAD / OPTIONS aren't supported by the generated client.
 			// Falling back to c.Get keeps generation compileable; the only
 			// alternative would be emitting an undefined method like c.Head.
@@ -344,7 +418,11 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 			}
 
 			outputDir := filepath.Join(t.TempDir(), tc.apiName+"-pp-cli")
-			require.NoError(t, New(apiSpec, outputDir).Generate())
+			gen := New(apiSpec, outputDir)
+			if tc.useStore {
+				gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+			}
+			require.NoError(t, gen.Generate())
 
 			src := readPromotedCommandFile(t, outputDir)
 			for _, want := range tc.mustContain {
@@ -353,8 +431,44 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 			for _, banned := range tc.mustNotHave {
 				require.NotContains(t, src, banned)
 			}
+			if endpointIsWriteCommand(tc.endpoint, tc.endpointName) && strings.EqualFold(tc.endpoint.Method, "GET") {
+				requireGeneratedCompiles(t, outputDir)
+			}
 		})
 	}
+}
+
+func TestEndpointGETMutationWithStoreCompiles(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("get-action-endpoint-store")
+	apiSpec.Resources = map[string]spec.Resource{
+		"applications": {
+			Description: "Manage applications",
+			Endpoints: map[string]spec.Endpoint{
+				"listApplications": {
+					Method:      "GET",
+					Path:        "/applications",
+					Description: "List applications",
+				},
+				"restartApplication": {
+					Method:      "GET",
+					Path:        "/applications/{id}/restart",
+					Description: "Restart an application",
+					Mutation:    true,
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	require.Contains(t, readGeneratedCLIFileContaining(t, outputDir, "c.GetMutating(cmd.Context(), path, params)"),
+		"c.GetMutating(cmd.Context(), path, params)")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestPromotedReadOnlyPOSTDoesNotEmitPartialFailureSupport(t *testing.T) {
@@ -543,6 +657,19 @@ func TestMCPReadOnlyAnnotationEmission(t *testing.T) {
 				Description: "List items",
 			},
 			wantReadOnly: true,
+		},
+		{
+			name:         "GET action mutation omits mcp:read-only annotation",
+			apiName:      "get-action-mutation",
+			resourceName: "applications",
+			endpointName: "restartApplication",
+			endpoint: spec.Endpoint{
+				Method:      "GET",
+				Path:        "/applications/{id}/restart",
+				Description: "Restart an application",
+				Mutation:    true,
+			},
+			wantReadOnly: false,
 		},
 		{
 			name:         "POST create endpoint omits mcp:read-only annotation",

@@ -17,6 +17,13 @@ func TestGeneratorEmitsNovelFeatureCommandStubs(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("apify")
+	items := apiSpec.Resources["items"]
+	items.Endpoints["create"] = spec.Endpoint{
+		Method:      "POST",
+		Path:        "/items",
+		Description: "Create an item",
+	}
+	apiSpec.Resources["items"] = items
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
 	gen.NovelFeatures = []NovelFeature{
@@ -107,6 +114,108 @@ func TestNovelFeatureStubsResolveAtRuntime(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "novel_stub_runtime_test.go"), []byte(runtimeTest.String()), 0o644))
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/cli")
+}
+
+func TestGeneratorMarksAllGETNovelFeatureStubsReadOnly(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("all-get-novel")
+	items := apiSpec.Resources["items"]
+	items.SubResources = map[string]spec.Resource{
+		"history": {
+			Endpoints: map[string]spec.Endpoint{
+				"listHistory": {Method: "GET", Path: "/items/{id}/history"},
+			},
+		},
+	}
+	apiSpec.Resources["items"] = items
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{
+		{
+			Name:        "Call actor",
+			Command:     "call",
+			Description: "Call an actor with idempotent tags.",
+			Rationale:   "Agents need to run actors without re-creating identical jobs.",
+			Example:     "all-get-novel-pp-cli call",
+		},
+		{
+			Name:        "Run classifier",
+			Command:     "runs classify",
+			Description: "Classify recent runs by failure mode.",
+			Rationale:   "Agents need a bounded view of run failures.",
+			Example:     "all-get-novel-pp-cli runs classify run-123",
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	call := readGeneratedFile(t, outputDir, "internal", "cli", "call.go")
+	assert.Contains(t, call, `Annotations: map[string]string{"mcp:read-only": "true"}`)
+	classify := readGeneratedFile(t, outputDir, "internal", "cli", "runs_classify.go")
+	assert.Contains(t, classify, `Annotations: map[string]string{"mcp:read-only": "true"}`)
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratorDoesNotTreatInferredGETMutationAsReadOnlySpec(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("get-mutation-novel")
+	items := apiSpec.Resources["items"]
+	items.Endpoints["startItem"] = spec.Endpoint{
+		Method:      "GET",
+		Path:        "/items/{id}/start",
+		Description: "Start an item",
+	}
+	apiSpec.Resources["items"] = items
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{
+		{
+			Name:        "Call actor",
+			Command:     "call",
+			Description: "Call an actor.",
+			Rationale:   "Agents need to run actors.",
+			Example:     "get-mutation-novel-pp-cli call",
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	call := readGeneratedFile(t, outputDir, "internal", "cli", "call.go")
+	assert.NotContains(t, call, `Annotations: map[string]string{"mcp:read-only": "true"}`)
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratorDoesNotTreatExplicitGETMutationAsReadOnlySpec(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("explicit-get-mutation-novel")
+	items := apiSpec.Resources["items"]
+	items.Endpoints["restartItem"] = spec.Endpoint{
+		Method:      "GET",
+		Path:        "/items/{id}/restart",
+		Description: "Restart an item",
+		Mutation:    true,
+	}
+	apiSpec.Resources["items"] = items
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{
+		{
+			Name:        "Call actor",
+			Command:     "call",
+			Description: "Call an actor.",
+			Rationale:   "Agents need to run actors.",
+			Example:     "explicit-get-mutation-novel-pp-cli call",
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	call := readGeneratedFile(t, outputDir, "internal", "cli", "call.go")
+	assert.NotContains(t, call, `Annotations: map[string]string{"mcp:read-only": "true"}`)
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGeneratedNovelHookDoesNotDuplicateGeneratedStub(t *testing.T) {

@@ -10,7 +10,7 @@
 {{- $isReadVerb := or (eq $method "GET") (eq $method "HEAD") (eq $method "OPTIONS")}}
 {{- $isWriteVerb := or (eq $method "POST") (eq $method "PUT") (eq $method "PATCH")}}
 {{- $canWriteBack := and .HasStore $isWriteVerb (not .IsReadOnly) (not .Endpoint.UsesBinaryResponse) (not .Endpoint.UsesTextResponse)}}
-{{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk")}}
+{{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk") (or (not (eq $method "GET")) .IsReadOnly)}}
 {{- $dataSourceStrategy := dataSourceStrategy .Resource .Endpoint}}
 
 package cli
@@ -284,13 +284,16 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- end}}
-{{- if and .HasStore (eq (upper .Endpoint.Method) "GET")}}
+{{- if and .HasStore .IsReadOnly (eq (upper .Endpoint.Method) "GET")}}
 {{- if eq .Endpoint.ResponseFormat "html"}}
 			data, prov, err := resolveReadWithStrategyResponsePathAndJSONGuard(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, false, cmd.ErrOrStderr())
 {{- else}}
 			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, cmd.ErrOrStderr())
 {{- end}}
 {{- else if eq $method "GET"}}
+{{- if .HasStore}}
+			var prov DataProvenance
+{{- end}}
 {{- if eq $dataSourceStrategy "local"}}
 			return fmt.Errorf("data_source_strategy local requires the local store data layer")
 {{- else if eq $dataSourceStrategy "live"}}
@@ -299,9 +302,22 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			}
 {{- end}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}
+			{{- if .IsReadOnly}}
 			data, err := c.GetWithHeaders(cmd.Context(), path, params, headerOverrides)
+			{{- else}}
+			data, err := c.GetMutatingWithHeaders(cmd.Context(), path, params, headerOverrides)
+			{{- end}}
 {{- else}}
+			{{- if .IsReadOnly}}
 			data, err := c.Get(cmd.Context(), path, params)
+			{{- else}}
+			data, err := c.GetMutating(cmd.Context(), path, params)
+			{{- end}}
+{{- end}}
+{{- if .HasStore}}
+			if err == nil {
+				prov = attachFreshness(DataProvenance{Source: "live"}, flags)
+			}
 {{- end}}
 {{- else if eq (upper .Endpoint.Method) "DELETE"}}
 {{- if $isRaw}}
