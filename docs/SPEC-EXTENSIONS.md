@@ -20,6 +20,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-roles` | root or `info` | `APISpec.Roles` | No |
 | `x-tier-routing` | root or `info` | `APISpec.TierRouting` | No |
 | `x-rate-class` | root or `info` | `APISpec.RateClass` | No |
+| `x-pp-default-rate-limit` | root or `info` | `APISpec.DefaultRateLimit` | No |
 | `x-mcp` | root or `info` | `APISpec.MCP` | No |
 | `x-cache` | root or `info` | `APISpec.Cache` | No |
 | `x-learn` | root or `info` | `APISpec.Learn` | No |
@@ -56,6 +57,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 | `x-pp-dispatch-param` | parameter | `Param.DispatchParam` | No |
 | `x-pp-tenant-scope-column` | path item | *reserved for follow-up tenant-scoped reconcile; not parsed yet* | No |
+| `x-pp-membership-field` | path item | `Endpoint.MembershipField` | No |
 
 ## `info` Extensions
 
@@ -254,6 +256,36 @@ info:
   title: Low Quota API
   version: "1.0"
   x-rate-class: monthly
+```
+
+### `x-pp-default-rate-limit`
+
+Sets the built-in default for the generated CLI's `--rate-limit` flag from an
+OpenAPI spec, mirroring the internal YAML `default_rate_limit` field.
+
+Parsed field: `APISpec.DefaultRateLimit`
+
+Rules:
+- Optional.
+- May be declared at the OpenAPI root or under `info`. Root takes precedence
+  when both are present.
+- The value is either the string `"auto"` (case-insensitive) or a non-negative
+  number (a JSON number or a numeric string). Any other shape is rejected with
+  a validation error.
+- `"auto"` selects the header-driven adaptive limiter so the CLI paces itself
+  to the server's `X-Ratelimit-*` headers with no hardcoded ceiling. A numeric
+  value (e.g. `2`) pins a fixed requests-per-second ceiling.
+- When absent, the legacy provenance default applies (2 for sniffed specs, else
+  0 = disabled). This only sets the default; the generated `--rate-limit` flag
+  still overrides it at runtime.
+
+Example:
+
+```yaml
+info:
+  title: Throttled API
+  version: "1.0"
+  x-pp-default-rate-limit: auto
 ```
 
 ### `x-mcp`
@@ -575,6 +607,36 @@ paths:
     get:
       operationId: list_projects
       summary: List or retrieve projects
+```
+
+### `x-pp-membership-field`
+
+Declares, on a parent collection's list path-item, the boolean field in that
+collection's own row payload that indicates whether the authenticated user is a
+member of the resource (e.g. `is_member`). Dependent fan-out over the parent
+table skips rows whose field is false — their sub-resources would 403 — so a
+sync reports one clear "not a member" summary instead of a 403 per
+(sub-resource, parent).
+
+Parsed field: `Endpoint.MembershipField`
+
+Rules:
+- Optional. Absence means no membership filtering is recorded.
+- Placed on the list path-item object (same level as `get:`, `post:`, etc.),
+  not on an individual operation.
+- Must be a string naming a boolean field in the row payload; non-string
+  values are ignored with a warning.
+- Consumed by the profiler when building dependent-sync resource metadata.
+
+Example:
+
+```yaml
+paths:
+  /workspaces/:
+    x-pp-membership-field: is_member
+    get:
+      operationId: list_workspaces
+      summary: List workspaces
 ```
 
 ### `x-path-template-env-vars`
