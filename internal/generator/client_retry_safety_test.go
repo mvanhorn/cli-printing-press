@@ -26,12 +26,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"retry-safety-pp-cli/internal/cliutil"
 	"retry-safety-pp-cli/internal/config"
 	"retry-safety-pp-cli/internal/platform"
 )
@@ -109,16 +111,35 @@ func TestRetrySafety_POSTDoesNotRetryRateLimitWithoutIdempotencyKey(t *testing.T
 	var calls int
 	c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		calls++
-		return retryResponse(req, http.StatusTooManyRequests), nil
+		resp := retryResponse(req, http.StatusTooManyRequests)
+		resp.Header.Set("Retry-After", "5")
+		return resp, nil
 	}))
 
 	_, status, err := c.Post(context.Background(), "/items", map[string]string{"name": "one"})
 	var rateErr *platform.RateLimitedError
-	if !errors.As(err, &rateErr) || status != http.StatusTooManyRequests {
+	var cliRateErr *cliutil.RateLimitError
+	var apiErr *APIError
+	if !errors.As(err, &rateErr) || !errors.As(err, &cliRateErr) || !errors.As(err, &apiErr) || status != http.StatusTooManyRequests {
 		t.Fatalf("Post() = status %d, error %v; want typed HTTP 429", status, err)
+	}
+	if cliRateErr.RetryAfter != 5*time.Second {
+		t.Fatalf("cliutil.RateLimitError.RetryAfter = %s, want 5s", cliRateErr.RetryAfter)
 	}
 	if calls != 1 {
 		t.Fatalf("POST calls = %d, want 1", calls)
+	}
+}
+
+func TestRetrySafety_ServerErrorDoesNotMatchRateLimit(t *testing.T) {
+	c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return retryResponse(req, http.StatusInternalServerError), nil
+	}))
+
+	_, status, err := c.Post(context.Background(), "/items", map[string]string{"name": "one"})
+	var cliRateErr *cliutil.RateLimitError
+	if err == nil || status != http.StatusInternalServerError || errors.As(err, &cliRateErr) {
+		t.Fatalf("Post() = status %d, error %v; want untyped HTTP 500 error", status, err)
 	}
 }
 
@@ -180,6 +201,98 @@ func TestRetrySafety_TransportErrorsRespectMethodSafety(t *testing.T) {
 			}
 			if calls != 1 {
 				t.Fatalf("%s calls = %d, want 1", method, calls)
+			}
+		})
+	}
+}
+
+func TestRetrySafety_DNSFailureClassification(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        *net.DNSError
+		wantCalls  int
+		wantResult int
+	}{
+		{
+			name: "NXDOMAIN is terminal",
+			err: &net.DNSError{
+				Err:        "no such host",
+				Name:       "api.example.invalid",
+				IsNotFound: true,
+			},
+			wantCalls:  1,
+		},
+		{
+			name: "SERVFAIL retries",
+			err: &net.DNSError{
+				Err:  "server misbehaving",
+				Name: "api.example.invalid",
+			},
+			wantCalls:  2,
+			wantResult: http.StatusOK,
+		},
+		{
+			name: "explicit REFUSED is terminal",
+			err: &net.DNSError{
+				Err:  "query refused",
+				Name: "api.example.invalid",
+			},
+			wantCalls: 1,
+		},
+		{
+			name: "unclassified DNS retries",
+			err: &net.DNSError{
+				Err:  "unclassified resolver failure",
+				Name: "api.example.invalid",
+			},
+			wantCalls:  2,
+			wantResult: http.StatusOK,
+		},
+		{
+			name: "temporary DNS retries",
+			err: &net.DNSError{
+				Err:         "temporary failure",
+				Name:        "api.example.invalid",
+				IsTemporary: true,
+			},
+			wantCalls:  2,
+			wantResult: http.StatusOK,
+		},
+		{
+			name: "DNS timeout retries",
+			err: &net.DNSError{
+				Err:       "i/o timeout",
+				Name:      "api.example.invalid",
+				IsTimeout: true,
+			},
+			wantCalls:  2,
+			wantResult: http.StatusOK,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int
+			c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				if calls == 1 {
+					return nil, tc.err
+				}
+				return retryResponse(req, tc.wantResult), nil
+			}))
+
+			_, status, err := c.do(context.Background(), http.MethodGet, "/items", nil, nil, nil)
+			if calls != tc.wantCalls {
+				t.Fatalf("calls = %d, want %d; error = %v", calls, tc.wantCalls, err)
+			}
+			if tc.wantResult == 0 {
+				if err == nil || status != 0 {
+					t.Fatalf("terminal DNS result = status %d, error %v; want immediate transport error", status, err)
+				}
+				return
+			}
+			if err != nil || status != tc.wantResult {
+				t.Fatalf("retryable DNS result = status %d, error %v; want HTTP %d", status, err, tc.wantResult)
 			}
 		})
 	}
