@@ -2256,8 +2256,12 @@ func absoluteRequestPathTemplateSource(path string) string {
 }
 
 type Endpoint struct {
-	Method      string `yaml:"method" json:"method"`
-	Path        string `yaml:"path" json:"path"`
+	Method string `yaml:"method" json:"method"`
+	Path   string `yaml:"path" json:"path"`
+	// Mutation explicitly marks an endpoint as mutating when its transport
+	// method is not enough to convey the side effect, such as a GET action.
+	// The generator uses this signal for MCP safety classification.
+	Mutation    bool   `yaml:"mutation,omitempty" json:"mutation,omitempty"`
 	BaseURL     string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
 	Description string `yaml:"description" json:"description"`
 	// Example is an optional Cobra Example string for this endpoint command.

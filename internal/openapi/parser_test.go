@@ -8013,6 +8013,38 @@ paths:
 	}
 }
 
+func TestParseReadsXPPMutationExtension(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /applications/{id}/restart:
+    get:
+      operationId: restartApplication
+      x-pp-mutation: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Restarted
+`)
+
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	ep := findEndpoint(t, parsed, "/applications/{id}/restart")
+	assert.True(t, ep.Mutation)
+}
+
 func TestParseDataSourceStrategyExtension(t *testing.T) {
 	t.Parallel()
 

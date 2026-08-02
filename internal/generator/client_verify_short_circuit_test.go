@@ -40,15 +40,15 @@ func TestClient_VerifyShortCircuit(t *testing.T) {
 			"isMutatingVerb should enumerate %s as a mutating verb", verb)
 	}
 
-	// The short-circuit gate inside doInternal() must consult both helpers,
-	// in the order isMutatingVerb -> IsVerifyEnv -> !IsVerifyLiveHTTPEnv.
-	// Order matters for short-circuit evaluation: cheapest check first, and
-	// the env-var lookups skip when the verb is GET. The leading
+	// The short-circuit gate inside doInternal() must consult both the
+	// explicit mutation intent and the HTTP verb, followed by the verify env
+	// checks. Order matters for short-circuit evaluation: cheapest checks first,
+	// and the env-var lookups skip for ordinary reads. The leading
 	// !readOnlyIntent suppresses the gate for read-only mutating-verb
 	// operations (GraphQL queries, JSON-RPC reads, POST-based search).
-	gate := "!readOnlyIntent && isMutatingVerb(method) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()"
+	gate := "!readOnlyIntent && (mutationIntent || isMutatingVerb(method)) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()"
 	assert.Contains(t, emitted, gate,
-		"doInternal() should gate the short-circuit on !readOnlyIntent && isMutatingVerb && IsVerifyEnv && !IsVerifyLiveHTTPEnv")
+		"doInternal() should gate the short-circuit on mutation intent or verb plus the verify env checks")
 
 	// Synthetic envelope sentinel: downstream consumers (validate-narrative,
 	// agent inspections, future verify-mode assertions) key on the namespace
@@ -82,9 +82,9 @@ func TestClient_VerifyShortCircuit(t *testing.T) {
 	// do() and doRead() must both be thin wrappers around doInternal() so
 	// the gate-check site stays single. A future edit that inlines the
 	// gate into do() would split the source of truth and could drift.
-	assert.Contains(t, emitted, "func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {\n\treturn c.doInternal(ctx, method, path, params, body, headerOverrides, false)\n}",
+	assert.Contains(t, emitted, "func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {\n\treturn c.doInternal(ctx, method, path, params, body, headerOverrides, false, false)\n}",
 		"do() must be a thin wrapper passing readOnlyIntent=false to doInternal()")
-	assert.Contains(t, emitted, "func (c *Client) doRead(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {\n\treturn c.doInternal(ctx, method, path, params, body, headerOverrides, true)\n}",
+	assert.Contains(t, emitted, "func (c *Client) doRead(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {\n\treturn c.doInternal(ctx, method, path, params, body, headerOverrides, true, false)\n}",
 		"doRead() must be a thin wrapper passing readOnlyIntent=true to doInternal()")
 
 	// Read-only POST surface (GraphQL queries, RPC reads, search-by-POST)
@@ -99,4 +99,15 @@ func TestClient_VerifyShortCircuit(t *testing.T) {
 		"PostQueryWithParams must delegate to doRead so the verify-mode gate is bypassed")
 	assert.Contains(t, emitted, `return c.doRead(ctx, "POST", path, params, body, headers)`,
 		"PostQueryWithParamsAndHeaders must delegate to doRead so the verify-mode gate is bypassed")
+
+	assert.Contains(t, emitted, "func (c *Client) GetMutating(ctx context.Context, path string, params map[string]string) (json.RawMessage, error)",
+		"client.go should expose a mutation-intent GET helper for GET action endpoints")
+	assert.Contains(t, emitted, "func (c *Client) GetMutatingWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)",
+		"client.go should expose a header-aware mutation-intent GET helper")
+	assert.Contains(t, emitted, `result, _, err := c.doMutation(ctx, "GET", path, params, nil, headers)`,
+		"GET mutation helpers must route through the mutation-intent transport gate")
+	assert.Contains(t, emitted, `return result, err`,
+		"GET mutation helpers must return the mutation-intent transport result")
+	assert.Contains(t, emitted, "func (c *Client) doMutation(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error)",
+		"client.go should expose a private mutation-intent transport helper")
 }

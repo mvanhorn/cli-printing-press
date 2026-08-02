@@ -51,6 +51,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-pp-example` | operation | `Endpoint.Example` (verbatim Cobra example override) | No |
 | `x-pp-resource` | operation | resource name override | No |
 | `x-pp-pagination` | operation | `Endpoint.Pagination` | No |
+| `x-pp-mutation` | operation | `Endpoint.Mutation` | No |
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 | `x-pp-dispatch-param` | parameter | `Param.DispatchParam` | No |
@@ -1366,6 +1367,35 @@ paths:
       responses:
         "200":
           description: OK
+```
+
+### `x-pp-mutation`
+
+Marks an operation as mutating even when its HTTP method is normally treated as
+read-only, such as a GET action that starts, stops, restarts, deploys, or
+otherwise changes remote state.
+
+Parsed field: `Endpoint.Mutation`
+
+Rules:
+- Optional.
+- Defaults to `false`.
+- Must be a native boolean.
+- Applies only at the operation level.
+- When `true`, the generator classifies the endpoint as a mutation before
+  applying HTTP-verb and operation-name fallbacks.
+
+Example:
+
+```yaml
+paths:
+  /applications/{id}/restart:
+    get:
+      operationId: restartApplication
+      x-pp-mutation: true
+      responses:
+        "204":
+          description: Restarted
 ```
 
 ### `x-tier`

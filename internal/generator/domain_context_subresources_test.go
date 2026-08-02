@@ -135,6 +135,36 @@ func TestBuildDomainContext_NoSubResourcesIsFlat(t *testing.T) {
 	assert.False(t, ctx.Resources[0].Writable, "GET-only resource is not writable")
 }
 
+func TestBuildDomainContext_GETMutationsAreWritable(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("actions")
+	apiSpec.Resources = map[string]spec.Resource{
+		"explicit": {
+			Endpoints: map[string]spec.Endpoint{
+				"restart": {
+					Method:   "GET",
+					Path:     "/explicit/{id}/restart",
+					Mutation: true,
+				},
+			},
+		},
+		"inferred": {
+			Endpoints: map[string]spec.Endpoint{
+				"startApplication": {Method: "GET", Path: "/inferred/{id}/start"},
+			},
+		},
+	}
+
+	g := &Generator{Spec: apiSpec, profile: &profiler.APIProfile{}}
+	ctx := g.buildDomainContext()
+
+	assert.True(t, summaryByName(t, ctx, "explicit").Writable,
+		"an explicit GET mutation must be writable in agent context")
+	assert.True(t, summaryByName(t, ctx, "inferred").Writable,
+		"an inferred GET action mutation must be writable in agent context")
+}
+
 // TestBuildDomainContext_ReadOnlyParentWritableChild verifies the inverse of the
 // nested-comments case that resourceHasMutation's "and vice versa" comment claims:
 // a GET-only PARENT carrying a mutating CHILD keeps the parent read-only while the
