@@ -54,6 +54,8 @@ func TestSchemaPhase5MarkerPrintsJSONSchema(t *testing.T) {
 		"tests_failed",
 		"completed_at",
 		"summary",
+		"source_fingerprint",
+		"source_files",
 	} {
 		assert.Contains(t, output, `"`+field+`"`)
 	}
@@ -69,7 +71,7 @@ func TestSchemaPhase5SkipPrintsJSONSchema(t *testing.T) {
 	var schema map[string]any
 	require.NoError(t, json.Unmarshal([]byte(output), &schema))
 	assert.Equal(t, "CLI Printing Press phase5-skip.json", schema["title"])
-	for _, field := range []string{"schema_version", "run_id", "api_name", "cli_name", "status", "skip_reason", "auth_context"} {
+	for _, field := range []string{"schema_version", "run_id", "api_name", "cli_name", "status", "skip_reason", "auth_context", "source_fingerprint", "source_files"} {
 		assert.Contains(t, output, `"`+field+`"`)
 	}
 	assert.Contains(t, output, `"local_network_only"`)

@@ -510,6 +510,13 @@ fi
 mkdir -p "$PROOFS_DIR"
 ```
 
+Phase 5 markers are bound to the source tree that was exercised. The live
+dogfood writer records `source_fingerprint` and per-file hashes automatically.
+Publish validation recomputes the fingerprint from the current CLI directory
+and refuses a marker from a drifted tree, naming changed source files when the
+marker has them. README-only edits are outside this fingerprint and do not
+invalidate the gate.
+
 If `SKIP_LIVE_TEST_REASON` is unset, run full live dogfood and write a fresh
 acceptance marker into that proofs directory:
 
@@ -570,12 +577,29 @@ if [ -n "$AUTH_ENV" ] && [ -n "${!AUTH_ENV:-}" ]; then
   API_KEY_AVAILABLE=true
 fi
 
+SOURCE_FILES=$(find "$CLI_DIR" \( -type d \( -name '.git' -o -name '.manuscripts' -o -name '.printing-press' \) -prune \) -o -type f \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' -o -name 'spec.json' -o -name 'spec.yaml' -o -name 'spec.yml' \) -print | LC_ALL=C sort)
+SOURCE_FINGERPRINT=$(
+  while IFS= read -r SOURCE_FILE; do
+    [ -z "$SOURCE_FILE" ] && continue
+    SOURCE_REL="${SOURCE_FILE#"$CLI_DIR"/}"
+    SOURCE_HASH=$(shasum -a 256 "$SOURCE_FILE" | sed 's/[[:space:]].*//')
+    printf '%s\0%s\n' "$SOURCE_REL" "$SOURCE_HASH"
+  done <<EOF | shasum -a 256 | sed 's/[[:space:]].*//'
+$SOURCE_FILES
+EOF
+)
+if [ -z "$SOURCE_FINGERPRINT" ]; then
+  echo "ERROR: unable to fingerprint CLI source before writing the Phase 5 skip marker."
+  exit 1
+fi
+
 rm -f "$PROOFS_DIR/phase5-acceptance.json"
 jq -n \
   --arg api "$API_SLUG" \
   --arg run "$RUN_ID" \
   --arg reason "$SKIP_LIVE_TEST_REASON" \
   --arg auth "$AUTH_TYPE" \
+  --arg source_fingerprint "$SOURCE_FINGERPRINT" \
   --argjson api_key_available "$API_KEY_AVAILABLE" \
   --argjson browser_session_available false \
   '{
@@ -584,6 +608,7 @@ jq -n \
     run_id: $run,
     status: "skip",
     level: "none",
+    source_fingerprint: $source_fingerprint,
     skip_reason: $reason,
     auth_context: {
       type: $auth,

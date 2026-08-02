@@ -145,6 +145,10 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	if strings.TrimSpace(opts.CLIDir) == "" {
 		return nil, fmt.Errorf("CLIDir is required")
 	}
+	source, err := CaptureSourceFingerprint(opts.CLIDir)
+	if err != nil {
+		return nil, fmt.Errorf("capturing phase5 source fingerprint: %w", err)
+	}
 	if isDeviceCLIDir(opts.CLIDir) {
 		// Device (BLE) CLIs cannot be auto-driven by the generic live runner:
 		// their actuating commands require an explicit --live flag, a physically
@@ -236,7 +240,7 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	// every terminal verdict; phase5_gate.go already routes status:"fail"
 	// to the hold path.
 	if opts.WriteAcceptancePath != "" {
-		if err := writeLiveDogfoodAcceptance(opts, report); err != nil {
+		if err := writeLiveDogfoodAcceptance(opts, report, source); err != nil {
 			return nil, err
 		}
 	}
@@ -2905,7 +2909,7 @@ func isBrowserSessionAuthType(authType string) bool {
 	}
 }
 
-func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodReport) error {
+func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodReport, source SourceFingerprint) error {
 	// Identity (api_name/run_id) is recorded so `lock promote`'s cross-check
 	// in validatePhase5Marker can reject stale markers. Three sources, in
 	// order: the working-dir manifest (most authoritative — already merged
@@ -2925,12 +2929,14 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 	// acceptance marker. The 401-cascade is a harness artifact, not a defect.
 	if report.Verdict == liveDogfoodVerdictCookieAuthNoSession {
 		skipMarker := Phase5GateMarker{
-			SchemaVersion: 1,
-			APIName:       apiName,
-			RunID:         runID,
-			Status:        "skip",
-			Level:         "none",
-			SkipReason:    phase5SkipReasonCookieAuthNoHarnessSession,
+			SchemaVersion:     1,
+			APIName:           apiName,
+			RunID:             runID,
+			Status:            "skip",
+			Level:             "none",
+			SkipReason:        phase5SkipReasonCookieAuthNoHarnessSession,
+			SourceFingerprint: source.Digest,
+			SourceFiles:       source.Files,
 			AuthContext: Phase5AuthContext{
 				Type:                    authType,
 				BrowserSessionAvailable: false,
@@ -2948,18 +2954,20 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 	}
 
 	marker := Phase5GateMarker{
-		SchemaVersion:   1,
-		APIName:         apiName,
-		RunID:           runID,
-		Status:          status,
-		Level:           report.Level,
-		MatrixSize:      report.MatrixSize,
-		TestsPassed:     report.Passed,
-		TestsSkipped:    report.Skipped,
-		TestsUnverified: report.Unverified,
-		TestsFailed:     report.Failed,
-		CoverageHollow:  report.CoverageHollow,
-		HollowFeatures:  append([]string(nil), report.HollowFeatures...),
+		SchemaVersion:     1,
+		APIName:           apiName,
+		RunID:             runID,
+		Status:            status,
+		Level:             report.Level,
+		MatrixSize:        report.MatrixSize,
+		TestsPassed:       report.Passed,
+		TestsSkipped:      report.Skipped,
+		TestsUnverified:   report.Unverified,
+		TestsFailed:       report.Failed,
+		CoverageHollow:    report.CoverageHollow,
+		HollowFeatures:    append([]string(nil), report.HollowFeatures...),
+		SourceFingerprint: source.Digest,
+		SourceFiles:       source.Files,
 		AuthContext: Phase5AuthContext{
 			Type:            authType,
 			APIKeyAvailable: opts.AuthEnv != "" && os.Getenv(opts.AuthEnv) != "",
