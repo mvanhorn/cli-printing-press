@@ -3456,6 +3456,19 @@ func TestDetectEndpointSyncSortDoesNotConflateEndpointDescription(t *testing.T) 
 	assert.Empty(t, value)
 }
 
+func TestDetectEndpointSyncSortRequiresMatchingSinceField(t *testing.T) {
+	endpoint := spec.Endpoint{
+		Params: []spec.Param{
+			{Name: "updated_after", Type: "string"},
+			{Name: "sort", Type: "string", Default: "modified_at:asc"},
+		},
+	}
+
+	param, value := detectEndpointSyncSort(endpoint)
+	assert.Empty(t, param, "a different temporal field must not become watermark-safe")
+	assert.Empty(t, value)
+}
+
 func TestProfileSyncableResourcePaginationDefaultsPreserveEndpointParams(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "mixed-pagination",

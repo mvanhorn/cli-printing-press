@@ -2829,9 +2829,11 @@ func inferPaginationType(cursorParam string) string {
 // sort parameter is not enough to prove that a capped sync has a monotonic
 // watermark.
 func detectEndpointSyncSort(endpoint spec.Endpoint) (string, string) {
-	if sinceParam, _ := detectEndpointSinceParamAndFormat(endpoint, nil); sinceParam == "" {
+	sinceParam, _ := detectEndpointSinceParamAndFormat(endpoint, nil)
+	if sinceParam == "" {
 		return "", ""
 	}
+	sinceField := temporalSinceField(sinceParam)
 	for _, param := range endpoint.Params {
 		if param.PathParam || param.Positional || !isSyncSortParamName(param.Name) {
 			continue
@@ -2850,13 +2852,54 @@ func detectEndpointSyncSort(endpoint spec.Endpoint) (string, string) {
 			// The wire value must name the temporal field itself. Prose on the
 			// endpoint or sort parameter cannot prove that a generic value such
 			// as name:asc orders by the field used by the since filter.
-			if !describesLastModifiedSort(strings.ToLower(value)) || !isAscendingSortValue(value) {
+			sortField := temporalSortField(value)
+			if sortField == "" || !describesLastModifiedSort(sortField) || !isAscendingSortValue(value) {
+				continue
+			}
+			if sinceField != "" && !temporalFieldsMatch(sortField, sinceField) {
 				continue
 			}
 			return param.WireName(), value
 		}
 	}
 	return "", ""
+}
+
+func temporalSinceField(name string) string {
+	normalized := normalizeTemporalFieldName(name)
+	for _, suffix := range []string{"after", "since", "gte", "gt", "lte", "lt"} {
+		if strings.HasSuffix(normalized, suffix) {
+			return strings.TrimSuffix(normalized, suffix)
+		}
+	}
+	if normalized == "since" {
+		return ""
+	}
+	return normalized
+}
+
+func temporalSortField(value string) string {
+	parts := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(value)), func(r rune) bool {
+		return r == ':' || r == ',' || r == ' ' || r == '\t'
+	})
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.TrimLeft(parts[0], "+-")
+}
+
+func temporalFieldsMatch(a, b string) bool {
+	a = normalizeTemporalFieldName(a)
+	b = normalizeTemporalFieldName(b)
+	if a == b {
+		return true
+	}
+	for _, suffix := range []string{"at", "date", "time"} {
+		if strings.TrimSuffix(a, suffix) == b || strings.TrimSuffix(b, suffix) == a {
+			return true
+		}
+	}
+	return false
 }
 
 func isSyncSortParamName(name string) bool {
