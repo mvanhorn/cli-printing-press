@@ -626,6 +626,10 @@ Rules:
   not on an individual operation.
 - Must be a string naming a boolean field in the row payload; non-string
   values are ignored with a warning.
+- The field name must be a simple identifier (`^[a-zA-Z_][a-zA-Z0-9_]*$`). It
+  is interpolated into the generated store's non-member query, so dotted or
+  nested-path field names are rejected at runtime and the membership skip
+  becomes a no-op rather than filtering rows.
 - Consumed by the profiler when building dependent-sync resource metadata.
 
 Example:
