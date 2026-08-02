@@ -69,6 +69,34 @@ func TestWriteCLIManifest(t *testing.T) {
 	assert.Contains(t, string(changelog), "printing-press-library release automation")
 }
 
+func TestReadCLIBinaryNameRejectsPathComponents(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		cliName  string
+		wantName string
+	}{
+		{name: "valid", cliName: "notion-pp-cli", wantName: "notion-pp-cli"},
+		{name: "trims whitespace", cliName: " notion-pp-cli ", wantName: "notion-pp-cli"},
+		{name: "parent traversal", cliName: "../notion-pp-cli"},
+		{name: "absolute path", cliName: "/tmp/notion-pp-cli"},
+		{name: "backslash path", cliName: `..\\notion-pp-cli`},
+		{name: "dot", cliName: "."},
+		{name: "empty", cliName: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			data, err := json.Marshal(CLIManifest{CLIName: tc.cliName})
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
+
+			assert.Equal(t, tc.wantName, ReadCLIBinaryName(dir))
+		})
+	}
+}
+
 func TestWriteCLIManifestUsesOnlyClientProfileForPlatformRuntime(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "platform"), 0o755))

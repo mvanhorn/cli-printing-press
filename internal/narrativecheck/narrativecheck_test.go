@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 )
 
 // TestExtractSubcommandWords pins the wordlist rule against the bash
@@ -502,6 +504,23 @@ func TestValidateWithOptions_FullExamplesUsesTemplateVarEnvOverrides(t *testing.
 
 	if report.HasFailures() {
 		t.Fatalf("full example should seed manifest override env names, got %+v", report)
+	}
+}
+
+func TestDiscoverTemplateVarEnvFindsManifestAboveStagedBinary(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "build", "stage", "bin", "notion-pp-cli")
+	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
+		t.Fatalf("creating staged binary directory: %v", err)
+	}
+	manifest := `{"api_name":"notion","endpoint_template_vars":["workspace"],"endpoint_template_env_overrides":{"workspace":"NOTION_WORKSPACE"}}`
+	if err := os.WriteFile(filepath.Join(root, pipeline.CLIManifestFilename), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("writing root manifest: %v", err)
+	}
+
+	got := discoverTemplateVarEnv(binary)
+	if want := []templateVarEnvEntry{{Name: "NOTION_WORKSPACE", Value: "workspace_placeholder"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("discoverTemplateVarEnv() = %#v, want %#v", got, want)
 	}
 }
 

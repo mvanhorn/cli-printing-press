@@ -733,7 +733,7 @@ type templateVarEnvEntry struct {
 }
 
 func discoverTemplateVarEnv(binaryPath string) []templateVarEnvEntry {
-	manifest, err := pipeline.ReadCLIManifest(filepath.Dir(binaryPath))
+	manifest, err := readCLIManifestNearBinary(binaryPath)
 	if err != nil {
 		return nil
 	}
@@ -762,6 +762,26 @@ func discoverTemplateVarEnv(binaryPath string) []templateVarEnvEntry {
 		})
 	}
 	return envs
+}
+
+func readCLIManifestNearBinary(binaryPath string) (pipeline.CLIManifest, error) {
+	dir := filepath.Dir(binaryPath)
+	var lastErr error
+	// Cover a direct binary, bin/, and build/stage/bin/ without inheriting a
+	// manifest from an unrelated parent directory.
+	for range 4 {
+		manifest, err := pipeline.ReadCLIManifest(dir)
+		if err == nil {
+			return manifest, nil
+		}
+		lastErr = err
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return pipeline.CLIManifest{}, lastErr
+		}
+		dir = parent
+	}
+	return pipeline.CLIManifest{}, lastErr
 }
 
 func missingTemplateVarEnvAssignments(templateVars []templateVarEnvEntry) []string {

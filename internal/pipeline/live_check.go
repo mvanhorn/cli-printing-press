@@ -149,8 +149,8 @@ type LiveCheckOptions struct {
 	// override.
 	ResearchDir string
 	// BinaryName, when non-empty, names the executable to run. Leave blank
-	// to let RunLiveCheck derive it from CLIDir (tries `<base>-pp-cli`,
-	// falls back to `<base>`).
+	// to let RunLiveCheck derive it from CLIDir (tries the manifest name,
+	// then `<base>-pp-cli`, and finally `<base>`).
 	BinaryName string
 	// Timeout bounds each feature invocation. Zero uses DefaultLiveCheckTimeout.
 	Timeout time.Duration
@@ -236,6 +236,13 @@ func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 			return out
 		}
 	}
+	probeBinaryPath, cleanupProbeBinary, snapshotErr := snapshotLiveCheckBinary(binaryPath)
+	if snapshotErr != nil {
+		out.Unable = true
+		out.Reason = "snapshotting live-check binary: " + snapshotErr.Error()
+		return out
+	}
+	defer cleanupProbeBinary()
 
 	timeout := opts.Timeout
 	if timeout <= 0 {
@@ -249,7 +256,7 @@ func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 		concurrency = len(features)
 	}
 
-	results := runFeaturesConcurrent(opts.CLIDir, binaryPath, annotateLiveCheckFeatures(opts.CLIDir, features), timeout, concurrency)
+	results := runFeaturesConcurrent(opts.CLIDir, probeBinaryPath, annotateLiveCheckFeatures(opts.CLIDir, features), timeout, concurrency)
 	out.Features = results
 	for _, r := range results {
 		switch r.Status {
@@ -341,6 +348,35 @@ func rebuildLiveCheckBinary(cliDir, binaryPath string) error {
 		return fmt.Errorf("replacing binary: %w", err)
 	}
 	return nil
+}
+
+func snapshotLiveCheckBinary(binaryPath string) (string, func(), error) {
+	// Keep probes on an immutable copy so a later staged refresh cannot replace
+	// the executable backing an in-flight probe.
+	info, err := os.Stat(binaryPath)
+	if err != nil {
+		return "", func() {}, fmt.Errorf("statting resolved binary: %w", err)
+	}
+	data, err := os.ReadFile(binaryPath)
+	if err != nil {
+		return "", func() {}, fmt.Errorf("reading resolved binary: %w", err)
+	}
+
+	tempDir, err := os.MkdirTemp(filepath.Dir(binaryPath), ".printing-press-live-check-")
+	if err != nil {
+		tempDir, err = os.MkdirTemp("", "printing-press-live-check-")
+	}
+	if err != nil {
+		return "", func() {}, fmt.Errorf("creating probe directory: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(tempDir) }
+
+	dstPath := filepath.Join(tempDir, filepath.Base(binaryPath))
+	if err := os.WriteFile(dstPath, data, info.Mode().Perm()); err != nil {
+		cleanup()
+		return "", func() {}, fmt.Errorf("writing probe binary: %w", err)
+	}
+	return dstPath, cleanup, nil
 }
 
 func replaceLiveCheckBinary(src, dst string) error {
@@ -578,10 +614,24 @@ func newestLiveCheckBuildGraphModTime(cmdDir string) (time.Time, bool, error) {
 }
 
 // resolveBinaryPath returns the absolute path to the CLI binary. When name
-// is non-empty it's used verbatim; otherwise RunLiveCheck tries the common
-// `<base>-pp-cli` naming convention and falls back to `<base>`.
+// is non-empty it's used verbatim; otherwise the manifest name is tried before
+// the common `<base>-pp-cli` naming convention and `<base>` fallback.
 func resolveBinaryPath(cliDir, name string) (string, error) {
 	return resolveBinaryPathForGOOS(cliDir, name, runtime.GOOS)
+}
+
+// ResolveScorerBinaryPath returns the freshest runnable CLI binary found in
+// the layouts used by scorer and shipcheck. An explicit name wins; otherwise
+// the manifest name is tried before worktree-derived legacy names.
+func ResolveScorerBinaryPath(cliDir, name string) (string, error) {
+	return resolveBinaryPath(cliDir, name)
+}
+
+// ResolveScorerBinaryPathForGOOS is the platform-explicit form used by tests
+// and path-building callers that need to model another host executable
+// suffix.
+func ResolveScorerBinaryPathForGOOS(cliDir, name, goos string) (string, error) {
+	return resolveBinaryPathForGOOS(cliDir, name, goos)
 }
 
 func resolveBinaryPathForGOOS(cliDir, name, goos string) (string, error) {
@@ -646,11 +696,27 @@ func liveCheckBinaryCandidatesForGOOS(cliDir, name, goos string) []string {
 }
 
 func liveCheckBinaryNames(cliDir, name string) []string {
-	names := []string{name}
-	if name == "" {
-		base := filepath.Base(cliDir)
-		names = []string{base + "-pp-cli", base}
+	if strings.TrimSpace(name) != "" {
+		return []string{name}
 	}
+
+	names := make([]string, 0, 3)
+	seen := make(map[string]struct{})
+	add := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return
+		}
+		if _, ok := seen[candidate]; ok {
+			return
+		}
+		seen[candidate] = struct{}{}
+		names = append(names, candidate)
+	}
+	add(ReadCLIBinaryName(cliDir))
+	base := filepath.Base(cliDir)
+	add(base + "-pp-cli")
+	add(base)
 	return names
 }
 

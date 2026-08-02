@@ -107,6 +107,48 @@ func TestShipcheckCLIPath_ManifestOverridesBasename(t *testing.T) {
 	}
 }
 
+func TestShipcheckCLIPath_UsesManifestBinaryInStage(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "wt-phase-4-pp-cli")
+	stagedDir := filepath.Join(dir, "build", "stage", "bin")
+	if err := os.MkdirAll(stagedDir, 0o755); err != nil {
+		t.Fatalf("creating staged binary dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(`{"cli_name":"notion-pp-cli"}`), 0o644); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+	manifestBinary := filepath.Join(stagedDir, "notion-pp-cli")
+	if err := os.WriteFile(manifestBinary, []byte("staged binary"), 0o755); err != nil {
+		t.Fatalf("writing staged binary: %v", err)
+	}
+
+	if got := shipcheckCLIPath(&shipcheckOpts{dir: dir}); got != manifestBinary {
+		t.Fatalf("shipcheck binary path = %q, want manifest-named staged binary %q", got, manifestBinary)
+	}
+}
+
+func TestShipcheckCLIPath_UsesExistingWorktreeBinaryWhenManifestNameDiffers(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "wt-phase-4-pp-cli")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("creating worktree dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(`{"cli_name":"notion-pp-cli"}`), 0o644); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+	worktreeBinary := filepath.Join(dir, filepath.Base(dir))
+	if err := os.WriteFile(worktreeBinary, []byte("worktree binary"), 0o755); err != nil {
+		t.Fatalf("writing worktree binary: %v", err)
+	}
+
+	opts := &shipcheckOpts{dir: dir}
+	if got := shipcheckCLIPath(opts); got != worktreeBinary {
+		t.Fatalf("shipcheck binary path = %q, want existing worktree binary %q", got, worktreeBinary)
+	}
+}
+
 // TestShipcheckCLIPath_FallsBackToBasename covers the manifest-less case:
 // when .printing-press.json is missing or unparseable, the binary name
 // falls back to the directory basename (preserves legacy behavior).

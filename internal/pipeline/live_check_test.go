@@ -715,8 +715,8 @@ func TestLiveCheck_OutputSampleRedactsSplitJWTAcrossTruncationBoundary(t *testin
 	require.Contains(t, got, artifacts.PIIRedactedSentinel)
 }
 
-// TestLiveCheck_BinaryAutoDerivation verifies RunLiveCheck finds the binary
-// when BinaryName is empty by trying <base>-pp-cli then <base>.
+// TestLiveCheck_BinaryAutoDerivation verifies the legacy fallback after no
+// manifest name is available: <base>-pp-cli is tried before <base>.
 func TestLiveCheck_BinaryAutoDerivation(t *testing.T) {
 	dir := t.TempDir()
 	// CLIDir basename is the last path segment. Build a stub named that way
@@ -736,6 +736,96 @@ func TestLiveCheck_BinaryAutoDerivation(t *testing.T) {
 	require.Equal(t, 1, result.Passed)
 	require.Contains(t, result.Features[0].Example, "stub x matched")
 	require.Contains(t, result.Features[0].OutputSample, "matched via -pp-cli")
+}
+
+func TestLiveCheck_BinaryAutoDerivationUsesManifestName(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+
+	dir := filepath.Join(t.TempDir(), "worktree-x")
+	stagedDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(`{"api_name":"notion","cli_name":"notion-pp-cli"}`), 0o644))
+	writeStubBinary(t, stagedDir, "notion-pp-cli", `echo '{"data":[{"source":"manifest"}]}'`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "X", Command: "x", Example: "notion-pp-cli x --json"},
+	})
+
+	result := RunLiveCheck(LiveCheckOptions{
+		CLIDir:      dir,
+		ResearchDir: dir,
+		Timeout:     liveCheckIntegrationTimeout,
+	})
+	require.False(t, result.Unable, "manifest-named binary should be found: %s", result.Reason)
+	require.Equal(t, 1, result.Passed)
+	require.Contains(t, result.Features[0].OutputSample, "manifest")
+}
+
+func TestLiveCheck_UsesSnapshotBinaryForProbes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+
+	dir := filepath.Join(t.TempDir(), "worktree-x")
+	stagedDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(`{"api_name":"notion","cli_name":"notion-pp-cli"}`), 0o644))
+	writeStubBinary(t, stagedDir, "notion-pp-cli", `printf '{"data":[{"source":"%s"}]}\n' "$0"`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "X", Command: "x", Example: "notion-pp-cli x --json"},
+	})
+
+	result := RunLiveCheck(LiveCheckOptions{
+		CLIDir:      dir,
+		ResearchDir: dir,
+		Timeout:     liveCheckIntegrationTimeout,
+	})
+	require.False(t, result.Unable, "snapshot probe should run: %s", result.Reason)
+	require.Equal(t, 1, result.Passed)
+	require.Contains(t, result.Features[0].OutputSample, ".printing-press-live-check-")
+}
+
+func TestResolveBinaryPathForGOOSUsesManifestExe(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "worktree-x")
+	stagedDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(`{"cli_name":"notion-pp-cli"}`), 0o644))
+	windowsBinary := filepath.Join(stagedDir, "notion-pp-cli.exe")
+	require.NoError(t, os.WriteFile(windowsBinary, []byte("windows binary"), 0o644))
+
+	got, err := ResolveScorerBinaryPathForGOOS(dir, "", "windows")
+	require.NoError(t, err)
+	absWindowsBinary, err := filepath.Abs(windowsBinary)
+	require.NoError(t, err)
+	require.Equal(t, absWindowsBinary, got)
+}
+
+func TestSnapshotLiveCheckBinarySurvivesReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+
+	dir := t.TempDir()
+	original := writeStubBinary(t, dir, "sample-pp-cli", `echo '{"data":[{"source":"old"}]}'`)
+	snapshot, cleanup, err := snapshotLiveCheckBinary(original)
+	require.NoError(t, err)
+	t.Cleanup(cleanup)
+
+	replacement := writeStubBinary(t, dir, "replacement", `echo '{"data":[{"source":"new"}]}'`)
+	require.NoError(t, replaceLiveCheckBinary(replacement, original))
+
+	oldResult := runOneFeatureCheck(t.TempDir(), snapshot, NovelFeature{
+		Name: "X", Command: "x", Example: "sample-pp-cli x --json",
+	}, liveCheckIntegrationTimeout)
+	require.Equal(t, StatusPass, oldResult.Status, "snapshot should remain runnable: %s", oldResult.Reason)
+	require.Contains(t, oldResult.OutputSample, "old")
+
+	newResult := runOneFeatureCheck(t.TempDir(), original, NovelFeature{
+		Name: "X", Command: "x", Example: "sample-pp-cli x --json",
+	}, liveCheckIntegrationTimeout)
+	require.Equal(t, StatusPass, newResult.Status, "replacement should be runnable: %s", newResult.Reason)
+	require.Contains(t, newResult.OutputSample, "new")
 }
 
 func TestLiveCheckBinaryCandidatesPreferBuildStageBin(t *testing.T) {

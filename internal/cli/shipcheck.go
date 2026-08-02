@@ -185,10 +185,16 @@ func shipcheckBinaryName(dir string) string {
 }
 
 func shipcheckCLIPath(o *shipcheckOpts) string {
+	if path, err := pipeline.ResolveScorerBinaryPath(o.dir, ""); err == nil {
+		return path
+	}
 	return platform.ExecutablePath(filepath.Join(o.dir, shipcheckBinaryName(o.dir)))
 }
 
 func shipcheckCLIPathForGOOS(o *shipcheckOpts, goos string) string {
+	if path, err := pipeline.ResolveScorerBinaryPathForGOOS(o.dir, "", goos); err == nil {
+		return path
+	}
 	return platform.ExecutablePathForGOOS(filepath.Join(o.dir, shipcheckBinaryName(o.dir)), goos)
 }
 
