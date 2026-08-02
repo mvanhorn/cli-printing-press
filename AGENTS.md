@@ -8,7 +8,7 @@ This repo is **the machine** (generator, templates, binary, skills) that produce
 - **Don't change the machine for one CLI's edge case.** If a fix helps one API but breaks another, guard it with a clear conditional or leave it as a printed-CLI fix.
 - **Don't hardcode API/site names in reusable artifacts.** Skills, templates, generator code, prompts, and shared docs must use placeholders (`<api>`, `<site>`, "the target site") unless the text is explicitly an example or test fixture.
 - **Update dependent verifiers in the same change.** A new generator capability that affects scoring requires a scorer update; one that changes the MCP surface requires an audit update.
-When iterating on a printed CLI to discover issues, label findings as systemic (retro candidate) vs specific (printed-CLI fix).
+When iterating on a printed CLI to discover issues, classify findings as systemic (retro candidate) vs specific (printed-CLI fix).
 
 ### Anti-reimplementation
 A printed CLI wraps an API; it does not replace one. Novel-feature commands must call the real endpoint or read from the local store populated by sync.
@@ -172,6 +172,14 @@ Before implementation, claim the issue: assign it to yourself (or the GitHub use
 If the issue already has an assignee, treat that as active ownership until you can determine otherwise from recent activity or direct confirmation. For a plausibly stale assignment, ask the current assignee by tagging them in an issue comment before taking over or reassigning the issue.
 
 If you stop, abandon, or hand off before opening a PR, unclaim: remove the assignment and comment so the next picker-upper knows it is free. No need to unclaim on success — a merged PR closes the issue.
+
+## Issue Taxonomy and Relationships
+
+For actionable GitHub issues, including retro work-unit issues, apply exactly one `priority:P1|P2|P3` label, exactly one real issue type (`bug` or `enhancement`), and exactly one primary `comp:<slug>` component label. `source:retro` is optional provenance; legacy `retro` is accepted only while the provenance-label cutover is in progress and is never an issue type. Optional surface labels are a closed vocabulary: `surface:cli`, `surface:auth`, `surface:sync`, `surface:store`, `surface:mcp`, `surface:docs`, `surface:verify`, `surface:sniff`, and `surface:publish`; normally apply one, and never more than two, when evidence supports them. Components identify ownership; surfaces identify affected behavior.
+
+Routing outcomes `duplicate`, `invalid`, `wontfix`, and `question` are exempt from the actionable-field requirement. `documentation` and `good first issue` are overlays; they do not replace an actionable issue's priority, type, or primary component. PR queue labels are governed by the separate PR guidance below and are PR-only, outside the issue taxonomy.
+
+Keep retro work units as flat top-level issues. When a work unit declares a real prerequisite, represent it with GitHub's native `blocked-by`/`blocking` relationship; ordinary related-area or prior-retro references remain prose links in `Related issues` and must not be promoted to dependencies merely because they are adjacent. The `pp-fix-batch` queue derives readiness from an open, unassigned issue with the required priority and type labels (and its primary component for actionable work), not from provenance or routing labels; an unresolved native prerequisite remains a dependency, not a substitute label.
 
 ## Commit Style
 Format: `type(scope): description`. Both type and scope are required.
