@@ -57,7 +57,7 @@ fi
 
 ## Step 3: Scrub secrets
 
-Read and apply [references/secret-scrubbing.md](references/secret-scrubbing.md) on
+Read and apply [references/secret-scrubbing.md](secret-scrubbing.md) on
 the staging copies. The scrub file expects `$STAGING_MANUSCRIPTS` and
 `$STAGING_CLI_SOURCE` to be set.
 
