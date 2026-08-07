@@ -89,6 +89,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cli/resource_paths.go",
 		"internal/store/extras.go",
 		"internal/platform/profile.go",
+		"internal/platform/perms_unix.go",
+		"internal/platform/perms_windows.go",
 		"internal/platform/gate.go",
 		"internal/platform/metadata.go",
 		"internal/platform/migration.go",
@@ -141,9 +143,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +2: command and MCP platform-window adoption plus conformance tests.
 		// +1: internal/cliutil/testenv, the sandbox helper every emitted test
 		// routes its HOME/USERPROFILE isolation through.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 169},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 173},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 171},
+		// +2: platform-specific private-file permission helpers.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 171},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 175},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 173},
 	}
 
 	for _, tt := range tests {

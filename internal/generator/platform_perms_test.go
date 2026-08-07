@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -18,13 +19,8 @@ import (
 // toggles the read-only attribute, so a file written 0600 stats back 0666.
 var posixModeMask = regexp.MustCompile(`0o?077`)
 
-// TestGenerate_PlatformProfilePermsAreBuildTagged proves internal/platform does
-// not gate profile loading on a raw POSIX mode comparison.
-//
-// internal/cliutil already solves this with a //go:build split
-// (creds_perms_unix.go / creds_perms_windows.go). internal/platform, added
-// later, did not adopt the pattern and hard-failed every printed CLI on
-// Windows before it could do any work.
+// TestGenerate_PlatformProfilePermsAreBuildTagged verifies generated
+// private-file checks remain platform-specific.
 func TestGenerate_PlatformProfilePermsAreBuildTagged(t *testing.T) {
 	t.Parallel()
 
@@ -56,9 +52,15 @@ func TestGenerate_PlatformProfilePermsAreBuildTagged(t *testing.T) {
 		"the Windows helper must not compare POSIX mode bits")
 	require.Contains(t, winSrc, "cliutil.VerifyCredsPerms",
 		"Windows must reuse the existing DACL evaluator rather than inventing a second one")
+	conformanceSrc := readGeneratedFile(t, outputDir, "internal", "platform", "conformance_test.go")
+	require.Equal(t, 3, strings.Count(conformanceSrc, `if runtime.GOOS != "windows" {`),
+		"only the three POSIX mode assertions should be bypassed on Windows")
+	require.NotContains(t, conformanceSrc, `t.Skip("POSIX mode assertion is not meaningful on Windows")`,
+		"Windows must continue through the rest of each conformance test")
 
 	for _, f := range []string{"perms_unix.go", "perms_windows.go"} {
 		_, err := os.Stat(filepath.Join(outputDir, "internal", "platform", f))
 		require.NoError(t, err, "%s must be emitted", f)
 	}
+	requireGeneratedCompiles(t, outputDir)
 }

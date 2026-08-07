@@ -70,7 +70,7 @@
     "skipped": true
   },
   "source_client_check": {
-    "checked": 7
+    "checked": 9
   },
   "spec_path": "<ARTIFACT_DIR>/generate-golden-api/printing-press-golden/spec.yaml",
   "spec_source": "bundled",
