@@ -284,6 +284,42 @@ func read() string { return os.Getenv("PIZZA_HIDDEN_TOKEN") }
 		assert.False(t, entry.Required, "composed auth keeps user_config optional")
 	})
 
+	t.Run("discovered User-Agent override is optional and non-sensitive regardless of auth", func(t *testing.T) {
+		dir := t.TempDir()
+		cli := CLIManifest{
+			APIName:     "espn",
+			DisplayName: "ESPN",
+			MCPBinary:   "espn-pp-mcp",
+			AuthType:    "bearer_token",
+			AuthEnvVars: []string{"ESPN_TOKEN"},
+		}
+		writeMCPBManifest(t, dir, MCPBManifest{
+			Name: "espn-pp-mcp",
+			Server: MCPBServer{
+				MCPConfig: MCPBLaunchSpec{Env: map[string]string{"ESPN_TOKEN": "${user_config.espn_token}"}},
+			},
+			UserConfig: map[string]MCPBVar{
+				"espn_token": {Type: "string", Title: "ESPN_TOKEN", Required: true, Sensitive: true},
+			},
+		})
+		writeClientFile(t, dir, "client.go", `package client
+
+import "os"
+
+func read() string { return os.Getenv("ESPN_USER_AGENT") }
+`)
+
+		require.NoError(t, reconcileMCPBManifestFromClient(dir, cli))
+
+		got := readMCPBManifest(t, dir)
+		entry, ok := got.UserConfig["espn_user_agent"]
+		require.True(t, ok)
+		assert.False(t, entry.Required, "User-Agent override must stay optional even when base auth requires a credential")
+		assert.False(t, entry.Sensitive, "User-Agent override is not a secret")
+		assert.Contains(t, entry.Description, "not a credential")
+		assert.NotContains(t, entry.Description, "credential refresh")
+	})
+
 	t.Run("manifest with nil env/userconfig maps gets populated", func(t *testing.T) {
 		dir := t.TempDir()
 		cli := CLIManifest{APIName: "x", MCPBinary: "x-pp-mcp", AuthType: "api_key"}

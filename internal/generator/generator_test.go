@@ -12098,6 +12098,23 @@ func TestGenerateRequiredUserAgentHeaderBeatsDefaultUserAgent(t *testing.T) {
 	assert.NotContains(t, doctorSrc, `authHeaders["User-Agent"] = "browserheaders-pp-cli"`)
 }
 
+// Generated clients preserve explicit headers before applying the optional
+// environment override and baked-in User-Agent fallback.
+func TestGenerateUserAgentEnvVarOverridesDefault(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("uaenv")
+	outputDir := filepath.Join(t.TempDir(), "uaenv-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	assert.Contains(t, clientSrc, `if req.Header.Get("User-Agent") == "" {`)
+	assert.Contains(t, clientSrc, `if ua := os.Getenv("UAENV_USER_AGENT"); ua != "" {`)
+	assert.Contains(t, clientSrc, `req.Header.Set("User-Agent", ua)`)
+	assert.Contains(t, clientSrc, `req.Header.Set("User-Agent", "uaenv-pp-cli/0.1.0")`)
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGenerateObjectBodyDefaultsAreParsedAsJSON(t *testing.T) {
 	t.Parallel()
 

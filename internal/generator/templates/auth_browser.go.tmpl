@@ -2217,9 +2217,17 @@ func validateComposedAuth(authHeader string) error {
 		// Browser-shaped UA matches the main client default; WAF fingerprint
 		// checks on the auth-verify call have to clear the same bar as the
 		// per-resource calls or the user can't log in to begin with.
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")
+		if ua := os.Getenv("{{envName .Name}}_USER_AGENT"); ua != "" {
+			req.Header.Set("User-Agent", ua)
+		} else {
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")
+		}
 {{- else}}
-		req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+		if ua := os.Getenv("{{envName .Name}}_USER_AGENT"); ua != "" {
+			req.Header.Set("User-Agent", ua)
+		} else {
+			req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+		}
 {{- end}}
 	}
 {{- end}}
