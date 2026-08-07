@@ -5113,6 +5113,27 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 	// with HTTP 422 "Invalid json" (e.g. Tripletex [BETA] PUT
 	// /supplierInvoice/voucher/{id}/postings, body [{"posting":{...}}]).
 	if media.Schema.Value.Type != nil && media.Schema.Value.Type.Is(openapi3.TypeArray) {
+		// An array-root multipart body means "one or more file parts". The item
+		// schema is no help: Atlassian, for one, emits their Java MultipartFile
+		// type here rather than `type: string, format: binary`, so the file-ness
+		// is carried by the content type alone.
+		//
+		// Dropping the content type here left endpointUsesMultipart seeing "",
+		// so the generator emitted its generic JSON path and the command POSTed
+		// a JSON body naming a local file path — which the endpoint can never
+		// accept, while its help text still advertised multipart. Synthesize the
+		// binary param instead; multipartBodyMaps routes a binary
+		// param into fileFields, and the client's PostMultipart already builds a
+		// real multipart body.
+		if isMultipartContentType(requestContentType) {
+			return []spec.Param{{
+				Name:        "file",
+				Type:        "string",
+				Format:      "binary",
+				Required:    requestBody.Required,
+				Description: "Path to the file to upload.",
+			}}, requestContentType, false, requestBody.Required, false
+		}
 		if !isJSONContentType(requestContentType) {
 			warnf("skipping request body for %s %q: array-root body and content type %q is not JSON-shaped", strings.ToUpper(method), path, requestContentType)
 			return nil, "", false, false, false
@@ -5219,6 +5240,12 @@ func isJSONContentType(ct string) bool {
 		return true
 	}
 	return strings.HasPrefix(ct, "application/") && strings.HasSuffix(ct, "+json")
+}
+
+// isMultipartContentType reports whether ct is a multipart request body.
+func isMultipartContentType(ct string) bool {
+	base := strings.ToLower(strings.TrimSpace(strings.SplitN(ct, ";", 2)[0]))
+	return base == "multipart/form-data"
 }
 
 func isRawRequestContentType(ct string) bool {
