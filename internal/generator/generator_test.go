@@ -7736,6 +7736,50 @@ func TestPaginatedGetExemptsCursorParamFromZeroStripping(t *testing.T) {
 		`the unconditional v != "" && v != "0" && v != "false" filter incorrectly drops cursor="0" for offset-paginated APIs`)
 }
 
+// The exemption above must stay scoped to offset pagination. Under id-cursor
+// pagination 0 is not a real record id, so sending cursor=0 (what an unset
+// cursor flag produces) makes the API return an empty page — and every list
+// command reports zero rows while the endpoint itself is healthy.
+func TestPaginatedGetScopesCursorZeroExemptionToOffsetPagination(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("cursor-zero-scope")
+	apiSpec.Resources = map[string]spec.Resource{
+		"items": {
+			Description: "Manage items",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/items",
+					Description: "List items",
+					Pagination: &spec.Pagination{
+						Type:        "cursor",
+						CursorParam: "after",
+						LimitParam:  "limit",
+					},
+				},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), "cursor-zero-scope-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	path := filepath.Join(outputDir, "internal", "cli", "helpers.go")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err, "generated helper must exist: %s", path)
+	body := string(data)
+
+	cleanStart := strings.Index(body, "clean := map[string]string{}")
+	require.GreaterOrEqual(t, cleanStart, 0, "paginatedGet must declare a clean map")
+	loopEnd := strings.Index(body[cleanStart:], "if !fetchAll")
+	require.GreaterOrEqual(t, loopEnd, 0, "expected fetchAll branch after clean loop")
+	cleanBlock := body[cleanStart : cleanStart+loopEnd]
+
+	assert.Contains(t, cleanBlock, `k == cursorParam && paginationType == "offset"`,
+		`the cursor zero-value exemption must be gated on offset pagination; an unconditional exemption sends cursor=0 for id-cursor APIs and silently empties every list command`)
+	requireGeneratedCompiles(t, outputDir)
+}
+
 // TestPipedJsonGateRespectsExplicitFormatFlags pins the contract: the
 // piped-output auto-JSON gate must defer to explicit --csv / --quiet /
 // --plain flags so piped consumers that asked for a non-JSON format
