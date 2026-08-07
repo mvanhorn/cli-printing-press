@@ -7743,9 +7743,30 @@ func TestPaginatedGetExemptsCursorParamFromZeroStripping(t *testing.T) {
 func TestPaginatedGetScopesCursorZeroExemptionToOffsetPagination(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join("templates", "helpers.go.tmpl")
+	apiSpec := minimalSpec("cursor-zero-scope")
+	apiSpec.Resources = map[string]spec.Resource{
+		"items": {
+			Description: "Manage items",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/items",
+					Description: "List items",
+					Pagination: &spec.Pagination{
+						Type:        "cursor",
+						CursorParam: "after",
+						LimitParam:  "limit",
+					},
+				},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), "cursor-zero-scope-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	path := filepath.Join(outputDir, "internal", "cli", "helpers.go")
 	data, err := os.ReadFile(path)
-	require.NoError(t, err, "template must exist: %s", path)
+	require.NoError(t, err, "generated helper must exist: %s", path)
 	body := string(data)
 
 	cleanStart := strings.Index(body, "clean := map[string]string{}")
@@ -7756,6 +7777,7 @@ func TestPaginatedGetScopesCursorZeroExemptionToOffsetPagination(t *testing.T) {
 
 	assert.Contains(t, cleanBlock, `k == cursorParam && paginationType == "offset"`,
 		`the cursor zero-value exemption must be gated on offset pagination; an unconditional exemption sends cursor=0 for id-cursor APIs and silently empties every list command`)
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // TestPipedJsonGateRespectsExplicitFormatFlags pins the contract: the
