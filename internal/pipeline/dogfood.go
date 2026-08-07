@@ -3297,9 +3297,8 @@ func listGoFiles(dir string) []string {
 	return files
 }
 
-// listGoTestFiles returns the _test.go files in dir. It is the complement of
-// listGoFiles, which skips them. Dead-code analysis needs both: definitions
-// come from non-test files, usage must be counted across everything.
+// Dead-code analysis needs non-test files for definitions while counting usage
+// across both production and test files.
 func listGoTestFiles(dir string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

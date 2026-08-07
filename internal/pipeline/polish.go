@@ -106,16 +106,14 @@ func RemoveDeadCode(dir string, dryRun bool) (*PolishResult, error) {
 		buildCmd.Dir = dir
 		buildOutput, buildErr := buildCmd.CombinedOutput()
 
-		// `go build` never compiles _test.go, so on its own it cannot notice
-		// that a removal broke the test suite. `go test -run ^$` builds every
-		// test binary and runs no test: it is the compile-only check, and it is
-		// as fast as a build. Actually running the suite here would be slow and
-		// would fail for reasons unrelated to the removal (network, live API).
+		// Test binaries must compile after removal, but they must not execute:
+		// generated suites can require live credentials or other runtime setup.
 		if buildErr == nil {
-			testCmd := exec.Command("go", "test", "-run", "^$", "./...")
-			testCmd.Dir = dir
-			if out, err := testCmd.CombinedOutput(); err != nil {
+			if out, err := compileTestBinaries(dir); err != nil {
 				buildErr = err
+				if len(out) == 0 {
+					out = []byte(err.Error())
+				}
 				buildOutput = out
 			}
 		}
@@ -138,6 +136,18 @@ func RemoveDeadCode(dir string, dryRun bool) (*PolishResult, error) {
 
 	result.BuildVerified = true
 	return result, nil
+}
+
+func compileTestBinaries(dir string) ([]byte, error) {
+	outputDir, err := os.MkdirTemp("", "printing-press-polish-tests-*")
+	if err != nil {
+		return nil, fmt.Errorf("creating test build directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(outputDir) }()
+
+	testCmd := exec.Command("go", "test", "-c", "-o", outputDir, "./...")
+	testCmd.Dir = dir
+	return testCmd.CombinedOutput()
 }
 
 // findAllDeadFunctions scans ALL .go files in a CLI's internal/cli/ directory

@@ -13,9 +13,8 @@ import (
 // binaries must still compile.
 //
 // `go build` never compiles _test.go, so verification on build alone cannot
-// notice that a removal broke the suite — the command would report
-// build_verified:true over a red tree. Verification now also runs
-// `go test -run ^$ ./...`, which builds every test binary and runs no test.
+// notice that a removal broke the suite. Verification must compile test
+// binaries without executing package initialization or TestMain setup.
 func TestRemoveDeadCode_KeepsTheSuiteCompiling(t *testing.T) {
 	dir := t.TempDir()
 	cliDir := filepath.Join(dir, "internal", "cli")
@@ -39,7 +38,14 @@ func trulyDead() string {
 
 	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "root_test.go"), []byte(`package cli
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
+
+func TestMain(*testing.M) {
+	os.Exit(23)
+}
 
 func TestRootWires(t *testing.T) {
 	if RootCmd() != "root" {
@@ -55,7 +61,7 @@ func TestRootWires(t *testing.T) {
 	require.NoError(t, err)
 
 	require.True(t, result.BuildVerified,
-		"tree must verify clean; build_error=%q", result.BuildError)
+		"test binaries must compile without executing TestMain; build_error=%q", result.BuildError)
 	require.NotContains(t, result.Removed, "RootCmd",
 		"RootCmd is referenced from a _test.go and must survive")
 
