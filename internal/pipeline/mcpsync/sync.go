@@ -17,6 +17,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/specmeta"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/semver"
 )
@@ -50,6 +51,108 @@ type Options struct {
 	Force bool
 }
 
+type mcpClientSurfaceRequirement struct {
+	name   string
+	marker string
+}
+
+// Keep this contract in lockstep with client APIs referenced by mcp_tools.go.tmpl.
+var mcpClientSurfaceRequirements = []mcpClientSurfaceRequirement{
+	{"BinaryResponseHeader", "const BinaryResponseHeader"},
+	{"New(config, timeout, rateLimit)", "func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client"},
+	{"Client.Config", "field:Config:*config.Config"},
+	{"Client.NoCache", "field:NoCache:bool"},
+	{"Get(context.Context, ...)", "func (c *Client) Get(ctx context.Context,"},
+	{"GetWithHeaders(context.Context, ...)", "func (c *Client) GetWithHeaders(ctx context.Context,"},
+	{"PostWithParams(context.Context, ...)", "func (c *Client) PostWithParams(ctx context.Context,"},
+	{"PostWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PostWithParamsAndHeaders(ctx context.Context,"},
+	{"PostQueryWithParams(context.Context, ...)", "func (c *Client) PostQueryWithParams(ctx context.Context,"},
+	{"PostQueryWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PostQueryWithParamsAndHeaders(ctx context.Context,"},
+	{"DeleteWithParams(context.Context, ...)", "func (c *Client) DeleteWithParams(ctx context.Context,"},
+	{"DeleteWithParamsAndHeaders(context.Context, ...)", "func (c *Client) DeleteWithParamsAndHeaders(ctx context.Context,"},
+	{"PutWithParams(context.Context, ...)", "func (c *Client) PutWithParams(ctx context.Context,"},
+	{"PutWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PutWithParamsAndHeaders(ctx context.Context,"},
+	{"PatchWithParams(context.Context, ...)", "func (c *Client) PatchWithParams(ctx context.Context,"},
+	{"PatchWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PatchWithParamsAndHeaders(ctx context.Context,"},
+}
+
+var conditionalMCPClientSurfaceRequirements = []struct {
+	featureMarker string
+	requirements  []mcpClientSurfaceRequirement
+}{
+	{
+		featureMarker: "func (c *Client) PostForm(",
+		requirements: []mcpClientSurfaceRequirement{
+			{"PostFormWithParams(context.Context, ...)", "func (c *Client) PostFormWithParams(ctx context.Context,"},
+			{"PostFormWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PostFormWithParamsAndHeaders(ctx context.Context,"},
+			{"PostQueryFormWithParams(context.Context, ...)", "func (c *Client) PostQueryFormWithParams(ctx context.Context,"},
+			{"PostQueryFormWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PostQueryFormWithParamsAndHeaders(ctx context.Context,"},
+			{"PutFormWithParams(context.Context, ...)", "func (c *Client) PutFormWithParams(ctx context.Context,"},
+			{"PutFormWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PutFormWithParamsAndHeaders(ctx context.Context,"},
+			{"PatchFormWithParams(context.Context, ...)", "func (c *Client) PatchFormWithParams(ctx context.Context,"},
+			{"PatchFormWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PatchFormWithParamsAndHeaders(ctx context.Context,"},
+		},
+	},
+	{
+		featureMarker: "func (c *Client) PostMultipart(",
+		requirements: []mcpClientSurfaceRequirement{
+			{"PostMultipartWithParams(context.Context, ...)", "func (c *Client) PostMultipartWithParams(ctx context.Context,"},
+			{"PostMultipartWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PostMultipartWithParamsAndHeaders(ctx context.Context,"},
+			{"PutMultipartWithParams(context.Context, ...)", "func (c *Client) PutMultipartWithParams(ctx context.Context,"},
+			{"PutMultipartWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PutMultipartWithParamsAndHeaders(ctx context.Context,"},
+			{"PatchMultipartWithParams(context.Context, ...)", "func (c *Client) PatchMultipartWithParams(ctx context.Context,"},
+			{"PatchMultipartWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PatchMultipartWithParamsAndHeaders(ctx context.Context,"},
+		},
+	},
+	{
+		featureMarker: "requestTier string",
+		requirements: []mcpClientSurfaceRequirement{
+			{"WithTier(string)", "func (c *Client) WithTier(tier string) *Client"},
+		},
+	},
+}
+
+func ensureMCPClientSurfaceCompatible(cliDir string) error {
+	clientPath := filepath.Join(cliDir, "internal", "client", "client.go")
+	data, err := os.ReadFile(clientPath)
+	if err != nil {
+		return fmt.Errorf("mcp-sync refused: reading target CLI client API: %w; reprint required before regenerating the MCP surface", err)
+	}
+	src := string(data)
+	var missing []string
+	for _, requirement := range mcpClientSurfaceRequirements {
+		if !mcpClientSurfaceMarkerPresent(src, requirement.marker) {
+			missing = append(missing, requirement.name)
+		}
+	}
+	for _, conditional := range conditionalMCPClientSurfaceRequirements {
+		if !strings.Contains(src, conditional.featureMarker) {
+			continue
+		}
+		for _, requirement := range conditional.requirements {
+			if !mcpClientSurfaceMarkerPresent(src, requirement.marker) {
+				missing = append(missing, requirement.name)
+			}
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("mcp-sync refused: target CLI client API is incompatible with the current MCP handler (missing %s); reprint required before regenerating tools.go", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func mcpClientSurfaceMarkerPresent(src, marker string) bool {
+	if !strings.HasPrefix(marker, "field:") {
+		return strings.Contains(src, marker)
+	}
+	parts := strings.Split(marker, ":")
+	if len(parts) != 3 {
+		return false
+	}
+	pattern := `(?m)^\s*` + regexp.QuoteMeta(parts[1]) + `\s+` + regexp.QuoteMeta(parts[2]) + `\s*$`
+	return regexp.MustCompile(pattern).MatchString(src)
+}
+
 func Sync(cliDir string, opts Options) (Result, error) {
 	state, err := pipeline.InspectMCPSurface(cliDir)
 	if err != nil {
@@ -57,6 +160,9 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	}
 	if state.State == pipeline.MCPSurfaceHandEdited && !opts.Force {
 		return Result{}, fmt.Errorf("%w: tools.go appears hand-edited; refusing to overwrite. Use --force to override at your own risk", ErrHandEdited)
+	}
+	if err := ensureMCPClientSurfaceCompatible(cliDir); err != nil {
+		return Result{}, err
 	}
 	// MCPSurfaceRuntime means the MCP source is already on the new walker
 	// template and we don't need to migrate that. But we still refresh
@@ -69,6 +175,17 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	parsed, err := loadArchivedSpec(cliDir)
 	if err != nil {
 		return Result{}, err
+	}
+	// The manifest's api_name is the user's chosen identity (set by
+	// generate --name) and outranks the spec's info.title slug. Without
+	// this preempt, downstream emitters (WriteToolsManifest,
+	// populateMCPMetadata, GenerateMCPSurface) regenerate mcp_binary,
+	// api_name, manifest.json's name/entry_point, and
+	// cmd/<slug>-pp-{cli,mcp}/ directories under the title-derived slug
+	// — silently flipping a "telegram" CLI to "telegram-bot" mid-sync.
+	prior, manifestNameAuthoritative := applyManifestNameOverride(cliDir, parsed)
+	if prior != "" {
+		fmt.Fprintf(os.Stderr, "mcp-sync: using manifest api_name %q over spec-derived slug %q\n", parsed.Name, prior)
 	}
 	// Validate that spec.yaml.name matches the directory's basename.
 	// Older library CLIs sometimes have drift (weather-goat's
@@ -83,12 +200,14 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	// spec with a stale top-level `name:` field) by rewriting the line in
 	// place. For OpenAPI/GraphQL specs the fix is too invasive, so it
 	// falls through to the validator's --force-required error.
-	renamedFrom, err := reconcileSpecNameWithDir(cliDir, parsed)
-	if err != nil && !opts.Force {
-		return Result{}, err
-	}
-	if renamedFrom != "" {
-		fmt.Fprintf(os.Stderr, "mcp-sync: rewrote spec.yaml name from %q to %q to match directory-derived slug\n", renamedFrom, parsed.Name)
+	if !manifestNameAuthoritative {
+		renamedFrom, err := reconcileSpecNameWithDir(cliDir, parsed)
+		if err != nil && !opts.Force {
+			return Result{}, err
+		}
+		if renamedFrom != "" {
+			fmt.Fprintf(os.Stderr, "mcp-sync: rewrote spec.yaml name from %q to %q to match directory-derived slug\n", renamedFrom, parsed.Name)
+		}
 	}
 	// Preserve the existing manifest.json's display_name onto the parsed
 	// spec when the spec itself doesn't carry one. Library CLIs printed
@@ -102,7 +221,7 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	// Falls through to the public library's registry.json when
 	// manifest.json has no usable value (browser-sniffed CLIs that
 	// never had a manifest, or a manifest already corrupted to the
-	// slug form). The registry is the catalog source of truth for
+	// slug form). The public-library registry is the source of truth for
 	// brand names.
 	if parsed.DisplayName == "" {
 		if existing := readExistingManifestDisplayName(cliDir); existing != "" {
@@ -171,9 +290,6 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	if err := gen.GenerateMCPSurface(); err != nil {
 		return Result{}, fmt.Errorf("rendering MCP surface: %w", err)
 	}
-	if err := pipeline.WriteToolsManifest(cliDir, parsed); err != nil {
-		return Result{}, fmt.Errorf("regenerating tools-manifest.json: %w", err)
-	}
 	// Refresh .printing-press.json's spec-derived fields before regenerating
 	// manifest.json. WriteMCPBManifest reads provenance from disk, so
 	// without this step spec.yaml updates to auth.key_url, auth.optional,
@@ -183,6 +299,13 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	// when auth.optional was added (Required label didn't drop).
 	if err := pipeline.RefreshCLIManifestFromSpec(cliDir, parsed); err != nil {
 		return Result{}, fmt.Errorf("refreshing CLI manifest from spec: %w", err)
+	}
+	var manifestDescription string
+	if m, err := pipeline.ReadCLIManifest(cliDir); err == nil {
+		manifestDescription = m.Description
+	}
+	if err := pipeline.WriteToolsManifestWithDescription(cliDir, parsed, manifestDescription); err != nil {
+		return Result{}, fmt.Errorf("regenerating tools-manifest.json: %w", err)
 	}
 	// Regenerate the MCPB manifest too. The schema can drift between
 	// generator releases (most recently: cli_binary was removed because
@@ -468,6 +591,52 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	return writeFileAtomic(path, []byte(src))
 }
 
+// defaultConfigPathFormat is the spec-derived shape the OpenAPI/internal
+// parsers emit for Config.Path. The override only migrates paths matching
+// this shape; hand-customized paths (XDG-style overrides, per-environment
+// roots) are left alone.
+const defaultConfigPathFormat = "~/.config/%s/config.toml"
+
+// applyManifestNameOverride aligns parsed.Name with the existing CLI manifest's
+// api_name (the operator's chosen identity). It returns the prior parsed.Name
+// when an override actually happened ("" otherwise: manifest missing, api_name
+// empty, or the values already agreed) and authoritative=true when the manifest
+// api_name is the identity of record — i.e. it either overrode parsed.Name or
+// already matched it. The manifest is read exactly once, and the trimmed
+// api_name is used for both the comparison and the assignment so a hand-edited
+// manifest with stray whitespace can't leak a padded name downstream.
+func applyManifestNameOverride(cliDir string, parsed *spec.APISpec) (prior string, authoritative bool) {
+	if parsed == nil {
+		return "", false
+	}
+	m, err := pipeline.ReadCLIManifest(cliDir)
+	if err != nil {
+		// fs.ErrNotExist is the expected legacy-CLI case — fall through
+		// silently. A JSON parse failure (corrupted/partially-written
+		// manifest) is not expected: it would silently revert to the
+		// pre-fix spec-derived slug with no operator signal, so surface
+		// it on stderr.
+		if !errors.Is(err, fs.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "mcp-sync: could not read .printing-press.json (%v); falling back to spec-derived slug\n", err)
+		}
+		return "", false
+	}
+	apiName := strings.TrimSpace(m.APIName)
+	if apiName == "" {
+		return "", false
+	}
+	if apiName == parsed.Name {
+		return "", true
+	}
+	prior = parsed.Name
+	if parsed.Config.Path == fmt.Sprintf(defaultConfigPathFormat, naming.CLI(prior)) {
+		parsed.Config.Path = fmt.Sprintf(defaultConfigPathFormat, naming.CLI(apiName))
+	}
+	specmeta.RebaseAuthEnvPrefix(&parsed.Auth, prior, apiName)
+	parsed.Name = apiName
+	return prior, true
+}
+
 // readExistingManifestDisplayName returns the display_name from an
 // existing manifest.json if it's a real brand name. The only form
 // rejected is the bare lowercase slug we'd otherwise emit as last
@@ -589,10 +758,21 @@ var internalSpecNameLine = regexp.MustCompile(`(?m)^name:[ \t]*.*$`)
 // silently. The non-empty renamedFrom return signals the caller to
 // log the rename.
 func reconcileSpecNameWithDir(cliDir string, parsed *spec.APISpec) (renamedFrom string, err error) {
-	if parsed == nil || parsed.Name == "" {
+	if parsed == nil {
 		return "", nil
 	}
 	expected := naming.TrimCLISuffix(filepath.Base(cliDir))
+	if parsed.Name == "" {
+		specPath, data, ok := findInternalYAMLSpec(cliDir)
+		if ok && !internalSpecNameLine.Match(data) {
+			rewritten := append([]byte("name: "+expected+"\n"), data...)
+			if err := writeFileAtomic(specPath, rewritten); err != nil {
+				return "", fmt.Errorf("rewriting %s: %w", specPath, err)
+			}
+		}
+		parsed.Name = expected
+		return "", nil
+	}
 	if expected == parsed.Name {
 		return "", nil
 	}

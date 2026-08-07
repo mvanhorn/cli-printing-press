@@ -2,6 +2,16 @@
 
 Cross-cutting design patterns the printing press uses, with the rules for applying them. Loaded on-demand when designing or extending a workflow that needs one.
 
+## Device-Native Discovery
+
+When a target is a local physical device, keep the discovery artifact protocol-native and generate from that artifact directly. BLE devices use advertised identity, services, characteristics, reads, writes, notifications, action journals, and safety labels; they should not be flattened into fake HTTP paths or methods just to fit ordinary API generation.
+
+Use Device Sniff as the umbrella for local-device backends. BLE is the first backend, but future LAN, Wi-Fi, MQTT, UDP, or cloud-adjacent IoT discovery should share the same identity, evidence, safety, telemetry, and session concepts while preserving their own protocol details.
+
+Safety labels in device specs are classification and provenance. They should drive conservative MCP annotations, verify/dogfood no-ops, and explicit CLI confirmation for `physical-effect` or `configuration-risk` writes. They should not become blanket human-facing blocks when a command is evidence-backed, the operator has previewed it, and the operator intentionally passes the confirmation flag.
+
+Device backends are wrapped behind a testability seam (the `bleDriver` interface, implemented against the real stack and against an in-memory stub for tests). The seam only adds confidence if the production wrapper preserves the backend's pointer-receiver mutation semantics and the stub honors the backend's real return/teardown contracts — see [`solutions/design-patterns/ble-seam-stub-fidelity-pointer-receiver.md`](solutions/design-patterns/ble-seam-stub-fidelity-pointer-receiver.md).
+
 ## Deterministic Inventory + Agent-Marked Ledger
 
 When a workflow has a checklist where detection is mechanical but each item needs per-item judgment, split the work between a binary-emitted inventory and an agent-maintained ledger. The binary owns "what's there"; the agent owns "what to do about each item." A persistent file holds both, so the work survives context flushes and the audit trail surfaces the agent's reasoning.

@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/device/fixtures/ble-opaque-binary.yaml --output "$CASE_ACTUAL_DIR/ble-opaque-binary" --force --validate=false

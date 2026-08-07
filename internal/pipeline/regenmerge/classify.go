@@ -58,6 +58,12 @@ func extractDecls(filename string) (declSet, error) {
 	for _, d := range file.Decls {
 		switch decl := d.(type) {
 		case *ast.FuncDecl:
+			if decl.Recv == nil && decl.Name.Name == "registerClientHook" {
+				// Client hook registration is generated scaffolding. Ignore it so
+				// a force regen can upgrade an older root while retaining a
+				// markerless package-local client extension.
+				continue
+			}
 			decls.add(canonicalFuncName(decl))
 		case *ast.GenDecl:
 			for _, spec := range decl.Specs {
@@ -66,6 +72,12 @@ func extractDecls(filename string) (declSet, error) {
 					decls.add(s.Name.Name)
 				case *ast.ValueSpec:
 					for _, n := range s.Names {
+						// The original singleton hook was generated scaffolding,
+						// not authored surface. Ignore it so a force regen can
+						// migrate older generated roots to the additive hook.
+						if n.Name == "novelCommands" || n.Name == "clientHooks" {
+							continue
+						}
 						decls.add(n.Name)
 					}
 				}
@@ -124,7 +136,7 @@ func hasTemplatedMarker(filename string) bool {
 // emitting one FileClassification per relative path. Decl-set extraction
 // for fresh .go files is cached so the cross-file-search pass and the
 // per-file comparison share a single parse per fresh file.
-func classifyFiles(publishedDir, freshDir string) ([]FileClassification, error) {
+func classifyFiles(publishedDir, freshDir, baseDir string) ([]FileClassification, error) {
 	pubFiles, err := walkSourceFiles(publishedDir)
 	if err != nil {
 		return nil, fmt.Errorf("walking published: %w", err)
@@ -135,6 +147,14 @@ func classifyFiles(publishedDir, freshDir string) ([]FileClassification, error) 
 	}
 	pubSet := stringSet(pubFiles)
 	freshSet := stringSet(freshFiles)
+	baseSet := map[string]struct{}{}
+	if baseDir != "" {
+		baseFiles, err := walkSourceFiles(baseDir)
+		if err != nil {
+			return nil, fmt.Errorf("walking base: %w", err)
+		}
+		baseSet = stringSet(baseFiles)
+	}
 
 	// Cache fresh decl-sets keyed by relative path. One parse per fresh
 	// file across both the global cross-file search and per-file
@@ -186,6 +206,17 @@ func classifyFiles(publishedDir, freshDir string) ([]FileClassification, error) 
 				fc.Verdict = VerdictNovel
 			}
 		case inPub && inFresh:
+			if _, inBase := baseSet[rel]; inBase {
+				sameAsBase, err := filesEqual(pubPath, filepath.Join(baseDir, rel))
+				if err != nil {
+					return nil, fmt.Errorf("comparing published to base for %s: %w", rel, err)
+				}
+				if sameAsBase {
+					fc.Verdict = VerdictTemplatedClean
+					out = append(out, fc)
+					continue
+				}
+			}
 			// In both. Only .go files participate in decl-set comparison;
 			// go.mod / go.sum classify as TEMPLATED-CLEAN here so Apply
 			// overwrites with the merged form.
@@ -210,6 +241,18 @@ func classifyFiles(publishedDir, freshDir string) ([]FileClassification, error) 
 		out = append(out, fc)
 	}
 	return out, nil
+}
+
+func filesEqual(left, right string) (bool, error) {
+	leftData, err := os.ReadFile(left)
+	if err != nil {
+		return false, err
+	}
+	rightData, err := os.ReadFile(right)
+	if err != nil {
+		return false, err
+	}
+	return string(leftData) == string(rightData), nil
 }
 
 func stringSet(s []string) map[string]struct{} {

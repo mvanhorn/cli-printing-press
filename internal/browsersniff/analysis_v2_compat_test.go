@@ -137,6 +137,12 @@ func TestAuthAnalysis_CandidateTypesV2Compat(t *testing.T) {
 		require.NoError(t, json.Unmarshal([]byte(`{}`), &a))
 		assert.Empty(t, a.Candidates)
 	})
+
+	t.Run("captcha preflight field preserved", func(t *testing.T) {
+		var a AuthAnalysis
+		require.NoError(t, json.Unmarshal([]byte(`{"captcha_preflight":true}`), &a))
+		assert.True(t, a.CaptchaPreflight)
+	})
 }
 
 // TestTrafficAnalysis_GenerationHintsMapCompat covers `generation_hints` shape

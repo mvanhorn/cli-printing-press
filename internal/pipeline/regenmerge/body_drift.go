@@ -75,6 +75,10 @@ func bodyCallsByFunc(filename string) map[string]map[string]struct{} {
 		if !ok || fn.Body == nil {
 			continue
 		}
+		// Generated registration scaffolding evolves independently of a
+		// hand-authored extension. Strip it before comparing call targets so
+		// a singleton-to-additive migration is not mistaken for a body edit.
+		fn.Body.List = stripAddCommandStmts(fn.Body.List)
 		name := canonicalFuncName(fn)
 		calls := map[string]struct{}{}
 		ast.Inspect(fn.Body, func(n ast.Node) bool {

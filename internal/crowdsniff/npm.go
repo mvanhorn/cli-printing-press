@@ -2,6 +2,7 @@ package crowdsniff
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -17,15 +18,17 @@ import (
 )
 
 const (
-	defaultRegistryBaseURL  = "https://registry.npmjs.org"
-	defaultDownloadsBaseURL = "https://api.npmjs.org"
-	defaultRecencyCutoff    = 180 * 24 * time.Hour // 6 months
-	defaultHTTPTimeout      = 15 * time.Second
-	maxTarballSize          = 10 * 1024 * 1024 // 10 MB
-	maxSearchResults        = 25
-	maxPackagesToProcess    = 10
-	maxBulkDownloadPackages = 128
-	maxReadmeSize           = 100 * 1024 // 100 KB
+	defaultRegistryBaseURL   = "https://registry.npmjs.org"
+	defaultDownloadsBaseURL  = "https://api.npmjs.org"
+	defaultRecencyCutoff     = 180 * 24 * time.Hour // 6 months
+	defaultHTTPTimeout       = 15 * time.Second
+	maxHTTPRedirects         = 10
+	maxTarballSize           = 10 * 1024 * 1024 // 10 MB
+	maxDownloadsResponseSize = 2 * 1024 * 1024  // 2 MB
+	maxSearchResults         = 25
+	maxPackagesToProcess     = 10
+	maxBulkDownloadPackages  = 128
+	maxReadmeSize            = 100 * 1024 // 100 KB
 )
 
 // NPMOptions configures the NPM source.
@@ -59,6 +62,7 @@ func NewNPMSource(opts NPMOptions) *NPMSource {
 	if client == nil {
 		client = &http.Client{Timeout: defaultHTTPTimeout}
 	}
+	client = withHTTPSRedirectPolicy(client)
 	cutoff := opts.RecencyCutoff
 	if cutoff == 0 {
 		cutoff = defaultRecencyCutoff
@@ -69,6 +73,37 @@ func NewNPMSource(opts NPMOptions) *NPMSource {
 		httpClient:       client,
 		recencyCutoff:    cutoff,
 	}
+}
+
+// withHTTPSRedirectPolicy returns a shallow copy of client whose CheckRedirect
+// rejects any redirect to a non-HTTPS URL. The initial tarball URL is validated
+// as HTTPS, but Go's default client follows redirects without revalidating the
+// scheme, so an HTTPS URL could otherwise redirect to plain HTTP and still be
+// downloaded. Any CheckRedirect the caller already set is preserved and runs
+// after the scheme check. The caller's client is not mutated.
+func withHTTPSRedirectPolicy(client *http.Client) *http.Client {
+	inner := client.CheckRedirect
+	c := *client
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= maxHTTPRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxHTTPRedirects)
+		}
+		if req.URL.Scheme != "https" {
+			return fmt.Errorf("refusing redirect to non-HTTPS URL: %s", req.URL.Redacted())
+		}
+		if inner != nil {
+			if err := inner(req, via); err != nil {
+				return err
+			}
+			// Re-check after the caller's hook in case it modified the
+			// request URL before returning nil.
+			if req.URL.Scheme != "https" {
+				return fmt.Errorf("refusing redirect to non-HTTPS URL: %s", req.URL.Redacted())
+			}
+		}
+		return nil
+	}
+	return &c
 }
 
 // npmSearchResponse represents the npm registry search API response.
@@ -243,18 +278,77 @@ func (s *NPMSource) fetchDownloads(ctx context.Context, packages []npmPackageInf
 		return result
 	}
 
-	var bulk npmBulkDownloadsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&bulk); err != nil {
-		fmt.Fprintf(os.Stderr, "crowd-sniff: failed to decode downloads response: %v\n", err)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDownloadsResponseSize))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "crowd-sniff: failed to read downloads response: %v\n", err)
 		return result
 	}
 
-	for name, data := range bulk {
-		if data != nil {
+	decoded, err := decodeDownloadsResponse(body, names)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "crowd-sniff: failed to decode downloads response: %v\n", err)
+		return decoded
+	}
+	return decoded
+}
+
+// decodeDownloadsResponse accepts both the bulk npm response and the
+// single-package response returned when the request contains one package.
+// Some compatible endpoints also return counts directly instead of wrapping
+// them in an object, so those shapes are accepted in the bulk response.
+func decodeDownloadsResponse(body []byte, packageNames []string) (map[string]int, error) {
+	result := make(map[string]int)
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return result, fmt.Errorf("empty response")
+	}
+
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(body, &object); err != nil {
+		return result, err
+	}
+
+	if raw, isSingle := object["downloads"]; isSingle && len(packageNames) == 1 && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		var count int
+		if err := json.Unmarshal(raw, &count); err == nil {
+			var data npmDownloadsResponse
+			if err := json.Unmarshal(body, &data); err != nil {
+				return result, err
+			}
+			name := data.Package
+			if name == "" && len(packageNames) == 1 {
+				name = packageNames[0]
+			}
+			if name == "" {
+				return result, fmt.Errorf("single-package response has no package name")
+			}
 			result[name] = data.Downloads
+			return result, nil
 		}
 	}
-	return result
+
+	var decodeErr error
+	for name, raw := range object {
+		trimmed := bytes.TrimSpace(raw)
+		if bytes.Equal(trimmed, []byte("null")) {
+			continue
+		}
+		var count int
+		if err := json.Unmarshal(trimmed, &count); err == nil {
+			result[name] = count
+			continue
+		}
+
+		var data npmDownloadsResponse
+		if err := json.Unmarshal(raw, &data); err != nil {
+			if decodeErr == nil {
+				decodeErr = fmt.Errorf("package %q: %w", name, err)
+			}
+			continue
+		}
+		result[name] = data.Downloads
+	}
+	return result, decodeErr
 }
 
 // fetchTarballURL gets the tarball download URL for a specific package version.
@@ -392,7 +486,9 @@ func (s *NPMSource) processPackageTarball(ctx context.Context, tarballURL, pkgNa
 // extractTarball extracts a gzipped tar archive to the destination directory.
 // Security: rejects symlinks, hard links, path traversal, and limits total size.
 func extractTarball(r io.Reader, destDir string) error {
-	// Limit total bytes read.
+	// Bound the compressed input as a coarse first guard. This alone is not
+	// enough: a small gzip stream can expand far past maxTarballSize, so the
+	// decompressed output is bounded separately below.
 	limited := io.LimitReader(r, maxTarballSize)
 
 	gz, err := gzip.NewReader(limited)
@@ -406,6 +502,11 @@ func extractTarball(r io.Reader, destDir string) error {
 	if err != nil {
 		return fmt.Errorf("resolving dest dir: %w", err)
 	}
+
+	// remaining is the decompressed-byte budget shared across every extracted
+	// regular file, so a decompression bomb cannot exceed maxTarballSize in
+	// aggregate no matter how many entries it is split across.
+	remaining := int64(maxTarballSize)
 
 	for {
 		header, err := tr.Next()
@@ -449,20 +550,41 @@ func extractTarball(r io.Reader, destDir string) error {
 			return fmt.Errorf("creating parent dir for %s: %w", header.Name, err)
 		}
 
+		// Reject an entry whose declared size alone would blow the remaining
+		// decompressed budget, before creating the file.
+		if header.Size > remaining {
+			return fmt.Errorf("tarball exceeds decompressed size limit of %d bytes", maxTarballSize)
+		}
+
 		f, err := os.Create(absTarget)
 		if err != nil {
 			return fmt.Errorf("creating file %s: %w", header.Name, err)
 		}
 
-		// Copy with size limit per file (same global limit via LimitReader on outer reader).
-		if _, err := io.Copy(f, tr); err != nil {
+		written, err := copyTarEntryWithBudget(f, tr, remaining)
+		if err != nil {
 			_ = f.Close()
+			_ = os.Remove(absTarget)
 			return fmt.Errorf("writing file %s: %w", header.Name, err)
 		}
 		_ = f.Close()
+		remaining -= written
 	}
 
 	return nil
+}
+
+func copyTarEntryWithBudget(dst io.Writer, src io.Reader, remaining int64) (int64, error) {
+	// Read one byte past the budget so an overlong stream is distinguishable
+	// from an entry that ends exactly at the limit.
+	written, err := io.Copy(dst, io.LimitReader(src, remaining+1))
+	if err != nil {
+		return written, err
+	}
+	if written > remaining {
+		return written, fmt.Errorf("tarball exceeds decompressed size limit of %d bytes", maxTarballSize)
+	}
+	return written, nil
 }
 
 // classifyPackage determines whether a package is an official or community SDK.

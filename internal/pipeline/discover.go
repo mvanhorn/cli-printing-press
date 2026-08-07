@@ -3,9 +3,6 @@ package pipeline
 import (
 	"fmt"
 	"strings"
-
-	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 )
 
 // KnownSpec holds metadata about a known API spec.
@@ -126,47 +123,17 @@ var KnownSpecs = map[string]KnownSpec{
 	},
 }
 
-// ApisGuruPattern builds an apis-guru URL for a provider and version.
-func ApisGuruPattern(provider, version string) string {
-	return fmt.Sprintf("https://raw.githubusercontent.com/APIs-guru/openapi-directory/main/APIs/%s/%s/openapi.yaml", provider, version)
-}
-
 // DiscoverSpec finds the OpenAPI spec URL for a given API name.
 // Returns the URL and a source description.
 func DiscoverSpec(apiName string) (string, string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(apiName))
 
-	if entry, err := catalog.LookupFS(catalogfs.FS, normalized); err == nil {
-		if entry.SpecURL == "" {
-			return "", "", fmt.Errorf("catalog entry %q does not define spec_url - try providing a URL with --spec", apiName)
-		}
-		return entry.SpecURL, catalogSpecSource(entry), nil
-	}
-
-	// Check known specs for aliases that do not have catalog entries.
+	// Check known specs for aliases with stable public OpenAPI URLs.
 	if spec, ok := KnownSpecs[normalized]; ok {
 		return spec.URL, "known-specs registry", nil
 	}
 
-	// Try apis-guru with common version patterns - return the first one
-	// (caller should validate with an HTTP fetch).
-	versions := []string{"v1", "v2", "v3", "1.0", "2.0"}
-	if len(versions) > 0 {
-		url := ApisGuruPattern(normalized+".com", versions[0])
-		return url, "apis-guru (unverified, needs fetch validation)", nil
-	}
-
 	return "", "", fmt.Errorf("could not find OpenAPI spec for %q - try providing a URL with --spec", apiName)
-}
-
-func catalogSpecSource(entry *catalog.Entry) string {
-	if source := strings.TrimSpace(entry.SpecSource); source != "" {
-		return "catalog entry (" + source + ")"
-	}
-	if tier := strings.TrimSpace(entry.Tier); tier != "" {
-		return "catalog entry (" + tier + ")"
-	}
-	return "catalog entry"
 }
 
 // IsSandboxSafe returns true if the API is known to have a safe test/sandbox environment.

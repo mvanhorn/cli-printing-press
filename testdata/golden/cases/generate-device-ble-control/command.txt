@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/device/fixtures/ble-simple-actuator.yaml --output "$CASE_ACTUAL_DIR/ble-desk-lamp" --force --validate=false

@@ -10,15 +10,27 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/publicsuffix"
+
 	"github.com/mvanhorn/cli-printing-press/v4/internal/discovery"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 const trafficAnalysisVersion = "1"
+const maxCaptchaPreflightJSONBytes = 4096
+const maxCaptchaChallengeJSONBytes = maxCaptchaPreflightJSONBytes * 16
+
+type SecondaryHostReason string
+
+const (
+	SecondaryHostReasonNonPrimary SecondaryHostReason = "non-primary host"
+	SecondaryHostReasonTelemetry  SecondaryHostReason = "telemetry host"
+)
 
 type TrafficAnalysis struct {
 	Version           string                  `json:"version"`
 	Summary           TrafficAnalysisSummary  `json:"summary"`
+	SecondaryHosts    []SecondaryHost         `json:"secondary_hosts,omitempty"`
 	Reachability      *ReachabilityAnalysis   `json:"reachability,omitempty"`
 	Protocols         []ProtocolObservation   `json:"protocols"`
 	Auth              AuthAnalysis            `json:"auth"`
@@ -29,6 +41,12 @@ type TrafficAnalysis struct {
 	CandidateCommands []CandidateCommand      `json:"candidate_commands,omitempty"`
 	GenerationHints   []string                `json:"generation_hints,omitempty"`
 	Warnings          []AnalysisWarning       `json:"warnings,omitempty"`
+}
+
+type SecondaryHost struct {
+	Host   string              `json:"host"`
+	Count  int                 `json:"count"`
+	Reason SecondaryHostReason `json:"reason"`
 }
 
 // UnmarshalJSON normalizes two v2 shapes that v3 no longer emits but that
@@ -132,14 +150,15 @@ func unmarshalGenerationHints(data []byte) ([]string, error) {
 }
 
 type TrafficAnalysisSummary struct {
-	TargetURL        string         `json:"target_url,omitempty"`
-	CapturedAt       string         `json:"captured_at,omitempty"`
-	EntryCount       int            `json:"entry_count"`
-	APIEntryCount    int            `json:"api_entry_count"`
-	NoiseEntryCount  int            `json:"noise_entry_count"`
-	HostDistribution map[string]int `json:"host_distribution,omitempty"`
-	TimeStart        string         `json:"time_start,omitempty"`
-	TimeEnd          string         `json:"time_end,omitempty"`
+	TargetURL               string         `json:"target_url,omitempty"`
+	CapturedAt              string         `json:"captured_at,omitempty"`
+	EntryCount              int            `json:"entry_count"`
+	APIEntryCount           int            `json:"api_entry_count"`
+	NoiseEntryCount         int            `json:"noise_entry_count"`
+	HostDistribution        map[string]int `json:"host_distribution,omitempty"`
+	HTTPVersionDistribution map[string]int `json:"http_version_distribution,omitempty"`
+	TimeStart               string         `json:"time_start,omitempty"`
+	TimeEnd                 string         `json:"time_end,omitempty"`
 }
 
 // EvidenceRef cites a piece of evidence for an observation. Two flavors:
@@ -221,7 +240,18 @@ type ProtocolObservation struct {
 }
 
 type AuthAnalysis struct {
-	Candidates []AuthCandidate `json:"candidates,omitempty"`
+	Candidates       []AuthCandidate `json:"candidates,omitempty"`
+	CaptchaPreflight bool            `json:"captcha_preflight,omitempty"`
+
+	// Auth0SPAInMemory is true when an /oauth/token response carried an
+	// `access_token` in the JSON body without a JWT-shaped Set-Cookie on the
+	// same response — the signature of an Auth0 SPA SDK deployment using
+	// `cacheLocation: memory`. The token lives in JS heap and is reachable
+	// only via CDP runtime interception, so the spec carries
+	// `auth.subtype: auth0_spa_in_memory` and the generated `auth login`
+	// command exposes a `--auth0-spa` CDP path instead of cookie-jar
+	// extraction. See internal/browsersniff/auth0_spa.go.
+	Auth0SPAInMemory bool `json:"auth0_spa_in_memory,omitempty"`
 }
 
 // UnmarshalJSON accepts v2-shape `auth.candidate_types: ["api_key", "none"]`
@@ -230,13 +260,17 @@ type AuthAnalysis struct {
 // as `{type: <s>, confidence: 1.0}`. See issue #474.
 func (a *AuthAnalysis) UnmarshalJSON(data []byte) error {
 	var legacy struct {
-		Candidates     []AuthCandidate `json:"candidates,omitempty"`
-		CandidateTypes []string        `json:"candidate_types,omitempty"`
+		Candidates       []AuthCandidate `json:"candidates,omitempty"`
+		CandidateTypes   []string        `json:"candidate_types,omitempty"`
+		CaptchaPreflight bool            `json:"captcha_preflight,omitempty"`
+		Auth0SPAInMemory bool            `json:"auth0_spa_in_memory,omitempty"`
 	}
 	if err := json.Unmarshal(data, &legacy); err != nil {
 		return err
 	}
 	a.Candidates = legacy.Candidates
+	a.CaptchaPreflight = legacy.CaptchaPreflight
+	a.Auth0SPAInMemory = legacy.Auth0SPAInMemory
 	if len(a.Candidates) == 0 && len(legacy.CandidateTypes) > 0 {
 		a.Candidates = make([]AuthCandidate, 0, len(legacy.CandidateTypes))
 		for _, t := range legacy.CandidateTypes {
@@ -260,10 +294,17 @@ type AuthCandidate struct {
 }
 
 type ReachabilityAnalysis struct {
-	Mode       string        `json:"mode"`
-	Confidence float64       `json:"confidence"`
-	Reasons    []string      `json:"reasons,omitempty"`
-	Evidence   []EvidenceRef `json:"evidence,omitempty"`
+	Mode              string        `json:"mode"`
+	Confidence        float64       `json:"confidence"`
+	Reasons           []string      `json:"reasons,omitempty"`
+	Evidence          []EvidenceRef `json:"evidence,omitempty"`
+	ImpersonationSafe *bool         `json:"impersonation_safe,omitempty"`
+
+	// HTMLExtractSignature is set when Mode == "html_scrape" and carries
+	// which SSR state-blob signature triggered the promotion (one of
+	// SSRSignature*). Downstream spec emission maps it to a script
+	// selector. Empty otherwise.
+	HTMLExtractSignature string `json:"html_extract_signature,omitempty"`
 }
 
 type ProtectionObservation struct {
@@ -300,16 +341,42 @@ func (p *ProtectionObservation) UnmarshalJSON(data []byte) error {
 }
 
 type EndpointCluster struct {
-	Host          string        `json:"host,omitempty"`
-	Method        string        `json:"method"`
-	Path          string        `json:"path"`
-	Count         int           `json:"count"`
-	Statuses      []int         `json:"statuses,omitempty"`
-	ContentTypes  []string      `json:"content_types,omitempty"`
-	SizeClass     string        `json:"size_class,omitempty"`
-	RequestShape  ShapeSummary  `json:"request_shape"`
-	ResponseShape ShapeSummary  `json:"response_shape"`
-	Evidence      []EvidenceRef `json:"evidence,omitempty"`
+	Host                    string                   `json:"host,omitempty"`
+	Method                  string                   `json:"method"`
+	Path                    string                   `json:"path"`
+	Count                   int                      `json:"count"`
+	Statuses                []int                    `json:"statuses,omitempty"`
+	ContentTypes            []string                 `json:"content_types,omitempty"`
+	SizeClass               string                   `json:"size_class,omitempty"`
+	RequestShape            ShapeSummary             `json:"request_shape"`
+	ResponseShape           ShapeSummary             `json:"response_shape"`
+	LowConfidenceParameters []LowConfidenceParameter `json:"low_confidence_parameters,omitempty"`
+	// ObservedAuth lists lowercased request header names observed on this
+	// cluster's entries that match common auth surfaces (Authorization,
+	// Cookie, X-API-Key, etc.). Observation-only — values are never recorded.
+	// Mirrors spec.Endpoint.ObservedAuth so downstream gates can read
+	// per-endpoint auth signal directly from the traffic-analysis sidecar.
+	ObservedAuth []string `json:"observed_auth,omitempty"`
+	// NormalizationFlags surfaces per-cluster shape anomalies that downstream
+	// confidence consumers (absorb gate, dogfood, novel-feature ranking) care
+	// about. Possible values: single-sample, single-status, mixed-content-types,
+	// request-body-only-on-some-samples, divergent-response-shape. Empty
+	// slice is omitted via omitempty.
+	NormalizationFlags []string `json:"normalization_flags,omitempty"`
+	// Confidence is a coarse bucket derived from Count, Statuses, and
+	// NormalizationFlags: "low" when Count<3 or any flag is set, "medium"
+	// for 3-9 samples with no flags, "high" for 10+ samples with multiple
+	// status codes and no flags. The bucket is intentionally coarse so
+	// future numeric-confidence refinements stay backward-compatible.
+	Confidence string        `json:"confidence,omitempty"`
+	Evidence   []EvidenceRef `json:"evidence,omitempty"`
+}
+
+type LowConfidenceParameter struct {
+	Name     string `json:"name"`
+	Segment  string `json:"segment"`
+	Position int    `json:"position"`
+	Reason   string `json:"reason"`
 }
 
 type ShapeSummary struct {
@@ -415,15 +482,20 @@ func AnalyzeTraffic(capture *EnrichedCapture) (*TrafficAnalysis, error) {
 	}
 
 	apiEntries, noiseEntries := ClassifyEntries(capture.Entries)
+	var secondaryHosts []SecondaryHost
+	if primaryHost, _ := primaryHostByFrequency(apiEntries); primaryHost != "" {
+		secondaryHosts = secondaryHostsForEntries(apiEntries, noiseEntries, primaryHost)
+	}
 	classifiedEntries := classifyInCaptureOrder(capture.Entries, apiEntries, noiseEntries)
 	groups := DeduplicateTrafficEndpoints(apiEntries)
 
 	analysis := &TrafficAnalysis{
 		Version:          trafficAnalysisVersion,
 		Summary:          buildTrafficSummary(capture, apiEntries, noiseEntries),
+		SecondaryHosts:   secondaryHosts,
 		Protocols:        detectProtocols(classifiedEntries),
 		Auth:             detectTrafficAuth(capture, classifiedEntries),
-		Protections:      detectProtections(classifiedEntries),
+		Protections:      detectProtections(classifiedEntries, capture.TargetURL),
 		EndpointClusters: buildEndpointClusters(groups, classifiedEntries),
 		RequestSequences: detectRequestSequences(classifiedEntries),
 		Pagination:       detectPagination(classifiedEntries),
@@ -476,6 +548,35 @@ func WriteTrafficAnalysis(analysis *TrafficAnalysis, outputPath string) error {
 	return nil
 }
 
+// AddReservedResourceNameWarnings surfaces the rename while traffic context
+// can still suggest a domain-specific replacement; generation can only reject.
+func AddReservedResourceNameWarnings(apiSpec *spec.APISpec, analysis *TrafficAnalysis) {
+	if apiSpec == nil || analysis == nil {
+		return
+	}
+
+	resourceNames := make([]string, 0, len(apiSpec.Resources))
+	for name := range apiSpec.Resources {
+		resourceNames = append(resourceNames, name)
+	}
+	sort.Strings(resourceNames)
+	for _, name := range resourceNames {
+		resource := apiSpec.Resources[name]
+		if len(resource.Endpoints) == 0 && len(resource.SubResources) == 0 {
+			continue
+		}
+		if !apiSpec.ConflictsWithReservedCLIResourceName(name) && !apiSpec.ParseTimeReservedCobraUseName(name) {
+			continue
+		}
+		analysis.Warnings = append(analysis.Warnings, AnalysisWarning{
+			Type:       "reserved_resource_name",
+			Message:    fmt.Sprintf("resource name %q may conflict with a reserved Printing Press command or template; consider renaming it to a domain-specific command name", name),
+			Confidence: 1,
+		})
+	}
+	sortTrafficAnalysis(analysis)
+}
+
 func ReadTrafficAnalysis(inputPath string) (*TrafficAnalysis, error) {
 	if strings.TrimSpace(inputPath) == "" {
 		return nil, fmt.Errorf("input path is required")
@@ -518,7 +619,7 @@ func DeduplicateTrafficEndpoints(entries []EnrichedEntry) []EndpointGroup {
 	for _, entry := range entries {
 		method := strings.ToUpper(strings.TrimSpace(entry.Method))
 		host := strings.ToLower(extractHost(entry.URL))
-		normalizedPath := normalizeEntryPath(entry.URL)
+		normalizedPath, lowConfidence := normalizeEntryPathWithHints(entry.URL)
 		key := host + " " + method + " " + normalizedPath
 
 		if idx, ok := indexByKey[key]; ok {
@@ -528,13 +629,15 @@ func DeduplicateTrafficEndpoints(entries []EnrichedEntry) []EndpointGroup {
 
 		indexByKey[key] = len(groups)
 		groups = append(groups, EndpointGroup{
+			Host:           host,
 			Method:         method,
 			NormalizedPath: normalizedPath,
 			Entries:        []EnrichedEntry{entry},
+			LowConfidence:  lowConfidence,
 		})
 	}
 
-	return groups
+	return collapseVariantGroups(groups)
 }
 
 func classifyInCaptureOrder(entries []EnrichedEntry, apiEntries []EnrichedEntry, noiseEntries []EnrichedEntry) []EnrichedEntry {
@@ -573,12 +676,13 @@ func entryClassificationKey(entry EnrichedEntry) string {
 
 func buildTrafficSummary(capture *EnrichedCapture, apiEntries []EnrichedEntry, noiseEntries []EnrichedEntry) TrafficAnalysisSummary {
 	summary := TrafficAnalysisSummary{
-		TargetURL:        capture.TargetURL,
-		CapturedAt:       capture.CapturedAt,
-		EntryCount:       len(capture.Entries),
-		APIEntryCount:    len(apiEntries),
-		NoiseEntryCount:  len(noiseEntries),
-		HostDistribution: map[string]int{},
+		TargetURL:               capture.TargetURL,
+		CapturedAt:              capture.CapturedAt,
+		EntryCount:              len(capture.Entries),
+		APIEntryCount:           len(apiEntries),
+		NoiseEntryCount:         len(noiseEntries),
+		HostDistribution:        map[string]int{},
+		HTTPVersionDistribution: map[string]int{},
 	}
 	var start *time.Time
 	var end *time.Time
@@ -586,6 +690,9 @@ func buildTrafficSummary(capture *EnrichedCapture, apiEntries []EnrichedEntry, n
 		host := extractHost(entry.URL)
 		if host != "" {
 			summary.HostDistribution[host]++
+		}
+		if v := NormalizeHTTPVersion(entry.HTTPVersion); v != "" {
+			summary.HTTPVersionDistribution[v]++
 		}
 		parsed, ok := parseEntryTime(entry.StartedDateTime)
 		if !ok {
@@ -602,6 +709,9 @@ func buildTrafficSummary(capture *EnrichedCapture, apiEntries []EnrichedEntry, n
 	}
 	if len(summary.HostDistribution) == 0 {
 		summary.HostDistribution = nil
+	}
+	if len(summary.HTTPVersionDistribution) == 0 {
+		summary.HTTPVersionDistribution = nil
 	}
 	if start != nil {
 		summary.TimeStart = start.Format(time.RFC3339Nano)
@@ -674,8 +784,8 @@ func detectProtocols(entries []EnrichedEntry) []ProtocolObservation {
 		if strings.Contains(host, "firebase") || strings.Contains(path, "firestore") || strings.Contains(path, "google.firestore") {
 			addProtocol("firebase", 0.75, entry, index, "firebase/firestore host or path", nil)
 		}
-		if isSSREmbeddedData(entry) {
-			addProtocol("ssr_embedded_data", 0.85, entry, index, "HTML contains embedded structured data", nil)
+		if signature := detectSSREmbeddedData(entry); signature != "" {
+			addProtocol("ssr_embedded_data", 0.85, entry, index, "HTML contains embedded structured data", map[string]string{"signature": signature})
 		} else if strings.Contains(respType, "text/html") && strings.TrimSpace(entry.ResponseBody) != "" {
 			addProtocol("html_scrape", 0.55, entry, index, "HTML response observed", nil)
 		}
@@ -708,6 +818,7 @@ func detectTrafficAuth(capture *EnrichedCapture, entries []EnrichedEntry) AuthAn
 		candidate AuthCandidate
 	}
 	candidates := map[string]*accumulator{}
+	captchaPreflight := false
 	add := func(key string, candidate AuthCandidate) {
 		existing := candidates[key]
 		if existing == nil {
@@ -736,6 +847,9 @@ func detectTrafficAuth(capture *EnrichedCapture, entries []EnrichedEntry) AuthAn
 	}
 
 	for index, entry := range entries {
+		if entry.Classification == "noise" || entry.IsNoise {
+			continue
+		}
 		for name, value := range entry.RequestHeaders {
 			lowerName := strings.ToLower(name)
 			switch {
@@ -757,6 +871,9 @@ func detectTrafficAuth(capture *EnrichedCapture, entries []EnrichedEntry) AuthAn
 				}
 			}
 		}
+		if !captchaPreflight && isCaptchaPreflightCandidate(entry) {
+			captchaPreflight = true
+		}
 	}
 
 	out := make([]AuthCandidate, 0, len(candidates))
@@ -773,10 +890,14 @@ func detectTrafficAuth(capture *EnrichedCapture, entries []EnrichedEntry) AuthAn
 		}
 		return out[i].Confidence > out[j].Confidence
 	})
-	return AuthAnalysis{Candidates: out}
+	return AuthAnalysis{
+		Candidates:       out,
+		CaptchaPreflight: captchaPreflight,
+		Auth0SPAInMemory: detectAuth0SPAInMemory(entries),
+	}
 }
 
-func detectProtections(entries []EnrichedEntry) []ProtectionObservation {
+func detectProtections(entries []EnrichedEntry, targetURL string) []ProtectionObservation {
 	observations := map[string]*ProtectionObservation{}
 	add := func(label string, confidence float64, entry EnrichedEntry, index int, reason string, notes ...string) {
 		observation := observations[label]
@@ -791,7 +912,15 @@ func detectProtections(entries []EnrichedEntry) []ProtectionObservation {
 		observation.Notes = uniqueStrings(append(observation.Notes, notes...))
 	}
 
+	protectionSites := protectionSitesForEntries(entries, targetURL)
+	apiHosts := apiHostsForProtection(entries)
 	for index, entry := range entries {
+		entryHost := normalizedURLHost(entry.URL)
+		// If no real target or API host is known, keep the legacy broad scan
+		// instead of dropping possible protection evidence from a sparse capture.
+		if len(protectionSites) > 0 && !apiHosts[entryHost] && !protectionSites[registeredDomainOrHost(entryHost)] {
+			continue
+		}
 		body := strings.ToLower(entry.ResponseBody)
 		headers := lowerHeaderMap(entry.ResponseHeaders)
 		server := headers["server"]
@@ -816,7 +945,7 @@ func detectProtections(entries []EnrichedEntry) []ProtectionObservation {
 			add("perimeterx", 0.8, entry, index, "PerimeterX marker")
 		}
 
-		if strings.Contains(body, "recaptcha") || strings.Contains(body, "hcaptcha") || strings.Contains(body, "captcha") {
+		if hasCaptchaChallengeMarker(entry, body) {
 			add("captcha", 0.85, entry, index, "CAPTCHA marker")
 		}
 		if entry.ResponseStatus == 403 || entry.ResponseStatus == 429 {
@@ -843,6 +972,177 @@ func detectProtections(entries []EnrichedEntry) []ProtectionObservation {
 		return out[i].Confidence > out[j].Confidence
 	})
 	return out
+}
+
+func protectionSitesForEntries(entries []EnrichedEntry, targetURL string) map[string]bool {
+	sites := map[string]bool{}
+	if site := registeredDomainOrHost(httpURLHostname(targetURL)); site != "" {
+		sites[site] = true
+	}
+	for _, entry := range entries {
+		if entry.Classification != "api" {
+			continue
+		}
+		if site := registeredDomainOrHost(normalizedURLHost(entry.URL)); site != "" {
+			sites[site] = true
+		}
+	}
+	return sites
+}
+
+func apiHostsForProtection(entries []EnrichedEntry) map[string]bool {
+	hosts := map[string]bool{}
+	for _, entry := range entries {
+		if entry.Classification != "api" {
+			continue
+		}
+		if host := normalizedURLHost(entry.URL); host != "" {
+			hosts[host] = true
+		}
+	}
+	return hosts
+}
+
+func httpURLHostname(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+	return strings.ToLower(parsed.Hostname())
+}
+
+func isCaptchaPreflightCandidate(entry EnrichedEntry) bool {
+	if entry.ResponseStatus < 200 || entry.ResponseStatus >= 300 {
+		return false
+	}
+	if !strings.Contains(strings.ToLower(entry.ResponseContentType), "json") {
+		return false
+	}
+	if len(strings.TrimSpace(entry.ResponseBody)) > maxCaptchaPreflightJSONBytes {
+		return false
+	}
+	path := strings.ToLower(extractPath(entry.URL))
+	return strings.Contains(path, "/c/check") ||
+		strings.Contains(path, "check_captcha") ||
+		strings.Contains(path, "captcha/required") ||
+		strings.Contains(path, "turnstile/check")
+}
+
+func hasCaptchaChallengeMarker(entry EnrichedEntry, lowerBody string) bool {
+	if isCaptchaPreflightCandidate(entry) {
+		return captchaPreflightRequiresChallenge(entry.ResponseBody)
+	}
+	isSuccessfulJSON := entry.ResponseStatus >= 200 &&
+		entry.ResponseStatus < 300 &&
+		strings.Contains(strings.ToLower(entry.ResponseContentType), "json")
+	if isSuccessfulJSON {
+		hasCaptchaKeyword := strings.Contains(lowerBody, "captcha") ||
+			strings.Contains(lowerBody, "recaptcha") ||
+			strings.Contains(lowerBody, "hcaptcha") ||
+			strings.Contains(lowerBody, "turnstile")
+		if !hasCaptchaKeyword {
+			return false
+		}
+		if len(strings.TrimSpace(entry.ResponseBody)) > maxCaptchaChallengeJSONBytes {
+			return false
+		}
+		if requiresChallenge, parsed := captchaPreflightChallengeDecision(entry.ResponseBody); parsed {
+			return requiresChallenge
+		}
+		return captchaChallengeText(lowerBody)
+	}
+	if strings.Contains(lowerBody, "recaptcha") ||
+		strings.Contains(lowerBody, "hcaptcha") ||
+		strings.Contains(lowerBody, "turnstile") ||
+		strings.Contains(lowerBody, "cf_chl") {
+		return true
+	}
+	if !strings.Contains(lowerBody, "captcha") {
+		return false
+	}
+	if captchaChallengeText(lowerBody) {
+		return true
+	}
+	if entry.ResponseStatus < 200 || entry.ResponseStatus >= 300 {
+		return true
+	}
+	return strings.Contains(strings.ToLower(entry.ResponseContentType), "html")
+}
+
+func captchaChallengeText(lowerBody string) bool {
+	return (strings.Contains(lowerBody, "captcha") ||
+		strings.Contains(lowerBody, "recaptcha") ||
+		strings.Contains(lowerBody, "hcaptcha") ||
+		strings.Contains(lowerBody, "turnstile")) &&
+		(strings.Contains(lowerBody, "required") ||
+			strings.Contains(lowerBody, "challenge"))
+}
+
+func captchaPreflightRequiresChallenge(body string) bool {
+	requiresChallenge, _ := captchaPreflightChallengeDecision(body)
+	return requiresChallenge
+}
+
+func captchaPreflightChallengeDecision(body string) (bool, bool) {
+	var value any
+	if err := json.Unmarshal([]byte(body), &value); err != nil {
+		return false, false
+	}
+	return hasPositiveCaptchaDecision("", value), true
+}
+
+func hasPositiveCaptchaDecision(key string, value any) bool {
+	switch v := value.(type) {
+	case map[string]any:
+		for childKey, childValue := range v {
+			if hasPositiveCaptchaDecision(childKey, childValue) {
+				return true
+			}
+		}
+	case []any:
+		for _, childValue := range v {
+			if hasPositiveCaptchaDecision(key, childValue) {
+				return true
+			}
+		}
+	case bool:
+		return v && captchaDecisionKey(key)
+	case string:
+		lowerValue := strings.ToLower(v)
+		if captchaDecisionKey(key) {
+			return lowerValue == "true" ||
+				lowerValue == "yes" ||
+				strings.Contains(lowerValue, "required") ||
+				strings.Contains(lowerValue, "challenge")
+		}
+		return captchaMessageKey(key) && captchaChallengeText(lowerValue)
+	case float64:
+		return v != 0 && captchaDecisionKey(key)
+	}
+	return false
+}
+
+func captchaDecisionKey(key string) bool {
+	lowerKey := strings.ToLower(key)
+	return strings.Contains(lowerKey, "captcha") ||
+		strings.Contains(lowerKey, "recaptcha") ||
+		strings.Contains(lowerKey, "hcaptcha") ||
+		strings.Contains(lowerKey, "turnstile") ||
+		strings.Contains(lowerKey, "challenge") ||
+		strings.Contains(lowerKey, "required") ||
+		strings.Contains(lowerKey, "present")
+}
+
+func captchaMessageKey(key string) bool {
+	lowerKey := strings.ToLower(key)
+	return lowerKey == "error" ||
+		lowerKey == "message" ||
+		lowerKey == "detail" ||
+		lowerKey == "reason" ||
+		lowerKey == "status"
 }
 
 func classifyReachability(analysis *TrafficAnalysis, entries []EnrichedEntry) *ReachabilityAnalysis {
@@ -927,12 +1227,130 @@ func classifyReachability(analysis *TrafficAnalysis, entries []EnrichedEntry) *R
 		}
 	}
 
-	return &ReachabilityAnalysis{
-		Mode:       mode,
-		Confidence: confidence,
-		Reasons:    reasons,
-		Evidence:   evidence,
+	// html_scrape overrides browser_required when an API entry carries
+	// a captcha-tier signal AND a same-eTLD+1 HTML sibling emits an SSR
+	// state blob — cheaper than spinning up a browser when the same data
+	// is reachable from a cold HTML fetch.
+	htmlExtractSignature := ""
+	if apiIdx, ok := findCaptchaTierProtectedAPIEntry(entries, analysis.Protections); ok {
+		refHost := extractHost(entries[apiIdx].URL)
+		if _, signature, ok := findSSRStateBlobEntryOnRegisteredDomain(entries, analysis.Protocols, refHost); ok {
+			mode = "html_scrape"
+			if confidence < 0.85 {
+				confidence = 0.85
+			}
+			reasons = []string{fmt.Sprintf("captcha-tier protection on API + same-registered-domain SSR state blob (signature: %s); html_scrape preferred over browser_required", signature)}
+			htmlExtractSignature = signature
+		}
 	}
+
+	return &ReachabilityAnalysis{
+		Mode:                 mode,
+		Confidence:           confidence,
+		Reasons:              reasons,
+		Evidence:             evidence,
+		HTMLExtractSignature: htmlExtractSignature,
+	}
+}
+
+// captchaTierProtections are the labels that signal "JSON is unreachable
+// without a browser" — the html_scrape promotion fires only on these
+// (not on cloudflare/akamai/datadome/perimeterx, which can usually be
+// cleared with bearer tokens or session cookies via lighter modes).
+var captchaTierProtections = map[string]bool{
+	"captcha":          true,
+	"bot_challenge":    true,
+	"aws_waf":          true,
+	"vercel_challenge": true,
+}
+
+// findCaptchaTierProtectedAPIEntry returns the index of the first
+// API-classified entry that itself surfaces a captcha-tier protection
+// signal. Walking via EvidenceRef.EntryIndex ensures the protection is
+// attributed to the API entry — a Cloudflare-fronted SSR HTML page
+// emitting a cloudflare signal from its own response headers does not
+// satisfy this check.
+func findCaptchaTierProtectedAPIEntry(entries []EnrichedEntry, protections []ProtectionObservation) (int, bool) {
+	for _, p := range protections {
+		if !captchaTierProtections[p.Label] {
+			continue
+		}
+		for _, ev := range p.Evidence {
+			idx := ev.EntryIndex
+			if idx < 0 || idx >= len(entries) {
+				continue
+			}
+			if entries[idx].Classification == "api" {
+				return idx, true
+			}
+		}
+	}
+	return -1, false
+}
+
+// findSSRStateBlobEntryOnRegisteredDomain returns the index and matched
+// signature of the first HTML entry on the same registered domain
+// (eTLD+1) as refHost that emits the ssr_embedded_data protocol. Uses
+// content-type to identify HTML entries because the classifier marks
+// HTML as "noise". Signature is re-detected per entry because the
+// protocol observation collapses multi-entry details, so the per-entry
+// signature is the only reliable source.
+func findSSRStateBlobEntryOnRegisteredDomain(entries []EnrichedEntry, protocols []ProtocolObservation, refHost string) (int, string, bool) {
+	var ssr *ProtocolObservation
+	for i := range protocols {
+		if protocols[i].Label == "ssr_embedded_data" {
+			ssr = &protocols[i]
+			break
+		}
+	}
+	if ssr == nil {
+		return -1, "", false
+	}
+	for _, ev := range ssr.Evidence {
+		idx := ev.EntryIndex
+		if idx < 0 || idx >= len(entries) {
+			continue
+		}
+		entry := entries[idx]
+		if !strings.Contains(strings.ToLower(entry.ResponseContentType), "html") {
+			continue
+		}
+		if !sameRegisteredDomain(extractHost(entry.URL), refHost) {
+			continue
+		}
+		signature := detectSSREmbeddedData(entry)
+		if signature == "" {
+			continue
+		}
+		return idx, signature, true
+	}
+	return -1, "", false
+}
+
+// sameRegisteredDomain compares two hosts at the eTLD+1 level so
+// subdomain splits like api.example.com / www.example.com qualify as
+// "same site." Literal-equality is checked first so private or unknown
+// hosts (intranet names, raw IPs) still match themselves even when
+// publicsuffix can't resolve them.
+func sameRegisteredDomain(hostA, hostB string) bool {
+	a := registeredDomainOrHost(hostA)
+	b := registeredDomainOrHost(hostB)
+	if a == "" || b == "" {
+		return false
+	}
+	return a == b
+}
+
+func registeredDomainOrHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return ""
+	}
+	registered, err := publicsuffix.EffectiveTLDPlusOne(host)
+	if err != nil {
+		return host
+	}
+	return registered
 }
 
 func hasAPIBrowserRenderedEntry(entries []EnrichedEntry) bool {
@@ -949,9 +1367,10 @@ func buildEndpointClusters(groups []EndpointGroup, entries []EnrichedEntry) []En
 	clusters := make([]EndpointCluster, 0, len(groups))
 	for _, group := range groups {
 		cluster := EndpointCluster{
-			Method: group.Method,
-			Path:   group.NormalizedPath,
-			Count:  len(group.Entries),
+			Method:                  group.Method,
+			Path:                    group.NormalizedPath,
+			Count:                   len(group.Entries),
+			LowConfidenceParameters: group.LowConfidence,
 		}
 		if len(group.Entries) > 0 {
 			cluster.Host = extractHost(group.Entries[0].URL)
@@ -980,6 +1399,9 @@ func buildEndpointClusters(groups []EndpointGroup, entries []EnrichedEntry) []En
 		cluster.SizeClass = classifyBodySize(totalSize, len(group.Entries))
 		cluster.RequestShape = summarizeRequestShape(group.Entries, requestBodies)
 		cluster.ResponseShape = summarizeResponseShape(responseBodies)
+		cluster.ObservedAuth = observedAuthHeaders(group.Entries)
+		cluster.NormalizationFlags = computeNormalizationFlags(group.Method, cluster.Count, cluster.Statuses, cluster.ContentTypes, len(requestBodies))
+		cluster.Confidence = bucketConfidence(cluster.Count, cluster.Statuses, cluster.NormalizationFlags)
 		clusters = append(clusters, cluster)
 	}
 	sort.Slice(clusters, func(i, j int) bool {
@@ -992,6 +1414,74 @@ func buildEndpointClusters(groups []EndpointGroup, entries []EnrichedEntry) []En
 		return clusters[i].Host < clusters[j].Host
 	})
 	return clusters
+}
+
+// computeNormalizationFlags returns the set of shape-anomaly flags for an
+// endpoint cluster. Flags surface signals downstream confidence consumers
+// care about — small samples, single-status responses, content-type drift,
+// inconsistent request-body presence on write methods. Order is stable so
+// the resulting JSON is golden-friendly.
+//
+// The divergent-response-shape flag from the plan is reserved here for a
+// future signal: it would fire when pre-normalization paths collapsed but
+// responses diverged structurally. Today's classifier already keys clusters
+// by host + method + normalizedPath so that collapse cannot happen, hence
+// the flag is never populated. Kept in the documented set so writers and
+// readers across PP and external review tooling share a single vocabulary.
+func computeNormalizationFlags(method string, sampleCount int, statuses []int, contentTypes []string, requestBodyCount int) []string {
+	flags := make([]string, 0, 4)
+	if sampleCount <= 1 {
+		flags = append(flags, "single-sample")
+	}
+	if len(statuses) == 1 {
+		flags = append(flags, "single-status")
+	}
+	if hasMixedContentTypes(contentTypes) {
+		flags = append(flags, "mixed-content-types")
+	}
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case "POST", "PUT", "PATCH":
+		if requestBodyCount > 0 && requestBodyCount < sampleCount {
+			flags = append(flags, "request-body-only-on-some-samples")
+		}
+	}
+	if len(flags) == 0 {
+		return nil
+	}
+	return flags
+}
+
+// hasMixedContentTypes returns true when the cluster's content types span
+// more than one media type after stripping parameters. "application/json"
+// and "application/json; charset=utf-8" count as the same media type, since
+// the only difference is encoding metadata.
+func hasMixedContentTypes(contentTypes []string) bool {
+	seen := map[string]bool{}
+	for _, ct := range contentTypes {
+		head := strings.SplitN(ct, ";", 2)[0]
+		normalized := strings.ToLower(strings.TrimSpace(head))
+		if normalized == "" {
+			continue
+		}
+		seen[normalized] = true
+		if len(seen) > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// bucketConfidence maps Count + Statuses + flags onto a coarse low/medium/high
+// label. Coarse on purpose — future numeric refinements should not require
+// downstream consumers to learn new label values.
+func bucketConfidence(sampleCount int, statuses []int, flags []string) string {
+	if sampleCount < 3 || len(flags) > 0 {
+		return "low"
+	}
+	if sampleCount >= 10 && len(statuses) >= 2 {
+		return "high"
+	}
+	return "medium"
 }
 
 func originalEntryIndexes(entries []EnrichedEntry) map[string][]int {
@@ -1131,7 +1621,55 @@ func detectAnalysisWarnings(entries []EnrichedEntry, clusters []EndpointCluster)
 			warnings = append(warnings, AnalysisWarning{Type: "error_status_cluster", Message: "Endpoint cluster only observed error HTTP statuses.", Confidence: 0.7, Evidence: cluster.Evidence})
 		}
 	}
+	if allEndpointClustersHaveEmptyResponseShape(clusters) {
+		warnings = append(warnings, AnalysisWarning{
+			Type:       "empty_response_shapes",
+			Message:    "All endpoint clusters have empty response shapes; capture may have omitted response bodies. Re-fetch discovered endpoints with curl or another direct HTTP path before generating types.",
+			Confidence: 0.9,
+			Evidence:   evidenceForClusters(clusters),
+		})
+	}
 	return warnings
+}
+
+func allEndpointClustersHaveEmptyResponseShape(clusters []EndpointCluster) bool {
+	if len(clusters) == 0 {
+		return false
+	}
+	seenCluster := false
+	for _, cluster := range clusters {
+		if cluster.Count == 0 {
+			continue
+		}
+		if clusterHasOnlyNoContentStatuses(cluster) {
+			continue
+		}
+		seenCluster = true
+		if cluster.ResponseShape.Kind != "" || len(cluster.ResponseShape.Fields) > 0 {
+			return false
+		}
+	}
+	return seenCluster
+}
+
+func clusterHasOnlyNoContentStatuses(cluster EndpointCluster) bool {
+	if len(cluster.Statuses) == 0 {
+		return false
+	}
+	for _, status := range cluster.Statuses {
+		if status != 204 && status != 205 {
+			return false
+		}
+	}
+	return true
+}
+
+func evidenceForClusters(clusters []EndpointCluster) []EvidenceRef {
+	var evidence []EvidenceRef
+	for _, cluster := range clusters {
+		evidence = appendEvidence(evidence, cluster.Evidence...)
+	}
+	return evidence
 }
 
 func suggestCandidateCommands(clusters []EndpointCluster) []CandidateCommand {
@@ -1180,6 +1718,9 @@ func deriveGenerationHints(analysis *TrafficAnalysis) []string {
 		}
 	}
 	if analysis.Reachability != nil {
+		if analysis.Reachability.ImpersonationSafe != nil && !*analysis.Reachability.ImpersonationSafe {
+			hints["impersonation_content_type_flip"] = true
+		}
 		switch analysis.Reachability.Mode {
 		case "browser_http":
 			hints["browser_http_transport"] = true
@@ -1194,6 +1735,12 @@ func deriveGenerationHints(analysis *TrafficAnalysis) []string {
 		if candidate.Type == "cookie" || candidate.Type == "composed" {
 			hints["requires_browser_auth"] = true
 		}
+	}
+	if analysis.Auth.Auth0SPAInMemory {
+		hints["auth0_spa_in_memory"] = true
+	}
+	if analysis.Auth.CaptchaPreflight {
+		hints["auth_supports_captcha_preflight"] = true
 	}
 	for _, warning := range analysis.Warnings {
 		if warning.Type == "weak_schema_evidence" || warning.Type == "raw_protocol_envelope" {
@@ -1328,12 +1875,68 @@ func containsJSONRPC(body string) bool {
 	return ok
 }
 
-func isSSREmbeddedData(entry EnrichedEntry) bool {
+// ssrEmbeddedDataMinBodySize is the body-size floor below which an HTML
+// response with a state-blob marker is treated as an empty template or
+// challenge page rather than a real SSR payload.
+const ssrEmbeddedDataMinBodySize = 10_000
+
+// SSR state-blob signature labels surfaced by detectSSREmbeddedData and
+// consumed by spec emission to pick the right script selector. Exported
+// so the producer (this file) and consumer (reachability.go) share the
+// symbol set rather than duplicating string literals.
+const (
+	SSRSignatureNextData        = "__NEXT_DATA__"
+	SSRSignatureNuxt            = "__NUXT__"
+	SSRSignatureAppInitialState = "__APP_INITIAL_STATE__"
+	SSRSignatureStateView       = "state-view"
+	SSRSignatureLDJSON          = "application/ld+json"
+	SSRSignatureWindowPrefix    = "window.__"
+)
+
+// ssrEmbeddedDataSignatures lists each substring the detector matches
+// against alongside its signature label. Order matters — earlier
+// entries win on multi-match because framework-specific signatures
+// imply a known DOM shape the generic markers don't. The state-view
+// and window.__ entries require shape-bearing context (quoted attr
+// value, state-named global) so analytics globals like window.__gtag
+// and CSS classes like state-view-port don't promote benign pages.
+var ssrEmbeddedDataSignatures = []struct {
+	substring string
+	label     string
+}{
+	{"__next_data__", SSRSignatureNextData},
+	{"__nuxt__", SSRSignatureNuxt},
+	{"__app_initial_state__", SSRSignatureAppInitialState},
+	{`"state-view"`, SSRSignatureStateView},
+	{`'state-view'`, SSRSignatureStateView},
+	{"application/ld+json", SSRSignatureLDJSON},
+	{"window.__initial_state", SSRSignatureWindowPrefix},
+	{"window.__app_state", SSRSignatureWindowPrefix},
+	{"window.__apollo_state", SSRSignatureWindowPrefix},
+	{"window.__data__", SSRSignatureWindowPrefix},
+}
+
+// detectSSREmbeddedData returns the matched signature label when an
+// HTML response carries a server-rendered state blob, or "" when no
+// signature matches. Requires HTTP 2xx and body >= the size floor so
+// challenge pages and empty templates do not promote to html_scrape.
+func detectSSREmbeddedData(entry EnrichedEntry) string {
 	if !strings.Contains(strings.ToLower(entry.ResponseContentType), "html") {
-		return false
+		return ""
+	}
+	if entry.ResponseStatus < 200 || entry.ResponseStatus >= 300 {
+		return ""
+	}
+	if len(entry.ResponseBody) < ssrEmbeddedDataMinBodySize {
+		return ""
 	}
 	body := strings.ToLower(entry.ResponseBody)
-	return strings.Contains(body, "__next_data__") || strings.Contains(body, "application/ld+json") || strings.Contains(body, "window.__")
+	for _, sig := range ssrEmbeddedDataSignatures {
+		if strings.Contains(body, sig.substring) {
+			return sig.label
+		}
+	}
+	return ""
 }
 
 func looksBrowserRendered(entry EnrichedEntry) bool {
@@ -1397,10 +2000,11 @@ func anyHeaderPrefix(headers map[string]string, prefix string) bool {
 }
 
 func isAuthQueryName(lowerName string) bool {
-	if isPaginationTokenName(lowerName) {
+	lowerName = strings.ToLower(strings.TrimSpace(lowerName))
+	if isSearchInputName(lowerName) || isPaginationTokenName(lowerName) {
 		return false
 	}
-	return strings.Contains(lowerName, "key") || strings.Contains(lowerName, "token") || strings.Contains(lowerName, "auth")
+	return isStrongAuthQueryName(lowerName) || isWeakAuthQueryName(lowerName)
 }
 
 func isPaginationTokenName(lowerName string) bool {

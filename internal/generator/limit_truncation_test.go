@@ -11,7 +11,7 @@ import (
 )
 
 // TestEndpointNeedsClientLimit verifies the gate that controls when
-// generated GET commands emit a `truncateJSONArray(data, flagLimit)` call
+// generated GET commands emit a `truncateJSONArray(cmd.Context(), data, flagLimit)` call
 // after the API response returns. This is the core decision behind
 // hackernews retro #350 finding F6 — APIs that accept ?limit=N without
 // honoring it (Firebase, file dumps, RSS) silently broke --limit until
@@ -131,8 +131,53 @@ func TestClientLimitGenerationEmitsHelperAndBuilds(t *testing.T) {
 	require.Contains(t, string(helpersSrc), "func truncateJSONArray(")
 
 	commandSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_orders.go")
-	require.Contains(t, commandSrc, "truncateJSONArray(data,",
+	require.Contains(t, commandSrc, "truncateJSONArray(cmd.Context(), data,",
 		"generated command should call truncateJSONArray for non-paginated limit endpoint")
+
+	runGoCommand(t, outputDir, "build", "./internal/cli")
+}
+
+// TestNumberTypedLimitParamCoercesToInt verifies that a spec declaring
+// `limit` as `number` (the LLM-derived `--docs`-mode shape from #1082)
+// still emits `var flagLimit int` and `IntVar`, so the generated
+// `truncateJSONArray(cmd.Context(), data, flagLimit)` call compiles. OpenAPI specs
+// declare `integer` and exercise the same path; this test pins the
+// override that prevents `Float64Var`/`float64 flagLimit` regression.
+func TestNumberTypedLimitParamCoercesToInt(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("limit-number")
+	apiSpec.Resources = map[string]spec.Resource{
+		"webhooks": {
+			Description: "Manage webhooks",
+			Endpoints: map[string]spec.Endpoint{
+				"list-payloads": {
+					Method:      "GET",
+					Path:        "/webhooks/payloads",
+					Description: "List webhook payloads",
+					Params: []spec.Param{{
+						Name:    "limit",
+						Type:    "number",
+						Default: 0.0,
+					}},
+					Response: spec.ResponseDef{Type: "array", Item: "Payload"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "limit-number-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	commandSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_webhooks.go")
+	assert.Contains(t, commandSrc, "var flagLimit int",
+		"number-typed limit param must coerce to int Go type")
+	assert.Contains(t, commandSrc, "IntVar(&flagLimit",
+		"number-typed limit param must bind via IntVar")
+	assert.NotContains(t, commandSrc, "Float64Var(&flagLimit",
+		"number-typed limit param must not emit Float64Var")
+	assert.NotContains(t, commandSrc, "var flagLimit float64",
+		"number-typed limit param must not declare flagLimit as float64")
 
 	runGoCommand(t, outputDir, "build", "./internal/cli")
 }

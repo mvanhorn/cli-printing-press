@@ -39,6 +39,8 @@ Every phase has two orthogonal status fields:
 
 `Status` tracks the execution state of the phase. `PlanStatus` tracks the state of the phase's plan file: a freshly-initialized phase has a `seed` plan; once expanded by the planner it becomes `expanded`; once the phase finishes it becomes `completed`. Both are defined in `internal/pipeline/state.go`.
 
+`LoadState` and `save()` defensively initialize the on-disk `phases` map to an empty object when it is unmarshaled as nil. Phase names, ordering, transitions, and the version-migration semantics described in this document are unaffected by that guard.
+
 ## Phases
 
 Each phase below lists four fields: what it consumes, what it produces, what gates it must pass, and which artifacts it leaves on disk.
@@ -72,7 +74,6 @@ Purpose: discover and score the existing CLI landscape for the target API before
 
 Inputs:
 - Validated spec URL from preflight
-- `catalog/<api>.yaml` if the API is catalog-known (for `known_alternatives`)
 
 Outputs:
 - `research.json` in the pipeline directory with:
@@ -108,7 +109,7 @@ Freshness ownership:
 - Freshness metadata belongs in the existing JSON provenance envelope at `meta.freshness`. It describes current-cache freshness for the covered path only; it must not be described as full historical backfill or API-specific enrichment.
 
 Gates:
-- All eight generator quality gates pass: `go mod tidy`, default-mode `govulncheck`, `go vet`, `go build`, binary build, `--help`, version, `doctor`
+- All ten generator quality gates pass: `go mod tidy`, safe `golang.org/x/net`, fresh generated `go test -count=1 ./...`, default-mode `govulncheck`, `go vet`, `go build`, binary build, `--help`, version, `doctor`
 
 Artifacts:
 - Full CLI source tree in the output directory
@@ -147,7 +148,7 @@ Outputs:
 
 Gates:
 - Overlay merge completes without conflicts
-- All eight generator quality gates pass again after regeneration, including default-mode `govulncheck`
+- All ten generator quality gates pass again after regeneration, including safe `golang.org/x/net`, fresh generated `go test -count=1 ./...`, and default-mode `govulncheck`
 
 Artifacts:
 - Merged spec (format follows the source spec)
@@ -190,6 +191,7 @@ Outputs:
 - Reviewer scorecard across seven principles and three severities
 - Fix implementation log (which fixes were applied, which were skipped or reverted)
 - Phase verdict: `Pass`, `Warn`, or `Degrade`
+- `pipeline/agent-readiness.md` with a parseable `Phase verdict: Pass|Warn|Degrade` line and remaining Blocker/Friction findings as bullets or table rows
 
 Gates:
 - `Pass` - zero Blockers and zero Frictions
@@ -197,7 +199,7 @@ Gates:
 - `Degrade` - Blockers remain; phase fails
 
 Artifacts:
-- Reviewer scorecard document in the pipeline directory
+- `pipeline/agent-readiness.md`
 - Fix log in the pipeline directory
 
 ### 8. comparative
@@ -239,6 +241,7 @@ Purpose: package the generated CLI output and produce the final handoff report.
 
 Inputs:
 - Review score and `review.md` from the review phase
+- Agent-readiness verdict from `agent-readiness.md`
 - Working CLI binary ready for handoff
 
 Outputs:
@@ -248,6 +251,7 @@ Outputs:
 
 Gates:
 - All prior phases are `completed`
+- `agent-readiness.md` reports `Pass`, unless a maintainer records an explicit override in the handoff
 - Output directory contains a valid CLI source tree and compiled binary
 
 Artifacts:

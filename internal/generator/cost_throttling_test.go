@@ -140,7 +140,7 @@ func TestGenerateCostThrottlingPrimitives(t *testing.T) {
 	clientGoBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
 	clientGo := string(clientGoBytes)
-	assert.Contains(t, clientGo, "Throttle     *ThrottleState",
+	assert.Contains(t, clientGo, "Throttle *ThrottleState",
 		"client.go must declare the Throttle field")
 	assert.Contains(t, clientGo, "ThrottleMode: ThrottleModeStrict",
 		"client.go must default ThrottleMode to strict in New()")
@@ -155,6 +155,18 @@ func TestGenerateCostThrottlingPrimitives(t *testing.T) {
 		"graphql.go must parse extensions.cost via updateThrottleFromBody")
 	assert.Contains(t, graphqlGo, "throttleStatus",
 		"graphql.go cost parser must read throttleStatus")
+	queryWithThrottleBody := generatedFunctionBody(t, graphqlGo, "func (c *Client) queryWithThrottle(")
+	assert.Contains(t, queryWithThrottleBody, "c.PostQueryWithParams(ctx, graphqlEndpointPath",
+		"throttle-aware GraphQL reads must use the read-only POST helper")
+	assert.NotContains(t, queryWithThrottleBody, "c.Post(ctx, graphqlEndpointPath",
+		"throttle-aware GraphQL reads must not use the verify-gated POST helper")
+	mutateWithThrottleBody := generatedFunctionBody(t, graphqlGo, "func (c *Client) mutateWithThrottle(")
+	assert.Contains(t, mutateWithThrottleBody, "c.Post(ctx, graphqlEndpointPath",
+		"throttle-aware GraphQL mutations must keep the verify-gated POST helper")
+	assert.NotContains(t, mutateWithThrottleBody, "c.PostQueryWithParams(ctx, graphqlEndpointPath",
+		"throttle-aware GraphQL mutations must not use the read-only POST helper")
+	assert.Contains(t, mutateWithThrottleBody, "c.graphqlWithThrottle",
+		"throttle-aware GraphQL mutations must preserve cost-budget handling")
 
 	// root.go must register --throttle-mode and validate its value.
 	rootGoBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))

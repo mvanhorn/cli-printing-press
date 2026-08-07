@@ -1,0 +1,37 @@
+version: 1
+name: ble-ambiguous-lamp
+display_name: BLE Ambiguous Lamp
+protocol: ble
+identity:
+    advertised_names:
+        - DeskLamp
+    address_policy: stable
+    match_strength: weak
+ble:
+    services:
+        - uuid: ff00
+          characteristics:
+            - uuid: ff01
+              properties:
+                - write
+session:
+    mode: one-shot
+evidence:
+    - id: action-toggle
+      source: action-journal
+      summary: toggle
+    - id: adv-a
+      source: ble-event
+      summary: advertisement
+    - id: adv-b
+      source: ble-event
+      summary: advertisement
+    - id: svc-power
+      source: ble-event
+      summary: service_discovery
+    - id: write-a
+      source: ble-event
+      summary: write
+    - id: write-b
+      source: ble-event
+      summary: write

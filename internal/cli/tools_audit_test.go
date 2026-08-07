@@ -2,6 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +31,42 @@ func TestRequiresPreDecisionFields(t *testing.T) {
 		if got := requiresPreDecisionFields(tc.kind); got != tc.want {
 			t.Errorf("requiresPreDecisionFields(%q) = %v, want %v", tc.kind, got, tc.want)
 		}
+	}
+}
+
+func TestAuditMCPManifestSkipsHiddenEndpointMirrors(t *testing.T) {
+	manifest := &pipeline.ToolsManifest{
+		MCP: &pipeline.ManifestMCP{
+			EndpointTools: "hidden",
+			Orchestration: "code",
+		},
+		Tools: []pipeline.ManifestTool{
+			{Name: "demo_get", Description: "Get"},
+			{Name: "demo_create", Description: "Create"},
+		},
+	}
+
+	if got := auditMCPManifest(manifest); len(got) != 0 {
+		t.Fatalf("got %d findings for hidden endpoint mirrors, want 0: %#v", len(got), got)
+	}
+}
+
+func TestAuditMCPManifestStillFlagsVisibleEndpointMirrors(t *testing.T) {
+	manifest := &pipeline.ToolsManifest{
+		MCP: &pipeline.ManifestMCP{
+			EndpointTools: "visible",
+		},
+		Tools: []pipeline.ManifestTool{
+			{Name: "demo_get", Description: "Get"},
+		},
+	}
+
+	got := auditMCPManifest(manifest)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1: %#v", len(got), got)
+	}
+	if got[0].Kind != kindThinMCPDesc {
+		t.Fatalf("kind = %q, want %q", got[0].Kind, kindThinMCPDesc)
 	}
 }
 
@@ -323,6 +364,7 @@ func TestCheckScorecardDelta(t *testing.T) {
 		}, before)
 		if got == nil {
 			t.Fatal("got nil, want issue")
+			return
 		}
 		if got.AcceptedThinMCP != 2 {
 			t.Errorf("AcceptedThinMCP = %d, want 2", got.AcceptedThinMCP)
@@ -455,6 +497,378 @@ func TestTruncate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := truncate(tc.in, tc.n); got != tc.want {
 				t.Errorf("truncate(%q, %d) = %q, want %q", tc.in, tc.n, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAuditCommandFieldsExplicitReadOnly pins #891 at the
+// auditCommandFields layer: the missing-read-only finding fires only
+// when the annotation is genuinely absent. The AST-level differentiation
+// between explicit-true and explicit-false collapses to the same
+// hasExplicitReadOnly=true signal by the time it reaches this function,
+// so a single "present" case suffices here; the explicit-false vs
+// explicit-true distinction is covered by TestInspectAnnotationsExplicitReadOnlyFalse.
+func TestAuditCommandFieldsExplicitReadOnly(t *testing.T) {
+	cases := []struct {
+		name                string
+		fields              commandFields
+		wantMissingReadOnly bool
+	}{
+		{
+			name: "explicit annotation (any value) suppresses missing-read-only",
+			fields: commandFields{
+				use:                 "report",
+				short:               "Generate a report",
+				hasExplicitReadOnly: true,
+				hasRunE:             true,
+			},
+			wantMissingReadOnly: false,
+		},
+		{
+			name: "absent annotation fires the finding",
+			fields: commandFields{
+				use:                 "report",
+				short:               "Generate a report",
+				hasExplicitReadOnly: false,
+				hasRunE:             true,
+			},
+			wantMissingReadOnly: true,
+		},
+		{
+			name: "non-read-shaped names never fire regardless of annotation",
+			fields: commandFields{
+				use:                 "post",
+				short:               "Post a message",
+				hasExplicitReadOnly: false,
+				hasRunE:             true,
+			},
+			wantMissingReadOnly: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := auditCommandFields("internal/cli/x.go", 1, tc.fields)
+			var got bool
+			for _, f := range findings {
+				if f.Kind == kindMissingReadOnly {
+					got = true
+					break
+				}
+			}
+			if got != tc.wantMissingReadOnly {
+				t.Fatalf("missing-read-only fired = %v, want %v (findings: %+v)", got, tc.wantMissingReadOnly, findings)
+			}
+		})
+	}
+}
+
+func TestAuditCommandFieldsThinShortStillFlagsShellOutCommands(t *testing.T) {
+	findings := auditCommandFields("internal/cli/cancel.go", 1, commandFields{
+		use:     "cancel",
+		short:   "Manage cancel",
+		hasRunE: true,
+	})
+
+	var gotThin bool
+	for _, f := range findings {
+		if f.Kind == kindThinShort {
+			gotThin = true
+			break
+		}
+	}
+	if !gotThin {
+		t.Fatalf("thin-short finding missing for shell-out command with thin Short: %+v", findings)
+	}
+}
+
+func TestAuditCommandFieldsParentNoSubcommandRunESkipsParentFindings(t *testing.T) {
+	findings := auditCommandFields("internal/cli/reports.go", 1, commandFields{
+		use:                       "report",
+		short:                     "Manage reports",
+		hasRunE:                   true,
+		hasParentNoSubcommandRunE: true,
+	})
+	if len(findings) != 0 {
+		t.Fatalf("parentNoSubcommandRunE parent findings = %+v, want none", findings)
+	}
+}
+
+func TestAuditCommandFieldsFrameworkNamesOnlySkippedInFrameworkSubtrees(t *testing.T) {
+	t.Run("nested framework-named domain command is audited", func(t *testing.T) {
+		findings := auditCommandFields("items.go", 1, commandFields{
+			use:     "search",
+			short:   "Find",
+			hasRunE: true,
+		})
+
+		var gotThin, gotMissingReadOnly bool
+		for _, f := range findings {
+			switch f.Kind {
+			case kindThinShort:
+				gotThin = true
+			case kindMissingReadOnly:
+				gotMissingReadOnly = true
+			}
+		}
+		if !gotThin || !gotMissingReadOnly {
+			t.Fatalf("nested search findings = %+v, want thin-short and missing-read-only", findings)
+		}
+	})
+
+	t.Run("top-level framework file is skipped", func(t *testing.T) {
+		findings := auditCommandFields("search.go", 1, commandFields{
+			use:     "search",
+			short:   "Find",
+			hasRunE: true,
+		})
+		if len(findings) != 0 {
+			t.Fatalf("top-level framework search findings = %+v, want none", findings)
+		}
+	})
+}
+
+func TestExtractCommandFieldsDetectsParentNoSubcommandRunE(t *testing.T) {
+	src := `package x
+import "github.com/spf13/cobra"
+func newMintsCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "mints",
+		Short: "Manage mints",
+		RunE:  parentNoSubcommandRunE(flags),
+	}
+}`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "mints.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var lit *ast.CompositeLit
+	ast.Inspect(file, func(n ast.Node) bool {
+		c, ok := n.(*ast.CompositeLit)
+		if !ok || !isCobraCommandType(c.Type) {
+			return true
+		}
+		lit = c
+		return false
+	})
+	if lit == nil {
+		t.Fatalf("no cobra command literal found")
+	}
+
+	fields := extractCommandFields(lit)
+	if !fields.hasRunE {
+		t.Fatalf("hasRunE = false, want true")
+	}
+	if !fields.hasParentNoSubcommandRunE {
+		t.Fatalf("hasParentNoSubcommandRunE = false, want true")
+	}
+}
+
+func TestAuditCobraSourceDistinguishesSentinelFromRealRunE(t *testing.T) {
+	root := t.TempDir()
+	cliDir := filepath.Join(root, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatalf("mkdir cli dir: %v", err)
+	}
+	sentinelSrc := `package cli
+import "github.com/spf13/cobra"
+func newReportCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "report",
+		Short: "Manage reports",
+		RunE:  parentNoSubcommandRunE(flags),
+	}
+}`
+	realRunESrc := `package cli
+import "github.com/spf13/cobra"
+func newReportRealCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "report",
+		Short: "Manage reports",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return nil
+		},
+	}
+}`
+	if err := os.WriteFile(filepath.Join(cliDir, "report.go"), []byte(sentinelSrc), 0o644); err != nil {
+		t.Fatalf("write sentinel source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cliDir, "report_real.go"), []byte(realRunESrc), 0o644); err != nil {
+		t.Fatalf("write real RunE source: %v", err)
+	}
+
+	findings, err := auditCobraSource(root)
+	if err != nil {
+		t.Fatalf("auditCobraSource: %v", err)
+	}
+	var sentinelFindings, realThinShort, realMissingReadOnly int
+	for _, f := range findings {
+		switch f.File {
+		case "report.go":
+			sentinelFindings++
+		case "report_real.go":
+			switch f.Kind {
+			case kindThinShort:
+				realThinShort++
+			case kindMissingReadOnly:
+				realMissingReadOnly++
+			}
+		}
+	}
+	if sentinelFindings != 0 {
+		t.Fatalf("sentinel parent findings = %d in %+v, want none", sentinelFindings, findings)
+	}
+	if realThinShort != 1 || realMissingReadOnly != 1 {
+		t.Fatalf("real RunE findings thin=%d missing-read-only=%d in %+v, want 1 each", realThinShort, realMissingReadOnly, findings)
+	}
+}
+
+func TestAuditCobraSourceDescendsThroughCobraHiddenAndPrunesMCPHidden(t *testing.T) {
+	root := t.TempDir()
+	cliDir := filepath.Join(root, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatalf("mkdir cli dir: %v", err)
+	}
+	src := `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "root"}
+	cmd.AddCommand(newCobraHiddenGroupCmd(), newMCPHiddenGroupCmd())
+	return cmd
+}
+func newCobraHiddenGroupCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "orders", Hidden: true}
+	cmd.AddCommand(newVisibleListCmd())
+	return cmd
+}
+func newVisibleListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "list", Short: "List", RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+func newMCPHiddenGroupCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "secrets", Annotations: map[string]string{"mcp:hidden": "true"}}
+	cmd.AddCommand(newPrunedListCmd())
+	return cmd
+}
+func newPrunedListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "show", Short: "Show", RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}`
+	if err := os.WriteFile(filepath.Join(cliDir, "groups.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	findings, err := auditCobraSource(root)
+	if err != nil {
+		t.Fatalf("auditCobraSource: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("findings = %+v, want thin-short and missing-read-only for visible descendant only", findings)
+	}
+	for _, finding := range findings {
+		if finding.Command != "list" {
+			t.Fatalf("unexpected finding from pruned command: %+v", finding)
+		}
+	}
+}
+
+func TestAuditCobraSourceAuditsConstructorWithVisibleAndMCPHiddenPaths(t *testing.T) {
+	root := t.TempDir()
+	cliDir := filepath.Join(root, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatalf("mkdir cli dir: %v", err)
+	}
+	src := `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "root"}
+	cmd.AddCommand(newVisibleGroupCmd(), newMCPHiddenGroupCmd())
+	return cmd
+}
+func newVisibleGroupCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "orders"}
+	cmd.AddCommand(newSharedReportCmd())
+	return cmd
+}
+func newMCPHiddenGroupCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "secrets", Annotations: map[string]string{"mcp:hidden": "true"}}
+	cmd.AddCommand(newSharedReportCmd())
+	return cmd
+}
+func newSharedReportCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "report", Short: "Report", RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}`
+	if err := os.WriteFile(filepath.Join(cliDir, "groups.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	findings, err := auditCobraSource(root)
+	if err != nil {
+		t.Fatalf("auditCobraSource: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("findings = %+v, want thin-short and missing-read-only for shared visible constructor", findings)
+	}
+	for _, finding := range findings {
+		if finding.Command != "report" {
+			t.Fatalf("unexpected finding: %+v", finding)
+		}
+	}
+}
+
+// TestInspectAnnotationsExplicitReadOnlyFalse pins the AST-level
+// helper: any value for `mcp:read-only` — including "false" — sets
+// hasExplicitReadOnly. The old behavior treated "false" as absent.
+func TestInspectAnnotationsExplicitReadOnlyFalse(t *testing.T) {
+	cases := []struct {
+		name      string
+		src       string
+		wantSetRO bool
+	}{
+		{
+			name:      "explicit true",
+			src:       `package x; var _ = map[string]string{"mcp:read-only": "true"}`,
+			wantSetRO: true,
+		},
+		{
+			name:      "explicit false",
+			src:       `package x; var _ = map[string]string{"mcp:read-only": "false"}`,
+			wantSetRO: true,
+		},
+		{
+			name:      "absent",
+			src:       `package x; var _ = map[string]string{}`,
+			wantSetRO: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "x.go", tc.src, 0)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			var lit *ast.CompositeLit
+			ast.Inspect(file, func(n ast.Node) bool {
+				if c, ok := n.(*ast.CompositeLit); ok {
+					if _, ok := c.Type.(*ast.MapType); ok {
+						lit = c
+						return false
+					}
+				}
+				return true
+			})
+			if lit == nil {
+				t.Fatalf("no map literal found")
+			}
+			gotRO, _, _ := inspectAnnotations(lit)
+			if gotRO != tc.wantSetRO {
+				t.Errorf("hasExplicitReadOnly = %v, want %v", gotRO, tc.wantSetRO)
 			}
 		})
 	}

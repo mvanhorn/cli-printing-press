@@ -1,0 +1,35 @@
+version: 1
+name: ble-desk-lamp
+display_name: BLE Desk Lamp
+protocol: ble
+identity:
+  advertised_names: ["DeskLamp"]
+  address_policy: stable
+  gatt_fingerprint:
+    - service:ff00
+    - char:ff01:write
+  match_strength: strong
+ble:
+  services:
+    - uuid: "ff00"
+      name: Lamp Control
+      characteristics:
+        - uuid: "ff01"
+          name: Power
+          properties: [write]
+capabilities:
+  commands:
+    - name: toggle
+      characteristic_uuid: "ff01"
+      safety: low-risk-write
+      validation_status: observed
+      evidence_refs: [toggle-write]
+      payload:
+        encoding: hex
+        bytes: "01"
+session:
+  mode: one-shot
+evidence:
+  - id: toggle-write
+    source: action-journal
+    summary: Operator tapped the lamp toggle once and observed a one-byte write.

@@ -1,0 +1,23 @@
+Walks every .go file under <cli-dir>/internal/syncer/ (and parallel
+hand-authored sync directories) and finds calls of the shape
+client.<HTTPMethod>(path, params). For each call, looks up the same path
+in the supplied browser-sniff traffic-analysis.json and reports the call
+as a finding when the captured query/body key set is a strict superset of
+what the code passes. Suppress one call site with a
+// pp:sync-params-intentional-subset reason=... comment immediately above.
+
+Diagnostic by default; pass --strict for a non-zero exit on findings.
+
+Usage:
+  cli-printing-press sync-param-drop [flags]
+
+Examples:
+  printing-press sync-param-drop --dir ./factor75-pp-cli --traffic-analysis ./pipeline/factor75-traffic-analysis.json
+  printing-press sync-param-drop --dir . --traffic-analysis ./traffic-analysis.json --strict --json
+
+Flags:
+      --dir string                Path to a printed-CLI work directory (required)
+  -h, --help                      help for sync-param-drop
+      --json                      Emit JSON instead of a human-readable summary
+      --strict                    Exit non-zero when findings remain
+      --traffic-analysis string   Path to a traffic-analysis.json file (required)

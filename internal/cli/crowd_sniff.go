@@ -43,7 +43,7 @@ func newCrowdSniffCmdWithOptions(opts crowdSniffOptions) *cobra.Command {
 		Use:   "crowd-sniff",
 		Short: "Discover API endpoints from npm SDKs and GitHub code search",
 		Long: `Discover API endpoints by mining community signals: npm SDK packages
-and GitHub code search. Produces a spec YAML compatible with 'printing-press generate'.
+and GitHub code search. Produces a spec YAML compatible with 'cli-printing-press generate'.
 
 Complements 'browser-sniff' (which discovers from live web traffic) by finding
 what developers have already mapped in published packages and code.`,
@@ -134,6 +134,7 @@ func runCrowdSniff(ctx context.Context, apiName, baseURL, outputPath string, asJ
 			for _, d := range dropped {
 				fmt.Fprintf(stderr, "  dropped: %s %s (origin(s): %s)\n", d.Method, d.Path, strings.Join(d.OriginBaseURLs, ", "))
 			}
+			fmt.Fprintf(stderr, "WARNING: dropped %d endpoint(s); generated spec covers only target host %s; review the drops above.\n", len(dropped), targetHost)
 		}
 		aggregated = kept
 	}
@@ -188,7 +189,7 @@ func runCrowdSniff(ctx context.Context, apiName, baseURL, outputPath string, asJ
 		}
 		fmt.Fprintf(stdout, "Tiers: %s\n", strings.Join(parts, ", "))
 	}
-	fmt.Fprintf(stdout, "Run 'printing-press generate --spec %s' to build the CLI\n", outputPath)
+	fmt.Fprintf(stdout, "Run 'cli-printing-press generate --spec %s' to build the CLI\n", outputPath)
 	return nil
 }
 

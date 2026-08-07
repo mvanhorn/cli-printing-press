@@ -1,0 +1,38 @@
+version: 1
+name: ble-opaque-binary
+display_name: BLE Opaque Binary Device
+protocol: ble
+identity:
+  advertised_names: ["OpaqueBLE"]
+  address_policy: unknown
+  gatt_fingerprint:
+    - service:ab00
+    - char:ab01:write
+  match_strength: weak
+ble:
+  services:
+    - uuid: "ab00"
+      name: Vendor Binary
+      characteristics:
+        - uuid: "ab01"
+          name: Binary Command
+          properties: [write]
+capabilities:
+  commands:
+    - name: vendor-action
+      characteristic_uuid: "ab01"
+      safety: unknown
+      validation_status: inferred
+      evidence_refs: [opaque-action]
+      payload:
+        encoding: hex
+        bytes: "f7a50100fd"
+        unknown_fields:
+          - name: counter
+            byte_range: "2..3"
+            confidence: low
+        checksum: sum bytes 1..3 modulo 256
+evidence:
+  - id: opaque-action
+    source: community-reference
+    summary: Community reference identifies this payload as action-like but does not decode all fields.

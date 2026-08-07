@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/device/fixtures/ble-session-telemetry.yaml --output "$CASE_ACTUAL_DIR/ble-session-appliance" --force --validate=false

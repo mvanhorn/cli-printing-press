@@ -142,7 +142,14 @@ func canonicalRender(fset *token.FileSet, node ast.Node) (string, error) {
 		return buf.String(), nil
 	}
 	formatted = bytes.TrimPrefix(formatted, []byte("package _\n"))
-	return string(bytes.TrimSpace(formatted)), nil
+	// Removing AST statements leaves their original token positions behind;
+	// gofmt retains those empty lines. Canonical comparison is explicitly
+	// whitespace-insensitive, so collapse them after formatting.
+	text := string(bytes.TrimSpace(formatted))
+	for strings.Contains(text, "\n\n") {
+		text = strings.ReplaceAll(text, "\n\n", "\n")
+	}
+	return text, nil
 }
 
 // stripAddCommandStmts removes top-level AddCommand call statements from a
@@ -154,12 +161,64 @@ func canonicalRender(fset *token.FileSet, node ast.Node) (string, error) {
 func stripAddCommandStmts(stmts []ast.Stmt) []ast.Stmt {
 	out := make([]ast.Stmt, 0, len(stmts))
 	for _, stmt := range stmts {
-		if isAddCommandASTStmt(stmt) {
+		if isAddCommandASTStmt(stmt) || isNovelCommandsHookASTStmt(stmt) || isClientHooksASTStmt(stmt) {
 			continue
 		}
 		out = append(out, stmt)
 	}
 	return out
+}
+
+// isNovelCommandsHookASTStmt recognizes the generated optional-extension hook.
+// The hook is structural generator evolution, not authored value drift; keeping
+// it in the comparison would make a cross-spec force regen retain the old root
+// and strand an otherwise preserved markerless command source without wiring.
+func isNovelCommandsHookASTStmt(stmt ast.Stmt) bool {
+	ifStmt, ok := stmt.(*ast.IfStmt)
+	if ok && ifStmt.Else == nil && len(ifStmt.Body.List) == 1 {
+		expr, ok := ifStmt.Body.List[0].(*ast.ExprStmt)
+		if ok {
+			call, ok := expr.X.(*ast.CallExpr)
+			if ok && isIdent(call.Fun, "novelCommands") {
+				return true
+			}
+		}
+	}
+	forStmt, ok := stmt.(*ast.RangeStmt)
+	if !ok || !isIdent(forStmt.X, "novelCommandHooks") || len(forStmt.Body.List) != 1 {
+		return false
+	}
+	expr, ok := forStmt.Body.List[0].(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := expr.X.(*ast.CallExpr)
+	return ok && isIdent(call.Fun, "hook")
+}
+
+// isClientHooksASTStmt recognizes the generated client-extension loop. It is
+// template evolution, not authored value drift; otherwise a force regen would
+// retain an older root that has no way to run a preserved package extension.
+func isClientHooksASTStmt(stmt ast.Stmt) bool {
+	forStmt, ok := stmt.(*ast.RangeStmt)
+	if !ok || !isIdent(forStmt.X, "clientHooks") || len(forStmt.Body.List) != 1 {
+		return false
+	}
+	ifStmt, ok := forStmt.Body.List[0].(*ast.IfStmt)
+	if !ok || ifStmt.Init == nil || len(ifStmt.Body.List) != 1 {
+		return false
+	}
+	assign, ok := ifStmt.Init.(*ast.AssignStmt)
+	if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 || !isIdent(assign.Lhs[0], "err") {
+		return false
+	}
+	call, ok := assign.Rhs[0].(*ast.CallExpr)
+	return ok && isIdent(call.Fun, "hook")
+}
+
+func isIdent(expr ast.Expr, name string) bool {
+	id, ok := expr.(*ast.Ident)
+	return ok && id.Name == name
 }
 
 // isAddCommandASTStmt reports whether stmt is an `<recv>.AddCommand(...)`

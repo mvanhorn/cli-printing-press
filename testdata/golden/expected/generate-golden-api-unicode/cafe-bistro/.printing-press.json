@@ -1,11 +1,25 @@
 {
   "api_name": "cafe-bistro",
   "api_version": "1.0.0",
-  "auth_env_vars": [
-    "CAFE_BISTRO_API_KEY"
+  "auth_env_var_specs": [
+    {
+      "kind": "per_call",
+      "name": "PRINTING_PRESS_CLIENT_PROFILE",
+      "required": true,
+      "sensitive": false
+    }
   ],
+  "auth_env_vars": [
+    "PRINTING_PRESS_CLIENT_PROFILE"
+  ],
+  "auth_preference": "ApiKeyAuth",
   "auth_type": "api_key",
   "cli_name": "cafe-bistro-pp-cli",
+  "creator": {
+    "handle": "printing-press-golden",
+    "name": "printing-press-golden"
+  },
+  "description": "Purpose-built fixture for the Unicode-to-ASCII slug contract.",
   "display_name": "Café Bistro",
   "generated_at": "<GENERATED_AT>",
   "mcp_binary": "cafe-bistro-pp-mcp",
@@ -15,9 +29,10 @@
   "printer": "printing-press-golden",
   "printer_name": "printing-press-golden",
   "printing_press_version": "<PRINTING_PRESS_VERSION>",
-  "schema_version": 1,
+  "run_id": "<RUN_ID>",
+  "schema_version": 2,
   "spec_checksum": "sha256:8cfba131c384836e8dde461511c9fd63cf2cbab7793553067765d515f2007aa1",
   "spec_format": "openapi3",
-  "spec_path": "testdata/golden/fixtures/golden-api-unicode.yaml",
+  "spec_path": "golden-api-unicode.yaml",
   "spec_url": "file://testdata/golden/fixtures/golden-api-unicode.yaml"
 }

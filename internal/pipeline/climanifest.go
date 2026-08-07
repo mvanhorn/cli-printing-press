@@ -16,8 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mvanhorn/cli-printing-press/v4/catalog"
-	catalogpkg "github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -28,8 +26,56 @@ import (
 // published CLI directory.
 const CLIManifestFilename = ".printing-press.json"
 
+// CLIReleaseManifestFilename is the public-library release ledger manifest.
+// The generator writes a skeleton only; printing-press-library assigns the
+// actual per-CLI release version after the publish PR merges.
+const CLIReleaseManifestFilename = ".printing-press-release.json"
+
+// CLIChangelogFilename is the public-library per-CLI changelog.
+const CLIChangelogFilename = "CHANGELOG.md"
+
 // CurrentCLIManifestSchemaVersion is the public-library provenance contract.
-const CurrentCLIManifestSchemaVersion = 1
+const CurrentCLIManifestSchemaVersion = 2
+
+// PatchesIndexFilename is the legacy single-array customizations file. It is
+// superseded by PatchesDirName (one file per patch) because the single array
+// conflicts on every concurrent same-CLI PR (mvanhorn/cli-printing-press#2496).
+// Retained here because older published CLIs still ship it and the public
+// library tolerates it on PRs, normalizing it to the directory post-merge.
+const PatchesIndexFilename = ".printing-press-patches.json"
+
+// PatchesDirName is the per-patch customizations directory written for every
+// fresh print. Each <id>.json is one self-contained patch object; a .gitkeep
+// keeps the directory present at zero patches. Two PRs adding different patches
+// write different files, so they never conflict. Shape is documented in
+// internal/generator/templates/agents.md.tmpl and the public library AGENTS.md.
+const PatchesDirName = ".printing-press-patches"
+
+// PatchesGitKeepName is the placeholder that keeps an empty PatchesDirName
+// tracked by git (which does not track empty directories).
+const PatchesGitKeepName = ".gitkeep"
+
+// PatchesMetadataFilename stores directory-level patch metadata and is not an
+// individual applied patch record.
+const PatchesMetadataFilename = "_meta.json"
+
+// CurrentPatchesIndexSchemaVersion is the schema version stamped into per-patch
+// files authored against the directory layout. Matches the shape documented in
+// internal/generator/templates/agents.md.tmpl.
+const CurrentPatchesIndexSchemaVersion = 2
+
+// PatchesIndex is the legacy single-array customizations shape, retained for
+// reading CLIs that still ship PatchesIndexFilename. Fresh prints now emit the
+// PatchesDirName directory instead (see EnsurePatchesDir). The Patches field is
+// []json.RawMessage so an empty legacy index serializes to "patches: []" rather
+// than "patches: null".
+type PatchesIndex struct {
+	SchemaVersion            int               `json:"schema_version"`
+	AppliedAt                string            `json:"applied_at"` // YYYY-MM-DD
+	BaseRunID                string            `json:"base_run_id"`
+	BasePrintingPressVersion string            `json:"base_printing_press_version"`
+	Patches                  []json.RawMessage `json:"patches"`
+}
 
 // CLIManifest captures provenance metadata for a generated CLI.
 // It is written to the root of each published CLI directory so the
@@ -46,36 +92,61 @@ type CLIManifest struct {
 	// surfaces that don't want a kebab-case slug — Claude Desktop's
 	// connector list, the MCPB manifest's display_name field, the MCP
 	// server's protocol-level name. Sourced from the spec's display_name
-	// (if set) or a matching catalog entry, with a title-cased fallback.
+	// (if set), with a title-cased fallback.
 	DisplayName string `json:"display_name,omitempty"`
 	// CLIName is the executable/binary name (for example "espn-pp-cli").
 	// It does not track the slug-keyed library directory.
 	CLIName string `json:"cli_name"`
-	// Owner is the attribution recorded in generated copyright headers
-	// (for example "hiten-shah"). Persisted here so subsequent regens
-	// preserve attribution regardless of who's running the generator.
-	Owner string `json:"owner,omitempty"`
+	// Creator is the permanent original author (handle + display name),
+	// preserved across regens regardless of who runs the generator. Source
+	// of truth for every attribution surface.
+	Creator *spec.Person `json:"creator,omitempty"`
+	// Contributors accrue as others improve the CLI (reprinter first).
+	// Preserved on plain regen/sync; appended only by deliberate
+	// contribution flows (publish/amend/reprint by a non-creator).
+	Contributors []spec.Person `json:"contributors,omitempty"`
+	// Owner/Printer/PrinterName are legacy attribution fields, dual-written
+	// from Creator during the transition window so older skills/tooling that
+	// read them keep working. A future major release removes them.
+	Owner string `json:"owner,omitempty"` // legacy: derived from Creator.Handle
 	// Printer is the original printer's GitHub handle, preserved across regens.
-	Printer string `json:"printer,omitempty"`
+	Printer string `json:"printer,omitempty"` // legacy: derived from Creator.Handle
 	// PrinterName is the optional display name rendered beside the printer handle.
-	PrinterName          string            `json:"printer_name,omitempty"`
-	SpecURL              string            `json:"spec_url,omitempty"`
-	SpecPath             string            `json:"spec_path,omitempty"`
-	SpecFormat           string            `json:"spec_format,omitempty"`
-	SpecChecksum         string            `json:"spec_checksum,omitempty"`
-	RunID                string            `json:"run_id,omitempty"`
-	CatalogEntry         string            `json:"catalog_entry,omitempty"`
-	Category             string            `json:"category,omitempty"`
-	Description          string            `json:"description,omitempty"`
-	MCPBinary            string            `json:"mcp_binary,omitempty"`
-	MCPToolCount         int               `json:"mcp_tool_count,omitempty"`
-	MCPPublicToolCount   int               `json:"mcp_public_tool_count,omitempty"`
-	MCPReady             string            `json:"mcp_ready,omitempty"`
-	APIVersion           string            `json:"api_version,omitempty"` // from the spec's info.version — provenance only, not the CLI version
-	AuthType             string            `json:"auth_type,omitempty"`
-	AuthEnvVars          []string          `json:"auth_env_vars,omitempty"`
-	AuthEnvVarSpecs      []spec.AuthEnvVar `json:"auth_env_var_specs,omitempty"`
-	EndpointTemplateVars []string          `json:"endpoint_template_vars,omitempty"`
+	PrinterName        string            `json:"printer_name,omitempty"` // legacy: derived from Creator.Name
+	SpecURL            string            `json:"spec_url,omitempty"`
+	SpecPath           string            `json:"spec_path,omitempty"`
+	SpecFormat         string            `json:"spec_format,omitempty"`
+	SpecKind           string            `json:"spec_kind,omitempty"`
+	SpecSource         string            `json:"spec_source,omitempty"`
+	SpecChecksum       string            `json:"spec_checksum,omitempty"`
+	RunID              string            `json:"run_id,omitempty"`
+	Category           string            `json:"category,omitempty"`
+	Regions            []string          `json:"regions,omitempty"`
+	APILanguage        string            `json:"api_language,omitempty"`
+	Description        string            `json:"description,omitempty"`
+	MCPBinary          string            `json:"mcp_binary,omitempty"`
+	MCPToolCount       int               `json:"mcp_tool_count,omitempty"`
+	MCPPublicToolCount int               `json:"mcp_public_tool_count,omitempty"`
+	MCPReady           string            `json:"mcp_ready,omitempty"`
+	APIVersion         string            `json:"api_version,omitempty"` // from the spec's info.version — provenance only, not the CLI version
+	AuthType           string            `json:"auth_type,omitempty"`
+	AuthPreference     string            `json:"auth_preference,omitempty"`
+	AuthEnvVars        []string          `json:"auth_env_vars,omitempty"`
+	AuthEnvVarSpecs    []spec.AuthEnvVar `json:"auth_env_var_specs,omitempty"`
+	// AuthAdditionalHeaders mirrors AuthConfig.AdditionalHeaders so the MCPB
+	// manifest's user_config block prompts for sibling-scheme per-call
+	// credentials (e.g. an apiKey header alongside an OAuth bearer). Without
+	// this field, agents installing the printed CLI via Claude Desktop never
+	// see the second credential prompt and every request returns 401.
+	AuthAdditionalHeaders        []spec.AdditionalAuthHeader `json:"auth_additional_headers,omitempty"`
+	EndpointTemplateVars         []string                    `json:"endpoint_template_vars,omitempty"`
+	EndpointTemplateEnvOverrides map[string]string           `json:"endpoint_template_env_overrides,omitempty"`
+	// EndpointTemplateVarDefaults mirrors APISpec.EndpointTemplateVarDefaults
+	// so a regenerating run, the MCPB manifest's user_config default fill,
+	// and the public-library republish path all see the same fallback values
+	// the parser captured from the spec. Empty for path-positional templates
+	// (x-tenant-env-var style) since those have no spec-level default.
+	EndpointTemplateVarDefaults map[string]string `json:"endpoint_template_var_defaults,omitempty"`
 	// AuthKeyURL is the page where users register for an API key. Used by
 	// downstream emitters (MCPB manifest user_config descriptions, doctor
 	// hints) to point users at the right credential source.
@@ -89,8 +160,77 @@ type CLIManifest struct {
 	// (e.g., USDA nutrition backfill on recipe-goat) rather than every
 	// API call. Drives the MCPB user_config Required field so opt-in
 	// keys don't surface as mandatory in install dialogs.
-	AuthOptional  bool                   `json:"auth_optional,omitempty"`
-	NovelFeatures []NovelFeatureManifest `json:"novel_features,omitempty"`
+	AuthOptional               bool                        `json:"auth_optional,omitempty"`
+	ReviewedSecretSuppressions []ReviewedSecretSuppression `json:"reviewed_secret_suppressions,omitempty"`
+	NovelFeatures              []NovelFeatureManifest      `json:"novel_features,omitempty"`
+	Scorecard                  *CLIManifestScorecard       `json:"scorecard,omitempty"`
+	Verify                     *CLIManifestVerify          `json:"verify,omitempty"`
+}
+
+type CLIManifestScorecard struct {
+	Steinberger          CLIManifestSteinbergerScore `json:"steinberger"`
+	UnverifiedDimensions []string                    `json:"unverified_dimensions,omitempty"`
+}
+
+type CLIManifestSteinbergerScore struct {
+	Percentage int    `json:"percentage"`
+	Grade      string `json:"grade"`
+	Total      int    `json:"total,omitempty"`
+}
+
+type CLIManifestVerify struct {
+	Mode                   string  `json:"mode,omitempty"`
+	PassRate               float64 `json:"pass_rate"`
+	Passed                 int     `json:"passed"`
+	Total                  int     `json:"total"`
+	Failed                 int     `json:"failed,omitempty"`
+	DataPipeline           bool    `json:"data_pipeline,omitempty"`
+	BrowserSessionRequired bool    `json:"browser_session_required,omitempty"`
+	BrowserSessionProof    string  `json:"browser_session_proof,omitempty"`
+	Verdict                string  `json:"verdict,omitempty"`
+}
+
+type ReviewedSecretSuppression struct {
+	Path        string `json:"path"`
+	Line        int    `json:"line"`
+	Kind        string `json:"kind"`
+	Fingerprint string `json:"fingerprint"`
+	Reason      string `json:"reason"`
+}
+
+// CLIReleaseManifest is the skeleton shape consumed by the public library's
+// release-ledger workflow. Version fields are intentionally blank at print
+// time: the library owns final release accounting to avoid PR-time conflicts.
+type CLIReleaseManifest struct {
+	SchemaVersion        int      `json:"schema_version"`
+	Slug                 string   `json:"slug"`
+	CLIName              string   `json:"cli_name,omitempty"`
+	Version              string   `json:"version"`
+	ReleasedAt           string   `json:"released_at"`
+	SourceCommit         string   `json:"source_commit"`
+	PrintingPressVersion string   `json:"printing_press_version,omitempty"`
+	RunID                string   `json:"run_id,omitempty"`
+	Changes              []string `json:"changes,omitempty"`
+}
+
+// IsLocalDatastore reports whether the manifest describes a local-datastore
+// CLI rather than an HTTP API wrapper. These CLIs read operator-local stores
+// such as SQLite databases and should not be scored or dogfooded through
+// HTTP-only assumptions.
+func (m CLIManifest) IsLocalDatastore() bool {
+	format := strings.ToLower(strings.TrimSpace(m.SpecFormat))
+	source := strings.ToLower(strings.TrimSpace(m.SpecSource))
+	switch format {
+	case "sqlite", "local-sqlite":
+		return true
+	}
+	return strings.Contains(source, "local") && strings.Contains(source, "sqlite")
+}
+
+// IsSyntheticSpec reports whether the manifest came from a spec marked
+// `kind: synthetic`, which relaxes gates that assume HTTP API reachability.
+func (m CLIManifest) IsSyntheticSpec() bool {
+	return strings.EqualFold(strings.TrimSpace(m.SpecKind), spec.KindSynthetic)
 }
 
 // NovelFeatureManifest is a compact representation of a transcendence feature
@@ -103,21 +243,34 @@ type NovelFeatureManifest struct {
 }
 
 // ReadCLIBinaryName reads .printing-press.json from dir and returns the
-// cli_name field. Returns empty string when the file is missing or
-// unparseable so callers can fall back to convention. Used by the MCPB
-// bundle builder, which can't store the CLI binary name in manifest.json
-// (Claude Desktop's MCPB v0.3 validator rejects unknown top-level keys).
+// cli_name field when it is a safe single path component. Returns empty string
+// when the file is missing, unparseable, or names a path so callers can fall
+// back to convention. Used by the MCPB bundle builder, which can't store the
+// CLI binary name in manifest.json (Claude Desktop's MCPB v0.3 validator
+// rejects unknown top-level keys).
 func ReadCLIBinaryName(dir string) string {
 	m, err := ReadCLIManifest(dir)
 	if err != nil {
 		return ""
 	}
-	return m.CLIName
+	name := strings.TrimSpace(m.CLIName)
+	if !isSafeCLIBinaryName(name) {
+		return ""
+	}
+	return name
+}
+
+func isSafeCLIBinaryName(name string) bool {
+	return name != "" && name != "." && name != ".." && !filepath.IsAbs(name) && !strings.ContainsAny(name, `/\\`)
 }
 
 // ReadCLIManifest decodes dir/.printing-press.json.
 func ReadCLIManifest(dir string) (CLIManifest, error) {
-	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	return readCLIManifestFile(filepath.Join(dir, CLIManifestFilename))
+}
+
+func readCLIManifestFile(path string) (CLIManifest, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return CLIManifest{}, err
 	}
@@ -138,7 +291,7 @@ func ReadCLIManifest(dir string) (CLIManifest, error) {
 //
 // Generate-time fields (spec_url, spec_path, spec_checksum,
 // generated_at, printing_press_version, schema_version, novel_features,
-// catalog_entry, category, cli_name, api_name, api_version, description)
+// category, cli_name, api_name, api_version, description)
 // are preserved as-is. Only the spec-driven MCP/auth/display fields
 // are refreshed.
 //
@@ -159,19 +312,243 @@ func RefreshCLIManifestFromSpec(dir string, parsed *spec.APISpec) error {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return fmt.Errorf("parsing CLI manifest for refresh: %w", err)
 	}
+	existingDescription := m.Description
 	populateMCPMetadata(&m, parsed)
+	if preserveExistingDescription(existingDescription) {
+		m.Description = existingDescription
+	}
 	return WriteCLIManifest(dir, m)
 }
 
 // WriteCLIManifest marshals m as indented JSON and writes it to
-// dir/.printing-press.json.
+// dir/.printing-press.json. It preserves existing release-ledger files because
+// the public library workflow owns updating them after merge.
 func WriteCLIManifest(dir string, m CLIManifest) error {
+	m = normalizeCLIManifestForWrite(dir, m)
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling CLI manifest: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644); err != nil {
 		return fmt.Errorf("writing CLI manifest: %w", err)
+	}
+	if err := WriteReleaseLedgerSkeleton(dir, m); err != nil {
+		return err
+	}
+	return nil
+}
+
+func normalizeCLIManifestForWrite(dir string, m CLIManifest) CLIManifest {
+	if usesPlatformClientProfiles(dir) {
+		m.AuthEnvVars = []string{"PRINTING_PRESS_CLIENT_PROFILE"}
+		m.AuthEnvVarSpecs = []spec.AuthEnvVar{{
+			Name: "PRINTING_PRESS_CLIENT_PROFILE", Kind: spec.AuthEnvVarKindPerCall,
+			Required: true, Sensitive: false,
+		}}
+		m.AuthAdditionalHeaders = nil
+	}
+	return m
+}
+
+func writeCLIManifestPreservingRaw(dir string, m CLIManifest, existingRaw map[string]json.RawMessage) error {
+	return writeCLIManifestPreservingRawFields(dir, m, existingRaw, nil)
+}
+
+func writeCLIManifestPreservingRawFields(dir string, m CLIManifest, existingRaw map[string]json.RawMessage, clearFields map[string]struct{}) error {
+	if len(existingRaw) == 0 {
+		return WriteCLIManifest(dir, m)
+	}
+
+	m = normalizeCLIManifestForWrite(dir, m)
+	merged, err := mergeRawCLIManifestFields(existingRaw, m, clearFields)
+	if err != nil {
+		return err
+	}
+	data, err := marshalCLIManifestObject(merged)
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomic(filepath.Join(dir, CLIManifestFilename), data, 0o644); err != nil {
+		return fmt.Errorf("writing CLI manifest: %w", err)
+	}
+	if err := WriteReleaseLedgerSkeleton(dir, m); err != nil {
+		return err
+	}
+	return nil
+}
+
+func WriteReviewedSecretSuppressions(dir string, suppressions []ReviewedSecretSuppression) error {
+	path := filepath.Join(dir, CLIManifestFilename)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading CLI manifest: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("parsing CLI manifest: %w", err)
+	}
+	if len(suppressions) == 0 {
+		delete(raw, "reviewed_secret_suppressions")
+	} else {
+		encoded, err := json.Marshal(suppressions)
+		if err != nil {
+			return fmt.Errorf("encoding reviewed secret suppressions: %w", err)
+		}
+		raw["reviewed_secret_suppressions"] = encoded
+	}
+	out, err := marshalCLIManifestObject(raw)
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomic(path, out, 0o644); err != nil {
+		return fmt.Errorf("writing CLI manifest: %w", err)
+	}
+	return nil
+}
+
+// WriteReleaseLedgerSkeleton preserves public-library release ledger files.
+// Fresh prints intentionally do not create .printing-press-release.json:
+// the public library registry validator treats a present release object as
+// populated release metadata and rejects blank version/stamp fields.
+func WriteReleaseLedgerSkeleton(dir string, m CLIManifest) error {
+	releasePath := filepath.Join(dir, CLIReleaseManifestFilename)
+	if _, err := os.Stat(releasePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("checking CLI release manifest skeleton: %w", err)
+	}
+
+	changelogPath := filepath.Join(dir, CLIChangelogFilename)
+	if _, err := os.Stat(changelogPath); errors.Is(err, os.ErrNotExist) {
+		data := []byte("# Changelog\n\nThis file is maintained by printing-press-library release automation. Do not hand-edit release sections in normal PRs.\n\n")
+		if err := os.WriteFile(changelogPath, data, 0o644); err != nil {
+			return fmt.Errorf("writing CLI changelog skeleton: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("checking CLI changelog skeleton: %w", err)
+	}
+	return nil
+}
+
+// AppendContributor adds p to the manifest's contributors[] in dir, returning
+// whether a write happened. It is the deliberate-contribution counterpart to
+// the resolver's preserve-on-regen behavior: only the publish/amend/reprint
+// flows call it, never a plain regen.
+//
+// The append is idempotent and skips self-attribution: p is dropped when it is
+// the creator or already a contributor (matched case-insensitively by handle).
+// With front=true the contributor is prepended (used by the reprint flow so
+// the reprinter is listed first); otherwise appended. All other manifest fields
+// — including unknown/future keys — are preserved verbatim via the raw map.
+func AppendContributor(dir string, p spec.Person, front bool) (bool, error) {
+	p = p.Clean()
+	if p.IsZero() {
+		return false, nil
+	}
+	path := filepath.Join(dir, CLIManifestFilename)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("reading CLI manifest: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false, fmt.Errorf("parsing CLI manifest: %w", err)
+	}
+
+	var creator spec.Person
+	if rc, ok := raw["creator"]; ok {
+		if err := json.Unmarshal(rc, &creator); err != nil {
+			return false, fmt.Errorf("parsing creator: %w", err)
+		}
+	}
+	if spec.SamePerson(p, creator) {
+		return false, nil
+	}
+
+	var contributors []spec.Person
+	if rc, ok := raw["contributors"]; ok {
+		if err := json.Unmarshal(rc, &contributors); err != nil {
+			return false, fmt.Errorf("parsing contributors: %w", err)
+		}
+	}
+	for _, c := range contributors {
+		if spec.SamePerson(p, c) {
+			return false, nil
+		}
+	}
+
+	if front {
+		contributors = append([]spec.Person{p}, contributors...)
+	} else {
+		contributors = append(contributors, p)
+	}
+	enc, err := json.Marshal(contributors)
+	if err != nil {
+		return false, fmt.Errorf("encoding contributors: %w", err)
+	}
+	raw["contributors"] = enc
+
+	out, err := marshalCLIManifestObject(raw)
+	if err != nil {
+		return false, err
+	}
+	if err := writeFileAtomic(path, out, 0o644); err != nil {
+		return false, fmt.Errorf("writing CLI manifest: %w", err)
+	}
+	return true, nil
+}
+
+// writeFileAtomic writes data to a sibling temp file and renames it over path,
+// so an interrupted write can't truncate the manifest (the provenance source of
+// truth) and leave it unparseable for the next regen.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op once the rename succeeds
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+// EnsurePatchesDir creates the empty per-patch customizations directory
+// (PatchesDirName containing a .gitkeep) into the generated CLI directory. The
+// library's Verify CI requires fresh-print publishes to ship a patches index;
+// emitting the empty directory here removes the friction for every future
+// publish without affecting CLIs that already recorded customizations.
+//
+// It is a no-op when the CLI already has either the directory or the legacy
+// PatchesIndexFilename, so agent-applied customizations survive regen (parallel
+// to how resolveOwnerForExisting preserves printer/owner metadata across
+// regenerate runs). A legacy file is left in place; the public library converts
+// it to the directory post-merge via its normalize-patches workflow.
+func EnsurePatchesDir(dir string) error {
+	patchesDir := filepath.Join(dir, PatchesDirName)
+	if _, err := os.Stat(patchesDir); err == nil {
+		return nil // directory already present — preserve agent-authored content
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking patches dir: %w", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, PatchesIndexFilename)); err == nil {
+		return nil // legacy single-array file present — preserve; library normalizes it post-merge
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking legacy patches index: %w", err)
+	}
+	// os.Mkdir (not MkdirAll) so a nonexistent parent CLI dir surfaces as an
+	// error rather than being silently created.
+	if err := os.Mkdir(patchesDir, 0o755); err != nil {
+		return fmt.Errorf("creating patches dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(patchesDir, PatchesGitKeepName), nil, 0o644); err != nil {
+		return fmt.Errorf("writing patches .gitkeep: %w", err)
 	}
 	return nil
 }
@@ -238,6 +615,116 @@ func SyncCLIManifestNovelFeatures(dir string, features []NovelFeature) (bool, er
 	return true, nil
 }
 
+func PersistScorecardToManifest(manifestPath string, sc *Scorecard, researchDir string) (bool, error) {
+	if sc == nil {
+		return false, fmt.Errorf("scorecard is nil")
+	}
+	updates := map[string]any{
+		"scorecard": CLIManifestScorecard{
+			Steinberger: CLIManifestSteinbergerScore{
+				Percentage: sc.Steinberger.Percentage,
+				Grade:      sc.OverallGrade,
+				Total:      sc.Steinberger.Total,
+			},
+			UnverifiedDimensions: append([]string(nil), sc.UnverifiedDimensions...),
+		},
+	}
+	if researchDir != "" {
+		research, err := LoadResearch(researchDir)
+		if err != nil {
+			return false, fmt.Errorf("loading research for manifest scorecard persistence: %w", err)
+		}
+		if research.NovelFeaturesBuilt != nil {
+			updates["novel_features_built"] = novelFeaturesToManifest(*research.NovelFeaturesBuilt)
+		}
+	}
+	return mergeCLIManifestFields(manifestPath, updates)
+}
+
+func PersistVerifyToManifest(manifestPath string, report *VerifyReport) (bool, error) {
+	if report == nil {
+		return false, fmt.Errorf("verify report is nil")
+	}
+	return mergeCLIManifestFields(manifestPath, map[string]any{
+		"verify": CLIManifestVerify{
+			Mode:                   report.Mode,
+			PassRate:               report.PassRate,
+			Passed:                 report.Passed,
+			Total:                  report.Total,
+			Failed:                 report.Failed,
+			DataPipeline:           report.DataPipeline,
+			BrowserSessionRequired: report.BrowserSessionRequired,
+			BrowserSessionProof:    report.BrowserSessionProof,
+			Verdict:                report.Verdict,
+		},
+	})
+}
+
+// LoadVerifyReportFromManifest restores the verification evidence that a
+// preceding shipcheck verify leg persisted. Older manifests simply return no
+// report, preserving standalone scorecard behavior.
+func LoadVerifyReportFromManifest(manifestPath string) (*VerifyReport, error) {
+	if strings.TrimSpace(manifestPath) == "" {
+		return nil, nil
+	}
+	manifest, err := readCLIManifestFile(manifestPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if manifest.Verify == nil {
+		return nil, nil
+	}
+	return &VerifyReport{
+		Mode:                   manifest.Verify.Mode,
+		PassRate:               manifest.Verify.PassRate,
+		Passed:                 manifest.Verify.Passed,
+		Total:                  manifest.Verify.Total,
+		Failed:                 manifest.Verify.Failed,
+		DataPipeline:           manifest.Verify.DataPipeline,
+		BrowserSessionRequired: manifest.Verify.BrowserSessionRequired,
+		BrowserSessionProof:    manifest.Verify.BrowserSessionProof,
+		Verdict:                manifest.Verify.Verdict,
+	}, nil
+}
+
+func mergeCLIManifestFields(manifestPath string, updates map[string]any) (bool, error) {
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reading CLI manifest: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false, fmt.Errorf("parsing CLI manifest: %w", err)
+	}
+	if raw == nil {
+		return false, fmt.Errorf("parsing CLI manifest: expected JSON object")
+	}
+	for key, value := range updates {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return false, fmt.Errorf("encoding CLI manifest field %q: %w", key, err)
+		}
+		raw[key] = encoded
+	}
+	out, err := marshalCLIManifestObject(raw)
+	if err != nil {
+		return false, err
+	}
+	if bytes.Equal(data, out) {
+		return false, nil
+	}
+	if err := writeFileAtomic(manifestPath, out, 0o644); err != nil {
+		return false, fmt.Errorf("writing CLI manifest: %w", err)
+	}
+	return true, nil
+}
+
 func marshalCLIManifestFields(m CLIManifest) (map[string]json.RawMessage, error) {
 	data, err := json.Marshal(m)
 	if err != nil {
@@ -248,6 +735,20 @@ func marshalCLIManifestFields(m CLIManifest) (map[string]json.RawMessage, error)
 		return nil, fmt.Errorf("parsing CLI manifest fields: %w", err)
 	}
 	return raw, nil
+}
+
+func mergeRawCLIManifestFields(existingRaw map[string]json.RawMessage, m CLIManifest, clearFields map[string]struct{}) (map[string]json.RawMessage, error) {
+	generatedFields, err := marshalCLIManifestFields(m)
+	if err != nil {
+		return nil, err
+	}
+	merged := maps.Clone(existingRaw)
+	for key := range clearFields {
+		delete(merged, key)
+	}
+	delete(merged, "catalog_entry")
+	maps.Copy(merged, generatedFields)
+	return merged, nil
 }
 
 func marshalCLIManifestObject(raw map[string]json.RawMessage) ([]byte, error) {
@@ -284,16 +785,21 @@ func orderedCLIManifestKeys(raw map[string]json.RawMessage) []string {
 		"api_name",
 		"display_name",
 		"cli_name",
+		"creator",
+		"contributors",
 		"owner",
 		"printer",
 		"printer_name",
 		"spec_url",
 		"spec_path",
 		"spec_format",
+		"spec_kind",
+		"spec_source",
 		"spec_checksum",
 		"run_id",
-		"catalog_entry",
 		"category",
+		"regions",
+		"api_language",
 		"description",
 		"mcp_binary",
 		"mcp_tool_count",
@@ -301,14 +807,22 @@ func orderedCLIManifestKeys(raw map[string]json.RawMessage) []string {
 		"mcp_ready",
 		"api_version",
 		"auth_type",
+		"auth_preference",
 		"auth_env_vars",
 		"auth_env_var_specs",
+		"auth_additional_headers",
 		"endpoint_template_vars",
+		"endpoint_template_env_overrides",
+		"endpoint_template_var_defaults",
 		"auth_key_url",
 		"auth_title",
 		"auth_description",
 		"auth_optional",
+		"reviewed_secret_suppressions",
 		"novel_features",
+		"novel_features_built",
+		"verify",
+		"scorecard",
 	}
 
 	keys := make([]string, 0, len(raw))
@@ -395,26 +909,49 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	if parsed == nil {
 		return
 	}
+	m.SpecKind = parsed.Kind
 	total, public := parsed.CountMCPTools()
-	m.MCPBinary = naming.MCP(parsed.Name)
+	mcpName := m.APIName
+	if mcpName == "" {
+		mcpName = parsed.Name
+	}
+	m.MCPBinary = naming.MCP(mcpName)
 	m.MCPToolCount = total
 	m.MCPPublicToolCount = public
 	m.MCPReady = computeMCPReady(parsed.Auth.Type)
 	m.AuthType = parsed.Auth.Type
+	m.AuthPreference = strings.TrimSpace(parsed.Auth.Scheme)
 	envVarSpecs := manifestAuthEnvVarSpecs(parsed)
 	m.AuthEnvVars = manifestAuthEnvVarNames(parsed, envVarSpecs)
 	if !spec.AllAuthEnvVarSpecsInferred(envVarSpecs) {
 		m.AuthEnvVarSpecs = envVarSpecs
 	}
+	m.AuthAdditionalHeaders = parsed.Auth.AdditionalHeaders
 	m.EndpointTemplateVars = parsed.EndpointTemplateVars
-	m.AuthKeyURL = parsed.Auth.KeyURL
-	m.AuthTitle = parsed.Auth.Title
-	m.AuthDescription = parsed.Auth.Description
-	m.AuthOptional = parsed.Auth.Optional
-	// DisplayName precedence: explicit spec field > catalog-set existing
+	m.EndpointTemplateEnvOverrides = parsed.EndpointTemplateEnvOverrides
+	m.EndpointTemplateVarDefaults = parsed.EndpointTemplateVarDefaults
+	if parsed.Auth.KeyURL != "" {
+		m.AuthKeyURL = parsed.Auth.KeyURL
+	}
+	if parsed.Auth.Title != "" {
+		m.AuthTitle = parsed.Auth.Title
+	}
+	if parsed.Auth.Description != "" {
+		m.AuthDescription = parsed.Auth.Description
+	}
+	if parsed.Auth.Optional {
+		m.AuthOptional = true
+	}
+	if len(parsed.Regions) > 0 {
+		m.Regions = append([]string(nil), parsed.Regions...)
+	}
+	if parsed.APILanguage != "" {
+		m.APILanguage = parsed.APILanguage
+	}
+	// DisplayName precedence: explicit spec field > existing manifest
 	// value > spec/title-derived fallback > slug-derived fallback.
 	// OpenAPI info.title is useful as a fallback, but it is not explicit
-	// enough to clobber a curated catalog value.
+	// enough to clobber a curated manifest value.
 	if parsed.DisplayName != "" && !parsed.DisplayNameDerivedFromTitle {
 		m.DisplayName = parsed.DisplayName
 	} else if m.DisplayName == "" && parsed.DisplayName != "" {
@@ -424,7 +961,7 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	}
 	// CLIDescription overrides existing m.Description so the spec's
 	// CLI-shaped copy ships in manifest.json instead of the API-shaped
-	// catalog default.
+	// existing manifest default.
 	if parsed.CLIDescription != "" {
 		m.Description = parsed.CLIDescription
 	}
@@ -505,29 +1042,36 @@ func manifestAuthEnvVarSpecs(parsed *spec.APISpec) []spec.AuthEnvVar {
 // PipelineState), the standalone generate command only knows the spec
 // sources and output directory.
 type GenerateManifestParams struct {
-	APIName       string
-	SpecSrcs      []string // --spec args (URLs or file paths)
-	SpecURL       string   // --spec-url: explicit provenance URL (when --spec is a local downloaded file)
-	DocsURL       string   // --docs URL, if used
-	OutputDir     string
-	Owner         string                 // resolved owner attribution (manifest preserve > copyright parse > git config)
-	Printer       string                 // resolved printer @handle (manifest preserve > git config github.user > empty)
-	PrinterName   string                 // resolved printer display name (manifest preserve > git config user.name > empty)
-	RunID         string                 // YYYYMMDD-HHMMSS, derived from --research-dir basename when empty
-	Spec          *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
-	NovelFeatures []NovelFeatureManifest // transcendence features from research (nil if unavailable)
+	APIName        string
+	SpecSrcs       []string // --spec args (URLs or file paths)
+	SpecURL        string   // --spec-url: explicit provenance URL (when --spec is a local downloaded file)
+	DocsURL        string   // --docs URL, if used
+	OutputDir      string
+	Description    string                 // best generated user-facing manifest description
+	DisplayName    string                 // best generated user-facing manifest display name
+	Creator        spec.Person            // resolved creator (manifest preserve > legacy fields > git config)
+	Contributors   []spec.Person          // resolved contributors, preserved from the existing manifest
+	Owner          string                 // legacy, derived from Creator.Handle (dual-write)
+	Printer        string                 // legacy, derived from Creator.Handle (dual-write)
+	PrinterName    string                 // legacy, derived from Creator.Name (dual-write)
+	RunID          string                 // from --research-dir/state.json when available, legacy basename fallback otherwise
+	Spec           *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
+	AuthPreference string                 // resolved OpenAPI securityScheme preference selected for this generate
+	NovelFeatures  []NovelFeatureManifest // transcendence features from research (nil if unavailable)
 }
 
-// runIDPattern matches the canonical pipeline run_id shape: YYYYMMDD-HHMMSS.
-// When an arbitrary path basename happens to match this pattern, treat it as
-// a real run_id; otherwise fall back to empty (and warn at the call site).
-var runIDPattern = regexp.MustCompile(`^\d{8}-\d{6}$`)
+// runIDPattern matches legacy and skill-allocated pipeline run_id basenames.
+// State files are the source of truth for current runs; this is only a legacy
+// fallback for older run directories that predate state-backed generate.
+var runIDPattern = regexp.MustCompile(`^\d{8}-\d{6}(?:-[A-Za-z0-9._-]+)?$`)
+
+// runIDTimeFormat is the legacy timestamp-only layout used when generate has
+// no state-backed run_id. Kept as a const so fallback formatting stays stable.
+const runIDTimeFormat = "20060102-150405"
 
 // DeriveRunIDFromResearchDir extracts a canonical run_id from a research-dir
-// path, or returns "" when no valid run_id can be derived. The standalone
-// generate command does not load a PipelineState, so it cannot reach
-// state.RunID directly; the basename of --research-dir is the only structured
-// signal available without a state-loading refactor.
+// path, or returns "" when no valid run_id can be derived. Prefer
+// ResolveRunIDFromResearchDir for current generate flows so state.json wins.
 func DeriveRunIDFromResearchDir(researchDir string) string {
 	if researchDir == "" {
 		return ""
@@ -539,21 +1083,91 @@ func DeriveRunIDFromResearchDir(researchDir string) string {
 	return ""
 }
 
+type generateResearchState struct {
+	APIName string `json:"api_name"`
+	RunID   string `json:"run_id"`
+}
+
+func loadGenerateResearchState(researchDir string) (generateResearchState, bool) {
+	if researchDir == "" {
+		return generateResearchState{}, false
+	}
+	statePath := filepath.Join(researchDir, "state.json")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		return generateResearchState{}, false
+	}
+	var state generateResearchState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return generateResearchState{}, false
+	}
+	state.APIName = strings.TrimSpace(state.APIName)
+	state.RunID = strings.TrimSpace(state.RunID)
+	return state, state.APIName != "" || state.RunID != ""
+}
+
+// ResolveRunIDFromResearchDir reads the run_id recorded by Run Initialization
+// in `<researchDir>/state.json`, falling back to the path basename only for
+// legacy runs that predate state-backed generate.
+func ResolveRunIDFromResearchDir(researchDir string) string {
+	if state, ok := loadGenerateResearchState(researchDir); ok && state.RunID != "" {
+		return state.RunID
+	}
+	return DeriveRunIDFromResearchDir(researchDir)
+}
+
+// LoadAPINameFromResearchDir reads `<researchDir>/state.json` and returns the
+// recorded api_name slug, or "" when the file is absent, unreadable, malformed,
+// or has no api_name. The generate command uses this as an implicit --name
+// override so a spec whose `info.title` derives to something different from
+// the user's intended slug (e.g. "Canvas LMS API" vs `canvas`) still produces
+// the slug-keyed cmd/ directory the rest of the pipeline expects. Explicit
+// --name wins over this; an absent or unreadable state.json silently yields
+// to the title-derived default.
+func LoadAPINameFromResearchDir(researchDir string) string {
+	state, ok := loadGenerateResearchState(researchDir)
+	if !ok {
+		return ""
+	}
+	return state.APIName
+}
+
 // WriteManifestForGenerate writes a .printing-press.json manifest into the
 // generated CLI directory. This is the generate-command counterpart of
 // writeCLIManifestForPublish (which operates on PipelineState).
+//
+// An empty p.RunID is auto-filled with a fresh timestamp so the emitted
+// manifest satisfies publish-validate's required-run_id contract. Phase 5
+// dogfood acceptance still needs the original run_id from state.json or the
+// legacy research-dir basename, and the root.go --research-dir warning
+// informs phase5 callers of that gap.
 func WriteManifestForGenerate(p GenerateManifestParams) error {
+	now := time.Now().UTC()
+	runID := p.RunID
+	if runID == "" {
+		runID = now.Format(runIDTimeFormat)
+	}
+	existing, existingRaw, hasExisting := readExistingManifestForGenerate(p.OutputDir)
 	m := CLIManifest{
 		SchemaVersion:        CurrentCLIManifestSchemaVersion,
-		GeneratedAt:          time.Now().UTC(),
+		GeneratedAt:          now,
 		PrintingPressVersion: version.Version,
 		APIName:              p.APIName,
 		CLIName:              naming.CLI(p.APIName),
-		RunID:                p.RunID,
+		RunID:                runID,
 		Owner:                p.Owner,
 		Printer:              p.Printer,
 		PrinterName:          p.PrinterName,
 	}
+	// Creator is the canonical attribution; Owner/Printer/PrinterName above are
+	// the legacy dual-write derived from it. Stored as a pointer so an empty
+	// creator omits the key (and lets the same-lineage raw merge preserve a
+	// persisted one).
+	if !p.Creator.IsZero() {
+		creator := p.Creator
+		m.Creator = &creator
+	}
+	m.Contributors = p.Contributors
 
 	// Populate spec_url / spec_path from the first spec source.
 	if p.DocsURL != "" {
@@ -564,7 +1178,7 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
 			m.SpecURL = src
 		} else {
-			m.SpecPath = src
+			m.SpecPath = sanitizeManifestSpecPath(src)
 			// Compute checksum and format from the actual input spec file.
 			if data, err := os.ReadFile(src); err == nil {
 				m.SpecFormat = detectSpecFormat(data)
@@ -594,25 +1208,6 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		}
 	}
 
-	// Look up catalog entry for category/description/display-name enrichment.
-	if entry := lookupCatalogEntryForGenerate(p.APIName, m.SpecURL); entry != nil {
-		m.CatalogEntry = entry.Name
-		m.Category = entry.Category
-		m.Description = entry.Description
-		// Catalog's display_name wins over spec/title fallback, while explicit
-		// spec display_name / x-display-name still wins in populateMCPMetadata.
-		if entry.DisplayName != "" {
-			m.DisplayName = entry.DisplayName
-		}
-	}
-	// Fall back to spec.Category for synthetic CLIs that aren't in the
-	// embedded catalog. Without this, manifest.Category stays empty even
-	// when the spec sets `category: travel`, and verify-skill's canonical-
-	// sections check then expects the install URL to use "other" — putting
-	// the rendered SKILL (which read category from the spec via the
-	// template's .Category) and the manifest-derived expected SKILL out of
-	// sync. The README/SKILL templates already resolve category through the
-	// spec; the manifest writer was the lone holdout.
 	if m.Category == "" && p.Spec != nil && p.Spec.Category != "" {
 		m.Category = p.Spec.Category
 	}
@@ -621,16 +1216,106 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	if p.Spec != nil && p.Spec.Version != "" {
 		m.APIVersion = p.Spec.Version
 	}
+	if p.Spec != nil && strings.TrimSpace(p.Spec.SpecSource) != "" {
+		m.SpecSource = strings.TrimSpace(p.Spec.SpecSource)
+	}
+	if p.Spec != nil && p.Spec.IsLocalSQLiteSource() {
+		m.SpecFormat = spec.SourceLocalSQLite
+	}
 
 	// Populate MCP metadata from the parsed spec.
 	if p.Spec != nil {
 		populateMCPMetadata(&m, p.Spec)
 	}
+	if authPreference := strings.TrimSpace(p.AuthPreference); authPreference != "" {
+		m.AuthPreference = authPreference
+	}
+	if displayName := strings.TrimSpace(p.DisplayName); displayName != "" {
+		m.DisplayName = displayName
+	}
+	if description := strings.TrimSpace(p.Description); description != "" {
+		m.Description = description
+	}
+	preserveExisting := hasExisting && sameGenerateManifestLineage(existing, m)
+	// A durable manifest description may be hand-edited after generation.
+	// Operators can delete or replace the field when they want changed spec
+	// prose to become canonical on a later generate run.
+	if preserveExisting && preserveExistingDescription(existing.Description) {
+		m.Description = existing.Description
+	}
 	if len(p.NovelFeatures) > 0 {
 		m.NovelFeatures = p.NovelFeatures
+	} else if p.NovelFeatures != nil {
+		m.NovelFeatures = []NovelFeatureManifest{}
+	} else if preserveExisting && len(existing.NovelFeatures) > 0 {
+		m.NovelFeatures = existing.NovelFeatures
 	}
 
-	if err := WriteCLIManifest(p.OutputDir, m); err != nil {
+	if preserveExisting && m.Category == "" && strings.TrimSpace(existing.Category) != "" {
+		m.Category = existing.Category
+	}
+	if preserveExisting && p.RunID == "" && strings.TrimSpace(existing.RunID) != "" {
+		m.RunID = existing.RunID
+	}
+	if preserveExisting {
+		if p.Owner == "" && strings.TrimSpace(existing.Owner) != "" {
+			m.Owner = existing.Owner
+		}
+		if p.Printer == "" && strings.TrimSpace(existing.Printer) != "" {
+			m.Printer = existing.Printer
+		}
+		if p.PrinterName == "" && strings.TrimSpace(existing.PrinterName) != "" {
+			m.PrinterName = existing.PrinterName
+		}
+		// Creator is permanent: preserve the persisted one when this run did
+		// not carry it. Contributors are preserved unless explicitly cleared
+		// (a non-nil empty slice, handled via clearFields below).
+		if p.Creator.IsZero() && existing.Creator != nil && !existing.Creator.IsZero() {
+			m.Creator = existing.Creator
+		}
+		if p.Contributors == nil && len(existing.Contributors) > 0 {
+			m.Contributors = existing.Contributors
+		}
+	} else {
+		existingRaw = nil
+	}
+
+	clearFields := map[string]struct{}{}
+	if preserveExisting && p.NovelFeatures != nil && len(p.NovelFeatures) == 0 {
+		clearFields["novel_features"] = struct{}{}
+	}
+	// A non-nil empty contributors slice is the explicit-clear signal: force
+	// the key out of the same-lineage raw merge (an omitempty empty slice
+	// would otherwise leave the persisted list in place).
+	if preserveExisting && p.Contributors != nil && len(p.Contributors) == 0 {
+		clearFields["contributors"] = struct{}{}
+	}
+	if preserveExisting && strings.TrimSpace(m.AuthPreference) == "" {
+		clearFields["auth_preference"] = struct{}{}
+	}
+	if preserveExisting {
+		if m.SpecURL != "" && m.SpecPath == "" {
+			clearFields["spec_path"] = struct{}{}
+		}
+		if m.SpecPath != "" && m.SpecURL == "" {
+			clearFields["spec_url"] = struct{}{}
+		}
+	}
+
+	if err := writeCLIManifestForGenerate(p.OutputDir, m, existingRaw, clearFields); err != nil {
+		return err
+	}
+	// Emit the customizations directory alongside .printing-press.json. The
+	// library's Verify CI requires every fresh-print publish to ship a patches
+	// index; preserve-on-regen keeps agent-applied patch entries from being
+	// clobbered by a later generate --force.
+	if err := EnsurePatchesDir(p.OutputDir); err != nil {
+		return err
+	}
+	// Emit agentcookie.toml so the user's agentcookie source can ship
+	// per-CLI auth tokens to the sink at tier "explicit-manifest". Skips
+	// cookie-only CLIs and authors with the manual-override marker.
+	if err := WriteAgentcookieManifest(p); err != nil {
 		return err
 	}
 	// Emit MCPB manifest.json next to .printing-press.json. Pass the
@@ -638,23 +1323,73 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	return WriteMCPBManifestFromStruct(p.OutputDir, m)
 }
 
-func lookupCatalogEntryForGenerate(apiName, specURL string) *catalogpkg.Entry {
-	if entry, err := catalogpkg.LookupFS(catalog.FS, apiName); err == nil {
-		return entry
-	}
-	if specURL == "" {
-		return nil
-	}
-	entries, err := catalogpkg.ParseFS(catalog.FS)
+func readExistingManifestForGenerate(dir string) (CLIManifest, map[string]json.RawMessage, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
 	if err != nil {
-		return nil
+		return CLIManifest{}, nil, false
 	}
-	for i := range entries {
-		if entries[i].SpecURL == specURL {
-			return &entries[i]
-		}
+	var m CLIManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return CLIManifest{}, nil, false
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		raw = nil
+	}
+	return m, raw, true
+}
+
+func writeCLIManifestForGenerate(dir string, m CLIManifest, existingRaw map[string]json.RawMessage, clearFields map[string]struct{}) error {
+	if len(existingRaw) == 0 {
+		return WriteCLIManifest(dir, m)
+	}
+	merged, err := mergeRawCLIManifestFields(existingRaw, m, clearFields)
+	if err != nil {
+		return err
+	}
+	data, err := marshalCLIManifestObject(merged)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644); err != nil {
+		return fmt.Errorf("writing CLI manifest: %w", err)
 	}
 	return nil
+}
+
+func sameGenerateManifestLineage(existing, generated CLIManifest) bool {
+	if existing.APIName == "" || generated.APIName == "" || existing.APIName != generated.APIName {
+		return false
+	}
+	if existing.SpecChecksum != "" && generated.SpecChecksum != "" {
+		return existing.SpecChecksum == generated.SpecChecksum
+	}
+	if (existing.SpecURL != "" || existing.SpecPath != "") && (generated.SpecURL != "" || generated.SpecPath != "") {
+		if existing.SpecURL != "" || generated.SpecURL != "" {
+			return existing.SpecURL == generated.SpecURL
+		}
+		return existing.SpecPath == generated.SpecPath
+	}
+	return true
+}
+
+func preserveExistingDescription(description string) bool {
+	description = strings.TrimSpace(description)
+	return description != "" && !naming.HasLiteralEllipsisSuffix(description)
+}
+
+// sanitizeManifestSpecPath reduces a local spec file path to its basename so the
+// published manifest never leaks the printer's filesystem layout. Only http(s)
+// URLs pass through unchanged — a file:// URL embeds the same local path we are
+// trying to keep out of the published manifest, so it is basenamed too.
+func sanitizeManifestSpecPath(specPath string) string {
+	if specPath == "" {
+		return ""
+	}
+	if strings.HasPrefix(specPath, "http://") || strings.HasPrefix(specPath, "https://") {
+		return specPath
+	}
+	return filepath.Base(specPath)
 }
 
 // detectSpecFormat examines the raw spec bytes and returns a format

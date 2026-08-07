@@ -3,8 +3,10 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,9 +33,37 @@ func TestEndpointIsWriteCommand(t *testing.T) {
 			want:     false,
 		},
 		{
+			name:   "GET action explicitly marked mutation is write",
+			opName: "restartApplication",
+			endpoint: spec.Endpoint{
+				Method:   "GET",
+				Path:     "/applications/{id}/restart",
+				Mutation: true,
+			},
+			want: true,
+		},
+		{
+			name:     "GET action with leading mutation token is write",
+			opName:   "deployApplication",
+			endpoint: spec.Endpoint{Method: "GET", Path: "/applications/{id}/deploy"},
+			want:     true,
+		},
+		{
+			name:     "GET action with kebab-case leading mutation token is write",
+			opName:   "restart-job",
+			endpoint: spec.Endpoint{Method: "GET", Path: "/applications/{id}/restart"},
+			want:     true,
+		},
+		{
 			name:     "HEAD endpoint is read",
 			opName:   "headStatus",
 			endpoint: spec.Endpoint{Method: "HEAD", Path: "/status"},
+			want:     false,
+		},
+		{
+			name:     "HEAD action token stays read without explicit signal",
+			opName:   "restartApplication",
+			endpoint: spec.Endpoint{Method: "HEAD", Path: "/applications/{id}/restart"},
 			want:     false,
 		},
 		{
@@ -175,6 +205,19 @@ func TestEndpointIsWriteCommand(t *testing.T) {
 			want: false,
 		},
 		{
+			name:   "POST with id-walk filter body params is read",
+			opName: "executeReport",
+			endpoint: spec.Endpoint{
+				Method: "POST",
+				Path:   "/tickets/query",
+				Body: []spec.Param{
+					{Name: "MaxRecords", Type: "integer"},
+					{Name: "filter", Type: "array"},
+				},
+			},
+			want: false,
+		},
+		{
 			name:   "POST with mixed filter and write-shape body params stays write",
 			opName: "doStuff",
 			endpoint: spec.Endpoint{
@@ -249,8 +292,7 @@ func TestHasWriteCommands_PostAsQueryFlipsHasWriteFalse(t *testing.T) {
 
 // TestPromotedCommandVerbBranching covers the integration path: the
 // rendered promoted command emits the same HTTP verb the spec declared,
-// so a POST-only endpoint hits c.Post and a GET-only endpoint stays on
-// c.Get/resolveRead.
+// while routing read-only POSTs through the verify-safe query helper.
 func TestPromotedCommandVerbBranching(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -258,11 +300,12 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 		resourceName string
 		endpointName string
 		endpoint     spec.Endpoint
+		useStore     bool
 		mustContain  []string
 		mustNotHave  []string
 	}{
 		{
-			name:         "POST endpoint emits c.Post",
+			name:         "read-only POST endpoint emits c.PostQueryWithParams",
 			apiName:      "post-promoted",
 			resourceName: "queries",
 			endpointName: "searchAll",
@@ -272,8 +315,22 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 				Description: "Search collections by free text",
 				Body:        []spec.Param{{Name: "queryText", Type: "string"}},
 			},
-			mustContain: []string{"c.Post("},
-			mustNotHave: []string{"c.Get(path, params)"},
+			mustContain: []string{"c.PostQueryWithParams("},
+			mustNotHave: []string{"c.PostWithParams(", "c.Get(cmd.Context(), path, params)"},
+		},
+		{
+			name:         "mutating POST endpoint emits c.PostWithParams",
+			apiName:      "post-create-promoted",
+			resourceName: "widgets",
+			endpointName: "create",
+			endpoint: spec.Endpoint{
+				Method:      "POST",
+				Path:        "/widgets",
+				Description: "Create a widget",
+				Body:        []spec.Param{{Name: "name", Type: "string", Required: true}},
+			},
+			mustContain: []string{"c.PostWithParams("},
+			mustNotHave: []string{"c.PostQueryWithParams(", "c.Get(cmd.Context(), path, params)"},
 		},
 		{
 			name:         "GET endpoint keeps c.Get / resolveRead",
@@ -288,6 +345,49 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 			mustNotHave: []string{"c.Post(", "c.Put(", "c.Patch("},
 		},
 		{
+			name:         "GET action mutation uses the mutation client path",
+			apiName:      "get-action-promoted",
+			resourceName: "applications",
+			endpointName: "restartApplication",
+			endpoint: spec.Endpoint{
+				Method:      "GET",
+				Path:        "/applications/{id}/restart",
+				Description: "Restart an application",
+				Mutation:    true,
+			},
+			mustContain: []string{"c.GetMutating(cmd.Context(), path, params)"},
+			mustNotHave: []string{"resolveReadWithStrategyAndResponsePath", "c.Get(cmd.Context(), path, params)"},
+		},
+		{
+			name:         "GET action mutation bypasses pagination helpers",
+			apiName:      "get-action-pagination",
+			resourceName: "applications",
+			endpointName: "restartApplication",
+			endpoint: spec.Endpoint{
+				Method:      "GET",
+				Path:        "/applications/{id}/restart",
+				Description: "Restart an application",
+				Mutation:    true,
+				Pagination:  &spec.Pagination{Type: "cursor", CursorParam: "cursor", LimitParam: "limit"},
+			},
+			useStore:    true,
+			mustContain: []string{"c.GetMutating(cmd.Context(), path, params)"},
+			mustNotHave: []string{"paginatedGetWithResponsePath", "resolvePaginatedReadWithStrategy", "Fetch all pages"},
+		},
+		{
+			name:         "GET action leading token uses the mutation client path",
+			apiName:      "get-action-inferred",
+			resourceName: "applications",
+			endpointName: "deployApplication",
+			endpoint: spec.Endpoint{
+				Method:      "GET",
+				Path:        "/applications/{id}/deploy",
+				Description: "Deploy an application",
+			},
+			mustContain: []string{"c.GetMutating(cmd.Context(), path, params)"},
+			mustNotHave: []string{"resolveReadWithStrategyAndResponsePath", "c.Get(cmd.Context(), path, params)"},
+		},
+		{
 			// HEAD / OPTIONS aren't supported by the generated client.
 			// Falling back to c.Get keeps generation compileable; the only
 			// alternative would be emitting an undefined method like c.Head.
@@ -300,7 +400,7 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 				Path:        "/status",
 				Description: "Probe status",
 			},
-			mustContain: []string{"c.Get(path, params)"},
+			mustContain: []string{"c.Get(cmd.Context(), path, params)"},
 			mustNotHave: []string{"c.Head(", "c.Options("},
 		},
 	}
@@ -318,7 +418,11 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 			}
 
 			outputDir := filepath.Join(t.TempDir(), tc.apiName+"-pp-cli")
-			require.NoError(t, New(apiSpec, outputDir).Generate())
+			gen := New(apiSpec, outputDir)
+			if tc.useStore {
+				gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+			}
+			require.NoError(t, gen.Generate())
 
 			src := readPromotedCommandFile(t, outputDir)
 			for _, want := range tc.mustContain {
@@ -327,8 +431,116 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 			for _, banned := range tc.mustNotHave {
 				require.NotContains(t, src, banned)
 			}
+			if endpointIsWriteCommand(tc.endpoint, tc.endpointName) && strings.EqualFold(tc.endpoint.Method, "GET") {
+				requireGeneratedCompiles(t, outputDir)
+			}
 		})
 	}
+}
+
+func TestEndpointGETMutationWithStoreCompiles(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("get-action-endpoint-store")
+	apiSpec.Resources = map[string]spec.Resource{
+		"applications": {
+			Description: "Manage applications",
+			Endpoints: map[string]spec.Endpoint{
+				"listApplications": {
+					Method:      "GET",
+					Path:        "/applications",
+					Description: "List applications",
+				},
+				"restartApplication": {
+					Method:      "GET",
+					Path:        "/applications/{id}/restart",
+					Description: "Restart an application",
+					Mutation:    true,
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	require.Contains(t, readGeneratedCLIFileContaining(t, outputDir, "c.GetMutating(cmd.Context(), path, params)"),
+		"c.GetMutating(cmd.Context(), path, params)")
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestPromotedReadOnlyPOSTDoesNotEmitPartialFailureSupport(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("promoted-readonly-post")
+	apiSpec.Resources = map[string]spec.Resource{
+		"queries": {
+			Description: "Search queries",
+			Endpoints: map[string]spec.Endpoint{
+				"searchAll": {
+					Method:      "POST",
+					Path:        "/search-all",
+					Description: "Search collections by free text",
+					Body:        []spec.Param{{Name: "queryText", Type: "string"}},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "promoted-readonly-post-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet.Store = true
+	gen.VisionSet.MCP = true
+	require.NoError(t, gen.Generate())
+
+	promotedSrc := readPromotedCommandFile(t, outputDir)
+	require.Contains(t, promotedSrc, "c.PostQueryWithParams(")
+	require.NotContains(t, promotedSrc, "detectPartialFailure(")
+	require.NotContains(t, promotedSrc, "flags.allowPartialFailure")
+
+	helpers, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	helpersSrc := string(helpers)
+	require.NotContains(t, helpersSrc, "func partialFailureErr(")
+	require.NotContains(t, helpersSrc, "type partialFailureReport struct")
+	require.NotContains(t, helpersSrc, "func detectPartialFailure(")
+
+	root, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	require.NotContains(t, string(root), "allow-partial-failure")
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestPartialFailureEmissionFlagsRecurseIntoNestedSubresources(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("nested-mutation")
+	apiSpec.Resources = map[string]spec.Resource{
+		"orgs": {
+			SubResources: map[string]spec.Resource{
+				"projects": {
+					SubResources: map[string]spec.Resource{
+						"tasks": {
+							Endpoints: map[string]spec.Endpoint{
+								"update": {
+									Method:      "PATCH",
+									Path:        "/orgs/{org_id}/projects/{project_id}/tasks/{task_id}",
+									Description: "Update a task",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	hasSupport, hasTypedErr := partialFailureEmissionFlags(apiSpec, nil, nil, false)
+	require.True(t, hasSupport, "nested mutation endpoints need partial-failure support")
+	require.True(t, hasTypedErr, "nested command_endpoint.go callers need partialFailureErr")
 }
 
 func TestPromotedCommandSubstitutesFlagPathParams(t *testing.T) {
@@ -356,13 +568,13 @@ func TestPromotedCommandSubstitutesFlagPathParams(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	src := readPromotedCommandFile(t, outputDir)
-	assert.Contains(t, src, `path = replacePathParam(path, "userId", fmt.Sprintf("%v", flagUserId))`,
+	assert.Contains(t, src, `path = replacePathParam(path, "userId", formatCLIParamValue(flagUserId))`,
 		"promoted command must substitute flag-backed path params before making the request")
-	assert.Contains(t, src, `params["limit"] = fmt.Sprintf("%v", flagLimit)`,
+	assert.Contains(t, src, `params["limit"] = formatCLIParamValue(flagLimit)`,
 		"ordinary non-positional flags still belong in query params")
 	assert.NotContains(t, src, `params["userId"]`,
 		"path params must not also be sent as query params")
-	assert.NotContains(t, src, `"userId": fmt.Sprintf("%v", flagUserID)`,
+	assert.NotContains(t, src, `"userId": formatCLIParamValue(flagUserID)`,
 		"path params must not be passed to paginated query maps")
 }
 
@@ -445,6 +657,19 @@ func TestMCPReadOnlyAnnotationEmission(t *testing.T) {
 				Description: "List items",
 			},
 			wantReadOnly: true,
+		},
+		{
+			name:         "GET action mutation omits mcp:read-only annotation",
+			apiName:      "get-action-mutation",
+			resourceName: "applications",
+			endpointName: "restartApplication",
+			endpoint: spec.Endpoint{
+				Method:      "GET",
+				Path:        "/applications/{id}/restart",
+				Description: "Restart an application",
+				Mutation:    true,
+			},
+			wantReadOnly: false,
 		},
 		{
 			name:         "POST create endpoint omits mcp:read-only annotation",
@@ -557,12 +782,12 @@ func TestPromotedCommandPlumbsBodyFields(t *testing.T) {
 
 	// 4. The RunE builds a body map from the body* vars and passes it
 	// to c.Post — not `params`, which is what the OLD template did.
-	require.Contains(t, src, `body := map[string]any{}`,
+	require.Contains(t, src, `bodyMap := map[string]any{}`,
 		"promoted command must build a body map from body flags")
-	require.Contains(t, src, `body["name"] = bodyName`,
+	require.Contains(t, src, `bodyMap["name"] = bodyName`,
 		"body map must use the spec-declared field name, not the camelCased flag var")
-	require.Contains(t, src, `c.Post(path, body)`,
-		"promoted command must pass the body map to c.Post, not the params map")
+	require.Contains(t, src, `c.PostWithParams(cmd.Context(), path, params, body)`,
+		"promoted command must pass the body map to c.PostWithParams, not the params map")
 	require.NotContains(t, src, `c.Post(path, params)`,
 		"promoted command must NOT pass params (URL/path params) as the request body — that was the bug")
 }

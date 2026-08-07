@@ -1,22 +1,22 @@
 {
   "auth_check": {
-    "detail": "spec not provided; auth protocol check skipped",
-    "generated_format": "",
+    "detail": "spec and generated client both use api key header \"X-API-Key\"",
+    "generated_format": "X-API-Key",
     "match": true,
-    "spec_scheme": ""
+    "spec_scheme": "api key header \"X-API-Key\""
   },
   "browser_session_check": {
-    "detail": "spec not provided; browser-session auth check skipped",
+    "detail": "browser-session auth not required",
     "pass": true,
     "required": false
   },
   "dead_flags": {
     "dead": 0,
-    "total": 18
+    "total": 26
   },
   "dead_functions": {
     "dead": 0,
-    "total": 53
+    "total": 86
   },
   "dir": "<ARTIFACT_DIR>/generate-golden-api/printing-press-golden",
   "example_check": {
@@ -35,11 +35,17 @@
     "state": "runtime_walking"
   },
   "naming_check": {
-    "checked": 32
+    "checked": 48
   },
   "novel_features_check": {
     "found": 0,
     "planned": 0,
+    "skipped": true
+  },
+  "oauth_scope_coverage_check": {
+    "checked": 0,
+    "covered": 0,
+    "detail": "no OAuth-scoped endpoints in spec",
     "skipped": true
   },
   "path_check": {
@@ -48,13 +54,15 @@
     "valid_pct": 0
   },
   "pipeline_check": {
-    "detail": "sync uses domain-specific Upsert methods; search uses generic Search only; 1 domain tables found",
-    "domain_tables": 1,
+    "detail": "sync uses domain-specific Upsert methods; search uses generic Search only; 4 domain tables found",
+    "domain_tables": 4,
     "search_calls_domain": false,
-    "sync_calls_domain": true
+    "sync_calls_domain": true,
+    "sync_file_emitted": true,
+    "sync_resources_present": true
   },
   "print_json_filtered_check": {
-    "checked": 32
+    "checked": 48
   },
   "reimplementation_check": {
     "checked": 0,
@@ -62,17 +70,22 @@
     "skipped": true
   },
   "source_client_check": {
+    "checked": 7
+  },
+  "spec_path": "<ARTIFACT_DIR>/generate-golden-api/printing-press-golden/spec.yaml",
+  "spec_source": "bundled",
+  "sync_param_drop_check": {
     "checked": 0,
     "skipped": true
   },
   "test_presence": {
-    "checked": 0
+    "checked": 2
   },
   "verdict": "WARN",
   "wiring_check": {
     "command_tree": {
-      "defined": 41,
-      "registered": 41
+      "defined": 72,
+      "registered": 72
     },
     "config_consistency": {
       "consistent": true

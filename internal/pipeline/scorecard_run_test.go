@@ -3,6 +3,8 @@ package pipeline
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -39,4 +41,50 @@ func TestScorecardOnRealCLI(t *testing.T) {
 		}
 	}
 	fmt.Println()
+}
+
+func TestRunScorecardReportsNovelFeatureDepthMismatches(t *testing.T) {
+	outputDir := t.TempDir()
+	cliDir := filepath.Join(outputDir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func Execute() {
+	rootCmd.AddCommand(newAssetsCmd())
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "assets.go"), `package cli
+import "github.com/spf13/cobra"
+func newAssetsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "assets"}
+	cmd.AddCommand(newAssetsGrabCmd())
+	return cmd
+}
+func newAssetsGrabCmd() *cobra.Command {
+	return &cobra.Command{Use: "grab"}
+}
+`)
+
+	pipelineDir := t.TempDir()
+	if err := writeResearchJSON(&ResearchResult{
+		APIName: "test",
+		NovelFeatures: []NovelFeature{
+			{Name: "Grab asset", Command: "grab", Example: `test-pp-cli grab "sunset"`},
+		},
+	}, pipelineDir); err != nil {
+		t.Fatal(err)
+	}
+
+	sc, err := RunScorecard(outputDir, pipelineDir, "", nil)
+	if err != nil {
+		t.Fatalf("RunScorecard: %v", err)
+	}
+	if len(sc.NovelFeatureDepthMismatches) != 1 {
+		t.Fatalf("expected one depth mismatch, got %#v", sc.NovelFeatureDepthMismatches)
+	}
+	want := "novel feature command-depth mismatch: grab advertised as grab but registered as assets grab"
+	if !slices.Contains(sc.GapReport, want) {
+		t.Fatalf("expected gap %q, got %#v", want, sc.GapReport)
+	}
 }

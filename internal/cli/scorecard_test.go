@@ -123,6 +123,9 @@ func TestScorecardJSONKeepsLiveCheckSeparateFromLiveVerification(t *testing.T) {
 	live := &pipeline.LiveCheckResult{
 		Passed:   1,
 		PassRate: 1.0,
+		BinaryRefresh: &pipeline.LiveCheckBinaryRefresh{
+			Action: "rebuilt",
+		},
 		Features: []pipeline.LiveFeatureResult{{
 			Name:         "sample",
 			Status:       pipeline.StatusPass,
@@ -136,7 +139,25 @@ func TestScorecardJSONKeepsLiveCheckSeparateFromLiveVerification(t *testing.T) {
 	got := string(data)
 
 	assert.Contains(t, got, `"live_check"`)
+	assert.Contains(t, got, `"binary_refresh"`)
+	assert.Contains(t, got, `"action":"rebuilt"`)
 	assert.Contains(t, got, `"output_sample":"Found 3 brownie recipes"`)
 	assert.Contains(t, got, `"unscored_dimensions":["live_api_verification"]`)
 	assert.Contains(t, got, `"live_api_verification":0`)
+}
+
+func TestLiveCheckFatalReasonReportsFailedBinaryRefresh(t *testing.T) {
+	t.Parallel()
+
+	live := &pipeline.LiveCheckResult{
+		Unable: true,
+		Reason: "rebuilding staged binary: go build failed",
+		BinaryRefresh: &pipeline.LiveCheckBinaryRefresh{
+			Action: "failed",
+		},
+	}
+
+	assert.Contains(t, liveCheckFatalReason(live), "staged binary refresh failed")
+	assert.Contains(t, liveCheckFatalReason(live), "go build failed")
+	assert.Empty(t, liveCheckFatalReason(&pipeline.LiveCheckResult{Unable: true, Reason: "no research.json"}))
 }

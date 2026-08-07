@@ -22,7 +22,11 @@ from verify_skill import (  # noqa: E402
     find_root_children,
     resolve_command_path,
     find_command_source,
+    run_checks,
+    extract_recipes,
+    _cli_invocation_from_tokens,
     _extract_function_body,
+    _extract_prose_invocations,
 )
 
 
@@ -240,6 +244,215 @@ func newSearchCmd() *cobra.Command {
             self.assertEqual(use, "search <query>")
 
 
+class TestFlagChecks(unittest.TestCase):
+    def test_alias_receiver_flags_are_recognized(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newSearchCmd())
+    return rootCmd.Execute()
+}
+''',
+                "search.go": '''package cli
+import "github.com/spf13/cobra"
+func newSearchCmd() *cobra.Command {
+    cmd := &cobra.Command{Use: "search"}
+    var level string
+    f := cmd.Flags()
+    f.StringVar(&level, "level", "", "filter level")
+    return cmd
+}
+''',
+            })
+            cli_binary = f"{cli_dir.name}-pp-cli"
+            (cli_dir / "SKILL.md").write_text(
+                f"""# Fixture
+
+```bash
+{cli_binary} search --level high
+```
+""",
+                encoding="utf-8",
+            )
+
+            report = run_checks(cli_dir, {"flag-names", "flag-commands"})
+
+            self.assertEqual([], report.findings)
+
+    def test_missing_limit_flag_is_reported(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newSearchCmd())
+    return rootCmd.Execute()
+}
+''',
+                "search.go": '''package cli
+import "github.com/spf13/cobra"
+func newSearchCmd() *cobra.Command {
+    return &cobra.Command{Use: "search"}
+}
+''',
+            })
+            cli_binary = f"{cli_dir.name}-pp-cli"
+            (cli_dir / "SKILL.md").write_text(
+                f"""# Fixture
+
+```bash
+{cli_binary} search --limit 5
+{cli_binary} search --limit 10
+```
+""",
+                encoding="utf-8",
+            )
+
+            report = run_checks(cli_dir, {"flag-names", "flag-commands"})
+            details = {(f.check, f.detail) for f in report.findings}
+
+            self.assertIn(
+                ("flag-names", "--limit is referenced in SKILL.md but not declared in any internal/cli/*.go"),
+                details,
+            )
+            self.assertIn(
+                ("flag-commands", "--limit is not declared anywhere"),
+                details,
+            )
+            self.assertEqual(
+                1,
+                sum(
+                    1
+                    for f in report.findings
+                    if f.check == "flag-commands"
+                    and f.command == f"{cli_binary} search"
+                    and f.detail == "--limit is not declared anywhere"
+                ),
+            )
+
+
+class TestInvocationParsing(unittest.TestCase):
+    def test_optional_positionals_are_bound_before_sibling_resolution(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newIssuancesCmd())
+    rootCmd.AddCommand(newRrCmd())
+    return rootCmd.Execute()
+}
+''',
+                "issuances.go": '''package cli
+import "github.com/spf13/cobra"
+func newIssuancesCmd() *cobra.Command {
+    cmd := &cobra.Command{Use: "issuances"}
+    cmd.AddCommand(newCitedByCmd())
+    return cmd
+}
+func newCitedByCmd() *cobra.Command {
+    return &cobra.Command{Use: "cited-by [type] [number-year]"}
+}
+''',
+                "rr.go": '''package cli
+import "github.com/spf13/cobra"
+func newRrCmd() *cobra.Command {
+    return &cobra.Command{Use: "rr"}
+}
+''',
+            })
+            cli_binary = f"{cli_dir.name}-pp-cli"
+            skill = cli_dir / "SKILL.md"
+            skill.write_text(
+                f"""# Fixture
+
+```bash
+{cli_binary} issuances cited-by rr 7-2003
+```
+""",
+                encoding="utf-8",
+            )
+
+            recipes = extract_recipes(skill, cli_binary, cli_dir)
+
+            self.assertEqual([(["issuances", "cited-by"], ["rr", "7-2003"], [])], recipes)
+
+    def test_trailing_quote_is_stripped_from_flag_token(self):
+        """Prose that quotes a full command (`'cli cmd --refresh'`) glues the
+        closing quote onto the flag token; the declaration lookup must see
+        `--refresh`, not `--refresh'`. A genuinely undeclared flag still keeps
+        its real name after the quote is trimmed."""
+        _path, _positional, flags = _cli_invocation_from_tokens(
+            ["entitlements", "--refresh'", "to", "map"], None,
+        )
+        self.assertEqual(["--refresh"], flags)
+
+        _path, _positional, flags = _cli_invocation_from_tokens(
+            ["get", "--bogus')."], None,
+        )
+        self.assertEqual(["--bogus"], flags)
+
+    def test_space_separated_long_flag_value_is_not_positional(self):
+        cmd_path, positional, flags = _cli_invocation_from_tokens(
+            ["search", "--filter", "status=active", "item-123"],
+            None,
+        )
+
+        self.assertEqual(["search"], cmd_path)
+        self.assertEqual(["item-123"], positional)
+        self.assertEqual(["--filter"], flags)
+
+    def test_boolean_long_flag_does_not_swallow_following_positional(self):
+        """A value-less boolean flag (e.g. `--json`) takes no value, so the
+        token after it is a positional and must not be consumed as the flag's
+        value. A value-bearing flag in the same CLI still consumes its value."""
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newGetCmd())
+    return rootCmd.Execute()
+}
+''',
+                "get.go": '''package cli
+import "github.com/spf13/cobra"
+func newGetCmd() *cobra.Command {
+    cmd := &cobra.Command{Use: "get <id>"}
+    var asJSON bool
+    var filter string
+    cmd.Flags().BoolVar(&asJSON, "json", false, "output as JSON")
+    cmd.Flags().StringVar(&filter, "filter", "", "filter expression")
+    return cmd
+}
+''',
+            })
+
+            # Boolean flag: the next token is a positional, not the flag's value.
+            cmd_path, positional, flags = _cli_invocation_from_tokens(
+                ["get", "--json", "item-123"], cli_dir,
+            )
+            self.assertEqual(["get"], cmd_path)
+            self.assertEqual(
+                ["item-123"], positional,
+                "a positional after a boolean flag must not be swallowed as its value",
+            )
+            self.assertEqual(["--json"], flags)
+
+            # Value-bearing flag still consumes its space-separated value.
+            cmd_path, positional, flags = _cli_invocation_from_tokens(
+                ["get", "--filter", "active", "item-123"], cli_dir,
+            )
+            self.assertEqual(["item-123"], positional)
+            self.assertEqual(["--filter"], flags)
+
+
 class UTF8ReadTest(unittest.TestCase):
     def test_read_text_uses_explicit_utf8_encoding(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -257,6 +470,73 @@ class UTF8ReadTest(unittest.TestCase):
                 self.assertIn("한국어", verify_skill.read_utf8(path))
 
             self.assertEqual(seen, ["utf-8"])
+
+
+class TestExtractProseInvocations(unittest.TestCase):
+    """Prose flag extraction must not leak wrapping quotes into flag tokens.
+
+    A single-quoted prose command like `'<cli> auth login --chrome'` cannot be
+    balanced by shlex, so extraction falls back to `str.split()`; without
+    quote stripping the closing quote leaks as the phantom flag `--chrome'`.
+    """
+
+    AUTH_GO = (
+        "package cli\n"
+        'import "github.com/spf13/cobra"\n'
+        "func newAuthCmd() *cobra.Command {\n"
+        '  c := &cobra.Command{Use: "auth"}\n'
+        "  return c\n"
+        "}\n"
+        "func newAuthLoginCmd() *cobra.Command {\n"
+        '  c := &cobra.Command{Use: "login"}\n'
+        '  c.Flags().Bool("chrome", false, "use chrome")\n'
+        "  return c\n"
+        "}\n"
+    )
+
+    def _cli_dir(self, tmp: str) -> Path:
+        return _write_cli(Path(tmp), {"auth.go": self.AUTH_GO})
+
+    def test_single_quoted_command_strips_trailing_quote(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cli_dir = self._cli_dir(tmp)
+            text = "Run 'mycli auth login --chrome' to authenticate."
+            results = _extract_prose_invocations(text, "mycli", cli_dir)
+            flags = [f for _cmd, _pos, fl, _surface in results for f in fl]
+            self.assertIn("--chrome", flags)
+            self.assertNotIn("--chrome'", flags)
+            self.assertFalse(
+                any(f.endswith("'") or f.endswith('"') for f in flags),
+                f"flag tokens leaked a wrapping quote: {flags}",
+            )
+
+    def test_double_quoted_command_strips_trailing_quote(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cli_dir = self._cli_dir(tmp)
+            # The opening quote sits after the binary, so the extracted
+            # fragment (`auth login --chrome" to authenticate.`) carries an
+            # unbalanced `"` that shlex.split rejects, forcing the
+            # fragment.split() fallback to yield `--chrome"`. Without the
+            # trailing-quote strip the flag token would leak that quote.
+            text = 'Run "mycli auth login --chrome" to authenticate.'
+            results = _extract_prose_invocations(text, "mycli", cli_dir)
+            flags = [f for _cmd, _pos, fl, _surface in results for f in fl]
+            self.assertIn("--chrome", flags)
+            self.assertFalse(
+                any(f.endswith("'") or f.endswith('"') for f in flags),
+                f"flag tokens leaked a wrapping quote: {flags}",
+            )
+
+    def test_undeclared_flag_in_prose_still_extracted(self):
+        # The quote fix must not suppress genuinely undeclared flags: a real
+        # but undeclared flag still surfaces so downstream flag-name checks
+        # can fail it.
+        with tempfile.TemporaryDirectory() as tmp:
+            cli_dir = self._cli_dir(tmp)
+            text = "Run mycli auth login --bogusflag to break things."
+            results = _extract_prose_invocations(text, "mycli", cli_dir)
+            flags = [f for _cmd, _pos, fl, _surface in results for f in fl]
+            self.assertIn("--bogusflag", flags)
 
 
 if __name__ == "__main__":

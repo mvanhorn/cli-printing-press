@@ -136,6 +136,14 @@ type LostRegistration struct {
 	// internal/cli/category.go.
 	HostFile string `json:"host_file"`
 
+	// EnclosingFunc is the name of the function the lost calls were declared
+	// in (e.g., "Execute"). Re-injection targets the same-named function in
+	// the fresh host so calls land where they belong when a host file has
+	// more than one command-registration function. Empty for plans produced
+	// before this field existed; injection then falls back to the first
+	// AddCommand-bearing function.
+	EnclosingFunc string `json:"enclosing_func,omitempty"`
+
 	// Calls are the source-form `parent.AddCommand(newX(args...))` strings
 	// for each lost registration.
 	Calls []string `json:"calls"`
@@ -182,10 +190,17 @@ type Options struct {
 	// Off by default.
 	Force bool
 
+	// BaseDir optionally points at the original template emission for the
+	// snapshot tree. When a snapshot file is byte-identical to BaseDir's copy,
+	// any difference from fresh is template version drift, not a hand edit, so
+	// fresh is authoritative.
+	BaseDir string
+
 	// NovelOnly restricts MergeIntoFreshTree to preserve only NOVEL and
 	// NOVEL-COLLISION files; TEMPLATED-WITH-ADDITIONS, TEMPLATED-BODY-DRIFT,
-	// and TEMPLATED-VALUE-DRIFT are left as fresh emitted them, and lost
-	// AddCommand re-injection is skipped. Used by the cross-spec fallback
+	// and TEMPLATED-VALUE-DRIFT are left as fresh emitted them. Lost
+	// AddCommand calls whose constructors are preserved in the novel files are
+	// still re-injected. Used by the cross-spec fallback
 	// path in `generate --force` where the classifier's heuristics aren't
 	// valid across different specs but novel hand-written files (no marker)
 	// remain user-owned regardless of spec lineage.
@@ -210,6 +225,13 @@ func Classify(publishedDir, freshDir string, opts Options) (*MergeReport, error)
 	if err != nil {
 		return nil, fmt.Errorf("resolving fresh dir: %w", err)
 	}
+	baseAbs := ""
+	if opts.BaseDir != "" {
+		baseAbs, err = filepath.Abs(opts.BaseDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolving base dir: %w", err)
+		}
+	}
 
 	// CWD-prefix containment is checked only on the published tree; that's
 	// the destructive target. fresh is read-only input — no Apply step
@@ -224,7 +246,7 @@ func Classify(publishedDir, freshDir string, opts Options) (*MergeReport, error)
 		FreshDir: freshAbs,
 	}
 
-	files, err := classifyFiles(pubAbs, freshAbs)
+	files, err := classifyFiles(pubAbs, freshAbs, baseAbs)
 	if err != nil {
 		return nil, fmt.Errorf("classifying files: %w", err)
 	}

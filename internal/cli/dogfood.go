@@ -16,12 +16,14 @@ func newDogfoodCmd() *cobra.Command {
 	var dir string
 	var specPath string
 	var researchDir string
+	var trafficAnalysisPath string
 	var asJSON bool
 	var live bool
 	var level string
 	var timeout time.Duration
 	var writeAcceptance string
 	var authEnv string
+	var authTier string
 	var allowDestructive bool
 
 	cmd := &cobra.Command{
@@ -29,18 +31,25 @@ func newDogfoodCmd() *cobra.Command {
 		Short: "Validate a generated CLI against its source spec",
 		Long:  "Mechanically verify that a generated CLI's commands hit valid API paths, auth matches the spec protocol, no dead flags/functions exist, and the data pipeline is wired correctly.",
 		Example: `  # Evaluate a generated CLI directory
-  printing-press dogfood --dir ./generated/stripe-pp-cli
+  cli-printing-press dogfood --dir ./generated/stripe-pp-cli
 
   # Output as JSON for programmatic use
-  printing-press dogfood --dir ./generated/stripe-pp-cli --json`,
+  cli-printing-press dogfood --dir ./generated/stripe-pp-cli --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			canonicalDir, err := pipeline.ResolveTargetDir(dir)
+			if err != nil {
+				return &ExitError{Code: ExitInputError, Err: err}
+			}
+			dir = canonicalDir
 			if live {
 				report, err := pipeline.RunLiveDogfood(pipeline.LiveDogfoodOptions{
 					CLIDir:              dir,
 					Level:               level,
 					Timeout:             timeout,
+					ResearchDir:         researchDir,
 					WriteAcceptancePath: writeAcceptance,
 					AuthEnv:             authEnv,
+					AuthTier:            authTier,
 					AllowDestructive:    allowDestructive,
 				})
 				if err != nil {
@@ -55,7 +64,9 @@ func newDogfoodCmd() *cobra.Command {
 				} else {
 					printLiveDogfoodReport(report)
 				}
-				if report.Verdict != "PASS" {
+				// Device CLIs report "unverified-device" (manual --live testing is
+				// their real gate); only a hard FAIL is a non-zero exit.
+				if report.Verdict == "FAIL" {
 					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("live dogfood failed: %d/%d tests failed", report.Failed, report.MatrixSize)}
 				}
 				return nil
@@ -64,6 +75,9 @@ func newDogfoodCmd() *cobra.Command {
 			var opts []pipeline.DogfoodOption
 			if researchDir != "" {
 				opts = append(opts, pipeline.WithResearchDir(researchDir))
+			}
+			if trafficAnalysisPath != "" {
+				opts = append(opts, pipeline.WithTrafficAnalysis(trafficAnalysisPath))
 			}
 			report, err := pipeline.RunDogfood(dir, specPath, opts...)
 			if err != nil {
@@ -84,12 +98,14 @@ func newDogfoodCmd() *cobra.Command {
 	cmd.Flags().StringVar(&dir, "dir", "", "Path to the generated CLI directory (required)")
 	cmd.Flags().StringVar(&specPath, "spec", "", "Path to the OpenAPI spec file")
 	cmd.Flags().StringVar(&researchDir, "research-dir", "", "Pipeline directory containing research.json for novel features validation")
+	cmd.Flags().StringVar(&trafficAnalysisPath, "traffic-analysis", "", "Path to a browser-sniff traffic-analysis.json (enables sync-param-drop gate)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&live, "live", false, "Run the Phase 5 live command-tree dogfood matrix")
 	cmd.Flags().StringVar(&level, "level", "full", "Live dogfood depth: quick or full")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Timeout for each live dogfood test")
-	cmd.Flags().StringVar(&writeAcceptance, "write-acceptance", "", "Write phase5-acceptance.json to this path when live dogfood passes")
+	cmd.Flags().StringVar(&writeAcceptance, "write-acceptance", "", "Write phase5-acceptance.json to this path on every outcome (status:pass on success, status:fail with a failure_summary block on failure)")
 	cmd.Flags().StringVar(&authEnv, "auth-env", "", "Environment variable that proves an API credential was available for the acceptance marker")
+	cmd.Flags().StringVar(&authTier, "auth-tier", "", "Credential tier for live dogfood; falls back to PP_AUTH_TIER and skips commands annotated pp:requires-tier on mismatch")
 	cmd.Flags().BoolVar(&allowDestructive, "allow-destructive", false, "Re-enable testing of endpoints classified as destructive-at-auth. Default skips them to prevent runner-credential rotation.")
 	_ = cmd.MarkFlagRequired("dir")
 	return cmd
@@ -102,7 +118,15 @@ func printLiveDogfoodReport(report *pipeline.LiveDogfoodReport) {
 	fmt.Printf("Level:      %s\n", report.Level)
 	fmt.Printf("Verdict:    %s%s\n", report.Verdict, liveDogfoodVerdictQualifier(report))
 	fmt.Printf("Commands:   %d\n", len(report.Commands))
-	fmt.Printf("Tests:      %d passed, %d failed, %d skipped\n", report.Passed, report.Failed, report.Skipped)
+	fmt.Printf("Tests:      %d passed, %d failed, %d skipped (%d unverified)\n", report.Passed, report.Failed, report.Skipped, report.Unverified)
+	fmt.Printf("Pass rate:  %.0f%% of %d evaluated checks\n", report.PassRate, report.MatrixSize)
+	if report.Verdict == "unverified-device" {
+		fmt.Println("Coverage:   UNVERIFIED - device CLI requires manual live testing")
+	} else if report.CoverageHollow {
+		fmt.Printf("Coverage:   HOLLOW - %d novel feature(s) never executed: %s\n", len(report.HollowFeatures), strings.Join(report.HollowFeatures, ", "))
+	} else {
+		fmt.Println("Coverage:   headline novel features executed")
+	}
 	fmt.Println()
 	for _, result := range report.Tests {
 		status := strings.ToUpper(string(result.Status))
@@ -133,9 +157,18 @@ func printDogfoodReport(report *pipeline.DogfoodReport) {
 
 	pathStatus := "SKIP"
 	if report.SpecPath != "" && !report.PathCheck.Skipped {
-		pathStatus = "PASS"
-		if report.PathCheck.Pct < 70 {
+		// An empty matrix (Tested == 0) is cosmetic, not a failure: the
+		// scorecard's Path Validity dimension renders 10/10 in this case, and
+		// the dogfood failure aggregator at FailedIssues guards on Tested > 0
+		// before counting a low-percentage path-validity failure. Render N/A
+		// here to match.
+		switch {
+		case report.PathCheck.Tested == 0:
+			pathStatus = "N/A"
+		case report.PathCheck.Pct < 70:
 			pathStatus = "FAIL"
+		default:
+			pathStatus = "PASS"
 		}
 	}
 	fmt.Printf("Path Validity:     %d/%d valid (%s)\n", report.PathCheck.Valid, report.PathCheck.Tested, pathStatus)
@@ -163,6 +196,26 @@ func printDogfoodReport(report *pipeline.DogfoodReport) {
 	}
 	if report.AuthCheck.Detail != "" {
 		fmt.Printf("  Detail: %s\n", report.AuthCheck.Detail)
+	}
+	fmt.Println()
+
+	scopeStatus := "SKIP"
+	if !report.OAuthScopeCoverage.Skipped {
+		scopeStatus = "PASS"
+		if len(report.OAuthScopeCoverage.Violations) > 0 {
+			scopeStatus = "FAIL"
+		}
+	}
+	fmt.Printf("OAuth Scope Cover: %d/%d endpoints covered (%s)\n", report.OAuthScopeCoverage.Covered, report.OAuthScopeCoverage.Checked, scopeStatus)
+	if report.OAuthScopeCoverage.Detail != "" {
+		fmt.Printf("  Detail: %s\n", report.OAuthScopeCoverage.Detail)
+	}
+	for _, violation := range report.OAuthScopeCoverage.Violations {
+		op := violation.OperationID
+		if op == "" {
+			op = "unknown"
+		}
+		fmt.Printf("  - %s (op-id %s) %s, none in auth.go\n", violation.Endpoint, op, describeOAuthScopeRequirement(violation))
 	}
 	fmt.Println()
 
@@ -235,12 +288,15 @@ func printDogfoodReport(report *pipeline.DogfoodReport) {
 		fmt.Println("Novel Features:    SKIP (none planned)")
 	} else {
 		nfStatus := "PASS"
-		if len(nfc.Missing) > 0 {
+		if len(nfc.Missing) > 0 || len(nfc.DepthMismatches) > 0 {
 			nfStatus = "WARN"
 		}
 		fmt.Printf("Novel Features:    %d/%d survived (%s)\n", nfc.Found, nfc.Planned, nfStatus)
 		for _, cmd := range nfc.Missing {
 			fmt.Printf("  - %s: planned but not found\n", cmd)
+		}
+		for _, mismatch := range nfc.DepthMismatches {
+			fmt.Printf("  - %s: advertised as %q but registered as %q\n", mismatch.Command, mismatch.Advertised, mismatch.Actual)
 		}
 	}
 	fmt.Println()
@@ -262,6 +318,33 @@ func printDogfoodReport(report *pipeline.DogfoodReport) {
 	fmt.Printf("Verdict: %s\n", report.Verdict)
 	for _, issue := range report.Issues {
 		fmt.Printf("  - %s\n", issue)
+	}
+}
+
+func describeOAuthScopeRequirement(violation pipeline.OAuthScopeCoverageViolation) string {
+	alternatives := violation.RequiredScopeAlternatives
+	if len(alternatives) == 0 && len(violation.RequiredScopes) > 0 {
+		alternatives = [][]string{violation.RequiredScopes}
+	}
+
+	switch len(alternatives) {
+	case 0:
+		return "requires OAuth scopes"
+	case 1:
+		if len(alternatives[0]) == 1 {
+			return "requires " + alternatives[0][0]
+		}
+		return "requires all of " + strings.Join(alternatives[0], ", ")
+	default:
+		options := make([]string, 0, len(alternatives))
+		for _, alternative := range alternatives {
+			if len(alternative) == 1 {
+				options = append(options, alternative[0])
+			} else {
+				options = append(options, "all of "+strings.Join(alternative, ", "))
+			}
+		}
+		return "requires one of " + strings.Join(options, "; ")
 	}
 }
 

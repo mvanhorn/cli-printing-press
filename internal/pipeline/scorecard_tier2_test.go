@@ -2,6 +2,11 @@ package pipeline
 
 import (
 	"encoding/json"
+	"fmt"
+	"go/parser"
+	"go/token"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +14,89 @@ import (
 
 	"github.com/stretchr/testify/assert"
 )
+
+// TestLoadOpenAPISpec_AcceptsHTTPURL is the regression guard for #1001:
+// scorer subcommands rejected --spec URLs because the loader called
+// os.ReadFile directly. The fix routes through openapi.LoadSpecBytes,
+// which dispatches by scheme. A URL must now load successfully on every
+// platform without a separate "curl to /tmp" workaround.
+func TestLoadOpenAPISpec_AcceptsHTTPURL(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+  "openapi": "3.0.0",
+  "info": {"title": "Demo", "version": "1.0"},
+  "paths": {
+    "/things": {"get": {"responses": {"200": {"description": "ok"}}}}
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer_auth": {"type": "http", "scheme": "bearer"}
+    }
+  }
+}`))
+	}))
+	defer srv.Close()
+
+	info, err := loadOpenAPISpec(srv.URL)
+	assert.NoError(t, err)
+	assert.NotNil(t, info)
+	assert.Contains(t, info.Paths, "/things")
+	assert.Contains(t, info.SecuritySchemes, "bearer_auth")
+}
+
+func TestScorecardTreatsDeviceBackedCLIAsNonHTTP(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pipelineDir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "device-spec.yaml"), `version: 1
+name: desk-lamp
+display_name: Desk Lamp
+protocol: ble
+identity:
+  advertised_names: ["Desk Lamp"]
+ble:
+  services:
+    - uuid: "180f"
+      characteristics:
+        - uuid: "2a19"
+          properties: ["read"]
+`)
+
+	sc, err := RunScorecard(dir, pipelineDir, "", nil)
+	assert.NoError(t, err)
+	assert.Contains(t, sc.UnscoredDimensions, DimPathValidity)
+	assert.Contains(t, sc.UnscoredDimensions, DimAuthProtocol)
+}
+
+func TestScorecardAcceptsDeviceSpecPathAsNonHTTP(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pipelineDir := t.TempDir()
+	specPath := filepath.Join(t.TempDir(), "device.yaml")
+	writeFile(t, specPath, `version: 1
+name: desk-lamp
+display_name: Desk Lamp
+protocol: ble
+identity:
+  advertised_names: ["Desk Lamp"]
+ble:
+  services:
+    - uuid: "180f"
+      characteristics:
+        - uuid: "2a19"
+          properties: ["read"]
+`)
+
+	sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+	assert.NoError(t, err)
+	assert.Contains(t, sc.UnscoredDimensions, DimPathValidity)
+	assert.Contains(t, sc.UnscoredDimensions, DimAuthProtocol)
+}
 
 func TestIsThinMCPDescription(t *testing.T) {
 	tests := []struct {
@@ -45,6 +133,18 @@ func TestScoreMCPDescriptionQuality(t *testing.T) {
 			})
 		}
 		manifest := map[string]any{"tools": tools}
+		data, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "tools-manifest.json"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	mkManifest := func(t *testing.T, manifest ToolsManifest) string {
+		t.Helper()
+		dir := t.TempDir()
 		data, err := json.Marshal(manifest)
 		if err != nil {
 			t.Fatal(err)
@@ -98,6 +198,39 @@ func TestScoreMCPDescriptionQuality(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("hidden endpoint mirrors are not counted", func(t *testing.T) {
+		dir := mkManifest(t, ToolsManifest{
+			MCP: &ManifestMCP{
+				EndpointTools: "hidden",
+				Orchestration: "code",
+			},
+			Tools: []ManifestTool{
+				{Name: "demo_get", Description: "Get"},
+				{Name: "demo_create", Description: "Create"},
+			},
+		})
+		score, scored := scoreMCPDescriptionQuality(dir)
+		if scored {
+			t.Errorf("score=%d scored=%v, want unscored", score, scored)
+		}
+	})
+
+	t.Run("visible endpoint mirrors are still counted", func(t *testing.T) {
+		dir := mkManifest(t, ToolsManifest{
+			MCP: &ManifestMCP{
+				EndpointTools: "visible",
+			},
+			Tools: []ManifestTool{
+				{Name: "demo_get", Description: "Get"},
+				{Name: "demo_create", Description: "Create"},
+			},
+		})
+		score, scored := scoreMCPDescriptionQuality(dir)
+		if !scored || score != 0 {
+			t.Errorf("score=%d scored=%v, want 0/true", score, scored)
+		}
+	})
 }
 
 func appendN(prefix []string, val string, n int) []string {
@@ -143,6 +276,8 @@ package cli
 func filterFields() {}
 
 func outputCSV() {}
+
+func boundCtx() {}
 `)
 
 		// 2 dead flags (csvOutput, stdinInput), 2 dead functions (filterFields, outputCSV)
@@ -468,6 +603,33 @@ func runLinks() string {
 	})
 }
 
+func TestScoreSpecDimensionsPrefersEmbeddedMergedSpecJSON(t *testing.T) {
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, "internal/cli/merged.go", `
+package cli
+
+func runMerged() string {
+	path := "/merged"
+	return path
+}
+`)
+	writeScorecardFixture(t, dir, "spec.json", `{
+  "openapi": "3.0.0",
+  "paths": {"/merged": {}}
+}`)
+	callerSpec := filepath.Join(t.TempDir(), "single.json")
+	assert.NoError(t, os.WriteFile(callerSpec, []byte(`{
+  "openapi": "3.0.0",
+  "paths": {"/single": {}}
+}`), 0o644))
+
+	sc := &Scorecard{}
+	_, err := scoreSpecDimensions(sc, dir, callerSpec)
+	assert.NoError(t, err)
+	assert.Equal(t, 10, sc.Steinberger.PathValidity)
+	assert.NotContains(t, sc.UnscoredDimensions, DimPathValidity)
+}
+
 func TestScoreTypeFidelity(t *testing.T) {
 	t.Run("scores wrong id flag types and dummy guards low", func(t *testing.T) {
 		dir := t.TempDir()
@@ -485,10 +647,10 @@ func init() {
 }
 `)
 
-		assert.Equal(t, 0, scoreTypeFidelity(dir))
+		assert.Equal(t, 0, scoreTypeFidelity(dir, nil))
 	})
 
-	t.Run("scores string id flags required markers and clear descriptions high", func(t *testing.T) {
+	t.Run("scores string id flags but does not treat them as full type fidelity", func(t *testing.T) {
 		dir := t.TempDir()
 
 		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
@@ -499,14 +661,330 @@ func init() {
 	cmd.Flags().StringVar(&flagAfterID, "after-id", "", "Snowflake ID to fetch results after the given message")
 	cmd.Flags().StringVar(&flagChannelID, "channel-id", "", "Channel ID containing the messages to fetch for sync")
 	cmd.Flags().StringVar(&flagGuildID, "guild-id", "", "Guild ID used to scope channel and message syncing")
-	_ = cmd.MarkFlagRequired("after-id")
-	_ = cmd.MarkFlagRequired("channel-id")
-	_ = cmd.MarkFlagRequired("guild-id")
 }
 `)
 
-		assert.GreaterOrEqual(t, scoreTypeFidelity(dir), 4)
+		// String-backed ID flags are valid, but by themselves they do not prove
+		// positional arg handling or typed parser coverage.
+		assert.Equal(t, 2, scoreTypeFidelity(dir, nil))
 	})
+
+	t.Run("scores mixed id flag typing with partial credit", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
+package cli
+
+func init() {
+	cmd := messagesCmd
+	cmd.Flags().StringVar(&flagAfterID, "after-id", "", "Snowflake ID")
+	cmd.Flags().IntVar(&flagChannelID, "channel-id", 0, "Channel ID")
+}
+`)
+
+		assert.Equal(t, 1, scoreTypeFidelity(dir, nil))
+	})
+
+	t.Run("caps multiple cobra arg validator types at two points", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events.go", `
+package cli
+
+import "github.com/spf13/cobra"
+
+var getCmd = &cobra.Command{
+	Use:  "get <event_id>",
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		_ = args[0]
+		return nil
+	},
+}
+
+var exportCmd = &cobra.Command{
+	Use:  "export <resource> [id]",
+	Args: cobra.MinimumNArgs(1),
+}
+
+var searchCmd = &cobra.Command{
+	Use:  "search [query]",
+	Args: cobra.MaximumNArgs(1),
+}
+`)
+
+		assert.Equal(t, 2, scoreTypeFidelity(dir, nil))
+	})
+
+	t.Run("scores typed parser coverage plus positional command shape high", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
+package cli
+
+import "github.com/spf13/cobra"
+
+func newEventsGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:  "get <calendar_id> <event_id>",
+		Args: cobra.ExactArgs(2),
+	}
+}
+`)
+		writeScorecardFixture(t, dir, "internal/graph/events.go", `
+package graph
+
+import "encoding/json"
+
+type graphEvent struct {
+	ID      string `+"`json:\"id\"`"+`
+	Subject string `+"`json:\"subject\"`"+`
+}
+
+func ParseGraphEvent(data []byte) (graphEvent, error) {
+	var event graphEvent
+	err := json.Unmarshal(data, &event)
+	return event, err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/graph/events_test.go", `
+package graph
+
+import "testing"
+
+func TestParseGraphEvent(t *testing.T) {
+	_, _ = ParseGraphEvent([]byte("{}"))
+}
+`)
+
+		assert.Equal(t, 4, scoreTypeFidelity(dir, nil))
+	})
+
+	t.Run("scores typed parser coverage plus generated positional use without Args validators", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
+package cli
+
+import "github.com/spf13/cobra"
+
+func newEventsGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "get <event_id>",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			_ = args[0]
+			return nil
+		},
+	}
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/novel_events.go", `
+package cli
+
+import "encoding/json"
+
+type graphEvent struct {
+	ID      string `+"`json:\"id\"`"+`
+	Subject string `+"`json:\"subject\"`"+`
+}
+
+func parseGraphEvent(data []byte) (graphEvent, error) {
+	var event graphEvent
+	err := json.Unmarshal(data, &event)
+	return event, err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/novel_events_test.go", `
+package cli
+
+import "testing"
+
+func TestParseGraphEvent(t *testing.T) {
+	_, _ = parseGraphEvent([]byte("{}"))
+}
+`)
+
+		assert.Equal(t, 4, scoreTypeFidelity(dir, &openAPISpecInfo{PositionalParamCount: 1}))
+	})
+
+	t.Run("does not score spec positionals without CLI positional handling", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
+package cli
+
+func init() {
+	cmd := eventsCmd
+	cmd.Flags().StringVar(&flagQuery, "query", "", "Text query")
+}
+`)
+
+		assert.Equal(t, 0, scoreTypeFidelity(dir, &openAPISpecInfo{PositionalParamCount: 1}))
+	})
+
+	t.Run("does not score advertised positionals without consuming or validating args", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
+package cli
+
+import "github.com/spf13/cobra"
+
+func newEventsGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "get <event_id>",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return nil
+		},
+	}
+}
+`)
+
+		assert.Equal(t, 0, scoreTypeFidelity(dir, &openAPISpecInfo{PositionalParamCount: 1}))
+	})
+
+	t.Run("does not score parser-looking code without tests that mention the parser", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
+package cli
+
+import "github.com/spf13/cobra"
+
+func newEventsGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:  "get <event_id>",
+		Args: cobra.ExactArgs(1),
+	}
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/novel_events.go", `
+package cli
+
+import "encoding/json"
+
+type graphEvent struct {
+	ID string `+"`json:\"id\"`"+`
+}
+
+func parseGraphEvent(data []byte) (graphEvent, error) {
+	var event graphEvent
+	err := json.Unmarshal(data, &event)
+	return event, err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/novel_events_test.go", `
+package cli
+
+import "testing"
+
+func TestSomethingElse(t *testing.T) {}
+`)
+
+		assert.Equal(t, 2, scoreTypeFidelity(dir, nil))
+	})
+
+	t.Run("scores generic string flags without typed parsing low", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
+package cli
+
+func init() {
+	cmd := messagesCmd
+	cmd.Flags().StringVar(&flagQuery, "query", "", "Text query used to filter the list of messages")
+	cmd.Flags().StringVar(&flagStatus, "status", "", "Status value used to filter the list of messages")
+}
+`)
+
+		assert.LessOrEqual(t, scoreTypeFidelity(dir, nil), 2)
+	})
+}
+
+// TestIsIDFlagName pins the kebab-case word-boundary semantics that replaced
+// the bare `strings.Contains(name, "id")` check. The old check classified
+// "price-paid-cents" as an ID flag because "paid" contains "id", which then
+// failed the "all ID flags must be StringVar" rule on IntVar money columns.
+func TestIsIDFlagName(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"id", true},
+		{"user-id", true},
+		{"id-prefix", true},
+		{"parent-id-child", true},
+		{"price-paid-cents", false},
+		{"validate", false},
+		{"kid", false},
+		{"wide", false},
+		{"video", false},
+		{"identity", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isIDFlagName(tc.name))
+		})
+	}
+}
+
+// TestScoreTypeFidelity_FlagDeclRegexBoundedToOneLine pins that consecutive
+// Flags() calls stay isolated when detecting ID flag names. Before the
+// [^,\n]+ fix the greedy [^,]+ spanned newlines into the next Flags() call.
+func TestScoreTypeFidelity_FlagDeclRegexBoundedToOneLine(t *testing.T) {
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, "internal/cli/messages.go", `
+package cli
+
+func init() {
+	cmd := messagesCmd
+	cmd.Flags().StringVar(&flagAlphaID, "alpha-id", "", "Alpha identifier")
+	cmd.Flags().StringVar(&flagBravoID, "bravo-id", "", "Bravo identifier")
+	cmd.Flags().StringVar(&flagCharlieID, "charlie-id", "", "Charlie identifier")
+}
+`)
+
+	assert.Equal(t, 2, scoreTypeFidelity(dir, nil))
+}
+
+// TestScoreTypeFidelity_DoesNotRewardMarkFlagRequired pins that
+// MarkFlagRequired no longer earns a point. The SKILL's verify-friendly RunE
+// rule forbids it (Cobra evaluates it before RunE, so --dry-run probes fail).
+// Rewarding it created a direct scorer-versus-SKILL conflict — a compliant
+// agent would always lose this point.
+func TestScoreTypeFidelity_DoesNotRewardMarkFlagRequired(t *testing.T) {
+	withRequired := t.TempDir()
+	writeScorecardFixture(t, withRequired, "internal/cli/messages.go", `
+package cli
+
+func init() {
+	cmd := messagesCmd
+	cmd.Flags().StringVar(&flagAlpha, "alpha", "", "Alpha description with at least seven words here")
+	cmd.Flags().StringVar(&flagBravo, "bravo", "", "Bravo description with at least seven words here")
+	cmd.Flags().StringVar(&flagCharlie, "charlie", "", "Charlie description with at least seven words here")
+	_ = cmd.MarkFlagRequired("alpha")
+	_ = cmd.MarkFlagRequired("bravo")
+	_ = cmd.MarkFlagRequired("charlie")
+}
+`)
+
+	withoutRequired := t.TempDir()
+	writeScorecardFixture(t, withoutRequired, "internal/cli/messages.go", `
+package cli
+
+func init() {
+	cmd := messagesCmd
+	cmd.Flags().StringVar(&flagAlpha, "alpha", "", "Alpha description with at least seven words here")
+	cmd.Flags().StringVar(&flagBravo, "bravo", "", "Bravo description with at least seven words here")
+	cmd.Flags().StringVar(&flagCharlie, "charlie", "", "Charlie description with at least seven words here")
+}
+`)
+
+	assert.Equal(t, scoreTypeFidelity(withoutRequired, nil), scoreTypeFidelity(withRequired, nil),
+		"MarkFlagRequired must not earn a scorecard point — it is forbidden by the SKILL's verify-friendly RunE rule")
 }
 
 func TestScoreSyncCorrectness_NonSyncFilename(t *testing.T) {
@@ -575,6 +1053,199 @@ CREATE TABLE bookings (
 		score := scoreDataPipelineIntegrity(dir)
 		assert.GreaterOrEqual(t, score, 7, "domain upserts in non-sync.go should score high")
 	})
+
+	t.Run("credits generic resources SQL search", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/coin_search.go", `
+package cli
+
+import "database/sql"
+
+func runCoinSearch(db *sql.DB, query string) error {
+	rows, err := db.Query(`+"`"+`
+SELECT resources.data
+FROM resources
+JOIN resources_fts ON resources_fts.rowid = resources.rowid
+WHERE resources.resource_type = ? AND resources_fts MATCH ?
+`+"`"+`, "coin", query)
+	_ = rows
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `
+package store
+
+const schema = `+"`"+`
+CREATE TABLE resources (
+	id TEXT PRIMARY KEY,
+	resource_type TEXT NOT NULL,
+	data TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE VIRTUAL TABLE resources_fts USING fts5(resource_type, data);
+`+"`"+`
+`)
+
+		score := scoreDataPipelineIntegrity(dir)
+		assert.GreaterOrEqual(t, score, 7, "raw SQL search over the generic resources store should get search credit")
+	})
+
+	t.Run("credits store-backed generic resources SQL search", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/coin_search.go", `
+package cli
+
+import "example.com/project/internal/store"
+
+func runCoinSearch(query string) error {
+	db := store.Open()
+	rows, err := db.Query(`+"`"+`
+SELECT resources.data
+FROM resources
+WHERE resources.resource_type = ? AND resources.data LIKE ?
+`+"`"+`, "coin", query)
+	_ = rows
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `
+package store
+
+const schema = `+"`"+`
+CREATE TABLE resources (
+	id TEXT PRIMARY KEY,
+	resource_type TEXT NOT NULL,
+	data TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+`+"`"+`
+`)
+
+		score := scoreDataPipelineIntegrity(dir)
+		assert.GreaterOrEqual(t, score, 7, "store-backed raw SQL search over resources should get search credit")
+	})
+
+	t.Run("does not credit copied generic resources SQL without execution", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/notes.go", `
+package cli
+
+const copiedQuery = `+"`"+`
+SELECT resources.data
+FROM resources
+JOIN resources_fts ON resources_fts.rowid = resources.rowid
+WHERE resources.resource_type = ? AND resources_fts MATCH ?
+`+"`"+`
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `
+package store
+
+const schema = `+"`"+`
+CREATE TABLE resources (
+	id TEXT PRIMARY KEY,
+	resource_type TEXT NOT NULL,
+	data TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+`+"`"+`
+`)
+
+		score := scoreDataPipelineIntegrity(dir)
+		assert.Equal(t, 3, score, "copied SQL text should not get local-store or search execution credit")
+	})
+
+	t.Run("does not combine generic SQL signals across files", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/notes.go", `
+package cli
+
+const copiedQuery = `+"`"+`
+SELECT resources.data
+FROM resources
+WHERE resources.resource_type = ?
+`+"`"+`
+`)
+		writeScorecardFixture(t, dir, "internal/cli/unrelated_sql.go", `
+package cli
+
+import "database/sql"
+
+func runOther(db *sql.DB) error {
+	rows, err := db.Query("SELECT id FROM accounts")
+	_ = rows
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `
+package store
+
+const schema = `+"`"+`
+CREATE TABLE resources (
+	id TEXT PRIMARY KEY,
+	resource_type TEXT NOT NULL,
+	data TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+`+"`"+`
+`)
+
+		score := scoreDataPipelineIntegrity(dir)
+		assert.Equal(t, 3, score, "generic resources SQL and unrelated SQL execution in different files should not combine")
+	})
+
+	t.Run("does not credit orphan generic resources SQL command", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+
+func newRootCmd() { rootCmd.AddCommand(newLookupCmd(nil)) }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/lookup.go", `package cli
+
+func newLookupCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/coin_search.go", `
+package cli
+
+import "database/sql"
+
+func newCoinSearchCmd(flags any) {}
+
+func runCoinSearch(db *sql.DB, query string) error {
+	rows, err := db.Query(`+"`"+`
+SELECT resources.data
+FROM resources
+WHERE resources.resource_type = ?
+`+"`"+`, "coin")
+	_ = rows
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `
+package store
+
+const schema = `+"`"+`
+CREATE TABLE resources (
+	id TEXT PRIMARY KEY,
+	resource_type TEXT NOT NULL,
+	data TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+`+"`"+`
+`)
+
+		score := scoreDataPipelineIntegrity(dir)
+		assert.Equal(t, 3, score, "unregistered generic resources SQL commands should not get search execution credit")
+	})
 }
 
 func TestScoreDeadCode_FlagsPassedAsArg(t *testing.T) {
@@ -632,6 +1303,35 @@ package cli
 func runMessages() {
 	formatOutput(data)
 }
+`)
+
+		assert.Equal(t, 5, scoreDeadCode(dir))
+	})
+
+	t.Run("generated helper extension points are not dead code", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+func applyResponsePath() {}
+func declarePlatformAnalytics() {}
+func emitMissingPaginationCursorWarning() {}
+func emitMissingPaginationSignalWarning() {}
+func emitPaginatedGetMaxPagesWarning() {}
+func emitTruncationWarning() {}
+func extractGraphQLConnection() {}
+func extractGraphQLObject() {}
+func formatCLIParamValue() {}
+func nextClientSidePaginationCursor() {}
+func nextFullPageOffsetCursor() {}
+func paginatedGet() {}
+func paginationCursorToken() {}
+func replacePathParam() {}
+func resolvePlatformWindow() {}
+func responsePayloadParentAtPath() {}
+func writeNoop() {}
 `)
 
 		assert.Equal(t, 5, scoreDeadCode(dir))
@@ -746,9 +1446,122 @@ func runLinks() string {
 		pipelineDir := t.TempDir()
 		sc, err := RunScorecard(dir, pipelineDir, "", nil)
 		assert.NoError(t, err)
-		assert.ElementsMatch(t, []string{"mcp_description_quality", "mcp_token_efficiency", "mcp_remote_transport", "mcp_tool_design", "mcp_surface_strategy", "cache_freshness", "path_validity", "auth_protocol", "live_api_verification"}, sc.UnscoredDimensions)
+		assert.ElementsMatch(t, []string{"mcp_description_quality", "mcp_token_efficiency", "mcp_remote_transport", "mcp_tool_design", "mcp_surface_strategy", "cache_freshness", "path_validity", "auth_protocol", "data_pipeline_integrity", "sync_correctness", "type_fidelity", "live_api_verification"}, sc.UnscoredDimensions)
 		assert.NotContains(t, sc.GapReport, "path_validity scored 0/10 - needs improvement")
 		assert.NotContains(t, sc.GapReport, "auth_protocol scored 0/10 - needs improvement")
+	})
+
+	t.Run("graphql specs omit rest path validity from scoring", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/events.go", `
+package cli
+
+func runEvents() string {
+	path := "/events"
+	return path
+}
+`)
+		specPath := filepath.Join(dir, "spec.yaml")
+		writeScorecardFixture(t, dir, "spec.yaml", `
+name: events-graphql
+version: "0.1.0"
+base_url: https://api.example.com
+graphql_endpoint_path: /graphql
+auth:
+  type: none
+resources:
+  events:
+    description: Events
+    endpoints:
+      list:
+        method: POST
+        path: /graphql
+        description: List events
+`)
+
+		sc, err := RunScorecard(dir, t.TempDir(), specPath, nil)
+		assert.NoError(t, err)
+		assert.Contains(t, sc.UnscoredDimensions, DimPathValidity)
+		assert.Zero(t, sc.Steinberger.PathValidity)
+		assert.NotContains(t, sc.GapReport, "path_validity scored 0/10 - needs improvement")
+	})
+
+	t.Run("OpenAPI GraphQL specs omit rest path validity from scoring", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/events.go", `
+package cli
+
+func runEvents() string {
+	path := "/events"
+	return path
+}
+`)
+		specPath := filepath.Join(dir, "openapi.yaml")
+		writeScorecardFixture(t, dir, "openapi.yaml", `
+openapi: 3.0.3
+info:
+  title: Events GraphQL
+  version: 1.0.0
+  x-graphql-endpoint: /graphql
+paths:
+  /graphql:
+    post:
+      operationId: graphql
+      responses:
+        "200":
+          description: ok
+`)
+
+		sc, err := RunScorecard(dir, t.TempDir(), specPath, nil)
+		assert.NoError(t, err)
+		assert.Contains(t, sc.UnscoredDimensions, DimPathValidity)
+		assert.Zero(t, sc.Steinberger.PathValidity)
+		assert.NotContains(t, sc.GapReport, "path_validity scored 0/10 - needs improvement")
+	})
+
+	t.Run("no store omits store pipeline dimensions from scoring", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func initRoot() { rootCmd.AddCommand(newSyncCmd()) }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/sync.go", `package cli
+import "github.com/spf13/cobra"
+func newSyncCmd() *cobra.Command { return &cobra.Command{Use: "sync"} }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/snapshot.go", `package cli
+import "github.com/spf13/cobra"
+func newSnapshotCmd() *cobra.Command { return &cobra.Command{Use: "snapshot"} }
+`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, "", nil)
+		assert.NoError(t, err)
+		assert.Contains(t, sc.UnscoredDimensions, DimDataPipelineIntegrity)
+		assert.Contains(t, sc.UnscoredDimensions, DimSyncCorrectness)
+		assert.Contains(t, sc.UnscoredDimensions, DimTypeFidelity)
+		assert.NotContains(t, sc.GapReport, "data_pipeline_integrity scored 0/10 - needs improvement")
+		assert.NotContains(t, sc.GapReport, "sync_correctness scored 0/10 - needs improvement")
+		assert.NotContains(t, sc.GapReport, "type_fidelity scored 0/5 - needs improvement")
+	})
+
+	t.Run("hidden endpoint mirrors omit mcp description quality from scoring", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, ToolsManifestFilename, `{
+  "mcp": {
+    "endpoint_tools": "hidden",
+    "orchestration": "code"
+  },
+  "tools": [
+    {"name": "demo_get", "description": "Get"},
+    {"name": "demo_create", "description": "Create"}
+  ]
+}`)
+
+		sc, err := RunScorecard(dir, t.TempDir(), "", nil)
+		assert.NoError(t, err)
+		assert.Contains(t, sc.UnscoredDimensions, DimMCPDescriptionQuality)
 	})
 
 	t.Run("missing security schemes renormalizes tier2 instead of treating auth as zero", func(t *testing.T) {
@@ -809,7 +1622,9 @@ func runLinks() string {
 			scBearer.Steinberger.SyncCorrectness +
 			scBearer.Steinberger.TypeFidelity +
 			scBearer.Steinberger.DeadCode
-		expectedDelta := (sharedTier2Raw * 50 / 40) - (sharedTier2Raw * 50 / 50)
+		noAuthMax := scorecardTierMax(scNoAuth, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness, DimDataPipelineIntegrity, DimTypeFidelity)
+		bearerMax := scorecardTierMax(scBearer, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness, DimDataPipelineIntegrity, DimTypeFidelity)
+		expectedDelta := (sharedTier2Raw * 50 / noAuthMax) - (sharedTier2Raw * 50 / bearerMax)
 		assert.Equal(t, scBearer.Steinberger.Total+expectedDelta, scNoAuth.Steinberger.Total)
 	})
 
@@ -1194,6 +2009,266 @@ func signKalshiRequest(req *http.Request, key string, signature string) {
 		assert.Less(t, sc.Steinberger.AuthProtocol, 5)
 	})
 
+	t.Run("all apiKey header auth scores every required header", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func setAutotaskAuth(req *http.Request, userName string, secret string, integrationCode string) {
+	req.Header.Set("UserName", userName)
+	req.Header.Set("Secret", secret)
+	req.Header.Set("ApiIntegrationCode", integrationCode)
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-autotask-composed.json")
+		writeScorecardFixture(t, dir, "spec-autotask-composed.json", `{
+  "security": [
+    {
+      "UserName": [],
+      "Secret": [],
+      "ApiIntegrationCode": []
+    }
+  ],
+  "paths": {
+    "/tickets": {
+      "get": {
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "UserName": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "UserName"
+      },
+      "Secret": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Secret"
+      },
+      "ApiIntegrationCode": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "ApiIntegrationCode"
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.Equal(t, 10, sc.Steinberger.AuthProtocol)
+	})
+
+	t.Run("all apiKey header auth penalizes missing required header", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func setAutotaskAuth(req *http.Request, userName string, integrationCode string) {
+	req.Header.Set("UserName", userName)
+	req.Header.Set("ApiIntegrationCode", integrationCode)
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-autotask-composed-missing.json")
+		writeScorecardFixture(t, dir, "spec-autotask-composed-missing.json", `{
+  "security": [
+    {
+      "UserName": [],
+      "Secret": [],
+      "ApiIntegrationCode": []
+    }
+  ],
+  "paths": {
+    "/tickets": {
+      "get": {
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "UserName": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "UserName"
+      },
+      "Secret": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Secret"
+      },
+      "ApiIntegrationCode": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "ApiIntegrationCode"
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.Less(t, sc.Steinberger.AuthProtocol, 5)
+	})
+
+	t.Run("all apiKey query auth scores every required query parameter", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func setTrelloAuth(req *http.Request, key string, token string) {
+	q := req.URL.Query()
+	q.Set("key", key)
+	q.Set("token", token)
+	req.URL.RawQuery = q.Encode()
+}
+`)
+		writeScorecardFixture(t, dir, "internal/config/config.go", `
+package config
+
+import "os"
+
+func Load() {
+	if v := os.Getenv("TRELLO_API_KEY"); v != "" {
+		cfg.TrelloApiKey = v
+	}
+	if v := os.Getenv("TRELLO_TOKEN"); v != "" {
+		cfg.TrelloToken = v
+	}
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-trello-query-composed.json")
+		writeScorecardFixture(t, dir, "spec-trello-query-composed.json", `{
+  "security": [
+    {
+      "APIKey": [],
+      "APIToken": []
+    }
+  ],
+  "paths": {
+    "/members/me": {
+      "get": {
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "APIKey": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "key",
+        "x-auth-env-vars": ["TRELLO_API_KEY"]
+      },
+      "APIToken": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "token",
+        "x-auth-env-vars": ["TRELLO_TOKEN"]
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.Equal(t, 10, sc.Steinberger.AuthProtocol)
+	})
+
+	t.Run("all apiKey query auth penalizes missing required query parameter", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func setTrelloAuth(req *http.Request, key string) {
+	q := req.URL.Query()
+	q.Set("key", key)
+	req.URL.RawQuery = q.Encode()
+}
+`)
+		writeScorecardFixture(t, dir, "internal/config/config.go", `
+package config
+
+import "os"
+
+func Load() {
+	if v := os.Getenv("TRELLO_API_KEY"); v != "" {
+		cfg.TrelloApiKey = v
+	}
+	if v := os.Getenv("TRELLO_TOKEN"); v != "" {
+		cfg.TrelloToken = v
+	}
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-trello-query-composed-missing.json")
+		writeScorecardFixture(t, dir, "spec-trello-query-composed-missing.json", `{
+  "security": [
+    {
+      "APIKey": [],
+      "APIToken": []
+    }
+  ],
+  "paths": {
+    "/members/me": {
+      "get": {
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "APIKey": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "key",
+        "x-auth-env-vars": ["TRELLO_API_KEY"]
+      },
+      "APIToken": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "token",
+        "x-auth-env-vars": ["TRELLO_TOKEN"]
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.Less(t, sc.Steinberger.AuthProtocol, 6)
+	})
+
 	t.Run("same-prefix standalone header scheme is not pulled into composed auth", func(t *testing.T) {
 		dir := t.TempDir()
 		writeScorecardFixture(t, dir, "internal/client/client.go", `
@@ -1529,7 +2604,7 @@ func runLinks() string {
 		body := string(data)
 		assert.True(t, strings.Contains(body, `"path_validity":0`))
 		assert.True(t, strings.Contains(body, `"auth_protocol":0`))
-		assert.True(t, strings.Contains(body, `"unscored_dimensions":["mcp_description_quality","mcp_token_efficiency","mcp_remote_transport","mcp_tool_design","mcp_surface_strategy","cache_freshness","path_validity","auth_protocol","live_api_verification"]`))
+		assert.True(t, strings.Contains(body, `"unscored_dimensions":["mcp_description_quality","mcp_token_efficiency","mcp_remote_transport","mcp_tool_design","mcp_surface_strategy","cache_freshness","path_validity","auth_protocol","data_pipeline_integrity","sync_correctness","type_fidelity","live_api_verification"]`))
 	})
 }
 
@@ -1608,6 +2683,172 @@ func collectCacheReport() {}`)
 		assert.True(t, scored)
 		assert.Equal(t, 5, score) // 3 (schema gate) + 2 (doctor cache section)
 	})
+
+	t.Run("lookup log excludes auto-refresh from denominator", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+
+const StoreSchemaVersion = 1
+
+func migrate() {
+	_ = "PRAGMA user_version"
+	_ = "CREATE TABLE lookup_log (resource_type TEXT, looked_up_at TEXT)"
+}`)
+		writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+func collectCacheReport() {}`)
+
+		score, scored := scoreCacheFreshness(dir)
+		assert.True(t, scored)
+		assert.Equal(t, 10, score, "quota-aware CLIs should not be penalized for deliberately omitting auto-refresh")
+	})
+
+	t.Run("daily quota helper excludes auto-refresh from denominator", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+
+const StoreSchemaVersion = 1
+
+func migrate() {
+	_ = "PRAGMA user_version"
+}`)
+		writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+func collectCacheReport() {}`)
+		writeScorecardFixture(t, dir, "internal/cliutil/quota.go", `package cliutil
+
+const DailyQuota = 1000
+`)
+
+		score, scored := scoreCacheFreshness(dir)
+		assert.True(t, scored)
+		assert.Equal(t, 10, score, "per-day quota helpers should mark auto-refresh as intentionally not applicable")
+	})
+
+	t.Run("incidental day substring in quota helper does not exclude auto-refresh", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+
+const StoreSchemaVersion = 1
+
+func migrate() {
+	_ = "PRAGMA user_version"
+}`)
+		writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+func collectCacheReport() {}`)
+		writeScorecardFixture(t, dir, "internal/cliutil/quota.go", `package cliutil
+
+const TotalQuota = 1000
+
+// Resets every Monday.
+`)
+
+		score, scored := scoreCacheFreshness(dir)
+		assert.True(t, scored)
+		assert.Equal(t, 5, score, "incidental day-like words must not mark a CLI as quota-aware freshness")
+	})
+}
+
+func TestScoreVision_ResourceGroupedCapabilityShapes(t *testing.T) {
+	dir := t.TempDir()
+
+	writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+
+func newRootCmd() {
+	rootCmd.AddCommand(newCoinCmd(nil))
+	rootCmd.AddCommand(newAuditCmd(nil))
+}`)
+	writeScorecardFixture(t, dir, "internal/cli/coin.go", `package cli
+
+import "github.com/spf13/cobra"
+
+func newCoinCmd(flags any) *cobra.Command {
+	cmd := &cobra.Command{Use: "coin"}
+	cmd.AddCommand(newBatchCmd(flags))
+	return cmd
+}
+`)
+	writeScorecardFixture(t, dir, "internal/cli/coin_batch.go", `package cli
+
+import (
+	"encoding/json"
+	"example.com/project/internal/store"
+	"github.com/spf13/cobra"
+)
+
+func newBatchCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "batch --list-certs", RunE: func(cmd *cobra.Command, args []string) error {
+		db := store.Open()
+		rows := db.ListCoins()
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(rows)
+	}}
+}
+`)
+	writeScorecardFixture(t, dir, "internal/cli/audit.go", `package cli
+
+import "github.com/spf13/cobra"
+
+func newAuditCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "audit", RunE: func(cmd *cobra.Command, args []string) error {
+		first := c.Get("/coins")
+		second := c.Get("/orders")
+		_, _ = first, second
+		return nil
+	}}
+}
+`)
+	writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+
+func Open() DB { return DB{} }
+
+type DB struct{}
+
+func (DB) ListCoins() []string { return nil }
+`)
+
+	score := scoreVision(dir)
+	assert.GreaterOrEqual(t, score, 4, "resource-grouped export and workflow equivalents should contribute to Vision")
+}
+
+func TestIsVisionExportShapeRequiresStructuredExportWriter(t *testing.T) {
+	outputOnly := `package cli
+
+import (
+	"fmt"
+	"example.com/project/internal/store"
+	"github.com/spf13/cobra"
+)
+
+func newListCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "list", RunE: func(cmd *cobra.Command, args []string) error {
+		db := store.Open()
+		fmt.Fprintln(cmd.OutOrStdout(), db.List())
+		return nil
+	}}
+}
+`
+	assert.False(t, isVisionExportShape(outputOnly), "ordinary store-backed command output must not count as an export shape")
+}
+
+func TestScoreVision_IgnoresOrphanWorkflowFile(t *testing.T) {
+	dir := t.TempDir()
+
+	writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+
+func newRootCmd() { rootCmd.AddCommand(newLookupCmd(nil)) }
+`)
+	writeScorecardFixture(t, dir, "internal/cli/lookup.go", `package cli
+
+func newLookupCmd(flags any) {}
+`)
+	writeScorecardFixture(t, dir, "internal/cli/coin_workflow.go", `package cli
+
+func newCoinWorkflowCmd(flags any) {}
+`)
+
+	score := scoreVision(dir)
+	assert.Equal(t, 0, score, "unregistered workflow-shaped filenames should not inflate Vision")
 }
 
 func TestScoreDoctorDetectsHTTPClientReachability(t *testing.T) {
@@ -1675,6 +2916,109 @@ func doctorCheck() {
 	})
 }
 
+func TestScoreDoctorLocalDatastoreRequiresRealSQLiteReachability(t *testing.T) {
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, ".printing-press.json", `{
+  "schema_version": 1,
+  "api_name": "local",
+  "cli_name": "local-pp-cli",
+  "auth_type": "none",
+  "spec_format": "sqlite"
+}`)
+	writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+import "os"
+
+func newDoctorCmd() {}
+
+func doctorCheckPath(path string) error {
+	_, err := os.Stat(path)
+	return err
+}
+`)
+
+	assert.Equal(t, 2, scoreDoctor(dir), "local-datastore doctors should not receive auth/config/reachability credit from os.Stat alone")
+}
+
+func TestScorecardLocalDatastoreManifestCreditsLocalShape(t *testing.T) {
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, ".printing-press.json", `{
+  "schema_version": 1,
+  "api_name": "chrome-history",
+  "cli_name": "chrome-history-pp-cli",
+  "auth_type": "none",
+  "spec_format": "sqlite",
+  "spec_source": "local-sqlite"
+}`)
+	writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+
+func register() {
+	rootCmd.AddCommand(newListCmd())
+	rootCmd.AddCommand(newSyncCmd())
+}
+`)
+	writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+import (
+	"database/sql"
+	"os"
+)
+
+func newDoctorCmd() {}
+
+func checkLocalSource(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	return db.Ping()
+}
+`)
+	writeScorecardFixture(t, dir, "internal/cli/list.go", `package cli
+
+func newListCmd() *cobra.Command {
+	return &cobra.Command{Use: "list"}
+}
+`)
+	writeScorecardFixture(t, dir, "internal/cli/sync.go", `package cli
+
+func newSyncCmd() *cobra.Command {
+	return &cobra.Command{Use: "sync"}
+}
+`)
+	writeScorecardFixture(t, dir, "internal/source/sqlite.go", `package source
+
+import "database/sql"
+
+func Query(db *sql.DB) {
+	rows, _ := db.Query("SELECT url FROM visits")
+	_ = rows
+}
+`)
+	writeScorecardFixture(t, dir, "internal/mcp/server.go", `package mcp
+
+func NewServer() {
+	RegisterTools("context", "search")
+	_ = "Returns browsing-history results from the local SQLite database"
+}
+func handleSearch() {}
+`)
+
+	assert.GreaterOrEqual(t, scoreDoctor(dir), 4, "local SQLite reachability should substitute for HTTP reachability without granting unrelated credit")
+	assert.Equal(t, 10, scoreLocalCache(dir), "manifest-gated local SQLite source should count as the local datastore")
+	assert.GreaterOrEqual(t, scoreMCPQuality(dir), 6, "hand-authored local MCP server should not require generated tools.go")
+	assert.GreaterOrEqual(t, scoreDataPipelineIntegrity(dir), 8, "SQL-backed local source should count as real data pipeline")
+
+	sc, err := RunScorecard(dir, t.TempDir(), filepath.Join(dir, "not-openapi.sqlite"), nil)
+	assert.NoError(t, err, "local-datastore manifests should bypass OpenAPI-only spec parsing")
+	assert.Contains(t, sc.UnscoredDimensions, DimPathValidity)
+	assert.Contains(t, sc.UnscoredDimensions, DimAuthProtocol)
+	assert.Contains(t, sc.UnscoredDimensions, DimSyncCorrectness)
+}
+
 func TestScoreWorkflows(t *testing.T) {
 	t.Run("counts files matching expanded prefixes", func(t *testing.T) {
 		dir := t.TempDir()
@@ -1718,6 +3062,317 @@ func runAvailability() {
 `)
 
 		assert.GreaterOrEqual(t, scoreWorkflows(dir), 4) // 2 compound → 4
+	})
+
+	t.Run("counts commands that call package-local store helpers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+import "example.com/project/internal/store"
+
+func openLocalStore() (*store.Store, error) {
+	return store.Open("data.db")
+}
+
+func ensureLocalStore() error {
+	db, err := openLocalStore()
+	if err != nil {
+		return err
+	}
+	_ = db
+	return nil
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(
+		newReport1Cmd(nil),
+		newReport2Cmd(nil),
+		newReport3Cmd(nil),
+		newReport4Cmd(nil),
+		newReport5Cmd(nil),
+		newReport6Cmd(nil),
+		newReport7Cmd(nil),
+		newLookupCmd(nil),
+	)
+}
+`)
+		for i := 1; i <= 7; i++ {
+			writeScorecardFixture(t, dir, filepath.Join("internal/cli", fmt.Sprintf("report_%d.go", i)), fmt.Sprintf(`
+package cli
+
+func newReport%dCmd(flags any) {}
+
+func runReport%d() error {
+	return ensureLocalStore()
+}
+`, i, i))
+		}
+		writeScorecardFixture(t, dir, "internal/cli/lookup.go", `package cli
+func newLookupCmd(flags any) {}
+func runLookup() error { return nil }
+`)
+
+		assert.Equal(t, 10, scoreWorkflows(dir))
+	})
+
+	t.Run("counts direct store-helper calls and excludes non-store commands", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+import "example.com/project/internal/store"
+
+func openLocalStore() (*store.Store, error) {
+	return store.Open("data.db")
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(
+		newReport1Cmd(nil),
+		newReport2Cmd(nil),
+		newReport3Cmd(nil),
+		newReport4Cmd(nil),
+		newLookupCmd(nil),
+	)
+}
+`)
+		for i := 1; i <= 4; i++ {
+			writeScorecardFixture(t, dir, filepath.Join("internal/cli", fmt.Sprintf("report_%d.go", i)), fmt.Sprintf(`
+package cli
+
+func newReport%dCmd(flags any) {}
+
+func runReport%d() error {
+	db, err := openLocalStore()
+	if err != nil {
+		return err
+	}
+	_ = db
+	return nil
+}
+`, i, i))
+		}
+		writeScorecardFixture(t, dir, "internal/cli/lookup.go", `package cli
+func newLookupCmd(flags any) {}
+func runLookup() error { return nil }
+`)
+
+		assert.Equal(t, 6, scoreWorkflows(dir))
+	})
+
+	t.Run("counts commands that call package-local client helpers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+func fetchMeta(c apiClient) error {
+	_, err := c.Get("/meta")
+	return err
+}
+
+func runQuery(c apiClient) error {
+	_, err := c.Post("/query", nil)
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(
+		newReport1Cmd(nil),
+		newReport2Cmd(nil),
+		newReport3Cmd(nil),
+	)
+}
+`)
+		for i := 1; i <= 3; i++ {
+			writeScorecardFixture(t, dir, filepath.Join("internal/cli", fmt.Sprintf("report_%d.go", i)), fmt.Sprintf(`
+package cli
+
+func newReport%dCmd(flags any) {}
+
+func runReport%d(c apiClient) error {
+	if err := fetchMeta(c); err != nil {
+		return err
+	}
+	return runQuery(c)
+}
+`, i, i))
+		}
+
+		assert.Equal(t, 6, scoreWorkflows(dir))
+	})
+
+	t.Run("counts package-local client helper weights greater than one", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+	package cli
+
+	func fetchBundle(c apiClient) error {
+		if _, err := c.Get("/bundle/meta"); err != nil {
+			return err
+		}
+		_, err := c.Get("/bundle/items")
+		return err
+	}
+	`)
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+	package cli
+
+	func runReport(c apiClient) error {
+		return fetchBundle(c)
+	}
+	`)
+
+		assert.Equal(t, 2, scoreWorkflows(dir))
+	})
+
+	t.Run("ignores unregistered commands that call package-local client helpers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/pxcommon.go", `
+package cli
+
+func runQuery(c apiClient) error {
+	_, err := c.Post("/query", nil)
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newLookupCmd(nil))
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/lookup.go", `package cli
+func newLookupCmd(flags any) {}
+func runLookup() error { return nil }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+package cli
+
+func newReportCmd(flags any) {}
+
+func runReport(c apiClient) error {
+	return runQuery(c)
+}
+`)
+
+		assert.Equal(t, 0, scoreWorkflows(dir))
+	})
+
+	t.Run("counts package-local helpers using other generated client verbs", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+func updateThing(c apiClient) error {
+	_, err := c.Put("/thing", nil)
+	return err
+}
+
+func deleteThing(c apiClient) error {
+	_, err := c.Delete("/thing")
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+package cli
+
+func runReport(c apiClient) error {
+	if err := updateThing(c); err != nil {
+		return err
+	}
+	return deleteThing(c)
+}
+`)
+
+		assert.Equal(t, 2, scoreWorkflows(dir))
+	})
+
+	t.Run("counts package-local helpers that call sibling internal clients", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/pxcommon.go", `
+package cli
+
+import "example.com/project/internal/phgraphql"
+
+func fetchMeta() error {
+	_, err := phgraphql.FetchMeta()
+	return err
+}
+
+func runQuery() error {
+	_, err := phgraphql.Post()
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newReportCmd(nil))
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+package cli
+
+func newReportCmd(flags any) {}
+
+func runReport() error {
+	if err := fetchMeta(); err != nil {
+		return err
+	}
+	return runQuery()
+}
+`)
+
+		assert.Equal(t, 2, scoreWorkflows(dir))
+	})
+
+	t.Run("does not count commands that only call non-client helpers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+func staticRows() []string {
+	return []string{"cached"}
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+package cli
+
+func runReport() []string {
+	return staticRows()
+}
+`)
+
+		assert.Equal(t, 0, scoreWorkflows(dir))
+	})
+
+	t.Run("does not double-count same-file command runners as helpers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+package cli
+
+func newReportCmd(flags any) {
+	runReport(flags)
+}
+
+func runReport(c apiClient) error {
+	_, err := c.Get("/report")
+	return err
+}
+`)
+
+		assert.Equal(t, 0, scoreWorkflows(dir))
 	})
 
 	t.Run("counts multi-API-call files", func(t *testing.T) {
@@ -1917,6 +3572,37 @@ func (c *Client) do() {
 			"inferred auth should score > 0")
 	})
 
+	t.Run("inferred cookie header auth is scored", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/config/config.go", `package config
+// Auth inferred from API description — verify the env var below is correct
+func Load() {
+	if v := os.Getenv("EXAMPLE_COOKIE"); v != "" {
+		cfg.Cookie = v
+	}
+}
+`)
+		writeScorecardFixture(t, dir, "internal/client/client.go", `package client
+func (c *Client) do() {
+	req.Header.Set("Cookie", authHeader)
+}
+`)
+
+		specPath := filepath.Join(dir, "spec.json")
+		writeScorecardFixture(t, dir, "spec.json", `{
+  "paths": { "/users": { "get": { "responses": { "200": { "description": "ok" } } } } },
+  "components": { "securitySchemes": {} }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol",
+			"inferred cookie auth with Cookie header should be scored")
+		assert.GreaterOrEqual(t, sc.Steinberger.AuthProtocol, 8)
+	})
+
 	t.Run("query-param auth without inferred marker stays unscored", func(t *testing.T) {
 		dir := t.TempDir()
 
@@ -1979,6 +3665,177 @@ func (c *Client) do() {
 			"inferred auth with custom header should be scored")
 		assert.Greater(t, sc.Steinberger.AuthProtocol, 0)
 	})
+}
+
+func TestEvaluateAuthProtocol_InternalCookieAuth(t *testing.T) {
+	t.Run("scores generated Cookie header for internal YAML cookie auth", func(t *testing.T) {
+		sc := scoreInternalCookieAuthProtocol(t, `package client
+func (c *Client) do() {
+	req.Header.Set("Cookie", authHeader)
+}
+`)
+
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.GreaterOrEqual(t, sc.Steinberger.AuthProtocol, 8)
+	})
+
+	t.Run("does not score Cookie mentions without header assignment", func(t *testing.T) {
+		sc := scoreInternalCookieAuthProtocol(t, `package client
+func (c *Client) do() {
+	_ = "Cookie"
+	// Cookie appears in documentation, not in an outgoing request.
+}
+`)
+
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.Less(t, sc.Steinberger.AuthProtocol, 8)
+	})
+}
+
+func scoreInternalCookieAuthProtocol(t *testing.T, clientContent string) *Scorecard {
+	t.Helper()
+
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, "internal/config/config.go", `package config
+func Load() {
+	if v := os.Getenv("EXAMPLE_COOKIE"); v != "" {
+		cfg.Cookie = v
+	}
+}
+`)
+	writeScorecardFixture(t, dir, "internal/client/client.go", clientContent)
+	specPath := filepath.Join(dir, "spec.yaml")
+	writeScorecardFixture(t, dir, "spec.yaml", `name: example
+display_name: Example
+description: Cookie auth scorecard fixture
+base_url: https://api.example.com
+auth:
+  type: cookie
+  header: Cookie
+  cookies:
+    - session
+  env_vars:
+    - EXAMPLE_COOKIE
+resources:
+  users:
+    description: Users
+    endpoints:
+      list:
+        method: GET
+        path: /users
+`)
+
+	sc, err := RunScorecard(dir, t.TempDir(), specPath, nil)
+	assert.NoError(t, err)
+	return sc
+}
+
+func TestScoreAuthScheme_APIKeyHeaderUsesCaseInsensitiveHeaderAndGenericAPIKeyEnv(t *testing.T) {
+	clientContent := `package client
+func (c *Client) do(req *http.Request) {
+	req.Header.Set("X-API-Key", cfg.APIKey)
+}`
+	configContent := `package config
+func Load() {
+	if v := os.Getenv("SETLIST_FM_API_KEY"); v != "" {
+		cfg.APIKey = v
+	}
+}`
+	scheme := openAPISecurityScheme{
+		Key:        "x-api-key",
+		Type:       "apikey",
+		In:         "header",
+		HeaderName: "x-api-key",
+	}
+
+	score, scoreable := scoreAuthScheme(clientContent, configContent, "", false, scheme)
+	assert.True(t, scoreable)
+	assert.Equal(t, 10, score)
+
+	partnerOnlyConfig := `package config
+func Load() {
+	if v := os.Getenv("PARTNER_SERVICE_API_KEY"); v != "" {
+		cfg.PartnerAPIKey = v
+	}
+}`
+	assert.False(t, configReadsAPIKeyEnvForScheme(partnerOnlyConfig, scheme))
+	partnerOnlyScore, partnerOnlyScoreable := scoreAuthScheme(clientContent, partnerOnlyConfig, "", false, scheme)
+	assert.True(t, partnerOnlyScoreable)
+	assert.Equal(t, 8, partnerOnlyScore)
+
+	unrelatedScheme := openAPISecurityScheme{
+		Key:        "account-id",
+		Type:       "apikey",
+		In:         "header",
+		HeaderName: "X-Account-ID",
+	}
+	unrelatedScore, unrelatedScoreable := scoreAuthScheme(clientContent, configContent, "", false, unrelatedScheme)
+	assert.True(t, unrelatedScoreable)
+	assert.Equal(t, 0, unrelatedScore)
+}
+
+func TestConfigReadsSchemeEnvVarRequiresExactEnvLookup(t *testing.T) {
+	scheme := openAPISecurityScheme{
+		Key:     "APIToken",
+		Type:    "apikey",
+		In:      "query",
+		EnvVars: []string{"KEY"},
+	}
+
+	assert.True(t, configReadsSchemeEnvVar(`package config
+func Load() {
+	if v := os.Getenv("KEY"); v != "" {
+		cfg.Key = v
+	}
+}`, scheme))
+	assert.True(t, configReadsSchemeEnvVar(`package config
+func Load() {
+	if v, ok := os.LookupEnv("KEY"); ok {
+		cfg.Key = v
+	}
+}`, scheme))
+	assert.False(t, configReadsSchemeEnvVar(`package config
+// KEY is mentioned here, but not read.
+func Load() {
+	cfg.SomeOtherKey = "not-secret"
+}`, scheme))
+}
+
+func TestRunScorecard_APIKeyHeaderUsesCaseInsensitiveHeaderAndGenericAPIKeyEnv(t *testing.T) {
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, "internal/client/client.go", `package client
+func (c *Client) do(req *http.Request) {
+	req.Header.Set("X-API-Key", cfg.APIKey)
+}`)
+	writeScorecardFixture(t, dir, "internal/config/config.go", `package config
+func Load() {
+	if v := os.Getenv("SETLIST_FM_API_KEY"); v != "" {
+		cfg.APIKey = v
+	}
+}`)
+	specPath := filepath.Join(dir, "spec.json")
+	writeScorecardFixture(t, dir, "spec.json", `{
+  "openapi": "3.0.3",
+  "info": {"title": "Setlist", "version": "1.0.0"},
+  "paths": {
+    "/1.0/search/artists": {
+      "get": {
+        "security": [{"x-api-key": []}],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "x-api-key": {"type": "apiKey", "in": "header", "name": "x-api-key"}
+    }
+  }
+}`)
+
+	sc, err := RunScorecard(dir, t.TempDir(), specPath, nil)
+	assert.NoError(t, err)
+	assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+	assert.Equal(t, 10, sc.Steinberger.AuthProtocol)
 }
 
 func TestLoadOpenAPISpec_Swagger20SecurityDefinitions(t *testing.T) {
@@ -2280,6 +4137,48 @@ resources:
 		assert.NotNil(t, info, "internal-YAML branch should produce a non-nil info")
 	})
 
+	t.Run("OpenAPI path templates count positional parameters", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "path-params.json")
+		writeScorecardFixture(t, dir, "path-params.json", `{
+  "openapi": "3.0.3",
+  "paths": {
+    "/calendars/{calendar_id}/events/{event_id}": {},
+    "/submissions/CIK{cik}.json": {}
+  }
+}`)
+
+		info, err := loadOpenAPISpec(specPath)
+		assert.NoError(t, err)
+		assert.Equal(t, 3, info.PositionalParamCount)
+	})
+
+	t.Run("internal YAML positional params count from Param metadata", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "internal-positionals.yaml")
+		writeScorecardFixture(t, dir, "internal-positionals.yaml", `name: example
+display_name: Example API
+description: Test fixture for internal positional metadata
+base_url: https://api.example.com
+resources:
+  events:
+    description: Events
+    endpoints:
+      get:
+        method: GET
+        path: /events/{event_id}
+        params:
+          - name: event_id
+            type: string
+            required: true
+            positional: true
+`)
+
+		info, err := loadOpenAPISpec(specPath)
+		assert.NoError(t, err)
+		assert.Equal(t, 1, info.PositionalParamCount)
+	})
+
 	t.Run("leading whitespace before { still detects JSON", func(t *testing.T) {
 		dir := t.TempDir()
 		specPath := filepath.Join(dir, "indented.json")
@@ -2358,9 +4257,517 @@ func TestScoreAuthScheme_BearerPrefixOverride(t *testing.T) {
 	withoutPrefix := withPrefix
 	withoutPrefix.Prefix = ""
 
-	scoreWith, _ := scoreAuthScheme(clientStub, configWithToken, "", withPrefix)
-	scoreWithout, _ := scoreAuthScheme(clientStub, configWithToken, "", withoutPrefix)
+	scoreWith, _ := scoreAuthScheme(clientStub, configWithToken, "", false, withPrefix)
+	scoreWithout, _ := scoreAuthScheme(clientStub, configWithToken, "", false, withoutPrefix)
 
 	assert.Greater(t, scoreWith, scoreWithout,
 		"AuthProtocol score with configured prefix must exceed the empty-prefix default when generated code uses the prefix literal")
+}
+
+// TestScoreAuthScheme_StructuralOAuthSurface pins that bearer-style schemes
+// get credit for real OAuth machinery (refresh-token rotation in config, or a
+// dedicated internal/oauth helper package) even when the literal "Bearer "
+// string is absent from source — preventing the score-by-literal regression
+// where a polish pass could add an unused const to lift the score.
+func TestScoreAuthScheme_StructuralOAuthSurface(t *testing.T) {
+	bearerScheme := openAPISecurityScheme{Key: "bearerAuth", Type: "http", Scheme: "bearer"}
+	oauth2Scheme := openAPISecurityScheme{Key: "oauth2Auth", Type: "oauth2"}
+	openIDScheme := openAPISecurityScheme{Key: "oidcAuth", Type: "openidconnect"}
+	basicScheme := openAPISecurityScheme{Key: "basicAuth", Type: "http", Scheme: "basic"}
+
+	clientHeaderOnly := `req.Header.Set("Authorization", token)`
+	configRefresh := `type Config struct { AccessToken string; RefreshToken string }`
+	configNoOAuth := `type Config struct { Token string }`
+
+	t.Run("bearer scheme without literal credited when RefreshToken in config", func(t *testing.T) {
+		score, scoreable := scoreAuthScheme(clientHeaderOnly, configRefresh, "", true, bearerScheme)
+		assert.True(t, scoreable)
+		assert.GreaterOrEqual(t, score, 9, "real OAuth surface should lift score above the literal-grep ceiling")
+	})
+
+	t.Run("bearer scheme without literal stays low when no structural OAuth", func(t *testing.T) {
+		score, scoreable := scoreAuthScheme(clientHeaderOnly, configNoOAuth, "", false, bearerScheme)
+		assert.True(t, scoreable)
+		assert.Less(t, score, 7, "absent literal AND absent OAuth surface must not score as wired auth")
+	})
+
+	t.Run("oauth2 scheme without literal credited when structural OAuth present", func(t *testing.T) {
+		score, scoreable := scoreAuthScheme(clientHeaderOnly, configRefresh, "", true, oauth2Scheme)
+		assert.True(t, scoreable)
+		assert.GreaterOrEqual(t, score, 9)
+	})
+
+	t.Run("openidconnect scheme shares the bearer-style credit path", func(t *testing.T) {
+		// openidconnect lives on the same switch case as oauth2, so a future
+		// split must not silently drop structural credit from this arm.
+		score, scoreable := scoreAuthScheme(clientHeaderOnly, configRefresh, "", true, openIDScheme)
+		assert.True(t, scoreable)
+		assert.GreaterOrEqual(t, score, 9)
+	})
+
+	t.Run("basic scheme not lifted by OAuth surface", func(t *testing.T) {
+		// Counter-check: structural OAuth signal must not bleed into non-bearer
+		// schemes. A Basic scheme without its literal should stay at the
+		// header-name credit ceiling regardless of nearby OAuth machinery.
+		withOAuth, _ := scoreAuthScheme(clientHeaderOnly, configRefresh, "", true, basicScheme)
+		withoutOAuth, _ := scoreAuthScheme(clientHeaderOnly, configRefresh, "", false, basicScheme)
+		assert.Equal(t, withOAuth, withoutOAuth, "OAuth surface must not credit basic-scheme scoring")
+	})
+}
+
+// TestHasStructuralOAuthSurface pins the helper's recognition signals:
+// either a RefreshToken field in generated config.go, or a hand-written
+// internal/oauth helper package on disk.
+func TestHasStructuralOAuthSurface(t *testing.T) {
+	t.Run("refresh-token field in config", func(t *testing.T) {
+		dir := t.TempDir()
+		got := hasStructuralOAuthSurface(dir, "type Config struct { RefreshToken string }")
+		assert.True(t, got)
+	})
+
+	t.Run("internal/oauth package on disk", func(t *testing.T) {
+		dir := t.TempDir()
+		err := os.MkdirAll(filepath.Join(dir, "internal", "oauth"), 0o755)
+		assert.NoError(t, err)
+		assert.True(t, hasStructuralOAuthSurface(dir, "type Config struct { Token string }"))
+	})
+
+	t.Run("neither signal present", func(t *testing.T) {
+		dir := t.TempDir()
+		assert.False(t, hasStructuralOAuthSurface(dir, "type Config struct { Token string }"))
+	})
+
+	t.Run("internal/oauth as a regular file does not count", func(t *testing.T) {
+		dir := t.TempDir()
+		err := os.MkdirAll(filepath.Join(dir, "internal"), 0o755)
+		assert.NoError(t, err)
+		err = os.WriteFile(filepath.Join(dir, "internal", "oauth"), []byte("not a package"), 0o644)
+		assert.NoError(t, err)
+		assert.False(t, hasStructuralOAuthSurface(dir, "type Config struct { Token string }"))
+	})
+
+	t.Run("word-anchored RefreshToken rejects same-word neighbours", func(t *testing.T) {
+		// Cosmetic identifiers that contain "RefreshToken" as a substring
+		// (NoRefreshToken, RefreshTokenError) must not trip the structural
+		// check — otherwise the polish pass this fix defeats just renames
+		// its decoy.
+		dir := t.TempDir()
+		assert.False(t, hasStructuralOAuthSurface(dir, "type Config struct { NoRefreshToken bool }"))
+		assert.False(t, hasStructuralOAuthSurface(dir, "type RefreshTokenError struct{}"))
+	})
+}
+
+// TestScoreTerminalUX_TTYDetectionPatterns pins that the TTY-detection check
+// accepts all canonical Go idioms, not just the "isatty" literal. The
+// generator's own helpers.go template uses (fi.Mode() & os.ModeCharDevice),
+// so a substring-only "isatty" check penalized every generated CLI by 1pt.
+func TestScoreTerminalUX_TTYDetectionPatterns(t *testing.T) {
+	cases := []struct {
+		name       string
+		helpers    string
+		wantCredit bool
+	}{
+		{
+			name: "ModeCharDevice (generator template idiom) credited",
+			helpers: `package cli
+import "os"
+func isTerminal(f *os.File) bool {
+	fi, _ := f.Stat()
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}`,
+			wantCredit: true,
+		},
+		{
+			name: "term.IsTerminal (golang.org/x/term) credited",
+			helpers: `package cli
+import "golang.org/x/term"
+func isTerminal() bool { return term.IsTerminal(0) }`,
+			wantCredit: true,
+		},
+		{
+			name: "isatty literal (mattn/go-isatty) credited",
+			helpers: `package cli
+import "github.com/mattn/go-isatty"
+func isTerminal() bool { return isatty.IsTerminal(0) }`,
+			wantCredit: true,
+		},
+		{
+			name: "no TTY detection at all not credited",
+			helpers: `package cli
+func isTerminal() bool { return false }`,
+			wantCredit: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeScorecardFixture(t, dir, "internal/cli/helpers.go", tc.helpers)
+			writeScorecardFixture(t, dir, "internal/cli/root.go", "package cli")
+
+			score := scoreTerminalUX(dir)
+			if tc.wantCredit {
+				assert.GreaterOrEqual(t, score, 1, "TTY-detection check should award at least 1pt")
+			} else {
+				assert.Equal(t, 0, score, "no TTY detection should not award the TTY-detection point")
+			}
+		})
+	}
+}
+
+// TestScoreVision_LearnCreditIsStaticBehavioral pins the retirement of the
+// internal/learn/doc.go presence sentinel. Once the learn loop is default-on,
+// every printed CLI ships doc.go, so its presence proves nothing. Vision
+// credit for the loop is now split into two static-behavioral quarter points:
+//
+//	+0.25 when root.go actually registers the learn command surface
+//	      (teach + recall + learnings constructor calls, read via the same
+//	      reachable-command parse the rest of the scorer uses);
+//	+0.25 when the emitted seed artifact carries non-empty entity lookup
+//	      seeds (the stamped lookups.SeedConfig map in learn_init.go).
+//
+// The base fixture is sized at 3.75 raw points (tier1 3.0 + tier2 wiring
+// 0.75) so each individual +0.25 crosses the integer boundary to 4, and the
+// retired doc.go sentinel alone visibly earns nothing (would cross to 4 if
+// it still carried +0.5).
+func TestScoreVision_LearnCreditIsStaticBehavioral(t *testing.T) {
+	build := func(docSentinel, registered, seeded bool) string {
+		dir := t.TempDir()
+		rootRegs := "newSearchCmd(nil), newExportCmd(nil), newSyncCmd(nil)"
+		if registered {
+			rootRegs += ", newTeachCmd(nil, nil), newRecallCmd(nil, nil), newLearningsCmd(nil, nil)"
+		}
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() { rootCmd.AddCommand(`+rootRegs+`) }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/search.go", `package cli
+func newSearchCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/export.go", `package cli
+func newExportCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+`)
+		if docSentinel {
+			writeScorecardFixture(t, dir, "internal/learn/doc.go", `// Package learn owns the generated recall/teach loop.
+package learn
+`)
+		}
+		if seeded {
+			writeScorecardFixture(t, dir, "internal/cli/learn_init.go", `package cli
+import "example.com/project/internal/learn/lookups"
+func initLearn(db any) error {
+	seeds := map[string][]lookups.SeedConfig{
+		"team": {
+			{Canonical: "SEA", Values: []string{"Mariners", "Seattle"}},
+		},
+	}
+	_, err := lookups.SeedFromConfig(nil, seeds)
+	return err
+}
+`)
+		}
+		return dir
+	}
+
+	assert.Equal(t, 3, scoreVision(build(false, false, false)),
+		"base fixture should sum to 3.75 raw points → int 3")
+	assert.Equal(t, 3, scoreVision(build(true, false, false)),
+		"internal/learn/doc.go presence alone must earn nothing — the sentinel is retired")
+	assert.Equal(t, 4, scoreVision(build(false, true, false)),
+		"registered teach+recall+learnings surface should earn +0.25 → 4.0 → int 4")
+	assert.Equal(t, 4, scoreVision(build(false, false, true)),
+		"non-empty entity lookup seeds should earn +0.25 → 4.0 → int 4")
+	assert.Equal(t, 4, scoreVision(build(true, true, true)),
+		"full learn evidence earns +0.5 combined → 4.25 → int 4")
+}
+
+func TestScoreVision_LearnLoopGoldenFixtureEarnsBehavioralCredit(t *testing.T) {
+	fixture := filepath.Join("..", "..", "testdata", "golden", "expected", "generate-learn-loop-api", "learn-loop-example")
+	score := scoreVision(fixture)
+
+	assert.GreaterOrEqual(t, score, 4, "learn-enabled golden fixture registers teach/recall/learnings and stamps seeds, so it should earn the behavioral credit")
+}
+
+func TestLearnCommandSurfaceRegistered(t *testing.T) {
+	write := func(t *testing.T, rootBody string) string {
+		dir := t.TempDir()
+		if rootBody != "" {
+			writeScorecardFixture(t, dir, "internal/cli/root.go", rootBody)
+		}
+		return dir
+	}
+
+	t.Run("all three learn commands registered", func(t *testing.T) {
+		dir := write(t, `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newTeachCmd(nil, nil))
+	rootCmd.AddCommand(newRecallCmd(nil, nil))
+	rootCmd.AddCommand(newLearningsCmd(nil, nil))
+}
+`)
+		assert.True(t, learnCommandSurfaceRegistered(filepath.Join(dir, "internal", "cli")))
+	})
+
+	t.Run("missing learnings registration", func(t *testing.T) {
+		dir := write(t, `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newTeachCmd(nil, nil), newRecallCmd(nil, nil))
+}
+`)
+		assert.False(t, learnCommandSurfaceRegistered(filepath.Join(dir, "internal", "cli")),
+			"a partial surface (no learnings) must not earn the registration credit")
+	})
+
+	t.Run("constructor names outside AddCommand do not count", func(t *testing.T) {
+		dir := write(t, `package cli
+// newTeachCmd newRecallCmd newLearningsCmd mentioned in a comment only.
+func newRootCmd() {
+	rootCmd.AddCommand(newSearchCmd(nil))
+}
+`)
+		assert.False(t, learnCommandSurfaceRegistered(filepath.Join(dir, "internal", "cli")),
+			"registration evidence must come from parsed AddCommand calls, not substring mentions")
+	})
+
+	t.Run("missing root.go", func(t *testing.T) {
+		dir := write(t, "")
+		assert.False(t, learnCommandSurfaceRegistered(filepath.Join(dir, "internal", "cli")))
+	})
+}
+
+func TestLearnEntitySeedsNonEmpty(t *testing.T) {
+	t.Run("stamped seed map in learn_init.go", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/learn_init.go", `package cli
+import "example.com/project/internal/learn/lookups"
+func initLearn(db any) error {
+	seeds := map[string][]lookups.SeedConfig{
+		"venue": {
+			{Canonical: "KALSHI", Values: []string{"kalshi"}},
+		},
+	}
+	_, err := lookups.SeedFromConfig(nil, seeds)
+	return err
+}
+`)
+		assert.True(t, learnEntitySeedsNonEmpty(dir))
+	})
+
+	t.Run("empty-seed learn_init.go earns nothing", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/learn_init.go", `package cli
+func initLearn(db any) error {
+	_ = db
+	return nil
+}
+`)
+		assert.False(t, learnEntitySeedsNonEmpty(dir))
+	})
+
+	t.Run("generic lookups library alone earns nothing", func(t *testing.T) {
+		// The emitted lookups library always contains SeedConfig and
+		// variable-reference Canonical fields; that must not count as
+		// seed data.
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/learn/lookups/seeds.go", `package lookups
+type SeedConfig struct {
+	Canonical string
+	Values    []string
+}
+func SeedFromConfig(db any, seedsByKind map[string][]SeedConfig) (int, error) {
+	rows := make([]LookupRow, 0)
+	for kind, seeds := range seedsByKind {
+		for _, s := range seeds {
+			rows = append(rows, LookupRow{Kind: kind, Canonical: s.Canonical, Value: s.Canonical, Source: "seeded"})
+		}
+	}
+	_ = rows
+	return 0, nil
+}
+`)
+		assert.False(t, learnEntitySeedsNonEmpty(dir))
+	})
+
+	t.Run("commented seed shape earns nothing", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/learn_init.go", `package cli
+// SeedConfig example only: Canonical: "SEA"
+func initLearn(db any) error {
+	_ = db
+	return nil
+}
+`)
+		assert.False(t, learnEntitySeedsNonEmpty(dir))
+	})
+
+	t.Run("hand-authored seed table under lookups counts", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/learn/lookups/seeds.go", `package lookups
+var builtinSeeds = map[string][]SeedConfig{
+	"team": {
+		{Canonical: "SEA", Values: []string{"Mariners"}},
+	},
+}
+`)
+		assert.True(t, learnEntitySeedsNonEmpty(dir))
+	})
+
+	t.Run("no seed artifacts at all", func(t *testing.T) {
+		assert.False(t, learnEntitySeedsNonEmpty(t.TempDir()))
+	})
+}
+
+// TestScorecardSourcesNeverImportOSExec pins the scorecard's pure-static
+// contract: every scorecard credit is computed by scanning emitted source
+// content, never by executing printed binaries. Execution proof belongs to
+// verify and the acceptance print. Any scorecard source file importing
+// os/exec is a contract violation, regardless of what it does with it.
+func TestScorecardSourcesNeverImportOSExec(t *testing.T) {
+	matches, err := filepath.Glob("scorecard*.go")
+	if err != nil {
+		t.Fatalf("glob scorecard sources: %v", err)
+	}
+
+	checked := 0
+	fset := token.NewFileSet()
+	for _, m := range matches {
+		if strings.HasSuffix(m, "_test.go") {
+			continue
+		}
+		parsed, err := parser.ParseFile(fset, m, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse %s: %v", m, err)
+		}
+		for _, imp := range parsed.Imports {
+			assert.NotEqual(t, `"os/exec"`, imp.Path.Value,
+				"%s must not import os/exec — the scorecard never executes binaries", m)
+		}
+		checked++
+	}
+	assert.GreaterOrEqual(t, checked, 2, "expected to check scorecard.go and scorecard_structural.go at minimum")
+}
+
+func TestScoreVision_ImportPresenceAddsHalfPoint(t *testing.T) {
+	build := func(includeImport bool) string {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() { rootCmd.AddCommand(newSearchCmd(nil), newExportCmd(nil)) }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/search.go", `package cli
+func newSearchCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/export.go", `package cli
+func newExportCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+`)
+		if includeImport {
+			writeScorecardFixture(t, dir, "internal/cli/import.go", `package cli
+func newImportCmd(flags any) {}
+`)
+		}
+		return dir
+	}
+
+	assert.Equal(t, 3, scoreVision(build(false)))
+	assert.Equal(t, 4, scoreVision(build(true)))
+}
+
+func TestScoreVision_MaxReachableAndPartialStaysSub10(t *testing.T) {
+	build := func(includeLearn, includeFTS5 bool) string {
+		dir := t.TempDir()
+
+		learnRegs := ""
+		if includeLearn {
+			learnRegs = "\n\t\tnewTeachCmd(nil, nil),\n\t\tnewRecallCmd(nil, nil),\n\t\tnewLearningsCmd(nil, nil),"
+		}
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(
+		newSyncCmd(nil),
+		newSearchCmd(nil),
+		newExportCmd(nil),
+		newTailCmd(nil),
+		newImportCmd(nil),
+		newAnalyticsCmd(nil),`+learnRegs+`
+	)
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/sync.go", `package cli
+func newSyncCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/search.go", `package cli
+import "example.com/project/internal/store"
+func newSearchCmd(flags any) {
+	_ = store.Open()
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/export.go", `package cli
+import (
+	"encoding/json"
+	"example.com/project/internal/store"
+)
+func newExportCmd(flags any) {
+	_ = json.NewEncoder(nil)
+	_ = store.Open()
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/tail.go", `package cli
+func newTailCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/import.go", `package cli
+func newImportCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/analytics.go", `package cli
+func newAnalyticsCmd(flags any) {
+	first := c.Get("/one")
+	second := c.Get("/two")
+	_, _ = first, second
+}
+`)
+
+		storeBody := `package store
+func Open() DB { return DB{} }
+type DB struct{}
+const schema = `
+		if includeFTS5 {
+			storeBody += "`CREATE TABLE projects(id INTEGER PRIMARY KEY);\n" +
+				"CREATE TABLE datasets(id INTEGER PRIMARY KEY);\n" +
+				"CREATE TABLE models(id INTEGER PRIMARY KEY);\n" +
+				"CREATE VIRTUAL TABLE docs_fts USING fts5(content);`"
+		} else {
+			storeBody += "`CREATE TABLE projects(id INTEGER PRIMARY KEY);\n" +
+				"CREATE TABLE datasets(id INTEGER PRIMARY KEY);\n" +
+				"CREATE TABLE models(id INTEGER PRIMARY KEY);`"
+		}
+		writeScorecardFixture(t, dir, "internal/store/store.go", storeBody)
+
+		if includeLearn {
+			writeScorecardFixture(t, dir, "internal/learn/doc.go", `// Package learn owns the generated recall/teach loop.
+package learn
+`)
+			writeScorecardFixture(t, dir, "internal/cli/learn_init.go", `package cli
+import "example.com/project/internal/learn/lookups"
+func initLearn(db any) error {
+	seeds := map[string][]lookups.SeedConfig{
+		"team": {
+			{Canonical: "SEA", Values: []string{"Mariners"}},
+		},
+	}
+	_, err := lookups.SeedFromConfig(nil, seeds)
+	return err
+}
+`)
+		}
+		return dir
+	}
+
+	// Before the tier2 schema+wiring cap fix, build(true,true) scored 9 and
+	// build(false,false) scored 8. Both sat in the affected (3.0,3.5] band;
+	// the full fixture now reaches 10, the partial reaches 9. The learn half
+	// point is behavioral now: registered teach/recall/learnings (+0.25) plus
+	// stamped non-empty seeds (+0.25).
+	assert.Equal(t, 10, scoreVision(build(true, true)))
+	assert.Equal(t, 9, scoreVision(build(false, false)))
 }

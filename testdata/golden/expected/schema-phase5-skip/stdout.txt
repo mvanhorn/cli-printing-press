@@ -4,7 +4,7 @@
   "title": "CLI Printing Press phase5-skip.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "api_name", "run_id", "status", "skip_reason"],
+  "required": ["schema_version", "api_name", "run_id", "status", "skip_reason", "source_fingerprint"],
   "properties": {
     "schema_version": {"type": "integer", "const": 1},
     "api_name": {"type": "string", "minLength": 1},
@@ -12,7 +12,9 @@
     "run_id": {"type": "string", "minLength": 1},
     "status": {"type": "string", "const": "skip"},
     "skip_reason": {"type": "string", "minLength": 1},
-    "auth_context": {"$ref": "#/$defs/auth_context"}
+    "auth_context": {"$ref": "#/$defs/auth_context"},
+    "source_fingerprint": {"type": "string", "minLength": 1},
+    "source_files": {"type": "object", "additionalProperties": {"type": "string"}}
   },
   "$defs": {
     "auth_context": {
@@ -21,7 +23,9 @@
       "properties": {
         "type": {"type": "string"},
         "api_key_available": {"type": "boolean"},
-        "browser_session_available": {"type": "boolean"}
+        "browser_session_available": {"type": "boolean"},
+        "local_sqlite": {"type": "boolean"},
+        "local_network_only": {"type": "boolean"}
       }
     }
   }

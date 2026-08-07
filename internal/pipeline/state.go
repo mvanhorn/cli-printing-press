@@ -416,6 +416,9 @@ func NewStateWithRun(apiName, outputDir, runID, scope string) *PipelineState {
 }
 
 func (s *PipelineState) save(updateCurrentPointer bool) error {
+	if s.Phases == nil {
+		s.Phases = make(map[string]PhaseState)
+	}
 	if s.Scope == "" {
 		s.Scope = WorkspaceScope()
 	}
@@ -480,6 +483,11 @@ func LoadState(apiName string) (*PipelineState, error) {
 	}
 
 	needsSave := false
+	// Must run before the version-migration loop below, which assigns into s.Phases.
+	if s.Phases == nil {
+		s.Phases = make(map[string]PhaseState)
+		needsSave = true
+	}
 	if s.RunID == "" {
 		runID, err := newRunID(time.Now())
 		if err != nil {

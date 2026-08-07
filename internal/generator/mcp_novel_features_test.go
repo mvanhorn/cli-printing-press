@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -55,17 +56,20 @@ func TestMCPRegistersCobraTreeMirror(t *testing.T) {
 
 	cobratreeCLIPath, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "cli_path.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(cobratreeCLIPath), `const cliName = "noveltest-pp-cli"`)
+	assert.Contains(t, string(cobratreeCLIPath), `cliExecutableName(runtime.GOOS)`)
 	assert.Contains(t, string(cobratreeCLIPath), `os.Getenv("NOVELTEST_CLI_PATH")`)
 
 	cobratreeShellout, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "shellout.go"))
 	require.NoError(t, err)
 	assert.Contains(t, string(cobratreeShellout), "func shellOutToCLI(")
-	assert.Contains(t, string(cobratreeShellout), "func splitShellArgs(s string)")
+	assert.Contains(t, string(cobratreeShellout), "func SplitShellArgs(s string)")
 
 	root, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
 	require.NoError(t, err)
 	assert.Contains(t, string(root), "func RootCmd() *cobra.Command")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/mcp/cobratree", "-run", "TestSplitShellArgs")
 
 	// main.go calls only RegisterTools; RegisterTools owns endpoint tools and
 	// the runtime command mirror.
@@ -76,7 +80,7 @@ func TestMCPRegistersCobraTreeMirror(t *testing.T) {
 }
 
 // TestMCPNovelFeatureToolNameSanitization pins the snake-case tool-name
-// derivation across the corner cases the catalog actually uses.
+// derivation across the corner cases published CLIs use.
 func TestMCPNovelFeatureToolNameSanitization(t *testing.T) {
 	t.Parallel()
 
@@ -140,6 +144,222 @@ func TestToolNameForPathCases(t *testing.T) {
 }
 `)
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "names_extra_test.go"), []byte(testSrc.String()), 0o644))
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree")
+}
+
+func TestMCPFrameworkCommandClassificationIsTopLevelOnly(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("depthcheck")
+	outputDir := filepath.Join(t.TempDir(), "depthcheck-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	var testSrc strings.Builder
+	testSrc.WriteString(`package cobratree
+
+import (
+	"testing"
+
+	"github.com/mark3labs/mcp-go/server"
+	"github.com/spf13/cobra"
+)
+
+func TestFrameworkCommandClassificationIsTopLevelOnly(t *testing.T) {
+	for name := range frameworkCommands {
+		root := &cobra.Command{Use: "depthcheck-pp-cli"}
+		top := &cobra.Command{
+			Use: name,
+			RunE: func(cmd *cobra.Command, args []string) error { return nil },
+		}
+		parent := &cobra.Command{Use: "items"}
+		nested := &cobra.Command{
+			Use: name,
+			RunE: func(cmd *cobra.Command, args []string) error { return nil },
+		}
+		parent.AddCommand(nested)
+		root.AddCommand(top, parent)
+
+		if got := classify(top); got != commandFramework {
+			t.Fatalf("top-level %s classify() = %v, want commandFramework", name, got)
+		}
+		if got := classify(nested); got != commandNovel {
+			t.Fatalf("nested items %s classify() = %v, want commandNovel", name, got)
+		}
+	}
+
+	root := &cobra.Command{Use: "depthcheck-pp-cli"}
+	topAuth := &cobra.Command{
+		Use: "auth",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	library := &cobra.Command{Use: "library"}
+	librarySearch := &cobra.Command{
+		Use: "search",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	topVersion := &cobra.Command{
+		Use: "version",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	libraryAuth := &cobra.Command{
+		Use: "auth",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	library.AddCommand(librarySearch, libraryAuth)
+	root.AddCommand(topAuth, topVersion, library)
+
+	if got := classify(topAuth); got != commandFramework {
+		t.Fatalf("top-level auth classify() = %v, want commandFramework", got)
+	}
+	if got := classify(topVersion); got != commandFramework {
+		t.Fatalf("top-level version classify() = %v, want commandFramework", got)
+	}
+	if got := classify(librarySearch); got != commandNovel {
+		t.Fatalf("nested library search classify() = %v, want commandNovel", got)
+	}
+	if got := classify(libraryAuth); got != commandNovel {
+		t.Fatalf("nested library auth classify() = %v, want commandNovel", got)
+	}
+	if got := toolNameForPath([]string{"library", "search"}); got != "library_search" {
+		t.Fatalf("nested search tool name = %q, want library_search", got)
+	}
+
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, root, func() (string, error) { return "missing-binary", nil })
+	tools := s.ListTools()
+	if _, ok := tools["library_search"]; !ok {
+		t.Fatalf("nested library search was not mirrored: %#v", tools)
+	}
+	if _, ok := tools["library_auth"]; !ok {
+		t.Fatalf("nested library auth was not mirrored: %#v", tools)
+	}
+	for _, excluded := range []string{"auth", "version"} {
+		if _, ok := tools[excluded]; ok {
+			t.Fatalf("top-level framework command %q was mirrored: %#v", excluded, tools)
+		}
+	}
+}
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "framework_depth_test.go"), []byte(testSrc.String()), 0o644))
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree")
+}
+
+func TestMCPEndpointToolsHiddenPreservesNovelDescendantReachability(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("surfacecheck")
+	apiSpec.MCP = spec.MCPConfig{EndpointTools: "hidden"}
+	apiSpec.Resources = map[string]spec.Resource{
+		"orders": {
+			Description: "Manage orders",
+			Endpoints: map[string]spec.Endpoint{
+				"list":   {Method: "GET", Path: "/orders", Description: "List orders"},
+				"create": {Method: "POST", Path: "/orders", Description: "Create order"},
+			},
+		},
+		"customers": {
+			Description: "Single-endpoint customers resource",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/customers", Description: "List customers"},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "surfacecheck-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{{
+		Name:        "Order triage",
+		Command:     "orders triage",
+		Description: "Prioritize orders that need attention.",
+		Rationale:   "Combines multiple order signals.",
+	}}
+	require.NoError(t, gen.Generate())
+
+	const runtimeTest = `package mcp
+
+import (
+	"testing"
+
+	"github.com/mark3labs/mcp-go/server"
+)
+
+func TestEndpointToolsHiddenSurfaceReachability(t *testing.T) {
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterTools(s)
+	tools := s.ListTools()
+	if _, ok := tools["orders_triage"]; !ok {
+		t.Fatalf("novel descendant missing from MCP tools: %#v", tools)
+	}
+	if _, ok := tools["orders"]; ok {
+		t.Fatalf("API resource grouping command leaked into MCP tools: %#v", tools)
+	}
+	for _, endpointTool := range []string{"orders_list", "orders_create", "customers_list"} {
+		if _, ok := tools[endpointTool]; ok {
+			t.Fatalf("endpoint tool %q leaked into MCP tools: %#v", endpointTool, tools)
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "surface_reachability_test.go"), []byte(runtimeTest), 0o644))
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/...", "-run", "TestEndpointToolsHiddenSurfaceReachability|TestRegisterAllDescendsThroughCobraHiddenButPrunesMCPHidden")
+}
+
+func TestMCPCobraTreeSiblingCLIPathUsesWindowsExecutableSuffix(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("pathcheck")
+	outputDir := filepath.Join(t.TempDir(), "pathcheck-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	var testSrc strings.Builder
+	testSrc.WriteString(`package cobratree
+
+import (
+	"path/filepath"
+	"testing"
+)
+
+func TestCLIExecutableNameUsesWindowsSuffix(t *testing.T) {
+	if got := cliExecutableName("windows"); got != "pathcheck-pp-cli.exe" {
+		t.Fatalf("cliExecutableName(windows) = %q, want pathcheck-pp-cli.exe", got)
+	}
+	if got := cliExecutableName("linux"); got != "pathcheck-pp-cli" {
+		t.Fatalf("cliExecutableName(linux) = %q, want pathcheck-pp-cli", got)
+	}
+	if got := cliExecutableName("darwin"); got != "pathcheck-pp-cli" {
+		t.Fatalf("cliExecutableName(darwin) = %q, want pathcheck-pp-cli", got)
+	}
+}
+
+func TestSiblingCLICandidatesUseWindowsSuffixThenFallback(t *testing.T) {
+	exePath := filepath.Join("tmp", "bin", "pathcheck-pp-mcp.exe")
+	windowsCandidates := siblingCLICandidates("windows", exePath)
+	if len(windowsCandidates) != 2 {
+		t.Fatalf("windows candidates length = %d, want 2: %#v", len(windowsCandidates), windowsCandidates)
+	}
+	if got, want := filepath.Base(windowsCandidates[0]), "pathcheck-pp-cli.exe"; got != want {
+		t.Fatalf("windows candidates[0] = %q, want %q", got, want)
+	}
+	if got, want := filepath.Base(windowsCandidates[1]), "pathcheck-pp-cli"; got != want {
+		t.Fatalf("windows candidates[1] = %q, want %q", got, want)
+	}
+
+	linuxCandidates := siblingCLICandidates("linux", filepath.Join("tmp", "bin", "pathcheck-pp-mcp"))
+	if len(linuxCandidates) != 1 {
+		t.Fatalf("linux candidates length = %d, want 1: %#v", len(linuxCandidates), linuxCandidates)
+	}
+	if got, want := filepath.Base(linuxCandidates[0]), "pathcheck-pp-cli"; got != want {
+		t.Fatalf("linux candidates[0] = %q, want %q", got, want)
+	}
+}
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "cli_path_extra_test.go"), []byte(testSrc.String()), 0o644))
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree")
 }

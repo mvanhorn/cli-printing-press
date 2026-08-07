@@ -71,6 +71,8 @@ func TestCobraFlagFuncForParamCursorOverride(t *testing.T) {
 			assert.Equal(t, tt.want, cobraFlagFuncForParam(tt.paramName, tt.paramType))
 		})
 	}
+	assert.Equal(t, "StringVar", cobraFlagFuncForParamRequired("all_day", "bool", true, false))
+	assert.Equal(t, "BoolVar", cobraFlagFuncForParamRequired("all_day", "bool", true, true))
 }
 
 func TestGoTypeForParamCursorOverride(t *testing.T) {
@@ -99,6 +101,8 @@ func TestGoTypeForParamCursorOverride(t *testing.T) {
 			assert.Equal(t, tt.want, goTypeForParam(tt.paramName, tt.paramType))
 		})
 	}
+	assert.Equal(t, "string", goTypeForParamRequired("all_day", "bool", true, false))
+	assert.Equal(t, "bool", goTypeForParamRequired("all_day", "bool", true, true))
 }
 
 func TestCobraFlagFuncAcceptsSpecScalarAliases(t *testing.T) {
@@ -110,6 +114,64 @@ func TestCobraFlagFuncAcceptsSpecScalarAliases(t *testing.T) {
 	assert.Equal(t, "StringVar", cobraFlagFuncForParam("cursor", "integer"))
 }
 
+// TestMCPBindingFunc pins that OpenAPI-parsed shapes ("int", "float",
+// "bool") and internal-spec literals ("integer", "number", "boolean")
+// produce the same MCP binding, and that array/object params bind to their
+// native MCP type (WithArray/WithObject) rather than the WithString default.
+func TestMCPBindingFunc(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		typ  string
+		want string
+	}{
+		{"integer", "WithNumber"},
+		{"int", "WithNumber"},
+		{"number", "WithNumber"},
+		{"float", "WithNumber"},
+		{"boolean", "WithBoolean"},
+		{"bool", "WithBoolean"},
+		{"string", "WithString"},
+		{"", "WithString"},
+		{"object", "WithObject"},
+		{"array", "WithArray"},
+		{"INTEGER", "WithNumber"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.typ, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, mcpBindingFunc(tt.typ))
+		})
+	}
+}
+
+// TestMCPParamDefaultValue pins that a composite (array/object) param default is
+// serialized as JSON — matching how native array/object live values are now
+// encoded — while scalar defaults keep their "%v" rendering. Without the JSON
+// branch an array default would be injected on the wire as Go's "[a b c]".
+func TestMCPParamDefaultValue(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		p      spec.Param
+		want   string
+		wantOK bool
+	}{
+		{"nil default", spec.Param{Type: "array"}, "", false},
+		{"scalar int", spec.Param{Type: "integer", Default: 25}, "25", true},
+		{"scalar string", spec.Param{Type: "string", Default: "later"}, "later", true},
+		{"array default", spec.Param{Type: "array", Default: []any{"a", "b"}}, `["a","b"]`, true},
+		{"object default", spec.Param{Type: "object", Default: map[string]any{"k": "v"}}, `{"k":"v"}`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := mcpParamDefaultValue(tt.p)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestDefaultAndZeroValuesAcceptSpecScalarAliases(t *testing.T) {
 	t.Parallel()
 
@@ -119,6 +181,8 @@ func TestDefaultAndZeroValuesAcceptSpecScalarAliases(t *testing.T) {
 	assert.Equal(t, "0", zeroVal("integer"))
 	assert.Equal(t, "false", zeroVal("boolean"))
 	assert.Equal(t, "0.0", zeroVal("number"))
+	assert.Equal(t, `""`, defaultValForParamRequired(spec.Param{Name: "all_day", Type: "boolean"}, true, false))
+	assert.Equal(t, `""`, zeroValForParamRequired("all_day", "boolean", true, false))
 }
 
 func TestDefaultValForParamCursorOverride(t *testing.T) {

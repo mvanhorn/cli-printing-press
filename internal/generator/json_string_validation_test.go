@@ -176,8 +176,93 @@ func TestJSONStringBodyParamEmitsLocalValidation(t *testing.T) {
 	code := string(src)
 
 	require.Contains(t, code, `json.Unmarshal([]byte(bodyMetadata), &parsedMetadata)`)
-	require.Contains(t, code, `body["metadata"] = bodyMetadata`)
-	require.NotContains(t, code, `body["metadata"] = parsedMetadata`)
+	require.Contains(t, code, `bodyMap["metadata"] = parsedMetadata`)
+	require.NotContains(t, code, `bodyMap["metadata"] = bodyMetadata`)
+}
+
+func TestEncodedJSONStringBodyParamKeepsRawBytes(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("json-encoded-body-param")
+	apiSpec.Resources["items"] = spec.Resource{
+		Description: "Items",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {
+				Method:      "GET",
+				Path:        "/items",
+				Description: "List items",
+			},
+			"create": {
+				Method:      "POST",
+				Path:        "/items",
+				Description: "Create item",
+				Body: []spec.Param{
+					{Name: "metadata", Type: "string", Description: "Metadata as a JSON-encoded string"},
+					{Name: "settings", Type: "string", Description: "Settings as a stringified JSON"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "json-encoded-body-param-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	src, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items_create.go"))
+	require.NoError(t, err)
+	code := string(src)
+
+	require.Contains(t, code, `json.Unmarshal([]byte(bodyMetadata), &parsedMetadata)`)
+	require.Contains(t, code, `bodyMap["metadata"] = bodyMetadata`)
+	require.NotContains(t, code, `bodyMap["metadata"] = parsedMetadata`)
+	require.Contains(t, code, `json.Unmarshal([]byte(bodySettings), &parsedSettings)`)
+	require.Contains(t, code, `bodyMap["settings"] = bodySettings`)
+	require.NotContains(t, code, `bodyMap["settings"] = parsedSettings`)
+}
+
+func TestHTMLStringBodyParamDoesNotEmitJSONValidation(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("html-body-param")
+	apiSpec.Resources["tasks"] = spec.Resource{
+		Description: "Tasks",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {
+				Method:      "GET",
+				Path:        "/tasks",
+				Description: "List tasks",
+			},
+			"update": {
+				Method:      "PATCH",
+				Path:        "/tasks/{task_gid}",
+				Description: "Update task",
+				Params: []spec.Param{
+					{Name: "task_gid", Type: "string", Positional: true, PathParam: true, Required: true},
+				},
+				Body: []spec.Param{
+					{
+						Name:        "data",
+						Type:        "object",
+						Description: "Request payload",
+						Fields: []spec.Param{
+							{Name: "html_text", Type: "string", Description: "HTML formatted text for a comment."},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "html-body-param-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	src, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "tasks_update.go"))
+	require.NoError(t, err)
+	code := string(src)
+
+	require.Contains(t, code, `cmd.Flags().StringVar(&bodyDataHtmlText, "data-html-text"`)
+	require.Contains(t, code, `nestedData["html_text"] = bodyDataHtmlText`)
+	require.NotContains(t, code, `parsedDataHtmlText`)
+	require.NotContains(t, code, `parsing --data-html-text JSON`)
 }
 
 func TestJSONStringParamDoesNotSuggestUnrelatedEnum(t *testing.T) {

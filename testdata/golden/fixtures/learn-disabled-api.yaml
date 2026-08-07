@@ -1,0 +1,28 @@
+name: learn-disabled-example
+description: |
+  Golden fixture exercising the learn.disabled generation-time opt-out. With
+  the self-learning loop on by default for every fresh print, this fixture
+  pins the ONLY sanctioned way to print without it: `learn.disabled: true`.
+  The locked artifacts must carry no internal/learn tree, no
+  teach/recall/learnings commands, no learn store schema, and no
+  self-learning sections in README.md / SKILL.md / AGENTS.md. A regression
+  here means either the opt-out stopped working (learn surface appears) or
+  the default leaked into an opted-out spec.
+version: 1.0.0
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [LEARN_DISABLED_TOKEN]
+resources:
+  games:
+    description: Minimal syncable resource so the disabled shape still keeps
+      its profile-derived store; the opt-out must remove the learn surface,
+      not the ordinary data layer.
+    endpoints:
+      list:
+        method: GET
+        path: /games
+        description: List games
+        id_field: game_key
+learn:
+  disabled: true

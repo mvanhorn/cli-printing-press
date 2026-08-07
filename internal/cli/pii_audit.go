@@ -18,30 +18,35 @@ import (
 //
 // Default exit is 0 (diagnostic). The `--strict` flag exits non-zero
 // when pending findings or gate failures remain — for external CI
-// callers that shell out to `printing-press pii-audit`. The in-process
+// callers that shell out to `cli-printing-press pii-audit`. The in-process
 // promote/publish gates call artifacts.RunPIIAudit directly and apply
 // equivalent enforcement.
 func newPIIAuditCmd() *cobra.Command {
 	var asJSON bool
 	var strict bool
+	var manuscriptsDir string
 
 	cmd := &cobra.Command{
 		Use:   "pii-audit <cli-dir>",
 		Short: "Mechanically audit a printed CLI's high-risk files for customer-PII shapes",
 		Long: `Walks <cli-dir>'s high-risk file scope (JSON, YAML, Markdown,
-*_test.go, .manuscripts/**, testdata/**) and reports per-line findings
+.manuscripts/**) and reports per-line findings
 that signal PII-shape leaks. Detection is purely mechanical: card
-last-4 with context tokens, email addresses, US-shaped phone numbers,
-ZIP+4, and street-address-line shapes. The agent layer
+last-4 with context tokens, order IDs, email addresses, US-shaped phone
+numbers, ZIP+4, and street-address-line shapes. The agent layer
 (skills/printing-press-polish/references/pii-polish.md) takes these
 findings and applies judgment per item — fix in source or accept with
 pre-decision fields.
 
 Exit 0 by default (diagnostic). With --strict, exits non-zero when
-pending findings or gate failures remain.`,
-		Example: `  printing-press pii-audit ~/printing-press/library/dub
-  printing-press pii-audit ~/printing-press/library/dub --json
-  printing-press pii-audit ~/printing-press/library/dub --strict`,
+pending findings or gate failures remain.
+
+When --manuscripts-dir points at a manuscripts run directory, pii-audit also
+scans that run's research.json and research/*.md using the publish-staged
+.manuscripts/<run-id>/... paths so accepts carry forward into publish package.`,
+		Example: `  cli-printing-press pii-audit ~/printing-press/library/dub
+  cli-printing-press pii-audit ~/printing-press/library/dub --json
+  cli-printing-press pii-audit ~/printing-press/library/dub --strict`,
 		Args: cobra.ExactArgs(1),
 		Annotations: map[string]string{
 			// No mcp:read-only — RunPIIAudit writes a ledger file under
@@ -60,12 +65,13 @@ pending findings or gate failures remain.`,
 				return fmt.Errorf("cli-dir %q is not a directory", cliDir)
 			}
 
+			opts := artifacts.PIIAuditOptions{ManuscriptsDir: manuscriptsDir}
 			var result artifacts.PIIAuditResult
 			if asJSON {
 				// --json is a read-only probe; do not write the ledger.
-				result, err = artifacts.ScanPII(cliDir)
+				result, err = artifacts.ScanPIIWithOptions(cliDir, opts)
 			} else {
-				result, err = artifacts.RunPIIAudit(cliDir)
+				result, err = artifacts.RunPIIAuditWithOptions(cliDir, opts)
 			}
 			if err != nil {
 				return err
@@ -94,6 +100,7 @@ pending findings or gate failures remain.`,
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON instead of a human-readable table")
 	cmd.Flags().BoolVar(&strict, "strict", false, "exit non-zero when pending findings or gate failures remain")
+	cmd.Flags().StringVar(&manuscriptsDir, "manuscripts-dir", "", "optional manuscripts run directory; scans research.json and research/*.md using publish-staged paths")
 	return cmd
 }
 
@@ -105,9 +112,9 @@ func renderPIIAuditTable(w io.Writer, findings []artifacts.PIIFinding, delta art
 	switch {
 	case pending == 0 && !gateFired:
 		if accepted > 0 {
-			fmt.Fprintf(w, "pii-audit: no pending findings (%d accepted) — phase-1 scope (card/email/phone/zip/postal); order-IDs, ASINs, and standalone names are a future detector class\n", accepted)
+			fmt.Fprintf(w, "pii-audit: no pending findings (%d accepted) — phase-1 scope (order-id/card/email/phone/zip/postal); ASINs and standalone names are a future detector class\n", accepted)
 		} else {
-			fmt.Fprintln(w, "pii-audit: no findings — phase-1 scope (card/email/phone/zip/postal); order-IDs, ASINs, and standalone names are a future detector class")
+			fmt.Fprintln(w, "pii-audit: no findings — phase-1 scope (order-id/card/email/phone/zip/postal); ASINs and standalone names are a future detector class")
 		}
 	case pending == 0 && gateFired:
 		fmt.Fprintf(w, "pii-audit: incomplete (%d accepted, %d gate failure(s))\n",

@@ -1,0 +1,24 @@
+{
+  "statusCheck": true,
+  "triggerOnUpdates": true,
+  "customContext": {
+    "rules": [
+      {
+        "scope": [".github/workflows/**"],
+        "rule": "P0. A workflow that combines a pull_request_target trigger with a checkout step whose ref points at PR-head code (github.event.pull_request.head.sha, github.event.pull_request.head.ref, or refs/pull/<n>/merge) is the TanStack mini-Shai-Hulud attack shape — head code runs with base-context secrets and OIDC tokens, which attackers exfiltrate from runner memory. The repo's existing pull_request_target workflow (conversation-resolution-check.yml) makes API calls only and does not check out PR head; new workflows must follow that posture. Flag any new pull_request_target workflow that overrides the checkout ref. Recommend switching to pull_request, or removing the ref override so checkout defaults to the base commit."
+      },
+      {
+        "scope": [".github/workflows/**"],
+        "rule": "P0. id-token: write mints OIDC tokens consumers use to publish to npm, Sigstore, AWS, etc. In this repo the allowlist is empty — release.yml uses keyed cosign signing and no other workflow needs OIDC. Any new workflow granting id-token: write is the TanStack OIDC-theft attack shape. Flag and recommend either removing the permission, or if a publishing workflow is genuinely being introduced, adding it to the allowlist in .github/scripts/verify-supply-chain/signals.py in the same PR with reviewer sign-off."
+      },
+      {
+        "scope": [".github/workflows/**"],
+        "rule": "P0. Setting GOPROXY, GOFLAGS, GONOSUMCHECK, GOSUMDB, or GONOSUMDB inside a workflow env block (workflow, job, or step level) lets PR authors redirect Go module resolution to an attacker proxy or suppress checksum verification (BufferZoneCorp attack shape). The repo does not use any of these overrides on origin/main as of 2026-05-17; new ones are forward-looking attack vectors. Flag any addition and recommend configuring private proxies at the org/runner level under operator review instead."
+      },
+      {
+        "scope": ["internal/**/*.go", "cmd/**/*.go"],
+        "rule": "Judge whether the generator's purpose plausibly explains any credential-path read. Patterns to weigh: literal strings or os.Getenv calls for ~/.aws, ~/.ssh, ~/.kube, ~/.claude, ~/.vscode (the node-ipc and TanStack persistence/exfil paths), or env vars AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, ACTIONS_ID_TOKEN_REQUEST_URL, GITHUB_TOKEN, NPM_TOKEN. The generator's own code reads specs and writes generated CLIs; it does not normally read user credentials. Flag P0 when a credential-path read is added unless the PR clearly justifies it. The generator must never write to ~/.claude/ or ~/.vscode/ — those were the TanStack persistence sinks."
+      }
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+# Locks the OAuth2 device-code auth shape contract end-to-end.
+# The fixture declares x-oauth-device-flow; every artifact below proves
+# a chokepoint in the auth shape pipeline ran:
+#
+#   parser.go      -> AuthConfig.OAuth2Grant=device_code, device/token URLs set
+#   generator.go   -> auth_device_code.go.tmpl and oauth_device.go.tmpl selected
+#   config.go.tmpl -> AuthHeader emits AccessToken-first, not client-id bearer
+#   client.go.tmpl -> refresh_token grant and 401 refresh retry are emitted
+#
+# If parser scoring, extension handling, template selection, or request auth
+# precedence regresses, these files either disappear or contain the wrong shape.
+
+# auth.go exposes setup, login --device-code, non-interactive poll, refresh,
+# status, set-token, and logout commands.
+printing-press-oauth2-device-code/internal/cli/auth.go
+
+# device.go carries the vendored OAuth2 device-code helper and refresh helper.
+printing-press-oauth2-device-code/internal/oauth/device.go
+
+# client.go carries refresh_token auto-refresh and 401 refresh retry behavior.
+printing-press-oauth2-device-code/internal/client/client.go
+
+# config.go's AuthHeader must prefer stored OAuth access tokens over the
+# public client-id env var.
+printing-press-oauth2-device-code/internal/config/config.go
+
+# User and agent docs must show the device-code auth setup path.
+printing-press-oauth2-device-code/README.md
+printing-press-oauth2-device-code/SKILL.md

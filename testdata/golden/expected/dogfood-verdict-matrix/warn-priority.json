@@ -46,6 +46,12 @@
     "planned": 0,
     "skipped": true
   },
+  "oauth_scope_coverage_check": {
+    "checked": 0,
+    "covered": 0,
+    "detail": "spec not provided; OAuth scope coverage check skipped",
+    "skipped": true
+  },
   "path_check": {
     "tested": 0,
     "valid": 0,
@@ -55,7 +61,9 @@
     "detail": "sync uses domain-specific Upsert methods; search methods not found",
     "domain_tables": 0,
     "search_calls_domain": false,
-    "sync_calls_domain": true
+    "sync_calls_domain": true,
+    "sync_file_emitted": true,
+    "sync_resources_present": true
   },
   "print_json_filtered_check": {
     "checked": 3
@@ -66,6 +74,10 @@
     "skipped": true
   },
   "source_client_check": {
+    "checked": 0,
+    "skipped": true
+  },
+  "sync_param_drop_check": {
     "checked": 0,
     "skipped": true
   },

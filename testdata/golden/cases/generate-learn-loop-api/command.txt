@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/learn-loop-api.yaml --output "$CASE_ACTUAL_DIR/learn-loop-example" --force --spec-url file://testdata/golden/fixtures/learn-loop-api.yaml --validate=false

@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/async-job-api.yaml --output "$CASE_ACTUAL_DIR/async-job-api" --force --spec-url file://testdata/golden/fixtures/async-job-api.yaml --validate=false

@@ -2,13 +2,15 @@
 
 **Goal:** clear the PII ledger so promote and publish gates pass. Every pending finding is either real PII (replace with a placeholder in source) or a justified non-PII match (accept in the ledger with pre-decision fields).
 
-**Scope:** Phase 1 detectors are shape-only — card-last-4, email, US phone, ZIP+4, postal-address. Order/transaction IDs, ASINs, and standalone names are a future detector class pending spec-aware detection work. A passing gate is the floor, not "PII-clean."
+**Scope:** Phase 1 detectors are shape-only — order/transaction IDs, card-last-4, email, US phone, ZIP+4, postal-address. ASINs and standalone names are a future detector class pending spec-aware detection work. A passing gate is the floor, not "PII-clean."
 
 ```bash
-printing-press pii-audit <cli-dir>
+cli-printing-press pii-audit <cli-dir>
 ```
 
 The audit writes `<cli-dir>/.printing-press-pii-polish.json`. Promote and publish re-run the audit themselves, so the ledger header is the authority — they refuse if pending findings or gate failures remain.
+
+When polish resolved a manuscripts run directory, run the audit with `--manuscripts-dir <run-dir>`. That adds only `<run-dir>/research.json` and `<run-dir>/research/*.md` to the scan and reports them as `.manuscripts/<run-id>/...` paths, matching the publish-staged tree.
 
 ## The accept contract
 
@@ -70,6 +72,14 @@ When a downstream consumer (parser, schema validator) needs a valid-shape value,
 
 **Manuscripts (`.manuscripts/<runID>/`).** Highest-risk source — captured browser-sniff content is by construction where customer values entered. Acceptance for manuscript findings requires the explicit `evidence_context`-cited justification; "captured data" alone is not sufficient. When in doubt, replace the value in the manuscript file directly (it's local working state) and use a hand-authored fixture with synthetic values for any downstream tests.
 
+**Generated test fixtures (`*_test.go`, `testdata/`).** Exempt from the audit by design — generated tests commonly carry standards-reserved or synthetic placeholder values, and rewriting them during polish creates churn without reducing customer-PII risk. Real PII in production code, config, README, and manuscript files remains in scope.
+
+**Tooling workspaces (`.omc/`, `.claude/`).** Exempt from the audit at the CLI root — these are agent orchestration or scratch directories, not shippable printed-CLI content.
+
+**Vendor spec files at the CLI root (`spec.yaml`, `spec.yml`, `spec.json`).** Exempt from the audit by design — these are the OpenAPI/internal source the operator passed to `--spec`, and vendor `example:` blocks (Stripe `jenny@example.com`, GitHub user-schema example phones) are documentation, not customer PII.
+
+**Vendor spec source archived under `.manuscripts/`.** Files anywhere inside a `.manuscripts/` subtree whose head bytes match an OpenAPI 2.x/3.x or Swagger 2.0 root-document marker are exempt — the operator archived the vendor's published spec source alongside research, and its `example:` blocks are documentation. The exemption is content-based, not glob-based, so per-resource subdir basenames like `apps/calendars.json` or vendor-named files like `pushpress-v3.yaml` are covered without an allowlist. HARs, `session-state.json`, hand-edited proofs, and any other non-spec content under `.manuscripts/` stays in scope because the marker check fails on them.
+
 ## Forbidden accept patterns
 
 The binary enforces these via gate failures, not just convention:
@@ -88,7 +98,7 @@ Don't manually mark findings as `fixed`. A real source fix makes the finding dis
 
 ## End-state checklist
 
-- [ ] `printing-press pii-audit <cli-dir>` summary reads `no pending findings`, no `incomplete:` block.
+- [ ] `cli-printing-press pii-audit <cli-dir> ${PII_ARGS[@]}` summary reads `no pending findings`, no `incomplete:` block. Outside the polish shell, pass `--manuscripts-dir <run-dir>` when a manuscripts run was resolved.
 - [ ] Every accepted finding has `category` + `evidence_context`. `category: other` also has `note`.
 - [ ] No 6+ accepts share a normalized `note` + `category`.
 - [ ] Real PII fixes landed in source (`git diff`).

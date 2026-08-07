@@ -15,8 +15,11 @@ func TestRenderJSON(t *testing.T) {
 		URL:        "https://food52.com",
 		Mode:       ModeBrowserHTTP,
 		Confidence: 0.85,
+		BodyEvidence: []string{
+			"vercel_security_checkpoint",
+		},
 		Probes: []ProbeResult{
-			{Transport: TransportStdlib, Status: 429, ElapsedMS: 412, Evidence: []string{"x-vercel-mitigated: challenge"}},
+			{Transport: TransportStdlib, Status: 429, ElapsedMS: 412, Evidence: []string{"x-vercel-mitigated: challenge"}, BodyEvidence: []string{"vercel_security_checkpoint"}},
 			{Transport: TransportSurfChrome, Status: 200, ElapsedMS: 387},
 		},
 		Recommendation: Recommendation{
@@ -31,9 +34,12 @@ func TestRenderJSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &decoded))
 	assert.Equal(t, "browser_http", decoded["mode"])
 	assert.Equal(t, "https://food52.com", decoded["url"])
+	assert.Equal(t, []any{"vercel_security_checkpoint"}, decoded["body_evidence"])
 	probes, ok := decoded["probes"].([]any)
 	require.True(t, ok)
 	assert.Len(t, probes, 2)
+	firstProbe := probes[0].(map[string]any)
+	assert.Equal(t, []any{"vercel_security_checkpoint"}, firstProbe["body_evidence"])
 }
 
 func TestRenderTable_FullPath(t *testing.T) {

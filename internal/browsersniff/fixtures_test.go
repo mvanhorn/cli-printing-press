@@ -151,6 +151,62 @@ func TestSanitizeForFixture(t *testing.T) {
 				BodyFields: []string{"client_id", "grant_type"},
 			},
 		},
+		{
+			name: "captured value shapes become synthetic samples",
+			entry: EnrichedEntry{
+				Method: "POST",
+				URL:    "https://api.example.com/orders?order_id=123-4567890-1234567&asin=B012345678",
+				RequestHeaders: map[string]string{
+					"Content-Type": "application/json",
+				},
+				RequestBody: `{"card_last4":"4242","amount":"99.95","purchased_date":"2026-05-01"}`,
+			},
+			want: TestFixture{
+				Method:     "POST",
+				Path:       "/orders",
+				ParamNames: []string{"amount", "asin", "card_last4", "order_id", "purchased_date"},
+				BodyFields: []string{"amount", "card_last4", "purchased_date"},
+				ParamSamples: []FixtureValue{
+					{Name: "amount", Value: "12.34"},
+					{Name: "asin", Value: "B0EXAMPLE1"},
+					{Name: "card_last4", Value: "LAST4"},
+					{Name: "order_id", Value: "111-1111111-1111111"},
+					{Name: "purchased_date", Value: "2026-01-15"},
+				},
+				BodySamples: []FixtureValue{
+					{Name: "amount", Value: "12.34"},
+					{Name: "card_last4", Value: "LAST4"},
+					{Name: "purchased_date", Value: "2026-01-15"},
+				},
+			},
+		},
+		{
+			name: "date substring in unrelated field does not become date sample",
+			entry: EnrichedEntry{
+				Method: "POST",
+				URL:    "https://api.example.com/check",
+				RequestHeaders: map[string]string{
+					"Content-Type": "application/json",
+				},
+				RequestBody: `{"validate":"pending","candidate":"alice","update":"later"}`,
+			},
+			want: TestFixture{
+				Method:     "POST",
+				Path:       "/check",
+				ParamNames: []string{"candidate", "update", "validate"},
+				BodyFields: []string{"candidate", "update", "validate"},
+				ParamSamples: []FixtureValue{
+					{Name: "candidate", Value: "example-value"},
+					{Name: "update", Value: "example-value"},
+					{Name: "validate", Value: "example-value"},
+				},
+				BodySamples: []FixtureValue{
+					{Name: "candidate", Value: "example-value"},
+					{Name: "update", Value: "example-value"},
+					{Name: "validate", Value: "example-value"},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -162,6 +218,12 @@ func TestSanitizeForFixture(t *testing.T) {
 			assert.Equal(t, tt.want.Path, fixture.Path)
 			assert.Equal(t, tt.want.ParamNames, fixture.ParamNames)
 			assert.Equal(t, tt.want.BodyFields, fixture.BodyFields)
+			if tt.want.ParamSamples != nil {
+				assert.Equal(t, tt.want.ParamSamples, fixture.ParamSamples)
+			}
+			if tt.want.BodySamples != nil {
+				assert.Equal(t, tt.want.BodySamples, fixture.BodySamples)
+			}
 		})
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,14 +14,15 @@ import (
 )
 
 var (
-	endpointRe = regexp.MustCompile(`(GET|POST|PUT|PATCH|DELETE)\s+(/[a-zA-Z0-9/{}_.\-]+)`)
-	baseURLRe  = regexp.MustCompile(`https://api\.[a-zA-Z0-9.\-]+`)
-	bearerRe   = regexp.MustCompile(`(?i)(Bearer|Authorization:\s*Bearer)`)
-	apiKeyRe   = regexp.MustCompile(`(?i)(API[_ ]key|api_key|X-API-Key)`)
-	oauthRe    = regexp.MustCompile(`(?i)OAuth`)
-	paramRowRe = regexp.MustCompile(`(?i)<t[dr][^>]*>\s*(\w+)\s*</t[dr]>\s*<t[dr][^>]*>\s*(string|integer|int|boolean|bool|number|float|array|object)\s*</t[dr]>`)
-	jsonKeyRe  = regexp.MustCompile(`"(\w+)"\s*:`)
-	preBlockRe = regexp.MustCompile(`(?s)<(?:pre|code)[^>]*>(.*?)</(?:pre|code)>`)
+	endpointRe     = regexp.MustCompile(`(GET|POST|PUT|PATCH|DELETE)\s+(/[a-zA-Z0-9/{}_.\-]+)`)
+	baseURLRe      = regexp.MustCompile(`https://api\.[a-zA-Z0-9.\-]+`)
+	bearerRe       = regexp.MustCompile(`(?i)(Bearer|Authorization:\s*Bearer)`)
+	apiKeyRe       = regexp.MustCompile(`(?i)(API[_ ]key|api_key|X-API-Key)`)
+	oauthRe        = regexp.MustCompile(`(?i)OAuth`)
+	paramRowRe     = regexp.MustCompile(`(?i)<t[dr][^>]*>\s*(\w+)\s*</t[dr]>\s*<t[dr][^>]*>\s*(string|integer|int|boolean|bool|number|float|array|object)\s*</t[dr]>`)
+	jsonKeyRe      = regexp.MustCompile(`"(\w+)"\s*:`)
+	preBlockRe     = regexp.MustCompile(`(?s)<(?:pre|code)[^>]*>(.*?)</(?:pre|code)>`)
+	pathParamKeyRe = regexp.MustCompile(`\{[A-Za-z_][A-Za-z0-9_]*\}`)
 )
 
 // GenerateFromDocs fetches an API documentation page and extracts a best-effort
@@ -38,7 +40,7 @@ func GenerateFromDocs(docsURL, apiName string) (*spec.APISpec, error) {
 
 	resources := groupByResource(endpoints)
 	auth := detectAuth(body)
-	baseURL := detectBaseURL(body)
+	baseURL, baseURLIsPlaceholder := detectBaseURL(body)
 	params := extractParams(body)
 
 	// Attach extracted params as body params to POST/PUT/PATCH endpoints
@@ -53,11 +55,12 @@ func GenerateFromDocs(docsURL, apiName string) (*spec.APISpec, error) {
 	}
 
 	apiSpec := &spec.APISpec{
-		Name:        apiName,
-		Description: fmt.Sprintf("CLI for %s (generated from docs)", apiName),
-		Version:     "1.0.0",
-		BaseURL:     baseURL,
-		Auth:        auth,
+		Name:                 apiName,
+		Description:          fmt.Sprintf("CLI for %s (generated from docs)", apiName),
+		Version:              "1.0.0",
+		BaseURL:              baseURL,
+		BaseURLIsPlaceholder: baseURLIsPlaceholder,
+		Auth:                 auth,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", apiName),
@@ -126,13 +129,19 @@ func groupByResource(endpoints []rawEndpoint) map[string]spec.Resource {
 			Description: fmt.Sprintf("Operations on %s", seg),
 			Endpoints:   map[string]spec.Endpoint{},
 		}
-		nameCount := map[string]int{}
+		// Allocate names against the set already used in this resource, not a
+		// per-base-name counter: a generated suffix (get_users_2) can otherwise
+		// collide with another route's natural name and silently overwrite it in
+		// the endpoints map. Iterating eps in documentation order keeps naming
+		// deterministic.
+		used := map[string]bool{}
 		for _, ep := range eps {
-			name := endpointName(ep.Method, ep.Path)
-			nameCount[name]++
-			if nameCount[name] > 1 {
-				name = fmt.Sprintf("%s_%d", name, nameCount[name])
+			base := endpointName(ep.Method, ep.Path)
+			name := base
+			for i := 2; used[name]; i++ {
+				name = fmt.Sprintf("%s_%d", base, i)
 			}
+			used[name] = true
 
 			pathParams := extractPathParams(ep.Path)
 
@@ -259,19 +268,20 @@ func detectAuth(body string) spec.AuthConfig {
 	}
 }
 
-func detectBaseURL(body string) string {
+// The second return is true when no URL matched and the caller is getting
+// the placeholder fallback — used by callers to refuse shipping.
+func detectBaseURL(body string) (string, bool) {
 	matches := baseURLRe.FindAllString(body, -1)
 	if len(matches) > 0 {
-		// Return the first match, preferring longer ones (more specific)
 		best := matches[0]
 		for _, m := range matches[1:] {
 			if len(m) > len(best) {
 				best = m
 			}
 		}
-		return best
+		return best, false
 	}
-	return "https://api.example.com"
+	return spec.PlaceholderBaseURL, true
 }
 
 func extractParams(body string) []spec.Param {
@@ -353,7 +363,150 @@ func GenerateFromDocsLLM(docsURL, apiName string) (*spec.APISpec, error) {
 
 	yamlContent := ExtractYAML(response)
 
-	return spec.ParseBytes([]byte(yamlContent))
+	parsed, err := spec.ParseBytes([]byte(yamlContent))
+	if err != nil {
+		return nil, err
+	}
+	documentedEndpoints := extractEndpoints(html)
+	if preserveDocumentedEndpointPaths(parsed, documentedEndpoints) {
+		parsed.EnrichPathParams()
+	}
+	if err := parsed.Validate(); err != nil {
+		return nil, fmt.Errorf("validation after preserving documented paths: %w", err)
+	}
+	// The prompt template (BuildDocSpecLLMPrompt) seeds base_url with the
+	// PlaceholderBaseURL; an LLM that can't find a real host often echoes
+	// it back. Set the flag here so callers refuse to ship — yaml:"-" on
+	// BaseURLIsPlaceholder means ParseBytes can't carry the flag itself.
+	if parsed.BaseURL == spec.PlaceholderBaseURL {
+		parsed.BaseURLIsPlaceholder = true
+	}
+	return parsed, nil
+}
+
+func preserveDocumentedEndpointPaths(apiSpec *spec.APISpec, documented []rawEndpoint) bool {
+	if apiSpec == nil || len(documented) == 0 {
+		return false
+	}
+
+	exact := map[string]map[string]bool{}
+	canonical := map[string]map[string][]string{}
+	for _, ep := range documented {
+		method := strings.ToUpper(strings.TrimSpace(ep.Method))
+		path := strings.TrimSpace(ep.Path)
+		if method == "" || path == "" {
+			continue
+		}
+		if exact[method] == nil {
+			exact[method] = map[string]bool{}
+		}
+		exact[method][path] = true
+
+		key := canonicalDocumentedPathKey(path)
+		if key == "" {
+			continue
+		}
+		if canonical[method] == nil {
+			canonical[method] = map[string][]string{}
+		}
+		if !slices.Contains(canonical[method][key], path) {
+			canonical[method][key] = append(canonical[method][key], path)
+		}
+	}
+
+	var changed bool
+	for resourceName, resource := range apiSpec.Resources {
+		if preserveResourceEndpointPaths(&resource, exact, canonical) {
+			changed = true
+		}
+		apiSpec.Resources[resourceName] = resource
+	}
+	return changed
+}
+
+func preserveResourceEndpointPaths(resource *spec.Resource, exact map[string]map[string]bool, canonical map[string]map[string][]string) bool {
+	var changed bool
+	for endpointName, endpoint := range resource.Endpoints {
+		method := strings.ToUpper(strings.TrimSpace(endpoint.Method))
+		path := strings.TrimSpace(endpoint.Path)
+		if exact[method][path] {
+			continue
+		}
+
+		key := canonicalDocumentedPathKey(path)
+		candidates := canonical[method][key]
+		if len(candidates) != 1 {
+			continue
+		}
+
+		endpoint.Path = candidates[0]
+		pruneStalePathParams(&endpoint)
+		resource.Endpoints[endpointName] = endpoint
+		changed = true
+	}
+	for subResourceName, subResource := range resource.SubResources {
+		if preserveResourceEndpointPaths(&subResource, exact, canonical) {
+			changed = true
+		}
+		resource.SubResources[subResourceName] = subResource
+	}
+	return changed
+}
+
+func pruneStalePathParams(endpoint *spec.Endpoint) {
+	names := map[string]bool{}
+	for _, param := range extractPathParams(endpoint.Path) {
+		names[param.Name] = true
+	}
+	if len(endpoint.Params) == 0 {
+		return
+	}
+
+	params := endpoint.Params[:0]
+	for _, param := range endpoint.Params {
+		if (param.Positional || param.PathParam) && !names[param.Name] {
+			continue
+		}
+		params = append(params, param)
+	}
+	endpoint.Params = params
+}
+
+func canonicalDocumentedPathKey(path string) string {
+	path = pathParamKeyRe.ReplaceAllString(strings.ToLower(path), "{param}")
+	tokens := strings.FieldsFunc(path, func(r rune) bool {
+		switch r {
+		case '/', '_', '-':
+			return true
+		default:
+			return false
+		}
+	})
+	if len(tokens) == 0 {
+		return ""
+	}
+	for i, token := range tokens {
+		if token != "{param}" {
+			tokens[i] = singularizePathToken(token)
+		}
+	}
+	return strings.Join(tokens, "")
+}
+
+func singularizePathToken(token string) string {
+	if len(token) <= 3 || !strings.HasSuffix(token, "s") {
+		return token
+	}
+	// Keep this conservative: -es/-ies plurals stay unmatched instead of
+	// guessing a singular form that could rewrite to the wrong documented path.
+	switch {
+	case strings.HasSuffix(token, "ss"),
+		strings.HasSuffix(token, "us"),
+		strings.HasSuffix(token, "is"):
+		return token
+	default:
+		return strings.TrimSuffix(token, "s")
+	}
 }
 
 // BuildDocSpecLLMPrompt constructs a prompt that asks the LLM to read API docs
@@ -366,7 +519,7 @@ The YAML must follow this exact format:
 name: %s
 description: "CLI for %s"
 version: "1.0.0"
-base_url: "https://api.example.com"
+base_url: "`+spec.PlaceholderBaseURL+`"
 auth:
   type: "bearer_token"   # one of: api_key, oauth2, bearer_token, none
   header: "Authorization"
@@ -414,6 +567,7 @@ Rules:
 - Extract ALL endpoints you can find in the docs
 - Detect the correct auth type from the documentation
 - Extract the real base URL from the docs
+- Preserve documented request paths verbatim. Do not singularize path segments or convert underscores into slashes, or slashes into underscores.
 - Group endpoints by resource (the first path segment after version prefix)
 - Every resource must have at least one endpoint
 - Every endpoint must have method and path

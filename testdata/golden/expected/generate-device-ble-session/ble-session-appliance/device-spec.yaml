@@ -1,0 +1,86 @@
+version: 1
+name: ble-session-appliance
+display_name: BLE Session Appliance
+protocol: ble
+identity:
+  advertised_names: ["SessionThing"]
+  address_policy: stable
+  gatt_fingerprint:
+    - service:fd00
+    - char:fd01:write
+    - char:fd02:notify
+  match_strength: strong
+ble:
+  services:
+    - uuid: "fd00"
+      name: Appliance Control
+      characteristics:
+        - uuid: "fd01"
+          name: Control
+          properties: [write]
+        - uuid: "fd02"
+          name: Status
+          properties: [notify]
+capabilities:
+  commands:
+    - name: start
+      characteristic_uuid: "fd01"
+      safety: physical-effect
+      validation_status: replay-validated
+      evidence_refs: [write-start, notify-running]
+      payload:
+        encoding: hex
+        bytes: "a001"
+  telemetry:
+    - name: run_state
+      source_characteristic_uuid: "fd02"
+      sample_cadence: notification
+      store: true
+session:
+  mode: optional
+  reasons: [low_latency_controls, notification_stream, telemetry_sampling, reconnect]
+  one_shot_fallback: true
+  reconnect: true
+  notification_stream: true
+transport:
+  write_mode: acknowledged
+  command_spacing_ms: 690
+  poll_cadence_ms: 500
+  teardown: keep-running
+  single_client: true
+  connect_ceremony:
+    - name: enable-notify
+      characteristic_uuid: "fd02"
+      wait_ms: 1000
+  settle_delays:
+    - name: mode_change
+      ms: 1500
+  evidence_refs: [proto-spacing]
+quirks:
+  - category: concurrency
+    summary: The vendor app holds the single BLE slot; disconnect it before laptop control.
+    handling: doctor surfaces this; suggest closing the app on a connect failure.
+    evidence_refs: [proto-single-client]
+workflows:
+  - name: start-appliance
+    goal: Bring the appliance up and hold it running over a sustained connection.
+    steps:
+      - Subscribe to the status characteristic (fd02).
+      - Run the connect ceremony (enable-notify), then let it settle.
+      - Send start (a001) on the control characteristic (fd01).
+      - Poll status at the transport poll cadence and hold the connection.
+    evidence_refs: [write-start, notify-running]
+    notes: A one-shot write does not sustain the appliance; the session holds the connection open.
+evidence:
+  - id: write-start
+    source: action-journal
+    summary: Operator pressed start and observed write a001.
+  - id: notify-running
+    source: imported-log
+    summary: Status characteristic notified running state after start.
+  - id: proto-spacing
+    source: community-library
+    summary: Reference controller enforces a 0.69s minimum between commands.
+  - id: proto-single-client
+    source: forum
+    summary: Users report the vendor app must be closed before a second client connects.

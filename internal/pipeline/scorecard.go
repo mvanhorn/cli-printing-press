@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,7 +15,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"gopkg.in/yaml.v3"
 )
@@ -31,14 +37,23 @@ var infraAllFiles = map[string]bool{
 	"tail.go": true, "analytics.go": true,
 }
 
+var actionableDoctorSuggestionRE = regexp.MustCompile(`(?i)\b(run|try)\b.{0,80}\bdoctor\b`)
+var clientAPICallRE = regexp.MustCompile(`c\.(Get|Post|Put|Delete|Patch)\s*\(`)
+var resourcesSQLSearchRE = regexp.MustCompile(`(?is)\bSELECT\b.*\bFROM\s+resources\b.*\bresource_type\b`)
+var resourcesFTSSQLSearchRE = regexp.MustCompile(`(?is)\bSELECT\b.*\bresources_fts\b.*\bresource_type\b`)
+var sqlQueryCallRE = regexp.MustCompile(`\.\s*Query(Row)?\s*\(`)
+var quotaDailySignalRE = regexp.MustCompile(`(?i)\b(daily|per[-_\s]+day)\b`)
+
 // Scorecard holds the auto-scored evaluation of a generated CLI against the Steinberger bar.
 type Scorecard struct {
-	APIName            string       `json:"api_name"`
-	Steinberger        SteinerScore `json:"steinberger"`
-	CompetitorScores   []CompScore  `json:"competitor_scores"`
-	OverallGrade       string       `json:"overall_grade"`
-	GapReport          []string     `json:"gap_report"`
-	UnscoredDimensions []string     `json:"unscored_dimensions,omitempty"`
+	APIName                     string                      `json:"api_name"`
+	Steinberger                 SteinerScore                `json:"steinberger"`
+	CompetitorScores            []CompScore                 `json:"competitor_scores"`
+	OverallGrade                string                      `json:"overall_grade"`
+	GapReport                   []string                    `json:"gap_report"`
+	UnscoredDimensions          []string                    `json:"unscored_dimensions,omitempty"`
+	UnverifiedDimensions        []string                    `json:"unverified_dimensions,omitempty"`
+	NovelFeatureDepthMismatches []NovelFeatureDepthMismatch `json:"novel_feature_depth_mismatches,omitempty"`
 
 	verifyCalibrationFloor   int
 	browserSessionUnverified bool
@@ -54,10 +69,10 @@ type SteinerScore struct {
 	Doctor                int `json:"doctor"`                   // 0-10
 	AgentNative           int `json:"agent_native"`             // 0-10
 	MCPQuality            int `json:"mcp_quality"`              // 0-10
-	MCPDescriptionQuality int `json:"mcp_description_quality"`  // 0-10; unscored when no tools-manifest.json. Penalizes thin per-tool descriptions (the same threshold as `printing-press tools-audit` thin-mcp-description).
+	MCPDescriptionQuality int `json:"mcp_description_quality"`  // 0-10; unscored when no tools-manifest.json. Penalizes thin per-tool descriptions (the same threshold as `cli-printing-press tools-audit` thin-mcp-description).
 	MCPTokenEff           int `json:"mcp_token_efficiency"`     // 0-10; unscored when no MCP surface
-	MCPRemoteTransport    int `json:"mcp_remote_transport"`     // 0-10; unscored when no MCP surface. Rewards remote-capable servers per Anthropic's 2026-04 MCP guidance.
-	MCPToolDesign         int `json:"mcp_tool_design"`          // 0-10; unscored when no MCP surface or endpoint count below toolDesignMinEndpoints. Rewards intent-grouped tools vs. endpoint mirrors.
+	MCPRemoteTransport    int `json:"mcp_remote_transport"`     // 0-10; unscored when no MCP surface or small endpoint mirrors. Rewards remote-capable MCP servers.
+	MCPToolDesign         int `json:"mcp_tool_design"`          // 0-10; unscored when no MCP surface or endpoint count below mcpEnrichmentMinEndpoints. Rewards intent-grouped tools vs. endpoint mirrors.
 	MCPSurfaceStrategy    int `json:"mcp_surface_strategy"`     // 0-10; unscored unless the endpoint surface exceeds surfaceStrategyLargeThreshold or code-orchestration is explicitly used. Penalizes endpoint-mirror at scale.
 	LocalCache            int `json:"local_cache"`              // 0-10
 	CacheFreshness        int `json:"cache_freshness"`          // 0-10; unscored when the CLI has no local store
@@ -80,7 +95,7 @@ type SteinerScore struct {
 }
 
 // Dimension identifiers used by recordOptionalScore, scorecardTierMax,
-// IsDimensionUnscored, and renderers (renderHumanScorecard,
+// IsDimensionUnscored, IsDimensionUnverified, and renderers (renderHumanScorecard,
 // writeScorecardMD). Any dimension that can land in
 // Scorecard.UnscoredDimensions has a constant here so a typo at any
 // call site fails the compile rather than silently returning false
@@ -95,7 +110,19 @@ const (
 	DimCacheFreshness        = "cache_freshness"
 	DimPathValidity          = "path_validity"
 	DimAuthProtocol          = "auth_protocol"
+	DimSyncCorrectness       = "sync_correctness"
+	DimTypeFidelity          = "type_fidelity"
+	DimDeadCode              = "dead_code"
 	DimLiveAPIVerification   = "live_api_verification"
+	// HTTP-API-shaped dimensions that do not apply to a BLE device CLI (no remote
+	// API, no sync->sql->search pipeline, no response cache). Marked N/A for
+	// device CLIs so they drop from the denominator instead of scoring a false 0.
+	DimLocalCache            = "local_cache"
+	DimVision                = "vision"
+	DimWorkflows             = "workflows"
+	DimInsight               = "insight"
+	DimAgentWorkflow         = "agent_workflow_readiness"
+	DimDataPipelineIntegrity = "data_pipeline_integrity"
 )
 
 // CompScore compares our score against a competitor on a single dimension.
@@ -109,6 +136,12 @@ type CompScore struct {
 // RunScorecard evaluates generated CLI files and produces a scorecard.
 // If verifyReport is non-nil, verify results calibrate the final score.
 func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyReport) (*Scorecard, error) {
+	canonicalDir, err := ResolveTargetDir(outputDir)
+	if err != nil {
+		return nil, err
+	}
+	outputDir = canonicalDir
+
 	// Strip the CLI suffix because outputDir from fullrun (paths.WorkingCLIDir)
 	// and library checkouts both end in -pp-cli; APIName is the API slug,
 	// not the binary name, and lands in user-visible output (Markdown
@@ -128,22 +161,35 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 }
 
 func scoreScorecardDimensions(sc *Scorecard, outputDir, specPath string, verifyReport *VerifyReport) error {
-	scoreInfrastructureDimensions(sc, outputDir)
-	if err := scoreSpecDimensions(sc, outputDir, specPath); err != nil {
+	isDevice := isDeviceBackedCLIDir(outputDir) || looksLikeDeviceSpecFile(specPath)
+	scoreInfrastructureDimensions(sc, outputDir, isDevice)
+	spec, err := scoreSpecDimensions(sc, outputDir, specPath)
+	if err != nil {
 		return err
 	}
-	scoreDomainDimensions(sc, outputDir, verifyReport)
+	scoreDomainDimensions(sc, outputDir, spec, verifyReport, isDevice)
 	return nil
 }
 
-func scoreInfrastructureDimensions(sc *Scorecard, outputDir string) {
-	sc.Steinberger.OutputModes = scoreOutputModes(outputDir)
+func scoreInfrastructureDimensions(sc *Scorecard, outputDir string, isDevice bool) {
+	reachableInternalFiles := scorecardReachableInternalFiles(outputDir)
+	reachableInternalContent := scorecardContentsFromFiles(reachableInternalFiles)
 	sc.Steinberger.Auth = scoreAuth(outputDir)
-	sc.Steinberger.ErrorHandling = scoreErrorHandling(outputDir)
-	sc.Steinberger.TerminalUX = scoreTerminalUX(outputDir)
-	sc.Steinberger.README = scoreREADME(outputDir)
-	sc.Steinberger.Doctor = scoreDoctor(outputDir)
-	sc.Steinberger.AgentNative = scoreAgentNative(outputDir)
+	if isDevice {
+		sc.Steinberger.OutputModes = scoreOutputModesDevice(outputDir)
+		sc.Steinberger.ErrorHandling = scoreErrorHandlingDevice(reachableInternalContent)
+		sc.Steinberger.TerminalUX = scoreTerminalUXDevice(outputDir)
+		sc.Steinberger.README = scoreREADMEDevice(outputDir)
+		sc.Steinberger.Doctor = scoreDoctorDevice(outputDir)
+		sc.Steinberger.AgentNative = scoreAgentNativeDevice(outputDir)
+	} else {
+		sc.Steinberger.OutputModes = scoreOutputModesWithSurface(outputDir, reachableInternalContent, reachableInternalFiles)
+		sc.Steinberger.ErrorHandling = scoreErrorHandlingFromSurface(reachableInternalContent)
+		sc.Steinberger.TerminalUX = scoreTerminalUXWithSurface(outputDir, reachableInternalContent)
+		sc.Steinberger.README = scoreREADME(outputDir)
+		sc.Steinberger.Doctor = scoreDoctor(outputDir)
+		sc.Steinberger.AgentNative = scoreAgentNative(outputDir)
+	}
 	sc.Steinberger.MCPQuality = scoreMCPQuality(outputDir)
 	mcpDescScore, mcpDescScored := scoreMCPDescriptionQuality(outputDir)
 	recordOptionalScore(sc, &sc.Steinberger.MCPDescriptionQuality, DimMCPDescriptionQuality, mcpDescScore, mcpDescScored)
@@ -155,14 +201,26 @@ func scoreInfrastructureDimensions(sc *Scorecard, outputDir string) {
 	recordOptionalScore(sc, &sc.Steinberger.MCPToolDesign, DimMCPToolDesign, toolDesignScore, toolDesignScored)
 	strategyScore, strategyScored := scoreMCPSurfaceStrategy(outputDir)
 	recordOptionalScore(sc, &sc.Steinberger.MCPSurfaceStrategy, DimMCPSurfaceStrategy, strategyScore, strategyScored)
-	sc.Steinberger.LocalCache = scoreLocalCache(outputDir)
 	cacheFreshnessScore, cacheFreshnessScored := scoreCacheFreshness(outputDir)
 	recordOptionalScore(sc, &sc.Steinberger.CacheFreshness, DimCacheFreshness, cacheFreshnessScore, cacheFreshnessScored)
-	sc.Steinberger.Breadth = scoreBreadth(outputDir)
-	sc.Steinberger.Vision = scoreVision(outputDir)
-	sc.Steinberger.Workflows = scoreWorkflows(outputDir)
-	sc.Steinberger.Insight = scoreInsight(outputDir)
-	sc.Steinberger.AgentWorkflow = scoreAgentWorkflow(outputDir)
+	if isDevice {
+		sc.Steinberger.Breadth = scoreBreadthDevice(outputDir)
+	} else {
+		sc.Steinberger.Breadth = scoreBreadth(outputDir)
+	}
+	if isDevice {
+		// A BLE device CLI wraps no remote API and has no HTTP-shaped local cache,
+		// sync-driven datastore, or multi-source aggregation surface. Mark these
+		// N/A so they drop from the denominator rather than scoring a false 0.
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions,
+			DimLocalCache, DimVision, DimWorkflows, DimInsight, DimAgentWorkflow)
+	} else {
+		sc.Steinberger.LocalCache = scoreLocalCache(outputDir)
+		sc.Steinberger.Vision = scoreVision(outputDir)
+		sc.Steinberger.Workflows = scoreWorkflows(outputDir)
+		sc.Steinberger.Insight = scoreInsight(outputDir)
+		sc.Steinberger.AgentWorkflow = scoreAgentWorkflow(outputDir)
+	}
 }
 
 func recordOptionalScore(sc *Scorecard, target *int, dimension string, score int, scored bool) {
@@ -173,22 +231,45 @@ func recordOptionalScore(sc *Scorecard, target *int, dimension string, score int
 	sc.UnscoredDimensions = append(sc.UnscoredDimensions, dimension)
 }
 
-func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) error {
-	if specPath == "" {
-		// No spec: mark spec-dependent dimensions as unscored.
+func markUnverifiedDimension(sc *Scorecard, dimensions ...string) {
+	for _, dimension := range dimensions {
+		if !slices.Contains(sc.UnscoredDimensions, dimension) {
+			sc.UnscoredDimensions = append(sc.UnscoredDimensions, dimension)
+		}
+		if !slices.Contains(sc.UnverifiedDimensions, dimension) {
+			sc.UnverifiedDimensions = append(sc.UnverifiedDimensions, dimension)
+		}
+	}
+}
+
+func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) (*openAPISpecInfo, error) {
+	if isDeviceBackedCLIDir(outputDir) || looksLikeDeviceSpecFile(specPath) {
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity, DimAuthProtocol)
-		return nil
+		return nil, nil
+	}
+	if isLocalDatastoreCLIDir(outputDir) {
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity, DimAuthProtocol)
+		return nil, nil
+	}
+	specPath = scorecardSpecPath(outputDir, specPath)
+	if specPath == "" {
+		// No spec: these dimensions are applicable to an HTTP CLI, but the
+		// scorer has no source evidence with which to establish them.
+		markUnverifiedDimension(sc, DimPathValidity, DimAuthProtocol)
+		return nil, nil
 	}
 
 	spec, err := loadOpenAPISpec(specPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	if spec.IsSynthetic() {
-		// Hand-built commands intentionally go beyond the spec; path-validity
-		// is not applicable. Mark unscored so the tier-2 denominator excludes
-		// it rather than awarding a 10-point cushion the CLI didn't earn.
+	if spec.IsSynthetic() || spec.IsGraphQL {
+		// Hand-built commands intentionally go beyond the spec, and GraphQL
+		// CLIs expose semantic command paths over one POST endpoint. In both
+		// cases path-validity is not applicable. Mark unscored so the tier-2
+		// denominator excludes it rather than awarding a 10-point cushion the
+		// CLI didn't earn.
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity)
 	} else {
 		pathValidity := evaluatePathValidity(outputDir, spec)
@@ -203,13 +284,39 @@ func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) error {
 	if !authProtocol.scored {
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimAuthProtocol)
 	}
-	return nil
+	return spec, nil
 }
 
-func scoreDomainDimensions(sc *Scorecard, outputDir string, verifyReport *VerifyReport) {
-	sc.Steinberger.DataPipelineIntegrity = scoreDataPipelineIntegrity(outputDir)
-	sc.Steinberger.SyncCorrectness = scoreSyncCorrectness(outputDir)
-	sc.Steinberger.TypeFidelity = scoreTypeFidelity(outputDir)
+func scorecardSpecPath(outputDir, specPath string) string {
+	embedded := filepath.Join(outputDir, "spec.json")
+	if fileExists(embedded) {
+		return embedded
+	}
+	return specPath
+}
+
+func scoreDomainDimensions(sc *Scorecard, outputDir string, spec *openAPISpecInfo, verifyReport *VerifyReport, isDevice bool) {
+	if isDevice {
+		// BLE device CLIs have no sync->sql->search data pipeline; the HTTP-shaped
+		// pipeline and sync checks don't apply. Mark N/A rather than scoring 0.
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimDataPipelineIntegrity, DimSyncCorrectness)
+	} else if !hasScorecardLocalStore(outputDir) {
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimDataPipelineIntegrity, DimSyncCorrectness)
+	} else {
+		sc.Steinberger.DataPipelineIntegrity = scoreDataPipelineIntegrity(outputDir)
+		if isLocalDatastoreCLIDir(outputDir) {
+			sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimSyncCorrectness)
+		} else {
+			sc.Steinberger.SyncCorrectness = scoreSyncCorrectness(outputDir)
+		}
+	}
+	if isDevice {
+		sc.Steinberger.TypeFidelity = scoreTypeFidelityDevice(outputDir)
+	} else if !hasScorecardLocalStore(outputDir) {
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimTypeFidelity)
+	} else {
+		sc.Steinberger.TypeFidelity = scoreTypeFidelity(outputDir, spec)
+	}
 	sc.Steinberger.DeadCode = scoreDeadCode(outputDir)
 
 	// LiveAPIVerification is scored only when verify ran in live mode (real
@@ -220,6 +327,8 @@ func scoreDomainDimensions(sc *Scorecard, outputDir string, verifyReport *Verify
 	// shipped CLI has never been exercised against the real API.
 	if liveScore, scored := scoreLiveAPIVerification(verifyReport); scored {
 		sc.Steinberger.LiveAPIVerification = liveScore
+	} else if !isDevice && !isLocalDatastoreCLIDir(outputDir) {
+		markUnverifiedDimension(sc, DimLiveAPIVerification)
 	} else {
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimLiveAPIVerification)
 	}
@@ -252,10 +361,12 @@ func finalizeScorecard(sc *Scorecard, outputDir, pipelineDir string, verifyRepor
 	applyScorecardCalibration(sc)
 
 	// Grade
-	sc.OverallGrade = computeGrade(sc.Steinberger.Percentage)
+	sc.OverallGrade = formatScorecardGrade(sc, computeGrade(sc.Steinberger.Percentage))
 
 	// Gap report for dimensions below 5
 	sc.GapReport = buildGapReport(sc.Steinberger, sc.UnscoredDimensions)
+	sc.NovelFeatureDepthMismatches = scorecardNovelFeatureDepthMismatches(outputDir, pipelineDir)
+	appendNovelFeatureDepthGaps(sc)
 
 	// MCP tool split from manifest (informational, does not affect score)
 	if manifest, err := loadCLIManifestForScorecard(outputDir); err == nil && manifest.MCPBinary != "" {
@@ -283,9 +394,44 @@ func (sc *Scorecard) IsDimensionUnscored(name string) bool {
 	return slices.Contains(sc.UnscoredDimensions, name)
 }
 
+func (sc *Scorecard) IsDimensionUnverified(name string) bool {
+	return slices.Contains(sc.UnverifiedDimensions, name)
+}
+
+var scorecardDimensionNames = []string{
+	"output_modes", "auth", "error_handling", "terminal_ux", "readme", "doctor",
+	"agent_native", "mcp_quality", DimMCPDescriptionQuality, DimMCPTokenEfficiency,
+	DimMCPRemoteTransport, DimMCPToolDesign, DimMCPSurfaceStrategy, DimLocalCache,
+	DimCacheFreshness, "breadth", DimVision, DimWorkflows, DimInsight, DimAgentWorkflow,
+	DimPathValidity, DimAuthProtocol, DimDataPipelineIntegrity, DimSyncCorrectness,
+	DimTypeFidelity, DimDeadCode, DimLiveAPIVerification,
+}
+
+func formatScorecardGrade(sc *Scorecard, grade string) string {
+	if sc == nil || len(sc.UnverifiedDimensions) == 0 {
+		return grade
+	}
+	applicable := 0
+	for _, dimension := range scorecardDimensionNames {
+		if sc.IsDimensionUnscored(dimension) && !sc.IsDimensionUnverified(dimension) {
+			continue
+		}
+		applicable++
+	}
+	return fmt.Sprintf("%s (%d of %d dimensions unverified: %s)",
+		grade,
+		len(sc.UnverifiedDimensions),
+		applicable,
+		strings.Join(sc.UnverifiedDimensions, ", "))
+}
+
 func scoreOutputModes(dir string) int {
+	reachableFiles := scorecardReachableInternalFiles(dir)
+	return scoreOutputModesWithSurface(dir, scorecardContentsFromFiles(reachableFiles), reachableFiles)
+}
+
+func scoreOutputModesWithSurface(dir string, surfaceContent []string, surfaceFiles []string) int {
 	rootContent := readFileContent(filepath.Join(dir, "internal", "cli", "root.go"))
-	helpersContent := readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
 	score := 0
 	// Presence tier (max 5)
 	if strings.Contains(rootContent, `"json"`) {
@@ -304,15 +450,15 @@ func scoreOutputModes(dir string) int {
 		score += 1
 	}
 	// Quality tier: field-aware select (real JSON parsing, not string ops)
-	if strings.Contains(helpersContent, "filterFields") && strings.Contains(helpersContent, "json.Unmarshal") {
+	if containsAllInAny(surfaceContent, "filterFields", "json.Unmarshal") {
 		score += 2
 	}
 	// Quality tier: pagination progress events
-	if strings.Contains(helpersContent, "page_fetch") || strings.Contains(helpersContent, "ndjson") || hasPageProgressStructure(filepath.Join(dir, "internal", "cli")) {
+	if containsAnyInAny(surfaceContent, "page_fetch", "ndjson") || hasPageProgressStructureInFiles(surfaceFiles) {
 		score += 1
 	}
 	// Quality tier: tabwriter for aligned output
-	if strings.Contains(helpersContent, "tabwriter") {
+	if containsAnyInAny(surfaceContent, "tabwriter") {
 		score += 2
 	}
 	if score > 10 {
@@ -383,34 +529,36 @@ func scoreAuth(dir string) int {
 }
 
 func scoreErrorHandling(dir string) int {
-	helpersContent := readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
-	clientContent := readFileContent(filepath.Join(dir, "internal", "client", "client.go"))
+	return scoreErrorHandlingFromSurface(scorecardReachableInternalContents(dir))
+}
+
+func scoreErrorHandlingFromSurface(surfaceContent []string) int {
 	score := 0
 	// Presence: error hints
-	if strings.Contains(helpersContent, "hint:") || strings.Contains(helpersContent, "Hint:") {
+	if containsAnyInAny(surfaceContent, "hint:", "Hint:") {
 		score += 1
 	}
 	// Presence: at least 3 distinct exit codes
-	exitCount := strings.Count(helpersContent, "code:")
+	exitCount := countAcross(surfaceContent, "code:")
 	if exitCount >= 3 {
 		score += 2
 	} else if exitCount >= 1 {
 		score += 1
 	}
 	// Quality: rate limit handling (429 + retry)
-	if strings.Contains(clientContent, "429") && (strings.Contains(clientContent, "Retry-After") || strings.Contains(clientContent, "backoff") || strings.Contains(clientContent, "retry")) {
+	if containsAllInAny(surfaceContent, "429", "Retry-After") || containsAllInAny(surfaceContent, "429", "backoff") || containsAllInAny(surfaceContent, "429", "retry") {
 		score += 2
 	}
 	// Quality: idempotency (409 = already exists = success)
-	if strings.Contains(helpersContent, "409") && strings.Contains(helpersContent, "already exists") {
+	if containsAllInAny(surfaceContent, "409", "already exists") {
 		score += 2
 	}
 	// Quality: 404 with specific exit code
-	if strings.Contains(helpersContent, "404") {
+	if containsAnyInAny(surfaceContent, "404") {
 		score += 1
 	}
 	// Excellence: actionable suggestions in errors (not just codes)
-	if (strings.Contains(helpersContent, "Run") || strings.Contains(helpersContent, "try")) && strings.Contains(helpersContent, "doctor") {
+	if containsActionableDoctorSuggestion(surfaceContent) {
 		score += 2
 	}
 	if score > 10 {
@@ -419,16 +567,25 @@ func scoreErrorHandling(dir string) int {
 	return score
 }
 
+func containsActionableDoctorSuggestion(surfaceContent []string) bool {
+	return slices.ContainsFunc(surfaceContent, actionableDoctorSuggestionRE.MatchString)
+}
+
 func scoreTerminalUX(dir string) int {
-	helpersContent := readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
+	return scoreTerminalUXWithSurface(dir, scorecardReachableInternalContents(dir))
+}
+
+func scoreTerminalUXWithSurface(dir string, surfaceContent []string) int {
 	rootContent := readFileContent(filepath.Join(dir, "internal", "cli", "root.go"))
 	score := 0
 	// Presence: NO_COLOR support
-	if strings.Contains(helpersContent, "NO_COLOR") {
+	if containsAnyInAny(surfaceContent, "NO_COLOR") {
 		score += 1
 	}
-	// Presence: TTY detection
-	if strings.Contains(helpersContent, "isatty") {
+	// Presence: TTY detection. Accept any canonical Go idiom:
+	// ModeCharDevice (the generator's helpers.go template), IsTerminal /
+	// x/term (golang.org/x/term), or isatty (github.com/mattn/go-isatty).
+	if containsAnyInAny(surfaceContent, "isatty", "IsTerminal", "x/term", "ModeCharDevice") {
 		score += 1
 	}
 	// Presence: no-color flag
@@ -436,7 +593,7 @@ func scoreTerminalUX(dir string) int {
 		score += 1
 	}
 	// Quality: tabwriter for aligned columns
-	if strings.Contains(helpersContent, "tabwriter") {
+	if containsAnyInAny(surfaceContent, "tabwriter") {
 		score += 2
 	}
 	// Quality: help text descriptions are meaningful (not just verb names)
@@ -522,6 +679,7 @@ func scoreDoctor(dir string) int {
 	if content == "" {
 		return 0
 	}
+	localDatastore := isLocalDatastoreCLIDir(dir)
 	score := 0
 	// Presence: doctor command exists
 	score += 2
@@ -530,7 +688,7 @@ func scoreDoctor(dir string) int {
 		score += 2
 	}
 	// Quality: checks API connectivity (makes an HTTP request)
-	if hasDoctorHTTPReachability(content) {
+	if hasDoctorHTTPReachability(content) || (localDatastore && hasLocalDatastoreReachability(content)) {
 		score += 2
 	}
 	// Quality: checks config file
@@ -557,6 +715,239 @@ func hasDoctorHTTPReachability(content string) bool {
 	clientCallRe := regexp.MustCompile(`\b[A-Za-z_]\w*(?:Client|HTTPClient)?\.(?:Get|Head|Post|Put|Patch|Delete|Do)\s*\(`)
 	inlineClientCallRe := regexp.MustCompile(`\(&http\.Client\s*\{[^}]*\}\)\.(?:Get|Head|Post|Put|Patch|Delete|Do)\s*\(`)
 	return clientCallRe.MatchString(content) || inlineClientCallRe.MatchString(content)
+}
+
+func hasLocalDatastoreReachability(content string) bool {
+	lower := strings.ToLower(content)
+	hasSQLiteSignal := strings.Contains(lower, "sqlite") || strings.Contains(lower, "database/sql")
+	if !hasSQLiteSignal {
+		return false
+	}
+	return strings.Contains(lower, "sql.open") ||
+		strings.Contains(lower, ".ping(") ||
+		strings.Contains(lower, ".query(") ||
+		strings.Contains(lower, ".queryrow(") ||
+		strings.Contains(lower, ".exec(")
+}
+
+// scoreDoctorDevice scores a BLE device CLI's doctor command. Device doctors
+// live in any cli file (not a dedicated doctor.go) and check BLE reachability,
+// build/verify state, and device metadata rather than HTTP auth/connectivity.
+// It reads the whole cli package directly because the doctor command may sit in
+// a file the HTTP-shaped reachability surface does not include.
+func scoreDoctorDevice(dir string) int {
+	joined := deviceCLIContent(dir)
+	if !strings.Contains(joined, `"doctor"`) {
+		return 0
+	}
+	lower := strings.ToLower(joined)
+	score := 2 // doctor command present
+	if hasDeviceReachability(joined) {
+		score += 2 // probes whether the device is reachable
+	}
+	if strings.Contains(lower, "verify") || strings.Contains(lower, "dogfood") || strings.Contains(lower, "compiled") {
+		score += 2 // reports build / verify-mode state
+	}
+	if strings.Contains(lower, "address") || strings.Contains(lower, "config") {
+		score += 2 // device address / config handling
+	}
+	if strings.Contains(lower, "capabilit") || strings.Contains(lower, "serviceuuid") || strings.Contains(lower, "service_uuid") {
+		score += 2 // surfaces device/service metadata
+	}
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
+func hasDeviceReachability(content string) bool {
+	lower := strings.ToLower(content)
+	return strings.Contains(lower, ".scan(") ||
+		strings.Contains(lower, "reachable") ||
+		strings.Contains(lower, "available()")
+}
+
+// scoreErrorHandlingDevice scores error handling for a BLE device CLI. Device
+// errors are protocol- and safety-shaped (out-of-range inputs, "not found",
+// "pass --live", confirmation gating) rather than HTTP status codes.
+func scoreErrorHandlingDevice(surfaceContent []string) int {
+	score := 0
+	if countAcross(surfaceContent, "code:") >= 1 || containsAnyInAny(surfaceContent, "pp:typed-exit-codes") {
+		score += 2 // typed / documented exit codes
+	}
+	if containsAnyInAny(surfaceContent, "out of range", "not found", "must be") {
+		score += 2 // specific, input-naming validation errors
+	}
+	if containsAnyInAny(surfaceContent, "%w") {
+		score += 2 // wraps underlying errors for propagation
+	}
+	if containsAnyInAny(surfaceContent, "pass --live", "wp_live", "ErrLiveUnavailable", "official", "--confirm") {
+		score += 3 // actionable device/safety remediation guidance
+	}
+	if containsActionableDoctorSuggestion(surfaceContent) {
+		score += 1
+	}
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
+// The scorers below grade the HTTP-shaped Steinberger dimensions on a BLE device
+// CLI's actual shape. The HTTP variants key off structure a device CLI does not
+// have -- separate per-command files, HTTP README sections, endpoint counts, API
+// response types -- and so score a healthy device CLI a false 0. A device CLI
+// keeps its commands in root.go, outputs --json/--agent + text, ships device
+// README sections, and exposes its agent surface via the MCP server.
+
+func deviceCLIContent(dir string) string {
+	return readAllGoFiles(filepath.Join(dir, "internal", "cli"))
+}
+
+func scoreOutputModesDevice(dir string) int {
+	cli := deviceCLIContent(dir)
+	score := 0
+	if strings.Contains(cli, `"json"`) {
+		score += 3 // structured machine output
+	}
+	if strings.Contains(cli, `"agent"`) {
+		score += 2 // agent-friendly JSON alias
+	}
+	if strings.Contains(cli, "writeJSON(") {
+		score += 3 // per-command JSON emission
+	}
+	if strings.Contains(cli, "OutOrStdout()") {
+		score += 2 // human-readable text output
+	}
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
+func scoreTerminalUXDevice(dir string) int {
+	cli := deviceCLIContent(dir)
+	score := 0
+	if strings.Contains(cli, "OutOrStdout()") {
+		score += 3 // human-readable text output
+	}
+	if strings.Contains(cli, `"json"`) {
+		score += 2 // structured alternative for non-TTY use
+	}
+	switch shortCount := strings.Count(cli, "Short:"); {
+	case shortCount >= 4:
+		score += 3 // most commands carry a meaningful one-line description
+	case shortCount >= 2:
+		score += 1
+	}
+	if strings.Contains(cli, "NO_COLOR") || strings.Contains(cli, "IsTerminal") {
+		score += 2 // optional color / TTY awareness
+	}
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
+func scoreREADMEDevice(dir string) int {
+	content := readFileContent(filepath.Join(dir, "README.md"))
+	score := 0
+	for _, section := range []string{"## Commands", "## Live control", "## MCP server"} {
+		if strings.Contains(content, section) {
+			score += 2
+		}
+	}
+	if strings.Contains(content, "-tags ble_live") {
+		score += 1 // documents the live build
+	}
+	if strings.Contains(content, "capabilities") {
+		score += 1 // points at the capability/safety surface
+	}
+	if strings.Contains(content, "device-native") || strings.Contains(content, "BLE device spec") {
+		score += 1
+	}
+	if len(content) >= 400 {
+		score += 1
+	}
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
+func scoreAgentNativeDevice(dir string) int {
+	cli := deviceCLIContent(dir)
+	score := 0
+	if strings.Contains(cli, `"json"`) {
+		score += 2
+	}
+	if strings.Contains(cli, `"agent"`) {
+		score += 2
+	}
+	if strings.Contains(cli, "dry-run") {
+		score += 1
+	}
+	// Agent-native parity: an MCP server mirrors the command surface as tools.
+	if _, err := os.Stat(filepath.Join(dir, "internal", "mcp")); err == nil {
+		score += 3
+	}
+	if strings.Contains(cli, `"capabilities"`) {
+		score += 1 // machine-readable capability + safety discovery
+	}
+	if !strings.Contains(cli, "bufio.NewScanner(os.Stdin)") && !strings.Contains(cli, "ReadString(") {
+		score += 1 // non-interactive
+	}
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
+func scoreBreadthDevice(dir string) int {
+	// Count registered commands across the cli package (generated built-ins,
+	// generated device commands, and hand-authored novel commands) plus telemetry
+	// fields -- breadth scales with how much of the device the CLI exposes.
+	commands := strings.Count(deviceCLIContent(dir), "AddCommand(")
+	telemetry := strings.Count(readFileContent(filepath.Join(dir, "internal", "device", "spec.go")), "SourceCharacteristicUUID:")
+	switch total := commands + telemetry; {
+	case total >= 14:
+		return 10
+	case total >= 10:
+		return 8
+	case total >= 7:
+		return 6
+	case total >= 5:
+		return 4
+	case total >= 3:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func scoreTypeFidelityDevice(dir string) int {
+	spec := readFileContent(filepath.Join(dir, "internal", "device", "spec.go"))
+	transport := readFileContent(filepath.Join(dir, "internal", "device", "transport.go"))
+	score := 0
+	// Device tier 2 removes HTTP-only dimensions, leaving Type Fidelity and
+	// Dead Code as the ten remaining points. Keep this scorer on the same
+	// five-point scale as the generic scorer; Dead Code supplies the other five.
+	if strings.Contains(spec, "type CommandDefinition struct") {
+		score++ // typed command model
+	}
+	if strings.Contains(spec, "type StatusField struct") {
+		score++ // typed telemetry model
+	}
+	if strings.Contains(spec, "type CapabilitySummary struct") {
+		score++ // typed capability summary
+	}
+	if strings.Contains(transport, "type CommandResult struct") {
+		score++ // typed command result
+	}
+	if strings.Contains(spec, `Parameters: []string{"`) {
+		score++ // a command declares typed parameters
+	}
+	return score
 }
 
 func scoreAgentNative(dir string) int {
@@ -643,18 +1034,24 @@ func scoreAgentNative(dir string) int {
 func scoreMCPQuality(dir string) int {
 	mcpContent := readFileContent(filepath.Join(dir, "internal", "mcp", "tools.go"))
 	if mcpContent == "" {
-		return 0 // No MCP server generated
+		if !isLocalDatastoreCLIDir(dir) {
+			return 0 // No MCP server generated
+		}
+		mcpContent = readAllGoFiles(filepath.Join(dir, "internal", "mcp"))
+		if mcpContent == "" {
+			return 0
+		}
 	}
 
 	score := 0
 
 	// Presence: MCP tools.go exists and has RegisterTools
-	if strings.Contains(mcpContent, "RegisterTools") {
+	if strings.Contains(mcpContent, "RegisterTools") || strings.Contains(mcpContent, "NewServer") {
 		score += 2
 	}
 
 	// Context tool: has rich context/about tool with domain knowledge
-	if strings.Contains(mcpContent, `"context"`) || strings.Contains(mcpContent, "handleContext") {
+	if strings.Contains(mcpContent, `"context"`) || strings.Contains(mcpContent, "handleContext") || strings.Contains(mcpContent, "agent_context") {
 		score += 2
 	}
 
@@ -664,11 +1061,12 @@ func scoreMCPQuality(dir string) int {
 	if strings.Contains(mcpContent, `"sql"`) && strings.Contains(mcpContent, "handleSQL") {
 		highlevelCount++
 	}
-	if strings.Contains(mcpContent, `"search"`) && strings.Contains(mcpContent, "handleSearch") {
+	hasRegisteredSearch := hasRuntimeMirror && hasRegisteredCommandFileWithPrefix(filepath.Join(dir, "internal", "cli"), "search")
+	if strings.Contains(mcpContent, `"search"`) && (strings.Contains(mcpContent, "handleSearch") || hasRegisteredSearch) {
 		highlevelCount++
 	}
 	if (strings.Contains(mcpContent, `"sync"`) && strings.Contains(mcpContent, "handleSync")) ||
-		(hasRuntimeMirror && fileExists(filepath.Join(dir, "internal", "cli", "sync.go"))) {
+		(hasRuntimeMirror && hasRegisteredCommandFileWithPrefix(filepath.Join(dir, "internal", "cli"), "sync")) {
 		highlevelCount++
 	}
 	if highlevelCount >= 2 {
@@ -703,7 +1101,7 @@ func scoreMCPQuality(dir string) int {
 }
 
 // MCPDescMinLen and MCPDescMinWords are the agent-grade-description
-// thresholds used by both `printing-press tools-audit` and the
+// thresholds used by both `cli-printing-press tools-audit` and the
 // scorecard's mcp_description_quality dimension. Defined here so a
 // single edit keeps both surfaces in lockstep — internal/cli imports
 // these for its thin-mcp-description check.
@@ -726,11 +1124,14 @@ func IsThinMCPDescription(desc string) bool {
 
 // ScoreMCPDescriptionQualityForManifest scores an already-parsed
 // manifest. Callers that read tools-manifest.json for other reasons
-// in the same code path (e.g., printing-press tools-audit, which
+// in the same code path (e.g., cli-printing-press tools-audit, which
 // emits findings from the manifest) call this variant to avoid
 // re-parsing.
 func ScoreMCPDescriptionQualityForManifest(m *ToolsManifest) (score int, scored bool) {
 	if m == nil || len(m.Tools) == 0 {
+		return 0, false
+	}
+	if !m.EndpointMirrorsVisible() {
 		return 0, false
 	}
 	thin := 0
@@ -761,7 +1162,7 @@ func ScoreMCPDescriptionQualityForManifest(m *ToolsManifest) (score int, scored 
 // summaries. Reads tools-manifest.json (the source of truth for typed
 // endpoint tools' descriptions at runtime) and counts entries whose
 // description trips IsThinMCPDescription — the same predicate
-// `printing-press tools-audit` uses for thin-mcp-description findings.
+// `cli-printing-press tools-audit` uses for thin-mcp-description findings.
 //
 // Unscored when no manifest exists (legacy CLIs predating the
 // manifest schema) or when the manifest has no tools.
@@ -780,6 +1181,9 @@ func scoreMCPDescriptionQuality(dir string) (score int, scored bool) {
 }
 
 func scoreLocalCache(dir string) int {
+	if isLocalDatastoreCLIDir(dir) && hasLocalDatastoreCodeSignal(dir) {
+		return 10
+	}
 	clientContent := readFileContent(filepath.Join(dir, "internal", "client", "client.go"))
 	score := 0
 	// Presence: GET response caching
@@ -855,12 +1259,29 @@ func scoreCacheFreshness(dir string) (int, bool) {
 	freshnessContent := readFileContent(freshnessPath)
 	if strings.Contains(autoRefreshContent, "autoRefreshIfStale") && strings.Contains(freshnessContent, "EnsureFresh") {
 		score += 5
+	} else if hasQuotaAwareFreshnessDesign(dir, storeContent) {
+		// Quota-aware CLIs deliberately omit auto-refresh, so rescale the
+		// remaining 5-point subtotal onto the full 10-point dimension.
+		score *= 2
 	}
 
 	if score > 10 {
 		score = 10
 	}
 	return score, true
+}
+
+func hasQuotaAwareFreshnessDesign(dir, storeContent string) bool {
+	if strings.Contains(storeContent, "lookup_log") {
+		return true
+	}
+	quotaContent := readFileContent(filepath.Join(dir, "internal", "cliutil", "quota.go"))
+	if quotaContent == "" || !strings.Contains(strings.ToLower(quotaContent), "quota") {
+		return false
+	}
+	return strings.Contains(quotaContent, "Daily") ||
+		strings.Contains(quotaContent, "PerDay") ||
+		quotaDailySignalRE.MatchString(quotaContent)
 }
 
 // scoreLiveAPIVerification returns a 0-10 score reflecting whether verify
@@ -903,8 +1324,38 @@ func ApplyLiveCheckToScorecard(sc *Scorecard, live *LiveCheckResult) {
 	sc.Steinberger.Insight = *insightCap
 	recomputeScorecardTotals(sc)
 	applyScorecardCalibration(sc)
-	sc.OverallGrade = computeGrade(sc.Steinberger.Percentage)
+	sc.OverallGrade = formatScorecardGrade(sc, computeGrade(sc.Steinberger.Percentage))
 	sc.GapReport = buildGapReport(sc.Steinberger, sc.UnscoredDimensions)
+	appendNovelFeatureDepthGaps(sc)
+}
+
+func scorecardNovelFeatureDepthMismatches(outputDir, pipelineDir string) []NovelFeatureDepthMismatch {
+	if pipelineDir == "" {
+		return nil
+	}
+	research, err := LoadResearch(pipelineDir)
+	if err != nil || len(research.NovelFeatures) == 0 {
+		return nil
+	}
+	paths, leaves := collectRegisteredCommands(outputDir)
+	var mismatches []NovelFeatureDepthMismatch
+	for _, nf := range research.NovelFeatures {
+		if !matchNovelFeature(nf, paths, leaves) {
+			continue
+		}
+		if mismatch := novelFeatureDepthMismatch(nf, paths); mismatch != nil {
+			mismatches = append(mismatches, *mismatch)
+		}
+	}
+	return mismatches
+}
+
+func appendNovelFeatureDepthGaps(sc *Scorecard) {
+	for _, mismatch := range sc.NovelFeatureDepthMismatches {
+		sc.GapReport = append(sc.GapReport, fmt.Sprintf(
+			"novel feature command-depth mismatch: %s advertised as %s but registered as %s",
+			mismatch.Command, mismatch.Advertised, mismatch.Actual))
+	}
 }
 
 func applyScorecardCalibration(sc *Scorecard) {
@@ -951,7 +1402,7 @@ func recomputeScorecardTotals(sc *Scorecard) {
 		sc.Steinberger.AgentWorkflow,
 	)
 
-	tier1Max := scorecardTierMax(sc, 200, DimMCPDescriptionQuality, DimMCPTokenEfficiency, DimCacheFreshness, DimMCPRemoteTransport, DimMCPToolDesign, DimMCPSurfaceStrategy)
+	tier1Max := scorecardTierMax(sc, 200, DimMCPDescriptionQuality, DimMCPTokenEfficiency, DimCacheFreshness, DimMCPRemoteTransport, DimMCPToolDesign, DimMCPSurfaceStrategy, DimLocalCache, DimVision, DimWorkflows, DimInsight, DimAgentWorkflow)
 	tier1Normalized := 0
 	if tier1Max > 0 {
 		tier1Normalized = (tier1Raw * 50) / tier1Max
@@ -967,7 +1418,7 @@ func recomputeScorecardTotals(sc *Scorecard) {
 		sc.Steinberger.LiveAPIVerification,
 	)
 
-	tier2Max := scorecardTierMax(sc, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol)
+	tier2Max := scorecardTierMax(sc, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness, DimDataPipelineIntegrity, DimTypeFidelity)
 	tier2Normalized := 0
 	if tier2Max > 0 {
 		tier2Normalized = (tier2Raw * 50) / tier2Max
@@ -987,10 +1438,21 @@ func scorecardTierMax(sc *Scorecard, base int, optionalDimensions ...string) int
 	max := base
 	for _, name := range optionalDimensions {
 		if sc.IsDimensionUnscored(name) {
-			max -= 10
+			max -= scorecardDimensionMax(name)
 		}
 	}
 	return max
+}
+
+func scorecardDimensionMax(name string) int {
+	if name == DimTypeFidelity || name == DimDeadCode {
+		return 5
+	}
+	return 10
+}
+
+func hasScorecardLocalStore(dir string) bool {
+	return fileExists(filepath.Join(dir, "internal", "store", "store.go"))
 }
 
 func scoreBreadth(dir string) int {
@@ -1050,10 +1512,14 @@ func scoreBreadth(dir string) int {
 
 func scoreVision(dir string) int {
 	cliDir := filepath.Join(dir, "internal", "cli")
+	registeredFiles := registeredCommandFiles(cliDir)
+	commandContent := registeredCommandContent(cliDir, registeredFiles)
 
 	// Tier 1: Feature Presence (0-5 points)
 	tier1 := 0.0
 	if fileExists(filepath.Join(cliDir, "export.go")) {
+		tier1 += 1.0
+	} else if hasCommandContentMatching(commandContent, isVisionExportShape) {
 		tier1 += 1.0
 	}
 	if fileExists(filepath.Join(dir, "internal", "store", "store.go")) {
@@ -1062,7 +1528,7 @@ func scoreVision(dir string) int {
 	if fileExists(filepath.Join(cliDir, "search.go")) {
 		tier1 += 1.0
 	}
-	if fileExists(filepath.Join(cliDir, "sync.go")) {
+	if hasRegisteredCommandFileWithPrefix(cliDir, "sync") {
 		tier1 += 0.5
 	}
 	if fileExists(filepath.Join(cliDir, "tail.go")) {
@@ -1071,24 +1537,45 @@ func scoreVision(dir string) int {
 	if fileExists(filepath.Join(cliDir, "import.go")) {
 		tier1 += 0.5
 	}
+	// Learn-loop credit is static-behavioral, never presence-only. The old
+	// internal/learn/doc.go sentinel is retired: with the learn loop
+	// default-on, every printed CLI ships that file, so its presence proves
+	// nothing. Instead the half point splits into two quarter-point signals:
+	//   +0.25 when the learn command surface (teach + recall + learnings) is
+	//         actually registered on the root command, read via the same
+	//         reachable-command parse the rest of the scorer uses;
+	//   +0.25 when the emitted seed artifact carries non-empty entity lookup
+	//         seeds (the per-CLI lookups.SeedConfig map the generator stamps).
+	// Both are pure static content scans. Execution proof (verify matrix,
+	// learn stats runs) belongs to verify and the acceptance print — the
+	// scorecard never executes binaries.
+	if learnCommandSurfaceRegistered(cliDir) {
+		tier1 += 0.25
+	}
+	if learnEntitySeedsNonEmpty(dir) {
+		tier1 += 0.25
+	}
 	// Workflow or compound command files
-	entries, err := os.ReadDir(cliDir)
-	if err == nil {
-		for _, e := range entries {
-			name := e.Name()
-			if strings.Contains(name, "_workflow") || strings.Contains(name, "_compound") {
-				if strings.HasSuffix(name, ".go") {
-					tier1 += 0.5
-					break
-				}
+	hasWorkflowShape := false
+	for name := range commandContent {
+		if strings.Contains(name, "_workflow") || strings.Contains(name, "_compound") {
+			if strings.HasSuffix(name, ".go") {
+				hasWorkflowShape = true
+				break
 			}
 		}
+	}
+	if hasWorkflowShape || hasCommandContentMatching(commandContent, isVisionWorkflowShape) {
+		tier1 += 0.5
 	}
 	if tier1 > 5 {
 		tier1 = 5
 	}
 
 	// Tier 2: Feature Intelligence (0-5 points)
+	// - schema+wiring combined cap: 3.5
+	// - FTS5: 1.0
+	// - search uses store: 0.5
 	tier2 := 0.0
 
 	// Schema depth (0-1.5): check if store.go has domain-specific tables
@@ -1122,8 +1609,9 @@ func scoreVision(dir string) int {
 			}
 		}
 		tier2 += float64(wired) * 0.25
-		if tier2 > 3.0 { // cap wiring contribution
-			tier2 = 3.0
+		tier2 += float64(registeredVisionCapabilityFiles(commandContent)) * 0.75
+		if tier2 > 3.5 { // cap schema+wiring contribution so tier2 can reach its documented 5.0 max
+			tier2 = 3.5
 		}
 	}
 
@@ -1152,10 +1640,171 @@ func scoreVision(dir string) int {
 	return score
 }
 
-// cobraUseLeafRe extracts the first whitespace-delimited token from a Cobra
-// `Use: "..."` literal — the leaf command name (e.g., `"trajectory <slug>"`
-// → `trajectory`).
-var cobraUseLeafRe = regexp.MustCompile(`Use:\s*"([^"\s]+)`)
+func registeredCommandContent(cliDir string, registeredFiles map[string]bool) map[string]string {
+	entries, err := os.ReadDir(cliDir)
+	if err != nil {
+		return nil
+	}
+	contentByName := map[string]string{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || infraCoreFiles[name] {
+			continue
+		}
+		if len(registeredFiles) > 0 && !registeredFiles[name] {
+			continue
+		}
+		contentByName[name] = readFileContent(filepath.Join(cliDir, name))
+	}
+	return contentByName
+}
+
+func hasCommandContentMatching(commandContent map[string]string, match func(string) bool) bool {
+	for _, content := range commandContent {
+		if match(content) {
+			return true
+		}
+	}
+	return false
+}
+
+// learnCommandSurfaceRegistered reports whether the learn loop's command
+// surface is reachable from the emitted root command: teach, recall, and
+// learnings must all appear as registered constructor calls in root.go
+// (rootCmd.AddCommand(newTeachCmd(...)) and friends). This reuses the same
+// AST-based registered-call parse the reachable-command scorer uses, so an
+// orphan teach.go that nothing registers earns no credit.
+func learnCommandSurfaceRegistered(cliDir string) bool {
+	rootContent := readFileContent(filepath.Join(cliDir, "root.go"))
+	if rootContent == "" {
+		return false
+	}
+	ctors := addCommandConstructorCalls(rootContent)
+	return ctors["newTeachCmd"] && ctors["newRecallCmd"] && ctors["newLearningsCmd"]
+}
+
+// learnSeedMapRe matches the emitted shape that can actually carry seed rows.
+var learnSeedMapRe = regexp.MustCompile(`map\s*\[\s*string\s*\]\s*\[\s*\](?:lookups\.)?SeedConfig`)
+
+// learnSeedDataRe matches a stamped entity-lookup seed row: a Canonical
+// field assigned a string literal ({Canonical: "SEA", ...}). The generic
+// lookups library only ever writes variable references (Canonical:
+// s.Canonical), so this shape is unique to per-CLI seed data.
+var learnSeedDataRe = regexp.MustCompile(`Canonical:\s*"`)
+
+// learnEntitySeedsNonEmpty reports whether the emitted tree carries
+// non-empty entity lookup seeds. The generator stamps the per-CLI seed map
+// into internal/cli/learn_init.go as a lookups.SeedConfig literal with at
+// least one Canonical entry; an empty learn block emits no such literal.
+// A hand-authored seed table under internal/learn/lookups counts the same
+// way. Pure static content scan — no binary ever runs.
+func learnEntitySeedsNonEmpty(dir string) bool {
+	for _, p := range []string{
+		filepath.Join(dir, "internal", "cli", "learn_init.go"),
+		filepath.Join(dir, "internal", "learn", "lookups", "seeds.go"),
+	} {
+		content := readFileContent(p)
+		if content == "" {
+			continue
+		}
+		if learnSeedMapRe.MatchString(content) && learnSeedDataRe.MatchString(content) {
+			return true
+		}
+	}
+	return false
+}
+
+func registeredVisionCapabilityFiles(commandContent map[string]string) int {
+	count := 0
+	for _, content := range commandContent {
+		if isVisionExportShape(content) || isVisionWorkflowShape(content) {
+			count++
+		}
+	}
+	return count
+}
+
+func isVisionExportShape(content string) bool {
+	hasDataSource := hasStoreSignal(content) || hasGenericResourcesSQLSearchSignal(content)
+	if !hasDataSource {
+		return false
+	}
+	return strings.Contains(content, "json.NewEncoder") ||
+		strings.Contains(content, "csv.NewWriter")
+}
+
+func isVisionWorkflowShape(content string) bool {
+	return countClientAPICalls(content) >= 2
+}
+
+func countClientAPICalls(content string) int {
+	return len(clientAPICallRE.FindAllString(content, -1))
+}
+
+func clientHelperCallCounts(fileContent map[string]string) map[string]int {
+	helpers := map[string]int{}
+	for fileName, content := range fileContent {
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, "", content, 0)
+		if err != nil {
+			continue
+		}
+		imports := clientImportAliases(file)
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name == nil || fn.Recv != nil || fn.Body == nil {
+				continue
+			}
+			start := fset.Position(fn.Body.Pos()).Offset
+			end := fset.Position(fn.Body.End()).Offset
+			if start < 0 || end > len(content) || start >= end {
+				continue
+			}
+			body := content[start:end]
+			calls := countClientAPICalls(body) + countImportedClientCalls(fn.Body, imports, false)
+			if calls > 0 {
+				helpers[helperKey(fileName, fn.Name.Name)] = calls
+			}
+		}
+	}
+	return helpers
+}
+
+func helperKey(fileName, funcName string) string {
+	return fileName + ":" + funcName
+}
+
+func splitHelperKey(key string) (string, string) {
+	i := strings.LastIndexByte(key, ':')
+	if i < 0 {
+		return "", key
+	}
+	return key[:i], key[i+1:]
+}
+
+func countImportedClientCalls(body *ast.BlockStmt, imports map[string]clientImportKind, allowAnySiblingSelector bool) int {
+	if body == nil {
+		return 0
+	}
+	count := 0
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if isImportedClientCall(call.Fun, imports, allowAnySiblingSelector) {
+			count++
+		}
+		return true
+	})
+	return count
+}
+
+// cobraUseLeafRe extracts the leaf command name from a Cobra Use: literal.
+// Accepts both Go string forms — double-quoted and backtick raw-string —
+// because authors reach for backticks when the value contains a literal
+// double-quote.
+var cobraUseLeafRe = regexp.MustCompile("Use:\\s*[\"`]([^\"`\\s]+)")
 
 // manifestNovelFeatureLeaves returns the leaves of every novel_features[].command
 // in dir/.printing-press.json. Returns nil when the manifest is missing,
@@ -1183,10 +1832,10 @@ func manifestNovelFeatureLeaves(dir string) map[string]bool {
 }
 
 // registeredCommandFiles returns the set of cli/*.go filenames whose command
-// constructor is referenced by root.go. Files without a registered constructor
-// should not inflate workflow/insight scores even if they match prefix or
-// behavioral heuristics — they're orphans, dead code, or half-built commands
-// that the user cannot actually invoke.
+// constructor is wired into the Cobra tree through AddCommand calls. Files
+// without a registered constructor should not inflate workflow/insight scores
+// even if they match prefix or behavioral heuristics — they're orphans, dead
+// code, or half-built commands that the user cannot actually invoke.
 //
 // Returns an empty map if root.go is missing or parsing yields no matches so
 // callers can fall open to the prior heuristic behavior (older or partial CLI
@@ -1197,50 +1846,107 @@ func registeredCommandFiles(cliDir string) map[string]bool {
 		return map[string]bool{}
 	}
 
-	// Match every `newXxxCmd(` invocation — but not definitions. root.go may
-	// contain helper function declarations (e.g. `func newRootCmd()`) that we
-	// must not count as registrations. Strip `func Name(` declaration heads
-	// before scanning so only call-sites contribute to the ctor set.
-	funcDeclRe := regexp.MustCompile(`(?m)^func\s+\w+\s*\(`)
-	scanContent := funcDeclRe.ReplaceAllString(rootContent, "")
-
-	ctorRe := regexp.MustCompile(`\bnew([A-Z][A-Za-z0-9_]*)Cmd\s*\(`)
-	matches := ctorRe.FindAllStringSubmatch(scanContent, -1)
-	if len(matches) == 0 {
+	reachableCtors := addCommandConstructorCalls(rootContent)
+	if len(reachableCtors) == 0 {
 		return map[string]bool{}
 	}
-	ctors := make(map[string]bool, len(matches))
-	for _, m := range matches {
-		ctors["new"+m[1]+"Cmd"] = true
-	}
 
-	// Walk cli/*.go and map each file to the constructor it defines. Use a
-	// regexp for the declaration site to avoid depending on go/parser for one
-	// lookup (keeps the scorer dependency-free, which matters because it runs
-	// against third-party generated trees).
+	// Walk cli/*.go and map each file to the reachable constructor it defines.
+	// Re-scan newly reachable command files for child AddCommand calls so
+	// subcommands defined outside root.go still count as user-reachable.
 	defRe := regexp.MustCompile(`^func\s+(new[A-Z][A-Za-z0-9_]*Cmd)\s*\(`)
 	entries, err := os.ReadDir(cliDir)
 	if err != nil {
 		return map[string]bool{}
 	}
-	result := make(map[string]bool)
+	fileContent := map[string]string{}
+	fileDefs := map[string][]string{}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
 		}
 		content := readFileContent(filepath.Join(cliDir, e.Name()))
+		fileContent[e.Name()] = content
 		for line := range strings.SplitSeq(content, "\n") {
 			sm := defRe.FindStringSubmatch(line)
-			if sm == nil {
-				continue
-			}
-			if ctors[sm[1]] {
-				result[e.Name()] = true
-				break
+			if sm != nil {
+				fileDefs[e.Name()] = append(fileDefs[e.Name()], sm[1])
 			}
 		}
 	}
+
+	result := make(map[string]bool)
+	for {
+		changed := false
+		for name, defs := range fileDefs {
+			reachable := false
+			for _, def := range defs {
+				if reachableCtors[def] {
+					reachable = true
+					break
+				}
+			}
+			if !reachable || result[name] {
+				continue
+			}
+
+			result[name] = true
+			changed = true
+			for ctor := range addCommandConstructorCalls(fileContent[name]) {
+				reachableCtors[ctor] = true
+			}
+		}
+		if !changed {
+			break
+		}
+	}
 	return result
+}
+
+func addCommandConstructorCalls(content string) map[string]bool {
+	file, err := parser.ParseFile(token.NewFileSet(), "", content, 0)
+	if err != nil {
+		return map[string]bool{}
+	}
+
+	ctors := map[string]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel == nil || sel.Sel.Name != "AddCommand" {
+			return true
+		}
+		for _, arg := range call.Args {
+			if ctor := commandConstructorName(arg); ctor != "" {
+				ctors[ctor] = true
+			}
+		}
+		return true
+	})
+	return ctors
+}
+
+func commandConstructorName(expr ast.Expr) string {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return ""
+	}
+	ident, ok := call.Fun.(*ast.Ident)
+	if !ok || !isCommandConstructorName(ident.Name) {
+		return ""
+	}
+	return ident.Name
+}
+
+func isCommandConstructorName(name string) bool {
+	if !strings.HasPrefix(name, "new") || !strings.HasSuffix(name, "Cmd") {
+		return false
+	}
+	stem := strings.TrimSuffix(strings.TrimPrefix(name, "new"), "Cmd")
+	return stem != "" && stem[0] >= 'A' && stem[0] <= 'Z'
 }
 
 func scoreWorkflows(dir string) int {
@@ -1256,6 +1962,15 @@ func scoreWorkflows(dir string) int {
 	// also prevents dead-code removal from dropping the score: a file whose
 	// constructor isn't registered isn't counted in the first place.
 	registeredFiles := registeredCommandFiles(cliDir)
+	fileContent := map[string]string{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		fileContent[e.Name()] = readFileContent(filepath.Join(cliDir, e.Name()))
+	}
+	storeHelpers := storeHelperNames(fileContent)
+	clientHelpers := clientHelperCallCounts(fileContent)
 
 	// Some prefixes overlap with insightPrefixes intentionally — per Steinberger,
 	// analytics/insights ARE compound commands (the visionary research plan lists
@@ -1298,18 +2013,19 @@ func scoreWorkflows(dir string) int {
 			continue
 		}
 
-		content := readFileContent(filepath.Join(cliDir, e.Name()))
+		content := fileContent[e.Name()]
 
-		// A command that uses the store is a workflow command (it uses the data layer)
-		if strings.Contains(content, "/store") || strings.Contains(content, "store.Open") || strings.Contains(content, "store.New") {
+		// A command that uses the local data layer is a workflow command.
+		if hasStoreSignal(content) || callsStoreHelper(content, storeHelpers) {
 			compoundCommands++
 			continue
 		}
 
 		// Count files that make 2+ API calls (total occurrences, not unique methods).
 		// A command calling c.Get 3 times is a compound workflow even if it never uses POST.
-		apiCallRe := regexp.MustCompile(`c\.(Get|Post|Put|Delete|Patch)\s*\(`)
-		apiCalls := len(apiCallRe.FindAllString(content, -1))
+		apiCalls := countClientAPICalls(content) + countWeightedHelperCallsFiltered(content, clientHelpers, func(fileName, name string) bool {
+			return fileName != e.Name()
+		})
 		if strings.Contains(content, "store.") {
 			apiCalls++
 		}
@@ -1385,14 +2101,21 @@ func scoreInsight(dir string) int {
 
 		// Signal 2: file declares a Cobra Use: matching an agent-declared novel feature.
 		if len(novelLeaves) > 0 {
-			if m := cobraUseLeafRe.FindStringSubmatch(content); m != nil && novelLeaves[strings.ToLower(m[1])] {
+			matchedNovelLeaf := false
+			for _, m := range cobraUseLeafRe.FindAllStringSubmatch(content, -1) {
+				if novelLeaves[strings.ToLower(m[1])] {
+					matchedNovelLeaf = true
+					break
+				}
+			}
+			if matchedNovelLeaf {
 				found++
 				continue
 			}
 		}
 
 		// Signal 3: store + SQL aggregation
-		usesStore := strings.Contains(content, "/store") || strings.Contains(content, "store.Open") || strings.Contains(content, "store.New")
+		usesStore := hasStoreSignal(content)
 		rateRe := regexp.MustCompile(`\brate\b|\bRate\b`)
 		hasSQLAgg := strings.Contains(content, "COUNT(") || strings.Contains(content, "SUM(") ||
 			strings.Contains(content, "GROUP BY") || strings.Contains(content, "AVG(") ||
@@ -1406,8 +2129,7 @@ func scoreInsight(dir string) int {
 		// Detects Go-level aggregation: sorting, percentage calculations, comparisons,
 		// summary statistics. Requires multi-source input (2+ API calls or store usage)
 		// to avoid counting simple pass-through commands.
-		apiCallRe := regexp.MustCompile(`c\.(Get|Post|Put|Delete|Patch)\s*\(`)
-		apiCallCount := len(apiCallRe.FindAllString(content, -1))
+		apiCallCount := countClientAPICalls(content)
 		hasMultiSource := apiCallCount >= 2 || usesStore
 
 		hasGoAgg := strings.Contains(content, "sort.Slice") ||
@@ -1499,6 +2221,7 @@ type openAPISecurityScheme struct {
 	Scheme     string
 	In         string
 	HeaderName string
+	EnvVars    []string
 	// Prefix mirrors apispec.AuthConfig.Prefix for internal-YAML specs that
 	// override the literal "Bearer" scheme word (e.g., "Token", "PRIVATE-TOKEN").
 	// Empty for OpenAPI-derived schemes; bearer-branch scoring falls back to "Bearer".
@@ -1518,11 +2241,24 @@ type securityRequirementSet struct {
 	AllowsAnonymous bool
 }
 
+type oauthScopeRequirement struct {
+	Endpoint     string                  `json:"endpoint"`
+	OperationID  string                  `json:"operation_id,omitempty"`
+	Alternatives []oauthScopeAlternative `json:"alternatives"`
+}
+
+type oauthScopeAlternative struct {
+	Scopes []string `json:"scopes"`
+}
+
 type openAPISpecInfo struct {
-	Paths                []string
-	SecuritySchemes      map[string]openAPISecurityScheme
-	SecurityRequirements []securityRequirementSet
-	Kind                 string // see apispec.KindREST / apispec.KindSynthetic
+	Paths                  []string
+	SecuritySchemes        map[string]openAPISecurityScheme
+	SecurityRequirements   []securityRequirementSet
+	OAuthScopeRequirements []oauthScopeRequirement
+	PositionalParamCount   int
+	Kind                   string // see apispec.KindREST / apispec.KindSynthetic
+	IsGraphQL              bool
 }
 
 func (s *openAPISpecInfo) IsSynthetic() bool {
@@ -1534,11 +2270,14 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 		return nil, nil
 	}
 
-	data, err := os.ReadFile(specPath)
+	data, err := openapi.LoadSpecBytes(specPath, false, false)
 	if err != nil {
 		return nil, fmt.Errorf("reading spec: %w", err)
 	}
+	return loadOpenAPISpecData(data, specPath)
+}
 
+func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error) {
 	// Detect internal YAML spec format and convert to openAPISpecInfo.
 	if isInternalYAMLSpec(data) {
 		internal, err := apispec.ParseBytes(data)
@@ -1574,10 +2313,12 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 
 	info := &openAPISpecInfo{
 		SecuritySchemes: make(map[string]openAPISecurityScheme),
+		IsGraphQL:       hasGraphQLEndpointExtension(raw),
 	}
 	if paths, ok := raw["paths"].(map[string]any); ok {
 		for path := range paths {
 			info.Paths = append(info.Paths, path)
+			info.PositionalParamCount += countPathTemplateParams(path)
 		}
 		slices.Sort(info.Paths)
 	}
@@ -1591,6 +2332,7 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 					scheme.Scheme = strings.ToLower(asString(fields["scheme"]))
 					scheme.In = strings.ToLower(asString(fields["in"]))
 					scheme.HeaderName = asString(fields["name"])
+					scheme.EnvVars = parseScorecardAuthEnvVars(fields["x-auth-env-vars"])
 				}
 				info.SecuritySchemes[schemeName] = scheme
 			}
@@ -1615,6 +2357,7 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 						scheme.Type = "apikey"
 						scheme.In = swIn
 						scheme.HeaderName = swName
+						scheme.EnvVars = parseScorecardAuthEnvVars(fields["x-auth-env-vars"])
 						// Detect Bearer-style API key in header with Authorization name.
 						if swIn == "header" && strings.EqualFold(swName, "Authorization") {
 							scheme.Type = "http"
@@ -1631,17 +2374,30 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 	}
 
 	rootSecurity, rootHasSecurity := parseSecurityRequirementSet(raw["security"])
+	rootOAuthScopes, rootHasOAuthScopes := parseOAuthScopeAlternatives(raw["security"], info.SecuritySchemes)
 	foundOperation := false
 	if paths, ok := raw["paths"].(map[string]any); ok {
-		for _, pathValue := range paths {
+		pathNames := make([]string, 0, len(paths))
+		for path := range paths {
+			pathNames = append(pathNames, path)
+		}
+		slices.Sort(pathNames)
+		for _, path := range pathNames {
+			pathValue := paths[path]
 			pathItem, ok := pathValue.(map[string]any)
 			if !ok {
 				continue
 			}
-			for method, operationValue := range pathItem {
+			methods := make([]string, 0, len(pathItem))
+			for method := range pathItem {
 				if !isHTTPMethod(method) {
 					continue
 				}
+				methods = append(methods, method)
+			}
+			slices.Sort(methods)
+			for _, method := range methods {
+				operationValue := pathItem[method]
 				foundOperation = true
 				operation, ok := operationValue.(map[string]any)
 				if !ok {
@@ -1649,10 +2405,24 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 				}
 				if requirementSet, ok := parseSecurityRequirementSet(operation["security"]); ok {
 					info.SecurityRequirements = append(info.SecurityRequirements, requirementSet)
+					if alternatives, ok := parseOAuthScopeAlternatives(operation["security"], info.SecuritySchemes); ok && len(alternatives) > 0 {
+						info.OAuthScopeRequirements = append(info.OAuthScopeRequirements, oauthScopeRequirement{
+							Endpoint:     strings.ToUpper(method) + " " + path,
+							OperationID:  operationIDFromRaw(operation),
+							Alternatives: alternatives,
+						})
+					}
 					continue
 				}
 				if rootHasSecurity {
 					info.SecurityRequirements = append(info.SecurityRequirements, rootSecurity)
+				}
+				if rootHasOAuthScopes && len(rootOAuthScopes) > 0 {
+					info.OAuthScopeRequirements = append(info.OAuthScopeRequirements, oauthScopeRequirement{
+						Endpoint:     strings.ToUpper(method) + " " + path,
+						OperationID:  operationIDFromRaw(operation),
+						Alternatives: rootOAuthScopes,
+					})
 				}
 			}
 		}
@@ -1665,13 +2435,64 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 		for _, alternative := range requirementSet.Alternatives {
 			for _, name := range alternative {
 				if _, ok := info.SecuritySchemes[name]; !ok {
-					return nil, fmt.Errorf("spec references undefined security scheme %q", name)
+					return info, fmt.Errorf("spec references undefined security scheme %q", name)
 				}
 			}
 		}
 	}
 
 	return info, nil
+}
+
+func hasGraphQLEndpointExtension(raw map[string]any) bool {
+	if hasNonEmptyStringExtension(raw, "x-graphql-endpoint") {
+		return true
+	}
+	if info, ok := raw["info"].(map[string]any); ok && hasNonEmptyStringExtension(info, "x-graphql-endpoint") {
+		return true
+	}
+	if paths, ok := raw["paths"].(map[string]any); ok {
+		for _, pathValue := range paths {
+			pathItem, ok := pathValue.(map[string]any)
+			if !ok {
+				continue
+			}
+			if hasNonEmptyStringExtension(pathItem, "x-graphql-endpoint") {
+				return true
+			}
+			for method, operationValue := range pathItem {
+				if !isHTTPMethod(method) {
+					continue
+				}
+				operation, ok := operationValue.(map[string]any)
+				if ok && hasNonEmptyStringExtension(operation, "x-graphql-endpoint") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func hasNonEmptyStringExtension(fields map[string]any, key string) bool {
+	if fields == nil {
+		return false
+	}
+	value, ok := fields[key]
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(asString(value)) != ""
+}
+
+func operationIDFromRaw(operation map[string]any) string {
+	if operation == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(asString(operation["operationId"])); id != "" {
+		return id
+	}
+	return ""
 }
 
 type dimensionScore struct {
@@ -1740,7 +2561,7 @@ func evaluateAuthProtocol(dir string, spec *openAPISpecInfo) dimensionScore {
 			score += 4 // env var support present
 		}
 		// AuthProtocol pattern: standard/custom header auth in generated client.
-		if strings.Contains(clientContent, "Authorization") || strings.Contains(clientContent, "X-Api-Key") || strings.Contains(clientContent, "X-Auth-Token") || strings.Contains(clientContent, "X-Access-Token") {
+		if inferredAuthHeaderAssignmentPresent(clientContent) {
 			score += 3 // client sends auth header (standard or custom)
 		}
 		// Query-param auth (e.g., TMDb ?api_key=, Google Maps ?key=):
@@ -1761,6 +2582,7 @@ func evaluateAuthProtocol(dir string, spec *openAPISpecInfo) dimensionScore {
 		return dimensionScore{scored: true}
 	}
 
+	hasStructuralOAuth := hasStructuralOAuthSurface(dir, configContent)
 	referencedSchemes := referencedSecuritySchemes(spec.SecurityRequirements)
 	totalScore := 0
 	scoredSets := 0
@@ -1772,7 +2594,7 @@ func evaluateAuthProtocol(dir string, spec *openAPISpecInfo) dimensionScore {
 		bestScore := -1
 		scoreable := false
 		for _, alternative := range requirementSet.Alternatives {
-			score, ok := scoreAuthAlternative(clientContent, configContent, authContent, spec.SecuritySchemes, alternative, referencedSchemes)
+			score, ok := scoreAuthAlternative(clientContent, configContent, authContent, hasStructuralOAuth, spec.SecuritySchemes, alternative, referencedSchemes)
 			if !ok {
 				continue
 			}
@@ -1843,6 +2665,92 @@ func parseSecurityRequirementSet(value any) (securityRequirementSet, bool) {
 	return set, true
 }
 
+func parseOAuthScopeAlternatives(value any, schemes map[string]openAPISecurityScheme) ([]oauthScopeAlternative, bool) {
+	requirements, ok := value.([]any)
+	if !ok {
+		return nil, false
+	}
+
+	var alternatives []oauthScopeAlternative
+	seen := map[string]struct{}{}
+	for _, requirement := range requirements {
+		names, ok := requirement.(map[string]any)
+		if !ok {
+			continue
+		}
+		var scopes []string
+		for name, scopeValue := range names {
+			scheme, ok := schemes[name]
+			if !ok || !isOAuthSecurityScheme(scheme) {
+				continue
+			}
+			scopes = append(scopes, parseOAuthScopeList(scopeValue)...)
+		}
+		scopes = uniqueSorted(scopes)
+		if len(scopes) == 0 {
+			continue
+		}
+		key := strings.Join(scopes, "\x00")
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		alternatives = append(alternatives, oauthScopeAlternative{Scopes: scopes})
+	}
+	return alternatives, true
+}
+
+func parseOAuthScopeList(value any) []string {
+	rawScopes, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	var scopes []string
+	for _, rawScope := range rawScopes {
+		scope := strings.TrimSpace(asString(rawScope))
+		if scope != "" {
+			scopes = append(scopes, scope)
+		}
+	}
+	slices.Sort(scopes)
+	return slices.Compact(scopes)
+}
+
+func parseScorecardAuthEnvVars(value any) []string {
+	switch envVars := value.(type) {
+	case []any:
+		var parsed []string
+		for _, raw := range envVars {
+			envVar := strings.TrimSpace(asString(raw))
+			if envVar != "" {
+				parsed = append(parsed, envVar)
+			}
+		}
+		return parsed
+	case []string:
+		var parsed []string
+		for _, raw := range envVars {
+			envVar := strings.TrimSpace(raw)
+			if envVar != "" {
+				parsed = append(parsed, envVar)
+			}
+		}
+		return parsed
+	case string:
+		envVar := strings.TrimSpace(envVars)
+		if envVar == "" {
+			return nil
+		}
+		return []string{envVar}
+	default:
+		return nil
+	}
+}
+
+func isOAuthSecurityScheme(scheme openAPISecurityScheme) bool {
+	return scheme.Type == "oauth2" || scheme.Type == "openidconnect"
+}
+
 func referencedSecuritySchemes(requirementSets []securityRequirementSet) map[string]bool {
 	referenced := make(map[string]bool)
 	for _, requirementSet := range requirementSets {
@@ -1855,7 +2763,7 @@ func referencedSecuritySchemes(requirementSets []securityRequirementSet) map[str
 	return referenced
 }
 
-func scoreAuthAlternative(clientContent, configContent, authContent string, schemes map[string]openAPISecurityScheme, alternative []string, referencedSchemes map[string]bool) (int, bool) {
+func scoreAuthAlternative(clientContent, configContent, authContent string, hasStructuralOAuth bool, schemes map[string]openAPISecurityScheme, alternative []string, referencedSchemes map[string]bool) (int, bool) {
 	if len(alternative) == 0 {
 		return 0, false
 	}
@@ -1875,7 +2783,7 @@ func scoreAuthAlternative(clientContent, configContent, authContent string, sche
 		if composedHeaders && isAPIKeyHeaderScheme(scheme) {
 			score, scoreable = scoreComposedHeaderScheme(clientContent, scheme)
 		} else {
-			score, scoreable = scoreAuthScheme(clientContent, configContent, authContent, scheme)
+			score, scoreable = scoreAuthScheme(clientContent, configContent, authContent, hasStructuralOAuth, scheme)
 		}
 		if !scoreable {
 			continue
@@ -1896,7 +2804,7 @@ func scoreAuthAlternative(clientContent, configContent, authContent string, sche
 	return score, true
 }
 
-func scoreAuthScheme(clientContent, configContent, authContent string, scheme openAPISecurityScheme) (int, bool) {
+func scoreAuthScheme(clientContent, configContent, authContent string, hasStructuralOAuth bool, scheme openAPISecurityScheme) (int, bool) {
 	nameLower := strings.ToLower(scheme.Key)
 	headerName := "Authorization"
 	authHeaderMatched := false
@@ -1904,9 +2812,13 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 	queryMatched := false
 	envMatched := false
 	scoreable := false
+	bearerStyle := false
+	exactQueryParamMatched := false
 
-	if strings.EqualFold(scheme.Type, "apikey") && scheme.In == "header" && strings.TrimSpace(scheme.HeaderName) != "" {
+	if strings.EqualFold(scheme.Type, "apikey") && (scheme.In == "header" || scheme.In == "query") && strings.TrimSpace(scheme.HeaderName) != "" {
 		headerName = scheme.HeaderName
+	} else if strings.EqualFold(scheme.Type, "apikey") && scheme.In == "cookie" {
+		headerName = "Cookie"
 	}
 
 	switch {
@@ -1917,6 +2829,7 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 		}
 	case strings.Contains(nameLower, "bearer") || (scheme.Type == "http" && scheme.Scheme == "bearer"):
 		scoreable = true
+		bearerStyle = true
 		bearerLiteral := scheme.Prefix
 		if strings.TrimSpace(bearerLiteral) == "" {
 			bearerLiteral = "Bearer"
@@ -1934,13 +2847,22 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 		// For apiKey schemes, the header value format varies (Bearer, Bot, custom).
 		// Credit authHeaderMatched if the client sets the correct header name,
 		// since that proves the auth plumbing is wired correctly regardless of format.
-		if scheme.In == "header" && headerName != "" {
+		if (scheme.In == "header" || scheme.In == "cookie") && headerName != "" {
 			if headerAssignmentPresent(clientContent, headerName) {
 				authHeaderMatched = true
 			}
 		}
+		if scheme.In == "query" && headerName != "" {
+			if queryAssignmentPresent(clientContent, headerName) {
+				exactQueryParamMatched = true
+				authHeaderMatched = true
+				headerNameMatched = true
+				queryMatched = true
+			}
+		}
 	case strings.EqualFold(scheme.Type, "oauth2"), strings.EqualFold(scheme.Type, "openidconnect"):
 		scoreable = true
+		bearerStyle = true
 		if authPrefixLiteralPresent("Bearer", clientContent, configContent, authContent) {
 			authHeaderMatched = true
 		}
@@ -1949,19 +2871,37 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 		return 0, false
 	}
 
+	// Bearer-style schemes (http/bearer, oauth2, openidconnect) are otherwise
+	// scored by grepping for the "Bearer " literal and the spec's scheme key as
+	// an env-var needle, both of which a cosmetic polish pass can fake by adding
+	// an unused const. Real OAuth machinery (refresh-token rotation in config or
+	// a dedicated oauth helper package) credits both signals at once because the
+	// CLI demonstrably exchanges tokens and reads OAuth env vars (CLIENT_ID,
+	// REFRESH_TOKEN) that sanitizeEnvName never matches.
+	if bearerStyle && hasStructuralOAuth {
+		authHeaderMatched = true
+		envMatched = true
+	}
+
 	// AuthProtocol pattern: generated clients use Header.Set/Add with the expected header name.
 	if headerAssignmentPresent(clientContent, headerName) {
 		headerNameMatched = true
 	}
 
 	// AuthProtocol pattern: query schemes touch URL query plumbing.
-	if scheme.In == "query" && (strings.Contains(clientContent, ".Query()") || strings.Contains(clientContent, "url.Values") || strings.Contains(clientContent, "RawQuery")) {
+	if scheme.In == "query" && (queryAssignmentPresent(clientContent, headerName) || strings.Contains(clientContent, ".Query()") || strings.Contains(clientContent, "url.Values") || strings.Contains(clientContent, "RawQuery")) {
 		queryMatched = true
 	}
 
 	envNeedle := sanitizeEnvName(scheme.Key)
 	// AuthProtocol pattern: config.go contains the sanitized scheme key/env name.
 	if envNeedle != "" && strings.Contains(strings.ToUpper(configContent), envNeedle) {
+		envMatched = true
+	}
+	if !envMatched && configReadsAPIKeyEnvForScheme(configContent, scheme) {
+		envMatched = true
+	}
+	if !envMatched && configReadsSchemeEnvVar(configContent, scheme) {
 		envMatched = true
 	}
 	// Browser cookie auth (composed or cookie type) uses Chrome cookie extraction
@@ -1971,6 +2911,10 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 		strings.Contains(configContent, "chrome-composed") ||
 		strings.Contains(configContent, `"browser"`)) {
 		envMatched = true
+	}
+
+	if strings.EqualFold(scheme.Type, "apikey") && scheme.In == "query" && strings.TrimSpace(headerName) != "" && !exactQueryParamMatched {
+		return 0, true
 	}
 
 	score := 0
@@ -2048,12 +2992,20 @@ func composedHeaderCompanionSuffix(scheme openAPISecurityScheme) bool {
 }
 
 func isComposedHeaderAlternative(schemes map[string]openAPISecurityScheme, alternative []string) bool {
+	apiKeyHeaderCount := 0
 	counts := make(map[string]int)
 	for _, key := range alternative {
-		prefix := composedHeaderPrefix(schemes[key])
+		scheme := schemes[key]
+		if isAPIKeyHeaderScheme(scheme) {
+			apiKeyHeaderCount++
+		}
+		prefix := composedHeaderPrefix(scheme)
 		if prefix != "" {
 			counts[prefix]++
 		}
+	}
+	if apiKeyHeaderCount > 1 {
+		return true
 	}
 	for _, count := range counts {
 		if count > 1 {
@@ -2094,8 +3046,98 @@ func scoreComposedHeaderScheme(clientContent string, scheme openAPISecuritySchem
 }
 
 func headerAssignmentPresent(clientContent, headerName string) bool {
-	return strings.Contains(clientContent, `Header.Set("`+headerName+`"`) ||
-		strings.Contains(clientContent, `Header.Add("`+headerName+`"`)
+	clientContent = strings.ToLower(clientContent)
+	headerName = strings.ToLower(headerName)
+	return strings.Contains(clientContent, `header.set("`+headerName+`"`) ||
+		strings.Contains(clientContent, `header.add("`+headerName+`"`)
+}
+
+func queryAssignmentPresent(clientContent, queryName string) bool {
+	clientContent = strings.ToLower(clientContent)
+	queryName = strings.ToLower(strings.TrimSpace(queryName))
+	if queryName == "" {
+		return false
+	}
+	return strings.Contains(clientContent, `q.set("`+queryName+`"`) ||
+		strings.Contains(clientContent, `query.set("`+queryName+`"`) ||
+		strings.Contains(clientContent, `params["`+queryName+`"]`)
+}
+
+func inferredAuthHeaderAssignmentPresent(clientContent string) bool {
+	for _, headerName := range []string{"Authorization", "X-Api-Key", "X-Auth-Token", "X-Access-Token", "Cookie"} {
+		if headerAssignmentPresent(clientContent, headerName) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	genericAPIKeyEnvCallRe             = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*:=\s*os\.Getenv\("(?:[A-Z][A-Z0-9_]*_)?API_KEY"\)`)
+	directGenericAPIKeyEnvAssignmentRe = regexp.MustCompile(`\.\s*APIKey\s*=\s*os\.Getenv\("(?:[A-Z][A-Z0-9_]*_)?API_KEY"\)`)
+)
+
+func configReadsAPIKeyEnvForScheme(configContent string, scheme openAPISecurityScheme) bool {
+	if !strings.EqualFold(scheme.Type, "apikey") || !isGenericAPIKeyScheme(scheme) {
+		return false
+	}
+	if directGenericAPIKeyEnvAssignmentRe.MatchString(configContent) {
+		return true
+	}
+	for _, match := range genericAPIKeyEnvCallRe.FindAllStringSubmatchIndex(configContent, -1) {
+		if len(match) < 4 {
+			continue
+		}
+		envVarName := configContent[match[2]:match[3]]
+		tailStart := match[1]
+		tailEnd := min(len(configContent), tailStart+240)
+		fieldAssignmentRe := regexp.MustCompile(`\.\s*APIKey\s*=\s*` + regexp.QuoteMeta(envVarName) + `\b`)
+		if fieldAssignmentRe.MatchString(configContent[tailStart:tailEnd]) {
+			return true
+		}
+	}
+	return false
+}
+
+func configReadsSchemeEnvVar(configContent string, scheme openAPISecurityScheme) bool {
+	for _, envVar := range scheme.EnvVars {
+		envVar = strings.TrimSpace(envVar)
+		if envVar != "" && configReadsExactEnvVar(configContent, envVar) {
+			return true
+		}
+	}
+	return false
+}
+
+func configReadsExactEnvVar(configContent, envVar string) bool {
+	callPattern := `\bos\.(?:Getenv|LookupEnv)\(\s*"` + regexp.QuoteMeta(envVar) + `"\s*\)`
+	return regexp.MustCompile(callPattern).MatchString(configContent)
+}
+
+func isGenericAPIKeyScheme(scheme openAPISecurityScheme) bool {
+	for _, name := range []string{scheme.Key, scheme.HeaderName} {
+		needle := strings.ReplaceAll(sanitizeEnvName(name), "_", "")
+		if strings.Contains(needle, "APIKEY") {
+			return true
+		}
+	}
+	return false
+}
+
+// refreshTokenFieldRe word-anchors RefreshToken so cosmetic names like
+// NoRefreshToken or RefreshTokenError don't satisfy the structural check.
+var refreshTokenFieldRe = regexp.MustCompile(`\bRefreshToken\b`)
+
+// hasStructuralOAuthSurface returns true when the printed CLI ships real
+// OAuth machinery rather than a literal "Bearer " const that grep can find.
+// Either signal is sufficient — a generated config.go with a RefreshToken
+// rotation field, or a hand-written internal/oauth/ helper package.
+func hasStructuralOAuthSurface(dir, configContent string) bool {
+	if refreshTokenFieldRe.MatchString(configContent) {
+		return true
+	}
+	info, err := os.Stat(filepath.Join(dir, "internal", "oauth"))
+	return err == nil && info.IsDir()
 }
 
 func authPrefixLiteralPresent(prefix string, contents ...string) bool {
@@ -2123,9 +3165,19 @@ func scoreDataPipelineIntegrity(dir string) int {
 	score := 0
 	cliDir := filepath.Join(dir, "internal", "cli")
 	allCLIContent := readAllGoFiles(cliDir)
+	localDatastore := isLocalDatastoreCLIDir(dir)
+	allLocalContent := allCLIContent
+	if localDatastore {
+		allLocalContent += readAllGoFiles(filepath.Join(dir, "internal", "source"))
+		allLocalContent += readAllGoFiles(filepath.Join(dir, "internal", "store"))
+		allLocalContent += readAllGoFiles(filepath.Join(dir, "internal", "mcp"))
+	}
 	storeContent := readFileContent(filepath.Join(dir, "internal", "store", "store.go"))
+	registeredFiles := registeredCommandFiles(cliDir)
+	commandContent := registeredCommandContent(cliDir, registeredFiles)
+	hasGenericResourcesSearch := hasGenericResourcesSQLSearchSignalInCommands(commandContent)
 
-	if allCLIContent != "" && (strings.Contains(allCLIContent, "/store") || strings.Contains(allCLIContent, "store.")) {
+	if allCLIContent != "" && (strings.Contains(allCLIContent, "/store") || strings.Contains(allCLIContent, "store.") || hasGenericResourcesSearch) {
 		score++
 	}
 
@@ -2141,8 +3193,19 @@ func scoreDataPipelineIntegrity(dir string) int {
 	genericSearchRe := regexp.MustCompile(`\.Search\(`)
 	if domainSearchRe.MatchString(allCLIContent) {
 		score += 3
+	} else if hasGenericResourcesSearch {
+		score += 3
 	} else if genericSearchRe.MatchString(allCLIContent) {
 		score += 0
+	}
+
+	if localDatastore && hasLocalDatastoreCodeSignalFromContent(allLocalContent) {
+		if score < 8 {
+			score = 8
+		}
+		if hasGenericResourcesSQLSearchSignal(allLocalContent) || strings.Contains(strings.ToLower(allLocalContent), "select ") {
+			score += 2
+		}
 	}
 
 	score += scoreDomainTables(storeContent)
@@ -2152,9 +3215,34 @@ func scoreDataPipelineIntegrity(dir string) int {
 	return score
 }
 
+func hasGenericResourcesSQLSearch(content string) bool {
+	if content == "" {
+		return false
+	}
+	if resourcesSQLSearchRE.MatchString(content) {
+		return true
+	}
+	return resourcesFTSSQLSearchRE.MatchString(content)
+}
+
+func hasGenericResourcesSQLSearchSignal(content string) bool {
+	return hasGenericResourcesSQLSearch(content) &&
+		sqlQueryCallRE.MatchString(content) &&
+		(rawSQLImportRe.MatchString(content) || hasStoreSignal(content))
+}
+
+func hasGenericResourcesSQLSearchSignalInCommands(commandContent map[string]string) bool {
+	for _, content := range commandContent {
+		if hasGenericResourcesSQLSearchSignal(content) {
+			return true
+		}
+	}
+	return false
+}
+
 func scoreSyncCorrectness(dir string) int {
-	cliDir := filepath.Join(dir, "internal", "cli")
-	content := readAllGoFiles(cliDir)
+	reachableFiles := scorecardReachableInternalFiles(dir)
+	content := readFilesContent(reachableFiles)
 	if content == "" {
 		return 0
 	}
@@ -2169,7 +3257,7 @@ func scoreSyncCorrectness(dir string) int {
 	if strings.Contains(content, "SaveSyncState") {
 		score++
 	}
-	if hasSyncPaginationStructure(cliDir) {
+	if hasSyncPaginationStructureInFiles(reachableFiles) {
 		score += 2
 	}
 	// URL path parameters only count when other sync signals are present,
@@ -2192,62 +3280,182 @@ func scoreSyncCorrectness(dir string) int {
 	return score * 10 / max
 }
 
-func scoreTypeFidelity(dir string) int {
+func scoreTypeFidelity(dir string, spec *openAPISpecInfo) int {
 	score := 0
-	cmdFiles := sampleCommandFiles(dir, 10)
+	cmdFiles := sampleCommandFiles(dir, 0)
 	if len(cmdFiles) == 0 {
 		return 0
 	}
 
-	flagDeclRe := regexp.MustCompile(`Flags\(\)\.(StringVar|IntVar|StringVarP|IntVarP)\(&[^,]+,\s*"([^"]+)"(?:,\s*[^,]+){1,2},\s*"([^"]*)"`)
-	requiredRe := regexp.MustCompile(`MarkFlagRequired\("([^"]+)"\)`)
-
-	totalIDFlags := 0
-	stringIDFlags := 0
-	requiredCount := 0
-	descWordCount := 0
-	descCount := 0
-
-	for _, content := range cmdFiles {
-		for _, match := range flagDeclRe.FindAllStringSubmatch(content, -1) {
-			name := strings.ToLower(match[2])
-			if strings.Contains(name, "id") {
-				totalIDFlags++
-				if strings.HasPrefix(match[1], "StringVar") {
-					stringIDFlags++
-				}
-			}
-			descWordCount += len(strings.Fields(match[3]))
-			descCount++
-		}
-		requiredCount += len(requiredRe.FindAllStringSubmatch(content, -1))
-	}
-
-	if totalIDFlags == 0 || stringIDFlags == totalIDFlags {
+	score += scoreTypedIDFlags(cmdFiles)
+	score += scorePositionalArgHandling(cmdFiles, spec)
+	if hasTypedParserCoverage(dir) {
 		score += 2
-	}
-	if requiredCount >= 3 {
-		score++
-	}
-	if descCount > 0 && descWordCount/descCount > 5 {
-		score++
-	}
-
-	var allCLIBuilder strings.Builder
-	for _, content := range sampleCommandFiles(dir, 0) {
-		allCLIBuilder.WriteString(content)
-	}
-	allCLIBuilder.WriteString(readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go")))
-	allCLIBuilder.WriteString(readFileContent(filepath.Join(dir, "internal", "cli", "root.go")))
-	allCLI := allCLIBuilder.String()
-	if !strings.Contains(allCLI, "var _ = strings.ReplaceAll") && !strings.Contains(allCLI, "var _ = fmt.Sprintf") {
-		score++
 	}
 
 	if score > 5 {
 		score = 5
 	}
 	return score
+}
+
+func scoreTypedIDFlags(cmdFiles []string) int {
+	// [^,\n]+ keeps each capture inside a single Flags() call. The previous
+	// [^,]+ would greedily consume across newlines into the next Flags()
+	// invocation, dragging the next flag's name into the current flag's
+	// description capture.
+	flagDeclRe := regexp.MustCompile(`Flags\(\)\.(StringVar|IntVar|StringVarP|IntVarP)\(&[^,\n]+,\s*"([^"]+)"(?:,\s*[^,\n]+){1,2},\s*"([^"]*)"`)
+	totalIDFlags := 0
+	stringIDFlags := 0
+
+	for _, content := range cmdFiles {
+		for _, match := range flagDeclRe.FindAllStringSubmatch(content, -1) {
+			name := strings.ToLower(match[2])
+			if isIDFlagName(name) {
+				totalIDFlags++
+				if strings.HasPrefix(match[1], "StringVar") {
+					stringIDFlags++
+				}
+			}
+		}
+	}
+
+	switch {
+	case totalIDFlags == 0:
+		return 0
+	case stringIDFlags == totalIDFlags:
+		return 2
+	case stringIDFlags > 0:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func scoreCobraArgValidators(cmdFiles []string) int {
+	validatorRe := regexp.MustCompile(`cobra\.(ExactArgs|MinimumNArgs|MaximumNArgs)\s*\(`)
+	seen := make(map[string]struct{})
+	for _, content := range cmdFiles {
+		for _, match := range validatorRe.FindAllStringSubmatch(content, -1) {
+			seen[match[1]] = struct{}{}
+		}
+	}
+	if len(seen) > 2 {
+		return 2
+	}
+	return len(seen)
+}
+
+func scorePositionalArgHandling(cmdFiles []string, spec *openAPISpecInfo) int {
+	if !commandFilesAdvertisePositionals(cmdFiles) {
+		return 0
+	}
+
+	score := 0
+	validatorScore := scoreCobraArgValidators(cmdFiles)
+	if commandFilesConsumePositionals(cmdFiles) || validatorScore > 0 {
+		score++
+	}
+	if score > 0 && (validatorScore > 0 || (spec != nil && spec.PositionalParamCount > 0)) {
+		score++
+	}
+	return min(score, 2)
+}
+
+func commandFilesAdvertisePositionals(cmdFiles []string) bool {
+	useRe := regexp.MustCompile(`Use:\s*"[^"]*(?:<[^>]+>|\[[^\]]+\])`)
+	return slices.ContainsFunc(cmdFiles, useRe.MatchString)
+}
+
+func commandFilesConsumePositionals(cmdFiles []string) bool {
+	for _, content := range cmdFiles {
+		if strings.Contains(content, "args[") || strings.Contains(content, "len(args)") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTypedParserCoverage(dir string) bool {
+	internalDir := filepath.Join(dir, "internal")
+	parserSymbolsByDir := make(map[string][]string)
+	testContentByDir := make(map[string]string)
+
+	_ = filepath.WalkDir(internalDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".go") {
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), "_test.go") {
+			testContentByDir[filepath.Dir(path)] += "\n" + readFileContent(path)
+			return nil
+		}
+		if symbols := typedParserSymbols(readFileContent(path)); len(symbols) > 0 {
+			fileDir := filepath.Dir(path)
+			parserSymbolsByDir[fileDir] = append(parserSymbolsByDir[fileDir], symbols...)
+		}
+		return nil
+	})
+
+	for fileDir, symbols := range parserSymbolsByDir {
+		testContent := testContentByDir[fileDir]
+		for _, symbol := range symbols {
+			if strings.Contains(testContent, symbol+"(") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func typedParserSymbols(content string) []string {
+	if content == "" {
+		return nil
+	}
+	hasJSONStruct := regexp.MustCompile("(?s)type\\s+\\w+\\s+struct\\s*\\{[^}]+`json:\"").MatchString(content)
+	if !hasJSONStruct {
+		return nil
+	}
+	hasDecodeCall := strings.Contains(content, "json.Unmarshal") || strings.Contains(content, "json.NewDecoder")
+	parseFuncRe := regexp.MustCompile(`func\s+(?:\([^)]+\)\s+)?(?:[Pp]arse|[Dd]ecode|[Nn]ormalize|[Uu]nmarshal)[A-Za-z0-9_]*\s*\(`)
+	if !hasDecodeCall && !parseFuncRe.MatchString(content) {
+		return nil
+	}
+	var symbols []string
+	for _, match := range parseFuncRe.FindAllString(content, -1) {
+		name := strings.TrimPrefix(match, "func")
+		name = strings.TrimSpace(name)
+		if strings.HasPrefix(name, "(") {
+			if end := strings.Index(name, ")"); end >= 0 {
+				name = strings.TrimSpace(name[end+1:])
+			}
+		}
+		if open := strings.Index(name, "("); open >= 0 {
+			name = strings.TrimSpace(name[:open])
+		}
+		if name != "" {
+			symbols = append(symbols, name)
+		}
+	}
+	return symbols
+}
+
+var pathTemplateParamRe = regexp.MustCompile(`\{[^}/]+\}`)
+
+func countPathTemplateParams(path string) int {
+	return len(pathTemplateParamRe.FindAllString(path, -1))
+}
+
+// isIDFlagName returns true when a kebab-case flag name denotes an identifier
+// (id, *-id, id-*, *-id-*). Word boundaries prevent false positives like
+// "price-paid-cents" matching on the "id" substring inside "paid".
+func isIDFlagName(name string) bool {
+	if name == "id" {
+		return true
+	}
+	if strings.HasPrefix(name, "id-") || strings.HasSuffix(name, "-id") {
+		return true
+	}
+	return strings.Contains(name, "-id-")
 }
 
 func scoreDeadCode(dir string) int {
@@ -2282,6 +3490,9 @@ func scoreDeadCode(dir string) int {
 	// Use Count >= 2 because the definition itself contributes 1 occurrence of name+"(".
 	allContent := helpersContent + "\n" + otherHelpers
 	for _, name := range funcNames {
+		if isAllowedDeadHelper(name) {
+			continue
+		}
 		if strings.Count(allContent, name+"(") < 2 {
 			deadFunctions++
 		}
@@ -2440,16 +3651,13 @@ func uniqueMatches(re *regexp.Regexp, content string) []string {
 
 // readAllGoFiles concatenates the content of all .go files in dir.
 func readAllGoFiles(dir string) string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return ""
-	}
+	return readFilesContent(listGoFiles(dir))
+}
+
+func readFilesContent(paths []string) string {
 	var b strings.Builder
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
-			continue
-		}
-		b.WriteString(readFileContent(filepath.Join(dir, entry.Name())))
+	for _, path := range paths {
+		b.WriteString(readFileContent(path))
 		b.WriteByte('\n')
 	}
 	return b.String()
@@ -2553,6 +3761,50 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+func isLocalDatastoreCLIDir(dir string) bool {
+	manifest, err := loadCLIManifestForScorecard(dir)
+	return err == nil && manifest.IsLocalDatastore()
+}
+
+func isDeviceBackedCLIDir(dir string) bool {
+	if looksLikeDeviceSpecFile(filepath.Join(dir, "device-spec.yaml")) {
+		return true
+	}
+	if strings.Contains(readFileContent(filepath.Join(dir, "README.md")), "Generated by the Printing Press from a BLE device spec.") {
+		return true
+	}
+	return strings.Contains(readFileContent(filepath.Join(dir, "internal", "device", "spec.go")), `Protocol = "ble"`)
+}
+
+func looksLikeDeviceSpecFile(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	return err == nil && devicespec.LooksLikeDeviceSpec(data)
+}
+
+func hasLocalDatastoreCodeSignal(dir string) bool {
+	var b strings.Builder
+	for _, rel := range []string{
+		filepath.Join("internal", "cli"),
+		filepath.Join("internal", "source"),
+		filepath.Join("internal", "store"),
+		filepath.Join("internal", "mcp"),
+	} {
+		b.WriteString(readAllGoFiles(filepath.Join(dir, rel)))
+		b.WriteByte('\n')
+	}
+	return hasLocalDatastoreCodeSignalFromContent(b.String())
+}
+
+func hasLocalDatastoreCodeSignalFromContent(content string) bool {
+	lower := strings.ToLower(content)
+	return strings.Contains(lower, "sqlite") ||
+		strings.Contains(lower, "database/sql") ||
+		strings.Contains(lower, "sql.open")
+}
+
 func computeGrade(percentage int) string {
 	switch {
 	case percentage >= 80:
@@ -2613,14 +3865,14 @@ func buildGapReport(s SteinerScore, unscored []string) []string {
 		{"data_pipeline_integrity", s.DataPipelineIntegrity},
 		{"sync_correctness", s.SyncCorrectness},
 		{"type_fidelity", s.TypeFidelity},
-		{"dead_code", s.DeadCode},
+		{DimDeadCode, s.DeadCode},
 	}
 	for _, d := range dimensions {
 		if _, skip := unscoredSet[d.name]; skip {
 			continue
 		}
 		max := 10
-		if d.name == "type_fidelity" || d.name == "dead_code" {
+		if d.name == DimTypeFidelity || d.name == DimDeadCode {
 			max = 5
 		}
 		if d.score < max/2 {
@@ -2713,6 +3965,9 @@ func writeScorecardMD(sc *Scorecard, pipelineDir string) error {
 	if len(sc.UnscoredDimensions) > 0 {
 		fmt.Fprintf(&b, "Unscored dimensions omitted from the total denominator: %s\n\n", strings.Join(sc.UnscoredDimensions, ", "))
 	}
+	if len(sc.UnverifiedDimensions) > 0 {
+		fmt.Fprintf(&b, "Unverified dimensions require evidence before ship: %s\n\n", strings.Join(sc.UnverifiedDimensions, ", "))
+	}
 
 	// Steinberger dimensions table
 	b.WriteString("## Quality Dimensions\n\n")
@@ -2760,6 +4015,10 @@ func writeScorecardMD(sc *Scorecard, pipelineDir string) error {
 		{"Dead Code", s.DeadCode},
 	}
 	for _, d := range typeDimensions {
+		if sc.IsDimensionUnscored(strings.ToLower(strings.ReplaceAll(d.name, " ", "_"))) {
+			fmt.Fprintf(&b, "| %s | N/A |\n", d.name)
+			continue
+		}
 		bar := strings.Repeat("#", d.score) + strings.Repeat(".", 5-d.score)
 		fmt.Fprintf(&b, "| %s | %d/5 %s |\n", d.name, d.score, bar)
 	}

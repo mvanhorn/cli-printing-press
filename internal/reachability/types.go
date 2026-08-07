@@ -57,11 +57,13 @@ const (
 // printing-press skill (and any future scripts) can consume this without
 // depending on Go struct ordering.
 type Result struct {
-	URL            string         `json:"url"`
-	Mode           Mode           `json:"mode"`
-	Confidence     float64        `json:"confidence"`
-	Probes         []ProbeResult  `json:"probes"`
-	Recommendation Recommendation `json:"recommendation"`
+	URL               string         `json:"url"`
+	Mode              Mode           `json:"mode"`
+	Confidence        float64        `json:"confidence"`
+	BodyEvidence      []string       `json:"body_evidence,omitempty"`
+	Probes            []ProbeResult  `json:"probes"`
+	Recommendation    Recommendation `json:"recommendation"`
+	ImpersonationSafe *bool          `json:"impersonation_safe,omitempty"`
 	// Partial is true when --probe-only restricted the ladder to one rung.
 	// Skill consumers should ignore Mode when Partial is true.
 	Partial bool `json:"partial,omitempty"`
@@ -69,12 +71,13 @@ type Result struct {
 
 // ProbeResult is one rung of the probe ladder.
 type ProbeResult struct {
-	Transport   Transport `json:"transport"`
-	Status      int       `json:"status,omitempty"`
-	ElapsedMS   int64     `json:"elapsed_ms"`
-	Evidence    []string  `json:"evidence,omitempty"`
-	ContentType string    `json:"content_type,omitempty"`
-	Error       string    `json:"error,omitempty"`
+	Transport    Transport `json:"transport"`
+	Status       int       `json:"status,omitempty"`
+	ElapsedMS    int64     `json:"elapsed_ms"`
+	Evidence     []string  `json:"evidence,omitempty"`
+	BodyEvidence []string  `json:"body_evidence,omitempty"`
+	ContentType  string    `json:"content_type,omitempty"`
+	Error        string    `json:"error,omitempty"`
 }
 
 // Recommendation tells the caller what runtime to ship and what consent

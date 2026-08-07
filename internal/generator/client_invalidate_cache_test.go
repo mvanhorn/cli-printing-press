@@ -13,13 +13,19 @@ import (
 )
 
 // TestGenerateEmitsInvalidateCacheSymmetry guards #603's two-prong fix:
-// the generated client.go must contain BOTH the invalidateCache method
-// definition AND a c.invalidateCache() call inside do()'s body.
-// Method-presence alone is not enough — a future refactor that drops
-// the call but keeps the method would silently re-introduce the
-// stale-list-after-mutation bug. See
+// the generated client.go must contain BOTH the resource-scoped invalidation
+// primitive, the tenant-scoped projection fallback, AND a matching call inside the do-family
+// implementation's body. Method-presence alone is not enough — a future
+// refactor that drops the call but keeps the method would silently
+// re-introduce the stale-list-after-mutation bug. See
 // docs/solutions/design-patterns/http-client-cache-invalidate-on-mutation-2026-05-05.md
 // for full rationale.
+//
+// After the verify-mode read-only-POST work, do() is a thin wrapper
+// around doInternal(...readOnlyIntent bool), so the cache-invalidation
+// call lives in doInternal(). The assertion follows the single
+// implementation site: a call site OUTSIDE doInternal() would not
+// protect against the stale-list-after-mutation regression.
 func TestGenerateEmitsInvalidateCacheSymmetry(t *testing.T) {
 	t.Parallel()
 
@@ -35,29 +41,82 @@ func TestGenerateEmitsInvalidateCacheSymmetry(t *testing.T) {
 	clientGo := string(clientGoBytes)
 
 	// Prong 1: method definition exists.
-	assert.Contains(t, clientGo, "func (c *Client) invalidateCache()",
-		"client.go must define invalidateCache method (R1)")
+	assert.Contains(t, clientGo, "func (c *Client) invalidateCacheResource(path string)",
+		"client.go must define resource-scoped invalidation (R1)")
+	assert.Contains(t, clientGo, "func (c *Client) invalidateCacheAfterMutation(path string)",
+		"client.go must define mutation invalidation with an HTTP-namespace safety fallback")
+	assert.Contains(t, clientGo, "os.RemoveAll(filepath.Join(c.cacheDir, \"resources\"))",
+		"all mutations must evict potentially related projections inside only that API or profile/source cache")
 
-	// Prong 2: do() must call invalidateCache. Locate do() and verify the
-	// call is in its body — not just anywhere in the file. The do
-	// function spans from its declaration to the next package-level
-	// `func ` or end of file. A call site OUTSIDE do() would not protect
-	// against the stale-list-after-mutation regression.
-	doStart := strings.Index(clientGo, "func (c *Client) do(")
-	require.NotEqual(t, -1, doStart, "client.go must contain Client.do function")
-	doRest := clientGo[doStart:]
-	// Find the next top-level func declaration to bound do()'s body.
-	nextFunc := strings.Index(doRest[1:], "\nfunc ")
-	doBody := doRest
+	// Prong 2: doInternal() must call invalidateCache. Bound the search
+	// to doInternal()'s body so a call site emitted at file scope (or in
+	// an unrelated helper) does not pass. doInternal() spans from its
+	// declaration to the next package-level `func ` or end of file.
+	implStart := strings.Index(clientGo, "func (c *Client) doInternal(")
+	require.NotEqual(t, -1, implStart, "client.go must contain Client.doInternal function")
+	implRest := clientGo[implStart:]
+	nextFunc := strings.Index(implRest[1:], "\nfunc ")
+	implBody := implRest
 	if nextFunc != -1 {
-		doBody = doRest[:nextFunc+1]
+		implBody = implRest[:nextFunc+1]
 	}
-	assert.Contains(t, doBody, "c.invalidateCache()",
-		"Client.do must call c.invalidateCache() in its success branch (R2)")
+	assert.Contains(t, implBody, "c.invalidateCacheAfterMutation(path)",
+		"Client.doInternal must invalidate all potentially related cached projections in its success branch (R2)")
+	assert.Contains(t, implBody, "if !readOnlyIntent && (mutationIntent || method != http.MethodGet) && !c.DryRun {",
+		"GET mutations must invalidate cached projections while read-only POST/PUT/PATCH operations must not")
+	assert.NotContains(t, implBody, "c.invalidateCache()",
+		"a successful mutation must not evict config, database, or state siblings outside the HTTP response namespace")
+
+	// do() and doRead() must remain thin wrappers around doInternal so
+	// the cache-invalidation call site stays single. A future edit that
+	// inlines do()'s implementation back into do() would silently move
+	// the call out of doInternal — pin the wrapper shape here too.
+	assert.Contains(t, clientGo, "func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {\n\treturn c.doInternal(ctx, method, path, params, body, headerOverrides, false, false)\n}",
+		"Client.do must be a thin wrapper delegating to doInternal(..., false)")
+	assert.Contains(t, clientGo, "func (c *Client) doRead(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {\n\treturn c.doInternal(ctx, method, path, params, body, headerOverrides, true, false)\n}",
+		"Client.doRead must be a thin wrapper delegating to doInternal(..., true)")
 
 	// Prong 3: writeCache must still be present (asymmetry diagnostic
 	// from the design-pattern doc — writeCache without invalidateCache
 	// is the original bug shape).
 	assert.Contains(t, clientGo, "func (c *Client) writeCache(",
 		"client.go must still define writeCache; symmetry presupposes both")
+}
+
+// TestGenerateCacheDirIsHTTPSubdir guards #1126: cacheDir must point at
+// <cache-root>/<api>/http (not <cache-root>/<api>) so that
+// invalidateCache's os.RemoveAll only wipes the HTTP cache and leaves
+// sibling state files (SQLite mirrors, FTS5 stores, watchlists) intact.
+//
+// The cache root is XDG-aware ($XDG_CACHE_HOME with ~/.cache fallback) so
+// the assertions key off the trailing `<api>/http` shape rather than a
+// hardcoded home prefix.
+func TestGenerateCacheDirIsHTTPSubdir(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "stytch.yaml"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	clientGoBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientGo := string(clientGoBytes)
+
+	assert.Contains(t, clientGo, `dir, err := cliutil.CacheDir()`,
+		"client.go must route the cache root through the generated cache-dir resolver")
+	assert.Contains(t, clientGo, `cacheDir = filepath.Join(dir, "http")`,
+		"client.go must place cacheDir under <api>/http so invalidateCache spares siblings (#1126)")
+	cliName := naming.CLI(apiSpec.Name)
+	wantOldShape := `filepath.Join(homeDir, ".cache", "` + cliName + `")`
+	wantInlineXDG := `os.Getenv("XDG_CACHE_HOME")`
+	wantBareRoot := `filepath.Join(dir, "` + cliName + `")`
+	assert.NotContains(t, clientGo, wantOldShape,
+		"client.go must not hardcode homeDir/.cache for cache root")
+	assert.NotContains(t, clientGo, wantInlineXDG,
+		"client.go must delegate XDG cache resolution to cliutil.CacheDir()")
+	assert.NotContains(t, clientGo, wantBareRoot,
+		"client.go must not point cacheDir at the bare cache root without /http (#1126)")
 }

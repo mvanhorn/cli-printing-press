@@ -93,6 +93,7 @@ func InferRequestSchema(body string, contentType string) []spec.Param {
 				Name:        key,
 				Type:        inferScalarStringType(value),
 				Required:    true,
+				Default:     value,
 				Description: "",
 			})
 		}
@@ -158,17 +159,28 @@ func mergeObject(fields map[string]*inferredField, object map[string]any, depth 
 		field.count++
 		field.param = inferParam(name, value, depth)
 
-		if field.param.Type == "object" && len(field.param.Fields) > 0 {
+		if (field.param.Type == "object" || field.param.Type == "array") && len(field.param.Fields) > 0 {
 			if field.nested == nil {
 				field.nested = make(map[string]*inferredField)
 			}
 
-			child, ok := value.(map[string]any)
-			if ok {
+			if child, ok := nestedObjectSample(value); ok {
 				mergeObject(field.nested, child, depth+1)
 			}
 		}
 	}
+}
+
+func nestedObjectSample(value any) (map[string]any, bool) {
+	if child, ok := value.(map[string]any); ok {
+		return child, true
+	}
+	items, ok := value.([]any)
+	if !ok || len(items) == 0 {
+		return nil, false
+	}
+	child, ok := items[0].(map[string]any)
+	return child, ok
 }
 
 func inferParam(name string, value any, depth int) spec.Param {
@@ -236,7 +248,7 @@ func buildParams(fields map[string]*inferredField, sampleCount int) []spec.Param
 		param := field.param
 		param.Name = name
 		param.Required = field.count == sampleCount
-		if field.param.Type == "object" && field.nested != nil {
+		if (field.param.Type == "object" || field.param.Type == "array") && field.nested != nil {
 			param.Fields = buildParams(field.nested, field.count)
 		}
 		params = append(params, param)

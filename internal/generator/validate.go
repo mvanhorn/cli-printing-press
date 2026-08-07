@@ -7,12 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/govulncheck"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 )
 
 type validationGate struct {
@@ -23,7 +25,7 @@ type validationGate struct {
 const qualityGateTimeout = 5 * time.Minute
 
 func (g *Generator) Validate() error {
-	binPath := filepath.Join(g.OutputDir, naming.ValidationBinary(g.Spec.Name))
+	binPath := platform.ExecutablePath(filepath.Join(g.OutputDir, naming.ValidationBinary(g.Spec.Name)))
 	if err := artifacts.CleanupGeneratedCLI(g.OutputDir, artifacts.CleanupOptions{
 		RemoveValidationBinaries: true,
 		RemoveRecursiveCopies:    true,
@@ -48,9 +50,23 @@ func (g *Generator) Validate() error {
 			},
 		},
 		{
+			name: "ensure safe golang.org/x/net",
+			run: func() error {
+				return ensureSafeXNet(g.OutputDir)
+			},
+		},
+		{
+			name: "go test ./...",
+			run: func() error {
+				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "test", "-count=1", "./...")
+				return err
+			},
+		},
+		{
 			name: "govulncheck ./...",
 			run: func() error {
-				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", govulncheck.GoRunArgs("./...")...)
+				env := govulncheck.ToolchainEnv(g.OutputDir)
+				_, err := runCommandWithEnv(g.OutputDir, qualityGateTimeout, env, "go", govulncheck.GoRunArgs("./...")...)
 				return err
 			},
 		},
@@ -64,21 +80,21 @@ func (g *Generator) Validate() error {
 		{
 			name: "go build ./...",
 			run: func() error {
-				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "build", "./...")
+				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "build", "-trimpath", "-ldflags=-buildid=", "./...")
 				return err
 			},
 		},
 		{
 			name: "build runnable binary",
 			run: func() error {
-				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "build", "-o", binPath, "./cmd/"+naming.CLI(g.Spec.Name))
+				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "build", "-trimpath", "-ldflags=-buildid=", "-o", binPath, "./cmd/"+naming.CLI(g.Spec.Name))
 				return err
 			},
 		},
 		{
 			name: naming.CLI(g.Spec.Name) + " --help",
 			run: func() error {
-				return validateCommandOutput(g.OutputDir, 15*time.Second, binPath, "--help")
+				return validateCommandOutput(g.OutputDir, helpGateTimeout(runtime.GOOS), binPath, "--help")
 			},
 		},
 		{
@@ -106,6 +122,13 @@ func (g *Generator) Validate() error {
 	return nil
 }
 
+func helpGateTimeout(goos string) time.Duration {
+	if goos == "windows" {
+		return 30 * time.Second
+	}
+	return 15 * time.Second
+}
+
 func validateCommandOutput(dir string, timeout time.Duration, name string, args ...string) error {
 	output, err := runCommand(dir, timeout, name, args...)
 	if err != nil {
@@ -118,6 +141,10 @@ func validateCommandOutput(dir string, timeout time.Duration, name string, args 
 }
 
 func runCommand(dir string, timeout time.Duration, name string, args ...string) (string, error) {
+	return runCommandWithEnv(dir, timeout, nil, name, args...)
+}
+
+func runCommandWithEnv(dir string, timeout time.Duration, extraEnv []string, name string, args ...string) (string, error) {
 	ctx := context.Background()
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -132,6 +159,7 @@ func runCommand(dir string, timeout time.Duration, name string, args ...string) 
 		return "", err
 	}
 	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+	cmd.Env = append(cmd.Env, extraEnv...)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

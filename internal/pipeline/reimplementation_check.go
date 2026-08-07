@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -17,11 +18,13 @@ import (
 // behavior - a hand-rolled response, a constant return, or an empty
 // stub that pretends to do work.
 //
-// The check is structural, not semantic. It does not parse Go or try to
-// understand what the function returns. It looks at the file that
+// The check is structural, not semantic. It looks at the file that
 // implements the command and asks: does any part of this file call
-// through the generated client package, or read from the generated
-// store package? If neither, the command is flagged.
+// through the generated client package, read from the generated store package,
+// or call a package-local helper that reaches the store or API client? If none do, the
+// command is flagged. Primitive client/store signals stay regex-based; helper
+// discovery uses Go AST parsing so declarations and comments do not look like
+// real helper calls.
 //
 // SQLite-derived commands (stale, bottleneck, health, reconcile) pass
 // this check because their files call `store.Open` and consult the
@@ -52,9 +55,20 @@ type ReimplementationCheckResult struct {
 	// dogfood analytics can distinguish "real API through abstraction" from
 	// "curated static data."
 	ExemptedViaClientDirective int `json:"exempted_via_client_directive,omitempty"`
+	// ExemptedViaComputedDataSource is the number of commands that passed
+	// via // pp:data-source computed. These commands intentionally compute
+	// from embedded policy/math tables instead of calling an API or store.
+	ExemptedViaComputedDataSource int `json:"exempted_via_computed_data_source,omitempty"`
+	// ExemptedViaLocalDataSource is the number of commands that passed
+	// via // pp:data-source local without a store package signal. These
+	// commands intentionally read local files or other local-only state.
+	ExemptedViaLocalDataSource int `json:"exempted_via_local_data_source,omitempty"`
 	// Suspicious is the list of commands whose files show no client
 	// call and no store access - the candidate hand-rolled responses.
 	Suspicious []ReimplementationFinding `json:"suspicious,omitempty"`
+	// MissingDataSourceStrategy is the list of hand-written novel-feature
+	// commands that do not declare // pp:data-source <auto|local|live|computed>.
+	MissingDataSourceStrategy []ReimplementationFinding `json:"missing_data_source_strategy,omitempty"`
 	// Skipped is true when the check could not run (no research dir, no
 	// novel features, no matchable files).
 	Skipped bool `json:"skipped,omitempty"`
@@ -69,10 +83,9 @@ type ReimplementationFinding struct {
 	Reason  string `json:"reason"`
 }
 
-// These signals are intentionally string-match and regex based. AST
-// parsing would be more precise but adds scope and dependency weight
-// this check does not need at v1. If false-positive pressure grows,
-// we upgrade to AST in a follow-up.
+// The primitive store/client signals stay regex-based because they are broad
+// file-level probes. Helper discovery uses Go ASTs so declarations and comments
+// do not look like real helper calls.
 
 var (
 	// storeImportRe catches the generated store package import in any
@@ -143,6 +156,8 @@ var (
 	// with optional whitespace variations. If the command's handler body
 	// is only this, no other signal is going to save it.
 	trivialBodyRe = regexp.MustCompile(`RunE:\s*func\s*\(\s*cmd\s*\*cobra\.Command\s*,\s*args\s*\[\]string\s*\)\s*error\s*\{\s*return\s+nil\s*\}`)
+
+	todoStubRe = regexp.MustCompile(`(?i)\bTODO:\s*implement\s+novel\s+feature\b`)
 )
 
 // checkReimplementation scans the files that implement built novel
@@ -172,13 +187,14 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 	// We only index non-infrastructure, non-test source files.
 	leafToFiles := map[string][]string{}
 	fileContent := map[string]string{}
+	helperContent := map[string]string{}
 	infra := map[string]bool{
 		"helpers.go": true,
 		"root.go":    true,
 		"doctor.go":  true,
 		"auth.go":    true,
 	}
-	useLineRe := regexp.MustCompile(`Use:\s*"([^"\s]+)`)
+	useLineRe := cobraUseLeafRe
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") {
@@ -187,14 +203,15 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 		if strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		if infra[name] {
-			continue
-		}
 		data, readErr := os.ReadFile(filepath.Join(cliFilesDir, name))
 		if readErr != nil {
 			continue
 		}
 		content := string(data)
+		helperContent[name] = content
+		if infra[name] {
+			continue
+		}
 		fileContent[name] = content
 		for _, m := range useLineRe.FindAllStringSubmatch(content, -1) {
 			leaf := m[1]
@@ -203,7 +220,8 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 	}
 
 	result := ReimplementationCheckResult{}
-	storeHelpers := storeHelperNames(fileContent)
+	storeHelpers := storeHelperNames(helperContent)
+	clientHelpers := clientHelperNames(helperContent)
 	for _, nf := range research.NovelFeatures {
 		leaf := lastPathSegment(commandPath(nf.Command))
 		if leaf == "" {
@@ -219,7 +237,11 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 		// and take the most favorable classification - any single file
 		// with the right signals vindicates the command.
 		result.Checked++
-		finding, kind, ok := classifyReimplementation(files, fileContent, storeHelpers)
+		if finding, ok := dataSourceStrategyFinding(files, fileContent); ok {
+			finding.Command = nf.Command
+			result.MissingDataSourceStrategy = append(result.MissingDataSourceStrategy, finding)
+		}
+		finding, kind, ok := classifyReimplementation(leaf, files, fileContent, storeHelpers, clientHelpers)
 		switch kind {
 		case exemptStore:
 			result.ExemptedViaStore++
@@ -229,6 +251,12 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 			continue
 		case exemptClientDirective:
 			result.ExemptedViaClientDirective++
+			continue
+		case exemptComputedDataSource:
+			result.ExemptedViaComputedDataSource++
+			continue
+		case exemptLocalDataSource:
+			result.ExemptedViaLocalDataSource++
 			continue
 		}
 		if !ok {
@@ -267,6 +295,11 @@ var novelStaticReferenceRe = regexp.MustCompile(`(?m)^\s*//\s*pp:novel-static-re
 // verify mechanically."
 var clientCallDirectiveRe = regexp.MustCompile(`(?m)^\s*//\s*pp:client-call\b`)
 
+var (
+	explicitDataSourceDirectiveRe = regexp.MustCompile(`(?i)^//\s*pp:data-source\s+(\S+)`)
+	trailingDataSourceDirectiveRe = regexp.MustCompile(`(?i)[.!?:;]\s+pp:data-source\s+(\S+)(?:\s*[.!])?\s*$`)
+)
+
 // exemptionKind labels which carve-out vindicated a command, so the
 // caller can route the bump to the right counter on
 // ReimplementationCheckResult. exemptNone covers both "passes via
@@ -280,6 +313,8 @@ const (
 	exemptStore
 	exemptAnnotation
 	exemptClientDirective
+	exemptComputedDataSource
+	exemptLocalDataSource
 )
 
 // classifyReimplementation returns the best classification across the
@@ -291,19 +326,33 @@ const (
 //  2. If any file carries the `// pp:client-call` marker, the command
 //     is exempted as a real API call hidden behind an abstraction.
 //     Return (_, exemptClientDirective, true).
-//  3. If any file shows a store signal, the command is exempted as a
+//  3. If any file declares // pp:data-source local and does not look
+//     like a TODO stub, the command is accepted as intentionally local.
+//  4. If any file declares // pp:data-source computed and does not look
+//     like a TODO stub, the command is exempted as intentional pure
+//     computation.
+//  5. If any file shows a store signal, the command is exempted as a
 //     local-SQLite feature. Return (_, exemptStore, true).
-//  4. If any file shows a client signal, the command is fine. Return
+//  6. If any file shows a client signal, the command is fine. Return
 //     (_, exemptNone, true).
-//  5. Otherwise the command is suspicious. Return a ReimplementationFinding
+//  7. Otherwise the command is suspicious. Return a ReimplementationFinding
 //     naming the primary file and a reason. Return (finding, exemptNone, false).
 //
-// The trivial-body regex is consulted only when rule 5 fires, to pick
+// The trivial-body regex is consulted only when rule 6 fires, to pick
 // between "empty stub" and "hand-rolled response" as the reason.
-func classifyReimplementation(files []string, fileContent map[string]string, storeHelpers map[string]bool) (ReimplementationFinding, exemptionKind, bool) {
+func classifyReimplementation(leaf string, files []string, fileContent map[string]string, storeHelpers, clientHelpers map[string]bool) (ReimplementationFinding, exemptionKind, bool) {
 	hasClient := false
 	hasTrivialBody := false
+	hasTODOStub := false
 	primaryFile := files[0]
+	hasAnyTODOStub := false
+	for _, f := range files {
+		content, ok := fileContent[f]
+		if ok && todoStubRe.MatchString(content) {
+			hasAnyTODOStub = true
+			break
+		}
+	}
 	for _, f := range files {
 		content, ok := fileContent[f]
 		if !ok {
@@ -315,16 +364,36 @@ func classifyReimplementation(files []string, fileContent map[string]string, sto
 		if clientCallDirectiveRe.MatchString(content) {
 			return ReimplementationFinding{File: f}, exemptClientDirective, true
 		}
+		if computedDataSource(content) && !hasAnyTODOStub {
+			return ReimplementationFinding{File: f}, exemptComputedDataSource, true
+		}
 		if hasStoreSignal(content) {
 			return ReimplementationFinding{File: f}, exemptStore, true
 		}
 		if callsStoreHelper(content, storeHelpers) {
 			return ReimplementationFinding{File: f}, exemptStore, true
 		}
-		if hasClientSignal(content) {
+		if localDataSource(content) && !hasAnyTODOStub {
+			return ReimplementationFinding{File: f}, exemptLocalDataSource, true
+		}
+		commandScan := scanCommandHandler(content, leaf)
+		clientScanContent := content
+		if commandScan.ok {
+			clientScanContent = commandScan.body
+		}
+		if callsClientHelper(clientScanContent, clientHelpers) {
+			hasClient = true
+		}
+		if commandScan.ok && hasBlockClientSignal(commandScan.bodyNode, commandScan.imports, true) {
+			hasClient = true
+		} else if !commandScan.ok && hasClientSignal(content) {
 			hasClient = true
 		}
 		if trivialBodyRe.MatchString(content) {
+			hasTrivialBody = true
+		}
+		if todoStubRe.MatchString(content) {
+			hasTODOStub = true
 			hasTrivialBody = true
 		}
 	}
@@ -332,10 +401,110 @@ func classifyReimplementation(files []string, fileContent map[string]string, sto
 		return ReimplementationFinding{File: primaryFile}, exemptNone, true
 	}
 	reason := "hand-rolled response: no API client call, no store access"
-	if hasTrivialBody {
+	if hasTODOStub {
+		reason = "TODO stub: no implementation"
+	} else if hasTrivialBody {
 		reason = "empty body: no implementation"
 	}
 	return ReimplementationFinding{File: primaryFile, Reason: reason}, exemptNone, false
+}
+
+func dataSourceStrategyFinding(files []string, fileContent map[string]string) (ReimplementationFinding, bool) {
+	var firstMissing string
+	for _, f := range files {
+		content, ok := fileContent[f]
+		if !ok || isGeneratedPrintingPressFile(content) {
+			continue
+		}
+		strategy, invalidReason := declaredDataSourceStrategy(content)
+		if invalidReason != "" {
+			return ReimplementationFinding{File: f, Reason: invalidReason}, true
+		}
+		if strategy == "" {
+			if firstMissing == "" {
+				firstMissing = f
+			}
+			continue
+		}
+		return ReimplementationFinding{}, false
+	}
+	if firstMissing != "" {
+		return ReimplementationFinding{
+			File:   firstMissing,
+			Reason: "missing // pp:data-source <auto|local|live|computed> annotation",
+		}, true
+	}
+	return ReimplementationFinding{}, false
+}
+
+func computedDataSource(content string) bool {
+	strategy, invalidReason := declaredDataSourceStrategy(content)
+	return invalidReason == "" && strategy == "computed"
+}
+
+func localDataSource(content string) bool {
+	strategy, invalidReason := declaredDataSourceStrategy(content)
+	return invalidReason == "" && strategy == "local"
+}
+
+// declaredDataSourceStrategy reads only parsed Go line comments. A directive
+// may lead the comment or follow punctuation in a descriptive comment;
+// comment-shaped strings and prose mentions are not declarations. When a
+// scaffold's auto default remains beside one narrower declaration, the narrower
+// strategy wins.
+func declaredDataSourceStrategy(content string) (string, string) {
+	parsed, err := parser.ParseFile(token.NewFileSet(), "", content, parser.ParseComments)
+	if err != nil {
+		return "", ""
+	}
+
+	strategies := make(map[string]struct{})
+	for _, group := range parsed.Comments {
+		for _, comment := range group.List {
+			if !strings.HasPrefix(comment.Text, "//") {
+				continue
+			}
+
+			match := explicitDataSourceDirectiveRe.FindStringSubmatch(comment.Text)
+			if len(match) == 0 {
+				match = trailingDataSourceDirectiveRe.FindStringSubmatch(comment.Text)
+			}
+			if len(match) > 1 {
+				strategy := strings.ToLower(match[1])
+				if strings.HasSuffix(strategy, ".") || strings.HasSuffix(strategy, "!") {
+					strategy = strategy[:len(strategy)-1]
+				}
+				if !validDataSourceStrategy(strategy) {
+					return "", "invalid // pp:data-source annotation: must be auto, local, live, or computed"
+				}
+				strategies[strategy] = struct{}{}
+			}
+		}
+	}
+
+	if len(strategies) > 1 {
+		delete(strategies, "auto")
+	}
+	if len(strategies) > 1 {
+		return "", "conflicting // pp:data-source annotations: use exactly one of auto, local, live, or computed"
+	}
+	for strategy := range strategies {
+		return strategy, ""
+	}
+	return "", ""
+}
+
+func validDataSourceStrategy(strategy string) bool {
+	switch strategy {
+	case "auto", "local", "live", "computed":
+		return true
+	default:
+		return false
+	}
+}
+
+func isGeneratedPrintingPressFile(content string) bool {
+	return strings.Contains(content, "Generated by CLI Printing Press")
 }
 
 func hasStoreSignal(content string) bool {
@@ -346,16 +515,358 @@ func hasStoreSignal(content string) bool {
 
 func storeHelperNames(fileContent map[string]string) map[string]bool {
 	helpers := map[string]bool{}
+	funcContent := map[string]string{}
 	for _, content := range fileContent {
-		if !hasStoreSignal(content) {
-			continue
+		forEachGoFuncContent(content, func(name, body string) {
+			funcContent[name] = body
+			if hasStoreSignal(body) || storeTypeRe.MatchString(body) {
+				helpers[name] = true
+			}
+		})
+	}
+	for {
+		changed := false
+		for name, body := range funcContent {
+			if helpers[name] {
+				continue
+			}
+			if callsStoreHelper(body, helpers) {
+				helpers[name] = true
+				changed = true
+			}
 		}
-		collectStoreHelpers(content, helpers)
+		if !changed {
+			break
+		}
 	}
 	return helpers
 }
 
-func collectStoreHelpers(content string, helpers map[string]bool) {
+type clientImportKind int
+
+const (
+	generatedClientImport clientImportKind = iota + 1
+	siblingClientImport
+)
+
+func clientHelperNames(fileContent map[string]string) map[string]bool {
+	helpers := map[string]bool{}
+	for _, content := range fileContent {
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, "", content, 0)
+		if err != nil {
+			continue
+		}
+		imports := clientImportAliases(file)
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name == nil || fn.Recv != nil || fn.Body == nil {
+				continue
+			}
+			// Client helper discovery is intentionally one hop: command -> helper
+			// -> client. Deeper chains use the pp:client-call escape hatch.
+			if hasFunctionClientSignal(fn, imports) {
+				helpers[fn.Name.Name] = true
+			}
+		}
+	}
+	return helpers
+}
+
+func clientImportAliases(file *ast.File) map[string]clientImportKind {
+	aliases := map[string]clientImportKind{}
+	for _, spec := range file.Imports {
+		importPath := strings.Trim(spec.Path.Value, "`\"")
+		if importPath == "" {
+			continue
+		}
+		internalName, isInternal := internalPackageName(importPath)
+		kind := clientImportKind(0)
+		switch {
+		case strings.HasSuffix(importPath, "/internal/client"):
+			kind = generatedClientImport
+		case isInternal && !reservedInternalPackages[internalName]:
+			kind = siblingClientImport
+		default:
+			continue
+		}
+		alias := importAlias(spec, importPath)
+		if alias != "" {
+			aliases[alias] = kind
+		}
+	}
+	return aliases
+}
+
+func internalPackageName(importPath string) (string, bool) {
+	_, rest, ok := strings.Cut(importPath, "/internal/")
+	if !ok {
+		return "", false
+	}
+	if rest == "" {
+		return "", false
+	}
+	name, _, _ := strings.Cut(rest, "/")
+	return name, name != ""
+}
+
+func importAlias(spec *ast.ImportSpec, importPath string) string {
+	if spec.Name != nil {
+		switch spec.Name.Name {
+		case ".", "_":
+			return ""
+		default:
+			return spec.Name.Name
+		}
+	}
+	if idx := strings.LastIndex(importPath, "/"); idx >= 0 {
+		return importPath[idx+1:]
+	}
+	return importPath
+}
+
+func hasFunctionClientSignal(fn *ast.FuncDecl, imports map[string]clientImportKind) bool {
+	return hasBlockClientSignal(fn.Body, imports, false)
+}
+
+func hasBlockClientSignal(body *ast.BlockStmt, imports map[string]clientImportKind, allowAnySiblingSelector bool) bool {
+	if body == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if isPrimitiveClientCall(call.Fun) || isImportedClientCall(call.Fun, imports, allowAnySiblingSelector) || isSidecarExecCall(call) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func isPrimitiveClientCall(expr ast.Expr) bool {
+	parts := selectorParts(expr)
+	if len(parts) < 2 {
+		return false
+	}
+	root := parts[0]
+	last := parts[len(parts)-1]
+	if root == "flags" && last == "newClient" {
+		return true
+	}
+	return outboundHTTPCallRe.MatchString(strings.Join(parts, ".") + "(")
+}
+
+func isSidecarExecCall(call *ast.CallExpr) bool {
+	parts := selectorParts(call.Fun)
+	if len(parts) != 2 || parts[0] != "exec" {
+		return false
+	}
+	binaryArg := 0
+	switch parts[1] {
+	case "Command":
+		binaryArg = 0
+	case "CommandContext":
+		binaryArg = 1
+	default:
+		return false
+	}
+	if len(call.Args) <= binaryArg {
+		return false
+	}
+	lit, ok := call.Args[binaryArg].(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return false
+	}
+	value, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return false
+	}
+	return strings.HasSuffix(strings.TrimSpace(value), "-pp-mcp")
+}
+
+func isImportedClientCall(expr ast.Expr, imports map[string]clientImportKind, allowAnySiblingSelector bool) bool {
+	parts := selectorParts(expr)
+	if len(parts) < 2 {
+		return false
+	}
+	kind, ok := imports[parts[0]]
+	if !ok {
+		return false
+	}
+	if kind == generatedClientImport {
+		return true
+	}
+	if allowAnySiblingSelector {
+		return true
+	}
+	return isSiblingClientSelector(parts[len(parts)-1])
+}
+
+func isSiblingClientSelector(name string) bool {
+	switch name {
+	case "NewClient", "NewRequest", "NewRequestWithContext", "Get", "Post", "Do":
+		return true
+	default:
+		return strings.HasPrefix(name, "Fetch")
+	}
+}
+
+func selectorParts(expr ast.Expr) []string {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return []string{e.Name}
+	case *ast.SelectorExpr:
+		parts := selectorParts(e.X)
+		if len(parts) == 0 {
+			return nil
+		}
+		return append(parts, e.Sel.Name)
+	case *ast.ParenExpr:
+		return selectorParts(e.X)
+	default:
+		return nil
+	}
+}
+
+type commandHandlerScan struct {
+	body     string
+	bodyNode *ast.BlockStmt
+	imports  map[string]clientImportKind
+	ok       bool
+}
+
+func scanCommandHandler(content, leaf string) commandHandlerScan {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "", content, 0)
+	if err != nil {
+		return commandHandlerScan{}
+	}
+	imports := clientImportAliases(file)
+	cobraAliases := cobraImportAliases(file)
+	var scan commandHandlerScan
+	ast.Inspect(file, func(n ast.Node) bool {
+		if scan.ok {
+			return false
+		}
+		lit, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		handler := commandHandlerForLeaf(lit, leaf, cobraAliases)
+		if handler == nil || handler.Body == nil {
+			return true
+		}
+		start := fset.Position(handler.Body.Pos()).Offset
+		end := fset.Position(handler.Body.End()).Offset
+		if start < 0 || end > len(content) || start >= end {
+			return true
+		}
+		scan = commandHandlerScan{
+			body:     content[start:end],
+			bodyNode: handler.Body,
+			imports:  imports,
+			ok:       true,
+		}
+		return false
+	})
+	return scan
+}
+
+func commandHandlerForLeaf(lit *ast.CompositeLit, leaf string, cobraAliases map[string]bool) *ast.FuncLit {
+	if !isCommandCompositeType(lit.Type, cobraAliases) {
+		return nil
+	}
+	matchesLeaf := false
+	var runHandler *ast.FuncLit
+	var runEHandler *ast.FuncLit
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		switch key.Name {
+		case "Use":
+			matchesLeaf = useExprLeaf(kv.Value) == leaf
+		case "Run":
+			if fn, ok := kv.Value.(*ast.FuncLit); ok {
+				runHandler = fn
+			}
+		case "RunE":
+			if fn, ok := kv.Value.(*ast.FuncLit); ok {
+				runEHandler = fn
+			}
+		}
+	}
+	if matchesLeaf {
+		if runEHandler != nil {
+			return runEHandler
+		}
+		return runHandler
+	}
+	return nil
+}
+
+func cobraImportAliases(file *ast.File) map[string]bool {
+	aliases := map[string]bool{}
+	for _, spec := range file.Imports {
+		importPath := strings.Trim(spec.Path.Value, "`\"")
+		if importPath != "github.com/spf13/cobra" {
+			continue
+		}
+		if spec.Name != nil {
+			if spec.Name.Name != "_" {
+				aliases[spec.Name.Name] = true
+			}
+			continue
+		}
+		aliases["cobra"] = true
+	}
+	return aliases
+}
+
+func isCommandCompositeType(expr ast.Expr, cobraAliases map[string]bool) bool {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name == "Command" && cobraAliases["."]
+	case *ast.SelectorExpr:
+		id, ok := e.X.(*ast.Ident)
+		return ok && e.Sel.Name == "Command" && cobraAliases[id.Name]
+	case *ast.StarExpr:
+		return isCommandCompositeType(e.X, cobraAliases)
+	default:
+		return false
+	}
+}
+
+func useExprLeaf(expr ast.Expr) string {
+	lit, ok := expr.(*ast.BasicLit)
+	if !ok {
+		return ""
+	}
+	use, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(use)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func forEachGoFuncContent(content string, visit func(name, body string)) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "", content, 0)
 	if err != nil {
@@ -363,7 +874,7 @@ func collectStoreHelpers(content string, helpers map[string]bool) {
 	}
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Name == nil {
+		if !ok || fn.Name == nil || fn.Recv != nil {
 			continue
 		}
 		start := fset.Position(fn.Pos()).Offset
@@ -371,20 +882,78 @@ func collectStoreHelpers(content string, helpers map[string]bool) {
 		if start < 0 || end > len(content) || start >= end {
 			continue
 		}
-		funcText := content[start:end]
-		if storeCallRe.MatchString(funcText) || storeTypeRe.MatchString(funcText) {
-			helpers[fn.Name.Name] = true
-		}
+		visit(fn.Name.Name, content[start:end])
 	}
 }
 
+func callsClientHelper(content string, helpers map[string]bool) bool {
+	return callsHelper(content, helpers)
+}
+
 func callsStoreHelper(content string, helpers map[string]bool) bool {
-	for name := range helpers {
-		if regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\s*\(`).MatchString(content) {
-			return true
+	return callsHelper(content, helpers)
+}
+
+func countWeightedHelperCallsFiltered(content string, helpers map[string]int, include func(string, string) bool) int {
+	if len(helpers) == 0 {
+		return 0
+	}
+	return countHelperCalls(content, func(name string) int {
+		count := 0
+		for key, weight := range helpers {
+			fileName, funcName := splitHelperKey(key)
+			if funcName != name {
+				continue
+			}
+			if include != nil && !include(fileName, funcName) {
+				continue
+			}
+			count += weight
+		}
+		return count
+	})
+}
+
+func callsHelper(content string, helpers map[string]bool) bool {
+	if len(helpers) == 0 {
+		return false
+	}
+	return countHelperCalls(content, func(name string) int {
+		if helpers[name] {
+			return 1
+		}
+		return 0
+	}) > 0
+}
+
+func countHelperCalls(content string, weight func(string) int) int {
+	source := content
+	file, err := parser.ParseFile(token.NewFileSet(), "", source, 0)
+	if err != nil {
+		trimmed := strings.TrimSpace(source)
+		if strings.HasPrefix(trimmed, "{") {
+			source = "package cli\nfunc _() " + trimmed
+		} else {
+			source = "package cli\n" + source
+		}
+		file, err = parser.ParseFile(token.NewFileSet(), "", source, 0)
+		if err != nil {
+			return 0
 		}
 	}
-	return false
+	count := 0
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := call.Fun.(*ast.Ident)
+		if ok {
+			count += weight(ident.Name)
+		}
+		return true
+	})
+	return count
 }
 
 func hasClientSignal(content string) bool {

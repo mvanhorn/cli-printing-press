@@ -4,16 +4,29 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 type TableDef struct {
+	// Name is the snake_cased SQL/Go identifier (table DDL, Pascal-derived
+	// method names). Resource is the original spec key used by callers that
+	// dispatch on the runtime resource string, which preserves spec casing.
 	Name         string
+	Resource     string
 	Columns      []ColumnDef
 	Indexes      []IndexDef
 	FTS5         bool
 	FTS5Fields   []string
 	FTS5Triggers bool
+
+	// ParentKeyColumn is set for dependent resource tables whose rows carry
+	// parent context. Store upserts use it to keep one row per child-parent
+	// pair instead of collapsing many-to-many relations onto the child id.
+	ParentKeyColumn string
+
+	JSONOnlyFallback    bool
+	OriginalColumnCount int
 }
 
 type ColumnDef struct {
@@ -37,6 +50,49 @@ var baseTableColumns = []ColumnDef{
 	{Name: "id", Type: "TEXT", PrimaryKey: true},
 	{Name: "data", Type: "JSON", NotNull: true},
 	{Name: "synced_at", Type: "DATETIME DEFAULT CURRENT_TIMESTAMP"},
+}
+
+// SQLite defaults to SQLITE_MAX_COLUMN=2000. Keep typed domain tables below
+// that hard limit with room for generator-added columns and future schema drift.
+const maxStoreDomainTableColumns = 1500
+
+// frameworkStoreObjectNames owns SQLite schema names that domain projections
+// must not reuse. A collision is routed through the generic resources table so
+// the API resource remains syncable without colliding with framework tables or
+// indexes.
+var frameworkStoreObjectNames = map[string]struct{}{
+	"resources":             {},
+	"resources_fts":         {},
+	"resources_fts_data":    {},
+	"resources_fts_idx":     {},
+	"resources_fts_content": {},
+	"resources_fts_docsize": {},
+	"resources_fts_config":  {},
+	"resources_v2":          {},
+	"sync_state":            {},
+	"idx_resources_type":    {},
+	"idx_resources_synced":  {},
+}
+
+var learnStoreObjectNames = map[string]struct{}{
+	"search_learnings":               {},
+	"entity_lookups":                 {},
+	"search_patterns":                {},
+	"learning_playbooks":             {},
+	"learn_candidates":               {},
+	"learn_events":                   {},
+	"learn_recall_misses":            {},
+	"idx_learn_query":                {},
+	"idx_learn_unique":               {},
+	"idx_entity_lookup_canonical":    {},
+	"idx_entity_lookup_kind":         {},
+	"idx_patterns_query_template":    {},
+	"idx_patterns_unique":            {},
+	"idx_playbooks_source":           {},
+	"idx_playbooks_last_observed_at": {},
+	"idx_learn_candidates_status":    {},
+	"idx_learn_candidates_family":    {},
+	"idx_learn_events_event_ts":      {},
 }
 
 // BuildSchema generates domain-specific table definitions from the API spec.
@@ -65,8 +121,9 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 		tableName := toSnakeCase(name)
 
 		table := TableDef{
-			Name:    tableName,
-			Columns: append([]ColumnDef(nil), baseTableColumns...),
+			Name:     tableName,
+			Resource: name,
+			Columns:  append([]ColumnDef(nil), baseTableColumns...),
 		}
 
 		if gravity >= 2 {
@@ -105,10 +162,19 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 					})
 				}
 			}
+			if len(table.Columns) > maxStoreDomainTableColumns {
+				table.JSONOnlyFallback = true
+				table.OriginalColumnCount = len(table.Columns)
+				table.Columns = append([]ColumnDef(nil), baseTableColumns...)
+				table.Indexes = nil
+				table.FTS5 = false
+				table.FTS5Fields = nil
+				table.FTS5Triggers = false
+			}
 		}
 
 		textFields := collectTextFieldNamesFromFields(fields)
-		if len(textFields) >= 2 && gravity >= 2 {
+		if len(textFields) >= 2 && gravity >= 2 && !table.JSONOnlyFallback {
 			table.FTS5 = true
 			table.FTS5Fields = textFields
 			// Only use content-sync triggers when ALL FTS fields are
@@ -143,7 +209,10 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 	// author naming a top-level resource the same thing the shard synthesizes
 	// (e.g. top-level "gists_commits" plus a multi-parent "commits" under
 	// "gists") would otherwise emit two CREATE TABLE statements and two
-	// duplicate Upsert<X>Tx methods, breaking the build on regen.
+	// duplicate Upsert<X>Tx methods, breaking the build on regen. Top-level
+	// tables are appended before sub-resource tables, so on a Name collision
+	// the kept entry carries the top-level Resource (raw spec key) rather
+	// than the sub-resource's snake-cased form.
 	seen := make(map[string]bool)
 	deduped := make([]TableDef, 0, len(tables))
 	for _, t := range tables {
@@ -153,9 +222,11 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 		}
 	}
 	tables = deduped
+	routeReservedStoreTablesToGenericOnly(tables, reservedStoreObjectNames(s))
 
 	tables = append(tables, TableDef{
-		Name: "sync_state",
+		Name:     "sync_state",
+		Resource: "sync_state",
 		Columns: []ColumnDef{
 			{Name: "resource_type", Type: "TEXT", PrimaryKey: true},
 			{Name: "last_cursor", Type: "TEXT"},
@@ -165,6 +236,42 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 	})
 
 	return tables
+}
+
+func reservedStoreObjectNames(s *spec.APISpec) map[string]struct{} {
+	names := make(map[string]struct{}, len(frameworkStoreObjectNames)+len(learnStoreObjectNames)+5)
+	for name := range frameworkStoreObjectNames {
+		names[name] = struct{}{}
+	}
+	for name := range learnStoreObjectNames {
+		names[name] = struct{}{}
+	}
+	prefix := naming.Snake(s.Name)
+	for _, suffix := range []string{
+		"_stream_frames",
+		"_stream_metadata",
+		"_rebase_log",
+		"_stream_metadata_status",
+		"_rebase_log_created",
+	} {
+		names[prefix+suffix] = struct{}{}
+	}
+	return names
+}
+
+func routeReservedStoreTablesToGenericOnly(tables []TableDef, reserved map[string]struct{}) {
+	for i := range tables {
+		if _, collision := reserved[tables[i].Name]; !collision {
+			continue
+		}
+		tables[i].Columns = append([]ColumnDef(nil), baseTableColumns...)
+		tables[i].Indexes = nil
+		tables[i].FTS5 = false
+		tables[i].FTS5Fields = nil
+		tables[i].FTS5Triggers = false
+		tables[i].JSONOnlyFallback = false
+		tables[i].OriginalColumnCount = 0
+	}
 }
 
 // computeDataGravity scores 0-12 based on endpoint count, response field
@@ -372,8 +479,10 @@ func buildSubResourceTable(name string, r spec.Resource, parentTable string) Tab
 	columns = append(columns, baseTableColumns[1:]...) // data, synced_at
 
 	return TableDef{
-		Name:    tableName,
-		Columns: columns,
+		Name:            tableName,
+		Resource:        tableName,
+		Columns:         columns,
+		ParentKeyColumn: parentCol,
 		Indexes: []IndexDef{
 			{
 				Name:      "idx_" + tableName + "_" + parentCol,
@@ -384,52 +493,15 @@ func buildSubResourceTable(name string, r spec.Resource, parentTable string) Tab
 	}
 }
 
-// sqlReservedWords is the set of SQL keywords that must be quoted when used
-// as table or column names. Covers SQLite reserved words plus common SQL
-// keywords that appear as API resource or field names.
-var sqlReservedWords = map[string]bool{
-	"check": true, "default": true, "from": true, "to": true,
-	"order": true, "group": true, "select": true, "where": true,
-	"table": true, "column": true, "index": true, "key": true,
-	"values": true, "references": true, "create": true, "drop": true,
-	"insert": true, "update": true, "delete": true, "set": true,
-	"join": true, "on": true, "in": true, "not": true, "null": true,
-	"primary": true, "foreign": true, "unique": true, "like": true,
-	"between": true, "exists": true, "having": true, "limit": true,
-	"offset": true, "union": true, "except": true, "case": true,
-	"when": true, "then": true, "else": true, "end": true,
-	"as": true, "is": true, "by": true, "and": true, "or": true,
-	"transaction": true, "begin": true, "commit": true, "rollback": true,
-	"trigger": true, "view": true, "replace": true, "match": true,
-}
-
 // safeSQLName returns an identifier that is safe to use in SQLite DDL.
-// SQLite accepts many names when double-quoted, so quote reserved words and
-// anything that is not a valid bare identifier (for example, names beginning
-// with a digit).
+// Always double-quotes the name, escaping any embedded quote. Quoting is
+// harmless for non-keyword identifiers and is the only way to safely emit
+// SQLite strict-reserved keywords like "add", "to", and "from" in CREATE
+// TABLE / CREATE INDEX context, where they otherwise fail at parse time.
+// Maintaining a hand-rolled keyword allowlist diverges from SQLite over
+// time; quoting unconditionally is the durable contract.
 func safeSQLName(name string) string {
-	if sqlReservedWords[strings.ToLower(name)] || !isBareSQLiteIdentifier(name) {
-		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
-	}
-	return name
-}
-
-func isBareSQLiteIdentifier(name string) bool {
-	if name == "" {
-		return false
-	}
-	for i, r := range name {
-		if i == 0 {
-			if r != '_' && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
-				return false
-			}
-			continue
-		}
-		if r != '_' && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
-			return false
-		}
-	}
-	return true
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 func sqlStringLiteral(s string) string {

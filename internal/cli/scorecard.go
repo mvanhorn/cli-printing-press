@@ -19,25 +19,31 @@ func newScorecardCmd() *cobra.Command {
 	var asJSON bool
 	var liveCheck bool
 	var liveCheckTimeout time.Duration
+	var writeManifest string
 
 	cmd := &cobra.Command{
 		Use:   "scorecard",
 		Short: "Score a generated CLI against the Steinberger bar",
 		Example: `  # Score a generated CLI directory
-  printing-press scorecard --dir ./generated/stripe-pp-cli
+  cli-printing-press scorecard --dir ./generated/stripe-pp-cli
 
   # Include a live behavioral sample (runs novel-feature examples against real targets)
-  printing-press scorecard --dir ./generated/stripe-pp-cli --live-check
+  cli-printing-press scorecard --dir ./generated/stripe-pp-cli --live-check
 
   # Live-check a CLI whose research.json lives in the run state, not the CLI dir
-  printing-press scorecard --dir ./working/foo-pp-cli --research-dir ./runs/<id> --live-check
+  cli-printing-press scorecard --dir ./working/foo-pp-cli --research-dir ./runs/<id> --live-check
 
   # Output as JSON
-  printing-press scorecard --dir ./generated/stripe-pp-cli --json`,
+  cli-printing-press scorecard --dir ./generated/stripe-pp-cli --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
 			}
+			canonicalDir, err := pipeline.ResolveTargetDir(dir)
+			if err != nil {
+				return &ExitError{Code: ExitInputError, Err: err}
+			}
+			dir = canonicalDir
 
 			// Use a temp pipeline dir for the scorecard output
 			pipelineDir, err := os.MkdirTemp("", "scorecard-*")
@@ -46,7 +52,11 @@ func newScorecardCmd() *cobra.Command {
 			}
 			defer func() { _ = os.RemoveAll(pipelineDir) }()
 
-			sc, err := pipeline.RunScorecard(dir, pipelineDir, specPath, nil)
+			verifyReport, err := pipeline.LoadVerifyReportFromManifest(writeManifest)
+			if err != nil {
+				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("loading verify evidence: %w", err)}
+			}
+			sc, err := pipeline.RunScorecard(dir, pipelineDir, specPath, verifyReport)
 			if err != nil {
 				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("running scorecard: %w", err)}
 			}
@@ -59,6 +69,11 @@ func newScorecardCmd() *cobra.Command {
 					Timeout:     liveCheckTimeout,
 				})
 				pipeline.ApplyLiveCheckToScorecard(sc, live)
+			}
+			if writeManifest != "" {
+				if _, err := pipeline.PersistScorecardToManifest(writeManifest, sc, researchDir); err != nil {
+					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("writing scorecard to manifest: %w", err)}
+				}
 			}
 
 			if asJSON {
@@ -76,10 +91,18 @@ func newScorecardCmd() *cobra.Command {
 
 			if live != nil {
 				fmt.Printf("\nSample Output Probe (live command sample)\n")
+				if live.BinaryRefresh != nil {
+					fmt.Printf("  Binary refresh: %s", live.BinaryRefresh.Action)
+					if live.BinaryRefresh.Reason != "" {
+						fmt.Printf(" (%s)", live.BinaryRefresh.Reason)
+					}
+					fmt.Println()
+				}
 				if live.Unable {
+					fmt.Printf("  Status: unavailable\n")
 					fmt.Printf("  Unable to run: %s\n", live.Reason)
 				} else {
-					fmt.Printf("  Passed: %d/%d  (%d%% pass rate)\n", live.Passed, live.Checked(), int(live.PassRate*100+0.5))
+					fmt.Printf("  Passed: %d/%d  (%d%% pass rate, %d skipped)\n", live.Passed, live.Evaluated(), int(live.PassRate*100+0.5), live.Skipped)
 					if live.Failed > 0 {
 						fmt.Println("  Failures:")
 						for _, f := range live.Features {
@@ -114,6 +137,10 @@ func newScorecardCmd() *cobra.Command {
 				}
 			}
 
+			if reason := liveCheckFatalReason(live); reason != "" {
+				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("%s", reason)}
+			}
+
 			return nil
 		},
 	}
@@ -124,8 +151,19 @@ func newScorecardCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&liveCheck, "live-check", false, "Sample novel-feature examples against real targets and cap Insight when flagships return broken output")
 	cmd.Flags().DurationVar(&liveCheckTimeout, "live-check-timeout", 10*time.Second, "Per-feature timeout for live check invocations")
+	cmd.Flags().StringVar(&writeManifest, "write-manifest", "", "Path to .printing-press.json to update with scorecard summary and built novel features")
 
 	return cmd
+}
+
+func liveCheckFatalReason(live *pipeline.LiveCheckResult) string {
+	if live == nil || live.BinaryRefresh == nil || live.BinaryRefresh.Action != "failed" {
+		return ""
+	}
+	if live.Reason != "" {
+		return "live-check staged binary refresh failed: " + live.Reason
+	}
+	return "live-check staged binary refresh failed"
 }
 
 // renderHumanScorecard writes the human-readable scorecard table to w.
@@ -174,5 +212,8 @@ func renderHumanScorecard(w io.Writer, sc *pipeline.Scorecard) {
 	fmt.Fprintf(w, "\n  Total: %d/100 - Grade %s\n", s.Total, sc.OverallGrade)
 	if len(sc.UnscoredDimensions) > 0 {
 		fmt.Fprintf(w, "  Note: omitted from denominator: %s\n", strings.Join(sc.UnscoredDimensions, ", "))
+	}
+	if len(sc.UnverifiedDimensions) > 0 {
+		fmt.Fprintf(w, "  Hold: unverified dimensions: %s\n", strings.Join(sc.UnverifiedDimensions, ", "))
 	}
 }

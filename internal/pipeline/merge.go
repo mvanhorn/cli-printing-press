@@ -76,8 +76,14 @@ func applyParamPatches(params *[]spec.Param, patches []ParamPatch) error {
 				if patch.ClearFlagName {
 					(*params)[i].FlagName = ""
 				}
+				if patch.ClearBodyName {
+					(*params)[i].BodyName = ""
+				}
 				if patch.FlagName != nil {
 					(*params)[i].FlagName = *patch.FlagName
+				}
+				if patch.BodyName != nil {
+					(*params)[i].BodyName = *patch.BodyName
 				}
 				if patch.Aliases != nil {
 					(*params)[i].Aliases = append([]string(nil), (*patch.Aliases)...)

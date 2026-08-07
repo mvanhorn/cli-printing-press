@@ -9,18 +9,26 @@ import (
 // Label vocabulary matches internal/browsersniff/analysis.go's
 // ProtectionObservation labels so probe and post-capture analyzer agree.
 type Protection struct {
-	Label    string
-	Evidence string
+	Label        string
+	Evidence     string
+	BodyEvidence string
 }
 
 // classifyResponse returns protection signals detected in the response.
-// bodySnippet is expected to be a small (~4KB) lowercased read of the
+// bodySnippet is expected to be a bounded lowercased read of the
 // response body — full body reads would be wasteful for large pages.
 func classifyResponse(status int, headers http.Header, bodySnippet string) []Protection {
 	var out []Protection
 	body := strings.ToLower(bodySnippet)
 	h := lowerHeaders(headers)
 	server := h["server"]
+	contentType := h["content-type"]
+	jsonBody := strings.Contains(contentType, "json")
+	htmlBody := strings.Contains(contentType, "html") ||
+		(!jsonBody && (strings.Contains(body, "<html") ||
+			strings.Contains(body, "<script") ||
+			strings.Contains(body, "<div") ||
+			strings.Contains(body, "<iframe")))
 
 	if v := h["cf-mitigated"]; v == "challenge" {
 		out = append(out, Protection{Label: "bot_challenge", Evidence: "cf-mitigated: challenge"})
@@ -32,13 +40,17 @@ func classifyResponse(status int, headers http.Header, bodySnippet string) []Pro
 	if h["x-vercel-challenge-token"] != "" {
 		out = append(out, Protection{Label: "vercel_challenge", Evidence: "x-vercel-challenge-token present"})
 	}
-	if strings.Contains(body, "vercel security checkpoint") {
-		out = append(out, Protection{Label: "vercel_challenge", Evidence: "Vercel Security Checkpoint page"})
+	if htmlBody && strings.Contains(body, "vercel security checkpoint") {
+		out = append(out, Protection{Label: "vercel_challenge", Evidence: "Vercel Security Checkpoint page", BodyEvidence: "vercel_security_checkpoint"})
 	}
 
 	if h["aws-waf-token"] != "" || hasHeaderPrefix(h, "x-amzn-waf") ||
-		strings.Contains(body, "awswaf") || strings.Contains(body, "aws-waf") {
-		out = append(out, Protection{Label: "aws_waf", Evidence: "AWS WAF marker"})
+		(htmlBody && (strings.Contains(body, "awswaf") || strings.Contains(body, "aws-waf"))) {
+		p := Protection{Label: "aws_waf", Evidence: "AWS WAF marker"}
+		if htmlBody && (strings.Contains(body, "awswaf") || strings.Contains(body, "aws-waf")) {
+			p.BodyEvidence = "aws_waf"
+		}
+		out = append(out, p)
 	}
 
 	// CDN fingerprints (cf-ray, server: cloudflare, x-akamai-transformed)
@@ -52,28 +64,50 @@ func classifyResponse(status int, headers http.Header, bodySnippet string) []Pro
 	// DataDome and PerimeterX header presence stays a strong signal — those
 	// products only ship as bot mitigation, not as plain CDN.
 	cfFingerprint := strings.Contains(server, "cloudflare") || h["cf-ray"] != ""
-	cfChallengeBody := strings.Contains(body, "cf-chl") ||
+	turnstileBody := htmlBody && strings.Contains(body, "challenges.cloudflare.com/turnstile")
+	impervaBody := htmlBody && (strings.Contains(body, "_incapsula_resource") ||
+		strings.Contains(body, "incapsula_resource") ||
+		strings.Contains(body, "visid_incap") ||
+		strings.Contains(body, "incap_ses"))
+	cfChallengeBody := htmlBody && (strings.Contains(body, "cf-chl") ||
+		turnstileBody ||
 		strings.Contains(body, "just a moment") ||
 		strings.Contains(body, "checking your browser") ||
-		strings.Contains(body, "ddos protection by cloudflare")
+		strings.Contains(body, "ddos protection by cloudflare"))
 	akamaiFingerprint := h["x-akamai-transformed"] != ""
+	hcaptchaBody := htmlBody && (strings.Contains(body, "hcaptcha.com") ||
+		strings.Contains(body, "h-captcha") ||
+		strings.Contains(body, "data-hcaptcha"))
+	recaptchaBody := htmlBody && (strings.Contains(body, "google.com/recaptcha") ||
+		strings.Contains(body, "g-recaptcha") ||
+		(strings.Contains(body, "data-sitekey") && strings.Contains(body, "recaptcha")))
 
 	switch {
 	case cfChallengeBody:
-		out = append(out, Protection{Label: "cloudflare", Evidence: "Cloudflare challenge marker in body"})
+		out = append(out, Protection{Label: "cloudflare", Evidence: "Cloudflare challenge marker in body", BodyEvidence: "cloudflare_challenge"})
 	case cfFingerprint && status >= 400:
 		out = append(out, Protection{Label: "cloudflare", Evidence: "Cloudflare error response"})
 	case akamaiFingerprint && status >= 400:
 		out = append(out, Protection{Label: "akamai", Evidence: "Akamai error response"})
-	case h["x-datadome"] != "" || strings.Contains(body, "datadome"):
+	case h["x-datadome"] != "":
 		out = append(out, Protection{Label: "datadome", Evidence: "DataDome marker"})
-	case strings.Contains(body, "perimeterx") || strings.Contains(body, "_px"):
-		out = append(out, Protection{Label: "perimeterx", Evidence: "PerimeterX marker"})
+	case htmlBody && strings.Contains(body, "datadome"):
+		out = append(out, Protection{Label: "datadome", Evidence: "DataDome marker", BodyEvidence: "datadome"})
+	case htmlBody && (strings.Contains(body, "perimeterx") || strings.Contains(body, "_px")):
+		out = append(out, Protection{Label: "perimeterx", Evidence: "PerimeterX marker", BodyEvidence: "perimeterx"})
+	case impervaBody:
+		out = append(out, Protection{Label: "imperva", Evidence: "Imperva/Incapsula marker", BodyEvidence: "imperva"})
 	}
 
-	if strings.Contains(body, "recaptcha") || strings.Contains(body, "hcaptcha") ||
-		strings.Contains(body, "g-recaptcha") {
-		out = append(out, Protection{Label: "captcha", Evidence: "CAPTCHA widget"})
+	switch {
+	case turnstileBody:
+		out = append(out, Protection{Label: "captcha", Evidence: "Cloudflare Turnstile interstitial", BodyEvidence: "cloudflare_turnstile"})
+	case htmlBody && strings.Contains(body, "fill out the captcha to unblock"):
+		out = append(out, Protection{Label: "captcha", Evidence: "CAPTCHA unblock shell", BodyEvidence: "captcha"})
+	case hcaptchaBody:
+		out = append(out, Protection{Label: "captcha", Evidence: "hCaptcha widget", BodyEvidence: "hcaptcha"})
+	case recaptchaBody:
+		out = append(out, Protection{Label: "captcha", Evidence: "reCAPTCHA widget", BodyEvidence: "recaptcha"})
 	}
 
 	if (status == 403 || status == 429) && len(out) == 0 {
@@ -140,6 +174,22 @@ func protectionsToEvidence(protections []Protection) []string {
 		}
 		seen[p.Evidence] = true
 		out = append(out, p.Evidence)
+	}
+	return out
+}
+
+func protectionsToBodyEvidence(protections []Protection) []string {
+	if len(protections) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range protections {
+		if p.BodyEvidence == "" || seen[p.BodyEvidence] {
+			continue
+		}
+		seen[p.BodyEvidence] = true
+		out = append(out, p.BodyEvidence)
 	}
 	return out
 }

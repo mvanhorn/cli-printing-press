@@ -5,6 +5,8 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"go/format"
+	"maps"
 	"net/url"
 	"os"
 	"path"
@@ -20,7 +22,9 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpdesc"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/piiplaceholders"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -59,7 +63,7 @@ type QuickStartStep struct {
 	Comment string
 }
 
-// Recipe mirrors pipeline.Recipe for SKILL.md template rendering.
+// Recipe mirrors pipeline.Recipe for README/SKILL template rendering.
 type Recipe struct {
 	Title       string
 	Command     string
@@ -91,6 +95,7 @@ type ReadmeNarrative struct {
 	QuickStart     []QuickStartStep
 	Troubleshoots  []TroubleshootTip
 	WhenToUse      string
+	AntiTriggers   []string
 	Recipes        []Recipe
 	TriggerPhrases []string
 }
@@ -113,6 +118,7 @@ type ResourceSummary struct {
 	Endpoints   []string `json:"endpoints"`
 	Syncable    bool     `json:"syncable,omitempty"`
 	Searchable  bool     `json:"searchable,omitempty"`
+	Writable    bool     `json:"writable,omitempty"`
 }
 
 // PlaybookEntry is a domain-specific insight for agents.
@@ -122,16 +128,17 @@ type PlaybookEntry struct {
 }
 
 type Generator struct {
-	Spec            *spec.APISpec
-	OutputDir       string
-	VisionSet       VisionTemplateSet
-	FixtureSet      *browsersniff.FixtureSet
-	TrafficAnalysis *browsersniff.TrafficAnalysis
-	Sources         []ReadmeSource          // Ecosystem tools to credit in README
-	DiscoveryPages  []string                // Pages visited during browser-sniff discovery
-	NovelFeatures   []NovelFeature          // Transcendence features for README/SKILL
-	Narrative       *ReadmeNarrative        // LLM-authored prose for README/SKILL; optional
-	AsyncJobs       map[string]AsyncJobInfo // Detected async-job endpoints, keyed by "<resource>/<endpoint>"
+	Spec               *spec.APISpec
+	OutputDir          string
+	VisionSet          VisionTemplateSet
+	visionCommandNames map[string]string
+	FixtureSet         *browsersniff.FixtureSet
+	TrafficAnalysis    *browsersniff.TrafficAnalysis
+	Sources            []ReadmeSource          // Ecosystem tools to credit in README
+	DiscoveryPages     []string                // Pages visited during browser-sniff discovery
+	NovelFeatures      []NovelFeature          // Transcendence features for README/SKILL
+	Narrative          *ReadmeNarrative        // LLM-authored prose for README/SKILL; optional
+	AsyncJobs          map[string]AsyncJobInfo // Detected async-job endpoints, keyed by "<resource>/<endpoint>"
 
 	// ModulePath overrides the Go module import path emitted by templates that
 	// reference internal packages (`{{modulePath}}/internal/client`, etc.).
@@ -152,40 +159,75 @@ type Generator struct {
 	funcs     template.FuncMap
 	templates map[string]*template.Template
 
+	htmlSyncStubComputed bool
+	htmlSyncStub         bool
+	htmlSyncStubSelected bool
+	learnStorePromoted   bool
+
 	mcpParamDescriptions *mcpdesc.ParamDescriptionCompactor
 }
 
 func New(s *spec.APISpec, outputDir string) *Generator {
-	if s.Owner == "" {
-		s.Owner = resolveOwnerForExisting(outputDir)
-	}
-	// Sanitize owner for Go module path: lowercase, no spaces/special chars
-	s.Owner = strings.ToLower(s.Owner)
-	s.Owner = strings.ReplaceAll(s.Owner, " ", "-")
-	s.Owner = strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
-			return r
+	normalizeGoogleServiceAccountAuth(s)
+	s.InferEndpointTemplateVarsFromBaseURLs()
+	s.EnrichPathParams()
+	s.PromoteGlobalPathTemplateVars()
+	normalizeSubstackGlobalWriterRoutes(s)
+	// Resolve the creator + contributors (the canonical attribution model),
+	// preserving persisted values across regens so a regen never flips the
+	// creator to whoever is running the generator. The legacy
+	// Owner/OwnerName/Printer/PrinterName fields are derived from the creator
+	// below (dual-write) so older skills and library tooling that still read
+	// them keep working during the transition window.
+	if s.Creator.IsZero() {
+		switch {
+		case s.Printer != "" || s.PrinterName != "":
+			// Printer names the human — bridge it into the creator in full.
+			s.Creator = spec.Person{Handle: s.Printer, Name: s.PrinterName}
+		case s.OwnerName != "" || s.Owner != "":
+			// An explicitly-set legacy owner drove the copyright header before
+			// the creator model existed; preserve that for backward-compat by
+			// seeding only the creator NAME. Handle is left empty so the owner
+			// slug never leaks into the printer byline (it is the vendor/module
+			// identity, not the human).
+			name := s.OwnerName
+			if name == "" {
+				name = s.Owner
+			}
+			s.Creator = spec.Person{Name: name}
+		default:
+			s.Creator = resolveCreatorForExisting(outputDir, s.Name)
 		}
-		return -1
-	}, s.Owner)
+	}
+	if s.Contributors == nil {
+		s.Contributors = resolveContributorsForExisting(outputDir, s.Name)
+	}
+	// Strip attribution-unsafe characters once at the source so every render
+	// surface (copyright header, README byline, NOTICE) inherits clean values
+	// rather than each escaping independently.
+	s.Creator = s.Creator.Clean()
+	for i := range s.Contributors {
+		s.Contributors[i] = s.Contributors[i].Clean()
+	}
 
-	// OwnerName is the prose-shaped display name (e.g. "Trevin Chow") that
-	// flows into Hermes author:, README byline, and other human-facing
-	// surfaces. Distinct from s.Owner (the slug) above. No sanitization —
-	// the value is preserved verbatim and must be YAML-escaped at template
-	// emission time. Empty values are validated in Generate() before any
-	// file writes.
+	// Owner is the slug form (Go-module-adjacent, copyright-recoverable).
+	// Derive it from the creator handle when not explicitly set, then always
+	// sanitize before rendering generated files.
+	if s.Owner == "" {
+		s.Owner = s.Creator.Handle
+	}
+	s.Owner = sanitizeOwner(s.Owner)
+	// OwnerName / Printer / PrinterName are prose- or handle-shaped legacy
+	// fields, preserved verbatim. Empty creator-derived values are validated
+	// (soft) in Generate() before any file writes.
 	if s.OwnerName == "" {
-		s.OwnerName = resolveOwnerNameForExisting(outputDir)
+		s.OwnerName = s.Creator.Name
 	}
-
-	// Preserve printer attribution from the manifest before consulting git config.
 	if s.Printer == "" {
-		s.Printer = resolvePrinterForExisting(outputDir)
+		s.Printer = s.Creator.Handle
 	}
-	// Preserve the prose-shaped printer display name when regenerating a CLI.
 	if s.PrinterName == "" {
-		s.PrinterName = resolvePrinterNameForExisting(outputDir)
+		s.PrinterName = s.Creator.Name
 	}
 	g := &Generator{
 		Spec:      s,
@@ -193,61 +235,106 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		templates: make(map[string]*template.Template),
 	}
 	g.funcs = template.FuncMap{
-		"title":                 cases.Title(language.English).String,
-		"lower":                 strings.ToLower,
-		"upper":                 strings.ToUpper,
-		"join":                  strings.Join,
-		"camel":                 toCamel,
-		"snake":                 naming.Snake,
-		"pascal":                toPascal,
-		"goType":                goType,
-		"goStructType":          goStructType,
-		"goTypeForParam":        goTypeForParam,
-		"goStoreType":           goStoreType,
-		"cobraFlagFunc":         cobraFlagFunc,
-		"cobraFlagFuncForParam": cobraFlagFuncForParam,
-		"defaultVal":            defaultVal,
-		"defaultValForParam":    defaultValForParam,
-		"zeroVal":               zeroVal,
-		"zeroValForParam": func(name, t string) string {
-			kind := primitiveKind(t)
-			if isIDParam(name) && kind == "int" {
-				return `""`
-			}
-			if isCursorParam(name) && (kind == "int" || kind == "float") {
-				return `""`
-			}
-			return zeroVal(t)
-		},
-		"positionalArgs":         positionalArgs,
-		"configTag":              configTag,
-		"camelToJSON":            camelToJSON,
-		"columnNames":            columnNames,
-		"columnPlaceholders":     columnPlaceholders,
-		"updateSet":              updateSet,
-		"envVarField":            envVarField,
-		"envVarPlaceholder":      naming.EnvVarPlaceholder,
-		"envVarIsBuiltinField":   envVarIsBuiltinField,
-		"envVarBuiltinFieldName": envVarBuiltinFieldName,
-		"resolveEnvVarField":     resolveEnvVarField,
-		"authPlacement":          authPlacement,
-		"authParameterName":      authParameterName,
-		"authCommandShort":       authCommandShort,
-		"authHarvestedEnvHint":   authHarvestedEnvHint,
-		"basicAuthEnvVars":       basicAuthEnvVars,
-		"hasAuthEnvVarKind":      hasAuthEnvVarKind,
-		"isRequestAuthEnvVar":    isRequestAuthEnvVar,
-		"effectiveTier":          effectiveTier,
-		"effectiveSubTier":       effectiveSubTier,
-		"add":                    func(a, b int) int { return a + b },
-		"oneline":                naming.OneLine,
-		"composeMCPDesc":         composeMCPDesc,
-		"composeMCPSubDesc":      composeMCPSubDesc,
-		"mcpParamDesc":           g.mcpParamDescription,
-		"flagName":               flagName,
-		"paramIdent":             paramIdent,
-		"typeFieldIdent":         typeFieldIdent,
-		"safeTypeName":           safeTypeName,
+		"title":                               cases.Title(language.English).String,
+		"lower":                               strings.ToLower,
+		"upper":                               strings.ToUpper,
+		"join":                                strings.Join,
+		"camel":                               toCamel,
+		"cmdIdent":                            commandIdent,
+		"snake":                               naming.Snake,
+		"pascal":                              toPascal,
+		"goType":                              goType,
+		"goStructType":                        goStructType,
+		"goTypeForParam":                      goTypeForParam,
+		"goTypeForParamRequired":              goTypeForParamRequired,
+		"goTypeForBodyParam":                  goTypeForBodyParam,
+		"goStoreType":                         goStoreType,
+		"cobraFlagFunc":                       cobraFlagFunc,
+		"cobraFlagFuncForParam":               cobraFlagFuncForParam,
+		"cobraFlagFuncForParamRequired":       cobraFlagFuncForParamRequired,
+		"cobraFlagFuncForBodyParam":           cobraFlagFuncForBodyParam,
+		"mcpBindingFunc":                      mcpBindingFunc,
+		"recipeParamTypeString":               func(t RecipeIntentParamType) string { return string(t) },
+		"defaultVal":                          defaultVal,
+		"defaultValForParam":                  defaultValForParam,
+		"defaultValForParamRequired":          defaultValForParamRequired,
+		"defaultValForBodyParam":              defaultValForBodyParam,
+		"hasDefault":                          paramHasDefault,
+		"isConstDefault":                      paramIsConstDefault,
+		"zeroVal":                             zeroVal,
+		"zeroValForParam":                     zeroValForParam,
+		"zeroValForParamRequired":             zeroValForParamRequired,
+		"zeroValForBodyParam":                 zeroValForBodyParam,
+		"paramIsHeader":                       paramIsHeader,
+		"paramPresenceExpr":                   paramPresenceExpr,
+		"endpointHasHeaderParams":             endpointHasHeaderParams,
+		"positionalArgs":                      positionalArgs,
+		"configTag":                           configTag,
+		"camelToJSON":                         camelToJSON,
+		"columnNames":                         columnNames,
+		"columnPlaceholders":                  columnPlaceholders,
+		"updateSet":                           updateSet,
+		"envVarField":                         envVarField,
+		"envVarPlaceholder":                   naming.EnvVarPlaceholder,
+		"envVarIsBuiltinField":                envVarIsBuiltinField,
+		"envVarBuiltinFieldName":              envVarBuiltinFieldName,
+		"resolveEnvVarField":                  resolveEnvVarField,
+		"pathKindEnvSuffix":                   pathKindEnvSuffix,
+		"authPlacement":                       authPlacement,
+		"authParameterName":                   authParameterName,
+		"isBrowserCookieAuth":                 isBrowserCookieAuth,
+		"authCommandShort":                    authCommandShort,
+		"authHarvestedEnvHint":                authHarvestedEnvHint,
+		"oauth2AccessTokenAuth":               oauth2AccessTokenAuth,
+		"oauth2DirectBearerEnvFallback":       oauth2DirectBearerEnvFallback,
+		"oauth2AuthSource":                    oauth2AuthSource,
+		"basicAuthEnvVars":                    basicAuthEnvVars,
+		"basicAuthAppendsColonForSingleToken": basicAuthAppendsColonForSingleToken,
+		"clientCredentialsEnvVars":            clientCredentialsEnvVars,
+		"deviceCodeEnvVars":                   deviceCodeEnvVars,
+		"clientCredentialsScope":              clientCredentialsScope,
+		"clientCredentialsScopeUsesClientID":  clientCredentialsScopeUsesClientID,
+		"clientCredentialsTenantEnvVar":       clientCredentialsTenantEnvVar,
+		"clientCredentialsTokenURLHasTenant":  clientCredentialsTokenURLHasTenant,
+		"hasNonCookieAuth":                    hasNonCookieAuth,
+		"authAgentEnvVars":                    authAgentEnvVars,
+		"hasAuthEnvVarKind":                   hasAuthEnvVarKind,
+		"isRequestAuthEnvVar":                 isRequestAuthEnvVar,
+		"requiredRequestAuthEnvVars":          requiredRequestAuthEnvVars,
+		"optionalRequestAuthEnvVars":          optionalRequestAuthEnvVars,
+		"requiredRequestAuthEnvVarCount":      requiredRequestAuthEnvVarCount,
+		"requestAuthEnvVarCount":              requestAuthEnvVarCount,
+		"authSetTokenAvailable":               authSetTokenAvailable,
+		"authSetCredentialsAvailable":         authSetCredentialsAvailable,
+		"authErrorCheckHint":                  authErrorCheckHint,
+		"authSetupHint":                       authSetupHint,
+		"authBrowserLoginAvailable":           authBrowserLoginAvailable,
+		"authEnvPlaceholder":                  authEnvPlaceholder,
+		"authEnvPlaceholderByName":            authEnvPlaceholderByName,
+		"authEnvHintComment":                  authEnvHintComment,
+		"effectiveTier":                       effectiveTier,
+		"effectiveSubTier":                    effectiveSubTier,
+		"add":                                 func(a, b int) int { return a + b },
+		"chomp":                               func(s string) string { return strings.TrimRight(s, "\r\n") },
+		"staleAfterExpr":                      staleAfterExpr,
+		"oneline":                             naming.OneLine,
+		"composeMCPDesc":                      composeMCPDesc,
+		"composeMCPSubDesc":                   composeMCPSubDesc,
+		"mcpParamDesc":                        g.mcpParamDescription,
+		"hasDefaultSyncResources":             hasDefaultSyncResources,
+		"flagName":                            flagName,
+		"paramIdent":                          paramIdent,
+		"paramWireName":                       paramWireName,
+		"isArrayQueryParam":                   isArrayQueryParam,
+		"isDeepObjectQueryParam":              isDeepObjectQueryParam,
+		"queryParamStyle":                     queryParamStyle,
+		"queryParamExplodes":                  queryParamExplodes,
+		"hasArrayQueryParams":                 hasArrayQueryParams,
+		"hasDeepObjectQueryParams":            hasDeepObjectQueryParams,
+		"hasIndexedOrArrayQueryParams":        hasIndexedOrArrayQueryParams,
+		"typeFieldIdent":                      typeFieldIdent,
+		"typeFieldJSONTagComment":             typeFieldJSONTagComment,
+		"safeTypeName":                        safeTypeName,
 		"hasNonScalarType": func(types map[string]spec.TypeDef) bool {
 			for _, td := range types {
 				for _, f := range td.Fields {
@@ -258,70 +345,91 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return false
 		},
-		"exampleLine":        g.exampleLine,
-		"commandExampleArgs": commandExampleArgs,
-		"currentYear":        func() string { return strconv.Itoa(time.Now().Year()) },
+		"exampleLine":         g.exampleLine,
+		"promotedExampleLine": g.promotedExampleLine,
+		"exampleNeedsTODO":    exampleNeedsTODO,
+		"commandExampleArgs":  commandExampleArgs,
+		"currentYear":         func() string { return strconv.Itoa(time.Now().Year()) },
+		"copyrightHolder": func() string {
+			return copyrightHolderString(g.Spec.Creator, g.Spec.OwnerName, g.Spec.Owner)
+		},
+		"endsSentence": endsSentence,
 		"modulePath": func() string {
 			if g.ModulePath != "" {
 				return g.ModulePath
 			}
 			return naming.CLI(s.Name)
 		},
-		"graphqlQueryField": graphqlQueryField,
+		"goDirectiveVersion": resolveCurrentGoDirectiveVersion,
+		"goToolchainVersion": resolveCurrentGoToolchainVersion,
+		"graphqlQueryField":  graphqlQueryField,
 		"graphqlFieldSelection": func(typeName string, types map[string]spec.TypeDef) []string {
 			return graphqlFieldSelection(typeName, types)
 		},
-		"isGraphQL":           isGraphQLSpec,
-		"exportableResources": exportableResources,
-		"backtick":            func() string { return "`" },
-		"kebab":               toKebab,
-		"humanName":           naming.HumanName,
-		"envPrefix":           naming.EnvPrefix,
-		"mcpToolName":         naming.SnakeIdentifier,
+		"isGraphQL":                 isGraphQLSpec,
+		"localReadIsList":           localReadIsList,
+		"localReadSupported":        localReadSupported,
+		"dataSourceStrategy":        spec.EffectiveDataSourceStrategy,
+		"networkFallbackReason":     networkFallbackReason,
+		"exportableResources":       exportableResources,
+		"resourceReadPathEntries":   resourceReadPathEntries,
+		"resourceDetailPathEntries": resourceDetailPathEntries,
+		"resourceWritePathEntries":  resourceWritePathEntries,
+		"backtick":                  func() string { return "`" },
+		"kebab":                     toKebab,
+		"humanName":                 naming.HumanName,
+		"envPrefix":                 naming.EnvPrefix,
+		"mcpToolName":               naming.SnakeIdentifier,
 		"lookupEndpoint": func(api *spec.APISpec, ref string) templateEndpoint {
 			e, _ := lookupEndpointForTemplate(api, ref)
 			return e
 		},
-		"effectiveEndpointPath":    effectiveEndpointPath,
-		"effectiveSubEndpointPath": effectiveSubEndpointPath,
-		"enumLiteral": func(values []string) string {
-			// Render a string slice as a Go []string literal for template embedding.
-			// Example: ["asc","desc"] → `"asc", "desc"`. Returns empty string when
-			// the slice is empty so callers can {{if}}-gate the block.
-			if len(values) == 0 {
-				return ""
-			}
-			parts := make([]string, len(values))
-			for i, v := range values {
-				parts[i] = fmt.Sprintf("%q", v)
-			}
-			return strings.Join(parts, ", ")
-		},
-		"enumDescriptionHint": func(values []string) string {
-			// Appends " (one of: a, b, c)" to a flag description when the param
-			// has enum constraints. Returns empty string when the slice is empty.
-			if len(values) == 0 {
-				return ""
-			}
-			return " (one of: " + strings.Join(values, ", ") + ")"
-		},
-		"jsonStringParam":       isJSONStringParam,
-		"jsonEnumSuggestion":    jsonEnumSuggestion,
-		"bodyMap":               bodyMap,
-		"bodyVarDecls":          bodyVarDecls,
-		"bodyFlagRegs":          bodyFlagRegs,
-		"bodyRequiredChecks":    bodyRequiredChecks,
-		"multipartBodyMaps":     multipartBodyMaps,
-		"endpointUsesMultipart": endpointUsesMultipart,
-		"hasMultipartRequest":   hasMultipartRequest,
-		"formBodyMaps":          formBodyMaps,
-		"endpointUsesForm":      endpointUsesForm,
-		"hasFormRequest":        hasFormRequest,
-		"publicFlagName":        publicFlagName,
-		"publicFlagAliases":     publicFlagAliases,
-		"flagChangedExpr":       flagChangedExpr,
-		"mcpInputName":          mcpInputName,
-		"mcpParamBindings":      mcpParamBindings,
+		"effectiveEndpointPath":        effectiveEndpointPath,
+		"effectiveSubEndpointPath":     effectiveSubEndpointPath,
+		"enumLiteral":                  enumLiteral,
+		"enumDescriptionHint":          enumDescriptionHint,
+		"jsonStringParam":              isJSONStringParam,
+		"jsonEnumSuggestion":           jsonEnumSuggestion,
+		"bodyMap":                      bodyMap,
+		"bodyMapForEndpoint":           bodyMapForEndpoint,
+		"bodyMapForEndpointVars":       bodyMapForEndpointVars,
+		"bodyVarDecls":                 bodyVarDecls,
+		"bodyFlagRegs":                 bodyFlagRegs,
+		"bodyRequiredChecks":           bodyRequiredChecks,
+		"bodyExceedsFlagDepth":         bodyExceedsFlagDepth,
+		"bodyHasStringBackedBool":      bodyHasStringBackedBool,
+		"multipartBodyMaps":            multipartBodyMaps,
+		"endpointUsesMultipart":        endpointUsesMultipart,
+		"endpointUsesRawRequest":       endpointUsesRawRequest,
+		"endpointUsesCSVArray":         endpointUsesCSVArray,
+		"endpointHasQueryFlags":        endpointHasQueryFlags,
+		"endpointHasRequestParams":     endpointHasRequestParams,
+		"endpointHasRequiredInput":     endpointHasRequiredInput,
+		"endpointSkipsErrorPathProbe":  endpointSkipsErrorPathProbe,
+		"endpointIsReadCommand":        endpointIsReadCommand,
+		"hasMultipartRequest":          hasMultipartRequest,
+		"hasRawRequest":                hasRawRequest,
+		"formBodyMaps":                 formBodyMaps,
+		"endpointUsesForm":             endpointUsesForm,
+		"hasFormRequest":               hasFormRequest,
+		"hasBodyJSONFallback":          hasBodyJSONFallback,
+		"hasMCPNestedBodyPath":         hasMCPNestedBodyPath,
+		"hasMCPJSONOrScalarBody":       hasMCPJSONOrScalarBody,
+		"hasMCPParamDefault":           hasMCPParamDefault,
+		"publicFlagName":               publicFlagName,
+		"publicFlagAliases":            publicFlagAliases,
+		"flagChangedExpr":              flagChangedExpr,
+		"graphqlListParams":            graphqlListParams,
+		"graphqlLatestParams":          graphqlLatestParams,
+		"graphqlVariableType":          graphqlVariableType,
+		"hasGraphQLParam":              hasGraphQLParam,
+		"mcpInputName":                 mcpInputName,
+		"mcpToolInputParams":           mcpToolInputParams,
+		"mcpParamBindings":             mcpParamBindings,
+		"mcpEndpointPageable":          mcpEndpointPageable,
+		"mcpPageConfig":                mcpPageConfig,
+		"mcpGlobalTemplateInputParams": mcpGlobalTemplateInputParams,
+		"mcpGlobalTemplateBindings":    mcpGlobalTemplateBindings,
 		// endpointNeedsClientLimit reports whether a list endpoint needs
 		// client-side truncation. True when the endpoint has a `limit`-named
 		// param AND no Pagination block — the spec author asked for a
@@ -330,14 +438,53 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		// `?limit=N` query param without honoring it; truncating client-
 		// side means the user-facing --limit flag works regardless.
 		// Surfaced by hackernews retro #350 finding F6.
-		"endpointNeedsClientLimit":       endpointNeedsClientLimit,
-		"envName":                        naming.EnvPrefix,
-		"safeName":                       safeSQLName,
-		"resourceIDFieldOverrideEntries": resourceIDFieldOverrideEntries,
-		"criticalResourceEntries":        criticalResourceEntries,
-		"isBackfillColumn":               isStoreBackfillColumn,
-		"hasBackfillColumns":             hasStoreBackfillColumns,
-		"backfillDecl":                   storeBackfillDecl,
+		"endpointNeedsClientLimit":  endpointNeedsClientLimit,
+		"endpointClientSideFilters": endpointClientSideFilters,
+		"globalScopeParams":         globalScopeParams,
+		"responsePathCases":         responsePathCases,
+		"envName":                   naming.EnvPrefix,
+		// endpointTemplateEnvName resolves the env-var name for a
+		// {placeholder} in EndpointTemplateVars. Returns the spec-declared
+		// override (e.g. ST_TENANT_ID for {tenant}) when one exists, else
+		// the conventional <APINAME>_<UPPER_PLACEHOLDER>. Bound to the
+		// generator's current spec; callers in templates pass just the
+		// placeholder name.
+		"endpointTemplateEnvName": func(placeholder string) string {
+			return s.EndpointTemplateEnvName(placeholder)
+		},
+		"globalScopeEnvName": func(param spec.Param) string {
+			return globalScopeEnvName(s.Name, param)
+		},
+		"globalScopeFallbackValue": globalScopeFallbackValue,
+		"paramHasEnvDefault":       paramHasEnvDefault,
+		// endpointTemplateDefault returns the spec-declared default value for
+		// a placeholder (e.g. server-URL variables' `default:` value), or ""
+		// when none. Templates branch on the empty case to skip the runtime
+		// fallback path and preserve byte-compat with placeholders that have
+		// no spec-level default (path-positional templates like {tenant}).
+		"endpointTemplateDefault": func(placeholder string) string {
+			return s.EndpointTemplateDefault(placeholder)
+		},
+		// Predicates the config.Load template branches on. Splitting on
+		// has-default vs has-undefaulted preserves byte-compat for CLIs whose
+		// placeholders are all path-positional (no defaults): without the
+		// split, every prior CLI would regenerate just to emit unused helpers.
+		"endpointTemplateVarsHasDefault": func(vars []string) bool {
+			return endpointTemplateVarsAny(vars, s, func(v string) bool { return v != "" })
+		},
+		"endpointTemplateVarsHasUndefaulted": func(vars []string) bool {
+			return endpointTemplateVarsAny(vars, s, func(v string) bool { return v == "" })
+		},
+		"hasSubstackPublicationIDTemplateResolver": hasSubstackPublicationIDTemplateResolver,
+		"substackPublicationIDTemplatePath":        substackPublicationIDTemplatePath,
+		"safeName":                                 safeSQLName,
+		"resourceIDFieldOverrideEntries":           resourceIDFieldOverrideEntries,
+		"resourceIDBaseOverrideEntries":            resourceIDBaseOverrideEntries,
+		"resourceParentKeyColumnEntries":           resourceParentKeyColumnEntries,
+		"criticalResourceEntries":                  criticalResourceEntries,
+		"isBackfillColumn":                         isStoreBackfillColumn,
+		"hasBackfillColumns":                       hasStoreBackfillColumns,
+		"backfillDecl":                             storeBackfillDecl,
 		"safeNameSuffix": func(name, suffix string) string {
 			return safeSQLName(name + suffix)
 		},
@@ -345,18 +492,19 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"hasDomainUpsert": func(name string) bool {
 			return domainUpsertMethodName(name) != "UpsertBatch"
 		},
-		// hasTypedTable is the single source of truth for "this table gets a
-		// typed Upsert<X>." Table creation, typed-Upsert generation, the
-		// UpsertBatch dispatch switch, and the populated-table tests must all
-		// gate on the same predicate; otherwise dead tables (created but never
-		// written to) leak in for resources whose names hit the framework-cobra
-		// rename and end up with only id/data/synced_at columns.
-		"hasTypedTable": func(t TableDef) bool {
-			return len(t.Columns) > 3 && t.Name != "sync_state" && domainUpsertMethodName(t.Name) != "UpsertBatch"
-		},
+		// emitsDomainTable is the single source of truth for "this table gets
+		// a writable per-resource table and Upsert<X>." Table creation,
+		// typed-Upsert generation, the UpsertBatch dispatch switch, and the
+		// populated-table tests must all gate on the same predicate; otherwise
+		// dead tables (created but never written to) leak in for resources whose
+		// names hit the framework-cobra rename. JSONOnlyFallback intentionally
+		// keeps a writable per-resource table while dropping extracted columns.
+		"emitsDomainTable":           emitsDomainTable,
+		"reconcileTypedTableEntries": reconcileTypedTableEntries,
 		"pathContainsParam": func(path, name string) bool {
 			return strings.Contains(path, "{"+name+"}")
 		},
+		"positionalIndex": positionalIndex,
 		"safeJoin": func(fields []string, sep string) string {
 			safe := make([]string, len(fields))
 			for i, f := range fields {
@@ -446,19 +594,33 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return string(runes[:max-1]) + "…"
 		},
-		// yamlDoubleQuoted escapes a string for safe embedding inside a YAML
-		// double-quoted scalar. Handles the three failure modes we've seen
-		// from LLM-authored narrative fields: unescaped " (breaks parser),
-		// unescaped \ (swallows next char), and raw newlines (terminates
-		// scalar). Leaves single quotes alone — valid in double-quoted YAML.
-		"yamlDoubleQuoted": func(s string) string {
-			s = strings.ReplaceAll(s, `\`, `\\`)
-			s = strings.ReplaceAll(s, `"`, `\"`)
-			s = strings.ReplaceAll(s, "\n", `\n`)
-			s = strings.ReplaceAll(s, "\r", `\r`)
-			s = strings.ReplaceAll(s, "\t", `\t`)
-			return s
+		// truncateWords keeps root Short within budget without ending on a
+		// partial word. A single long token still hard-clips to honor the cap.
+		"truncateWords": func(max int, s string) string {
+			if max <= 0 {
+				return s
+			}
+			runes := []rune(s)
+			if len(runes) <= max {
+				return s
+			}
+			if max <= 1 {
+				return string(runes[:max])
+			}
+			cut := runes[:max-1]
+			boundary := -1
+			for i, r := range slices.Backward(cut) {
+				if unicode.IsSpace(r) {
+					boundary = i
+					break
+				}
+			}
+			if boundary > 0 {
+				cut = cut[:boundary]
+			}
+			return strings.TrimRightFunc(string(cut), unicode.IsSpace) + "…"
 		},
+		"yamlDoubleQuoted": yamlDoubleQuoted,
 		// groupNovelFeatures clusters features by their Group field, preserving
 		// first-seen order of group names. Features with empty Group land in a
 		// trailing "More" bucket so nothing gets dropped. Returns nil when no
@@ -509,102 +671,203 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return out
 		},
-		"whichFallbackEntries": buildWhichFallbackEntries,
-		"firstCommandExample":  firstCommandExample,
+		"firstCommandExample": firstCommandExample,
 	}
 	return g
 }
 
-func buildWhichFallbackEntries(resources map[string]spec.Resource) []NovelFeature {
-	var entries []NovelFeature
-	var resNames []string
-	for name := range resources {
-		resNames = append(resNames, name)
+func normalizeGoogleServiceAccountAuth(s *spec.APISpec) {
+	if s == nil || s.Auth.Subtype != spec.AuthSubtypeGoogleServiceAccount {
+		return
 	}
-	sort.Strings(resNames)
-	for _, rName := range resNames {
-		r := resources[rName]
-		appendEndpoint := func(command string, endpoint spec.Endpoint) {
-			description := strings.TrimSpace(endpoint.Description)
-			if description == "" {
-				description = "Run " + command
-			}
-			entries = append(entries, NovelFeature{
-				Command:     command,
-				Description: description,
-				Group:       rName,
-			})
-		}
+	s.Auth.AuthorizationURL = ""
+	s.Auth.EnvVars = []string{"GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_OAUTH_ACCESS_TOKEN"}
+	s.Auth.EnvVarSpecs = spec.NewORCaseEnvVarSpecs(s.Auth.EnvVars)
+}
 
-		var endpointNames []string
-		for eName := range r.Endpoints {
-			endpointNames = append(endpointNames, eName)
-		}
-		sort.Strings(endpointNames)
-		for _, eName := range endpointNames {
-			appendEndpoint(rName+" "+eName, r.Endpoints[eName])
-		}
-
-		var subNames []string
-		for subName := range r.SubResources {
-			subNames = append(subNames, subName)
-		}
-		sort.Strings(subNames)
-		for _, subName := range subNames {
-			sub := r.SubResources[subName]
-			var subEndpointNames []string
-			for eName := range sub.Endpoints {
-				subEndpointNames = append(subEndpointNames, eName)
-			}
-			sort.Strings(subEndpointNames)
-			for _, eName := range subEndpointNames {
-				appendEndpoint(rName+" "+subName+" "+eName, sub.Endpoints[eName])
-			}
+func endpointTemplateVarsAny(vars []string, s *spec.APISpec, predicate func(string) bool) bool {
+	for _, name := range vars {
+		if predicate(s.EndpointTemplateDefault(name)) {
+			return true
 		}
 	}
-	return entries
+	return false
+}
+
+func hasSubstackPublicationIDTemplateResolver(s *spec.APISpec) bool {
+	if s == nil || !strings.EqualFold(s.Name, "substack") || !s.IsEndpointTemplateVar("publication_id") {
+		return false
+	}
+	return specWalkEndpoints(s, func(_ string, endpoint spec.Endpoint) bool {
+		return substackPublicationIDTemplatePath(s, endpoint.Path)
+	})
+}
+
+func substackPublicationIDTemplatePath(s *spec.APISpec, path string) bool {
+	return s != nil && strings.EqualFold(s.Name, "substack") && strings.Contains(path, "{publication_id}")
+}
+
+func normalizeSubstackGlobalWriterRoutes(s *spec.APISpec) {
+	if s == nil || !strings.EqualFold(s.Name, "substack") || !s.IsEndpointTemplateVar("publication_id") {
+		return
+	}
+	for resourceName, resource := range s.Resources {
+		for endpointName, endpoint := range resource.Endpoints {
+			if normalized, ok := substackGlobalWriterPath(resourceName, endpointName, endpoint.Path); ok {
+				endpoint.Path = normalized
+				resource.Endpoints[endpointName] = endpoint
+			}
+		}
+		for subName, sub := range resource.SubResources {
+			for endpointName, endpoint := range sub.Endpoints {
+				if normalized, ok := substackGlobalWriterPath(subName, endpointName, endpoint.Path); ok {
+					endpoint.Path = normalized
+					sub.Endpoints[endpointName] = endpoint
+				}
+			}
+			resource.SubResources[subName] = sub
+		}
+		s.Resources[resourceName] = resource
+	}
+}
+
+func substackGlobalWriterPath(resourceName, endpointName, path string) (string, bool) {
+	resourceName = strings.ToLower(strings.TrimSpace(resourceName))
+	endpointName = strings.ToLower(strings.TrimSpace(endpointName))
+	path = strings.TrimSpace(path)
+	if resourceName == "images" && substackImageUploadPath(path) {
+		return "https://substack.com/api/v1/image", path != "https://substack.com/api/v1/image"
+	}
+	if resourceName != "drafts" {
+		return "", false
+	}
+	if !substackDraftsPath(path) {
+		return "", false
+	}
+	if endpointName == "" {
+		return "", false
+	}
+	trimmed := strings.TrimPrefix(path, "https://{publication}.substack.com/api/v1")
+	trimmed = strings.TrimPrefix(trimmed, "https://substack.com/api/v1")
+	if !strings.HasPrefix(trimmed, "/drafts") {
+		trimmed = "/drafts"
+	}
+	normalized := "https://substack.com/api/v1" + ensurePublicationIDQuery(trimmed)
+	return normalized, normalized != path
+}
+
+func substackImageUploadPath(path string) bool {
+	if path == "/image" || strings.HasPrefix(path, "/image?") {
+		path = "https://substack.com/api/v1" + path
+	}
+	for _, prefix := range []string{
+		"https://substack.com/api/v1/image",
+		"https://{publication}.substack.com/api/v1/image",
+	} {
+		if path == prefix || strings.HasPrefix(path, prefix+"?") {
+			return true
+		}
+	}
+	return false
+}
+
+func substackDraftsPath(path string) bool {
+	if strings.HasPrefix(path, "/drafts") {
+		return true
+	}
+	return strings.HasPrefix(path, "https://{publication}.substack.com/api/v1/drafts") || strings.HasPrefix(path, "https://substack.com/api/v1/drafts")
+}
+
+func ensurePublicationIDQuery(path string) string {
+	if strings.Contains(path, "publication_id=") {
+		return path
+	}
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "publication_id={publication_id}"
+}
+
+func specWalkEndpoints(s *spec.APISpec, visit func(resourceName string, endpoint spec.Endpoint) bool) bool {
+	if s == nil {
+		return false
+	}
+	for resourceName, resource := range s.Resources {
+		if resourceWalkEndpoints(resourceName, resource, visit) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceWalkEndpoints(resourceName string, resource spec.Resource, visit func(resourceName string, endpoint spec.Endpoint) bool) bool {
+	for _, endpoint := range resource.Endpoints {
+		if visit(resourceName, endpoint) {
+			return true
+		}
+	}
+	for subResourceName, subResource := range resource.SubResources {
+		name := resourceName + "." + subResourceName
+		if resourceWalkEndpoints(name, subResource, visit) {
+			return true
+		}
+	}
+	return false
 }
 
 // HelperFlags controls which helper functions are emitted in helpers.go.
 type HelperFlags struct {
-	HasDelete          bool // spec has DELETE endpoints → emit classifyDeleteError
-	HasPathParams      bool // spec has path parameters → emit replacePathParam
-	HasMultiPositional bool // spec has endpoints with 2+ positional params → emit usageErr
-	HasDataLayer       bool // CLI has a local store (sync/search) → emit provenance helpers
-	HasClientLimit     bool // at least one endpoint needs client-side limit truncation → emit truncateJSONArray
+	HasDelete            bool // spec has DELETE endpoints → emit classifyDeleteError
+	HasPathParams        bool // spec has path parameters → emit replacePathParam
+	HasMultiPositional   bool // spec has endpoints with 2+ positional params → emit usageErr
+	HasDataLayer         bool // CLI has a local store (sync/search) → emit provenance helpers
+	HasStorePath         bool // CLI has any local store, including a learn-only store
+	HasSyncHelpers       bool // generated sync implementation calls sync-only helpers
+	HasClientLimit       bool // at least one endpoint needs client-side limit truncation → emit truncateJSONArray
+	HasClientFilters     bool // at least one docs-derived endpoint needs client-side response filtering
+	HasEmbeddedPaged     bool // at least one GET endpoint has detected embedded paged sub-resources → emit fetchEmbeddedPagedSubresource
+	HasResponseUnwrap    bool // at least one generated command can call extractResponseData
+	HasMutationEndpoints bool // emitted commands can detect partial failures → emit partial-failure support + --allow-partial-failure flag
+	HasPartialFailureErr bool // emitted command_endpoint.go command can call partialFailureErr
+	HasRequiredRoles     bool // spec has per-endpoint requires_role gates → emit persona helpers
+	HasCreateCommands    bool // spec has POST/PUT/PATCH write endpoints → emit create retry helpers
+	HasRawRequest        bool // spec has non-JSON request bodies → emit raw file/stdin reader
 }
 
 // computeHelperFlags scans the spec's resources to determine which helpers are needed.
 func computeHelperFlags(s *spec.APISpec) HelperFlags {
 	var flags HelperFlags
 	for _, r := range s.Resources {
-		for _, e := range r.Endpoints {
-			if strings.EqualFold(e.Method, "DELETE") {
-				flags.HasDelete = true
-			}
-			if endpointNeedsClientLimit(e) {
-				flags.HasClientLimit = true
-			}
-			positionalCount := 0
-			for _, p := range e.Params {
-				if p.Positional || p.PathParam {
-					flags.HasPathParams = true
-				}
-				if p.Positional {
-					positionalCount++
-				}
-			}
-			if positionalCount >= 2 {
-				flags.HasMultiPositional = true
-			}
-		}
-		for _, sub := range r.SubResources {
-			for _, e := range sub.Endpoints {
+		var scan func(spec.Resource)
+		scan = func(resource spec.Resource) {
+			for name, e := range resource.Endpoints {
 				if strings.EqualFold(e.Method, "DELETE") {
 					flags.HasDelete = true
 				}
+				if isMutationMethod(e.Method) {
+					flags.HasMutationEndpoints = true
+				}
+				if e.UsesRawRequestBody() {
+					flags.HasRawRequest = true
+				}
+				if strings.TrimSpace(e.RequiresRole) != "" {
+					flags.HasRequiredRoles = true
+				}
 				if endpointNeedsClientLimit(e) {
 					flags.HasClientLimit = true
+				}
+				if endpointIsCreateCommand(e, name) {
+					flags.HasCreateCommands = true
+				}
+				if len(endpointClientSideFilters(s, e)) > 0 {
+					flags.HasClientFilters = true
+				}
+				if len(e.EmbeddedPagedSubresources) > 0 {
+					flags.HasEmbeddedPaged = true
+				}
+				if strings.Contains(e.Path, "{") {
+					flags.HasPathParams = true
 				}
 				positionalCount := 0
 				for _, p := range e.Params {
@@ -619,9 +882,75 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 					flags.HasMultiPositional = true
 				}
 			}
+			for _, sub := range resource.SubResources {
+				scan(sub)
+			}
 		}
+		scan(r)
 	}
 	return flags
+}
+
+func applyPartialFailureFlags(flags *HelperFlags, apiSpec *spec.APISpec, promotedCommands []PromotedCommand, promotedEndpointNames map[string]string, hasStore bool) {
+	flags.HasMutationEndpoints, flags.HasPartialFailureErr = partialFailureEmissionFlags(apiSpec, promotedCommands, promotedEndpointNames, hasStore)
+}
+
+func partialFailureEmissionFlags(apiSpec *spec.APISpec, promotedCommands []PromotedCommand, promotedEndpointNames map[string]string, hasStore bool) (bool, bool) {
+	hasSupport := false
+	hasTypedErr := false
+
+	var scan func(spec.Resource, string)
+	scan = func(originalResource spec.Resource, promotedEndpointName string) {
+		resource := withoutOptionsEndpoints(originalResource)
+		for endpointName, endpoint := range resource.Endpoints {
+			if promotedEndpointName == endpointName {
+				continue
+			}
+			if isMutationMethod(endpoint.Method) {
+				hasSupport = true
+				hasTypedErr = true
+			}
+		}
+		for _, originalSubResource := range resource.SubResources {
+			scan(originalSubResource, "")
+		}
+	}
+
+	for resourceName, originalResource := range apiSpec.Resources {
+		scan(originalResource, promotedEndpointNames[resourceName])
+	}
+
+	for _, command := range promotedCommands {
+		if promotedCommandCanDetectPartialFailure(command, hasStore) {
+			// command_promoted.go.tmpl detects partial failures for store
+			// write-back only; it never calls partialFailureErr.
+			hasSupport = true
+		}
+	}
+
+	return hasSupport, hasTypedErr
+}
+
+func promotedCommandCanDetectPartialFailure(command PromotedCommand, hasStore bool) bool {
+	if !hasStore || command.Endpoint.UsesBinaryResponse() || command.Endpoint.UsesTextResponse() || endpointIsReadCommand(command.Endpoint, command.EndpointName) {
+		return false
+	}
+	method := strings.ToUpper(strings.TrimSpace(command.Endpoint.Method))
+	return method == "POST" || method == "PUT" || method == "PATCH"
+}
+
+// isMutationMethod reports whether method is a mutation verb that reaches the
+// partial-failure detection call sites in command_endpoint.go.tmpl. The
+// template emits those call sites for every non-GET/HEAD endpoint, so the
+// predicate must match the same shape — otherwise a DELETE-only CLI would
+// reference undefined detectPartialFailure / partialFailureReport symbols.
+// Detection itself is a no-op for DELETE bodies in practice; the cost is one
+// dead function on truly-DELETE-only CLIs.
+func isMutationMethod(method string) bool {
+	if method == "" {
+		return false
+	}
+	return !strings.EqualFold(method, "GET") && !strings.EqualFold(method, "HEAD")
 }
 
 // helpersTemplateData wraps APISpec with flags controlling conditional helper emission.
@@ -630,13 +959,23 @@ type helpersTemplateData struct {
 	HelperFlags
 }
 
-// doctorTemplateData wraps APISpec with a HasStore flag so the doctor
-// template can gate its cache-health section. Doctor is emitted for every
-// CLI — with or without a local store — so the template needs explicit
-// knowledge of whether internal/store exists.
+// doctorTemplateData wraps APISpec with flags for store-aware credential
+// resolution and generated cache-health checks.
 type doctorTemplateData struct {
 	*spec.APISpec
-	HasStore bool
+	HasStore       bool
+	HasCacheReport bool
+	HasAuthCommand bool
+}
+
+type credentialField struct {
+	GoField string
+	Tag     string
+}
+
+type pathsTemplateData struct {
+	*spec.APISpec
+	PathKindEnvSuffixes []string
 }
 
 // authTemplateData wraps APISpec with traffic-analysis generation hints that
@@ -650,9 +989,12 @@ type authTemplateData struct {
 // the generated HTTP client.
 type clientTemplateData struct {
 	*spec.APISpec
+	IsGraphQL                  bool
 	HasGraphQLPersistedQueries bool
 	HasMultipartRequest        bool
 	HasFormRequest             bool
+	HasRawRequest              bool
+	UseChromeImpersonation     bool
 	// Populated by Generator.shouldEmitAuth() so this template gate stays in
 	// sync with auth.go emission, root.go registration, and scoreAuth.
 	HasAuthCommand bool
@@ -663,26 +1005,28 @@ type clientTemplateData struct {
 // predicate the auth-command emission and root.go registration use.
 type configTemplateData struct {
 	*spec.APISpec
-	HasAuthCommand bool
+	HasAuthCommand              bool
+	CredentialFields            []credentialField
+	UsesLegacyEnvVarCredentials bool
 }
 
-// endpointTemplateData is the data passed to command_endpoint.go.tmpl
-// for both top-level resource endpoints and sub-resource endpoints.
-// ResourceBaseURL carries the endpoint's effective BaseURL override. The
-// template prepends it to Endpoint.Path so per-request hosts produce absolute
-// URLs.
+// endpointTemplateData is the data passed to command_endpoint.go.tmpl for both
+// top-level resource endpoints and sub-resource endpoints. EffectivePath is
+// either the relative endpoint path or a full URL when the endpoint declares
+// one directly or inherits a per-resource/per-endpoint BaseURL override.
 type endpointTemplateData struct {
-	ResourceName    string
-	ResourceBaseURL string
-	EffectivePath   string
-	EffectiveTier   string
-	FuncPrefix      string
-	CommandPath     string
-	EndpointName    string
-	Endpoint        spec.Endpoint
-	HasStore        bool
-	IsAsync         bool
-	Async           AsyncJobInfo
+	ResourceName  string
+	EffectivePath string
+	EffectiveTier string
+	FuncPrefix    string
+	CommandPath   string
+	EndpointName  string
+	Endpoint      spec.Endpoint
+	Resource      spec.Resource
+	HasStore      bool
+	IsAsync       bool
+	Async         AsyncJobInfo
+	PageSize      int
 	// IsReadOnly mirrors !endpointIsWriteCommand(endpoint, name). The
 	// emitted command sets Annotations["mcp:read-only"] = "true" when
 	// it's true so the cobratree MCP walker marks the tool with
@@ -702,12 +1046,21 @@ type readmeTemplateData struct {
 	CompactDescription string
 	SkillDescription   string
 	HasDataLayer       bool
+	HasSync            bool
 	HasAsyncJobs       bool
 	HasWriteCommands   bool
+	HasCreateCommands  bool
 	HasDelete          bool
 	HasAuth            bool
-	FreshnessCommands  []string
-	TrafficAnalysis    *trafficAnalysisTemplateData
+	// HasAuthCommand mirrors Generator.shouldEmitAuth() so doc templates can
+	// gate credential-file prose on the same predicate that controls auth
+	// command emission. Distinct from HasAuth: an empty auth type still emits
+	// the auth surface, and docs must follow the emitted surface, not the
+	// spec's declared type.
+	HasAuthCommand    bool
+	HasAutoRefresh    bool
+	FreshnessCommands []string
+	TrafficAnalysis   *trafficAnalysisTemplateData
 	// PromotedResourceNames maps a resource name to true when the generator
 	// collapsed that single-endpoint resource into a leaf command. Templates
 	// (notably skill.md.tmpl's Command Reference) use this to emit `<cli>
@@ -726,6 +1079,11 @@ type generatorTemplateData struct {
 	*spec.APISpec
 	CompactDescription string
 	TrafficAnalysis    *trafficAnalysisTemplateData
+}
+
+type rootTestTemplateData struct {
+	*spec.APISpec
+	ExpectedCommandPaths []string
 }
 
 type trafficAnalysisTemplateData struct {
@@ -759,11 +1117,15 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		ProseName:             g.proseName(),
 		CompactDescription:    g.compactDescription(),
 		SkillDescription:      g.skillDescription(),
-		HasDataLayer:          g.VisionSet.Store,
+		HasDataLayer:          g.hasDataLayer(),
+		HasSync:               g.hasGeneratedSyncImplementation(),
 		HasAsyncJobs:          len(g.AsyncJobs) > 0,
 		HasWriteCommands:      hasWriteCommands(g.Spec.Resources),
+		HasCreateCommands:     hasCreateCommands(g.Spec.Resources),
 		HasDelete:             computeHelperFlags(g.Spec).HasDelete,
 		HasAuth:               hasAuth(g.Spec.Auth),
+		HasAuthCommand:        g.shouldEmitAuth(),
+		HasAutoRefresh:        g.hasAutoRefresh(),
 		FreshnessCommands:     g.freshnessCommandPaths(),
 		TrafficAnalysis:       g.trafficAnalysisData(),
 		PromotedResourceNames: g.PromotedResourceNames,
@@ -771,28 +1133,84 @@ func (g *Generator) readmeData() *readmeTemplateData {
 	}
 }
 
+func (g *Generator) hasDataLayer() bool {
+	// Explicit store-only plans remain supported for custom population paths;
+	// zero-syncable learn stores must not advertise generic local-data surfaces.
+	return g != nil && g.VisionSet.Store && (!g.learnStorePromoted || g.hasGeneratedSyncImplementation() || hasSyncCommandResources(g.profile))
+}
+
+func (g *Generator) hasWorkflowSurface() bool {
+	return g != nil && (g.hasDataLayer() || g.htmlSyncStubSelected)
+}
+
+func (g *Generator) dataSurfaceVisionSet() VisionTemplateSet {
+	set := g.VisionSet
+	set.Store = g.hasDataLayer()
+	return set
+}
+
 func (g *Generator) compactDescription() string {
-	candidates := []string{}
 	if g.Narrative != nil {
-		candidates = append(candidates, g.Narrative.Headline)
+		if desc := naming.AuthoredDescription(g.Narrative.Headline); desc != "" {
+			return desc
+		}
 	}
 	if g.Spec != nil {
-		candidates = append(candidates, g.Spec.CLIDescription, g.Spec.Description)
-	}
-	for _, candidate := range candidates {
-		if desc := naming.CompactDescription(candidate); desc != "" {
+		if desc := naming.AuthoredDescription(g.Spec.CLIDescription); desc != "" {
+			return desc
+		}
+		if desc := naming.CompactDescription(g.Spec.Description); desc != "" {
 			return desc
 		}
 	}
 	return fmt.Sprintf("Printing Press CLI for %s.", g.proseName())
 }
 
+// ManifestDescription keeps durable manifest prose intact; compact command
+// surfaces can apply their own truncation later.
+func (g *Generator) ManifestDescription() string {
+	candidates := []string{}
+	if g.Narrative != nil {
+		candidates = append(candidates, g.Narrative.Headline)
+	}
+	if g.Spec != nil {
+		candidates = append(candidates, g.Spec.CLIDescription)
+	}
+	for _, candidate := range candidates {
+		if desc := naming.ManifestDescription(candidate); desc != "" {
+			if !naming.HasLiteralEllipsisSuffix(desc) {
+				return desc
+			}
+		}
+	}
+	if g.Spec != nil {
+		if desc := naming.CompactDescription(g.Spec.Description); desc != "" {
+			return desc
+		}
+	}
+	return fmt.Sprintf("Printing Press CLI for %s.", g.proseName())
+}
+
+// ManifestDisplayName returns the best generated brand name for durable CLI
+// metadata.
+func (g *Generator) ManifestDisplayName() string {
+	if g.Narrative != nil {
+		if displayName := strings.TrimSpace(g.Narrative.DisplayName); displayName != "" {
+			return displayName
+		}
+	}
+	if g.Spec != nil {
+		return strings.TrimSpace(g.Spec.EffectiveDisplayName())
+	}
+	return ""
+}
+
 func (g *Generator) skillDescription() string {
 	switch {
 	case g.Narrative != nil && strings.TrimSpace(g.Narrative.Headline) != "":
-		return naming.CompactDescription(g.Narrative.Headline)
+		return naming.AuthoredDescription(g.Narrative.Headline)
 	case g.Spec != nil && strings.TrimSpace(g.Spec.CLIDescription) != "":
-		return naming.CompactDescription(g.Spec.CLIDescription)
+		return naming.AuthoredDescription(g.Spec.CLIDescription)
 	case g.Spec != nil && strings.TrimSpace(g.Spec.Description) != "":
 		return fmt.Sprintf("Printing Press CLI for %s. %s", g.proseName(), naming.CompactDescription(g.Spec.Description))
 	default:
@@ -800,21 +1218,12 @@ func (g *Generator) skillDescription() string {
 	}
 }
 
-// freshnessCommandPaths returns the rendered slice of "covered command paths"
-// surfaced in user-facing docs (README.md and SKILL.md) for the freshness
-// section. The slice contains only paths whose subcommands actually exist in
-// the generated CLI — promoted single-endpoint resources emit only the bare
-// `<cli> <resource>` form, multi-endpoint resources emit the bare form plus
-// one entry per real endpoint name.
-//
-// The runtime fallback map in `internal/cli/auto_refresh.go` (rendered by
-// auto_refresh.go.tmpl) keeps its `<resource> list/get/search` no-op
-// variants because Cobra's argument resolution can land on any of them at
-// runtime — having the map accept those forms keeps freshness lookups
-// loose. Only the slice rendered into docs needs trimming, so users and
-// agents don't see phantom subcommands they can't actually invoke.
+// freshnessCommandPaths returns the command paths surfaced in README.md and
+// SKILL.md freshness sections. Keep this in lockstep with
+// auto_refresh.go.tmpl's readCommandResources map so the docs describe the
+// exact command paths that can trigger auto-refresh at runtime.
 func (g *Generator) freshnessCommandPaths() []string {
-	if !g.Spec.Cache.Enabled || g.profile == nil {
+	if !g.Spec.Cache.Enabled || g.shouldEmitHTMLSyncStub() || g.profile == nil {
 		return nil
 	}
 	seen := map[string]struct{}{}
@@ -829,28 +1238,9 @@ func (g *Generator) freshnessCommandPaths() []string {
 	cliName := naming.CLI(g.Spec.Name)
 	for _, resource := range g.profile.SyncableResources {
 		prefix := cliName + " " + resource.Name
-		// Always emit the bare `<cli> <resource>` form. For promoted
-		// single-endpoint resources Cobra resolves this to the leaf
-		// command; for multi-endpoint resources it resolves to the
-		// parent help. Both are real, reachable paths.
 		add(prefix)
-
-		// Promoted resources have only one underlying endpoint and it
-		// is wired directly to the bare command — emitting endpoint
-		// names would create phantom paths users can't invoke.
-		if g.PromotedResourceNames[resource.Name] {
-			continue
-		}
-
-		// For multi-endpoint resources, emit one entry per real endpoint
-		// name. The endpoint map key matches the generated subcommand
-		// name (e.g., a `top` endpoint becomes `<cli> stories top`).
-		specResource, ok := g.Spec.Resources[resource.Name]
-		if !ok {
-			continue
-		}
-		for endpointName := range specResource.Endpoints {
-			add(prefix + " " + endpointName)
+		for _, subcommand := range []string{"list", "get", "search"} {
+			add(prefix + " " + subcommand)
 		}
 	}
 	for _, command := range g.Spec.Cache.Commands {
@@ -888,6 +1278,12 @@ func authParameterName(auth spec.AuthConfig) string {
 	return "Authorization"
 }
 
+func isBrowserCookieAuth(auth spec.AuthConfig) bool {
+	return strings.TrimSpace(auth.Type) == "cookie" &&
+		strings.EqualFold(strings.TrimSpace(auth.In), "cookie") &&
+		(strings.TrimSpace(auth.Header) == "" || strings.EqualFold(strings.TrimSpace(auth.Header), "Cookie"))
+}
+
 func authCommandShort(api *spec.APISpec) string {
 	displayName := "this API"
 	if api != nil && strings.TrimSpace(api.EffectiveDisplayName()) != "" {
@@ -903,13 +1299,69 @@ func authHarvestedEnvHint(auth spec.AuthConfig) string {
 	switch {
 	case auth.Type == "cookie" || auth.Type == "composed":
 		return "populated automatically by auth login --chrome"
+	case auth.Subtype == spec.AuthSubtypeGoogleServiceAccount:
+		return "set GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_OAUTH_ACCESS_TOKEN"
 	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && auth.TokenURL != "":
 		return "populated automatically by auth login --client-id/--client-secret"
+	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && auth.DeviceAuthorizationURL != "" && auth.TokenURL != "":
+		return "populated automatically by auth login --device-code"
 	case auth.AuthorizationURL != "":
 		return "populated automatically by auth login"
 	default:
 		return "set with auth set-token"
 	}
+}
+
+// oauth2DirectBearerEnvFallback reports whether the generated AuthHeader
+// should honor a directly-held bearer from the canonical env var when no
+// minted AccessToken exists. Only authorization-code-style flows qualify:
+// under client_credentials and device_code the configured env vars are flow
+// inputs that mint tokens, never wire-ready bearers.
+func oauth2DirectBearerEnvFallback(auth spec.AuthConfig) bool {
+	if !oauth2AccessTokenAuth(auth) {
+		return false
+	}
+	switch auth.EffectiveOAuth2Grant() {
+	case spec.OAuth2GrantClientCredentials, spec.OAuth2GrantDeviceCode:
+		return false
+	}
+	v := auth.CanonicalEnvVar()
+	if v == nil {
+		return false
+	}
+	// Only a required request credential qualifies. An optional per-call
+	// token is a stale-able extra: a value persisted to config long ago
+	// must not be sent on the wire when the refreshed-AccessToken flow is
+	// the real credential path.
+	if !v.Required {
+		return false
+	}
+	return v.Kind == "" || v.Kind == spec.AuthEnvVarKindPerCall
+}
+
+func oauth2AccessTokenAuth(auth spec.AuthConfig) bool {
+	if auth.Type == "oauth2" || auth.Type == spec.AuthTypeOAuth2Refresh {
+		return true
+	}
+	if auth.Type != "bearer_token" {
+		return false
+	}
+	if auth.AuthorizationURL != "" && auth.TokenURL != "" && auth.EffectiveOAuth2Grant() == spec.OAuth2GrantAuthorizationCode {
+		return true
+	}
+	switch auth.EffectiveOAuth2Grant() {
+	case spec.OAuth2GrantClientCredentials, spec.OAuth2GrantDeviceCode:
+		return true
+	default:
+		return false
+	}
+}
+
+func oauth2AuthSource(auth spec.AuthConfig) string {
+	if auth.Type == spec.AuthTypeOAuth2Refresh {
+		return spec.AuthTypeOAuth2Refresh
+	}
+	return "oauth2"
 }
 
 func authFormatIsBasic(auth spec.AuthConfig) bool {
@@ -936,10 +1388,260 @@ func basicAuthEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
 			})
 		}
 	}
+	if len(envVars) == 0 {
+		return nil
+	}
+	if len(envVars) == 1 {
+		return envVars
+	}
+	return envVars[:2]
+}
+
+// hasNonCookieAuth reports whether the CLI has at least one env-var
+// based credential (bearer token, API key, OAuth client credentials,
+// etc.). Cookie-only CLIs (instacart, airbnb, ebay, pagliacci,
+// table-reservation-goat) skip the agentcookie.toml manifest emit
+// and the bus-detection block in the generated config loader.
+func hasNonCookieAuth(auth spec.AuthConfig) bool {
+	return auth.HasNonCookieAuth()
+}
+
+func clientCredentialsEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
+	if auth.EffectiveOAuth2Grant() != spec.OAuth2GrantClientCredentials {
+		return nil
+	}
+	if len(auth.EnvVarSpecs) > 0 {
+		var candidates []spec.AuthEnvVar
+		tenantEnvVar := clientCredentialsTenantEnvVar(auth)
+		for _, envVar := range auth.EnvVarSpecs {
+			name := strings.TrimSpace(envVar.Name)
+			if name == "" || name == tenantEnvVar || envVar.EffectiveKind() == spec.AuthEnvVarKindHarvested {
+				continue
+			}
+			candidates = append(candidates, envVar)
+		}
+		clientID, clientSecret := clientCredentialsNamedPair(candidates)
+		if clientID.Name != "" && clientSecret.Name != "" {
+			return []spec.AuthEnvVar{clientID, clientSecret}
+		}
+		if len(candidates) >= 2 {
+			return candidates[:2]
+		}
+		return nil
+	}
+	var envVars []spec.AuthEnvVar
+	tenantEnvVar := clientCredentialsTenantEnvVar(auth)
+	for _, name := range auth.EnvVars {
+		if strings.TrimSpace(name) == "" || name == tenantEnvVar {
+			continue
+		}
+		envVars = append(envVars, spec.AuthEnvVar{
+			Name:      name,
+			Kind:      spec.AuthEnvVarKindPerCall,
+			Required:  true,
+			Sensitive: !isClientIDAuthEnvVar(name),
+		})
+	}
 	if len(envVars) < 2 {
 		return nil
 	}
+	clientID, clientSecret := clientCredentialsNamedPair(envVars)
+	if clientID.Name != "" && clientSecret.Name != "" {
+		return []spec.AuthEnvVar{clientID, clientSecret}
+	}
 	return envVars[:2]
+}
+
+func deviceCodeEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
+	if auth.EffectiveOAuth2Grant() != spec.OAuth2GrantDeviceCode {
+		return nil
+	}
+	if len(auth.EnvVarSpecs) > 0 {
+		var candidates []spec.AuthEnvVar
+		for _, envVar := range auth.EnvVarSpecs {
+			if strings.TrimSpace(envVar.Name) == "" || envVar.EffectiveKind() == spec.AuthEnvVarKindHarvested {
+				continue
+			}
+			candidates = append(candidates, envVar)
+		}
+		clientID, _ := clientCredentialsNamedPair(candidates)
+		if clientID.Name != "" {
+			return []spec.AuthEnvVar{clientID}
+		}
+		if len(candidates) > 0 {
+			return candidates[:1]
+		}
+		return nil
+	}
+	for _, name := range auth.EnvVars {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		return []spec.AuthEnvVar{{
+			Name:      name,
+			Kind:      spec.AuthEnvVarKindAuthFlowInput,
+			Required:  strings.TrimSpace(auth.DefaultClientID) == "",
+			Sensitive: false,
+		}}
+	}
+	return nil
+}
+
+func clientCredentialsNamedPair(envVars []spec.AuthEnvVar) (spec.AuthEnvVar, spec.AuthEnvVar) {
+	var clientID spec.AuthEnvVar
+	var clientSecret spec.AuthEnvVar
+	for _, envVar := range envVars {
+		placeholder := naming.EnvVarPlaceholder(envVar.Name)
+		switch {
+		case clientID.Name == "" && (placeholder == "client_id" || strings.HasSuffix(placeholder, "_client_id")):
+			clientID = envVar
+		case clientSecret.Name == "" && (placeholder == "client_secret" || strings.HasSuffix(placeholder, "_client_secret")):
+			clientSecret = envVar
+		}
+	}
+	return clientID, clientSecret
+}
+
+func clientCredentialsTenantEnvVar(auth spec.AuthConfig) string {
+	if auth.EffectiveOAuth2Grant() != spec.OAuth2GrantClientCredentials {
+		return ""
+	}
+	for _, envVar := range auth.EnvVarSpecs {
+		if envVar.EffectiveKind() == spec.AuthEnvVarKindAuthFlowInput && isTenantAuthEnvVar(envVar.Name) {
+			return envVar.Name
+		}
+	}
+	if len(auth.EnvVarSpecs) == 0 || spec.AllAuthEnvVarSpecsInferred(auth.EnvVarSpecs) {
+		for _, name := range auth.EnvVars {
+			if isTenantAuthEnvVar(name) {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func clientCredentialsTokenURLHasTenant(auth spec.AuthConfig) bool {
+	return clientCredentialsTenantEnvVar(auth) != "" && isMicrosoftEntraTokenURL(auth.TokenURL) && strings.Contains(strings.ToLower(auth.TokenURL), "/common/")
+}
+
+func clientCredentialsScope(auth spec.AuthConfig) string {
+	if auth.EffectiveOAuth2Grant() != spec.OAuth2GrantClientCredentials {
+		return ""
+	}
+	if len(auth.Scopes) > 0 {
+		return strings.Join(auth.Scopes, " ")
+	}
+	if isMicrosoftEntraTokenURL(auth.TokenURL) {
+		return "api://{client_id}/.default"
+	}
+	return ""
+}
+
+func clientCredentialsScopeUsesClientID(scope string) bool {
+	return strings.Contains(scope, "{client_id}")
+}
+
+func isMicrosoftEntraTokenURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Host, "login.microsoftonline.com")
+}
+
+func isTenantAuthEnvVar(name string) bool {
+	placeholder := naming.EnvVarPlaceholder(name)
+	return placeholder == "tenant_id" || strings.HasSuffix(placeholder, "_tenant_id")
+}
+
+func isClientIDAuthEnvVar(name string) bool {
+	placeholder := naming.EnvVarPlaceholder(name)
+	return placeholder == "client_id" || strings.HasSuffix(placeholder, "_client_id")
+}
+
+func authAgentEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
+	var envVars []spec.AuthEnvVar
+	seen := map[string]struct{}{}
+	add := func(envVar spec.AuthEnvVar) {
+		if strings.TrimSpace(envVar.Name) == "" || envVar.Kind == spec.AuthEnvVarKindHarvested {
+			return
+		}
+		if _, ok := seen[envVar.Name]; ok {
+			return
+		}
+		seen[envVar.Name] = struct{}{}
+		envVars = append(envVars, envVar)
+	}
+
+	if len(auth.EnvVarSpecs) > 0 {
+		for _, envVar := range auth.EnvVarSpecs {
+			add(envVar)
+		}
+	} else {
+		for _, name := range auth.EnvVars {
+			add(spec.AuthEnvVar{
+				Name:      name,
+				Kind:      spec.AuthEnvVarKindPerCall,
+				Required:  true,
+				Sensitive: true,
+			})
+		}
+	}
+	for _, header := range auth.AdditionalHeaders {
+		add(header.EnvVar)
+	}
+	return envVars
+}
+
+func credentialFields(auth spec.AuthConfig) []credentialField {
+	var fields []credentialField
+	usedTags := make(map[string]struct{})
+	add := func(name string) {
+		if envVarIsBuiltinField(name) {
+			return
+		}
+		tag := naming.EnvVarPlaceholder(name)
+		if _, exists := usedTags[tag]; exists {
+			tag = strings.ToLower(name)
+			for suffix := 2; ; suffix++ {
+				if _, exists := usedTags[tag]; !exists {
+					break
+				}
+				tag = fmt.Sprintf("%s_%d", strings.ToLower(name), suffix)
+			}
+		}
+		usedTags[tag] = struct{}{}
+		fields = append(fields, credentialField{
+			GoField: envVarField(name),
+			Tag:     tag,
+		})
+	}
+	if len(auth.EnvVarSpecs) > 0 {
+		for _, envVar := range auth.EnvVarSpecs {
+			add(envVar.Name)
+		}
+	} else {
+		for _, name := range auth.EnvVars {
+			add(name)
+		}
+	}
+	for _, header := range auth.AdditionalHeaders {
+		add(header.EnvVar.Name)
+	}
+	return fields
+}
+
+func usesLegacyEnvVarCredentials(auth spec.AuthConfig) bool {
+	return len(auth.EnvVarSpecs) == 0 && len(auth.EnvVars) > 0
+}
+
+func pathKindEnvSuffix(index int) string {
+	suffixes := naming.PathKindEnvSuffixes()
+	if index < 0 || index >= len(suffixes) {
+		return ""
+	}
+	return suffixes[index]
 }
 
 func hasAuthEnvVarKind(envVarSpecs []spec.AuthEnvVar, kind string) bool {
@@ -953,6 +1655,204 @@ func hasAuthEnvVarKind(envVarSpecs []spec.AuthEnvVar, kind string) bool {
 
 func isRequestAuthEnvVar(envVar spec.AuthEnvVar) bool {
 	return envVar.IsRequestCredential()
+}
+
+func authEnvHintComment(envVar spec.AuthEnvVar) string {
+	// OneLineNormalize collapses newlines and neutralizes " and \ so the value
+	// is safe to embed verbatim in the generated Go double-quoted string literal
+	// that prints the hint; without it a description containing a quote or
+	// backslash produces non-compiling output. OneLineNormalize (not OneLine)
+	// avoids the length cap so the full description survives as a hint.
+	return naming.OneLineNormalize(strings.TrimSpace(envVar.Description))
+}
+
+func authEnvPlaceholder(envVar spec.AuthEnvVar) string {
+	return authEnvPlaceholderByName(envVar.Name)
+}
+
+func authEnvPlaceholderByName(envVarName string) string {
+	placeholder := naming.EnvVarPlaceholder(envVarName)
+	switch {
+	case placeholder == "domain" || strings.HasSuffix(placeholder, "_domain") ||
+		placeholder == "host" || strings.HasSuffix(placeholder, "_host"):
+		envNameUpper := strings.ToUpper(strings.TrimSpace(envVarName))
+		return "acme." + authEnvDomainVendor(envNameUpper, placeholder) + ".com"
+	case placeholder == "region" || strings.HasSuffix(placeholder, "_region"):
+		return "us-east-1"
+	case placeholder == "username" || strings.HasSuffix(placeholder, "_username"):
+		return "your-username"
+	case placeholder == "password" || strings.HasSuffix(placeholder, "_password"):
+		return "your-password"
+	case placeholder == "user_agent" || strings.HasSuffix(placeholder, "_user_agent"):
+		return "you@example.com (Your Tool Name)"
+	case placeholder == "cookies" || strings.HasSuffix(placeholder, "_cookies"):
+		return "<paste your session cookies>"
+	default:
+		return "your-token-here"
+	}
+}
+
+func requestAuthEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
+	auth.NormalizeEnvVarSpecs("")
+	out := make([]spec.AuthEnvVar, 0, len(auth.EnvVarSpecs))
+	for _, envVar := range auth.EnvVarSpecs {
+		if envVar.IsRequestCredential() {
+			out = append(out, envVar)
+		}
+	}
+	return out
+}
+
+func requiredRequestAuthEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
+	envVars := requestAuthEnvVars(auth)
+	out := make([]spec.AuthEnvVar, 0, len(envVars))
+	for _, envVar := range envVars {
+		if envVar.Required {
+			out = append(out, envVar)
+		}
+	}
+	return out
+}
+
+func optionalRequestAuthEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
+	envVars := requestAuthEnvVars(auth)
+	out := make([]spec.AuthEnvVar, 0, len(envVars))
+	for _, envVar := range envVars {
+		if !envVar.Required {
+			out = append(out, envVar)
+		}
+	}
+	return out
+}
+
+func requiredRequestAuthEnvVarCount(auth spec.AuthConfig) int {
+	return len(requiredRequestAuthEnvVars(auth))
+}
+
+func requestAuthEnvVarCount(auth spec.AuthConfig) int {
+	return len(requestAuthEnvVars(auth))
+}
+
+func authSetTokenAvailable(auth spec.AuthConfig) bool {
+	return authSetTokenAvailableForRequiredCount(auth, requiredRequestAuthEnvVarCount(auth))
+}
+
+func authSetCredentialsAvailable(auth spec.AuthConfig) bool {
+	return len(basicAuthEnvVars(auth)) == 2
+}
+
+func authSetTokenAvailableForRequiredCount(auth spec.AuthConfig, requiredCount int) bool {
+	if strings.Contains(strings.ToLower(auth.Format), "basic ") {
+		return requiredCount == 1 && requestAuthEnvVarCount(auth) == 1
+	}
+	switch auth.Type {
+	case "api_key", "bearer_token":
+		return requestAuthEnvVarCount(auth) > 0 && requiredCount <= 1
+	default:
+		return false
+	}
+}
+
+func basicAuthAppendsColonForSingleToken(auth spec.AuthConfig) bool {
+	envVars := basicAuthEnvVars(auth)
+	if len(envVars) != 1 {
+		return false
+	}
+	payload := strings.TrimSpace(auth.Format)
+	if scheme, rest, ok := strings.Cut(payload, " "); ok && strings.EqualFold(strings.TrimSpace(scheme), "Basic") {
+		payload = strings.TrimSpace(rest)
+	}
+	return !strings.Contains(payload, ":")
+}
+
+func authErrorCheckHint(auth spec.AuthConfig) string {
+	switch auth.Type {
+	case "bearer_token", "oauth2", "oauth2_refresh":
+		return "check your token."
+	case "api_key":
+		if strings.Contains(strings.ToLower(auth.Format), "basic ") {
+			return "check your Basic credentials."
+		}
+		return "check your API key."
+	default:
+		return "check your API credentials."
+	}
+}
+
+func authSetupHint(auth spec.AuthConfig, cliName string) string {
+	if auth.Subtype == spec.AuthSubtypeGoogleServiceAccount {
+		return fmt.Sprintf("Run '%s-pp-cli auth service-account --key <service-account.json>' or set GOOGLE_OAUTH_ACCESS_TOKEN.", cliName)
+	}
+	switch auth.Type {
+	case "", "none":
+		return ""
+	case "cookie", "composed":
+		return fmt.Sprintf("Run '%s-pp-cli auth login --chrome' to refresh browser-session credentials.", cliName)
+	case "oauth2":
+		return fmt.Sprintf("Run '%s-pp-cli auth login' to re-authenticate.", cliName)
+	}
+	if authBrowserLoginAvailable(auth) {
+		return fmt.Sprintf("Run '%s-pp-cli auth login' to re-authenticate.", cliName)
+	}
+
+	envVars := requiredRequestAuthEnvVars(auth)
+	if len(envVars) == 0 && auth.IsAuthEnvVarORCase() {
+		envVars = requestAuthEnvVars(auth)
+		exports := make([]string, 0, len(envVars))
+		for _, envVar := range envVars {
+			exports = append(exports, fmt.Sprintf(`export %s="%s"`, envVar.Name, authEnvPlaceholder(envVar)))
+		}
+		if len(exports) > 0 {
+			return "Set one of: " + strings.Join(exports, " or ")
+		}
+	}
+	if len(envVars) == 0 {
+		return fmt.Sprintf("Run '%s-pp-cli auth setup' for credential setup steps.", cliName)
+	}
+
+	exports := make([]string, 0, len(envVars))
+	for _, envVar := range envVars {
+		exports = append(exports, fmt.Sprintf(`%s="%s"`, envVar.Name, authEnvPlaceholder(envVar)))
+	}
+
+	if len(envVars) == 1 {
+		switch auth.Type {
+		case "bearer_token", "oauth2_refresh":
+			if authSetTokenAvailableForRequiredCount(auth, len(envVars)) {
+				return fmt.Sprintf("Set it with: %s-pp-cli auth set-token <token> or export %s", cliName, exports[0])
+			}
+			return fmt.Sprintf("Set it with: export %s", exports[0])
+		case "api_key":
+			if strings.Contains(strings.ToLower(auth.Format), "basic ") {
+				return fmt.Sprintf("Set the Basic credential with: export %s", exports[0])
+			}
+			return fmt.Sprintf("Set your API key with: export %s", exports[0])
+		default:
+			return fmt.Sprintf("Set credentials with: export %s", exports[0])
+		}
+	}
+
+	if strings.Contains(strings.ToLower(auth.Format), "basic ") {
+		return "Set Basic credentials with: export " + strings.Join(exports, " ")
+	}
+	return "Set credentials with: export " + strings.Join(exports, " ")
+}
+
+func authBrowserLoginAvailable(auth spec.AuthConfig) bool {
+	return strings.TrimSpace(auth.AuthorizationURL) != "" &&
+		auth.EffectiveOAuth2Grant() == spec.OAuth2GrantAuthorizationCode
+}
+
+func authEnvDomainVendor(envNameUpper, placeholder string) string {
+	vendor := strings.TrimSuffix(strings.TrimSuffix(envNameUpper, "_DOMAIN"), "_HOST")
+	if vendor == envNameUpper {
+		vendor = strings.TrimSuffix(strings.TrimSuffix(placeholder, "_domain"), "_host")
+	}
+	vendor = strings.Trim(vendor, "_")
+	if vendor == "" {
+		return "example"
+	}
+	return strings.ToLower(strings.ReplaceAll(vendor, "_", "-"))
 }
 
 func effectiveTier(api *spec.APISpec, resource spec.Resource, endpoint spec.Endpoint) string {
@@ -982,6 +1882,15 @@ func hasWriteCommands(resources map[string]spec.Resource) bool {
 	return false
 }
 
+func hasCreateCommands(resources map[string]spec.Resource) bool {
+	for _, resource := range resources {
+		if resourceHasCreateCommand(resource) {
+			return true
+		}
+	}
+	return false
+}
+
 func resourceHasWriteCommand(resource spec.Resource) bool {
 	for name, endpoint := range resource.Endpoints {
 		if endpointIsWriteCommand(endpoint, name) {
@@ -990,6 +1899,20 @@ func resourceHasWriteCommand(resource spec.Resource) bool {
 	}
 	for _, sub := range resource.SubResources {
 		if resourceHasWriteCommand(sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceHasCreateCommand(resource spec.Resource) bool {
+	for name, endpoint := range resource.Endpoints {
+		if endpointIsCreateCommand(endpoint, name) {
+			return true
+		}
+	}
+	for _, sub := range resource.SubResources {
+		if resourceHasCreateCommand(sub) {
 			return true
 		}
 	}
@@ -1022,6 +1945,47 @@ var readOperationIDPrefixes = map[string]bool{
 	"fetch":    true,
 }
 
+// mutationOperationIDPrefixes are conservative action tokens for GET-based
+// RPC endpoints. HTTP method remains the default signal; these leading tokens
+// only opt a GET into the write path when an operation name clearly describes
+// a state-changing action.
+var mutationOperationIDPrefixes = map[string]bool{
+	"activate":   true,
+	"add":        true,
+	"approve":    true,
+	"archive":    true,
+	"cancel":     true,
+	"create":     true,
+	"deactivate": true,
+	"delete":     true,
+	"deploy":     true,
+	"disable":    true,
+	"enable":     true,
+	"execute":    true,
+	"insert":     true,
+	"pause":      true,
+	"publish":    true,
+	"put":        true,
+	"reject":     true,
+	"remove":     true,
+	"restart":    true,
+	"restore":    true,
+	"resume":     true,
+	"revoke":     true,
+	"rotate":     true,
+	"run":        true,
+	"save":       true,
+	"send":       true,
+	"set":        true,
+	"start":      true,
+	"stop":       true,
+	"sync":       true,
+	"trigger":    true,
+	"unpublish":  true,
+	"update":     true,
+	"upsert":     true,
+}
+
 // writeOperationIDFragments name mutations. When a read-shaped leading token
 // is followed by one of these (e.g. getOrCreate, fetchAndUpdate), the
 // classifier flips back to write — the leading verb was misleading.
@@ -1041,37 +2005,47 @@ var writeOperationIDFragments = map[string]bool{
 // params are entirely drawn from this set is acting as a query, not a
 // mutation; mixing in any unknown name flips the endpoint back to write.
 var readBodyParamNames = map[string]bool{
-	"query":     true,
-	"querytext": true,
-	"q":         true,
-	"filter":    true,
-	"filters":   true,
-	"limit":     true,
-	"offset":    true,
-	"from":      true,
-	"size":      true,
-	"cursor":    true,
-	"page":      true,
-	"pagesize":  true,
-	"sort":      true,
-	"sortby":    true,
-	"orderby":   true,
+	"query":       true,
+	"querytext":   true,
+	"q":           true,
+	"filter":      true,
+	"filters":     true,
+	"limit":       true,
+	"offset":      true,
+	"from":        true,
+	"size":        true,
+	"cursor":      true,
+	"page":        true,
+	"pagesize":    true,
+	"sort":        true,
+	"sortby":      true,
+	"orderby":     true,
+	"maxrecords":  true,
+	"max_records": true,
 }
 
 // endpointIsWriteCommand returns true when the endpoint mutates external
-// state. Read signals are checked in cost order: annotation, verb, name
-// token, body shape. Fail-closed when none fire so unknown shapes stay
-// classified as writes.
+// state. Read signals are checked in cost order: read-only annotation,
+// explicit mutation signal, verb, name token, body shape. The read-only
+// annotation remains the strongest override so an explicitly safe endpoint
+// cannot be made destructive by a broad fallback. Unknown GET shapes remain
+// read-only unless the spec or operation name supplies a mutation signal.
 //
 // opName is the map key from Resource.Endpoints (the operation id).
 func endpointIsWriteCommand(endpoint spec.Endpoint, opName string) bool {
 	if v, ok := endpoint.Meta["mcp:read-only"]; ok && strings.EqualFold(strings.TrimSpace(v), "true") {
 		return false
 	}
-	if !methodIsWrite(endpoint.Method) {
-		return false
+	if endpoint.Mutation {
+		return true
 	}
 	tokens := camelCaseTokens(strings.TrimSpace(opName))
+	if !methodIsWrite(endpoint.Method) {
+		if !strings.EqualFold(strings.TrimSpace(endpoint.Method), "GET") {
+			return false
+		}
+		return len(tokens) > 0 && mutationOperationIDPrefixes[strings.ToLower(tokens[0])]
+	}
 	if len(tokens) > 0 && readOperationIDPrefixes[strings.ToLower(tokens[0])] {
 		for _, tok := range tokens[1:] {
 			if writeOperationIDFragments[strings.ToLower(tok)] {
@@ -1081,6 +2055,18 @@ func endpointIsWriteCommand(endpoint spec.Endpoint, opName string) bool {
 		return false
 	}
 	return !bodyIsAllFilterShape(endpoint.Body)
+}
+
+func endpointIsCreateCommand(endpoint spec.Endpoint, opName string) bool {
+	if !endpointIsWriteCommand(endpoint, opName) {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(endpoint.Method)) {
+	case "POST", "PUT", "PATCH":
+		return true
+	default:
+		return false
+	}
 }
 
 // endpointIsReadCommand is the inverse of endpointIsWriteCommand.
@@ -1095,8 +2081,8 @@ func endpointIsReadCommand(endpoint spec.Endpoint, opName string) bool {
 }
 
 // camelCaseTokens splits "getOrCreate" → ["get", "Or", "Create"] and
-// "searchAll" → ["search", "All"]. Non-letter runes (digits, separators)
-// stay attached to the preceding token.
+// "searchAll" → ["search", "All"]. Digits stay attached to the preceding
+// token, while punctuation separators create a new token.
 func camelCaseTokens(s string) []string {
 	if s == "" {
 		return nil
@@ -1104,6 +2090,13 @@ func camelCaseTokens(s string) []string {
 	var tokens []string
 	var cur []rune
 	for _, r := range s {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			if len(cur) > 0 {
+				tokens = append(tokens, string(cur))
+				cur = nil
+			}
+			continue
+		}
 		if unicode.IsUpper(r) && len(cur) > 0 {
 			tokens = append(tokens, string(cur))
 			cur = []rune{r}
@@ -1198,6 +2191,13 @@ func (g *Generator) hasTrafficAnalysisHint(hint string) bool {
 	return slices.Contains(g.TrafficAnalysis.GenerationHints, hint)
 }
 
+func (g *Generator) shouldUseChromeImpersonation() bool {
+	if g == nil || g.TrafficAnalysis == nil || g.TrafficAnalysis.Reachability == nil || g.TrafficAnalysis.Reachability.ImpersonationSafe == nil {
+		return true
+	}
+	return *g.TrafficAnalysis.Reachability.ImpersonationSafe
+}
+
 func appendLimited(values []string, value string, limit int) []string {
 	value = strings.TrimSpace(value)
 	if value == "" || len(values) >= limit {
@@ -1222,6 +2222,22 @@ func safeDisplayURL(value string) string {
 	return parsed.String()
 }
 
+// resourceHasMutation reports whether the resource has any mutating endpoint
+// directly on itself. This uses the same classifier as command generation so
+// explicit and conservative GET mutation signals are reflected in agent
+// context. Each sub-resource is surfaced as its own taxonomy entry and
+// evaluated independently, so this deliberately does NOT recurse into
+// r.SubResources — a read-only parent must not inherit a child's writability,
+// and vice versa.
+func resourceHasMutation(r spec.Resource) bool {
+	for name, endpoint := range r.Endpoints {
+		if endpointIsWriteCommand(endpoint, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // buildDomainContext constructs structured domain knowledge for MCP agents
 // from the spec and profiler output. This is front-loaded context that prevents
 // agents from wasting tokens discovering what the API is about.
@@ -1241,18 +2257,39 @@ func (g *Generator) buildDomainContext() DomainContext {
 			syncSet[sr.Name] = true
 		}
 
-		for rName, r := range g.Spec.Resources {
+		// addResourceSummaries emits one ResourceSummary for the resource named
+		// `name` (dotted path for sub-resources, e.g. "projects.issues") and
+		// then recurses into its sub-resources. syncable/searchable are looked
+		// up by the qualified name: the profiler keys those maps by bare
+		// top-level name, so a dotted name is never a key and correctly resolves
+		// to false (omit-over-guess) for sub-entries.
+		var addResourceSummaries func(name string, r spec.Resource)
+		addResourceSummaries = func(name string, r spec.Resource) {
 			rs := ResourceSummary{
-				Name:        rName,
+				Name:        name,
 				Description: naming.OneLine(r.Description),
-				Syncable:    syncSet[rName],
-				Searchable:  len(g.profile.SearchableFields[rName]) > 0,
+				Syncable:    syncSet[name],
+				Searchable:  len(g.profile.SearchableFields[name]) > 0,
+				Writable:    resourceHasMutation(r),
 			}
 			for eName := range r.Endpoints {
 				rs.Endpoints = append(rs.Endpoints, eName)
 			}
 			sort.Strings(rs.Endpoints)
 			ctx.Resources = append(ctx.Resources, rs)
+
+			subNames := make([]string, 0, len(r.SubResources))
+			for subName := range r.SubResources {
+				subNames = append(subNames, subName)
+			}
+			sort.Strings(subNames)
+			for _, subName := range subNames {
+				addResourceSummaries(name+"."+subName, r.SubResources[subName])
+			}
+		}
+
+		for rName, r := range g.Spec.Resources {
+			addResourceSummaries(rName, r)
 		}
 		sort.Slice(ctx.Resources, func(i, j int) bool {
 			return ctx.Resources[i].Name < ctx.Resources[j].Name
@@ -1282,7 +2319,7 @@ func (g *Generator) buildDomainContext() DomainContext {
 	}
 
 	// Add data layer tips when store is available
-	if g.VisionSet.Store {
+	if g.hasDataLayer() {
 		ctx.QueryTips = append(ctx.QueryTips,
 			"Use the sql tool for ad-hoc analysis on synced data. Run sync first to populate the local database.",
 			"Use the search tool for full-text search across all synced resources. Faster than iterating list endpoints.",
@@ -1339,9 +2376,28 @@ func (g *Generator) prepareOutput() error {
 		filepath.Join("internal", "cache"),
 		filepath.Join("internal", "client"),
 		filepath.Join("internal", "cliutil"),
+		filepath.Join("internal", "cliutil", "testenv"),
 		filepath.Join("internal", "config"),
+		filepath.Join("internal", "mcp", "bound"),
 		filepath.Join("internal", "mcp", "cobratree"),
+		filepath.Join("internal", "platform"),
+		filepath.Join("internal", "platform", "testdata"),
 		filepath.Join("internal", "types"),
+	}
+	// Reserve the learn-package directory tree only when the spec opts
+	// in. Keeping these gated avoids creating empty dirs in CLIs that
+	// don't ship the self-learning loop, which would otherwise show up
+	// as untracked dirs in published-library trees.
+	if g.Spec.Learn.Enabled {
+		dirs = append(dirs,
+			filepath.Join("internal", "learn"),
+			filepath.Join("internal", "learn", "entities"),
+			filepath.Join("internal", "learn", "lookups"),
+			filepath.Join("internal", "learn", "patterns"),
+		)
+	}
+	if g.Spec.Streaming.Enabled() {
+		dirs = append(dirs, filepath.Join("internal", "wsclient"))
 	}
 
 	for _, d := range dirs {
@@ -1354,13 +2410,34 @@ func (g *Generator) prepareOutput() error {
 	// templates can check HasStore for data source resolution.
 	if g.VisionSet.IsZero() {
 		g.profile = profiler.Profile(g.Spec)
+		g.resetHTMLSyncStubCache()
 		plan := g.profile.ToVisionaryPlan(g.Spec.Name)
 		g.VisionSet = SelectVisionTemplates(plan)
 	}
 	if g.profile == nil {
 		g.profile = profiler.Profile(g.Spec)
+		g.resetHTMLSyncStubCache()
 	}
-	g.VisionSet = constrainVisionTemplates(g.Spec, g.VisionSet)
+	storeSelectedBeforeConstrain := g.VisionSet.Store
+	g.htmlSyncStubSelected = g.VisionSet.Sync && g.shouldEmitHTMLSyncStub()
+	g.VisionSet = constrainVisionTemplates(g.Spec, g.VisionSet, g.profile, os.Stderr)
+	if g.Spec.Learn.Enabled && !storeSelectedBeforeConstrain && g.VisionSet.Store {
+		g.learnStorePromoted = true
+	}
+	if g.Spec.Learn.Enabled && !g.VisionSet.Store {
+		// Defensive: constrainVisionTemplates already promotes Store for
+		// learn-enabled specs, so this branch is unreachable through the
+		// normal path. Promote rather than error so callers that force-set
+		// VisionSet around constrain keep working (soft-validation posture).
+		g.VisionSet.Store = true
+		fmt.Fprint(os.Stderr, learnStorePromotionInfo)
+	}
+	g.resolveVisionCommandNames()
+	if g.renameActiveFrameworkResourceCollisions() {
+		g.profile = profiler.Profile(g.Spec)
+		g.resetHTMLSyncStubCache()
+	}
+	promoteSyncPathTemplateVars(g.Spec, g.profile)
 	if err := g.validateFreshnessCommandCoverage(); err != nil {
 		return err
 	}
@@ -1380,6 +2457,13 @@ func (g *Generator) prepareOutput() error {
 		return err
 	}
 
+	// Assert the FINAL per-endpoint MCP input-name set (post-dedup) is legal
+	// and collision-free before anything renders — an illegal or duplicate
+	// tool property key must fail generation, never ship (#165).
+	if err := g.validateMCPInputNames(); err != nil {
+		return err
+	}
+
 	g.dedupeTypeFieldIdentifiers()
 
 	return nil
@@ -1387,71 +2471,122 @@ func (g *Generator) prepareOutput() error {
 
 func (g *Generator) renderSingleFiles() error {
 	singleFiles := map[string]string{
-		"main.go.tmpl":                       filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
-		"helpers.go.tmpl":                    filepath.Join("internal", "cli", "helpers.go"),
-		"doctor.go.tmpl":                     filepath.Join("internal", "cli", "doctor.go"),
-		"agent_context.go.tmpl":              filepath.Join("internal", "cli", "agent_context.go"),
-		"profile.go.tmpl":                    filepath.Join("internal", "cli", "profile.go"),
-		"deliver.go.tmpl":                    filepath.Join("internal", "cli", "deliver.go"),
-		"feedback.go.tmpl":                   filepath.Join("internal", "cli", "feedback.go"),
-		"which.go.tmpl":                      filepath.Join("internal", "cli", "which.go"),
-		"which_test.go.tmpl":                 filepath.Join("internal", "cli", "which_test.go"),
-		"config.go.tmpl":                     filepath.Join("internal", "config", "config.go"),
-		"cache.go.tmpl":                      filepath.Join("internal", "cache", "cache.go"),
-		"client.go.tmpl":                     filepath.Join("internal", "client", "client.go"),
-		"cliutil_fanout.go.tmpl":             filepath.Join("internal", "cliutil", "fanout.go"),
-		"cliutil_text.go.tmpl":               filepath.Join("internal", "cliutil", "text.go"),
-		"cliutil_probe.go.tmpl":              filepath.Join("internal", "cliutil", "probe.go"),
-		"cliutil_ratelimit.go.tmpl":          filepath.Join("internal", "cliutil", "ratelimit.go"),
-		"cliutil_verifyenv.go.tmpl":          filepath.Join("internal", "cliutil", "verifyenv.go"),
-		"cliutil_extractnumber.go.tmpl":      filepath.Join("internal", "cliutil", "extractnumber.go"),
-		"cliutil_extractnumber_test.go.tmpl": filepath.Join("internal", "cliutil", "extractnumber_test.go"),
-		"cliutil_test.go.tmpl":               filepath.Join("internal", "cliutil", "cliutil_test.go"),
-		"cobratree/walker.go.tmpl":           filepath.Join("internal", "mcp", "cobratree", "walker.go"),
-		"cobratree/classify.go.tmpl":         filepath.Join("internal", "mcp", "cobratree", "classify.go"),
-		"cobratree/typemap.go.tmpl":          filepath.Join("internal", "mcp", "cobratree", "typemap.go"),
-		"cobratree/shellout.go.tmpl":         filepath.Join("internal", "mcp", "cobratree", "shellout.go"),
-		"cobratree/shellout_test.go.tmpl":    filepath.Join("internal", "mcp", "cobratree", "shellout_test.go"),
-		"cobratree/cli_path.go.tmpl":         filepath.Join("internal", "mcp", "cobratree", "cli_path.go"),
-		"cobratree/names.go.tmpl":            filepath.Join("internal", "mcp", "cobratree", "names.go"),
-		"types.go.tmpl":                      filepath.Join("internal", "types", "types.go"),
-		"golangci.yml.tmpl":                  ".golangci.yml",
-		"readme.md.tmpl":                     "README.md",
-		"agents.md.tmpl":                     "AGENTS.md",
-		"skill.md.tmpl":                      "SKILL.md",
-		"LICENSE.tmpl":                       "LICENSE",
-		"NOTICE.tmpl":                        "NOTICE",
+		"main.go.tmpl":                             filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
+		"version.go.tmpl":                          filepath.Join("internal", "cli", "version.go"),
+		"helpers.go.tmpl":                          filepath.Join("internal", "cli", "helpers.go"),
+		"root_test.go.tmpl":                        filepath.Join("internal", "cli", "root_test.go"),
+		"doctor.go.tmpl":                           filepath.Join("internal", "cli", "doctor.go"),
+		"agent_context.go.tmpl":                    filepath.Join("internal", "cli", "agent_context.go"),
+		"profile.go.tmpl":                          filepath.Join("internal", "cli", "profile.go"),
+		"deliver.go.tmpl":                          filepath.Join("internal", "cli", "deliver.go"),
+		"feedback.go.tmpl":                         filepath.Join("internal", "cli", "feedback.go"),
+		"which.go.tmpl":                            filepath.Join("internal", "cli", "which.go"),
+		"which_test.go.tmpl":                       filepath.Join("internal", "cli", "which_test.go"),
+		"config.go.tmpl":                           filepath.Join("internal", "config", "config.go"),
+		"cache.go.tmpl":                            filepath.Join("internal", "cache", "cache.go"),
+		"platform_profile.go.tmpl":                 filepath.Join("internal", "platform", "profile.go"),
+		"platform_gate.go.tmpl":                    filepath.Join("internal", "platform", "gate.go"),
+		"platform_metadata.go.tmpl":                filepath.Join("internal", "platform", "metadata.go"),
+		"platform_migration.go.tmpl":               filepath.Join("internal", "platform", "migration.go"),
+		"platform_ratelimit.go.tmpl":               filepath.Join("internal", "platform", "ratelimit.go"),
+		"platform_receipt.go.tmpl":                 filepath.Join("internal", "platform", "receipt.go"),
+		"platform_doctor.go.tmpl":                  filepath.Join("internal", "platform", "doctor.go"),
+		"platform_cli.go.tmpl":                     filepath.Join("internal", "cli", "platform_client.go"),
+		"platform_cli_test.go.tmpl":                filepath.Join("internal", "cli", "platform_cli_test.go"),
+		"platform_window.go.tmpl":                  filepath.Join("internal", "cli", "platform_window.go"),
+		"platform_window_test.go.tmpl":             filepath.Join("internal", "cli", "platform_window_test.go"),
+		"platform_conformance_test.go.tmpl":        filepath.Join("internal", "platform", "conformance_test.go"),
+		"platform_receipt_status_golden.json.tmpl": filepath.Join("internal", "platform", "testdata", "receipt-status-golden.json"),
+		"client.go.tmpl":                           filepath.Join("internal", "client", "client.go"),
+		"client_test.go.tmpl":                      filepath.Join("internal", "client", "client_test.go"),
+		"client_platform_budget_test.go.tmpl":      filepath.Join("internal", "client", "platform_budget_test.go"),
+		"client_platform_rate_limit_test.go.tmpl":  filepath.Join("internal", "client", "platform_rate_limit_test.go"),
+		"client_verify_short_circuit_test.go.tmpl": filepath.Join("internal", "client", "client_verify_short_circuit_test.go"),
+		"cliutil_fanout.go.tmpl":                   filepath.Join("internal", "cliutil", "fanout.go"),
+		"cliutil_text.go.tmpl":                     filepath.Join("internal", "cliutil", "text.go"),
+		"cliutil_probe.go.tmpl":                    filepath.Join("internal", "cliutil", "probe.go"),
+		"cliutil_ratelimit.go.tmpl":                filepath.Join("internal", "cliutil", "ratelimit.go"),
+		"cliutil_verifyenv.go.tmpl":                filepath.Join("internal", "cliutil", "verifyenv.go"),
+		"cliutil_paths.go.tmpl":                    filepath.Join("internal", "cliutil", "paths.go"),
+		"cliutil_paths_test.go.tmpl":               filepath.Join("internal", "cliutil", "paths_test.go"),
+		"cliutil_testenv.go.tmpl":                  filepath.Join("internal", "cliutil", "testenv", "testenv.go"),
+		"cliutil_testenv_sandbox_unix.go.tmpl":     filepath.Join("internal", "cliutil", "testenv", "sandbox_unix.go"),
+		"cliutil_testenv_sandbox_windows.go.tmpl":  filepath.Join("internal", "cliutil", "testenv", "sandbox_windows.go"),
+		"cliutil_extractnumber.go.tmpl":            filepath.Join("internal", "cliutil", "extractnumber.go"),
+		"cliutil_extractnumber_test.go.tmpl":       filepath.Join("internal", "cliutil", "extractnumber_test.go"),
+		"cliutil_jwtshape.go.tmpl":                 filepath.Join("internal", "cliutil", "jwtshape.go"),
+		"cliutil_jwtshape_test.go.tmpl":            filepath.Join("internal", "cliutil", "jwtshape_test.go"),
+		"cliutil_duration.go.tmpl":                 filepath.Join("internal", "cliutil", "duration.go"),
+		"cliutil_duration_test.go.tmpl":            filepath.Join("internal", "cliutil", "duration_test.go"),
+		"cliutil_odata_date.go.tmpl":               filepath.Join("internal", "cliutil", "odata_date.go"),
+		"cliutil_odata_date_test.go.tmpl":          filepath.Join("internal", "cliutil", "odata_date_test.go"),
+		"cliutil_test.go.tmpl":                     filepath.Join("internal", "cliutil", "cliutil_test.go"),
+		"mcp_bound.go.tmpl":                        filepath.Join("internal", "mcp", "bound", "bound.go"),
+		"mcp_bound_test.go.tmpl":                   filepath.Join("internal", "mcp", "bound", "bound_test.go"),
+		"types.go.tmpl":                            filepath.Join("internal", "types", "types.go"),
+		"golangci.yml.tmpl":                        ".golangci.yml",
+		"readme.md.tmpl":                           "README.md",
+		"agents.md.tmpl":                           "AGENTS.md",
+		"claude.md.tmpl":                           "CLAUDE.md",
+		"skill.md.tmpl":                            "SKILL.md",
+		"LICENSE.tmpl":                             "LICENSE",
+		"NOTICE.tmpl":                              "NOTICE",
 	}
+	maps.Copy(singleFiles, cobratreeWalkerTemplateFiles())
 
 	for tmplName, outPath := range singleFiles {
+		if tmplName == "types.go.tmpl" && g.shouldPreserveExistingTypesFile(outPath) {
+			continue
+		}
 		var data any
 		switch tmplName {
-		case "readme.md.tmpl", "agents.md.tmpl", "skill.md.tmpl", "which.go.tmpl", "which_test.go.tmpl":
+		case "readme.md.tmpl", "agents.md.tmpl", "claude.md.tmpl", "skill.md.tmpl", "which.go.tmpl", "which_test.go.tmpl":
 			data = g.readmeData()
 		case "helpers.go.tmpl":
 			hFlags := computeHelperFlags(g.Spec)
-			hFlags.HasDataLayer = g.VisionSet.Store
+			applyPartialFailureFlags(&hFlags, g.Spec, g.PromotedCommands, g.PromotedEndpointNames, g.hasDataLayer())
+			hFlags.HasDataLayer = g.hasDataLayer()
+			hFlags.HasStorePath = g.VisionSet.Store
+			hFlags.HasSyncHelpers = g.hasGeneratedSyncImplementation()
+			hFlags.HasResponseUnwrap = g.hasDataLayer() && promotedCommandsCanUnwrapResponse(g.PromotedCommands, g.Spec.Types)
 			data = &helpersTemplateData{
 				APISpec:     g.Spec,
 				HelperFlags: hFlags,
 			}
+		case "root_test.go.tmpl":
+			data = &rootTestTemplateData{
+				APISpec:              g.Spec,
+				ExpectedCommandPaths: expectedCommandPaths(buildCommandSurface(g.Spec, g.PromotedCommands)),
+			}
 		case "doctor.go.tmpl":
 			data = &doctorTemplateData{
-				APISpec:  g.Spec,
-				HasStore: g.VisionSet.Store,
+				APISpec:        g.Spec,
+				HasStore:       g.hasDataLayer(),
+				HasCacheReport: g.hasGeneratedSyncImplementation(),
+				HasAuthCommand: g.shouldEmitAuth(),
+			}
+		case "cliutil_paths.go.tmpl":
+			data = &pathsTemplateData{
+				APISpec:             g.Spec,
+				PathKindEnvSuffixes: naming.PathKindEnvSuffixes(),
 			}
 		case "client.go.tmpl":
 			data = &clientTemplateData{
 				APISpec:                    g.Spec,
+				IsGraphQL:                  isGraphQLSpec(g.Spec),
 				HasGraphQLPersistedQueries: g.hasTrafficAnalysisHint("graphql_persisted_query"),
 				HasMultipartRequest:        hasMultipartRequest(g.Spec),
 				HasFormRequest:             hasFormRequest(g.Spec),
+				HasRawRequest:              hasRawRequest(g.Spec),
+				UseChromeImpersonation:     g.shouldUseChromeImpersonation(),
 				HasAuthCommand:             g.shouldEmitAuth(),
 			}
 		case "config.go.tmpl":
 			data = &configTemplateData{
-				APISpec:        g.Spec,
-				HasAuthCommand: g.shouldEmitAuth(),
+				APISpec:                     g.Spec,
+				HasAuthCommand:              g.shouldEmitAuth(),
+				CredentialFields:            credentialFields(g.Spec.Auth),
+				UsesLegacyEnvVarCredentials: usesLegacyEnvVarCredentials(g.Spec.Auth),
 			}
 		case "agent_context.go.tmpl":
 			data = g.templateData()
@@ -1466,10 +2601,86 @@ func (g *Generator) renderSingleFiles() error {
 	return nil
 }
 
+func (g *Generator) shouldPreserveExistingTypesFile(outPath string) bool {
+	if g == nil || g.Spec == nil || g.Spec.SpecSource != "sniffed" {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(g.OutputDir, outPath))
+	if err != nil {
+		return false
+	}
+	return generatedTypesFileHasDeclarations(string(data))
+}
+
+func generatedTypesFileHasDeclarations(content string) bool {
+	for line := range strings.SplitSeq(content, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "type ") {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *Generator) renderOptionalSupportFiles() error {
+	if g.shouldEmitAuth() {
+		authData := &configTemplateData{
+			APISpec:                     g.Spec,
+			HasAuthCommand:              true,
+			CredentialFields:            credentialFields(g.Spec.Auth),
+			UsesLegacyEnvVarCredentials: usesLegacyEnvVarCredentials(g.Spec.Auth),
+		}
+		if err := g.renderTemplate("cliutil_credentials.go.tmpl", filepath.Join("internal", "cliutil", "credentials.go"), authData); err != nil {
+			return fmt.Errorf("rendering cliutil credentials: %w", err)
+		}
+		if err := g.renderTemplate("cliutil_credentials_test.go.tmpl", filepath.Join("internal", "cliutil", "credentials_test.go"), authData); err != nil {
+			return fmt.Errorf("rendering cliutil credentials test: %w", err)
+		}
+		// Behavioral test proving the read-time guard is wired into
+		// LoadCredentials (A4): owner-locked = hit, group/world-readable = soft
+		// miss (the not-found sentinel, no credential surfaced), over-permissive
+		// is not an error. In-package (package cliutil) so it drives
+		// credentialsPath() + VerifyCredsPerms directly.
+		if err := g.renderTemplate("cliutil_credentials_perms_test.go.tmpl", filepath.Join("internal", "cliutil", "credentials_perms_test.go"), authData); err != nil {
+			return fmt.Errorf("rendering cliutil credentials perms test: %w", err)
+		}
+		// Read-time credentials permission check (S1): a persisted token file
+		// written 0600 can later drift to loose perms, so guard it at load time.
+		// Emitted alongside credentials because it only matters when a token is
+		// persisted. Pure evaluator is build-tag-free (unit-testable anywhere);
+		// the POSIX and Windows guards are platform-gated.
+		if err := g.renderTemplate("cliutil_creds_perms_eval.go.tmpl", filepath.Join("internal", "cliutil", "creds_perms_eval.go"), authData); err != nil {
+			return fmt.Errorf("rendering cliutil creds perms evaluator: %w", err)
+		}
+		if err := g.renderTemplate("cliutil_creds_perms_eval_test.go.tmpl", filepath.Join("internal", "cliutil", "creds_perms_eval_test.go"), authData); err != nil {
+			return fmt.Errorf("rendering cliutil creds perms evaluator test: %w", err)
+		}
+		if err := g.renderTemplate("cliutil_creds_perms_unix.go.tmpl", filepath.Join("internal", "cliutil", "creds_perms_unix.go"), authData); err != nil {
+			return fmt.Errorf("rendering cliutil creds perms unix: %w", err)
+		}
+		if err := g.renderTemplate("cliutil_creds_perms_windows.go.tmpl", filepath.Join("internal", "cliutil", "creds_perms_windows.go"), authData); err != nil {
+			return fmt.Errorf("rendering cliutil creds perms windows: %w", err)
+		}
+		// Behavioral test proving the read-time guard is wired into config.Load:
+		// owner-locked = hit, group/world-readable = silent miss, env re-seed
+		// after refusal, symlink-to-loose-target refused, dangling = miss, and
+		// the parse-error path never leaks the token (S3).
+		if err := g.renderTemplate("config_perms_test.go.tmpl", filepath.Join("internal", "config", "config_perms_test.go"), authData); err != nil {
+			return fmt.Errorf("rendering config perms test: %w", err)
+		}
+	}
+
 	if g.Spec.HasHTMLExtraction() {
 		if err := g.renderTemplate("html_extract.go.tmpl", filepath.Join("internal", "cli", "html_extract.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering HTML extraction helper: %w", err)
+		}
+	}
+
+	if g.hasGeneratedSyncImplementation() {
+		if err := g.renderTemplate("sync_hint.go.tmpl", filepath.Join("internal", "cli", "sync_hint.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering sync hint helper: %w", err)
+		}
+		if err := g.renderTemplate("sync_hint_test.go.tmpl", filepath.Join("internal", "cli", "sync_hint_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering sync hint test: %w", err)
 		}
 	}
 
@@ -1477,12 +2688,30 @@ func (g *Generator) renderOptionalSupportFiles() error {
 	// or share and the CLI has a local store. Without a store there is
 	// nothing to check freshness against; without cache or share opt-in
 	// there is no caller that consumes the Decision.
-	if g.VisionSet.Store && (g.Spec.Cache.Enabled || g.Spec.Share.Enabled) {
+	if g.VisionSet.Store && ((g.Spec.Cache.Enabled && g.hasGeneratedSyncImplementation()) || g.Spec.Share.Enabled) {
 		if err := g.renderTemplate("cliutil_freshness.go.tmpl", filepath.Join("internal", "cliutil", "freshness.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering cliutil freshness: %w", err)
 		}
 		if err := g.renderTemplate("cliutil_freshness_test.go.tmpl", filepath.Join("internal", "cliutil", "freshness_test.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering cliutil freshness test: %w", err)
+		}
+	}
+
+	if hasCSVArrayRequest(g.Spec) {
+		if err := g.renderTemplate("cliutil_csv.go.tmpl", filepath.Join("internal", "cliutil", "csv.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cliutil csv: %w", err)
+		}
+	}
+
+	if hasCSVResponse(g.Spec) {
+		if err := g.renderTemplate("cliutil_csv_parse.go.tmpl", filepath.Join("internal", "cliutil", "csv_parse.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cliutil csv parse: %w", err)
+		}
+	}
+
+	if g.Spec.HasXMLResponse() {
+		if err := g.renderTemplate("cliutil_xml_parse.go.tmpl", filepath.Join("internal", "cliutil", "xml_parse.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cliutil xml parse: %w", err)
 		}
 	}
 
@@ -1503,7 +2732,7 @@ func (g *Generator) renderOptionalSupportFiles() error {
 	// and the CLI has both a store and a sync path to call. Without sync
 	// there is nothing to refresh with; without cache.enabled there is no
 	// read-path hook that would call autoRefreshIfStale.
-	if g.VisionSet.Store && g.VisionSet.Sync && g.Spec.Cache.Enabled {
+	if g.hasAutoRefresh() {
 		autoRefreshData := struct {
 			*spec.APISpec
 			SyncableResources []profiler.SyncableResource
@@ -1515,6 +2744,9 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 		if err := g.renderTemplate("auto_refresh.go.tmpl", filepath.Join("internal", "cli", "auto_refresh.go"), autoRefreshData); err != nil {
 			return fmt.Errorf("rendering auto_refresh: %w", err)
+		}
+		if err := g.renderTemplate("auto_refresh_test.go.tmpl", filepath.Join("internal", "cli", "auto_refresh_test.go"), autoRefreshData); err != nil {
+			return fmt.Errorf("rendering auto_refresh_test: %w", err)
 		}
 	}
 
@@ -1537,9 +2769,178 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
+	// Emit the self-learning loop (entities + normalize + match +
+	// recall + teach + teach_log + preseed + lookups + patterns) only
+	// when the spec opts in via Learn.Enabled. The schema migrations
+	// for the supporting tables are emitted from store.go.tmpl under
+	// the same gate; see internal/generator/templates/learn/doc.go.tmpl
+	// for the package-level design and the schema-adaptation note.
+	if g.Spec.Learn.Enabled {
+		if err := g.renderLearnFiles(); err != nil {
+			return err
+		}
+		// learnings.go ports prediction-goat's canonical Apply engine
+		// (Apply/Recall/UpsertLearning/ListLearnings/ForgetLearnings +
+		// LearnedHit/Applier types + NormalizeQuery/MarshalLearnings
+		// helpers) into the generator's internal/store/ output. The
+		// engine is a method on *store.Store, so it lives next to
+		// store.go rather than under internal/learn/.
+		//
+		// The internal/store directory is created by renderStoreFiles()
+		// later in Generate(), but the learn-emission block runs first.
+		// Ensure the directory exists before writing into it. Idempotent
+		// with the subsequent MkdirAll in renderStoreFiles.
+		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "store"), 0o755); err != nil {
+			return fmt.Errorf("creating store dir for learn engine: %w", err)
+		}
+		if err := g.renderTemplate("learnings.go.tmpl", filepath.Join("internal", "store", "learnings.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store learnings engine: %w", err)
+		}
+		if err := g.renderTemplate("learnings_test.go.tmpl", filepath.Join("internal", "store", "learnings_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store learnings engine test: %w", err)
+		}
+		// store/playbooks.go ports the playbook-row CRUD (UpsertPlaybook,
+		// AppendPlaybookNotes, GetPlaybookByFamily, ListPlaybooks) into
+		// the generator's internal/store/ output. Lives next to
+		// learnings.go and shares the LearningSourceTaught constant + the
+		// learning_playbooks table created by store.go.tmpl. Gated under
+		// Learn.Enabled for the same reason as learnings.go.
+		if err := g.renderTemplate("store_playbooks.go.tmpl", filepath.Join("internal", "store", "playbooks.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store playbooks: %w", err)
+		}
+		if err := g.renderTemplate("store_playbooks_test.go.tmpl", filepath.Join("internal", "store", "playbooks_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store playbooks test: %w", err)
+		}
+		// store/candidates.go ships the quarantined learn_candidates
+		// lifecycle (DeriveCandidate signature upsert plus the
+		// confirm/reject/expire/purge state machine) beside
+		// learnings.go and playbooks.go. The backing table is created
+		// by store.go.tmpl at schema v9 under the same Learn gate;
+		// candidates never touch the verified learning tables until an
+		// explicit confirm materializes them through the playbook
+		// machinery.
+		if err := g.renderTemplate("store_candidates.go.tmpl", filepath.Join("internal", "store", "candidates.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store candidates lifecycle: %w", err)
+		}
+		if err := g.renderTemplate("store_candidates_test.go.tmpl", filepath.Join("internal", "store", "candidates_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store candidates lifecycle test: %w", err)
+		}
+		// store/events.go ships the learn_events measurement layer:
+		// best-effort telemetry inserts (callers swallow errors to
+		// teach.log), retention pruning, the forget cascade, the
+		// surface-detection seam, and the stats aggregation `learnings
+		// stats` reads. The backing table is created by store.go.tmpl
+		// at schema v9 under the same Learn gate.
+		if err := g.renderTemplate("store_events.go.tmpl", filepath.Join("internal", "store", "events.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store events measurement layer: %w", err)
+		}
+		if err := g.renderTemplate("store_events_test.go.tmpl", filepath.Join("internal", "store", "events_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store events measurement layer test: %w", err)
+		}
+		// teach.go and teach_test.go are emitted into internal/cli/
+		// (not the learn package) because they wire cobra commands;
+		// the learn package itself stays cobra-free per the boundary
+		// established in U3-U5.
+		if err := g.renderTemplate("teach.go.tmpl", filepath.Join("internal", "cli", "teach.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering teach commands: %w", err)
+		}
+		if err := g.renderTemplate("teach_test.go.tmpl", filepath.Join("internal", "cli", "teach_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering teach commands test: %w", err)
+		}
+		// teach_playbook.go ships the standalone playbook write surface:
+		// `teach-playbook` (query-family-keyed playbook + notes), `playbook list`
+		// (sentinel-filtered inspection), and `playbook amend` (atomic
+		// AppendPlaybookNotes self-correction). Lives in internal/cli/ alongside
+		// teach.go for the same package-boundary reason — cobra wiring stays
+		// out of the learn package. Registration on the root command is
+		// owned by root.go.tmpl (a later unit wires it).
+		if err := g.renderTemplate("teach_playbook.go.tmpl", filepath.Join("internal", "cli", "teach_playbook.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering teach-playbook commands: %w", err)
+		}
+		if err := g.renderTemplate("teach_playbook_test.go.tmpl", filepath.Join("internal", "cli", "teach_playbook_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering teach-playbook commands test: %w", err)
+		}
+		// learnings_candidates.go ships the candidate control surface
+		// (`learnings candidates|confirm|reject|purge`) plus the
+		// teach-promotion helper teach.go calls after a successful
+		// teach. The commands register on the existing learnings group
+		// inside teach.go's newLearningsCmd.
+		if err := g.renderTemplate("learnings_candidates.go.tmpl", filepath.Join("internal", "cli", "learnings_candidates.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering learnings candidates commands: %w", err)
+		}
+		if err := g.renderTemplate("learnings_candidates_test.go.tmpl", filepath.Join("internal", "cli", "learnings_candidates_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering learnings candidates commands test: %w", err)
+		}
+		// learnings_stats.go ships the measurement readout (`learnings
+		// stats`): the four headline metrics aggregated from the local
+		// learn_events table, plus the opportunistic retention prune.
+		// Registers on the learnings group inside teach.go's
+		// newLearningsCmd.
+		if err := g.renderTemplate("learnings_stats.go.tmpl", filepath.Join("internal", "cli", "learnings_stats.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering learnings stats command: %w", err)
+		}
+		if err := g.renderTemplate("learnings_stats_test.go.tmpl", filepath.Join("internal", "cli", "learnings_stats_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering learnings stats command test: %w", err)
+		}
+		// internal/cli/playbooks/ ships the embed.FS scaffold for hand-
+		// authored playbook content (JSON + notes files). U9 emits the
+		// scaffold only — the auto-install path that walks this FS lives
+		// in playbook_init.go (a later unit). MANIFEST.md keeps the
+		// //go:embed *.json *.md directive matching at least one file
+		// when no authored content has shipped yet, so the package
+		// compiles cleanly on a fresh print.
+		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "cli", "playbooks"), 0o755); err != nil {
+			return fmt.Errorf("creating cli/playbooks dir for embed.FS scaffold: %w", err)
+		}
+		if err := g.renderTemplate("playbooks_embed.go.tmpl", filepath.Join("internal", "cli", "playbooks", "embed.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cli/playbooks embed.go: %w", err)
+		}
+		if err := g.renderTemplate("playbooks_manifest.md.tmpl", filepath.Join("internal", "cli", "playbooks", "MANIFEST.md"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cli/playbooks MANIFEST.md: %w", err)
+		}
+		// playbook_init.go is the embed-FS auto-install path. At first
+		// DB open after schema migration it walks playbooks.FS, parses
+		// each <base>.json + <base>_notes.md pair, derives the query
+		// family via learn.QueryFamily(learn.Normalize(example)), and
+		// upserts a row per family. A sentinel row tracks SeedVersion;
+		// re-seed fires on binary upgrades that bump the constant.
+		// `playbook amend` writes are preserved across upgrades via an
+		// anchored regex check on the `[amend YYYY-...]` marker.
+		// Root.go.tmpl wires runPlaybookInitOnce in a later unit.
+		if err := g.renderTemplate("playbook_init.go.tmpl", filepath.Join("internal", "cli", "playbook_init.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering playbook init: %w", err)
+		}
+		if err := g.renderTemplate("playbook_init_test.go.tmpl", filepath.Join("internal", "cli", "playbook_init_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering playbook init test: %w", err)
+		}
+		// learn_init.go translates spec.Learn (ticker patterns, stopwords,
+		// entity-lookup seeds) into a runtime *entities.Config and seeds
+		// the entity_lookups table at first start. Owns newLearnConfig()
+		// (which teach.go's command constructors call) and initLearn(),
+		// which root.go invokes from PersistentPreRunE under the same
+		// Learn.Enabled gate.
+		if err := g.renderTemplate("learn_init.go.tmpl", filepath.Join("internal", "cli", "learn_init.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering learn init: %w", err)
+		}
+		if err := g.renderTemplate("learn_init_test.go.tmpl", filepath.Join("internal", "cli", "learn_init_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering learn init test: %w", err)
+		}
+	}
+
 	if g.FixtureSet != nil {
 		if err := g.renderTemplate("captured_test.go.tmpl", filepath.Join("internal", "client", "client_captured_test.go"), g.FixtureSet); err != nil {
 			return fmt.Errorf("rendering captured fixture tests: %w", err)
+		}
+	}
+
+	// Persistent cookie jar — emitted only when the spec declares cookies
+	// (cookie or composed auth). Non-cookie CLIs (api_key, bearer, oauth2,
+	// session_handshake, Auth0-SPA) don't need the helper and get the same
+	// byte-identical client.go they always did. The session_handshake path
+	// uses sess.CookieJar() and bypasses this file entirely.
+	if g.Spec.Auth.HasCookies() && g.Spec.Auth.Type != "session_handshake" {
+		if err := g.renderTemplate("cookiejar.go.tmpl", filepath.Join("internal", "client", "cookiejar.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cookie jar: %w", err)
 		}
 	}
 
@@ -1579,11 +2980,96 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
+	if g.Spec.Streaming.Enabled() {
+		if err := g.renderTemplate("wsclient.go.tmpl", filepath.Join("internal", "wsclient", "client.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering websocket client helper: %w", err)
+		}
+		if err := g.renderTemplate("live_ws.go.tmpl", filepath.Join("internal", "cli", "live_ws.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering websocket live command: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// renderLearnFiles emits the internal/learn package and its three
+// sub-packages (entities, lookups, patterns) when the spec opts into
+// the self-learning loop. The matching v3 schema migrations are
+// emitted from internal/generator/templates/store.go.tmpl under the
+// same Learn.Enabled gate.
+//
+// The teach_log.go.tmpl file uses the CLI name as the state-directory
+// suffix; every other learn file is data-driven from the spec's
+// LearnConfig values, which the per-CLI startup wires via NewConfig
+// and SeedFromConfig at first run.
+func (g *Generator) renderLearnFiles() error {
+	learnData := struct {
+		*spec.APISpec
+		HasSync bool
+	}{
+		APISpec: g.Spec,
+		HasSync: g.hasGeneratedSyncImplementation(),
+	}
+	learnFiles := map[string]string{
+		"learn_entities/config.go.tmpl":       filepath.Join("internal", "learn", "entities", "config.go"),
+		"learn_entities/config_test.go.tmpl":  filepath.Join("internal", "learn", "entities", "config_test.go"),
+		"learn_entities/extract.go.tmpl":      filepath.Join("internal", "learn", "entities", "extract.go"),
+		"learn_entities/extract_test.go.tmpl": filepath.Join("internal", "learn", "entities", "extract_test.go"),
+
+		"learn/doc.go.tmpl":                   filepath.Join("internal", "learn", "doc.go"),
+		"learn/normalize.go.tmpl":             filepath.Join("internal", "learn", "normalize.go"),
+		"learn/normalize_test.go.tmpl":        filepath.Join("internal", "learn", "normalize_test.go"),
+		"learn/match.go.tmpl":                 filepath.Join("internal", "learn", "match.go"),
+		"learn/match_test.go.tmpl":            filepath.Join("internal", "learn", "match_test.go"),
+		"learn/recall.go.tmpl":                filepath.Join("internal", "learn", "recall.go"),
+		"learn/recall_test.go.tmpl":           filepath.Join("internal", "learn", "recall_test.go"),
+		"learn/recall_canonical_test.go.tmpl": filepath.Join("internal", "learn", "recall_canonical_test.go"),
+		"learn/teach.go.tmpl":                 filepath.Join("internal", "learn", "teach.go"),
+		"learn/teach_test.go.tmpl":            filepath.Join("internal", "learn", "teach_test.go"),
+		"learn/teach_log.go.tmpl":             filepath.Join("internal", "learn", "teach_log.go"),
+		"learn/teach_log_test.go.tmpl":        filepath.Join("internal", "learn", "teach_log_test.go"),
+		"learn/journal.go.tmpl":               filepath.Join("internal", "learn", "journal.go"),
+		"learn/journal_test.go.tmpl":          filepath.Join("internal", "learn", "journal_test.go"),
+		"learn/derive.go.tmpl":                filepath.Join("internal", "learn", "derive.go"),
+		"learn/derive_test.go.tmpl":           filepath.Join("internal", "learn", "derive_test.go"),
+		"learn/synthesize.go.tmpl":            filepath.Join("internal", "learn", "synthesize.go"),
+		"learn/synthesize_test.go.tmpl":       filepath.Join("internal", "learn", "synthesize_test.go"),
+		"learn/protocol.go.tmpl":              filepath.Join("internal", "learn", "protocol.go"),
+		"learn/preseed.go.tmpl":               filepath.Join("internal", "learn", "preseed.go"),
+		"learn/preseed_test.go.tmpl":          filepath.Join("internal", "learn", "preseed_test.go"),
+		"learn/playbooks.go.tmpl":             filepath.Join("internal", "learn", "playbooks.go"),
+		"learn/playbooks_test.go.tmpl":        filepath.Join("internal", "learn", "playbooks_test.go"),
+		"learn/promote.go.tmpl":               filepath.Join("internal", "learn", "promote.go"),
+		"learn/promote_test.go.tmpl":          filepath.Join("internal", "learn", "promote_test.go"),
+
+		"learn_lookups/store.go.tmpl":      filepath.Join("internal", "learn", "lookups", "store.go"),
+		"learn_lookups/store_test.go.tmpl": filepath.Join("internal", "learn", "lookups", "store_test.go"),
+		"learn_lookups/seeds.go.tmpl":      filepath.Join("internal", "learn", "lookups", "seeds.go"),
+		"learn_lookups/seeds_test.go.tmpl": filepath.Join("internal", "learn", "lookups", "seeds_test.go"),
+
+		"learn_patterns/doc.go.tmpl":          filepath.Join("internal", "learn", "patterns", "doc.go"),
+		"learn_patterns/store.go.tmpl":        filepath.Join("internal", "learn", "patterns", "store.go"),
+		"learn_patterns/store_test.go.tmpl":   filepath.Join("internal", "learn", "patterns", "store_test.go"),
+		"learn_patterns/extract.go.tmpl":      filepath.Join("internal", "learn", "patterns", "extract.go"),
+		"learn_patterns/extract_test.go.tmpl": filepath.Join("internal", "learn", "patterns", "extract_test.go"),
+		"learn_patterns/apply.go.tmpl":        filepath.Join("internal", "learn", "patterns", "apply.go"),
+		"learn_patterns/apply_test.go.tmpl":   filepath.Join("internal", "learn", "patterns", "apply_test.go"),
+	}
+	for tmplName, outPath := range learnFiles {
+		if err := g.renderTemplate(tmplName, outPath, learnData); err != nil {
+			return fmt.Errorf("rendering %s: %w", tmplName, err)
+		}
+	}
 	return nil
 }
 
 func (g *Generator) Generate() error {
-	warnUnenrichedLargeMCPSurface(g.Spec, os.Stderr)
+	applyLargeMCPSurfaceDefault(g.Spec, os.Stderr)
+	// Fresh prints default the self-learning loop on (opt out with
+	// learn.disabled: true). Deliberately absent from GenerateMCPSurface:
+	// mcp-sync regenerates the MCP surface of published CLIs whose trees
+	// may lack the learn package, and the default must never flip there.
+	g.Spec.ApplyLearnLoopDefault(os.Stderr)
 	if g.Spec.OwnerName == "" {
 		// OwnerName flows into Hermes `author:` and other prose
 		// surfaces. We don't hard-fail on an empty value because the
@@ -1608,6 +3094,18 @@ func (g *Generator) Generate() error {
 				"Set `git config github.user` (your GitHub @handle) to populate this correctly before publishing.\n",
 		)
 	}
+	// Auth.VerifyPath drives the doctor's credentials probe. Derive it before
+	// HealthCheckPath so HealthCheckPath's fallback chain can pick up the
+	// derived value (mirroring how an operator-set auth.verify_path already
+	// flows through). Without this, specs that ship a me-shaped endpoint but
+	// no explicit auth.verify_path generate a doctor that reports credentials
+	// as merely "present (not verified)" instead of probing the API.
+	if g.Spec.Auth.VerifyPath == "" {
+		g.Spec.Auth.VerifyPath = deriveAuthVerifyPath(g.Spec)
+	}
+	if g.Spec.HealthCheckPath == "" {
+		g.Spec.HealthCheckPath = deriveHealthCheckPath(g.Spec)
+	}
 	if err := g.prepareOutput(); err != nil {
 		return err
 	}
@@ -1619,6 +3117,9 @@ func (g *Generator) Generate() error {
 	// used to live, except the maps are now visible to readmeData() / template
 	// rendering.
 	g.PromotedCommands, g.PromotedResourceNames, g.PromotedEndpointNames = buildPromotedCommandPlan(g.Spec)
+	if err := validateCommandSurface(buildCommandSurface(g.Spec, g.PromotedCommands), g.activeFrameworkCobraUseNames()); err != nil {
+		return err
+	}
 
 	if err := g.renderSingleFiles(); err != nil {
 		return err
@@ -1640,6 +3141,179 @@ func (g *Generator) Generate() error {
 	return g.renderVisionAndRootFiles(g.PromotedCommands, g.PromotedResourceNames)
 }
 
+func (g *Generator) renameActiveFrameworkResourceCollisions() bool {
+	active := g.activeFrameworkCobraUseNames()
+	type resourceRename struct {
+		from     string
+		to       string
+		use      string
+		resource spec.Resource
+	}
+	var renames []resourceRename
+	for name, resource := range g.Spec.Resources {
+		kebab := spec.NormalizeCobraCommandName(name)
+		if _, ok := active[kebab]; !ok {
+			continue
+		}
+		if g.Spec.ParseTimeReservedCobraUseName(kebab) {
+			continue
+		}
+		renames = append(renames, resourceRename{
+			from:     name,
+			to:       g.Spec.UniqueFrameworkCollisionResourceName(kebab),
+			use:      kebab,
+			resource: resource,
+		})
+	}
+	for _, rename := range renames {
+		delete(g.Spec.Resources, rename.from)
+		g.Spec.Resources[rename.to] = rename.resource
+		fmt.Fprintf(os.Stderr, "warning: resource %q would shadow active framework cobra command %q; renamed to %q\n", rename.from, rename.use, rename.to)
+	}
+	return len(renames) > 0
+}
+
+func (g *Generator) activeFrameworkCobraUseNames() map[string]struct{} {
+	names := map[string]struct{}{
+		"agent-context": {},
+		"completion":    {},
+		"doctor":        {},
+		"feedback":      {},
+		"help":          {},
+		"profile":       {},
+		"version":       {},
+		"which":         {},
+	}
+	if g.shouldEmitAuth() {
+		names["auth"] = struct{}{}
+		if g.emitsTopLevelOAuthLogin() {
+			names["login"] = struct{}{}
+		}
+	}
+	if g.Spec.BearerRefresh.Enabled() {
+		names["refresh-bearer"] = struct{}{}
+	}
+	if len(g.AsyncJobs) > 0 {
+		names["jobs"] = struct{}{}
+	}
+	if g.VisionSet.Export {
+		names["export"] = struct{}{}
+	}
+	if g.VisionSet.Import {
+		names["import"] = struct{}{}
+	}
+	if g.VisionSet.Search {
+		names["search"] = struct{}{}
+	}
+	if g.VisionSet.Sync {
+		names["sync"] = struct{}{}
+	}
+	if g.VisionSet.Tail {
+		names["tail"] = struct{}{}
+	}
+	if g.VisionSet.Analytics {
+		names["analytics"] = struct{}{}
+	}
+	if g.hasDataLayer() {
+		names["workflow"] = struct{}{}
+	}
+	if g.Spec.Share.Enabled {
+		names["share"] = struct{}{}
+	}
+	if len(g.PromotedCommands) > 0 {
+		names["api"] = struct{}{}
+	}
+	for _, tmpl := range g.VisionSet.Workflows {
+		if name := g.resolvedVisionCommandName(tmpl); name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	for _, tmpl := range g.VisionSet.Insights {
+		if name := g.resolvedVisionCommandName(tmpl); name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	return names
+}
+
+func (g *Generator) resolveVisionCommandNames() {
+	g.visionCommandNames = make(map[string]string)
+	novelNames := g.novelFeatureRootCommandNames()
+	reserved := maps.Clone(novelNames)
+	for name := range g.Spec.Resources {
+		reserved[spec.NormalizeCobraCommandName(name)] = struct{}{}
+	}
+	for _, tmpl := range append(slices.Clone(g.VisionSet.Workflows), g.VisionSet.Insights...) {
+		bare := frameworkUseNameForTemplate(tmpl)
+		if bare == "" {
+			continue
+		}
+		name := bare
+		if _, collides := novelNames[bare]; collides {
+			name = g.uniqueFrameworkCommandName(bare, reserved)
+			fmt.Fprintf(os.Stderr, "warning: pattern-pack command %q would shadow novel command %q; renamed to %q\n", bare, bare, name)
+		}
+		g.visionCommandNames[bare] = name
+		reserved[name] = struct{}{}
+	}
+}
+
+func (g *Generator) resolvedVisionCommandName(tmpl string) string {
+	bare := frameworkUseNameForTemplate(tmpl)
+	if name, ok := g.visionCommandNames[bare]; ok {
+		return name
+	}
+	return bare
+}
+
+func (g *Generator) uniqueFrameworkCommandName(original string, reserved map[string]struct{}) string {
+	candidate := g.Spec.UniqueFrameworkCollisionResourceName(original)
+	if _, exists := reserved[candidate]; !exists {
+		return candidate
+	}
+	base := candidate
+	for suffix := 2; ; suffix++ {
+		candidate = fmt.Sprintf("%s-%d", base, suffix)
+		if _, exists := reserved[candidate]; !exists {
+			return candidate
+		}
+	}
+}
+
+func (g *Generator) novelFeatureRootCommandNames() map[string]struct{} {
+	names := make(map[string]struct{})
+	for _, feature := range g.NovelFeatures {
+		parts := novelFeatureCommandParts(feature.Command)
+		if len(parts) > 0 {
+			names[parts[0]] = struct{}{}
+		}
+	}
+	return names
+}
+
+func frameworkUseNameForTemplate(tmpl string) string {
+	ctor := commandConstructorForTemplate(tmpl)
+	if ctor == "" {
+		return ""
+	}
+	return strings.ReplaceAll(naming.Snake(ctor), "_", "-")
+}
+
+// cobratreeWalkerTemplateFiles maps each cobratree MCP-walker template to its
+// output path under internal/mcp/cobratree. The walker is API-agnostic, so the
+// file set is identical for every printed CLI (HTTP and device); single-source
+// it here rather than repeating the manifest in each generator's file map.
+func cobratreeWalkerTemplateFiles() map[string]string {
+	files := make(map[string]string)
+	for _, name := range []string{
+		"walker.go", "classify.go", "typemap.go", "shellout.go",
+		"shellout_test.go", "cli_path.go", "names.go",
+	} {
+		files["cobratree/"+name+".tmpl"] = filepath.Join("internal", "mcp", "cobratree", name)
+	}
+	return files
+}
+
 // GenerateMCPSurface rewrites the generated MCP entrypoint, tools package,
 // cobratree helpers, AND the generator-reserved cliutil package without
 // touching the printed CLI's command files. The cliutil package is
@@ -1653,18 +3327,15 @@ func (g *Generator) Generate() error {
 // autoRefresh) stay in renderOptionalSupportFiles so they don't get
 // emitted when the spec opts out.
 func (g *Generator) GenerateMCPSurface() error {
+	applyLargeMCPSurfaceDefault(g.Spec, os.Stderr)
 	if err := g.prepareOutput(); err != nil {
 		return err
 	}
 	g.PromotedCommands, g.PromotedResourceNames, g.PromotedEndpointNames = buildPromotedCommandPlan(g.Spec)
+	if err := validateCommandSurface(buildCommandSurface(g.Spec, g.PromotedCommands), g.activeFrameworkCobraUseNames()); err != nil {
+		return err
+	}
 	mcpFiles := map[string]string{
-		"cobratree/walker.go.tmpl":        filepath.Join("internal", "mcp", "cobratree", "walker.go"),
-		"cobratree/classify.go.tmpl":      filepath.Join("internal", "mcp", "cobratree", "classify.go"),
-		"cobratree/typemap.go.tmpl":       filepath.Join("internal", "mcp", "cobratree", "typemap.go"),
-		"cobratree/shellout.go.tmpl":      filepath.Join("internal", "mcp", "cobratree", "shellout.go"),
-		"cobratree/shellout_test.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "shellout_test.go"),
-		"cobratree/cli_path.go.tmpl":      filepath.Join("internal", "mcp", "cobratree", "cli_path.go"),
-		"cobratree/names.go.tmpl":         filepath.Join("internal", "mcp", "cobratree", "names.go"),
 		// cliutil files. Deliberately asymmetric with the marker-checked
 		// tools.go / handlers.go / root.go paths elsewhere in mcp-sync:
 		// those files can carry hand-edits and require explicit
@@ -1674,14 +3345,24 @@ func (g *Generator) GenerateMCPSurface() error {
 		// predates a helper the new MCP template uses (SanitizeErrorBody,
 		// LooksLikeAuthError) fail to build after migration. See the
 		// GenerateMCPSurface doc comment for the full rationale.
-		"cliutil_fanout.go.tmpl":             filepath.Join("internal", "cliutil", "fanout.go"),
-		"cliutil_text.go.tmpl":               filepath.Join("internal", "cliutil", "text.go"),
-		"cliutil_probe.go.tmpl":              filepath.Join("internal", "cliutil", "probe.go"),
-		"cliutil_ratelimit.go.tmpl":          filepath.Join("internal", "cliutil", "ratelimit.go"),
-		"cliutil_verifyenv.go.tmpl":          filepath.Join("internal", "cliutil", "verifyenv.go"),
-		"cliutil_extractnumber.go.tmpl":      filepath.Join("internal", "cliutil", "extractnumber.go"),
-		"cliutil_extractnumber_test.go.tmpl": filepath.Join("internal", "cliutil", "extractnumber_test.go"),
+		"cliutil_fanout.go.tmpl":                  filepath.Join("internal", "cliutil", "fanout.go"),
+		"cliutil_text.go.tmpl":                    filepath.Join("internal", "cliutil", "text.go"),
+		"cliutil_probe.go.tmpl":                   filepath.Join("internal", "cliutil", "probe.go"),
+		"cliutil_ratelimit.go.tmpl":               filepath.Join("internal", "cliutil", "ratelimit.go"),
+		"cliutil_verifyenv.go.tmpl":               filepath.Join("internal", "cliutil", "verifyenv.go"),
+		"cliutil_paths.go.tmpl":                   filepath.Join("internal", "cliutil", "paths.go"),
+		"cliutil_paths_test.go.tmpl":              filepath.Join("internal", "cliutil", "paths_test.go"),
+		"cliutil_testenv.go.tmpl":                 filepath.Join("internal", "cliutil", "testenv", "testenv.go"),
+		"cliutil_testenv_sandbox_unix.go.tmpl":    filepath.Join("internal", "cliutil", "testenv", "sandbox_unix.go"),
+		"cliutil_testenv_sandbox_windows.go.tmpl": filepath.Join("internal", "cliutil", "testenv", "sandbox_windows.go"),
+		"cliutil_extractnumber.go.tmpl":           filepath.Join("internal", "cliutil", "extractnumber.go"),
+		"cliutil_extractnumber_test.go.tmpl":      filepath.Join("internal", "cliutil", "extractnumber_test.go"),
+		"cliutil_jwtshape.go.tmpl":                filepath.Join("internal", "cliutil", "jwtshape.go"),
+		"cliutil_jwtshape_test.go.tmpl":           filepath.Join("internal", "cliutil", "jwtshape_test.go"),
+		"mcp_bound.go.tmpl":                       filepath.Join("internal", "mcp", "bound", "bound.go"),
+		"mcp_bound_test.go.tmpl":                  filepath.Join("internal", "mcp", "bound", "bound_test.go"),
 	}
+	maps.Copy(mcpFiles, cobratreeWalkerTemplateFiles())
 	for tmplName, outPath := range mcpFiles {
 		if err := g.renderTemplate(tmplName, outPath, g.Spec); err != nil {
 			return fmt.Errorf("rendering %s: %w", tmplName, err)
@@ -1713,36 +3394,306 @@ func buildPromotedCommandPlan(apiSpec *spec.APISpec) ([]PromotedCommand, map[str
 	return promotedCommands, promotedResourceNames, promotedEndpointNames
 }
 
+func promotedCommandsCanUnwrapResponse(commands []PromotedCommand, types map[string]spec.TypeDef) bool {
+	for _, cmd := range commands {
+		if !cmd.Endpoint.UsesBinaryResponse() && !cmd.Endpoint.UsesTextResponse() && endpointHasStatusDataEnvelope(cmd.Endpoint, types) {
+			return true
+		}
+	}
+	return false
+}
+
+// endpointHasStatusDataEnvelope reports whether the endpoint's response type
+// looks like a {status/success, data} envelope, gating extractResponseData
+// emission. The runtime helper keys on the "status" field; "success" is
+// accepted here too so success-keyed envelopes still emit the helper. A type
+// with data+success but no status passes detection and the helper no-ops on it
+// at runtime — harmless over-emission, and emit/call stay aligned either way.
+func endpointHasStatusDataEnvelope(endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
+	item := strings.TrimSpace(endpoint.Response.Item)
+	if item == "" {
+		return false
+	}
+	typedef, ok := types[item]
+	if !ok {
+		return false
+	}
+	hasData := false
+	hasStatusOrSuccess := false
+	for _, field := range typedef.Fields {
+		switch strings.ToLower(strings.TrimSpace(field.Name)) {
+		case "data":
+			hasData = true
+		case "status", "success":
+			hasStatusOrSuccess = true
+		}
+		if hasData && hasStatusOrSuccess {
+			return true
+		}
+	}
+	return false
+}
+
+func parentCommandShort(resourceName, parentName string, resource spec.Resource, apiDescriptionShort string) string {
+	short := naming.OneLine(resource.Description)
+	if !naming.IsThinCommandShort(short) {
+		return short
+	}
+
+	if resourceName == "" {
+		return short
+	}
+
+	target := humanCommandSegment(resourceName)
+	if parentName != "" {
+		parent := humanCommandSegment(parentName)
+		if isVerbLikeParentSegment(resourceName) {
+			return "Run " + target + " operations for " + parent
+		}
+		if strings.EqualFold(resourceName, "pdf") {
+			return "Manage PDF files for " + parent
+		}
+		if actions := parentCommandActions(resource.Endpoints); actions != "" {
+			return actions + " " + target + " for " + parent
+		}
+		return "Manage " + target + " for " + parent
+	}
+
+	if apiDescriptionShort != "" {
+		return apiDescriptionShort
+	}
+	if actions := parentCommandActions(resource.Endpoints); actions != "" {
+		if computed := actions + " " + target; !naming.IsThinCommandShort(computed) {
+			return computed
+		}
+	}
+	return "Manage " + target + " command groups"
+}
+
+func parentCommandInfoDescriptionShort(description string) string {
+	description = naming.OneLineNormalize(description)
+	if description == "" {
+		return ""
+	}
+
+	for idx, r := range description {
+		if r != '.' && r != '!' && r != '?' {
+			continue
+		}
+		if r == '.' && parentCommandShortPeriodIsInternal(description, idx) {
+			continue
+		}
+		sentence := parentCommandShortCompact(description[:idx+len(string(r))])
+		if !naming.IsThinCommandShort(sentence) {
+			return sentence
+		}
+		return ""
+	}
+
+	short := parentCommandShortCompact(description)
+	if !naming.IsThinCommandShort(short) {
+		return short
+	}
+	return ""
+}
+
+func parentCommandShortCompact(description string) string {
+	description = naming.OneLineNormalize(description)
+	runes := []rune(description)
+	if len(runes) <= 120 {
+		return description
+	}
+
+	cut := string(runes[:120])
+	if idx := strings.LastIndex(cut, " "); idx > 60 {
+		return strings.TrimRight(cut[:idx], " ,;:")
+	}
+	return strings.TrimRight(cut, " ,;:")
+}
+
+func parentCommandShortPeriodIsInternal(description string, idx int) bool {
+	if idx <= 0 || idx >= len(description)-1 {
+		return false
+	}
+
+	prev, next := description[idx-1], description[idx+1]
+	if (isASCIILetter(prev) || isASCIIDigit(prev)) && (isASCIILetter(next) || isASCIIDigit(next)) {
+		return true
+	}
+
+	tokenStart := strings.LastIndex(description[:idx], " ") + 1
+	return strings.Contains(description[tokenStart:idx], ".")
+}
+
+func isASCIILetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+func isASCIIDigit(b byte) bool {
+	return b >= '0' && b <= '9'
+}
+
+func parentCommandActions(endpoints map[string]spec.Endpoint) string {
+	if len(endpoints) == 0 {
+		return ""
+	}
+	seen := make(map[string]bool, len(endpoints))
+	for name, endpoint := range endpoints {
+		if action := endpointActionVerb(name, endpoint.Method); action != "" {
+			seen[action] = true
+		}
+	}
+	actionOrder := []string{"list", "get", "search", "find", "query", "count", "describe", "fetch", "run", "trigger", "execute", "generate", "batch", "process", "enable", "disable", "create", "add", "update", "edit", "delete", "remove", "upload", "download", "send", "submit", "verify"}
+	var actions []string
+	for _, action := range actionOrder {
+		if seen[action] {
+			actions = append(actions, action)
+		}
+	}
+	return joinCommandActions(actions)
+}
+
+func endpointActionVerb(name, method string) string {
+	head := strings.ToLower(name)
+	if i := strings.IndexAny(head, "-_"); i > 0 {
+		head = head[:i]
+	}
+	switch head {
+	case "list", "get", "search", "find", "query", "count", "describe", "fetch", "run", "trigger", "execute", "generate", "batch", "process", "enable", "disable", "create", "add", "update", "edit", "delete", "remove", "upload", "download", "send", "submit", "verify":
+		return head
+	}
+	switch strings.ToUpper(method) {
+	case "GET":
+		return "get"
+	case "POST":
+		return "create"
+	case "PUT", "PATCH":
+		return "update"
+	case "DELETE":
+		return "delete"
+	default:
+		return ""
+	}
+}
+
+func joinCommandActions(actions []string) string {
+	switch len(actions) {
+	case 0:
+		return ""
+	case 1:
+		return titleFirst(actions[0])
+	case 2:
+		return titleFirst(actions[0]) + " and " + actions[1]
+	default:
+		return titleFirst(strings.Join(actions[:len(actions)-1], ", ")) + ", and " + actions[len(actions)-1]
+	}
+}
+
+func titleFirst(s string) string {
+	if s == "" {
+		return ""
+	}
+	runes := []rune(s)
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
+}
+
+func isVerbLikeParentSegment(segment string) bool {
+	switch strings.ToLower(segment) {
+	case "approve", "archive", "cancel", "close", "delete", "download", "edit", "freeze", "publish", "reject", "restore", "send", "submit", "unarchive", "unfreeze", "upload", "verify":
+		return true
+	default:
+		return false
+	}
+}
+
+func humanCommandSegment(segment string) string {
+	words := strings.Fields(strings.ReplaceAll(strings.ReplaceAll(segment, "-", " "), "_", " "))
+	for i, word := range words {
+		switch strings.ToLower(word) {
+		case "api", "crm", "id", "mcp", "pdf":
+			words[i] = strings.ToUpper(word)
+		default:
+			words[i] = strings.ToLower(word)
+		}
+	}
+	return strings.Join(words, " ")
+}
+
+// withoutOptionsEndpoints returns a copy of the resource whose Endpoints
+// map has OPTIONS-method entries removed, leaving the caller's original
+// map untouched. The parent command template iterates Endpoints to
+// register cobra subcommands (cmd.AddCommand(newXxxYyyCmd())), so if we
+// only skip OPTIONS at the per-endpoint render site the parent ends up
+// referencing functions in files we deliberately didn't emit. Filtering
+// at the resource level keeps every downstream consumer of Endpoints
+// (parent template, sub-resource parent template, novel-children pass)
+// consistent with the per-endpoint skip.
+func withoutOptionsEndpoints(r spec.Resource) spec.Resource {
+	if len(r.Endpoints) == 0 {
+		return r
+	}
+	hasOptions := false
+	for _, ep := range r.Endpoints {
+		if strings.EqualFold(ep.Method, "OPTIONS") {
+			hasOptions = true
+			break
+		}
+	}
+	if !hasOptions {
+		return r
+	}
+	filtered := make(map[string]spec.Endpoint, len(r.Endpoints))
+	for k, ep := range r.Endpoints {
+		if strings.EqualFold(ep.Method, "OPTIONS") {
+			continue
+		}
+		filtered[k] = ep
+	}
+	out := r
+	out.Endpoints = filtered
+	return out
+}
+
 func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool, promotedEndpointNames map[string]string) error {
-	// When the spec emits promoted commands, the generator also emits the api
-	// browser (api_discovery.go), whose RunE filters root.Commands() by
-	// child.Hidden. Mark the raw top-level resource groups Hidden so they
-	// surface there instead of cluttering --help. Direct invocation still
-	// works (Cobra's Hidden only suppresses listing). For specs without
-	// promoted commands the api browser is not generated, so leave resources
-	// visible.
-	hideTopLevelResources := len(g.PromotedCommands) > 0
+	var apiDescriptionShort string
+	if len(g.Spec.Resources) == 1 {
+		apiDescriptionShort = parentCommandInfoDescriptionShort(g.Spec.Description)
+	}
+	novelChildrenByParent := g.novelFeatureChildrenByParent()
 	// Generate per-resource parent files + per-endpoint command files
 	// This produces more files (one per endpoint) which improves Breadth scoring
-	for name, resource := range g.Spec.Resources {
+	for name, originalResource := range g.Spec.Resources {
+		// Filter OPTIONS-method endpoints out of the resource view used to
+		// render parent commands and per-endpoint files for this resource.
+		// Both downstream sites (parent template iterating Endpoints to
+		// register cobra subcommands; per-endpoint loop emitting one file
+		// per endpoint) must agree on which endpoints exist, otherwise the
+		// parent calls newXxxOptionsXxxCmd() functions whose files we
+		// deliberately didn't emit. Filtering once here keeps them in sync.
+		resource := withoutOptionsEndpoints(originalResource)
 		// Skip parent file for promoted resources — the promoted command replaces it.
 		// Sub-resource parents and endpoint files are still needed (wired by the promoted command).
 		if !promotedResourceNames[name] {
 			// Parent file: wires subcommands together
 			parentData := struct {
-				ResourceName string
-				FuncPrefix   string
-				CommandPath  string
-				Resource     spec.Resource
-				Hidden       bool
+				ResourceName  string
+				FuncPrefix    string
+				CommandPath   string
+				Short         string
+				Resource      spec.Resource
+				NovelChildren []novelFeatureChildRender
+				APIResource   bool
 				*spec.APISpec
 			}{
-				ResourceName: name,
-				FuncPrefix:   name,
-				CommandPath:  name,
-				Resource:     resource,
-				Hidden:       hideTopLevelResources,
-				APISpec:      g.Spec,
+				ResourceName:  name,
+				FuncPrefix:    name,
+				CommandPath:   name,
+				Short:         parentCommandShort(name, "", resource, apiDescriptionShort),
+				Resource:      resource,
+				NovelChildren: novelChildrenByParent[toKebab(name)],
+				APIResource:   true,
+				APISpec:       g.Spec,
 			}
 			parentPath := filepath.Join("internal", "cli", safeResourceFileStem(name)+".go")
 			if err := g.renderTemplate("command_parent.go.tmpl", parentPath, parentData); err != nil {
@@ -1750,7 +3701,10 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			}
 		}
 
-		// Per-endpoint files
+		// Per-endpoint files. OPTIONS endpoints have already been filtered
+		// out of `resource.Endpoints` by withoutOptionsEndpoints at the
+		// top of the loop, so the only skip here is the promoted-endpoint
+		// inlining case.
 		for eName, endpoint := range resource.Endpoints {
 			// Skip the promoted endpoint — its logic is inlined in the promoted command's RunE.
 			if promotedEndpointNames[name] == eName {
@@ -1758,19 +3712,20 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			}
 			asyncInfo, isAsync := g.AsyncJobs[name+"/"+eName]
 			epData := endpointTemplateData{
-				ResourceName:    name,
-				ResourceBaseURL: effectiveEndpointBaseURL(resource, endpoint),
-				EffectivePath:   effectiveEndpointPath(resource, endpoint),
-				EffectiveTier:   g.Spec.EffectiveTier(resource, endpoint),
-				FuncPrefix:      name,
-				CommandPath:     name,
-				EndpointName:    eName,
-				Endpoint:        endpoint,
-				HasStore:        g.VisionSet.Store,
-				IsAsync:         isAsync,
-				Async:           asyncInfo,
-				IsReadOnly:      endpointIsReadCommand(endpoint, eName),
-				APISpec:         g.Spec,
+				ResourceName:  name,
+				EffectivePath: effectiveEndpointPath(resource, endpoint),
+				EffectiveTier: g.Spec.EffectiveTier(resource, endpoint),
+				FuncPrefix:    name,
+				CommandPath:   name,
+				EndpointName:  eName,
+				Endpoint:      endpoint,
+				Resource:      resource,
+				HasStore:      g.hasDataLayer(),
+				IsAsync:       isAsync,
+				Async:         asyncInfo,
+				PageSize:      g.paginationPageSizeForEndpoint(endpoint),
+				IsReadOnly:    endpointIsReadCommand(endpoint, eName),
+				APISpec:       g.Spec,
 			}
 			epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+eName)+".go")
 			if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
@@ -1779,27 +3734,36 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 		}
 
 		// Sub-resource parent + endpoint files
-		for subName, subResource := range resource.SubResources {
+		for subName, originalSubResource := range resource.SubResources {
+			// Same OPTIONS filter as the top-level resource, applied to
+			// the sub-resource view for the same consistency reason.
+			subResource := withoutOptionsEndpoints(originalSubResource)
 			subParentData := struct {
-				ResourceName string
-				FuncPrefix   string
-				CommandPath  string
-				Resource     spec.Resource
-				Hidden       bool
+				ResourceName  string
+				FuncPrefix    string
+				CommandPath   string
+				Short         string
+				Resource      spec.Resource
+				NovelChildren []novelFeatureChildRender
+				APIResource   bool
 				*spec.APISpec
 			}{
-				ResourceName: subName,
-				FuncPrefix:   name + "-" + subName,
-				CommandPath:  name + " " + subName,
-				Resource:     subResource,
-				Hidden:       false,
-				APISpec:      g.Spec,
+				ResourceName:  subName,
+				FuncPrefix:    name + "-" + subName,
+				CommandPath:   name + " " + subName,
+				Short:         parentCommandShort(subName, name, subResource, ""),
+				Resource:      subResource,
+				NovelChildren: novelChildrenByParent[toKebab(name)+" "+toKebab(subName)],
+				APIResource:   false,
+				APISpec:       g.Spec,
 			}
 			subParentPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName)+".go")
 			if err := g.renderTemplate("command_parent.go.tmpl", subParentPath, subParentData); err != nil {
 				return fmt.Errorf("rendering sub-parent %s/%s: %w", name, subName, err)
 			}
 
+			// OPTIONS endpoints have already been filtered out of
+			// subResource.Endpoints by withoutOptionsEndpoints above.
 			for eName, endpoint := range subResource.Endpoints {
 				subKey := subName + "/" + eName
 				asyncInfo, isAsync := g.AsyncJobs[subKey]
@@ -1808,19 +3772,20 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 					effectiveResource.Tier = resource.Tier
 				}
 				epData := endpointTemplateData{
-					ResourceName:    subName,
-					ResourceBaseURL: effectiveSubEndpointBaseURL(resource, subResource, endpoint),
-					EffectivePath:   effectiveSubEndpointPath(resource, subResource, endpoint),
-					EffectiveTier:   g.Spec.EffectiveTier(effectiveResource, endpoint),
-					FuncPrefix:      name + "-" + subName,
-					CommandPath:     name + " " + subName,
-					EndpointName:    eName,
-					Endpoint:        endpoint,
-					HasStore:        g.VisionSet.Store,
-					IsAsync:         isAsync,
-					Async:           asyncInfo,
-					IsReadOnly:      endpointIsReadCommand(endpoint, eName),
-					APISpec:         g.Spec,
+					ResourceName:  subName,
+					EffectivePath: effectiveSubEndpointPath(resource, subResource, endpoint),
+					EffectiveTier: g.Spec.EffectiveTier(effectiveResource, endpoint),
+					FuncPrefix:    name + "-" + subName,
+					CommandPath:   name + " " + subName,
+					EndpointName:  eName,
+					Endpoint:      endpoint,
+					Resource:      effectiveResource,
+					HasStore:      g.hasDataLayer(),
+					IsAsync:       isAsync,
+					Async:         asyncInfo,
+					PageSize:      g.paginationPageSizeForEndpoint(endpoint),
+					IsReadOnly:    endpointIsReadCommand(endpoint, eName),
+					APISpec:       g.Spec,
 				}
 				epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName+"_"+eName)+".go")
 				if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
@@ -1843,21 +3808,24 @@ func (g *Generator) renderAuthFiles() error {
 	}
 	// Render auth command. Template selection priority:
 	//   1. OAuth2 client_credentials (server-to-server, no user redirect)
-	//   2. OAuth2 authorization_code (3-legged, AuthorizationURL non-empty)
-	//   3. Browser-cookie / composed / persisted-query
-	//   4. Simple token-management (catch-all)
+	//   2. OAuth2 device_code (agent/CLI-friendly user auth, no localhost redirect)
+	//   3. OAuth2 authorization_code (3-legged, AuthorizationURL non-empty)
+	//   4. Browser-cookie / composed / persisted-query
+	//   5. Simple token-management (catch-all)
 	authPath := filepath.Join("internal", "cli", "auth.go")
 	authTmpl := "auth_simple.go.tmpl"
 	switch {
 	case g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && g.Spec.Auth.TokenURL != "":
 		authTmpl = "auth_client_credentials.go.tmpl"
+	case g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && g.Spec.Auth.DeviceAuthorizationURL != "" && g.Spec.Auth.TokenURL != "":
+		authTmpl = "auth_device_code.go.tmpl"
 	case g.Spec.Auth.AuthorizationURL != "":
 		authTmpl = "auth.go.tmpl"
-	case g.Spec.Auth.Type == "cookie" || g.Spec.Auth.Type == "composed" || g.hasTrafficAnalysisHint("graphql_persisted_query"):
-		// Browser-aware auth template for browser-cookie auth or a
-		// persisted-query registry, even for auth.type:none. Query refresh
-		// flows need temporary browser capture support, not a resident
-		// browser transport.
+	case g.Spec.Auth.Type == "cookie" || g.Spec.Auth.Type == "composed" || g.hasTrafficAnalysisHint("graphql_persisted_query") || g.Spec.Auth.Subtype == spec.AuthSubtypeAuth0SPAInMemory:
+		// Browser-aware auth template for browser-cookie auth, a
+		// persisted-query registry, or an Auth0-SPA-in-memory bearer token
+		// (CDP runtime extraction). Query refresh flows need temporary
+		// browser capture support, not a resident browser transport.
 		authTmpl = "auth_browser.go.tmpl"
 	}
 	authData := &authTemplateData{
@@ -1866,6 +3834,15 @@ func (g *Generator) renderAuthFiles() error {
 	}
 	if err := g.renderTemplate(authTmpl, authPath, authData); err != nil {
 		return fmt.Errorf("rendering auth: %w", err)
+	}
+	if g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode {
+		oauthPath := filepath.Join("internal", "oauth", "device.go")
+		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "oauth"), 0o755); err != nil {
+			return fmt.Errorf("creating OAuth helper directory: %w", err)
+		}
+		if err := g.renderTemplate("oauth_device.go.tmpl", oauthPath, g.Spec); err != nil {
+			return fmt.Errorf("rendering OAuth device-code helper: %w", err)
+		}
 	}
 
 	// For session_handshake auth, emit the session manager helper alongside
@@ -1898,12 +3875,19 @@ func (g *Generator) shouldEmitAuth() bool {
 		g.hasTrafficAnalysisHint("graphql_persisted_query")
 }
 
+func (g *Generator) emitsTopLevelOAuthLogin() bool {
+	return g.Spec.Auth.AuthorizationURL != "" &&
+		(g.Spec.Auth.EffectiveOAuth2Grant() != spec.OAuth2GrantClientCredentials || g.Spec.Auth.TokenURL == "")
+}
+
 func (g *Generator) renderMCPEntrypoint() error {
 	// MCP server: generate cmd/{name}-pp-mcp/ entry point and internal/mcp/ package
 	if g.VisionSet.MCP || true { // Always generate MCP for now
 		mcpDirs := []string{
 			filepath.Join("cmd", naming.MCP(g.Spec.Name)),
 			filepath.Join("internal", "mcp"),
+			filepath.Join("internal", "mcp", "bound"),
+			filepath.Join("internal", "cliutil", "testenv"),
 		}
 		for _, d := range mcpDirs {
 			if err := os.MkdirAll(filepath.Join(g.OutputDir, d), 0755); err != nil {
@@ -1933,7 +3917,7 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 	if err != nil {
 		return err
 	}
-	insightConstructors := g.renderInsightFiles()
+	insightConstructors := g.renderInsightFiles(visionData)
 
 	if err := g.renderMCPToolFiles(schema); err != nil {
 		return err
@@ -1941,12 +3925,29 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 	if err := g.renderPromotedCommandFiles(promotedCommands); err != nil {
 		return err
 	}
+	novelCommandStubs, err := g.renderNovelFeatureStubs()
+	if err != nil {
+		return err
+	}
 
-	return g.renderRootProjectFiles(promotedCommands, promotedResourceNames, workflowConstructors, insightConstructors)
+	return g.renderRootProjectFiles(promotedCommands, promotedResourceNames, workflowConstructors, insightConstructors, novelCommandStubs)
 }
 
+// schemaWithDependentParents adds a parent_id column + index to dependent
+// resource tables so sync can record which parent each row belongs to.
+// JSON-only fallback tables keep only id/data/synced_at; parent context for
+// those rows remains available in the generic resources table. For
+// walker-emitted dependents whose DependentResource.KeyField is non-empty,
+// parent_id stores the value of that field (not strictly a parent's primary
+// key); the column name is retained for backwards compatibility with existing
+// CLIs. The naming caveat is internal — the column is not part of any
+// user-visible API.
 func (g *Generator) schemaWithDependentParents() []TableDef {
 	schema := BuildSchema(g.Spec)
+	// BuildSchema always appends the framework sync_state definition after API
+	// domain tables. Dependent enrichment and reserved-name routing apply only
+	// to the domain portion, including an API resource also named sync_state.
+	domainSchema := schema[:len(schema)-1]
 
 	// Add parent_id column to tables for dependent (parent-child) sync resources
 	if g.profile != nil {
@@ -1954,8 +3955,14 @@ func (g *Generator) schemaWithDependentParents() []TableDef {
 		for _, dep := range g.profile.DependentSyncResources {
 			depSet[dep.Name] = true
 		}
-		for i, table := range schema {
+		for i, table := range domainSchema {
 			if depSet[table.Name] {
+				if table.JSONOnlyFallback {
+					continue
+				}
+				if schema[i].ParentKeyColumn == "" {
+					schema[i].ParentKeyColumn = "parent_id"
+				}
 				hasParentID := false
 				for _, col := range table.Columns {
 					if col.Name == "parent_id" {
@@ -1964,6 +3971,16 @@ func (g *Generator) schemaWithDependentParents() []TableDef {
 					}
 				}
 				if !hasParentID {
+					if len(table.Columns)+1 > maxStoreDomainTableColumns {
+						schema[i].JSONOnlyFallback = true
+						schema[i].OriginalColumnCount = len(table.Columns) + 1
+						schema[i].Columns = append([]ColumnDef(nil), baseTableColumns...)
+						schema[i].Indexes = nil
+						schema[i].FTS5 = false
+						schema[i].FTS5Fields = nil
+						schema[i].FTS5Triggers = false
+						continue
+					}
 					schema[i].Columns = append(schema[i].Columns, ColumnDef{
 						Name: "parent_id",
 						Type: "TEXT",
@@ -1978,30 +3995,46 @@ func (g *Generator) schemaWithDependentParents() []TableDef {
 		}
 	}
 
+	// Reapply after dependent enrichment so parent_id cannot restore a reserved
+	// domain table routed through generic storage by BuildSchema.
+	routeReservedStoreTablesToGenericOnly(domainSchema, reservedStoreObjectNames(g.Spec))
+
 	return schema
 }
 
 func (g *Generator) renderStoreFiles(schema []TableDef) error {
 	// Create store directory if needed
 	if g.VisionSet.Store {
+		for _, table := range schema {
+			if table.JSONOnlyFallback {
+				fmt.Fprintf(os.Stderr, "warning: store-fallback: %s (%d cols) -> JSON-only\n", table.Name, table.OriginalColumnCount)
+			}
+		}
 		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "store"), 0755); err != nil {
 			return fmt.Errorf("creating store dir: %w", err)
 		}
 		storeData := struct {
 			*spec.APISpec
-			SyncableResources      []profiler.SyncableResource
-			DependentSyncResources []profiler.DependentResource
-			SearchableFields       map[string][]string
-			Tables                 []TableDef
+			SyncableResources       []profiler.SyncableResource
+			DependentSyncResources  []profiler.DependentResource
+			SearchableFields        map[string][]string
+			Tables                  []TableDef
+			ChildScopeColumnSources []profiler.ChildScopeSource
+			MembershipScopedParents []profiler.MembershipScopedParent
 		}{
-			APISpec:                g.Spec,
-			SyncableResources:      g.profile.SyncableResources,
-			DependentSyncResources: g.profile.DependentSyncResources,
-			SearchableFields:       g.profile.SearchableFields,
-			Tables:                 schema,
+			APISpec:                 g.Spec,
+			SyncableResources:       g.profile.SyncableResources,
+			DependentSyncResources:  g.profile.DependentSyncResources,
+			SearchableFields:        g.profile.SearchableFields,
+			Tables:                  schema,
+			ChildScopeColumnSources: g.profile.ChildScopeColumnSources(),
+			MembershipScopedParents: g.profile.MembershipScopedParents(),
 		}
 		if err := g.renderTemplate("store.go.tmpl", filepath.Join("internal", "store", "store.go"), storeData); err != nil {
 			return fmt.Errorf("rendering store: %w", err)
+		}
+		if err := g.renderTemplate("store_extras.go.tmpl", filepath.Join("internal", "store", "extras.go"), storeData); err != nil {
+			return fmt.Errorf("rendering store extras: %w", err)
 		}
 		if err := g.renderTemplate("store_schema_version_test.go.tmpl", filepath.Join("internal", "store", "schema_version_test.go"), storeData); err != nil {
 			return fmt.Errorf("rendering store schema version test: %w", err)
@@ -2016,17 +4049,30 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 
 type visionRenderData struct {
 	*spec.APISpec
-	SyncableResources      []profiler.SyncableResource
-	DependentSyncResources []profiler.DependentResource
-	SearchableFields       map[string][]string
-	Tables                 []TableDef
-	Pagination             profiler.PaginationProfile
-	SearchEndpointPath     string
-	SearchQueryParam       string
-	SearchEndpointMethod   string
-	SearchBodyFields       []profiler.SearchBodyField
-	GraphQLFieldPaths      map[string]string
-	AgentMoneyWorkflow     AgentMoneyWorkflow
+	VisionSet                    VisionTemplateSet
+	CommandNames                 map[string]string
+	CommandConstructor           string
+	HasSync                      bool
+	SyncableResources            []profiler.SyncableResource
+	DependentSyncResources       []profiler.DependentResource
+	TenantScopedParents          []profiler.TenantScopedParent
+	MembershipScopedParents      []profiler.MembershipScopedParent
+	PaginationSupportedResources []string
+	PaginationDefaultResources   []paginationDefaultEntry
+	SpecTimestampFields          []string
+	SearchableFields             map[string][]string
+	Tables                       []TableDef
+	Pagination                   profiler.PaginationProfile
+	SearchEndpointPath           string
+	SearchQueryParam             string
+	SearchEndpointMethod         string
+	SearchBodyFields             []profiler.SearchBodyField
+	SearchResponsePaths          []string
+	SearchExampleType            string
+	GraphQLFieldPaths            map[string]string
+	AgentMoneyWorkflow           AgentMoneyWorkflow
+	HTMLSyncStub                 bool
+	HTMLPageModeResources        []criticalResourceEntry
 }
 
 type resourceIDFieldOverrideEntry struct {
@@ -2034,8 +4080,108 @@ type resourceIDFieldOverrideEntry struct {
 	Value string
 }
 
+type resourceParentKeyColumnEntry struct {
+	Name   string
+	Values []string
+}
+
 type criticalResourceEntry struct {
 	Name string
+}
+
+type paginationDefaultEntry struct {
+	Key         string
+	Name        string
+	CursorParam string
+	CursorType  string
+	LimitParam  string
+	Limit       int
+}
+
+func paginationDefaultEntries(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []paginationDefaultEntry {
+	defaults := map[string]paginationDefaultEntry{}
+	add := func(key, name, cursorParam, cursorType, limitParam string, limit int, supportsPagination bool) {
+		if !supportsPagination || key == "" || name == "" {
+			return
+		}
+		if _, exists := defaults[key]; exists {
+			return
+		}
+		defaults[key] = paginationDefaultEntry{
+			Key:         key,
+			Name:        name,
+			CursorParam: cursorParam,
+			CursorType:  cursorType,
+			LimitParam:  limitParam,
+			Limit:       limit,
+		}
+	}
+	for _, resource := range syncable {
+		add(resource.Name, resource.Name, resource.PaginationCursorParam, resource.PaginationCursorType, resource.PaginationLimitParam, resource.PaginationPageSize, resource.SupportsPagination)
+	}
+	for _, resource := range dependent {
+		add(resource.ParentResource+"/"+resource.Name, resource.Name, resource.PaginationCursorParam, resource.PaginationCursorType, resource.PaginationLimitParam, resource.PaginationPageSize, resource.SupportsPagination)
+	}
+
+	keys := make([]string, 0, len(defaults))
+	for key := range defaults {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	entries := make([]paginationDefaultEntry, len(keys))
+	for i, key := range keys {
+		entries[i] = defaults[key]
+	}
+	return entries
+}
+
+func promoteSyncPathTemplateVars(api *spec.APISpec, profile *profiler.APIProfile) {
+	if api == nil || profile == nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(api.EndpointTemplateVars))
+	for _, name := range api.EndpointTemplateVars {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			seen[trimmed] = struct{}{}
+		}
+	}
+	for _, resource := range profile.SyncableResources {
+		if !resource.SkipDefaultSync {
+			continue
+		}
+		for _, name := range pathTemplateVarNames(resource.Path) {
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			api.EndpointTemplateVars = append(api.EndpointTemplateVars, name)
+		}
+	}
+	slices.Sort(api.EndpointTemplateVars)
+}
+
+func pathTemplateVarNames(path string) []string {
+	var names []string
+	seen := map[string]struct{}{}
+	for i := 0; i < len(path); i++ {
+		if path[i] != '{' {
+			continue
+		}
+		j := strings.IndexByte(path[i:], '}')
+		if j < 0 {
+			break
+		}
+		name := strings.TrimSpace(path[i+1 : i+j])
+		if name != "" {
+			if _, ok := seen[name]; !ok {
+				seen[name] = struct{}{}
+				names = append(names, name)
+			}
+		}
+		i += j
+	}
+	return names
 }
 
 func resourceIDFieldOverrideEntries(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []resourceIDFieldOverrideEntry {
@@ -2060,6 +4206,125 @@ func resourceIDFieldOverrideEntries(syncable []profiler.SyncableResource, depend
 	entries := make([]resourceIDFieldOverrideEntry, len(names))
 	for i, name := range names {
 		entries[i] = resourceIDFieldOverrideEntry{Name: name, Value: overrides[name]}
+	}
+	return entries
+}
+
+func resourceParentKeyColumnEntries(tables []TableDef, dependent []profiler.DependentResource) []resourceParentKeyColumnEntry {
+	columns := make(map[string][]string)
+	add := func(resource, column string, first bool) {
+		if resource == "" || column == "" {
+			return
+		}
+		values := columns[resource]
+		if slices.Contains(values, column) {
+			return
+		}
+		if first {
+			columns[resource] = append([]string{column}, values...)
+			return
+		}
+		columns[resource] = append(values, column)
+	}
+	for _, table := range tables {
+		if table.ParentKeyColumn != "" {
+			add(table.Resource, table.ParentKeyColumn, false)
+		}
+	}
+	for _, resource := range dependent {
+		add(resource.Name, "parent_id", true)
+	}
+
+	names := make([]string, 0, len(columns))
+	for name := range columns {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	entries := make([]resourceParentKeyColumnEntry, 0, len(names))
+	for _, name := range names {
+		entries = append(entries, resourceParentKeyColumnEntry{
+			Name:   name,
+			Values: columns[name],
+		})
+	}
+	return entries
+}
+
+func resourceIDBaseOverrideEntries(dependent []profiler.DependentResource) []resourceIDFieldOverrideEntry {
+	overrides := make(map[string]string)
+	for _, resource := range dependent {
+		if leaf := dependentResourcePathLeaf(resource.Path); leaf != "" {
+			overrides[resource.Name] = leaf
+		}
+	}
+
+	names := make([]string, 0, len(overrides))
+	for name := range overrides {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	entries := make([]resourceIDFieldOverrideEntry, len(names))
+	for i, name := range names {
+		entries[i] = resourceIDFieldOverrideEntry{Name: name, Value: overrides[name]}
+	}
+	return entries
+}
+
+func dependentResourcePathLeaf(path string) string {
+	if before, _, ok := strings.Cut(path, "?"); ok {
+		path = before
+	}
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	for _, segment := range slices.Backward(segments) {
+		segment = strings.TrimSpace(segment)
+		if segment == "" || (strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}")) {
+			continue
+		}
+		return spec.ToSnakeCase(segment)
+	}
+	return ""
+}
+
+func htmlPageModeResourceEntries(api *spec.APISpec, syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []criticalResourceEntry {
+	resources := map[string]bool{}
+	if api != nil {
+		var collect func(resourceMap map[string]spec.Resource)
+		collect = func(resourceMap map[string]spec.Resource) {
+			for resourceName, resource := range resourceMap {
+				name := spec.ToSnakeCase(resourceName)
+				for _, endpoint := range resource.Endpoints {
+					if endpoint.UsesHTMLResponse() && endpoint.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage {
+						resources[name] = true
+						break
+					}
+				}
+				collect(resource.SubResources)
+			}
+		}
+		collect(api.Resources)
+	}
+	for _, resource := range syncable {
+		if syncableResourceUsesHTMLPageMode(resource) {
+			resources[resource.Name] = true
+		}
+	}
+	for _, resource := range dependent {
+		if dependentResourceUsesHTMLPageMode(resource) {
+			resources[resource.Name] = true
+		}
+	}
+
+	names := make([]string, 0, len(resources))
+	for name := range resources {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	entries := make([]criticalResourceEntry, len(names))
+	for i, name := range names {
+		entries[i] = criticalResourceEntry{Name: name}
 	}
 	return entries
 }
@@ -2090,6 +4355,85 @@ func criticalResourceEntries(syncable []profiler.SyncableResource, dependent []p
 	return entries
 }
 
+func paginationSupportedResources(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []string {
+	supported := map[string]bool{}
+	for _, resource := range syncable {
+		if resource.SupportsPagination {
+			supported[resource.Name] = true
+		}
+	}
+	for _, resource := range dependent {
+		if resource.SupportsPagination {
+			supported[resource.Name] = true
+		}
+	}
+	names := make([]string, 0, len(supported))
+	for name := range supported {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func hasDefaultSyncResources(syncable []profiler.SyncableResource) bool {
+	for _, resource := range syncable {
+		if !resource.SkipDefaultSync {
+			return true
+		}
+	}
+	return false
+}
+
+func specDateTimeFieldNames(api *spec.APISpec) []string {
+	if api == nil {
+		return nil
+	}
+
+	fields := map[string]struct{}{}
+	addName := func(name, format string) {
+		if strings.EqualFold(format, "date-time") && strings.TrimSpace(name) != "" {
+			fields[name] = struct{}{}
+		}
+	}
+
+	var walkParams func(params []spec.Param)
+	walkParams = func(params []spec.Param) {
+		for _, p := range params {
+			addName(p.Name, p.Format)
+			if len(p.Fields) > 0 {
+				walkParams(p.Fields)
+			}
+		}
+	}
+
+	var walkResource func(resource spec.Resource)
+	walkResource = func(resource spec.Resource) {
+		for _, endpoint := range resource.Endpoints {
+			walkParams(endpoint.Params)
+			walkParams(endpoint.Body)
+		}
+		for _, sub := range resource.SubResources {
+			walkResource(sub)
+		}
+	}
+
+	for _, typeDef := range api.Types {
+		for _, f := range typeDef.Fields {
+			addName(f.Name, f.Format)
+		}
+	}
+	for _, resource := range api.Resources {
+		walkResource(resource)
+	}
+
+	names := make([]string, 0, len(fields))
+	for name := range fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 	gqlFieldPaths := map[string]string{}
 	for rName, r := range g.Spec.Resources {
@@ -2099,22 +4443,173 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 	}
 
 	return visionRenderData{
-		APISpec:                g.Spec,
-		SyncableResources:      g.profile.SyncableResources,
-		DependentSyncResources: g.profile.DependentSyncResources,
-		SearchableFields:       g.profile.SearchableFields,
-		Tables:                 schema,
-		Pagination:             g.profile.Pagination,
-		SearchEndpointPath:     g.profile.SearchEndpointPath,
-		SearchQueryParam:       g.profile.SearchQueryParam,
-		SearchEndpointMethod:   g.profile.SearchEndpointMethod,
-		SearchBodyFields:       g.profile.SearchBodyFields,
-		GraphQLFieldPaths:      gqlFieldPaths,
-		AgentMoneyWorkflow:     detectAgentMoneyWorkflow(g.Spec, g.PromotedEndpointNames),
+		APISpec:                      g.Spec,
+		VisionSet:                    g.VisionSet,
+		CommandNames:                 maps.Clone(g.visionCommandNames),
+		HasSync:                      g.hasGeneratedSyncImplementation(),
+		SyncableResources:            g.profile.SyncableResources,
+		DependentSyncResources:       g.profile.DependentSyncResources,
+		TenantScopedParents:          g.profile.TenantScopedParents(),
+		MembershipScopedParents:      g.profile.MembershipScopedParents(),
+		PaginationSupportedResources: paginationSupportedResources(g.profile.SyncableResources, g.profile.DependentSyncResources),
+		PaginationDefaultResources:   paginationDefaultEntries(g.profile.SyncableResources, g.profile.DependentSyncResources),
+		SpecTimestampFields:          specDateTimeFieldNames(g.Spec),
+		SearchableFields:             g.profile.SearchableFields,
+		Tables:                       schema,
+		Pagination:                   g.profile.Pagination,
+		SearchEndpointPath:           g.profile.SearchEndpointPath,
+		SearchQueryParam:             g.profile.SearchQueryParam,
+		SearchEndpointMethod:         g.profile.SearchEndpointMethod,
+		SearchBodyFields:             g.profile.SearchBodyFields,
+		SearchResponsePaths:          searchResponsePaths(g.Spec, g.profile.SearchEndpointPath, g.profile.SearchEndpointMethod),
+		SearchExampleType:            searchExampleType(g.Spec),
+		GraphQLFieldPaths:            gqlFieldPaths,
+		AgentMoneyWorkflow:           detectAgentMoneyWorkflow(g.Spec, g.PromotedEndpointNames),
+		HTMLSyncStub:                 g.htmlSyncStubSelected,
+		HTMLPageModeResources:        htmlPageModeResourceEntries(g.Spec, g.profile.SyncableResources, g.profile.DependentSyncResources),
 	}
 }
 
+func searchResponsePaths(apiSpec *spec.APISpec, searchEndpointPath, searchEndpointMethod string) []string {
+	searchEndpointPath = strings.TrimSpace(searchEndpointPath)
+	if apiSpec == nil || searchEndpointPath == "" {
+		return nil
+	}
+	searchEndpointMethod = strings.ToUpper(strings.TrimSpace(searchEndpointMethod))
+	seen := map[string]bool{}
+	for _, resource := range apiSpec.Resources {
+		for _, endpoint := range resource.Endpoints {
+			if endpoint.Path != searchEndpointPath {
+				continue
+			}
+			if searchEndpointMethod != "" && strings.ToUpper(endpoint.Method) != searchEndpointMethod {
+				continue
+			}
+			path := strings.TrimSpace(endpoint.ResponsePath)
+			if path != "" {
+				seen[path] = true
+			}
+		}
+	}
+	paths := slices.Sorted(maps.Keys(seen))
+	return paths
+}
+
+func searchExampleType(apiSpec *spec.APISpec) string {
+	if apiSpec == nil {
+		return ""
+	}
+	names := slices.Sorted(maps.Keys(apiSpec.Resources))
+	if len(names) == 0 {
+		return ""
+	}
+	return names[0]
+}
+
+const htmlSyncStubThreshold = 0.7
+
+func (g *Generator) shouldEmitHTMLSyncStub() bool {
+	if g == nil || isGraphQLSpec(g.Spec) {
+		return false
+	}
+	if g.htmlSyncStubComputed {
+		return g.htmlSyncStub
+	}
+	total, html := g.countHTMLPageModeSyncResources()
+	if total > 0 && html != total {
+		g.htmlSyncStubComputed = true
+		g.htmlSyncStub = false
+		return g.htmlSyncStub
+	}
+	if total == 0 {
+		total, html = countHTMLPageModeEndpoints(g.Spec)
+	}
+	if total == 0 {
+		g.htmlSyncStubComputed = true
+		g.htmlSyncStub = false
+		return g.htmlSyncStub
+	}
+	g.htmlSyncStubComputed = true
+	g.htmlSyncStub = float64(html)/float64(total) >= htmlSyncStubThreshold
+	return g.htmlSyncStub
+}
+
+func (g *Generator) hasGeneratedSyncImplementation() bool {
+	return g != nil && g.VisionSet.Sync && !g.shouldEmitHTMLSyncStub()
+}
+
+func (g *Generator) hasAutoRefresh() bool {
+	return g != nil && g.VisionSet.Store && g.hasGeneratedSyncImplementation() && g.Spec.Cache.Enabled
+}
+
+func (g *Generator) resetHTMLSyncStubCache() {
+	if g == nil {
+		return
+	}
+	g.htmlSyncStubComputed = false
+	g.htmlSyncStub = false
+}
+
+func (g *Generator) countHTMLPageModeSyncResources() (total int, html int) {
+	if g == nil || g.profile == nil {
+		return 0, 0
+	}
+	for _, resource := range g.profile.SyncableResources {
+		total++
+		if syncableResourceUsesHTMLPageMode(resource) {
+			html++
+		}
+	}
+	for _, resource := range g.profile.DependentSyncResources {
+		total++
+		if dependentResourceUsesHTMLPageMode(resource) {
+			html++
+		}
+	}
+	return total, html
+}
+
+func syncableResourceUsesHTMLPageMode(resource profiler.SyncableResource) bool {
+	return resource.UsesHTMLResponse && resource.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage
+}
+
+func dependentResourceUsesHTMLPageMode(resource profiler.DependentResource) bool {
+	return resource.UsesHTMLResponse && resource.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage
+}
+
+func countHTMLPageModeEndpoints(api *spec.APISpec) (total int, html int) {
+	if api == nil {
+		return 0, 0
+	}
+	for _, resource := range api.Resources {
+		resourceTotal, resourceHTML := countResourceHTMLPageModeEndpoints(resource)
+		total += resourceTotal
+		html += resourceHTML
+	}
+	return total, html
+}
+
+func countResourceHTMLPageModeEndpoints(resource spec.Resource) (total int, html int) {
+	for _, endpoint := range resource.Endpoints {
+		total++
+		if endpoint.UsesHTMLResponse() && endpoint.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage {
+			html++
+		}
+	}
+	for _, sub := range resource.SubResources {
+		subTotal, subHTML := countResourceHTMLPageModeEndpoints(sub)
+		total += subTotal
+		html += subHTML
+	}
+	return total, html
+}
+
 func (g *Generator) renderVisionCommands(visionData visionRenderData) error {
+	if g.VisionSet.Export || g.VisionSet.Import || g.VisionSet.Tail {
+		if err := g.renderTemplate("resource_paths.go.tmpl", filepath.Join("internal", "cli", "resource_paths.go"), visionData); err != nil {
+			return fmt.Errorf("rendering resource paths: %w", err)
+		}
+	}
 	// Render vision CLI commands
 	visionCmds := map[string]string{
 		"export.go.tmpl":    filepath.Join("internal", "cli", "export.go"),
@@ -2138,13 +4633,25 @@ func (g *Generator) renderVisionCommands(visionData visionRenderData) error {
 		actualTmpl := tmplName
 		if tmplName == "sync.go.tmpl" && gqlSpec {
 			actualTmpl = "graphql_sync.go.tmpl"
+		} else if tmplName == "sync.go.tmpl" && visionData.HTMLSyncStub {
+			actualTmpl = "sync_stub.go.tmpl"
+		} else if tmplName == "import.go.tmpl" && gqlSpec {
+			// GraphQL APIs have no generic REST create endpoint, so the REST
+			// import template's POST /<resource> per record always 400s. Emit
+			// a GraphQL-aware import that errors clearly instead.
+			actualTmpl = "graphql_import.go.tmpl"
 		}
 		var tmplData any = g.Spec
-		if tmplName == "sync.go.tmpl" || tmplName == "search.go.tmpl" {
+		if tmplName == "sync.go.tmpl" || tmplName == "search.go.tmpl" || tmplName == "export.go.tmpl" || tmplName == "import.go.tmpl" || tmplName == "tail.go.tmpl" || tmplName == "analytics.go.tmpl" {
 			tmplData = visionData
 		}
 		if err := g.renderTemplate(actualTmpl, outPath, tmplData); err != nil {
 			return fmt.Errorf("rendering vision %s: %w", tmplName, err)
+		}
+		if tmplName == "sync.go.tmpl" && actualTmpl == "sync.go.tmpl" {
+			if err := g.renderTemplate("sync_numeric_id_test.go.tmpl", filepath.Join("internal", "cli", "sync_numeric_id_test.go"), tmplData); err != nil {
+				return fmt.Errorf("rendering sync numeric ID test: %w", err)
+			}
 		}
 	}
 
@@ -2153,24 +4660,29 @@ func (g *Generator) renderVisionCommands(visionData visionRenderData) error {
 
 func (g *Generator) renderWorkflowFiles(visionData visionRenderData) ([]string, error) {
 	// Render data source resolution template when store is enabled
-	if g.VisionSet.Store {
+	if g.hasDataLayer() {
 		if err := g.renderTemplate("data_source.go.tmpl", filepath.Join("internal", "cli", "data_source.go"), visionData); err != nil {
 			return nil, fmt.Errorf("rendering data_source: %w", err)
 		}
 	}
 
-	// Render workflow template when store is enabled (root.go registers it conditionally on VisionSet.Store)
-	if g.VisionSet.Store {
+	// HTML page-mode CLIs keep a workflow stub that explains how to add a
+	// site-specific sync command even though they have no generic sync surface.
+	if g.hasWorkflowSurface() {
 		workflowData := struct {
 			*spec.APISpec
 			SyncableResources  []profiler.SyncableResource
 			SearchableFields   map[string][]string
+			Pagination         profiler.PaginationProfile
 			AgentMoneyWorkflow AgentMoneyWorkflow
+			SyncEnabled        bool
 		}{
 			APISpec:            g.Spec,
 			SyncableResources:  g.profile.SyncableResources,
 			SearchableFields:   g.profile.SearchableFields,
+			Pagination:         g.profile.Pagination,
 			AgentMoneyWorkflow: visionData.AgentMoneyWorkflow,
+			SyncEnabled:        g.hasGeneratedSyncImplementation(),
 		}
 		if err := g.renderTemplate("channel_workflow.go.tmpl", filepath.Join("internal", "cli", "channel_workflow.go"), workflowData); err != nil {
 			return nil, fmt.Errorf("rendering workflow: %w", err)
@@ -2182,12 +4694,14 @@ func (g *Generator) renderWorkflowFiles(visionData visionRenderData) ([]string, 
 	for _, tmpl := range g.VisionSet.Workflows {
 		outName := strings.TrimSuffix(filepath.Base(tmpl), ".tmpl")
 		outPath := filepath.Join("internal", "cli", outName)
-		if err := g.renderTemplate(tmpl, outPath, g.Spec); err != nil {
+		templateData := visionData
+		templateData.CommandConstructor = g.resolvedVisionCommandConstructor(tmpl)
+		if err := g.renderTemplate(tmpl, outPath, templateData); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: skipping workflow template %s: %v\n", tmpl, err)
 			continue
 		}
-		if constructor := commandConstructorForTemplate(tmpl); constructor != "" {
-			renderedWorkflowConstructors = append(renderedWorkflowConstructors, constructor)
+		if templateData.CommandConstructor != "" {
+			renderedWorkflowConstructors = append(renderedWorkflowConstructors, templateData.CommandConstructor)
 		}
 	}
 
@@ -2411,19 +4925,21 @@ func sortedResourceNames(resources map[string]spec.Resource) []string {
 	return names
 }
 
-func (g *Generator) renderInsightFiles() []string {
+func (g *Generator) renderInsightFiles(visionData visionRenderData) []string {
 	var renderedInsightConstructors []string
 
 	// Render insight templates
 	for _, tmpl := range g.VisionSet.Insights {
 		outName := strings.TrimSuffix(filepath.Base(tmpl), ".tmpl")
 		outPath := filepath.Join("internal", "cli", outName)
-		if err := g.renderTemplate(tmpl, outPath, g.Spec); err != nil {
+		templateData := visionData
+		templateData.CommandConstructor = g.resolvedVisionCommandConstructor(tmpl)
+		if err := g.renderTemplate(tmpl, outPath, templateData); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: skipping insight template %s: %v\n", tmpl, err)
 			continue
 		}
-		if constructor := commandConstructorForTemplate(tmpl); constructor != "" {
-			renderedInsightConstructors = append(renderedInsightConstructors, constructor)
+		if templateData.CommandConstructor != "" {
+			renderedInsightConstructors = append(renderedInsightConstructors, templateData.CommandConstructor)
 		}
 	}
 
@@ -2435,6 +4951,8 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 	if g.VisionSet.MCP {
 		mcpTotal, mcpPublic := g.Spec.CountMCPTools()
 		domainCtx := g.buildDomainContext()
+		reservedIntentNames := reservedMCPToolNames(g.Spec, g.VisionSet, g.NovelFeatures)
+		recipeIntents := buildRecipeIntents(g.Spec.Name, g.Narrative, reservedIntentNames)
 		mcpData := struct {
 			*spec.APISpec
 			SyncableResources []profiler.SyncableResource
@@ -2445,33 +4963,55 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 			MCPPublicCount    int
 			NovelFeatures     []NovelFeature
 			DomainContext     DomainContext
+			RecipeIntents     []RecipeIntent
+			HasMCPIntents     bool
 		}{
 			APISpec:           g.Spec,
 			SyncableResources: g.profile.SyncableResources,
 			SearchableFields:  g.profile.SearchableFields,
 			Tables:            schema,
-			VisionSet:         g.VisionSet,
+			VisionSet:         g.dataSurfaceVisionSet(),
 			MCPTotalCount:     mcpTotal,
 			MCPPublicCount:    mcpPublic,
 			NovelFeatures:     g.NovelFeatures,
 			DomainContext:     domainCtx,
+			RecipeIntents:     recipeIntents,
+			HasMCPIntents:     len(g.Spec.MCP.Intents) > 0 || len(recipeIntents) > 0,
+		}
+		if err := g.renderTemplate("mcp_platform_gate.go.tmpl", filepath.Join("internal", "mcp", "platform_gate.go"), mcpData); err != nil {
+			return fmt.Errorf("rendering MCP tenant gate: %w", err)
+		}
+		if err := g.renderTemplate("mcp_platform_gate_test.go.tmpl", filepath.Join("internal", "mcp", "platform_gate_test.go"), mcpData); err != nil {
+			return fmt.Errorf("rendering MCP tenant-gate tests: %w", err)
 		}
 		if err := g.renderTemplate("mcp_tools.go.tmpl", filepath.Join("internal", "mcp", "tools.go"), mcpData); err != nil {
 			return fmt.Errorf("rendering MCP tools: %w", err)
 		}
-		if g.VisionSet.Store {
+		if g.hasDataLayer() {
 			if err := g.renderTemplate("mcp_tools_test.go.tmpl", filepath.Join("internal", "mcp", "tools_test.go"), mcpData); err != nil {
 				return fmt.Errorf("rendering MCP tools tests: %w", err)
 			}
 		}
-		if len(g.Spec.MCP.Intents) > 0 {
+		if mcpData.HasMCPIntents {
 			if err := g.renderTemplate("mcp_intents.go.tmpl", filepath.Join("internal", "mcp", "intents.go"), mcpData); err != nil {
 				return fmt.Errorf("rendering MCP intents: %w", err)
+			}
+		}
+		if len(recipeIntents) > 0 {
+			if err := g.renderTemplate("mcp_recipe_intents_test.go.tmpl", filepath.Join("internal", "mcp", "recipe_intents_test.go"), mcpData); err != nil {
+				return fmt.Errorf("rendering MCP recipe intent tests: %w", err)
 			}
 		}
 		if g.Spec.MCP.IsCodeOrchestration() {
 			if err := g.renderTemplate("mcp_code_orch.go.tmpl", filepath.Join("internal", "mcp", "code_orch.go"), mcpData); err != nil {
 				return fmt.Errorf("rendering MCP code-orchestration: %w", err)
+			}
+			// Durable regression test for the write-body contracts
+			// (double-marshal object path + bare-array body path).
+			// Gated on code-orchestration so intents-only CLIs, which
+			// have no codeOrchWriteBody/codeOrchArrayBody, still compile.
+			if err := g.renderTemplate("mcp_code_orch_writebody_test.go.tmpl", filepath.Join("internal", "mcp", "code_orch_writebody_test.go"), mcpData); err != nil {
+				return fmt.Errorf("rendering MCP code-orchestration write-body test: %w", err)
 			}
 		}
 	}
@@ -2487,43 +5027,50 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 		}
 	}
 
+	novelChildrenByParent := g.novelFeatureChildrenByParent()
 	// Generate promoted top-level commands (user-friendly aliases for nested API commands)
 	// promotedCommands was computed earlier so promoted resources can replace their raw parents.
 	for _, pc := range promotedCommands {
 		// Look up the full resource to pass sibling endpoints/sub-resources.
-		// Trim trailing slash on BaseURL so the promoted handler's
-		// `path := <ResourceBaseURL><Endpoint.Path>` concat doesn't
-		// produce `https://x.com/v1//search`.
 		resource := g.Spec.Resources[pc.ResourceName]
-		resourceBaseURL := effectiveEndpointBaseURL(resource, pc.Endpoint)
 		promotedData := struct {
-			PromotedName    string
-			ResourceName    string
-			EndpointName    string
-			ResourceBaseURL string
-			EffectivePath   string
-			Endpoint        spec.Endpoint
-			EffectiveTier   string
-			HasStore        bool
-			Resource        spec.Resource
-			FuncPrefix      string
-			IsReadOnly      bool
+			PromotedName      string
+			ResourceName      string
+			EndpointName      string
+			EffectivePath     string
+			Endpoint          spec.Endpoint
+			EffectiveTier     string
+			HasStore          bool
+			HasResponseUnwrap bool
+			PageSize          int
+			Resource          spec.Resource
+			FuncPrefix        string
+			IsReadOnly        bool
+			NovelChildren     []novelFeatureChildRender
 			*spec.APISpec
 		}{
-			PromotedName:    pc.PromotedName,
-			ResourceName:    pc.ResourceName,
-			EndpointName:    pc.EndpointName,
-			ResourceBaseURL: resourceBaseURL,
-			EffectivePath:   effectiveEndpointPath(resource, pc.Endpoint),
-			Endpoint:        pc.Endpoint,
-			EffectiveTier:   g.Spec.EffectiveTier(resource, pc.Endpoint),
-			HasStore:        g.VisionSet.Store,
-			Resource:        resource,
-			FuncPrefix:      pc.ResourceName,
-			IsReadOnly:      endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
-			APISpec:         g.Spec,
+			PromotedName:  pc.PromotedName,
+			ResourceName:  pc.ResourceName,
+			EndpointName:  pc.EndpointName,
+			EffectivePath: effectiveEndpointPath(resource, pc.Endpoint),
+			Endpoint:      pc.Endpoint,
+			EffectiveTier: g.Spec.EffectiveTier(resource, pc.Endpoint),
+			HasStore:      g.hasDataLayer(),
+			// Per-command: emit the extractResponseData call only on commands
+			// whose own response is envelope-shaped, so a non-envelope command
+			// in a mixed-envelope spec is never unwrapped. This is a subset of
+			// the CLI-level helper-emission gate (helpers.go emits the helper
+			// when ANY promoted command qualifies), so call ⊆ emit — no call to
+			// an unemitted helper.
+			HasResponseUnwrap: g.hasDataLayer() && !pc.Endpoint.UsesBinaryResponse() && !pc.Endpoint.UsesTextResponse() && endpointHasStatusDataEnvelope(pc.Endpoint, g.Spec.Types),
+			PageSize:          g.paginationPageSizeForEndpoint(pc.Endpoint),
+			Resource:          resource,
+			FuncPrefix:        pc.ResourceName,
+			IsReadOnly:        endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
+			NovelChildren:     novelChildrenByParent[toKebab(pc.PromotedName)],
+			APISpec:           g.Spec,
 		}
-		promotedPath := filepath.Join("internal", "cli", "promoted_"+pc.PromotedName+".go")
+		promotedPath := filepath.Join("internal", "cli", safeResourceFileStem("promoted_"+pc.PromotedName)+".go")
 		if err := g.renderTemplate("command_promoted.go.tmpl", promotedPath, promotedData); err != nil {
 			return fmt.Errorf("rendering promoted command %s: %w", pc.PromotedName, err)
 		}
@@ -2532,7 +5079,88 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 	return nil
 }
 
-func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, promotedResourceNames map[string]bool, renderedWorkflowConstructors, renderedInsightConstructors []string) error {
+func (g *Generator) paginationDefaultPageSize() int {
+	if g != nil && g.profile != nil && g.profile.Pagination.DefaultPageSize > 0 {
+		return g.profile.Pagination.DefaultPageSize
+	}
+	return 100
+}
+
+func (g *Generator) paginationPageSizeForEndpoint(endpoint spec.Endpoint) int {
+	pageSize := g.paginationDefaultPageSize()
+	if endpoint.Pagination == nil || endpoint.Pagination.LimitParam == "" {
+		return pageSize
+	}
+	limitParam, ok := endpointParamByName(endpoint, endpoint.Pagination.LimitParam)
+	if !ok {
+		return pageSize
+	}
+	if defaultPageSize, ok := positiveIntValue(limitParam.Default); ok {
+		pageSize = defaultPageSize
+	}
+	if maxPageSize, ok := paramMaxInt(limitParam); ok && maxPageSize < pageSize {
+		pageSize = maxPageSize
+	}
+	if pageSize <= 0 {
+		return g.paginationDefaultPageSize()
+	}
+	return pageSize
+}
+
+func endpointParamByName(endpoint spec.Endpoint, name string) (spec.Param, bool) {
+	for _, param := range endpoint.Params {
+		if param.Name == name || param.URLName == name {
+			return param, true
+		}
+	}
+	return spec.Param{}, false
+}
+
+func positiveIntValue(value any) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		if v > 0 {
+			return v, true
+		}
+	case int64:
+		if v > 0 && int64(int(v)) == v {
+			return int(v), true
+		}
+	case float64:
+		asInt := int(v)
+		if v > 0 && float64(asInt) == v {
+			return asInt, true
+		}
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err == nil && n > 0 {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func paramMaxInt(param spec.Param) (int, bool) {
+	var max int
+	hasMax := false
+	if param.Maximum != nil && *param.Maximum > 0 {
+		max = int(*param.Maximum)
+		hasMax = true
+	}
+	if param.ExclusiveMaximum != nil && *param.ExclusiveMaximum > 0 {
+		exclusiveMax := int(*param.ExclusiveMaximum)
+		if float64(exclusiveMax) == *param.ExclusiveMaximum {
+			exclusiveMax--
+		}
+		if exclusiveMax > 0 && (!hasMax || exclusiveMax < max) {
+			max = exclusiveMax
+			hasMax = true
+		}
+	}
+	return max, hasMax
+}
+
+func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, promotedResourceNames map[string]bool, renderedWorkflowConstructors, renderedInsightConstructors []string, novelCommandStubs []novelFeatureCommandRender) error {
 	// Root --help Long surfaces ALL verified-built novel features — the
 	// whole point of this change is to stop making agents do discovery
 	// for novel capabilities. A count cap (earlier draft used 3) neuters
@@ -2556,6 +5184,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 	// undefined symbol when auth.go was skipped.
 	hasAuthCommand := g.shouldEmitAuth()
 	helperFlags := computeHelperFlags(g.Spec)
+	applyPartialFailureFlags(&helperFlags, g.Spec, promotedCommands, g.PromotedEndpointNames, g.hasDataLayer())
 
 	rootData := struct {
 		*spec.APISpec
@@ -2563,6 +5192,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		VisionCmdNames        map[string]bool
 		WorkflowConstructors  []string
 		InsightConstructors   []string
+		NovelCommandStubs     []novelFeatureCommandRender
 		PromotedCommands      []PromotedCommand
 		PromotedResourceNames map[string]bool
 		Narrative             *ReadmeNarrative
@@ -2571,14 +5201,19 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		HasAsyncJobs          bool
 		AsyncJobCount         int
 		HasAuthCommand        bool
+		HasCreateCommands     bool
 		HasDelete             bool
+		HasMutationEndpoints  bool
+		HasAutoRefresh        bool
+		HasWorkflow           bool
 		CompactDescription    string
 	}{
 		APISpec:               g.Spec,
-		VisionSet:             g.VisionSet,
+		VisionSet:             g.dataSurfaceVisionSet(),
 		VisionCmdNames:        g.VisionSet.CmdNames(),
 		WorkflowConstructors:  renderedWorkflowConstructors,
 		InsightConstructors:   renderedInsightConstructors,
+		NovelCommandStubs:     novelCommandStubs,
 		PromotedCommands:      promotedCommands,
 		PromotedResourceNames: promotedResourceNames,
 		Narrative:             g.Narrative,
@@ -2587,7 +5222,11 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		HasAsyncJobs:          len(g.AsyncJobs) > 0,
 		AsyncJobCount:         len(g.AsyncJobs),
 		HasAuthCommand:        hasAuthCommand,
+		HasCreateCommands:     hasCreateCommands(g.Spec.Resources),
 		HasDelete:             helperFlags.HasDelete,
+		HasMutationEndpoints:  helperFlags.HasMutationEndpoints,
+		HasAutoRefresh:        g.hasAutoRefresh(),
+		HasWorkflow:           g.hasWorkflowSurface(),
 		CompactDescription:    g.compactDescription(),
 	}
 	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {
@@ -2676,6 +5315,19 @@ func commandConstructorForTemplate(tmpl string) string {
 	}
 }
 
+func (g *Generator) resolvedVisionCommandConstructor(tmpl string) string {
+	constructor := commandConstructorForTemplate(tmpl)
+	if constructor == "" {
+		return ""
+	}
+	bare := frameworkUseNameForTemplate(tmpl)
+	resolved := g.resolvedVisionCommandName(tmpl)
+	if resolved == "" || resolved == bare {
+		return constructor
+	}
+	return commandIdent(resolved)
+}
+
 func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {
 	tmpl, err := g.template(tmplName)
 	if err != nil {
@@ -2691,9 +5343,89 @@ func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {
 		return err
 	}
 
-	rendered := bytes.TrimRight(buf.Bytes(), " \t\r\n")
+	return os.WriteFile(fullPath, normalizeRendered(buf.Bytes(), tmplName, outPath), 0o644)
+}
+
+// normalizeRendered prepares template-rendered bytes for disk: trims trailing
+// whitespace and re-appends a single newline, then runs go/format.Source on
+// `.go` outputs so printed CLIs ship formatting-clean. Template authors
+// hand-align struct fields inconsistently, and without this pass every fresh
+// print surfaces hundreds of phantom diffs on the first `gofmt -w`. Falls
+// through with a stderr warning rather than fail-hard so a malformed template
+// surfaces as a compile error downstream instead of an opaque emit failure.
+func normalizeRendered(raw []byte, tmplName, outPath string) []byte {
+	rendered := bytes.TrimRight(raw, " \t\r\n")
 	rendered = append(rendered, '\n')
-	return os.WriteFile(fullPath, rendered, 0o644)
+	if tmplName == "command_endpoint.go.tmpl" {
+		rendered = pruneUnusedClientImport(rendered)
+	}
+	if filepath.Ext(outPath) != ".go" {
+		return rendered
+	}
+	formatted, err := format.Source(rendered)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: gofmt failed for %s: %v\n", outPath, err)
+		return rendered
+	}
+	return formatted
+}
+
+// pruneUnusedClientImport drops the `<module>/internal/client` import line
+// from a rendered command_endpoint.go file when the body never references
+// the `client` package as a qualifier. The endpoint template emits this
+// import for the GraphQL list/get path, but other branches (notably
+// POST /graphql for GraphQL specs whose author wrote method: POST) reach
+// the rendered file without producing a `client.X` reference, leaving an
+// unused import that breaks `go build`.
+func pruneUnusedClientImport(src []byte) []byte {
+	// Find the import block.
+	importStart := bytes.Index(src, []byte("\nimport (\n"))
+	if importStart < 0 {
+		return src
+	}
+	importBlockStart := importStart + len("\nimport (\n")
+	importEnd := bytes.Index(src[importBlockStart:], []byte("\n)"))
+	if importEnd < 0 {
+		return src
+	}
+	importEnd += importBlockStart
+
+	// Body is everything after the closing `)` of the import block.
+	body := src[importEnd:]
+	// A `client.X` reference is the only way the import is used inside the
+	// rendered body.
+	if bytes.Contains(body, []byte("client.")) {
+		return src
+	}
+
+	// Locate the line `"<...>/internal/client"` inside the import block and
+	// remove it (including its trailing newline). The literal suffix is
+	// stable across all module paths because it's emitted as
+	// `"{{modulePath}}/internal/client"` from the template.
+	importBlock := src[importBlockStart:importEnd]
+	suffix := []byte(`/internal/client"`)
+	rel := bytes.Index(importBlock, suffix)
+	if rel < 0 {
+		return src
+	}
+	abs := importBlockStart + rel
+	// Walk back to the start of the line.
+	lineStart := abs
+	for lineStart > 0 && src[lineStart-1] != '\n' {
+		lineStart--
+	}
+	// Walk forward to the end of the line, including the trailing newline.
+	lineEnd := abs
+	for lineEnd < len(src) && src[lineEnd] != '\n' {
+		lineEnd++
+	}
+	if lineEnd < len(src) {
+		lineEnd++
+	}
+	out := make([]byte, 0, len(src)-(lineEnd-lineStart))
+	out = append(out, src[:lineStart]...)
+	out = append(out, src[lineEnd:]...)
+	return out
 }
 
 func validateRenderedArtifact(outPath, content string) error {
@@ -2775,22 +5507,18 @@ func (g *Generator) template(tmplName string) (*template.Template, error) {
 // toCamelCase, etc). Treat any new caller that feeds raw spec strings
 // directly into these helpers as a bug — fold first, then shape.
 func toCamel(s string) string {
-	// Strip characters that are invalid in Go identifiers
-	s = strings.TrimLeft(s, "$")
-	parts := strings.FieldsFunc(s, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	for i, p := range parts {
-		if len(p) > 0 {
-			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+	return naming.CamelIdentifier(s)
+}
+
+func commandIdent(parts ...string) string {
+	joined := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimLeft(part, "$")
+		if part != "" {
+			joined = append(joined, part)
 		}
 	}
-	result := strings.Join(parts, "")
-	// Ensure starts with letter
-	if len(result) > 0 && !unicode.IsLetter(rune(result[0])) {
-		result = "V" + result
-	}
-	return result
+	return toCamel(strings.Join(joined, "-"))
 }
 
 func toPascal(s string) string {
@@ -2813,6 +5541,47 @@ func toPascal(s string) string {
 
 func domainUpsertMethodName(tableName string) string {
 	return "Upsert" + toPascal(tableName)
+}
+
+func emitsDomainTable(t TableDef) bool {
+	return (len(t.Columns) > 3 || t.JSONOnlyFallback) && t.Name != "sync_state" && domainUpsertMethodName(t.Name) != "UpsertBatch"
+}
+
+type reconcileTypedTableEntry struct {
+	Resource string
+	Table    string
+}
+
+func reconcileTypedTableEntries(tables []TableDef) []reconcileTypedTableEntry {
+	byResource := make(map[string]string)
+	ambiguous := make(map[string]struct{})
+	for _, table := range tables {
+		if !emitsDomainTable(table) {
+			continue
+		}
+		resource := strings.ToLower(table.Resource)
+		if _, skip := ambiguous[resource]; skip {
+			continue
+		}
+		if existing, ok := byResource[resource]; ok && existing != table.Name {
+			delete(byResource, resource)
+			ambiguous[resource] = struct{}{}
+			continue
+		}
+		byResource[resource] = table.Name
+	}
+
+	resources := make([]string, 0, len(byResource))
+	for resource := range byResource {
+		resources = append(resources, resource)
+	}
+	sort.Strings(resources)
+
+	entries := make([]reconcileTypedTableEntry, 0, len(resources))
+	for _, resource := range resources {
+		entries = append(entries, reconcileTypedTableEntry{Resource: resource, Table: byResource[resource]})
+	}
+	return entries
 }
 
 // isIDParam returns true if the parameter name suggests it's an identifier
@@ -2842,6 +5611,19 @@ func isCursorParam(name string) bool {
 		return true
 	}
 	return false
+}
+
+// isFlagLimitParam returns true when a parameter is the canonical
+// pagination/truncation `--limit` flag, which is always count-shaped
+// (integer) regardless of whether the spec declares it as `number`.
+// LLM-derived specs in `--docs` mode have produced `limit: number`,
+// which previously emitted `Float64Var`/`float64 flagLimit` and broke
+// `truncateJSONArray(data, flagLimit)` at compile time because the
+// helper expects an `int`. Keyed on the same case-insensitive match
+// `endpointNeedsClientLimit` uses, so the override fires exactly where
+// the truncate caller lives.
+func isFlagLimitParam(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), "limit")
 }
 
 func primitiveKind(t string) string {
@@ -2882,12 +5664,27 @@ func goType(t string) string {
 // Unlike goType (used for CLI flags which are always primitives),
 // this maps object/array types to json.RawMessage for type fidelity.
 func goStructType(t string) string {
+	if ref, ok := strings.CutPrefix(t, "ref:"); ok {
+		return safeTypeName(ref)
+	}
+	if ref, ok := strings.CutPrefix(t, "[]ref:"); ok {
+		return "[]" + safeTypeName(ref)
+	}
 	switch primitiveKind(t) {
 	case "object", "array":
 		return "json.RawMessage"
 	default:
 		return goType(t)
 	}
+}
+
+func typeFieldJSONTagComment(f spec.TypeField) string {
+	for _, r := range f.Name {
+		if r > unicode.MaxASCII {
+			return f.Name
+		}
+	}
+	return ""
 }
 
 func goStoreType(sqlType string) string {
@@ -2986,39 +5783,116 @@ func cobraFlagFunc(t string) string {
 	}
 }
 
-// goTypeForParam returns the Go type for a parameter, overriding int→string
-// for ID-like parameters to avoid overflow and zero-value confusion, and
+// mcpBindingFunc returns the mcplib.With* function name used in MCP tool
+// input-schema registration so each field binds to its native JSON type and
+// passes through the generic makeAPIHandler intact. Funnels through
+// primitiveKind so OpenAPI-parsed shapes ("int", "float", "bool") and
+// internal-spec literals ("integer", "number", "boolean") produce the same
+// binding. Array/object params bind natively (WithArray/WithObject): the
+// handler's body path stores the parsed value verbatim and JSON-marshals it,
+// so a native []any/map serializes as a real array/object instead of a quoted
+// JSON string. The body_json polymorphic (oneOf/anyOf) fallback is hardcoded
+// as WithString in the template and is NOT routed through this function.
+func mcpBindingFunc(t string) string {
+	switch primitiveKind(t) {
+	case "int", "float":
+		return "WithNumber"
+	case "bool":
+		return "WithBoolean"
+	case "array":
+		return "WithArray"
+	case "object":
+		return "WithObject"
+	default:
+		return "WithString"
+	}
+}
+
+// goTypeForParam returns the Go type for a parameter, overriding bool→string
+// for required bools without defaults so omitted can be distinguished from an
+// explicit false, int→string for ID-like parameters to avoid overflow and zero-value confusion,
 // numeric→string for pagination cursors so they survive scientific-notation
-// rendering of large Unix timestamps and millisecond cursors.
+// rendering of large Unix timestamps and millisecond cursors, and
+// float→int for the canonical `--limit` flag whose semantics are always
+// a count.
 func goTypeForParam(name, t string) string {
+	return goTypeForParamRequired(name, t, false, false)
+}
+
+func goTypeForParamRequired(name, t string, required bool, hasDefault bool) string {
 	kind := primitiveKind(t)
+	if required && !hasDefault && kind == "bool" {
+		return "string"
+	}
 	if isIDParam(name) && kind == "int" {
 		return "string"
 	}
 	if isCursorParam(name) && (kind == "int" || kind == "float") {
 		return "string"
+	}
+	if isFlagLimitParam(name) && kind == "float" {
+		return "int"
 	}
 	return goType(t)
 }
 
-// cobraFlagFuncForParam returns the cobra flag function, overriding IntVar→StringVar
-// for ID-like parameters and Float64Var/IntVar→StringVar for pagination cursors.
+// Body fields preserve their declared scalar type in JSON. The identifier,
+// cursor, and limit overrides are for URL-facing flags; applying them to a
+// JSON body changes the payload type. Required booleans still use a string
+// backing value so omitted and explicit false remain distinguishable.
+func goTypeForBodyParam(p spec.Param) string {
+	if isStringBackedBoolParam(p) {
+		return "string"
+	}
+	return goType(p.Type)
+}
+
+// cobraFlagFuncForParam returns the cobra flag function, overriding BoolVar→StringVar
+// for required bools without defaults, IntVar→StringVar for ID-like parameters,
+// Float64Var/IntVar→StringVar for pagination cursors,
+// and Float64Var→IntVar for the canonical `--limit` flag.
 func cobraFlagFuncForParam(name, t string) string {
+	return cobraFlagFuncForParamRequired(name, t, false, false)
+}
+
+func cobraFlagFuncForParamRequired(name, t string, required bool, hasDefault bool) string {
 	kind := primitiveKind(t)
+	if required && !hasDefault && kind == "bool" {
+		return "StringVar"
+	}
 	if isIDParam(name) && kind == "int" {
 		return "StringVar"
 	}
 	if isCursorParam(name) && (kind == "int" || kind == "float") {
 		return "StringVar"
 	}
+	if isFlagLimitParam(name) && kind == "float" {
+		return "IntVar"
+	}
 	return cobraFlagFunc(t)
 }
 
+func cobraFlagFuncForBodyParam(p spec.Param) string {
+	if isStringBackedBoolParam(p) {
+		return "StringVar"
+	}
+	return cobraFlagFunc(p.Type)
+}
+
 // defaultValForParam returns the default value for a flag parameter,
-// overriding int→string for ID-like parameters and numeric→string for
-// pagination cursors so the StringVar default matches the StringVar field type.
+// overriding bool→string for required bools without defaults, int→string for
+// ID-like parameters, numeric→string for pagination cursors so the StringVar default matches the StringVar field type,
+// and float→int for the canonical `--limit` flag so the IntVar default
+// matches its coerced int type.
 func defaultValForParam(p spec.Param) string {
+	return defaultValForParamRequired(p, false, false)
+}
+
+func defaultValForParamRequired(p spec.Param, required bool, hasDefault bool) string {
 	kind := primitiveKind(p.Type)
+	if required && !hasDefault && kind == "bool" {
+		return `""`
+	}
 	if isIDParam(p.Name) && kind == "int" {
 		if p.Default != nil {
 			return fmt.Sprintf("%q", fmt.Sprintf("%v", p.Default))
@@ -3031,7 +5905,300 @@ func defaultValForParam(p spec.Param) string {
 		}
 		return `""`
 	}
+	if isFlagLimitParam(p.Name) && kind == "float" {
+		coerced := p
+		coerced.Type = "integer"
+		return defaultVal(coerced)
+	}
 	return defaultVal(p)
+}
+
+func defaultValForBodyParam(p spec.Param) string {
+	if isStringBackedBoolParam(p) {
+		return `""`
+	}
+	return defaultVal(p)
+}
+
+func zeroValForParam(name, t string) string {
+	return zeroValForParamRequired(name, t, false, false)
+}
+
+func zeroValForParamRequired(name, t string, required bool, hasDefault bool) string {
+	kind := primitiveKind(t)
+	if required && !hasDefault && kind == "bool" {
+		return `""`
+	}
+	if isIDParam(name) && kind == "int" {
+		return `""`
+	}
+	if isCursorParam(name) && (kind == "int" || kind == "float") {
+		return `""`
+	}
+	return zeroVal(t)
+}
+
+func zeroValForBodyParam(p spec.Param) string {
+	if isStringBackedBoolParam(p) {
+		return `""`
+	}
+	return zeroVal(p.Type)
+}
+
+func paramHasDefault(p spec.Param) bool {
+	return p.Default != nil
+}
+
+func paramHasEnvDefault(p spec.Param) bool {
+	return p.GlobalScope && primitiveKind(p.Type) == "string"
+}
+
+func globalScopeFallbackValue(p spec.Param) string {
+	if p.Default == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", p.Default)
+}
+
+func globalScopeEnvName(apiName string, p spec.Param) string {
+	name := p.PublicInputName()
+	if name == "" {
+		name = p.Name
+	}
+	placeholder := strings.ToUpper(strings.ReplaceAll(naming.FlagName(name), "-", "_"))
+	if placeholder == "" {
+		placeholder = "SCOPE"
+	}
+	return naming.EnvPrefix(apiName) + "_" + placeholder
+}
+
+// responsePathCase is one deduplicated entry for the sync template's
+// responsePathForResource switch: the switch key (resource + NUL + path) and
+// the response envelope path to return for it.
+type responsePathCase struct {
+	Key          string
+	ResponsePath string
+}
+
+type resourcePathEntry struct {
+	Name         string
+	Path         string
+	ResponsePath string
+	Pagination   *spec.Pagination
+	PageSize     int
+}
+
+func resourceReadPathEntries(data visionRenderData) []resourcePathEntry {
+	entries := map[string]resourcePathEntry{}
+	pathCounts := map[string]int{}
+	for name, resource := range data.Resources {
+		endpoint, ok := resourceEndpointForMethod(resource, "GET")
+		if !ok {
+			continue
+		}
+		entries[name] = resourcePathEntry{
+			Name:         name,
+			Path:         endpoint.Path,
+			ResponsePath: endpoint.ResponsePath,
+			Pagination:   endpoint.Pagination,
+			PageSize:     resourcePathPageSize(data, endpoint),
+		}
+		pathCounts[endpoint.Path]++
+	}
+	for name, entry := range entries {
+		if pathCounts[entry.Path] > 1 {
+			delete(entries, name)
+		}
+	}
+	return sortedResourcePathEntries(entries)
+}
+
+func resourcePathPageSize(data visionRenderData, endpoint spec.Endpoint) int {
+	pageSize := data.Pagination.DefaultPageSize
+	if pageSize <= 0 {
+		pageSize = 100
+	}
+	if endpoint.Pagination == nil || endpoint.Pagination.LimitParam == "" {
+		return pageSize
+	}
+	limitParam, ok := endpointParamByName(endpoint, endpoint.Pagination.LimitParam)
+	if !ok {
+		return pageSize
+	}
+	if defaultPageSize, ok := positiveIntValue(limitParam.Default); ok {
+		pageSize = defaultPageSize
+	}
+	if maxPageSize, ok := paramMaxInt(limitParam); ok && maxPageSize < pageSize {
+		pageSize = maxPageSize
+	}
+	return pageSize
+}
+
+func resourceWritePathEntries(data visionRenderData) []resourcePathEntry {
+	entries := map[string]resourcePathEntry{}
+	for name, resource := range data.Resources {
+		endpoint, ok := resourceEndpointForMethod(resource, "POST")
+		if !ok {
+			continue
+		}
+		entries[name] = resourcePathEntry{Name: name, Path: endpoint.Path}
+	}
+	return sortedResourcePathEntries(entries)
+}
+
+func resourceDetailPathEntries(data visionRenderData) []resourcePathEntry {
+	entries := map[string]resourcePathEntry{}
+	for name, resource := range data.Resources {
+		endpointNames := make([]string, 0, len(resource.Endpoints))
+		for endpointName := range resource.Endpoints {
+			endpointNames = append(endpointNames, endpointName)
+		}
+		sort.SliceStable(endpointNames, func(i, j int) bool {
+			return resourceDetailEndpointRank(endpointNames[i]) < resourceDetailEndpointRank(endpointNames[j])
+		})
+		for _, endpointName := range endpointNames {
+			endpoint := resource.Endpoints[endpointName]
+			if !strings.EqualFold(endpoint.Method, "GET") || endpoint.Response.Type == "array" || endpoint.Pagination != nil || strings.Count(endpoint.Path, "{") != 1 || strings.Count(endpoint.Path, "}") != 1 {
+				continue
+			}
+			entries[name] = resourcePathEntry{Name: name, Path: endpoint.Path}
+			break
+		}
+	}
+	return sortedResourcePathEntries(entries)
+}
+
+func resourceDetailEndpointRank(name string) string {
+	preferred := "1"
+	switch strings.ToLower(name) {
+	case "get", "read", "retrieve", "show", "detail":
+		preferred = "0"
+	}
+	return preferred + "\x00" + name
+}
+
+func sortedResourcePathEntries(entries map[string]resourcePathEntry) []resourcePathEntry {
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]resourcePathEntry, 0, len(names))
+	for _, name := range names {
+		out = append(out, entries[name])
+	}
+	return out
+}
+
+// responsePathCases returns deterministic switch cases deduplicated by resource
+// and path. Syncable endpoints take precedence because the generated lookup is
+// used by sync; endpoint name breaks ties to keep output stable.
+func responsePathCases(resources map[string]spec.Resource) []responsePathCase {
+	resourceNames := make([]string, 0, len(resources))
+	for name := range resources {
+		resourceNames = append(resourceNames, name)
+	}
+	sort.Strings(resourceNames)
+
+	seen := map[string]struct{}{}
+	var out []responsePathCase
+	for _, resourceName := range resourceNames {
+		resource := resources[resourceName]
+		endpointNames := make([]string, 0, len(resource.Endpoints))
+		for endpointName := range resource.Endpoints {
+			endpointNames = append(endpointNames, endpointName)
+		}
+		sort.Slice(endpointNames, func(i, j int) bool {
+			left := resource.Endpoints[endpointNames[i]]
+			right := resource.Endpoints[endpointNames[j]]
+			if left.Syncable != right.Syncable {
+				return left.Syncable
+			}
+			return endpointNames[i] < endpointNames[j]
+		})
+		for _, endpointName := range endpointNames {
+			endpoint := resource.Endpoints[endpointName]
+			if endpoint.ResponsePath == "" {
+				continue
+			}
+			key := resourceName + "\x00" + endpoint.Path
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, responsePathCase{Key: key, ResponsePath: endpoint.ResponsePath})
+		}
+	}
+	return out
+}
+
+func globalScopeParams(resources map[string]spec.Resource) []spec.Param {
+	resourceNames := make([]string, 0, len(resources))
+	for name := range resources {
+		resourceNames = append(resourceNames, name)
+	}
+	sort.Strings(resourceNames)
+
+	seen := map[string]struct{}{}
+	var out []spec.Param
+	for _, resourceName := range resourceNames {
+		resource := resources[resourceName]
+		endpointNames := make([]string, 0, len(resource.Endpoints))
+		for endpointName := range resource.Endpoints {
+			endpointNames = append(endpointNames, endpointName)
+		}
+		sort.Strings(endpointNames)
+		for _, endpointName := range endpointNames {
+			endpoint := resource.Endpoints[endpointName]
+			for _, param := range endpoint.Params {
+				if !paramHasEnvDefault(param) {
+					continue
+				}
+				key := param.WireName()
+				if key == "" {
+					key = param.Name
+				}
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				out = append(out, param)
+			}
+		}
+	}
+	return out
+}
+
+// paramIsConstDefault holds for single-value-enum params whose default
+// equals the only enum value. Templates emit MarkHidden for these so
+// --help does not list a flag whose only valid value is the default,
+// while the flag stays registered so the wire-side default still flows.
+// This catches the single-URL routing-selector shape, where an API
+// selects an operation via a fixed query param.
+func paramIsConstDefault(p spec.Param) bool {
+	if len(p.Enum) != 1 || p.Default == nil {
+		return false
+	}
+	// Float defaults round-trip ambiguously under any single string format:
+	// fmt.Sprintf("%v", float64(2.0)) and strconv.FormatFloat with -1
+	// precision both yield "2", which would miss a heterogeneous spec
+	// declaring `enum: ["2.0"]` alongside `default: 2.0`. Parse the enum
+	// element as a float and compare numerically so "2", "2.0", and "2.00"
+	// are all equivalent to float64(2.0).
+	switch v := p.Default.(type) {
+	case float64:
+		if enumF, err := strconv.ParseFloat(p.Enum[0], 64); err == nil {
+			return enumF == v
+		}
+		return false
+	case float32:
+		if enumF, err := strconv.ParseFloat(p.Enum[0], 32); err == nil {
+			return float32(enumF) == v
+		}
+		return false
+	default:
+		return fmt.Sprintf("%v", p.Default) == p.Enum[0]
+	}
 }
 
 type jsonFlagSuggestion struct {
@@ -3043,8 +6210,14 @@ type mcpParamBinding struct {
 	PublicName         string
 	WireName           string
 	Location           string
+	BodyPath           []string
 	Format             string
+	QueryArray         bool
+	QueryStyle         string
+	QueryExplode       bool
+	DeepObjectQuery    bool
 	RequestContentType string
+	Default            string
 }
 
 func flagChangedExpr(p spec.Param) string {
@@ -3066,27 +6239,357 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 		requestContentType = endpoint.RequestContentType
 	}
 	for _, p := range endpoint.Params {
-		loc := "query"
-		if strings.Contains(pathTemplate, "{"+p.Name+"}") {
+		if isMCPPaginationCursorParam(endpoint, p) {
+			continue
+		}
+		declaredLoc := strings.ToLower(strings.TrimSpace(p.In))
+		loc := declaredLoc
+		if loc == "" {
+			loc = "query"
+		}
+		if p.PathParam || (strings.Contains(pathTemplate, "{"+p.Name+"}") && (declaredLoc == "" || declaredLoc == "path")) {
 			loc = "path"
 		}
-		bindings = append(bindings, mcpParamBinding{
+		wireName := p.WireName()
+		if loc == "path" || loc == "header" {
+			wireName = p.Name
+		}
+		binding := mcpParamBinding{
 			PublicName:         p.PublicInputName(),
-			WireName:           p.Name,
+			WireName:           wireName,
 			Location:           loc,
 			RequestContentType: requestContentType,
-		})
+		}
+		// Carry the spec default onto the MCP binding for query params so an
+		// omitted arg sends the same value the cobra flag would (#2679). Format
+		// must match the cobra default rendering for CLI/MCP wire parity; keep in
+		// sync with that path (and cf. pipeline.stringifyParamDefault).
+		if loc == "query" || loc == "header" {
+			// deepObject wins over the array marker: an array-typed
+			// style=deepObject param routes through the indexed-key emitter
+			// only, never the repeated/joined array path (deliberate).
+			if loc == "query" && isDeepObjectQueryParam(p) {
+				binding.DeepObjectQuery = true
+			} else if isArrayQueryParam(p) {
+				binding.QueryArray = true
+				binding.QueryStyle = queryParamStyle(p)
+				binding.QueryExplode = queryParamExplodes(p)
+			}
+			if def, ok := mcpParamDefaultValue(p); ok {
+				binding.Default = def
+			}
+		}
+		bindings = append(bindings, binding)
 	}
-	for _, p := range endpoint.Body {
+	if endpoint.BodyJSONFallback {
+		// Single opaque body-json input; the handler parses it as JSON and
+		// sends it verbatim, mirroring the CLI's --body-json fallback for
+		// oneOf/anyOf request bodies. Body is empty by parser invariant.
 		bindings = append(bindings, mcpParamBinding{
-			PublicName:         p.PublicInputName(),
-			WireName:           p.Name,
-			Location:           "body",
-			Format:             multipartBindingFormat(endpoint, p),
-			RequestContentType: requestContentType,
+			PublicName: "body_json",
+			WireName:   "body_json",
+			Location:   "body_json",
+		})
+		return bindings
+	}
+	appendMCPBodyBindings(&bindings, endpoint, requestContentType)
+	return bindings
+}
+
+func mcpToolInputParams(endpoint spec.Endpoint) []spec.Param {
+	params := make([]spec.Param, 0, len(endpoint.Params)+len(endpoint.Body))
+	for _, p := range endpoint.Params {
+		if isMCPPaginationCursorParam(endpoint, p) {
+			continue
+		}
+		params = append(params, p)
+	}
+	if endpoint.BodyJSONFallback {
+		return params
+	}
+	params = append(params, mcpBodyInputParams(endpoint)...)
+	return params
+}
+
+func mcpEndpointPageable(endpoint spec.Endpoint) bool {
+	if !strings.EqualFold(strings.TrimSpace(endpoint.Method), "GET") {
+		return false
+	}
+	if endpoint.Pagination == nil {
+		return false
+	}
+	if strings.TrimSpace(endpoint.Pagination.CursorParam) == "" {
+		return false
+	}
+	return !endpoint.UsesBinaryResponse() && !endpoint.UsesTextResponse()
+}
+
+func mcpPageConfig(endpoint spec.Endpoint) string {
+	if !mcpEndpointPageable(endpoint) {
+		return "mcpPageConfig{}"
+	}
+	nextCursorPath := endpoint.Pagination.NextCursorPath
+	paginationType := strings.ToLower(strings.TrimSpace(endpoint.Pagination.Type))
+	if strings.TrimSpace(nextCursorPath) == "" && paginationType != "offset" && paginationType != "page" {
+		nextCursorPath = endpoint.Pagination.CursorParam
+	}
+	return fmt.Sprintf("mcpPageConfig{CursorParam: %q, NextCursorPath: %q}",
+		endpoint.Pagination.CursorParam,
+		nextCursorPath,
+	)
+}
+
+func isMCPPaginationCursorParam(endpoint spec.Endpoint, p spec.Param) bool {
+	if !mcpEndpointPageable(endpoint) {
+		return false
+	}
+	if p.PathParam || p.Positional || paramIsHeader(p) || !isQueryParamLocation(p) {
+		return false
+	}
+	return p.Name == endpoint.Pagination.CursorParam || p.WireName() == endpoint.Pagination.CursorParam
+}
+
+func isQueryParamLocation(p spec.Param) bool {
+	loc := strings.TrimSpace(p.In)
+	return loc == "" || strings.EqualFold(loc, "query")
+}
+
+func mcpGlobalTemplateInputParams(endpoint spec.Endpoint, pathTemplate string, vars []string) []spec.Param {
+	if len(vars) == 0 {
+		return nil
+	}
+	known := map[string]struct{}{}
+	for _, param := range mcpToolInputParams(endpoint) {
+		known[param.PublicInputName()] = struct{}{}
+	}
+	params := make([]spec.Param, 0, len(vars))
+	for _, name := range vars {
+		if !spec.PathContainsPlaceholder(pathTemplate, name) {
+			continue
+		}
+		if _, exists := known[name]; exists {
+			continue
+		}
+		params = append(params, spec.Param{
+			Name:        name,
+			Type:        "string",
+			Description: fmt.Sprintf("Path template value for {%s}; overrides env/config for this MCP call", name),
+		})
+		known[name] = struct{}{}
+	}
+	return params
+}
+
+func mcpGlobalTemplateBindings(endpoint spec.Endpoint, pathTemplate string, vars []string) []mcpParamBinding {
+	inputs := mcpGlobalTemplateInputParams(endpoint, pathTemplate, vars)
+	bindings := make([]mcpParamBinding, 0, len(inputs))
+	for _, param := range inputs {
+		bindings = append(bindings, mcpParamBinding{
+			PublicName: param.PublicInputName(),
+			WireName:   param.Name,
+			Location:   "template",
 		})
 	}
 	return bindings
+}
+
+func mcpBodyInputParams(endpoint spec.Endpoint) []spec.Param {
+	if bodyUsesFlatEmission(endpoint) {
+		return append([]spec.Param(nil), endpoint.Body...)
+	}
+	body := flattenCollidingBodyFields(endpoint.Body)
+	params := make([]spec.Param, 0, len(body))
+	collectMCPBodyInputParams(&params, body, 0, "", true)
+	return params
+}
+
+func collectMCPBodyInputParams(params *[]spec.Param, body []spec.Param, depth int, flagPrefix string, ancestorsRequired bool) {
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
+			collectMCPBodyInputParams(params, p.Fields, depth+1, joinFlag(flagPrefix, publicFlagName(p)), ancestorsRequired && p.Required)
+			continue
+		}
+		p.Required = p.Required && ancestorsRequired
+		if flagPrefix != "" {
+			p.FlagName = joinFlag(flagPrefix, publicFlagName(p))
+			p.Aliases = nil
+		}
+		*params = append(*params, p)
+	}
+}
+
+func appendMCPBodyBindings(bindings *[]mcpParamBinding, endpoint spec.Endpoint, requestContentType string) {
+	if bodyUsesFlatEmission(endpoint) {
+		for _, p := range endpoint.Body {
+			*bindings = append(*bindings, mcpParamBinding{
+				PublicName:         p.PublicInputName(),
+				WireName:           p.BodyWireName(),
+				Location:           "body",
+				Format:             multipartBindingFormat(endpoint, p),
+				RequestContentType: requestContentType,
+			})
+		}
+		return
+	}
+	collectMCPBodyBindings(bindings, flattenCollidingBodyFields(endpoint.Body), 0, "", nil, requestContentType)
+}
+
+func collectMCPBodyBindings(bindings *[]mcpParamBinding, body []spec.Param, depth int, flagPrefix string, bodyPath []string, requestContentType string) {
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
+			nextPath := append(slices.Clone(bodyPath), p.BodyWireName())
+			collectMCPBodyBindings(bindings, p.Fields, depth+1, joinFlag(flagPrefix, publicFlagName(p)), nextPath, requestContentType)
+			continue
+		}
+		publicName := p.PublicInputName()
+		if flagPrefix != "" {
+			publicName = joinFlag(flagPrefix, publicFlagName(p))
+		}
+		binding := mcpParamBinding{
+			PublicName:         publicName,
+			WireName:           p.BodyWireName(),
+			Location:           "body",
+			RequestContentType: requestContentType,
+		}
+		if isJSONOrScalarParam(p) {
+			binding.Format = "json_or_scalar"
+		}
+		if len(bodyPath) > 0 {
+			binding.BodyPath = append(append([]string(nil), bodyPath...), p.BodyWireName())
+		}
+		*bindings = append(*bindings, binding)
+	}
+}
+
+func hasMCPJSONOrScalarBody(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointHasJSONOrScalarBody)
+}
+
+func endpointHasJSONOrScalarBody(endpoint spec.Endpoint) bool {
+	if endpoint.BodyJSONFallback {
+		return false
+	}
+	var walk func([]spec.Param, int) bool
+	walk = func(params []spec.Param, depth int) bool {
+		if depth >= maxBodyFlagDepth {
+			return false
+		}
+		for _, p := range params {
+			if isJSONOrScalarParam(p) {
+				return true
+			}
+			if walk(p.Fields, depth+1) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(endpoint.Body, 0)
+}
+
+func endpointHasMCPNestedBodyPath(endpoint spec.Endpoint) bool {
+	if endpoint.BodyJSONFallback || bodyUsesFlatEmission(endpoint) {
+		return false
+	}
+	return bodyHasReachableNestedLeaf(flattenCollidingBodyFields(endpoint.Body), 0)
+}
+
+func bodyHasReachableNestedLeaf(body []spec.Param, depth int) bool {
+	for _, p := range body {
+		if p.Type != "object" || len(p.Fields) == 0 {
+			continue
+		}
+		if depth+1 >= maxBodyFlagDepth {
+			continue
+		}
+		for _, field := range p.Fields {
+			if field.Type == "object" && len(field.Fields) > 0 {
+				if bodyHasReachableNestedLeaf([]spec.Param{field}, depth+1) {
+					return true
+				}
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func hasMCPNestedBodyPath(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointHasMCPNestedBodyPath)
+}
+
+// mcpParamDefaultValue returns the wire-effective stringified default for a
+// param and whether it is effective. A default that stringifies to "" is NOT
+// effective: the non-paginated CLI template's zero-value gate (`if flag != ""`)
+// skips an empty-string default on the wire, so for CLI/MCP parity the MCP
+// binding must skip it too. (Paginated CLI branches emit query params without
+// that gate, but the client layer — paginatedGet and client.Get — strips empty
+// values before the wire, so parity holds there as well.) Counting/emitting an
+// empty default would also leave a dead Default field and fallback block,
+// breaking the "default-less CLIs stay byte-identical" goal. The check is on the
+// stringified value, so a numeric/bool zero (%v -> "0"/"false") is a real
+// default and is kept.
+func mcpParamDefaultValue(p spec.Param) (string, bool) {
+	if p.Default == nil {
+		return "", false
+	}
+	// An array/object param now binds natively (WithArray/WithObject) and its
+	// live values are JSON-encoded; serialize a composite default the same way
+	// so an omitted-arg default isn't injected as Go's "%v" rendering
+	// ("[a b c]" / "map[...]") where the wire expects JSON.
+	switch primitiveKind(p.Type) {
+	case "array", "object":
+		if b, err := json.Marshal(p.Default); err == nil {
+			s := string(b)
+			return s, s != "" && s != "null"
+		}
+	}
+	v := fmt.Sprintf("%v", p.Default)
+	return v, v != ""
+}
+
+func endpointHasMCPParamDefault(endpoint spec.Endpoint, pathTemplate string) bool {
+	for _, p := range endpoint.Params {
+		if strings.Contains(pathTemplate, "{"+p.Name+"}") {
+			continue
+		}
+		if _, ok := mcpParamDefaultValue(p); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMCPParamDefault(apiSpec *spec.APISpec) bool {
+	if apiSpec == nil {
+		return false
+	}
+	var walk func(parent spec.Resource, resources map[string]spec.Resource, subResource bool) bool
+	walk = func(parent spec.Resource, resources map[string]spec.Resource, subResource bool) bool {
+		for _, resource := range resources {
+			for _, endpoint := range resource.Endpoints {
+				pathTemplate := effectiveEndpointPath(resource, endpoint)
+				if subResource {
+					pathTemplate = effectiveSubEndpointPath(parent, resource, endpoint)
+				}
+				if endpointHasMCPParamDefault(endpoint, pathTemplate) {
+					return true
+				}
+			}
+			if walk(resource, resource.SubResources, true) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(spec.Resource{}, apiSpec.Resources, false)
 }
 
 func multipartBindingFormat(endpoint spec.Endpoint, p spec.Param) string {
@@ -3134,6 +6637,166 @@ func endpointNeedsClientLimit(endpoint spec.Endpoint) bool {
 	return false
 }
 
+type clientSideFilter struct {
+	Param spec.Param
+	Field string
+}
+
+// endpointClientSideFilters reports best-effort response filters for
+// docs-derived batch GET endpoints. Docs-derived specs sometimes expose
+// a documented query flag that the API accepts but ignores; when the flag name
+// matches a scalar response item field (including simple plural-to-singular
+// forms like symbols -> symbol), generated commands locally narrow the returned
+// JSON so the public flag stays truthful.
+func endpointClientSideFilters(apiSpec *spec.APISpec, endpoint spec.Endpoint) []clientSideFilter {
+	if apiSpec == nil || strings.TrimSpace(apiSpec.SpecSource) != "docs" {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(endpoint.Method), "GET") || endpoint.Pagination != nil {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(endpoint.Response.Type), "array") {
+		return nil
+	}
+	if !endpointLooksLikeClientFilteredBatch(endpoint) {
+		return nil
+	}
+	if endpoint.Response.Item == "" {
+		return nil
+	}
+	itemType, ok := apiSpec.Types[endpoint.Response.Item]
+	if !ok || len(itemType.Fields) == 0 {
+		return nil
+	}
+
+	fieldsByKey := map[string]string{}
+	for _, field := range itemType.Fields {
+		if strings.TrimSpace(field.Name) == "" {
+			continue
+		}
+		fieldsByKey[normalizeClientSideFilterKey(field.Name)] = field.Name
+	}
+
+	var filters []clientSideFilter
+	seenFields := map[string]struct{}{}
+	for _, param := range endpoint.Params {
+		if !clientSideFilterParamEligible(param) {
+			continue
+		}
+		for _, candidate := range clientSideFilterFieldCandidates(param) {
+			field, ok := fieldsByKey[normalizeClientSideFilterKey(candidate)]
+			if !ok {
+				continue
+			}
+			if _, seen := seenFields[field]; seen {
+				continue
+			}
+			filters = append(filters, clientSideFilter{Param: param, Field: field})
+			seenFields[field] = struct{}{}
+			break
+		}
+	}
+	return filters
+}
+
+func endpointLooksLikeClientFilteredBatch(endpoint spec.Endpoint) bool {
+	for _, value := range []string{endpoint.Path, endpoint.Description} {
+		parts := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+			return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+		})
+		if slices.Contains(parts, "batch") {
+			return true
+		}
+	}
+	return false
+}
+
+func clientSideFilterParamEligible(param spec.Param) bool {
+	if param.Positional || param.PathParam {
+		return false
+	}
+	if param.Purpose == spec.ParamPurposeFieldSelector {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(param.Type)) {
+	case "", "string", "string_csv_array":
+	default:
+		return false
+	}
+	name := normalizeClientSideFilterKey(param.WireName())
+	switch name {
+	case "", "limit", "page", "pagesize", "perpage", "offset", "cursor", "after", "before", "next", "sort", "order", "orderby", "fields", "field", "select", "include", "expand", "q", "query", "search":
+		return false
+	default:
+		return true
+	}
+}
+
+func clientSideFilterFieldCandidates(param spec.Param) []string {
+	names := []string{param.WireName(), param.Name}
+	var out []string
+	seen := map[string]struct{}{}
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		for _, candidate := range []string{trimmed, singularClientSideFilterName(trimmed)} {
+			key := normalizeClientSideFilterKey(candidate)
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, candidate)
+		}
+	}
+	return out
+}
+
+func singularClientSideFilterName(name string) string {
+	if strings.HasSuffix(name, "ies") && len(name) > len("ies") {
+		return strings.TrimSuffix(name, "ies") + "y"
+	}
+	if strings.HasSuffix(name, "ses") {
+		if len(name) > len("ses") {
+			return strings.TrimSuffix(name, "es")
+		}
+		return name
+	}
+	if strings.HasSuffix(name, "s") && len(name) > 1 {
+		return strings.TrimSuffix(name, "s")
+	}
+	return name
+}
+
+func normalizeClientSideFilterKey(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// maxBodyFlagDepth caps how many levels of nested-object recursion the
+// body-flag emitters expand into per-field Cobra flags. A Param at
+// depth 0 is a top-level body field; its object children are at depth 1
+// and recurse with depth+1. When the next depth would meet or exceed
+// the cap, the object's subtree is skipped uniformly across renderBodyMap,
+// renderBodyVarDecls, renderBodyFlagRegs, and renderBodyRequiredChecks.
+// The user reaches truncated fields via the existing `--stdin` flag on
+// POST/PUT/PATCH commands, which reads the full JSON body from stdin.
+//
+// Default 3 covers typical CRUD schemas (resource.object.field) without
+// the recursive explosion seen on enterprise/ERP specs that self-reference
+// through 6+ layers and produce 40k-line command files the Go compiler
+// OOMs on.
+const maxBodyFlagDepth = 3
+
 // bodyMap renders the per-flag body-building block shared by the
 // POST/PUT/PATCH branches in command_endpoint.go.tmpl and the body
 // branch in command_promoted.go.tmpl. The four sites generated the
@@ -3146,25 +6809,110 @@ func endpointNeedsClientLimit(endpoint spec.Endpoint) bool {
 // recurses: each leaf field becomes its own flag (parent-prefixed in
 // the generated identifier so `start.dateTime` and `end.dateTime` do
 // not collide), and the parent's wire-side key receives a built-up
-// map[string]any rather than a single JSON-string flag.
+// map[string]any rather than a single JSON-string flag. Recursion stops
+// at maxBodyFlagDepth; deeper subtrees are only reachable via `--stdin`.
 func bodyMap(body []spec.Param, indent string) string {
+	return bodyMapForVar(body, indent, "body")
+}
+
+func bodyMapForVar(body []spec.Param, indent, mapVar string) string {
 	var b strings.Builder
-	renderBodyMap(&b, body, indent, "body", "", "")
+	renderBodyMap(&b, flattenCollidingBodyFields(body), 0, indent, mapVar, "", "")
 	return b.String()
 }
 
-func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identPrefix, flagPrefix string) {
+// bodyMapForEndpoint dispatches between the typed-flag body-map renderer
+// and the --body-json fallback renderer. Templates call this in place of
+// bodyMap so the BodyJSONFallback decision lives in one place.
+func bodyMapForEndpoint(endpoint spec.Endpoint, indent string) string {
+	return bodyMapForEndpointVars(endpoint, indent, "body", "body")
+}
+
+func bodyMapForEndpointVars(endpoint spec.Endpoint, indent, mapVar, bodyVar string) string {
+	if endpoint.BodyJSONFallback {
+		return bodyJSONFallbackMap(endpoint, indent, bodyVar)
+	}
+	return bodyMapForVar(endpoint.Body, indent, mapVar)
+}
+
+// bodyJSONFallbackMap renders the body-population block used when an
+// endpoint's request body schema is a oneOf/anyOf (or otherwise opaque)
+// and we expose a single `--body-json` string flag. The caller has
+// already initialized the body value; this block conditionally overwrites it
+// with a parsed JSON value when the user passed a value.
+//
+// The fallback defaults to JSON objects because top-level discriminated
+// unions in real-world specs (Cloudflare DNS records, Stripe PaymentMethod,
+// Notion blocks, Linear filters) are object-shaped; array-root bodies are
+// accepted only when the parser marked the endpoint BodyIsArray.
+func bodyJSONFallbackMap(endpoint spec.Endpoint, indent, bodyVar string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%sif flagBodyJSON != \"\" {\n", indent)
+	fmt.Fprintf(&b, "%s\tvar parsedBodyJSON any\n", indent)
+	fmt.Fprintf(&b, "%s\tif err := json.Unmarshal([]byte(flagBodyJSON), &parsedBodyJSON); err != nil {\n", indent)
+	fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --body-json: %%w\", err)\n", indent)
+	fmt.Fprintf(&b, "%s\t}\n", indent)
+	if endpoint.BodyIsArray {
+		fmt.Fprintf(&b, "%s\tasArray, ok := parsedBodyJSON.([]any)\n", indent)
+		fmt.Fprintf(&b, "%s\tif !ok {\n", indent)
+		fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"--body-json must be a JSON array, got JSON %%T\", parsedBodyJSON)\n", indent)
+		fmt.Fprintf(&b, "%s\t}\n", indent)
+		fmt.Fprintf(&b, "%s\t%s = asArray\n", indent, bodyVar)
+		fmt.Fprintf(&b, "%s}\n", indent)
+		return b.String()
+	}
+	fmt.Fprintf(&b, "%s\tasMap, ok := parsedBodyJSON.(map[string]any)\n", indent)
+	fmt.Fprintf(&b, "%s\tif !ok {\n", indent)
+	fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"--body-json must be a JSON object, got JSON %%T\", parsedBodyJSON)\n", indent)
+	fmt.Fprintf(&b, "%s\t}\n", indent)
+	fmt.Fprintf(&b, "%s\t%s = asMap\n", indent, bodyVar)
+	fmt.Fprintf(&b, "%s}\n", indent)
+	return b.String()
+}
+
+func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, mapVar, identPrefix, flagPrefix string) {
 	for _, p := range body {
 		id := paramIdent(p)
 		ident := identPrefix + toCamel(id)
 		flag := joinFlag(flagPrefix, publicFlagName(p))
 		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
 			nestedMap := "nested" + ident
 			fmt.Fprintf(b, "%s{\n", indent)
 			fmt.Fprintf(b, "%s\t%s := map[string]any{}\n", indent, nestedMap)
-			renderBodyMap(b, p.Fields, indent+"\t", nestedMap, ident, flag)
+			renderBodyMap(b, p.Fields, depth+1, indent+"\t", nestedMap, ident, flag)
 			fmt.Fprintf(b, "%s\tif len(%s) > 0 {\n", indent, nestedMap)
-			fmt.Fprintf(b, "%s\t\t%s[%q] = %s\n", indent, mapVar, p.Name, nestedMap)
+			fmt.Fprintf(b, "%s\t\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), nestedMap)
+			fmt.Fprintf(b, "%s\t}\n", indent)
+			fmt.Fprintf(b, "%s}\n", indent)
+			continue
+		}
+		if isStringCSVArrayParam(p) {
+			fmt.Fprintf(b, "%sif cmd.Flags().Changed(%q) {\n", indent, flag)
+			if strings.EqualFold(strings.TrimSpace(p.ItemType), "object") {
+				fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), csvArrayValueExpr(p, "body"+ident))
+			} else {
+				fmt.Fprintf(b, "%s\tparsed%s, parseErr := %s\n", indent, ident, csvArrayValueExpr(p, "body"+ident))
+				fmt.Fprintf(b, "%s\tif parseErr != nil {\n", indent)
+				fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s list: %%w\", parseErr)\n", indent, flag)
+				fmt.Fprintf(b, "%s\t}\n", indent)
+				fmt.Fprintf(b, "%s\t%s[%q] = parsed%s\n", indent, mapVar, p.BodyWireName(), ident)
+			}
+			fmt.Fprintf(b, "%s}\n", indent)
+			continue
+		}
+		if isJSONOrScalarParam(p) {
+			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
+			fmt.Fprintf(b, "%s\tif looksLikeJSONComposite(body%s) {\n", indent, ident)
+			fmt.Fprintf(b, "%s\t\tvar parsed%s any\n", indent, ident)
+			fmt.Fprintf(b, "%s\t\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
+			fmt.Fprintf(b, "%s\t\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
+			fmt.Fprintf(b, "%s\t\t}\n", indent)
+			fmt.Fprintf(b, "%s\t\t%s[%q] = parsed%s\n", indent, mapVar, p.BodyWireName(), ident)
+			fmt.Fprintf(b, "%s\t} else {\n", indent)
+			fmt.Fprintf(b, "%s\t\t%s[%q] = body%s\n", indent, mapVar, p.BodyWireName(), ident)
 			fmt.Fprintf(b, "%s\t}\n", indent)
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
@@ -3172,25 +6920,107 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identP
 		isComplex := p.Type == "object" || p.Type == "array"
 		if isComplex || isJSONStringParam(p) {
 			// object/array: store the parsed value (so the API receives
-			// real JSON). jsonStringParam: validate then store the raw
-			// string (the API expects a JSON-encoded string field).
-			rhs := "body" + ident
-			if isComplex {
-				rhs = "parsed" + ident
+			// real JSON) after checking its top-level shape.
+			// jsonStringParam: parse and store the decoded value too. These
+			// params are string-typed only because the spec author described
+			// the *flag input* as JSON ("as JSON", "JSON object of ...");
+			// JSON-body APIs expect the real object/array on the wire, and
+			// sending the raw flag bytes double-encodes the field (live-hit
+			// on two printed CLIs: Bird CRM returned 422 on contact create,
+			// Title Toolbox's backend expects a criteria object). Only
+			// params that explicitly declare an encoded-string wire format
+			// (isEncodedJSONStringParam) keep the user's exact bytes.
+			rhs := "parsed" + ident
+			if isEncodedJSONStringParam(p) {
+				rhs = "body" + ident
 			}
-			fmt.Fprintf(b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
 			fmt.Fprintf(b, "%s\tvar parsed%s any\n", indent, ident)
 			fmt.Fprintf(b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
 			fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
 			fmt.Fprintf(b, "%s\t}\n", indent)
-			fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.Name, rhs)
+			if isComplex {
+				shape, valueVar, valueType := "object", "asMap", "map[string]any"
+				if p.Type == "array" {
+					shape, valueVar, valueType = "array", "asArray", "[]any"
+				}
+				fmt.Fprintf(b, "%s\t%s, ok := parsed%s.(%s)\n", indent, valueVar, ident, valueType)
+				fmt.Fprintf(b, "%s\tif !ok {\n", indent)
+				fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"--%s must be a JSON %s, got JSON %%T\", parsed%s)\n", indent, flag, shape, ident)
+				fmt.Fprintf(b, "%s\t}\n", indent)
+				rhs = valueVar
+			}
+			fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), rhs)
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
-		fmt.Fprintf(b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
-		fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.Name, ident)
+		if (p.Type == "boolean" || p.Type == "bool") && (!p.Required || p.Default != nil) {
+			// Booleans gate on cmd.Flags().Changed instead of a zero-guard.
+			// The zero-guard (body != false) drops user-set false values,
+			// letting the server's default (often true) silently invert
+			// intent. Unconditionally emitting flips the bug: PATCH bodies
+			// would carry "field: false" for every untouched flag and
+			// overwrite server state. Changed distinguishes "user set
+			// false" from "user did not touch the flag" and is correct
+			// for POST, PUT, and PATCH. Internal YAML specs use "boolean";
+			// the OpenAPI parser normalizes to "bool".
+			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
+			fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.BodyWireName(), ident)
+			fmt.Fprintf(b, "%s}\n", indent)
+			continue
+		}
+		fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
+		if isStringBackedBoolParam(p) {
+			fmt.Fprintf(b, "%s\tparsed%s, err := strconv.ParseBool(body%s)\n", indent, ident, ident)
+			fmt.Fprintf(b, "%s\tif err != nil {\n", indent)
+			fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s as bool: %%w\", err)\n", indent, flag)
+			fmt.Fprintf(b, "%s\t}\n", indent)
+			fmt.Fprintf(b, "%s\t%s[%q] = parsed%s\n", indent, mapVar, p.BodyWireName(), ident)
+		} else {
+			fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.BodyWireName(), ident)
+		}
 		fmt.Fprintf(b, "%s}\n", indent)
 	}
+}
+
+func bodyLeafPresenceExpr(p spec.Param, ident, flag string) string {
+	changed := fmt.Sprintf("cmd.Flags().Changed(%q)", flag)
+	if flag == publicFlagName(p) {
+		changed = flagChangedExpr(p)
+	}
+	if (p.Type == "boolean" || p.Type == "bool") && (!p.Required || p.Default != nil) {
+		return changed
+	}
+	return fmt.Sprintf("(%s || body%s != %s)", changed, ident, zeroValForBodyParam(p))
+}
+
+func bodyHasStringBackedBool(endpoint spec.Endpoint) bool {
+	if endpoint.BodyJSONFallback || bodyUsesFlatEmission(endpoint) {
+		return false
+	}
+	var walk func([]spec.Param, int) bool
+	walk = func(params []spec.Param, depth int) bool {
+		for _, p := range params {
+			if p.Type == "object" && len(p.Fields) > 0 {
+				if depth+1 >= maxBodyFlagDepth {
+					continue
+				}
+				if walk(p.Fields, depth+1) {
+					return true
+				}
+				continue
+			}
+			if isStringBackedBoolParam(p) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(flattenCollidingBodyFields(endpoint.Body), 0)
+}
+
+func isStringBackedBoolParam(p spec.Param) bool {
+	return p.Required && p.Default == nil && primitiveKind(p.Type) == "bool"
 }
 
 // bodyVarDecls renders Go var declarations for body construction. For
@@ -3202,15 +7032,22 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identP
 // parents as JSON-string fields. Output starts with "\n\tvar ..."
 // matching the one-tab indent of the original `{{- range .Endpoint.Body}}`
 // template loop.
+//
+// When endpoint.BodyJSONFallback is set (oneOf/anyOf body schema), a single
+// `flagBodyJSON` string is declared instead of per-field flags.
 func bodyVarDecls(endpoint spec.Endpoint) string {
 	var b strings.Builder
+	if endpoint.BodyJSONFallback {
+		b.WriteString("\n\tvar flagBodyJSON string")
+		return b.String()
+	}
 	if bodyUsesFlatEmission(endpoint) {
 		for _, p := range endpoint.Body {
-			fmt.Fprintf(&b, "\n\tvar body%s %s", toCamel(paramIdent(p)), goType(p.Type))
+			fmt.Fprintf(&b, "\n\tvar body%s %s", toCamel(paramIdent(p)), goTypeForBodyParam(p))
 		}
 		return b.String()
 	}
-	renderBodyVarDecls(&b, endpoint.Body, "")
+	renderBodyVarDecls(&b, flattenCollidingBodyFields(endpoint.Body), 0, "")
 	return b.String()
 }
 
@@ -3223,14 +7060,17 @@ func bodyUsesFlatEmission(endpoint spec.Endpoint) bool {
 	return endpointUsesMultipart(endpoint) || endpointUsesForm(endpoint)
 }
 
-func renderBodyVarDecls(b *strings.Builder, body []spec.Param, identPrefix string) {
+func renderBodyVarDecls(b *strings.Builder, body []spec.Param, depth int, identPrefix string) {
 	for _, p := range body {
 		ident := identPrefix + toCamel(paramIdent(p))
 		if p.Type == "object" && len(p.Fields) > 0 {
-			renderBodyVarDecls(b, p.Fields, ident)
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
+			renderBodyVarDecls(b, p.Fields, depth+1, ident)
 			continue
 		}
-		fmt.Fprintf(b, "\n\tvar body%s %s", ident, goType(p.Type))
+		fmt.Fprintf(b, "\n\tvar body%s %s", ident, goTypeForBodyParam(p))
 	}
 }
 
@@ -3242,38 +7082,56 @@ func renderBodyVarDecls(b *strings.Builder, body []spec.Param, identPrefix strin
 // not collide. Aliases are emitted only at the top level.
 func bodyFlagRegs(endpoint spec.Endpoint) string {
 	var b strings.Builder
+	if endpoint.BodyJSONFallback {
+		bodyShape := "object"
+		if endpoint.BodyIsArray {
+			bodyShape = "array"
+		}
+		fmt.Fprintf(&b, "\n\tcmd.Flags().StringVar(&flagBodyJSON, \"body-json\", \"\", \"Provide the full request body as a JSON %s string (this endpoint accepts a polymorphic schema: oneOf/anyOf)\")", bodyShape)
+		return b.String()
+	}
 	if bodyUsesFlatEmission(endpoint) {
 		for _, p := range endpoint.Body {
 			renderFlatBodyFlagReg(&b, p, "", "", true)
 		}
 		return b.String()
 	}
-	renderBodyFlagRegs(&b, endpoint.Body, "", "", true)
+	renderBodyFlagRegs(&b, flattenCollidingBodyFields(endpoint.Body), 0, "", "", true)
 	return b.String()
 }
 
-func renderBodyFlagRegs(b *strings.Builder, body []spec.Param, identPrefix, flagPrefix string, topLevel bool) {
+func renderBodyFlagRegs(b *strings.Builder, body []spec.Param, depth int, identPrefix, flagPrefix string, topLevel bool) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
 			ident := identPrefix + toCamel(paramIdent(p))
 			flag := joinFlag(flagPrefix, publicFlagName(p))
-			renderBodyFlagRegs(b, p.Fields, ident, flag, false)
+			renderBodyFlagRegs(b, p.Fields, depth+1, ident, flag, false)
 			continue
 		}
 		renderFlatBodyFlagReg(b, p, identPrefix, flagPrefix, topLevel)
 	}
 }
 
+// renderFlatBodyFlagReg emits cobra flag registrations for a single body
+// param. Const-default detection via paramIsConstDefault is intentionally
+// not wired through here yet: the primary use case is the query-param
+// routing-selector shape, not body fields. If a future API surfaces a
+// const-default body field, extend the emission here with a MarkHidden
+// line gated by paramIsConstDefault, mirroring the command_endpoint and
+// command_promoted templates.
 func renderFlatBodyFlagReg(b *strings.Builder, p spec.Param, identPrefix, flagPrefix string, topLevel bool) {
 	ident := identPrefix + toCamel(paramIdent(p))
 	flag := joinFlag(flagPrefix, publicFlagName(p))
 	desc := naming.OneLine(p.Description)
 	fmt.Fprintf(b, "\n\tcmd.Flags().%s(&body%s, \"%s\", %s, \"%s\")",
-		cobraFlagFunc(p.Type), ident, flag, defaultVal(p), desc)
+		cobraFlagFuncForBodyParam(p), ident, flag, defaultValForBodyParam(p), desc)
 	if topLevel {
 		for _, alias := range publicFlagAliases(p) {
 			fmt.Fprintf(b, "\n\tcmd.Flags().%s(&body%s, \"%s\", %s, \"%s\")",
-				cobraFlagFunc(p.Type), ident, alias, defaultVal(p), desc)
+				cobraFlagFuncForBodyParam(p), ident, alias, defaultValForBodyParam(p), desc)
 			fmt.Fprintf(b, "\n\t_ = cmd.Flags().MarkHidden(\"%s\")", alias)
 		}
 	}
@@ -3287,27 +7145,114 @@ func renderFlatBodyFlagReg(b *strings.Builder, p spec.Param, identPrefix, flagPr
 // behavior. For non-multipart, top-level params use flagChangedExpr
 // (lifts aliases); nested fields use a single Changed() check on the
 // parent-prefixed flag because aliases are not propagated to children.
+// Required fields below an optional object are checked only when any flag
+// in that object was supplied, matching JSON Schema's conditional presence
+// semantics for nested required lists.
 func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
 	var b strings.Builder
+	if endpoint.BodyJSONFallback {
+		if endpoint.BodyRequired {
+			fmt.Fprintf(&b, "\n%sif !cmd.Flags().Changed(\"body-json\") && !flags.dryRun {", indent)
+			fmt.Fprintf(&b, "\n%s\treturn fmt.Errorf(\"required flag \\\"%%s\\\" not set\", \"body-json\")", indent)
+			fmt.Fprintf(&b, "\n%s}", indent)
+		}
+		return b.String()
+	}
 	if bodyUsesFlatEmission(endpoint) {
 		for _, p := range endpoint.Body {
 			renderFlatBodyRequiredCheck(&b, p, indent, "", true)
 		}
 		return b.String()
 	}
-	renderBodyRequiredChecks(&b, endpoint.Body, indent, "", true)
+	renderBodyRequiredChecks(&b, flattenCollidingBodyFields(endpoint.Body), 0, indent, "", "", true)
 	return b.String()
 }
 
-func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, indent, flagPrefix string, topLevel bool) {
+func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, depth int, indent, flagPrefix, identPrefix string, topLevel bool) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
 			flag := joinFlag(flagPrefix, publicFlagName(p))
-			renderBodyRequiredChecks(b, p.Fields, indent, flag, false)
+			ident := identPrefix + toCamel(paramIdent(p))
+			if p.Required {
+				renderBodyRequiredChecks(b, p.Fields, depth+1, indent, flag, ident, false)
+				continue
+			}
+			var nested strings.Builder
+			renderBodyRequiredChecks(&nested, p.Fields, depth+1, indent+"\t", flag, ident, false)
+			if nested.Len() == 0 {
+				continue
+			}
+			changedExpr := bodyFieldsChangedExpr(p.Fields, depth+1, flag, ident)
+			if changedExpr == "" {
+				continue
+			}
+			fmt.Fprintf(b, "\n%sif %s {", indent, changedExpr)
+			b.WriteString(nested.String())
+			fmt.Fprintf(b, "\n%s}", indent)
 			continue
 		}
 		renderFlatBodyRequiredCheck(b, p, indent, flagPrefix, topLevel)
 	}
+}
+
+func bodyFieldsChangedExpr(body []spec.Param, depth int, flagPrefix, identPrefix string) string {
+	var expressions []string
+	for _, p := range body {
+		flag := joinFlag(flagPrefix, publicFlagName(p))
+		ident := identPrefix + toCamel(paramIdent(p))
+		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
+			if nested := bodyFieldsChangedExpr(p.Fields, depth+1, flag, ident); nested != "" {
+				expressions = append(expressions, nested)
+			}
+			continue
+		}
+		expressions = append(expressions, bodyLeafPresenceExpr(p, ident, flag))
+	}
+	return strings.Join(expressions, " || ")
+}
+
+// bodyExceedsFlagDepth reports whether emitting per-field body flags for
+// the endpoint would have truncated any nested-object subtree under
+// maxBodyFlagDepth. Multipart/form endpoints stay flat and never
+// truncate; BodyJSONFallback endpoints route through a single
+// --body-json flag and never reach the per-field path.
+//
+// The walk uses flattenCollidingBodyFields because that is what the
+// emitters render. Collision-flattening clears `Fields` on an object
+// whose dot-flattened subtree would clash with a sibling identifier,
+// turning it into a JSON-string leaf the user passes as a single flag.
+// Walking the raw body would falsely report truncation in that case
+// and rewrite the --stdin help text even when every field is exposed.
+func bodyExceedsFlagDepth(endpoint spec.Endpoint) bool {
+	if endpoint.BodyJSONFallback || bodyUsesFlatEmission(endpoint) {
+		return false
+	}
+	return walkBodyExceedsDepth(flattenCollidingBodyFields(endpoint.Body), 0)
+}
+
+// walkBodyExceedsDepth returns true as soon as any nested-object subtree
+// at depth >= maxBodyFlagDepth-1 is found. The walk is bounded by the
+// same depth check the emitters use, so a Param graph that
+// intentionally self-references (cyclic spec) does not loop here.
+func walkBodyExceedsDepth(body []spec.Param, depth int) bool {
+	for _, p := range body {
+		if p.Type != "object" || len(p.Fields) == 0 {
+			continue
+		}
+		if depth+1 >= maxBodyFlagDepth {
+			return true
+		}
+		if walkBodyExceedsDepth(p.Fields, depth+1) {
+			return true
+		}
+	}
+	return false
 }
 
 func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagPrefix string, topLevel bool) {
@@ -3327,10 +7272,7 @@ func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagP
 }
 
 func joinFlag(prefix, name string) string {
-	if prefix == "" {
-		return name
-	}
-	return prefix + "-" + name
+	return naming.JoinFlag(prefix, name)
 }
 
 func multipartBodyMaps(body []spec.Param, indent string) string {
@@ -3340,31 +7282,147 @@ func multipartBodyMaps(body []spec.Param, indent string) string {
 		ident := toCamel(id)
 		flag := publicFlagName(p)
 		if isComplexBodyField(p) || isJSONStringParam(p) {
-			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
 			fmt.Fprintf(&b, "%s\tif !json.Valid([]byte(body%s)) {\n", indent, ident)
 			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: invalid JSON\")\n", indent, flag)
 			fmt.Fprintf(&b, "%s\t}\n", indent)
-			fmt.Fprintf(&b, "%s\tfields[%q] = body%s\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s\tfields[%q] = body%s\n", indent, p.BodyWireName(), ident)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
 		if isBinaryParam(p) {
-			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
-			fmt.Fprintf(&b, "%s\tfileFields[%q] = body%s\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
+			fmt.Fprintf(&b, "%s\tfileFields[%q] = body%s\n", indent, p.BodyWireName(), ident)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
 		if p.Type == "string" {
-			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
-			fmt.Fprintf(&b, "%s\tfields[%q] = body%s\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
+			fmt.Fprintf(&b, "%s\tfields[%q] = body%s\n", indent, p.BodyWireName(), ident)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
-		fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
-		fmt.Fprintf(&b, "%s\tfields[%q] = fmt.Sprintf(\"%%v\", body%s)\n", indent, p.Name, ident)
+		fmt.Fprintf(&b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
+		fmt.Fprintf(&b, "%s\tfields[%q] = fmt.Sprintf(\"%%v\", body%s)\n", indent, p.BodyWireName(), ident)
 		fmt.Fprintf(&b, "%s}\n", indent)
 	}
 	return b.String()
+}
+
+func paramIsHeader(p spec.Param) bool {
+	return strings.EqualFold(strings.TrimSpace(p.In), "header")
+}
+
+func paramPresenceExpr(p spec.Param) string {
+	return fmt.Sprintf("(%s || flag%s != %s)", flagChangedExpr(p), toCamel(paramIdent(p)), zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
+}
+
+func endpointHasHeaderParams(endpoint spec.Endpoint) bool {
+	return slices.ContainsFunc(endpoint.Params, paramIsHeader)
+}
+
+// endpointHasQueryFlags reports whether the endpoint declares any non-positional,
+// non-path parameters — i.e., flags that should be encoded as URL query string.
+// True for any HTTP method. Used by the non-GET handler template to decide
+// whether to build a params map and route through the *WithParams client
+// variant, so query-shaped params on POST/PUT/DELETE/PATCH reach the URL
+// instead of being silently dropped into the JSON body or omitted.
+func endpointHasQueryFlags(endpoint spec.Endpoint) bool {
+	for _, p := range endpoint.Params {
+		if !p.Positional && !p.PathParam && !paramIsHeader(p) {
+			return true
+		}
+	}
+	return false
+}
+
+// endpointHasRequiredInput reports whether a bare invocation of the generated
+// command (no flags, no args) would fail a required-input check before
+// reaching the request: a required non-positional flag or a required body
+// field. It gates the empty-invocation help short-circuit so read commands
+// with only optional filters still execute on a bare call instead of printing
+// help. Both halves mirror exactly when the template emits a required check:
+// the flag half uses template.IsTrue to match the template's `(not .Default)`
+// gate (so a required flag carrying a non-empty default — which the template
+// lets satisfy itself — does not trigger the guard, just as it emits no
+// required-flag error), and the body half reuses bodyRequiredChecks, gated on
+// the body-bearing verbs the command template actually emits the body check
+// for (POST/PUT/PATCH/DELETE) so a GET that happens to declare a required body
+// param does not falsely trip the guard.
+func endpointHasRequiredInput(endpoint spec.Endpoint) bool {
+	for _, p := range endpoint.Params {
+		if paramHasEnvDefault(p) {
+			continue
+		}
+		if p.Required && !p.Positional {
+			if truth, _ := template.IsTrue(p.Default); !truth {
+				return true
+			}
+		}
+	}
+	switch strings.ToUpper(endpoint.Method) {
+	case "POST", "PUT", "PATCH", "DELETE":
+		return strings.TrimSpace(bodyRequiredChecks(endpoint, "")) != ""
+	}
+	return false
+}
+
+// endpointSkipsErrorPathProbe reports whether live dogfood's synthesized
+// "__printing_press_invalid__" argument is not a meaningful invalid input for
+// this read command. Free-form string lookups and searches commonly return
+// HTTP 200 plus empty results, so the generator emits pp:no-error-path-probe
+// only when the command has exactly one required positional request parameter
+// and no locally validated required input surface.
+func endpointSkipsErrorPathProbe(endpoint spec.Endpoint) bool {
+	switch strings.ToUpper(strings.TrimSpace(endpoint.Method)) {
+	case "GET", "HEAD":
+	default:
+		return false
+	}
+	if endpointHasRequiredInput(endpoint) {
+		return false
+	}
+
+	var requestPositionals []spec.Param
+	for _, p := range orderedPositionalParams(endpoint) {
+		if p.PathParam || strings.Contains(endpoint.Path, "{"+p.Name+"}") {
+			return false
+		}
+		requestPositionals = append(requestPositionals, p)
+	}
+	if len(requestPositionals) != 1 {
+		return false
+	}
+	p := requestPositionals[0]
+	return p.Required && freeTextStringParam(p)
+}
+
+func freeTextStringParam(p spec.Param) bool {
+	if p.Type != "" && !strings.EqualFold(strings.TrimSpace(p.Type), "string") {
+		return false
+	}
+	if len(p.Enum) > 0 {
+		return false
+	}
+	if strings.TrimSpace(p.Format) != "" {
+		return false
+	}
+	if isJSONStringParam(p) {
+		return false
+	}
+	return true
+}
+
+// endpointHasRequestParams reports whether the endpoint passes any values in
+// the client request's params map: query flags plus positional values not
+// consumed by the URL path.
+func endpointHasRequestParams(endpoint spec.Endpoint) bool {
+	for _, p := range endpoint.Params {
+		if !p.PathParam && !paramIsHeader(p) {
+			return true
+		}
+	}
+	return false
 }
 
 func endpointUsesMultipart(endpoint spec.Endpoint) bool {
@@ -3381,6 +7439,56 @@ func endpointUsesForm(endpoint spec.Endpoint) bool {
 
 func hasFormRequest(apiSpec *spec.APISpec) bool {
 	return anyEndpointMatches(apiSpec, endpointUsesForm)
+}
+
+func endpointUsesCSVArray(endpoint spec.Endpoint) bool {
+	if endpointUsesMultipart(endpoint) || endpointUsesForm(endpoint) {
+		return false
+	}
+	var walk func([]spec.Param, int) bool
+	walk = func(params []spec.Param, depth int) bool {
+		if depth >= maxBodyFlagDepth {
+			return false
+		}
+		for _, p := range params {
+			if isStringCSVArrayParam(p) {
+				return true
+			}
+			if walk(p.Fields, depth+1) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(endpoint.Body, 0)
+}
+
+func hasCSVArrayRequest(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointUsesCSVArray)
+}
+
+func endpointUsesCSVResponse(endpoint spec.Endpoint) bool {
+	return endpoint.UsesCSVResponse()
+}
+
+func hasCSVResponse(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointUsesCSVResponse)
+}
+
+func endpointUsesBodyJSONFallback(endpoint spec.Endpoint) bool {
+	return endpoint.BodyJSONFallback
+}
+
+func hasBodyJSONFallback(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointUsesBodyJSONFallback)
+}
+
+func endpointUsesRawRequest(endpoint spec.Endpoint) bool {
+	return endpoint.UsesRawRequestBody()
+}
+
+func hasRawRequest(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointUsesRawRequest)
 }
 
 func anyEndpointMatches(apiSpec *spec.APISpec, predicate func(spec.Endpoint) bool) bool {
@@ -3404,6 +7512,42 @@ func anyEndpointMatches(apiSpec *spec.APISpec, predicate func(spec.Endpoint) boo
 	return walk(apiSpec.Resources)
 }
 
+// findEndpointMatch returns the first endpoint for which predicate is true,
+// walking resources and sub-resources depth-first. Resource and endpoint
+// names are iterated in sorted order so callers that bake the returned
+// endpoint's path into generated output stay deterministic across runs.
+func findEndpointMatch(apiSpec *spec.APISpec, predicate func(spec.Endpoint) bool) (spec.Endpoint, bool) {
+	if apiSpec == nil {
+		return spec.Endpoint{}, false
+	}
+	var walk func(resources map[string]spec.Resource) (spec.Endpoint, bool)
+	walk = func(resources map[string]spec.Resource) (spec.Endpoint, bool) {
+		for _, rName := range sortedKeys(resources) {
+			resource := resources[rName]
+			for _, eName := range sortedKeys(resource.Endpoints) {
+				endpoint := resource.Endpoints[eName]
+				if predicate(endpoint) {
+					return endpoint, true
+				}
+			}
+			if e, ok := walk(resource.SubResources); ok {
+				return e, ok
+			}
+		}
+		return spec.Endpoint{}, false
+	}
+	return walk(apiSpec.Resources)
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // formBodyMaps renders per-flag form-field assignments for endpoints that send
 // application/x-www-form-urlencoded request bodies. Object/array/JSON-string
 // fields are validated as JSON then sent as a single string field (matching
@@ -3416,22 +7560,22 @@ func formBodyMaps(body []spec.Param, indent string) string {
 		ident := toCamel(id)
 		flag := publicFlagName(p)
 		if isComplexBodyField(p) || isJSONStringParam(p) {
-			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
 			fmt.Fprintf(&b, "%s\tif !json.Valid([]byte(body%s)) {\n", indent, ident)
 			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: invalid JSON\")\n", indent, flag)
 			fmt.Fprintf(&b, "%s\t}\n", indent)
-			fmt.Fprintf(&b, "%s\tfields.Set(%q, body%s)\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s\tfields.Set(%q, body%s)\n", indent, p.BodyWireName(), ident)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
 		if p.Type == "string" {
-			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
-			fmt.Fprintf(&b, "%s\tfields.Set(%q, body%s)\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
+			fmt.Fprintf(&b, "%s\tfields.Set(%q, body%s)\n", indent, p.BodyWireName(), ident)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
-		fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
-		fmt.Fprintf(&b, "%s\tfields.Set(%q, fmt.Sprintf(\"%%v\", body%s))\n", indent, p.Name, ident)
+		fmt.Fprintf(&b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
+		fmt.Fprintf(&b, "%s\tfields.Set(%q, fmt.Sprintf(\"%%v\", body%s))\n", indent, p.BodyWireName(), ident)
 		fmt.Fprintf(&b, "%s}\n", indent)
 	}
 	return b.String()
@@ -3446,13 +7590,14 @@ func isComplexBodyField(p spec.Param) bool {
 }
 
 func isJSONStringParam(p spec.Param) bool {
-	if p.Type != "string" {
+	if p.Type != "" && !strings.EqualFold(strings.TrimSpace(p.Type), "string") {
 		return false
 	}
 
 	format := strings.ToLower(strings.TrimSpace(p.Format))
 	switch format {
-	case "json", "application/json":
+	case "json", "application/json",
+		"json-string", "json_string", "jsonstring", "json-encoded", "json_encoded":
 		return true
 	}
 
@@ -3473,8 +7618,40 @@ func isJSONStringParam(p spec.Param) bool {
 		"json-formatted",
 		"json formatted",
 		"serialized json",
+		"stringified json",
 	}
 	for _, marker := range jsonDescriptionMarkers {
+		if strings.Contains(lowerDescription, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// isEncodedJSONStringParam reports whether a JSON-string param explicitly
+// declares that the wire field carries a JSON-*encoded string* (double-encoded),
+// so the generated command must send the user's raw flag bytes instead of the
+// decoded value. This is the exception, not the default: description phrases
+// like "as JSON" or "JSON object of ..." describe the flag's input format and
+// map to the decoded value; only wording that names an encoded/serialized
+// string wire type ("JSON-encoded string", "serialized JSON string",
+// "stringified JSON") or an explicit encoded-string format keeps raw bytes.
+func isEncodedJSONStringParam(p spec.Param) bool {
+	if !isJSONStringParam(p) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(p.Format)) {
+	case "json-string", "json_string", "jsonstring", "json-encoded", "json_encoded":
+		return true
+	}
+	lowerDescription := strings.ToLower(strings.TrimSpace(p.Description))
+	encodedMarkers := []string{
+		"json-encoded string",
+		"json encoded string",
+		"serialized json string",
+		"stringified json",
+	}
+	for _, marker := range encodedMarkers {
 		if strings.Contains(lowerDescription, marker) {
 			return true
 		}
@@ -3518,12 +7695,62 @@ func hasTemporalMarker(s string) bool {
 	return false
 }
 
+func enumLiteral(values []string) string {
+	// Render a string slice as a Go []string literal for template embedding.
+	// Example: ["asc","desc"] -> `"asc", "desc"`. Returns empty string when
+	// the slice is empty so callers can {{if}}-gate the block.
+	values = trimmedEnumValues(values)
+	if len(values) == 0 {
+		return ""
+	}
+	parts := make([]string, len(values))
+	for i, v := range values {
+		parts[i] = fmt.Sprintf("%q", v)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func enumDescriptionHint(values []string) string {
+	// Appends " (one of: a, b, c)" to a flag description when the param
+	// has enum constraints. Returns empty string when the slice is empty.
+	values = trimmedEnumValues(values)
+	if len(values) == 0 {
+		return ""
+	}
+	return " (one of: " + strings.Join(values, ", ") + ")"
+}
+
+func trimmedEnumValues(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	trimmed := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		trimmed = append(trimmed, value)
+	}
+	return trimmed
+}
+
 func defaultVal(p spec.Param) string {
 	if p.Default != nil {
+		if defaultShouldUseZero(p) || stringDefaultOutsideEnum(p) {
+			return zeroVal(p.Type)
+		}
 		// Coerce the default value to match the declared param type
 		switch primitiveKind(p.Type) {
 		case "string":
-			return fmt.Sprintf("%q", fmt.Sprintf("%v", p.Default))
+			// Trim before emitting so a whitespace-padded default that was
+			// kept by stringDefaultOutsideEnum (which compares trimmed values)
+			// still matches the trimmed enum validator built by enumLiteral —
+			// otherwise the generated CLI rejects its own default. Trimming a
+			// non-enum string default is harmless (surrounding whitespace in a
+			// spec default is noise, like the other sloppy defaults this path
+			// normalizes).
+			return fmt.Sprintf("%q", strings.TrimSpace(fmt.Sprintf("%v", p.Default)))
 		case "bool":
 			switch v := p.Default.(type) {
 			case bool:
@@ -3561,6 +7788,37 @@ func defaultVal(p spec.Param) string {
 	return zeroVal(p.Type)
 }
 
+func defaultShouldUseZero(p spec.Param) bool {
+	if v, ok := p.Default.(string); ok && v == "" {
+		return true
+	}
+	switch primitiveKind(p.Type) {
+	case "object", "array":
+		data, err := json.Marshal(p.Default)
+		if err != nil {
+			return true
+		}
+		switch string(data) {
+		case `""`, "[]", "{}", "null":
+			return true
+		}
+	}
+	return false
+}
+
+func stringDefaultOutsideEnum(p spec.Param) bool {
+	if primitiveKind(p.Type) != "string" || len(p.Enum) == 0 {
+		return false
+	}
+	defaultText := strings.TrimSpace(fmt.Sprintf("%v", p.Default))
+	for _, enumValue := range p.Enum {
+		if defaultText == strings.TrimSpace(enumValue) {
+			return false
+		}
+	}
+	return true
+}
+
 func zeroVal(t string) string {
 	switch primitiveKind(t) {
 	case "string":
@@ -3576,17 +7834,186 @@ func zeroVal(t string) string {
 	}
 }
 
-func positionalArgs(e spec.Endpoint) string {
-	var args []string
+func isStringCSVArrayParam(p spec.Param) bool {
+	if strings.EqualFold(strings.TrimSpace(p.Type), "string_csv_array") {
+		return true
+	}
+	return primitiveKind(p.Type) == "array" && strings.EqualFold(strings.TrimSpace(p.ItemType), "string") && len(p.Fields) == 0
+}
+
+func isArrayQueryParam(p spec.Param) bool {
+	return !p.Positional && !p.PathParam && !paramIsHeader(p) && primitiveKind(p.Type) == "array"
+}
+
+func queryParamStyle(p spec.Param) string {
+	if style := strings.TrimSpace(p.QueryStyle); style != "" {
+		return style
+	}
+	return "form"
+}
+
+func queryParamExplodes(p spec.Param) bool {
+	return p.QueryExplode == nil || *p.QueryExplode
+}
+
+func hasArrayQueryParams(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, func(endpoint spec.Endpoint) bool {
+		return slices.ContainsFunc(endpoint.Params, isArrayQueryParam)
+	})
+}
+
+// isDeepObjectQueryParam reports whether p is a query parameter declared with
+// OpenAPI style=deepObject — an array- or object-typed param whose wire form
+// is indexed bracket keys (name[i][field]=v / name[key]=v), never a repeated
+// or delimiter-joined value list. The parser stores serialization.Style
+// verbatim, so this compares against the literal (case-insensitively, to
+// tolerate hand-authored specs).
+func isDeepObjectQueryParam(p spec.Param) bool {
+	if p.Positional || p.PathParam {
+		return false
+	}
+	kind := primitiveKind(p.Type)
+	return (kind == "array" || kind == "object") && strings.EqualFold(strings.TrimSpace(p.QueryStyle), "deepObject")
+}
+
+func hasDeepObjectQueryParams(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, func(endpoint spec.Endpoint) bool {
+		return slices.ContainsFunc(endpoint.Params, isDeepObjectQueryParam)
+	})
+}
+
+// hasIndexedOrArrayQueryParams gates the generated-code surfaces shared by
+// the repeated/joined array emission and the indexed deepObject emission:
+// the net/url imports and codeOrchSplitQuery's path-returning form.
+func hasIndexedOrArrayQueryParams(apiSpec *spec.APISpec) bool {
+	return hasArrayQueryParams(apiSpec) || hasDeepObjectQueryParams(apiSpec)
+}
+
+func csvArrayValueExpr(p spec.Param, inputExpr string) string {
+	switch strings.ToLower(strings.TrimSpace(p.ItemType)) {
+	case "object":
+		return fmt.Sprintf("cliutil.CSVTemplateObjects(%s, %s)", inputExpr, csvItemTemplateLiteral(p.ItemTemplate))
+	default:
+		return fmt.Sprintf("cliutil.ParseStringList(%s)", inputExpr)
+	}
+}
+
+func isJSONOrScalarParam(p spec.Param) bool {
+	return strings.EqualFold(strings.TrimSpace(p.Format), "json_or_scalar")
+}
+
+func csvItemTemplateLiteral(v any) string {
+	switch val := v.(type) {
+	case nil:
+		return "nil"
+	case string:
+		return fmt.Sprintf("%q", val)
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	case int:
+		return strconv.Itoa(val)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case float64:
+		if val == float64(int(val)) {
+			return strconv.Itoa(int(val))
+		}
+		return fmt.Sprintf("%g", val)
+	case []any:
+		parts := make([]string, 0, len(val))
+		for _, item := range val {
+			parts = append(parts, csvItemTemplateLiteral(item))
+		}
+		return "[]any{" + strings.Join(parts, ", ") + "}"
+	case map[string]any:
+		keys := make([]string, 0, len(val))
+		for key := range val {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, key := range keys {
+			parts = append(parts, fmt.Sprintf("%q: %s", key, csvItemTemplateLiteral(val[key])))
+		}
+		return "map[string]any{" + strings.Join(parts, ", ") + "}"
+	case map[any]any:
+		converted := make(map[string]any, len(val))
+		for key, item := range val {
+			converted[fmt.Sprint(key)] = item
+		}
+		return csvItemTemplateLiteral(converted)
+	default:
+		return fmt.Sprintf("%q", fmt.Sprint(val))
+	}
+}
+
+// orderedPositionalParams returns an endpoint's positional params with the
+// path-param positionals sorted into URL-path order (left-to-right by where
+// each {placeholder} appears in Endpoint.Path). The OpenAPI parser appends path
+// params in parameters-array order, which some specs declare deepest-first
+// (Cloudflare lists project_name before account_id for
+// /accounts/{account_id}/pages/projects/{project_name}). Emitting them in that
+// order made commands accept <project_name> <account_id> — the reverse of the
+// URL and of the conventional parent-first ordering — so args passed in natural
+// path order routed each value into the wrong slot and 404'd. Only path-param
+// positionals are reordered, and only among the slots they already hold; any
+// non-path positional keeps its declared place.
+func orderedPositionalParams(e spec.Endpoint) []spec.Param {
+	positionals := make([]spec.Param, 0, len(e.Params))
 	for _, p := range e.Params {
 		if p.Positional {
-			args = append(args, "<"+p.Name+">")
+			positionals = append(positionals, p)
 		}
+	}
+	pathRank := func(p spec.Param) int { return strings.Index(e.Path, "{"+p.Name+"}") }
+
+	pathParams := make([]spec.Param, 0, len(positionals))
+	for _, p := range positionals {
+		if pathRank(p) >= 0 {
+			pathParams = append(pathParams, p)
+		}
+	}
+	sort.SliceStable(pathParams, func(i, j int) bool {
+		return pathRank(pathParams[i]) < pathRank(pathParams[j])
+	})
+
+	j := 0
+	for i, p := range positionals {
+		if pathRank(p) >= 0 {
+			positionals[i] = pathParams[j]
+			j++
+		}
+	}
+	return positionals
+}
+
+func positionalArgs(e spec.Endpoint) string {
+	var args []string
+	for _, p := range orderedPositionalParams(e) {
+		args = append(args, "<"+p.Name+">")
 	}
 	if len(args) > 0 {
 		return " " + strings.Join(args, " ")
 	}
 	return ""
+}
+
+// positionalIndex returns the args[] slot a positional param fills at runtime.
+// Cobra populates args from CLI positionals in the order they appear in the
+// command's Use string, which orderedPositionalParams fixes to URL-path order.
+// The slot therefore tracks that path order rather than the raw Endpoint.Params
+// order, which interleaves query/header params and may declare path params in
+// reverse path order. Returns -1 if name is not a positional param.
+func positionalIndex(e spec.Endpoint, name string) int {
+	for i, p := range orderedPositionalParams(e) {
+		if p.Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 func configTag(format string) string {
@@ -3786,6 +8213,36 @@ func (g *Generator) mcpParamDescription(p spec.Param) string {
 }
 
 func exampleValue(p spec.Param) string {
+	if value, ok := syntheticExampleValue(p.Name); ok {
+		return value
+	}
+
+	if p.Example != nil {
+		if s := stringifyDefault(p.Example); shellSafeSchemaExampleValue(s) {
+			return s
+		}
+	}
+
+	// Enum-constrained params: the API rejects anything outside the set,
+	// so prefer the first declared value over name-shape heuristics.
+	// This wins over name-based branches because a hypothetical
+	// `status_id: [a,b,c]` enum still requires `a`, not a UUID.
+	for _, v := range p.Enum {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+
+	if p.Default != nil {
+		if s, ok := defaultSliceExampleValue(p.Default); ok && shellSafeSchemaExampleValue(s) {
+			return s
+		}
+	}
+
+	if value, ok := descriptionExampleValue(p.Description); ok {
+		return value
+	}
+
 	nameLower := strings.ToLower(p.Name)
 
 	// camelCase `*Id` carries an exclusion fence so bool/numeric params
@@ -3798,7 +8255,7 @@ func exampleValue(p spec.Param) string {
 	if nameLower == "id" ||
 		strings.HasSuffix(nameLower, "_id") ||
 		(strings.HasSuffix(nameLower, "id") && len(nameLower) > 2 && !isNumericOrBool) {
-		return "550e8400-e29b-41d4-a716-446655440000"
+		return piiplaceholders.SyntheticUUID
 	}
 	if strings.Contains(nameLower, "email") {
 		return "user@example.com"
@@ -3809,10 +8266,15 @@ func exampleValue(p spec.Param) string {
 	if strings.Contains(nameLower, "name") || strings.Contains(nameLower, "title") {
 		return "example-resource"
 	}
-	if strings.Contains(nameLower, "date") || p.Format == "date" {
+	// Reuse isNumericOrBool (defined above): a numeric- or boolean-typed
+	// param must not pick up an RFC3339/date example from a "time"/"date"
+	// substring in its name (epoch cursors like start_time, oldest), while
+	// Format == date/date-time stays authoritative for genuinely temporal
+	// string params.
+	if p.Format == "date" || (!isNumericOrBool && strings.Contains(nameLower, "date")) {
 		return "2026-01-15"
 	}
-	if strings.Contains(nameLower, "time") || p.Format == "date-time" {
+	if p.Format == "date-time" || (!isNumericOrBool && strings.Contains(nameLower, "time")) {
 		return "2026-01-15T09:00:00Z"
 	}
 	if strings.Contains(nameLower, "token") || strings.Contains(nameLower, "key") {
@@ -3832,48 +8294,324 @@ func exampleValue(p spec.Param) string {
 	return "example-value"
 }
 
+func descriptionExampleValue(description string) (string, bool) {
+	lower := strings.ToLower(description)
+	for _, marker := range []string{"e.g.", "eg.", "for example"} {
+		idx := descriptionExampleMarkerIndex(lower, marker)
+		if idx < 0 {
+			continue
+		}
+		rest := strings.TrimSpace(description[idx+len(marker):])
+		rest = strings.TrimLeft(rest, ": \t")
+		if value := firstShellSafeDescriptionToken(rest); value != "" {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func descriptionExampleMarkerIndex(lower, marker string) int {
+	searchFrom := 0
+	for {
+		idx := strings.Index(lower[searchFrom:], marker)
+		if idx < 0 {
+			return -1
+		}
+		idx += searchFrom
+		if idx == 0 {
+			return idx
+		}
+		prev := rune(lower[idx-1])
+		if !unicode.IsLetter(prev) && !unicode.IsDigit(prev) {
+			return idx
+		}
+		searchFrom = idx + len(marker)
+	}
+}
+
+func defaultSliceExampleValue(v any) (string, bool) {
+	switch t := v.(type) {
+	case []string:
+		if len(t) == 0 {
+			return "", false
+		}
+		return stringifyDefault(t[0]), true
+	case []any:
+		if len(t) == 0 {
+			return "", false
+		}
+		return stringifyDefault(t[0]), true
+	default:
+		return "", false
+	}
+}
+
+func firstShellSafeDescriptionToken(s string) string {
+	for _, delimiter := range []string{",", ";", ".", "\n", "\r", " or ", " and "} {
+		if idx := strings.Index(s, delimiter); idx >= 0 {
+			s = s[:idx]
+		}
+	}
+	s = strings.Trim(s, " \t`'\"()[]{}")
+	if s == "" || strings.ContainsAny(s, " \t") {
+		return ""
+	}
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == ':' || r == '/' || r == '.' {
+			continue
+		}
+		return ""
+	}
+	return s
+}
+
+func shellSafeSchemaExampleValue(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.ContainsAny(s, " \t\n\r") {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == ':' || r == '/' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func exampleNeedsTODO(line string) bool {
+	return strings.Contains(line, "example-value")
+}
+
 func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.Endpoint) string {
+	if strings.TrimSpace(endpoint.Example) != "" {
+		return endpoint.Example
+	}
+
+	commandParts := append(strings.Fields(commandPath), toKebab(endpointName))
+	if line, ok := g.narrativeExampleLine(commandParts, endpoint); ok {
+		return line
+	}
+	if endpoint.Alias != "" {
+		aliasParts := append(strings.Fields(commandPath), endpoint.Alias)
+		if line, ok := g.narrativeExampleLine(aliasParts, endpoint); ok {
+			return line
+		}
+	}
+
 	var parts []string
 	parts = append(parts, naming.CLI(g.Spec.Name))
-	parts = append(parts, strings.Fields(commandPath)...)
-	parts = append(parts, toKebab(endpointName))
+	parts = append(parts, commandParts...)
 	parts = append(parts, commandExampleArgParts(endpoint)...)
 
 	return "  " + strings.Join(parts, " ")
 }
 
-func flagName(name string) string {
-	name = strings.TrimLeft(name, "$")
-	// Convert camelCase/PascalCase and separators to kebab-case.
-	// "pageSize" → "page-size", "storeID" → "store-id", "per_page" → "per-page"
-	var b strings.Builder
-	runes := []rune(name)
-	for i, r := range runes {
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
-			// Non-alphanumeric → hyphen (dedup'd below)
-			if b.Len() > 0 {
-				b.WriteByte('-')
-			}
+func (g *Generator) promotedExampleLine(promotedName string, endpoint spec.Endpoint) string {
+	if strings.TrimSpace(endpoint.Example) != "" {
+		return endpoint.Example
+	}
+
+	if line, ok := g.narrativeExampleLine([]string{promotedName}, endpoint); ok {
+		return line
+	}
+
+	parts := []string{naming.CLI(g.Spec.Name), promotedName}
+	parts = append(parts, commandExampleArgParts(endpoint)...)
+	return "  " + strings.Join(parts, " ")
+}
+
+func (g *Generator) narrativeExampleLine(commandParts []string, endpoint spec.Endpoint) (string, bool) {
+	if g == nil || g.Narrative == nil {
+		return "", false
+	}
+
+	for _, command := range g.narrativeExampleCommands() {
+		segments, err := shellargs.SplitChain(command)
+		if err != nil {
 			continue
 		}
-		// Insert hyphen at camelCase boundaries: lowercase→uppercase
-		if i > 0 && unicode.IsUpper(r) {
-			prev := runes[i-1]
-			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
-				b.WriteByte('-')
-			} else if unicode.IsUpper(prev) && i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
-				// Handle acronyms: "storeID" → "store-id" (not "store-i-d")
-				b.WriteByte('-')
+		for _, segment := range segments {
+			if segment.AfterPipe {
+				continue
+			}
+			if narrativeCommandMatches(g.Spec.Name, segment.Text, commandParts, endpoint) {
+				return "  " + strings.TrimSpace(segment.Text), true
 			}
 		}
-		b.WriteRune(unicode.ToLower(r))
 	}
-	// Collapse multiple hyphens and trim
-	result := b.String()
-	for strings.Contains(result, "--") {
-		result = strings.ReplaceAll(result, "--", "-")
+	return "", false
+}
+
+func (g *Generator) narrativeExampleCommands() []string {
+	if g == nil || g.Narrative == nil {
+		return nil
 	}
-	return strings.Trim(result, "-")
+
+	var commands []string
+	for _, step := range g.Narrative.QuickStart {
+		if command := strings.TrimSpace(step.Command); command != "" {
+			commands = append(commands, command)
+		}
+	}
+	for _, recipe := range g.Narrative.Recipes {
+		if command := strings.TrimSpace(recipe.Command); command != "" {
+			commands = append(commands, command)
+		}
+	}
+	return commands
+}
+
+func narrativeCommandMatches(apiName, command string, commandParts []string, endpoint spec.Endpoint) bool {
+	tokens, err := shellargs.Split(command)
+	if err != nil || len(tokens) < 1+len(commandParts) {
+		return false
+	}
+	if tokens[0] != naming.CLI(apiName) {
+		return false
+	}
+	args := tokens[1:]
+	commandIndex, ok := narrativeCommandStart(args)
+	if !ok || len(args[commandIndex:]) < len(commandParts) {
+		return false
+	}
+	for i, part := range commandParts {
+		if args[commandIndex+i] != part {
+			return false
+		}
+	}
+	return narrativeTailMatches(args[commandIndex+len(commandParts):], endpoint)
+}
+
+func narrativeTailMatches(args []string, endpoint spec.Endpoint) bool {
+	flags := narrativeEndpointFlags()
+	for _, p := range endpoint.Params {
+		if p.Positional {
+			continue
+		}
+		flags[publicFlagName(p)] = !isBoolParam(p)
+	}
+	for _, p := range endpoint.Body {
+		flags[publicFlagName(p)] = !isBoolParam(p)
+	}
+
+	positionals := 0
+	expectedPositionals := endpointPositionalCount(endpoint)
+	for i := 0; i < len(args); {
+		if strings.HasPrefix(args[i], "--") {
+			next, ok := skipNarrativeFlag(args, i, flags)
+			if !ok {
+				return false
+			}
+			i = next
+			continue
+		}
+		if positionals >= expectedPositionals {
+			return false
+		}
+		positionals++
+		i++
+	}
+	return positionals == expectedPositionals
+}
+
+func endpointPositionalCount(endpoint spec.Endpoint) int {
+	count := 0
+	for _, p := range endpoint.Params {
+		if p.Positional {
+			count++
+		}
+	}
+	return count
+}
+
+func narrativeEndpointFlags() map[string]bool {
+	flags := maps.Clone(narrativeGlobalFlags)
+	flags["all"] = false
+	flags["body-json"] = true
+	flags["stdin"] = false
+	flags["wait"] = false
+	flags["wait-interval"] = true
+	flags["wait-timeout"] = true
+	return flags
+}
+
+func skipNarrativeFlag(args []string, index int, flags map[string]bool) (int, bool) {
+	arg := args[index]
+	if arg == "--" {
+		return 0, false
+	}
+	name, _, hasInlineValue := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+	requiresValue, ok := flags[name]
+	if !ok {
+		return 0, false
+	}
+	next := index + 1
+	if requiresValue && !hasInlineValue {
+		if next >= len(args) {
+			return 0, false
+		}
+		next++
+	}
+	return next, true
+}
+
+func isBoolParam(p spec.Param) bool {
+	switch p.Type {
+	case "boolean", "bool":
+		return true
+	default:
+		return false
+	}
+}
+
+func narrativeCommandStart(args []string) (int, bool) {
+	for i := 0; i < len(args); {
+		arg := args[i]
+		if arg == "--" {
+			return 0, false
+		}
+		if !strings.HasPrefix(arg, "--") {
+			return i, true
+		}
+		next, ok := skipNarrativeFlag(args, i, narrativeGlobalFlags)
+		if !ok {
+			return 0, false
+		}
+		i = next
+	}
+	return 0, false
+}
+
+var narrativeGlobalFlags = map[string]bool{
+	"agent":                 false,
+	"allow-partial-failure": false,
+	"compact":               false,
+	"config":                true,
+	"csv":                   false,
+	"data-source":           true,
+	"deliver":               true,
+	"dry-run":               false,
+	"human-friendly":        false,
+	"idempotent":            false,
+	"ignore-missing":        false,
+	"json":                  false,
+	"max-age":               true,
+	"no-cache":              false,
+	"no-color":              false,
+	"no-input":              false,
+	"plain":                 false,
+	"profile":               true,
+	"quiet":                 false,
+	"rate-limit":            true,
+	"select":                true,
+	"throttle-mode":         true,
+	"timeout":               true,
+	"yes":                   false,
+}
+
+func flagName(name string) string {
+	return naming.FlagName(name)
 }
 
 func safeTypeName(name string) string {
@@ -3914,34 +8652,48 @@ func isGoKeyword(s string) bool {
 	return goKeywords[s]
 }
 
+// cacheDurationDefault is the global stale-after fallback used when the spec
+// declares no stale_after, or declares one that does not parse.
+const cacheDurationDefault = "6 * time.Hour"
+
+// staleAfterExpr renders the cache stale-after duration as a Go expression for
+// direct initialization. A spec literal that parses to a non-negative duration
+// becomes e.g. "168 * time.Hour"; an empty, unparseable, or negative value
+// falls back to the 6h default (a negative stale-after would make the cache
+// permanently stale). Emitting the value directly avoids a dead "staleAfter :=
+// 6 * time.Hour" initializer that is always overwritten by a ParseDuration call
+// which cannot fail on a constant literal.
+func staleAfterExpr(lit string) string {
+	if lit == "" {
+		return cacheDurationDefault
+	}
+	d, err := time.ParseDuration(lit)
+	if err != nil || d < 0 {
+		return cacheDurationDefault
+	}
+	return goDurationExpr(d)
+}
+
+// goDurationExpr renders a time.Duration as a readable Go expression, preferring
+// the largest whole unit (hours, then minutes, then seconds) and falling back
+// to a nanosecond-typed literal for sub-second or non-round values.
+func goDurationExpr(d time.Duration) string {
+	switch {
+	case d%time.Hour == 0:
+		return fmt.Sprintf("%d * time.Hour", d/time.Hour)
+	case d%time.Minute == 0:
+		return fmt.Sprintf("%d * time.Minute", d/time.Minute)
+	case d%time.Second == 0:
+		return fmt.Sprintf("%d * time.Second", d/time.Second)
+	default:
+		return fmt.Sprintf("time.Duration(%d)", int64(d))
+	}
+}
+
 // toKebab converts PascalCase, camelCase, or mixed names to kebab-case.
 // It also strips a leading "I" if it looks like an interface prefix (e.g., ISteamUser → steam-user).
 func toKebab(s string) string {
-	// Strip leading "I" when followed by an uppercase letter (interface prefix convention)
-	if len(s) > 1 && s[0] == 'I' && unicode.IsUpper(rune(s[1])) {
-		s = s[1:]
-	}
-	var result strings.Builder
-	for i, r := range s {
-		// Snake-case underscores convert to dashes. Lets spec keys like
-		// `customer_feedback` and `slot_list_for_date` flow through to
-		// user-facing cobra `Use:` strings as `customer-feedback` and
-		// `slot-list-for-date` instead of preserving the snake form.
-		if r == '_' {
-			result.WriteByte('-')
-			continue
-		}
-		if unicode.IsUpper(r) && i > 0 {
-			prev := rune(s[i-1])
-			// Insert hyphen before uppercase letter if preceded by lowercase,
-			// or if preceding char is uppercase AND next char is lowercase (e.g., "APIKey" → "api-key")
-			if unicode.IsLower(prev) || (unicode.IsUpper(prev) && i+1 < len(s) && unicode.IsLower(rune(s[i+1]))) {
-				result.WriteByte('-')
-			}
-		}
-		result.WriteRune(unicode.ToLower(r))
-	}
-	return result.String()
+	return spec.NormalizeCobraCommandName(s)
 }
 
 // PromotedCommand represents a top-level user-friendly command that wraps a nested API endpoint.
@@ -3971,12 +8723,14 @@ var builtinCommands = map[string]bool{
 }
 
 // buildPromotedCommands scans spec resources and returns safe top-level shortcuts.
-// Only single-endpoint resources are promoted. Multi-endpoint resources stay
-// nested so an unknown subcommand cannot silently fall back to an arbitrary
-// parent RunE action.
+// Single-endpoint resources are promoted. GraphQL resources with a canonical
+// get/list pair also promote the get endpoint so users keep a friendly
+// `<cli> resource <id>` read path while list and mutation siblings remain
+// available as subcommands under the promoted command.
 func buildPromotedCommands(s *spec.APISpec) []PromotedCommand {
 	var promoted []PromotedCommand
 	usedNames := make(map[string]bool)
+	graphQL := isGraphQLSpec(s)
 
 	resourceNames := make([]string, 0, len(s.Resources))
 	for name := range s.Resources {
@@ -3986,25 +8740,45 @@ func buildPromotedCommands(s *spec.APISpec) []PromotedCommand {
 
 	for _, name := range resourceNames {
 		resource := s.Resources[name]
-		if len(resource.Endpoints) > 1 {
-			continue
-		}
 
-		// Single-endpoint resources promote the only endpoint regardless of method.
-		// Without this, POST-only auth resources like `login`/`logout`/`register`
-		// render as `<cli> login login --email ...`.
 		var bestName string
 		var bestEndpoint spec.Endpoint
 		found := false
 
-		for _, eName := range sortedEndpointNames(resource.Endpoints) {
-			ep := resource.Endpoints[eName]
-			bestName = eName
-			bestEndpoint = ep
-			found = true
+		if len(resource.Endpoints) > 1 {
+			if graphQL {
+				if ep, ok := resource.Endpoints["get"]; ok {
+					if _, hasList := resource.Endpoints["list"]; !hasList {
+						continue
+					}
+					bestName = "get"
+					bestEndpoint = ep
+					found = true
+				}
+			}
+			if !found {
+				continue
+			}
+		} else {
+			// Single-endpoint resources promote the only endpoint regardless of method.
+			// Without this, POST-only auth resources like `login`/`logout`/`register`
+			// render as `<cli> login login --email ...`.
+			for _, eName := range sortedEndpointNames(resource.Endpoints) {
+				ep := resource.Endpoints[eName]
+				bestName = eName
+				bestEndpoint = ep
+				found = true
+			}
 		}
 
 		if !found {
+			continue
+		}
+		// A body that recurses past maxBodyFlagDepth must NOT be promoted: the
+		// promoted template emits no --stdin fallback, so the truncated subtree
+		// would silently drop fields. Skipping promotion keeps the canonical
+		// command (which has --stdin) as the reachable surface.
+		if bodyExceedsFlagDepth(bestEndpoint) {
 			continue
 		}
 
@@ -4039,6 +8813,9 @@ func sortedEndpointNames(endpoints map[string]spec.Endpoint) []string {
 // isGraphQLSpec returns true if the spec was produced by a GraphQL SDL parser.
 // Detection heuristic: all list endpoints have path "/graphql".
 func isGraphQLSpec(s *spec.APISpec) bool {
+	if s == nil {
+		return false
+	}
 	hasListEndpoint := false
 	for _, r := range s.Resources {
 		for eName, ep := range r.Endpoints {
@@ -4051,6 +8828,84 @@ func isGraphQLSpec(s *spec.APISpec) bool {
 		}
 	}
 	return hasListEndpoint
+}
+
+func networkFallbackReason(s *spec.APISpec) string {
+	if s == nil {
+		return "api_unreachable"
+	}
+	if s.IsSynthetic() {
+		return "synthetic_anchor_fallback"
+	}
+	u, err := url.Parse(strings.TrimSpace(s.BaseURL))
+	// In Printing Press specs, .local base URLs are synthetic placeholders.
+	// Real mDNS/private hosts should use a non-.local alias to avoid being
+	// classified as synthetic fallback surfaces.
+	if err == nil && strings.HasSuffix(strings.ToLower(u.Hostname()), ".local") {
+		return "synthetic_anchor_fallback"
+	}
+	return "api_unreachable"
+}
+
+func localReadIsList(supportsAllPagination bool, apiSpec *spec.APISpec, endpointName string, endpoint spec.Endpoint) bool {
+	if supportsAllPagination {
+		return true
+	}
+	if endpointHasPathScope(endpoint) {
+		return false
+	}
+	if localReadLooksLikeCollection(endpointName, endpoint) {
+		return true
+	}
+	return networkFallbackReason(apiSpec) == "synthetic_anchor_fallback" && strings.EqualFold(endpoint.Response.Type, "array")
+}
+
+func localReadSupported(endpoint spec.Endpoint) bool {
+	if endpoint.UsesTextResponse() {
+		return false
+	}
+	segments := strings.Split(strings.Trim(strings.TrimSpace(endpoint.Path), "/"), "/")
+	for i, segment := range segments {
+		if strings.Contains(segment, "{") {
+			return i == len(segments)-1
+		}
+	}
+	return true
+}
+
+func localReadLooksLikeCollection(endpointName string, endpoint spec.Endpoint) bool {
+	nameLower := strings.ToLower(strings.TrimSpace(endpointName))
+	if nameLower == "list" {
+		return true
+	}
+	if !localReadNameContainsAny(nameLower, []string{"search", "query", "browse", "find"}) {
+		return false
+	}
+	return strings.EqualFold(endpoint.Response.Type, "array")
+}
+
+func localReadNameContainsAny(s string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func endpointHasPathScope(endpoint spec.Endpoint) bool {
+	// Parsed specs and hand-authored fixtures may disagree between the path
+	// string and normalized Param flags; either signal means local List would
+	// over-return rows across parents.
+	if strings.Contains(endpoint.Path, "{") {
+		return true
+	}
+	for _, p := range endpoint.Params {
+		if p.PathParam {
+			return true
+		}
+	}
+	return false
 }
 
 // graphqlQueryField extracts the GraphQL query field name from a ResponsePath.
@@ -4099,6 +8954,67 @@ func graphqlFieldSelection(typeName string, types map[string]spec.TypeDef) []str
 		return []string{"id"}
 	}
 	return fields
+}
+
+// graphqlListParams returns the GraphQL list arguments this generator knows how
+// to render into the query document and command variables map.
+func graphqlListParams(endpoint spec.Endpoint) []spec.Param {
+	params := make([]spec.Param, 0, len(endpoint.Params))
+	for _, p := range endpoint.Params {
+		if p.Positional || p.PathParam {
+			continue
+		}
+		switch p.Name {
+		case "first", "after", "query":
+		default:
+			continue
+		}
+		params = append(params, p)
+	}
+	return params
+}
+
+func graphqlLatestParams(endpoint spec.Endpoint) []spec.Param {
+	params := make([]spec.Param, 0, len(endpoint.Params))
+	for _, p := range endpoint.Params {
+		if p.Positional || p.PathParam {
+			continue
+		}
+		if p.Name != "last" {
+			continue
+		}
+		params = append(params, p)
+	}
+	return params
+}
+
+func hasGraphQLParam(endpoint spec.Endpoint, name string) bool {
+	for _, p := range endpoint.Params {
+		if p.Name == name && !p.Positional && !p.PathParam {
+			return true
+		}
+	}
+	return false
+}
+
+func graphqlVariableType(p spec.Param) string {
+	var typ string
+	switch primitiveKind(p.Type) {
+	case "int":
+		typ = "Int"
+	case "float":
+		typ = "Float"
+	case "bool":
+		typ = "Boolean"
+	case "array":
+		typ = "[String!]"
+	default:
+		typ = "String"
+	}
+	if p.Required || strings.EqualFold(p.Name, "first") || strings.EqualFold(p.Name, "last") {
+		typ += "!"
+	}
+	return typ
 }
 
 type templateEndpoint struct {
@@ -4187,7 +9103,7 @@ func effectiveSubEndpointBaseURL(parent spec.Resource, sub spec.Resource, endpoi
 
 func endpointPathWithBase(baseURL, path string) string {
 	baseURL = strings.TrimRight(baseURL, "/")
-	if baseURL == "" {
+	if baseURL == "" || strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://") {
 		return path
 	}
 	return baseURL + path

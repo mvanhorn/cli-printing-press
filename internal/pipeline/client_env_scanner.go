@@ -13,9 +13,24 @@ import (
 	"strings"
 )
 
+// systemEnvVarDenylist names env vars the manifest reconciler must never
+// promote to user_config even when the generated client reads them.
+// XDG_* and HOME/USERPROFILE are platform conventions a user sets globally
+// (or that fall back via the standard library) — they are not credentials
+// or per-CLI knobs an install prompt should collect.
+var systemEnvVarDenylist = map[string]struct{}{
+	"XDG_CACHE_HOME":  {},
+	"XDG_CONFIG_HOME": {},
+	"XDG_DATA_HOME":   {},
+	"XDG_STATE_HOME":  {},
+	"HOME":            {},
+	"USERPROFILE":     {},
+}
+
 // scanClientEnvReads parses every Go source file under <dir>/internal/client/
 // and returns the deduplicated, sorted set of env var names read via
-// os.Getenv("...").
+// os.Getenv("..."), excluding well-known platform-convention vars
+// (systemEnvVarDenylist).
 //
 // The scan is intentionally restricted to internal/client/. Hand-written
 // auth-refresh code in that package is the unambiguous signal the manifest
@@ -67,6 +82,9 @@ func scanClientEnvReads(dir string) ([]string, error) {
 			}
 			name, err := strconv.Unquote(lit.Value)
 			if err != nil || name == "" {
+				return true
+			}
+			if _, deny := systemEnvVarDenylist[name]; deny {
 				return true
 			}
 			seen[name] = struct{}{}

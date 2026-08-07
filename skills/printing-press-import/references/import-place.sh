@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # import-place.sh — atomically move a staged CLI + its manuscripts into
-# the internal library at $HOME/printing-press/.
+# the internal library at ${PRINTING_PRESS_HOME:-$HOME/printing-press}/.
 #
 # Layout:
 #   <staging>/                      (CLI files at root)
 #   <staging>/.manuscripts/<run>/   (one or more run-id dirs)
 #
 # Lands as:
-#   $HOME/printing-press/library/<api-slug>/             (CLI files)
-#   $HOME/printing-press/manuscripts/<api-slug>/<run>/   (each run dir)
+#   ${PRINTING_PRESS_HOME:-$HOME/printing-press}/library/<api-slug>/             (CLI files)
+#   ${PRINTING_PRESS_HOME:-$HOME/printing-press}/manuscripts/<api-slug>/<run>/   (each run dir)
 #
 # Any pre-existing target dirs are removed first; back them up with
 # import-backup.sh before invoking this.
@@ -25,8 +25,9 @@ API_SLUG="$2"
 
 [[ -d "$STAGING" ]] || { echo "staging dir not found: $STAGING" >&2; exit 1; }
 
-LIB_TARGET="$HOME/printing-press/library/$API_SLUG"
-MAN_TARGET_ROOT="$HOME/printing-press/manuscripts/$API_SLUG"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
+LIB_TARGET="$PRESS_HOME/library/$API_SLUG"
+MAN_TARGET_ROOT="$PRESS_HOME/manuscripts/$API_SLUG"
 
 # Move manuscripts out of the staging dir before placing the CLI. This
 # keeps the CLI subtree clean (no .manuscripts/ inside the library dir).

@@ -1,0 +1,137 @@
+openapi: "3.0.3"
+info:
+  title: Embedded Paged API
+  version: "1.0.0"
+  description: |
+    Golden fixture exercising the embedded-paged-sub-resource detection
+    and emission path. The parent GET responses embed three envelope
+    shapes the detector must distinguish: a URL-bearing `next`, an
+    opaque cursor `next_cursor`, and a boolean `has_more`. Generated
+    output should contain a `fetchFull<X>` wrapper per detected entry
+    plus the shared `fetchEmbeddedPagedSubresource` runtime helper.
+servers:
+  - url: https://api.embedded.example/v1
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  schemas:
+    Track:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+    Playlist:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        tracks:
+          type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/Track" }
+            next: { type: string }
+            total: { type: integer }
+    Page:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        children:
+          type: object
+          properties:
+            results:
+              type: array
+              items: { type: object }
+            next_cursor: { type: string }
+    Customer:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string }
+        subscriptions:
+          type: object
+          properties:
+            data:
+              type: array
+              items: { type: object }
+            has_more: { type: boolean }
+paths:
+  /playlists:
+    get:
+      tags: [playlists]
+      operationId: listPlaylists
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Playlist" }
+  /playlists/{id}:
+    get:
+      tags: [playlists]
+      operationId: getPlaylist
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Playlist" }
+  /pages:
+    get:
+      tags: [pages]
+      operationId: listPages
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Page" }
+  /pages/{id}:
+    get:
+      tags: [pages]
+      operationId: getPage
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Page" }
+  /customers:
+    get:
+      tags: [customers]
+      operationId: listCustomers
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Customer" }
+  /customers/{id}:
+    get:
+      tags: [customers]
+      operationId: getCustomer
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Customer" }

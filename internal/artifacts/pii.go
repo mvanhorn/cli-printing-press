@@ -14,8 +14,11 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/piiplaceholders"
 )
 
 // PII gate implementation following the Deterministic Inventory +
@@ -38,6 +41,8 @@ const (
 // changing a value is a backward-incompatible ledger format change.
 const (
 	PIIKindCardLast4     = "card-last-4"
+	PIIKindOrderID       = "order-id"
+	PIIKindASIN          = "asin"
 	PIIKindEmail         = "email"
 	PIIKindPhoneUS       = "phone-us"
 	PIIKindZipPlus4      = "zip-plus-4"
@@ -85,6 +90,11 @@ type PIIFinding struct {
 	EvidenceContext string `json:"evidence_context,omitempty"`
 }
 
+// PIIAuditOptions controls optional scan inputs outside the printed CLI tree.
+type PIIAuditOptions struct {
+	ManuscriptsDir string
+}
+
 type piiDetector struct {
 	kind    string
 	pattern *regexp.Regexp
@@ -101,6 +111,13 @@ var piiDetectors = []piiDetector{
 		pattern: regexp.MustCompile(`(?i)(?:\b(?:card|visa|mastercard|amex|ending in|last\s+4)|x{4,}|\*{4,})[\s:.\-]{0,5}\d{4}`),
 	},
 	{
+		kind: PIIKindOrderID,
+		// Physical and digital order IDs observed in browser-sniff
+		// captures. The canonical synthetic placeholders are filtered
+		// after matching.
+		pattern: piiplaceholders.OrderIDPattern(),
+	},
+	{
 		kind: PIIKindEmail,
 		// Standard email shape with a TLD of 2+ chars. Word boundaries
 		// guard against capturing surrounding punctuation.
@@ -108,10 +125,12 @@ var piiDetectors = []piiDetector{
 	},
 	{
 		kind: PIIKindPhoneUS,
-		// US-shaped 10-digit phone with optional +1 prefix and
-		// parens/separators. Word boundaries on each end. Catches
-		// "(415) 555-0123", "415-555-0123", "+1 415 555 0123".
-		pattern: regexp.MustCompile(`\b(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}\b`),
+		// Formatted US phone with optional +1 prefix. NANP requires the
+		// area code and the exchange code to each start with 2-9; requiring
+		// separators/parentheses avoids treating bare 10-digit IDs, DNS SOA
+		// serials, and epoch timestamps as customer phone numbers.
+		// Catches "(415) 555-0123", "415-555-0123", "+1 415 555 0123".
+		pattern: regexp.MustCompile(`(?:\+?1[\s.\-]+)?(?:\([2-9]\d{2}\)[\s.\-]*|\b[2-9]\d{2}[\s.\-]+)[2-9]\d{2}[\s.\-]+\d{4}\b`),
 	},
 	{
 		kind: PIIKindZipPlus4,
@@ -134,20 +153,301 @@ var piiDetectors = []piiDetector{
 	},
 }
 
-// Scoped to the capture-to-publish leak path: manuscripts, test
-// fixtures, README, and *_test.go files. Non-test Go source and
-// module metadata are excluded by default.
+// PIIRedactedSentinel is the stable marker used when artifact text is
+// scrubbed before it can be persisted.
+const PIIRedactedSentinel = "<redacted>"
+
+var piiJSONScalarKeys = map[string]bool{
+	"accesstoken":     true,
+	"address":         true,
+	"address1":        true,
+	"address2":        true,
+	"apikey":          true,
+	"apitoken":        true,
+	"billingaddress":  true,
+	"cardlast4":       true,
+	"clientsecret":    true,
+	"csrf":            true,
+	"csrftoken":       true,
+	"customeremail":   true,
+	"customername":    true,
+	"email":           true,
+	"firstname":       true,
+	"fullname":        true,
+	"invoice":         true,
+	"invoicenumber":   true,
+	"lastname":        true,
+	"last4":           true,
+	"mobile":          true,
+	"name":            true,
+	"password":        true,
+	"phone":           true,
+	"phonenumber":     true,
+	"postalcode":      true,
+	"refreshtoken":    true,
+	"secret":          true,
+	"session":         true,
+	"sessiontoken":    true,
+	"shippingaddress": true,
+	"street":          true,
+	"streetaddress":   true,
+	"token":           true,
+	"websocketurl":    true,
+	"zip":             true,
+}
+
+var piiJSONKeyNeedleRE = regexp.MustCompile(`(?i)"(?:access[_ -]?token|address1?|address2|api[_ -]?key|api[_ -]?token|billing[_ -]?address|card[_ -]?last[_ -]?4|client[_ -]?secret|csrf(?:[_ -]?token)?|customer[_ -]?(?:email|name)|email|first[_ -]?name|full[_ -]?name|invoice(?:[_ -]?number)?|last[_ -]?name|last[_ -]?4|mobile|name|password|phone(?:[_ -]?number)?|postal[_ -]?code|refresh[_ -]?token|secret|session(?:[_ -]?token)?|shipping[_ -]?address|street(?:[_ -]?address)?|token|websocket[_ -]?url|zip)"\s*:`)
+var piiJSONCredentialKeyNeedleRE = regexp.MustCompile(`(?i)"(?:auth(?:entication)?[_ -]?token|[^"\r\n]*sso[^"\r\n]*token)"\s*:`)
+var piiCredentialJWTPattern = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`)
+
+// RedactPIIText returns text with customer-PII shapes replaced before the
+// text is written to durable artifacts. JSON input preserves non-PII fields
+// when redactions are needed and returns the original text unchanged when no
+// PII is found.
+func RedactPIIText(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	if redacted, changed := redactPIIJSONText(text); changed {
+		return redacted
+	}
+	if redacted, changed := RedactPIIJSONKeys(text); changed {
+		return redactPIIPatterns(redacted)
+	}
+	return redactPIIPatterns(text)
+}
+
+// RedactPIIJSONKeys redacts values whose JSON keys commonly carry customer
+// PII. It intentionally skips regex value sweeps so callers can apply it to
+// larger captures before truncating, then run RedactPIIText on the bounded
+// persisted sample.
+func RedactPIIJSONKeys(text string) (string, bool) {
+	if strings.TrimSpace(text) == "" {
+		return text, false
+	}
+	if !piiJSONKeyNeedleRE.MatchString(text) && !piiJSONCredentialKeyNeedleRE.MatchString(text) {
+		return text, false
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &parsed); err == nil {
+		redacted, changed := redactPIIJSONValue(parsed, "", false)
+		if !changed {
+			return text, false
+		}
+		out, ok := marshalPIIJSON(redacted)
+		if !ok {
+			return text, false
+		}
+		return out, true
+	}
+
+	if redacted, changed := redactPIIJSONLines(text); changed {
+		return redacted, true
+	}
+	return redactPIIJSONKeyFragments(text)
+}
+
+func redactPIIJSONText(text string) (string, bool) {
+	var parsed any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &parsed); err != nil {
+		return "", false
+	}
+	redacted, changed := redactPIIJSONValue(parsed, "", true)
+	if !changed {
+		return text, false
+	}
+	out, ok := marshalPIIJSON(redacted)
+	if !ok {
+		return redactPIIPatterns(text), true
+	}
+	return out, true
+}
+
+func marshalPIIJSON(value any) (string, bool) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(value); err != nil {
+		return "", false
+	}
+	return strings.TrimSuffix(buf.String(), "\n"), true
+}
+
+func redactPIIJSONLines(text string) (string, bool) {
+	var out strings.Builder
+	changed := false
+	for _, line := range strings.SplitAfter(text, "\n") {
+		lineBody := strings.TrimSuffix(line, "\n")
+		lineEnding := line[len(lineBody):]
+		trimmed := strings.TrimSpace(lineBody)
+		if trimmed == "" {
+			out.WriteString(line)
+			continue
+		}
+		var parsed any
+		if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+			out.WriteString(line)
+			continue
+		}
+		redacted, lineChanged := redactPIIJSONValue(parsed, "", false)
+		if !lineChanged {
+			out.WriteString(line)
+			continue
+		}
+		marshaled, ok := marshalPIIJSON(redacted)
+		if !ok {
+			out.WriteString(line)
+			continue
+		}
+		out.WriteString(marshaled)
+		out.WriteString(lineEnding)
+		changed = true
+	}
+	return out.String(), changed
+}
+
+func redactPIIJSONValue(value any, key string, redactStringPatterns bool) (any, bool) {
+	if key != "" && isPIIJSONScalarKey(key) {
+		return PIIRedactedSentinel, true
+	}
+
+	switch v := value.(type) {
+	case map[string]any:
+		changed := false
+		for childKey, child := range v {
+			redacted, childChanged := redactPIIJSONValue(child, childKey, redactStringPatterns)
+			if childChanged {
+				v[childKey] = redacted
+				changed = true
+			}
+		}
+		return v, changed
+	case []any:
+		changed := false
+		for i, child := range v {
+			redacted, childChanged := redactPIIJSONValue(child, "", redactStringPatterns)
+			if childChanged {
+				v[i] = redacted
+				changed = true
+			}
+		}
+		return v, changed
+	case string:
+		if !redactStringPatterns {
+			return v, false
+		}
+		redacted := redactPIIPatterns(v)
+		return redacted, redacted != v
+	default:
+		return value, false
+	}
+}
+
+var jsonStringPairRE = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"`)
+
+func redactPIIJSONKeyFragments(text string) (string, bool) {
+	changed := false
+	redacted := jsonStringPairRE.ReplaceAllStringFunc(text, func(match string) string {
+		pair := jsonStringPairRE.FindStringSubmatch(match)
+		if len(pair) != 3 {
+			return match
+		}
+		key, err := strconv.Unquote(`"` + pair[1] + `"`)
+		if err != nil || !isPIIJSONScalarKey(key) {
+			return match
+		}
+		changed = true
+		target := `"` + pair[2] + `"`
+		valueIdx := strings.LastIndex(match, target)
+		if valueIdx == -1 {
+			return match
+		}
+		return match[:valueIdx] + strconv.Quote(PIIRedactedSentinel) + match[valueIdx+len(target):]
+	})
+	return redacted, changed
+}
+
+func normalizePIIJSONKey(key string) string {
+	key = strings.ToLower(key)
+	key = strings.ReplaceAll(key, "_", "")
+	key = strings.ReplaceAll(key, "-", "")
+	key = strings.ReplaceAll(key, " ", "")
+	return key
+}
+
+func isPIIJSONScalarKey(key string) bool {
+	normalized := normalizePIIJSONKey(key)
+	return piiJSONScalarKeys[normalized] ||
+		normalized == "authtoken" ||
+		normalized == "authenticationtoken" ||
+		(strings.HasSuffix(normalized, "token") && hasPIISSOKeySegment(key))
+}
+
+func hasPIISSOKeySegment(key string) bool {
+	lower := strings.ToLower(key)
+	for offset := 0; offset < len(lower); {
+		relative := strings.Index(lower[offset:], "sso")
+		if relative == -1 {
+			return false
+		}
+		idx := offset + relative
+		if idx == 0 || strings.ContainsRune("_- ", rune(key[idx-1])) ||
+			(key[idx] >= 'A' && key[idx] <= 'Z' && key[idx-1] >= 'a' && key[idx-1] <= 'z') {
+			return true
+		}
+		offset = idx + len("sso")
+	}
+	return false
+}
+
+// RedactPIIJWTs removes JWT-shaped credentials before callers truncate text.
+func RedactPIIJWTs(text string) string {
+	return piiCredentialJWTPattern.ReplaceAllString(text, PIIRedactedSentinel)
+}
+
+func redactPIIPatterns(text string) string {
+	redacted := text
+	for _, det := range piiDetectors {
+		redacted = redactDetectorMatches(det, redacted)
+	}
+	return RedactPIIJWTs(redacted)
+}
+
+func redactDetectorMatches(det piiDetector, text string) string {
+	locs := det.pattern.FindAllStringIndex(text, -1)
+	if len(locs) == 0 {
+		return text
+	}
+	var b strings.Builder
+	last := 0
+	for _, loc := range locs {
+		match := text[loc[0]:loc[1]]
+		b.WriteString(text[last:loc[0]])
+		if isSyntheticPIIPlaceholder(det.kind, match) ||
+			(det.kind == PIIKindEmail && isBenignEmailContext(text, loc[0], match)) ||
+			(det.kind == PIIKindPhoneUS && isGitHubContextBarePhoneID(text, loc[0], match)) {
+			b.WriteString(match)
+		} else {
+			b.WriteString(PIIRedactedSentinel)
+		}
+		last = loc[1]
+	}
+	b.WriteString(text[last:])
+	return b.String()
+}
+
+// Scoped to the capture-to-publish leak path: manuscripts, operator-authored
+// JSON/YAML/Markdown, and README files. Generated test fixtures are excluded
+// because synthetic placeholder values there are not customer PII.
 var highRiskFileGlobs = []string{
 	"*.json",
 	"*.yaml",
 	"*.yml",
 	"*.md",
-	"*_test.go",
 }
 
 var highRiskDirGlobs = []string{
 	".manuscripts",
-	"testdata",
 }
 
 // ToolsPolishLedgerFilename is the tools-audit polish ledger basename.
@@ -163,16 +463,246 @@ var excludedFiles = map[string]bool{
 	ToolsPolishLedgerFilename: true,
 }
 
+// rootVendorSpecFiles are the CLI-root basenames the generator embeds
+// as vendor source — the OpenAPI/internal spec the operator passed to
+// `--spec`. Vendor-published `example:` values (emails, phones,
+// addresses) are documentation, not customer PII, so a Stripe/Zendesk/
+// GitHub spec doesn't false-fail every promote. Exemption is depth-1
+// only; a spec.yaml nested under .manuscripts/ is captured content and
+// stays in scope unless content-detection identifies it as an archived vendor
+// spec (see manuscriptsDir + looksLikeVendorAPISpec). Generated test fixtures
+// under testdata/ are outside the audit scope.
+// Mirrors findArchivedSpec()'s candidate set in
+// internal/pipeline/climanifest.go.
+var rootVendorSpecFiles = map[string]bool{
+	"spec.json": true,
+	"spec.yaml": true,
+	"spec.yml":  true,
+}
+
+// manuscriptsDir is the path component that scopes the content-detected
+// vendor-spec exemption. Vendor specs archived under any depth inside
+// .manuscripts/ — research/, discovery/, or freeform subdirs — are
+// reproducible from the upstream URL and contain documentation `example:`
+// values, not customer PII. Limiting the content exemption to manuscripts
+// keeps the bypass off non-archive paths (committed docs/, generated
+// internal/, etc.) so a hand-edited file at docs/api.yaml still scans.
+const manuscriptsDir = ".manuscripts"
+
+// vendorSpecMarkers are the OpenAPI/Swagger version-marker patterns
+// looksLikeVendorAPISpec probes for in a file's head bytes. The two-form
+// shape (JSON quoted-key vs YAML unquoted-key) is required because vendor
+// docs ship both formats. Both forms anchor the key to the document
+// start: JSON requires `openapi`/`swagger` as the first key after the
+// opening brace; YAML requires it as the first content line after any
+// allowed lead-in (YAML directive `%...`, document marker `---`,
+// comments, blank lines). Without these anchors, a non-spec file with
+// PII in earlier keys could bypass scanning when it happened to also
+// contain an `openapi`/`swagger` marker deeper in the payload — a
+// response envelope, captured config blob, or research-notes YAML that
+// listed real values before the version field. Version constraints
+// (2.x or 3.x) avoid matching freeform mentions like "openapi: future".
+var vendorSpecMarkers = []*regexp.Regexp{
+	// JSON: {"openapi": "3.x.x" — openapi must be the first key.
+	regexp.MustCompile(`\A\s*\{\s*"openapi"\s*:\s*"[23]\.`),
+	regexp.MustCompile(`\A\s*\{\s*"swagger"\s*:\s*"2\.`),
+	// YAML: optional %directives, `---` document marker, comments, and
+	// blank lines may precede the marker, but no other content key can
+	// appear before `openapi`/`swagger` at column 0.
+	regexp.MustCompile(`\A(?:(?:%[^\n]*|---[ \t]*|[ \t]*#[^\n]*|[ \t]*)\n)*openapi\s*:\s*['"]?[23]\.`),
+	regexp.MustCompile(`\A(?:(?:%[^\n]*|---[ \t]*|[ \t]*#[^\n]*|[ \t]*)\n)*swagger\s*:\s*['"]?2\.`),
+}
+
+// looksLikeVendorAPISpec reports whether the first few KB of a file
+// match an OpenAPI 2.x/3.x or Swagger 2.0 root-document marker. Content
+// detection beats filename heuristics because vendors ship spec source
+// under arbitrary basenames (`apps/calendars.json`, `pushpress-v3.yaml`)
+// that no glob would reliably cover. Restricted at the call site to
+// files under .manuscripts/ so non-archive paths cannot bypass scanning
+// by embedding a stray version marker.
+func looksLikeVendorAPISpec(probe []byte) bool {
+	for _, re := range vendorSpecMarkers {
+		if re.Match(probe) {
+			return true
+		}
+	}
+	return false
+}
+
+// isUnderManuscripts reports whether the slash-separated relative path
+// lives anywhere inside a .manuscripts/ subtree.
+func isUnderManuscripts(relSlash string) bool {
+	return slices.Contains(strings.Split(relSlash, "/"), manuscriptsDir)
+}
+
 // skippedDirs are subtree names the walker never descends into at the
 // top level. Scoping to depth-1 is deliberate — `.git` and friends as
 // direct children of the cli-dir are infrastructure; the same names
-// nested inside `.manuscripts/` or `testdata/` are captured content
-// and must be scanned.
+// nested inside `.manuscripts/` is captured content and must be scanned.
+// Generated fixture and top-level tooling workspaces are skipped at the root.
 var skippedDirs = map[string]bool{
+	".claude":      true,
 	".git":         true,
+	".omc":         true,
+	"testdata":     true,
 	"node_modules": true,
 	"vendor":       true,
 	"build":        true,
+}
+
+func isSyntheticPIIPlaceholder(kind, matched string) bool {
+	switch kind {
+	case PIIKindEmail:
+		return isRFCReservedEmail(matched)
+	case PIIKindPhoneUS:
+		return isNANPFictionalPhone(matched)
+	case PIIKindOrderID:
+		return piiplaceholders.IsSyntheticOrderID(matched)
+	case PIIKindASIN:
+		return piiplaceholders.IsSyntheticASIN(matched)
+	case PIIKindPostalAddress:
+		return piiplaceholders.IsSyntheticPostalAddress(matched)
+	default:
+		return false
+	}
+}
+
+func isRFCReservedEmail(matched string) bool {
+	at := strings.LastIndexByte(matched, '@')
+	if at == -1 || at == len(matched)-1 {
+		return false
+	}
+	domain := strings.ToLower(strings.Trim(matched[at+1:], "."))
+	if domain == "example.com" || domain == "example.org" || domain == "example.net" {
+		return true
+	}
+	return strings.HasSuffix(domain, ".example.com") ||
+		strings.HasSuffix(domain, ".example.org") ||
+		strings.HasSuffix(domain, ".example.net") ||
+		strings.HasSuffix(domain, ".example") ||
+		strings.HasSuffix(domain, ".test") ||
+		strings.HasSuffix(domain, ".invalid") ||
+		strings.HasSuffix(domain, ".localhost")
+}
+
+func isBenignEmailContext(line string, matchStart int, matchedSpan string) bool {
+	return isGitHubNoreplyEmail(matchedSpan) || isURLUserinfoPlaceholderEmail(line, matchStart, matchedSpan)
+}
+
+func isGitHubNoreplyEmail(matched string) bool {
+	lower := strings.ToLower(matched)
+	if !strings.HasSuffix(lower, "@users.noreply.github.com") {
+		return false
+	}
+	local := strings.TrimSuffix(lower, "@users.noreply.github.com")
+	id, handle, ok := strings.Cut(local, "+")
+	if ok {
+		if id == "" || handle == "" {
+			return false
+		}
+		for _, r := range id {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return isGitHubHandleLocalPart(handle)
+	}
+	return isGitHubHandleLocalPart(local)
+}
+
+func isGitHubHandleLocalPart(handle string) bool {
+	if handle == "" {
+		return false
+	}
+	for _, r := range handle {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isURLUserinfoPlaceholderEmail(line string, matchStart int, matched string) bool {
+	local, _, ok := strings.Cut(strings.ToLower(matched), "@")
+	if !ok || !map[string]bool{
+		"apikey":   true,
+		"password": true,
+		"pass":     true,
+		"secret":   true,
+		"token":    true,
+	}[local] {
+		return false
+	}
+	prefixStart := matchStart
+	for prefixStart > 0 {
+		r := line[prefixStart-1]
+		if r == '"' || r == '\'' || r == '`' || r == '<' || r == '(' || r == '[' || r == '{' || r == ' ' || r == '\t' || r == '\n' {
+			break
+		}
+		prefixStart--
+	}
+	prefix := strings.ToLower(line[prefixStart:matchStart])
+	if !strings.HasSuffix(prefix, ":") {
+		return false
+	}
+	user := strings.TrimSuffix(prefix, ":")
+	if schemeIdx := strings.LastIndex(user, "://"); schemeIdx != -1 {
+		user = user[schemeIdx+len("://"):]
+	}
+	return map[string]bool{
+		"login":    true,
+		"user":     true,
+		"username": true,
+	}[user]
+}
+
+func isNANPFictionalPhone(matched string) bool {
+	var digits strings.Builder
+	for _, r := range matched {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	normalized := digits.String()
+	if len(normalized) == 11 && normalized[0] == '1' {
+		normalized = normalized[1:]
+	}
+	switch len(normalized) {
+	case 10:
+		return normalized[3:6] == "555" && strings.HasPrefix(normalized[6:], "01")
+	default:
+		return false
+	}
+}
+
+func isGitHubContextBarePhoneID(line string, matchStart int, matchedSpan string) bool {
+	if !isBareDigits(matchedSpan) {
+		return false
+	}
+	start := max(0, matchStart-30)
+	context := strings.ToLower(line[start:matchStart])
+	for _, token := range []string{
+		"comment id", "comment_id", "comment-id", "issuecomment", "discussion_r",
+		"/comments/", "/commit/", "/commits/", "/pull/", "/issues/",
+	} {
+		if strings.Contains(context, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func isBareDigits(span string) bool {
+	if span == "" {
+		return false
+	}
+	for _, r := range span {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // FindPII walks root, applies the file-scoping rules, and returns all
@@ -217,6 +747,33 @@ func FindPII(root string) ([]PIIFinding, error) {
 	if err != nil {
 		return nil, err
 	}
+	sortPIIFindings(findings)
+	return findings, nil
+}
+
+// FindPIIWithOptions walks root plus any explicitly supplied external
+// manuscript run inputs. External manuscript findings are reported using the
+// same .manuscripts/<run-id>/... paths that publish package later stages.
+func FindPIIWithOptions(root string, opts PIIAuditOptions) ([]PIIFinding, error) {
+	findings, err := FindPII(root)
+	if err != nil {
+		return nil, err
+	}
+	if opts.ManuscriptsDir == "" {
+		return findings, nil
+	}
+
+	manuscriptFindings, err := findPIIInManuscriptsRun(opts.ManuscriptsDir)
+	if err != nil {
+		return nil, err
+	}
+	findings = append(findings, manuscriptFindings...)
+	findings = dedupePIIFindings(findings)
+	sortPIIFindings(findings)
+	return findings, nil
+}
+
+func sortPIIFindings(findings []PIIFinding) {
 	sort.Slice(findings, func(i, j int) bool {
 		if findings[i].File != findings[j].File {
 			return findings[i].File < findings[j].File
@@ -229,6 +786,59 @@ func FindPII(root string) ([]PIIFinding, error) {
 		}
 		return findings[i].Kind < findings[j].Kind
 	})
+}
+
+func dedupePIIFindings(findings []PIIFinding) []PIIFinding {
+	seen := make(map[string]bool, len(findings))
+	out := findings[:0]
+	for _, finding := range findings {
+		key := piiFindingKey(finding)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, finding)
+	}
+	return out
+}
+
+func findPIIInManuscriptsRun(runDir string) ([]PIIFinding, error) {
+	info, err := os.Stat(runDir)
+	if err != nil {
+		return nil, fmt.Errorf("manuscripts-dir %q: %w", runDir, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("manuscripts-dir %q is not a directory", runDir)
+	}
+
+	runID := filepath.Base(filepath.Clean(runDir))
+	candidates := []string{filepath.Join(runDir, "research.json")}
+	researchMarkdown, err := filepath.Glob(filepath.Join(runDir, "research", "*.md"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(researchMarkdown)
+	candidates = append(candidates, researchMarkdown...)
+
+	var findings []PIIFinding
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		rel, err := filepath.Rel(runDir, path)
+		if err != nil {
+			return nil, err
+		}
+		stagedRel := filepath.ToSlash(filepath.Join(manuscriptsDir, runID, rel))
+		fileFindings, err := scanPIIFileWithRel(path, stagedRel)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, fileFindings...)
+	}
 	return findings, nil
 }
 
@@ -239,6 +849,9 @@ func FindPII(root string) ([]PIIFinding, error) {
 func isHighRiskFile(relSlash string) bool {
 	base := filepath.Base(relSlash)
 	if excludedFiles[base] {
+		return false
+	}
+	if !strings.Contains(relSlash, "/") && rootVendorSpecFiles[base] {
 		return false
 	}
 	parts := strings.Split(relSlash, "/")
@@ -265,6 +878,14 @@ func isHighRiskFile(relSlash string) bool {
 // Binary files (null-byte probe) are skipped. Returns findings keyed
 // to the file's path relative to root with forward-slash separators.
 func scanPIIFile(root, path string) ([]PIIFinding, error) {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return nil, err
+	}
+	return scanPIIFileWithRel(path, filepath.ToSlash(rel))
+}
+
+func scanPIIFileWithRel(path, relSlash string) ([]PIIFinding, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -280,11 +901,14 @@ func scanPIIFile(root, path string) ([]PIIFinding, error) {
 		return nil, nil
 	}
 
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return nil, err
+	// Vendor-published OpenAPI/Swagger source archived under .manuscripts/
+	// carries documentation `example:` values, not customer PII. Mirrors
+	// the depth-1 rootVendorSpecFiles exemption for the case where the
+	// spec source lives nested in research/, discovery/, or freeform
+	// archive subdirs and the basename isn't `spec.{json,yaml,yml}`.
+	if isUnderManuscripts(relSlash) && looksLikeVendorAPISpec(probe) {
+		return nil, nil
 	}
-	relSlash := filepath.ToSlash(rel)
 
 	var findings []PIIFinding
 	lineNumber := 0
@@ -299,12 +923,22 @@ func scanPIIFile(root, path string) ([]PIIFinding, error) {
 		lineNumber++
 		for _, det := range piiDetectors {
 			for _, match := range det.pattern.FindAllStringIndex(line, -1) {
+				matchedSpan := line[match[0]:match[1]]
+				if isSyntheticPIIPlaceholder(det.kind, matchedSpan) {
+					continue
+				}
+				if det.kind == PIIKindEmail && isBenignEmailContext(line, match[0], matchedSpan) {
+					continue
+				}
+				if det.kind == PIIKindPhoneUS && isGitHubContextBarePhoneID(line, match[0], matchedSpan) {
+					continue
+				}
 				findings = append(findings, PIIFinding{
 					Kind:        det.kind,
 					File:        relSlash,
 					Line:        lineNumber,
 					Column:      match[0] + 1, // 1-based
-					MatchedSpan: line[match[0]:match[1]],
+					MatchedSpan: matchedSpan,
 				})
 			}
 		}
@@ -690,18 +1324,29 @@ type PIIAuditResult struct {
 // disk full), the audit result is still returned and a warning is
 // logged to stderr. The gate decision uses the in-memory result.
 func RunPIIAudit(dir string) (PIIAuditResult, error) {
-	return runPIIAudit(dir, true)
+	return RunPIIAuditWithOptions(dir, PIIAuditOptions{})
+}
+
+// RunPIIAuditWithOptions performs a full audit cycle with optional external
+// scan inputs and persists the reconciled ledger.
+func RunPIIAuditWithOptions(dir string, opts PIIAuditOptions) (PIIAuditResult, error) {
+	return runPIIAudit(dir, true, opts)
 }
 
 // ScanPII performs the audit without writing the ledger. The pii-audit
 // CLI's --json path uses this so a read-only probe doesn't have the
 // side effect of touching the filesystem.
 func ScanPII(dir string) (PIIAuditResult, error) {
-	return runPIIAudit(dir, false)
+	return ScanPIIWithOptions(dir, PIIAuditOptions{})
 }
 
-func runPIIAudit(dir string, persist bool) (PIIAuditResult, error) {
-	findings, err := FindPII(dir)
+// ScanPIIWithOptions performs the audit without writing the ledger.
+func ScanPIIWithOptions(dir string, opts PIIAuditOptions) (PIIAuditResult, error) {
+	return runPIIAudit(dir, false, opts)
+}
+
+func runPIIAudit(dir string, persist bool, opts PIIAuditOptions) (PIIAuditResult, error) {
+	findings, err := FindPIIWithOptions(dir, opts)
 	if err != nil {
 		return PIIAuditResult{}, fmt.Errorf("scanning %s for PII: %w", dir, err)
 	}
@@ -711,7 +1356,7 @@ func runPIIAudit(dir string, persist bool) (PIIAuditResult, error) {
 	if persist {
 		ledger := &PIILedger{
 			Timestamp: time.Now().UTC(),
-			CLIDir:    dir,
+			CLIDir:    RedactCLIDirRoot(dir),
 			Findings:  findings,
 		}
 		if previous != nil {

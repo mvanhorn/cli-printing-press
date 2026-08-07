@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -14,6 +15,19 @@ const (
 
 	phase5AcceptanceLevelQuick = "quick"
 	phase5AcceptanceLevelFull  = "full"
+
+	phase5SkipReasonAuthRequiredNoCredential       = "auth_required_no_credential"
+	phase5SkipReasonExternalCredentialsUnavailable = "external_credentials_unavailable"
+	phase5SkipReasonLANUnreachableFromHost         = "lan-unreachable-from-generation-host"
+	phase5SkipReasonLocalSourceRequiresDatabase    = "local_source_requires_operator_database"
+	// phase5SkipReasonCookieAuthNoHarnessSession records that a
+	// cookie/composed/session_handshake CLI could not be exercised live
+	// because the sandboxed dogfood HOME carried no captured browser session.
+	// The 401s this produces are a harness artifact, not a CLI defect; the
+	// live runner emits the matching skip. Valid only for browser-session
+	// auth types — credentialed auth (api_key/bearer/oauth2) keeps using
+	// auth_required_no_credential.
+	phase5SkipReasonCookieAuthNoHarnessSession = "cookie-auth-no-harness-session"
 )
 
 var phase5AcceptedAcceptanceLevels = []string{
@@ -25,20 +39,42 @@ type Phase5AuthContext struct {
 	Type                    string `json:"type,omitempty"`
 	APIKeyAvailable         bool   `json:"api_key_available,omitempty"`
 	BrowserSessionAvailable bool   `json:"browser_session_available,omitempty"`
+	LocalSQLite             bool   `json:"local_sqlite,omitempty"`
+	LocalNetworkOnly        bool   `json:"local_network_only,omitempty"`
 }
 
 type Phase5GateMarker struct {
-	SchemaVersion int               `json:"schema_version"`
-	APIName       string            `json:"api_name,omitempty"`
-	RunID         string            `json:"run_id,omitempty"`
-	Status        string            `json:"status"`
-	Level         string            `json:"level,omitempty"`
-	MatrixSize    int               `json:"matrix_size,omitempty"`
-	TestsPassed   int               `json:"tests_passed,omitempty"`
-	TestsSkipped  int               `json:"tests_skipped,omitempty"`
-	TestsFailed   int               `json:"tests_failed,omitempty"`
-	AuthContext   Phase5AuthContext `json:"auth_context,omitzero"`
-	SkipReason    string            `json:"skip_reason,omitempty"`
+	SchemaVersion     int                   `json:"schema_version"`
+	APIName           string                `json:"api_name,omitempty"`
+	RunID             string                `json:"run_id,omitempty"`
+	Status            string                `json:"status"`
+	Level             string                `json:"level,omitempty"`
+	MatrixSize        int                   `json:"matrix_size,omitempty"`
+	TestsPassed       int                   `json:"tests_passed,omitempty"`
+	TestsSkipped      int                   `json:"tests_skipped,omitempty"`
+	TestsUnverified   int                   `json:"tests_unverified,omitempty"`
+	TestsFailed       int                   `json:"tests_failed,omitempty"`
+	CoverageHollow    bool                  `json:"coverage_hollow,omitempty"`
+	HollowFeatures    []string              `json:"hollow_features,omitempty"`
+	AuthContext       Phase5AuthContext     `json:"auth_context,omitzero"`
+	SkipReason        string                `json:"skip_reason,omitempty"`
+	FailureSummary    *Phase5FailureSummary `json:"failure_summary,omitempty"`
+	SourceFingerprint string                `json:"source_fingerprint,omitempty"`
+	SourceFiles       map[string]string     `json:"source_files,omitempty"`
+}
+
+// Phase5FailureSummary groups failed tests by category so a human reviewing
+// a status:"fail" marker can route diagnosis without re-reading the full
+// dogfood-results-v2.json. Populated only when the runner writes a marker
+// on FAIL; absent on PASS markers.
+type Phase5FailureSummary struct {
+	TransportError int      `json:"transport_error,omitempty"`
+	HTTP4xx        int      `json:"http_4xx,omitempty"`
+	HTTP5xx        int      `json:"http_5xx,omitempty"`
+	ExitNonzero    int      `json:"exit_nonzero,omitempty"`
+	OutputMismatch int      `json:"output_mismatch,omitempty"`
+	Other          int      `json:"other,omitempty"`
+	Commands       []string `json:"commands,omitempty"`
 }
 
 type Phase5GateValidation struct {
@@ -48,15 +84,19 @@ type Phase5GateValidation struct {
 	Detail     string
 }
 
-func ValidatePhase5Gate(proofsDir string, manifest CLIManifest) Phase5GateValidation {
+func ValidatePhase5Gate(proofsDir string, manifest CLIManifest, sourceDirs ...string) Phase5GateValidation {
 	if strings.TrimSpace(proofsDir) == "" {
 		return Phase5GateValidation{Detail: "phase5 proofs directory is empty"}
 	}
+	sourceDir := ""
+	if len(sourceDirs) > 0 {
+		sourceDir = strings.TrimSpace(sourceDirs[0])
+	}
 
-	if result, ok := validatePhase5MarkerFile(filepath.Join(proofsDir, Phase5AcceptanceFilename), manifest, false); ok {
+	if result, ok := validatePhase5MarkerFile(filepath.Join(proofsDir, Phase5AcceptanceFilename), manifest, false, sourceDir); ok {
 		return result
 	}
-	if result, ok := validatePhase5MarkerFile(filepath.Join(proofsDir, Phase5SkipFilename), manifest, true); ok {
+	if result, ok := validatePhase5MarkerFile(filepath.Join(proofsDir, Phase5SkipFilename), manifest, true, sourceDir); ok {
 		return result
 	}
 
@@ -65,7 +105,7 @@ func ValidatePhase5Gate(proofsDir string, manifest CLIManifest) Phase5GateValida
 	}
 }
 
-func validatePhase5MarkerFile(path string, manifest CLIManifest, skipFile bool) (Phase5GateValidation, bool) {
+func validatePhase5MarkerFile(path string, manifest CLIManifest, skipFile bool, sourceDir string) (Phase5GateValidation, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -79,36 +119,51 @@ func validatePhase5MarkerFile(path string, manifest CLIManifest, skipFile bool) 
 		return Phase5GateValidation{MarkerPath: path, Detail: fmt.Sprintf("parsing phase5 marker: %v", err)}, true
 	}
 
-	result := validatePhase5Marker(marker, manifest, skipFile)
+	result := validatePhase5Marker(marker, manifest, skipFile, sourceDir)
 	result.MarkerPath = path
 	return result, true
 }
 
-func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFile bool) Phase5GateValidation {
+func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFile bool, sourceDir string) Phase5GateValidation {
 	status := strings.ToLower(strings.TrimSpace(marker.Status))
 	result := Phase5GateValidation{Status: status}
+	var issues []string
 
 	if marker.SchemaVersion != 1 {
-		result.Detail = fmt.Sprintf("unsupported phase5 marker schema_version %d", marker.SchemaVersion)
-		return result
+		issues = append(issues, fmt.Sprintf("unsupported phase5 marker schema_version %d", marker.SchemaVersion))
 	}
-	if marker.APIName != "" && manifest.APIName != "" && marker.APIName != manifest.APIName {
-		result.Detail = fmt.Sprintf("phase5 marker api_name %q does not match manifest api_name %q", marker.APIName, manifest.APIName)
-		return result
+	// Stale-marker protection: when the manifest carries identity, the
+	// marker must carry the same identity. An empty marker.APIName/RunID is
+	// only acceptable when the manifest is itself unidentified (e.g., a
+	// minimal state with no api_name) — otherwise an empty-identity marker
+	// would silently pass every subsequent promote regardless of run_id
+	// rotation.
+	if manifest.APIName != "" {
+		if marker.APIName == "" {
+			issues = append(issues, "phase5 marker missing api_name (manifest identifies the CLI)")
+		} else if marker.APIName != manifest.APIName {
+			issues = append(issues, fmt.Sprintf("phase5 marker api_name %q does not match manifest api_name %q", marker.APIName, manifest.APIName))
+		}
 	}
-	if marker.RunID != "" && manifest.RunID != "" && marker.RunID != manifest.RunID {
-		result.Detail = fmt.Sprintf("phase5 marker run_id %q does not match manifest run_id %q", marker.RunID, manifest.RunID)
-		return result
+	if manifest.RunID != "" {
+		if marker.RunID == "" {
+			issues = append(issues, "phase5 marker missing run_id (manifest identifies the run)")
+		} else if marker.RunID != manifest.RunID {
+			issues = append(issues, fmt.Sprintf("phase5 marker run_id %q does not match manifest run_id %q", marker.RunID, manifest.RunID))
+		}
+	}
+	if sourceDir != "" {
+		issues = append(issues, validatePhase5SourceFingerprint(marker, sourceDir)...)
 	}
 
 	switch status {
 	case "pass":
 		if skipFile {
-			result.Detail = fmt.Sprintf("%s must use status skip, got pass", Phase5SkipFilename)
-			return result
+			issues = append(issues, fmt.Sprintf("%s must use status skip, got pass", Phase5SkipFilename))
 		}
-		if detail := validatePhase5PassMarker(marker); detail != "" {
-			result.Detail = detail
+		issues = append(issues, validatePhase5PassMarkerIssues(marker)...)
+		if len(issues) > 0 {
+			result.Detail = strings.Join(issues, "; ")
 			return result
 		}
 		if ok, detail := phase5AcceptancePassed(marker); !ok {
@@ -118,15 +173,22 @@ func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFil
 		result.Passed = true
 		return result
 	case "fail":
+		if skipFile {
+			issues = append(issues, fmt.Sprintf("%s must use status skip, got fail", Phase5SkipFilename))
+		}
+		if len(issues) > 0 {
+			result.Detail = strings.Join(issues, "; ")
+			return result
+		}
 		result.Detail = "phase5 gate status is fail"
 		return result
 	case "skip":
 		if !skipFile {
-			result.Detail = fmt.Sprintf("%s must use status pass or fail, got skip", Phase5AcceptanceFilename)
-			return result
+			issues = append(issues, fmt.Sprintf("%s must use status pass or fail, got skip", Phase5AcceptanceFilename))
 		}
-		if detail := validatePhase5SkipMarker(marker); detail != "" {
-			result.Detail = detail
+		issues = append(issues, validatePhase5SkipMarkerIssues(marker)...)
+		if len(issues) > 0 {
+			result.Detail = strings.Join(issues, "; ")
 			return result
 		}
 		if ok, detail := phase5SkipAllowed(marker, manifest); !ok {
@@ -136,29 +198,65 @@ func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFil
 		result.Passed = true
 		return result
 	default:
-		result.Detail = fmt.Sprintf("unknown phase5 gate status %q", marker.Status)
+		issues = append(issues, phase5UnknownStatusDetail(marker.Status, skipFile))
+		if skipFile {
+			issues = append(issues, validatePhase5SkipMarkerIssues(marker)...)
+		} else {
+			issues = append(issues, validatePhase5PassMarkerIssues(marker)...)
+		}
+		result.Detail = strings.Join(issues, "; ")
 		return result
 	}
 }
 
-func validatePhase5PassMarker(marker Phase5GateMarker) string {
-	switch {
-	case strings.TrimSpace(marker.APIName) == "":
-		return "phase5 acceptance marker missing api_name"
-	case strings.TrimSpace(marker.RunID) == "":
-		return "phase5 acceptance marker missing run_id"
-	case phase5Level(marker) == "":
-		return "phase5 acceptance marker missing level"
-	case marker.MatrixSize <= 0:
-		return "phase5 acceptance marker missing matrix_size"
-	case marker.TestsPassed <= 0:
-		return "phase5 acceptance marker missing tests_passed"
-	default:
-		return ""
+func validatePhase5SourceFingerprint(marker Phase5GateMarker, sourceDir string) []string {
+	current, err := CaptureSourceFingerprint(sourceDir)
+	if err != nil {
+		return []string{fmt.Sprintf("capturing current CLI source fingerprint: %v", err)}
 	}
+	if strings.TrimSpace(marker.SourceFingerprint) == "" {
+		return []string{"phase5 marker missing source_fingerprint"}
+	}
+	if marker.SourceFingerprint == current.Digest {
+		return nil
+	}
+
+	issues := []string{"phase5 marker source fingerprint does not match the current CLI source"}
+	if len(marker.SourceFiles) == 0 {
+		return issues
+	}
+	if changed := changedSourceFingerprintFiles(marker.SourceFiles, current.Files); len(changed) > 0 {
+		issues = append(issues, fmt.Sprintf("changed source files: %s", strings.Join(changed, ", ")))
+	}
+	return issues
+}
+
+func validatePhase5PassMarkerIssues(marker Phase5GateMarker) []string {
+	// api_name and run_id are identity tags: the cross-check in
+	// validatePhase5Marker enforces consistency when both marker and
+	// manifest carry them, so requiring them here would reject markers
+	// written before the manifest exists (e.g., dogfood --write-acceptance
+	// run prior to `lock promote`).
+	var issues []string
+	switch {
+	case phase5Level(marker) == "":
+		issues = append(issues, "phase5 acceptance marker missing level")
+	case !phase5AcceptedAcceptanceLevel(phase5Level(marker)):
+		issues = append(issues, unknownPhase5AcceptanceLevelDetail(marker.Level))
+	}
+	if marker.MatrixSize <= 0 {
+		issues = append(issues, "phase5 acceptance marker missing matrix_size")
+	}
+	if marker.TestsPassed <= 0 {
+		issues = append(issues, "phase5 acceptance marker missing tests_passed")
+	}
+	return issues
 }
 
 func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
+	if marker.CoverageHollow {
+		return false, fmt.Sprintf("phase5 acceptance has hollow coverage for: %s", strings.Join(marker.HollowFeatures, ", "))
+	}
 	level := phase5Level(marker)
 	switch level {
 	case phase5AcceptanceLevelQuick:
@@ -185,12 +283,16 @@ func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
 		if marker.TestsFailed != 0 {
 			return false, fmt.Sprintf("phase5 full acceptance has %d failed tests", marker.TestsFailed)
 		}
-		if marker.TestsPassed != marker.MatrixSize {
-			return false, fmt.Sprintf("phase5 full acceptance requires all %d tests passed, got %d", marker.MatrixSize, marker.TestsPassed)
+		if marker.TestsPassed == marker.MatrixSize {
+			return true, ""
+		}
+		accountedTests := marker.TestsPassed + marker.TestsSkipped
+		if accountedTests != marker.MatrixSize {
+			return false, fmt.Sprintf("phase5 full acceptance requires all %d tests accounted for (passed+skipped), got %d passed + %d skipped = %d", marker.MatrixSize, marker.TestsPassed, marker.TestsSkipped, accountedTests)
 		}
 		return true, ""
 	default:
-		return false, fmt.Sprintf("unknown phase5 acceptance level %q (accepted: %s; prefer `printing-press dogfood --live --write-acceptance` to generate %s)", marker.Level, strings.Join(phase5AcceptedAcceptanceLevels, ", "), Phase5AcceptanceFilename)
+		return false, unknownPhase5AcceptanceLevelDetail(marker.Level)
 	}
 }
 
@@ -198,40 +300,95 @@ func phase5Level(marker Phase5GateMarker) string {
 	return strings.ToLower(strings.TrimSpace(marker.Level))
 }
 
-func validatePhase5SkipMarker(marker Phase5GateMarker) string {
-	switch {
-	case strings.TrimSpace(marker.APIName) == "":
-		return "phase5 skip marker missing api_name"
-	case strings.TrimSpace(marker.RunID) == "":
-		return "phase5 skip marker missing run_id"
-	case strings.TrimSpace(marker.SkipReason) == "":
-		return "phase5 skip marker missing skip_reason"
-	default:
-		return ""
+func phase5AcceptedAcceptanceLevel(level string) bool {
+	return slices.Contains(phase5AcceptedAcceptanceLevels, level)
+}
+
+func phase5UnknownStatusDetail(status string, skipFile bool) string {
+	accepted := []string{"pass", "fail"}
+	if skipFile {
+		accepted = []string{"skip"}
 	}
+	return fmt.Sprintf("unknown phase5 gate status %q (accepted: %s)", status, strings.Join(accepted, ", "))
+}
+
+func unknownPhase5AcceptanceLevelDetail(level string) string {
+	return fmt.Sprintf("unknown phase5 acceptance level %q (accepted: %s; prefer `cli-printing-press dogfood --live --write-acceptance` to generate %s)", level, strings.Join(phase5AcceptedAcceptanceLevels, ", "), Phase5AcceptanceFilename)
+}
+
+func validatePhase5SkipMarkerIssues(marker Phase5GateMarker) []string {
+	var issues []string
+	if strings.TrimSpace(marker.APIName) == "" {
+		issues = append(issues, "phase5 skip marker missing api_name")
+	}
+	if strings.TrimSpace(marker.RunID) == "" {
+		issues = append(issues, "phase5 skip marker missing run_id")
+	}
+	if strings.TrimSpace(marker.SkipReason) == "" {
+		issues = append(issues, "phase5 skip marker missing skip_reason")
+	}
+	return issues
 }
 
 func phase5SkipAllowed(marker Phase5GateMarker, manifest CLIManifest) (bool, string) {
 	authType := strings.ToLower(strings.TrimSpace(manifest.AuthType))
 	markerAuthType := strings.ToLower(strings.TrimSpace(marker.AuthContext.Type))
+	skipReason := phase5SkipReason(marker)
 	if authType == "" {
 		authType = markerAuthType
-	} else if markerAuthType != "" && markerAuthType != authType {
+	} else if markerAuthType != "" && markerAuthType != authType && (authType != "none" || !phase5SyntheticExternalCredentialSkip(manifest, skipReason)) {
 		return false, fmt.Sprintf("phase5 skip marker auth type %q does not match manifest auth type %q", marker.AuthContext.Type, manifest.AuthType)
 	}
 	if authType == "" || authType == "none" {
+		if manifest.IsLocalDatastore() {
+			if skipReason == phase5SkipReasonLocalSourceRequiresDatabase {
+				return true, ""
+			}
+			return false, fmt.Sprintf("phase5 skip reason %q is not valid for local datastore no-auth APIs", marker.SkipReason)
+		}
+		if skipReason == phase5SkipReasonLANUnreachableFromHost {
+			if !marker.AuthContext.LocalNetworkOnly {
+				return false, "phase5 LAN-unreachable skip requires auth_context.local_network_only=true"
+			}
+			return true, ""
+		}
+		if phase5SyntheticExternalCredentialSkip(manifest, skipReason) {
+			if marker.AuthContext.APIKeyAvailable {
+				return false, "phase5 skip claims an API key was available"
+			}
+			return true, ""
+		}
 		return false, "no-auth APIs require a phase5 pass marker, not a skip marker"
 	}
 	if marker.AuthContext.APIKeyAvailable {
 		return false, "phase5 skip claims an API key was available"
 	}
 	if authRequiresCredential(authType) {
+		if phase5SkipReason(marker) == phase5SkipReasonLANUnreachableFromHost {
+			return false, fmt.Sprintf("phase5 skip reason %q is not valid for auth type %q", marker.SkipReason, authType)
+		}
 		return true, ""
 	}
 	switch authType {
 	case "cookie", "composed", "session_handshake":
-		return false, "browser-session auth APIs require phase5 acceptance; missing API key is not a valid skip"
+		// The sandboxed dogfood HOME carries no captured browser session, so
+		// every command 401s — a harness artifact, not a CLI defect. Accept the
+		// runner-emitted no-harness-session skip; reject any other skip reason
+		// (e.g. auth_required_no_credential) so missing-credential excuses can't
+		// substitute for it.
+		if skipReason == phase5SkipReasonCookieAuthNoHarnessSession {
+			return true, ""
+		}
+		return false, "browser-session auth APIs require phase5 acceptance or a cookie-auth-no-harness-session skip; missing API key is not a valid skip"
 	default:
 		return false, fmt.Sprintf("phase5 skip not allowed for auth type %q", authType)
 	}
+}
+
+func phase5SkipReason(marker Phase5GateMarker) string {
+	return strings.ToLower(strings.TrimSpace(marker.SkipReason))
+}
+
+func phase5SyntheticExternalCredentialSkip(manifest CLIManifest, skipReason string) bool {
+	return manifest.IsSyntheticSpec() && skipReason == phase5SkipReasonExternalCredentialsUnavailable
 }

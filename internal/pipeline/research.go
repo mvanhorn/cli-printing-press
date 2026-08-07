@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -14,8 +15,6 @@ import (
 	"strings"
 	"time"
 
-	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llm"
 )
 
@@ -34,10 +33,93 @@ type ResearchResult struct {
 	// NOT omitempty: an empty [] means "dogfood ran, nothing survived" while a
 	// missing field means "dogfood hasn't validated yet."
 	NovelFeaturesBuilt *[]NovelFeature `json:"novel_features_built,omitempty"`
+	// Auth holds auth-specific research signals discovered by the skill flow.
+	// These signals complement, but do not replace, the parsed OpenAPI/internal
+	// YAML auth model.
+	Auth *ResearchAuth `json:"auth,omitempty"`
 	// Narrative holds LLM-authored prose for README and SKILL.md rendering.
 	// Optional: templates fall back to generic content when absent. Populated
 	// during the absorb phase alongside NovelFeatures.
 	Narrative *ReadmeNarrative `json:"narrative,omitempty"`
+}
+
+func (r *ResearchResult) UnmarshalJSON(data []byte) error {
+	type researchResultAlias ResearchResult
+	var decoded struct {
+		*researchResultAlias
+		Gaps     flexibleResearchStrings `json:"gaps"`
+		Patterns flexibleResearchStrings `json:"patterns"`
+	}
+	decoded.researchResultAlias = (*researchResultAlias)(r)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	r.Gaps = []string(decoded.Gaps)
+	r.Patterns = []string(decoded.Patterns)
+	return nil
+}
+
+type flexibleResearchStrings []string
+
+func (f *flexibleResearchStrings) UnmarshalJSON(data []byte) error {
+	var items []json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil {
+		return err
+	}
+
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if bytes.Equal(bytes.TrimSpace(item), []byte("null")) {
+			return fmt.Errorf("expected research list item to be a string or object with name/reason, got null")
+		}
+		var text string
+		if err := json.Unmarshal(item, &text); err == nil {
+			out = append(out, text)
+			continue
+		}
+
+		var structured struct {
+			Name   string `json:"name"`
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal(item, &structured); err != nil {
+			return err
+		}
+		rendered := renderResearchString(structured.Name, structured.Reason)
+		if rendered == "" {
+			return fmt.Errorf("expected research list item to be a string or object with name/reason")
+		}
+		out = append(out, rendered)
+	}
+
+	*f = out
+	return nil
+}
+
+// ResearchAuth holds auth-specific research signals that are not part of the
+// source spec but should influence fresh generation.
+type ResearchAuth struct {
+	CanonicalEnvVar string `json:"canonical_env_var,omitempty"`
+}
+
+func (r *ResearchResult) CanonicalAuthEnvVar() string {
+	if r == nil || r.Auth == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.Auth.CanonicalEnvVar)
+}
+
+func renderResearchString(name, reason string) string {
+	name = strings.TrimSpace(name)
+	reason = strings.TrimSpace(reason)
+	switch {
+	case name != "" && reason != "":
+		return name + ": " + reason
+	case name != "":
+		return name
+	default:
+		return reason
+	}
 }
 
 // NovelFeature represents a transcendence feature invented during the absorb
@@ -97,7 +179,10 @@ type ReadmeNarrative struct {
 	// WhenToUse is a 2–4 sentence narrative rendered in SKILL.md describing
 	// the CLI's ideal use cases. Not rendered in README.
 	WhenToUse string `json:"when_to_use,omitempty"`
-	// Recipes are worked examples rendered in SKILL.md's Recipes section.
+	// AntiTriggers are explicit "do not use this CLI for..." boundaries
+	// rendered in SKILL.md so agents can reject mismatched tasks quickly.
+	AntiTriggers []string `json:"anti_triggers,omitempty"`
+	// Recipes are worked examples rendered in README/SKILL Recipes sections.
 	// Each recipe is a titled command with an explanation.
 	Recipes []Recipe `json:"recipes,omitempty"`
 	// TriggerPhrases are natural-language phrases that should invoke this
@@ -115,8 +200,8 @@ type QuickStartStep struct {
 	Comment string `json:"comment,omitempty"`
 }
 
-// Recipe is a worked example for SKILL.md. Title is rendered as a heading,
-// Command as a fenced code block, Explanation as a paragraph beneath.
+// Recipe is a worked example for README and SKILL.md. Title is rendered as a
+// heading, Command as a fenced code block, Explanation as a paragraph beneath.
 type Recipe struct {
 	Title       string `json:"title"`
 	Command     string `json:"command"`
@@ -162,28 +247,17 @@ type Alternative struct {
 }
 
 // RunResearch executes the research phase for an API.
-// It checks the catalog for known alternatives, then optionally
-// queries the GitHub API for additional CLI tools.
+// It queries the GitHub API for CLI tools and summarizes the competitive surface.
 func RunResearch(apiName, pipelineDir string) (*ResearchResult, error) {
 	result := &ResearchResult{
 		APIName:      apiName,
 		ResearchedAt: time.Now(),
 	}
 
-	// Step 1: Check catalog for known alternatives
-	catalogAlts := loadCatalogAlternatives(apiName)
-	for _, alt := range catalogAlts {
-		result.Alternatives = append(result.Alternatives, Alternative{
-			Name:     alt.Name,
-			URL:      alt.URL,
-			Language: alt.Language,
-		})
-	}
-
-	// Step 2: Search GitHub for "<api-name> cli" repos
+	// Search GitHub for "<api-name> cli" repos.
 	ghAlts, err := searchGitHubCLIs(apiName)
 	if err != nil {
-		// Non-fatal: log and continue with catalog-only results
+		// Non-fatal: log and continue with an empty alternative list.
 		fmt.Fprintf(os.Stderr, "warning: GitHub search failed: %v\n", err)
 	} else {
 		result.Alternatives = append(result.Alternatives, ghAlts...)
@@ -261,28 +335,15 @@ func LoadResearch(pipelineDir string) (*ResearchResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	return decodeResearch(data)
+}
+
+func decodeResearch(data []byte) (*ResearchResult, error) {
 	var r ResearchResult
 	if err := json.Unmarshal(data, &r); err != nil {
 		return nil, err
 	}
 	return &r, nil
-}
-
-// loadResearchForState reads research.json from the run directory, supporting
-// both write conventions: the printing-press skill writes to RunRoot/research.json
-// directly, while printing-press print writes to RunRoot/pipeline/research.json
-// alongside its phase artifacts. Tries the run-root path first (the dominant
-// case), falls back to pipeline-dir.
-//
-// The two-location lookup matters at promote/publish time, when downstream code
-// needs research.json to populate the published manifest's novel_features.
-// Without this fallback the publish-time read silently misses skill-flow runs
-// and ships manifests with empty novel_features (cal-com retro #334 F2).
-func loadResearchForState(state *PipelineState) (*ResearchResult, error) {
-	if r, err := LoadResearch(state.RunRoot()); err == nil {
-		return r, nil
-	}
-	return LoadResearch(state.PipelineDir())
 }
 
 // WriteNovelFeaturesBuilt updates research.json with the verified list of
@@ -361,14 +422,6 @@ func SourcesForREADME(r *ResearchResult) []ReadmeSource {
 		return sources[i].Stars > sources[j].Stars
 	})
 	return sources
-}
-
-func loadCatalogAlternatives(apiName string) []catalog.KnownAlt {
-	entry, err := catalog.LookupFS(catalogfs.FS, apiName)
-	if err != nil {
-		return nil
-	}
-	return entry.KnownAlternatives
 }
 
 // ghSearchResponse models the GitHub search API response.

@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/device/fixtures/ble-minimal.yaml --output "$CASE_ACTUAL_DIR/ble-temperature-sensor" --force --validate=false

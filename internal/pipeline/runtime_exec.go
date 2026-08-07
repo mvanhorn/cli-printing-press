@@ -14,28 +14,43 @@ import (
 )
 
 func buildCLI(dir string) (string, error) {
-	binaryPath, err := filepath.Abs(filepath.Join(dir, filepath.Base(dir)))
+	dir, err := filepath.Abs(dir)
 	if err != nil {
-		return "", fmt.Errorf("resolving binary path: %w", err)
+		return "", fmt.Errorf("resolving CLI directory: %w", err)
 	}
-	binaryPath = platform.ExecutablePath(binaryPath)
-	cmdDir, err := findCLICommandDir(dir)
-	if err != nil {
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, filepath.Base(dir)))
+	if err := buildCLITo(dir, binaryPath); err != nil {
 		return "", err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", binaryPath, "./"+filepath.Base(cmdDir))
-	cmd.Dir = filepath.Dir(cmdDir)
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("go build: %s\n%s", err, string(out))
 	}
 	return binaryPath, nil
 }
 
+func buildCLITo(dir, binaryPath string) error {
+	cmdDir, err := findCLICommandDir(dir)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", buildCLIArgs(binaryPath, "./"+filepath.Base(cmdDir))...)
+	cmd.Dir = filepath.Dir(cmdDir)
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("go build: %s\n%s", err, string(out))
+	}
+	return nil
+}
+
+func buildCLIArgs(binaryPath, pkg string) []string {
+	return []string{"build", "-trimpath", "-ldflags=-buildid=", "-o", binaryPath, pkg}
+}
+
 func findCLICommandDir(dir string) (string, error) {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolving CLI directory: %w", err)
+	}
 	name := filepath.Base(dir)
 	apiName := naming.TrimCLISuffix(name)
 	candidates := []string{

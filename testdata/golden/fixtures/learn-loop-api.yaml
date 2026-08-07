@@ -1,0 +1,54 @@
+name: learn-loop-example
+description: |
+  Golden fixture exercising the spec-declared self-learning loop. Demonstrates
+  the shape every printed CLI gets when its spec declares a `learn:` block:
+  the generator emits internal/learn/* subpackages, the teach/recall/learnings
+  commands, the v3 store schema additions, and the self-learning sections in
+  README.md / SKILL.md / AGENTS.md.
+
+  The underlying resource surface mirrors the sync-walker fixture (top-level
+  games + walker-fanned-out leagues) so the emitted shape covers the typical
+  multi-file CLI alongside the learn package. Identifiers in the learn block
+  are intentionally neutral (EXAMPLE-* ticker, ALPHA/BRAVO entities) so the
+  scripts/verify-learn-purity.sh gate cannot trip on this fixture.
+version: 1.0.0
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [LEARN_LOOP_TOKEN]
+resources:
+  games:
+    description: Top-level games resource. The list endpoint populates the
+      generic resources table; rows carry a `game_key` field that the
+      walker's leagues endpoint extracts for child fan-out.
+    endpoints:
+      list:
+        method: GET
+        path: /games
+        description: List games
+        id_field: game_key
+  leagues:
+    description: Leagues, fetched per-game by walking games and extracting
+      each game's game_key into the child path.
+    endpoints:
+      list:
+        method: GET
+        path: /games/{game_key}/leagues
+        description: List leagues for a game
+        walker:
+          parent: games
+          key_field: game_key
+          key_param: game_key
+learn:
+  enabled: true
+  ticker_patterns:
+    - "^EXAMPLE-[A-Z0-9]+(-[A-Z0-9]+)*$"
+  stopwords:
+    - filler1
+    - filler2
+  entity_lookup_seeds:
+    thing:
+      - canonical: ALPHA
+        aliases: [Alpha, alpha-canonical]
+      - canonical: BRAVO
+        aliases: [Bravo, br]

@@ -12,8 +12,7 @@ import (
 // firstCommandExample returns a runnable "resource [endpoint] <pos1> <pos2>..."
 // invocation for docs that need a concrete example. Required public flags are
 // included so generated docs do not advertise commands that fail immediately.
-// Read-only verbs (list, get, search, query) are preferred to keep examples
-// non-destructive.
+// Read-only commands are preferred to keep examples non-destructive.
 // Returns empty when the spec has no endpoints, so callers can skip the
 // block rather than render nonsense.
 //
@@ -40,9 +39,12 @@ func firstCommandExample(resources map[string]spec.Resource) string {
 	preferredVerbs := []string{"list", "get", "search", "query"}
 
 	pathFor := func(rName string, r spec.Resource, eName string, ep spec.Endpoint) string {
-		parts := []string{rName}
+		// Kebab the resource segment to match the actual cobra command name
+		// (mirrors toKebab(resourceName) in buildPromotedCommands). PascalCase
+		// or snake_case spec keys would otherwise advertise an unrunnable path.
+		parts := []string{toKebab(rName)}
 		if !isPromotableSingleEndpoint(rName, r) {
-			parts = append(parts, eName)
+			parts = append(parts, toKebab(eName))
 		}
 		parts = append(parts, readmeExampleArgs(ep)...)
 		return strings.Join(parts, " ")
@@ -51,11 +53,21 @@ func firstCommandExample(resources map[string]spec.Resource) string {
 	for _, rName := range resNames {
 		r := resources[rName]
 		for _, verb := range preferredVerbs {
-			if ep, ok := r.Endpoints[verb]; ok {
+			if ep, ok := r.Endpoints[verb]; ok && endpointIsReadCommand(ep, verb) {
 				return pathFor(rName, r, verb, ep)
 			}
 		}
 	}
+	for _, rName := range resNames {
+		r := resources[rName]
+		for _, eName := range sortedEndpointNames(r.Endpoints) {
+			if ep := r.Endpoints[eName]; endpointIsReadCommand(ep, eName) {
+				return pathFor(rName, r, eName, ep)
+			}
+		}
+	}
+	// Preserve examples for mutation-only specs; callers use empty to mean that
+	// the spec has no endpoints.
 	for _, rName := range resNames {
 		r := resources[rName]
 		eNames := sortedEndpointNames(r.Endpoints)
@@ -65,17 +77,13 @@ func firstCommandExample(resources map[string]spec.Resource) string {
 	}
 	return ""
 }
-
 func commandExampleArgs(ep spec.Endpoint) string {
 	return strings.Join(commandExampleArgParts(ep), " ")
 }
 
 func commandExampleArgParts(ep spec.Endpoint) []string {
 	var parts []string
-	for _, p := range ep.Params {
-		if !p.Positional {
-			continue
-		}
+	for _, p := range orderedPositionalParams(ep) {
 		val := exampleValue(p)
 		if val == "" {
 			val = "<" + p.Name + ">"
@@ -87,10 +95,8 @@ func commandExampleArgParts(ep spec.Endpoint) []string {
 
 func readmeExampleArgs(ep spec.Endpoint) []string {
 	var parts []string
-	for _, p := range ep.Params {
-		if p.Positional {
-			parts = append(parts, skillExamplePositionalValue(p))
-		}
+	for _, p := range orderedPositionalParams(ep) {
+		parts = append(parts, skillExamplePositionalValue(p))
 	}
 	return append(parts, requiredFlagExampleParts(ep)...)
 }
@@ -101,7 +107,7 @@ func requiredFlagExampleParts(ep spec.Endpoint) []string {
 		if p.Positional || !p.Required {
 			continue
 		}
-		val := exampleValue(p)
+		val := requiredFlagExampleValue(ep, p)
 		if val == "" {
 			val = "value"
 		}
@@ -113,7 +119,16 @@ func requiredFlagExampleParts(ep spec.Endpoint) []string {
 		for _, p := range ep.Body {
 			if p.Required && p.Type == "string" {
 				val := exampleValue(p)
-				if val == "" {
+				// A string body flag whose value must be valid JSON (the command
+				// emits a json.Valid guard — see isJSONStringParam) cannot use the
+				// scalar "example-value" placeholder: it fails that guard
+				// immediately, so the emitted Example would advertise a command
+				// that errors on first run and the live-dogfood happy-path /
+				// json-fidelity probes (which run the Example verbatim) reject it.
+				// Emit a minimal valid-JSON placeholder instead.
+				if isJSONStringParam(p) {
+					val = jsonStringBodyExamplePlaceholder(p)
+				} else if val == "" {
 					val = "value"
 				}
 				parts = append(parts, "--"+publicFlagName(p), val)
@@ -122,6 +137,90 @@ func requiredFlagExampleParts(ep spec.Endpoint) []string {
 		}
 	}
 	return parts
+}
+
+// jsonStringBodyExamplePlaceholder returns a minimal, valid-JSON value for a
+// JSON-typed string body flag (isJSONStringParam). The value is single-quoted
+// so the rendered example survives a copy-paste into a shell and is parsed back
+// to valid JSON by the quote-aware live-dogfood example tokenizer
+// (shellargs.ArgsAfterBinary strips the quotes). An empty array/object keeps the
+// example runnable without inventing field names the upstream API might reject;
+// the array-vs-object shape follows the param's described body type.
+func jsonStringBodyExamplePlaceholder(p spec.Param) string {
+	desc := strings.TrimSpace(p.Description)
+	lower := strings.ToLower(desc)
+	if strings.HasPrefix(desc, "[") || strings.Contains(lower, "array") {
+		return "'[]'"
+	}
+	return "'{}'"
+}
+
+func requiredFlagExampleValue(ep spec.Endpoint, p spec.Param) string {
+	if val, ok := dispatchParamDefaultValue(ep, p); ok {
+		return val
+	}
+	return exampleValue(p)
+}
+
+func dispatchParamDefaultValue(ep spec.Endpoint, p spec.Param) (string, bool) {
+	defaultValue, ok := p.Default.(string)
+	if !ok {
+		return "", false
+	}
+	defaultValue = strings.TrimSpace(defaultValue)
+	if defaultValue == "" {
+		return "", false
+	}
+	if p.DispatchParam {
+		return defaultValue, true
+	}
+	if p.DispatchParamSet {
+		return "", false
+	}
+	if pathUsesDispatchDefault(ep.Path, p, defaultValue) || isDispatchStyleParam(p) {
+		return defaultValue, true
+	}
+	return "", false
+}
+
+func pathUsesDispatchDefault(path string, p spec.Param, defaultValue string) bool {
+	names := []string{p.Name, p.WireName()}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if queryParamDefaultInPath(path, name, defaultValue) {
+			return true
+		}
+	}
+	return false
+}
+
+func queryParamDefaultInPath(path, name, defaultValue string) bool {
+	idx := strings.Index(path, "?")
+	if idx < 0 || idx == len(path)-1 {
+		return false
+	}
+	for part := range strings.SplitSeq(path[idx+1:], "&") {
+		key, val, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(key) == name && strings.TrimSpace(val) == defaultValue {
+			return true
+		}
+	}
+	return false
+}
+
+func isDispatchStyleParam(p spec.Param) bool {
+	switch strings.ToLower(strings.TrimSpace(p.WireName())) {
+	case "type", "action":
+		return true
+	default:
+		return false
+	}
 }
 
 // skillExamplePositionalValue resolves one positional param to the value
@@ -148,6 +247,16 @@ func stringifyDefault(v any) string {
 		return ""
 	case string:
 		return t
+	case []string:
+		if len(t) == 0 {
+			return ""
+		}
+		return stringifyDefault(t[0])
+	case []any:
+		if len(t) == 0 {
+			return ""
+		}
+		return stringifyDefault(t[0])
 	default:
 		return fmt.Sprintf("%v", t)
 	}

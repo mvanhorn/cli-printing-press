@@ -16,13 +16,14 @@ import (
 
 // LibraryEntry represents a CLI in the local library for listing purposes.
 type LibraryEntry struct {
-	CLIName      string    `json:"cli_name"`
-	Dir          string    `json:"dir"`
-	APIName      string    `json:"api_name,omitempty"`
-	Category     string    `json:"category,omitempty"`
-	CatalogEntry string    `json:"catalog_entry,omitempty"`
-	Description  string    `json:"description,omitempty"`
-	Modified     time.Time `json:"modified"`
+	CLIName     string    `json:"cli_name"`
+	Dir         string    `json:"dir"`
+	APIName     string    `json:"api_name,omitempty"`
+	Category    string    `json:"category,omitempty"`
+	Regions     []string  `json:"regions,omitempty"`
+	APILanguage string    `json:"api_language,omitempty"`
+	Description string    `json:"description,omitempty"`
+	Modified    time.Time `json:"modified"`
 }
 
 func newLibraryCmd() *cobra.Command {
@@ -30,10 +31,10 @@ func newLibraryCmd() *cobra.Command {
 		Use:   "library",
 		Short: "Manage CLIs in the local library",
 		Example: `  # List all CLIs in the library
-  printing-press library list
+  cli-printing-press library list
 
   # List as JSON for tooling
-  printing-press library list --json`,
+  cli-printing-press library list --json`,
 	}
 
 	cmd.AddCommand(newLibraryListCmd())
@@ -48,8 +49,8 @@ func newLibraryListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all CLIs in the local library",
-		Example: `  printing-press library list
-  printing-press library list --json`,
+		Example: `  cli-printing-press library list
+  cli-printing-press library list --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			entries, err := scanLibrary()
 			if err != nil {
@@ -230,7 +231,8 @@ func scanLibrary() ([]LibraryEntry, error) {
 				}
 				entry.APIName = m.APIName
 				entry.Category = m.Category
-				entry.CatalogEntry = m.CatalogEntry
+				entry.Regions = m.Regions
+				entry.APILanguage = m.APILanguage
 				entry.Description = m.Description
 			}
 		}

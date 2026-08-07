@@ -1,0 +1,42 @@
+name: golden-api-cookie-auth
+description: "Purpose-built fixture for cookie-auth CDP WebSocket eval emission coverage."
+version: "1.0.0"
+base_url: "https://api.cookie-auth.example/v1"
+
+# Cookie auth drives the $hasCookieBrowserAuth branch in
+# auth_browser.go.tmpl. Pins:
+#   - gorilla/websocket import in auth.go and go.mod
+#   - evalDocumentCookieViaCDP helper function (Runtime.evaluate over CDP)
+#   - SetReadDeadline / SetWriteDeadline bounded-work calls
+#   - the extractViaCDP -> evalDocumentCookieViaCDP delegation
+# Regressions the reviewer named (reordered imports, renamed helper, dropped
+# deadline) will surface as a textual diff in the snapshotted auth.go.
+auth:
+  type: cookie
+  header: "Cookie"
+  cookie_domain: ".cookie-auth.example"
+  cookies:
+    - session_id
+    - csrf_token
+  env_vars:
+    - COOKIE_AUTH_SESSION
+
+resources:
+  items:
+    description: "Cookie-auth items resource"
+    endpoints:
+      list:
+        method: GET
+        path: "/items"
+        description: "List items"
+        response:
+          type: array
+          item: Item
+
+types:
+  Item:
+    fields:
+      - name: id
+        type: string
+      - name: name
+        type: string

@@ -48,11 +48,10 @@ Discover existing CLI tools for the {{.APIName}} API and assess whether generati
 
 ## Steps
 
-1. Check catalog/{{.APIName}}.yaml for known_alternatives field
-2. Search GitHub for "{{.APIName}} cli" repos sorted by stars
-3. Deduplicate and score alternatives
-4. If novelty score <= 3, flag: "Official CLI exists - consider whether this CLI adds value"
-5. Write research.json
+1. Search GitHub for "{{.APIName}} cli" repos sorted by stars
+2. Deduplicate and score alternatives
+3. If novelty score <= 3, flag: "Official CLI exists - consider whether this CLI adds value"
+4. Write research.json
 
 ## Prior Phase Outputs
 
@@ -61,7 +60,6 @@ Discover existing CLI tools for the {{.APIName}} API and assess whether generati
 ## Codebase Pointers
 
 - Research logic: internal/pipeline/research.go
-- Catalog entries: catalog/
 - Known specs registry: internal/pipeline/discover.go
 `,
 	PhaseComparative: `---
@@ -148,7 +146,7 @@ None.
 
 ## Codebase Pointers
 
-- Build entrypoint: go build ./cmd/printing-press
+- Build entrypoint: go build ./cmd/cli-printing-press
 - OpenAPI parsing: internal/openapi/parser.go
 - Pipeline discovery flow: internal/pipeline/discover.go
 `,
@@ -175,7 +173,7 @@ Generate the first working {{.APIName}} CLI from the validated OpenAPI spec.
 ## What This Phase Must Produce
 
 - Generated CLI source tree in {{.OutputDir}}
-- All eight generator quality gates passing, including default-mode govulncheck
+- All ten generator quality gates passing, including safe golang.org/x/net, fresh generated go test (-count=1 ./...), and default-mode govulncheck
 - Working CLI binary for {{.APIName}}
 
 ## Prior Phase Outputs
@@ -185,7 +183,7 @@ Generate the first working {{.APIName}} CLI from the validated OpenAPI spec.
 
 ## Codebase Pointers
 
-- Generator entrypoint: printing-press generate --spec <url> --output <dir>
+- Generator entrypoint: cli-printing-press generate --spec <url> --output <dir>
 - Generator implementation: internal/generator/
 - Quality gate logic in the generator flow under internal/generator/
 `,
@@ -250,7 +248,7 @@ Merge the enrichments into the source spec and regenerate the CLI without losing
 
 - Re-generated CLI in {{.OutputDir}} using the merged overlay
 - Merged spec artifact suitable for regeneration
-- All eight quality gates still passing after regeneration, including default-mode govulncheck
+- All ten quality gates still passing after regeneration, including safe golang.org/x/net, fresh generated go test (-count=1 ./...), and default-mode govulncheck
 
 ## Prior Phase Outputs
 
@@ -261,7 +259,7 @@ Merge the enrichments into the source spec and regenerate the CLI without losing
 
 - Overlay merge implementation: internal/pipeline/merge.go
 - MergeOverlay function in internal/pipeline/merge.go
-- Generator entrypoint: printing-press generate
+- Generator entrypoint: cli-printing-press generate
 `,
 	PhaseReview: `---
 title: "{{.APIName}} CLI Pipeline - Phase 4: Review"
@@ -297,12 +295,12 @@ Evaluate the generated CLI with one shipcheck block: dogfood, runtime verificati
 
 ## Codebase Pointers
 
-- printing-press dogfood --dir {{.OutputDir}} --spec <spec>
-- printing-press verify --dir {{.OutputDir}} --spec <spec> --fix
-- printing-press workflow-verify --dir {{.OutputDir}}
-- printing-press verify-skill --dir {{.OutputDir}}
-- printing-press validate-narrative --strict --full-examples --research {{.PipelineDir}}/research.json --binary {{.OutputDir}}/<cli-binary>
-- printing-press scorecard --dir {{.OutputDir}} --spec <spec>
+- cli-printing-press dogfood --dir {{.OutputDir}} --spec <spec>
+- cli-printing-press verify --dir {{.OutputDir}} --spec <spec> --fix
+- cli-printing-press workflow-verify --dir {{.OutputDir}}
+- cli-printing-press verify-skill --dir {{.OutputDir}}
+- cli-printing-press validate-narrative --strict --full-examples --research {{.PipelineDir}}/research.json --binary {{.OutputDir}}/<cli-binary>
+- cli-printing-press scorecard --dir {{.OutputDir}} --spec <spec>
 - Generated CLI binary and help surfaces in {{.OutputDir}}
 `,
 	PhaseAgentReadiness: `---
@@ -330,7 +328,8 @@ and implement its fixes in a severity-gated loop (max 2 passes) until no Blocker
 
 - Agent readiness reviewer scorecard (7 principles x severity)
 - Fix implementation log (which fixes were applied, which were skipped/reverted)
-- Phase verdict: Pass (zero Blockers and Frictions), Warn (Frictions remain), or Degrade (Blockers remain)
+- {{.PipelineDir}}/agent-readiness.md with a parseable Phase verdict: Pass|Warn|Degrade line
+- Remaining Blocker and Friction findings listed as bullets or table rows in agent-readiness.md
 
 ## Prior Phase Outputs
 
@@ -342,6 +341,7 @@ and implement its fixes in a severity-gated loop (max 2 passes) until no Blocker
 - Reviewer agent: compound-engineering:cli-agent-readiness-reviewer (external plugin)
 - Plugin dependency declared in .claude/settings.json
 - Phase 4.8 analog: SKILL.md Phase 4.8 (Runtime Verification)
+- Ship gate parser: internal/pipeline/planner.go LoadAgentReadinessReport
 - If the run started in codex mode, preserve that mode here: reviewer runs in Claude, but each accepted fix patch is delegated to Codex and then verified in Claude
 `,
 	PhaseShip: `---
@@ -372,12 +372,14 @@ Package the generated CLI output and produce the final handoff report for humans
 ## Prior Phase Outputs
 
 - Review score and review.md from the review phase
+- Agent-readiness verdict from agent-readiness.md
 - Working CLI binary ready for packaging and handoff
 
 ## Codebase Pointers
 
 - Output CLI tree in {{.OutputDir}}
 - Review artifacts in {{.PipelineDir}}
+- Agent-readiness report in {{.PipelineDir}}/agent-readiness.md
 - Morning report format from SKILL.md Workflow 4 Step 6
 `,
 }

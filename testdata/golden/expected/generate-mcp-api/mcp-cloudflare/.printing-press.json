@@ -1,11 +1,25 @@
 {
   "api_name": "mcp-cloudflare",
   "api_version": "1.0.0",
-  "auth_env_vars": [
-    "MCP_CLOUDFLARE_API_KEY"
+  "auth_env_var_specs": [
+    {
+      "kind": "per_call",
+      "name": "PRINTING_PRESS_CLIENT_PROFILE",
+      "required": true,
+      "sensitive": false
+    }
   ],
+  "auth_env_vars": [
+    "PRINTING_PRESS_CLIENT_PROFILE"
+  ],
+  "auth_preference": "ApiKeyAuth",
   "auth_type": "api_key",
   "cli_name": "mcp-cloudflare-pp-cli",
+  "creator": {
+    "handle": "printing-press-golden",
+    "name": "printing-press-golden"
+  },
+  "description": "Golden fixture exercising x-mcp on an OpenAPI spec.",
   "display_name": "Mcp Cloudflare",
   "generated_at": "<GENERATED_AT>",
   "mcp_binary": "mcp-cloudflare-pp-mcp",
@@ -15,9 +29,10 @@
   "printer": "printing-press-golden",
   "printer_name": "printing-press-golden",
   "printing_press_version": "<PRINTING_PRESS_VERSION>",
-  "schema_version": 1,
+  "run_id": "<RUN_ID>",
+  "schema_version": 2,
   "spec_checksum": "sha256:46c60ba489f2e138ffe6ab01531f2ed550369299820342a7f0093b94d0fc17b4",
   "spec_format": "openapi3",
-  "spec_path": "testdata/golden/fixtures/mcp-api.yaml",
+  "spec_path": "mcp-api.yaml",
   "spec_url": "file://testdata/golden/fixtures/mcp-api.yaml"
 }

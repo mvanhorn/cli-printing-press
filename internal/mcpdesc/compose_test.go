@@ -344,5 +344,310 @@ func TestCompose_EmptyDescriptionStillBuildsParts(t *testing.T) {
 		AuthType: "none",
 	}
 	got := Compose(in)
-	assert.Equal(t, "Required: name. Returns the new X.", got)
+	assert.Equal(t, "Create a new x. Required: name. Returns the new X.", got)
+}
+
+func TestCompose_SynthesizesResourceAwareActionForParserFallbackDescriptions(t *testing.T) {
+	tests := []struct {
+		name        string
+		method      string
+		path        string
+		description string
+		wantPrefix  string
+	}{
+		{
+			name:        "create uses singular resource",
+			method:      "POST",
+			path:        "/widgets",
+			description: "Create",
+			wantPrefix:  "Create a new widget.",
+		},
+		{
+			name:        "list uses plural resource",
+			method:      "GET",
+			path:        "/widgets",
+			description: "List",
+			wantPrefix:  "List widgets.",
+		},
+		{
+			name:        "get uses singular resource",
+			method:      "GET",
+			path:        "/widgets/{id}",
+			description: "Get",
+			wantPrefix:  "Get a widget.",
+		},
+		{
+			name:        "update uses singular resource",
+			method:      "PATCH",
+			path:        "/widgets/{id}",
+			description: "Update",
+			wantPrefix:  "Update a widget.",
+		},
+		{
+			name:        "delete uses singular resource",
+			method:      "DELETE",
+			path:        "/widgets/{id}",
+			description: "Delete",
+			wantPrefix:  "Delete a widget.",
+		},
+		{
+			name:        "sibilant plural singularizes correctly",
+			method:      "GET",
+			path:        "/boxes/{id}",
+			description: "Get",
+			wantPrefix:  "Get a box.",
+		},
+		{
+			name:        "se-plural is not over-stripped",
+			method:      "GET",
+			path:        "/releases/{id}",
+			description: "Get",
+			wantPrefix:  "Get a release.",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Compose(Input{
+				Endpoint: spec.Endpoint{
+					Method:                 tc.method,
+					Path:                   tc.path,
+					Description:            tc.description,
+					DescriptionSynthesized: true,
+				},
+				AuthType: "none",
+			})
+			assert.Contains(t, got, tc.wantPrefix)
+		})
+	}
+}
+
+// A synthesized description with a verb outside the recognized set must fall
+// through to the plain humanized verb, not produce a malformed resource action.
+func TestCompose_SynthesizedUnrecognizedVerbFallsThrough(t *testing.T) {
+	got := Compose(Input{
+		Endpoint: spec.Endpoint{
+			Method:                 "GET",
+			Path:                   "/widgets",
+			Description:            "Search",
+			DescriptionSynthesized: true,
+		},
+		AuthType: "none",
+	})
+	assert.Contains(t, got, "Search.")
+	assert.NotContains(t, got, "a widget")
+}
+
+func TestCompose_DoesNotOverrideAuthoredDescriptions(t *testing.T) {
+	got := Compose(Input{
+		Endpoint: spec.Endpoint{
+			Method:      "POST",
+			Path:        "/widgets",
+			Description: "Add a widget to inventory",
+		},
+		AuthType: "none",
+	})
+	assert.Equal(t, "Add a widget to inventory.", got)
+}
+
+func TestCompose_SynthesizesVendorBoilerplateDescriptions(t *testing.T) {
+	t.Parallel()
+
+	result := ComposeWithSource(Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/Actions",
+			Description: "Use this to return multiple Actions.<br>Requires authentication.",
+			Params: []spec.Param{
+				{Name: "page_size", Required: false},
+			},
+			Response: spec.ResponseDef{Type: "array", Item: "Action"},
+		},
+		AuthType: "none",
+	})
+
+	assert.Equal(t, "List actions. Optional: page_size. Returns array of Action.", result.Description)
+	assert.Equal(t, SourceGenerated, result.Source)
+}
+
+func TestCompose_PreservesRichDescriptionWithBoilerplatePrefix(t *testing.T) {
+	t.Parallel()
+
+	result := ComposeWithSource(Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/Users",
+			Description: "Use this to return multiple Users. Supports filtering by role, status, and department.",
+			Params: []spec.Param{
+				{Name: "role", Required: false},
+			},
+			Response: spec.ResponseDef{Type: "array", Item: "User"},
+		},
+		AuthType: "none",
+	})
+
+	assert.Contains(t, result.Description, "Supports filtering by role, status, and department.")
+	assert.Contains(t, result.Description, "Optional: role.")
+	assert.NotContains(t, result.Description, "List users.")
+	assert.Equal(t, SourceSpec, result.Source)
+}
+
+func TestCompose_SynthesizesSingleInstanceBoilerplateWithArticle(t *testing.T) {
+	t.Parallel()
+
+	result := ComposeWithSource(Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/Actions/{id}",
+			Description: "Use this to return a single instance of Actions.<br>Requires authentication.",
+			Params: []spec.Param{
+				{Name: "id", Required: true, Positional: true},
+			},
+			Response: spec.ResponseDef{Type: "object", Item: "Action"},
+		},
+		AuthType: "none",
+	})
+
+	assert.Equal(t, "Get an action. Required: id. Returns the Action.", result.Description)
+	assert.Equal(t, SourceGenerated, result.Source)
+}
+
+func TestComposeWithSourceKeepsStructuralBoilerplateOverrideAsSpec(t *testing.T) {
+	t.Parallel()
+
+	result := ComposeWithSource(Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/Actions",
+			Description: "Use this to return multiple Actions. Required: authorization.",
+			Response:    spec.ResponseDef{Type: "array", Item: "Action"},
+		},
+		AuthType: "none",
+	})
+
+	assert.Equal(t, "Use this to return multiple Actions. Required: authorization.", result.Description)
+	assert.Equal(t, SourceSpec, result.Source)
+}
+
+func TestComposeWithSourceMarksAuthoredDescriptionsAsSpec(t *testing.T) {
+	t.Parallel()
+
+	result := ComposeWithSource(Input{
+		Endpoint: spec.Endpoint{
+			Method:      "POST",
+			Path:        "/widgets",
+			Description: "Add a widget to inventory",
+		},
+		AuthType: "none",
+	})
+
+	assert.Equal(t, "Add a widget to inventory.", result.Description)
+	assert.Equal(t, SourceSpec, result.Source)
+}
+
+// --- deepObject shape hints (aos-build#165 plan, Task 6) ---
+//
+// style=deepObject params take structured JSON input that the generated
+// emitters expand into indexed bracket keys (sort[0][field]=Name). Without a
+// shape example in the tool description, agents guess flat scalars and get
+// 4xxs — the hint makes each description self-teaching.
+//
+// Expectations pin the RENDERED description: the hint is authored as real
+// JSON, but every Compose result passes through naming.MCPDescription →
+// OneLineNormalize, whose pre-existing policy rewrites double quotes to
+// single quotes so descriptions embed cleanly. Agents therefore see
+// [{'field':'...'}] — the shape survives, the quoting is normalized.
+
+// (i) An array-of-objects deepObject param's hint is built from its Fields,
+// capped at two field names.
+func TestCompose_DeepObjectArrayParamGainsFieldsShapeHint(t *testing.T) {
+	t.Parallel()
+
+	in := Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/records",
+			Description: "List records",
+			Params: []spec.Param{{
+				Name: "sort", Type: "array", ItemType: "object", QueryStyle: "deepObject",
+				Fields: []spec.Param{
+					{Name: "field", Type: "string"},
+					{Name: "direction", Type: "string"},
+					{Name: "third_field_beyond_cap", Type: "string"},
+				},
+			}},
+			Response: spec.ResponseDef{Type: "array", Item: "Record"},
+		},
+		AuthType: "none",
+	}
+	got := Compose(in)
+	assert.Equal(t, `List records. Optional: sort (array of objects, e.g. [{'field':'...','direction':'...'}]). Returns array of Record.`, got)
+}
+
+// (ii) A Fields-less deepObject param falls back to the generic example
+// rather than emitting an empty object (Designer round-2).
+func TestCompose_DeepObjectParamWithoutFieldsGetsGenericHint(t *testing.T) {
+	t.Parallel()
+
+	in := Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/records",
+			Description: "List records",
+			Params: []spec.Param{{
+				Name: "sort", Type: "array", ItemType: "object", QueryStyle: "deepObject",
+			}},
+			Response: spec.ResponseDef{Type: "array", Item: "Record"},
+		},
+		AuthType: "none",
+	}
+	got := Compose(in)
+	assert.Equal(t, `List records. Optional: sort (array of objects, e.g. [{'key':'value'}]). Returns array of Record.`, got)
+}
+
+// (iii) An OBJECT-typed deepObject param gets the object-form hint (no array
+// wrapper).
+func TestCompose_DeepObjectObjectParamGetsObjectFormHint(t *testing.T) {
+	t.Parallel()
+
+	in := Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/records",
+			Description: "List records",
+			Params: []spec.Param{{
+				Name: "filter", Type: "object", QueryStyle: "deepObject",
+			}},
+			Response: spec.ResponseDef{Type: "array", Item: "Record"},
+		},
+		AuthType: "none",
+	}
+	got := Compose(in)
+	assert.Equal(t, `List records. Optional: filter (e.g. {'key':'value'}). Returns array of Record.`, got)
+}
+
+// (iv) Negative pin: the shape hint is gated on style=deepObject, NOT on
+// array-ness. A plain array query param (form/explode — the repeated-key
+// wire form, e.g. recorded_by[]) keeps its unadorned public name; appending
+// a JSON-shape hint here would teach agents to send JSON where the emitter
+// expects a scalar list. Guards deepObjectHint's early return.
+func TestCompose_ArrayParamWithoutDeepObjectStyleGetsNoShapeHint(t *testing.T) {
+	t.Parallel()
+
+	explode := true
+	in := Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/records",
+			Description: "List records",
+			Params: []spec.Param{{
+				Name: "recorded_by[]", Type: "array", ItemType: "string",
+				QueryStyle: "form", QueryExplode: &explode,
+			}},
+			Response: spec.ResponseDef{Type: "array", Item: "Record"},
+		},
+		AuthType: "none",
+	}
+	got := Compose(in)
+	assert.Equal(t, `List records. Optional: recorded_by. Returns array of Record.`, got)
 }

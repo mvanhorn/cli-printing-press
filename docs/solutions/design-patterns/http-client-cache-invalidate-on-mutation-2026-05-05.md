@@ -46,13 +46,13 @@ The MCP-side `NoCache=true` workaround (auto memory [claude]) (session history) 
 **If your generated client ships a response cache, invalidate the entire cache directory at the success branch of any non-GET request.** The two-pronged approach:
 
 1. **Constructor default for MCP-shaped consumers** (already in template via PR #521 (session history)): `c.NoCache = true` for clients driven by agents.
-2. **Cache invalidation on mutation for ALL clients**: in `do()`, after a successful response, if the request was non-GET, drop the entire cache.
+2. **Cache invalidation on mutation for ALL clients**: in `do()`, after a successful response, if the request was non-GET and not a dry run, drop the entire cache.
 
 ```go
 // In do(), success branch:
 if resp.StatusCode < 400 {
     c.limiter.OnSuccess()
-    if method != http.MethodGet {
+    if method != http.MethodGet && !c.DryRun {
         c.invalidateCache()
     }
     return json.RawMessage(respBody), resp.StatusCode, nil
@@ -73,7 +73,7 @@ Constraints on the call site:
 
 - Only fire on `resp.StatusCode < 400` — 4xx/5xx didn't mutate state.
 - Only fire when `method != http.MethodGet`.
-- Skip on dry-run paths and inside the retry loop (only the final success).
+- Skip on dry-run paths (`c.DryRun`) and inside the retry loop (only the final success).
 - Best-effort: ignore the `RemoveAll` error so a cache-clear failure does not fail the surrounding successful mutation.
 
 ### Discarded alternative — selective invalidation by resource family
@@ -116,7 +116,7 @@ if resp.StatusCode < 400 {
 ```go
 if resp.StatusCode < 400 {
     c.limiter.OnSuccess()
-    if method != http.MethodGet {
+    if method != http.MethodGet && !c.DryRun {
         c.invalidateCache()
     }
     return json.RawMessage(respBody), resp.StatusCode, nil

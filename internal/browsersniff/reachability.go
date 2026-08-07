@@ -13,14 +13,19 @@ func ApplyReachabilityDefaults(apiSpec *spec.APISpec, analysis *TrafficAnalysis)
 		return
 	}
 
-	if analysis.Reachability.Mode == "browser_http" || analysis.Reachability.Mode == "browser_clearance_http" || analysis.Reachability.Mode == "browser_required" {
+	if analysis.Reachability.Mode == "html_scrape" && analysis.Reachability.HTMLExtractSignature != "" {
+		applyHTMLScrapeExtractionDefaults(apiSpec, analysis.Reachability.HTMLExtractSignature)
+	}
+
+	// browser_required is the "no Go-client replay possible" mode -- the
+	// operator must drive a real browser. It intentionally leaves
+	// HTTPTransport empty so downstream code does not try to wire a surf
+	// client. The HAR-driven transport mapping applies only to modes
+	// where the captured traffic is replayable.
+	switch analysis.Reachability.Mode {
+	case "browser_http", "browser_clearance_http":
 		if apiSpec.HTTPTransport == "" {
-			switch analysis.Reachability.Mode {
-			case "browser_clearance_http":
-				apiSpec.HTTPTransport = spec.HTTPTransportBrowserChromeH3
-			case "browser_http":
-				apiSpec.HTTPTransport = spec.HTTPTransportBrowserChrome
-			}
+			apiSpec.HTTPTransport = browserTransportFromHARVersion(analysis.Summary.HTTPVersionDistribution)
 		}
 	}
 
@@ -49,6 +54,10 @@ func ApplyReachabilityDefaults(apiSpec *spec.APISpec, analysis *TrafficAnalysis)
 	if domain == "" {
 		return
 	}
+	cookies := reachabilityCookieNames(analysis)
+	if len(cookies) == 0 {
+		return
+	}
 
 	validationPath := firstBrowserSessionValidationPath(apiSpec)
 	apiSpec.Auth = spec.AuthConfig{
@@ -56,6 +65,7 @@ func ApplyReachabilityDefaults(apiSpec *spec.APISpec, analysis *TrafficAnalysis)
 		Header:                       "Cookie",
 		In:                           "cookie",
 		CookieDomain:                 domain,
+		Cookies:                      cookies,
 		EnvVars:                      envVarsOrNil(strings.ToUpper(strings.ReplaceAll(apiSpec.Name, "-", "_")), "COOKIES"),
 		RequiresBrowserSession:       validationPath != "",
 		BrowserSessionReason:         "browser clearance is required to replay captured website traffic",
@@ -64,6 +74,16 @@ func ApplyReachabilityDefaults(apiSpec *spec.APISpec, analysis *TrafficAnalysis)
 	if validationPath != "" {
 		apiSpec.Auth.BrowserSessionValidationMethod = "GET"
 	}
+}
+
+func reachabilityCookieNames(analysis *TrafficAnalysis) []string {
+	var names []string
+	for _, candidate := range analysis.Auth.Candidates {
+		if candidate.Type == "cookie" || candidate.Type == "composed" {
+			names = append(names, candidate.CookieNames...)
+		}
+	}
+	return uniqueStrings(names)
 }
 
 func hasExplicitAuth(auth spec.AuthConfig) bool {
@@ -144,4 +164,56 @@ func hasRequiredInput(endpoint spec.Endpoint) bool {
 		}
 	}
 	return false
+}
+
+// scriptSelectorForSignature maps the SSR state-blob signature to the
+// runtime extractor's "tag" / "tag#id" / "tag.class" grammar. Empty
+// for window.__-style inline state — the runtime falls back to
+// DefaultEmbeddedJSONScriptSelector and the operator hand-tunes.
+func scriptSelectorForSignature(signature string) string {
+	switch signature {
+	case SSRSignatureNextData:
+		return spec.DefaultEmbeddedJSONScriptSelector
+	case SSRSignatureNuxt:
+		return "script#__NUXT__"
+	case SSRSignatureAppInitialState:
+		return "script#__APP_INITIAL_STATE__"
+	case SSRSignatureStateView:
+		return "script.state-view"
+	case SSRSignatureLDJSON:
+		return `script[type="application/ld+json"]`
+	default:
+		return ""
+	}
+}
+
+// applyHTMLScrapeExtractionDefaults promotes endpoints that already
+// declared HTMLExtract to embedded-json mode with a signature-derived
+// selector. Endpoints without HTMLExtract are skipped because the
+// signature alone is not enough to fabricate extraction config for
+// endpoints that never asked for HTML extraction.
+func applyHTMLScrapeExtractionDefaults(apiSpec *spec.APISpec, signature string) {
+	selector := scriptSelectorForSignature(signature)
+	for resourceName, resource := range apiSpec.Resources {
+		updated := promoteHTMLExtractInResource(resource, selector)
+		apiSpec.Resources[resourceName] = updated
+	}
+}
+
+func promoteHTMLExtractInResource(resource spec.Resource, selector string) spec.Resource {
+	for name, endpoint := range resource.Endpoints {
+		if endpoint.HTMLExtract == nil {
+			continue
+		}
+		endpoint.HTMLExtract.Mode = spec.HTMLExtractModeEmbeddedJSON
+		if selector != "" {
+			endpoint.HTMLExtract.ScriptSelector = selector
+		}
+		endpoint.HTMLExtract.LinkPrefixes = nil
+		resource.Endpoints[name] = endpoint
+	}
+	for subName, sub := range resource.SubResources {
+		resource.SubResources[subName] = promoteHTMLExtractInResource(sub, selector)
+	}
+	return resource
 }

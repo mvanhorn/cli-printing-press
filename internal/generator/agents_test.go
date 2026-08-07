@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,15 +30,24 @@ func TestGeneratedAgentsGuideRendersPortableAgentContract(t *testing.T) {
 	assert.Contains(t, content, "finance-pp-cli <command> --help")
 	assert.Contains(t, content, "finance-pp-cli <command> --agent")
 	assert.Contains(t, content, "finance-pp-cli <command> --dry-run --agent")
+	assert.Contains(t, content, "## Novel Command Data Sources")
+	assert.Contains(t, content, "// pp:data-source auto")
+	assert.Contains(t, content, "Use exactly one of `auto`, `local`, `live`, or `computed`")
 	assert.Contains(t, content, "README.md")
 	assert.Contains(t, content, "SKILL.md")
 
 	assert.NotContains(t, content, "## Command Reference")
-	assert.NotContains(t, content, "npx -y @mvanhorn/printing-press install")
+	assert.NotContains(t, content, "npx -y @mvanhorn/printing-press-library install")
 	assert.NotContains(t, content, "export ")
 	assert.NotContains(t, content, "<cli>")
 	assert.NotContains(t, content, "Claude Code")
 	assertASCII(t, content)
+
+	// Claude Code auto-loads CLAUDE.md, not AGENTS.md, so the generator emits a
+	// CLAUDE.md that imports the contract. Body is exactly the import pointer.
+	claude, err := os.ReadFile(filepath.Join(outputDir, "CLAUDE.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "@AGENTS.md", strings.TrimSpace(string(claude)))
 }
 
 func assertASCII(t *testing.T, content string) {

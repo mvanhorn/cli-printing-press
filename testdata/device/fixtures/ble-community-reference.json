@@ -1,0 +1,28 @@
+{
+  "name": "ble-community-reference",
+  "display_name": "BLE Community Reference",
+  "identity": {
+    "advertised_names": ["OpaqueBLE"],
+    "address_policy": "unknown",
+    "match_strength": "weak"
+  },
+  "events": [
+    {
+      "id": "svc-vendor",
+      "type": "service_discovery",
+      "at": "2026-06-01T12:00:00Z",
+      "service_uuid": "ab00",
+      "characteristic_uuid": "ab01",
+      "properties": ["write"]
+    }
+  ],
+  "community_references": [
+    {
+      "id": "community-vendor-action",
+      "command_name": "vendor-action",
+      "characteristic_uuid": "ab01",
+      "payload_hex": "f7a50100fd",
+      "safety": "unknown"
+    }
+  ]
+}

@@ -38,7 +38,8 @@ const trafficAnalysisSchemaJSON = `{
         "mode": {"type": "string", "enum": ["standard_http", "browser_http", "browser_clearance_http", "browser_required", "blocked", "unknown"]},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "reasons": {"type": "array", "items": {"type": "string"}},
-        "evidence": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/evidence_ref"}, {"type": "string"}]}}
+        "evidence": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/evidence_ref"}, {"type": "string"}]}},
+        "impersonation_safe": {"type": "boolean"}
       }
     },
     "protocols": {"type": "array", "items": {"$ref": "#/$defs/protocol_observation"}},
@@ -46,10 +47,12 @@ const trafficAnalysisSchemaJSON = `{
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "candidates": {"type": "array", "items": {"$ref": "#/$defs/auth_candidate"}}
+        "candidates": {"type": "array", "items": {"$ref": "#/$defs/auth_candidate"}},
+        "captcha_preflight": {"type": "boolean"}
       }
     },
     "protections": {"type": "array", "items": {"$ref": "#/$defs/protection_observation"}},
+    "secondary_hosts": {"type": "array", "items": {"$ref": "#/$defs/secondary_host"}},
     "endpoint_clusters": {"type": "array", "items": {"$ref": "#/$defs/endpoint_cluster"}},
     "request_sequences": {"type": "array", "items": {"$ref": "#/$defs/request_sequence"}},
     "pagination": {"type": "array", "items": {"$ref": "#/$defs/pagination_signal"}},
@@ -106,6 +109,16 @@ const trafficAnalysisSchemaJSON = `{
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "evidence": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/evidence_ref"}, {"type": "string"}]}},
         "notes": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "secondary_host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "count", "reason"],
+      "properties": {
+        "host": {"type": "string"},
+        "count": {"type": "integer", "minimum": 0},
+        "reason": {"type": "string", "enum": ["non-primary host", "telemetry host"]}
       }
     },
     "endpoint_cluster": {
@@ -198,23 +211,32 @@ const phase5MarkerSchemaJSON = `{
   "title": "CLI Printing Press phase5-acceptance.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "api_name", "run_id", "status", "level", "matrix_size", "tests_passed"],
+  "required": ["schema_version", "status", "level", "matrix_size", "source_fingerprint"],
   "properties": {
     "schema_version": {"type": "integer", "const": 1},
     "api_name": {"type": "string", "minLength": 1},
-    "cli_name": {"type": "string"},
     "run_id": {"type": "string", "minLength": 1},
     "status": {"type": "string", "enum": ["pass", "fail"]},
     "level": {"type": "string", "enum": ["quick", "full"]},
     "matrix_size": {"type": "integer", "minimum": 1},
-    "tests_total": {"type": "integer", "minimum": 0},
-    "tests_passed": {"type": "integer", "minimum": 1},
+    "tests_passed": {"type": "integer", "minimum": 0},
     "tests_skipped": {"type": "integer", "minimum": 0},
+    "tests_unverified": {"type": "integer", "minimum": 0},
     "tests_failed": {"type": "integer", "minimum": 0},
-    "completed_at": {"type": "string", "format": "date-time"},
-    "summary": {"type": "string"},
-    "auth_context": {"$ref": "#/$defs/auth_context"}
+    "coverage_hollow": {"type": "boolean"},
+    "hollow_features": {"type": "array", "items": {"type": "string"}},
+    "skip_reason": {"type": "string"},
+    "auth_context": {"$ref": "#/$defs/auth_context"},
+    "failure_summary": {"$ref": "#/$defs/failure_summary"},
+    "source_fingerprint": {"type": "string", "minLength": 1},
+    "source_files": {"type": "object", "additionalProperties": {"type": "string"}}
   },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "pass"}}, "required": ["status"]},
+      "then": {"required": ["tests_passed"], "properties": {"tests_passed": {"minimum": 1}}}
+    }
+  ],
   "$defs": {
     "auth_context": {
       "type": "object",
@@ -222,7 +244,21 @@ const phase5MarkerSchemaJSON = `{
       "properties": {
         "type": {"type": "string"},
         "api_key_available": {"type": "boolean"},
-        "browser_session_available": {"type": "boolean"}
+        "browser_session_available": {"type": "boolean"},
+        "local_sqlite": {"type": "boolean"}
+      }
+    },
+    "failure_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "transport_error": {"type": "integer", "minimum": 0},
+        "http_4xx": {"type": "integer", "minimum": 0},
+        "http_5xx": {"type": "integer", "minimum": 0},
+        "exit_nonzero": {"type": "integer", "minimum": 0},
+        "output_mismatch": {"type": "integer", "minimum": 0},
+        "other": {"type": "integer", "minimum": 0},
+        "commands": {"type": "array", "items": {"type": "string"}}
       }
     }
   }
@@ -234,7 +270,7 @@ const phase5SkipSchemaJSON = `{
   "title": "CLI Printing Press phase5-skip.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "api_name", "run_id", "status", "skip_reason"],
+  "required": ["schema_version", "api_name", "run_id", "status", "skip_reason", "source_fingerprint"],
   "properties": {
     "schema_version": {"type": "integer", "const": 1},
     "api_name": {"type": "string", "minLength": 1},
@@ -242,7 +278,9 @@ const phase5SkipSchemaJSON = `{
     "run_id": {"type": "string", "minLength": 1},
     "status": {"type": "string", "const": "skip"},
     "skip_reason": {"type": "string", "minLength": 1},
-    "auth_context": {"$ref": "#/$defs/auth_context"}
+    "auth_context": {"$ref": "#/$defs/auth_context"},
+    "source_fingerprint": {"type": "string", "minLength": 1},
+    "source_files": {"type": "object", "additionalProperties": {"type": "string"}}
   },
   "$defs": {
     "auth_context": {
@@ -251,7 +289,9 @@ const phase5SkipSchemaJSON = `{
       "properties": {
         "type": {"type": "string"},
         "api_key_available": {"type": "boolean"},
-        "browser_session_available": {"type": "boolean"}
+        "browser_session_available": {"type": "boolean"},
+        "local_sqlite": {"type": "boolean"},
+        "local_network_only": {"type": "boolean"}
       }
     }
   }

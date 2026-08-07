@@ -92,8 +92,10 @@ func TestGenerateNestedObjectBodyEmitsFieldFlags(t *testing.T) {
 		require.Containsf(t, got, want, "expected flag registration %q", want)
 	}
 
-	// Required-flag validation: parent-prefixed flag in the error message
-	// matches the registered flag name.
+	// Required-flag validation: the nested requirement applies only when the
+	// optional start object is populated, and the parent-prefixed flag in the
+	// error message matches the registered flag name.
+	require.Contains(t, got, `if (cmd.Flags().Changed("start-date-time") || bodyStartDateTime != "") || (cmd.Flags().Changed("start-time-zone") || bodyStartTimeZone != "") {`)
 	require.Contains(t, got, `cmd.Flags().Changed("start-date-time")`, "required check must use parent-prefixed flag")
 	require.Contains(t, got, `"required flag \"%s\" not set", "start-date-time"`)
 
@@ -104,9 +106,9 @@ func TestGenerateNestedObjectBodyEmitsFieldFlags(t *testing.T) {
 		`nestedStart["dateTime"] = bodyStartDateTime`,
 		`nestedStart["timeZone"] = bodyStartTimeZone`,
 		`if len(nestedStart) > 0 {`,
-		`body["start"] = nestedStart`,
+		`bodyMap["start"] = nestedStart`,
 		"nestedEnd := map[string]any{}",
-		`body["end"] = nestedEnd`,
+		`bodyMap["end"] = nestedEnd`,
 	} {
 		require.Containsf(t, got, want, "expected nested-map fragment %q", want)
 	}
@@ -120,4 +122,161 @@ func TestGenerateNestedObjectBodyEmitsFieldFlags(t *testing.T) {
 	fset := token.NewFileSet()
 	_, parseErr := parser.ParseFile(fset, "events_create.go", got, parser.AllErrors)
 	require.NoError(t, parseErr, "generated file with nested-object body must parse as Go")
+
+	mcpGot := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+	require.Contains(t, mcpGot, `mcplib.WithString("start-date-time", mcplib.Description("RFC3339 timestamp"))`)
+	require.NotContains(t, mcpGot, `mcplib.WithString("start-date-time", mcplib.Required()`)
+
+	runtimeTest := `package cli
+
+import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func runNestedRequiredCommand(t *testing.T, args ...string) error {
+	t.Helper()
+	var flags rootFlags
+	cmd := newRootCmd(&flags)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs(args)
+	return cmd.Execute()
+}
+
+func TestOptionalNestedRequiredRuntime(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{}"))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("MYAPI_TOKEN", "test-token")
+	t.Setenv("NESTED_BODY_BASE_URL", server.URL)
+
+	if err := runNestedRequiredCommand(t, "events", "create", "--subject", "Planning"); err != nil {
+		t.Fatalf("optional parent omitted: %v", err)
+	}
+	err := runNestedRequiredCommand(t, "events", "create", "--subject", "Planning", "--start-time-zone", "UTC")
+	if err == nil || !strings.Contains(err.Error(), "required flag \"start-date-time\" not set") {
+		t.Fatalf("partially populated parent error = %v", err)
+	}
+	if err := runNestedRequiredCommand(t, "events", "create", "--subject", "Planning", "--start-time-zone", "UTC", "--start-date-time", "2026-07-13T12:00:00Z"); err != nil {
+		t.Fatalf("complete optional parent: %v", err)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "nested_required_runtime_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestOptionalNestedRequiredRuntime", "-count=1")
+	requireGeneratedCompiles(t, outputDir)
+
+	promotedSpec := apiSpec
+	delete(promotedSpec.Resources["events"].Endpoints, "get")
+	promotedOutputDir := filepath.Join(t.TempDir(), "nested-body-promoted-pp-cli")
+	require.NoError(t, New(promotedSpec, promotedOutputDir).Generate())
+	promoted := readGeneratedFile(t, promotedOutputDir, "internal", "cli", "promoted_events.go")
+	require.Contains(t, promoted, `if (cmd.Flags().Changed("start-date-time") || bodyStartDateTime != "") || (cmd.Flags().Changed("start-time-zone") || bodyStartTimeZone != "") {`)
+	require.Contains(t, promoted, `if !cmd.Flags().Changed("start-date-time") && !flags.dryRun {`)
+	requireGeneratedCompiles(t, promotedOutputDir)
+}
+
+func TestGenerateInternalYAMLBodyObjectSchema(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.ParseBytes([]byte(`
+name: rich-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  graphql:
+    endpoints:
+      execute:
+        method: POST
+        path: /graphql
+        body:
+          properties:
+            query:
+              type: string
+              required: true
+              description: GraphQL document
+            variables:
+              type: object
+              description: GraphQL variables
+            serializerSettings:
+              type: object
+              properties:
+                includeNulls:
+                  type: bool
+            queries:
+              type: array
+              items:
+                type: object
+                properties:
+                  query:
+                    type: string
+`))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), "rich-body-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	var got string
+	err = filepath.Walk(filepath.Join(outputDir, "internal", "cli"), func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() || filepath.Ext(path) != ".go" {
+			return err
+		}
+		src, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(src), "bodySerializerSettingsIncludeNulls") {
+			got = string(src)
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, got)
+
+	for _, want := range []string{
+		`cmd.Flags().StringVar(&bodyQuery, "query"`,
+		`cmd.Flags().StringVar(&bodyVariables, "variables"`,
+		`cmd.Flags().BoolVar(&bodySerializerSettingsIncludeNulls, "serializer-settings-include-nulls"`,
+		`cmd.Flags().StringVar(&bodyQueries, "queries"`,
+		`json.Unmarshal([]byte(bodyVariables), &parsedVariables)`,
+		`json.Unmarshal([]byte(bodyQueries), &parsedQueries)`,
+		`nestedSerializerSettings["includeNulls"] = bodySerializerSettingsIncludeNulls`,
+		`bodyMap["serializerSettings"] = nestedSerializerSettings`,
+	} {
+		require.Containsf(t, got, want, "expected generated fragment %q", want)
+	}
+	require.Contains(t, got, `cmd.Flags().Changed("serializer-settings-include-nulls")`)
+	require.Contains(t, got, `cmd.Flags().Changed("query")`)
+
+	fset := token.NewFileSet()
+	_, parseErr := parser.ParseFile(fset, "graphql_execute.go", got, parser.AllErrors)
+	require.NoError(t, parseErr, "generated file from internal YAML object body schema must parse as Go")
+
+	mcpSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcpGot := string(mcpSrc)
+	for _, want := range []string{
+		`mcplib.WithString("query", mcplib.Required(), mcplib.Description("GraphQL document"))`,
+		`mcplib.WithObject("variables", mcplib.Description("GraphQL variables"))`,
+		`mcplib.WithBoolean("serializer-settings-include-nulls"`,
+		`mcplib.WithArray("queries"`,
+		`PublicName: "serializer-settings-include-nulls", WireName: "includeNulls", Location: "body", BodyPath: []string{"serializerSettings", "includeNulls"}`,
+		`setNestedBodyArg(bodyArgs, binding.BodyPath, v)`,
+	} {
+		require.Containsf(t, mcpGot, want, "expected generated MCP fragment %q", want)
+	}
+	require.NotContains(t, mcpGot, `mcplib.WithString("queries-query"`)
+
+	// formatMCPParamValue must JSON-encode a native composite in its default
+	// branch (a query/path-located array/object param now arrives as []any /
+	// map[string]any instead of a string); Go's "%v" would emit "[a b c]".
+	require.Regexp(t, `(?s)func formatMCPParamValue\(v any\) string \{.*?json\.Marshal\(v\)`, mcpGot)
 }

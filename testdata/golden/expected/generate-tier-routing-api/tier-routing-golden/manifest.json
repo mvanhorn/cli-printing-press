@@ -10,7 +10,7 @@
       "win32"
     ]
   },
-  "description": "Tier Routing Golden API surface as MCP tools.",
+  "description": "Golden fixture for tier-routed generated clients.",
   "display_name": "Tier Routing Golden",
   "license": "Apache-2.0",
   "manifest_version": "0.3",
@@ -21,34 +21,17 @@
       "args": [],
       "command": "${__dirname}/bin/tier-routing-golden-pp-mcp",
       "env": {
-        "TIER_ENTERPRISE_TOKEN": "${user_config.tier_enterprise_token}",
-        "TIER_GLOBAL_TOKEN": "${user_config.tier_global_token}",
-        "TIER_PAID_KEY": "${user_config.tier_paid_key}",
+        "PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}",
         "TIER_ROUTING_GOLDEN_USER_AGENT": "${user_config.tier_routing_golden_user_agent}"
       }
     },
     "type": "binary"
   },
   "user_config": {
-    "tier_enterprise_token": {
-      "description": "Sets TIER_ENTERPRISE_TOKEN for the Tier Routing Golden MCP server.",
+    "printing_press_client_profile": {
+      "description": "Binds the MCP server to an existing tenant-gated Printing Press client profile.",
       "required": true,
-      "sensitive": true,
-      "title": "TIER_ENTERPRISE_TOKEN",
-      "type": "string"
-    },
-    "tier_global_token": {
-      "description": "Sets TIER_GLOBAL_TOKEN for the Tier Routing Golden MCP server.",
-      "required": true,
-      "sensitive": true,
-      "title": "TIER_GLOBAL_TOKEN",
-      "type": "string"
-    },
-    "tier_paid_key": {
-      "description": "Sets TIER_PAID_KEY for the Tier Routing Golden MCP server.",
-      "required": true,
-      "sensitive": true,
-      "title": "TIER_PAID_KEY",
+      "title": "Client profile",
       "type": "string"
     },
     "tier_routing_golden_user_agent": {

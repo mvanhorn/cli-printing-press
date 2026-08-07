@@ -39,6 +39,34 @@ func TestAuditPublicParamNamesFindsDecisionRequiredCrypticParams(t *testing.T) {
 	assert.Equal(t, "s", requirePublicParamFinding(t, findings, "stores.find.params.s").WireName)
 }
 
+func TestAuditPublicParamNamesUsesURLNameForQueryWireName(t *testing.T) {
+	api := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"records": {
+				Endpoints: map[string]spec.Endpoint{
+					"query": {
+						Path: "/records",
+						Params: []spec.Param{
+							{Name: "limit", URLName: "$limit", Type: "integer", Description: "Max rows"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	findings := AuditPublicParamNames(api)
+
+	require.Len(t, findings, 1)
+	finding := requirePublicParamFinding(t, findings, "records.query.params.$limit")
+	assert.Equal(t, "$limit", finding.WireName)
+	assert.Equal(t, "limit", finding.CurrentPublicName)
+	assert.Equal(t, []string{"operator-like-wire-name"}, finding.Reasons)
+
+	ledger := NewPublicParamAuditLedger(findings)
+	assert.Equal(t, PublicParamAuditSummary{Total: 1, Resolved: 1}, ledger.Summary)
+}
+
 func TestAuditPublicParamNamesMarksExistingFlagNamesResolved(t *testing.T) {
 	api := &spec.APISpec{
 		Resources: map[string]spec.Resource{
@@ -61,6 +89,31 @@ func TestAuditPublicParamNamesMarksExistingFlagNamesResolved(t *testing.T) {
 	street := requirePublicParamFinding(t, ledger.Findings, "stores.find.params.s")
 	assert.Equal(t, "street", street.CurrentPublicName)
 	assert.Equal(t, []string{"s"}, street.Aliases)
+}
+
+func TestAuditPublicParamNamesUsesBodyWireName(t *testing.T) {
+	api := &spec.APISpec{
+		Name:    "body-wire",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"stores": {
+				Endpoints: map[string]spec.Endpoint{
+					"create": {
+						Method: "POST",
+						Path:   "/stores",
+						Body: []spec.Param{
+							{Name: "street", BodyName: "s", Type: "string"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	findings := AuditPublicParamNames(api)
+	finding := requirePublicParamFinding(t, findings, "stores.create.body.s")
+	assert.Equal(t, "s", finding.WireName)
 }
 
 func TestPublicParamAuditSkipRequiresEvidence(t *testing.T) {

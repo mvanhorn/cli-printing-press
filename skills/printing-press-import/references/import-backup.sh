@@ -6,8 +6,8 @@
 #   import-backup.sh <api-slug>
 #
 # Backs up:
-#   $HOME/printing-press/library/<api-slug>/
-#   $HOME/printing-press/manuscripts/<api-slug>/  (if present)
+#   ${PRINTING_PRESS_HOME:-$HOME/printing-press}/library/<api-slug>/
+#   ${PRINTING_PRESS_HOME:-$HOME/printing-press}/manuscripts/<api-slug>/  (if present)
 #
 # Output: prints the absolute path of the resulting zip on stdout.
 
@@ -20,8 +20,9 @@ BACKUP_DIR="/tmp/printing-press"
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 ZIP_PATH="$BACKUP_DIR/${API_SLUG}-${TS}.zip"
 
-LIBRARY_DIR="$HOME/printing-press/library/$API_SLUG"
-MANUSCRIPTS_DIR="$HOME/printing-press/manuscripts/$API_SLUG"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
+LIBRARY_DIR="$PRESS_HOME/library/$API_SLUG"
+MANUSCRIPTS_DIR="$PRESS_HOME/manuscripts/$API_SLUG"
 
 if [[ ! -d "$LIBRARY_DIR" && ! -d "$MANUSCRIPTS_DIR" ]]; then
   echo "nothing to backup for $API_SLUG" >&2

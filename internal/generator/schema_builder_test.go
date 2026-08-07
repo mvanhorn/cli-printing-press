@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -38,23 +39,90 @@ func TestToSnakeCase(t *testing.T) {
 	}
 }
 
-func TestSafeSQLNameQuotesUnsafeIdentifiers(t *testing.T) {
+func TestSafeSQLNameAlwaysQuotes(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
 		want string
 	}{
-		{name: "bare identifier", in: "messages", want: "messages"},
-		{name: "reserved word", in: "references", want: `"references"`},
+		{name: "plain identifier", in: "messages", want: `"messages"`},
+		{name: "non-strict reserved word", in: "references", want: `"references"`},
+		{name: "strict reserved word", in: "add", want: `"add"`},
 		{name: "starts with digit", in: "0", want: `"0"`},
 		{name: "derived starts with digit", in: "0_fts", want: `"0_fts"`},
 		{name: "contains punctuation", in: "foo/bar", want: `"foo/bar"`},
-		{name: "escapes quote", in: `foo"bar`, want: `"foo""bar"`},
+		{name: "escapes embedded quote", in: `foo"bar`, want: `"foo""bar"`},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, safeSQLName(tt.in))
+		})
+	}
+}
+
+func TestBuildSchemaRoutesReservedStoreTablesToGenericOnly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		resource  string
+		streaming bool
+		learn     bool
+	}{
+		{name: "generic resources table", resource: "resources"},
+		{name: "fts shadow table", resource: "resources_fts_data"},
+		{name: "lazy learn table", resource: "learn_recall_misses", learn: true},
+		{name: "disabled learn table remains reserved", resource: "search_learnings"},
+		{name: "framework index", resource: "idx_resources_type"},
+		{name: "stream frames table", resource: "collision_a_p_i_stream_frames", streaming: true},
+		{name: "disabled stream table remains reserved", resource: "collision_a_p_i_stream_frames"},
+		{name: "stream metadata table", resource: "collision_a_p_i_stream_metadata", streaming: true},
+		{name: "stream rebase table", resource: "collision_a_p_i_rebase_log", streaming: true},
+		{name: "stream metadata index", resource: "collision_a_p_i_stream_metadata_status", streaming: true},
+		{name: "stream rebase index", resource: "collision_a_p_i_rebase_log_created", streaming: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apiSpec := &spec.APISpec{
+				Name: "CollisionAPI",
+				Resources: map[string]spec.Resource{
+					tt.resource: {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:   "GET",
+								Path:     "/items",
+								Response: spec.ResponseDef{Type: "array", Item: "Resource"},
+							},
+						},
+					},
+				},
+				Types: map[string]spec.TypeDef{
+					"Resource": {
+						Fields: []spec.TypeField{
+							{Name: "id", Type: "string"},
+							{Name: "name", Type: "string"},
+							{Name: "notes", Type: "string"},
+							{Name: "created_at", Type: "string", Format: "date-time"},
+						},
+					},
+				},
+			}
+			if tt.streaming {
+				apiSpec.Streaming = spec.StreamingConfig{Transport: "websocket"}
+			}
+			apiSpec.Learn.Enabled = tt.learn
+
+			table := findTable(BuildSchema(apiSpec), tt.resource)
+			if !assert.NotNil(t, table) {
+				return
+			}
+			assert.Equal(t, baseTableColumns, table.Columns)
+			assert.Empty(t, table.Indexes)
+			assert.False(t, table.FTS5)
+			assert.Empty(t, table.FTS5Fields)
+			assert.False(t, table.FTS5Triggers)
 		})
 	}
 }
@@ -290,6 +358,44 @@ func TestBuildSchema_NoResponseTypeFallback(t *testing.T) {
 				"unresolved response type must yield only the base columns; got %v", names)
 		})
 	}
+}
+
+func TestBuildSchema_WideResponseFallsBackToJSONOnlyTable(t *testing.T) {
+	fields := []spec.TypeField{{Name: "id", Type: "string"}}
+	for i := range maxStoreDomainTableColumns {
+		fields = append(fields, spec.TypeField{Name: "setting_" + strconv.Itoa(i), Type: "string"})
+	}
+
+	s := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"control": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/Control",
+						Response: spec.ResponseDef{Type: "object", Item: "Control"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Control": {Fields: fields},
+		},
+	}
+
+	control := findTable(BuildSchema(s), "control")
+	require.NotNil(t, control, "control table should be emitted")
+
+	names := make([]string, 0, len(control.Columns))
+	for _, c := range control.Columns {
+		names = append(names, c.Name)
+	}
+	assert.ElementsMatch(t, []string{"id", "data", "synced_at"}, names,
+		"wide resources must fall back to JSON-only columns to stay under SQLite's column cap")
+	assert.True(t, control.JSONOnlyFallback, "wide fallback should still emit a per-resource JSON-only table")
+	assert.Greater(t, control.OriginalColumnCount, maxStoreDomainTableColumns)
+	assert.Empty(t, control.Indexes, "wide fallback must not retain typed-column indexes")
+	assert.False(t, control.FTS5, "wide fallback must not emit typed-table FTS triggers")
 }
 
 // TestBuildSchema_SubResourceCollisionShardsByParent pins the fix for issue

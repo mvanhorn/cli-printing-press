@@ -17,8 +17,15 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-proxy-routes` | `info` | `APISpec.ProxyRoutes` | No |
 | `x-origin` | `info` | Google Discovery resource fallback | No |
 | `x-providerName` | `info` | Google Discovery resource fallback | No |
+| `x-roles` | root or `info` | `APISpec.Roles` | No |
 | `x-tier-routing` | root or `info` | `APISpec.TierRouting` | No |
+| `x-rate-class` | root or `info` | `APISpec.RateClass` | No |
+| `x-pp-default-rate-limit` | root or `info` | `APISpec.DefaultRateLimit` | No |
 | `x-mcp` | root or `info` | `APISpec.MCP` | No |
+| `x-cache` | root or `info` | `APISpec.Cache` | No |
+| `x-learn` | root or `info` | `APISpec.Learn` | No |
+| `x-pp-query` | root | `APISpec.QuerySync` | No |
+| `x-pp-response-envelope` | root or `info` | `APISpec.ResponseEnvelopeKey` | No |
 | `x-auth-type` | `components.securitySchemes.<name>` | `APISpec.Auth.Type` | No |
 | `x-auth-format` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
 | `x-prefix` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
@@ -29,11 +36,28 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-auth-key-url` | `components.securitySchemes.<name>` | `APISpec.Auth.KeyURL` | No |
 | `x-auth-title` | `components.securitySchemes.<name>` | `APISpec.Auth.Title` | No |
 | `x-auth-description` | `components.securitySchemes.<name>` | `APISpec.Auth.Description` | No |
+| `x-auth-subtype` | `components.securitySchemes.<name>` | `APISpec.Auth.Subtype` | No |
 | `x-auth-cookie-domain` | `components.securitySchemes.<name>` | `APISpec.Auth.CookieDomain` | No |
 | `x-auth-cookies` | `components.securitySchemes.<name>` | `APISpec.Auth.Cookies` | No |
+| `x-auth-companion` | `components.securitySchemes.<name>` or `info` | `APISpec.Auth.LoginURL`, `LoginCompleteSelector`, `JWTCarrierCookie` | No |
+| `x-oauth-device-flow` | `components.securitySchemes.<name>` | `APISpec.Auth.OAuth2Grant`, `DeviceAuthorizationURL`, `TokenURL`, `Scopes`, `DefaultClientID` | No |
+| `x-oauth-refresh-token-mechanism` | `components.securitySchemes.<name>` | `APISpec.Auth.RefreshTokenMechanism` | No |
 | `x-resource-id` | path item | `Endpoint.IDField` | No |
 | `x-critical` | path item | `Endpoint.Critical` | No |
 | `x-tier` | path item or operation | `Endpoint.Tier` | No |
+| `x-data-source-strategy` | path item or operation | `Endpoint.DataSourceStrategy` | No |
+| `x-live-dogfood-requires-tier` | path item or operation | `Endpoint.LiveDogfoodRequiresTier` | No |
+| `x-requires-role` | operation | `Endpoint.RequiresRole` | No |
+| `x-happy-args` | operation | `Endpoint.HappyArgs` | No |
+| `x-pp-example` | operation | `Endpoint.Example` (verbatim Cobra example override) | No |
+| `x-pp-resource` | operation | resource name override | No |
+| `x-pp-pagination` | operation | `Endpoint.Pagination` | No |
+| `x-pp-mutation` | operation | `Endpoint.Mutation` | No |
+| `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
+| `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
+| `x-pp-dispatch-param` | parameter | `Param.DispatchParam` | No |
+| `x-pp-tenant-scope-column` | path item | *reserved for follow-up tenant-scoped reconcile; not parsed yet* | No |
+| `x-pp-membership-field` | path item | `Endpoint.MembershipField` | No |
 
 ## `info` Extensions
 
@@ -73,7 +97,7 @@ Rules:
 - Must be a string.
 - Leading and trailing whitespace is trimmed.
 - Empty or non-string values leave `DisplayName` empty, so downstream code falls
-  back to catalog metadata or slug-derived naming.
+  back to spec metadata or slug-derived naming.
 - The parser does not enforce a length cap for `x-display-name`. The separate
   `registry.json` display-name fallback used by `mcp-sync` rejects registry
   values longer than 40 characters, but that limit does not apply here.
@@ -187,6 +211,83 @@ x-tier-routing:
         env_vars: [EXAMPLE_PAID_KEY]
 ```
 
+### `x-roles`
+
+Declares the authenticated persona labels that operation-level RBAC gates may
+reference.
+
+Parsed field: `APISpec.Roles`
+
+Rules:
+- Optional.
+- May be declared at the OpenAPI root or under `info`.
+- Must be a string list.
+- Each role must match `^[A-Za-z][A-Za-z0-9_-]*$`.
+- Every operation-level `x-requires-role` value must name one declared role.
+
+Example:
+
+```yaml
+x-roles: [parent, student, teacher, admin]
+```
+
+### `x-rate-class`
+
+Declares the API's rate-limit operating point so generated sync defaults can
+avoid wasteful parallelism on low-total-budget APIs.
+
+Parsed field: `APISpec.RateClass`
+
+Rules:
+- Optional.
+- May be declared at the OpenAPI root or under `info`. Root takes precedence
+  when both are present.
+- Must be a string.
+- Accepted values are `per-second`, `daily`, `monthly`, and `unlimited`.
+- `daily` and `monthly` generate `sync --concurrency` with a default of 1.
+  `per-second`, `unlimited`, and absent keep the default of 4.
+- This only changes generated sync worker defaults. It does not add runtime
+  rate limiting, retries, or backoff.
+
+Example:
+
+```yaml
+info:
+  title: Low Quota API
+  version: "1.0"
+  x-rate-class: monthly
+```
+
+### `x-pp-default-rate-limit`
+
+Sets the built-in default for the generated CLI's `--rate-limit` flag from an
+OpenAPI spec, mirroring the internal YAML `default_rate_limit` field.
+
+Parsed field: `APISpec.DefaultRateLimit`
+
+Rules:
+- Optional.
+- May be declared at the OpenAPI root or under `info`. Root takes precedence
+  when both are present.
+- The value is either the string `"auto"` (case-insensitive) or a non-negative
+  number (a JSON number or a numeric string). Any other shape is rejected with
+  a validation error.
+- `"auto"` selects the header-driven adaptive limiter so the CLI paces itself
+  to the server's `X-Ratelimit-*` headers with no hardcoded ceiling. A numeric
+  value (e.g. `2`) pins a fixed requests-per-second ceiling.
+- When absent, the legacy provenance default applies (2 for sniffed specs, else
+  0 = disabled). This only sets the default; the generated `--rate-limit` flag
+  still overrides it at runtime.
+
+Example:
+
+```yaml
+info:
+  title: Throttled API
+  version: "1.0"
+  x-pp-default-rate-limit: auto
+```
+
 ### `x-mcp`
 
 Declares MCP server shape for the generated CLI. Mirrors the internal YAML
@@ -198,10 +299,23 @@ for large surfaces: `transport: [stdio, http]` + `orchestration: code` +
 Parsed field: `APISpec.MCP` (`spec.MCPConfig`)
 
 Rules:
-- Optional. Specs without `x-mcp` keep today's stdio-only endpoint-mirror
-  behavior.
+- Optional. Specs without `x-mcp` get the endpoint-mirror surface while they
+  remain at or below the orchestration threshold. Small APIs (typed-endpoint
+  count at or below `spec.DefaultRemoteTransportEndpointThreshold`, currently
+  30) also get the http transport compiled in alongside stdio so the same
+  binary can reach cloud-hosted agents. Large APIs above
+  `spec.DefaultOrchestrationThreshold` (currently 50) default to the Cloudflare
+  MCP pattern (`transport: [stdio, http]`, `orchestration: code`, and
+  `endpoint_tools: hidden`) when `orchestration` is unset. Set
+  `orchestration: endpoint-mirror` to opt out. Setting `transport` explicitly
+  (including `transport: [stdio]`) bypasses the transport default and is
+  honored as-is.
 - May be declared at the OpenAPI root or under `info`. Root takes precedence
   when both are present.
+- For backwards compatibility, root-level `mcp:` is also accepted when
+  canonical `x-mcp` is absent. The parser emits a warning asking authors to
+  rename it to `x-mcp`. `x-mcp` and `mcp` are never merged; any canonical
+  `x-mcp` declaration, including under `info`, wins as a complete config.
 - Shape mirrors the internal YAML `mcp:` block field-for-field: `transport`,
   `addr`, `intents`, `endpoint_tools`, `orchestration`,
   `orchestration_threshold`.
@@ -215,6 +329,394 @@ x-mcp:
   transport: [stdio, http]
   orchestration: code
   endpoint_tools: hidden
+```
+
+### `x-cache`
+
+Declares cache-freshness and auto-refresh behavior for generated CLIs. Mirrors
+the internal YAML spec's top-level `cache:` block so OpenAPI specs with a
+store-backed sync surface can opt into the same freshness machinery.
+
+Parsed field: `APISpec.Cache` (`spec.CacheConfig`)
+
+Rules:
+- Optional. Specs without `x-cache` keep today's behavior: no freshness helper
+  or auto-refresh hook is emitted unless cache is configured elsewhere.
+- May be declared at the OpenAPI root or under `info`. Root takes precedence
+  when both are present.
+- Shape mirrors the internal YAML `cache:` block field-for-field: `enabled`,
+  `stale_after`, `refresh_timeout`, `env_opt_out`, `resources`, `commands`.
+- Validated by the same cache/share validation as internal YAML specs. Duration
+  fields must be Go duration strings, `commands` require `enabled: true`, and
+  command resource names must refer to parsed resources.
+
+Example:
+
+```yaml
+x-cache:
+  enabled: true
+  stale_after: 6h
+  refresh_timeout: 30s
+  env_opt_out: EXAMPLE_NO_AUTO_REFRESH
+  resources:
+    quotes: 5m
+  commands:
+    - name: dashboard
+      resources: [quotes]
+```
+
+### `x-learn`
+
+Declares the self-learning loop configuration for generated CLIs. Mirrors the
+internal YAML spec's top-level `learn:` block so OpenAPI-sourced prints can
+author ticker patterns, stopwords, synonym folds, and entity-lookup seeds the
+same way internal specs do.
+
+Parsed field: `APISpec.Learn` (`spec.LearnConfig`)
+
+Rules:
+- Optional. Specs without `x-learn` express no learn preference and take the
+  generator's learn-loop default. `enabled: false` is likewise treated as
+  unset under that default (a plain bool cannot express "explicitly off");
+  the authoritative opt-out is `disabled: true`.
+- May be declared at the OpenAPI root or under `info`. Root takes precedence
+  when both are present.
+- Shape mirrors the internal YAML `learn:` block field-for-field: `enabled`,
+  `disabled`, `ticker_patterns`, `stopwords`, `synonyms`,
+  `entity_lookup_seeds`.
+- `disabled: true` is the generation-time opt-out. Combining it with an
+  explicit `enabled: true` is rejected at parse time as contradictory.
+- Validated by the same learn validation as internal YAML specs: ticker
+  patterns must compile as Go regexps, seed kinds must be lowercase
+  identifiers, canonicals must be non-empty and unique within a kind, and
+  synonym pairs must be non-empty lowercase single-hop folds (no chains, no
+  self-references).
+
+Example:
+
+```yaml
+x-learn:
+  enabled: true
+  ticker_patterns:
+    - "[A-Z]{2,6}-[0-9]+"
+  stopwords: [the, of]
+  synonyms:
+    last night: yesterday
+  entity_lookup_seeds:
+    country:
+      - canonical: USA
+        aliases: [united states, america]
+```
+
+### `x-pp-example`
+
+Overrides the generated command's `--help` Example with a verbatim, authored
+invocation. The synthesized example only includes **required** params, so an
+endpoint whose params are all optional — the common "pass one of `channelId` /
+`handle` / `url`" shape — otherwise advertises a bare command the API rejects
+with a 4xx. That broken example also fails the live-dogfood happy-path and
+json-fidelity probes, which run the Example verbatim.
+
+Parsed field: `Endpoint.Example` (the same field the internal YAML spec sets via
+`example:`).
+
+Rules:
+- Optional. Endpoints without `x-pp-example` keep today's synthesized example
+  byte-for-byte.
+- Operation-level only. The value is the full invocation including the binary
+  name (`<api-slug>-pp-cli <command> <args>`); the parser normalizes it to the
+  canonical two-space indent on each line, so authors may omit the leading
+  spaces.
+- Use it instead of marking a param `required` to force it into the example —
+  marking it required would also make the generated CLI flag mandatory, which a
+  one-of endpoint must not be.
+- Whitespace-only values are ignored (treated as absent); non-string values warn
+  and are ignored.
+
+Example:
+
+```yaml
+paths:
+  /v1/youtube/channel:
+    get:
+      operationId: getYoutubeChannel
+      x-pp-example: "scrape-creators-pp-cli youtube list-channel --handle mkbhd"
+      parameters:
+        - { name: channelId, in: query, required: false, schema: { type: string } }
+        - { name: handle, in: query, required: false, schema: { type: string } }
+        - { name: url, in: query, required: false, schema: { type: string } }
+```
+
+### `x-pp-response-envelope`
+
+Declares the exact top-level key used by an API's single-key JSON response
+wrapper, such as `result` in `{"result": {"items": [...]}}`. The generated
+client removes that wrapper before the response reaches commands, pagination,
+or sync. This is opt-in because a top-level key can also be part of a
+legitimate payload.
+
+Parsed field: `APISpec.ResponseEnvelopeKey`
+
+Rules:
+- Optional. Specs without this extension keep the response body unchanged.
+- Declared at the OpenAPI root or under `info`.
+- Must be a string; surrounding whitespace is trimmed.
+- Unwrapping applies only to successful JSON responses whose body is an object
+  with exactly one property matching the configured key. Other bodies pass
+  through unchanged.
+
+Example:
+
+```yaml
+x-pp-response-envelope: result
+```
+
+### `x-pp-query`
+
+Declares the SQL-query-endpoint sync shape (QuickBooks Online, Salesforce SOQL):
+an API where every list resource is read through one shared endpoint with an
+injected `SELECT`-style query, results wrapped in an entity-named envelope, and
+paging carried inside the query text. Mirrors the internal YAML spec's top-level
+`query_sync:` block. When present, the sync generator emits the query injection,
+the response-envelope unwrap, and the in-query offset-paging loop **by
+construction** — gated so a normal REST list API's generated output is
+byte-identical to today.
+
+Parsed field: `APISpec.QuerySync` (`spec.QuerySyncConfig`)
+
+Rules:
+- Optional. Specs without `x-pp-query` keep today's REST sync behavior exactly.
+- Declared at the OpenAPI root (the internal YAML form lives in the top-level
+  `query_sync:` block). All query dialect text lives in the hint, never the
+  generator — the template substitutes the `{entity}`, `{start}`, and `{limit}`
+  placeholders at runtime.
+- A resource participates only when its list endpoint's path equals `path` AND
+  it declares a `response_path` (e.g. `QueryResponse.<Entity>`); the per-resource
+  entity name is taken from that endpoint's response item (e.g. `Invoice`). Raw
+  passthrough resources on the same path with no `response_path` are skipped.
+- Fields: `path` (required, the shared query endpoint, e.g. `/query`);
+  `query_param` (the param carrying the SELECT, default `query`);
+  `query_template` (required, the SELECT + paging clause with
+  `{entity}`/`{start}`/`{limit}` placeholders); `version_param` + `version_value`
+  (an optional extra param sent on every query call); `envelope_key` (the
+  result-envelope object key joined to the runtime extractor list, e.g.
+  `QueryResponse`); `page_size` (in-query page size and offset stride, default
+  `1000`).
+
+Example:
+
+```yaml
+x-pp-query:
+  path: /query
+  query_param: query
+  query_template: "select * from {entity} startposition {start} maxresults {limit}"
+  version_param: minorversion
+  version_value: "75"
+  envelope_key: QueryResponse
+  page_size: 1000
+```
+
+### `x-tenant-env-var`
+
+Declares the env-var name that resolves the implicit `{tenant}` path
+placeholder for multi-tenant SaaS APIs whose every path is
+`/tenant/{tenant}/<resource>`. Without this annotation, the generator
+classifies tenant-templated paths as parent-context-dependent and emits an
+empty `defaultSyncResources` / `syncResourcePath` map; sync silently no-ops
+and every downstream offline command ships broken.
+
+Parsed fields: `APISpec.EndpointTemplateVars` (`tenant` added),
+`APISpec.EndpointTemplateEnvOverrides["tenant"]` (env-var name), and
+`APISpec.GlobalPathTemplateVars` when `{tenant}` is present on at least
+80% of endpoints and can safely map to a root persistent flag.
+
+Rules:
+- Optional. Specs without `x-tenant-env-var` keep single-tenant behavior;
+  no `{tenant}`-aware emission, no spurious env reads.
+- Declared under `info` only (path-positional templates are spec-wide).
+- Value must be a non-empty string after `TrimSpace`. Whitespace-only
+  values are treated as absent.
+- The placeholder name is `tenant`. Specs that use a different
+  placeholder (`{workspace}`, `{org}`) should set
+  `EndpointTemplateVars` + `EndpointTemplateEnvOverrides` directly in
+  internal YAML until this extension generalizes.
+
+Effect on generated output (when set):
+- The profiler treats `/.../{tenant}/...` paths as standalone-listable, so
+  the resource becomes a flat `SyncableResource` rather than a
+  `DependentSyncResource`.
+- The emitted `config.go` reads the override env-var name (e.g.
+  `ST_TENANT_ID`) into `Config.TemplateVars["tenant"]` at `Load()` time.
+- The emitted `url.go` `buildURL` substitutes `{tenant}` from
+  `Config.TemplateVars` at request time and names the override env var in
+  the actionable error when the value is missing.
+- When `{tenant}` appears on at least 80% of endpoints and its public
+  flag name does not collide with existing root flags, the emitted root
+  command exposes `--tenant` as an optional override for the same
+  `Config.TemplateVars["tenant"]` value. Matching per-command
+  `{tenant}` positionals are removed; sparse path params remain
+  per-command inputs.
+- Typed MCP endpoint tools for tenant-scoped paths expose optional
+  `tenant` input that overrides the env/config value for that one call.
+- The emitted `sync.go` filters `{tenant}` out of the unresolved-key
+  warning so per-tenant paths don't get skipped as "requires parent
+  context".
+
+Example:
+
+```yaml
+info:
+  title: ServiceTitan CRM
+  version: 1.0.0
+  x-tenant-env-var: ST_TENANT_ID
+```
+
+### `x-pp-tenant-scope-column`
+
+Declares, on a parent collection's list path-item, the column or field name
+that identifies the tenant (e.g. workspace) scope for each row returned by
+that collection. Use it on list path-items whose synced rows are partitioned
+by a workspace or organization identifier, so that a future deletion-
+reconciliation pass can target only the rows belonging to the active tenant
+rather than pruning the entire table.
+
+This extension is **reserved and forward-looking**. It is consumed by the
+upcoming tenant-scoped deletion-reconciliation and flat fan-out work; the
+follow-up parser will map it to a `tenantScopeColumn` field on the profiled
+resource. The extension is **not parsed in the current release** and has no
+effect on generated output today. Specs without it are unaffected.
+
+Rules:
+- Optional. Absence means no tenant scoping is recorded; the current release
+  behavior is unchanged.
+- Placed on the list path-item object (same level as `get:`, `post:`, etc.),
+  not on an individual operation.
+- Value must be a non-empty string naming the response field that holds the
+  tenant scope (e.g. `workspace`, `workspace_slug`, `org_id`).
+- Only one column per path-item is meaningful; the field names the foreign-key
+  column whose values identify tenant boundaries in the synced rows.
+- Has no effect this round; the parser will begin reading it in the follow-up
+  tenant-scoped reconcile task.
+
+Example:
+
+```yaml
+paths:
+  /projects/:
+    x-pp-tenant-scope-column: workspace
+    get:
+      operationId: list_projects
+      summary: List or retrieve projects
+```
+
+### `x-pp-membership-field`
+
+Declares, on a parent collection's list path-item, the boolean field in that
+collection's own row payload that indicates whether the authenticated user is a
+member of the resource (e.g. `is_member`). Dependent fan-out over the parent
+table skips rows whose field is false — their sub-resources would 403 — so a
+sync reports one clear "not a member" summary instead of a 403 per
+(sub-resource, parent).
+
+Parsed field: `Endpoint.MembershipField`
+
+Rules:
+- Optional. Absence means no membership filtering is recorded.
+- Placed on the list path-item object (same level as `get:`, `post:`, etc.),
+  not on an individual operation.
+- Must be a string naming a boolean field in the row payload; non-string
+  values are ignored with a warning.
+- The field name must be a simple identifier (`^[a-zA-Z_][a-zA-Z0-9_]*$`). It
+  is interpolated into the generated store's non-member query, so dotted or
+  nested-path field names are rejected at runtime and the membership skip
+  becomes a no-op rather than filtering rows.
+- Consumed by the profiler when building dependent-sync resource metadata.
+
+Example:
+
+```yaml
+paths:
+  /workspaces/:
+    x-pp-membership-field: is_member
+    get:
+      operationId: list_workspaces
+      summary: List workspaces
+```
+
+### `x-path-template-env-vars`
+
+Generic, map-shaped successor to `x-tenant-env-var`. Each entry binds a
+path placeholder to an object with two optional fields. The `env` field
+registers a runtime env-var override for the placeholder, flowing into
+the same `EndpointTemplateVars` / `EndpointTemplateEnvOverrides` bucket
+that `x-tenant-env-var` populates — suitable for BaseURL placeholders
+such as Atlassian's `{workspace}` or GitHub's `{org}`. The `default`
+field bakes a literal into operation paths at generation time and drops
+the matching path parameter, suitable for canonical always-valid values
+such as Gmail's `userId='me'` for the authenticated user. When both are
+set on the same entry, `default` wins and `env` is ignored — the
+placeholder is fully resolved before runtime substitution sees it.
+
+Parsed fields: `APISpec.EndpointTemplateVars`,
+`APISpec.EndpointTemplateEnvOverrides`,
+`APISpec.EndpointPathParamDefaults`, and
+`APISpec.GlobalPathTemplateVars` for env-backed placeholders that meet
+the same 80% common-path promotion rule.
+
+Rules:
+- Optional. Specs without this extension keep prior behavior; the new
+  field stays empty and no generated output changes.
+- Declared under `info` only (path-positional templates are spec-wide).
+- Coexists with `x-tenant-env-var`; both feed the same template-vars
+  bucket. The `tenant` placeholder may be set by either extension.
+- `env` and `default` values must be non-empty after `TrimSpace`.
+  Whitespace-only values are treated as absent on the entry.
+- Entries with neither `env` nor `default` set are skipped silently.
+- Env-backed placeholders that appear in at least 80% of endpoint paths
+  are promoted to optional root persistent flags (for example
+  `{workspace}` -> `--workspace`) when the derived flag and Go field
+  names do not collide with existing root command flags. Matching
+  per-command path positionals are removed, while same-named
+  non-path positionals and sparse path params remain command inputs.
+- Typed MCP endpoint tools for promoted env-backed path placeholders
+  expose optional per-call inputs that override env/config values before
+  URL substitution.
+
+Effect on generated output (when set):
+- `env`-set entries behave exactly like `x-tenant-env-var` for the
+  declared placeholder: the emitted `config.go`, `url.go`, and `sync.go`
+  resolve the placeholder against the named env var at runtime, and the
+  profiler treats `/.../{placeholder}/...` paths as standalone-listable.
+- `default`-set entries are baked in at parse time: every operation
+  path under `Resources` has `{placeholder}` replaced with the literal,
+  and the matching path parameter is dropped from each endpoint's
+  `Params`. The printed CLI exposes neither a placeholder nor a flag
+  for the resolved parameter.
+
+Examples:
+
+Runtime env-var override for a BaseURL placeholder, parallel to
+`x-tenant-env-var`:
+
+```yaml
+info:
+  title: Atlassian API
+  version: 1.0.0
+  x-path-template-env-vars:
+    workspace:
+      env: ATLASSIAN_WORKSPACE
+```
+
+Build-time literal substitution that bakes a canonical value into every
+operation path and drops the matching path parameter:
+
+```yaml
+info:
+  title: Gmail Users API
+  version: 1.0.0
+  x-path-template-env-vars:
+    userId:
+      default: me
 ```
 
 ## Security Scheme Extensions
@@ -283,6 +785,36 @@ components:
       x-prefix: Klaviyo-API-Key
 ```
 
+### `x-auth-basic-username` / `x-auth-basic-password`
+
+Declares the literal username or password half for HTTP Basic auth schemes
+where only the other half should be supplied by the user.
+
+Parsed field: `APISpec.Auth.Format`
+
+Rules:
+- Optional.
+- Only read for OpenAPI `http` security schemes with `scheme: basic`.
+- Must be a string.
+- Leading and trailing whitespace is trimmed.
+- When only `x-auth-basic-username` is present, the parser stores
+  `"Basic <username>:{token}"` in `Auth.Format`.
+- When only `x-auth-basic-password` is present, the parser stores
+  `"Basic {token}:<password>"` in `Auth.Format`.
+- If both are present or both are absent, the normal Basic auth format remains
+  `"Basic {username}:{password}"`.
+
+Example:
+
+```yaml
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      x-auth-basic-username: API_KEY
+```
+
 ### `x-auth-env-vars`
 
 Overrides the generated credential environment variable names.
@@ -296,6 +828,14 @@ Rules:
 - Empty and non-string list items are ignored.
 - When at least one non-empty item is present, the list replaces the parser's
   generated env var names.
+- On apiKey/header schemes that appear beside the selected auth scheme in the
+  same AND security requirement, the first non-empty item supplies the
+  generated per-call env var for that sibling header. Use `x-auth-vars` for
+  richer metadata or when more than one credential variable belongs to the
+  same scheme.
+- If a sibling apiKey/header scheme omits `x-auth-env-vars` and `x-auth-vars`,
+  the parser derives a required per-call env var from the API slug and header
+  name, for example `DISPATCH_ST_APP_KEY` for `ST-App-Key`.
 
 ### `x-auth-vars`
 
@@ -375,12 +915,18 @@ Rules:
 - The parser does not validate the URL shape.
 
 When the extension is absent and the spec has any auth, the parser falls back
-through the following sources in order and uses the first plausible HTTPS URL:
+through the following sources in order:
 
 1. The selected security scheme's `description` (extracted via regex).
 2. `info.description`, but only when the surrounding text mentions
    credential-related cues (`token`, `api key`, `credential`, `register`,
    `sign up`, etc.) so an unrelated URL doesn't get picked.
+
+Within either description, generic protocol references such as MDN, RFC/IETF,
+HTTPWG, and Wikipedia links are ignored. A clear credential-management surface
+(`console`, `dashboard`, `api-keys`/`apikeys`, or `settings/integrations`) wins
+over an earlier neutral URL; otherwise the first accepted non-generic URL is
+kept as the fallback.
 
 `externalDocs.url` and `info.contact.url` are intentionally **not** fallbacks
 for `KeyURL`. Those almost always point at the API's docs landing page or the
@@ -389,9 +935,8 @@ When `KeyURL` ends up empty, the printed CLI uses `WebsiteURL` (already
 populated from `externalDocs.url`, `info.contact.url`, and `x-website`) under
 a separate `See API docs: <URL>` line — honest framing for those URLs.
 
-Catalog YAML's `auth_key_url:` (see [`CATALOG.md`](CATALOG.md)) overrides the
-inference. The result drives the printed CLI's `Get a key at: <URL>` output in
-auth prompts and `doctor`.
+The result drives the printed CLI's `Get a key at: <URL>` output in auth
+prompts and `doctor`.
 
 ### `x-auth-instructions`
 
@@ -407,8 +952,6 @@ Rules:
 - Leading and trailing whitespace is trimmed.
 - Use this when `x-auth-key-url` lands on a docs page rather than the keys UI;
   the URL says where to start, the instruction says what to do once there.
-
-Catalog YAML's `auth_instructions:` overrides any spec-supplied value.
 
 ### `x-auth-title`
 
@@ -455,6 +998,52 @@ components:
       x-auth-description: Optional FlightAware AeroAPI credential for enriched flight data.
 ```
 
+### `x-auth-subtype`
+
+Refines `Auth.Type` for runtime flows that need a different credential-capture
+path than the base type implies. Recognized values include
+`google_service_account`, which selects the generated Google service-account
+JWT bearer exchange scaffold, and `auth0_spa_in_memory`, a bearer-token spec
+whose access token is held by the Auth0 SPA SDK with `cacheLocation: memory`.
+Cookie/localStorage extractors have no path to the latter token (it lives in JS
+heap only), so the generator emits a `--auth0-spa` flag on `auth login --chrome`
+that drives a Chrome DevTools Protocol outbound-Authorization interceptor.
+
+Parsed field: `APISpec.Auth.Subtype`
+
+Rules:
+
+- Optional.
+- Must be a string.
+- Recognized values: `google_service_account`, `auth0_spa_in_memory`. Other values are silently dropped
+  by the parser; the in-spec value never round-trips unless it matches a known
+  subtype.
+- `google_service_account` is valid only with a bearer-token auth type. It
+  emits `auth service-account`, accepts a service-account JSON key through
+  `GOOGLE_APPLICATION_CREDENTIALS`, and supports a pre-minted bearer override
+  through `GOOGLE_OAUTH_ACCESS_TOKEN`.
+- Spec-level validation rejects `auth.subtype: auth0_spa_in_memory` paired with
+  any non-empty `auth.type` other than `bearer_token`. Auth0 SPA tokens are
+  always Authorization-bearer values; combining the subtype with `api_key` or
+  `cookie` would silently emit a CDP path against a credential that isn't a
+  JWT.
+- Sniff-time detection (`internal/browsersniff/auth0_spa.go`) sets the subtype
+  automatically when an `/oauth/token` response carries `access_token` in the
+  JSON body without a JWT-shaped Set-Cookie on the same response. Authors
+  rarely need to set it by hand.
+
+Example:
+
+```yaml
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      x-auth-subtype: auth0_spa_in_memory
+```
+
 ### `x-auth-cookie-domain`
 
 Domain used when extracting named cookies for composed auth.
@@ -495,11 +1084,260 @@ components:
         - csrf_token
 ```
 
+### `x-auth-companion`
+
+Declares the deterministic hints the generated CLI needs to hand off to
+`press-auth login` non-interactively. With these set, `auth login --chrome
+--auto-login` shells out to `press-auth login <domain> --login-url ...
+--jwt-carrier-cookie ...` and the user never has to remember those values.
+
+Parsed fields:
+
+- `login_url` -> `APISpec.Auth.LoginURL`
+- `login_complete_selector` -> `APISpec.Auth.LoginCompleteSelector`
+- `jwt_carrier_cookie` -> `APISpec.Auth.JWTCarrierCookie`
+
+Placement:
+
+- Allowed on `components.securitySchemes.<name>` and on `info`. Scheme-level
+  fields win over info-level when both are set. Info-level is intended for
+  specs that declare composed auth without a single named security scheme.
+
+Rules:
+
+- All three sub-fields are optional. When absent, the generated CLI prints
+  a hint instructing the user to invoke `press-auth login` manually.
+- `login_url` must parse as a URL and use `https://` (or `http://localhost`
+  / `http://127.0.0.1`). Plain `http://` against other hosts would leak the
+  captured cookies to a network sniffer; the parser rejects it.
+- `login_complete_selector` is opaque — pass through verbatim as a CSS
+  selector. The parser does not validate it beyond non-emptiness.
+- `jwt_carrier_cookie` should match one of the names listed in `cookies`.
+  A mismatch surfaces as a stderr warning at parse time (typo surfacing)
+  rather than a hard error.
+- Only these three public hints are embedded into the generated CLI's
+  source. Cookie values, JWT tokens, and other user-secret material never
+  appear in generated constants — press-auth captures and stores those
+  itself.
+
+Internal YAML equivalent (under the `auth:` block):
+
+```yaml
+auth:
+  type: composed
+  cookie_domain: example.com
+  cookies:
+    - session_id
+    - guestsession
+  login_url: https://www.example.com/account/login
+  login_complete_selector: "a[href*=signout]"
+  jwt_carrier_cookie: guestsession
+```
+
+OpenAPI security-scheme placement:
+
+```yaml
+components:
+  securitySchemes:
+    browserSession:
+      type: apiKey
+      in: cookie
+      name: guestsession
+      x-auth-companion:
+        login_url: https://www.example.com/account/login
+        login_complete_selector: "a[href*=signout]"
+        jwt_carrier_cookie: guestsession
+```
+
+OpenAPI info-level placement (for specs without a named scheme):
+
+```yaml
+info:
+  title: Example
+  x-auth-companion:
+    login_url: https://www.example.com/account/login
+    login_complete_selector: "a[href*=signout]"
+    jwt_carrier_cookie: guestsession
+```
+
+### `x-oauth-device-flow`
+
+Declares OAuth 2.0 device authorization grant metadata for CLI-first OAuth
+flows. OpenAPI 3.0 does not have a native `deviceCode` flow, so the Printing
+Press reads this extension from an OAuth2 security scheme and emits a generated
+`auth login --device-code` command plus refresh-token handling.
+
+Parsed fields: `APISpec.Auth.OAuth2Grant=device_code`,
+`APISpec.Auth.DeviceAuthorizationURL`, `APISpec.Auth.TokenURL`,
+`APISpec.Auth.Scopes`, `APISpec.Auth.DefaultClientID`.
+
+Rules:
+
+- Optional. When present, the parser treats the security scheme as a bearer
+  OAuth flow backed by stored access tokens.
+- Must be an object.
+- `deviceAuthorizationUrl` (or `device_authorization_url`) and `tokenUrl` (or
+  `token_url`) are required by `APISpec.Validate()` when
+  `oauth2_grant: device_code`.
+- `scopes` may be a string or list of strings. Lists are sorted for stable
+  generation.
+- `defaultClientId` (or `default_client_id`) is optional. When absent, the
+  generated CLI prompts for `--client-id` or the inferred `<API>_CLIENT_ID`
+  environment variable.
+
+Example:
+
+```yaml
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      x-oauth-device-flow:
+        deviceAuthorizationUrl: https://login.example.com/common/oauth2/v2.0/devicecode
+        tokenUrl: https://login.example.com/common/oauth2/v2.0/token
+        defaultClientId: public-client-id
+        scopes:
+          - Calendars.Read
+          - Mail.Read
+```
+
+### `x-oauth-refresh-token-mechanism`
+
+Declares how the authorization endpoint should be asked to issue a refresh
+token. Providers diverge: Google reads `access_type=offline` as a query
+parameter, while WHOOP, X/Twitter, and others read a magic scope value
+(`offline`, `offline.access`, `offline_access`) instead. The generator emits
+neither by default because a Google-shaped silent default silently breaks
+other providers (broken refresh path is invisible until access-token TTL
+expires).
+
+Parsed field: `APISpec.Auth.RefreshTokenMechanism`
+
+Rules:
+
+- Optional. Only consumed by the authorization_code grant template; ignored
+  for other grants and non-OAuth2 auth.
+- Must be a string. Leading and trailing whitespace on the whole value is
+  trimmed.
+- Two exact-match prefixes are accepted:
+  - `scope:<value>` appends `<value>` to the scope list. No query param is
+    added.
+  - `query:<key>=<value>` sets the query parameter exactly once. No scope
+    change.
+- Malformed values (empty key, empty value, missing `=` for `query`, unknown
+  prefix, uppercase prefix) are ignored and produce no emission.
+- For `query:<key>=<value>`, the reserved authorization-URL parameter names
+  `client_id`, `redirect_uri`, `response_type`, `state`, and `scope` are
+  rejected. Permitting them would let a spec author silently overwrite the
+  generator's CSRF state token or core OAuth params.
+- Note: the single-mechanism shape cannot express Google's two-param recipe
+  (`access_type=offline` + `prompt=consent`). The first param is sufficient
+  for refresh-token issuance on initial consent; the second forces re-consent
+  on subsequent logins to keep the refresh-token contract alive. Specs that
+  need both should declare one via this extension and add the other through a
+  future multi-mechanism syntax (out of scope here).
+
+Example:
+
+```yaml
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      x-oauth-refresh-token-mechanism: scope:offline
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.example.com/oauth/authorize
+          tokenUrl: https://api.example.com/oauth/token
+          scopes:
+            read: Read access
+```
+
+### `x-url-name` and `x-param-url-names`
+
+Overrides the URL query key for a parameter without changing the public
+CLI/MCP input name. Use this for APIs whose documented flag name or shared
+OpenAPI component name differs from the exact wire query key a specific
+endpoint accepts.
+
+Parsed field: `Param.URLName`
+
+Rules:
+
+- `x-url-name` is allowed on an OpenAPI Parameter Object and applies wherever
+  that parameter object is used.
+- `x-param-url-names` is allowed on a Path Item Object or Operation Object. It
+  is an object mapping parameter names to URL query keys. Operation entries
+  override path-item entries.
+- The parameter's `name` remains the public input identity used for generated
+  Go identifiers, CLI flags, MCP public names, and manifest public names.
+- The override only changes generated URL query emission, MCP `WireName`, and
+  manifest `wire_name`.
+- Empty names, empty URL keys, and non-string override values are ignored with
+  warnings.
+
+Example:
+
+```yaml
+paths:
+  /opportunities/search:
+    get:
+      x-param-url-names:
+        locationId: location_id
+      parameters:
+        - $ref: "#/components/parameters/LocationId"
+
+  /opportunities/pipelines:
+    get:
+      parameters:
+        - $ref: "#/components/parameters/LocationId"
+
+components:
+  parameters:
+    LocationId:
+      name: locationId
+      in: query
+      schema:
+        type: string
+```
+
+In this example both endpoints keep the same public `locationId` input, but
+only `/opportunities/search` sends `?location_id=` on the wire.
+
+### `x-pp-dispatch-param`
+
+Marks a query parameter as a fixed dispatch discriminator whose `default` value
+selects the upstream route rather than tuning the request. Generated runnable
+examples keep that default instead of substituting a synthetic dogfood value.
+
+Parsed field: `Param.DispatchParam`
+
+Use this for shared-path APIs where a query parameter such as `type` or
+`action` selects the report or operation. Do not use it for ordinary filters,
+limits, page sizes, or other tunable inputs.
+
+Example:
+
+```yaml
+paths:
+  /:
+    get:
+      operationId: getDomainRank
+      parameters:
+        - name: report
+          in: query
+          x-pp-dispatch-param: true
+          schema:
+            type: string
+            default: domain_rank
+```
+
 ## Path Item Extensions
 
 Path item extensions are read from a path object, beside its HTTP operations.
 They apply to every operation under that path because sync identity and critical
-resource status are resource-scoped.
+resource status are resource-scoped, and operation-level data-source strategy
+can override the path default.
 
 ### `x-resource-id`
 
@@ -562,6 +1400,70 @@ paths:
           description: OK
 ```
 
+### `x-pp-syncable`
+
+Opts a list endpoint into generated default sync even when the profiler would
+normally exclude it because required path or query parameters are not
+automatically satisfiable.
+
+Parsed field: `Endpoint.Syncable`
+
+Rules:
+- Optional.
+- Defaults to `false`.
+- Accepts native booleans.
+- May be set on a path item or a single operation.
+- Use only when required inputs are supplied by defaults, endpoint template
+  variables, or another generated runtime mechanism.
+
+Example:
+
+```yaml
+paths:
+  /tenant/{tenant_id}/items:
+    get:
+      operationId: listTenantItems
+      x-pp-syncable: true
+      parameters:
+        - name: tenant_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+```
+
+### `x-pp-mutation`
+
+Marks an operation as mutating even when its HTTP method is normally treated as
+read-only, such as a GET action that starts, stops, restarts, deploys, or
+otherwise changes remote state.
+
+Parsed field: `Endpoint.Mutation`
+
+Rules:
+- Optional.
+- Defaults to `false`.
+- Must be a native boolean.
+- Applies only at the operation level.
+- When `true`, the generator classifies the endpoint as a mutation before
+  applying HTTP-verb and operation-name fallbacks.
+
+Example:
+
+```yaml
+paths:
+  /applications/{id}/restart:
+    get:
+      operationId: restartApplication
+      x-pp-mutation: true
+      responses:
+        "204":
+          description: Restarted
+```
+
 ### `x-tier`
 
 Selects a tier declared by `x-tier-routing` for a path item or one operation.
@@ -590,4 +1492,334 @@ paths:
       x-tier: paid
       responses:
         "200": {description: ok}
+```
+
+### `x-data-source-strategy`
+
+Declares how a generated read command should honor the global
+`--data-source auto|local|live` flag.
+
+Parsed field: `Endpoint.DataSourceStrategy`
+
+Rules:
+- Optional.
+- May be declared on a path item or operation.
+- Operation-level values override path-item-level values.
+- Must be one of `auto`, `local`, or `live`.
+- `auto` keeps the normal live-with-local-fallback behavior for store-backed
+  reads.
+- `local` makes the command use local synced data for `auto` and `local`, and
+  reject `--data-source live` with a clear no-live-equivalent error.
+- `live` makes the command use the remote API for `auto` and `live`, and reject
+  `--data-source local` with a clear no-local-data-source error.
+
+Example:
+
+```yaml
+paths:
+  /reports/snapshot:
+    get:
+      x-data-source-strategy: local
+      responses:
+        "200": {description: ok}
+```
+
+### `x-live-dogfood-requires-tier`
+
+Declares the runner credential tier required before `cli-printing-press dogfood
+--live` should probe an endpoint.
+
+Parsed field: `Endpoint.LiveDogfoodRequiresTier`
+
+Rules:
+- Optional.
+- May be declared on a path item or operation.
+- Operation-level values override path-item-level values.
+- Must be a string; non-string values are ignored with a warning.
+- This is dogfood-only. It does not select an upstream auth route and should
+  not be confused with `x-tier`.
+- When absent, the parser may infer `streaming` for obvious `GET` streaming
+  endpoints such as paths ending in `/stream` or responses with
+  `text/event-stream`.
+
+The generator emits the value as the Cobra annotation `pp:requires-tier`.
+Live dogfood skips annotated commands unless `--auth-tier` or `PP_AUTH_TIER`
+matches the value.
+
+Example:
+
+```yaml
+paths:
+  /2/tweets/firehose/stream:
+    get:
+      x-live-dogfood-requires-tier: enterprise
+      responses:
+        "200":
+          description: Streaming response
+          content:
+            text/event-stream:
+              schema:
+                type: string
+```
+
+### `x-requires-role`
+
+Requires the authenticated account to have one of the declared `x-roles` before
+the generated command calls the API.
+
+Parsed field: `Endpoint.RequiresRole`
+
+Rules:
+- Optional.
+- Must be on an operation, not the root, `info`, or path item.
+- Must be a string naming a role declared by `x-roles`.
+- The generator emits the guard framework and endpoint call site. How a printed
+  CLI discovers the authenticated account's role remains API-specific.
+
+Example:
+
+```yaml
+x-roles: [parent, student, teacher, admin]
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      x-requires-role: admin
+      responses:
+        "200": {description: ok}
+```
+
+### `x-pp-resource`
+
+Overrides the resource bucket for one OpenAPI operation. Use it when the path
+parser would derive a reserved Printing Press template name such as `search`,
+or when the upstream path shape does not expose the intended resource name.
+
+Parsed field: resource map key in `APISpec.Resources`
+
+Rules:
+- Optional.
+- Must be a string.
+- The value is sanitized to the same resource-name form the parser uses for
+  path-derived names.
+- Non-string values emit a warning and are ignored.
+- Applies only to the operation where it appears.
+
+Example:
+
+```yaml
+paths:
+  /search:
+    post:
+      operationId: searchNotes
+      x-pp-resource: notes_search
+      responses:
+        "200": {description: ok}
+```
+
+### `x-pp-pagination`
+
+Overrides pagination detection for one GET operation.
+
+Parsed field: `Endpoint.Pagination`
+
+Rules:
+- Optional.
+- Must be on an operation, not the root, `info`, or path item.
+- Must be a string.
+- Accepted value: `none`.
+- `none` tells generated sync not to send inferred cursor, page, offset, or
+  page-size query parameters for this endpoint, even when the operation exposes
+  page-looking filters such as `page`, `page_size`, or `limit`.
+- Use for list endpoints that return the whole collection in one response and
+  reject pagination keys as invalid filters.
+- Unsupported values emit a warning and fall back to normal pagination
+  detection.
+
+Example:
+
+```yaml
+paths:
+  /ip_addresses:
+    get:
+      operationId: listIPAddresses
+      x-pp-pagination: none
+      parameters:
+        - name: page_size
+          in: query
+          schema: {type: integer}
+      responses:
+        "200": {description: ok}
+```
+
+### `x-pp-safe-probe`
+
+Marks a mutation endpoint as explicitly safe for the Phase 1.9 reachability gate
+to call once as an optional second probe after the low-risk GET/body capture.
+This extension is consumed by Printing Press skill guidance rather than the Go
+OpenAPI parser; it documents author intent for agents reviewing a resolved spec.
+
+Parsed field: none; consumed by skill guidance only
+
+Rules:
+- Optional.
+- Must be on an operation, not the root, `info`, or path item.
+- Accepts native boolean `true` only.
+- Use only for idempotent or otherwise harmless operations for the real account
+  being used.
+- Absence or any value other than native boolean `true` means mutation probing
+  is not allowed; agents must stop after the GET/body reachability capture.
+
+Example:
+
+```yaml
+paths:
+  /webhooks/test:
+    post:
+      x-pp-safe-probe: true
+      responses:
+        "200": {description: ok}
+```
+
+### `x-happy-args`
+
+Declares live-dogfood happy-path fixture arguments for one operation. Use it
+when generic synthesized inputs cannot satisfy the endpoint contract, such as a
+search endpoint that requires `q` or a lookup endpoint that requires one of
+several conditional query flags.
+
+Parsed field: `Endpoint.HappyArgs`
+
+Rules:
+- Optional.
+- Must be on an operation, not the root, `info`, or path item.
+- Must be a string in the runtime annotation format consumed by
+  `pp:happy-args`.
+- Tokens are separated by unescaped semicolons. Escape a literal semicolon as
+  `\;` (write `\\;` inside a YAML double-quoted string). `<label>=value`
+  overlays synthesized positional args, and `--flag=value` replaces the
+  matching example flag or adds a new flag/value pair.
+- Negative numeric flag values are emitted in `--flag=-12.3` form so Cobra
+  does not parse the value as a shorthand flag cluster.
+- Empty or whitespace-only values behave the same as absence.
+
+Example:
+
+```yaml
+paths:
+  /referents:
+    get:
+      operationId: listReferents
+      x-happy-args: "--song-id=378195"
+      responses:
+        "200": {description: ok}
+```
+
+### `x-pp-sync-walker`
+
+Declares a hierarchical-walk dependency for a child endpoint. Synthesizes (or
+augments) a dependent-resource entry so the generator's existing
+parent-child sync machinery handles the fan-out — fetch the parent, extract
+the named field from each parent record, substitute it into the child path,
+fetch each child.
+
+Use this when the auto-detected parent-child link in the profiler would miss
+your endpoint or pick the wrong parent. Common cases:
+
+- The child path's placeholder name does not match a parent resource (e.g.
+  `/games/{game_key}/leagues` — `game_key` does not stem to "games" via the
+  default `_id`/`_key` stripping).
+- The parent placeholder lives in a matrix or query parameter rather than the
+  path, so the path has no `{placeholder}` for auto-detection to read.
+- The child path uses a parent field that is not the parent's primary key
+  (e.g. Yahoo Fantasy's `game_key`, Reddit's `subreddit` name).
+
+Parsed field: `Endpoint.Walker` (a `*spec.WalkerConfig`)
+
+Rules:
+- Optional.
+- Operation-level only. (No path-item-level form today.)
+- `parent` (string, required): the resource name to iterate. The parent must
+  itself be a syncable resource (i.e., have a flat-list endpoint). Walkers
+  pointing at non-syncable parents emit a `warning:` to stderr at generate
+  time and are dropped.
+- `key_field` (string, optional): the field to extract from each parent
+  record for substitution into the child path. Defaults to the parent's
+  primary key. Set this when the child path needs a non-PK field.
+- `key_param` (string, optional): the placeholder name in the child path
+  that receives the extracted value. Defaults to the first (and only)
+  `{placeholder}` in the child path when there is exactly one. **Required
+  explicitly when the child path has 0 or 2+ placeholders** — the
+  single-placeholder default would otherwise pick the wrong slot (or no
+  slot at all). The generator warns and drops the walker when it's ambiguous
+  and `key_param` is missing.
+- Walker-emitted dependents flow through the same `syncDependentResource`
+  machinery as auto-detected ones, so concurrency/retry/cursor/Upsert
+  behavior is identical.
+
+Internal YAML emits this as `walker:` on the endpoint with the same
+sub-field names (`parent`, `key_field`, `key_param`). Both surfaces parse
+to the same `WalkerConfig` struct.
+
+Example:
+
+```yaml
+paths:
+  /games:
+    get:
+      summary: List games (parent for the walker below)
+      responses:
+        "200": {description: ok}
+  /games/{game_key}/leagues:
+    get:
+      summary: List leagues for a game
+      x-pp-sync-walker:
+        parent: games
+        key_field: game_key
+        key_param: game_key
+      parameters:
+        - name: game_key
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+```
+
+### `x-streaming`
+
+Declares that a spec has WebSocket-primary ingest with REST metadata refresh.
+Internal YAML uses the same shape as `streaming:` at the top level.
+
+Parsed field: `APISpec.Streaming` (`spec.StreamingConfig`)
+
+Rules:
+- Optional. When omitted, REST-only generation is unchanged.
+- `transport` must currently be `websocket`.
+- `url` must be an absolute `ws://` or `wss://` URL.
+- `framing` may be `single_object_per_frame` or `newline_delimited_json`.
+  Empty defaults to `single_object_per_frame`.
+- `metadata.endpoint` is optional, but required when any metadata sub-field
+  is declared.
+- `metadata.refresh_cadence` is a Go duration. Empty defaults to `30s`.
+- `metadata.statuses` defaults to `[live, pending]`.
+- `metadata.primary_key` defaults to `id`.
+
+When present, the generator emits `live ws sync`, `live rest sync`,
+`internal/wsclient`, and local SQLite tables for stream frames, stream
+metadata, and `<api>_rebase_log` lifecycle events.
+
+Example:
+
+```yaml
+x-streaming:
+  transport: websocket
+  url: "wss://api.example.com/v1/ws"
+  subscribe_shape: '{"type":"subscribe","channels":["events"]}'
+  framing: newline_delimited_json
+  metadata:
+    endpoint: "/v1/events"
+    refresh_cadence: 30s
+    statuses: [live, pending]
+    primary_key: event_id
 ```
