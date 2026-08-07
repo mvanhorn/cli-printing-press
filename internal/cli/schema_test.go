@@ -41,19 +41,24 @@ func TestSchemaPhase5MarkerPrintsJSONSchema(t *testing.T) {
 	var schema map[string]any
 	require.NoError(t, json.Unmarshal([]byte(output), &schema))
 	assert.Equal(t, "CLI Printing Press phase5-acceptance.json", schema["title"])
+	// Every field here must be one the runner can actually emit; see
+	// TestPhase5Marker_SchemaDeclaresNoPhantomProperties. cli_name,
+	// tests_total, completed_at and summary were removed because
+	// Phase5GateMarker never produced them — a schema promise nothing kept.
 	for _, field := range []string{
 		"schema_version",
 		"run_id",
 		"api_name",
-		"cli_name",
 		"level",
 		"status",
 		"matrix_size",
-		"tests_total",
 		"tests_passed",
+		"tests_skipped",
+		"tests_unverified",
 		"tests_failed",
-		"completed_at",
-		"summary",
+		"coverage_hollow",
+		"hollow_features",
+		"skip_reason",
 		"source_fingerprint",
 		"source_files",
 	} {
