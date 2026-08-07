@@ -3297,6 +3297,25 @@ func listGoFiles(dir string) []string {
 	return files
 }
 
+// Dead-code analysis needs non-test files for definitions while counting usage
+// across both production and test files.
+func listGoTestFiles(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var files []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		files = append(files, filepath.Join(dir, entry.Name()))
+	}
+	sort.Strings(files)
+	return files
+}
+
 func countDomainTables(storeSource string) int {
 	if storeSource == "" {
 		return 0

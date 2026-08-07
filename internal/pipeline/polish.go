@@ -101,10 +101,22 @@ func RemoveDeadCode(dir string, dryRun bool) (*PolishResult, error) {
 			}
 		}
 
-		// Verify build after each pass
+		// Verify build after each pass.
 		buildCmd := exec.Command("go", "build", "./...")
 		buildCmd.Dir = dir
 		buildOutput, buildErr := buildCmd.CombinedOutput()
+
+		// Test binaries must compile after removal, but they must not execute:
+		// generated suites can require live credentials or other runtime setup.
+		if buildErr == nil {
+			if out, err := compileTestBinaries(dir); err != nil {
+				buildErr = err
+				if len(out) == 0 {
+					out = []byte(err.Error())
+				}
+				buildOutput = out
+			}
+		}
 
 		if buildErr != nil {
 			result.BuildVerified = false
@@ -124,6 +136,18 @@ func RemoveDeadCode(dir string, dryRun bool) (*PolishResult, error) {
 
 	result.BuildVerified = true
 	return result, nil
+}
+
+func compileTestBinaries(dir string) ([]byte, error) {
+	outputDir, err := os.MkdirTemp("", "printing-press-polish-tests-*")
+	if err != nil {
+		return nil, fmt.Errorf("creating test build directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(outputDir) }()
+
+	testCmd := exec.Command("go", "test", "-c", "-o", outputDir, "./...")
+	testCmd.Dir = dir
+	return testCmd.CombinedOutput()
 }
 
 // findAllDeadFunctions scans ALL .go files in a CLI's internal/cli/ directory
@@ -157,6 +181,17 @@ func findAllDeadFunctions(cliDir string, extraSearchDirs ...string) []string {
 		matches := funcRe.FindAllStringSubmatch(content, -1)
 		for _, match := range matches {
 			allDefs = append(allDefs, funcDef{name: match[1], file: file})
+		}
+	}
+
+	// Usage detection must see _test.go too. listGoFiles deliberately skips
+	// test files so their helpers never become removal candidates, but a
+	// function whose only callers are tests is still live: deleting it leaves a
+	// tree that passes `go build` and fails `go test`. Read them for usage
+	// only — no definitions are harvested here.
+	for _, file := range listGoTestFiles(cliDir) {
+		if data, err := os.ReadFile(file); err == nil {
+			allContent = append(allContent, string(data))
 		}
 	}
 
