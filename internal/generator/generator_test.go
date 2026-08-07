@@ -5319,6 +5319,26 @@ func TestGenerateRequiredUserAgentHeaderBeatsDefaultUserAgent(t *testing.T) {
 	assert.NotContains(t, doctorSrc, `authHeaders["User-Agent"] = "browserheaders-pp-cli"`)
 }
 
+// TestGenerateUserAgentEnvVarOverridesDefault covers the runtime escape
+// hatch for the default User-Agent: some APIs (ESPN/Akamai) block on the
+// baked-in "<name>-pp-cli/<version>" string, and there is no config.toml
+// field for it. <ENV_PREFIX>_USER_AGENT lets an operator override the
+// default without a rebuild, while an explicit per-request header (a
+// required header from the spec, or a caller-supplied override) still wins.
+func TestGenerateUserAgentEnvVarOverridesDefault(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("uaenv")
+	outputDir := filepath.Join(t.TempDir(), "uaenv-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	assert.Contains(t, clientSrc, `if req.Header.Get("User-Agent") == "" {`)
+	assert.Contains(t, clientSrc, `if ua := os.Getenv("UAENV_USER_AGENT"); ua != "" {`)
+	assert.Contains(t, clientSrc, `req.Header.Set("User-Agent", ua)`)
+	assert.Contains(t, clientSrc, `req.Header.Set("User-Agent", "uaenv-pp-cli/0.1.0")`)
+}
+
 func TestGenerateObjectBodyDefaultsAreParsedAsJSON(t *testing.T) {
 	t.Parallel()
 

@@ -1283,7 +1283,11 @@ func validateComposedAuth(authHeader string) error {
 {{- end}}
 {{- if not .UsesBrowserManagedUserAgent}}
 	if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+		if ua := os.Getenv("{{envName .Name}}_USER_AGENT"); ua != "" {
+			req.Header.Set("User-Agent", ua)
+		} else {
+			req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+		}
 	}
 {{- end}}
 

@@ -847,7 +847,11 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		}
 {{- if not .UsesBrowserManagedUserAgent}}
 		if req.Header.Get("User-Agent") == "" {
-			req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+			if ua := os.Getenv("{{envName .Name}}_USER_AGENT"); ua != "" {
+				req.Header.Set("User-Agent", ua)
+			} else {
+				req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+			}
 		}
 {{- end}}
 

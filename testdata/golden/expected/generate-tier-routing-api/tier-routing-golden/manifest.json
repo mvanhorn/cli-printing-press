@@ -23,7 +23,8 @@
       "env": {
         "TIER_ENTERPRISE_TOKEN": "${user_config.tier_enterprise_token}",
         "TIER_GLOBAL_TOKEN": "${user_config.tier_global_token}",
-        "TIER_PAID_KEY": "${user_config.tier_paid_key}"
+        "TIER_PAID_KEY": "${user_config.tier_paid_key}",
+        "TIER_ROUTING_GOLDEN_USER_AGENT": "${user_config.tier_routing_golden_user_agent}"
       }
     },
     "type": "binary"
@@ -48,6 +49,11 @@
       "required": true,
       "sensitive": true,
       "title": "TIER_PAID_KEY",
+      "type": "string"
+    },
+    "tier_routing_golden_user_agent": {
+      "description": "Optional. Sets TIER_ROUTING_GOLDEN_USER_AGENT for the Tier Routing Golden MCP server. Overrides the default HTTP User-Agent header the generated client sends; not a credential.",
+      "title": "TIER_ROUTING_GOLDEN_USER_AGENT",
       "type": "string"
     }
   },

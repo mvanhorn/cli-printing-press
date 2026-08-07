@@ -247,7 +247,11 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 			req.Header.Set(k, v)
 		}
 		if req.Header.Get("User-Agent") == "" {
-			req.Header.Set("User-Agent", "printing-press-golden-pp-cli/2026.04")
+			if ua := os.Getenv("PRINTING_PRESS_GOLDEN_USER_AGENT"); ua != "" {
+				req.Header.Set("User-Agent", ua)
+			} else {
+				req.Header.Set("User-Agent", "printing-press-golden-pp-cli/2026.04")
+			}
 		}
 
 		resp, err := c.HTTPClient.Do(req)

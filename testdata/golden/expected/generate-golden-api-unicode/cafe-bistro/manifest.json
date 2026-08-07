@@ -21,7 +21,8 @@
       "args": [],
       "command": "${__dirname}/bin/cafe-bistro-pp-mcp",
       "env": {
-        "CAFE_BISTRO_API_KEY": "${user_config.cafe_bistro_api_key}"
+        "CAFE_BISTRO_API_KEY": "${user_config.cafe_bistro_api_key}",
+        "CAFE_BISTRO_USER_AGENT": "${user_config.cafe_bistro_user_agent}"
       }
     },
     "type": "binary"
@@ -32,6 +33,11 @@
       "required": true,
       "sensitive": true,
       "title": "CAFE_BISTRO_API_KEY",
+      "type": "string"
+    },
+    "cafe_bistro_user_agent": {
+      "description": "Optional. Sets CAFE_BISTRO_USER_AGENT for the Café Bistro MCP server. Overrides the default HTTP User-Agent header the generated client sends; not a credential.",
+      "title": "CAFE_BISTRO_USER_AGENT",
       "type": "string"
     }
   },

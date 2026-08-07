@@ -21,7 +21,8 @@
       "args": [],
       "command": "${__dirname}/bin/printing-press-golden-pp-mcp",
       "env": {
-        "PRINTING_PRESS_GOLDEN_API_KEY": "${user_config.printing_press_golden_api_key}"
+        "PRINTING_PRESS_GOLDEN_API_KEY": "${user_config.printing_press_golden_api_key}",
+        "PRINTING_PRESS_GOLDEN_USER_AGENT": "${user_config.printing_press_golden_user_agent}"
       }
     },
     "type": "binary"
@@ -32,6 +33,11 @@
       "required": true,
       "sensitive": true,
       "title": "PRINTING_PRESS_GOLDEN_API_KEY",
+      "type": "string"
+    },
+    "printing_press_golden_user_agent": {
+      "description": "Optional. Sets PRINTING_PRESS_GOLDEN_USER_AGENT for the Printing Press Studio MCP server. Overrides the default HTTP User-Agent header the generated client sends; not a credential.",
+      "title": "PRINTING_PRESS_GOLDEN_USER_AGENT",
       "type": "string"
     }
   },
