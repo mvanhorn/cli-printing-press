@@ -12095,12 +12095,8 @@ func TestGenerateRequiredUserAgentHeaderBeatsDefaultUserAgent(t *testing.T) {
 	assert.NotContains(t, doctorSrc, `authHeaders["User-Agent"] = "browserheaders-pp-cli"`)
 }
 
-// TestGenerateUserAgentEnvVarOverridesDefault covers the runtime escape
-// hatch for the default User-Agent: some APIs (ESPN/Akamai) block on the
-// baked-in "<name>-pp-cli/<version>" string, and there is no config.toml
-// field for it. <ENV_PREFIX>_USER_AGENT lets an operator override the
-// default without a rebuild, while an explicit per-request header (a
-// required header from the spec, or a caller-supplied override) still wins.
+// Generated clients preserve explicit headers before applying the optional
+// environment override and baked-in User-Agent fallback.
 func TestGenerateUserAgentEnvVarOverridesDefault(t *testing.T) {
 	t.Parallel()
 

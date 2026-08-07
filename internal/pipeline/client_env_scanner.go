@@ -207,15 +207,10 @@ func discoveredEnvDescription(m CLIManifest, envVar string, required bool) strin
 	return b.String()
 }
 
-// isNonCredentialDiscoveredEnvVar reports whether a discovered internal/client
-// env read is a behavioral override rather than a secret. The reconciler's
-// default — sensitive, and required whenever the CLI's base auth requires a
-// credential — is correct for hand-written auth-refresh reads (the case
-// #859 was built for), but generator-emitted reads like the per-CLI
-// User-Agent override are neither secret nor gated on auth: any CLI can set
-// one, and its absence never blocks a request. Keyed on the env var name's
-// suffix rather than the file it came from, since the scanner already
-// discards that distinction.
+// Request-behavior overrides are optional and non-sensitive because their
+// absence does not affect authentication. Match by environment-variable
+// suffix so classification stays independent of the generated client file
+// that reads the value.
 func isNonCredentialDiscoveredEnvVar(name string) bool {
 	return strings.HasSuffix(name, "_USER_AGENT")
 }
