@@ -1,4 +1,4 @@
-// Copyright 2026 mvanhorn. Licensed under Apache-2.0. See LICENSE.
+// Copyright mvanhorn. Licensed under Apache-2.0. See LICENSE.
 
 package cli
 
