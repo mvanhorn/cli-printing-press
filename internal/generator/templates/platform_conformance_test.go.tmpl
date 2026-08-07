@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -100,6 +101,12 @@ func TestProfileParserAndSelectionConformance(t *testing.T) {
 		t.Fatalf("loaded name = %q", loaded.Name)
 	}
 	path, _ := ProfilePath("synthetic")
+	if runtime.GOOS == "windows" {
+		// POSIX mode bits are meaningless on NTFS: os.Chmod only toggles the
+		// read-only attribute, so a file written 0600 always stats back 0666.
+		// Access control is the DACL, checked by verifyPrivatePerms.
+		t.Skip("POSIX mode assertion is not meaningful on Windows")
+	}
 	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("profile mode = %v, err = %v", info.Mode().Perm(), err)
 	}
@@ -311,6 +318,12 @@ func TestTenantGateAndIsolationConformance(t *testing.T) {
 	info, err := os.Stat(filepath.Join(state, "cache-key"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		// POSIX mode bits are meaningless on NTFS: os.Chmod only toggles the
+		// read-only attribute, so a file written 0600 always stats back 0666.
+		// Access control is the DACL, checked by verifyPrivatePerms.
+		t.Skip("POSIX mode assertion is not meaningful on Windows")
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("cache fingerprint key mode = %v", info.Mode().Perm())
@@ -702,6 +715,12 @@ func TestSharedLimiterHonorsBurstAndCrossInstanceLedger(t *testing.T) {
 	}
 	if len(waits) != 2 || waits[0] != time.Second || waits[1] != 2*time.Second {
 		t.Fatalf("shared ledger waits = %v", waits)
+	}
+	if runtime.GOOS == "windows" {
+		// POSIX mode bits are meaningless on NTFS: os.Chmod only toggles the
+		// read-only attribute, so a file written 0600 always stats back 0666.
+		// Access control is the DACL, checked by verifyPrivatePerms.
+		t.Skip("POSIX mode assertion is not meaningful on Windows")
 	}
 	if info, err := os.Stat(first.path); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("limiter ledger mode = %v err=%v", info.Mode().Perm(), err)

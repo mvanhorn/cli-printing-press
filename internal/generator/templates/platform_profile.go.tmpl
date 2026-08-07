@@ -184,8 +184,8 @@ func LoadProfile(name string) (*Profile, error) {
 	if info.Mode()&os.ModeSymlink != 0 {
 		return nil, errors.New("client profile may not be a symlink")
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("client profile permissions must be 0600, got %04o", info.Mode().Perm())
+	if err := verifyPrivatePerms(path, info, "client profile"); err != nil {
+		return nil, err
 	}
 	file, err := os.Open(filepath.Clean(path)) // #nosec G304 -- path is derived from a validated profile name.
 	if err != nil {
@@ -534,8 +534,8 @@ func readFingerprintKey(path string) ([]byte, error) {
 	if info.Mode()&os.ModeSymlink != 0 {
 		return nil, errors.New("cache fingerprint key may not be a symlink")
 	}
-	if info.Mode().Perm() != 0o600 {
-		return nil, fmt.Errorf("cache fingerprint key permissions must be 0600, got %04o", info.Mode().Perm())
+	if err := verifyPrivatePerms(path, info, "cache fingerprint key"); err != nil {
+		return nil, err
 	}
 	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- platform-owned state path.
 	if err != nil {
