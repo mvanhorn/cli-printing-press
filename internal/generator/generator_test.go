@@ -12109,6 +12109,7 @@ func TestGenerateUserAgentEnvVarOverridesDefault(t *testing.T) {
 	assert.Contains(t, clientSrc, `if ua := os.Getenv("UAENV_USER_AGENT"); ua != "" {`)
 	assert.Contains(t, clientSrc, `req.Header.Set("User-Agent", ua)`)
 	assert.Contains(t, clientSrc, `req.Header.Set("User-Agent", "uaenv-pp-cli/0.1.0")`)
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGenerateObjectBodyDefaultsAreParsedAsJSON(t *testing.T) {
