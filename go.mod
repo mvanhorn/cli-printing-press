@@ -68,7 +68,7 @@ require (
 	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/refraction-networking/utls v1.8.3-0.20260301010127-aa6edf4b11af // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
