@@ -51,14 +51,39 @@ func firstCommandExample(resources map[string]spec.Resource) string {
 		return strings.Join(parts, " ")
 	}
 
+	// Pass 1: an endpoint named exactly for a read-only verb.
 	for _, rName := range resNames {
 		r := resources[rName]
 		for _, verb := range preferredVerbs {
-			if ep, ok := r.Endpoints[verb]; ok {
+			if ep, ok := r.Endpoints[verb]; ok && isReadOnlyEndpoint(ep) {
 				return pathFor(rName, r, verb, ep)
 			}
 		}
 	}
+	// Pass 2: any read-only endpoint, by transport method rather than by name.
+	//
+	// Pass 1 matches endpoint names exactly, which most real specs never
+	// satisfy — they name endpoints with the verb as a prefix
+	// ("get-service-desks", "list-users"). Without this pass the search fell
+	// straight through to "alphabetically first", which is a coin flip on
+	// whether the docs advertise a mutation. For a Jira Service Management CLI
+	// it produced `add-customers`, a POST, in the blocks that illustrate
+	// --select / --json / --dry-run / --agent / --profile.
+	//
+	// These blocks are read by agents. A mutating command in the "here is how
+	// you use the flags" slot is materially more likely to be executed than the
+	// same example in human-facing prose.
+	for _, rName := range resNames {
+		r := resources[rName]
+		for _, eName := range sortedEndpointNames(r.Endpoints) {
+			if ep := r.Endpoints[eName]; isReadOnlyEndpoint(ep) {
+				return pathFor(rName, r, eName, ep)
+			}
+		}
+	}
+	// Pass 3: the spec has no read-only endpoint at all. Returning empty would
+	// delete the docs block, so fall back — this is the only path on which a
+	// mutation can appear in an example.
 	for _, rName := range resNames {
 		r := resources[rName]
 		eNames := sortedEndpointNames(r.Endpoints)
@@ -67,6 +92,22 @@ func firstCommandExample(resources map[string]spec.Resource) string {
 		}
 	}
 	return ""
+}
+
+// isReadOnlyEndpoint reports whether invoking ep is safe to advertise in
+// generated documentation. GET and HEAD are read-only by transport; Mutation
+// overrides that for GET actions the spec author has flagged as having side
+// effects.
+func isReadOnlyEndpoint(ep spec.Endpoint) bool {
+	if ep.Mutation {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(ep.Method)) {
+	case "GET", "HEAD":
+		return true
+	default:
+		return false
+	}
 }
 
 func commandExampleArgs(ep spec.Endpoint) string {
