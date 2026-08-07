@@ -101,10 +101,24 @@ func RemoveDeadCode(dir string, dryRun bool) (*PolishResult, error) {
 			}
 		}
 
-		// Verify build after each pass
+		// Verify build after each pass.
 		buildCmd := exec.Command("go", "build", "./...")
 		buildCmd.Dir = dir
 		buildOutput, buildErr := buildCmd.CombinedOutput()
+
+		// `go build` never compiles _test.go, so on its own it cannot notice
+		// that a removal broke the test suite. `go test -run ^$` builds every
+		// test binary and runs no test: it is the compile-only check, and it is
+		// as fast as a build. Actually running the suite here would be slow and
+		// would fail for reasons unrelated to the removal (network, live API).
+		if buildErr == nil {
+			testCmd := exec.Command("go", "test", "-run", "^$", "./...")
+			testCmd.Dir = dir
+			if out, err := testCmd.CombinedOutput(); err != nil {
+				buildErr = err
+				buildOutput = out
+			}
+		}
 
 		if buildErr != nil {
 			result.BuildVerified = false
@@ -157,6 +171,17 @@ func findAllDeadFunctions(cliDir string, extraSearchDirs ...string) []string {
 		matches := funcRe.FindAllStringSubmatch(content, -1)
 		for _, match := range matches {
 			allDefs = append(allDefs, funcDef{name: match[1], file: file})
+		}
+	}
+
+	// Usage detection must see _test.go too. listGoFiles deliberately skips
+	// test files so their helpers never become removal candidates, but a
+	// function whose only callers are tests is still live: deleting it leaves a
+	// tree that passes `go build` and fails `go test`. Read them for usage
+	// only — no definitions are harvested here.
+	for _, file := range listGoTestFiles(cliDir) {
+		if data, err := os.ReadFile(file); err == nil {
+			allContent = append(allContent, string(data))
 		}
 	}
 

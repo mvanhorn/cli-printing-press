@@ -3297,6 +3297,26 @@ func listGoFiles(dir string) []string {
 	return files
 }
 
+// listGoTestFiles returns the _test.go files in dir. It is the complement of
+// listGoFiles, which skips them. Dead-code analysis needs both: definitions
+// come from non-test files, usage must be counted across everything.
+func listGoTestFiles(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var files []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		files = append(files, filepath.Join(dir, entry.Name()))
+	}
+	sort.Strings(files)
+	return files
+}
+
 func countDomainTables(storeSource string) int {
 	if storeSource == "" {
 		return 0
