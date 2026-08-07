@@ -6638,3 +6638,44 @@ exit 99
 	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
 	return dir, binaryName
 }
+
+func TestLiveDogfoodExampleArgsJoinsBackslashContinuations(t *testing.T) {
+	cmd := liveDogfoodCommand{
+		Path: []string{"teach-pattern"},
+		Help: `Usage:
+  cli teach-pattern [flags]
+
+Examples:
+  cli teach-pattern \
+    --query-template "items in {entity}" \
+    --resource-template "GROUP-{entity:category}" \
+    --resource-type items \
+    --entity-kind category \
+    --strategy substitute
+`,
+	}
+	args, ok := liveDogfoodExampleArgs(cmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{
+		"teach-pattern", "--query-template", "items in {entity}",
+		"--resource-template", "GROUP-{entity:category}",
+		"--resource-type", "items", "--entity-kind", "category",
+		"--strategy", "substitute",
+	}, args)
+}
+
+func TestLiveDogfoodExampleArgsSeparatesDistinctExamples(t *testing.T) {
+	cmd := liveDogfoodCommand{
+		Path: []string{"widgets", "get"},
+		Help: `Usage:
+  cli widgets get <id> [flags]
+
+Examples:
+  cli widgets list --verbose
+  cli widgets get widget-1 --format=summary
+`,
+	}
+	args, ok := liveDogfoodExampleArgs(cmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"widgets", "get", "widget-1", "--format=summary"}, args)
+}

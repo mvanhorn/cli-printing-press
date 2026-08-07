@@ -2165,6 +2165,33 @@ func liveDogfoodHappyArgsParsed(command liveDogfoodCommand) ([]string, bool, hap
 
 func liveDogfoodExampleArgs(command liveDogfoodCommand) ([]string, bool) {
 	examples := extractExamplesSection(command.Help)
+	// Parse the example block as a single shell command instead of one line
+	// at a time. Generated examples use backslash-newline continuations:
+	// shellargs.Split folds them, but a per-line parse of the first
+	// continuation line yields a stray "\" token as a positional and drops
+	// the real example flags, failing commands that require flags (e.g.
+	// teach-pattern --query-template).
+	var sb strings.Builder
+	for line := range strings.SplitSeq(examples, "\n") {
+		t := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "$"))
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		sb.WriteString(t)
+		if strings.HasSuffix(t, "\\") {
+			sb.WriteString("\n") // backslash continuation: newline folds like the real help text
+		} else {
+			sb.WriteString("\n") // distinct example command boundary
+		}
+	}
+	block := strings.TrimSpace(sb.String())
+	if block != "" {
+		args, err := parseExampleArgs(block)
+		if err == nil && len(args) > 0 && slices.Equal(args[:min(len(command.Path), len(args))], command.Path) {
+			return args, true
+		}
+	}
+	// Per-line fallback for help text with multiple distinct examples.
 	for line := range strings.SplitSeq(examples, "\n") {
 		candidate := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "$"))
 		if candidate == "" || strings.HasPrefix(candidate, "#") {
