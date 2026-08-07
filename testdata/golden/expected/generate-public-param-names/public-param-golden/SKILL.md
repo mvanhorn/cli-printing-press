@@ -63,7 +63,7 @@ Add `--agent` to any command. Expands to: `--json --compact --no-input --no-colo
 - **Filterable** — `--select` keeps a subset of fields. Dotted paths descend into nested structures; arrays traverse element-wise. Critical for keeping context small on verbose APIs:
 
   ```bash
-  public-param-golden-pp-cli stores create --store-code example-value --agent --select id,name,status
+  public-param-golden-pp-cli stores find --address example-value --city example-value --location-id 550e8400-e29b-41d4-a716-446655440000 --agent --select id,name,status
   ```
 - **Previewable** — `--dry-run` shows the request without sending
 - **Offline-friendly** — sync/search commands can use the local SQLite store when available
@@ -334,7 +334,7 @@ A profile is a saved set of flag values, reused across invocations. Use it when 
 
 ```
 public-param-golden-pp-cli profile save briefing --json
-public-param-golden-pp-cli --profile briefing stores create --store-code example-value
+public-param-golden-pp-cli --profile briefing stores find --address example-value --city example-value --location-id 550e8400-e29b-41d4-a716-446655440000
 public-param-golden-pp-cli profile list --json
 public-param-golden-pp-cli profile show briefing
 public-param-golden-pp-cli profile delete briefing --yes

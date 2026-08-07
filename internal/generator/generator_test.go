@@ -18318,10 +18318,10 @@ func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
 	assert.Contains(t, mcpSource, `bodyArgs[binding.WireName] = v`)
 
 	readme := readGeneratedFile(t, outputDir, "README.md")
-	assert.Contains(t, readme, `public-params-pp-cli stores create --store-code example-value`)
+	assert.Contains(t, readme, `public-params-pp-cli stores find --address example-value --city example-value`)
 
 	skill := readGeneratedFile(t, outputDir, "SKILL.md")
-	assert.Contains(t, skill, `public-params-pp-cli stores create --store-code example-value`)
+	assert.Contains(t, skill, `public-params-pp-cli stores find --address example-value --city example-value`)
 }
 
 func TestGenerateBodyNameAcrossCLISurfaces(t *testing.T) {
