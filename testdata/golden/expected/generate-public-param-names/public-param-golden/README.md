@@ -123,7 +123,7 @@ This checks your configuration.
 ### 3. Try Your First Command
 
 ```bash
-public-param-golden-pp-cli stores create --store-code example-value
+public-param-golden-pp-cli stores find --address example-value --city example-value --location-id 550e8400-e29b-41d4-a716-446655440000
 ```
 
 ## Usage
@@ -210,19 +210,19 @@ The local store's schema version stamp is one-way: once this version of `public-
 
 ```bash
 # Human-readable table (default in terminal, JSON when piped)
-public-param-golden-pp-cli stores create --store-code example-value
+public-param-golden-pp-cli stores find --address example-value --city example-value --location-id 550e8400-e29b-41d4-a716-446655440000
 
 # JSON for scripting and agents
-public-param-golden-pp-cli stores create --store-code example-value --json
+public-param-golden-pp-cli stores find --address example-value --city example-value --location-id 550e8400-e29b-41d4-a716-446655440000 --json
 
 # Filter to specific fields
-public-param-golden-pp-cli stores create --store-code example-value --json --select id,name,status
+public-param-golden-pp-cli stores find --address example-value --city example-value --location-id 550e8400-e29b-41d4-a716-446655440000 --json --select id,name,status
 
 # Dry run — show the request without sending
-public-param-golden-pp-cli stores create --store-code example-value --dry-run
+public-param-golden-pp-cli stores find --address example-value --city example-value --location-id 550e8400-e29b-41d4-a716-446655440000 --dry-run
 
 # Agent mode — JSON + compact + no prompts in one flag
-public-param-golden-pp-cli stores create --store-code example-value --agent
+public-param-golden-pp-cli stores find --address example-value --city example-value --location-id 550e8400-e29b-41d4-a716-446655440000 --agent
 ```
 
 ## Agent Usage

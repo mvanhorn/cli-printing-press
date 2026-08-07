@@ -12,8 +12,7 @@ import (
 // firstCommandExample returns a runnable "resource [endpoint] <pos1> <pos2>..."
 // invocation for docs that need a concrete example. Required public flags are
 // included so generated docs do not advertise commands that fail immediately.
-// Read-only verbs (list, get, search, query) are preferred to keep examples
-// non-destructive.
+// Read-only commands are preferred to keep examples non-destructive.
 // Returns empty when the spec has no endpoints, so callers can skip the
 // block rather than render nonsense.
 //
@@ -54,11 +53,21 @@ func firstCommandExample(resources map[string]spec.Resource) string {
 	for _, rName := range resNames {
 		r := resources[rName]
 		for _, verb := range preferredVerbs {
-			if ep, ok := r.Endpoints[verb]; ok {
+			if ep, ok := r.Endpoints[verb]; ok && endpointIsReadCommand(ep, verb) {
 				return pathFor(rName, r, verb, ep)
 			}
 		}
 	}
+	for _, rName := range resNames {
+		r := resources[rName]
+		for _, eName := range sortedEndpointNames(r.Endpoints) {
+			if ep := r.Endpoints[eName]; endpointIsReadCommand(ep, eName) {
+				return pathFor(rName, r, eName, ep)
+			}
+		}
+	}
+	// Preserve examples for mutation-only specs; callers use empty to mean that
+	// the spec has no endpoints.
 	for _, rName := range resNames {
 		r := resources[rName]
 		eNames := sortedEndpointNames(r.Endpoints)
@@ -68,7 +77,6 @@ func firstCommandExample(resources map[string]spec.Resource) string {
 	}
 	return ""
 }
-
 func commandExampleArgs(ep spec.Endpoint) string {
 	return strings.Join(commandExampleArgParts(ep), " ")
 }
