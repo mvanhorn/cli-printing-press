@@ -133,6 +133,24 @@ paths:
       responses:
         "201":
           description: created
+  /attachments:
+    post:
+      operationId: uploadAttachments
+      summary: Upload attachments
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+      responses:
+        "201":
+          description: created
   /notes:
     post:
       operationId: createNote
@@ -165,13 +183,19 @@ paths:
 	assert.NotContains(t, uploadSrc, `body["assetData"] = bodyAssetData`)
 	assert.NotContains(t, uploadSrc, `body["filename"] = bodyFilename`)
 
+	attachmentsSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_attachments.go")
+	assert.Contains(t, attachmentsSrc, `cmd.Flags().StringVar(&bodyFile, "file", "", "Path to the file to upload.")`)
+	assert.Contains(t, attachmentsSrc, `return fmt.Errorf("required flag \"%s\" not set", "file")`)
+	assert.Contains(t, attachmentsSrc, `fileFields["file"] = bodyFile`)
+	assert.Contains(t, attachmentsSrc, `c.PostMultipartWithParams(cmd.Context(), path, params, fields, fileFields)`)
+	assert.NotContains(t, attachmentsSrc, `"stdin"`)
+
 	createSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_notes.go")
 	assert.Contains(t, createSrc, `bodyMap["title"] = bodyTitle`)
 	assert.Contains(t, createSrc, `c.PostWithParams(cmd.Context(), path, params, body)`)
 	assert.NotContains(t, createSrc, `c.PostMultipartWithParams`)
 
-	runGoCommand(t, outputDir, "mod", "tidy")
-	runGoCommand(t, outputDir, "build", "./...")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGenerateBinaryResponseWritesRawBytes(t *testing.T) {
