@@ -646,14 +646,16 @@ func paginatedGetWithResponsePath(ctx context.Context, c interface {
 func paginatedGet(ctx context.Context, c interface {
 	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
 }, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam string, defaultPageSize int, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
-	// Cursor params are exempt from the "0"/"false" strip: offset-paginated
-	// APIs send offset=0 on the first page.
+	// The cursor param is exempt from the "0"/"false" strip only for offset
+	// pagination, where offset=0 is a legitimate first page. Under id-cursor
+	// pagination 0 is not a real record id: APIs answer it with an empty page,
+	// so an unset cursor flag would silently empty every list command.
 	clean := map[string]string{}
 	for k, v := range params {
 		if v == "" {
 			continue
 		}
-		if k == cursorParam || (v != "0" && v != "false") {
+		if (k == cursorParam && paginationType == "offset") || (v != "0" && v != "false") {
 			clean[k] = v
 		}
 	}
