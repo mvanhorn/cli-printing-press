@@ -2485,6 +2485,8 @@ func (g *Generator) renderSingleFiles() error {
 		"config.go.tmpl":                           filepath.Join("internal", "config", "config.go"),
 		"cache.go.tmpl":                            filepath.Join("internal", "cache", "cache.go"),
 		"platform_profile.go.tmpl":                 filepath.Join("internal", "platform", "profile.go"),
+		"platform_perms_unix.go.tmpl":              filepath.Join("internal", "platform", "perms_unix.go"),
+		"platform_perms_windows.go.tmpl":           filepath.Join("internal", "platform", "perms_windows.go"),
 		"platform_gate.go.tmpl":                    filepath.Join("internal", "platform", "gate.go"),
 		"platform_metadata.go.tmpl":                filepath.Join("internal", "platform", "metadata.go"),
 		"platform_migration.go.tmpl":               filepath.Join("internal", "platform", "migration.go"),

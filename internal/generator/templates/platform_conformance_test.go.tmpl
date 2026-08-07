@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -100,8 +101,10 @@ func TestProfileParserAndSelectionConformance(t *testing.T) {
 		t.Fatalf("loaded name = %q", loaded.Name)
 	}
 	path, _ := ProfilePath("synthetic")
-	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("profile mode = %v, err = %v", info.Mode().Perm(), err)
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("profile mode = %v, err = %v", info.Mode().Perm(), err)
+		}
 	}
 
 	for _, reference := range []string{"literal-secret", "$TOKEN", "${TOKEN}", "file:///tmp/key", "opaque://vault/item", "opaque://vault//field"} {
@@ -312,8 +315,10 @@ func TestTenantGateAndIsolationConformance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("cache fingerprint key mode = %v", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("cache fingerprint key mode = %v", info.Mode().Perm())
+		}
 	}
 
 	otherPaths, err := PathsFor("client-two", "sample-pp-cli", "sample")
@@ -703,8 +708,10 @@ func TestSharedLimiterHonorsBurstAndCrossInstanceLedger(t *testing.T) {
 	if len(waits) != 2 || waits[0] != time.Second || waits[1] != 2*time.Second {
 		t.Fatalf("shared ledger waits = %v", waits)
 	}
-	if info, err := os.Stat(first.path); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("limiter ledger mode = %v err=%v", info.Mode().Perm(), err)
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(first.path); err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("limiter ledger mode = %v err=%v", info.Mode().Perm(), err)
+		}
 	}
 }
 
