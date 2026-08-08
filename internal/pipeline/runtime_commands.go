@@ -161,10 +161,18 @@ func parseHappyArgsAnnotation(value string) happyArgs {
 			continue
 		}
 		label = strings.TrimSpace(label)
-		if !strings.HasPrefix(label, "<") || !strings.HasSuffix(label, ">") {
+		if label == "" || strings.HasPrefix(label, "-") {
 			continue
 		}
-		parsed.positionals = append(parsed.positionals, strings.TrimSpace(value))
+		if strings.ContainsAny(label, "<>") &&
+			(!strings.HasPrefix(label, "<") || !strings.HasSuffix(label, ">")) {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		parsed.positionals = append(parsed.positionals, value)
 	}
 	return parsed
 }

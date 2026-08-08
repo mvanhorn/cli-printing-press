@@ -879,6 +879,7 @@ func TestGenerateAgentContextCommand(t *testing.T) {
 		"agentContextSchemaVersion",
 		`"schema_version"`,
 		"collectAgentCommands",
+		"Runnable: sub.Runnable()",
 		`"pretty"`,
 	} {
 		assert.Contains(t, src, snippet, "agent_context.go missing %q", snippet)
@@ -20759,6 +20760,8 @@ func TestGenerateParentNoSubcommandRunE_WiredOnResourceParents(t *testing.T) {
 	require.NoError(t, err)
 	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(parentSrc),
 		"the resource parent must call the shared helper instead of falling through to cobra's default help")
+	assert.Contains(t, string(parentSrc), `"pp:parent-group": "true"`,
+		"the resource parent must identify the generated no-subcommand shim to live dogfood")
 
 	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
 	require.NoError(t, err)

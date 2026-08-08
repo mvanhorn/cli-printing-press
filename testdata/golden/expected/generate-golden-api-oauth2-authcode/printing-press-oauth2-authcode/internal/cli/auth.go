@@ -29,9 +29,10 @@ import (
 
 func newAuthCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "auth",
-		Short: "Manage authentication for Printing Press Oauth2",
-		RunE:  parentNoSubcommandRunE(flags),
+		Use:         "auth",
+		Short:       "Manage authentication for Printing Press Oauth2",
+		Annotations: map[string]string{"pp:parent-group": "true"},
+		RunE:        parentNoSubcommandRunE(flags),
 	}
 
 	cmd.AddCommand(newAuthSetupCmd(flags))

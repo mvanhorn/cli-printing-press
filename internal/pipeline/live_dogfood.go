@@ -131,6 +131,8 @@ type liveDogfoodCommand struct {
 	Annotations map[string]string
 }
 
+const liveDogfoodParentGroupAnnotation = "pp:parent-group"
+
 type liveDogfoodRun struct {
 	stdout          string
 	stderr          string
@@ -744,7 +746,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 
 	pathLen := len(command.Path)
 	nPlaceholders := len(placeholders)
-	if pathLen < nPlaceholders+1 {
+	if pathLen < nPlaceholders {
 		// More placeholders than path segments before the verb. Unusual
 		// shape (top-level command with multiple positionals); skip.
 		return nil, true, fmt.Sprintf(
@@ -851,7 +853,8 @@ func happyPathSyntheticParamFixtureSkip(command liveDogfoodCommand, happyArgs []
 	if liveDogfoodCommandMutates(command) {
 		return ""
 	}
-	if !happyArgsContainSyntheticFlagPlaceholder(happyArgs, command.Path) {
+	if !happyArgsContainSyntheticFlagPlaceholder(happyArgs, command.Path) &&
+		!happyArgsContainSyntheticPositionalPlaceholder(happyArgs, command.Path) {
 		return ""
 	}
 	return reasonRequiredParamFixture
@@ -898,6 +901,28 @@ func happyArgsContainSyntheticFlagPlaceholder(happyArgs, commandPath []string) b
 			continue
 		}
 		if i+1 < len(happyArgs) && !isLiveDogfoodFlagToken(happyArgs[i+1]) && liveDogfoodSyntheticFixtureFlagValue(arg, happyArgs[i+1]) {
+			return true
+		}
+	}
+	return false
+}
+
+func happyArgsContainSyntheticPositionalPlaceholder(happyArgs, commandPath []string) bool {
+	start := min(len(commandPath), len(happyArgs))
+	afterTerminator := false
+	for i := start; i < len(happyArgs); i++ {
+		arg := happyArgs[i]
+		if arg == "--" {
+			afterTerminator = true
+			continue
+		}
+		if !afterTerminator && isLiveDogfoodFlagToken(arg) {
+			if !strings.Contains(arg, "=") && liveDogfoodFlagHasSeparateValue(happyArgs, start, i, 0) {
+				i++
+			}
+			continue
+		}
+		if liveDogfoodSyntheticExampleValue(arg) {
 			return true
 		}
 	}
@@ -1266,6 +1291,9 @@ func collectLiveDogfoodCommands(prefix []string, command dogfoodAgentCommand, cm
 	if len(command.Subcommands) == 0 {
 		*cmds = append(*cmds, liveDogfoodCommand{Path: next, Annotations: command.Annotations})
 		return
+	}
+	if command.Runnable && !annotationIsTrueValue(command.Annotations[liveDogfoodParentGroupAnnotation]) {
+		*cmds = append(*cmds, liveDogfoodCommand{Path: next, Annotations: command.Annotations})
 	}
 	for _, sub := range command.Subcommands {
 		collectLiveDogfoodCommands(next, sub, cmds)

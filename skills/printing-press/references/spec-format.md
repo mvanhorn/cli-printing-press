@@ -161,7 +161,8 @@ write it as the promoted invocation if that is the command users should run. Set
 from names or schema hints. The value is copied into the generated `pp:happy-args`
 annotation and follows the runtime grammar. Tokens are separated by unescaped
 semicolons, so a literal semicolon uses `\;` (or `\\;` inside a YAML
-double-quoted string). Positional and flag tokens replace matching synthesized
+double-quoted string). Positional tokens may use `<label>=value` or
+`label=value`. Positional and flag tokens replace matching synthesized
 or Example-derived values. Negative numeric flag values use the safe
 `--flag=-12.3` form. Examples include `"--zip=60614"` and
 `"id=example-id;--query=example"`.

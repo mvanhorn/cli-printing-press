@@ -26,9 +26,10 @@ import (
 
 func newAuthCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "auth",
-		Short: "Manage authentication for Golden Api Cookie Auth",
-		RunE:  parentNoSubcommandRunE(flags),
+		Use:         "auth",
+		Short:       "Manage authentication for Golden Api Cookie Auth",
+		Annotations: map[string]string{"pp:parent-group": "true"},
+		RunE:        parentNoSubcommandRunE(flags),
 	}
 
 	cmd.AddCommand(newAuthLoginCmd(flags))

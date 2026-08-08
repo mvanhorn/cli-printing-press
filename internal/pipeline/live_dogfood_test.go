@@ -3754,6 +3754,27 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 	}
 	_, skipped, _, _ = resolveCommandPositionals(cmd, []string{"get", "x", "y"}, 0, ctx)
 	assert.True(t, skipped)
+
+	// A top-level command with one positional is valid. Without an explicit
+	// fixture it still skips because no real ID source is available, but the
+	// reason must come from fixture resolution rather than a false path-depth
+	// rejection.
+	cmd = liveDogfoodCommand{
+		Path: []string{"last-bus"},
+		Help: "Usage:\n  cli last-bus <stop> [flags]\n",
+	}
+	_, skipped, reason, _ = resolveCommandPositionals(cmd, []string{"last-bus", "example-stop"}, 0, ctx)
+	assert.True(t, skipped)
+	assert.NotContains(t, reason, "fewer segments than placeholders")
+
+	// A positional pp:happy-args fixture makes the same top-level command
+	// runnable without a companion lookup.
+	cmd.Annotations = map[string]string{happyArgsAnnotation: "stop=Śrem"}
+	args, ok := liveDogfoodHappyArgs(cmd)
+	require.True(t, ok)
+	args, skipped, reason, _ = resolveCommandPositionals(cmd, args, 1, ctx)
+	assert.False(t, skipped, reason)
+	assert.Equal(t, []string{"last-bus", "Śrem"}, args)
 }
 
 func TestResolveCommandPositionalsMixedStoreAndCompanionSourceIsUntagged(t *testing.T) {
@@ -6418,6 +6439,18 @@ func TestHappyArgsContainSyntheticFlagPlaceholder(t *testing.T) {
 		[]string{"widgets", "search", "--query", "example-value"},
 		[]string{"widgets", "search"},
 	))
+	assert.True(t, happyArgsContainSyntheticPositionalPlaceholder(
+		[]string{"notes", "get", "550e8400-e29b-41d4-a716-446655440000"},
+		[]string{"notes", "get"},
+	))
+	assert.True(t, happyArgsContainSyntheticPositionalPlaceholder(
+		[]string{"notes", "get", "--", "550e8400-e29b-41d4-a716-446655440000"},
+		[]string{"notes", "get"},
+	))
+	assert.False(t, happyArgsContainSyntheticPositionalPlaceholder(
+		[]string{"last-bus", "Śrem"},
+		[]string{"last-bus"},
+	))
 }
 
 func TestLiveDogfoodSyntheticPositionalValueHandlesBooleanFlags(t *testing.T) {
@@ -6470,6 +6503,8 @@ func TestLiveDogfoodSkipsInteractiveAuthCommands(t *testing.T) {
 		{Name: "login"},
 		{Name: "logout"},
 		{Name: "auth", Subcommands: []dogfoodAgentCommand{{Name: "login"}}},
+		{Name: "group", Runnable: true, Subcommands: []dogfoodAgentCommand{{Name: "run"}}},
+		{Name: "generated", Runnable: true, Annotations: map[string]string{liveDogfoodParentGroupAnnotation: "true"}, Subcommands: []dogfoodAgentCommand{{Name: "run"}}},
 		{Name: "tasks", Subcommands: []dogfoodAgentCommand{{Name: "list"}}},
 	}
 	var cmds []liveDogfoodCommand
@@ -6485,7 +6520,40 @@ func TestLiveDogfoodSkipsInteractiveAuthCommands(t *testing.T) {
 	assert.NotContains(t, names, "login")
 	assert.NotContains(t, names, "logout")
 	assert.NotContains(t, names, "auth login")
+	assert.Contains(t, names, "group", "runnable parents must be included")
+	assert.Contains(t, names, "group run")
+	assert.NotContains(t, names, "generated", "generated parent shims must stay out of the matrix")
+	assert.Contains(t, names, "generated run")
 	assert.Contains(t, names, "tasks list", "non-auth commands must still be collected")
+}
+
+func TestDiscoverLiveDogfoodCommandsPreservesRunnableParents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	path := writeStubBinary(t, dir, "fixture-pp-cli", `if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"group","runnable":true,"subcommands":[{"name":"run"}]},
+    {"name":"generated","runnable":true,"annotations":{"pp:parent-group":"true"},"subcommands":[{"name":"run"}]}
+  ]
+}
+JSON
+  exit 0
+fi
+exit 99
+`)
+
+	commands, err := discoverLiveDogfoodCommands(path)
+	require.NoError(t, err)
+	var names []string
+	for _, command := range commands {
+		names = append(names, strings.Join(command.Path, " "))
+	}
+	assert.Equal(t, []string{"generated run", "group", "group run"}, names)
 }
 
 // TestLiveDogfoodSuccessExitCodes covers the helper that WU-1 (retro F1)
