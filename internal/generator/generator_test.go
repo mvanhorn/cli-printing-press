@@ -1895,6 +1895,7 @@ func TestGenerateOAuth2DeviceCodeAuth(t *testing.T) {
 	assert.Contains(t, authGo, `fmt.Fprintln(w, "  deviceauth-pp-cli auth poll")`, "headless login resumes without exposing the raw device_code")
 	assert.NotContains(t, authGo, `auth poll --device-code`, "raw device_code must not be printed into shell commands")
 	assert.Contains(t, authGo, `cfg.AuthHeaderVal = ""`, "OAuth token saves must clear stale manual auth headers")
+	assert.Contains(t, authGo, `w = cmd.ErrOrStderr()`, "machine-mode device login progress must not corrupt the JSON failure envelope")
 	assert.Contains(t, authGo, `deviceAuthorizationURL := cfg.DeviceAuthorizationURL`, "login honors device endpoint overrides")
 	assert.Contains(t, authGo, `"https://login.example.com/device"`, "login falls back to the configured device endpoint")
 	assert.Contains(t, authGo, `"public-client-id"`, "login uses the spec default client id")
