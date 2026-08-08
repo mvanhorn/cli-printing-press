@@ -618,7 +618,7 @@ func newLearningsCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Command
 		Short: "Inspect or forget the local search_learnings table",
 		Long: `Surface for browsing, filtering, and deleting rows in the
 search_learnings table that the LLM populates via the 'teach' command.`,
-		Annotations: map[string]string{"mcp:read-only": "true"},
+		Annotations: map[string]string{"mcp:read-only": "true", "pp:parent-group": "true"},
 		RunE:        parentNoSubcommandRunE(flags),
 	}
 	cmd.AddCommand(newLearningsListCmd(flags))

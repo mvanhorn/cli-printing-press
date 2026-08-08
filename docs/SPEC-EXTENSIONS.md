@@ -1697,7 +1697,7 @@ Rules:
   `pp:happy-args`.
 - Tokens are separated by unescaped semicolons. Escape a literal semicolon as
   `\;` (write `\\;` inside a YAML double-quoted string). `<label>=value`
-  overlays synthesized positional args, and `--flag=value` replaces the
+  or `label=value` overlays synthesized positional args, and `--flag=value` replaces the
   matching example flag or adds a new flag/value pair.
 - Negative numeric flag values are emitted in `--flag=-12.3` form so Cobra
   does not parse the value as a shorthand flag cluster.

@@ -206,6 +206,7 @@ type dogfoodAgentContext struct {
 type dogfoodAgentCommand struct {
 	Name        string                `json:"name"`
 	Annotations map[string]string     `json:"annotations,omitempty"`
+	Runnable    bool                  `json:"runnable,omitempty"`
 	Subcommands []dogfoodAgentCommand `json:"subcommands,omitempty"`
 }
 
@@ -611,7 +612,7 @@ func novelFeatureDepthMismatch(nf NovelFeature, paths map[string]bool) *NovelFea
 	if advertised == "" || matchPath(advertised, paths) {
 		return nil
 	}
-	actualPaths := leafMatchedPaths(advertised, paths)
+	actualPaths := exactLeafMatchedPaths(advertised, paths)
 	if len(actualPaths) == 0 {
 		return nil
 	}
@@ -671,6 +672,10 @@ func looksLikePrintedCLIBinary(token string) bool {
 }
 
 func leafMatchedPaths(plan string, paths map[string]bool) []string {
+	return matchedLeafPaths(plan, paths, commandLeavesMatch)
+}
+
+func matchedLeafPaths(plan string, paths map[string]bool, match func(string, string) bool) []string {
 	_, leaf := splitCommandPath(plan)
 	if leaf == "" {
 		return nil
@@ -681,12 +686,16 @@ func leafMatchedPaths(plan string, paths map[string]bool) []string {
 		if pathLeaf == "" {
 			continue
 		}
-		if commandLeavesMatch(leaf, pathLeaf) {
+		if match(leaf, pathLeaf) {
 			out = append(out, path)
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+func exactLeafMatchedPaths(plan string, paths map[string]bool) []string {
+	return matchedLeafPaths(plan, paths, func(a, b string) bool { return a == b })
 }
 
 func commandLeavesMatch(a, b string) bool {

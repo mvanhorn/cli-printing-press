@@ -28,7 +28,7 @@ One teammate with API credentials runs 'share publish' on a cadence; the
 rest run 'share subscribe <remote>' once, then read from the cache
 without needing credentials. Auto-refresh picks up new snapshots on the
 next read command.`,
-		Annotations: map[string]string{"mcp:read-only": "true"},
+		Annotations: map[string]string{"mcp:read-only": "true", "pp:parent-group": "true"},
 		RunE:        parentNoSubcommandRunE(flags),
 	}
 	cmd.AddCommand(newShareExportCmd(flags))

@@ -84,6 +84,7 @@ type agentContextCommand struct {
 	Short       string                `json:"short,omitempty"`
 	Annotations map[string]string     `json:"annotations,omitempty"`
 	Flags       []agentContextFlag    `json:"flags,omitempty"`
+	Runnable    bool                  `json:"runnable,omitempty"`
 	Subcommands []agentContextCommand `json:"subcommands,omitempty"`
 }
 
@@ -226,9 +227,10 @@ func collectAgentCommands(c *cobra.Command) []agentContextCommand {
 			continue
 		}
 		entry := agentContextCommand{
-			Name:  sub.Name(),
-			Use:   sub.Use,
-			Short: sub.Short,
+			Name:     sub.Name(),
+			Use:      sub.Use,
+			Short:    sub.Short,
+			Runnable: sub.Runnable(),
 		}
 		// Surface Cobra annotations (e.g., pp:endpoint, mcp:read-only) so
 		// agents and the live-dogfood classifier can detect destructive-at-auth

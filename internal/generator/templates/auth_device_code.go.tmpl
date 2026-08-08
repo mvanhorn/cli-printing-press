@@ -23,6 +23,7 @@ func newAuthCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "auth",
 		Short: {{printf "%q" (authCommandShort .APISpec)}},
+		Annotations: map[string]string{"pp:parent-group": "true"},
 		RunE:  parentNoSubcommandRunE(flags),
 	}
 

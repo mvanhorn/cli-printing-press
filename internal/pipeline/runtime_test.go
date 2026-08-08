@@ -1399,9 +1399,9 @@ func TestExtractPositionalPlaceholders(t *testing.T) {
 }
 
 func TestParseHappyArgsAnnotation(t *testing.T) {
-	got := parseHappyArgsAnnotation(" <person>= Alice ; --query= sunset ; --limit=10 ; invalid ; name=Bob ; --bad ")
+	got := parseHappyArgsAnnotation(" <person>= Alice ; --query= sunset ; --limit=10 ; invalid ; name=Bob ; empty= ; --bad ")
 
-	assert.Equal(t, []string{"Alice"}, got.positionals)
+	assert.Equal(t, []string{"Alice", "Bob"}, got.positionals)
 	assert.Equal(t, []string{"--query", "sunset", "--limit", "10"}, got.flags)
 
 	escaped := parseHappyArgsAnnotation(`<person>=vendor\;part;--query=foo\;bar`)
