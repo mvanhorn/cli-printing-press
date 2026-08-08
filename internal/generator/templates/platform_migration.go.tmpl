@@ -247,7 +247,7 @@ func readOnlySQLiteDSN(path string) string {
 	if strings.HasPrefix(slashed, "/") {
 		uri.Path = slashed
 	} else {
-		uri.Opaque = slashed
+		uri.Path = slashed
 	}
 	return uri.String()
 }
