@@ -745,6 +745,8 @@ func paginatedGet(ctx context.Context, c interface {
 	pageSize := 0
 	if paginationType == "offset" || paginationType == "page" {
 		pageSize = defaultPageSize
+		// A zero page size means the server controls the page size. Do not
+		// invent a limit or treat a short observed page as terminal.
 		hasPositiveLimit := false
 		if limitParam != "" {
 			if limit, err := strconv.Atoi(clean[limitParam]); err == nil && limit > 0 {
@@ -752,10 +754,7 @@ func paginatedGet(ctx context.Context, c interface {
 				hasPositiveLimit = true
 			}
 		}
-		if pageSize <= 0 {
-			pageSize = 100
-		}
-		if limitParam != "" && !hasPositiveLimit {
+		if limitParam != "" && !hasPositiveLimit && pageSize > 0 {
 			clean[limitParam] = strconv.Itoa(pageSize)
 		}
 	}
@@ -863,7 +862,17 @@ func paginatedGet(ctx context.Context, c interface {
 						var more bool
 						if json.Unmarshal(moreRaw, &more) == nil {
 							if more {
-								if next, ok := nextClientSidePaginationCursor(clean, cursorParam, paginationType, pageSize); ok {
+								nextPageSize := pageSize
+								if nextPageSize <= 0 && paginationType == "offset" {
+									nextPageSize = itemCount
+									if nextPageSize <= 0 {
+										// A server can truthfully report more data after an
+										// empty page. Advance by one so --all does not stall
+										// forever when no page size has been observed yet.
+										nextPageSize = 1
+									}
+								}
+								if next, ok := nextClientSidePaginationCursor(clean, cursorParam, paginationType, nextPageSize); ok {
 									if page >= paginatedGetMaxPages {
 										emitPaginatedGetMaxPagesWarning(ctx)
 										break
@@ -1009,8 +1018,11 @@ func nextFullPageOffsetCursor(params map[string]string, cursorParam, paginationT
 	if (paginationType != "offset" && paginationType != "page") || itemCount == 0 {
 		return "", false
 	}
-	if pageSize <= 0 || itemCount < pageSize {
+	if pageSize > 0 && itemCount < pageSize {
 		return "", false
+	}
+	if pageSize <= 0 && paginationType == "offset" {
+		pageSize = itemCount
 	}
 	return nextClientSidePaginationCursor(params, cursorParam, paginationType, pageSize)
 }

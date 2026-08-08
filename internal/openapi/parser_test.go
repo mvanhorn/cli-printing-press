@@ -12467,6 +12467,42 @@ func TestDetectPaginationRecognizesNestedNumericNextPage(t *testing.T) {
 	assert.Equal(t, "meta.nextPage", pag.NextCursorPath)
 }
 
+func TestDetectPaginationRecognizesNestedNumericNextCursor(t *testing.T) {
+	t.Parallel()
+
+	description := "OK"
+	responses := openapi3.NewResponses()
+	responses.Set("200", &openapi3.ResponseRef{Value: &openapi3.Response{
+		Description: &description,
+		Content: openapi3.Content{
+			"application/json": &openapi3.MediaType{
+				Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+					Type: &openapi3.Types{"object"},
+					Properties: openapi3.Schemas{
+						"data": &openapi3.SchemaRef{Value: &openapi3.Schema{
+							Type:  &openapi3.Types{"array"},
+							Items: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"object"}}},
+						}},
+						"pagination": &openapi3.SchemaRef{Value: &openapi3.Schema{
+							Type: &openapi3.Types{"object"},
+							Properties: openapi3.Schemas{
+								"next": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+							},
+						}},
+					},
+				}},
+			},
+		},
+	}})
+	op := &openapi3.Operation{Responses: responses}
+
+	pag := detectPagination([]spec.Param{{Name: "after"}, {Name: "limit"}}, op)
+	require.NotNil(t, pag)
+	assert.Equal(t, "after", pag.CursorParam)
+	assert.Equal(t, "cursor", pag.Type)
+	assert.Equal(t, "pagination.next", pag.NextCursorPath)
+}
+
 func TestDetectPaginationDoesNotWireNestedNextPageWithoutRequestCursor(t *testing.T) {
 	t.Parallel()
 

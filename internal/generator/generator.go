@@ -5083,30 +5083,22 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 	return nil
 }
 
-func (g *Generator) paginationDefaultPageSize() int {
-	if g != nil && g.profile != nil && g.profile.Pagination.DefaultPageSize > 0 {
-		return g.profile.Pagination.DefaultPageSize
-	}
-	return 100
-}
-
 func (g *Generator) paginationPageSizeForEndpoint(endpoint spec.Endpoint) int {
-	pageSize := g.paginationDefaultPageSize()
+	// Only an endpoint-declared default is safe as short-page evidence. Zero
+	// tells the generated helper that the server's page size is unknown.
 	if endpoint.Pagination == nil || endpoint.Pagination.LimitParam == "" {
-		return pageSize
+		return 0
 	}
 	limitParam, ok := endpointParamByName(endpoint, endpoint.Pagination.LimitParam)
 	if !ok {
-		return pageSize
+		return 0
 	}
+	pageSize := 0
 	if defaultPageSize, ok := positiveIntValue(limitParam.Default); ok {
 		pageSize = defaultPageSize
 	}
-	if maxPageSize, ok := paramMaxInt(limitParam); ok && maxPageSize < pageSize {
+	if maxPageSize, ok := paramMaxInt(limitParam); ok && pageSize > 0 && maxPageSize < pageSize {
 		pageSize = maxPageSize
-	}
-	if pageSize <= 0 {
-		return g.paginationDefaultPageSize()
 	}
 	return pageSize
 }
