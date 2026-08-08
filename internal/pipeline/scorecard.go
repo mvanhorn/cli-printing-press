@@ -1915,11 +1915,28 @@ func addCommandConstructorCalls(content string) map[string]bool {
 		if !ok {
 			return true
 		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel == nil || sel.Sel.Name != "AddCommand" {
+		helperCall := false
+		switch fun := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			if fun.Sel == nil || fun.Sel.Name != "AddCommand" {
+				return true
+			}
+		case *ast.Ident:
+			if fun.Name != "addNovelCommandIfAbsent" {
+				return true
+			}
+			helperCall = true
+		default:
 			return true
 		}
-		for _, arg := range call.Args {
+		args := call.Args
+		if helperCall {
+			if len(args) != 2 {
+				return true
+			}
+			args = args[1:]
+		}
+		for _, arg := range args {
 			if ctor := commandConstructorName(arg); ctor != "" {
 				ctors[ctor] = true
 			}
