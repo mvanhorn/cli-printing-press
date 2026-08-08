@@ -779,7 +779,6 @@ func paginatedGet(ctx context.Context, c interface {
 		seenCursorTokens[sentCursor] = struct{}{}
 	}
 	foundCursorField := false
-	observedOffsetPageSize := 0
 	page := 0
 	for {
 		page++
@@ -838,9 +837,6 @@ func paginatedGet(ctx context.Context, c interface {
 					}
 					allItems = append(allItems, nested...)
 					itemCount = len(nested)
-					if paginationType == "offset" && itemCount > 0 {
-						observedOffsetPageSize = itemCount
-					}
 				}
 
 				// Check for next cursor
@@ -879,9 +875,6 @@ func paginatedGet(ctx context.Context, c interface {
 								nextPageSize := pageSize
 								if nextPageSize <= 0 && paginationType == "offset" {
 									nextPageSize = itemCount
-									if nextPageSize <= 0 {
-										nextPageSize = observedOffsetPageSize
-									}
 									if nextPageSize <= 0 {
 										// A server can truthfully report more data after an
 										// empty page. Advance by one so --all does not stall
