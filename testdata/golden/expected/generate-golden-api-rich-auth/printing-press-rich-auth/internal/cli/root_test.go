@@ -4,11 +4,15 @@
 package cli
 
 import (
+	"bytes"
+
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
+
+	"printing-press-rich-pp-cli/internal/cliutil"
 
 	"github.com/spf13/cobra"
 )
@@ -73,6 +77,30 @@ func TestNoDuplicateCommandNames(t *testing.T) {
 	}
 	if len(duplicates) > 0 {
 		t.Fatalf("generated Cobra tree contains duplicate sibling command names: %s", strings.Join(duplicates, ", "))
+	}
+}
+func TestWriteCredentialSaveErrorEnvelope(t *testing.T) {
+	var out bytes.Buffer
+	cause := &cliutil.CredentialsPermissionError{
+		Path: "/tmp/credentials.toml",
+		Err:  errors.New("unsafe permissions"),
+	}
+	if !writeCredentialSaveErrorEnvelope(&out, &rootFlags{asJSON: true}, fmt.Errorf("saving token: %w", cause)) {
+		t.Fatal("permission failure envelope was not written")
+	}
+
+	var payload struct {
+		Saved               bool   `json:"saved"`
+		CredentialsPath     string `json:"credentials_path"`
+		PermissionsVerified bool   `json:"permissions_verified"`
+		Error               string `json:"error"`
+		Code                int    `json:"code"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("permission failure envelope must be valid JSON: %v\n%s", err, out.String())
+	}
+	if !payload.Saved || payload.CredentialsPath != cause.Path || payload.PermissionsVerified || payload.Error == "" || payload.Code == 0 {
+		t.Fatalf("permission failure envelope = %+v, want saved path, unsafe permissions, error, and non-zero code", payload)
 	}
 }
 

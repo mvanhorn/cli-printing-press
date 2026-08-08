@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -128,6 +129,16 @@ func Execute() (retErr error) {
 	if errors.Is(err, pflag.ErrHelp) {
 		return nil
 	}
+	envelopeWriter := io.Writer(os.Stdout)
+	if flags.deliverBuf != nil {
+		envelopeWriter = io.MultiWriter(os.Stdout, flags.deliverBuf)
+	}
+	envelopeWritten := writeCredentialSaveErrorEnvelope(envelopeWriter, &flags, err)
+	if envelopeWritten && flags.deliverBuf != nil {
+		if derr := Deliver(flags.deliverSink, flags.deliverBuf.Bytes(), flags.compact); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", flags.deliverSink.Scheme, flags.deliverSink.Target, derr)
+		}
+	}
 	if err != nil && strings.Contains(err.Error(), "unknown flag") {
 		msg := err.Error()
 		// Extract the flag name from the error message (e.g., "unknown flag: --foob")
@@ -168,6 +179,24 @@ func Execute() (retErr error) {
 		return usageErr(err)
 	}
 	return err
+}
+
+func writeCredentialSaveErrorEnvelope(w io.Writer, flags *rootFlags, err error) bool {
+	if flags == nil || !flags.asJSON || err == nil {
+		return false
+	}
+	var permissionErr *cliutil.CredentialsPermissionError
+	if !errors.As(err, &permissionErr) {
+		return false
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"saved":                true,
+		"credentials_path":     permissionErr.Path,
+		"permissions_verified": false,
+		"error":                permissionErr.Error(),
+		"code":                 ExitCode(err),
+	})
+	return true
 }
 
 // isCobraUsageError reports whether err matches one of Cobra/pflag's

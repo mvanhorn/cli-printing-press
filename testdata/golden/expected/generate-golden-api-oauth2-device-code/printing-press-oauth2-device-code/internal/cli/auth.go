@@ -112,6 +112,9 @@ for CLIs and agents: no localhost callback server and no client secret.
 			}
 
 			w := cmd.OutOrStdout()
+			if flags.asJSON {
+				w = cmd.ErrOrStderr()
+			}
 			if device.Message != "" {
 				fmt.Fprintln(w, device.Message)
 			} else {
