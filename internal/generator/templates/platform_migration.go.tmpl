@@ -239,5 +239,15 @@ func BackupLegacyArtifacts(state *LegacyMigrationState) error {
 }
 
 func readOnlySQLiteDSN(path string) string {
-	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro"}).String()
+	slashed := filepath.ToSlash(path)
+	if len(slashed) >= 3 && slashed[1] == ':' && slashed[2] == '/' {
+		slashed = "/" + slashed
+	}
+	uri := &url.URL{Scheme: "file", RawQuery: "mode=ro"}
+	if strings.HasPrefix(slashed, "/") {
+		uri.Path = slashed
+	} else {
+		uri.Opaque = url.PathEscape(slashed)
+	}
+	return uri.String()
 }
