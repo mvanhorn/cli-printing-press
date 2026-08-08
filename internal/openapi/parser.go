@@ -8553,6 +8553,13 @@ func detectPaginationResponseFields(schema *openapi3.Schema, prefix string, pag 
 			if pag.Type == "" {
 				pag.Type = "page"
 			}
+		case lower == "next" && isNumericPaginationField(propRef):
+			if pag.NextCursorPath == "" && pag.CursorParam != "" {
+				pag.NextCursorPath = path
+			}
+			if pag.Type == "" {
+				pag.Type = "cursor"
+			}
 		case stringInSlice(lower, nextFieldCursorNames):
 			if pag.NextCursorPath == "" && pag.CursorParam != "" {
 				pag.NextCursorPath = path
@@ -8574,6 +8581,14 @@ func detectPaginationResponseFields(schema *openapi3.Schema, prefix string, pag 
 		}
 		detectPaginationResponseFields(propRef.Value, path, pag)
 	}
+}
+
+func isNumericPaginationField(ref *openapi3.SchemaRef) bool {
+	schema := schemaRefValue(ref)
+	if schema == nil || schema.Type == nil {
+		return false
+	}
+	return schema.Type.Includes(openapi3.TypeInteger)
 }
 
 func isPaginationWrapperField(lower string) bool {

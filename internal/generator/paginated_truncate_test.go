@@ -10,6 +10,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -967,7 +968,7 @@ func TestPaginatedGetHandlesNumericCursorAndMissingAllSignal(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "paginate-edge-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 	endpointSrc := readGeneratedCLIFileContaining(t, outputDir, `flagAll, "cursor", "cursor", "limit"`)
-	require.Contains(t, endpointSrc, `flagAll, "cursor", "cursor", "limit", 100, "", ""`,
+	require.Contains(t, endpointSrc, `flagAll, "cursor", "cursor", "limit", 0, "", ""`,
 		"generated list command must preserve an empty next-cursor path for the runtime fallback")
 
 	behaviorTest := `package cli
@@ -1741,16 +1742,19 @@ func TestIssue3497BareAllOffsetUsesEndpointPageSize(t *testing.T) {
 
 	capped := 2.0
 	for _, tc := range []struct {
-		name       string
-		limitParam spec.Param
+		name         string
+		limitParam   spec.Param
+		wantPageSize int
 	}{
 		{
-			name:       "default",
-			limitParam: spec.Param{Name: "limit", Type: "integer", Default: 2},
+			name:         "default",
+			limitParam:   spec.Param{Name: "limit", Type: "integer", Default: 2},
+			wantPageSize: 2,
 		},
 		{
-			name:       "maximum",
-			limitParam: spec.Param{Name: "limit", Type: "integer", Maximum: &capped},
+			name:         "maximum",
+			limitParam:   spec.Param{Name: "limit", Type: "integer", Maximum: &capped},
+			wantPageSize: 0,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1793,7 +1797,7 @@ func TestIssue3497BareAllOffsetUsesEndpointPageSize(t *testing.T) {
 			}
 			require.NoError(t, gen.Generate())
 
-			generatedCLISourceContaining(t, outputDir, `flagAll && !flags.dryRun, "offset", "offset", "limit", 2, "", ""`)
+			generatedCLISourceContaining(t, outputDir, fmt.Sprintf(`flagAll && !flags.dryRun, "offset", "offset", "limit", %d, "", ""`, tc.wantPageSize))
 
 			behaviorTest := `package cli
 
@@ -1863,6 +1867,134 @@ func TestIssue3497BareAllOffsetUsesDefaultPageSize(t *testing.T) {
 	}
 }
 
+func TestIssue3989UnknownPageSizeDoesNotStopOnShortPage(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("unknown-page-size")
+	apiSpec.Resources = map[string]spec.Resource{
+		"records": {
+			Description: "Records",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/records",
+					Description: "List records",
+					Response:    spec.ResponseDef{Type: "array", Item: "Record"},
+					Pagination:  &spec.Pagination{Type: "page", CursorParam: "page"},
+				},
+			},
+		},
+	}
+	apiSpec.Types = map[string]spec.TypeDef{
+		"Record": {Fields: []spec.TypeField{{Name: "id", Type: "string"}}},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "unknown-page-size-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	commandSrc := generatedCLISourceContaining(t, outputDir, `"page", "page", "", `)
+	assert.Contains(t, commandSrc, `"page", "page", "", 0, "", ""`,
+		"generated page pagination must not pass fabricated page size 100 when the spec has no page-size parameter")
+	requireGeneratedCompiles(t, outputDir)
+
+	behaviorTest := `package cli
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+)
+
+type unknownPageSizeClient struct {
+	responses []json.RawMessage
+	params    []map[string]string
+}
+
+func (c *unknownPageSizeClient) GetWithHeaders(_ context.Context, _ string, params map[string]string, _ map[string]string) (json.RawMessage, error) {
+	copied := map[string]string{}
+	for key, value := range params {
+		copied[key] = value
+	}
+	c.params = append(c.params, copied)
+	response := c.responses[0]
+	c.responses = c.responses[1:]
+	return response, nil
+}
+
+func TestPaginatedGetKeepsFetchingWithUnknownPageSize(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		cursorParam string
+		pagination  string
+		wantFirst   string
+		wantSecond  string
+		wantThird   string
+	}{
+		{name: "page", cursorParam: "page", pagination: "page", wantSecond: "2", wantThird: "3"},
+		{name: "offset", cursorParam: "offset", pagination: "offset", wantFirst: "0", wantSecond: "2", wantThird: "3"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+			client := &unknownPageSizeClient{responses: []json.RawMessage{
+				json.RawMessage("[{\"id\":\"one\"},{\"id\":\"two\"}]"),
+				json.RawMessage("[{\"id\":\"three\"}]"),
+				json.RawMessage("[]"),
+			}}
+			params := map[string]string{}
+			if test.wantFirst != "" {
+				params[test.cursorParam] = test.wantFirst
+			}
+			data, err := paginatedGet(context.Background(), client, "/records", params, nil, true, test.cursorParam, test.pagination, "", 0, "", "")
+			if err != nil {
+				t.Fatalf("paginatedGet returned error: %v", err)
+			}
+			var got []map[string]string
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatalf("unmarshal data: %v", err)
+			}
+			if len(got) != 3 {
+				t.Fatalf("got %d items, want 3; data=%s", len(got), data)
+			}
+			if len(client.params) != 3 {
+				t.Fatalf("got %d requests, want 3", len(client.params))
+			}
+			if client.params[0][test.cursorParam] != test.wantFirst || client.params[1][test.cursorParam] != test.wantSecond || client.params[2][test.cursorParam] != test.wantThird {
+				t.Fatalf("%s params = %#v, want %s, %s, %s", test.cursorParam, client.params, test.wantFirst, test.wantSecond, test.wantThird)
+			}
+		})
+	}
+	}
+
+func TestPaginatedGetKeepsFetchingWithUnknownOffsetSizeAndHasMore(t *testing.T) {
+	client := &unknownPageSizeClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[{\"id\":\"one\"},{\"id\":\"two\"}],\"meta\":{\"has_more\":true}}"),
+		json.RawMessage("{\"items\":[{\"id\":\"three\"}],\"meta\":{\"has_more\":true}}"),
+		json.RawMessage("{\"items\":[],\"meta\":{\"has_more\":false}}"),
+	}}
+	data, err := paginatedGet(context.Background(), client, "/records", map[string]string{"offset":"0"}, nil, true, "offset", "offset", "", 0, "", "meta.has_more")
+	if err != nil {
+		t.Fatalf("paginatedGet returned error: %v", err)
+	}
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d items, want 3; data=%s", len(got), data)
+	}
+	if len(client.params) != 3 {
+		t.Fatalf("got %d requests, want 3", len(client.params))
+	}
+	for i, want := range []string{"0", "2", "3"} {
+		if got := client.params[i]["offset"]; got != want {
+			t.Fatalf("request %d offset = %q, want %q", i+1, got, want)
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "unknown_page_size_test.go"), []byte(behaviorTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestPaginatedGetKeepsFetchingWithUnknown", "-count=1")
+}
+
 func TestOpenAPINestedNextPageGeneratesPaginatedCommandSignal(t *testing.T) {
 	t.Parallel()
 
@@ -1920,7 +2052,7 @@ paths:
 		commandSrc.Write(src)
 		commandSrc.WriteByte('\n')
 	}
-	require.Contains(t, commandSrc.String(), `flagAll, "page", "page", "limit", 100, "meta.nextPage", ""`,
+	require.Contains(t, commandSrc.String(), `flagAll, "page", "page", "limit", 0, "meta.nextPage", ""`,
 		"generated command must pass parser-detected nested nextPage to resolvePaginatedRead")
 }
 
@@ -1978,6 +2110,6 @@ paths:
 		commandSrc.Write(src)
 		commandSrc.WriteByte('\n')
 	}
-	require.Contains(t, commandSrc.String(), `flagAll, "page", "page", "limit", 100, "", "has_more"`,
+	require.Contains(t, commandSrc.String(), `flagAll, "page", "page", "limit", 0, "", "has_more"`,
 		"generated command must pass has-more-only page pagination metadata to resolvePaginatedRead")
 }
