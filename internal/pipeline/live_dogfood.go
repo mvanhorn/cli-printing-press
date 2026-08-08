@@ -1949,26 +1949,38 @@ var destructiveAuthResources = map[string]bool{
 	"tokens":   true,
 }
 
+var destructiveAuthScopes = map[string]bool{
+	"auth":     true,
+	"oauth":    true,
+	"api-keys": true,
+	"api_keys": true,
+	"sessions": true,
+	"tokens":   true,
+}
+
 // isDestructiveAtAuth reports whether a command can invalidate the bearer
 // the live-dogfood runner is using. Reads pp:endpoint
 // (authoritative for endpoint-mirror commands) and falls back to
 // path-segment matching across the command path for novel commands.
-// Read-only commands are exempt regardless of name.
+// Auth-scoped destructive endpoint names take precedence over inferred
+// read-only metadata; ordinary read endpoints named refresh remain probeable.
 func isDestructiveAtAuth(annotations map[string]string, commandPath []string) bool {
 	if v, ok := annotations[destructiveAuthAnnotation]; ok {
 		return annotationIsTrueValue(v)
 	}
-	if annotationIsTrueValue(annotations[mcpReadOnlyAnnotation]) {
-		return false
-	}
 	if endpoint := annotations[endpointAnnotation]; endpoint != "" {
-		if containsDestructiveAuthTerm(endpoint) {
+		readOnly := annotationIsTrueValue(annotations[mcpReadOnlyAnnotation])
+		if containsDestructiveAuthTerm(endpoint) &&
+			(!readOnly || endpointTargetsAuthScope(endpoint, annotations[endpointPathAnnotation])) {
 			return true
 		}
 		if strings.EqualFold(strings.TrimSpace(annotations[endpointMethodAnnotation]), "DELETE") &&
 			endpointTargetsAuthResource(endpoint, annotations[endpointPathAnnotation]) {
 			return true
 		}
+		return false
+	}
+	if annotationIsTrueValue(annotations[mcpReadOnlyAnnotation]) {
 		return false
 	}
 	return slices.ContainsFunc(commandPath, containsDestructiveAuthTerm)
@@ -1989,6 +2001,18 @@ func endpointTargetsAuthResource(endpoint, path string) bool {
 	}
 	return slices.ContainsFunc(strings.Split(strings.ToLower(endpoint), "."), func(segment string) bool {
 		return destructiveAuthResources[segment]
+	})
+}
+
+func endpointTargetsAuthScope(endpoint, path string) bool {
+	if slices.ContainsFunc(splitPath(path), func(segment string) bool {
+		segment = strings.ToLower(strings.Trim(segment, "{}:"))
+		return destructiveAuthScopes[segment]
+	}) {
+		return true
+	}
+	return slices.ContainsFunc(strings.Split(strings.ToLower(endpoint), "."), func(segment string) bool {
+		return destructiveAuthScopes[strings.Trim(segment, "{}:")]
 	})
 }
 

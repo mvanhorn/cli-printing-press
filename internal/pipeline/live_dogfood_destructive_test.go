@@ -129,10 +129,39 @@ func TestIsDestructiveAtAuth(t *testing.T) {
 		{
 			name: "read-only exempt with pp:endpoint",
 			annotations: map[string]string{
-				"mcp:read-only": "true",
-				"pp:endpoint":   "catalog.catalog-refresh",
+				mcpReadOnlyAnnotation: "true",
+				endpointAnnotation:    "catalog.catalog-refresh",
 			},
 			path: []string{"craigslist-pp-cli", "catalog", "refresh"},
+			want: false,
+		},
+		{
+			name: "read-only conversations history remains probeable",
+			annotations: map[string]string{
+				mcpReadOnlyAnnotation: "true",
+				endpointAnnotation:    "conversations.history",
+			},
+			path: []string{"slack-pp-cli", "conversations", "history"},
+			want: false,
+		},
+		{
+			name: "destructive endpoint outranks read-only annotation",
+			annotations: map[string]string{
+				mcpReadOnlyAnnotation:    "true",
+				endpointAnnotation:       "auth.revoke",
+				endpointMethodAnnotation: "GET",
+			},
+			path: []string{"slack-pp-cli", "auth-api", "revoke"},
+			want: true,
+		},
+		{
+			name: "explicit destructive-auth false overrides destructive endpoint",
+			annotations: map[string]string{
+				destructiveAuthAnnotation: "false",
+				mcpReadOnlyAnnotation:     "true",
+				endpointAnnotation:        "auth.revoke",
+			},
+			path: []string{"slack-pp-cli", "auth-api", "revoke"},
 			want: false,
 		},
 		{
