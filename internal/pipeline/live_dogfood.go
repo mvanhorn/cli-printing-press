@@ -1949,13 +1949,24 @@ var destructiveAuthResources = map[string]bool{
 	"tokens":   true,
 }
 
-var destructiveAuthScopes = map[string]bool{
-	"auth":     true,
-	"oauth":    true,
-	"api-keys": true,
-	"api_keys": true,
-	"sessions": true,
-	"tokens":   true,
+type destructiveAuthScope string
+
+const (
+	destructiveAuthScopeAuth              destructiveAuthScope = "auth"
+	destructiveAuthScopeOAuth             destructiveAuthScope = "oauth"
+	destructiveAuthScopeAPIKeys           destructiveAuthScope = "api-keys"
+	destructiveAuthScopeAPIKeysUnderscore destructiveAuthScope = "api_keys"
+	destructiveAuthScopeSessions          destructiveAuthScope = "sessions"
+	destructiveAuthScopeTokens            destructiveAuthScope = "tokens"
+)
+
+var destructiveAuthScopes = map[destructiveAuthScope]bool{
+	destructiveAuthScopeAuth:              true,
+	destructiveAuthScopeOAuth:             true,
+	destructiveAuthScopeAPIKeys:           true,
+	destructiveAuthScopeAPIKeysUnderscore: true,
+	destructiveAuthScopeSessions:          true,
+	destructiveAuthScopeTokens:            true,
 }
 
 // isDestructiveAtAuth reports whether a command can invalidate the bearer
@@ -2007,12 +2018,12 @@ func endpointTargetsAuthResource(endpoint, path string) bool {
 func endpointTargetsAuthScope(endpoint, path string) bool {
 	if slices.ContainsFunc(splitPath(path), func(segment string) bool {
 		segment = strings.ToLower(strings.Trim(segment, "{}:"))
-		return destructiveAuthScopes[segment]
+		return destructiveAuthScopes[destructiveAuthScope(segment)]
 	}) {
 		return true
 	}
 	return slices.ContainsFunc(strings.Split(strings.ToLower(endpoint), "."), func(segment string) bool {
-		return destructiveAuthScopes[strings.Trim(segment, "{}:")]
+		return destructiveAuthScopes[destructiveAuthScope(strings.Trim(segment, "{}:"))]
 	})
 }
 
