@@ -73,6 +73,47 @@ func setPlatformRoots(t *testing.T) string {
 	return root
 }
 
+func TestReadOnlySQLiteDSNUsesLocalFileURI(t *testing.T) {
+	for _, test := range []struct {
+		path string
+		want string
+	}{
+		{path: "C:/Users/example/data.db", want: "file:///C:/Users/example/data.db?mode=ro"},
+		{path: "data.db", want: "file:data.db?mode=ro"},
+		{path: "//server/share/data.db", want: "file:////server/share/data.db?mode=ro"},
+	} {
+		if got := readOnlySQLiteDSN(test.path); got != test.want {
+			t.Fatalf("SQLite DSN for %q = %q, want %q", test.path, got, test.want)
+		}
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE dsn_fixture (value TEXT NOT NULL); INSERT INTO dsn_fixture VALUES ('readable')`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	readOnly, err := sql.Open("sqlite", readOnlySQLiteDSN(dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readOnly.Close()
+	var value string
+	if err := readOnly.QueryRow("SELECT value FROM dsn_fixture").Scan(&value); err != nil {
+		t.Fatalf("read-only SQLite query failed: %v", err)
+	}
+	if value != "readable" {
+		t.Fatalf("read-only SQLite value = %q, want %q", value, "readable")
+	}
+}
+
 func validSyntheticProfile(name string) *Profile {
 	return &Profile{
 		SchemaVersion: 1,
