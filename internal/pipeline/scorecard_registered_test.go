@@ -111,6 +111,56 @@ func newAvailabilitySweepCmd(flags any) *cobra.Command {
 	}
 }
 
+func TestRegisteredCommandFiles_FollowsNovelHelperCalls(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() {
+	addNovelCommandIfAbsent(rootCmd, newAvailabilityCmd(nil))
+}`)
+
+	writeFile(t, filepath.Join(cliDir, "availability.go"), `package cli
+import "github.com/spf13/cobra"
+func newAvailabilityCmd(flags any) *cobra.Command {
+	cmd := &cobra.Command{Use: "availability"}
+	addNovelCommandIfAbsent(newParentDeadCmd(), newAvailabilitySweepCmd(flags))
+	return cmd
+}`)
+
+	writeFile(t, filepath.Join(cliDir, "availability_sweep.go"), `package cli
+import "github.com/spf13/cobra"
+func newAvailabilitySweepCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "sweep"}
+}`)
+
+	writeFile(t, filepath.Join(cliDir, "dead.go"), `package cli
+import "github.com/spf13/cobra"
+func newDeadCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "dead"}
+}`)
+
+	writeFile(t, filepath.Join(cliDir, "parent_dead.go"), `package cli
+import "github.com/spf13/cobra"
+func newParentDeadCmd() *cobra.Command {
+	return &cobra.Command{Use: "parent-dead"}
+}`)
+
+	registered := registeredCommandFiles(cliDir)
+	if !registered["availability.go"] || !registered["availability_sweep.go"] {
+		t.Errorf("expected novel helper registrations to be reachable, got %v", registered)
+	}
+	if registered["dead.go"] {
+		t.Errorf("expected unregistered constructor to stay orphaned, got %v", registered)
+	}
+	if registered["parent_dead.go"] {
+		t.Errorf("expected helper parent constructor to stay orphaned, got %v", registered)
+	}
+}
+
 func TestRegisteredCommandFiles_IgnoresConstructorCallsOutsideAddCommand(t *testing.T) {
 	dir := t.TempDir()
 	cliDir := filepath.Join(dir, "internal", "cli")
