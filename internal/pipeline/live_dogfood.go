@@ -909,19 +909,21 @@ func happyArgsContainSyntheticFlagPlaceholder(happyArgs, commandPath []string) b
 
 func happyArgsContainSyntheticPositionalPlaceholder(happyArgs, commandPath []string) bool {
 	start := min(len(commandPath), len(happyArgs))
+	afterTerminator := false
 	for i := start; i < len(happyArgs); i++ {
 		arg := happyArgs[i]
 		if arg == "--" {
-			return false
+			afterTerminator = true
+			continue
 		}
-		if !isLiveDogfoodFlagToken(arg) {
-			if liveDogfoodSyntheticExampleValue(arg) {
-				return true
+		if !afterTerminator && isLiveDogfoodFlagToken(arg) {
+			if !strings.Contains(arg, "=") && liveDogfoodFlagHasSeparateValue(happyArgs, start, i, 0) {
+				i++
 			}
 			continue
 		}
-		if !strings.Contains(arg, "=") && liveDogfoodFlagHasSeparateValue(happyArgs, start, i, 0) {
-			i++
+		if liveDogfoodSyntheticExampleValue(arg) {
+			return true
 		}
 	}
 	return false
