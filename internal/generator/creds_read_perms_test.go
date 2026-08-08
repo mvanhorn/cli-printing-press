@@ -65,9 +65,20 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 	// in-package (not cliutil.VerifyCredsPerms).
 	credsSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "credentials.go")
 	require.Contains(t, credsSrc, "VerifyCredsPerms(", "LoadCredentials must guard the credentials-file read with the perms check")
+	require.Contains(t, credsSrc, "type CredentialsPermissionError", "credential saves must report a landed file that fails the permission guard")
+	require.Contains(t, credsSrc, "filepath.EvalSymlinks(path)", "credential saves must verify the file that was actually published")
+	require.Contains(t, credsSrc, "VerifyCredsPerms(real)", "credential saves must verify permissions after publication")
 
 	_, err = os.Stat(filepath.Join(outputDir, "internal", "cliutil", "credentials_perms_test.go"))
 	require.NoError(t, err, "cliutil credentials read-time perms behavioral test must be emitted")
+
+	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	require.Contains(t, rootSrc, "writeCredentialSaveErrorEnvelope", "JSON auth failures must report post-save credential permission refusals")
+	require.Contains(t, rootSrc, "envelopeWriter := io.Writer(os.Stdout)", "credential permission failures must use the normal JSON output stream")
+	require.Contains(t, rootSrc, `"permissions_verified": false`, "JSON auth failures must flag the unsafe landed file")
+	pathsSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "paths.go")
+	require.Contains(t, pathsSrc, "renamePrivateFileWithRetryFunc", "private-file publication must expose a testable bounded retry path")
+	requireGeneratedCompiles(t, outputDir)
 
 	// A5: creds_perms_windows.go imports golang.org/x/sys/windows, which makes
 	// golang.org/x/sys a DIRECT dependency of a token-bearing bundle. The

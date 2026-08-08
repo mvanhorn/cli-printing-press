@@ -1084,6 +1084,7 @@ type generatorTemplateData struct {
 type rootTestTemplateData struct {
 	*spec.APISpec
 	ExpectedCommandPaths []string
+	HasAuthCommand       bool
 }
 
 type trafficAnalysisTemplateData struct {
@@ -2559,6 +2560,7 @@ func (g *Generator) renderSingleFiles() error {
 			data = &rootTestTemplateData{
 				APISpec:              g.Spec,
 				ExpectedCommandPaths: expectedCommandPaths(buildCommandSurface(g.Spec, g.PromotedCommands)),
+				HasAuthCommand:       g.shouldEmitAuth(),
 			}
 		case "doctor.go.tmpl":
 			data = &doctorTemplateData{
