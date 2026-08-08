@@ -1990,6 +1990,30 @@ func TestPaginatedGetKeepsFetchingWithUnknownOffsetSizeAndHasMore(t *testing.T) 
 		}
 	}
 }
+
+func TestPaginatedGetKeepsFetchingWithUnknownOffsetAfterEmptyHasMorePage(t *testing.T) {
+	client := &unknownPageSizeClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"items":[],"meta":{"has_more":true}}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"meta":{"has_more":false}}` + "`" + `),
+	}}
+	data, err := paginatedGet(context.Background(), client, "/records", map[string]string{"offset":"0"}, nil, true, "offset", "offset", "", 0, "", "meta.has_more")
+	if err != nil {
+		t.Fatalf("paginatedGet returned error: %v", err)
+	}
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d items, want 1; data=%s", len(got), data)
+	}
+	if len(client.params) != 2 {
+		t.Fatalf("got %d requests, want 2", len(client.params))
+	}
+	if got := client.params[1]["offset"]; got != "1" {
+		t.Fatalf("second request offset = %q, want 1", got)
+	}
+}
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "unknown_page_size_test.go"), []byte(behaviorTest), 0o644))
 	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestPaginatedGetKeepsFetchingWithUnknown", "-count=1")
