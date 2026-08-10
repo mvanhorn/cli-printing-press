@@ -41,6 +41,83 @@ func TestRankWhich_DescriptionMatch(t *testing.T) {
 	}
 }
 
+func TestRankWhich_WhyItMattersMatch(t *testing.T) {
+	index := []whichEntry{
+		{
+			Command:      "students at-risk",
+			Description:  "List students",
+			WhyItMatters: "Use this for early-alert outreach; answer who is falling behind right now",
+		},
+		{
+			Command:     "students summary",
+			Description: "Summarize student status",
+		},
+	}
+	got := rankWhich(index, "who is falling behind", 1)
+	if len(got) != 1 || got[0].Entry.Command != "students at-risk" || got[0].Score <= 0 {
+		t.Fatalf("expected the why-it-matters entry as the top match, got %+v", got)
+	}
+}
+
+func TestRankWhich_GroupMatchRequiresWholeToken(t *testing.T) {
+	index := []whichEntry{
+		{
+			Command:     "risk",
+			Description: "Student risk",
+			Group:       "Local snapshots that compound",
+		},
+	}
+	got := rankWhich(index, "at", 1)
+	if len(got) != 0 {
+		t.Fatalf("substring-only group match should be discarded, got %+v", got)
+	}
+}
+
+func TestRankWhich_GroupCreditIsCapped(t *testing.T) {
+	index := []whichEntry{
+		{Command: "local", Group: "Local state"},
+	}
+	got := rankWhich(index, "local state", 1)
+	if len(got) != 1 || got[0].Score != 4 {
+		t.Fatalf("group match should add one point per entry, got %+v", got)
+	}
+}
+
+func TestRankWhich_DescriptionSubTokens(t *testing.T) {
+	index := []whichEntry{
+		{Command: "show", Description: "Grade-distribution"},
+	}
+	got := rankWhich(index, "distribution", 1)
+	if len(got) != 1 || got[0].Score != 3 {
+		t.Fatalf("hyphenated description token should receive substring and token credit, got %+v", got)
+	}
+}
+
+func TestRankWhich_ProseCreditDoesNotDoubleCount(t *testing.T) {
+	index := []whichEntry{
+		{Command: "grades distribution", Description: "Grade breakdown"},
+		{
+			Command:      "class overview",
+			Description:  "Summarize grade distribution report",
+			WhyItMatters: "Read the grade distribution report by class",
+		},
+	}
+	got := rankWhich(index, "grade distribution report", 1)
+	if len(got) != 1 || got[0].Entry.Command != "grades distribution" {
+		t.Fatalf("exact command match should outrank repeated prose, got %+v", got)
+	}
+}
+
+func TestRankWhich_IncidentalWhyItMattersTokenDoesNotAdmitEntry(t *testing.T) {
+	index := []whichEntry{
+		{Command: "risk", WhyItMatters: "Use this to help agents answer questions"},
+	}
+	got := rankWhich(index, "agents", 1)
+	if len(got) != 0 {
+		t.Fatalf("incidental rationale token should not create confidence, got %+v", got)
+	}
+}
+
 // Happy path: a multi-word query resolves to the best single match by
 // summing per-token scores.
 func TestRankWhich_MultiTokenQuery(t *testing.T) {

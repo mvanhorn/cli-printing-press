@@ -47,9 +47,9 @@ type whichMatch struct {
 //
 //	+3  exact token match on the command's leaf or full path
 //	+2  substring match on the command (any part)
-//	+2  substring match on the description
-//	+2  per-token match on the description
-//	+1  group tag contains the query as a word
+//	+2  substring match on description or why_it_matters
+//	+1  per-token match on description or why_it_matters (capped at 3)
+//	+1  group tag contains the query as a whole token
 //
 // Ties break on declaration order in the index. An empty query returns
 // every entry at score 0 in declaration order - this is the "list all"
@@ -110,7 +110,9 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 	// ties on the group token alone and index order decides the answer.
 	cmdTokens := whichSubTokens(cmd)
 	desc := strings.ToLower(e.Description)
-	descTokens := strings.Fields(desc)
+	descTokens := whichSubTokens(desc)
+	why := strings.ToLower(e.WhyItMatters)
+	whyTokens := whichSubTokens(why)
 	group := strings.ToLower(e.Group)
 
 	// Exact token match on the command path (any token).
@@ -126,34 +128,38 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 	if strings.Contains(cmd, query) {
 		score += 2
 	}
-	// Substring match on the description.
-	if strings.Contains(desc, query) {
+	// Description and rationale are correlated prose fields. Share the existing
+	// per-token cap so repeating the same query in both fields cannot outweigh
+	// an exact command match. A rationale-only match needs two tokens or an
+	// exact multi-token phrase to avoid promoting incidental prose words.
+	descPhrase := strings.Contains(desc, query)
+	descCredit := whichFieldCredit(qTokens, descTokens)
+	whyCredit := whichFieldCredit(qTokens, whyTokens)
+	whyPhrase := len(qTokens) > 1 && strings.Contains(why, query)
+	if score == 0 && whyCredit < 2 && !whyPhrase {
+		whyCredit = 0
+	}
+	if descPhrase || whyPhrase {
 		score += 2
 	}
-	// Per-token description match, CAPPED: natural-language requests often say
-	// "top coins by market cap" and the endpoint doc uses the same words - but
-	// uncapped description credit lets long token-soup descriptions outrank the
-	// precise command path, so the credit saturates at 3.
-	descCredit := 0
-	for _, qt := range qTokens {
-		for _, dt := range descTokens {
-			if whichTokenMatch(qt, dt) {
-				descCredit++
-				break
-			}
-		}
-		if descCredit == 3 {
-			break
-		}
+	if whyCredit > descCredit {
+		score += whyCredit
+	} else {
+		score += descCredit
 	}
-	score += descCredit
-	// Group tag match.
-	if group != "" {
-		for _, qt := range qTokens {
-			if strings.Contains(group, qt) {
+	// Group tag match requires a whole token, not an arbitrary substring.
+	groupTokens := whichSubTokens(group)
+	groupMatched := false
+	for _, qt := range qTokens {
+		for _, gt := range groupTokens {
+			if whichTokenMatch(qt, gt) {
 				score += 1
+				groupMatched = true
 				break
 			}
+		}
+		if groupMatched {
+			break
 		}
 	}
 	// Possessive aliasing: "my/mine/me/current" in a request is API-speak for
@@ -220,6 +226,22 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 		score -= unmatched
 	}
 	return score
+}
+
+func whichFieldCredit(qTokens, fieldTokens []string) int {
+	credit := 0
+	for _, qt := range qTokens {
+		for _, ft := range fieldTokens {
+			if whichTokenMatch(qt, ft) {
+				credit++
+				break
+			}
+		}
+		if credit == 3 {
+			break
+		}
+	}
+	return credit
 }
 
 func whichTokenMatch(a, b string) bool {
