@@ -921,7 +921,9 @@ func TestWriteManifestForGenerateWithLocalSpec(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &got))
 
 	assert.Empty(t, got.SpecURL, "local path should not appear in spec_url")
-	assert.Equal(t, "my-spec.yaml", got.SpecPath)
+	// Repointed to the shipped archive name: the source basename is not in the
+	// packaged tree.
+	assert.Equal(t, "spec.yaml", got.SpecPath)
 }
 
 func TestWriteManifestForGenerateStampsLocalSQLiteSpecFormat(t *testing.T) {
@@ -951,7 +953,7 @@ func TestWriteManifestForGenerateStampsLocalSQLiteSpecFormat(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &got))
 	assert.Equal(t, spec.SourceLocalSQLite, got.SpecFormat)
 	assert.True(t, got.IsLocalDatastore())
-	assert.Equal(t, "local-data.yaml", got.SpecPath)
+	assert.Equal(t, "spec.yaml", got.SpecPath)
 }
 
 func TestWriteManifestForGenerateStampsSyntheticSpecKind(t *testing.T) {
@@ -2624,7 +2626,8 @@ func TestWriteManifestForGenerateDoesNotPreserveStaleSpecURLWhenFreshSourceIsPat
 
 	got := readPublishedManifest(t, dir)
 	assert.Empty(t, got.SpecURL)
-	assert.Equal(t, filepath.Base(specPath), got.SpecPath)
+	// Repointed to the shipped archive name.
+	assert.Equal(t, "spec.json", got.SpecPath)
 }
 
 func TestWriteManifestForGenerateFreshValuesReplaceExistingManifestExtras(t *testing.T) {

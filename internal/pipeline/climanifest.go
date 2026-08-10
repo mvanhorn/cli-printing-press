@@ -874,6 +874,21 @@ func findArchivedSpec(dir string) (string, []byte, error) {
 	return "", nil, nil
 }
 
+// archivedSpecNameForFormat maps a source spec basename to the archive
+// filename generate writes alongside the CLI (archiveSpecBytes): JSON input
+// stays spec.json, everything else (YAML, GraphQL SDL) becomes spec.yaml.
+// Returns "" when the extension is unrecognized.
+func archivedSpecNameForFormat(sourceBasename string) string {
+	switch strings.ToLower(filepath.Ext(sourceBasename)) {
+	case ".json":
+		return "spec.json"
+	case ".yaml", ".yml":
+		return "spec.yaml"
+	default:
+		return ""
+	}
+}
+
 // specChecksum computes a SHA-256 checksum of the file at path.
 // Returns "sha256:<hex>" on success, or an empty string if the file
 // does not exist.
@@ -1212,11 +1227,14 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	// the converted spec as spec.json (or spec.yaml/yml); the source spec's
 	// basename (e.g. exa-openapi.json) does not exist in the packaged tree,
 	// which breaks the provenance contract consumers check against the
-	// manifest. No-spec runs (docs/sniff/plan) ship no archived spec and keep
-	// their existing spec_path (empty or docs URL).
+	// manifest. The archive name is derived from the spec format rather than
+	// a directory search because WriteManifestForGenerate runs before the
+	// archive write in the generate flow (root.go archives after the
+	// manifest), so the file is not on disk yet. No-spec runs (docs/sniff/
+	// plan) keep their existing spec_path (empty or docs URL).
 	if m.SpecPath != "" && !strings.HasPrefix(m.SpecPath, "http://") && !strings.HasPrefix(m.SpecPath, "https://") {
-		if specFile, _, err := findArchivedSpec(p.OutputDir); err == nil && specFile != "" {
-			m.SpecPath = filepath.Base(specFile)
+		if archiveName := archivedSpecNameForFormat(m.SpecPath); archiveName != "" {
+			m.SpecPath = archiveName
 		}
 	}
 

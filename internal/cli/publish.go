@@ -484,6 +484,7 @@ func newPublishPackageCmd() *cobra.Command {
 					enc.SetIndent("", "  ")
 					_ = enc.Encode(ValidateResult{Checks: []CheckResult{modulePathCheck}, Passed: false})
 				}
+				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("validation failed, cannot package: %s", modulePathCheck.Error)}
 			}
 
@@ -1501,10 +1502,8 @@ func checkGoModTidy(dir string) CheckResult {
 	return CheckResult{Name: "go mod tidy", Passed: true}
 }
 
-// checkModulePath verifies that go.mod's module line matches the canonical
-// public-library path prefix. The library's CI Verify/Scan workflows reject
-// PRs whose packaged CLI declares a bare CLI-name module path, so local
-// validation must catch it before the PR opens.
+// checkModulePath catches the bare CLI-name module declaration the library CI
+// rejects, before the PR opens.
 func checkModulePath(dir string) CheckResult {
 	modPath := filepath.Join(dir, "go.mod")
 	modBytes, err := os.ReadFile(modPath)

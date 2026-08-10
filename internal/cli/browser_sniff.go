@@ -14,9 +14,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// browserSniffConfigPath derives the generated CLI's default config path from
-// the slugified --name value, so the README/config surface matches the
-// slug-derived runtime path (naming.Slug) rather than the raw display name.
+// browserSniffConfigPath matches the runtime slug-derived path so the README
+// and config surface agree even when --name is a display title.
 func browserSniffConfigPath(name string) string {
 	slug := naming.Slug(name)
 	if slug == "" {
