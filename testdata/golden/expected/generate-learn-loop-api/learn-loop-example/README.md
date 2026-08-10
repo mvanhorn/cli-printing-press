@@ -248,9 +248,8 @@ learn-loop-example-pp-cli games
 
 # JSON for scripting and agents
 learn-loop-example-pp-cli games --json
-
-# Filter to specific fields
-learn-loop-example-pp-cli games --json --select id,name,status
+# Filter to specific fields by name
+learn-loop-example-pp-cli games --json --select <field>[,<field>...]
 
 # Dry run — show the request without sending
 learn-loop-example-pp-cli games --dry-run
@@ -265,7 +264,7 @@ This CLI is designed for AI agent consumption:
 
 - **Non-interactive** - never prompts, every input is a flag
 - **Pipeable** - `--json` output to stdout, errors to stderr
-- **Filterable** - `--select id,name` returns only fields you need
+- **Filterable** - `--select <field>[,<field>...]` returns only fields you need
 - **Previewable** - `--dry-run` shows the request without sending
 - **Read-only by default** - this CLI does not create, update, delete, publish, send, or mutate remote resources
 - **Offline-friendly** - sync/search commands can use the local SQLite store when available
