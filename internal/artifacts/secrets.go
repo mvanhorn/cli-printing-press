@@ -70,6 +70,30 @@ func RedactArchivedSpecSecrets(data []byte) []byte {
 	return out
 }
 
+const (
+	LiveOutputAuthEnvRedacted   = "<REDACTED:auth-env>"
+	LiveOutputVendorKeyRedacted = "<REDACTED:vendor-api-key>"
+)
+
+// Keep live samples aligned with publish scanning so credential-shaped output
+// cannot enter reports or proofs while known placeholders remain intact.
+func RedactLiveOutputSecrets(data []byte, authEnvValue string) []byte {
+	out := append([]byte(nil), data...)
+	if len(authEnvValue) >= 16 {
+		out = bytes.ReplaceAll(out, []byte(authEnvValue), []byte(LiveOutputAuthEnvRedacted))
+	}
+	for _, pattern := range vendorPrefixSecretPatterns {
+		out = pattern.pattern.ReplaceAllFunc(out, func(match []byte) []byte {
+			candidate := string(match)
+			if pattern.accept != nil && !pattern.accept(candidate) {
+				return match
+			}
+			return []byte(LiveOutputVendorKeyRedacted)
+		})
+	}
+	return out
+}
+
 type VendorPrefixSecretFinding struct {
 	Path        string
 	Line        int
