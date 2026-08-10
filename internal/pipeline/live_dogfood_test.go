@@ -6679,3 +6679,19 @@ Examples:
 	require.True(t, ok)
 	assert.Equal(t, []string{"widgets", "get", "widget-1", "--format=summary"}, args)
 }
+
+func TestLiveDogfoodExampleArgsDoesNotMergeDistinctExamplesWhenTargetFirst(t *testing.T) {
+	cmd := liveDogfoodCommand{
+		Path: []string{"widgets", "list"},
+		Help: `Usage:
+  cli widgets list [flags]
+
+Examples:
+  cli widgets list --verbose
+  cli widgets get widget-1 --format=summary
+`,
+	}
+	args, ok := liveDogfoodExampleArgs(cmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"widgets", "list", "--verbose"}, args)
+}
