@@ -1943,6 +1943,57 @@ func TestMergeSpecsRewritesMCPIntentWhenDuplicateResourceIsDropped(t *testing.T)
 	assert.NoError(t, merged.Validate())
 }
 
+func TestMergeSpecsRewritesLaterDuplicateToRenamedCanonicalResource(t *testing.T) {
+	t.Parallel()
+
+	primary := &spec.APISpec{
+		Name:    "primary",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"chat": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/chat"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	secondary := &spec.APISpec{
+		Name:    "vendor",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"chat": {Endpoints: map[string]spec.Endpoint{
+				"list":    {Method: "GET", Path: "/chat"},
+				"history": {Method: "GET", Path: "/chat/history"},
+			}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	later := &spec.APISpec{
+		Name:    "later",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"other": {Endpoints: map[string]spec.Endpoint{"history": {Method: "GET", Path: "/chat/history"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+		MCP: spec.MCPConfig{
+			Intents: []spec.Intent{{
+				Name:        "read_history",
+				Description: "Read history",
+				Steps:       []spec.IntentStep{{Endpoint: "other.history"}},
+			}},
+		},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary, later}, "combo")
+
+	require.Contains(t, merged.Resources, "vendor-chat")
+	assert.Contains(t, merged.Resources["vendor-chat"].Endpoints, "history")
+	require.Len(t, merged.MCP.Intents, 1)
+	require.Len(t, merged.MCP.Intents[0].Steps, 1)
+	assert.Equal(t, "vendor-chat.history", merged.MCP.Intents[0].Steps[0].Endpoint)
+	assert.NoError(t, merged.Validate())
+}
+
 func TestMergeSpecsKeepsSameRouteWhenParameterShapesDiffer(t *testing.T) {
 	t.Parallel()
 

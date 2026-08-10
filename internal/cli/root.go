@@ -1348,6 +1348,7 @@ func mergeSpecsWithOptions(specs []*spec.APISpec, name string, opts mergeSpecOpt
 			resource = rewriteDefaultResourceDescription(resource, resourceName, key)
 			if key != resourceName {
 				resourceRenames[resourceName] = key
+				rekeyResourceEndpointReferences(seenEndpointRefs, resource, resourceName, key)
 			}
 			merged.Resources[key] = resource
 			acceptedResourceKeys = append(acceptedResourceKeys, key)
@@ -1947,6 +1948,46 @@ func addResourceEndpointReferences(references map[string]string, resource spec.R
 			sub.BaseURL = resource.BaseURL
 		}
 		addResourceEndpointReferences(references, sub, resourceRef+"."+name)
+	}
+}
+
+func rekeyResourceEndpointReferences(references map[string]string, resource spec.Resource, oldRef, newRef string) {
+	if oldRef == newRef {
+		return
+	}
+	rekeyResourceEndpointReferencesWithBase(references, resource, oldRef, newRef, "")
+}
+
+func rekeyResourceEndpointReferencesWithBase(references map[string]string, resource spec.Resource, oldRef, newRef, inheritedBaseURL string) {
+	baseURL := resource.BaseURL
+	if baseURL == "" {
+		baseURL = inheritedBaseURL
+	}
+	signatureResource := resource
+	signatureResource.BaseURL = baseURL
+
+	endpointNames := make([]string, 0, len(resource.Endpoints))
+	for name := range resource.Endpoints {
+		endpointNames = append(endpointNames, name)
+	}
+	sort.Strings(endpointNames)
+	for _, name := range endpointNames {
+		endpoint := resource.Endpoints[name]
+		signature := endpointSignature(signatureResource, endpoint)
+		oldEndpointRef := oldRef + "." + name
+		if references[signature] == oldEndpointRef {
+			references[signature] = newRef + "." + name
+		}
+	}
+
+	subResourceNames := make([]string, 0, len(resource.SubResources))
+	for name := range resource.SubResources {
+		subResourceNames = append(subResourceNames, name)
+	}
+	sort.Strings(subResourceNames)
+	for _, name := range subResourceNames {
+		sub := resource.SubResources[name]
+		rekeyResourceEndpointReferencesWithBase(references, sub, oldRef+"."+name, newRef+"."+name, baseURL)
 	}
 }
 
