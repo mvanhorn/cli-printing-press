@@ -96,9 +96,8 @@ Resource scoping:
   from a prior sync.`,
 		Example: `  # Sync all resources
   sync-walker-golden-pp-cli sync
-
   # Sync specific resources only
-  sync-walker-golden-pp-cli sync --resources channels,messages
+  sync-walker-golden-pp-cli sync --resources games
 
   # Full resync (ignore previous checkpoint)
   sync-walker-golden-pp-cli sync --full

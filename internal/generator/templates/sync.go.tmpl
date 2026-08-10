@@ -158,8 +158,10 @@ Resource scoping:
 		Example: `  # Sync all resources
   {{.Name}}-pp-cli sync
 
+{{- if .SyncResourcesExample}}
   # Sync specific resources only
-  {{.Name}}-pp-cli sync --resources channels,messages
+  {{.Name}}-pp-cli sync --resources {{.SyncResourcesExample}}
+{{- end}}
 
   # Full resync (ignore previous checkpoint)
   {{.Name}}-pp-cli sync --full

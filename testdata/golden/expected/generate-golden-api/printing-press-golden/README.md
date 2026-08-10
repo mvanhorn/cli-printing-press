@@ -246,9 +246,8 @@ printing-press-golden-pp-cli currencies --x-api-version example-value
 
 # JSON for scripting and agents
 printing-press-golden-pp-cli currencies --x-api-version example-value --json
-
 # Filter to specific fields
-printing-press-golden-pp-cli currencies --x-api-version example-value --json --select id,name,status
+printing-press-golden-pp-cli currencies --x-api-version example-value --json --select code,decimals,symbol
 
 # Dry run — show the request without sending
 printing-press-golden-pp-cli currencies --x-api-version example-value --dry-run
@@ -263,7 +262,7 @@ This CLI is designed for AI agent consumption:
 
 - **Non-interactive** - never prompts, every input is a flag
 - **Pipeable** - `--json` output to stdout, errors to stderr
-- **Filterable** - `--select id,name` returns only fields you need
+- **Filterable** - `--select <field>[,<field>...]` returns only fields you need
 - **Previewable** - `--dry-run` shows the request without sending
 - **Explicit retries** - add `--idempotent` to create retries when a no-op success is acceptable
 - **Confirmable** - `--yes` for explicit confirmation of destructive actions

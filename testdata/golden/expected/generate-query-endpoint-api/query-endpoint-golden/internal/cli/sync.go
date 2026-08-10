@@ -94,9 +94,8 @@ Resource scoping:
   from a prior sync.`,
 		Example: `  # Sync all resources
   query-endpoint-golden-pp-cli sync
-
   # Sync specific resources only
-  query-endpoint-golden-pp-cli sync --resources channels,messages
+  query-endpoint-golden-pp-cli sync --resources gadgets,widgets
 
   # Full resync (ignore previous checkpoint)
   query-endpoint-golden-pp-cli sync --full

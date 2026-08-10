@@ -1057,10 +1057,12 @@ type readmeTemplateData struct {
 	// command emission. Distinct from HasAuth: an empty auth type still emits
 	// the auth surface, and docs must follow the emitted surface, not the
 	// spec's declared type.
-	HasAuthCommand    bool
-	HasAutoRefresh    bool
-	FreshnessCommands []string
-	TrafficAnalysis   *trafficAnalysisTemplateData
+	HasAuthCommand       bool
+	HasAutoRefresh       bool
+	SelectExample        string
+	SyncResourcesExample string
+	FreshnessCommands    []string
+	TrafficAnalysis      *trafficAnalysisTemplateData
 	// PromotedResourceNames maps a resource name to true when the generator
 	// collapsed that single-endpoint resource into a leaf command. Templates
 	// (notably skill.md.tmpl's Command Reference) use this to emit `<cli>
@@ -1109,6 +1111,12 @@ func (g *Generator) readmeData() *readmeTemplateData {
 			g.Spec.WebsiteURL = u.Scheme + "://" + u.Host
 		}
 	}
+	var syncable []profiler.SyncableResource
+	var dependent []profiler.DependentResource
+	if g.profile != nil {
+		syncable = g.profile.SyncableResources
+		dependent = g.profile.DependentSyncResources
+	}
 	return &readmeTemplateData{
 		APISpec:               g.Spec,
 		Sources:               g.Sources,
@@ -1127,6 +1135,8 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		HasAuth:               hasAuth(g.Spec.Auth),
 		HasAuthCommand:        g.shouldEmitAuth(),
 		HasAutoRefresh:        g.hasAutoRefresh(),
+		SelectExample:         selectExampleForCommand(g.Spec),
+		SyncResourcesExample:  syncResourcesExample(syncable, dependent),
 		FreshnessCommands:     g.freshnessCommandPaths(),
 		TrafficAnalysis:       g.trafficAnalysisData(),
 		PromotedResourceNames: g.PromotedResourceNames,
@@ -4059,6 +4069,7 @@ type visionRenderData struct {
 	HasSync                      bool
 	SyncableResources            []profiler.SyncableResource
 	DependentSyncResources       []profiler.DependentResource
+	SyncResourcesExample         string
 	TenantScopedParents          []profiler.TenantScopedParent
 	MembershipScopedParents      []profiler.MembershipScopedParent
 	PaginationSupportedResources []string
@@ -4453,6 +4464,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		HasSync:                      g.hasGeneratedSyncImplementation(),
 		SyncableResources:            g.profile.SyncableResources,
 		DependentSyncResources:       g.profile.DependentSyncResources,
+		SyncResourcesExample:         syncResourcesExample(g.profile.SyncableResources, g.profile.DependentSyncResources),
 		TenantScopedParents:          g.profile.TenantScopedParents(),
 		MembershipScopedParents:      g.profile.MembershipScopedParents(),
 		PaginationSupportedResources: paginationSupportedResources(g.profile.SyncableResources, g.profile.DependentSyncResources),
@@ -5201,6 +5213,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		HasDelete             bool
 		HasMutationEndpoints  bool
 		HasAutoRefresh        bool
+		SelectExample         string
 		HasWorkflow           bool
 		CompactDescription    string
 	}{
@@ -5222,6 +5235,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		HasDelete:             helperFlags.HasDelete,
 		HasMutationEndpoints:  helperFlags.HasMutationEndpoints,
 		HasAutoRefresh:        g.hasAutoRefresh(),
+		SelectExample:         selectExampleForCommand(g.Spec),
 		HasWorkflow:           g.hasWorkflowSurface(),
 		CompactDescription:    g.compactDescription(),
 	}

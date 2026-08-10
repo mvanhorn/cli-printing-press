@@ -519,8 +519,13 @@ The local store's schema version stamp is one-way: once this version of `{{$.Nam
 # JSON for scripting and agents
 {{.Name}}-pp-cli {{$example}} --json
 
+{{- if .SelectExample}}
 # Filter to specific fields
-{{.Name}}-pp-cli {{$example}} --json --select id,name,status
+{{.Name}}-pp-cli {{$example}} --json --select {{.SelectExample}}
+{{- else}}
+# Filter to specific fields by name
+{{.Name}}-pp-cli {{$example}} --json --select <field>[,<field>...]
+{{- end}}
 
 # Dry run — show the request without sending
 {{.Name}}-pp-cli {{$example}} --dry-run
@@ -533,7 +538,7 @@ The local store's schema version stamp is one-way: once this version of `{{$.Nam
 Every command supports these output flags:
 
 - `--json` — structured output for scripting and agents
-- `--select id,name,status` — filter to specific fields
+- `--select <field>[,<field>...]` — filter to specific fields
 - `--dry-run` — preview the request without sending
 - `--agent` — JSON + compact + non-interactive in one flag
 {{- end}}
@@ -544,7 +549,7 @@ This CLI is designed for AI agent consumption:
 
 - **Non-interactive** - never prompts, every input is a flag
 - **Pipeable** - `--json` output to stdout, errors to stderr
-- **Filterable** - `--select id,name` returns only fields you need
+- **Filterable** - `--select <field>[,<field>...]` returns only fields you need
 - **Previewable** - `--dry-run` shows the request without sending
 {{- if .HasWriteCommands}}
 {{- if or .HasCreateCommands .HasDelete}}

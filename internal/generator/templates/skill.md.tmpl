@@ -316,7 +316,7 @@ Add `--agent` to any command. Expands to: `--json --compact --no-input --no-colo
   ```bash
   {{- $agentExample := firstCommandExample .Resources}}
   {{- if $agentExample}}
-  {{.Name}}-pp-cli {{$agentExample}} --agent --select id,name,status
+  {{.Name}}-pp-cli {{$agentExample}} --agent{{if .SelectExample}} --select {{.SelectExample}}{{end}}
   {{- else}}
   {{.Name}}-pp-cli --help
   {{- end}}

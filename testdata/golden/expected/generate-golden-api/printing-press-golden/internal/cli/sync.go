@@ -96,9 +96,8 @@ Resource scoping:
   from a prior sync.`,
 		Example: `  # Sync all resources
   printing-press-golden-pp-cli sync
-
   # Sync specific resources only
-  printing-press-golden-pp-cli sync --resources channels,messages
+  printing-press-golden-pp-cli sync --resources projects,currencies
 
   # Full resync (ignore previous checkpoint)
   printing-press-golden-pp-cli sync --full
