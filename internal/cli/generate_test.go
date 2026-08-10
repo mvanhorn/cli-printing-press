@@ -1661,6 +1661,48 @@ func TestMergeSpecsDoesNotCopyOAuthMetadataAcrossAuthModels(t *testing.T) {
 	assert.Equal(t, []string{"API_KEY"}, authEnvVarNames(merged.Auth.EnvVarSpecs))
 }
 
+func TestMergeSpecsRejectsConflictingOAuthAuthoritiesAndGrants(t *testing.T) {
+	t.Parallel()
+
+	primary := &spec.APISpec{
+		Name:    "primary",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:             "oauth2",
+			Header:           "Authorization",
+			AuthorizationURL: "https://idp-primary.example.com/authorize",
+			OAuth2Grant:      spec.OAuth2GrantAuthorizationCode,
+		},
+		Resources: map[string]spec.Resource{
+			"items": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	secondary := &spec.APISpec{
+		Name:    "secondary",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:             "oauth2",
+			Header:           "Authorization",
+			AuthorizationURL: "https://idp-secondary.example.com/authorize",
+			TokenURL:         "https://idp-secondary.example.com/token",
+			OAuth2Grant:      spec.OAuth2GrantClientCredentials,
+		},
+		Resources: map[string]spec.Resource{
+			"other": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/other"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary}, "combo")
+
+	assert.Equal(t, "https://idp-primary.example.com/authorize", merged.Auth.AuthorizationURL)
+	assert.Empty(t, merged.Auth.TokenURL)
+	assert.Equal(t, spec.OAuth2GrantAuthorizationCode, merged.Auth.OAuth2Grant)
+}
+
 func TestMergeSpecsPreservesRequiredHeadersAndLearnFromLaterSpecs(t *testing.T) {
 	t.Parallel()
 
@@ -1712,6 +1754,77 @@ func TestMergeSpecsPreservesRequiredHeadersAndLearnFromLaterSpecs(t *testing.T) 
 			"team": {{Canonical: "Acme", Aliases: []string{"acme corp"}}},
 		},
 	}, merged.Learn)
+}
+
+func TestMergeSpecsScopesConflictingRequiredHeadersToTheirSourceEndpoints(t *testing.T) {
+	t.Parallel()
+
+	primary := &spec.APISpec{
+		Name:            "primary",
+		Version:         "0.1.0",
+		BaseURL:         "https://api.example.com",
+		RequiredHeaders: []spec.RequiredHeader{{Name: "X-API-Version", Value: "v1"}},
+		Resources: map[string]spec.Resource{
+			"items": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	secondary := &spec.APISpec{
+		Name:            "secondary",
+		Version:         "0.1.0",
+		BaseURL:         "https://api.example.com",
+		RequiredHeaders: []spec.RequiredHeader{{Name: "x-api-version", Value: "v2"}},
+		Resources: map[string]spec.Resource{
+			"other": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/other"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary}, "combo")
+
+	assert.Equal(t, []spec.RequiredHeader{{Name: "X-API-Version", Value: "v1"}}, merged.RequiredHeaders)
+	assert.Equal(t, []spec.RequiredHeader{{Name: "x-api-version", Value: "v2"}}, merged.Resources["other"].Endpoints["list"].HeaderOverrides)
+}
+
+func TestMergeSpecsDeduplicatesSiblingEndpointsAsTheyAreIndexed(t *testing.T) {
+	t.Parallel()
+
+	primary := &spec.APISpec{
+		Name:    "primary",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"items": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	secondary := &spec.APISpec{
+		Name:    "secondary",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"chat": {Endpoints: map[string]spec.Endpoint{
+				"first":  {Method: "GET", Path: "/chat"},
+				"second": {Method: "GET", Path: "/chat"},
+			}},
+		},
+		Types: map[string]spec.TypeDef{},
+		MCP: spec.MCPConfig{
+			Intents: []spec.Intent{{
+				Name:  "read_chat",
+				Steps: []spec.IntentStep{{Endpoint: "chat.second"}},
+			}},
+		},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary}, "combo")
+
+	require.Contains(t, merged.Resources, "chat")
+	assert.Contains(t, merged.Resources["chat"].Endpoints, "first")
+	assert.NotContains(t, merged.Resources["chat"].Endpoints, "second")
+	require.Len(t, merged.MCP.Intents, 1)
+	require.Len(t, merged.MCP.Intents[0].Steps, 1)
+	assert.Equal(t, "chat.first", merged.MCP.Intents[0].Steps[0].Endpoint)
 }
 
 func TestMergeSpecsDeduplicatesAcrossResourceNamesButKeepsDistinctEndpoints(t *testing.T) {

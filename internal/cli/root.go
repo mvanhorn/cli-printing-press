@@ -1287,7 +1287,6 @@ func mergeSpecsWithOptions(specs []*spec.APISpec, name string, opts mergeSpecOpt
 		Types:     map[string]spec.TypeDef{},
 	}
 
-	seenEndpointSignatures := map[string]struct{}{}
 	seenEndpointRefs := map[string]string{}
 	for i, s := range specs {
 		if merged.SpecSource == "" || merged.SpecSource == "official" {
@@ -1309,8 +1308,15 @@ func mergeSpecsWithOptions(specs []*spec.APISpec, name string, opts mergeSpecOpt
 		prefix := perSpecPathPrefix[i]
 		resourceRenames := map[string]string{}
 		duplicateEndpointRefs := map[string]string{}
+		conflictingRequiredHeaders := conflictingMultiSpecRequiredHeaderOverrides(merged.RequiredHeaders, s.RequiredHeaders)
 		acceptedResourceKeys := make([]string, 0, len(s.Resources))
-		for resourceName, resource := range s.Resources {
+		resourceNames := make([]string, 0, len(s.Resources))
+		for resourceName := range s.Resources {
+			resourceNames = append(resourceNames, resourceName)
+		}
+		sort.Strings(resourceNames)
+		for _, resourceName := range resourceNames {
+			resource := s.Resources[resourceName]
 			if prefix != "" {
 				// Same-host/different-path specs are normalized by folding each
 				// spec's path prefix into endpoint paths. Do not also preserve
@@ -1320,6 +1326,7 @@ func mergeSpecsWithOptions(specs []*spec.APISpec, name string, opts mergeSpecOpt
 			} else {
 				resource = resourceWithMergedSpecBaseURL(resource, s.BaseURL, merged.BaseURL)
 			}
+			resource = applyRequiredHeaderOverrides(resource, conflictingRequiredHeaders)
 			if !opts.NamePrefix && i > 0 {
 				var keep bool
 				resource, keep = filterDuplicateResourceEndpoints(resource, resourceName, seenEndpointRefs, duplicateEndpointRefs)
@@ -1348,7 +1355,6 @@ func mergeSpecsWithOptions(specs []*spec.APISpec, name string, opts mergeSpecOpt
 		if !opts.NamePrefix {
 			for _, key := range acceptedResourceKeys {
 				resource := merged.Resources[key]
-				addResourceEndpointSignatures(seenEndpointSignatures, resource)
 				addResourceEndpointReferences(seenEndpointRefs, resource, key)
 			}
 		}
@@ -1470,7 +1476,31 @@ func compatibleMultiSpecAuthModels(base, incoming spec.AuthConfig) bool {
 	if base.In != "" && incoming.In != "" && !strings.EqualFold(base.In, incoming.In) {
 		return false
 	}
+	if !compatibleMultiSpecAuthField(base.Subtype, incoming.Subtype) ||
+		!compatibleMultiSpecAuthField(base.Scheme, incoming.Scheme) ||
+		!compatibleMultiSpecAuthURL(base.AuthorizationURL, incoming.AuthorizationURL) ||
+		!compatibleMultiSpecAuthURL(base.DeviceAuthorizationURL, incoming.DeviceAuthorizationURL) ||
+		!compatibleMultiSpecAuthURL(base.TokenURL, incoming.TokenURL) ||
+		!compatibleMultiSpecAuthField(base.DefaultClientID, incoming.DefaultClientID) ||
+		!compatibleMultiSpecAuthField(base.RefreshTokenMechanism, incoming.RefreshTokenMechanism) {
+		return false
+	}
+	if baseType == "oauth2" && base.EffectiveOAuth2Grant() != incoming.EffectiveOAuth2Grant() {
+		return false
+	}
 	return true
+}
+
+func compatibleMultiSpecAuthField(base, incoming string) bool {
+	base = strings.TrimSpace(base)
+	incoming = strings.TrimSpace(incoming)
+	return base == "" || incoming == "" || base == incoming
+}
+
+func compatibleMultiSpecAuthURL(base, incoming string) bool {
+	base = normalizeAuthURL(base)
+	incoming = normalizeAuthURL(incoming)
+	return base == "" || incoming == "" || base == incoming
 }
 
 func fillMissingAuthFields(dst *spec.AuthConfig, src spec.AuthConfig) {
@@ -1535,6 +1565,66 @@ func mergeMultiSpecRequiredHeaders(specs []*spec.APISpec) []spec.RequiredHeader 
 		}
 	}
 	return merged
+}
+
+func conflictingMultiSpecRequiredHeaderOverrides(existing, incoming []spec.RequiredHeader) map[string]string {
+	existingByName := make(map[string]string, len(existing))
+	for _, header := range existing {
+		name := strings.ToLower(strings.TrimSpace(header.Name))
+		if name != "" {
+			existingByName[name] = header.Value
+		}
+	}
+
+	overrides := make(map[string]string)
+	for _, header := range incoming {
+		name := strings.ToLower(strings.TrimSpace(header.Name))
+		if name == "" {
+			continue
+		}
+		if value, exists := existingByName[name]; exists && value != header.Value {
+			overrides[header.Name] = header.Value
+		}
+	}
+	return overrides
+}
+
+func applyRequiredHeaderOverrides(resource spec.Resource, overrides map[string]string) spec.Resource {
+	if len(overrides) == 0 {
+		return resource
+	}
+
+	headerNames := make([]string, 0, len(overrides))
+	for name := range overrides {
+		headerNames = append(headerNames, name)
+	}
+	sort.Strings(headerNames)
+
+	for name, endpoint := range resource.Endpoints {
+		for _, headerName := range headerNames {
+			if hasHeaderOverride(endpoint.HeaderOverrides, headerName) {
+				continue
+			}
+			endpoint.HeaderOverrides = append(endpoint.HeaderOverrides, spec.RequiredHeader{
+				Name:  headerName,
+				Value: overrides[headerName],
+			})
+		}
+		resource.Endpoints[name] = endpoint
+	}
+	for name, subResource := range resource.SubResources {
+		resource.SubResources[name] = applyRequiredHeaderOverrides(subResource, overrides)
+	}
+	return resource
+}
+
+func hasHeaderOverride(overrides []spec.RequiredHeader, name string) bool {
+	for _, override := range overrides {
+		if strings.EqualFold(strings.TrimSpace(override.Name), strings.TrimSpace(name)) {
+			return true
+		}
+	}
+	return false
 }
 
 func mergeMultiSpecLearn(specs []*spec.APISpec) spec.LearnConfig {
@@ -1832,13 +1922,25 @@ func addResourceEndpointSignatures(signatures map[string]struct{}, resource spec
 }
 
 func addResourceEndpointReferences(references map[string]string, resource spec.Resource, resourceRef string) {
-	for name, endpoint := range resource.Endpoints {
+	endpointNames := make([]string, 0, len(resource.Endpoints))
+	for name := range resource.Endpoints {
+		endpointNames = append(endpointNames, name)
+	}
+	sort.Strings(endpointNames)
+	for _, name := range endpointNames {
+		endpoint := resource.Endpoints[name]
 		signature := endpointSignature(resource, endpoint)
 		if _, exists := references[signature]; !exists {
 			references[signature] = resourceRef + "." + name
 		}
 	}
-	for name, sub := range resource.SubResources {
+	subResourceNames := make([]string, 0, len(resource.SubResources))
+	for name := range resource.SubResources {
+		subResourceNames = append(subResourceNames, name)
+	}
+	sort.Strings(subResourceNames)
+	for _, name := range subResourceNames {
+		sub := resource.SubResources[name]
 		if sub.BaseURL == "" {
 			sub.BaseURL = resource.BaseURL
 		}
@@ -1860,19 +1962,33 @@ func filterDuplicateResourceEndpointsWithBase(resource spec.Resource, refPrefix,
 	signatureResource.BaseURL = baseURL
 
 	filteredEndpoints := make(map[string]spec.Endpoint, len(resource.Endpoints))
-	for name, endpoint := range resource.Endpoints {
-		if canonical, exists := seen[endpointSignature(signatureResource, endpoint)]; exists {
+	endpointNames := make([]string, 0, len(resource.Endpoints))
+	for name := range resource.Endpoints {
+		endpointNames = append(endpointNames, name)
+	}
+	sort.Strings(endpointNames)
+	for _, name := range endpointNames {
+		endpoint := resource.Endpoints[name]
+		signature := endpointSignature(signatureResource, endpoint)
+		if canonical, exists := seen[signature]; exists {
 			duplicateRefs[refPrefix+"."+name] = canonical
 			continue
 		}
 		filteredEndpoints[name] = endpoint
+		seen[signature] = refPrefix + "." + name
 	}
 	if len(resource.Endpoints) > 0 {
 		resource.Endpoints = filteredEndpoints
 	}
 
 	filteredSubResources := make(map[string]spec.Resource, len(resource.SubResources))
-	for name, subResource := range resource.SubResources {
+	subResourceNames := make([]string, 0, len(resource.SubResources))
+	for name := range resource.SubResources {
+		subResourceNames = append(subResourceNames, name)
+	}
+	sort.Strings(subResourceNames)
+	for _, name := range subResourceNames {
+		subResource := resource.SubResources[name]
 		filtered, keep := filterDuplicateResourceEndpointsWithBase(subResource, refPrefix+"."+name, baseURL, seen, duplicateRefs)
 		if keep {
 			filteredSubResources[name] = filtered
