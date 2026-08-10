@@ -1994,6 +1994,49 @@ func TestMergeSpecsRewritesLaterDuplicateToRenamedCanonicalResource(t *testing.T
 	assert.NoError(t, merged.Validate())
 }
 
+func TestMergeSpecsRewritesSiblingDuplicateToRenamedCanonicalResource(t *testing.T) {
+	t.Parallel()
+
+	primary := &spec.APISpec{
+		Name:    "primary",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"chat": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/chat"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	secondary := &spec.APISpec{
+		Name:    "vendor",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"chat": {Endpoints: map[string]spec.Endpoint{
+				"first":  {Method: "GET", Path: "/chat/history"},
+				"second": {Method: "GET", Path: "/chat/history"},
+			}},
+		},
+		Types: map[string]spec.TypeDef{},
+		MCP: spec.MCPConfig{
+			Intents: []spec.Intent{{
+				Name:        "read_history",
+				Description: "Read history",
+				Steps:       []spec.IntentStep{{Endpoint: "chat.second"}},
+			}},
+		},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary}, "combo")
+
+	require.Contains(t, merged.Resources, "vendor-chat")
+	assert.Contains(t, merged.Resources["vendor-chat"].Endpoints, "first")
+	assert.NotContains(t, merged.Resources["vendor-chat"].Endpoints, "second")
+	require.Len(t, merged.MCP.Intents, 1)
+	require.Len(t, merged.MCP.Intents[0].Steps, 1)
+	assert.Equal(t, "vendor-chat.first", merged.MCP.Intents[0].Steps[0].Endpoint)
+	assert.NoError(t, merged.Validate())
+}
+
 func TestMergeSpecsKeepsSameRouteWhenParameterShapesDiffer(t *testing.T) {
 	t.Parallel()
 

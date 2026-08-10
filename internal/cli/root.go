@@ -1348,7 +1348,12 @@ func mergeSpecsWithOptions(specs []*spec.APISpec, name string, opts mergeSpecOpt
 			resource = rewriteDefaultResourceDescription(resource, resourceName, key)
 			if key != resourceName {
 				resourceRenames[resourceName] = key
-				rekeyResourceEndpointReferences(seenEndpointRefs, resource, resourceName, key)
+				endpointRefRenames := rekeyResourceEndpointReferences(seenEndpointRefs, resource, resourceName, key)
+				for duplicateRef, canonicalRef := range duplicateEndpointRefs {
+					if renamed, ok := endpointRefRenames[canonicalRef]; ok {
+						duplicateEndpointRefs[duplicateRef] = renamed
+					}
+				}
 			}
 			merged.Resources[key] = resource
 			acceptedResourceKeys = append(acceptedResourceKeys, key)
@@ -1951,14 +1956,16 @@ func addResourceEndpointReferences(references map[string]string, resource spec.R
 	}
 }
 
-func rekeyResourceEndpointReferences(references map[string]string, resource spec.Resource, oldRef, newRef string) {
+func rekeyResourceEndpointReferences(references map[string]string, resource spec.Resource, oldRef, newRef string) map[string]string {
 	if oldRef == newRef {
-		return
+		return nil
 	}
-	rekeyResourceEndpointReferencesWithBase(references, resource, oldRef, newRef, "")
+	renamed := make(map[string]string)
+	rekeyResourceEndpointReferencesWithBase(references, resource, oldRef, newRef, "", renamed)
+	return renamed
 }
 
-func rekeyResourceEndpointReferencesWithBase(references map[string]string, resource spec.Resource, oldRef, newRef, inheritedBaseURL string) {
+func rekeyResourceEndpointReferencesWithBase(references map[string]string, resource spec.Resource, oldRef, newRef, inheritedBaseURL string, renamed map[string]string) {
 	baseURL := resource.BaseURL
 	if baseURL == "" {
 		baseURL = inheritedBaseURL
@@ -1976,7 +1983,9 @@ func rekeyResourceEndpointReferencesWithBase(references map[string]string, resou
 		signature := endpointSignature(signatureResource, endpoint)
 		oldEndpointRef := oldRef + "." + name
 		if references[signature] == oldEndpointRef {
-			references[signature] = newRef + "." + name
+			newEndpointRef := newRef + "." + name
+			references[signature] = newEndpointRef
+			renamed[oldEndpointRef] = newEndpointRef
 		}
 	}
 
@@ -1987,7 +1996,7 @@ func rekeyResourceEndpointReferencesWithBase(references map[string]string, resou
 	sort.Strings(subResourceNames)
 	for _, name := range subResourceNames {
 		sub := resource.SubResources[name]
-		rekeyResourceEndpointReferencesWithBase(references, sub, oldRef+"."+name, newRef+"."+name, baseURL)
+		rekeyResourceEndpointReferencesWithBase(references, sub, oldRef+"."+name, newRef+"."+name, baseURL, renamed)
 	}
 }
 
