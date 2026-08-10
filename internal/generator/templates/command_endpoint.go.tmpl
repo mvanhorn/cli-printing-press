@@ -5,7 +5,7 @@
 {{- $isForm := endpointUsesForm .Endpoint}}
 {{- $isRaw := endpointUsesRawRequest .Endpoint}}
 {{- $hasJSONBody := and (or .Endpoint.Body .Endpoint.BodyJSONFallback) (not $isMultipart) (not $isForm)}}
-{{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk") (or (not (eq .Endpoint.Method "GET")) .IsReadOnly)}}
+{{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk") (eq .Endpoint.Method "GET") .IsReadOnly}}
 {{- $dataSourceStrategy := dataSourceStrategy .Resource .Endpoint}}
 
 package cli

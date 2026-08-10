@@ -10,7 +10,7 @@
 {{- $isReadVerb := or (eq $method "GET") (eq $method "HEAD") (eq $method "OPTIONS")}}
 {{- $isWriteVerb := or (eq $method "POST") (eq $method "PUT") (eq $method "PATCH")}}
 {{- $canWriteBack := and .HasStore $isWriteVerb (not .IsReadOnly) (not .Endpoint.UsesBinaryResponse) (not .Endpoint.UsesTextResponse)}}
-{{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk") (or (not (eq $method "GET")) .IsReadOnly)}}
+{{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk") (eq $method "GET") .IsReadOnly}}
 {{- $dataSourceStrategy := dataSourceStrategy .Resource .Endpoint}}
 
 package cli

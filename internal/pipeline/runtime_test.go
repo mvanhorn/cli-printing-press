@@ -332,6 +332,15 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 	})
 }
 
+func TestRunDataPipelineTestBoundsLiveSync(t *testing.T) {
+	binary := buildLiveBoundedSyncProbeBinary(t)
+
+	pass, detail := runDataPipelineTest(binary, "", "live", os.Environ, 1)
+
+	assert.True(t, pass)
+	assert.Contains(t, detail, "items has 1 rows")
+}
+
 func TestUnknownSyncFlagIgnoresEmptyFlagName(t *testing.T) {
 	flag, ok := unknownSyncFlag(errors.New("unknown flag: "))
 
@@ -863,6 +872,86 @@ func dbArg(args []string) string {
 `, rowCount))
 	binaryPath := filepath.Join(dir, "test-cli")
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
+}
+
+func buildLiveBoundedSyncProbeBinary(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, `package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	args := os.Args[1:]
+	if len(args) == 0 {
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "sync":
+		if !hasFlagValue(args[1:], "--max-pages", "1") {
+			fmt.Fprintln(os.Stderr, "live sync probe requires --max-pages 1")
+			os.Exit(1)
+		}
+		dbPath := dbArg(args[1:])
+		if dbPath == "" {
+			os.Exit(1)
+		}
+		if err := os.WriteFile(dbPath+".marker", []byte(dbPath), 0o644); err != nil {
+			os.Exit(1)
+		}
+		return
+	case "sql":
+		dbPath := dbArg(args[1:])
+		if dbPath == "" {
+			os.Exit(1)
+		}
+		usedDB, err := os.ReadFile(dbPath + ".marker")
+		if err != nil || string(usedDB) != dbPath {
+			os.Exit(1)
+		}
+		query := args[len(args)-1]
+		if strings.Contains(query, "sqlite_master") {
+			fmt.Println("items")
+			return
+		}
+		if strings.Contains(query, "count(*)") {
+			fmt.Println(1)
+			return
+		}
+	}
+	os.Exit(1)
+}
+
+func hasFlagValue(args []string, flag, want string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == want {
+			return true
+		}
+	}
+	return false
+}
+
+func dbArg(args []string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--db" {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+`)
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", "./test-cli", mainFile)
+	buildCmd.Dir = dir
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
 	return binaryPath

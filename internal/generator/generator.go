@@ -4094,17 +4094,18 @@ type criticalResourceEntry struct {
 }
 
 type paginationDefaultEntry struct {
-	Key         string
-	Name        string
-	CursorParam string
-	CursorType  string
-	LimitParam  string
-	Limit       int
+	Key            string
+	Name           string
+	CursorParam    string
+	CursorType     string
+	NextCursorPath string
+	LimitParam     string
+	Limit          int
 }
 
 func paginationDefaultEntries(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []paginationDefaultEntry {
 	defaults := map[string]paginationDefaultEntry{}
-	add := func(key, name, cursorParam, cursorType, limitParam string, limit int, supportsPagination bool) {
+	add := func(key, name, cursorParam, cursorType, nextCursorPath, limitParam string, limit int, supportsPagination bool) {
 		if !supportsPagination || key == "" || name == "" {
 			return
 		}
@@ -4112,19 +4113,20 @@ func paginationDefaultEntries(syncable []profiler.SyncableResource, dependent []
 			return
 		}
 		defaults[key] = paginationDefaultEntry{
-			Key:         key,
-			Name:        name,
-			CursorParam: cursorParam,
-			CursorType:  cursorType,
-			LimitParam:  limitParam,
-			Limit:       limit,
+			Key:            key,
+			Name:           name,
+			CursorParam:    cursorParam,
+			CursorType:     cursorType,
+			NextCursorPath: nextCursorPath,
+			LimitParam:     limitParam,
+			Limit:          limit,
 		}
 	}
 	for _, resource := range syncable {
-		add(resource.Name, resource.Name, resource.PaginationCursorParam, resource.PaginationCursorType, resource.PaginationLimitParam, resource.PaginationPageSize, resource.SupportsPagination)
+		add(resource.Name, resource.Name, resource.PaginationCursorParam, resource.PaginationCursorType, resource.PaginationNextCursorPath, resource.PaginationLimitParam, resource.PaginationPageSize, resource.SupportsPagination)
 	}
 	for _, resource := range dependent {
-		add(resource.ParentResource+"/"+resource.Name, resource.Name, resource.PaginationCursorParam, resource.PaginationCursorType, resource.PaginationLimitParam, resource.PaginationPageSize, resource.SupportsPagination)
+		add(resource.ParentResource+"/"+resource.Name, resource.Name, resource.PaginationCursorParam, resource.PaginationCursorType, resource.PaginationNextCursorPath, resource.PaginationLimitParam, resource.PaginationPageSize, resource.SupportsPagination)
 	}
 
 	keys := make([]string, 0, len(defaults))

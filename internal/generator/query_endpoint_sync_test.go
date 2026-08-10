@@ -58,7 +58,7 @@ func TestGeneratedQueryEndpointSyncEmitsConstructs(t *testing.T) {
 	// not added to the global extractor list used by ordinary resources.
 	assert.Contains(t, syncContent, `var dataEnvelopeKeys = []string{"data", "Data", "result", "Result"}`)
 	assert.Contains(t, syncContent, `return []string{"QueryResponse"}`)
-	assert.Contains(t, syncContent, `extractPageItems(data, pageSize.cursorParam, responsePathForResource(resource, path)...)`)
+	assert.Contains(t, syncContent, `extractPageItemsWithPagination(data, pageSize.cursorParam, pageSize.nextCursorPath, responsePathForResource(resource, path)...)`)
 
 	requireGeneratedCompiles(t, outputDir)
 }

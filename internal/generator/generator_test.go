@@ -15146,15 +15146,15 @@ func TestGeneratedSyncUsesPerResourcePaginationDefaults(t *testing.T) {
 	assert.Contains(t, syncContent, `pageSize := determinePaginationDefaults(resource)`)
 	assert.Contains(t, syncContent, `func determinePaginationDefaults(resource string) paginationDefaults`)
 	assert.Contains(t, syncContent, `case "assets":`)
-	assert.Contains(t, syncContent, `cursorParam: "skip"`)
-	assert.Contains(t, syncContent, `cursorType:  "offset"`)
-	assert.Contains(t, syncContent, `limitParam:  "limit"`)
-	assert.Contains(t, syncContent, `limit:       50`)
+	assert.Contains(t, syncContent, `cursorParam:    "skip"`)
+	assert.Contains(t, syncContent, `cursorType:     "offset"`)
+	assert.Contains(t, syncContent, `limitParam:     "limit"`)
+	assert.Contains(t, syncContent, `limit:          50`)
 	assert.Contains(t, syncContent, `case "photos":`)
-	assert.Contains(t, syncContent, `cursorParam: "page"`)
-	assert.Contains(t, syncContent, `cursorType:  "page"`)
-	assert.Contains(t, syncContent, `limitParam:  "per_page"`)
-	assert.Contains(t, syncContent, `limit:       25`)
+	assert.Contains(t, syncContent, `cursorParam:    "page"`)
+	assert.Contains(t, syncContent, `cursorType:     "page"`)
+	assert.Contains(t, syncContent, `limitParam:     "per_page"`)
+	assert.Contains(t, syncContent, `limit:          25`)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./internal/cli")
@@ -15163,21 +15163,23 @@ func TestGeneratedSyncUsesPerResourcePaginationDefaults(t *testing.T) {
 func TestPaginationDefaultEntriesDistinguishDependentContext(t *testing.T) {
 	entries := paginationDefaultEntries(
 		[]profiler.SyncableResource{{
-			Name:                  "tasks",
-			SupportsPagination:    true,
-			PaginationCursorParam: "after",
-			PaginationCursorType:  "cursor",
-			PaginationLimitParam:  "limit",
-			PaginationPageSize:    100,
+			Name:                     "tasks",
+			SupportsPagination:       true,
+			PaginationCursorParam:    "after",
+			PaginationCursorType:     "cursor",
+			PaginationNextCursorPath: "meta.next",
+			PaginationLimitParam:     "limit",
+			PaginationPageSize:       100,
 		}},
 		[]profiler.DependentResource{{
-			Name:                  "tasks",
-			ParentResource:        "projects",
-			SupportsPagination:    true,
-			PaginationCursorParam: "offset",
-			PaginationCursorType:  "offset",
-			PaginationLimitParam:  "per_page",
-			PaginationPageSize:    25,
+			Name:                     "tasks",
+			ParentResource:           "projects",
+			SupportsPagination:       true,
+			PaginationCursorParam:    "offset",
+			PaginationCursorType:     "offset",
+			PaginationNextCursorPath: "paging.next",
+			PaginationLimitParam:     "per_page",
+			PaginationPageSize:       25,
 		}},
 	)
 
@@ -15189,7 +15191,9 @@ func TestPaginationDefaultEntriesDistinguishDependentContext(t *testing.T) {
 	require.Contains(t, byKey, "tasks")
 	require.Contains(t, byKey, "projects/tasks")
 	assert.Equal(t, "after", byKey["tasks"].CursorParam)
+	assert.Equal(t, "meta.next", byKey["tasks"].NextCursorPath)
 	assert.Equal(t, "offset", byKey["projects/tasks"].CursorParam)
+	assert.Equal(t, "paging.next", byKey["projects/tasks"].NextCursorPath)
 	assert.Equal(t, "per_page", byKey["projects/tasks"].LimitParam)
 	assert.Equal(t, 25, byKey["projects/tasks"].Limit)
 }
