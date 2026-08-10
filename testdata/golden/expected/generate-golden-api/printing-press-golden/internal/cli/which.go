@@ -226,9 +226,15 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 
 func whichFieldCredit(qTokens, fieldTokens []string) int {
 	credit := 0
+	matched := make(map[string]struct{})
 	for _, qt := range qTokens {
 		for _, ft := range fieldTokens {
 			if whichTokenMatch(qt, ft) {
+				key := whichTokenKey(ft)
+				if _, ok := matched[key]; ok {
+					break
+				}
+				matched[key] = struct{}{}
 				credit++
 				break
 			}
@@ -238,6 +244,14 @@ func whichFieldCredit(qTokens, fieldTokens []string) int {
 		}
 	}
 	return credit
+}
+
+func whichTokenKey(token string) string {
+	token = strings.Trim(strings.ToLower(token), ".,:;!?()[]{}\"'")
+	if alias := whichTokenAliases[token]; alias != "" {
+		return alias
+	}
+	return whichSingular(token)
 }
 
 func whichTokenMatch(a, b string) bool {

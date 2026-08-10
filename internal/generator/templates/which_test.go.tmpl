@@ -118,6 +118,18 @@ func TestRankWhich_IncidentalWhyItMattersTokenDoesNotAdmitEntry(t *testing.T) {
 	}
 }
 
+func TestRankWhich_WhyItMattersCreditDeduplicatesEquivalentTokens(t *testing.T) {
+	index := []whichEntry{
+		{Command: "risk", WhyItMatters: "Use this to coordinate repositories"},
+	}
+	for _, query := range []string{"repositories repositories", "repo repositories"} {
+		got := rankWhich(index, query, 1)
+		if len(got) != 0 {
+			t.Fatalf("duplicate rationale concepts should not create confidence for %q, got %+v", query, got)
+		}
+	}
+}
+
 // Happy path: a multi-word query resolves to the best single match by
 // summing per-token scores.
 func TestRankWhich_MultiTokenQuery(t *testing.T) {
