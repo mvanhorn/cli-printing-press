@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
@@ -1635,12 +1636,80 @@ func TestLiveDogfoodResultRedactsOutputSamplePII(t *testing.T) {
 		exitCode: 0,
 	}
 
-	result := liveDogfoodResult("widgets list", LiveDogfoodTestHappy, []string{"widgets", "list"}, run)
+	result := liveDogfoodResult("widgets list", LiveDogfoodTestHappy, []string{"widgets", "list"}, run, "")
 
 	require.NotContains(t, result.OutputSample, "Jane Doe")
 	require.NotContains(t, result.OutputSample, "jane@example.com")
 	require.Contains(t, result.OutputSample, `"name":"<redacted>"`)
 	require.Contains(t, result.OutputSample, `"email":"<redacted>"`)
+}
+
+func TestLiveDogfoodResultRedactsAuthEnvAndVendorSecretsAcrossOutputParts(t *testing.T) {
+	authSecret := "auth-secret-value-1234567890"
+	vendorSecret := "sk_live_" + strings.Repeat("a", 20)
+	run := liveDogfoodRun{
+		stdout:   "request failed with key " + authSecret[:len(authSecret)/2],
+		stderr:   authSecret[len(authSecret)/2:] + " and vendor token " + vendorSecret,
+		exitCode: 1,
+	}
+
+	result := liveDogfoodResult("widgets list", LiveDogfoodTestHappy, []string{"widgets", "list"}, run, authSecret)
+
+	require.NotContains(t, result.OutputSample, authSecret)
+	require.NotContains(t, result.OutputSample, vendorSecret)
+	require.Contains(t, result.OutputSample, artifacts.LiveOutputAuthEnvRedacted)
+	require.Contains(t, result.OutputSample, artifacts.LiveOutputVendorKeyRedacted)
+}
+
+func TestLiveDogfoodResultKeepsPIIRedactionWithAuthRedaction(t *testing.T) {
+	authSecret := "auth-secret-value-1234567890"
+	run := liveDogfoodRun{
+		stdout:   `{"name":"Jane Doe","auth":"` + authSecret[:len(authSecret)/2],
+		stderr:   authSecret[len(authSecret)/2:] + `"}`,
+		exitCode: 0,
+	}
+
+	result := liveDogfoodResult("widgets list", LiveDogfoodTestHappy, []string{"widgets", "list"}, run, authSecret)
+
+	require.NotContains(t, result.OutputSample, "Jane Doe")
+	require.Contains(t, result.OutputSample, `"name":"<redacted>"`)
+	require.Contains(t, result.OutputSample, artifacts.LiveOutputAuthEnvRedacted)
+}
+
+func TestLiveDogfoodResultLeavesOutputWithoutSecretsUnchanged(t *testing.T) {
+	run := liveDogfoodRun{stdout: "request failed", stderr: " with status 503", exitCode: 1}
+
+	result := liveDogfoodResult("widgets list", LiveDogfoodTestHappy, []string{"widgets", "list"}, run, "")
+
+	require.Equal(t, sampleOutputParts(run.stdout, run.stderr), result.OutputSample)
+}
+
+func TestRunLiveDogfoodRedactsAuthEnvOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	secret := "auth-secret-value-1234567890"
+	t.Setenv("PP_TEST_AUTH_SECRET", secret)
+	dir, binaryName := writeLiveDogfoodFixture(t, true)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+		AuthEnv:    "PP_TEST_AUTH_SECRET",
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "widgets list", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	require.NotContains(t, happy.OutputSample, secret)
+	require.Contains(t, happy.OutputSample, artifacts.LiveOutputAuthEnvRedacted)
+
+	jsonResult := findResultByCommandKind(report, "widgets list", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	require.NotContains(t, jsonResult.OutputSample, secret)
+	require.Contains(t, jsonResult.OutputSample, artifacts.LiveOutputAuthEnvRedacted)
 }
 
 func TestRunLiveDogfoodErrorPathAcceptsExpectedNonZeroExit(t *testing.T) {
@@ -4242,6 +4311,9 @@ HELP
 fi
 
 if [ "$1" = "widgets" ] && [ "$2" = "list" ]; then
+  if [ -n "${PP_TEST_AUTH_SECRET:-}" ]; then
+    printf 'auth=%s\n' "$PP_TEST_AUTH_SECRET" >&2
+  fi
   if [ "${3:-}" = "--json" ]; then
     echo '{"results":[{"id":"123"}]}'
     exit 0

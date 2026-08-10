@@ -49,6 +49,44 @@ func TestRedactArchivedSpecSecretsKeepsPlaceholders(t *testing.T) {
 	require.Equal(t, string(input), got)
 }
 
+func TestRedactLiveOutputSecretsRedactsConfiguredAndVendorCredentials(t *testing.T) {
+	authSecret := "auth-secret-value-1234567890"
+	vendorSecret := "sk_live_" + strings.Repeat("a", 20)
+	input := []byte("auth=" + authSecret + " vendor=" + vendorSecret)
+
+	got := string(RedactLiveOutputSecrets(input, authSecret))
+
+	require.NotContains(t, got, authSecret)
+	require.NotContains(t, got, vendorSecret)
+	require.Contains(t, got, LiveOutputAuthEnvRedacted)
+	require.Contains(t, got, LiveOutputVendorKeyRedacted)
+}
+
+func TestRedactLiveOutputSecretsLeavesUnmatchedOutputUnchanged(t *testing.T) {
+	input := []byte("request failed with status 503")
+
+	require.Equal(t, input, RedactLiveOutputSecrets(input, "auth-secret-value-1234567890"))
+}
+
+func TestRedactLiveOutputSecretsPreservesShortValuesAndPlaceholders(t *testing.T) {
+	placeholder := "AKIAIOSFODNN7EXAMPLE"
+	awsSecret := testSecret("AKIA", "1234567890ABCDEF")
+	input := []byte("mode=test placeholder=" + placeholder + " real=" + awsSecret)
+
+	got := RedactLiveOutputSecrets(input, "test")
+
+	require.Equal(t, "mode=test placeholder="+placeholder+" real="+LiveOutputVendorKeyRedacted, string(got))
+}
+
+func TestRedactLiveOutputSecretsRedactsPartialAuthAtCaptureBoundary(t *testing.T) {
+	authSecret := "auth-secret-" + strings.Repeat("x", 5000)
+	input := []byte("prefix " + authSecret[:len(authSecret)-100])
+
+	got := RedactLiveOutputSecrets(input, authSecret)
+
+	require.Equal(t, "prefix "+LiveOutputAuthEnvRedacted, string(got))
+}
+
 func TestFindVendorPrefixSecretsReportsFileAndLine(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(root, ".manuscripts", "run-1", "research"), 0o755))

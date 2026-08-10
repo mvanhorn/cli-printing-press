@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	openapiparser "github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/piiplaceholders"
 	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -216,6 +217,7 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	ctx := resolveCtx{
 		binaryPath:       binaryPath,
 		cliDir:           opts.CLIDir,
+		authEnvValue:     os.Getenv(opts.AuthEnv),
 		siblings:         buildSiblingMap(commands),
 		cache:            newCompanionCache(),
 		timeout:          timeout,
@@ -625,6 +627,7 @@ type companionCache struct {
 type resolveCtx struct {
 	binaryPath       string
 	cliDir           string
+	authEnvValue     string
 	siblings         map[string][]liveDogfoodCommand
 	cache            *companionCache
 	timeout          time.Duration
@@ -1476,7 +1479,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 
 	helpArgs := append(append([]string{}, command.Path...), "--help")
 	helpRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, helpArgs, ctx.timeout)
-	helpResult := liveDogfoodResult(commandName, LiveDogfoodTestHelp, helpArgs, helpRun)
+	helpResult := liveDogfoodResult(commandName, LiveDogfoodTestHelp, helpArgs, helpRun, ctx.authEnvValue)
 	helpPassed := helpRun.exitCode == 0
 	help := helpRun.stdout + helpRun.stderr
 	if helpPassed && extractExamplesSection(help) == "" {
@@ -1598,7 +1601,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))), liveDogfoodFlagValueNames(command.Help), liveDogfoodFlagNames(command.Help))
 
 		happyRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, runArgs, ctx.timeout)
-		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, happyRun)
+		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, happyRun, ctx.authEnvValue)
 		happyResult.FixtureSource = fixtureSource
 		if successCodes[happyRun.exitCode] {
 			happyResult.Status = LiveDogfoodStatusPass
@@ -1636,7 +1639,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			}
 			jsonArgs = appendJSONArg(jsonArgs)
 			jsonRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout)
-			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun)
+			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun, ctx.authEnvValue)
 			jsonResult.FixtureSource = fixtureSource
 			if jsonRun.exitCode == 0 {
 				if !liveDogfoodJSONValid(jsonRun) {
@@ -1707,7 +1710,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			}
 
 			errorRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, errorArgs, ctx.timeout)
-			errorResult := liveDogfoodResult(commandName, LiveDogfoodTestError, errorArgs, errorRun)
+			errorResult := liveDogfoodResult(commandName, LiveDogfoodTestError, errorArgs, errorRun, ctx.authEnvValue)
 
 			if isSearch {
 				// Real-world feed/content APIs return recent items as a fallback
@@ -1899,14 +1902,14 @@ func liveDogfoodJSONValid(run liveDogfoodRun) bool {
 	return validLiveDogfoodJSONOutput(run.stdout)
 }
 
-func liveDogfoodResult(command string, kind LiveDogfoodTestKind, args []string, run liveDogfoodRun) LiveDogfoodTestResult {
+func liveDogfoodResult(command string, kind LiveDogfoodTestKind, args []string, run liveDogfoodRun, authEnvValue string) LiveDogfoodTestResult {
 	result := LiveDogfoodTestResult{
 		Command:      command,
 		Kind:         kind,
 		Args:         append([]string{}, args...),
 		Status:       LiveDogfoodStatusFail,
 		ExitCode:     run.exitCode,
-		OutputSample: sampleOutputParts(run.stdout, run.stderr),
+		OutputSample: sampleLiveDogfoodOutput(authEnvValue, run.stdout, run.stderr),
 	}
 	if run.exitCode != 0 {
 		result.Reason = fmt.Sprintf("exit %d", run.exitCode)
@@ -1915,6 +1918,40 @@ func liveDogfoodResult(command string, kind LiveDogfoodTestKind, args []string, 
 		result.Reason = run.err.Error()
 	}
 	return result
+}
+
+func sampleLiveDogfoodOutput(authEnvValue string, parts ...string) string {
+	combined := boundedLiveDogfoodOutput(parts...)
+	redacted := artifacts.RedactLiveOutputSecrets([]byte(combined), authEnvValue)
+	if bytes.Equal(redacted, []byte(combined)) {
+		return sampleOutputParts(parts...)
+	}
+	redactedParts := make([]string, len(parts))
+	for i, part := range parts {
+		redactedParts[i] = string(artifacts.RedactLiveOutputSecrets([]byte(part), authEnvValue))
+	}
+	if bytes.Equal(redacted, []byte(boundedLiveDogfoodOutput(redactedParts...))) {
+		return sampleOutputParts(redactedParts...)
+	}
+	return sampleOutput(string(redacted))
+}
+
+func boundedLiveDogfoodOutput(parts ...string) string {
+	remaining := outputSampleMaxBytes + sampleRedactionLookaheadBytes
+	var combined strings.Builder
+	combined.Grow(remaining)
+	for _, part := range parts {
+		if remaining == 0 {
+			break
+		}
+		if len(part) > remaining {
+			combined.WriteString(truncateUTF8(part, remaining))
+			break
+		}
+		combined.WriteString(part)
+		remaining -= len(part)
+	}
+	return combined.String()
 }
 
 func failedLiveDogfoodResult(command string, kind LiveDogfoodTestKind, args []string, reason string) LiveDogfoodTestResult {
