@@ -73,23 +73,59 @@ func selectExample(apiSpec *spec.APISpec, syncable []profiler.SyncableResource) 
 		if !ok {
 			continue
 		}
+		return generatedExampleFields(typeDef)
+	}
+	return ""
+}
 
-		fields := make([]string, 0, generatedExampleFieldLimit)
-		for _, field := range typeDef.Fields {
-			name := strings.TrimSpace(field.Name)
-			if name == "" || strings.ContainsAny(name, ",\r\n") {
-				continue
-			}
-			fields = append(fields, name)
-			if len(fields) == generatedExampleFieldLimit {
-				return strings.Join(fields, ",")
-			}
+func selectExampleForCommand(apiSpec *spec.APISpec) string {
+	if apiSpec == nil {
+		return ""
+	}
+	candidate, ok := firstCommandExampleCandidate(apiSpec.Resources)
+	if !ok {
+		return ""
+	}
+	item := strings.TrimSpace(candidate.endpoint.Response.Item)
+	if item == "" {
+		return ""
+	}
+	typeDef, ok := typeDefByName(apiSpec.Types, item)
+	if !ok {
+		return ""
+	}
+	return generatedExampleFields(typeDef)
+}
+
+func generatedExampleFields(typeDef spec.TypeDef) string {
+	fields := make([]string, 0, generatedExampleFieldLimit)
+	for _, field := range typeDef.Fields {
+		name := strings.TrimSpace(field.Name)
+		if !safeGeneratedExampleField(name) {
+			continue
 		}
-		if len(fields) > 0 {
+		fields = append(fields, name)
+		if len(fields) == generatedExampleFieldLimit {
 			return strings.Join(fields, ",")
 		}
 	}
-	return ""
+	return strings.Join(fields, ",")
+}
+
+func safeGeneratedExampleField(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		if strings.ContainsRune("_.-", r) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func endpointForSyncableResource(resources map[string]spec.Resource, syncable profiler.SyncableResource) (spec.Endpoint, bool) {

@@ -67,6 +67,24 @@ func TestSelectExampleOmitsWhenResponseFieldsAreUnknown(t *testing.T) {
 	assert.Empty(t, selectExample(apiSpec, syncable))
 }
 
+func TestSelectExampleRejectsUnsafeFieldNames(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"items": {Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/items", Response: spec.ResponseDef{Type: "array", Item: "Item"}},
+			}},
+		},
+		Types: map[string]spec.TypeDef{
+			"Item": {Fields: []spec.TypeField{{Name: `bad"field`}}},
+		},
+	}
+
+	syncable := []profiler.SyncableResource{{Name: "items", Path: "/items", Method: "GET"}}
+	assert.Empty(t, selectExample(apiSpec, syncable))
+}
+
 func TestGeneratedExamplesUseAPIModelAcrossDocsAndSyncHelp(t *testing.T) {
 	t.Parallel()
 
@@ -88,7 +106,8 @@ func TestGeneratedExamplesUseAPIModelAcrossDocsAndSyncHelp(t *testing.T) {
 	}
 	assert.Contains(t, root, "--select invoice_id,title,state")
 	assert.NotContains(t, root, "--select id,name,status")
-	assert.Contains(t, sync, "--resources "+wantResources)
+	assert.Equal(t, "invoices,zcustomers", wantResources)
+	assert.Contains(t, sync, "--resources invoices,zcustomers")
 	assert.NotContains(t, sync, "--resources channels,messages")
 }
 
@@ -112,14 +131,9 @@ func TestGeneratedDocsOmitUnverifiableSelectExample(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := modelExamplesSpec("unknown-select-example")
-	for name, resource := range apiSpec.Resources {
-		for endpointName, endpoint := range resource.Endpoints {
-			endpoint.Response.Item = ""
-			resource.Endpoints[endpointName] = endpoint
-		}
-		apiSpec.Resources[name] = resource
-	}
-	apiSpec.Types = nil
+	apiSpec.Resources["aempty"] = spec.Resource{Endpoints: map[string]spec.Endpoint{
+		"list": {Method: "GET", Path: "/aempty", Response: spec.ResponseDef{Type: "array"}, IDField: "aempty_id"},
+	}}
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
@@ -129,6 +143,7 @@ func TestGeneratedDocsOmitUnverifiableSelectExample(t *testing.T) {
 	readme := readGeneratedFile(t, outputDir, "README.md")
 	skill := readGeneratedFile(t, outputDir, "SKILL.md")
 	root := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	assert.Empty(t, selectExampleForCommand(apiSpec))
 	assert.Contains(t, readme, "--select <field>[,<field>...]")
 	assert.NotContains(t, skill, "--select id,name,status")
 	assert.NotContains(t, skill, " --select ")

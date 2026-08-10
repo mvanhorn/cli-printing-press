@@ -1135,7 +1135,7 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		HasAuth:               hasAuth(g.Spec.Auth),
 		HasAuthCommand:        g.shouldEmitAuth(),
 		HasAutoRefresh:        g.hasAutoRefresh(),
-		SelectExample:         selectExample(g.Spec, syncable),
+		SelectExample:         selectExampleForCommand(g.Spec),
 		SyncResourcesExample:  syncResourcesExample(syncable, dependent),
 		FreshnessCommands:     g.freshnessCommandPaths(),
 		TrafficAnalysis:       g.trafficAnalysisData(),
@@ -5235,7 +5235,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		HasDelete:             helperFlags.HasDelete,
 		HasMutationEndpoints:  helperFlags.HasMutationEndpoints,
 		HasAutoRefresh:        g.hasAutoRefresh(),
-		SelectExample:         selectExample(g.Spec, g.profile.SyncableResources),
+		SelectExample:         selectExampleForCommand(g.Spec),
 		HasWorkflow:           g.hasWorkflowSurface(),
 		CompactDescription:    g.compactDescription(),
 	}
