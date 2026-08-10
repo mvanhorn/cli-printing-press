@@ -1512,10 +1512,10 @@ func checkModulePath(dir string) CheckResult {
 		return CheckResult{Name: "module path", Passed: false, Error: "go.mod not found"}
 	}
 	declared := ""
-	for _, line := range strings.Split(string(modBytes), "\n") {
+	for line := range strings.Lines(string(modBytes)) {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "module ") {
-			declared = strings.TrimSpace(strings.TrimPrefix(line, "module "))
+		if module, ok := strings.CutPrefix(line, "module "); ok {
+			declared = strings.TrimSpace(module)
 			break
 		}
 	}
