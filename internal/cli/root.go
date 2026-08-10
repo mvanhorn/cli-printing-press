@@ -1485,8 +1485,10 @@ func compatibleMultiSpecAuthModels(base, incoming spec.AuthConfig) bool {
 		!compatibleMultiSpecAuthField(base.RefreshTokenMechanism, incoming.RefreshTokenMechanism) {
 		return false
 	}
-	if baseType == "oauth2" && base.EffectiveOAuth2Grant() != incoming.EffectiveOAuth2Grant() {
-		return false
+	if baseType == "oauth2" || strings.TrimSpace(base.OAuth2Grant) != "" || strings.TrimSpace(incoming.OAuth2Grant) != "" {
+		if base.EffectiveOAuth2Grant() != incoming.EffectiveOAuth2Grant() {
+			return false
+		}
 	}
 	return true
 }
