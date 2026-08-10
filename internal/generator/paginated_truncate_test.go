@@ -214,6 +214,19 @@ func TestGeneratedSyncShortPageTerminationRespectsPaginationType(t *testing.T) {
 				},
 			},
 		},
+		"uncursored": {
+			Description: "Manage uncursored pages",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/uncursored",
+					Description: "List uncursored pages",
+					Params:      []spec.Param{{Name: "limit", Type: "integer", Default: 1}},
+					Pagination:  &spec.Pagination{Type: "page", LimitParam: "limit"},
+					Response:    spec.ResponseDef{Type: "array", Item: "Uncursored"},
+				},
+			},
+		},
 	}
 
 	outputDir := filepath.Join(t.TempDir(), "sync-short-page-pp-cli")
@@ -439,6 +452,24 @@ func TestSyncResourceDoesNotAdvancePastNullItems(t *testing.T) {
 		t.Fatalf("saved cursor = %%q, want empty", cursor)
 	}
 }
+
+func TestSyncResourceDoesNotLoopWithoutCursorParam(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %%v", err)
+	}
+	defer db.Close()
+	client := &shortPageSyncClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[{\"id\":\"one\"}],\"has_more\":true}"),
+	}}
+	result := syncResource(context.Background(), client, db, "uncursored", "", true, 0, false, false, &syncUserParams{}, io.Discard)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%%v warning=%%v", result.Err, result.Warn)
+	}
+	if len(client.params) != 1 {
+		t.Fatalf("sync calls = %%d, want 1 when no cursor parameter is declared", len(client.params))
+	}
+}
 `, modulePath+"/internal/store")
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_short_page_test.go"), []byte(behaviorTest), 0o644))
 	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestShortPageEndsPagination|TestCursorPageHasContinuation|TestExtractItemsByKnownKeys|TestSyncResource")
@@ -476,7 +507,7 @@ func TestGeneratedSyncNormalizesPagePaginationProfile(t *testing.T) {
 			outputDir := filepath.Join(t.TempDir(), "page-profile-pp-cli")
 			require.NoError(t, New(apiSpec, outputDir).Generate())
 			syncSrc := readGeneratedCLIFileContaining(t, outputDir, "func determinePaginationDefaults")
-			require.Contains(t, syncSrc, fmt.Sprintf(`cursorType:  %q`, tc.want), "generated sync must use the normalized pagination strategy")
+			require.Contains(t, syncSrc, fmt.Sprintf(`cursorType:     %q`, tc.want), "generated sync must use the normalized pagination strategy")
 			requireGeneratedCompiles(t, outputDir)
 		})
 	}

@@ -5117,11 +5117,11 @@ func TestSyncPageIntPaginationAdvancesAfterFullPage(t *testing.T) {
 				"sync.go must not synthesize page+1 when the envelope explicitly parsed has_more")
 			assert.Contains(t, src, `strconv.Itoa(currentPage + 1)`,
 				"page-int fallback must increment the integer cursor")
-			assert.Contains(t, src, `cursorType:  "page"`,
+			assert.Contains(t, src, `cursorType:     "page"`,
 				"determinePaginationDefaults must emit cursorType \"page\" when the profile selects it")
 			// CursorParam still carries the original-case param name so
 			// the HTTP request key matches the spec.
-			assert.Contains(t, src, `cursorParam: "`+tc.paramName+`"`,
+			assert.Contains(t, src, `cursorParam:    "`+tc.paramName+`"`,
 				"determinePaginationDefaults must preserve the original-case page-int param name")
 		})
 	}
@@ -14465,7 +14465,7 @@ func TestGeneratedSyncAdvancesOffsetWhenHasMoreWithoutCursor(t *testing.T) {
 		"sync loops must not require an API-returned next cursor for offset pagination")
 	assert.Contains(t, syncContent, `if !hasMore || shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, pageSize.limit) {`,
 		"sync loops must break only on real done signals before handling cursor advancement")
-	assert.Contains(t, syncContent, `if pageSize.cursorType == "offset" {`,
+	assert.Contains(t, syncContent, `if pageSize.cursorParam != "" && pageSize.cursorType == "offset" {`,
 		"offset pagination must advance the cursor client-side when has_more is true")
 	assert.Contains(t, syncContent, `nextCursor = strconv.Itoa(currentOffset + pageSize.limit)`,
 		"offset pagination must compute the next offset from the current cursor and limit")
@@ -14516,7 +14516,16 @@ func TestGeneratedSyncAdvancesOffsetAfterFullPageWithoutHasMore(t *testing.T) {
 			ItemsKey:        "items",
 		},
 		SyncableResources: []profiler.SyncableResource{
-			{Name: "records", Path: "/records", Method: "GET", SupportsPagination: true},
+			{
+				Name:                  "records",
+				Path:                  "/records",
+				Method:                "GET",
+				SupportsPagination:    true,
+				PaginationCursorParam: "offset",
+				PaginationCursorType:  "offset",
+				PaginationLimitParam:  "limit",
+				PaginationPageSize:    2,
+			},
 		},
 	}
 	require.NoError(t, gen.Generate())
@@ -15146,15 +15155,15 @@ func TestGeneratedSyncUsesPerResourcePaginationDefaults(t *testing.T) {
 	assert.Contains(t, syncContent, `pageSize := determinePaginationDefaults(resource)`)
 	assert.Contains(t, syncContent, `func determinePaginationDefaults(resource string) paginationDefaults`)
 	assert.Contains(t, syncContent, `case "assets":`)
-	assert.Contains(t, syncContent, `cursorParam: "skip"`)
-	assert.Contains(t, syncContent, `cursorType:  "offset"`)
-	assert.Contains(t, syncContent, `limitParam:  "limit"`)
-	assert.Contains(t, syncContent, `limit:       50`)
+	assert.Contains(t, syncContent, `cursorParam:    "skip"`)
+	assert.Contains(t, syncContent, `cursorType:     "offset"`)
+	assert.Contains(t, syncContent, `limitParam:     "limit"`)
+	assert.Contains(t, syncContent, `limit:          50`)
 	assert.Contains(t, syncContent, `case "photos":`)
-	assert.Contains(t, syncContent, `cursorParam: "page"`)
-	assert.Contains(t, syncContent, `cursorType:  "page"`)
-	assert.Contains(t, syncContent, `limitParam:  "per_page"`)
-	assert.Contains(t, syncContent, `limit:       25`)
+	assert.Contains(t, syncContent, `cursorParam:    "page"`)
+	assert.Contains(t, syncContent, `cursorType:     "page"`)
+	assert.Contains(t, syncContent, `limitParam:     "per_page"`)
+	assert.Contains(t, syncContent, `limit:          25`)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./internal/cli")
@@ -15163,21 +15172,23 @@ func TestGeneratedSyncUsesPerResourcePaginationDefaults(t *testing.T) {
 func TestPaginationDefaultEntriesDistinguishDependentContext(t *testing.T) {
 	entries := paginationDefaultEntries(
 		[]profiler.SyncableResource{{
-			Name:                  "tasks",
-			SupportsPagination:    true,
-			PaginationCursorParam: "after",
-			PaginationCursorType:  "cursor",
-			PaginationLimitParam:  "limit",
-			PaginationPageSize:    100,
+			Name:                     "tasks",
+			SupportsPagination:       true,
+			PaginationCursorParam:    "after",
+			PaginationCursorType:     "cursor",
+			PaginationNextCursorPath: "meta.next",
+			PaginationLimitParam:     "limit",
+			PaginationPageSize:       100,
 		}},
 		[]profiler.DependentResource{{
-			Name:                  "tasks",
-			ParentResource:        "projects",
-			SupportsPagination:    true,
-			PaginationCursorParam: "offset",
-			PaginationCursorType:  "offset",
-			PaginationLimitParam:  "per_page",
-			PaginationPageSize:    25,
+			Name:                     "tasks",
+			ParentResource:           "projects",
+			SupportsPagination:       true,
+			PaginationCursorParam:    "offset",
+			PaginationCursorType:     "offset",
+			PaginationNextCursorPath: "paging.next",
+			PaginationLimitParam:     "per_page",
+			PaginationPageSize:       25,
 		}},
 	)
 
@@ -15189,7 +15200,9 @@ func TestPaginationDefaultEntriesDistinguishDependentContext(t *testing.T) {
 	require.Contains(t, byKey, "tasks")
 	require.Contains(t, byKey, "projects/tasks")
 	assert.Equal(t, "after", byKey["tasks"].CursorParam)
+	assert.Equal(t, "meta.next", byKey["tasks"].NextCursorPath)
 	assert.Equal(t, "offset", byKey["projects/tasks"].CursorParam)
+	assert.Equal(t, "paging.next", byKey["projects/tasks"].NextCursorPath)
 	assert.Equal(t, "per_page", byKey["projects/tasks"].LimitParam)
 	assert.Equal(t, 25, byKey["projects/tasks"].Limit)
 }
@@ -20573,7 +20586,7 @@ components:
 	assert.Contains(t, paginationSwitch[1], `case "usercollection-daily-sleep":`)
 	assert.NotContains(t, paginationSwitch[1], `case "usercollection-personal-info":`,
 		"single-object resources without cursor params must not be marked paginated")
-	assert.Contains(t, src, `cursorParam: "next_token"`,
+	assert.Contains(t, src, `cursorParam:    "next_token"`,
 		"the generated sync layer must derive the API cursor param instead of hardcoding after")
 
 	sinceFormatTest := `package cli

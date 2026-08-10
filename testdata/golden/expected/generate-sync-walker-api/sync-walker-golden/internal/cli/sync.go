@@ -552,7 +552,9 @@ func syncResource(ctx context.Context, c interface {
 		if resourceSupportsPagination(resource) {
 			params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
 			if cursor != "" {
-				params[pageSize.cursorParam] = cursor
+				if pageSize.cursorParam != "" {
+					params[pageSize.cursorParam] = cursor
+				}
 			}
 		}
 
@@ -598,7 +600,7 @@ func syncResource(ctx context.Context, c interface {
 
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
-		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, responsePathForResource(resource, path)...)
+		items, nextCursor, hasMore := extractPageItemsWithPagination(data, pageSize.cursorParam, pageSize.nextCursorPath, responsePathForResource(resource, path)...)
 		if sortEffective && maxPages > 0 {
 			for _, item := range items {
 				itemTimestamp, ok := restSyncTimestamp(item, sortField)
@@ -623,7 +625,8 @@ func syncResource(ctx context.Context, c interface {
 		// 1 even though more pages exist (the original symptom in #1296).
 		// Guard on cursorType, not cursorParam name, so all canonical
 		// spellings (page / page_number / pageNumber / page[number]) work.
-		if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
+		// A declared strategy without a request parameter cannot advance safely.
+		if pageSize.cursorParam != "" && pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
 			currentPage, _ := strconv.Atoi(cursor)
 			if currentPage < 1 {
 				currentPage = 1
@@ -631,7 +634,7 @@ func syncResource(ctx context.Context, c interface {
 			nextCursor = strconv.Itoa(currentPage + 1)
 			hasMore = true
 		}
-		if pageSize.cursorType == "offset" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
+		if pageSize.cursorParam != "" && pageSize.cursorType == "offset" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
 			currentOffset, _ := strconv.Atoi(cursor)
 			nextCursor = strconv.Itoa(currentOffset + pageSize.limit)
 			hasMore = true
@@ -781,7 +784,7 @@ func syncResource(ctx context.Context, c interface {
 				capExitCursor = nextCursor
 			}
 			if truncatedByCap && capExitCursor == "" {
-				if pageSize.cursorType == "offset" {
+				if pageSize.cursorParam != "" && pageSize.cursorType == "offset" {
 					currentOffset, _ := strconv.Atoi(cursor)
 					capExitCursor = strconv.Itoa(currentOffset + pageSize.limit)
 				} else {
@@ -848,7 +851,7 @@ func syncResource(ctx context.Context, c interface {
 			break
 		}
 		if nextCursor == "" {
-			if pageSize.cursorType == "offset" {
+			if pageSize.cursorParam != "" && pageSize.cursorType == "offset" {
 				// Cursor-based APIs return the next cursor in the envelope.
 				// Offset-based APIs carry their pagination position client-side.
 				currentOffset, _ := strconv.Atoi(cursor)
@@ -972,10 +975,11 @@ func syncResource(ctx context.Context, c interface {
 
 // paginationDefaults holds the resolved pagination parameter names and page size.
 type paginationDefaults struct {
-	cursorParam string
-	cursorType  string // paginator class: "", "cursor", "page_token", "offset", "page"
-	limitParam  string
-	limit       int
+	cursorParam    string
+	cursorType     string // paginator class: "", "cursor", "page_token", "offset", "page"
+	nextCursorPath string
+	limitParam     string
+	limit          int
 }
 
 func shortPageEndsPagination(cursorType string, fetched, limit int) bool {
@@ -992,10 +996,11 @@ func determinePaginationDefaults(resource string) paginationDefaults {
 	switch resource {
 	}
 	return paginationDefaults{
-		cursorParam: "after",
-		cursorType:  "",
-		limitParam:  "limit",
-		limit:       100,
+		cursorParam:    "after",
+		cursorType:     "",
+		nextCursorPath: "",
+		limitParam:     "limit",
+		limit:          100,
 	}
 }
 
@@ -1072,6 +1077,10 @@ func formatSyncSinceValue(value string, paramFormat string) string {
 // 3. JSend-style nested data envelopes: {"data":{"<resource>":[...]}}
 // It also extracts the next cursor from common response fields.
 func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ...string) ([]json.RawMessage, string, bool) {
+	return extractPageItemsWithPagination(data, cursorParam, "", responsePaths...)
+}
+
+func extractPageItemsWithPagination(data json.RawMessage, cursorParam, nextCursorPath string, responsePaths ...string) ([]json.RawMessage, string, bool) {
 	// Strategy 1: direct array
 	var items []json.RawMessage
 	if err := json.Unmarshal(data, &items); err == nil {
@@ -1092,9 +1101,9 @@ func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ..
 		if items, ok := extractJSONItemsArray(pathData); ok {
 			nextCursor, hasMore := "", false
 			if parentEnvelope, ok := responsePayloadParentAtPath(data, responsePath); ok {
-				nextCursor, hasMore = extractPaginationFromEnvelope(parentEnvelope, cursorParam)
+				nextCursor, hasMore = extractPaginationFromEnvelope(parentEnvelope, cursorParam, nextCursorPath)
 			}
-			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
 			if nextCursor == "" {
 				nextCursor = outerCursor
 			}
@@ -1104,8 +1113,8 @@ func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ..
 		var inner map[string]json.RawMessage
 		if json.Unmarshal(pathData, &inner) == nil {
 			if items, ok := extractItemsFromEnvelope(inner); ok {
-				nextCursor, hasMore := extractPaginationFromEnvelope(inner, cursorParam)
-				outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+				nextCursor, hasMore := extractPaginationFromEnvelope(inner, cursorParam, nextCursorPath)
+				outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
 				if nextCursor == "" {
 					nextCursor = outerCursor
 				}
@@ -1116,7 +1125,7 @@ func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ..
 	}
 
 	if items, ok := extractItemsByKnownKeys(envelope); ok {
-		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
 		return items, nextCursor, hasMore
 	}
 
@@ -1130,8 +1139,8 @@ func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ..
 			continue
 		}
 		if items, ok := extractItemsFromEnvelope(inner); ok {
-			nextCursor, hasMore := extractPaginationFromEnvelope(inner, cursorParam)
-			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+			nextCursor, hasMore := extractPaginationFromEnvelope(inner, cursorParam, nextCursorPath)
+			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
 			if nextCursor == "" {
 				nextCursor = outerCursor
 			}
@@ -1144,14 +1153,14 @@ func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ..
 		var embedded map[string]json.RawMessage
 		if json.Unmarshal(raw, &embedded) == nil {
 			if items, ok := extractItemsFromEnvelope(embedded); ok {
-				nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+				nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
 				return items, nextCursor, hasMore
 			}
 		}
 	}
 
 	if items, ok := extractSingleObjectArraySibling(envelope); ok {
-		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
 		return items, nextCursor, hasMore
 	}
 
@@ -1413,15 +1422,29 @@ func isJSONResponse(data json.RawMessage) bool {
 }
 
 // extractPaginationFromEnvelope extracts cursor and has_more from a response envelope.
-func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorParam string) (string, bool) {
+func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorParam, nextCursorPath string) (string, bool) {
+	if strings.TrimSpace(cursorParam) == "" {
+		return "", false
+	}
 	var hasMore bool
 
-	nextCursor := nextCursorFromLinks(envelope, cursorParam)
+	nextCursor := ""
+	if nextCursorPath != "" {
+		if raw, ok := rawAtPath(envelope, nextCursorPath); ok {
+			nextCursor = cursorValue(raw)
+			if isFollowableNextURL(nextCursor) {
+				nextCursor = cursorFromNextURL(nextCursor, cursorParam)
+			}
+		}
+	}
+	if nextCursor == "" {
+		nextCursor = nextCursorFromLinks(envelope, cursorParam)
+	}
 
 	// Try common cursor field names
 	cursorKeys := []string{
 		"next_cursor", "nextCursor", "next_token", "nextToken", "cursor",
-		"next_page_token", "nextPageToken", "page_token", "after", "end_cursor", "endCursor",
+		"next_page_token", "nextPageToken", "page_token", "after", "end_cursor", "endCursor", "next",
 	}
 	if nextCursor == "" {
 		nextCursor = findCursorInMap(envelope, cursorKeys)
@@ -1634,7 +1657,7 @@ func cursorFromNextURL(nextURL string, cursorParam string) string {
 	return ""
 }
 
-// findCursorInMap returns the first non-empty string-typed value in m
+// findCursorInMap returns the first non-empty scalar value in m
 // whose key matches one of cursorKeys. Used by extractPaginationFromEnvelope
 // to scan both the top-level envelope and well-known wrapper objects with
 // the same name-match rules — extracted so the two scans can't drift.
@@ -1644,10 +1667,27 @@ func findCursorInMap(m map[string]json.RawMessage, cursorKeys []string) string {
 		if !ok {
 			continue
 		}
-		var s string
-		if err := json.Unmarshal(raw, &s); err == nil && s != "" {
-			return s
+		if key == "next" {
+			var value string
+			if json.Unmarshal(raw, &value) == nil && isFollowableNextURL(value) {
+				continue
+			}
 		}
+		if value := cursorValue(raw); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func cursorValue(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err == nil {
+		return number.String()
 	}
 	return ""
 }
@@ -2124,7 +2164,9 @@ func syncOneParent(
 		if resourceSupportsPagination(dep.Name) {
 			params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
 			if cursor != "" {
-				params[pageSize.cursorParam] = cursor
+				if pageSize.cursorParam != "" {
+					params[pageSize.cursorParam] = cursor
+				}
 			}
 		}
 		if depSinceTS != "" {
@@ -2171,12 +2213,13 @@ func syncOneParent(
 			return rep
 		}
 
-		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, responsePathForResource(dep.Name, path)...)
+		items, nextCursor, hasMore := extractPageItemsWithPagination(data, pageSize.cursorParam, pageSize.nextCursorPath, responsePathForResource(dep.Name, path)...)
 
 		// Page-int paginator fallback: mirrors syncResource so dependent
 		// resources on integer ?page=N APIs also advance past page 1.
-		// Guard on cursorType to cover every canonical spelling.
-		if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
+		// Guard on cursorType to cover every canonical spelling. A declared
+		// strategy without a request parameter cannot advance safely.
+		if pageSize.cursorParam != "" && pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
 			currentPage, _ := strconv.Atoi(cursor)
 			if currentPage < 1 {
 				currentPage = 1
@@ -2184,7 +2227,7 @@ func syncOneParent(
 			nextCursor = strconv.Itoa(currentPage + 1)
 			hasMore = true
 		}
-		if pageSize.cursorType == "offset" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
+		if pageSize.cursorParam != "" && pageSize.cursorType == "offset" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
 			currentOffset, _ := strconv.Atoi(cursor)
 			nextCursor = strconv.Itoa(currentOffset + pageSize.limit)
 			hasMore = true
@@ -2305,7 +2348,7 @@ func syncOneParent(
 			break
 		}
 		if nextCursor == "" {
-			if pageSize.cursorType == "offset" {
+			if pageSize.cursorParam != "" && pageSize.cursorType == "offset" {
 				// Cursor-based APIs return the next cursor in the envelope.
 				// Offset-based APIs carry their pagination position client-side.
 				currentOffset, _ := strconv.Atoi(cursor)

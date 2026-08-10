@@ -654,26 +654,26 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 
 	// Test sync (if it exists)
 	var syncErrors []error
-	syncErr := runCLI(binary, []string{"sync", "--db", dbPath, "--resources", "repos", "--full"}, env, 30*time.Second)
+	syncErr := runCLI(binary, boundedSyncProbeArgs(mode, []string{"sync", "--db", dbPath, "--resources", "repos", "--full"}), env, 30*time.Second)
 	if syncErr != nil {
 		syncErrors = append(syncErrors, syncErr)
-		syncErr = runCLI(binary, []string{"sync", "--db", dbPath, "--full"}, env, 30*time.Second)
+		syncErr = runCLI(binary, boundedSyncProbeArgs(mode, []string{"sync", "--db", dbPath, "--full"}), env, 30*time.Second)
 	}
 	if syncErr != nil {
 		syncErrors = append(syncErrors, syncErr)
 		// Sync might not accept --resources or --full; keep --db when
 		// possible so downstream sql probes read the same temporary store.
-		syncErr = runCLI(binary, []string{"sync", "--db", dbPath}, env, 30*time.Second)
+		syncErr = runCLI(binary, boundedSyncProbeArgs(mode, []string{"sync", "--db", dbPath}), env, 30*time.Second)
 	}
 	if syncErr != nil {
 		syncErrors = append(syncErrors, syncErr)
 		// Sync might not accept --db either; try the bare command before
 		// deciding the pipeline crashed.
-		syncErr = runCLI(binary, []string{"sync", "--full"}, env, 30*time.Second)
+		syncErr = runCLI(binary, boundedSyncProbeArgs(mode, []string{"sync", "--full"}), env, 30*time.Second)
 	}
 	if syncErr != nil {
 		syncErrors = append(syncErrors, syncErr)
-		syncErr = runCLI(binary, []string{"sync"}, env, 30*time.Second)
+		syncErr = runCLI(binary, boundedSyncProbeArgs(mode, []string{"sync"}), env, 30*time.Second)
 	}
 	if syncErr != nil {
 		syncErrors = append(syncErrors, syncErr)
@@ -749,6 +749,14 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 		return false, fmt.Sprintf("FAIL: %s has 0 rows after sync, expected at least %d (%s mode)", zeroDataTable, expectedRows, mode)
 	}
 	return false, fmt.Sprintf("FAIL: %d domain tables created but 0 rows after sync (%s mode)", len(tables), mode)
+}
+
+func boundedSyncProbeArgs(mode string, args []string) []string {
+	if mode != "live" {
+		return args
+	}
+	bounded := append([]string(nil), args...)
+	return append(bounded, "--max-pages", "1")
 }
 
 func allSyncAttemptsWereUnknownCommand(errs []error) bool {

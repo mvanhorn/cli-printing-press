@@ -138,10 +138,11 @@ type SyncableResource struct {
 	SupportsPagination bool
 	// Pagination* fields preserve the chosen list endpoint's concrete paging
 	// contract so generated sync does not reuse a different resource's default.
-	PaginationCursorParam string
-	PaginationCursorType  string
-	PaginationLimitParam  string
-	PaginationPageSize    int
+	PaginationCursorParam    string
+	PaginationCursorType     string
+	PaginationNextCursorPath string
+	PaginationLimitParam     string
+	PaginationPageSize       int
 	// PaginationSort* describe an explicit ascending last-modified ordering
 	// that is safe to send alongside an incremental temporal filter.
 	PaginationSortParam string
@@ -243,10 +244,11 @@ type DependentResource struct {
 	// that do not declare page-size pagination.
 	SupportsPagination bool
 	// Pagination* mirrors SyncableResource for child sync paths.
-	PaginationCursorParam string
-	PaginationCursorType  string
-	PaginationLimitParam  string
-	PaginationPageSize    int
+	PaginationCursorParam    string
+	PaginationCursorType     string
+	PaginationNextCursorPath string
+	PaginationLimitParam     string
+	PaginationPageSize       int
 
 	// UsesHTMLResponse and HTMLExtract mirror SyncableResource for child sync
 	// paths.
@@ -1754,31 +1756,32 @@ func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[strin
 	keyField := parentIDFieldForDependent(ctx.parentResource, syncable)
 
 	return DependentResource{
-		Name:                  ctx.name,
-		ParentResource:        ctx.parentResource,
-		ParentIDParam:         dependentParentIDParam(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam),
-		Path:                  entry.meta.Path,
-		Method:                entry.meta.Method,
-		Tier:                  entry.meta.Tier,
-		PathParams:            dependentPathParams(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam, keyField),
-		parentPath:            dependentParentPath(entry.meta.Path, ctx.parentPathSegment),
-		IDField:               entry.meta.IDField,
-		Critical:              entry.meta.Critical,
-		SinceParam:            entry.meta.SinceParam,
-		SinceParamFormat:      entry.meta.SinceParamFormat,
-		SupportsPagination:    entry.meta.SupportsPagination,
-		PaginationCursorParam: entry.meta.PaginationCursorParam,
-		PaginationCursorType:  entry.meta.PaginationCursorType,
-		PaginationLimitParam:  entry.meta.PaginationLimitParam,
-		PaginationPageSize:    entry.meta.PaginationPageSize,
-		UsesHTMLResponse:      entry.meta.UsesHTMLResponse,
-		HTMLExtract:           entry.meta.HTMLExtract,
-		BodyFields:            entry.meta.BodyFields,
-		IDWalkFilterParam:     entry.meta.IDWalkFilterParam,
-		IDWalkLimitParam:      entry.meta.IDWalkLimitParam,
-		IDWalkPageSize:        entry.meta.IDWalkPageSize,
-		FieldSelector:         entry.meta.FieldSelector,
-		Discriminator:         entry.meta.Discriminator,
+		Name:                     ctx.name,
+		ParentResource:           ctx.parentResource,
+		ParentIDParam:            dependentParentIDParam(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam),
+		Path:                     entry.meta.Path,
+		Method:                   entry.meta.Method,
+		Tier:                     entry.meta.Tier,
+		PathParams:               dependentPathParams(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam, keyField),
+		parentPath:               dependentParentPath(entry.meta.Path, ctx.parentPathSegment),
+		IDField:                  entry.meta.IDField,
+		Critical:                 entry.meta.Critical,
+		SinceParam:               entry.meta.SinceParam,
+		SinceParamFormat:         entry.meta.SinceParamFormat,
+		SupportsPagination:       entry.meta.SupportsPagination,
+		PaginationCursorParam:    entry.meta.PaginationCursorParam,
+		PaginationCursorType:     entry.meta.PaginationCursorType,
+		PaginationNextCursorPath: entry.meta.PaginationNextCursorPath,
+		PaginationLimitParam:     entry.meta.PaginationLimitParam,
+		PaginationPageSize:       entry.meta.PaginationPageSize,
+		UsesHTMLResponse:         entry.meta.UsesHTMLResponse,
+		HTMLExtract:              entry.meta.HTMLExtract,
+		BodyFields:               entry.meta.BodyFields,
+		IDWalkFilterParam:        entry.meta.IDWalkFilterParam,
+		IDWalkLimitParam:         entry.meta.IDWalkLimitParam,
+		IDWalkPageSize:           entry.meta.IDWalkPageSize,
+		FieldSelector:            entry.meta.FieldSelector,
+		Discriminator:            entry.meta.Discriminator,
 	}, true
 }
 
@@ -1989,32 +1992,33 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 			}
 			meta := metaFromEndpoint(s, resourceName, r, e, types, resourceNameIndex)
 			deps = append(deps, DependentResource{
-				Name:                  spec.ToSnakeCase(resourceName),
-				ParentResource:        parent,
-				ParentIDParam:         keyParam,
-				Path:                  e.Path,
-				parentPathLock:        true,
-				Method:                meta.Method,
-				Tier:                  meta.Tier,
-				PathParams:            dependentPathParams(e.Path, parent, keyParam, keyField),
-				IDField:               meta.IDField,
-				Critical:              meta.Critical,
-				SinceParam:            meta.SinceParam,
-				SinceParamFormat:      meta.SinceParamFormat,
-				SupportsPagination:    meta.SupportsPagination,
-				PaginationCursorParam: meta.PaginationCursorParam,
-				PaginationCursorType:  meta.PaginationCursorType,
-				PaginationLimitParam:  meta.PaginationLimitParam,
-				PaginationPageSize:    meta.PaginationPageSize,
-				UsesHTMLResponse:      meta.UsesHTMLResponse,
-				HTMLExtract:           meta.HTMLExtract,
-				BodyFields:            meta.BodyFields,
-				IDWalkFilterParam:     meta.IDWalkFilterParam,
-				IDWalkLimitParam:      meta.IDWalkLimitParam,
-				IDWalkPageSize:        meta.IDWalkPageSize,
-				FieldSelector:         meta.FieldSelector,
-				Discriminator:         meta.Discriminator,
-				KeyField:              keyField,
+				Name:                     spec.ToSnakeCase(resourceName),
+				ParentResource:           parent,
+				ParentIDParam:            keyParam,
+				Path:                     e.Path,
+				parentPathLock:           true,
+				Method:                   meta.Method,
+				Tier:                     meta.Tier,
+				PathParams:               dependentPathParams(e.Path, parent, keyParam, keyField),
+				IDField:                  meta.IDField,
+				Critical:                 meta.Critical,
+				SinceParam:               meta.SinceParam,
+				SinceParamFormat:         meta.SinceParamFormat,
+				SupportsPagination:       meta.SupportsPagination,
+				PaginationCursorParam:    meta.PaginationCursorParam,
+				PaginationCursorType:     meta.PaginationCursorType,
+				PaginationNextCursorPath: meta.PaginationNextCursorPath,
+				PaginationLimitParam:     meta.PaginationLimitParam,
+				PaginationPageSize:       meta.PaginationPageSize,
+				UsesHTMLResponse:         meta.UsesHTMLResponse,
+				HTMLExtract:              meta.HTMLExtract,
+				BodyFields:               meta.BodyFields,
+				IDWalkFilterParam:        meta.IDWalkFilterParam,
+				IDWalkLimitParam:         meta.IDWalkLimitParam,
+				IDWalkPageSize:           meta.IDWalkPageSize,
+				FieldSelector:            meta.FieldSelector,
+				Discriminator:            meta.Discriminator,
+				KeyField:                 keyField,
 			})
 			byPath[lookupKey] = len(deps) - 1
 		}
@@ -2301,36 +2305,37 @@ func resolveParentResourceName(walkParent, paramName string, knownParents map[st
 // is still selecting between candidates (e.g., flat vs. paginated). It is
 // converted into a SyncableResource at the end of Profile().
 type syncableMeta struct {
-	Path                  string
-	Method                string
-	Tier                  string
-	SkipDefaultSync       bool
-	IDField               string
-	Critical              bool
-	SinceParam            string
-	SinceParamFormat      string
-	SupportsPagination    bool
-	PaginationCursorParam string
-	PaginationCursorType  string
-	PaginationLimitParam  string
-	PaginationPageSize    int
-	PaginationSortParam   string
-	PaginationSortValue   string
-	PaginationSortField   string
-	UsesHTMLResponse      bool
-	HTMLExtract           *spec.HTMLExtract
-	BodyFields            []SyncBodyField
-	IDWalkFilterParam     string
-	IDWalkLimitParam      string
-	IDWalkPageSize        int
-	FieldSelector         FieldSelector
-	Discriminator         DiscriminatorDispatch
-	ResponseItem          string
-	QueryEntity           string
-	TenantScopeColumn     string
-	HydratePath           string
-	HydrateIDParam        string
-	MembershipField       string
+	Path                     string
+	Method                   string
+	Tier                     string
+	SkipDefaultSync          bool
+	IDField                  string
+	Critical                 bool
+	SinceParam               string
+	SinceParamFormat         string
+	SupportsPagination       bool
+	PaginationCursorParam    string
+	PaginationCursorType     string
+	PaginationNextCursorPath string
+	PaginationLimitParam     string
+	PaginationPageSize       int
+	PaginationSortParam      string
+	PaginationSortValue      string
+	PaginationSortField      string
+	UsesHTMLResponse         bool
+	HTMLExtract              *spec.HTMLExtract
+	BodyFields               []SyncBodyField
+	IDWalkFilterParam        string
+	IDWalkLimitParam         string
+	IDWalkPageSize           int
+	FieldSelector            FieldSelector
+	Discriminator            DiscriminatorDispatch
+	ResponseItem             string
+	QueryEntity              string
+	TenantScopeColumn        string
+	HydratePath              string
+	HydrateIDParam           string
+	MembershipField          string
 }
 
 type syncableCandidate struct {
@@ -2357,38 +2362,43 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 	paginationCursorParam, paginationCursorType, paginationLimitParam, paginationPageSize := syncPaginationDefaultsFromEndpoint(e)
 	paginationSortParam, paginationSortValue := detectEndpointSyncSort(e)
 	paginationSortField := temporalSortField(paginationSortValue)
+	nextCursorPath := ""
+	if e.Pagination != nil {
+		nextCursorPath = strings.TrimSpace(e.Pagination.NextCursorPath)
+	}
 	hydratePath, hydrateIDParam := scalarIDHydrationTarget(s, resourceName, e, types)
 	return syncableMeta{
-		Path:                  e.Path,
-		Method:                strings.ToUpper(e.Method),
-		Tier:                  s.EffectiveTier(resource, e),
-		SkipDefaultSync:       isAuthTaggedEndpoint(e) || hasTypedResponseWithoutRuntimeID(resourceName, e, types),
-		IDField:               e.IDField,
-		Critical:              e.Critical,
-		SinceParam:            sinceParam,
-		SinceParamFormat:      sinceParamFormat,
-		SupportsPagination:    endpointSupportsPagination(e),
-		PaginationCursorParam: paginationCursorParam,
-		PaginationCursorType:  paginationCursorType,
-		PaginationLimitParam:  paginationLimitParam,
-		PaginationPageSize:    paginationPageSize,
-		PaginationSortParam:   paginationSortParam,
-		PaginationSortValue:   paginationSortValue,
-		PaginationSortField:   paginationSortField,
-		UsesHTMLResponse:      e.UsesHTMLResponse(),
-		HTMLExtract:           e.HTMLExtract,
-		BodyFields:            syncBodyFieldsFromEndpoint(e),
-		IDWalkFilterParam:     idWalkFilterParam,
-		IDWalkLimitParam:      idWalkLimitParam,
-		IDWalkPageSize:        idWalkPageSize,
-		FieldSelector:         detectEndpointFieldSelector(e),
-		Discriminator:         discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
-		ResponseItem:          e.Response.Item,
-		QueryEntity:           queryEntityForEndpoint(s, e),
-		TenantScopeColumn:     e.TenantScopeColumn,
-		HydratePath:           hydratePath,
-		HydrateIDParam:        hydrateIDParam,
-		MembershipField:       e.MembershipField,
+		Path:                     e.Path,
+		Method:                   strings.ToUpper(e.Method),
+		Tier:                     s.EffectiveTier(resource, e),
+		SkipDefaultSync:          isAuthTaggedEndpoint(e) || hasTypedResponseWithoutRuntimeID(resourceName, e, types),
+		IDField:                  e.IDField,
+		Critical:                 e.Critical,
+		SinceParam:               sinceParam,
+		SinceParamFormat:         sinceParamFormat,
+		SupportsPagination:       endpointSupportsPagination(e),
+		PaginationCursorParam:    paginationCursorParam,
+		PaginationCursorType:     paginationCursorType,
+		PaginationNextCursorPath: nextCursorPath,
+		PaginationLimitParam:     paginationLimitParam,
+		PaginationPageSize:       paginationPageSize,
+		PaginationSortParam:      paginationSortParam,
+		PaginationSortValue:      paginationSortValue,
+		PaginationSortField:      paginationSortField,
+		UsesHTMLResponse:         e.UsesHTMLResponse(),
+		HTMLExtract:              e.HTMLExtract,
+		BodyFields:               syncBodyFieldsFromEndpoint(e),
+		IDWalkFilterParam:        idWalkFilterParam,
+		IDWalkLimitParam:         idWalkLimitParam,
+		IDWalkPageSize:           idWalkPageSize,
+		FieldSelector:            detectEndpointFieldSelector(e),
+		Discriminator:            discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
+		ResponseItem:             e.Response.Item,
+		QueryEntity:              queryEntityForEndpoint(s, e),
+		TenantScopeColumn:        e.TenantScopeColumn,
+		HydratePath:              hydratePath,
+		HydrateIDParam:           hydrateIDParam,
+		MembershipField:          e.MembershipField,
 	}
 }
 
@@ -3347,36 +3357,37 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 	for i, name := range names {
 		meta := m[name]
 		resources[i] = SyncableResource{
-			Name:                  name,
-			Path:                  meta.Path,
-			Method:                meta.Method,
-			Tier:                  meta.Tier,
-			SkipDefaultSync:       meta.SkipDefaultSync,
-			IDField:               meta.IDField,
-			Critical:              meta.Critical,
-			SinceParam:            meta.SinceParam,
-			SinceParamFormat:      meta.SinceParamFormat,
-			SupportsPagination:    meta.SupportsPagination,
-			PaginationCursorParam: meta.PaginationCursorParam,
-			PaginationCursorType:  meta.PaginationCursorType,
-			PaginationLimitParam:  meta.PaginationLimitParam,
-			PaginationPageSize:    meta.PaginationPageSize,
-			PaginationSortParam:   meta.PaginationSortParam,
-			PaginationSortValue:   meta.PaginationSortValue,
-			PaginationSortField:   meta.PaginationSortField,
-			UsesHTMLResponse:      meta.UsesHTMLResponse,
-			HTMLExtract:           meta.HTMLExtract,
-			BodyFields:            meta.BodyFields,
-			IDWalkFilterParam:     meta.IDWalkFilterParam,
-			IDWalkLimitParam:      meta.IDWalkLimitParam,
-			IDWalkPageSize:        meta.IDWalkPageSize,
-			FieldSelector:         meta.FieldSelector,
-			Discriminator:         meta.Discriminator,
-			QueryEntity:           meta.QueryEntity,
-			TenantScopeColumn:     meta.TenantScopeColumn,
-			HydratePath:           meta.HydratePath,
-			HydrateIDParam:        meta.HydrateIDParam,
-			MembershipField:       meta.MembershipField,
+			Name:                     name,
+			Path:                     meta.Path,
+			Method:                   meta.Method,
+			Tier:                     meta.Tier,
+			SkipDefaultSync:          meta.SkipDefaultSync,
+			IDField:                  meta.IDField,
+			Critical:                 meta.Critical,
+			SinceParam:               meta.SinceParam,
+			SinceParamFormat:         meta.SinceParamFormat,
+			SupportsPagination:       meta.SupportsPagination,
+			PaginationCursorParam:    meta.PaginationCursorParam,
+			PaginationCursorType:     meta.PaginationCursorType,
+			PaginationNextCursorPath: meta.PaginationNextCursorPath,
+			PaginationLimitParam:     meta.PaginationLimitParam,
+			PaginationPageSize:       meta.PaginationPageSize,
+			PaginationSortParam:      meta.PaginationSortParam,
+			PaginationSortValue:      meta.PaginationSortValue,
+			PaginationSortField:      meta.PaginationSortField,
+			UsesHTMLResponse:         meta.UsesHTMLResponse,
+			HTMLExtract:              meta.HTMLExtract,
+			BodyFields:               meta.BodyFields,
+			IDWalkFilterParam:        meta.IDWalkFilterParam,
+			IDWalkLimitParam:         meta.IDWalkLimitParam,
+			IDWalkPageSize:           meta.IDWalkPageSize,
+			FieldSelector:            meta.FieldSelector,
+			Discriminator:            meta.Discriminator,
+			QueryEntity:              meta.QueryEntity,
+			TenantScopeColumn:        meta.TenantScopeColumn,
+			HydratePath:              meta.HydratePath,
+			HydrateIDParam:           meta.HydrateIDParam,
+			MembershipField:          meta.MembershipField,
 		}
 	}
 	return resources
