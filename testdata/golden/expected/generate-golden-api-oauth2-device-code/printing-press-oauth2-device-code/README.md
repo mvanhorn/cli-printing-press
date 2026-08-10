@@ -235,9 +235,8 @@ printing-press-oauth2-pp-cli items
 
 # JSON for scripting and agents
 printing-press-oauth2-pp-cli items --json
-
 # Filter to specific fields
-printing-press-oauth2-pp-cli items --json --select id,name,status
+printing-press-oauth2-pp-cli items --json --select id,name
 
 # Dry run — show the request without sending
 printing-press-oauth2-pp-cli items --dry-run
@@ -252,7 +251,7 @@ This CLI is designed for AI agent consumption:
 
 - **Non-interactive** - never prompts, every input is a flag
 - **Pipeable** - `--json` output to stdout, errors to stderr
-- **Filterable** - `--select id,name` returns only fields you need
+- **Filterable** - `--select <field>[,<field>...]` returns only fields you need
 - **Previewable** - `--dry-run` shows the request without sending
 - **Read-only by default** - this CLI does not create, update, delete, publish, send, or mutate remote resources
 - **Offline-friendly** - sync/search commands can use the local SQLite store when available

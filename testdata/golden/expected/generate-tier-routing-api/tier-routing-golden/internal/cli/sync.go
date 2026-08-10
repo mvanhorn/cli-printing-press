@@ -94,9 +94,8 @@ Resource scoping:
   from a prior sync.`,
 		Example: `  # Sync all resources
   tier-routing-golden-pp-cli sync
-
   # Sync specific resources only
-  tier-routing-golden-pp-cli sync --resources channels,messages
+  tier-routing-golden-pp-cli sync --resources items
 
   # Full resync (ignore previous checkpoint)
   tier-routing-golden-pp-cli sync --full
