@@ -120,7 +120,7 @@ func safeGeneratedExampleField(name string) bool {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
 			continue
 		}
-		if strings.ContainsRune("_.-", r) {
+		if strings.ContainsRune("_-", r) {
 			continue
 		}
 		return false

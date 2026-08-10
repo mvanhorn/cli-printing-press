@@ -77,7 +77,7 @@ func TestSelectExampleRejectsUnsafeFieldNames(t *testing.T) {
 			}},
 		},
 		Types: map[string]spec.TypeDef{
-			"Item": {Fields: []spec.TypeField{{Name: `bad"field`}}},
+			"Item": {Fields: []spec.TypeField{{Name: "meta.id"}}},
 		},
 	}
 
