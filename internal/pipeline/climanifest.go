@@ -1208,6 +1208,18 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		}
 	}
 
+	// Repoint spec_path at the shipped archived spec. The packaged CLI ships
+	// the converted spec as spec.json (or spec.yaml/yml); the source spec's
+	// basename (e.g. exa-openapi.json) does not exist in the packaged tree,
+	// which breaks the provenance contract consumers check against the
+	// manifest. No-spec runs (docs/sniff/plan) ship no archived spec and keep
+	// their existing spec_path (empty or docs URL).
+	if m.SpecPath != "" && !strings.HasPrefix(m.SpecPath, "http://") && !strings.HasPrefix(m.SpecPath, "https://") {
+		if specFile, _, err := findArchivedSpec(p.OutputDir); err == nil && specFile != "" {
+			m.SpecPath = filepath.Base(specFile)
+		}
+	}
+
 	if m.Category == "" && p.Spec != nil && p.Spec.Category != "" {
 		m.Category = p.Spec.Category
 	}

@@ -2817,6 +2817,18 @@ emits the thin search+execute pair that covers the typed-endpoint surface in
 `mcp.endpoint_tools: hidden` removes the raw per-endpoint tools that would
 otherwise still show up alongside the orchestration pair.
 
+**HTTP transport security default — read before enabling `http`.** The emitted
+MCP server binds its HTTP listener to all interfaces by default
+(`defaultHTTPAddr = ":7777"`) and does not authenticate reachable callers, so
+any client that can reach the port can invoke tools with the process's bound
+API credentials. The public library's Greptile review has flagged this on new
+CLI prints. If the CLI needs HTTP transport, either ship the `--addr` flag with
+a loopback default (`127.0.0.1:<port>`) so operators opt into exposure, or —
+for CLIs whose MCP surface is only consumed locally — remove HTTP transport
+entirely and keep the server stdio-only, which keeps the credential boundary at
+process ownership. Decide this before generation; changing it after the PR
+opens costs review cycles.
+
 For command-dominant CLIs where cobratree-walked tools greatly outnumber typed
 endpoints, do not present code orchestration as the context-reduction remedy for
 the command mirror. Keep novel commands reachable by default, and reduce that
@@ -3239,7 +3251,8 @@ After building each command in Priority 1 and Priority 2, verify these 13 princi
 7. **Bounded responses**: `--compact` returns only high-gravity fields, list commands have `--limit`
 8. **Verify-friendly RunE**: Hand-written commands MUST NOT use `Args: cobra.MinimumNArgs(N)` or `MarkFlagRequired(...)`. Cobra evaluates both before RunE runs, so a `--dry-run` guard inside RunE cannot reach if those gates fail. Verify probes commands with `--dry-run` and expects exit 0; commands with hard arg/flag gates fail those probes. Instead: validate inside RunE, fall through to `cmd.Help()` only for unambiguous help-only invocations (no args and no flags), short-circuit on `dryRunOK(flags)` before any IO, and return `usageErr(...)` with exit 2 when required input is missing in real mode.
    - **Use string for "positional OR flag" commands**: when a command accepts a positional `<x>` OR a flag `--y` as alternatives (e.g., `snapshot <co>` or `snapshot --domain example.com`), declare `Use: "<cmd> [x]"` with **square brackets** (optional), not `<x>` (required). Validate "exactly one of x or --y" inside RunE. Required positionals declared with angle brackets break verify-skill recipes that use the flag-only form.
-   - **Declare verifier fixture inputs when generic values are not enough**: if the command needs realistic positional values or required flags to pass the verifier's happy path, add `Annotations: map[string]string{"pp:happy-args": "<item>=example-id;--query=example"}` or assign a whole initialized `cmd.Annotations` map after construction. The verifier consumes tokens separated by unescaped semicolons in order: escape a literal semicolon as `\;`, `<label>=value` or `label=value` tokens replace synthesized positional args, and `--flag=value` tokens replace matching Example flags or add new flag/value pairs. Negative numeric flag values use the `--flag=-12.3` form. Commands without the annotation keep the generic synthesized inputs.
+   - **Declare verifier fixture inputs when generic values are not enough**: if the command needs realistic positional values or required flags to pass the verifier's happy path, add `Annotations: map[string]string{"pp:happy-args": "<item>=example-id;--query=example"}` or assign a whole initialized `cmd.Annotations` map after construction. The verifier consumes tokens separated by unescaped semicolons in order: escape a literal semicolon as `\;`. Positional tokens are `label=value` pairs — the label is discarded and the value becomes the positional, so `<item>=example-id` and `item=example-id` behave identically. **Bare values without `=` are silently ignored**, so write `item=example-id`, never just `example-id`; a missing `=` produces no fixture and the happy path silently skips. `--flag=value` tokens replace matching Example flags or add new flag/value pairs. Negative numeric flag values use the `--flag=-12.3` form. Commands without the annotation keep the generic synthesized inputs.
+   - **Local-store novel commands also need `pp:typed-exit-codes` to pass publish.** Publish's phase5 gate rejects novel features whose live-dogfood happy paths were skipped ("hollow coverage"). A local-only command (e.g. `entity report`, `monitor diff`) whose happy path returns a graceful not-found exit must declare both `Annotations: map[string]string{"pp:happy-args": "<name>=example", "pp:typed-exit-codes": "0,3"}` — the typed codes let the live matrix count the graceful-empty exit as a pass, and the happy-args give the matrix a real positional. Without both, `publish validate` fails with "phase5 acceptance has hollow coverage" and the whole publish loop restarts.
 9. **Side-effect commands stay quiet under verify**: Any hand-written command that performs a visible side effect (opens a browser tab, sends a notification, plays audio, dials out to an OS handler) MUST follow both halves of the convention:
    - **Print by default; opt in to the action.** The default behavior prints what would happen (`would launch: <url>`); a flag like `--launch` / `--send` / `--play` is required to actually do it. food52's `open` command is the reference shape — see `internal/cli/open.go` after retro #337.
    - **Short-circuit when `cliutil.IsVerifyEnv()` returns true.** The Printing Press verifier sets `PRINTING_PRESS_VERIFY=1` in every mock-mode subprocess; commands that ignore it can spam the user's environment during a verify pass even with the print-by-default flag pattern. The helper is generated into every CLI's `internal/cliutil/verifyenv.go`. Pattern:
@@ -4566,6 +4579,11 @@ Before promoting, verify the Phase 5 JSON gate marker:
 - If `$PROOFS_DIR/phase5-acceptance.json` exists with `status: "fail"` → CLI is on hold. Do NOT promote. Proceed to Archive Manuscripts.
 - If `$PROOFS_DIR/phase5-skip.json` exists and the auth-aware skip is valid → proceed to promote.
 - If neither JSON marker exists → Phase 5 was skipped or not recorded. Go back and run it, or write the valid skip marker. Do NOT promote without one.
+
+**Marker invalidation — any source edit after the acceptance run breaks the gate.** The acceptance marker is bound to a source fingerprint (per-file hashes of the CLI tree). If you edit any `.go` file after the live dogfood run — adding a patch, an annotation, or a transport change — `lock promote`, `publish validate`, and `publish package` all fail with "phase5 marker source fingerprint does not match the current CLI source". Re-run live dogfood (with `--write-acceptance`) after EVERY post-acceptance source change, and sync the fresh marker to both locations:
+
+- The **embedded** copy at `$CLI_DIR/.manuscripts/<run>/proofs/` — what `lock promote` checks.
+- The **archived** copy at `$PRESS_MANUSCRIPTS/<api>/<run>/proofs/` — what `publish package` reads first (manuscript lookup is archive-first; phase5-proof lookup is embedded-first, so a stale copy in either blocks promotion or packaging with the same confusing message).
 
 ### Promote to Library
 

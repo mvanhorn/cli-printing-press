@@ -2784,3 +2784,45 @@ func TestWriteManifestForGenerateNoCategoryAnywhere(t *testing.T) {
 	got := readPublishedManifest(t, dir)
 	assert.Empty(t, got.Category, "manifest.Category should stay empty when no source provides one")
 }
+
+func TestWriteManifestForGenerateRepointsSpecPathToArchivedSpec(t *testing.T) {
+	dir := t.TempDir()
+	specContent := []byte(`{"openapi": "3.0.0", "info": {"title": "Test"}}`)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "spec.json"), specContent, 0o644))
+
+	// Local source spec basename (exa-openapi.json) does not exist in the
+	// packaged tree; the manifest must point at the shipped spec.json.
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "test-api",
+		SpecSrcs:  []string{filepath.Join(t.TempDir(), "exa-openapi.json")},
+		OutputDir: dir,
+		RunID:     "20260517-091036",
+	}))
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "spec.json", got.SpecPath,
+		"spec_path must resolve to the shipped archived spec, not the source basename")
+}
+
+func TestWriteManifestForGenerateKeepsSourceBasenameWhenNoArchivedSpec(t *testing.T) {
+	dir := t.TempDir()
+	// No spec.json/spec.yaml/spec.yml in OutputDir: docs-driven run must keep
+	// spec_path pointing at whatever was recorded (here empty), not fabricate one.
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "test-api",
+		SpecSrcs:  []string{filepath.Join(t.TempDir(), "exa-openapi.json")},
+		OutputDir: dir,
+		RunID:     "20260517-091036",
+	}))
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	// No archived spec in the output tree: the repoint must not fabricate a
+	// shipped file, so the source basename stays as the honest provenance
+	// record (this test is a regression guard against fabricating spec.json).
+}

@@ -496,3 +496,19 @@ func TestCrowdSniffStillWorksAfterBrowserSniffRename(t *testing.T) {
 	out := buf.String()
 	assert.Contains(t, out, "crowd-sniff", "crowd-sniff help output should reference the command name")
 }
+
+func TestBrowserSniffConfigPathUsesSlug(t *testing.T) {
+	// The config path must derive from the slug via browserSniffConfigPath,
+	// not the raw --name value. A name like "Exa Public API" previously
+	// produced ~/.config/Exa Public API-pp-cli/config.toml, which never
+	// matched the slug-derived runtime path.
+	cases := []struct{ name, wantPath string }{
+		{"Exa Public API", "~/.config/exa-public-api-pp-cli/config.toml"},
+		{"MyAPI", "~/.config/myapi-pp-cli/config.toml"},
+		{"Foo Bar", "~/.config/foo-bar-pp-cli/config.toml"},
+		{"!!!", ""}, // slugifies to empty — no degenerate path
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.wantPath, browserSniffConfigPath(tc.name), "config path for name %q", tc.name)
+	}
+}
