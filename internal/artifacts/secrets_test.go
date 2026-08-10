@@ -78,6 +78,15 @@ func TestRedactLiveOutputSecretsPreservesShortValuesAndPlaceholders(t *testing.T
 	require.Equal(t, "mode=test placeholder="+placeholder+" real="+LiveOutputVendorKeyRedacted, string(got))
 }
 
+func TestRedactLiveOutputSecretsRedactsPartialAuthAtCaptureBoundary(t *testing.T) {
+	authSecret := "auth-secret-" + strings.Repeat("x", 5000)
+	input := []byte("prefix " + authSecret[:len(authSecret)-100])
+
+	got := RedactLiveOutputSecrets(input, authSecret)
+
+	require.Equal(t, "prefix "+LiveOutputAuthEnvRedacted, string(got))
+}
+
 func TestFindVendorPrefixSecretsReportsFileAndLine(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(root, ".manuscripts", "run-1", "research"), 0o755))

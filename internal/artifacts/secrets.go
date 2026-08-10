@@ -80,7 +80,9 @@ const (
 func RedactLiveOutputSecrets(data []byte, authEnvValue string) []byte {
 	out := append([]byte(nil), data...)
 	if len(authEnvValue) >= 16 {
-		out = bytes.ReplaceAll(out, []byte(authEnvValue), []byte(LiveOutputAuthEnvRedacted))
+		authValue := []byte(authEnvValue)
+		out = bytes.ReplaceAll(out, authValue, []byte(LiveOutputAuthEnvRedacted))
+		out = redactPartialLiveOutputAuth(out, authValue)
 	}
 	for _, pattern := range vendorPrefixSecretPatterns {
 		out = pattern.pattern.ReplaceAllFunc(out, func(match []byte) []byte {
@@ -92,6 +94,29 @@ func RedactLiveOutputSecrets(data []byte, authEnvValue string) []byte {
 		})
 	}
 	return out
+}
+
+func redactPartialLiveOutputAuth(data, authValue []byte) []byte {
+	prefixLength := min(len(authValue), 16)
+	prefix := authValue[:prefixLength]
+	for start := bytes.Index(data, prefix); start >= 0; {
+		tail := data[start:]
+		if len(tail) < len(authValue) && bytes.HasPrefix(authValue, tail) {
+			redacted := make([]byte, 0, start+len(LiveOutputAuthEnvRedacted))
+			redacted = append(redacted, data[:start]...)
+			return append(redacted, LiveOutputAuthEnvRedacted...)
+		}
+		next := start + 1
+		if next >= len(data) {
+			break
+		}
+		relative := bytes.Index(data[next:], prefix)
+		if relative < 0 {
+			break
+		}
+		start = next + relative
+	}
+	return data
 }
 
 type VendorPrefixSecretFinding struct {
