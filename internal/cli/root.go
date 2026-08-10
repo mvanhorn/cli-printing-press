@@ -1271,12 +1271,14 @@ func mergeSpecsWithOptions(specs []*spec.APISpec, name string, opts mergeSpecOpt
 	sharedPathPrefix := sharedMultiSpecEndpointPathPrefix(specs)
 
 	merged := &spec.APISpec{
-		Name:        name,
-		Description: "Combined CLI for multiple API services",
-		Version:     specs[0].Version,
-		BaseURL:     mergedBaseURL,
-		BasePath:    specs[0].BasePath,
-		Auth:        mergeMultiSpecAuth(specs),
+		Name:            name,
+		Description:     "Combined CLI for multiple API services",
+		Version:         specs[0].Version,
+		BaseURL:         mergedBaseURL,
+		BasePath:        specs[0].BasePath,
+		Auth:            mergeMultiSpecAuth(specs),
+		RequiredHeaders: mergeMultiSpecRequiredHeaders(specs),
+		Learn:           mergeMultiSpecLearn(specs),
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -1285,6 +1287,8 @@ func mergeSpecsWithOptions(specs []*spec.APISpec, name string, opts mergeSpecOpt
 		Types:     map[string]spec.TypeDef{},
 	}
 
+	seenEndpointSignatures := map[string]struct{}{}
+	seenEndpointRefs := map[string]string{}
 	for i, s := range specs {
 		if merged.SpecSource == "" || merged.SpecSource == "official" {
 			switch s.SpecSource {
@@ -1304,6 +1308,8 @@ func mergeSpecsWithOptions(specs []*spec.APISpec, name string, opts mergeSpecOpt
 
 		prefix := perSpecPathPrefix[i]
 		resourceRenames := map[string]string{}
+		duplicateEndpointRefs := map[string]string{}
+		acceptedResourceKeys := make([]string, 0, len(s.Resources))
 		for resourceName, resource := range s.Resources {
 			if prefix != "" {
 				// Same-host/different-path specs are normalized by folding each
@@ -1313,6 +1319,13 @@ func mergeSpecsWithOptions(specs []*spec.APISpec, name string, opts mergeSpecOpt
 				resource = prefixResourceEndpointPaths(resource, prefix, s.BaseURL)
 			} else {
 				resource = resourceWithMergedSpecBaseURL(resource, s.BaseURL, merged.BaseURL)
+			}
+			if !opts.NamePrefix && i > 0 {
+				var keep bool
+				resource, keep = filterDuplicateResourceEndpoints(resource, resourceName, seenEndpointRefs, duplicateEndpointRefs)
+				if !keep {
+					continue
+				}
 			}
 			key := multiSpecResourceName(s, resourceName, sharedPathPrefix)
 			if opts.NamePrefix {
@@ -1330,6 +1343,14 @@ func mergeSpecsWithOptions(specs []*spec.APISpec, name string, opts mergeSpecOpt
 				resourceRenames[resourceName] = key
 			}
 			merged.Resources[key] = resource
+			acceptedResourceKeys = append(acceptedResourceKeys, key)
+		}
+		if !opts.NamePrefix {
+			for _, key := range acceptedResourceKeys {
+				resource := merged.Resources[key]
+				addResourceEndpointSignatures(seenEndpointSignatures, resource)
+				addResourceEndpointReferences(seenEndpointRefs, resource, key)
+			}
 		}
 
 		for typeName, typeDef := range s.Types {
@@ -1341,7 +1362,7 @@ func mergeSpecsWithOptions(specs []*spec.APISpec, name string, opts mergeSpecOpt
 		}
 
 		if mcpConfigured(s.MCP) && !mcpConfigured(merged.MCP) {
-			merged.MCP = rewriteMCPIntentEndpointRefs(s.MCP, resourceRenames)
+			merged.MCP = rewriteMCPIntentEndpointRefs(s.MCP, resourceRenames, duplicateEndpointRefs)
 		}
 	}
 
@@ -1376,11 +1397,18 @@ func mergeMultiSpecAuth(specs []*spec.APISpec) spec.AuthConfig {
 
 	auth := specs[0].Auth
 	authSpecIndex := 0
-	if auth.AuthorizationURL == "" {
+	if !authConfigHasModel(auth) {
 		for i, s := range specs[1:] {
 			if s.Auth.AuthorizationURL != "" {
 				auth = s.Auth
 				authSpecIndex = i + 1
+				break
+			}
+		}
+	} else {
+		for _, s := range specs[1:] {
+			if s.Auth.AuthorizationURL != "" && compatibleMultiSpecAuthModels(auth, s.Auth) {
+				fillMissingAuthFields(&auth, s.Auth)
 				break
 			}
 		}
@@ -1412,6 +1440,170 @@ func mergeMultiSpecAuth(specs []*spec.APISpec) spec.AuthConfig {
 	auth.Scopes = sortedScopes(scopeSet)
 	auth.AdditionalHeaders = headers
 	return auth
+}
+
+func authConfigHasModel(auth spec.AuthConfig) bool {
+	typeName := strings.TrimSpace(auth.Type)
+	if typeName != "" && !strings.EqualFold(typeName, "none") {
+		return true
+	}
+	return strings.TrimSpace(auth.Header) != "" ||
+		strings.TrimSpace(auth.Format) != "" ||
+		len(auth.EnvVars) > 0 ||
+		len(auth.EnvVarSpecs) > 0 ||
+		auth.HasCookies() ||
+		len(auth.AdditionalHeaders) > 0 ||
+		strings.TrimSpace(auth.AuthorizationURL) != ""
+}
+
+func compatibleMultiSpecAuthModels(base, incoming spec.AuthConfig) bool {
+	baseType := strings.ToLower(strings.TrimSpace(base.Type))
+	incomingType := strings.ToLower(strings.TrimSpace(incoming.Type))
+	if baseType == "" || incomingType == "" ||
+		baseType == spec.TierAuthTypeNone || incomingType == spec.TierAuthTypeNone ||
+		baseType != incomingType {
+		return false
+	}
+	if base.Header != "" && incoming.Header != "" && !strings.EqualFold(base.Header, incoming.Header) {
+		return false
+	}
+	if base.In != "" && incoming.In != "" && !strings.EqualFold(base.In, incoming.In) {
+		return false
+	}
+	return true
+}
+
+func fillMissingAuthFields(dst *spec.AuthConfig, src spec.AuthConfig) {
+	if dst == nil {
+		return
+	}
+	if dst.Subtype == "" {
+		dst.Subtype = src.Subtype
+	}
+	if dst.Header == "" {
+		dst.Header = src.Header
+	}
+	if dst.Prefix == "" {
+		dst.Prefix = src.Prefix
+	}
+	if dst.Format == "" {
+		dst.Format = src.Format
+	}
+	if dst.In == "" {
+		dst.In = src.In
+	}
+	if dst.Scheme == "" {
+		dst.Scheme = src.Scheme
+	}
+	if dst.AuthorizationURL == "" {
+		dst.AuthorizationURL = src.AuthorizationURL
+	}
+	if dst.DeviceAuthorizationURL == "" {
+		dst.DeviceAuthorizationURL = src.DeviceAuthorizationURL
+	}
+	if dst.TokenURL == "" {
+		dst.TokenURL = src.TokenURL
+	}
+	if dst.DefaultClientID == "" {
+		dst.DefaultClientID = src.DefaultClientID
+	}
+	if strings.EqualFold(dst.Type, "oauth2") {
+		if dst.OAuth2Grant == "" {
+			dst.OAuth2Grant = src.OAuth2Grant
+		}
+		if dst.RefreshTokenMechanism == "" {
+			dst.RefreshTokenMechanism = src.RefreshTokenMechanism
+		}
+	}
+}
+
+func mergeMultiSpecRequiredHeaders(specs []*spec.APISpec) []spec.RequiredHeader {
+	var merged []spec.RequiredHeader
+	seen := map[string]struct{}{}
+	for _, s := range specs {
+		for _, header := range s.RequiredHeaders {
+			key := strings.ToLower(strings.TrimSpace(header.Name))
+			if key != "" {
+				// Required headers are global on the merged client, so the first
+				// value wins when specs declare the same name differently.
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+			}
+			merged = append(merged, header)
+		}
+	}
+	return merged
+}
+
+func mergeMultiSpecLearn(specs []*spec.APISpec) spec.LearnConfig {
+	var merged spec.LearnConfig
+	controlConfigured := false
+	for _, s := range specs {
+		learn := s.Learn
+		if !learnConfigConfigured(learn) {
+			continue
+		}
+		if !controlConfigured && (learn.Enabled || learn.Disabled || learn.EnabledSet) {
+			merged.Enabled = learn.Enabled
+			merged.Disabled = learn.Disabled
+			merged.EnabledSet = learn.EnabledSet
+			controlConfigured = true
+		}
+		merged.TickerPatterns = appendUniqueStrings(merged.TickerPatterns, learn.TickerPatterns)
+		merged.Stopwords = appendUniqueStrings(merged.Stopwords, learn.Stopwords)
+		if merged.Synonyms == nil && len(learn.Synonyms) > 0 {
+			merged.Synonyms = map[string]string{}
+		}
+		for key, value := range learn.Synonyms {
+			if _, exists := merged.Synonyms[key]; !exists {
+				merged.Synonyms[key] = value
+			}
+		}
+		if merged.EntityLookupSeeds == nil && len(learn.EntityLookupSeeds) > 0 {
+			merged.EntityLookupSeeds = map[string][]spec.LookupSeed{}
+		}
+		for kind, seeds := range learn.EntityLookupSeeds {
+			for _, seed := range seeds {
+				merged.EntityLookupSeeds[kind] = appendUniqueLookupSeed(merged.EntityLookupSeeds[kind], seed)
+			}
+		}
+	}
+	return merged
+}
+
+func learnConfigConfigured(learn spec.LearnConfig) bool {
+	return learn.Enabled || learn.Disabled || learn.EnabledSet ||
+		len(learn.TickerPatterns) > 0 || len(learn.Stopwords) > 0 ||
+		len(learn.Synonyms) > 0 || len(learn.EntityLookupSeeds) > 0
+}
+
+func appendUniqueStrings(dst, src []string) []string {
+	seen := make(map[string]struct{}, len(dst)+len(src))
+	for _, value := range dst {
+		seen[value] = struct{}{}
+	}
+	for _, value := range src {
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		dst = append(dst, value)
+	}
+	return dst
+}
+
+func appendUniqueLookupSeed(dst []spec.LookupSeed, seed spec.LookupSeed) []spec.LookupSeed {
+	for i := range dst {
+		if dst[i].Canonical != seed.Canonical {
+			continue
+		}
+		dst[i].Aliases = appendUniqueStrings(dst[i].Aliases, seed.Aliases)
+		return dst
+	}
+	seed.Aliases = appendUniqueStrings(nil, seed.Aliases)
+	return append(dst, seed)
 }
 
 func seedAuthHeaderDedupe(seenHeaders, seenEnvVars map[string]struct{}, auth spec.AuthConfig, headers []spec.AdditionalAuthHeader) {
@@ -1571,8 +1763,8 @@ func normalizeAuthURL(raw string) string {
 	return parsed.String()
 }
 
-func rewriteMCPIntentEndpointRefs(mcp spec.MCPConfig, resourceRenames map[string]string) spec.MCPConfig {
-	if len(resourceRenames) == 0 || len(mcp.Intents) == 0 {
+func rewriteMCPIntentEndpointRefs(mcp spec.MCPConfig, resourceRenames, duplicateEndpointRefs map[string]string) spec.MCPConfig {
+	if len(resourceRenames) == 0 && len(duplicateEndpointRefs) == 0 || len(mcp.Intents) == 0 {
 		return mcp
 	}
 	mcp.Intents = append([]spec.Intent(nil), mcp.Intents...)
@@ -1583,7 +1775,13 @@ func rewriteMCPIntentEndpointRefs(mcp spec.MCPConfig, resourceRenames map[string
 		}
 		intent.Steps = append([]spec.IntentStep(nil), intent.Steps...)
 		for stepIndex := range intent.Steps {
-			intent.Steps[stepIndex].Endpoint = rewriteEndpointResourceRef(intent.Steps[stepIndex].Endpoint, resourceRenames)
+			endpoint := intent.Steps[stepIndex].Endpoint
+			if canonical, ok := duplicateEndpointRefs[endpoint]; ok {
+				endpoint = canonical
+			} else {
+				endpoint = rewriteEndpointResourceRef(endpoint, resourceRenames)
+			}
+			intent.Steps[stepIndex].Endpoint = endpoint
 		}
 		mcp.Intents[intentIndex] = intent
 	}
@@ -1633,6 +1831,136 @@ func addResourceEndpointSignatures(signatures map[string]struct{}, resource spec
 	}
 }
 
+func addResourceEndpointReferences(references map[string]string, resource spec.Resource, resourceRef string) {
+	for name, endpoint := range resource.Endpoints {
+		signature := endpointSignature(resource, endpoint)
+		if _, exists := references[signature]; !exists {
+			references[signature] = resourceRef + "." + name
+		}
+	}
+	for name, sub := range resource.SubResources {
+		if sub.BaseURL == "" {
+			sub.BaseURL = resource.BaseURL
+		}
+		addResourceEndpointReferences(references, sub, resourceRef+"."+name)
+	}
+}
+
+func filterDuplicateResourceEndpoints(resource spec.Resource, resourceName string, seen map[string]string, duplicateRefs map[string]string) (spec.Resource, bool) {
+	return filterDuplicateResourceEndpointsWithBase(resource, resourceName, "", seen, duplicateRefs)
+}
+
+func filterDuplicateResourceEndpointsWithBase(resource spec.Resource, refPrefix, inheritedBaseURL string, seen map[string]string, duplicateRefs map[string]string) (spec.Resource, bool) {
+	originalHasEndpointOrOperation := resourceHasEndpointOrOperation(resource)
+	baseURL := resource.BaseURL
+	if baseURL == "" {
+		baseURL = inheritedBaseURL
+	}
+	signatureResource := resource
+	signatureResource.BaseURL = baseURL
+
+	filteredEndpoints := make(map[string]spec.Endpoint, len(resource.Endpoints))
+	for name, endpoint := range resource.Endpoints {
+		if canonical, exists := seen[endpointSignature(signatureResource, endpoint)]; exists {
+			duplicateRefs[refPrefix+"."+name] = canonical
+			continue
+		}
+		filteredEndpoints[name] = endpoint
+	}
+	if len(resource.Endpoints) > 0 {
+		resource.Endpoints = filteredEndpoints
+	}
+
+	filteredSubResources := make(map[string]spec.Resource, len(resource.SubResources))
+	for name, subResource := range resource.SubResources {
+		filtered, keep := filterDuplicateResourceEndpointsWithBase(subResource, refPrefix+"."+name, baseURL, seen, duplicateRefs)
+		if keep {
+			filteredSubResources[name] = filtered
+		}
+	}
+	if len(resource.SubResources) > 0 {
+		resource.SubResources = filteredSubResources
+	}
+
+	if !originalHasEndpointOrOperation || resourceHasEndpointOrOperation(resource) {
+		return resource, true
+	}
+	return resource, false
+}
+
+func resourceHasEndpointOrOperation(resource spec.Resource) bool {
+	if len(resource.Endpoints) > 0 || len(resource.Operations) > 0 {
+		return true
+	}
+	for _, subResource := range resource.SubResources {
+		if resourceHasEndpointOrOperation(subResource) {
+			return true
+		}
+	}
+	return false
+}
+
+type endpointParameterSignature struct {
+	Name                 string   `json:"name,omitempty"`
+	In                   string   `json:"in,omitempty"`
+	FlagName             string   `json:"flag_name,omitempty"`
+	URLName              string   `json:"url_name,omitempty"`
+	BodyName             string   `json:"body_name,omitempty"`
+	Type                 string   `json:"type,omitempty"`
+	Required             bool     `json:"required,omitempty"`
+	Positional           bool     `json:"positional,omitempty"`
+	PathParam            bool     `json:"path_param,omitempty"`
+	GlobalScope          bool     `json:"global_scope,omitempty"`
+	Default              any      `json:"default,omitempty"`
+	Enum                 []string `json:"enum,omitempty"`
+	Format               string   `json:"format,omitempty"`
+	QueryStyle           string   `json:"query_style,omitempty"`
+	QueryExplode         *bool    `json:"query_explode,omitempty"`
+	ItemType             string   `json:"item_type,omitempty"`
+	FieldSelectorDefault string   `json:"field_selector_default,omitempty"`
+	Fields               []endpointParameterSignature
+}
+
+func endpointParameterShape(param spec.Param) endpointParameterSignature {
+	fields := make([]endpointParameterSignature, 0, len(param.Fields))
+	for _, field := range param.Fields {
+		fields = append(fields, endpointParameterShape(field))
+	}
+	return endpointParameterSignature{
+		Name:                 param.Name,
+		In:                   param.In,
+		FlagName:             param.FlagName,
+		URLName:              param.URLName,
+		BodyName:             param.BodyName,
+		Type:                 param.Type,
+		Required:             param.Required,
+		Positional:           param.Positional,
+		PathParam:            param.PathParam,
+		GlobalScope:          param.GlobalScope,
+		Default:              param.Default,
+		Enum:                 param.Enum,
+		Format:               param.Format,
+		QueryStyle:           param.QueryStyle,
+		QueryExplode:         param.QueryExplode,
+		ItemType:             param.ItemType,
+		FieldSelectorDefault: param.FieldSelectorDefault,
+		Fields:               fields,
+	}
+}
+
+func endpointParameterSignatures(params []spec.Param) []string {
+	shapes := make([]string, 0, len(params))
+	for _, param := range params {
+		encoded, err := json.Marshal(endpointParameterShape(param))
+		if err != nil {
+			encoded = []byte(fmt.Sprintf("%#v", endpointParameterShape(param)))
+		}
+		shapes = append(shapes, string(encoded))
+	}
+	sort.Strings(shapes)
+	return shapes
+}
+
 func endpointSignature(resource spec.Resource, endpoint spec.Endpoint) string {
 	baseURL := strings.TrimRight(strings.TrimSpace(endpoint.BaseURL), "/")
 	if baseURL == "" {
@@ -1640,7 +1968,54 @@ func endpointSignature(resource spec.Resource, endpoint spec.Endpoint) string {
 	}
 	method := strings.ToUpper(strings.TrimSpace(endpoint.Method))
 	path := strings.TrimRight(strings.TrimSpace(endpoint.Path), "/")
-	return method + " " + baseURL + " " + path
+	shape := struct {
+		Mutation           bool                  `json:"mutation,omitempty"`
+		RequestContentType string                `json:"request_content_type,omitempty"`
+		BodyJSONFallback   bool                  `json:"body_json_fallback,omitempty"`
+		BodyRequired       bool                  `json:"body_required,omitempty"`
+		BodyIsArray        bool                  `json:"body_is_array,omitempty"`
+		Response           spec.ResponseDef      `json:"response"`
+		ResponseFormat     string                `json:"response_format,omitempty"`
+		ResponsePath       string                `json:"response_path,omitempty"`
+		DataSourceStrategy string                `json:"data_source_strategy,omitempty"`
+		Pagination         *spec.Pagination      `json:"pagination,omitempty"`
+		HeaderOverrides    []spec.RequiredHeader `json:"header_overrides,omitempty"`
+		NoAuth             bool                  `json:"no_auth,omitempty"`
+		ObservedAuth       []string              `json:"observed_auth,omitempty"`
+		Tier               string                `json:"tier,omitempty"`
+		RequiresRole       string                `json:"requires_role,omitempty"`
+		Critical           bool                  `json:"critical,omitempty"`
+		Syncable           bool                  `json:"syncable,omitempty"`
+		Walker             *spec.WalkerConfig    `json:"walker,omitempty"`
+		Params             []string              `json:"params,omitempty"`
+		Body               []string              `json:"body,omitempty"`
+	}{
+		Mutation:           endpoint.Mutation,
+		RequestContentType: endpoint.RequestContentType,
+		BodyJSONFallback:   endpoint.BodyJSONFallback,
+		BodyRequired:       endpoint.BodyRequired,
+		BodyIsArray:        endpoint.BodyIsArray,
+		Response:           endpoint.Response,
+		ResponseFormat:     endpoint.ResponseFormat,
+		ResponsePath:       endpoint.ResponsePath,
+		DataSourceStrategy: endpoint.DataSourceStrategy,
+		Pagination:         endpoint.Pagination,
+		HeaderOverrides:    endpoint.HeaderOverrides,
+		NoAuth:             endpoint.NoAuth,
+		ObservedAuth:       endpoint.ObservedAuth,
+		Tier:               endpoint.Tier,
+		RequiresRole:       endpoint.RequiresRole,
+		Critical:           endpoint.Critical,
+		Syncable:           endpoint.Syncable,
+		Walker:             endpoint.Walker,
+		Params:             endpointParameterSignatures(endpoint.Params),
+		Body:               endpointParameterSignatures(endpoint.Body),
+	}
+	encoded, err := json.Marshal(shape)
+	if err != nil {
+		encoded = []byte(fmt.Sprintf("%#v", shape))
+	}
+	return method + " " + baseURL + " " + path + " " + string(encoded)
 }
 
 func multiSpecResourceName(s *spec.APISpec, resourceName string, sharedPathPrefix []string) string {

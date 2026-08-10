@@ -1562,6 +1562,274 @@ func TestMergeSpecsDeduplicatesTrailingSlashEndpointResourceCollision(t *testing
 	assert.Equal(t, "/v1beta/accounts", merged.Resources["accounts"].Endpoints["list"].Path)
 }
 
+func TestMergeSpecsPreservesPrimaryAuthModelWhileFillingMissingOAuthMetadata(t *testing.T) {
+	t.Parallel()
+
+	primary := &spec.APISpec{
+		Name:    "curated",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:   "bearer_token",
+			Header: "Authorization",
+			Format: "Bearer {token}",
+			EnvVars: []string{
+				"CURATED_TOKEN",
+			},
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "CURATED_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"items": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	secondary := &spec.APISpec{
+		Name:    "vendor",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:             "bearer_token",
+			Header:           "Authorization",
+			Format:           "Bearer {access_token}",
+			AuthorizationURL: "https://accounts.example.com/authorize",
+			TokenURL:         "https://accounts.example.com/token",
+			EnvVars:          []string{"VENDOR_ACCESS_TOKEN"},
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "VENDOR_ACCESS_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"vendor": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/vendor"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary}, "combo")
+
+	assert.Equal(t, "bearer_token", merged.Auth.Type)
+	assert.Equal(t, "Authorization", merged.Auth.Header)
+	assert.Equal(t, "Bearer {token}", merged.Auth.Format)
+	assert.Equal(t, []string{"CURATED_TOKEN"}, merged.Auth.EnvVars)
+	assert.Equal(t, []string{"CURATED_TOKEN"}, authEnvVarNames(merged.Auth.EnvVarSpecs))
+	assert.Equal(t, "https://accounts.example.com/authorize", merged.Auth.AuthorizationURL)
+	assert.Equal(t, "https://accounts.example.com/token", merged.Auth.TokenURL)
+}
+
+func TestMergeSpecsDoesNotCopyOAuthMetadataAcrossAuthModels(t *testing.T) {
+	t.Parallel()
+
+	primary := &spec.APISpec{
+		Name:    "keyed",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:   "api_key",
+			Header: "X-API-Key",
+			In:     "header",
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "API_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"items": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	secondary := &spec.APISpec{
+		Name:    "oauth",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:             "bearer_token",
+			Header:           "Authorization",
+			AuthorizationURL: "https://accounts.example.com/authorize",
+			TokenURL:         "https://accounts.example.com/token",
+		},
+		Resources: map[string]spec.Resource{
+			"oauth": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/oauth"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary}, "combo")
+
+	assert.Equal(t, "api_key", merged.Auth.Type)
+	assert.Empty(t, merged.Auth.AuthorizationURL)
+	assert.Empty(t, merged.Auth.TokenURL)
+	assert.Equal(t, []string{"API_KEY"}, authEnvVarNames(merged.Auth.EnvVarSpecs))
+}
+
+func TestMergeSpecsPreservesRequiredHeadersAndLearnFromLaterSpecs(t *testing.T) {
+	t.Parallel()
+
+	primary := &spec.APISpec{
+		Name:            "primary",
+		Version:         "0.1.0",
+		BaseURL:         "https://api.example.com",
+		RequiredHeaders: []spec.RequiredHeader{{Name: "X-Primary", Value: "one"}},
+		Learn: spec.LearnConfig{
+			TickerPatterns: []string{"PRIMARY-[0-9]+"},
+		},
+		Resources: map[string]spec.Resource{
+			"primary": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/primary"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	secondary := &spec.APISpec{
+		Name:            "secondary",
+		Version:         "0.1.0",
+		BaseURL:         "https://api.example.com",
+		RequiredHeaders: []spec.RequiredHeader{{Name: "X-Secondary", Value: "two"}},
+		Learn: spec.LearnConfig{
+			Enabled:        true,
+			TickerPatterns: []string{"SECONDARY-[0-9]+", "PRIMARY-[0-9]+"},
+			Stopwords:      []string{"the"},
+			Synonyms:       map[string]string{"yesterday": "prior day"},
+			EntityLookupSeeds: map[string][]spec.LookupSeed{
+				"team": {{Canonical: "Acme", Aliases: []string{"acme corp"}}},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"secondary": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/secondary"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary}, "combo")
+
+	assert.Equal(t, []spec.RequiredHeader{
+		{Name: "X-Primary", Value: "one"},
+		{Name: "X-Secondary", Value: "two"},
+	}, merged.RequiredHeaders)
+	assert.Equal(t, spec.LearnConfig{
+		Enabled:        true,
+		TickerPatterns: []string{"PRIMARY-[0-9]+", "SECONDARY-[0-9]+"},
+		Stopwords:      []string{"the"},
+		Synonyms:       map[string]string{"yesterday": "prior day"},
+		EntityLookupSeeds: map[string][]spec.LookupSeed{
+			"team": {{Canonical: "Acme", Aliases: []string{"acme corp"}}},
+		},
+	}, merged.Learn)
+}
+
+func TestMergeSpecsDeduplicatesAcrossResourceNamesButKeepsDistinctEndpoints(t *testing.T) {
+	t.Parallel()
+
+	primary := &spec.APISpec{
+		Name:    "curated",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"messages": {Endpoints: map[string]spec.Endpoint{
+				"create": {Method: "POST", Path: "/messages", Params: []spec.Param{{Name: "channel", In: "query", Type: "string", Required: true}}},
+			}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	secondary := &spec.APISpec{
+		Name:    "vendor",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"chat": {Endpoints: map[string]spec.Endpoint{
+				"post_message": {Method: "POST", Path: "/messages", Params: []spec.Param{{Name: "channel", In: "query", Type: "string", Required: true}}},
+				"history":      {Method: "GET", Path: "/messages/history"},
+			}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary}, "combo")
+
+	require.Contains(t, merged.Resources, "chat")
+	assert.NotContains(t, merged.Resources["chat"].Endpoints, "post_message")
+	assert.Contains(t, merged.Resources["chat"].Endpoints, "history")
+}
+
+func TestMergeSpecsRewritesMCPIntentWhenDuplicateResourceIsDropped(t *testing.T) {
+	t.Parallel()
+
+	primary := &spec.APISpec{
+		Name:    "curated",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"messages": {Endpoints: map[string]spec.Endpoint{
+				"create": {Method: "POST", Path: "/messages"},
+			}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	secondary := &spec.APISpec{
+		Name:    "vendor",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"chat": {Endpoints: map[string]spec.Endpoint{
+				"post_message": {Method: "POST", Path: "/messages"},
+			}},
+		},
+		Types: map[string]spec.TypeDef{},
+		MCP: spec.MCPConfig{
+			Intents: []spec.Intent{{
+				Name:        "send_message",
+				Description: "Send a message",
+				Steps:       []spec.IntentStep{{Endpoint: "chat.post_message"}},
+			}},
+		},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary}, "combo")
+
+	assert.NotContains(t, merged.Resources, "chat")
+	require.Len(t, merged.MCP.Intents, 1)
+	require.Len(t, merged.MCP.Intents[0].Steps, 1)
+	assert.Equal(t, "messages.create", merged.MCP.Intents[0].Steps[0].Endpoint)
+	assert.NoError(t, merged.Validate())
+}
+
+func TestMergeSpecsKeepsSameRouteWhenParameterShapesDiffer(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:    "a",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"items": {Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/items", Params: []spec.Param{{Name: "limit", In: "query", Type: "integer"}}},
+			}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:    "b",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"items": {Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/items", Params: []spec.Param{{Name: "cursor", In: "query", Type: "string"}}},
+			}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "combo")
+
+	assert.Contains(t, merged.Resources, "items")
+	assert.Contains(t, merged.Resources, "b-items")
+}
+
+func authEnvVarNames(envVars []spec.AuthEnvVar) []string {
+	names := make([]string, 0, len(envVars))
+	for _, envVar := range envVars {
+		names = append(names, envVar.Name)
+	}
+	return names
+}
+
 func TestMergeSpecsNamePrefixOptInKeepsNamespacedResourceForm(t *testing.T) {
 	t.Parallel()
 
