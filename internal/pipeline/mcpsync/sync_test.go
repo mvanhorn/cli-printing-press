@@ -723,7 +723,7 @@ require github.com/mark3labs/mcp-go v0.26.0
 
 	updated, err := os.ReadFile(filepath.Join(cliDir, "go.mod"))
 	require.NoError(t, err)
-	assert.Contains(t, string(updated), "github.com/mark3labs/mcp-go v0.47.0")
+	assert.Contains(t, string(updated), "github.com/mark3labs/mcp-go v0.57.0")
 	assert.NotContains(t, string(updated), "github.com/mark3labs/mcp-go v0.26.0")
 	// Surrounding directives must be preserved.
 	assert.Contains(t, string(updated), "module example.com/foo")
@@ -735,7 +735,7 @@ require github.com/mark3labs/mcp-go v0.26.0
 // already-current CLIs.
 func TestEnsureMCPGoMinVersionNoOpAtOrAboveFloor(t *testing.T) {
 	t.Parallel()
-	for _, version := range []string{"v0.47.0", "v0.48.0", "v1.0.0"} {
+	for _, version := range []string{"v0.57.0", "v0.58.0", "v1.0.0"} {
 		t.Run(version, func(t *testing.T) {
 			t.Parallel()
 			cliDir := t.TempDir()
@@ -795,7 +795,7 @@ replace github.com/mark3labs/mcp-go => github.com/myfork/mcp-go v0.30.0
 
 	updated, err := os.ReadFile(filepath.Join(cliDir, "go.mod"))
 	require.NoError(t, err)
-	assert.Contains(t, string(updated), "github.com/mark3labs/mcp-go v0.47.0",
+	assert.Contains(t, string(updated), "github.com/mark3labs/mcp-go v0.57.0",
 		"require entry must be bumped to the floor")
 	assert.Contains(t, string(updated), "github.com/myfork/mcp-go v0.30.0",
 		"replace directive's target must be untouched")
