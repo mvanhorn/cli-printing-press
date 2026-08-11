@@ -874,10 +874,8 @@ func findArchivedSpec(dir string) (string, []byte, error) {
 	return "", nil, nil
 }
 
-// archivedSpecNameForFormat maps a source spec basename to the archive
-// filename generate writes alongside the CLI (archiveSpecBytes): JSON input
-// stays spec.json, everything else (YAML, GraphQL SDL) becomes spec.yaml.
-// Returns "" when the extension is unrecognized.
+// archivedSpecNameForFormat provides a best-effort fallback for callers that
+// do not have the generate flow's already-selected archive name.
 func archivedSpecNameForFormat(sourceBasename string) string {
 	switch strings.ToLower(filepath.Ext(sourceBasename)) {
 	case ".json":
@@ -1057,22 +1055,23 @@ func manifestAuthEnvVarSpecs(parsed *spec.APISpec) []spec.AuthEnvVar {
 // PipelineState), the standalone generate command only knows the spec
 // sources and output directory.
 type GenerateManifestParams struct {
-	APIName        string
-	SpecSrcs       []string // --spec args (URLs or file paths)
-	SpecURL        string   // --spec-url: explicit provenance URL (when --spec is a local downloaded file)
-	DocsURL        string   // --docs URL, if used
-	OutputDir      string
-	Description    string                 // best generated user-facing manifest description
-	DisplayName    string                 // best generated user-facing manifest display name
-	Creator        spec.Person            // resolved creator (manifest preserve > legacy fields > git config)
-	Contributors   []spec.Person          // resolved contributors, preserved from the existing manifest
-	Owner          string                 // legacy, derived from Creator.Handle (dual-write)
-	Printer        string                 // legacy, derived from Creator.Handle (dual-write)
-	PrinterName    string                 // legacy, derived from Creator.Name (dual-write)
-	RunID          string                 // from --research-dir/state.json when available, legacy basename fallback otherwise
-	Spec           *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
-	AuthPreference string                 // resolved OpenAPI securityScheme preference selected for this generate
-	NovelFeatures  []NovelFeatureManifest // transcendence features from research (nil if unavailable)
+	APIName         string
+	SpecSrcs        []string // --spec args (URLs or file paths)
+	SpecArchiveName string   // archive filename selected by generate, when one will be shipped
+	SpecURL         string   // --spec-url: explicit provenance URL (when --spec is a local downloaded file)
+	DocsURL         string   // --docs URL, if used
+	OutputDir       string
+	Description     string                 // best generated user-facing manifest description
+	DisplayName     string                 // best generated user-facing manifest display name
+	Creator         spec.Person            // resolved creator (manifest preserve > legacy fields > git config)
+	Contributors    []spec.Person          // resolved contributors, preserved from the existing manifest
+	Owner           string                 // legacy, derived from Creator.Handle (dual-write)
+	Printer         string                 // legacy, derived from Creator.Handle (dual-write)
+	PrinterName     string                 // legacy, derived from Creator.Name (dual-write)
+	RunID           string                 // from --research-dir/state.json when available, legacy basename fallback otherwise
+	Spec            *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
+	AuthPreference  string                 // resolved OpenAPI securityScheme preference selected for this generate
+	NovelFeatures   []NovelFeatureManifest // transcendence features from research (nil if unavailable)
 }
 
 // runIDPattern matches legacy and skill-allocated pipeline run_id basenames.
@@ -1223,17 +1222,16 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		}
 	}
 
-	// Repoint spec_path at the shipped archived spec. The packaged CLI ships
-	// the converted spec as spec.json (or spec.yaml/yml); the source spec's
-	// basename (e.g. exa-openapi.json) does not exist in the packaged tree,
-	// which breaks the provenance contract consumers check against the
-	// manifest. The archive name is derived from the spec format rather than
-	// a directory search because WriteManifestForGenerate runs before the
-	// archive write in the generate flow (root.go archives after the
-	// manifest), so the file is not on disk yet. No-spec runs (docs/sniff/
-	// plan) keep their existing spec_path (empty or docs URL).
+	// Repoint spec_path at the shipped archived spec. The generate flow passes
+	// the exact name selected by archiveSpecBytes; the extension fallback keeps
+	// direct callers useful without pretending it covers merged or unusual
+	// inputs. No-spec runs (docs/sniff/plan) keep their existing spec_path.
 	if m.SpecPath != "" && !strings.HasPrefix(m.SpecPath, "http://") && !strings.HasPrefix(m.SpecPath, "https://") {
-		if archiveName := archivedSpecNameForFormat(m.SpecPath); archiveName != "" {
+		archiveName := strings.TrimSpace(p.SpecArchiveName)
+		if archiveName == "" {
+			archiveName = archivedSpecNameForFormat(m.SpecPath)
+		}
+		if archiveName != "" {
 			m.SpecPath = archiveName
 		}
 	}

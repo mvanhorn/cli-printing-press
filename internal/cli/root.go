@@ -526,33 +526,35 @@ func newGenerateCmd() *cobra.Command {
 				}
 			}
 
+			archiveBytes, archiveName, archiveOK := archiveSpecBytes(apiSpec, specs, specRawBytes)
 			runID := pipeline.ResolveRunIDFromResearchDir(researchDir)
 			if runID == "" {
 				fmt.Fprintln(os.Stderr, "warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it")
 			}
 			if err := pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
-				APIName:        apiSpec.Name,
-				SpecSrcs:       specFiles,
-				SpecURL:        specURL,
-				OutputDir:      absOut,
-				Description:    generateResult.ManifestDescription,
-				DisplayName:    generateResult.DisplayName,
-				Creator:        apiSpec.Creator,
-				Contributors:   apiSpec.Contributors,
-				Owner:          apiSpec.Owner,
-				Printer:        apiSpec.Printer,
-				PrinterName:    apiSpec.PrinterName,
-				RunID:          runID,
-				Spec:           apiSpec,
-				AuthPreference: openAPIParseAuthPref,
-				NovelFeatures:  generateResult.NovelFeatures,
+				APIName:         apiSpec.Name,
+				SpecSrcs:        specFiles,
+				SpecArchiveName: archiveName,
+				SpecURL:         specURL,
+				OutputDir:       absOut,
+				Description:     generateResult.ManifestDescription,
+				DisplayName:     generateResult.DisplayName,
+				Creator:         apiSpec.Creator,
+				Contributors:    apiSpec.Contributors,
+				Owner:           apiSpec.Owner,
+				Printer:         apiSpec.Printer,
+				PrinterName:     apiSpec.PrinterName,
+				RunID:           runID,
+				Spec:            apiSpec,
+				AuthPreference:  openAPIParseAuthPref,
+				NovelFeatures:   generateResult.NovelFeatures,
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 			}
 
 			// Archive a snapshot of the spec alongside the CLI; multi-spec
 			// runs use the merged form (see archiveSpecBytes for why).
-			if archiveBytes, archiveName, ok := archiveSpecBytes(apiSpec, specs, specRawBytes); ok {
+			if archiveOK {
 				data := artifacts.RedactArchivedSpecSecrets(archiveBytes)
 				if err := os.WriteFile(filepath.Join(absOut, archiveName), data, 0o644); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not archive spec: %v\n", err)

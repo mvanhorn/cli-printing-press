@@ -2812,11 +2812,11 @@ func TestWriteManifestForGenerateRepointsSpecPathToArchivedSpec(t *testing.T) {
 
 func TestWriteManifestForGenerateKeepsSourceBasenameWhenNoArchivedSpec(t *testing.T) {
 	dir := t.TempDir()
-	// No spec.json/spec.yaml/spec.yml in OutputDir: docs-driven run must keep
-	// spec_path pointing at whatever was recorded (here empty), not fabricate one.
+	// No spec.json/spec.yaml/spec.yml in OutputDir: a direct caller without an
+	// archive name must keep the source basename instead of fabricating one.
 	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
 		APIName:   "test-api",
-		SpecSrcs:  []string{filepath.Join(t.TempDir(), "exa-openapi.json")},
+		SpecSrcs:  []string{filepath.Join(t.TempDir(), "schema.graphql")},
 		OutputDir: dir,
 		RunID:     "20260517-091036",
 	}))
@@ -2825,7 +2825,44 @@ func TestWriteManifestForGenerateKeepsSourceBasenameWhenNoArchivedSpec(t *testin
 	require.NoError(t, err)
 	var got CLIManifest
 	require.NoError(t, json.Unmarshal(data, &got))
-	// No archived spec in the output tree: the repoint must not fabricate a
-	// shipped file, so the source basename stays as the honest provenance
-	// record (this test is a regression guard against fabricating spec.json).
+	assert.Equal(t, "schema.graphql", got.SpecPath,
+		"without an archive name, an unrecognized source extension stays unchanged")
+}
+
+func TestWriteManifestForGenerateUsesSelectedArchiveName(t *testing.T) {
+	tests := []struct {
+		name     string
+		sources  []string
+		archive  string
+		wantPath string
+	}{
+		{
+			name:     "merged specs use JSON archive",
+			sources:  []string{"v1.yaml", "v2.yaml"},
+			archive:  "spec.json",
+			wantPath: "spec.json",
+		},
+		{
+			name:     "nonstandard source uses selected YAML archive",
+			sources:  []string{"schema.graphql"},
+			archive:  "spec.yaml",
+			wantPath: "spec.yaml",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+				APIName:         "test-api",
+				SpecSrcs:        tt.sources,
+				SpecArchiveName: tt.archive,
+				OutputDir:       dir,
+				RunID:           "20260517-091036",
+			}))
+
+			got := readPublishedManifest(t, dir)
+			assert.Equal(t, tt.wantPath, got.SpecPath)
+		})
+	}
 }
