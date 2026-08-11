@@ -56,7 +56,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 | `x-pp-dispatch-param` | parameter | `Param.DispatchParam` | No |
-| `x-pp-tenant-scope-column` | path item | *reserved for follow-up tenant-scoped reconcile; not parsed yet* | No |
+| `x-pp-tenant-scope-column` | path item | `Endpoint.TenantScopeColumn` | No |
 | `x-pp-membership-field` | path item | `Endpoint.MembershipField` | No |
 
 ## `info` Extensions
@@ -573,30 +573,33 @@ info:
 
 ### `x-pp-tenant-scope-column`
 
-Declares, on a parent collection's list path-item, the column or field name
-that identifies the tenant (e.g. workspace) scope for each row returned by
-that collection. Use it on list path-items whose synced rows are partitioned
-by a workspace or organization identifier, so that a future deletion-
-reconciliation pass can target only the rows belonging to the active tenant
-rather than pruning the entire table.
+Declares, on a collection's list path-item, the column or field name that
+identifies the tenant (e.g. workspace) scope for each row returned by that
+collection. It is self-declaring: the annotated collection's own rows carry
+this column. Use it on list path-items whose synced rows are partitioned by a
+workspace or organization identifier.
 
-This extension is **reserved and forward-looking**. It is consumed by the
-upcoming tenant-scoped deletion-reconciliation and flat fan-out work; the
-follow-up parser will map it to a `tenantScopeColumn` field on the profiled
-resource. The extension is **not parsed in the current release** and has no
-effect on generated output today. Specs without it are unaffected.
+Parsed field: `Endpoint.TenantScopeColumn`
+
+The value flows into the resource profile and is consumed in two places:
+- **Tenant-scoped dependent fan-out** (parent tables): a parent collection
+  carrying a tenant column is surfaced via `APIProfile.TenantScopedParents()`
+  into the generated `parentTenantScopeColumns` map, so dependent fan-out
+  targets only rows belonging to the active tenant.
+- **Flat tenant-scoped reconcile**: a flat resource becomes reconcilable
+  (`ReconcileMode = "flat"`) only when it carries a tenant column, has a
+  stable primary key, and is not routed through a discriminator dispatcher;
+  otherwise it stays `"none"`.
 
 Rules:
-- Optional. Absence means no tenant scoping is recorded; the current release
-  behavior is unchanged.
+- Optional. Absence means no tenant scoping is recorded for the collection.
 - Placed on the list path-item object (same level as `get:`, `post:`, etc.),
   not on an individual operation.
-- Value must be a non-empty string naming the response field that holds the
-  tenant scope (e.g. `workspace`, `workspace_slug`, `org_id`).
-- Only one column per path-item is meaningful; the field names the foreign-key
-  column whose values identify tenant boundaries in the synced rows.
-- Has no effect this round; the parser will begin reading it in the follow-up
-  tenant-scoped reconcile task.
+- Must be a string naming the response field that holds the tenant scope
+  (e.g. `workspace`, `workspace_slug`, `org_id`); non-string values are
+  ignored with a warning.
+- The field names the foreign-key column whose values identify tenant
+  boundaries in the synced rows.
 
 Example:
 
