@@ -399,22 +399,48 @@ After all layers complete, do a final scan for obvious leaks:
 FINAL_CHECK=false
 # CRED_REGEX must mirror the vendor-prefix patterns in Layer 0 and Layer 2
 # above; update both together so the verification step does not silently stop
-# checking a credential shape the scrub loop still redacts.
-CRED_REGEX='(sk_live_[A-Za-z0-9]{20,}|sk_test_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|xoxb-[A-Za-z0-9-]{20,}|xoxp-[A-Za-z0-9-]{20,}|\bAKIA[0-9A-Z]{16}\b|sk-or-v1-[A-Za-z0-9_-]{24,}|sk-ant-api03-[A-Za-z0-9_-]{40,}|\blin_api_[A-Za-z0-9_-]{32,}|\b[a-f0-9]{32}-us[0-9]{1,2}\b|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}|Bearer [A-Za-z0-9._~+/=-]{20,})'
+# checking a credential shape the scrub loop still redacts. The JWT shape
+# intentionally matches Layer 2's two-segment form; that also catches the
+# first two segments of a conventional three-segment JWT.
+CRED_REGEX='(sk_live_[A-Za-z0-9]{20,}|sk_test_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|xoxb-[A-Za-z0-9-]{20,}|xoxp-[A-Za-z0-9-]{20,}|\bAKIA[0-9A-Z]{16}\b|sk-or-v1-[A-Za-z0-9_-]{24,}|sk-ant-api03-[A-Za-z0-9_-]{40,}|\blin_api_[A-Za-z0-9_-]{32,}|\b[a-f0-9]{32}-us[0-9]{1,2}\b|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|Bearer [A-Za-z0-9._~+/=-]{20,})'
 # PII_REGEX must mirror the shapes in PII_PATTERNS above; update both together
 # (e.g. when adding Partita IVA with an allowlist) so the verification step
 # does not silently stop checking a shape the scrub loop still redacts.
 PII_REGEX='(\b[A-Z]{6}[0-9]{2}[A-Z][0-9]{2}[A-Z][0-9]{3}[A-Z]\b|\b(AD|AT|BE|BG|CH|CY|CZ|DE|DK|EE|ES|FI|FR|GB|GI|GR|HR|HU|IE|IS|IT|LI|LT|LU|LV|MC|MT|NL|NO|PL|PT|RO|SE|SI|SK|SM|VA)[0-9]{2}[A-Z0-9]{11,30}\b|\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b)'
+SCAN_FAILED=false
 for dir in "$STAGING_MANUSCRIPTS" "$STAGING_CLI_SOURCE"; do
   [ -d "$dir" ] || continue
-  CRED_MATCHES=$(grep -rEi "$CRED_REGEX" "$dir" 2>/dev/null | grep -v 'REDACTED' | head -5)
-  PII_MATCHES=$(grep -rEi "$PII_REGEX" "$dir" 2>/dev/null | grep -v 'REDACTED' | head -5)
+  if CRED_RAW=$(grep -rEi "$CRED_REGEX" "$dir" 2>/dev/null); then
+    :
+  else
+    CRED_STATUS=$?
+    if [ "$CRED_STATUS" -gt 1 ]; then
+      echo "WARNING: Credential scan could not read all files under $dir."
+      SCAN_FAILED=true
+    fi
+  fi
+  if PII_RAW=$(grep -rEi "$PII_REGEX" "$dir" 2>/dev/null); then
+    :
+  else
+    PII_STATUS=$?
+    if [ "$PII_STATUS" -gt 1 ]; then
+      echo "WARNING: PII scan could not read all files under $dir."
+      SCAN_FAILED=true
+    fi
+  fi
+  CRED_MATCHES=$(printf '%s\n' "$CRED_RAW" | grep -v 'REDACTED' | head -5)
+  PII_MATCHES=$(printf '%s\n' "$PII_RAW" | grep -v 'REDACTED' | head -5)
   if [ -n "$CRED_MATCHES" ] || [ -n "$PII_MATCHES" ]; then
     [ -n "$CRED_MATCHES" ] && echo "$CRED_MATCHES"
     [ -n "$PII_MATCHES" ] && echo "$PII_MATCHES"
     FINAL_CHECK=true
   fi
 done
+if [ "$SCAN_FAILED" = true ]; then
+  FINAL_CHECK=true
+  echo "WARNING: One or more post-scrub scans did not complete successfully."
+  echo "Artifacts will NOT be uploaded until the scan errors are resolved."
+fi
 if [ "$FINAL_CHECK" = true ]; then
   echo "WARNING: Potential secrets or PII still found after scrubbing. Review the matches above."
   echo "Artifacts will NOT be uploaded until this is resolved."
