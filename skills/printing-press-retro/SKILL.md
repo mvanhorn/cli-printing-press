@@ -867,6 +867,11 @@ If the user picks "Save locally only," skip Steps 3 and 4 — the retro is alrea
 saved to manuscript proofs and `/tmp/printing-press/retro/`. Clean up the staging
 folder, then jump to Step 6.
 
+If the user picks **Submit**, set `SUBMISSION_CONFIRMED=true` immediately before
+running Step 3. Leave it unset or set it to `false` for the other choices; the
+artifact-packaging reference refuses public uploads unless this explicit consent
+marker and the successful scrub marker are both present.
+
 If the user wants to override a dedup decision before submitting (e.g.,
 "file new for WU-2 instead of commenting"), accept the override: clear
 `WU_DEDUP[i]` for that WU and proceed.
