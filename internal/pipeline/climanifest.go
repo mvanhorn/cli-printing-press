@@ -874,6 +874,19 @@ func findArchivedSpec(dir string) (string, []byte, error) {
 	return "", nil, nil
 }
 
+// archivedSpecNameForFormat provides a best-effort fallback for callers that
+// do not have the generate flow's already-selected archive name.
+func archivedSpecNameForFormat(sourceBasename string) string {
+	switch strings.ToLower(filepath.Ext(sourceBasename)) {
+	case ".json":
+		return "spec.json"
+	case ".yaml", ".yml":
+		return "spec.yaml"
+	default:
+		return ""
+	}
+}
+
 // specChecksum computes a SHA-256 checksum of the file at path.
 // Returns "sha256:<hex>" on success, or an empty string if the file
 // does not exist.
@@ -1042,22 +1055,23 @@ func manifestAuthEnvVarSpecs(parsed *spec.APISpec) []spec.AuthEnvVar {
 // PipelineState), the standalone generate command only knows the spec
 // sources and output directory.
 type GenerateManifestParams struct {
-	APIName        string
-	SpecSrcs       []string // --spec args (URLs or file paths)
-	SpecURL        string   // --spec-url: explicit provenance URL (when --spec is a local downloaded file)
-	DocsURL        string   // --docs URL, if used
-	OutputDir      string
-	Description    string                 // best generated user-facing manifest description
-	DisplayName    string                 // best generated user-facing manifest display name
-	Creator        spec.Person            // resolved creator (manifest preserve > legacy fields > git config)
-	Contributors   []spec.Person          // resolved contributors, preserved from the existing manifest
-	Owner          string                 // legacy, derived from Creator.Handle (dual-write)
-	Printer        string                 // legacy, derived from Creator.Handle (dual-write)
-	PrinterName    string                 // legacy, derived from Creator.Name (dual-write)
-	RunID          string                 // from --research-dir/state.json when available, legacy basename fallback otherwise
-	Spec           *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
-	AuthPreference string                 // resolved OpenAPI securityScheme preference selected for this generate
-	NovelFeatures  []NovelFeatureManifest // transcendence features from research (nil if unavailable)
+	APIName         string
+	SpecSrcs        []string // --spec args (URLs or file paths)
+	SpecArchiveName string   // archive filename selected by generate, when one will be shipped
+	SpecURL         string   // --spec-url: explicit provenance URL (when --spec is a local downloaded file)
+	DocsURL         string   // --docs URL, if used
+	OutputDir       string
+	Description     string                 // best generated user-facing manifest description
+	DisplayName     string                 // best generated user-facing manifest display name
+	Creator         spec.Person            // resolved creator (manifest preserve > legacy fields > git config)
+	Contributors    []spec.Person          // resolved contributors, preserved from the existing manifest
+	Owner           string                 // legacy, derived from Creator.Handle (dual-write)
+	Printer         string                 // legacy, derived from Creator.Handle (dual-write)
+	PrinterName     string                 // legacy, derived from Creator.Name (dual-write)
+	RunID           string                 // from --research-dir/state.json when available, legacy basename fallback otherwise
+	Spec            *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
+	AuthPreference  string                 // resolved OpenAPI securityScheme preference selected for this generate
+	NovelFeatures   []NovelFeatureManifest // transcendence features from research (nil if unavailable)
 }
 
 // runIDPattern matches legacy and skill-allocated pipeline run_id basenames.
@@ -1205,6 +1219,20 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 					m.SpecChecksum = cs
 				}
 			}
+		}
+	}
+
+	// Repoint spec_path at the shipped archived spec. The generate flow passes
+	// the exact name selected by archiveSpecBytes; the extension fallback keeps
+	// direct callers useful without pretending it covers merged or unusual
+	// inputs. No-spec runs (docs/sniff/plan) keep their existing spec_path.
+	if m.SpecPath != "" && !strings.HasPrefix(m.SpecPath, "http://") && !strings.HasPrefix(m.SpecPath, "https://") {
+		archiveName := strings.TrimSpace(p.SpecArchiveName)
+		if archiveName == "" {
+			archiveName = archivedSpecNameForFormat(m.SpecPath)
+		}
+		if archiveName != "" {
+			m.SpecPath = archiveName
 		}
 	}
 

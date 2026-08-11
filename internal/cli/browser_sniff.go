@@ -9,9 +9,20 @@ import (
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/spf13/cobra"
 )
+
+// browserSniffConfigPath matches the runtime slug-derived path so the README
+// and config surface agree even when --name is a display title.
+func browserSniffConfigPath(name string) string {
+	slug := naming.Slug(name)
+	if slug == "" {
+		return ""
+	}
+	return fmt.Sprintf("~/.config/%s-pp-cli/config.toml", slug)
+}
 
 func newBrowserSniffCmd() *cobra.Command {
 	var harPath string
@@ -59,7 +70,7 @@ func newBrowserSniffCmd() *cobra.Command {
 
 			if name != "" {
 				apiSpec.Name = name
-				apiSpec.Config.Path = fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name)
+				apiSpec.Config.Path = browserSniffConfigPath(name)
 			}
 
 			if outputPath == "" {

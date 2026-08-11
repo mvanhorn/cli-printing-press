@@ -439,6 +439,19 @@ Read `.printing-press.json` from the resolved CLI directory.
    - payments, auth, commerce, ai, food-and-dining, health, maps, media-and-entertainment, devices, other
    - travel
 
+## Step 3.5: The Greptile review contract — read before opening the PR
+
+Every PR into the public library gets an automated Greptile review plus a `Greptile policy gate` CI job. The canonical contract is the library's [`AGENTS.md → "Automated code review with Greptile"`](https://github.com/mvanhorn/printing-press-library/blob/main/AGENTS.md#automated-code-review-with-greptile); the essentials:
+
+- **The bar is resolving every Greptile finding before merge — the 0-5 score is a confidence signal, not the gate.** A 4/5 with everything resolved is ready; a 5/5 with open P1s is not. Treat every P0 and P1 as blocking; P2s need a fix or a concrete deferral reply.
+- **Reviews are incremental**: every push re-triggers a fresh review that can surface new findings. Drive the PR to a *stable* green — never declare done after round one.
+- **Read the latest `greptile-apps` top-level summary, not just inline threads.** Summaries can carry actionable `Comments Outside Diff` blocks even when the thread list is empty. Run the repo's review-state helper before declaring ready:
+  ```bash
+  python3 .github/scripts/pr-review-state/greptile_feedback.py <PR_NUMBER>
+  ```
+- **Timeout recovery**: if the policy gate fails with `Timed out waiting for Greptile Review to complete` (large new-CLI diffs are the common trigger), the gate auto-posts `@greptileai review` after ~3 minutes; if that doesn't recover, post `@greptileai review` yourself and wait.
+- **The score gate**: the policy gate requires the latest Greptile comment on the current head SHA to carry `Confidence Score: ≥ 4/5`. A new push re-runs it — keep the score meeting threshold on the final head.
+
 ## Step 4: Validate
 
 Run:
@@ -485,6 +498,15 @@ and validates structurally; this step proves the current post-edit tree still
 works against the real upstream API. Do not rely on an older
 `phase5-acceptance.json` from generation or polish because the CLI may have
 been hand-edited since that marker was written.
+
+**Marker invalidation and sync.** The acceptance marker carries a source
+fingerprint; any `.go` edit after it was written makes `publish package` fail
+with "phase5 marker source fingerprint does not match". Re-run this live gate
+after every source change and write the marker to **both** copies: the embedded
+`$CLI_DIR/.manuscripts/<run>/proofs/` and the archived
+`$PRESS_MANUSCRIPTS/<api>/<run>/proofs/` (manuscript lookup is archive-first;
+proof lookup is embedded-first — a stale copy in either location blocks
+packaging).
 
 Resolve the Phase 5 proofs directory from the CLI manifest:
 
@@ -859,6 +881,17 @@ MODULE_PATH="<module_path_base>/<category>/<api-slug>"
 ```
 
 For example: `github.com/mvanhorn/printing-press-library/library/productivity/notion`
+
+**`--module-path` is required in `--dest` mode.** When packaging with `--dest`,
+always pass `--module-path "$MODULE_PATH"`. Omitting it silently skips the
+go.mod/import rewrite (`RewriteModulePath` is gated on the flag), so the
+packaged CLI keeps `module <cli-name>` and the library CI rejects the PR with a
+module-path mismatch. `publish package` verifies the staged tree's module path
+after the rewrite and fails packaging when it is not library-canonical (whether
+`--module-path` was omitted or set to a non-canonical value). Standalone
+`publish validate` on a source tree surfaces the check as a warning — the bare
+module name is expected there pre-rewrite; the authoritative failure is in the
+package step.
 
 Run `publish package` with `--target` to stage the CLI into a unique temporary
 directory, then copy it into the publish repo:
@@ -1696,8 +1729,7 @@ Greptile reviews **incrementally**: every commit you push re-triggers a fresh re
 
 Iterate until **all** of these hold, confirmed by the review that your most recent fix commit triggered:
 
-- **Greptile score ≥ 4.** The 0-5 score is a confidence signal, not a hard gate; 4/5 and 5/5 are both acceptable end states, and the score lands there naturally once threads are addressed.
-- **No unresolved review threads.** For each P0/P1/P2 thread, either push a fix or reply with a concrete reason it shouldn't fire — not "won't fix", but *why* the code is right as written or *why* deferral is justified.
+- **All Greptile findings resolved.** The 0-5 score is a confidence signal, not the gate — the bar is resolving every finding. 4/5 with everything resolved is ready; 5/5 with open P1s is not. For each P0/P1/P2 thread, either push a fix or reply with a concrete reason it shouldn't fire — not "won't fix", but *why* the code is right as written or *why* deferral is justified. The policy gate also requires the latest score on the current head SHA to be ≥ 4/5, so keep the final head meeting that threshold.
 - **All CI checks pass.** `verify-library-conventions`, `Govulncheck`, and any other workflow on the PR.
 
 Read findings from two surfaces — they don't overlap:

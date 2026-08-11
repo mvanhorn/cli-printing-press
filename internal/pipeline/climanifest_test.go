@@ -921,7 +921,9 @@ func TestWriteManifestForGenerateWithLocalSpec(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &got))
 
 	assert.Empty(t, got.SpecURL, "local path should not appear in spec_url")
-	assert.Equal(t, "my-spec.yaml", got.SpecPath)
+	// Repointed to the shipped archive name: the source basename is not in the
+	// packaged tree.
+	assert.Equal(t, "spec.yaml", got.SpecPath)
 }
 
 func TestWriteManifestForGenerateStampsLocalSQLiteSpecFormat(t *testing.T) {
@@ -951,7 +953,7 @@ func TestWriteManifestForGenerateStampsLocalSQLiteSpecFormat(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &got))
 	assert.Equal(t, spec.SourceLocalSQLite, got.SpecFormat)
 	assert.True(t, got.IsLocalDatastore())
-	assert.Equal(t, "local-data.yaml", got.SpecPath)
+	assert.Equal(t, "spec.yaml", got.SpecPath)
 }
 
 func TestWriteManifestForGenerateStampsSyntheticSpecKind(t *testing.T) {
@@ -2624,7 +2626,8 @@ func TestWriteManifestForGenerateDoesNotPreserveStaleSpecURLWhenFreshSourceIsPat
 
 	got := readPublishedManifest(t, dir)
 	assert.Empty(t, got.SpecURL)
-	assert.Equal(t, filepath.Base(specPath), got.SpecPath)
+	// Repointed to the shipped archive name.
+	assert.Equal(t, "spec.json", got.SpecPath)
 }
 
 func TestWriteManifestForGenerateFreshValuesReplaceExistingManifestExtras(t *testing.T) {
@@ -2783,4 +2786,83 @@ func TestWriteManifestForGenerateNoCategoryAnywhere(t *testing.T) {
 
 	got := readPublishedManifest(t, dir)
 	assert.Empty(t, got.Category, "manifest.Category should stay empty when no source provides one")
+}
+
+func TestWriteManifestForGenerateRepointsSpecPathToArchivedSpec(t *testing.T) {
+	dir := t.TempDir()
+	specContent := []byte(`{"openapi": "3.0.0", "info": {"title": "Test"}}`)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "spec.json"), specContent, 0o644))
+
+	// Local source spec basename (exa-openapi.json) does not exist in the
+	// packaged tree; the manifest must point at the shipped spec.json.
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "test-api",
+		SpecSrcs:  []string{filepath.Join(t.TempDir(), "exa-openapi.json")},
+		OutputDir: dir,
+		RunID:     "20260517-091036",
+	}))
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "spec.json", got.SpecPath,
+		"spec_path must resolve to the shipped archived spec, not the source basename")
+}
+
+func TestWriteManifestForGenerateKeepsSourceBasenameWhenNoArchivedSpec(t *testing.T) {
+	dir := t.TempDir()
+	// No spec.json/spec.yaml/spec.yml in OutputDir: a direct caller without an
+	// archive name must keep the source basename instead of fabricating one.
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "test-api",
+		SpecSrcs:  []string{filepath.Join(t.TempDir(), "schema.graphql")},
+		OutputDir: dir,
+		RunID:     "20260517-091036",
+	}))
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "schema.graphql", got.SpecPath,
+		"without an archive name, an unrecognized source extension stays unchanged")
+}
+
+func TestWriteManifestForGenerateUsesSelectedArchiveName(t *testing.T) {
+	tests := []struct {
+		name     string
+		sources  []string
+		archive  string
+		wantPath string
+	}{
+		{
+			name:     "merged specs use JSON archive",
+			sources:  []string{"v1.yaml", "v2.yaml"},
+			archive:  "spec.json",
+			wantPath: "spec.json",
+		},
+		{
+			name:     "nonstandard source uses selected YAML archive",
+			sources:  []string{"schema.graphql"},
+			archive:  "spec.yaml",
+			wantPath: "spec.yaml",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+				APIName:         "test-api",
+				SpecSrcs:        tt.sources,
+				SpecArchiveName: tt.archive,
+				OutputDir:       dir,
+				RunID:           "20260517-091036",
+			}))
+
+			got := readPublishedManifest(t, dir)
+			assert.Equal(t, tt.wantPath, got.SpecPath)
+		})
+	}
 }
