@@ -10,7 +10,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.4
 )
 require modernc.org/sqlite v1.37.0
-require github.com/mark3labs/mcp-go v0.47.0
+require github.com/mark3labs/mcp-go v0.57.0
 
 // x/sys is a DIRECT dependency for token-bearing bundles: the read-time
 // credentials-perms guard's Windows surface (internal/cliutil/creds_perms_windows.go)
