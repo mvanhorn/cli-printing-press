@@ -864,13 +864,8 @@ func TestPlatformMigrationAdoptsOnlyVerifiedTenantDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recoverable backup missing: err=%v", err)
 	}
-	// The 0600 assertion is POSIX-only. NTFS carries no mode bits, os.Chmod is a
-	// no-op there, and Go reports a writable file as 0666 — so asserting 0600 on
-	// Windows fails for a backup that was written correctly. This mirrors what the
-	// generated perms_windows.go already documents ("Windows mode bits do not model
-	// access control") and the runtime.GOOS guard used by the creds-perms tests.
-	// Existence and recoverability are asserted on every platform; only the mode
-	// check is skipped where the concept does not exist.
+	// NTFS does not expose POSIX mode bits, so assert the backup mode only where
+	// it is meaningful while retaining the cross-platform recoverability check.
 	if runtime.GOOS != "windows" && backupInfo.Mode().Perm() != 0o600 {
 		t.Fatalf("recoverable backup perm = %04o, want 0600", backupInfo.Mode().Perm())
 	}
