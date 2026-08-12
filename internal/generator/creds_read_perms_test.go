@@ -154,6 +154,9 @@ func TestGeneratedConfigPermissionTestsIgnoreSeededCredentialsStore(t *testing.T
 // shouldEmitAuth(): a spec with no auth persists no token, so shipping the
 // check would be dead weight. public-param-names declares auth.type: none.
 func TestGenerate_NoCredsPermsForNonAuthSpec(t *testing.T) {
+	if testing.Short() {
+		t.Skip("generated CLI compile tests run in the full generated-test CI lane")
+	}
 	t.Parallel()
 
 	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "golden", "fixtures", "public-param-names.yaml"))
@@ -164,4 +167,18 @@ func TestGenerate_NoCredsPermsForNonAuthSpec(t *testing.T) {
 
 	_, err = os.Stat(filepath.Join(outputDir, "internal", "cliutil", "creds_perms_eval.go"))
 	require.True(t, os.IsNotExist(err), "creds_perms_eval.go must not be emitted for a non-auth spec")
+
+	winSrc := readGeneratedFile(t, outputDir, "internal", "platform", "perms_windows.go")
+	require.Contains(t, winSrc, "func verifyPrivatePerms")
+	require.NotContains(t, winSrc, "cliutil.VerifyCredsPerms",
+		"the no-auth Windows hook must not reference the auth-gated credentials helper")
+
+	cmd := exec.Command("go", "build", "-mod=mod", "./...")
+	cmd.Dir = outputDir
+	cacheDir, err := goBuildCacheDir(outputDir)
+	require.NoError(t, err)
+	cmd.Env = append(os.Environ(), "GOOS=windows", "GOCACHE="+cacheDir)
+	cmd.Env = append(cmd.Env, sandboxHomeEnv(t)...)
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "generated no-auth CLI must build for Windows:\n%s", output)
 }
