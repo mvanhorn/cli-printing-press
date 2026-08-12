@@ -45,11 +45,13 @@ func LoadCookieJar() http.CookieJar {
 	return jar
 }
 
-// NewCookieJar returns an empty persistent wrapper without loading cookies
-// from disk. Config.Load uses it when an env or external-store override has
-// replaced a browser session, so an old browser jar cannot ride along.
+// NewCookieJar returns an empty in-memory jar without loading or persisting
+// cookies. Config.Load uses it when an env or external-store override has
+// replaced a browser session, so an old browser jar cannot ride along or be
+// contaminated by response cookies.
 func NewCookieJar() http.CookieJar {
-	return newCookieJar()
+	jar, _ := cookiejar.New(nil)
+	return jar
 }
 
 func newCookieJar() *cookieJar {

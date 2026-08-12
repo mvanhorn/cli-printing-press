@@ -93,7 +93,9 @@ func TestGeneratedBrowserCredentialBindsToCapturedDomain(t *testing.T) {
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"os"
 	"testing"
 	"time"
 
@@ -179,8 +181,61 @@ func TestCookieOverrideDoesNotInheritPersistedBrowserJar(t *testing.T) {
 		t.Fatal("environment override inherited a stale browser domain binding")
 	}
 }
+
+func TestCookieOverrideRotatesInMemoryWithoutPersisting(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	if err := WriteCookieJarFromMap(".auth.example.com", map[string]string{"session_id": "browser"}); err != nil {
+		t.Fatal(err)
+	}
+	path := cookieJarPath()
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		want := "session_id=env"
+		if requests == 2 {
+			want = "session_id=rotated"
+		}
+		if got := r.Header.Get("Cookie"); got != want {
+			t.Errorf("request %d Cookie = %q, want %q", requests, got, want)
+		}
+		if requests == 1 {
+			http.SetCookie(w, &http.Cookie{Name: "session_id", Value: "rotated", Path: "/"})
+		}
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		BaseURL:          server.URL,
+		AccessToken:      "session_id=env",
+		AuthSource:       "env:CREDENTIALDOMAIN_SESSION",
+		CredentialSource: "env:CREDENTIALDOMAIN_SESSION",
+	}
+	client := New(cfg, time.Second, 0)
+	for i := 0; i < 2; i++ {
+		resp, err := client.HTTPClient.Get(server.URL + "/rotate")
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	if requests != 2 {
+		t.Fatalf("server saw %d requests, want 2", requests)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("override response cookie changed persisted browser jar: before=%s after=%s", before, after)
+	}
+}
 `
 	runtimePath := filepath.Join(outputDir, "internal", "client", "credential_domain_runtime_test.go")
 	require.NoError(t, os.WriteFile(runtimePath, []byte(runtimeTest), 0o600))
-	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^TestCredentialAppliesToURL$", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^Test(CredentialAppliesToURL|CookieOverrideDoesNotInheritPersistedBrowserJar|CookieOverrideRotatesInMemoryWithoutPersisting)$", "-count=1")
 }
