@@ -11319,6 +11319,11 @@ func TestGeneratedHelpers_AuthWithKeyURL_Compiles(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
 
+	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	assert.Contains(t, clientSrc, "q := req.URL.Query()",
+		"query API-key auth must emit cross-host query cleanup")
+	assert.Contains(t, clientSrc, "req.URL.RawQuery = q.Encode()",
+		"query API-key auth must write the cleaned query back")
 	requireGeneratedCompiles(t, outputDir)
 }
 
