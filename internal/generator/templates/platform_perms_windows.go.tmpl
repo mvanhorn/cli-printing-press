@@ -5,9 +5,12 @@
 
 // Private-file permission checks (Windows).
 //
-// Windows mode bits do not model access control. Reuse cliutil's owner and DACL
-// check, but report it as advisory because generated writers do not establish
-// an explicit Windows DACL.
+// Windows mode bits do not model access control, so the POSIX 0600 check in
+// perms_unix.go has no meaning here.
+{{if ne .Auth.Type "none"}}//
+// Auth is configured, so cliutil carries the owner+DACL evaluator
+// (VerifyCredsPerms). Reuse it, but report the result as advisory because
+// generated writers do not establish an explicit Windows DACL.
 package platform
 
 import (
@@ -28,3 +31,28 @@ func verifyPrivatePerms(path string, _ os.FileInfo, label string) error {
 	}
 	return nil
 }
+{{else}}//
+// This spec declares no auth, so cliutil's credentials-permission evaluator
+// (VerifyCredsPerms / evalCredsSecurity) is deliberately NOT emitted — see
+// renderOptionalSupportFiles, which gates it on shouldEmitAuth(), and
+// TestGenerate_NoCredsPermsForNonAuthSpec, which pins that behaviour.
+//
+// The files this guards (client profile, cache fingerprint key) still exist in a
+// no-auth CLI, so the hook must still exist — but it cannot delegate to a helper
+// that was never generated. Delegating unconditionally is what produced
+// "undefined: cliutil.VerifyCredsPerms" on every no-auth Windows build.
+//
+// A no-auth CLI persists no secret, and the Windows check is advisory even when
+// present, so the honest no-auth behaviour is a documented no-op rather than a
+// duplicated SDDL evaluator in this package.
+package platform
+
+import "os"
+
+// verifyPrivatePerms is a no-op on Windows for a no-auth CLI. The artifacts it
+// guards hold no credential material, and NTFS carries no mode bits to check.
+// Signature matches perms_unix.go so platform code compiles unchanged.
+func verifyPrivatePerms(_ string, _ os.FileInfo, _ string) error {
+	return nil
+}
+{{end}}
