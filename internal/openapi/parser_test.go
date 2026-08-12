@@ -6600,6 +6600,67 @@ paths:
 	assert.True(t, additional.EnvVar.Sensitive)
 }
 
+// A public API-key surface can outnumber the user endpoints that require
+// OAuth2. The composed OAuth2 requirement still needs to win so generated
+// clients send Authorization, while the API key remains an additional header.
+func TestComposedOAuthIsNotDisplacedByStandaloneAPIKeyUsage(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Numista-shape
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Numista-API-Key
+      x-auth-env-vars:
+        - NUMISTA_API_KEY
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.example.com/oauth/authorize
+          tokenUrl: https://api.example.com/oauth/token
+          scopes:
+            view_collection: view collection
+paths:
+  /catalogue:
+    get:
+      operationId: listCatalogue
+      responses: {"200": {description: ok}}
+  /account:
+    get:
+      operationId: getProfile
+      security:
+        - ApiKeyAuth: []
+          OAuth2: [view_collection]
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+	assert.Equal(t, "OAuth2", parsed.Auth.Scheme)
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	require.Len(t, parsed.Auth.AdditionalHeaders, 1)
+	assert.Equal(t, "Numista-API-Key", parsed.Auth.AdditionalHeaders[0].Header)
+	assert.Equal(t, "NUMISTA_API_KEY", parsed.Auth.AdditionalHeaders[0].EnvVar.Name)
+
+	outputDir := filepath.Join(t.TempDir(), "numista-shape-pp-cli")
+	require.NoError(t, generator.New(parsed, outputDir).Generate())
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(clientSrc), `req.Header.Set("Authorization", authHeader)`)
+	assert.Contains(t, string(clientSrc), `req.Header.Set("Numista-API-Key", v)`)
+	assert.Contains(t, string(clientSrc), `c.Config.NumistaApiKey`)
+}
+
 // Single-scheme apiKey (no sibling OAuth) must keep its existing single-scheme
 // emission path: the per_call envvar lives on EnvVarSpecs, and
 // AdditionalHeaders stays empty so the generator does not emit duplicate

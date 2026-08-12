@@ -3073,6 +3073,9 @@ func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *open
 	usageCounts := securitySchemeOperationUsageCounts(doc)
 	candidates := candidateSecuritySchemeNames(doc, usageCounts)
 	effectiveRequirements := allEffectiveSecurityRequirements(doc)
+	if name, scheme := preferredComposedBearerScheme(doc, effectiveRequirements, candidates, usageCounts); scheme != nil {
+		return name, scheme
+	}
 
 	bestScore := math.MaxInt
 	bestUsageCount := 0
@@ -3095,6 +3098,75 @@ func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *open
 	}
 
 	return bestName, bestScheme
+}
+
+// preferredComposedBearerScheme keeps a bearer/OAuth credential as the
+// primary auth when an API key is required alongside it. A spec may also use
+// that API key alone for public operations, so raw operation counts otherwise
+// make the API key win and drop the Authorization header from the composed
+// operations. The existing additional-header emission then carries the API
+// key alongside the selected bearer credential.
+func preferredComposedBearerScheme(doc *openapi3.T, requirements openapi3.SecurityRequirements, candidates []string, usageCounts map[string]int) (string, *openapi3.SecurityScheme) {
+	if doc == nil || doc.Components == nil {
+		return "", nil
+	}
+
+	bestScore := math.MaxInt
+	bestUsageCount := -1
+	var bestName string
+	var bestScheme *openapi3.SecurityScheme
+	for _, name := range candidates {
+		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
+		if scheme == nil || !isBearerOrOAuth2Scheme(scheme) {
+			continue
+		}
+		matching := additionalHeaderRequirementsForWinner(requirements, name)
+		if !composedBearerHasSupportedAPIKeySibling(doc, matching, name) || !additionalHeaderRequirementsShareSiblings(matching, name) {
+			continue
+		}
+
+		score := schemePriorityScoreForDoc(doc, requirements, name, scheme)
+		usageCount := usageCounts[name]
+		if bestScheme == nil || score < bestScore || (score == bestScore && usageCount > bestUsageCount) {
+			bestScore = score
+			bestUsageCount = usageCount
+			bestName = name
+			bestScheme = scheme
+		}
+	}
+	return bestName, bestScheme
+}
+
+func isBearerOrOAuth2Scheme(scheme *openapi3.SecurityScheme) bool {
+	if scheme == nil {
+		return false
+	}
+	if strings.EqualFold(scheme.Type, "oauth2") {
+		return true
+	}
+	return strings.EqualFold(scheme.Type, "http") && strings.EqualFold(scheme.Scheme, "bearer")
+}
+
+func composedBearerHasSupportedAPIKeySibling(doc *openapi3.T, requirements openapi3.SecurityRequirements, winner string) bool {
+	if doc == nil || doc.Components == nil {
+		return false
+	}
+	for _, requirement := range requirements {
+		if _, ok := requirement[winner]; !ok || len(requirement) < 2 {
+			continue
+		}
+		for siblingName := range requirement {
+			if siblingName == winner {
+				continue
+			}
+			sibling := securitySchemeValue(doc.Components.SecuritySchemes[siblingName])
+			if sibling != nil && strings.EqualFold(sibling.Type, "apiKey") &&
+				(strings.EqualFold(sibling.In, "header") || strings.EqualFold(sibling.In, "query")) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Effective operation security is authoritative when present: a

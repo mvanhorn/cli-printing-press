@@ -489,6 +489,7 @@ func (c *Config) AuthHeader() string {
 {{- $isAuthEnvVarORCase := .Auth.IsAuthEnvVarORCase}}
 {{- $basicAuthEnvVars := basicAuthEnvVars .Auth}}
 {{- $hasNonRequestEnvVars := or (hasAuthEnvVarKind .Auth.EnvVarSpecs "auth_flow_input") (hasAuthEnvVarKind .Auth.EnvVarSpecs "harvested")}}
+{{- $hasAccessTokenRequestEnvVar := hasRequestAuthEnvVarField .Auth "AccessToken"}}
 {{- if and .BearerRefresh.Enabled (eq .Auth.Type "bearer_token") (ne .Auth.EffectiveOAuth2Grant "client_credentials")}}
 	if c.AuthHeaderVal != "" && c.AccessToken == "" {
 		return c.AuthHeaderVal
@@ -785,7 +786,7 @@ func (c *Config) AuthHeader() string {
 {{- end}}
 {{- end}}
 {{- end}}
-{{- if and (not .BearerRefresh.Enabled) (not $hasNonRequestEnvVars)}}
+{{- if and (not .BearerRefresh.Enabled) (not $hasNonRequestEnvVars) (not $hasAccessTokenRequestEnvVar)}}
 	if c.AccessToken != "" {
 		if c.AuthSource == "" || strings.HasPrefix(c.AuthSource, "env:") {
 			c.AuthSource = "{{oauth2AuthSource .Auth}}"
