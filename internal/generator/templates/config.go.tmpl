@@ -90,6 +90,13 @@ type Config struct {
 	GoogleImpersonate string   `{{configTag .Config.Format}}:"google_impersonate,omitempty"`
 	GoogleScopes     []string `{{configTag .Config.Format}}:"google_scopes,omitempty"`
 {{- end}}
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+	// CredentialDomain binds browser-captured credentials to the registrable
+	// domain they came from. It is intentionally per-CLI config state rather
+	// than shared credential-store state because one credential file can serve
+	// unrelated printed CLIs.
+	CredentialDomain string `{{configTag .Config.Format}}:"credential_domain,omitempty"`
+{{- end}}
 {{- end}}
 	Path           string `{{configTag .Config.Format}}:"-"`
 	envOverrides   map[string]bool `{{configTag .Config.Format}}:"-"`
@@ -244,6 +251,9 @@ func Load(configPath string) (*Config, error) {
 {{- if $.HasAuthCommand}}
 		cfg.CredentialSource = "env:{{.Name}}"
 {{- end}}
+{{- if or (eq $.Auth.Type "cookie") (eq $.Auth.Type "composed")}}
+		cfg.CredentialDomain = ""
+{{- end}}
 	}
 {{- end}}
 {{- else if .Auth.EnvVars}}
@@ -255,6 +265,9 @@ func Load(configPath string) (*Config, error) {
 		cfg.AuthSource = "env:{{.}}"
 {{- if $.HasAuthCommand}}
 		cfg.CredentialSource = "env:{{.}}"
+{{- end}}
+{{- if or (eq $.Auth.Type "cookie") (eq $.Auth.Type "composed")}}
+		cfg.CredentialDomain = ""
 {{- end}}
 	}
 {{- end}}
@@ -905,6 +918,24 @@ func (c *Config) CookieCredential() string {
 }
 {{- end}}
 
+{{- if or (eq .Auth.Type "composed") (eq .Auth.Type "cookie")}}
+// UsePersistedCookieJar keeps disk cookies only when the active credential is
+// config-backed or carries its own browser binding. Environment and external
+// store overrides without a binding must not inherit a stale browser session.
+func (c *Config) UsePersistedCookieJar() bool {
+	if c == nil {
+		return true
+	}
+	if strings.HasPrefix(c.AuthSource, "env:") {
+		return false
+	}
+	if c.CredentialSource == "credentials file" || c.CredentialSource == "agentcookie" {
+		return strings.TrimSpace(c.CredentialDomain) != ""
+	}
+	return true
+}
+{{- end}}
+
 // Raw browser-session values count as credentials even when no header
 // representation exists; hand-coded flows may also preserve a working header.
 func (c *Config) CredentialConfigured() bool {
@@ -1126,6 +1157,9 @@ func (c *Config) clearCredentialFields() {
 	c.TokenExpiry = time.Time{}
 	c.ClientID = ""
 	c.ClientSecret = ""
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+	c.CredentialDomain = ""
+{{- end}}
 {{- if eq .Auth.Subtype "google_service_account"}}
 	c.GoogleImpersonate = ""
 	c.GoogleScopes = nil
@@ -1149,6 +1183,9 @@ func (c *Config) credentials() *cliutil.Credentials {
 {{- end}}
 		ClientID:     c.ClientID,
 		ClientSecret: c.ClientSecret,
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+		CredentialDomain: c.CredentialDomain,
+{{- end}}
 {{- range .CredentialFields}}
 		{{.GoField}}: c.{{.GoField}},
 {{- end}}
@@ -1182,6 +1219,13 @@ func (c *Config) applyCredentials(creds *cliutil.Credentials) {
 	if c.ClientSecret == "" {
 		c.ClientSecret = creds.ClientSecret
 	}
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+	// An external credential owns its browser binding. An empty binding clears
+	// stale config-file state instead of allowing an unrelated token to inherit it.
+	if creds.AuthHeaderVal != "" || creds.AccessToken != "" {
+		c.CredentialDomain = creds.CredentialDomain
+	}
+{{- end}}
 {{- range .CredentialFields}}
 	if c.{{.GoField}} == "" {
 		c.{{.GoField}} = creds.{{.GoField}}
@@ -1371,6 +1415,9 @@ func (c *Config) ClearTokens() error {
 	c.TokenExpiry = time.Time{}
 	c.ClientID = ""
 	c.ClientSecret = ""
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+	c.CredentialDomain = ""
+{{- end}}
 {{- if eq .Auth.Subtype "google_service_account"}}
 	c.GoogleImpersonate = ""
 	c.GoogleScopes = nil
@@ -1654,6 +1701,9 @@ type persistedConfig struct {
 {{- if .Auth.RequiresBrowserSession}}
 	ChromeProfile string `{{configTag .Config.Format}}:"chrome_profile,omitempty"`
 {{- end}}
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+	CredentialDomain string `{{configTag .Config.Format}}:"credential_domain,omitempty"`
+{{- end}}
 {{- if .HasRequiredRoles}}
 	AuthRole string `{{configTag .Config.Format}}:"auth_role,omitempty"`
 {{- end}}
@@ -1687,6 +1737,9 @@ func (c *Config) persisted() persistedConfig {
 		Headers: c.Headers,
 {{- if .Auth.RequiresBrowserSession}}
 		ChromeProfile: c.ChromeProfile,
+{{- end}}
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+		CredentialDomain: c.CredentialDomain,
 {{- end}}
 {{- if .HasRequiredRoles}}
 		AuthRole: c.AuthRole,

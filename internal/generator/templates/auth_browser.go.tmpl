@@ -391,6 +391,9 @@ profile by name when the installed backend supports it.`,
 {{- if .Auth.RequiresBrowserSession}}
 			cfg.ChromeProfile = loginProfileLocation
 {{- end}}
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+			cfg.CredentialDomain = "{{.Auth.CookieDomain}}"
+{{- end}}
 
 			if err := cfg.SaveTokens("", "", composed, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving auth: %w", err))
@@ -415,6 +418,9 @@ profile by name when the installed backend supports it.`,
 			fmt.Fprintf(w, "Validating browser session...")
 			if err := validateAndWriteBrowserSessionProof(cmd.Context(), cfg, flags); err != nil {
 				_ = cfg.ClearTokens()
+{{- if .Auth.HasCookies}}
+				_ = client.ClearCookieJar()
+{{- end}}
 				_ = clearBrowserSessionProof(cfg)
 				fmt.Fprintf(w, " %s\n", red("failed"))
 				return authErr(fmt.Errorf("browser session validation failed: %w", err))
@@ -459,6 +465,9 @@ profile by name when the installed backend supports it.`,
 {{- if .Auth.RequiresBrowserSession}}
 			cfg.ChromeProfile = loginProfileLocation
 {{- end}}
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+			cfg.CredentialDomain = "{{.Auth.CookieDomain}}"
+{{- end}}
 
 			if err := cfg.SaveTokens("", "", cookies, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving cookies: %w", err))
@@ -482,6 +491,9 @@ profile by name when the installed backend supports it.`,
 			fmt.Fprintf(w, "Validating browser session...")
 			if err := validateAndWriteBrowserSessionProof(cmd.Context(), cfg, flags); err != nil {
 				_ = cfg.ClearTokens()
+{{- if .Auth.HasCookies}}
+				_ = client.ClearCookieJar()
+{{- end}}
 				_ = clearBrowserSessionProof(cfg)
 				fmt.Fprintf(w, " %s\n", red("failed"))
 				return authErr(fmt.Errorf("browser session validation failed: %w", err))
@@ -593,6 +605,9 @@ when the CDP path is not available (other machine, headless server, etc.).`,
 				return configErr(err)
 			}
 			cfg.AuthHeaderVal = ""
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+			cfg.CredentialDomain = ""
+{{- end}}
 			if err := cfg.SaveTokens("", "", token, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
@@ -1020,6 +1035,7 @@ func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
 	for _, name := range requiredCookies {
 		composed = strings.ReplaceAll(composed, "{"+name+"}", cookieMap[name])
 	}
+	cfg.CredentialDomain = "{{.Auth.CookieDomain}}"
 	if err := cfg.SaveTokens("", "", composed, "", time.Time{}); err != nil {
 		return configErr(fmt.Errorf("saving auth: %w", err))
 	}
@@ -1055,6 +1071,7 @@ func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
 	}
 	cookies = strings.Join(kept, "; ")
 {{- end}}
+	cfg.CredentialDomain = "{{.Auth.CookieDomain}}"
 	if err := cfg.SaveTokens("", "", cookies, "", time.Time{}); err != nil {
 		return configErr(fmt.Errorf("saving cookies: %w", err))
 	}
@@ -1394,6 +1411,9 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			// 401 on the next API call, same as the rest of the browser-auth
 			// flow. Matches ClearTokens / SaveBearerToken's zero-on-write
 			// invariant in config.go.tmpl.
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+			cfg.CredentialDomain = ""
+{{- end}}
 			if err := cfg.SaveTokens("", "", token, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
@@ -1444,6 +1464,11 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 			if err := cfg.ClearTokens(); err != nil {
 				return configErr(fmt.Errorf("clearing tokens: %w", err))
 			}
+{{- if .Auth.HasCookies}}
+			if err := client.ClearCookieJar(); err != nil {
+				return configErr(fmt.Errorf("clearing cookie jar: %w", err))
+			}
+{{- end}}
 {{- if .Auth.RequiresBrowserSession}}
 			if err := clearBrowserSessionProof(cfg); err != nil {
 				return configErr(fmt.Errorf("clearing browser-session proof: %w", err))

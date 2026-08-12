@@ -267,6 +267,7 @@ profile by name when the installed backend supports it.`,
 			if err != nil {
 				return configErr(err)
 			}
+			cfg.CredentialDomain = ".cookie-auth.example"
 
 			if err := cfg.SaveTokens("", "", cookies, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving cookies: %w", err))
@@ -392,6 +393,7 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			// 401 on the next API call, same as the rest of the browser-auth
 			// flow. Matches ClearTokens / SaveBearerToken's zero-on-write
 			// invariant in config.go.tmpl.
+			cfg.CredentialDomain = ""
 			if err := cfg.SaveTokens("", "", token, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
@@ -440,6 +442,9 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 
 			if err := cfg.ClearTokens(); err != nil {
 				return configErr(fmt.Errorf("clearing tokens: %w", err))
+			}
+			if err := client.ClearCookieJar(); err != nil {
+				return configErr(fmt.Errorf("clearing cookie jar: %w", err))
 			}
 			if os.Getenv("COOKIE_AUTH_SESSION") != "" {
 				fmt.Fprintf(cmd.OutOrStdout(), "Config cleared. Note: %s env var is still set.\n", "COOKIE_AUTH_SESSION")

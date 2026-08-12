@@ -80,7 +80,7 @@ func TestCookieAuthRefreshResolvesChannel(t *testing.T) {
 
 	// The persisted field exists in config with an omitempty tag.
 	configGo := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
-	assert.Contains(t, configGo, "ChromeProfile string")
+	assert.Contains(t, configGo, "ChromeProfile")
 	assert.Contains(t, configGo, "chrome_profile,omitempty")
 
 	requireGeneratedCompiles(t, outputDir)

@@ -374,6 +374,12 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			// "Moved Permanently" body back to the caller.
 			return errors.New("stopped after 10 redirects")
 		}
+		// Never carry credential material across a host-changing redirect.
+		// Go strips Authorization and Cookie in common cases, but custom
+		// headers and URL query values need explicit removal here.
+		if req.URL.Host != via[0].URL.Host {
+			req.Header.Del("Authorization")
+		}
 		// Tier routing picks header vs query at request time on a WithTier copy,
 		// while this redirect callback is installed once on the shared
 		// http.Client. On cross-host redirects, delete every tier auth header

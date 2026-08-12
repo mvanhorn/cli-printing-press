@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"golang.org/x/net/publicsuffix"
 	"golden-api-cookie-auth-pp-cli/internal/cliutil"
 	"golden-api-cookie-auth-pp-cli/internal/config"
 	"golden-api-cookie-auth-pp-cli/internal/platform"
@@ -247,11 +248,19 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		cacheDir = filepath.Join(dir, "http")
 	}
 	cookieJar := LoadCookieJar()
+	if cfg != nil && !cfg.UsePersistedCookieJar() {
+		cookieJar = NewCookieJar()
+	}
 	// Seed the jar from a session captured via the env var or stored in
 	// credentials but not yet in cookies.json, so the credential rides every
 	// request and net/http absorbs Set-Cookie rotation across the session.
 	if cfg != nil {
-		SeedCookieJar(cookieJar, cfg.BaseURL, cfg.CookieCredential())
+		if cfg.CredentialDomain != "" && cfg.UsePersistedCookieJar() {
+			seedBaseURL := "https://" + strings.TrimPrefix(cfg.CredentialDomain, ".")
+			SeedCookieJarForDomain(cookieJar, seedBaseURL, cfg.CookieCredential(), cfg.CredentialDomain)
+		} else {
+			SeedCookieJar(cookieJar, cfg.BaseURL, cfg.CookieCredential())
+		}
 	}
 	httpClient := newHTTPClient(timeout, cookieJar)
 	c := &Client{
@@ -276,6 +285,13 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			// would then classify as a successful response and hand the HTML
 			// "Moved Permanently" body back to the caller.
 			return errors.New("stopped after 10 redirects")
+		}
+		// Never carry credential material across a host-changing redirect.
+		// Go strips Authorization and Cookie in common cases, but custom
+		// headers and URL query values need explicit removal here.
+		if req.URL.Host != via[0].URL.Host {
+			req.Header.Del("Cookie")
+			req.Header.Del("Cookie")
 		}
 		// Cookie-auth redirects: Go's http.Client + http.CookieJar handle
 		// cookie carriage on 3xx hops natively. Setting the Cookie header
@@ -871,6 +887,10 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	if err != nil {
 		return nil, 0, err
 	}
+	credentialAllowed := c.credentialAppliesToURL(targetURL)
+	if !credentialAllowed {
+		authHeader = ""
+	}
 
 	// Build the request for dry-run display or actual execution
 	if c.DryRun {
@@ -929,7 +949,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			req.URL.RawQuery = q.Encode()
 		}
 
-		if authHeader != "" {
+		if authHeader != "" && credentialAllowed {
 			// Cookie-auth: the cookie jar is the sole source of outbound
 			// cookies. New() loads it from cookies.json and seeds it from
 			// the env-var / credentials session via SeedCookieJar, so every
@@ -1246,6 +1266,43 @@ func authPlaceholderCredentialErrorWithSetup(cfg *config.Config, setup string) e
 		location = cfg.Path
 	}
 	return fmt.Errorf("%w configured in %s; set a real token with: %s", ErrPlaceholderCredential, location, setup)
+}
+
+// credentialAppliesToURL keeps a browser-captured credential on its own
+// registrable domain. An empty binding preserves legacy credentials and
+// explicit verify-live HTTP uses mock hosts that cannot match the real site.
+func (c *Client) credentialAppliesToURL(rawURL string) bool {
+	if c == nil || c.Config == nil || !c.Config.UsePersistedCookieJar() || strings.TrimSpace(c.Config.CredentialDomain) == "" {
+		return true
+	}
+	if cliutil.IsVerifyEnv() && cliutil.IsVerifyLiveHTTPEnv() && isVerifyMockURL(rawURL) {
+		return true
+	}
+	target, err := url.Parse(rawURL)
+	if err != nil || target.Hostname() == "" {
+		return false
+	}
+	targetHost := strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+	boundHost := strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(c.Config.CredentialDomain), "."), "."))
+	if targetHost == boundHost || strings.HasSuffix(targetHost, "."+boundHost) {
+		return true
+	}
+	targetRegistered, targetErr := publicsuffix.EffectiveTLDPlusOne(targetHost)
+	boundRegistered, boundErr := publicsuffix.EffectiveTLDPlusOne(boundHost)
+	return targetErr == nil && boundErr == nil && targetRegistered == boundRegistered
+}
+
+func isVerifyMockURL(rawURL string) bool {
+	target, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(target.Hostname())
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // binaryResponseEnvelope wraps a non-textual success body so it survives the
