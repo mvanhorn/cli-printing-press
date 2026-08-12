@@ -47,6 +47,7 @@ type htmlLink struct {
 	Text  string `json:"text,omitempty"`
 	Image string `json:"image,omitempty"`
 	URL   string `json:"url,omitempty"`
+	ID    string `json:"id,omitempty"`
 	Slug  string `json:"slug,omitempty"`
 }
 
@@ -471,18 +472,29 @@ func extractHTMLLink(n *xhtml.Node, opts htmlExtractionOptions) (htmlLink, bool)
 		name = text
 	}
 	image := normalizeHTMLURL(firstImageSrc(n, opts.BaseURL), opts.BaseURL)
+	id, slug := htmlLinkPathParts(parsed.Path, opts.LinkPrefixes)
 	return htmlLink{
 		Rank:  rank,
 		Name:  name,
 		Text:  text,
 		Image: image,
 		URL:   normalized,
-		Slug:  htmlLinkSlug(parsed.Path, opts.LinkPrefixes),
+		ID:    id,
+		Slug:  slug,
 	}, true
 }
 
 func normalizeHTMLURL(raw string, base string) string {
-	ref, err := url.Parse(strings.TrimSpace(raw))
+	raw = strings.TrimSpace(raw)
+	// An absent href/src must stay absent. url.Parse("") yields an empty
+	// reference, and ResolveReference against the base then returns the site
+	// root — which surfaced as every extracted link reporting the bare site
+	// root as its image, and as a <link rel=canonical> with no href silently
+	// becoming the base URL.
+	if raw == "" {
+		return ""
+	}
+	ref, err := url.Parse(raw)
 	if err != nil {
 		return ""
 	}
@@ -560,7 +572,21 @@ func htmlPathMatchesPrefix(path string, prefix string) bool {
 	return path == trimmed || strings.HasPrefix(path, trimmed+"/")
 }
 
-func htmlLinkSlug(path string, prefixes []string) string {
+// htmlLinkPathParts splits a matched link path into its short id and its
+// human-readable slug.
+//
+// Detail pages are commonly addressed as /<prefix>/<id>/<slug>.html, where the
+// first segment is an opaque short id and the last is the readable slug. The
+// previous behaviour returned only the first segment and labelled it "slug",
+// so a caller holding an extracted link could not reconstruct the detail URL:
+// the actual slug was dropped, and the value presented as a slug was really an
+// id. Returning both lets discovery output feed directly into the commands
+// that take --id and --slug.
+//
+// Paths with a single segment after the prefix have no id; the one segment is
+// the slug.
+func htmlLinkPathParts(path string, prefixes []string) (id string, slug string) {
+	rest := ""
 	for _, prefix := range prefixes {
 		prefix = strings.TrimSpace(prefix)
 		if prefix == "" {
@@ -569,18 +595,50 @@ func htmlLinkSlug(path string, prefixes []string) string {
 		if !strings.HasPrefix(prefix, "/") {
 			prefix = "/" + prefix
 		}
-		rest := strings.Trim(strings.TrimPrefix(path, strings.TrimRight(prefix, "/")), "/")
-		if rest == path || rest == "" {
+		// Match on segment boundaries with the same helper the extractor uses
+		// to select links. Testing "did the trim change anything?" instead
+		// silently accepts a non-matching prefix, because Trim also removes
+		// the leading slash and so always differs from the original path —
+		// which made /track/<id>/<slug>/index.html report id="track".
+		if !htmlPathMatchesPrefix(path, prefix) {
 			continue
 		}
-		parts := strings.Split(rest, "/")
-		return parts[0]
+		trimmed := strings.Trim(strings.TrimPrefix(path, strings.TrimRight(prefix, "/")), "/")
+		if trimmed == "" {
+			continue
+		}
+		rest = trimmed
+		break
 	}
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) == 0 {
-		return ""
+	if rest == "" {
+		rest = strings.Trim(path, "/")
 	}
-	return parts[len(parts)-1]
+	if rest == "" {
+		return "", ""
+	}
+	parts := strings.Split(rest, "/")
+	// A trailing directory-index document (/<id>/<slug>/index.html) carries no
+	// identity of its own; the slug is the segment before it.
+	if len(parts) > 1 && strings.EqualFold(trimHTMLPageExt(parts[len(parts)-1]), "index") {
+		parts = parts[:len(parts)-1]
+	}
+	last := trimHTMLPageExt(parts[len(parts)-1])
+	if len(parts) == 1 {
+		return "", last
+	}
+	return parts[0], last
+}
+
+// trimHTMLPageExt drops a trailing page extension so an extracted slug can be
+// handed straight back to a command that rebuilds the URL from a template.
+func trimHTMLPageExt(s string) string {
+	lower := strings.ToLower(s)
+	for _, ext := range []string{".html", ".htm", ".php", ".aspx"} {
+		if strings.HasSuffix(lower, ext) {
+			return s[:len(s)-len(ext)]
+		}
+	}
+	return s
 }
 
 {{- end }}

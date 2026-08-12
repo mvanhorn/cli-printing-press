@@ -2687,6 +2687,9 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		if err := g.renderTemplate("html_extract.go.tmpl", filepath.Join("internal", "cli", "html_extract.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering HTML extraction helper: %w", err)
 		}
+		if err := g.renderTemplate("html_extract_test.go.tmpl", filepath.Join("internal", "cli", "html_extract_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering HTML extraction helper test: %w", err)
+		}
 	}
 
 	if g.hasGeneratedSyncImplementation() {
