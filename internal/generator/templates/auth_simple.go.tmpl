@@ -10,6 +10,9 @@ package cli
 {{- $basicAuthEnvVars := basicAuthEnvVars .Auth}}
 
 import (
+{{- if eq .Auth.Subtype "google_service_account"}}
+	"context"
+{{- end}}
 {{- if eq .Auth.Type "session_handshake"}}
 	"encoding/json"
 {{- end}}
@@ -28,8 +31,16 @@ import (
 	"strings"
 	"time"
 {{- end}}
+{{- if eq .Auth.Subtype "google_service_account"}}
+	"path/filepath"
+	"strings"
+	"time"
+{{- end}}
 
 	"github.com/spf13/cobra"
+{{- if eq .Auth.Subtype "google_service_account"}}
+	"golang.org/x/oauth2/google"
+{{- end}}
 {{- if eq .Auth.Type "session_handshake"}}
 	"{{modulePath}}/internal/client"
 {{- end}}
@@ -41,12 +52,16 @@ func newAuthCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "auth",
 		Short: {{printf "%q" (authCommandShort .APISpec)}},
+		Annotations: map[string]string{"pp:parent-group": "true"},
 		RunE:  parentNoSubcommandRunE(flags),
 	}
 
 {{ if eq .Auth.Type "session_handshake"}}
 	cmd.AddCommand(newAuthLoginCmd(flags))
 {{ end -}}
+{{- if eq .Auth.Subtype "google_service_account"}}
+	cmd.AddCommand(newAuthServiceAccountCmd(flags))
+{{- end}}
 	cmd.AddCommand(newAuthSetupCmd(flags))
 	cmd.AddCommand(newAuthStatusCmd(flags))
 {{- if $authSetTokenAvailable}}
@@ -59,6 +74,117 @@ func newAuthCmd(flags *rootFlags) *cobra.Command {
 
 	return cmd
 }
+
+{{- if eq .Auth.Subtype "google_service_account"}}
+
+func newAuthServiceAccountCmd(flags *rootFlags) *cobra.Command {
+	var keyPath string
+	var impersonate string
+	var scopes []string
+	cmd := &cobra.Command{
+		Use:   "service-account",
+		Short: "Exchange a Google service-account key for a bearer token",
+		Example: strings.TrimSpace(`
+  {{.Name}}-pp-cli auth service-account --key service-account.json
+  {{.Name}}-pp-cli auth service-account --key service-account.json --impersonate admin@example.com --scopes https://www.googleapis.com/auth/cloud-platform
+`),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if cliutil.IsVerifyEnv() {
+				fmt.Fprintln(cmd.OutOrStdout(), "would exchange service-account JWT for a bearer token")
+				return nil
+			}
+			cfg, err := config.Load(flags.configPath)
+			if err != nil {
+				return configErr(err)
+			}
+			keyPath = strings.TrimSpace(keyPath)
+			if keyPath == "" {
+				keyPath = strings.TrimSpace(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+			}
+			if keyPath == "" {
+				keyPath = strings.TrimSpace(cfg.{{resolveEnvVarField "GOOGLE_APPLICATION_CREDENTIALS"}})
+			}
+			if keyPath == "" {
+				return authErr(fmt.Errorf("service-account key required; set --key or GOOGLE_APPLICATION_CREDENTIALS"))
+			}
+			absoluteKeyPath, err := filepath.Abs(keyPath)
+			if err != nil {
+				return authErr(fmt.Errorf("resolving service-account key %q: %w", keyPath, err))
+			}
+			keyPath = absoluteKeyPath
+			impersonate = strings.TrimSpace(impersonate)
+			if impersonate == "" {
+				impersonate = strings.TrimSpace(cfg.GoogleImpersonate)
+			}
+			if len(scopes) == 0 {
+				scopes = append([]string(nil), cfg.GoogleScopes...)
+			}
+{{- if .Auth.Scopes}}
+			if len(scopes) == 0 {
+				scopes = []string{ {{- range .Auth.Scopes}}{{printf "%q" .}}, {{end}} }
+			}
+{{- end}}
+			tokenURL := ""
+{{- if .Auth.TokenURL}}
+			tokenURL = cfg.TokenURL
+			if tokenURL == "" {
+				tokenURL = {{printf "%q" .Auth.TokenURL}}
+			}
+{{- end}}
+			accessToken, expiry, err := mintGoogleServiceAccountToken(cmd.Context(), keyPath, tokenURL, impersonate, scopes)
+			if err != nil {
+				return authErr(err)
+			}
+			cfg.SetGoogleServiceAccount(keyPath, impersonate, scopes)
+			if err := cfg.SaveTokens("", "", accessToken, "", expiry); err != nil {
+				return configErr(fmt.Errorf("saving service-account token: %w", err))
+			}
+			if flags.asJSON {
+				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					"authenticated": true,
+					"expires_at":    expiry,
+				}, flags)
+			}
+			if expiry.IsZero() {
+				fmt.Fprintln(cmd.OutOrStdout(), "Service-account token saved. Token expiry not provided.")
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Service-account token saved. Token expires %s.\n", expiry.Format(time.RFC3339))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&keyPath, "key", "", "Path to the Google service-account JSON key")
+	cmd.Flags().StringVar(&impersonate, "impersonate", "", "Workspace user to impersonate with domain-wide delegation")
+	cmd.Flags().StringSliceVar(&scopes, "scopes", nil, "OAuth scopes; defaults to scopes declared by the API spec")
+	return cmd
+}
+
+func mintGoogleServiceAccountToken(ctx context.Context, keyPath, tokenURL, subject string, scopes []string) (string, time.Time, error) {
+	keyJSON, err := os.ReadFile(keyPath)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("reading Google service-account key %q: %w", keyPath, err)
+	}
+	jwtConfig, err := google.JWTConfigFromJSON(keyJSON, scopes...)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("parsing Google service-account key: %w", err)
+	}
+	jwtConfig.Subject = strings.TrimSpace(subject)
+	if strings.TrimSpace(tokenURL) != "" {
+		jwtConfig.TokenURL = strings.TrimSpace(tokenURL)
+	}
+	exchangeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	token, err := jwtConfig.TokenSource(exchangeCtx).Token()
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("exchanging Google service-account JWT: %w", err)
+	}
+	if token == nil || strings.TrimSpace(token.AccessToken) == "" {
+		return "", time.Time{}, fmt.Errorf("Google service-account token response missing access_token")
+	}
+	return token.AccessToken, token.Expiry, nil
+}
+
+{{- end}}
 
 // newAuthSetupCmd prints concrete steps for getting a credential. Side-effect
 // rule: print by default, --launch opt-in to open the URL, short-circuit when
@@ -310,6 +436,11 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			w := cmd.OutOrStdout()
 			header := cfg.AuthHeader()
 			authed := header != ""
+{{- if eq .Auth.Subtype "google_service_account"}}
+			if cfg.AccessToken != "" {
+				authed = true
+			}
+{{- end}}
 {{- if eq .Auth.Type "oauth2_refresh"}}
 			if cfg.RefreshToken != "" {
 				authed = true

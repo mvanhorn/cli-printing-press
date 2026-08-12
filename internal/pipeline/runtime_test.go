@@ -204,6 +204,31 @@ func TestRunCommandTestsUsesHappyArgsAnnotation(t *testing.T) {
 	assert.Equal(t, 3, result.Score)
 }
 
+func TestRunCommandTestsUsesSafeHappyArgsArgv(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "argv.log")
+	binary := buildRuntimeArgProbeBinary(t)
+	env := append(os.Environ(), "PP_PROBE_LOG="+logPath)
+	cmd := discoveredCommand{
+		Name: "whereabouts",
+		Kind: "read",
+		Args: []string{"-122.1"},
+		Annotations: map[string]string{
+			happyArgsAnnotation: "<longitude>=-122.1;--west=-122.1;--csv=true",
+		},
+	}
+
+	result := runCommandTests(binary, cmd, "mock", env)
+
+	assert.True(t, result.Help)
+	assert.True(t, result.DryRun)
+	assert.True(t, result.Execute)
+	data, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "whereabouts --west=-122.1 --csv true --dry-run -- -122.1")
+	assert.Contains(t, string(data), "whereabouts --west=-122.1 --csv true -- -122.1")
+	assert.NotContains(t, string(data), "--json")
+}
+
 func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 	t.Run("fails when sync creates tables but stores no rows", func(t *testing.T) {
 		binary := buildDataPipelineProbeBinary(t, 0)
@@ -305,6 +330,15 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 		assert.False(t, pass)
 		assert.Equal(t, "FAIL: sync crashed", detail)
 	})
+}
+
+func TestRunDataPipelineTestBoundsLiveSync(t *testing.T) {
+	binary := buildLiveBoundedSyncProbeBinary(t)
+
+	pass, detail := runDataPipelineTest(binary, "", "live", os.Environ, 1)
+
+	assert.True(t, pass)
+	assert.Contains(t, detail, "items has 1 rows")
 }
 
 func TestUnknownSyncFlagIgnoresEmptyFlagName(t *testing.T) {
@@ -735,6 +769,48 @@ func main() {
 	return binaryPath
 }
 
+func buildRuntimeArgProbeBinary(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, `package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	args := os.Args[1:]
+	if logPath := os.Getenv("PP_PROBE_LOG"); logPath != "" {
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err == nil {
+			_, _ = f.WriteString(strings.Join(args, " ") + "\n")
+			_ = f.Close()
+		}
+	}
+	if len(args) == 2 && args[0] == "whereabouts" && args[1] == "--help" {
+		return
+	}
+	if len(args) == 1 && args[0] == "whereabouts" {
+		fmt.Fprintln(os.Stderr, "required flag(s) \"west\" not set")
+		os.Exit(1)
+	}
+	if len(args) > 0 && args[0] == "whereabouts" {
+		return
+	}
+	os.Exit(1)
+}
+`)
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
+}
+
 func buildDataPipelineProbeBinary(t *testing.T, rowCount int) string {
 	t.Helper()
 
@@ -796,6 +872,86 @@ func dbArg(args []string) string {
 `, rowCount))
 	binaryPath := filepath.Join(dir, "test-cli")
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
+}
+
+func buildLiveBoundedSyncProbeBinary(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, `package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	args := os.Args[1:]
+	if len(args) == 0 {
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "sync":
+		if !hasFlagValue(args[1:], "--max-pages", "1") {
+			fmt.Fprintln(os.Stderr, "live sync probe requires --max-pages 1")
+			os.Exit(1)
+		}
+		dbPath := dbArg(args[1:])
+		if dbPath == "" {
+			os.Exit(1)
+		}
+		if err := os.WriteFile(dbPath+".marker", []byte(dbPath), 0o644); err != nil {
+			os.Exit(1)
+		}
+		return
+	case "sql":
+		dbPath := dbArg(args[1:])
+		if dbPath == "" {
+			os.Exit(1)
+		}
+		usedDB, err := os.ReadFile(dbPath + ".marker")
+		if err != nil || string(usedDB) != dbPath {
+			os.Exit(1)
+		}
+		query := args[len(args)-1]
+		if strings.Contains(query, "sqlite_master") {
+			fmt.Println("items")
+			return
+		}
+		if strings.Contains(query, "count(*)") {
+			fmt.Println(1)
+			return
+		}
+	}
+	os.Exit(1)
+}
+
+func hasFlagValue(args []string, flag, want string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == want {
+			return true
+		}
+	}
+	return false
+}
+
+func dbArg(args []string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--db" {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+`)
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", "./test-cli", mainFile)
+	buildCmd.Dir = dir
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
 	return binaryPath
@@ -1332,10 +1488,14 @@ func TestExtractPositionalPlaceholders(t *testing.T) {
 }
 
 func TestParseHappyArgsAnnotation(t *testing.T) {
-	got := parseHappyArgsAnnotation(" <person>= Alice ; --query= sunset ; --limit=10 ; invalid ; name=Bob ; --bad ")
+	got := parseHappyArgsAnnotation(" <person>= Alice ; --query= sunset ; --limit=10 ; invalid ; name=Bob ; empty= ; --bad ")
 
-	assert.Equal(t, []string{"Alice"}, got.positionals)
+	assert.Equal(t, []string{"Alice", "Bob"}, got.positionals)
 	assert.Equal(t, []string{"--query", "sunset", "--limit", "10"}, got.flags)
+
+	escaped := parseHappyArgsAnnotation(`<person>=vendor\;part;--query=foo\;bar`)
+	assert.Equal(t, []string{"vendor;part"}, escaped.positionals)
+	assert.Equal(t, []string{"--query", "foo;bar"}, escaped.flags)
 }
 
 func TestMergeHappyPositionalsOverlaysInOrder(t *testing.T) {
@@ -1353,6 +1513,24 @@ func TestMergeHappyFlagsOverlaysByFlagName(t *testing.T) {
 	assert.Equal(t,
 		[]string{"--query", "sunset", "--limit", "10"},
 		mergeHappyFlags([]string{"--query", "mock-query"}, []string{"--query", "sunset", "--limit", "10"}),
+	)
+}
+
+func TestAppendRuntimeFlagArgsUsesEqualsForNegativeNumericValues(t *testing.T) {
+	assert.Equal(t,
+		[]string{"map", "--west=-122.1", "--east", "140.9"},
+		appendRuntimeFlagArgs([]string{"map"}, []string{"--west", "-122.1", "--east", "140.9"}),
+	)
+}
+
+func TestBuildRuntimeTestArgsProtectsNegativeNumericPositionals(t *testing.T) {
+	assert.Equal(t,
+		[]string{"map", "--json", "--", "-122.1", "140.9"},
+		buildRuntimeTestArgs("map", []string{"-122.1", "140.9"}, nil, "--json"),
+	)
+	assert.Equal(t,
+		[]string{"map", "140.9", "--limit", "1"},
+		buildRuntimeTestArgs("map", []string{"140.9"}, []string{"--limit", "1"}),
 	)
 }
 

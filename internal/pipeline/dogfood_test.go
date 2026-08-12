@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -1217,7 +1218,7 @@ func TestCheckCommandTree_IndirectWiring(t *testing.T) {
 	require.NoError(t, os.MkdirAll(cliDir, 0o755))
 
 	// Test indirect wiring: sub := newXxxCmd(flags); cmd.AddCommand(sub)
-	// This pattern is used by command_promoted.go.tmpl for multi-endpoint subresources.
+	// The command-tree audit supports this valid hand-authored wiring shape.
 	writeTestFile(t, filepath.Join(cliDir, "root.go"), `package cli
 func newRootCmd() {
 	rootCmd.AddCommand(newParentCmd(&flags))
@@ -1826,6 +1827,43 @@ func TestCheckNovelFeatures(t *testing.T) {
 		require.NoError(t, writeResearchJSON(research, researchDir))
 		result := checkNovelFeatures(t.TempDir(), researchDir)
 		assert.True(t, result.Skipped)
+	})
+
+	t.Run("finds parent research without an explicit directory", func(t *testing.T) {
+		runRoot := t.TempDir()
+		workingDir := filepath.Join(runRoot, "working")
+		cliDir := filepath.Join(workingDir, "demo-pp-cli")
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		t.Chdir(workingDir)
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}`)
+
+		research := &ResearchResult{
+			APIName: "demo",
+			NovelFeatures: []NovelFeature{
+				{Name: "Health dashboard", Command: "health"},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, runRoot))
+		manifestData, err := json.Marshal(CLIManifest{APIName: "demo", RunID: "dogfood-run"})
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(cliDir, CLIManifestFilename), manifestData, 0o644))
+		stateData, err := json.Marshal(PipelineState{
+			APIName:    "demo",
+			RunID:      "dogfood-run",
+			WorkingDir: cliDir,
+		})
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(runRoot, "state.json"), stateData, 0o644))
+
+		result := checkNovelFeatures("demo-pp-cli", "")
+		assert.False(t, result.Skipped)
+		assert.Equal(t, 1, result.Planned)
+		assert.Equal(t, 1, result.Found)
 	})
 
 	t.Run("finds matching commands", func(t *testing.T) {
@@ -3817,6 +3855,33 @@ func TestDogfoodExampleCommandPathsFromAgentContext(t *testing.T) {
 		{"posts", "launch_details"},
 		{"what_i_missed"},
 	}, paths)
+}
+
+func TestDogfoodExampleCommandPathsRejectsDuplicateSiblingNames(t *testing.T) {
+	payload := []byte("{\n" +
+		"\t\"commands\": [\n" +
+		"\t\t{\"name\": \"root\", \"subcommands\": [\n" +
+		"\t\t\t{\"name\": \"status\"},\n" +
+		"\t\t\t{\"name\": \"status\"}\n" +
+		"\t\t]}\n" +
+		"\t]\n" +
+		"}")
+
+	paths, err := dogfoodExampleCommandPathsFromAgentContext(payload)
+	require.Error(t, err)
+	assert.Nil(t, paths)
+	assert.Contains(t, err.Error(), "root status")
+}
+
+func TestDogfoodExampleCommandPathsRejectsDuplicateRootNames(t *testing.T) {
+	payload := []byte("{\n" +
+		"\t\"commands\": [{\"name\": \"status\"}, {\"name\": \"status\"}]\n" +
+		"}")
+
+	paths, err := dogfoodExampleCommandPathsFromAgentContext(payload)
+	require.Error(t, err)
+	assert.Nil(t, paths)
+	assert.Contains(t, err.Error(), "status")
 }
 
 // passingDogfoodReport returns a DogfoodReport populated with the minimum

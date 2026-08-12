@@ -73,6 +73,7 @@ func newAuthCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "auth",
 		Short: {{printf "%q" (authCommandShort .APISpec)}},
+		Annotations: map[string]string{"pp:parent-group": "true"},
 		RunE:  parentNoSubcommandRunE(flags),
 	}
 
@@ -295,6 +296,14 @@ profile by name when the installed backend supports it.`,
 				return authErr(fmt.Errorf("cookie tool returned no cookies for %s", domain))
 			}
 			} // end if !fromPressAuth
+
+			// Cookie extractors read Chrome's evolving on-disk schema. Refuse
+			// malformed output before it reaches TOML or net/http: stale tools can
+			// otherwise persist binary schema metadata as credentials and leave the
+			// CLI unable to parse its own config on the next invocation.
+			if err := validateExtractedCookieHeader(cookies); err != nil {
+				return authErr(err)
+			}
 
 
 {{- if eq .Auth.Type "composed"}}
@@ -995,6 +1004,9 @@ func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
 	if cookies == "" {
 		return fmt.Errorf("no cookies found for %s", domain)
 	}
+	if err := validateExtractedCookieHeader(cookies); err != nil {
+		return err
+	}
 
 {{- if eq .Auth.Type "composed"}}
 	cookieMap := parseCookieString(cookies)
@@ -1297,8 +1309,8 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			w := cmd.OutOrStdout()
-			header := cfg.AuthHeader()
-			if header == "" {
+			credentialConfigured := cfg.CredentialConfigured()
+			if !credentialConfigured {
 {{- if eq .Auth.Type "none"}}
 				// This CLI ships with auth.type:none — no credentials are ever
 				// required. Report ok status so agents don't treat `auth status`
@@ -1883,6 +1895,18 @@ type cookieTool struct {
 	pyArgs []string
 }
 
+// validateExtractedCookieHeader rejects malformed browser-extractor output
+// before it can be persisted or passed to net/http. In Chrome cookie database
+// schema 24+, stale extractors may leave the binary SHA-256(host_key) prefix
+// attached to each decrypted value. net/http rejects those bytes, and writing
+// invalid UTF-8 into TOML can make the CLI's config unreadable on its next run.
+func validateExtractedCookieHeader(header string) error {
+	if _, err := http.ParseCookie(header); err != nil {
+		return fmt.Errorf("cookie importer returned malformed Cookie header: %w; update the browser extractor (pycookiecheat 0.8.0 or newer) or use press-auth; refusing to save credentials", err)
+	}
+	return nil
+}
+
 // tryPressAuth shells out to `press-auth cookies <domain>` and returns the
 // resulting Cookie header value. Stderr from press-auth (if any) is surfaced
 // as the error message so callers can include the recovery hint.
@@ -2194,9 +2218,17 @@ func validateComposedAuth(authHeader string) error {
 		// Browser-shaped UA matches the main client default; WAF fingerprint
 		// checks on the auth-verify call have to clear the same bar as the
 		// per-resource calls or the user can't log in to begin with.
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")
+		if ua := os.Getenv("{{envName .Name}}_USER_AGENT"); ua != "" {
+			req.Header.Set("User-Agent", ua)
+		} else {
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")
+		}
 {{- else}}
-		req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+		if ua := os.Getenv("{{envName .Name}}_USER_AGENT"); ua != "" {
+			req.Header.Set("User-Agent", ua)
+		} else {
+			req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+		}
 {{- end}}
 	}
 {{- end}}

@@ -157,13 +157,19 @@ func reconcileMCPBManifestFromClient(dir string, cli CLIManifest) error {
 	required := authRequiresCredential(cli.AuthType) && !cli.AuthOptional
 	for _, name := range missing {
 		key := userConfigKey(name)
+		entryRequired := required
+		sensitive := true
+		if isNonCredentialDiscoveredEnvVar(name) {
+			entryRequired = false
+			sensitive = false
+		}
 		manifest.Server.MCPConfig.Env[name] = "${user_config." + key + "}"
 		manifest.UserConfig[key] = MCPBVar{
 			Type:        mcpbVarTypeString,
 			Title:       name,
-			Description: discoveredEnvDescription(cli, name, required),
-			Sensitive:   true,
-			Required:    required,
+			Description: discoveredEnvDescription(cli, name, entryRequired),
+			Sensitive:   sensitive,
+			Required:    entryRequired,
 		}
 	}
 
@@ -192,6 +198,19 @@ func discoveredEnvDescription(m CLIManifest, envVar string, required bool) strin
 	} else {
 		b.WriteString("CLI")
 	}
-	b.WriteString(" MCP server. Required by the generated client for credential refresh or hand-written auth flow.")
+	b.WriteString(" MCP server.")
+	if isNonCredentialDiscoveredEnvVar(envVar) {
+		b.WriteString(" Overrides the default HTTP User-Agent header the generated client sends; not a credential.")
+	} else {
+		b.WriteString(" Required by the generated client for credential refresh or hand-written auth flow.")
+	}
 	return b.String()
+}
+
+// Request-behavior overrides are optional and non-sensitive because their
+// absence does not affect authentication. Match by environment-variable
+// suffix so classification stays independent of the generated client file
+// that reads the value.
+func isNonCredentialDiscoveredEnvVar(name string) bool {
+	return strings.HasSuffix(name, "_USER_AGENT")
 }

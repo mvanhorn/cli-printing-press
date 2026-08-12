@@ -51,8 +51,10 @@ func TestDoctorWithVerifyPathCanClaimCredentialsValid(t *testing.T) {
 	require.Contains(t, src, `verifyPath := "/account"`)
 	require.Contains(t, src, `report["credentials"] = "valid"`,
 		"doctor may report valid credentials after a configured authenticated verification probe succeeds")
-	require.Contains(t, src, "but auth was accepted",
-		"non-auth HTTP statuses only imply accepted auth when they come from the configured verification path")
+	require.Contains(t, src, "WARN not verified (HTTP %d from %s)",
+		"a non-401/403 status from the verification path cannot distinguish a valid token from a garbage one (a well-chosen verify_path 401s on bad creds), so the default branch must report an honest not-verified WARN, not claim auth was accepted")
+	require.NotContains(t, src, "but auth was accepted",
+		"the old copy that treated any non-auth status from the verify path as accepted auth must be gone")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")

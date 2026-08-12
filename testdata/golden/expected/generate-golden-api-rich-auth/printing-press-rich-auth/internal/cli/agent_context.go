@@ -84,6 +84,7 @@ type agentContextCommand struct {
 	Short       string                `json:"short,omitempty"`
 	Annotations map[string]string     `json:"annotations,omitempty"`
 	Flags       []agentContextFlag    `json:"flags,omitempty"`
+	Runnable    bool                  `json:"runnable,omitempty"`
 	Subcommands []agentContextCommand `json:"subcommands,omitempty"`
 }
 
@@ -213,10 +214,9 @@ func buildAgentDiscoveryContext() *agentContextDiscovery {
 // command name for stable diffs across regenerations.
 //
 // Cobra's Hidden flag suppresses listing in --help but does not gate
-// agent discovery. Raw resource parents are Hidden so --help stays
-// curated and the `api` browser populates; the agent-context surface
-// must still enumerate them and their endpoints so agents can call any
-// action a CLI user could.
+// agent discovery. The agent-context surface still traverses Hidden
+// grouping commands so agents can reach any visible descendant that a
+// CLI user can invoke directly.
 func collectAgentCommands(c *cobra.Command) []agentContextCommand {
 	children := c.Commands()
 	sort.Slice(children, func(i, j int) bool { return children[i].Name() < children[j].Name() })
@@ -227,9 +227,10 @@ func collectAgentCommands(c *cobra.Command) []agentContextCommand {
 			continue
 		}
 		entry := agentContextCommand{
-			Name:  sub.Name(),
-			Use:   sub.Use,
-			Short: sub.Short,
+			Name:     sub.Name(),
+			Use:      sub.Use,
+			Short:    sub.Short,
+			Runnable: sub.Runnable(),
 		}
 		// Surface Cobra annotations (e.g., pp:endpoint, mcp:read-only) so
 		// agents and the live-dogfood classifier can detect destructive-at-auth

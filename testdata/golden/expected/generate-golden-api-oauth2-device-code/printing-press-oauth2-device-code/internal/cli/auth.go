@@ -20,9 +20,10 @@ import (
 
 func newAuthCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "auth",
-		Short: "Manage authentication for Printing Press Oauth2",
-		RunE:  parentNoSubcommandRunE(flags),
+		Use:         "auth",
+		Short:       "Manage authentication for Printing Press Oauth2",
+		Annotations: map[string]string{"pp:parent-group": "true"},
+		RunE:        parentNoSubcommandRunE(flags),
 	}
 
 	cmd.AddCommand(newAuthSetupCmd(flags))
@@ -112,6 +113,9 @@ for CLIs and agents: no localhost callback server and no client secret.
 			}
 
 			w := cmd.OutOrStdout()
+			if flags.asJSON {
+				w = cmd.ErrOrStderr()
+			}
 			if device.Message != "" {
 				fmt.Fprintln(w, device.Message)
 			} else {

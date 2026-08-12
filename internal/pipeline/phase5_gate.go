@@ -44,18 +44,23 @@ type Phase5AuthContext struct {
 }
 
 type Phase5GateMarker struct {
-	SchemaVersion  int                   `json:"schema_version"`
-	APIName        string                `json:"api_name,omitempty"`
-	RunID          string                `json:"run_id,omitempty"`
-	Status         string                `json:"status"`
-	Level          string                `json:"level,omitempty"`
-	MatrixSize     int                   `json:"matrix_size,omitempty"`
-	TestsPassed    int                   `json:"tests_passed,omitempty"`
-	TestsSkipped   int                   `json:"tests_skipped,omitempty"`
-	TestsFailed    int                   `json:"tests_failed,omitempty"`
-	AuthContext    Phase5AuthContext     `json:"auth_context,omitzero"`
-	SkipReason     string                `json:"skip_reason,omitempty"`
-	FailureSummary *Phase5FailureSummary `json:"failure_summary,omitempty"`
+	SchemaVersion     int                   `json:"schema_version"`
+	APIName           string                `json:"api_name,omitempty"`
+	RunID             string                `json:"run_id,omitempty"`
+	Status            string                `json:"status"`
+	Level             string                `json:"level,omitempty"`
+	MatrixSize        int                   `json:"matrix_size,omitempty"`
+	TestsPassed       int                   `json:"tests_passed,omitempty"`
+	TestsSkipped      int                   `json:"tests_skipped,omitempty"`
+	TestsUnverified   int                   `json:"tests_unverified,omitempty"`
+	TestsFailed       int                   `json:"tests_failed,omitempty"`
+	CoverageHollow    bool                  `json:"coverage_hollow,omitempty"`
+	HollowFeatures    []string              `json:"hollow_features,omitempty"`
+	AuthContext       Phase5AuthContext     `json:"auth_context,omitzero"`
+	SkipReason        string                `json:"skip_reason,omitempty"`
+	FailureSummary    *Phase5FailureSummary `json:"failure_summary,omitempty"`
+	SourceFingerprint string                `json:"source_fingerprint,omitempty"`
+	SourceFiles       map[string]string     `json:"source_files,omitempty"`
 }
 
 // Phase5FailureSummary groups failed tests by category so a human reviewing
@@ -79,15 +84,19 @@ type Phase5GateValidation struct {
 	Detail     string
 }
 
-func ValidatePhase5Gate(proofsDir string, manifest CLIManifest) Phase5GateValidation {
+func ValidatePhase5Gate(proofsDir string, manifest CLIManifest, sourceDirs ...string) Phase5GateValidation {
 	if strings.TrimSpace(proofsDir) == "" {
 		return Phase5GateValidation{Detail: "phase5 proofs directory is empty"}
 	}
+	sourceDir := ""
+	if len(sourceDirs) > 0 {
+		sourceDir = strings.TrimSpace(sourceDirs[0])
+	}
 
-	if result, ok := validatePhase5MarkerFile(filepath.Join(proofsDir, Phase5AcceptanceFilename), manifest, false); ok {
+	if result, ok := validatePhase5MarkerFile(filepath.Join(proofsDir, Phase5AcceptanceFilename), manifest, false, sourceDir); ok {
 		return result
 	}
-	if result, ok := validatePhase5MarkerFile(filepath.Join(proofsDir, Phase5SkipFilename), manifest, true); ok {
+	if result, ok := validatePhase5MarkerFile(filepath.Join(proofsDir, Phase5SkipFilename), manifest, true, sourceDir); ok {
 		return result
 	}
 
@@ -96,7 +105,7 @@ func ValidatePhase5Gate(proofsDir string, manifest CLIManifest) Phase5GateValida
 	}
 }
 
-func validatePhase5MarkerFile(path string, manifest CLIManifest, skipFile bool) (Phase5GateValidation, bool) {
+func validatePhase5MarkerFile(path string, manifest CLIManifest, skipFile bool, sourceDir string) (Phase5GateValidation, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -110,12 +119,12 @@ func validatePhase5MarkerFile(path string, manifest CLIManifest, skipFile bool) 
 		return Phase5GateValidation{MarkerPath: path, Detail: fmt.Sprintf("parsing phase5 marker: %v", err)}, true
 	}
 
-	result := validatePhase5Marker(marker, manifest, skipFile)
+	result := validatePhase5Marker(marker, manifest, skipFile, sourceDir)
 	result.MarkerPath = path
 	return result, true
 }
 
-func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFile bool) Phase5GateValidation {
+func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFile bool, sourceDir string) Phase5GateValidation {
 	status := strings.ToLower(strings.TrimSpace(marker.Status))
 	result := Phase5GateValidation{Status: status}
 	var issues []string
@@ -142,6 +151,9 @@ func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFil
 		} else if marker.RunID != manifest.RunID {
 			issues = append(issues, fmt.Sprintf("phase5 marker run_id %q does not match manifest run_id %q", marker.RunID, manifest.RunID))
 		}
+	}
+	if sourceDir != "" {
+		issues = append(issues, validatePhase5SourceFingerprint(marker, sourceDir)...)
 	}
 
 	switch status {
@@ -197,6 +209,28 @@ func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFil
 	}
 }
 
+func validatePhase5SourceFingerprint(marker Phase5GateMarker, sourceDir string) []string {
+	current, err := CaptureSourceFingerprint(sourceDir)
+	if err != nil {
+		return []string{fmt.Sprintf("capturing current CLI source fingerprint: %v", err)}
+	}
+	if strings.TrimSpace(marker.SourceFingerprint) == "" {
+		return []string{"phase5 marker missing source_fingerprint"}
+	}
+	if marker.SourceFingerprint == current.Digest {
+		return nil
+	}
+
+	issues := []string{"phase5 marker source fingerprint does not match the current CLI source"}
+	if len(marker.SourceFiles) == 0 {
+		return issues
+	}
+	if changed := changedSourceFingerprintFiles(marker.SourceFiles, current.Files); len(changed) > 0 {
+		issues = append(issues, fmt.Sprintf("changed source files: %s", strings.Join(changed, ", ")))
+	}
+	return issues
+}
+
 func validatePhase5PassMarkerIssues(marker Phase5GateMarker) []string {
 	// api_name and run_id are identity tags: the cross-check in
 	// validatePhase5Marker enforces consistency when both marker and
@@ -220,6 +254,9 @@ func validatePhase5PassMarkerIssues(marker Phase5GateMarker) []string {
 }
 
 func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
+	if marker.CoverageHollow {
+		return false, fmt.Sprintf("phase5 acceptance has hollow coverage for: %s", strings.Join(marker.HollowFeatures, ", "))
+	}
 	level := phase5Level(marker)
 	switch level {
 	case phase5AcceptanceLevelQuick:

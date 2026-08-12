@@ -874,7 +874,7 @@ const mcpGoModulePath = "github.com/mark3labs/mcp-go"
 // the cobratree-era templates compile against. Pinned to whatever the
 // generator's go.mod template currently emits — bump both together.
 // TestMinMCPGoVersionMatchesGoModTemplate keeps them in lockstep.
-const minMCPGoVersionForCobratree = "v0.47.0"
+const minMCPGoVersionForCobratree = "v0.57.0"
 
 // ensureMCPGoMinVersion bumps the mark3labs/mcp-go require directive
 // in go.mod to minMCPGoVersionForCobratree when the existing pin is

@@ -12,6 +12,9 @@ require (
 	github.com/chromedp/cdproto v0.0.0-20260321001828-e3e3800016bc
 	github.com/chromedp/chromedp v0.15.1
 {{- end}}
+{{- if eq .Auth.Subtype "google_service_account"}}
+	golang.org/x/oauth2 v0.36.0
+{{- end}}
 {{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed") .Streaming.Enabled}}
 	github.com/gorilla/websocket v1.5.3
 {{- end}}
@@ -28,7 +31,7 @@ require modernc.org/sqlite v1.37.0
 {{- end}}
 
 {{- if .VisionSet.MCP}}
-require github.com/mark3labs/mcp-go v0.47.0
+require github.com/mark3labs/mcp-go v0.57.0
 {{- end}}
 
 {{- if .HasAuthCommand}}

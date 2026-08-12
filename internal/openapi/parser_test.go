@@ -52,6 +52,134 @@ func TestParsePetstore(t *testing.T) {
 	assert.Contains(t, parsed.Types, "Pet")
 }
 
+func TestParseOperationPreservesHeaderAndWriteOnlyRequestFields(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Parameter Pipeline API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /users/{id}:
+    patch:
+      operationId: resetUserPassword
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-Request-ID
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, password]
+              properties:
+                currentPassword:
+                  type: string
+                  writeOnly: true
+                password:
+                  type: string
+                  writeOnly: true
+      responses:
+        "200":
+          description: ok
+`))
+	require.NoError(t, err)
+
+	var endpoint spec.Endpoint
+	for _, resource := range parsed.Resources {
+		for _, candidate := range resource.Endpoints {
+			if candidate.Method == "PATCH" {
+				endpoint = candidate
+			}
+		}
+	}
+	require.Equal(t, "PATCH", endpoint.Method)
+
+	var header spec.Param
+	for _, param := range endpoint.Params {
+		if param.Name == "X-Request-ID" {
+			header = param
+		}
+	}
+	require.Equal(t, "header", header.In)
+
+	bodyNames := make(map[string]bool, len(endpoint.Body))
+	for _, param := range endpoint.Body {
+		bodyNames[param.Name] = true
+	}
+	assert.True(t, bodyNames["currentPassword"])
+	assert.True(t, bodyNames["password"])
+}
+
+func TestGlobalParameterFilteringDoesNotDropRepeatedHeaders(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Repeated Header API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /one:
+    get:
+      parameters:
+        - name: X-Request-ID
+          in: header
+          schema: {type: string}
+        - name: filter_one
+          in: query
+          schema: {type: string}
+      responses: {"200": {description: ok}}
+  /two:
+    get:
+      parameters:
+        - name: X-Request-ID
+          in: header
+          schema: {type: string}
+        - name: filter_two
+          in: query
+          schema: {type: string}
+      responses: {"200": {description: ok}}
+  /three:
+    get:
+      parameters:
+        - name: X-Request-ID
+          in: header
+          schema: {type: string}
+        - name: filter_three
+          in: query
+          schema: {type: string}
+      responses: {"200": {description: ok}}
+`))
+	require.NoError(t, err)
+	for _, resource := range parsed.Resources {
+		for _, endpoint := range resource.Endpoints {
+			var found bool
+			for _, param := range endpoint.Params {
+				if param.Name == "X-Request-ID" {
+					found = true
+					assert.Equal(t, "header", param.In)
+				}
+			}
+			assert.True(t, found, "repeated header should remain on %s", endpoint.Path)
+		}
+	}
+}
+
 func TestParseStreamingExtension(t *testing.T) {
 	t.Parallel()
 
@@ -1826,12 +1954,149 @@ func TestParseGmailOAuth2(t *testing.T) {
 
 	assert.Equal(t, "bearer_token", parsed.Auth.Type)
 	assert.Equal(t, "Authorization", parsed.Auth.Header)
+	assert.Empty(t, parsed.Auth.Subtype, "interactive Gmail OAuth must not select service-account auth")
 	assert.Equal(t, "https://accounts.google.com/o/oauth2/auth", parsed.Auth.AuthorizationURL)
 	assert.Equal(t, "https://accounts.google.com/o/oauth2/token", parsed.Auth.TokenURL)
 	assert.NotEmpty(t, parsed.Auth.Scopes)
-	// gmail uses authorization_code flow; OAuth2Grant stays empty so the
-	// EffectiveOAuth2Grant() default of "authorization_code" applies.
 	assert.Equal(t, "", parsed.Auth.OAuth2Grant)
+}
+
+func TestParseGoogleHostInteractiveOAuth2PreservesBrowserAuth(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: GoogleService
+  version: "1.0"
+servers:
+  - url: https://example.googleapis.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://accounts.google.com/o/oauth2/auth
+          tokenUrl: https://oauth2.googleapis.com/token
+          scopes:
+            https://www.googleapis.com/auth/cloud-platform: Cloud platform
+paths:
+  /v1/items:
+    get:
+      security:
+        - OAuth2: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Empty(t, parsed.Auth.Subtype)
+	assert.Equal(t, "https://oauth2.googleapis.com/token", parsed.Auth.TokenURL)
+	assert.Equal(t, []string{"https://www.googleapis.com/auth/cloud-platform"}, parsed.Auth.Scopes)
+	assert.Equal(t, "https://accounts.google.com/o/oauth2/auth", parsed.Auth.AuthorizationURL)
+}
+
+func TestParseGoogleServiceAccountAuthByServerHostForClientCredentials(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: GoogleService
+  version: "1.0"
+servers:
+  - url: https://example.googleapis.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://oauth2.googleapis.com/token
+          scopes:
+            https://www.googleapis.com/auth/cloud-platform: Cloud platform
+paths:
+  /v1/items:
+    get:
+      security:
+        - OAuth2: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, spec.AuthSubtypeGoogleServiceAccount, parsed.Auth.Subtype)
+	assert.Equal(t, "https://oauth2.googleapis.com/token", parsed.Auth.TokenURL)
+	assert.Equal(t, []string{"https://www.googleapis.com/auth/cloud-platform"}, parsed.Auth.Scopes)
+	assert.Empty(t, parsed.Auth.AuthorizationURL)
+	assert.Equal(t, []string{"GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_OAUTH_ACCESS_TOKEN"}, parsed.Auth.EnvVars)
+}
+
+func TestParseGenericOAuth2DoesNotUseGoogleServiceAccountAuth(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: GenericOAuth
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      description: Generic service-account JWT bearer authorization
+      flows:
+        authorizationCode:
+          authorizationUrl: https://accounts.google.com/o/oauth2/auth
+          tokenUrl: https://oauth2.googleapis.com/token
+          scopes:
+            read: Read access
+paths:
+  /items:
+    get:
+      security:
+        - OAuth2: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Empty(t, parsed.Auth.Subtype)
+	assert.Equal(t, "https://accounts.google.com/o/oauth2/auth", parsed.Auth.AuthorizationURL)
+	assert.Equal(t, "https://oauth2.googleapis.com/token", parsed.Auth.TokenURL)
+}
+
+func TestParseGoogleHostPlainBearerDoesNotUseServiceAccountAuth(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: GoogleProxy
+  version: "1.0"
+servers:
+  - url: https://proxy.googleapis.com
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+paths:
+  /items:
+    get:
+      security:
+        - BearerAuth: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	assert.Empty(t, parsed.Auth.Subtype)
+	assert.NotEmpty(t, parsed.Auth.EnvVars)
 }
 
 func TestParseOAuth2ClientCredentialsFlow(t *testing.T) {
@@ -5264,7 +5529,8 @@ paths:
 }
 
 // TestOpenAPIAuthSubtype covers the x-auth-subtype extension on a bearer
-// security scheme. The parser accepts the auth0_spa_in_memory value and
+// security scheme. The parser accepts the Google service-account and
+// auth0_spa_in_memory values and
 // silently drops unrecognized values (typos surface as the field being
 // empty, not as a confusing later validation error).
 func TestOpenAPIAuthSubtype(t *testing.T) {
@@ -5296,6 +5562,38 @@ paths:
 		require.NoError(t, err)
 		assert.Equal(t, "bearer_token", parsed.Auth.Type)
 		assert.Equal(t, "auth0_spa_in_memory", parsed.Auth.Subtype)
+	})
+
+	t.Run("google_service_account round-trips", func(t *testing.T) {
+		t.Parallel()
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: GoogleService
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    BearerAuth:
+      type: oauth2
+      x-auth-subtype: google_service_account
+      flows:
+        authorizationCode:
+          authorizationUrl: https://login.example.com/authorize
+          tokenUrl: https://login.example.com/token
+paths:
+  /me:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+		assert.Equal(t, "bearer_token", parsed.Auth.Type)
+		assert.Equal(t, spec.AuthSubtypeGoogleServiceAccount, parsed.Auth.Subtype)
+		assert.Empty(t, parsed.Auth.AuthorizationURL)
+		assert.Equal(t, []string{"GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_OAUTH_ACCESS_TOKEN"}, parsed.Auth.EnvVars)
 	})
 
 	t.Run("unknown subtype is dropped", func(t *testing.T) {
@@ -7713,6 +8011,38 @@ paths:
 			assert.Equal(t, tt.wantSyncable, ep.Syncable, "Syncable")
 		})
 	}
+}
+
+func TestParseReadsXPPMutationExtension(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /applications/{id}/restart:
+    get:
+      operationId: restartApplication
+      x-pp-mutation: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Restarted
+`)
+
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	ep := findEndpoint(t, parsed, "/applications/{id}/restart")
+	assert.True(t, ep.Mutation)
 }
 
 func TestParseDataSourceStrategyExtension(t *testing.T) {
@@ -12135,6 +12465,42 @@ func TestDetectPaginationRecognizesNestedNumericNextPage(t *testing.T) {
 	assert.Equal(t, "page", pag.Type)
 	assert.Equal(t, "limit", pag.LimitParam)
 	assert.Equal(t, "meta.nextPage", pag.NextCursorPath)
+}
+
+func TestDetectPaginationRecognizesNestedNumericNextCursor(t *testing.T) {
+	t.Parallel()
+
+	description := "OK"
+	responses := openapi3.NewResponses()
+	responses.Set("200", &openapi3.ResponseRef{Value: &openapi3.Response{
+		Description: &description,
+		Content: openapi3.Content{
+			"application/json": &openapi3.MediaType{
+				Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+					Type: &openapi3.Types{"object"},
+					Properties: openapi3.Schemas{
+						"data": &openapi3.SchemaRef{Value: &openapi3.Schema{
+							Type:  &openapi3.Types{"array"},
+							Items: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"object"}}},
+						}},
+						"pagination": &openapi3.SchemaRef{Value: &openapi3.Schema{
+							Type: &openapi3.Types{"object"},
+							Properties: openapi3.Schemas{
+								"next": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+							},
+						}},
+					},
+				}},
+			},
+		},
+	}})
+	op := &openapi3.Operation{Responses: responses}
+
+	pag := detectPagination([]spec.Param{{Name: "after"}, {Name: "limit"}}, op)
+	require.NotNil(t, pag)
+	assert.Equal(t, "after", pag.CursorParam)
+	assert.Equal(t, "cursor", pag.Type)
+	assert.Equal(t, "pagination.next", pag.NextCursorPath)
 }
 
 func TestDetectPaginationDoesNotWireNestedNextPageWithoutRequestCursor(t *testing.T) {

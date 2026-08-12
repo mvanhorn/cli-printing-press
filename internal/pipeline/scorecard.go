@@ -52,6 +52,7 @@ type Scorecard struct {
 	OverallGrade                string                      `json:"overall_grade"`
 	GapReport                   []string                    `json:"gap_report"`
 	UnscoredDimensions          []string                    `json:"unscored_dimensions,omitempty"`
+	UnverifiedDimensions        []string                    `json:"unverified_dimensions,omitempty"`
 	NovelFeatureDepthMismatches []NovelFeatureDepthMismatch `json:"novel_feature_depth_mismatches,omitempty"`
 
 	verifyCalibrationFloor   int
@@ -94,7 +95,7 @@ type SteinerScore struct {
 }
 
 // Dimension identifiers used by recordOptionalScore, scorecardTierMax,
-// IsDimensionUnscored, and renderers (renderHumanScorecard,
+// IsDimensionUnscored, IsDimensionUnverified, and renderers (renderHumanScorecard,
 // writeScorecardMD). Any dimension that can land in
 // Scorecard.UnscoredDimensions has a constant here so a typo at any
 // call site fails the compile rather than silently returning false
@@ -135,6 +136,12 @@ type CompScore struct {
 // RunScorecard evaluates generated CLI files and produces a scorecard.
 // If verifyReport is non-nil, verify results calibrate the final score.
 func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyReport) (*Scorecard, error) {
+	canonicalDir, err := ResolveTargetDir(outputDir)
+	if err != nil {
+		return nil, err
+	}
+	outputDir = canonicalDir
+
 	// Strip the CLI suffix because outputDir from fullrun (paths.WorkingCLIDir)
 	// and library checkouts both end in -pp-cli; APIName is the API slug,
 	// not the binary name, and lands in user-visible output (Markdown
@@ -224,6 +231,17 @@ func recordOptionalScore(sc *Scorecard, target *int, dimension string, score int
 	sc.UnscoredDimensions = append(sc.UnscoredDimensions, dimension)
 }
 
+func markUnverifiedDimension(sc *Scorecard, dimensions ...string) {
+	for _, dimension := range dimensions {
+		if !slices.Contains(sc.UnscoredDimensions, dimension) {
+			sc.UnscoredDimensions = append(sc.UnscoredDimensions, dimension)
+		}
+		if !slices.Contains(sc.UnverifiedDimensions, dimension) {
+			sc.UnverifiedDimensions = append(sc.UnverifiedDimensions, dimension)
+		}
+	}
+}
+
 func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) (*openAPISpecInfo, error) {
 	if isDeviceBackedCLIDir(outputDir) || looksLikeDeviceSpecFile(specPath) {
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity, DimAuthProtocol)
@@ -235,8 +253,9 @@ func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) (*openAPISpe
 	}
 	specPath = scorecardSpecPath(outputDir, specPath)
 	if specPath == "" {
-		// No spec: mark spec-dependent dimensions as unscored.
-		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity, DimAuthProtocol)
+		// No spec: these dimensions are applicable to an HTTP CLI, but the
+		// scorer has no source evidence with which to establish them.
+		markUnverifiedDimension(sc, DimPathValidity, DimAuthProtocol)
 		return nil, nil
 	}
 
@@ -308,6 +327,8 @@ func scoreDomainDimensions(sc *Scorecard, outputDir string, spec *openAPISpecInf
 	// shipped CLI has never been exercised against the real API.
 	if liveScore, scored := scoreLiveAPIVerification(verifyReport); scored {
 		sc.Steinberger.LiveAPIVerification = liveScore
+	} else if !isDevice && !isLocalDatastoreCLIDir(outputDir) {
+		markUnverifiedDimension(sc, DimLiveAPIVerification)
 	} else {
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimLiveAPIVerification)
 	}
@@ -340,7 +361,7 @@ func finalizeScorecard(sc *Scorecard, outputDir, pipelineDir string, verifyRepor
 	applyScorecardCalibration(sc)
 
 	// Grade
-	sc.OverallGrade = computeGrade(sc.Steinberger.Percentage)
+	sc.OverallGrade = formatScorecardGrade(sc, computeGrade(sc.Steinberger.Percentage))
 
 	// Gap report for dimensions below 5
 	sc.GapReport = buildGapReport(sc.Steinberger, sc.UnscoredDimensions)
@@ -371,6 +392,37 @@ func writeScorecardArtifacts(sc *Scorecard, pipelineDir string) error {
 
 func (sc *Scorecard) IsDimensionUnscored(name string) bool {
 	return slices.Contains(sc.UnscoredDimensions, name)
+}
+
+func (sc *Scorecard) IsDimensionUnverified(name string) bool {
+	return slices.Contains(sc.UnverifiedDimensions, name)
+}
+
+var scorecardDimensionNames = []string{
+	"output_modes", "auth", "error_handling", "terminal_ux", "readme", "doctor",
+	"agent_native", "mcp_quality", DimMCPDescriptionQuality, DimMCPTokenEfficiency,
+	DimMCPRemoteTransport, DimMCPToolDesign, DimMCPSurfaceStrategy, DimLocalCache,
+	DimCacheFreshness, "breadth", DimVision, DimWorkflows, DimInsight, DimAgentWorkflow,
+	DimPathValidity, DimAuthProtocol, DimDataPipelineIntegrity, DimSyncCorrectness,
+	DimTypeFidelity, DimDeadCode, DimLiveAPIVerification,
+}
+
+func formatScorecardGrade(sc *Scorecard, grade string) string {
+	if sc == nil || len(sc.UnverifiedDimensions) == 0 {
+		return grade
+	}
+	applicable := 0
+	for _, dimension := range scorecardDimensionNames {
+		if sc.IsDimensionUnscored(dimension) && !sc.IsDimensionUnverified(dimension) {
+			continue
+		}
+		applicable++
+	}
+	return fmt.Sprintf("%s (%d of %d dimensions unverified: %s)",
+		grade,
+		len(sc.UnverifiedDimensions),
+		applicable,
+		strings.Join(sc.UnverifiedDimensions, ", "))
 }
 
 func scoreOutputModes(dir string) int {
@@ -1272,7 +1324,7 @@ func ApplyLiveCheckToScorecard(sc *Scorecard, live *LiveCheckResult) {
 	sc.Steinberger.Insight = *insightCap
 	recomputeScorecardTotals(sc)
 	applyScorecardCalibration(sc)
-	sc.OverallGrade = computeGrade(sc.Steinberger.Percentage)
+	sc.OverallGrade = formatScorecardGrade(sc, computeGrade(sc.Steinberger.Percentage))
 	sc.GapReport = buildGapReport(sc.Steinberger, sc.UnscoredDimensions)
 	appendNovelFeatureDepthGaps(sc)
 }
@@ -1863,11 +1915,28 @@ func addCommandConstructorCalls(content string) map[string]bool {
 		if !ok {
 			return true
 		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel == nil || sel.Sel.Name != "AddCommand" {
+		helperCall := false
+		switch fun := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			if fun.Sel == nil || fun.Sel.Name != "AddCommand" {
+				return true
+			}
+		case *ast.Ident:
+			if fun.Name != "addNovelCommandIfAbsent" {
+				return true
+			}
+			helperCall = true
+		default:
 			return true
 		}
-		for _, arg := range call.Args {
+		args := call.Args
+		if helperCall {
+			if len(args) != 2 {
+				return true
+			}
+			args = args[1:]
+		}
+		for _, arg := range args {
 			if ctor := commandConstructorName(arg); ctor != "" {
 				ctors[ctor] = true
 			}
@@ -3912,6 +3981,9 @@ func writeScorecardMD(sc *Scorecard, pipelineDir string) error {
 	fmt.Fprintf(&b, "**Overall Grade: %s** (%d%%)\n\n", sc.OverallGrade, sc.Steinberger.Percentage)
 	if len(sc.UnscoredDimensions) > 0 {
 		fmt.Fprintf(&b, "Unscored dimensions omitted from the total denominator: %s\n\n", strings.Join(sc.UnscoredDimensions, ", "))
+	}
+	if len(sc.UnverifiedDimensions) > 0 {
+		fmt.Fprintf(&b, "Unverified dimensions require evidence before ship: %s\n\n", strings.Join(sc.UnverifiedDimensions, ", "))
 	}
 
 	// Steinberger dimensions table

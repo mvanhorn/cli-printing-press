@@ -109,16 +109,27 @@ func Load(configPath string) (*Config, error) {
 	if cfg.AgentcookieManagedByExternalStore() {
 		cfg.markAgentcookieManaged()
 	} else {
-		creds, ok, err := cliutil.LoadCredentials()
-		if err != nil {
-			return nil, err
-		}
-		if ok && creds.HasValues() {
-			cfg.clearCredentialFields()
-			cfg.applyCredentials(creds)
-			if cfg.hasCredentialFields() {
-				cfg.AuthSource = "config"
-				cfg.CredentialSource = "credentials file"
+		var creds *cliutil.Credentials
+		var ok bool
+		if !cfg.hasCompleteCredentialFields() {
+			if explicitConfigFile {
+				creds, ok, err = cliutil.LoadCredentialsForConfig(path)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if !ok || creds == nil || !creds.HasValues() {
+				creds, ok, err = cliutil.LoadCredentials()
+				if err != nil {
+					return nil, err
+				}
+			}
+			if ok && creds.HasValues() {
+				cfg.applyCredentials(creds)
+				if cfg.hasCredentialFields() {
+					cfg.AuthSource = "config"
+					cfg.CredentialSource = "credentials file"
+				}
 			}
 		}
 	}
@@ -236,6 +247,15 @@ func (c *Config) AuthHeader() string {
 	return token
 }
 
+// Raw browser-session values count as credentials even when no header
+// representation exists; hand-coded flows may also preserve a working header.
+func (c *Config) CredentialConfigured() bool {
+	if c == nil {
+		return false
+	}
+	return c.AuthHeader() != ""
+}
+
 func applyAuthFormat(format string, replacements map[string]string) string {
 	if format == "" {
 		return ""
@@ -282,6 +302,19 @@ func (c *Config) hasCredentialFields() bool {
 	return false
 }
 
+func (c *Config) hasCompleteCredentialFields() bool {
+	if c.AuthHeaderVal != "" {
+		return true
+	}
+	if c.PrintingPressGoldenApiKey == "" {
+		return false
+	}
+	if c.PrintingPressGoldenApiKey == "" {
+		return false
+	}
+	return true
+}
+
 func (c *Config) clearCredentialFields() {
 	c.AuthHeaderVal = ""
 	c.AccessToken = ""
@@ -308,13 +341,27 @@ func (c *Config) applyCredentials(creds *cliutil.Credentials) {
 	if creds == nil {
 		return
 	}
-	c.AuthHeaderVal = creds.AuthHeaderVal
-	c.AccessToken = creds.AccessToken
-	c.RefreshToken = creds.RefreshToken
-	c.TokenExpiry = creds.TokenExpiry
-	c.ClientID = creds.ClientID
-	c.ClientSecret = creds.ClientSecret
-	c.PrintingPressGoldenApiKey = creds.PrintingPressGoldenApiKey
+	if c.AuthHeaderVal == "" {
+		c.AuthHeaderVal = creds.AuthHeaderVal
+	}
+	if c.AccessToken == "" {
+		c.AccessToken = creds.AccessToken
+	}
+	if c.RefreshToken == "" {
+		c.RefreshToken = creds.RefreshToken
+	}
+	if c.TokenExpiry.IsZero() {
+		c.TokenExpiry = creds.TokenExpiry
+	}
+	if c.ClientID == "" {
+		c.ClientID = creds.ClientID
+	}
+	if c.ClientSecret == "" {
+		c.ClientSecret = creds.ClientSecret
+	}
+	if c.PrintingPressGoldenApiKey == "" {
+		c.PrintingPressGoldenApiKey = creds.PrintingPressGoldenApiKey
+	}
 }
 
 func (c *Config) saveCredentialsFirst() error {

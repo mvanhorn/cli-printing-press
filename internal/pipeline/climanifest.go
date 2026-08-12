@@ -55,6 +55,10 @@ const PatchesDirName = ".printing-press-patches"
 // tracked by git (which does not track empty directories).
 const PatchesGitKeepName = ".gitkeep"
 
+// PatchesMetadataFilename stores directory-level patch metadata and is not an
+// individual applied patch record.
+const PatchesMetadataFilename = "_meta.json"
+
 // CurrentPatchesIndexSchemaVersion is the schema version stamped into per-patch
 // files authored against the directory layout. Matches the shape documented in
 // internal/generator/templates/agents.md.tmpl.
@@ -159,10 +163,13 @@ type CLIManifest struct {
 	AuthOptional               bool                        `json:"auth_optional,omitempty"`
 	ReviewedSecretSuppressions []ReviewedSecretSuppression `json:"reviewed_secret_suppressions,omitempty"`
 	NovelFeatures              []NovelFeatureManifest      `json:"novel_features,omitempty"`
+	Scorecard                  *CLIManifestScorecard       `json:"scorecard,omitempty"`
+	Verify                     *CLIManifestVerify          `json:"verify,omitempty"`
 }
 
 type CLIManifestScorecard struct {
-	Steinberger CLIManifestSteinbergerScore `json:"steinberger"`
+	Steinberger          CLIManifestSteinbergerScore `json:"steinberger"`
+	UnverifiedDimensions []string                    `json:"unverified_dimensions,omitempty"`
 }
 
 type CLIManifestSteinbergerScore struct {
@@ -172,12 +179,15 @@ type CLIManifestSteinbergerScore struct {
 }
 
 type CLIManifestVerify struct {
-	Mode     string  `json:"mode,omitempty"`
-	PassRate float64 `json:"pass_rate"`
-	Passed   int     `json:"passed"`
-	Total    int     `json:"total"`
-	Failed   int     `json:"failed,omitempty"`
-	Verdict  string  `json:"verdict,omitempty"`
+	Mode                   string  `json:"mode,omitempty"`
+	PassRate               float64 `json:"pass_rate"`
+	Passed                 int     `json:"passed"`
+	Total                  int     `json:"total"`
+	Failed                 int     `json:"failed,omitempty"`
+	DataPipeline           bool    `json:"data_pipeline,omitempty"`
+	BrowserSessionRequired bool    `json:"browser_session_required,omitempty"`
+	BrowserSessionProof    string  `json:"browser_session_proof,omitempty"`
+	Verdict                string  `json:"verdict,omitempty"`
 }
 
 type ReviewedSecretSuppression struct {
@@ -233,21 +243,34 @@ type NovelFeatureManifest struct {
 }
 
 // ReadCLIBinaryName reads .printing-press.json from dir and returns the
-// cli_name field. Returns empty string when the file is missing or
-// unparseable so callers can fall back to convention. Used by the MCPB
-// bundle builder, which can't store the CLI binary name in manifest.json
-// (Claude Desktop's MCPB v0.3 validator rejects unknown top-level keys).
+// cli_name field when it is a safe single path component. Returns empty string
+// when the file is missing, unparseable, or names a path so callers can fall
+// back to convention. Used by the MCPB bundle builder, which can't store the
+// CLI binary name in manifest.json (Claude Desktop's MCPB v0.3 validator
+// rejects unknown top-level keys).
 func ReadCLIBinaryName(dir string) string {
 	m, err := ReadCLIManifest(dir)
 	if err != nil {
 		return ""
 	}
-	return m.CLIName
+	name := strings.TrimSpace(m.CLIName)
+	if !isSafeCLIBinaryName(name) {
+		return ""
+	}
+	return name
+}
+
+func isSafeCLIBinaryName(name string) bool {
+	return name != "" && name != "." && name != ".." && !filepath.IsAbs(name) && !strings.ContainsAny(name, `/\\`)
 }
 
 // ReadCLIManifest decodes dir/.printing-press.json.
 func ReadCLIManifest(dir string) (CLIManifest, error) {
-	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	return readCLIManifestFile(filepath.Join(dir, CLIManifestFilename))
+}
+
+func readCLIManifestFile(path string) (CLIManifest, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return CLIManifest{}, err
 	}
@@ -301,6 +324,21 @@ func RefreshCLIManifestFromSpec(dir string, parsed *spec.APISpec) error {
 // dir/.printing-press.json. It preserves existing release-ledger files because
 // the public library workflow owns updating them after merge.
 func WriteCLIManifest(dir string, m CLIManifest) error {
+	m = normalizeCLIManifestForWrite(dir, m)
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling CLI manifest: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644); err != nil {
+		return fmt.Errorf("writing CLI manifest: %w", err)
+	}
+	if err := WriteReleaseLedgerSkeleton(dir, m); err != nil {
+		return err
+	}
+	return nil
+}
+
+func normalizeCLIManifestForWrite(dir string, m CLIManifest) CLIManifest {
 	if usesPlatformClientProfiles(dir) {
 		m.AuthEnvVars = []string{"PRINTING_PRESS_CLIENT_PROFILE"}
 		m.AuthEnvVarSpecs = []spec.AuthEnvVar{{
@@ -309,11 +347,28 @@ func WriteCLIManifest(dir string, m CLIManifest) error {
 		}}
 		m.AuthAdditionalHeaders = nil
 	}
-	data, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling CLI manifest: %w", err)
+	return m
+}
+
+func writeCLIManifestPreservingRaw(dir string, m CLIManifest, existingRaw map[string]json.RawMessage) error {
+	return writeCLIManifestPreservingRawFields(dir, m, existingRaw, nil)
+}
+
+func writeCLIManifestPreservingRawFields(dir string, m CLIManifest, existingRaw map[string]json.RawMessage, clearFields map[string]struct{}) error {
+	if len(existingRaw) == 0 {
+		return WriteCLIManifest(dir, m)
 	}
-	if err := os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644); err != nil {
+
+	m = normalizeCLIManifestForWrite(dir, m)
+	merged, err := mergeRawCLIManifestFields(existingRaw, m, clearFields)
+	if err != nil {
+		return err
+	}
+	data, err := marshalCLIManifestObject(merged)
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomic(filepath.Join(dir, CLIManifestFilename), data, 0o644); err != nil {
 		return fmt.Errorf("writing CLI manifest: %w", err)
 	}
 	if err := WriteReleaseLedgerSkeleton(dir, m); err != nil {
@@ -571,6 +626,7 @@ func PersistScorecardToManifest(manifestPath string, sc *Scorecard, researchDir 
 				Grade:      sc.OverallGrade,
 				Total:      sc.Steinberger.Total,
 			},
+			UnverifiedDimensions: append([]string(nil), sc.UnverifiedDimensions...),
 		},
 	}
 	if researchDir != "" {
@@ -591,14 +647,47 @@ func PersistVerifyToManifest(manifestPath string, report *VerifyReport) (bool, e
 	}
 	return mergeCLIManifestFields(manifestPath, map[string]any{
 		"verify": CLIManifestVerify{
-			Mode:     report.Mode,
-			PassRate: report.PassRate,
-			Passed:   report.Passed,
-			Total:    report.Total,
-			Failed:   report.Failed,
-			Verdict:  report.Verdict,
+			Mode:                   report.Mode,
+			PassRate:               report.PassRate,
+			Passed:                 report.Passed,
+			Total:                  report.Total,
+			Failed:                 report.Failed,
+			DataPipeline:           report.DataPipeline,
+			BrowserSessionRequired: report.BrowserSessionRequired,
+			BrowserSessionProof:    report.BrowserSessionProof,
+			Verdict:                report.Verdict,
 		},
 	})
+}
+
+// LoadVerifyReportFromManifest restores the verification evidence that a
+// preceding shipcheck verify leg persisted. Older manifests simply return no
+// report, preserving standalone scorecard behavior.
+func LoadVerifyReportFromManifest(manifestPath string) (*VerifyReport, error) {
+	if strings.TrimSpace(manifestPath) == "" {
+		return nil, nil
+	}
+	manifest, err := readCLIManifestFile(manifestPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if manifest.Verify == nil {
+		return nil, nil
+	}
+	return &VerifyReport{
+		Mode:                   manifest.Verify.Mode,
+		PassRate:               manifest.Verify.PassRate,
+		Passed:                 manifest.Verify.Passed,
+		Total:                  manifest.Verify.Total,
+		Failed:                 manifest.Verify.Failed,
+		DataPipeline:           manifest.Verify.DataPipeline,
+		BrowserSessionRequired: manifest.Verify.BrowserSessionRequired,
+		BrowserSessionProof:    manifest.Verify.BrowserSessionProof,
+		Verdict:                manifest.Verify.Verdict,
+	}, nil
 }
 
 func mergeCLIManifestFields(manifestPath string, updates map[string]any) (bool, error) {
@@ -646,6 +735,20 @@ func marshalCLIManifestFields(m CLIManifest) (map[string]json.RawMessage, error)
 		return nil, fmt.Errorf("parsing CLI manifest fields: %w", err)
 	}
 	return raw, nil
+}
+
+func mergeRawCLIManifestFields(existingRaw map[string]json.RawMessage, m CLIManifest, clearFields map[string]struct{}) (map[string]json.RawMessage, error) {
+	generatedFields, err := marshalCLIManifestFields(m)
+	if err != nil {
+		return nil, err
+	}
+	merged := maps.Clone(existingRaw)
+	for key := range clearFields {
+		delete(merged, key)
+	}
+	delete(merged, "catalog_entry")
+	maps.Copy(merged, generatedFields)
+	return merged, nil
 }
 
 func marshalCLIManifestObject(raw map[string]json.RawMessage) ([]byte, error) {
@@ -769,6 +872,19 @@ func findArchivedSpec(dir string) (string, []byte, error) {
 		}
 	}
 	return "", nil, nil
+}
+
+// archivedSpecNameForFormat provides a best-effort fallback for callers that
+// do not have the generate flow's already-selected archive name.
+func archivedSpecNameForFormat(sourceBasename string) string {
+	switch strings.ToLower(filepath.Ext(sourceBasename)) {
+	case ".json":
+		return "spec.json"
+	case ".yaml", ".yml":
+		return "spec.yaml"
+	default:
+		return ""
+	}
 }
 
 // specChecksum computes a SHA-256 checksum of the file at path.
@@ -939,22 +1055,23 @@ func manifestAuthEnvVarSpecs(parsed *spec.APISpec) []spec.AuthEnvVar {
 // PipelineState), the standalone generate command only knows the spec
 // sources and output directory.
 type GenerateManifestParams struct {
-	APIName        string
-	SpecSrcs       []string // --spec args (URLs or file paths)
-	SpecURL        string   // --spec-url: explicit provenance URL (when --spec is a local downloaded file)
-	DocsURL        string   // --docs URL, if used
-	OutputDir      string
-	Description    string                 // best generated user-facing manifest description
-	DisplayName    string                 // best generated user-facing manifest display name
-	Creator        spec.Person            // resolved creator (manifest preserve > legacy fields > git config)
-	Contributors   []spec.Person          // resolved contributors, preserved from the existing manifest
-	Owner          string                 // legacy, derived from Creator.Handle (dual-write)
-	Printer        string                 // legacy, derived from Creator.Handle (dual-write)
-	PrinterName    string                 // legacy, derived from Creator.Name (dual-write)
-	RunID          string                 // from --research-dir/state.json when available, legacy basename fallback otherwise
-	Spec           *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
-	AuthPreference string                 // resolved OpenAPI securityScheme preference selected for this generate
-	NovelFeatures  []NovelFeatureManifest // transcendence features from research (nil if unavailable)
+	APIName         string
+	SpecSrcs        []string // --spec args (URLs or file paths)
+	SpecArchiveName string   // archive filename selected by generate, when one will be shipped
+	SpecURL         string   // --spec-url: explicit provenance URL (when --spec is a local downloaded file)
+	DocsURL         string   // --docs URL, if used
+	OutputDir       string
+	Description     string                 // best generated user-facing manifest description
+	DisplayName     string                 // best generated user-facing manifest display name
+	Creator         spec.Person            // resolved creator (manifest preserve > legacy fields > git config)
+	Contributors    []spec.Person          // resolved contributors, preserved from the existing manifest
+	Owner           string                 // legacy, derived from Creator.Handle (dual-write)
+	Printer         string                 // legacy, derived from Creator.Handle (dual-write)
+	PrinterName     string                 // legacy, derived from Creator.Name (dual-write)
+	RunID           string                 // from --research-dir/state.json when available, legacy basename fallback otherwise
+	Spec            *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
+	AuthPreference  string                 // resolved OpenAPI securityScheme preference selected for this generate
+	NovelFeatures   []NovelFeatureManifest // transcendence features from research (nil if unavailable)
 }
 
 // runIDPattern matches legacy and skill-allocated pipeline run_id basenames.
@@ -1105,6 +1222,20 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		}
 	}
 
+	// Repoint spec_path at the shipped archived spec. The generate flow passes
+	// the exact name selected by archiveSpecBytes; the extension fallback keeps
+	// direct callers useful without pretending it covers merged or unusual
+	// inputs. No-spec runs (docs/sniff/plan) keep their existing spec_path.
+	if m.SpecPath != "" && !strings.HasPrefix(m.SpecPath, "http://") && !strings.HasPrefix(m.SpecPath, "https://") {
+		archiveName := strings.TrimSpace(p.SpecArchiveName)
+		if archiveName == "" {
+			archiveName = archivedSpecNameForFormat(m.SpecPath)
+		}
+		if archiveName != "" {
+			m.SpecPath = archiveName
+		}
+	}
+
 	if m.Category == "" && p.Spec != nil && p.Spec.Category != "" {
 		m.Category = p.Spec.Category
 	}
@@ -1240,16 +1371,10 @@ func writeCLIManifestForGenerate(dir string, m CLIManifest, existingRaw map[stri
 	if len(existingRaw) == 0 {
 		return WriteCLIManifest(dir, m)
 	}
-	generatedFields, err := marshalCLIManifestFields(m)
+	merged, err := mergeRawCLIManifestFields(existingRaw, m, clearFields)
 	if err != nil {
 		return err
 	}
-	merged := maps.Clone(existingRaw)
-	for key := range clearFields {
-		delete(merged, key)
-	}
-	delete(merged, "catalog_entry")
-	maps.Copy(merged, generatedFields)
 	data, err := marshalCLIManifestObject(merged)
 	if err != nil {
 		return err

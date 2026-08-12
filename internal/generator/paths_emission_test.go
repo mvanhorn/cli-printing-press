@@ -22,6 +22,8 @@ func TestPathsResolverEmitsAndGeneratedCLIBuilds(t *testing.T) {
 	require.Contains(t, pathsSrc, `const envPrefix = "PATHS_EMISSION"`)
 	require.Contains(t, pathsSrc, `return envPrefix + "_" + suffix`)
 	require.Contains(t, pathsSrc, `envPrefix + "_HOME"`)
+	require.Contains(t, pathsSrc, "func resolvedHomeDir() (string, error)")
+	require.Contains(t, pathsSrc, "if override := homeOverride(); override != \"\" {")
 	for _, suffix := range naming.PathKindEnvSuffixes()[1:] {
 		require.Contains(t, pathsSrc, `return "`+suffix+`"`)
 	}
@@ -41,6 +43,7 @@ func TestPathsResolverEmitsAndGeneratedCLIBuilds(t *testing.T) {
 	require.Contains(t, rootSrc, "if err := hook(c); err != nil {")
 
 	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/cliutil", "-run", "TestHomeOverrideWinsForDefaultBaseAndTildeExpansion", "-count=1")
 }
 
 func TestPathEnvPrefixDerivationCoversEdgeNames(t *testing.T) {

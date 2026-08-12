@@ -74,6 +74,29 @@ func TestPrintingPressSkillTranscendenceCollectorSliceInit(t *testing.T) {
 	require.NotContains(t, content, "var successfulItems []yourEntryType")
 }
 
+func TestPrintingPressSkillEmptyResultOutputContract(t *testing.T) {
+	t.Parallel()
+
+	content := readPrintingPressSkill(t)
+	require.Contains(t, content, "Empty results and output modes")
+	require.Contains(t, content, "wantsHumanTable(cmd.OutOrStdout(), flags)")
+	require.Contains(t, content, "printJSONFiltered(cmd.OutOrStdout(), rows, flags)")
+	require.Contains(t, content, "printJSONFiltered(cmd.OutOrStdout(), make([]yourRowType, 0), flags)")
+	require.Contains(t, content, "make([]yourRowType, 0)")
+	require.NotContains(t, content, "if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly)")
+	require.Contains(t, content, "// human-only empty-result prose;")
+	for _, flag := range []string{"`--json`", "`--agent`", "`--csv`"} {
+		require.Contains(t, content, flag)
+	}
+
+	machineIdx := strings.Index(content, "wantsHumanTable(cmd.OutOrStdout(), flags)")
+	humanProseIdx := strings.Index(content, "// human-only empty-result prose;")
+	require.GreaterOrEqual(t, machineIdx, 0)
+	require.GreaterOrEqual(t, humanProseIdx, 0)
+	require.Less(t, machineIdx, humanProseIdx,
+		"machine output must be selected before human-only empty-result prose")
+}
+
 func TestPrintingPressSkillSQLiteNovelCommandsGuardMissingMirror(t *testing.T) {
 	t.Parallel()
 
@@ -81,7 +104,8 @@ func TestPrintingPressSkillSQLiteNovelCommandsGuardMissingMirror(t *testing.T) {
 	require.Contains(t, content, "For SQLite-backed novel commands only")
 	require.Contains(t, content, "live execution without `--dry-run`, before the user has run `sync`")
 	require.Contains(t, content, "os.Stat(dbPath); os.IsNotExist(statErr)")
-	require.Contains(t, content, "flags.asJSON || flags.agent")
+	require.Contains(t, content, "!wantsHumanTable(cmd.OutOrStdout(), flags)")
+	require.Contains(t, content, "printJSONFiltered(cmd.OutOrStdout(), make([]yourRowType, 0), flags)")
 	require.Contains(t, content, "The unconditional `return nil` is intentional")
 	require.Contains(t, content, "store.OpenWithContext")
 

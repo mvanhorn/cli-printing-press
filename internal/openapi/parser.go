@@ -68,6 +68,8 @@ const (
 	extensionLearn                 = "x-learn"
 	extensionStreaming             = "x-streaming"
 	extensionPPQuery               = "x-pp-query"
+	extensionPPResponseEnvelope    = "x-pp-response-envelope"
+	extensionPPMutation            = "x-pp-mutation"
 	extensionPPSyncable            = "x-pp-syncable"
 	extensionPPPagination          = "x-pp-pagination"
 	extensionSyncWalker            = "x-pp-sync-walker"
@@ -635,6 +637,11 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	if err != nil {
 		return nil, err
 	}
+	responseEnvelopeKey, err := parseStringOpenAPIExtension(doc, extensionPPResponseEnvelope)
+	if err != nil {
+		return nil, err
+	}
+	responseEnvelopeKey = strings.TrimSpace(responseEnvelopeKey)
 	roles, err := parseStringListOpenAPIExtension(doc, extensionRoles)
 	if err != nil {
 		return nil, err
@@ -682,6 +689,7 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 		ProxyRoutes:                  proxyRoutes,
 		RateClass:                    rateClass,
 		DefaultRateLimit:             defaultRateLimit,
+		ResponseEnvelopeKey:          responseEnvelopeKey,
 		Auth:                         auth,
 		Roles:                        roles,
 		TierRouting:                  tierRouting,
@@ -1304,8 +1312,24 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 	applyAuthEnvVarDefaults(&auth, envPrefix)
 	applyAuthVarsRichOverride(&auth, scheme.Extensions, fmt.Sprintf("components.securitySchemes.%s.%s", schemeName, extensionAuthVars))
 	applyAuthCompanionFromInfo(&auth, doc)
+	if isGoogleServiceAccountOAuth2(doc, scheme, auth) || auth.Subtype == spec.AuthSubtypeGoogleServiceAccount {
+		applyGoogleServiceAccountAuth(&auth)
+	}
 	auth.AdditionalHeaders = collectAdditionalAuthHeaders(doc, schemeName, envPrefix)
 	return auth
+}
+
+func applyGoogleServiceAccountAuth(auth *spec.AuthConfig) {
+	if auth == nil {
+		return
+	}
+	auth.Subtype = spec.AuthSubtypeGoogleServiceAccount
+	// Google service-account JWT exchange is a non-interactive bearer flow.
+	// Keep the OAuth2 scheme's token URL and scopes, but remove the browser
+	// authorization URL so the generator selects the service-account scaffold.
+	auth.AuthorizationURL = ""
+	auth.EnvVars = []string{"GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_OAUTH_ACCESS_TOKEN"}
+	auth.EnvVarSpecs = spec.NewORCaseEnvVarSpecs(auth.EnvVars)
 }
 
 // collectAdditionalAuthHeaders scans AND-group siblings of the winning
@@ -1852,6 +1876,8 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 		// keeps the error close to the typo, matching how unknown auth types are
 		// handled elsewhere in this parser.
 		switch subtype {
+		case spec.AuthSubtypeGoogleServiceAccount:
+			auth.Subtype = subtype
 		case spec.AuthSubtypeAuth0SPAInMemory:
 			auth.Subtype = subtype
 		}
@@ -3660,6 +3686,9 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			// templates do not re-walk schemas at generation time.
 			if responseUsesBinary(op) {
 				endpoint.ResponseFormat = spec.ResponseFormatBinary
+			} else if accept := textResponseAcceptType(op); accept != "" {
+				endpoint.ResponseFormat = spec.ResponseFormatText
+				endpoint.HeaderOverrides = upsertHeaderOverride(endpoint.HeaderOverrides, "Accept", accept)
 			} else if responseUsesXML(op) {
 				// XML-only success bodies are normalized to JSON by the
 				// generated client (response_format: xml). Pin Accept so the
@@ -3682,6 +3711,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			endpoint.TenantScopeColumn = pathTenantScopeColumn
 			endpoint.MembershipField = pathMembershipField
 			endpoint.Critical = pathCritical
+			endpoint.Mutation, _ = boolExtension(op.Extensions, extensionPPMutation)
 			opSyncable, _ := boolExtension(op.Extensions, extensionPPSyncable)
 			endpoint.Syncable = pathSyncable || opSyncable
 			endpoint.Walker = readWalkerExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
@@ -4275,7 +4305,7 @@ func classifyGlobalParams(resources map[string]spec.Resource) {
 
 		seen := map[string]struct{}{}
 		for _, param := range endpoint.Params {
-			if isPathSubstitutionParam(param) {
+			if isPathSubstitutionParam(param) || !isQueryParamLocation(param) {
 				continue
 			}
 			key := strings.ToLower(param.Name)
@@ -4409,7 +4439,12 @@ func isGlobalFilterCandidate(param spec.Param) bool {
 	// access scope that defaults true) is not silently stripped, while plain
 	// high-frequency boilerplate (prettyPrint, quotaUser) with no default is
 	// still dropped.
-	return !isPathSubstitutionParam(param) && !param.Required && param.Default == nil
+	return isQueryParamLocation(param) && !isPathSubstitutionParam(param) && !param.Required && param.Default == nil
+}
+
+func isQueryParamLocation(param spec.Param) bool {
+	loc := strings.TrimSpace(param.In)
+	return loc == "" || strings.EqualFold(loc, "query")
 }
 
 func isRetainableSoleGlobalInputParam(param spec.Param) bool {
@@ -4610,7 +4645,7 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) ([]spec.
 		if parameter == nil {
 			continue
 		}
-		if parameter.In != openapi3.ParameterInPath && parameter.In != openapi3.ParameterInQuery {
+		if parameter.In != openapi3.ParameterInPath && parameter.In != openapi3.ParameterInQuery && parameter.In != openapi3.ParameterInHeader {
 			continue
 		}
 
@@ -4632,6 +4667,7 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) ([]spec.
 		}
 		param := spec.Param{
 			Name:        paramName,
+			In:          string(parameter.In),
 			Type:        mapSchemaType(schema),
 			Required:    parameter.Required,
 			Positional:  parameter.In == openapi3.ParameterInPath,
@@ -5056,8 +5092,17 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 	}
 
 	requestContentType, media := requestBodyMediaType(requestBody.Content)
-	if media == nil || media.Schema == nil || media.Schema.Value == nil {
+	if media == nil {
 		return nil, "", false, false, false
+	}
+	if media.Schema == nil || media.Schema.Value == nil {
+		if isRawRequestContentType(requestContentType) {
+			return nil, requestContentType, false, requestBody.Required, false
+		}
+		return nil, "", false, false, false
+	}
+	if isRawRequestContentType(requestContentType) {
+		return nil, requestContentType, false, requestBody.Required, false
 	}
 
 	// Bare top-level array request body: no object properties to flatten to
@@ -5068,6 +5113,27 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 	// with HTTP 422 "Invalid json" (e.g. Tripletex [BETA] PUT
 	// /supplierInvoice/voucher/{id}/postings, body [{"posting":{...}}]).
 	if media.Schema.Value.Type != nil && media.Schema.Value.Type.Is(openapi3.TypeArray) {
+		// An array-root multipart body means "one or more file parts". The item
+		// schema is no help: Atlassian, for one, emits their Java MultipartFile
+		// type here rather than `type: string, format: binary`, so the file-ness
+		// is carried by the content type alone.
+		//
+		// Dropping the content type here left endpointUsesMultipart seeing "",
+		// so the generator emitted its generic JSON path and the command POSTed
+		// a JSON body naming a local file path — which the endpoint can never
+		// accept, while its help text still advertised multipart. Synthesize the
+		// binary param instead; multipartBodyMaps routes a binary
+		// param into fileFields, and the client's PostMultipart already builds a
+		// real multipart body.
+		if isMultipartContentType(requestContentType) {
+			return []spec.Param{{
+				Name:        "file",
+				Type:        "string",
+				Format:      "binary",
+				Required:    requestBody.Required,
+				Description: "Path to the file to upload.",
+			}}, requestContentType, false, requestBody.Required, false
+		}
 		if !isJSONContentType(requestContentType) {
 			warnf("skipping request body for %s %q: array-root body and content type %q is not JSON-shaped", strings.ToUpper(method), path, requestContentType)
 			return nil, "", false, false, false
@@ -5176,6 +5242,25 @@ func isJSONContentType(ct string) bool {
 	return strings.HasPrefix(ct, "application/") && strings.HasSuffix(ct, "+json")
 }
 
+// isMultipartContentType reports whether ct is a multipart request body.
+func isMultipartContentType(ct string) bool {
+	base := strings.ToLower(strings.TrimSpace(strings.SplitN(ct, ";", 2)[0]))
+	return base == "multipart/form-data"
+}
+
+func isRawRequestContentType(ct string) bool {
+	base := strings.ToLower(strings.TrimSpace(strings.SplitN(ct, ";", 2)[0]))
+	if base == "" || isJSONContentType(base) {
+		return false
+	}
+	switch base {
+	case "multipart/form-data", "application/x-www-form-urlencoded":
+		return false
+	default:
+		return true
+	}
+}
+
 func requestBodyMediaType(content openapi3.Content) (string, *openapi3.MediaType) {
 	if content == nil {
 		return "", nil
@@ -5198,6 +5283,11 @@ func requestBodyMediaType(content openapi3.Content) (string, *openapi3.MediaType
 	for _, contentType := range contentTypes {
 		media := content[contentType]
 		if media != nil && media.Schema != nil {
+			return contentType, media
+		}
+	}
+	for _, contentType := range contentTypes {
+		if media := content[contentType]; media != nil {
 			return contentType, media
 		}
 	}
@@ -5547,6 +5637,27 @@ func xmlResponseContentType(base string) bool {
 		return false
 	}
 	return base == "application/xml" || base == "text/xml" || strings.HasSuffix(base, "+xml")
+}
+
+func textResponseAcceptType(op *openapi3.Operation) string {
+	if op == nil || op.Responses == nil {
+		return ""
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil || len(success.Value.Content) == 0 {
+		return ""
+	}
+	contentTypes := sortedContentTypes(success.Value.Content)
+	for _, contentType := range contentTypes {
+		base := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
+		if !strings.HasPrefix(base, "text/") || base == "text/json" || base == "text/xml" {
+			return ""
+		}
+	}
+	if len(contentTypes) == 0 {
+		return ""
+	}
+	return contentTypes[0]
 }
 
 func binaryContentType(contentType string) bool {
@@ -7640,6 +7751,21 @@ func isGoogleAPIsServerURL(raw string) bool {
 	return false
 }
 
+// isGoogleServiceAccountOAuth2 narrows the Google auth scaffold to OAuth2
+// schemes. A plain bearer scheme on a Google-hosted proxy still represents a
+// user-supplied token and must keep the normal bearer path.
+func isGoogleServiceAccountOAuth2(doc *openapi3.T, scheme *openapi3.SecurityScheme, auth spec.AuthConfig) bool {
+	if scheme == nil || !strings.EqualFold(strings.TrimSpace(scheme.Type), "oauth2") || auth.Type != "bearer_token" {
+		return false
+	}
+	// Preserve an explicitly declared browser flow. Google-hosted APIs can
+	// expose ordinary user OAuth alongside service-account-compatible scopes.
+	if strings.TrimSpace(auth.AuthorizationURL) != "" {
+		return false
+	}
+	return hasGoogleAPIsServer(doc)
+}
+
 func operationIDResourceVariants(resourceName string) []string {
 	resource := toSnakeCase(strings.TrimSpace(resourceName))
 	if resource == "" {
@@ -8193,6 +8319,9 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	originalCase := map[string]string{}
 	paramsByLowerName := map[string]spec.Param{}
 	for _, p := range params {
+		if !isQueryParamLocation(p) || isPathSubstitutionParam(p) {
+			continue
+		}
 		lowerName := strings.ToLower(p.Name)
 		originalCase[lowerName] = p.Name
 		paramsByLowerName[lowerName] = p
@@ -8424,6 +8553,13 @@ func detectPaginationResponseFields(schema *openapi3.Schema, prefix string, pag 
 			if pag.Type == "" {
 				pag.Type = "page"
 			}
+		case lower == "next" && isNumericPaginationField(propRef):
+			if pag.NextCursorPath == "" && pag.CursorParam != "" {
+				pag.NextCursorPath = path
+			}
+			if pag.Type == "" {
+				pag.Type = "cursor"
+			}
 		case stringInSlice(lower, nextFieldCursorNames):
 			if pag.NextCursorPath == "" && pag.CursorParam != "" {
 				pag.NextCursorPath = path
@@ -8445,6 +8581,14 @@ func detectPaginationResponseFields(schema *openapi3.Schema, prefix string, pag 
 		}
 		detectPaginationResponseFields(propRef.Value, path, pag)
 	}
+}
+
+func isNumericPaginationField(ref *openapi3.SchemaRef) bool {
+	schema := schemaRefValue(ref)
+	if schema == nil || schema.Type == nil {
+		return false
+	}
+	return schema.Type.Includes(openapi3.TypeInteger)
 }
 
 func isPaginationWrapperField(lower string) bool {

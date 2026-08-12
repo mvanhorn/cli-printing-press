@@ -8,7 +8,7 @@ The Printing Press has a fast path and a managed path.
 
 The fast path is the `/printing-press` skill. It runs the flow end to end in one session, produces a CLI plus an MCP server, and reports back. The high-level step list lives in `README.md` under "How It Works."
 
-The managed path is the 9-phase pipeline. It breaks the same work into phases the user can stop at, resume, re-run, and inspect. Each phase has its own plan file, its own artifacts directory, and its own gate. This is what `printing-press pipeline` creates. It is also how this contract should be read: the fast path compresses these phases, it does not replace them.
+The managed path is the 9-phase pipeline. It breaks the same work into phases the user can stop at, resume, re-run, and inspect. Each phase has its own plan file, its own artifacts directory, and its own gate. This is what `printing-press print` creates. It is also how this contract should be read: the fast path compresses these phases, it does not replace them.
 
 Both paths converge on the same quality bar. A CLI produced by the fast path should score the same as one produced by the managed path.
 
@@ -109,7 +109,7 @@ Freshness ownership:
 - Freshness metadata belongs in the existing JSON provenance envelope at `meta.freshness`. It describes current-cache freshness for the covered path only; it must not be described as full historical backfill or API-specific enrichment.
 
 Gates:
-- All eight generator quality gates pass: `go mod tidy`, default-mode `govulncheck`, `go vet`, `go build`, binary build, `--help`, version, `doctor`
+- All ten generator quality gates pass: `go mod tidy`, safe `golang.org/x/net`, fresh generated `go test -count=1 ./...`, default-mode `govulncheck`, `go vet`, `go build`, binary build, `--help`, version, `doctor`
 
 Artifacts:
 - Full CLI source tree in the output directory
@@ -148,7 +148,7 @@ Outputs:
 
 Gates:
 - Overlay merge completes without conflicts
-- All eight generator quality gates pass again after regeneration, including default-mode `govulncheck`
+- All ten generator quality gates pass again after regeneration, including safe `golang.org/x/net`, fresh generated `go test -count=1 ./...`, and default-mode `govulncheck`
 
 Artifacts:
 - Merged spec (format follows the source spec)

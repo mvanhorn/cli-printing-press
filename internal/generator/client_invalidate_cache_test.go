@@ -62,6 +62,8 @@ func TestGenerateEmitsInvalidateCacheSymmetry(t *testing.T) {
 	}
 	assert.Contains(t, implBody, "c.invalidateCacheAfterMutation(path)",
 		"Client.doInternal must invalidate all potentially related cached projections in its success branch (R2)")
+	assert.Contains(t, implBody, "if !readOnlyIntent && (mutationIntent || method != http.MethodGet) && !c.DryRun {",
+		"GET mutations must invalidate cached projections while read-only POST/PUT/PATCH operations must not")
 	assert.NotContains(t, implBody, "c.invalidateCache()",
 		"a successful mutation must not evict config, database, or state siblings outside the HTTP response namespace")
 
@@ -69,9 +71,9 @@ func TestGenerateEmitsInvalidateCacheSymmetry(t *testing.T) {
 	// the cache-invalidation call site stays single. A future edit that
 	// inlines do()'s implementation back into do() would silently move
 	// the call out of doInternal — pin the wrapper shape here too.
-	assert.Contains(t, clientGo, "func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {\n\treturn c.doInternal(ctx, method, path, params, body, headerOverrides, false)\n}",
+	assert.Contains(t, clientGo, "func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {\n\treturn c.doInternal(ctx, method, path, params, body, headerOverrides, false, false)\n}",
 		"Client.do must be a thin wrapper delegating to doInternal(..., false)")
-	assert.Contains(t, clientGo, "func (c *Client) doRead(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {\n\treturn c.doInternal(ctx, method, path, params, body, headerOverrides, true)\n}",
+	assert.Contains(t, clientGo, "func (c *Client) doRead(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {\n\treturn c.doInternal(ctx, method, path, params, body, headerOverrides, true, false)\n}",
 		"Client.doRead must be a thin wrapper delegating to doInternal(..., true)")
 
 	// Prong 3: writeCache must still be present (asymmetry diagnostic

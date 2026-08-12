@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/config"
 	"{{modulePath}}/internal/platform"
 )
@@ -53,7 +54,9 @@ func TestPlatformRateLimitDoesNotReplayUnsafeWrite(t *testing.T) {
 	client, session := platformRateLimitTestClient(t, server)
 	_, _, err := client.Post(context.Background(), "/mutation", map[string]any{"synthetic": true})
 	var limited *platform.RateLimitedError
-	if !errors.As(err, &limited) || limited.Attempts != 1 || limited.RequestID != "safe-request-id" {
+	var cliLimited *cliutil.RateLimitError
+	var apiErr *APIError
+	if !errors.As(err, &limited) || !errors.As(err, &cliLimited) || !errors.As(err, &apiErr) || limited.Attempts != 1 || limited.RequestID != "safe-request-id" {
 		t.Fatalf("rate-limit error = %#v (%v)", limited, err)
 	}
 	if calls.Load() != 1 {
@@ -61,6 +64,32 @@ func TestPlatformRateLimitDoesNotReplayUnsafeWrite(t *testing.T) {
 	}
 	if !session.RateLimitMetadata().Exhausted {
 		t.Fatal("exhausted rate-limit metadata was not recorded")
+	}
+}
+
+func TestPlatformRateLimitRetryBudgetReturnsTypedError(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client, _ := platformRateLimitTestClient(t, server)
+	if err := client.SetPlatformEndpointBudget(platform.EndpointBudget{
+		Class: "*", Steady: 60, Interval: time.Minute, Burst: 1,
+		MaxAttempts: 3, RetryBudget: time.Nanosecond,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := client.Get(context.Background(), "/budget", nil)
+	var cliLimited *cliutil.RateLimitError
+	if !errors.As(err, &cliLimited) || cliLimited.RetryAfter != 5*time.Second {
+		t.Fatalf("rate-limit error = %#v (%v); want cliutil error with 5s retry-after", cliLimited, err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("calls = %d, want retry budget to stop after first response", calls.Load())
 	}
 }
 
@@ -74,7 +103,7 @@ func platformRateLimitTestClient(t *testing.T, server *httptest.Server) (*Client
 		SchemaVersion: platform.ProfileSchemaVersion,
 		Name:          "tenant-a",
 		Sources: map[string]platform.SourceProfile{
-			"{{.Name}}": {CredentialRef: "op://Test Vault/Synthetic/token", ExpectedAccountID: "acct-a", ExpectedOrgName: "Tenant A", ExpectedStoreID: "store-a", ExpectedStoreDomain: "tenant-a.example.test", ExpectedPropertyID: "123", ExpectedBaseURL: "https://tenant-a.example.test"},
+			"{{.Name}}": {CredentialRef: "fixture://Test/Synthetic/token", ExpectedAccountID: "acct-a", ExpectedOrgName: "Tenant A", ExpectedStoreID: "store-a", ExpectedStoreDomain: "tenant-a.example.test", ExpectedPropertyID: "123", ExpectedBaseURL: "https://tenant-a.example.test"},
 		},
 	}, "{{.Name}}-pp-cli", "{{.Name}}")
 	if err != nil {

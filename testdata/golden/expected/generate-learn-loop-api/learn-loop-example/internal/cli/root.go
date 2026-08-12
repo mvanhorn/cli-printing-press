@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +44,8 @@ type rootFlags struct {
 	runProfileName          string
 	clientProfileName       string
 	platformSession         *platform.Session
+	platformResolver        platform.CredentialResolver
+	platformResolverReady   bool
 	platformAnalytics       *platform.AnalyticsDeclaration
 	platformGateError       error
 	platformMetadataWriter  io.Writer
@@ -73,6 +76,15 @@ var novelCommandHooks []func(root *cobra.Command, flags *rootFlags)
 
 func registerNovelCommand(hook func(root *cobra.Command, flags *rootFlags)) {
 	novelCommandHooks = append(novelCommandHooks, hook)
+}
+
+func addNovelCommandIfAbsent(parent *cobra.Command, candidate *cobra.Command) {
+	for _, existing := range parent.Commands() {
+		if existing.Name() == candidate.Name() {
+			return
+		}
+	}
+	parent.AddCommand(candidate)
 }
 
 // clientHooks let preserved package-local extensions configure a newly-created
@@ -110,6 +122,16 @@ func Execute() (retErr error) {
 	}()
 	if errors.Is(err, pflag.ErrHelp) {
 		return nil
+	}
+	envelopeWriter := io.Writer(os.Stdout)
+	if flags.deliverBuf != nil {
+		envelopeWriter = io.MultiWriter(os.Stdout, flags.deliverBuf)
+	}
+	envelopeWritten := writeCredentialSaveErrorEnvelope(envelopeWriter, &flags, err)
+	if envelopeWritten && flags.deliverBuf != nil {
+		if derr := Deliver(flags.deliverSink, flags.deliverBuf.Bytes(), flags.compact); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", flags.deliverSink.Scheme, flags.deliverSink.Target, derr)
+		}
 	}
 	if err != nil && strings.Contains(err.Error(), "unknown flag") {
 		msg := err.Error()
@@ -151,6 +173,24 @@ func Execute() (retErr error) {
 		return usageErr(err)
 	}
 	return err
+}
+
+func writeCredentialSaveErrorEnvelope(w io.Writer, flags *rootFlags, err error) bool {
+	if flags == nil || !flags.asJSON || err == nil {
+		return false
+	}
+	var permissionErr *cliutil.CredentialsPermissionError
+	if !errors.As(err, &permissionErr) {
+		return false
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"saved":                true,
+		"credentials_path":     permissionErr.Path,
+		"permissions_verified": false,
+		"error":                permissionErr.Error(),
+		"code":                 ExitCode(err),
+	})
+	return true
 }
 
 // isCobraUsageError reports whether err matches one of Cobra/pflag's
@@ -221,7 +261,7 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.PersistentFlags().StringVar(&flags.receiptFile, "receipt-file", "", "Override the run receipt destination")
 	rootCmd.PersistentFlags().StringVar(&flags.auditDir, "audit-dir", "", "Aggregate the receipt and index under this audit directory")
 	rootCmd.PersistentFlags().BoolVar(&flags.noInput, "no-input", false, "Disable all interactive prompts (for CI/agents)")
-	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output (e.g. --select id,name,status)")
+	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output")
 	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (for agents and scripts)")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	rootCmd.PersistentFlags().BoolVar(&humanFriendly, "human-friendly", false, "Enable colored output and rich formatting")

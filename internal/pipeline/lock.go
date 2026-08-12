@@ -3,8 +3,10 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -213,29 +215,34 @@ func ReleaseLock(cliName string) error {
 // Uses a staging directory with atomic swap so the previous library copy
 // survives if any step fails.
 func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
+	_, err := promoteWorkingCLI(cliName, workingDir, state)
+	return err
+}
+
+func promoteWorkingCLI(cliName, workingDir string, state *PipelineState) (*PromoteResult, error) {
 	if err := validateCLIName(cliName); err != nil {
-		return err
+		return nil, err
 	}
 	if workingDir == "" {
-		return fmt.Errorf("working directory is empty")
+		return nil, fmt.Errorf("working directory is empty")
 	}
 
 	// Verify working dir has content.
 	entries, err := os.ReadDir(workingDir)
 	if err != nil {
-		return fmt.Errorf("reading working directory: %w", err)
+		return nil, fmt.Errorf("reading working directory: %w", err)
 	}
 	if len(entries) == 0 {
-		return fmt.Errorf("working directory is empty: %s", workingDir)
+		return nil, fmt.Errorf("working directory is empty: %s", workingDir)
 	}
 	if err := validatePhase5GateForPromote(workingDir, state); err != nil {
-		return err
+		return nil, err
 	}
 	if err := validatePIIGateForPromote(workingDir, state); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := refreshPromoteArtifacts(workingDir, cliName); err != nil {
-		return fmt.Errorf("refreshing staged artifacts: %w", err)
+		return nil, fmt.Errorf("refreshing staged artifacts: %w", err)
 	}
 
 	slug := naming.TrimCLISuffix(cliName)
@@ -245,7 +252,7 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 
 	// Ensure parent exists.
 	if err := os.MkdirAll(filepath.Dir(libraryDir), 0o755); err != nil {
-		return fmt.Errorf("creating library parent directory: %w", err)
+		return nil, fmt.Errorf("creating library parent directory: %w", err)
 	}
 
 	// If a previous promote died after moving the live library to backup but
@@ -253,10 +260,10 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 	if _, err := os.Stat(backupDir); err == nil {
 		if _, libErr := os.Stat(libraryDir); os.IsNotExist(libErr) {
 			if err := os.Rename(backupDir, libraryDir); err != nil {
-				return fmt.Errorf("restoring library from backup: %w", err)
+				return nil, fmt.Errorf("restoring library from backup: %w", err)
 			}
 		} else if libErr != nil {
-			return fmt.Errorf("checking existing library directory: %w", libErr)
+			return nil, fmt.Errorf("checking existing library directory: %w", libErr)
 		}
 	}
 
@@ -266,14 +273,23 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 	// Copy working dir to staging.
 	if err := CopyDir(workingDir, stagingDir); err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return fmt.Errorf("copying to staging directory: %w", err)
+		return nil, fmt.Errorf("copying to staging directory: %w", err)
+	}
+
+	// The library may contain hand-authored patch records that were created
+	// after the working copy was generated. Keep those records in the atomic
+	// replacement while letting the staged copy win on filename conflicts.
+	preservedPatches, err := preserveLibraryOnlyPatches(libraryDir, stagingDir)
+	if err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return nil, fmt.Errorf("preserving library-only patches: %w", err)
 	}
 
 	// Phase 5 writes acceptance markers to the runstate, but the published
 	// copy is the path downstream consumers see — embed them before the swap.
 	if err := stageRunstateManuscripts(stagingDir, state); err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return fmt.Errorf("staging runstate manuscripts: %w", err)
+		return nil, fmt.Errorf("staging runstate manuscripts: %w", err)
 	}
 
 	// Update state to reflect promotion.
@@ -282,11 +298,11 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 	// Write CLI manifest into the staging copy.
 	if err := writeCLIManifestForPublish(state, stagingDir); err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return fmt.Errorf("writing CLI manifest: %w", err)
+		return nil, fmt.Errorf("writing CLI manifest: %w", err)
 	}
 	if err := restorePermanentCreatorForPromote(stagingDir, libraryDir, state.APIName); err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return fmt.Errorf("restoring permanent creator: %w", err)
+		return nil, fmt.Errorf("restoring permanent creator: %w", err)
 	}
 
 	// Refresh the MCPB manifest.json in the staging dir so the lock-and-promote
@@ -298,11 +314,11 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 	// fields, which is the exact bug class this writer chain exists to prevent.
 	if err := WriteMCPBManifest(stagingDir); err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return fmt.Errorf("writing MCPB manifest to staging: %w", err)
+		return nil, fmt.Errorf("writing MCPB manifest to staging: %w", err)
 	}
 	if _, err := syncPromoteBundle(stagingDir, cliName); err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return fmt.Errorf("syncing MCPB bundle in staging: %w", err)
+		return nil, fmt.Errorf("syncing MCPB bundle in staging: %w", err)
 	}
 
 	// Remove any stale backup from a prior successful swap before we create a
@@ -310,7 +326,7 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 	if _, err := os.Stat(backupDir); err == nil {
 		if err := os.RemoveAll(backupDir); err != nil {
 			_ = os.RemoveAll(stagingDir)
-			return fmt.Errorf("removing stale backup directory: %w", err)
+			return nil, fmt.Errorf("removing stale backup directory: %w", err)
 		}
 	}
 
@@ -318,11 +334,11 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 	if _, err := os.Stat(libraryDir); err == nil {
 		if err := os.Rename(libraryDir, backupDir); err != nil {
 			_ = os.RemoveAll(stagingDir)
-			return fmt.Errorf("backing up existing library directory: %w", err)
+			return nil, fmt.Errorf("backing up existing library directory: %w", err)
 		}
 	} else if !os.IsNotExist(err) {
 		_ = os.RemoveAll(stagingDir)
-		return fmt.Errorf("checking library directory before promote: %w", err)
+		return nil, fmt.Errorf("checking library directory before promote: %w", err)
 	}
 
 	if err := os.Rename(stagingDir, libraryDir); err != nil {
@@ -330,7 +346,7 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 		if _, statErr := os.Stat(backupDir); statErr == nil {
 			_ = os.Rename(backupDir, libraryDir)
 		}
-		return fmt.Errorf("promoting staging to library: %w", err)
+		return nil, fmt.Errorf("promoting staging to library: %w", err)
 	}
 
 	// Swap succeeded — remove the backup.
@@ -343,14 +359,74 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 
 	switch {
 	case saveErr != nil && releaseErr != nil:
-		return fmt.Errorf("cli promoted to %s, but state update failed: %v; lock release also failed: %w", libraryDir, saveErr, releaseErr)
+		return nil, fmt.Errorf("cli promoted to %s, but state update failed: %v; lock release also failed: %w", libraryDir, saveErr, releaseErr)
 	case saveErr != nil:
-		return fmt.Errorf("cli promoted to %s, but state update failed: %w", libraryDir, saveErr)
+		return nil, fmt.Errorf("cli promoted to %s, but state update failed: %w", libraryDir, saveErr)
 	case releaseErr != nil:
-		return fmt.Errorf("cli promoted to %s, but lock release failed: %w", libraryDir, releaseErr)
+		return nil, fmt.Errorf("cli promoted to %s, but lock release failed: %w", libraryDir, releaseErr)
 	default:
-		return nil
+		return &PromoteResult{PreservedPatches: preservedPatches}, nil
 	}
+}
+
+// PromoteResult contains operator-visible details from a successful promote.
+type PromoteResult struct {
+	PreservedPatches []string
+}
+
+// PromoteWorkingCLIWithResult is the reporting form of PromoteWorkingCLI used
+// by the lock CLI. The existing error-only function remains for callers that
+// do not need promote details.
+func PromoteWorkingCLIWithResult(cliName, workingDir string, state *PipelineState) (*PromoteResult, error) {
+	return promoteWorkingCLI(cliName, workingDir, state)
+}
+
+func preserveLibraryOnlyPatches(libraryDir, stagingDir string) ([]string, error) {
+	libraryPatches := filepath.Join(libraryDir, PatchesDirName)
+	entries, err := os.ReadDir(libraryPatches)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+	stagingPatches := filepath.Join(stagingDir, PatchesDirName)
+	if info, err := os.Stat(stagingPatches); err == nil {
+		if !info.IsDir() {
+			return nil, fmt.Errorf("staged patches path is not a directory: %s", stagingPatches)
+		}
+	} else if os.IsNotExist(err) {
+		if err := os.MkdirAll(stagingPatches, 0o755); err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, err
+	}
+
+	preserved := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Name() == PatchesGitKeepName || entry.Name() == PatchesMetadataFilename {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(stagingPatches, entry.Name())); os.IsNotExist(err) {
+			preserved = append(preserved, entry.Name())
+		} else if err != nil {
+			return nil, err
+		}
+	}
+	sort.Strings(preserved)
+
+	if err := copyDirFiltered(libraryPatches, stagingPatches, func(path string, _ fs.FileInfo) bool {
+		rel, err := filepath.Rel(libraryPatches, path)
+		if err != nil {
+			return false
+		}
+		_, err = os.Lstat(filepath.Join(stagingPatches, rel))
+		return err == nil
+	}); err != nil {
+		return nil, err
+	}
+	return preserved, nil
 }
 
 // A pre-existing subtree in the staging copy wins so artifacts that generate
@@ -433,7 +509,7 @@ func validatePhase5GateForPromote(workingDir string, state *PipelineState) error
 		manifest.SpecKind = existing.SpecKind
 	}
 
-	result := ValidatePhase5Gate(state.ProofsDir(), manifest)
+	result := ValidatePhase5Gate(state.ProofsDir(), manifest, workingDir)
 	if result.Passed {
 		return nil
 	}

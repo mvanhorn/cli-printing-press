@@ -69,6 +69,34 @@ func TestWriteCLIManifest(t *testing.T) {
 	assert.Contains(t, string(changelog), "printing-press-library release automation")
 }
 
+func TestReadCLIBinaryNameRejectsPathComponents(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		cliName  string
+		wantName string
+	}{
+		{name: "valid", cliName: "notion-pp-cli", wantName: "notion-pp-cli"},
+		{name: "trims whitespace", cliName: " notion-pp-cli ", wantName: "notion-pp-cli"},
+		{name: "parent traversal", cliName: "../notion-pp-cli"},
+		{name: "absolute path", cliName: "/tmp/notion-pp-cli"},
+		{name: "backslash path", cliName: `..\\notion-pp-cli`},
+		{name: "dot", cliName: "."},
+		{name: "empty", cliName: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			data, err := json.Marshal(CLIManifest{CLIName: tc.cliName})
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
+
+			assert.Equal(t, tc.wantName, ReadCLIBinaryName(dir))
+		})
+	}
+}
+
 func TestWriteCLIManifestUsesOnlyClientProfileForPlatformRuntime(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "platform"), 0o755))
@@ -130,7 +158,8 @@ func TestPersistScorecardToManifestWritesScoreAndBuiltFeatures(t *testing.T) {
 	}, researchDir))
 
 	sc := &Scorecard{
-		OverallGrade: "A",
+		OverallGrade:         "A",
+		UnverifiedDimensions: []string{DimLiveAPIVerification},
 		Steinberger: SteinerScore{
 			Percentage: 96,
 			Total:      96,
@@ -150,6 +179,7 @@ func TestPersistScorecardToManifestWritesScoreAndBuiltFeatures(t *testing.T) {
 	steinberger := scorecard["steinberger"].(map[string]any)
 	assert.Equal(t, float64(96), steinberger["percentage"])
 	assert.Equal(t, "A", steinberger["grade"])
+	assert.Equal(t, []any{DimLiveAPIVerification}, scorecard["unverified_dimensions"])
 	assert.Equal(t, "keep me", raw["description"])
 
 	built := raw["novel_features_built"].([]any)
@@ -162,12 +192,15 @@ func TestPersistVerifyToManifestWritesVerifySummary(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(`{"schema_version":1,"api_name":"example"}`+"\n"), 0o644))
 
 	changed, err := PersistVerifyToManifest(filepath.Join(dir, CLIManifestFilename), &VerifyReport{
-		Mode:     "live",
-		Total:    8,
-		Passed:   7,
-		Failed:   1,
-		PassRate: 87.5,
-		Verdict:  "WARN",
+		Mode:                   "live",
+		Total:                  8,
+		Passed:                 7,
+		Failed:                 1,
+		PassRate:               87.5,
+		DataPipeline:           true,
+		BrowserSessionRequired: true,
+		BrowserSessionProof:    "valid",
+		Verdict:                "WARN",
 	})
 	require.NoError(t, err)
 	require.True(t, changed)
@@ -182,7 +215,33 @@ func TestPersistVerifyToManifestWritesVerifySummary(t *testing.T) {
 	assert.Equal(t, float64(87.5), verify["pass_rate"])
 	assert.Equal(t, float64(7), verify["passed"])
 	assert.Equal(t, float64(8), verify["total"])
+	assert.Equal(t, true, verify["data_pipeline"])
+	assert.Equal(t, true, verify["browser_session_required"])
+	assert.Equal(t, "valid", verify["browser_session_proof"])
 	assert.Equal(t, "WARN", verify["verdict"])
+
+	loaded, err := LoadVerifyReportFromManifest(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+	assert.Equal(t, "live", loaded.Mode)
+	assert.Equal(t, 87.5, loaded.PassRate)
+	assert.True(t, loaded.DataPipeline)
+	assert.True(t, loaded.BrowserSessionRequired)
+	assert.Equal(t, "valid", loaded.BrowserSessionProof)
+}
+
+func TestLoadVerifyReportFromManifestUsesExactPath(t *testing.T) {
+	dir := t.TempDir()
+	defaultPath := filepath.Join(dir, CLIManifestFilename)
+	customPath := filepath.Join(dir, "custom-manifest.json")
+
+	require.NoError(t, os.WriteFile(defaultPath, []byte(`{"schema_version":1,"verify":{"mode":"default"}}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(customPath, []byte(`{"schema_version":1,"verify":{"mode":"custom"}}`+"\n"), 0o644))
+
+	loaded, err := LoadVerifyReportFromManifest(customPath)
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+	assert.Equal(t, "custom", loaded.Mode)
 }
 
 func TestPersistVerifyToManifestNoopsWhenManifestMissing(t *testing.T) {
@@ -862,7 +921,9 @@ func TestWriteManifestForGenerateWithLocalSpec(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &got))
 
 	assert.Empty(t, got.SpecURL, "local path should not appear in spec_url")
-	assert.Equal(t, "my-spec.yaml", got.SpecPath)
+	// Repointed to the shipped archive name: the source basename is not in the
+	// packaged tree.
+	assert.Equal(t, "spec.yaml", got.SpecPath)
 }
 
 func TestWriteManifestForGenerateStampsLocalSQLiteSpecFormat(t *testing.T) {
@@ -892,7 +953,7 @@ func TestWriteManifestForGenerateStampsLocalSQLiteSpecFormat(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &got))
 	assert.Equal(t, spec.SourceLocalSQLite, got.SpecFormat)
 	assert.True(t, got.IsLocalDatastore())
-	assert.Equal(t, "local-data.yaml", got.SpecPath)
+	assert.Equal(t, "spec.yaml", got.SpecPath)
 }
 
 func TestWriteManifestForGenerateStampsSyntheticSpecKind(t *testing.T) {
@@ -2565,7 +2626,8 @@ func TestWriteManifestForGenerateDoesNotPreserveStaleSpecURLWhenFreshSourceIsPat
 
 	got := readPublishedManifest(t, dir)
 	assert.Empty(t, got.SpecURL)
-	assert.Equal(t, filepath.Base(specPath), got.SpecPath)
+	// Repointed to the shipped archive name.
+	assert.Equal(t, "spec.json", got.SpecPath)
 }
 
 func TestWriteManifestForGenerateFreshValuesReplaceExistingManifestExtras(t *testing.T) {
@@ -2724,4 +2786,83 @@ func TestWriteManifestForGenerateNoCategoryAnywhere(t *testing.T) {
 
 	got := readPublishedManifest(t, dir)
 	assert.Empty(t, got.Category, "manifest.Category should stay empty when no source provides one")
+}
+
+func TestWriteManifestForGenerateRepointsSpecPathToArchivedSpec(t *testing.T) {
+	dir := t.TempDir()
+	specContent := []byte(`{"openapi": "3.0.0", "info": {"title": "Test"}}`)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "spec.json"), specContent, 0o644))
+
+	// Local source spec basename (exa-openapi.json) does not exist in the
+	// packaged tree; the manifest must point at the shipped spec.json.
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "test-api",
+		SpecSrcs:  []string{filepath.Join(t.TempDir(), "exa-openapi.json")},
+		OutputDir: dir,
+		RunID:     "20260517-091036",
+	}))
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "spec.json", got.SpecPath,
+		"spec_path must resolve to the shipped archived spec, not the source basename")
+}
+
+func TestWriteManifestForGenerateKeepsSourceBasenameWhenNoArchivedSpec(t *testing.T) {
+	dir := t.TempDir()
+	// No spec.json/spec.yaml/spec.yml in OutputDir: a direct caller without an
+	// archive name must keep the source basename instead of fabricating one.
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "test-api",
+		SpecSrcs:  []string{filepath.Join(t.TempDir(), "schema.graphql")},
+		OutputDir: dir,
+		RunID:     "20260517-091036",
+	}))
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "schema.graphql", got.SpecPath,
+		"without an archive name, an unrecognized source extension stays unchanged")
+}
+
+func TestWriteManifestForGenerateUsesSelectedArchiveName(t *testing.T) {
+	tests := []struct {
+		name     string
+		sources  []string
+		archive  string
+		wantPath string
+	}{
+		{
+			name:     "merged specs use JSON archive",
+			sources:  []string{"v1.yaml", "v2.yaml"},
+			archive:  "spec.json",
+			wantPath: "spec.json",
+		},
+		{
+			name:     "nonstandard source uses selected YAML archive",
+			sources:  []string{"schema.graphql"},
+			archive:  "spec.yaml",
+			wantPath: "spec.yaml",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+				APIName:         "test-api",
+				SpecSrcs:        tt.sources,
+				SpecArchiveName: tt.archive,
+				OutputDir:       dir,
+				RunID:           "20260517-091036",
+			}))
+
+			got := readPublishedManifest(t, dir)
+			assert.Equal(t, tt.wantPath, got.SpecPath)
+		})
+	}
 }

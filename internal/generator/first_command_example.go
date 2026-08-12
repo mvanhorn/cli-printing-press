@@ -9,11 +9,53 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
+type commandExampleCandidate struct {
+	resourceName string
+	resource     spec.Resource
+	endpointName string
+	endpoint     spec.Endpoint
+}
+
+func firstCommandExampleCandidate(resources map[string]spec.Resource) (commandExampleCandidate, bool) {
+	var empty commandExampleCandidate
+	var resNames []string
+	for name := range resources {
+		resNames = append(resNames, name)
+	}
+	sort.Strings(resNames)
+	preferredVerbs := []string{"list", "get", "search", "query"}
+
+	for _, rName := range resNames {
+		r := resources[rName]
+		for _, verb := range preferredVerbs {
+			if ep, ok := r.Endpoints[verb]; ok && endpointIsReadCommand(ep, verb) {
+				return commandExampleCandidate{resourceName: rName, resource: r, endpointName: verb, endpoint: ep}, true
+			}
+		}
+	}
+	for _, rName := range resNames {
+		r := resources[rName]
+		for _, eName := range sortedEndpointNames(r.Endpoints) {
+			if ep := r.Endpoints[eName]; endpointIsReadCommand(ep, eName) {
+				return commandExampleCandidate{resourceName: rName, resource: r, endpointName: eName, endpoint: ep}, true
+			}
+		}
+	}
+	for _, rName := range resNames {
+		r := resources[rName]
+		eNames := sortedEndpointNames(r.Endpoints)
+		if len(eNames) > 0 {
+			eName := eNames[0]
+			return commandExampleCandidate{resourceName: rName, resource: r, endpointName: eName, endpoint: r.Endpoints[eName]}, true
+		}
+	}
+	return empty, false
+}
+
 // firstCommandExample returns a runnable "resource [endpoint] <pos1> <pos2>..."
 // invocation for docs that need a concrete example. Required public flags are
 // included so generated docs do not advertise commands that fail immediately.
-// Read-only verbs (list, get, search, query) are preferred to keep examples
-// non-destructive.
+// Read-only commands are preferred to keep examples non-destructive.
 // Returns empty when the spec has no endpoints, so callers can skip the
 // block rather than render nonsense.
 //
@@ -32,43 +74,24 @@ import (
 // the mock-value catch-all. This keeps SKILL examples honest enough that
 // verify-skill exits 0 on first generation.
 func firstCommandExample(resources map[string]spec.Resource) string {
-	var resNames []string
-	for name := range resources {
-		resNames = append(resNames, name)
+	candidate, ok := firstCommandExampleCandidate(resources)
+	if !ok {
+		return ""
 	}
-	sort.Strings(resNames)
-	preferredVerbs := []string{"list", "get", "search", "query"}
-
-	pathFor := func(rName string, r spec.Resource, eName string, ep spec.Endpoint) string {
+	pathFor := func(rName string, r spec.Resource, ep spec.Endpoint) string {
 		// Kebab the resource segment to match the actual cobra command name
 		// (mirrors toKebab(resourceName) in buildPromotedCommands). PascalCase
 		// or snake_case spec keys would otherwise advertise an unrunnable path.
 		parts := []string{toKebab(rName)}
 		if !isPromotableSingleEndpoint(rName, r) {
-			parts = append(parts, toKebab(eName))
+			parts = append(parts, toKebab(candidate.endpointName))
 		}
 		parts = append(parts, readmeExampleArgs(ep)...)
 		return strings.Join(parts, " ")
 	}
 
-	for _, rName := range resNames {
-		r := resources[rName]
-		for _, verb := range preferredVerbs {
-			if ep, ok := r.Endpoints[verb]; ok {
-				return pathFor(rName, r, verb, ep)
-			}
-		}
-	}
-	for _, rName := range resNames {
-		r := resources[rName]
-		eNames := sortedEndpointNames(r.Endpoints)
-		if len(eNames) > 0 {
-			return pathFor(rName, r, eNames[0], r.Endpoints[eNames[0]])
-		}
-	}
-	return ""
+	return pathFor(candidate.resourceName, candidate.resource, candidate.endpoint)
 }
-
 func commandExampleArgs(ep spec.Endpoint) string {
 	return strings.Join(commandExampleArgParts(ep), " ")
 }

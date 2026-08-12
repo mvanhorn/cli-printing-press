@@ -3712,6 +3712,8 @@ base_url: https://api.example.com
 auth:
   type: cookie
   header: Cookie
+  cookies:
+    - session
   env_vars:
     - EXAMPLE_COOKIE
 resources:

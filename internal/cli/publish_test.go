@@ -564,7 +564,7 @@ func TestPublishValidateJSONHasAllChecks(t *testing.T) {
 	}
 
 	// All checks should be present (they may fail in test env, but must exist)
-	expectedChecks := []string{"manifest", "transcendence", "phase5", "go mod tidy", "govulncheck", "go vet", "go build", "--help", "--version", "verify-skill", "manuscripts"}
+	expectedChecks := []string{"manifest", "transcendence", "phase5", "go mod tidy", "module path", "govulncheck", "go vet", "go build", "--help", "--version", "verify-skill", "manuscripts"}
 	for _, name := range expectedChecks {
 		assert.True(t, checkNames[name], "should have %q check", name)
 	}
@@ -754,7 +754,7 @@ func TestPublishPackageTargetExists(t *testing.T) {
 	require.NoError(t, os.MkdirAll(target, 0o755))
 
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "developer-tools", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "developer-tools", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/developer-tools/test", "--json"})
 
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -787,7 +787,7 @@ func TestPublishPackageCategoryPathTraversal(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			target := filepath.Join(t.TempDir(), "staging")
 			cmd := newPublishCmd()
-			cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", tt.category, "--target", target, "--json"})
+			cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", tt.category, "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/" + tt.category + "/test", "--json"})
 
 			err := cmd.Execute()
 			require.Error(t, err)
@@ -803,7 +803,7 @@ func TestPublishPackageRejectsUnknownCategory(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "banana", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "banana", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/banana/test", "--json"})
 
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -820,7 +820,7 @@ func TestPublishPackageBackfillsPatchesIndexForLegacyCLI(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -851,7 +851,7 @@ func TestPublishPackageRemovesBlankReleaseManifest(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -877,7 +877,7 @@ func TestPublishPackagePreservesPopulatedReleaseManifest(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -909,7 +909,7 @@ func TestPublishPackageNormalizesManifestCategoryToPublishCategory(t *testing.T)
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -947,7 +947,7 @@ func TestPublishPackageFailsWhenSkillReferencesUnknownCommand(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.Error(t, err)
@@ -979,7 +979,7 @@ func TestPublishPackageDoesNotStageCompiledBinary(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -1009,7 +1009,7 @@ func TestPublishPackageStripsBuildDir(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -1051,7 +1051,7 @@ func TestPublishPackageStripsRootBinaries(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -1089,7 +1089,7 @@ func TestPublishPackageStripsRootShipcheckReports(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -1140,7 +1140,7 @@ func TestPublishPackageFailsWhenManuscriptsCopyFails(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -1180,7 +1180,7 @@ func TestPublishPackageIncludesManuscripts(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -1241,7 +1241,7 @@ func TestPublishPackageUsesManifestRunInsteadOfNewerArchive(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -1274,7 +1274,7 @@ func TestPublishPackageWarnsWhenManifestRunFallsBack(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	stderr, err := runWithCapturedStderr(t, cmd.Execute)
 	require.NoError(t, err)
@@ -1285,7 +1285,13 @@ func TestPublishPackageWarnsWhenManifestRunFallsBack(t *testing.T) {
 	manifest, manifestErr := pipeline.ReadCLIManifest(stagedDir)
 	require.NoError(t, manifestErr)
 	assert.Equal(t, fallbackRunID, manifest.RunID)
-	assert.True(t, checkPhase5Gate(stagedDir, manifest).Passed)
+	// The staged tree's go.mod was rewritten by --module-path, so the fallback
+	// marker (captured against the source tree's bare-module fingerprint) no
+	// longer matches byte-for-byte; the gate check runs against the source
+	// tree before staging, and this assertion only needs the marker to be
+	// carried into the staged tree.
+	markerPath := filepath.Join(stagedDir, ".manuscripts", fallbackRunID, "proofs", pipeline.Phase5AcceptanceFilename)
+	assert.FileExists(t, markerPath)
 }
 
 func TestPublishPackageRejectsUnsafeManifestRunID(t *testing.T) {
@@ -1297,7 +1303,7 @@ func TestPublishPackageRejectsUnsafeManifestRunID(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -1323,7 +1329,7 @@ func TestPublishPackageRejectsUnsafeManifestLookupNames(t *testing.T) {
 
 			target := filepath.Join(t.TempDir(), "staging")
 			cmd := newPublishCmd()
-			cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+			cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 			err = cmd.Execute()
 			require.Error(t, err)
@@ -1375,7 +1381,7 @@ func TestPublishPackageNormalizesTrimmedManifestRunID(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
 	var result PackageResult
@@ -1406,7 +1412,7 @@ func TestPublishPackageRejectsFallbackWithMismatchedPhase5Proof(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -1451,7 +1457,7 @@ func TestPublishPackageCanIncludeRawCaptures(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--include-raw-captures", "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--include-raw-captures", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -1500,7 +1506,7 @@ func TestPublishPackageFiltersEmbeddedManuscriptsFallback(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -1526,7 +1532,7 @@ func TestPublishPackageRejectsVendorPrefixSecretsInStagedCLI(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -1555,7 +1561,7 @@ const firebaseWebAPIKey = "`+publicKey+`" // pp:public-secret Firebase web API k
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -1583,7 +1589,7 @@ func TestPublishPackageRejectsSpecDeclaredCookieValuesInStagedCLI(t *testing.T) 
 
 			target := filepath.Join(t.TempDir(), "staging")
 			cmd := newPublishCmd()
-			cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+			cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 			err := cmd.Execute()
 			require.Error(t, err)
@@ -1611,7 +1617,7 @@ func TestPublishPackageRejectsPIIInStagedCLI(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -1645,7 +1651,7 @@ func TestPublishPackageAllowsReservedSyntheticPII(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -1668,7 +1674,7 @@ func TestPublishPackageRejectsPIIInManuscripts(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -1698,7 +1704,7 @@ func TestPublishPackageCombinesSecretAndPIIReports(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -1722,7 +1728,7 @@ func TestPublishPackageRejectsVendorPrefixSecretsInManuscripts(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -1807,7 +1813,7 @@ func TestPublishPackageDestWritesDirectly(t *testing.T) {
 	require.NoError(t, os.MkdirAll(destDir, 0o755))
 
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -1843,7 +1849,7 @@ func TestPublishPackageDestRemovesOldCLI(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(oldCLIDir, "old-file.go"), []byte("old"), 0o644))
 
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -1886,7 +1892,7 @@ func TestPublishPackageDestRestoresOldCLIOnFailure(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(oldCLIDir, "old-file.go"), []byte("old"), 0o644))
 
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	err := cmd.Execute()
 	require.Error(t, err, "should fail due to unreadable manuscript")
@@ -1911,7 +1917,7 @@ func TestPublishPackageDestNonexistent(t *testing.T) {
 	writePublishableTestCLI(t, cliDir)
 
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", "/nonexistent/path", "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", "/nonexistent/path", "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -2044,7 +2050,7 @@ exit 1
 	)
 
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "cmd", "test-pp-cli"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(`module example.com/test-pp-cli
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(`module test-pp-cli
 
 go 1.24
 
@@ -2131,6 +2137,26 @@ func setPublishableTestRunID(t *testing.T, cliDir, runID string) {
 	writeTestManifest(t, cliDir, manifest)
 }
 
+func TestPublishValidateRejectsPhase5ProofAfterSourceDrift(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	manifest, err := pipeline.ReadCLIManifest(cliDir)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "README.md"), []byte("documentation-only edit\n"), 0o644))
+
+	check := checkPhase5Gate(cliDir, manifest)
+	require.True(t, check.Passed, check.Error)
+
+	rootPath := filepath.Join(cliDir, "internal", "cli", "root.go")
+	require.NoError(t, os.WriteFile(rootPath, []byte("package cli\n\nvar drifted = true\n"), 0o644))
+	check = checkPhase5Gate(cliDir, manifest)
+	assert.False(t, check.Passed)
+	assert.Contains(t, check.Error, "source fingerprint")
+	assert.Contains(t, check.Error, "internal/cli/root.go")
+}
+
 func writePublishablePhase5Pass(t *testing.T) {
 	t.Helper()
 	home := os.Getenv("PRINTING_PRESS_HOME")
@@ -2160,7 +2186,7 @@ func TestPublishPackageAllowMirrorDeletionsRequiresDest(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--allow-mirror-deletions", "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--allow-mirror-deletions", "--json"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--allow-mirror-deletions requires --dest")
@@ -2247,7 +2273,7 @@ func TestPublishPackageDestDivergenceMessageTruncatesAndUsesSingular(t *testing.
 	require.NoError(t, os.WriteFile(filepath.Join(soloDir, "only.go"), []byte("package extra\n"), 0o644))
 
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mirror has 1 file not present")
@@ -2283,7 +2309,7 @@ func TestPublishPackageDestRefusesMirrorOnlyContent(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(resyDir, "types.go"), []byte("package resy\n"), 0o644))
 
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -2311,7 +2337,7 @@ func TestPublishPackageDestAllowMirrorDeletionsOverride(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(resyDir, "client.go"), []byte("package resy\n"), 0o644))
 
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--allow-mirror-deletions", "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--allow-mirror-deletions", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -2347,7 +2373,7 @@ func TestPublishPackageDestIgnoresManuscriptsDivergence(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(mirrorCLIDir, "build", "host.tar.gz"), []byte("artifact"), 0o644))
 
 	cmd := newPublishCmd()
-	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--json"})
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err, "manuscripts/build divergence should not block the overlay")
@@ -2355,4 +2381,73 @@ func TestPublishPackageDestIgnoresManuscriptsDivergence(t *testing.T) {
 	var result PackageResult
 	require.NoError(t, json.Unmarshal([]byte(output), &result))
 	assert.True(t, result.ManuscriptsIncluded)
+}
+
+func TestCheckModulePath(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("canonical prefix passes", func(t *testing.T) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+			[]byte("module github.com/mvanhorn/printing-press-library/library/ai/exa\n\ngo 1.26.5\n"), 0o644))
+		res := checkModulePath(dir)
+		assert.True(t, res.Passed, res.Error)
+		assert.Equal(t, "module path", res.Name)
+	})
+
+	t.Run("bare CLI name fails", func(t *testing.T) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+			[]byte("module exa-pp-cli\n\ngo 1.26.5\n"), 0o644))
+		res := checkModulePath(dir)
+		assert.False(t, res.Passed)
+		assert.Contains(t, res.Error, "does not start with the canonical library prefix")
+	})
+
+	t.Run("missing go.mod fails", func(t *testing.T) {
+		res := checkModulePath(filepath.Join(t.TempDir(), "nope"))
+		assert.False(t, res.Passed)
+		assert.Contains(t, res.Error, "go.mod not found")
+	})
+
+	t.Run("no module line fails", func(t *testing.T) {
+		emptyDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(emptyDir, "go.mod"), []byte("go 1.26.5\n"), 0o644))
+		res := checkModulePath(emptyDir)
+		assert.False(t, res.Passed)
+		assert.Contains(t, res.Error, "declares no module line")
+	})
+}
+
+func TestPublishValidateModulePathCheckWired(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	// Force a bare module path to exercise the new check end-to-end.
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "go.mod"),
+		[]byte("module test-pp-cli\n\ngo 1.26.5\n"), 0o644))
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"validate", "--dir", cliDir, "--json"})
+
+	// The fixture tree fails other checks in the test env (missing phase5
+	// marker, verify-skill artifacts); the point of this test is that the
+	// module-path check surfaces as a warning, not as a failing check, on a
+	// pre-rewrite source tree.
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.Error(t, err)
+
+	var result ValidateResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+
+	var modulePathCheck *CheckResult
+	for i := range result.Checks {
+		if result.Checks[i].Name == "module path" {
+			modulePathCheck = &result.Checks[i]
+			break
+		}
+	}
+	require.NotNil(t, modulePathCheck, "module path check not wired into validate")
+	// Informational in standalone validate (source trees are pre-rewrite); the
+	// authoritative failure lives in the package flow's staged-tree check.
+	assert.NotEmpty(t, modulePathCheck.Warning)
+	assert.Contains(t, modulePathCheck.Warning, "canonical library prefix")
 }

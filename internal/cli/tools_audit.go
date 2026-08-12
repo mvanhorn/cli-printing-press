@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"io"
 	"os"
@@ -206,43 +205,6 @@ func runToolsAudit(cliDir string, manifest *pipeline.ToolsManifest) ([]ToolsAudi
 	return findings, nil
 }
 
-func auditCobraSource(cliDir string) ([]ToolsAuditFinding, error) {
-	pkgDir := filepath.Join(cliDir, "internal", "cli")
-	entries, err := os.ReadDir(pkgDir)
-	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", pkgDir, err)
-	}
-	var findings []ToolsAuditFinding
-	fset := token.NewFileSet()
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		full := filepath.Join(pkgDir, name)
-		// Skip unparseable files — the agent can run go build separately
-		// to surface syntax errors without failing the audit.
-		file, err := parser.ParseFile(fset, full, nil, 0)
-		if err != nil {
-			continue
-		}
-		ast.Inspect(file, func(n ast.Node) bool {
-			lit, ok := n.(*ast.CompositeLit)
-			if !ok || !isCobraCommandType(lit.Type) {
-				return true
-			}
-			fields := extractCommandFields(lit)
-			if fields.use == "" {
-				return true
-			}
-			line := fset.Position(lit.Pos()).Line
-			findings = append(findings, auditCommandFields(name, line, fields)...)
-			return true
-		})
-	}
-	return findings, nil
-}
-
 // auditMCPManifest flags MCP tool descriptions that fall below the
 // agent-grade bar. The manifest is the source of truth for typed
 // endpoint tools' descriptions; for shell-out tools, descriptions
@@ -286,6 +248,8 @@ type commandFields struct {
 	// writing "false" has done the right thing and shouldn't be flagged.
 	hasExplicitReadOnly       bool
 	hasEndpoint               bool
+	cobraHidden               bool
+	mcpHidden                 bool
 	hasRunE                   bool
 	hasParentNoSubcommandRunE bool
 }
@@ -324,7 +288,9 @@ func extractCommandFields(lit *ast.CompositeLit) commandFields {
 		case "Short":
 			f.short = stringLit(kv.Value)
 		case "Annotations":
-			f.hasExplicitReadOnly, f.hasEndpoint = inspectAnnotations(kv.Value)
+			f.hasExplicitReadOnly, f.hasEndpoint, f.mcpHidden = inspectAnnotations(kv.Value)
+		case "Hidden":
+			f.cobraHidden = identIsTrue(kv.Value)
 		case "Run", "RunE":
 			f.hasRunE = true
 			if key.Name == "RunE" && isParentNoSubcommandRunE(kv.Value) {
@@ -368,10 +334,10 @@ func stringLit(e ast.Expr) string {
 // the author already classified correctly; the audit's job is to flag
 // unannotated commands, not to enforce that every read-shaped name be
 // read-only.
-func inspectAnnotations(e ast.Expr) (hasExplicitReadOnly, hasEndpoint bool) {
+func inspectAnnotations(e ast.Expr) (hasExplicitReadOnly, hasEndpoint, mcpHidden bool) {
 	lit, ok := e.(*ast.CompositeLit)
 	if !ok {
-		return false, false
+		return false, false, false
 	}
 	for _, el := range lit.Elts {
 		kv, ok := el.(*ast.KeyValueExpr)
@@ -383,9 +349,25 @@ func inspectAnnotations(e ast.Expr) (hasExplicitReadOnly, hasEndpoint bool) {
 			hasExplicitReadOnly = true
 		case "pp:endpoint":
 			hasEndpoint = stringLit(kv.Value) != ""
+		case "mcp:hidden":
+			mcpHidden = annotationValueIsTrue(stringLit(kv.Value))
 		}
 	}
-	return hasExplicitReadOnly, hasEndpoint
+	return hasExplicitReadOnly, hasEndpoint, mcpHidden
+}
+
+func identIsTrue(e ast.Expr) bool {
+	ident, ok := e.(*ast.Ident)
+	return ok && ident.Name == "true"
+}
+
+func annotationValueIsTrue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "1", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 func auditCommandFields(file string, line int, f commandFields) []ToolsAuditFinding {

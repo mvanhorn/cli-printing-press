@@ -47,7 +47,11 @@ _resolve_press_bin() {
 # suffixes collapse to their GA counterpart (acceptable: we ship no pre-release
 # tags).
 _semver_lt() {
-  awk -v a="$1" -v b="$2" 'BEGIN {
+  if [ -z "${PP_SEMVER_A:-}" ] || [ -z "${PP_SEMVER_B:-}" ]; then
+    echo "[setup-error] semver comparison inputs are missing." >&2
+    return 2
+  fi
+  awk -v a="${PP_SEMVER_A:-}" -v b="${PP_SEMVER_B:-}" 'BEGIN {
     split(a, x, ".")
     split(b, y, ".")
     for (i = 1; i <= 3; i++) {
@@ -70,7 +74,12 @@ _rebuild_local_press_bin_if_stale() {
 
   _local_v="$("$_scope_dir/cli-printing-press" version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')"
   _source_v="$(_source_press_version)"
-  if [ -z "$_local_v" ] || [ -z "$_source_v" ] || ! _semver_lt "$_local_v" "$_source_v"; then
+  if [ -z "$_local_v" ] || [ -z "$_source_v" ]; then
+    return 0
+  fi
+  PP_SEMVER_A="$_local_v"
+  PP_SEMVER_B="$_source_v"
+  if ! _semver_lt; then
     return 0
   fi
 
@@ -247,7 +256,7 @@ echo "PRINTING_PRESS_BIN=$PRINTING_PRESS_BIN"
 echo "PRESS_REPO_MODE=$_press_repo"
 
 _pp_go_version_norm() {
-  printf '%s\n' "$1" | sed -nE 's/.*go([0-9]+)\.([0-9]+)(\.([0-9]+))?.*/\1.\2.\4/p' | awk -F. 'NF >= 2 { printf "%d.%d.%d\n", $1, $2, ($3 == "" ? 0 : $3) }'
+  printf '%s\n' "${PP_GO_VERSION_INPUT:-}" | sed -nE 's/.*go([0-9]+)\.([0-9]+)(\.([0-9]+))?.*/\1.\2.\4/p' | sed -E 's/\.$/.0/'
 }
 
 _pp_check_go_currency() {
@@ -255,9 +264,11 @@ _pp_check_go_currency() {
     return 0
   fi
 
-  _pp_go_installed="$(_pp_go_version_norm "$(go env GOVERSION 2>/dev/null)")"
-  _pp_go_required="$(_pp_go_version_norm "$(go version "$PRINTING_PRESS_BIN" 2>/dev/null)")"
-  if [ -z "$_pp_go_installed" ] || [ -z "$_pp_go_required" ] || ! _semver_lt "$_pp_go_installed" "$_pp_go_required"; then
+  _pp_go_installed="$(PP_GO_VERSION_INPUT="$(go env GOVERSION 2>/dev/null)" _pp_go_version_norm)"
+  _pp_go_required="$(PP_GO_VERSION_INPUT="$(go version "$PRINTING_PRESS_BIN" 2>/dev/null)" _pp_go_version_norm)"
+  PP_SEMVER_A="$_pp_go_installed"
+  PP_SEMVER_B="$_pp_go_required"
+  if [ -z "$_pp_go_installed" ] || [ -z "$_pp_go_required" ] || ! _semver_lt; then
     return 0
   fi
 
@@ -329,7 +340,11 @@ _pp_check_disk_space() {
     _pp_disk_path="$(dirname "$_pp_disk_path")"
   done
 
-  _pp_disk_avail_kb="$(df -Pk "$_pp_disk_path" 2>/dev/null | awk 'NR == 2 { print $4; exit }')"
+  _pp_disk_avail_kb="$(df -Pk "$_pp_disk_path" 2>/dev/null | awk 'BEGIN {
+    if ((getline header) <= 0 || (getline record) <= 0) exit
+    field_count = split(record, fields)
+    if (field_count >= 4) print fields[4]
+  }')"
   case "$_pp_disk_avail_kb" in
     ""|*[!0-9]*) return 0 ;;
   esac
@@ -368,7 +383,7 @@ _now_ts=$(date +%s)
 
 _should_check=true
 if [ -f "$PRESS_VERCHECK_FILE" ] && [ -z "$PRESS_VERCHECK_FORCE" ]; then
-  _last_ts=$(awk -F= '/^last_check=/{print $2}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
+  _last_ts=$(sed -nE 's/^last_check=//p' "$PRESS_VERCHECK_FILE" 2>/dev/null | head -n 1)
   if [ -n "$_last_ts" ] && [ "$((_now_ts - _last_ts))" -lt "$PRESS_VERCHECK_TTL" ]; then
     _should_check=false
   fi
@@ -383,7 +398,7 @@ if [ "$_press_repo" = "true" ]; then
     _main_rev=$(git -C "$_scope_dir" rev-parse origin/main 2>/dev/null || true)
     _skipped_repo_main=""
     if [ -f "$PRESS_VERCHECK_FILE" ] && [ -z "$PRESS_VERCHECK_FORCE" ]; then
-      _skipped_repo_main=$(awk -F= '/^skipped_repo_main=/{value=$2} END{print value}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
+      _skipped_repo_main=$(sed -nE 's/^skipped_repo_main=//p' "$PRESS_VERCHECK_FILE" 2>/dev/null | tail -n 1)
     fi
     if [ -n "$_head_rev" ] && [ -n "$_main_rev" ] &&
        [ "$_head_rev" != "$_main_rev" ] &&
@@ -404,15 +419,7 @@ elif [ "$_should_check" = "true" ] && command -v go >/dev/null 2>&1; then
   _latest=""
 
   if [ -n "$_installed" ]; then
-    _latest=$(go list -m -json github.com/mvanhorn/cli-printing-press/v4@latest 2>/dev/null | awk '
-      /"Version":/ {
-        version=$2
-        gsub(/[",]/, "", version)
-        sub(/^v/, "", version)
-        print version
-        exit
-      }
-    ')
+    _latest=$(go list -m -json github.com/mvanhorn/cli-printing-press/v4@latest 2>/dev/null | sed -nE 's/^[[:space:]]*"Version":[[:space:]]*"v?([^"]+)".*/\1/p' | head -n 1)
   fi
 
   # Currency floor: the lowest release still considered safe to generate with,
@@ -425,12 +432,14 @@ elif [ "$_should_check" = "true" ] && command -v go >/dev/null 2>&1; then
     _floor_doc=$(curl -fsSL --max-time 5 \
       https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/supported-versions.txt 2>/dev/null || true)
     if [ -n "$_floor_doc" ]; then
-      _min_supported=$(printf '%s\n' "$_floor_doc" | awk -F= '/^min_supported=/{print $2; exit}')
+      _min_supported=$(printf '%s\n' "$_floor_doc" | sed -nE 's/^min_supported=//p' | head -n 1)
       _min_reason=$(printf '%s\n' "$_floor_doc" | sed -nE 's/^reason=//p' | head -n 1)
     fi
   fi
 
-  if [ -n "$_installed" ] && [ -n "$_latest" ] && _semver_lt "$_installed" "$_latest"; then
+  PP_SEMVER_A="$_installed"
+  PP_SEMVER_B="$_latest"
+  if [ -n "$_installed" ] && [ -n "$_latest" ] && _semver_lt; then
     # Marker for the skill prose below to detect and offer an interactive upgrade.
     # The skill reads PRESS_UPGRADE_AVAILABLE / PRESS_UPGRADE_INSTALLED from this output.
     echo ""
@@ -452,13 +461,13 @@ fi
 # is itself <= latest, so a typo'd or tampered floor above the newest release
 # cannot brick every install.
 if [ "$_press_repo" != "true" ] && [ -f "$PRESS_VERCHECK_FILE" ]; then
-  _floor_min=$(awk -F= '/^min_supported=/{print $2; exit}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
-  _floor_latest=$(awk -F= '/^latest=/{print $2; exit}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
+  _floor_min=$(sed -nE 's/^min_supported=//p' "$PRESS_VERCHECK_FILE" 2>/dev/null | head -n 1)
+  _floor_latest=$(sed -nE 's/^latest=//p' "$PRESS_VERCHECK_FILE" 2>/dev/null | head -n 1)
   _floor_reason=$(sed -nE 's/^reason=//p' "$PRESS_VERCHECK_FILE" 2>/dev/null | head -n 1)
   _floor_installed=$("$PRINTING_PRESS_BIN" version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')
   if [ -n "$_floor_min" ] && [ -n "$_floor_installed" ] && [ -n "$_floor_latest" ] &&
-     _semver_lt "$_floor_installed" "$_floor_min" &&
-     ! _semver_lt "$_floor_latest" "$_floor_min"; then
+     PP_SEMVER_A="$_floor_installed" PP_SEMVER_B="$_floor_min" _semver_lt &&
+     ! PP_SEMVER_A="$_floor_latest" PP_SEMVER_B="$_floor_min" _semver_lt; then
     echo ""
     echo "[upgrade-required] printing-press v$_floor_min is the minimum supported version (you have v$_floor_installed)"
     echo "PRESS_REQUIRED_MIN=$_floor_min"

@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,84 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestBearerAccessTokenFormatUsesPerCallEnvCredential(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		envVars       []string
+		envVarSpecs   []spec.AuthEnvVar
+		configFields  string
+		wantAuthValue string
+	}{
+		{
+			name: "single request credential",
+			envVarSpecs: []spec.AuthEnvVar{
+				{Name: "BEARER_ALIAS_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			},
+			configFields:  `BearerAliasToken: "single-token"`,
+			wantAuthValue: "Bearer single-token",
+		},
+		{
+			name: "request credential aliases",
+			envVarSpecs: spec.NewORCaseEnvVarSpecs([]string{
+				"BEARER_ALIAS_PRIMARY",
+				"BEARER_ALIAS_SECONDARY",
+			}),
+			configFields:  `BearerAliasSecondary: "secondary-token"`,
+			wantAuthValue: "Bearer secondary-token",
+		},
+		{
+			name:          "legacy request credential",
+			envVars:       []string{"BEARER_ALIAS_LEGACY"},
+			configFields:  `BearerAliasLegacy: "legacy-token"`,
+			wantAuthValue: "Bearer legacy-token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := minimalSpec("bearer-access-token-alias")
+			apiSpec.Auth = spec.AuthConfig{
+				Type:        "bearer_token",
+				Header:      "Authorization",
+				Format:      "Bearer {access_token}",
+				EnvVars:     tt.envVars,
+				EnvVarSpecs: tt.envVarSpecs,
+			}
+
+			outputDir := filepath.Join(t.TempDir(), "bearer-access-token-alias-pp-cli")
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			runtimeTest := fmt.Sprintf(`package config
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestBearerAccessTokenAlias(t *testing.T) {
+	cfg := &Config{%s}
+	got := cfg.AuthHeader()
+	want := %q
+	if got != want {
+		t.Fatalf("AuthHeader() = %%q, want %%q", got, want)
+	}
+	if strings.Contains(got, "{access_token}") {
+		t.Fatalf("AuthHeader() left access_token placeholder unresolved: %%q", got)
+	}
+}
+`, tt.configFields, tt.wantAuthValue)
+			require.NoError(t, os.WriteFile(
+				filepath.Join(outputDir, "internal", "config", "bearer_access_token_alias_test.go"),
+				[]byte(runtimeTest), 0o644))
+			runGoCommand(t, outputDir, "test", "./internal/config", "-run", "^TestBearerAccessTokenAlias$")
+		})
+	}
+}
 
 // TestAuthHeader_ClientCredentialsDoesNotUseSetupEnvVars pins that under
 // OAuth2 client_credentials the setup inputs are never emitted as bearer

@@ -4,11 +4,105 @@
 package cli
 
 import (
+	"bytes"
+
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
+
+	"printing-press-rich-pp-cli/internal/cliutil"
+
+	"github.com/spf13/cobra"
 )
+
+func TestDeclaredAPISurfaceReachable(t *testing.T) {
+	expected := []string{
+		"items",
+	}
+	actual := make(map[string]struct{}, len(expected))
+	type pendingCommand struct {
+		command *cobra.Command
+		path    string
+	}
+	queue := make([]pendingCommand, 0, len(expected))
+	for _, child := range RootCmd().Commands() {
+		queue = append(queue, pendingCommand{command: child, path: child.Name()})
+	}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		actual[current.path] = struct{}{}
+		for _, child := range current.command.Commands() {
+			queue = append(queue, pendingCommand{
+				command: child,
+				path:    strings.TrimSpace(current.path + " " + child.Name()),
+			})
+		}
+	}
+
+	var missing []string
+	for _, commandPath := range expected {
+		if _, ok := actual[commandPath]; !ok {
+			missing = append(missing, commandPath)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("declared API command paths missing from generated Cobra tree: %s", strings.Join(missing, ", "))
+	}
+}
+
+func TestNoDuplicateCommandNames(t *testing.T) {
+	type pendingCommand struct {
+		command *cobra.Command
+		path    string
+	}
+	queue := []pendingCommand{}
+	queue = append(queue, pendingCommand{command: RootCmd(), path: ""})
+	var duplicates []string
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		seen := map[string]struct{}{}
+		for _, child := range current.command.Commands() {
+			childPath := strings.TrimSpace(current.path + " " + child.Name())
+			if _, exists := seen[child.Name()]; exists {
+				duplicates = append(duplicates, childPath)
+			} else {
+				seen[child.Name()] = struct{}{}
+			}
+			queue = append(queue, pendingCommand{command: child, path: childPath})
+		}
+	}
+	if len(duplicates) > 0 {
+		t.Fatalf("generated Cobra tree contains duplicate sibling command names: %s", strings.Join(duplicates, ", "))
+	}
+}
+func TestWriteCredentialSaveErrorEnvelope(t *testing.T) {
+	var out bytes.Buffer
+	cause := &cliutil.CredentialsPermissionError{
+		Path: "/tmp/credentials.toml",
+		Err:  errors.New("unsafe permissions"),
+	}
+	if !writeCredentialSaveErrorEnvelope(&out, &rootFlags{asJSON: true}, fmt.Errorf("saving token: %w", cause)) {
+		t.Fatal("permission failure envelope was not written")
+	}
+
+	var payload struct {
+		Saved               bool   `json:"saved"`
+		CredentialsPath     string `json:"credentials_path"`
+		PermissionsVerified bool   `json:"permissions_verified"`
+		Error               string `json:"error"`
+		Code                int    `json:"code"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("permission failure envelope must be valid JSON: %v\n%s", err, out.String())
+	}
+	if !payload.Saved || payload.CredentialsPath != cause.Path || payload.PermissionsVerified || payload.Error == "" || payload.Code == 0 {
+		t.Fatalf("permission failure envelope = %+v, want saved path, unsafe permissions, error, and non-zero code", payload)
+	}
+}
 
 // TestIsCobraUsageError covers the six pre-RunE error shapes Cobra and
 // pflag can produce before any user RunE runs. Each must be detected so
@@ -174,14 +268,13 @@ func TestFilterFields(t *testing.T) {
 			want:   `{"events":[{"id":"e1"}],"speakers":[{"id":"s1"}]}`,
 		},
 		{
-			// Envelope fallback is intentionally one level deep. A nested
-			// object envelope like {"data":{"items":[...]}} surfaces no
-			// array at the outer level, so the fallback does not fire and
-			// an invalid selector preserves the input.
-			name:   "nested object envelope preserves input (one-level only)",
+			// Generic object descent supports type-keyed envelopes such as
+			// {"data":{"items":[...]}} while keeping the fail-closed
+			// behavior for objects with no collection below them.
+			name:   "nested object envelope descends into collection",
 			input:  `{"data":{"items":[{"id":"a","other":"y"}]}}`,
 			fields: "id",
-			want:   `{"data":{"items":[{"id":"a","other":"y"}]}}`,
+			want:   `{"data":{"items":[{"id":"a"}]}}`,
 		},
 	}
 	for _, tc := range cases {

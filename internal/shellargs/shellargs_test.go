@@ -135,3 +135,26 @@ func TestArgsAfterBinary(t *testing.T) {
 		t.Fatal("expected missing subcommand error")
 	}
 }
+
+func TestJoinRoundTripsTokens(t *testing.T) {
+	tokens := []string{
+		"cli",
+		"inspect",
+		"--query",
+		"weekly digest",
+		"--literal",
+		"it's ready",
+		"",
+		"#tag",
+		"<id>",
+	}
+
+	joined := Join(tokens)
+	got, err := Split(joined)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, tokens) {
+		t.Fatalf("Split(Join()) = %#v, want %#v; joined = %q", got, tokens, joined)
+	}
+}

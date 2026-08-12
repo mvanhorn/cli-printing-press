@@ -50,6 +50,8 @@ type rootFlags struct {
 	runProfileName          string
 	clientProfileName       string
 	platformSession         *platform.Session
+	platformResolver        platform.CredentialResolver
+	platformResolverReady   bool
 	platformAnalytics       *platform.AnalyticsDeclaration
 	platformGateError       error
 	platformMetadataWriter  io.Writer
@@ -80,6 +82,15 @@ var novelCommandHooks []func(root *cobra.Command, flags *rootFlags)
 
 func registerNovelCommand(hook func(root *cobra.Command, flags *rootFlags)) {
 	novelCommandHooks = append(novelCommandHooks, hook)
+}
+
+func addNovelCommandIfAbsent(parent *cobra.Command, candidate *cobra.Command) {
+	for _, existing := range parent.Commands() {
+		if existing.Name() == candidate.Name() {
+			return
+		}
+	}
+	parent.AddCommand(candidate)
 }
 
 // clientHooks let preserved package-local extensions configure a newly-created
@@ -230,7 +241,7 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify auth and connectivity.
 	rootCmd.PersistentFlags().BoolVar(&flags.noInput, "no-input", false, "Disable all interactive prompts (for CI/agents)")
 	rootCmd.PersistentFlags().BoolVar(&flags.idempotent, "idempotent", false, "Treat already-existing create results as a successful no-op")
 	rootCmd.PersistentFlags().BoolVar(&flags.ignoreMissing, "ignore-missing", false, "Treat missing delete targets as a successful no-op")
-	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output (e.g. --select id,name,status)")
+	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output")
 	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (for agents and scripts)")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	rootCmd.PersistentFlags().BoolVar(&humanFriendly, "human-friendly", false, "Enable colored output and rich formatting")

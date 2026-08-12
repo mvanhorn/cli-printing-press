@@ -26,9 +26,10 @@ import (
 
 func newAuthCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "auth",
-		Short: "Manage authentication for Golden Api Cookie Auth",
-		RunE:  parentNoSubcommandRunE(flags),
+		Use:         "auth",
+		Short:       "Manage authentication for Golden Api Cookie Auth",
+		Annotations: map[string]string{"pp:parent-group": "true"},
+		RunE:        parentNoSubcommandRunE(flags),
 	}
 
 	cmd.AddCommand(newAuthLoginCmd(flags))
@@ -230,6 +231,14 @@ profile by name when the installed backend supports it.`,
 					return authErr(fmt.Errorf("cookie tool returned no cookies for %s", domain))
 				}
 			} // end if !fromPressAuth
+
+			// Cookie extractors read Chrome's evolving on-disk schema. Refuse
+			// malformed output before it reaches TOML or net/http: stale tools can
+			// otherwise persist binary schema metadata as credentials and leave the
+			// CLI unable to parse its own config on the next invocation.
+			if err := validateExtractedCookieHeader(cookies); err != nil {
+				return authErr(err)
+			}
 			// Unfiltered, the persisted blob carries every cookie the target
 			// domain has set (CSRF, WAF, anti-bot fingerprints, etc.) into the
 			// Cookie header on every request, which routinely trips upstream
@@ -310,8 +319,8 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			w := cmd.OutOrStdout()
-			header := cfg.AuthHeader()
-			if header == "" {
+			credentialConfigured := cfg.CredentialConfigured()
+			if !credentialConfigured {
 				if v := os.Getenv("COOKIE_AUTH_SESSION"); v != "" {
 					fmt.Fprintln(w, green("Authenticated"))
 					fmt.Fprintf(w, "  Source: %s env var\n", "COOKIE_AUTH_SESSION")
@@ -871,6 +880,18 @@ type cookieTool struct {
 	name   string
 	pyBin  string
 	pyArgs []string
+}
+
+// validateExtractedCookieHeader rejects malformed browser-extractor output
+// before it can be persisted or passed to net/http. In Chrome cookie database
+// schema 24+, stale extractors may leave the binary SHA-256(host_key) prefix
+// attached to each decrypted value. net/http rejects those bytes, and writing
+// invalid UTF-8 into TOML can make the CLI's config unreadable on its next run.
+func validateExtractedCookieHeader(header string) error {
+	if _, err := http.ParseCookie(header); err != nil {
+		return fmt.Errorf("cookie importer returned malformed Cookie header: %w; update the browser extractor (pycookiecheat 0.8.0 or newer) or use press-auth; refusing to save credentials", err)
+	}
+	return nil
 }
 
 // tryPressAuth shells out to `press-auth cookies <domain>` and returns the

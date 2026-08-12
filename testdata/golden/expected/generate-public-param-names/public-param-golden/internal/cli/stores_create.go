@@ -53,7 +53,7 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			params := map[string]string{}
-			if flagDryRun != false {
+			if cmd.Flags().Changed("dry-run") || flagDryRun != false {
 				params["$dry_run"] = formatCLIParamValue(flagDryRun)
 			}
 			var body any
@@ -70,7 +70,7 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 			} else {
 				bodyMap := map[string]any{}
 				body = bodyMap
-				if bodyStoreCode != "" {
+				if (cmd.Flags().Changed("store-code") || cmd.Flags().Changed("code")) || bodyStoreCode != "" {
 					bodyMap["store_code"] = bodyStoreCode
 				}
 			}

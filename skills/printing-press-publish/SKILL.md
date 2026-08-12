@@ -225,7 +225,11 @@ fi
 echo "PRINTING_PRESS_BIN=$PRINTING_PRESS_BIN"
 
 _pp_semver_lt() {
-  awk -v a="$1" -v b="$2" 'BEGIN {
+  if [ -z "${PP_SEMVER_A:-}" ] || [ -z "${PP_SEMVER_B:-}" ]; then
+    echo "[setup-error] semver comparison inputs are missing." >&2
+    return 2
+  fi
+  awk -v a="${PP_SEMVER_A:-}" -v b="${PP_SEMVER_B:-}" 'BEGIN {
     split(a, x, "."); split(b, y, ".")
     for (i = 1; i <= 3; i++) {
       if ((x[i] + 0) < (y[i] + 0)) exit 0
@@ -236,13 +240,15 @@ _pp_semver_lt() {
 }
 
 _pp_go_version_norm() {
-  printf '%s\n' "$1" | sed -nE 's/.*go([0-9]+)\.([0-9]+)(\.([0-9]+))?.*/\1.\2.\4/p' | awk -F. 'NF >= 2 { printf "%d.%d.%d\n", $1, $2, ($3 == "" ? 0 : $3) }'
+  printf '%s\n' "${PP_GO_VERSION_INPUT:-}" | sed -nE 's/.*go([0-9]+)\.([0-9]+)(\.([0-9]+))?.*/\1.\2.\4/p' | sed -E 's/\.$/.0/'
 }
 
 _pp_check_go_currency() {
-  _pp_go_installed="$(_pp_go_version_norm "$(go env GOVERSION 2>/dev/null)")"
-  _pp_go_required="$(_pp_go_version_norm "$(go version "$PRINTING_PRESS_BIN" 2>/dev/null)")"
-  if [ -z "$_pp_go_installed" ] || [ -z "$_pp_go_required" ] || ! _pp_semver_lt "$_pp_go_installed" "$_pp_go_required"; then
+  _pp_go_installed="$(PP_GO_VERSION_INPUT="$(go env GOVERSION 2>/dev/null)" _pp_go_version_norm)"
+  _pp_go_required="$(PP_GO_VERSION_INPUT="$(go version "$PRINTING_PRESS_BIN" 2>/dev/null)" _pp_go_version_norm)"
+  PP_SEMVER_A="$_pp_go_installed"
+  PP_SEMVER_B="$_pp_go_required"
+  if [ -z "$_pp_go_installed" ] || [ -z "$_pp_go_required" ] || ! _pp_semver_lt; then
     return 0
   fi
 
@@ -288,7 +294,11 @@ _pp_check_disk_space() {
     _pp_disk_path="$(dirname "$_pp_disk_path")"
   done
 
-  _pp_disk_avail_kb="$(df -Pk "$_pp_disk_path" 2>/dev/null | awk 'NR == 2 { print $4; exit }')"
+  _pp_disk_avail_kb="$(df -Pk "$_pp_disk_path" 2>/dev/null | awk 'BEGIN {
+    if ((getline header) <= 0 || (getline record) <= 0) exit
+    field_count = split(record, fields)
+    if (field_count >= 4) print fields[4]
+  }')"
   case "$_pp_disk_avail_kb" in
     ""|*[!0-9]*) return 0 ;;
   esac
@@ -429,6 +439,19 @@ Read `.printing-press.json` from the resolved CLI directory.
    - payments, auth, commerce, ai, food-and-dining, health, maps, media-and-entertainment, devices, other
    - travel
 
+## Step 3.5: The Greptile review contract — read before opening the PR
+
+Every PR into the public library gets an automated Greptile review plus a `Greptile policy gate` CI job. The canonical contract is the library's [`AGENTS.md → "Automated code review with Greptile"`](https://github.com/mvanhorn/printing-press-library/blob/main/AGENTS.md#automated-code-review-with-greptile); the essentials:
+
+- **The bar is resolving every Greptile finding before merge — the 0-5 score is a confidence signal, not the gate.** A 4/5 with everything resolved is ready; a 5/5 with open P1s is not. Treat every P0 and P1 as blocking; P2s need a fix or a concrete deferral reply.
+- **Reviews are incremental**: every push re-triggers a fresh review that can surface new findings. Drive the PR to a *stable* green — never declare done after round one.
+- **Read the latest `greptile-apps` top-level summary, not just inline threads.** Summaries can carry actionable `Comments Outside Diff` blocks even when the thread list is empty. Run the repo's review-state helper before declaring ready:
+  ```bash
+  python3 .github/scripts/pr-review-state/greptile_feedback.py <PR_NUMBER>
+  ```
+- **Timeout recovery**: if the policy gate fails with `Timed out waiting for Greptile Review to complete` (large new-CLI diffs are the common trigger), the gate auto-posts `@greptileai review` after ~3 minutes; if that doesn't recover, post `@greptileai review` yourself and wait.
+- **The score gate**: the policy gate requires the latest Greptile comment on the current head SHA to carry `Confidence Score: ≥ 4/5`. A new push re-runs it — keep the score meeting threshold on the final head.
+
 ## Step 4: Validate
 
 Run:
@@ -476,6 +499,15 @@ works against the real upstream API. Do not rely on an older
 `phase5-acceptance.json` from generation or polish because the CLI may have
 been hand-edited since that marker was written.
 
+**Marker invalidation and sync.** The acceptance marker carries a source
+fingerprint; any `.go` edit after it was written makes `publish package` fail
+with "phase5 marker source fingerprint does not match". Re-run this live gate
+after every source change and write the marker to **both** copies: the embedded
+`$CLI_DIR/.manuscripts/<run>/proofs/` and the archived
+`$PRESS_MANUSCRIPTS/<api>/<run>/proofs/` (manuscript lookup is archive-first;
+proof lookup is embedded-first — a stale copy in either location blocks
+packaging).
+
 Resolve the Phase 5 proofs directory from the CLI manifest:
 
 ```bash
@@ -498,7 +530,23 @@ elif [ ! -d "$PROOFS_DIR" ] && [ -n "$CLI_NAME" ] && [ -d "$PRESS_MANUSCRIPTS/$C
   PROOFS_DIR="$PRESS_MANUSCRIPTS/$CLI_NAME/$RUN_ID/proofs"
 fi
 mkdir -p "$PROOFS_DIR"
+
+RESEARCH_DIR="$(dirname "$PROOFS_DIR")/research"
+if [ ! -f "$RESEARCH_DIR/research.json" ] && [ -f "$(dirname "$PROOFS_DIR")/research.json" ]; then
+  RESEARCH_DIR="$(dirname "$PROOFS_DIR")"
+fi
+if [ ! -f "$RESEARCH_DIR/research.json" ]; then
+  echo "ERROR: publish live gate requires the run research.json at $RESEARCH_DIR." >&2
+  exit 1
+fi
 ```
+
+Phase 5 markers are bound to the source tree that was exercised. The live
+dogfood writer records `source_fingerprint` and per-file hashes automatically.
+Publish validation recomputes the fingerprint from the current CLI directory
+and refuses a marker from a drifted tree, naming changed source files when the
+marker has them. README-only edits are outside this fingerprint and do not
+invalidate the gate.
 
 If `SKIP_LIVE_TEST_REASON` is unset, run full live dogfood and write a fresh
 acceptance marker into that proofs directory:
@@ -511,6 +559,7 @@ LIVE_GATE_ARGS=(
   --live
   --level full
   --timeout 120s
+  --research-dir "$RESEARCH_DIR"
   --write-acceptance "$PROOFS_DIR/phase5-acceptance.json"
   --json
 )
@@ -560,12 +609,29 @@ if [ -n "$AUTH_ENV" ] && [ -n "${!AUTH_ENV:-}" ]; then
   API_KEY_AVAILABLE=true
 fi
 
+SOURCE_FILES=$(find "$CLI_DIR" \( -type d \( -name '.git' -o -name '.manuscripts' -o -name '.printing-press' \) -prune \) -o -type f \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' -o -name 'spec.json' -o -name 'spec.yaml' -o -name 'spec.yml' \) -print | LC_ALL=C sort)
+SOURCE_FINGERPRINT=$(
+  while IFS= read -r SOURCE_FILE; do
+    [ -z "$SOURCE_FILE" ] && continue
+    SOURCE_REL="${SOURCE_FILE#"$CLI_DIR"/}"
+    SOURCE_HASH=$(shasum -a 256 "$SOURCE_FILE" | sed 's/[[:space:]].*//')
+    printf '%s\0%s\n' "$SOURCE_REL" "$SOURCE_HASH"
+  done <<EOF | shasum -a 256 | sed 's/[[:space:]].*//'
+$SOURCE_FILES
+EOF
+)
+if [ -z "$SOURCE_FINGERPRINT" ]; then
+  echo "ERROR: unable to fingerprint CLI source before writing the Phase 5 skip marker."
+  exit 1
+fi
+
 rm -f "$PROOFS_DIR/phase5-acceptance.json"
 jq -n \
   --arg api "$API_SLUG" \
   --arg run "$RUN_ID" \
   --arg reason "$SKIP_LIVE_TEST_REASON" \
   --arg auth "$AUTH_TYPE" \
+  --arg source_fingerprint "$SOURCE_FINGERPRINT" \
   --argjson api_key_available "$API_KEY_AVAILABLE" \
   --argjson browser_session_available false \
   '{
@@ -574,6 +640,7 @@ jq -n \
     run_id: $run,
     status: "skip",
     level: "none",
+    source_fingerprint: $source_fingerprint,
     skip_reason: $reason,
     auth_context: {
       type: $auth,
@@ -814,6 +881,17 @@ MODULE_PATH="<module_path_base>/<category>/<api-slug>"
 ```
 
 For example: `github.com/mvanhorn/printing-press-library/library/productivity/notion`
+
+**`--module-path` is required in `--dest` mode.** When packaging with `--dest`,
+always pass `--module-path "$MODULE_PATH"`. Omitting it silently skips the
+go.mod/import rewrite (`RewriteModulePath` is gated on the flag), so the
+packaged CLI keeps `module <cli-name>` and the library CI rejects the PR with a
+module-path mismatch. `publish package` verifies the staged tree's module path
+after the rewrite and fails packaging when it is not library-canonical (whether
+`--module-path` was omitted or set to a non-canonical value). Standalone
+`publish validate` on a source tree surfaces the check as a warning — the bare
+module name is expected there pre-rewrite; the authoritative failure is in the
+package step.
 
 Run `publish package` with `--target` to stage the CLI into a unique temporary
 directory, then copy it into the publish repo:
@@ -1420,16 +1498,18 @@ git add -f "library/<category>/<api-slug>/"
 # fragments from previous publish branches before they leak into the wrong PR.
 EXPECTED_STAGE_PREFIXES=$(printf '%s\n' "library/<category>/<api-slug>/" "$PREEXISTING_MERGED_PATHS" | sed '/^$/d; s#/*$#/#' | sort -u)
 UNEXPECTED_STAGED=$(git diff --cached --name-only | awk -v prefixes="$EXPECTED_STAGE_PREFIXES" '
-BEGIN { n = split(prefixes, p, "\n") }
-{
-  matched = 0
-  for (i = 1; i <= n; i++) {
-    if (p[i] != "" && ($0 == p[i] || index($0, p[i]) == 1)) {
-      matched = 1
-      break
+BEGIN {
+  n = split(prefixes, p, "\n")
+  while ((getline line) > 0) {
+    matched = 0
+    for (i = 1; i <= n; i++) {
+      if (p[i] != "" && (line == p[i] || index(line, p[i]) == 1)) {
+        matched = 1
+        break
+      }
     }
+    if (!matched) print line
   }
-  if (!matched) print
 }')
 if [ -n "$UNEXPECTED_STAGED" ]; then
   echo "ERROR: publish staged paths outside the expected CLI scope:" >&2
@@ -1649,8 +1729,7 @@ Greptile reviews **incrementally**: every commit you push re-triggers a fresh re
 
 Iterate until **all** of these hold, confirmed by the review that your most recent fix commit triggered:
 
-- **Greptile score ≥ 4.** The 0-5 score is a confidence signal, not a hard gate; 4/5 and 5/5 are both acceptable end states, and the score lands there naturally once threads are addressed.
-- **No unresolved review threads.** For each P0/P1/P2 thread, either push a fix or reply with a concrete reason it shouldn't fire — not "won't fix", but *why* the code is right as written or *why* deferral is justified.
+- **All Greptile findings resolved.** The 0-5 score is a confidence signal, not the gate — the bar is resolving every finding. 4/5 with everything resolved is ready; 5/5 with open P1s is not. For each P0/P1/P2 thread, either push a fix or reply with a concrete reason it shouldn't fire — not "won't fix", but *why* the code is right as written or *why* deferral is justified. The policy gate also requires the latest score on the current head SHA to be ≥ 4/5, so keep the final head meeting that threshold.
 - **All CI checks pass.** `verify-library-conventions`, `Govulncheck`, and any other workflow on the PR.
 
 Read findings from two surfaces — they don't overlap:

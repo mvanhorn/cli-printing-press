@@ -57,6 +57,7 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
       list:                       # endpoint key becomes subcommand: users list
         method: GET               # string (REQUIRED) must be one of GET | POST | PUT | DELETE
         path: "/users"           # string (REQUIRED) API path; supports {param} placeholders
+        mutation: true             # bool optional; explicitly marks a GET action as state-changing
         base_url: "https://search.example.com/v1" # string optional override for this endpoint only
         description: "List users" # string endpoint help text
         example: "  my-api-pp-cli users list --limit 25" # string optional Cobra Example override; include Cobra help indentation
@@ -158,8 +159,13 @@ top-level command, the same `example` value is used verbatim for both forms, so
 write it as the promoted invocation if that is the command users should run. Set
 `happy_args` when live dogfood needs realistic arguments that cannot be inferred
 from names or schema hints. The value is copied into the generated `pp:happy-args`
-annotation and follows the runtime grammar, for example
-`"--zip=60614"` or `"id=example-id;--query=example"`.
+annotation and follows the runtime grammar. Tokens are separated by unescaped
+semicolons, so a literal semicolon uses `\;` (or `\\;` inside a YAML
+double-quoted string). Positional tokens may use `<label>=value` or
+`label=value`. Positional and flag tokens replace matching synthesized
+or Example-derived values. Negative numeric flag values use the safe
+`--flag=-12.3` form. Examples include `"--zip=60614"` and
+`"id=example-id;--query=example"`.
 
 **`html_extract.link_prefixes` are path-segment anchored.** In `mode: links`, a
 prefix such as `/items` keeps links whose path is exactly `/items` or starts

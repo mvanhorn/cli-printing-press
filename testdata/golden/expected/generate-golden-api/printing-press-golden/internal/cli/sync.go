@@ -47,6 +47,8 @@ type syncResult struct {
 	Duration time.Duration
 }
 
+const syncWatermarkOverlap = time.Second
+
 func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var resources []string
 	var full bool
@@ -94,9 +96,8 @@ Resource scoping:
   from a prior sync.`,
 		Example: `  # Sync all resources
   printing-press-golden-pp-cli sync
-
   # Sync specific resources only
-  printing-press-golden-pp-cli sync --resources channels,messages
+  printing-press-golden-pp-cli sync --resources projects,currencies
 
   # Full resync (ignore previous checkpoint)
   printing-press-golden-pp-cli sync --full
@@ -155,7 +156,9 @@ Resource scoping:
 			// Skip under --dry-run: a preview must not mutate sync-state (issue #2935).
 			if full && !c.DryRun {
 				for _, resource := range resources {
-					_ = db.SaveSyncState(resource, "", 0)
+					if err := db.SaveSyncStateAt(resource, "", 0, time.Time{}); err != nil {
+						return fmt.Errorf("clearing sync state for %s: %w", resource, err)
+					}
 				}
 			}
 
@@ -174,13 +177,14 @@ Resource scoping:
 					maxPages = 1
 					// Clear the cursor so we start from the head each time;
 					// the goal of --latest-only is "refresh the top" not
-					// "resume from wherever I left off". Skip under --dry-run:
+					// "resume from wherever I left off". Clear the watermark too,
+					// so the head request does not inherit an old incremental window.
+					// Skip under --dry-run:
 					// a preview must not mutate sync-state (issue #2935).
 					if !c.DryRun {
 						for _, resource := range resources {
-							existing, _, _, _ := db.GetSyncState(resource)
-							if existing != "" {
-								_ = db.SaveSyncState(resource, "", 0)
+							if err := db.SaveSyncStateAt(resource, "", 0, time.Time{}); err != nil {
+								return fmt.Errorf("clearing sync state for %s: %w", resource, err)
 							}
 						}
 					}
@@ -196,14 +200,16 @@ Resource scoping:
 			// safety limit, which is a real anomaly worth surfacing.
 			effectiveLatestOnly := latestOnly && since == ""
 
-			// Resolve --since into an RFC3339 timestamp
+			// Resolve --since into an RFC3339 timestamp. Render in UTC so the
+			// zone is "Z" rather than a numeric offset like "-04:00"; some APIs
+			// reject the offset form of the temporal filter as an invalid date.
 			sinceTS := ""
 			if since != "" {
 				ts, err := parseSinceDuration(since)
 				if err != nil {
 					return fmt.Errorf("invalid --since value %q: %w", since, err)
 				}
-				sinceTS = ts.Format(time.RFC3339)
+				sinceTS = ts.UTC().Format(time.RFC3339)
 			}
 
 			// Worker pool: produce resources, N workers consume
@@ -273,7 +279,7 @@ Resource scoping:
 					if firstPlaceholderErr == nil && errors.Is(res.Err, client.ErrPlaceholderCredential) {
 						firstPlaceholderErr = res.Err
 					}
-					if criticalResources[res.Resource] {
+					if isSyncStatePersistenceError(res.Err) || criticalResources[res.Resource] {
 						criticalErrCount++
 						criticalFailedResources = append(criticalFailedResources, res.Resource)
 					}
@@ -306,7 +312,7 @@ Resource scoping:
 					if firstPlaceholderErr == nil && errors.Is(res.Err, client.ErrPlaceholderCredential) {
 						firstPlaceholderErr = res.Err
 					}
-					if criticalResources[res.Resource] {
+					if isSyncStatePersistenceError(res.Err) || criticalResources[res.Resource] {
 						criticalErrCount++
 						criticalFailedResources = append(criticalFailedResources, res.Resource)
 					}
@@ -465,6 +471,7 @@ func syncResource(ctx context.Context, c interface {
 	}
 
 	var totalCount int
+	requestedAt := started.UTC()
 
 	// Resume cursor from sync_state (unless --full cleared it)
 	existingCursor, lastSynced, _, _ := db.GetSyncState(resource)
@@ -481,7 +488,8 @@ func syncResource(ctx context.Context, c interface {
 	sinceParam := syncResourceSinceParam(resource)
 	effectiveSince := sinceTS
 	if effectiveSince == "" && !lastSynced.IsZero() && !full {
-		effectiveSince = lastSynced.Format(time.RFC3339)
+		// UTC so the zone renders as "Z"; see the --since resolution above.
+		effectiveSince = lastSynced.UTC().Format(time.RFC3339)
 	}
 	// Resources whose list endpoint declares no temporal-filter parameter
 	// fall back to plain pagination — sending a synthetic since=... would
@@ -502,11 +510,20 @@ func syncResource(ctx context.Context, c interface {
 
 	cursor := existingCursor
 	pageSize := determinePaginationDefaults(resource)
+	sortParam := syncResourceSortParam(resource)
+	sortValue := syncResourceSortValue(resource)
+	sortField := syncResourceSortField(resource)
+	sortEffective := false
 	var progressCount int64
 	pagesFetched := 0
 	lastNextCursor := ""
 	capExitHit := false
 	capExitCursor := ""
+	capTruncated := false
+	var previousStoredAt time.Time
+	var newestStoredAt time.Time
+	timestampOrderSafe := true
+	timestampEvidence := false
 	// extractFailureTotal accumulates per-item primary-key extraction
 	// misses across pages within this resource sync. Resource-level
 	// concurrency is 1 (one goroutine per resource via the work channel)
@@ -535,18 +552,24 @@ func syncResource(ctx context.Context, c interface {
 		if resourceSupportsPagination(resource) {
 			params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
 			if cursor != "" {
-				params[pageSize.cursorParam] = cursor
+				if pageSize.cursorParam != "" {
+					params[pageSize.cursorParam] = cursor
+				}
 			}
 		}
 
 		// Set since filter
 		if effectiveSince != "" {
 			params[sinceParam] = effectiveSince
+			if sortParam != "" {
+				params[sortParam] = sortValue
+			}
 		}
 		// Apply user-supplied --param / --resource-param overrides last so they
 		// win over spec-derived defaults (e.g. forcing mine=true on a list
 		// endpoint whose OpenAPI spec marks the filter optional).
 		userParams.applyTo(resource, params, false)
+		sortEffective = effectiveSince != "" && sortParam != "" && sortValue != "" && sortField != "" && params[sortParam] == sortValue
 
 		data, err := c.Get(ctx, path, params)
 		if err != nil {
@@ -568,7 +591,7 @@ func syncResource(ctx context.Context, c interface {
 		// sentinel has no items and no id; emit a synthetic success event so
 		// validate-narrative --full-examples (which auto-appends --dry-run)
 		// sees a clean exit.
-		if isDryRunResponse(data) {
+		if isDryRunResponseForClient(c, data) {
 			if !humanFriendly {
 				fmt.Fprintf(syncEvents, `{"event":"sync_dryrun","resource":"%s"}`+"\n", resource)
 			}
@@ -577,7 +600,24 @@ func syncResource(ctx context.Context, c interface {
 
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
-		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, responsePathForResource(resource, path)...)
+		items, nextCursor, hasMore := extractPageItemsWithPagination(data, pageSize.cursorParam, pageSize.nextCursorPath, responsePathForResource(resource, path)...)
+		if sortEffective && maxPages > 0 {
+			for _, item := range items {
+				itemTimestamp, ok := restSyncTimestamp(item, sortField)
+				if !ok {
+					timestampOrderSafe = false
+					continue
+				}
+				timestampEvidence = true
+				if !previousStoredAt.IsZero() && itemTimestamp.Before(previousStoredAt) {
+					timestampOrderSafe = false
+				}
+				previousStoredAt = itemTimestamp
+				if newestStoredAt.IsZero() || itemTimestamp.After(newestStoredAt) {
+					newestStoredAt = itemTimestamp
+				}
+			}
+		}
 
 		// Page-int paginator fallback: when the API paginates by integer
 		// ?page=N and emits no body cursor, treat a full page as a signal
@@ -585,7 +625,8 @@ func syncResource(ctx context.Context, c interface {
 		// 1 even though more pages exist (the original symptom in #1296).
 		// Guard on cursorType, not cursorParam name, so all canonical
 		// spellings (page / page_number / pageNumber / page[number]) work.
-		if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
+		// A declared strategy without a request parameter cannot advance safely.
+		if pageSize.cursorParam != "" && pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
 			currentPage, _ := strconv.Atoi(cursor)
 			if currentPage < 1 {
 				currentPage = 1
@@ -593,7 +634,7 @@ func syncResource(ctx context.Context, c interface {
 			nextCursor = strconv.Itoa(currentPage + 1)
 			hasMore = true
 		}
-		if pageSize.cursorType == "offset" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
+		if pageSize.cursorParam != "" && pageSize.cursorType == "offset" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
 			currentOffset, _ := strconv.Atoi(cursor)
 			nextCursor = strconv.Itoa(currentOffset + pageSize.limit)
 			hasMore = true
@@ -659,6 +700,11 @@ func syncResource(ctx context.Context, c interface {
 		extractFailureTotal += extractFailures + hydrateFailures
 		hydrateFailureTotal += hydrateFailures
 		pageFailureCount := extractFailures + hydrateFailures
+		if pageFailureCount > 0 {
+			// A timestamp from an item that did not reach the store cannot safely
+			// advance the incremental watermark past that item.
+			timestampOrderSafe = false
+		}
 
 		if fetchedThisPage > 0 && stored == 0 {
 			reason := "all_items_failed_id_extraction"
@@ -733,18 +779,26 @@ func syncResource(ctx context.Context, c interface {
 		if maxPages > 0 && pagesFetched >= maxPages {
 			truncatedByCap := resourceSupportsPagination(resource) && hasMore
 			truncatedByCap = truncatedByCap && !shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, pageSize.limit)
+			capResumed := false
 			if truncatedByCap {
 				capExitCursor = nextCursor
 			}
 			if truncatedByCap && capExitCursor == "" {
-				if pageSize.cursorType == "offset" {
+				if pageSize.cursorParam != "" && pageSize.cursorType == "offset" {
 					currentOffset, _ := strconv.Atoi(cursor)
 					capExitCursor = strconv.Itoa(currentOffset + pageSize.limit)
 				} else {
 					truncatedByCap = false
 				}
 			}
-			if truncatedByCap && capExitCursor != cursor {
+			capResumed = truncatedByCap && capExitCursor != cursor
+			capPageLimit := pageSize.limit
+			// A resume cursor alone does not prove that the page window was
+			// truncated. Only a full page with a real continuation advances a
+			// watermark; short cursor pages retain the cursor but leave the
+			// watermark unchanged.
+			capTruncated = capResumed && fetchedThisPage >= capPageLimit
+			if capResumed {
 				if !latestOnly {
 					capExitHit = true
 					if humanFriendly {
@@ -754,10 +808,17 @@ func syncResource(ctx context.Context, c interface {
 					}
 				}
 			}
-			// A cap break ends enumeration before exhausting the partition; mirror
-			// the dependent loop and treat it as incomplete (reconcile SKIPS). Safe
-			// default: when the cap may have truncated, never prune.
-			outcome.reason = "max_pages_cap"
+			// A cap break is incomplete when it has a continuation. A short
+			// page for page/offset pagination is a proven natural end even when
+			// the operator's page ceiling fired on that same request.
+			if capResumed {
+				outcome.reason = "max_pages_cap"
+			} else if !hasMore ||
+				shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, capPageLimit) {
+				outcome.complete = true
+			} else {
+				outcome.reason = "max_pages_cap"
+			}
 			break
 		}
 
@@ -790,7 +851,7 @@ func syncResource(ctx context.Context, c interface {
 			break
 		}
 		if nextCursor == "" {
-			if pageSize.cursorType == "offset" {
+			if pageSize.cursorParam != "" && pageSize.cursorType == "offset" {
 				// Cursor-based APIs return the next cursor in the envelope.
 				// Offset-based APIs carry their pagination position client-side.
 				currentOffset, _ := strconv.Atoi(cursor)
@@ -804,9 +865,8 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		// Save cursor after each page for resumability
-		if err := db.SaveSyncState(resource, nextCursor, totalCount); err != nil {
-			// Non-fatal: log and continue
-			fmt.Fprintf(os.Stderr, "\nwarning: failed to save sync state for %s: %v\n", resource, err)
+		if err := db.SaveSyncProgress(resource, nextCursor, totalCount); err != nil {
+			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync progress for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
 		cursor = nextCursor
@@ -845,13 +905,38 @@ func syncResource(ctx context.Context, c interface {
 		fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","reason":"unsupported-resource-shape"}`+"\n", resource)
 	}
 
-	// Final sync state: clear cursor on natural completion, but preserve the
-	// resume cursor when an operator intentionally capped the page budget.
+	// Final sync state separates pagination progress from the incremental
+	// watermark. A checkpoint after a capped page may retain a resume cursor
+	// without claiming that records on pages we did not fetch were observed.
 	finalCursor := ""
 	if capExitHit {
 		finalCursor = capExitCursor
 	}
-	_ = db.SaveSyncState(resource, finalCursor, totalCount)
+	cachedCount, countErr := db.Count(resource)
+	if countErr != nil {
+		return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("counting stored %s rows: %w", resource, countErr), Duration: time.Since(started)}
+	}
+	watermark := time.Time{}
+	if outcome.complete {
+		watermark = requestedAt.Add(-syncWatermarkOverlap)
+	} else if capTruncated && sortEffective && timestampOrderSafe && timestampEvidence && !newestStoredAt.IsZero() {
+		watermark = newestStoredAt.Add(-syncWatermarkOverlap)
+	}
+	if !watermark.IsZero() {
+		// A positional or opaque cursor was issued for the old since window.
+		// Restart from the new watermark instead of combining two incompatible
+		// result windows on the next run.
+		finalCursor = ""
+	}
+	var stateErr error
+	if watermark.IsZero() {
+		stateErr = db.SaveSyncProgress(resource, finalCursor, cachedCount)
+	} else {
+		stateErr = db.SaveSyncStateAt(resource, finalCursor, cachedCount, watermark)
+	}
+	if stateErr != nil {
+		return syncResult{Resource: resource, Count: cachedCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, stateErr), Duration: time.Since(started)}
+	}
 
 	// F4b symptom probe: if items were consumed and successfully
 	// extracted (extractFailures < consumed) but nothing landed in
@@ -869,7 +954,7 @@ func syncResource(ctx context.Context, c interface {
 	}
 
 	if !humanFriendly {
-		fmt.Fprintf(syncEvents, `{"event":"sync_complete","resource":"%s","total":%d,"duration_ms":%d}`+"\n", resource, totalCount, time.Since(started).Milliseconds())
+		fmt.Fprintf(syncEvents, `{"event":"sync_complete","resource":"%s","total":%d,"duration_ms":%d}`+"\n", resource, cachedCount, time.Since(started).Milliseconds())
 	}
 
 	if consumedTotal > 0 && totalCount == 0 && extractFailureTotal >= consumedTotal {
@@ -885,15 +970,16 @@ func syncResource(ctx context.Context, c interface {
 		}
 	}
 
-	return syncResult{Resource: resource, Count: totalCount, Duration: time.Since(started)}
+	return syncResult{Resource: resource, Count: cachedCount, Duration: time.Since(started)}
 }
 
 // paginationDefaults holds the resolved pagination parameter names and page size.
 type paginationDefaults struct {
-	cursorParam string
-	cursorType  string // paginator class: "", "cursor", "page_token", "offset", "page"
-	limitParam  string
-	limit       int
+	cursorParam    string
+	cursorType     string // paginator class: "", "cursor", "page_token", "offset", "page"
+	nextCursorPath string
+	limitParam     string
+	limit          int
 }
 
 func shortPageEndsPagination(cursorType string, fetched, limit int) bool {
@@ -910,24 +996,27 @@ func determinePaginationDefaults(resource string) paginationDefaults {
 	switch resource {
 	case "projects":
 		return paginationDefaults{
-			cursorParam: "cursor",
-			cursorType:  "cursor",
-			limitParam:  "limit",
-			limit:       25,
+			cursorParam:    "cursor",
+			cursorType:     "cursor",
+			nextCursorPath: "",
+			limitParam:     "limit",
+			limit:          25,
 		}
 	case "projects/tasks":
 		return paginationDefaults{
-			cursorParam: "cursor",
-			cursorType:  "cursor",
-			limitParam:  "limit",
-			limit:       50,
+			cursorParam:    "cursor",
+			cursorType:     "cursor",
+			nextCursorPath: "",
+			limitParam:     "limit",
+			limit:          50,
 		}
 	}
 	return paginationDefaults{
-		cursorParam: "cursor",
-		cursorType:  "cursor",
-		limitParam:  "limit",
-		limit:       100,
+		cursorParam:    "cursor",
+		cursorType:     "cursor",
+		nextCursorPath: "",
+		limitParam:     "limit",
+		limit:          100,
 	}
 }
 
@@ -946,6 +1035,28 @@ func resourceSupportsPagination(resource string) bool {
 // endpoint declares none. Skipping the param for "" resources avoids
 // validation-error 400s on APIs that reject unknown query keys.
 func syncResourceSinceParam(resource string) string {
+	switch resource {
+	}
+	return ""
+}
+
+// syncResourceSortParam and syncResourceSortValue describe a spec-declared
+// ascending last-modified ordering. Sync adds them only when it sends a since
+// filter, because applying a sort to a full sync can change API behavior and
+// does not improve the watermark proof.
+func syncResourceSortParam(resource string) string {
+	switch resource {
+	}
+	return ""
+}
+
+func syncResourceSortValue(resource string) string {
+	switch resource {
+	}
+	return ""
+}
+
+func syncResourceSortField(resource string) string {
 	switch resource {
 	}
 	return ""
@@ -986,6 +1097,10 @@ func formatSyncSinceValue(value string, paramFormat string) string {
 // 3. JSend-style nested data envelopes: {"data":{"<resource>":[...]}}
 // It also extracts the next cursor from common response fields.
 func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ...string) ([]json.RawMessage, string, bool) {
+	return extractPageItemsWithPagination(data, cursorParam, "", responsePaths...)
+}
+
+func extractPageItemsWithPagination(data json.RawMessage, cursorParam, nextCursorPath string, responsePaths ...string) ([]json.RawMessage, string, bool) {
 	// Strategy 1: direct array
 	var items []json.RawMessage
 	if err := json.Unmarshal(data, &items); err == nil {
@@ -1006,9 +1121,9 @@ func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ..
 		if items, ok := extractJSONItemsArray(pathData); ok {
 			nextCursor, hasMore := "", false
 			if parentEnvelope, ok := responsePayloadParentAtPath(data, responsePath); ok {
-				nextCursor, hasMore = extractPaginationFromEnvelope(parentEnvelope, cursorParam)
+				nextCursor, hasMore = extractPaginationFromEnvelope(parentEnvelope, cursorParam, nextCursorPath)
 			}
-			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
 			if nextCursor == "" {
 				nextCursor = outerCursor
 			}
@@ -1018,8 +1133,8 @@ func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ..
 		var inner map[string]json.RawMessage
 		if json.Unmarshal(pathData, &inner) == nil {
 			if items, ok := extractItemsFromEnvelope(inner); ok {
-				nextCursor, hasMore := extractPaginationFromEnvelope(inner, cursorParam)
-				outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+				nextCursor, hasMore := extractPaginationFromEnvelope(inner, cursorParam, nextCursorPath)
+				outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
 				if nextCursor == "" {
 					nextCursor = outerCursor
 				}
@@ -1030,7 +1145,7 @@ func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ..
 	}
 
 	if items, ok := extractItemsByKnownKeys(envelope); ok {
-		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
 		return items, nextCursor, hasMore
 	}
 
@@ -1044,8 +1159,8 @@ func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ..
 			continue
 		}
 		if items, ok := extractItemsFromEnvelope(inner); ok {
-			nextCursor, hasMore := extractPaginationFromEnvelope(inner, cursorParam)
-			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+			nextCursor, hasMore := extractPaginationFromEnvelope(inner, cursorParam, nextCursorPath)
+			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
 			if nextCursor == "" {
 				nextCursor = outerCursor
 			}
@@ -1058,14 +1173,14 @@ func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ..
 		var embedded map[string]json.RawMessage
 		if json.Unmarshal(raw, &embedded) == nil {
 			if items, ok := extractItemsFromEnvelope(embedded); ok {
-				nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+				nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
 				return items, nextCursor, hasMore
 			}
 		}
 	}
 
 	if items, ok := extractSingleObjectArraySibling(envelope); ok {
-		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
 		return items, nextCursor, hasMore
 	}
 
@@ -1148,30 +1263,6 @@ func extractObjectArray(raw json.RawMessage) ([]json.RawMessage, bool) {
 		return nil, false
 	}
 	return items, true
-}
-
-// isDryRunResponse detects the `{"dry_run": true}` sentinel that
-// client.dryRun returns instead of a real API response. The sync loop
-// uses this to short-circuit before the upsert path, which would
-// otherwise fail with "missing id for <resource>" against a sentinel
-// that has no items and no id. The check requires exactly one key
-// (dry_run) so a live API response that happens to include a top-level
-// dry_run field alongside real data isn't misclassified as the
-// sentinel and silently zero out the sync count.
-func isDryRunResponse(data json.RawMessage) bool {
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return false
-	}
-	if len(envelope) != 1 {
-		return false
-	}
-	raw, ok := envelope["dry_run"]
-	if !ok {
-		return false
-	}
-	var v bool
-	return json.Unmarshal(raw, &v) == nil && v
 }
 
 func isEmptyPageResponse(data json.RawMessage, responsePaths ...string) bool {
@@ -1351,15 +1442,29 @@ func isJSONResponse(data json.RawMessage) bool {
 }
 
 // extractPaginationFromEnvelope extracts cursor and has_more from a response envelope.
-func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorParam string) (string, bool) {
+func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorParam, nextCursorPath string) (string, bool) {
+	if strings.TrimSpace(cursorParam) == "" {
+		return "", false
+	}
 	var hasMore bool
 
-	nextCursor := nextCursorFromLinks(envelope, cursorParam)
+	nextCursor := ""
+	if nextCursorPath != "" {
+		if raw, ok := rawAtPath(envelope, nextCursorPath); ok {
+			nextCursor = cursorValue(raw)
+			if isFollowableNextURL(nextCursor) {
+				nextCursor = cursorFromNextURL(nextCursor, cursorParam)
+			}
+		}
+	}
+	if nextCursor == "" {
+		nextCursor = nextCursorFromLinks(envelope, cursorParam)
+	}
 
 	// Try common cursor field names
 	cursorKeys := []string{
 		"next_cursor", "nextCursor", "next_token", "nextToken", "cursor",
-		"next_page_token", "nextPageToken", "page_token", "after", "end_cursor", "endCursor",
+		"next_page_token", "nextPageToken", "page_token", "after", "end_cursor", "endCursor", "next",
 	}
 	if nextCursor == "" {
 		nextCursor = findCursorInMap(envelope, cursorKeys)
@@ -1572,7 +1677,7 @@ func cursorFromNextURL(nextURL string, cursorParam string) string {
 	return ""
 }
 
-// findCursorInMap returns the first non-empty string-typed value in m
+// findCursorInMap returns the first non-empty scalar value in m
 // whose key matches one of cursorKeys. Used by extractPaginationFromEnvelope
 // to scan both the top-level envelope and well-known wrapper objects with
 // the same name-match rules — extracted so the two scans can't drift.
@@ -1582,10 +1687,27 @@ func findCursorInMap(m map[string]json.RawMessage, cursorKeys []string) string {
 		if !ok {
 			continue
 		}
-		var s string
-		if err := json.Unmarshal(raw, &s); err == nil && s != "" {
-			return s
+		if key == "next" {
+			var value string
+			if json.Unmarshal(raw, &value) == nil && isFollowableNextURL(value) {
+				continue
+			}
 		}
+		if value := cursorValue(raw); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func cursorValue(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err == nil {
+		return number.String()
 	}
 	return ""
 }
@@ -1716,6 +1838,68 @@ func parseSinceDuration(s string) (time.Time, error) {
 	default:
 		return time.Time{}, fmt.Errorf("unknown unit %q", matches[2])
 	}
+}
+
+// restSyncTimestamp extracts the record-level timestamp for the exact field
+// used by the endpoint's incremental sort. Nested child or metadata timestamps
+// are deliberately ignored: the incremental filter applies to the resource
+// record, not its embedded objects. A missing or unparseable expected field is
+// unsafe, so this helper never falls back to another recognized timestamp.
+func restSyncTimestamp(data json.RawMessage, expectedField string) (time.Time, bool) {
+	var value map[string]any
+	if err := json.Unmarshal(data, &value); err != nil {
+		return time.Time{}, false
+	}
+	expectedField = normalizeRestSyncTimestampField(expectedField)
+	if expectedField == "" || !restSyncTimestampField(expectedField) {
+		return time.Time{}, false
+	}
+	var timestamp time.Time
+	matches := 0
+	for fieldName, child := range value {
+		if normalizeRestSyncTimestampField(fieldName) != expectedField {
+			continue
+		}
+		text, ok := child.(string)
+		if !ok {
+			continue
+		}
+		ts, ok := parseRestSyncTimestamp(text)
+		if !ok {
+			continue
+		}
+		matches++
+		timestamp = ts
+	}
+	if matches != 1 {
+		return time.Time{}, false
+	}
+	return timestamp, true
+}
+
+func normalizeRestSyncTimestampField(name string) string {
+	return strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(name))
+}
+
+func restSyncTimestampField(name string) bool {
+	normalized := normalizeRestSyncTimestampField(name)
+	return strings.Contains(normalized, "updated") ||
+		strings.Contains(normalized, "modified") ||
+		strings.Contains(normalized, "lastchanged") ||
+		strings.Contains(normalized, "lastmodified")
+}
+
+func parseRestSyncTimestamp(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02"} {
+		if ts, err := time.Parse(layout, value); err == nil {
+			return ts, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func defaultSyncResources() []string {
@@ -2011,7 +2195,9 @@ func syncOneParent(
 		if resourceSupportsPagination(dep.Name) {
 			params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
 			if cursor != "" {
-				params[pageSize.cursorParam] = cursor
+				if pageSize.cursorParam != "" {
+					params[pageSize.cursorParam] = cursor
+				}
 			}
 		}
 		if depSinceTS != "" {
@@ -2053,17 +2239,18 @@ func syncOneParent(
 		// of a real response when --dry-run is set. A preview must not mutate
 		// sync-state, so return before any reconcile; the aggregator emits the
 		// single sync_dryrun event. (issue #2935)
-		if isDryRunResponse(data) {
+		if isDryRunResponseForClient(c, data) {
 			rep.dryRun = true
 			return rep
 		}
 
-		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, responsePathForResource(dep.Name, path)...)
+		items, nextCursor, hasMore := extractPageItemsWithPagination(data, pageSize.cursorParam, pageSize.nextCursorPath, responsePathForResource(dep.Name, path)...)
 
 		// Page-int paginator fallback: mirrors syncResource so dependent
 		// resources on integer ?page=N APIs also advance past page 1.
-		// Guard on cursorType to cover every canonical spelling.
-		if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
+		// Guard on cursorType to cover every canonical spelling. A declared
+		// strategy without a request parameter cannot advance safely.
+		if pageSize.cursorParam != "" && pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
 			currentPage, _ := strconv.Atoi(cursor)
 			if currentPage < 1 {
 				currentPage = 1
@@ -2071,7 +2258,7 @@ func syncOneParent(
 			nextCursor = strconv.Itoa(currentPage + 1)
 			hasMore = true
 		}
-		if pageSize.cursorType == "offset" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
+		if pageSize.cursorParam != "" && pageSize.cursorType == "offset" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
 			currentOffset, _ := strconv.Atoi(cursor)
 			nextCursor = strconv.Itoa(currentOffset + pageSize.limit)
 			hasMore = true
@@ -2192,7 +2379,7 @@ func syncOneParent(
 			break
 		}
 		if nextCursor == "" {
-			if pageSize.cursorType == "offset" {
+			if pageSize.cursorParam != "" && pageSize.cursorType == "offset" {
 				// Cursor-based APIs return the next cursor in the envelope.
 				// Offset-based APIs carry their pagination position client-side.
 				currentOffset, _ := strconv.Atoi(cursor)
@@ -2417,7 +2604,9 @@ func syncDependentResource(ctx context.Context, c interface {
 		return syncResult{Resource: dep.Name, Count: totalCount, Warn: failure, Duration: time.Since(started)}
 	}
 
-	_ = db.SaveSyncState(dep.Name, "", totalCount)
+	if err := db.SaveSyncState(dep.Name, "", totalCount); err != nil {
+		return syncResult{Resource: dep.Name, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", dep.Name, err), Duration: time.Since(started)}
+	}
 
 	// F4b symptom probe: items consumed and extracted but nothing landed.
 	// See syncResource for rationale.
@@ -2581,14 +2770,6 @@ var resolveTenantID = func() string { return "" }
 // fan-out. Empty when no parent is annotated.
 var parentTenantScopeColumns = map[string]string{}
 
-// genericIDFieldFallbacks is the runtime safety net for resources that did
-// NOT receive a templated IDField. API-specific names belong in spec
-// annotations (x-resource-id), not this list. Order matters: vendor
-// identifier names (gid, sid, uid, uuid, guid) take precedence over `name`
-// so APIs like Asana (gid) and Twilio (sid) don't fall through to a display
-// field and upsert on names — see #1394.
-var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "api_id", "name", "slug", "key", "code"}
-
 // pageItemKeys is scanned in priority order; lowercase REST-convention keys
 // come first, PascalCase .NET variants second. Without the PascalCase row,
 // {"Items": [...]} envelopes fall through to the ambiguity scan and a
@@ -2643,6 +2824,13 @@ var pageEnvelopeMetadataKeys = map[string]bool{
 	"next": true, "prev": true, "previous": true, "first": true, "last": true,
 }
 
+// isSyncStatePersistenceError reports failures to persist sync checkpoints.
+// These are always treated as critical because a silent exit 0 would leave
+// resume cursors inconsistent with stored data.
+func isSyncStatePersistenceError(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "saving sync state for ")
+}
+
 // criticalResources is the template-time projection of per-resource Critical
 // (set by the profiler from the spec's path-item x-critical extension). It
 // is consulted at error-aggregation time so a non-critical failure can be
@@ -2655,154 +2843,10 @@ var criticalResources = map[string]bool{
 	"projects": true,
 }
 
-// extractID resolves an item's primary-key field. It consults the
-// per-resource templated override first; on miss, it falls through to the
-// generic fallback list. resource may be empty for callers that don't have
-// a resource context (only the generic list applies in that case).
-//
-// Field lookups go through store.LookupFieldValue so snake_case overrides
-// match camelCase JSON renderings. UpsertBatch resolves fields the same
-// way — divergence between the two paths produces silent drops on
-// heterogeneous payloads.
+// extractID delegates the shared identity contract to the store so sync paths
+// and UpsertBatch cannot select different fields from the same payload.
 func extractID(resource string, obj map[string]any) string {
-	if override, ok := resourceIDFieldOverrides[resource]; ok && override != "" {
-		if v := store.LookupFieldValue(obj, override); v != nil {
-			s := store.ResourceIDString(v)
-			if s != "" && s != "<nil>" {
-				return s
-			}
-		}
-	}
-	for _, key := range genericIDFieldFallbacks {
-		if v := store.LookupFieldValue(obj, key); v != nil {
-			s := store.ResourceIDString(v)
-			if s != "" && s != "<nil>" {
-				return s
-			}
-		}
-	}
-	if s := suffixIDFieldFallback(resource, obj); s != "" {
-		return s
-	}
-	return ""
-}
-
-// suffixIDFieldFallback resolves an id-less resource that keys on its own
-// "<name>_code" / "<name>_id" / "<name>_key" / "<name>_slug" field (e.g. the
-// "currencies" resource keying on "currency_code" — see #2327). It is scoped to
-// the resource's OWN name so a foreign key like account_id/parent_id is never
-// promoted to the primary key, and it uses direct map lookups in a fixed suffix
-// order so the chosen id is deterministic.
-func suffixIDFieldFallback(resourceType string, obj map[string]any) string {
-	for _, base := range resourceIDBaseNames(resourceType) {
-		for _, suffix := range []string{"_id", "_code", "_key", "_slug"} {
-			if v, ok := obj[base+suffix]; ok {
-				if s := scalarIDString(v); s != "" && s != "<nil>" {
-					return s
-				}
-			}
-		}
-		camelBase := lowerCamelResourceIDBase(base)
-		for _, suffix := range []string{"Id", "Code", "Key", "Slug"} {
-			if v, ok := obj[camelBase+suffix]; ok {
-				if s := scalarIDString(v); s != "" && s != "<nil>" {
-					return s
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// resourceIDBaseNames returns lowercase candidate singular/plural stems of a
-// resource name to build "<base>_id"-style key probes from (e.g. "currencies"
-// -> ["currencies","currency"]). OpenAPI-/path-derived names can carry a
-// leading verb token ("get-currencies"), so the same probes are also attempted
-// on the de-verbed stem. Minimal English depluralization; the raw name is
-// always included so already-singular names work too.
-func resourceIDBaseNames(resourceType string) []string {
-	r := strings.ToLower(strings.TrimSpace(resourceType))
-	if r == "" {
-		return nil
-	}
-	stems := []string{r}
-	if d := stripLeadingResourceVerb(r); d != "" && d != r {
-		stems = append(stems, d)
-	}
-	var bases []string
-	seen := map[string]bool{}
-	add := func(s string) {
-		if s != "" && !seen[s] {
-			seen[s] = true
-			bases = append(bases, s)
-		}
-	}
-	for _, stem := range stems {
-		add(stem)
-		add(depluralizeResourceStem(stem))
-	}
-	return bases
-}
-
-func stripLeadingResourceVerb(r string) string {
-	for _, verb := range []string{"get", "list", "fetch", "find", "retrieve", "read", "show", "all"} {
-		for _, sep := range []string{"-", "_"} {
-			prefix := verb + sep
-			if strings.HasPrefix(r, prefix) && len(r) > len(prefix) {
-				return r[len(prefix):]
-			}
-		}
-	}
-	return ""
-}
-
-func depluralizeResourceStem(r string) string {
-	switch {
-	case strings.HasSuffix(r, "ies") && len(r) > 3:
-		return strings.TrimSuffix(r, "ies") + "y" // currencies -> currency
-	// Plurals formed by adding "es" to a base ending in s/x/z/ch/sh. The
-	// double-s "sses" guard (not bare "ses") keeps soft-e plurals — where the
-	// singular already ends in a silent "e" (cases, databases, licenses,
-	// purchases) — out of this branch; they fall through to the "-s" case below
-	// (cases -> case, not cas). Trade-off: a genuine "-es" plural of an s-ending
-	// singular (buses, statuses) depluralizes imperfectly, but those are rare as
-	// resource names and this stem only feeds best-effort id-field probing.
-	case strings.HasSuffix(r, "sses") || strings.HasSuffix(r, "xes") ||
-		strings.HasSuffix(r, "zes") || strings.HasSuffix(r, "ches") ||
-		strings.HasSuffix(r, "shes"):
-		return strings.TrimSuffix(r, "es") // classes -> class, boxes -> box, dishes -> dish
-	case strings.HasSuffix(r, "s") && !strings.HasSuffix(r, "ss") && len(r) > 1:
-		return strings.TrimSuffix(r, "s") // languages -> language, cases -> case
-	}
-	return r
-}
-
-func lowerCamelResourceIDBase(base string) string {
-	parts := strings.FieldsFunc(base, func(r rune) bool {
-		return r == '_' || r == '-'
-	})
-	if len(parts) == 0 {
-		return base
-	}
-	for i := range parts {
-		if i == 0 {
-			parts[i] = strings.ToLower(parts[i])
-			continue
-		}
-		parts[i] = strings.ToUpper(parts[i][:1]) + strings.ToLower(parts[i][1:])
-	}
-	return strings.Join(parts, "")
-}
-
-func scalarIDString(value any) string {
-	switch value.(type) {
-	case string, bool, int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64,
-		float32, float64, json.Number, []byte:
-		return store.ResourceIDString(value)
-	default:
-		return ""
-	}
+	return store.ExtractResourceID(resource, obj)
 }
 
 // lookupRefreshEntityFields names the generic identity-bearing JSON

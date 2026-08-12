@@ -43,7 +43,7 @@ func TestClientThreadsCallContextThroughHTTPRequestsAndRetryWaits(t *testing.T) 
 
 	assert.Contains(t, emitted, "func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error)")
 	assert.Contains(t, emitted, "func (c *Client) doRead(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error)")
-	assert.Contains(t, emitted, "func (c *Client) doInternal(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string, readOnlyIntent bool) (json.RawMessage, int, error)")
+	assert.Contains(t, emitted, "func (c *Client) doInternal(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string, readOnlyIntent bool, mutationIntent bool) (json.RawMessage, int, error)")
 
 	doStart := strings.Index(emitted, "func (c *Client) doInternal(")
 	require.NotEqual(t, -1, doStart, "client.go must contain Client.doInternal function")

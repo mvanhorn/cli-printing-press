@@ -4,7 +4,7 @@ description: >
   Internal sub-skill: agentic review of a printed CLI's sampled command output for
   plausibility issues that rule-based checks can't encode (substring-match
   relevance, format bugs, silent source drops, ranking failures). Invoked via the
-  Skill tool by main printing-press phases/16-agentic-output-review.md (Phase 4.85) and printing-press-polish
+  Skill tool by the main printing-press skill at Phase 4.85 and printing-press-polish
   SKILL.md during the diagnostic loop. Not for direct user invocation — its
   actionable wrappers are /printing-press and /printing-press-polish.
 context: fork
@@ -60,6 +60,12 @@ cli-printing-press scorecard --dir "$CLI_DIR" "${RESEARCH_ARGS[@]}" --live-check
 
 If the scorecard call fails or `/tmp/output-review-livecheck.json` is empty, return the SKIP result (Step 3) without dispatching the reviewer.
 
+Before dispatch, count entries in `live_check.features[]` whose `status` is
+`pass`. If there are zero, return `SKIP` with the reason `no eligible passing
+samples; plausibility not assessed`. Do not dispatch the reviewer, and never
+report a clean `PASS` merely because all sampled commands failed or were
+excluded from review.
+
 ### Step 2: Dispatch the reviewer agent
 
 Use the Agent tool (general-purpose) with this prompt contract:
@@ -88,6 +94,9 @@ End the skill response with a `---OUTPUT-REVIEW-RESULT---` block the parent pars
 
 **On clean pass:**
 
+Use this result only when the reviewer assessed at least one eligible
+`status: pass` sample.
+
 ```
 ---OUTPUT-REVIEW-RESULT---
 status: PASS
@@ -109,7 +118,7 @@ findings:
 ---END-OUTPUT-REVIEW-RESULT---
 ```
 
-**On reviewer failure (timeout, agent-budget exhaustion, missing live-check data):**
+**On reviewer failure or absence of assessable output (timeout, agent-budget exhaustion, missing live-check data, or zero eligible `status: pass` samples):**
 
 ```
 ---OUTPUT-REVIEW-RESULT---

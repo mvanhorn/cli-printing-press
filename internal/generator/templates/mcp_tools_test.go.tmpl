@@ -18,6 +18,7 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"{{modulePath}}/internal/cliutil"
+	"{{modulePath}}/internal/cliutil/testenv"
 	"{{modulePath}}/internal/mcp/bound"
 {{- if or .VisionSet.Search .VisionSet.Store}}
 	"{{modulePath}}/internal/store"
@@ -76,28 +77,12 @@ func TestMCPPathResolutionMatchesCLIResolverWithPlatformDefaults(t *testing.T) {
 
 func resetMCPPathEnv(t *testing.T) string {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	for _, name := range []string{
-		"{{envName .Name}}_CONFIG",
-		"{{envName .Name}}_CONFIG_DIR",
-		"{{envName .Name}}_DATA_DIR",
-		"{{envName .Name}}_STATE_DIR",
-		"{{envName .Name}}_CACHE_DIR",
-		"{{envName .Name}}_HOME",
-		"XDG_CONFIG_HOME",
-		"XDG_DATA_HOME",
-		"XDG_STATE_HOME",
-		"XDG_CACHE_HOME",
-	} {
-		t.Setenv(name, "")
-	}
 	restore, err := cliutil.SetHomeOverride("")
 	if err != nil {
 		t.Fatalf("reset home override: %v", err)
 	}
 	t.Cleanup(restore)
-	return home
+	return testenv.Isolate(t, cliutil.ConfigDir, cliutil.DataDir, cliutil.StateDir, cliutil.CacheDir)
 }
 
 func TestMCPRegisterToolsPreservesTypedSpecialTools(t *testing.T) {

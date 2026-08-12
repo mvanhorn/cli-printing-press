@@ -90,6 +90,10 @@ browser-sniffed and crowd-sniffed specs where the mechanical auth detection may 
 - For internal YAML specs: look for `auth:` section with `type:` not equal to `"none"`
 - For OpenAPI specs: look for `components.securitySchemes` or `security` sections
 
+| Spec signal | Generator auth path |
+|---|---|
+| Provider-specific OAuth2 server or auth marker identifies a service-account JWT bearer flow | Emit the guarded service-account scaffold. It accepts the provider's credential file or pre-minted bearer override, exchanges service-account JWTs for cached bearer tokens, and preserves generic OAuth2 behavior for other hosts. |
+
 **If auth is missing** (`type: none` or no auth section) AND [Phase 1](04-research-brief.md) research found
 auth signals, enrich the spec before generation:
 
@@ -583,6 +587,18 @@ emits the thin search+execute pair that covers the typed-endpoint surface in
 ~1K tokens.
 `mcp.endpoint_tools: hidden` removes the raw per-endpoint tools that would
 otherwise still show up alongside the orchestration pair.
+
+**HTTP transport security default — read before enabling `http`.** The emitted
+MCP server binds its HTTP listener to all interfaces by default
+(`defaultHTTPAddr = ":7777"`) and does not authenticate reachable callers, so
+any client that can reach the port can invoke tools with the process's bound
+API credentials. The public library's Greptile review has flagged this on new
+CLI prints. If the CLI needs HTTP transport, either ship the `--addr` flag with
+a loopback default (`127.0.0.1:<port>`) so operators opt into exposure, or —
+for CLIs whose MCP surface is only consumed locally — remove HTTP transport
+entirely and keep the server stdio-only, which keeps the credential boundary at
+process ownership. Decide this before generation; changing it after the PR
+opens costs review cycles.
 
 For command-dominant CLIs where cobratree-walked tools greatly outnumber typed
 endpoints, do not present code orchestration as the context-reduction remedy for

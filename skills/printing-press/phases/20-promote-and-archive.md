@@ -17,6 +17,11 @@ For a ship-verdict run, verify the [Phase 5](18-dogfood-testing.md) JSON gate ma
 - If `$PROOFS_DIR/phase5-skip.json` exists and the auth-aware skip is valid → proceed to promote.
 - If neither JSON marker exists → [Phase 5](18-dogfood-testing.md) was skipped or not recorded. Go back and run it, or write the valid skip marker. Do NOT promote without one.
 
+**Marker invalidation — any source edit after the acceptance run breaks the gate.** The acceptance marker is bound to a source fingerprint (per-file hashes of the CLI tree). If you edit any `.go` file after the live dogfood run — adding a patch, an annotation, or a transport change — `lock promote`, `publish validate`, and `publish package` all fail with "phase5 marker source fingerprint does not match the current CLI source". Re-run live dogfood (with `--write-acceptance`) after EVERY post-acceptance source change, and sync the fresh marker to both locations:
+
+- The **embedded** copy at `$CLI_DIR/.manuscripts/<run>/proofs/` — what `lock promote` checks.
+- The **archived** copy at `$PRESS_MANUSCRIPTS/<api>/<run>/proofs/` — what `publish package` reads first (manuscript lookup is archive-first; phase5-proof lookup is embedded-first, so a stale copy in either blocks promotion or packaging with the same confusing message).
+
 When a ship-verdict run has a missing marker and you go back to run [Phase 5](18-dogfood-testing.md), record the backtrack handoff so the receipt gate accepts the re-entry rather than treating it as an out-of-order jump:
 
 ```bash

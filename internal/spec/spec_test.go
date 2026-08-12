@@ -190,6 +190,39 @@ resources:
 	assert.Equal(t, "per_page", list.Pagination.LimitParam)
 }
 
+func TestParsePaginationCursorFieldAlias(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: cursor-pagination
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  contacts:
+    endpoints:
+      list:
+        method: GET
+        path: /contacts
+        response:
+          type: array
+          item: Contact
+        response_path: results
+        pagination:
+          type: cursor
+          cursor_param: after
+          cursor_field: paging.next.after
+          limit_param: limit
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	list := s.Resources["contacts"].Endpoints["list"]
+	require.NotNil(t, list.Pagination)
+	assert.Equal(t, "paging.next.after", list.Pagination.NextCursorPath)
+	assert.Equal(t, "results", list.ResponsePath)
+}
+
 func TestParseEndpointExampleAndHappyArgs(t *testing.T) {
 	t.Parallel()
 
@@ -889,6 +922,267 @@ func TestValidationRejectsUnknownSource(t *testing.T) {
 	}
 
 	require.ErrorContains(t, s.Validate(), `source "local-postgres" is not supported; valid values: local-sqlite`)
+}
+
+func TestValidateAuthConfigRejectsUnusableDeclarations(t *testing.T) {
+	baseSpec := func(auth AuthConfig) APISpec {
+		return APISpec{
+			Name:    "auth-api",
+			BaseURL: "https://api.example.com",
+			Auth:    auth,
+			Resources: map[string]Resource{
+				"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+			},
+		}
+	}
+
+	tests := []struct {
+		name    string
+		auth    AuthConfig
+		wantErr string
+	}{
+		{
+			name: "cookie auth with declared cookie",
+			auth: AuthConfig{Type: "cookie", Cookies: []string{"session"}},
+		},
+		{
+			name: "composed auth with declared cookie",
+			auth: AuthConfig{
+				Type:    "composed",
+				Format:  "Session {session}|{csrf}",
+				Cookies: []string{"session", "csrf"},
+			},
+		},
+		{
+			name:    "cookie auth without cookies",
+			auth:    AuthConfig{Type: "cookie"},
+			wantErr: `auth.type is "cookie" but auth.cookies is empty`,
+		},
+		{
+			name: "header-carried cookie auth with request credential",
+			auth: AuthConfig{
+				Type:   "cookie",
+				Header: "Authorization",
+				In:     "header",
+				Format: "Bearer {token}",
+				EnvVarSpecs: []AuthEnvVar{{
+					Name:     "FOO_TOKEN",
+					Kind:     AuthEnvVarKindPerCall,
+					Required: true,
+				}},
+			},
+		},
+		{
+			name: "header-carried cookie auth with legacy env var",
+			auth: AuthConfig{
+				Type:    "cookie",
+				Header:  "X-API-Key",
+				In:      "header",
+				Format:  "{token}",
+				EnvVars: []string{"FOO_API_KEY"},
+			},
+		},
+		{
+			name: "header-carried cookie auth rejects format without placeholder",
+			auth: AuthConfig{
+				Type:    "cookie",
+				Header:  "Authorization",
+				In:      "header",
+				Format:  "Token ",
+				EnvVars: []string{"FOO_TOKEN"},
+			},
+			wantErr: `auth.format must contain a placeholder like {token} (got "Token ")`,
+		},
+		{
+			name: "header-carried cookie auth rejects malformed placeholder",
+			auth: AuthConfig{
+				Type:    "cookie",
+				Header:  "Authorization",
+				In:      "header",
+				Format:  "Token {token} {tenant-id}",
+				EnvVars: []string{"FOO_TOKEN"},
+			},
+			wantErr: `auth.format contains invalid placeholder syntax`,
+		},
+		{
+			name: "header-carried cookie auth rejects unmapped placeholder",
+			auth: AuthConfig{
+				Type:    "cookie",
+				Header:  "Authorization",
+				In:      "header",
+				Format:  "Token {missing}",
+				EnvVars: []string{"FOO_TOKEN"},
+			},
+			wantErr: `auth.format placeholder "{missing}" has no env_var mapping`,
+		},
+		{
+			name: "cookie auth without cookies still rejects Cookie header",
+			auth: AuthConfig{
+				Type:    "cookie",
+				Header:  "Cookie",
+				In:      "header",
+				Format:  "{token}",
+				EnvVars: []string{"FOO_COOKIE"},
+			},
+			wantErr: `auth.type is "cookie" but auth.cookies is empty`,
+		},
+		{
+			name: "cookie auth without cookies rejects non-header placement",
+			auth: AuthConfig{
+				Type:    "cookie",
+				Header:  "Authorization",
+				In:      "cookie",
+				Format:  "Bearer {token}",
+				EnvVars: []string{"FOO_TOKEN"},
+			},
+			wantErr: `auth.type is "cookie" but auth.cookies is empty`,
+		},
+		{
+			name: "cookie auth without cookies rejects missing format",
+			auth: AuthConfig{
+				Type:    "cookie",
+				Header:  "Authorization",
+				In:      "header",
+				EnvVars: []string{"FOO_TOKEN"},
+			},
+			wantErr: `auth.type is "cookie" but auth.cookies is empty`,
+		},
+		{
+			name: "cookie auth without cookies rejects flow input",
+			auth: AuthConfig{
+				Type:   "cookie",
+				Header: "Authorization",
+				In:     "header",
+				Format: "Bearer {token}",
+				EnvVarSpecs: []AuthEnvVar{{
+					Name: "FOO_CLIENT_ID",
+					Kind: AuthEnvVarKindAuthFlowInput,
+				}},
+			},
+			wantErr: `auth.type is "cookie" but auth.cookies is empty`,
+		},
+		{
+			name:    "composed auth without cookies",
+			auth:    AuthConfig{Type: "composed"},
+			wantErr: `auth.type is "composed" but auth.cookies is empty`,
+		},
+		{
+			name:    "cookie auth with blank cookie",
+			auth:    AuthConfig{Type: "cookie", Cookies: []string{" "}},
+			wantErr: `auth.type is "cookie" but auth.cookies is empty`,
+		},
+		{
+			name:    "cookie auth with a blank cookie entry",
+			auth:    AuthConfig{Type: "cookie", Cookies: []string{"session", " "}},
+			wantErr: `auth.cookies contains an empty cookie name`,
+		},
+		{
+			name: "standard token placeholder",
+			auth: AuthConfig{
+				Type:    "bearer_token",
+				Format:  "Bearer {token}",
+				EnvVars: []string{"FOO_TOKEN"},
+			},
+		},
+		{
+			name: "rich per-call env placeholder",
+			auth: AuthConfig{
+				Type:   "bearer_token",
+				Format: "Bearer {foo_token}",
+				EnvVarSpecs: []AuthEnvVar{{
+					Name:     "COMPANY_FOO_TOKEN",
+					Kind:     AuthEnvVarKindPerCall,
+					Required: true,
+				}},
+			},
+		},
+		{
+			name: "access token placeholder with flow input",
+			auth: AuthConfig{
+				Type:   "bearer_token",
+				Format: "Bearer {access_token}",
+				EnvVarSpecs: []AuthEnvVar{{
+					Name: "FOO_CLIENT_ID",
+					Kind: AuthEnvVarKindAuthFlowInput,
+				}},
+			},
+		},
+		{
+			name: "access token placeholder with per-call credential",
+			auth: AuthConfig{
+				Type:   "bearer_token",
+				Format: "Bearer {access_token}",
+				EnvVarSpecs: []AuthEnvVar{{
+					Name:     "FOO_TOKEN",
+					Kind:     AuthEnvVarKindPerCall,
+					Required: true,
+				}},
+			},
+		},
+		{
+			name: "canonical and raw env var placeholders",
+			auth: AuthConfig{
+				Type:    "api_key",
+				Format:  "Contact {pp_contact_email} ({COMPANY_PP_CONTACT_EMAIL})",
+				EnvVars: []string{"COMPANY_PP_CONTACT_EMAIL"},
+			},
+		},
+		{
+			name: "api key format without credential mapping",
+			auth: AuthConfig{
+				Type:   "api_key",
+				Format: "Bearer {token}",
+			},
+			wantErr: `auth.format placeholder "{token}" has no env_var mapping; declare an auth env-var credential`,
+		},
+		{
+			name: "basic auth aliases",
+			auth: AuthConfig{
+				Type:    "api_key",
+				Format:  "Basic {username}:{password}",
+				EnvVars: []string{"TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"},
+			},
+		},
+		{
+			name: "unmapped placeholder",
+			auth: AuthConfig{
+				Type:    "api_key",
+				Format:  "Contact {email}",
+				EnvVars: []string{"COMPANY_PP_CONTACT_EMAIL"},
+			},
+			wantErr: `auth.format placeholder "{email}" has no env_var mapping; expected one of: {COMPANY_PP_CONTACT_EMAIL, pp_contact_email, token}`,
+		},
+		{
+			name: "format without placeholder",
+			auth: AuthConfig{
+				Type:    "bearer_token",
+				Format:  "Bearer ",
+				EnvVars: []string{"FOO_TOKEN"},
+			},
+			wantErr: `auth.format must contain a placeholder like {token} (got "Bearer ")`,
+		},
+		{
+			name: "format with malformed placeholder",
+			auth: AuthConfig{
+				Type:    "bearer_token",
+				Format:  "Bearer {token} {tenant-id}",
+				EnvVars: []string{"FOO_TOKEN"},
+			},
+			wantErr: `auth.format contains invalid placeholder syntax`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			candidate := baseSpec(tt.auth)
+			err := candidate.Validate()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
 }
 
 // validateAdditionalAuthHeaders covers six distinct error paths; this table
@@ -1678,12 +1972,21 @@ func TestAuthSubtypeValidate(t *testing.T) {
 			auth: AuthConfig{Type: "bearer_token", Subtype: AuthSubtypeAuth0SPAInMemory},
 		},
 		{
+			name: "google_service_account with bearer_token is valid",
+			auth: AuthConfig{Type: "bearer_token", Subtype: AuthSubtypeGoogleServiceAccount},
+		},
+		{
 			name: "auth0_spa_in_memory with empty Type is valid",
 			auth: AuthConfig{Subtype: AuthSubtypeAuth0SPAInMemory},
 		},
 		{
 			name:    "auth0_spa_in_memory with api_key is rejected",
 			auth:    AuthConfig{Type: "api_key", Subtype: AuthSubtypeAuth0SPAInMemory},
+			wantErr: `requires auth.type "bearer_token"`,
+		},
+		{
+			name:    "google_service_account with api_key is rejected",
+			auth:    AuthConfig{Type: "api_key", Subtype: AuthSubtypeGoogleServiceAccount},
 			wantErr: `requires auth.type "bearer_token"`,
 		},
 		{
@@ -2554,7 +2857,7 @@ resources:
 		assert.Equal(t, []string{"customerId", "authToken"}, s.Auth.Cookies)
 	})
 
-	t.Run("cookie auth without cookies field is nil", func(t *testing.T) {
+	t.Run("cookie auth without cookies field is rejected", func(t *testing.T) {
 		t.Parallel()
 		input := `name: notionapi
 base_url: https://api.notion.so
@@ -2571,10 +2874,77 @@ resources:
         path: /pages
         description: List pages
 `
+		_, err := ParseBytes([]byte(input))
+		require.ErrorContains(t, err, `auth.type is "cookie" but auth.cookies is empty`)
+	})
+
+	t.Run("unknown auth key is surfaced by name", func(t *testing.T) {
+		t.Parallel()
+		input := `name: notionapi
+base_url: https://api.notion.so
+auth:
+  type: cookie
+  cookie_domain: ".notion.so"
+  required_cookies:
+    - token_v2
+resources:
+  pages:
+    endpoints:
+      list:
+        method: GET
+        path: /pages
+`
+		_, err := ParseBytes([]byte(input))
+		require.ErrorContains(t, err, `auth contains unknown field "required_cookies"`)
+	})
+
+	t.Run("auth YAML merge is accepted and validated", func(t *testing.T) {
+		t.Parallel()
+		input := `name: merged-auth
+base_url: https://api.example.com
+auth_defaults: &auth_defaults
+  type: bearer_token
+  header: Authorization
+  env_vars:
+    - MERGED_AUTH_TOKEN
+auth:
+  <<: *auth_defaults
+  format: "Bearer {token}"
+resources:
+  pages:
+    endpoints:
+      list:
+        method: GET
+        path: /pages
+`
 		s, err := ParseBytes([]byte(input))
 		require.NoError(t, err)
-		assert.Equal(t, "cookie", s.Auth.Type)
-		assert.Nil(t, s.Auth.Cookies)
+		assert.Equal(t, "bearer_token", s.Auth.Type)
+		assert.Equal(t, []string{"MERGED_AUTH_TOKEN"}, s.Auth.EnvVars)
+	})
+
+	t.Run("unknown auth key in YAML merge is surfaced", func(t *testing.T) {
+		t.Parallel()
+		input := `name: merged-auth
+base_url: https://api.example.com
+auth_defaults: &auth_defaults
+  type: bearer_token
+  required_cookies:
+    - token_v2
+auth:
+  <<: *auth_defaults
+  format: "Bearer {token}"
+  env_vars:
+    - MERGED_AUTH_TOKEN
+resources:
+  pages:
+    endpoints:
+      list:
+        method: GET
+        path: /pages
+`
+		_, err := ParseBytes([]byte(input))
+		require.ErrorContains(t, err, `auth contains unknown field "required_cookies"`)
 	})
 
 	t.Run("invalid YAML still returns error", func(t *testing.T) {
@@ -3907,6 +4277,40 @@ func TestMCPIntentsValidation(t *testing.T) {
 	}
 }
 
+// TestValidateIntentsRejectsIllegalParamName pins that intent param names are
+// validated against the Anthropic MCP tool property-key grammar
+// (MCPPropertyKeyPattern): intent params are emitted verbatim as MCP schema
+// keys, and an illegal key (e.g. the fathom-style recorded_by[]) bricks the
+// calling agent session at schema load (HelpFlow/aos-build#165).
+func TestValidateIntentsRejectsIllegalParamName(t *testing.T) {
+	t.Parallel()
+	s := APISpec{
+		Name:    "demo",
+		BaseURL: "http://x",
+		Resources: map[string]Resource{
+			"items": {
+				Endpoints: map[string]Endpoint{
+					"get":  {Method: "GET", Path: "/items/{id}"},
+					"list": {Method: "GET", Path: "/items"},
+				},
+			},
+		},
+		MCP: MCPConfig{Intents: []Intent{{
+			Name:        "get_item",
+			Description: "Get an item",
+			Params:      []IntentParam{{Name: "recorded_by[]", Type: "string", Required: true, Description: "id"}},
+			Steps: []IntentStep{
+				{Endpoint: "items.get", Capture: "item"},
+			},
+			Returns: "item",
+		}}},
+	}
+	err := s.Validate()
+	require.Error(t, err)
+	require.ErrorContains(t, err, "recorded_by[]")
+	require.ErrorContains(t, err, MCPPropertyKeyPattern)
+}
+
 func TestMCPOrchestrationValidation(t *testing.T) {
 	base := func(mcp MCPConfig) APISpec {
 		return APISpec{
@@ -5196,6 +5600,28 @@ resources:
 		assert.Contains(t, err.Error(), "shadow framework cobra command", "error must explain the failure mode")
 	})
 
+	t.Run("CamelCase resource is normalized before framework collision check", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  AgentContext:
+    description: API agent context
+    endpoints:
+      list:
+        method: GET
+        path: /agent-context
+        description: List API agent context
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"AgentContext"`)
+		assert.Contains(t, err.Error(), `framework cobra command "agent-context"`)
+	})
+
 	t.Run("rename suggestion uses api slug when spec name is set", func(t *testing.T) {
 		t.Parallel()
 		input := `name: pokeapi
@@ -5698,6 +6124,35 @@ func TestValidateRejectsBasePathWithProxyEnvelope(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "proxy-envelope")
 	assert.Contains(t, err.Error(), "base_path")
+}
+
+func TestValidateRejectsRawRequestWithProxyEnvelope(t *testing.T) {
+	t.Parallel()
+
+	s := &APISpec{
+		Name:          "proxyraw",
+		Version:       "0.1.0",
+		BaseURL:       "https://proxy.example.com",
+		ClientPattern: "proxy-envelope",
+		Resources: map[string]Resource{
+			"uploads": {
+				Endpoints: map[string]Endpoint{
+					"create": {
+						Method:             "POST",
+						Path:               "/uploads",
+						Description:        "Upload raw bytes",
+						RequestContentType: "application/octet-stream",
+						BodyRequired:       true,
+					},
+				},
+			},
+		},
+	}
+
+	err := s.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "proxy-envelope")
+	assert.Contains(t, err.Error(), "raw request bodies")
 }
 
 // TestValidateAcceptsResourceBaseURLWithoutProxyEnvelope — the same
@@ -6714,6 +7169,8 @@ func TestAuthHasCookies(t *testing.T) {
 		{name: "cookie-typed with cookie list", auth: AuthConfig{Type: "cookie", Cookies: []string{"session_id"}}, want: true},
 		{name: "composed-typed with cookie list", auth: AuthConfig{Type: "composed", Cookies: []string{"session_id", "csrf"}}, want: true},
 		{name: "composed-typed without cookie list", auth: AuthConfig{Type: "composed"}, want: false},
+		{name: "cookie-typed with blank-only list", auth: AuthConfig{Type: "cookie", Cookies: []string{" "}}, want: false},
+		{name: "cookie-typed with one real name", auth: AuthConfig{Type: "cookie", Cookies: []string{" ", "session_id"}}, want: true},
 		{name: "bearer with no cookies", auth: AuthConfig{Type: "bearer_token"}, want: false},
 		{name: "empty", auth: AuthConfig{}, want: false},
 	}
@@ -6829,6 +7286,42 @@ resources:
 		assert.Equal(t, "org_id", ep.Params[0].Name)
 		require.Len(t, ep.Body, 1)
 		assert.Equal(t, "name", ep.Body[0].Name)
+	})
+
+	t.Run("POST endpoint keeps explicit query and header params", func(t *testing.T) {
+		t.Parallel()
+		input := header + `  messages:
+    description: Message endpoints
+    endpoints:
+      create:
+        method: POST
+        path: /messages
+        description: Create message
+        params:
+          - name: mode
+            in: query
+            type: string
+          - name: X-Request-ID
+            in: header
+            type: string
+          - name: text
+            type: string
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["messages"].Endpoints["create"]
+		require.Len(t, ep.Params, 2)
+		assert.ElementsMatch(t, []string{"mode", "X-Request-ID"}, []string{ep.Params[0].Name, ep.Params[1].Name})
+		require.Len(t, ep.Body, 1)
+		assert.Equal(t, "text", ep.Body[0].Name)
+		for _, param := range ep.Params {
+			if param.Name == "mode" {
+				assert.Equal(t, "query", param.In)
+			}
+			if param.Name == "X-Request-ID" {
+				assert.Equal(t, "header", param.In)
+			}
+		}
 	})
 
 	t.Run("GET endpoint params are not promoted", func(t *testing.T) {

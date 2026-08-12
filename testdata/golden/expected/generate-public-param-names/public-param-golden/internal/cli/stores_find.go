@@ -15,6 +15,8 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 	var flagS string
 	var flagC string
 	var flagLocationId string
+	var flagRecordedBy string
+	var flagSort string
 
 	cmd := &cobra.Command{
 		Use:   "find",
@@ -55,6 +57,15 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if flagRecordedBy != "" {
+				path = appendArrayQueryParam(path, "recorded_by[]", flagRecordedBy, "form", true)
+			}
+			if flagSort != "" {
+				path, err = appendDeepObjectQueryParam(path, "sort", flagSort)
+				if err != nil {
+					return err
+				}
+			}
 			params := map[string]string{}
 			if flagS != "" {
 				params["s"] = formatCLIParamValue(flagS)
@@ -69,6 +80,7 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
+			outputData := data
 			// Print provenance to stderr for human-facing output only.
 			// Machine-format flags (--json, --csv, --compact, --quiet, --plain,
 			// --select) and piped stdout suppress this line; the JSON envelope
@@ -76,7 +88,7 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 			// SYNC: keep this gate aligned with command_promoted.go.tmpl.
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
 				var countItems []json.RawMessage
-				_ = json.Unmarshal(data, &countItems)
+				_ = json.Unmarshal(outputData, &countItems)
 				printProvenance(cmd, len(countItems), prov)
 			}
 			// For JSON output, wrap with provenance envelope before passing through flags.
@@ -104,7 +116,7 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 			// For all other output modes (table, csv, plain, quiet), use the standard pipeline
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
 				var items []map[string]any
-				if json.Unmarshal(data, &items) == nil && len(items) > 0 {
+				if json.Unmarshal(outputData, &items) == nil && len(items) > 0 {
 					if err := printAutoTable(cmd.OutOrStdout(), items); err != nil {
 						return err
 					}
@@ -114,7 +126,11 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
-			return printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "live"})
+			formatData := data
+			if flags.csv || flags.plain {
+				formatData = outputData
+			}
+			return printOutputWithFlagsMeta(cmd.OutOrStdout(), formatData, flags, map[string]any{"source": "live"})
 		},
 	}
 	cmd.Flags().StringVar(&flagS, "address", "", "Street address")
@@ -124,6 +140,8 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&flagC, "c", "", "City, state, zip")
 	_ = cmd.Flags().MarkHidden("c")
 	cmd.Flags().StringVar(&flagLocationId, "location-id", "", "Location identifier sent with this endpoint's snake-case query key")
+	cmd.Flags().StringVar(&flagRecordedBy, "recorded-by", "", "Filter by recorder emails, sent as repeated bracket query keys")
+	cmd.Flags().StringVar(&flagSort, "sort", "", "Sort specification sent as indexed deepObject query keys")
 
 	return cmd
 }

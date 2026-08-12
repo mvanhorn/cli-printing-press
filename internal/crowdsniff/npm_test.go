@@ -3,14 +3,17 @@ package crowdsniff
 import (
 	"archive/tar"
 	"bytes"
+	"compress/flate"
 	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -388,6 +391,101 @@ func TestExtractTarball(t *testing.T) {
 		assert.NoFileExists(t, tmpDir+"/package/evil-link")
 	})
 
+	t.Run("rejects decompression bomb exceeding decompressed limit", func(t *testing.T) {
+		t.Parallel()
+
+		// One highly compressible entry whose decompressed size exceeds
+		// maxTarballSize while the compressed archive stays well under it.
+		var buf bytes.Buffer
+		gw := gzip.NewWriter(&buf)
+		tw := tar.NewWriter(gw)
+		oversized := int64(maxTarballSize) + 2*1024*1024
+		hdr := &tar.Header{
+			Name:     "package/huge.js",
+			Mode:     0o644,
+			Size:     oversized,
+			Typeflag: tar.TypeReg,
+		}
+		require.NoError(t, tw.WriteHeader(hdr))
+		_, err := io.Copy(tw, io.LimitReader(zeroReader{}, oversized))
+		require.NoError(t, err)
+		require.NoError(t, tw.Close())
+		require.NoError(t, gw.Close())
+
+		require.Less(t, buf.Len(), maxTarballSize, "compressed archive should stay under the limit")
+
+		tmpDir := t.TempDir()
+		err = extractTarball(bytes.NewReader(buf.Bytes()), tmpDir)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decompressed size limit")
+		// No oversized partial file should remain after rejection.
+		assert.NoFileExists(t, tmpDir+"/package/huge.js")
+	})
+
+	t.Run("rejects cumulative decompressed size across entries", func(t *testing.T) {
+		t.Parallel()
+
+		// Several entries each under the limit whose cumulative size exceeds it.
+		var buf bytes.Buffer
+		gw := gzip.NewWriter(&buf)
+		tw := tar.NewWriter(gw)
+		const perEntry = 4 * 1024 * 1024 // 4 MB x 3 = 12 MB > 10 MB
+		for i := range 3 {
+			hdr := &tar.Header{
+				Name:     fmt.Sprintf("package/chunk%d.js", i),
+				Mode:     0o644,
+				Size:     perEntry,
+				Typeflag: tar.TypeReg,
+			}
+			require.NoError(t, tw.WriteHeader(hdr))
+			_, err := io.Copy(tw, io.LimitReader(zeroReader{}, perEntry))
+			require.NoError(t, err)
+		}
+		require.NoError(t, tw.Close())
+		require.NoError(t, gw.Close())
+
+		tmpDir := t.TempDir()
+		err := extractTarball(bytes.NewReader(buf.Bytes()), tmpDir)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decompressed size limit")
+		assert.FileExists(t, tmpDir+"/package/chunk0.js")
+		assert.FileExists(t, tmpDir+"/package/chunk1.js")
+		assert.NoFileExists(t, tmpDir+"/package/chunk2.js")
+	})
+
+	t.Run("cleans up partial file when entry stream fails", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		gw, err := gzip.NewWriterLevel(&buf, flate.NoCompression)
+		require.NoError(t, err)
+		tw := tar.NewWriter(gw)
+		payload := make([]byte, 64*1024)
+		for i := range payload {
+			payload[i] = byte(i)
+		}
+		hdr := &tar.Header{
+			Name:     "package/partial.js",
+			Mode:     0o644,
+			Size:     int64(len(payload)),
+			Typeflag: tar.TypeReg,
+		}
+		require.NoError(t, tw.WriteHeader(hdr))
+		_, err = tw.Write(payload)
+		require.NoError(t, err)
+		require.NoError(t, tw.Close())
+		require.NoError(t, gw.Close())
+
+		truncated := buf.Bytes()[:len(buf.Bytes())/2]
+		tmpDir := t.TempDir()
+		err = extractTarball(bytes.NewReader(truncated), tmpDir)
+
+		require.Error(t, err)
+		assert.NoFileExists(t, tmpDir+"/package/partial.js")
+	})
+
 	t.Run("rejects path traversal", func(t *testing.T) {
 		t.Parallel()
 
@@ -564,6 +662,75 @@ func TestNPMSource_FetchDownloads(t *testing.T) {
 
 		assert.Equal(t, 1000, result["pkg-a"])
 		assert.Equal(t, 50, result["pkg-b"])
+	})
+
+	t.Run("parses a bare-count bulk package named downloads", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"downloads":21,"pkg-b":50}`))
+		}))
+		defer server.Close()
+
+		src := NewNPMSource(NPMOptions{DownloadsBaseURL: server.URL})
+		result := src.fetchDownloads(context.Background(), []npmPackageInfo{
+			{Name: "downloads"},
+			{Name: "pkg-b"},
+		})
+
+		assert.Equal(t, 21, result["downloads"])
+		assert.Equal(t, 50, result["pkg-b"])
+	})
+
+	t.Run("parses single-package downloads", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Contains(t, r.URL.Path, "/downloads/point/last-week/")
+			_, _ = w.Write([]byte(`{"downloads":21,"package":"pkg-a"}`))
+		}))
+		defer server.Close()
+
+		src := NewNPMSource(NPMOptions{DownloadsBaseURL: server.URL})
+		result := src.fetchDownloads(context.Background(), []npmPackageInfo{
+			{Name: "pkg-a"},
+		})
+
+		assert.Equal(t, 21, result["pkg-a"])
+	})
+
+	t.Run("parses bare counts in a bulk response", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"pkg-a":21}`))
+		}))
+		defer server.Close()
+
+		src := NewNPMSource(NPMOptions{DownloadsBaseURL: server.URL})
+		result := src.fetchDownloads(context.Background(), []npmPackageInfo{
+			{Name: "pkg-a"},
+		})
+
+		assert.Equal(t, 21, result["pkg-a"])
+	})
+
+	t.Run("keeps valid counts when a bulk entry is malformed", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"pkg-a":{"downloads":21,"package":"pkg-a"},"bad":"not-a-count"}`))
+		}))
+		defer server.Close()
+
+		src := NewNPMSource(NPMOptions{DownloadsBaseURL: server.URL})
+		result := src.fetchDownloads(context.Background(), []npmPackageInfo{
+			{Name: "pkg-a"},
+			{Name: "bad"},
+		})
+
+		assert.Equal(t, 21, result["pkg-a"])
+		assert.NotContains(t, result, "bad")
 	})
 
 	t.Run("handles API error gracefully", func(t *testing.T) {
@@ -792,7 +959,70 @@ func TestNewNPMSource_CustomOptions(t *testing.T) {
 	assert.Equal(t, "https://custom-registry.com", src.registryBaseURL)
 	assert.Equal(t, "https://custom-downloads.com", src.downloadsBaseURL)
 	assert.Equal(t, 90*24*time.Hour, src.recencyCutoff)
-	assert.Same(t, client, src.httpClient)
+
+	// The client is wrapped with an HTTPS-only redirect policy rather than
+	// stored verbatim, so it is a distinct value that preserves the caller's
+	// settings, gains a CheckRedirect, and leaves the caller's client unmutated.
+	assert.NotSame(t, client, src.httpClient)
+	assert.Equal(t, 30*time.Second, src.httpClient.Timeout)
+	assert.NotNil(t, src.httpClient.CheckRedirect)
+	assert.Nil(t, client.CheckRedirect, "caller-supplied client must not be mutated")
+}
+
+func TestWithHTTPSRedirectPolicy_PreservesCallerCheckRedirect(t *testing.T) {
+	t.Parallel()
+
+	t.Run("preserves caller errors", func(t *testing.T) {
+		called := false
+		client := &http.Client{
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				called = true
+				assert.Equal(t, "https", req.URL.Scheme)
+				return http.ErrUseLastResponse
+			},
+		}
+
+		wrapped := withHTTPSRedirectPolicy(client)
+		req := httptest.NewRequest(http.MethodGet, "https://example.com/redirect", nil)
+
+		err := wrapped.CheckRedirect(req, nil)
+
+		assert.ErrorIs(t, err, http.ErrUseLastResponse)
+		assert.True(t, called)
+	})
+
+	t.Run("rechecks a URL changed by the caller", func(t *testing.T) {
+		client := &http.Client{
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				req.URL.Scheme = "http"
+				return nil
+			},
+		}
+
+		wrapped := withHTTPSRedirectPolicy(client)
+		req := httptest.NewRequest(http.MethodGet, "https://example.com/redirect", nil)
+
+		err := wrapped.CheckRedirect(req, nil)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "non-HTTPS")
+	})
+
+	t.Run("stops after ten HTTPS redirects", func(t *testing.T) {
+		var requests atomic.Int32
+		tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+			http.Redirect(w, r, r.URL.String(), http.StatusFound)
+		}))
+		defer tlsSrv.Close()
+
+		src := NewNPMSource(NPMOptions{HTTPClient: tlsSrv.Client()})
+		_, _, _, err := src.processPackageTarball(context.Background(), tlsSrv.URL+"/loop", "pkg", "community", "example", 100)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "stopped after 10 redirects")
+		assert.Equal(t, int32(maxHTTPRedirects), requests.Load(), "the wrapped client should retain Go's redirect limit")
+	})
 }
 
 func TestNPMSource_RecencyCutoffFiltering(t *testing.T) {
@@ -1696,4 +1926,85 @@ func TestReadFileCapped(t *testing.T) {
 		_, err := readFileCapped("/nonexistent/file.txt", 1024)
 		assert.Error(t, err)
 	})
+}
+
+func TestProcessPackageTarball_RedirectPolicy(t *testing.T) {
+	t.Parallel()
+
+	tgz := buildTarball(t, map[string]string{
+		"package/index.js": `fetch("https://api.example.com/v1/things");`,
+	})
+
+	t.Run("rejects HTTPS-to-HTTP redirect before downloading", func(t *testing.T) {
+		t.Parallel()
+
+		var httpHit bool
+		httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			httpHit = true
+			_, _ = w.Write(tgz)
+		}))
+		defer httpSrv.Close()
+
+		tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, httpSrv.URL+"/package.tgz", http.StatusFound)
+		}))
+		defer tlsSrv.Close()
+
+		src := NewNPMSource(NPMOptions{HTTPClient: tlsSrv.Client()})
+		_, _, _, err := src.processPackageTarball(context.Background(), tlsSrv.URL+"/pkg.tgz", "pkg", "community", "example", 100)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "non-HTTPS")
+		assert.False(t, httpHit, "insecure HTTP redirect target must not be contacted")
+	})
+
+	t.Run("allows HTTPS-to-HTTPS redirect", func(t *testing.T) {
+		t.Parallel()
+
+		tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/package.tgz" {
+				_, _ = w.Write(tgz)
+				return
+			}
+			http.Redirect(w, r, "/package.tgz", http.StatusFound)
+		}))
+		defer tlsSrv.Close()
+
+		src := NewNPMSource(NPMOptions{HTTPClient: tlsSrv.Client()})
+		_, _, _, err := src.processPackageTarball(context.Background(), tlsSrv.URL+"/redirect", "pkg", "community", "example", 100)
+
+		require.NoError(t, err)
+	})
+
+	t.Run("rejects a direct HTTP tarball URL", func(t *testing.T) {
+		t.Parallel()
+
+		src := NewNPMSource(NPMOptions{})
+		_, _, _, err := src.processPackageTarball(context.Background(), "http://registry.example.com/pkg.tgz", "pkg", "community", "example", 100)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "HTTPS")
+	})
+}
+
+// zeroReader yields an endless stream of zero bytes. Paired with io.LimitReader
+// it builds highly compressible fixed-size payloads for decompression-limit tests.
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
+func TestCopyTarEntryWithBudget(t *testing.T) {
+	t.Parallel()
+
+	var dst bytes.Buffer
+	written, err := copyTarEntryWithBudget(&dst, strings.NewReader("12345"), 4)
+
+	require.Error(t, err)
+	assert.Equal(t, int64(5), written)
+	assert.Equal(t, "12345", dst.String())
 }

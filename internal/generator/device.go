@@ -166,6 +166,9 @@ func (g *DeviceGenerator) Validate() error {
 	if _, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "mod", "tidy"); err != nil {
 		return fmt.Errorf("go mod tidy: %w", err)
 	}
+	if _, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "test", "-count=1", "./..."); err != nil {
+		return fmt.Errorf("go test ./...: %w", err)
+	}
 	if _, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "build", "./..."); err != nil {
 		return fmt.Errorf("go build ./...: %w", err)
 	}
@@ -339,7 +342,7 @@ go {{goDirectiveVersion}}
 toolchain {{goToolchainVersion}}
 
 require (
-	github.com/mark3labs/mcp-go v0.47.0
+	github.com/mark3labs/mcp-go v0.57.0
 	github.com/spf13/cobra v1.9.1
 	tinygo.org/x/bluetooth v0.15.0
 )

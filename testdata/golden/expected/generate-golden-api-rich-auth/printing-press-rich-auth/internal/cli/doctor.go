@@ -20,6 +20,22 @@ import (
 	"printing-press-rich-pp-cli/internal/store"
 )
 
+// Hand-coded auth flows can report credentials that are intentionally not
+// represented by the generated Config fields. Assign this from a same-package
+// author file after generation. This is a presence signal only; custom flows
+// own their transport and credential-probe validation.
+var doctorAuthConfiguredHook func() (bool, string)
+
+func doctorAuthConfiguredState(cfg *config.Config) (bool, string) {
+	if cfg != nil && cfg.CredentialConfigured() {
+		return true, cfg.AuthSource
+	}
+	if doctorAuthConfiguredHook != nil {
+		return doctorAuthConfiguredHook()
+	}
+	return false, ""
+}
+
 // looksLikeDoctorInterstitial reports whether the response body matches a known
 // bot-detection challenge page (Cloudflare, Akamai, Vercel, AWS WAF, DataDome,
 // PerimeterX). Only fires on the doctor probe — used to distinguish "transport
@@ -89,12 +105,10 @@ func suggestReadCommand(root *cobra.Command) string {
 				found = strings.Join(childPath, " ")
 				return
 			}
-			// Recurse even into Hidden parents: printed CLIs mark raw
-			// resource parents Hidden to keep --help curated, but their
-			// endpoint leaves remain runnable (`<cli> projects list`
-			// works). Skipping hidden subtrees would make this return ""
-			// in nearly every CLI. isSuggestableReadLeaf still rejects a
-			// leaf that is itself Hidden.
+			// Recurse even into Hidden grouping commands because their
+			// descendants can remain runnable and discoverable by direct
+			// invocation. isSuggestableReadLeaf still rejects a leaf that
+			// is itself Hidden.
 			walk(child, childPath)
 			if found != "" {
 				return
@@ -190,14 +204,14 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// Check auth
 			authConfigured := false
 			if cfg != nil {
-				header := cfg.AuthHeader()
-				if header == "" {
+				configured, authSource := doctorAuthConfiguredState(cfg)
+				if !configured {
 					report["auth"] = "not configured"
 					report["auth_hint"] = "Set your API key with: export RICH_AUTH_API_KEY=\"your-token-here\""
 				} else {
 					authConfigured = true
 					report["auth"] = "configured"
-					report["auth_source"] = cfg.AuthSource
+					report["auth_source"] = authSource
 				}
 			}
 
@@ -739,7 +753,10 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 	switch {
 	case !haveAny && len(resources) == 0:
 		report["status"] = "empty"
-		report["hint"] = "Cache is empty; run 'printing-press-rich-pp-cli sync' to hydrate."
+		// Only sync-tracked resources are counted here. A store seeded by
+		// other paths (built-in reference data, local writes) can hold rows
+		// while sync_state stays empty, so say what was measured.
+		report["hint"] = "No sync recorded; run 'printing-press-rich-pp-cli sync' to hydrate API-backed resources. Rows written by other paths are not tracked in sync_state."
 	case fresh:
 		report["status"] = "fresh"
 	default:

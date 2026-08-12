@@ -141,7 +141,8 @@ func TestSkillsEnforceCurrencyFloor(t *testing.T) {
 	assert.Contains(t, ppBlock, "PRESS_REQUIRED_INSTALLED=")
 	assert.Contains(t, ppBlock, "PRESS_REQUIRED_REASON=")
 	assert.Contains(t, ppBlock, `[ "$_press_repo" != "true" ] && [ -f "$PRESS_VERCHECK_FILE" ]`)
-	assert.Contains(t, ppBlock, `! _semver_lt "$_floor_latest" "$_floor_min"`)
+	assert.Contains(t, ppBlock, `PP_SEMVER_A="$_floor_installed" PP_SEMVER_B="$_floor_min" _semver_lt`)
+	assert.Contains(t, ppBlock, `! PP_SEMVER_A="$_floor_latest" PP_SEMVER_B="$_floor_min" _semver_lt`)
 
 	// setup-checks.md documents the hard gate as upgrade-or-abort, distinct from
 	// the soft [upgrade-available] advisory.
@@ -161,7 +162,8 @@ func TestSkillsEnforceCurrencyFloor(t *testing.T) {
 	assert.Contains(t, amendBlock, "PRESS_REQUIRED_MIN=")
 	assert.Contains(t, amendBlock, "PRESS_REQUIRED_INSTALLED=")
 	assert.Contains(t, amendBlock, "PRESS_REQUIRED_REASON=")
-	assert.Contains(t, amendBlock, `! _semver_lt "$_floor_latest" "$_floor_min"`)
+	assert.Contains(t, amendBlock, `PP_SEMVER_A="$_floor_installed" PP_SEMVER_B="$_floor_min" _semver_lt`)
+	assert.Contains(t, amendBlock, `! PP_SEMVER_A="$_floor_latest" PP_SEMVER_B="$_floor_min" _semver_lt`)
 	assert.Contains(t, amend, "no skip-and-continue")
 }
 
@@ -490,6 +492,118 @@ func TestSkillsProhibitProposalFallbackForRequestedArtifacts(t *testing.T) {
 	assert.Contains(t, holdBlock, "A hold is not permission to change PR shape.")
 	assert.Contains(t, holdBlock, "Do not substitute a docs-only, plan, proposal, or spec PR for the requested generated CLI.")
 	assert.Contains(t, holdBlock, "The only public-library PR this menu may lead to is the explicit `blocked-apis.json` journal option")
+}
+
+func TestRetroIssueTaxonomyAndRelationshipContracts(t *testing.T) {
+	t.Parallel()
+
+	agents := readContractFile(t, filepath.Join("..", "..", "AGENTS.md"))
+	ownershipEnd := strings.Index(agents, "## Commit Style")
+	taxonomyStart := strings.Index(agents, "## Issue Taxonomy and Relationships")
+	require.GreaterOrEqual(t, taxonomyStart, 0, "AGENTS.md must define the issue taxonomy")
+	require.Greater(t, taxonomyStart, strings.Index(agents, "## Issue Work Ownership"))
+	require.Less(t, taxonomyStart, ownershipEnd, "taxonomy must immediately follow Issue Work Ownership")
+	taxonomy := substringBetween(t, agents, "## Issue Taxonomy and Relationships", "## Commit Style")
+	assert.Contains(t, taxonomy, "exactly one `priority:P1|P2|P3`")
+	assert.Contains(t, taxonomy, "exactly one real issue type (`bug` or `enhancement`)")
+	assert.Contains(t, taxonomy, "exactly one primary `comp:<slug>`")
+	assert.Contains(t, taxonomy, "`source:retro` is optional provenance")
+	assert.Contains(t, taxonomy, "`surface:cli`, `surface:auth`, `surface:sync`, `surface:store`, `surface:mcp`, `surface:docs`, `surface:verify`, `surface:sniff`, and `surface:publish`")
+	assert.Contains(t, taxonomy, "normally apply one, and never more than two")
+	assert.Contains(t, taxonomy, "Components identify ownership; surfaces identify affected behavior")
+	assert.Contains(t, taxonomy, "Routing outcomes `duplicate`, `invalid`, `wontfix`, and `question`")
+	assert.Contains(t, taxonomy, "`documentation` and `good first issue` are overlays")
+	assert.Contains(t, taxonomy, "PR-only, outside the issue taxonomy")
+	assert.Contains(t, taxonomy, "native `blocked-by`/`blocking` relationship")
+	assert.Contains(t, taxonomy, "ordinary related-area or prior-retro references remain prose links")
+	assert.Contains(t, taxonomy, "`pp-fix-batch` queue derives readiness")
+	assert.NotContains(t, taxonomy, "ready-to-merge")
+	assert.NotContains(t, taxonomy, "queued")
+	assert.NotContains(t, taxonomy, "dequeued")
+	assert.NotContains(t, taxonomy, "ready-for-maintainer")
+	assert.Contains(t, agents[:taxonomyStart], "classify findings as systemic")
+	assert.NotContains(t, agents[:taxonomyStart], "label findings as systemic")
+
+	claude := strings.TrimSpace(readContractFile(t, filepath.Join("..", "..", "CLAUDE.md")))
+	assert.Equal(t, "@AGENTS.md", claude, "CLAUDE.md must import AGENTS.md instead of duplicating the contract")
+
+	retroSkill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-retro", "SKILL.md"))
+	typeMapping := substringBetween(t, retroSkill, "### Actionable issue type mapping", "**4. Where in the Printing Press does this originate?**")
+	for _, category := range []string{
+		"| Bug | `bug` |",
+		"| Scorer bug | `bug` |",
+		"| Assumption mismatch | `bug` |",
+		"| Default gap | `bug` |",
+		"| Template gap | `enhancement` |",
+		"| Recurring friction | `enhancement` |",
+		"| Missing scaffolding | `enhancement` |",
+		"| Discovered optimization | `enhancement` |",
+		"| Skill instruction gap | `enhancement` |",
+	} {
+		assert.Contains(t, typeMapping, category)
+	}
+	assert.Contains(t, typeMapping, "`bug` wins")
+	assert.Contains(t, retroSkill, "source:retro")
+	assert.Contains(t, retroSkill, "native `blocked-by`/`blocking` relationships")
+	assert.NotContains(t, retroSkill, "Each new issue carries `retro`,")
+
+	issueTemplate := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-retro", "references", "issue-template.md"))
+	labelBlock := substringBetween(t, issueTemplate, "## Step 1: Ensure labels exist", "## Step 2: Sort work units")
+	assert.Contains(t, labelBlock, "all 11 canonical labels")
+	assert.Contains(t, labelBlock, `"bug" "enhancement" "source:retro"`)
+	assert.Contains(t, labelBlock, `ensure_label "source:retro"`)
+	assert.NotContains(t, labelBlock, `ensure_label "retro"`)
+	assert.Contains(t, labelBlock, `ensure_label "priority:P1" "b60205" "High priority: safety, correctness, release, or broad user impact"`)
+	assert.Contains(t, labelBlock, `ensure_label "priority:P2" "d93f0b" "Medium priority: meaningful recurring defect or capability gap"`)
+	assert.Contains(t, labelBlock, `ensure_label "priority:P3" "fbca04" "Low priority: useful systemic improvement"`)
+	assert.Contains(t, labelBlock, `ensure_label "source:retro" "c59c0f" "Issue produced by /printing-press-retro; systemic Printing Press finding"`)
+	assert.Contains(t, labelBlock, "RETRO_PROVENANCE_LABEL=\"source:retro\"")
+	assert.Contains(t, labelBlock, "RETRO_PROVENANCE_LABEL=\"retro\"")
+
+	dedupBlock := substringBetween(t, issueTemplate, "### Fetch open retro issues", "### Classify each WU against the candidate set")
+	assert.Contains(t, dedupBlock, "--label source:retro")
+	assert.Contains(t, dedupBlock, "--label retro")
+	assert.Contains(t, dedupBlock, "unique_by(.number)")
+
+	createBlock := substringBetween(t, issueTemplate, "### Parallel execution", "# Cleanup is conditional on scrub-failed WUs.")
+	assert.Contains(t, createBlock, `--label "$RETRO_PROVENANCE_LABEL"`)
+	assert.Contains(t, createBlock, `--label "$WU_TYPE_LABEL"`)
+	assert.NotContains(t, createBlock, "--label retro")
+	assert.Contains(t, createBlock, "--remove-label bug")
+	assert.Contains(t, createBlock, "--remove-label enhancement")
+	assert.Contains(t, createBlock, "--add-blocked-by")
+	assert.Contains(t, createBlock, "Related-area references")
+	assert.Contains(t, createBlock, "declare -A OUTCOME_ISSUE_NUM_BY_WU_ID SORTED_WU_ID_SEEN")
+	assert.Contains(t, createBlock, "extract_wu_id")
+	assert.Contains(t, issueTemplate, "never sort a work-unit array and an ID array independently")
+	assert.NotContains(t, createBlock, "SORTED_WU_IDS")
+	assert.Contains(t, createBlock, "WU-2|wu:WU-1")
+	assert.Contains(t, createBlock, "OUTCOME_ISSUE_NUM_BY_WU_ID[$dependent_id]")
+	assert.Contains(t, createBlock, "OUTCOME_ISSUE_NUM_BY_WU_ID[$prerequisite_id]")
+	assert.Contains(t, createBlock, "remains correct when a P1 WU-2 sorts before a P2 WU-1")
+	assert.NotContains(t, createBlock, "dependent_wu_index|wu:<prerequisite_wu_index>")
+	assert.NotContains(t, createBlock, "OUTCOME_ISSUE_NUM[$")
+	assert.Contains(t, issueTemplate, "Apply labels: $RETRO_PROVENANCE_LABEL, bug or enhancement")
+	assert.Contains(t, issueTemplate, "Each record retains its own `Stable ID: WU-N` field")
+	assert.Contains(t, issueTemplate, "Dependency edges use the stable ID extracted from each sorted record")
+}
+
+func TestRetroDependencyStableIDsSurvivePriorityReorder(t *testing.T) {
+	// WU-2 was originally second, but its P1 priority sorts it before WU-1.
+	sortedWUIds := []string{"WU-2", "WU-1"}
+	issueNumbersByWUId := map[string]string{
+		"WU-2": "202",
+		"WU-1": "201",
+	}
+
+	edgeParts := strings.SplitN("WU-2|wu:WU-1", "|", 2)
+	dependentID := edgeParts[0]
+	prerequisiteID := strings.TrimPrefix(edgeParts[1], "wu:")
+
+	assert.Equal(t, "WU-2", sortedWUIds[0])
+	assert.Equal(t, "202", issueNumbersByWUId[dependentID])
+	assert.Equal(t, "201", issueNumbersByWUId[prerequisiteID])
+	assert.NotEqual(t, issueNumbersByWUId[dependentID], issueNumbersByWUId[prerequisiteID])
 }
 
 func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {

@@ -20,6 +20,7 @@ import (
 {{- if .HasMultipartRequest}}
 	"mime/multipart"
 {{- end}}
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -30,6 +31,9 @@ import (
 	"sync"
 	"time"
 
+{{- if eq .Auth.Subtype "google_service_account"}}
+	"golang.org/x/oauth2/google"
+{{- end}}
 {{- if .UsesBrowserHTTPTransport}}
 	enetxhttp "github.com/enetx/http"
 	"github.com/enetx/surf"
@@ -44,6 +48,9 @@ import (
 {{- $ccScopeUsesClientID := clientCredentialsScopeUsesClientID $ccScope}}
 
 const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
+{{- if .HasTextResponse}}
+const TextResponseHeader = "X-Printing-Press-Text-Response"
+{{- end}}
 
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 var ErrPlaceholderCredential = errors.New("auth placeholder credential")
@@ -80,6 +87,11 @@ type Client struct {
 	// endpoint and race on Config field writes / file persistence.
 	ccMu *sync.Mutex
 {{- end}}
+{{- if eq .Auth.Subtype "google_service_account"}}
+	// googleMu serializes service-account token loading and keeps one reusable
+	// token cache per client so concurrent requests share the TTL cache.
+	googleMu           *sync.RWMutex
+{{- end}}
 {{- if eq .Auth.Type "session_handshake"}}
 	Session    *SessionManager
 {{- end}}
@@ -101,6 +113,10 @@ type Client struct {
 	// ThrottleModeOff (bypass). Wired from the --throttle-mode root flag.
 	ThrottleMode string
 {{- end}}
+}
+
+func (c *Client) IsDryRun() bool {
+	return c != nil && c.DryRun
 }
 
 // BindPlatformSession installs the result of the live fail-closed tenant gate.
@@ -583,6 +599,9 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
 		ccMu:       &sync.Mutex{},
 {{- end}}
+{{- if eq .Auth.Subtype "google_service_account"}}
+		googleMu:   &sync.RWMutex{},
+{{- end}}
 		Session:    sess,
 {{- if .HasCostThrottling}}
 		Throttle:     NewThrottleState(),
@@ -621,6 +640,9 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- end}}
 {{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
 		ccMu:       &sync.Mutex{},
+{{- end}}
+{{- if eq .Auth.Subtype "google_service_account"}}
+		googleMu:   &sync.RWMutex{},
 {{- end}}
 {{- if .HasCostThrottling}}
 		Throttle:     NewThrottleState(),
@@ -760,6 +782,18 @@ func (c *Client) GetWithHeaders(ctx context.Context, path string, params map[str
 
 func (c *Client) GetWithHeadersValues(ctx context.Context, path string, params url.Values, headers map[string]string) (json.RawMessage, error) {
 	return c.GetWithHeaders(ctx, pathWithQueryValues(path, params), nil, headers)
+}
+
+// GetMutating issues a GET whose endpoint is explicitly classified as a
+// state-changing action. It deliberately bypasses the response cache and
+// carries mutation intent into the verify-mode transport gate.
+func (c *Client) GetMutating(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
+	return c.GetMutatingWithHeaders(ctx, path, params, nil)
+}
+
+func (c *Client) GetMutatingWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+	result, _, err := c.doMutation(ctx, "GET", path, params, nil, headers)
+	return result, err
 }
 
 // GetNoCache issues a GET that bypasses the cache read for this call only,
@@ -1431,6 +1465,29 @@ func (c *Client) PatchQueryFormWithParamsAndHeaders(ctx context.Context, path st
 
 {{ end }}
 
+{{- if .HasRawRequest }}
+type rawRequestBody struct {
+	Data []byte
+}
+
+func (c *Client) SendRaw(ctx context.Context, method, path string, params map[string]string, body []byte, contentType string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do(ctx, method, path, params, rawRequestBody{Data: body}, rawRequestHeaders(headers, contentType))
+}
+
+func (c *Client) SendRawRead(ctx context.Context, method, path string, params map[string]string, body []byte, contentType string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, method, path, params, rawRequestBody{Data: body}, rawRequestHeaders(headers, contentType))
+}
+
+func rawRequestHeaders(headers map[string]string, contentType string) map[string]string {
+	out := make(map[string]string, len(headers)+1)
+	for key, value := range headers {
+		out[key] = value
+	}
+	out["Content-Type"] = contentType
+	return out
+}
+
+{{ end }}
 {{- if .HasMultipartRequest }}
 type multipartRequestBody struct {
 	Fields     map[string]string
@@ -1530,10 +1587,19 @@ func sleepContext(ctx context.Context, wait time.Duration) error {
 	}
 }
 
+{{- if eq .ClientPattern "proxy-envelope"}}
+func buildClientPath(method, path string, params map[string]string) string {
+	if method == "GET" {
+		return cliutil.BuildPath(path, params)
+	}
+	return cliutil.BuildPathPreserveEmpty(path, params)
+}
+{{- end}}
+
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
-	return c.doInternal(ctx, method, path, params, body, headerOverrides, false)
+	return c.doInternal(ctx, method, path, params, body, headerOverrides, false, false)
 }
 
 // doRead is do() minus the verify-mode mutating-verb gate. Used by the
@@ -1543,17 +1609,25 @@ func (c *Client) do(ctx context.Context, method, path string, params map[string]
 // but the verify-mode short-circuit does not fire because the operation
 // does not mutate remote state.
 func (c *Client) doRead(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
-	return c.doInternal(ctx, method, path, params, body, headerOverrides, true)
+	return c.doInternal(ctx, method, path, params, body, headerOverrides, true, false)
 }
 
-// doInternal is the shared implementation behind do() and doRead(). The
+func (c *Client) doMutation(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+	return c.doInternal(ctx, method, path, params, body, headerOverrides, false, true)
+}
+
+// doInternal is the shared implementation behind do(), doRead(), and
+// doMutation().
 // readOnlyIntent flag is set by doRead() callers (read-only POST/PUT/PATCH
 // operations like GraphQL queries) to skip the mutating-verb verify-mode
 // gate. Plain do() callers leave it false and get the usual short-circuit.
-func (c *Client) doInternal(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string, readOnlyIntent bool) (json.RawMessage, int, error) {
+// mutationIntent extends that gate to GET action endpoints whose wire method
+// is not itself a mutating verb.
+func (c *Client) doInternal(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string, readOnlyIntent bool, mutationIntent bool) (json.RawMessage, int, error) {
 	// Verify-mode transport-layer gate. When the verifier (or any consumer
-	// that sets PRINTING_PRESS_VERIFY=1) drives a mutating verb without
-	// the LIVE_HTTP=1 opt-in, return a synthetic envelope without dialing,
+	// that sets PRINTING_PRESS_VERIFY=1) drives a mutating verb or explicit
+	// mutation intent without the LIVE_HTTP=1 opt-in, return a synthetic
+	// envelope without dialing,
 	// minting auth, or touching the cache. The verify pipeline itself
 	// sets both env vars in mock mode so its httptest server still sees
 	// real requests; every other consumer gets a safe no-op.
@@ -1567,7 +1641,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	// minting, and the success-branch invalidateCache() call below — so
 	// no cache invalidation runs (no remote state changed) and no
 	// client_credentials mint happens unnecessarily.
-	if !readOnlyIntent && isMutatingVerb(method) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
+	if !readOnlyIntent && (mutationIntent || isMutatingVerb(method)) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
 		return verifyShortCircuitEnvelope(method, path), http.StatusOK, nil
 	}
 	if err := rejectUnresolvedPathParams(path, {{if .EndpointTemplateVars}}templateVarEnvNames{{else}}nil{{end}}); err != nil {
@@ -1647,6 +1721,11 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	var contentType string
 {{- end}}
 	if body != nil {
+{{- if .HasRawRequest}}
+		if rawBody, ok := body.(rawRequestBody); ok {
+			bodyBytes = rawBody.Data
+		} else {
+{{- end}}
 {{- if .HasMultipartRequest}}
 		if multipartBody, ok := body.(multipartRequestBody); ok {
 			b, ct, err := encodeMultipartBody(multipartBody)
@@ -1671,6 +1750,9 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		bodyBytes = b
 {{- if or .HasMultipartRequest .HasFormRequest}}
 		contentType = "application/json"
+		}
+{{- end}}
+{{- if .HasRawRequest}}
 		}
 {{- end}}
 	}
@@ -1715,9 +1797,10 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	}
 
 	maxRetries := clientMaxRetries()
-	// Retry only methods that are safe to replay after an ambiguous transport
-	// failure or server error; a write may already have committed remotely.
-	canRetryAmbiguousFailure := readOnlyIntent || platform.CanRetryRequest(method, requestIdempotencyKey(c.Config, headerOverrides))
+	// Retry only operations that are safe to replay after an ambiguous
+	// transport failure or server error; a write may already have committed
+	// remotely even when its wire method is GET.
+	canRetryAmbiguousFailure := readOnlyIntent || (!mutationIntent && platform.CanRetryRequest(method, requestIdempotencyKey(c.Config, headerOverrides)))
 	endpointClass := safeEndpointClass(method, path)
 	retryPolicy, err := c.platformRetryPolicy(endpointClass)
 	if err != nil {
@@ -1766,7 +1849,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		envelope := proxyEnvelope{
 			Service: serviceForPath(path),
 			Method:  method,
-			Path:    cliutil.BuildPath(path, params),
+			Path:    buildClientPath(method, path, params),
 		}
 		if bodyBytes != nil {
 			envelope.Body = json.RawMessage(bodyBytes)
@@ -1802,7 +1885,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		if params != nil {
 			q := req.URL.Query()
 			for k, v := range params {
-				if v != "" {
+				if v != "" || method != "GET" {
 					q.Set(k, v)
 				}
 			}
@@ -1893,6 +1976,12 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		if binaryResponse {
 			req.Header.Del(BinaryResponseHeader)
 		}
+{{- if .HasTextResponse}}
+		textResponse := strings.EqualFold(req.Header.Get(TextResponseHeader), "true")
+		if textResponse {
+			req.Header.Del(TextResponseHeader)
+		}
+{{- end}}
 {{- if not .UsesBrowserManagedUserAgent}}
 		if req.Header.Get("User-Agent") == "" {
 {{- if .UsesBrowserLikeUserAgent}}
@@ -1904,9 +1993,17 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			// empty 5xx or a challenge. RequiredHeaders or per-endpoint
 			// headerOverrides still win, and any caller that wants the
 			// CLI-flavored UA can set it on the request explicitly.
-			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")
+			if ua := os.Getenv("{{envName .Name}}_USER_AGENT"); ua != "" {
+				req.Header.Set("User-Agent", ua)
+			} else {
+				req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")
+			}
 {{- else}}
-			req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+			if ua := os.Getenv("{{envName .Name}}_USER_AGENT"); ua != "" {
+				req.Header.Set("User-Agent", ua)
+			} else {
+				req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+			}
 {{- end}}
 		}
 		// Go's net/http omits Accept by default; browsers, curl, and other
@@ -1942,7 +2039,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			// timeout). Back off before retrying — same exponential schedule as
 			// the 5xx path below — so a brief outage does not burn every attempt
 			// in a tight loop. ctx cancellation breaks out of the wait at once.
-			if attempt < maxRetries && canRetryAmbiguousFailure {
+			if attempt < maxRetries && canRetryAmbiguousFailure && !isPermanentDNSError(err) {
 				wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 				if !retryWithinBudget(wait) {
 					return nil, 0, lastErr
@@ -1976,7 +2073,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			c.lastContentType = resp.Header.Get("Content-Type")
 {{- end}}
 			c.limiter.OnSuccess()
-			if method != http.MethodGet && !c.DryRun {
+			if !readOnlyIntent && (mutationIntent || method != http.MethodGet) && !c.DryRun {
 				c.invalidateCacheAfterMutation(path)
 			}
 			// Non-textual bodies (PDF, zip, image, octet-stream) must not be
@@ -1990,6 +2087,22 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				}
 				return env, resp.StatusCode, nil
 			}
+{{- if .HasTextResponse}}
+			if textResponse {
+				contentType := strings.TrimSpace(strings.SplitN(resp.Header.Get("Content-Type"), ";", 2)[0])
+				if contentType == "" {
+					contentType = strings.TrimSpace(strings.SplitN(req.Header.Get("Accept"), ";", 2)[0])
+				}
+				env, encErr := json.Marshal(map[string]any{
+					"format": contentType,
+					"body":   string(respBody),
+				})
+				if encErr != nil {
+					return nil, 0, fmt.Errorf("encoding text response: %w", encErr)
+				}
+				return json.RawMessage(env), resp.StatusCode, nil
+			}
+{{- end}}
 {{- if .HasXMLResponse}}
 			// XML endpoints carry an application/xml Accept override. Use that
 			// per-request signal so mixed XML/JSON specs normalize only the XML
@@ -1998,7 +2111,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				return cliutil.XMLToJSON(json.RawMessage(respBody)), resp.StatusCode, nil
 			}
 {{- end}}
-			return json.RawMessage(sanitizeJSONResponse(respBody)), resp.StatusCode, nil
+			return json.RawMessage({{if and .ResponseEnvelopeKey (not .IsGraphQL)}}unwrapResponseEnvelope(sanitizeJSONResponse(respBody)){{else}}sanitizeJSONResponse(respBody){{end}}), resp.StatusCode, nil
 		}
 
 		if !binaryResponse {
@@ -2066,6 +2179,12 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			return nil, resp.StatusCode, &platform.RateLimitedError{
 				EndpointClass: endpointClass, Attempts: attempt + 1,
 				RetryAfter: wait, RequestID: requestID,
+				Cause: &cliutil.RateLimitError{
+					URL:        apiErr.Path,
+					RetryAfter: wait,
+					Body:       apiErr.Body,
+					Cause:      apiErr,
+				},
 			}
 		}
 {{- if eq .Auth.Type "session_handshake"}}
@@ -2136,7 +2255,7 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 	envelope := proxyEnvelope{
 		Service: serviceForPath(path),
 		Method:  method,
-		Path:    c.displayURL(cliutil.BuildPath(path, params), authHeader),
+		Path:    c.displayURL(buildClientPath(method, path, params), authHeader),
 	}
 	if body != nil {
 		envelope.Body = json.RawMessage(body)
@@ -2150,7 +2269,7 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 	if params != nil {
 		keys := make([]string, 0, len(params))
 		for k := range params {
-			if params[k] != "" {
+			if params[k] != "" || method != "GET" {
 				keys = append(keys, k)
 			}
 		}
@@ -2390,7 +2509,20 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 	if c.Config == nil {
 		return "", nil
 	}
-{{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
+{{- if eq .Auth.Subtype "google_service_account"}}
+	// A pre-minted token is the fast path. When only a service-account key is
+	// configured, exchange it lazily and reuse the resulting token until its
+	// expiry window is reached.
+	if header := c.Config.AuthHeader(); header != "" {
+		// A persisted service-account token must not bypass the expiry-aware
+		// exchange below. Explicit environment overrides have no persisted
+		// expiry, so they remain a valid fast path.
+		if strings.HasPrefix(c.Config.AuthSource, "env:") || c.Config.TokenExpiry.IsZero() || time.Until(c.Config.TokenExpiry) >= 60*time.Second {
+			return header, nil
+		}
+	}
+	return c.googleServiceAccountAuthHeader(ctx)
+{{- else if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
 	if c.Config.AccessToken == "" && cliutil.IsVerifyEnv() {
 		c.Config.AccessToken = "mock-token-for-testing"
 		return c.Config.AuthHeader(), nil
@@ -2439,6 +2571,69 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 {{- end}}
 	return authHeader, nil
 }
+
+{{- if eq .Auth.Subtype "google_service_account"}}
+
+func (c *Client) googleServiceAccountAuthHeader(ctx context.Context) (string, error) {
+	if c == nil || c.Config == nil {
+		return "", nil
+	}
+	if c.googleMu == nil {
+		c.googleMu = &sync.RWMutex{}
+	}
+
+	c.googleMu.RLock()
+	if c.Config.AccessToken != "" && (c.Config.TokenExpiry.IsZero() || time.Until(c.Config.TokenExpiry) >= 60*time.Second) {
+		header := "Bearer " + c.Config.AccessToken
+		c.googleMu.RUnlock()
+		return header, nil
+	}
+	c.googleMu.RUnlock()
+	c.googleMu.Lock()
+	defer c.googleMu.Unlock()
+
+	if c.Config.AccessToken != "" && (c.Config.TokenExpiry.IsZero() || time.Until(c.Config.TokenExpiry) >= 60*time.Second) {
+		return "Bearer " + c.Config.AccessToken, nil
+	}
+	keyPath := strings.TrimSpace(c.Config.{{resolveEnvVarField "GOOGLE_APPLICATION_CREDENTIALS"}})
+	if keyPath == "" {
+		return "", nil
+	}
+	keyJSON, err := os.ReadFile(keyPath)
+	if err != nil {
+		return "", fmt.Errorf("reading Google service-account key %q: %w", keyPath, err)
+	}
+	scopes := append([]string(nil), c.Config.GoogleScopes...)
+	if len(scopes) == 0 {
+		scopes = []string{ {{- range .Auth.Scopes}}{{printf "%q" .}}, {{end}} }
+	}
+	jwtConfig, err := google.JWTConfigFromJSON(keyJSON, scopes...)
+	if err != nil {
+		return "", fmt.Errorf("parsing Google service-account key: %w", err)
+	}
+	jwtConfig.Subject = strings.TrimSpace(c.Config.GoogleImpersonate)
+{{- if .Auth.TokenURL}}
+	if tokenURL := strings.TrimSpace(c.Config.TokenURL); tokenURL != "" {
+		jwtConfig.TokenURL = tokenURL
+	} else {
+		jwtConfig.TokenURL = {{printf "%q" .Auth.TokenURL}}
+	}
+{{- end}}
+	exchangeCtx, cancel := context.WithTimeout(ctx, c.ConfiguredTimeout())
+	defer cancel()
+	token, err := jwtConfig.TokenSource(exchangeCtx).Token()
+	if err != nil {
+		return "", fmt.Errorf("exchanging Google service-account JWT: %w", err)
+	}
+	if token == nil || strings.TrimSpace(token.AccessToken) == "" {
+		return "", errors.New("Google service-account token response missing access_token")
+	}
+	c.Config.AccessToken = token.AccessToken
+	c.Config.TokenExpiry = token.Expiry
+	return "Bearer " + token.AccessToken, nil
+}
+
+{{- end}}
 
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 
@@ -2860,16 +3055,28 @@ func sanitizeJSONResponse(body []byte) []byte {
 	return body
 }
 
+{{- if and .ResponseEnvelopeKey (not .IsGraphQL)}}
+// unwrapResponseEnvelope removes the explicitly configured single-key JSON
+// wrapper while leaving unrelated objects and malformed bodies untouched.
+func unwrapResponseEnvelope(body []byte) []byte {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil || len(envelope) != 1 {
+		return body
+	}
+	if payload, ok := envelope[{{printf "%q" .ResponseEnvelopeKey}}]; ok {
+		return payload
+	}
+	return body
+}
+{{- end}}
 
-// maskToken redacts all but the last 4 characters of a token for safe display.
+
+// maskToken returns a fixed placeholder for a non-empty token.
 func maskToken(token string) string {
 	if token == "" {
 		return ""
 	}
-	if len(token) <= 4 {
-		return "****"
-	}
-	return "****" + token[len(token)-4:]
+	return "****"
 }
 
 type maskedError struct {
@@ -2988,4 +3195,24 @@ func clientMaxRetries() int {
 		return 0
 	}
 	return 3
+}
+
+// isPermanentDNSError identifies known resolver failures that cannot succeed
+// by replaying the request. Timeouts, explicitly temporary failures, and
+// otherwise unclassified DNS errors remain retryable.
+func isPermanentDNSError(err error) bool {
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) {
+		return false
+	}
+	if dnsErr.IsNotFound {
+		return true
+	}
+	if dnsErr.IsTimeout || dnsErr.IsTemporary {
+		return false
+	}
+	reason := strings.ToLower(strings.TrimSpace(dnsErr.Err))
+	// The generic "server misbehaving" text is also used for transient
+	// SERVFAIL responses, so only explicit refusal text is terminal here.
+	return strings.Contains(reason, "refused")
 }

@@ -86,7 +86,22 @@ type RenameResult struct {
 	Error         string `json:"error,omitempty"`
 }
 
-var runValidationForPublishPackage = runValidation
+var runValidationForPublishPackage = func(dir string) ValidateResult {
+	// The package flow validates the SOURCE tree, where the module path is
+	// still the bare CLI name by design (the rewrite happens on the staged
+	// copy afterwards). Skip the module-path check here; the staged tree is
+	// checked post-rewrite in the package command.
+	res := runValidation(dir)
+	filtered := res.Checks[:0]
+	for _, c := range res.Checks {
+		if c.Name == "module path" {
+			continue
+		}
+		filtered = append(filtered, c)
+	}
+	res.Checks = filtered
+	return res
+}
 
 func newPublishRenameCmd() *cobra.Command {
 	var dir string
@@ -458,6 +473,20 @@ func newPublishPackageCmd() *cobra.Command {
 					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("rewriting module path: %w", err)}
 				}
 			}
+			// Verify the staged tree's module path is library-canonical. Runs
+			// after the rewrite in both branches: without --module-path the
+			// bare module name fails here; with a wrong --module-path value
+			// the mismatch is caught before it reaches the library CI.
+			modulePathCheck := checkModulePath(outCLIDir)
+			if !modulePathCheck.Passed {
+				if asJSON {
+					enc := json.NewEncoder(os.Stdout)
+					enc.SetIndent("", "  ")
+					_ = enc.Encode(ValidateResult{Checks: []CheckResult{modulePathCheck}, Passed: false})
+				}
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("validation failed, cannot package: %s", modulePathCheck.Error)}
+			}
 
 			// Resolve and copy manuscripts
 			result := PackageResult{
@@ -749,7 +778,7 @@ func runPackageValidation(dir, selectedManuscriptsDir, selectedRunID string) Val
 			continue
 		}
 		proofsDir := filepath.Join(selectedManuscriptsDir, selectedRunID, "proofs")
-		result.Checks[i] = checkPhase5GateAt(proofsDir, manifest)
+		result.Checks[i] = checkPhase5GateAt(proofsDir, manifest, dir)
 		result.Passed = true
 		for _, check := range result.Checks {
 			if !check.Passed {
@@ -822,6 +851,18 @@ func runValidation(dir string) ValidateResult {
 		allPassed = false
 	}
 	result.Checks = append(result.Checks, tidyCheck)
+
+	// 3.5 module path check — informational here. A source tree (pre-rewrite)
+	// legitimately declares the bare CLI module path; the check is
+	// authoritative in the package flow, which validates the staged tree after
+	// --module-path rewrite. Surface it as a warning so a library-shaped tree
+	// with a wrong module path is still flagged before packaging.
+	modulePathCheck := checkModulePath(dir)
+	if !modulePathCheck.Passed {
+		modulePathCheck.Warning = modulePathCheck.Error
+		modulePathCheck.Error = ""
+	}
+	result.Checks = append(result.Checks, modulePathCheck)
 
 	// 4. govulncheck catches reachable vulnerable code in this one CLI module
 	// before publish. Keep this scoped to dir; the public library may contain
@@ -1294,11 +1335,11 @@ func checkPhase5Gate(dir string, manifest pipeline.CLIManifest) CheckResult {
 		return CheckResult{Name: "phase5", Passed: false, Error: "manifest missing run_id; cannot locate Phase 5 gate proof"}
 	}
 
-	return checkPhase5GateAt(phase5ProofsDir(dir, manifest), manifest)
+	return checkPhase5GateAt(phase5ProofsDir(dir, manifest), manifest, dir)
 }
 
-func checkPhase5GateAt(proofsDir string, manifest pipeline.CLIManifest) CheckResult {
-	result := pipeline.ValidatePhase5Gate(proofsDir, manifest)
+func checkPhase5GateAt(proofsDir string, manifest pipeline.CLIManifest, sourceDir string) CheckResult {
+	result := pipeline.ValidatePhase5Gate(proofsDir, manifest, sourceDir)
 	if !result.Passed {
 		return CheckResult{Name: "phase5", Passed: false, Error: result.Detail}
 	}
@@ -1459,6 +1500,32 @@ func checkGoModTidy(dir string) CheckResult {
 		return CheckResult{Name: "go mod tidy", Passed: false, Error: "go.mod or go.sum is not tidy"}
 	}
 	return CheckResult{Name: "go mod tidy", Passed: true}
+}
+
+// checkModulePath catches the bare CLI-name module declaration the library CI
+// rejects, before the PR opens.
+func checkModulePath(dir string) CheckResult {
+	modPath := filepath.Join(dir, "go.mod")
+	modBytes, err := os.ReadFile(modPath)
+	if err != nil {
+		return CheckResult{Name: "module path", Passed: false, Error: "go.mod not found"}
+	}
+	declared := ""
+	for line := range strings.Lines(string(modBytes)) {
+		line = strings.TrimSpace(line)
+		if module, ok := strings.CutPrefix(line, "module "); ok {
+			declared = strings.TrimSpace(module)
+			break
+		}
+	}
+	if declared == "" {
+		return CheckResult{Name: "module path", Passed: false, Error: "go.mod declares no module line"}
+	}
+	if strings.HasPrefix(declared, "github.com/mvanhorn/printing-press-library/library/") {
+		return CheckResult{Name: "module path", Passed: true}
+	}
+	return CheckResult{Name: "module path", Passed: false,
+		Error: fmt.Sprintf("go.mod module path %q does not start with the canonical library prefix github.com/mvanhorn/printing-press-library/library/<category>/<slug>", declared)}
 }
 
 func buildValidationBinary(dir, cliName string) (path string, cleanup func(), err error) {

@@ -13,9 +13,10 @@ This shape was chosen deliberately:
 - The default GitHub issue list is not duplicated; there is no parent to
   mirror children, no progress bar to drift, no parent-not-auto-closing
   bookkeeping.
-- Cross-retro discovery still works through labels: `comp:<slug>` surfaces
-  every retro WU touching one component; `priority:P1` surfaces high-priority
-  work across retros.
+- Cross-retro discovery still works through labels: `source:retro` marks
+  provenance, `comp:<slug>` surfaces every retro WU touching one component,
+  `priority:P1` surfaces high-priority work, and `bug`/`enhancement` carry the
+  real issue type.
 - Inter-issue links inside the same retro are not auto-generated. They appear
   only when an issue genuinely relates to another (a contradicting prior
   retro, or a `related-area` open issue surfaced by the dedup scan).
@@ -76,8 +77,8 @@ clobber them).
 ```bash
 REPO="mvanhorn/cli-printing-press"
 
-# Fast-path: list existing labels once. If all 10 canonical labels are already
-# present, skip the create loop entirely — saves up to 10 gh API calls per
+# Fast-path: list existing labels once. If all 11 canonical labels are already
+# present, skip the create loop entirely — saves up to 11 gh API calls per
 # retro on a repo where prior retros already provisioned the set.
 EXISTING_LABELS=$(gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name' 2>/dev/null || echo "")
 NEED_CREATE=false
@@ -85,7 +86,7 @@ for required in \
   "comp:generator" "comp:openapi-parser" "comp:spec-parser" \
   "comp:scorer" "comp:skill" \
   "priority:P1" "priority:P2" "priority:P3" \
-  "retro"; do
+  "bug" "enhancement" "source:retro"; do
   if ! printf '%s\n' "$EXISTING_LABELS" | grep -qFx "$required"; then
     NEED_CREATE=true
     break
@@ -107,18 +108,64 @@ if [ "$NEED_CREATE" = true ]; then
 
   # Priority labels (3) — drive priority-based filtering. The label is the
   # primary carrier; titles do not duplicate the priority prefix.
-  ensure_label "priority:P1" "b60205" "Retro priority P1 (high)"
-  ensure_label "priority:P2" "d93f0b" "Retro priority P2 (medium)"
-  ensure_label "priority:P3" "fbca04" "Retro priority P3 (low)"
+  ensure_label "priority:P1" "b60205" "High priority: safety, correctness, release, or broad user impact"
+  ensure_label "priority:P2" "d93f0b" "Medium priority: meaningful recurring defect or capability gap"
+  ensure_label "priority:P3" "fbca04" "Low priority: useful systemic improvement"
 
-  # Marker label
-  ensure_label "retro" "0e8a16" "Issue produced by /printing-press-retro"
+  # Real issue types. These are actionable taxonomy, not routing or provenance.
+  ensure_label "bug"         "d73a4a" "Something isn't working"
+  ensure_label "enhancement" "a2eeef" "New feature or request"
+
+  # Canonical provenance marker. Do not create the legacy `retro` label.
+  ensure_label "source:retro" "c59c0f" "Issue produced by /printing-press-retro; systemic Printing Press finding"
+fi
+
+REFRESHED_LABELS=$(gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name' 2>/dev/null || true)
+if [ -n "$REFRESHED_LABELS" ]; then
+  EXISTING_LABELS="$REFRESHED_LABELS"
 fi
 ```
 
 The `retro-parent` label is intentionally omitted — there are no parent
-issues. If the label exists from prior retros, leave it; the skill never
-creates new issues with it.
+issues. If the legacy `retro` label exists from prior retros, leave it for
+discovery during the cutover; the skill never creates new issues with it.
+
+### Resolve the provenance marker for writes
+
+`source:retro` is the canonical provenance label. Before creating an issue,
+choose a marker from labels that are actually available, preferring
+`source:retro` and falling back to legacy `retro` only when the canonical label
+cannot be created or is not available. Never pass a guessed label to `gh issue
+create`:
+
+```bash
+has_label() {
+  printf '%s\n' "$EXISTING_LABELS" | grep -qFx "$1"
+}
+
+RETRO_PROVENANCE_LABEL=""
+if has_label "source:retro"; then
+  RETRO_PROVENANCE_LABEL="source:retro"
+elif has_label "retro"; then
+  RETRO_PROVENANCE_LABEL="retro"
+else
+  gh label create "source:retro" --repo "$REPO" --color "c59c0f" \
+    --description "Issue produced by /printing-press-retro; systemic Printing Press finding" 2>/dev/null || true
+  EXISTING_LABELS=$(gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name' 2>/dev/null || echo "")
+  if has_label "source:retro"; then
+    RETRO_PROVENANCE_LABEL="source:retro"
+  elif has_label "retro"; then
+    RETRO_PROVENANCE_LABEL="retro"
+  else
+    echo "ERROR: neither source:retro nor legacy retro is available; cannot file a provenance-marked issue." >&2
+    exit 1
+  fi
+fi
+```
+
+The initial label pass provisions `source:retro` on a fresh fork. The
+post-create re-list makes the fallback safe when label creation races or is
+denied. Existing issues are not relabeled solely to rename provenance.
 
 ## Step 2: Sort work units
 
@@ -128,7 +175,11 @@ but the skill may have intentionally ordered them by dependency — preserve
 that).
 
 ```bash
-# SORTED_WORK_UNITS is populated from $WORK_UNITS sorted P1 → P3.
+# SORTED_WORK_UNITS is populated by sorting the complete WU records from
+# $WORK_UNITS P1 → P3. Each record retains its own `Stable ID: WU-N` field;
+# never sort a work-unit array and an ID array independently.
+# Dependency edges use the stable ID extracted from each sorted record, never
+# a sorted array position.
 ```
 
 ## Step 2.5: Dedup against open issues
@@ -137,26 +188,40 @@ Before filing, check whether any WUs match an issue that's already open.
 If they do, comment on the existing issue with new evidence rather than
 file a duplicate.
 
-This is a single `gh` call followed by per-WU agent reasoning over titles.
-**It does not need to be bulletproof** — false negatives (filing new when
+This is two label-filtered `gh` calls followed by per-WU agent reasoning over
+the de-duplicated result set. **It does not need to be bulletproof** — false negatives (filing new when
 one exists) are recoverable; false positives (commenting on the wrong
 issue) are uglier. **Bias toward `file-new` when uncertain.**
 
 ### Fetch open retro issues
 
 ```bash
-EXISTING_OPEN_RETROS=$(gh issue list \
+EXISTING_OPEN_RETROS_SOURCE=$(gh issue list \
+  --repo "$REPO" \
+  --label source:retro \
+  --state open \
+  --limit 200 \
+  --json number,title,url,labels 2>/dev/null \
+  || echo "[]")
+
+EXISTING_OPEN_RETROS_LEGACY=$(gh issue list \
   --repo "$REPO" \
   --label retro \
   --state open \
   --limit 200 \
-  --json number,title,url 2>/dev/null \
+  --json number,title,url,labels 2>/dev/null \
   || echo "[]")
+
+EXISTING_OPEN_RETROS=$(jq -s 'add | unique_by(.number)' \
+  <(printf '%s\n' "$EXISTING_OPEN_RETROS_SOURCE") \
+  <(printf '%s\n' "$EXISTING_OPEN_RETROS_LEGACY"))
 ```
 
-A single call. No per-WU label filtering — the agent reasons over titles
+The two results are merged by issue number so an issue carrying both labels is
+considered once. No per-WU component filtering — the agent reasons over titles
 across the whole open-retro set so a related-area issue under a different
-component still surfaces.
+component still surfaces. The `labels` field lets the executor preserve the
+one-type invariant when commenting on an existing match.
 
 ### Classify each WU against the candidate set
 
@@ -231,6 +296,7 @@ should understand what they're being asked to address.>
 ## Where to look
 
 - **Component:** <comp-slug>
+- **Issue type:** `bug` or `enhancement` from the deterministic finding-category mapping
 - **Likely area:** <path or files in the printing-press repo, e.g. `internal/generator/templates/`>
 - **Triggered when:** <spec shape, API behavior, or runtime context that surfaces this>
 
@@ -298,7 +364,12 @@ small / medium / large
 
 ## Dependencies
 
-<Free text — only if there's a real prerequisite. Most issues say "None.">
+<"None." unless this work unit has a real prerequisite. For an explicit
+prerequisite, name the blocking issue or work unit here. After issue numbers are
+known, the filing pass applies GitHub's native relationship with
+`gh issue edit <dependent> --repo "$REPO" --add-blocked-by <prerequisite>`.
+Related-area references do not belong here and must remain prose in
+`Related issues`.
 
 ## Findings absorbed
 
@@ -316,7 +387,8 @@ small / medium / large
 <Combined output from Phase 3 Step D (prior-retro doc archaeology) and
 Step 2.5 (open-issue dedup `related-area` classification). Auto-cross-links
 via `#N`. Sibling WUs in this same retro do NOT appear here unless one is
-genuinely a prerequisite.>
+genuinely a prerequisite; a real prerequisite is also represented by a native
+`blocked-by`/`blocking` relationship, not only by this prose link.>
 
 - #<num> — prior retro (`aligned`/`contradicts`/`extends`): <one-sentence note>
 - #<num> — open issue (`related-area`): <one-sentence note on the adjacency>
@@ -343,7 +415,8 @@ What's *not* in the body, by design:
 - **Skipped table** — retro-wide triage record; lives in the retro doc.
 - **Auto-cross-references to sibling WUs in this same retro** — these are
   noise unless one WU is genuinely a prerequisite for another (and that
-  goes in `Dependencies:` as free text, not as an auto-linked `#N`).
+  goes in `Dependencies:` and becomes a native `blocked-by` relationship after
+  issue numbers are known).
 
 ### Comment body (for `comment:#N` decisions)
 
@@ -372,18 +445,41 @@ trail for anyone who wants more context.
 
 ```bash
 declare -a OUTCOME_KIND OUTCOME_URL OUTCOME_TITLE OUTCOME_PRIORITY OUTCOME_COMP OUTCOME_COMPLEXITY
+declare -a WU_DEPENDENCY_EDGES
 declare -a FAILED_ISSUES
+declare -A OUTCOME_ISSUE_NUM_BY_WU_ID SORTED_WU_ID_SEEN
+
+extract_wu_id() {
+  printf '%s\n' "$1" \
+    | sed -nE 's/^- \*\*Stable ID:\*\* (WU-[1-9][0-9]*)([[:space:]].*)?$/\1/p' \
+    | head -1
+}
 
 ISSUE_TMPDIR=$(mktemp -d)
 ISSUE_RUN_START_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
+  WU_ID="$(extract_wu_id "${SORTED_WORK_UNITS[$wu_idx]}")"
+  if [[ ! "$WU_ID" =~ ^WU-[1-9][0-9]*$ ]]; then
+    echo "ERROR: sorted WU $wu_idx has missing or duplicate stable ID: ${WU_ID:-<empty>}" >&2
+    exit 1
+  fi
+  if [[ -n "${SORTED_WU_ID_SEEN[$WU_ID]+x}" ]]; then
+    echo "ERROR: sorted WU $wu_idx has duplicate stable ID: $WU_ID" >&2
+    exit 1
+  fi
+  SORTED_WU_ID_SEEN["$WU_ID"]=1
+done
+
+for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
   (
     WU="${SORTED_WORK_UNITS[$wu_idx]}"
+    WU_ID="$(extract_wu_id "$WU")"
     DEDUP="${WU_DEDUP[$wu_idx]}"  # "comment:NN" or empty
 
-    # Each WU contributes: $WU_TITLE, $WU_BODY, $WU_COMMENT_BODY,
-    # $WU_PRIORITY_NUM, $WU_PRIORITY_LABEL, $WU_COMP_SLUG, $WU_COMPLEXITY.
+    # Each WU contributes: $WU_ID, $WU_TITLE, $WU_BODY, $WU_COMMENT_BODY,
+    # $WU_PRIORITY_NUM, $WU_PRIORITY_LABEL, $WU_TYPE_LABEL, $WU_COMP_SLUG,
+    # $WU_COMPLEXITY.
 
     KIND=""
     URL=""
@@ -413,7 +509,18 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
       URL=""
     elif [[ "$DEDUP" == comment:* ]]; then
       ISSUE_NUM="${DEDUP#comment:}"
-      if URL=$(gh issue comment "$ISSUE_NUM" \
+      # A recurrence may target a legacy issue that predates real type labels.
+      # Normalize the two actionable type labels before adding evidence so the
+      # existing issue still satisfies the one-type taxonomy invariant.
+      if ! gh issue edit "$ISSUE_NUM" \
+            --repo "$REPO" \
+            --remove-label bug \
+            --remove-label enhancement \
+            --add-label "$WU_TYPE_LABEL" >/dev/null 2>&1; then
+        KIND="type-normalization-failed"
+        FAIL_MSG="$WU_TITLE — could not normalize #$ISSUE_NUM to exactly one type label ($WU_TYPE_LABEL); comment not posted."
+        URL=""
+      elif URL=$(gh issue comment "$ISSUE_NUM" \
             --repo "$REPO" \
             --body-file "$BODY_TMP_SCRUBBED" 2>&1) \
             && [[ "$URL" == https://* ]]; then
@@ -428,7 +535,8 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
             --repo "$REPO" \
             --title "$WU_TITLE" \
             --body-file "$BODY_TMP_SCRUBBED" \
-            --label retro \
+            --label "$RETRO_PROVENANCE_LABEL" \
+            --label "$WU_TYPE_LABEL" \
             --label "priority:P${WU_PRIORITY_NUM}" \
             --label "comp:${WU_COMP_SLUG}" 2>&1) \
             && [[ "$URL" == https://* ]]; then
@@ -441,6 +549,7 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
     fi
 
     {
+      printf '%s\n' "$WU_ID"
       printf '%s\n' "$KIND"
       printf '%s\n' "$URL"
       printf '%s\n' "$WU_TITLE"
@@ -465,6 +574,7 @@ EXPECTED_ISSUE_NUMBERS=$(
   for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
     if [ -f "$ISSUE_TMPDIR/issue-$wu_idx" ]; then
       {
+        IFS= read -r WU_ID_TMP
         IFS= read -r KIND_TMP
         IFS= read -r URL_TMP
       } < "$ISSUE_TMPDIR/issue-$wu_idx"
@@ -510,6 +620,7 @@ fi
 
 for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
   {
+    IFS= read -r WU_ID
     IFS= read -r KIND
     IFS= read -r URL
     IFS= read -r TITLE
@@ -519,22 +630,84 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
     IFS= read -r FAIL_MSG
   } < "$ISSUE_TMPDIR/issue-$wu_idx"
 
+  EXPECTED_WU_ID="$(extract_wu_id "${SORTED_WORK_UNITS[$wu_idx]}")"
+  if [[ "$WU_ID" != "$EXPECTED_WU_ID" ]]; then
+    FAILED_ISSUES+=("sorted WU $wu_idx returned stable ID ${WU_ID:-<empty>}, expected ${EXPECTED_WU_ID:-<empty>}")
+    continue
+  fi
+
   OUTCOME_KIND+=("$KIND")
   OUTCOME_URL+=("$URL")
   OUTCOME_TITLE+=("$TITLE")
   OUTCOME_PRIORITY+=("$PRIORITY")
   OUTCOME_COMP+=("$COMP")
   OUTCOME_COMPLEXITY+=("$COMPLEXITY")
+  if [[ "$URL" =~ /issues/([0-9]+) ]]; then
+    OUTCOME_ISSUE_NUM_BY_WU_ID["$WU_ID"]="${BASH_REMATCH[1]}"
+  elif [[ "${WU_DEDUP[$wu_idx]}" == comment:* ]]; then
+    OUTCOME_ISSUE_NUM_BY_WU_ID["$WU_ID"]="${WU_DEDUP[$wu_idx]#comment:}"
+  else
+    OUTCOME_ISSUE_NUM_BY_WU_ID["$WU_ID"]=""
+  fi
 
   case "$KIND" in
     created|commented)
       echo "${KIND^}: $URL"
       ;;
-    create-failed|comment-failed|scrub-failed)
+    create-failed|comment-failed|type-normalization-failed|scrub-failed)
       echo "WARNING: $FAIL_MSG"
       FAILED_ISSUES+=("$FAIL_MSG")
       ;;
   esac
+done
+
+# Apply only explicitly declared prerequisite edges, after all creates and
+# dedup decisions have produced issue numbers. Each edge is
+# `WU-2|wu:WU-1` or `WU-2|issue:123`. IDs are stable WU-N values, so this
+# remains correct when a P1 WU-2 sorts before a P2 WU-1. Resolve both endpoints
+# through the associative outcome map; never use sorted array positions.
+# Related-area references never enter this array; they remain prose links.
+for edge in "${WU_DEPENDENCY_EDGES[@]}"; do
+  IFS='|' read -r dependent_id prerequisite_ref <<< "$edge"
+  if [[ ! "$dependent_id" =~ ^WU-[1-9][0-9]*$ ]]; then
+    FAILED_ISSUES+=("dependency edge $edge — unknown or malformed dependent stable WU ID")
+    continue
+  fi
+  if [[ -z "${SORTED_WU_ID_SEEN[$dependent_id]+x}" ]]; then
+    FAILED_ISSUES+=("dependency edge $edge — unknown dependent stable WU ID")
+    continue
+  fi
+  dependent_issue="${OUTCOME_ISSUE_NUM_BY_WU_ID[$dependent_id]-}"
+  case "$prerequisite_ref" in
+    wu:*)
+      prerequisite_id="${prerequisite_ref#wu:}"
+      if [[ ! "$prerequisite_id" =~ ^WU-[1-9][0-9]*$ ]]; then
+        FAILED_ISSUES+=("dependency edge $edge — unknown or malformed prerequisite stable WU ID")
+        continue
+      fi
+      if [[ -z "${SORTED_WU_ID_SEEN[$prerequisite_id]+x}" ]]; then
+        FAILED_ISSUES+=("dependency edge $edge — unknown prerequisite stable WU ID")
+        continue
+      fi
+      prerequisite_issue="${OUTCOME_ISSUE_NUM_BY_WU_ID[$prerequisite_id]-}"
+      ;;
+    issue:*)
+      prerequisite_issue="${prerequisite_ref#issue:}"
+      if [[ ! "$prerequisite_issue" =~ ^[1-9][0-9]*$ ]]; then
+        FAILED_ISSUES+=("dependency edge $edge — malformed existing issue number")
+        continue
+      fi
+      ;;
+    *)
+      prerequisite_issue=""
+      ;;
+  esac
+  if [[ -z "$dependent_issue" || -z "$prerequisite_issue" ]]; then
+    FAILED_ISSUES+=("dependency edge $edge — issue number unavailable; native relationship not applied")
+  elif ! gh issue edit "$dependent_issue" --repo "$REPO" \
+      --add-blocked-by "$prerequisite_issue" >/dev/null 2>&1; then
+    FAILED_ISSUES+=("dependency edge #$dependent_issue blocked by #$prerequisite_issue — native relationship failed")
+  fi
 done
 
 # Cleanup is conditional on scrub-failed WUs. Those WUs' body files are the
@@ -562,6 +735,7 @@ Failure modes:
 | `commented` | Comment added to existing issue | Listed as "commented on #N" |
 | `create-failed` | `gh issue create` returned no usable URL | `$FAILED_ISSUES` summary; manual filing instructions |
 | `comment-failed` | `gh issue comment` failed | `$FAILED_ISSUES` summary; manual comment instructions |
+| `type-normalization-failed` | Existing matched issue could not be normalized to exactly one real type label | `$FAILED_ISSUES` summary; manual label repair instructions |
 | `scrub-failed` | Body contained an unredacted vendor-prefix secret; `scrub_body` refused to write the scrubbed copy. Body file left at `$BODY_TMP` for hand-redaction | `$FAILED_ISSUES` summary; agent must hand-redact per `secret-scrubbing.md` Layer 0 and retry the WU |
 
 ## Variables expected
@@ -574,11 +748,15 @@ Failure modes:
 | `$CLI_SOURCE_URL` | artifact-packaging.md | catbox URL or empty |
 | `$RETRO_PROOF_PATH` | SKILL.md Phase 5 | Path to saved retro in manuscript proofs |
 | `$RETRO_SCRATCH_PATH` | SKILL.md Phase 5 | Path to temp retro copy under `/tmp/printing-press/retro/` |
+| `$RETRO_PROVENANCE_LABEL` | This file Step 1 | Available write marker: canonical `source:retro`, or legacy `retro` only during cutover fallback |
 | `$WORK_UNITS` | SKILL.md Phase 5.5 | Array of WU records |
-| `$SORTED_WORK_UNITS` | This file Step 2 | `$WORK_UNITS` sorted P1 → P3 |
-| `$EXISTING_OPEN_RETROS` | This file Step 2.5 | JSON of open retro-tagged issues |
+| `$SORTED_WORK_UNITS` | This file Step 2 | Complete `$WORK_UNITS` records sorted P1 → P3; each record retains its own stable WU-N identifier |
+| `$EXISTING_OPEN_RETROS` | This file Step 2.5 | De-duplicated JSON of open issues carrying `source:retro` or legacy `retro` |
 | `$WU_DEDUP` | This file Step 2.5 | Per-WU dedup decision: `comment:NN` or empty |
 | `$WU_RELATED` | This file Step 2.5 + Phase 3 Step D | Per-WU comma-separated related-issue numbers (annotated for the body) |
+| `$WU_DEPENDENCY_EDGES` | SKILL.md Phase 5.5 + this file Step 3 | Explicit stable-ID prerequisite edges such as `WU-2|wu:WU-1` applied with native `--add-blocked-by`; related-area references are excluded |
+| `$OUTCOME_ISSUE_NUM_BY_WU_ID` | This file Step 3 | Issue numbers keyed by stable WU-N, independent of sorted array positions |
+| `$WU_TYPE_LABEL` | Each sorted WU record | Exactly one mapped real issue type: `bug` or `enhancement` |
 | All retro findings | SKILL.md Phase 4 | Used to populate each issue's "Findings absorbed" section |
 
 ## Variables produced
@@ -617,7 +795,7 @@ if [ "$GH_AVAILABLE" = false ] || [ "${#FAILED_ISSUES[@]}" -eq "${#SORTED_WORK_U
   if [ -n "$RETRO_SCRATCH_PATH" ] && [ -f "$RETRO_SCRATCH_PATH" ]; then
     echo "       $RETRO_SCRATCH_PATH"
   fi
-  echo "  3. File one issue per work unit. Apply labels: retro, priority:P<n>, comp:<slug>."
+  echo "  3. File one issue per work unit. Apply labels: $RETRO_PROVENANCE_LABEL, bug or enhancement, priority:P<n>, comp:<slug>. Use native --add-blocked-by only for explicit prerequisites; keep related-area references in prose."
   if [ -n "$MANUSCRIPTS_URL" ]; then
     echo "  4. Manuscripts: $MANUSCRIPTS_URL"
   fi

@@ -3,10 +3,9 @@
     "api_name": "printing-press-golden",
     "competitor_scores": null,
     "gap_report": [
-      "mcp_description_quality scored 3/10 - needs improvement",
       "MCP: 10 tools (1 public, 9 auth-required) — readiness: full"
     ],
-    "overall_grade": "A",
+    "overall_grade": "A (3 of 25 dimensions unverified: path_validity, auth_protocol, live_api_verification)",
     "steinberger": {
       "agent_native": 10,
       "agent_workflow_readiness": 9,
@@ -21,7 +20,7 @@
       "insight": 9,
       "live_api_verification": 0,
       "local_cache": 10,
-      "mcp_description_quality": 3,
+      "mcp_description_quality": 7,
       "mcp_quality": 10,
       "mcp_remote_transport": 10,
       "mcp_surface_strategy": 0,
@@ -29,11 +28,11 @@
       "mcp_tool_design": 0,
       "output_modes": 10,
       "path_validity": 0,
-      "percentage": 95,
+      "percentage": 96,
       "readme": 8,
       "sync_correctness": 10,
       "terminal_ux": 9,
-      "total": 95,
+      "total": 96,
       "type_fidelity": 5,
       "vision": 9,
       "workflows": 10
@@ -41,6 +40,11 @@
     "unscored_dimensions": [
       "mcp_tool_design",
       "mcp_surface_strategy",
+      "path_validity",
+      "auth_protocol",
+      "live_api_verification"
+    ],
+    "unverified_dimensions": [
       "path_validity",
       "auth_protocol",
       "live_api_verification"

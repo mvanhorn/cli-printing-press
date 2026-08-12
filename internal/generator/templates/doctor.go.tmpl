@@ -53,6 +53,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Hand-coded auth flows can report credentials that are intentionally not
+// represented by the generated Config fields. Assign this from a same-package
+// author file after generation. This is a presence signal only; custom flows
+// own their transport and credential-probe validation.
+var doctorAuthConfiguredHook func() (bool, string)
+
+func doctorAuthConfiguredState(cfg *config.Config) (bool, string) {
+	if cfg != nil && cfg.CredentialConfigured() {
+		return true, cfg.AuthSource
+	}
+	if doctorAuthConfiguredHook != nil {
+		return doctorAuthConfiguredHook()
+	}
+	return false, ""
+}
+
 // looksLikeDoctorInterstitial reports whether the response body matches a known
 // bot-detection challenge page (Cloudflare, Akamai, Vercel, AWS WAF, DataDome,
 // PerimeterX). Only fires on the doctor probe — used to distinguish "transport
@@ -123,12 +139,10 @@ func suggestReadCommand(root *cobra.Command) string {
 				found = strings.Join(childPath, " ")
 				return
 			}
-			// Recurse even into Hidden parents: printed CLIs mark raw
-			// resource parents Hidden to keep --help curated, but their
-			// endpoint leaves remain runnable (`<cli> projects list`
-			// works). Skipping hidden subtrees would make this return ""
-			// in nearly every CLI. isSuggestableReadLeaf still rejects a
-			// leaf that is itself Hidden.
+			// Recurse even into Hidden grouping commands because their
+			// descendants can remain runnable and discoverable by direct
+			// invocation. isSuggestableReadLeaf still rejects a leaf that
+			// is itself Hidden.
 			walk(child, childPath)
 			if found != "" {
 				return
@@ -263,17 +277,22 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				report["auth"] = "inferred (not configured)"
 			}
 {{- else if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
-			if cfg != nil {
-				header := cfg.AuthHeader()
-				if header == "" {
-					report["auth"] = "not configured"
-					report["auth_hint"] = "{{.Name}}-pp-cli auth login --chrome"
-				} else {
-					authConfigured = true
+			credentialConfigured, authSource := doctorAuthConfiguredState(cfg)
+			if !credentialConfigured {
+				report["auth"] = "not configured"
+				report["auth_hint"] = "{{.Name}}-pp-cli auth login --chrome"
+			} else {
+				authConfigured = true
+				report["auth"] = "configured"
+				report["auth_source"] = authSource
+				if cfg != nil && cfg.CredentialConfigured() {
 					report["auth"] = "configured (browser session)"
-					report["auth_source"] = cfg.AuthSource
 					report["auth_domain"] = "{{.Auth.CookieDomain}}"
 {{- if .Auth.RequiresBrowserSession}}
+					header := cfg.AuthHeader()
+					if header == "" {
+						header = cfg.CookieCredential()
+					}
 					if proofOK, proofDetail := browserSessionProofStatus(cfg, header); proofOK {
 						report["browser_session_proof"] = "valid"
 						report["browser_session_proof_detail"] = proofDetail
@@ -333,8 +352,31 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			}
 {{- else}}
 			if cfg != nil {
-				header := cfg.AuthHeader()
-				if header == "" {
+				{{- if eq .Auth.Subtype "google_service_account"}}
+				googleKeyPath := strings.TrimSpace(cfg.{{resolveEnvVarField "GOOGLE_APPLICATION_CREDENTIALS"}})
+				if googleKeyPath != "" && cfg.AuthHeader() == "" && cfg.AccessToken == "" {
+					if _, statErr := os.Stat(googleKeyPath); statErr != nil {
+						report["auth"] = "misconfigured (Google service-account key is not readable)"
+						report["auth_hint"] = "set GOOGLE_APPLICATION_CREDENTIALS to a readable service-account JSON file"
+					} else {
+						authConfigured = true
+						report["auth"] = "configured (Google service account; token exchange deferred until request)"
+						report["auth_source"] = "google_service_account"
+					}
+				} else {
+					header := cfg.AuthHeader()
+					if header == "" && cfg.AccessToken == "" {
+						report["auth"] = "not configured"
+						report["auth_hint"] = "{{.Name}}-pp-cli auth service-account --key <service-account.json>"
+					} else {
+						authConfigured = true
+						report["auth"] = "configured"
+						report["auth_source"] = cfg.AuthSource
+					}
+				}
+				{{- else}}
+				configured, authSource := doctorAuthConfiguredState(cfg)
+				if !configured {
 {{- if .Auth.Optional}}
 					report["auth"] = "optional — not configured"
 {{- else}}
@@ -358,8 +400,9 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				} else {
 					authConfigured = true
 					report["auth"] = "configured"
-					report["auth_source"] = cfg.AuthSource
+					report["auth_source"] = authSource
 				}
+				{{- end}}
 			}
 {{- end}}
 {{- if not (or .Auth.EnvVarSpecs .Auth.EnvVars .Auth.AdditionalHeaders)}}
@@ -571,6 +614,11 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 
 					// Step 2: Validate credentials with an authenticated probe.
 					authHeader := cfg.AuthHeader()
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+					if authHeader == "" {
+						authHeader = cfg.CookieCredential()
+					}
+{{- end}}
 					if authHeader == "" {
 						// No auth configured — skip credential validation
 {{- if .Auth.RequiresBrowserSession}}
@@ -631,8 +679,13 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 							case authAPIErr.StatusCode == 403:
 								report["credentials"] = fmt.Sprintf("scope-limited (HTTP %d) — credentials are valid but lack permission for this endpoint. Check your dashboard's API key scope.", authAPIErr.StatusCode)
 							default:
-								// Non-auth HTTP error (404, 500, etc.) — don't blame credentials
-								report["credentials"] = fmt.Sprintf("ok (HTTP %d from %s, but auth was accepted)", authAPIErr.StatusCode, verifyPath)
+								// Non-auth HTTP status (404, 500, etc.): the probe never
+								// reached an authenticated resource, so auth was neither
+								// accepted nor rejected. "Don't blame the credentials" and
+								// "the credentials are ok" are different claims; only the
+								// first is supported here. Report not-verified at WARN so the
+								// verdict is honest and --fail-on warn can trip on it.
+								report["credentials"] = fmt.Sprintf("WARN not verified (HTTP %d from %s) — probe reached a non-auth endpoint; set auth.verify_path to a known-good authenticated GET", authAPIErr.StatusCode, verifyPath)
 							}
 						default:
 							report["credentials"] = fmt.Sprintf("error: %s", authErr)
@@ -664,7 +717,11 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 							case gqlAPIErr.StatusCode == 403:
 								report["credentials"] = fmt.Sprintf("scope-limited (HTTP %d) — credentials are valid but lack permission for this endpoint. Check your dashboard's API key scope.", gqlAPIErr.StatusCode)
 							default:
-								report["credentials"] = fmt.Sprintf("ok (HTTP %d from GraphQL probe, but auth was accepted)", gqlAPIErr.StatusCode)
+								// Non-auth HTTP status: the probe never reached the
+								// authenticated GraphQL surface, so auth was neither
+								// accepted nor rejected. Report not-verified at WARN
+								// (honest verdict; --fail-on warn can trip on it).
+								report["credentials"] = fmt.Sprintf("WARN not verified (HTTP %d from GraphQL probe) — auth was neither accepted nor rejected; set auth.verify_query to a known-good viewer query", gqlAPIErr.StatusCode)
 							}
 						default:
 							report["credentials"] = fmt.Sprintf("error: %s", gqlErr)
@@ -1274,7 +1331,10 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 	switch {
 	case !haveAny && len(resources) == 0:
 		report["status"] = "empty"
-		report["hint"] = "Cache is empty; run '{{.Name}}-pp-cli sync' to hydrate."
+		// Only sync-tracked resources are counted here. A store seeded by
+		// other paths (built-in reference data, local writes) can hold rows
+		// while sync_state stays empty, so say what was measured.
+		report["hint"] = "No sync recorded; run '{{.Name}}-pp-cli sync' to hydrate API-backed resources. Rows written by other paths are not tracked in sync_state."
 	case fresh:
 		report["status"] = "fresh"
 	default:

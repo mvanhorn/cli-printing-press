@@ -71,7 +71,7 @@ Maintain a lightweight state file at `$STATE_FILE` so `/printing-press-score` ca
 
 `run_id` is the unique value allocated above from the wall-clock stamp plus a short random suffix. `mkdir "$CANDIDATE_RUN_DIR"` is the collision guard: if another run already owns a candidate directory, allocate another ID instead of reusing the directory. Persisting this value in `state.json` makes the state file the source of truth for generate, dogfood acceptance, promote, `/printing-press-score`, and future state-loading consumers. Without `run_id` in either state or legacy path fallback, `cli-printing-press dogfood --live --write-acceptance` refuses to write the gate marker.
 
-Do not create a `go.work` file in `$CLI_WORK_DIR`. Generated modules must build and test as standalone modules; a mismatched workspace `go` directive can break Go 1.25+ toolchains and lefthook checks. Editor/gopls workspace noise is cosmetic and must not be traded for broken `go build` or `go test`.
+Do not create a `go.work` file in `$CLI_WORK_DIR`. Generated modules must build and test as standalone modules; a mismatched workspace `go` directive can break Go 1.25+ toolchains and lefthook checks. Editor/gopls workspace noise is cosmetic and must not be traded for broken `go build` or `go test`. The generated test gate is `go test -count=1 ./...` so a warm Go test cache cannot satisfy a fresh proof.
 
 There are exactly three durable writable locations. Every generated artifact this
 skill preserves goes to one of them:

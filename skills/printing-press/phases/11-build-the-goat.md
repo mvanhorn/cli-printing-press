@@ -99,7 +99,8 @@ After building each command in Priority 1 and Priority 2, verify these 13 princi
 7. **Bounded responses**: `--compact` returns only high-gravity fields, list commands have `--limit`
 8. **Verify-friendly RunE**: Hand-written commands MUST NOT use `Args: cobra.MinimumNArgs(N)` or `MarkFlagRequired(...)`. Cobra evaluates both before RunE runs, so a `--dry-run` guard inside RunE cannot reach if those gates fail. Verify probes commands with `--dry-run` and expects exit 0; commands with hard arg/flag gates fail those probes. Instead: validate inside RunE, fall through to `cmd.Help()` only for unambiguous help-only invocations (no args and no flags), short-circuit on `dryRunOK(flags)` before any IO, and return `usageErr(...)` with exit 2 when required input is missing in real mode.
    - **Use string for "positional OR flag" commands**: when a command accepts a positional `<x>` OR a flag `--y` as alternatives (e.g., `snapshot <co>` or `snapshot --domain example.com`), declare `Use: "<cmd> [x]"` with **square brackets** (optional), not `<x>` (required). Validate "exactly one of x or --y" inside RunE. Required positionals declared with angle brackets break verify-skill recipes that use the flag-only form.
-   - **Declare verifier fixture inputs when generic values are not enough**: if the command needs realistic positional values or required flags to pass the verifier's happy path, add `Annotations: map[string]string{"pp:happy-args": "<item>=example-id;--query=example"}` or assign a whole initialized `cmd.Annotations` map after construction. The verifier consumes semicolon-separated tokens in order: `<label>=value` tokens overlay synthesized positional args, and `--flag=value` tokens overlay or add flag/value pairs. Commands without the annotation keep the generic synthesized inputs.
+   - **Declare verifier fixture inputs when generic values are not enough**: if the command needs realistic positional values or required flags to pass the verifier's happy path, add `Annotations: map[string]string{"pp:happy-args": "<item>=example-id;--query=example"}` or assign a whole initialized `cmd.Annotations` map after construction. The verifier consumes tokens separated by unescaped semicolons in order: escape a literal semicolon as `\;`. Positional tokens are `label=value` pairs — the label is discarded and the value becomes the positional, so `<item>=example-id` and `item=example-id` behave identically. **Bare values without `=` are silently ignored**, so write `item=example-id`, never just `example-id`; a missing `=` produces no fixture and the happy path silently skips. `--flag=value` tokens replace matching Example flags or add new flag/value pairs. Negative numeric flag values use the `--flag=-12.3` form. Commands without the annotation keep the generic synthesized inputs.
+   - **Local-store novel commands also need `pp:typed-exit-codes` to pass publish.** Publish's phase5 gate rejects novel features whose live-dogfood happy paths were skipped ("hollow coverage"). A local-only command (e.g. `entity report`, `monitor diff`) whose happy path returns a graceful not-found exit must declare both `Annotations: map[string]string{"pp:happy-args": "<name>=example", "pp:typed-exit-codes": "0,3"}` — the typed codes let the live matrix count the graceful-empty exit as a pass, and the happy-args give the matrix a real positional. Without both, `publish validate` fails with "phase5 acceptance has hollow coverage" and the whole publish loop restarts.
 9. **Side-effect commands stay quiet under verify**: Any hand-written command that performs a visible side effect (opens a browser tab, sends a notification, plays audio, dials out to an OS handler) MUST follow both halves of the convention:
    - **Print by default; opt in to the action.** The default behavior prints what would happen (`would launch: <url>`); a flag like `--launch` / `--send` / `--play` is required to actually do it. food52's `open` command is the reference shape — see `internal/cli/open.go` after retro #337.
    - **Short-circuit when `cliutil.IsVerifyEnv()` returns true.** The Printing Press verifier sets `PRINTING_PRESS_VERIFY=1` in every mock-mode subprocess; commands that ignore it can spam the user's environment during a verify pass even with the print-by-default flag pattern. The helper is generated into every CLI's `internal/cliutil/verifyenv.go`. Pattern:
@@ -177,8 +178,7 @@ func newScanFilterCmd(flags *rootFlags) *cobra.Command {
 				return cmd.Help()
 			}
 			if dryRunOK(flags) {
-				fmt.Fprintf(cmd.OutOrStdout(), "would scan up to %d pages for matching items\n", maxScanPages)
-				return nil
+				return writeDryRun(cmd.OutOrStdout(), flags, "scan")
 			}
 			if status == "" {
 				_ = cmd.Usage()
@@ -251,7 +251,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
         return cmd.Help()
     }
     if dryRunOK(flags) {
-        return nil
+        return writeDryRun(cmd.OutOrStdout(), flags, "<command name>")
     }
     if <required input missing> {
         _ = cmd.Usage()
@@ -261,21 +261,21 @@ RunE: func(cmd *cobra.Command, args []string) error {
 }
 ```
 
-Why each branch exists: the `len(args) == 0 && cmd.Flags().NFlag() == 0` branch handles an interactive `<cli> mycommand` help-only invocation without treating help as an error. The `dryRunOK` branch handles verify's `<cli> mycommand <fixture> --dry-run` probes before network or filesystem IO. The required-input branch handles non-help invocations where a mode or output flag is present (`--no-input`, `--agent`, `--json`) but the required ID, query, path, or other command input is still missing. Missing required input must print usage and return `usageErr(...)` so callers get exit code 2 instead of a silent rc=0 skip.
+Why each branch exists: the `len(args) == 0 && cmd.Flags().NFlag() == 0` branch handles an interactive `<cli> mycommand` help-only invocation without treating help as an error. The `dryRunOK` branch handles verify's `<cli> mycommand <fixture> --dry-run` probes before network or filesystem IO; it must end in `writeDryRun(cmd.OutOrStdout(), flags, "<command name>")` so `--dry-run --json` still produces a parseable envelope. The required-input branch handles non-help invocations where a mode or output flag is present (`--no-input`, `--agent`, `--json`) but the required ID, query, path, or other command input is still missing. Missing required input must print usage and return `usageErr(...)` so callers get exit code 2 instead of a silent rc=0 skip.
 
 For SQLite-backed novel commands only, add this missing-mirror guard after `dryRunOK(flags)`, after any required-input `usageErr(...)` check, and after `dbPath` is resolved, but before `store.OpenWithContext`, `store.OpenReadOnly`, `sql.Open`, or other SQLite access:
 
 ```go
 if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
 	fmt.Fprintf(cmd.ErrOrStderr(), "no local mirror at %s\nrun: <cli> sync --resources <resource> --db %s\n", dbPath, dbPath)
-	if flags.asJSON || flags.agent {
-		fmt.Fprintln(cmd.OutOrStdout(), "[]")
+	if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+		return printJSONFiltered(cmd.OutOrStdout(), make([]yourRowType, 0), flags)
 	}
 	return nil
 }
 ```
 
-The missing-mirror branch covers a different probe layer from `dryRunOK`: live execution without `--dry-run`, before the user has run `sync`. Return empty JSON (`[]`) for `--json` / `--agent` so agents receive a valid empty result instead of a SQLite open failure; print a human hint to stderr that names the sync command needed to populate the mirror. The unconditional `return nil` is intentional for both machine and human paths: a missing local mirror is an empty local-cache state, not a usage or API failure. Do not add this branch to novel commands that call live API endpoints directly or do not use the local store.
+The missing-mirror branch covers a different probe layer from `dryRunOK`: live execution without `--dry-run`, before the user has run `sync`. Route every non-human format through `printJSONFiltered` so agents receive a valid empty result instead of a SQLite open failure; print a human hint to stderr that names the sync command needed to populate the mirror. The unconditional `return nil` is intentional for both machine and human paths: a missing local mirror is an empty local-cache state, not a usage or API failure. Do not add this branch to novel commands that call live API endpoints directly or do not use the local store.
 
 Multi-positional commands (N >= 2 required args) must use a two-check shape so only the bare help probe returns exit 0:
 
@@ -393,11 +393,40 @@ The generator handles Priority 0 (data layer) and most of Priority 1 (absorbed A
 - `printAutoTable(w io.Writer, items []map[string]any) error` - render JSON-like rows as the generated human table format.
 - `defaultDBPath(name string) string` - resolve the local SQLite database path for `<name>`.
 - `dryRunOK(flags *rootFlags) bool` - detect verify-friendly `--dry-run` short-circuits before network, store, or filesystem work.
+- `writeDryRun(w io.Writer, flags *rootFlags, action string) error` - end a `--dry-run` short-circuit with a `{"dry_run":true,"action":...,"would":...}` envelope under `--json` and a prose line otherwise; pass `cmd.OutOrStdout()`. Never `return nil` silently from a dry-run branch: empty stdout under `--json` fails the live-dogfood `json_fidelity` check. Let it own the whole dry-run output — an extra prose write before it makes stdout unparseable under `--json`.
 - `boundCtx(parent context.Context, flags *rootFlags) (context.Context, context.CancelFunc)` - apply root `--timeout` to hand-written commands that call sibling typed clients instead of the generated `internal/client`.
 - `filterFields(data json.RawMessage, fields string) json.RawMessage` - apply `--select` to a JSON blob.
 - `compactFields(data json.RawMessage) json.RawMessage` - apply `--compact` to a JSON blob.
 - `isTerminal(w io.Writer) bool` - detect terminal output versus pipes.
 - `wantsHumanTable(w io.Writer, flags *rootFlags) bool` - detect when output should use the generated human table instead of machine JSON.
+
+**Empty results and output modes.** Any novel command that can return zero rows
+MUST choose the output mode before printing empty-result prose. Initialize
+list-shaped results with `make(..., 0)` so JSON mode emits `[]`, never `null`.
+Route JSON, agent, and CSV output through the generated helpers, and keep
+human-only empty-result prose inside the human branch:
+
+```go
+rows := make([]yourRowType, 0)
+// populate rows...
+if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+	return printJSONFiltered(cmd.OutOrStdout(), rows, flags)
+}
+if len(rows) == 0 {
+	// human-only empty-result prose; never write this before the machine branch
+	fmt.Fprintln(cmd.OutOrStdout(), "No matching items found.")
+	return nil
+}
+// Render the non-empty human table here.
+return nil
+```
+
+Do not put a `len(rows) == 0` prose return before the mode check, and do not
+manually branch only on `flags.asJSON`. `wantsHumanTable` covers `--json`,
+`--agent`, `--csv`, `--plain`, `--quiet`, `--compact`, `--select`, and piped
+output. The Phase 5 dogfood run must exercise a known zero-result case when
+available: `--json` and `--agent` stdout must parse as JSON, `--csv` must be an
+empty or valid CSV stream, and human mode may retain the explanatory prose.
 
 ```go
 // internal/cli/<command>.go — replace <command> with the kebab leaf
@@ -431,18 +460,21 @@ func newNovelXxxCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// Multi-word Commands like "issues stale": this constructor is registered as
-// a child of the matching spec-resource parent (newIssuesCmd) — wire the
-// AddCommand call inside root.go via local-variable capture:
-//   issuesCmd := newIssuesCmd(flags)
-//   issuesCmd.AddCommand(newNovelIssuesStaleCmd(flags))
-//   rootCmd.AddCommand(issuesCmd)
+// Multi-word Commands like "issues stale": register the child from the
+// preserved file through the novel hook. Resolve the generated parent by
+// its command path and use the duplicate-safe helper:
+//   registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+//       issuesCmd, _, err := root.Find([]string{"issues"})
+//       if err == nil {
+//           addNovelCommandIfAbsent(issuesCmd, newNovelIssuesStaleCmd(flags))
+//       }
+//   })
 // Leaf commands must declare every non-root flag used in their examples.
 // Use kebab-case flag names, such as --max-age instead of --maxAge, so the
 // generated CLI convention and verify-skill flag scanner stay aligned.
 // Do not rely on parent-local flags like --org or --project being accepted by
 // child commands unless the parent registered them with PersistentFlags().
-// Single-word Commands register directly: rootCmd.AddCommand(newNovelXxxCmd(flags)).
+// Single-word Commands use the same hook: addNovelCommandIfAbsent(root, newNovelXxxCmd(flags)).
 ```
 
 **RunE skeleton — API-call shape** (live data via a sibling typed client):
@@ -453,8 +485,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	}
 	if dryRunOK(flags) {
-		fmt.Fprintln(cmd.OutOrStdout(), "would fetch <resource>")
-		return nil
+		return writeDryRun(cmd.OutOrStdout(), flags, "<command name>")
 	}
 	ctx, cancel := boundCtx(cmd.Context(), flags)
 	defer cancel()
@@ -482,10 +513,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	// text extracted from HTML or schema.org JSON-LD; re-implementing
 	// HTML-entity unescape inline is the &#39; bug class.
 	var view yourViewType // = parse(data)
-	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		return enc.Encode(view)
+	if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+		return printJSONFiltered(cmd.OutOrStdout(), view, flags)
 	}
 	// Human/terminal output (table or pretty print).
 	return nil
@@ -502,8 +531,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	}
 	if dryRunOK(flags) {
-		fmt.Fprintln(cmd.OutOrStdout(), "would fetch <resource> details")
-		return nil
+		return writeDryRun(cmd.OutOrStdout(), flags, "<command name>")
 	}
 	ctx, cancel := boundCtx(cmd.Context(), flags)
 	defer cancel()
@@ -573,10 +601,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		AverageMetric: safeAverage(total, denominator),
 		FetchFailures: failures, // json tag: `json:"fetch_failures,omitempty"`
 	}
-	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		return enc.Encode(view)
+	if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+		return printJSONFiltered(cmd.OutOrStdout(), view, flags)
 	}
 	// Human/terminal output, including a visible partial-failure note.
 	for _, entry := range view.Items {
@@ -605,8 +631,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	}
 	if dryRunOK(flags) {
-		fmt.Fprintln(cmd.OutOrStdout(), "would query local store")
-		return nil
+		return writeDryRun(cmd.OutOrStdout(), flags, "<command name>")
 	}
 	ctx, cancel := boundCtx(cmd.Context(), flags)
 	defer cancel()
@@ -619,8 +644,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	}
 	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
 		fmt.Fprintf(cmd.ErrOrStderr(), "no local mirror at %s\nrun: <cli> sync --resources <resource> --db %s\n", dbPath, dbPath)
-		if flags.asJSON || flags.agent {
-			fmt.Fprintln(cmd.OutOrStdout(), "[]")
+		if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+			return printJSONFiltered(cmd.OutOrStdout(), make([]yourRowType, 0), flags)
 		}
 		return nil
 	}
@@ -671,10 +696,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		// Resolve IDs, expand child rows, or perform local joins, then append.
 		_ = raw
 	}
-	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		return enc.Encode(results)
+	if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+		return printJSONFiltered(cmd.OutOrStdout(), results, flags)
 	}
 	// Human/terminal output.
 	return nil
@@ -729,7 +752,7 @@ For an extension to be durable, put it in its own file beside the emitted one:
 - **Custom request headers** (vendor fingerprint, `X-CSRF`, app-version, signed timestamps): create `internal/client/<api>_headers.go` exporting a func that builds the header map; novel code passes that map to `client.GetWithHeaders` / `PostWithHeaders` when it calls the API. The generated `client.go` has no global request mutator, so this pattern only covers requests made directly from novel code — it does not intercept calls from generated endpoint commands. Do not edit the templated header block in `client.go`.
 - **Custom auth flow** (browser-sniffed sessions, vendor SSO, refresh hooks beyond OAuth2): create `internal/cli/<api>_auth.go` (package `cli`, same as the generated `auth.go`) with the API-specific token capture or refresh, and wire it from a novel command rather than editing the templated `auth.go` constructor functions (`newAuthLoginCmd`, `newAuthSetupCmd`, etc.). If the custom flow implements OAuth2 Authorization Code + PKCE, read [references/oauth2-pkce-cli-checklist.md](../references/oauth2-pkce-cli-checklist.md) before writing or reviewing the command.
 - **Extended store schema** (typed tables beyond `resources`, vendor JSON columns, full-text indexes): create `internal/store/<api>_migrations.go` running its own `CREATE TABLE ... IF NOT EXISTS` from a lazy init invoked by the novel commands that need it. Do not edit the migration slice in `store.go`.
-- **New novel command:** put the command body in its own `internal/cli/<feature>.go` file. Generated TODO scaffolds may refresh on `generate --force`; once you replace the TODO body with a real implementation, regen preserves that hand-authored file instead of re-emitting the scaffold. The `AddCommand` call wiring it into the Cobra tree still goes in `root.go` per the Phase 3 novel-command skeleton above; `cli-printing-press generate --force` re-injects it via the lost-registration merge path. Use standalone `regen-merge` when you want to inspect the merge report before applying. Spec-declared commands are picked up by the generator's typed-tool path and need no hand-wired `AddCommand` at all.
+- **New novel command:** put the command body and its `registerNovelCommand` hook in their own `internal/cli/<feature>.go` file. Generated TODO scaffolds may refresh on `generate --force`; once you replace the TODO body with a real implementation, regen preserves that hand-authored file instead of re-emitting the scaffold. Do not edit `root.go` for novel wiring. The hook file is preserved, and `generate --force` also re-injects any lost `AddCommand` call whose constructor remains in a preserved novel file. Use standalone `regen-merge` when you want to inspect the merge report before applying. Spec-declared commands are picked up by the generator's typed-tool path and need no hand-wired `AddCommand` at all.
 
 If an extension genuinely cannot live in a separate file (a `case` branch in a templated method switch, an inline modification to a generated handler with no registry hook), file a generator issue requesting the hook rather than depending on repeated conflict-prone merges. The `AddCommand` case above is covered by the merge path.
 
@@ -739,7 +762,7 @@ If an extension genuinely cannot live in a separate file (a `case` branch in a t
 - `cmd.Annotations["mcp:read-only"] = "true"` — declare that this command does not modify external state. The MCP server attaches `readOnlyHint: true` to the resulting tool, so hosts like Claude Desktop don't bucket it under "write/delete tools" and demand permission per call. Apply this to every novel command whose only effect is reading from the API or the local store: lookups, comparisons, aggregations, render-only views, status checks. Skip it for commands that mutate external state (orders, posts, deletes) or write to user-visible files outside the local cache.
 - `cmd.Annotations["mcp:write-positionals"] = "0"` — mark zero-based positional indexes that write to user-visible files when populated. Use this with `mcp:read-only` only when the command is otherwise read-only and the positional has a stdout-safe escape such as `-`. The MCP shell-out wrapper rejects non-stdout values for those positionals so a read-only-hinted tool cannot write files through the free-form `args` field. Use comma-separated indexes for multiple write sinks.
 
-Endpoint-mirror tools the generator emits from the spec already get the right annotations automatically (`GET` → read-only, `DELETE` → destructive, etc.) — `mcp:read-only` is only needed on hand-authored Cobra commands the spec doesn't cover.
+Endpoint-mirror tools the generator emits from the spec already get the right annotations automatically: `GET` is read-only by default, while an internal `mutation: true` field or OpenAPI `x-pp-mutation: true` marks a GET action as a write. The generator also conservatively recognizes clearly state-changing GET operation-name prefixes such as `start`, `stop`, `restart`, and `deploy`. `mcp:read-only` is only needed on hand-authored Cobra commands the spec doesn't cover.
 
 Do not rationalize skipping transcendence features because "the CLI already works for live API interaction." The absorb manifest was approved by the user. Build what was approved.
 

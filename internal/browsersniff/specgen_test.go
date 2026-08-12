@@ -314,6 +314,7 @@ func TestAnalyzeCapture_UsesCapturedCookieAuth(t *testing.T) {
 	assert.Equal(t, "Cookie", apiSpec.Auth.Header)
 	assert.Equal(t, "cookie", apiSpec.Auth.In)
 	assert.Equal(t, "spotify.com", apiSpec.Auth.CookieDomain)
+	assert.Equal(t, []string{"_session"}, apiSpec.Auth.Cookies)
 	assert.Equal(t, []string{"SPOTIFY_COOKIES"}, apiSpec.Auth.EnvVars)
 }
 

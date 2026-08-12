@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -48,6 +49,10 @@ type Client struct {
 	// API calls inside the 60s pre-expiry window don't all dial the token
 	// endpoint and race on Config field writes / file persistence.
 	ccMu *sync.Mutex
+}
+
+func (c *Client) IsDryRun() bool {
+	return c != nil && c.DryRun
 }
 
 // BindPlatformSession installs the result of the live fail-closed tenant gate.
@@ -319,6 +324,18 @@ func (c *Client) GetWithHeaders(ctx context.Context, path string, params map[str
 
 func (c *Client) GetWithHeadersValues(ctx context.Context, path string, params url.Values, headers map[string]string) (json.RawMessage, error) {
 	return c.GetWithHeaders(ctx, pathWithQueryValues(path, params), nil, headers)
+}
+
+// GetMutating issues a GET whose endpoint is explicitly classified as a
+// state-changing action. It deliberately bypasses the response cache and
+// carries mutation intent into the verify-mode transport gate.
+func (c *Client) GetMutating(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
+	return c.GetMutatingWithHeaders(ctx, path, params, nil)
+}
+
+func (c *Client) GetMutatingWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+	result, _, err := c.doMutation(ctx, "GET", path, params, nil, headers)
+	return result, err
 }
 
 // GetNoCache issues a GET that bypasses the cache read for this call only,
@@ -799,7 +816,7 @@ func sleepContext(ctx context.Context, wait time.Duration) error {
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
-	return c.doInternal(ctx, method, path, params, body, headerOverrides, false)
+	return c.doInternal(ctx, method, path, params, body, headerOverrides, false, false)
 }
 
 // doRead is do() minus the verify-mode mutating-verb gate. Used by the
@@ -809,17 +826,25 @@ func (c *Client) do(ctx context.Context, method, path string, params map[string]
 // but the verify-mode short-circuit does not fire because the operation
 // does not mutate remote state.
 func (c *Client) doRead(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
-	return c.doInternal(ctx, method, path, params, body, headerOverrides, true)
+	return c.doInternal(ctx, method, path, params, body, headerOverrides, true, false)
 }
 
-// doInternal is the shared implementation behind do() and doRead(). The
+func (c *Client) doMutation(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+	return c.doInternal(ctx, method, path, params, body, headerOverrides, false, true)
+}
+
+// doInternal is the shared implementation behind do(), doRead(), and
+// doMutation().
 // readOnlyIntent flag is set by doRead() callers (read-only POST/PUT/PATCH
 // operations like GraphQL queries) to skip the mutating-verb verify-mode
 // gate. Plain do() callers leave it false and get the usual short-circuit.
-func (c *Client) doInternal(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string, readOnlyIntent bool) (json.RawMessage, int, error) {
+// mutationIntent extends that gate to GET action endpoints whose wire method
+// is not itself a mutating verb.
+func (c *Client) doInternal(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string, readOnlyIntent bool, mutationIntent bool) (json.RawMessage, int, error) {
 	// Verify-mode transport-layer gate. When the verifier (or any consumer
-	// that sets PRINTING_PRESS_VERIFY=1) drives a mutating verb without
-	// the LIVE_HTTP=1 opt-in, return a synthetic envelope without dialing,
+	// that sets PRINTING_PRESS_VERIFY=1) drives a mutating verb or explicit
+	// mutation intent without the LIVE_HTTP=1 opt-in, return a synthetic
+	// envelope without dialing,
 	// minting auth, or touching the cache. The verify pipeline itself
 	// sets both env vars in mock mode so its httptest server still sees
 	// real requests; every other consumer gets a safe no-op.
@@ -833,7 +858,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	// minting, and the success-branch invalidateCache() call below — so
 	// no cache invalidation runs (no remote state changed) and no
 	// client_credentials mint happens unnecessarily.
-	if !readOnlyIntent && isMutatingVerb(method) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
+	if !readOnlyIntent && (mutationIntent || isMutatingVerb(method)) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
 		return verifyShortCircuitEnvelope(method, path), http.StatusOK, nil
 	}
 	if err := rejectUnresolvedPathParams(path, nil); err != nil {
@@ -865,9 +890,10 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	}
 
 	maxRetries := clientMaxRetries()
-	// Retry only methods that are safe to replay after an ambiguous transport
-	// failure or server error; a write may already have committed remotely.
-	canRetryAmbiguousFailure := readOnlyIntent || platform.CanRetryRequest(method, requestIdempotencyKey(c.Config, headerOverrides))
+	// Retry only operations that are safe to replay after an ambiguous
+	// transport failure or server error; a write may already have committed
+	// remotely even when its wire method is GET.
+	canRetryAmbiguousFailure := readOnlyIntent || (!mutationIntent && platform.CanRetryRequest(method, requestIdempotencyKey(c.Config, headerOverrides)))
 	endpointClass := safeEndpointClass(method, path)
 	retryPolicy, err := c.platformRetryPolicy(endpointClass)
 	if err != nil {
@@ -909,7 +935,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		if params != nil {
 			q := req.URL.Query()
 			for k, v := range params {
-				if v != "" {
+				if v != "" || method != "GET" {
 					q.Set(k, v)
 				}
 			}
@@ -933,7 +959,11 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			req.Header.Del(BinaryResponseHeader)
 		}
 		if req.Header.Get("User-Agent") == "" {
-			req.Header.Set("User-Agent", "printing-press-oauth2-pp-cli/1.0.0")
+			if ua := os.Getenv("PRINTING_PRESS_OAUTH2_USER_AGENT"); ua != "" {
+				req.Header.Set("User-Agent", ua)
+			} else {
+				req.Header.Set("User-Agent", "printing-press-oauth2-pp-cli/1.0.0")
+			}
 		}
 		// Go's net/http omits Accept by default; browsers, curl, and other
 		// stdlibs always send it. Fingerprint-checking WAFs (Imperva, Akamai,
@@ -967,7 +997,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			// timeout). Back off before retrying — same exponential schedule as
 			// the 5xx path below — so a brief outage does not burn every attempt
 			// in a tight loop. ctx cancellation breaks out of the wait at once.
-			if attempt < maxRetries && canRetryAmbiguousFailure {
+			if attempt < maxRetries && canRetryAmbiguousFailure && !isPermanentDNSError(err) {
 				wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 				if !retryWithinBudget(wait) {
 					return nil, 0, lastErr
@@ -998,7 +1028,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		// Success
 		if resp.StatusCode < 400 {
 			c.limiter.OnSuccess()
-			if method != http.MethodGet && !c.DryRun {
+			if !readOnlyIntent && (mutationIntent || method != http.MethodGet) && !c.DryRun {
 				c.invalidateCacheAfterMutation(path)
 			}
 			// Non-textual bodies (PDF, zip, image, octet-stream) must not be
@@ -1069,6 +1099,12 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			return nil, resp.StatusCode, &platform.RateLimitedError{
 				EndpointClass: endpointClass, Attempts: attempt + 1,
 				RetryAfter: wait, RequestID: requestID,
+				Cause: &cliutil.RateLimitError{
+					URL:        apiErr.Path,
+					RetryAfter: wait,
+					Body:       apiErr.Body,
+					Cause:      apiErr,
+				},
 			}
 		}
 
@@ -1120,7 +1156,7 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 	if params != nil {
 		keys := make([]string, 0, len(params))
 		for k := range params {
-			if params[k] != "" {
+			if params[k] != "" || method != "GET" {
 				keys = append(keys, k)
 			}
 		}
@@ -1501,15 +1537,12 @@ func sanitizeJSONResponse(body []byte) []byte {
 	return body
 }
 
-// maskToken redacts all but the last 4 characters of a token for safe display.
+// maskToken returns a fixed placeholder for a non-empty token.
 func maskToken(token string) string {
 	if token == "" {
 		return ""
 	}
-	if len(token) <= 4 {
-		return "****"
-	}
-	return "****" + token[len(token)-4:]
+	return "****"
 }
 
 type maskedError struct {
@@ -1611,4 +1644,24 @@ func clientMaxRetries() int {
 		return 0
 	}
 	return 3
+}
+
+// isPermanentDNSError identifies known resolver failures that cannot succeed
+// by replaying the request. Timeouts, explicitly temporary failures, and
+// otherwise unclassified DNS errors remain retryable.
+func isPermanentDNSError(err error) bool {
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) {
+		return false
+	}
+	if dnsErr.IsNotFound {
+		return true
+	}
+	if dnsErr.IsTimeout || dnsErr.IsTemporary {
+		return false
+	}
+	reason := strings.ToLower(strings.TrimSpace(dnsErr.Err))
+	// The generic "server misbehaving" text is also used for transient
+	// SERVFAIL responses, so only explicit refusal text is terminal here.
+	return strings.Contains(reason, "refused")
 }

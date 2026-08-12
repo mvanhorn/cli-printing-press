@@ -1249,7 +1249,17 @@ func TestProfileRequiredParamResourcesStayExplicitOnlyByDefault(t *testing.T) {
 		Resources: map[string]spec.Resource{
 			"items": {
 				Endpoints: map[string]spec.Endpoint{
-					"list": {Method: "GET", Path: "/items", Response: spec.ResponseDef{Type: "array"}},
+					"list": {
+						Method:   "GET",
+						Path:     "/items",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{{
+							Name:     "api_version",
+							In:       "header",
+							Type:     "string",
+							Required: true,
+						}},
+					},
 				},
 			},
 			"batch_prices": {
@@ -1680,6 +1690,64 @@ func TestProfileDependentResources_SharedSubResourceShardsByParent(t *testing.T)
 	reposDep := depsByName["repos_commits"]
 	assert.Equal(t, "repos", reposDep.ParentResource)
 	assert.Equal(t, "/repos/{repo_id}/commits", reposDep.Path)
+}
+
+func TestUniquifyDependentResourceNamesUpdatesDescendantParents(t *testing.T) {
+	deps := []DependentResource{
+		{Name: "shared_child", ParentResource: "root", Path: "/root/{root_id}/alpha/child", Method: "GET"},
+		{Name: "shared_child", ParentResource: "root", Path: "/root/{root_id}/beta/child", Method: "GET"},
+		{Name: "grandchildren", ParentResource: "shared_child", Path: "/root/{root_id}/alpha/child/{child_id}/grandchildren", parentPath: "/root/{root_id}/alpha/child", Method: "GET"},
+	}
+
+	uniquifyDependentResourceNames(deps, nil)
+
+	assert.Equal(t, "root_alpha_child", deps[0].Name)
+	assert.Equal(t, "root_beta_child", deps[1].Name)
+	assert.Equal(t, "root_alpha_child", deps[2].ParentResource)
+}
+
+func TestUniquifyDependentResourceNamesPreservesSyncableParents(t *testing.T) {
+	deps := []DependentResource{
+		{Name: "accounts", ParentResource: "accounts", Path: "/accounts/{account_id}/nested", Method: "GET"},
+		{Name: "accounts", ParentResource: "accounts", Path: "/accounts/{account_id}/other", Method: "GET"},
+		{Name: "items", ParentResource: "accounts", Path: "/accounts/{account_id}/nested/{nested_id}/items", Method: "GET"},
+	}
+
+	deps[2].parentPath = "/accounts"
+	uniquifyDependentResourceNames(deps, map[string]syncableMeta{"accounts": {Path: "/accounts"}})
+
+	assert.Equal(t, "accounts_nested", deps[0].Name)
+	assert.Equal(t, "accounts_other", deps[1].Name)
+	assert.Equal(t, "accounts", deps[2].ParentResource)
+}
+
+func TestUniquifyDependentResourceNamesRewiresToSpecificDependentParent(t *testing.T) {
+	deps := []DependentResource{
+		{Name: "accounts", ParentResource: "accounts", Path: "/accounts/{account_id}/nested", Method: "GET"},
+		{Name: "accounts", ParentResource: "accounts", Path: "/accounts/{account_id}/other", Method: "GET"},
+		{Name: "items", ParentResource: "accounts", Path: "/accounts/{account_id}/nested/{nested_id}/items", parentPath: "/accounts/{account_id}/nested", Method: "GET"},
+	}
+
+	uniquifyDependentResourceNames(deps, map[string]syncableMeta{"accounts": {Path: "/accounts"}})
+
+	assert.Equal(t, "accounts_nested", deps[0].Name)
+	assert.Equal(t, "accounts_other", deps[1].Name)
+	assert.Equal(t, "accounts_nested", deps[2].ParentResource)
+}
+
+func TestUniquifyDependentResourceNamesUsesDeterministicFallbacks(t *testing.T) {
+	deps := []DependentResource{
+		{Name: "shared_child", Path: "/root/{root_id}/alpha/child", Method: "GET"},
+		{Name: "shared_child", Path: "/root/{root_id}/beta/child", Method: "GET"},
+	}
+
+	uniquifyDependentResourceNames(deps, map[string]syncableMeta{
+		"root_alpha_child":     {},
+		"root_alpha_child_get": {},
+	})
+
+	assert.Equal(t, "root_alpha_child_2", deps[0].Name)
+	assert.Equal(t, "root_beta_child", deps[1].Name)
 }
 
 // TestProfileDependentResources_MultiParamParentPath confirms the walk-context
@@ -3279,6 +3347,140 @@ func TestProfilePagination_ExplicitBlockWinsOverInference(t *testing.T) {
 	profile := Profile(s)
 	assert.Equal(t, "foo", profile.Pagination.CursorParam, "explicit cursor_param must win")
 	assert.Equal(t, "bar", profile.Pagination.PageSizeParam, "explicit limit_param must win")
+}
+
+func TestProfilePaginationKeepsPageProfilesInternallyConsistent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		page spec.Pagination
+		want string
+	}{
+		{
+			name: "missing type",
+			page: spec.Pagination{CursorParam: "page", LimitParam: "per_page"},
+			want: "page",
+		},
+		{
+			name: "offset type on page parameter",
+			page: spec.Pagination{Type: "offset", CursorParam: "page", LimitParam: "per_page"},
+			want: "page",
+		},
+		{
+			name: "page type on offset parameter",
+			page: spec.Pagination{Type: "page", CursorParam: "offset", LimitParam: "limit"},
+			want: "offset",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &spec.APISpec{
+				Name: "consistent-page-profile",
+				Resources: map[string]spec.Resource{
+					"items": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/items",
+								Params:     []spec.Param{{Name: "page", Type: "integer"}, {Name: "per_page", Type: "integer"}},
+								Pagination: &tc.page,
+								Response:   spec.ResponseDef{Type: "array"},
+							},
+						},
+					},
+				},
+			}
+
+			profile := Profile(s)
+			assert.Equal(t, tc.want, profile.Pagination.CursorType)
+			require.Len(t, profile.SyncableResources, 1)
+			assert.Equal(t, tc.want, profile.SyncableResources[0].PaginationCursorType)
+		})
+	}
+}
+
+func TestProfilePaginationDetectsAscendingLastModifiedSort(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "sorted-incremental",
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/items",
+						Params: []spec.Param{
+							{Name: "after", Type: "string"},
+							{Name: "limit", Type: "integer"},
+							{Name: "updated_after", Type: "string"},
+							{Name: "sort", Type: "string", Default: "updated_at:asc", Description: "Sort by updated_at ascending."},
+						},
+						Pagination: &spec.Pagination{Type: "cursor", CursorParam: "after", LimitParam: "limit"},
+						Response:   spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	assert.Equal(t, "sort", profile.Pagination.SortParam)
+	assert.Equal(t, "updated_at:asc", profile.Pagination.SortValue)
+	require.Len(t, profile.SyncableResources, 1)
+	assert.Equal(t, "sort", profile.SyncableResources[0].PaginationSortParam)
+	assert.Equal(t, "updated_at:asc", profile.SyncableResources[0].PaginationSortValue)
+	assert.Equal(t, "updated_at", profile.SyncableResources[0].PaginationSortField)
+}
+
+func TestDetectEndpointSyncSortRejectsDescendingDefault(t *testing.T) {
+	endpoint := spec.Endpoint{
+		Description: "List items updated after a timestamp; ascending unless prefixed with -.",
+		Params: []spec.Param{
+			{Name: "updated_after", Type: "string"},
+			{Name: "sort", Type: "string", Default: "-updated_at", Description: "Sort by updated_at; ascending unless prefixed with -."},
+		},
+	}
+
+	param, value := detectEndpointSyncSort(endpoint)
+	assert.Empty(t, param)
+	assert.Empty(t, value)
+}
+
+func TestDetectEndpointSyncSortDoesNotConflateEndpointDescription(t *testing.T) {
+	endpoint := spec.Endpoint{
+		Description: "List items updated after a timestamp.",
+		Params: []spec.Param{
+			{Name: "updated_after", Type: "string"},
+			{Name: "sort", Type: "string", Default: "name:asc", Description: "Sort by any field in ascending order."},
+		},
+	}
+
+	param, value := detectEndpointSyncSort(endpoint)
+	assert.Empty(t, param, "an unrelated ascending field must not become watermark-safe")
+	assert.Empty(t, value)
+}
+
+func TestDetectEndpointSyncSortRequiresMatchingSinceField(t *testing.T) {
+	endpoint := spec.Endpoint{
+		Params: []spec.Param{
+			{Name: "updated_after", Type: "string"},
+			{Name: "sort", Type: "string", Default: "modified_at:asc"},
+		},
+	}
+
+	param, value := detectEndpointSyncSort(endpoint)
+	assert.Empty(t, param, "a different temporal field must not become watermark-safe")
+	assert.Empty(t, value)
+}
+
+func TestDetectEndpointSyncSortRequiresKnownSinceField(t *testing.T) {
+	endpoint := spec.Endpoint{
+		Params: []spec.Param{
+			{Name: "since", Type: "string"},
+			{Name: "sort", Type: "string", Default: "updated_at:asc"},
+		},
+	}
+
+	param, value := detectEndpointSyncSort(endpoint)
+	assert.Empty(t, param, "a generic since filter cannot prove which temporal field is sorted")
+	assert.Empty(t, value)
 }
 
 func TestProfileSyncableResourcePaginationDefaultsPreserveEndpointParams(t *testing.T) {

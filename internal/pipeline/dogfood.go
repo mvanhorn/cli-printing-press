@@ -206,6 +206,7 @@ type dogfoodAgentContext struct {
 type dogfoodAgentCommand struct {
 	Name        string                `json:"name"`
 	Annotations map[string]string     `json:"annotations,omitempty"`
+	Runnable    bool                  `json:"runnable,omitempty"`
 	Subcommands []dogfoodAgentCommand `json:"subcommands,omitempty"`
 }
 
@@ -270,6 +271,12 @@ func (s *openAPISpec) IsSynthetic() bool {
 }
 
 func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, error) {
+	canonicalDir, err := ResolveTargetDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	dir = canonicalDir
+
 	releaseHome, err := scopeSubprocessHome(findCLINames(dir)...)
 	if err != nil {
 		return nil, err
@@ -279,6 +286,13 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	cfg := dogfoodConfig{}
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if cfg.researchDir != "" {
+		canonicalResearchDir, err := ResolveTargetDir(cfg.researchDir)
+		if err != nil {
+			return nil, err
+		}
+		cfg.researchDir = canonicalResearchDir
 	}
 
 	resolvedSpec, specSource, overriddenCaller := resolveDogfoodSpec(dir, specPath)
@@ -457,8 +471,11 @@ func checkMCPSurfaceParity(cliDir string) MCPSurfaceResult {
 // the verified list back as novel_features_built so downstream consumers
 // (README, publish) only claim what actually exists.
 func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
+	if canonicalDir, err := ResolveTargetDir(cliDir); err == nil {
+		cliDir = canonicalDir
+	}
 	if researchDir == "" {
-		return NovelFeaturesCheckResult{Skipped: true}
+		researchDir = FindResearchDir(cliDir)
 	}
 	research, err := LoadResearch(researchDir)
 	if err != nil || len(research.NovelFeatures) == 0 {
@@ -595,7 +612,7 @@ func novelFeatureDepthMismatch(nf NovelFeature, paths map[string]bool) *NovelFea
 	if advertised == "" || matchPath(advertised, paths) {
 		return nil
 	}
-	actualPaths := leafMatchedPaths(advertised, paths)
+	actualPaths := exactLeafMatchedPaths(advertised, paths)
 	if len(actualPaths) == 0 {
 		return nil
 	}
@@ -655,6 +672,10 @@ func looksLikePrintedCLIBinary(token string) bool {
 }
 
 func leafMatchedPaths(plan string, paths map[string]bool) []string {
+	return matchedLeafPaths(plan, paths, commandLeavesMatch)
+}
+
+func matchedLeafPaths(plan string, paths map[string]bool, match func(string, string) bool) []string {
 	_, leaf := splitCommandPath(plan)
 	if leaf == "" {
 		return nil
@@ -665,12 +686,16 @@ func leafMatchedPaths(plan string, paths map[string]bool) []string {
 		if pathLeaf == "" {
 			continue
 		}
-		if commandLeavesMatch(leaf, pathLeaf) {
+		if match(leaf, pathLeaf) {
 			out = append(out, path)
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+func exactLeafMatchedPaths(plan string, paths map[string]bool) []string {
+	return matchedLeafPaths(plan, paths, func(a, b string) bool { return a == b })
 }
 
 func commandLeavesMatch(a, b string) bool {
@@ -3028,6 +3053,19 @@ func dogfoodExampleCommandPathsFromAgentContext(data []byte) ([][]string, error)
 	if err := json.Unmarshal(data, &ctx); err != nil {
 		return nil, err
 	}
+	var duplicates []string
+	seenRootNames := make(map[string]struct{}, len(ctx.Commands))
+	for _, command := range ctx.Commands {
+		if _, exists := seenRootNames[command.Name]; exists {
+			duplicates = append(duplicates, command.Name)
+		} else {
+			seenRootNames[command.Name] = struct{}{}
+		}
+		collectDuplicateDogfoodCommandNames(nil, command, &duplicates)
+	}
+	if len(duplicates) > 0 {
+		return nil, fmt.Errorf("duplicate sibling command names in agent-context: %s", strings.Join(duplicates, ", "))
+	}
 	var paths [][]string
 	for _, command := range ctx.Commands {
 		collectDogfoodExampleCommandPaths(nil, command, &paths)
@@ -3036,6 +3074,19 @@ func dogfoodExampleCommandPathsFromAgentContext(data []byte) ([][]string, error)
 		return strings.Join(paths[i], " ") < strings.Join(paths[j], " ")
 	})
 	return paths, nil
+}
+
+func collectDuplicateDogfoodCommandNames(prefix []string, command dogfoodAgentCommand, duplicates *[]string) {
+	seen := make(map[string]struct{}, len(command.Subcommands))
+	parentPath := strings.Join(append(prefix, command.Name), " ")
+	for _, subcommand := range command.Subcommands {
+		if _, exists := seen[subcommand.Name]; exists {
+			*duplicates = append(*duplicates, strings.TrimSpace(parentPath+" "+subcommand.Name))
+		} else {
+			seen[subcommand.Name] = struct{}{}
+		}
+		collectDuplicateDogfoodCommandNames(append(prefix, command.Name), subcommand, duplicates)
+	}
 }
 
 var dogfoodExampleCommandSkip = map[string]bool{
@@ -3250,6 +3301,25 @@ func listGoFiles(dir string) []string {
 			continue
 		}
 		files = append(files, filepath.Join(dir, name))
+	}
+	sort.Strings(files)
+	return files
+}
+
+// Dead-code analysis needs non-test files for definitions while counting usage
+// across both production and test files.
+func listGoTestFiles(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var files []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		files = append(files, filepath.Join(dir, entry.Name()))
 	}
 	sort.Strings(files)
 	return files

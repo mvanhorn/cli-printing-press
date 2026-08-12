@@ -43,6 +43,20 @@ Every hand-written novel command must declare its strategy in a Go line comment:
 
 Use exactly one of `auto`, `local`, `live`, or `computed`. Keep `auto` when the command honors `--data-source auto|local|live` by preferring live data with a local fallback; use `local` for local-only reads, `live` for remote-only reads, and `computed` for pure computation from embedded rules. Change a generated scaffold's `auto` default deliberately when its implementation has a narrower source, and reject incompatible `--data-source` requests with a clear error. TODO stubs still fail dogfood even when annotated.
 
+## Platform Credential References
+
+Normal API authentication is separate from optional platform-source credential
+resolution. If this CLI uses indirect references for a tenant-gated platform
+source, add the downstream registration in a preserved hand-authored file
+under `internal/cli/` and provide both `CredentialResolverFactory` and
+`ValidateSourceProfile` on `platformSourceRegistration` for any selected source
+that has references. A source with no references may omit both hooks and receives
+an empty credential map. Keep reference values opaque to shared profile code,
+validate only the selected source in the downstream hook, and never persist
+resolved credential bytes. Do not edit generator-owned `internal/platform`
+packages; a reprint refreshes those files while retaining the downstream
+registration file.
+
 For install, auth, examples, and longer product guidance, read `README.md` and `SKILL.md`. This file intentionally stays small so repo-local agents get invariant local guidance without duplicating the generated docs.
 
 ## Release Ledger

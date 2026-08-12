@@ -177,6 +177,13 @@ func TestNovelFeatureDepthMismatch(t *testing.T) {
 			paths:   map[string]bool{},
 			want:    nil,
 		},
+		{
+			name:    "unrelated hyphenated leaf is not a depth mismatch",
+			command: "dns",
+			example: `godaddy-pp-cli dns`,
+			paths:   map[string]bool{"zones dns-records": true},
+			want:    nil,
+		},
 	}
 
 	for _, tc := range cases {

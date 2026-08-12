@@ -20,10 +20,12 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-roles` | root or `info` | `APISpec.Roles` | No |
 | `x-tier-routing` | root or `info` | `APISpec.TierRouting` | No |
 | `x-rate-class` | root or `info` | `APISpec.RateClass` | No |
+| `x-pp-default-rate-limit` | root or `info` | `APISpec.DefaultRateLimit` | No |
 | `x-mcp` | root or `info` | `APISpec.MCP` | No |
 | `x-cache` | root or `info` | `APISpec.Cache` | No |
 | `x-learn` | root or `info` | `APISpec.Learn` | No |
 | `x-pp-query` | root | `APISpec.QuerySync` | No |
+| `x-pp-response-envelope` | root or `info` | `APISpec.ResponseEnvelopeKey` | No |
 | `x-auth-type` | `components.securitySchemes.<name>` | `APISpec.Auth.Type` | No |
 | `x-auth-format` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
 | `x-prefix` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
@@ -50,10 +52,12 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-pp-example` | operation | `Endpoint.Example` (verbatim Cobra example override) | No |
 | `x-pp-resource` | operation | resource name override | No |
 | `x-pp-pagination` | operation | `Endpoint.Pagination` | No |
+| `x-pp-mutation` | operation | `Endpoint.Mutation` | No |
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 | `x-pp-dispatch-param` | parameter | `Param.DispatchParam` | No |
-| `x-pp-tenant-scope-column` | path item | *reserved for follow-up tenant-scoped reconcile; not parsed yet* | No |
+| `x-pp-tenant-scope-column` | path item | `Endpoint.TenantScopeColumn` | No |
+| `x-pp-membership-field` | path item | `Endpoint.MembershipField` | No |
 
 ## `info` Extensions
 
@@ -254,6 +258,36 @@ info:
   x-rate-class: monthly
 ```
 
+### `x-pp-default-rate-limit`
+
+Sets the built-in default for the generated CLI's `--rate-limit` flag from an
+OpenAPI spec, mirroring the internal YAML `default_rate_limit` field.
+
+Parsed field: `APISpec.DefaultRateLimit`
+
+Rules:
+- Optional.
+- May be declared at the OpenAPI root or under `info`. Root takes precedence
+  when both are present.
+- The value is either the string `"auto"` (case-insensitive) or a non-negative
+  number (a JSON number or a numeric string). Any other shape is rejected with
+  a validation error.
+- `"auto"` selects the header-driven adaptive limiter so the CLI paces itself
+  to the server's `X-Ratelimit-*` headers with no hardcoded ceiling. A numeric
+  value (e.g. `2`) pins a fixed requests-per-second ceiling.
+- When absent, the legacy provenance default applies (2 for sniffed specs, else
+  0 = disabled). This only sets the default; the generated `--rate-limit` flag
+  still overrides it at runtime.
+
+Example:
+
+```yaml
+info:
+  title: Throttled API
+  version: "1.0"
+  x-pp-default-rate-limit: auto
+```
+
 ### `x-mcp`
 
 Declares MCP server shape for the generated CLI. Mirrors the internal YAML
@@ -413,6 +447,30 @@ paths:
         - { name: url, in: query, required: false, schema: { type: string } }
 ```
 
+### `x-pp-response-envelope`
+
+Declares the exact top-level key used by an API's single-key JSON response
+wrapper, such as `result` in `{"result": {"items": [...]}}`. The generated
+client removes that wrapper before the response reaches commands, pagination,
+or sync. This is opt-in because a top-level key can also be part of a
+legitimate payload.
+
+Parsed field: `APISpec.ResponseEnvelopeKey`
+
+Rules:
+- Optional. Specs without this extension keep the response body unchanged.
+- Declared at the OpenAPI root or under `info`.
+- Must be a string; surrounding whitespace is trimmed.
+- Unwrapping applies only to successful JSON responses whose body is an object
+  with exactly one property matching the configured key. Other bodies pass
+  through unchanged.
+
+Example:
+
+```yaml
+x-pp-response-envelope: result
+```
+
 ### `x-pp-query`
 
 Declares the SQL-query-endpoint sync shape (QuickBooks Online, Salesforce SOQL):
@@ -515,30 +573,33 @@ info:
 
 ### `x-pp-tenant-scope-column`
 
-Declares, on a parent collection's list path-item, the column or field name
-that identifies the tenant (e.g. workspace) scope for each row returned by
-that collection. Use it on list path-items whose synced rows are partitioned
-by a workspace or organization identifier, so that a future deletion-
-reconciliation pass can target only the rows belonging to the active tenant
-rather than pruning the entire table.
+Declares, on a collection's list path-item, the column or field name that
+identifies the tenant (e.g. workspace) scope for each row returned by that
+collection. It is self-declaring: the annotated collection's own rows carry
+this column. Use it on list path-items whose synced rows are partitioned by a
+workspace or organization identifier.
 
-This extension is **reserved and forward-looking**. It is consumed by the
-upcoming tenant-scoped deletion-reconciliation and flat fan-out work; the
-follow-up parser will map it to a `tenantScopeColumn` field on the profiled
-resource. The extension is **not parsed in the current release** and has no
-effect on generated output today. Specs without it are unaffected.
+Parsed field: `Endpoint.TenantScopeColumn`
+
+The value flows into the resource profile and is consumed in two places:
+- **Tenant-scoped dependent fan-out** (parent tables): a parent collection
+  carrying a tenant column is surfaced via `APIProfile.TenantScopedParents()`
+  into the generated `parentTenantScopeColumns` map, so dependent fan-out
+  targets only rows belonging to the active tenant.
+- **Flat tenant-scoped reconcile**: a flat resource becomes reconcilable
+  (`ReconcileMode = "flat"`) only when it carries a tenant column, has a
+  stable primary key, and is not routed through a discriminator dispatcher;
+  otherwise it stays `"none"`.
 
 Rules:
-- Optional. Absence means no tenant scoping is recorded; the current release
-  behavior is unchanged.
+- Optional. Absence means no tenant scoping is recorded for the collection.
 - Placed on the list path-item object (same level as `get:`, `post:`, etc.),
   not on an individual operation.
-- Value must be a non-empty string naming the response field that holds the
-  tenant scope (e.g. `workspace`, `workspace_slug`, `org_id`).
-- Only one column per path-item is meaningful; the field names the foreign-key
-  column whose values identify tenant boundaries in the synced rows.
-- Has no effect this round; the parser will begin reading it in the follow-up
-  tenant-scoped reconcile task.
+- Must be a string naming the response field that holds the tenant scope
+  (e.g. `workspace`, `workspace_slug`, `org_id`); non-string values are
+  ignored with a warning.
+- The field names the foreign-key column whose values identify tenant
+  boundaries in the synced rows.
 
 Example:
 
@@ -549,6 +610,40 @@ paths:
     get:
       operationId: list_projects
       summary: List or retrieve projects
+```
+
+### `x-pp-membership-field`
+
+Declares, on a parent collection's list path-item, the boolean field in that
+collection's own row payload that indicates whether the authenticated user is a
+member of the resource (e.g. `is_member`). Dependent fan-out over the parent
+table skips rows whose field is false — their sub-resources would 403 — so a
+sync reports one clear "not a member" summary instead of a 403 per
+(sub-resource, parent).
+
+Parsed field: `Endpoint.MembershipField`
+
+Rules:
+- Optional. Absence means no membership filtering is recorded.
+- Placed on the list path-item object (same level as `get:`, `post:`, etc.),
+  not on an individual operation.
+- Must be a string naming a boolean field in the row payload; non-string
+  values are ignored with a warning.
+- The field name must be a simple identifier (`^[a-zA-Z_][a-zA-Z0-9_]*$`). It
+  is interpolated into the generated store's non-member query, so dotted or
+  nested-path field names are rejected at runtime and the membership skip
+  becomes a no-op rather than filtering rows.
+- Consumed by the profiler when building dependent-sync resource metadata.
+
+Example:
+
+```yaml
+paths:
+  /workspaces/:
+    x-pp-membership-field: is_member
+    get:
+      operationId: list_workspaces
+      summary: List workspaces
 ```
 
 ### `x-path-template-env-vars`
@@ -909,12 +1004,13 @@ components:
 ### `x-auth-subtype`
 
 Refines `Auth.Type` for runtime flows that need a different credential-capture
-path than the base type implies. Today the only recognized value is
-`auth0_spa_in_memory`: a bearer-token spec whose access token is held by the
-Auth0 SPA SDK with `cacheLocation: memory`. Cookie/localStorage extractors have
-no path to such a token (it lives in JS heap only), so the generator emits a
-`--auth0-spa` flag on `auth login --chrome` that drives a Chrome DevTools
-Protocol outbound-Authorization interceptor instead.
+path than the base type implies. Recognized values include
+`google_service_account`, which selects the generated Google service-account
+JWT bearer exchange scaffold, and `auth0_spa_in_memory`, a bearer-token spec
+whose access token is held by the Auth0 SPA SDK with `cacheLocation: memory`.
+Cookie/localStorage extractors have no path to the latter token (it lives in JS
+heap only), so the generator emits a `--auth0-spa` flag on `auth login --chrome`
+that drives a Chrome DevTools Protocol outbound-Authorization interceptor.
 
 Parsed field: `APISpec.Auth.Subtype`
 
@@ -922,9 +1018,13 @@ Rules:
 
 - Optional.
 - Must be a string.
-- Recognized values: `auth0_spa_in_memory`. Other values are silently dropped
+- Recognized values: `google_service_account`, `auth0_spa_in_memory`. Other values are silently dropped
   by the parser; the in-spec value never round-trips unless it matches a known
   subtype.
+- `google_service_account` is valid only with a bearer-token auth type. It
+  emits `auth service-account`, accepts a service-account JSON key through
+  `GOOGLE_APPLICATION_CREDENTIALS`, and supports a pre-minted bearer override
+  through `GOOGLE_OAUTH_ACCESS_TOKEN`.
 - Spec-level validation rejects `auth.subtype: auth0_spa_in_memory` paired with
   any non-empty `auth.type` other than `bearer_token`. Auth0 SPA tokens are
   always Authorization-bearer values; combining the subtype with `api_key` or
@@ -1338,6 +1438,35 @@ paths:
           description: OK
 ```
 
+### `x-pp-mutation`
+
+Marks an operation as mutating even when its HTTP method is normally treated as
+read-only, such as a GET action that starts, stops, restarts, deploys, or
+otherwise changes remote state.
+
+Parsed field: `Endpoint.Mutation`
+
+Rules:
+- Optional.
+- Defaults to `false`.
+- Must be a native boolean.
+- Applies only at the operation level.
+- When `true`, the generator classifies the endpoint as a mutation before
+  applying HTTP-verb and operation-name fallbacks.
+
+Example:
+
+```yaml
+paths:
+  /applications/{id}/restart:
+    get:
+      operationId: restartApplication
+      x-pp-mutation: true
+      responses:
+        "204":
+          description: Restarted
+```
+
 ### `x-tier`
 
 Selects a tier declared by `x-tier-routing` for a path item or one operation.
@@ -1569,8 +1698,12 @@ Rules:
 - Must be on an operation, not the root, `info`, or path item.
 - Must be a string in the runtime annotation format consumed by
   `pp:happy-args`.
-- Tokens are semicolon-separated. `<label>=value` overlays synthesized
-  positional args, and `--flag=value` overlays or adds flag/value pairs.
+- Tokens are separated by unescaped semicolons. Escape a literal semicolon as
+  `\;` (write `\\;` inside a YAML double-quoted string). `<label>=value`
+  or `label=value` overlays synthesized positional args, and `--flag=value` replaces the
+  matching example flag or adds a new flag/value pair.
+- Negative numeric flag values are emitted in `--flag=-12.3` form so Cobra
+  does not parse the value as a shorthand flag cluster.
 - Empty or whitespace-only values behave the same as absence.
 
 Example:

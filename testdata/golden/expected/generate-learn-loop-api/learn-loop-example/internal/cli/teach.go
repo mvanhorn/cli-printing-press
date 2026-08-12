@@ -185,8 +185,7 @@ emits the user-facing response: silent on success, errors only to
 the CLI state directory's teach.log, safe to fire-and-forget.
 
 Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
-		Example: `  learn-loop-example-pp-cli teach --query "<question>" --resource-type <type> \
-    --resource <id> --resource <id> &`,
+		Example: `  learn-loop-example-pp-cli teach --query "<question>" --resource-type <type> --resource <id> --resource <id> &`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
@@ -194,7 +193,7 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 				return nil
 			}
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(cmd.OutOrStdout(), flags, "teach")
 			}
 			if strings.TrimSpace(query) == "" {
 				writeTeachErrLog(fmt.Sprintf("teach: missing --query (args=%v resources=%v)", args, resources))
@@ -475,7 +474,7 @@ when learnings exist.`,
 				return cmd.Help()
 			}
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(cmd.OutOrStdout(), flags, "recall")
 			}
 			query := strings.Join(args, " ")
 			envelope := recallEnvelope{
@@ -619,7 +618,7 @@ func newLearningsCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Command
 		Short: "Inspect or forget the local search_learnings table",
 		Long: `Surface for browsing, filtering, and deleting rows in the
 search_learnings table that the LLM populates via the 'teach' command.`,
-		Annotations: map[string]string{"mcp:read-only": "true"},
+		Annotations: map[string]string{"mcp:read-only": "true", "pp:parent-group": "true"},
 		RunE:        parentNoSubcommandRunE(flags),
 	}
 	cmd.AddCommand(newLearningsListCmd(flags))
@@ -698,7 +697,7 @@ func newLearningsListCmd(flags *rootFlags) *cobra.Command {
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(cmd.OutOrStdout(), flags, "learnings list")
 			}
 			if warningsOnly {
 				var filterIDs []string
@@ -807,7 +806,7 @@ Requires at least one of --resource, --action, or --all.`,
 				return cmd.Help()
 			}
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(cmd.OutOrStdout(), flags, "learnings forget")
 			}
 			query := strings.Join(args, " ")
 			dbPath = learnDBPath(dbPath)
@@ -895,15 +894,10 @@ substitute live query entities into a resource template, so a pattern
 with query_template="items in {entity}" and
 resource_template="GROUP-{entity:category}" generalizes one teach into
 a whole family.`,
-		Example: `  learn-loop-example-pp-cli teach-pattern \
-    --query-template "items in {entity}" \
-    --resource-template "GROUP-{entity:category}" \
-    --resource-type "items" \
-    --entity-kind "category" \
-    --strategy substitute`,
+		Example: `  learn-loop-example-pp-cli teach-pattern --query-template "items in {entity}" --resource-template "GROUP-{entity:category}" --resource-type "items" --entity-kind "category" --strategy substitute`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(cmd.OutOrStdout(), flags, "teach-pattern")
 			}
 			if noLearnActive(flags) {
 				return nil
@@ -987,7 +981,7 @@ cannot be taught — they are derived from the canonical input.`,
 		Example: `  learn-loop-example-pp-cli teach-lookup --kind country --canonical "United States" --value USA`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
-				return nil
+				return writeDryRun(cmd.OutOrStdout(), flags, "teach-lookup")
 			}
 			if noLearnActive(flags) {
 				return nil

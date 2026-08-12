@@ -12,23 +12,23 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newLoadCmd(flags *rootFlags) *cobra.Command {
+func new{{.CommandConstructor}}Cmd(flags *rootFlags) *cobra.Command {
 	var dbPath string
 	var limit int
 
 	cmd := &cobra.Command{
-		Use:   "load",
+		Use:   {{printf "%q" (index .CommandNames "load")}},
 		Short: "Show workload distribution per assignee",
 		Long: `Analyze locally synced data to show how many items are assigned to each
 person. Helps identify overloaded team members and unbalanced workload.`,
 		Example: `  # Show workload distribution
-  {{.Name}}-pp-cli load
+  {{.Name}}-pp-cli {{index .CommandNames "load"}}
 
   # Limit results
-  {{.Name}}-pp-cli load --limit 10
+  {{.Name}}-pp-cli {{index .CommandNames "load"}} --limit 10
 
   # Output as JSON
-  {{.Name}}-pp-cli load --json`,
+  {{.Name}}-pp-cli {{index .CommandNames "load"}} --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dbPath == "" {
@@ -41,7 +41,9 @@ person. Helps identify overloaded team members and unbalanced workload.`,
 			}
 			defer db.Close()
 
+			{{- if .HasSync }}
 			maybeEmitSyncHints(cmd, db, "", flags.maxAge)
+			{{- end }}
 
 			// Build user name lookup from synced users
 			userNames := map[string]string{}

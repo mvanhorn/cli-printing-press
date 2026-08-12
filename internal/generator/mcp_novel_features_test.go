@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -244,6 +245,68 @@ func TestFrameworkCommandClassificationIsTopLevelOnly(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "framework_depth_test.go"), []byte(testSrc.String()), 0o644))
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree")
+}
+
+func TestMCPEndpointToolsHiddenPreservesNovelDescendantReachability(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("surfacecheck")
+	apiSpec.MCP = spec.MCPConfig{EndpointTools: "hidden"}
+	apiSpec.Resources = map[string]spec.Resource{
+		"orders": {
+			Description: "Manage orders",
+			Endpoints: map[string]spec.Endpoint{
+				"list":   {Method: "GET", Path: "/orders", Description: "List orders"},
+				"create": {Method: "POST", Path: "/orders", Description: "Create order"},
+			},
+		},
+		"customers": {
+			Description: "Single-endpoint customers resource",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/customers", Description: "List customers"},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "surfacecheck-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{{
+		Name:        "Order triage",
+		Command:     "orders triage",
+		Description: "Prioritize orders that need attention.",
+		Rationale:   "Combines multiple order signals.",
+	}}
+	require.NoError(t, gen.Generate())
+
+	const runtimeTest = `package mcp
+
+import (
+	"testing"
+
+	"github.com/mark3labs/mcp-go/server"
+)
+
+func TestEndpointToolsHiddenSurfaceReachability(t *testing.T) {
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterTools(s)
+	tools := s.ListTools()
+	if _, ok := tools["orders_triage"]; !ok {
+		t.Fatalf("novel descendant missing from MCP tools: %#v", tools)
+	}
+	if _, ok := tools["orders"]; ok {
+		t.Fatalf("API resource grouping command leaked into MCP tools: %#v", tools)
+	}
+	for _, endpointTool := range []string{"orders_list", "orders_create", "customers_list"} {
+		if _, ok := tools[endpointTool]; ok {
+			t.Fatalf("endpoint tool %q leaked into MCP tools: %#v", endpointTool, tools)
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "surface_reachability_test.go"), []byte(runtimeTest), 0o644))
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/...", "-run", "TestEndpointToolsHiddenSurfaceReachability|TestRegisterAllDescendsThroughCobraHiddenButPrunesMCPHidden")
 }
 
 func TestMCPCobraTreeSiblingCLIPathUsesWindowsExecutableSuffix(t *testing.T) {

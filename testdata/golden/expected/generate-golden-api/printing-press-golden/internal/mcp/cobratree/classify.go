@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	EndpointAnnotation = "pp:endpoint"
-	HiddenAnnotation   = "mcp:hidden"
+	EndpointAnnotation    = "pp:endpoint"
+	HiddenAnnotation      = "mcp:hidden"
+	APIResourceAnnotation = "pp:api-resource"
 	// ReadOnlyAnnotation, when set on a Cobra command to "true"/"1"/"yes",
 	// causes the runtime walker to register the resulting MCP tool with
 	// readOnlyHint=true. Use for novel CLI commands that don't mutate
@@ -40,6 +41,7 @@ type commandKind int
 const (
 	commandNovel commandKind = iota
 	commandEndpoint
+	commandGroup
 	commandFramework
 	commandHidden
 )
@@ -88,6 +90,9 @@ func classify(cmd *cobra.Command) commandKind {
 	}
 	if endpointID(cmd) != "" {
 		return commandEndpoint
+	}
+	if annotationIsTrue(cmd, APIResourceAnnotation) {
+		return commandGroup
 	}
 	if isTopLevelFrameworkCommand(cmd) {
 		return commandFramework

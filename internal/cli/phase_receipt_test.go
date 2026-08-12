@@ -175,3 +175,75 @@ func TestPhaseReceiptCompleteRejectsSkipWithNext(t *testing.T) {
 	})
 	require.ErrorContains(t, root.Execute(), "--next cannot be combined with --skip")
 }
+
+func TestPhaseReceiptStopFailedRequiresExplicitResume(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
+	_, _, err := pipeline.InitPhaseReceipts(pipeline.PhaseReceiptOptions{
+		Path:  path,
+		RunID: "run-123",
+		Phase: "02-run-initialization",
+	})
+	require.NoError(t, err)
+	_, _, err = pipeline.EnterPhase(pipeline.PhaseReceiptOptions{
+		Path:  path,
+		RunID: "run-123",
+		Phase: "03-resolve-and-reuse",
+	})
+	require.NoError(t, err)
+
+	var stdout bytes.Buffer
+	root := NewRootCommand(CanonicalBinaryName)
+	root.SetOut(&stdout)
+	root.SetArgs([]string{
+		"phase-receipt", "stop",
+		"--file", path,
+		"--run-id", "run-123",
+		"--phase", "03-resolve-and-reuse",
+		"--failed",
+		"--note", "generation failed",
+	})
+	require.NoError(t, root.Execute())
+
+	var stopped struct {
+		Recorded bool                  `json:"recorded"`
+		Receipt  pipeline.PhaseReceipt `json:"receipt"`
+	}
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &stopped))
+	assert.True(t, stopped.Recorded)
+	assert.Equal(t, pipeline.PhaseReceiptFailed, stopped.Receipt.Event)
+	assert.Equal(t, "generation failed", stopped.Receipt.Note)
+
+	root = NewRootCommand(CanonicalBinaryName)
+	root.SetOut(&bytes.Buffer{})
+	root.SilenceErrors = true
+	root.SilenceUsage = true
+	root.SetArgs([]string{
+		"phase-receipt", "enter",
+		"--file", path,
+		"--run-id", "run-123",
+		"--phase", "03-resolve-and-reuse",
+	})
+	require.ErrorContains(t, root.Execute(), "pass --resume")
+
+	stdout.Reset()
+	root = NewRootCommand(CanonicalBinaryName)
+	root.SetOut(&stdout)
+	root.SetArgs([]string{
+		"phase-receipt", "enter",
+		"--file", path,
+		"--run-id", "run-123",
+		"--phase", "03-resolve-and-reuse",
+		"--resume",
+	})
+	require.NoError(t, root.Execute())
+
+	var resumed struct {
+		Recorded bool                  `json:"recorded"`
+		Receipt  pipeline.PhaseReceipt `json:"receipt"`
+	}
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &resumed))
+	assert.True(t, resumed.Recorded)
+	assert.Equal(t, pipeline.PhaseReceiptEntered, resumed.Receipt.Event)
+}

@@ -8,7 +8,7 @@ This repo is **the machine** (generator, templates, binary, skills) that produce
 - **Don't change the machine for one CLI's edge case.** If a fix helps one API but breaks another, guard it with a clear conditional or leave it as a printed-CLI fix.
 - **Don't hardcode API/site names in reusable artifacts.** Skills, templates, generator code, prompts, and shared docs must use placeholders (`<api>`, `<site>`, "the target site") unless the text is explicitly an example or test fixture.
 - **Update dependent verifiers in the same change.** A new generator capability that affects scoring requires a scorer update; one that changes the MCP surface requires an audit update.
-When iterating on a printed CLI to discover issues, label findings as systemic (retro candidate) vs specific (printed-CLI fix).
+When iterating on a printed CLI to discover issues, classify findings as systemic (retro candidate) vs specific (printed-CLI fix).
 
 ### Anti-reimplementation
 A printed CLI wraps an API; it does not replace one. Novel-feature commands must call the real endpoint or read from the local store populated by sync.
@@ -90,6 +90,31 @@ Required before handoff:
 
 If the "obvious" fix violates a parser, verifier, scorer, or printed-CLI invariant, stop and resolve the invariant conflict rather than shipping a narrow band-aid.
 
+#### Emitted code that touches the developer's home requires a field proof
+
+CI proves the emitted code compiles and passes on a clean Linux runner. It does not prove the code leaves a populated home directory alone. When the change touches emitted code that resolves user paths or credentials (`HOME` / `USERPROFILE` lookups, `internal/cliutil` path and credential helpers, emitted `*_test.go` helpers), prove it against a real print before handoff.
+
+Point the proof at a **decoy profile, never your own home**. The snapshot below detects an escape after it lands, so a run against live credentials destroys them and only then reports it.
+
+```bash
+DECOY=$(mktemp -d)
+mkdir -p "$DECOY"/.config "$DECOY"/.local/share "$DECOY"/.local/state
+echo sentinel > "$DECOY"/.config/sentinel   # an escape needs something to clobber
+export HOME="$DECOY" USERPROFILE="$DECOY" \
+       XDG_CONFIG_HOME="$DECOY/.config" XDG_DATA_HOME="$DECOY/.local/share" \
+       XDG_STATE_HOME="$DECOY/.local/state" XDG_CACHE_HOME="$DECOY/.cache"
+
+go build -o ./cli-printing-press ./cmd/cli-printing-press
+./cli-printing-press generate --spec ./testdata/stytch.yaml --output "$DECOY/print/stytch-pp-cli"
+find "$DECOY"/.config "$DECOY"/.local -type f | sort | xargs md5sum > "$DECOY/before.txt"
+(cd "$DECOY/print/stytch-pp-cli" && go test ./...)
+find "$DECOY"/.config "$DECOY"/.local -type f | sort | xargs md5sum | diff "$DECOY/before.txt" -
+```
+
+A byte-identical snapshot is the pass condition.
+
+Redirect **both** `HOME` and `USERPROFILE`, plus the `XDG_*` variables. On Windows the production resolver reads `USERPROFILE`, so redirecting only `HOME` leaves the real profile exposed, which is the exact shape of the escape this proof exists to catch.
+
 ## Cross-repo dependency: published-library sweep tool
 
 When a change to `internal/generator/templates/readme.md.tmpl` or `skill.md.tmpl` shifts canonical published-library shape — install-block structure, top-of-README section ordering, presence/removal of `## ` sections, frontmatter top-level field set, install command syntax — also update `tools/sweep-canonical/main.go` in [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) so already-published CLIs can be retrofitted to match. Fresh prints get the new shape automatically; existing entries drift until the sweep runs.
@@ -147,6 +172,14 @@ Before implementation, claim the issue: assign it to yourself (or the GitHub use
 If the issue already has an assignee, treat that as active ownership until you can determine otherwise from recent activity or direct confirmation. For a plausibly stale assignment, ask the current assignee by tagging them in an issue comment before taking over or reassigning the issue.
 
 If you stop, abandon, or hand off before opening a PR, unclaim: remove the assignment and comment so the next picker-upper knows it is free. No need to unclaim on success — a merged PR closes the issue.
+
+## Issue Taxonomy and Relationships
+
+For actionable GitHub issues, including retro work-unit issues, apply exactly one `priority:P1|P2|P3` label, exactly one real issue type (`bug` or `enhancement`), and exactly one primary `comp:<slug>` component label. `source:retro` is optional provenance; legacy `retro` is accepted only while the provenance-label cutover is in progress and is never an issue type. Optional surface labels are a closed vocabulary: `surface:cli`, `surface:auth`, `surface:sync`, `surface:store`, `surface:mcp`, `surface:docs`, `surface:verify`, `surface:sniff`, and `surface:publish`; normally apply one, and never more than two, when evidence supports them. Components identify ownership; surfaces identify affected behavior.
+
+Routing outcomes `duplicate`, `invalid`, `wontfix`, and `question` are exempt from the actionable-field requirement. `documentation` and `good first issue` are overlays; they do not replace an actionable issue's priority, type, or primary component. PR queue labels are governed by the separate PR guidance below and are PR-only, outside the issue taxonomy.
+
+Keep retro work units as flat top-level issues. When a work unit declares a real prerequisite, represent it with GitHub's native `blocked-by`/`blocking` relationship; ordinary related-area or prior-retro references remain prose links in `Related issues` and must not be promoted to dependencies merely because they are adjacent. The `pp-fix-batch` queue derives readiness from an open, unassigned issue with the required priority and type labels (and its primary component for actionable work), not from provenance or routing labels; an unresolved native prerequisite remains a dependency, not a substitute label.
 
 ## Commit Style
 Format: `type(scope): description`. Both type and scope are required.
@@ -217,7 +250,7 @@ Add tests for new non-trivial logic. Match the package's existing style (typical
 Run `go test ./...` before considering your work done.
 
 ## Quality Gates
-Generated CLIs must pass 8 gates: `go mod tidy`, `govulncheck`, `go vet`, `go build`, binary build, `--help`, `version`, and `doctor`.
+Generated CLIs must pass 9 gates: `go mod tidy`, generated `go test ./...`, `govulncheck`, `go vet`, `go build`, binary build, `--help`, `version`, and `doctor`.
 Run `govulncheck` in default mode only, scoped to the generated or publishing CLI module (`./...` from that CLI directory). Do not use `-show verbose` or a whole public-library scan as a blocking gate; blocking CI scans only added or changed CLI modules, leaving whole-library sweeps to scheduled/reporting workflows.
 - For CLIs with `auth.type` of `cookie` or `composed`, `press-auth` (`cmd/press-auth/`) is the canonical cookie capture path. The generated `auth login --chrome` prefers it; the legacy extraction chain (pycookiecheat / browser-use / etc.) is the fallback when press-auth isn't installed. See [`skills/printing-press/references/auth-companion.md`](skills/printing-press/references/auth-companion.md).
 

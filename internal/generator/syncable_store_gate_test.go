@@ -62,7 +62,18 @@ func TestGenerateZeroSyncableAPIOmitsSyncAndDoctorCache(t *testing.T) {
 	apiSpec.Cache.Enabled = true
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Import: true, Store: true, Search: true, Sync: true, MCP: true}
+	gen.VisionSet = VisionTemplateSet{
+		Import: true,
+		Store:  true,
+		Search: true,
+		Sync:   true,
+		MCP:    true,
+		Workflows: []string{
+			"workflows/pm_stale.go.tmpl",
+			"workflows/pm_orphans.go.tmpl",
+			"workflows/pm_load.go.tmpl",
+		},
+	}
 	require.NoError(t, gen.Generate())
 
 	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "sync.go"))
@@ -71,7 +82,6 @@ func TestGenerateZeroSyncableAPIOmitsSyncAndDoctorCache(t *testing.T) {
 	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
 	doctorSrc := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
 	dataSourceSrc := readGeneratedFile(t, outputDir, "internal", "cli", "data_source.go")
-	syncHintSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync_hint.go")
 	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	require.NotContains(t, rootSrc, "newSyncCmd(flags)")
 	require.NotContains(t, rootSrc, "newSearchCmd(flags)")
@@ -80,10 +90,16 @@ func TestGenerateZeroSyncableAPIOmitsSyncAndDoctorCache(t *testing.T) {
 	require.NotContains(t, dataSourceSrc, "emitSyncHints")
 	require.NotContains(t, dataSourceSrc, "Run 'zero-syncable-query-pp-cli sync' first")
 	require.Equal(t, 4, strings.Count(dataSourceSrc, "Populate the local store through a custom store-backed command first."))
-	require.Contains(t, syncHintSrc, "const syncHintsEnabled = false")
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "sync_hint.go"))
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "sync_hint_test.go"))
 	require.Contains(t, mcpSrc, `mcplib.NewTool("sql"`)
+	for _, file := range []string{"pm_stale.go", "pm_orphans.go", "pm_load.go"} {
+		workflowSrc := readGeneratedFile(t, outputDir, "internal", "cli", file)
+		require.NotContains(t, workflowSrc, "maybeEmitSyncHints")
+	}
 
 	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./...")
 }
 
 func TestConstrainVisionTemplatesKeepsStreamingSyncWhenProfileHasNoBulkResources(t *testing.T) {

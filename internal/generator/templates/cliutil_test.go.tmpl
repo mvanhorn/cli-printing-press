@@ -792,13 +792,17 @@ func TestRateLimitError_ErrorMessage(t *testing.T) {
 }
 
 func TestRateLimitError_ErrorsAs(t *testing.T) {
-	var err error = &RateLimitError{URL: "https://x", RetryAfter: time.Second}
+	cause := errors.New("underlying API error")
+	var err error = &RateLimitError{URL: "https://x", RetryAfter: time.Second, Cause: cause}
 	var target *RateLimitError
 	if !errors.As(err, &target) {
 		t.Fatal("errors.As should match *RateLimitError")
 	}
 	if target.URL != "https://x" {
 		t.Errorf("target.URL = %q, want %q", target.URL, "https://x")
+	}
+	if !errors.Is(err, cause) {
+		t.Fatal("errors.Is should reach the wrapped cause")
 	}
 }
 

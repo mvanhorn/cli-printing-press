@@ -11,10 +11,7 @@ func new{{cmdIdent .FuncPrefix}}Cmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "{{kebab .ResourceName}}",
 		Short: "{{.Short}}",
-{{- if .Hidden}}
-		Hidden: true,
-{{- end}}
-		Annotations: map[string]string{"mcp:read-only": "true", "pp:typed-exit-codes": "0,2"},
+		Annotations: map[string]string{"mcp:read-only": "true", "pp:parent-group": "true", {{if .APIResource}}"pp:api-resource": "true", {{end}}"pp:typed-exit-codes": "0,2"},
 		RunE: parentNoSubcommandRunE(flags),
 	}
 {{range $eName, $endpoint := .Resource.Endpoints}}
@@ -24,7 +21,7 @@ func new{{cmdIdent .FuncPrefix}}Cmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(new{{cmdIdent $.FuncPrefix $subName}}Cmd(flags))
 {{- end}}
 {{- range .NovelChildren}}
-	cmd.AddCommand(newNovel{{.Ident}}Cmd(flags))
+	addNovelCommandIfAbsent(cmd, newNovel{{.Ident}}Cmd(flags))
 {{- end}}
 	return cmd
 }

@@ -89,6 +89,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cli/resource_paths.go",
 		"internal/store/extras.go",
 		"internal/platform/profile.go",
+		"internal/platform/perms_unix.go",
+		"internal/platform/perms_windows.go",
 		"internal/platform/gate.go",
 		"internal/platform/metadata.go",
 		"internal/platform/migration.go",
@@ -109,6 +111,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/mcp/cobratree/shellout_test.go",
 		"internal/mcp/cobratree/cli_path.go",
 		"internal/mcp/cobratree/names.go",
+		"internal/cliutil/testenv/testenv.go",
+		"internal/cliutil/testenv/sandbox_unix.go",
+		"internal/cliutil/testenv/sandbox_windows.go",
 	}
 
 	tests := []struct {
@@ -136,9 +141,12 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +2: MCP tenant-gate middleware and its single-gate conformance tests.
 		// +1: fail-closed endpoint-budget lookup conformance coverage.
 		// +2: command and MCP platform-window adoption plus conformance tests.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 166},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 170},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 168},
+		// +1: internal/cliutil/testenv, the sandbox helper every emitted test
+		// routes its HOME/USERPROFILE isolation through.
+		// +2: platform-specific private-file permission helpers.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 171},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 175},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 173},
 	}
 
 	for _, tt := range tests {
@@ -871,6 +879,7 @@ func TestGenerateAgentContextCommand(t *testing.T) {
 		"agentContextSchemaVersion",
 		`"schema_version"`,
 		"collectAgentCommands",
+		"Runnable: sub.Runnable()",
 		`"pretty"`,
 	} {
 		assert.Contains(t, src, snippet, "agent_context.go missing %q", snippet)
@@ -1886,6 +1895,7 @@ func TestGenerateOAuth2DeviceCodeAuth(t *testing.T) {
 	assert.Contains(t, authGo, `fmt.Fprintln(w, "  deviceauth-pp-cli auth poll")`, "headless login resumes without exposing the raw device_code")
 	assert.NotContains(t, authGo, `auth poll --device-code`, "raw device_code must not be printed into shell commands")
 	assert.Contains(t, authGo, `cfg.AuthHeaderVal = ""`, "OAuth token saves must clear stale manual auth headers")
+	assert.Contains(t, authGo, `w = cmd.ErrOrStderr()`, "machine-mode device login progress must not corrupt the JSON failure envelope")
 	assert.Contains(t, authGo, `deviceAuthorizationURL := cfg.DeviceAuthorizationURL`, "login honors device endpoint overrides")
 	assert.Contains(t, authGo, `"https://login.example.com/device"`, "login falls back to the configured device endpoint")
 	assert.Contains(t, authGo, `"public-client-id"`, "login uses the spec default client id")
@@ -2527,11 +2537,21 @@ func requireGeneratedCompiles(t *testing.T, dir string) {
 
 func runGoCommandRequired(t *testing.T, dir string, args ...string) {
 	t.Helper()
+	output, err := runGoCommandOutput(t, dir, args...)
+	require.NoError(t, err, output)
+}
+
+// runGoCommandOutput runs a go command in a generated module and hands
+// back its combined output and exit status. Callers that expect the
+// command to fail use this directly; runGoCommandRequired wraps it for
+// the usual must-succeed case.
+func runGoCommandOutput(t *testing.T, dir string, args ...string) (string, error) {
+	t.Helper()
 
 	// Generated-project compile tests exercise module resolution via -mod=mod;
 	// production Validate still owns the go mod tidy quality gate.
 	if len(args) >= 2 && args[0] == "mod" && args[1] == "tidy" {
-		return
+		return "", nil
 	}
 	if len(args) > 0 && (args[0] == "build" || args[0] == "test") {
 		args = append([]string{args[0], "-mod=mod"}, args[1:]...)
@@ -2542,8 +2562,36 @@ func runGoCommandRequired(t *testing.T, dir string, args ...string) {
 	cacheDir, err := goBuildCacheDir(dir)
 	require.NoError(t, err)
 	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+	cmd.Env = append(cmd.Env, sandboxHomeEnv(t)...)
 	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(output))
+	return string(output), err
+}
+
+// sandboxHomeEnv points a generated module's test run at a throwaway
+// home. Emitted tests resolve user directories from HOME on Unix and
+// USERPROFILE on Windows, so a run that inherits the real values reads
+// and writes the operator's own config, state, and data dirs. GOPATH
+// and GOMODCACHE stay on their real values: relocating them would
+// re-download the module cache on every case.
+func sandboxHomeEnv(t *testing.T) []string {
+	t.Helper()
+	home := t.TempDir()
+	env := []string{"HOME=" + home, "USERPROFILE=" + home}
+	for _, name := range []string{"GOPATH", "GOMODCACHE"} {
+		if value := goEnvValue(t, name); value != "" {
+			env = append(env, name+"="+value)
+		}
+	}
+	return env
+}
+
+func goEnvValue(t *testing.T, name string) string {
+	t.Helper()
+	out, err := exec.Command("go", "env", name).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func runGeneratedBinary(t *testing.T, binaryPath string, args ...string) (string, string) {
@@ -2571,7 +2619,7 @@ func TestGenerateWithNoAuth(t *testing.T) {
 		Version: "0.1.0",
 		BaseURL: "https://api.example.com",
 		Auth: spec.AuthConfig{
-			Type:    "",
+			Type:    "none",
 			EnvVars: nil,
 		},
 		Config: spec.ConfigSpec{
@@ -3082,6 +3130,7 @@ func TestGenerateCookieAuthDerivesCookieDomainFromBaseURL(t *testing.T) {
 		Type:    "cookie",
 		Header:  "Cookie",
 		In:      "cookie",
+		Cookies: []string{"session"},
 		EnvVars: []string{"COOKIEDOMAINDERIVE_COOKIES"},
 		// CookieDomain intentionally left empty — the generator must derive it.
 	}
@@ -5068,11 +5117,11 @@ func TestSyncPageIntPaginationAdvancesAfterFullPage(t *testing.T) {
 				"sync.go must not synthesize page+1 when the envelope explicitly parsed has_more")
 			assert.Contains(t, src, `strconv.Itoa(currentPage + 1)`,
 				"page-int fallback must increment the integer cursor")
-			assert.Contains(t, src, `cursorType:  "page"`,
+			assert.Contains(t, src, `cursorType:     "page"`,
 				"determinePaginationDefaults must emit cursorType \"page\" when the profile selects it")
 			// CursorParam still carries the original-case param name so
 			// the HTTP request key matches the spec.
-			assert.Contains(t, src, `cursorParam: "`+tc.paramName+`"`,
+			assert.Contains(t, src, `cursorParam:    "`+tc.paramName+`"`,
 				"determinePaginationDefaults must preserve the original-case page-int param name")
 		})
 	}
@@ -5564,6 +5613,12 @@ func TestExtractObjectIDPascalCaseIdWinsOverUppercaseID(t *testing.T) {
 		t.Fatalf("PascalCase Id must precede uppercase ID: got %q", got)
 	}
 }
+
+func TestExtractObjectIDMongoID(t *testing.T) {
+	if got := extractObjectID(map[string]any{"_id": "mongo-1", "name": "Jack's"}); got != "mongo-1" {
+		t.Fatalf("MongoDB _id must precede display name: got %q", got)
+	}
+}
 `
 	storeTestPath := filepath.Join(outputDir, "internal", "store", "store_pascalcase_test.go")
 	require.NoError(t, os.WriteFile(storeTestPath, []byte(storeInlineTest), 0o644))
@@ -5967,6 +6022,7 @@ func TestGenerateDependentSyncInjectsSubResourceParentFK(t *testing.T) {
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -6032,8 +6088,46 @@ func TestSyncDependentResourcePopulatesTypedParentFK(t *testing.T) {
 	if got["contact-injected\x00list-A"] != "list-A" {
 		t.Fatalf("injected contact lists_id = %q, want list-A", got["contact-injected\x00list-A"])
 	}
-	if got["contact-preserved\x00api-list"] != "api-list" {
-		t.Fatalf("preserved contact lists_id = %q, want api-list", got["contact-preserved\x00api-list"])
+	if got["contact-preserved\x00list-A"] != "api-list" {
+		t.Fatalf("preserved contact lists_id = %q, want api-list", got["contact-preserved\x00list-A"])
+	}
+}
+
+func TestStoreFallsBackToTypedParentKey(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	items := []json.RawMessage{
+		json.RawMessage(` + "`" + `{"id":"contact-shared","lists_id":"list-A","email":"a@example.test"}` + "`" + `),
+		json.RawMessage(` + "`" + `{"id":"contact-shared","lists_id":"list-B","email":"b@example.test"}` + "`" + `),
+	}
+	if _, _, err := db.UpsertBatch("contacts", items); err != nil {
+		t.Fatalf("upsert raw contacts: %v", err)
+	}
+
+	rows, err := db.DB().Query(` + "`" + `SELECT id FROM resources WHERE resource_type = 'contacts' ORDER BY id` + "`" + `)
+	if err != nil {
+		t.Fatalf("query contact ids: %v", err)
+	}
+	defer rows.Close()
+
+	var got []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan contact id: %v", err)
+		}
+		got = append(got, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate contact ids: %v", err)
+	}
+	want := []string{"contact-shared\x00list-A", "contact-shared\x00list-B"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("contact ids = %v, want %v", got, want)
 	}
 }
 `
@@ -6041,7 +6135,7 @@ func TestSyncDependentResourcePopulatesTypedParentFK(t *testing.T) {
 	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
-	runGoCommandRequired(t, outputDir, "test", "-run", "TestSyncDependentResourcePopulatesTypedParentFK", "./internal/cli")
+	runGoCommandRequired(t, outputDir, "test", "-run", "Test(SyncDependentResourcePopulatesTypedParentFK|StoreFallsBackToTypedParentKey)", "./internal/cli")
 }
 
 func TestSyncDependentResourceSubstitutesChainedPathParams(t *testing.T) {
@@ -6190,8 +6284,8 @@ func TestSyncDependentResourceSubstitutesChainedPathParams(t *testing.T) {
 	if err := rows.Scan(&id, &messagesID, &channelsID); err != nil {
 		t.Fatalf("scan reaction: %v", err)
 	}
-	if id != "react-1" || messagesID != "msg-1" || channelsID != "chan-1" {
-		t.Fatalf("row = (%q, %q, %q), want (react-1, msg-1, chan-1)", id, messagesID, channelsID)
+	if id != "react-1\x00msg-1" || messagesID != "msg-1" || channelsID != "chan-1" {
+		t.Fatalf("row = (%q, %q, %q), want (react-1\\x00msg-1, msg-1, chan-1)", id, messagesID, channelsID)
 	}
 }
 `
@@ -6344,6 +6438,76 @@ func TestWriteThroughCachePopulatesTypedTable(t *testing.T) {
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
 	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCachePopulatesTypedTable", "./internal/cli")
+}
+
+// TestGeneratedTypedSingleObjectSkipsEmptyIDForMongoFallback guards the
+// typed single-object path: an empty or null canonical id must not prevent a
+// valid MongoDB _id from being normalized and used as the row key.
+func TestGeneratedTypedSingleObjectSkipsEmptyIDForMongoFallback(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := adsCampaignSpec()
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	inlineTest := `package cli
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+func TestUpsertSingleObjectSkipsEmptyIDForMongoFallback(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	cases := []struct {
+		name string
+		data string
+		want string
+	}{
+		{
+			name: "empty id",
+			data: "{\"id\":\"\",\"_id\":{\"$oid\":\"mongo-empty\"},\"name\":\"Empty\"}",
+			want: "mongo-empty",
+		},
+		{
+			name: "null id",
+			data: "{\"id\":null,\"_id\":\"mongo-null\",\"name\":\"Null\"}",
+			want: "mongo-null",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := upsertSingleObject(db, "campaigns", json.RawMessage(tc.data)); err != nil {
+				t.Fatalf("upsertSingleObject: %v", err)
+			}
+
+			var count int
+			if err := db.DB().QueryRow("SELECT COUNT(*) FROM campaigns WHERE id = ?", tc.want).Scan(&count); err != nil {
+				t.Fatalf("query typed campaigns: %v", err)
+			}
+			if count != 1 {
+				t.Fatalf("typed campaigns for %q = %d, want 1", tc.want, count)
+			}
+		})
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "typed_single_object_id_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestUpsertSingleObjectSkipsEmptyIDForMongoFallback", "./internal/cli")
 }
 
 // TestWriteThroughCacheNonIDPrimaryKeyResponse guards #1439: the previous
@@ -7577,6 +7741,50 @@ func TestPaginatedGetExemptsCursorParamFromZeroStripping(t *testing.T) {
 		`the unconditional v != "" && v != "0" && v != "false" filter incorrectly drops cursor="0" for offset-paginated APIs`)
 }
 
+// The exemption above must stay scoped to offset pagination. Under id-cursor
+// pagination 0 is not a real record id, so sending cursor=0 (what an unset
+// cursor flag produces) makes the API return an empty page — and every list
+// command reports zero rows while the endpoint itself is healthy.
+func TestPaginatedGetScopesCursorZeroExemptionToOffsetPagination(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("cursor-zero-scope")
+	apiSpec.Resources = map[string]spec.Resource{
+		"items": {
+			Description: "Manage items",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/items",
+					Description: "List items",
+					Pagination: &spec.Pagination{
+						Type:        "cursor",
+						CursorParam: "after",
+						LimitParam:  "limit",
+					},
+				},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), "cursor-zero-scope-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	path := filepath.Join(outputDir, "internal", "cli", "helpers.go")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err, "generated helper must exist: %s", path)
+	body := string(data)
+
+	cleanStart := strings.Index(body, "clean := map[string]string{}")
+	require.GreaterOrEqual(t, cleanStart, 0, "paginatedGet must declare a clean map")
+	loopEnd := strings.Index(body[cleanStart:], "if !fetchAll")
+	require.GreaterOrEqual(t, loopEnd, 0, "expected fetchAll branch after clean loop")
+	cleanBlock := body[cleanStart : cleanStart+loopEnd]
+
+	assert.Contains(t, cleanBlock, `k == cursorParam && paginationType == "offset"`,
+		`the cursor zero-value exemption must be gated on offset pagination; an unconditional exemption sends cursor=0 for id-cursor APIs and silently empties every list command`)
+	requireGeneratedCompiles(t, outputDir)
+}
+
 // TestPipedJsonGateRespectsExplicitFormatFlags pins the contract: the
 // piped-output auto-JSON gate must defer to explicit --csv / --quiet /
 // --plain flags so piped consumers that asked for a non-JSON format
@@ -8284,6 +8492,7 @@ func TestUnwrapSingleKeyArray_KnownWrapperKeysUnwrap(t *testing.T) {
 		{"nodes", ` + "`{\"nodes\":[]}`" + `, ` + "`[]`" + `},
 		{"entries", ` + "`{\"entries\":[\"x\"]}`" + `, ` + "`[\"x\"]`" + `},
 		{"records", ` + "`{\"records\":[null]}`" + `, ` + "`[null]`" + `},
+		{"results with pagination metadata sibling", ` + "`{\"results\":[{\"id\":\"a\"}],\"paging\":{\"next\":{\"after\":\"1\"}}}`" + `, ` + "`[{\"id\":\"a\"}]`" + `},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -8303,6 +8512,10 @@ func TestUnwrapSingleKeyArray_PassThroughs(t *testing.T) {
 	}{
 		{"bare array", ` + "`[{\"id\":\"a\"}]`" + `},
 		{"multi-key object preserves cursor", ` + "`{\"results\":[],\"next_page_token\":\"abc\"}`" + `},
+		{"two collection siblings", ` + "`{\"results\":[],\"items\":[]}`" + `},
+		{"empty key alongside collection", ` + "`{\"\":[],\"results\":[]}`" + `},
+		{"unknown wrapper with pagination metadata", ` + "`{\"payload\":[],\"paging\":{\"next\":{}}}`" + `},
+		{"metadata without collection", ` + "`{\"paging\":{\"next\":{}}}`" + `},
 		{"unknown wrapper key", ` + "`{\"payload\":[1,2]}`" + `},
 		{"single key but not array value", ` + "`{\"data\":{\"issues\":{\"nodes\":[]}}}`" + `},
 		{"single key but value is null", ` + "`{\"results\":null}`" + `},
@@ -9386,7 +9599,7 @@ func TestGeneratedCommandExampleEscapesQuotedNarrativeArgs(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("narrative-quotes")
-	apiSpec.Resources["search"] = spec.Resource{
+	apiSpec.Resources["lookup"] = spec.Resource{
 		Description: "Search",
 		Endpoints: map[string]spec.Endpoint{
 			"list": {
@@ -9410,13 +9623,13 @@ func TestGeneratedCommandExampleEscapesQuotedNarrativeArgs(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	gen.Narrative = &ReadmeNarrative{
 		QuickStart: []QuickStartStep{
-			{Command: `narrative-quotes-pp-cli search list --query "peace dollar"`},
+			{Command: `narrative-quotes-pp-cli lookup list --query "peace dollar"`},
 		},
 	}
 	require.NoError(t, gen.Generate())
 
-	source := readGeneratedFile(t, outputDir, "internal", "cli", "search_list.go")
-	assert.Contains(t, source, `"  narrative-quotes-pp-cli search list --query \"peace dollar\""`)
+	source := readGeneratedFile(t, outputDir, "internal", "cli", "lookup_list.go")
+	assert.Contains(t, source, `"  narrative-quotes-pp-cli lookup list --query \"peace dollar\""`)
 	assert.NotContains(t, source, "--query example-value")
 }
 
@@ -10186,6 +10399,268 @@ func TestGeneratedOutput_WorkflowArchiveJSONKeepsSyncEventsOffStdout(t *testing.
 	assert.Contains(t, stderr, "Sync complete:")
 }
 
+func TestGeneratedOutput_WorkflowBoundaries(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Name:    "workflowboundary",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/workflowboundary-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"alpha":   workflowBoundaryResource("/alpha"),
+			"bravo":   workflowBoundaryResource("/bravo"),
+			"charlie": workflowBoundaryResource("/charlie"),
+			"delta":   workflowBoundaryResource("/delta"),
+		},
+	}
+	apiSpec.Learn.Disabled = true
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	workflowGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "channel_workflow.go"))
+	require.NoError(t, err)
+	src := string(workflowGo)
+	assert.Contains(t, src, `"os"`, "workflow status needs os.Stat for the missing-store preflight")
+	assert.Contains(t, src, `store.OpenReadOnlyContext(cmd.Context(), dbPath)`,
+		"workflow status must use the context-aware read-only store open")
+	assert.Contains(t, src, `schemaVersion, err := s.SchemaVersion()`,
+		"workflow status must inspect the schema without running migrations")
+	assert.Contains(t, src, `local store schema version %d requires migration`,
+		"workflow status must explain why an older store cannot be inspected read-only")
+	assert.Contains(t, src, `local store schema version %d is newer than supported version`,
+		"workflow status must reject stores newer than the generated schema")
+	assert.Contains(t, src, `"workflowboundary-pp-cli/internal/cliutil"`,
+		"workflow archive must import the generated dogfood environment helper")
+	assert.Contains(t, src, `archiveMaxPages := 100`,
+		"workflow archive must keep its normal page limit explicit")
+	assert.Contains(t, src, `if cliutil.IsDogfoodEnv()`,
+		"workflow archive must enter its bounded dogfood path")
+	assert.Contains(t, src, `resources = resources[:3]`,
+		"workflow archive must cap the resource list under dogfood")
+	assert.Contains(t, src, `archiveMaxPages, false`,
+		"workflow archive must pass the dogfood-aware page limit to syncResource")
+
+	syncDisabledDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name)+"-nosync")
+	syncDisabledGen := New(apiSpec, syncDisabledDir)
+	syncDisabledGen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+	require.NoError(t, syncDisabledGen.Generate())
+	syncDisabledWorkflow, err := os.ReadFile(filepath.Join(syncDisabledDir, "internal", "cli", "channel_workflow.go"))
+	require.NoError(t, err)
+	syncDisabledSrc := string(syncDisabledWorkflow)
+	assert.Contains(t, syncDisabledSrc, "this read-only command cannot migrate it",
+		"store-only workflow status needs valid migration guidance")
+	assert.NotContains(t, syncDisabledSrc, "run 'workflow archive' to migrate it",
+		"store-only workflow status must not suggest an absent archive command")
+	requireGeneratedCompiles(t, syncDisabledDir)
+
+	behaviorTest := `package cli
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"workflowboundary-pp-cli/internal/store"
+)
+
+func runWorkflowBoundaryCommand(args ...string) (string, string, error) {
+	root := RootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs(args)
+	err := root.Execute()
+	return stdout.String(), stderr.String(), err
+}
+
+func TestWorkflowStatusDoesNotCreateColdStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+
+	stdout, stderr, err := runWorkflowBoundaryCommand("workflow", "status")
+	if err != nil {
+		t.Fatalf("cold status: %v; stderr=%s", err, stderr)
+	}
+	if !strings.Contains(stdout, "No archived data") {
+		t.Fatalf("cold status stdout = %q, want empty-store message", stdout)
+	}
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatalf("read cold home: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("cold status created home entries: %v", entries)
+	}
+}
+
+func TestWorkflowStatusReadsCompatibleStoreAndRejectsMigration(t *testing.T) {
+	compatiblePath := filepath.Join(t.TempDir(), "compatible.db")
+	db, err := store.OpenWithContext(context.Background(), compatiblePath)
+	if err != nil {
+		t.Fatalf("create compatible store: %v", err)
+	}
+	if _, err := db.DB().Exec("INSERT INTO resources (id, resource_type, data) VALUES (?, ?, ?)", "item-1", "items", "{\"id\":\"item-1\"}"); err != nil {
+		db.Close()
+		t.Fatalf("seed compatible store: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close compatible store: %v", err)
+	}
+
+	stdout, stderr, err := runWorkflowBoundaryCommand("workflow", "status", "--db", compatiblePath)
+	if err != nil {
+		t.Fatalf("compatible status: %v; stderr=%s", err, stderr)
+	}
+	if !strings.Contains(stdout, "items") || !strings.Contains(stdout, "1 items") {
+		t.Fatalf("compatible status stdout = %q, want item count", stdout)
+	}
+
+	migrationPath := filepath.Join(t.TempDir(), "migration.db")
+	db, err = store.OpenWithContext(context.Background(), migrationPath)
+	if err != nil {
+		t.Fatalf("create migration store: %v", err)
+	}
+	if _, err := db.DB().Exec("PRAGMA user_version = 1"); err != nil {
+		db.Close()
+		t.Fatalf("mark migration store old: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close migration store: %v", err)
+	}
+
+	_, stderr, err = runWorkflowBoundaryCommand("workflow", "status", "--db", migrationPath)
+	if err == nil || !strings.Contains(err.Error(), "requires migration") {
+		t.Fatalf("migration status error = %v, stderr=%s, want actionable migration error", err, stderr)
+	}
+	ro, err := store.OpenReadOnlyContext(context.Background(), migrationPath)
+	if err != nil {
+		t.Fatalf("reopen migration store read-only: %v", err)
+	}
+	version, err := ro.SchemaVersion()
+	if closeErr := ro.Close(); closeErr != nil {
+		t.Fatalf("close read-only migration store: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("read migration store version: %v", err)
+	}
+	if version != 1 {
+		t.Fatalf("migration store version = %d, want status to leave it at 1", version)
+	}
+
+	futurePath := filepath.Join(t.TempDir(), "future.db")
+	db, err = store.OpenWithContext(context.Background(), futurePath)
+	if err != nil {
+		t.Fatalf("create future store: %v", err)
+	}
+	if _, err := db.DB().Exec(fmt.Sprintf("PRAGMA user_version = %d", store.StoreSchemaVersion+1)); err != nil {
+		db.Close()
+		t.Fatalf("mark future store newer: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close future store: %v", err)
+	}
+
+	_, stderr, err = runWorkflowBoundaryCommand("workflow", "status", "--db", futurePath)
+	if err == nil || !strings.Contains(err.Error(), "newer than supported") {
+		t.Fatalf("future status error = %v, stderr=%s, want newer-schema error", err, stderr)
+	}
+	ro, err = store.OpenReadOnlyContext(context.Background(), futurePath)
+	if err != nil {
+		t.Fatalf("reopen future store read-only: %v", err)
+	}
+	version, err = ro.SchemaVersion()
+	if closeErr := ro.Close(); closeErr != nil {
+		t.Fatalf("close read-only future store: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("read future store version: %v", err)
+	}
+	if version != store.StoreSchemaVersion+1 {
+		t.Fatalf("future store version = %d, want status to leave it at %d", version, store.StoreSchemaVersion+1)
+	}
+}
+
+func TestWorkflowArchiveCurtailsOnlyUnderDogfood(t *testing.T) {
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("cursor") == "" {
+			_, _ = w.Write([]byte("{\"items\":[{\"id\":\"item-1\"}],\"has_more\":true,\"next_cursor\":\"page-2\"}"))
+			return
+		}
+		_, _ = w.Write([]byte("{\"items\":[{\"id\":\"item-2\"}],\"has_more\":false,\"next_cursor\":\"\"}"))
+	}))
+	defer server.Close()
+	t.Setenv("WORKFLOWBOUNDARY_BASE_URL", server.URL)
+
+	t.Setenv("PRINTING_PRESS_DOGFOOD", "1")
+	stdout, stderr, err := runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "dogfood.db"))
+	if err != nil {
+		t.Fatalf("dogfood archive: %v; stdout=%s stderr=%s", err, stdout, stderr)
+	}
+	if got := atomic.LoadInt32(&requests); got != 3 {
+		t.Fatalf("dogfood archive requests = %d, want one page for each of 3 resources", got)
+	}
+	if !strings.Contains(stdout, "across 3 resources") {
+		t.Fatalf("dogfood archive stdout = %q, want curtailed resource count", stdout)
+	}
+
+	atomic.StoreInt32(&requests, 0)
+	t.Setenv("PRINTING_PRESS_DOGFOOD", "")
+	stdout, stderr, err = runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "normal.db"))
+	if err != nil {
+		t.Fatalf("normal archive: %v; stdout=%s stderr=%s", err, stdout, stderr)
+	}
+	if got := atomic.LoadInt32(&requests); got != 8 {
+		t.Fatalf("normal archive requests = %d, want two pages for each of 4 resources", got)
+	}
+	if !strings.Contains(stdout, "across 4 resources") {
+		t.Fatalf("normal archive stdout = %q, want all-resource count", stdout)
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "workflow_boundary_runtime_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestWorkflow(Status|Archive)")
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func workflowBoundaryResource(path string) spec.Resource {
+	return spec.Resource{
+		Description: "Workflow boundary test resource",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {
+				Method:       "GET",
+				Path:         path,
+				Response:     spec.ResponseDef{Type: "array"},
+				ResponsePath: "items",
+				Pagination: &spec.Pagination{
+					Type:           "cursor",
+					CursorParam:    "cursor",
+					NextCursorPath: "next_cursor",
+					HasMoreField:   "has_more",
+				},
+			},
+		},
+	}
+}
+
 func TestGeneratedOutput_PromotedCommandCompiles(t *testing.T) {
 	t.Parallel()
 
@@ -10263,13 +10738,13 @@ func TestGeneratedOutput_PromotedCommand_TestResourceCompiles(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
-func TestGeneratedOutput_ResourceParentsHiddenWhenAPIBrowserGenerated(t *testing.T) {
+func TestGeneratedOutput_ResourceParentsVisibleWhenAPIBrowserGenerated(t *testing.T) {
 	t.Parallel()
 
 	// Multi-endpoint resource -> parent group; single-endpoint resource -> promoted command.
-	// The promoted command's presence is what triggers api_discovery.go emission, and the
-	// api browser's RunE filters on child.Hidden. Without this fix the browser was empty by
-	// construction (issue #872).
+	// The promoted command's presence triggers api_discovery.go emission, but resource
+	// parents must remain visible in root help. API discovery identifies them from command
+	// metadata instead of repurposing Cobra's Hidden bit.
 	apiSpec := &spec.APISpec{
 		Name:    "hiddentest",
 		Version: "0.1.0",
@@ -10302,8 +10777,24 @@ func TestGeneratedOutput_ResourceParentsHiddenWhenAPIBrowserGenerated(t *testing
 
 	orders, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "orders.go"))
 	require.NoError(t, err)
-	assert.Regexp(t, `Hidden:\s+true`, string(orders),
-		"raw resource parent must be Hidden so the api browser finds it")
+	assert.NotContains(t, string(orders), "Hidden: true",
+		"raw resource parents must remain visible when the api browser is generated")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	binaryPath := filepath.Join(outputDir, "hiddentest-pp-cli")
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/hiddentest-pp-cli")
+
+	helpOut, err := exec.Command(binaryPath, "--help").Output()
+	require.NoError(t, err)
+	assert.Contains(t, string(helpOut), "orders",
+		"root help must advertise raw resource parents")
+
+	apiOut, err := exec.Command(binaryPath, "api").Output()
+	require.NoError(t, err)
+	assert.Contains(t, string(apiOut), "orders",
+		"api discovery must still list visible resource parents")
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGeneratedOutput_ResourceParentsNotHiddenWithoutAPIBrowser(t *testing.T) {
@@ -10348,12 +10839,11 @@ func TestGeneratedOutput_ResourceParentsNotHiddenWithoutAPIBrowser(t *testing.T)
 		"raw resource parent must not be Hidden when no api browser is generated")
 }
 
-func TestGeneratedOutput_AgentContextIncludesHiddenResourceGroups(t *testing.T) {
+func TestGeneratedOutput_AgentContextIncludesResourceGroups(t *testing.T) {
 	t.Parallel()
 
-	// Cobra's Hidden flag is a --help curation tool; the agent-context surface
-	// must still enumerate hidden resource parents and their endpoint subcommands
-	// so agents can reach every action a CLI user could.
+	// The agent-context surface must enumerate resource parents and their
+	// endpoint subcommands so agents can reach every action a CLI user could.
 	apiSpec := &spec.APISpec{
 		Name:    "agentctxhide",
 		Version: "0.1.0",
@@ -10394,13 +10884,13 @@ func TestGeneratedOutput_AgentContextIncludesHiddenResourceGroups(t *testing.T) 
 	orders := findAgentContextCommand(payload["commands"], func(c map[string]any) bool {
 		return c["name"] == "orders"
 	})
-	require.NotNil(t, orders, "hidden resource parent must appear in agent-context")
+	require.NotNil(t, orders, "resource parent must appear in agent-context")
 	subs, ok := orders["subcommands"].([]any)
-	require.True(t, ok, "hidden resource parent must report its endpoint subcommands")
-	assert.NotEmpty(t, subs, "hidden resource parent must report its endpoint subcommands")
+	require.True(t, ok, "resource parent must report its endpoint subcommands")
+	assert.NotEmpty(t, subs, "resource parent must report its endpoint subcommands")
 }
 
-func TestGeneratedOutput_PromotedCommandNotForBuiltins(t *testing.T) {
+func TestGeneratedOutput_RejectsBuiltinResourceCollision(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := &spec.APISpec{
@@ -10427,12 +10917,11 @@ func TestGeneratedOutput_PromotedCommandNotForBuiltins(t *testing.T) {
 
 	outputDir := filepath.Join(t.TempDir(), "builtintest-pp-cli")
 	gen := New(apiSpec, outputDir)
-	require.NoError(t, gen.Generate())
-
-	// "version" should NOT have a promoted command (collides with built-in)
-	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_version.go"))
-	// "users" SHOULD have a promoted command (shortcut for the resource group)
-	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_users.go"))
+	err := gen.Generate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `derived command path "version"`)
+	assert.Contains(t, err.Error(), `resource "version"`)
+	assert.Contains(t, err.Error(), "emitted framework command")
 }
 
 // --- Unit 3: Auth Error Handling Tests ---
@@ -11253,6 +11742,9 @@ func TestGenerate_CookieAuthUsesBrowserTemplate(t *testing.T) {
 	assert.Contains(t, content, "--chrome")
 	assert.Contains(t, content, "detectCookieTool")
 	assert.Contains(t, content, "extractCookies")
+	assert.Contains(t, content, "validateExtractedCookieHeader(cookies)")
+	assert.Contains(t, content, "http.ParseCookie(header)")
+	assert.Contains(t, content, "refusing to save credentials")
 	assert.Contains(t, content, "cookieToolSupportsProfiles")
 	assert.Contains(t, content, `"pycookiecheat-cli"`)
 	assert.Contains(t, content, `exec.LookPath("pycookiecheat")`)
@@ -11301,6 +11793,21 @@ func TestGenerate_CookieAuthUsesBrowserTemplate(t *testing.T) {
 	assert.Contains(t, doctorContent, "browser_session_proof")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
+	validationTest := `package cli
+
+import "testing"
+
+func TestGeneratedValidateExtractedCookieHeader(t *testing.T) {
+	if err := validateExtractedCookieHeader("session-id=abc; ubid-main=def"); err != nil {
+		t.Fatalf("valid Cookie header rejected: %v", err)
+	}
+	if err := validateExtractedCookieHeader("session-id=\x01\xffbinary"); err == nil {
+		t.Fatal("malformed Cookie header accepted")
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "auth_cookie_validation_test.go"), []byte(validationTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestGeneratedValidateExtractedCookieHeader")
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
@@ -11593,6 +12100,23 @@ func TestGenerateRequiredUserAgentHeaderBeatsDefaultUserAgent(t *testing.T) {
 	assert.NotContains(t, doctorSrc, `authHeaders["User-Agent"] = "browserheaders-pp-cli"`)
 }
 
+// Generated clients preserve explicit headers before applying the optional
+// environment override and baked-in User-Agent fallback.
+func TestGenerateUserAgentEnvVarOverridesDefault(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("uaenv")
+	outputDir := filepath.Join(t.TempDir(), "uaenv-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	assert.Contains(t, clientSrc, `if req.Header.Get("User-Agent") == "" {`)
+	assert.Contains(t, clientSrc, `if ua := os.Getenv("UAENV_USER_AGENT"); ua != "" {`)
+	assert.Contains(t, clientSrc, `req.Header.Set("User-Agent", ua)`)
+	assert.Contains(t, clientSrc, `req.Header.Set("User-Agent", "uaenv-pp-cli/0.1.0")`)
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGenerateObjectBodyDefaultsAreParsedAsJSON(t *testing.T) {
 	t.Parallel()
 
@@ -11713,9 +12237,8 @@ func TestGenerateGraphQLBFFUsesSemanticCommandSurface(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/example-pp-cli")
 	helpOut, err := exec.Command(binaryPath, "--help").CombinedOutput()
 	require.NoError(t, err, string(helpOut))
-	// Multi-endpoint resources are now Hidden so the generated `api` browser can
-	// surface them; --help stays curated. Direct invocation and the api browser
-	// listing must both still work.
+	// GraphQL transport commands stay suppressed while generated resource
+	// parents remain directly invocable and available through the api browser.
 	assert.NotContains(t, string(helpOut), "graphql")
 	apiOut, err := exec.Command(binaryPath, "api").CombinedOutput()
 	require.NoError(t, err, string(apiOut))
@@ -12510,7 +13033,7 @@ func TestGenerateReservedStoreTableCollisionUsesGenericStore(t *testing.T) {
 		"learn table names must stay reserved while learn is disabled")
 	assert.NotContains(t, store, "func (s *Store) upsertCollisionAPIStreamFramesTx(",
 		"stream table names must stay reserved while streaming is disabled")
-	assert.Regexp(t, `"resources":\s+"parent_id"`, store)
+	assert.Regexp(t, `"resources":\s*\{\s*"parent_id"`, store)
 	assert.NotContains(t, store, `CREATE TABLE IF NOT EXISTS "resources" (
 		id TEXT PRIMARY KEY,
 		data TEXT NOT NULL,
@@ -13942,7 +14465,7 @@ func TestGeneratedSyncAdvancesOffsetWhenHasMoreWithoutCursor(t *testing.T) {
 		"sync loops must not require an API-returned next cursor for offset pagination")
 	assert.Contains(t, syncContent, `if !hasMore || shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, pageSize.limit) {`,
 		"sync loops must break only on real done signals before handling cursor advancement")
-	assert.Contains(t, syncContent, `if pageSize.cursorType == "offset" {`,
+	assert.Contains(t, syncContent, `if pageSize.cursorParam != "" && pageSize.cursorType == "offset" {`,
 		"offset pagination must advance the cursor client-side when has_more is true")
 	assert.Contains(t, syncContent, `nextCursor = strconv.Itoa(currentOffset + pageSize.limit)`,
 		"offset pagination must compute the next offset from the current cursor and limit")
@@ -13993,7 +14516,16 @@ func TestGeneratedSyncAdvancesOffsetAfterFullPageWithoutHasMore(t *testing.T) {
 			ItemsKey:        "items",
 		},
 		SyncableResources: []profiler.SyncableResource{
-			{Name: "records", Path: "/records", Method: "GET", SupportsPagination: true},
+			{
+				Name:                  "records",
+				Path:                  "/records",
+				Method:                "GET",
+				SupportsPagination:    true,
+				PaginationCursorParam: "offset",
+				PaginationCursorType:  "offset",
+				PaginationLimitParam:  "limit",
+				PaginationPageSize:    2,
+			},
 		},
 	}
 	require.NoError(t, gen.Generate())
@@ -14623,15 +15155,15 @@ func TestGeneratedSyncUsesPerResourcePaginationDefaults(t *testing.T) {
 	assert.Contains(t, syncContent, `pageSize := determinePaginationDefaults(resource)`)
 	assert.Contains(t, syncContent, `func determinePaginationDefaults(resource string) paginationDefaults`)
 	assert.Contains(t, syncContent, `case "assets":`)
-	assert.Contains(t, syncContent, `cursorParam: "skip"`)
-	assert.Contains(t, syncContent, `cursorType:  "offset"`)
-	assert.Contains(t, syncContent, `limitParam:  "limit"`)
-	assert.Contains(t, syncContent, `limit:       50`)
+	assert.Contains(t, syncContent, `cursorParam:    "skip"`)
+	assert.Contains(t, syncContent, `cursorType:     "offset"`)
+	assert.Contains(t, syncContent, `limitParam:     "limit"`)
+	assert.Contains(t, syncContent, `limit:          50`)
 	assert.Contains(t, syncContent, `case "photos":`)
-	assert.Contains(t, syncContent, `cursorParam: "page"`)
-	assert.Contains(t, syncContent, `cursorType:  "page"`)
-	assert.Contains(t, syncContent, `limitParam:  "per_page"`)
-	assert.Contains(t, syncContent, `limit:       25`)
+	assert.Contains(t, syncContent, `cursorParam:    "page"`)
+	assert.Contains(t, syncContent, `cursorType:     "page"`)
+	assert.Contains(t, syncContent, `limitParam:     "per_page"`)
+	assert.Contains(t, syncContent, `limit:          25`)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./internal/cli")
@@ -14640,21 +15172,23 @@ func TestGeneratedSyncUsesPerResourcePaginationDefaults(t *testing.T) {
 func TestPaginationDefaultEntriesDistinguishDependentContext(t *testing.T) {
 	entries := paginationDefaultEntries(
 		[]profiler.SyncableResource{{
-			Name:                  "tasks",
-			SupportsPagination:    true,
-			PaginationCursorParam: "after",
-			PaginationCursorType:  "cursor",
-			PaginationLimitParam:  "limit",
-			PaginationPageSize:    100,
+			Name:                     "tasks",
+			SupportsPagination:       true,
+			PaginationCursorParam:    "after",
+			PaginationCursorType:     "cursor",
+			PaginationNextCursorPath: "meta.next",
+			PaginationLimitParam:     "limit",
+			PaginationPageSize:       100,
 		}},
 		[]profiler.DependentResource{{
-			Name:                  "tasks",
-			ParentResource:        "projects",
-			SupportsPagination:    true,
-			PaginationCursorParam: "offset",
-			PaginationCursorType:  "offset",
-			PaginationLimitParam:  "per_page",
-			PaginationPageSize:    25,
+			Name:                     "tasks",
+			ParentResource:           "projects",
+			SupportsPagination:       true,
+			PaginationCursorParam:    "offset",
+			PaginationCursorType:     "offset",
+			PaginationNextCursorPath: "paging.next",
+			PaginationLimitParam:     "per_page",
+			PaginationPageSize:       25,
 		}},
 	)
 
@@ -14666,7 +15200,9 @@ func TestPaginationDefaultEntriesDistinguishDependentContext(t *testing.T) {
 	require.Contains(t, byKey, "tasks")
 	require.Contains(t, byKey, "projects/tasks")
 	assert.Equal(t, "after", byKey["tasks"].CursorParam)
+	assert.Equal(t, "meta.next", byKey["tasks"].NextCursorPath)
 	assert.Equal(t, "offset", byKey["projects/tasks"].CursorParam)
+	assert.Equal(t, "paging.next", byKey["projects/tasks"].NextCursorPath)
 	assert.Equal(t, "per_page", byKey["projects/tasks"].LimitParam)
 	assert.Equal(t, 25, byKey["projects/tasks"].Limit)
 }
@@ -15071,8 +15607,8 @@ func TestGeneratedSyncExitPolicy(t *testing.T) {
 	// criticalResources map. This pins the lookup mechanism so a refactor
 	// can't accidentally drop the per-resource classification.
 	assert.Contains(t, syncContent,
-		`if criticalResources[res.Resource] {`,
-		"sync.go must classify each errored resource against criticalResources")
+		`isSyncStatePersistenceError(res.Err) || criticalResources[res.Resource]`,
+		"sync.go must classify each errored resource against persistence failures and criticalResources")
 
 	// (d) In-band default-flip signal. Fires once when the new default
 	// suppressed a non-zero exit under the old contract.
@@ -15211,14 +15747,17 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 		`"events": "event_id",`,
 		"store.go resourceIDFieldOverrides must include events: event_id")
 
-	// (b) Generic fallback list reduced — kalshi-specific names dropped.
+	// (b) Generic fallback lists reduced — kalshi-specific names dropped.
 	// The user owns the kalshi CLI and will regenerate with x-resource-id
 	// annotations; no other public-library CLIs depend on these names.
-	// Vendor identifiers (gid, sid, uid, uuid, guid) precede `name` so
-	// APIs like Asana don't fall through to a display field — see #1394.
+	// Vendor identifiers (gid, sid, uid, uuid, guid) and resource-specific
+	// suffixes precede descriptive fields so APIs do not key rows by names.
 	assert.Contains(t, storeContent,
-		`var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "api_id", "name", "slug", "key", "code"}`,
-		"store.go genericIDFieldFallbacks must include vendor identifiers before name")
+		`var genericIDFieldFallbacks = []string{"id", "ID", "_id", "gid", "sid", "uid", "uuid", "guid", "api_id"}`,
+		"store.go genericIDFieldFallbacks must include stable vendor identifiers")
+	assert.Contains(t, storeContent,
+		`var genericDescriptiveIDFieldFallbacks = []string{"name", "slug", "key", "code"}`,
+		"store.go must keep descriptive fallbacks separate from stable identifiers")
 	// Negative: kalshi-specific names must not be in the fallback list.
 	// We assert a robust shape: no occurrence of "ticker" inside the fallback
 	// declaration. The generic check below also pins the absence at a
@@ -17241,13 +17780,13 @@ func assertMCPMainUsesVersionVar(t *testing.T, body string) {
 	assert.NotContains(t, body, "\n\t\t\"1.0.0\",\n\t\tserver.WithToolCapabilities(false),")
 }
 
-// TestGenerateMCPCodeOrchestrationEmitsSearchExecute proves that when the
-// spec opts into code-orchestration, the generator emits only
-// <api>_search and <api>_execute as MCP tools, covering every endpoint via
-// a single registry. This is the thin surface pattern referenced by
+// TestGenerateMCPCodeOrchestrationEmitsRegistryTools proves that when the
+// spec opts into code-orchestration, the generator emits only the registry
+// tools <api>_search, <api>_get, and <api>_execute as MCP tools, covering every
+// endpoint via a single registry. This is the thin surface pattern referenced by
 // Anthropic's 2026-04-22 post (Cloudflare's ~2,500-endpoint server in ~1K
 // tokens).
-func TestGenerateMCPCodeOrchestrationEmitsSearchExecute(t *testing.T) {
+func TestGenerateMCPCodeOrchestrationEmitsRegistryTools(t *testing.T) {
 	t.Parallel()
 
 	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
@@ -17266,6 +17805,7 @@ func TestGenerateMCPCodeOrchestrationEmitsSearchExecute(t *testing.T) {
 	for _, want := range []string{
 		`func RegisterCodeOrchestrationTools(`,
 		`mcplib.NewTool("loops_search"`,
+		`mcplib.NewTool("loops_get"`,
 		`mcplib.NewTool("loops_execute"`,
 		`codeOrchEndpoints = []codeOrchEndpoint`,
 		`func handleCodeOrchSearch(`,
@@ -17857,10 +18397,10 @@ func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
 	assert.Contains(t, mcpSource, `bodyArgs[binding.WireName] = v`)
 
 	readme := readGeneratedFile(t, outputDir, "README.md")
-	assert.Contains(t, readme, `public-params-pp-cli stores create --store-code example-value`)
+	assert.Contains(t, readme, `public-params-pp-cli stores find --address example-value --city example-value`)
 
 	skill := readGeneratedFile(t, outputDir, "SKILL.md")
-	assert.Contains(t, skill, `public-params-pp-cli stores create --store-code example-value`)
+	assert.Contains(t, skill, `public-params-pp-cli stores find --address example-value --city example-value`)
 }
 
 func TestGenerateBodyNameAcrossCLISurfaces(t *testing.T) {
@@ -19423,20 +19963,23 @@ func TestStaleTemplateCoversCommonTimestampFields(t *testing.T) {
 // error.
 func TestSyncTemplateShortCircuitsOnDryRunSentinel(t *testing.T) {
 	t.Parallel()
-	data, err := os.ReadFile(filepath.Join("templates", "sync.go.tmpl"))
+	data, err := os.ReadFile(filepath.Join("templates", "helpers.go.tmpl"))
 	require.NoError(t, err)
 	body := string(data)
 
-	assert.Contains(t, body, "func isDryRunResponse(data json.RawMessage) bool",
-		"sync.go.tmpl must define isDryRunResponse helper that detects the client.dryRun sentinel")
-	assert.Contains(t, body, `"sync_dryrun"`,
+	assert.Contains(t, body, "func isDryRunResponse(dryRun bool, data json.RawMessage) bool",
+		"helpers.go.tmpl must define isDryRunResponse helper that detects the client.dryRun sentinel")
+	syncData, err := os.ReadFile(filepath.Join("templates", "sync.go.tmpl"))
+	require.NoError(t, err)
+	syncBody := string(syncData)
+	assert.Contains(t, syncBody, `"sync_dryrun"`,
 		"sync.go.tmpl must emit a sync_dryrun event on the short-circuit path so validate-narrative sees a structured success")
 
 	// Ordering pin: the dry-run check must run BEFORE upsertSingleObject,
 	// otherwise the sentinel reaches the upsert path and triggers a spurious
 	// "missing id for <resource>" error.
-	dryRunCheckIdx := strings.Index(body, "if isDryRunResponse(data)")
-	upsertSingleIdx := strings.Index(body, "if err := upsertSingleObject(db, resource, data)")
+	dryRunCheckIdx := strings.Index(syncBody, "if isDryRunResponseForClient(c, data)")
+	upsertSingleIdx := strings.Index(syncBody, "if err := upsertSingleObject(db, resource, data)")
 	require.GreaterOrEqual(t, dryRunCheckIdx, 0, "sync.go.tmpl must call isDryRunResponse on the response")
 	require.GreaterOrEqual(t, upsertSingleIdx, 0, "sync.go.tmpl must still call upsertSingleObject for live single-object responses")
 	assert.Less(t, dryRunCheckIdx, upsertSingleIdx,
@@ -20043,7 +20586,7 @@ components:
 	assert.Contains(t, paginationSwitch[1], `case "usercollection-daily-sleep":`)
 	assert.NotContains(t, paginationSwitch[1], `case "usercollection-personal-info":`,
 		"single-object resources without cursor params must not be marked paginated")
-	assert.Contains(t, src, `cursorParam: "next_token"`,
+	assert.Contains(t, src, `cursorParam:    "next_token"`,
 		"the generated sync layer must derive the API cursor param instead of hardcoding after")
 
 	sinceFormatTest := `package cli
@@ -20231,6 +20774,8 @@ func TestGenerateParentNoSubcommandRunE_WiredOnResourceParents(t *testing.T) {
 	require.NoError(t, err)
 	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(parentSrc),
 		"the resource parent must call the shared helper instead of falling through to cobra's default help")
+	assert.Contains(t, string(parentSrc), `"pp:parent-group": "true"`,
+		"the resource parent must identify the generated no-subcommand shim to live dogfood")
 
 	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
 	require.NoError(t, err)

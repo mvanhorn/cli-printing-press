@@ -238,14 +238,16 @@ func newLockPromoteCmd() *cobra.Command {
 				state = pipeline.NewMinimalState(cliName, dir)
 			}
 
-			if err := pipeline.PromoteWorkingCLI(cliName, dir, state); err != nil {
+			promotion, err := pipeline.PromoteWorkingCLIWithResult(cliName, dir, state)
+			if err != nil {
 				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("promoting CLI: %w", err)}
 			}
 
 			result := map[string]any{
-				"promoted":    true,
-				"cli":         cliName,
-				"library_dir": state.PublishedDir,
+				"promoted":          true,
+				"cli":               cliName,
+				"library_dir":       state.PublishedDir,
+				"preserved_patches": promotion.PreservedPatches,
 			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")

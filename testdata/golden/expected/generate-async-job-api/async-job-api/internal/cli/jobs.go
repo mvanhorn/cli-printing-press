@@ -239,7 +239,7 @@ Submit an async endpoint with --wait to block until completion; submit
 without --wait to get the job ID back immediately and track it later.`,
 		Example: `  async-job-pp-cli jobs list --limit 10
   async-job-pp-cli jobs get example-job-id --json`,
-		Annotations: map[string]string{"mcp:read-only": "true"},
+		Annotations: map[string]string{"mcp:read-only": "true", "pp:parent-group": "true"},
 		RunE:        parentNoSubcommandRunE(flags),
 	}
 	cmd.AddCommand(newJobsListCmd(flags))

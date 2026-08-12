@@ -159,6 +159,9 @@ func resolveReadWithStrategyResponsePathAndJSONGuard(ctx context.Context, c *cli
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
+		if isDryRunResponse(c.IsDryRun(), data) {
+			return data, attachFreshness(DataProvenance{Source: "dry-run"}, flags), nil
+		}
 		if guardLiveJSON {
 			if err := assertLiveJSONBody(data); err != nil {
 				return nil, DataProvenance{}, err
@@ -177,6 +180,9 @@ func resolveReadWithStrategyResponsePathAndJSONGuard(ctx context.Context, c *cli
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
+		if isDryRunResponse(c.IsDryRun(), data) {
+			return data, attachFreshness(DataProvenance{Source: "dry-run"}, flags), nil
+		}
 		if guardLiveJSON {
 			if err := assertLiveJSONBody(data); err != nil {
 				return nil, DataProvenance{}, err
@@ -188,6 +194,9 @@ func resolveReadWithStrategyResponsePathAndJSONGuard(ctx context.Context, c *cli
 	default: // "auto"
 		data, err := c.GetWithHeaders(ctx, path, params, headers)
 		if err == nil {
+			if isDryRunResponse(c.IsDryRun(), data) {
+				return data, attachFreshness(DataProvenance{Source: "dry-run"}, flags), nil
+			}
 			if guardLiveJSON {
 				if err := assertLiveJSONBody(data); err != nil {
 					return nil, DataProvenance{}, err
@@ -215,16 +224,19 @@ func resolveReadWithStrategyResponsePathAndJSONGuard(ctx context.Context, c *cli
 // headers argument carries per-endpoint required headers; pass nil when the
 // endpoint declares no overrides.
 func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam string, defaultPageSize int, nextCursorPath, hasMoreField string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
-	return resolvePaginatedReadWithStrategy(ctx, c, flags, "auto", resourceType, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField, hintWriter)
+	return resolvePaginatedReadWithStrategy(ctx, c, flags, "auto", resourceType, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField, "", hintWriter)
 }
 
-func resolvePaginatedReadWithStrategy(ctx context.Context, c *client.Client, flags *rootFlags, strategy string, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam string, defaultPageSize int, nextCursorPath, hasMoreField string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
-	return resolvePaginatedReadWithStrategyAndJSONGuard(ctx, c, flags, strategy, resourceType, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField, true, hintWriter)
+func resolvePaginatedReadWithStrategy(ctx context.Context, c *client.Client, flags *rootFlags, strategy string, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam string, defaultPageSize int, nextCursorPath, hasMoreField, responsePath string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
+	return resolvePaginatedReadWithStrategyAndJSONGuard(ctx, c, flags, strategy, resourceType, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField, responsePath, true, hintWriter)
 }
 
-func resolvePaginatedReadWithStrategyAndJSONGuard(ctx context.Context, c *client.Client, flags *rootFlags, strategy string, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam string, defaultPageSize int, nextCursorPath, hasMoreField string, guardLiveJSON bool, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
+func resolvePaginatedReadWithStrategyAndJSONGuard(ctx context.Context, c *client.Client, flags *rootFlags, strategy string, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam string, defaultPageSize int, nextCursorPath, hasMoreField, responsePath string, guardLiveJSON bool, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
 	if err := validateDataSourceStrategy(flags, strategy); err != nil {
 		return nil, DataProvenance{}, err
+	}
+	if flags != nil && flags.dryRun {
+		fetchAll = false
 	}
 	if strategy == "local" {
 		data, prov, err := resolveLocal(ctx, flags, hintWriter, resourceType, true, path, params, "strategy_local")
@@ -234,9 +246,12 @@ func resolvePaginatedReadWithStrategyAndJSONGuard(ctx context.Context, c *client
 		if !guardLiveJSON && fetchAll {
 			return nil, DataProvenance{}, fmt.Errorf("--all is not supported for live HTML responses; omit --all to extract the current page")
 		}
-		data, err := paginatedGet(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField)
+		data, err := paginatedGetWithResponsePath(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField, responsePath)
 		if err != nil {
 			return nil, DataProvenance{}, err
+		}
+		if isDryRunResponse(c.IsDryRun(), data) {
+			return data, attachFreshness(DataProvenance{Source: "dry-run"}, flags), nil
 		}
 		if guardLiveJSON {
 			if err := assertLiveJSONBody(data); err != nil {
@@ -254,9 +269,12 @@ func resolvePaginatedReadWithStrategyAndJSONGuard(ctx context.Context, c *client
 		if !guardLiveJSON && fetchAll {
 			return nil, DataProvenance{}, fmt.Errorf("--all is not supported for live HTML responses; omit --all to extract the current page")
 		}
-		data, err := paginatedGet(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField)
+		data, err := paginatedGetWithResponsePath(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField, responsePath)
 		if err != nil {
 			return nil, DataProvenance{}, err
+		}
+		if isDryRunResponse(c.IsDryRun(), data) {
+			return data, attachFreshness(DataProvenance{Source: "dry-run"}, flags), nil
 		}
 		if guardLiveJSON {
 			if err := assertLiveJSONBody(data); err != nil {
@@ -269,8 +287,11 @@ func resolvePaginatedReadWithStrategyAndJSONGuard(ctx context.Context, c *client
 		if !guardLiveJSON && fetchAll {
 			return nil, DataProvenance{}, fmt.Errorf("--all is not supported for live HTML responses; omit --all or use --data-source local")
 		}
-		data, err := paginatedGet(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField)
+		data, err := paginatedGetWithResponsePath(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField, responsePath)
 		if err == nil {
+			if isDryRunResponse(c.IsDryRun(), data) {
+				return data, attachFreshness(DataProvenance{Source: "dry-run"}, flags), nil
+			}
 			if guardLiveJSON {
 				if err := assertLiveJSONBody(data); err != nil {
 					return nil, DataProvenance{}, err
@@ -352,7 +373,7 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 		var envelope map[string]json.RawMessage
 		if json.Unmarshal(data, &envelope) == nil {
 			matchedListEnvelope := false
-			if extracted, ok := extractWriteThroughListItems(envelope); ok {
+			if extracted, ok := extractWriteThroughListItems(resourceType, envelope); ok {
 				matchedListEnvelope = true
 				items = extracted
 			}
@@ -412,8 +433,11 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 
 type writeThroughArrayDecoder func(json.RawMessage) ([]json.RawMessage, bool)
 
-func extractWriteThroughListItems(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+func extractWriteThroughListItems(resourceType string, envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
 	if items, ok := extractWriteThroughListWrapperItems(envelope, decodeWriteThroughNonEmptyArray); ok {
+		return items, true
+	}
+	if items, ok := extractWriteThroughResourceItems(resourceType, envelope); ok {
 		return items, true
 	}
 
@@ -432,6 +456,29 @@ func extractWriteThroughListItems(envelope map[string]json.RawMessage) ([]json.R
 	}
 
 	return extractWriteThroughSingleArraySibling(envelope, decodeWriteThroughNonEmptyArray)
+}
+
+func extractWriteThroughResourceItems(resourceType string, envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	var envelopeObject map[string]any
+	envelopeJSON, err := json.Marshal(envelope)
+	if err != nil || json.Unmarshal(envelopeJSON, &envelopeObject) != nil {
+		return nil, false
+	}
+	if store.ExtractResourceID(resourceType, envelopeObject) != "" {
+		return nil, false
+	}
+
+	for key, raw := range envelope {
+		if !strings.EqualFold(key, resourceType) {
+			continue
+		}
+		items, ok := decodeWriteThroughArray(raw)
+		if !ok || !writeThroughArrayItemsAreObjects(items) {
+			return nil, false
+		}
+		return items, true
+	}
+	return nil, false
 }
 
 func extractNestedWriteThroughListItems(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {

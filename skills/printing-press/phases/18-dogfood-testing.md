@@ -55,6 +55,7 @@ and acceptance-marker writing are deterministic:
 cli-printing-press dogfood --live \
   --dir "$CLI_WORK_DIR" \
   --level full \
+  --research-dir "$RESEARCH_DIR" \
   --json \
   --write-acceptance "$PROOFS_DIR/phase5-acceptance.json"
 ```
@@ -70,7 +71,7 @@ carries the captured session, and export it before the `dogfood --live` call:
 
 ```bash
 <API>_CONFIG="$SESSION_DIR/config.toml" cli-printing-press dogfood --live \
-  --dir "$CLI_WORK_DIR" --level full --json \
+  --dir "$CLI_WORK_DIR" --level full --research-dir "$RESEARCH_DIR" --json \
   --write-acceptance "$PROOFS_DIR/phase5-acceptance.json"
 ```
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 type novelFeatureCommandRender struct {
@@ -265,7 +266,7 @@ func (g *Generator) novelFeatureCommandData(node *novelFeatureStubNode) novelFea
 		if short == "" {
 			short = "TODO: implement " + commandPath
 		}
-		readOnly = novelFeatureReadOnly(*node.feature)
+		readOnly = g.novelFeatureReadOnly(*node.feature)
 		flags = novelFeatureFlags(*node.feature, node.path, g.Spec.Name)
 		hasPositional = novelFeatureHasPositional(node.feature.Command)
 		use = novelFeatureUse(node.segment, node.feature.Command)
@@ -460,6 +461,48 @@ func novelFeatureReadOnly(feature NovelFeature) bool {
 	return true
 }
 
+// novelFeatureReadOnly applies the prose classifier only when the API has a
+// mixed or unknown transport surface. A spec whose complete endpoint tree is
+// made of non-mutating GETs has no generated mutation route for a novel
+// scaffold to target, so every scaffold is safe to expose as read-only
+// regardless of prose verbs.
+func (g *Generator) novelFeatureReadOnly(feature NovelFeature) bool {
+	if g.allEndpointsAreGET() {
+		return true
+	}
+	return novelFeatureReadOnly(feature)
+}
+
+func (g *Generator) allEndpointsAreGET() bool {
+	if g == nil || g.Spec == nil {
+		return false
+	}
+
+	count := 0
+	var visit func(spec.Resource) bool
+	visit = func(resource spec.Resource) bool {
+		for endpointName, endpoint := range resource.Endpoints {
+			count++
+			if !strings.EqualFold(strings.TrimSpace(endpoint.Method), "GET") || endpointIsWriteCommand(endpoint, endpointName) {
+				return false
+			}
+		}
+		for _, subResource := range resource.SubResources {
+			if !visit(subResource) {
+				return false
+			}
+		}
+		return true
+	}
+
+	for _, resource := range g.Spec.Resources {
+		if !visit(resource) {
+			return false
+		}
+	}
+	return count > 0
+}
+
 func novelFeatureFlags(feature NovelFeature, commandPath []string, apiName string) []novelFeatureFlagRender {
 	if strings.TrimSpace(feature.Example) == "" {
 		return nil
@@ -542,10 +585,9 @@ func novelFeatureFlags(feature NovelFeature, commandPath []string, apiName strin
 	return flags
 }
 
-// novelFeatureExample returns the prefix-stripped runnable form of the
-// feature's research example, suitable for a Cobra Example field. Empty when
-// the feature has no example or the example yields no tokens after stripping
-// the binary/command-path prefix.
+// novelFeatureExample returns a complete invocation suitable for a Cobra
+// Example field. Empty when the feature has no example or the example yields
+// no arguments after stripping an existing binary/command-path prefix.
 func novelFeatureExample(feature NovelFeature, commandPath []string, apiName string) string {
 	if strings.TrimSpace(feature.Example) == "" {
 		return ""
@@ -555,7 +597,14 @@ func novelFeatureExample(feature NovelFeature, commandPath []string, apiName str
 		return ""
 	}
 	tokens = dropNovelFeatureExamplePrefix(tokens, commandPath, apiName)
-	return strings.Join(tokens, " ")
+	if len(tokens) == 0 {
+		return ""
+	}
+	invocation := make([]string, 0, 1+len(commandPath)+len(tokens))
+	invocation = append(invocation, naming.CLI(apiName))
+	invocation = append(invocation, commandPath...)
+	invocation = append(invocation, tokens...)
+	return "  " + shellargs.Join(invocation)
 }
 
 func dropNovelFeatureExamplePrefix(tokens []string, commandPath []string, apiName string) []string {
