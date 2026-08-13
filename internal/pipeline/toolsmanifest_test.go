@@ -191,6 +191,12 @@ func TestWriteManifestForGenerateSynchronizesNovelFeaturesToToolsManifest(t *tes
 	assert.Equal(t, features, got.NovelFeatures)
 }
 
+func TestSyncToolsManifestNovelFeaturesRequiresManifest(t *testing.T) {
+	err := syncToolsManifestNovelFeatures(t.TempDir(), nil)
+	require.Error(t, err)
+	assert.True(t, os.IsNotExist(err))
+}
+
 func TestWriteToolsManifest_OpenAPIDanglingOperationSecurityUsesRootAPIKey(t *testing.T) {
 	t.Parallel()
 

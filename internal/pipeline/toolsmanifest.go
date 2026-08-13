@@ -265,9 +265,6 @@ func novelFeaturesForToolsManifest(dir string) ([]NovelFeatureManifest, error) {
 
 func syncToolsManifestNovelFeatures(dir string, features []NovelFeatureManifest) error {
 	manifest, err := ReadToolsManifest(dir)
-	if os.IsNotExist(err) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}
