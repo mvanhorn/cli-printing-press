@@ -271,6 +271,56 @@ func TestRunLiveDogfoodRunsBodyFixtureWhenHappyArgsProvided(t *testing.T) {
 	}
 }
 
+func TestRunLiveDogfoodRunsHappyStdinFixture(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodStdinFixture(t, `{"name":"synthetic"}`)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	happy := findResultByCommandKind(report, "widgets inspect", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status, happy.Reason)
+	assert.Equal(t, []string{"widgets", "inspect", "--stdin"}, happy.Args)
+
+	jsonResult := findResultByCommandKind(report, "widgets inspect", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusPass, jsonResult.Status, jsonResult.Reason)
+	assert.Equal(t, []string{"widgets", "inspect", "--stdin", "--json"}, jsonResult.Args)
+}
+
+func TestRunLiveDogfoodSkipsUnannotatedStdinOnlyCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodStdinFixture(t, "")
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	for _, kind := range []LiveDogfoodTestKind{LiveDogfoodTestHappy, LiveDogfoodTestJSON} {
+		result := findResultByCommandKind(report, "widgets inspect", kind)
+		require.NotNil(t, result)
+		assert.Equal(t, LiveDogfoodStatusSkip, result.Status)
+		assert.Equal(t, reasonNoStdinFixture, result.Reason)
+		assert.Empty(t, result.Args)
+	}
+}
+
 func TestRunLiveDogfoodWritesAcceptanceMarkerOnPass(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
@@ -4694,6 +4744,66 @@ echo "unexpected args: $*" >&2
 exit 99
 `, annotation)
 	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
+
+func writeLiveDogfoodStdinFixture(t *testing.T, happyStdin string) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+	annotation := ""
+	if happyStdin != "" {
+		annotation = fmt.Sprintf(`,"pp:happy-stdin":%q`, happyStdin)
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+set -u
+
+if [ "${1:-}" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"widgets","subcommands":[
+      {"name":"inspect","annotations":{"pp:endpoint":"widgets.inspect","pp:method":"POST","pp:path":"/widgets/inspect"%s}}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "${1:-}" = "widgets" ] && [ "${2:-}" = "inspect" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Inspect widgets.
+
+Usage:
+  fixture-pp-cli widgets inspect [flags]
+
+Examples:
+  fixture-pp-cli widgets inspect --stdin
+
+Flags:
+      --json    Output JSON
+      --stdin   Read request body from stdin
+HELP
+  exit 0
+fi
+
+if [ "${1:-}" = "widgets" ] && [ "${2:-}" = "inspect" ]; then
+  input=$(cat)
+  if [ "$input" != '{"name":"synthetic"}' ]; then
+    echo "unexpected stdin: $input" >&2
+    exit 99
+  fi
+  echo '{"ok":true}'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`, annotation)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, binaryName), []byte(script), 0o755))
 	return dir, binaryName
 }
 

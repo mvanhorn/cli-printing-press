@@ -74,6 +74,7 @@ const (
 	extensionPPPagination          = "x-pp-pagination"
 	extensionSyncWalker            = "x-pp-sync-walker"
 	extensionHappyArgs             = "x-happy-args"
+	extensionHappyStdin            = "x-happy-stdin"
 	extensionPPExample             = "x-pp-example"
 	extensionLiveDogfoodTier       = "x-live-dogfood-requires-tier"
 	extensionDispatchParam         = "x-pp-dispatch-param"
@@ -3648,6 +3649,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 				endpoint.DataSourceStrategy = pathDataSourceStrategy
 			}
 			endpoint.HappyArgs = readHappyArgsExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
+			endpoint.HappyStdin = readHappyStdinExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
 			if ex := readExampleExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path)); ex != "" {
 				endpoint.Example = ex
 			}
@@ -5909,6 +5911,27 @@ func readHappyArgsExtension(extensions map[string]any, context string) string {
 		return ""
 	}
 	return strings.TrimSpace(value)
+}
+
+func readHappyStdinExtension(extensions map[string]any, context string) string {
+	if extensions == nil {
+		return ""
+	}
+	raw, ok := extensions[extensionHappyStdin]
+	if !ok || raw == nil {
+		return ""
+	}
+	value, ok := raw.(string)
+	if !ok {
+		warnf("%s: %s must be a string, got %T; ignoring", context, extensionHappyStdin, raw)
+		return ""
+	}
+	value = strings.TrimSpace(value)
+	if value == "" || !json.Valid([]byte(value)) {
+		warnf("%s: %s must contain valid JSON; ignoring", context, extensionHappyStdin)
+		return ""
+	}
+	return value
 }
 
 // readExampleExtension reads an operation-level x-pp-example string and returns

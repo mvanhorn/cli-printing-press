@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,7 @@ type WorkflowStep struct {
 	Command      string            `yaml:"command" json:"command"`
 	Args         map[string]string `yaml:"args,omitempty" json:"args,omitempty"`
 	ArgsStdin    bool              `yaml:"args_stdin,omitempty" json:"args_stdin,omitempty"`
+	StdinJSON    map[string]any    `yaml:"stdin_json,omitempty" json:"stdin_json,omitempty"`
 	Extract      map[string]string `yaml:"extract,omitempty" json:"extract,omitempty"`
 	Mode         StepMode          `yaml:"mode" json:"mode"`
 	ExpectFields []string          `yaml:"expect_fields,omitempty" json:"expect_fields,omitempty"`
@@ -101,7 +103,9 @@ func LoadWorkflowManifest(dir string) (*WorkflowManifest, error) {
 	}
 
 	var manifest WorkflowManifest
-	if err := yaml.Unmarshal(data, &manifest); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&manifest); err != nil {
 		return nil, fmt.Errorf("parsing workflow manifest: %w", err)
 	}
 

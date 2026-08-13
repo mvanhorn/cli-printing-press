@@ -4,11 +4,37 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestExecuteStepWiresStdinJSON(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "stdin-cli")
+	writeTestFile(t, binary, `#!/bin/sh
+set -eu
+[ "$1" = "inspect" ]
+cat
+`)
+	require.NoError(t, os.Chmod(binary, 0o755))
+
+	result := executeStep(binary, WorkflowStep{
+		Command:   "inspect",
+		ArgsStdin: true,
+		StdinJSON: map[string]any{"input": map[string]any{"ref": "thing:synthetic"}},
+		Mode:      StepModeLocal,
+	}, "inspect", dir)
+
+	assert.Equal(t, StepStatusPass, result.Status, result.Error)
+	assert.JSONEq(t, `{"input":{"ref":"thing:synthetic"}}`, result.Output)
+}
 
 func TestRunWorkflowVerification_NoManifest(t *testing.T) {
 	dir := t.TempDir()
