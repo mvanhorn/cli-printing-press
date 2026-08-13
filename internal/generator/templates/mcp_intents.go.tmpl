@@ -16,16 +16,22 @@
 package mcp
 
 import (
+	{{- if or .MCP.Intents .RecipeIntents}}
 	"context"
+{{- end}}
 {{- if .MCP.Intents}}
 	"encoding/json"
 {{- end}}
+	{{- if or .MCP.Intents .RecipeIntents}}
 	"fmt"
 	"strings"
+{{- end}}
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+{{- if or .MCP.Intents .RecipeIntents}}
 	"{{modulePath}}/internal/mcp/bound"
+{{- end}}
 {{- if .MCP.Intents}}
 	"{{modulePath}}/internal/client"
 {{- end}}
@@ -64,6 +70,9 @@ func RegisterIntents(s *server.MCPServer) {
 		),
 		handle{{pascal .Name}},
 	)
+{{- end}}
+{{- if and .PreserveMCPIntentRegistration (not .PreserveMCPIntentFile)}}
+	RegisterRecipeIntents(s)
 {{- end}}
 }
 

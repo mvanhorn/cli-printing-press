@@ -3,6 +3,7 @@ package mcpsync
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -76,6 +77,12 @@ func TestSyncPreservesGeneratedRecipeIntentRegistration(t *testing.T) {
 
 	apiSpec, err := spec.Parse(filepath.Join("..", "..", "..", "testdata", "loops.yaml"))
 	require.NoError(t, err)
+	apiSpec.MCP.Intents = []spec.Intent{{
+		Name:        "old_explicit_intent",
+		Description: "The old explicit intent.",
+		Steps:       []spec.IntentStep{{Endpoint: "contacts.list", Capture: "contacts"}},
+		Returns:     "contacts",
+	}}
 	cliDir := filepath.Join(t.TempDir(), "loops")
 	gen := generator.New(apiSpec, cliDir)
 	gen.VisionSet = generator.VisionTemplateSet{MCP: true}
@@ -100,6 +107,17 @@ func TestSyncPreservesGeneratedRecipeIntentRegistration(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(toolsBefore), "RegisterIntents(s)")
 	require.Contains(t, string(intentsBefore), "list_contacts_with_a_limit")
+	require.Contains(t, string(intentsBefore), "old_explicit_intent")
+
+	apiSpec.MCP.Intents = []spec.Intent{{
+		Name:        "new_explicit_intent",
+		Description: "The new explicit intent.",
+		Steps:       []spec.IntentStep{{Endpoint: "contacts.list", Capture: "contacts"}},
+		Returns:     "contacts",
+	}}
+	specData, err = yaml.Marshal(apiSpec)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "spec.yaml"), specData, 0o644))
 
 	_, err = Sync(cliDir, Options{})
 	require.NoError(t, err)
@@ -108,8 +126,63 @@ func TestSyncPreservesGeneratedRecipeIntentRegistration(t *testing.T) {
 	require.NoError(t, err)
 	intentsAfter, err := os.ReadFile(intentsPath)
 	require.NoError(t, err)
+	recipeAfter, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "recipe_intents.go"))
+	require.NoError(t, err)
 	assert.Contains(t, string(toolsAfter), "RegisterIntents(s)", "same-version mcp-sync must preserve the generated RegisterTools intent registration")
-	assert.Equal(t, string(intentsBefore), string(intentsAfter), "mcp-sync must not rewrite recipe-lifted intent handlers without their narrative source")
+	assert.Contains(t, string(intentsAfter), "new_explicit_intent", "mcp-sync must regenerate explicit intent declarations from the archived spec")
+	assert.NotContains(t, string(intentsAfter), "old_explicit_intent", "removed explicit intents must not remain registered")
+	assert.Contains(t, string(intentsAfter), "RegisterRecipeIntents(s)", "mcp-sync must retain the preserved recipe registration call")
+	assert.Contains(t, string(recipeAfter), "list_contacts_with_a_limit", "recipe intent registration must survive without the narrative source")
+	assert.Contains(t, string(recipeAfter), "cobratree.RunCLICommand(ctx, recipeCLIPath, args)")
+	cmd := exec.Command("go", "test", "-mod=mod", "./internal/mcp")
+	cmd.Dir = cliDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "post-sync MCP package must compile and test: %s", output)
+}
+
+func TestSyncLeavesRecipeOnlyIntentFileUnchanged(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	cliDir := filepath.Join(t.TempDir(), "loops")
+	gen := generator.New(apiSpec, cliDir)
+	gen.VisionSet = generator.VisionTemplateSet{MCP: true}
+	gen.Narrative = &generator.ReadmeNarrative{
+		Recipes: []generator.Recipe{{
+			Title:       "List contacts with a limit",
+			Command:     "loops-pp-cli contacts list --limit=<limit> --json",
+			Explanation: "Fetch a bounded contact list.",
+		}},
+	}
+	require.NoError(t, gen.Generate())
+	specData, err := yaml.Marshal(apiSpec)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "spec.yaml"), specData, 0o644))
+
+	intentsPath := filepath.Join(cliDir, "internal", "mcp", "intents.go")
+	before, err := os.ReadFile(intentsPath)
+	require.NoError(t, err)
+	_, err = Sync(cliDir, Options{})
+	require.NoError(t, err)
+	after, err := os.ReadFile(intentsPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after), "recipe-only mcp-sync must preserve the combined intent file when no explicit intents need refresh")
+	_, err = os.Stat(filepath.Join(cliDir, "internal", "mcp", "recipe_intents.go"))
+	assert.Error(t, err, "recipe-only mcp-sync should not create a compatibility split file")
+}
+
+func TestHasMCPRecipeIntentRegistrationFailsClosedOnReadError(t *testing.T) {
+	t.Parallel()
+
+	cliDir := filepath.Join(t.TempDir(), "broken")
+	intentsDir := filepath.Join(cliDir, "internal", "mcp", "intents.go")
+	require.NoError(t, os.MkdirAll(intentsDir, 0o755))
+
+	got, err := hasMCPRecipeIntentRegistration(cliDir)
+	require.Error(t, err)
+	assert.False(t, got)
+	assert.Contains(t, err.Error(), "intents.go")
 }
 
 func TestEnsureMCPClientSurfaceCompatibleChecksConditionalRequestTypes(t *testing.T) {

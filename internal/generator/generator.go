@@ -138,11 +138,13 @@ type Generator struct {
 	DiscoveryPages     []string         // Pages visited during browser-sniff discovery
 	NovelFeatures      []NovelFeature   // Transcendence features for README/SKILL
 	Narrative          *ReadmeNarrative // LLM-authored prose for README/SKILL; optional
-	// PreserveMCPIntentRegistration keeps RegisterTools wired to an existing
-	// generated intents.go when a partial regeneration lacks the narrative
-	// source that originally lifted recipe intents.
+	// Partial regeneration must retain generated intent wiring because the
+	// narrative source used to lift recipe intents is no longer available.
 	PreserveMCPIntentRegistration bool
-	AsyncJobs                     map[string]AsyncJobInfo // Detected async-job endpoints, keyed by "<resource>/<endpoint>"
+	// PreserveMCPIntentFile keeps a legacy combined intents.go untouched when
+	// no explicit intents need regeneration.
+	PreserveMCPIntentFile bool
+	AsyncJobs             map[string]AsyncJobInfo // Detected async-job endpoints, keyed by "<resource>/<endpoint>"
 
 	// ModulePath overrides the Go module import path emitted by templates that
 	// reference internal packages (`{{modulePath}}/internal/client`, etc.).
@@ -4993,28 +4995,32 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 		recipeIntents := buildRecipeIntents(g.Spec.Name, g.Narrative, reservedIntentNames)
 		mcpData := struct {
 			*spec.APISpec
-			SyncableResources []profiler.SyncableResource
-			SearchableFields  map[string][]string
-			Tables            []TableDef
-			VisionSet         VisionTemplateSet
-			MCPTotalCount     int
-			MCPPublicCount    int
-			NovelFeatures     []NovelFeature
-			DomainContext     DomainContext
-			RecipeIntents     []RecipeIntent
-			HasMCPIntents     bool
+			SyncableResources             []profiler.SyncableResource
+			SearchableFields              map[string][]string
+			Tables                        []TableDef
+			VisionSet                     VisionTemplateSet
+			MCPTotalCount                 int
+			MCPPublicCount                int
+			NovelFeatures                 []NovelFeature
+			DomainContext                 DomainContext
+			RecipeIntents                 []RecipeIntent
+			HasMCPIntents                 bool
+			PreserveMCPIntentRegistration bool
+			PreserveMCPIntentFile         bool
 		}{
-			APISpec:           g.Spec,
-			SyncableResources: g.profile.SyncableResources,
-			SearchableFields:  g.profile.SearchableFields,
-			Tables:            schema,
-			VisionSet:         g.dataSurfaceVisionSet(),
-			MCPTotalCount:     mcpTotal,
-			MCPPublicCount:    mcpPublic,
-			NovelFeatures:     g.NovelFeatures,
-			DomainContext:     domainCtx,
-			RecipeIntents:     recipeIntents,
-			HasMCPIntents:     len(g.Spec.MCP.Intents) > 0 || len(recipeIntents) > 0 || g.PreserveMCPIntentRegistration,
+			APISpec:                       g.Spec,
+			SyncableResources:             g.profile.SyncableResources,
+			SearchableFields:              g.profile.SearchableFields,
+			Tables:                        schema,
+			VisionSet:                     g.dataSurfaceVisionSet(),
+			MCPTotalCount:                 mcpTotal,
+			MCPPublicCount:                mcpPublic,
+			NovelFeatures:                 g.NovelFeatures,
+			DomainContext:                 domainCtx,
+			RecipeIntents:                 recipeIntents,
+			HasMCPIntents:                 len(g.Spec.MCP.Intents) > 0 || len(recipeIntents) > 0 || g.PreserveMCPIntentRegistration,
+			PreserveMCPIntentRegistration: g.PreserveMCPIntentRegistration,
+			PreserveMCPIntentFile:         g.PreserveMCPIntentFile,
 		}
 		if err := g.renderTemplate("mcp_platform_gate.go.tmpl", filepath.Join("internal", "mcp", "platform_gate.go"), mcpData); err != nil {
 			return fmt.Errorf("rendering MCP tenant gate: %w", err)
@@ -5030,7 +5036,7 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 				return fmt.Errorf("rendering MCP tools tests: %w", err)
 			}
 		}
-		if (len(g.Spec.MCP.Intents) > 0 || len(recipeIntents) > 0) && !g.PreserveMCPIntentRegistration {
+		if mcpData.HasMCPIntents && !g.PreserveMCPIntentFile {
 			if err := g.renderTemplate("mcp_intents.go.tmpl", filepath.Join("internal", "mcp", "intents.go"), mcpData); err != nil {
 				return fmt.Errorf("rendering MCP intents: %w", err)
 			}
