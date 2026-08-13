@@ -364,6 +364,28 @@ func TestCursorPageHasContinuation(t *testing.T) {
 	}
 }
 
+func TestSyncPaginationPageIsStuck(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		cursorType string
+		cursor     string
+		nextCursor string
+		want       bool
+	}{
+		{name: "advancing cursor continues", cursorType: "cursor", cursor: "page-1", nextCursor: "page-2", want: false},
+		{name: "repeated cursor stops", cursorType: "cursor", cursor: "page-2", nextCursor: "page-2", want: true},
+		{name: "advancing page token continues", cursorType: "page_token", cursor: "page-1", nextCursor: "page-2", want: false},
+		{name: "repeated offset page stops", cursorType: "offset", cursor: "2", nextCursor: "4", want: true},
+		{name: "repeated page page stops", cursorType: "page", cursor: "2", nextCursor: "3", want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := syncPaginationPageIsStuck(tt.cursorType, tt.cursor, tt.nextCursor); got != tt.want {
+				t.Fatalf("syncPaginationPageIsStuck(%%q, %%q, %%q) = %%v, want %%v", tt.cursorType, tt.cursor, tt.nextCursor, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExtractItemsByKnownKeysFallsThroughEmptyPreferredKey(t *testing.T) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal([]byte("{\"items\":[],\"records\":[{\"id\":\"one\"}]}"), &envelope); err != nil {
@@ -441,6 +463,29 @@ func TestSyncResourceFollowsEmptyCursorPage(t *testing.T) {
 	}
 }
 
+func TestSyncResourceStopsOnTerminalEmptyCursorPage(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %%v", err)
+	}
+	defer db.Close()
+
+	client := &shortPageSyncClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[{\"id\":\"one\"}],\"next_cursor\":\"page-2\",\"has_more\":true}"),
+		json.RawMessage("{\"items\":[],\"next_cursor\":\"\",\"has_more\":false}"),
+	}}
+	result := syncResource(context.Background(), client, db, "orders", "", true, 0, false, false, &syncUserParams{}, io.Discard)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%%v warning=%%v", result.Err, result.Warn)
+	}
+	if result.Count != 1 || len(client.params) != 2 {
+		t.Fatalf("sync count/calls = %%d/%%d, want 1/2", result.Count, len(client.params))
+	}
+	if got := client.params[1]["after"]; got != "page-2" {
+		t.Fatalf("second request after = %%q, want page-2", got)
+	}
+}
+
 func TestSyncResourceUsesPopulatedFallbackAfterEmptyItems(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
@@ -515,7 +560,7 @@ func TestSyncResourceStopsOnRepeatedEmptyCursorPage(t *testing.T) {
 
 	client := &shortPageSyncClient{responses: []json.RawMessage{
 		json.RawMessage("{\"items\":[],\"next_cursor\":\"page-2\",\"has_more\":true}"),
-		json.RawMessage("{\"items\":[],\"next_cursor\":\"page-3\",\"has_more\":true}"),
+		json.RawMessage("{\"items\":[],\"next_cursor\":\"page-2\",\"has_more\":true}"),
 	}}
 	var events strings.Builder
 	result := syncResource(context.Background(), client, db, "orders", "", true, 0, false, false, &syncUserParams{}, &events)

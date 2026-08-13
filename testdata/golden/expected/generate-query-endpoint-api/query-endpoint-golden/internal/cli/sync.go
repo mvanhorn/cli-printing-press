@@ -645,7 +645,7 @@ func syncResource(ctx context.Context, c interface {
 				hasMore = false
 			}
 		}
-		if hasMore && previousPageItemsSet && syncPageItemsEqual(previousPageItems, items) && nextCursor == cursor {
+		if hasMore && previousPageItemsSet && syncPageItemsEqual(previousPageItems, items) && syncPaginationPageIsStuck(pageSize.cursorType, cursor, nextCursor) {
 			outcome.reason = "stuck_page"
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "\n  %s: API returned the same page twice; aborting to prevent budget waste.\n", resource)
@@ -1030,6 +1030,13 @@ func syncPageItemsEqual(previous, current []json.RawMessage) bool {
 		if string(previous[i]) != string(current[i]) {
 			return false
 		}
+	}
+	return true
+}
+
+func syncPaginationPageIsStuck(cursorType, cursor, nextCursor string) bool {
+	if cursorType == "cursor" || cursorType == "page_token" {
+		return nextCursor == cursor
 	}
 	return true
 }
