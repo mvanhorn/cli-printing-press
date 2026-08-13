@@ -368,6 +368,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"graphqlFieldSelection": func(typeName string, types map[string]spec.TypeDef) []string {
 			return graphqlFieldSelection(typeName, types)
 		},
+		"compactFieldMapLiteral":    compactFieldMapLiteral,
 		"isGraphQL":                 isGraphQLSpec,
 		"localReadIsList":           localReadIsList,
 		"localReadSupported":        localReadSupported,

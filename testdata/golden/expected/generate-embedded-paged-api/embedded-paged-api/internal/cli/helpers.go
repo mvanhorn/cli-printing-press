@@ -1277,6 +1277,9 @@ func extractPaginatedItemsMatchingPath(obj map[string]json.RawMessage, requestPa
 var envelopeMetadataArrayKeys = map[string]bool{
 	"errors": true, "Errors": true,
 	"warnings": true, "Warnings": true,
+	// fetch_failures is emitted by fan-out scaffolding. It is bookkeeping,
+	// not a competing domain payload array during compact projection.
+	"fetch_failures": true, "FetchFailures": true,
 }
 
 // envelopeMetadataKeys lists pagination and collection-envelope metadata
@@ -1962,7 +1965,7 @@ func isDryRunResponseForClient(c any, data json.RawMessage) bool {
 	return ok && isDryRunResponse(dryRunClient.IsDryRun(), data)
 }
 
-func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any) error {
+func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any, documentedFields ...map[string]bool) error {
 	if err := validatePlatformAnalytics(flags); err != nil {
 		return err
 	}
@@ -1974,7 +1977,7 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 	if flags.selectFields != "" {
 		data = filterFields(data, flags.selectFields)
 	} else if flags.compact {
-		data = compactFields(data)
+		data = compactFields(data, documentedFields...)
 	}
 	if flags.agent && flags.asJSON && !flags.csv && !flags.plain && !flags.quiet {
 		wrapped, err := wrapAgentOutput(data, agentMeta)
@@ -2032,17 +2035,17 @@ var compactVerboseObjectFields = map[string]bool{
 // compactFields keeps only the most important fields for agent consumption.
 // For arrays: allowlist of high-gravity fields (no descriptions).
 // For single objects: blocklist that strips known-verbose fields (descriptions, comments, etc.).
-func compactFields(data json.RawMessage) json.RawMessage {
+func compactFields(data json.RawMessage, documentedFields ...map[string]bool) json.RawMessage {
 	// Try array first
 	var items []map[string]any
 	if err := json.Unmarshal(data, &items); err == nil {
-		return compactListFields(items)
+		return compactListFields(items, documentedFields...)
 	}
 
 	// Single object — use blocklist
 	var obj map[string]any
 	if err := json.Unmarshal(data, &obj); err == nil {
-		return compactObjectFields(obj)
+		return compactObjectFields(obj, documentedFields...)
 	}
 
 	return data
@@ -2067,7 +2070,7 @@ func compactFields(data json.RawMessage) json.RawMessage {
 // When an item still carries none of the keep keys, the original is
 // preserved so `--agent` does not silently emit {} for shapes whose key
 // names are entirely off-canonical.
-func compactListFields(items []map[string]any) json.RawMessage {
+func compactListFields(items []map[string]any, documentedFields ...map[string]bool) json.RawMessage {
 	keepFields := map[string]bool{
 		// Identity
 		"id": true, "name": true, "title": true, "identifier": true,
@@ -2089,6 +2092,11 @@ func compactListFields(items []map[string]any) json.RawMessage {
 		"date": true,
 		// Versioning
 		"version": true,
+	}
+	for _, fields := range documentedFields {
+		for field := range fields {
+			keepFields[field] = true
+		}
 	}
 	if len(items) > 0 {
 		keyCounts := map[string]int{}
@@ -2151,8 +2159,8 @@ func isCompactScalar(v any) bool {
 // "markdown" — those fields are payload on `get` commands and stripping them
 // under `--agent`/`--compact` is a silent loss; agents who want to omit them
 // can pass `--select` to specify only the fields they need.
-func compactObjectFields(obj map[string]any) json.RawMessage {
-	if compacted, ok := compactListEnvelopeObjectAtDepth(obj, 0); ok {
+func compactObjectFields(obj map[string]any, documentedFields ...map[string]bool) json.RawMessage {
+	if compacted, ok := compactListEnvelopeObjectAtDepth(obj, 0, documentedFields...); ok {
 		result, _ := json.Marshal(compacted)
 		return result
 	}
@@ -2166,25 +2174,34 @@ func compactObjectFields(obj map[string]any) json.RawMessage {
 	return result
 }
 
-func compactListEnvelopeObjectAtDepth(obj map[string]any, envelopeDepth int) (map[string]any, bool) {
+func compactListEnvelopeObjectAtDepth(obj map[string]any, envelopeDepth int, documentedFields ...map[string]bool) (map[string]any, bool) {
 	out := map[string]any{}
 	foundArray := false
+	payloadArrays := map[string]bool{}
 	for k, v := range obj {
-		if envelopeDepth == 0 && compactVerboseObjectFields[k] {
+		if envelopeMetadataArrayKeys[k] || envelopeMetadataKeys[k] {
+			continue
+		}
+		if _, ok := compactObjectArrayValue(v, documentedFields...); ok {
+			payloadArrays[k] = true
+		}
+	}
+	for k, v := range obj {
+		if envelopeDepth == 0 && compactVerboseObjectFields[k] && (!payloadArrays[k] || len(payloadArrays) > 1) {
 			continue
 		}
 		if envelopeMetadataArrayKeys[k] || envelopeMetadataKeys[k] {
 			out[k] = v
 			continue
 		}
-		if compacted, ok := compactObjectArrayValue(v); ok {
+		if compacted, ok := compactObjectArrayValue(v, documentedFields...); ok {
 			foundArray = true
 			out[k] = compacted
 			continue
 		}
 		if nested, ok := v.(map[string]any); ok {
 			if envelopeDepth < maxListEnvelopeDepth {
-				if compacted, ok := compactListEnvelopeObjectAtDepth(nested, envelopeDepth+1); ok {
+				if compacted, ok := compactListEnvelopeObjectAtDepth(nested, envelopeDepth+1, documentedFields...); ok {
 					foundArray = true
 					out[k] = compacted
 					continue
@@ -2199,7 +2216,7 @@ func compactListEnvelopeObjectAtDepth(obj map[string]any, envelopeDepth int) (ma
 	return out, true
 }
 
-func compactObjectArrayValue(v any) (any, bool) {
+func compactObjectArrayValue(v any, documentedFields ...map[string]bool) (any, bool) {
 	rawItems, ok := v.([]any)
 	if !ok || len(rawItems) == 0 {
 		return nil, false
@@ -2212,7 +2229,7 @@ func compactObjectArrayValue(v any) (any, bool) {
 		}
 		items = append(items, item)
 	}
-	compactedRaw := compactListFields(items)
+	compactedRaw := compactListFields(items, documentedFields...)
 	var compacted any
 	if err := json.Unmarshal(compactedRaw, &compacted); err != nil {
 		return nil, false

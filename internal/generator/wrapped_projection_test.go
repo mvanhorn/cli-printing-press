@@ -192,6 +192,87 @@ func TestCompactFieldsProjectsHALEmbeddedArrays(t *testing.T) {
 	}
 }
 
+func TestCompactFieldsPreservesDocumentedSparseFields(t *testing.T) {
+	input := json.RawMessage(`+"`"+`[
+		{"id":"row-1","name":"One","odds":1.5,"ranking":7,"lean":"up","segment":"rare","undocumented":"drop"},
+		{"id":"row-2","name":"Two"},
+		{"id":"row-3","name":"Three"},
+		{"id":"row-4","name":"Four"},
+		{"id":"row-5","name":"Five"},
+		{"id":"row-6","name":"Six"},
+		{"id":"row-7","name":"Seven"},
+		{"id":"row-8","name":"Eight"},
+		{"id":"row-9","name":"Nine"},
+		{"id":"row-10","name":"Ten"}
+	]`+"`"+`)
+
+	got := compactFields(input, map[string]bool{
+		"odds": true, "ranking": true, "lean": true, "segment": true,
+	})
+	var rows []map[string]any
+	if err := json.Unmarshal(got, &rows); err != nil {
+		t.Fatalf("compactFields returned invalid JSON: %v\n%s", err, got)
+	}
+	first := rows[0]
+	for _, key := range []string{"odds", "ranking", "lean", "segment"} {
+		if _, ok := first[key]; !ok {
+			t.Fatalf("documented sparse field %q was dropped: %#v", key, first)
+		}
+	}
+	if _, ok := first["undocumented"]; ok {
+		t.Fatalf("undocumented sparse field survived compact projection: %#v", first)
+	}
+}
+
+func TestCompactFieldsPreservesSoleVerbosePayloadArray(t *testing.T) {
+	input := json.RawMessage(`+"`"+`{
+		"id": "issue-1",
+		"title": "Bug",
+		"description": "verbose metadata",
+		"comments": [{"id":"comment-1","body":"comment payload"}]
+	}`+"`"+`)
+
+	got := decodeObject(t, compactFields(input))
+	if _, ok := got["comments"].([]any); !ok {
+		t.Fatalf("sole payload comments array was stripped: %#v", got)
+	}
+	if _, ok := got["description"]; ok {
+		t.Fatalf("scalar description should remain blocklisted: %#v", got)
+	}
+}
+
+func TestCompactFieldsStripsVerboseArrayWhenPayloadCompetes(t *testing.T) {
+	input := json.RawMessage(`+"`"+`{
+		"id": "issue-1",
+		"body": "primary payload",
+		"comments": [{"id":"comment-1","body":"comment payload"}],
+		"tags": [{"id":"tag-1","label":"bug"}]
+	}`+"`"+`)
+
+	got := decodeObject(t, compactFields(input))
+	if _, ok := got["comments"]; ok {
+		t.Fatalf("verbose competing comments array survived: %#v", got)
+	}
+	if _, ok := got["tags"].([]any); !ok {
+		t.Fatalf("domain payload tags array was stripped: %#v", got)
+	}
+}
+
+func TestCompactFieldsPreservesFetchFailuresAlongsidePayload(t *testing.T) {
+	input := json.RawMessage(`+"`"+`{
+		"results": [{"id":"evt-1","name":"Launch","description":"verbose"}],
+		"fetch_failures": [{"resource":"venues","error":"timeout"}]
+	}`+"`"+`)
+
+	got := decodeObject(t, compactFields(input))
+	if _, ok := got["results"].([]any); !ok {
+		t.Fatalf("results payload was stripped: %#v", got)
+	}
+	if _, ok := got["fetch_failures"].([]any); !ok {
+		t.Fatalf("fetch_failures sidecar was stripped: %#v", got)
+	}
+}
+
 func TestCompactFieldsKeepsObjectBlocklistForDetailObjectsWithArrays(t *testing.T) {
 	input := json.RawMessage(`+"`"+`{
 		"id": "issue-1",
@@ -200,7 +281,8 @@ func TestCompactFieldsKeepsObjectBlocklistForDetailObjectsWithArrays(t *testing.
 		"body": "primary payload",
 		"comments": [
 			{"id":"comment-1","body":"verbose comment"}
-		]
+		],
+		"tags": [{"id":"tag-1","label":"bug"}]
 	}`+"`"+`)
 
 	got := decodeObject(t, compactFields(input))
@@ -214,6 +296,9 @@ func TestCompactFieldsKeepsObjectBlocklistForDetailObjectsWithArrays(t *testing.
 		if _, ok := got[key]; ok {
 			t.Fatalf("detail object kept object-path blocklisted %s field: %#v", key, got)
 		}
+	}
+	if _, ok := got["tags"].([]any); !ok {
+		t.Fatalf("detail object lost competing payload tags: %#v", got)
 	}
 }
 
@@ -265,5 +350,5 @@ func TestSelectFieldsProjectsHALEmbeddedArrays(t *testing.T) {
 `), 0o644))
 
 	requireGeneratedCompiles(t, outputDir)
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestCompactFieldsProjects|TestCompactFieldsKeeps|TestSelectFieldsProjects", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestCompactFieldsProjects|TestCompactFieldsPreserves|TestCompactFieldsStrips|TestCompactFieldsKeeps|TestSelectFieldsProjects", "-count=1")
 }
