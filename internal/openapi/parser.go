@@ -3123,6 +3123,9 @@ func preferredComposedBearerScheme(doc *openapi3.T, requirements openapi3.Securi
 		if !composedBearerHasSupportedAPIKeySibling(doc, matching, name) || !additionalHeaderRequirementsShareSiblings(matching, name) {
 			continue
 		}
+		if !composedBearerHasNoAPIKeyOnlyRequirements(doc, requirements, matching, name) {
+			continue
+		}
 
 		score := schemePriorityScoreForDoc(doc, requirements, name, scheme)
 		usageCount := usageCounts[name]
@@ -3166,6 +3169,38 @@ func composedBearerHasSupportedAPIKeySibling(doc *openapi3.T, requirements opena
 		}
 	}
 	return false
+}
+
+func composedBearerHasNoAPIKeyOnlyRequirements(doc *openapi3.T, requirements, matching openapi3.SecurityRequirements, winner string) bool {
+	if doc == nil || doc.Components == nil {
+		return false
+	}
+
+	siblings := map[string]struct{}{}
+	for _, requirement := range matching {
+		for siblingName := range requirement {
+			if siblingName == winner {
+				continue
+			}
+			scheme := securitySchemeValue(doc.Components.SecuritySchemes[siblingName])
+			if scheme != nil && strings.EqualFold(scheme.Type, "apiKey") &&
+				(strings.EqualFold(scheme.In, "header") || strings.EqualFold(scheme.In, "query")) {
+				siblings[siblingName] = struct{}{}
+			}
+		}
+	}
+
+	for _, requirement := range requirements {
+		if _, hasWinner := requirement[winner]; hasWinner {
+			continue
+		}
+		for siblingName := range siblings {
+			if _, usesSibling := requirement[siblingName]; usesSibling {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // Effective operation security is authoritative when present: a

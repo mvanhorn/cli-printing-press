@@ -6600,15 +6600,76 @@ paths:
 	assert.True(t, additional.EnvVar.Sensitive)
 }
 
-// A public API-key surface can outnumber the user endpoints that require
-// OAuth2. The composed OAuth2 requirement still needs to win so generated
-// clients send Authorization, while the API key remains an additional header.
-func TestComposedOAuthIsNotDisplacedByStandaloneAPIKeyUsage(t *testing.T) {
+// A composed OAuth2 requirement keeps both credentials in the generated
+// client when the whole authenticated surface requires the same AND-group.
+func TestComposedOAuthEmitsBearerAndAPIKey(t *testing.T) {
 	t.Parallel()
 
 	yamlSpec := []byte(`openapi: "3.0.3"
 info:
   title: Numista-shape
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ApiKeyAuth: []
+    OAuth2: [view_collection]
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Numista-API-Key
+      x-auth-env-vars:
+        - NUMISTA_API_KEY
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.example.com/oauth/authorize
+          tokenUrl: https://api.example.com/oauth/token
+          scopes:
+            view_collection: view collection
+paths:
+  /catalogue:
+    get:
+      operationId: listCatalogue
+      responses: {"200": {description: ok}}
+  /account:
+    get:
+      operationId: getProfile
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+	assert.Equal(t, "OAuth2", parsed.Auth.Scheme)
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	require.Len(t, parsed.Auth.AdditionalHeaders, 1)
+	assert.Equal(t, "Numista-API-Key", parsed.Auth.AdditionalHeaders[0].Header)
+	assert.Equal(t, "NUMISTA_API_KEY", parsed.Auth.AdditionalHeaders[0].EnvVar.Name)
+
+	outputDir := filepath.Join(t.TempDir(), "numista-shape-pp-cli")
+	require.NoError(t, generator.New(parsed, outputDir).Generate())
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(clientSrc), `req.Header.Set("Authorization", authHeader)`)
+	assert.Contains(t, string(clientSrc), `req.Header.Set("Numista-API-Key", v)`)
+	assert.Contains(t, string(clientSrc), `c.Config.NumistaApiKey`)
+
+	if testing.Short() {
+		t.Skip("OpenAPI generated CLI compile coverage runs in the generated-test CI lane")
+	}
+	runGo(t, outputDir, "mod", "tidy")
+	runGo(t, outputDir, "build", "./...")
+}
+
+func TestMixedSecurityDoesNotGloballyPromoteOAuth(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Numista-mixed-security
   version: "1.0.0"
 servers:
   - url: https://api.example.com
@@ -6646,25 +6707,15 @@ paths:
 
 	parsed, err := Parse(yamlSpec)
 	require.NoError(t, err)
-	assert.Equal(t, "OAuth2", parsed.Auth.Scheme)
-	assert.Equal(t, "bearer_token", parsed.Auth.Type)
-	require.Len(t, parsed.Auth.AdditionalHeaders, 1)
-	assert.Equal(t, "Numista-API-Key", parsed.Auth.AdditionalHeaders[0].Header)
-	assert.Equal(t, "NUMISTA_API_KEY", parsed.Auth.AdditionalHeaders[0].EnvVar.Name)
+	assert.Equal(t, "ApiKeyAuth", parsed.Auth.Scheme)
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Empty(t, parsed.Auth.AdditionalHeaders)
 
-	outputDir := filepath.Join(t.TempDir(), "numista-shape-pp-cli")
+	outputDir := filepath.Join(t.TempDir(), "numista-mixed-security-pp-cli")
 	require.NoError(t, generator.New(parsed, outputDir).Generate())
 	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(clientSrc), `req.Header.Set("Authorization", authHeader)`)
-	assert.Contains(t, string(clientSrc), `req.Header.Set("Numista-API-Key", v)`)
-	assert.Contains(t, string(clientSrc), `c.Config.NumistaApiKey`)
-
-	if testing.Short() {
-		t.Skip("OpenAPI generated CLI compile coverage runs in the generated-test CI lane")
-	}
-	runGo(t, outputDir, "mod", "tidy")
-	runGo(t, outputDir, "build", "./...")
+	assert.NotContains(t, string(clientSrc), `req.Header.Set("Authorization", authHeader)`)
 }
 
 func TestComposedOAuthKeepsExtensionFreeQueryAPIKey(t *testing.T) {
@@ -6678,6 +6729,7 @@ servers:
   - url: https://api.example.com
 security:
   - ApiKeyAuth: []
+    OAuth2: [view_collection]
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -6700,9 +6752,6 @@ paths:
   /account:
     get:
       operationId: getProfile
-      security:
-        - ApiKeyAuth: []
-          OAuth2: [view_collection]
       responses: {"200": {description: ok}}
 `)
 
