@@ -127,6 +127,76 @@ func TestWriteToolsManifest_MultipleResources(t *testing.T) {
 	assert.Equal(t, "/store/inventory", got.Tools[3].Path)
 }
 
+func TestWriteToolsManifestIncludesNovelFeaturesFromCLIManifest(t *testing.T) {
+	dir := t.TempDir()
+	features := []NovelFeatureManifest{{
+		Name:        "Verify sync",
+		Command:     "sync verify",
+		Description: "Verify synchronized data.",
+	}}
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{NovelFeatures: features}))
+	parsed := &spec.APISpec{
+		Name:    "novel-manifest",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, features, got.NovelFeatures)
+}
+
+func TestWriteToolsManifestOmitsNovelFeaturesWithoutCLIManifest(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "plain-manifest",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+	assert.Empty(t, got.NovelFeatures)
+
+	raw, err := os.ReadFile(filepath.Join(dir, ToolsManifestFilename))
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), `"novel_features"`)
+}
+
+func TestWriteManifestForGenerateSynchronizesNovelFeaturesToToolsManifest(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "generate-novel-manifest",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+	}
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+	features := []NovelFeatureManifest{{
+		Name:        "Verify sync",
+		Command:     "sync verify",
+		Description: "Verify synchronized data.",
+	}}
+
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:       parsed.Name,
+		OutputDir:     dir,
+		Spec:          parsed,
+		NovelFeatures: features,
+	}))
+
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, features, got.NovelFeatures)
+}
+
+func TestSyncToolsManifestNovelFeaturesRequiresManifest(t *testing.T) {
+	err := syncToolsManifestNovelFeatures(t.TempDir(), nil)
+	require.Error(t, err)
+	assert.True(t, os.IsNotExist(err))
+}
+
 func TestWriteToolsManifest_OpenAPIDanglingOperationSecurityUsesRootAPIKey(t *testing.T) {
 	t.Parallel()
 

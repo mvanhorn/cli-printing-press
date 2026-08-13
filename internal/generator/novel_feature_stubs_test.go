@@ -3,6 +3,7 @@ package generator
 import (
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -110,10 +111,91 @@ func TestNovelFeatureStubsResolveAtRuntime(t *testing.T) {
 		}
 	}
 }
+
 `)
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "novel_stub_runtime_test.go"), []byte(runtimeTest.String()), 0o644))
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/cli")
+}
+
+func TestGeneratorRegistersNovelFeatureUnderFrameworkParent(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("framework-novel")
+	apiSpec.Streaming = spec.StreamingConfig{
+		Transport: spec.StreamingTransportWebSocket,
+		URL:       "wss://api.example.com/v1/ws",
+		Framing:   spec.StreamingFramingNDJSON,
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	gen.NovelFeatures = []NovelFeature{{
+		Name:        "Verify sync",
+		Command:     "sync verify",
+		Description: "Verify synchronized data.",
+		Example:     "framework-novel-pp-cli sync verify",
+	}, {
+		Name:        "Verify live stream",
+		Command:     "live verify",
+		Description: "Verify the live stream.",
+		Example:     "framework-novel-pp-cli live verify",
+	}, {
+		Name:        "Explain help",
+		Command:     "help explain",
+		Description: "Explain help topics.",
+		Example:     "framework-novel-pp-cli help explain",
+	}, {
+		Name:        "Check completion",
+		Command:     "completion check",
+		Description: "Check completion setup.",
+		Example:     "framework-novel-pp-cli completion check",
+	}}
+	require.NoError(t, gen.Generate())
+
+	root := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	assert.Contains(t, root, `rootCmd.Find(strings.Fields("sync"))`)
+	assert.Contains(t, root, "addNovelCommandIfAbsent(parent, newNovelSyncVerifyCmd(flags))")
+	assert.Contains(t, root, "addNovelCommandIfAbsent(parent, newNovelLiveVerifyCmd(flags))")
+
+	// Exercise the generated Cobra tree so this regression catches a missing
+	// framework-parent AddCommand rather than only checking template text.
+	testPath := filepath.Join(outputDir, "internal", "cli", "framework_novel_wiring_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(`package cli
+
+import "testing"
+
+func TestNovelFrameworkParentReachable(t *testing.T) {
+	for _, path := range [][]string{
+		{"sync", "verify"},
+		{"live", "verify"},
+		{"help", "explain"},
+		{"completion", "check"},
+	} {
+		command, _, err := RootCmd().Find(path)
+		if err != nil {
+			t.Fatalf("Find(%v) error = %v", path, err)
+		}
+		if command == nil || command.Name() != path[len(path)-1] {
+			t.Fatalf("Find(%v) = %#v", path, command)
+		}
+	}
+}
+`), 0o644))
+
+	cmd := exec.Command("go", "test", "-mod=mod", "./internal/cli", "-run", "TestNovelFrameworkParentReachable", "-count=1")
+	cmd.Dir = outputDir
+	cmd.Env = os.Environ()
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+
+	plainDir := filepath.Join(t.TempDir(), naming.CLI("framework-plain"))
+	plainSpec := minimalSpec("framework-plain")
+	plainGen := New(plainSpec, plainDir)
+	plainGen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, plainGen.Generate())
+	plainRoot := readGeneratedFile(t, plainDir, "internal", "cli", "root.go")
+	assert.NotContains(t, plainRoot, `rootCmd.Find(strings.Fields(`)
 }
 
 func TestGeneratorMarksAllGETNovelFeatureStubsReadOnly(t *testing.T) {

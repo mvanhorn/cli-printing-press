@@ -615,6 +615,20 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	for _, hook := range novelCommandHooks {
 		hook(rootCmd, flags)
 	}
+{{- if .NovelFrameworkChildren}}
+	// Cobra creates its default help and completion parents lazily during
+	// Execute. Initialize them here too so novel features can attach to the
+	// same framework command tree when RootCmd is inspected directly.
+	rootCmd.InitDefaultHelpCmd()
+	rootCmd.InitDefaultCompletionCmd()
+{{- range $parent, $children := .NovelFrameworkChildren}}
+	if parent, _, err := rootCmd.Find(strings.Fields({{printf "%q" $parent}})); err == nil {
+{{- range $children}}
+		addNovelCommandIfAbsent(parent, newNovel{{.Ident}}Cmd(flags))
+{{- end}}
+	}
+{{- end}}
+{{- end}}
 {{- range .NovelCommandStubs}}
 	addNovelCommandIfAbsent(rootCmd, newNovel{{.Ident}}Cmd(flags))
 {{- end}}
