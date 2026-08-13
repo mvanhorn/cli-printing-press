@@ -412,7 +412,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		return err
 	}
 	if err := syncToolsManifestNovelFeatures(dir, m.NovelFeatures); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not sync tools manifest novel features: %v\n", err)
+		return fmt.Errorf("syncing novel features to tools manifest: %w", err)
 	}
 	return nil
 }
