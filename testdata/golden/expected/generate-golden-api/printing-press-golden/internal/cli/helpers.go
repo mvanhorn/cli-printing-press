@@ -775,6 +775,8 @@ func paginatedGet(ctx context.Context, c interface {
 	collectionField := ""
 	collectionShapeSet := false
 	seenCursorTokens := map[string]struct{}{}
+	var previousPageItems []json.RawMessage
+	previousPageItemsSet := false
 	if sentCursor := clean[cursorParam]; sentCursor != "" {
 		seenCursorTokens[sentCursor] = struct{}{}
 	}
@@ -803,6 +805,12 @@ func paginatedGet(ctx context.Context, c interface {
 				return nil, fmt.Errorf("paginated response collection changed from %q to a bare array", collectionField)
 			}
 			collectionShapeSet = true
+			if previousPageItemsSet && paginatedItemsEqual(previousPageItems, items) {
+				emitPaginatedGetRepeatedPageWarning(ctx)
+				break
+			}
+			previousPageItems = append([]json.RawMessage(nil), items...)
+			previousPageItemsSet = true
 			allItems = append(allItems, items...)
 			if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, len(items)); ok {
 				if page >= paginatedGetMaxPages {
@@ -817,6 +825,7 @@ func paginatedGet(ctx context.Context, c interface {
 			var obj map[string]json.RawMessage
 			if json.Unmarshal(data, &obj) == nil {
 				itemCount := 0
+				nextCursorToken := ""
 				field, preserve := paginatedCollectionEnvelopeField(obj, path)
 				nested, ok := extractPaginatedItems(obj, path)
 				if !ok && preserve {
@@ -835,33 +844,40 @@ func paginatedGet(ctx context.Context, c interface {
 						}
 						return nil, fmt.Errorf("paginated response collection changed from a canonical array to %q", field)
 					}
+					if cursorLookupPath != "" {
+						if tokenRaw, ok := rawAtPath(obj, cursorLookupPath); ok {
+							nextCursorToken = paginationCursorToken(tokenRaw)
+						}
+					}
+					if previousPageItemsSet && paginatedItemsEqual(previousPageItems, nested) && (paginationType == "offset" || (cursorLookupPath != "" && (nextCursorToken == "" || nextCursorToken == clean[cursorParam]))) {
+						emitPaginatedGetRepeatedPageWarning(ctx)
+						break
+					}
+					previousPageItems = append([]json.RawMessage(nil), nested...)
+					previousPageItemsSet = true
 					allItems = append(allItems, nested...)
 					itemCount = len(nested)
 				}
 
 				// Check for next cursor
-				if cursorLookupPath != "" {
-					if tokenRaw, ok := rawAtPath(obj, cursorLookupPath); ok {
-						if token := paginationCursorToken(tokenRaw); token != "" {
-							foundCursorField = true
-							if _, seen := seenCursorTokens[token]; seen {
-								platform.MarkContextTruncated(ctx, platform.TruncationReason{Kind: "pagination_cursor_repeated", Configured: "unique_cursor", Observed: "repeated_cursor", MoreAvailable: true})
-								if humanFriendly {
-									fmt.Fprintf(os.Stderr, "warning: --all received the same pagination cursor twice; returning fetched pages only.\n")
-								} else {
-									fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_cursor_repeated","next_cursor_path":%q,"message":"--all received the same pagination cursor twice; returning fetched pages only"}`+"\n", cursorLookupPath)
-								}
-								break
-							}
-							seenCursorTokens[token] = struct{}{}
-							if page >= paginatedGetMaxPages {
-								emitPaginatedGetMaxPagesWarning(ctx)
-								break
-							}
-							clean[cursorParam] = token
-							continue
+				if nextCursorToken != "" {
+					foundCursorField = true
+					if _, seen := seenCursorTokens[nextCursorToken]; seen {
+						platform.MarkContextTruncated(ctx, platform.TruncationReason{Kind: "pagination_cursor_repeated", Configured: "unique_cursor", Observed: "repeated_cursor", MoreAvailable: true})
+						if humanFriendly {
+							fmt.Fprintf(os.Stderr, "warning: --all received the same pagination cursor twice; returning fetched pages only.\n")
+						} else {
+							fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_cursor_repeated","next_cursor_path":%q,"message":"--all received the same pagination cursor twice; returning fetched pages only"}`+"\n", cursorLookupPath)
 						}
+						break
 					}
+					seenCursorTokens[nextCursorToken] = struct{}{}
+					if page >= paginatedGetMaxPages {
+						emitPaginatedGetMaxPagesWarning(ctx)
+						break
+					}
+					clean[cursorParam] = nextCursorToken
+					continue
 				}
 
 				// Check has_more. Page and offset paginators can advance
@@ -1131,6 +1147,27 @@ func emitPaginatedGetMaxPagesWarning(ctx context.Context) {
 	} else {
 		fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"max_pages_cap_hit","message":"--all reached the %d-page safety limit; returning fetched pages only"}`+"\n", paginatedGetMaxPages)
 	}
+}
+
+func emitPaginatedGetRepeatedPageWarning(ctx context.Context) {
+	platform.MarkContextTruncated(ctx, platform.TruncationReason{Kind: "pagination_page_repeated", Configured: "unique_page", Observed: "repeated_page", MoreAvailable: true})
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "warning: --all received the same page twice; returning fetched pages only.\n")
+	} else {
+		fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_page_repeated","message":"--all received the same page twice; returning fetched pages only"}`+"\n")
+	}
+}
+
+func paginatedItemsEqual(previous, current []json.RawMessage) bool {
+	if len(previous) != len(current) {
+		return false
+	}
+	for i := range previous {
+		if string(previous[i]) != string(current[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func emitMissingPaginationCursorWarning(ctx context.Context, nextCursorPath string) {

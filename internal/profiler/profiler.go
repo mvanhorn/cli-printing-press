@@ -1036,7 +1036,7 @@ func dataFit(v bool) int {
 var (
 	pageSizeParamCandidates = map[string]bool{
 		"limit": true, "per_page": true, "page_size": true, "pagesize": true,
-		"perpage": true, "first": true, "count": true, "max_results": true,
+		"perpage": true, "first": true, "count": true, "take": true, "max_results": true,
 		"maxrecords": true, "max_records": true, "page[size]": true,
 	}
 	cursorParamCandidates = map[string]bool{

@@ -12399,6 +12399,47 @@ func TestDetectPaginationPreservesCursorParamCase(t *testing.T) {
 	}
 }
 
+func TestDetectPaginationRecognizesTakePageSize(t *testing.T) {
+	t.Parallel()
+
+	pag := detectPagination([]spec.Param{{Name: "skip"}, {Name: "take"}}, nil)
+	require.NotNil(t, pag)
+	assert.Equal(t, "skip", pag.CursorParam)
+	assert.Equal(t, "offset", pag.Type)
+	assert.Equal(t, "take", pag.LimitParam)
+}
+
+func TestDetectPaginationPrefersNestedPageTokenPathFromResponseSchema(t *testing.T) {
+	t.Parallel()
+
+	description := "OK"
+	responses := openapi3.NewResponses()
+	responses.Set("200", &openapi3.ResponseRef{Value: &openapi3.Response{
+		Description: &description,
+		Content: openapi3.Content{
+			"application/json": &openapi3.MediaType{Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+				Type: &openapi3.Types{"object"},
+				Properties: openapi3.Schemas{
+					"agents": &openapi3.SchemaRef{Value: &openapi3.Schema{
+						Type:  &openapi3.Types{"array"},
+						Items: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"object"}}},
+					}},
+					"pagination": &openapi3.SchemaRef{Value: &openapi3.Schema{
+						Type: &openapi3.Types{"object"},
+						Properties: openapi3.Schemas{
+							"next_page_token": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+						},
+					}},
+				},
+			}}},
+		},
+	}})
+
+	pag := detectPagination([]spec.Param{{Name: "page_token"}, {Name: "limit"}}, &openapi3.Operation{Responses: responses})
+	require.NotNil(t, pag)
+	assert.Equal(t, "pagination.next_page_token", pag.NextCursorPath)
+}
+
 // TestDetectPaginationRecognizesPageIntCursor guards #1296: APIs that
 // paginate by integer ?page=N (Freshworks family, Atlassian, HubSpot,
 // etc.) used to fall through to the "after" cursor default. Detection

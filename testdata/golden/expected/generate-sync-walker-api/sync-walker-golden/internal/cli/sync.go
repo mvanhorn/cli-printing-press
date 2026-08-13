@@ -517,6 +517,8 @@ func syncResource(ctx context.Context, c interface {
 	var progressCount int64
 	pagesFetched := 0
 	lastNextCursor := ""
+	var previousPageItems []json.RawMessage
+	previousPageItemsSet := false
 	capExitHit := false
 	capExitCursor := ""
 	capTruncated := false
@@ -639,6 +641,17 @@ func syncResource(ctx context.Context, c interface {
 			nextCursor = strconv.Itoa(currentOffset + pageSize.limit)
 			hasMore = true
 		}
+		if hasMore && previousPageItemsSet && syncPageItemsEqual(previousPageItems, items) && syncPaginationPageIsStuck(pageSize.cursorType, cursor, nextCursor) {
+			outcome.reason = "stuck_page"
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr, "\n  %s: API returned the same page twice; aborting to prevent budget waste.\n", resource)
+			} else {
+				fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","reason":"stuck_pagination","message":"API returned the same page twice for resource %s; aborting to prevent budget waste."}`+"\n", resource, resource)
+			}
+			break
+		}
+		previousPageItems = append([]json.RawMessage(nil), items...)
+		previousPageItemsSet = true
 
 		if len(items) == 0 && len(data) > 0 && !isJSONResponse(data) {
 			// Abnormal: a 200 with a non-JSON body means the page was not a
@@ -984,6 +997,25 @@ type paginationDefaults struct {
 
 func shortPageEndsPagination(cursorType string, fetched, limit int) bool {
 	return cursorType != "cursor" && cursorType != "page_token" && fetched < limit
+}
+
+func syncPageItemsEqual(previous, current []json.RawMessage) bool {
+	if len(previous) != len(current) {
+		return false
+	}
+	for i := range previous {
+		if string(previous[i]) != string(current[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func syncPaginationPageIsStuck(cursorType, cursor, nextCursor string) bool {
+	if cursorType == "cursor" || cursorType == "page_token" {
+		return nextCursor == cursor
+	}
+	return true
 }
 
 func cursorPageHasContinuation(cursorType string, hasMore bool, nextCursor string) bool {
@@ -2155,6 +2187,8 @@ func syncOneParent(
 	cursor := ""
 	pagesFetched := 0
 	lastNextCursor := ""
+	var previousPageItems []json.RawMessage
+	previousPageItemsSet := false
 
 	outcome := partitionOutcome{scopeVal: parentID}
 	var seenIDs []string
@@ -2232,6 +2266,17 @@ func syncOneParent(
 			nextCursor = strconv.Itoa(currentOffset + pageSize.limit)
 			hasMore = true
 		}
+		if hasMore && previousPageItemsSet && syncPageItemsEqual(previousPageItems, items) && syncPaginationPageIsStuck(pageSize.cursorType, cursor, nextCursor) {
+			outcome.reason = "stuck_page"
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr, "\n  %s: API returned the same page twice for parent %s; aborting to prevent budget waste.\n", dep.Name, parentID)
+			} else {
+				fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","parent":%q,"reason":"stuck_pagination","message":"API returned the same page twice for resource %s; aborting to prevent budget waste."}`+"\n", dep.Name, parentID, dep.Name)
+			}
+			break
+		}
+		previousPageItems = append([]json.RawMessage(nil), items...)
+		previousPageItemsSet = true
 
 		if len(items) == 0 && len(data) > 0 && !isJSONResponse(data) {
 			outcome.reason = "non_json_200_body"
