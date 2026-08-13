@@ -126,7 +126,7 @@ func TestCredentialAliasFieldsRoundTripIndependently(t *testing.T) {
 func TestGeneratedNoAuthCredentialsTestsDoNotAssertAnAuthHeader(t *testing.T) {
 	t.Parallel()
 
-	for _, authType := range []string{"none", "   "} {
+	for _, authType := range []string{"none", "None", "   "} {
 		t.Run(fmt.Sprintf("auth type %q", authType), func(t *testing.T) {
 			apiSpec := minimalSpec("no-auth-credentials")
 			apiSpec.Auth = spec.AuthConfig{
