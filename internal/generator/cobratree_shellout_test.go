@@ -24,4 +24,5 @@ func TestGeneratedWindowsShelloutLargeOutputUsesPowerShell(t *testing.T) {
 	assert.NotContains(t, source, "for /L %%i in (1,1,70000)")
 
 	requireGeneratedCompiles(t, outputDir)
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree", "-run", "^Test(ShellOutBoundsFinalError|RunCLICommandBoundsFailureOutput)$", "-count=1")
 }
