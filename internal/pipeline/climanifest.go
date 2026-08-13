@@ -1337,9 +1337,26 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	if err := writeCLIManifestForGenerate(p.OutputDir, m, existingRaw, clearFields); err != nil {
 		return err
 	}
+	toolsManifestPath := filepath.Join(p.OutputDir, ToolsManifestFilename)
+	if _, err := os.Stat(toolsManifestPath); os.IsNotExist(err) {
+		if p.Spec == nil {
+			// Direct low-level callers may only be writing provenance; the
+			// generate command normally creates this file before this step.
+			return writeGenerateManifestArtifacts(p, m)
+		}
+		if err := WriteToolsManifestWithDescription(p.OutputDir, p.Spec, m.Description); err != nil {
+			return fmt.Errorf("writing tools manifest: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("checking tools manifest: %w", err)
+	}
 	if err := syncToolsManifestNovelFeatures(p.OutputDir, m.NovelFeatures); err != nil {
 		return fmt.Errorf("syncing novel features to tools manifest: %w", err)
 	}
+	return writeGenerateManifestArtifacts(p, m)
+}
+
+func writeGenerateManifestArtifacts(p GenerateManifestParams, m CLIManifest) error {
 	// Emit the customizations directory alongside .printing-press.json. The
 	// library's Verify CI requires every fresh-print publish to ship a patches
 	// index; preserve-on-regen keeps agent-applied patch entries from being

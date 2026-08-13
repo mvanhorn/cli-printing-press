@@ -204,6 +204,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		RunID:                state.RunID,
 	}
 	var existingDescription string
+	toolsManifestExpected := false
 
 	// Carry forward metadata from the generated manifest when publish-time
 	// parsing is unavailable or lossy for the original spec format. NovelFeatures
@@ -330,6 +331,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		// (auth-doctor, mcp-audit). Non-blocking: log warning on error
 		// but don't fail the publish.
 		if parsed != nil {
+			toolsManifestExpected = true
 			if tmErr := WriteToolsManifestWithDescription(dir, parsed, m.Description); tmErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write tools manifest: %v\n", tmErr)
 			}
@@ -412,6 +414,9 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		return err
 	}
 	if err := syncToolsManifestNovelFeatures(dir, m.NovelFeatures); err != nil {
+		if os.IsNotExist(err) && !toolsManifestExpected {
+			return nil
+		}
 		return fmt.Errorf("syncing novel features to tools manifest: %w", err)
 	}
 	return nil
