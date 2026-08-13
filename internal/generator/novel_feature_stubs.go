@@ -134,6 +134,21 @@ func (g *Generator) novelFeatureChildrenByParent() map[string][]novelFeatureChil
 	return out
 }
 
+func (g *Generator) novelFeatureFrameworkChildren() map[string][]novelFeatureChildRender {
+	all := g.novelFeatureChildrenByParent()
+	active := g.activeFrameworkCobraUseNames()
+	out := map[string][]novelFeatureChildRender{}
+	for parent, children := range all {
+		if strings.ContainsAny(parent, " \t") {
+			continue
+		}
+		if _, ok := active[parent]; ok {
+			out[parent] = children
+		}
+	}
+	return out
+}
+
 func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, generatedPaths map[string]struct{}) (*novelFeatureCommandRender, error) {
 	var renderedChildren []novelFeatureChildRender
 	for _, child := range sortedNovelChildren(node) {
