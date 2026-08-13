@@ -931,8 +931,12 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.MCPBinary = naming.MCP(mcpName)
 	m.MCPToolCount = total
 	m.MCPPublicToolCount = public
-	m.MCPReady = computeMCPReady(parsed.Auth.Type)
-	m.AuthType = parsed.Auth.Type
+	authType := parsed.Auth.Type
+	if strings.TrimSpace(authType) == "" {
+		authType = spec.TierAuthTypeNone
+	}
+	m.MCPReady = computeMCPReady(authType)
+	m.AuthType = authType
 	m.AuthPreference = strings.TrimSpace(parsed.Auth.Scheme)
 	envVarSpecs := manifestAuthEnvVarSpecs(parsed)
 	m.AuthEnvVars = manifestAuthEnvVarNames(parsed, envVarSpecs)
