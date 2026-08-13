@@ -4311,17 +4311,55 @@ func TestGenerateStoreDSNOrdersBusyTimeoutBeforeJournalMode(t *testing.T) {
 	// the read-write DSN, so a file-wide strings.Index for it always hits
 	// the read-only DSN first and the ordering check passes regardless of
 	// the read-write DSN's internal order. Scope the busy_timeout search to
-	// the read-write DSN by starting at its "?_pragma=" query prefix — the
-	// read-only DSN begins with "?mode=ro&_pragma=", so "?_pragma=" uniquely
-	// marks the read-write query string.
+	// the read-write DSN by starting at its "?_txlock=immediate" query prefix —
+	// the read-only DSN begins with "?mode=ro", so this uniquely marks the
+	// read-write query string.
 	idxJournal := strings.Index(codeOnly, "_pragma=journal_mode(WAL)")
 	require.GreaterOrEqual(t, idxJournal, 0, "read-write DSN must set journal_mode(WAL)")
-	dsnStart := strings.LastIndex(codeOnly[:idxJournal], "?_pragma=")
+	dsnStart := strings.LastIndex(codeOnly[:idxJournal], "?_txlock=immediate")
 	require.GreaterOrEqual(t, dsnStart, 0,
-		"read-write DSN must list busy_timeout(5000) before journal_mode(WAL): no ?_pragma= query prefix precedes journal_mode(WAL) (see #2926)")
+		"read-write DSN must list busy_timeout(5000) before journal_mode(WAL): no ?_txlock=immediate query prefix precedes journal_mode(WAL) (see #2926)")
 	idxBusy := strings.Index(codeOnly[dsnStart:idxJournal], "_pragma=busy_timeout(5000)")
 	require.GreaterOrEqual(t, idxBusy, 0,
 		"read-write DSN must list busy_timeout(5000) before journal_mode(WAL) so the WAL conversion runs with the busy handler active (see #2926)")
+}
+
+// TestGenerateStoreDSNUsesImmediateTransactionsAndProfileJournalMode pins
+// the two profile shapes that share the generated store. Cache-enabled
+// profiles write local state during reads and must avoid WAL sidecars; the
+// default store profile retains WAL for concurrent analytical reads.
+func TestGenerateStoreDSNUsesImmediateTransactionsAndProfileJournalMode(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		cache       bool
+		journalMode string
+		otherMode   string
+	}{
+		{name: "default WAL", journalMode: "WAL", otherMode: "TRUNCATE"},
+		{name: "cache rollback journal", cache: true, journalMode: "TRUNCATE", otherMode: "WAL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			apiSpec := minimalSpec("dsn-concurrency-" + strings.ToLower(strings.ReplaceAll(tc.name, " ", "-")))
+			apiSpec.Cache.Enabled = tc.cache
+			outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+			gen := New(apiSpec, outputDir)
+			gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+			require.NoError(t, gen.Generate())
+
+			storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+			require.NoError(t, err)
+			codeOnly := stripGoComments(string(storeSrc))
+
+			assert.Contains(t, codeOnly, "?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode("+tc.journalMode+")",
+				"read-write DSN must acquire immediate transactions and select the profile journal mode")
+			assert.NotContains(t, codeOnly, "_pragma=journal_mode("+tc.otherMode+")&_pragma=synchronous",
+				"read-write DSN must not emit the other profile journal mode")
+			requireGeneratedCompiles(t, outputDir)
+			runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "^Test(OpenHardensSQLiteFilePermissions|HardenSQLiteFilesSkipsSymlinkSidecars|OpenAppliesPragmas)$", "-count=1")
+		})
+	}
 }
 
 // Callers gating on existence rely on errors.Is(err, sql.ErrNoRows); the

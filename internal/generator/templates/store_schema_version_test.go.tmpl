@@ -51,8 +51,10 @@ func TestOpenHardensSQLiteFilePermissions(t *testing.T) {
 
 			assertPrivateMode(t, filepath.Dir(dbPath), tc.wantDirMode)
 			assertPrivateMode(t, dbPath, 0o600)
+			{{- if not .Cache.Enabled}}
 			assertPrivateMode(t, dbPath+"-wal", 0o600)
 			assertPrivateMode(t, dbPath+"-shm", 0o600)
+			{{- end}}
 		})
 	}
 }
@@ -78,8 +80,12 @@ func TestOpenWithRelativePathDoesNotChmodWorkingDirectory(t *testing.T) {
 
 	assertPrivateMode(t, ".", wantDirMode)
 	assertPrivateMode(t, "data.db", 0o600)
+	{{- if .Cache.Enabled}}
+	assertPrivateMode(t, "data.db-journal", 0o600)
+	{{- else}}
 	assertPrivateMode(t, "data.db-wal", 0o600)
 	assertPrivateMode(t, "data.db-shm", 0o600)
+	{{- end}}
 }
 
 func TestHardenSQLiteFilesSkipsSymlinkSidecars(t *testing.T) {
@@ -96,10 +102,15 @@ func TestHardenSQLiteFilesSkipsSymlinkSidecars(t *testing.T) {
 	if err := os.Symlink(targetPath, dbPath+"-wal"); err != nil {
 		t.Fatalf("create WAL symlink: %v", err)
 	}
+	journalPath := dbPath + "-journal"
+	if err := os.WriteFile(journalPath, nil, 0o644); err != nil {
+		t.Fatalf("create journal sidecar: %v", err)
+	}
 
 	hardenSQLiteFiles(dbPath)
 
 	assertPrivateMode(t, targetPath, 0o644)
+	assertPrivateMode(t, journalPath, 0o600)
 }
 
 func assertPrivateMode(t *testing.T, path string, want os.FileMode) {
@@ -135,11 +146,10 @@ func TestSchemaVersion_StampedOnFreshDB(t *testing.T) {
 }
 
 // TestOpenAppliesPragmas pins the connection-string contract: the store
-// must open in WAL journal mode with a non-zero busy_timeout so a read
-// concurrent with a write waits on the lock instead of failing immediately
-// with SQLITE_BUSY. It fails the instant the DSN regresses to the mattn-
-// style _journal_mode=WAL form, which modernc.org/sqlite silently drops —
-// see the OpenReadOnly comment for the driver-syntax detail.
+// must use the profile-selected journal mode with a non-zero busy_timeout so
+// concurrent opens wait on the lock instead of failing immediately with
+// SQLITE_BUSY. It fails the instant the DSN regresses to the mattn-style
+// pragma form, which modernc.org/sqlite silently drops.
 func TestOpenAppliesPragmas(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	s, err := Open(dbPath)
@@ -148,19 +158,30 @@ func TestOpenAppliesPragmas(t *testing.T) {
 	}
 	defer s.Close()
 
+	{{- if .Cache.Enabled}}
+	requirePragma(t, s.DB(), "journal_mode", "truncate")
+	{{- else}}
 	requirePragma(t, s.DB(), "journal_mode", "wal")
+	{{- end}}
 	requirePragma(t, s.DB(), "busy_timeout", "5000")
 
-	// The read-only handle (MCP sql/search, analytics) must see the same WAL
-	// file mode and carry the busy_timeout so it waits on a concurrent writer
-	// rather than erroring.
+	// The read-only handle (MCP sql/search, analytics) must retain its
+	// profile-compatible journal mode and carry the busy_timeout so it waits
+	// on a concurrent writer rather than erroring.
 	ro, err := OpenReadOnly(dbPath)
 	if err != nil {
 		t.Fatalf("open read-only: %v", err)
 	}
 	defer ro.Close()
 
+	{{- if .Cache.Enabled}}
+	// TRUNCATE is a per-connection setting. A read-only handle that does not
+	// set journal_mode reports SQLite's default delete mode, which is safe
+	// because the handle never creates a journal.
+	requirePragma(t, ro.DB(), "journal_mode", "delete")
+	{{- else}}
 	requirePragma(t, ro.DB(), "journal_mode", "wal")
+	{{- end}}
 	requirePragma(t, ro.DB(), "busy_timeout", "5000")
 }
 
