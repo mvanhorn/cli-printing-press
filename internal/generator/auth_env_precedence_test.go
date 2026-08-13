@@ -90,6 +90,31 @@ func TestBearerAccessTokenAlias(t *testing.T) {
 	}
 }
 
+func TestAuthHeaderAccessTokenEnvCollisionEmitsOneFallback(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("access-token-auth-source")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:   "bearer_token",
+		Header: "Authorization",
+		Format: "Bearer {access_token}",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "CANVAS_API_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			{Name: "CANVAS_ACCESS_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "access-token-auth-source-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	configSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	body := authHeaderBody(t, string(configSrc))
+	assert.Equal(t, 1, strings.Count(body, `if c.AccessToken != ""`),
+		"an AccessToken env-var collision must not emit an unreachable duplicate guard")
+	runGoCommand(t, outputDir, "test", "./internal/config")
+}
+
 // TestAuthHeader_ClientCredentialsDoesNotUseSetupEnvVars pins that under
 // OAuth2 client_credentials the setup inputs are never emitted as bearer
 // headers. Only a minted AccessToken is usable for API requests.

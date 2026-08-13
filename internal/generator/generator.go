@@ -305,6 +305,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"optionalRequestAuthEnvVars":          optionalRequestAuthEnvVars,
 		"requiredRequestAuthEnvVarCount":      requiredRequestAuthEnvVarCount,
 		"requestAuthEnvVarCount":              requestAuthEnvVarCount,
+		"hasRequestAuthEnvVarField":           hasRequestAuthEnvVarField,
 		"authSetTokenAvailable":               authSetTokenAvailable,
 		"authSetCredentialsAvailable":         authSetCredentialsAvailable,
 		"authErrorCheckHint":                  authErrorCheckHint,
@@ -1743,6 +1744,15 @@ func requiredRequestAuthEnvVarCount(auth spec.AuthConfig) int {
 
 func requestAuthEnvVarCount(auth spec.AuthConfig) int {
 	return len(requestAuthEnvVars(auth))
+}
+
+func hasRequestAuthEnvVarField(auth spec.AuthConfig, field string) bool {
+	for _, envVar := range requestAuthEnvVars(auth) {
+		if resolveEnvVarField(envVar.Name) == field {
+			return true
+		}
+	}
+	return false
 }
 
 func authSetTokenAvailable(auth spec.AuthConfig) bool {
