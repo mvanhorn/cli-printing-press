@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -138,7 +139,7 @@ func executeStep(binary string, step WorkflowStep, cmdExpanded string, dir strin
 	}
 
 	args := strings.Fields(cmdExpanded)
-	if step.ArgsStdin && !workflowArgsContainFlag(args, "stdin") {
+	if step.ArgsStdin && !workflowArgsEnableFlag(args, "stdin") {
 		args = append(args, "--stdin")
 	}
 	args = append(args, "--json")
@@ -235,11 +236,18 @@ func executeStep(binary string, step WorkflowStep, cmdExpanded string, dir strin
 	return sr
 }
 
-func workflowArgsContainFlag(args []string, name string) bool {
+func workflowArgsEnableFlag(args []string, name string) bool {
 	prefix := "--" + name
 	for _, arg := range args {
-		if arg == prefix || strings.HasPrefix(arg, prefix+"=") {
+		if arg == prefix {
 			return true
+		}
+		value, ok := strings.CutPrefix(arg, prefix+"=")
+		if ok {
+			enabled, err := strconv.ParseBool(value)
+			if err == nil && enabled {
+				return true
+			}
 		}
 	}
 	return false

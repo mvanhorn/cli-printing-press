@@ -37,10 +37,11 @@ cat
 	assert.JSONEq(t, `{"input":{"ref":"thing:synthetic"}}`, result.Output)
 }
 
-func TestWorkflowArgsContainFlag(t *testing.T) {
-	assert.True(t, workflowArgsContainFlag([]string{"inspect", "--stdin"}, "stdin"))
-	assert.True(t, workflowArgsContainFlag([]string{"inspect", "--stdin=true"}, "stdin"))
-	assert.False(t, workflowArgsContainFlag([]string{"inspect", "--json"}, "stdin"))
+func TestWorkflowArgsEnableFlag(t *testing.T) {
+	assert.True(t, workflowArgsEnableFlag([]string{"inspect", "--stdin"}, "stdin"))
+	assert.True(t, workflowArgsEnableFlag([]string{"inspect", "--stdin=true"}, "stdin"))
+	assert.False(t, workflowArgsEnableFlag([]string{"inspect", "--stdin=false"}, "stdin"))
+	assert.False(t, workflowArgsEnableFlag([]string{"inspect", "--json"}, "stdin"))
 }
 
 func TestRunWorkflowVerification_NoManifest(t *testing.T) {
