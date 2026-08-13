@@ -29,7 +29,7 @@ func newHealthPromotedCmd(flags *rootFlags) *cobra.Command {
 			params := map[string]string{}
 			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "auto", "health", false, path, params, nil, "", cmd.ErrOrStderr())
 			if err != nil {
-				return classifyAPIError(err, flags)
+				return classifyAPIError(cmd.OutOrStdout(), err, flags)
 			}
 			outputData := data
 			// Print provenance to stderr for human-facing output only.

@@ -510,26 +510,31 @@ type noopResult struct {
 	Reason string `json:"reason"`
 }
 
-func writeNoop(flags *rootFlags, reason, prose string) error {
+func writeNoop(w io.Writer, flags *rootFlags, reason, prose string) error {
 	if flags != nil && flags.asJSON {
-		return json.NewEncoder(os.Stdout).Encode(noopResult{Status: "noop", Reason: reason})
+		_ = json.NewEncoder(w).Encode(noopResult{Status: "noop", Reason: reason})
+		return apiErr(errors.New(prose))
 	}
 	fmt.Fprintln(os.Stderr, prose)
-	return nil
+	return apiErr(errors.New(prose))
 }
 
-func writeAPIErrorEnvelope(flags *rootFlags, err error, code int) {
+func writeAPIErrorEnvelope(w io.Writer, flags *rootFlags, err error, code int) {
 	if flags == nil || !flags.asJSON {
 		return
 	}
-	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": err.Error(),
 		"code":  code,
 	})
 }
 
-// classifyAPIError maps API errors to structured exit codes with actionable hints.
-func classifyAPIError(err error, flags *rootFlags) error {
+// classifyAPIErrorOnly maps API errors to structured exit codes without writing.
+// Hand-written commands should use this helper when they own output sequencing.
+func classifyAPIErrorOnly(err error) error {
+	if err == nil {
+		return nil
+	}
 	var typed *cliError
 	if errors.As(err, &typed) {
 		return err
@@ -538,9 +543,7 @@ func classifyAPIError(err error, flags *rootFlags) error {
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "HTTP 409"):
-		classified := apiErr(err)
-		writeAPIErrorEnvelope(flags, classified, ExitCode(classified))
-		return classified
+		return apiErr(err)
 	case errors.Is(err, client.ErrPlaceholderCredential):
 		return authErr(err)
 	case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
@@ -564,6 +567,23 @@ func classifyAPIError(err error, flags *rootFlags) error {
 	default:
 		return apiErr(err)
 	}
+}
+
+// classifyAPIError maps API errors to structured exit codes with actionable hints.
+func classifyAPIError(w io.Writer, err error, flags *rootFlags) error {
+	if err == nil {
+		return nil
+	}
+	var typed *cliError
+	if errors.As(err, &typed) {
+		return err
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "HTTP 409") {
+	}
+	classified := classifyAPIErrorOnly(err)
+	writeAPIErrorEnvelope(w, flags, classified, ExitCode(classified))
+	return classified
 }
 
 func truncate(s string, max int) string {

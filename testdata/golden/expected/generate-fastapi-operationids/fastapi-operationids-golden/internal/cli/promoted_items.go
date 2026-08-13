@@ -36,7 +36,7 @@ func newItemsPromotedCmd(flags *rootFlags) *cobra.Command {
 			data, _, err := c.PostQueryWithParams(cmd.Context(), path, params, body)
 
 			if err != nil {
-				return classifyAPIError(err, flags)
+				return classifyAPIError(cmd.OutOrStdout(), err, flags)
 			}
 			prov := attachFreshness(DataProvenance{Source: "live"}, flags)
 			outputData := data
