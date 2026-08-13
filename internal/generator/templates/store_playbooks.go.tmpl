@@ -60,8 +60,8 @@ func (s *Store) UpsertPlaybook(in UpsertPlaybookInput) (int64, bool, error) {
 		source = LearningSourceTaught
 	}
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 
 	now := time.Now().UTC()
 	tx, err := s.db.Begin()
@@ -161,8 +161,8 @@ func (s *Store) AppendPlaybookNotes(family, marker string) (int64, bool, error) 
 		return 0, false, fmt.Errorf("append playbook notes: marker is required")
 	}
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 
 	now := time.Now().UTC()
 	tx, err := s.db.Begin()

@@ -173,12 +173,11 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 	return s, nil
 }
 
-// rejectNewerSchemaBeforeJournalMode uses a lightweight read-only connection so an
-// old binary can reject a future schema before the read-write DSN attempts
-// journal-mode conversion. The conversion may wait behind a peer writer, but a
-// committed PRAGMA user_version remains readable while that writer is active.
-// Other probe errors are left to the normal open/migration path, which returns
-// the more precise corruption, permission, or lock error.
+// A newer schema must be rejected before a read-write connection can attempt
+// journal-mode conversion. This lightweight read-only probe can read a
+// committed PRAGMA user_version while a peer writer is active; other probe
+// errors remain with the normal open/migration path, which returns the more
+// precise corruption, permission, or lock error.
 func rejectNewerSchemaBeforeJournalMode(ctx context.Context, dbPath string) error {
 	info, err := os.Stat(dbPath)
 	if os.IsNotExist(err) || (err == nil && info.Size() == 0) {
@@ -227,6 +226,20 @@ func hardenSQLiteFiles(dbPath string) {
 		}
 		_ = file.Close()
 	}
+}
+
+// lockForWrite and unlockAfterWrite keep SQLite sidecars private across the
+// lifetime of every serialized writer. TRUNCATE journaling reuses its journal
+// file and can restore its mode when a later transaction starts, after the
+// one-time OpenWithContext hardening has already run.
+func (s *Store) lockForWrite() {
+	s.writeMu.Lock()
+	hardenSQLiteFiles(s.path)
+}
+
+func (s *Store) unlockAfterWrite() {
+	hardenSQLiteFiles(s.path)
+	s.writeMu.Unlock()
 }
 
 func ensureSQLiteDriverInitialized(ctx context.Context, dsn string) error {
@@ -968,8 +981,8 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 }
 
 func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -1335,8 +1348,8 @@ func (s *Store) UpsertGadgets(data json.RawMessage) error {
 	}
 	storageID := resourceStorageID("gadgets", id, obj)
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -1387,8 +1400,8 @@ func (s *Store) UpsertWidgets(data json.RawMessage) error {
 	}
 	storageID := resourceStorageID("widgets", id, obj)
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -1681,8 +1694,8 @@ func deriveScopeColumns(obj map[string]any) {
 // downstream typed table is misconfigured. Failures are surfaced via a
 // trailing stderr warning rather than aborting the batch.
 func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, int, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, 0, fmt.Errorf("starting batch transaction: %w", err)
@@ -1813,8 +1826,8 @@ func (s *Store) SaveSyncState(resourceType, cursor string, count int) error {
 // watermark represented by at. Callers use this when the watermark belongs to
 // the data just fetched rather than to the instant the checkpoint is written.
 func (s *Store) SaveSyncStateAt(resourceType, cursor string, count int, at time.Time) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 	_, err := s.db.Exec(
 		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count)
 		 VALUES (?, ?, ?, ?)
@@ -1829,8 +1842,8 @@ func (s *Store) SaveSyncStateAt(resourceType, cursor string, count int, at time.
 // incremental watermark. A new row gets a parseable zero timestamp so
 // GetSyncState can scan it into time.Time without a NULL conversion error.
 func (s *Store) SaveSyncProgress(resourceType, cursor string, count int) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 	_, err := s.db.Exec(
 		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count)
 		 VALUES (?, ?, ?, ?)
@@ -1854,8 +1867,8 @@ func (s *Store) GetSyncState(resourceType string) (cursor string, lastSynced tim
 
 // SaveSyncCursor stores the pagination cursor for a resource type.
 func (s *Store) SaveSyncCursor(resourceType, cursor string) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.Exec(
 		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count)
@@ -2134,8 +2147,8 @@ func (s *Store) GetLastSyncedAt(resourceType string) string {
 
 // ClearSyncCursors resets all sync state for a full resync.
 func (s *Store) ClearSyncCursors() error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 	_, err := s.db.Exec("DELETE FROM sync_state")
 	return err
 }
@@ -2230,8 +2243,8 @@ func (s *Store) ReconcilePartition(resourceType, genericScopeJSONPath, scopeValu
 	if genericScopeJSONPath == "" || scopeValue == "" {
 		return 0, fmt.Errorf("reconcile %s: empty partition scope", resourceType)
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 
 	tx, err := s.db.Begin()
 	if err != nil {

@@ -4324,10 +4324,10 @@ func TestGenerateStoreDSNOrdersBusyTimeoutBeforeJournalMode(t *testing.T) {
 		"read-write DSN must list busy_timeout(5000) before journal_mode(WAL) so the WAL conversion runs with the busy handler active (see #2926)")
 }
 
-// TestGenerateStoreDSNUsesImmediateTransactionsAndProfileJournalMode pins
-// the two profile shapes that share the generated store. Cache-enabled
-// profiles write local state during reads and must avoid WAL sidecars; the
-// default store profile retains WAL for concurrent analytical reads.
+// Verify that generated stores choose the journal and transaction settings
+// required by each profile. Cache-enabled profiles write local state during
+// reads and must avoid WAL sidecars; the default profile retains WAL for
+// concurrent analytical reads.
 func TestGenerateStoreDSNUsesImmediateTransactionsAndProfileJournalMode(t *testing.T) {
 	t.Parallel()
 

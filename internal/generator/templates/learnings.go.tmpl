@@ -320,8 +320,8 @@ func (s *Store) UpsertLearning(ctx context.Context, in UpsertLearningInput) (int
 		return 0, false, fmt.Errorf("upsert learning: query normalized to empty string")
 	}
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 
 	now := time.Now().UTC()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -519,8 +519,8 @@ func (s *Store) ForgetLearnings(ctx context.Context, f ForgetLearningsFilter) (i
 		return 0, fmt.Errorf("forget learnings: query normalized to empty string")
 	}
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 
 	clauses := []string{"query_pattern = ?"}
 	args := []any{pattern}

@@ -54,6 +54,11 @@ func TestOpenHardensSQLiteFilePermissions(t *testing.T) {
 			{{- if not .Cache.Enabled}}
 			assertPrivateMode(t, dbPath+"-wal", 0o600)
 			assertPrivateMode(t, dbPath+"-shm", 0o600)
+			{{- else}}
+			if err := s.Upsert("permission-test", "id", []byte(`{"id":"id"}`)); err != nil {
+				t.Fatalf("write after open: %v", err)
+			}
+			assertPrivateMode(t, dbPath+"-journal", 0o600)
 			{{- end}}
 		})
 	}
