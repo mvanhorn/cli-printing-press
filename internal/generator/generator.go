@@ -238,6 +238,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"title":                               cases.Title(language.English).String,
 		"lower":                               strings.ToLower,
 		"upper":                               strings.ToUpper,
+		"trimSpace":                           strings.TrimSpace,
 		"join":                                strings.Join,
 		"camel":                               toCamel,
 		"cmdIdent":                            commandIdent,

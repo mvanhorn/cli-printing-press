@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -125,21 +126,25 @@ func TestCredentialAliasFieldsRoundTripIndependently(t *testing.T) {
 func TestGeneratedNoAuthCredentialsTestsDoNotAssertAnAuthHeader(t *testing.T) {
 	t.Parallel()
 
-	apiSpec := minimalSpec("no-auth-credentials")
-	apiSpec.Auth = spec.AuthConfig{
-		Type:             "none",
-		AuthorizationURL: "https://auth.example.com/authorize",
+	for _, authType := range []string{"none", "   "} {
+		t.Run(fmt.Sprintf("auth type %q", authType), func(t *testing.T) {
+			apiSpec := minimalSpec("no-auth-credentials")
+			apiSpec.Auth = spec.AuthConfig{
+				Type:             authType,
+				AuthorizationURL: "https://auth.example.com/authorize",
+			}
+			outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			credentialTests := readGeneratedFile(t, outputDir, "internal", "cliutil", "credentials_test.go")
+			require.NotContains(t, credentialTests, "want config-file value and not credentials-file value")
+			require.NotContains(t, credentialTests, "want legacy credential")
+			require.Contains(t, credentialTests, "assertConfigCredential(t, cfg, \"legacy-secret\")")
+
+			requireGeneratedCompiles(t, outputDir)
+			runGoCommandRequired(t, outputDir, "test", "./internal/cliutil")
+		})
 	}
-	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
-	require.NoError(t, New(apiSpec, outputDir).Generate())
-
-	credentialTests := readGeneratedFile(t, outputDir, "internal", "cliutil", "credentials_test.go")
-	require.NotContains(t, credentialTests, "want config-file value and not credentials-file value")
-	require.NotContains(t, credentialTests, "want legacy credential")
-	require.Contains(t, credentialTests, "assertConfigCredential(t, cfg, \"legacy-secret\")")
-
-	requireGeneratedCompiles(t, outputDir)
-	runGoCommandRequired(t, outputDir, "test", "./internal/cliutil")
 }
 
 func TestGeneratedSingleKeyCredentialsTestsAssertAnAuthHeader(t *testing.T) {
