@@ -202,15 +202,15 @@ type ReviewedSecretSuppression struct {
 // release-ledger workflow. Version fields are intentionally blank at print
 // time: the library owns final release accounting to avoid PR-time conflicts.
 type CLIReleaseManifest struct {
-	SchemaVersion        int      `json:"schema_version"`
-	Slug                 string   `json:"slug"`
-	CLIName              string   `json:"cli_name,omitempty"`
-	Version              string   `json:"version"`
-	ReleasedAt           string   `json:"released_at"`
-	SourceCommit         string   `json:"source_commit"`
-	PrintingPressVersion string   `json:"printing_press_version,omitempty"`
-	RunID                string   `json:"run_id,omitempty"`
-	Changes              []string `json:"changes,omitempty"`
+	SchemaVersion        int             `json:"schema_version"`
+	Slug                 string          `json:"slug"`
+	CLIName              string          `json:"cli_name,omitempty"`
+	Version              string          `json:"version"`
+	ReleasedAt           string          `json:"released_at"`
+	SourceCommit         string          `json:"source_commit"`
+	PrintingPressVersion string          `json:"printing_press_version,omitempty"`
+	RunID                string          `json:"run_id,omitempty"`
+	Changes              json.RawMessage `json:"changes,omitempty"`
 }
 
 // IsLocalDatastore reports whether the manifest describes a local-datastore
