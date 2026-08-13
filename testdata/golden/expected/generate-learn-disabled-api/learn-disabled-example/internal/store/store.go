@@ -224,6 +224,21 @@ func hardenSQLiteFiles(dbPath string) {
 	}
 }
 
+// ensureSQLiteJournalPrivate creates the cache-profile rollback journal before
+// SQLite starts a write transaction, so its mode is private for the whole
+// transaction rather than only after the journal has been created.
+func ensureSQLiteJournalPrivate(dbPath string) {
+	journalPath := dbPath + "-journal"
+	file, err := os.OpenFile(journalPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err == nil {
+		_ = file.Close()
+		return
+	}
+	if os.IsExist(err) {
+		hardenSQLiteFiles(dbPath)
+	}
+}
+
 // lockForWrite and unlockAfterWrite keep SQLite sidecars private across the
 // lifetime of every serialized writer. TRUNCATE journaling reuses its journal
 // file and can restore its mode when a later transaction starts, after the

@@ -51,15 +51,25 @@ func TestOpenHardensSQLiteFilePermissions(t *testing.T) {
 
 			assertPrivateMode(t, filepath.Dir(dbPath), tc.wantDirMode)
 			assertPrivateMode(t, dbPath, 0o600)
-			{{- if not .Cache.Enabled}}
-			assertPrivateMode(t, dbPath+"-wal", 0o600)
-			assertPrivateMode(t, dbPath+"-shm", 0o600)
-			{{- else}}
-			if err := s.Upsert("permission-test", "id", []byte(`{"id":"id"}`)); err != nil {
-				t.Fatalf("write after open: %v", err)
-			}
-			assertPrivateMode(t, dbPath+"-journal", 0o600)
-			{{- end}}
+		{{- if not .Cache.Enabled}}
+		assertPrivateMode(t, dbPath+"-wal", 0o600)
+		assertPrivateMode(t, dbPath+"-shm", 0o600)
+		{{- else}}
+		s.lockForWrite()
+		defer s.unlockAfterWrite()
+		tx, err := s.db.Begin()
+		if err != nil {
+			t.Fatalf("begin write transaction: %v", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO resources (id, resource_type, data) VALUES (?, ?, ?)`, "id", "permission-test", `{"id":"id"}`); err != nil {
+			_ = tx.Rollback()
+			t.Fatalf("write in transaction: %v", err)
+		}
+		assertPrivateMode(t, dbPath+"-journal", 0o600)
+		if err := tx.Rollback(); err != nil {
+			t.Fatalf("rollback write transaction: %v", err)
+		}
+		{{- end}}
 		})
 	}
 }
