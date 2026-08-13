@@ -866,14 +866,21 @@ func TestPublishPackagePreservesPopulatedReleaseManifest(t *testing.T) {
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
 	writePublishableTestCLI(t, cliDir)
 	stubPublishPackageValidation(t)
-	require.NoError(t, os.WriteFile(filepath.Join(cliDir, pipeline.CLIReleaseManifestFilename), []byte(`{
+	releaseLedger := []byte(`{
   "schema_version": 1,
   "slug": "test",
   "cli_name": "test-pp-cli",
   "version": "2026.6.2",
   "released_at": "2026-06-02T00:00:00Z",
-  "source_commit": "abc123"
-}`+"\n"), 0o644))
+  "source_commit": "abc123",
+  "changes": [{
+    "title": "feat(test): preserve release history",
+    "pr": 1372,
+    "url": "https://github.com/mvanhorn/printing-press-library/pull/1372",
+    "commit": "14a3685ce9929e28fe44aabd980d8bda8f53088b"
+  }]
+}` + "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, pipeline.CLIReleaseManifestFilename), releaseLedger, 0o644))
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
@@ -886,7 +893,7 @@ func TestPublishPackagePreservesPopulatedReleaseManifest(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(output), &result))
 	got, err := os.ReadFile(filepath.Join(result.StagedDir, pipeline.CLIReleaseManifestFilename))
 	require.NoError(t, err)
-	assert.Contains(t, string(got), `"version": "2026.6.2"`)
+	assert.Equal(t, releaseLedger, got)
 }
 
 func TestPublishPackageNormalizesManifestCategoryToPublishCategory(t *testing.T) {
