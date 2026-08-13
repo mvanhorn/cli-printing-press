@@ -287,6 +287,7 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	gen := generator.New(parsed, cliDir)
 	gen.NovelFeatures = features
 	gen.ModulePath = modulePath
+	gen.PreserveMCPIntentRegistration = hasMCPRecipeIntentRegistration(cliDir)
 	if err := gen.GenerateMCPSurface(); err != nil {
 		return Result{}, fmt.Errorf("rendering MCP surface: %w", err)
 	}
@@ -320,6 +321,15 @@ func Sync(cliDir string, opts Options) (Result, error) {
 		detail = "refreshed MCP surface, manifest.json, and tools-manifest.json from current spec / .printing-press.json / mcp-descriptions.json"
 	}
 	return Result{Changed: true, Detail: detail, UnmatchedOverrideKeys: unmatched}, nil
+}
+
+func hasMCPRecipeIntentRegistration(cliDir string) bool {
+	data, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "intents.go"))
+	if err != nil {
+		return false
+	}
+	source := string(data)
+	return strings.Contains(source, "func RegisterIntents(") && strings.Contains(source, "recipeCLIPath")
 }
 
 func loadArchivedSpec(cliDir string) (*spec.APISpec, error) {

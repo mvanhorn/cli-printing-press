@@ -71,6 +71,47 @@ func RegisterNovelFeatureTools() { shellOutToCLI("items list") }
 	assert.Equal(t, legacyTools, after, "compatibility refusal must happen before tools.go is rewritten")
 }
 
+func TestSyncPreservesGeneratedRecipeIntentRegistration(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	cliDir := filepath.Join(t.TempDir(), "loops")
+	gen := generator.New(apiSpec, cliDir)
+	gen.VisionSet = generator.VisionTemplateSet{MCP: true}
+	gen.Narrative = &generator.ReadmeNarrative{
+		Recipes: []generator.Recipe{{
+			Title:       "List contacts with a limit",
+			Command:     "loops-pp-cli contacts list --limit=<limit> --json",
+			Explanation: "Fetch a bounded contact list.",
+		}},
+	}
+	require.NoError(t, gen.Generate())
+
+	specData, err := yaml.Marshal(apiSpec)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "spec.yaml"), specData, 0o644))
+
+	toolsPath := filepath.Join(cliDir, "internal", "mcp", "tools.go")
+	intentsPath := filepath.Join(cliDir, "internal", "mcp", "intents.go")
+	toolsBefore, err := os.ReadFile(toolsPath)
+	require.NoError(t, err)
+	intentsBefore, err := os.ReadFile(intentsPath)
+	require.NoError(t, err)
+	require.Contains(t, string(toolsBefore), "RegisterIntents(s)")
+	require.Contains(t, string(intentsBefore), "list_contacts_with_a_limit")
+
+	_, err = Sync(cliDir, Options{})
+	require.NoError(t, err)
+
+	toolsAfter, err := os.ReadFile(toolsPath)
+	require.NoError(t, err)
+	intentsAfter, err := os.ReadFile(intentsPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(toolsAfter), "RegisterIntents(s)", "same-version mcp-sync must preserve the generated RegisterTools intent registration")
+	assert.Equal(t, string(intentsBefore), string(intentsAfter), "mcp-sync must not rewrite recipe-lifted intent handlers without their narrative source")
+}
+
 func TestEnsureMCPClientSurfaceCompatibleChecksConditionalRequestTypes(t *testing.T) {
 	t.Parallel()
 

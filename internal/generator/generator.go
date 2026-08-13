@@ -134,11 +134,15 @@ type Generator struct {
 	visionCommandNames map[string]string
 	FixtureSet         *browsersniff.FixtureSet
 	TrafficAnalysis    *browsersniff.TrafficAnalysis
-	Sources            []ReadmeSource          // Ecosystem tools to credit in README
-	DiscoveryPages     []string                // Pages visited during browser-sniff discovery
-	NovelFeatures      []NovelFeature          // Transcendence features for README/SKILL
-	Narrative          *ReadmeNarrative        // LLM-authored prose for README/SKILL; optional
-	AsyncJobs          map[string]AsyncJobInfo // Detected async-job endpoints, keyed by "<resource>/<endpoint>"
+	Sources            []ReadmeSource   // Ecosystem tools to credit in README
+	DiscoveryPages     []string         // Pages visited during browser-sniff discovery
+	NovelFeatures      []NovelFeature   // Transcendence features for README/SKILL
+	Narrative          *ReadmeNarrative // LLM-authored prose for README/SKILL; optional
+	// PreserveMCPIntentRegistration keeps RegisterTools wired to an existing
+	// generated intents.go when a partial regeneration lacks the narrative
+	// source that originally lifted recipe intents.
+	PreserveMCPIntentRegistration bool
+	AsyncJobs                     map[string]AsyncJobInfo // Detected async-job endpoints, keyed by "<resource>/<endpoint>"
 
 	// ModulePath overrides the Go module import path emitted by templates that
 	// reference internal packages (`{{modulePath}}/internal/client`, etc.).
@@ -5010,7 +5014,7 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 			NovelFeatures:     g.NovelFeatures,
 			DomainContext:     domainCtx,
 			RecipeIntents:     recipeIntents,
-			HasMCPIntents:     len(g.Spec.MCP.Intents) > 0 || len(recipeIntents) > 0,
+			HasMCPIntents:     len(g.Spec.MCP.Intents) > 0 || len(recipeIntents) > 0 || g.PreserveMCPIntentRegistration,
 		}
 		if err := g.renderTemplate("mcp_platform_gate.go.tmpl", filepath.Join("internal", "mcp", "platform_gate.go"), mcpData); err != nil {
 			return fmt.Errorf("rendering MCP tenant gate: %w", err)
@@ -5026,7 +5030,7 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 				return fmt.Errorf("rendering MCP tools tests: %w", err)
 			}
 		}
-		if mcpData.HasMCPIntents {
+		if (len(g.Spec.MCP.Intents) > 0 || len(recipeIntents) > 0) && !g.PreserveMCPIntentRegistration {
 			if err := g.renderTemplate("mcp_intents.go.tmpl", filepath.Join("internal", "mcp", "intents.go"), mcpData); err != nil {
 				return fmt.Errorf("rendering MCP intents: %w", err)
 			}
