@@ -112,8 +112,8 @@ func (s *Store) DeriveCandidate(class, payload, signature, queryFamily, commandP
 		return CandidateRow{}, false, fmt.Errorf("derive candidate: derivation signature is required")
 	}
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 
 	now := time.Now().UTC().Format(candidateTimeFormat)
 	res, err := s.db.Exec(`INSERT INTO learn_candidates
@@ -219,8 +219,8 @@ func (s *Store) ListCandidates(f ListCandidatesFilter) ([]CandidateRow, error) {
 // machinery) and happens before this state change so a failed
 // materialization leaves the candidate open and retryable.
 func (s *Store) ConfirmCandidate(id int64) (CandidateRow, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -240,8 +240,8 @@ func (s *Store) ConfirmCandidate(id int64) (CandidateRow, error) {
 }
 
 func (s *Store) ConfirmCandidateWithPlaybook(id int64, in UpsertPlaybookInput) (CandidateRow, int64, bool, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -273,8 +273,8 @@ func (s *Store) ConfirmCandidateWithPlaybook(id int64, in UpsertPlaybookInput) (
 }
 
 func (s *Store) ConfirmCandidateWithPlaybookNote(id int64, family, marker string) (CandidateRow, int64, bool, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -351,8 +351,8 @@ func markCandidateConfirmedTx(tx *sql.Tx, row CandidateRow, now time.Time) (Cand
 // candidate created the row rather than updating pre-existing guidance.
 // A confirmed flag_alias returns ErrConfirmedFlagAliasReject.
 func (s *Store) RejectCandidate(id int64) (CandidateRow, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -402,8 +402,8 @@ func (s *Store) ExpireCandidates(ttl time.Duration) (int64, error) {
 		ttl = DefaultCandidateTTL
 	}
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 
 	now := time.Now().UTC()
 	cutoff := now.Add(-ttl).Format(candidateTimeFormat)
@@ -425,8 +425,8 @@ func (s *Store) ExpireCandidates(ttl time.Duration) (int64, error) {
 // which re-allows derivation of those signatures. Open rows are never
 // purged. Returns how many rows were deleted.
 func (s *Store) PurgeCandidates(includeTombstones bool) (int64, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 
 	statuses := `(?, ?)`
 	args := []any{CandidateStatusExpired, CandidateStatusConfirmed}
