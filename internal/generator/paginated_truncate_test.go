@@ -1284,6 +1284,28 @@ func TestPaginatedGetFallsBackToCursorParamResponseField(t *testing.T) {
 	}
 }
 
+func TestPaginatedGetPreservesAdvancingEmptyCursorPages(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"items":[],"cursor":"page-2"}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[],"cursor":"page-3"}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[{"id":"three"}],"cursor":""}` + "`" + `),
+	}}
+	data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, true, "cursor", "cursor", "limit", 100, "", "")
+	if err != nil {
+		t.Fatalf("paginatedGet returned error: %v", err)
+	}
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if len(got) != 1 || got[0]["id"] != "three" {
+		t.Fatalf("got items = %#v, want the populated third page", got)
+	}
+	if len(client.params) != 3 || client.params[1]["cursor"] != "page-2" || client.params[2]["cursor"] != "page-3" {
+		t.Fatalf("requests = %#v, want cursors page-2 then page-3", client.params)
+	}
+}
+
 func TestPaginatedGetWarnsForCursorParamFallbackWithoutAll(t *testing.T) {
 	client := &paginatedTestClient{responses: []json.RawMessage{
 		json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"cursor":"page-2"}` + "`" + `),

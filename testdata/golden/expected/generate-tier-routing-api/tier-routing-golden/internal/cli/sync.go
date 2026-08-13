@@ -602,7 +602,7 @@ func syncResource(ctx context.Context, c interface {
 			nextCursor = strconv.Itoa(currentOffset + pageSize.limit)
 			hasMore = true
 		}
-		if hasMore && previousPageItemsSet && syncPageItemsEqual(previousPageItems, items) {
+		if hasMore && previousPageItemsSet && syncPageItemsEqual(previousPageItems, items) && nextCursor == cursor {
 			outcome.reason = "stuck_page"
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "\n  %s: API returned the same page twice; aborting to prevent budget waste.\n", resource)
