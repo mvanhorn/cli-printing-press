@@ -751,9 +751,9 @@ func writeShelloutHelper(t *testing.T, mode string) string {
 		case "fail-stdout":
 			body = "@echo off\r\necho stdout failure\r\nexit /b 7\r\n"
 		case "fail-large-stderr":
-			body = "@echo off\r\nfor /L %%i in (1,1,70000) do <nul set /p =x 1>&2\r\nexit /b 7\r\n"
+			body = "@echo off\r\npowershell -NoProfile -Command \"[Console]::Error.Write((New-Object string([char]0x78,70000)))\"\r\nexit /b 7\r\n"
 		case "fail-large-stdout":
-			body = "@echo off\r\nfor /L %%i in (1,1,70000) do <nul set /p =x\r\nexit /b 7\r\n"
+			body = "@echo off\r\npowershell -NoProfile -Command \"[Console]::Out.Write((New-Object string([char]0x78,70000)))\"\r\nexit /b 7\r\n"
 		default:
 			t.Fatalf("unknown mode %q", mode)
 		}
