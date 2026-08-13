@@ -376,6 +376,37 @@ func TestWriteCLIManifestForPublish_NovelFeaturesFromSkillFlowResearch(t *testin
 	assert.Equal(t, "today", m.NovelFeatures[1].Command)
 }
 
+func TestWriteCLIManifestForPublishSynchronizesToolsManifestNovelFeatures(t *testing.T) {
+	_, state := publishManifestEnvSetup(t, "20260427-tools-manifest")
+	require.NoError(t, os.WriteFile(filepath.Join(state.WorkingDir, "spec.yaml"), []byte(`
+name: test-api
+description: Test API
+version: "1.0"
+base_url: https://api.example.com
+auth:
+  type: none
+resources: {}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(state.WorkingDir, ToolsManifestFilename), []byte(`{
+  "api_name": "test-api",
+  "tools": [],
+  "novel_features": [{"name": "Stale", "command": "stale"}]
+}`), 0o644))
+
+	built := []NovelFeature{{Name: "Fresh", Command: "fresh", Description: "Verified feature."}}
+	writeResearchAt(t, RunRoot(state.RunID), &ResearchResult{
+		APIName:            "test-api",
+		NovelFeaturesBuilt: &built,
+	})
+
+	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
+
+	cliManifest := readPublishedManifest(t, state.WorkingDir)
+	toolsManifest, err := ReadToolsManifest(state.WorkingDir)
+	require.NoError(t, err)
+	assert.Equal(t, cliManifest.NovelFeatures, toolsManifest.NovelFeatures)
+}
+
 func TestWriteCLIManifestForPublishPreservesGeneratedDescription(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", tmp)

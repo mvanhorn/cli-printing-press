@@ -1337,6 +1337,9 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	if err := writeCLIManifestForGenerate(p.OutputDir, m, existingRaw, clearFields); err != nil {
 		return err
 	}
+	if err := syncToolsManifestNovelFeatures(p.OutputDir, m.NovelFeatures); err != nil {
+		return fmt.Errorf("syncing novel features to tools manifest: %w", err)
+	}
 	// Emit the customizations directory alongside .printing-press.json. The
 	// library's Verify CI requires every fresh-print publish to ship a patches
 	// index; preserve-on-regen keeps agent-applied patch entries from being

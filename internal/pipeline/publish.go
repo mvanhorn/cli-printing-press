@@ -408,7 +408,13 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 	if m.SpecPath != "" && m.SpecURL == "" {
 		clearFields["spec_url"] = struct{}{}
 	}
-	return writeCLIManifestPreservingRawFields(dir, m, existingRaw, clearFields)
+	if err := writeCLIManifestPreservingRawFields(dir, m, existingRaw, clearFields); err != nil {
+		return err
+	}
+	if err := syncToolsManifestNovelFeatures(dir, m.NovelFeatures); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not sync tools manifest novel features: %v\n", err)
+	}
+	return nil
 }
 
 func archivedSpecDescription(data []byte) string {

@@ -26,16 +26,17 @@ const ToolsManifestFilename = "tools-manifest.json"
 // ToolsManifest describes every MCP tool for an API, along with API-level
 // metadata, in a form the diagnostic commands can read directly.
 type ToolsManifest struct {
-	APIName         string           `json:"api_name"`
-	BaseURL         string           `json:"base_url"`
-	Description     string           `json:"description"`
-	MCPReady        string           `json:"mcp_ready"`
-	HTTPTransport   string           `json:"http_transport,omitempty"`
-	MCP             *ManifestMCP     `json:"mcp,omitempty"`
-	Auth            ManifestAuth     `json:"auth"`
-	TierRouting     *ManifestTiers   `json:"tier_routing,omitempty"`
-	RequiredHeaders []ManifestHeader `json:"required_headers"`
-	Tools           []ManifestTool   `json:"tools"`
+	APIName         string                 `json:"api_name"`
+	BaseURL         string                 `json:"base_url"`
+	Description     string                 `json:"description"`
+	MCPReady        string                 `json:"mcp_ready"`
+	HTTPTransport   string                 `json:"http_transport,omitempty"`
+	MCP             *ManifestMCP           `json:"mcp,omitempty"`
+	Auth            ManifestAuth           `json:"auth"`
+	TierRouting     *ManifestTiers         `json:"tier_routing,omitempty"`
+	RequiredHeaders []ManifestHeader       `json:"required_headers"`
+	Tools           []ManifestTool         `json:"tools"`
+	NovelFeatures   []NovelFeatureManifest `json:"novel_features,omitempty"`
 }
 
 // ManifestMCP persists the endpoint visibility fields needed by manifest
@@ -200,6 +201,11 @@ func WriteToolsManifestWithDescription(dir string, parsed *spec.APISpec, manifes
 		RequiredHeaders: make([]ManifestHeader, 0, len(parsed.RequiredHeaders)),
 		Tools:           make([]ManifestTool, 0),
 	}
+	if novelFeatures, err := novelFeaturesForToolsManifest(dir); err != nil {
+		return err
+	} else {
+		manifest.NovelFeatures = novelFeatures
+	}
 	if parsed.MCP.EndpointTools != "" || parsed.MCP.Orchestration != "" {
 		manifest.MCP = &ManifestMCP{
 			EndpointTools: parsed.MCP.EndpointTools,
@@ -240,6 +246,37 @@ func WriteToolsManifestWithDescription(dir string, parsed *spec.APISpec, manifes
 	}
 	data = append(data, '\n')
 
+	if err := os.WriteFile(filepath.Join(dir, ToolsManifestFilename), data, 0o644); err != nil {
+		return fmt.Errorf("writing tools manifest: %w", err)
+	}
+	return nil
+}
+
+func novelFeaturesForToolsManifest(dir string) ([]NovelFeatureManifest, error) {
+	cliManifest, err := ReadCLIManifest(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading %s for tools manifest: %w", CLIManifestFilename, err)
+	}
+	return append([]NovelFeatureManifest(nil), cliManifest.NovelFeatures...), nil
+}
+
+func syncToolsManifestNovelFeatures(dir string, features []NovelFeatureManifest) error {
+	manifest, err := ReadToolsManifest(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	manifest.NovelFeatures = append([]NovelFeatureManifest(nil), features...)
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling tools manifest: %w", err)
+	}
+	data = append(data, '\n')
 	if err := os.WriteFile(filepath.Join(dir, ToolsManifestFilename), data, 0o644); err != nil {
 		return fmt.Errorf("writing tools manifest: %w", err)
 	}

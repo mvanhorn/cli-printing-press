@@ -3233,6 +3233,9 @@ func (g *Generator) activeFrameworkCobraUseNames() map[string]struct{} {
 	if g.VisionSet.Sync {
 		names["sync"] = struct{}{}
 	}
+	if g.Spec.Streaming.Enabled() {
+		names["live"] = struct{}{}
+	}
 	if g.VisionSet.Tail {
 		names["tail"] = struct{}{}
 	}
@@ -5209,48 +5212,50 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 
 	rootData := struct {
 		*spec.APISpec
-		VisionSet             VisionTemplateSet
-		VisionCmdNames        map[string]bool
-		WorkflowConstructors  []string
-		InsightConstructors   []string
-		NovelCommandStubs     []novelFeatureCommandRender
-		PromotedCommands      []PromotedCommand
-		PromotedResourceNames map[string]bool
-		Narrative             *ReadmeNarrative
-		TopNovelFeatures      []NovelFeature
-		NovelOverflowCount    int
-		HasAsyncJobs          bool
-		AsyncJobCount         int
-		HasAuthCommand        bool
-		HasCreateCommands     bool
-		HasDelete             bool
-		HasMutationEndpoints  bool
-		HasAutoRefresh        bool
-		SelectExample         string
-		HasWorkflow           bool
-		CompactDescription    string
+		VisionSet              VisionTemplateSet
+		VisionCmdNames         map[string]bool
+		WorkflowConstructors   []string
+		InsightConstructors    []string
+		NovelCommandStubs      []novelFeatureCommandRender
+		NovelFrameworkChildren map[string][]novelFeatureChildRender
+		PromotedCommands       []PromotedCommand
+		PromotedResourceNames  map[string]bool
+		Narrative              *ReadmeNarrative
+		TopNovelFeatures       []NovelFeature
+		NovelOverflowCount     int
+		HasAsyncJobs           bool
+		AsyncJobCount          int
+		HasAuthCommand         bool
+		HasCreateCommands      bool
+		HasDelete              bool
+		HasMutationEndpoints   bool
+		HasAutoRefresh         bool
+		SelectExample          string
+		HasWorkflow            bool
+		CompactDescription     string
 	}{
-		APISpec:               g.Spec,
-		VisionSet:             g.dataSurfaceVisionSet(),
-		VisionCmdNames:        g.VisionSet.CmdNames(),
-		WorkflowConstructors:  renderedWorkflowConstructors,
-		InsightConstructors:   renderedInsightConstructors,
-		NovelCommandStubs:     novelCommandStubs,
-		PromotedCommands:      promotedCommands,
-		PromotedResourceNames: promotedResourceNames,
-		Narrative:             g.Narrative,
-		TopNovelFeatures:      shownNovel,
-		NovelOverflowCount:    overflow,
-		HasAsyncJobs:          len(g.AsyncJobs) > 0,
-		AsyncJobCount:         len(g.AsyncJobs),
-		HasAuthCommand:        hasAuthCommand,
-		HasCreateCommands:     hasCreateCommands(g.Spec.Resources),
-		HasDelete:             helperFlags.HasDelete,
-		HasMutationEndpoints:  helperFlags.HasMutationEndpoints,
-		HasAutoRefresh:        g.hasAutoRefresh(),
-		SelectExample:         selectExampleForCommand(g.Spec),
-		HasWorkflow:           g.hasWorkflowSurface(),
-		CompactDescription:    g.compactDescription(),
+		APISpec:                g.Spec,
+		VisionSet:              g.dataSurfaceVisionSet(),
+		VisionCmdNames:         g.VisionSet.CmdNames(),
+		WorkflowConstructors:   renderedWorkflowConstructors,
+		InsightConstructors:    renderedInsightConstructors,
+		NovelCommandStubs:      novelCommandStubs,
+		NovelFrameworkChildren: g.novelFeatureFrameworkChildren(),
+		PromotedCommands:       promotedCommands,
+		PromotedResourceNames:  promotedResourceNames,
+		Narrative:              g.Narrative,
+		TopNovelFeatures:       shownNovel,
+		NovelOverflowCount:     overflow,
+		HasAsyncJobs:           len(g.AsyncJobs) > 0,
+		AsyncJobCount:          len(g.AsyncJobs),
+		HasAuthCommand:         hasAuthCommand,
+		HasCreateCommands:      hasCreateCommands(g.Spec.Resources),
+		HasDelete:              helperFlags.HasDelete,
+		HasMutationEndpoints:   helperFlags.HasMutationEndpoints,
+		HasAutoRefresh:         g.hasAutoRefresh(),
+		SelectExample:          selectExampleForCommand(g.Spec),
+		HasWorkflow:            g.hasWorkflowSurface(),
+		CompactDescription:     g.compactDescription(),
 	}
 	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {
 		return fmt.Errorf("rendering root: %w", err)
