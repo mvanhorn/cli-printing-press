@@ -113,9 +113,6 @@ func generatedExampleFields(typeDef spec.TypeDef) string {
 	return strings.Join(fields, ",")
 }
 
-// compactFieldNames returns the wire fields declared by a response item type.
-// The generated compact projection uses these as a floor beneath its
-// data-driven frequency heuristic so sparse documented fields remain visible.
 func compactFieldNames(typeName string, types map[string]spec.TypeDef) []string {
 	typeDef, ok := typeDefByName(types, strings.TrimSpace(typeName))
 	if !ok {
