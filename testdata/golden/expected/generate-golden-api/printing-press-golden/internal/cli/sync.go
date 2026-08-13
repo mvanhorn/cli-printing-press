@@ -1000,7 +1000,7 @@ func shortPageEndsPagination(cursorType string, fetched, limit int) bool {
 }
 
 func syncPageItemsEqual(previous, current []json.RawMessage) bool {
-	if len(previous) == 0 || len(previous) != len(current) {
+	if len(previous) != len(current) {
 		return false
 	}
 	for i := range previous {
@@ -2295,7 +2295,7 @@ func syncOneParent(
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "\n  %s: API returned the same page twice for parent %s; aborting to prevent budget waste.\n", dep.Name, parentID)
 			} else {
-				fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","parent":"%s","reason":"stuck_pagination","message":"API returned the same page twice for resource %s; aborting to prevent budget waste."}`+"\n", dep.Name, parentID, dep.Name)
+				fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","parent":%q,"reason":"stuck_pagination","message":"API returned the same page twice for resource %s; aborting to prevent budget waste."}`+"\n", dep.Name, parentID, dep.Name)
 			}
 			break
 		}

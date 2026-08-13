@@ -961,7 +961,7 @@ func shortPageEndsPagination(cursorType string, fetched, limit int) bool {
 }
 
 func syncPageItemsEqual(previous, current []json.RawMessage) bool {
-	if len(previous) == 0 || len(previous) != len(current) {
+	if len(previous) != len(current) {
 		return false
 	}
 	for i := range previous {

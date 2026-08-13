@@ -513,8 +513,10 @@ func TestSyncResourceStopsOnRepeatedEmptyCursorPage(t *testing.T) {
 	}
 	defer db.Close()
 
-	page := json.RawMessage("{\"items\":[],\"next_cursor\":\"page-2\",\"has_more\":true}")
-	client := &shortPageSyncClient{responses: []json.RawMessage{page, page}}
+	client := &shortPageSyncClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[],\"next_cursor\":\"page-2\",\"has_more\":true}"),
+		json.RawMessage("{\"items\":[],\"next_cursor\":\"page-3\",\"has_more\":true}"),
+	}}
 	var events strings.Builder
 	result := syncResource(context.Background(), client, db, "orders", "", true, 0, false, false, &syncUserParams{}, &events)
 	if result.Err != nil || result.Warn != nil {
