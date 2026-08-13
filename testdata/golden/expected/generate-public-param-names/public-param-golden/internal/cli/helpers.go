@@ -591,13 +591,34 @@ type noopResult struct {
 	Reason string `json:"reason"`
 }
 
+type noopWriteError struct {
+	prose string
+	cause error
+}
+
+func (e *noopWriteError) Error() string {
+	if e.cause == nil {
+		return e.prose
+	}
+	return fmt.Sprintf("%s: %v", e.prose, e.cause)
+}
+
+func (e *noopWriteError) Unwrap() error { return e.cause }
+
 func writeNoop(w io.Writer, flags *rootFlags, reason, prose string) error {
+	result := &noopWriteError{prose: prose}
 	if flags != nil && flags.asJSON {
-		_ = json.NewEncoder(w).Encode(noopResult{Status: "noop", Reason: reason})
-		return apiErr(errors.New(prose))
+		result.cause = json.NewEncoder(w).Encode(noopResult{Status: "noop", Reason: reason})
+		return apiErr(result)
 	}
 	fmt.Fprintln(os.Stderr, prose)
-	return apiErr(errors.New(prose))
+	return apiErr(result)
+}
+
+func successfulNoop(err error) bool {
+	var typed *cliError
+	var result *noopWriteError
+	return errors.As(err, &typed) && errors.As(typed.err, &result) && result.cause == nil
 }
 
 func writeAPIErrorEnvelope(w io.Writer, flags *rootFlags, err error, code int) {
@@ -653,8 +674,11 @@ func classifyAPIError(w io.Writer, err error, flags *rootFlags) error {
 	if strings.Contains(msg, "HTTP 409") {
 		if flags != nil && flags.idempotent {
 			// Generated endpoint commands preserve their established successful no-op contract.
-			_ = writeNoop(w, flags, "already_exists", "already exists (no-op)")
-			return nil
+			noopErr := writeNoop(w, flags, "already_exists", "already exists (no-op)")
+			if successfulNoop(noopErr) {
+				return nil
+			}
+			return noopErr
 		}
 	}
 	classified := classifyAPIErrorOnly(err)

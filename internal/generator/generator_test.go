@@ -8281,6 +8281,22 @@ func TestWriteNoopReturnsTypedError(t *testing.T) {
 	requireNoopJSON(t, out.String(), "already_exists")
 }
 
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("output writer failed")
+}
+
+func TestClassifyAPIErrorPropagatesNoopWriteError(t *testing.T) {
+	err := classifyAPIError(failingWriter{}, errors.New("HTTP 409: conflict"), &rootFlags{idempotent: true, asJSON: true})
+	if err == nil {
+		t.Fatal("failed noop output must return a non-nil error")
+	}
+	if ExitCode(err) != 5 {
+		t.Fatalf("failed noop output exit code = %d, want 5", ExitCode(err))
+	}
+}
+
 func TestClassifyAPIErrorOnlyDoesNotWrite(t *testing.T) {
 	stdout, stderr, err := captureStdoutStderr(t, func() error {
 		return classifyAPIErrorOnly(errors.New("HTTP 409: conflict"))
