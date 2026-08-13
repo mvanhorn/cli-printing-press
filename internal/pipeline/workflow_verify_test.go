@@ -21,6 +21,7 @@ func TestExecuteStepWiresStdinJSON(t *testing.T) {
 	writeTestFile(t, binary, `#!/bin/sh
 set -eu
 [ "$1" = "inspect" ]
+[ "$2" = "--stdin" ]
 cat
 `)
 	require.NoError(t, os.Chmod(binary, 0o755))
@@ -34,6 +35,12 @@ cat
 
 	assert.Equal(t, StepStatusPass, result.Status, result.Error)
 	assert.JSONEq(t, `{"input":{"ref":"thing:synthetic"}}`, result.Output)
+}
+
+func TestWorkflowArgsContainFlag(t *testing.T) {
+	assert.True(t, workflowArgsContainFlag([]string{"inspect", "--stdin"}, "stdin"))
+	assert.True(t, workflowArgsContainFlag([]string{"inspect", "--stdin=true"}, "stdin"))
+	assert.False(t, workflowArgsContainFlag([]string{"inspect", "--json"}, "stdin"))
 }
 
 func TestRunWorkflowVerification_NoManifest(t *testing.T) {

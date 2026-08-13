@@ -1561,7 +1561,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	}
 	happyArgs, ok, parsedHappyArgs := liveDogfoodHappyArgsParsed(command)
 	if stdinFixture != "" {
-		happyArgs = append(append([]string{}, command.Path...), "--stdin")
+		happyArgs = liveDogfoodAppendStdinArg(happyArgs)
 		ok = true
 	}
 	if !ok {
@@ -1796,11 +1796,12 @@ func commandSupportsSearch(help string) bool {
 	return slices.Contains(extractPositionalPlaceholders(liveDogfoodUsageSuffix(help)), "query")
 }
 
-// liveDogfoodCommandStdinOnly identifies generated body commands that have no
-// runnable input other than --stdin. These commands must either declare a
-// pp:happy-stdin fixture or be reported as an honest matrix skip.
+// liveDogfoodCommandStdinOnly reports body commands with no command-local
+// request input besides --stdin. Inherited global flags are runner controls,
+// not request inputs, so they do not prevent the honest no-fixture skip.
 func liveDogfoodCommandStdinOnly(command liveDogfoodCommand) bool {
-	if !slices.Contains(extractFlagNames(extractFlagsSection(command.Help)), "stdin") ||
+	flags := extractCommandFlagsSection(command.Help)
+	if !slices.Contains(extractFlagNames(flags), "stdin") ||
 		liveDogfoodCommandTakesArg(command.Help) {
 		return false
 	}
@@ -1808,12 +1809,39 @@ func liveDogfoodCommandStdinOnly(command liveDogfoodCommand) bool {
 		"all": true, "content-type": true, "dry-run": true, "file": true,
 		"json": true, "stdin": true,
 	}
-	for _, name := range extractFlagNames(extractFlagsSection(command.Help)) {
+	for _, name := range extractFlagNames(flags) {
 		if !allowed[name] {
 			return false
 		}
 	}
 	return true
+}
+
+// extractCommandFlagsSection returns only the command-local Cobra "Flags:"
+// block. "Global Flags:" contains process controls such as --config and
+// --timeout, which are not request inputs for stdin-only classification.
+func extractCommandFlagsSection(help string) string {
+	lines := strings.Split(help, "\n")
+	var out []string
+	inFlags := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "Flags:" {
+			inFlags = true
+			continue
+		}
+		if trimmed == "Global Flags:" {
+			inFlags = false
+			continue
+		}
+		if inFlags {
+			if trimmed == "" {
+				break
+			}
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // extractFlagsSection returns the body of a Cobra `--help` "Flags:" or
@@ -2292,6 +2320,15 @@ func fileExistsRelativeTo(p, cliDir string) bool {
 func liveDogfoodHappyArgs(command liveDogfoodCommand) ([]string, bool) {
 	args, ok, _ := liveDogfoodHappyArgsParsed(command)
 	return args, ok
+}
+
+func liveDogfoodAppendStdinArg(args []string) []string {
+	if slices.ContainsFunc(args, func(arg string) bool {
+		return arg == "--stdin" || strings.HasPrefix(arg, "--stdin=")
+	}) {
+		return args
+	}
+	return append(append([]string{}, args...), "--stdin")
 }
 
 func liveDogfoodHappyArgsParsed(command liveDogfoodCommand) ([]string, bool, happyArgs) {

@@ -321,6 +321,50 @@ func TestRunLiveDogfoodSkipsUnannotatedStdinOnlyCommand(t *testing.T) {
 	}
 }
 
+func TestLiveDogfoodStdinOnlyIgnoresGlobalFlags(t *testing.T) {
+	command := liveDogfoodCommand{Help: `
+Usage:
+  fixture-pp-cli widgets inspect [flags]
+
+Flags:
+      --json    Output JSON
+      --stdin   Read request body from stdin
+
+Global Flags:
+      --config   Config path
+      --timeout  Request timeout
+      --compact  Compact output
+`}
+
+	assert.True(t, liveDogfoodCommandStdinOnly(command))
+}
+
+func TestLiveDogfoodStdinFixturePreservesHappyArgs(t *testing.T) {
+	command := liveDogfoodCommand{
+		Path: []string{"widgets", "inspect"},
+		Help: `
+Usage:
+  fixture-pp-cli widgets inspect [flags]
+
+Examples:
+  fixture-pp-cli widgets inspect --name=synthetic
+
+Flags:
+      --name    Widget name
+      --stdin   Read request body from stdin
+`,
+		Annotations: map[string]string{
+			happyStdinAnnotation: `{"body":"synthetic"}`,
+		},
+	}
+
+	happyArgs, ok, _ := liveDogfoodHappyArgsParsed(command)
+	require.True(t, ok)
+	happyArgs = liveDogfoodAppendStdinArg(happyArgs)
+
+	assert.Equal(t, []string{"widgets", "inspect", "--name=synthetic", "--stdin"}, happyArgs)
+}
+
 func TestRunLiveDogfoodWritesAcceptanceMarkerOnPass(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")

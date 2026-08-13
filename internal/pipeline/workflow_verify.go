@@ -138,6 +138,9 @@ func executeStep(binary string, step WorkflowStep, cmdExpanded string, dir strin
 	}
 
 	args := strings.Fields(cmdExpanded)
+	if step.ArgsStdin && !workflowArgsContainFlag(args, "stdin") {
+		args = append(args, "--stdin")
+	}
 	args = append(args, "--json")
 
 	maxAttempts := 1
@@ -230,6 +233,16 @@ func executeStep(binary string, step WorkflowStep, cmdExpanded string, dir strin
 
 	sr.Status = StepStatusPass
 	return sr
+}
+
+func workflowArgsContainFlag(args []string, name string) bool {
+	prefix := "--" + name
+	for _, arg := range args {
+		if arg == prefix || strings.HasPrefix(arg, prefix+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 // classifyError determines the step status from a command failure.
