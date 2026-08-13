@@ -7931,6 +7931,7 @@ func TestEndpointFixturesEmittedFromSpec(t *testing.T) {
 					Params:                  []spec.Param{{Name: "q", Type: "string", Required: true}},
 					Example:                 "  endpoint-fixtures-pp-cli lookup --q example-page",
 					HappyArgs:               "--q=example-page",
+					HappyStdin:              `{"query":"synthetic"}`,
 					LiveDogfoodRequiresTier: "enterprise",
 				},
 			},
@@ -7966,6 +7967,8 @@ func TestEndpointFixturesEmittedFromSpec(t *testing.T) {
 		"promoted command must prefer the spec-declared Cobra example")
 	assert.Contains(t, promoted, `"pp:happy-args": "--q=example-page"`,
 		"promoted command must carry spec-declared happy-path fixtures for live dogfood")
+	assert.Contains(t, promoted, `"pp:happy-stdin": "{\"query\":\"synthetic\"}"`,
+		"promoted command must carry spec-declared stdin fixtures for live dogfood")
 	assert.Contains(t, promoted, `"pp:requires-tier": "enterprise"`,
 		"promoted command must carry spec-declared live dogfood tier requirements")
 

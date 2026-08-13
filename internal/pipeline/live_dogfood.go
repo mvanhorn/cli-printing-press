@@ -72,6 +72,7 @@ const reasonFeatureAbsentFixture = "blocked-fixture: feature absent for runner c
 const reasonNoErrorPathProbeAnnotation = "no-error-path-probe annotation"
 const reasonInteractiveCommand = "interactive command requires human input"
 const reasonUnsynthesizableBody = "unsynthesizable-body"
+const reasonNoStdinFixture = "no-stdin-fixture"
 
 // dogfoodEnvVar is the env signal every live-dogfood subprocess
 // inherits. Generated commands with a long-running happy path detect
@@ -1426,7 +1427,7 @@ func normalizeLiveDogfoodPath(path string) string {
 }
 
 func liveDogfoodUnsynthesizableBodyFixtureSkip(command liveDogfoodCommand, fixtures []liveDogfoodBodyFixture) string {
-	if strings.TrimSpace(command.Annotations[happyArgsAnnotation]) == "" {
+	if strings.TrimSpace(command.Annotations[happyArgsAnnotation]) == "" && strings.TrimSpace(command.Annotations[happyStdinAnnotation]) == "" {
 		endpointName := strings.TrimSpace(command.Annotations[endpointAnnotation])
 		if endpointName == "" {
 			return ""
@@ -1537,7 +1538,32 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	}
 
 	bodyFixtureSkip := liveDogfoodUnsynthesizableBodyFixtureSkip(command, ctx.bodyFixtures)
+	stdinFixture := strings.TrimSpace(command.Annotations[happyStdinAnnotation])
+	stdinOnly := liveDogfoodCommandStdinOnly(command)
+	if stdinOnly && stdinFixture == "" {
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonNoStdinFixture),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonNoStdinFixture),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonNoStdinFixture),
+		)
+		return results
+	}
+	var stdinPayload []byte
+	if stdinFixture != "" {
+		stdinPayload = []byte(stdinFixture)
+		if !json.Valid(stdinPayload) {
+			results = append(results,
+				failedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, nil, "invalid pp:happy-stdin fixture"),
+				failedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, nil, "invalid pp:happy-stdin fixture"),
+			)
+			return results
+		}
+	}
 	happyArgs, ok, parsedHappyArgs := liveDogfoodHappyArgsParsed(command)
+	if stdinFixture != "" {
+		happyArgs = liveDogfoodAppendStdinArg(happyArgs)
+		ok = true
+	}
 	if !ok {
 		if bodyFixtureSkip != "" {
 			results = append(results,
@@ -1600,7 +1626,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		runArgs = protectLiveDogfoodNegativeNumericPositionals(runArgs, command.Path,
 			len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))), liveDogfoodFlagValueNames(command.Help), liveDogfoodFlagNames(command.Help))
 
-		happyRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, runArgs, ctx.timeout)
+		happyRun := runLiveDogfoodProcessWithStdin(ctx.binaryPath, ctx.cliDir, runArgs, ctx.timeout, stdinPayload)
 		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, happyRun, ctx.authEnvValue)
 		happyResult.FixtureSource = fixtureSource
 		if successCodes[happyRun.exitCode] {
@@ -1638,7 +1664,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 				jsonArgs = removeNonJSONOutputModes(jsonArgs)
 			}
 			jsonArgs = appendJSONArg(jsonArgs)
-			jsonRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout)
+			jsonRun := runLiveDogfoodProcessWithStdin(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout, stdinPayload)
 			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun, ctx.authEnvValue)
 			jsonResult.FixtureSource = fixtureSource
 			if jsonRun.exitCode == 0 {
@@ -1770,6 +1796,54 @@ func commandSupportsSearch(help string) bool {
 	return slices.Contains(extractPositionalPlaceholders(liveDogfoodUsageSuffix(help)), "query")
 }
 
+// liveDogfoodCommandStdinOnly reports body commands with no command-local
+// request input besides --stdin. Inherited global flags are runner controls,
+// not request inputs, so they do not prevent the honest no-fixture skip.
+func liveDogfoodCommandStdinOnly(command liveDogfoodCommand) bool {
+	flags := extractCommandFlagsSection(command.Help)
+	if !slices.Contains(extractFlagNames(flags), "stdin") ||
+		liveDogfoodCommandTakesArg(command.Help) {
+		return false
+	}
+	allowed := map[string]bool{
+		"all": true, "content-type": true, "dry-run": true, "file": true,
+		"json": true, "stdin": true,
+	}
+	for _, name := range extractFlagNames(flags) {
+		if !allowed[name] {
+			return false
+		}
+	}
+	return true
+}
+
+// extractCommandFlagsSection returns only the command-local Cobra "Flags:"
+// block. "Global Flags:" contains process controls such as --config and
+// --timeout, which are not request inputs for stdin-only classification.
+func extractCommandFlagsSection(help string) string {
+	lines := strings.Split(help, "\n")
+	var out []string
+	inFlags := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "Flags:" {
+			inFlags = true
+			continue
+		}
+		if trimmed == "Global Flags:" {
+			inFlags = false
+			continue
+		}
+		if inFlags {
+			if trimmed == "" {
+				break
+			}
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
 // extractFlagsSection returns the body of a Cobra `--help` "Flags:" or
 // "Global Flags:" block — everything from the section header through the
 // next blank line. Used to scope flag-name extraction so cross-reference
@@ -1796,8 +1870,12 @@ func extractFlagsSection(help string) string {
 }
 
 func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout time.Duration) liveDogfoodRun {
+	return runLiveDogfoodProcessWithStdin(binaryPath, cliDir, args, timeout, nil)
+}
+
+func runLiveDogfoodProcessWithStdin(binaryPath, cliDir string, args []string, timeout time.Duration, stdin []byte) liveDogfoodRun {
 	deadline := time.Now().Add(timeout)
-	run := runLiveDogfoodProcessOnce(binaryPath, cliDir, args, timeout)
+	run := runLiveDogfoodProcessOnceWithStdin(binaryPath, cliDir, args, timeout, stdin)
 	if !liveDogfoodRetryableAuth401(run) || time.Until(deadline) <= liveDogfoodAuthRetryDelay {
 		return run
 	}
@@ -1806,10 +1884,10 @@ func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout tim
 	if remaining <= 0 {
 		return run
 	}
-	return runLiveDogfoodProcessOnce(binaryPath, cliDir, args, remaining)
+	return runLiveDogfoodProcessOnceWithStdin(binaryPath, cliDir, args, remaining, stdin)
 }
 
-func runLiveDogfoodProcessOnce(binaryPath, cliDir string, args []string, timeout time.Duration) liveDogfoodRun {
+func runLiveDogfoodProcessOnceWithStdin(binaryPath, cliDir string, args []string, timeout time.Duration, stdin []byte) liveDogfoodRun {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -1839,6 +1917,9 @@ func runLiveDogfoodProcessOnce(binaryPath, cliDir string, args []string, timeout
 		cmd.Stdout = stdoutCap
 	}
 	cmd.Stderr = stderrCap
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
 
 	err := cmd.Run()
 	rawJSONValid := false
@@ -2239,6 +2320,15 @@ func fileExistsRelativeTo(p, cliDir string) bool {
 func liveDogfoodHappyArgs(command liveDogfoodCommand) ([]string, bool) {
 	args, ok, _ := liveDogfoodHappyArgsParsed(command)
 	return args, ok
+}
+
+func liveDogfoodAppendStdinArg(args []string) []string {
+	if slices.ContainsFunc(args, func(arg string) bool {
+		return arg == "--stdin" || strings.HasPrefix(arg, "--stdin=")
+	}) {
+		return args
+	}
+	return append(append([]string{}, args...), "--stdin")
 }
 
 func liveDogfoodHappyArgsParsed(command liveDogfoodCommand) ([]string, bool, happyArgs) {

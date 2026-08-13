@@ -34,6 +34,9 @@ const testManifestYAML = `workflows:
         mode: local
       - command: "orders price_order"
         args_stdin: true
+        stdin_json:
+          input:
+            ref: "thing:synthetic"
         mode: mock
         expect_fields:
           - "Order.Amounts.Customer"
@@ -87,6 +90,9 @@ func TestLoadWorkflowManifest_Valid(t *testing.T) {
 	assert.Equal(t, "orders price_order", s4.Command)
 	assert.Equal(t, StepModeMock, s4.Mode)
 	assert.True(t, s4.ArgsStdin)
+	assert.Equal(t, map[string]any{
+		"input": map[string]any{"ref": "thing:synthetic"},
+	}, s4.StdinJSON)
 	assert.Equal(t, []string{"Order.Amounts.Customer", "Order.Products"}, s4.ExpectFields)
 }
 
@@ -106,6 +112,23 @@ func TestLoadWorkflowManifest_InvalidYAML(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, m)
 	assert.Contains(t, err.Error(), "parsing workflow manifest")
+}
+
+func TestLoadWorkflowManifest_RejectsUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "workflow_verify.yaml"), `workflows:
+  - name: test
+    steps:
+      - command: inspect
+        mode: local
+        stdin_json: {input: ok}
+        unsupported: true
+`)
+
+	m, err := LoadWorkflowManifest(dir)
+	assert.Error(t, err)
+	assert.Nil(t, m)
+	assert.Contains(t, err.Error(), "unsupported")
 }
 
 func TestPrimaryWorkflow(t *testing.T) {

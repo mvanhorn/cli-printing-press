@@ -49,6 +49,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-live-dogfood-requires-tier` | path item or operation | `Endpoint.LiveDogfoodRequiresTier` | No |
 | `x-requires-role` | operation | `Endpoint.RequiresRole` | No |
 | `x-happy-args` | operation | `Endpoint.HappyArgs` | No |
+| `x-happy-stdin` | operation | `Endpoint.HappyStdin` | No |
 | `x-pp-example` | operation | `Endpoint.Example` (verbatim Cobra example override) | No |
 | `x-pp-resource` | operation | resource name override | No |
 | `x-pp-pagination` | operation | `Endpoint.Pagination` | No |
@@ -1714,6 +1715,33 @@ paths:
     get:
       operationId: listReferents
       x-happy-args: "--song-id=378195"
+      responses:
+        "200": {description: ok}
+```
+
+### `x-happy-stdin`
+
+Declares a JSON request-body fixture for a live-dogfood command that reads its
+input from stdin. The generator emits the fixture as the `pp:happy-stdin`
+annotation, and the matrix pipes it to both the happy-path and JSON-fidelity
+probes.
+
+Parsed field: `Endpoint.HappyStdin`
+
+Rules:
+- Optional.
+- Must be on an operation, not the root, `info`, or path item.
+- Must be a string containing valid JSON.
+- Commands that require stdin but do not declare this fixture are skipped with
+  reason `no-stdin-fixture`; the runner never synthesizes a request body.
+
+Example:
+
+```yaml
+paths:
+  /widgets/inspect:
+    post:
+      x-happy-stdin: '{"name":"synthetic"}'
       responses:
         "200": {description: ok}
 ```

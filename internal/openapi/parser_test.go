@@ -8131,6 +8131,52 @@ paths:
 	require.Empty(t, songs.HappyArgs)
 }
 
+func TestParseHappyStdinExtension(t *testing.T) {
+	t.Parallel()
+
+	specYAML := []byte(`
+openapi: 3.0.0
+info:
+  title: stdin fixtures
+  version: "1"
+paths:
+  /items:
+    post:
+      x-happy-stdin: '{"name":"synthetic"}'
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := ParseWithOptions(specYAML, ParseOptions{Path: "stdin-fixture.yaml"})
+	require.NoError(t, err)
+	endpoint := parsed.Resources["items"].Endpoints["create"]
+	require.NotNil(t, endpoint)
+	assert.Equal(t, `{"name":"synthetic"}`, endpoint.HappyStdin)
+}
+
+func TestParseHappyStdinExtensionRejectsInvalidJSON(t *testing.T) {
+	t.Parallel()
+
+	specYAML := []byte(`
+openapi: 3.0.0
+info:
+  title: stdin fixtures
+  version: "1"
+paths:
+  /items:
+    post:
+      x-happy-stdin: not-json
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := ParseWithOptions(specYAML, ParseOptions{Path: "stdin-fixture.yaml"})
+	require.NoError(t, err)
+	assert.Empty(t, parsed.Resources["items"].Endpoints["create"].HappyStdin)
+}
+
 func TestParseExampleExtension(t *testing.T) {
 	t.Parallel()
 
