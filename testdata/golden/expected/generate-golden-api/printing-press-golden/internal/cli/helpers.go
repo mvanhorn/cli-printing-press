@@ -656,7 +656,9 @@ func classifyAPIError(w io.Writer, err error, flags *rootFlags) error {
 	msg := err.Error()
 	if strings.Contains(msg, "HTTP 409") {
 		if flags != nil && flags.idempotent {
-			return writeNoop(w, flags, "already_exists", "already exists (no-op)")
+			// Generated endpoint commands preserve their established successful no-op contract.
+			_ = writeNoop(w, flags, "already_exists", "already exists (no-op)")
+			return nil
 		}
 	}
 	classified := classifyAPIErrorOnly(err)

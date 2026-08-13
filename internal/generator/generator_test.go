@@ -8238,11 +8238,8 @@ func TestClassifyAPIError409RequiresIdempotent(t *testing.T) {
 	stdout, stderr, err := captureStdoutStderr(t, func() error {
 		return classifyAPIError(os.Stdout, errors.New("HTTP 409: conflict"), &rootFlags{idempotent: true, asJSON: true})
 	})
-	if err == nil {
-		t.Fatal("idempotent 409 must remain a non-nil error")
-	}
-	if ExitCode(err) != 5 {
-		t.Fatalf("idempotent 409 should retain API exit code, got %d", ExitCode(err))
+	if err != nil {
+		t.Fatalf("idempotent 409 should remain a successful no-op: %v", err)
 	}
 	if stderr != "" {
 		t.Fatalf("json noop should not write stderr, got %q", stderr)
@@ -8253,8 +8250,8 @@ func TestClassifyAPIError409RequiresIdempotent(t *testing.T) {
 func TestClassifyAPIErrorUsesProvidedWriter(t *testing.T) {
 	var out bytes.Buffer
 	err := classifyAPIError(&out, errors.New("HTTP 409: conflict"), &rootFlags{idempotent: true, asJSON: true})
-	if err == nil {
-		t.Fatal("idempotent 409 must remain a non-nil error")
+	if err != nil {
+		t.Fatalf("idempotent 409 should remain a successful no-op: %v", err)
 	}
 	requireNoopJSON(t, out.String(), "already_exists")
 
@@ -8270,6 +8267,18 @@ func TestClassifyAPIErrorUsesProvidedWriter(t *testing.T) {
 	if envelope["code"] != float64(5) {
 		t.Fatalf("error envelope code = %v, want 5", envelope["code"])
 	}
+}
+
+func TestWriteNoopReturnsTypedError(t *testing.T) {
+	var out bytes.Buffer
+	err := writeNoop(&out, &rootFlags{asJSON: true}, "already_exists", "already exists (no-op)")
+	if err == nil {
+		t.Fatal("writeNoop must return a non-nil typed error")
+	}
+	if ExitCode(err) != 5 {
+		t.Fatalf("writeNoop exit code = %d, want 5", ExitCode(err))
+	}
+	requireNoopJSON(t, out.String(), "already_exists")
 }
 
 func TestClassifyAPIErrorOnlyDoesNotWrite(t *testing.T) {
@@ -8334,11 +8343,8 @@ func TestClassifyDeleteError404RequiresIgnoreMissing(t *testing.T) {
 	stdout, stderr, err := captureStdoutStderr(t, func() error {
 		return classifyDeleteError(os.Stdout, errors.New("HTTP 404: not found"), &rootFlags{ignoreMissing: true, asJSON: true})
 	})
-	if err == nil {
-		t.Fatal("ignore-missing 404 must remain a non-nil error")
-	}
-	if ExitCode(err) != 5 {
-		t.Fatalf("ignore-missing 404 should retain API exit code, got %d", ExitCode(err))
+	if err != nil {
+		t.Fatalf("ignore-missing 404 should remain a successful no-op: %v", err)
 	}
 	if stderr != "" {
 		t.Fatalf("json noop should not write stderr, got %q", stderr)
