@@ -6659,6 +6659,62 @@ paths:
 	assert.Contains(t, string(clientSrc), `req.Header.Set("Authorization", authHeader)`)
 	assert.Contains(t, string(clientSrc), `req.Header.Set("Numista-API-Key", v)`)
 	assert.Contains(t, string(clientSrc), `c.Config.NumistaApiKey`)
+
+	if testing.Short() {
+		t.Skip("OpenAPI generated CLI compile coverage runs in the generated-test CI lane")
+	}
+	runGo(t, outputDir, "mod", "tidy")
+	runGo(t, outputDir, "build", "./...")
+}
+
+func TestComposedOAuthKeepsExtensionFreeQueryAPIKey(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Numista-shape
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: query
+      name: api_key
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.example.com/oauth/authorize
+          tokenUrl: https://api.example.com/oauth/token
+          scopes:
+            view_collection: view collection
+paths:
+  /catalogue:
+    get:
+      operationId: listCatalogue
+      responses: {"200": {description: ok}}
+  /account:
+    get:
+      operationId: getProfile
+      security:
+        - ApiKeyAuth: []
+          OAuth2: [view_collection]
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+	require.Len(t, parsed.Auth.AdditionalHeaders, 1)
+	additional := parsed.Auth.AdditionalHeaders[0]
+	assert.Equal(t, "api_key", additional.Header)
+	assert.Equal(t, "query", additional.In)
+	assert.Equal(t, "ApiKeyAuth", additional.Scheme)
+	assert.Equal(t, "NUMISTA_SHAPE_API_KEY", additional.EnvVar.Name)
+	assert.Equal(t, spec.AuthEnvVarKindPerCall, additional.EnvVar.Kind)
 }
 
 // Single-scheme apiKey (no sibling OAuth) must keep its existing single-scheme

@@ -1414,6 +1414,8 @@ func collectAdditionalAuthHeaders(doc *openapi3.T, winner, envPrefix string) []s
 			fallbackMode = additionalHeaderFallbackScheme
 		} else if placement == "header" {
 			fallbackMode = additionalHeaderFallbackHeader
+		} else if placement == "query" {
+			fallbackMode = additionalHeaderFallbackScheme
 		}
 		envVars := additionalHeaderEnvVars(scheme, name, header, envPrefix, fallbackMode)
 		for _, ev := range envVars {
@@ -3100,12 +3102,9 @@ func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *open
 	return bestName, bestScheme
 }
 
-// preferredComposedBearerScheme keeps a bearer/OAuth credential as the
-// primary auth when an API key is required alongside it. A spec may also use
-// that API key alone for public operations, so raw operation counts otherwise
-// make the API key win and drop the Authorization header from the composed
-// operations. The existing additional-header emission then carries the API
-// key alongside the selected bearer credential.
+// A composed bearer requirement must remain primary when standalone API-key
+// operations outnumber it; otherwise selection drops Authorization before the
+// sibling credential can be emitted.
 func preferredComposedBearerScheme(doc *openapi3.T, requirements openapi3.SecurityRequirements, candidates []string, usageCounts map[string]int) (string, *openapi3.SecurityScheme) {
 	if doc == nil || doc.Components == nil {
 		return "", nil
