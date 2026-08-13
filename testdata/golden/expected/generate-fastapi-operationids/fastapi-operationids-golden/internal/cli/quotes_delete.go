@@ -46,7 +46,7 @@ func newQuotesDeleteCmd(flags *rootFlags) *cobra.Command {
 			params := map[string]string{}
 			data, statusCode, err := c.DeleteWithParams(cmd.Context(), path, params)
 			if err != nil {
-				return classifyDeleteError(err, flags)
+				return classifyDeleteError(cmd.OutOrStdout(), err, flags)
 			}
 			// Inspect the mutate response body for a partial-failure-shaped
 			// field (e.g. Google Ads `partialFailureError`). Several Google

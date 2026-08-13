@@ -170,6 +170,7 @@ func TestRealTokensReachTransport(t *testing.T) {
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -177,7 +178,7 @@ import (
 )
 
 func TestPlaceholderAuthErrorClassifiesAsExitCode4(t *testing.T) {
-	err := classifyAPIError(fmt.Errorf("%w configured in /tmp/config.toml; set a real token with: export PLACEHOLDER_AUTH_TOKEN=<your-token> or placeholder-auth-pp-cli auth set-token <token>", client.ErrPlaceholderCredential), &rootFlags{})
+	err := classifyAPIError(os.Stdout, fmt.Errorf("%w configured in /tmp/config.toml; set a real token with: export PLACEHOLDER_AUTH_TOKEN=<your-token> or placeholder-auth-pp-cli auth set-token <token>", client.ErrPlaceholderCredential), &rootFlags{})
 	if ExitCode(err) != 4 {
 		t.Fatalf("placeholder auth error exit code = %d, want 4", ExitCode(err))
 	}
@@ -195,7 +196,7 @@ func TestPlaceholderAuthErrorClassifiesAsExitCode4(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(syncSrc), "var firstPlaceholderErr error")
 	require.Contains(t, string(syncSrc), "errors.Is(res.Err, client.ErrPlaceholderCredential)")
-	require.Contains(t, string(syncSrc), "return classifyAPIError(firstPlaceholderErr, flags)")
+	require.Contains(t, string(syncSrc), "return classifyAPIError(cmd.OutOrStdout(), firstPlaceholderErr, flags)")
 
 	runGoCommand(t, outputDir, "test", "./internal/client", "./internal/cli", "-run", "TestPlaceholder", "-count=1")
 }

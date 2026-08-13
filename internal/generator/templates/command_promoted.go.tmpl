@@ -424,7 +424,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 			if err != nil {
-				return classifyAPIError(err, flags)
+				return classifyAPIError(cmd.OutOrStdout(), err, flags)
 			}
 {{- if and .IsReadOnly (not .HasStore)}}
 			if isDryRunResponse(c.IsDryRun(), data) {

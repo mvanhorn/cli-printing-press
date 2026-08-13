@@ -28,7 +28,7 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 			c = c.WithTier("free")
 			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "auto", "items", path, map[string]string{}, nil, flagAll, "cursor", "cursor", "limit", 0, "", "", "", cmd.ErrOrStderr())
 			if err != nil {
-				return classifyAPIError(err, flags)
+				return classifyAPIError(cmd.OutOrStdout(), err, flags)
 			}
 			outputData := collectionItemsForOutput(data, path)
 			// Print provenance to stderr for human-facing output only.

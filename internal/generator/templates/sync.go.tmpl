@@ -526,7 +526,7 @@ Resource scoping:
 			// without reading the CHANGELOG.
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 			if firstPlaceholderErr != nil {
-				return classifyAPIError(firstPlaceholderErr, flags)
+				return classifyAPIError(cmd.OutOrStdout(), firstPlaceholderErr, flags)
 			}
 {{- end}}
 			if strict && errCount > 0 {

@@ -100,7 +100,7 @@ native streaming instead of polling.`,
 			// Initial fetch
 			if err := fetchAndEmit(cmd.Context(), c, path, readConfig, enc); err != nil {
 				if !follow {
-					return classifyAPIError(err, flags)
+					return classifyAPIError(cmd.OutOrStdout(), err, flags)
 				}
 				fmt.Fprintf(os.Stderr, "warning: initial fetch failed: %v\n", err)
 			}

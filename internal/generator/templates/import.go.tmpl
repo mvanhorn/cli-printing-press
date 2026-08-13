@@ -86,7 +86,7 @@ but do not stop the import.`,
 				if err != nil {
 					failed++
 					if status == 401 || status == 403 {
-						terminalErr = classifyAPIError(err, flags)
+						terminalErr = classifyAPIError(cmd.OutOrStdout(), err, flags)
 						continue
 					}
 					fmt.Fprintf(os.Stderr, "warning: failed to import record: %v\n", err)

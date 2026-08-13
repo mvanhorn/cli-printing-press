@@ -55,7 +55,7 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 				"cursor": formatCLIParamValue(flagCursor),
 			}, headerOverrides, flagAll, "cursor", "cursor", "limit", 25, "", "", "", cmd.ErrOrStderr())
 			if err != nil {
-				return classifyAPIError(err, flags)
+				return classifyAPIError(cmd.OutOrStdout(), err, flags)
 			}
 			outputData := collectionItemsForOutput(data, path)
 			// Print provenance to stderr for human-facing output only.

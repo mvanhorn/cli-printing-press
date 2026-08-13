@@ -78,7 +78,7 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 			}
 			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "auto", "stores", true, path, params, nil, "", cmd.ErrOrStderr())
 			if err != nil {
-				return classifyAPIError(err, flags)
+				return classifyAPIError(cmd.OutOrStdout(), err, flags)
 			}
 			outputData := data
 			// Print provenance to stderr for human-facing output only.

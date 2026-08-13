@@ -328,7 +328,7 @@ Resource scoping:
 			// CI scripts that depend on $? != 0 can discover the contract change
 			// without reading the CHANGELOG.
 			if firstPlaceholderErr != nil {
-				return classifyAPIError(firstPlaceholderErr, flags)
+				return classifyAPIError(cmd.OutOrStdout(), firstPlaceholderErr, flags)
 			}
 			if strict && errCount > 0 {
 				return errors.New(describeFailedResources(errCount, failedResources))

@@ -233,7 +233,7 @@ Exit codes & warnings:
 			if errCount > 0 {
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 				if firstPlaceholderErr != nil {
-					return classifyAPIError(firstPlaceholderErr, flags)
+					return classifyAPIError(cmd.OutOrStdout(), firstPlaceholderErr, flags)
 				}
 {{- end}}
 				return fmt.Errorf("%d resource(s) failed to sync", errCount)
