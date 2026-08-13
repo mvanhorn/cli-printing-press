@@ -7398,7 +7398,7 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 
 	// --select and --compact are applied to inner data before wrapping in envelope
 	assert.Contains(t, content, "filtered := data")
-	assert.Contains(t, content, "compactFields(filtered)")
+	assert.Contains(t, content, "compactFields(filtered,")
 	assert.Contains(t, content, "filterFields(filtered, flags.selectFields)")
 	assert.Contains(t, content, `json.Unmarshal(filtered, &parsed)`)
 

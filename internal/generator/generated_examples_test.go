@@ -85,6 +85,23 @@ func TestSelectExampleRejectsUnsafeFieldNames(t *testing.T) {
 	assert.Empty(t, selectExample(apiSpec, syncable))
 }
 
+func TestCompactFieldMapLiteralUsesDocumentedWireFields(t *testing.T) {
+	t.Parallel()
+
+	types := map[string]spec.TypeDef{
+		"Event": {Fields: []spec.TypeField{
+			{Name: "id"},
+			{Name: "odds"},
+			{Name: "odds"},
+			{Name: "event_name"},
+			{Name: ""},
+		}},
+	}
+
+	assert.Equal(t, `map[string]bool{"id": true, "odds": true, "event_name": true}`, compactFieldMapLiteral("Event", types))
+	assert.Equal(t, "nil", compactFieldMapLiteral("Missing", types))
+}
+
 func TestGeneratedExamplesUseAPIModelAcrossDocsAndSyncHelp(t *testing.T) {
 	t.Parallel()
 
