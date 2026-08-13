@@ -3170,6 +3170,16 @@ func TestProfilePagination_InfersFromPlainParamsWhenNoExplicitBlock(t *testing.T
 					},
 				},
 			},
+			"take_agents": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/agents",
+						Params:   []spec.Param{{Name: "skip", Type: "int"}, {Name: "take", Type: "int", Default: 40}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
 		},
 	}
 
@@ -3183,6 +3193,8 @@ func TestProfilePagination_InfersFromPlainParamsWhenNoExplicitBlock(t *testing.T
 	require.Contains(t, byName, "agents")
 	assert.Equal(t, 25, byName["agents"].PaginationPageSize,
 		"inferred limit param must still read the spec-declared default")
+	assert.Equal(t, "take", byName["take_agents"].PaginationLimitParam)
+	assert.Equal(t, 40, byName["take_agents"].PaginationPageSize)
 }
 
 // A limit param's declared `maximum` must cap the sync page size: the 100

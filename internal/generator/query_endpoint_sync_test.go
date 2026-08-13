@@ -144,3 +144,51 @@ func TestQueryEndpointSyncPagesAndUnwraps(t *testing.T) {
 	assert.Contains(t, string(out), `"resource":"widgets"`)
 	assert.Contains(t, string(out), `"total":3`)
 }
+
+// TestQueryEndpointSyncStopsOnRepeatedFullPage verifies that a query endpoint
+// which ignores STARTPOSITION cannot make sync append the same full page until
+// the page cap or process timeout. The repeated-page warning is emitted after
+// query-specific continuation has marked the full response as having more.
+func TestQueryEndpointSyncStopsOnRepeatedFullPage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs a generated binary; runs in the full generated-test CI lane")
+	}
+	t.Parallel()
+
+	var mu sync.Mutex
+	var seenQueries []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/query", r.URL.Path)
+		mu.Lock()
+		seenQueries = append(seenQueries, r.URL.Query().Get("query"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"QueryResponse":{"Widget":[{"id":"1","name":"same"},{"id":"2","name":"page"}]}}`)
+	}))
+	t.Cleanup(server.Close)
+
+	apiSpec, err := spec.Parse(queryEndpointFixturePath())
+	require.NoError(t, err)
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.BaseURL = server.URL
+
+	slug := naming.CLI(apiSpec.Name)
+	outputDir := filepath.Join(t.TempDir(), slug)
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	binaryPath := filepath.Join(outputDir, slug)
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+slug)
+
+	dbPath := filepath.Join(t.TempDir(), "sync.db")
+	cmd := exec.Command(binaryPath, "--json", "sync", "--resources", "widgets", "--max-pages", "0", "--db", dbPath)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, seenQueries, 2, "repeated full page should stop after the second request: %v", seenQueries)
+	assert.Contains(t, seenQueries[0], "startposition 1 maxresults 2")
+	assert.Contains(t, seenQueries[1], "startposition 3 maxresults 2")
+	assert.Contains(t, string(out), `"reason":"stuck_pagination"`)
+	assert.Contains(t, string(out), `"total":2`)
+}

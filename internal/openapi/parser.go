@@ -8330,7 +8330,7 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	var pag spec.Pagination
 
 	// Detect limit param
-	for _, name := range []string{"limit", "maxresults", "pagesize", "page_size", "max_results", "perpage", "per_page", "page[size]"} {
+	for _, name := range []string{"limit", "take", "maxresults", "pagesize", "page_size", "max_results", "perpage", "per_page", "page[size]"} {
 		if orig, ok := originalCase[name]; ok {
 			pag.LimitParam = orig
 			break
@@ -8342,7 +8342,6 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 		if orig, ok := originalCase[name]; ok {
 			pag.CursorParam = orig
 			pag.Type = "page_token"
-			pag.NextCursorPath = "nextPageToken"
 			break
 		}
 	}
@@ -8394,6 +8393,12 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 				detectPaginationResponseFields(schemaRef.Value, "", &pag)
 			}
 		}
+	}
+	// Preserve the historical Google-style fallback when the response schema
+	// does not declare a cursor field. When a schema does declare one, the
+	// response walk above owns the path so nested and snake_case fields win.
+	if pag.NextCursorPath == "" && pag.Type == "page_token" {
+		pag.NextCursorPath = "nextPageToken"
 	}
 
 	// Only return pagination if we detected at least a limit or cursor param
