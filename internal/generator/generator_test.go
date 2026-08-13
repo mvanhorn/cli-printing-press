@@ -8370,7 +8370,8 @@ func TestClassifyDeleteError404RequiresIgnoreMissing(t *testing.T) {
 `
 	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
 
-	runGoCommandRequired(t, outputDir, "test", "-run", "TestClassify", "./internal/cli")
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommandRequired(t, outputDir, "test", "-run", "Test(Classify|WriteNoop)", "./internal/cli")
 }
 
 func TestGeneratedExport_ValidatesResourceArgument(t *testing.T) {

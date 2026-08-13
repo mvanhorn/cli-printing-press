@@ -611,7 +611,7 @@ func writeNoop(w io.Writer, flags *rootFlags, reason, prose string) error {
 		result.cause = json.NewEncoder(w).Encode(noopResult{Status: "noop", Reason: reason})
 		return apiErr(result)
 	}
-	fmt.Fprintln(os.Stderr, prose)
+	_, result.cause = fmt.Fprintln(w, prose)
 	return apiErr(result)
 }
 
