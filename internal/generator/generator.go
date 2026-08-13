@@ -268,6 +268,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"zeroValForBodyParam":                 zeroValForBodyParam,
 		"paramIsHeader":                       paramIsHeader,
 		"paramPresenceExpr":                   paramPresenceExpr,
+		"readParamPresenceExpr":               readParamPresenceExpr,
 		"endpointHasHeaderParams":             endpointHasHeaderParams,
 		"positionalArgs":                      positionalArgs,
 		"configTag":                           configTag,
@@ -7343,7 +7344,17 @@ func paramIsHeader(p spec.Param) bool {
 }
 
 func paramPresenceExpr(p spec.Param) string {
+	if primitiveKind(p.Type) == "int" && (p.Required || paramHasDefault(p)) {
+		return "true"
+	}
 	return fmt.Sprintf("(%s || flag%s != %s)", flagChangedExpr(p), toCamel(paramIdent(p)), zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
+}
+
+func readParamPresenceExpr(p spec.Param) string {
+	if primitiveKind(p.Type) == "int" && (p.Required || paramHasDefault(p)) {
+		return "true"
+	}
+	return fmt.Sprintf("flag%s != %s", toCamel(paramIdent(p)), zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
 }
 
 func endpointHasHeaderParams(endpoint spec.Endpoint) bool {

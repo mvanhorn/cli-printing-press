@@ -247,7 +247,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			htmlRequestParams["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam) (not (paramIsHeader .)) (not (isArrayQueryParam .)) (not (isDeepObjectQueryParam .))}}
-			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
+			if {{readParamPresenceExpr .}} {
 				htmlRequestParams["{{.Name}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
 {{- end}}
@@ -416,7 +416,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam) (not (paramIsHeader .)) (not (isArrayQueryParam .)) (not (isDeepObjectQueryParam .))}}
-				if {{if or (eq $.Endpoint.Method "GET") (eq $.Endpoint.Method "HEAD")}}flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}}{{else}}{{paramPresenceExpr .}}{{end}} {
+				if {{if or (eq $.Endpoint.Method "GET") (eq $.Endpoint.Method "HEAD")}}{{readParamPresenceExpr .}}{{else}}{{paramPresenceExpr .}}{{end}} {
 				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
 {{- end}}
