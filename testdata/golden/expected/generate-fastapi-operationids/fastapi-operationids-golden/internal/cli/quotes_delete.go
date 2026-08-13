@@ -144,7 +144,7 @@ func newQuotesDeleteCmd(flags *rootFlags) *cobra.Command {
 				if flags.selectFields != "" {
 					filtered = filterFields(filtered, flags.selectFields)
 				} else if flags.compact {
-					filtered = compactFields(filtered)
+					filtered = compactFields(filtered, nil)
 				}
 				if len(filtered) > 0 {
 					var parsed any
