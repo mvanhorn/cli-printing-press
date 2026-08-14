@@ -15,6 +15,29 @@ func ensureNotOlderThanCLIManifest(cliDir, commandName string) error {
 	return ensureVersionNotOlderThanCLIManifest(cliDir, commandName, version.Get())
 }
 
+func ensureMCPVersionCompatibleWithCLIManifest(cliDir, currentVersion string) error {
+	manifest, err := pipeline.ReadCLIManifest(cliDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("reading %s: %w", pipeline.CLIManifestFilename, err)
+	}
+	required := strings.TrimSpace(manifest.PrintingPressVersion)
+	if required == "" {
+		return nil
+	}
+	current := normalizeSemver(currentVersion)
+	required = normalizeSemver(required)
+	if !semver.IsValid(current) || !semver.IsValid(required) {
+		return fmt.Errorf("cannot compare cli-printing-press version %q with %s printing_press_version %q", currentVersion, pipeline.CLIManifestFilename, manifest.PrintingPressVersion)
+	}
+	if semver.MajorMinor(current) != semver.MajorMinor(required) {
+		return fmt.Errorf("mcp-sync refused: cli-printing-press %s does not match the target CLI's generating minor version %s; reprint required before regenerating the MCP surface", strings.TrimPrefix(current, "v"), strings.TrimPrefix(semver.MajorMinor(required), "v"))
+	}
+	return nil
+}
+
 func ensureVersionNotOlderThanCLIManifest(cliDir, commandName, currentVersion string) error {
 	manifest, err := pipeline.ReadCLIManifest(cliDir)
 	if err != nil {
