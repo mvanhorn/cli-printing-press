@@ -1,6 +1,6 @@
 module github.com/mvanhorn/cli-printing-press/v4
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/chromedp/chromedp v0.15.1
