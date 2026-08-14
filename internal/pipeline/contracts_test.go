@@ -326,8 +326,8 @@ func TestSetupContractsStayQuietInHealthyEnvironment(t *testing.T) {
 
 			output, err := runSkillSetupContract(t, skill, setupContractOptions{
 				includeGo:       true,
-				goInstalled:     "1.26.5",
-				goBinary:        "1.26.5",
+				goInstalled:     "1.26.6",
+				goBinary:        "1.26.6",
 				diskAvailableKB: "4194304",
 			})
 
@@ -349,14 +349,14 @@ func TestSetupContractsWarnOnOldGoToolchain(t *testing.T) {
 			output, err := runSkillSetupContract(t, skill, setupContractOptions{
 				includeGo:       true,
 				goInstalled:     "1.25.0",
-				goBinary:        "1.26.5",
+				goBinary:        "1.26.6",
 				diskAvailableKB: "4194304",
 			})
 
 			require.NoError(t, err, output)
 			assert.Contains(t, output, "[go-toolchain-old]")
 			assert.Contains(t, output, "PRESS_GO_INSTALLED=1.25.0")
-			assert.Contains(t, output, "PRESS_GO_REQUIRED=1.26.5")
+			assert.Contains(t, output, "PRESS_GO_REQUIRED=1.26.6")
 		})
 	}
 }
@@ -371,13 +371,13 @@ func TestSetupContractsBlockOldGoWhenToolchainLocal(t *testing.T) {
 			output, err := runSkillSetupContract(t, skill, setupContractOptions{
 				includeGo:       true,
 				goInstalled:     "1.25.0",
-				goBinary:        "1.26.5",
+				goBinary:        "1.26.6",
 				goToolchain:     "local",
 				diskAvailableKB: "4194304",
 			})
 
 			require.Error(t, err, output)
-			assert.Contains(t, output, "[setup-error] Go 1.26.5 or newer is required")
+			assert.Contains(t, output, "[setup-error] Go 1.26.6 or newer is required")
 			assert.NotContains(t, output, "[go-toolchain-old]")
 		})
 	}
@@ -392,8 +392,8 @@ func TestSetupContractsWarnOnLowDisk(t *testing.T) {
 
 			output, err := runSkillSetupContract(t, skill, setupContractOptions{
 				includeGo:       true,
-				goInstalled:     "1.26.5",
-				goBinary:        "1.26.5",
+				goInstalled:     "1.26.6",
+				goBinary:        "1.26.6",
 				diskAvailableKB: "1048576",
 			})
 
@@ -414,8 +414,8 @@ func TestSetupContractsBlockCriticallyLowDisk(t *testing.T) {
 
 			output, err := runSkillSetupContract(t, skill, setupContractOptions{
 				includeGo:       true,
-				goInstalled:     "1.26.5",
-				goBinary:        "1.26.5",
+				goInstalled:     "1.26.6",
+				goBinary:        "1.26.6",
 				diskAvailableKB: "1024",
 			})
 
@@ -944,7 +944,7 @@ func TestImportRewriteHandlesCRLFGoMod(t *testing.T) {
 	t.Parallel()
 
 	staging := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(staging, "go.mod"), []byte("module github.com/mvanhorn/printing-press-library/library/productivity/sample\r\n\r\ngo 1.26.5\r\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(staging, "go.mod"), []byte("module github.com/mvanhorn/printing-press-library/library/productivity/sample\r\n\r\ngo 1.26.6\r\n"), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(staging, "internal", "cli"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(staging, "internal", "cli", "root.go"), []byte("package cli\r\n\r\nimport \"github.com/mvanhorn/printing-press-library/library/productivity/sample/internal/client\"\r\n\r\nvar _ = client.New\r\n"), 0o644))
 
@@ -1580,7 +1580,7 @@ func runSkillSetupContract(t *testing.T, skill setupSkill, opts setupContractOpt
 	t.Helper()
 
 	if opts.goInstalled == "" {
-		opts.goInstalled = "1.26.5"
+		opts.goInstalled = "1.26.6"
 	}
 	if opts.goBinary == "" {
 		opts.goBinary = opts.goInstalled
@@ -1616,16 +1616,16 @@ echo "fake 9999999 0 ${PP_FAKE_DF_AVAIL_KB:-4194304} 0% /"
 case "$1" in
   env)
     if [ "$2" = "GOVERSION" ]; then
-      echo "go${PP_FAKE_GO_INSTALLED:-1.26.5}"
+      echo "go${PP_FAKE_GO_INSTALLED:-1.26.6}"
       exit 0
     fi
     exit 0
     ;;
   version)
     if [ "$#" -ge 2 ]; then
-      echo "$2: go${PP_FAKE_GO_BINARY:-1.26.5}"
+      echo "$2: go${PP_FAKE_GO_BINARY:-1.26.6}"
     else
-      echo "go version go${PP_FAKE_GO_INSTALLED:-1.26.5} test/amd64"
+      echo "go version go${PP_FAKE_GO_INSTALLED:-1.26.6} test/amd64"
     fi
     exit 0
     ;;
