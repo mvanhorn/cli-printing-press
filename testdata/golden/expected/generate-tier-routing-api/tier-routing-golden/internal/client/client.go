@@ -32,6 +32,7 @@ import (
 )
 
 const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
+const maxErrorBodyBytes = 4096
 
 var ErrPlaceholderCredential = errors.New("auth placeholder credential")
 
@@ -1540,18 +1541,21 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 }
 
 func truncateBody(b []byte) string {
-	const maxBytes = 4096
 	if summary, ok := collapseHTMLErrorBody(b); ok {
 		return summary
 	}
-	if len(b) <= maxBytes {
+	if len(b) <= maxErrorBodyBytes {
 		return string(b)
 	}
-	return strings.ToValidUTF8(string(b[:maxBytes]), "") + "..."
+	return strings.ToValidUTF8(string(b[:maxErrorBodyBytes]), "") + "..."
 }
 
 func collapseHTMLErrorBody(b []byte) (string, bool) {
-	body := strings.ToValidUTF8(string(b), "")
+	scanBytes := b
+	if len(scanBytes) > maxErrorBodyBytes {
+		scanBytes = scanBytes[:maxErrorBodyBytes]
+	}
+	body := strings.ToValidUTF8(string(scanBytes), "")
 	trimmed := strings.TrimSpace(body)
 	if trimmed == "" || !looksLikeHTMLBody(trimmed) {
 		return "", false
