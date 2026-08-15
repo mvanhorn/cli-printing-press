@@ -254,6 +254,13 @@ func promoteWorkingCLI(cliName, workingDir string, state *PipelineState) (*Promo
 	if err := os.MkdirAll(filepath.Dir(libraryDir), 0o755); err != nil {
 		return nil, fmt.Errorf("creating library parent directory: %w", err)
 	}
+	sameTarget, err := sameDirectory(workingDir, libraryDir)
+	if err != nil {
+		return nil, err
+	}
+	if sameTarget {
+		return promoteWorkingCLIInPlace(cliName, libraryDir, backupDir, state)
+	}
 
 	// If a previous promote died after moving the live library to backup but
 	// before swapping in staging, restore that backup before attempting a retry.
@@ -352,7 +359,49 @@ func promoteWorkingCLI(cliName, workingDir string, state *PipelineState) (*Promo
 	// Swap succeeded — remove the backup.
 	_ = os.RemoveAll(backupDir)
 
-	// Update current run pointer so working_dir reflects library path.
+	return finishPromote(cliName, libraryDir, state, preservedPatches)
+}
+
+func sameDirectory(a, b string) (bool, error) {
+	aInfo, err := os.Stat(a)
+	if err != nil {
+		return false, fmt.Errorf("checking working directory: %w", err)
+	}
+	bInfo, err := os.Stat(b)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("checking library directory before promote: %w", err)
+	}
+	return os.SameFile(aInfo, bInfo), nil
+}
+
+func promoteWorkingCLIInPlace(cliName, libraryDir, backupDir string, state *PipelineState) (*PromoteResult, error) {
+	state.PublishedDir = libraryDir
+	if err := stageRunstateManuscripts(libraryDir, state); err != nil {
+		return nil, fmt.Errorf("staging runstate manuscripts: %w", err)
+	}
+	if err := writeCLIManifestForPublish(state, libraryDir); err != nil {
+		return nil, fmt.Errorf("writing CLI manifest: %w", err)
+	}
+	if err := WriteMCPBManifest(libraryDir); err != nil {
+		return nil, fmt.Errorf("writing MCPB manifest: %w", err)
+	}
+	if _, err := syncPromoteBundle(libraryDir, cliName); err != nil {
+		return nil, fmt.Errorf("syncing MCPB bundle: %w", err)
+	}
+	if _, err := os.Stat(backupDir); err == nil {
+		if err := os.RemoveAll(backupDir); err != nil {
+			return nil, fmt.Errorf("removing stale backup directory: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("checking stale backup directory: %w", err)
+	}
+	return finishPromote(cliName, libraryDir, state, []string{})
+}
+
+func finishPromote(cliName, libraryDir string, state *PipelineState, preservedPatches []string) (*PromoteResult, error) {
 	state.WorkingDir = libraryDir
 	saveErr := state.Save()
 	releaseErr := ReleaseLock(cliName)
