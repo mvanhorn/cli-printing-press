@@ -208,7 +208,7 @@ func newGenerateCmd() *cobra.Command {
 					return err
 				}
 
-				generateResult, err := runGenerateProject(parsed, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath})
+				generateResult, err := runGenerateProject(parsed, absOut, generateProjectOptions{validate: validateBeforeForceMerge(validate, snapshotDir), polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath})
 				if err != nil {
 					return err
 				}
@@ -352,7 +352,7 @@ func newGenerateCmd() *cobra.Command {
 						fmt.Fprintf(os.Stdout, "Would generate %s at %s from BLE device spec %s\n", naming.CLI(deviceSpec.Name), absOut, specFiles[0])
 						return nil
 					}
-					generateResult, err := runGenerateDeviceProject(deviceSpec, absOut, generateProjectOptions{validate: validate, polish: polish})
+					generateResult, err := runGenerateDeviceProject(deviceSpec, absOut, generateProjectOptions{validate: validateBeforeForceMerge(validate, snapshotDir), polish: polish})
 					if err != nil {
 						return err
 					}
@@ -489,7 +489,7 @@ func newGenerateCmd() *cobra.Command {
 				return printDryRun(apiSpec, absOut, specFiles)
 			}
 
-			generateResult, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, rejectUnshippablePageContextTraffic: true})
+			generateResult, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validateBeforeForceMerge(validate, snapshotDir), polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, rejectUnshippablePageContextTraffic: true})
 			if err != nil {
 				return err
 			}
@@ -635,6 +635,10 @@ func runGeneratePolishPass(enabled bool, apiName, outputDir string) bool {
 	fmt.Fprintf(os.Stderr, "Polish: %d help texts improved, %d examples added, README %v\n",
 		polishResult.HelpTextsImproved, polishResult.ExamplesAdded, polishResult.READMERewritten)
 	return true
+}
+
+func validateBeforeForceMerge(validate bool, snapshotDir string) bool {
+	return validate && snapshotDir == ""
 }
 
 type generateProjectOptions struct {

@@ -1178,6 +1178,16 @@ func TestRetellTablesSentinel(t *testing.T) {
 	}
 }
 
+func TestValidateBeforeForceMergeDefersWhenSnapshotExists(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, validateBeforeForceMerge(false, ""))
+	assert.True(t, validateBeforeForceMerge(true, ""),
+		"first-generation output validates in the normal generation path")
+	assert.False(t, validateBeforeForceMerge(true, filepath.Join("cli.preserve-1")),
+		"force regen must merge the snapshot before validation can stop the run")
+}
+
 func TestGenerateCmdCarriesVerifiedNovelFeaturesIntoManifest(t *testing.T) {
 	t.Parallel()
 
