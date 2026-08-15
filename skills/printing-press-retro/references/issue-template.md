@@ -77,15 +77,15 @@ clobber them).
 ```bash
 REPO="mvanhorn/cli-printing-press"
 
-# Fast-path: list existing labels once. If all 11 canonical labels are already
-# present, skip the create loop entirely — saves up to 11 gh API calls per
+# Fast-path: list existing labels once. If all 10 canonical labels are already
+# present, skip the create loop entirely — saves up to 10 gh API calls per
 # retro on a repo where prior retros already provisioned the set.
 EXISTING_LABELS=$(gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name' 2>/dev/null || echo "")
 NEED_CREATE=false
 for required in \
   "comp:generator" "comp:openapi-parser" "comp:spec-parser" \
   "comp:scorer" "comp:skill" \
-  "priority:P1" "priority:P2" "priority:P3" \
+  "priority:P1" "priority:P2" \
   "bug" "enhancement" "source:retro"; do
   if ! printf '%s\n' "$EXISTING_LABELS" | grep -qFx "$required"; then
     NEED_CREATE=true
@@ -106,11 +106,10 @@ if [ "$NEED_CREATE" = true ]; then
   ensure_label "comp:scorer"         "5319e7" "verify / dogfood / scorecard"
   ensure_label "comp:skill"          "5319e7" "skills/printing-press/SKILL.md and related skill instructions"
 
-  # Priority labels (3) — drive priority-based filtering. The label is the
+  # Priority labels (2) — drive priority-based filtering. The label is the
   # primary carrier; titles do not duplicate the priority prefix.
-  ensure_label "priority:P1" "b60205" "High priority: safety, correctness, release, or broad user impact"
-  ensure_label "priority:P2" "d93f0b" "Medium priority: meaningful recurring defect or capability gap"
-  ensure_label "priority:P3" "fbca04" "Low priority: useful systemic improvement"
+  ensure_label "priority:P1" "b60205" "Broken or unsafe printed CLI"
+  ensure_label "priority:P2" "d93f0b" "Current generalizing defect; printed CLI still works"
 
   # Real issue types. These are actionable taxonomy, not routing or provenance.
   ensure_label "bug"         "d73a4a" "Something isn't working"
@@ -169,14 +168,14 @@ denied. Existing issues are not relabeled solely to rename provenance.
 
 ## Step 2: Sort work units
 
-Sort WUs by priority: P1 first, then P2, then P3. Within a priority bucket,
-keep the order they appeared in Phase 5.5 (typically by ascending WU number,
-but the skill may have intentionally ordered them by dependency — preserve
-that).
+Sort WUs by priority: P1 first, then P2. A WU with any other priority is invalid:
+return to SKILL.md Phase 4 and move it to Skip or Drop. Within a priority bucket,
+keep the order they appeared in Phase 5.5 (typically by ascending WU number, but
+the skill may have intentionally ordered them by dependency — preserve that).
 
 ```bash
 # SORTED_WORK_UNITS is populated by sorting the complete WU records from
-# $WORK_UNITS P1 → P3. Each record retains its own `Stable ID: WU-N` field;
+# $WORK_UNITS P1 → P2. Each record retains its own `Stable ID: WU-N` field;
 # never sort a work-unit array and an ID array independently.
 # Dependency edges use the stable ID extracted from each sorted record, never
 # a sorted array position.
@@ -502,7 +501,11 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
     else
       printf '%s' "$WU_BODY" > "$BODY_TMP"
     fi
-    if ! scrub_body "$BODY_TMP" "$BODY_TMP_SCRUBBED" 2>"$ISSUE_TMPDIR/scrub-$wu_idx.err"; then
+    if [[ "$WU_PRIORITY_NUM" != "1" && "$WU_PRIORITY_NUM" != "2" ]]; then
+      KIND="invalid-priority"
+      FAIL_MSG="$WU_TITLE — invalid retro priority P${WU_PRIORITY_NUM:-<empty>}; only P1/P2 may be filed. Move this WU to Skip or Drop instead."
+      URL=""
+    elif ! scrub_body "$BODY_TMP" "$BODY_TMP_SCRUBBED" 2>"$ISSUE_TMPDIR/scrub-$wu_idx.err"; then
       KIND="scrub-failed"
       SCRUB_REASON=$(tr '\n' ' ' < "$ISSUE_TMPDIR/scrub-$wu_idx.err" | head -c 400)
       FAIL_MSG="$WU_TITLE — body scrub hard-failed (vendor-prefix secret in body); not posted. Reason: $SCRUB_REASON. Body left at $BODY_TMP for hand-redaction."
@@ -607,8 +610,14 @@ fi
 EXPECTED_CREATES=0
 for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
   if [[ "${WU_DEDUP[$wu_idx]}" != comment:* ]]; then
-    KIND_TMP=$(head -1 "$ISSUE_TMPDIR/issue-$wu_idx" 2>/dev/null)
-    [[ "$KIND_TMP" == scrub-failed ]] || EXPECTED_CREATES=$((EXPECTED_CREATES + 1))
+    KIND_TMP=""
+    if [ -f "$ISSUE_TMPDIR/issue-$wu_idx" ]; then
+      {
+        IFS= read -r _
+        IFS= read -r KIND_TMP
+      } < "$ISSUE_TMPDIR/issue-$wu_idx"
+    fi
+    [[ "$KIND_TMP" == scrub-failed || "$KIND_TMP" == invalid-priority ]] || EXPECTED_CREATES=$((EXPECTED_CREATES + 1))
   fi
 done
 UNEXPECTED_CREATED_COUNT=$(printf '%s\n' "$UNEXPECTED_CREATED_LINES" | sed '/^$/d' | wc -l | tr -d ' ')
@@ -654,7 +663,7 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
     created|commented)
       echo "${KIND^}: $URL"
       ;;
-    create-failed|comment-failed|type-normalization-failed|scrub-failed)
+    create-failed|comment-failed|type-normalization-failed|invalid-priority|scrub-failed)
       echo "WARNING: $FAIL_MSG"
       FAILED_ISSUES+=("$FAIL_MSG")
       ;;
@@ -736,6 +745,7 @@ Failure modes:
 | `create-failed` | `gh issue create` returned no usable URL | `$FAILED_ISSUES` summary; manual filing instructions |
 | `comment-failed` | `gh issue comment` failed | `$FAILED_ISSUES` summary; manual comment instructions |
 | `type-normalization-failed` | Existing matched issue could not be normalized to exactly one real type label | `$FAILED_ISSUES` summary; manual label repair instructions |
+| `invalid-priority` | A work unit still carried a non-P1/P2 priority | `$FAILED_ISSUES` summary; agent must return to Phase 4 and move the WU to Skip or Drop |
 | `scrub-failed` | Body contained an unredacted vendor-prefix secret; `scrub_body` refused to write the scrubbed copy. Body file left at `$BODY_TMP` for hand-redaction | `$FAILED_ISSUES` summary; agent must hand-redact per `secret-scrubbing.md` Layer 0 and retry the WU |
 
 ## Variables expected
@@ -750,7 +760,7 @@ Failure modes:
 | `$RETRO_SCRATCH_PATH` | SKILL.md Phase 5 | Path to temp retro copy under `/tmp/printing-press/retro/` |
 | `$RETRO_PROVENANCE_LABEL` | This file Step 1 | Available write marker: canonical `source:retro`, or legacy `retro` only during cutover fallback |
 | `$WORK_UNITS` | SKILL.md Phase 5.5 | Array of WU records |
-| `$SORTED_WORK_UNITS` | This file Step 2 | Complete `$WORK_UNITS` records sorted P1 → P3; each record retains its own stable WU-N identifier |
+| `$SORTED_WORK_UNITS` | This file Step 2 | Complete `$WORK_UNITS` records sorted P1 → P2; each record retains its own stable WU-N identifier |
 | `$EXISTING_OPEN_RETROS` | This file Step 2.5 | De-duplicated JSON of open issues carrying `source:retro` or legacy `retro` |
 | `$WU_DEDUP` | This file Step 2.5 | Per-WU dedup decision: `comment:NN` or empty |
 | `$WU_RELATED` | This file Step 2.5 + Phase 3 Step D | Per-WU comma-separated related-issue numbers (annotated for the body) |
@@ -763,7 +773,7 @@ Failure modes:
 
 | Variable | Contains |
 |---|---|
-| `$OUTCOME_KIND` | Array, one per WU: `created` / `commented` / `create-failed` / `comment-failed` / `scrub-failed` |
+| `$OUTCOME_KIND` | Array, one per WU: `created` / `commented` / `create-failed` / `comment-failed` / `type-normalization-failed` / `invalid-priority` / `scrub-failed` |
 | `$OUTCOME_URL` | Array of issue/comment URLs (empty for failures) |
 | `$FAILED_ISSUES` | Array of human-readable failure descriptions; empty if every WU succeeded |
 
@@ -795,7 +805,7 @@ if [ "$GH_AVAILABLE" = false ] || [ "${#FAILED_ISSUES[@]}" -eq "${#SORTED_WORK_U
   if [ -n "$RETRO_SCRATCH_PATH" ] && [ -f "$RETRO_SCRATCH_PATH" ]; then
     echo "       $RETRO_SCRATCH_PATH"
   fi
-  echo "  3. File one issue per work unit. Apply labels: $RETRO_PROVENANCE_LABEL, bug or enhancement, priority:P<n>, comp:<slug>. Use native --add-blocked-by only for explicit prerequisites; keep related-area references in prose."
+  echo "  3. File one issue per work unit. Apply labels: $RETRO_PROVENANCE_LABEL, bug or enhancement, priority:P1 or priority:P2, comp:<slug>. Use native --add-blocked-by only for explicit prerequisites; keep related-area references in prose."
   if [ -n "$MANUSCRIPTS_URL" ]; then
     echo "  4. Manuscripts: $MANUSCRIPTS_URL"
   fi
