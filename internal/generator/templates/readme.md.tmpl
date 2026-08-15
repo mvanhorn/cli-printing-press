@@ -1,6 +1,7 @@
 # {{.ProseName}} CLI
 {{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
 {{- $deviceEnvVars := deviceCodeEnvVars .Auth}}
+{{- $authPersistenceCommand := authCredentialPersistenceCommand .Auth .Name}}
 {{- if and .Narrative .Narrative.Headline}}
 
 **{{.Narrative.Headline}}**
@@ -142,12 +143,12 @@ The bundle reuses your local OAuth2 refresh-token credentials — configure them
 export {{.Name}}="{{authEnvPlaceholder .}}"
 {{- end}}
 ```
-{{- else if and (eq .Auth.Type "bearer_token") (not $canonicalEnvVar)}}
+{{- else if and (eq .Auth.Type "bearer_token") (not $canonicalEnvVar) $authPersistenceCommand}}
 
 Store your token first if you haven't:
 
 ```bash
-{{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE
+{{$authPersistenceCommand}}
 ```
 {{- end}}
 
@@ -242,7 +243,9 @@ Get your API key from your API provider's developer portal. The key typically lo
 export {{.Name}}="<paste-your-key>"
 ```
 
-To persist credentials, use `{{$.Name}}-pp-cli auth set-token <token>`. Stored secrets live in `credentials.toml` under the data directory, not in `config.toml`.
+{{- if $authPersistenceCommand}}
+To persist credentials, use `{{$authPersistenceCommand}}`. Stored secrets live in `credentials.toml` under the data directory, not in `config.toml`.
+{{- end}}
 {{- end}}
 {{- else if eq .Auth.EffectiveOAuth2Grant "device_code"}}
 
@@ -286,11 +289,13 @@ export {{.Name}}="{{authEnvPlaceholder .}}"
 
 ### 2. Set Up Credentials
 
-Get your access token from your API provider's developer portal, then store it:
+Get your access token from your API provider's developer portal{{if $authPersistenceCommand}}, then store it{{end}}:
+{{- if $authPersistenceCommand}}
 
 ```bash
-{{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE
+{{$authPersistenceCommand}}
 ```
+{{- end}}
 {{- if .BearerRefresh.Enabled}}
 
 If commands start returning auth errors after working for a while, refresh the public client bearer token from the live web bundle:

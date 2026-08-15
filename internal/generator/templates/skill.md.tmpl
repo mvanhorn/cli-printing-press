@@ -22,6 +22,7 @@ allowed-tools: "Read Bash"
 
 # {{.ProseName}} — Printing Press CLI
 {{- $deviceEnvVars := deviceCodeEnvVars .Auth}}
+{{- $authPersistenceCommand := authCredentialPersistenceCommand .Auth .Name}}
 
 ## Prerequisites: Install the CLI
 
@@ -221,7 +222,9 @@ Run `{{$.Name}}-pp-cli auth setup` to print the URL and steps for getting a key 
 export {{.Name}}="<your-key>"
 ```
 
-To persist credentials, use `{{$.Name}}-pp-cli auth set-token <token>`. Stored secrets live in `credentials.toml` under the data dir, not in `config.toml`.
+{{- if $authPersistenceCommand}}
+To persist credentials, use `{{$authPersistenceCommand}}`. Stored secrets live in `credentials.toml` under the data dir, not in `config.toml`.
+{{- end}}
 {{- end}}
 {{- else if eq .Auth.EffectiveOAuth2Grant "device_code"}}
 
@@ -259,11 +262,13 @@ export {{.Name}}="{{authEnvPlaceholder .}}"
 Access tokens are refreshed automatically before API calls.
 {{- else if eq .Auth.Type "bearer_token"}}
 
-Run `{{.Name}}-pp-cli auth setup` for the URL and steps to obtain a token (add `--launch` to open the URL). Then store it:
+Run `{{.Name}}-pp-cli auth setup` for the URL and steps to obtain a token (add `--launch` to open the URL){{if $authPersistenceCommand}}. Then store it{{end}}:
+{{- if $authPersistenceCommand}}
 
 ```bash
-{{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE
+{{$authPersistenceCommand}}
 ```
+{{- end}}
 {{- if .BearerRefresh.Enabled}}
 
 If authenticated commands start returning token errors after previously working, refresh the public client bearer token:

@@ -512,6 +512,8 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
+{{- if $authSetTokenAvailable}}
+
 func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "set-token <token>",
@@ -563,6 +565,8 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 }
+
+{{- end}}
 
 {{- if $authSetCredentialsAvailable}}
 
