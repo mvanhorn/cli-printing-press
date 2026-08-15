@@ -555,7 +555,7 @@ This CLI is designed for AI agent consumption:
 {{- if or .HasCreateCommands .HasDelete}}
 - **Explicit retries** - {{if .HasCreateCommands}}add `--idempotent` to create retries{{if .HasDelete}} and {{end}}{{end}}{{if .HasDelete}}add `--ignore-missing` to delete retries{{end}} when a no-op success is acceptable
 {{- end}}
-- **Confirmable** - `--yes` for explicit confirmation of destructive actions
+- **Explicit confirmation** - `--agent` does not imply `--yes`; pass `--yes` separately only after the target, arguments, and side effects are clear
 - **Piped input** - write commands can accept structured input when their help lists `--stdin`
 {{- else}}
 - **Read-only by default** - this CLI does not create, update, delete, publish, send, or mutate remote resources
