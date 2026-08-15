@@ -48,6 +48,7 @@ const reasonDestructiveAtAuth = "destructive-at-auth"
 const reasonMutatingDryRunOnly = "mutating command dry-run only"
 const reasonMutatingErrorPath = "mutating command; error_path would call live API without --dry-run"
 const reasonMutatingRunnableFixture = "blocked-fixture: mutating command requires runnable example"
+const reasonUnclassifiedNoMethod = "unclassified: no pp:method"
 const reasonNoLiveSignal = "no live happy/json pass; credential-unavailable skips cannot certify acceptance"
 const reasonUnverifiedNeedsAccess = "unverified-needs-access"
 
@@ -596,19 +597,37 @@ func liveDogfoodCommandMutates(command liveDogfoodCommand) bool {
 }
 
 func commandMutates(annotations map[string]string, commandPath []string) bool {
+	return commandMutation(annotations, commandPath).mutating
+}
+
+type commandMutationClassification struct {
+	mutating     bool
+	unclassified bool
+}
+
+func liveDogfoodCommandMutation(command liveDogfoodCommand) commandMutationClassification {
+	return commandMutation(command.Annotations, command.Path)
+}
+
+func commandMutation(annotations map[string]string, commandPath []string) commandMutationClassification {
 	if annotationIsTrueValue(annotations[mcpReadOnlyAnnotation]) {
-		return false
+		return commandMutationClassification{}
 	}
 	if annotationIsTrueValue(annotations[mcpLocalWriteAnnotation]) {
-		return true
+		return commandMutationClassification{mutating: true}
 	}
 	if method := strings.ToUpper(strings.TrimSpace(annotations[endpointMethodAnnotation])); method != "" {
-		return method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE"
+		return commandMutationClassification{
+			mutating: method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE",
+		}
 	}
 	if len(commandPath) == 0 {
-		return false
+		return commandMutationClassification{}
 	}
-	return isMutatingLeaf(commandPath[len(commandPath)-1])
+	if isMutatingLeaf(commandPath[len(commandPath)-1]) {
+		return commandMutationClassification{mutating: true}
+	}
+	return commandMutationClassification{mutating: true, unclassified: true}
 }
 
 func commandNameTokens(name string) []string {
@@ -1513,8 +1532,17 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	// same contract `verify` honors. Commands with no declaration keep the
 	// default {0}, so their happy/json verdicts are unchanged.
 	successCodes := liveDogfoodSuccessExitCodes(command)
-	mutating := liveDogfoodCommandMutates(command)
+	mutation := liveDogfoodCommandMutation(command)
+	mutating := mutation.mutating
 	useDryRun := mutating && commandSupportsDryRun(command.Help)
+	if mutation.unclassified && !useDryRun {
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonUnclassifiedNoMethod),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonUnclassifiedNoMethod),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonUnclassifiedNoMethod),
+		)
+		return results
+	}
 
 	if annotationIsTrueValue(command.Annotations[interactiveAnnotation]) {
 		results = append(results,

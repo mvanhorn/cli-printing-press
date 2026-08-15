@@ -1866,6 +1866,22 @@ func TestLiveDogfoodCommandMutatesPrefersEndpointMethod(t *testing.T) {
 		Path:        []string{"accounts", "plain-name"},
 		Annotations: map[string]string{"pp:method": "POST"},
 	}))
+	assert.True(t, liveDogfoodCommandMutates(liveDogfoodCommand{
+		Path: []string{"courses", "publish"},
+	}))
+	assert.True(t, liveDogfoodCommandMutates(liveDogfoodCommand{
+		Path: []string{"courses", "publish"},
+		Annotations: map[string]string{
+			"mcp:read-only": "false",
+		},
+	}))
+	assert.False(t, liveDogfoodCommandMutation(liveDogfoodCommand{
+		Path:        []string{"courses", "publish"},
+		Annotations: map[string]string{"pp:method": "GET"},
+	}).unclassified)
+	assert.True(t, liveDogfoodCommandMutation(liveDogfoodCommand{
+		Path: []string{"courses", "publish"},
+	}).unclassified)
 }
 
 func TestLiveDogfoodCommandMutatesHonorsLocalWrite(t *testing.T) {
@@ -6122,13 +6138,20 @@ func TestRunLiveDogfoodSearchErrorPathMutationFallthrough(t *testing.T) {
 //     --dry-run, exits 1 (modeling the live-API placeholder-body rejection
 //     class). When PRINTING_PRESS_TEST_DRY_RUN_BROKEN=1, exits 1 even with
 //     --dry-run, modeling a broken dry-run preview (R3).
-//   - widgets destroy — mutator (leaf in mutatingVerbs) that does NOT
+//   - widgets destroy - mutator (leaf in mutatingVerbs) that does NOT
 //     advertise --dry-run (hand-written novel command shape). The matrix
 //     should fail the gate's second leg and keep today behavior: no
 //     --dry-run injection and no error_path_real entry.
-//   - widgets get — non-mutator (read). Advertises --dry-run via the
-//     persistent root flag, but the matrix must not inject because the leaf
-//     is not in mutatingVerbs.
+//   - widgets get - annotated GET read. Advertises --dry-run via the
+//     persistent root flag, but the matrix must not inject because the
+//     endpoint method marks it as read-only.
+//   - widgets lookup - annotated read-only command. Advertises --dry-run via
+//     the persistent root flag, but the matrix must not inject because the
+//     MCP annotation marks it as read-only.
+//   - widgets publish - unclassified no-method command that advertises
+//     --dry-run. The matrix must inject --dry-run instead of executing live.
+//   - widgets activate - unclassified no-method command without --dry-run.
+//     The matrix must skip it before invoking the binary.
 func writeLiveDogfoodDryRunFixture(t *testing.T) (dir string, binaryName string) {
 	t.Helper()
 
@@ -6153,7 +6176,10 @@ if [ "$1" = "agent-context" ]; then
     {"name":"widgets","subcommands":[
       {"name":"create"},
       {"name":"destroy"},
-      {"name":"get"},
+      {"name":"get","annotations":{"pp:method":"GET"}},
+      {"name":"lookup","annotations":{"mcp:read-only":"true"}},
+      {"name":"publish"},
+      {"name":"activate"},
       {"name":"update"}
     ]}
   ]
@@ -6267,6 +6293,86 @@ if [ "$1" = "widgets" ] && [ "$2" = "get" ]; then
   fi
   echo '{"id":"42"}'
   exit 0
+fi
+
+# ---------- widgets lookup: read-only annotated command with --dry-run advertised globally ----------
+if [ "$1" = "widgets" ] && [ "$2" = "lookup" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Look up widgets.
+
+Usage:
+  fixture-pp-cli widgets lookup [flags]
+
+Examples:
+  fixture-pp-cli widgets lookup
+
+Flags:
+      --json   Output JSON
+
+Global Flags:
+      --dry-run   Show request without sending
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "lookup" ]; then
+  if [ "$has_dry_run" = "1" ]; then
+    echo 'unexpected --dry-run on read-only command' >&2
+    exit 99
+  fi
+  echo '{"id":"42"}'
+  exit 0
+fi
+
+# ---------- widgets publish: unclassified command with --dry-run advertised ----------
+if [ "$1" = "widgets" ] && [ "$2" = "publish" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Publish widgets.
+
+Usage:
+  fixture-pp-cli widgets publish [flags]
+
+Examples:
+  fixture-pp-cli widgets publish
+
+Flags:
+      --json   Output JSON
+
+Global Flags:
+      --dry-run   Show request without sending
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "publish" ]; then
+  if [ "$has_dry_run" = "1" ]; then
+    echo '{"action":"publish","resource":"widgets","status":0,"success":false,"dry_run":true}'
+    exit 0
+  fi
+  echo 'unexpected live publish invocation' >&2
+  exit 99
+fi
+
+# ---------- widgets activate: unclassified command without --dry-run advertised ----------
+if [ "$1" = "widgets" ] && [ "$2" = "activate" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Activate widgets.
+
+Usage:
+  fixture-pp-cli widgets activate [flags]
+
+Examples:
+  fixture-pp-cli widgets activate
+
+Flags:
+      --json   Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "activate" ]; then
+  echo 'unexpected live activate invocation' >&2
+  exit 99
 fi
 
 # ---------- widgets update <id>: mutator with positional + no list companion ----------
@@ -6388,14 +6494,62 @@ func TestRunLiveDogfoodSkipsDryRunInjectionForReadCommand(t *testing.T) {
 	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
 	report := runDryRunFixtureMatrix(t, dir, binaryName)
 
-	// widgets get is a read command. Even though --dry-run is advertised
-	// (as a global flag), the leaf is not in mutatingVerbs, so injection
-	// must not happen. Fixture surfaces a regression as exit 99.
+	// widgets get is a GET endpoint. Even though --dry-run is advertised
+	// (as a global flag), the endpoint method marks it as read-only, so
+	// injection must not happen. Fixture surfaces a regression as exit 99.
 	got := findResultByCommandKind(report, "widgets get", LiveDogfoodTestHappy)
 	require.NotNil(t, got)
 	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
 	assert.NotContains(t, got.Args, "--dry-run",
-		"expected matrix to skip --dry-run injection on non-mutator read commands")
+		"expected matrix to skip --dry-run injection on GET endpoint commands")
+}
+
+func TestRunLiveDogfoodSkipsDryRunInjectionForReadOnlyAnnotatedCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "widgets lookup", LiveDogfoodTestHappy)
+	require.NotNil(t, got)
+	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
+	assert.NotContains(t, got.Args, "--dry-run",
+		"expected matrix to skip --dry-run injection on read-only annotated commands")
+}
+
+func TestRunLiveDogfoodInjectsDryRunForUnclassifiedCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "widgets publish", LiveDogfoodTestHappy)
+	require.NotNil(t, got, "expected widgets publish happy_path result in matrix")
+	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
+	assert.Contains(t, got.Args, "--dry-run",
+		"expected matrix to inject --dry-run into unclassified commands that advertise it")
+}
+
+func TestRunLiveDogfoodSkipsUnclassifiedCommandWithoutDryRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	argvLogPath := filepath.Join(t.TempDir(), "argv.log")
+	t.Setenv("PRINTING_PRESS_TEST_ARGV_LOG", argvLogPath)
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "widgets activate", LiveDogfoodTestHappy)
+	require.NotNil(t, got, "expected widgets activate happy_path result in matrix")
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status, got.Reason)
+	assert.Equal(t, reasonUnclassifiedNoMethod, got.Reason)
+	assert.Empty(t, got.Args, "skipped unclassified command must not include executable mutation args")
+
+	lines := readArgvLog(t, argvLogPath)
+	assert.Equal(t, 0, countArgvLines(lines, "widgets activate")-countArgvLines(lines, "widgets activate --help"),
+		"unclassified command without --dry-run must not invoke the binary")
 }
 
 func TestRunLiveDogfoodSkipsErrorPathRealForMutatorWithDryRun(t *testing.T) {
