@@ -551,27 +551,6 @@ func novelFeatureReadOnly(feature NovelFeature) bool {
 			return true
 		}
 	}
-	for _, word := range []string{
-		"cost", "costs",
-		"fetch", "fetches", "fetching",
-		"get", "gets",
-		"grep",
-		"history",
-		"inspect", "inspects", "inspecting",
-		"list", "lists", "listing",
-		"query", "queries", "querying",
-		"read", "reads", "reading",
-		"retrieve", "retrieves", "retrieving",
-		"result", "results",
-		"search", "searches", "searching",
-		"show", "shows", "showing",
-		"status", "stats",
-		"view", "views", "viewing",
-	} {
-		if slices.Contains(words, word) {
-			return true
-		}
-	}
 	return false
 }
 

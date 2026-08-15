@@ -239,7 +239,7 @@ func TestGeneratorClassifiesNovelFeatureReadOnlyFromFeatureIntentOnly(t *testing
 		{
 			Name:        "Transcript grep",
 			Command:     "transcripts grep",
-			Description: "Search cached transcripts with FTS.",
+			Description: "Search transcripts in the local cache with FTS.",
 			Rationale:   "Agents need local transcript lookup.",
 			Example:     "intent-novel-pp-cli transcripts grep renewal",
 		},
@@ -271,6 +271,13 @@ func TestGeneratorClassifiesNovelFeatureReadOnlyFromFeatureIntentOnly(t *testing
 			Rationale:   "Agents need to reproduce an earlier action.",
 			Example:     "intent-novel-pp-cli replay history call-123",
 		},
+		{
+			Name:        "Promote status",
+			Command:     "promote status",
+			Description: "Promote status after review.",
+			Rationale:   "Agents need to advance the remote workflow.",
+			Example:     "intent-novel-pp-cli promote status approved",
+		},
 	}
 	require.NoError(t, gen.Generate())
 
@@ -288,6 +295,8 @@ func TestGeneratorClassifiesNovelFeatureReadOnlyFromFeatureIntentOnly(t *testing
 	assert.Contains(t, runQuery, `Annotations: map[string]string{"mcp:read-only": "false"}`)
 	replayHistory := readGeneratedFile(t, outputDir, "internal", "cli", "replay_history.go")
 	assert.Contains(t, replayHistory, `Annotations: map[string]string{"mcp:read-only": "false"}`)
+	promoteStatus := readGeneratedFile(t, outputDir, "internal", "cli", "promote_status.go")
+	assert.Contains(t, promoteStatus, `Annotations: map[string]string{"mcp:read-only": "false"}`)
 
 	requireGeneratedCompiles(t, outputDir)
 }
