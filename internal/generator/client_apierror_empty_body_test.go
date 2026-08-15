@@ -148,6 +148,21 @@ func TestAPIErrorHTMLTitleSkipsRepeatedBlocks(t *testing.T) {
 		t.Fatalf("repeated script block summary = %q, want real title", collapsed)
 	}
 }
+
+func TestAPIErrorHTMLTitleScanIsCapped(t *testing.T) {
+	var body strings.Builder
+	body.WriteString(` + "`" + `<!doctype html><html><head>` + "`" + `)
+	body.WriteString(strings.Repeat("x", 5000))
+	body.WriteString(` + "`" + `<title>Late Title</title></head></html>` + "`" + `)
+
+	collapsed := truncateBody([]byte(body.String()))
+	if strings.Contains(collapsed, "Late Title") {
+		t.Fatalf("title beyond capped scan window leaked into summary: %q", collapsed)
+	}
+	if !strings.Contains(collapsed, "HTML error page") {
+		t.Fatalf("capped scan summary = %q, want HTML summary", collapsed)
+	}
+}
 `
 	require.NoError(t, os.WriteFile(
 		filepath.Join(outputDir, "internal", "client", "apierror_empty_body_test.go"),
