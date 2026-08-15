@@ -369,6 +369,29 @@ func TestSyncResourceDeclaredFailureIsIntegrityFailure(t *testing.T) {
 	}
 }
 
+func TestSyncResourceDeclaredFailureWithItemsIsIntegrityFailure(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	var events bytes.Buffer
+	res := syncResource(context.Background(), fixedBodyClient{body: json.RawMessage(` + "`" + `{"success":false,"data":[{"id":"bad"}],"next_cursor":"still-more"}` + "`" + `)}, db, "things", "", false, 1, false, false, nil, &events)
+	if res.Err == nil {
+		t.Fatalf("syncResource returned clean success for declared-failure body with items; events: %s", events.String())
+	}
+	if !res.IntegrityFailure {
+		t.Fatalf("IntegrityFailure = false, want true")
+	}
+	if res.Count != 0 {
+		t.Fatalf("Count = %d, want 0", res.Count)
+	}
+	if !strings.Contains(events.String(), "response declared failure") {
+		t.Fatalf("events did not contain declared-failure sync error: %s", events.String())
+	}
+}
+
 func TestSyncDependentResourceNonJSONBodyEmitsAnomaly(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
@@ -395,9 +418,42 @@ func TestSyncDependentResourceNonJSONBodyEmitsAnomaly(t *testing.T) {
 		t.Fatalf("events did not contain dependent non_json_200_body anomaly: %s", events.String())
 	}
 }
+
+func TestSyncDependentResourceDeclaredFailureWithItemsIsIntegrityFailure(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Upsert("parents", "p1", []byte(` + "`" + `{"id":"p1"}` + "`" + `)); err != nil {
+		t.Fatalf("insert parent: %v", err)
+	}
+
+	var events bytes.Buffer
+	res := syncDependentResource(
+		context.Background(),
+		fixedBodyClient{body: json.RawMessage(` + "`" + `{"success":false,"data":[{"id":"c1"}],"next_cursor":"still-more"}` + "`" + `)},
+		db,
+		dependentResourceDef{Name: "children", ParentTable: "parents", ParentIDParam: "parentId", PathTemplate: "/parents/{parentId}/children"},
+		"", false, 1, false, false, nil, &events, 1,
+	)
+	if res.Err == nil {
+		t.Fatalf("syncDependentResource returned clean success for declared-failure body with items; events: %s", events.String())
+	}
+	if !res.IntegrityFailure {
+		t.Fatalf("IntegrityFailure = false, want true")
+	}
+	if res.Count != 0 {
+		t.Fatalf("Count = %d, want 0", res.Count)
+	}
+	if !strings.Contains(events.String(), "response declared failure") {
+		t.Fatalf("events did not contain dependent declared-failure sync error: %s", events.String())
+	}
+}
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "batch4_sync_test.go"), []byte(cliTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "TestCurrencyCodeSuffixExtractsResourceID", "-count=1")
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(SyncExtractIDSuffixFallbackIsGuarded|ExtractPageItemsDRFTopLevelNextURL|ExtractPageItemsDRFTopLevelRelativeNextURL|ExtractPageItemsBareTokenCursorUnaffected|SyncResourceNonJSONBodyEmitsAnomaly|SyncResourceValidEmptyJSONDoesNotEmitNonJSONAnomaly|SyncResourceZeroStoredIsIntegrityFailure|SyncResourceDeclaredFailureIsIntegrityFailure|SyncDependentResourceNonJSONBodyEmitsAnomaly)", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(SyncExtractIDSuffixFallbackIsGuarded|ExtractPageItemsDRFTopLevelNextURL|ExtractPageItemsDRFTopLevelRelativeNextURL|ExtractPageItemsBareTokenCursorUnaffected|SyncResourceNonJSONBodyEmitsAnomaly|SyncResourceValidEmptyJSONDoesNotEmitNonJSONAnomaly|SyncResourceZeroStoredIsIntegrityFailure|SyncResourceDeclaredFailure|SyncDependentResourceNonJSONBodyEmitsAnomaly|SyncDependentResourceDeclaredFailure)", "-count=1")
 }
