@@ -1417,13 +1417,9 @@ func deriveScopeColumns(obj map[string]any) {
 	}
 }
 
-// UpsertBatch inserts or replaces multiple records in a single transaction
-// and returns (stored, extractFailures, err). stored counts rows landed in
-// the generic resources table; extractFailures counts items that survived
-// JSON unmarshal but had no extractable primary key (templated IDField AND
-// generic fallback both missed). callers (sync.go.tmpl) compare these
-// against len(items) to emit the per-item primary_key_unresolved warning
-// and the F4b stored_count_zero_after_extraction probe.
+// UpsertBatch inserts or replaces multiple records in a single transaction.
+// The detailed variant also reports typed-table projection failures so sync can
+// treat a generic-only write as an incomplete local mirror.
 //
 // For resource types that have a domain-specific typed table, the per-item
 // generic insert is followed by a dispatch to the matching upsert<Pascal>Tx
@@ -1436,18 +1432,22 @@ func deriveScopeColumns(obj map[string]any) {
 // didn't populate the parent path placeholder) rolls back only that typed
 // upsert. The generic resources row inserted just above it survives the
 // rollback, so successful API fetches never strand in memory because one
-// downstream typed table is misconfigured. Failures are surfaced via a
-// trailing stderr warning rather than aborting the batch.
+// downstream typed table is misconfigured.
 func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, int, error) {
+	stored, extractFailures, _, err := s.UpsertBatchDetailed(resourceType, items)
+	return stored, extractFailures, err
+}
+
+func (s *Store) UpsertBatchDetailed(resourceType string, items []json.RawMessage) (int, int, int, error) {
 	s.lockForWrite()
 	defer s.unlockAfterWrite()
 	tx, err := s.db.Begin()
 	if err != nil {
-		return 0, 0, fmt.Errorf("starting batch transaction: %w", err)
+		return 0, 0, 0, fmt.Errorf("starting batch transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	var stored, skippedCount, extractFailures int
+	var stored, skippedCount, extractFailures, typedFailures int
 	for _, item := range items {
 		obj, err := DecodeJSONObject(item)
 		if err != nil {
@@ -1477,7 +1477,7 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 			// Return the running stored count rather than zero so callers
 			// inspecting partial progress on failure see what already
 			// landed in earlier loop iterations.
-			return stored, extractFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, storageID, err)
+			return stored, extractFailures, typedFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, storageID, err)
 		}
 		stored++
 	}
@@ -1492,9 +1492,9 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, extractFailures, err
+		return 0, extractFailures, typedFailures, err
 	}
-	return stored, extractFailures, nil
+	return stored, extractFailures, typedFailures, nil
 }
 
 func unwrapIDBearingEnvelopeItem(resourceType string, item json.RawMessage, obj map[string]any) (map[string]any, json.RawMessage, bool) {

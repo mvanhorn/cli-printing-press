@@ -293,7 +293,7 @@ func TestSyncResourceWarnsOnPartialHydrationFailure(t *testing.T) {
 	}
 }
 
-func TestSyncResourceUsesFetchedPageForHydrationCapWarning(t *testing.T) {
+func TestSyncResourceAllHydrationFailedIsIntegrityFailure(t *testing.T) {
 	db := openHydrationTestStore(t)
 	client := &fakeHydrateClient{
 		responses: map[string]json.RawMessage{
@@ -307,14 +307,14 @@ func TestSyncResourceUsesFetchedPageForHydrationCapWarning(t *testing.T) {
 	var events bytes.Buffer
 
 	res := syncResource(context.Background(), client, db, "stories", "", true, 1, false, false, nil, &events)
-	if res.Err != nil {
-		t.Fatalf("syncResource error: %v", res.Err)
+	if res.Err == nil {
+		t.Fatalf("syncResource returned clean success for all-failed hydration; events: %s", events.String())
 	}
-	if res.Warn == nil || !strings.Contains(res.Warn.Error(), "scalar item hydration failed") {
-		t.Fatalf("syncResource warning = %v, want hydration failure", res.Warn)
+	if !res.IntegrityFailure {
+		t.Fatalf("IntegrityFailure = false, want true")
 	}
 	got := events.String()
-	for _, want := range []string{`+"`"+`"reason":"all_items_failed_hydration"`+"`"+`, `+"`"+`"reason":"max_pages_cap_hit"`+"`"+`} {
+	for _, want := range []string{`+"`"+`"reason":"all_items_failed_hydration"`+"`"+`, `+"`"+`"error":"stories consumed 2 item(s) but stored 0"`+"`"+`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("sync events missing %s:\n%s", want, got)
 		}
@@ -323,6 +323,135 @@ func TestSyncResourceUsesFetchedPageForHydrationCapWarning(t *testing.T) {
 `), 0o644))
 
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "Test(HydrateScalarItems|SyncResource)", "-count=1")
+}
+
+func TestGeneratedSyncHydrationPathsStayResourceSpecific(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("specific-hydration")
+	apiSpec.Resources = map[string]spec.Resource{
+		"agents": {
+			Description: "Agents",
+			Endpoints: map[string]spec.Endpoint{
+				"get": {
+					Method:      "GET",
+					Path:        "/get-agent/{agent_id}",
+					Description: "Get agent",
+					Response:    spec.ResponseDef{Type: "object", Item: "Agent"},
+					IDField:     "agent_id",
+				},
+			},
+		},
+		"batch-tests": {
+			Description: "Batch tests",
+			Endpoints: map[string]spec.Endpoint{
+				"get": {
+					Method:      "GET",
+					Path:        "/get-batch-test/{test_case_batch_job_id}",
+					Description: "Get batch test",
+					Response:    spec.ResponseDef{Type: "object", Item: "BatchTest"},
+					IDField:     "test_case_batch_job_id",
+				},
+			},
+		},
+		"conversation-flow-components": {
+			Description: "Conversation flow components",
+			Endpoints: map[string]spec.Endpoint{
+				"get": {
+					Method:      "GET",
+					Path:        "/get-conversation-flow-component/{conversation_flow_component_id}",
+					Description: "Get conversation flow component",
+					Response:    spec.ResponseDef{Type: "object", Item: "ConversationFlowComponent"},
+					IDField:     "conversation_flow_component_id",
+				},
+			},
+		},
+		"list-batch-tests": {
+			Description: "Batch test IDs",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/list-batch-tests",
+					Description: "List batch test IDs",
+					Response:    spec.ResponseDef{Type: "array", Item: "string"},
+				},
+			},
+		},
+		"list-conversation-flow-components": {
+			Description: "Conversation flow component IDs",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/list-conversation-flow-components",
+					Description: "List conversation flow component IDs",
+					Response:    spec.ResponseDef{Type: "array", Item: "string"},
+				},
+			},
+		},
+		"list-export-requests": {
+			Description: "Export request IDs",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/list-export-requests",
+					Description: "List export request IDs",
+					Response:    spec.ResponseDef{Type: "array", Item: "string"},
+				},
+			},
+		},
+		"retell-llms": {
+			Description: "Retell LLMs",
+			Endpoints: map[string]spec.Endpoint{
+				"get": {
+					Method:      "GET",
+					Path:        "/get-retell-llm/{llm_id}",
+					Description: "Get Retell LLM",
+					Response:    spec.ResponseDef{Type: "object", Item: "RetellLLM"},
+					IDField:     "llm_id",
+				},
+				"list": {
+					Method:      "GET",
+					Path:        "/list-retell-llms",
+					Description: "List Retell LLM IDs",
+					Response:    spec.ResponseDef{Type: "array", Item: "string"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
+	hydrationMap := generatedHydrationMapSection(syncSrc)
+	for _, want := range []string{
+		`"list-batch-tests":`,
+		`path: "/get-batch-test/{test_case_batch_job_id}", idParam: "test_case_batch_job_id"`,
+		`"list-conversation-flow-components":`,
+		`path: "/get-conversation-flow-component/{conversation_flow_component_id}", idParam: "conversation_flow_component_id"`,
+		`"retell-llms":`,
+		`path: "/get-retell-llm/{llm_id}", idParam: "llm_id"`,
+	} {
+		require.Contains(t, hydrationMap, want, hydrationMap)
+	}
+	require.NotContains(t, hydrationMap, `"list-export-requests": {path:`, hydrationMap)
+	require.NotContains(t, hydrationMap, `"list-batch-tests":                  {path: "/get-agent/{agent_id}"`)
+	require.NotContains(t, hydrationMap, `"list-conversation-flow-components": {path: "/get-agent/{agent_id}"`)
+	require.NotContains(t, hydrationMap, `"retell-llms":                       {path: "/get-agent/{agent_id}"`)
+}
+
+func generatedHydrationMapSection(syncSrc string) string {
+	start := strings.Index(syncSrc, "var itemHydrationPaths")
+	if start < 0 {
+		return syncSrc
+	}
+	end := strings.Index(syncSrc[start:], "func hydrateScalarItems")
+	if end < 0 {
+		return syncSrc[start:]
+	}
+	return syncSrc[start : start+end]
 }
 
 func TestGeneratedSearchExtractionHonorsResponsePaths(t *testing.T) {

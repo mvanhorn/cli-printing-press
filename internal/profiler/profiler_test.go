@@ -206,6 +206,61 @@ func TestProfileSiblingListEndpoints(t *testing.T) {
 	assert.Equal(t, "/portfolio/settlements", syncPaths["portfolio-settlements"])
 }
 
+func TestProfilePrefersNamedListEndpointForCanonicalSyncResource(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "canonical",
+		Resources: map[string]spec.Resource{
+			"computers": {
+				Endpoints: map[string]spec.Endpoint{
+					"picker": {
+						Method:     "GET",
+						Path:       "/Computer/ComputerGetForNewComputer",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+					"list": {
+						Method:     "GET",
+						Path:       "/Computer/ComputerGetByAllParameters",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	syncPaths := make(map[string]string)
+	for _, resource := range profile.SyncableResources {
+		syncPaths[resource.Name] = resource.Path
+	}
+
+	assert.Equal(t, "/Computer/ComputerGetByAllParameters", syncPaths["computers"])
+	assert.Equal(t, "/Computer/ComputerGetForNewComputer", syncPaths["computers-computer-get-for-new-computer"])
+}
+
+func TestProfileInstallInfoEndpointNameIsNotAList(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "installer",
+		Resources: map[string]spec.Resource{
+			"computers": {
+				Endpoints: map[string]spec.Endpoint{
+					"install-info": {
+						Method:   "GET",
+						Path:     "/Computer/install-info",
+						Response: spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	assert.Empty(t, profile.SyncableResources)
+}
+
 func TestProfileScalarIDListsUseHydrationTarget(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "hydrate",
@@ -263,6 +318,103 @@ func TestProfileScalarIDListsUseHydrationTarget(t *testing.T) {
 	require.Contains(t, byName, "updates")
 	assert.Equal(t, "/item/{id}.json", byName["updates"].HydratePath)
 	assert.Equal(t, "id", byName["updates"].HydrateIDParam)
+}
+
+func TestProfileScalarIDListsUseOwnHydrationTargets(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "hydrate-multiple",
+		Resources: map[string]spec.Resource{
+			"agents": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/get-agent/{agent_id}",
+						Response: spec.ResponseDef{Type: "object", Item: "Agent"},
+						IDField:  "agent_id",
+					},
+				},
+			},
+			"batch-tests": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/get-batch-test/{test_case_batch_job_id}",
+						Response: spec.ResponseDef{Type: "object", Item: "BatchTest"},
+						IDField:  "test_case_batch_job_id",
+					},
+				},
+			},
+			"conversation-flow-components": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/get-conversation-flow-component/{conversation_flow_component_id}",
+						Response: spec.ResponseDef{Type: "object", Item: "ConversationFlowComponent"},
+						IDField:  "conversation_flow_component_id",
+					},
+				},
+			},
+			"list-batch-tests": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/list-batch-tests",
+						Response: spec.ResponseDef{Type: "array", Item: "string"},
+					},
+				},
+			},
+			"list-conversation-flow-components": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/list-conversation-flow-components",
+						Response: spec.ResponseDef{Type: "array", Item: "string"},
+					},
+				},
+			},
+			"list-export-requests": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/list-export-requests",
+						Response: spec.ResponseDef{Type: "array", Item: "string"},
+					},
+				},
+			},
+			"retell-llms": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/get-retell-llm/{llm_id}",
+						Response: spec.ResponseDef{Type: "object", Item: "RetellLLM"},
+						IDField:  "llm_id",
+					},
+					"list": {
+						Method:   "GET",
+						Path:     "/list-retell-llms",
+						Response: spec.ResponseDef{Type: "array", Item: "string"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "list-batch-tests")
+	assert.Equal(t, "/get-batch-test/{test_case_batch_job_id}", byName["list-batch-tests"].HydratePath)
+	assert.Equal(t, "test_case_batch_job_id", byName["list-batch-tests"].HydrateIDParam)
+	require.Contains(t, byName, "list-conversation-flow-components")
+	assert.Equal(t, "/get-conversation-flow-component/{conversation_flow_component_id}", byName["list-conversation-flow-components"].HydratePath)
+	assert.Equal(t, "conversation_flow_component_id", byName["list-conversation-flow-components"].HydrateIDParam)
+	require.Contains(t, byName, "retell-llms")
+	assert.Equal(t, "/get-retell-llm/{llm_id}", byName["retell-llms"].HydratePath)
+	assert.Equal(t, "llm_id", byName["retell-llms"].HydrateIDParam)
+	assert.NotContains(t, byName, "list-export-requests")
 }
 
 func TestProfileScalarIDListsWithoutHydrationTargetStayUnsyncable(t *testing.T) {
@@ -2850,30 +3002,28 @@ func TestProfileDependentResourceSinceParamPropagation(t *testing.T) {
 	assert.Equal(t, "modified_since", profile.DependentSyncResources[0].SinceParam)
 }
 
-// TestProfileSyncableResourceShorterPathWinsMetadata asserts that when two
-// candidate endpoints can populate the same syncable resource, the shorter-path
-// rule that already governs the Path field also picks the IDField/Critical
-// values — i.e., the metadata always reflects the endpoint sync will actually
-// call.
-func TestProfileSyncableResourceShorterPathWinsMetadata(t *testing.T) {
+// TestProfileSyncableResourceNamedListWinsMetadata asserts that when two
+// candidate endpoints can populate the same syncable resource, metadata follows
+// the endpoint explicitly named list rather than a shorter sibling path.
+func TestProfileSyncableResourceNamedListWinsMetadata(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "things",
 		Resources: map[string]spec.Resource{
 			"things": {
 				Endpoints: map[string]spec.Endpoint{
-					"longList": {
+					"list": {
 						Method:   "GET",
 						Path:     "/v1/things/all",
 						Response: spec.ResponseDef{Type: "array"},
-						IDField:  "loser",
-						Critical: false,
+						IDField:  "winner",
+						Critical: true,
 					},
-					"shortList": {
+					"shortPicker": {
 						Method:   "GET",
 						Path:     "/v1/things",
 						Response: spec.ResponseDef{Type: "array"},
-						IDField:  "winner",
-						Critical: true,
+						IDField:  "loser",
+						Critical: false,
 					},
 				},
 			},
@@ -2882,7 +3032,7 @@ func TestProfileSyncableResourceShorterPathWinsMetadata(t *testing.T) {
 
 	profile := Profile(s)
 	require.Len(t, profile.SyncableResources, 1)
-	assert.Equal(t, "/v1/things", profile.SyncableResources[0].Path)
+	assert.Equal(t, "/v1/things/all", profile.SyncableResources[0].Path)
 	assert.Equal(t, "winner", profile.SyncableResources[0].IDField)
 	assert.True(t, profile.SyncableResources[0].Critical)
 }

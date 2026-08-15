@@ -118,12 +118,15 @@ func TestUpsertBatch_NoFabricatedScopeWhenSourceAbsent(t *testing.T) {
 	items := []json.RawMessage{
 		json.RawMessage(` + "`" + `{"id":"orphan-001","name":"No Parent"}` + "`" + `),
 	}
-	stored, _, err := s.UpsertBatch("modules", items)
+	stored, _, typedFailures, err := s.UpsertBatchDetailed("modules", items)
 	if err != nil {
-		t.Fatalf("UpsertBatch must not error on typed-table NOT NULL failure: %v", err)
+		t.Fatalf("UpsertBatchDetailed must not error on typed-table NOT NULL failure: %v", err)
 	}
 	if stored != 1 {
 		t.Fatalf("stored = %d, want 1 (generic row must land)", stored)
+	}
+	if typedFailures != 1 {
+		t.Fatalf("typedFailures = %d, want 1", typedFailures)
 	}
 	var typed int
 	s.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM "modules" WHERE id = 'orphan-001'` + "`" + `).Scan(&typed)
@@ -135,8 +138,43 @@ func TestUpsertBatch_NoFabricatedScopeWhenSourceAbsent(t *testing.T) {
 	testPath := filepath.Join(outputDir, "internal", "store", "derive_scope_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(testSrc), 0o644))
 
+	cliTestSrc := `package cli
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"testing"
+
+	"derive-scope-pp-cli/internal/store"
+)
+
+func TestUpsertResourceBatchReportsTypedProjectionFailure(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	items := []json.RawMessage{
+		json.RawMessage(` + "`" + `{"id":"orphan-001","name":"No Parent"}` + "`" + `),
+	}
+	stored, extractFailures, typedFailures, err := upsertResourceBatch(s, "modules", items)
+	if err != nil {
+		t.Fatalf("upsertResourceBatch: %v", err)
+	}
+	if stored != 1 || extractFailures != 0 || typedFailures != 1 {
+		t.Fatalf("stored/extractFailures/typedFailures = %d/%d/%d, want 1/0/1", stored, extractFailures, typedFailures)
+	}
+}
+`
+	cliTestPath := filepath.Join(outputDir, "internal", "cli", "derive_scope_sync_test.go")
+	require.NoError(t, os.WriteFile(cliTestPath, []byte(cliTestSrc), 0o644))
+
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/store",
 		"-run", "TestUpsertBatch_DerivesChildScopeFromProjectField|TestUpsertBatch_NoFabricatedScopeWhenSourceAbsent",
 		"-count=1", "-v")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli",
+		"-run", "TestUpsertResourceBatchReportsTypedProjectionFailure",
+		"-count=1")
 }

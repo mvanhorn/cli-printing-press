@@ -25,11 +25,12 @@ import (
 
 // syncResult holds the outcome of syncing a single resource.
 type syncResult struct {
-	Resource string
-	Count    int
-	Err      error
-	Warn     error
-	Duration time.Duration
+	Resource         string
+	Count            int
+	Err              error
+	Warn             error
+	IntegrityFailure bool
+	Duration         time.Duration
 }
 
 func newSyncCmd(flags *rootFlags) *cobra.Command {
@@ -698,5 +699,5 @@ func parseSinceDuration(s string) (time.Time, error) {
 // isSyncStatePersistenceError reports failures to persist sync checkpoints.
 // Shared with workflow archive and the primary sync command's exit policy.
 func isSyncStatePersistenceError(err error) bool {
-	return err != nil && strings.HasPrefix(err.Error(), "saving sync state for ")
+	return err != nil && (strings.HasPrefix(err.Error(), "saving sync state for ") || strings.HasPrefix(err.Error(), "saving sync progress for "))
 }

@@ -38,11 +38,12 @@ var unresolvedPathKeyRE = regexp.MustCompile(`\{[a-zA-Z_][a-zA-Z0-9_]*\}`)
 
 // syncResult holds the outcome of syncing a single resource.
 type syncResult struct {
-	Resource string
-	Count    int
-	Err      error
-	Warn     error
-	Duration time.Duration
+	Resource         string
+	Count            int
+	Err              error
+	Warn             error
+	IntegrityFailure bool
+	Duration         time.Duration
 }
 
 const syncWatermarkOverlap = time.Second
@@ -273,7 +274,7 @@ Resource scoping:
 					if firstPlaceholderErr == nil && errors.Is(res.Err, client.ErrPlaceholderCredential) {
 						firstPlaceholderErr = res.Err
 					}
-					if isSyncStatePersistenceError(res.Err) || criticalResources[res.Resource] {
+					if res.IntegrityFailure || isSyncStatePersistenceError(res.Err) || criticalResources[res.Resource] {
 						criticalErrCount++
 						criticalFailedResources = append(criticalFailedResources, res.Resource)
 					}
@@ -564,6 +565,13 @@ func syncResource(ctx context.Context, c interface {
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
 		items, nextCursor, hasMore := extractPageItemsWithPagination(data, pageSize.cursorParam, pageSize.nextCursorPath, responsePathForResource(resource, path)...)
+		if responseDeclaresFailure(data) {
+			err := fmt.Errorf("%s response declared failure", resource)
+			if !humanFriendly {
+				fmt.Fprintln(syncEvents, syncErrorJSON(resource, "", err))
+			}
+			return syncResult{Resource: resource, Count: totalCount, Err: err, IntegrityFailure: true, Duration: time.Since(started)}
+		}
 		if sortEffective && maxPages > 0 {
 			for _, item := range items {
 				itemTimestamp, ok := restSyncTimestamp(item, sortField)
@@ -651,18 +659,11 @@ func syncResource(ctx context.Context, c interface {
 		_, hydrationEnabled := itemHydrationPaths[resource]
 		items, hydrateFailures := hydrateScalarItems(ctx, c, resource, items)
 
-		// Batch upsert all items from this page. UpsertBatch returns
-		// (stored, extractFailures, err): stored counts rows actually
-		// landed; extractFailures counts items that survived JSON
-		// unmarshal but had no extractable primary key (templated
-		// IDField AND generic fallback both missed). Tracking these
-		// separately lets us emit precise sync_anomaly events: a
-		// roll-up "all_items_failed_id_extraction" when an entire
-		// page yields zero stored, a per-resource
-		// "primary_key_unresolved" the first time any single item
-		// fails, and the F4b "stored_count_zero_after_extraction"
-		// probe when extraction succeeded but rows still didn't land.
-		stored, extractFailures, err := upsertResourceBatch(db, resource, items)
+		// Keep page consumption separate from stored rows so integrity-loss
+		// outcomes are classified precisely: all items rejected by ID extraction,
+		// partial primary-key misses, typed projection failures, and rows that
+		// extracted cleanly but still failed to land.
+		stored, extractFailures, typedFailures, err := upsertResourceBatch(db, resource, items)
 		if err != nil {
 			if !humanFriendly {
 				fmt.Fprintln(syncEvents, syncErrorJSON(resource, "", err))
@@ -679,6 +680,13 @@ func syncResource(ctx context.Context, c interface {
 			// advance the incremental watermark past that item.
 			timestampOrderSafe = false
 		}
+		if typedFailures > 0 {
+			err := fmt.Errorf("%s stored %d generic row(s) but %d typed-table projection(s) failed", resource, stored, typedFailures)
+			if !humanFriendly {
+				fmt.Fprintln(syncEvents, syncErrorJSON(resource, "", err))
+			}
+			return syncResult{Resource: resource, Count: totalCount + stored, Err: err, IntegrityFailure: true, Duration: time.Since(started)}
+		}
 
 		if fetchedThisPage > 0 && stored == 0 {
 			reason := "all_items_failed_id_extraction"
@@ -692,7 +700,11 @@ func syncResource(ctx context.Context, c interface {
 			} else {
 				fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"reason":"%s"}`+"\n", resource, fetchedThisPage, reason)
 			}
-			anomalyEmitted = true
+			err := fmt.Errorf("%s consumed %d item(s) but stored 0", resource, fetchedThisPage)
+			if !humanFriendly {
+				fmt.Fprintln(syncEvents, syncErrorJSON(resource, "", err))
+			}
+			return syncResult{Resource: resource, Count: totalCount, Err: err, IntegrityFailure: true, Duration: time.Since(started)}
 		} else if pageFailureCount > 0 && !anomalyEmitted {
 			reason := "primary_key_unresolved"
 			message := fmt.Sprintf("%s had %d item(s) on this page with no extractable primary key — those rows were not stored. Annotate the spec with x-resource-id to fix.", resource, extractFailures)
@@ -925,6 +937,11 @@ func syncResource(ctx context.Context, c interface {
 		} else {
 			fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"extract_failures":%d,"reason":"stored_count_zero_after_extraction"}`+"\n", resource, consumedTotal, extractFailureTotal)
 		}
+		err := fmt.Errorf("%s consumed %d item(s) but stored 0 after primary-key extraction", resource, consumedTotal)
+		if !humanFriendly {
+			fmt.Fprintln(syncEvents, syncErrorJSON(resource, "", err))
+		}
+		return syncResult{Resource: resource, Count: 0, Err: err, IntegrityFailure: true, Duration: time.Since(started)}
 	}
 
 	if !humanFriendly {
@@ -932,15 +949,16 @@ func syncResource(ctx context.Context, c interface {
 	}
 
 	if consumedTotal > 0 && totalCount == 0 && extractFailureTotal >= consumedTotal {
-		warn := fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal)
+		err := fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal)
 		if hydrateFailureTotal > 0 {
-			warn = fmt.Errorf("%s consumed %d items but stored 0 because scalar item hydration failed", resource, consumedTotal)
+			err = fmt.Errorf("%s consumed %d items but stored 0 because scalar item hydration failed", resource, consumedTotal)
 		}
 		return syncResult{
-			Resource: resource,
-			Count:    0,
-			Warn:     warn,
-			Duration: time.Since(started),
+			Resource:         resource,
+			Count:            0,
+			Err:              err,
+			IntegrityFailure: true,
+			Duration:         time.Since(started),
 		}
 	}
 
@@ -1269,9 +1287,6 @@ func isEmptyPageResponse(data json.RawMessage, responsePaths ...string) bool {
 			continue
 		}
 		if isJSONNull(pathData) {
-			if envelopeReportsFailure(envelope) {
-				return true
-			}
 			continue
 		}
 		var direct []json.RawMessage
@@ -1290,9 +1305,6 @@ func isEmptyPageResponse(data json.RawMessage, responsePaths ...string) bool {
 			continue
 		}
 		if isJSONNull(raw) {
-			if envelopeReportsFailure(envelope) {
-				return true
-			}
 			continue
 		}
 		var inner map[string]json.RawMessage
@@ -1302,6 +1314,14 @@ func isEmptyPageResponse(data json.RawMessage, responsePaths ...string) bool {
 	}
 
 	return false
+}
+
+func responseDeclaresFailure(data json.RawMessage) bool {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return false
+	}
+	return envelopeReportsFailure(envelope)
 }
 
 func envelopeReportsFailure(envelope map[string]json.RawMessage) bool {
@@ -1718,9 +1738,9 @@ type discriminatorDispatch struct {
 
 var discriminatorDispatchers = map[string]discriminatorDispatch{}
 
-func upsertResourceBatch(db *store.Store, resource string, items []json.RawMessage) (int, int, error) {
+func upsertResourceBatch(db *store.Store, resource string, items []json.RawMessage) (int, int, int, error) {
 	if _, ok := discriminatorDispatchers[resource]; !ok {
-		return db.UpsertBatch(resource, items)
+		return db.UpsertBatchDetailed(resource, items)
 	}
 
 	grouped := map[string][]json.RawMessage{}
@@ -1736,16 +1756,17 @@ func upsertResourceBatch(db *store.Store, resource string, items []json.RawMessa
 		grouped[target] = append(grouped[target], item)
 	}
 
-	var stored, extractFailures int
+	var stored, extractFailures, typedFailures int
 	for _, target := range order {
-		targetStored, targetExtractFailures, err := db.UpsertBatch(target, grouped[target])
+		targetStored, targetExtractFailures, targetTypedFailures, err := db.UpsertBatchDetailed(target, grouped[target])
 		if err != nil {
-			return stored, extractFailures + targetExtractFailures, err
+			return stored, extractFailures + targetExtractFailures, typedFailures + targetTypedFailures, err
 		}
 		stored += targetStored
 		extractFailures += targetExtractFailures
+		typedFailures += targetTypedFailures
 	}
-	return stored, extractFailures, nil
+	return stored, extractFailures, typedFailures, nil
 }
 
 func resolveDiscriminatedResource(resource string, obj map[string]any) string {
@@ -2137,7 +2158,7 @@ var pageEnvelopeMetadataKeys = map[string]bool{
 // These are always treated as critical because a silent exit 0 would leave
 // resume cursors inconsistent with stored data.
 func isSyncStatePersistenceError(err error) bool {
-	return err != nil && strings.HasPrefix(err.Error(), "saving sync state for ")
+	return err != nil && (strings.HasPrefix(err.Error(), "saving sync state for ") || strings.HasPrefix(err.Error(), "saving sync progress for "))
 }
 
 // criticalResources is the template-time projection of per-resource Critical

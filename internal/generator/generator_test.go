@@ -5559,8 +5559,11 @@ func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
 	if len(items) != 0 || cursor != "" || hasMore {
 		t.Fatalf("null data envelope = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
 	}
-	if !isEmptyPageResponse(json.RawMessage(body)) {
-		t.Fatalf("failed JSend null data envelope should be treated as an empty page")
+	if isEmptyPageResponse(json.RawMessage(body)) {
+		t.Fatalf("failed JSend null data envelope should not be treated as an empty page")
+	}
+	if !responseDeclaresFailure(json.RawMessage(body)) {
+		t.Fatalf("failed JSend null data envelope should be detected as a declared failure")
 	}
 
 	withErrors := json.RawMessage(` + "`" + `{"success": false, "errors": [{"code": "bad"}], "data": null}` + "`" + `)
@@ -5570,8 +5573,11 @@ func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
 	}
 
 	statusFail := json.RawMessage(` + "`" + `{"status": "fail", "data": null}` + "`" + `)
-	if !isEmptyPageResponse(statusFail) {
-		t.Fatalf("status=fail null data envelope should be treated as an empty page")
+	if isEmptyPageResponse(statusFail) {
+		t.Fatalf("status=fail null data envelope should not be treated as an empty page")
+	}
+	if !responseDeclaresFailure(statusFail) {
+		t.Fatalf("status=fail null data envelope should be detected as a declared failure")
 	}
 
 	emptyResultSibling := json.RawMessage(` + "`" + `{"data": null, "result": {"orders": []}}` + "`" + `)
@@ -5584,13 +5590,19 @@ func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
 	if len(items) != 0 || cursor != "" || hasMore {
 		t.Fatalf("PascalCase failed JSend null data envelope = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
 	}
-	if !isEmptyPageResponse(pascalSuccessFalse) {
-		t.Fatalf("PascalCase failed JSend null data envelope should be treated as an empty page")
+	if isEmptyPageResponse(pascalSuccessFalse) {
+		t.Fatalf("PascalCase failed JSend null data envelope should not be treated as an empty page")
+	}
+	if !responseDeclaresFailure(pascalSuccessFalse) {
+		t.Fatalf("PascalCase failed JSend null data envelope should be detected as a declared failure")
 	}
 
 	pascalStatusFail := json.RawMessage(` + "`" + `{"Status": "Failed", "Data": null}` + "`" + `)
-	if !isEmptyPageResponse(pascalStatusFail) {
-		t.Fatalf("PascalCase status=Failed null data envelope should be treated as an empty page")
+	if isEmptyPageResponse(pascalStatusFail) {
+		t.Fatalf("PascalCase status=Failed null data envelope should not be treated as an empty page")
+	}
+	if !responseDeclaresFailure(pascalStatusFail) {
+		t.Fatalf("PascalCase status=Failed null data envelope should be detected as a declared failure")
 	}
 
 	statusSuccess := json.RawMessage(` + "`" + `{"status": "success", "data": null}` + "`" + `)
@@ -6995,12 +7007,12 @@ func TestUpsertResourceBatchRoutesDiscriminatorItems(t *testing.T) {
 		json.RawMessage(`+"`"+`{"type":"collection","id":"c1","name":"Collection","created_at":"2026-01-01T00:00:00Z"}`+"`"+`),
 		json.RawMessage(`+"`"+`{"type":"team","id":"t1","name":"Team","created_at":"2026-01-01T00:00:00Z"}`+"`"+`),
 	}
-	stored, extractFailures, err := upsertResourceBatch(s, "network_entities", items)
+	stored, extractFailures, typedFailures, err := upsertResourceBatch(s, "network_entities", items)
 	if err != nil {
 		t.Fatalf("upsertResourceBatch: %%v", err)
 	}
-	if stored != len(items) || extractFailures != 0 {
-		t.Fatalf("stored/extractFailures = %%d/%%d, want %%d/0", stored, extractFailures, len(items))
+	if stored != len(items) || extractFailures != 0 || typedFailures != 0 {
+		t.Fatalf("stored/extractFailures/typedFailures = %%d/%%d/%%d, want %%d/0/0", stored, extractFailures, typedFailures, len(items))
 	}
 
 	for _, table := range []string{"workspaces", "collections", "teams"} {
@@ -13362,7 +13374,7 @@ func TestGeneratedSyncTreatsAccessDeniedAsWarning(t *testing.T) {
 	syncContent := string(syncGo)
 
 	// Sync emits the structured warn event and routes to the warn-aware exit branch.
-	assert.Contains(t, syncContent, `Warn     error`)
+	assert.Contains(t, syncContent, `Warn             error`)
 	// The access-denied warning is marshaled via syncWarningJSON (escaping the
 	// embedded upstream error body) rather than raw fmt.Fprintf interpolation.
 	assert.Contains(t, syncContent, `syncWarningJSON(resource, "", w.Status, w.Reason, w.Message)`)
@@ -15903,11 +15915,11 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 		`"reason":"all_items_failed_id_extraction"`,
 		"sync.go must preserve the all_items_failed_id_extraction roll-up event")
 	assert.Contains(t, syncContent,
-		`warn := fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal)`,
-		"sync.go must surface all-items-failed ID extraction as a warning result, not a success")
+		`err := fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal)`,
+		"sync.go must surface all-items-failed ID extraction as an integrity error, not a success")
 	assert.Contains(t, syncContent,
-		`Warn:     warn`,
-		"sync.go must return the all-items-failed warning result, not a success")
+		`IntegrityFailure: true`,
+		"sync.go must mark all-items-failed and typed projection failures as integrity failures")
 	assert.Contains(t, syncContent,
 		`completed with warnings but no successful syncs`,
 		"sync.go all-warned summary must not claim the warning was only access-related")
@@ -15924,15 +15936,14 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 		`{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"extract_failures":%d,"reason":"stored_count_zero_after_extraction"}`,
 		"F4b probe must use the literal %s interpolation pattern")
 
-	// UpsertBatch's signature is (int, int, error) — sync.go must consume
-	// all three return values. Without this contract, extractFailures would
-	// not be observable from sync's per-item warning code.
+	// upsertResourceBatch's signature is (int, int, int, error) — sync.go must
+	// consume the typed-projection failure count as well as ID extraction misses.
 	assert.Contains(t, syncContent,
-		`stored, extractFailures, err := upsertResourceBatch(db, resource, items)`,
-		"sync.go syncResource must consume the three-tuple batch upsert return")
+		`stored, extractFailures, typedFailures, err := upsertResourceBatch(db, resource, items)`,
+		"sync.go syncResource must consume the four-tuple batch upsert return")
 	assert.Contains(t, syncContent,
-		`stored, extractFailures, err := upsertResourceBatch(db, dep.Name, items)`,
-		"sync.go syncDependentResource must consume the three-tuple batch upsert return")
+		`stored, extractFailures, typedFailures, err := upsertResourceBatch(db, dep.Name, items)`,
+		"sync.go syncDependentResource must consume the four-tuple batch upsert return")
 
 	// store.go's UpsertBatch declaration matches the new signature.
 	assert.Contains(t, storeContent,
@@ -20687,17 +20698,17 @@ components:
 	defaultResources := regexp.MustCompile(`(?s)func defaultSyncResources\(\) \[\]string \{(.*?)\n\}`).FindStringSubmatch(src)
 	require.Len(t, defaultResources, 2)
 	assert.Contains(t, defaultResources[1], `"usercollection",`)
-	assert.Contains(t, defaultResources[1], `"usercollection-daily-sleep",`)
+	assert.Contains(t, defaultResources[1], `"usercollection-heartrate",`)
 	assert.Contains(t, defaultResources[1], `"usercollection-personal-info",`)
-	assert.NotContains(t, defaultResources[1], `"usercollection-heartrate",`,
-		"heartrate should stay absorbed by the canonical usercollection resource")
+	assert.NotContains(t, defaultResources[1], `"usercollection-daily-sleep",`,
+		"daily_sleep should stay absorbed by the canonical usercollection resource")
 	assert.NotContains(t, defaultResources[1], `"webhook",`,
 		"auth-tagged webhook resources must stay out of the default sync set")
 
 	paginationSwitch := regexp.MustCompile(`(?s)func resourceSupportsPagination\(resource string\) bool \{(.*?)\n\}`).FindStringSubmatch(src)
 	require.Len(t, paginationSwitch, 2)
 	assert.Contains(t, paginationSwitch[1], `case "usercollection":`)
-	assert.Contains(t, paginationSwitch[1], `case "usercollection-daily-sleep":`)
+	assert.Contains(t, paginationSwitch[1], `case "usercollection-heartrate":`)
 	assert.NotContains(t, paginationSwitch[1], `case "usercollection-personal-info":`,
 		"single-object resources without cursor params must not be marked paginated")
 	assert.Contains(t, src, `cursorParam:    "next_token"`,
@@ -20708,11 +20719,11 @@ components:
 import "testing"
 
 func TestSyncSinceParamFormatForDateOnlyResources(t *testing.T) {
-	if got := syncResourceSinceParamFormat("usercollection-daily-sleep"); got != "date" {
+	if got := syncResourceSinceParamFormat("usercollection"); got != "date" {
 		t.Fatalf("daily sleep since format = %q, want date", got)
 	}
-	// The canonical usercollection endpoint is heartrate because it has the shortest shared-prefix path.
-	if got := syncResourceSinceParamFormat("usercollection"); got != "date-time" {
+	// The canonical usercollection endpoint is daily_sleep because no endpoint is named list and get_daily_sleep sorts before get_heartrate.
+	if got := syncResourceSinceParamFormat("usercollection-heartrate"); got != "date-time" {
 		t.Fatalf("heartrate since format = %q, want date-time", got)
 	}
 	if got := formatSyncSinceValue("2026-06-07T12:34:56Z", "date"); got != "2026-06-07" {

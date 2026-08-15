@@ -349,14 +349,15 @@ func Profile(s *spec.APISpec) *APIProfile {
 	syncable := make(map[string]syncableMeta) // resource name -> chosen list endpoint metadata
 	syncCandidates := make(map[string][]syncableCandidate)
 	pathDerivedIDFields := make(map[string]string)
-	addSyncCandidate := func(resourceName string, meta syncableMeta) {
+	addSyncCandidate := func(resourceName string, endpointName string, meta syncableMeta) {
 		for _, candidate := range syncCandidates[resourceName] {
 			if candidate.meta.Path == meta.Path {
 				return
 			}
 		}
 		syncCandidates[resourceName] = append(syncCandidates[resourceName], syncableCandidate{
-			meta: meta,
+			endpointName: endpointName,
+			meta:         meta,
 		})
 	}
 	// Keyed by "<parent>/<leaf>" so the same leaf under multiple parents
@@ -522,7 +523,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 					if requiredScope && !endpoint.Syncable {
 						meta.SkipDefaultSync = true
 					}
-					addSyncCandidate(resourceName, meta)
+					addSyncCandidate(resourceName, endpointName, meta)
 				}
 
 				if endpoint.Pagination != nil {
@@ -583,7 +584,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 				if hasRequiredScopeParams(endpoint) && !endpoint.Syncable {
 					meta.SkipDefaultSync = true
 				}
-				addSyncCandidate(resourceName, meta)
+				addSyncCandidate(resourceName, endpointName, meta)
 			}
 
 			if endpoint.Pagination != nil {
@@ -1384,13 +1385,13 @@ func findEntityTypeEnum(endpoint spec.Endpoint) *spec.Param {
 // the catch-all syncable-resource heuristic so that singleton getters like
 // "get" or "show" are excluded.
 func looksLikeCollectionEndpoint(nameLower string) bool {
-	return containsAny(nameLower, collectionEndpointTerms)
+	return nameHasAnyToken(nameLower, collectionEndpointTerms)
 }
 
 var collectionEndpointTerms = []string{"list", "all", "index", "search", "query", "browse", "find"}
 
 func looksLikeBasicGetListEndpoint(nameLower string) bool {
-	return containsAny(nameLower, basicGetListEndpointTerms)
+	return nameHasAnyToken(nameLower, basicGetListEndpointTerms)
 }
 
 var basicGetListEndpointTerms = []string{"list", "all"}
@@ -1559,6 +1560,93 @@ func containsAny(s string, needles []string) bool {
 		}
 	}
 	return false
+}
+
+func nameHasAnyToken(name string, needles []string) bool {
+	tokens := collectionNameTokens(name)
+	for _, needle := range needles {
+		needle = normalizeName(needle)
+		for _, token := range tokens {
+			if token == needle || strings.HasPrefix(token, needle) || hasListVerbSuffix(token, needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasListVerbSuffix(token string, needle string) bool {
+	if !strings.HasSuffix(token, needle) || len(token) == len(needle) {
+		return false
+	}
+	prefix := strings.TrimSuffix(token, needle)
+	switch prefix {
+	case "get", "fetch", "find", "list", "search", "query", "browse":
+		return true
+	default:
+		return false
+	}
+}
+
+func collectionNameTokens(name string) []string {
+	var tokens []string
+	seen := map[string]bool{}
+	add := func(token string) {
+		token = normalizeName(token)
+		if token == "" || seen[token] {
+			return
+		}
+		seen[token] = true
+		tokens = append(tokens, token)
+	}
+	for _, part := range splitNameParts(name) {
+		add(part)
+		for _, token := range splitCamelNamePart(part) {
+			add(token)
+		}
+	}
+	return tokens
+}
+
+func splitNameParts(name string) []string {
+	return strings.FieldsFunc(name, func(r rune) bool {
+		return r == '-' || r == '_' || r == ' ' || r == '/' || r == '.'
+	})
+}
+
+func splitCamelNamePart(part string) []string {
+	if part == "" {
+		return nil
+	}
+	var tokens []string
+	start := 0
+	runes := []rune(part)
+	for i := 1; i < len(runes); i++ {
+		prev := runes[i-1]
+		cur := runes[i]
+		var next rune
+		if i+1 < len(runes) {
+			next = runes[i+1]
+		}
+		if isNameUpper(cur) && (isNameLower(prev) || isNameDigit(prev) || (isNameUpper(prev) && next != 0 && isNameLower(next))) {
+			tokens = append(tokens, string(runes[start:i]))
+			start = i
+		}
+	}
+	tokens = append(tokens, string(runes[start:]))
+	return tokens
+}
+
+func isNameUpper(r rune) bool {
+	return r >= 'A' && r <= 'Z'
+}
+
+func isNameLower(r rune) bool {
+	return r >= 'a' && r <= 'z'
+}
+
+func isNameDigit(r rune) bool {
+	return r >= '0' && r <= '9'
 }
 
 func sortedKeys[V any](m map[string]V) []string {
@@ -2339,7 +2427,8 @@ type syncableMeta struct {
 }
 
 type syncableCandidate struct {
-	meta syncableMeta
+	endpointName string
+	meta         syncableMeta
 }
 
 // parameterizedEntry pairs a parameterized list endpoint with the parent
@@ -2412,10 +2501,9 @@ func scalarIDHydrationTarget(s *spec.APISpec, resourceName string, endpoint spec
 		return "", ""
 	}
 	type candidate struct {
-		path    string
-		param   string
-		score   int
-		pathLen int
+		path  string
+		param string
+		score int
 	}
 	var candidates []candidate
 	walkResources(s.Resources, func(name string, resource spec.Resource) {
@@ -2433,10 +2521,9 @@ func scalarIDHydrationTarget(s *spec.APISpec, resourceName string, endpoint spec
 				continue
 			}
 			candidates = append(candidates, candidate{
-				path:    ep.Path,
-				param:   placeholders[0],
-				score:   score,
-				pathLen: len(ep.Path),
+				path:  ep.Path,
+				param: placeholders[0],
+				score: score,
 			})
 		}
 	})
@@ -2446,9 +2533,6 @@ func scalarIDHydrationTarget(s *spec.APISpec, resourceName string, endpoint spec
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].score != candidates[j].score {
 			return candidates[i].score > candidates[j].score
-		}
-		if candidates[i].pathLen != candidates[j].pathLen {
-			return candidates[i].pathLen < candidates[j].pathLen
 		}
 		return candidates[i].path < candidates[j].path
 	})
@@ -2479,25 +2563,68 @@ func isScalarIDListShape(endpoint spec.Endpoint, types map[string]spec.TypeDef) 
 
 func hydrationTargetScore(listResourceName, targetResourceName, endpointName string, endpoint spec.Endpoint) int {
 	score := 0
-	targetNames := append(nameVariants(listResourceName), "item")
+	targetNames := append(hydrationNameVariants(listResourceName), "item")
 	for _, segment := range staticPathSegments(endpoint.Path) {
-		if slices.Contains(targetNames, normalizeSyncResourceSegment(segment)) || segment == "item" {
+		pathMatched := false
+		for _, variant := range hydrationNameVariants(segment) {
+			if slices.Contains(targetNames, variant) || variant == "item" {
+				pathMatched = true
+				break
+			}
+		}
+		if pathMatched {
 			score += 4
 			break
 		}
 	}
 	for _, value := range []string{targetResourceName, endpointName} {
-		for _, variant := range nameVariants(value) {
+		for _, variant := range hydrationNameVariants(value) {
 			if slices.Contains(targetNames, variant) || variant == "item" {
 				score += 2
 				break
 			}
 		}
 	}
-	if endpoint.IDField != "" {
+	if score > 0 && endpoint.IDField != "" {
 		score++
 	}
 	return score
+}
+
+func hydrationNameVariants(name string) []string {
+	seen := map[string]struct{}{}
+	var variants []string
+	for _, variant := range nameVariants(name) {
+		addHydrationVariant(variant, seen, &variants)
+		if stem := stripHydrationVerbPrefix(variant); stem != variant {
+			for _, stemVariant := range nameVariants(stem) {
+				addHydrationVariant(stemVariant, seen, &variants)
+			}
+		}
+	}
+	return variants
+}
+
+func addHydrationVariant(variant string, seen map[string]struct{}, variants *[]string) {
+	normalized := normalizeSyncResourceSegment(variant)
+	if normalized == "" {
+		return
+	}
+	if _, ok := seen[normalized]; ok {
+		return
+	}
+	seen[normalized] = struct{}{}
+	*variants = append(*variants, normalized)
+}
+
+func stripHydrationVerbPrefix(name string) string {
+	normalized := normalizeSyncResourceSegment(name)
+	for _, verb := range []string{"list", "get", "fetch", "find", "search", "query", "browse"} {
+		if after, ok := strings.CutPrefix(normalized, verb+"-"); ok && after != "" {
+			return after
+		}
+	}
+	return normalized
 }
 
 // queryEntityForEndpoint returns the SQL-query entity name for a list endpoint
@@ -3118,10 +3245,18 @@ func applySyncCandidates(syncable map[string]syncableMeta, candidates map[string
 	for _, resourceName := range resourceNames {
 		entries := candidates[resourceName]
 		sort.SliceStable(entries, func(i, j int) bool {
-			if len(entries[i].meta.Path) != len(entries[j].meta.Path) {
-				return len(entries[i].meta.Path) < len(entries[j].meta.Path)
+			iRank := syncCandidateRank(entries[i])
+			jRank := syncCandidateRank(entries[j])
+			if iRank != jRank {
+				return iRank < jRank
 			}
-			return entries[i].meta.Path < entries[j].meta.Path
+			if entries[i].endpointName != entries[j].endpointName {
+				return entries[i].endpointName < entries[j].endpointName
+			}
+			if entries[i].meta.Path != entries[j].meta.Path {
+				return entries[i].meta.Path < entries[j].meta.Path
+			}
+			return entries[i].meta.Method < entries[j].meta.Method
 		})
 		if len(entries) == 0 {
 			continue
@@ -3142,6 +3277,16 @@ func applySyncCandidates(syncable map[string]syncableMeta, candidates map[string
 			addSyncableIfUnique(syncable, name, entry.meta)
 		}
 	}
+}
+
+func syncCandidateRank(candidate syncableCandidate) int {
+	if strings.EqualFold(strings.TrimSpace(candidate.endpointName), "list") {
+		return 0
+	}
+	if candidate.meta.SkipDefaultSync {
+		return 2
+	}
+	return 1
 }
 
 func applyPathDerivedIDFields(syncable map[string]syncableMeta, pathDerivedIDFields map[string]string, types map[string]spec.TypeDef) {
