@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"math"
 	"net"
@@ -27,9 +28,11 @@ import (
 	"tier-routing-golden-pp-cli/internal/config"
 	"tier-routing-golden-pp-cli/internal/platform"
 	"time"
+	"unicode"
 )
 
 const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
+const maxErrorBodyBytes = 4096
 
 var ErrPlaceholderCredential = errors.New("auth placeholder credential")
 
@@ -1538,11 +1541,192 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 }
 
 func truncateBody(b []byte) string {
-	const maxBytes = 4096
-	if len(b) <= maxBytes {
+	if summary, ok := collapseHTMLErrorBody(b); ok {
+		return summary
+	}
+	if len(b) <= maxErrorBodyBytes {
 		return string(b)
 	}
-	return strings.ToValidUTF8(string(b[:maxBytes]), "") + "..."
+	return strings.ToValidUTF8(string(b[:maxErrorBodyBytes]), "") + "..."
+}
+
+func collapseHTMLErrorBody(b []byte) (string, bool) {
+	scanBytes := b
+	if len(scanBytes) > maxErrorBodyBytes {
+		scanBytes = scanBytes[:maxErrorBodyBytes]
+	}
+	body := strings.ToValidUTF8(string(scanBytes), "")
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" || !looksLikeHTMLBody(trimmed) {
+		return "", false
+	}
+
+	summary := fmt.Sprintf("HTML error page (%d bytes)", len(b))
+	if title := extractHTMLTitle(trimmed); title != "" {
+		summary += ": " + truncateRunes(title, 160)
+	}
+	return summary, true
+}
+
+func looksLikeHTMLBody(body string) bool {
+	lower := strings.ToLower(body)
+	if strings.HasPrefix(lower, "<!doctype html") || strings.HasPrefix(lower, "<html") {
+		return true
+	}
+	sample := lower
+	if len(sample) > 2048 {
+		sample = sample[:2048]
+	}
+	return strings.HasPrefix(sample, "<") && (strings.Contains(sample, "<body") || strings.Contains(sample, "<head") || strings.Contains(sample, "<title") || strings.Contains(sample, "<script"))
+}
+
+func extractHTMLTitle(body string) string {
+	pos := 0
+	ignoredBlock := ""
+	for pos < len(body) {
+		tagStartRel := strings.IndexByte(body[pos:], '<')
+		if tagStartRel < 0 {
+			return ""
+		}
+		tagStart := pos + tagStartRel
+		tagEnd := htmlTagEnd(body, tagStart)
+		if tagEnd < 0 {
+			return ""
+		}
+		tagName, closing := htmlTagName(body[tagStart+1 : tagEnd])
+		pos = tagEnd + 1
+		if tagName == "" {
+			continue
+		}
+		if ignoredBlock != "" {
+			if closing && tagName == ignoredBlock {
+				ignoredBlock = ""
+			}
+			continue
+		}
+		if closing {
+			continue
+		}
+		if tagName == "script" || tagName == "style" {
+			ignoredBlock = tagName
+			continue
+		}
+		if tagName != "title" {
+			continue
+		}
+		titleEnd := findHTMLCloseTag(body, pos, "title")
+		if titleEnd < 0 {
+			return ""
+		}
+		title := stripHTMLTags(body[pos:titleEnd])
+		return strings.Join(strings.Fields(stripControlCharacters(html.UnescapeString(title))), " ")
+	}
+	return ""
+}
+
+func findHTMLCloseTag(body string, from int, tag string) int {
+	pos := from
+	for pos < len(body) {
+		tagStartRel := strings.IndexByte(body[pos:], '<')
+		if tagStartRel < 0 {
+			return -1
+		}
+		tagStart := pos + tagStartRel
+		tagEnd := htmlTagEnd(body, tagStart)
+		if tagEnd < 0 {
+			return -1
+		}
+		tagName, closing := htmlTagName(body[tagStart+1 : tagEnd])
+		if closing && tagName == tag {
+			return tagStart
+		}
+		pos = tagEnd + 1
+	}
+	return -1
+}
+
+func htmlTagEnd(body string, start int) int {
+	end := strings.IndexByte(body[start:], '>')
+	if end < 0 {
+		return -1
+	}
+	return start + end
+}
+
+func htmlTagName(raw string) (string, bool) {
+	raw = strings.TrimLeftFunc(raw, isHTMLSpace)
+	closing := false
+	if strings.HasPrefix(raw, "/") {
+		closing = true
+		raw = strings.TrimLeftFunc(raw[1:], isHTMLSpace)
+	}
+	if raw == "" || strings.HasPrefix(raw, "!") || strings.HasPrefix(raw, "?") {
+		return "", closing
+	}
+	end := 0
+	for end < len(raw) && isHTMLTagNameByte(raw[end]) {
+		end++
+	}
+	if end == 0 {
+		return "", closing
+	}
+	return strings.ToLower(raw[:end]), closing
+}
+
+func isHTMLTagNameByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-' || b == ':'
+}
+
+func isHTMLSpace(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\f'
+}
+
+func stripHTMLTags(body string) string {
+	var out strings.Builder
+	inTag := false
+	for _, r := range body {
+		switch r {
+		case '<':
+			inTag = true
+			out.WriteByte(' ')
+		case '>':
+			inTag = false
+		default:
+			if !inTag {
+				out.WriteRune(r)
+			}
+		}
+	}
+	return out.String()
+}
+
+func stripControlCharacters(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' {
+			return ' '
+		}
+		if unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+			return ' '
+		}
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, text)
+}
+
+func truncateRunes(text string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func clientMaxRetries() int {
