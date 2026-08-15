@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"math"
 {{- if .HasMultipartRequest}}
@@ -3269,10 +3270,136 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 
 func truncateBody(b []byte) string {
 	const maxBytes = 4096
+	if summary, ok := collapseHTMLErrorBody(b); ok {
+		return summary
+	}
 	if len(b) <= maxBytes {
 		return string(b)
 	}
 	return strings.ToValidUTF8(string(b[:maxBytes]), "") + "..."
+}
+
+func collapseHTMLErrorBody(b []byte) (string, bool) {
+	body := strings.ToValidUTF8(string(b), "")
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" || !looksLikeHTMLBody(trimmed) {
+		return "", false
+	}
+
+	title := extractHTMLTitle(trimmed)
+	excerpt := collapseHTMLVisibleText(trimmed)
+	detail := title
+	if detail == "" {
+		detail = excerpt
+	} else if excerpt != "" && !strings.Contains(strings.ToLower(excerpt), strings.ToLower(title)) {
+		detail += ": " + excerpt
+	}
+
+	summary := fmt.Sprintf("HTML error page (%d bytes)", len(b))
+	if detail != "" {
+		summary += ": " + truncateRunes(detail, 240)
+	}
+	return summary, true
+}
+
+func looksLikeHTMLBody(body string) bool {
+	lower := strings.ToLower(body)
+	if strings.HasPrefix(lower, "<!doctype html") || strings.HasPrefix(lower, "<html") {
+		return true
+	}
+	sample := lower
+	if len(sample) > 2048 {
+		sample = sample[:2048]
+	}
+	return strings.Contains(sample, "<body") || strings.Contains(sample, "<script") || (strings.Contains(sample, "<head") && strings.Contains(sample, "</html>"))
+}
+
+func extractHTMLTitle(body string) string {
+	lower := strings.ToLower(body)
+	start := strings.Index(lower, "<title")
+	if start < 0 {
+		return ""
+	}
+	openEnd := strings.Index(lower[start:], ">")
+	if openEnd < 0 {
+		return ""
+	}
+	contentStart := start + openEnd + 1
+	end := strings.Index(lower[contentStart:], "</title>")
+	if end < 0 {
+		return ""
+	}
+	return collapsePlainText(stripHTMLTags(body[contentStart : contentStart+end]))
+}
+
+func collapseHTMLVisibleText(body string) string {
+	body = removeHTMLBlocks(body, "script", "style", "svg")
+	return collapsePlainText(stripHTMLTags(body))
+}
+
+func removeHTMLBlocks(body string, tags ...string) string {
+	lower := strings.ToLower(body)
+	for _, tag := range tags {
+		open := "<" + tag
+		close := "</" + tag + ">"
+		for {
+			start := strings.Index(lower, open)
+			if start < 0 {
+				break
+			}
+			openEnd := strings.Index(lower[start:], ">")
+			if openEnd < 0 {
+				body = body[:start]
+				lower = lower[:start]
+				break
+			}
+			contentStart := start + openEnd + 1
+			closeStart := strings.Index(lower[contentStart:], close)
+			if closeStart < 0 {
+				body = body[:start] + " " + body[contentStart:]
+				lower = lower[:start] + " " + lower[contentStart:]
+				continue
+			}
+			end := contentStart + closeStart + len(close)
+			body = body[:start] + " " + body[end:]
+			lower = lower[:start] + " " + lower[end:]
+		}
+	}
+	return body
+}
+
+func stripHTMLTags(body string) string {
+	var out strings.Builder
+	inTag := false
+	for _, r := range body {
+		switch r {
+		case '<':
+			inTag = true
+			out.WriteByte(' ')
+		case '>':
+			inTag = false
+		default:
+			if !inTag {
+				out.WriteRune(r)
+			}
+		}
+	}
+	return out.String()
+}
+
+func collapsePlainText(text string) string {
+	return strings.Join(strings.Fields(html.UnescapeString(text)), " ")
+}
+
+func truncateRunes(text string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func clientMaxRetries() int {

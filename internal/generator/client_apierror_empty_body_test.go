@@ -21,7 +21,10 @@ func TestGeneratedAPIErrorOmitsSeparatorOnEmptyBody(t *testing.T) {
 
 	const clientTest = `package client
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestAPIErrorSeparatorGuardOnEmptyBody(t *testing.T) {
 	cases := []struct {
@@ -43,10 +46,41 @@ func TestAPIErrorSeparatorGuardOnEmptyBody(t *testing.T) {
 		})
 	}
 }
+
+func TestAPIErrorHTMLBodyCollapsed(t *testing.T) {
+	body := []byte(` + "`" + `<!doctype html>
+<html>
+<head>
+<title>Tenant Missing</title>
+<style>body{color:red}</style>
+</head>
+<body>
+<h1>Tenant Missing</h1>
+<script>alert("x")</script>
+<p>Use the right host.</p>
+</body>
+</html>` + "`" + `)
+
+	collapsed := truncateBody(body)
+	if strings.Contains(collapsed, "<html") || strings.Contains(collapsed, "<script") || strings.Contains(collapsed, "body{color:red}") {
+		t.Fatalf("HTML body was emitted verbatim: %q", collapsed)
+	}
+	if !strings.Contains(collapsed, "HTML error page") {
+		t.Fatalf("collapsed body = %q, want HTML error page summary", collapsed)
+	}
+	if !strings.Contains(collapsed, "Tenant Missing") {
+		t.Fatalf("collapsed body = %q, want title excerpt", collapsed)
+	}
+
+	errText := (&APIError{Method: "GET", Path: "/items", StatusCode: 404, Body: collapsed}).Error()
+	if strings.Contains(errText, "<html") || strings.Contains(errText, "<script") || strings.Contains(errText, "alert(") {
+		t.Fatalf("APIError.Error emitted raw HTML: %q", errText)
+	}
+}
 `
 	require.NoError(t, os.WriteFile(
 		filepath.Join(outputDir, "internal", "client", "apierror_empty_body_test.go"),
 		[]byte(clientTest), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestAPIErrorSeparatorGuardOnEmptyBody", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestAPIError", "-count=1")
 }
