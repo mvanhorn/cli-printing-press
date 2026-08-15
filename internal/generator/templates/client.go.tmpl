@@ -3286,18 +3286,9 @@ func collapseHTMLErrorBody(b []byte) (string, bool) {
 		return "", false
 	}
 
-	title := extractHTMLTitle(trimmed)
-	excerpt := collapseHTMLVisibleText(trimmed)
-	detail := title
-	if detail == "" {
-		detail = excerpt
-	} else if excerpt != "" && !strings.Contains(strings.ToLower(excerpt), strings.ToLower(title)) {
-		detail += ": " + excerpt
-	}
-
 	summary := fmt.Sprintf("HTML error page (%d bytes)", len(b))
-	if detail != "" {
-		summary += ": " + truncateRunes(detail, 240)
+	if title := extractHTMLTitle(trimmed); title != "" {
+		summary += ": " + truncateRunes(title, 160)
 	}
 	return summary, true
 }
@@ -3311,7 +3302,7 @@ func looksLikeHTMLBody(body string) bool {
 	if len(sample) > 2048 {
 		sample = sample[:2048]
 	}
-	return strings.Contains(sample, "<body") || strings.Contains(sample, "<script") || (strings.Contains(sample, "<head") && strings.Contains(sample, "</html>"))
+	return strings.HasPrefix(sample, "<") && (strings.Contains(sample, "<body") || strings.Contains(sample, "<head") || strings.Contains(sample, "<title") || strings.Contains(sample, "<script"))
 }
 
 func extractHTMLTitle(body string) string {
@@ -3329,43 +3320,8 @@ func extractHTMLTitle(body string) string {
 	if end < 0 {
 		return ""
 	}
-	return collapsePlainText(stripHTMLTags(body[contentStart : contentStart+end]))
-}
-
-func collapseHTMLVisibleText(body string) string {
-	body = removeHTMLBlocks(body, "script", "style", "svg")
-	return collapsePlainText(stripHTMLTags(body))
-}
-
-func removeHTMLBlocks(body string, tags ...string) string {
-	lower := strings.ToLower(body)
-	for _, tag := range tags {
-		open := "<" + tag
-		close := "</" + tag + ">"
-		for {
-			start := strings.Index(lower, open)
-			if start < 0 {
-				break
-			}
-			openEnd := strings.Index(lower[start:], ">")
-			if openEnd < 0 {
-				body = body[:start]
-				lower = lower[:start]
-				break
-			}
-			contentStart := start + openEnd + 1
-			closeStart := strings.Index(lower[contentStart:], close)
-			if closeStart < 0 {
-				body = body[:start] + " " + body[contentStart:]
-				lower = lower[:start] + " " + lower[contentStart:]
-				continue
-			}
-			end := contentStart + closeStart + len(close)
-			body = body[:start] + " " + body[end:]
-			lower = lower[:start] + " " + lower[end:]
-		}
-	}
-	return body
+	title := stripHTMLTags(body[contentStart : contentStart+end])
+	return strings.Join(strings.Fields(html.UnescapeString(title)), " ")
 }
 
 func stripHTMLTags(body string) string {
@@ -3385,10 +3341,6 @@ func stripHTMLTags(body string) string {
 		}
 	}
 	return out.String()
-}
-
-func collapsePlainText(text string) string {
-	return strings.Join(strings.Fields(html.UnescapeString(text)), " ")
 }
 
 func truncateRunes(text string, maxRunes int) string {
