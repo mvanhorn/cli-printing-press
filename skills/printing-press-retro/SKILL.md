@@ -32,16 +32,19 @@ tweaks.** That's the nature of the system. We expect agents to reason over the
 generated CLI, customize for the specific API, build novel features, and iterate.
 Some hand-built work in every run is normal.
 
-The retro's job is to find the subset of manual work where **the machine could
-have realistically raised the floor** — given the agent a better starting point,
-prevented the issue entirely, or eliminated friction that would recur on the
-next CLI. Two clear cases qualify:
+The retro's job is to find the subset of manual work where **the Printing Press
+must change to prevent a current, reproducible defect from recurring**. "Raised
+the floor" is useful language for analysis, not a filing bar by itself. Two
+clear cases qualify:
 
 1. **The machine could have completely prevented the issue, and the pattern is
-   generalizable across many printed CLIs.** File it.
+   generalizable across many printed CLIs.** File it only if it clears the P1
+   or P2 priority rubric below.
 2. **The machine could have raised the floor meaningfully** — better default,
    partial scaffold, helper that absorbs the boilerplate — **across multiple
-   CLIs you can name with evidence.** File it.
+   CLIs you can name with evidence.** File it only if the current behavior is a
+   real generalizing defect that a printed-CLI user or shipping gate would
+   notice.
 
 Otherwise, the manual work is normal iteration and should not generate a finding.
 Some items make it back as machine fixes; not all. The retro is the filter that
@@ -72,6 +75,11 @@ different PRs.
 - **Default is "don't change the machine."** The Printing Press is mature — 30+ CLIs printed, most templates exercised across many shapes. The burden of proof is on the finding, not on the Skip path. Most things you encountered while printing one CLI are that CLI's quirks, iteration noise, or upstream API behavior — not generator gaps. Propose a machine change only when cross-CLI evidence is concrete and the finding survives the Phase 3 adversarial check (Step G).
 - **A retro of three sharp findings is more valuable than ten mixed-quality findings.** Each filed finding spends maintainer attention. If you find yourself writing "every finding warrants action" or producing zero drops and zero skips, stop and re-triage — that outcome is the failure mode this skill exists to prevent.
 - The retro proposes Printing Press changes that help multiple printed CLIs. Don't propose direct edits to the one CLI that just shipped, and don't propose machine changes whose value is unique to this CLI's quirks — those are printed-CLI fixes wearing a generator costume.
+- **There is no P3 backlog rank.** A finding that is not P1 or P2 is Drop or
+  Skip, not a low-priority filed issue. Do not file wishlists, new seams,
+  skill/docs/catalog polish, lint or gosec hygiene, one-vendor grab-bags,
+  already-fixed items, theoretical collisions, "would be nice" scaffolding, or
+  scorer/operator convenience that a printed-CLI user would not notice.
 - **Never upload un-scrubbed artifacts.** All artifacts go through the secrets scrub before upload.
 - **Never modify source directories.** Manuscripts and library directories are read-only. Scrub operations work on temporary copies.
 - **Never skip the secrets scrub,** even if the generation pipeline already ran one. Defense in depth.
@@ -368,15 +376,19 @@ For each candidate, ask in order:
    if it's "let one CLI work around it," that's a printed-CLI fix. Drop.
 4. **Is the only evidence "I noticed this once"?** A one-time observation that you
    can't connect to a recurring pattern across other CLIs is a candidate for Drop,
-   not a P3. P3 means "low priority systemic finding," not "I want to record this
-   somewhere."
+   not a filed issue. "I want to record this somewhere" belongs in the local
+   retro doc, not in GitHub.
 5. **Does the same finding appear in 2+ prior retros without being implemented?**
    Don't re-raise at the same priority. Either drop it (the cost-benefit math has
    been "no" twice and the retro is becoming a wishlist), or reframe as a smaller
    incremental fix that addresses part of the friction. Search:
    `grep -l "<finding keywords>" "$PRESS_MANUSCRIPTS"/*/proofs/*-retro-*.md`
+6. **Would weekday maintainer triage close this?** Drop wishlists, skill/docs
+   polish, catalog polish, lint/gosec hygiene, one-vendor quirks, one-CLI
+   grab-bags, already-fixed behavior, theoretical collisions, and conveniences
+   that do not affect printed-CLI users or shipping gates.
 
-Survivors of these five questions go to Phase 3. Dropped candidates are recorded
+Survivors of these six questions go to Phase 3. Dropped candidates are recorded
 as one-line entries in the retro's "Dropped at triage" section — they exist for
 your own discipline check and for the maintainer to see triage actually ran.
 
@@ -391,8 +403,9 @@ candidates that should have been dropped here. If you find yourself writing
 
 For each candidate that survived Phase 2.5 triage, answer these seven questions.
 Question 5 has seven sub-steps (A through G); Step G is the adversarial check.
-Findings that fail Step G drop out — they don't get a priority, they don't go in
-the Do/Skip tables, they go on the dropped-candidates list with the reason.
+Findings that fail Step G do not get a priority and do not go in Do. Put them
+in Skip when they survived deep analysis but failed the filing bar, or Drop when
+the analysis shows they were triage noise after all.
 
 **1. What happened?** One sentence — the symptom, not the fix.
 
@@ -467,7 +480,8 @@ a header the vendor documents, an output you can reproduce. "Stripe, Notion, Git
 probably have this" is hand-waving; "Stripe (Stripe-Version header in spec line N),
 GitHub (X-GitHub-Api-Version on the issues endpoints), Linear (api-version on /v2/*)"
 is evidence. If you can name only two with evidence — or three with hand-waving — the
-finding drops to **P3 max with a `subclass:<name>` annotation**, or moves to Drop.
+finding cannot be filed. Move it to Skip if it otherwise survived deep analysis,
+or Drop if the evidence is only a one-off.
 
 **Step C: Counter-check question.** Ask explicitly: "If I implemented this fix, would it
 actively hurt any API that doesn't have this pattern?" If yes, the fix needs a guard or
@@ -479,10 +493,10 @@ paginator. Without that guard the same finding is unsafe to land.
 **Step D: Recurrence-cost check.** Search prior retros under
 `$PRESS_MANUSCRIPTS/*/proofs/*-retro-*.md` for the same finding. If the same
 finding has been raised in 2+ prior retros without being implemented, the prior cost-
-benefit math has been "no" twice. Don't re-raise it at the same priority — either move
-to P3 with a "raised N times, still not justified" annotation, or reframe the finding
-into a smaller incremental fix that addresses part of the friction. Recurrence at the
-same priority is a triage failure, not stronger evidence.
+benefit math has been "no" twice. Don't re-raise it — either drop it with a
+"raised N times, still not justified" note, or reframe the finding into a smaller
+incremental fix that now clears the P1/P2 bar. Recurrence without a sharper,
+current-main defect is a triage failure, not stronger evidence.
 
 **Capture matched prior retros.** When the search returns hits, record each as a
 structured tuple — retro CLI name, retro file path (or GitHub issue number if the
@@ -568,10 +582,9 @@ machine. The good fix lets the profiler drive behavior from the spec.
 
 Sort survivors of Phase 3 into three buckets:
 
-- **Do** — survived Phase 3 Step G with a clear case-for. Assign a priority (P1,
-  P2, P3) based on frequency, fallback reliability, and complexity. Scorer bugs
-  are just findings like any other — rank them by impact alongside template gaps
-  and parser issues.
+- **Do** — survived Phase 3 Step G with a clear case-for and clears P1 or P2
+  below. Scorer bugs are just findings like any other — rank them by user or
+  shipping impact alongside template gaps and parser issues.
 - **Skip** — survived Phase 2.5 triage but didn't clear Phase 3 (Step B couldn't
   name 3 APIs with evidence, Step D recurrence-cost disqualified, or Step G's
   case-against was stronger). State the specific step that failed. These are
@@ -583,12 +596,29 @@ Sort survivors of Phase 3 into three buckets:
 
 No numerical scoring formulas. State the priority reasoning in words.
 
+### Priority rubric
+
+- **P1 — the printed CLI is broken or unsafe.** Generate or regen ships a CLI
+  that does not work, or a user of that CLI can lose data, spend money, or skip a
+  safety prompt. Includes commands that fail or no-op; silent wrong or missing
+  data; broken or fail-open auth; skipped confirmations; regen dropping working
+  code; or generated CLIs that will not run or load config. "Produces a broken
+  CLI" is P1.
+- **P2 — real generalizing defect, but the printed CLI still works.**
+  Scorer/dogfood/publish-skill/operator gates that mis-score or block shipping;
+  noticeable non-breaking polish such as wrong `which` ranking, a dropped
+  `doctor` render, or empty CSV output on zero rows. The defect must generalize
+  across CLIs, reproduce on current `main`, and be something that belongs in the
+  next weekday fix wave.
+- **No P3.** If a survivor is not P1 or P2, move it to Skip or Drop. Do not file
+  it and do not apply any low-priority label.
+
 **Sanity check before moving to Phase 5.** Look at the bucket distribution.
 Almost every retro should have *some* drops and *some* skips. A retro with
 "all Do, no Skip, no Drop" is the failure mode — re-run triage and Step G on
-the weakest findings. Likewise, if every Do is P1, you're not prioritizing,
-you're inflating; force yourself to identify the weakest "Do" and ask whether
-it really beats the Skip bar.
+the weakest findings. Likewise, if every Do is P1, you're probably inflating;
+force yourself to identify the weakest "Do" and ask whether it is truly a
+broken or unsafe printed CLI rather than a P2, Skip, or Drop.
 
 ## Phase 5: Write the retro
 
@@ -637,10 +667,6 @@ Write the full retro document using this template:
 |---------|-------|-----------|-----------|---------------------|------------|--------|
 
 ### P2 — Medium priority
-| Finding | Title | Component | Frequency | Fallback Reliability | Complexity | Guards |
-|---------|-------|-----------|-----------|---------------------|------------|--------|
-
-### P3 — Low priority
 | Finding | Title | Component | Frequency | Fallback Reliability | Complexity | Guards |
 |---------|-------|-----------|-----------|---------------------|------------|--------|
 
@@ -732,8 +758,8 @@ For each "Do" finding or group of related findings:
 ### WU-1: <Title> (from F1, F3, ...)
 - **Stable ID:** WU-1 *(preserve this identifier when sorting; dependency edges
   use the stable ID rather than a post-sort array position)*
-- **Priority:** P1 / P2 / P3 *(max priority among absorbed findings — P1 if any
-  absorbed finding is P1, else P2 if any is P2, else P3)*
+- **Priority:** P1 / P2 *(max priority among absorbed findings — P1 if any
+  absorbed finding is P1, else P2)*
 - **Type:** bug / enhancement *(use the deterministic category mapping above;
   `bug` wins for a mixed work unit)*
 - **Component:** generator / openapi-parser / spec-parser / scorer / skill
@@ -785,14 +811,21 @@ nothing to act on.
 - All findings are printed-CLI-specific (manual edits that only apply to this one API
   and wouldn't recur across other CLIs)
 - The "Do" table is empty
+- Any work unit's best justification is wishlist, new seam, skill/docs/catalog
+  polish, lint/gosec hygiene, one-vendor behavior, an already-fixed issue,
+  theoretical collision, or scorer/operator convenience not visible to a
+  printed-CLI user
 
 **File issues (one per WU) if:**
-- There is at least one "Do" finding — i.e., something a maintainer or agent could
-  act on in the Printing Press (templates, binary, skills, or scoring tools)
+- There is at least one P1 or P2 "Do" finding — i.e., something a maintainer or
+  agent should act on in the Printing Press because it is a broken/unsafe
+  printed CLI or a current, generalizing non-breaking defect
 
 Use judgment. A retro that found three things but all three are "this API has a weird
 auth scheme no other API uses" is not worth filing. A retro that found one small
-template gap that would help every future CLI *is* worth filing.
+template gap that would help every future CLI is worth filing only when the
+current emitted behavior is broken/unsafe (P1) or a real generalizing defect a
+printed-CLI user or shipping gate would notice (P2).
 
 If filing is skipped, still save the retro locally (manuscript proofs +
 `/tmp/printing-press/retro/`), present the findings to the user, then jump
@@ -842,7 +875,7 @@ confirmation via `AskUserQuestion`.
 > | 3 | <wu-3 title> | File new + reference #189 | Adjacent open issue |
 >
 > Each new issue carries `source:retro`, the mapped `bug` or `enhancement` type,
-> `priority:P<n>`, and `comp:<slug>` labels — agents filter related work across
+> `priority:P1` or `priority:P2`, and `comp:<slug>` labels — agents filter related work across
 > retros with `gh issue list --label source:retro`, `gh issue list --label
 > comp:<slug>`, or `gh issue list --label priority:P1`. During the label cutover,
 > legacy `retro` issues remain discoverable and a write may use `retro` only when
@@ -905,7 +938,7 @@ ordinary related-area references remain prose.
 
 Each new issue carries its own provenance marker (`source:retro`, or legacy
 `retro` only when the canonical label is unavailable), exactly one mapped
-`bug`/`enhancement` type, `priority:P<n>`, and `comp:<slug>` labels.
+`bug`/`enhancement` type, `priority:P1` or `priority:P2`, and `comp:<slug>` labels.
 This is what enables `gh issue list --label comp:openapi-parser` to surface
 every retro WU in that area across every retro — labels are the cross-retro
 discovery surface, not auto-cross-links inside issue bodies.
@@ -946,7 +979,7 @@ filed work, but the shape differs.
 
 > **Retro submitted!**
 >
-> Filed <C> new issue<s>, added <E> comment<s> on existing issues (P1 → P3 order):
+> Filed <C> new issue<s>, added <E> comment<s> on existing issues (P1 → P2 order):
 >
 > *New issues:*
 >   - [P1] <title> — <full $OUTCOME_URL[i]>
@@ -958,7 +991,7 @@ filed work, but the shape differs.
 >   - ...
 >
 > <N> findings across <M> work units. New issues are tagged with `source:retro`,
-> their mapped `bug` or `enhancement` type, `comp:<slug>`, and `priority:P<n>`
+> their mapped `bug` or `enhancement` type, `comp:<slug>`, and `priority:P1`/`priority:P2`
 > labels — agents can filter related work across retros with `gh issue list
 > --label source:retro`, `gh issue list --label comp:<slug>`, or `gh issue list
 > --label priority:P1`.
