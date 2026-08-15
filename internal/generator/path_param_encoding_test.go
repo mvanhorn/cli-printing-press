@@ -15,10 +15,9 @@ import (
 
 // TestReplacePathParamPercentEncodesValue pins the helpers.go template so the
 // emitted replacePathParam routes the user-supplied value through the shared
-// segment-aware cliutil escaper before substituting it into the URL path. Without
-// the escape, values that contain path-reserved characters silently produce
-// malformed request URLs; escaping the whole value instead breaks hierarchical
-// identifiers such as "allenai/c4".
+// path-param escaper before substituting it into the URL path. Without encoding
+// the value as one segment, values that contain path-reserved characters
+// silently produce malformed request URLs.
 //
 // We assert at the template-output level (helpers.go calls cliutil and
 // cliutil/text.go contains the implementation) so every printed CLI inherits
@@ -65,7 +64,7 @@ func TestReplacePathParamPercentEncodesValue(t *testing.T) {
 		"helpers.go must import cliutil when replacePathParam is emitted")
 	assert.Contains(t, src,
 		`return strings.ReplaceAll(path, "{"+name+"}", cliutil.EscapePathParam(value))`,
-		"replacePathParam must use the shared segment-aware escaper")
+		"replacePathParam must use the shared path-param escaper")
 
 	cliutilPath := filepath.Join(outputDir, "internal", "cliutil", "text.go")
 	cliutilGo, err := os.ReadFile(cliutilPath)
@@ -73,10 +72,10 @@ func TestReplacePathParamPercentEncodesValue(t *testing.T) {
 	cliutilSrc := string(cliutilGo)
 	assert.Contains(t, cliutilSrc, "func EscapePathParam(value string) string",
 		"cliutil must emit the shared path-param escaper")
-	assert.Contains(t, cliutilSrc, "segments := strings.Split(value, \"/\")",
-		"path-param escaping must preserve slash separators in hierarchical identifiers")
-	assert.Contains(t, cliutilSrc, "segments[i] = url.PathEscape(segment)",
-		"each path segment must be percent-encoded independently")
+	assert.Contains(t, cliutilSrc, `if value == "." || value == ".."`,
+		"path-param escaping must keep dot-only values from becoming path traversal segments")
+	assert.Contains(t, cliutilSrc, "return url.PathEscape(value)",
+		"path-param values must be percent-encoded as a single segment")
 
 	mcpPath := filepath.Join(outputDir, "internal", "mcp", "tools.go")
 	mcpGo, err := os.ReadFile(mcpPath)
@@ -91,13 +90,15 @@ func TestReplacePathParamPercentEncodesValue(t *testing.T) {
 
 import "testing"
 
-func TestReplacePathParamPreservesHierarchicalIdentifiers(t *testing.T) {
+func TestReplacePathParamEncodesSingleSegment(t *testing.T) {
 	tests := map[string]string{
 		"opaque-id": "opaque-id",
-		"allenai/c4": "allenai/c4",
-		"src/main file.go": "src/main%20file.go",
-		"../secret": "%2E%2E/secret",
-		"./file": "%2E/file",
+		"sc-domain:example.com": "sc-domain:example.com",
+		"https://example.com/foo": "https:%2F%2Fexample.com%2Ffoo",
+		"allenai/c4": "allenai%2Fc4",
+		"src/main file.go": "src%2Fmain%20file.go",
+		"../secret": "..%2Fsecret",
+		"./file": ".%2Ffile",
 		"a b?c#d": "a%20b%3Fc%23d",
 	}
 	for input, want := range tests {
@@ -108,19 +109,21 @@ func TestReplacePathParamPreservesHierarchicalIdentifiers(t *testing.T) {
 }
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "path_param_test.go"), []byte(cliTest), 0o644))
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestReplacePathParamPreservesHierarchicalIdentifiers")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestReplacePathParamEncodesSingleSegment")
 
 	cliutilTest := `package cliutil
 
 import "testing"
 
-func TestEscapePathParamPreservesHierarchicalIdentifiers(t *testing.T) {
+func TestEscapePathParamEncodesSingleSegment(t *testing.T) {
 	tests := map[string]string{
 		"opaque-id": "opaque-id",
-		"allenai/c4": "allenai/c4",
-		"src/main file.go": "src/main%20file.go",
-		"../secret": "%2E%2E/secret",
-		"./file": "%2E/file",
+		"sc-domain:example.com": "sc-domain:example.com",
+		"https://example.com/foo": "https:%2F%2Fexample.com%2Ffoo",
+		"allenai/c4": "allenai%2Fc4",
+		"src/main file.go": "src%2Fmain%20file.go",
+		"../secret": "..%2Fsecret",
+		"./file": ".%2Ffile",
 		"a b?c#d": "a%20b%3Fc%23d",
 	}
 	for input, want := range tests {
@@ -131,7 +134,7 @@ func TestEscapePathParamPreservesHierarchicalIdentifiers(t *testing.T) {
 }
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cliutil", "path_param_test.go"), []byte(cliutilTest), 0o644))
-	runGoCommandRequired(t, outputDir, "test", "./internal/cliutil", "-run", "TestEscapePathParamPreservesHierarchicalIdentifiers")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cliutil", "-run", "TestEscapePathParamEncodesSingleSegment")
 
 	mcpTest := `package mcp
 
@@ -140,10 +143,12 @@ import "testing"
 func TestMCPPathValuePercentEncodesReservedCharacters(t *testing.T) {
 	tests := map[string]string{
 		"opaque-id": "opaque-id",
-		"allenai/c4": "allenai/c4",
-		"src/main file.go": "src/main%20file.go",
-		"../secret": "%2E%2E/secret",
-		"./file": "%2E/file",
+		"sc-domain:example.com": "sc-domain:example.com",
+		"https://example.com/foo": "https:%2F%2Fexample.com%2Ffoo",
+		"allenai/c4": "allenai%2Fc4",
+		"src/main file.go": "src%2Fmain%20file.go",
+		"../secret": "..%2Fsecret",
+		"./file": ".%2Ffile",
 		"a b?c#d": "a%20b%3Fc%23d",
 	}
 	for input, want := range tests {
@@ -216,11 +221,10 @@ func TestDependentPathParamStripsCompositeStorageID(t *testing.T) {
 			"parent (composite id) never leaks a %00 into the request URL (nginx 400)")
 }
 
-// TestURLPathEscapeBehaviorPinsContract is a stdlib-behavior pin for each
-// segment of a path-param value. The shared helper deliberately preserves
-// slash separators while retaining url.PathEscape's reserved-character
-// behavior within each segment.
-func TestURLPathEscapeBehaviorPinsContract(t *testing.T) {
+// TestPathParamEscapeBehaviorPinsContract is a stdlib-behavior pin for
+// path-param values. The shared helper treats the full value as one path segment
+// so slashes inside IDs do not change the route shape.
+func TestPathParamEscapeBehaviorPinsContract(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -228,24 +232,21 @@ func TestURLPathEscapeBehaviorPinsContract(t *testing.T) {
 	}{
 		{"abc-123-def", "abc-123-def"},
 		{"2026-01-15", "2026-01-15"},
-		{"src/cli/main.go", "src/cli/main.go"},
-		{"../secret", "%2E%2E/secret"},
-		{"./file", "%2E/file"},
-		{"https://example.com/", "https://example.com/"},
+		{"src/cli/main.go", "src%2Fcli%2Fmain.go"},
+		{"../secret", "..%2Fsecret"},
+		{"./file", ".%2Ffile"},
+		{"https://example.com/", "https:%2F%2Fexample.com%2F"},
+		{"https://example.com/foo", "https:%2F%2Fexample.com%2Ffoo"},
 		{"sc-domain:example.com", "sc-domain:example.com"},
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
 			t.Parallel()
-			parts := strings.Split(c.in, "/")
-			for i, part := range parts {
-				if part == "." || part == ".." {
-					parts[i] = strings.Repeat("%2E", len(part))
-					continue
-				}
-				parts[i] = url.PathEscape(part)
+			got := url.PathEscape(c.in)
+			if c.in == "." || c.in == ".." {
+				got = strings.Repeat("%2E", len(c.in))
 			}
-			assert.Equal(t, c.want, strings.Join(parts, "/"))
+			assert.Equal(t, c.want, got)
 		})
 	}
 }
