@@ -122,6 +122,23 @@ func TestAPIErrorHTMLTitleIgnoresScriptAndStyleBlocks(t *testing.T) {
 		t.Fatalf("unclosed style block summary = %q, want HTML summary", unclosedCollapsed)
 	}
 }
+
+func TestAPIErrorHTMLTitleSkipsRepeatedBlocks(t *testing.T) {
+	var body strings.Builder
+	body.WriteString(` + "`" + `<!doctype html><html><head>` + "`" + `)
+	for i := 0; i < 100; i++ {
+		body.WriteString(` + "`" + `<script><title>Script Secret</title></script>` + "`" + `)
+	}
+	body.WriteString(` + "`" + `<title>Real Title</title></head></html>` + "`" + `)
+
+	collapsed := truncateBody([]byte(body.String()))
+	if strings.Contains(collapsed, "Script Secret") {
+		t.Fatalf("repeated script blocks leaked into title summary: %q", collapsed)
+	}
+	if !strings.Contains(collapsed, "Real Title") {
+		t.Fatalf("repeated script block summary = %q, want real title", collapsed)
+	}
+}
 `
 	require.NoError(t, os.WriteFile(
 		filepath.Join(outputDir, "internal", "client", "apierror_empty_body_test.go"),
