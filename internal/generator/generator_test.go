@@ -20686,17 +20686,17 @@ components:
 	defaultResources := regexp.MustCompile(`(?s)func defaultSyncResources\(\) \[\]string \{(.*?)\n\}`).FindStringSubmatch(src)
 	require.Len(t, defaultResources, 2)
 	assert.Contains(t, defaultResources[1], `"usercollection",`)
-	assert.Contains(t, defaultResources[1], `"usercollection-daily-sleep",`)
+	assert.Contains(t, defaultResources[1], `"usercollection-heartrate",`)
 	assert.Contains(t, defaultResources[1], `"usercollection-personal-info",`)
-	assert.NotContains(t, defaultResources[1], `"usercollection-heartrate",`,
-		"heartrate should stay absorbed by the canonical usercollection resource")
+	assert.NotContains(t, defaultResources[1], `"usercollection-daily-sleep",`,
+		"daily_sleep should stay absorbed by the canonical usercollection resource")
 	assert.NotContains(t, defaultResources[1], `"webhook",`,
 		"auth-tagged webhook resources must stay out of the default sync set")
 
 	paginationSwitch := regexp.MustCompile(`(?s)func resourceSupportsPagination\(resource string\) bool \{(.*?)\n\}`).FindStringSubmatch(src)
 	require.Len(t, paginationSwitch, 2)
 	assert.Contains(t, paginationSwitch[1], `case "usercollection":`)
-	assert.Contains(t, paginationSwitch[1], `case "usercollection-daily-sleep":`)
+	assert.Contains(t, paginationSwitch[1], `case "usercollection-heartrate":`)
 	assert.NotContains(t, paginationSwitch[1], `case "usercollection-personal-info":`,
 		"single-object resources without cursor params must not be marked paginated")
 	assert.Contains(t, src, `cursorParam:    "next_token"`,
@@ -20707,11 +20707,11 @@ components:
 import "testing"
 
 func TestSyncSinceParamFormatForDateOnlyResources(t *testing.T) {
-	if got := syncResourceSinceParamFormat("usercollection-daily-sleep"); got != "date" {
+	if got := syncResourceSinceParamFormat("usercollection"); got != "date" {
 		t.Fatalf("daily sleep since format = %q, want date", got)
 	}
-	// The canonical usercollection endpoint is heartrate because it has the shortest shared-prefix path.
-	if got := syncResourceSinceParamFormat("usercollection"); got != "date-time" {
+	// The canonical usercollection endpoint is daily_sleep because no endpoint is named list and get_daily_sleep sorts before get_heartrate.
+	if got := syncResourceSinceParamFormat("usercollection-heartrate"); got != "date-time" {
 		t.Fatalf("heartrate since format = %q, want date-time", got)
 	}
 	if got := formatSyncSinceValue("2026-06-07T12:34:56Z", "date"); got != "2026-06-07" {

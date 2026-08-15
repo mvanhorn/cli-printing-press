@@ -293,7 +293,7 @@ func TestSyncResourceWarnsOnPartialHydrationFailure(t *testing.T) {
 	}
 }
 
-func TestSyncResourceUsesFetchedPageForHydrationCapWarning(t *testing.T) {
+func TestSyncResourceAllHydrationFailedIsIntegrityFailure(t *testing.T) {
 	db := openHydrationTestStore(t)
 	client := &fakeHydrateClient{
 		responses: map[string]json.RawMessage{
@@ -307,14 +307,14 @@ func TestSyncResourceUsesFetchedPageForHydrationCapWarning(t *testing.T) {
 	var events bytes.Buffer
 
 	res := syncResource(context.Background(), client, db, "stories", "", true, 1, false, false, nil, &events)
-	if res.Err != nil {
-		t.Fatalf("syncResource error: %v", res.Err)
+	if res.Err == nil {
+		t.Fatalf("syncResource returned clean success for all-failed hydration; events: %s", events.String())
 	}
-	if res.Warn == nil || !strings.Contains(res.Warn.Error(), "scalar item hydration failed") {
-		t.Fatalf("syncResource warning = %v, want hydration failure", res.Warn)
+	if !res.IntegrityFailure {
+		t.Fatalf("IntegrityFailure = false, want true")
 	}
 	got := events.String()
-	for _, want := range []string{`+"`"+`"reason":"all_items_failed_hydration"`+"`"+`, `+"`"+`"reason":"max_pages_cap_hit"`+"`"+`} {
+	for _, want := range []string{`+"`"+`"reason":"all_items_failed_hydration"`+"`"+`, `+"`"+`"error":"stories consumed 2 item(s) but stored 0"`+"`"+`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("sync events missing %s:\n%s", want, got)
 		}
