@@ -29,6 +29,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
@@ -1567,22 +1568,98 @@ func looksLikeHTMLBody(body string) bool {
 }
 
 func extractHTMLTitle(body string) string {
-	lower := strings.ToLower(body)
-	start := strings.Index(lower, "<title")
-	if start < 0 {
-		return ""
+	searchFrom := 0
+	for searchFrom < len(body) {
+		titleStart := indexHTMLTag(body[searchFrom:], "title")
+		if titleStart < 0 {
+			return ""
+		}
+		if blockStart, blockTag := nextHTMLBlockTag(body[searchFrom:titleStart+searchFrom], "script", "style"); blockStart >= 0 {
+			blockStart += searchFrom
+			blockOpenEnd := htmlTagEnd(body, blockStart)
+			if blockOpenEnd < 0 {
+				return ""
+			}
+			blockCloseStart := indexHTMLCloseTag(body[blockOpenEnd+1:], blockTag)
+			if blockCloseStart < 0 {
+				return ""
+			}
+			searchFrom = blockOpenEnd + 1 + blockCloseStart + len("</"+blockTag+">")
+			continue
+		}
+		titleStart += searchFrom
+		openEnd := htmlTagEnd(body, titleStart)
+		if openEnd < 0 {
+			return ""
+		}
+		contentStart := openEnd + 1
+		end := indexHTMLCloseTag(body[contentStart:], "title")
+		if end < 0 {
+			return ""
+		}
+		title := stripHTMLTags(body[contentStart : contentStart+end])
+		return strings.Join(strings.Fields(stripControlCharacters(html.UnescapeString(title))), " ")
 	}
-	openEnd := strings.Index(lower[start:], ">")
-	if openEnd < 0 {
-		return ""
+	return ""
+}
+
+func indexHTMLTag(body, tag string) int {
+	needle := "<" + tag
+	offset := 0
+	for offset < len(body) {
+		idx := indexCaseInsensitive(body[offset:], needle)
+		if idx < 0 {
+			return -1
+		}
+		start := offset + idx
+		after := start + len(needle)
+		if after >= len(body) || isHTMLTagNameBoundary(body[after]) {
+			return start
+		}
+		offset = after
 	}
-	contentStart := start + openEnd + 1
-	end := strings.Index(lower[contentStart:], "</title>")
+	return -1
+}
+
+func nextHTMLBlockTag(body string, tags ...string) (int, string) {
+	best := -1
+	bestTag := ""
+	for _, tag := range tags {
+		idx := indexHTMLTag(body, tag)
+		if idx >= 0 && (best < 0 || idx < best) {
+			best = idx
+			bestTag = tag
+		}
+	}
+	return best, bestTag
+}
+
+func indexHTMLCloseTag(body, tag string) int {
+	return indexCaseInsensitive(body, "</"+tag+">")
+}
+
+func indexCaseInsensitive(body, needle string) int {
+	if needle == "" {
+		return 0
+	}
+	for idx := 0; idx+len(needle) <= len(body); idx++ {
+		if strings.EqualFold(body[idx:idx+len(needle)], needle) {
+			return idx
+		}
+	}
+	return -1
+}
+
+func htmlTagEnd(body string, start int) int {
+	end := strings.IndexByte(body[start:], '>')
 	if end < 0 {
-		return ""
+		return -1
 	}
-	title := stripHTMLTags(body[contentStart : contentStart+end])
-	return strings.Join(strings.Fields(html.UnescapeString(title)), " ")
+	return start + end
+}
+
+func isHTMLTagNameBoundary(b byte) bool {
+	return b == '>' || b == '/' || b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '\f'
 }
 
 func stripHTMLTags(body string) string {
@@ -1602,6 +1679,18 @@ func stripHTMLTags(body string) string {
 		}
 	}
 	return out.String()
+}
+
+func stripControlCharacters(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' {
+			return ' '
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, text)
 }
 
 func truncateRunes(text string, maxRunes int) string {
