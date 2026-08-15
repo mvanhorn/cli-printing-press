@@ -251,13 +251,22 @@ func appendRuntimeFlagArgs(args, flags []string) []string {
 	out := slices.Clone(args)
 	for i := 0; i+1 < len(flags); i += 2 {
 		flag, value := flags[i], flags[i+1]
-		if isNegativeNumericArg(value) {
+		if isNegativeNumericArg(value) || isBooleanFlagValue(value) {
 			out = append(out, flag+"="+value)
 			continue
 		}
 		out = append(out, flag, value)
 	}
 	return out
+}
+
+func isBooleanFlagValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "false":
+		return true
+	default:
+		return false
+	}
 }
 
 func isNegativeNumericArg(value string) bool {

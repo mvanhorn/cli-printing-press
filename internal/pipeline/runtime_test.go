@@ -224,8 +224,8 @@ func TestRunCommandTestsUsesSafeHappyArgsArgv(t *testing.T) {
 	assert.True(t, result.Execute)
 	data, err := os.ReadFile(logPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(data), "whereabouts --west=-122.1 --csv true --dry-run -- -122.1")
-	assert.Contains(t, string(data), "whereabouts --west=-122.1 --csv true -- -122.1")
+	assert.Contains(t, string(data), "whereabouts --west=-122.1 --csv=true --dry-run -- -122.1")
+	assert.Contains(t, string(data), "whereabouts --west=-122.1 --csv=true -- -122.1")
 	assert.NotContains(t, string(data), "--json")
 }
 
@@ -1574,6 +1574,15 @@ func TestAppendRuntimeFlagArgsUsesEqualsForNegativeNumericValues(t *testing.T) {
 	assert.Equal(t,
 		[]string{"map", "--west=-122.1", "--east", "140.9"},
 		appendRuntimeFlagArgs([]string{"map"}, []string{"--west", "-122.1", "--east", "140.9"}),
+	)
+}
+
+func TestBuildRuntimeTestArgsUsesEqualsForBareBooleanHappyFlags(t *testing.T) {
+	happy := parseHappyArgsAnnotation("<item>=example-id;--dry-run")
+
+	assert.Equal(t,
+		[]string{"create", "example-id", "--dry-run=true", "--json"},
+		buildRuntimeTestArgs("create", happy.positionals, happy.flags, "--json"),
 	)
 }
 
