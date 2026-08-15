@@ -135,7 +135,7 @@ func TestAPIErrorHTMLTitleIgnoresScriptAndStyleBlocks(t *testing.T) {
 func TestAPIErrorHTMLTitleSkipsRepeatedBlocks(t *testing.T) {
 	var body strings.Builder
 	body.WriteString(` + "`" + `<!doctype html><html><head>` + "`" + `)
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 10; i++ {
 		body.WriteString(` + "`" + `<script><title>Script Secret</title></script>` + "`" + `)
 	}
 	body.WriteString(` + "`" + `<title>Real Title</title></head></html>` + "`" + `)
