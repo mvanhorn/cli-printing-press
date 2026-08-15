@@ -81,7 +81,7 @@ Run `learn-loop-example-pp-cli doctor` to verify setup.
 
 ## Agent Mode
 
-Add `--agent` to any command. Expands to: `--json --compact --no-input --no-color --yes`.
+Add `--agent` to any command. Expands to: `--json --compact --no-input --no-color`.
 
 - **Pipeable** — JSON on stdout, errors on stderr
 - **Filterable** — `--select` keeps a subset of fields. Dotted paths descend into nested structures; arrays traverse element-wise. Critical for keeping context small on verbose APIs:
