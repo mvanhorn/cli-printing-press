@@ -179,7 +179,7 @@ func TestRunCommandTestsExecutesMockReadCommands(t *testing.T) {
 	binary := buildCommandProbeBinary(t)
 	cmd := discoveredCommand{Name: "items", Kind: "read"}
 
-	result := runCommandTests(binary, cmd, "mock", os.Environ())
+	result := runCommandTests(binary, cmd, "mock", os.Environ(), false)
 	assert.True(t, result.Help)
 	assert.True(t, result.DryRun)
 	assert.False(t, result.Execute)
@@ -196,7 +196,7 @@ func TestRunCommandTestsUsesHappyArgsAnnotation(t *testing.T) {
 		},
 	}
 
-	result := runCommandTests(binary, cmd, "mock", os.Environ())
+	result := runCommandTests(binary, cmd, "mock", os.Environ(), false)
 
 	assert.True(t, result.Help)
 	assert.True(t, result.DryRun)
@@ -217,7 +217,7 @@ func TestRunCommandTestsUsesSafeHappyArgsArgv(t *testing.T) {
 		},
 	}
 
-	result := runCommandTests(binary, cmd, "mock", env)
+	result := runCommandTests(binary, cmd, "mock", env, false)
 
 	assert.True(t, result.Help)
 	assert.True(t, result.DryRun)
@@ -602,7 +602,7 @@ func TestRunCommandTestsWithoutHappyArgsKeepsGenericFailure(t *testing.T) {
 		Args: []string{"mock-value"},
 	}
 
-	result := runCommandTests(binary, cmd, "mock", os.Environ())
+	result := runCommandTests(binary, cmd, "mock", os.Environ(), false)
 
 	assert.True(t, result.Help)
 	assert.False(t, result.DryRun)
@@ -1488,14 +1488,68 @@ func TestExtractPositionalPlaceholders(t *testing.T) {
 }
 
 func TestParseHappyArgsAnnotation(t *testing.T) {
-	got := parseHappyArgsAnnotation(" <person>= Alice ; --query= sunset ; --limit=10 ; invalid ; name=Bob ; empty= ; --bad ")
+	got := parseHappyArgsAnnotation(" <person>= Alice ; --query= sunset ; --limit=10 ; invalid ; name=Bob ; empty= ; --dry-run ; --bad ")
 
 	assert.Equal(t, []string{"Alice", "Bob"}, got.positionals)
-	assert.Equal(t, []string{"--query", "sunset", "--limit", "10"}, got.flags)
+	assert.Equal(t, []string{"--query", "sunset", "--limit", "10", "--dry-run", "true", "--bad", "true"}, got.flags)
 
 	escaped := parseHappyArgsAnnotation(`<person>=vendor\;part;--query=foo\;bar`)
 	assert.Equal(t, []string{"vendor;part"}, escaped.positionals)
 	assert.Equal(t, []string{"--query", "foo;bar"}, escaped.flags)
+}
+
+func TestClassifyCommandKindUsesEndpointMutationAnnotations(t *testing.T) {
+	spec := &openAPISpec{Paths: []string{"/phone-numbers"}}
+
+	mutating := discoveredCommand{
+		Name: "create-phone-number",
+		Annotations: map[string]string{
+			endpointMethodAnnotation: "POST",
+		},
+	}
+	classifyCommandKind(&mutating, spec)
+	assert.Equal(t, "write", mutating.Kind)
+
+	readOnlyPost := discoveredCommand{
+		Name: "search",
+		Annotations: map[string]string{
+			endpointMethodAnnotation: "POST",
+			mcpReadOnlyAnnotation:    "true",
+		},
+	}
+	classifyCommandKind(&readOnlyPost, spec)
+	assert.Equal(t, "read", readOnlyPost.Kind)
+}
+
+func TestRunCommandTestsSkipsLiveWriteExecuteUnlessAllowed(t *testing.T) {
+	binary := buildHappyArgsProbeBinary(t)
+	logFile := filepath.Join(t.TempDir(), "probe.log")
+	env := append(os.Environ(), "PP_PROBE_LOG="+logFile)
+	cmd := discoveredCommand{
+		Name: "whereabouts",
+		Kind: "write",
+		Annotations: map[string]string{
+			happyArgsAnnotation: "<person>=Alice;--query=sunset",
+		},
+	}
+
+	result := runCommandTests(binary, cmd, "live", env, false)
+	require.True(t, result.Execute, "live write execute is treated as skipped/pass")
+	assert.Equal(t, 3, result.Score)
+	assert.NotContains(t, readProbeLog(t, logFile), "whereabouts Alice --query sunset --json")
+
+	require.NoError(t, os.Remove(logFile))
+	result = runCommandTests(binary, cmd, "live", env, true)
+	require.True(t, result.Execute)
+	assert.Equal(t, 3, result.Score)
+	assert.Contains(t, readProbeLog(t, logFile), "whereabouts Alice --query sunset --json")
+}
+
+func readProbeLog(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return string(data)
 }
 
 func TestMergeHappyPositionalsOverlaysInOrder(t *testing.T) {

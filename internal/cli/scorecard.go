@@ -20,6 +20,7 @@ func newScorecardCmd() *cobra.Command {
 	var liveCheck bool
 	var liveCheckTimeout time.Duration
 	var writeManifest string
+	var allowDestructive bool
 
 	cmd := &cobra.Command{
 		Use:   "scorecard",
@@ -64,9 +65,10 @@ func newScorecardCmd() *cobra.Command {
 			var live *pipeline.LiveCheckResult
 			if liveCheck {
 				live = pipeline.RunLiveCheck(pipeline.LiveCheckOptions{
-					CLIDir:      dir,
-					ResearchDir: researchDir,
-					Timeout:     liveCheckTimeout,
+					CLIDir:           dir,
+					ResearchDir:      researchDir,
+					Timeout:          liveCheckTimeout,
+					AllowDestructive: allowDestructive,
 				})
 				pipeline.ApplyLiveCheckToScorecard(sc, live)
 			}
@@ -152,6 +154,7 @@ func newScorecardCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&liveCheck, "live-check", false, "Sample novel-feature examples against real targets and cap Insight when flagships return broken output")
 	cmd.Flags().DurationVar(&liveCheckTimeout, "live-check-timeout", 10*time.Second, "Per-feature timeout for live check invocations")
 	cmd.Flags().StringVar(&writeManifest, "write-manifest", "", "Path to .printing-press.json to update with scorecard summary and built novel features")
+	cmd.Flags().BoolVar(&allowDestructive, "allow-destructive", false, "Allow live-check to execute mutating generated command samples (default skips them)")
 
 	return cmd
 }

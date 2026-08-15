@@ -592,19 +592,23 @@ func isMutatingLeaf(name string) bool {
 }
 
 func liveDogfoodCommandMutates(command liveDogfoodCommand) bool {
-	if annotationIsTrueValue(command.Annotations[mcpReadOnlyAnnotation]) {
+	return commandMutates(command.Annotations, command.Path)
+}
+
+func commandMutates(annotations map[string]string, commandPath []string) bool {
+	if annotationIsTrueValue(annotations[mcpReadOnlyAnnotation]) {
 		return false
 	}
-	if annotationIsTrueValue(command.Annotations[mcpLocalWriteAnnotation]) {
+	if annotationIsTrueValue(annotations[mcpLocalWriteAnnotation]) {
 		return true
 	}
-	if method := strings.ToUpper(strings.TrimSpace(command.Annotations[endpointMethodAnnotation])); method != "" {
+	if method := strings.ToUpper(strings.TrimSpace(annotations[endpointMethodAnnotation])); method != "" {
 		return method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE"
 	}
-	if len(command.Path) == 0 {
+	if len(commandPath) == 0 {
 		return false
 	}
-	return isMutatingLeaf(command.Path[len(command.Path)-1])
+	return isMutatingLeaf(commandPath[len(commandPath)-1])
 }
 
 func commandNameTokens(name string) []string {

@@ -153,8 +153,11 @@ func parseHappyArgsAnnotation(value string) happyArgs {
 		}
 		if strings.HasPrefix(token, "--") {
 			name, value, ok := strings.Cut(token, "=")
-			if !ok || strings.TrimSpace(name) == "--" {
+			if strings.TrimSpace(name) == "--" {
 				continue
+			}
+			if !ok {
+				value = "true"
 			}
 			parsed.flags = append(parsed.flags, strings.TrimSpace(name), strings.TrimSpace(value))
 			continue
@@ -649,6 +652,11 @@ func classifyCommandKind(cmd *discoveredCommand, spec *openAPISpec) {
 		return
 	case "tail":
 		cmd.Kind = "data-layer"
+		return
+	}
+
+	if commandMutates(cmd.Annotations, []string{cmd.Name}) {
+		cmd.Kind = "write"
 		return
 	}
 
