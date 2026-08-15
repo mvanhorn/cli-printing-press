@@ -11,7 +11,6 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 type novelFeatureCommandRender struct {
@@ -36,7 +35,9 @@ type novelFeatureFlagRender struct {
 }
 
 type novelFeatureChildRender struct {
-	Ident string
+	Ident       string
+	CommandPath string
+	Example     string
 }
 
 type novelFeatureTestRender struct {
@@ -157,12 +158,19 @@ func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, generated
 			return nil, err
 		}
 		if rendered != nil {
-			renderedChildren = append(renderedChildren, novelFeatureChildRender{Ident: rendered.Ident})
+			renderedChildren = append(renderedChildren, novelFeatureChildRender{
+				Ident:       rendered.Ident,
+				CommandPath: rendered.CommandPath,
+				Example:     rendered.Example,
+			})
 		}
 	}
 
 	data := g.novelFeatureCommandData(node)
 	data.Children = renderedChildren
+	if data.Example == "" && node.feature == nil {
+		data.Example = novelFeatureParentExample(renderedChildren, g.Spec.Name)
+	}
 	outPath := filepath.Join("internal", "cli", novelFeatureStubFileName(node.path))
 	if g.novelFeatureStubShouldSkipGenerated(node.path, generatedPaths) {
 		fmt.Fprintf(os.Stderr, "warning: novel feature command %q maps to generated command path; skipping novel stub\n", data.CommandPath)
@@ -281,7 +289,7 @@ func (g *Generator) novelFeatureCommandData(node *novelFeatureStubNode) novelFea
 		if short == "" {
 			short = "TODO: implement " + commandPath
 		}
-		readOnly = g.novelFeatureReadOnly(*node.feature)
+		readOnly = novelFeatureReadOnly(*node.feature)
 		flags = novelFeatureFlags(*node.feature, node.path, g.Spec.Name)
 		hasPositional = novelFeatureHasPositional(node.feature.Command)
 		use = novelFeatureUse(node.segment, node.feature.Command)
@@ -428,14 +436,41 @@ func novelFeatureUse(segment, command string) string {
 }
 
 func novelFeatureParentShort(node *novelFeatureStubNode) string {
-	// Only called from the else-if len(node.children) > 0 branch, so children
-	// is always non-empty here.
-	children := sortedNovelChildren(node)
-	leafNames := make([]string, 0, len(children))
-	for _, child := range children {
-		leafNames = append(leafNames, child.segment)
+	if group := commonNovelFeatureGroup(node); group != "" {
+		return group
 	}
-	return fmt.Sprintf("%s subcommands: %s", node.segment, strings.Join(leafNames, ", "))
+	return "Work with " + strings.ReplaceAll(node.segment, "-", " ")
+}
+
+func commonNovelFeatureGroup(node *novelFeatureStubNode) string {
+	var first string
+	allGrouped := true
+	var walk func(*novelFeatureStubNode)
+	walk = func(cur *novelFeatureStubNode) {
+		if cur == nil || !allGrouped {
+			return
+		}
+		if cur.feature != nil {
+			group := naming.OneLine(cur.feature.Group)
+			if group == "" {
+				allGrouped = false
+				return
+			}
+			if first == "" {
+				first = group
+			} else if !strings.EqualFold(first, group) {
+				allGrouped = false
+			}
+		}
+		for _, child := range sortedNovelChildren(cur) {
+			walk(child)
+		}
+	}
+	walk(node)
+	if !allGrouped {
+		return ""
+	}
+	return first
 }
 
 func novelFeatureStubIdent(parts []string) string {
@@ -462,60 +497,61 @@ func novelFeatureStubLegacyFileName(parts []string) string {
 
 func novelFeatureReadOnly(feature NovelFeature) bool {
 	text := strings.ToLower(strings.Join([]string{
+		feature.Name,
+		feature.Command,
 		feature.Description,
+		feature.Rationale,
 		feature.WhyItMatters,
 	}, " "))
 	words := strings.FieldsFunc(text, func(r rune) bool {
 		return r < 'a' || r > 'z'
 	})
-	for _, verb := range []string{"create", "call", "run", "delete", "replay", "define", "batch"} {
-		if slices.Contains(words, verb) {
+	for _, word := range []string{
+		"add", "adds", "adding",
+		"archive", "archives", "archiving",
+		"buy", "buys", "buying",
+		"cancel", "cancels", "canceling", "cancelling",
+		"create", "creates", "creating",
+		"delete", "deletes", "deleting",
+		"dial", "dials", "dialing",
+		"invite", "invites", "inviting",
+		"place", "places", "placing",
+		"post", "posts", "posting",
+		"publish", "publishes", "publishing",
+		"purchase", "purchases", "purchasing",
+		"remove", "removes", "removing",
+		"restore", "restores", "restoring",
+		"replay", "replays", "replaying",
+		"run", "runs", "running",
+		"send", "sends", "sending",
+		"set", "sets", "setting",
+		"submit", "submits", "submitting",
+		"transfer", "transfers", "transferring",
+		"trigger", "triggers", "triggering",
+		"update", "updates", "updating",
+	} {
+		if slices.Contains(words, word) {
 			return false
 		}
 	}
-	return true
-}
 
-// novelFeatureReadOnly applies the prose classifier only when the API has a
-// mixed or unknown transport surface. A spec whose complete endpoint tree is
-// made of non-mutating GETs has no generated mutation route for a novel
-// scaffold to target, so every scaffold is safe to expose as read-only
-// regardless of prose verbs.
-func (g *Generator) novelFeatureReadOnly(feature NovelFeature) bool {
-	if g.allEndpointsAreGET() {
-		return true
-	}
-	return novelFeatureReadOnly(feature)
-}
-
-func (g *Generator) allEndpointsAreGET() bool {
-	if g == nil || g.Spec == nil {
-		return false
-	}
-
-	count := 0
-	var visit func(spec.Resource) bool
-	visit = func(resource spec.Resource) bool {
-		for endpointName, endpoint := range resource.Endpoints {
-			count++
-			if !strings.EqualFold(strings.TrimSpace(endpoint.Method), "GET") || endpointIsWriteCommand(endpoint, endpointName) {
-				return false
-			}
-		}
-		for _, subResource := range resource.SubResources {
-			if !visit(subResource) {
-				return false
-			}
-		}
-		return true
-	}
-
-	for _, resource := range g.Spec.Resources {
-		if !visit(resource) {
-			return false
+	for _, phrase := range []string{
+		"read only",
+		"read-only",
+		"local store",
+		"local sqlite",
+		"sqlite store",
+		"local cache",
+		"cached data",
+		"local ledger",
+		"without mutating",
+		"does not mutate",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
 		}
 	}
-	return count > 0
+	return false
 }
 
 func novelFeatureFlags(feature NovelFeature, commandPath []string, apiName string) []novelFeatureFlagRender {
@@ -619,6 +655,22 @@ func novelFeatureExample(feature NovelFeature, commandPath []string, apiName str
 	invocation = append(invocation, naming.CLI(apiName))
 	invocation = append(invocation, commandPath...)
 	invocation = append(invocation, tokens...)
+	return "  " + shellargs.Join(invocation)
+}
+
+func novelFeatureParentExample(children []novelFeatureChildRender, apiName string) string {
+	if len(children) == 0 {
+		return ""
+	}
+	for _, child := range children {
+		if strings.TrimSpace(child.Example) != "" {
+			return child.Example
+		}
+	}
+	if strings.TrimSpace(children[0].CommandPath) == "" {
+		return ""
+	}
+	invocation := append([]string{naming.CLI(apiName)}, strings.Fields(children[0].CommandPath)...)
 	return "  " + shellargs.Join(invocation)
 }
 

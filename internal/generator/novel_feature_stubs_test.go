@@ -66,6 +66,8 @@ func TestGeneratorEmitsNovelFeatureCommandStubs(t *testing.T) {
 
 	parent := readGeneratedFile(t, outputDir, "internal", "cli", "runs.go")
 	assert.Contains(t, parent, `Use:         "runs"`)
+	assert.Contains(t, parent, `Short:       "Work with runs"`)
+	assert.Contains(t, parent, `Example:     "  apify-pp-cli runs classify run-123 --limit 10"`)
 	assert.Contains(t, parent, "RunE:        parentNoSubcommandRunE(flags)")
 	assert.Contains(t, parent, "addNovelCommandIfAbsent(cmd, newNovelRunsClassifyCmd(flags))")
 
@@ -73,7 +75,7 @@ func TestGeneratorEmitsNovelFeatureCommandStubs(t *testing.T) {
 	assert.Contains(t, classify, "// pp:data-source auto")
 	assert.Contains(t, classify, `Use:         "classify"`)
 	assert.Contains(t, classify, `Example:     "  apify-pp-cli runs classify run-123 --limit 10"`)
-	assert.Contains(t, classify, `Annotations: map[string]string{"mcp:read-only": "true"}`)
+	assert.Contains(t, classify, `Annotations: map[string]string{"mcp:read-only": "false"}`)
 	assert.Contains(t, classify, `StringVar(&flagLimit, "limit", ""`)
 	assert.Contains(t, classify, `TODO: implement novel feature %q", "runs classify"`)
 
@@ -91,23 +93,29 @@ func TestGeneratorEmitsNovelFeatureCommandStubs(t *testing.T) {
 	runtimeTest.WriteString(`package cli
 
 import (
-	"io"
+	"bytes"
+	"strings"
 	"testing"
 )
 
 func TestNovelFeatureStubsResolveAtRuntime(t *testing.T) {
 	cases := [][]string{
 		{"call", "--help"},
+		{"runs", "--help"},
 		{"runs", "classify", "--help"},
 		{"call", "apify/web-scraper", "--dry-run"},
 	}
 	for _, args := range cases {
 		cmd := RootCmd()
 		cmd.SetArgs(args)
-		cmd.SetOut(io.Discard)
-		cmd.SetErr(io.Discard)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
 		if err := cmd.Execute(); err != nil {
 			t.Fatalf("RootCmd(%v) error = %v", args, err)
+		}
+		if args[len(args)-1] == "--help" && len(args) == 2 && !strings.Contains(out.String(), "Examples:") {
+			t.Fatalf("RootCmd(%v) help missing Examples section:\n%s", args, out.String())
 		}
 	}
 }
@@ -198,10 +206,10 @@ func TestNovelFrameworkParentReachable(t *testing.T) {
 	assert.NotContains(t, plainRoot, `rootCmd.Find(strings.Fields(`)
 }
 
-func TestGeneratorMarksAllGETNovelFeatureStubsReadOnly(t *testing.T) {
+func TestGeneratorClassifiesNovelFeatureReadOnlyFromFeatureIntentOnly(t *testing.T) {
 	t.Parallel()
 
-	apiSpec := minimalSpec("all-get-novel")
+	apiSpec := minimalSpec("intent-novel")
 	items := apiSpec.Resources["items"]
 	items.SubResources = map[string]spec.Resource{
 		"history": {
@@ -215,26 +223,80 @@ func TestGeneratorMarksAllGETNovelFeatureStubsReadOnly(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	gen.NovelFeatures = []NovelFeature{
 		{
-			Name:        "Call actor",
-			Command:     "call",
-			Description: "Call an actor with idempotent tags.",
-			Rationale:   "Agents need to run actors without re-creating identical jobs.",
-			Example:     "all-get-novel-pp-cli call",
+			Name:        "Dial customer",
+			Command:     "afk ask",
+			Description: "Dial a phone number and place an outbound call.",
+			Rationale:   "Agents need to ask a person a question.",
+			Example:     "intent-novel-pp-cli afk ask --to +15555550123",
 		},
 		{
-			Name:        "Run classifier",
-			Command:     "runs classify",
-			Description: "Classify recent runs by failure mode.",
-			Rationale:   "Agents need a bounded view of run failures.",
-			Example:     "all-get-novel-pp-cli runs classify run-123",
+			Name:        "Cost report",
+			Command:     "cost",
+			Description: "Read cost totals from the local SQLite store.",
+			Rationale:   "Agents need local spend visibility.",
+			Example:     "intent-novel-pp-cli cost --json",
+		},
+		{
+			Name:        "Transcript grep",
+			Command:     "transcripts grep",
+			Description: "Search transcripts in the local cache with FTS.",
+			Rationale:   "Agents need local transcript lookup.",
+			Example:     "intent-novel-pp-cli transcripts grep renewal",
+		},
+		{
+			Name:        "Ambiguous helper",
+			Command:     "assist",
+			Description: "Coordinate the next recommended action.",
+			Rationale:   "Agents need a workflow shortcut.",
+			Example:     "intent-novel-pp-cli assist",
+		},
+		{
+			Name:        "Set status",
+			Command:     "set status",
+			Description: "Set status using the latest workflow state.",
+			Rationale:   "Agents need to update external state.",
+			Example:     "intent-novel-pp-cli set status done",
+		},
+		{
+			Name:        "Run query",
+			Command:     "run query",
+			Description: "Run query against the remote system.",
+			Rationale:   "Agents need to execute an action query.",
+			Example:     "intent-novel-pp-cli run query --name nightly",
+		},
+		{
+			Name:        "Replay history",
+			Command:     "replay history",
+			Description: "Replay history into the remote workflow.",
+			Rationale:   "Agents need to reproduce an earlier action.",
+			Example:     "intent-novel-pp-cli replay history call-123",
+		},
+		{
+			Name:        "Promote status",
+			Command:     "promote status",
+			Description: "Promote status after review.",
+			Rationale:   "Agents need to advance the remote workflow.",
+			Example:     "intent-novel-pp-cli promote status approved",
 		},
 	}
 	require.NoError(t, gen.Generate())
 
-	call := readGeneratedFile(t, outputDir, "internal", "cli", "call.go")
-	assert.Contains(t, call, `Annotations: map[string]string{"mcp:read-only": "true"}`)
-	classify := readGeneratedFile(t, outputDir, "internal", "cli", "runs_classify.go")
-	assert.Contains(t, classify, `Annotations: map[string]string{"mcp:read-only": "true"}`)
+	ask := readGeneratedFile(t, outputDir, "internal", "cli", "afk_ask.go")
+	assert.Contains(t, ask, `Annotations: map[string]string{"mcp:read-only": "false"}`)
+	cost := readGeneratedFile(t, outputDir, "internal", "cli", "cost.go")
+	assert.Contains(t, cost, `Annotations: map[string]string{"mcp:read-only": "true"}`)
+	grep := readGeneratedFile(t, outputDir, "internal", "cli", "transcripts_grep.go")
+	assert.Contains(t, grep, `Annotations: map[string]string{"mcp:read-only": "true"}`)
+	assist := readGeneratedFile(t, outputDir, "internal", "cli", "assist.go")
+	assert.Contains(t, assist, `Annotations: map[string]string{"mcp:read-only": "false"}`)
+	setStatus := readGeneratedFile(t, outputDir, "internal", "cli", "set_status.go")
+	assert.Contains(t, setStatus, `Annotations: map[string]string{"mcp:read-only": "false"}`)
+	runQuery := readGeneratedFile(t, outputDir, "internal", "cli", "run_query.go")
+	assert.Contains(t, runQuery, `Annotations: map[string]string{"mcp:read-only": "false"}`)
+	replayHistory := readGeneratedFile(t, outputDir, "internal", "cli", "replay_history.go")
+	assert.Contains(t, replayHistory, `Annotations: map[string]string{"mcp:read-only": "false"}`)
+	promoteStatus := readGeneratedFile(t, outputDir, "internal", "cli", "promote_status.go")
+	assert.Contains(t, promoteStatus, `Annotations: map[string]string{"mcp:read-only": "false"}`)
 
 	requireGeneratedCompiles(t, outputDir)
 }
@@ -912,10 +974,40 @@ func TestGeneratorNovelFeatureParentShortHasNoTODO(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	parent := readGeneratedFile(t, outputDir, "internal", "cli", "snapshot.go")
-	assert.Contains(t, parent, `Short:       "snapshot subcommands: diff, list"`)
+	assert.Contains(t, parent, `Short:       "Work with snapshot"`)
+	assert.Contains(t, parent, `Example:     "  novelparent-pp-cli snapshot diff before after"`)
 	assert.NotContains(t, parent, `Short:       "TODO`)
+	assert.NotContains(t, parent, `subcommands:`)
 
 	single := readGeneratedFile(t, outputDir, "internal", "cli", "single.go")
 	assert.Contains(t, single, `Short:       "A single-segment novel command."`)
 	assert.NotContains(t, single, `subcommands:`)
+}
+
+func TestGeneratorLeavesAuthoredParentGroupExampleUntouched(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("authoredparent")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{
+		{
+			Name:        "After-call workspace",
+			Command:     "afk",
+			Description: "Manage after-call knowledge workflows.",
+			Example:     "authoredparent-pp-cli afk --help",
+		},
+		{
+			Name:        "After-call history",
+			Command:     "afk history",
+			Description: "Read call history from the local ledger.",
+			Example:     "authoredparent-pp-cli afk history --limit 5",
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	parent := readGeneratedFile(t, outputDir, "internal", "cli", "afk.go")
+	assert.Contains(t, parent, `Example:     "  authoredparent-pp-cli afk --help"`)
+	assert.NotContains(t, parent, `Example:     "  authoredparent-pp-cli afk history --limit 5"`)
+	requireGeneratedCompiles(t, outputDir)
 }
