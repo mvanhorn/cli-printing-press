@@ -185,10 +185,10 @@ if [ "${1:-}" = "agent-context" ]; then
 {
   "commands": [
     {"name":"alpha","subcommands":[
-      {"name":"list"}
+      {"name":"list","annotations":{"pp:method":"GET"}}
     ]},
     {"name":"widgets","subcommands":[
-      {"name":"list"}
+      {"name":"list","annotations":{"pp:method":"GET"}}
     ]}
   ]
 }

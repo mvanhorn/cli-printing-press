@@ -4361,9 +4361,9 @@ if [ "$1" = "agent-context" ]; then
 {
   "commands": [
     {"name":"widgets","subcommands":[
-      {"name":"list"},
-      {"name":"get"},
-      {"name":"broken"}
+      {"name":"list","annotations":{"pp:method":"GET"}},
+      {"name":"get","annotations":{"pp:method":"GET"}},
+      {"name":"broken","annotations":{"pp:method":"GET"}}
     ]},
     {"name":"completion","subcommands":[{"name":"bash"}]}
   ]
@@ -4674,7 +4674,7 @@ if [ "$1" = "agent-context" ]; then
   cat <<'JSON'
 {
   "commands": [
-    {"name":"widgets","subcommands":[{"name":"large"}]}
+    {"name":"widgets","subcommands":[{"name":"large","annotations":{"pp:method":"GET"}}]}
   ]
 }
 JSON
