@@ -157,6 +157,9 @@ type LiveCheckOptions struct {
 	// Concurrency sets the parallel-feature worker count. Zero uses
 	// DefaultLiveCheckConcurrency. Set to 1 to force serial execution.
 	Concurrency int
+	// AllowDestructive permits generated-command fallback samples that mutate
+	// external state. Research-authored novel-feature examples are unchanged.
+	AllowDestructive bool
 }
 
 // RunLiveCheck samples novel feature Example commands against the real CLI.
@@ -222,15 +225,16 @@ func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 		out.BinaryRefresh.BinaryPath = binaryPath
 	}
 	features := pickFeatures(research)
-	if len(features) == 0 {
+	checkFeatures := annotateLiveCheckFeatures(opts.CLIDir, features)
+	if len(checkFeatures) == 0 {
 		var fallbackErr error
-		features, fallbackErr = pickGeneratedCommandFeatures(binaryPath)
+		checkFeatures, fallbackErr = pickGeneratedCommandFeatures(binaryPath)
 		if fallbackErr != nil {
 			out.Unable = true
 			out.Reason = "no novel features with Example commands and no generated command fallback: " + fallbackErr.Error()
 			return out
 		}
-		if len(features) == 0 {
+		if len(checkFeatures) == 0 {
 			out.Unable = true
 			out.Reason = "no novel features with Example commands and no generated command leaves to sample"
 			return out
@@ -252,11 +256,11 @@ func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 	if concurrency <= 0 {
 		concurrency = DefaultLiveCheckConcurrency
 	}
-	if concurrency > len(features) {
-		concurrency = len(features)
+	if concurrency > len(checkFeatures) {
+		concurrency = len(checkFeatures)
 	}
 
-	results := runFeaturesConcurrent(opts.CLIDir, probeBinaryPath, annotateLiveCheckFeatures(opts.CLIDir, features), timeout, concurrency)
+	results := runFeaturesConcurrent(opts.CLIDir, probeBinaryPath, checkFeatures, timeout, concurrency, opts.AllowDestructive)
 	out.Features = results
 	for _, r := range results {
 		switch r.Status {
@@ -759,6 +763,8 @@ func liveCheckBinaryCandidatePathsForName(cliDir, candidate, goos string) []stri
 type liveCheckFeature struct {
 	NovelFeature
 	DataSourceStrategy string
+	Path               []string
+	Annotations        map[string]string
 }
 
 func annotateLiveCheckFeatures(cliDir string, features []NovelFeature) []liveCheckFeature {
@@ -809,7 +815,7 @@ func novelCommandDataSourceStrategies(cliDir string) map[string]string {
 // runFeaturesConcurrent distributes the per-feature checks across a worker
 // pool. Results are collected in-order so LiveCheckResult.Features stays
 // stable across runs.
-func runFeaturesConcurrent(cliDir, binaryPath string, features []liveCheckFeature, timeout time.Duration, concurrency int) []LiveFeatureResult {
+func runFeaturesConcurrent(cliDir, binaryPath string, features []liveCheckFeature, timeout time.Duration, concurrency int, allowDestructive bool) []LiveFeatureResult {
 	results := make([]LiveFeatureResult, len(features))
 	type job struct{ idx int }
 	jobs := make(chan job, len(features))
@@ -822,7 +828,7 @@ func runFeaturesConcurrent(cliDir, binaryPath string, features []liveCheckFeatur
 	for range concurrency {
 		wg.Go(func() {
 			for j := range jobs {
-				results[j.idx] = runOneFeatureCheckWithDataSource(cliDir, binaryPath, features[j.idx], timeout)
+				results[j.idx] = runOneFeatureCheckWithDataSource(cliDir, binaryPath, features[j.idx], timeout, allowDestructive)
 			}
 		})
 	}
@@ -848,27 +854,31 @@ func pickFeatures(r *ResearchResult) []NovelFeature {
 	return out
 }
 
-func pickGeneratedCommandFeatures(binaryPath string) ([]NovelFeature, error) {
+func pickGeneratedCommandFeatures(binaryPath string) ([]liveCheckFeature, error) {
 	out, err := runStdoutOnly(binaryPath, 15*time.Second, "agent-context")
 	if err != nil {
 		return nil, fmt.Errorf("agent-context failed: %w", err)
 	}
-	paths, err := dogfoodExampleCommandPathsFromAgentContext(out)
+	paths, err := dogfoodExampleCommandPathsWithAnnotationsFromAgentContext(out)
 	if err != nil {
 		return nil, err
 	}
 	if len(paths) > 5 {
-		paths = sampleEvenlyCommandPaths(paths, 5)
+		paths = sampleEvenlyAgentCommandPaths(paths, 5)
 	}
 	binaryName := filepath.Base(binaryPath)
-	features := make([]NovelFeature, 0, len(paths))
-	for _, path := range paths {
-		command := strings.Join(path, " ")
-		features = append(features, NovelFeature{
-			Name:        command,
-			Command:     command,
-			Description: "Generated command " + command,
-			Example:     binaryName + " " + command + " --json",
+	features := make([]liveCheckFeature, 0, len(paths))
+	for _, item := range paths {
+		command := strings.Join(item.Path, " ")
+		features = append(features, liveCheckFeature{
+			NovelFeature: NovelFeature{
+				Name:        command,
+				Command:     command,
+				Description: "Generated command " + command,
+				Example:     binaryName + " " + command + " --json",
+			},
+			Path:        item.Path,
+			Annotations: item.Annotations,
 		})
 	}
 	return features, nil
@@ -886,14 +896,19 @@ func pickGeneratedCommandFeatures(binaryPath string) ([]NovelFeature, error) {
 // messaging) and needs structured access to *exec.ExitError +
 // DeadlineExceeded, so it runs exec inline.
 func runOneFeatureCheck(cliDir, binaryPath string, f NovelFeature, timeout time.Duration) LiveFeatureResult {
-	return runOneFeatureCheckWithDataSource(cliDir, binaryPath, liveCheckFeature{NovelFeature: f}, timeout)
+	return runOneFeatureCheckWithDataSource(cliDir, binaryPath, liveCheckFeature{NovelFeature: f}, timeout, false)
 }
 
-func runOneFeatureCheckWithDataSource(cliDir, binaryPath string, f liveCheckFeature, timeout time.Duration) LiveFeatureResult {
+func runOneFeatureCheckWithDataSource(cliDir, binaryPath string, f liveCheckFeature, timeout time.Duration, allowDestructive bool) LiveFeatureResult {
 	result := LiveFeatureResult{Name: f.Name, Command: f.Command, Example: f.Example}
 	fail := func(reason string) LiveFeatureResult {
 		result.Status = StatusFail
 		result.Reason = reason
+		return result
+	}
+	if !allowDestructive && liveCheckFeatureMutates(f) {
+		result.Status = StatusSkip
+		result.Reason = "mutating generated command requires --allow-destructive"
 		return result
 	}
 
@@ -965,6 +980,13 @@ func runOneFeatureCheckWithDataSource(cliDir, binaryPath string, f liveCheckFeat
 		result.Warnings = append(result.Warnings, msg)
 	}
 	return result
+}
+
+func liveCheckFeatureMutates(f liveCheckFeature) bool {
+	if len(f.Path) == 0 && len(f.Annotations) == 0 {
+		return false
+	}
+	return commandMutates(f.Annotations, f.Path)
 }
 
 func isUnsyncedLocalStoreFailure(stderr string) bool {

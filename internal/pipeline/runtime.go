@@ -25,6 +25,9 @@ type VerifyConfig struct {
 	EnvVar    string // env var name for the API key (e.g., GITHUB_TOKEN)
 	Threshold int    // minimum pass rate (default 80)
 	NoSpec    bool   // structural-only mode: skip spec-dependent checks
+	// AllowDestructive permits live-mode execute probes for commands classified
+	// as write operations. The default keeps live verification read-only.
+	AllowDestructive bool
 }
 
 // VerifyReport is the output of a runtime verification run.
@@ -305,7 +308,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 			report.Results = append(report.Results, result)
 			continue
 		}
-		result := runCommandTests(binaryPath, cmd, report.Mode, env)
+		result := runCommandTests(binaryPath, cmd, report.Mode, env, cfg.AllowDestructive)
 		commands[i] = cmd // preserve classification
 		report.Results = append(report.Results, result)
 	}
@@ -486,7 +489,7 @@ func runSideEffectSafeCommandTests(binary string, cmd discoveredCommand, env []s
 }
 
 // runCommandTests executes the test suite for a single command.
-func runCommandTests(binary string, cmd discoveredCommand, mode string, env []string) CommandResult {
+func runCommandTests(binary string, cmd discoveredCommand, mode string, env []string, allowDestructive bool) CommandResult {
 	result := CommandResult{
 		Command: cmd.Name,
 		Kind:    cmd.Kind,
@@ -519,7 +522,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	// Test 3: Execute (only for read commands in live mode, all in mock mode)
 	if cmd.Kind == "local" || cmd.Kind == "data-layer" {
 		result.Execute = true // tested separately in data pipeline
-	} else if mode == "live" && cmd.Kind == "write" {
+	} else if mode == "live" && cmd.Kind == "write" && !allowDestructive {
 		result.Execute = true // skip writes on live = pass (tested via dry-run)
 	} else {
 		extra := []string{"--json"}

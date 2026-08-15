@@ -3049,6 +3049,23 @@ func formatStdoutOnlyError(err error) error {
 }
 
 func dogfoodExampleCommandPathsFromAgentContext(data []byte) ([][]string, error) {
+	items, err := dogfoodExampleCommandPathsWithAnnotationsFromAgentContext(data)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([][]string, 0, len(items))
+	for _, item := range items {
+		paths = append(paths, item.Path)
+	}
+	return paths, nil
+}
+
+type dogfoodAgentCommandPath struct {
+	Path        []string
+	Annotations map[string]string
+}
+
+func dogfoodExampleCommandPathsWithAnnotationsFromAgentContext(data []byte) ([]dogfoodAgentCommandPath, error) {
 	var ctx dogfoodAgentContext
 	if err := json.Unmarshal(data, &ctx); err != nil {
 		return nil, err
@@ -3066,12 +3083,12 @@ func dogfoodExampleCommandPathsFromAgentContext(data []byte) ([][]string, error)
 	if len(duplicates) > 0 {
 		return nil, fmt.Errorf("duplicate sibling command names in agent-context: %s", strings.Join(duplicates, ", "))
 	}
-	var paths [][]string
+	var paths []dogfoodAgentCommandPath
 	for _, command := range ctx.Commands {
 		collectDogfoodExampleCommandPaths(nil, command, &paths)
 	}
 	sort.Slice(paths, func(i, j int) bool {
-		return strings.Join(paths[i], " ") < strings.Join(paths[j], " ")
+		return strings.Join(paths[i].Path, " ") < strings.Join(paths[j].Path, " ")
 	})
 	return paths, nil
 }
@@ -3110,14 +3127,17 @@ var dogfoodExampleCommandSkip = map[string]bool{
 	"workflow":      true,
 }
 
-func collectDogfoodExampleCommandPaths(prefix []string, command dogfoodAgentCommand, paths *[][]string) {
+func collectDogfoodExampleCommandPaths(prefix []string, command dogfoodAgentCommand, paths *[]dogfoodAgentCommandPath) {
 	if command.Name == "" || dogfoodExampleCommandSkip[command.Name] {
 		return
 	}
 
 	next := append(append([]string{}, prefix...), command.Name)
 	if len(command.Subcommands) == 0 {
-		*paths = append(*paths, next)
+		*paths = append(*paths, dogfoodAgentCommandPath{
+			Path:        next,
+			Annotations: command.Annotations,
+		})
 		return
 	}
 	for _, sub := range command.Subcommands {
@@ -3131,6 +3151,19 @@ func sampleEvenlyCommandPaths(items [][]string, n int) [][]string {
 	}
 	step := float64(len(items)) / float64(n)
 	result := make([][]string, n)
+	for i := range n {
+		idx := int(float64(i) * step)
+		result[i] = items[idx]
+	}
+	return result
+}
+
+func sampleEvenlyAgentCommandPaths(items []dogfoodAgentCommandPath, n int) []dogfoodAgentCommandPath {
+	if len(items) <= n {
+		return items
+	}
+	step := float64(len(items)) / float64(n)
+	result := make([]dogfoodAgentCommandPath, n)
 	for i := range n {
 		idx := int(float64(i) * step)
 		result[i] = items[idx]

@@ -594,6 +594,28 @@ func TestShipcheck_NoLiveCheck_OmitsLiveCheckFromScorecard(t *testing.T) {
 	}
 }
 
+func TestShipcheck_AllowDestructivePassesToNonDogfoodLiveLegs(t *testing.T) {
+	h := newShipcheckHarness(t)
+
+	if err := runShipcheckCmd(t, "--dir", h.dir, "--allow-destructive"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	invocations := readStubLog(t, h.logFile)
+	verifyArgs := findInvocation(invocations, "verify")
+	if !argvHas(verifyArgs, "--allow-destructive") {
+		t.Errorf("verify argv missing --allow-destructive: %v", verifyArgs)
+	}
+	scorecardArgs := findInvocation(invocations, "scorecard")
+	if !argvHas(scorecardArgs, "--allow-destructive") {
+		t.Errorf("scorecard argv missing --allow-destructive: %v", scorecardArgs)
+	}
+	dogfoodArgs := findInvocation(invocations, "dogfood")
+	if argvHas(dogfoodArgs, "--allow-destructive") {
+		t.Errorf("dogfood argv should remain out of scope for --allow-destructive forwarding: %v", dogfoodArgs)
+	}
+}
+
 // TestShipcheck_PassesAuthFlagsToVerify confirms --api-key and --env-var
 // flow through to verify (and only verify — other legs do not accept them).
 func TestShipcheck_PassesAuthFlagsToVerify(t *testing.T) {

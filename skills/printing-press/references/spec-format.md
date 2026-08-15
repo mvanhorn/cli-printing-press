@@ -163,7 +163,8 @@ annotation and follows the runtime grammar. Tokens are separated by unescaped
 semicolons, so a literal semicolon uses `\;` (or `\\;` inside a YAML
 double-quoted string). Positional tokens may use `<label>=value` or
 `label=value`. Positional and flag tokens replace matching synthesized
-or Example-derived values. Negative numeric flag values use the safe
+or Example-derived values, and bare `--flag` tokens become boolean
+`--flag=true`. Negative numeric flag values use the safe
 `--flag=-12.3` form. Examples include `"--zip=60614"` and
 `"id=example-id;--query=example"`.
 
