@@ -1645,6 +1645,12 @@ func stripControlCharacters(text string) string {
 		if r == '\t' || r == '\n' || r == '\r' {
 			return ' '
 		}
+		if unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+			return ' '
+		}
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
 		if unicode.IsControl(r) {
 			return -1
 		}
