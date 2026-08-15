@@ -392,6 +392,29 @@ func TestSyncResourceDeclaredFailureWithItemsIsIntegrityFailure(t *testing.T) {
 	}
 }
 
+func TestSyncResourceStatusErrorWithItemsIsIntegrityFailure(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	var events bytes.Buffer
+	res := syncResource(context.Background(), fixedBodyClient{body: json.RawMessage(` + "`" + `{"status":"error","items":[{"id":"bad"}],"next_cursor":"still-more"}` + "`" + `)}, db, "things", "", false, 1, false, false, nil, &events)
+	if res.Err == nil {
+		t.Fatalf("syncResource returned clean success for status=error body with items; events: %s", events.String())
+	}
+	if !res.IntegrityFailure {
+		t.Fatalf("IntegrityFailure = false, want true")
+	}
+	if res.Count != 0 {
+		t.Fatalf("Count = %d, want 0", res.Count)
+	}
+	if !strings.Contains(events.String(), "response declared failure") {
+		t.Fatalf("events did not contain status=error sync error: %s", events.String())
+	}
+}
+
 func TestSyncDependentResourceNonJSONBodyEmitsAnomaly(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
