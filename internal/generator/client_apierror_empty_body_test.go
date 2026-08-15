@@ -92,6 +92,15 @@ func TestAPIErrorHTMLTitleSanitizesDecodedControls(t *testing.T) {
 	if !strings.Contains(collapsed, "Tenant [2J Missing") {
 		t.Fatalf("collapsed body = %q, want sanitized title text", collapsed)
 	}
+
+	unicodeBody := []byte(` + "`" + `<!doctype html><html><head><title>Tenant &#x202E;Split&#x2028;Missing</title></head><body>Denied</body></html>` + "`" + `)
+	unicodeCollapsed := truncateBody(unicodeBody)
+	if strings.ContainsRune(unicodeCollapsed, '\u202e') || strings.ContainsRune(unicodeCollapsed, '\u2028') {
+		t.Fatalf("collapsed body contains decoded unicode formatting controls: %q", unicodeCollapsed)
+	}
+	if !strings.Contains(unicodeCollapsed, "Tenant Split Missing") {
+		t.Fatalf("collapsed body = %q, want unicode controls sanitized", unicodeCollapsed)
+	}
 }
 
 func TestAPIErrorHTMLTitleUsesOriginalOffsets(t *testing.T) {
