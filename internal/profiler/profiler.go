@@ -2501,10 +2501,9 @@ func scalarIDHydrationTarget(s *spec.APISpec, resourceName string, endpoint spec
 		return "", ""
 	}
 	type candidate struct {
-		path    string
-		param   string
-		score   int
-		pathLen int
+		path  string
+		param string
+		score int
 	}
 	var candidates []candidate
 	walkResources(s.Resources, func(name string, resource spec.Resource) {
@@ -2522,10 +2521,9 @@ func scalarIDHydrationTarget(s *spec.APISpec, resourceName string, endpoint spec
 				continue
 			}
 			candidates = append(candidates, candidate{
-				path:    ep.Path,
-				param:   placeholders[0],
-				score:   score,
-				pathLen: len(ep.Path),
+				path:  ep.Path,
+				param: placeholders[0],
+				score: score,
 			})
 		}
 	})
@@ -2535,9 +2533,6 @@ func scalarIDHydrationTarget(s *spec.APISpec, resourceName string, endpoint spec
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].score != candidates[j].score {
 			return candidates[i].score > candidates[j].score
-		}
-		if candidates[i].pathLen != candidates[j].pathLen {
-			return candidates[i].pathLen < candidates[j].pathLen
 		}
 		return candidates[i].path < candidates[j].path
 	})
@@ -2568,25 +2563,68 @@ func isScalarIDListShape(endpoint spec.Endpoint, types map[string]spec.TypeDef) 
 
 func hydrationTargetScore(listResourceName, targetResourceName, endpointName string, endpoint spec.Endpoint) int {
 	score := 0
-	targetNames := append(nameVariants(listResourceName), "item")
+	targetNames := append(hydrationNameVariants(listResourceName), "item")
 	for _, segment := range staticPathSegments(endpoint.Path) {
-		if slices.Contains(targetNames, normalizeSyncResourceSegment(segment)) || segment == "item" {
+		pathMatched := false
+		for _, variant := range hydrationNameVariants(segment) {
+			if slices.Contains(targetNames, variant) || variant == "item" {
+				pathMatched = true
+				break
+			}
+		}
+		if pathMatched {
 			score += 4
 			break
 		}
 	}
 	for _, value := range []string{targetResourceName, endpointName} {
-		for _, variant := range nameVariants(value) {
+		for _, variant := range hydrationNameVariants(value) {
 			if slices.Contains(targetNames, variant) || variant == "item" {
 				score += 2
 				break
 			}
 		}
 	}
-	if endpoint.IDField != "" {
+	if score > 0 && endpoint.IDField != "" {
 		score++
 	}
 	return score
+}
+
+func hydrationNameVariants(name string) []string {
+	seen := map[string]struct{}{}
+	var variants []string
+	for _, variant := range nameVariants(name) {
+		addHydrationVariant(variant, seen, &variants)
+		if stem := stripHydrationVerbPrefix(variant); stem != variant {
+			for _, stemVariant := range nameVariants(stem) {
+				addHydrationVariant(stemVariant, seen, &variants)
+			}
+		}
+	}
+	return variants
+}
+
+func addHydrationVariant(variant string, seen map[string]struct{}, variants *[]string) {
+	normalized := normalizeSyncResourceSegment(variant)
+	if normalized == "" {
+		return
+	}
+	if _, ok := seen[normalized]; ok {
+		return
+	}
+	seen[normalized] = struct{}{}
+	*variants = append(*variants, normalized)
+}
+
+func stripHydrationVerbPrefix(name string) string {
+	normalized := normalizeSyncResourceSegment(name)
+	for _, verb := range []string{"list", "get", "fetch", "find", "search", "query", "browse"} {
+		if after, ok := strings.CutPrefix(normalized, verb+"-"); ok && after != "" {
+			return after
+		}
+	}
+	return normalized
 }
 
 // queryEntityForEndpoint returns the SQL-query entity name for a list endpoint

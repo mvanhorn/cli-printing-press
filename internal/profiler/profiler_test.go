@@ -320,6 +320,103 @@ func TestProfileScalarIDListsUseHydrationTarget(t *testing.T) {
 	assert.Equal(t, "id", byName["updates"].HydrateIDParam)
 }
 
+func TestProfileScalarIDListsUseOwnHydrationTargets(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "hydrate-multiple",
+		Resources: map[string]spec.Resource{
+			"agents": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/get-agent/{agent_id}",
+						Response: spec.ResponseDef{Type: "object", Item: "Agent"},
+						IDField:  "agent_id",
+					},
+				},
+			},
+			"batch-tests": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/get-batch-test/{test_case_batch_job_id}",
+						Response: spec.ResponseDef{Type: "object", Item: "BatchTest"},
+						IDField:  "test_case_batch_job_id",
+					},
+				},
+			},
+			"conversation-flow-components": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/get-conversation-flow-component/{conversation_flow_component_id}",
+						Response: spec.ResponseDef{Type: "object", Item: "ConversationFlowComponent"},
+						IDField:  "conversation_flow_component_id",
+					},
+				},
+			},
+			"list-batch-tests": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/list-batch-tests",
+						Response: spec.ResponseDef{Type: "array", Item: "string"},
+					},
+				},
+			},
+			"list-conversation-flow-components": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/list-conversation-flow-components",
+						Response: spec.ResponseDef{Type: "array", Item: "string"},
+					},
+				},
+			},
+			"list-export-requests": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/list-export-requests",
+						Response: spec.ResponseDef{Type: "array", Item: "string"},
+					},
+				},
+			},
+			"retell-llms": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/get-retell-llm/{llm_id}",
+						Response: spec.ResponseDef{Type: "object", Item: "RetellLLM"},
+						IDField:  "llm_id",
+					},
+					"list": {
+						Method:   "GET",
+						Path:     "/list-retell-llms",
+						Response: spec.ResponseDef{Type: "array", Item: "string"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "list-batch-tests")
+	assert.Equal(t, "/get-batch-test/{test_case_batch_job_id}", byName["list-batch-tests"].HydratePath)
+	assert.Equal(t, "test_case_batch_job_id", byName["list-batch-tests"].HydrateIDParam)
+	require.Contains(t, byName, "list-conversation-flow-components")
+	assert.Equal(t, "/get-conversation-flow-component/{conversation_flow_component_id}", byName["list-conversation-flow-components"].HydratePath)
+	assert.Equal(t, "conversation_flow_component_id", byName["list-conversation-flow-components"].HydrateIDParam)
+	require.Contains(t, byName, "retell-llms")
+	assert.Equal(t, "/get-retell-llm/{llm_id}", byName["retell-llms"].HydratePath)
+	assert.Equal(t, "llm_id", byName["retell-llms"].HydrateIDParam)
+	assert.NotContains(t, byName, "list-export-requests")
+}
+
 func TestProfileScalarIDListsWithoutHydrationTargetStayUnsyncable(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "scalar-list",
