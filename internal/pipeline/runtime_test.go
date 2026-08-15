@@ -1511,7 +1511,7 @@ func TestClassifyCommandKindUsesEndpointMutationAnnotations(t *testing.T) {
 	assert.Equal(t, "write", mutating.Kind)
 
 	readOnlyPost := discoveredCommand{
-		Name: "search",
+		Name: "lookup",
 		Annotations: map[string]string{
 			endpointMethodAnnotation: "POST",
 			mcpReadOnlyAnnotation:    "true",
