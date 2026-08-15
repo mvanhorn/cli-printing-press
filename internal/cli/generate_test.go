@@ -1059,6 +1059,125 @@ resources:
 	assert.Contains(t, string(stub), `TODO: implement novel feature %q", "items insight"`)
 }
 
+func TestGenerateCmdForcePreservesImplementedNovelScaffoldAndStandaloneFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	researchDir := filepath.Join(dir, "research")
+	outputDir := filepath.Join(dir, "retellshape")
+	require.NoError(t, os.MkdirAll(researchDir, 0o755))
+
+	specData := []byte(`name: retellshape
+description: Retell-shaped regen API
+version: 0.1.0
+base_url: https://api.example.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/retellshape-pp-cli/config.toml
+resources:
+  calls:
+    description: Manage calls
+    endpoints:
+      list:
+        method: GET
+        path: /calls
+        description: List calls
+`)
+	require.NoError(t, os.WriteFile(specPath, specData, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), []byte(`{
+  "api_name": "retellshape",
+  "novelty_score": 8,
+  "alternatives": [],
+  "gaps": [],
+  "patterns": [],
+  "recommendation": "proceed",
+  "researched_at": "2026-04-25T00:00:00Z",
+  "novel_features": [
+    {
+      "name": "Call cost",
+      "command": "calls cost",
+      "description": "Summarize call costs",
+      "rationale": "Requires local correlation"
+    }
+  ]
+}`), 0o644))
+
+	runGenerate := func() {
+		cmd := newGenerateCmd()
+		cmd.SetArgs([]string{
+			"--spec", specPath,
+			"--output", outputDir,
+			"--research-dir", researchDir,
+			"--category", "ai",
+			"--validate=false",
+			"--force",
+			"--lenient",
+		})
+		require.NoError(t, cmd.Execute())
+	}
+
+	runGenerate()
+
+	scaffoldPath := filepath.Join(outputDir, "internal", "cli", "calls_cost.go")
+	scaffold, err := os.ReadFile(scaffoldPath)
+	require.NoError(t, err)
+	implementedScaffold := bytes.Replace(scaffold,
+		[]byte(`return fmt.Errorf("TODO: implement novel feature %q", "calls cost")`),
+		[]byte(`fmt.Fprintln(cmd.OutOrStdout(), "implemented call cost")
+			return nil`),
+		1,
+	)
+	require.NotEqual(t, string(scaffold), string(implementedScaffold), "fixture must replace the generated TODO body")
+	require.NoError(t, os.WriteFile(scaffoldPath, implementedScaffold, 0o644))
+
+	standaloneFiles := map[string][]byte{
+		filepath.Join("internal", "cli", "retell_calls.go"): []byte(`package cli
+
+func retellCallsSentinel() string { return "preserved cli helper" }
+`),
+		filepath.Join("internal", "store", "retell_tables.go"): []byte(`package store
+
+func retellTablesSentinel() string { return "preserved store helper" }
+`),
+		filepath.Join("internal", "store", "retell_tables_test.go"): []byte(`package store
+
+import "testing"
+
+func TestRetellTablesSentinel(t *testing.T) {
+	if retellTablesSentinel() == "" {
+		t.Fatal("missing sentinel")
+	}
+}
+`),
+		filepath.Join("internal", "store", "retell_tables.sql"): []byte(`CREATE TABLE retell_calls (
+	id TEXT PRIMARY KEY
+);
+`),
+	}
+	for rel, content := range standaloneFiles {
+		path := filepath.Join(outputDir, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, content, 0o644))
+	}
+
+	runGenerate()
+
+	gotScaffold, err := os.ReadFile(scaffoldPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(implementedScaffold), string(gotScaffold),
+		"implemented novel scaffold body must survive same-spec generate --force verbatim")
+	assert.NotContains(t, string(gotScaffold), "TODO: implement novel feature")
+
+	for rel, want := range standaloneFiles {
+		got, err := os.ReadFile(filepath.Join(outputDir, rel))
+		require.NoError(t, err, "%s must survive force regen", rel)
+		assert.Equal(t, string(want), string(got), "%s must survive same-spec generate --force verbatim", rel)
+	}
+}
+
 func TestGenerateCmdCarriesVerifiedNovelFeaturesIntoManifest(t *testing.T) {
 	t.Parallel()
 
