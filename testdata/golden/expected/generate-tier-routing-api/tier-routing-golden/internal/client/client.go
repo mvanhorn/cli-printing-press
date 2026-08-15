@@ -1577,84 +1577,66 @@ func looksLikeHTMLBody(body string) bool {
 }
 
 func extractHTMLTitle(body string) string {
-	searchFrom := 0
-	for searchFrom < len(body) {
-		titleStart := indexHTMLTag(body[searchFrom:], "title")
-		if titleStart < 0 {
+	pos := 0
+	ignoredBlock := ""
+	for pos < len(body) {
+		tagStartRel := strings.IndexByte(body[pos:], '<')
+		if tagStartRel < 0 {
 			return ""
 		}
-		if blockStart, blockTag := nextHTMLBlockTag(body[searchFrom:titleStart+searchFrom], "script", "style"); blockStart >= 0 {
-			blockStart += searchFrom
-			blockOpenEnd := htmlTagEnd(body, blockStart)
-			if blockOpenEnd < 0 {
-				return ""
-			}
-			blockCloseStart := indexHTMLCloseTag(body[blockOpenEnd+1:], blockTag)
-			if blockCloseStart < 0 {
-				return ""
-			}
-			searchFrom = blockOpenEnd + 1 + blockCloseStart + len("</"+blockTag+">")
+		tagStart := pos + tagStartRel
+		tagEnd := htmlTagEnd(body, tagStart)
+		if tagEnd < 0 {
+			return ""
+		}
+		tagName, closing := htmlTagName(body[tagStart+1 : tagEnd])
+		pos = tagEnd + 1
+		if tagName == "" {
 			continue
 		}
-		titleStart += searchFrom
-		openEnd := htmlTagEnd(body, titleStart)
-		if openEnd < 0 {
+		if ignoredBlock != "" {
+			if closing && tagName == ignoredBlock {
+				ignoredBlock = ""
+			}
+			continue
+		}
+		if closing {
+			continue
+		}
+		if tagName == "script" || tagName == "style" {
+			ignoredBlock = tagName
+			continue
+		}
+		if tagName != "title" {
+			continue
+		}
+		titleEnd := findHTMLCloseTag(body, pos, "title")
+		if titleEnd < 0 {
 			return ""
 		}
-		contentStart := openEnd + 1
-		end := indexHTMLCloseTag(body[contentStart:], "title")
-		if end < 0 {
-			return ""
-		}
-		title := stripHTMLTags(body[contentStart : contentStart+end])
+		title := stripHTMLTags(body[pos:titleEnd])
 		return strings.Join(strings.Fields(stripControlCharacters(html.UnescapeString(title))), " ")
 	}
 	return ""
 }
 
-func indexHTMLTag(body, tag string) int {
-	needle := "<" + tag
-	offset := 0
-	for offset < len(body) {
-		idx := indexCaseInsensitive(body[offset:], needle)
-		if idx < 0 {
+func findHTMLCloseTag(body string, from int, tag string) int {
+	pos := from
+	for pos < len(body) {
+		tagStartRel := strings.IndexByte(body[pos:], '<')
+		if tagStartRel < 0 {
 			return -1
 		}
-		start := offset + idx
-		after := start + len(needle)
-		if after >= len(body) || isHTMLTagNameBoundary(body[after]) {
-			return start
+		tagStart := pos + tagStartRel
+		tagEnd := htmlTagEnd(body, tagStart)
+		if tagEnd < 0 {
+			return -1
 		}
-		offset = after
-	}
-	return -1
-}
-
-func nextHTMLBlockTag(body string, tags ...string) (int, string) {
-	best := -1
-	bestTag := ""
-	for _, tag := range tags {
-		idx := indexHTMLTag(body, tag)
-		if idx >= 0 && (best < 0 || idx < best) {
-			best = idx
-			bestTag = tag
+		tagName, closing := htmlTagName(body[tagStart+1 : tagEnd])
+		if closing && tagName == tag {
+			return tagStart
 		}
-	}
-	return best, bestTag
-}
-
-func indexHTMLCloseTag(body, tag string) int {
-	return indexCaseInsensitive(body, "</"+tag+">")
-}
-
-func indexCaseInsensitive(body, needle string) int {
-	if needle == "" {
-		return 0
-	}
-	for idx := 0; idx+len(needle) <= len(body); idx++ {
-		if strings.EqualFold(body[idx:idx+len(needle)], needle) {
-			return idx
-		}
+		pos = tagEnd + 1
 	}
 	return -1
 }
@@ -1667,8 +1649,32 @@ func htmlTagEnd(body string, start int) int {
 	return start + end
 }
 
-func isHTMLTagNameBoundary(b byte) bool {
-	return b == '>' || b == '/' || b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '\f'
+func htmlTagName(raw string) (string, bool) {
+	raw = strings.TrimLeftFunc(raw, isHTMLSpace)
+	closing := false
+	if strings.HasPrefix(raw, "/") {
+		closing = true
+		raw = strings.TrimLeftFunc(raw[1:], isHTMLSpace)
+	}
+	if raw == "" || strings.HasPrefix(raw, "!") || strings.HasPrefix(raw, "?") {
+		return "", closing
+	}
+	end := 0
+	for end < len(raw) && isHTMLTagNameByte(raw[end]) {
+		end++
+	}
+	if end == 0 {
+		return "", closing
+	}
+	return strings.ToLower(raw[:end]), closing
+}
+
+func isHTMLTagNameByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-' || b == ':'
+}
+
+func isHTMLSpace(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\f'
 }
 
 func stripHTMLTags(body string) string {
