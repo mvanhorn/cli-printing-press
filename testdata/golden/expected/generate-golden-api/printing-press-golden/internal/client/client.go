@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"math"
 	"mime/multipart"
@@ -1530,10 +1531,88 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 
 func truncateBody(b []byte) string {
 	const maxBytes = 4096
+	if summary, ok := collapseHTMLErrorBody(b); ok {
+		return summary
+	}
 	if len(b) <= maxBytes {
 		return string(b)
 	}
 	return strings.ToValidUTF8(string(b[:maxBytes]), "") + "..."
+}
+
+func collapseHTMLErrorBody(b []byte) (string, bool) {
+	body := strings.ToValidUTF8(string(b), "")
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" || !looksLikeHTMLBody(trimmed) {
+		return "", false
+	}
+
+	summary := fmt.Sprintf("HTML error page (%d bytes)", len(b))
+	if title := extractHTMLTitle(trimmed); title != "" {
+		summary += ": " + truncateRunes(title, 160)
+	}
+	return summary, true
+}
+
+func looksLikeHTMLBody(body string) bool {
+	lower := strings.ToLower(body)
+	if strings.HasPrefix(lower, "<!doctype html") || strings.HasPrefix(lower, "<html") {
+		return true
+	}
+	sample := lower
+	if len(sample) > 2048 {
+		sample = sample[:2048]
+	}
+	return strings.HasPrefix(sample, "<") && (strings.Contains(sample, "<body") || strings.Contains(sample, "<head") || strings.Contains(sample, "<title") || strings.Contains(sample, "<script"))
+}
+
+func extractHTMLTitle(body string) string {
+	lower := strings.ToLower(body)
+	start := strings.Index(lower, "<title")
+	if start < 0 {
+		return ""
+	}
+	openEnd := strings.Index(lower[start:], ">")
+	if openEnd < 0 {
+		return ""
+	}
+	contentStart := start + openEnd + 1
+	end := strings.Index(lower[contentStart:], "</title>")
+	if end < 0 {
+		return ""
+	}
+	title := stripHTMLTags(body[contentStart : contentStart+end])
+	return strings.Join(strings.Fields(html.UnescapeString(title)), " ")
+}
+
+func stripHTMLTags(body string) string {
+	var out strings.Builder
+	inTag := false
+	for _, r := range body {
+		switch r {
+		case '<':
+			inTag = true
+			out.WriteByte(' ')
+		case '>':
+			inTag = false
+		default:
+			if !inTag {
+				out.WriteRune(r)
+			}
+		}
+	}
+	return out.String()
+}
+
+func truncateRunes(text string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func clientMaxRetries() int {
