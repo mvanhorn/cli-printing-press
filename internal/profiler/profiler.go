@@ -349,14 +349,15 @@ func Profile(s *spec.APISpec) *APIProfile {
 	syncable := make(map[string]syncableMeta) // resource name -> chosen list endpoint metadata
 	syncCandidates := make(map[string][]syncableCandidate)
 	pathDerivedIDFields := make(map[string]string)
-	addSyncCandidate := func(resourceName string, meta syncableMeta) {
+	addSyncCandidate := func(resourceName string, endpointName string, meta syncableMeta) {
 		for _, candidate := range syncCandidates[resourceName] {
 			if candidate.meta.Path == meta.Path {
 				return
 			}
 		}
 		syncCandidates[resourceName] = append(syncCandidates[resourceName], syncableCandidate{
-			meta: meta,
+			endpointName: endpointName,
+			meta:         meta,
 		})
 	}
 	// Keyed by "<parent>/<leaf>" so the same leaf under multiple parents
@@ -522,7 +523,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 					if requiredScope && !endpoint.Syncable {
 						meta.SkipDefaultSync = true
 					}
-					addSyncCandidate(resourceName, meta)
+					addSyncCandidate(resourceName, endpointName, meta)
 				}
 
 				if endpoint.Pagination != nil {
@@ -583,7 +584,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 				if hasRequiredScopeParams(endpoint) && !endpoint.Syncable {
 					meta.SkipDefaultSync = true
 				}
-				addSyncCandidate(resourceName, meta)
+				addSyncCandidate(resourceName, endpointName, meta)
 			}
 
 			if endpoint.Pagination != nil {
@@ -1384,13 +1385,13 @@ func findEntityTypeEnum(endpoint spec.Endpoint) *spec.Param {
 // the catch-all syncable-resource heuristic so that singleton getters like
 // "get" or "show" are excluded.
 func looksLikeCollectionEndpoint(nameLower string) bool {
-	return containsAny(nameLower, collectionEndpointTerms)
+	return nameHasAnyToken(nameLower, collectionEndpointTerms)
 }
 
 var collectionEndpointTerms = []string{"list", "all", "index", "search", "query", "browse", "find"}
 
 func looksLikeBasicGetListEndpoint(nameLower string) bool {
-	return containsAny(nameLower, basicGetListEndpointTerms)
+	return nameHasAnyToken(nameLower, basicGetListEndpointTerms)
 }
 
 var basicGetListEndpointTerms = []string{"list", "all"}
@@ -1555,6 +1556,16 @@ func hasChronologicalParams(params []spec.Param) bool {
 func containsAny(s string, needles []string) bool {
 	for _, needle := range needles {
 		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func nameHasAnyToken(name string, needles []string) bool {
+	tokens := nameTokens(name)
+	for _, needle := range needles {
+		if slices.Contains(tokens, normalizeName(needle)) {
 			return true
 		}
 	}
@@ -2339,7 +2350,8 @@ type syncableMeta struct {
 }
 
 type syncableCandidate struct {
-	meta syncableMeta
+	endpointName string
+	meta         syncableMeta
 }
 
 // parameterizedEntry pairs a parameterized list endpoint with the parent
@@ -3118,10 +3130,18 @@ func applySyncCandidates(syncable map[string]syncableMeta, candidates map[string
 	for _, resourceName := range resourceNames {
 		entries := candidates[resourceName]
 		sort.SliceStable(entries, func(i, j int) bool {
-			if len(entries[i].meta.Path) != len(entries[j].meta.Path) {
-				return len(entries[i].meta.Path) < len(entries[j].meta.Path)
+			iRank := syncCandidateRank(entries[i])
+			jRank := syncCandidateRank(entries[j])
+			if iRank != jRank {
+				return iRank < jRank
 			}
-			return entries[i].meta.Path < entries[j].meta.Path
+			if entries[i].endpointName != entries[j].endpointName {
+				return entries[i].endpointName < entries[j].endpointName
+			}
+			if entries[i].meta.Path != entries[j].meta.Path {
+				return entries[i].meta.Path < entries[j].meta.Path
+			}
+			return entries[i].meta.Method < entries[j].meta.Method
 		})
 		if len(entries) == 0 {
 			continue
@@ -3142,6 +3162,16 @@ func applySyncCandidates(syncable map[string]syncableMeta, candidates map[string
 			addSyncableIfUnique(syncable, name, entry.meta)
 		}
 	}
+}
+
+func syncCandidateRank(candidate syncableCandidate) int {
+	if strings.EqualFold(strings.TrimSpace(candidate.endpointName), "list") {
+		return 0
+	}
+	if candidate.meta.SkipDefaultSync {
+		return 2
+	}
+	return 1
 }
 
 func applyPathDerivedIDFields(syncable map[string]syncableMeta, pathDerivedIDFields map[string]string, types map[string]spec.TypeDef) {

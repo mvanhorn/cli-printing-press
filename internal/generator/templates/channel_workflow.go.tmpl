@@ -308,6 +308,7 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 				}
 			}
 
+			resourcesSynced := 0
 			for _, resource := range resources {
 {{- if eq .Name "substack"}}
 				if resource == "drafts" {
@@ -319,7 +320,7 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 {{- end}}
 				res := syncResource(cmd.Context(), {{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, s, resource, "", full, archiveMaxPages, false{{if not (isGraphQL .APISpec)}}, false{{end}}{{if .Pagination.DateRangeParam}}, ""{{end}}{{if not (isGraphQL .APISpec)}}, nil, syncEventWriter{{end}})
 				if res.Err != nil {
-					if isSyncStatePersistenceError(res.Err) {
+					if res.IntegrityFailure || isSyncStatePersistenceError(res.Err) {
 						return fmt.Errorf("archiving %s: %w", resource, res.Err)
 					}
 					fmt.Fprintf(cmd.ErrOrStderr(), "  %s: error: %v\n", resource, res.Err)
@@ -330,6 +331,7 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 					continue
 				}
 				totalSynced += res.Count
+				resourcesSynced++
 				fmt.Fprintf(cmd.ErrOrStderr(), "  %s: %d synced\n", resource, res.Count)
 			}
 
@@ -337,14 +339,14 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
 				return enc.Encode(map[string]any{
-					"resources_synced": len(resources),
+					"resources_synced": resourcesSynced,
 					"total_items":      totalSynced,
 					"store_path":       dbPath,
 					"timestamp":        time.Now().UTC().Format(time.RFC3339),
 				})
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Archived %d items across %d resources to %s\n", totalSynced, len(resources), dbPath)
+			fmt.Fprintf(cmd.OutOrStdout(), "Archived %d items across %d resources to %s\n", totalSynced, resourcesSynced, dbPath)
 			return nil
 		},
 	}

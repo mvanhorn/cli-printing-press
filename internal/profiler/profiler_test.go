@@ -206,6 +206,61 @@ func TestProfileSiblingListEndpoints(t *testing.T) {
 	assert.Equal(t, "/portfolio/settlements", syncPaths["portfolio-settlements"])
 }
 
+func TestProfilePrefersNamedListEndpointForCanonicalSyncResource(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "canonical",
+		Resources: map[string]spec.Resource{
+			"computers": {
+				Endpoints: map[string]spec.Endpoint{
+					"picker": {
+						Method:     "GET",
+						Path:       "/Computer/ComputerGetForNewComputer",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+					"list": {
+						Method:     "GET",
+						Path:       "/Computer/ComputerGetByAllParameters",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	syncPaths := make(map[string]string)
+	for _, resource := range profile.SyncableResources {
+		syncPaths[resource.Name] = resource.Path
+	}
+
+	assert.Equal(t, "/Computer/ComputerGetByAllParameters", syncPaths["computers"])
+	assert.Equal(t, "/Computer/ComputerGetForNewComputer", syncPaths["computers-computer-get-for-new-computer"])
+}
+
+func TestProfileInstallInfoEndpointNameIsNotAList(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "installer",
+		Resources: map[string]spec.Resource{
+			"computers": {
+				Endpoints: map[string]spec.Endpoint{
+					"install-info": {
+						Method:   "GET",
+						Path:     "/Computer/install-info",
+						Response: spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	assert.Empty(t, profile.SyncableResources)
+}
+
 func TestProfileScalarIDListsUseHydrationTarget(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "hydrate",

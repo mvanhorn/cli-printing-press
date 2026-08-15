@@ -6995,12 +6995,12 @@ func TestUpsertResourceBatchRoutesDiscriminatorItems(t *testing.T) {
 		json.RawMessage(`+"`"+`{"type":"collection","id":"c1","name":"Collection","created_at":"2026-01-01T00:00:00Z"}`+"`"+`),
 		json.RawMessage(`+"`"+`{"type":"team","id":"t1","name":"Team","created_at":"2026-01-01T00:00:00Z"}`+"`"+`),
 	}
-	stored, extractFailures, err := upsertResourceBatch(s, "network_entities", items)
+	stored, extractFailures, typedFailures, err := upsertResourceBatch(s, "network_entities", items)
 	if err != nil {
 		t.Fatalf("upsertResourceBatch: %%v", err)
 	}
-	if stored != len(items) || extractFailures != 0 {
-		t.Fatalf("stored/extractFailures = %%d/%%d, want %%d/0", stored, extractFailures, len(items))
+	if stored != len(items) || extractFailures != 0 || typedFailures != 0 {
+		t.Fatalf("stored/extractFailures/typedFailures = %%d/%%d/%%d, want %%d/0/0", stored, extractFailures, typedFailures, len(items))
 	}
 
 	for _, table := range []string{"workspaces", "collections", "teams"} {
@@ -15903,11 +15903,11 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 		`"reason":"all_items_failed_id_extraction"`,
 		"sync.go must preserve the all_items_failed_id_extraction roll-up event")
 	assert.Contains(t, syncContent,
-		`warn := fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal)`,
-		"sync.go must surface all-items-failed ID extraction as a warning result, not a success")
+		`err := fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal)`,
+		"sync.go must surface all-items-failed ID extraction as an integrity error, not a success")
 	assert.Contains(t, syncContent,
-		`Warn:     warn`,
-		"sync.go must return the all-items-failed warning result, not a success")
+		`IntegrityFailure: true`,
+		"sync.go must mark all-items-failed and typed projection failures as integrity failures")
 	assert.Contains(t, syncContent,
 		`completed with warnings but no successful syncs`,
 		"sync.go all-warned summary must not claim the warning was only access-related")
@@ -15924,15 +15924,14 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 		`{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"extract_failures":%d,"reason":"stored_count_zero_after_extraction"}`,
 		"F4b probe must use the literal %s interpolation pattern")
 
-	// UpsertBatch's signature is (int, int, error) — sync.go must consume
-	// all three return values. Without this contract, extractFailures would
-	// not be observable from sync's per-item warning code.
+	// upsertResourceBatch's signature is (int, int, int, error) — sync.go must
+	// consume the typed-projection failure count as well as ID extraction misses.
 	assert.Contains(t, syncContent,
-		`stored, extractFailures, err := upsertResourceBatch(db, resource, items)`,
-		"sync.go syncResource must consume the three-tuple batch upsert return")
+		`stored, extractFailures, typedFailures, err := upsertResourceBatch(db, resource, items)`,
+		"sync.go syncResource must consume the four-tuple batch upsert return")
 	assert.Contains(t, syncContent,
-		`stored, extractFailures, err := upsertResourceBatch(db, dep.Name, items)`,
-		"sync.go syncDependentResource must consume the three-tuple batch upsert return")
+		`stored, extractFailures, typedFailures, err := upsertResourceBatch(db, dep.Name, items)`,
+		"sync.go syncDependentResource must consume the four-tuple batch upsert return")
 
 	// store.go's UpsertBatch declaration matches the new signature.
 	assert.Contains(t, storeContent,
