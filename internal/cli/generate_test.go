@@ -288,7 +288,7 @@ resources:
 	runGoCommandForCLITest(t, outputDir, "build", "./cmd/tenderned-pp-cli")
 }
 
-func TestFinalizeForceMergeFailsWhenPostMergeBuildBreaks(t *testing.T) {
+func TestFinalizeForceMergeRunsFullValidationAfterSnapshotMerge(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -312,10 +312,22 @@ package cli
 func Execute() {}
 `), 0o644))
 
-	err := finalizeForceMerge(snapshotDir, freshDir, nil, true)
+	validationRan := false
+	err := finalizeForceMerge(snapshotDir, freshDir, nil, true, func() error {
+		validationRan = true
+		merged, readErr := os.ReadFile(filepath.Join(freshDir, "internal", "cli", "root.go"))
+		if readErr != nil {
+			return readErr
+		}
+		if !strings.Contains(string(merged), "missingSymbol") {
+			return fmt.Errorf("validation ran before force snapshot merge")
+		}
+		return fmt.Errorf(`gate "go test ./..." failed: generated test failure`)
+	})
 	require.Error(t, err)
+	assert.True(t, validationRan)
 	assert.Contains(t, err.Error(), "validating post-merge generated project")
-	assert.Contains(t, err.Error(), "go build ./...")
+	assert.Contains(t, err.Error(), "go test ./...")
 	assert.DirExists(t, snapshotDir, "failed post-merge validation must leave the recovery snapshot in place")
 }
 

@@ -214,7 +214,7 @@ func newGenerateCmd() *cobra.Command {
 				}
 
 				if snapshotDir != "" {
-					if err := finalizeForceMerge(snapshotDir, absOut, docYAML, validate); err != nil {
+					if err := finalizeForceMerge(snapshotDir, absOut, docYAML, validate, generateResult.Validate); err != nil {
 						return err
 					}
 				}
@@ -301,7 +301,9 @@ func newGenerateCmd() *cobra.Command {
 					// SpecChecksum, so the cross-spec guard naturally lands
 					// on the defensive full-merge path. Pass nil so any
 					// manifest hash that does exist still gates merge mode.
-					if err := finalizeForceMerge(snapshotDir, absOut, nil, validate); err != nil {
+					// Plan mode has no non-force validation suite to mirror,
+					// so force merge should not invent a build-only subset.
+					if err := finalizeForceMerge(snapshotDir, absOut, nil, false, nil); err != nil {
 						return err
 					}
 				}
@@ -357,7 +359,7 @@ func newGenerateCmd() *cobra.Command {
 						return err
 					}
 					if snapshotDir != "" {
-						if err := finalizeForceMerge(snapshotDir, absOut, archivedDeviceSpec, validate); err != nil {
+						if err := finalizeForceMerge(snapshotDir, absOut, archivedDeviceSpec, validate, generateResult.Validate); err != nil {
 							return err
 						}
 					}
@@ -504,7 +506,7 @@ func newGenerateCmd() *cobra.Command {
 				if len(specRawBytes) > 0 {
 					primarySpec = specRawBytes[0]
 				}
-				if err := finalizeForceMerge(snapshotDir, absOut, primarySpec, validate); err != nil {
+				if err := finalizeForceMerge(snapshotDir, absOut, primarySpec, validate, generateResult.Validate); err != nil {
 					return err
 				}
 			}
@@ -655,6 +657,7 @@ type generateProjectResult struct {
 	ManifestDescription string
 	DisplayName         string
 	Polished            bool
+	Validate            func() error
 }
 
 func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProjectOptions) (generateProjectResult, error) {
@@ -698,8 +701,11 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	if err := pipeline.WriteToolsManifestWithDescription(absOut, apiSpec, manifestDescription); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write tools manifest: %v\n", err)
 	}
+	validateGeneratedProject := func() error {
+		return gen.Validate()
+	}
 	if opts.validate {
-		if err := gen.Validate(); err != nil {
+		if err := validateGeneratedProject(); err != nil {
 			return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated project: %w", err)}
 		}
 	}
@@ -708,6 +714,7 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 		ManifestDescription: manifestDescription,
 		DisplayName:         gen.ManifestDisplayName(),
 		Polished:            runGeneratePolishPass(opts.polish, apiSpec.Name, absOut),
+		Validate:            validateGeneratedProject,
 	}, nil
 }
 
@@ -716,14 +723,18 @@ func runGenerateDeviceProject(deviceSpec *devicespec.DeviceSpec, absOut string, 
 	if err := gen.Generate(); err != nil {
 		return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating device project: %w", err)}
 	}
+	validateGeneratedProject := func() error {
+		return gen.Validate()
+	}
 	if opts.validate {
-		if err := gen.Validate(); err != nil {
+		if err := validateGeneratedProject(); err != nil {
 			return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated device project: %w", err)}
 		}
 	}
 	return generateProjectResult{
 		DisplayName: deviceSpec.DisplayName,
 		Polished:    runGeneratePolishPass(opts.polish, deviceSpec.Name, absOut),
+		Validate:    validateGeneratedProject,
 	}, nil
 }
 
@@ -2514,7 +2525,7 @@ func claimOrForce(absOut string, force bool, explicitOutput bool) (resolvedAbsOu
 // one preserves hand-edits consistently — discarding snapshotDir after
 // generation would silently lose user work and leave an orphan that blocks
 // future --force runs.
-func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, validate bool) error {
+func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, validate bool, validateMerged func() error) error {
 	gomodMerged, err := mergeForceSnapshot(snapshotDir, freshDir, currentSpecBytes)
 	if err != nil {
 		return &ExitError{Code: ExitGenerationError, Err: err}
@@ -2523,7 +2534,10 @@ func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, v
 		retidyAfterMerge(freshDir)
 	}
 	if validate {
-		if err := validatePostMergeBuild(freshDir); err != nil {
+		if validateMerged == nil {
+			return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating post-merge generated project: validator unavailable; snapshot preserved at %s", snapshotDir)}
+		}
+		if err := validateMerged(); err != nil {
 			return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating post-merge generated project: %w; snapshot preserved at %s", err, snapshotDir)}
 		}
 	}
@@ -2682,21 +2696,6 @@ func retidyAfterMerge(dir string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: post-merge `go mod tidy` failed: %v\n%s", err, out)
 	}
-}
-
-func validatePostMergeBuild(dir string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "build", "./...")
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("go build ./... timed out after 5m")
-	}
-	if err != nil {
-		return fmt.Errorf("go build ./... failed: %w\n%s", err, out)
-	}
-	return nil
 }
 
 // forceRegenSpecHashMatches reports whether the snapshot's recorded spec
