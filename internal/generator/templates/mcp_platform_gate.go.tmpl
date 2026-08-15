@@ -38,7 +38,7 @@ func requireFreshTenantGate(s *server.MCPServer, next server.ToolHandlerFunc) se
 			return mcplib.NewToolResultError(err.Error()), nil
 		}
 		if session == nil {
-			return mcplib.NewToolResultError("MCP tenant gate is not configured"), nil
+			return next(ctx, request)
 		}
 		defer session.ZeroCredentials()
 		return next(platform.ContextWithSession(ctx, session), request)
