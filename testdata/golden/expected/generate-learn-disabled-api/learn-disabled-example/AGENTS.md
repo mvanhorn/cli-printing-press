@@ -18,7 +18,7 @@ learn-disabled-example-pp-cli which "<capability>" --json
 learn-disabled-example-pp-cli <command> --help
 ```
 
-Add `--agent` to command invocations for JSON, compact output, non-interactive defaults, no color, and confirmation-safe scripting:
+Add `--agent` to command invocations for JSON, compact output, non-interactive defaults, and no color:
 
 ```bash
 learn-disabled-example-pp-cli <command> --agent
@@ -31,7 +31,7 @@ learn-disabled-example-pp-cli <command> --help
 learn-disabled-example-pp-cli <command> --dry-run --agent
 ```
 
-Use `--yes --no-input` only after the target, arguments, and side effects are clear.
+When a command requires confirmation, pass `--yes` explicitly only after the target, arguments, and side effects are clear. `--agent` does not imply `--yes`.
 
 ## Novel Command Data Sources
 

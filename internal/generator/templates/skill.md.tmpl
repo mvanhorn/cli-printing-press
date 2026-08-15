@@ -308,7 +308,7 @@ Run `{{.Name}}-pp-cli doctor` to verify setup.
 
 ## Agent Mode
 
-Add `--agent` to any command. Expands to: `--json --compact --no-input --no-color --yes`.
+Add `--agent` to any command. Expands to: `--json --compact --no-input --no-color`.
 
 - **Pipeable** — JSON on stdout, errors on stderr
 - **Filterable** — `--select` keeps a subset of fields. Dotted paths descend into nested structures; arrays traverse element-wise. Critical for keeping context small on verbose APIs:
@@ -329,6 +329,7 @@ Add `--agent` to any command. Expands to: `--json --compact --no-input --no-colo
 {{- if not .HasWriteCommands}}
 - **Read-only** — do not use this CLI for create, update, delete, publish, comment, upvote, invite, order, send, or other mutating requests
 {{- else}}
+- **Explicit confirmation** — `--agent` does not imply `--yes`; pass `--yes` separately only after the target, arguments, and side effects are clear
 {{- if or .HasCreateCommands .HasDelete}}
 - **Explicit retries** — {{if .HasCreateCommands}}use `--idempotent` only when an already-existing create should count as success{{if .HasDelete}}, and {{end}}{{end}}{{if .HasDelete}}use `--ignore-missing` only when a missing delete target should count as success{{end}}
 {{- end}}
