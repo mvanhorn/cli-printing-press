@@ -604,6 +604,13 @@ func syncResource(ctx context.Context, c interface {
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
 		items, nextCursor, hasMore := extractPageItemsWithPagination(data, pageSize.cursorParam, pageSize.nextCursorPath, responsePathForResource(resource, path)...)
+		if responseDeclaresFailure(data) {
+			err := fmt.Errorf("%s response declared failure", resource)
+			if !humanFriendly {
+				fmt.Fprintln(syncEvents, syncErrorJSON(resource, "", err))
+			}
+			return syncResult{Resource: resource, Count: totalCount, Err: err, IntegrityFailure: true, Duration: time.Since(started)}
+		}
 		if sortEffective && maxPages > 0 {
 			for _, item := range items {
 				itemTimestamp, ok := restSyncTimestamp(item, sortField)
@@ -669,13 +676,6 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		if len(items) == 0 && !cursorPageHasContinuation(pageSize.cursorType, hasMore, nextCursor) {
-			if responseDeclaresFailure(data) {
-				err := fmt.Errorf("%s response declared failure without items", resource)
-				if !humanFriendly {
-					fmt.Fprintln(syncEvents, syncErrorJSON(resource, "", err))
-				}
-				return syncResult{Resource: resource, Count: totalCount, Err: err, IntegrityFailure: true, Duration: time.Since(started)}
-			}
 			if isEmptyPageResponse(data, responsePathForResource(resource, path)...) {
 				// Natural end: the API legitimately returned an empty page.
 				outcome.complete = true
@@ -2277,6 +2277,15 @@ func syncOneParent(
 		}
 
 		items, nextCursor, hasMore := extractPageItemsWithPagination(data, pageSize.cursorParam, pageSize.nextCursorPath, responsePathForResource(dep.Name, path)...)
+		if responseDeclaresFailure(data) {
+			outcome.reason = "response_declared_failure"
+			rep.integrityFailure = true
+			rep.failure = fmt.Errorf("%s parent %s response declared failure", dep.Name, parentID)
+			if !humanFriendly {
+				fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, parentID, rep.failure))
+			}
+			break
+		}
 
 		// Page-int paginator fallback: mirrors syncResource so dependent
 		// resources on integer ?page=N APIs also advance past page 1.
@@ -2318,15 +2327,6 @@ func syncOneParent(
 		}
 
 		if len(items) == 0 && !cursorPageHasContinuation(pageSize.cursorType, hasMore, nextCursor) {
-			if responseDeclaresFailure(data) {
-				outcome.reason = "response_declared_failure"
-				rep.integrityFailure = true
-				rep.failure = fmt.Errorf("%s parent %s response declared failure without items", dep.Name, parentID)
-				if !humanFriendly {
-					fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, parentID, rep.failure))
-				}
-				break
-			}
 			if isEmptyPageResponse(data, responsePathForResource(dep.Name, path)...) {
 				outcome.complete = true // parent legitimately has zero children
 			} else {

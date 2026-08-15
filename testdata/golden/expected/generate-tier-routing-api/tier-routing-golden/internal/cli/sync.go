@@ -565,6 +565,13 @@ func syncResource(ctx context.Context, c interface {
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
 		items, nextCursor, hasMore := extractPageItemsWithPagination(data, pageSize.cursorParam, pageSize.nextCursorPath, responsePathForResource(resource, path)...)
+		if responseDeclaresFailure(data) {
+			err := fmt.Errorf("%s response declared failure", resource)
+			if !humanFriendly {
+				fmt.Fprintln(syncEvents, syncErrorJSON(resource, "", err))
+			}
+			return syncResult{Resource: resource, Count: totalCount, Err: err, IntegrityFailure: true, Duration: time.Since(started)}
+		}
 		if sortEffective && maxPages > 0 {
 			for _, item := range items {
 				itemTimestamp, ok := restSyncTimestamp(item, sortField)
@@ -630,13 +637,6 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		if len(items) == 0 && !cursorPageHasContinuation(pageSize.cursorType, hasMore, nextCursor) {
-			if responseDeclaresFailure(data) {
-				err := fmt.Errorf("%s response declared failure without items", resource)
-				if !humanFriendly {
-					fmt.Fprintln(syncEvents, syncErrorJSON(resource, "", err))
-				}
-				return syncResult{Resource: resource, Count: totalCount, Err: err, IntegrityFailure: true, Duration: time.Since(started)}
-			}
 			if isEmptyPageResponse(data, responsePathForResource(resource, path)...) {
 				// Natural end: the API legitimately returned an empty page.
 				outcome.complete = true
