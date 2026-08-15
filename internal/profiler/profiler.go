@@ -1563,13 +1563,90 @@ func containsAny(s string, needles []string) bool {
 }
 
 func nameHasAnyToken(name string, needles []string) bool {
-	tokens := nameTokens(name)
+	tokens := collectionNameTokens(name)
 	for _, needle := range needles {
-		if slices.Contains(tokens, normalizeName(needle)) {
-			return true
+		needle = normalizeName(needle)
+		for _, token := range tokens {
+			if token == needle || strings.HasPrefix(token, needle) || hasListVerbSuffix(token, needle) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func hasListVerbSuffix(token string, needle string) bool {
+	if !strings.HasSuffix(token, needle) || len(token) == len(needle) {
+		return false
+	}
+	prefix := strings.TrimSuffix(token, needle)
+	switch prefix {
+	case "get", "fetch", "find", "list", "search", "query", "browse":
+		return true
+	default:
+		return false
+	}
+}
+
+func collectionNameTokens(name string) []string {
+	var tokens []string
+	seen := map[string]bool{}
+	add := func(token string) {
+		token = normalizeName(token)
+		if token == "" || seen[token] {
+			return
+		}
+		seen[token] = true
+		tokens = append(tokens, token)
+	}
+	for _, part := range splitNameParts(name) {
+		add(part)
+		for _, token := range splitCamelNamePart(part) {
+			add(token)
+		}
+	}
+	return tokens
+}
+
+func splitNameParts(name string) []string {
+	return strings.FieldsFunc(name, func(r rune) bool {
+		return r == '-' || r == '_' || r == ' ' || r == '/' || r == '.'
+	})
+}
+
+func splitCamelNamePart(part string) []string {
+	if part == "" {
+		return nil
+	}
+	var tokens []string
+	start := 0
+	runes := []rune(part)
+	for i := 1; i < len(runes); i++ {
+		prev := runes[i-1]
+		cur := runes[i]
+		var next rune
+		if i+1 < len(runes) {
+			next = runes[i+1]
+		}
+		if isNameUpper(cur) && (isNameLower(prev) || isNameDigit(prev) || (isNameUpper(prev) && next != 0 && isNameLower(next))) {
+			tokens = append(tokens, string(runes[start:i]))
+			start = i
+		}
+	}
+	tokens = append(tokens, string(runes[start:]))
+	return tokens
+}
+
+func isNameUpper(r rune) bool {
+	return r >= 'A' && r <= 'Z'
+}
+
+func isNameLower(r rune) bool {
+	return r >= 'a' && r <= 'z'
+}
+
+func isNameDigit(r rune) bool {
+	return r >= '0' && r <= '9'
 }
 
 func sortedKeys[V any](m map[string]V) []string {

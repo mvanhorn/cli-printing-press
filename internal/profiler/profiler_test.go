@@ -2905,30 +2905,28 @@ func TestProfileDependentResourceSinceParamPropagation(t *testing.T) {
 	assert.Equal(t, "modified_since", profile.DependentSyncResources[0].SinceParam)
 }
 
-// TestProfileSyncableResourceShorterPathWinsMetadata asserts that when two
-// candidate endpoints can populate the same syncable resource, the shorter-path
-// rule that already governs the Path field also picks the IDField/Critical
-// values — i.e., the metadata always reflects the endpoint sync will actually
-// call.
-func TestProfileSyncableResourceShorterPathWinsMetadata(t *testing.T) {
+// TestProfileSyncableResourceNamedListWinsMetadata asserts that when two
+// candidate endpoints can populate the same syncable resource, metadata follows
+// the endpoint explicitly named list rather than a shorter sibling path.
+func TestProfileSyncableResourceNamedListWinsMetadata(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "things",
 		Resources: map[string]spec.Resource{
 			"things": {
 				Endpoints: map[string]spec.Endpoint{
-					"longList": {
+					"list": {
 						Method:   "GET",
 						Path:     "/v1/things/all",
 						Response: spec.ResponseDef{Type: "array"},
-						IDField:  "loser",
-						Critical: false,
+						IDField:  "winner",
+						Critical: true,
 					},
-					"shortList": {
+					"shortPicker": {
 						Method:   "GET",
 						Path:     "/v1/things",
 						Response: spec.ResponseDef{Type: "array"},
-						IDField:  "winner",
-						Critical: true,
+						IDField:  "loser",
+						Critical: false,
 					},
 				},
 			},
@@ -2937,7 +2935,7 @@ func TestProfileSyncableResourceShorterPathWinsMetadata(t *testing.T) {
 
 	profile := Profile(s)
 	require.Len(t, profile.SyncableResources, 1)
-	assert.Equal(t, "/v1/things", profile.SyncableResources[0].Path)
+	assert.Equal(t, "/v1/things/all", profile.SyncableResources[0].Path)
 	assert.Equal(t, "winner", profile.SyncableResources[0].IDField)
 	assert.True(t, profile.SyncableResources[0].Critical)
 }

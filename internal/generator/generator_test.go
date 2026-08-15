@@ -5559,8 +5559,11 @@ func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
 	if len(items) != 0 || cursor != "" || hasMore {
 		t.Fatalf("null data envelope = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
 	}
-	if !isEmptyPageResponse(json.RawMessage(body)) {
-		t.Fatalf("failed JSend null data envelope should be treated as an empty page")
+	if isEmptyPageResponse(json.RawMessage(body)) {
+		t.Fatalf("failed JSend null data envelope should not be treated as an empty page")
+	}
+	if !responseDeclaresFailure(json.RawMessage(body)) {
+		t.Fatalf("failed JSend null data envelope should be detected as a declared failure")
 	}
 
 	withErrors := json.RawMessage(` + "`" + `{"success": false, "errors": [{"code": "bad"}], "data": null}` + "`" + `)
@@ -5570,8 +5573,11 @@ func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
 	}
 
 	statusFail := json.RawMessage(` + "`" + `{"status": "fail", "data": null}` + "`" + `)
-	if !isEmptyPageResponse(statusFail) {
-		t.Fatalf("status=fail null data envelope should be treated as an empty page")
+	if isEmptyPageResponse(statusFail) {
+		t.Fatalf("status=fail null data envelope should not be treated as an empty page")
+	}
+	if !responseDeclaresFailure(statusFail) {
+		t.Fatalf("status=fail null data envelope should be detected as a declared failure")
 	}
 
 	emptyResultSibling := json.RawMessage(` + "`" + `{"data": null, "result": {"orders": []}}` + "`" + `)
@@ -5584,13 +5590,19 @@ func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
 	if len(items) != 0 || cursor != "" || hasMore {
 		t.Fatalf("PascalCase failed JSend null data envelope = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
 	}
-	if !isEmptyPageResponse(pascalSuccessFalse) {
-		t.Fatalf("PascalCase failed JSend null data envelope should be treated as an empty page")
+	if isEmptyPageResponse(pascalSuccessFalse) {
+		t.Fatalf("PascalCase failed JSend null data envelope should not be treated as an empty page")
+	}
+	if !responseDeclaresFailure(pascalSuccessFalse) {
+		t.Fatalf("PascalCase failed JSend null data envelope should be detected as a declared failure")
 	}
 
 	pascalStatusFail := json.RawMessage(` + "`" + `{"Status": "Failed", "Data": null}` + "`" + `)
-	if !isEmptyPageResponse(pascalStatusFail) {
-		t.Fatalf("PascalCase status=Failed null data envelope should be treated as an empty page")
+	if isEmptyPageResponse(pascalStatusFail) {
+		t.Fatalf("PascalCase status=Failed null data envelope should not be treated as an empty page")
+	}
+	if !responseDeclaresFailure(pascalStatusFail) {
+		t.Fatalf("PascalCase status=Failed null data envelope should be detected as a declared failure")
 	}
 
 	statusSuccess := json.RawMessage(` + "`" + `{"status": "success", "data": null}` + "`" + `)
@@ -13362,7 +13374,7 @@ func TestGeneratedSyncTreatsAccessDeniedAsWarning(t *testing.T) {
 	syncContent := string(syncGo)
 
 	// Sync emits the structured warn event and routes to the warn-aware exit branch.
-	assert.Contains(t, syncContent, `Warn     error`)
+	assert.Contains(t, syncContent, `Warn             error`)
 	// The access-denied warning is marshaled via syncWarningJSON (escaping the
 	// embedded upstream error body) rather than raw fmt.Fprintf interpolation.
 	assert.Contains(t, syncContent, `syncWarningJSON(resource, "", w.Status, w.Reason, w.Message)`)
