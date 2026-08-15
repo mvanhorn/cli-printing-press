@@ -426,13 +426,20 @@ func TestGeneratedSyncHydrationPathsStayResourceSpecific(t *testing.T) {
 
 	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
 	hydrationMap := generatedHydrationMapSection(syncSrc)
-	require.Contains(t, syncSrc, `"list-batch-tests": {path: "/get-batch-test/{test_case_batch_job_id}", idParam: "test_case_batch_job_id"}`, hydrationMap)
-	require.Contains(t, syncSrc, `"list-conversation-flow-components": {path: "/get-conversation-flow-component/{conversation_flow_component_id}", idParam: "conversation_flow_component_id"}`, hydrationMap)
-	require.Contains(t, syncSrc, `"retell-llms": {path: "/get-retell-llm/{llm_id}", idParam: "llm_id"}`, hydrationMap)
-	require.NotContains(t, syncSrc, `"list-export-requests": {path:`, hydrationMap)
-	require.NotContains(t, syncSrc, `"list-batch-tests": {path: "/get-agent/{agent_id}"`)
-	require.NotContains(t, syncSrc, `"list-conversation-flow-components": {path: "/get-agent/{agent_id}"`)
-	require.NotContains(t, syncSrc, `"retell-llms": {path: "/get-agent/{agent_id}"`)
+	for _, want := range []string{
+		`"list-batch-tests":`,
+		`path: "/get-batch-test/{test_case_batch_job_id}", idParam: "test_case_batch_job_id"`,
+		`"list-conversation-flow-components":`,
+		`path: "/get-conversation-flow-component/{conversation_flow_component_id}", idParam: "conversation_flow_component_id"`,
+		`"retell-llms":`,
+		`path: "/get-retell-llm/{llm_id}", idParam: "llm_id"`,
+	} {
+		require.Contains(t, hydrationMap, want, hydrationMap)
+	}
+	require.NotContains(t, hydrationMap, `"list-export-requests": {path:`, hydrationMap)
+	require.NotContains(t, hydrationMap, `"list-batch-tests":                  {path: "/get-agent/{agent_id}"`)
+	require.NotContains(t, hydrationMap, `"list-conversation-flow-components": {path: "/get-agent/{agent_id}"`)
+	require.NotContains(t, hydrationMap, `"retell-llms":                       {path: "/get-agent/{agent_id}"`)
 }
 
 func generatedHydrationMapSection(syncSrc string) string {
