@@ -77,10 +77,56 @@ func TestAPIErrorHTMLBodyCollapsed(t *testing.T) {
 		t.Fatalf("APIError.Error emitted raw HTML: %q", errText)
 	}
 }
+
+func TestAPIErrorHTMLTitleSanitizesDecodedControls(t *testing.T) {
+	body := []byte(` + "`" + `<!doctype html><html><head><title>Tenant &#27;[2J Missing</title></head><body>Denied</body></html>` + "`" + `)
+
+	collapsed := truncateBody(body)
+	if strings.ContainsRune(collapsed, '\x1b') {
+		t.Fatalf("collapsed body contains decoded ESC control: %q", collapsed)
+	}
+	errText := (&APIError{Method: "GET", Path: "/items", StatusCode: 403, Body: collapsed}).Error()
+	if strings.ContainsRune(errText, '\x1b') {
+		t.Fatalf("APIError.Error contains decoded ESC control: %q", errText)
+	}
+	if !strings.Contains(collapsed, "Tenant [2J Missing") {
+		t.Fatalf("collapsed body = %q, want sanitized title text", collapsed)
+	}
+}
+
+func TestAPIErrorHTMLTitleUsesOriginalOffsets(t *testing.T) {
+	body := []byte(` + "`" + `<!doctype html><html><head><title>Tenant İ Missing</title></head><body>Denied</body></html>` + "`" + `)
+
+	collapsed := truncateBody(body)
+	if !strings.Contains(collapsed, "Tenant İ Missing") {
+		t.Fatalf("collapsed body = %q, want non-ASCII title preserved", collapsed)
+	}
+}
+
+func TestAPIErrorHTMLTitleIgnoresScriptAndStyleBlocks(t *testing.T) {
+	closedBlock := []byte(` + "`" + `<!doctype html><html><head><script><title>Script Secret</title></script><title>Real Title</title></head></html>` + "`" + `)
+	closedCollapsed := truncateBody(closedBlock)
+	if strings.Contains(closedCollapsed, "Script Secret") {
+		t.Fatalf("closed script block leaked into title summary: %q", closedCollapsed)
+	}
+	if !strings.Contains(closedCollapsed, "Real Title") {
+		t.Fatalf("closed script block summary = %q, want real title", closedCollapsed)
+	}
+
+	unclosedBlock := []byte(` + "`" + `<!doctype html><html><head><style><title>Style Secret</title></head><body>Denied</body></html>` + "`" + `)
+	unclosedCollapsed := truncateBody(unclosedBlock)
+	if strings.Contains(unclosedCollapsed, "Style Secret") || strings.Contains(unclosedCollapsed, "Denied") {
+		t.Fatalf("unclosed style block leaked body content into summary: %q", unclosedCollapsed)
+	}
+	if !strings.Contains(unclosedCollapsed, "HTML error page") {
+		t.Fatalf("unclosed style block summary = %q, want HTML summary", unclosedCollapsed)
+	}
+}
 `
 	require.NoError(t, os.WriteFile(
 		filepath.Join(outputDir, "internal", "client", "apierror_empty_body_test.go"),
 		[]byte(clientTest), 0o644))
 
+	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestAPIError", "-count=1")
 }
