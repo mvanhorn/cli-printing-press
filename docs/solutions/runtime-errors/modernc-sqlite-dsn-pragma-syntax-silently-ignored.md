@@ -51,10 +51,10 @@ Switch both opens to the `_pragma=` form (verify with the pinned driver version,
 
 ```go
 // read-only
-sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)")
+sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)")
 
 // read-write (adds synchronous)
-sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)")
+sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)")
 ```
 
 Empirical proof with the pinned driver — the mattn-style DSN is byte-for-byte equivalent to passing no parameters:
@@ -95,7 +95,7 @@ defer conn.Close()
 
 - **Two SQLite drivers, two DSN dialects.** When the driver is `modernc.org/sqlite`, pragmas are `_pragma=name(value)`. When it is `mattn/go-sqlite3` (CGO), they are `_journal_mode=…` etc. The two are not interchangeable and the wrong one fails silently. Printed CLIs use modernc (pure Go, no CGO) — see `store.go.tmpl`'s import.
 - **A config string that is silently a no-op can mask a latent bug.** The store had concurrency-hardening machinery (`retryOnBusy`, `BEGIN IMMEDIATE`) that only had to cover statement-level contention because WAL was never actually on. Turning WAL on exposed a connect-time conversion race the no-op had hidden. When you fix a setting that was previously inert, re-test the paths that setting touches — the "fix" can reveal bugs the broken state was suppressing.
-- **Verify pragmas by reading them back, never by trusting the DSN or a comment.** `TestOpenAppliesPragmas` (in `store_schema_version_test.go.tmpl`) opens the store, then asserts `PRAGMA journal_mode == wal` and `PRAGMA busy_timeout == 5000` on both the read-write and read-only handles, so the DSN cannot silently regress:
+- **Verify pragmas by reading them back, never by trusting the DSN or a comment.** `TestOpenAppliesPragmas` (in `store_schema_version_test.go.tmpl`) opens the store, then asserts the expected `journal_mode`, `PRAGMA busy_timeout == 5000`, and `PRAGMA mmap_size == 0` on both the read-write and read-only handles, so the DSN cannot silently regress:
 
 ```go
 func requirePragma(t *testing.T, db *sql.DB, name, want string) {
@@ -110,7 +110,7 @@ func requirePragma(t *testing.T, db *sql.DB, name, want string) {
 }
 ```
 
-  (Reading the value as text covers both string pragmas like `journal_mode` and integer pragmas like `busy_timeout`.)
+  (Reading the value as text covers both string pragmas like `journal_mode` and integer pragmas like `busy_timeout` or `mmap_size`.)
 
 ## Related Issues
 
