@@ -75,7 +75,7 @@ func TestGeneratorEmitsNovelFeatureCommandStubs(t *testing.T) {
 	assert.Contains(t, classify, "// pp:data-source auto")
 	assert.Contains(t, classify, `Use:         "classify"`)
 	assert.Contains(t, classify, `Example:     "  apify-pp-cli runs classify run-123 --limit 10"`)
-	assert.Contains(t, classify, `Annotations: map[string]string{"mcp:read-only": "true"}`)
+	assert.Contains(t, classify, `Annotations: map[string]string{"mcp:read-only": "false"}`)
 	assert.Contains(t, classify, `StringVar(&flagLimit, "limit", ""`)
 	assert.Contains(t, classify, `TODO: implement novel feature %q", "runs classify"`)
 
@@ -250,6 +250,27 @@ func TestGeneratorClassifiesNovelFeatureReadOnlyFromFeatureIntentOnly(t *testing
 			Rationale:   "Agents need a workflow shortcut.",
 			Example:     "intent-novel-pp-cli assist",
 		},
+		{
+			Name:        "Set status",
+			Command:     "set status",
+			Description: "Set status using the latest workflow state.",
+			Rationale:   "Agents need to update external state.",
+			Example:     "intent-novel-pp-cli set status done",
+		},
+		{
+			Name:        "Run query",
+			Command:     "run query",
+			Description: "Run query against the remote system.",
+			Rationale:   "Agents need to execute an action query.",
+			Example:     "intent-novel-pp-cli run query --name nightly",
+		},
+		{
+			Name:        "Replay history",
+			Command:     "replay history",
+			Description: "Replay history into the remote workflow.",
+			Rationale:   "Agents need to reproduce an earlier action.",
+			Example:     "intent-novel-pp-cli replay history call-123",
+		},
 	}
 	require.NoError(t, gen.Generate())
 
@@ -261,6 +282,12 @@ func TestGeneratorClassifiesNovelFeatureReadOnlyFromFeatureIntentOnly(t *testing
 	assert.Contains(t, grep, `Annotations: map[string]string{"mcp:read-only": "true"}`)
 	assist := readGeneratedFile(t, outputDir, "internal", "cli", "assist.go")
 	assert.Contains(t, assist, `Annotations: map[string]string{"mcp:read-only": "false"}`)
+	setStatus := readGeneratedFile(t, outputDir, "internal", "cli", "set_status.go")
+	assert.Contains(t, setStatus, `Annotations: map[string]string{"mcp:read-only": "false"}`)
+	runQuery := readGeneratedFile(t, outputDir, "internal", "cli", "run_query.go")
+	assert.Contains(t, runQuery, `Annotations: map[string]string{"mcp:read-only": "false"}`)
+	replayHistory := readGeneratedFile(t, outputDir, "internal", "cli", "replay_history.go")
+	assert.Contains(t, replayHistory, `Annotations: map[string]string{"mcp:read-only": "false"}`)
 
 	requireGeneratedCompiles(t, outputDir)
 }
