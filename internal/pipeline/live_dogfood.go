@@ -583,6 +583,14 @@ var mutatingVerbs = map[string]bool{
 	"transfer": true, "cancel": true, "freeze": true, "unfreeze": true,
 }
 
+var readVerbs = map[string]bool{
+	"get": true, "list": true, "show": true, "read": true,
+	"describe": true, "view": true, "info": true, "lookup": true,
+	"fetch": true, "retrieve": true, "query": true, "find": true,
+	"search": true, "status": true, "stats": true, "history": true,
+	"recent": true, "feed": true,
+}
+
 func isMutatingLeaf(name string) bool {
 	for _, token := range commandNameTokens(name) {
 		if mutatingVerbs[token] {
@@ -590,6 +598,15 @@ func isMutatingLeaf(name string) bool {
 		}
 	}
 	return false
+}
+
+func isReadLeaf(name string) bool {
+	for _, token := range commandNameTokens(name) {
+		if readVerbs[token] {
+			return true
+		}
+	}
+	return isCompanionLeaf(name)
 }
 
 func liveDogfoodCommandMutates(command liveDogfoodCommand) bool {
@@ -626,6 +643,9 @@ func commandMutation(annotations map[string]string, commandPath []string) comman
 	}
 	if isMutatingLeaf(commandPath[len(commandPath)-1]) {
 		return commandMutationClassification{mutating: true}
+	}
+	if isReadLeaf(commandPath[len(commandPath)-1]) {
+		return commandMutationClassification{}
 	}
 	return commandMutationClassification{mutating: true, unclassified: true}
 }
