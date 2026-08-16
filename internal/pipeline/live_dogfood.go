@@ -1555,14 +1555,6 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	mutation := liveDogfoodCommandMutation(command)
 	mutating := mutation.mutating
 	useDryRun := mutating && commandSupportsDryRun(command.Help)
-	if mutation.unclassified && !useDryRun {
-		results = append(results,
-			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonUnclassifiedNoMethod),
-			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonUnclassifiedNoMethod),
-			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonUnclassifiedNoMethod),
-		)
-		return results
-	}
 
 	if annotationIsTrueValue(command.Annotations[interactiveAnnotation]) {
 		results = append(results,
@@ -1668,6 +1660,13 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, syntheticParamSkip),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, syntheticParamSkip),
 		)
+	case mutation.unclassified && !useDryRun:
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonUnclassifiedNoMethod),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonUnclassifiedNoMethod),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonUnclassifiedNoMethod),
+		)
+		return results
 	default:
 		happyArgs = resolvedArgs
 
