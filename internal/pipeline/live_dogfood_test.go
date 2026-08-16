@@ -6655,7 +6655,13 @@ func TestRunLiveDogfoodSkipsUnannotatedSyncWithoutDryRun(t *testing.T) {
 	assert.Empty(t, got.Args, "skipped sync must not include executable mutation args")
 
 	lines := readArgvLog(t, argvLogPath)
-	assert.NotContains(t, lines, "sync", "sync without --dry-run must not invoke the binary")
+	syncCalls := 0
+	for _, line := range lines {
+		if line == "sync" {
+			syncCalls++
+		}
+	}
+	assert.Equal(t, 1, syncCalls, "only the explicit pre-sync hydration may invoke sync without --dry-run")
 }
 
 func TestRunLiveDogfoodSkipsUnclassifiedCommandWithoutDryRun(t *testing.T) {
