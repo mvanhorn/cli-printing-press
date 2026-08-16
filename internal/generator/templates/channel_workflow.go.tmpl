@@ -343,6 +343,10 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 {{- if eq .Name "substack"}}
 				if resource == "drafts" {
 					if err := resolveSubstackPublicationIDTemplate(archiveCtx, c, flags); err != nil {
+						err = workflowArchiveTimeoutError(archiveTimeout, err)
+						if errors.Is(err, context.DeadlineExceeded) {
+							return fmt.Errorf("archiving %s: %w", resource, err)
+						}
 						fmt.Fprintf(cmd.ErrOrStderr(), "  %s: error: %v\n", resource, err)
 						continue
 					}

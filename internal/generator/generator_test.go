@@ -10585,6 +10585,10 @@ func TestGeneratedOutput_WorkflowBoundaries(t *testing.T) {
 	substackWorkflow := readGeneratedFile(t, substackDir, "internal", "cli", "channel_workflow.go")
 	assert.Contains(t, substackWorkflow, `resolveSubstackPublicationIDTemplate(archiveCtx, c, flags)`,
 		"Substack archive publication preflight must share the bounded archive context")
+	assert.Contains(t, substackWorkflow, `err = workflowArchiveTimeoutError(archiveTimeout, err)`,
+		"Substack archive publication preflight must convert deadline errors into actionable archive timeout errors")
+	assert.Contains(t, substackWorkflow, `return fmt.Errorf("archiving %s: %w", resource, err)`,
+		"Substack archive publication preflight timeout must hard-fail instead of continuing")
 	assert.NotContains(t, substackWorkflow, `resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags)`,
 		"Substack archive publication preflight must not bypass the archive timeout")
 
