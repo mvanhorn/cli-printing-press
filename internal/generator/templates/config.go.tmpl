@@ -905,6 +905,11 @@ func (c *Config) StoreScopeCredential() string {
 		parts = append(parts, {{printf "%q" (printf "sibling:%s:%s=" .In .Header)}}+c.{{resolveEnvVarField .EnvVar.Name}})
 	}
 {{- end}}
+{{- if or (eq .Auth.Type "composed") (eq .Auth.Type "cookie")}}
+	if cookie := c.CookieCredential(); cookie != "" {
+		parts = append(parts, "cookie="+cookie)
+	}
+{{- end}}
 	if len(parts) > 0 {
 		return strings.Join(parts, "\n")
 	}

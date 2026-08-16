@@ -33,9 +33,11 @@ func TestGeneratedDefaultDBPathScopesComposedSiblingCredentials(t *testing.T) {
 
 	apiSpec := minimalSpec("db-scope-composed")
 	apiSpec.Auth = spec.AuthConfig{
-		Type:    "composed",
-		Header:  "Authorization",
-		EnvVars: []string{"COMPOSED_SCOPE_TOKEN"},
+		Type:         "composed",
+		Header:       "Authorization",
+		EnvVars:      []string{"COMPOSED_SCOPE_TOKEN"},
+		CookieDomain: ".example.test",
+		Cookies:      []string{"session_id"},
 		AdditionalHeaders: []spec.AdditionalAuthHeader{
 			{
 				Header: "X-App-Key",
@@ -58,7 +60,7 @@ func TestGeneratedDefaultDBPathScopesComposedSiblingCredentials(t *testing.T) {
 	testSrc := strings.ReplaceAll(defaultDBPathComposedScopeTestSource, "__MODULE_PATH__", modulePath)
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "default_db_path_composed_scope_test.go"), []byte(testSrc), 0o644))
 
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestDefaultDBPathScopeComposedSiblingCredentials$", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestDefaultDBPathScopeComposed", "-count=1")
 	requireGeneratedCompiles(t, outputDir)
 }
 
@@ -220,6 +222,7 @@ func quoteTOMLString(value string) string {
 const defaultDBPathComposedScopeTestSource = `package cli
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -251,6 +254,50 @@ func TestDefaultDBPathScopeComposedSiblingCredentials(t *testing.T) {
 	}
 	if first == second {
 		t.Fatalf("composed identities with different sibling credentials selected the same database: %s", first)
+	}
+}
+
+func TestDefaultDBPathScopeComposedCookieAndSiblingCredentials(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("COMPOSED_SCOPE_TOKEN", "")
+	t.Setenv("COMPOSED_SCOPE_APP_KEY", "")
+	restore, err := cliutil.SetHomeOverride(home)
+	if err != nil {
+		t.Fatalf("set home override: %v", err)
+	}
+	t.Cleanup(restore)
+	setDefaultDBScopeCredential("")
+
+	firstConfig := filepath.Join(t.TempDir(), "first.toml")
+	writeComposedScopeConfig(t, firstConfig, "Bearer shared-primary", "cookie-a", "same-sibling")
+	configureDefaultDBScope(firstConfig)
+	first := defaultDBPath("db-scope-composed-pp-cli")
+	if filepath.Base(first) == "data.db" {
+		t.Fatalf("first composed cookie identity selected unscoped database: %s", first)
+	}
+
+	secondConfig := filepath.Join(t.TempDir(), "second.toml")
+	writeComposedScopeConfig(t, secondConfig, "Bearer shared-primary", "cookie-b", "same-sibling")
+	configureDefaultDBScope(secondConfig)
+	second := defaultDBPath("db-scope-composed-pp-cli")
+	if filepath.Base(second) == "data.db" {
+		t.Fatalf("second composed cookie identity selected unscoped database: %s", second)
+	}
+	if first == second {
+		t.Fatalf("composed identities with different cookies selected the same database: %s", first)
+	}
+}
+
+func writeComposedScopeConfig(t *testing.T, path, authHeader, cookie, sibling string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := "auth_header = \""+authHeader+"\"\n"+
+		"access_token = \""+cookie+"\"\n"+
+		"scope_app_key = \""+sibling+"\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 `
