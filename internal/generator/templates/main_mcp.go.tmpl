@@ -23,7 +23,7 @@ import (
 // guidance that production agents need a remote option.
 
 const (
-	defaultHTTPAddr = "{{if .MCP.Addr}}{{.MCP.Addr}}{{else}}:7777{{end}}"
+	defaultHTTPAddr = "{{if .MCP.Addr}}{{.MCP.Addr}}{{else}}127.0.0.1:7777{{end}}"
 )
 
 // version is the printed MCP server's version, overridable at build time via ldflags.
