@@ -321,11 +321,20 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 
 			w := cmd.OutOrStdout()
 			credentialConfigured := cfg.CredentialConfigured()
+			refusals := cfg.CredentialRefusalSummaries()
+			credentialRefused := len(refusals) > 0
 			if !credentialConfigured {
 				if v := os.Getenv("COOKIE_AUTH_SESSION"); v != "" {
 					fmt.Fprintln(w, green("Authenticated"))
 					fmt.Fprintf(w, "  Source: %s env var\n", "COOKIE_AUTH_SESSION")
 					return nil
+				}
+				if credentialRefused {
+					fmt.Fprintln(w, red("Credentials present but refused"))
+					for _, refusal := range refusals {
+						fmt.Fprintf(w, "  %s\n", refusal)
+					}
+					return authErr(cfg.CredentialRefusalError())
 				}
 				fmt.Fprintln(w, red("Not authenticated"))
 				fmt.Fprintln(w, "")
