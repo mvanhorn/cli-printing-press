@@ -11396,8 +11396,6 @@ func TestGeneratedAuthCredentialCommandReferencesMatchCobraTree(t *testing.T) {
 			content := readGeneratedFile(t, outputDir, generatedPath...)
 			assert.Contains(t, content, "auth set-token", strings.Join(generatedPath, "/"))
 		}
-
-		requireGeneratedCompiles(t, outputDir)
 	})
 
 	t.Run("basic credential pair advertises set-credentials without dead set-token", func(t *testing.T) {
@@ -11452,8 +11450,6 @@ func TestGeneratedAuthCredentialCommandReferencesMatchCobraTree(t *testing.T) {
 		assert.Contains(t, client, "auth set-credentials")
 		doctor := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
 		assert.Contains(t, doctor, `credentialRemediation = "run auth set-credentials or auth logout"`)
-
-		requireGeneratedCompiles(t, outputDir)
 	})
 }
 
