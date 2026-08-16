@@ -31,8 +31,12 @@ func isAllowedDeadHelper(name string) bool {
 		"paginatedItemsEqual",
 		"paginationCursorToken",
 		"pathParamSegmentValue",
+		"replaceDependentPathParam",
 		"replacePathParam",
+		"replaceURLIDPathParam",
+		"resourceURLIDPathParam",
 		"responsePayloadParentAtPath",
+		"urlIDFieldName",
 		"writeNoop":
 		return true
 	default:

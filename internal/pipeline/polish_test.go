@@ -233,6 +233,10 @@ func writeHarnessRefusal() {}
 func declarePlatformAnalytics() {}
 func resolvePlatformWindow() {}
 func pathParamSegmentValue() {}
+func replaceDependentPathParam() {}
+func replaceURLIDPathParam() {}
+func resourceURLIDPathParam() {}
+func urlIDFieldName() {}
 
 func deadHelper() {}
 `), 0o644)

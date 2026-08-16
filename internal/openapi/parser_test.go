@@ -8603,8 +8603,9 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
 			wantID: "id",
 		},
 		{
-			name: "tier 4: uri wins over name (Calendly shape)",
+			name: "tier 4: required uri wins over name (Calendly shape)",
 			schemaYAML: `                  type: object
+                  required: [uri]
                   properties:
                     uri: {type: string}
                     name: {type: string}
@@ -8612,13 +8613,34 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
 			wantID: "uri",
 		},
 		{
-			name: "tier 4: selfLink casing is preserved",
+			name: "tier 4: required selfLink casing is preserved",
 			schemaYAML: `                  type: object
+                  required: [selfLink]
                   properties:
                     selfLink: {type: string}
                     name: {type: string}
 `,
 			wantID: "selfLink",
+		},
+		{
+			name: "tier 4: optional identifier-looking url wins over name",
+			schemaYAML: `                  type: object
+                  properties:
+                    url:
+                      type: string
+                      description: Unique resource URL for this object.
+                    name: {type: string}
+`,
+			wantID: "url",
+		},
+		{
+			name: "tier 5: optional generic url falls through to name",
+			schemaYAML: `                  type: object
+                  properties:
+                    url: {type: string}
+                    name: {type: string}
+`,
+			wantID: "name",
 		},
 		{
 			name: "tier 4: id wins over self (compact id precedence)",

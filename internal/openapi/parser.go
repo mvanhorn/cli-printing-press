@@ -6220,7 +6220,7 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation, resourceName strin
 
 	// Tier 4: URL-shaped identifiers. These trail id-shaped keys so APIs that
 	// expose both `id` and `self` keep keying on the compact primary key.
-	if id := urlShapedIDField(itemSchema); id != "" {
+	if id := urlShapedIDField(itemSchema, itemFields.required); id != "" {
 		return id
 	}
 
@@ -6357,9 +6357,13 @@ func resourceIDBaseCandidates(resourceName string) []string {
 	return candidates
 }
 
-func urlShapedIDField(schema *openapi3.Schema) string {
+func urlShapedIDField(schema *openapi3.Schema, required []string) string {
 	if schema == nil {
 		return ""
+	}
+	requiredSet := map[string]struct{}{}
+	for _, name := range required {
+		requiredSet[name] = struct{}{}
 	}
 	propNames := make([]string, 0, len(schema.Properties))
 	for name := range schema.Properties {
@@ -6372,12 +6376,30 @@ func urlShapedIDField(schema *openapi3.Schema) string {
 			if propName != key && toSnakeCase(propName) != keySnake {
 				continue
 			}
-			if propRef := schema.Properties[propName]; propRef != nil && isPlausibleIDFieldSchema(schemaRefValue(propRef)) {
+			propRef := schema.Properties[propName]
+			propSchema := schemaRefValue(propRef)
+			if propRef != nil && isPlausibleIDFieldSchema(propSchema) && urlFieldLooksIdentifier(propName, propSchema, isRequired(requiredSet, propName)) {
 				return propName
 			}
 		}
 	}
 	return ""
+}
+
+func urlFieldLooksIdentifier(name string, schema *openapi3.Schema, required bool) bool {
+	if required {
+		return true
+	}
+	if schema == nil {
+		return false
+	}
+	text := strings.ToLower(strings.Join([]string{name, schema.Title, schema.Description, schema.Format}, " "))
+	for _, token := range []string{"unique", "identifier", "permalink", "canonical", "resource uri", "resource url"} {
+		if strings.Contains(text, token) {
+			return true
+		}
+	}
+	return false
 }
 
 // singularizeIdentifier returns a simple singular form of a snake-cased
