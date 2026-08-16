@@ -191,11 +191,12 @@ func TestGeneratedOAuthPartialConfigCredentialsMergeMissingFields(t *testing.T) 
 	credentialTests := readGeneratedFile(t, outputDir, "internal", "cliutil", "credentials_test.go")
 	require.Contains(t, credentialTests, "TestPartialConfigCredentialsMergeMissingFields")
 	require.Contains(t, credentialTests, "TestExplicitConfigFallsBackToGlobalCredentialsWhenSiblingEmptyAndLoose")
+	require.Contains(t, credentialTests, "TestExplicitConfigRefusesLooseMalformedSiblingInsteadOfUsingGlobal")
 	require.Contains(t, credentialTests, "RefreshToken = %q, want config-refresh")
 	require.Contains(t, credentialTests, "AccessToken = %q, want credentials-access")
 
 	requireGeneratedCompiles(t, outputDir)
-	runGoCommandRequired(t, outputDir, "test", "./internal/cliutil", "-run", "Test(PartialConfigCredentialsMergeMissingFields|ExplicitConfigFallsBackToGlobalCredentialsWhenSiblingEmptyAndLoose)")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cliutil", "-run", "Test(PartialConfigCredentialsMergeMissingFields|ExplicitConfigFallsBackToGlobalCredentialsWhenSiblingEmptyAndLoose|ExplicitConfigRefusesLooseMalformedSiblingInsteadOfUsingGlobal)")
 }
 
 func TestGeneratedRequiredCredentialPairPassesCredentialTests(t *testing.T) {
