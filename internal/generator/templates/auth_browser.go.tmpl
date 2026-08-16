@@ -23,6 +23,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 {{- end}}
+{{- if eq .Auth.Type "composed"}}
+	"encoding/base64"
+{{- end}}
 {{- if or $hasCookieBrowserAuth $hasBrowserCapture}}
 	"encoding/json"
 {{- end}}
@@ -2223,11 +2226,16 @@ func extractViaCookieScoop(domain, profileDir string) (string, error) {
 {{- end}}
 
 {{- if eq .Auth.Type "composed"}}
-// validateComposedAuth makes a lightweight test request to verify the session is still active.
-// Uses the API base URL — any authenticated endpoint returning 401/403 indicates expiry.
-// A non-auth error (404, 500, timeout) is treated as "can't validate, assume OK" to avoid
-// blocking auth on unrelated API issues.
+// validateComposedAuth rejects expired JWTs locally before falling back to a
+// lightweight probe for opaque composed credentials.
 func validateComposedAuth(authHeader string) error {
+	if expiry, ok := composedAuthJWTExpiry(authHeader); ok {
+		if !time.Now().Before(expiry) {
+			return fmt.Errorf("JWT expired at %s", expiry.Format(time.RFC3339))
+		}
+		return nil
+	}
+
 	testURL := "{{.BaseURL}}"
 	req, err := http.NewRequest("HEAD", testURL, nil)
 	if err != nil {
@@ -2269,6 +2277,61 @@ func validateComposedAuth(authHeader string) error {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func composedAuthJWTExpiry(authHeader string) (time.Time, bool) {
+	for _, candidate := range strings.FieldsFunc(authHeader, func(r rune) bool {
+		isAlnum := (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		return !isAlnum && r != '-' && r != '_' && r != '.'
+	}) {
+		if strings.Count(candidate, ".") != 2 {
+			continue
+		}
+		expiry, ok := decodeJWTExpiry(candidate)
+		if ok {
+			return expiry, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func decodeJWTExpiry(candidate string) (time.Time, bool) {
+	parts := strings.Split(candidate, ".")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return time.Time{}, false
+	}
+	header, err := decodeBase64URLSegment(parts[0])
+	if err != nil {
+		return time.Time{}, false
+	}
+	var headerClaims map[string]any
+	if err := json.Unmarshal(header, &headerClaims); err != nil {
+		return time.Time{}, false
+	}
+	payload, err := decodeBase64URLSegment(parts[1])
+	if err != nil {
+		return time.Time{}, false
+	}
+	var claims struct {
+		Exp json.Number `json:"exp"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&claims); err != nil {
+		return time.Time{}, false
+	}
+	expUnix, err := claims.Exp.Int64()
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(expUnix, 0), true
+}
+
+func decodeBase64URLSegment(segment string) ([]byte, error) {
+	if decoded, err := base64.RawURLEncoding.DecodeString(segment); err == nil {
+		return decoded, nil
+	}
+	return base64.URLEncoding.DecodeString(segment)
 }
 {{- end}}
 
