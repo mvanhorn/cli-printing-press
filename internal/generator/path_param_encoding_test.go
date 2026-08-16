@@ -63,8 +63,8 @@ func TestReplacePathParamPercentEncodesValue(t *testing.T) {
 	assert.Contains(t, src, "/internal/cliutil",
 		"helpers.go must import cliutil when replacePathParam is emitted")
 	assert.Contains(t, src,
-		`return strings.ReplaceAll(path, "{"+name+"}", cliutil.EscapePathParam(value))`,
-		"replacePathParam must use the shared path-param escaper")
+		`return strings.ReplaceAll(path, "{"+name+"}", cliutil.EscapePathParam(pathParamSegmentValue(value)))`,
+		"replacePathParam must normalize URL IDs before using the shared path-param escaper")
 
 	cliutilPath := filepath.Join(outputDir, "internal", "cliutil", "text.go")
 	cliutilGo, err := os.ReadFile(cliutilPath)
@@ -94,7 +94,8 @@ func TestReplacePathParamEncodesSingleSegment(t *testing.T) {
 	tests := map[string]string{
 		"opaque-id": "opaque-id",
 		"sc-domain:example.com": "sc-domain:example.com",
-		"https://example.com/foo": "https:%2F%2Fexample.com%2Ffoo",
+		"https://example.com/foo": "foo",
+		"https://example.com/foo/bar/": "bar",
 		"allenai/c4": "allenai%2Fc4",
 		"src/main file.go": "src%2Fmain%20file.go",
 		"../secret": "..%2Fsecret",
