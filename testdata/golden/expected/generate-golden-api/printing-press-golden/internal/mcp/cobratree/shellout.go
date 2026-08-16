@@ -189,21 +189,35 @@ var reservedStructuredArgs = map[string]bool{
 	"args": true,
 }
 
+// blockedDestinationFlags are filesystem destination selectors that an MCP
+// client must not choose. The server account owns command execution, so
+// letting the client pick paths would let a tool write or truncate anything
+// that account can reach.
+var blockedDestinationFlags = map[string]bool{
+	"audit-dir":    true,
+	"o":            true,
+	"output":       true,
+	"receipt-file": true,
+}
+
 // blockedRootFlags are root-level CLI flags that an MCP client must not be
 // able to override via structured tool parameters. Allowing them lets a
 // caller swap auth credentials, redirect the API base URL, select a different
 // per-client filesystem, relocate the config/data/state/cache roots, load a
-// malicious config file, or change the delivery target, all of which sit
-// outside the per-command surface the agent is supposed to be calling.
+// malicious config file, change receipt destinations, or change the delivery
+// target, all of which sit outside the per-command surface the agent is
+// supposed to be calling.
 var blockedRootFlags = map[string]bool{
-	"base-url": true,
-	"client":   true,
-	"config":   true,
-	"deliver":  true,
-	"home":     true,
-	"insecure": true,
-	"profile":  true,
-	"token":    true,
+	"audit-dir":    true,
+	"base-url":     true,
+	"client":       true,
+	"config":       true,
+	"deliver":      true,
+	"home":         true,
+	"insecure":     true,
+	"profile":      true,
+	"receipt-file": true,
+	"token":        true,
 }
 
 func cliArgsFromMCP(args map[string]any, blocked map[string]bool) []string {
