@@ -228,6 +228,7 @@ func Load(configPath string) (*Config, error) {
 				if err != nil {
 					return nil, err
 				}
+				ok = status.Loaded
 				if status.Refusal != nil {
 					cfg.addCredentialRefusal(*status.Refusal)
 					credentialsRefused = true
@@ -239,6 +240,7 @@ func Load(configPath string) (*Config, error) {
 				if err != nil {
 					return nil, err
 				}
+				ok = status.Loaded
 				if status.Refusal != nil {
 					cfg.addCredentialRefusal(*status.Refusal)
 				}
