@@ -135,7 +135,7 @@ func composedAuthTestJWT(t *testing.T, expiry time.Time) string {
 	t.Helper()
 
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
-	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"sub":"test","exp":%d}`, expiry.Unix())))
+	payload := base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"sub":"test","exp":%d}`, expiry.Unix()))
 	signature := base64.RawURLEncoding.EncodeToString([]byte("signature"))
 	return header + "." + payload + "." + signature
 }
