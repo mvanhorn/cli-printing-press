@@ -24,15 +24,21 @@ func TestGeneratedComposedAuthValidatesJWTExpLocally(t *testing.T) {
 	var mu sync.Mutex
 	calls := map[string]int{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
+		authHeader := r.Header.Get("Authorization")
+		cookieHeader := r.Header.Get("Cookie")
+		callKey := "Authorization:" + authHeader + "|Cookie:" + cookieHeader
 		mu.Lock()
-		calls[auth]++
+		calls[callKey]++
 		mu.Unlock()
 
-		switch auth {
-		case "Bearer " + expiredJWT:
-			w.WriteHeader(http.StatusNoContent)
-		case "Bearer " + validJWT, "opaque-session":
+		if authHeader != "" {
+			w.WriteHeader(http.StatusTeapot)
+			return
+		}
+		switch cookieHeader {
+		case "session=" + validJWT:
+			w.WriteHeader(http.StatusUnauthorized)
+		case "session=opaque-session":
 			w.WriteHeader(http.StatusUnauthorized)
 		default:
 			w.WriteHeader(http.StatusNoContent)
@@ -79,8 +85,15 @@ import (
 const expiredJWT = %q
 const validJWT = %q
 
+func TestComposeAuthFromCookiesReplacesTokenPlaceholder(t *testing.T) {
+	got := composeAuthFromCookies("Bearer {token}", []string{"session"}, map[string]string{"session": "captured-cookie"})
+	if got != "Bearer captured-cookie" {
+		t.Fatalf("composeAuthFromCookies() = %%q, want %%q", got, "Bearer captured-cookie")
+	}
+}
+
 func TestValidateComposedAuthRejectsExpiredJWTBeforeProbe(t *testing.T) {
-	err := validateComposedAuth("Bearer " + expiredJWT)
+	err := validateComposedAuth("Bearer " + expiredJWT, "session=" + expiredJWT)
 	if err == nil {
 		t.Fatal("validateComposedAuth() error = nil, want expired JWT error")
 	}
@@ -90,13 +103,13 @@ func TestValidateComposedAuthRejectsExpiredJWTBeforeProbe(t *testing.T) {
 }
 
 func TestValidateComposedAuthAcceptsValidJWTWithoutProbe(t *testing.T) {
-	if err := validateComposedAuth("Bearer " + validJWT); err != nil {
+	if err := validateComposedAuth("Bearer " + validJWT, "session=" + validJWT); err != nil {
 		t.Fatalf("validateComposedAuth() error = %%v, want nil", err)
 	}
 }
 
 func TestValidateComposedAuthFallsBackForOpaqueCredential(t *testing.T) {
-	err := validateComposedAuth("opaque-session")
+	err := validateComposedAuth("Bearer opaque-session", "session=opaque-session")
 	if err == nil {
 		t.Fatal("validateComposedAuth() error = nil, want probe error")
 	}
@@ -110,9 +123,12 @@ func TestValidateComposedAuthFallsBackForOpaqueCredential(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Zero(t, calls["Bearer "+expiredJWT], "expired JWT must fail locally even when the probe would accept it")
-	require.Zero(t, calls["Bearer "+validJWT], "valid JWT with exp must not be rejected by a hostile probe")
-	require.Positive(t, calls["opaque-session"], "opaque composed credentials must still use the existing probe")
+	require.Zero(t, calls["Authorization:Bearer "+expiredJWT+"|Cookie:session="+expiredJWT], "expired JWT must fail locally even when the probe would accept it")
+	require.Zero(t, calls["Authorization:|Cookie:session="+expiredJWT], "expired JWT must fail locally before any cookie probe")
+	require.Zero(t, calls["Authorization:Bearer "+validJWT+"|Cookie:session="+validJWT], "valid JWT with exp must not be rejected by a hostile probe")
+	require.Zero(t, calls["Authorization:|Cookie:session="+validJWT], "valid JWT with exp must not be rejected by a hostile cookie probe")
+	require.Positive(t, calls["Authorization:|Cookie:session=opaque-session"], "opaque composed credentials must still use the existing cookie probe")
+	require.Zero(t, calls["Authorization:Bearer opaque-session|Cookie:session=opaque-session"], "cookie-session validation must not send the bearer Authorization header")
 }
 
 func composedAuthTestJWT(t *testing.T, expiry time.Time) string {

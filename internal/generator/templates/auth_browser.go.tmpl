@@ -365,15 +365,13 @@ profile by name when the installed backend supports it.`,
 				fmt.Fprintf(w, "%s Found session cookies via live Chrome.\n", green("OK"))
 			}
 
-			composed := "{{.Auth.Format}}"
-			for _, name := range requiredCookies {
-				composed = strings.ReplaceAll(composed, "{"+name+"}", cookieMap[name])
-			}
+			composed := composeAuthFromCookies("{{.Auth.Format}}", requiredCookies, cookieMap)
+			validationCookies := composeCookieHeader(requiredCookies, cookieMap)
 
 {{- if not .Auth.RequiresBrowserSession}}
 			// Validate the composed auth before saving — catch stale/expired sessions
 			fmt.Fprintf(w, "Validating session...")
-			if err := validateComposedAuth(composed); err != nil {
+			if err := validateComposedAuth(composed, validationCookies); err != nil {
 				loginURL := "https://" + strings.TrimPrefix(domain, ".")
 				fmt.Fprintf(w, " %s\n", red("expired"))
 				fmt.Fprintln(w, "")
@@ -1034,10 +1032,7 @@ func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
 			return fmt.Errorf("cookie %q not found for %s", name, domain)
 		}
 	}
-	composed := "{{.Auth.Format}}"
-	for _, name := range requiredCookies {
-		composed = strings.ReplaceAll(composed, "{"+name+"}", cookieMap[name])
-	}
+	composed := composeAuthFromCookies("{{.Auth.Format}}", requiredCookies, cookieMap)
 	cfg.CredentialDomain = "{{.Auth.CookieDomain}}"
 	if err := cfg.SaveTokens("", "", composed, "", time.Time{}); err != nil {
 		return configErr(fmt.Errorf("saving auth: %w", err))
@@ -2226,14 +2221,40 @@ func extractViaCookieScoop(domain, profileDir string) (string, error) {
 {{- end}}
 
 {{- if eq .Auth.Type "composed"}}
+func composeAuthFromCookies(format string, requiredCookies []string, cookieMap map[string]string) string {
+	composed := format
+	if len(requiredCookies) > 0 {
+		if value, ok := cookieMap[requiredCookies[0]]; ok {
+			composed = strings.ReplaceAll(composed, "{token}", value)
+			composed = strings.ReplaceAll(composed, "{access_token}", value)
+		}
+	}
+	for _, name := range requiredCookies {
+		composed = strings.ReplaceAll(composed, "{"+name+"}", cookieMap[name])
+	}
+	return composed
+}
+
+func composeCookieHeader(requiredCookies []string, cookieMap map[string]string) string {
+	parts := make([]string, 0, len(requiredCookies))
+	for _, name := range requiredCookies {
+		if value, ok := cookieMap[name]; ok {
+			parts = append(parts, name+"="+value)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
 // validateComposedAuth rejects expired JWTs locally before falling back to a
 // lightweight probe for opaque composed credentials.
-func validateComposedAuth(authHeader string) error {
-	if expiry, ok := composedAuthJWTExpiry(authHeader); ok {
-		if !time.Now().Before(expiry) {
-			return fmt.Errorf("JWT expired at %s", expiry.Format(time.RFC3339))
+func validateComposedAuth(authHeader, cookieHeader string) error {
+	for _, credential := range []string{authHeader, cookieHeader} {
+		if expiry, ok := composedAuthJWTExpiry(credential); ok {
+			if !time.Now().Before(expiry) {
+				return fmt.Errorf("JWT expired at %s", expiry.Format(time.RFC3339))
+			}
+			return nil
 		}
-		return nil
 	}
 
 	testURL := "{{.BaseURL}}"
@@ -2241,7 +2262,11 @@ func validateComposedAuth(authHeader string) error {
 	if err != nil {
 		return nil // can't validate, assume OK
 	}
-	req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", authHeader)
+	if strings.TrimSpace(cookieHeader) != "" {
+		req.Header.Set("Cookie", cookieHeader)
+	} else {
+		req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", authHeader)
+	}
 {{- range .RequiredHeaders}}
 	req.Header.Set("{{.Name}}", "{{.Value}}")
 {{- end}}
