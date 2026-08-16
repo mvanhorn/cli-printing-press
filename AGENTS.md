@@ -74,6 +74,8 @@ Always use relative paths for build output. Never build to `/tmp` or another sha
 Run `scripts/golden.sh verify` whenever a change may affect CLI command output, browser-sniff or crowd-sniff output, generated specs or generated printed CLI files, templates under `internal/generator/templates/`, naming, endpoint derivation, auth emission, manifest generation, scorecard output, or pipeline artifacts.
 Never update goldens just to make a failing check pass. Run `scripts/golden.sh update` only when the behavior change is intentional, then inspect the diff and explain it in your final response. See [`docs/GOLDEN.md`](docs/GOLDEN.md) for the decision rubric, fixture conventions, and failure handling.
 When adding a new deterministic CLI behavior or generated artifact contract, explicitly decide whether the golden suite needs a new or expanded fixture. A passing `scripts/golden.sh verify` on existing cases does not prove coverage for new auth, pagination, MCP, manifest, naming, or similar deterministic generation behavior.
+For PRs targeting `main`, the same golden set Mergify waits on is Main CI's `full-golden` job, which runs `bash scripts/golden.sh verify`; the separate `Golden` workflow delegates `main`-targeted PRs to that job. A template/generator PR is incomplete until the fixture updates for that full set are committed. Do not open the PR or call it ready when only a cheaper `golden` signal is green and `full-golden` would fail.
+Do not open a PR that touches `internal/generator/templates/**` or parser-emitted contracts without the matching golden or generated-output fixture updates in the same commit set. Use `scripts/verify-generator-output.sh` for template/generator changes that can alter emitted Go, as described below.
 
 ### Generator fixes require generated-output proof
 When touching `internal/generator/**`, `internal/openapi/**`, generator templates, parser-derived fields, MCP descriptions, naming, auth emission, or SKILL.md skeletons, verify the generated CLI behavior, not only the Printing Press source or template text.
@@ -219,6 +221,8 @@ When implementation or generation is blocked, report the exact blocker and stop.
 ## Automated code review with Greptile
 
 Every PR gets automated Greptile review alongside CI. Resolve every Greptile finding before calling a PR ready: P0 and P1 comments block merge, and P2 comments need either a fix or a concrete reply explaining why the deferral is intentional. Do not use the score alone as the gate.
+If a Greptile finding argues against a stated issue or PR contract, do not change the contract just to appease the finding; leave the intended behavior in place and reply with the concrete contract. For example, when a contract says URL-valued path params must reduce to the trailing segment so dependent fetches do not 404, do not "restore" URL components.
+After required CI is green or `ready-to-merge` is on the PR, do not push comment-only, formatting-only, or Greptile-appeasement commits. Those pushes reset required checks and dequeue Mergify; use concrete replies or review-thread resolution for non-blocking nits.
 
 Greptile feedback is not limited to GitHub review threads. It also edits top-level PR summary comments, and those summaries can contain actionable issue blocks, including `Comments Outside Diff`, even when the thread list has zero unresolved comments. Before saying a PR is ready, run the repo-owned review-state helper:
 

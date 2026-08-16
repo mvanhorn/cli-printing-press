@@ -12,11 +12,15 @@ Passing `scripts/golden.sh verify` only proves existing fixtures did not drift. 
 
 Golden verification is byte-level, not compile-level. It can miss generator bugs where a template emits a call without its matching definition, or where the changed branch is not captured by the expected artifact subset. For generator/template changes that can alter emitted Go, also run `scripts/verify-generator-output.sh` so representative generated CLIs are built with `go build ./...`. Pass the specific golden case names that cover the touched variant when the default case set is not enough.
 
+For PRs targeting `main`, `.github/workflows/golden.yml` delegates golden verification to Main CI's `full-golden` job. That job runs `bash scripts/golden.sh verify` and is the golden fixture set Mergify waits on through the aggregate `build-and-test` check. Do not open or mark a generator/template PR ready when only a cheaper `golden` signal is green and `full-golden` would fail; update and commit the matching fixture set first.
+
 ## Decision rubric
 
 - **No golden update:** code changed but the captured external behavior is intentionally identical. Run `scripts/golden.sh verify`; it should pass unchanged.
 - **Update an existing fixture:** the behavior already covered by a golden case intentionally changed. Run `scripts/golden.sh update`, then inspect and explain the exact expected diff.
 - **Add or expand a fixture:** the change creates a new deterministic command output or persisted artifact contract that existing cases do not exercise. Add the smallest fixture that proves that contract.
+
+Template changes under `internal/generator/templates/**` and parser changes that alter emitted contracts must carry their fixture updates in the same commit set. A PR that changes the generator contract but leaves stale goldens for a later push is incomplete.
 
 ## Fixture authoring
 

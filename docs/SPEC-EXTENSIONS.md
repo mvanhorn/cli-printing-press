@@ -1355,8 +1355,22 @@ Rules:
 - Must be a string.
 - Leading and trailing whitespace is trimmed.
 - Non-string values emit a warning and are ignored.
-- An empty or missing value falls through to the parser's response-schema
-  fallback chain: `id`, then `name`, then the first required scalar field.
+- A non-empty `x-resource-id` wins over every automatic response-schema
+  fallback.
+- An empty or missing value falls through to the parser's automatic
+  `resolveIDFieldFromResponseSchema` chain: bare `id`; then a resource-derived
+  singular key ending in `_id`, `_uuid`, or `_guid` (matched through
+  snake-case normalization, so camelCase and PascalCase spellings such as
+  `widgetId` are preserved when emitted); then vendor identifier keys `gid`,
+  `sid`, `uid`, `uuid`, and `guid`; then URL-shaped identifier keys `uri`,
+  `self`, `selfLink`, `href`, and `url`; then `name`; then the first plausible
+  required scalar field.
+- URL-shaped keys intentionally trail id-shaped keys, so APIs that expose both
+  `id` and `self` keep the compact primary key.
+- URL-shaped keys intentionally win over display `name` when no id-shaped key
+  is available. A resource URL or URI is usually record-unique, while display
+  names can collide; keying on `name` would collapse two records with the same
+  display label into one local row.
 - Applies to every operation on the path item.
 
 Example:
@@ -1371,6 +1385,20 @@ paths:
         "200":
           description: OK
 ```
+
+Generated dependent sync uses the resolved resource ID field when substituting
+parent IDs into child path parameters. When the resolved ID field is URL-shaped
+(`uri`, `self`, `selfLink`, `href`, or `url`), generated
+`replaceURLIDPathParam` reduces a full URL value to its trailing path segment
+before normal path escaping. This is intentional: dependent fetches whose
+upstream path expects `{id}` must not send a full URL as that path segment. Do
+not restore scheme, host, query, or earlier path components in generated path
+params.
+
+`store.BareResourceID` is a separate storage-key helper for stripping the
+NUL-delimited parent suffix from composite dependent-resource storage IDs. It is
+not part of response-schema identity selection and should not be changed to
+alter URL-shaped record identity behavior.
 
 ### `x-critical`
 

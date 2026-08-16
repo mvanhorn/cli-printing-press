@@ -18,6 +18,14 @@
       {
         "scope": ["internal/**/*.go", "cmd/**/*.go"],
         "rule": "Judge whether the generator's purpose plausibly explains any credential-path read. Patterns to weigh: literal strings or os.Getenv calls for ~/.aws, ~/.ssh, ~/.kube, ~/.claude, ~/.vscode (the node-ipc and TanStack persistence/exfil paths), or env vars AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, ACTIONS_ID_TOKEN_REQUEST_URL, GITHUB_TOKEN, NPM_TOKEN. The generator's own code reads specs and writes generated CLIs; it does not normally read user credentials. Flag P0 when a credential-path read is added unless the PR clearly justifies it. The generator must never write to ~/.claude/ or ~/.vscode/ — those were the TanStack persistence sinks."
+      },
+      {
+        "scope": ["internal/openapi/parser.go"],
+        "rule": "The record-identity contract is intentional: x-resource-id wins; resolveIDFieldFromResponseSchema falls back through id-shaped keys first (id, resource-derived _id/_uuid/_guid spellings, then gid/sid/uid/uuid/guid), then URL-shaped keys (uri, self, selfLink, href, url), then name, then the first plausible required scalar. Do not file a P1 claiming URL-shaped keys should come after name, or claiming self/url should beat id when both exist."
+      },
+      {
+        "scope": ["internal/generator/templates/helpers.go.tmpl", "internal/generator/templates/sync.go.tmpl"],
+        "rule": "Generated dependent path-param substitution intentionally reduces URL-valued resource IDs to the trailing path segment before escaping. Do not file a P1 asking replaceURLIDPathParam/pathParamSegmentValue or replaceDependentPathParam to preserve scheme, host, query, or earlier URL path components; APIs whose child paths take {id} must not receive a full URL as that segment. store.BareResourceID remains only the composite-storage-key suffix stripper, not a replacement for this URL-segment behavior."
       }
     ]
   }
