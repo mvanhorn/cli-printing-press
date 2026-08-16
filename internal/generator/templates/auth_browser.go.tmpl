@@ -572,16 +572,10 @@ when the CDP path is not available (other machine, headless server, etc.).`,
 
 			w := cmd.OutOrStdout()
 
-			// Honor verify-env (mock subprocess) and dogfood-env (live API
-			// matrix) per the side-effect-command rule. CDP attach launches
-			// real Chrome activity — explode-prone in both environments.
-			if cliutil.IsVerifyEnv() {
-				fmt.Fprintln(w, "PRINTING_PRESS_VERIFY=1; skipping Chrome CDP attach.")
-				return nil
-			}
-			if cliutil.IsDogfoodEnv() {
-				fmt.Fprintln(w, "PRINTING_PRESS_DOGFOOD=1; skipping Chrome CDP attach.")
-				return nil
+			// CDP attach launches real Chrome activity, so every Printing
+			// Press harness gets a structured refusal before the browser path.
+			if cliutil.IsAnyHarness() {
+				return writeHarnessRefusal(w, flags, "Chrome CDP attach")
 			}
 
 			token, err := captureAuth0SPABearer(cmd.Context(), debugPort, targetOrigin, auth0SPACaptureURL(), captureTimeout, w)

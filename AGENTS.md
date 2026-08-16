@@ -39,9 +39,9 @@ MCP hosts use `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorld
 Wrong annotations are worse than missing ones. A false `readOnlyHint: true` on a mutating tool is a real bug; a missing annotation is just a permission prompt.
 
 ### Side-effect commands
-Hand-written novel commands that perform visible actions (open browser tabs, send notifications, dial out to OS handlers) follow a two-part rule:
+Hand-written novel commands that perform visible or physical actions (open browser tabs, send notifications, dial out to OS handlers, play audio, preheat hardware, boil water, write physical displays) follow this rule:
 1. Print by default; require explicit opt-in (`--launch`, `--send`, `--play`, etc.) to actually act.
-2. Short-circuit when `cliutil.IsVerifyEnv()` is true. The verifier sets `PRINTING_PRESS_VERIFY=1` in every mock-mode subprocess; this env-var check is the floor that catches any side-effect command the verifier's heuristic classifier misses.
+2. Refuse when `cliutil.IsAnyHarness()` is true, and emit structured JSON when `--json` or `--agent` is active. The helper covers `PRINTING_PRESS_VERIFY=1` and `PRINTING_PRESS_DOGFOOD=1`; commands reaching hardware a person can hear or see must refuse under every harness because curtailing makes the effect shorter, not absent.
 
 OAuth browser authorization flows must also avoid impossible machine-mode combinations. If `--json` or another machine-output mode suppresses the authorize URL and `--no-open` or equivalent disables browser launch, either emit a deliberate structured continuation protocol (`authorize_url`, state handle, expiry, next command) or fail fast with an actionable usage error. Do not wait for a callback that no user or machine can initiate. See `skills/printing-press/references/oauth2-pkce-cli-checklist.md`.
 
@@ -49,7 +49,7 @@ Generated endpoint-mirror commands also gate mutating HTTP verbs (DELETE/POST/PU
 
 
 ### Long-running commands under live-dogfood
-Hand-written novel commands whose happy path is an expensive network operation (full sync loops, content crawlers, bulk archive walks) MUST curtail work when `cliutil.IsDogfoodEnv()` returns true. The `cli-printing-press dogfood --live` runner sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess under a flat 30s per-command timeout, so an uncapped happy path trips the timeout and flips the matrix verdict to FAIL. Unlike `IsVerifyEnv`, this does NOT mean "don't hit the network" — dogfood is a real-API matrix; use it to bound work (paginate once, fetch a bounded sample, honor a smaller `--limit` default), never to substitute mock data for real calls.
+Hand-written novel commands whose happy path is an expensive read/network operation (full sync loops, content crawlers, bulk archive walks) MUST curtail work when `cliutil.IsDogfoodEnv()` returns true. The `cli-printing-press dogfood --live` runner sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess under a flat 30s per-command timeout, so an uncapped happy path trips the matrix verdict to FAIL. Unlike `IsAnyHarness`, this does NOT mean "don't hit the network" — dogfood is a real-API matrix for reads; use it to bound read work (paginate once, fetch a bounded sample, honor a smaller `--limit` default), never to substitute mock data for real calls.
 
 ### Generator-reserved namespaces
 `internal/cliutil/`, `internal/learn/`, and `internal/mcp/cobratree/` are generator-owned packages emitted into every printed CLI. Do not hand-author code in them and do not name agent-authored helpers that collide with their exports — regen will overwrite the work. Novel-feature code goes in command packages and may import from `cliutil` or `learn`.

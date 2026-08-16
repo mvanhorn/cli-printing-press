@@ -56,11 +56,12 @@ func TestGenerateAuth0SPAEmitsCDPLoginCmd(t *testing.T) {
 	assert.Contains(t, authGo, `"chrome"`,
 		"auth.go should still register the --chrome flag")
 
-	// Side-effect-command floor: verify-env + dogfood-env short-circuits.
-	assert.Contains(t, authGo, "cliutil.IsVerifyEnv()",
-		"CDP login must short-circuit under PRINTING_PRESS_VERIFY=1")
-	assert.Contains(t, authGo, "cliutil.IsDogfoodEnv()",
-		"CDP login must short-circuit under PRINTING_PRESS_DOGFOOD=1")
+	// Side-effect-command floor: every Printing Press harness gets the
+	// structured refusal path before Chrome activity starts.
+	assert.Contains(t, authGo, "cliutil.IsAnyHarness()",
+		"CDP login must refuse under PRINTING_PRESS_VERIFY=1 and PRINTING_PRESS_DOGFOOD=1")
+	assert.Contains(t, authGo, `return writeHarnessRefusal(w, flags, "Chrome CDP attach")`,
+		"CDP login suppression must honor --json and --agent output")
 
 	// JWT shape gate before saving.
 	assert.Contains(t, authGo, "cliutil.LooksLikeJWT(",
