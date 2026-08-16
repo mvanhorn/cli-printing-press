@@ -48,6 +48,7 @@ const reasonDestructiveAtAuth = "destructive-at-auth"
 const reasonMutatingDryRunOnly = "mutating command dry-run only"
 const reasonMutatingErrorPath = "mutating command; error_path would call live API without --dry-run"
 const reasonMutatingRunnableFixture = "blocked-fixture: mutating command requires runnable example"
+const reasonSyncDryRunRequired = "sync command requires --dry-run"
 const reasonUnclassifiedNoMethod = "unclassified: no pp:method"
 const reasonNoLiveSignal = "no live happy/json pass; credential-unavailable skips cannot certify acceptance"
 const reasonUnverifiedNeedsAccess = "unverified-needs-access"
@@ -608,6 +609,10 @@ func isReadLeaf(name string) bool {
 		}
 	}
 	return isCompanionLeaf(name)
+}
+
+func isSyncLeaf(name string) bool {
+	return slices.Contains(commandNameTokens(name), "sync")
 }
 
 func liveDogfoodCommandMutates(command liveDogfoodCommand) bool {
@@ -1579,6 +1584,15 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		if useDryRun {
 			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestErrorReal, tierSkip))
 		}
+		return results
+	}
+
+	if mutating && len(command.Path) > 0 && isSyncLeaf(command.Path[len(command.Path)-1]) && !useDryRun {
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonSyncDryRunRequired),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonSyncDryRunRequired),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonSyncDryRunRequired),
+		)
 		return results
 	}
 

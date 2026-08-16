@@ -2211,11 +2211,11 @@ func TestRunLiveDogfoodHappyPathHandlesShellCommentInExample(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	happy := findResultByCommandKind(report, "sync", LiveDogfoodTestHappy)
-	require.NotNil(t, happy, "expected sync happy_path result")
+	happy := findResultByCommandKind(report, "status", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected status happy_path result")
 	assert.Equal(t, LiveDogfoodStatusPass, happy.Status,
 		"trailing '# comment' in Cobra Example must not bleed into happy_path argv (reason=%q)", happy.Reason)
-	assert.Equal(t, []string{"sync"}, happy.Args,
+	assert.Equal(t, []string{"status"}, happy.Args,
 		"happy_path argv must contain only the subcommand path, not the comment text")
 }
 
@@ -2234,22 +2234,22 @@ if [ "$1" = "agent-context" ]; then
   cat <<'JSON'
 {
   "commands": [
-    {"name":"sync"}
+    {"name":"status"}
   ]
 }
 JSON
   exit 0
 fi
 
-if [ "$1" = "sync" ] && [ "${2:-}" = "--help" ]; then
+if [ "$1" = "status" ] && [ "${2:-}" = "--help" ]; then
   cat <<'HELP'
-Refresh local cache.
+Show service status.
 
 Usage:
-  fixture-pp-cli sync [flags]
+  fixture-pp-cli status [flags]
 
 Examples:
-  fixture-pp-cli sync                       # full schema + records refresh
+  fixture-pp-cli status                     # include service health
 
 Flags:
       --json    Output JSON
@@ -2257,18 +2257,18 @@ HELP
   exit 0
 fi
 
-if [ "$1" = "sync" ]; then
-  # Anything past 'sync' means the example's trailing comment leaked into
+if [ "$1" = "status" ]; then
+  # Anything past 'status' means the example's trailing comment leaked into
   # argv — fail loudly so the test catches the regression.
   if [ "$#" -gt 1 ] && [ "${2}" != "--json" ]; then
-    echo "unexpected sync args: $*" >&2
+    echo "unexpected status args: $*" >&2
     exit 4
   fi
   if [ "${2:-}" = "--json" ]; then
-    echo '{"synced":true}'
+    echo '{"ok":true}'
     exit 0
   fi
-  echo 'synced'
+  echo 'ok'
   exit 0
 fi
 
@@ -6462,6 +6462,61 @@ func runDryRunFixtureMatrix(t *testing.T, dir, binaryName string) *LiveDogfoodRe
 	return report
 }
 
+func writeLiveDogfoodSyncNoDryRunFixture(t *testing.T) (dir string, binaryName string, argvLogPath string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+	argvLogPath = filepath.Join(t.TempDir(), "argv.log")
+
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ -n "${PRINTING_PRESS_TEST_ARGV_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$PRINTING_PRESS_TEST_ARGV_LOG"
+fi
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"sync"}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "sync" ] && [ "${2:-}" = "--help" ]; then
+  cat <<'HELP'
+Sync the source into the local store.
+
+Usage:
+  fixture-pp-cli sync [flags]
+
+Examples:
+  fixture-pp-cli sync
+
+Flags:
+      --json   Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "sync" ]; then
+  echo 'unexpected live sync invocation' >&2
+  exit 99
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName, argvLogPath
+}
+
 func TestRunLiveDogfoodInjectsDryRunForMutator(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
@@ -6583,6 +6638,25 @@ func TestRunLiveDogfoodInjectsDryRunForUnannotatedSync(t *testing.T) {
 	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
 	assert.Contains(t, got.Args, "--dry-run",
 		"expected matrix to inject --dry-run into unannotated sync")
+}
+
+func TestRunLiveDogfoodSkipsUnannotatedSyncWithoutDryRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName, argvLogPath := writeLiveDogfoodSyncNoDryRunFixture(t)
+	t.Setenv("PRINTING_PRESS_TEST_ARGV_LOG", argvLogPath)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "sync", LiveDogfoodTestHappy)
+	require.NotNil(t, got, "expected sync happy_path result in matrix")
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status, got.Reason)
+	assert.Equal(t, reasonSyncDryRunRequired, got.Reason)
+	assert.Empty(t, got.Args, "skipped sync must not include executable mutation args")
+
+	lines := readArgvLog(t, argvLogPath)
+	assert.Equal(t, 0, countArgvLines(lines, "sync")-countArgvLines(lines, "sync --help"),
+		"sync without --dry-run must not invoke the binary")
 }
 
 func TestRunLiveDogfoodSkipsUnclassifiedCommandWithoutDryRun(t *testing.T) {
