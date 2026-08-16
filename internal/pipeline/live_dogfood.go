@@ -48,6 +48,8 @@ const reasonDestructiveAtAuth = "destructive-at-auth"
 const reasonMutatingDryRunOnly = "mutating command dry-run only"
 const reasonMutatingErrorPath = "mutating command; error_path would call live API without --dry-run"
 const reasonMutatingRunnableFixture = "blocked-fixture: mutating command requires runnable example"
+const reasonSyncDryRunRequired = "sync command requires --dry-run"
+const reasonUnclassifiedNoMethod = "unclassified: no pp:method"
 const reasonNoLiveSignal = "no live happy/json pass; credential-unavailable skips cannot certify acceptance"
 const reasonUnverifiedNeedsAccess = "unverified-needs-access"
 
@@ -580,6 +582,15 @@ var mutatingVerbs = map[string]bool{
 	"set": true, "modify": true, "replace": true,
 	"post": true, "put": true, "send": true, "submit": true,
 	"transfer": true, "cancel": true, "freeze": true, "unfreeze": true,
+	"sync": true,
+}
+
+var readVerbs = map[string]bool{
+	"get": true, "list": true, "show": true, "read": true,
+	"describe": true, "view": true, "info": true, "lookup": true,
+	"fetch": true, "retrieve": true, "query": true, "find": true,
+	"search": true, "status": true, "stats": true, "history": true,
+	"recent": true, "feed": true,
 }
 
 func isMutatingLeaf(name string) bool {
@@ -591,24 +602,58 @@ func isMutatingLeaf(name string) bool {
 	return false
 }
 
+func isReadLeaf(name string) bool {
+	for _, token := range commandNameTokens(name) {
+		if readVerbs[token] {
+			return true
+		}
+	}
+	return isCompanionLeaf(name)
+}
+
+func isSyncLeaf(name string) bool {
+	return slices.Contains(commandNameTokens(name), "sync")
+}
+
 func liveDogfoodCommandMutates(command liveDogfoodCommand) bool {
 	return commandMutates(command.Annotations, command.Path)
 }
 
 func commandMutates(annotations map[string]string, commandPath []string) bool {
+	return commandMutation(annotations, commandPath).mutating
+}
+
+type commandMutationClassification struct {
+	mutating     bool
+	unclassified bool
+}
+
+func liveDogfoodCommandMutation(command liveDogfoodCommand) commandMutationClassification {
+	return commandMutation(command.Annotations, command.Path)
+}
+
+func commandMutation(annotations map[string]string, commandPath []string) commandMutationClassification {
 	if annotationIsTrueValue(annotations[mcpReadOnlyAnnotation]) {
-		return false
+		return commandMutationClassification{}
 	}
 	if annotationIsTrueValue(annotations[mcpLocalWriteAnnotation]) {
-		return true
+		return commandMutationClassification{mutating: true}
 	}
 	if method := strings.ToUpper(strings.TrimSpace(annotations[endpointMethodAnnotation])); method != "" {
-		return method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE"
+		return commandMutationClassification{
+			mutating: method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE",
+		}
 	}
 	if len(commandPath) == 0 {
-		return false
+		return commandMutationClassification{}
 	}
-	return isMutatingLeaf(commandPath[len(commandPath)-1])
+	if isMutatingLeaf(commandPath[len(commandPath)-1]) {
+		return commandMutationClassification{mutating: true}
+	}
+	if isReadLeaf(commandPath[len(commandPath)-1]) {
+		return commandMutationClassification{}
+	}
+	return commandMutationClassification{mutating: true, unclassified: true}
 }
 
 func commandNameTokens(name string) []string {
@@ -1513,7 +1558,8 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	// same contract `verify` honors. Commands with no declaration keep the
 	// default {0}, so their happy/json verdicts are unchanged.
 	successCodes := liveDogfoodSuccessExitCodes(command)
-	mutating := liveDogfoodCommandMutates(command)
+	mutation := liveDogfoodCommandMutation(command)
+	mutating := mutation.mutating
 	useDryRun := mutating && commandSupportsDryRun(command.Help)
 
 	if annotationIsTrueValue(command.Annotations[interactiveAnnotation]) {
@@ -1538,6 +1584,15 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		if useDryRun {
 			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestErrorReal, tierSkip))
 		}
+		return results
+	}
+
+	if mutating && len(command.Path) > 0 && isSyncLeaf(command.Path[len(command.Path)-1]) && !useDryRun {
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonSyncDryRunRequired),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonSyncDryRunRequired),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonSyncDryRunRequired),
+		)
 		return results
 	}
 
@@ -1620,6 +1675,13 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, syntheticParamSkip),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, syntheticParamSkip),
 		)
+	case mutation.unclassified && !useDryRun:
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonUnclassifiedNoMethod),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonUnclassifiedNoMethod),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonUnclassifiedNoMethod),
+		)
+		return results
 	default:
 		happyArgs = resolvedArgs
 

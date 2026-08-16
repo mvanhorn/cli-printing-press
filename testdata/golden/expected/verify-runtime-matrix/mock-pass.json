@@ -19,7 +19,7 @@
         "dry_run": true,
         "execute": true,
         "help": true,
-        "kind": "read",
+        "kind": "write",
         "score": 3
       }
     ],
