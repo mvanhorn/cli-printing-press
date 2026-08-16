@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,6 +25,40 @@ func TestGeneratedDefaultDBPathScopesCredential(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "default_db_path_scope_test.go"), []byte(testSrc), 0o644))
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestDefaultDBPathScope", "-count=1")
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratedDefaultDBPathScopesComposedSiblingCredentials(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("db-scope-composed")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:    "composed",
+		Header:  "Authorization",
+		EnvVars: []string{"COMPOSED_SCOPE_TOKEN"},
+		AdditionalHeaders: []spec.AdditionalAuthHeader{
+			{
+				Header: "X-App-Key",
+				In:     "header",
+				EnvVar: spec.AuthEnvVar{
+					Name:      "COMPOSED_SCOPE_APP_KEY",
+					Kind:      spec.AuthEnvVarKindPerCall,
+					Required:  true,
+					Sensitive: true,
+				},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	modulePath := generatedModulePath(t, outputDir)
+	testSrc := strings.ReplaceAll(defaultDBPathComposedScopeTestSource, "__MODULE_PATH__", modulePath)
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "default_db_path_composed_scope_test.go"), []byte(testSrc), 0o644))
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestDefaultDBPathScopeComposedSiblingCredentials$", "-count=1")
 	requireGeneratedCompiles(t, outputDir)
 }
 
@@ -179,5 +214,43 @@ func defaultDBScopeHash(credential string) string {
 
 func quoteTOMLString(value string) string {
 	return "\""+strings.ReplaceAll(value, "\"", "\\\"")+"\""
+}
+`
+
+const defaultDBPathComposedScopeTestSource = `package cli
+
+import (
+	"path/filepath"
+	"testing"
+
+	"__MODULE_PATH__/internal/cliutil"
+)
+
+func TestDefaultDBPathScopeComposedSiblingCredentials(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("COMPOSED_SCOPE_TOKEN", "shared-primary")
+	t.Setenv("COMPOSED_SCOPE_APP_KEY", "sibling-a")
+	restore, err := cliutil.SetHomeOverride(home)
+	if err != nil {
+		t.Fatalf("set home override: %v", err)
+	}
+	t.Cleanup(restore)
+	setDefaultDBScopeCredential("")
+
+	configureDefaultDBScope("")
+	first := defaultDBPath("db-scope-composed-pp-cli")
+	if filepath.Base(first) == "data.db" {
+		t.Fatalf("first composed identity selected unscoped database: %s", first)
+	}
+
+	t.Setenv("COMPOSED_SCOPE_APP_KEY", "sibling-b")
+	configureDefaultDBScope("")
+	second := defaultDBPath("db-scope-composed-pp-cli")
+	if filepath.Base(second) == "data.db" {
+		t.Fatalf("second composed identity selected unscoped database: %s", second)
+	}
+	if first == second {
+		t.Fatalf("composed identities with different sibling credentials selected the same database: %s", first)
+	}
 }
 `

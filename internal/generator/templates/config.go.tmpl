@@ -895,11 +895,26 @@ func (c *Config) StoreScopeCredential() string {
 	if c == nil {
 		return ""
 	}
+{{- if .Auth.AdditionalHeaders}}
+	var parts []string
+	if header := c.AuthHeader(); header != "" {
+		parts = append(parts, "auth_header="+header)
+	}
+{{- range .Auth.AdditionalHeaders}}
+	if c.{{resolveEnvVarField .EnvVar.Name}} != "" {
+		parts = append(parts, {{printf "%q" (printf "sibling:%s:%s=" .In .Header)}}+c.{{resolveEnvVarField .EnvVar.Name}})
+	}
+{{- end}}
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n")
+	}
+{{- else}}
 	if header := c.AuthHeader(); header != "" {
 		return header
 	}
 
 	var parts []string
+{{- end}}
 	if c.AuthHeaderVal != "" {
 		parts = append(parts, "auth_header="+c.AuthHeaderVal)
 	}
