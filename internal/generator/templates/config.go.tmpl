@@ -891,6 +891,48 @@ func (c *Config) AuthHeader() string {
 {{- end}}
 }
 
+func (c *Config) StoreScopeCredential() string {
+	if c == nil {
+		return ""
+	}
+	if header := c.AuthHeader(); header != "" {
+		return header
+	}
+
+	var parts []string
+	if c.AuthHeaderVal != "" {
+		parts = append(parts, "auth_header="+c.AuthHeaderVal)
+	}
+{{- if .HasAuthCommand}}
+	if c.RefreshToken != "" {
+		parts = append(parts, "refresh_token="+c.RefreshToken)
+	}
+	if c.AccessToken != "" {
+		parts = append(parts, "access_token="+c.AccessToken)
+	}
+	if c.ClientID != "" {
+		parts = append(parts, "client_id="+c.ClientID)
+	}
+	if c.ClientSecret != "" {
+		parts = append(parts, "client_secret="+c.ClientSecret)
+	}
+{{- end}}
+{{- if or (eq .Auth.Type "composed") (eq .Auth.Type "cookie")}}
+	if cookie := c.CookieCredential(); cookie != "" {
+		parts = append(parts, "cookie="+cookie)
+	}
+{{- end}}
+{{- range .CredentialFields}}
+	if c.{{.GoField}} != "" {
+		parts = append(parts, "{{.Tag}}="+c.{{.GoField}})
+	}
+{{- end}}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "\n")
+}
+
 {{- if or (eq .Auth.Type "composed") (eq .Auth.Type "cookie")}}
 
 // CookieCredential returns the raw stored cookie credential for cookie/composed
