@@ -46,6 +46,7 @@ func configure(flags *rootFlags) {
 func usedHelper() {}
 func deadHelper() {}
 func boundCtx() {}
+func writeHarnessRefusal() {}
 func declarePlatformAnalytics() {}
 func resolvePlatformWindow() {}
 `)

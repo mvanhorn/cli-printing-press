@@ -229,6 +229,7 @@ func funcB() { funcA() }
 		_ = os.WriteFile(filepath.Join(dir, "helpers.go"), []byte(`package cli
 
 func boundCtx() {}
+func writeHarnessRefusal() {}
 func declarePlatformAnalytics() {}
 func resolvePlatformWindow() {}
 

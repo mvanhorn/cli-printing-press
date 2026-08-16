@@ -33,10 +33,21 @@ const VerifyLiveHTTPEnvVar = "PRINTING_PRESS_VERIFY_LIVE_HTTP"
 
 // DogfoodEnvVar is the env var the printing-press live-dogfood runner
 // sets in every subprocess. Distinct from VerifyEnvVar because dogfood
-// is a real-network matrix: commands may still perform actual API
+// is a real-network matrix: read commands may still perform actual API
 // calls, just curtailed (paginate-once, bounded crawl, etc.) so the
 // runner's flat 30s per-command timeout doesn't trip.
 const DogfoodEnvVar = "PRINTING_PRESS_DOGFOOD"
+
+// Harness identifies the Printing Press harness currently running this
+// process. Physical side-effect commands can include the value in JSON
+// suppression output without hardcoding env-var names in each command.
+type Harness string
+
+const (
+	HarnessNone    Harness = ""
+	HarnessVerify  Harness = "verify"
+	HarnessDogfood Harness = "dogfood"
+)
 
 // IsVerifyEnv reports whether the current process is running under the
 // printing-press verifier in mock mode. Generated commands with side
@@ -74,6 +85,36 @@ func IsVerifyLiveHTTPEnv() bool {
 	return os.Getenv(VerifyLiveHTTPEnvVar) == "1"
 }
 
+// CurrentHarness reports the active Printing Press harness. Verify wins
+// if multiple harness env vars are set because verify mode has the
+// stronger "do not perform visible side effects" transport guarantee.
+func CurrentHarness() Harness {
+	if IsVerifyEnv() {
+		return HarnessVerify
+	}
+	if IsDogfoodEnv() {
+		return HarnessDogfood
+	}
+	return HarnessNone
+}
+
+// HarnessName returns the active Printing Press harness as a stable
+// string ("verify", "dogfood", or ""). Use this in human and JSON
+// suppression output for visible side-effect commands.
+func HarnessName() string {
+	return string(CurrentHarness())
+}
+
+// IsAnyHarness reports whether the process is running under a Printing
+// Press harness. Commands that reach hardware a person can hear or see
+// must refuse when this returns true: curtailing a physical effect makes
+// it shorter, not absent. Read-only commands must not use this helper to
+// skip network calls under dogfood; real reads are the point of the live
+// matrix.
+func IsAnyHarness() bool {
+	return CurrentHarness() != HarnessNone
+}
+
 // IsDogfoodEnv reports whether the current process is running under
 // the printing-press live-dogfood matrix. Long-running commands (full
 // sync loops, content crawlers, bulk archive walks) should use this
@@ -85,9 +126,9 @@ func IsVerifyLiveHTTPEnv() bool {
 //	    return crawl(ctx, opts.WithMaxPages(1))
 //	}
 //
-// Unlike IsVerifyEnv this does NOT mean "don't hit the network" —
-// dogfood is a real-API matrix. Use this only to bound work, never to
-// substitute mock data for real calls.
+// Unlike IsAnyHarness this does NOT mean "don't hit the network" for
+// read-only work — dogfood is a real-API matrix. Use IsDogfoodEnv only
+// to bound read work, never to substitute mock data for real calls.
 func IsDogfoodEnv() bool {
 	return os.Getenv(DogfoodEnvVar) == "1"
 }
