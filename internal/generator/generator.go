@@ -315,6 +315,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"hasRequestAuthEnvVarField":           hasRequestAuthEnvVarField,
 		"authSetTokenAvailable":               authSetTokenAvailable,
 		"authSetCredentialsAvailable":         authSetCredentialsAvailable,
+		"authCredentialPersistenceCommand":    authCredentialPersistenceCommand,
+		"authCredentialConsolidationAction":   authCredentialConsolidationAction,
+		"authPlaceholderCredentialSetup":      authPlaceholderCredentialSetup,
 		"authErrorCheckHint":                  authErrorCheckHint,
 		"authSetupHint":                       authSetupHint,
 		"authBrowserLoginAvailable":           authBrowserLoginAvailable,
@@ -1769,6 +1772,81 @@ func authSetTokenAvailable(auth spec.AuthConfig) bool {
 
 func authSetCredentialsAvailable(auth spec.AuthConfig) bool {
 	return len(basicAuthEnvVars(auth)) == 2
+}
+
+func authCredentialPersistenceCommand(auth spec.AuthConfig, cliName string) string {
+	if authSetTokenAvailable(auth) {
+		return fmt.Sprintf("%s-pp-cli auth set-token YOUR_TOKEN_HERE", cliName)
+	}
+	envVars := basicAuthEnvVars(auth)
+	if len(envVars) == 2 {
+		return fmt.Sprintf("%s-pp-cli auth set-credentials %s %s", cliName, authEnvPlaceholder(envVars[0]), authEnvPlaceholder(envVars[1]))
+	}
+	return ""
+}
+
+func authCredentialConsolidationAction(auth spec.AuthConfig) string {
+	switch {
+	case authSetTokenAvailable(auth):
+		return "auth set-token"
+	case authSetCredentialsAvailable(auth):
+		return "auth set-credentials"
+	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && auth.TokenURL != "":
+		return "auth set-token"
+	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && auth.DeviceAuthorizationURL != "" && auth.TokenURL != "":
+		return "auth set-token"
+	case authBrowserLoginAvailable(auth):
+		return "auth login"
+	case auth.Type == "oauth2":
+		return "auth login"
+	case auth.Type == "cookie" || auth.Type == "composed" || auth.Type == "session_handshake":
+		return "auth login"
+	case auth.Subtype == spec.AuthSubtypeGoogleServiceAccount:
+		return "auth service-account"
+	default:
+		return ""
+	}
+}
+
+func authPlaceholderCredentialSetup(auth spec.AuthConfig, cliName string) string {
+	switch {
+	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && auth.TokenURL != "":
+		return fmt.Sprintf("%s-pp-cli auth login or %s-pp-cli auth set-token <token>", cliName, cliName)
+	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && auth.DeviceAuthorizationURL != "" && auth.TokenURL != "":
+		return fmt.Sprintf("%s-pp-cli auth login --device-code or %s-pp-cli auth set-token <token>", cliName, cliName)
+	case auth.Type == "oauth2" || authBrowserLoginAvailable(auth):
+		return fmt.Sprintf("%s-pp-cli auth login", cliName)
+	case auth.Type == "cookie" || auth.Type == "composed" || auth.Type == "session_handshake":
+		return fmt.Sprintf("%s-pp-cli auth login", cliName)
+	}
+
+	persistenceCommand := authCredentialPersistenceCommand(auth, cliName)
+	if persistenceCommand == "" {
+		if hint := authSetupHint(auth, cliName); hint != "" {
+			return hint
+		}
+		return fmt.Sprintf("%s-pp-cli auth setup", cliName)
+	}
+	exports := authCredentialExports(auth)
+	if exports == "" {
+		return persistenceCommand
+	}
+	return exports + " or " + persistenceCommand
+}
+
+func authCredentialExports(auth spec.AuthConfig) string {
+	envVars := requiredRequestAuthEnvVars(auth)
+	if len(envVars) == 0 && auth.IsAuthEnvVarORCase() {
+		envVars = requestAuthEnvVars(auth)
+	}
+	if len(envVars) == 0 {
+		return ""
+	}
+	exports := make([]string, 0, len(envVars))
+	for _, envVar := range envVars {
+		exports = append(exports, fmt.Sprintf("%s=<%s>", envVar.Name, authEnvPlaceholderByName(envVar.Name)))
+	}
+	return "export " + strings.Join(exports, " ")
 }
 
 func authSetTokenAvailableForRequiredCount(auth spec.AuthConfig, requiredCount int) bool {

@@ -2472,6 +2472,7 @@ func TestGenerateHTTPBasicAuthAllowsOptionalBlankPasswordAndSetCredentials(t *te
 	require.Contains(t, authSrc, `"set-credentials <username> [password]"`)
 	require.Contains(t, authSrc, `requires 1 or 2 args: <username> [password]`)
 	require.NotContains(t, authSrc, "cmd.AddCommand(newAuthSetTokenCmd(flags))")
+	require.NotContains(t, authSrc, "func newAuthSetTokenCmd")
 
 	const inlineTest = `package config
 
@@ -11356,13 +11357,100 @@ func TestGeneratedAuthHints_BasicCredentialsAreSchemeAware(t *testing.T) {
 	assert.NotContains(t, auth[setupStart:setupStart+setupEnd], `basicauth-pp-cli auth set-token <token>`)
 	statusStart := strings.Index(auth, "func newAuthStatusCmd")
 	require.NotEqual(t, -1, statusStart)
-	statusEnd := strings.Index(auth[statusStart:], "func newAuthSetTokenCmd")
+	statusEnd := strings.Index(auth[statusStart:], "func newAuthSetCredentialsCmd")
 	require.NotEqual(t, -1, statusEnd)
 	statusBlock := auth[statusStart : statusStart+statusEnd]
 	assert.Contains(t, statusBlock, "Set your credentials:")
 	assert.NotContains(t, statusBlock, `basicauth-pp-cli auth set-token <token>`)
 
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratedAuthCredentialCommandReferencesMatchCobraTree(t *testing.T) {
+	t.Run("single bearer token registers and advertises set-token", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := minimalSpec("single-bearer")
+		apiSpec.Auth = spec.AuthConfig{
+			Type:    "bearer_token",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"SINGLE_BEARER_TOKEN"},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "single-bearer-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		auth := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+		assert.Contains(t, auth, "func newAuthSetTokenCmd")
+		assert.Contains(t, auth, "cmd.AddCommand(newAuthSetTokenCmd(flags))")
+
+		for _, generatedPath := range [][]string{
+			{"README.md"},
+			{"SKILL.md"},
+			{"internal", "cli", "helpers.go"},
+			{"internal", "mcp", "tools.go"},
+			{"internal", "client", "client.go"},
+			{"internal", "cli", "doctor.go"},
+		} {
+			content := readGeneratedFile(t, outputDir, generatedPath...)
+			assert.Contains(t, content, "auth set-token", strings.Join(generatedPath, "/"))
+		}
+	})
+
+	t.Run("basic credential pair advertises set-credentials without dead set-token", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := &spec.APISpec{
+			Name:    "basic-pair-surface",
+			Version: "0.1.0",
+			BaseURL: "https://api.example.com",
+			Auth: spec.AuthConfig{
+				Type:   "api_key",
+				Header: "Authorization",
+				Format: "Basic {username}:{password}",
+				EnvVarSpecs: []spec.AuthEnvVar{
+					{Name: "BASIC_PAIR_USERNAME", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false},
+					{Name: "BASIC_PAIR_PASSWORD", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+				},
+			},
+			Config: spec.ConfigSpec{Format: "toml", Path: "~/.config/basic-pair-surface/config.toml"},
+			Resources: map[string]spec.Resource{
+				"items": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}}},
+			},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "basic-pair-surface-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		auth := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+		assert.Contains(t, auth, "func newAuthSetCredentialsCmd")
+		assert.Contains(t, auth, "cmd.AddCommand(newAuthSetCredentialsCmd(flags))")
+		assert.NotContains(t, auth, "func newAuthSetTokenCmd")
+		assert.NotContains(t, auth, "cmd.AddCommand(newAuthSetTokenCmd(flags))")
+
+		for _, generatedPath := range [][]string{
+			{"README.md"},
+			{"SKILL.md"},
+			{"internal", "cli", "auth.go"},
+			{"internal", "cli", "helpers.go"},
+			{"internal", "mcp", "tools.go"},
+			{"internal", "client", "client.go"},
+			{"internal", "cli", "doctor.go"},
+		} {
+			content := readGeneratedFile(t, outputDir, generatedPath...)
+			assert.NotContains(t, content, "auth set-token", strings.Join(generatedPath, "/"))
+		}
+
+		readme := readGeneratedFile(t, outputDir, "README.md")
+		assert.Contains(t, readme, "auth set-credentials")
+		skill := readGeneratedFile(t, outputDir, "SKILL.md")
+		assert.Contains(t, skill, "auth set-credentials")
+		client := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+		assert.Contains(t, client, "auth set-credentials")
+		doctor := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
+		assert.Contains(t, doctor, `credentialRemediation := "run auth set-credentials or auth logout"`)
+	})
 }
 
 func TestGeneratedHelpers_NoAuth_No400Branch(t *testing.T) {
