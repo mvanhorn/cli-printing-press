@@ -913,6 +913,22 @@ func (c *Config) StoreScopeCredential() string {
 	if len(parts) > 0 {
 		return strings.Join(parts, "\n")
 	}
+{{- else if or (eq .Auth.Type "composed") (eq .Auth.Type "cookie")}}
+	header := c.AuthHeader()
+	cookie := c.CookieCredential()
+	if cookie != "" {
+		var parts []string
+		if header != "" {
+			parts = append(parts, "auth_header="+header)
+		}
+		parts = append(parts, "cookie="+cookie)
+		return strings.Join(parts, "\n")
+	}
+	if header != "" {
+		return header
+	}
+
+	var parts []string
 {{- else}}
 	if header := c.AuthHeader(); header != "" {
 		return header

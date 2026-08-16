@@ -64,6 +64,30 @@ func TestGeneratedDefaultDBPathScopesComposedSiblingCredentials(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+func TestGeneratedDefaultDBPathScopesComposedCookieCredentials(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("db-scope-cookie")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:         "composed",
+		Header:       "Authorization",
+		EnvVars:      []string{"COMPOSED_COOKIE_TOKEN"},
+		CookieDomain: ".example.test",
+		Cookies:      []string{"session_id"},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	modulePath := generatedModulePath(t, outputDir)
+	testSrc := strings.ReplaceAll(defaultDBPathComposedCookieScopeTestSource, "__MODULE_PATH__", modulePath)
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "default_db_path_composed_cookie_scope_test.go"), []byte(testSrc), 0o644))
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestDefaultDBPathScopeComposedCookieCredentials$", "-count=1")
+	requireGeneratedCompiles(t, outputDir)
+}
+
 const defaultDBPathScopeTestSource = `package cli
 
 import (
@@ -296,6 +320,59 @@ func writeComposedScopeConfig(t *testing.T, path, authHeader, cookie, sibling st
 	content := "auth_header = \""+authHeader+"\"\n"+
 		"access_token = \""+cookie+"\"\n"+
 		"scope_app_key = \""+sibling+"\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+`
+
+const defaultDBPathComposedCookieScopeTestSource = `package cli
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"__MODULE_PATH__/internal/cliutil"
+)
+
+func TestDefaultDBPathScopeComposedCookieCredentials(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("COMPOSED_COOKIE_TOKEN", "")
+	restore, err := cliutil.SetHomeOverride(home)
+	if err != nil {
+		t.Fatalf("set home override: %v", err)
+	}
+	t.Cleanup(restore)
+	setDefaultDBScopeCredential("")
+
+	firstConfig := filepath.Join(t.TempDir(), "first.toml")
+	writeComposedCookieConfig(t, firstConfig, "Bearer shared-primary", "cookie-a")
+	configureDefaultDBScope(firstConfig)
+	first := defaultDBPath("db-scope-cookie-pp-cli")
+	if filepath.Base(first) == "data.db" {
+		t.Fatalf("first composed cookie identity selected unscoped database: %s", first)
+	}
+
+	secondConfig := filepath.Join(t.TempDir(), "second.toml")
+	writeComposedCookieConfig(t, secondConfig, "Bearer shared-primary", "cookie-b")
+	configureDefaultDBScope(secondConfig)
+	second := defaultDBPath("db-scope-cookie-pp-cli")
+	if filepath.Base(second) == "data.db" {
+		t.Fatalf("second composed cookie identity selected unscoped database: %s", second)
+	}
+	if first == second {
+		t.Fatalf("composed identities with different cookies selected the same database: %s", first)
+	}
+}
+
+func writeComposedCookieConfig(t *testing.T, path, authHeader, cookie string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := "auth_header = \""+authHeader+"\"\n"+
+		"access_token = \""+cookie+"\"\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
