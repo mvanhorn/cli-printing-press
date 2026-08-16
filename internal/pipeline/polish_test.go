@@ -232,6 +232,7 @@ func boundCtx() {}
 func writeHarnessRefusal() {}
 func declarePlatformAnalytics() {}
 func resolvePlatformWindow() {}
+func pathParamSegmentValue() {}
 
 func deadHelper() {}
 `), 0o644)
