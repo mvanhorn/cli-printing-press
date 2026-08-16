@@ -1075,9 +1075,10 @@ func collectCredentialsLocationReport(report map[string]any, cfg *config.Config)
 	if cfg == nil {
 		return
 	}
-	credentialRemediation := "run auth logout"
 {{- if $authCredentialConsolidationAction}}
-	credentialRemediation = "run {{ $authCredentialConsolidationAction }} or auth logout"
+	credentialRemediation := "run {{ $authCredentialConsolidationAction }} or auth logout"
+{{- else}}
+	credentialRemediation := "run auth logout"
 {{- end}}
 	if cfg.CredentialSource != "" {
 		report["credentials_location"] = cfg.CredentialSource

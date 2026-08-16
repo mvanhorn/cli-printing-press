@@ -11449,7 +11449,7 @@ func TestGeneratedAuthCredentialCommandReferencesMatchCobraTree(t *testing.T) {
 		client := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
 		assert.Contains(t, client, "auth set-credentials")
 		doctor := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
-		assert.Contains(t, doctor, `credentialRemediation = "run auth set-credentials or auth logout"`)
+		assert.Contains(t, doctor, `credentialRemediation := "run auth set-credentials or auth logout"`)
 	})
 }
 

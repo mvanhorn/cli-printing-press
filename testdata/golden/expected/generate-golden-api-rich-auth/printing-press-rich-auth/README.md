@@ -123,8 +123,7 @@ Get your API key from your API provider's developer portal. The key typically lo
 ```bash
 export RICH_AUTH_API_KEY="<paste-your-key>"
 ```
-
-To persist credentials, use `printing-press-rich-pp-cli auth set-token <token>`. Stored secrets live in `credentials.toml` under the data directory, not in `config.toml`.
+To persist credentials, use `printing-press-rich-pp-cli auth set-token YOUR_TOKEN_HERE`. Stored secrets live in `credentials.toml` under the data directory, not in `config.toml`.
 
 ### 3. Verify Setup
 
