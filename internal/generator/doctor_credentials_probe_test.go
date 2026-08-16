@@ -104,6 +104,10 @@ func TestGeneratedDoctor_UnverifiedMessageSuggestsReadCommand(t *testing.T) {
 		"the renderer must downgrade the unverified-state to INFO; without the case it falls through to the WARN catch-all")
 	assert.Contains(t, content, `indicator = yellow("INFO")`,
 		"the unverified case must paint yellow INFO, not red FAIL or yellow WARN")
+	assert.Contains(t, content, `report["auth"] = "refused: credential present but not loaded"`,
+		"doctor must distinguish a refused stored credential from genuine absence")
+	assert.Contains(t, content, `case strings.HasPrefix(s, "refused:"):`,
+		"doctor human renderer must classify refused credentials as FAIL")
 }
 
 // TestGeneratedDoctor_SuggestReadCommandHelperGatesOnEndpointAndArgs guards

@@ -104,5 +104,9 @@ func TestAuthStatusReportsCredentialsPresentNotVerified(t *testing.T) {
 
 	require.Contains(t, src, "Credentials present (not verified)")
 	require.Contains(t, src, `"verified":      false`)
+	require.Contains(t, src, `"credential_refused"`,
+		"auth status JSON must distinguish refused stored credentials from genuine absence")
+	require.Contains(t, src, "Credentials present but refused",
+		"auth status human output must distinguish refused stored credentials from genuine absence")
 	require.NotContains(t, src, `fmt.Fprintln(w, green("Authenticated"))`)
 }
