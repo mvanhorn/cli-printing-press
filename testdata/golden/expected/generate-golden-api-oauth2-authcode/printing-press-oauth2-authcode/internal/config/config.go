@@ -387,7 +387,7 @@ func (c *Config) hasCompleteCredentialFields() bool {
 	if c.AuthHeaderVal != "" {
 		return true
 	}
-	if c.AccessToken != "" || c.RefreshToken != "" {
+	if c.AccessToken != "" {
 		return true
 	}
 	if c.PrintingPressOauth2Oauth2AuthCode != "" {
