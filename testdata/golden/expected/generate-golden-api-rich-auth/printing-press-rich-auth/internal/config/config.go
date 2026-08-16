@@ -289,6 +289,57 @@ func (c *Config) AuthHeader() string {
 	return token
 }
 
+func (c *Config) StoreScopeCredential() string {
+	if c == nil {
+		return ""
+	}
+	if header := c.AuthHeader(); header != "" {
+		return header
+	}
+
+	var parts []string
+	if c.AuthHeaderVal != "" {
+		parts = append(parts, "auth_header="+c.AuthHeaderVal)
+	}
+	if c.RefreshToken != "" {
+		parts = append(parts, "refresh_token="+c.RefreshToken)
+	}
+	if c.AccessToken != "" {
+		parts = append(parts, "access_token="+c.AccessToken)
+	}
+	if c.ClientID != "" {
+		parts = append(parts, "client_id="+c.ClientID)
+	}
+	if c.ClientSecret != "" {
+		parts = append(parts, "client_secret="+c.ClientSecret)
+	}
+	if c.RichAuthApiKey != "" {
+		parts = append(parts, "auth_api_key="+c.RichAuthApiKey)
+	}
+	if c.RichAuthClientId != "" {
+		parts = append(parts, "auth_client_id="+c.RichAuthClientId)
+	}
+	if c.RichAuthClientSecret != "" {
+		parts = append(parts, "auth_client_secret="+c.RichAuthClientSecret)
+	}
+	if c.RichAuthSessionCookie != "" {
+		parts = append(parts, "auth_session_cookie="+c.RichAuthSessionCookie)
+	}
+	if c.RichAuthOptionalToken != "" {
+		parts = append(parts, "auth_optional_token="+c.RichAuthOptionalToken)
+	}
+	if c.RichAuthBotToken != "" {
+		parts = append(parts, "auth_bot_token="+c.RichAuthBotToken)
+	}
+	if c.RichAuthUserToken != "" {
+		parts = append(parts, "auth_user_token="+c.RichAuthUserToken)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "\n")
+}
+
 // Raw browser-session values count as credentials even when no header
 // representation exists; hand-coded flows may also preserve a working header.
 func (c *Config) CredentialConfigured() bool {

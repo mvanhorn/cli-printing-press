@@ -2892,9 +2892,14 @@ func defaultDBPath(name string) string {
 	dir, err := cliutil.DataDir()
 	if err != nil {
 		if home, homeErr := os.UserHomeDir(); homeErr == nil {
-			return filepath.Join(home, ".local", "share", name, "data.db")
+			return defaultDBPathInDir(filepath.Join(home, ".local", "share", name))
 		}
 		return "data.db"
 	}
-	return filepath.Join(dir, "data.db")
+	return defaultDBPathInDir(dir)
+}
+
+func defaultDBPathInDir(dir string) string {
+	unscoped := filepath.Join(dir, "data.db")
+	return unscoped
 }

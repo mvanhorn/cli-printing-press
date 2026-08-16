@@ -264,6 +264,42 @@ func (c *Config) AuthHeader() string {
 	return ""
 }
 
+func (c *Config) StoreScopeCredential() string {
+	if c == nil {
+		return ""
+	}
+	if header := c.AuthHeader(); header != "" {
+		return header
+	}
+
+	var parts []string
+	if c.AuthHeaderVal != "" {
+		parts = append(parts, "auth_header="+c.AuthHeaderVal)
+	}
+	if c.RefreshToken != "" {
+		parts = append(parts, "refresh_token="+c.RefreshToken)
+	}
+	if c.AccessToken != "" {
+		parts = append(parts, "access_token="+c.AccessToken)
+	}
+	if c.ClientID != "" {
+		parts = append(parts, "client_id="+c.ClientID)
+	}
+	if c.ClientSecret != "" {
+		parts = append(parts, "client_secret="+c.ClientSecret)
+	}
+	if c.PrintingPressOauth2ClientId != "" {
+		parts = append(parts, "press_oauth2_client_id="+c.PrintingPressOauth2ClientId)
+	}
+	if c.PrintingPressOauth2ClientSecret != "" {
+		parts = append(parts, "press_oauth2_client_secret="+c.PrintingPressOauth2ClientSecret)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "\n")
+}
+
 // Raw browser-session values count as credentials even when no header
 // representation exists; hand-coded flows may also preserve a working header.
 func (c *Config) CredentialConfigured() bool {
