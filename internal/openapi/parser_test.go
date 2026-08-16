@@ -8603,7 +8603,57 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
 			wantID: "id",
 		},
 		{
-			name: "tier 3: name when id absent",
+			name: "tier 4: required uri wins over name (Calendly shape)",
+			schemaYAML: `                  type: object
+                  required: [uri]
+                  properties:
+                    uri: {type: string}
+                    name: {type: string}
+`,
+			wantID: "uri",
+		},
+		{
+			name: "tier 4: required selfLink casing is preserved",
+			schemaYAML: `                  type: object
+                  required: [selfLink]
+                  properties:
+                    selfLink: {type: string}
+                    name: {type: string}
+`,
+			wantID: "selfLink",
+		},
+		{
+			name: "tier 4: optional identifier-looking url wins over name",
+			schemaYAML: `                  type: object
+                  properties:
+                    url:
+                      type: string
+                      description: Unique resource URL for this object.
+                    name: {type: string}
+`,
+			wantID: "url",
+		},
+		{
+			name: "tier 5: optional generic url falls through to name",
+			schemaYAML: `                  type: object
+                  properties:
+                    url: {type: string}
+                    name: {type: string}
+`,
+			wantID: "name",
+		},
+		{
+			name: "tier 4: id wins over self (compact id precedence)",
+			schemaYAML: `                  type: object
+                  properties:
+                    id: {type: string}
+                    self: {type: string}
+                    name: {type: string}
+`,
+			wantID: "id",
+		},
+		{
+			name: "tier 5: name when no stable identifier is present",
 			schemaYAML: `                  type: object
                   properties:
                     name: {type: string}
@@ -8612,7 +8662,7 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
 			wantID: "name",
 		},
 		{
-			name: "tier 4: first required scalar when id and name absent",
+			name: "tier 6: first required scalar when id and name absent",
 			schemaYAML: `                  type: object
                   required: [ticker, market]
                   properties:
@@ -8623,7 +8673,7 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
 			wantID: "ticker",
 		},
 		{
-			name: "tier 4: required scalar inside anyOf is considered",
+			name: "tier 6: required scalar inside anyOf is considered",
 			schemaYAML: `                  anyOf:
                     - type: object
                       required: [ticker]
@@ -8639,7 +8689,7 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
 			wantID: "ticker",
 		},
 		{
-			name: "tier 4: object-typed required field is skipped, next scalar wins",
+			name: "tier 6: object-typed required field is skipped, next scalar wins",
 			schemaYAML: `                  type: object
                   required: [meta, code]
                   properties:
@@ -8768,6 +8818,42 @@ paths:
 			assert.False(t, ep.Critical)
 		})
 	}
+}
+
+func TestParseIDFieldNameFallbackWarns(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /things:
+    get:
+      operationId: listThings
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name: {type: string}
+                    description: {type: string}
+`)
+	var parsed *spec.APISpec
+	var err error
+	warnings := captureWarnings(t, func() {
+		parsed, err = Parse(yamlSpec)
+	})
+	require.NoError(t, err)
+
+	ep := findEndpoint(t, parsed, "/things")
+	assert.Equal(t, "name", ep.IDField)
+	assert.Contains(t, warnings, `GET "/things": response-schema ID fallback chose display field "name"`)
 }
 
 func TestParseScalarUnionArrayDoesNotRegisterEmptyInlineType(t *testing.T) {
@@ -9025,6 +9111,27 @@ func TestParseIDFieldResourcePrefixedHeuristic(t *testing.T) {
 			wantID: "categoryId",
 		},
 		{
+			name: "composed resource leaf picks camelCase child id before name",
+			path: "/days/{dayId}/activities",
+			schemaYAML: `                  type: object
+                  properties:
+                    activityId: {type: string}
+                    name: {type: string}
+                    title: {type: string}
+`,
+			wantID: "activityId",
+		},
+		{
+			name: "composed resource leaf picks PascalCase child id before title",
+			path: "/projects/{projectId}/tasks",
+			schemaYAML: `                  type: object
+                  properties:
+                    TaskId: {type: string}
+                    title: {type: string}
+`,
+			wantID: "TaskId",
+		},
+		{
 			name: "kebab-case path resource singularizes correctly",
 			path: "/auth-tokens",
 			schemaYAML: `                  type: object
@@ -9220,6 +9327,8 @@ paths:
                 properties:
                   widgetId: {type: string}
                   canonical_id: {type: string}
+                  uri: {type: string}
+                  name: {type: string}
 `)
 	parsed, err := Parse(yamlSpec)
 	require.NoError(t, err)

@@ -2090,6 +2090,29 @@ type dependentPathParamDef struct {
 	Field string
 }
 
+func replaceDependentPathParam(path, name, parentResource, field, value string) string {
+	bareValue := store.BareResourceID(value)
+	if resourceURLIDPathParam(parentResource, field) {
+		return replaceURLIDPathParam(path, name, bareValue)
+	}
+	return replacePathParam(path, name, bareValue)
+}
+
+func resourceURLIDPathParam(resource, field string) bool {
+	idField, ok := resourceIDFieldOverrides[resource]
+	return ok && idField == field && urlIDFieldName(field)
+}
+
+func urlIDFieldName(field string) bool {
+	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(field))
+	switch normalized {
+	case "uri", "self", "selflink", "href", "url":
+		return true
+	default:
+		return false
+	}
+}
+
 func dependentResourceDefs() []dependentResourceDef {
 	return []dependentResourceDef{
 		{Name: "leagues", ParentTable: "games", ParentIDParam: "game_key", PathTemplate: "/games/{game_key}/leagues", KeyField: "game_key", ReconcileMode: "none", GenericScopeJSONPath: "", PathParams: []dependentPathParamDef{
@@ -2197,13 +2220,7 @@ func syncOneParent(
 	parentFKKey := dep.ParentTable + "_id"
 	path := dep.PathTemplate
 	for _, pathParam := range pathParams {
-		// Strip the NUL-composite parent suffix that resourceStorageID builds
-		// for parent-keyed parents: the path needs the BARE entity id. Leaving
-		// the composite in routes a "%00" through replacePathParam's
-		// url.PathEscape into the URL, which nginx rejects with HTTP 400.
-		// BareResourceID is a no-op on non-composite ids, so this is safe for
-		// every path param (plain parents are unaffected).
-		path = replacePathParam(path, pathParam.Param, store.BareResourceID(parentRow[pathParam.Field]))
+		path = replaceDependentPathParam(path, pathParam.Param, dep.ParentTable, pathParam.Field, parentRow[pathParam.Field])
 	}
 
 	cursor := ""
