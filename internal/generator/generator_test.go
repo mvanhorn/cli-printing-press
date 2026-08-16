@@ -10556,10 +10556,18 @@ func TestGeneratedOutput_WorkflowBoundaries(t *testing.T) {
 		"workflow status must reject stores newer than the generated schema")
 	assert.Contains(t, src, `"workflowboundary-pp-cli/internal/cliutil"`,
 		"workflow archive must import the generated dogfood environment helper")
-	assert.Contains(t, src, `archiveMaxPages := 100`,
-		"workflow archive must keep its normal page limit explicit")
+	assert.Contains(t, src, `cmd.Flags().IntVar(&maxPages, "max-pages", 0`,
+		"workflow archive must leave normal archive pagination unlimited unless the operator sets a cap")
+	assert.Contains(t, src, `cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute`,
+		"workflow archive must expose a wall-clock bound with an operator escape hatch")
+	assert.Contains(t, src, `context.WithTimeout(archiveCtx, archiveTimeout)`,
+		"workflow archive must pass a timeout-bound context through store open and sync")
 	assert.Contains(t, src, `if cliutil.IsDogfoodEnv()`,
 		"workflow archive must enter its bounded dogfood path")
+	assert.Contains(t, src, `if !cmd.Flags().Changed("max-pages")`,
+		"dogfood must not override an explicit archive page cap")
+	assert.Contains(t, src, `if !cmd.Flags().Changed("timeout")`,
+		"dogfood must not override an explicit archive timeout")
 	assert.Contains(t, src, `resources = resources[:3]`,
 		"workflow archive must cap the resource list under dogfood")
 	assert.Contains(t, src, `archiveMaxPages, false`,
@@ -10591,6 +10599,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"workflowboundary-pp-cli/internal/store"
 )
@@ -10744,8 +10753,17 @@ func TestWorkflowArchiveCurtailsOnlyUnderDogfood(t *testing.T) {
 	}
 
 	atomic.StoreInt32(&requests, 0)
+	stdout, stderr, err = runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "dogfood-unlimited.db"), "--max-pages", "0", "--timeout", "0")
+	if err != nil {
+		t.Fatalf("dogfood archive with explicit escape: %v; stdout=%s stderr=%s", err, stdout, stderr)
+	}
+	if got := atomic.LoadInt32(&requests); got != 6 {
+		t.Fatalf("dogfood archive with explicit escape requests = %d, want two pages for each of 3 resources", got)
+	}
+
+	atomic.StoreInt32(&requests, 0)
 	t.Setenv("PRINTING_PRESS_DOGFOOD", "")
-	stdout, stderr, err = runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "normal.db"))
+	stdout, stderr, err = runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "normal.db"), "--timeout", "0")
 	if err != nil {
 		t.Fatalf("normal archive: %v; stdout=%s stderr=%s", err, stdout, stderr)
 	}
@@ -10754,6 +10772,24 @@ func TestWorkflowArchiveCurtailsOnlyUnderDogfood(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "across 4 resources") {
 		t.Fatalf("normal archive stdout = %q, want all-resource count", stdout)
+	}
+}
+
+func TestWorkflowArchiveTimeoutFailsFast(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"items\":[{\"id\":\"item-1\"}],\"has_more\":false,\"next_cursor\":\"\"}"))
+	}))
+	defer server.Close()
+	t.Setenv("WORKFLOWBOUNDARY_BASE_URL", server.URL)
+
+	stdout, stderr, err := runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "timeout.db"), "--timeout", "1ms")
+	if err == nil {
+		t.Fatalf("timeout archive unexpectedly succeeded; stdout=%s stderr=%s", stdout, stderr)
+	}
+	if !strings.Contains(err.Error(), "workflow archive timed out after 1ms") {
+		t.Fatalf("timeout archive error = %v; stderr=%s", err, stderr)
 	}
 }
 `
