@@ -1055,7 +1055,7 @@ func (s *Store) Search(query string, limit int, resourceTypes ...string) ([]json
 	if limit <= 0 {
 		limit = 50
 	}
-	matchQuery := ftsMatchQuery(query)
+	matchQuery := FTSMatchQuery(query)
 	if matchQuery == "" {
 		return nil, nil
 	}
@@ -1175,7 +1175,8 @@ func isIdentifierKey(key string) bool {
 		strings.HasSuffix(key, "ID")
 }
 
-func ftsMatchQuery(query string) string {
+// FTSMatchQuery converts arbitrary text into a safe FTS5 MATCH expression.
+func FTSMatchQuery(query string) string {
 	tokens := ftsQueryTokenRE.FindAllString(query, -1)
 	if len(tokens) == 0 {
 		return ""
