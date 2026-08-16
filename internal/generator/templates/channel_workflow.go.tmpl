@@ -275,6 +275,12 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
   # Archive without a wall-clock timeout
   {{.Name}}-pp-cli workflow archive --timeout 0`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if maxPages < 0 {
+				return fmt.Errorf("--max-pages must be greater than or equal to 0 (0 = unlimited)")
+			}
+			if timeout < 0 {
+				return fmt.Errorf("--timeout must be greater than or equal to 0 (0 = no timeout)")
+			}
 			archiveTimeout := timeout
 			archiveMaxPages := maxPages
 			if cliutil.IsDogfoodEnv() {
@@ -336,7 +342,7 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			for _, resource := range resources {
 {{- if eq .Name "substack"}}
 				if resource == "drafts" {
-					if err := resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags); err != nil {
+					if err := resolveSubstackPublicationIDTemplate(archiveCtx, c, flags); err != nil {
 						fmt.Fprintf(cmd.ErrOrStderr(), "  %s: error: %v\n", resource, err)
 						continue
 					}

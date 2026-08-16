@@ -10560,6 +10560,10 @@ func TestGeneratedOutput_WorkflowBoundaries(t *testing.T) {
 		"workflow archive must leave normal archive pagination unlimited unless the operator sets a cap")
 	assert.Contains(t, src, `cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute`,
 		"workflow archive must expose a wall-clock bound with an operator escape hatch")
+	assert.Contains(t, src, `if maxPages < 0`,
+		"workflow archive must reject negative page limits instead of treating them as unlimited")
+	assert.Contains(t, src, `if timeout < 0`,
+		"workflow archive must reject negative timeouts instead of treating them as no timeout")
 	assert.Contains(t, src, `context.WithTimeout(archiveCtx, archiveTimeout)`,
 		"workflow archive must pass a timeout-bound context through store open and sync")
 	assert.Contains(t, src, `if cliutil.IsDogfoodEnv()`,
@@ -10572,6 +10576,17 @@ func TestGeneratedOutput_WorkflowBoundaries(t *testing.T) {
 		"workflow archive must cap the resource list under dogfood")
 	assert.Contains(t, src, `archiveMaxPages, false`,
 		"workflow archive must pass the dogfood-aware page limit to syncResource")
+
+	substackSpec := minimalSpec("substack")
+	substackDir := filepath.Join(t.TempDir(), naming.CLI(substackSpec.Name))
+	substackGen := New(substackSpec, substackDir)
+	substackGen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, substackGen.Generate())
+	substackWorkflow := readGeneratedFile(t, substackDir, "internal", "cli", "channel_workflow.go")
+	assert.Contains(t, substackWorkflow, `resolveSubstackPublicationIDTemplate(archiveCtx, c, flags)`,
+		"Substack archive publication preflight must share the bounded archive context")
+	assert.NotContains(t, substackWorkflow, `resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags)`,
+		"Substack archive publication preflight must not bypass the archive timeout")
 
 	syncDisabledDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name)+"-nosync")
 	syncDisabledGen := New(apiSpec, syncDisabledDir)
@@ -10790,6 +10805,32 @@ func TestWorkflowArchiveTimeoutFailsFast(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "workflow archive timed out after 1ms") {
 		t.Fatalf("timeout archive error = %v; stderr=%s", err, stderr)
+	}
+}
+
+func TestWorkflowArchiveRejectsNegativeBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		flag string
+		value string
+		want string
+	}{
+		{name: "max pages", flag: "--max-pages", value: "-1", want: "--max-pages must be greater than or equal to 0"},
+		{name: "timeout", flag: "--timeout", value: "-1s", want: "--timeout must be greater than or equal to 0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "negative.db")
+			stdout, stderr, err := runWorkflowBoundaryCommand("workflow", "archive", "--db", dbPath, tc.flag, tc.value)
+			if err == nil {
+				t.Fatalf("negative %s unexpectedly succeeded; stdout=%s stderr=%s", tc.flag, stdout, stderr)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("negative %s error = %v; stderr=%s", tc.flag, err, stderr)
+			}
+			if _, statErr := os.Stat(dbPath); !os.IsNotExist(statErr) {
+				t.Fatalf("negative %s created db path: stat err=%v", tc.flag, statErr)
+			}
+		})
 	}
 }
 `
