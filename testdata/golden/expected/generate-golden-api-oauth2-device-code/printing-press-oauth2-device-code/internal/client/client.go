@@ -1202,6 +1202,9 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 		}
 	}
 	authHeader := c.Config.AuthHeader()
+	if authHeader == "" && c.Config.HasCredentialRefusals() {
+		return "", c.Config.CredentialRefusalError()
+	}
 	if authHeaderLooksLikePlaceholderCredential(authHeader) {
 		return "", authPlaceholderCredentialError(c.Config)
 	}

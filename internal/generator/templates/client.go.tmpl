@@ -2613,6 +2613,11 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 	}
 {{- end}}
 	authHeader := c.Config.AuthHeader()
+{{- if and .HasAuthCommand (ne .Auth.Type "session_handshake")}}
+	if authHeader == "" && c.Config.HasCredentialRefusals() {
+		return "", c.Config.CredentialRefusalError()
+	}
+{{- end}}
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 	if authHeaderLooksLikePlaceholderCredential(authHeader) {
 		return "", authPlaceholderCredentialError(c.Config)

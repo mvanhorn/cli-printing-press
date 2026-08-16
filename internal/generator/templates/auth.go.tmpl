@@ -415,6 +415,8 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 
 			w := cmd.OutOrStdout()
 			authed := cfg.AccessToken != ""
+			refusals := cfg.CredentialRefusalSummaries()
+			credentialRefused := len(refusals) > 0
 			// JSON envelope: {authenticated, verified, source, config}.
 			if flags.asJSON {
 				out := map[string]any{
@@ -423,7 +425,25 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 					"source":        cfg.AuthSource,
 					"config":        cfg.Path,
 				}
-				return printJSONFiltered(w, out, flags)
+				if credentialRefused {
+					out["credential_refused"] = true
+					out["credential_refusals"] = refusals
+				}
+				if printErr := printJSONFiltered(w, out, flags); printErr != nil {
+					return printErr
+				}
+				if !authed && credentialRefused {
+					return authErr(cfg.CredentialRefusalError())
+				}
+				return nil
+			}
+
+			if !authed && credentialRefused {
+				fmt.Fprintf(w, "  %s Credentials present but refused.\n", red("FAIL"))
+				for _, refusal := range refusals {
+					fmt.Fprintf(w, "  %s\n", refusal)
+				}
+				return authErr(cfg.CredentialRefusalError())
 			}
 
 			if !authed {

@@ -52,12 +52,17 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 	configSrc := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
 	require.Contains(t, configSrc, "filepath.EvalSymlinks(", "config.Load must canonicalize the config path before the perms check")
 	require.Contains(t, configSrc, "cliutil.VerifyCredsPerms(", "config.Load must guard the persisted-token read with the perms check")
+	require.Contains(t, configSrc, "CredentialRefusals []cliutil.CredentialRefusal", "config.Load must preserve refused credential state")
+	require.Contains(t, configSrc, "func (c *Config) HasCredentialRefusals() bool", "diagnostics must distinguish refused credentials from absence")
+	require.Contains(t, configSrc, "credentialsRefused := false", "explicit config credential refusals must not fall through to another credentials home")
 
 	_, err = os.Stat(filepath.Join(outputDir, "internal", "config", "config_perms_test.go"))
 	require.NoError(t, err, "config.Load read-time perms behavioral test must be emitted")
 	configPermsSrc := readGeneratedFile(t, outputDir, "internal", "config", "config_perms_test.go")
 	require.Contains(t, configPermsSrc, "internal/cliutil/testenv", "config permission tests must use the shared path sandbox")
 	require.Contains(t, configPermsSrc, "testenv.Isolate(t, cliutil.DataDir)", "config permission tests must isolate the credentials store")
+	require.Contains(t, configPermsSrc, "TestLoad_DoesNotRecordRefusalForCredentialFreeLooseConfig", "config permission tests must prove loose credential-free configs are not recorded as refused")
+	require.Contains(t, configPermsSrc, "CredentialRefusalSummaries", "config permission tests must assert refused state survives the soft miss")
 
 	// A4: cliutil.LoadCredentials reads a SEPARATE credentials file that also
 	// holds a live token, so it must apply the same read-time guard. Because
@@ -65,12 +70,19 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 	// in-package (not cliutil.VerifyCredsPerms).
 	credsSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "credentials.go")
 	require.Contains(t, credsSrc, "VerifyCredsPerms(", "LoadCredentials must guard the credentials-file read with the perms check")
+	require.Contains(t, credsSrc, "func LoadCredentialsWithStatus()", "LoadCredentials must expose a status-bearing path for refusals")
+	require.Contains(t, credsSrc, "type CredentialRefusal", "refused credentials must be distinct from absent credentials")
+	require.Contains(t, credsSrc, "error: %s", "permission refusals must print at error severity")
 	require.Contains(t, credsSrc, "type CredentialsPermissionError", "credential saves must report a landed file that fails the permission guard")
 	require.Contains(t, credsSrc, "filepath.EvalSymlinks(path)", "credential saves must verify the file that was actually published")
 	require.Contains(t, credsSrc, "VerifyCredsPerms(real)", "credential saves must verify permissions after publication")
 
-	_, err = os.Stat(filepath.Join(outputDir, "internal", "cliutil", "credentials_perms_test.go"))
+	credsPermsPath := filepath.Join(outputDir, "internal", "cliutil", "credentials_perms_test.go")
+	_, err = os.Stat(credsPermsPath)
 	require.NoError(t, err, "cliutil credentials read-time perms behavioral test must be emitted")
+	credsPermsSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "credentials_perms_test.go")
+	require.Contains(t, credsPermsSrc, "LoadCredentialsWithStatus()", "generated credentials perms test must assert refusal state")
+	require.Contains(t, credsPermsSrc, "TestLoadCredentials_MissingFileIsAbsentNotRefused", "generated credentials perms test must keep absence distinct from refusal")
 
 	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
 	require.Contains(t, rootSrc, "writeCredentialSaveErrorEnvelope", "JSON auth failures must report post-save credential permission refusals")

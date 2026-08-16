@@ -168,6 +168,37 @@ func TestGeneratedSingleKeyCredentialsTestsAssertAnAuthHeader(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "./internal/cliutil")
 }
 
+func TestGeneratedOAuthPartialConfigCredentialsMergeMissingFields(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("oauth-partial-credentials")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:             "oauth2",
+		Header:           "Authorization",
+		Format:           "Bearer {access_token}",
+		AuthorizationURL: "https://auth.example.com/authorize",
+		TokenURL:         "https://auth.example.com/token",
+		EnvVars:          []string{"OAUTH_PARTIAL_CREDENTIALS_ACCESS_TOKEN"},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	configSrc := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
+	completeCredentials := funcBody(t, configSrc, "func (c *Config) hasCompleteCredentialFields() bool {")
+	require.Contains(t, completeCredentials, "if c.AccessToken != \"\" {")
+	require.NotContains(t, completeCredentials, "c.AccessToken != \"\" || c.RefreshToken != \"\"")
+
+	credentialTests := readGeneratedFile(t, outputDir, "internal", "cliutil", "credentials_test.go")
+	require.Contains(t, credentialTests, "TestPartialConfigCredentialsMergeMissingFields")
+	require.Contains(t, credentialTests, "TestExplicitConfigFallsBackToGlobalCredentialsWhenSiblingEmptyAndLoose")
+	require.Contains(t, credentialTests, "TestExplicitConfigRefusesLooseMalformedSiblingInsteadOfUsingGlobal")
+	require.Contains(t, credentialTests, "RefreshToken = %q, want config-refresh")
+	require.Contains(t, credentialTests, "AccessToken = %q, want credentials-access")
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommandRequired(t, outputDir, "test", "./internal/cliutil", "-run", "Test(PartialConfigCredentialsMergeMissingFields|ExplicitConfigFallsBackToGlobalCredentialsWhenSiblingEmptyAndLoose|ExplicitConfigRefusesLooseMalformedSiblingInsteadOfUsingGlobal)")
+}
+
 func TestGeneratedRequiredCredentialPairPassesCredentialTests(t *testing.T) {
 	t.Parallel()
 

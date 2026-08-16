@@ -203,15 +203,22 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 
 			// Check auth
 			authConfigured := false
-			if cfg != nil {
-				configured, authSource := doctorAuthConfiguredState(cfg)
-				if !configured {
-					report["auth"] = "not configured"
-					report["auth_hint"] = "Set your API key with: export RICH_AUTH_API_KEY=\"your-token-here\""
-				} else {
-					authConfigured = true
-					report["auth"] = "configured"
-					report["auth_source"] = authSource
+			credentialRefused := cfg != nil && cfg.HasCredentialRefusals()
+			if credentialRefused {
+				report["auth"] = "refused: credential present but not loaded"
+				report["auth_refusals"] = cfg.CredentialRefusalSummaries()
+				report["credentials"] = "refused: credential present but not loaded"
+			} else {
+				if cfg != nil {
+					configured, authSource := doctorAuthConfiguredState(cfg)
+					if !configured {
+						report["auth"] = "not configured"
+						report["auth_hint"] = "Set your API key with: export RICH_AUTH_API_KEY=\"your-token-here\""
+					} else {
+						authConfigured = true
+						report["auth"] = "configured"
+						report["auth_source"] = authSource
+					}
 				}
 			}
 
@@ -418,6 +425,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					indicator = yellow("INFO")
 				case strings.HasPrefix(s, "ERROR"):
 					indicator = red("FAIL")
+				case strings.HasPrefix(s, "refused:"):
+					indicator = red("FAIL")
 				case strings.HasPrefix(s, "optional"):
 					// Optional-auth CLI with no key set — informational, not a failure.
 					indicator = yellow("INFO")
@@ -439,7 +448,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintf(w, "  %s %s: %s\n", indicator, ck.label, s)
 			}
 			// Print info keys without status indicator
-			for _, key := range []string{"config_path", "base_url", "auth_source", "credentials_location", "version"} {
+			for _, key := range []string{"config_path", "base_url", "auth_source", "auth_refusals", "credentials_location", "version"} {
 				if v, ok := report[key]; ok {
 					fmt.Fprintf(w, "  %s: %v\n", key, v)
 				}
@@ -628,7 +637,7 @@ func doctorExitForFailOn(failOn string, report map[string]any) error {
 	for _, v := range report {
 		s, ok := v.(string)
 		if ok {
-			if strings.Contains(s, "error") || strings.Contains(s, "unreachable") || strings.Contains(s, "invalid") || strings.Contains(s, "missing") {
+			if strings.HasPrefix(s, "refused:") || strings.Contains(s, "error") || strings.Contains(s, "unreachable") || strings.Contains(s, "invalid") || strings.Contains(s, "missing") {
 				worstError = true
 			}
 			if strings.HasPrefix(s, "WARN") {

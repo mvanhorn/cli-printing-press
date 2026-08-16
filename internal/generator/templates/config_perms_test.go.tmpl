@@ -108,6 +108,20 @@ func writeTokenConfig(t *testing.T, p string) {
 	}
 }
 
+func writeCredentialFreeConfig(t *testing.T, p string) {
+	t.Helper()
+{{- if eq .Config.Format "toml"}}
+	content := "base_url = \"https://example.test/v1\"\n"
+{{- else}}
+	content := "{\n" +
+		"  \"base_url\": \"https://example.test/v1\"\n" +
+		"}\n"
+{{- end}}
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // writeCorruptTokenConfig writes a file that carries the token value but fails
 // to parse, so a test can assert the parse-error path (S3) never echoes it.
 func writeCorruptTokenConfig(t *testing.T, p string) {
@@ -154,13 +168,16 @@ func TestLoad_RefusesOverPermissiveConfigOnRead(t *testing.T) {
 	if cfg.RefreshToken != sampleReadPermsSecret {
 		t.Fatalf("precondition: owner-locked config should load the token, got %q", cfg.RefreshToken)
 	}
+	if cfg.HasCredentialRefusals() {
+		t.Fatalf("owner-locked config should not record a refusal: %#v", cfg.CredentialRefusals)
+	}
 
 	// Broaden perms → the config holding a live token MUST be refused on read
-	// (a silent miss), not trusted and not an error.
+	// (a soft miss with refusal state), not trusted and not an error.
 	grantBroad(t, p)
 	cfg, err = Load(p)
 	if err != nil {
-		t.Fatalf("over-permissive config must be a silent miss, got error: %v", err)
+		t.Fatalf("over-permissive config must be a soft miss, got error: %v", err)
 	}
 	if cfg == nil {
 		t.Fatal("Load returned nil *Config on over-permissive config")
@@ -174,8 +191,34 @@ func TestLoad_RefusesOverPermissiveConfigOnRead(t *testing.T) {
 	if cfg.AuthSource != "" {
 		t.Errorf("over-permissive config must be a miss; AuthSource should be unset, got %q", cfg.AuthSource)
 	}
+	if !cfg.HasCredentialRefusals() {
+		t.Fatal("over-permissive config with credentials should record a refusal")
+	}
+	summaries := cfg.CredentialRefusalSummaries()
+	if len(summaries) != 1 || !strings.Contains(summaries[0], p) || !strings.Contains(summaries[0], "refused") {
+		t.Fatalf("credential refusal summaries = %#v, want one refusal naming %s", summaries, p)
+	}
 	if cfg.BaseURL != "https://example.test/v1" {
 		t.Errorf("over-permissive config must preserve non-secret settings; BaseURL = %q", cfg.BaseURL)
+	}
+}
+
+func TestLoad_DoesNotRecordRefusalForCredentialFreeLooseConfig(t *testing.T) {
+	clearCredEnv(t)
+	dir := t.TempDir()
+	p := filepath.Join(dir, configFileName())
+	writeCredentialFreeConfig(t, p)
+	grantBroad(t, p)
+
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("credential-free loose config should still load non-secret settings: %v", err)
+	}
+	if cfg.HasCredentialRefusals() {
+		t.Fatalf("credential-free loose config should not record a credential refusal: %#v", cfg.CredentialRefusals)
+	}
+	if cfg.BaseURL != "https://example.test/v1" {
+		t.Errorf("credential-free loose config should preserve BaseURL = %q", cfg.BaseURL)
 	}
 }
 
@@ -208,6 +251,9 @@ func TestLoad_ReseedsFromEnvAfterOverPermissiveRefusal(t *testing.T) {
 	if !strings.HasPrefix(cfg.AuthSource, "env:") {
 		t.Errorf("expected env-sourced credential after refusal, got AuthSource %q", cfg.AuthSource)
 	}
+	if !cfg.HasCredentialRefusals() {
+		t.Fatal("env re-seed should not erase the recorded on-disk refusal")
+	}
 }
 {{- end}}
 
@@ -238,6 +284,9 @@ func TestLoad_RefusesSymlinkToLoosePermsTarget(t *testing.T) {
 	if cfg.RefreshToken != "" {
 		t.Errorf("symlink to loose-perms target must be refused; got %q", cfg.RefreshToken)
 	}
+	if !cfg.HasCredentialRefusals() {
+		t.Fatal("symlink to loose-perms target with credentials should record a refusal")
+	}
 }
 
 // TestLoad_DanglingSymlinkIsMiss covers the EvalSymlinks-error branch.
@@ -260,6 +309,9 @@ func TestLoad_DanglingSymlinkIsMiss(t *testing.T) {
 	}
 	if cfg.RefreshToken != "" {
 		t.Errorf("dangling symlink must be a miss; got %q", cfg.RefreshToken)
+	}
+	if cfg.HasCredentialRefusals() {
+		t.Fatalf("dangling symlink should be absent, not refused: %#v", cfg.CredentialRefusals)
 	}
 }
 
