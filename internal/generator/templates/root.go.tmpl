@@ -425,7 +425,7 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 		if _, err := cliutil.SetHomeOverride(flags.homePath); err != nil {
 			return err
 		}
-{{- if and (or .HasDataLayer .HasStorePath) (and .Auth.Type (ne .Auth.Type "none"))}}
+{{- if and .HasStorePath (and .Auth.Type (ne .Auth.Type "none"))}}
 		configureDefaultDBScope(flags.configPath)
 {{- end}}
 		if flags.deliverSpec != "" {

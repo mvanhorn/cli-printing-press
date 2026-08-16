@@ -16,7 +16,7 @@ func TestGeneratedDefaultDBPathScopesCredential(t *testing.T) {
 	apiSpec := minimalSpec("db-scope")
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
 	modulePath := generatedModulePath(t, outputDir)
@@ -90,7 +90,7 @@ func TestDefaultDBPathScopeCredentialsAndLegacy(t *testing.T) {
 func TestDefaultDBPathScopeUsesConfigLoadPrecedence(t *testing.T) {
 	resetDefaultDBScopeTest(t)
 
-	if err := cliutil.SaveCredentials(&cliutil.Credentials{AuthHeaderVal: "Bearer from-credentials"}); err != nil {
+	if err := cliutil.SaveCredentials(&cliutil.Credentials{MyapiToken: "from-credentials"}); err != nil {
 		t.Fatalf("save credentials: %v", err)
 	}
 	configureDefaultDBScope("")
@@ -98,7 +98,7 @@ func TestDefaultDBPathScopeUsesConfigLoadPrecedence(t *testing.T) {
 	assertScopedDBPath(t, credentialsPath, "Bearer from-credentials")
 
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	writeAuthHeaderConfig(t, configPath, "Bearer from-config", 0o600)
+	writeTokenConfig(t, configPath, "from-config", 0o600)
 	configureDefaultDBScope(configPath)
 	configPathDB := defaultDBPath("db-scope-pp-cli")
 	assertScopedDBPath(t, configPathDB, "Bearer from-config")
@@ -128,7 +128,7 @@ func TestDefaultDBPathScopeRefusedConfigFallsBackToUnscoped(t *testing.T) {
 	resetDefaultDBScopeTest(t)
 
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	writeAuthHeaderConfig(t, configPath, "Bearer too-visible", 0o644)
+	writeTokenConfig(t, configPath, "too-visible", 0o644)
 	configureDefaultDBScope(configPath)
 	if got := filepath.Base(defaultDBPath("db-scope-pp-cli")); got != "data.db" {
 		t.Fatalf("refused credential config selected %s, want data.db", got)
@@ -148,12 +148,12 @@ func resetDefaultDBScopeTest(t *testing.T) {
 	setDefaultDBScopeCredential("")
 }
 
-func writeAuthHeaderConfig(t *testing.T, path, header string, mode os.FileMode) {
+func writeTokenConfig(t *testing.T, path, token string, mode os.FileMode) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("auth_header = "+quoteTOMLString(header)+"\n"), mode); err != nil {
+	if err := os.WriteFile(path, []byte("token = "+quoteTOMLString(token)+"\n"), mode); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(path, mode); err != nil {
