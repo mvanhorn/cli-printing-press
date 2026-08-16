@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -744,6 +745,32 @@ func newTabWriter(w io.Writer) *tabwriter.Writer {
 // reserved characters within each segment remain safe in the request URL.
 func replacePathParam(path, name, value string) string {
 	return strings.ReplaceAll(path, "{"+name+"}", cliutil.EscapePathParam(value))
+}
+
+func replaceURLIDPathParam(path, name, value string) string {
+	return replacePathParam(path, name, pathParamSegmentValue(value))
+}
+
+func pathParamSegmentValue(value string) string {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return value
+	}
+	escapedPath := strings.TrimRight(parsed.EscapedPath(), "/")
+	if escapedPath == "" {
+		return value
+	}
+	segment := escapedPath
+	if i := strings.LastIndex(segment, "/"); i >= 0 {
+		segment = segment[i+1:]
+	}
+	if segment == "" {
+		return value
+	}
+	if decoded, err := url.PathUnescape(segment); err == nil {
+		return decoded
+	}
+	return segment
 }
 
 const responsePathItemsKey = "__printing_press_response_path_items"

@@ -15,7 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-{{- if or .HasEmbeddedPaged (hasIndexedOrArrayQueryParams .APISpec)}}
+{{- if or .HasEmbeddedPaged (hasIndexedOrArrayQueryParams .APISpec) .HasPathParams}}
 	"net/url"
 {{- end}}
 	"os"
@@ -1275,6 +1275,32 @@ func newTabWriter(w io.Writer) *tabwriter.Writer {
 // reserved characters within each segment remain safe in the request URL.
 func replacePathParam(path, name, value string) string {
 	return strings.ReplaceAll(path, "{"+name+"}", cliutil.EscapePathParam(value))
+}
+
+func replaceURLIDPathParam(path, name, value string) string {
+	return replacePathParam(path, name, pathParamSegmentValue(value))
+}
+
+func pathParamSegmentValue(value string) string {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return value
+	}
+	escapedPath := strings.TrimRight(parsed.EscapedPath(), "/")
+	if escapedPath == "" {
+		return value
+	}
+	segment := escapedPath
+	if i := strings.LastIndex(segment, "/"); i >= 0 {
+		segment = segment[i+1:]
+	}
+	if segment == "" {
+		return value
+	}
+	if decoded, err := url.PathUnescape(segment); err == nil {
+		return decoded
+	}
+	return segment
 }
 {{- end}}
 

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -64,7 +65,10 @@ func TestReplacePathParamPercentEncodesValue(t *testing.T) {
 		"helpers.go must import cliutil when replacePathParam is emitted")
 	assert.Contains(t, src,
 		`return strings.ReplaceAll(path, "{"+name+"}", cliutil.EscapePathParam(value))`,
-		"replacePathParam must use the shared path-param escaper")
+		"replacePathParam must preserve ordinary path params while using the shared path-param escaper")
+	assert.Contains(t, src,
+		`return replacePathParam(path, name, pathParamSegmentValue(value))`,
+		"replaceURLIDPathParam must normalize URL-backed resource IDs before escaping")
 
 	cliutilPath := filepath.Join(outputDir, "internal", "cliutil", "text.go")
 	cliutilGo, err := os.ReadFile(cliutilPath)
@@ -94,7 +98,7 @@ func TestReplacePathParamEncodesSingleSegment(t *testing.T) {
 	tests := map[string]string{
 		"opaque-id": "opaque-id",
 		"sc-domain:example.com": "sc-domain:example.com",
-		"https://example.com/foo": "https:%2F%2Fexample.com%2Ffoo",
+		"https://example.com/foo?version=2": "https:%2F%2Fexample.com%2Ffoo%3Fversion=2",
 		"allenai/c4": "allenai%2Fc4",
 		"src/main file.go": "src%2Fmain%20file.go",
 		"../secret": "..%2Fsecret",
@@ -104,6 +108,21 @@ func TestReplacePathParamEncodesSingleSegment(t *testing.T) {
 	for input, want := range tests {
 		if got := replacePathParam("/datasets/{id}", "id", input); got != "/datasets/"+want {
 			t.Fatalf("replacePathParam(%q) = %q, want %q", input, got, "/datasets/"+want)
+		}
+	}
+}
+
+func TestReplaceURLIDPathParamUsesTrailingSegment(t *testing.T) {
+	tests := map[string]string{
+		"https://example.com/foo": "foo",
+		"https://example.com/foo/bar/": "bar",
+		"https://example.com/foo?version=2": "foo",
+		"opaque-id": "opaque-id",
+		"allenai/c4": "allenai%2Fc4",
+	}
+	for input, want := range tests {
+		if got := replaceURLIDPathParam("/datasets/{id}", "id", input); got != "/datasets/"+want {
+			t.Fatalf("replaceURLIDPathParam(%q) = %q, want %q", input, got, "/datasets/"+want)
 		}
 	}
 }
@@ -215,10 +234,123 @@ func TestDependentPathParamStripsCompositeStorageID(t *testing.T) {
 	src := string(syncGo)
 
 	assert.Contains(t, src,
-		`path = replacePathParam(path, pathParam.Param, store.BareResourceID(parentRow[pathParam.Field]))`,
+		`path = replaceDependentPathParam(path, pathParam.Param, dep.ParentTable, pathParam.Field, parentRow[pathParam.Field])`,
 		"the dependent fan-out must strip the NUL-composite parent storage id via "+
 			"store.BareResourceID before substituting it into the path, so a parent-keyed "+
 			"parent (composite id) never leaks a %00 into the request URL (nginx 400)")
+	assert.Contains(t, src,
+		`bareValue := store.BareResourceID(value)`,
+		"replaceDependentPathParam must still strip composite storage IDs before path substitution")
+}
+
+func TestDependentURLIDPathParamUsesTrailingSegment(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("urlidpath")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources = map[string]spec.Resource{
+		"scheduled-events": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:   "GET",
+					Path:     "/scheduled_events",
+					Response: spec.ResponseDef{Type: "array"},
+					IDField:  "uri",
+				},
+			},
+		},
+		"invitees": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:   "GET",
+					Path:     "/scheduled_events/{event_uuid}/invitees",
+					Response: spec.ResponseDef{Type: "array"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	gen.profile = &profiler.APIProfile{
+		SyncableResources: []profiler.SyncableResource{
+			{Name: "scheduled-events", Path: "/scheduled_events", Method: "GET", IDField: "uri"},
+		},
+		DependentSyncResources: []profiler.DependentResource{
+			{
+				Name:           "invitees",
+				ParentResource: "scheduled-events",
+				ParentIDParam:  "event_uuid",
+				Path:           "/scheduled_events/{event_uuid}/invitees",
+				Method:         "GET",
+				PathParams:     []profiler.DependentPathParam{{Param: "event_uuid", Field: "uri"}},
+			},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	inlineTest := `package cli
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+type dependentURLIDClient struct {
+	t *testing.T
+}
+
+func (c dependentURLIDClient) Get(_ context.Context, path string, _ map[string]string) (json.RawMessage, error) {
+	if path != "/scheduled_events/event-a/invitees" {
+		c.t.Fatalf("path = %q, want /scheduled_events/event-a/invitees", path)
+	}
+	return json.RawMessage(` + "`" + `[{"id":"invitee-1"}]` + "`" + `), nil
+}
+
+func (dependentURLIDClient) RateLimit() float64 {
+	return 0
+}
+
+func TestDependentURLIDPathParamUsesTrailingSegment(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	eventURI := "https://api.example.com/scheduled_events/event-a?version=2"
+	if err := db.Upsert("scheduled-events", eventURI, []byte(` + "`" + `{"uri":"https://api.example.com/scheduled_events/event-a?version=2","name":"Weekly review"}` + "`" + `)); err != nil {
+		t.Fatalf("insert scheduled event: %v", err)
+	}
+
+	res := syncDependentResource(
+		context.Background(),
+		dependentURLIDClient{t: t},
+		db,
+		dependentResourceDef{
+			Name: "invitees",
+			ParentTable: "scheduled-events",
+			ParentIDParam: "event_uuid",
+			PathTemplate: "/scheduled_events/{event_uuid}/invitees",
+			PathParams: []dependentPathParamDef{{Param: "event_uuid", Field: "uri"}},
+		},
+		"", false, 1, false, false, nil, nil, 1,
+	)
+	if res.Err != nil {
+		t.Fatalf("syncDependentResource error: %v", res.Err)
+	}
+	if res.Count != 1 {
+		t.Fatalf("synced count = %d, want 1", res.Count)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "dependent_url_id_path_test.go"), []byte(inlineTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestDependentURLIDPathParamUsesTrailingSegment")
 }
 
 // TestPathParamEscapeBehaviorPinsContract is a stdlib-behavior pin for

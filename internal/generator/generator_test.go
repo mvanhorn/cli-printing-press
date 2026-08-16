@@ -16231,6 +16231,83 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/cli/...", "-run", "TestSyncSingleObject_PreservesLargeIntegerResourceIDs")
 }
 
+func TestGeneratedStoreIDFieldOverrideKeepsDuplicateNames(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("idfieldrows")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources = map[string]spec.Resource{
+		"scheduled-events": {
+			Description: "Manage scheduled events",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/scheduled_events",
+					Description: "List scheduled events",
+					Response:    spec.ResponseDef{Type: "array"},
+					Pagination:  &spec.Pagination{CursorParam: "page_token", LimitParam: "count"},
+					IDField:     "uri",
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(storeGo), `"scheduled-events": "uri",`)
+
+	storeTest := `package store
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"testing"
+)
+
+func TestURIOverrideKeepsDuplicateDisplayNames(t *testing.T) {
+	db, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "store.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	items := []json.RawMessage{
+		json.RawMessage(` + "`" + `{"uri":"https://api.example.com/scheduled_events/event-a","name":"Weekly review"}` + "`" + `),
+		json.RawMessage(` + "`" + `{"uri":"https://api.example.com/scheduled_events/event-b","name":"Weekly review"}` + "`" + `),
+	}
+	stored, extractFailures, typedFailures, err := db.UpsertBatchDetailed("scheduled-events", items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored != 2 || extractFailures != 0 || typedFailures != 0 {
+		t.Fatalf("UpsertBatchDetailed stored=%d extractFailures=%d typedFailures=%d, want 2/0/0", stored, extractFailures, typedFailures)
+	}
+	count, err := db.Count("scheduled-events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("Count = %d, want 2", count)
+	}
+	for _, id := range []string{
+		"https://api.example.com/scheduled_events/event-a",
+		"https://api.example.com/scheduled_events/event-b",
+	} {
+		if _, err := db.Get("scheduled-events", id); err != nil {
+			t.Fatalf("Get(%q): %v", id, err)
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "store", "id_override_test.go"), []byte(storeTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "TestURIOverrideKeepsDuplicateDisplayNames")
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGeneratedSyncIDFieldOverridesFromMemberPathParam(t *testing.T) {
 	t.Parallel()
 

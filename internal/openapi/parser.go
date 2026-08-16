@@ -3706,6 +3706,9 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 				endpoint.IDFieldFromPathParam = true
 			} else {
 				endpoint.IDField = resolveIDFieldFromResponseSchema(op, targetResourceName)
+				if endpoint.IDField == "name" {
+					warnf("%s %q: response-schema ID fallback chose display field \"name\"; add x-resource-id if the API exposes a stable identifier", strings.ToUpper(method), path)
+				}
 			}
 			if strings.ToUpper(method) == "POST" {
 				endpoint.Pagination = detectPostQueryIDWalkPagination(endpoint.Body, op, endpoint.IDField)
@@ -6165,11 +6168,12 @@ func responseItemSchema(op *openapi3.Operation) *openapi3.Schema {
 	return unwrapItemSchema(schemaRef.Value)
 }
 
-// resolveIDFieldFromResponseSchema implements tiers 2-5 of the IDField fallback
+// resolveIDFieldFromResponseSchema implements tiers 2-6 of the IDField fallback
 // chain: prefer "id", then a resource-prefixed key (`<singular>_id` /
 // `_uuid` / `_guid`), then a vendor identifier (`gid` / `sid` / `uid` /
-// `uuid` / `guid`), then "name", then the first scalar field listed in the
-// response schema's `required:` array (walking properties in their schema order).
+// `uuid` / `guid`), then a URL-shaped identifier (`uri` / `self` /
+// `selfLink` / `href` / `url`), then "name", then the first scalar field listed
+// in the response schema's `required:` array (walking properties in their schema order).
 // Returns "" when no field qualifies; templates fall through to runtime list
 // scanning. Tier 1 (`x-resource-id` extension) is handled separately by the
 // caller — it overrides every tier here.
@@ -6214,12 +6218,18 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation, resourceName strin
 		}
 	}
 
-	// Tier 4: explicit `name`
+	// Tier 4: URL-shaped identifiers. These trail id-shaped keys so APIs that
+	// expose both `id` and `self` keep keying on the compact primary key.
+	if id := urlShapedIDField(itemSchema, itemFields.required); id != "" {
+		return id
+	}
+
+	// Tier 5: explicit `name`
 	if _, ok := itemSchema.Properties["name"]; ok {
 		return "name"
 	}
 
-	// Tier 5: first plausible-PK scalar field appearing in the schema's
+	// Tier 6: first plausible-PK scalar field appearing in the schema's
 	// required[] array, matched against properties in their schema-declared
 	// order. kin-openapi preserves YAML/JSON property order in MapKeys/Extensions
 	// but not via range over Properties (it's a Go map). Fall back to iterating
@@ -6295,13 +6305,13 @@ func collectIDSchemaFieldsInto(schemaRef *openapi3.SchemaRef, fields *idSchemaFi
 }
 
 // resourcePrefixedIDField returns the first property whose snake-cased name
-// matches `<singular_resource>_id`, then `_uuid`, then `_guid`. Returns "" when
-// the resource name is empty or no property matches. Property names are
-// returned verbatim so callers preserve the spec's original casing (e.g.
-// `categoryId` rather than `category_id`).
+// matches a resource-derived base plus `_id`, then `_uuid`, then `_guid`.
+// Composed resource names also probe their leaf segment so child collections
+// like `projects_tasks` can key on `taskId`. Property names are returned
+// verbatim so callers preserve the spec's original casing.
 func resourcePrefixedIDField(schema *openapi3.Schema, resourceName string) string {
-	singular := singularizeIdentifier(toSnakeCase(resourceName))
-	if singular == "" {
+	bases := resourceIDBaseCandidates(resourceName)
+	if len(bases) == 0 {
 		return ""
 	}
 	// Sort property names so behavior is deterministic across Go map
@@ -6313,14 +6323,83 @@ func resourcePrefixedIDField(schema *openapi3.Schema, resourceName string) strin
 	}
 	sort.Strings(propNames)
 	for _, suffix := range []string{"_id", "_uuid", "_guid"} {
-		target := singular + suffix
+		for _, base := range bases {
+			target := base + suffix
+			for _, propName := range propNames {
+				if toSnakeCase(propName) == target {
+					return propName
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func resourceIDBaseCandidates(resourceName string) []string {
+	snake := strings.Trim(toSnakeCase(resourceName), "_")
+	if snake == "" {
+		return nil
+	}
+	candidates := []string{}
+	seen := map[string]bool{}
+	add := func(s string) {
+		s = strings.Trim(s, "_")
+		if s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		candidates = append(candidates, s)
+	}
+	add(singularizeIdentifier(snake))
+	if i := strings.LastIndex(snake, "_"); i >= 0 && i+1 < len(snake) {
+		add(singularizeIdentifier(snake[i+1:]))
+	}
+	return candidates
+}
+
+func urlShapedIDField(schema *openapi3.Schema, required []string) string {
+	if schema == nil {
+		return ""
+	}
+	requiredSet := map[string]struct{}{}
+	for _, name := range required {
+		requiredSet[name] = struct{}{}
+	}
+	propNames := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		propNames = append(propNames, name)
+	}
+	sort.Strings(propNames)
+	for _, key := range []string{"uri", "self", "selfLink", "href", "url"} {
+		keySnake := toSnakeCase(key)
 		for _, propName := range propNames {
-			if toSnakeCase(propName) == target {
+			if propName != key && toSnakeCase(propName) != keySnake {
+				continue
+			}
+			propRef := schema.Properties[propName]
+			propSchema := schemaRefValue(propRef)
+			if propRef != nil && isPlausibleIDFieldSchema(propSchema) && urlFieldLooksIdentifier(propName, propSchema, isRequired(requiredSet, propName)) {
 				return propName
 			}
 		}
 	}
 	return ""
+}
+
+func urlFieldLooksIdentifier(name string, schema *openapi3.Schema, required bool) bool {
+	if required {
+		return true
+	}
+	if schema == nil {
+		return false
+	}
+	text := strings.ToLower(strings.Join([]string{name, schema.Title, schema.Description, schema.Format}, " "))
+	for _, token := range []string{"unique", "identifier", "permalink", "canonical", "resource uri", "resource url"} {
+		if strings.Contains(text, token) {
+			return true
+		}
+	}
+	return false
 }
 
 // singularizeIdentifier returns a simple singular form of a snake-cased
