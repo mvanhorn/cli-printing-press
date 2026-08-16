@@ -5320,6 +5320,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		HasDelete              bool
 		HasMutationEndpoints   bool
 		HasAutoRefresh         bool
+		HasStorePath           bool
 		SelectExample          string
 		HasWorkflow            bool
 		CompactDescription     string
@@ -5343,6 +5344,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		HasDelete:              helperFlags.HasDelete,
 		HasMutationEndpoints:   helperFlags.HasMutationEndpoints,
 		HasAutoRefresh:         g.hasAutoRefresh(),
+		HasStorePath:           g.VisionSet.Store,
 		SelectExample:          selectExampleForCommand(g.Spec),
 		HasWorkflow:            g.hasWorkflowSurface(),
 		CompactDescription:     g.compactDescription(),

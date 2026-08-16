@@ -6,6 +6,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,12 +19,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 	"unicode"
 
 	"embedded-paged-pp-cli/internal/client"
 	"embedded-paged-pp-cli/internal/cliutil"
+	"embedded-paged-pp-cli/internal/config"
 	"embedded-paged-pp-cli/internal/platform"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -2972,6 +2976,41 @@ func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMess
 	return json.Marshal(envelope)
 }
 
+const defaultDBScopeHashLen = 12
+
+var defaultDBScopeState struct {
+	sync.RWMutex
+	hash string
+}
+
+func configureDefaultDBScope(configPath string) {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		setDefaultDBScopeCredential("")
+		return
+	}
+	setDefaultDBScopeCredential(cfg.StoreScopeCredential())
+}
+
+func setDefaultDBScopeCredential(credential string) {
+	credential = strings.TrimSpace(credential)
+	scopeHash := ""
+	if credential != "" {
+		sum := sha256.Sum256([]byte(credential))
+		scopeHash = hex.EncodeToString(sum[:])[:defaultDBScopeHashLen]
+	}
+
+	defaultDBScopeState.Lock()
+	defaultDBScopeState.hash = scopeHash
+	defaultDBScopeState.Unlock()
+}
+
+func currentDefaultDBScopeHash() string {
+	defaultDBScopeState.RLock()
+	defer defaultDBScopeState.RUnlock()
+	return defaultDBScopeState.hash
+}
+
 // defaultDBPath returns the canonical path for the local SQLite database.
 // The resolver already knows the app name on the happy path; name is only
 // used for the conservative fallback when the resolved data directory fails.
@@ -2979,9 +3018,24 @@ func defaultDBPath(name string) string {
 	dir, err := cliutil.DataDir()
 	if err != nil {
 		if home, homeErr := os.UserHomeDir(); homeErr == nil {
-			return filepath.Join(home, ".local", "share", name, "data.db")
+			return defaultDBPathInDir(filepath.Join(home, ".local", "share", name))
 		}
 		return "data.db"
 	}
-	return filepath.Join(dir, "data.db")
+	return defaultDBPathInDir(dir)
+}
+
+func defaultDBPathInDir(dir string) string {
+	unscoped := filepath.Join(dir, "data.db")
+	if scopeHash := currentDefaultDBScopeHash(); scopeHash != "" {
+		scoped := filepath.Join(dir, "data-"+scopeHash+".db")
+		if _, err := os.Stat(scoped); err == nil {
+			return scoped
+		}
+		if _, err := os.Stat(unscoped); err == nil || !os.IsNotExist(err) {
+			return unscoped
+		}
+		return scoped
+	}
+	return unscoped
 }
