@@ -17857,6 +17857,25 @@ func TestGenerateMCPMainLargeAPIExplicitEndpointMirrorHonored(t *testing.T) {
 	assert.NotContains(t, body, "NewStreamableHTTPServer")
 }
 
+func TestGenerateMCPMainRemoteOptInDefaultsHTTPAddrToLoopback(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	apiSpec.MCP = spec.MCPConfig{
+		Transport: []string{"stdio", "http"},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+	requireGeneratedCompiles(t, outputDir)
+
+	body := readGeneratedMCPMain(t, outputDir, apiSpec.Name)
+	assert.Contains(t, body, `defaultHTTPAddr = "127.0.0.1:7777"`)
+	assert.NotContains(t, body, `defaultHTTPAddr = ":7777"`)
+}
+
 // TestGenerateMCPMainRemoteOptIn confirms that declaring mcp.transport: [stdio, http]
 // emits a flag-aware main with both transport branches, including the env-based
 // default and the custom --addr. Uses a byte-level check on the template
@@ -17868,22 +17887,19 @@ func TestGenerateMCPMainRemoteOptIn(t *testing.T) {
 	require.NoError(t, err)
 	apiSpec.MCP = spec.MCPConfig{
 		Transport: []string{"stdio", "http"},
-		Addr:      ":8123",
+		Addr:      "0.0.0.0:7777",
 	}
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
 
-	mainPath := filepath.Join(outputDir, "cmd", naming.MCP(apiSpec.Name), "main.go")
-	data, err := os.ReadFile(mainPath)
-	require.NoError(t, err)
-	body := string(data)
+	body := readGeneratedMCPMain(t, outputDir, apiSpec.Name)
 
 	for _, want := range []string{
 		`"flag"`,
 		`"strings"`,
-		`defaultHTTPAddr = ":8123"`,
+		`defaultHTTPAddr = "0.0.0.0:7777"`,
 		`flag.String("transport"`,
 		`flag.String("addr"`,
 		`server.ServeStdio(s)`,
@@ -17894,6 +17910,15 @@ func TestGenerateMCPMainRemoteOptIn(t *testing.T) {
 		assert.Contains(t, body, want, "remote-opt-in main should contain %q", want)
 	}
 	assertMCPMainUsesVersionVar(t, body)
+}
+
+func readGeneratedMCPMain(t *testing.T, outputDir, apiName string) string {
+	t.Helper()
+
+	mainPath := filepath.Join(outputDir, "cmd", naming.MCP(apiName), "main.go")
+	data, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	return string(data)
 }
 
 func assertMCPMainUsesVersionVar(t *testing.T, body string) {

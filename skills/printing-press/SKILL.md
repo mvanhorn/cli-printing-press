@@ -2817,17 +2817,16 @@ emits the thin search+execute pair that covers the typed-endpoint surface in
 `mcp.endpoint_tools: hidden` removes the raw per-endpoint tools that would
 otherwise still show up alongside the orchestration pair.
 
-**HTTP transport security default — read before enabling `http`.** The emitted
-MCP server binds its HTTP listener to all interfaces by default
-(`defaultHTTPAddr = ":7777"`) and does not authenticate reachable callers, so
-any client that can reach the port can invoke tools with the process's bound
-API credentials. The public library's Greptile review has flagged this on new
-CLI prints. If the CLI needs HTTP transport, either ship the `--addr` flag with
-a loopback default (`127.0.0.1:<port>`) so operators opt into exposure, or —
-for CLIs whose MCP surface is only consumed locally — remove HTTP transport
-entirely and keep the server stdio-only, which keeps the credential boundary at
-process ownership. Decide this before generation; changing it after the PR
-opens costs review cycles.
+**HTTP transport security default - read before enabling `http`.** The emitted
+MCP server binds its HTTP listener to loopback by default
+(`defaultHTTPAddr = "127.0.0.1:7777"`) and does not authenticate reachable
+callers. Any client that can reach a deliberately non-loopback `mcp.addr` or
+`--addr` value can invoke tools with the process's bound API credentials. If the
+CLI needs HTTP transport for local agents, rely on the loopback default. Only
+configure a non-loopback address when the exposure is deliberate; for CLIs whose
+MCP surface is only consumed locally, keep the server stdio-only when HTTP is
+not needed. Decide this before generation; changing it after the PR opens costs
+review cycles.
 
 For command-dominant CLIs where cobratree-walked tools greatly outnumber typed
 endpoints, do not present code orchestration as the context-reduction remedy for
