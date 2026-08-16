@@ -11,15 +11,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"io"
 	"os"
 	"path/filepath"
-	"printing-press-rich-pp-cli/internal/client"
-	"printing-press-rich-pp-cli/internal/cliutil"
-	"printing-press-rich-pp-cli/internal/config"
-	"printing-press-rich-pp-cli/internal/platform"
 	"regexp"
 	"sort"
 	"strconv"
@@ -28,6 +22,13 @@ import (
 	"text/tabwriter"
 	"time"
 	"unicode"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+	"printing-press-rich-pp-cli/internal/client"
+	"printing-press-rich-pp-cli/internal/cliutil"
+	"printing-press-rich-pp-cli/internal/config"
+	"printing-press-rich-pp-cli/internal/platform"
 )
 
 var As = errors.As
@@ -156,6 +157,14 @@ type dryRunResult struct {
 	Would  string `json:"would"`
 }
 
+type harnessRefusalResult struct {
+	Refused bool   `json:"refused"`
+	Harness string `json:"harness"`
+	Action  string `json:"action"`
+	Reason  string `json:"reason"`
+	Would   string `json:"would"`
+}
+
 // writeDryRun ends a --dry-run short-circuit by reporting the action that was
 // skipped. Returning silently leaves a --json caller with empty stdout, which
 // is indistinguishable from a broken command rather than a deliberate no-op.
@@ -166,6 +175,29 @@ func writeDryRun(w io.Writer, flags *rootFlags, action string) error {
 		return json.NewEncoder(w).Encode(dryRunResult{DryRun: true, Action: action, Would: would})
 	}
 	_, err := fmt.Fprintf(w, "dry-run: would %s\n", would)
+	return err
+}
+
+// writeHarnessRefusal reports that a Printing Press harness blocked a visible
+// side effect. Returning silently leaves a --json or --agent caller with empty
+// stdout, which looks like a broken command rather than an intentional refusal.
+func writeHarnessRefusal(w io.Writer, flags *rootFlags, action string) error {
+	harness := cliutil.HarnessName()
+	if harness == "" {
+		harness = "harness"
+	}
+	reason := "Printing Press harness refuses visible side effects"
+	would := "run " + action + "; no visible side effect performed"
+	if flags != nil && flags.asJSON {
+		return json.NewEncoder(w).Encode(harnessRefusalResult{
+			Refused: true,
+			Harness: harness,
+			Action:  action,
+			Reason:  reason,
+			Would:   would,
+		})
+	}
+	_, err := fmt.Fprintf(w, "%s: %s; would %s\n", harness, reason, would)
 	return err
 }
 
