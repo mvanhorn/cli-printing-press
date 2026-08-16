@@ -10795,7 +10795,105 @@ func TestWorkflowArchiveTimeoutFailsFast(t *testing.T) {
 `
 	testPath := filepath.Join(outputDir, "internal", "cli", "workflow_boundary_runtime_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
+	storeCrashTest := `package store
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestStoreWrite_KilledProcessLeavesDatabaseIntegral(t *testing.T) {
+	if os.Getenv("PP_STORE_KILL_HELPER") == "1" {
+		runStoreKillHelper()
+		return
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestStoreWrite_KilledProcessLeavesDatabaseIntegral$", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		"PP_STORE_KILL_HELPER=1",
+		"PP_STORE_KILL_DB="+dbPath,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start kill helper: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill helper: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+	}
+
+	ro, err := OpenReadOnly(dbPath)
+	if err != nil {
+		t.Fatalf("open killed db read-only: %v", err)
+	}
+	defer ro.Close()
+	var integrity string
+	if err := ro.DB().QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil {
+		t.Fatalf("integrity_check killed db: %v", err)
+	}
+	if integrity != "ok" {
+		t.Fatalf("integrity_check = %q, want ok", integrity)
+	}
+}
+
+func runStoreKillHelper() {
+	dbPath := os.Getenv("PP_STORE_KILL_DB")
+	if dbPath == "" {
+		fmt.Fprintln(os.Stderr, "PP_STORE_KILL_DB is required")
+		os.Exit(2)
+	}
+	s, err := Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open helper db: %v\n", err)
+		os.Exit(3)
+	}
+	defer s.Close()
+
+	items := make([]json.RawMessage, 0, 100)
+	payload := strings.Repeat("x", 1024)
+	for i := 0; i < cap(items); i++ {
+		items = append(items, json.RawMessage(fmt.Sprintf(` + "`" + `{"id":"kill-%d","payload":%q}` + "`" + `, i, payload)))
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, _, err := s.UpsertBatch("kill_items", items); err != nil {
+			fmt.Fprintf(os.Stderr, "upsert helper batch: %v\n", err)
+			os.Exit(4)
+		}
+	}
+}
+`
+	storeCrashPath := filepath.Join(outputDir, "internal", "store", "killed_writer_integrity_test.go")
+	require.NoError(t, os.WriteFile(storeCrashPath, []byte(storeCrashTest), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestWorkflow(Status|Archive)")
+	runGoCommand(t, outputDir, "test", "./internal/store", "-run", "TestStoreWrite_KilledProcessLeavesDatabaseIntegral", "-count=1")
 	requireGeneratedCompiles(t, outputDir)
 }
 
