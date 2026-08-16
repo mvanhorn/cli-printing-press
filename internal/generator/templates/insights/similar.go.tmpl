@@ -96,21 +96,6 @@ work items, tickets, or tasks.`,
 				return fmt.Errorf("item %q has no searchable title or name", itemID)
 			}
 
-			// Use FTS5 to find similar items (exclude the source item)
-			query := `SELECT r.id, r.resource_type, r.data, fts.rank
-				FROM resources_fts fts
-				JOIN resources r ON r.id = fts.id AND r.resource_type = fts.resource_type
-				WHERE resources_fts MATCH ?
-				  AND NOT (r.id = ? AND r.resource_type = ?)
-				ORDER BY fts.rank
-				LIMIT ?`
-
-			rows, err := db.DB().Query(query, searchText, itemID, sourceType, limit)
-			if err != nil {
-				return fmt.Errorf("searching for similar items: %w", err)
-			}
-			defer rows.Close()
-
 			type similarItem struct {
 				ID           string  `json:"id"`
 				ResourceType string  `json:"resource_type"`
@@ -119,33 +104,54 @@ work items, tickets, or tasks.`,
 			}
 
 			var items []similarItem
-			for rows.Next() {
-				var id, resType string
-				var data []byte
-				var rank float64
-				if err := rows.Scan(&id, &resType, &data, &rank); err != nil {
-					continue
-				}
+			matchQuery := store.FTSMatchQuery(searchText)
+			if matchQuery != "" {
+				// Use FTS5 to find similar items (exclude the source item)
+				query := `SELECT r.id, r.resource_type, r.data, fts.rank
+					FROM resources_fts fts
+					JOIN resources r ON r.id = fts.id AND r.resource_type = fts.resource_type
+					WHERE resources_fts MATCH ?
+					  AND NOT (r.id = ? AND r.resource_type = ?)
+					ORDER BY fts.rank
+					LIMIT ?`
 
-				var obj map[string]any
-				if err := json.Unmarshal(data, &obj); err != nil {
-					continue
+				rows, err := db.DB().Query(query, matchQuery, itemID, sourceType, limit)
+				if err != nil {
+					return fmt.Errorf("searching for similar items: %w", err)
 				}
+				defer rows.Close()
 
-				title := ""
-				for _, key := range []string{"title", "name", "subject", "summary"} {
-					if v, ok := obj[key]; ok {
-						title = fmt.Sprintf("%v", v)
-						break
+				for rows.Next() {
+					var id, resType string
+					var data []byte
+					var rank float64
+					if err := rows.Scan(&id, &resType, &data, &rank); err != nil {
+						continue
 					}
-				}
 
-				items = append(items, similarItem{
-					ID:           id,
-					ResourceType: resType,
-					Title:        title,
-					Rank:         rank,
-				})
+					var obj map[string]any
+					if err := json.Unmarshal(data, &obj); err != nil {
+						continue
+					}
+
+					title := ""
+					for _, key := range []string{"title", "name", "subject", "summary"} {
+						if v, ok := obj[key]; ok {
+							title = fmt.Sprintf("%v", v)
+							break
+						}
+					}
+
+					items = append(items, similarItem{
+						ID:           id,
+						ResourceType: resType,
+						Title:        title,
+						Rank:         rank,
+					})
+				}
+				if err := rows.Err(); err != nil {
+					return fmt.Errorf("reading similar items: %w", err)
+				}
 			}
 
 			if flags.asJSON {
