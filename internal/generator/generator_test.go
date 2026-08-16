@@ -10556,14 +10556,41 @@ func TestGeneratedOutput_WorkflowBoundaries(t *testing.T) {
 		"workflow status must reject stores newer than the generated schema")
 	assert.Contains(t, src, `"workflowboundary-pp-cli/internal/cliutil"`,
 		"workflow archive must import the generated dogfood environment helper")
-	assert.Contains(t, src, `archiveMaxPages := 100`,
-		"workflow archive must keep its normal page limit explicit")
+	assert.Contains(t, src, `cmd.Flags().IntVar(&maxPages, "max-pages", 0`,
+		"workflow archive must leave normal archive pagination unlimited unless the operator sets a cap")
+	assert.Contains(t, src, `cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute`,
+		"workflow archive must expose a wall-clock bound with an operator escape hatch")
+	assert.Contains(t, src, `if maxPages < 0`,
+		"workflow archive must reject negative page limits instead of treating them as unlimited")
+	assert.Contains(t, src, `if timeout < 0`,
+		"workflow archive must reject negative timeouts instead of treating them as no timeout")
+	assert.Contains(t, src, `context.WithTimeout(archiveCtx, archiveTimeout)`,
+		"workflow archive must pass a timeout-bound context through store open and sync")
 	assert.Contains(t, src, `if cliutil.IsDogfoodEnv()`,
 		"workflow archive must enter its bounded dogfood path")
+	assert.Contains(t, src, `if !cmd.Flags().Changed("max-pages")`,
+		"dogfood must not override an explicit archive page cap")
+	assert.Contains(t, src, `if !cmd.Flags().Changed("timeout")`,
+		"dogfood must not override an explicit archive timeout")
 	assert.Contains(t, src, `resources = resources[:3]`,
 		"workflow archive must cap the resource list under dogfood")
 	assert.Contains(t, src, `archiveMaxPages, false`,
 		"workflow archive must pass the dogfood-aware page limit to syncResource")
+
+	substackSpec := minimalSpec("substack")
+	substackDir := filepath.Join(t.TempDir(), naming.CLI(substackSpec.Name))
+	substackGen := New(substackSpec, substackDir)
+	substackGen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, substackGen.Generate())
+	substackWorkflow := readGeneratedFile(t, substackDir, "internal", "cli", "channel_workflow.go")
+	assert.Contains(t, substackWorkflow, `resolveSubstackPublicationIDTemplate(archiveCtx, c, flags)`,
+		"Substack archive publication preflight must share the bounded archive context")
+	assert.Contains(t, substackWorkflow, `err = workflowArchiveTimeoutError(archiveTimeout, err)`,
+		"Substack archive publication preflight must convert deadline errors into actionable archive timeout errors")
+	assert.Contains(t, substackWorkflow, `return fmt.Errorf("archiving %s: %w", resource, err)`,
+		"Substack archive publication preflight timeout must hard-fail instead of continuing")
+	assert.NotContains(t, substackWorkflow, `resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags)`,
+		"Substack archive publication preflight must not bypass the archive timeout")
 
 	syncDisabledDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name)+"-nosync")
 	syncDisabledGen := New(apiSpec, syncDisabledDir)
@@ -10591,6 +10618,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"workflowboundary-pp-cli/internal/store"
 )
@@ -10744,8 +10772,17 @@ func TestWorkflowArchiveCurtailsOnlyUnderDogfood(t *testing.T) {
 	}
 
 	atomic.StoreInt32(&requests, 0)
+	stdout, stderr, err = runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "dogfood-unlimited.db"), "--max-pages", "0", "--timeout", "0")
+	if err != nil {
+		t.Fatalf("dogfood archive with explicit escape: %v; stdout=%s stderr=%s", err, stdout, stderr)
+	}
+	if got := atomic.LoadInt32(&requests); got != 6 {
+		t.Fatalf("dogfood archive with explicit escape requests = %d, want two pages for each of 3 resources", got)
+	}
+
+	atomic.StoreInt32(&requests, 0)
 	t.Setenv("PRINTING_PRESS_DOGFOOD", "")
-	stdout, stderr, err = runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "normal.db"))
+	stdout, stderr, err = runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "normal.db"), "--timeout", "0")
 	if err != nil {
 		t.Fatalf("normal archive: %v; stdout=%s stderr=%s", err, stdout, stderr)
 	}
@@ -10756,10 +10793,152 @@ func TestWorkflowArchiveCurtailsOnlyUnderDogfood(t *testing.T) {
 		t.Fatalf("normal archive stdout = %q, want all-resource count", stdout)
 	}
 }
+
+func TestWorkflowArchiveTimeoutFailsFast(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"items\":[{\"id\":\"item-1\"}],\"has_more\":false,\"next_cursor\":\"\"}"))
+	}))
+	defer server.Close()
+	t.Setenv("WORKFLOWBOUNDARY_BASE_URL", server.URL)
+
+	stdout, stderr, err := runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "timeout.db"), "--timeout", "1ms")
+	if err == nil {
+		t.Fatalf("timeout archive unexpectedly succeeded; stdout=%s stderr=%s", stdout, stderr)
+	}
+	if !strings.Contains(err.Error(), "workflow archive timed out after 1ms") {
+		t.Fatalf("timeout archive error = %v; stderr=%s", err, stderr)
+	}
+}
+
+func TestWorkflowArchiveRejectsNegativeBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		flag string
+		value string
+		want string
+	}{
+		{name: "max pages", flag: "--max-pages", value: "-1", want: "--max-pages must be greater than or equal to 0"},
+		{name: "timeout", flag: "--timeout", value: "-1s", want: "--timeout must be greater than or equal to 0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "negative.db")
+			stdout, stderr, err := runWorkflowBoundaryCommand("workflow", "archive", "--db", dbPath, tc.flag, tc.value)
+			if err == nil {
+				t.Fatalf("negative %s unexpectedly succeeded; stdout=%s stderr=%s", tc.flag, stdout, stderr)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("negative %s error = %v; stderr=%s", tc.flag, err, stderr)
+			}
+			if _, statErr := os.Stat(dbPath); !os.IsNotExist(statErr) {
+				t.Fatalf("negative %s created db path: stat err=%v", tc.flag, statErr)
+			}
+		})
+	}
+}
 `
 	testPath := filepath.Join(outputDir, "internal", "cli", "workflow_boundary_runtime_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
+	storeCrashTest := `package store
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestStoreWrite_KilledProcessLeavesDatabaseIntegral(t *testing.T) {
+	if os.Getenv("PP_STORE_KILL_HELPER") == "1" {
+		runStoreKillHelper()
+		return
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestStoreWrite_KilledProcessLeavesDatabaseIntegral$", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		"PP_STORE_KILL_HELPER=1",
+		"PP_STORE_KILL_DB="+dbPath,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start kill helper: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill helper: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+	}
+
+	ro, err := OpenReadOnly(dbPath)
+	if err != nil {
+		t.Fatalf("open killed db read-only: %v", err)
+	}
+	defer ro.Close()
+	var integrity string
+	if err := ro.DB().QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil {
+		t.Fatalf("integrity_check killed db: %v", err)
+	}
+	if integrity != "ok" {
+		t.Fatalf("integrity_check = %q, want ok", integrity)
+	}
+}
+
+func runStoreKillHelper() {
+	dbPath := os.Getenv("PP_STORE_KILL_DB")
+	if dbPath == "" {
+		fmt.Fprintln(os.Stderr, "PP_STORE_KILL_DB is required")
+		os.Exit(2)
+	}
+	s, err := Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open helper db: %v\n", err)
+		os.Exit(3)
+	}
+	defer s.Close()
+
+	items := make([]json.RawMessage, 0, 100)
+	payload := strings.Repeat("x", 1024)
+	for i := 0; i < cap(items); i++ {
+		items = append(items, json.RawMessage(fmt.Sprintf(` + "`" + `{"id":"kill-%d","payload":%q}` + "`" + `, i, payload)))
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, _, err := s.UpsertBatch("kill_items", items); err != nil {
+			fmt.Fprintf(os.Stderr, "upsert helper batch: %v\n", err)
+			os.Exit(4)
+		}
+	}
+}
+`
+	storeCrashPath := filepath.Join(outputDir, "internal", "store", "killed_writer_integrity_test.go")
+	require.NoError(t, os.WriteFile(storeCrashPath, []byte(storeCrashTest), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestWorkflow(Status|Archive)")
+	runGoCommand(t, outputDir, "test", "./internal/store", "-run", "TestStoreWrite_KilledProcessLeavesDatabaseIntegral", "-count=1")
 	requireGeneratedCompiles(t, outputDir)
 }
 
