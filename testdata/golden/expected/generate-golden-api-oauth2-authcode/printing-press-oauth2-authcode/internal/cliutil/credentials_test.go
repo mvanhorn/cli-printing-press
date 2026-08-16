@@ -197,6 +197,43 @@ func TestExplicitConfigFallsBackToGlobalCredentialsWhenSiblingEmpty(t *testing.T
 	assertConfigCredential(t, cfg, "global-secret")
 }
 
+func TestExplicitConfigFallsBackToGlobalCredentialsWhenSiblingEmptyAndLoose(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX chmod test")
+	}
+	home, _ := resetCredentialEnv(t)
+	explicitDir := filepath.Join(home, "store-b")
+	configPath := filepath.Join(explicitDir, "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatalf("mkdir explicit config: %v", err)
+	}
+	if err := os.WriteFile(configPath, legacyConfigData(t, "https://store-b.example", ""), 0o600); err != nil {
+		t.Fatalf("write explicit config: %v", err)
+	}
+	emptySiblingPath := filepath.Join(explicitDir, "data", "credentials.toml")
+	if err := os.MkdirAll(filepath.Dir(emptySiblingPath), 0o700); err != nil {
+		t.Fatalf("mkdir empty sibling credentials dir: %v", err)
+	}
+	if err := os.WriteFile(emptySiblingPath, []byte{}, 0o600); err != nil {
+		t.Fatalf("write empty sibling credentials: %v", err)
+	}
+	if err := os.Chmod(emptySiblingPath, 0o644); err != nil {
+		t.Fatalf("loosen empty sibling credentials: %v", err)
+	}
+	if err := cliutil.SaveCredentials(testCredentials("global-secret")); err != nil {
+		t.Fatalf("SaveCredentials() error = %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.HasCredentialRefusals() {
+		t.Fatalf("empty loose sibling should not record refusal: %v", cfg.CredentialRefusalSummaries())
+	}
+	assertConfigCredential(t, cfg, "global-secret")
+}
+
 func TestExplicitConfigRejectsMalformedSiblingInsteadOfUsingGlobal(t *testing.T) {
 	home, _ := resetCredentialEnv(t)
 	explicitDir := filepath.Join(home, "store-b")

@@ -143,7 +143,7 @@ func Load(configPath string) (*Config, error) {
 				ok = status.Loaded
 				if status.Refusal != nil {
 					cfg.addCredentialRefusal(*status.Refusal)
-					credentialsRefused = true
+					credentialsRefused = status.Refusal.CredentialsPresent
 				}
 			}
 			if (!ok || creds == nil || !creds.HasValues()) && !credentialsRefused {
