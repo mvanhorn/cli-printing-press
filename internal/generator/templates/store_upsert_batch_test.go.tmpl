@@ -444,6 +444,66 @@ func TestSearchQuotesFTSQuerySyntax(t *testing.T) {
 	}
 }
 
+func TestFTSMatchQuerySanitizesPunctuation(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "comma and parens",
+			input: `Well drilling, Phase 2 (residential)`,
+			want:  `"Well" "drilling" "Phase" "2" "residential"`,
+		},
+		{
+			name:  "embedded quote",
+			input: `Alpha "quoted" beta`,
+			want:  `"Alpha" "quoted" "beta"`,
+		},
+		{
+			name:  "leading hyphen",
+			input: `-Draft- proposal`,
+			want:  `"Draft" "proposal"`,
+		},
+		{
+			name:  "bare operators",
+			input: `AND OR NOT`,
+			want:  `"AND" "OR" "NOT"`,
+		},
+		{
+			name:  "punctuation only",
+			input: `!!! , -- () ""`,
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matchQuery := FTSMatchQuery(tt.input)
+			if matchQuery != tt.want {
+				t.Fatalf("FTSMatchQuery(%q) = %q, want %q", tt.input, matchQuery, tt.want)
+			}
+			if matchQuery == "" {
+				return
+			}
+			rows, err := s.DB().Query(`SELECT rowid FROM resources_fts WHERE resources_fts MATCH ? LIMIT 1`, matchQuery)
+			if err != nil {
+				t.Fatalf("FTS MATCH rejected sanitized query %q from %q: %v", matchQuery, tt.input, err)
+			}
+			if err := rows.Close(); err != nil {
+				t.Fatalf("close rows: %v", err)
+			}
+		})
+	}
+}
+
 {{- $hasDomainTable := false }}
 {{- range .Tables}}
 {{- if emitsDomainTable .}}
