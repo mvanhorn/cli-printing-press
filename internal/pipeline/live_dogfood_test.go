@@ -1841,6 +1841,7 @@ func TestLiveDogfoodMutatingLeafDetectionTokenizesCommandNames(t *testing.T) {
 		"request-send-money",
 		"transfer",
 		"set-token",
+		"sync",
 	} {
 		assert.True(t, isMutatingLeaf(name), "%s should be treated as mutating", name)
 	}
@@ -1881,6 +1882,12 @@ func TestLiveDogfoodCommandMutatesPrefersEndpointMethod(t *testing.T) {
 	}).unclassified)
 	assert.True(t, liveDogfoodCommandMutation(liveDogfoodCommand{
 		Path: []string{"courses", "publish"},
+	}).unclassified)
+	assert.True(t, liveDogfoodCommandMutates(liveDogfoodCommand{
+		Path: []string{"sync"},
+	}))
+	assert.False(t, liveDogfoodCommandMutation(liveDogfoodCommand{
+		Path: []string{"sync"},
 	}).unclassified)
 }
 
@@ -6152,6 +6159,8 @@ func TestRunLiveDogfoodSearchErrorPathMutationFallthrough(t *testing.T) {
 //     --dry-run. The matrix must inject --dry-run instead of executing live.
 //   - widgets activate - unclassified no-method command without --dry-run.
 //     The matrix must skip it before invoking the binary.
+//   - sync - unannotated store-population command that advertises --dry-run.
+//     The matrix must treat it as mutating and inject --dry-run.
 func writeLiveDogfoodDryRunFixture(t *testing.T) (dir string, binaryName string) {
 	t.Helper()
 
@@ -6173,6 +6182,7 @@ if [ "$1" = "agent-context" ]; then
   cat <<'JSON'
 {
   "commands": [
+    {"name":"sync"},
     {"name":"widgets","subcommands":[
       {"name":"create"},
       {"name":"destroy"},
@@ -6195,6 +6205,35 @@ for a in "$@"; do
     --dry-run|--dry-run=*) has_dry_run=1 ;;
   esac
 done
+
+# ---------- sync: unannotated store-population command with --dry-run advertised ----------
+if [ "$1" = "sync" ] && [ "${2:-}" = "--help" ]; then
+  cat <<'HELP'
+Sync the source into the local store.
+
+Usage:
+  fixture-pp-cli sync [flags]
+
+Examples:
+  fixture-pp-cli sync
+
+Flags:
+      --json   Output JSON
+
+Global Flags:
+      --dry-run   Show request without sending
+HELP
+  exit 0
+fi
+
+if [ "$1" = "sync" ]; then
+  if [ "$has_dry_run" = "1" ]; then
+    echo '{"action":"sync","status":0,"success":false,"dry_run":true}'
+    exit 0
+  fi
+  echo 'unexpected live sync invocation' >&2
+  exit 99
+fi
 
 # ---------- widgets create: mutator with --dry-run advertised ----------
 if [ "$1" = "widgets" ] && [ "$2" = "create" ] && [ "${3:-}" = "--help" ]; then
@@ -6530,6 +6569,20 @@ func TestRunLiveDogfoodInjectsDryRunForUnclassifiedCommand(t *testing.T) {
 	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
 	assert.Contains(t, got.Args, "--dry-run",
 		"expected matrix to inject --dry-run into unclassified commands that advertise it")
+}
+
+func TestRunLiveDogfoodInjectsDryRunForUnannotatedSync(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "sync", LiveDogfoodTestHappy)
+	require.NotNil(t, got, "expected sync happy_path result in matrix")
+	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
+	assert.Contains(t, got.Args, "--dry-run",
+		"expected matrix to inject --dry-run into unannotated sync")
 }
 
 func TestRunLiveDogfoodSkipsUnclassifiedCommandWithoutDryRun(t *testing.T) {
