@@ -6655,8 +6655,7 @@ func TestRunLiveDogfoodSkipsUnannotatedSyncWithoutDryRun(t *testing.T) {
 	assert.Empty(t, got.Args, "skipped sync must not include executable mutation args")
 
 	lines := readArgvLog(t, argvLogPath)
-	assert.Equal(t, 0, countArgvLines(lines, "sync")-countArgvLines(lines, "sync --help"),
-		"sync without --dry-run must not invoke the binary")
+	assert.NotContains(t, lines, "sync", "sync without --dry-run must not invoke the binary")
 }
 
 func TestRunLiveDogfoodSkipsUnclassifiedCommandWithoutDryRun(t *testing.T) {
