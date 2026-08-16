@@ -740,7 +740,11 @@ func newTabWriter(w io.Writer) *tabwriter.Writer {
 // replacePathParam escapes path-param values before substituting them so
 // reserved characters within each segment remain safe in the request URL.
 func replacePathParam(path, name, value string) string {
-	return strings.ReplaceAll(path, "{"+name+"}", cliutil.EscapePathParam(pathParamSegmentValue(value)))
+	return strings.ReplaceAll(path, "{"+name+"}", cliutil.EscapePathParam(value))
+}
+
+func replaceURLIDPathParam(path, name, value string) string {
+	return replacePathParam(path, name, pathParamSegmentValue(value))
 }
 
 func pathParamSegmentValue(value string) string {
