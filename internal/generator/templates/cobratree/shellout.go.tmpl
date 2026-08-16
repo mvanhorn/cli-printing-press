@@ -189,10 +189,9 @@ var reservedStructuredArgs = map[string]bool{
 	"args": true,
 }
 
-// blockedDestinationFlags are filesystem destination selectors that an MCP
-// client must not choose. The server account owns command execution, so
-// letting the client pick paths would let a tool write or truncate anything
-// that account can reach.
+// MCP runs commands as the server account. Letting clients choose filesystem
+// destinations would let a tool write or truncate anything that account can
+// reach.
 var blockedDestinationFlags = map[string]bool{
 	"audit-dir":    true,
 	"o":            true,
