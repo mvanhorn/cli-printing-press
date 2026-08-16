@@ -588,7 +588,7 @@ var readVerbs = map[string]bool{
 	"describe": true, "view": true, "info": true, "lookup": true,
 	"fetch": true, "retrieve": true, "query": true, "find": true,
 	"search": true, "status": true, "stats": true, "history": true,
-	"recent": true, "feed": true,
+	"recent": true, "feed": true, "sync": true,
 }
 
 func isMutatingLeaf(name string) bool {

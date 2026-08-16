@@ -2480,8 +2480,8 @@ if [ "$1" = "agent-context" ]; then
 {
   "commands": [
     {"name":"reports","subcommands":[
-      {"name":"prospects"},
-      {"name":"summary"}
+      {"name":"prospects","annotations":{"pp:method":"GET"}},
+      {"name":"summary","annotations":{"pp:method":"GET"}}
     ]},
     {"name":"events","subcommands":[
       {"name":"list","annotations":{"pp:method":"GET","mcp:read-only":"true"}}
@@ -2654,7 +2654,7 @@ if [ "$1" = "agent-context" ]; then
 {
   "commands": [
     {"name":"reports","subcommands":[
-      {"name":"broken-filter"}
+      {"name":"broken-filter","annotations":{"pp:method":"GET"}}
     ]}
   ]
 }
@@ -4995,7 +4995,7 @@ if [ "$1" = "agent-context" ]; then
 {
   "commands": [
     {"name":"api-keys","subcommands":[
-      {"name":"refresh","annotations":{"pp:endpoint":"api-keys.keys-refresh"}}
+      {"name":"refresh","annotations":{"pp:endpoint":"api-keys.keys-refresh","pp:method":"POST"}}
     ]},
     {"name":"widgets","subcommands":[
       {"name":"list"}
@@ -7027,10 +7027,10 @@ if [ "$1" = "agent-context" ]; then
 {
   "commands": [
     {"name":"records","subcommands":[
-      {"name":"verify","annotations":{"pp:typed-exit-codes":"0,2"}}
+      {"name":"verify","annotations":{"pp:method":"GET","pp:typed-exit-codes":"0,2"}}
     ]},
     {"name":"items","subcommands":[
-      {"name":"verify"}
+      {"name":"verify","annotations":{"pp:method":"GET"}}
     ]}
   ]
 }
