@@ -40,7 +40,7 @@ func RegisterCodeOrchestrationTools(s *server.MCPServer) {
 		mcplib.NewTool("{{snake .Name}}_search",
 			mcplib.WithDescription("Search the {{.Name}} API for endpoints matching a natural-language query. Returns a ranked list of {{if hasRawRequest .APISpec}}endpoint metadata, including request_body instructions for raw uploads{{else}}{endpoint_id, method, path, summary} entries{{end}}. Call this first to find the endpoint to execute."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Natural-language description of what you want to do.")),
-			mcplib.WithNumber("limit", mcplib.Description("Max endpoints to return (default 10).")),
+			mcplib.WithNumber("limit", mcplib.Description("Max endpoints to return (default 10, max 100).")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(false),
