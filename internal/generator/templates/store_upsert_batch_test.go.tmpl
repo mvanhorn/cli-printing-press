@@ -273,9 +273,11 @@ func TestUpsertBatch_UnwrapsIDBearingEnvelopeItems(t *testing.T) {
 	defer s.Close()
 
 	items := []json.RawMessage{
-		json.RawMessage(`{"customer":{"id":"cust-1","name":"Ada"}}`),
+		json.RawMessage(`{"result":{"id":"cust-1","name":"Ada"}}`),
 		json.RawMessage(`{"kind":"customer","data":{"id":"cust-2","name":"Grace"}}`),
 		json.RawMessage(`{"customer":{"id":"cust-large","external_id":9007199254740993,"name":"Big"}}`),
+		json.RawMessage(`{"a":1,"metadata":{"uuid":"meta-1"}}`),
+		json.RawMessage(`{"id":"cust-top","name":"Top","metadata":{"uuid":"ignored"}}`),
 		json.RawMessage(`{"kind":"customer","data":{"description":"missing-id"}}`),
 		json.RawMessage(`{"kind":"customer","data":{"id":"cust-3"},"alternate":{"id":"other-1"}}`),
 	}
@@ -283,15 +285,15 @@ func TestUpsertBatch_UnwrapsIDBearingEnvelopeItems(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
 	}
-	if stored != 3 || extractFailures != 2 {
-		t.Fatalf("envelope unwrap stored=%d extractFailures=%d, want stored=3 extractFailures=2", stored, extractFailures)
+	if stored != 5 || extractFailures != 2 {
+		t.Fatalf("envelope unwrap stored=%d extractFailures=%d, want stored=5 extractFailures=2", stored, extractFailures)
 	}
 
 	row, err := s.Get("customers", "cust-1")
 	if err != nil {
 		t.Fatalf("Get cust-1: %v", err)
 	}
-	if strings.Contains(string(row), `"customer"`) || !strings.Contains(string(row), `"name":"Ada"`) {
+	if strings.Contains(string(row), `"result"`) || !strings.Contains(string(row), `"name":"Ada"`) {
 		t.Fatalf("single-key envelope should store the flat inner object, got %s", row)
 	}
 
@@ -299,8 +301,8 @@ func TestUpsertBatch_UnwrapsIDBearingEnvelopeItems(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get cust-2: %v", err)
 	}
-	if strings.Contains(string(row), `"kind"`) || !strings.Contains(string(row), `"name":"Grace"`) {
-		t.Fatalf("tagged envelope should store the flat inner object, got %s", row)
+	if !strings.Contains(string(row), `"kind":"customer"`) || !strings.Contains(string(row), `"data"`) || !strings.Contains(string(row), `"name":"Grace"`) {
+		t.Fatalf("tagged envelope should keep the outer row while deriving the ID from data, got %s", row)
 	}
 
 	row, err = s.Get("customers", "cust-large")
@@ -309,6 +311,22 @@ func TestUpsertBatch_UnwrapsIDBearingEnvelopeItems(t *testing.T) {
 	}
 	if !strings.Contains(string(row), `"external_id":9007199254740993`) || strings.Contains(string(row), `9007199254740992`) {
 		t.Fatalf("envelope unwrap should preserve original large integer bytes, got %s", row)
+	}
+
+	row, err = s.Get("customers", "meta-1")
+	if err != nil {
+		t.Fatalf("Get meta-1: %v", err)
+	}
+	if !strings.Contains(string(row), `"a":1`) || !strings.Contains(string(row), `"metadata"`) || !strings.Contains(string(row), `"uuid":"meta-1"`) {
+		t.Fatalf("nested metadata ID should keep the outer row, got %s", row)
+	}
+
+	row, err = s.Get("customers", "cust-top")
+	if err != nil {
+		t.Fatalf("Get cust-top: %v", err)
+	}
+	if !strings.Contains(string(row), `"id":"cust-top"`) || !strings.Contains(string(row), `"metadata"`) {
+		t.Fatalf("top-level ID item should remain unchanged, got %s", row)
 	}
 }
 

@@ -1731,10 +1731,10 @@ func (s *Store) UpsertBatchDetailed(resourceType string, items []json.RawMessage
 		// spec declares x-resource-id).
 		id := ExtractResourceID(resourceType, obj)
 		if id == "" {
-			if unwrappedObj, unwrappedItem, ok := unwrapIDBearingEnvelopeItem(resourceType, item, obj); ok {
-				obj = unwrappedObj
-				item = unwrappedItem
-				id = ExtractResourceID(resourceType, obj)
+			if keyObj, rowObj, rowItem, ok := unwrapIDBearingEnvelopeItem(resourceType, item, obj); ok {
+				id = ExtractResourceID(resourceType, keyObj)
+				obj = rowObj
+				item = rowItem
 			}
 		}
 		if id == "" {
@@ -1805,33 +1805,38 @@ func (s *Store) UpsertBatchDetailed(resourceType string, items []json.RawMessage
 	return stored, extractFailures, typedFailures, nil
 }
 
-func unwrapIDBearingEnvelopeItem(resourceType string, item json.RawMessage, obj map[string]any) (map[string]any, json.RawMessage, bool) {
+// Multi-field wrappers keep their outer row because scalar siblings may be
+// resource data; true single-field envelopes unwrap to the inner object.
+func unwrapIDBearingEnvelopeItem(resourceType string, item json.RawMessage, obj map[string]any) (map[string]any, map[string]any, json.RawMessage, bool) {
 	var candidate map[string]any
 	candidateKey := ""
-	objectFields := 0
+	candidates := 0
 	for key, value := range obj {
 		inner, ok := value.(map[string]any)
 		if !ok {
 			continue
 		}
-		objectFields++
 		if ExtractResourceID(resourceType, inner) != "" {
 			candidate = inner
 			candidateKey = key
+			candidates++
 		}
 	}
-	if objectFields != 1 || candidate == nil || candidateKey == "" {
-		return nil, nil, false
+	if candidates != 1 || candidate == nil || candidateKey == "" {
+		return nil, nil, nil, false
+	}
+	if len(obj) != 1 {
+		return candidate, obj, item, true
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(item, &raw); err != nil {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	data, ok := raw[candidateKey]
 	if !ok {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
-	return candidate, data, true
+	return candidate, candidate, data, true
 }
 
 func (s *Store) SaveSyncState(resourceType, cursor string, count int) error {
