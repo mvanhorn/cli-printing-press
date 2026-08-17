@@ -117,6 +117,7 @@ func runGroupBy(out io.Writer, db *store.Store, resourceType, field string, limi
 	}
 
 	counts := make(map[string]int)
+	nullCount := 0
 	validFields := make(map[string]struct{})
 	matchedAny := false
 	missingFieldCount := 0
@@ -133,6 +134,10 @@ func runGroupBy(out io.Writer, db *store.Store, resourceType, field string, limi
 		raw, ok := resolvedGroupValue(obj, field)
 		if ok {
 			matchedAny = true
+			if raw == nil {
+				nullCount++
+				continue
+			}
 			val := fmt.Sprintf("%v", raw)
 			counts[val]++
 		} else {
@@ -143,16 +148,19 @@ func runGroupBy(out io.Writer, db *store.Store, resourceType, field string, limi
 		return fmt.Errorf("group-by field %q was not found in any %s record; valid group-by fields: %s", field, resourceType, formatGroupByFields(validFields))
 	}
 	if missingFieldCount > 0 {
-		counts["<nil>"] += missingFieldCount
+		nullCount += missingFieldCount
 	}
 
 	type kv struct {
-		Key   string `json:"value"`
+		Value any `json:"value"`
 		Count int    `json:"count"`
 	}
 	var sorted []kv
 	for k, v := range counts {
 		sorted = append(sorted, kv{k, v})
+	}
+	if nullCount > 0 {
+		sorted = append(sorted, kv{Value: nil, Count: nullCount})
 	}
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Count > sorted[j].Count })
 	if limit > 0 && len(sorted) > limit {
@@ -166,7 +174,11 @@ func runGroupBy(out io.Writer, db *store.Store, resourceType, field string, limi
 	fmt.Fprintf(out, "%s\tCount\n", field)
 	fmt.Fprintln(out, "---\t-----")
 	for _, kv := range sorted {
-		fmt.Fprintf(out, "%s\t%d\n", kv.Key, kv.Count)
+		value := fmt.Sprint(kv.Value)
+		if kv.Value == nil {
+			value = "(none)"
+		}
+		fmt.Fprintf(out, "%s\t%d\n", value, kv.Count)
 	}
 	return nil
 }
