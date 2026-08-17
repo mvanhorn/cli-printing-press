@@ -54,17 +54,40 @@ func TestScrubTerminal(t *testing.T) {
 
 func TestParseStoredTime(t *testing.T) {
 	cases := []struct {
-		name string
-		in   string
-		want time.Time
+		name         string
+		in           string
+		want         time.Time
+		wantLocation *time.Location
 	}{
+		{
+			name: "rfc3339",
+			in:   "2026-04-21T09:02:49-07:00",
+			want: time.Date(2026, 4, 21, 9, 2, 49, 0, time.FixedZone("", -7*60*60)),
+		},
 		{
 			name: "rfc3339 nano",
 			in:   "2026-04-21T09:02:49.123456789-07:00",
 			want: time.Date(2026, 4, 21, 9, 2, 49, 123456789, time.FixedZone("", -7*60*60)),
 		},
 		{
-			name: "modernc go string",
+			name: "sqlite current timestamp",
+			in:   "2026-07-02 19:35:41",
+			want: time.Date(2026, 7, 2, 19, 35, 41, 0, time.UTC),
+			wantLocation: time.UTC,
+		},
+		{
+			name: "sqlite current timestamp fractional",
+			in:   "2026-07-02 19:35:41.123456789",
+			want: time.Date(2026, 7, 2, 19, 35, 41, 123456789, time.UTC),
+			wantLocation: time.UTC,
+		},
+		{
+			name: "go string numeric offset",
+			in:   "2026-04-21 09:02:49.123456789 -0700",
+			want: time.Date(2026, 4, 21, 9, 2, 49, 123456789, time.FixedZone("", -7*60*60)),
+		},
+		{
+			name: "go string zone name",
 			in:   "2026-04-21 09:02:49.123456789 -0700 PDT",
 			want: time.Date(2026, 4, 21, 9, 2, 49, 123456789, time.FixedZone("PDT", -7*60*60)),
 		},
@@ -85,6 +108,9 @@ func TestParseStoredTime(t *testing.T) {
 			got := ParseStoredTime(tc.in)
 			if !got.Equal(tc.want) {
 				t.Fatalf("ParseStoredTime(%q) = %s, want %s", tc.in, got, tc.want)
+			}
+			if tc.wantLocation != nil && got.Location() != tc.wantLocation {
+				t.Fatalf("ParseStoredTime(%q) location = %s, want %s", tc.in, got.Location(), tc.wantLocation)
 			}
 		})
 	}
