@@ -21,7 +21,7 @@
       },
       {
         "scope": ["internal/openapi/parser.go"],
-        "rule": "The record-identity contract is intentional: x-resource-id wins; resolveIDFieldFromResponseSchema falls back through id-shaped keys first (id, resource-derived _id/_uuid/_guid spellings, then gid/sid/uid/uuid/guid), then URL-shaped keys (uri, self, selfLink, href, url), then name, then the first plausible required scalar. Do not file a P1 claiming URL-shaped keys should come after name, or claiming self/url should beat id when both exist."
+        "rule": "The record-identity contract is intentional: x-resource-id wins; resolveIDFieldFromResponseSchema falls back through id-shaped keys first (id, resource-derived _id/_uuid/_guid spellings, then gid/sid/uid/uuid/guid), then URL-shaped keys (uri, self, selfLink, href, url), then name, then the first plausible required scalar. URL-shaped keys are not unconditional winners: urlShapedIDField also requires a plausible ID schema and urlFieldLooksIdentifier, so required URL-shaped fields qualify automatically but optional generic url fields without unique/identifier/permalink/canonical/resource uri/resource url hints fall through to name. Do not file a P1 claiming qualified URL-shaped keys should come after name, or claiming self/url should beat id when both exist."
       },
       {
         "scope": ["internal/generator/templates/helpers.go.tmpl", "internal/generator/templates/sync.go.tmpl"],

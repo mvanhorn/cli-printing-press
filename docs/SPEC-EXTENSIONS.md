@@ -1364,13 +1364,16 @@ Rules:
   `widgetId` are preserved when emitted); then vendor identifier keys `gid`,
   `sid`, `uid`, `uuid`, and `guid`; then URL-shaped identifier keys `uri`,
   `self`, `selfLink`, `href`, and `url`; then `name`; then the first plausible
-  required scalar field.
+  required scalar field. URL-shaped keys qualify only when the field schema is a
+  plausible ID and either the field is required or its name, title, description,
+  or format carries an identifier hint; an optional generic `url` therefore
+  falls through to `name`.
 - URL-shaped keys intentionally trail id-shaped keys, so APIs that expose both
   `id` and `self` keep the compact primary key.
-- URL-shaped keys intentionally win over display `name` when no id-shaped key
-  is available. A resource URL or URI is usually record-unique, while display
-  names can collide; keying on `name` would collapse two records with the same
-  display label into one local row.
+- Qualified URL-shaped keys intentionally win over display `name` when no
+  id-shaped key is available. A resource URL or URI is usually record-unique,
+  while display names can collide; keying on `name` would collapse two records
+  with the same display label into one local row.
 - Applies to every operation on the path item.
 
 Example:
