@@ -54,6 +54,7 @@ func TestRecipeNarrativeEmitsMCPIntentTools(t *testing.T) {
 	require.Contains(t, intents, `mcplib.NewTool("rank_with_numeric_limit"`)
 	require.Contains(t, intents, `mcplib.WithNumber("limit"`)
 	require.Contains(t, intents, `cobratree.RunCLICommand(ctx, recipeCLIPath, args)`)
+	require.Contains(t, intents, `cobratree.ToolResultFromCLICommand(out)`)
 	require.NotContains(t, intents, "CombinedOutput")
 	require.Contains(t, intents, `mcplib.NewTool("plain_lookup"`)
 	require.Contains(t, intents, `mcplib.WithString("id"`)

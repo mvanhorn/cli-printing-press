@@ -462,7 +462,11 @@ func extractMCPRecipeIntentSource(source, modulePath string) ([]byte, error) {
 		header = prefix
 	}
 	var out bytes.Buffer
-	fmt.Fprintf(&out, "%spackage mcp\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\t\"strings\"\n\n\tmcplib \"github.com/mark3labs/mcp-go/mcp\"\n\t\"github.com/mark3labs/mcp-go/server\"\n\t%q\n\t%q\n)\n\nfunc RegisterRecipeIntents(s *server.MCPServer) {\n", header, modulePath+"/internal/mcp/bound", modulePath+"/internal/mcp/cobratree")
+	fmt.Fprintf(&out, "%spackage mcp\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\t\"strings\"\n\n\tmcplib \"github.com/mark3labs/mcp-go/mcp\"\n\t\"github.com/mark3labs/mcp-go/server\"\n", header)
+	if declsContainIdentifier(recipeDecls, "bound") {
+		fmt.Fprintf(&out, "\t%q\n", modulePath+"/internal/mcp/bound")
+	}
+	fmt.Fprintf(&out, "\t%q\n)\n\nfunc RegisterRecipeIntents(s *server.MCPServer) {\n", modulePath+"/internal/mcp/cobratree")
 	out.Write(registration.Bytes())
 	out.WriteString("}\n\n")
 	for _, decl := range recipeDecls {
@@ -476,6 +480,15 @@ func extractMCPRecipeIntentSource(source, modulePath string) ([]byte, error) {
 		return nil, fmt.Errorf("formatting recipe_intents.go: %w", err)
 	}
 	return formatted, nil
+}
+
+func declsContainIdentifier(decls []ast.Decl, name string) bool {
+	for _, decl := range decls {
+		if containsMCPIntentIdentifier(decl, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsMCPIntentIdentifier(node ast.Node, name string) bool {

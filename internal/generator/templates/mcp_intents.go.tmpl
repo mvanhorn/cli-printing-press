@@ -29,7 +29,7 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-{{- if or .MCP.Intents .RecipeIntents}}
+{{- if .MCP.Intents}}
 	"{{modulePath}}/internal/mcp/bound"
 {{- end}}
 {{- if .MCP.Intents}}
@@ -187,7 +187,7 @@ func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*m
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
-	return mcplib.NewToolResultText(bound.Text(out)), nil
+	return cobratree.ToolResultFromCLICommand(out), nil
 }
 {{end}}
 

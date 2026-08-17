@@ -72,7 +72,8 @@ func TestGenerateMCPSharedBoundPackageAndConsumers(t *testing.T) {
 	require.NoError(t, err)
 	shelloutCode := stripGoComments(string(shelloutSrc))
 	assert.Contains(t, shelloutCode, `/internal/mcp/bound"`)
-	assert.Contains(t, shelloutCode, "bound.Text(out)")
+	assert.Contains(t, shelloutCode, "bound.Text(result.Stdout)")
+	assert.Contains(t, shelloutCode, "bound.Text(strings.Join(result.StderrHints")
 	assert.NotContains(t, shelloutCode, "NewToolResultText(out)")
 
 	requireGeneratedCompiles(t, outputDir)

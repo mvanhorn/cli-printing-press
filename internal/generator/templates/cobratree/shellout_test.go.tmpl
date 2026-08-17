@@ -691,6 +691,49 @@ func TestShellOutBoundsFinalError(t *testing.T) {
 	}
 }
 
+func TestShellOutSurfacesSuccessStderrHintsSeparateFromJSON(t *testing.T) {
+	bin := writeShelloutHelper(t, "success-hints")
+	handler := shellOutToCLI(
+		func() (string, error) { return bin, nil },
+		nil,
+		map[string]bool{},
+		map[string]bool{},
+		nil,
+		false,
+		nil,
+	)
+
+	result, err := handler(context.Background(), mcplib.CallToolRequest{})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handler returned tool error: %s", toolResultText(result))
+	}
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(toolResultText(result)), &payload); err != nil {
+		t.Fatalf("stdout content is not parseable JSON: %v; text=%q", err, toolResultText(result))
+	}
+	if payload["args"] != "" {
+		t.Fatalf("stdout payload args = %q, want empty", payload["args"])
+	}
+	if strings.Contains(toolResultText(result), "hint:") || strings.Contains(toolResultText(result), "warning:") {
+		t.Fatalf("stderr hints leaked into JSON stdout content: %q", toolResultText(result))
+	}
+	hints := toolResultContentText(result, 1)
+	if !strings.Contains(hints, "hint: local store is empty; run sync") {
+		t.Fatalf("MCP result hints missing hint line: %q", hints)
+	}
+	if !strings.Contains(hints, "warning: result was truncated") {
+		t.Fatalf("MCP result hints missing warning line: %q", hints)
+	}
+	for _, noise := range []string{"telemetry", "progress"} {
+		if strings.Contains(hints, noise) {
+			t.Fatalf("MCP result hints included filtered stderr noise %q: %q", noise, hints)
+		}
+	}
+}
+
 func TestCappedCaptureDrainsWithoutRetainingFullInput(t *testing.T) {
 	capture := newCappedCapture()
 	input := strings.Repeat("x", shelloutCaptureLimit+100)
@@ -712,11 +755,29 @@ func TestRunCLICommandKeepsStdoutSeparateFromStderr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunCLICommand success returned error: %v", err)
 	}
-	if !strings.Contains(got, `{"args":"alpha beta"}`) {
-		t.Fatalf("stdout result missing JSON payload: %q", got)
+	if !strings.Contains(got.Stdout, `{"args":"alpha beta"}`) {
+		t.Fatalf("stdout result missing JSON payload: %q", got.Stdout)
 	}
-	if strings.Contains(got, "telemetry") {
-		t.Fatalf("stderr telemetry leaked into stdout: %q", got)
+	if strings.Contains(got.Stdout, "telemetry") {
+		t.Fatalf("stderr telemetry leaked into stdout: %q", got.Stdout)
+	}
+}
+
+func TestRunCLICommandFiltersSuccessStderrHints(t *testing.T) {
+	bin := writeShelloutHelper(t, "success-hints")
+	got, err := RunCLICommand(context.Background(), bin, nil)
+	if err != nil {
+		t.Fatalf("RunCLICommand success-hints returned error: %v", err)
+	}
+	if !strings.Contains(got.Stdout, `{"args":""}`) {
+		t.Fatalf("stdout result missing JSON payload: %q", got.Stdout)
+	}
+	want := []string{
+		"hint: local store is empty; run sync",
+		"warning: result was truncated",
+	}
+	if !reflect.DeepEqual(got.StderrHints, want) {
+		t.Fatalf("stderr hints = %#v, want %#v", got.StderrHints, want)
 	}
 }
 
@@ -775,6 +836,8 @@ func writeShelloutHelper(t *testing.T, mode string) string {
 		switch mode {
 		case "success":
 			body = "@echo off\r\necho telemetry 1>&2\r\necho {\"args\":\"%*\"}\r\n"
+		case "success-hints":
+			body = "@echo off\r\necho telemetry 1>&2\r\n<nul set /p \"=progress 50%%\" 1>&2\r\necho. 1>&2\r\necho hint: local store is empty; run sync 1>&2\r\necho warning: result was truncated 1>&2\r\necho {\"args\":\"%*\"}\r\n"
 		case "fail-stderr":
 			body = "@echo off\r\necho boom from stderr 1>&2\r\nexit /b 7\r\n"
 		case "fail-stdout":
@@ -796,6 +859,8 @@ func writeShelloutHelper(t *testing.T, mode string) string {
 	switch mode {
 	case "success":
 		body = "#!/bin/sh\necho telemetry >&2\nprintf '{\"args\":\"%s\"}\\n' \"$*\"\n"
+	case "success-hints":
+		body = "#!/bin/sh\nprintf 'telemetry\\nprogress 50%%\\rhint: local store is empty; run sync\\nwarning: result was truncated\\n' >&2\nprintf '{\"args\":\"%s\"}\\n' \"$*\"\n"
 	case "fail-stderr":
 		body = "#!/bin/sh\necho boom from stderr >&2\nexit 7\n"
 	case "fail-stdout":
@@ -852,10 +917,17 @@ func decodeArgvResult(t *testing.T, result *mcplib.CallToolResult) []string {
 }
 
 func toolResultText(result *mcplib.CallToolResult) string {
+	return toolResultContentText(result, 0)
+}
+
+func toolResultContentText(result *mcplib.CallToolResult, index int) string {
 	if result == nil || len(result.Content) == 0 {
 		return ""
 	}
-	text, ok := result.Content[0].(mcplib.TextContent)
+	if index >= len(result.Content) {
+		return ""
+	}
+	text, ok := result.Content[index].(mcplib.TextContent)
 	if !ok {
 		return ""
 	}
