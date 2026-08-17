@@ -134,6 +134,7 @@ func TestSyncPreservesGeneratedRecipeIntentRegistration(t *testing.T) {
 	assert.Contains(t, string(intentsAfter), "RegisterRecipeIntents(s)", "mcp-sync must retain the preserved recipe registration call")
 	assert.Contains(t, string(recipeAfter), "list_contacts_with_a_limit", "recipe intent registration must survive without the narrative source")
 	assert.Contains(t, string(recipeAfter), "cobratree.RunCLICommand(ctx, recipeCLIPath, args)")
+	assert.Contains(t, string(recipeAfter), "cobratree.ToolResultFromCLICommand(out)")
 	cmd := exec.Command("go", "test", "-mod=mod", "./internal/mcp")
 	cmd.Dir = cliDir
 	output, err := cmd.CombinedOutput()
