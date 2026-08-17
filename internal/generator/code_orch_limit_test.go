@@ -19,7 +19,7 @@ func TestCodeOrchestrationSearchLimitClamp(t *testing.T) {
 	apiSpec.MCP = spec.MCPConfig{Orchestration: "code"}
 
 	endpoints := make(map[string]spec.Endpoint, 125)
-	for i := 0; i < 125; i++ {
+	for i := range 125 {
 		name := fmt.Sprintf("list-%03d", i)
 		endpoints[name] = spec.Endpoint{
 			Method:      "GET",
