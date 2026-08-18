@@ -175,7 +175,10 @@ func TestSkillFilesHonorPrintingPressHomeEnv(t *testing.T) {
 	referencePaths, err := filepath.Glob(filepath.Join("..", "..", "skills", "*", "references", "*"))
 	require.NoError(t, err)
 
-	for _, path := range append(skillPaths, referencePaths...) {
+	phasePaths, err := filepath.Glob(filepath.Join("..", "..", "skills", "*", "phases", "*.md"))
+	require.NoError(t, err)
+
+	for _, path := range append(append(skillPaths, referencePaths...), phasePaths...) {
 		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
 			full := readContractFile(t, path)
 			assert.NotContains(t, full, `PRESS_HOME="$HOME/printing-press"`)
@@ -1402,7 +1405,23 @@ func readContractFile(t *testing.T, path string) string {
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	return string(data)
+
+	var content strings.Builder
+	content.Write(data)
+
+	// printing-press-retro is a thin router plus per-phase files; contract
+	// text may live in either, so read them as one bundle.
+	if filepath.ToSlash(path) == "../../skills/printing-press-retro/SKILL.md" {
+		phasePaths, err := filepath.Glob(filepath.Join(filepath.Dir(path), "phases", "*.md"))
+		require.NoError(t, err)
+		for _, phasePath := range phasePaths {
+			phaseData, err := os.ReadFile(phasePath)
+			require.NoError(t, err)
+			content.WriteByte('\n')
+			content.Write(phaseData)
+		}
+	}
+	return content.String()
 }
 
 func extractContractBlock(t *testing.T, content string) string {
