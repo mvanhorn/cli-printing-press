@@ -4581,3 +4581,90 @@ func TestProfiler_MixedPrintUnscopedStaysNone(t *testing.T) {
 		t.Fatalf("devices.ReconcileMode = %q, want none (unscoped sibling in a print that has any TenantScopeColumn)", devices.ReconcileMode)
 	}
 }
+
+func TestProfiler_DependentTenantScopeKeepsUnscopedNone(t *testing.T) {
+	prof := Profile(&spec.APISpec{
+		Name: "dependent-tenant-scope-fixture",
+		Resources: map[string]spec.Resource{
+			"projects": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/projects",
+						Response: spec.ResponseDef{Type: "array", Item: "Project"},
+						IDField:  "id",
+					},
+					"get": {
+						Method:   "GET",
+						Path:     "/projects/{project_id}",
+						Response: spec.ResponseDef{Type: "object", Item: "Project"},
+					},
+				},
+			},
+			"modules": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:            "GET",
+						Path:              "/projects/{project_id}/modules",
+						Response:          spec.ResponseDef{Type: "array", Item: "Module"},
+						Pagination:        &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+						IDField:           "id",
+						TenantScopeColumn: "workspace",
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Project": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "name", Type: "string"},
+				},
+			},
+			"Module": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "workspace", Type: "string"},
+				},
+			},
+		},
+	})
+
+	for _, sr := range prof.SyncableResources {
+		if sr.Name == "modules" {
+			t.Fatal("modules landed in SyncableResources; test must cover a DependentSyncResources-only tenant column")
+		}
+		if sr.TenantScopeColumn != "" {
+			t.Fatalf("%s unexpectedly carries a tenant scope column on the flat slice", sr.Name)
+		}
+	}
+
+	var foundDependent bool
+	for _, dep := range prof.DependentSyncResources {
+		if dep.Name == "modules" {
+			foundDependent = true
+			break
+		}
+	}
+	if !foundDependent {
+		t.Fatal("modules did not land in DependentSyncResources; test does not cover the dependent-scope hole")
+	}
+
+	var projects SyncableResource
+	var foundProjects bool
+	for _, sr := range prof.SyncableResources {
+		if sr.Name == "projects" {
+			projects, foundProjects = sr, true
+			break
+		}
+	}
+	if !foundProjects {
+		t.Fatal("projects resource not found in SyncableResources")
+	}
+	if projects.IDField == "" || projects.Discriminator.Field != "" {
+		t.Fatalf("projects fixture is not reconcilable (id=%q discriminator=%q); dependent-scope case is ineffective", projects.IDField, projects.Discriminator.Field)
+	}
+	if projects.ReconcileMode != ReconcileModeNone {
+		t.Fatalf("projects.ReconcileMode = %q, want none (unscoped flat sibling when the only TenantScopeColumn is on a dependent)", projects.ReconcileMode)
+	}
+}

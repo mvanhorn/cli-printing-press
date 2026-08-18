@@ -708,7 +708,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 	sortDependentResources(p.DependentSyncResources, nil)
 	addUnresolvedPathTemplateCollections(syncable, parameterized, p.DependentSyncResources)
 	p.SyncableResources = sortedSyncableResources(syncable)
-	classifyFlatReconcileModes(p.SyncableResources)
+	classifyFlatReconcileModes(p.SyncableResources, specHasTenantScopeColumn(s))
 	// Populate reconcile metadata for each dependent resource.
 	// per_parent is safe only for a single-path-param dependent with a PK.
 	for i := range p.DependentSyncResources {
@@ -747,21 +747,35 @@ func flatResourceReconcilable(sr SyncableResource) bool {
 	return sr.IDField != "" && sr.Discriminator.Field == ""
 }
 
+func specHasTenantScopeColumn(s *spec.APISpec) bool {
+	if s == nil {
+		return false
+	}
+	return resourceTreeHasTenantScopeColumn(s.Resources)
+}
+
+func resourceTreeHasTenantScopeColumn(resources map[string]spec.Resource) bool {
+	for _, resource := range resources {
+		for _, endpoint := range resource.Endpoints {
+			if endpoint.TenantScopeColumn != "" {
+				return true
+			}
+		}
+		if resourceTreeHasTenantScopeColumn(resource.SubResources) {
+			return true
+		}
+	}
+	return false
+}
+
 // classifyFlatReconcileModes assigns ReconcileMode for each flat resource.
 // Tenant-discriminated resources with a stable PK and no discriminator are
 // "flat". flat_global (whole table is the partition) is emitted only when
 // the print has zero TenantScopeColumn annotations anywhere — a mixed print
-// that carries any tenant column keeps unscoped siblings at "none", even if
-// no tenant-scoped resource itself qualifies as reconcilable. Everything
-// else stays "none".
-func classifyFlatReconcileModes(resources []SyncableResource) {
-	hasTenantScope := false
-	for _, sr := range resources {
-		if sr.TenantScopeColumn != "" {
-			hasTenantScope = true
-			break
-		}
-	}
+// that carries any tenant column (flat or parameterized/dependent) keeps
+// unscoped siblings at "none", even if no tenant-scoped flat resource
+// itself qualifies as reconcilable. Everything else stays "none".
+func classifyFlatReconcileModes(resources []SyncableResource, hasTenantScope bool) {
 	for i := range resources {
 		sr := &resources[i]
 		switch {
