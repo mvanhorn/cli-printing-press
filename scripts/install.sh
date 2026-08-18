@@ -420,20 +420,24 @@ install_skills() {
       mkdir -p "$gemini_skills_dir"
       local repo_root
       repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-      if [[ -n "$repo_root" && -d "$repo_root/skills" ]]; then
-        for skill_dir in "$repo_root"/skills/*; do
+      local installed_count=0
+      if [[ -n "$repo_root" && -f "$repo_root/skills/printing-press/SKILL.md" ]]; then
+        for skill_dir in "$repo_root"/skills/printing-press*; do
           if [[ -d "$skill_dir" ]]; then
             local sname
             sname="$(basename "$skill_dir")"
             rm -rf "$gemini_skills_dir/$sname"
             cp -r "$skill_dir" "$gemini_skills_dir/$sname"
+            installed_count=$((installed_count + 1))
           fi
         done
       else
         local tmp_skills="$TMP_DIR/skills_download"
         mkdir -p "$tmp_skills"
-        (cd "$tmp_skills" && npx -y "$SKILLS_PACKAGE" add "$SKILL_SOURCE" --skill "*" -y >/dev/null 2>&1 || true)
-        find "$tmp_skills" -name "SKILL.md" | while read -r sfile; do
+        if ! (cd "$tmp_skills" && npx -y "$SKILLS_PACKAGE" add "$SKILL_SOURCE" --skill "*" -y >/dev/null 2>&1); then
+          warn "Could not download skills via $SKILLS_PACKAGE"
+        fi
+        while IFS= read -r sfile; do
           local sdir
           sdir="$(dirname "$sfile")"
           local sname
@@ -441,10 +445,15 @@ install_skills() {
           if [[ "$sname" == printing-press* ]]; then
             rm -rf "$gemini_skills_dir/$sname"
             cp -r "$sdir" "$gemini_skills_dir/$sname"
+            installed_count=$((installed_count + 1))
           fi
-        done
+        done < <(find "$tmp_skills" -name "SKILL.md" 2>/dev/null || true)
       fi
-      ok "Installed Printing Press skills to Antigravity ($gemini_skills_dir)"
+      if [[ "$installed_count" -gt 0 ]]; then
+        ok "Installed $installed_count Printing Press skills to Antigravity ($gemini_skills_dir)"
+      else
+        warn "No Printing Press skills could be installed to Antigravity ($gemini_skills_dir)"
+      fi
     fi
   fi
 
