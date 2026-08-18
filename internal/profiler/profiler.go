@@ -27,6 +27,13 @@ const (
 	ArchetypeGeneric           DomainArchetype = "generic"
 )
 
+const (
+	ReconcileModeNone       = "none"
+	ReconcileModeFlat       = "flat"
+	ReconcileModeFlatGlobal = "flat_global"
+	ReconcileModePerParent  = "per_parent"
+)
+
 type DomainSignals struct {
 	Archetype        DomainArchetype
 	HasAssignees     bool
@@ -184,9 +191,9 @@ type SyncableResource struct {
 	// that carry it.
 	QueryEntity string
 
-	// ReconcileMode mirrors DependentResource.ReconcileMode for flat resources.
-	// Always "none" this round — forward-looking metadata reserved for a
-	// follow-up flat/tenant reconcile pass; no sync logic consumes it yet.
+	// ReconcileMode classifies how sync can prune this flat resource:
+	// "flat" (tenant-scoped partition), "flat_global" (whole table is the
+	// partition), or "none".
 	ReconcileMode string
 
 	// TenantScopeColumn is the resource's own tenant discriminator column
@@ -701,28 +708,17 @@ func Profile(s *spec.APISpec) *APIProfile {
 	sortDependentResources(p.DependentSyncResources, nil)
 	addUnresolvedPathTemplateCollections(syncable, parameterized, p.DependentSyncResources)
 	p.SyncableResources = sortedSyncableResources(syncable)
-	// Flat tenant-scoped reconcile: a flat resource is reconcilable only when it
-	// is tenant-discriminated (its rows carry a tenant column) AND has a stable
-	// PK AND will not mis-route items through a discriminator dispatcher. All
-	// other flat resources stay "none". flat_global is intentionally unreachable.
-	for i := range p.SyncableResources {
-		sr := &p.SyncableResources[i]
-		if sr.TenantScopeColumn != "" && sr.IDField != "" && sr.Discriminator.Field == "" {
-			sr.ReconcileMode = "flat"
-		} else {
-			sr.ReconcileMode = "none"
-		}
-	}
+	classifyFlatReconcileModes(p.SyncableResources, specHasTenantScopeColumn(s))
 	// Populate reconcile metadata for each dependent resource.
 	// per_parent is safe only for a single-path-param dependent with a PK.
 	for i := range p.DependentSyncResources {
 		dep := &p.DependentSyncResources[i]
 		if len(dep.PathParams) == 1 && dep.IDField != "" {
-			dep.ReconcileMode = "per_parent"
+			dep.ReconcileMode = ReconcileModePerParent
 			dep.ParentScopeColumn = dep.ParentResource + "_id"
 			dep.GenericScopeJSONPath = "$." + singularParentField(dep.ParentResource)
 		} else {
-			dep.ReconcileMode = "none"
+			dep.ReconcileMode = ReconcileModeNone
 		}
 	}
 	for resource, fields := range searchable {
@@ -745,6 +741,52 @@ func Profile(s *spec.APISpec) *APIProfile {
 	}
 
 	return p
+}
+
+func flatResourceReconcilable(sr SyncableResource) bool {
+	return sr.IDField != "" && sr.Discriminator.Field == ""
+}
+
+func specHasTenantScopeColumn(s *spec.APISpec) bool {
+	if s == nil {
+		return false
+	}
+	return resourceTreeHasTenantScopeColumn(s.Resources)
+}
+
+func resourceTreeHasTenantScopeColumn(resources map[string]spec.Resource) bool {
+	for _, resource := range resources {
+		for _, endpoint := range resource.Endpoints {
+			if endpoint.TenantScopeColumn != "" {
+				return true
+			}
+		}
+		if resourceTreeHasTenantScopeColumn(resource.SubResources) {
+			return true
+		}
+	}
+	return false
+}
+
+// classifyFlatReconcileModes assigns ReconcileMode for each flat resource.
+// Tenant-discriminated resources with a stable PK and no discriminator are
+// "flat". flat_global (whole table is the partition) is emitted only when
+// the print has zero TenantScopeColumn annotations anywhere — a mixed print
+// that carries any tenant column (flat or parameterized/dependent) keeps
+// unscoped siblings at "none", even if no tenant-scoped flat resource
+// itself qualifies as reconcilable. Everything else stays "none".
+func classifyFlatReconcileModes(resources []SyncableResource, hasTenantScope bool) {
+	for i := range resources {
+		sr := &resources[i]
+		switch {
+		case sr.TenantScopeColumn != "" && flatResourceReconcilable(*sr):
+			sr.ReconcileMode = ReconcileModeFlat
+		case !hasTenantScope && flatResourceReconcilable(*sr):
+			sr.ReconcileMode = ReconcileModeFlatGlobal
+		default:
+			sr.ReconcileMode = ReconcileModeNone
+		}
+	}
 }
 
 func (p *APIProfile) ToVisionaryPlan(apiName string) *vision.VisionaryPlan {

@@ -4421,3 +4421,250 @@ func TestProfiler_FlatReconcileClassification(t *testing.T) {
 		t.Fatalf("mixed_items.ReconcileMode = %q, want none (discriminator-dispatched)", mixed.ReconcileMode)
 	}
 }
+
+func TestProfiler_SingleTenantFlatGlobal(t *testing.T) {
+	prof := Profile(&spec.APISpec{
+		Name: "single-tenant-fixture",
+		Resources: map[string]spec.Resource{
+			"devices": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/devices",
+						Response:   spec.ResponseDef{Type: "array", Item: "Device"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						IDField:    "id",
+					},
+				},
+			},
+			"invoices": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/invoices",
+						Response: spec.ResponseDef{Type: "array"},
+						// IDField intentionally omitted — no stable PK.
+					},
+				},
+			},
+			"mixed_items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/mixed-items",
+						Response: spec.ResponseDef{Type: "array", Item: "MixedItem"},
+						IDField:  "id",
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Device": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "name", Type: "string"},
+				},
+			},
+			"MixedItem": {
+				Fields: []spec.TypeField{
+					{Name: "type", Type: "string", Enum: []string{"devices", "invoices"}},
+					{Name: "id", Type: "string"},
+				},
+			},
+		},
+	})
+
+	var devices, invoices, mixed SyncableResource
+	var foundDevices, foundInvoices, foundMixed bool
+	for _, sr := range prof.SyncableResources {
+		switch sr.Name {
+		case "devices":
+			devices, foundDevices = sr, true
+		case "invoices":
+			invoices, foundInvoices = sr, true
+		case "mixed_items":
+			mixed, foundMixed = sr, true
+		}
+		if sr.TenantScopeColumn != "" {
+			t.Fatalf("%s unexpectedly carries a tenant scope column", sr.Name)
+		}
+	}
+	if !foundDevices {
+		t.Fatal("devices resource not found in SyncableResources")
+	}
+	if devices.ReconcileMode != ReconcileModeFlatGlobal {
+		t.Fatalf("devices.ReconcileMode = %q, want %q (single-tenant whole-table)", devices.ReconcileMode, ReconcileModeFlatGlobal)
+	}
+	if foundInvoices && invoices.ReconcileMode != ReconcileModeNone {
+		t.Fatalf("invoices.ReconcileMode = %q, want none (no IDField)", invoices.ReconcileMode)
+	}
+	if !foundMixed {
+		t.Fatal("mixed_items resource not found in SyncableResources")
+	}
+	if mixed.Discriminator.Field == "" {
+		t.Fatal("mixed_items fixture is not discriminator-dispatched; negative case is ineffective")
+	}
+	if mixed.ReconcileMode != ReconcileModeNone {
+		t.Fatalf("mixed_items.ReconcileMode = %q, want none (discriminator-dispatched)", mixed.ReconcileMode)
+	}
+}
+
+func TestProfiler_MixedPrintUnscopedStaysNone(t *testing.T) {
+	prof := Profile(&spec.APISpec{
+		Name: "mixed-unscoped-fixture",
+		Resources: map[string]spec.Resource{
+			"invoices": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:            "GET",
+						Path:              "/invoices",
+						Response:          spec.ResponseDef{Type: "array"},
+						TenantScopeColumn: "workspace",
+						// IDField intentionally omitted — tenant-scoped but not reconcilable.
+					},
+				},
+			},
+			"devices": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/devices",
+						Response:   spec.ResponseDef{Type: "array", Item: "Device"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						IDField:    "id",
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Device": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "name", Type: "string"},
+				},
+			},
+		},
+	})
+
+	var invoices, devices SyncableResource
+	var foundInvoices, foundDevices bool
+	for _, sr := range prof.SyncableResources {
+		switch sr.Name {
+		case "invoices":
+			invoices, foundInvoices = sr, true
+		case "devices":
+			devices, foundDevices = sr, true
+		}
+	}
+	if !foundInvoices {
+		t.Fatal("invoices resource not found in SyncableResources")
+	}
+	if invoices.TenantScopeColumn == "" {
+		t.Fatal("invoices fixture lost its tenant column; mixed-print case is ineffective")
+	}
+	if invoices.IDField != "" {
+		t.Fatal("invoices fixture gained an IDField; mixed-print case needs a non-reconcilable tenant resource")
+	}
+	if invoices.ReconcileMode != ReconcileModeNone {
+		t.Fatalf("invoices.ReconcileMode = %q, want none (tenant-scoped without IDField)", invoices.ReconcileMode)
+	}
+	if !foundDevices {
+		t.Fatal("devices resource not found in SyncableResources")
+	}
+	if devices.TenantScopeColumn != "" {
+		t.Fatal("devices fixture unexpectedly carries a tenant scope column")
+	}
+	if devices.IDField == "" || devices.Discriminator.Field != "" {
+		t.Fatalf("devices fixture is not reconcilable (id=%q discriminator=%q); mixed-print case is ineffective", devices.IDField, devices.Discriminator.Field)
+	}
+	if devices.ReconcileMode != ReconcileModeNone {
+		t.Fatalf("devices.ReconcileMode = %q, want none (unscoped sibling in a print that has any TenantScopeColumn)", devices.ReconcileMode)
+	}
+}
+
+func TestProfiler_DependentTenantScopeKeepsUnscopedNone(t *testing.T) {
+	prof := Profile(&spec.APISpec{
+		Name: "dependent-tenant-scope-fixture",
+		Resources: map[string]spec.Resource{
+			"projects": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/projects",
+						Response: spec.ResponseDef{Type: "array", Item: "Project"},
+						IDField:  "id",
+					},
+					"get": {
+						Method:   "GET",
+						Path:     "/projects/{project_id}",
+						Response: spec.ResponseDef{Type: "object", Item: "Project"},
+					},
+				},
+			},
+			"modules": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:            "GET",
+						Path:              "/projects/{project_id}/modules",
+						Response:          spec.ResponseDef{Type: "array", Item: "Module"},
+						Pagination:        &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+						IDField:           "id",
+						TenantScopeColumn: "workspace",
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Project": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "name", Type: "string"},
+				},
+			},
+			"Module": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "workspace", Type: "string"},
+				},
+			},
+		},
+	})
+
+	for _, sr := range prof.SyncableResources {
+		if sr.Name == "modules" {
+			t.Fatal("modules landed in SyncableResources; test must cover a DependentSyncResources-only tenant column")
+		}
+		if sr.TenantScopeColumn != "" {
+			t.Fatalf("%s unexpectedly carries a tenant scope column on the flat slice", sr.Name)
+		}
+	}
+
+	var foundDependent bool
+	for _, dep := range prof.DependentSyncResources {
+		if dep.Name == "modules" {
+			foundDependent = true
+			break
+		}
+	}
+	if !foundDependent {
+		t.Fatal("modules did not land in DependentSyncResources; test does not cover the dependent-scope hole")
+	}
+
+	var projects SyncableResource
+	var foundProjects bool
+	for _, sr := range prof.SyncableResources {
+		if sr.Name == "projects" {
+			projects, foundProjects = sr, true
+			break
+		}
+	}
+	if !foundProjects {
+		t.Fatal("projects resource not found in SyncableResources")
+	}
+	if projects.IDField == "" || projects.Discriminator.Field != "" {
+		t.Fatalf("projects fixture is not reconcilable (id=%q discriminator=%q); dependent-scope case is ineffective", projects.IDField, projects.Discriminator.Field)
+	}
+	if projects.ReconcileMode != ReconcileModeNone {
+		t.Fatalf("projects.ReconcileMode = %q, want none (unscoped flat sibling when the only TenantScopeColumn is on a dependent)", projects.ReconcileMode)
+	}
+}

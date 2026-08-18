@@ -588,9 +588,12 @@ The value flows into the resource profile and is consumed in two places:
   into the generated `parentTenantScopeColumns` map, so dependent fan-out
   targets only rows belonging to the active tenant.
 - **Flat tenant-scoped reconcile**: a flat resource becomes reconcilable
-  (`ReconcileMode = "flat"`) only when it carries a tenant column, has a
-  stable primary key, and is not routed through a discriminator dispatcher;
-  otherwise it stays `"none"`.
+  (`ReconcileMode = "flat"`) when it carries a tenant column, has a
+  stable primary key, and is not routed through a discriminator dispatcher.
+- **Single-tenant whole-table reconcile**: when a print has zero
+  `TenantScopeColumn` annotations, eligible flat resources (stable PK, no
+  discriminator) are classified `ReconcileMode = "flat_global"` and the
+  table is the partition. Unscoped resources in a mixed print stay `"none"`.
 
 Rules:
 - Optional. Absence means no tenant scoping is recorded for the collection.

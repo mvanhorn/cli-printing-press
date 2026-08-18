@@ -59,10 +59,12 @@ func TestFlatReconcile_SkipOnUnknownTenant(t *testing.T) {
 	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
 	require.NoError(t, err)
 	src := string(syncSrc)
-	require.Contains(t, src, "flatReconcilable := resourceReconcileMode(resource) == \"flat\"",
+	require.Contains(t, src, "flatReconcilable := resourceIsFlatReconcilable(reconcileMode)",
 		"sync.go must declare flatReconcilable in syncResource")
 	require.Contains(t, src, "func resourceReconcileMode(resource string) string",
 		"sync.go must emit the resourceReconcileMode lookup")
+	require.Contains(t, src, "func resourceIsFlatReconcilable(mode string) bool",
+		"sync.go must treat flat and flat_global as reconcilable")
 	require.Contains(t, src, "func flatReconcileDef(resource string)",
 		"sync.go must emit the flatReconcileDef lookup")
 	require.Contains(t, src, `"unknown-tenant"`,
