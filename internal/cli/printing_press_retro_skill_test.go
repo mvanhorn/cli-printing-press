@@ -62,16 +62,19 @@ func TestPrintingPressRetroSkillPhaseChainIntegrity(t *testing.T) {
 	require.NotContains(t, routerText, "Scan the session for candidate signals")
 	require.Contains(t, routerText, "Use when the user asks to retro")
 
-	bundle := routerText
+	var bundle strings.Builder
+	bundle.WriteString(routerText)
 	for _, name := range expected {
 		data, err := os.ReadFile(filepath.Join(skillDir, "phases", name))
 		require.NoError(t, err)
-		bundle += "\n" + string(data)
+		bundle.WriteByte('\n')
+		bundle.Write(data)
 	}
-	require.Contains(t, bundle, "Would weekday maintainer triage close this?")
-	require.Contains(t, bundle, "Put them\nin Skip when they survived deep analysis but failed the filing bar, or Drop when")
-	require.Contains(t, bundle, "print session's on-disk transcript")
-	require.Contains(t, bundle, "returns only the candidate list")
+	bundleText := bundle.String()
+	require.Contains(t, bundleText, "Would weekday maintainer triage close this?")
+	require.Contains(t, bundleText, "Put them\nin Skip when they survived deep analysis but failed the filing bar, or Drop when")
+	require.Contains(t, bundleText, "print session's on-disk transcript")
+	require.Contains(t, bundleText, "returns only the candidate list")
 
 	for i, name := range expected {
 		data, err := os.ReadFile(filepath.Join(skillDir, "phases", name))
