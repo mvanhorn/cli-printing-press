@@ -506,8 +506,8 @@ func TestGenerateDedupesResourceRegistryMapEntries(t *testing.T) {
 }
 
 // TestGenerate_EmitsReconcile verifies that, for a spec with a single-path-param
-// dependent resource, the generator emits the ReconcilePartition wiring in both
-// store.go and sync.go, and that the generated code compiles successfully.
+// dependent resource, the generator emits ReconcilePartition and ReconcileAll
+// wiring in store.go and sync.go, and that the generated code compiles.
 func TestGenerate_EmitsReconcile(t *testing.T) {
 	t.Parallel()
 	apiSpec := minimalSpec("emits-reconcile")
@@ -537,7 +537,11 @@ func TestGenerate_EmitsReconcile(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Contains(t, string(storeSrc), "func (s *Store) ReconcilePartition")
+	assert.Contains(t, string(storeSrc), "func (s *Store) ReconcileAll")
 	assert.Contains(t, string(syncSrc), "ReconcilePartition(")
+	assert.Contains(t, string(syncSrc), "ReconcileAll(")
+	assert.Contains(t, string(syncSrc), `"flat_global"`,
+		"no-tenant-scope print must emit a reconcilable whole-table mode")
 	assert.Contains(t, string(syncSrc), "partitionOutcome")
 	assert.Contains(t, string(syncSrc), "reconcile_skipped")
 

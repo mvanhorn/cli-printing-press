@@ -2212,6 +2212,23 @@ func (s *Store) ReconcilePartition(resourceType, genericScopeJSONPath, scopeValu
 	if genericScopeJSONPath == "" || scopeValue == "" {
 		return 0, fmt.Errorf("reconcile %s: empty partition scope", resourceType)
 	}
+	return s.reconcileUnseen(resourceType, seenIDs, typedTable, cascades,
+		`SELECT id FROM resources
+		 WHERE resource_type = ?
+		   AND (CASE WHEN json_valid(data) THEN json_extract(data, ?) END) = ?`,
+		resourceType, genericScopeJSONPath, scopeValue)
+}
+
+// ReconcileAll hard-deletes local rows of resourceType whose primary key is NOT
+// in seenIDs. It is the single-tenant counterpart of ReconcilePartition: the
+// table is the partition. The caller must pass the COMPLETE seen-ID set from a
+// proven-complete walk.
+func (s *Store) ReconcileAll(resourceType string, seenIDs []string, typedTable string, cascades []CascadeJunction) (int, error) {
+	return s.reconcileUnseen(resourceType, seenIDs, typedTable, cascades,
+		`SELECT id FROM resources WHERE resource_type = ?`, resourceType)
+}
+
+func (s *Store) reconcileUnseen(resourceType string, seenIDs []string, typedTable string, cascades []CascadeJunction, query string, args ...any) (int, error) {
 	s.lockForWrite()
 	defer s.unlockAfterWrite()
 
@@ -2236,12 +2253,7 @@ func (s *Store) ReconcilePartition(resourceType, genericScopeJSONPath, scopeValu
 
 	// CASE guards against a malformed-JSON row aborting the victim scan:
 	// a row we cannot parse is never a victim — it is skipped (never deleted).
-	rows, err := tx.Query(
-		`SELECT id FROM resources
-		 WHERE resource_type = ?
-		   AND (CASE WHEN json_valid(data) THEN json_extract(data, ?) END) = ?`,
-		resourceType, genericScopeJSONPath, scopeValue,
-	)
+	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("reconcile %s: select victims: %w", resourceType, err)
 	}

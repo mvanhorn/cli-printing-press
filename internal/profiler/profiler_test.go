@@ -4421,3 +4421,90 @@ func TestProfiler_FlatReconcileClassification(t *testing.T) {
 		t.Fatalf("mixed_items.ReconcileMode = %q, want none (discriminator-dispatched)", mixed.ReconcileMode)
 	}
 }
+
+func TestProfiler_SingleTenantFlatGlobal(t *testing.T) {
+	prof := Profile(&spec.APISpec{
+		Name: "single-tenant-fixture",
+		Resources: map[string]spec.Resource{
+			"devices": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/devices",
+						Response:   spec.ResponseDef{Type: "array", Item: "Device"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						IDField:    "id",
+					},
+				},
+			},
+			"invoices": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/invoices",
+						Response: spec.ResponseDef{Type: "array"},
+						// IDField intentionally omitted — no stable PK.
+					},
+				},
+			},
+			"mixed_items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/mixed-items",
+						Response: spec.ResponseDef{Type: "array", Item: "MixedItem"},
+						IDField:  "id",
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Device": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "name", Type: "string"},
+				},
+			},
+			"MixedItem": {
+				Fields: []spec.TypeField{
+					{Name: "type", Type: "string", Enum: []string{"devices", "invoices"}},
+					{Name: "id", Type: "string"},
+				},
+			},
+		},
+	})
+
+	var devices, invoices, mixed SyncableResource
+	var foundDevices, foundInvoices, foundMixed bool
+	for _, sr := range prof.SyncableResources {
+		switch sr.Name {
+		case "devices":
+			devices, foundDevices = sr, true
+		case "invoices":
+			invoices, foundInvoices = sr, true
+		case "mixed_items":
+			mixed, foundMixed = sr, true
+		}
+		if sr.TenantScopeColumn != "" {
+			t.Fatalf("%s unexpectedly carries a tenant scope column", sr.Name)
+		}
+	}
+	if !foundDevices {
+		t.Fatal("devices resource not found in SyncableResources")
+	}
+	if devices.ReconcileMode != ReconcileModeFlatGlobal {
+		t.Fatalf("devices.ReconcileMode = %q, want %q (single-tenant whole-table)", devices.ReconcileMode, ReconcileModeFlatGlobal)
+	}
+	if foundInvoices && invoices.ReconcileMode != ReconcileModeNone {
+		t.Fatalf("invoices.ReconcileMode = %q, want none (no IDField)", invoices.ReconcileMode)
+	}
+	if !foundMixed {
+		t.Fatal("mixed_items resource not found in SyncableResources")
+	}
+	if mixed.Discriminator.Field == "" {
+		t.Fatal("mixed_items fixture is not discriminator-dispatched; negative case is ineffective")
+	}
+	if mixed.ReconcileMode != ReconcileModeNone {
+		t.Fatalf("mixed_items.ReconcileMode = %q, want none (discriminator-dispatched)", mixed.ReconcileMode)
+	}
+}
