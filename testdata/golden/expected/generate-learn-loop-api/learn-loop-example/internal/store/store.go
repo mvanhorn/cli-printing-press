@@ -2219,10 +2219,8 @@ func (s *Store) ReconcilePartition(resourceType, genericScopeJSONPath, scopeValu
 		resourceType, genericScopeJSONPath, scopeValue)
 }
 
-// ReconcileAll hard-deletes local rows of resourceType whose primary key is NOT
-// in seenIDs. It is the single-tenant counterpart of ReconcilePartition: the
-// table is the partition. The caller must pass the COMPLETE seen-ID set from a
-// proven-complete walk.
+// Whole-table reconciliation is safe only when the caller supplies the complete
+// seen-ID set from a proven-complete walk.
 func (s *Store) ReconcileAll(resourceType string, seenIDs []string, typedTable string, cascades []CascadeJunction) (int, error) {
 	return s.reconcileUnseen(resourceType, seenIDs, typedTable, cascades,
 		`SELECT id FROM resources WHERE resource_type = ?`, resourceType)

@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSingleTenantReconcile_CompleteWalkPrunes proves the #4239 single-tenant
-// prune / completeness-gate pair: a print with zero tenant-scoped flat
+// TestSingleTenantReconcile_CompleteWalkPrunes proves the single-tenant
+// prune and completeness-gate pair: a print with zero tenant-scoped flat
 // resources emits a reconcilable mode, --full deletes local rows absent from a
 // complete walk, and a full page with no followable cursor leaves complete=false
 // so prune does not run.

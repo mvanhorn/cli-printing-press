@@ -749,14 +749,16 @@ func flatResourceReconcilable(sr SyncableResource) bool {
 
 // classifyFlatReconcileModes assigns ReconcileMode for each flat resource.
 // Tenant-discriminated resources with a stable PK and no discriminator are
-// "flat". When the print has zero such tenant-scoped resources, the same
-// PK/discriminator gates classify eligible resources as "flat_global" (the
-// table is the partition). Everything else stays "none".
+// "flat". flat_global (whole table is the partition) is emitted only when
+// the print has zero TenantScopeColumn annotations anywhere — a mixed print
+// that carries any tenant column keeps unscoped siblings at "none", even if
+// no tenant-scoped resource itself qualifies as reconcilable. Everything
+// else stays "none".
 func classifyFlatReconcileModes(resources []SyncableResource) {
-	hasTenantFlat := false
+	hasTenantScope := false
 	for _, sr := range resources {
-		if sr.TenantScopeColumn != "" && flatResourceReconcilable(sr) {
-			hasTenantFlat = true
+		if sr.TenantScopeColumn != "" {
+			hasTenantScope = true
 			break
 		}
 	}
@@ -765,7 +767,7 @@ func classifyFlatReconcileModes(resources []SyncableResource) {
 		switch {
 		case sr.TenantScopeColumn != "" && flatResourceReconcilable(*sr):
 			sr.ReconcileMode = ReconcileModeFlat
-		case !hasTenantFlat && flatResourceReconcilable(*sr):
+		case !hasTenantScope && flatResourceReconcilable(*sr):
 			sr.ReconcileMode = ReconcileModeFlatGlobal
 		default:
 			sr.ReconcileMode = ReconcileModeNone

@@ -4508,3 +4508,76 @@ func TestProfiler_SingleTenantFlatGlobal(t *testing.T) {
 		t.Fatalf("mixed_items.ReconcileMode = %q, want none (discriminator-dispatched)", mixed.ReconcileMode)
 	}
 }
+
+func TestProfiler_MixedPrintUnscopedStaysNone(t *testing.T) {
+	prof := Profile(&spec.APISpec{
+		Name: "mixed-unscoped-fixture",
+		Resources: map[string]spec.Resource{
+			"invoices": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:            "GET",
+						Path:              "/invoices",
+						Response:          spec.ResponseDef{Type: "array"},
+						TenantScopeColumn: "workspace",
+						// IDField intentionally omitted — tenant-scoped but not reconcilable.
+					},
+				},
+			},
+			"devices": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/devices",
+						Response:   spec.ResponseDef{Type: "array", Item: "Device"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						IDField:    "id",
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Device": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "name", Type: "string"},
+				},
+			},
+		},
+	})
+
+	var invoices, devices SyncableResource
+	var foundInvoices, foundDevices bool
+	for _, sr := range prof.SyncableResources {
+		switch sr.Name {
+		case "invoices":
+			invoices, foundInvoices = sr, true
+		case "devices":
+			devices, foundDevices = sr, true
+		}
+	}
+	if !foundInvoices {
+		t.Fatal("invoices resource not found in SyncableResources")
+	}
+	if invoices.TenantScopeColumn == "" {
+		t.Fatal("invoices fixture lost its tenant column; mixed-print case is ineffective")
+	}
+	if invoices.IDField != "" {
+		t.Fatal("invoices fixture gained an IDField; mixed-print case needs a non-reconcilable tenant resource")
+	}
+	if invoices.ReconcileMode != ReconcileModeNone {
+		t.Fatalf("invoices.ReconcileMode = %q, want none (tenant-scoped without IDField)", invoices.ReconcileMode)
+	}
+	if !foundDevices {
+		t.Fatal("devices resource not found in SyncableResources")
+	}
+	if devices.TenantScopeColumn != "" {
+		t.Fatal("devices fixture unexpectedly carries a tenant scope column")
+	}
+	if devices.IDField == "" || devices.Discriminator.Field != "" {
+		t.Fatalf("devices fixture is not reconcilable (id=%q discriminator=%q); mixed-print case is ineffective", devices.IDField, devices.Discriminator.Field)
+	}
+	if devices.ReconcileMode != ReconcileModeNone {
+		t.Fatalf("devices.ReconcileMode = %q, want none (unscoped sibling in a print that has any TenantScopeColumn)", devices.ReconcileMode)
+	}
+}
