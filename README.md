@@ -18,6 +18,8 @@ Three CLIs printed by the press, installable today:
 
 Browse the full catalog of printed CLIs at [printingpress.dev](https://printingpress.dev) or in the [Printing Press Library](https://github.com/mvanhorn/printing-press-library), organized by category, most with full MCP servers.
 
+**Antigravity users:** see [docs/ANTIGRAVITY.md](docs/ANTIGRAVITY.md) to install the Printing Press skills with `--agent antigravity` into your `~/.gemini/config/skills/` directory and run `/printing-press <api>` natively.
+
 **Codex users:** see [docs/CODEX.md](docs/CODEX.md) to install the Printing Press skills with `--agent codex`, verify the install, and understand how that differs from `/printing-press <api> codex`.
 
 **Cursor users:** see [docs/CURSOR.md](docs/CURSOR.md) for how to install a printed CLI, attach the matching skill, handle auth, and choose CLI vs MCP when your repo does not already document a workflow.

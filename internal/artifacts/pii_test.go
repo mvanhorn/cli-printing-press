@@ -463,6 +463,9 @@ func TestFindPII_SkipsFixtureAndToolingWorkspaces(t *testing.T) {
 	write(t, filepath.Join(root, "testdata", "fixtures", "sample.json"), pii)
 	write(t, filepath.Join(root, ".omc", "state.json"), pii)
 	write(t, filepath.Join(root, ".claude", "scratch.md"), pii)
+	write(t, filepath.Join(root, ".gemini", "state.json"), pii)
+	write(t, filepath.Join(root, ".antigravity", "session.json"), pii)
+	write(t, filepath.Join(root, ".agent", "scratch.md"), pii)
 	write(t, filepath.Join(root, "config.yaml"), pii)
 	write(t, filepath.Join(root, "README.md"), pii)
 
@@ -474,6 +477,9 @@ func TestFindPII_SkipsFixtureAndToolingWorkspaces(t *testing.T) {
 	assert.NotContains(t, files, "testdata/fixtures/sample.json")
 	assert.NotContains(t, files, ".omc/state.json")
 	assert.NotContains(t, files, ".claude/scratch.md")
+	assert.NotContains(t, files, ".gemini/state.json")
+	assert.NotContains(t, files, ".antigravity/session.json")
+	assert.NotContains(t, files, ".agent/scratch.md")
 	assert.Contains(t, files, "config.yaml")
 	assert.Contains(t, files, "README.md")
 }

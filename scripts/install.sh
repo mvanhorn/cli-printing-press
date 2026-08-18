@@ -11,7 +11,7 @@ umask 022
 # Options:
 #   --cli-only          Install or update only the Go generator binary.
 #   --skills-only       Install or refresh only the Printing Press skills.
-#   -a, --agent NAME    Install skills for an agent supported by `skills`.
+#   -a, --agent NAME    Install skills for an agent (claude-code, antigravity, codex, cursor).
 #                       May be repeated. Defaults to claude-code.
 #   --dry-run           Print commands without executing them.
 #   --quiet             Suppress non-error output.
@@ -61,7 +61,7 @@ Usage:
 Options:
   --cli-only          Install or update only the Go generator binary.
   --skills-only       Install or refresh only the Printing Press skills.
-  -a, --agent NAME    Install skills for an agent supported by `skills`.
+  -a, --agent NAME    Install skills for an agent (claude-code, antigravity, codex, cursor).
                        May be repeated. Defaults to claude-code.
   --dry-run           Print commands without executing them.
   --quiet             Suppress non-error output.
@@ -392,12 +392,62 @@ install_cli() {
 }
 
 install_skills() {
-  local cmd=(npx -y "$SKILLS_PACKAGE" add "$SKILL_SOURCE" --skill "*" -g -y)
+  local standard_agents=()
+  local install_antigravity=0
+
   local agent
   for agent in "${AGENTS[@]}"; do
-    cmd+=(-a "$agent")
+    if [[ "$agent" == "antigravity" ]]; then
+      install_antigravity=1
+    else
+      standard_agents+=("$agent")
+    fi
   done
-  run_with_spinner "Installing Printing Press skills" "${cmd[@]}"
+
+  if ((${#standard_agents[@]} > 0)); then
+    local cmd=(npx -y "$SKILLS_PACKAGE" add "$SKILL_SOURCE" --skill "*" -g -y)
+    for agent in "${standard_agents[@]}"; do
+      cmd+=(-a "$agent")
+    done
+    run_with_spinner "Installing Printing Press skills for ${standard_agents[*]}" "${cmd[@]}"
+  fi
+
+  if [[ "$install_antigravity" -eq 1 ]]; then
+    local gemini_skills_dir="${GEMINI_CONFIG_DIR:-$HOME/.gemini/config}/skills"
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      info "Would install Printing Press skills to $gemini_skills_dir"
+    else
+      mkdir -p "$gemini_skills_dir"
+      local repo_root
+      repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+      if [[ -n "$repo_root" && -d "$repo_root/skills" ]]; then
+        for skill_dir in "$repo_root"/skills/*; do
+          if [[ -d "$skill_dir" ]]; then
+            local sname
+            sname="$(basename "$skill_dir")"
+            rm -rf "$gemini_skills_dir/$sname"
+            cp -r "$skill_dir" "$gemini_skills_dir/$sname"
+          fi
+        done
+      else
+        local tmp_skills="$TMP_DIR/skills_download"
+        mkdir -p "$tmp_skills"
+        (cd "$tmp_skills" && npx -y "$SKILLS_PACKAGE" add "$SKILL_SOURCE" --skill "*" -y >/dev/null 2>&1 || true)
+        find "$tmp_skills" -name "SKILL.md" | while read -r sfile; do
+          local sdir
+          sdir="$(dirname "$sfile")"
+          local sname
+          sname="$(basename "$sdir")"
+          if [[ "$sname" == printing-press* ]]; then
+            rm -rf "$gemini_skills_dir/$sname"
+            cp -r "$sdir" "$gemini_skills_dir/$sname"
+          fi
+        done
+      fi
+      ok "Installed Printing Press skills to Antigravity ($gemini_skills_dir)"
+    fi
+  fi
+
   if [[ "$DRY_RUN" -eq 1 ]]; then
     SKILLS_STATUS="planned"
   else

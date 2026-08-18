@@ -84,7 +84,8 @@ See the `printing-press-polish` skill for details. It runs diagnostics, fixes ve
 - **Do not ship a CLI that hasn't been behaviorally tested against real targets.** `go build` and `verify` pass-rate are structural signals, not correctness signals. Phase 5's mechanical test matrix runs every subcommand + `--json` + error paths; if that matrix was not executed, the CLI is not shippable. Quick Check is the floor; Full Dogfood is required when the user asks for thoroughness.
 - **Bugs found during dogfood are fix-before-ship, not "file for v0.2".** If a 1-3 file edit resolves it, do it now. `ship-with-gaps` is deprecated as a default verdict (see Phase 4). Context is freshest in-session; a v0.2 backlog that may never be revisited ships known-broken CLIs.
 - **Features approved in Phase 1.5 are shipping scope.** Do not downgrade a shipping-scope feature to a stub mid-build. If implementation becomes infeasible, return to Phase 1.5 with a revised manifest and get explicit re-approval.
-- **Do not quote human-time estimates for sub-tasks** ("~15-30 min", "~1 hour", "quick fix") in `AskUserQuestion` options, phase descriptions, or reference docs. The agent does the work, not the user; agent-fabricated estimates are notoriously bad and train users to distrust the prompt. Describe scope instead (lines of code, files touched, relative size). The carve-outs are wall-clock estimates for genuinely time-bound things: the whole-CLI run (set the user's expectation up front — most CLIs take 30+ minutes), tool installs (`go install` takes ~10 seconds), and printing-press subcommands that do network-bound work (crowd-sniff scans npm + GitHub, ~5-10 minutes). Anything bounded by agent reasoning time is not time-bound — describe scope.
+- **Harness-aware interaction method:** When prompting the user with discrete choices, use Claude Code's `AskUserQuestion` tool or Antigravity's `ask_question` tool (`{questions: [{question, options, is_multi_select}]}`). In Codex or non-interactive environments, prompt via stdout/stdin. For open-ended questions in Antigravity, output regular markdown text and end your turn.
+- **Do not quote human-time estimates for sub-tasks** ("~15-30 min", "~1 hour", "quick fix") in `AskUserQuestion`/`ask_question` options, phase descriptions, or reference docs. The agent does the work, not the user; agent-fabricated estimates are notoriously bad and train users to distrust the prompt. Describe scope instead (lines of code, files touched, relative size). The carve-outs are wall-clock estimates for genuinely time-bound things: the whole-CLI run (set the user's expectation up front — most CLIs take 30+ minutes), tool installs (`go install` takes ~10 seconds), and printing-press subcommands that do network-bound work (crowd-sniff scans npm + GitHub, ~5-10 minutes). Anything bounded by agent reasoning time is not time-bound — describe scope.
 - **Use raw captures for contract research.** When reading official docs, auth/error/rate-limit pages, endpoint references, OpenAPI/Postman links, or source pages whose exact identifiers affect the generated CLI, read [references/fetch-docs.md](references/fetch-docs.md) and use its `fetch-docs.sh` helper. Reserve `WebFetch` for quick TL;DR reads where losing field-level details is acceptable.
 - Optimize for time-to-ship, not time-to-document.
 - Reuse prior research whenever it is already good enough.
@@ -4149,13 +4150,24 @@ their current local fix path.
 
 **Runs after Phase 4.8, before Phase 4.95.** Phase 4.8 reviews SKILL.md prose against the shipped CLI. Phase 4.85 reviews the CLI's **actual command output** for plausibility bugs that rule-based checks can't encode (substring-match relevance failures, format bugs, silent source drops, ranking failures). The dispatch prompt, gate logic, and known blind spots live in the `printing-press-output-review` sub-skill — single source of truth shared with the polish skill (which runs the same review during its diagnostic loop).
 
-Invoke the sub-skill via the Skill tool:
+Invoke the sub-skill via the Skill tool (Claude Code) or by reading with `view_file` / dispatching via `invoke_subagent` (Antigravity):
 
-```
+```text
+# Claude Code:
 Skill(
   skill: "cli-printing-press:printing-press-output-review",
   args: "$CLI_WORK_DIR"
 )
+
+# Antigravity:
+# Read skills/printing-press-output-review/SKILL.md or dispatch:
+invoke_subagent({
+  "Subagents": [{
+    "TypeName": "research",
+    "Role": "Output Reviewer",
+    "Prompt": "<Contents of printing-press-output-review/SKILL.md with $CLI_WORK_DIR substituted>"
+  }]
+})
 ```
 
 The sub-skill carries `context: fork` so the reviewer agent's diagnostic chatter stays isolated from this generation flow. It returns a `---OUTPUT-REVIEW-RESULT---` block with `status: PASS|WARN|SKIP` and a list of findings.
@@ -4182,9 +4194,9 @@ aligned. Non-description code findings keep the normal Phase 4.95 autofix path.
 
 **Tool selection — pick what's installed, do not name-match.** This phase needs *a* code review, not a specific named command. Survey the review-shaped capabilities the current harness has and pick the best fit. Plausible candidates (names drift across harnesses and plugin sets; treat this as an example list, not a closed set):
 
-- A standalone, working-dir-shaped code review skill that runs against `git diff` and a file list without needing an open PR (e.g., `compound-engineering:ce-code-review`, or similar).
+- A standalone, working-dir-shaped code review skill that runs against `git diff` and a file list without needing an open PR (e.g., an installed review skill or custom plugin, if available).
 - Codex's built-in code-review mode (`/codex:review`), which reviews the current diff or target directly.
-- **Direct reviewer-subagent dispatch via the Agent tool.** Spawn `correctness`, `security`, and `maintainability` reviewers (always-on) plus any conditional reviewers warranted by the diff (`api-contract`, `data-migrations`, `reliability`, `performance`) against the in-scope paths. This is the universal fallback: any harness that runs the press skill has the Agent tool, so this path is always available. When dispatching multiple reviewers, a "round" (per the autofix loop below) means re-running *all* spawned reviewers in parallel and merging their findings into a single set before autofix; convergence is the merged set being empty, not any individual reviewer clearing. Do not re-run only the reviewer whose prior findings were touched — every round must include every reviewer so cascading or newly-introduced issues surface.
+- **Direct reviewer-subagent dispatch via the Agent/invoke_subagent tool.** Spawn `correctness`, `security`, and `maintainability` reviewers (always-on) plus any conditional reviewers warranted by the diff (`api-contract`, `data-migrations`, `reliability`, `performance`) against the in-scope paths. This is the universal fallback: any harness that runs the press skill has access to subagents, so this path is always available. When dispatching multiple reviewers, a "round" (per the autofix loop below) means re-running *all* spawned reviewers in parallel and merging their findings into a single set before autofix; convergence is the merged set being empty, not any individual reviewer clearing. Do not re-run only the reviewer whose prior findings were touched — every round must include every reviewer so cascading or newly-introduced issues surface.
 
 **Do not invoke Claude Code's `/review` for this phase.** `/review` is PR-shaped — it fetches an open GitHub PR and comments back via `gh`. There is no PR yet at Phase 4.95; the CLI is in a working dir that has not been promoted or published. Reaching for `/review`, bouncing off its shape, and claiming "harness has no code review" is the failure mode this section is written to prevent.
 
@@ -4219,7 +4231,7 @@ The retro skill scans the template-shape and out-of-scope sections for candidate
 
 **Template-shape escape hatch.** Even if a finding lives in an in-scope path, if it appears to come from a generator template (recurs across files in identical shape, sits in a path matched by `internal/generator/templates/`'s emit set, or duplicates a known prior template bug), file as retro-candidate and surface to the user rather than autofixing. Patching the printed CLI hides the machine bug from the next CLI.
 
-**Post-fix simplification (Claude Code only).** After the review + autofix loop converges, the printed CLI has fresh edits from the autofix passes — typically defensive guards, sanitization helpers, and near-duplicate fixes across sibling files. Run `/simplify` scoped to the same in-scope paths to consolidate duplication, remove dead code, and tighten the autofix output before dogfood. `/simplify` is Claude Code-only; skip on Codex and other harnesses (they have no built-in equivalent, and the press skill explicitly avoids custom simplification logic — same rule as the review path above).
+**Post-fix simplification.** After the review + autofix loop converges, the printed CLI has fresh edits from the autofix passes — typically defensive guards, sanitization helpers, and near-duplicate fixes across sibling files. In Claude Code, run `/simplify` scoped to the same in-scope paths to consolidate duplication, remove dead code, and tighten the autofix output before dogfood. In Antigravity or other harnesses without a built-in simplification command, execute a targeted simplification pass (or invoke an installed simplification skill if available). On Codex and other harnesses without a built-in simplification tool, skip this step.
 
 **Harness exemption — narrow.** Skipping this phase is legitimate only when the current harness has *neither* a working-dir-shaped review skill *nor* the Agent/subagent capability needed for the direct-dispatch fallback. In practice this is almost never true — any harness that runs the press skill has access to subagents. The following rationales are **not** acceptable for skipping:
 
@@ -4524,7 +4536,7 @@ prior_sub60_reprint: <true|false>
 partial_transcendence_override: <none or build-log note path>
 ```
 
-Invoke via the Skill tool (**foreground** — must complete before promoting).
+Invoke via the Skill tool (Claude Code) or by loading `skills/printing-press-polish/SKILL.md` / dispatching via `invoke_subagent` (Antigravity, **foreground** — must complete before promoting).
 Pass `$CLI_WORK_DIR` as the first line of `args`, followed by the Phase 3 bundle:
 
 ```
@@ -4959,7 +4971,7 @@ Invoke `/printing-press-retro`. The retro skill analyzes the session for generat
 
 #### If "Polish to retry"
 
-**Invoke polish via the Skill tool with `$CLI_WORK_DIR` as the arg:**
+**Invoke polish via the Skill tool (Claude Code) or via `skills/printing-press-polish/SKILL.md` / `invoke_subagent` (Antigravity) with `$CLI_WORK_DIR` as the arg:**
 
 ```
 Skill(

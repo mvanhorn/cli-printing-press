@@ -393,8 +393,18 @@ Install the MCP binary from this CLI's published public-library entry or pre-bui
 ```bash
 claude mcp add learn-loop-example-pp-mcp -- learn-loop-example-pp-mcp
 ```
+Or add to Antigravity `mcp_config.json`:
+```json
+{
+  "mcpServers": {
+    "learn-loop-example-pp-mcp": {
+      "command": "learn-loop-example-pp-mcp"
+    }
+  }
+}
+```
 
-Verify: `claude mcp list`
+Verify: `claude mcp list` or inspect Antigravity MCP tool catalog
 
 ## Direct Use
 

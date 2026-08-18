@@ -74,7 +74,7 @@ When a downstream consumer (parser, schema validator) needs a valid-shape value,
 
 **Generated test fixtures (`*_test.go`, `testdata/`).** Exempt from the audit by design — generated tests commonly carry standards-reserved or synthetic placeholder values, and rewriting them during polish creates churn without reducing customer-PII risk. Real PII in production code, config, README, and manuscript files remains in scope.
 
-**Tooling workspaces (`.omc/`, `.claude/`).** Exempt from the audit at the CLI root — these are agent orchestration or scratch directories, not shippable printed-CLI content.
+**Tooling workspaces (`.omc/`, `.claude/`, `.gemini/`, `.antigravity/`, `.agent/`).** Exempt from the audit at the CLI root — these are agent orchestration or scratch directories, not shippable printed-CLI content.
 
 **Vendor spec files at the CLI root (`spec.yaml`, `spec.yml`, `spec.json`).** Exempt from the audit by design — these are the OpenAPI/internal source the operator passed to `--spec`, and vendor `example:` blocks (Stripe `jenny@example.com`, GitHub user-schema example phones) are documentation, not customer PII.
 

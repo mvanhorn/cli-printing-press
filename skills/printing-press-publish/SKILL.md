@@ -35,6 +35,10 @@ docs-only, plan, proposal, or spec PR as a substitute for a CLI that is not
 ready to publish. If generation, validation, or live testing is blocked, report
 the exact blocker and stop.
 
+## Interaction Method
+
+When prompting the user with discrete choices, use Claude Code's `AskUserQuestion` tool or Antigravity's `ask_question` tool (`{questions: [{question, options, is_multi_select}]}`). In Codex or non-interactive environments, prompt via stdout/stdin. For open-ended questions in Antigravity, output regular markdown text and end your turn.
+
 ## Direct User Invocation Required
 
 Publishing can fork `mvanhorn/printing-press-library`, push a branch, and open or

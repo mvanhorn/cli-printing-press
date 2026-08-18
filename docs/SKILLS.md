@@ -4,7 +4,7 @@ Conventions for the skills shipped from this repo (under `skills/`) and any inte
 
 ## Install Targets
 
-The shipped Printing Press skills are installed through the `skills` CLI. Claude Code is the default and tested target (`--agent claude-code`), but the installer can target other supported agents, including Codex (`--agent codex`). Keep install instructions agent-neutral unless the step truly depends on Claude Code behavior, and link Codex-specific setup notes to [CODEX.md](CODEX.md).
+The shipped Printing Press skills are installed through the `skills` CLI or the installer script. Claude Code is the default and tested target (`--agent claude-code`), but the installer supports other agents including Antigravity (`--agent antigravity`) and Codex (`--agent codex`). Keep install instructions agent-neutral unless the step truly depends on Claude Code behavior, and link agent-specific setup notes to [ANTIGRAVITY.md](ANTIGRAVITY.md) and [CODEX.md](CODEX.md).
 
 ## Workflow Parity
 

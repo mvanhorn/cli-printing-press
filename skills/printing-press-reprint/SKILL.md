@@ -46,6 +46,10 @@ current machine — keep, reframe, or drop with reasons, never silent.
 For one-off code-quality fixes, prefer `/printing-press-polish` — it doesn't
 redo research or rebuild the manuscript.
 
+## Interaction Method
+
+When prompting the user with discrete choices, use Claude Code's `AskUserQuestion` tool or Antigravity's `ask_question` tool (`{questions: [{question, options, is_multi_select}]}`). In Codex or non-interactive environments, prompt via stdout/stdin. For open-ended questions in Antigravity, output regular markdown text and end your turn.
+
 ## Setup
 
 ```bash

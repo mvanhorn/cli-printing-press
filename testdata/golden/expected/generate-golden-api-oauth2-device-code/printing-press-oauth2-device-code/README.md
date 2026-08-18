@@ -6,7 +6,7 @@ Created by [@printing-press-golden](https://github.com/printing-press-golden) (p
 
 ## Install
 
-The recommended path installs both the `printing-press-oauth2-pp-cli` binary and the `pp-printing-press-oauth2` agent skill (Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot, and other agents supported by the upstream [`skills`](https://github.com/vercel-labs/skills) CLI) in one shot:
+The recommended path installs both the `printing-press-oauth2-pp-cli` binary and the `pp-printing-press-oauth2` agent skill (Claude Code, Antigravity, Codex, Cursor, Gemini CLI, GitHub Copilot, and other agents supported by the upstream [`skills`](https://github.com/vercel-labs/skills) CLI) in one shot:
 
 ```bash
 npx -y @mvanhorn/printing-press-library install printing-press-oauth2

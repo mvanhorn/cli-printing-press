@@ -18,11 +18,11 @@ func TestAvailable(t *testing.T) {
 }
 
 func TestRunReturnsErrorWhenNoLLM(t *testing.T) {
-	// Only test this if neither CLI is installed
-	_, err1 := exec.LookPath("claude")
-	_, err2 := exec.LookPath("codex")
-	if err1 == nil || err2 == nil {
-		t.Skip("skipping: LLM CLI is installed")
+	// Only test this if none of the CLIs are installed
+	for _, name := range []string{"claude", "codex", "gemini", "agentapi"} {
+		if _, err := exec.LookPath(name); err == nil {
+			t.Skip("skipping: LLM CLI is installed")
+		}
 	}
 
 	_, err := Run("test prompt")
@@ -93,4 +93,40 @@ printf ok
 	response, err := Run(strings.Repeat("x", 100001))
 	require.NoError(t, err)
 	assert.Equal(t, "ok", response)
+}
+
+func TestRunGeminiFallback(t *testing.T) {
+	binDir := t.TempDir()
+	tmpDir := t.TempDir()
+	geminiPath := filepath.Join(binDir, "gemini")
+	script := `#!/bin/sh
+printf "gemini response"
+`
+	require.NoError(t, os.WriteFile(geminiPath, []byte(script), 0700))
+	t.Setenv("PATH", binDir)
+	t.Setenv("TMPDIR", tmpDir)
+
+	response, err := Run("test gemini prompt")
+	require.NoError(t, err)
+	assert.Equal(t, "gemini response", response)
+}
+
+func TestRunAgentAPIFallback(t *testing.T) {
+	binDir := t.TempDir()
+	tmpDir := t.TempDir()
+	agentapiPath := filepath.Join(binDir, "agentapi")
+	script := `#!/bin/sh
+if [ "$1" = "new-conversation" ]; then
+	printf "agentapi response"
+else
+	exit 1
+fi
+`
+	require.NoError(t, os.WriteFile(agentapiPath, []byte(script), 0700))
+	t.Setenv("PATH", binDir)
+	t.Setenv("TMPDIR", tmpDir)
+
+	response, err := Run("test agentapi prompt")
+	require.NoError(t, err)
+	assert.Equal(t, "agentapi response", response)
 }

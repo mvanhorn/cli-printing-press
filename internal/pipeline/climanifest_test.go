@@ -551,7 +551,7 @@ func TestSpecChecksum(t *testing.T) {
 }
 
 func TestSpecChecksumNonexistentFile(t *testing.T) {
-	checksum, err := specChecksum("/nonexistent/file.json")
+	checksum, err := specChecksum(filepath.Join(t.TempDir(), "nonexistent.json"))
 	require.NoError(t, err)
 	assert.Empty(t, checksum)
 }

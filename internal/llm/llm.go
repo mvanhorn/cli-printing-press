@@ -9,14 +9,18 @@ import (
 
 // Available returns true if any supported LLM CLI is installed.
 func Available() bool {
-	_, err1 := exec.LookPath("claude")
-	_, err2 := exec.LookPath("codex")
-	return err1 == nil || err2 == nil
+	for _, name := range []string{"claude", "codex", "gemini", "agentapi"} {
+		if _, err := exec.LookPath(name); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // Run sends a prompt to the best available LLM CLI and returns the response.
-// It tries claude first, then falls back to codex. Long Claude prompts are
-// written to a temp file and passed by reference to avoid ARG_MAX issues.
+// It tries claude first, then falls back to codex, gemini, and agentapi.
+// Long prompts for CLI tools that support file references are written to a
+// temp file to avoid ARG_MAX issues.
 func Run(prompt string) (string, error) {
 	// Try claude first (-p / --print mode, prompt as positional arg)
 	if path, err := exec.LookPath("claude"); err == nil {
@@ -52,10 +56,44 @@ func Run(prompt string) (string, error) {
 		if err == nil {
 			return strings.TrimSpace(string(out)), nil
 		}
-		return "", fmt.Errorf("codex failed: %w", err)
+		fmt.Fprintf(os.Stderr, "warning: codex failed (%v), trying gemini\n", err)
 	}
 
-	return "", fmt.Errorf("no LLM CLI found (install claude or codex)")
+	// Try gemini (-p / --prompt positional)
+	if path, err := exec.LookPath("gemini"); err == nil {
+		var cmd *exec.Cmd
+		if len(prompt) < 100000 {
+			cmd = exec.Command(path, "-p", prompt)
+		} else {
+			tmpFile, cleanup, err := writePromptTempFile(prompt)
+			if err != nil {
+				return "", err
+			}
+			defer cleanup()
+
+			metaPrompt := fmt.Sprintf("Read the file at %s and follow the instructions inside it exactly.", tmpFile)
+			cmd = exec.Command(path, "-p", metaPrompt)
+		}
+		cmd.Stderr = os.Stderr
+		out, err := cmd.Output()
+		if err == nil {
+			return strings.TrimSpace(string(out)), nil
+		}
+		fmt.Fprintf(os.Stderr, "warning: gemini failed (%v), trying agentapi\n", err)
+	}
+
+	// Try agentapi (new-conversation)
+	if path, err := exec.LookPath("agentapi"); err == nil {
+		cmd := exec.Command(path, "new-conversation", prompt)
+		cmd.Stderr = os.Stderr
+		out, err := cmd.Output()
+		if err == nil {
+			return strings.TrimSpace(string(out)), nil
+		}
+		return "", fmt.Errorf("agentapi failed: %w", err)
+	}
+
+	return "", fmt.Errorf("no LLM CLI found (install claude, codex, or gemini)")
 }
 
 func writePromptTempFile(prompt string) (string, func(), error) {

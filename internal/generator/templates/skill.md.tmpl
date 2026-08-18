@@ -671,15 +671,35 @@ Parse `$ARGUMENTS`:
    ```bash
    claude mcp add {{.Name}}-pp-mcp -- {{.Name}}-pp-mcp
    ```
-3. Verify: `claude mcp list`
+   Or add to Antigravity `mcp_config.json`:
+   ```json
+   {
+     "mcpServers": {
+       "{{.Name}}-pp-mcp": {
+         "command": "{{.Name}}-pp-mcp"
+       }
+     }
+   }
+   ```
+3. Verify: `claude mcp list` or inspect Antigravity MCP tool catalog
 {{- else}}
 Install the MCP binary from this CLI's published public-library entry or pre-built release, then register it:
 
 ```bash
 claude mcp add {{.Name}}-pp-mcp -- {{.Name}}-pp-mcp
 ```
+Or add to Antigravity `mcp_config.json`:
+```json
+{
+  "mcpServers": {
+    "{{.Name}}-pp-mcp": {
+      "command": "{{.Name}}-pp-mcp"
+    }
+  }
+}
+```
 
-Verify: `claude mcp list`
+Verify: `claude mcp list` or inspect Antigravity MCP tool catalog
 {{- end}}
 
 ## Direct Use

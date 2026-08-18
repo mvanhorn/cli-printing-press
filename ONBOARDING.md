@@ -10,7 +10,7 @@ This is built as a Claude Code skill. You run `/printing-press Discord` inside C
 
 ## How It's Used
 
-The primary entry point for users is the **`/printing-press` Claude Code skill** (defined in `skills/printing-press/`). A user types `/printing-press <API name>` inside Claude Code and the skill drives the fast path: one research brief, generation, focused build work, then a shipcheck block using `dogfood`, `verify`, and `scorecard`. Everything else in this repo -- the Go binary, the parsers, the templates, the profiler -- exists to serve that skill.
+The primary entry point for users is the **`/printing-press` agent skill** (defined in `skills/printing-press/`, supported in Claude Code, Antigravity, and Codex). A user types `/printing-press <API name>` inside their agent session and the skill drives the fast path: one research brief, generation, focused build work, then a shipcheck block using `dogfood`, `verify`, and `scorecard`. Everything else in this repo -- the Go binary, the parsers, the templates, the profiler -- exists to serve that skill.
 
 Developers working on this codebase build and test the Go binary directly (`go build`, `go test`), but the thing you're ultimately shipping is the skill-driven experience.
 

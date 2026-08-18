@@ -68,16 +68,29 @@ inside the brief. The subagent detects their presence by checking for the
 
 ## Subagent invocation
 
-One Task tool call. Do not split passes across multiple invocations — the cut
+One subagent invocation. Do not split passes across multiple invocations — the cut
 pass must see the candidates it generated.
 
-```
+**Under Claude Code:**
+```text
 Agent({
   description: "Novel-features brainstorm + adversarial cut",
   subagent_type: "general-purpose",
   prompt: <Subagent prompt template below, with ${...} placeholders substituted>
 })
 ```
+
+**Under Antigravity:**
+```json
+invoke_subagent({
+  "Subagents": [{
+    "TypeName": "research",
+    "Role": "Novel Features Brainstormer",
+    "Prompt": "<Subagent prompt template below, with ${...} placeholders substituted>"
+  }]
+})
+```
+*Note on Antigravity:* Antigravity operates on a Reactive Wakeup model. After calling `invoke_subagent`, stop calling tools and end your turn. The system will automatically wake you and deliver the subagent's response.
 
 ## Subagent prompt template
 

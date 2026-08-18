@@ -43,6 +43,10 @@ re-publish — the publish step will re-apply the module path rewrites.
 If the user is asking to polish a CLI and mentions "in/from the public
 library" or "from the repo", suggest running this skill first.
 
+## Interaction Method
+
+When prompting the user with discrete choices, use Claude Code's `AskUserQuestion` tool or Antigravity's `ask_question` tool (`{questions: [{question, options, is_multi_select}]}`). In Codex or non-interactive environments, prompt via stdout/stdin. For open-ended questions in Antigravity, output regular markdown text and end your turn.
+
 ## Setup
 
 ```bash

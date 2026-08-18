@@ -49,9 +49,9 @@ If the setup contract output contains a line starting with `[repo-upgrade-availa
 - `PRESS_REPO_HEAD=<current HEAD sha>`
 - `PRESS_REPO_MAIN=<origin/main sha>`
 
-Then ask the user via `AskUserQuestion` before continuing setup:
+Then ask the user via `AskUserQuestion` (Claude Code) or `ask_question` (Antigravity) before continuing setup:
 
-- **question:** `"origin/main has newer Printing Press changes. Pull the latest main now? After this, reload the skill with /reload-plugin."`
+- **question:** `"origin/main has newer Printing Press changes. Pull the latest main now? After this, reload the skill (/reload-plugin in Claude Code, or start a new conversation in Antigravity)."`
 - **header:** `"Update repo"`
 - **multiSelect:** `false`
 - **options:**
@@ -66,7 +66,7 @@ git -C "$PRESS_REPO_DIR" pull --ff-only origin main
 
 After it completes, tell the user:
 
-> "Updated the Printing Press checkout. Run `/reload-plugin`, then re-run `/printing-press` so the refreshed skill and rebuilt local binary are used."
+> "Updated the Printing Press checkout. Run `/reload-plugin` (Claude Code) or start a new conversation (Antigravity), then re-run `/printing-press` so the refreshed skill and rebuilt local binary are used."
 
 Then stop the skill immediately. Do not continue the current run, because the skill text that is executing may now be stale.
 
@@ -113,7 +113,7 @@ Interpret the output as follows:
 
   Do not proceed to research, generation, scoring, publishing, or any other workflow after a skill update.
 - If it reports `All global skills are up to date` or otherwise completes without an updated-skill summary, continue.
-- If it reports `No installed skills found matching: ...`, continue without blocking. The current skill is already running, so absence from the global open-agent-skills registry usually means this session was loaded from another install surface, such as the Claude Code plugin/marketplace channel, a project-scoped skill install, or a local plugin directory. Do not tell the user to reinstall through `npx skills` as a prerequisite. If they explicitly ask how to move to the global open-agent-skills install path, give them the skills-only installer command so they do not have to name individual skills:
+- If it reports `No installed skills found matching: ...`, continue without blocking. The current skill is already running, so absence from the global open-agent-skills registry usually means this session was loaded from another install surface, such as the Claude Code plugin/marketplace channel, Antigravity global skills (`~/.gemini/config/skills/`), a project-scoped skill install, or a local plugin directory. Do not tell the user to reinstall through `npx skills` as a prerequisite. If they explicitly ask how to move to the global install path, give them the skills-only installer command so they do not have to name individual skills:
 
   ```bash
   curl -fsSL https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/scripts/install.sh | bash -s -- --skills-only
@@ -146,7 +146,7 @@ If the setup contract output contains a line starting with `[upgrade-required]`,
 - `PRESS_REQUIRED_INSTALLED=<installed version>`
 - `PRESS_REQUIRED_REASON=<one-line reason>`
 
-This is a hard gate. Do not proceed to research, generation, scoring, publishing, or any other workflow on a binary below the floor. Offer a one-click upgrade via `AskUserQuestion` before continuing:
+This is a hard gate. Do not proceed to research, generation, scoring, publishing, or any other workflow on a binary below the floor. Offer a one-click upgrade via `AskUserQuestion` (Claude Code) or `ask_question` (Antigravity) before continuing:
 
 - **question:** `"printing-press v<installed> is below the minimum supported v<minimum>. <reason> Upgrade now? Takes about 10 seconds."`
 - **header:** `"Update required"`
@@ -176,7 +176,7 @@ If the setup contract output contains a line starting with `[upgrade-available]`
 - `PRESS_UPGRADE_AVAILABLE=<latest>`
 - `PRESS_UPGRADE_INSTALLED=<installed>`
 
-Then ask the user via `AskUserQuestion` before continuing setup:
+Then ask the user via `AskUserQuestion` (Claude Code) or `ask_question` (Antigravity) before continuing setup:
 
 - **question:** `"printing-press v<latest> is available (you have v<installed>). Upgrade now? Takes about 10 seconds."`
 - **header:** `"Update available"`
@@ -220,7 +220,7 @@ If the setup contract output contains a line starting with `[browser-tools-missi
 - `PRESS_BROWSER_USE_MISSING=<true|false>`
 - `PRESS_AGENT_BROWSER_MISSING=<true|false>`
 
-Then ask the user via `AskUserQuestion` before continuing setup. The prompt fires every run when either tool is missing — there is no decline cache. Re-prompting is intentional: browser-use and agent-browser are the preferred Phase 1.7 backends, and mid-flight install gates during generation are more disruptive than one short preflight prompt.
+Then ask the user via `AskUserQuestion` (Claude Code) or `ask_question` (Antigravity) before continuing setup. The prompt fires every run when either tool is missing — there is no decline cache. Re-prompting is intentional: browser-use and agent-browser are the preferred Phase 1.7 backends, and mid-flight install gates during generation are more disruptive than one short preflight prompt.
 
 - **question** (compose based on which are missing — pick the matching row):
   - Both missing: `"browser-use and agent-browser are not installed. These are the preferred Phase 1.7 browser-sniff backends — broadly useful for future runs and avoids mid-flight install prompts. (chrome-MCP is a narrow-case fallback, not a substitute.) Install now?"`

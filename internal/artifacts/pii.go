@@ -542,6 +542,9 @@ func isUnderManuscripts(relSlash string) bool {
 // Generated fixture and top-level tooling workspaces are skipped at the root.
 var skippedDirs = map[string]bool{
 	".claude":      true,
+	".gemini":      true,
+	".antigravity": true,
+	".agent":       true,
 	".git":         true,
 	".omc":         true,
 	"testdata":     true,

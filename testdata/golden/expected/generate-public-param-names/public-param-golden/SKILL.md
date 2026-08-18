@@ -369,8 +369,18 @@ Install the MCP binary from this CLI's published public-library entry or pre-bui
 ```bash
 claude mcp add public-param-golden-pp-mcp -- public-param-golden-pp-mcp
 ```
+Or add to Antigravity `mcp_config.json`:
+```json
+{
+  "mcpServers": {
+    "public-param-golden-pp-mcp": {
+      "command": "public-param-golden-pp-mcp"
+    }
+  }
+}
+```
 
-Verify: `claude mcp list`
+Verify: `claude mcp list` or inspect Antigravity MCP tool catalog
 
 ## Direct Use
 

@@ -60,7 +60,7 @@ that survive triage and the adversarial check, plus artifacts, so maintainers
   user-facing output (issues, retros, prompts). It has four subsystems:
   - **Generator** — templates that emit Go code (`internal/generator/`)
   - **Scorer** — tools that grade the output: verify, dogfood, scorecard
-  - **Skills** — SKILL.md instructions that guide Claude during generation
+  - **Skills** — SKILL.md instructions that guide the agent during generation
   - **Binary** — the Go CLI itself: commands, flags, parsers (`cmd/cli-printing-press/`)
 - **Printed CLI**: A CLI produced by the Printing Press for a specific API (e.g.,
   `notion-pp-cli`). Printed-CLI fixes only help that one CLI.
@@ -68,6 +68,10 @@ that survive triage and the adversarial check, plus artifacts, so maintainers
 Use "the Printing Press" when talking about the system. Use the subsystem name when
 pointing a developer at what to fix — "fix the scorer" and "fix the generator" are
 different PRs.
+
+## Interaction Method
+
+When prompting the user with discrete choices, use Claude Code's `AskUserQuestion` tool or Antigravity's `ask_question` tool (`{questions: [{question, options, is_multi_select}]}`). In Codex or non-interactive environments, prompt via stdout/stdin. For open-ended questions in Antigravity, output regular markdown text and end your turn.
 
 ## Cardinal rules
 

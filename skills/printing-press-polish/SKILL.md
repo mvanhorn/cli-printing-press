@@ -43,6 +43,10 @@ After any `/printing-press` generation, especially when:
 
 Can also be run standalone on any CLI in `$PRESS_LIBRARY/`.
 
+## Interaction Method
+
+When prompting the user with discrete choices, use Claude Code's `AskUserQuestion` tool or Antigravity's `ask_question` tool (`{questions: [{question, options, is_multi_select}]}`). In Codex or non-interactive environments, prompt via stdout/stdin. For open-ended questions in Antigravity, output regular markdown text and end your turn.
+
 ## Setup
 
 ```bash
@@ -516,13 +520,23 @@ Classify these as environmental in `skipped_findings` with the specific reason; 
 
 ### Phase 4.85 — Agentic output review (Wave B)
 
-After the mechanical diagnostics above complete, invoke the `printing-press-output-review` sub-skill via the Skill tool. The sub-skill carries `context: fork` and owns the dispatch prompt, gate logic, and known blind spots — single source of truth shared with the main printing-press skill.
+After the mechanical diagnostics above complete, invoke the `printing-press-output-review` sub-skill via the Skill tool (Claude Code) or by reading with `view_file` / dispatching via `invoke_subagent` (Antigravity). The sub-skill carries `context: fork` and owns the dispatch prompt, gate logic, and known blind spots — single source of truth shared with the main printing-press skill.
 
-```
+```text
+# Claude Code:
 Skill(
   skill: "cli-printing-press:printing-press-output-review",
   args: "$CLI_DIR"
 )
+
+# Antigravity:
+invoke_subagent({
+  "Subagents": [{
+    "TypeName": "research",
+    "Role": "Output Reviewer",
+    "Prompt": "<Contents of printing-press-output-review/SKILL.md with $CLI_DIR substituted>"
+  }]
+})
 ```
 
 Parse the returned `---OUTPUT-REVIEW-RESULT---` block. `status: WARN` findings flow into the diagnostic categories above so Phase 2 fixes address both rule-based and plausibility issues. `status: SKIP` is informational — record but don't block.

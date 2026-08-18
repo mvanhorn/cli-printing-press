@@ -403,8 +403,18 @@ Install the MCP binary from this CLI's published public-library entry or pre-bui
 ```bash
 claude mcp add printing-press-golden-pp-mcp -- printing-press-golden-pp-mcp
 ```
+Or add to Antigravity `mcp_config.json`:
+```json
+{
+  "mcpServers": {
+    "printing-press-golden-pp-mcp": {
+      "command": "printing-press-golden-pp-mcp"
+    }
+  }
+}
+```
 
-Verify: `claude mcp list`
+Verify: `claude mcp list` or inspect Antigravity MCP tool catalog
 
 ## Direct Use
 

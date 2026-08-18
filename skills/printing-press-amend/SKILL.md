@@ -307,7 +307,7 @@ When `MODE=dogfood`, run only `### 1a`. When `MODE=direct`, run only `### 1b`. W
 
 Read `references/transcript-parsing.md` for the full procedure. Summary of what this sub-section does:
 
-1. **Resolve the active session transcript file** — derive `<project-dir-slug>` from the current working directory, list `~/.claude/projects/<slug>/*.jsonl` by mtime, pick the most-recently-modified. ALWAYS confirm the resolved path with the user via `AskUserQuestion` before reading — wrong-file selection ingests friction from the wrong session.
+1. **Resolve the active session transcript file** — per `references/transcript-parsing.md`, resolve the active Claude Code (`~/.claude/projects/`) or Antigravity (`<appDataDir>/brain/<id>/.system_generated/logs/transcript.jsonl`) transcript file. ALWAYS confirm the resolved path with the user via `AskUserQuestion` (Claude Code) or `ask_question` (Antigravity) before reading — wrong-file selection ingests friction from the wrong session.
 
 2. **Walk the transcript and extract friction signals** — non-zero exit codes, error messages, hand-rolled API payloads (e.g. direct `curl` POSTs that should be a CLI command), retry-after-failure patterns, agent commentary like "X doesn't exist" / "X returns 400", missing-flag references, silent-null returns, auth confusion. Each signal carries timestamp + category + verbatim evidence + the `<slug>-pp-cli` it references.
 

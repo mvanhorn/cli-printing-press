@@ -379,8 +379,18 @@ Install the MCP binary from this CLI's published public-library entry or pre-bui
 ```bash
 claude mcp add printing-press-oauth2-pp-mcp -- printing-press-oauth2-pp-mcp
 ```
+Or add to Antigravity `mcp_config.json`:
+```json
+{
+  "mcpServers": {
+    "printing-press-oauth2-pp-mcp": {
+      "command": "printing-press-oauth2-pp-mcp"
+    }
+  }
+}
+```
 
-Verify: `claude mcp list`
+Verify: `claude mcp list` or inspect Antigravity MCP tool catalog
 
 ## Direct Use
 

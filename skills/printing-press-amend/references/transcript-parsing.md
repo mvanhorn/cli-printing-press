@@ -2,36 +2,39 @@
 
 **Scope:** This reference applies when `MODE=dogfood` (Phase 0 detected a session-friction invocation) or when running the dogfood half of `MODE=both`. For direct-input mode (`MODE=direct`), see `direct-input-parsing.md` instead — that mode parses the user's prompt and never touches the transcript.
 
-This reference is loaded by Phase 1's `### 1a. Dogfood mode` sub-section of `printing-press-amend`. It defines how the agent reads a Claude Code session transcript and extracts friction signals tied to a specific printed CLI invocation.
+This reference is loaded by Phase 1's `### 1a. Dogfood mode` sub-section of `printing-press-amend`. It defines how the agent reads a Claude Code or Antigravity session transcript and extracts friction signals tied to a specific printed CLI invocation.
 
 ## Where the active session transcript lives
-
-Claude Code stores per-session transcripts as JSONL files under `~/.claude/projects/<project-dir-slug>/<session-uuid>.jsonl`. The slug is derived from the working directory path (slashes replaced with `-`).
 
 Resolution order (use the first that resolves to a readable file):
 
 1. **Skill argument or environment** — if the user passed an explicit transcript path, use it.
-2. **Active session via working dir** — derive `<project-dir-slug>` from `pwd -P` (replace `/` with `-`, strip leading `-`), then list `~/.claude/projects/<slug>/*.jsonl` and pick the most-recently-modified. This is the heuristic; it can be wrong when multiple Claude Code panes are running in the same dir, so confirm with the user.
-3. **Fallback** — list `~/.claude/projects/` directories sorted by mtime, list each one's `*.jsonl` files, pick the most-recently-modified across all. This catches the case where the user invokes `/printing-press-amend` from a different working directory than the session was started in.
+2. **Claude Code active session via working dir** — derive `<project-dir-slug>` from `pwd -P` (replace `/` with `-`, strip leading `-`), then list `~/.claude/projects/<slug>/*.jsonl` and pick the most-recently-modified.
+3. **Antigravity active session** — in Antigravity, transcripts live under `<appDataDir>/brain/<conversation-id>/.system_generated/logs/transcript.jsonl`. Pick the active conversation's log or most-recently-modified.
+4. **Fallback** — list `~/.claude/projects/` or `<appDataDir>/brain/` directories sorted by mtime, list each one's `*.jsonl` files, pick the most-recently-modified across all.
 
-After picking a candidate file, ALWAYS show the user the resolved path with `AskUserQuestion`:
+After picking a candidate file, ALWAYS show the user the resolved path with `AskUserQuestion` (Claude Code) or `ask_question` (Antigravity):
 
 > "Detected active session at `<path>` (modified <relative-time>). Mine this session for friction, or pick a different transcript?"
 
 Options:
 - Use this transcript (recommended)
-- Pick a different file (drops into a list of recent JSONL files under `~/.claude/projects/`)
+- Pick a different file (drops into a list of recent JSONL files)
 - Cancel
 
 The confirmation is non-optional — wrong-file selection ingests friction from the wrong session and ships PRs for bugs the user never hit.
 
 ## Signal extraction taxonomy
 
-The transcript is line-delimited JSON; each line is a turn in the conversation. Walk the file and extract these signal categories. Each signal carries: `timestamp` (from the turn), `category` (one of below), `evidence` (the verbatim quote that triggered it), and `target_cli` (when the signal references a specific `<slug>-pp-cli` invocation).
+The transcript is line-delimited JSON; each line is a turn or step in the conversation:
+- In **Claude Code**: lines are conversation turns with `type: "user"`, `type: "tool_use"`, `type: "tool_result"`.
+- In **Antigravity**: lines are steps with `type: "USER_INPUT"` or `"PLANNER_RESPONSE"`, carrying `content` and `tool_calls` (including tool name, arguments, and execution status).
+
+Walk the file and extract these signal categories. Each signal carries: `timestamp` (or `step_index`), `category` (one of below), `evidence` (the verbatim quote that triggered it), and `target_cli` (when the signal references a specific `<slug>-pp-cli` invocation).
 
 | Category | Signal | Bug or feature? |
 |---|---|---|
-| **Non-zero exit code** | A `tool_result` block whose stderr indicates a non-zero exit on a `<cli>-pp-cli` invocation | Bug |
+| **Non-zero exit code** | A tool execution block (`tool_result` or `tool_calls`) whose stderr/output indicates a non-zero exit on a `<cli>-pp-cli` invocation | Bug |
 | **Error message** | Lines like `Error: ...`, `failed:`, `panic:`, `HTTP 4xx`, `HTTP 5xx` returned from the CLI | Bug (usually) |
 | **Hand-rolled API payload** | Bash commands that POST/PUT directly to a URL (e.g. `curl -X POST https://api.example.com/...` or scripted JSON construction) instead of calling the CLI | Feature (the CLI doesn't expose what the user needed) |
 | **Retry-after-failure** | The same command run ≥ 2 times in a row with similar args, separated by manual edits or tool tweaks | Bug or feature (look at what changed) |

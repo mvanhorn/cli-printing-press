@@ -30,6 +30,10 @@ Score generated CLIs against the Steinberger bar. Supports rescoring, scoring by
 - Go 1.26.6 or newer installed
 - `cli-printing-press` binary on PATH (install with `go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest`)
 
+## Interaction Method
+
+When prompting the user with discrete choices, use Claude Code's `AskUserQuestion` tool or Antigravity's `ask_question` tool (`{questions: [{question, options, is_multi_select}]}`). In Codex or non-interactive environments, prompt via stdout/stdin. For open-ended questions in Antigravity, output regular markdown text and end your turn.
+
 ## Step 0: Setup
 
 Before any other commands, run the setup contract to verify the cli-printing-press binary is on PATH and initialize scope variables:
