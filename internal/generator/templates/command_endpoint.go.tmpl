@@ -535,7 +535,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				body = []any{}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- else}}
 				bodyMap := map[string]any{}
-				body = bodyMap
+				{{assignJSONBodyMap .Endpoint "bodyMap" "body"}}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- end}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}
 {{- if .IsReadOnly}}
@@ -597,7 +597,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				body = []any{}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- else}}
 				bodyMap := map[string]any{}
-				body = bodyMap
+				{{assignJSONBodyMap .Endpoint "bodyMap" "body"}}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- end}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}
 {{- if endpointHasRequestParams .Endpoint}}
@@ -696,7 +696,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				body = []any{}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- else}}
 				bodyMap := map[string]any{}
-				body = bodyMap
+				{{assignJSONBodyMap .Endpoint "bodyMap" "body"}}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- end}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}
 {{- if .IsReadOnly}}
@@ -789,7 +789,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				body = []any{}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- else}}
 				bodyMap := map[string]any{}
-				body = bodyMap
+				{{assignJSONBodyMap .Endpoint "bodyMap" "body"}}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- end}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}
 {{- if .IsReadOnly}}

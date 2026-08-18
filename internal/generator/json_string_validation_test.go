@@ -260,7 +260,8 @@ func TestHTMLStringBodyParamDoesNotEmitJSONValidation(t *testing.T) {
 	code := string(src)
 
 	require.Contains(t, code, `cmd.Flags().StringVar(&bodyDataHtmlText, "data-html-text"`)
-	require.Contains(t, code, `nestedData["html_text"] = bodyDataHtmlText`)
+	require.Contains(t, code, `body = map[string]any{"data": bodyMap}`)
+	require.Contains(t, code, `bodyMap["html_text"] = bodyDataHtmlText`)
 	require.NotContains(t, code, `parsedDataHtmlText`)
 	require.NotContains(t, code, `parsing --data-html-text JSON`)
 }
