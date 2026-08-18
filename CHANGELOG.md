@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.31.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.30.3...v4.31.0) (2026-08-18)
+
+
+### Features
+
+* **skills:** cut retro always-loaded context by 93% ([#3776](https://github.com/mvanhorn/cli-printing-press/issues/3776)) ([625e876](https://github.com/mvanhorn/cli-printing-press/commit/625e876ef83e401de6938eb1fa898152b1a01d17))
+
+
+### Bug Fixes
+
+* **cli:** prune single-tenant mirrors; do not mark truncated walks complete. ([#4247](https://github.com/mvanhorn/cli-printing-press/issues/4247)) ([47bf39b](https://github.com/mvanhorn/cli-printing-press/commit/47bf39b4529c17e42b1ceae68cf50e2c2a341d69))
+* **cli:** skip MCP tools for sub-resource parent groups ([#4245](https://github.com/mvanhorn/cli-printing-press/issues/4245)) ([de5bd88](https://github.com/mvanhorn/cli-printing-press/commit/de5bd88432f4830bd1ba38c22a92c24650c4402e))
+* **cli:** wrap mutation bodies under spec resource root. ([#4246](https://github.com/mvanhorn/cli-printing-press/issues/4246)) ([3ab775b](https://github.com/mvanhorn/cli-printing-press/commit/3ab775be0125416309f705e4670041e321f98d66))
+
 ## [4.30.3](https://github.com/mvanhorn/cli-printing-press/compare/v4.30.2...v4.30.3) (2026-08-17)
 
 
