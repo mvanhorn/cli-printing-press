@@ -435,7 +435,7 @@ func cobratreeCommandKind(cmd cobraCommandLiteral, depth int) mcpCobraCommandKin
 	if strings.TrimSpace(cmd.annotations["pp:endpoint"]) != "" {
 		return mcpCobraEndpoint
 	}
-	if annotationIsTrueValue(cmd.annotations["pp:api-resource"]) {
+	if annotationIsTrueValue(cmd.annotations["pp:api-resource"]) || annotationIsTrueValue(cmd.annotations["pp:parent-group"]) {
 		return mcpCobraGroup
 	}
 	if depth == 1 && cobratreeFrameworkCommands[name] {
