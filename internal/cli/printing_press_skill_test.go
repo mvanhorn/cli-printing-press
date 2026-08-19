@@ -222,6 +222,7 @@ func TestPrintingPressSkillPhaseReceiptsEnforceEveryHandoff(t *testing.T) {
 	// the --next TARGETS are read from the binary graph, so the files and the
 	// state machine cross-check.
 	completeBlocks := map[string]int{
+		"06-browser-sniff-gate":    3,
 		"08-ecosystem-absorb-gate": 3,
 		"09-api-reachability-gate": 2,
 		"11-build-the-goat":        2,

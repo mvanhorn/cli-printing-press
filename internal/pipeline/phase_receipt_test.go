@@ -405,18 +405,20 @@ func TestReadPhaseReceiptsAcceptsAlternateStoredHandoff(t *testing.T) {
 func TestPhaseReceiptsAcceptEveryDocumentedAlternateHandoff(t *testing.T) {
 	t.Parallel()
 
-	edges := []struct {
+	// Derived from the graph the binary enforces rather than restated as a
+	// literal, so the name stays true and an alternate edge added later is
+	// covered without editing this test.
+	type edge struct {
 		phase string
 		next  string
-	}{
-		{"08-ecosystem-absorb-gate", "06-browser-sniff-gate"},
-		{"08-ecosystem-absorb-gate", "07-crowd-sniff-gate"},
-		{"09-api-reachability-gate", "06-browser-sniff-gate"},
-		{"11-build-the-goat", "08-ecosystem-absorb-gate"},
-		{"12-shipcheck", "20-promote-and-archive"},
-		{"17-local-code-review", "08-ecosystem-absorb-gate"},
-		{"20-promote-and-archive", "18-dogfood-testing"},
 	}
+	var edges []edge
+	for _, phase := range PrintingPressReceiptPhases() {
+		for _, next := range PrintingPressAlternateNextPhases(phase) {
+			edges = append(edges, edge{phase: phase, next: next})
+		}
+	}
+	require.NotEmpty(t, edges)
 
 	for _, edge := range edges {
 		t.Run(edge.phase+"_to_"+edge.next, func(t *testing.T) {
@@ -493,6 +495,66 @@ func TestPhaseReceiptsReplayDiscoveryReworkLoop(t *testing.T) {
 	require.True(t, recorded)
 	assert.Equal(t, PhaseReceiptEntered, entered.Event)
 	assert.Equal(t, "08-ecosystem-absorb-gate", entered.Phase)
+}
+
+func TestPhaseReceiptsReturnBrowserSniffReworkToTheGateThatOrderedIt(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
+	enterAfterCanonicalChain(t, path, "09-api-reachability-gate")
+
+	rework := receiptOptions(t, path, "09-api-reachability-gate")
+	rework.Next = "06-browser-sniff-gate"
+	rework.Note = "cleared-browser capture retry"
+	receipt, recorded, err := CompletePhase(rework, false)
+	require.NoError(t, err)
+	assert.True(t, recorded)
+	assert.Equal(t, "06-browser-sniff-gate", receipt.Next)
+
+	sniff := receiptOptions(t, path, "06-browser-sniff-gate")
+	entered, recorded, err := EnterPhase(sniff)
+	require.NoError(t, err)
+	require.True(t, recorded)
+	assert.Equal(t, PhaseReceiptEntered, entered.Event)
+
+	// The rework returns straight to the gate that ordered it instead of
+	// replaying 07 and 08, whose approvals still stand.
+	sniff.Next = "09-api-reachability-gate"
+	sniff.Note = "capture cleared, retrying reachability"
+	returned, recorded, err := CompletePhase(sniff, false)
+	require.NoError(t, err)
+	require.True(t, recorded)
+	assert.Equal(t, "09-api-reachability-gate", returned.Next)
+
+	receipts, err := ReadPhaseReceipts(path)
+	require.NoError(t, err)
+	assert.Equal(t, "09-api-reachability-gate", receipts[len(receipts)-1].Next)
+
+	latest, err := LatestPhaseReceipt(path, "run-123")
+	require.NoError(t, err)
+	assert.Equal(t, "06-browser-sniff-gate", latest.Phase)
+	assert.Equal(t, "09-api-reachability-gate", latest.Next)
+
+	reentered, recorded, err := EnterPhase(receiptOptions(t, path, "09-api-reachability-gate"))
+	require.NoError(t, err)
+	require.True(t, recorded)
+	assert.Equal(t, PhaseReceiptEntered, reentered.Event)
+}
+
+func TestPhaseReceiptsRejectUndocumentedNextFromSniffGate(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
+	enterAfterCanonicalChain(t, path, "06-browser-sniff-gate")
+
+	// The return edges are exactly the gates that can order rework into this
+	// phase; they are not a licence to jump anywhere downstream.
+	bogus := receiptOptions(t, path, "06-browser-sniff-gate")
+	bogus.Next = "10-generate"
+	bogus.Note = "skip ahead"
+	_, _, err := CompletePhase(bogus, false)
+	require.ErrorContains(t, err, `phase "06-browser-sniff-gate" cannot hand off to "10-generate"`)
+	require.ErrorContains(t, err, "allowed: 07-crowd-sniff-gate, 08-ecosystem-absorb-gate, 09-api-reachability-gate")
 }
 
 func TestReadPhaseReceiptsReportsAlternatesForReworkPhase(t *testing.T) {

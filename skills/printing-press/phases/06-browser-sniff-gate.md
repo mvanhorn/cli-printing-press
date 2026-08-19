@@ -252,4 +252,18 @@ the browser-sniff gate marker:
 "$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "06-browser-sniff-gate" --evidence "$API_RUN_DIR/browser-browser-sniff-gate.json"
 ```
 
+If you entered this phase from a rework handoff, complete back to the gate that
+sent you, not to `Next:` — replaying the phases in between re-prompts the user to
+re-approve work that already passed. From [Phase 1.5](08-ecosystem-absorb-gate.md):
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "06-browser-sniff-gate" --next "08-ecosystem-absorb-gate" --note "browser-sniff rework complete for <source>"
+```
+
+From [Phase 1.9](09-api-reachability-gate.md):
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "06-browser-sniff-gate" --next "09-api-reachability-gate" --note "cleared-browser capture retry complete: <outcome>"
+```
+
 Next: phases/07-crowd-sniff-gate.md

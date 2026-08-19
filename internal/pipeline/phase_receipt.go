@@ -63,7 +63,17 @@ var printingPressReceiptPhases = []string{
 // code review that uncovers a scope change returns to the absorb gate, and the
 // promote gate backtracks to dogfood when an acceptance marker is missing. Every
 // other handoff stays on the canonical linear order.
+//
+// A rework edge implies a return edge to its origin, unless the canonical next
+// already provides one: a phase a gate can send rework into must be able to
+// complete straight back to that gate, or the only legal route back is a replay
+// of every phase in between, which re-enters gates that already hold their
+// approval and re-prompts the user for it. Only the browser-sniff gate needs
+// explicit entries. The crowd-sniff gate is reworked solely by the absorb gate,
+// which is already its canonical next, so listing that edge here would duplicate
+// the canonical one and change no routing decision.
 var printingPressAlternateNext = map[string][]string{
+	"06-browser-sniff-gate":    {"08-ecosystem-absorb-gate", "09-api-reachability-gate"},
 	"08-ecosystem-absorb-gate": {"06-browser-sniff-gate", "07-crowd-sniff-gate"},
 	"09-api-reachability-gate": {"06-browser-sniff-gate"},
 	"11-build-the-goat":        {"08-ecosystem-absorb-gate"},
