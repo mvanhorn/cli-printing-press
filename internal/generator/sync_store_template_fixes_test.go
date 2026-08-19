@@ -474,9 +474,181 @@ func TestSyncDependentResourceDeclaredFailureWithItemsIsIntegrityFailure(t *test
 		t.Fatalf("events did not contain dependent declared-failure sync error: %s", events.String())
 	}
 }
+
+func TestSyncResourceOkFalseEnvelopeIsIntegrityFailure(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	var events bytes.Buffer
+	res := syncResource(context.Background(), fixedBodyClient{body: json.RawMessage(` + "`" + `{"ok":false,"error":"not_authed"}` + "`" + `)}, db, "things", "", false, 1, false, false, nil, &events)
+	if res.Err == nil {
+		t.Fatalf("syncResource returned clean success for ok:false body; events: %s", events.String())
+	}
+	if !res.IntegrityFailure {
+		t.Fatalf("IntegrityFailure = false, want true")
+	}
+	if res.Count != 0 {
+		t.Fatalf("Count = %d, want 0", res.Count)
+	}
+	if !strings.Contains(events.String(), "response declared failure") {
+		t.Fatalf("events did not contain ok:false sync error: %s", events.String())
+	}
+	rows, err := db.List("things", 10)
+	if err != nil {
+		t.Fatalf("list things: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("stored rows = %d, want 0 (ok:false body must not upsert)", len(rows))
+	}
+}
+
+func TestSyncResourceOkFalseEnvelopeWithItemsIsIntegrityFailure(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	var events bytes.Buffer
+	res := syncResource(context.Background(), fixedBodyClient{body: json.RawMessage(` + "`" + `{"ok":false,"error":"not_authed","data":[{"id":"bad"}],"next_cursor":"still-more"}` + "`" + `)}, db, "things", "", false, 1, false, false, nil, &events)
+	if res.Err == nil {
+		t.Fatalf("syncResource returned clean success for ok:false body with items; events: %s", events.String())
+	}
+	if !res.IntegrityFailure {
+		t.Fatalf("IntegrityFailure = false, want true")
+	}
+	if res.Count != 0 {
+		t.Fatalf("Count = %d, want 0", res.Count)
+	}
+	rows, err := db.List("things", 10)
+	if err != nil {
+		t.Fatalf("list things: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("stored rows = %d, want 0 (ok:false body must not upsert)", len(rows))
+	}
+}
+
+func TestSyncResourcePascalOkFalseIsIntegrityFailure(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	var events bytes.Buffer
+	res := syncResource(context.Background(), fixedBodyClient{body: json.RawMessage(` + "`" + `{"Ok":false,"error":"not_authed"}` + "`" + `)}, db, "things", "", false, 1, false, false, nil, &events)
+	if res.Err == nil {
+		t.Fatalf("syncResource returned clean success for Ok:false body; events: %s", events.String())
+	}
+	if !res.IntegrityFailure {
+		t.Fatalf("IntegrityFailure = false, want true")
+	}
+	rows, err := db.List("things", 10)
+	if err != nil {
+		t.Fatalf("list things: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("stored rows = %d, want 0 (Ok:false body must not upsert)", len(rows))
+	}
+}
+
+func TestSyncResourceOkTrueEnvelopeStoresItems(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	var events bytes.Buffer
+	res := syncResource(context.Background(), fixedBodyClient{body: json.RawMessage(` + "`" + `{"ok":true,"data":[{"id":"good-1"},{"id":"good-2"}]}` + "`" + `)}, db, "things", "", false, 1, false, false, nil, &events)
+	if res.Err != nil {
+		t.Fatalf("syncResource error for ok:true body: %v; events: %s", res.Err, events.String())
+	}
+	if res.IntegrityFailure {
+		t.Fatalf("IntegrityFailure = true, want false")
+	}
+	if res.Count != 2 {
+		t.Fatalf("Count = %d, want 2", res.Count)
+	}
+	rows, err := db.List("things", 10)
+	if err != nil {
+		t.Fatalf("list things: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("stored rows = %d, want 2", len(rows))
+	}
+}
+
+func TestSyncResourceWithoutOkFieldStillStores(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	var events bytes.Buffer
+	res := syncResource(context.Background(), fixedBodyClient{body: json.RawMessage(` + "`" + `[{"id":"plain-1"},{"id":"plain-2"}]` + "`" + `)}, db, "things", "", false, 1, false, false, nil, &events)
+	if res.Err != nil {
+		t.Fatalf("syncResource error for body without ok: %v; events: %s", res.Err, events.String())
+	}
+	if res.IntegrityFailure {
+		t.Fatalf("IntegrityFailure = true, want false")
+	}
+	if res.Count != 2 {
+		t.Fatalf("Count = %d, want 2", res.Count)
+	}
+	rows, err := db.List("things", 10)
+	if err != nil {
+		t.Fatalf("list things: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("stored rows = %d, want 2", len(rows))
+	}
+}
+
+func TestSyncDependentResourceOkFalseEnvelopeIsIntegrityFailure(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Upsert("parents", "p1", []byte(` + "`" + `{"id":"p1"}` + "`" + `)); err != nil {
+		t.Fatalf("insert parent: %v", err)
+	}
+
+	var events bytes.Buffer
+	res := syncDependentResource(
+		context.Background(),
+		fixedBodyClient{body: json.RawMessage(` + "`" + `{"ok":false,"error":"not_authed","data":[{"id":"c1"}]}` + "`" + `)},
+		db,
+		dependentResourceDef{Name: "children", ParentTable: "parents", ParentIDParam: "parentId", PathTemplate: "/parents/{parentId}/children"},
+		"", false, 1, false, false, nil, &events, 1,
+	)
+	if res.Err == nil {
+		t.Fatalf("syncDependentResource returned clean success for ok:false body; events: %s", events.String())
+	}
+	if !res.IntegrityFailure {
+		t.Fatalf("IntegrityFailure = false, want true")
+	}
+	if res.Count != 0 {
+		t.Fatalf("Count = %d, want 0", res.Count)
+	}
+	rows, err := db.List("children", 10)
+	if err != nil {
+		t.Fatalf("list children: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("stored rows = %d, want 0 (ok:false body must not upsert)", len(rows))
+	}
+}
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "batch4_sync_test.go"), []byte(cliTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "TestCurrencyCodeSuffixExtractsResourceID", "-count=1")
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(SyncExtractIDSuffixFallbackIsGuarded|ExtractPageItemsDRFTopLevelNextURL|ExtractPageItemsDRFTopLevelRelativeNextURL|ExtractPageItemsBareTokenCursorUnaffected|SyncResourceNonJSONBodyEmitsAnomaly|SyncResourceValidEmptyJSONDoesNotEmitNonJSONAnomaly|SyncResourceZeroStoredIsIntegrityFailure|SyncResourceDeclaredFailure|SyncDependentResourceNonJSONBodyEmitsAnomaly|SyncDependentResourceDeclaredFailure)", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(SyncExtractIDSuffixFallbackIsGuarded|ExtractPageItemsDRFTopLevelNextURL|ExtractPageItemsDRFTopLevelRelativeNextURL|ExtractPageItemsBareTokenCursorUnaffected|SyncResourceNonJSONBodyEmitsAnomaly|SyncResourceValidEmptyJSONDoesNotEmitNonJSONAnomaly|SyncResourceZeroStoredIsIntegrityFailure|SyncResourceDeclaredFailure|SyncDependentResourceNonJSONBodyEmitsAnomaly|SyncDependentResourceDeclaredFailure|SyncResourceOkFalseEnvelope|SyncResourcePascalOkFalse|SyncResourceOkTrueEnvelopeStoresItems|SyncResourceWithoutOkFieldStillStores|SyncDependentResourceOkFalseEnvelope)", "-count=1")
 }

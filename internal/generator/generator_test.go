@@ -5614,6 +5614,29 @@ func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
 	if isEmptyPageResponse(statusSuccess) {
 		t.Fatalf("status=success null data envelope should not be treated as an empty page")
 	}
+
+	okFalse := json.RawMessage(` + "`" + `{"ok": false, "error": "not_authed"}` + "`" + `)
+	if isEmptyPageResponse(okFalse) {
+		t.Fatalf("ok:false envelope should not be treated as an empty page")
+	}
+	if !responseDeclaresFailure(okFalse) {
+		t.Fatalf("ok:false envelope should be detected as a declared failure")
+	}
+
+	okTrue := json.RawMessage(` + "`" + `{"ok": true, "data": [{"id": "ch1"}]}` + "`" + `)
+	if responseDeclaresFailure(okTrue) {
+		t.Fatalf("ok:true envelope should not be detected as a declared failure")
+	}
+
+	pascalOkFalse := json.RawMessage(` + "`" + `{"Ok": false, "error": "not_authed"}` + "`" + `)
+	if !responseDeclaresFailure(pascalOkFalse) {
+		t.Fatalf("PascalCase Ok:false envelope should be detected as a declared failure")
+	}
+
+	noEnvelope := json.RawMessage(` + "`" + `{"id": "plain-1", "name": "widget"}` + "`" + `)
+	if responseDeclaresFailure(noEnvelope) {
+		t.Fatalf("body without success/ok/status should not be a declared failure")
+	}
 }
 
 func TestLookupFieldValuePascalCase(t *testing.T) {
