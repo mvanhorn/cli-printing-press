@@ -2303,9 +2303,9 @@ func TestMergeSpecsKeepsExplicitMutationFalseWhenOverlappingUnset(t *testing.T) 
 	}
 
 	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "merged")
-	require.Contains(t, merged.Resources, "items")
-	require.Contains(t, merged.Resources, "catalog-items")
-	got := merged.Resources["catalog-items"].Endpoints["search"]
+	require.Contains(t, merged.Resources, "admin")
+	require.Contains(t, merged.Resources, "catalog")
+	got := merged.Resources["catalog"].Endpoints["search"]
 	require.NotNil(t, got.Mutation)
 	assert.False(t, *got.Mutation)
 }
