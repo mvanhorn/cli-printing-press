@@ -2477,12 +2477,6 @@ func (e *Endpoint) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// OptionalBool returns a pointer to v for optional spec flags such as
-// Endpoint.Mutation, where nil means unset.
-func OptionalBool(v bool) *bool {
-	return &v
-}
-
 // MutationOverride reports the explicit mutation flag. set is false when
 // the spec omitted mutation, so callers can distinguish unset from false.
 func (e Endpoint) MutationOverride() (value, set bool) {

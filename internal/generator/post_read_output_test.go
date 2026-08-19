@@ -34,7 +34,7 @@ func postReadOutputSpec() *spec.APISpec {
 					Method:      "POST",
 					Path:        "/sets/items",
 					Description: "List set items",
-					Mutation:    spec.OptionalBool(false),
+					Mutation:    new(false),
 					Body:        []spec.Param{{Name: "term", Type: "string"}},
 					Response:    spec.ResponseDef{Type: "array"},
 				},

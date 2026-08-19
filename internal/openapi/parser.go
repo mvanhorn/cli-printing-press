@@ -3717,7 +3717,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			endpoint.MembershipField = pathMembershipField
 			endpoint.Critical = pathCritical
 			if mutation, present := boolExtension(op.Extensions, extensionPPMutation); present {
-				endpoint.Mutation = spec.OptionalBool(mutation)
+				endpoint.Mutation = new(mutation)
 			}
 			opSyncable, _ := boolExtension(op.Extensions, extensionPPSyncable)
 			endpoint.Syncable = pathSyncable || opSyncable

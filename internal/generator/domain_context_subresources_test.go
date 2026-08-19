@@ -145,7 +145,7 @@ func TestBuildDomainContext_GETMutationsAreWritable(t *testing.T) {
 				"restart": {
 					Method:   "GET",
 					Path:     "/explicit/{id}/restart",
-					Mutation: spec.OptionalBool(true),
+					Mutation: new(true),
 				},
 			},
 		},
