@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.31.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.0...v4.31.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* **cli:** keep POST read/search/list response bodies ([#4274](https://github.com/mvanhorn/cli-printing-press/issues/4274)) ([2fb6337](https://github.com/mvanhorn/cli-printing-press/commit/2fb6337b595fb39651b1bfbcf2de131dac44dcd6))
+* **cli:** pin golang.org/x/text above GO-2026-5970 ([#4268](https://github.com/mvanhorn/cli-printing-press/issues/4268)) ([993667e](https://github.com/mvanhorn/cli-printing-press/commit/993667e18296f91efab690b555881c10ae297340))
+* **cli:** send x-pp-sync-walker query-param parent keys ([#4271](https://github.com/mvanhorn/cli-printing-press/issues/4271)) ([61dd4bf](https://github.com/mvanhorn/cli-printing-press/commit/61dd4bfd82b5600f8d47c68f114145c0b6b59589)), closes [#3816](https://github.com/mvanhorn/cli-printing-press/issues/3816)
+* **cli:** treat HTTP 200 ok:false envelopes as sync failures ([#4269](https://github.com/mvanhorn/cli-printing-press/issues/4269)) ([8944db4](https://github.com/mvanhorn/cli-printing-press/commit/8944db4a81c1d1a67d99f5e52db9b96ae340e000)), closes [#3956](https://github.com/mvanhorn/cli-printing-press/issues/3956)
+
 ## [4.31.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.30.3...v4.31.0) (2026-08-18)
 
 
