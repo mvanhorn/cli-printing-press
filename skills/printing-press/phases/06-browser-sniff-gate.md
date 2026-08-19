@@ -254,7 +254,11 @@ the browser-sniff gate marker:
 
 If you entered this phase from a rework handoff, complete back to the gate that
 sent you, not to `Next:` — replaying the phases in between re-prompts the user to
-re-approve work that already passed. From [Phase 1.5](08-ecosystem-absorb-gate.md):
+re-approve work that already passed. The binary enforces this: it reads the
+rework handoff out of the ledger and rejects a return to the other gate, so use
+the block that matches the gate you came from. Entered from `Next:` rather than a
+rework handoff, this phase has neither block available and completes to `Next:`.
+From [Phase 1.5](08-ecosystem-absorb-gate.md):
 
 ```bash
 "$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "06-browser-sniff-gate" --next "08-ecosystem-absorb-gate" --note "browser-sniff rework complete for <source>"

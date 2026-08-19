@@ -65,13 +65,16 @@ var printingPressReceiptPhases = []string{
 // other handoff stays on the canonical linear order.
 //
 // A rework edge implies a return edge to its origin, unless the canonical next
-// already provides one: a phase a gate can send rework into must be able to
-// complete straight back to that gate, or the only legal route back is a replay
-// of every phase in between, which re-enters gates that already hold their
-// approval and re-prompts the user for it. Only the browser-sniff gate needs
-// explicit entries. The crowd-sniff gate is reworked solely by the absorb gate,
-// which is already its canonical next, so listing that edge here would duplicate
-// the canonical one and change no routing decision.
+// already provides one, and the return is bound to the recorded origin: a phase
+// a gate can send rework into must be able to complete straight back to that
+// gate, or the only legal route back is a replay of every phase in between,
+// which re-enters gates that already hold their approval and re-prompts the user
+// for it. The return is bound because the edges alone are not: listing two of
+// them lets a run reworked by one gate answer to the other. See
+// printingPressReturnBoundPhases. Only the browser-sniff gate needs explicit
+// entries. The crowd-sniff gate is reworked solely by the absorb gate, which is
+// already its canonical next, so listing that edge here would duplicate the
+// canonical one and change no routing decision.
 var printingPressAlternateNext = map[string][]string{
 	"06-browser-sniff-gate":    {"08-ecosystem-absorb-gate", "09-api-reachability-gate"},
 	"08-ecosystem-absorb-gate": {"06-browser-sniff-gate", "07-crowd-sniff-gate"},
@@ -81,6 +84,20 @@ var printingPressAlternateNext = map[string][]string{
 	"17-local-code-review":     {"08-ecosystem-absorb-gate"},
 	"20-promote-and-archive":   {"18-dogfood-testing"},
 }
+
+// printingPressReturnBoundPhases names the phases whose alternate handoffs are
+// pure return edges, so which one is legal is decided by the ledger rather than
+// by the agent: a run may only complete back to the gate that ordered its
+// rework. The browser-sniff gate is reworked by both the absorb gate and the
+// reachability gate, and the reachability gate's canonical next is generate, so
+// an unbound return lets an absorb-ordered rework answer to reachability and
+// reach generate with a capture the absorb gate never re-reviewed.
+//
+// The other alternate edges mean something else and stay unbound: 08 and 09 into
+// the sniff gates order rework, 11 and 17 into 08 jump back to replay forward,
+// and 12 into 20 is a forward jump. Binding those would demand, say, that the
+// absorb gate entered from the local code review complete back to that review.
+var printingPressReturnBoundPhases = []string{"06-browser-sniff-gate"}
 
 // PrintingPressReceiptPhases returns the canonical phase order the state machine
 // enforces. It returns a copy so callers, including the skill contract tests, can
@@ -239,6 +256,9 @@ func CompletePhase(opts PhaseReceiptOptions, skipped bool) (*PhaseReceipt, bool,
 	}
 	last, err := lastPhaseReceipt(receipts, opts.RunID)
 	if err != nil {
+		return nil, false, err
+	}
+	if err := validateReworkReturn(receipts, opts.Phase, next); err != nil {
 		return nil, false, err
 	}
 
@@ -702,6 +722,30 @@ func resolveCompleteNext(phase, next string) (string, error) {
 		return trimmed, nil
 	}
 	return "", fmt.Errorf("phase %q cannot hand off to %q; allowed: %s", phase, trimmed, strings.Join(allowedNextPhases(phase), ", "))
+}
+
+// validateReworkReturn binds a return-bound phase's alternate handoff to the
+// gate that ordered the rework: the most recent handoff into this phase from one
+// of the phase's own alternates. It reads the already-parsed ledger the caller
+// holds, so the append path still touches the file once. A run that does want
+// the phases in between re-run keeps the canonical handoff, which is never
+// bound, so nothing this rejects was the only route to anywhere.
+func validateReworkReturn(receipts []PhaseReceipt, phase, next string) error {
+	if next == expectedNextPhase(phase) || !slices.Contains(printingPressReturnBoundPhases, phase) {
+		return nil
+	}
+	alternates := printingPressAlternateNext[phase]
+	for i := len(receipts) - 1; i >= 0; i-- {
+		origin := receipts[i]
+		if origin.Next != phase || !slices.Contains(alternates, origin.Phase) {
+			continue
+		}
+		if next != origin.Phase {
+			return fmt.Errorf("phase %q was reworked by %q and must hand off back to it, not %q", phase, origin.Phase, next)
+		}
+		return nil
+	}
+	return fmt.Errorf("phase %q has no recorded rework order to return to; %q is a return edge, so hand off to %q", phase, next, expectedNextPhase(phase))
 }
 
 // allowedNextPhases orders the canonical next phase first so a rejected handoff

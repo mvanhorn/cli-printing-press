@@ -3,6 +3,7 @@ package pipeline
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -251,6 +252,21 @@ func enterAfterCanonicalChain(t *testing.T, path, target string) {
 	}
 }
 
+// orderReworkInto walks the canonical chain to the gate that orders rework and
+// records its handoff, leaving the ledger ready for the target phase to be
+// entered. A return-bound phase can only be completed off-canonical from here.
+func orderReworkInto(t *testing.T, path, origin, target string) {
+	t.Helper()
+	enterAfterCanonicalChain(t, path, origin)
+	opts := receiptOptions(t, path, origin)
+	opts.Next = target
+	opts.Note = "documented rework"
+	_, _, err := CompletePhase(opts, false)
+	require.NoError(t, err)
+	_, _, err = EnterPhase(receiptOptions(t, path, target))
+	require.NoError(t, err)
+}
+
 func TestPhaseReceiptsAllowShipcheckHoldHandoff(t *testing.T) {
 	t.Parallel()
 
@@ -424,7 +440,13 @@ func TestPhaseReceiptsAcceptEveryDocumentedAlternateHandoff(t *testing.T) {
 		t.Run(edge.phase+"_to_"+edge.next, func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
-			enterAfterCanonicalChain(t, path, edge.phase)
+			if slices.Contains(printingPressReturnBoundPhases, edge.phase) {
+				// A return edge is legal only for a phase a rework order
+				// brought here, and the edge's target is that order's origin.
+				orderReworkInto(t, path, edge.next, edge.phase)
+			} else {
+				enterAfterCanonicalChain(t, path, edge.phase)
+			}
 
 			opts := receiptOptions(t, path, edge.phase)
 			opts.Next = edge.next
@@ -517,6 +539,14 @@ func TestPhaseReceiptsReturnBrowserSniffReworkToTheGateThatOrderedIt(t *testing.
 	require.True(t, recorded)
 	assert.Equal(t, PhaseReceiptEntered, entered.Event)
 
+	// The absorb gate is a documented alternate for this phase, but it did not
+	// order this rework, so it is not where this rework returns.
+	misrouted := sniff
+	misrouted.Next = "08-ecosystem-absorb-gate"
+	misrouted.Note = "capture cleared"
+	_, _, err = CompletePhase(misrouted, false)
+	require.ErrorContains(t, err, `phase "06-browser-sniff-gate" was reworked by "09-api-reachability-gate" and must hand off back to it, not "08-ecosystem-absorb-gate"`)
+
 	// The rework returns straight to the gate that ordered it instead of
 	// replaying 07 and 08, whose approvals still stand.
 	sniff.Next = "09-api-reachability-gate"
@@ -539,6 +569,52 @@ func TestPhaseReceiptsReturnBrowserSniffReworkToTheGateThatOrderedIt(t *testing.
 	require.NoError(t, err)
 	require.True(t, recorded)
 	assert.Equal(t, PhaseReceiptEntered, reentered.Event)
+}
+
+func TestPhaseReceiptsBindBrowserSniffReturnToTheAbsorbGateThatOrderedIt(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
+	orderReworkInto(t, path, "08-ecosystem-absorb-gate", "06-browser-sniff-gate")
+
+	// Returning to the reachability gate would hand the new capture to generate:
+	// 09's canonical next is 10, so the absorb gate that ordered this rework
+	// would never see what came back.
+	bypass := receiptOptions(t, path, "06-browser-sniff-gate")
+	bypass.Next = "09-api-reachability-gate"
+	bypass.Note = "browser-sniff rework complete"
+	_, _, err := CompletePhase(bypass, false)
+	require.ErrorContains(t, err, `phase "06-browser-sniff-gate" was reworked by "08-ecosystem-absorb-gate" and must hand off back to it, not "09-api-reachability-gate"`)
+
+	back := receiptOptions(t, path, "06-browser-sniff-gate")
+	back.Next = "08-ecosystem-absorb-gate"
+	back.Note = "browser-sniff rework complete"
+	receipt, recorded, err := CompletePhase(back, false)
+	require.NoError(t, err)
+	assert.True(t, recorded)
+	assert.Equal(t, "08-ecosystem-absorb-gate", receipt.Next)
+}
+
+func TestPhaseReceiptsRejectBrowserSniffReturnWithoutReworkOrder(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
+	enterAfterCanonicalChain(t, path, "06-browser-sniff-gate")
+
+	// Reached on the canonical route, this phase has no rework order to answer,
+	// so its return edges are not a shortcut past the crowd-sniff gate.
+	shortcut := receiptOptions(t, path, "06-browser-sniff-gate")
+	shortcut.Next = "08-ecosystem-absorb-gate"
+	shortcut.Note = "nothing to crowd-sniff"
+	_, _, err := CompletePhase(shortcut, false)
+	require.ErrorContains(t, err, `phase "06-browser-sniff-gate" has no recorded rework order to return to; "08-ecosystem-absorb-gate" is a return edge, so hand off to "07-crowd-sniff-gate"`)
+
+	// The canonical handoff is never bound, so the phase still completes.
+	canonical := receiptOptions(t, path, "06-browser-sniff-gate")
+	receipt, recorded, err := CompletePhase(canonical, false)
+	require.NoError(t, err)
+	assert.True(t, recorded)
+	assert.Equal(t, "07-crowd-sniff-gate", receipt.Next)
 }
 
 func TestPhaseReceiptsRejectUndocumentedNextFromSniffGate(t *testing.T) {

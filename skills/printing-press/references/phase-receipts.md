@@ -18,7 +18,7 @@ At each phase boundary:
    recorded with `--next` — an alternate handoff always requires `--note` and
    never combines with `--skip`:
    - discovery rework — Phase 1.5 or the reachability gate back to Phase 1.7/1.8 (`08→06`, `08→07`, `09→06`)
-   - rework return — Phase 1.7 back to the gate that ordered it (`06→08`, `06→09`)
+   - rework return — Phase 1.7 back to the gate that ordered it, and only that gate: the binary reads the ordering handoff out of the ledger (`06→08`, `06→09`)
    - build infeasible — Phase 3 back to Phase 1.5 (`11→08`)
    - shipcheck hold — Phase 4 straight to Phase 5.6 (`12→20`)
    - scope change in review — Phase 4.95 back to Phase 1.5 (`17→08`)
