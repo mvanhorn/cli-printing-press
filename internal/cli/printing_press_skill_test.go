@@ -276,12 +276,40 @@ func TestPrintingPressSkillPhaseReceiptsEnforceEveryHandoff(t *testing.T) {
 		require.NotContains(t, content, "--phase-file")
 	}
 
-	router, err := os.ReadFile("../../skills/printing-press/SKILL.md")
+	// The receipt contract itself lives in the reference the router points at, so
+	// the always-loaded spine stays thin.
+	receipts, err := os.ReadFile("../../skills/printing-press/references/phase-receipts.md")
 	require.NoError(t, err)
-	require.Contains(t, string(router), "Receipts own sequencing only")
-	require.Contains(t, string(router), "never copied into manuscripts")
-	require.Contains(t, string(router), "Never write secrets, credentials")
-	require.Contains(t, string(router), "`previous` receipt")
-	require.Contains(t, string(router), "`phase_receipt_log`")
-	require.Contains(t, string(router), "restart pointer")
+	require.Contains(t, string(receipts), "Receipts own sequencing only")
+	require.Contains(t, string(receipts), "never copied into manuscripts")
+	require.Contains(t, string(receipts), "Never write secrets, credentials")
+	require.Contains(t, string(receipts), "`previous` receipt")
+	require.Contains(t, string(receipts), "`phase_receipt_log`")
+	require.Contains(t, string(receipts), "restart pointer")
+}
+
+func TestPrintingPressSkillRouterStaysAThinSpine(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile("../../skills/printing-press/SKILL.md")
+	require.NoError(t, err)
+	router := string(data)
+
+	require.Less(t, len(strings.Split(router, "\n")), 100, "SKILL.md must stay a thin always-loaded spine")
+	require.Contains(t, router, "**Result:**")
+	require.Contains(t, router, "**Next consumer:**")
+	require.Contains(t, router, "**Done:**")
+	require.Contains(t, router, "**Intent:**")
+	require.Contains(t, router, "Use when the user says build a CLI")
+	require.Contains(t, router, "**Never execute a phase from memory. When you enter a phase, Read its file from phases/ first.**")
+
+	// Run resolution and the receipt contract are loaded on demand, not restated
+	// in the router.
+	require.Contains(t, router, "references/run-resolution.md")
+	require.Contains(t, router, "references/phase-receipts.md")
+
+	// The phase index is a bare Step | File table: per-phase purpose and gate
+	// columns are the phase files' job.
+	require.NotContains(t, router, "One-line purpose")
+	require.NotContains(t, router, "Gates")
 }

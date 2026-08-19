@@ -1825,7 +1825,8 @@ to proceed. The user makes the final call on those non-mandatory findings.
 ### PII pattern scanning (mandatory)
 
 Beyond the secret scans above, run the **PII pattern scanning** step defined in
-the main printing-press skill's secret-protection reference. This catches PII captured during live dogfood
+`references/secret-protection.md` in the printing-press skill, section *PII
+pattern scanning*. It carries the Tier 1 pattern set and the sweep loop. This catches PII captured during live dogfood
 that the prose guidance missed — emails, real attendee names, account
 identifiers — before they ship to the public library repo.
 

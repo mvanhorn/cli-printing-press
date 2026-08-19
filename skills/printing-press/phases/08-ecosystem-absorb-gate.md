@@ -301,7 +301,7 @@ Also write discovery pages if browser-sniff was used. The generator reads these 
 
 ### Priority inversion check (combo CLIs only)
 
-**Only runs when `source-priority.json` exists from the Multi-Source Priority Gate.**
+**Only runs when `source-priority.json` exists from the Multi-Source Priority Gate in [references/run-resolution.md](../references/run-resolution.md).**
 
 Before Phase Gate 1.5, tally the commands/features the manifest attributes to each named source. Compare against the confirmed priority ordering:
 

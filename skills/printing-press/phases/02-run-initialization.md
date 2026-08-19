@@ -1,6 +1,6 @@
 ## Run Initialization
 
-After you know `<api>` (from the [Orientation & Briefing](../SKILL.md#orientation--briefing) flow in the router; [preflight](01-preflight.md) already ran), initialize the run-scoped artifact paths:
+After you know `<api>` (from the orientation and briefing flow in [references/run-resolution.md](../references/run-resolution.md); [preflight](01-preflight.md) already ran), initialize the run-scoped artifact paths:
 
 ```bash
 mkdir -p "$PRESS_RUNSTATE/runs"

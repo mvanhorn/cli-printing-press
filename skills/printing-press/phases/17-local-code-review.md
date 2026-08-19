@@ -38,7 +38,7 @@ Fix without asking when:
 - There is no plausible competing implementation a reasonable user would prefer over the chosen one.
 
 Surface to the user only when the fix requires a real tradeoff they have to make. Real tradeoffs look like:
-- **Shipping scope shrinks.** Closing the finding cleanly means dropping or significantly degrading a [Phase 1.5](08-ecosystem-absorb-gate.md)-approved feature. (Per the [Rules](../SKILL.md#rules) section in the router, scope changes route back to [Phase 1.5](08-ecosystem-absorb-gate.md) for re-approval, not a silent shrink here.)
+- **Shipping scope shrinks.** Closing the finding cleanly means dropping or significantly degrading a [Phase 1.5](08-ecosystem-absorb-gate.md)-approved feature. (Scope changes route back to [Phase 1.5](08-ecosystem-absorb-gate.md) for re-approval, not a silent shrink here.)
 - **Two materially different valid fixes** with different cost, surface, or dependency profiles, and either is defensible.
 - **The finding implies a [Phase 1](04-research-brief.md) research miss** — wrong primary source, wrong auth model, wrong transport — that the agent cannot resolve from in-session context.
 - **The fix re-triggers a long phase** (re-running browser-sniff, regen from spec, etc.).

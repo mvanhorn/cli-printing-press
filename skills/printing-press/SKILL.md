@@ -19,309 +19,79 @@ created_by: user
 
 # /printing-press
 
-Generate the best useful CLI for an API without burning an hour on phase theater.
+**Result:** A working Go CLI in `$PRESS_LIBRARY/<api-slug>/`, plus up to five dense
+manuscripts archived to `$PRESS_MANUSCRIPTS/<api-slug>/<run-id>/`: research brief,
+absorb manifest, build log, shipcheck proof, and live smoke proof when live testing ran.
 
-```bash
-/printing-press Notion
-/printing-press Discord codex
-/printing-press --spec ./openapi.yaml
-/printing-press --har ./capture.har --name MyAPI
-/printing-press https://postman.com/explore
-/printing-press https://postman.com
-```
+**Next consumer:** The user, who runs the CLI or ships it, and the sibling skills that
+take it from here: `printing-press-polish` for a second pass, `printing-press-publish`
+for the public library, `printing-press-retro` for findings against the Press itself.
 
-## Modes
+**Done:** Every feature approved at the absorb gate is implemented, shipcheck reached
+ship, the live dogfood matrix ran against real targets, the CLI is promoted, and the
+receipt ledger closes on the last phase.
 
-### Default
+**Intent:** The best useful CLI for an API without an hour of phase theater. Optimize
+for time-to-ship, not time-to-document: reuse prior research when it is already good
+enough, run the cheap high-signal checks early, fix blockers before polish.
 
-Normal mode. Claude does research, generation orchestration, implementation, and verification.
+## Boundaries
 
-### Codex Mode
+- **Never leak a secret.** API key **values**, token **values**, passwords, and session
+  cookies must never reach source, manuscripts, proofs, READMEs, HARs, receipts, or
+  anything committed. Env var **names** and placeholders are safe. Phase 5.6 and publish
+  apply [references/secret-protection.md](references/secret-protection.md).
+- **Never ship untested.** `go build` and `verify` pass-rate are structural signals, not
+  correctness signals. A CLI that has not been through the live matrix in
+  [phases/18-dogfood-testing.md](phases/18-dogfood-testing.md) is not shippable, and a
+  bug a 1-3 file edit resolves is fixed now, not filed for v0.2.
+- **Never quote human-time estimates** for sub-tasks ("~15-30 min", "quick fix"). The
+  agent does the work, not the user; describe scope instead. The carve-outs are the
+  genuinely time-bound: the whole run (30-60 minutes), tool installs, and the
+  network-bound printing-press subcommands.
+- **Never sequence from memory.** The receipt ledger decides which phase comes next; see
+  [references/phase-receipts.md](references/phase-receipts.md).
 
-If the arguments include `codex` or `--codex`, offload pure code-writing tasks to Codex CLI.
+## Authority
 
-Use Codex for:
-- writing store/data-layer code
-- writing workflow commands
-- fixing dead flags / dead code / path issues
-- README cookbook edits
+Invocation authorizes reading and writing under `$PRESS_RUNSTATE/`, `$PRESS_LIBRARY/`,
+and `$PRESS_MANUSCRIPTS/`, running the printing-press binary and the Go toolchain, and
+researching the API on the open web. It does not authorize publishing to the public
+library, opening a pull request, or writing anywhere else on the user's machine.
 
-Keep on Claude:
-- research and product positioning
-- choosing which gaps matter
-- verification results and ship decisions
+## Steps
 
-If Codex fails 3 times in a row, stop delegating and finish locally.
-
-### Polish Mode (Standalone Skill)
-
-For second-pass improvements to an existing CLI, use the standalone polish skill:
-
-```bash
-/printing-press-polish redfin
-```
-
-See the `printing-press-polish` skill for details. It runs diagnostics, fixes verify failures, removes dead code, cleans up descriptions and README, and offers to publish.
-
-## Rules
-
-- **Do not ship a CLI that hasn't been behaviorally tested against real targets.** `go build` and `verify` pass-rate are structural signals, not correctness signals. Phase 5's mechanical test matrix in [phases/18-dogfood-testing.md](phases/18-dogfood-testing.md) runs every subcommand + `--json` + error paths; if that matrix was not executed, the CLI is not shippable. Quick Check is the floor; Full Dogfood is required when the user asks for thoroughness.
-- **Bugs found during dogfood are fix-before-ship, not "file for v0.2".** If a 1-3 file edit resolves it, do it now. `ship-with-gaps` is deprecated as a default verdict (see Phase 4 in [phases/12-shipcheck.md](phases/12-shipcheck.md)). Context is freshest in-session; a v0.2 backlog that may never be revisited ships known-broken CLIs.
-- **Features approved in Phase 1.5 are shipping scope.** Do not downgrade a shipping-scope feature to a stub mid-build. If implementation becomes infeasible, return to Phase 1.5 in [phases/08-ecosystem-absorb-gate.md](phases/08-ecosystem-absorb-gate.md) with a revised manifest and get explicit re-approval. Record the return with the alternate `--next` handoff shown in [phases/11-build-the-goat.md](phases/11-build-the-goat.md) before re-entering the gate.
-- **Do not quote human-time estimates for sub-tasks** ("~15-30 min", "~1 hour", "quick fix") in `AskUserQuestion` options, phase descriptions, or reference docs. The agent does the work, not the user; agent-fabricated estimates are notoriously bad and train users to distrust the prompt. Describe scope instead (lines of code, files touched, relative size). The carve-outs are wall-clock estimates for genuinely time-bound things: the whole-CLI run (set the user's expectation up front — most CLIs take 30+ minutes), tool installs (`go install` takes ~10 seconds), and printing-press subcommands that do network-bound work (crowd-sniff scans npm + GitHub, ~5-10 minutes). Anything bounded by agent reasoning time is not time-bound — describe scope.
-- **Use raw captures for contract research.** When reading official docs, auth/error/rate-limit pages, endpoint references, OpenAPI/Postman links, or source pages whose exact identifiers affect the generated CLI, read [references/fetch-docs.md](references/fetch-docs.md) and use its `fetch-docs.sh` helper. Reserve `WebFetch` for quick TL;DR reads where losing field-level details is acceptable.
-- Optimize for time-to-ship, not time-to-document.
-- Reuse prior research whenever it is already good enough.
-- Do not split one idea across multiple mandatory artifacts.
-- Durable files produced by this skill go under `$PRESS_RUNSTATE/` (working state) or `$PRESS_MANUSCRIPTS/` (archived). Short-lived command captures may use `/tmp/printing-press/` and must be removed after use.
-- Do not create a separate narrative phase for dogfood, dead-code audit, runtime verification, and final score. Treat them as one shipcheck block.
-- Run cheap, high-signal checks early.
-- Fix blockers and high-leverage failures first.
-- Reuse the same spec path across `generate`, `dogfood`, `verify`, and `scorecard`.
-- YAML, JSON, local paths, and URLs are all valid spec inputs for the verification tools.
-- Maximum 2 verification fix loops unless the user explicitly asks for more.
-
-## Secret & PII Protection (Cardinal Rules)
-
-**These rules are non-negotiable. They apply at ALL times during a run.**
-
-API key **values**, token **values**, passwords, and session cookies must NEVER
-appear in any artifact: source code, manuscripts, proofs, READMEs, HARs, or
-anything committed to git. Env var **names** (e.g., `STEAM_API_KEY`) and
-placeholders (e.g., `"your-key-here"`) are safe.
-
-During Phase 5.6 in [phases/20-promote-and-archive.md](phases/20-promote-and-archive.md) and before publishing, read and apply
-[references/secret-protection.md](references/secret-protection.md) for:
-- Exact-value scanning and auto-redaction of artifacts
-- HAR auth stripping (headers, query strings, cookies)
-- API key handling rules during the run
-- Session state cleanup ordering
-
-## Phase Index
+Enter [phases/01-preflight.md](phases/01-preflight.md) before any user-facing prompt,
+then read [references/run-resolution.md](references/run-resolution.md): it resolves the
+API target, the briefing context, and the source priority for combo runs.
 
 **Never execute a phase from memory. When you enter a phase, Read its file from phases/ first.**
 
-Start with preflight before any user-facing prompt. After preflight succeeds, return here and complete Orientation & Briefing. Then enter Run Initialization and continue in the file order below, following each file's final `Next:` pointer.
+| Step | File |
+|---:|---|
+| 1 | [phases/01-preflight.md](phases/01-preflight.md) |
+| 2 | [phases/02-run-initialization.md](phases/02-run-initialization.md) |
+| 3 | [phases/03-resolve-and-reuse.md](phases/03-resolve-and-reuse.md) |
+| 4 | [phases/04-research-brief.md](phases/04-research-brief.md) |
+| 5 | [phases/05-pre-browser-sniff-auth-intelligence.md](phases/05-pre-browser-sniff-auth-intelligence.md) |
+| 6 | [phases/06-browser-sniff-gate.md](phases/06-browser-sniff-gate.md) |
+| 7 | [phases/07-crowd-sniff-gate.md](phases/07-crowd-sniff-gate.md) |
+| 8 | [phases/08-ecosystem-absorb-gate.md](phases/08-ecosystem-absorb-gate.md) |
+| 9 | [phases/09-api-reachability-gate.md](phases/09-api-reachability-gate.md) |
+| 10 | [phases/10-generate.md](phases/10-generate.md) |
+| 11 | [phases/11-build-the-goat.md](phases/11-build-the-goat.md) |
+| 12 | [phases/12-shipcheck.md](phases/12-shipcheck.md) |
+| 13 | [phases/13-sync-param-drop-gate.md](phases/13-sync-param-drop-gate.md) |
+| 14 | [phases/14-agentic-skill-review.md](phases/14-agentic-skill-review.md) |
+| 15 | [phases/15-readme-skill-agents-correctness-audit.md](phases/15-readme-skill-agents-correctness-audit.md) |
+| 16 | [phases/16-agentic-output-review.md](phases/16-agentic-output-review.md) |
+| 17 | [phases/17-local-code-review.md](phases/17-local-code-review.md) |
+| 18 | [phases/18-dogfood-testing.md](phases/18-dogfood-testing.md) |
+| 19 | [phases/19-polish.md](phases/19-polish.md) |
+| 20 | [phases/20-promote-and-archive.md](phases/20-promote-and-archive.md) |
+| 21 | [phases/21-next-steps.md](phases/21-next-steps.md) |
 
-| Step | File | One-line purpose | Gates |
-|---:|---|---|---|
-| 1 | [phases/01-preflight.md](phases/01-preflight.md) | Validate the binary, toolchain, disk, browser tools, and setup contract. | Yes |
-| 2 | [phases/02-run-initialization.md](phases/02-run-initialization.md) | Allocate run-scoped state and working paths. | No |
-| 3 | [phases/03-resolve-and-reuse.md](phases/03-resolve-and-reuse.md) | Resolve inputs, prior work, source priority, and auth. | Yes |
-| 4 | [phases/04-research-brief.md](phases/04-research-brief.md) | Produce the build-driving research brief. | No |
-| 5 | [phases/05-pre-browser-sniff-auth-intelligence.md](phases/05-pre-browser-sniff-auth-intelligence.md) | Gather auth context before capture. | No |
-| 6 | [phases/06-browser-sniff-gate.md](phases/06-browser-sniff-gate.md) | Decide and record browser discovery per source. | Yes |
-| 7 | [phases/07-crowd-sniff-gate.md](phases/07-crowd-sniff-gate.md) | Decide whether community code should enrich the spec. | Yes |
-| 8 | [phases/08-ecosystem-absorb-gate.md](phases/08-ecosystem-absorb-gate.md) | Approve the absorb and transcendence manifest. | Yes |
-| 9 | [phases/09-api-reachability-gate.md](phases/09-api-reachability-gate.md) | Prove a shippable runtime surface is reachable. | Yes |
-| 10 | [phases/10-generate.md](phases/10-generate.md) | Enrich the spec, lock, and generate the CLI. | No |
-| 11 | [phases/11-build-the-goat.md](phases/11-build-the-goat.md) | Implement every approved feature. | Yes |
-| 12 | [phases/12-shipcheck.md](phases/12-shipcheck.md) | Run verification and reach ship or hold. | Yes |
-| 13 | [phases/13-sync-param-drop-gate.md](phases/13-sync-param-drop-gate.md) | Compare authored and captured request keys. | Yes |
-| 14 | [phases/14-agentic-skill-review.md](phases/14-agentic-skill-review.md) | Review printed-SKILL claims against commands. | Yes |
-| 15 | [phases/15-readme-skill-agents-correctness-audit.md](phases/15-readme-skill-agents-correctness-audit.md) | Audit user-facing document correctness. | Yes |
-| 16 | [phases/16-agentic-output-review.md](phases/16-agentic-output-review.md) | Review live output for semantic bugs. | No |
-| 17 | [phases/17-local-code-review.md](phases/17-local-code-review.md) | Review and autofix source before live testing. | Yes |
-| 18 | [phases/18-dogfood-testing.md](phases/18-dogfood-testing.md) | Exercise real workflows through the live matrix. | Yes |
-| 19 | [phases/19-polish.md](phases/19-polish.md) | Run diagnostic, fix, and rediagnose. | Yes |
-| 20 | [phases/20-promote-and-archive.md](phases/20-promote-and-archive.md) | Enforce acceptance, promote, and archive evidence. | Yes |
-| 21 | [phases/21-next-steps.md](phases/21-next-steps.md) | Route outcomes to publish, polish, retro, journal, or done. | Yes |
-
-### Durable Phase Receipts
-
-This is a long-running workflow. Do not rely on conversation memory to decide
-which phase comes next. Phase 2 creates a disposable, append-only receipt log at
-`$PIPELINE_DIR/phase-receipts.jsonl`. From Phase 3 onward, every phase file has
-an entry command and an exit command.
-
-At each phase boundary:
-
-1. Run the phase file's `enter` command and read its `previous` receipt.
-2. On an ordinary handoff, confirm that `previous.next` names this phase. On an
-   idempotent re-entry or explicit `--resume`, confirm that `previous.phase`
-   names this phase. The binary derives the canonical phase file and next phase
-   itself and rejects any other ordering. The only exceptions are the documented rework and hold handoffs,
-   recorded with `--next` — an alternate handoff always requires `--note` and
-   never combines with `--skip`:
-   - discovery rework — Phase 1.5 or the reachability gate back to Phase 1.7/1.8 (`08→06`, `08→07`, `09→06`)
-   - build infeasible — Phase 3 back to Phase 1.5 (`11→08`)
-   - shipcheck hold — Phase 4 straight to Phase 5.6 (`12→20`)
-   - scope change in review — Phase 4.95 back to Phase 1.5 (`17→08`)
-   - promote backtrack — Phase 5.6 back to Phase 5 (`20→18`)
-3. Do the phase work only after the entry receipt succeeds.
-4. Run `complete` before following the phase file's `Next:` pointer. Use
-   `--skip --note "<allowed reason>"` for an allowed skip.
-5. If work cannot continue, run `stop --note "<concise reason>"` instead of
-   pretending the phase completed. Add `--failed` for a failed phase. Resume a
-   blocked or failed phase by adding `--resume` to its `enter` command.
-
-After context compaction or another interruption, read the current
-`state.json`, use its `run_id` and `phase_receipt_log` values to run
-`phase-receipt status`, and only then choose a phase file. The receipt's `next`
-field is the restart pointer; do not infer that pointer from the conversation.
-A mid-phase interruption has an empty `next`, because `entered`, `blocked`, and
-`failed` receipts carry none: when the latest event is `entered`, the restart
-pointer is that same phase (re-entering it is idempotent), and a `blocked` or
-`failed` receipt is resumed by re-entering the same phase with `--resume`. If a
-fresh conversation has lost the run entirely, find `state.json` at
-`$PRESS_RUNSTATE/runs/<run-id>/state.json` — [preflight](phases/01-preflight.md)
-defines `$PRESS_RUNSTATE`.
-
-Receipts own sequencing only. Existing artifacts remain the source of truth for
-specs, manifests, builds, proofs, acceptance, and promotion. Add `--evidence`
-only for paths that already exist; never copy artifact contents into the log.
-Keep `--note` to one short decision or result. Never write secrets, credentials,
-cookies, raw API responses, or PII to a receipt.
-
-The receipt log is disposable run state. It stays under `$PRESS_RUNSTATE/`, is
-never copied into manuscripts, and is never committed. If the hidden
-`phase-receipt` helper is unavailable, stop with `[setup-error]`; do not
-hand-edit the JSONL or invent a fallback log format.
-
-## Orientation & Briefing
-
-After [preflight](phases/01-preflight.md) has completed, check whether the user provided arguments. Handle two cases:
-
-### No Arguments: Orientation
-
-If the user typed `/printing-press` with no arguments (no API name, no `--spec`, no `--har`, no URL), print an orientation and ask what they'd like to build:
-
-> The Printing Press generates a fully functional CLI for any API. You give it an API name, a spec file, or a URL. It researches the landscape, catalogs every feature that exists in any competing tool, invents novel features of its own, then generates a Go CLI that matches and beats everything out there — with offline search, agent-native output, and a local SQLite data layer.
->
-> By the end, you'll have a working CLI in `$PRESS_LIBRARY/` that you can use for yourself, ship on your own, or apply to add to the printing-press library.
->
-> The process takes 30-60 minutes depending on API complexity. Simple APIs with official specs (Stripe, GitHub) are faster. Undocumented APIs that need discovery (ESPN, Domino's) take longer.
-
-Print these example invocations as plain text BEFORE the `AskUserQuestion` call (so they appear as context above the question, not as competing menu options):
-
-```
-/printing-press Notion
-/printing-press Discord codex
-/printing-press --spec ./openapi.yaml
-/printing-press --har ./capture.har --name MyAPI
-/printing-press https://postman.com
-```
-
-Then ask via `AskUserQuestion`:
-
-- **question:** `"What API would you like to build a CLI for?"`
-- **header:** `"API target"`
-- **multiSelect:** `false`
-- **options:**
-  1. **label:** `"Type it (recommended)"` — **description:** `"Provide an API name, URL, spec path, or HAR file via the 'Other' option below."`
-  2. **label:** `"Browse existing CLIs first"` — **description:** `"Visit the public library to see what's already been printed before deciding what to build."`
-
-**Do not add additional options** — no "Show me popular options", no pre-populated buttons for Notion / Stripe / GitHub / Linear / Discord. The example invocations above already cover the common shapes, and most popular APIs are already in the public library (offering to re-print them is noise). The two options above plus the automatic "Other" field is the entire interface.
-
-If the user picks **"Type it (recommended)"**, they will provide their answer via the auto "Other" field. Set their input as the argument and proceed to the briefing below.
-
-If the user picks **"Browse existing CLIs first"**, print the public library URL prominently and try to open it in the browser, then end the skill so the user can browse before deciding:
-
-```bash
-echo ""
-echo "Public library: https://github.com/mvanhorn/printing-press-library"
-echo "(If you have the Printing Press Library plugin, you can also run /ppl in Claude Code.)"
-echo ""
-command -v open >/dev/null 2>&1 && open https://github.com/mvanhorn/printing-press-library
-```
-
-After printing, end the skill cleanly. Do not proceed to briefing or research — the user is exploring, not building yet. They can re-invoke `/printing-press <api>` once they've decided.
-
-### With Arguments: Briefing
-
-When the user provided an argument (API name, `--spec`, `--har`, or URL), print a brief process overview. This sets expectations and collects any upfront context. (Preflight has already run at this point.)
-
-Print as prose, matching the style of the example below:
-
-> Very well. Setting the type for `<API>`.
->
-> **Here is how this will proceed:**
-> 1. I shall research `<API>` across the internet: official docs, community wrappers, competing CLIs, MCP servers, and npm/PyPI packages
-> 2. I shall catalog every feature that exists in any tool, then devise novel features of my own that no existing tool offers
-> 3. I shall present what I found and what I invented — you will have a chance to add your own ideas or adjust the plan before I build
-> 4. I shall generate a Go CLI, build every feature from the plan, then verify quality through dogfood, runtime verification, and scoring
->
-> **What you will have at the end:** A fully functional CLI at `$PRESS_LIBRARY/<api>` that you can use yourself, ship on your own, or apply to add to the printing-press library.
->
-> **Time:** 30-60 minutes depending on API complexity.
->
-> **Things that help if you have them:**
-> - An API key (for live smoke testing at the end)
-> - A logged-in browser session (for discovering authenticated endpoints)
-> - A spec file or HAR capture (skips discovery)
-
-If the user provided `--spec`, adapt: "You have provided a spec, so I shall skip discovery and proceed directly to analysis and generation. Should be faster."
-
-If the user provided `--har`, adapt: "You have provided a HAR capture, so I shall generate a spec from your traffic and skip browser browser-sniffing."
-
-Then ask via `AskUserQuestion`:
-
-- **question:** `"Anything you want me to know before I begin? A vision for what this CLI should do, specific features you care about, or auth context I should have?"`
-- **header:** `"Briefing"`
-- **multiSelect:** `false`
-- **options:**
-  1. **label:** `"Let's go (recommended)"` — **description:** `"Start research now. I'll ask about API keys, browser auth, or other context when I need them."`
-  2. **label:** `"I have context to share"` — **description:** `"Tell me your vision, specific features, or auth context (API key, logged-in browser session) before research starts."`
-
-**Do not add additional options** — auth is already handled by the API Key Gate in [Phase 0](phases/03-resolve-and-reuse.md) and Phase 1.6 in [phases/05-pre-browser-sniff-auth-intelligence.md](phases/05-pre-browser-sniff-auth-intelligence.md) downstream. A user who wants to volunteer auth context can do so via option 2's free-text response. The two options above plus the automatic "Other" field is the entire interface.
-
-If the user picks **"Let's go (recommended)"**, proceed to the Multi-Source Priority Gate (or, for single-source runs, directly to Phase 0 in [phases/03-resolve-and-reuse.md](phases/03-resolve-and-reuse.md)).
-
-If the user picks **"I have context to share"**, capture their free-text response as `USER_BRIEFING_CONTEXT`. The response may include:
-
-- **Vision / specific features** — captured as-is. This context will be:
-  - Added to the Phase 1 Research Brief in [phases/04-research-brief.md](phases/04-research-brief.md) under a `## User Vision` section
-  - Used as a 4th self-brainstorm question in Phase 1.5c.5 in [phases/08-ecosystem-absorb-gate.md](phases/08-ecosystem-absorb-gate.md): "Based on the user's stated vision, what features directly serve their stated goals that the absorbed features don't cover?"
-  - Referenced at the Phase Gate 1.5 absorb gate in [phases/08-ecosystem-absorb-gate.md](phases/08-ecosystem-absorb-gate.md): "You mentioned [summary] at the start. Want to add more, or does the manifest already cover it?"
-- **Auth context** — if the user mentions an API key, env var, or logged-in browser session, set the corresponding `AUTH_CONTEXT` fields so the API Key Gate in [Phase 0](phases/03-resolve-and-reuse.md) and Pre-Browser-Sniff Auth Intelligence in [Phase 1.6](phases/05-pre-browser-sniff-auth-intelligence.md) do not re-ask.
-
-### Multi-Source Priority Gate
-
-After the briefing question resolves, inspect the user's original argument AND any `USER_BRIEFING_CONTEXT` they provided. If together they name **two or more distinct services, sites, or APIs** (e.g., "Google Flights and Kayak", "Notion + Linear combo CLI", "flightgoat: Google Flights, Kayak.com/direct, and FlightAware"), this is a combo CLI and priority ordering MUST be confirmed before Phase 1 research in [phases/04-research-brief.md](phases/04-research-brief.md).
-
-**Why this gate exists:** Phase 1 research defaults to the first resolvable spec as the primary source. When the user listed services in a specific order, that order is their intent — but the generator's spec-first bias will silently invert it (picking a well-documented paid API over a free reverse-engineered one the user actually wanted as the headline feature). This has caused real user-visible failures where the CLI shipped with the wrong primary and required a paid API key for what the user intended as the free primary command.
-
-**Parse the order from the prose.** Use the user's wording verbatim. Commas, "then", "and", explicit "primary/secondary", or numbered lists all signal ordering. If the user wrote "Google Flights, Kayak, FlightAware" — that is the order. Do not reorder by spec availability, tier, or ease of generation.
-
-**Confirm via `AskUserQuestion`:**
-
-> "You mentioned **<Source A>**, **<Source B>**, and **<Source C>**. I'll treat **<Source A>** as the primary — it gets the headline commands, the top of the README, and the first-run experience. Is that the right order?"
-
-Options:
-1. **Yes, that order is correct** — Proceed with `SOURCE_PRIORITY=[A, B, C]` captured to run state.
-2. **Different order** — User provides the correct ordering; capture it.
-3. **They're peers, no primary** — Rare; capture as equal weighting but warn the user that one will still lead the README.
-
-Write the confirmed ordering to `$API_RUN_DIR/source-priority.json`:
-
-```json
-{
-  "sources": ["google-flights", "kayak-direct", "flightaware"],
-  "confirmed_at": "<ISO timestamp>",
-  "raw_user_phrasing": "<verbatim text that established the order>"
-}
-```
-
-**Phase 1 in [phases/04-research-brief.md](phases/04-research-brief.md) MUST consult this file.** When selecting a spec source, the primary source wins even if it has no spec and a later source has a clean OpenAPI. When the primary has no official spec, flag that openly in the brief under `## Source Priority` (see the template in [phases/04-research-brief.md](phases/04-research-brief.md)) and route to the browser-sniff/docs path for the primary — do not promote a secondary source just because its spec is cleaner.
-
-**Economics check.** If the confirmed primary source is free (no API key required) AND the generator's default path would make the primary CLI commands require a paid key (because the auth applies broadly or because a paid secondary source is bleeding into the primary path), surface the tradeoff explicitly before generating:
-
-> "The primary source (**<Source A>**) is free, but the default path would require a **<paid key>** for the headline commands because <reason>. Options: (1) keep primary free, gate only the secondary commands on the paid key; (2) require the paid key for everything; (3) drop the paid source."
-
-Default to option 1 unless the user overrides. Record the decision in `source-priority.json` under `auth_scoping`.
-
-**Single-source runs:** If only one service is named, skip this gate entirely — no ordering to confirm.
-
----
-
-## Outputs
-
-Every run writes up to 5 concise artifacts under the current managed run and archives them to `$PRESS_MANUSCRIPTS/<api-slug>/<run-id>/`:
-
-1. `research/<stamp>-feat-<api>-pp-cli-brief.md`
-2. `research/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`
-3. `proofs/<stamp>-fix-<api>-pp-cli-build-log.md`
-4. `proofs/<stamp>-fix-<api>-pp-cli-shipcheck.md`
-5. `proofs/<stamp>-fix-<api>-pp-cli-live-smoke.md` (only if live testing runs)
-
-These do not need to be 200+ lines. Keep them dense, evidence-backed, and directly useful.
+Follow each file's final `Next:` pointer, and record the receipt handoff each phase
+names. Late procedure lives in the phase file or a role-named reference it loads
+([references/phase-receipts.md](references/phase-receipts.md), [references/codex-delegation.md](references/codex-delegation.md),
+[references/fetch-docs.md](references/fetch-docs.md)). Do not restate those files here.

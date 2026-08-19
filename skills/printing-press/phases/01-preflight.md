@@ -16,7 +16,7 @@ Artifacts are still written, but only the ones that materially help the next ste
 
 ## Preflight
 
-**This section MUST run before any user-facing prompt — including the [Orientation & Briefing](../SKILL.md#orientation--briefing) flow in the router.** A missing binary or available upgrade is information the user needs *before* they commit to an API. Do not invoke `AskUserQuestion`, print the orientation prose, or otherwise engage the user until preflight has completed and any signals from `../references/setup-checks.md` have been handled.
+**This section MUST run before any user-facing prompt — including the orientation and briefing flow in [references/run-resolution.md](../references/run-resolution.md).** A missing binary or available upgrade is information the user needs *before* they commit to an API. Do not invoke `AskUserQuestion`, print the orientation prose, or otherwise engage the user until preflight has completed and any signals from `../references/setup-checks.md` have been handled.
 
 <!-- PRESS_SETUP_CONTRACT_START -->
 ```bash
@@ -543,7 +543,7 @@ CODEX_CONSECUTIVE_FAILURES=0
 
 **Absolute-path rule.** The preflight contract always emits `PRINTING_PRESS_BIN=<absolute path>` to stdout. Capture this value and substitute it (the resolved absolute path, not the literal `$PRINTING_PRESS_BIN` token) for every subsequent `cli-printing-press ...` invocation in this skill, references, and any sub-skill you delegate to. The `export PATH=...` line inside the contract only affects the single Bash tool call it runs in; later Bash tool calls open fresh shells and resolve bare `cli-printing-press` against the user's default `PATH`, where a stale globally-installed binary (`$HOME/go/bin/cli-printing-press`, Homebrew copy, etc.) will silently shadow the local build the preflight just chose. Bash code examples below are written `cli-printing-press generate ...` for readability — replace `cli-printing-press` with the captured absolute path each time you actually run one.
 
-Only after preflight completes successfully (no `[setup-error]`; no `[upgrade-required]` left unresolved — the user either upgraded or the run was aborted; no global skill update that requires restart; any `[repo-upgrade-available]`, `[upgrade-available]`, or `[browser-tools-missing]` was offered to the user; `PRINTING_PRESS_BIN` is captured) should you proceed to [Orientation & Briefing](../SKILL.md#orientation--briefing) in the router.
+Only after preflight completes successfully (no `[setup-error]`; no `[upgrade-required]` left unresolved — the user either upgraded or the run was aborted; no global skill update that requires restart; any `[repo-upgrade-available]`, `[upgrade-available]`, or `[browser-tools-missing]` was offered to the user; `PRINTING_PRESS_BIN` is captured) should you proceed to the orientation and briefing flow in [references/run-resolution.md](../references/run-resolution.md).
 
 Phase receipts begin only after Phase 2 allocates a run ID and pipeline
 directory. Do not create a receipt during preflight.
