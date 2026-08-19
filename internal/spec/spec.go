@@ -2258,10 +2258,11 @@ func absoluteRequestPathTemplateSource(path string) string {
 type Endpoint struct {
 	Method string `yaml:"method" json:"method"`
 	Path   string `yaml:"path" json:"path"`
-	// Mutation explicitly marks an endpoint as mutating when its transport
-	// method is not enough to convey the side effect, such as a GET action.
-	// The generator uses this signal for MCP safety classification.
-	Mutation    bool   `yaml:"mutation,omitempty" json:"mutation,omitempty"`
+	// Mutation is the optional explicit read/write override. nil means
+	// unset (classify from verb, operation name, and body shape). true
+	// marks a GET action as state-changing; false marks a POST (or other
+	// non-GET) endpoint as a read so generated commands print the body.
+	Mutation    *bool  `yaml:"mutation,omitempty" json:"mutation,omitempty"`
 	BaseURL     string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
 	Description string `yaml:"description" json:"description"`
 	// Example is an optional Cobra Example string for this endpoint command.
@@ -2474,6 +2475,21 @@ func (e *Endpoint) UnmarshalJSON(data []byte) error {
 	*e = Endpoint(out)
 	e.BodySet = bodySet
 	return nil
+}
+
+// OptionalBool returns a pointer to v for optional spec flags such as
+// Endpoint.Mutation, where nil means unset.
+func OptionalBool(v bool) *bool {
+	return &v
+}
+
+// MutationOverride reports the explicit mutation flag. set is false when
+// the spec omitted mutation, so callers can distinguish unset from false.
+func (e Endpoint) MutationOverride() (value, set bool) {
+	if e.Mutation == nil {
+		return false, false
+	}
+	return *e.Mutation, true
 }
 
 func (e Endpoint) EffectiveResponseFormat() string {

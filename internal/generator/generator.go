@@ -860,7 +860,7 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 				if strings.EqualFold(e.Method, "DELETE") {
 					flags.HasDelete = true
 				}
-				if isMutationMethod(e.Method) {
+				if endpointIsWriteCommand(e, name) && isMutationMethod(e.Method) {
 					flags.HasMutationEndpoints = true
 				}
 				if e.UsesRawRequestBody() {
@@ -921,7 +921,7 @@ func partialFailureEmissionFlags(apiSpec *spec.APISpec, promotedCommands []Promo
 			if promotedEndpointName == endpointName {
 				continue
 			}
-			if isMutationMethod(endpoint.Method) {
+			if endpointIsWriteCommand(endpoint, endpointName) && isMutationMethod(endpoint.Method) {
 				hasSupport = true
 				hasTypedErr = true
 			}
@@ -954,13 +954,13 @@ func promotedCommandCanDetectPartialFailure(command PromotedCommand, hasStore bo
 	return method == "POST" || method == "PUT" || method == "PATCH"
 }
 
-// isMutationMethod reports whether method is a mutation verb that reaches the
-// partial-failure detection call sites in command_endpoint.go.tmpl. The
-// template emits those call sites for every non-GET/HEAD endpoint, so the
-// predicate must match the same shape — otherwise a DELETE-only CLI would
-// reference undefined detectPartialFailure / partialFailureReport symbols.
-// Detection itself is a no-op for DELETE bodies in practice; the cost is one
-// dead function on truly-DELETE-only CLIs.
+// isMutationMethod reports whether method is a mutating HTTP verb. Combined
+// with endpointIsWriteCommand it matches the $isMutationOutput gate in
+// command_endpoint.go.tmpl (write-classified non-GET/HEAD endpoints). The
+// helpers must stay in sync with that gate — otherwise a DELETE-only CLI
+// would reference undefined detectPartialFailure / partialFailureReport
+// symbols. Detection itself is a no-op for DELETE bodies in practice; the
+// cost is one dead function on truly-DELETE-only CLIs.
 func isMutationMethod(method string) bool {
 	if method == "" {
 		return false
@@ -2146,8 +2146,8 @@ func endpointIsWriteCommand(endpoint spec.Endpoint, opName string) bool {
 	if v, ok := endpoint.Meta["mcp:read-only"]; ok && strings.EqualFold(strings.TrimSpace(v), "true") {
 		return false
 	}
-	if endpoint.Mutation {
-		return true
+	if value, set := endpoint.MutationOverride(); set {
+		return value
 	}
 	tokens := camelCaseTokens(strings.TrimSpace(opName))
 	if !methodIsWrite(endpoint.Method) {

@@ -1475,19 +1475,23 @@ paths:
 
 ### `x-pp-mutation`
 
-Marks an operation as mutating even when its HTTP method is normally treated as
-read-only, such as a GET action that starts, stops, restarts, deploys, or
-otherwise changes remote state.
+Overrides the generator's read/write classification when the HTTP method is
+not enough. `true` marks a GET action as state-changing (start, stop, restart,
+deploy). `false` marks a POST (or other non-GET) endpoint as a read so the
+generated command prints the response body instead of the mutation
+acknowledgment envelope.
 
 Parsed field: `Endpoint.Mutation`
 
 Rules:
 - Optional.
-- Defaults to `false`.
+- Unset means classify from the HTTP verb, operation name, and body shape.
 - Must be a native boolean.
 - Applies only at the operation level.
-- When `true`, the generator classifies the endpoint as a mutation before
-  applying HTTP-verb and operation-name fallbacks.
+- When set, the generator uses this value before HTTP-verb and operation-name
+  fallbacks. Do not infer reads from filter-shaped parameter names alone;
+  use this flag or a read-shaped operation name (`search`, `list`, `query`).
+- Internal YAML uses the same boolean as `mutation:`.
 
 Example:
 
@@ -1500,6 +1504,13 @@ paths:
       responses:
         "204":
           description: Restarted
+  /sets/items:
+    post:
+      operationId: projectItems
+      x-pp-mutation: false
+      responses:
+        "200":
+          description: Matched rows
 ```
 
 ### `x-tier`
