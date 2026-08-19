@@ -46,6 +46,7 @@ func newVerifyCmdWithOptions(opts verifyCmdOptions) *cobra.Command {
 	var cleanup bool
 	var noSpec bool
 	var writeManifest string
+	var allowDestructive bool
 
 	cmd := &cobra.Command{
 		Use:   "verify",
@@ -82,12 +83,13 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 			}
 			dir = absDir
 			cfg := pipeline.VerifyConfig{
-				Dir:       dir,
-				SpecPath:  specPath,
-				APIKey:    apiKey,
-				EnvVar:    envVar,
-				Threshold: threshold,
-				NoSpec:    noSpec,
+				Dir:              dir,
+				SpecPath:         specPath,
+				APIKey:           apiKey,
+				EnvVar:           envVar,
+				Threshold:        threshold,
+				NoSpec:           noSpec,
+				AllowDestructive: allowDestructive,
 			}
 
 			report, err := opts.runVerify(cfg)
@@ -159,6 +161,7 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 	cmd.Flags().BoolVar(&cleanup, "cleanup", false, "Remove transient build artifacts after verification")
 	cmd.Flags().BoolVar(&noSpec, "no-spec", false, "Structural verification only (no API spec required)")
 	cmd.Flags().StringVar(&writeManifest, "write-manifest", "", "Path to .printing-press.json to update with verify summary")
+	cmd.Flags().BoolVar(&allowDestructive, "allow-destructive", false, "Allow live execution of mutating endpoint commands (default skips them in live mode)")
 	_ = cmd.MarkFlagRequired("dir")
 	return cmd
 }

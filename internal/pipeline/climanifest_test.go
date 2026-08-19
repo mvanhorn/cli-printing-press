@@ -874,6 +874,38 @@ func TestWriteManifestForGenerateRecordsAuthPreference(t *testing.T) {
 	assert.Equal(t, "ApiKeyAuth", got.AuthPreference)
 }
 
+func TestWriteManifestForGenerateDefaultsMissingAuthTypeToNone(t *testing.T) {
+	for _, authType := range []string{"", "   "} {
+		t.Run(authType, func(t *testing.T) {
+			dir := t.TempDir()
+
+			err := WriteManifestForGenerate(GenerateManifestParams{
+				APIName:   "public-api",
+				OutputDir: dir,
+				Spec: &spec.APISpec{
+					Name: "public-api",
+					Auth: spec.AuthConfig{Type: authType},
+					Resources: map[string]spec.Resource{
+						"items": {Endpoints: map[string]spec.Endpoint{
+							"list": {Method: "GET", Path: "/items"},
+						}},
+					},
+				},
+			})
+			require.NoError(t, err)
+
+			data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+			require.NoError(t, err)
+			var raw map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(data, &raw))
+			assert.Equal(t, json.RawMessage(`"none"`), raw["auth_type"])
+
+			got := readPublishedManifest(t, dir)
+			assert.Equal(t, "none", got.AuthType)
+		})
+	}
+}
+
 func TestWriteManifestForGenerateClearsStaleAuthPreference(t *testing.T) {
 	dir := t.TempDir()
 	writeManifest(t, dir, CLIManifest{

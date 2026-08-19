@@ -40,18 +40,12 @@ func ScrubTerminal(s string) string {
 	}, s)
 }
 
-// EscapePathParam preserves slash separators in hierarchical IDs so reserved
-// characters within each segment remain safe in the request URL.
+// EscapePathParam encodes a path-param value as one URL path segment.
 func EscapePathParam(value string) string {
-	segments := strings.Split(value, "/")
-	for i, segment := range segments {
-		if segment == "." || segment == ".." {
-			segments[i] = strings.Repeat("%2E", len(segment))
-			continue
-		}
-		segments[i] = url.PathEscape(segment)
+	if value == "." || value == ".." {
+		return strings.Repeat("%2E", len(value))
 	}
-	return strings.Join(segments, "/")
+	return url.PathEscape(value)
 }
 
 // ParseStoredTime parses timestamps read back from SQLite-backed generated
@@ -67,6 +61,8 @@ func ParseStoredTime(s string) time.Time {
 	for _, layout := range []string{
 		time.RFC3339Nano,
 		time.RFC3339,
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05",
 		"2006-01-02 15:04:05.999999999 -0700 MST",
 		"2006-01-02 15:04:05.999999 -0700 MST",
 		"2006-01-02 15:04:05.999 -0700 MST",

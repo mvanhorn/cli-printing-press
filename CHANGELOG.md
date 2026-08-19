@@ -1,5 +1,65 @@
 # Changelog
 
+## [4.31.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.30.3...v4.31.0) (2026-08-18)
+
+
+### Features
+
+* **skills:** cut retro always-loaded context by 93% ([#3776](https://github.com/mvanhorn/cli-printing-press/issues/3776)) ([625e876](https://github.com/mvanhorn/cli-printing-press/commit/625e876ef83e401de6938eb1fa898152b1a01d17))
+
+
+### Bug Fixes
+
+* **cli:** prune single-tenant mirrors; do not mark truncated walks complete. ([#4247](https://github.com/mvanhorn/cli-printing-press/issues/4247)) ([47bf39b](https://github.com/mvanhorn/cli-printing-press/commit/47bf39b4529c17e42b1ceae68cf50e2c2a341d69))
+* **cli:** skip MCP tools for sub-resource parent groups ([#4245](https://github.com/mvanhorn/cli-printing-press/issues/4245)) ([de5bd88](https://github.com/mvanhorn/cli-printing-press/commit/de5bd88432f4830bd1ba38c22a92c24650c4402e))
+* **cli:** wrap mutation bodies under spec resource root. ([#4246](https://github.com/mvanhorn/cli-printing-press/issues/4246)) ([3ab775b](https://github.com/mvanhorn/cli-printing-press/commit/3ab775be0125416309f705e4670041e321f98d66))
+
+## [4.30.3](https://github.com/mvanhorn/cli-printing-press/compare/v4.30.2...v4.30.3) (2026-08-17)
+
+
+### Bug Fixes
+
+* **cli:** accept object release ledger changes ([#4118](https://github.com/mvanhorn/cli-printing-press/issues/4118)) ([31f2436](https://github.com/mvanhorn/cli-printing-press/commit/31f2436e4b7dcc53e3c719b8669bf469a3d2065d))
+* **cli:** align auth set-token references with command surface ([#4198](https://github.com/mvanhorn/cli-printing-press/issues/4198)) ([6dc0cee](https://github.com/mvanhorn/cli-printing-press/commit/6dc0ceed579f0f6fa42af0ccc1f0313b02e24e6d))
+* **cli:** allow ungated MCP tenant gate ([#4171](https://github.com/mvanhorn/cli-printing-press/issues/4171)) ([9d274a9](https://github.com/mvanhorn/cli-printing-press/commit/9d274a9153c8c0de80657538ca944e46d68256ec))
+* **cli:** bind MCP HTTP to loopback by default ([#4192](https://github.com/mvanhorn/cli-printing-press/issues/4192)) ([142617f](https://github.com/mvanhorn/cli-printing-press/commit/142617fb4a7011f7b9a7947469f9abded1164af9))
+* **cli:** block MCP filesystem destination flags ([#4212](https://github.com/mvanhorn/cli-printing-press/issues/4212)) ([20d5058](https://github.com/mvanhorn/cli-printing-press/commit/20d505805c6de28cca2123207f3e7645662ac7f5))
+* **cli:** bound workflow archive and keep the store crash-safe ([#4206](https://github.com/mvanhorn/cli-printing-press/issues/4206)) ([1515265](https://github.com/mvanhorn/cli-printing-press/commit/151526547a96893232417ef7bd6dcc56989b85c0))
+* **cli:** bump Go floor to 1.26.6 ([#4155](https://github.com/mvanhorn/cli-printing-press/issues/4155)) ([f8b50c9](https://github.com/mvanhorn/cli-printing-press/commit/f8b50c9390b1b43e373264299546395f8344a703))
+* **cli:** clamp MCP code-orch search limit before slice. Closes [#3742](https://github.com/mvanhorn/cli-printing-press/issues/3742). ([#4223](https://github.com/mvanhorn/cli-printing-press/issues/4223)) ([808a986](https://github.com/mvanhorn/cli-printing-press/commit/808a9866424b8955d2c5de12d3afecbc77a5d485))
+* **cli:** collapse html error bodies ([#4183](https://github.com/mvanhorn/cli-printing-press/issues/4183)) ([7389a2f](https://github.com/mvanhorn/cli-printing-press/commit/7389a2f47ce07bf42499badc4dfaa82ac581e06b))
+* **cli:** correct novel scaffold safety hints ([#4172](https://github.com/mvanhorn/cli-printing-press/issues/4172)) ([023beb3](https://github.com/mvanhorn/cli-printing-press/commit/023beb35263bbd6c3899cf363bde7ec8c3293a8b))
+* **cli:** decouple agent mode from yes ([#4182](https://github.com/mvanhorn/cli-printing-press/issues/4182)) ([e20b65e](https://github.com/mvanhorn/cli-printing-press/commit/e20b65e05366981d7bcaa2e8f773e92eef2e8ca4))
+* **cli:** disable sqlite mmap to stop SIGBUS store corruption ([#4191](https://github.com/mvanhorn/cli-printing-press/issues/4191)) ([bd6c65e](https://github.com/mvanhorn/cli-printing-press/commit/bd6c65e6e8460ebd82a66a2d7a740bd619ca2ec8))
+* **cli:** encode path params as single segments ([#4184](https://github.com/mvanhorn/cli-printing-press/issues/4184)) ([d49c457](https://github.com/mvanhorn/cli-printing-press/commit/d49c457592c2f5579ea0c57a24df40bb7f36111e))
+* **cli:** fail sync integrity and hydration aliasing ([#4185](https://github.com/mvanhorn/cli-printing-press/issues/4185)) ([801de21](https://github.com/mvanhorn/cli-printing-press/commit/801de2134513cbceae17ffe277f5522fdf7587bb))
+* **cli:** guard shipcheck live mutations ([#4173](https://github.com/mvanhorn/cli-printing-press/issues/4173)) ([c63890c](https://github.com/mvanhorn/cli-printing-press/commit/c63890ca8603114367f0383bbbc571def8a5e6b0))
+* **cli:** handle auth-none generation metadata ([#4113](https://github.com/mvanhorn/cli-printing-press/issues/4113)) ([91fb730](https://github.com/mvanhorn/cli-printing-press/commit/91fb730a7e8898cfda630cfa793bef58d46efaf4))
+* **cli:** harden generated SQLite concurrency ([#4138](https://github.com/mvanhorn/cli-printing-press/issues/4138)) ([ee01a6e](https://github.com/mvanhorn/cli-printing-press/commit/ee01a6e66556080c0beeaf3243f3cce8a9787865))
+* **cli:** parse SQLite CURRENT_TIMESTAMP in ParseStoredTime ([#4224](https://github.com/mvanhorn/cli-printing-press/issues/4224)) ([813788f](https://github.com/mvanhorn/cli-printing-press/commit/813788f45defa60b0b7643f8a0b9a72517e00696))
+* **cli:** preserve .git on lock promote in-place ([#4194](https://github.com/mvanhorn/cli-printing-press/issues/4194)) ([5568e71](https://github.com/mvanhorn/cli-printing-press/commit/5568e7116f1a47a4cf2f2646241ae2e8052e9605))
+* **cli:** preserve compact and select projection payloads ([#4135](https://github.com/mvanhorn/cli-printing-press/issues/4135)) ([d74ddbf](https://github.com/mvanhorn/cli-printing-press/commit/d74ddbfa96bb205b43be968404e00d407e4ef11e))
+* **cli:** preserve generated pagination contracts ([#4115](https://github.com/mvanhorn/cli-printing-press/issues/4115)) ([fd69e7f](https://github.com/mvanhorn/cli-printing-press/commit/fd69e7f0135bea8889e825b86800d98344de7772))
+* **cli:** preserve mcp-sync intent parity and reject version skew ([#4146](https://github.com/mvanhorn/cli-printing-press/issues/4146)) ([8b2c361](https://github.com/mvanhorn/cli-printing-press/commit/8b2c361e37e50e6688ce21ac3bcdfd10a47c7432)), closes [#4134](https://github.com/mvanhorn/cli-printing-press/issues/4134)
+* **cli:** preserve OAuth bearer auth headers ([#4112](https://github.com/mvanhorn/cli-printing-press/issues/4112)) ([1a5f6ca](https://github.com/mvanhorn/cli-printing-press/commit/1a5f6cac7105fbdbfe722a1af4da72893a15dabf))
+* **cli:** preserve standalone force regen files ([#4174](https://github.com/mvanhorn/cli-printing-press/issues/4174)) ([4b3569f](https://github.com/mvanhorn/cli-printing-press/commit/4b3569f6b47539686a2b4e0cf16f3de890f3cade))
+* **cli:** preserve zero-valued integer query params ([#4143](https://github.com/mvanhorn/cli-printing-press/issues/4143)) ([5e77ac1](https://github.com/mvanhorn/cli-printing-press/commit/5e77ac1b1795ca9154f715f3c84eb1860a5bae6e))
+* **cli:** register novel framework commands and manifest entries ([#4139](https://github.com/mvanhorn/cli-printing-press/issues/4139)) ([a529a81](https://github.com/mvanhorn/cli-printing-press/commit/a529a81f148489005e5b518667ba3d0d93c6d425))
+* **cli:** repair credential load refusal and merge state ([#4205](https://github.com/mvanhorn/cli-printing-press/issues/4205)) ([1e8fe39](https://github.com/mvanhorn/cli-printing-press/commit/1e8fe3934fc3d0dd4f074287004f8d0633818fcb))
+* **cli:** route generated error output and preserve no-op semantics ([#4121](https://github.com/mvanhorn/cli-printing-press/issues/4121)) ([eae5b3d](https://github.com/mvanhorn/cli-printing-press/commit/eae5b3d70bf83038440e07e06b10f7a3d9c34fd9))
+* **cli:** sanitize insights similar FTS queries ([#4213](https://github.com/mvanhorn/cli-printing-press/issues/4213)) ([2b69deb](https://github.com/mvanhorn/cli-printing-press/commit/2b69deb5d2c9d738b7694e50ac7598ae3d37ab5d))
+* **cli:** scope browser credentials by host ([#4107](https://github.com/mvanhorn/cli-printing-press/issues/4107)) ([1a1a65f](https://github.com/mvanhorn/cli-printing-press/commit/1a1a65f1c9dfa71e971422d57ffa7c8b80688f71))
+* **cli:** scope the default store path to the credential ([#4204](https://github.com/mvanhorn/cli-printing-press/issues/4204)) ([c5bc30e](https://github.com/mvanhorn/cli-printing-press/commit/c5bc30e4423c04927cd385d27fbf1115b133f8fc))
+* **cli:** speed up generated Windows shellout tests ([#4119](https://github.com/mvanhorn/cli-printing-press/issues/4119)) ([781a1c7](https://github.com/mvanhorn/cli-printing-press/commit/781a1c77c86f234cecebbd537c6034b625effe85))
+* **cli:** stop name-keying records when a real identifier exists ([#4215](https://github.com/mvanhorn/cli-printing-press/issues/4215)) ([a6eb395](https://github.com/mvanhorn/cli-printing-press/commit/a6eb3950b032c7974f79ea194dc22775300db959))
+* **cli:** stop storing nested objects as sync rows ([#4226](https://github.com/mvanhorn/cli-printing-press/issues/4226)) ([9bac860](https://github.com/mvanhorn/cli-printing-press/commit/9bac8609f270d7a6f8d9ff130d4b6db739bc33ee))
+* **cli:** surface success-path CLI stderr to MCP clients ([#4225](https://github.com/mvanhorn/cli-printing-press/issues/4225)) ([8136196](https://github.com/mvanhorn/cli-printing-press/commit/813619660c7117a75a49ddc8142af488bf130d9e))
+* **cli:** treat unclassified dogfood commands as mutating ([#4193](https://github.com/mvanhorn/cli-printing-press/issues/4193)) ([ca3a6dd](https://github.com/mvanhorn/cli-printing-press/commit/ca3a6dd33ed4c087f319606bab09231bb6716be4))
+* **cli:** validate composed-auth login --chrome sessions ([#4207](https://github.com/mvanhorn/cli-printing-press/issues/4207)) ([6a54174](https://github.com/mvanhorn/cli-printing-press/commit/6a54174c5ea82fc0e34d0065c3d5d0bd5d450d88))
+* **cli:** wire stdin fixtures through verification ([#4136](https://github.com/mvanhorn/cli-printing-press/issues/4136)) ([a6923ce](https://github.com/mvanhorn/cli-printing-press/commit/a6923ceb253d4ee15562baa95b52f6fc462aa86b))
+* **skills:** refuse physical side effects under every harness ([#4203](https://github.com/mvanhorn/cli-printing-press/issues/4203)) ([a5400a4](https://github.com/mvanhorn/cli-printing-press/commit/a5400a4627ceddb15c9057d99c8fa9dcf13d239e))
+* **windows:** generated CLIs could neither build nor test on Windows ([#4106](https://github.com/mvanhorn/cli-printing-press/issues/4106)) ([deb0b07](https://github.com/mvanhorn/cli-printing-press/commit/deb0b070f7672e4a892164d716fa75c850e4f5ee))
+
 ## [4.30.2](https://github.com/mvanhorn/cli-printing-press/compare/v4.30.1...v4.30.2) (2026-08-11)
 
 

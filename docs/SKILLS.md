@@ -29,7 +29,7 @@ For any SKILL.md or phase-file update, search for the old concept across the rou
 
 ## Reference File Pattern
 
-Skills use a `references/` directory for content that is only needed during specific phases or conditions. The SKILL.md stays lean with inline pointers (`Read [references/foo.md](...) when X`), and the agent loads the reference file only when the condition is met.
+Skills use a `references/` directory for content that is only needed during specific phases or conditions. The SKILL.md stays lean with inline pointers (`Read [references/foo.md](...) when X`), and the agent loads the reference file only when the condition is met. `printing-press-retro` also extracts per-step procedure into `phases/` and role-named late procedure into `references/` (run resolution, issue filing, artifact packaging, secret scrubbing); its `SKILL.md` is the always-loaded spine, not a restatement of those files.
 
 **Why this matters:** SKILL.md content is loaded into the context window for every tool call in the session. A 2,000-line skill burns tokens on every phase — even phases that don't need most of the content. Extracting conditional sections (e.g., browser capture flows only needed when browser-sniffing, codex templates only needed in codex mode) into reference files reduces baseline context by 30-40%.
 

@@ -6,14 +6,11 @@ package cli
 import (
 	"bytes"
 	"context"
-	"embedded-paged-pp-cli/internal/client"
-	"embedded-paged-pp-cli/internal/cliutil"
-	"embedded-paged-pp-cli/internal/platform"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"io"
 	"net/url"
 	"os"
@@ -22,9 +19,17 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 	"unicode"
+
+	"embedded-paged-pp-cli/internal/client"
+	"embedded-paged-pp-cli/internal/cliutil"
+	"embedded-paged-pp-cli/internal/config"
+	"embedded-paged-pp-cli/internal/platform"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 var As = errors.As
@@ -153,6 +158,14 @@ type dryRunResult struct {
 	Would  string `json:"would"`
 }
 
+type harnessRefusalResult struct {
+	Refused bool   `json:"refused"`
+	Harness string `json:"harness"`
+	Action  string `json:"action"`
+	Reason  string `json:"reason"`
+	Would   string `json:"would"`
+}
+
 // writeDryRun ends a --dry-run short-circuit by reporting the action that was
 // skipped. Returning silently leaves a --json caller with empty stdout, which
 // is indistinguishable from a broken command rather than a deliberate no-op.
@@ -163,6 +176,29 @@ func writeDryRun(w io.Writer, flags *rootFlags, action string) error {
 		return json.NewEncoder(w).Encode(dryRunResult{DryRun: true, Action: action, Would: would})
 	}
 	_, err := fmt.Fprintf(w, "dry-run: would %s\n", would)
+	return err
+}
+
+// writeHarnessRefusal reports that a Printing Press harness blocked a visible
+// side effect. Returning silently leaves a --json or --agent caller with empty
+// stdout, which looks like a broken command rather than an intentional refusal.
+func writeHarnessRefusal(w io.Writer, flags *rootFlags, action string) error {
+	harness := cliutil.HarnessName()
+	if harness == "" {
+		harness = "harness"
+	}
+	reason := "Printing Press harness refuses visible side effects"
+	would := "run " + action + "; no visible side effect performed"
+	if flags != nil && flags.asJSON {
+		return json.NewEncoder(w).Encode(harnessRefusalResult{
+			Refused: true,
+			Harness: harness,
+			Action:  action,
+			Reason:  reason,
+			Would:   would,
+		})
+	}
+	_, err := fmt.Fprintf(w, "%s: %s; would %s\n", harness, reason, would)
 	return err
 }
 
@@ -511,26 +547,52 @@ type noopResult struct {
 	Reason string `json:"reason"`
 }
 
-func writeNoop(flags *rootFlags, reason, prose string) error {
-	if flags != nil && flags.asJSON {
-		return json.NewEncoder(os.Stdout).Encode(noopResult{Status: "noop", Reason: reason})
-	}
-	fmt.Fprintln(os.Stderr, prose)
-	return nil
+type noopWriteError struct {
+	prose string
+	cause error
 }
 
-func writeAPIErrorEnvelope(flags *rootFlags, err error, code int) {
+func (e *noopWriteError) Error() string {
+	if e.cause == nil {
+		return e.prose
+	}
+	return fmt.Sprintf("%s: %v", e.prose, e.cause)
+}
+
+func (e *noopWriteError) Unwrap() error { return e.cause }
+
+func writeNoop(w io.Writer, flags *rootFlags, reason, prose string) error {
+	result := &noopWriteError{prose: prose}
+	if flags != nil && flags.asJSON {
+		result.cause = json.NewEncoder(w).Encode(noopResult{Status: "noop", Reason: reason})
+		return apiErr(result)
+	}
+	_, result.cause = fmt.Fprintln(w, prose)
+	return apiErr(result)
+}
+
+func successfulNoop(err error) bool {
+	var typed *cliError
+	var result *noopWriteError
+	return errors.As(err, &typed) && errors.As(typed.err, &result) && result.cause == nil
+}
+
+func writeAPIErrorEnvelope(w io.Writer, flags *rootFlags, err error, code int) {
 	if flags == nil || !flags.asJSON {
 		return
 	}
-	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": err.Error(),
 		"code":  code,
 	})
 }
 
-// classifyAPIError maps API errors to structured exit codes with actionable hints.
-func classifyAPIError(err error, flags *rootFlags) error {
+// classifyAPIErrorOnly maps API errors to structured exit codes without writing.
+// Hand-written commands should use this helper when they own output sequencing.
+func classifyAPIErrorOnly(err error) error {
+	if err == nil {
+		return nil
+	}
 	var typed *cliError
 	if errors.As(err, &typed) {
 		return err
@@ -539,9 +601,7 @@ func classifyAPIError(err error, flags *rootFlags) error {
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "HTTP 409"):
-		classified := apiErr(err)
-		writeAPIErrorEnvelope(flags, classified, ExitCode(classified))
-		return classified
+		return apiErr(err)
 	case errors.Is(err, client.ErrPlaceholderCredential):
 		return authErr(err)
 	case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
@@ -567,6 +627,23 @@ func classifyAPIError(err error, flags *rootFlags) error {
 	}
 }
 
+// classifyAPIError maps API errors to structured exit codes with actionable hints.
+func classifyAPIError(w io.Writer, err error, flags *rootFlags) error {
+	if err == nil {
+		return nil
+	}
+	var typed *cliError
+	if errors.As(err, &typed) {
+		return err
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "HTTP 409") {
+	}
+	classified := classifyAPIErrorOnly(err)
+	writeAPIErrorEnvelope(w, flags, classified, ExitCode(classified))
+	return classified
+}
+
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
@@ -585,6 +662,32 @@ func newTabWriter(w io.Writer) *tabwriter.Writer {
 // reserved characters within each segment remain safe in the request URL.
 func replacePathParam(path, name, value string) string {
 	return strings.ReplaceAll(path, "{"+name+"}", cliutil.EscapePathParam(value))
+}
+
+func replaceURLIDPathParam(path, name, value string) string {
+	return replacePathParam(path, name, pathParamSegmentValue(value))
+}
+
+func pathParamSegmentValue(value string) string {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return value
+	}
+	escapedPath := strings.TrimRight(parsed.EscapedPath(), "/")
+	if escapedPath == "" {
+		return value
+	}
+	segment := escapedPath
+	if i := strings.LastIndex(segment, "/"); i >= 0 {
+		segment = segment[i+1:]
+	}
+	if segment == "" {
+		return value
+	}
+	if decoded, err := url.PathUnescape(segment); err == nil {
+		return decoded
+	}
+	return segment
 }
 
 const responsePathItemsKey = "__printing_press_response_path_items"
@@ -698,6 +801,8 @@ func paginatedGet(ctx context.Context, c interface {
 	collectionField := ""
 	collectionShapeSet := false
 	seenCursorTokens := map[string]struct{}{}
+	var previousPageItems []json.RawMessage
+	previousPageItemsSet := false
 	if sentCursor := clean[cursorParam]; sentCursor != "" {
 		seenCursorTokens[sentCursor] = struct{}{}
 	}
@@ -726,6 +831,12 @@ func paginatedGet(ctx context.Context, c interface {
 				return nil, fmt.Errorf("paginated response collection changed from %q to a bare array", collectionField)
 			}
 			collectionShapeSet = true
+			if previousPageItemsSet && paginatedItemsEqual(previousPageItems, items) {
+				emitPaginatedGetRepeatedPageWarning(ctx)
+				break
+			}
+			previousPageItems = append([]json.RawMessage(nil), items...)
+			previousPageItemsSet = true
 			allItems = append(allItems, items...)
 			if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, len(items)); ok {
 				if page >= paginatedGetMaxPages {
@@ -740,6 +851,7 @@ func paginatedGet(ctx context.Context, c interface {
 			var obj map[string]json.RawMessage
 			if json.Unmarshal(data, &obj) == nil {
 				itemCount := 0
+				nextCursorToken := ""
 				field, preserve := paginatedCollectionEnvelopeField(obj, path)
 				nested, ok := extractPaginatedItems(obj, path)
 				if !ok && preserve {
@@ -758,33 +870,40 @@ func paginatedGet(ctx context.Context, c interface {
 						}
 						return nil, fmt.Errorf("paginated response collection changed from a canonical array to %q", field)
 					}
+					if cursorLookupPath != "" {
+						if tokenRaw, ok := rawAtPath(obj, cursorLookupPath); ok {
+							nextCursorToken = paginationCursorToken(tokenRaw)
+						}
+					}
+					if previousPageItemsSet && paginatedItemsEqual(previousPageItems, nested) && (paginationType == "offset" || (cursorLookupPath != "" && (nextCursorToken == "" || nextCursorToken == clean[cursorParam]))) {
+						emitPaginatedGetRepeatedPageWarning(ctx)
+						break
+					}
+					previousPageItems = append([]json.RawMessage(nil), nested...)
+					previousPageItemsSet = true
 					allItems = append(allItems, nested...)
 					itemCount = len(nested)
 				}
 
 				// Check for next cursor
-				if cursorLookupPath != "" {
-					if tokenRaw, ok := rawAtPath(obj, cursorLookupPath); ok {
-						if token := paginationCursorToken(tokenRaw); token != "" {
-							foundCursorField = true
-							if _, seen := seenCursorTokens[token]; seen {
-								platform.MarkContextTruncated(ctx, platform.TruncationReason{Kind: "pagination_cursor_repeated", Configured: "unique_cursor", Observed: "repeated_cursor", MoreAvailable: true})
-								if humanFriendly {
-									fmt.Fprintf(os.Stderr, "warning: --all received the same pagination cursor twice; returning fetched pages only.\n")
-								} else {
-									fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_cursor_repeated","next_cursor_path":%q,"message":"--all received the same pagination cursor twice; returning fetched pages only"}`+"\n", cursorLookupPath)
-								}
-								break
-							}
-							seenCursorTokens[token] = struct{}{}
-							if page >= paginatedGetMaxPages {
-								emitPaginatedGetMaxPagesWarning(ctx)
-								break
-							}
-							clean[cursorParam] = token
-							continue
+				if nextCursorToken != "" {
+					foundCursorField = true
+					if _, seen := seenCursorTokens[nextCursorToken]; seen {
+						platform.MarkContextTruncated(ctx, platform.TruncationReason{Kind: "pagination_cursor_repeated", Configured: "unique_cursor", Observed: "repeated_cursor", MoreAvailable: true})
+						if humanFriendly {
+							fmt.Fprintf(os.Stderr, "warning: --all received the same pagination cursor twice; returning fetched pages only.\n")
+						} else {
+							fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_cursor_repeated","next_cursor_path":%q,"message":"--all received the same pagination cursor twice; returning fetched pages only"}`+"\n", cursorLookupPath)
 						}
+						break
 					}
+					seenCursorTokens[nextCursorToken] = struct{}{}
+					if page >= paginatedGetMaxPages {
+						emitPaginatedGetMaxPagesWarning(ctx)
+						break
+					}
+					clean[cursorParam] = nextCursorToken
+					continue
 				}
 
 				// Check has_more. Page and offset paginators can advance
@@ -1056,6 +1175,27 @@ func emitPaginatedGetMaxPagesWarning(ctx context.Context) {
 	}
 }
 
+func emitPaginatedGetRepeatedPageWarning(ctx context.Context) {
+	platform.MarkContextTruncated(ctx, platform.TruncationReason{Kind: "pagination_page_repeated", Configured: "unique_page", Observed: "repeated_page", MoreAvailable: true})
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "warning: --all received the same page twice; returning fetched pages only.\n")
+	} else {
+		fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_page_repeated","message":"--all received the same page twice; returning fetched pages only"}`+"\n")
+	}
+}
+
+func paginatedItemsEqual(previous, current []json.RawMessage) bool {
+	if len(previous) != len(current) {
+		return false
+	}
+	for i := range previous {
+		if string(previous[i]) != string(current[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func emitMissingPaginationCursorWarning(ctx context.Context, nextCursorPath string) {
 	platform.MarkContextTruncated(ctx, platform.TruncationReason{Kind: "pagination_cursor_missing", Configured: nextCursorPath, Observed: "missing", MoreAvailable: true})
 	if humanFriendly {
@@ -1199,6 +1339,9 @@ func extractPaginatedItemsMatchingPath(obj map[string]json.RawMessage, requestPa
 var envelopeMetadataArrayKeys = map[string]bool{
 	"errors": true, "Errors": true,
 	"warnings": true, "Warnings": true,
+	// fetch_failures is emitted by fan-out scaffolding. It is bookkeeping,
+	// not a competing domain payload array during compact projection.
+	"fetch_failures": true, "FetchFailures": true,
 }
 
 // envelopeMetadataKeys lists pagination and collection-envelope metadata
@@ -1884,7 +2027,7 @@ func isDryRunResponseForClient(c any, data json.RawMessage) bool {
 	return ok && isDryRunResponse(dryRunClient.IsDryRun(), data)
 }
 
-func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any) error {
+func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any, documentedFields ...map[string]bool) error {
 	if err := validatePlatformAnalytics(flags); err != nil {
 		return err
 	}
@@ -1896,7 +2039,7 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 	if flags.selectFields != "" {
 		data = filterFields(data, flags.selectFields)
 	} else if flags.compact {
-		data = compactFields(data)
+		data = compactFields(data, documentedFields...)
 	}
 	if flags.agent && flags.asJSON && !flags.csv && !flags.plain && !flags.quiet {
 		wrapped, err := wrapAgentOutput(data, agentMeta)
@@ -1954,17 +2097,17 @@ var compactVerboseObjectFields = map[string]bool{
 // compactFields keeps only the most important fields for agent consumption.
 // For arrays: allowlist of high-gravity fields (no descriptions).
 // For single objects: blocklist that strips known-verbose fields (descriptions, comments, etc.).
-func compactFields(data json.RawMessage) json.RawMessage {
+func compactFields(data json.RawMessage, documentedFields ...map[string]bool) json.RawMessage {
 	// Try array first
 	var items []map[string]any
 	if err := json.Unmarshal(data, &items); err == nil {
-		return compactListFields(items)
+		return compactListFields(items, documentedFields...)
 	}
 
 	// Single object — use blocklist
 	var obj map[string]any
 	if err := json.Unmarshal(data, &obj); err == nil {
-		return compactObjectFields(obj)
+		return compactObjectFields(obj, documentedFields...)
 	}
 
 	return data
@@ -1989,7 +2132,7 @@ func compactFields(data json.RawMessage) json.RawMessage {
 // When an item still carries none of the keep keys, the original is
 // preserved so `--agent` does not silently emit {} for shapes whose key
 // names are entirely off-canonical.
-func compactListFields(items []map[string]any) json.RawMessage {
+func compactListFields(items []map[string]any, documentedFields ...map[string]bool) json.RawMessage {
 	keepFields := map[string]bool{
 		// Identity
 		"id": true, "name": true, "title": true, "identifier": true,
@@ -2011,6 +2154,11 @@ func compactListFields(items []map[string]any) json.RawMessage {
 		"date": true,
 		// Versioning
 		"version": true,
+	}
+	for _, fields := range documentedFields {
+		for field := range fields {
+			keepFields[field] = true
+		}
 	}
 	if len(items) > 0 {
 		keyCounts := map[string]int{}
@@ -2073,8 +2221,8 @@ func isCompactScalar(v any) bool {
 // "markdown" — those fields are payload on `get` commands and stripping them
 // under `--agent`/`--compact` is a silent loss; agents who want to omit them
 // can pass `--select` to specify only the fields they need.
-func compactObjectFields(obj map[string]any) json.RawMessage {
-	if compacted, ok := compactListEnvelopeObjectAtDepth(obj, 0); ok {
+func compactObjectFields(obj map[string]any, documentedFields ...map[string]bool) json.RawMessage {
+	if compacted, ok := compactListEnvelopeObjectAtDepth(obj, 0, documentedFields...); ok {
 		result, _ := json.Marshal(compacted)
 		return result
 	}
@@ -2088,25 +2236,34 @@ func compactObjectFields(obj map[string]any) json.RawMessage {
 	return result
 }
 
-func compactListEnvelopeObjectAtDepth(obj map[string]any, envelopeDepth int) (map[string]any, bool) {
+func compactListEnvelopeObjectAtDepth(obj map[string]any, envelopeDepth int, documentedFields ...map[string]bool) (map[string]any, bool) {
 	out := map[string]any{}
 	foundArray := false
+	payloadArrays := map[string]bool{}
 	for k, v := range obj {
-		if envelopeDepth == 0 && compactVerboseObjectFields[k] {
+		if envelopeMetadataArrayKeys[k] || envelopeMetadataKeys[k] {
+			continue
+		}
+		if _, ok := compactObjectArrayValue(v, documentedFields...); ok {
+			payloadArrays[k] = true
+		}
+	}
+	for k, v := range obj {
+		if envelopeDepth == 0 && compactVerboseObjectFields[k] && (!payloadArrays[k] || len(payloadArrays) > 1) {
 			continue
 		}
 		if envelopeMetadataArrayKeys[k] || envelopeMetadataKeys[k] {
 			out[k] = v
 			continue
 		}
-		if compacted, ok := compactObjectArrayValue(v); ok {
+		if compacted, ok := compactObjectArrayValue(v, documentedFields...); ok {
 			foundArray = true
 			out[k] = compacted
 			continue
 		}
 		if nested, ok := v.(map[string]any); ok {
 			if envelopeDepth < maxListEnvelopeDepth {
-				if compacted, ok := compactListEnvelopeObjectAtDepth(nested, envelopeDepth+1); ok {
+				if compacted, ok := compactListEnvelopeObjectAtDepth(nested, envelopeDepth+1, documentedFields...); ok {
 					foundArray = true
 					out[k] = compacted
 					continue
@@ -2121,7 +2278,7 @@ func compactListEnvelopeObjectAtDepth(obj map[string]any, envelopeDepth int) (ma
 	return out, true
 }
 
-func compactObjectArrayValue(v any) (any, bool) {
+func compactObjectArrayValue(v any, documentedFields ...map[string]bool) (any, bool) {
 	rawItems, ok := v.([]any)
 	if !ok || len(rawItems) == 0 {
 		return nil, false
@@ -2134,7 +2291,7 @@ func compactObjectArrayValue(v any) (any, bool) {
 		}
 		items = append(items, item)
 	}
-	compactedRaw := compactListFields(items)
+	compactedRaw := compactListFields(items, documentedFields...)
 	var compacted any
 	if err := json.Unmarshal(compactedRaw, &compacted); err != nil {
 		return nil, false
@@ -2845,6 +3002,41 @@ func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMess
 	return json.Marshal(envelope)
 }
 
+const defaultDBScopeHashLen = 12
+
+var defaultDBScopeState struct {
+	sync.RWMutex
+	hash string
+}
+
+func configureDefaultDBScope(configPath string) {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		setDefaultDBScopeCredential("")
+		return
+	}
+	setDefaultDBScopeCredential(cfg.StoreScopeCredential())
+}
+
+func setDefaultDBScopeCredential(credential string) {
+	credential = strings.TrimSpace(credential)
+	scopeHash := ""
+	if credential != "" {
+		sum := sha256.Sum256([]byte(credential))
+		scopeHash = hex.EncodeToString(sum[:])[:defaultDBScopeHashLen]
+	}
+
+	defaultDBScopeState.Lock()
+	defaultDBScopeState.hash = scopeHash
+	defaultDBScopeState.Unlock()
+}
+
+func currentDefaultDBScopeHash() string {
+	defaultDBScopeState.RLock()
+	defer defaultDBScopeState.RUnlock()
+	return defaultDBScopeState.hash
+}
+
 // defaultDBPath returns the canonical path for the local SQLite database.
 // The resolver already knows the app name on the happy path; name is only
 // used for the conservative fallback when the resolved data directory fails.
@@ -2852,9 +3044,24 @@ func defaultDBPath(name string) string {
 	dir, err := cliutil.DataDir()
 	if err != nil {
 		if home, homeErr := os.UserHomeDir(); homeErr == nil {
-			return filepath.Join(home, ".local", "share", name, "data.db")
+			return defaultDBPathInDir(filepath.Join(home, ".local", "share", name))
 		}
 		return "data.db"
 	}
-	return filepath.Join(dir, "data.db")
+	return defaultDBPathInDir(dir)
+}
+
+func defaultDBPathInDir(dir string) string {
+	unscoped := filepath.Join(dir, "data.db")
+	if scopeHash := currentDefaultDBScopeHash(); scopeHash != "" {
+		scoped := filepath.Join(dir, "data-"+scopeHash+".db")
+		if _, err := os.Stat(scoped); err == nil {
+			return scoped
+		}
+		if _, err := os.Stat(unscoped); err == nil || !os.IsNotExist(err) {
+			return unscoped
+		}
+		return scoped
+	}
+	return unscoped
 }

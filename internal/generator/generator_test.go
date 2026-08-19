@@ -506,8 +506,8 @@ func TestGenerateDedupesResourceRegistryMapEntries(t *testing.T) {
 }
 
 // TestGenerate_EmitsReconcile verifies that, for a spec with a single-path-param
-// dependent resource, the generator emits the ReconcilePartition wiring in both
-// store.go and sync.go, and that the generated code compiles successfully.
+// dependent resource, the generator emits ReconcilePartition and ReconcileAll
+// wiring in store.go and sync.go, and that the generated code compiles.
 func TestGenerate_EmitsReconcile(t *testing.T) {
 	t.Parallel()
 	apiSpec := minimalSpec("emits-reconcile")
@@ -537,7 +537,11 @@ func TestGenerate_EmitsReconcile(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Contains(t, string(storeSrc), "func (s *Store) ReconcilePartition")
+	assert.Contains(t, string(storeSrc), "func (s *Store) ReconcileAll")
 	assert.Contains(t, string(syncSrc), "ReconcilePartition(")
+	assert.Contains(t, string(syncSrc), "ReconcileAll(")
+	assert.Contains(t, string(syncSrc), `"flat_global"`,
+		"no-tenant-scope print must emit a reconcilable whole-table mode")
 	assert.Contains(t, string(syncSrc), "partitionOutcome")
 	assert.Contains(t, string(syncSrc), "reconcile_skipped")
 
@@ -1405,6 +1409,7 @@ func TestGenerateComposedApiKeyPlusBearerEmitsAdditionalHeader(t *testing.T) {
 	mcpSrc := string(mcpBytes)
 	assert.Contains(t, mcpSrc, `"ST_APP_KEY"`,
 		"MCP context must expose sibling apiKey credentials to agents")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGenerateComposedHeaderApiKeyDerivesMissingSiblingEnvVar(t *testing.T) {
@@ -2471,6 +2476,7 @@ func TestGenerateHTTPBasicAuthAllowsOptionalBlankPasswordAndSetCredentials(t *te
 	require.Contains(t, authSrc, `"set-credentials <username> [password]"`)
 	require.Contains(t, authSrc, `requires 1 or 2 args: <username> [password]`)
 	require.NotContains(t, authSrc, "cmd.AddCommand(newAuthSetTokenCmd(flags))")
+	require.NotContains(t, authSrc, "func newAuthSetTokenCmd")
 
 	const inlineTest = `package config
 
@@ -4310,17 +4316,55 @@ func TestGenerateStoreDSNOrdersBusyTimeoutBeforeJournalMode(t *testing.T) {
 	// the read-write DSN, so a file-wide strings.Index for it always hits
 	// the read-only DSN first and the ordering check passes regardless of
 	// the read-write DSN's internal order. Scope the busy_timeout search to
-	// the read-write DSN by starting at its "?_pragma=" query prefix — the
-	// read-only DSN begins with "?mode=ro&_pragma=", so "?_pragma=" uniquely
-	// marks the read-write query string.
+	// the read-write DSN by starting at its "?_txlock=immediate" query prefix —
+	// the read-only DSN begins with "?mode=ro", so this uniquely marks the
+	// read-write query string.
 	idxJournal := strings.Index(codeOnly, "_pragma=journal_mode(WAL)")
 	require.GreaterOrEqual(t, idxJournal, 0, "read-write DSN must set journal_mode(WAL)")
-	dsnStart := strings.LastIndex(codeOnly[:idxJournal], "?_pragma=")
+	dsnStart := strings.LastIndex(codeOnly[:idxJournal], "?_txlock=immediate")
 	require.GreaterOrEqual(t, dsnStart, 0,
-		"read-write DSN must list busy_timeout(5000) before journal_mode(WAL): no ?_pragma= query prefix precedes journal_mode(WAL) (see #2926)")
+		"read-write DSN must list busy_timeout(5000) before journal_mode(WAL): no ?_txlock=immediate query prefix precedes journal_mode(WAL) (see #2926)")
 	idxBusy := strings.Index(codeOnly[dsnStart:idxJournal], "_pragma=busy_timeout(5000)")
 	require.GreaterOrEqual(t, idxBusy, 0,
 		"read-write DSN must list busy_timeout(5000) before journal_mode(WAL) so the WAL conversion runs with the busy handler active (see #2926)")
+}
+
+// Verify that generated stores choose the journal and transaction settings
+// required by each profile. Cache-enabled profiles write local state during
+// reads and must avoid WAL sidecars; the default profile retains WAL for
+// concurrent analytical reads.
+func TestGenerateStoreDSNUsesImmediateTransactionsAndProfileJournalMode(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		cache       bool
+		journalMode string
+		otherMode   string
+	}{
+		{name: "default WAL", journalMode: "WAL", otherMode: "TRUNCATE"},
+		{name: "cache rollback journal", cache: true, journalMode: "TRUNCATE", otherMode: "WAL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			apiSpec := minimalSpec("dsn-concurrency-" + strings.ToLower(strings.ReplaceAll(tc.name, " ", "-")))
+			apiSpec.Cache.Enabled = tc.cache
+			outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+			gen := New(apiSpec, outputDir)
+			gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+			require.NoError(t, gen.Generate())
+
+			storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+			require.NoError(t, err)
+			codeOnly := stripGoComments(string(storeSrc))
+
+			assert.Contains(t, codeOnly, "?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode("+tc.journalMode+")",
+				"read-write DSN must acquire immediate transactions and select the profile journal mode")
+			assert.NotContains(t, codeOnly, "_pragma=journal_mode("+tc.otherMode+")&_pragma=synchronous",
+				"read-write DSN must not emit the other profile journal mode")
+			requireGeneratedCompiles(t, outputDir)
+			runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "^Test(OpenHardensSQLiteFilePermissions|HardenSQLiteFilesSkipsSymlinkSidecars|OpenAppliesPragmas)$", "-count=1")
+		})
+	}
 }
 
 // Callers gating on existence rely on errors.Is(err, sql.ErrNoRows); the
@@ -5520,8 +5564,11 @@ func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
 	if len(items) != 0 || cursor != "" || hasMore {
 		t.Fatalf("null data envelope = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
 	}
-	if !isEmptyPageResponse(json.RawMessage(body)) {
-		t.Fatalf("failed JSend null data envelope should be treated as an empty page")
+	if isEmptyPageResponse(json.RawMessage(body)) {
+		t.Fatalf("failed JSend null data envelope should not be treated as an empty page")
+	}
+	if !responseDeclaresFailure(json.RawMessage(body)) {
+		t.Fatalf("failed JSend null data envelope should be detected as a declared failure")
 	}
 
 	withErrors := json.RawMessage(` + "`" + `{"success": false, "errors": [{"code": "bad"}], "data": null}` + "`" + `)
@@ -5531,8 +5578,11 @@ func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
 	}
 
 	statusFail := json.RawMessage(` + "`" + `{"status": "fail", "data": null}` + "`" + `)
-	if !isEmptyPageResponse(statusFail) {
-		t.Fatalf("status=fail null data envelope should be treated as an empty page")
+	if isEmptyPageResponse(statusFail) {
+		t.Fatalf("status=fail null data envelope should not be treated as an empty page")
+	}
+	if !responseDeclaresFailure(statusFail) {
+		t.Fatalf("status=fail null data envelope should be detected as a declared failure")
 	}
 
 	emptyResultSibling := json.RawMessage(` + "`" + `{"data": null, "result": {"orders": []}}` + "`" + `)
@@ -5545,13 +5595,19 @@ func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
 	if len(items) != 0 || cursor != "" || hasMore {
 		t.Fatalf("PascalCase failed JSend null data envelope = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
 	}
-	if !isEmptyPageResponse(pascalSuccessFalse) {
-		t.Fatalf("PascalCase failed JSend null data envelope should be treated as an empty page")
+	if isEmptyPageResponse(pascalSuccessFalse) {
+		t.Fatalf("PascalCase failed JSend null data envelope should not be treated as an empty page")
+	}
+	if !responseDeclaresFailure(pascalSuccessFalse) {
+		t.Fatalf("PascalCase failed JSend null data envelope should be detected as a declared failure")
 	}
 
 	pascalStatusFail := json.RawMessage(` + "`" + `{"Status": "Failed", "Data": null}` + "`" + `)
-	if !isEmptyPageResponse(pascalStatusFail) {
-		t.Fatalf("PascalCase status=Failed null data envelope should be treated as an empty page")
+	if isEmptyPageResponse(pascalStatusFail) {
+		t.Fatalf("PascalCase status=Failed null data envelope should not be treated as an empty page")
+	}
+	if !responseDeclaresFailure(pascalStatusFail) {
+		t.Fatalf("PascalCase status=Failed null data envelope should be detected as a declared failure")
 	}
 
 	statusSuccess := json.RawMessage(` + "`" + `{"status": "success", "data": null}` + "`" + `)
@@ -6956,12 +7012,12 @@ func TestUpsertResourceBatchRoutesDiscriminatorItems(t *testing.T) {
 		json.RawMessage(`+"`"+`{"type":"collection","id":"c1","name":"Collection","created_at":"2026-01-01T00:00:00Z"}`+"`"+`),
 		json.RawMessage(`+"`"+`{"type":"team","id":"t1","name":"Team","created_at":"2026-01-01T00:00:00Z"}`+"`"+`),
 	}
-	stored, extractFailures, err := upsertResourceBatch(s, "network_entities", items)
+	stored, extractFailures, typedFailures, err := upsertResourceBatch(s, "network_entities", items)
 	if err != nil {
 		t.Fatalf("upsertResourceBatch: %%v", err)
 	}
-	if stored != len(items) || extractFailures != 0 {
-		t.Fatalf("stored/extractFailures = %%d/%%d, want %%d/0", stored, extractFailures, len(items))
+	if stored != len(items) || extractFailures != 0 || typedFailures != 0 {
+		t.Fatalf("stored/extractFailures/typedFailures = %%d/%%d/%%d, want %%d/0/0", stored, extractFailures, typedFailures, len(items))
 	}
 
 	for _, table := range []string{"workspaces", "collections", "teams"} {
@@ -7397,7 +7453,7 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 
 	// --select and --compact are applied to inner data before wrapping in envelope
 	assert.Contains(t, content, "filtered := data")
-	assert.Contains(t, content, "compactFields(filtered)")
+	assert.Contains(t, content, "compactFields(filtered,")
 	assert.Contains(t, content, "filterFields(filtered, flags.selectFields)")
 	assert.Contains(t, content, `json.Unmarshal(filtered, &parsed)`)
 
@@ -7930,6 +7986,7 @@ func TestEndpointFixturesEmittedFromSpec(t *testing.T) {
 					Params:                  []spec.Param{{Name: "q", Type: "string", Required: true}},
 					Example:                 "  endpoint-fixtures-pp-cli lookup --q example-page",
 					HappyArgs:               "--q=example-page",
+					HappyStdin:              `{"query":"synthetic"}`,
 					LiveDogfoodRequiresTier: "enterprise",
 				},
 			},
@@ -7965,6 +8022,8 @@ func TestEndpointFixturesEmittedFromSpec(t *testing.T) {
 		"promoted command must prefer the spec-declared Cobra example")
 	assert.Contains(t, promoted, `"pp:happy-args": "--q=example-page"`,
 		"promoted command must carry spec-declared happy-path fixtures for live dogfood")
+	assert.Contains(t, promoted, `"pp:happy-stdin": "{\"query\":\"synthetic\"}"`,
+		"promoted command must carry spec-declared stdin fixtures for live dogfood")
 	assert.Contains(t, promoted, `"pp:requires-tier": "enterprise"`,
 		"promoted command must carry spec-declared live dogfood tier requirements")
 
@@ -8176,6 +8235,7 @@ func TestGeneratedHelpers_IdempotentNoopsRequireOptIn(t *testing.T) {
 	inlineTest := `package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -8225,7 +8285,7 @@ func requireNoopJSON(t *testing.T, body, reason string) {
 }
 
 func TestClassifyAPIError409RequiresIdempotent(t *testing.T) {
-	err := classifyAPIError(errors.New("HTTP 409: conflict"), &rootFlags{})
+	err := classifyAPIError(os.Stdout, errors.New("HTTP 409: conflict"), &rootFlags{})
 	if err == nil {
 		t.Fatal("409 without --idempotent must be an error")
 	}
@@ -8234,15 +8294,80 @@ func TestClassifyAPIError409RequiresIdempotent(t *testing.T) {
 	}
 
 	stdout, stderr, err := captureStdoutStderr(t, func() error {
-		return classifyAPIError(errors.New("HTTP 409: conflict"), &rootFlags{idempotent: true, asJSON: true})
+		return classifyAPIError(os.Stdout, errors.New("HTTP 409: conflict"), &rootFlags{idempotent: true, asJSON: true})
 	})
 	if err != nil {
-		t.Fatalf("idempotent 409 returned error: %v", err)
+		t.Fatalf("idempotent 409 should remain a successful no-op: %v", err)
 	}
 	if stderr != "" {
 		t.Fatalf("json noop should not write stderr, got %q", stderr)
 	}
 	requireNoopJSON(t, stdout, "already_exists")
+}
+
+func TestClassifyAPIErrorUsesProvidedWriter(t *testing.T) {
+	var out bytes.Buffer
+	err := classifyAPIError(&out, errors.New("HTTP 409: conflict"), &rootFlags{idempotent: true, asJSON: true})
+	if err != nil {
+		t.Fatalf("idempotent 409 should remain a successful no-op: %v", err)
+	}
+	requireNoopJSON(t, out.String(), "already_exists")
+
+	out.Reset()
+	err = classifyAPIError(&out, errors.New("HTTP 500: server error"), &rootFlags{asJSON: true})
+	if err == nil {
+		t.Fatal("HTTP 500 must remain a non-nil error")
+	}
+	var envelope map[string]any
+	if decodeErr := json.Unmarshal(out.Bytes(), &envelope); decodeErr != nil {
+		t.Fatalf("error envelope must be JSON: %v; body=%q", decodeErr, out.String())
+	}
+	if envelope["code"] != float64(5) {
+		t.Fatalf("error envelope code = %v, want 5", envelope["code"])
+	}
+}
+
+func TestWriteNoopReturnsTypedError(t *testing.T) {
+	var out bytes.Buffer
+	err := writeNoop(&out, &rootFlags{asJSON: true}, "already_exists", "already exists (no-op)")
+	if err == nil {
+		t.Fatal("writeNoop must return a non-nil typed error")
+	}
+	if ExitCode(err) != 5 {
+		t.Fatalf("writeNoop exit code = %d, want 5", ExitCode(err))
+	}
+	requireNoopJSON(t, out.String(), "already_exists")
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("output writer failed")
+}
+
+func TestClassifyAPIErrorPropagatesNoopWriteError(t *testing.T) {
+	err := classifyAPIError(failingWriter{}, errors.New("HTTP 409: conflict"), &rootFlags{idempotent: true, asJSON: true})
+	if err == nil {
+		t.Fatal("failed noop output must return a non-nil error")
+	}
+	if ExitCode(err) != 5 {
+		t.Fatalf("failed noop output exit code = %d, want 5", ExitCode(err))
+	}
+}
+
+func TestClassifyAPIErrorOnlyDoesNotWrite(t *testing.T) {
+	stdout, stderr, err := captureStdoutStderr(t, func() error {
+		return classifyAPIErrorOnly(errors.New("HTTP 409: conflict"))
+	})
+	if err == nil {
+		t.Fatal("classify-only helper must return a non-nil error")
+	}
+	if ExitCode(err) != 5 {
+		t.Fatalf("classify-only HTTP error should use API exit code, got %d", ExitCode(err))
+	}
+	if stdout != "" || stderr != "" {
+		t.Fatalf("classify-only helper wrote output: stdout=%q stderr=%q", stdout, stderr)
+	}
 }
 
 func TestClassifyAPIErrorPreservesTypedCLIError(t *testing.T) {
@@ -8261,7 +8386,7 @@ func TestClassifyAPIErrorPreservesTypedCLIError(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			stdout, stderr, classified := captureStdoutStderr(t, func() error {
-				return classifyAPIError(tc.err, tc.flags)
+				return classifyAPIError(os.Stdout, tc.err, tc.flags)
 			})
 
 			if classified != tc.err {
@@ -8281,7 +8406,7 @@ func TestClassifyAPIErrorPreservesTypedCLIError(t *testing.T) {
 }
 
 func TestClassifyDeleteError404RequiresIgnoreMissing(t *testing.T) {
-	err := classifyDeleteError(errors.New("HTTP 404: not found"), &rootFlags{})
+	err := classifyDeleteError(os.Stdout, errors.New("HTTP 404: not found"), &rootFlags{})
 	if err == nil {
 		t.Fatal("404 delete without --ignore-missing must be an error")
 	}
@@ -8290,10 +8415,10 @@ func TestClassifyDeleteError404RequiresIgnoreMissing(t *testing.T) {
 	}
 
 	stdout, stderr, err := captureStdoutStderr(t, func() error {
-		return classifyDeleteError(errors.New("HTTP 404: not found"), &rootFlags{ignoreMissing: true, asJSON: true})
+		return classifyDeleteError(os.Stdout, errors.New("HTTP 404: not found"), &rootFlags{ignoreMissing: true, asJSON: true})
 	})
 	if err != nil {
-		t.Fatalf("ignore-missing 404 returned error: %v", err)
+		t.Fatalf("ignore-missing 404 should remain a successful no-op: %v", err)
 	}
 	if stderr != "" {
 		t.Fatalf("json noop should not write stderr, got %q", stderr)
@@ -8303,7 +8428,8 @@ func TestClassifyDeleteError404RequiresIgnoreMissing(t *testing.T) {
 `
 	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
 
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli")
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommandRequired(t, outputDir, "test", "-run", "Test(Classify|WriteNoop)", "./internal/cli")
 }
 
 func TestGeneratedExport_ValidatesResourceArgument(t *testing.T) {
@@ -10434,14 +10560,41 @@ func TestGeneratedOutput_WorkflowBoundaries(t *testing.T) {
 		"workflow status must reject stores newer than the generated schema")
 	assert.Contains(t, src, `"workflowboundary-pp-cli/internal/cliutil"`,
 		"workflow archive must import the generated dogfood environment helper")
-	assert.Contains(t, src, `archiveMaxPages := 100`,
-		"workflow archive must keep its normal page limit explicit")
+	assert.Contains(t, src, `cmd.Flags().IntVar(&maxPages, "max-pages", 0`,
+		"workflow archive must leave normal archive pagination unlimited unless the operator sets a cap")
+	assert.Contains(t, src, `cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute`,
+		"workflow archive must expose a wall-clock bound with an operator escape hatch")
+	assert.Contains(t, src, `if maxPages < 0`,
+		"workflow archive must reject negative page limits instead of treating them as unlimited")
+	assert.Contains(t, src, `if timeout < 0`,
+		"workflow archive must reject negative timeouts instead of treating them as no timeout")
+	assert.Contains(t, src, `context.WithTimeout(archiveCtx, archiveTimeout)`,
+		"workflow archive must pass a timeout-bound context through store open and sync")
 	assert.Contains(t, src, `if cliutil.IsDogfoodEnv()`,
 		"workflow archive must enter its bounded dogfood path")
+	assert.Contains(t, src, `if !cmd.Flags().Changed("max-pages")`,
+		"dogfood must not override an explicit archive page cap")
+	assert.Contains(t, src, `if !cmd.Flags().Changed("timeout")`,
+		"dogfood must not override an explicit archive timeout")
 	assert.Contains(t, src, `resources = resources[:3]`,
 		"workflow archive must cap the resource list under dogfood")
 	assert.Contains(t, src, `archiveMaxPages, false`,
 		"workflow archive must pass the dogfood-aware page limit to syncResource")
+
+	substackSpec := minimalSpec("substack")
+	substackDir := filepath.Join(t.TempDir(), naming.CLI(substackSpec.Name))
+	substackGen := New(substackSpec, substackDir)
+	substackGen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, substackGen.Generate())
+	substackWorkflow := readGeneratedFile(t, substackDir, "internal", "cli", "channel_workflow.go")
+	assert.Contains(t, substackWorkflow, `resolveSubstackPublicationIDTemplate(archiveCtx, c, flags)`,
+		"Substack archive publication preflight must share the bounded archive context")
+	assert.Contains(t, substackWorkflow, `err = workflowArchiveTimeoutError(archiveTimeout, err)`,
+		"Substack archive publication preflight must convert deadline errors into actionable archive timeout errors")
+	assert.Contains(t, substackWorkflow, `return fmt.Errorf("archiving %s: %w", resource, err)`,
+		"Substack archive publication preflight timeout must hard-fail instead of continuing")
+	assert.NotContains(t, substackWorkflow, `resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags)`,
+		"Substack archive publication preflight must not bypass the archive timeout")
 
 	syncDisabledDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name)+"-nosync")
 	syncDisabledGen := New(apiSpec, syncDisabledDir)
@@ -10469,6 +10622,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"workflowboundary-pp-cli/internal/store"
 )
@@ -10622,8 +10776,17 @@ func TestWorkflowArchiveCurtailsOnlyUnderDogfood(t *testing.T) {
 	}
 
 	atomic.StoreInt32(&requests, 0)
+	stdout, stderr, err = runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "dogfood-unlimited.db"), "--max-pages", "0", "--timeout", "0")
+	if err != nil {
+		t.Fatalf("dogfood archive with explicit escape: %v; stdout=%s stderr=%s", err, stdout, stderr)
+	}
+	if got := atomic.LoadInt32(&requests); got != 6 {
+		t.Fatalf("dogfood archive with explicit escape requests = %d, want two pages for each of 3 resources", got)
+	}
+
+	atomic.StoreInt32(&requests, 0)
 	t.Setenv("PRINTING_PRESS_DOGFOOD", "")
-	stdout, stderr, err = runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "normal.db"))
+	stdout, stderr, err = runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "normal.db"), "--timeout", "0")
 	if err != nil {
 		t.Fatalf("normal archive: %v; stdout=%s stderr=%s", err, stdout, stderr)
 	}
@@ -10634,10 +10797,152 @@ func TestWorkflowArchiveCurtailsOnlyUnderDogfood(t *testing.T) {
 		t.Fatalf("normal archive stdout = %q, want all-resource count", stdout)
 	}
 }
+
+func TestWorkflowArchiveTimeoutFailsFast(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"items\":[{\"id\":\"item-1\"}],\"has_more\":false,\"next_cursor\":\"\"}"))
+	}))
+	defer server.Close()
+	t.Setenv("WORKFLOWBOUNDARY_BASE_URL", server.URL)
+
+	stdout, stderr, err := runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "timeout.db"), "--timeout", "1ms")
+	if err == nil {
+		t.Fatalf("timeout archive unexpectedly succeeded; stdout=%s stderr=%s", stdout, stderr)
+	}
+	if !strings.Contains(err.Error(), "workflow archive timed out after 1ms") {
+		t.Fatalf("timeout archive error = %v; stderr=%s", err, stderr)
+	}
+}
+
+func TestWorkflowArchiveRejectsNegativeBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		flag string
+		value string
+		want string
+	}{
+		{name: "max pages", flag: "--max-pages", value: "-1", want: "--max-pages must be greater than or equal to 0"},
+		{name: "timeout", flag: "--timeout", value: "-1s", want: "--timeout must be greater than or equal to 0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "negative.db")
+			stdout, stderr, err := runWorkflowBoundaryCommand("workflow", "archive", "--db", dbPath, tc.flag, tc.value)
+			if err == nil {
+				t.Fatalf("negative %s unexpectedly succeeded; stdout=%s stderr=%s", tc.flag, stdout, stderr)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("negative %s error = %v; stderr=%s", tc.flag, err, stderr)
+			}
+			if _, statErr := os.Stat(dbPath); !os.IsNotExist(statErr) {
+				t.Fatalf("negative %s created db path: stat err=%v", tc.flag, statErr)
+			}
+		})
+	}
+}
 `
 	testPath := filepath.Join(outputDir, "internal", "cli", "workflow_boundary_runtime_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
+	storeCrashTest := `package store
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestStoreWrite_KilledProcessLeavesDatabaseIntegral(t *testing.T) {
+	if os.Getenv("PP_STORE_KILL_HELPER") == "1" {
+		runStoreKillHelper()
+		return
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestStoreWrite_KilledProcessLeavesDatabaseIntegral$", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		"PP_STORE_KILL_HELPER=1",
+		"PP_STORE_KILL_DB="+dbPath,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start kill helper: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill helper: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+	}
+
+	ro, err := OpenReadOnly(dbPath)
+	if err != nil {
+		t.Fatalf("open killed db read-only: %v", err)
+	}
+	defer ro.Close()
+	var integrity string
+	if err := ro.DB().QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil {
+		t.Fatalf("integrity_check killed db: %v", err)
+	}
+	if integrity != "ok" {
+		t.Fatalf("integrity_check = %q, want ok", integrity)
+	}
+}
+
+func runStoreKillHelper() {
+	dbPath := os.Getenv("PP_STORE_KILL_DB")
+	if dbPath == "" {
+		fmt.Fprintln(os.Stderr, "PP_STORE_KILL_DB is required")
+		os.Exit(2)
+	}
+	s, err := Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open helper db: %v\n", err)
+		os.Exit(3)
+	}
+	defer s.Close()
+
+	items := make([]json.RawMessage, 0, 100)
+	payload := strings.Repeat("x", 1024)
+	for i := 0; i < cap(items); i++ {
+		items = append(items, json.RawMessage(fmt.Sprintf(` + "`" + `{"id":"kill-%d","payload":%q}` + "`" + `, i, payload)))
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, _, err := s.UpsertBatch("kill_items", items); err != nil {
+			fmt.Fprintf(os.Stderr, "upsert helper batch: %v\n", err)
+			os.Exit(4)
+		}
+	}
+}
+`
+	storeCrashPath := filepath.Join(outputDir, "internal", "store", "killed_writer_integrity_test.go")
+	require.NoError(t, os.WriteFile(storeCrashPath, []byte(storeCrashTest), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestWorkflow(Status|Archive)")
+	runGoCommand(t, outputDir, "test", "./internal/store", "-run", "TestStoreWrite_KilledProcessLeavesDatabaseIntegral", "-count=1")
 	requireGeneratedCompiles(t, outputDir)
 }
 
@@ -11235,13 +11540,100 @@ func TestGeneratedAuthHints_BasicCredentialsAreSchemeAware(t *testing.T) {
 	assert.NotContains(t, auth[setupStart:setupStart+setupEnd], `basicauth-pp-cli auth set-token <token>`)
 	statusStart := strings.Index(auth, "func newAuthStatusCmd")
 	require.NotEqual(t, -1, statusStart)
-	statusEnd := strings.Index(auth[statusStart:], "func newAuthSetTokenCmd")
+	statusEnd := strings.Index(auth[statusStart:], "func newAuthSetCredentialsCmd")
 	require.NotEqual(t, -1, statusEnd)
 	statusBlock := auth[statusStart : statusStart+statusEnd]
 	assert.Contains(t, statusBlock, "Set your credentials:")
 	assert.NotContains(t, statusBlock, `basicauth-pp-cli auth set-token <token>`)
 
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratedAuthCredentialCommandReferencesMatchCobraTree(t *testing.T) {
+	t.Run("single bearer token registers and advertises set-token", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := minimalSpec("single-bearer")
+		apiSpec.Auth = spec.AuthConfig{
+			Type:    "bearer_token",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"SINGLE_BEARER_TOKEN"},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "single-bearer-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		auth := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+		assert.Contains(t, auth, "func newAuthSetTokenCmd")
+		assert.Contains(t, auth, "cmd.AddCommand(newAuthSetTokenCmd(flags))")
+
+		for _, generatedPath := range [][]string{
+			{"README.md"},
+			{"SKILL.md"},
+			{"internal", "cli", "helpers.go"},
+			{"internal", "mcp", "tools.go"},
+			{"internal", "client", "client.go"},
+			{"internal", "cli", "doctor.go"},
+		} {
+			content := readGeneratedFile(t, outputDir, generatedPath...)
+			assert.Contains(t, content, "auth set-token", strings.Join(generatedPath, "/"))
+		}
+	})
+
+	t.Run("basic credential pair advertises set-credentials without dead set-token", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := &spec.APISpec{
+			Name:    "basic-pair-surface",
+			Version: "0.1.0",
+			BaseURL: "https://api.example.com",
+			Auth: spec.AuthConfig{
+				Type:   "api_key",
+				Header: "Authorization",
+				Format: "Basic {username}:{password}",
+				EnvVarSpecs: []spec.AuthEnvVar{
+					{Name: "BASIC_PAIR_USERNAME", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false},
+					{Name: "BASIC_PAIR_PASSWORD", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+				},
+			},
+			Config: spec.ConfigSpec{Format: "toml", Path: "~/.config/basic-pair-surface/config.toml"},
+			Resources: map[string]spec.Resource{
+				"items": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}}},
+			},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "basic-pair-surface-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		auth := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+		assert.Contains(t, auth, "func newAuthSetCredentialsCmd")
+		assert.Contains(t, auth, "cmd.AddCommand(newAuthSetCredentialsCmd(flags))")
+		assert.NotContains(t, auth, "func newAuthSetTokenCmd")
+		assert.NotContains(t, auth, "cmd.AddCommand(newAuthSetTokenCmd(flags))")
+
+		for _, generatedPath := range [][]string{
+			{"README.md"},
+			{"SKILL.md"},
+			{"internal", "cli", "auth.go"},
+			{"internal", "cli", "helpers.go"},
+			{"internal", "mcp", "tools.go"},
+			{"internal", "client", "client.go"},
+			{"internal", "cli", "doctor.go"},
+		} {
+			content := readGeneratedFile(t, outputDir, generatedPath...)
+			assert.NotContains(t, content, "auth set-token", strings.Join(generatedPath, "/"))
+		}
+
+		readme := readGeneratedFile(t, outputDir, "README.md")
+		assert.Contains(t, readme, "auth set-credentials")
+		skill := readGeneratedFile(t, outputDir, "SKILL.md")
+		assert.Contains(t, skill, "auth set-credentials")
+		client := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+		assert.Contains(t, client, "auth set-credentials")
+		doctor := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
+		assert.Contains(t, doctor, `credentialRemediation := "run auth set-credentials or auth logout"`)
+	})
 }
 
 func TestGeneratedHelpers_NoAuth_No400Branch(t *testing.T) {
@@ -11318,6 +11710,11 @@ func TestGeneratedHelpers_AuthWithKeyURL_Compiles(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
 
+	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	assert.Contains(t, clientSrc, "q := req.URL.Query()",
+		"query API-key auth must emit cross-host query cleanup")
+	assert.Contains(t, clientSrc, "req.URL.RawQuery = q.Encode()",
+		"query API-key auth must write the cleaned query back")
 	requireGeneratedCompiles(t, outputDir)
 }
 
@@ -13248,7 +13645,7 @@ func TestGeneratedSyncTreatsAccessDeniedAsWarning(t *testing.T) {
 	syncContent := string(syncGo)
 
 	// Sync emits the structured warn event and routes to the warn-aware exit branch.
-	assert.Contains(t, syncContent, `Warn     error`)
+	assert.Contains(t, syncContent, `Warn             error`)
 	// The access-denied warning is marshaled via syncWarningJSON (escaping the
 	// embedded upstream error body) rather than raw fmt.Fprintf interpolation.
 	assert.Contains(t, syncContent, `syncWarningJSON(resource, "", w.Status, w.Reason, w.Message)`)
@@ -15789,11 +16186,11 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 		`"reason":"all_items_failed_id_extraction"`,
 		"sync.go must preserve the all_items_failed_id_extraction roll-up event")
 	assert.Contains(t, syncContent,
-		`warn := fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal)`,
-		"sync.go must surface all-items-failed ID extraction as a warning result, not a success")
+		`err := fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal)`,
+		"sync.go must surface all-items-failed ID extraction as an integrity error, not a success")
 	assert.Contains(t, syncContent,
-		`Warn:     warn`,
-		"sync.go must return the all-items-failed warning result, not a success")
+		`IntegrityFailure: true`,
+		"sync.go must mark all-items-failed and typed projection failures as integrity failures")
 	assert.Contains(t, syncContent,
 		`completed with warnings but no successful syncs`,
 		"sync.go all-warned summary must not claim the warning was only access-related")
@@ -15810,15 +16207,14 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 		`{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"extract_failures":%d,"reason":"stored_count_zero_after_extraction"}`,
 		"F4b probe must use the literal %s interpolation pattern")
 
-	// UpsertBatch's signature is (int, int, error) — sync.go must consume
-	// all three return values. Without this contract, extractFailures would
-	// not be observable from sync's per-item warning code.
+	// upsertResourceBatch's signature is (int, int, int, error) — sync.go must
+	// consume the typed-projection failure count as well as ID extraction misses.
 	assert.Contains(t, syncContent,
-		`stored, extractFailures, err := upsertResourceBatch(db, resource, items)`,
-		"sync.go syncResource must consume the three-tuple batch upsert return")
+		`stored, extractFailures, typedFailures, err := upsertResourceBatch(db, resource, items)`,
+		"sync.go syncResource must consume the four-tuple batch upsert return")
 	assert.Contains(t, syncContent,
-		`stored, extractFailures, err := upsertResourceBatch(db, dep.Name, items)`,
-		"sync.go syncDependentResource must consume the three-tuple batch upsert return")
+		`stored, extractFailures, typedFailures, err := upsertResourceBatch(db, dep.Name, items)`,
+		"sync.go syncDependentResource must consume the four-tuple batch upsert return")
 
 	// store.go's UpsertBatch declaration matches the new signature.
 	assert.Contains(t, storeContent,
@@ -15837,6 +16233,83 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 	runGoCommand(t, outputDir, "test", "./internal/store/...", "-run", "TestUpsertBatch_(TemplatedIDFieldOverrideWins|GenericFallbackList|SuffixFallbackAcceptsScopedCamelCaseID|UnwrapsIDBearingEnvelopeItems|PreservesLargeIntegerResourceIDs|ExtractFailuresReturnedForPerItemMisses)")
 	runGoCommand(t, outputDir, "test", "./internal/cli/...", "-run", "TestSyncSingleObject_PreservesLargeIntegerResourceIDs")
+}
+
+func TestGeneratedStoreIDFieldOverrideKeepsDuplicateNames(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("idfieldrows")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources = map[string]spec.Resource{
+		"scheduled-events": {
+			Description: "Manage scheduled events",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/scheduled_events",
+					Description: "List scheduled events",
+					Response:    spec.ResponseDef{Type: "array"},
+					Pagination:  &spec.Pagination{CursorParam: "page_token", LimitParam: "count"},
+					IDField:     "uri",
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(storeGo), `"scheduled-events": "uri",`)
+
+	storeTest := `package store
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"testing"
+)
+
+func TestURIOverrideKeepsDuplicateDisplayNames(t *testing.T) {
+	db, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "store.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	items := []json.RawMessage{
+		json.RawMessage(` + "`" + `{"uri":"https://api.example.com/scheduled_events/event-a","name":"Weekly review"}` + "`" + `),
+		json.RawMessage(` + "`" + `{"uri":"https://api.example.com/scheduled_events/event-b","name":"Weekly review"}` + "`" + `),
+	}
+	stored, extractFailures, typedFailures, err := db.UpsertBatchDetailed("scheduled-events", items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored != 2 || extractFailures != 0 || typedFailures != 0 {
+		t.Fatalf("UpsertBatchDetailed stored=%d extractFailures=%d typedFailures=%d, want 2/0/0", stored, extractFailures, typedFailures)
+	}
+	count, err := db.Count("scheduled-events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("Count = %d, want 2", count)
+	}
+	for _, id := range []string{
+		"https://api.example.com/scheduled_events/event-a",
+		"https://api.example.com/scheduled_events/event-b",
+	} {
+		if _, err := db.Get("scheduled-events", id); err != nil {
+			t.Fatalf("Get(%q): %v", id, err)
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "store", "id_override_test.go"), []byte(storeTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "TestURIOverrideKeepsDuplicateDisplayNames")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGeneratedSyncIDFieldOverridesFromMemberPathParam(t *testing.T) {
@@ -17732,6 +18205,25 @@ func TestGenerateMCPMainLargeAPIExplicitEndpointMirrorHonored(t *testing.T) {
 	assert.NotContains(t, body, "NewStreamableHTTPServer")
 }
 
+func TestGenerateMCPMainRemoteOptInDefaultsHTTPAddrToLoopback(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	apiSpec.MCP = spec.MCPConfig{
+		Transport: []string{"stdio", "http"},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+	requireGeneratedCompiles(t, outputDir)
+
+	body := readGeneratedMCPMain(t, outputDir, apiSpec.Name)
+	assert.Contains(t, body, `defaultHTTPAddr = "127.0.0.1:7777"`)
+	assert.NotContains(t, body, `defaultHTTPAddr = ":7777"`)
+}
+
 // TestGenerateMCPMainRemoteOptIn confirms that declaring mcp.transport: [stdio, http]
 // emits a flag-aware main with both transport branches, including the env-based
 // default and the custom --addr. Uses a byte-level check on the template
@@ -17743,22 +18235,19 @@ func TestGenerateMCPMainRemoteOptIn(t *testing.T) {
 	require.NoError(t, err)
 	apiSpec.MCP = spec.MCPConfig{
 		Transport: []string{"stdio", "http"},
-		Addr:      ":8123",
+		Addr:      "0.0.0.0:7777",
 	}
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
 
-	mainPath := filepath.Join(outputDir, "cmd", naming.MCP(apiSpec.Name), "main.go")
-	data, err := os.ReadFile(mainPath)
-	require.NoError(t, err)
-	body := string(data)
+	body := readGeneratedMCPMain(t, outputDir, apiSpec.Name)
 
 	for _, want := range []string{
 		`"flag"`,
 		`"strings"`,
-		`defaultHTTPAddr = ":8123"`,
+		`defaultHTTPAddr = "0.0.0.0:7777"`,
 		`flag.String("transport"`,
 		`flag.String("addr"`,
 		`server.ServeStdio(s)`,
@@ -17769,6 +18258,15 @@ func TestGenerateMCPMainRemoteOptIn(t *testing.T) {
 		assert.Contains(t, body, want, "remote-opt-in main should contain %q", want)
 	}
 	assertMCPMainUsesVersionVar(t, body)
+}
+
+func readGeneratedMCPMain(t *testing.T, outputDir, apiName string) string {
+	t.Helper()
+
+	mainPath := filepath.Join(outputDir, "cmd", naming.MCP(apiName), "main.go")
+	data, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	return string(data)
 }
 
 func assertMCPMainUsesVersionVar(t *testing.T, body string) {
@@ -20573,17 +21071,17 @@ components:
 	defaultResources := regexp.MustCompile(`(?s)func defaultSyncResources\(\) \[\]string \{(.*?)\n\}`).FindStringSubmatch(src)
 	require.Len(t, defaultResources, 2)
 	assert.Contains(t, defaultResources[1], `"usercollection",`)
-	assert.Contains(t, defaultResources[1], `"usercollection-daily-sleep",`)
+	assert.Contains(t, defaultResources[1], `"usercollection-heartrate",`)
 	assert.Contains(t, defaultResources[1], `"usercollection-personal-info",`)
-	assert.NotContains(t, defaultResources[1], `"usercollection-heartrate",`,
-		"heartrate should stay absorbed by the canonical usercollection resource")
+	assert.NotContains(t, defaultResources[1], `"usercollection-daily-sleep",`,
+		"daily_sleep should stay absorbed by the canonical usercollection resource")
 	assert.NotContains(t, defaultResources[1], `"webhook",`,
 		"auth-tagged webhook resources must stay out of the default sync set")
 
 	paginationSwitch := regexp.MustCompile(`(?s)func resourceSupportsPagination\(resource string\) bool \{(.*?)\n\}`).FindStringSubmatch(src)
 	require.Len(t, paginationSwitch, 2)
 	assert.Contains(t, paginationSwitch[1], `case "usercollection":`)
-	assert.Contains(t, paginationSwitch[1], `case "usercollection-daily-sleep":`)
+	assert.Contains(t, paginationSwitch[1], `case "usercollection-heartrate":`)
 	assert.NotContains(t, paginationSwitch[1], `case "usercollection-personal-info":`,
 		"single-object resources without cursor params must not be marked paginated")
 	assert.Contains(t, src, `cursorParam:    "next_token"`,
@@ -20594,11 +21092,11 @@ components:
 import "testing"
 
 func TestSyncSinceParamFormatForDateOnlyResources(t *testing.T) {
-	if got := syncResourceSinceParamFormat("usercollection-daily-sleep"); got != "date" {
+	if got := syncResourceSinceParamFormat("usercollection"); got != "date" {
 		t.Fatalf("daily sleep since format = %q, want date", got)
 	}
-	// The canonical usercollection endpoint is heartrate because it has the shortest shared-prefix path.
-	if got := syncResourceSinceParamFormat("usercollection"); got != "date-time" {
+	// The canonical usercollection endpoint is daily_sleep because no endpoint is named list and get_daily_sleep sorts before get_heartrate.
+	if got := syncResourceSinceParamFormat("usercollection-heartrate"); got != "date-time" {
 		t.Fatalf("heartrate since format = %q, want date-time", got)
 	}
 	if got := formatSyncSinceValue("2026-06-07T12:34:56Z", "date"); got != "2026-06-07" {

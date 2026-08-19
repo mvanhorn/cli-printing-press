@@ -6,7 +6,8 @@ package pipeline
 // excluded from checkDeadFunctions, scoreDeadCode, and findAllDeadFunctions.
 func isAllowedDeadHelper(name string) bool {
 	switch name {
-	case "boundCtx": // used by hand-written novel commands; unused in endpoint-only CLIs
+	case "boundCtx", // used by hand-written novel commands; unused in endpoint-only CLIs
+		"writeHarnessRefusal": // structured side-effect refusal hook for hand-written novel commands
 		return true
 	case "declarePlatformAnalytics", // strict analytics declaration hook for hand-written novel commands
 		"resolvePlatformWindow": // resolved-window hook for hand-written novel commands
@@ -17,6 +18,7 @@ func isAllowedDeadHelper(name string) bool {
 		"emitMissingPaginationCursorWarning",
 		"emitMissingPaginationSignalWarning",
 		"emitPaginatedGetMaxPagesWarning",
+		"emitPaginatedGetRepeatedPageWarning",
 		"emitTruncationWarning",
 		"extractGraphQLConnection",
 		"extractGraphQLObject",
@@ -26,9 +28,15 @@ func isAllowedDeadHelper(name string) bool {
 		"nextFullPageOffsetCursor",
 		"paginatedGet",
 		"paginatedCollectionEnvelopeField",
+		"paginatedItemsEqual",
 		"paginationCursorToken",
+		"pathParamSegmentValue",
+		"replaceDependentPathParam",
 		"replacePathParam",
+		"replaceURLIDPathParam",
+		"resourceURLIDPathParam",
 		"responsePayloadParentAtPath",
+		"urlIDFieldName",
 		"writeNoop":
 		return true
 	default:

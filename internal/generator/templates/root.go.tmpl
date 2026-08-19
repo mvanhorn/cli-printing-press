@@ -366,10 +366,10 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	rootCmd.PersistentFlags().BoolVar(&flags.ignoreMissing, "ignore-missing", false, "Treat missing delete targets as a successful no-op")
 {{- end}}
 	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output{{if .SelectExample}} (e.g. --select {{.SelectExample}}){{end}}")
-	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (for agents and scripts)")
+	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (explicit confirmation for scripts)")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	rootCmd.PersistentFlags().BoolVar(&humanFriendly, "human-friendly", false, "Enable colored output and rich formatting")
-	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set all agent-friendly defaults (--json --compact --no-input --no-color --yes)")
+	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set agent-friendly output defaults (--json --compact --no-input --no-color)")
 {{- if .Learn.Enabled}}
 	rootCmd.PersistentFlags().BoolVar(&flags.noLearn, "no-learn", false, "Disable the teach/recall learning loop for this invocation")
 {{- end}}
@@ -425,6 +425,9 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 		if _, err := cliutil.SetHomeOverride(flags.homePath); err != nil {
 			return err
 		}
+{{- if and .HasStorePath (and .Auth.Type (ne .Auth.Type "none"))}}
+		configureDefaultDBScope(flags.configPath)
+{{- end}}
 		if flags.deliverSpec != "" {
 			sink, err := ParseDeliverSink(flags.deliverSpec)
 			if err != nil {
@@ -484,9 +487,6 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 			}
 			if !cmd.Flags().Changed("no-input") {
 				flags.noInput = true
-			}
-			if !cmd.Flags().Changed("yes") {
-				flags.yes = true
 			}
 			if !cmd.Flags().Changed("no-color") {
 				noColor = true
@@ -615,6 +615,20 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	for _, hook := range novelCommandHooks {
 		hook(rootCmd, flags)
 	}
+{{- if .NovelFrameworkChildren}}
+	// Cobra creates its default help and completion parents lazily during
+	// Execute. Initialize them here too so novel features can attach to the
+	// same framework command tree when RootCmd is inspected directly.
+	rootCmd.InitDefaultHelpCmd()
+	rootCmd.InitDefaultCompletionCmd()
+{{- range $parent, $children := .NovelFrameworkChildren}}
+	if parent, _, err := rootCmd.Find(strings.Fields({{printf "%q" $parent}})); err == nil {
+{{- range $children}}
+		addNovelCommandIfAbsent(parent, newNovel{{.Ident}}Cmd(flags))
+{{- end}}
+	}
+{{- end}}
+{{- end}}
 {{- range .NovelCommandStubs}}
 	addNovelCommandIfAbsent(rootCmd, newNovel{{.Ident}}Cmd(flags))
 {{- end}}

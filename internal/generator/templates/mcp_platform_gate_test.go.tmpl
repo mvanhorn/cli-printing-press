@@ -121,3 +121,36 @@ func TestMCPTypedInvocationUsesSingleFreshTenantGate(t *testing.T) {
 		t.Fatalf("typed handler calls = %d, want 1", handlerCalls)
 	}
 }
+
+func TestMCPUngatedInvocationUsesRealVerifier(t *testing.T) {
+	originalVerify := verifyFreshMCPInvocation
+	t.Cleanup(func() { verifyFreshMCPInvocation = originalVerify })
+	verifyFreshMCPInvocation = cli.VerifyMCPInvocation
+
+	session, err := cli.VerifyMCPInvocation(context.Background())
+	if err != nil {
+		t.Fatalf("real MCP verifier returned an error: %v", err)
+	}
+	if session != nil {
+		session.ZeroCredentials()
+		t.Skip("this CLI registers a platform source")
+	}
+
+	handlerCalls := 0
+	s := server.NewMCPServer("tenant-gate-conformance", "test")
+	result, err := requireFreshTenantGate(s, func(context.Context, mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+		handlerCalls++
+		return mcplib.NewToolResultText("ok"), nil
+	})(context.Background(), mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{Name: "ungated-conformance", Arguments: map[string]any{}},
+	})
+	if err != nil {
+		t.Fatalf("ungated wrapper returned protocol error: %v", err)
+	}
+	if handlerCalls != 1 {
+		t.Fatalf("ungated handler calls = %d, want 1", handlerCalls)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("ungated handler was blocked by the tenant gate: %#v", result)
+	}
+}

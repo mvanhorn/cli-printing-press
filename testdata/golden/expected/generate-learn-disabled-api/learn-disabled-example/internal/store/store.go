@@ -113,7 +113,7 @@ func OpenReadOnly(dbPath string) (*Store, error) {
 // OpenReadOnlyContext is OpenReadOnly with a caller-supplied context honored by
 // the driver-init SQLITE_BUSY retry.
 func OpenReadOnlyContext(ctx context.Context, dbPath string) (*Store, error) {
-	dsn := "file:" + dbPath + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)"
+	dsn := "file:" + dbPath + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)"
 	if err := ensureSQLiteDriverInitialized(ctx, dsn); err != nil {
 		return nil, err
 	}
@@ -136,20 +136,17 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 	}
 	hardenSQLiteFiles(dbPath)
 	defer hardenSQLiteFiles(dbPath)
-	if err := rejectNewerSchemaBeforeWAL(ctx, dbPath); err != nil {
+	if err := rejectNewerSchemaBeforeJournalMode(ctx, dbPath); err != nil {
 		return nil, err
 	}
 
-	// Pragma order is load-bearing: busy_timeout must engage BEFORE
-	// journal_mode(WAL) so the delete→WAL conversion (an exclusive
-	// operation on a fresh DB) runs with a busy handler active. With the
-	// timeout listed after the conversion, concurrent first-run opens
-	// race the WAL switch and fail SQLITE_BUSY instead of waiting. This
-	// mirrors the OpenReadOnly DSN and works alongside the retryOnBusy
-	// wrapper around Conn() acquisition below; both layers are needed
-	// because modernc.org/sqlite's connect-time conversion is not fully
-	// covered by the statement-level busy handler alone.
-	dsn := dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)"
+	// Pragma order is load-bearing: busy_timeout must engage BEFORE the
+	// journal-mode conversion so concurrent first-run opens wait instead of
+	// racing the exclusive conversion. Cache-enabled profiles write local
+	// state during reads, so they use a rollback journal and avoid WAL sidecar
+	// teardown races between short-lived processes. Other store profiles keep
+	// WAL for concurrent analytical reads.
+	dsn := dbPath + "?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)"
 	if err := ensureSQLiteDriverInitialized(ctx, dsn); err != nil {
 		return nil, err
 	}
@@ -159,9 +156,8 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
-	// WAL mode + 2 connections allows one read cursor open while a second
-	// query executes (e.g., analytics commands calling helpers during row
-	// iteration). Writes are still serialized by SQLite's WAL lock.
+	// Two connections allow one read cursor to remain open while a second query
+	// executes (e.g., analytics commands calling helpers during row iteration).
 	db.SetMaxOpenConns(2)
 
 	s := &Store{db: db, path: dbPath}
@@ -173,13 +169,12 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 	return s, nil
 }
 
-// rejectNewerSchemaBeforeWAL uses a lightweight read-only connection so an
-// old binary can reject a future schema before the read-write DSN attempts
-// journal_mode(WAL). The WAL conversion may wait behind a peer writer, but a
-// committed PRAGMA user_version remains readable while that writer is active.
-// Other probe errors are left to the normal open/migration path, which returns
-// the more precise corruption, permission, or lock error.
-func rejectNewerSchemaBeforeWAL(ctx context.Context, dbPath string) error {
+// A newer schema must be rejected before a read-write connection can attempt
+// journal-mode conversion. This lightweight read-only probe can read a
+// committed PRAGMA user_version while a peer writer is active; other probe
+// errors remain with the normal open/migration path, which returns the more
+// precise corruption, permission, or lock error.
+func rejectNewerSchemaBeforeJournalMode(ctx context.Context, dbPath string) error {
 	info, err := os.Stat(dbPath)
 	if os.IsNotExist(err) || (err == nil && info.Size() == 0) {
 		return nil
@@ -210,7 +205,7 @@ func rejectNewerSchemaBeforeWAL(ctx context.Context, dbPath string) error {
 // hardenSQLiteFiles is best-effort so stores on filesystems without Unix modes
 // remain usable. The deferred call catches files the SQLite driver creates.
 func hardenSQLiteFiles(dbPath string) {
-	for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+	for _, path := range []string{dbPath, dbPath + "-journal", dbPath + "-wal", dbPath + "-shm"} {
 		info, err := os.Lstat(path)
 		if err != nil || !info.Mode().IsRegular() {
 			continue
@@ -229,6 +224,35 @@ func hardenSQLiteFiles(dbPath string) {
 	}
 }
 
+// ensureSQLiteJournalPrivate creates the cache-profile rollback journal before
+// SQLite starts a write transaction, so its mode is private for the whole
+// transaction rather than only after the journal has been created.
+func ensureSQLiteJournalPrivate(dbPath string) {
+	journalPath := dbPath + "-journal"
+	file, err := os.OpenFile(journalPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err == nil {
+		_ = file.Close()
+		return
+	}
+	if os.IsExist(err) {
+		hardenSQLiteFiles(dbPath)
+	}
+}
+
+// lockForWrite and unlockAfterWrite keep SQLite sidecars private across the
+// lifetime of every serialized writer. TRUNCATE journaling reuses its journal
+// file and can restore its mode when a later transaction starts, after the
+// one-time OpenWithContext hardening has already run.
+func (s *Store) lockForWrite() {
+	s.writeMu.Lock()
+	hardenSQLiteFiles(s.path)
+}
+
+func (s *Store) unlockAfterWrite() {
+	hardenSQLiteFiles(s.path)
+	s.writeMu.Unlock()
+}
+
 func ensureSQLiteDriverInitialized(ctx context.Context, dsn string) error {
 	sqliteDriverInit.mu.Lock()
 	defer sqliteDriverInit.mu.Unlock()
@@ -244,7 +268,7 @@ func ensureSQLiteDriverInitialized(ctx context.Context, dsn string) error {
 	defer db.Close()
 
 	// Acquiring the first physical connection runs the DSN _pragma directives,
-	// including the journal_mode(WAL) conversion for a read-write DSN. On a
+	// including the journal-mode conversion for a read-write DSN. On a
 	// fresh DB opened concurrently — e.g. the scorecard live-check probing
 	// sampled commands in parallel — that conversion can return SQLITE_BUSY
 	// before the DSN's busy_timeout engages, so retry the acquisition against a
@@ -804,8 +828,8 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 }
 
 func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -863,7 +887,7 @@ func (s *Store) Search(query string, limit int, resourceTypes ...string) ([]json
 	if limit <= 0 {
 		limit = 50
 	}
-	matchQuery := ftsMatchQuery(query)
+	matchQuery := FTSMatchQuery(query)
 	if matchQuery == "" {
 		return nil, nil
 	}
@@ -983,7 +1007,8 @@ func isIdentifierKey(key string) bool {
 		strings.HasSuffix(key, "ID")
 }
 
-func ftsMatchQuery(query string) string {
+// FTSMatchQuery converts arbitrary text into a safe FTS5 MATCH expression.
+func FTSMatchQuery(query string) string {
 	tokens := ftsQueryTokenRE.FindAllString(query, -1)
 	if len(tokens) == 0 {
 		return ""
@@ -1393,13 +1418,9 @@ func deriveScopeColumns(obj map[string]any) {
 	}
 }
 
-// UpsertBatch inserts or replaces multiple records in a single transaction
-// and returns (stored, extractFailures, err). stored counts rows landed in
-// the generic resources table; extractFailures counts items that survived
-// JSON unmarshal but had no extractable primary key (templated IDField AND
-// generic fallback both missed). callers (sync.go.tmpl) compare these
-// against len(items) to emit the per-item primary_key_unresolved warning
-// and the F4b stored_count_zero_after_extraction probe.
+// UpsertBatch inserts or replaces multiple records in a single transaction.
+// The detailed variant also reports typed-table projection failures so sync can
+// treat a generic-only write as an incomplete local mirror.
 //
 // For resource types that have a domain-specific typed table, the per-item
 // generic insert is followed by a dispatch to the matching upsert<Pascal>Tx
@@ -1412,18 +1433,22 @@ func deriveScopeColumns(obj map[string]any) {
 // didn't populate the parent path placeholder) rolls back only that typed
 // upsert. The generic resources row inserted just above it survives the
 // rollback, so successful API fetches never strand in memory because one
-// downstream typed table is misconfigured. Failures are surfaced via a
-// trailing stderr warning rather than aborting the batch.
+// downstream typed table is misconfigured.
 func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, int, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	stored, extractFailures, _, err := s.UpsertBatchDetailed(resourceType, items)
+	return stored, extractFailures, err
+}
+
+func (s *Store) UpsertBatchDetailed(resourceType string, items []json.RawMessage) (int, int, int, error) {
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 	tx, err := s.db.Begin()
 	if err != nil {
-		return 0, 0, fmt.Errorf("starting batch transaction: %w", err)
+		return 0, 0, 0, fmt.Errorf("starting batch transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	var stored, skippedCount, extractFailures int
+	var stored, skippedCount, extractFailures, typedFailures int
 	for _, item := range items {
 		obj, err := DecodeJSONObject(item)
 		if err != nil {
@@ -1436,10 +1461,10 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 		// spec declares x-resource-id).
 		id := ExtractResourceID(resourceType, obj)
 		if id == "" {
-			if unwrappedObj, unwrappedItem, ok := unwrapIDBearingEnvelopeItem(resourceType, item, obj); ok {
-				obj = unwrappedObj
-				item = unwrappedItem
-				id = ExtractResourceID(resourceType, obj)
+			if keyObj, rowObj, rowItem, ok := unwrapIDBearingEnvelopeItem(resourceType, item, obj); ok {
+				id = ExtractResourceID(resourceType, keyObj)
+				obj = rowObj
+				item = rowItem
 			}
 		}
 		if id == "" {
@@ -1453,7 +1478,7 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 			// Return the running stored count rather than zero so callers
 			// inspecting partial progress on failure see what already
 			// landed in earlier loop iterations.
-			return stored, extractFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, storageID, err)
+			return stored, extractFailures, typedFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, storageID, err)
 		}
 		stored++
 	}
@@ -1468,38 +1493,43 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, extractFailures, err
+		return 0, extractFailures, typedFailures, err
 	}
-	return stored, extractFailures, nil
+	return stored, extractFailures, typedFailures, nil
 }
 
-func unwrapIDBearingEnvelopeItem(resourceType string, item json.RawMessage, obj map[string]any) (map[string]any, json.RawMessage, bool) {
+// Multi-field wrappers keep their outer row because scalar siblings may be
+// resource data; true single-field envelopes unwrap to the inner object.
+func unwrapIDBearingEnvelopeItem(resourceType string, item json.RawMessage, obj map[string]any) (map[string]any, map[string]any, json.RawMessage, bool) {
 	var candidate map[string]any
 	candidateKey := ""
-	objectFields := 0
+	candidates := 0
 	for key, value := range obj {
 		inner, ok := value.(map[string]any)
 		if !ok {
 			continue
 		}
-		objectFields++
 		if ExtractResourceID(resourceType, inner) != "" {
 			candidate = inner
 			candidateKey = key
+			candidates++
 		}
 	}
-	if objectFields != 1 || candidate == nil || candidateKey == "" {
-		return nil, nil, false
+	if candidates != 1 || candidate == nil || candidateKey == "" {
+		return nil, nil, nil, false
+	}
+	if len(obj) != 1 {
+		return candidate, obj, item, true
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(item, &raw); err != nil {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	data, ok := raw[candidateKey]
 	if !ok {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
-	return candidate, data, true
+	return candidate, candidate, data, true
 }
 
 func (s *Store) SaveSyncState(resourceType, cursor string, count int) error {
@@ -1510,8 +1540,8 @@ func (s *Store) SaveSyncState(resourceType, cursor string, count int) error {
 // watermark represented by at. Callers use this when the watermark belongs to
 // the data just fetched rather than to the instant the checkpoint is written.
 func (s *Store) SaveSyncStateAt(resourceType, cursor string, count int, at time.Time) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 	_, err := s.db.Exec(
 		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count)
 		 VALUES (?, ?, ?, ?)
@@ -1526,8 +1556,8 @@ func (s *Store) SaveSyncStateAt(resourceType, cursor string, count int, at time.
 // incremental watermark. A new row gets a parseable zero timestamp so
 // GetSyncState can scan it into time.Time without a NULL conversion error.
 func (s *Store) SaveSyncProgress(resourceType, cursor string, count int) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 	_, err := s.db.Exec(
 		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count)
 		 VALUES (?, ?, ?, ?)
@@ -1551,8 +1581,8 @@ func (s *Store) GetSyncState(resourceType string) (cursor string, lastSynced tim
 
 // SaveSyncCursor stores the pagination cursor for a resource type.
 func (s *Store) SaveSyncCursor(resourceType, cursor string) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.Exec(
 		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count)
@@ -1831,8 +1861,8 @@ func (s *Store) GetLastSyncedAt(resourceType string) string {
 
 // ClearSyncCursors resets all sync state for a full resync.
 func (s *Store) ClearSyncCursors() error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 	_, err := s.db.Exec("DELETE FROM sync_state")
 	return err
 }
@@ -1927,8 +1957,23 @@ func (s *Store) ReconcilePartition(resourceType, genericScopeJSONPath, scopeValu
 	if genericScopeJSONPath == "" || scopeValue == "" {
 		return 0, fmt.Errorf("reconcile %s: empty partition scope", resourceType)
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	return s.reconcileUnseen(resourceType, seenIDs, typedTable, cascades,
+		`SELECT id FROM resources
+		 WHERE resource_type = ?
+		   AND (CASE WHEN json_valid(data) THEN json_extract(data, ?) END) = ?`,
+		resourceType, genericScopeJSONPath, scopeValue)
+}
+
+// Whole-table reconciliation is safe only when the caller supplies the complete
+// seen-ID set from a proven-complete walk.
+func (s *Store) ReconcileAll(resourceType string, seenIDs []string, typedTable string, cascades []CascadeJunction) (int, error) {
+	return s.reconcileUnseen(resourceType, seenIDs, typedTable, cascades,
+		`SELECT id FROM resources WHERE resource_type = ?`, resourceType)
+}
+
+func (s *Store) reconcileUnseen(resourceType string, seenIDs []string, typedTable string, cascades []CascadeJunction, query string, args ...any) (int, error) {
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -1951,12 +1996,7 @@ func (s *Store) ReconcilePartition(resourceType, genericScopeJSONPath, scopeValu
 
 	// CASE guards against a malformed-JSON row aborting the victim scan:
 	// a row we cannot parse is never a victim — it is skipped (never deleted).
-	rows, err := tx.Query(
-		`SELECT id FROM resources
-		 WHERE resource_type = ?
-		   AND (CASE WHEN json_valid(data) THEN json_extract(data, ?) END) = ?`,
-		resourceType, genericScopeJSONPath, scopeValue,
-	)
+	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("reconcile %s: select victims: %w", resourceType, err)
 	}

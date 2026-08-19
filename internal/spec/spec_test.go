@@ -239,6 +239,7 @@ resources:
         path: /geography/counties
         example: "fixture-api-pp-cli geography counties --zip 60614"
         happy_args: "--zip=60614"
+        happy_stdin: '{"query":"synthetic"}'
         live_dogfood_requires_tier: enterprise
         params:
           - name: zip
@@ -255,6 +256,7 @@ resources:
 	counties := s.Resources["geography"].Endpoints["counties"]
 	assert.Equal(t, "fixture-api-pp-cli geography counties --zip 60614", counties.Example)
 	assert.Equal(t, "--zip=60614", counties.HappyArgs)
+	assert.Equal(t, `{"query":"synthetic"}`, counties.HappyStdin)
 	assert.Equal(t, "enterprise", counties.LiveDogfoodRequiresTier)
 
 	states := s.Resources["geography"].Endpoints["states"]

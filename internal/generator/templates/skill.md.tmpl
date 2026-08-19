@@ -22,6 +22,7 @@ allowed-tools: "Read Bash"
 
 # {{.ProseName}} — Printing Press CLI
 {{- $deviceEnvVars := deviceCodeEnvVars .Auth}}
+{{- $authPersistenceCommand := authCredentialPersistenceCommand .Auth .Name}}
 
 ## Prerequisites: Install the CLI
 
@@ -34,7 +35,7 @@ This skill drives the `{{.Name}}-pp-cli` binary. **You must verify the CLI is in
 2. Verify: `{{.Name}}-pp-cli --version`
 3. Ensure the reported install directory is on `$PATH` for the agent/runtime that will invoke this skill.
 {{ if .Category}}
-If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.5 or newer). This installs into `$GOPATH/bin` (default `$HOME/go/bin`), so add that directory to `$PATH` instead:
+If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.6 or newer). This installs into `$GOPATH/bin` (default `$HOME/go/bin`), so add that directory to `$PATH` instead:
 
 ```bash
 go install github.com/mvanhorn/printing-press-library/library/{{.Category}}/{{.Name}}/cmd/{{.Name}}-pp-cli@latest
@@ -221,7 +222,9 @@ Run `{{$.Name}}-pp-cli auth setup` to print the URL and steps for getting a key 
 export {{.Name}}="<your-key>"
 ```
 
-To persist credentials, use `{{$.Name}}-pp-cli auth set-token <token>`. Stored secrets live in `credentials.toml` under the data dir, not in `config.toml`.
+{{- if $authPersistenceCommand}}
+To persist credentials, use `{{$authPersistenceCommand}}`. Stored secrets live in `credentials.toml` under the data dir, not in `config.toml`.
+{{- end}}
 {{- end}}
 {{- else if eq .Auth.EffectiveOAuth2Grant "device_code"}}
 
@@ -259,11 +262,13 @@ export {{.Name}}="{{authEnvPlaceholder .}}"
 Access tokens are refreshed automatically before API calls.
 {{- else if eq .Auth.Type "bearer_token"}}
 
-Run `{{.Name}}-pp-cli auth setup` for the URL and steps to obtain a token (add `--launch` to open the URL). Then store it:
+Run `{{.Name}}-pp-cli auth setup` for the URL and steps to obtain a token (add `--launch` to open the URL){{if $authPersistenceCommand}}. Then store it{{end}}:
+{{- if $authPersistenceCommand}}
 
 ```bash
-{{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE
+{{$authPersistenceCommand}}
 ```
+{{- end}}
 {{- if .BearerRefresh.Enabled}}
 
 If authenticated commands start returning token errors after previously working, refresh the public client bearer token:
@@ -308,7 +313,7 @@ Run `{{.Name}}-pp-cli doctor` to verify setup.
 
 ## Agent Mode
 
-Add `--agent` to any command. Expands to: `--json --compact --no-input --no-color --yes`.
+Add `--agent` to any command. Expands to: `--json --compact --no-input --no-color`.
 
 - **Pipeable** — JSON on stdout, errors on stderr
 - **Filterable** — `--select` keeps a subset of fields. Dotted paths descend into nested structures; arrays traverse element-wise. Critical for keeping context small on verbose APIs:
@@ -329,6 +334,7 @@ Add `--agent` to any command. Expands to: `--json --compact --no-input --no-colo
 {{- if not .HasWriteCommands}}
 - **Read-only** — do not use this CLI for create, update, delete, publish, comment, upvote, invite, order, send, or other mutating requests
 {{- else}}
+- **Explicit confirmation** — `--agent` does not imply `--yes`; pass `--yes` separately only after the target, arguments, and side effects are clear
 {{- if or .HasCreateCommands .HasDelete}}
 - **Explicit retries** — {{if .HasCreateCommands}}use `--idempotent` only when an already-existing create should count as success{{if .HasDelete}}, and {{end}}{{end}}{{if .HasDelete}}use `--ignore-missing` only when a missing delete target should count as success{{end}}
 {{- end}}

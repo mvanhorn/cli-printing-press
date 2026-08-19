@@ -27,6 +27,7 @@ The runtime walker in `internal/mcp/cobratree/` mirrors the Cobra tree at server
 1. Commands annotated `cmd.Annotations["pp:endpoint"] = "<resource>.<endpoint>"` already have typed tools and are skipped to avoid duplicates.
 2. Framework commands listed in `cobratree/classify.go.tmpl`'s `frameworkCommands` set are skipped because a typed equivalent is better (`sql`, `search`, `context`) or the command is non-functional via MCP (`auth`, `completion`, `doctor`, `version`, `feedback`, `profile`, `which`, `help`).
 3. `cmd.Annotations["mcp:hidden"] = "true"` opts out a domain command that needs human-in-the-loop input.
+4. Commands annotated `cmd.Annotations["pp:api-resource"] = "true"` or `cmd.Annotations["pp:parent-group"] = "true"` are grouping parents whose only behavior is printing help; they are skipped so they do not register as runnable MCP tools. Endpoint leaves stay exposed.
 Store-population commands stay exposed: `sync`, `stale`, `orphans`, `reconcile`, `load`, `export`, `import`, `workflow`, `analytics`. `sql` and `search` return empty until `sync` populates the store. When in doubt, leave it exposed.
 
 ### Tool safety annotations
@@ -39,9 +40,9 @@ MCP hosts use `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorld
 Wrong annotations are worse than missing ones. A false `readOnlyHint: true` on a mutating tool is a real bug; a missing annotation is just a permission prompt.
 
 ### Side-effect commands
-Hand-written novel commands that perform visible actions (open browser tabs, send notifications, dial out to OS handlers) follow a two-part rule:
+Hand-written novel commands that perform visible or physical actions (open browser tabs, send notifications, dial out to OS handlers, play audio, preheat hardware, boil water, write physical displays) follow this rule:
 1. Print by default; require explicit opt-in (`--launch`, `--send`, `--play`, etc.) to actually act.
-2. Short-circuit when `cliutil.IsVerifyEnv()` is true. The verifier sets `PRINTING_PRESS_VERIFY=1` in every mock-mode subprocess; this env-var check is the floor that catches any side-effect command the verifier's heuristic classifier misses.
+2. Refuse when `cliutil.IsAnyHarness()` is true, and emit structured JSON when `--json` or `--agent` is active. The helper covers `PRINTING_PRESS_VERIFY=1` and `PRINTING_PRESS_DOGFOOD=1`; commands reaching hardware a person can hear or see must refuse under every harness because curtailing makes the effect shorter, not absent.
 
 OAuth browser authorization flows must also avoid impossible machine-mode combinations. If `--json` or another machine-output mode suppresses the authorize URL and `--no-open` or equivalent disables browser launch, either emit a deliberate structured continuation protocol (`authorize_url`, state handle, expiry, next command) or fail fast with an actionable usage error. Do not wait for a callback that no user or machine can initiate. See `skills/printing-press/references/oauth2-pkce-cli-checklist.md`.
 
@@ -49,7 +50,7 @@ Generated endpoint-mirror commands also gate mutating HTTP verbs (DELETE/POST/PU
 
 
 ### Long-running commands under live-dogfood
-Hand-written novel commands whose happy path is an expensive network operation (full sync loops, content crawlers, bulk archive walks) MUST curtail work when `cliutil.IsDogfoodEnv()` returns true. The `cli-printing-press dogfood --live` runner sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess under a flat 30s per-command timeout, so an uncapped happy path trips the timeout and flips the matrix verdict to FAIL. Unlike `IsVerifyEnv`, this does NOT mean "don't hit the network" — dogfood is a real-API matrix; use it to bound work (paginate once, fetch a bounded sample, honor a smaller `--limit` default), never to substitute mock data for real calls.
+Hand-written novel commands whose happy path is an expensive read/network operation (full sync loops, content crawlers, bulk archive walks) MUST curtail work when `cliutil.IsDogfoodEnv()` returns true. The `cli-printing-press dogfood --live` runner sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess under a flat 30s per-command timeout, so an uncapped happy path trips the matrix verdict to FAIL. Unlike `IsAnyHarness`, this does NOT mean "don't hit the network" — dogfood is a real-API matrix for reads; use it to bound read work (paginate once, fetch a bounded sample, honor a smaller `--limit` default), never to substitute mock data for real calls.
 
 ### Generator-reserved namespaces
 `internal/cliutil/`, `internal/learn/`, and `internal/mcp/cobratree/` are generator-owned packages emitted into every printed CLI. Do not hand-author code in them and do not name agent-authored helpers that collide with their exports — regen will overwrite the work. Novel-feature code goes in command packages and may import from `cliutil` or `learn`.
@@ -74,6 +75,8 @@ Always use relative paths for build output. Never build to `/tmp` or another sha
 Run `scripts/golden.sh verify` whenever a change may affect CLI command output, browser-sniff or crowd-sniff output, generated specs or generated printed CLI files, templates under `internal/generator/templates/`, naming, endpoint derivation, auth emission, manifest generation, scorecard output, or pipeline artifacts.
 Never update goldens just to make a failing check pass. Run `scripts/golden.sh update` only when the behavior change is intentional, then inspect the diff and explain it in your final response. See [`docs/GOLDEN.md`](docs/GOLDEN.md) for the decision rubric, fixture conventions, and failure handling.
 When adding a new deterministic CLI behavior or generated artifact contract, explicitly decide whether the golden suite needs a new or expanded fixture. A passing `scripts/golden.sh verify` on existing cases does not prove coverage for new auth, pagination, MCP, manifest, naming, or similar deterministic generation behavior.
+For PRs targeting `main`, the same golden set Mergify waits on is Main CI's `full-golden` job, which runs `bash scripts/golden.sh verify`; the separate `Golden` workflow delegates `main`-targeted PRs to that job. A template/generator PR is incomplete until the fixture updates for that full set are committed. Do not open the PR or call it ready when only a cheaper `golden` signal is green and `full-golden` would fail.
+Do not open a PR that touches `internal/generator/templates/**` or parser-emitted contracts without the matching golden or generated-output fixture updates in the same commit set. Use `scripts/verify-generator-output.sh` for template/generator changes that can alter emitted Go, as described below.
 
 ### Generator fixes require generated-output proof
 When touching `internal/generator/**`, `internal/openapi/**`, generator templates, parser-derived fields, MCP descriptions, naming, auth emission, or SKILL.md skeletons, verify the generated CLI behavior, not only the Printing Press source or template text.
@@ -175,7 +178,7 @@ If you stop, abandon, or hand off before opening a PR, unclaim: remove the assig
 
 ## Issue Taxonomy and Relationships
 
-For actionable GitHub issues, including retro work-unit issues, apply exactly one `priority:P1|P2|P3` label, exactly one real issue type (`bug` or `enhancement`), and exactly one primary `comp:<slug>` component label. `source:retro` is optional provenance; legacy `retro` is accepted only while the provenance-label cutover is in progress and is never an issue type. Optional surface labels are a closed vocabulary: `surface:cli`, `surface:auth`, `surface:sync`, `surface:store`, `surface:mcp`, `surface:docs`, `surface:verify`, `surface:sniff`, and `surface:publish`; normally apply one, and never more than two, when evidence supports them. Components identify ownership; surfaces identify affected behavior.
+For actionable GitHub implementation issues, including retro work-unit issues, apply exactly one `priority:P1|P2` label, exactly one real issue type (`bug` or `enhancement`), and exactly one primary `comp:<slug>` component label. `priority:P1` means the printed CLI is broken or unsafe; `priority:P2` means a real generalizing defect exists but the printed CLI still works. Do not keep P3 as a backlog rank: if an issue is not P1 or P2, Skip/Drop/route it and close rather than filing or preserving it as actionable implementation work. `source:retro` is optional provenance; legacy `retro` is accepted only while the provenance-label cutover is in progress and is never an issue type. Optional surface labels are a closed vocabulary: `surface:cli`, `surface:auth`, `surface:sync`, `surface:store`, `surface:mcp`, `surface:docs`, `surface:verify`, `surface:sniff`, and `surface:publish`; normally apply one, and never more than two, when evidence supports them. Components identify ownership; surfaces identify affected behavior.
 
 Routing outcomes `duplicate`, `invalid`, `wontfix`, and `question` are exempt from the actionable-field requirement. `documentation` and `good first issue` are overlays; they do not replace an actionable issue's priority, type, or primary component. PR queue labels are governed by the separate PR guidance below and are PR-only, outside the issue taxonomy.
 
@@ -219,6 +222,8 @@ When implementation or generation is blocked, report the exact blocker and stop.
 ## Automated code review with Greptile
 
 Every PR gets automated Greptile review alongside CI. Resolve every Greptile finding before calling a PR ready: P0 and P1 comments block merge, and P2 comments need either a fix or a concrete reply explaining why the deferral is intentional. Do not use the score alone as the gate.
+If a Greptile finding argues against a stated issue or PR contract, do not change the contract just to appease the finding; leave the intended behavior in place and reply with the concrete contract. For example, when a contract says URL-valued path params must reduce to the trailing segment so dependent fetches do not 404, do not "restore" URL components.
+After required CI is green or `ready-to-merge` is on the PR, do not push comment-only, formatting-only, or Greptile-appeasement commits. Those pushes reset required checks and dequeue Mergify; use concrete replies or review-thread resolution for non-blocking nits.
 
 Greptile feedback is not limited to GitHub review threads. It also edits top-level PR summary comments, and those summaries can contain actionable issue blocks, including `Comments Outside Diff`, even when the thread list has zero unresolved comments. Before saying a PR is ready, run the repo-owned review-state helper:
 

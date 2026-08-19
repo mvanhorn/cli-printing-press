@@ -137,8 +137,8 @@ func (s *Store) InsertLearnEvent(event, familyHash string, matchedRowID int64, e
 		match = 1
 	}
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 
 	_, err := s.db.Exec(`INSERT INTO learn_events
 		(ts, event, query_family_hash, matched_row_id, entity_match, surface)
@@ -164,8 +164,8 @@ func (s *Store) PruneLearnEvents(maxRows int, maxAge time.Duration) (int64, erro
 		maxAge = DefaultLearnEventMaxAge
 	}
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 
 	var pruned int64
 	cutoff := time.Now().UTC().Add(-maxAge).Format(learnEventTimeFormat)
@@ -200,8 +200,8 @@ func (s *Store) DeleteLearnEventsByFamilyHash(hash string) (int64, error) {
 		return 0, nil
 	}
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
 
 	res, err := s.db.Exec(`DELETE FROM learn_events WHERE query_family_hash = ?`, hash)
 	if err != nil {

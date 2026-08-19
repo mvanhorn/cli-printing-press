@@ -40,11 +40,24 @@ type persistedCookie struct {
 // LoadCookieJar returns a persistent cookie jar pre-populated from the canonical
 // cookie file on disk. Falls back to an empty in-memory jar when no file exists.
 func LoadCookieJar() http.CookieJar {
-	inner, _ := cookiejar.New(nil)
-	path := cookieJarPath()
-	jar := &cookieJar{inner: inner, path: path}
+	jar := newCookieJar()
 	jar.loadFromDisk()
 	return jar
+}
+
+// NewCookieJar returns an empty in-memory jar without loading or persisting
+// cookies. Config.Load uses it when an env or external-store override has
+// replaced a browser session, so an old browser jar cannot ride along or be
+// contaminated by response cookies.
+func NewCookieJar() http.CookieJar {
+	jar, _ := cookiejar.New(nil)
+	return jar
+}
+
+func newCookieJar() *cookieJar {
+	inner, _ := cookiejar.New(nil)
+	path := cookieJarPath()
+	return &cookieJar{inner: inner, path: path}
 }
 
 func cookieJarPath() string {
@@ -53,6 +66,24 @@ func cookieJarPath() string {
 		return ""
 	}
 	return filepath.Join(dir, "cookies.json")
+}
+
+// ClearCookieJar removes the persisted session cookies for this printed CLI.
+// Logout must clear both config credentials and the jar because net/http can
+// otherwise continue sending a valid cookie after the config is cleared.
+func ClearCookieJar() error {
+	path := cookieJarPath()
+	if path == "" {
+		return nil
+	}
+	data, err := json.Marshal([]persistedCookie{})
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
 }
 
 // looksLikeCookieJar reports whether s is a cookie-jar string ("name=value;
@@ -126,6 +157,17 @@ func parseCookieJar(s string) []*http.Cookie {
 // A no-op when the credential is empty, is not a cookie-jar string, or baseURL
 // does not parse.
 func SeedCookieJar(jar http.CookieJar, baseURL, cookieStr string) {
+	seedCookieJar(jar, baseURL, cookieStr, "")
+}
+
+// SeedCookieJarForDomain seeds a captured cookie session for the captured
+// domain and its subdomains, while still requiring callers to choose the
+// capture root explicitly.
+func SeedCookieJarForDomain(jar http.CookieJar, baseURL, cookieStr, domain string) {
+	seedCookieJar(jar, baseURL, cookieStr, strings.TrimPrefix(strings.TrimSpace(domain), "."))
+}
+
+func seedCookieJar(jar http.CookieJar, baseURL, cookieStr, cookieDomain string) {
 	if jar == nil || !looksLikeCookieJar(cookieStr) {
 		return
 	}
@@ -136,6 +178,11 @@ func SeedCookieJar(jar http.CookieJar, baseURL, cookieStr string) {
 	cookies := parseCookieJar(cookieStr)
 	if len(cookies) == 0 {
 		return
+	}
+	if cookieDomain != "" {
+		for _, cookie := range cookies {
+			cookie.Domain = cookieDomain
+		}
 	}
 	// Seed the in-memory jar only — never persist. The wrapper's SetCookies
 	// writes through to cookies.json (persistLocked -> mergeAndWriteCookieRows),

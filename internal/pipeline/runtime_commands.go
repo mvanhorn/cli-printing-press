@@ -115,7 +115,10 @@ type discoveredCommand struct {
 	Annotations map[string]string
 }
 
-const happyArgsAnnotation = "pp:happy-args"
+const (
+	happyArgsAnnotation  = "pp:happy-args"
+	happyStdinAnnotation = "pp:happy-stdin"
+)
 
 type happyArgs struct {
 	positionals []string
@@ -150,8 +153,11 @@ func parseHappyArgsAnnotation(value string) happyArgs {
 		}
 		if strings.HasPrefix(token, "--") {
 			name, value, ok := strings.Cut(token, "=")
-			if !ok || strings.TrimSpace(name) == "--" {
+			if strings.TrimSpace(name) == "--" {
 				continue
+			}
+			if !ok {
+				value = "true"
 			}
 			parsed.flags = append(parsed.flags, strings.TrimSpace(name), strings.TrimSpace(value))
 			continue
@@ -245,13 +251,22 @@ func appendRuntimeFlagArgs(args, flags []string) []string {
 	out := slices.Clone(args)
 	for i := 0; i+1 < len(flags); i += 2 {
 		flag, value := flags[i], flags[i+1]
-		if isNegativeNumericArg(value) {
+		if isNegativeNumericArg(value) || isBooleanFlagValue(value) {
 			out = append(out, flag+"="+value)
 			continue
 		}
 		out = append(out, flag, value)
 	}
 	return out
+}
+
+func isBooleanFlagValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "false":
+		return true
+	default:
+		return false
+	}
 }
 
 func isNegativeNumericArg(value string) bool {
@@ -646,6 +661,11 @@ func classifyCommandKind(cmd *discoveredCommand, spec *openAPISpec) {
 		return
 	case "tail":
 		cmd.Kind = "data-layer"
+		return
+	}
+
+	if commandMutates(cmd.Annotations, []string{cmd.Name}) {
+		cmd.Kind = "write"
 		return
 	}
 

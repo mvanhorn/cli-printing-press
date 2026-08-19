@@ -127,6 +127,26 @@ func TestSyncUsesDeclaredNumericCursor(t *testing.T) {
 	}
 }
 
+func TestSyncPreservesAdvancingEmptyCursorPages(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %%v", err)
+	}
+	defer db.Close()
+	client := &paginationSyncClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[],\"pagination\":{\"continuation_marker\":\"page-2\"}}"),
+		json.RawMessage("{\"items\":[],\"pagination\":{\"continuation_marker\":\"page-3\"}}"),
+		json.RawMessage("{\"items\":[{\"id\":\"three\"}],\"pagination\":{}}"),
+	}}
+	result := syncResource(context.Background(), client, db, "items", "", true, 0, false, false, &syncUserParams{}, io.Discard)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%%v warning=%%v", result.Err, result.Warn)
+	}
+	if len(client.params) != 3 || client.params[1]["cursorId"] != "page-2" || client.params[2]["cursorId"] != "page-3" {
+		t.Fatalf("sync params = %%#v, want cursors page-2 then page-3", client.params)
+	}
+}
+
 func TestUndeclaredPaginationCursorDoesNotUseFallback(t *testing.T) {
 	defaults := determinePaginationDefaults("archives")
 	if defaults.cursorParam != "" {
@@ -144,7 +164,7 @@ func TestUndeclaredPaginationCursorDoesNotUseFallback(t *testing.T) {
 	testPath := filepath.Join(outputDir, "internal", "cli", "pagination_contract_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(DeclaredPaginationCursorPath|SyncUsesDeclaredNumericCursor|UndeclaredPaginationCursorDoesNotUseFallback)", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(DeclaredPaginationCursorPath|SyncUsesDeclaredNumericCursor|SyncPreservesAdvancingEmptyCursorPages|UndeclaredPaginationCursorDoesNotUseFallback)", "-count=1")
 }
 
 func TestGeneratedPostListDoesNotAdvertiseUnwiredAllFlag(t *testing.T) {

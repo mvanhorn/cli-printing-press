@@ -58,14 +58,13 @@ Run `printing-press-rich-pp-cli auth setup` to print the URL and steps for getti
 ```bash
 export RICH_AUTH_API_KEY="<your-key>"
 ```
-
-To persist credentials, use `printing-press-rich-pp-cli auth set-token <token>`. Stored secrets live in `credentials.toml` under the data dir, not in `config.toml`.
+To persist credentials, use `printing-press-rich-pp-cli auth set-token YOUR_TOKEN_HERE`. Stored secrets live in `credentials.toml` under the data dir, not in `config.toml`.
 
 Run `printing-press-rich-pp-cli doctor` to verify setup.
 
 ## Agent Mode
 
-Add `--agent` to any command. Expands to: `--json --compact --no-input --no-color --yes`.
+Add `--agent` to any command. Expands to: `--json --compact --no-input --no-color`.
 
 - **Pipeable** — JSON on stdout, errors on stderr
 - **Filterable** — `--select` keeps a subset of fields. Dotted paths descend into nested structures; arrays traverse element-wise. Critical for keeping context small on verbose APIs:

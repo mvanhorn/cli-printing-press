@@ -269,10 +269,10 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.PersistentFlags().BoolVar(&flags.noInput, "no-input", false, "Disable all interactive prompts (for CI/agents)")
 	rootCmd.PersistentFlags().BoolVar(&flags.idempotent, "idempotent", false, "Treat already-existing create results as a successful no-op")
 	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output (e.g. --select code,decimals,symbol)")
-	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (for agents and scripts)")
+	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (explicit confirmation for scripts)")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	rootCmd.PersistentFlags().BoolVar(&humanFriendly, "human-friendly", false, "Enable colored output and rich formatting")
-	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set all agent-friendly defaults (--json --compact --no-input --no-color --yes)")
+	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set agent-friendly output defaults (--json --compact --no-input --no-color)")
 	rootCmd.PersistentFlags().BoolVar(&flags.noLearn, "no-learn", false, "Disable the teach/recall learning loop for this invocation")
 	rootCmd.PersistentFlags().BoolVar(&flags.allowPartialFailure, "allow-partial-failure", false, "Downgrade response-body partial-failure (e.g. partialFailureError) to a warning instead of a non-zero exit")
 	rootCmd.PersistentFlags().StringVar(&flags.dataSource, "data-source", "auto", "Data source for read commands: auto (live with local fallback), live (API only), local (synced data only)")
@@ -294,6 +294,7 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 		if _, err := cliutil.SetHomeOverride(flags.homePath); err != nil {
 			return err
 		}
+		configureDefaultDBScope(flags.configPath)
 		if flags.deliverSpec != "" {
 			sink, err := ParseDeliverSink(flags.deliverSpec)
 			if err != nil {
@@ -353,9 +354,6 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 			}
 			if !cmd.Flags().Changed("no-input") {
 				flags.noInput = true
-			}
-			if !cmd.Flags().Changed("yes") {
-				flags.yes = true
 			}
 			if !cmd.Flags().Changed("no-color") {
 				noColor = true

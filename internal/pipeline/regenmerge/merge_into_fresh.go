@@ -57,7 +57,9 @@ var regenmergeGeneratorOwnedDirs = map[string]struct{}{
 //     renderMergedGoMod (preserves hand-added deps for novel packages).
 //  4. Sweep snapshot for non-classified files (README.md, Makefile, etc.)
 //     under non-generator-owned directories and copy any that don't exist
-//     in fresh.
+//     in fresh. Markerless files under generator-owned internal directories
+//     are preserved too: they are hand-authored standalone files, not stale
+//     template emissions.
 //
 // Symlinks at any preserve path or sweep path are refused — the caller is
 // expected to have validated the snapshot/fresh directory shape upstream.
@@ -1034,8 +1036,9 @@ func copyFileAtomic(src, dst string, mode os.FileMode) error {
 
 // sweepNonClassifiedFiles walks the snapshot for files that the classifier
 // did not see (non-Go, non-module files like README.md, Makefile,
-// .printing-press.json) and copies any that don't exist in fresh AND don't
-// live under a generator-owned directory. Symlinks are refused.
+// .printing-press.json) and copies any that don't exist in fresh. In
+// generator-owned internal directories, only markerless files are swept; a
+// generated marker means the missing file is stale template output.
 func sweepNonClassifiedFiles(snapshotDir, freshDir string) error {
 	return filepath.WalkDir(snapshotDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -1056,9 +1059,6 @@ func sweepNonClassifiedFiles(snapshotDir, freshDir string) error {
 			if !shouldWalkDir(d.Name()) {
 				return filepath.SkipDir
 			}
-			if isGeneratorOwnedInternalDir(relSlash) {
-				return filepath.SkipDir
-			}
 			return nil
 		}
 		if !isManuscriptsPath(relSlash) && !shouldWalkDir(filepath.Base(filepath.Dir(path))) {
@@ -1074,6 +1074,9 @@ func sweepNonClassifiedFiles(snapshotDir, freshDir string) error {
 		} else if !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("statting fresh path %s: %w", relSlash, err)
 		}
+		if isGeneratorOwnedInternalPath(relSlash) && snapshotFileHasGeneratedMarker(path) {
+			return nil
+		}
 		if err := copyPreserveFile(snapshotDir, freshDir, rel); err != nil {
 			return fmt.Errorf("sweeping snapshot file %s: %w", relSlash, err)
 		}
@@ -1085,11 +1088,10 @@ func isManuscriptsPath(relSlash string) bool {
 	return relSlash == ".manuscripts" || strings.HasPrefix(relSlash, ".manuscripts/")
 }
 
-// isGeneratorOwnedInternalDir reports whether relSlash names a directory
-// under internal/ that the generator owns end-to-end. Used by the sweep to
-// avoid copying random non-Go content into a directory the generator
-// regenerates from scratch each run.
-func isGeneratorOwnedInternalDir(relSlash string) bool {
+// isGeneratorOwnedInternalPath reports whether relSlash is under an internal/
+// subtree the generator owns end-to-end. Used by the sweep to distinguish stale
+// generated sidecars from markerless standalone files.
+func isGeneratorOwnedInternalPath(relSlash string) bool {
 	const prefix = "internal/"
 	rest, ok := strings.CutPrefix(relSlash, prefix)
 	if !ok {
@@ -1101,4 +1103,9 @@ func isGeneratorOwnedInternalDir(relSlash string) bool {
 	}
 	_, owned := regenmergeGeneratorOwnedDirs[first]
 	return owned
+}
+
+func snapshotFileHasGeneratedMarker(path string) bool {
+	data, err := os.ReadFile(path)
+	return err == nil && hasGeneratedMarkerBytes(data)
 }

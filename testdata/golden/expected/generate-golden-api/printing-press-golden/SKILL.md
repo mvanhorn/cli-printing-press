@@ -84,14 +84,13 @@ Run `printing-press-golden-pp-cli auth setup` to print the URL and steps for get
 ```bash
 export PRINTING_PRESS_GOLDEN_API_KEY="<your-key>"
 ```
-
-To persist credentials, use `printing-press-golden-pp-cli auth set-token <token>`. Stored secrets live in `credentials.toml` under the data dir, not in `config.toml`.
+To persist credentials, use `printing-press-golden-pp-cli auth set-token YOUR_TOKEN_HERE`. Stored secrets live in `credentials.toml` under the data dir, not in `config.toml`.
 
 Run `printing-press-golden-pp-cli doctor` to verify setup.
 
 ## Agent Mode
 
-Add `--agent` to any command. Expands to: `--json --compact --no-input --no-color --yes`.
+Add `--agent` to any command. Expands to: `--json --compact --no-input --no-color`.
 
 - **Pipeable** — JSON on stdout, errors on stderr
 - **Filterable** — `--select` keeps a subset of fields. Dotted paths descend into nested structures; arrays traverse element-wise. Critical for keeping context small on verbose APIs:
@@ -102,6 +101,7 @@ Add `--agent` to any command. Expands to: `--json --compact --no-input --no-colo
 - **Previewable** — `--dry-run` shows the request without sending
 - **Offline-friendly** — sync/search commands can use the local SQLite store when available
 - **Non-interactive** — never prompts, every input is a flag
+- **Explicit confirmation** — `--agent` does not imply `--yes`; pass `--yes` separately only after the target, arguments, and side effects are clear
 - **Explicit retries** — use `--idempotent` only when an already-existing create should count as success
 
 ### Response envelope

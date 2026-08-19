@@ -447,6 +447,8 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				cfg.AuthSource = "oauth2_refresh"
 			}
 {{- end}}
+			refusals := cfg.CredentialRefusalSummaries()
+			credentialRefused := len(refusals) > 0
 			// JSON envelope: {authenticated, verified, source, config}. When not
 			// authenticated, write the envelope first then return authErr
 			// so exit code carries the auth-failure signal.
@@ -457,13 +459,27 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 					"source":        cfg.AuthSource,
 					"config":        cfg.Path,
 				}
+				if credentialRefused {
+					out["credential_refused"] = true
+					out["credential_refusals"] = refusals
+				}
 				if printErr := printJSONFiltered(w, out, flags); printErr != nil {
 					return printErr
+				}
+				if !authed && credentialRefused {
+					return authErr(cfg.CredentialRefusalError())
 				}
 				if !authed {
 					return authErr(fmt.Errorf("no credentials configured"))
 				}
 				return nil
+			}
+			if !authed && credentialRefused {
+				fmt.Fprintln(w, red("Credentials present but refused"))
+				for _, refusal := range refusals {
+					fmt.Fprintf(w, "  %s\n", refusal)
+				}
+				return authErr(cfg.CredentialRefusalError())
 			}
 			if !authed {
 				fmt.Fprintln(w, red("Not authenticated"))
@@ -511,6 +527,8 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 }
+
+{{- if $authSetTokenAvailable}}
 
 func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
@@ -563,6 +581,8 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 }
+
+{{- end}}
 
 {{- if $authSetCredentialsAvailable}}
 

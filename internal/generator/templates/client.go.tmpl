@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"math"
 {{- if .HasMultipartRequest}}
@@ -30,9 +31,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 {{- if eq .Auth.Subtype "google_service_account"}}
 	"golang.org/x/oauth2/google"
+{{- end}}
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+	"golang.org/x/net/publicsuffix"
 {{- end}}
 {{- if .UsesBrowserHTTPTransport}}
 	enetxhttp "github.com/enetx/http"
@@ -51,6 +56,7 @@ const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
 {{- if .HasTextResponse}}
 const TextResponseHeader = "X-Printing-Press-Text-Response"
 {{- end}}
+const maxErrorBodyBytes = 4096
 
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 var ErrPlaceholderCredential = errors.New("auth placeholder credential")
@@ -615,11 +621,19 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- if .Auth.HasCookies}}
 	cookieJar := LoadCookieJar()
 {{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+	if cfg != nil && !cfg.UsePersistedCookieJar() {
+		cookieJar = NewCookieJar()
+	}
 	// Seed the jar from a session captured via the env var or stored in
 	// credentials but not yet in cookies.json, so the credential rides every
 	// request and net/http absorbs Set-Cookie rotation across the session.
 	if cfg != nil {
-		SeedCookieJar(cookieJar, cfg.BaseURL, cfg.CookieCredential())
+		if cfg.CredentialDomain != "" && cfg.UsePersistedCookieJar() {
+			seedBaseURL := "https://" + strings.TrimPrefix(cfg.CredentialDomain, ".")
+			SeedCookieJarForDomain(cookieJar, seedBaseURL, cfg.CookieCredential(), cfg.CredentialDomain)
+		} else {
+			SeedCookieJar(cookieJar, cfg.BaseURL, cfg.CookieCredential())
+		}
 	}
 {{- end}}
 	httpClient := newHTTPClient(timeout, cookieJar{{if .UsesBrowserHTTPTransport}}, cfg.SkipTLSVerify{{end}})
@@ -669,6 +683,40 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			// "Moved Permanently" body back to the caller.
 			return errors.New("stopped after 10 redirects")
 		}
+{{- if and (ne .Auth.Type "none") (ne .Auth.Type "")}}
+		// Never carry credential material across a host-changing redirect.
+		// Go strips Authorization and Cookie in common cases, but custom
+		// headers and URL query values need explicit removal here.
+		if req.URL.Host != via[0].URL.Host {
+			req.Header.Del("{{authParameterName .Auth}}")
+{{- if eq .Auth.Type "session_handshake"}}
+			req.Header.Del("{{.Auth.TokenParamName}}")
+{{- end}}
+{{- if or (eq .Auth.In "cookie") (eq .Auth.Type "cookie")}}
+			req.Header.Del("Cookie")
+{{- end}}
+{{- range .Auth.AdditionalHeaders}}
+{{- if eq .In "header"}}
+			req.Header.Del("{{.Header}}")
+{{- end}}
+{{- end}}
+{{- if or (eq .Auth.In "query") (eq .Auth.TokenParamIn "query")}}
+			q := req.URL.Query()
+{{- if eq .Auth.In "query"}}
+			q.Del("{{authParameterName .Auth}}")
+{{- end}}
+{{- if and (eq .Auth.Type "session_handshake") (eq .Auth.TokenParamIn "query")}}
+			q.Del("{{.Auth.TokenParamName}}")
+{{- end}}
+{{- range .Auth.AdditionalHeaders}}
+{{- if eq .In "query"}}
+			q.Del("{{.Header}}")
+{{- end}}
+{{- end}}
+			req.URL.RawQuery = q.Encode()
+{{- end}}
+		}
+{{- end}}
 {{- if .HasTierRouting}}
 		// Tier routing picks header vs query at request time on a WithTier copy,
 		// while this redirect callback is installed once on the shared
@@ -700,8 +748,8 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		}
 {{- end}}
 {{- else if and .Auth .Auth.In (eq .Auth.In "query")}}
-		// Auth lives on URL query; Go preserves the query on relative
-		// redirects, so nothing to re-derive.
+		// Query credentials are removed above on cross-host hops and remain
+		// unchanged on same-host redirects.
 {{- else if and .Auth .Auth.In (eq .Auth.In "cookie") (not (isBrowserCookieAuth .Auth))}}
 		// The auth cookie set on the initial request is carried verbatim by Go
 		// on same-host redirects, so re-adding it here would double the Cookie
@@ -729,15 +777,10 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// cross-domain 3xx (open redirect or partner handoff) must not
 		// receive the auth credential, even though we are inside
 		// CheckRedirect where Go's automatic stripping has already run.
-		if req.URL.Host == via[0].URL.Host {
+		if req.URL.Host == via[0].URL.Host{{- if eq .Auth.Type "composed"}} && c.credentialAppliesToURL(req.URL.String()){{- end}} {
 			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
 				req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", h)
 			}
-		} else {
-			// Cross-host hop: Go strips standard auth headers (Authorization,
-			// Cookie) but not custom ones, so a custom API-key header would be
-			// forwarded verbatim to the redirect target. Delete it explicitly.
-			req.Header.Del("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}")
 		}
 {{- end}}
 		return nil
@@ -1774,6 +1817,12 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	if err != nil {
 		return nil, 0, err
 	}
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+	credentialAllowed := c.credentialAppliesToURL(targetURL)
+	if !credentialAllowed {
+		authHeader = ""
+	}
+{{- end}}
 {{- if eq .Auth.Type "session_handshake"}}
 	// For session-handshake auth, authHeader() only returns the cached token
 	// (or empty). On the live path, ensure a fresh token if none is cached.
@@ -1893,7 +1942,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		}
 {{- end}}
 
-		if authHeader != "" {
+		if authHeader != ""{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}} && credentialAllowed{{- end}} {
 {{- if .HasTierRouting}}
 			if authInfo.In == "query" {
 				q := req.URL.Query()
@@ -1943,7 +1992,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		// Composed-scheme per-call credentials carried by sibling apiKey schemes.
 		// Sent independently of authHeader: the API requires both the primary
 		// auth credential and each sibling credential on every request.
-		if c.Config != nil {
+		if {{if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}credentialAllowed && {{end}}c.Config != nil {
 {{- range .Auth.AdditionalHeaders}}
 			if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
 				if authHeaderLooksLikePlaceholderCredential(v) {
@@ -2564,6 +2613,11 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 	}
 {{- end}}
 	authHeader := c.Config.AuthHeader()
+{{- if and .HasAuthCommand (ne .Auth.Type "session_handshake")}}
+	if authHeader == "" && c.Config.HasCredentialRefusals() {
+		return "", c.Config.CredentialRefusalError()
+	}
+{{- end}}
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 	if authHeaderLooksLikePlaceholderCredential(authHeader) {
 		return "", authPlaceholderCredentialError(c.Config)
@@ -2683,15 +2737,7 @@ func looksLikeCredentialPlaceholder(value string) bool {
 }
 
 func authPlaceholderCredentialError(cfg *config.Config) error {
-{{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
-	return authPlaceholderCredentialErrorWithSetup(cfg, "{{.Name}}-pp-cli auth login or {{.Name}}-pp-cli auth set-token <token>")
-{{- else if eq .Auth.EffectiveOAuth2Grant "device_code"}}
-	return authPlaceholderCredentialErrorWithSetup(cfg, "{{.Name}}-pp-cli auth login --device-code or {{.Name}}-pp-cli auth set-token <token>")
-{{- else if or (eq .Auth.Type "oauth2") (authBrowserLoginAvailable .Auth)}}
-	return authPlaceholderCredentialErrorWithSetup(cfg, "{{.Name}}-pp-cli auth login")
-{{- else}}
-	return authPlaceholderCredentialErrorWithSetup(cfg, "{{- with .Auth.CanonicalEnvVar}}export {{.Name}}=<your-token> or {{end}}{{.Name}}-pp-cli auth set-token <token>")
-{{- end}}
+	return authPlaceholderCredentialErrorWithSetup(cfg, {{printf "%q" (authPlaceholderCredentialSetup .Auth .Name)}})
 }
 
 func authPlaceholderCredentialErrorWithSetup(cfg *config.Config, setup string) error {
@@ -2922,6 +2968,45 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 // path; the relative-path concat with c.BaseURL must be skipped for those calls.
 func isAbsoluteURL(path string) bool {
 	return strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://")
+}
+
+{{end -}}
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+// credentialAppliesToURL keeps a browser-captured credential on its own
+// registrable domain. An empty binding preserves legacy credentials and
+// explicit verify-live HTTP uses mock hosts that cannot match the real site.
+func (c *Client) credentialAppliesToURL(rawURL string) bool {
+	if c == nil || c.Config == nil || !c.Config.UsePersistedCookieJar() || strings.TrimSpace(c.Config.CredentialDomain) == "" {
+		return true
+	}
+	if cliutil.IsVerifyEnv() && cliutil.IsVerifyLiveHTTPEnv() && isVerifyMockURL(rawURL) {
+		return true
+	}
+	target, err := url.Parse(rawURL)
+	if err != nil || target.Hostname() == "" {
+		return false
+	}
+	targetHost := strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+	boundHost := strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(c.Config.CredentialDomain), "."), "."))
+	if targetHost == boundHost || strings.HasSuffix(targetHost, "."+boundHost) {
+		return true
+	}
+	targetRegistered, targetErr := publicsuffix.EffectiveTLDPlusOne(targetHost)
+	boundRegistered, boundErr := publicsuffix.EffectiveTLDPlusOne(boundHost)
+	return targetErr == nil && boundErr == nil && targetRegistered == boundRegistered
+}
+
+func isVerifyMockURL(rawURL string) bool {
+	target, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(target.Hostname())
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 {{end -}}
@@ -3183,11 +3268,192 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 }
 
 func truncateBody(b []byte) string {
-	const maxBytes = 4096
-	if len(b) <= maxBytes {
+	if summary, ok := collapseHTMLErrorBody(b); ok {
+		return summary
+	}
+	if len(b) <= maxErrorBodyBytes {
 		return string(b)
 	}
-	return strings.ToValidUTF8(string(b[:maxBytes]), "") + "..."
+	return strings.ToValidUTF8(string(b[:maxErrorBodyBytes]), "") + "..."
+}
+
+func collapseHTMLErrorBody(b []byte) (string, bool) {
+	scanBytes := b
+	if len(scanBytes) > maxErrorBodyBytes {
+		scanBytes = scanBytes[:maxErrorBodyBytes]
+	}
+	body := strings.ToValidUTF8(string(scanBytes), "")
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" || !looksLikeHTMLBody(trimmed) {
+		return "", false
+	}
+
+	summary := fmt.Sprintf("HTML error page (%d bytes)", len(b))
+	if title := extractHTMLTitle(trimmed); title != "" {
+		summary += ": " + truncateRunes(title, 160)
+	}
+	return summary, true
+}
+
+func looksLikeHTMLBody(body string) bool {
+	lower := strings.ToLower(body)
+	if strings.HasPrefix(lower, "<!doctype html") || strings.HasPrefix(lower, "<html") {
+		return true
+	}
+	sample := lower
+	if len(sample) > 2048 {
+		sample = sample[:2048]
+	}
+	return strings.HasPrefix(sample, "<") && (strings.Contains(sample, "<body") || strings.Contains(sample, "<head") || strings.Contains(sample, "<title") || strings.Contains(sample, "<script"))
+}
+
+func extractHTMLTitle(body string) string {
+	pos := 0
+	ignoredBlock := ""
+	for pos < len(body) {
+		tagStartRel := strings.IndexByte(body[pos:], '<')
+		if tagStartRel < 0 {
+			return ""
+		}
+		tagStart := pos + tagStartRel
+		tagEnd := htmlTagEnd(body, tagStart)
+		if tagEnd < 0 {
+			return ""
+		}
+		tagName, closing := htmlTagName(body[tagStart+1 : tagEnd])
+		pos = tagEnd + 1
+		if tagName == "" {
+			continue
+		}
+		if ignoredBlock != "" {
+			if closing && tagName == ignoredBlock {
+				ignoredBlock = ""
+			}
+			continue
+		}
+		if closing {
+			continue
+		}
+		if tagName == "script" || tagName == "style" {
+			ignoredBlock = tagName
+			continue
+		}
+		if tagName != "title" {
+			continue
+		}
+		titleEnd := findHTMLCloseTag(body, pos, "title")
+		if titleEnd < 0 {
+			return ""
+		}
+		title := stripHTMLTags(body[pos:titleEnd])
+		return strings.Join(strings.Fields(stripControlCharacters(html.UnescapeString(title))), " ")
+	}
+	return ""
+}
+
+func findHTMLCloseTag(body string, from int, tag string) int {
+	pos := from
+	for pos < len(body) {
+		tagStartRel := strings.IndexByte(body[pos:], '<')
+		if tagStartRel < 0 {
+			return -1
+		}
+		tagStart := pos + tagStartRel
+		tagEnd := htmlTagEnd(body, tagStart)
+		if tagEnd < 0 {
+			return -1
+		}
+		tagName, closing := htmlTagName(body[tagStart+1 : tagEnd])
+		if closing && tagName == tag {
+			return tagStart
+		}
+		pos = tagEnd + 1
+	}
+	return -1
+}
+
+func htmlTagEnd(body string, start int) int {
+	end := strings.IndexByte(body[start:], '>')
+	if end < 0 {
+		return -1
+	}
+	return start + end
+}
+
+func htmlTagName(raw string) (string, bool) {
+	raw = strings.TrimLeftFunc(raw, isHTMLSpace)
+	closing := false
+	if strings.HasPrefix(raw, "/") {
+		closing = true
+		raw = strings.TrimLeftFunc(raw[1:], isHTMLSpace)
+	}
+	if raw == "" || strings.HasPrefix(raw, "!") || strings.HasPrefix(raw, "?") {
+		return "", closing
+	}
+	end := 0
+	for end < len(raw) && isHTMLTagNameByte(raw[end]) {
+		end++
+	}
+	if end == 0 {
+		return "", closing
+	}
+	return strings.ToLower(raw[:end]), closing
+}
+
+func isHTMLTagNameByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-' || b == ':'
+}
+
+func isHTMLSpace(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\f'
+}
+
+func stripHTMLTags(body string) string {
+	var out strings.Builder
+	inTag := false
+	for _, r := range body {
+		switch r {
+		case '<':
+			inTag = true
+			out.WriteByte(' ')
+		case '>':
+			inTag = false
+		default:
+			if !inTag {
+				out.WriteRune(r)
+			}
+		}
+	}
+	return out.String()
+}
+
+func stripControlCharacters(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' {
+			return ' '
+		}
+		if unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+			return ' '
+		}
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, text)
+}
+
+func truncateRunes(text string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func clientMaxRetries() int {

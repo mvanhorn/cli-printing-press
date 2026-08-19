@@ -58,18 +58,23 @@ func TestSplitShellArgs(t *testing.T) {
 // before they reach exec.CommandContext. A regression here would let a
 // caller redirect --base-url, swap --token, switch --client filesystems,
 // relocate the CLI's filesystem roots via --home, or load a malicious
-// --config.
+// --config. Filesystem destination flags must also be dropped even when they
+// are local command flags, because MCP clients do not get to choose disk paths.
 func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 	in := map[string]any{
-		"args":     "contacts",
-		"base-url": "https://evil.example.com",
-		"client":   "attacker-client",
-		"config":   "/tmp/evil.yaml",
-		"deliver":  "fd:3",
-		"home":     "/tmp/evil-home",
-		"insecure": true,
-		"profile":  "attacker",
-		"token":    "stolen-token",
+		"args":         "contacts",
+		"audit-dir":    "/tmp/evil-audit",
+		"base-url":     "https://evil.example.com",
+		"client":       "attacker-client",
+		"config":       "/tmp/evil.yaml",
+		"deliver":      "fd:3",
+		"home":         "/tmp/evil-home",
+		"insecure":     true,
+		"o":            "/tmp/evil-short.json",
+		"output":       "/tmp/evil.json",
+		"profile":      "attacker",
+		"receipt-file": "/tmp/evil-receipt.json",
+		"token":        "stolen-token",
 		// Keys containing "=" must not be emitted verbatim as flag=value.
 		"base-url=https://evil.example.com": true,
 		"config=/tmp/evil.yaml":             true,
@@ -79,21 +84,25 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 		"limit": float64(10),
 	}
 	got := cliArgsFromMCP(in, map[string]bool{
-		"args":     true,
-		"base-url": true,
-		"client":   true,
-		"config":   true,
-		"deliver":  true,
-		"home":     true,
-		"insecure": true,
-		"profile":  true,
-		"token":    true,
+		"args":         true,
+		"audit-dir":    true,
+		"base-url":     true,
+		"client":       true,
+		"config":       true,
+		"deliver":      true,
+		"home":         true,
+		"insecure":     true,
+		"o":            true,
+		"output":       true,
+		"profile":      true,
+		"receipt-file": true,
+		"token":        true,
 	})
 	want := []string{"--limit", "10"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP dropped/kept wrong keys: got %v, want %v", got, want)
 	}
-	for _, blocked := range []string{"--base-url", "--client", "--config", "--deliver", "--home", "--insecure", "--profile", "--token", "--args"} {
+	for _, blocked := range []string{"--audit-dir", "--base-url", "--client", "--config", "--deliver", "--home", "--insecure", "--o", "--output", "--profile", "--receipt-file", "--token", "--args"} {
 		for _, tok := range got {
 			if tok == blocked {
 				t.Errorf("blocked flag %q leaked through cliArgsFromMCP", blocked)
@@ -149,11 +158,14 @@ func TestValidateMCPArgumentNamesQuotesEachUnknownArg(t *testing.T) {
 
 func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 	root := &cobra.Command{Use: "root"}
+	root.PersistentFlags().String("audit-dir", "", "root audit dir")
 	root.PersistentFlags().String("profile", "", "root profile")
+	root.PersistentFlags().String("receipt-file", "", "root receipt file")
 	root.PersistentFlags().String("config", "", "root config")
 	root.PersistentFlags().String("json", "", "format output")
 
 	child := &cobra.Command{Use: "child"}
+	child.Flags().StringP("output", "o", "", "local output")
 	child.Flags().String("profile", "", "command profile")
 	root.AddCommand(child)
 
@@ -164,6 +176,11 @@ func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 	if !blocked["config"] {
 		t.Fatalf("inherited root --config was not blocked: %#v", blocked)
 	}
+	for _, destination := range []string{"audit-dir", "o", "output", "receipt-file"} {
+		if !blocked[destination] {
+			t.Fatalf("destination flag %q was not blocked: %#v", destination, blocked)
+		}
+	}
 	if blocked["json"] {
 		t.Fatalf("non-sensitive inherited --json should remain available: %#v", blocked)
 	}
@@ -173,6 +190,7 @@ func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 		"profile": "local-profile",
 		"config":  "/tmp/evil.yaml",
 		"json":    "true",
+		"output":  "/tmp/evil.json",
 	}, blocked)
 	want := []string{"--json", "true", "--profile", "local-profile"}
 	if !reflect.DeepEqual(got, want) {
@@ -400,11 +418,14 @@ func TestCLIArgsFromMCPSkipsStructuredPositionals(t *testing.T) {
 
 func TestToolOptionsHideBlockedRootFlagsButKeepLocalCollisions(t *testing.T) {
 	root := &cobra.Command{Use: "root"}
+	root.PersistentFlags().String("audit-dir", "", "root audit dir")
 	root.PersistentFlags().String("config", "", "root config")
 	root.PersistentFlags().Bool("json", false, "json output")
+	root.PersistentFlags().String("receipt-file", "", "root receipt file")
 
 	child := &cobra.Command{Use: "child <query>"}
 	child.Flags().String("config", "", "local config")
+	child.Flags().StringP("output", "o", "", "local output")
 	child.Flags().String("args", "", "reserved local args")
 	root.AddCommand(child)
 
@@ -421,8 +442,16 @@ func TestToolOptionsHideBlockedRootFlagsButKeepLocalCollisions(t *testing.T) {
 	if _, ok := props["query"]; !ok {
 		t.Fatalf("positional <query> missing from schema: %#v", props)
 	}
-	if _, ok := props["args"]; ok {
-		t.Fatalf("reserved args parameter should not be exposed as a flag schema: %#v", props)
+	for _, hidden := range []string{"args", "audit-dir", "o", "output", "receipt-file"} {
+		if _, ok := props[hidden]; ok {
+			t.Fatalf("blocked parameter %q should not be exposed as a flag schema: %#v", hidden, props)
+		}
+	}
+	allowed := allowedStructuredArgsForCommand(child, blocked, positionals, true)
+	for _, hidden := range []string{"audit-dir", "o", "output", "receipt-file"} {
+		if allowed[hidden] {
+			t.Fatalf("blocked parameter %q should not be accepted by structured args: %#v", hidden, allowed)
+		}
 	}
 }
 
@@ -662,6 +691,49 @@ func TestShellOutBoundsFinalError(t *testing.T) {
 	}
 }
 
+func TestShellOutSurfacesSuccessStderrHintsSeparateFromJSON(t *testing.T) {
+	bin := writeShelloutHelper(t, "success-hints")
+	handler := shellOutToCLI(
+		func() (string, error) { return bin, nil },
+		nil,
+		map[string]bool{},
+		map[string]bool{},
+		nil,
+		false,
+		nil,
+	)
+
+	result, err := handler(context.Background(), mcplib.CallToolRequest{})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handler returned tool error: %s", toolResultText(result))
+	}
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(toolResultText(result)), &payload); err != nil {
+		t.Fatalf("stdout content is not parseable JSON: %v; text=%q", err, toolResultText(result))
+	}
+	if payload["args"] != "" {
+		t.Fatalf("stdout payload args = %q, want empty", payload["args"])
+	}
+	if strings.Contains(toolResultText(result), "hint:") || strings.Contains(toolResultText(result), "warning:") {
+		t.Fatalf("stderr hints leaked into JSON stdout content: %q", toolResultText(result))
+	}
+	hints := toolResultContentText(result, 1)
+	if !strings.Contains(hints, "hint: local store is empty; run sync") {
+		t.Fatalf("MCP result hints missing hint line: %q", hints)
+	}
+	if !strings.Contains(hints, "warning: result was truncated") {
+		t.Fatalf("MCP result hints missing warning line: %q", hints)
+	}
+	for _, noise := range []string{"telemetry", "progress"} {
+		if strings.Contains(hints, noise) {
+			t.Fatalf("MCP result hints included filtered stderr noise %q: %q", noise, hints)
+		}
+	}
+}
+
 func TestCappedCaptureDrainsWithoutRetainingFullInput(t *testing.T) {
 	capture := newCappedCapture()
 	input := strings.Repeat("x", shelloutCaptureLimit+100)
@@ -683,11 +755,29 @@ func TestRunCLICommandKeepsStdoutSeparateFromStderr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunCLICommand success returned error: %v", err)
 	}
-	if !strings.Contains(got, `{"args":"alpha beta"}`) {
-		t.Fatalf("stdout result missing JSON payload: %q", got)
+	if !strings.Contains(got.Stdout, `{"args":"alpha beta"}`) {
+		t.Fatalf("stdout result missing JSON payload: %q", got.Stdout)
 	}
-	if strings.Contains(got, "telemetry") {
-		t.Fatalf("stderr telemetry leaked into stdout: %q", got)
+	if strings.Contains(got.Stdout, "telemetry") {
+		t.Fatalf("stderr telemetry leaked into stdout: %q", got.Stdout)
+	}
+}
+
+func TestRunCLICommandFiltersSuccessStderrHints(t *testing.T) {
+	bin := writeShelloutHelper(t, "success-hints")
+	got, err := RunCLICommand(context.Background(), bin, nil)
+	if err != nil {
+		t.Fatalf("RunCLICommand success-hints returned error: %v", err)
+	}
+	if !strings.Contains(got.Stdout, `{"args":""}`) {
+		t.Fatalf("stdout result missing JSON payload: %q", got.Stdout)
+	}
+	want := []string{
+		"hint: local store is empty; run sync",
+		"warning: result was truncated",
+	}
+	if !reflect.DeepEqual(got.StderrHints, want) {
+		t.Fatalf("stderr hints = %#v, want %#v", got.StderrHints, want)
 	}
 }
 
@@ -746,14 +836,16 @@ func writeShelloutHelper(t *testing.T, mode string) string {
 		switch mode {
 		case "success":
 			body = "@echo off\r\necho telemetry 1>&2\r\necho {\"args\":\"%*\"}\r\n"
+		case "success-hints":
+			body = "@echo off\r\necho telemetry 1>&2\r\n<nul set /p \"=progress 50%%\" 1>&2\r\necho. 1>&2\r\necho hint: local store is empty; run sync 1>&2\r\necho warning: result was truncated 1>&2\r\necho {\"args\":\"%*\"}\r\n"
 		case "fail-stderr":
 			body = "@echo off\r\necho boom from stderr 1>&2\r\nexit /b 7\r\n"
 		case "fail-stdout":
 			body = "@echo off\r\necho stdout failure\r\nexit /b 7\r\n"
 		case "fail-large-stderr":
-			body = "@echo off\r\nfor /L %%i in (1,1,70000) do <nul set /p =x 1>&2\r\nexit /b 7\r\n"
+			body = "@echo off\r\npowershell -NoProfile -Command \"[Console]::Error.Write((New-Object string([char]0x78,70000)))\"\r\nexit /b 7\r\n"
 		case "fail-large-stdout":
-			body = "@echo off\r\nfor /L %%i in (1,1,70000) do <nul set /p =x\r\nexit /b 7\r\n"
+			body = "@echo off\r\npowershell -NoProfile -Command \"[Console]::Out.Write((New-Object string([char]0x78,70000)))\"\r\nexit /b 7\r\n"
 		default:
 			t.Fatalf("unknown mode %q", mode)
 		}
@@ -767,6 +859,8 @@ func writeShelloutHelper(t *testing.T, mode string) string {
 	switch mode {
 	case "success":
 		body = "#!/bin/sh\necho telemetry >&2\nprintf '{\"args\":\"%s\"}\\n' \"$*\"\n"
+	case "success-hints":
+		body = "#!/bin/sh\nprintf 'telemetry\\nprogress 50%%\\rhint: local store is empty; run sync\\nwarning: result was truncated\\n' >&2\nprintf '{\"args\":\"%s\"}\\n' \"$*\"\n"
 	case "fail-stderr":
 		body = "#!/bin/sh\necho boom from stderr >&2\nexit 7\n"
 	case "fail-stdout":
@@ -823,10 +917,17 @@ func decodeArgvResult(t *testing.T, result *mcplib.CallToolResult) []string {
 }
 
 func toolResultText(result *mcplib.CallToolResult) string {
+	return toolResultContentText(result, 0)
+}
+
+func toolResultContentText(result *mcplib.CallToolResult, index int) string {
 	if result == nil || len(result.Content) == 0 {
 		return ""
 	}
-	text, ok := result.Content[0].(mcplib.TextContent)
+	if index >= len(result.Content) {
+		return ""
+	}
+	text, ok := result.Content[index].(mcplib.TextContent)
 	if !ok {
 		return ""
 	}

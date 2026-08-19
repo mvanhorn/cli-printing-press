@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -138,6 +139,9 @@ func executeStep(binary string, step WorkflowStep, cmdExpanded string, dir strin
 	}
 
 	args := strings.Fields(cmdExpanded)
+	if step.ArgsStdin && !workflowArgsEnableFlag(args, "stdin") {
+		args = append(args, "--stdin")
+	}
 	args = append(args, "--json")
 
 	maxAttempts := 1
@@ -147,11 +151,24 @@ func executeStep(binary string, step WorkflowStep, cmdExpanded string, dir strin
 
 	var output string
 	var cmdErr error
+	var stdin []byte
+	if step.ArgsStdin {
+		var err error
+		stdin, err = json.Marshal(step.StdinJSON)
+		if err != nil {
+			sr.Status = StepStatusFailCLIBug
+			sr.Error = fmt.Sprintf("invalid stdin_json payload: %v", err)
+			return sr
+		}
+	}
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		cmd := exec.CommandContext(ctx, binary, args...)
 		cmd.Dir = dir
+		if stdin != nil {
+			cmd.Stdin = strings.NewReader(string(stdin))
+		}
 		applyDefaultSubprocessEnv(cmd)
 		// Strip verify-mode env from the subprocess so an inherited
 		// PRINTING_PRESS_VERIFY=1 cannot short-circuit the live workflow
@@ -217,6 +234,23 @@ func executeStep(binary string, step WorkflowStep, cmdExpanded string, dir strin
 
 	sr.Status = StepStatusPass
 	return sr
+}
+
+func workflowArgsEnableFlag(args []string, name string) bool {
+	prefix := "--" + name
+	for _, arg := range args {
+		if arg == prefix {
+			return true
+		}
+		value, ok := strings.CutPrefix(arg, prefix+"=")
+		if ok {
+			enabled, err := strconv.ParseBool(value)
+			if err == nil && enabled {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // classifyError determines the step status from a command failure.

@@ -169,7 +169,7 @@ Run sync first to populate the local search index.`,
 				}
 				// Check if it's a network error for auto-mode fallback
 				if flags.dataSource == "live" || !isNetworkError(getErr) {
-					return classifyAPIError(getErr, flags)
+					return classifyAPIError(cmd.OutOrStdout(), getErr, flags)
 				}
 				// auto mode + network error: fall through to local FTS
 				fmt.Fprintf(cmd.ErrOrStderr(), "API unreachable, falling back to local search.\n")

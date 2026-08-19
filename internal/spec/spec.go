@@ -2311,6 +2311,10 @@ type Endpoint struct {
 	// conditional input contract. The runtime consumes it from the generated
 	// Cobra annotation `pp:happy-args`.
 	HappyArgs string `yaml:"happy_args,omitempty" json:"happy_args,omitempty"`
+	// HappyStdin declares a JSON request-body fixture for live dogfood probes
+	// of commands whose input is read from stdin. The generator emits it as
+	// the `pp:happy-stdin` Cobra annotation.
+	HappyStdin string `yaml:"happy_stdin,omitempty" json:"happy_stdin,omitempty"`
 	// LiveDogfoodRequiresTier declares the runner credential tier required
 	// before live dogfood should probe this endpoint. It is dogfood-only and
 	// does not select an upstream auth route; the runtime consumes it from the

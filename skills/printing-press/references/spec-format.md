@@ -163,7 +163,8 @@ annotation and follows the runtime grammar. Tokens are separated by unescaped
 semicolons, so a literal semicolon uses `\;` (or `\\;` inside a YAML
 double-quoted string). Positional tokens may use `<label>=value` or
 `label=value`. Positional and flag tokens replace matching synthesized
-or Example-derived values. Negative numeric flag values use the safe
+or Example-derived values, and bare `--flag` tokens become boolean
+`--flag=true`. Negative numeric flag values use the safe
 `--flag=-12.3` form. Examples include `"--zip=60614"` and
 `"id=example-id;--query=example"`.
 
@@ -409,6 +410,14 @@ Top-level scalars become typed flags. Object properties with their own
 `properties` become nested, parent-prefixed flags. Object and array properties
 without expandable scalar children remain JSON-string flags so the command can
 pass nested payloads without hand-written Go.
+
+When the request-body schema is a **single object property whose value is an
+object** (the resource root, e.g. `{"issue":{"notes":"..."}}`), generated
+create/update/patch/post commands wrap the constructed field map under that
+schema key. Keep the wrapper in the schema when the API requires it. A flat
+schema (`{"user_id": 1}` or `{id, name, ...}`) stays a flat body — do not
+invent a wrap key or flatten a named resource root away. `--stdin` still sends
+the caller's JSON as-is.
 
 ## 4. Validation Rules
 

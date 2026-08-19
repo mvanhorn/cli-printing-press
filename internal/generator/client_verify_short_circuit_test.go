@@ -78,6 +78,8 @@ func TestClient_VerifyShortCircuit(t *testing.T) {
 	doBody := rest[:nextFunc+1]
 	assert.Contains(t, doBody, gate,
 		"the gate must live INSIDE doInternal(), not in a sibling helper or at file scope")
+	assert.NotContains(t, doBody, "IsDogfoodEnv()",
+		"dogfood must not become a transport no-op; read-only dogfood commands still need real network calls")
 
 	// do() and doRead() must both be thin wrappers around doInternal() so
 	// the gate-check site stays single. A future edit that inlines the

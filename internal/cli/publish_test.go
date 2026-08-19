@@ -679,7 +679,7 @@ func TestRunGoVulnCheckUsesPinnedDefaultCommandWithModuleToolchain(t *testing.T)
 		t.Skip("fake shell go binary is Unix-only")
 	}
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.26.5\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.26.6\n"), 0o644))
 
 	fakeBin := t.TempDir()
 	callsPath := filepath.Join(t.TempDir(), "go-calls.txt")
@@ -701,7 +701,7 @@ exit 42
 
 	calls, err := os.ReadFile(callsPath)
 	require.NoError(t, err)
-	assert.Equal(t, "args=run "+govulncheck.ToolModule+" ./...\ntoolchain=go1.26.5\n", string(calls))
+	assert.Equal(t, "args=run "+govulncheck.ToolModule+" ./...\ntoolchain=go1.26.6\n", string(calls))
 	assert.NotContains(t, string(calls), "-show")
 	assert.NotContains(t, string(calls), "verbose")
 }
@@ -866,14 +866,21 @@ func TestPublishPackagePreservesPopulatedReleaseManifest(t *testing.T) {
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
 	writePublishableTestCLI(t, cliDir)
 	stubPublishPackageValidation(t)
-	require.NoError(t, os.WriteFile(filepath.Join(cliDir, pipeline.CLIReleaseManifestFilename), []byte(`{
+	releaseLedger := []byte(`{
   "schema_version": 1,
   "slug": "test",
   "cli_name": "test-pp-cli",
   "version": "2026.6.2",
   "released_at": "2026-06-02T00:00:00Z",
-  "source_commit": "abc123"
-}`+"\n"), 0o644))
+  "source_commit": "abc123",
+  "changes": [{
+    "title": "feat(test): preserve release history",
+    "pr": 1372,
+    "url": "https://github.com/mvanhorn/printing-press-library/pull/1372",
+    "commit": "14a3685ce9929e28fe44aabd980d8bda8f53088b"
+  }]
+}` + "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, pipeline.CLIReleaseManifestFilename), releaseLedger, 0o644))
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
@@ -886,7 +893,7 @@ func TestPublishPackagePreservesPopulatedReleaseManifest(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(output), &result))
 	got, err := os.ReadFile(filepath.Join(result.StagedDir, pipeline.CLIReleaseManifestFilename))
 	require.NoError(t, err)
-	assert.Contains(t, string(got), `"version": "2026.6.2"`)
+	assert.Equal(t, releaseLedger, got)
 }
 
 func TestPublishPackageNormalizesManifestCategoryToPublishCategory(t *testing.T) {
@@ -2388,7 +2395,7 @@ func TestCheckModulePath(t *testing.T) {
 
 	t.Run("canonical prefix passes", func(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
-			[]byte("module github.com/mvanhorn/printing-press-library/library/ai/exa\n\ngo 1.26.5\n"), 0o644))
+			[]byte("module github.com/mvanhorn/printing-press-library/library/ai/exa\n\ngo 1.26.6\n"), 0o644))
 		res := checkModulePath(dir)
 		assert.True(t, res.Passed, res.Error)
 		assert.Equal(t, "module path", res.Name)
@@ -2396,7 +2403,7 @@ func TestCheckModulePath(t *testing.T) {
 
 	t.Run("bare CLI name fails", func(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
-			[]byte("module exa-pp-cli\n\ngo 1.26.5\n"), 0o644))
+			[]byte("module exa-pp-cli\n\ngo 1.26.6\n"), 0o644))
 		res := checkModulePath(dir)
 		assert.False(t, res.Passed)
 		assert.Contains(t, res.Error, "does not start with the canonical library prefix")
@@ -2410,7 +2417,7 @@ func TestCheckModulePath(t *testing.T) {
 
 	t.Run("no module line fails", func(t *testing.T) {
 		emptyDir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(emptyDir, "go.mod"), []byte("go 1.26.5\n"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(emptyDir, "go.mod"), []byte("go 1.26.6\n"), 0o644))
 		res := checkModulePath(emptyDir)
 		assert.False(t, res.Passed)
 		assert.Contains(t, res.Error, "declares no module line")
@@ -2423,7 +2430,7 @@ func TestPublishValidateModulePathCheckWired(t *testing.T) {
 	writePublishableTestCLI(t, cliDir)
 	// Force a bare module path to exercise the new check end-to-end.
 	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "go.mod"),
-		[]byte("module test-pp-cli\n\ngo 1.26.5\n"), 0o644))
+		[]byte("module test-pp-cli\n\ngo 1.26.6\n"), 0o644))
 
 	cmd := newPublishCmd()
 	cmd.SetArgs([]string{"validate", "--dir", cliDir, "--json"})

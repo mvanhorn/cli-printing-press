@@ -49,6 +49,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-live-dogfood-requires-tier` | path item or operation | `Endpoint.LiveDogfoodRequiresTier` | No |
 | `x-requires-role` | operation | `Endpoint.RequiresRole` | No |
 | `x-happy-args` | operation | `Endpoint.HappyArgs` | No |
+| `x-happy-stdin` | operation | `Endpoint.HappyStdin` | No |
 | `x-pp-example` | operation | `Endpoint.Example` (verbatim Cobra example override) | No |
 | `x-pp-resource` | operation | resource name override | No |
 | `x-pp-pagination` | operation | `Endpoint.Pagination` | No |
@@ -587,9 +588,12 @@ The value flows into the resource profile and is consumed in two places:
   into the generated `parentTenantScopeColumns` map, so dependent fan-out
   targets only rows belonging to the active tenant.
 - **Flat tenant-scoped reconcile**: a flat resource becomes reconcilable
-  (`ReconcileMode = "flat"`) only when it carries a tenant column, has a
-  stable primary key, and is not routed through a discriminator dispatcher;
-  otherwise it stays `"none"`.
+  (`ReconcileMode = "flat"`) when it carries a tenant column, has a
+  stable primary key, and is not routed through a discriminator dispatcher.
+- **Single-tenant whole-table reconcile**: when a print has zero
+  `TenantScopeColumn` annotations, eligible flat resources (stable PK, no
+  discriminator) are classified `ReconcileMode = "flat_global"` and the
+  table is the partition. Unscoped resources in a mixed print stay `"none"`.
 
 Rules:
 - Optional. Absence means no tenant scoping is recorded for the collection.
@@ -1354,8 +1358,25 @@ Rules:
 - Must be a string.
 - Leading and trailing whitespace is trimmed.
 - Non-string values emit a warning and are ignored.
-- An empty or missing value falls through to the parser's response-schema
-  fallback chain: `id`, then `name`, then the first required scalar field.
+- A non-empty `x-resource-id` wins over every automatic response-schema
+  fallback.
+- An empty or missing value falls through to the parser's automatic
+  `resolveIDFieldFromResponseSchema` chain: bare `id`; then a resource-derived
+  singular key ending in `_id`, `_uuid`, or `_guid` (matched through
+  snake-case normalization, so camelCase and PascalCase spellings such as
+  `widgetId` are preserved when emitted); then vendor identifier keys `gid`,
+  `sid`, `uid`, `uuid`, and `guid`; then URL-shaped identifier keys `uri`,
+  `self`, `selfLink`, `href`, and `url`; then `name`; then the first plausible
+  required scalar field. URL-shaped keys qualify only when the field schema is a
+  plausible ID and either the field is required or its name, title, description,
+  or format carries an identifier hint; an optional generic `url` therefore
+  falls through to `name`.
+- URL-shaped keys intentionally trail id-shaped keys, so APIs that expose both
+  `id` and `self` keep the compact primary key.
+- Qualified URL-shaped keys intentionally win over display `name` when no
+  id-shaped key is available. A resource URL or URI is usually record-unique,
+  while display names can collide; keying on `name` would collapse two records
+  with the same display label into one local row.
 - Applies to every operation on the path item.
 
 Example:
@@ -1370,6 +1391,20 @@ paths:
         "200":
           description: OK
 ```
+
+Generated dependent sync uses the resolved resource ID field when substituting
+parent IDs into child path parameters. When the resolved ID field is URL-shaped
+(`uri`, `self`, `selfLink`, `href`, or `url`), generated
+`replaceURLIDPathParam` reduces a full URL value to its trailing path segment
+before normal path escaping. This is intentional: dependent fetches whose
+upstream path expects `{id}` must not send a full URL as that path segment. Do
+not restore scheme, host, query, or earlier path components in generated path
+params.
+
+`store.BareResourceID` is a separate storage-key helper for stripping the
+NUL-delimited parent suffix from composite dependent-resource storage IDs. It is
+not part of response-schema identity selection and should not be changed to
+alter URL-shaped record identity behavior.
 
 ### `x-critical`
 
@@ -1700,8 +1735,9 @@ Rules:
   `pp:happy-args`.
 - Tokens are separated by unescaped semicolons. Escape a literal semicolon as
   `\;` (write `\\;` inside a YAML double-quoted string). `<label>=value`
-  or `label=value` overlays synthesized positional args, and `--flag=value` replaces the
-  matching example flag or adds a new flag/value pair.
+  or `label=value` overlays synthesized positional args, `--flag=value` replaces the
+  matching example flag or adds a new flag/value pair, and bare `--flag`
+  tokens are treated as boolean `--flag=true`.
 - Negative numeric flag values are emitted in `--flag=-12.3` form so Cobra
   does not parse the value as a shorthand flag cluster.
 - Empty or whitespace-only values behave the same as absence.
@@ -1714,6 +1750,33 @@ paths:
     get:
       operationId: listReferents
       x-happy-args: "--song-id=378195"
+      responses:
+        "200": {description: ok}
+```
+
+### `x-happy-stdin`
+
+Declares a JSON request-body fixture for a live-dogfood command that reads its
+input from stdin. The generator emits the fixture as the `pp:happy-stdin`
+annotation, and the matrix pipes it to both the happy-path and JSON-fidelity
+probes.
+
+Parsed field: `Endpoint.HappyStdin`
+
+Rules:
+- Optional.
+- Must be on an operation, not the root, `info`, or path item.
+- Must be a string containing valid JSON.
+- Commands that require stdin but do not declare this fixture are skipped with
+  reason `no-stdin-fixture`; the runner never synthesizes a request body.
+
+Example:
+
+```yaml
+paths:
+  /widgets/inspect:
+    post:
+      x-happy-stdin: '{"name":"synthetic"}'
       responses:
         "200": {description: ok}
 ```

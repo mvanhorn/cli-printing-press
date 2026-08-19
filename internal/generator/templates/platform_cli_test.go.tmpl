@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -860,8 +861,13 @@ func TestPlatformMigrationAdoptsOnlyVerifiedTenantDatabase(t *testing.T) {
 	}
 	backupPath := legacyDB + ".printing-press-backup"
 	backupInfo, err := os.Stat(backupPath)
-	if err != nil || backupInfo.Mode().Perm() != 0o600 {
-		t.Fatalf("recoverable backup info=%v err=%v", backupInfo, err)
+	if err != nil {
+		t.Fatalf("recoverable backup missing: err=%v", err)
+	}
+	// NTFS does not expose POSIX mode bits, so assert the backup mode only where
+	// it is meaningful while retaining the cross-platform recoverability check.
+	if runtime.GOOS != "windows" && backupInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("recoverable backup perm = %04o, want 0600", backupInfo.Mode().Perm())
 	}
 	repeatCleanup := RootCmd()
 	repeatCleanup.SetOut(&bytes.Buffer{})

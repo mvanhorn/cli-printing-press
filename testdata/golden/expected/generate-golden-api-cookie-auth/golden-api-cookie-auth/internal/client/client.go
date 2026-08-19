@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"golang.org/x/net/publicsuffix"
 	"golden-api-cookie-auth-pp-cli/internal/cliutil"
 	"golden-api-cookie-auth-pp-cli/internal/config"
 	"golden-api-cookie-auth-pp-cli/internal/platform"
+	"html"
 	"io"
 	"math"
 	"net"
@@ -27,9 +29,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
+const maxErrorBodyBytes = 4096
 
 var ErrPlaceholderCredential = errors.New("auth placeholder credential")
 
@@ -247,11 +251,19 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		cacheDir = filepath.Join(dir, "http")
 	}
 	cookieJar := LoadCookieJar()
+	if cfg != nil && !cfg.UsePersistedCookieJar() {
+		cookieJar = NewCookieJar()
+	}
 	// Seed the jar from a session captured via the env var or stored in
 	// credentials but not yet in cookies.json, so the credential rides every
 	// request and net/http absorbs Set-Cookie rotation across the session.
 	if cfg != nil {
-		SeedCookieJar(cookieJar, cfg.BaseURL, cfg.CookieCredential())
+		if cfg.CredentialDomain != "" && cfg.UsePersistedCookieJar() {
+			seedBaseURL := "https://" + strings.TrimPrefix(cfg.CredentialDomain, ".")
+			SeedCookieJarForDomain(cookieJar, seedBaseURL, cfg.CookieCredential(), cfg.CredentialDomain)
+		} else {
+			SeedCookieJar(cookieJar, cfg.BaseURL, cfg.CookieCredential())
+		}
 	}
 	httpClient := newHTTPClient(timeout, cookieJar)
 	c := &Client{
@@ -276,6 +288,13 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			// would then classify as a successful response and hand the HTML
 			// "Moved Permanently" body back to the caller.
 			return errors.New("stopped after 10 redirects")
+		}
+		// Never carry credential material across a host-changing redirect.
+		// Go strips Authorization and Cookie in common cases, but custom
+		// headers and URL query values need explicit removal here.
+		if req.URL.Host != via[0].URL.Host {
+			req.Header.Del("Cookie")
+			req.Header.Del("Cookie")
 		}
 		// Cookie-auth redirects: Go's http.Client + http.CookieJar handle
 		// cookie carriage on 3xx hops natively. Setting the Cookie header
@@ -871,6 +890,10 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	if err != nil {
 		return nil, 0, err
 	}
+	credentialAllowed := c.credentialAppliesToURL(targetURL)
+	if !credentialAllowed {
+		authHeader = ""
+	}
 
 	// Build the request for dry-run display or actual execution
 	if c.DryRun {
@@ -929,7 +952,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			req.URL.RawQuery = q.Encode()
 		}
 
-		if authHeader != "" {
+		if authHeader != "" && credentialAllowed {
 			// Cookie-auth: the cookie jar is the sole source of outbound
 			// cookies. New() loads it from cookies.json and seeds it from
 			// the env-var / credentials session via SeedCookieJar, so every
@@ -1185,6 +1208,9 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	authHeader := c.Config.AuthHeader()
+	if authHeader == "" && c.Config.HasCredentialRefusals() {
+		return "", c.Config.CredentialRefusalError()
+	}
 	if authHeaderLooksLikePlaceholderCredential(authHeader) {
 		return "", authPlaceholderCredentialError(c.Config)
 	}
@@ -1237,7 +1263,7 @@ func looksLikeCredentialPlaceholder(value string) bool {
 }
 
 func authPlaceholderCredentialError(cfg *config.Config) error {
-	return authPlaceholderCredentialErrorWithSetup(cfg, "export COOKIE_AUTH_SESSION=<your-token> or golden-api-cookie-auth-pp-cli auth set-token <token>")
+	return authPlaceholderCredentialErrorWithSetup(cfg, "golden-api-cookie-auth-pp-cli auth login")
 }
 
 func authPlaceholderCredentialErrorWithSetup(cfg *config.Config, setup string) error {
@@ -1246,6 +1272,43 @@ func authPlaceholderCredentialErrorWithSetup(cfg *config.Config, setup string) e
 		location = cfg.Path
 	}
 	return fmt.Errorf("%w configured in %s; set a real token with: %s", ErrPlaceholderCredential, location, setup)
+}
+
+// credentialAppliesToURL keeps a browser-captured credential on its own
+// registrable domain. An empty binding preserves legacy credentials and
+// explicit verify-live HTTP uses mock hosts that cannot match the real site.
+func (c *Client) credentialAppliesToURL(rawURL string) bool {
+	if c == nil || c.Config == nil || !c.Config.UsePersistedCookieJar() || strings.TrimSpace(c.Config.CredentialDomain) == "" {
+		return true
+	}
+	if cliutil.IsVerifyEnv() && cliutil.IsVerifyLiveHTTPEnv() && isVerifyMockURL(rawURL) {
+		return true
+	}
+	target, err := url.Parse(rawURL)
+	if err != nil || target.Hostname() == "" {
+		return false
+	}
+	targetHost := strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+	boundHost := strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(c.Config.CredentialDomain), "."), "."))
+	if targetHost == boundHost || strings.HasSuffix(targetHost, "."+boundHost) {
+		return true
+	}
+	targetRegistered, targetErr := publicsuffix.EffectiveTLDPlusOne(targetHost)
+	boundRegistered, boundErr := publicsuffix.EffectiveTLDPlusOne(boundHost)
+	return targetErr == nil && boundErr == nil && targetRegistered == boundRegistered
+}
+
+func isVerifyMockURL(rawURL string) bool {
+	target, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(target.Hostname())
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // binaryResponseEnvelope wraps a non-textual success body so it survives the
@@ -1425,11 +1488,192 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 }
 
 func truncateBody(b []byte) string {
-	const maxBytes = 4096
-	if len(b) <= maxBytes {
+	if summary, ok := collapseHTMLErrorBody(b); ok {
+		return summary
+	}
+	if len(b) <= maxErrorBodyBytes {
 		return string(b)
 	}
-	return strings.ToValidUTF8(string(b[:maxBytes]), "") + "..."
+	return strings.ToValidUTF8(string(b[:maxErrorBodyBytes]), "") + "..."
+}
+
+func collapseHTMLErrorBody(b []byte) (string, bool) {
+	scanBytes := b
+	if len(scanBytes) > maxErrorBodyBytes {
+		scanBytes = scanBytes[:maxErrorBodyBytes]
+	}
+	body := strings.ToValidUTF8(string(scanBytes), "")
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" || !looksLikeHTMLBody(trimmed) {
+		return "", false
+	}
+
+	summary := fmt.Sprintf("HTML error page (%d bytes)", len(b))
+	if title := extractHTMLTitle(trimmed); title != "" {
+		summary += ": " + truncateRunes(title, 160)
+	}
+	return summary, true
+}
+
+func looksLikeHTMLBody(body string) bool {
+	lower := strings.ToLower(body)
+	if strings.HasPrefix(lower, "<!doctype html") || strings.HasPrefix(lower, "<html") {
+		return true
+	}
+	sample := lower
+	if len(sample) > 2048 {
+		sample = sample[:2048]
+	}
+	return strings.HasPrefix(sample, "<") && (strings.Contains(sample, "<body") || strings.Contains(sample, "<head") || strings.Contains(sample, "<title") || strings.Contains(sample, "<script"))
+}
+
+func extractHTMLTitle(body string) string {
+	pos := 0
+	ignoredBlock := ""
+	for pos < len(body) {
+		tagStartRel := strings.IndexByte(body[pos:], '<')
+		if tagStartRel < 0 {
+			return ""
+		}
+		tagStart := pos + tagStartRel
+		tagEnd := htmlTagEnd(body, tagStart)
+		if tagEnd < 0 {
+			return ""
+		}
+		tagName, closing := htmlTagName(body[tagStart+1 : tagEnd])
+		pos = tagEnd + 1
+		if tagName == "" {
+			continue
+		}
+		if ignoredBlock != "" {
+			if closing && tagName == ignoredBlock {
+				ignoredBlock = ""
+			}
+			continue
+		}
+		if closing {
+			continue
+		}
+		if tagName == "script" || tagName == "style" {
+			ignoredBlock = tagName
+			continue
+		}
+		if tagName != "title" {
+			continue
+		}
+		titleEnd := findHTMLCloseTag(body, pos, "title")
+		if titleEnd < 0 {
+			return ""
+		}
+		title := stripHTMLTags(body[pos:titleEnd])
+		return strings.Join(strings.Fields(stripControlCharacters(html.UnescapeString(title))), " ")
+	}
+	return ""
+}
+
+func findHTMLCloseTag(body string, from int, tag string) int {
+	pos := from
+	for pos < len(body) {
+		tagStartRel := strings.IndexByte(body[pos:], '<')
+		if tagStartRel < 0 {
+			return -1
+		}
+		tagStart := pos + tagStartRel
+		tagEnd := htmlTagEnd(body, tagStart)
+		if tagEnd < 0 {
+			return -1
+		}
+		tagName, closing := htmlTagName(body[tagStart+1 : tagEnd])
+		if closing && tagName == tag {
+			return tagStart
+		}
+		pos = tagEnd + 1
+	}
+	return -1
+}
+
+func htmlTagEnd(body string, start int) int {
+	end := strings.IndexByte(body[start:], '>')
+	if end < 0 {
+		return -1
+	}
+	return start + end
+}
+
+func htmlTagName(raw string) (string, bool) {
+	raw = strings.TrimLeftFunc(raw, isHTMLSpace)
+	closing := false
+	if strings.HasPrefix(raw, "/") {
+		closing = true
+		raw = strings.TrimLeftFunc(raw[1:], isHTMLSpace)
+	}
+	if raw == "" || strings.HasPrefix(raw, "!") || strings.HasPrefix(raw, "?") {
+		return "", closing
+	}
+	end := 0
+	for end < len(raw) && isHTMLTagNameByte(raw[end]) {
+		end++
+	}
+	if end == 0 {
+		return "", closing
+	}
+	return strings.ToLower(raw[:end]), closing
+}
+
+func isHTMLTagNameByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-' || b == ':'
+}
+
+func isHTMLSpace(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\f'
+}
+
+func stripHTMLTags(body string) string {
+	var out strings.Builder
+	inTag := false
+	for _, r := range body {
+		switch r {
+		case '<':
+			inTag = true
+			out.WriteByte(' ')
+		case '>':
+			inTag = false
+		default:
+			if !inTag {
+				out.WriteRune(r)
+			}
+		}
+	}
+	return out.String()
+}
+
+func stripControlCharacters(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' {
+			return ' '
+		}
+		if unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+			return ' '
+		}
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, text)
+}
+
+func truncateRunes(text string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func clientMaxRetries() int {

@@ -1,6 +1,7 @@
 # {{.ProseName}} CLI
 {{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
 {{- $deviceEnvVars := deviceCodeEnvVars .Auth}}
+{{- $authPersistenceCommand := authCredentialPersistenceCommand .Auth .Name}}
 {{- if and .Narrative .Narrative.Headline}}
 
 **{{.Narrative.Headline}}**
@@ -53,7 +54,7 @@ npx -y @mvanhorn/printing-press-library install {{.Name}} --agent claude-code --
 {{ if .Category}}
 ### Without Node (Go fallback)
 
-If `npx` isn't available (no Node, offline), install the CLI directly via Go (requires Go 1.26.5 or newer):
+If `npx` isn't available (no Node, offline), install the CLI directly via Go (requires Go 1.26.6 or newer):
 
 ```bash
 go install github.com/mvanhorn/printing-press-library/library/{{.Category}}/{{.Name}}/cmd/{{.Name}}-pp-cli@latest
@@ -142,12 +143,12 @@ The bundle reuses your local OAuth2 refresh-token credentials — configure them
 export {{.Name}}="{{authEnvPlaceholder .}}"
 {{- end}}
 ```
-{{- else if and (eq .Auth.Type "bearer_token") (not $canonicalEnvVar)}}
+{{- else if and (eq .Auth.Type "bearer_token") (not $canonicalEnvVar) $authPersistenceCommand}}
 
 Store your token first if you haven't:
 
 ```bash
-{{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE
+{{$authPersistenceCommand}}
 ```
 {{- end}}
 
@@ -242,7 +243,9 @@ Get your API key from your API provider's developer portal. The key typically lo
 export {{.Name}}="<paste-your-key>"
 ```
 
-To persist credentials, use `{{$.Name}}-pp-cli auth set-token <token>`. Stored secrets live in `credentials.toml` under the data directory, not in `config.toml`.
+{{- if $authPersistenceCommand}}
+To persist credentials, use `{{$authPersistenceCommand}}`. Stored secrets live in `credentials.toml` under the data directory, not in `config.toml`.
+{{- end}}
 {{- end}}
 {{- else if eq .Auth.EffectiveOAuth2Grant "device_code"}}
 
@@ -286,11 +289,13 @@ export {{.Name}}="{{authEnvPlaceholder .}}"
 
 ### 2. Set Up Credentials
 
-Get your access token from your API provider's developer portal, then store it:
+Get your access token from your API provider's developer portal{{if $authPersistenceCommand}}, then store it{{end}}:
+{{- if $authPersistenceCommand}}
 
 ```bash
-{{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE
+{{$authPersistenceCommand}}
 ```
+{{- end}}
 {{- if .BearerRefresh.Enabled}}
 
 If commands start returning auth errors after working for a while, refresh the public client bearer token from the live web bundle:
@@ -555,7 +560,7 @@ This CLI is designed for AI agent consumption:
 {{- if or .HasCreateCommands .HasDelete}}
 - **Explicit retries** - {{if .HasCreateCommands}}add `--idempotent` to create retries{{if .HasDelete}} and {{end}}{{end}}{{if .HasDelete}}add `--ignore-missing` to delete retries{{end}} when a no-op success is acceptable
 {{- end}}
-- **Confirmable** - `--yes` for explicit confirmation of destructive actions
+- **Explicit confirmation** - `--agent` does not imply `--yes`; pass `--yes` separately only after the target, arguments, and side effects are clear
 - **Piped input** - write commands can accept structured input when their help lists `--stdin`
 {{- else}}
 - **Read-only by default** - this CLI does not create, update, delete, publish, send, or mutate remote resources

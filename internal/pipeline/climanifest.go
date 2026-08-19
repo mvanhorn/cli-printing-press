@@ -202,15 +202,15 @@ type ReviewedSecretSuppression struct {
 // release-ledger workflow. Version fields are intentionally blank at print
 // time: the library owns final release accounting to avoid PR-time conflicts.
 type CLIReleaseManifest struct {
-	SchemaVersion        int      `json:"schema_version"`
-	Slug                 string   `json:"slug"`
-	CLIName              string   `json:"cli_name,omitempty"`
-	Version              string   `json:"version"`
-	ReleasedAt           string   `json:"released_at"`
-	SourceCommit         string   `json:"source_commit"`
-	PrintingPressVersion string   `json:"printing_press_version,omitempty"`
-	RunID                string   `json:"run_id,omitempty"`
-	Changes              []string `json:"changes,omitempty"`
+	SchemaVersion        int             `json:"schema_version"`
+	Slug                 string          `json:"slug"`
+	CLIName              string          `json:"cli_name,omitempty"`
+	Version              string          `json:"version"`
+	ReleasedAt           string          `json:"released_at"`
+	SourceCommit         string          `json:"source_commit"`
+	PrintingPressVersion string          `json:"printing_press_version,omitempty"`
+	RunID                string          `json:"run_id,omitempty"`
+	Changes              json.RawMessage `json:"changes,omitempty"`
 }
 
 // IsLocalDatastore reports whether the manifest describes a local-datastore
@@ -931,8 +931,12 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.MCPBinary = naming.MCP(mcpName)
 	m.MCPToolCount = total
 	m.MCPPublicToolCount = public
-	m.MCPReady = computeMCPReady(parsed.Auth.Type)
-	m.AuthType = parsed.Auth.Type
+	authType := parsed.Auth.Type
+	if strings.TrimSpace(authType) == "" {
+		authType = spec.TierAuthTypeNone
+	}
+	m.MCPReady = computeMCPReady(authType)
+	m.AuthType = authType
 	m.AuthPreference = strings.TrimSpace(parsed.Auth.Scheme)
 	envVarSpecs := manifestAuthEnvVarSpecs(parsed)
 	m.AuthEnvVars = manifestAuthEnvVarNames(parsed, envVarSpecs)
@@ -1333,6 +1337,26 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	if err := writeCLIManifestForGenerate(p.OutputDir, m, existingRaw, clearFields); err != nil {
 		return err
 	}
+	toolsManifestPath := filepath.Join(p.OutputDir, ToolsManifestFilename)
+	if _, err := os.Stat(toolsManifestPath); os.IsNotExist(err) {
+		if p.Spec == nil {
+			// Direct low-level callers may only be writing provenance; the
+			// generate command normally creates this file before this step.
+			return writeGenerateManifestArtifacts(p, m)
+		}
+		if err := WriteToolsManifestWithDescription(p.OutputDir, p.Spec, m.Description); err != nil {
+			return fmt.Errorf("writing tools manifest: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("checking tools manifest: %w", err)
+	}
+	if err := syncToolsManifestNovelFeatures(p.OutputDir, m.NovelFeatures); err != nil {
+		return fmt.Errorf("syncing novel features to tools manifest: %w", err)
+	}
+	return writeGenerateManifestArtifacts(p, m)
+}
+
+func writeGenerateManifestArtifacts(p GenerateManifestParams, m CLIManifest) error {
 	// Emit the customizations directory alongside .printing-press.json. The
 	// library's Verify CI requires every fresh-print publish to ship a patches
 	// index; preserve-on-regen keeps agent-applied patch entries from being

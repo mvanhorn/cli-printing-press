@@ -243,10 +243,10 @@ Run 'learn-disabled-example-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.PersistentFlags().StringVar(&flags.auditDir, "audit-dir", "", "Aggregate the receipt and index under this audit directory")
 	rootCmd.PersistentFlags().BoolVar(&flags.noInput, "no-input", false, "Disable all interactive prompts (for CI/agents)")
 	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output")
-	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (for agents and scripts)")
+	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (explicit confirmation for scripts)")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	rootCmd.PersistentFlags().BoolVar(&humanFriendly, "human-friendly", false, "Enable colored output and rich formatting")
-	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set all agent-friendly defaults (--json --compact --no-input --no-color --yes)")
+	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set agent-friendly output defaults (--json --compact --no-input --no-color)")
 	rootCmd.PersistentFlags().StringVar(&flags.dataSource, "data-source", "auto", "Data source for read commands: auto (live with local fallback), live (API only), local (synced data only)")
 	rootCmd.PersistentFlags().DurationVar(&flags.maxAge, "max-age", 30*time.Minute, "Maximum acceptable age of local-store data before a stderr hint suggests sync; 0 disables")
 	rootCmd.PersistentFlags().StringVar(&flags.runProfileName, "profile", "", "Apply values from a saved run profile; this does not select a client (see 'learn-disabled-example-pp-cli profile list')")
@@ -266,6 +266,7 @@ Run 'learn-disabled-example-pp-cli doctor' to verify auth and connectivity.`,
 		if _, err := cliutil.SetHomeOverride(flags.homePath); err != nil {
 			return err
 		}
+		configureDefaultDBScope(flags.configPath)
 		if flags.deliverSpec != "" {
 			sink, err := ParseDeliverSink(flags.deliverSpec)
 			if err != nil {
@@ -325,9 +326,6 @@ Run 'learn-disabled-example-pp-cli doctor' to verify auth and connectivity.`,
 			}
 			if !cmd.Flags().Changed("no-input") {
 				flags.noInput = true
-			}
-			if !cmd.Flags().Changed("yes") {
-				flags.yes = true
 			}
 			if !cmd.Flags().Changed("no-color") {
 				noColor = true

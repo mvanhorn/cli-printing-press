@@ -52,11 +52,12 @@ type shipcheckOpts struct {
 	asJSON bool
 
 	// Per-leg pass-through flags.
-	noFix       bool   // when true, omit --fix from verify argv
-	noLiveCheck bool   // when true, omit --live-check from scorecard argv
-	apiKey      string // when set, pass --api-key to verify
-	envVar      string // when set, pass --env-var to verify
-	strict      bool   // when set, pass --strict to verify-skill
+	noFix            bool   // when true, omit --fix from verify argv
+	noLiveCheck      bool   // when true, omit --live-check from scorecard argv
+	apiKey           string // when set, pass --api-key to verify
+	envVar           string // when set, pass --env-var to verify
+	strict           bool   // when set, pass --strict to verify-skill
+	allowDestructive bool   // when set, allow non-dogfood legs to execute live mutations
 }
 
 // shipcheckLeg names one verification leg and how to invoke it.
@@ -89,6 +90,9 @@ var shipcheckLegs = []shipcheckLeg{
 			}
 			if o.envVar != "" {
 				a = append(a, "--env-var", o.envVar)
+			}
+			if o.allowDestructive {
+				a = append(a, "--allow-destructive")
 			}
 			return a
 		},
@@ -156,6 +160,9 @@ var shipcheckLegs = []shipcheckLeg{
 			}
 			if !o.noLiveCheck {
 				a = append(a, "--live-check")
+			}
+			if o.allowDestructive {
+				a = append(a, "--allow-destructive")
 			}
 			return a
 		},
@@ -640,6 +647,7 @@ Each leg remains callable standalone — this command is additive orchestration.
 	cmd.Flags().StringVar(&opts.apiKey, "api-key", "", "API key for verify's live testing (read-only GETs only)")
 	cmd.Flags().StringVar(&opts.envVar, "env-var", "", "Environment variable name verify should read for the API key (e.g., GITHUB_TOKEN)")
 	cmd.Flags().BoolVar(&opts.strict, "strict", false, "Pass --strict to verify-skill (treat likely-false-positive findings as failures)")
+	cmd.Flags().BoolVar(&opts.allowDestructive, "allow-destructive", false, "Allow verify and scorecard live-check to execute mutating endpoint commands")
 
 	return cmd
 }

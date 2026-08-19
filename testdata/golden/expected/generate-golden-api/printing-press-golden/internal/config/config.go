@@ -15,12 +15,13 @@ import (
 )
 
 type Config struct {
-	BaseURL            string            `toml:"base_url"`
-	AuthHeaderVal      string            `toml:"auth_header"`
-	Headers            map[string]string `toml:"headers,omitempty"`
-	AuthSource         string            `toml:"-"`
-	CredentialSource   string            `toml:"-"`
-	AgentcookieManaged bool              `toml:"-"`
+	BaseURL            string                      `toml:"base_url"`
+	AuthHeaderVal      string                      `toml:"auth_header"`
+	Headers            map[string]string           `toml:"headers,omitempty"`
+	AuthSource         string                      `toml:"-"`
+	CredentialSource   string                      `toml:"-"`
+	AgentcookieManaged bool                        `toml:"-"`
+	CredentialRefusals []cliutil.CredentialRefusal `toml:"-"`
 	// configOwner records which on-disk file parseConfigData populated this
 	// config from ("config-kind path" or "legacy config path") so the
 	// credential-source fallback below reports where config-stored
@@ -58,14 +59,20 @@ func Load(configPath string) (*Config, error) {
 		// have drifted, but never trust credentials from that file. Canonicalizing
 		// first also makes a symlink inherit the target's permission verdict.
 		if real, evalErr := filepath.EvalSymlinks(path); evalErr == nil {
-			credentialsTrusted := cliutil.VerifyCredsPerms(real) == nil
+			credentialPermErr := cliutil.VerifyCredsPerms(real)
 			parsed := *cfg
 			if err := readConfigFile(path, &parsed, "config-kind path"); err != nil {
 				if !os.IsNotExist(err) {
 					return nil, err
 				}
 			} else {
-				if !credentialsTrusted {
+				if credentialPermErr != nil && parsed.hasCredentialFields() {
+					parsed.addCredentialRefusal(cliutil.CredentialRefusal{
+						Source:             "config-kind path",
+						Path:               path,
+						Err:                credentialPermErr,
+						CredentialsPresent: true,
+					})
 					parsed.clearCredentialFields()
 				}
 				*cfg = parsed
@@ -82,7 +89,7 @@ func Load(configPath string) (*Config, error) {
 				return nil, err
 			}
 		} else if real, evalErr := filepath.EvalSymlinks(sourcePath); evalErr == nil {
-			credentialsTrusted := cliutil.VerifyCredsPerms(real) == nil
+			credentialPermErr := cliutil.VerifyCredsPerms(real)
 			owner := "config-kind path"
 			if sourcePath == legacyPath {
 				owner = "legacy config path"
@@ -95,7 +102,13 @@ func Load(configPath string) (*Config, error) {
 					return nil, err
 				}
 			} else {
-				if !credentialsTrusted {
+				if credentialPermErr != nil && parsed.hasCredentialFields() {
+					parsed.addCredentialRefusal(cliutil.CredentialRefusal{
+						Source:             owner,
+						Path:               sourcePath,
+						Err:                credentialPermErr,
+						CredentialsPresent: true,
+					})
 					parsed.clearCredentialFields()
 				}
 				*cfg = parsed
@@ -111,17 +124,29 @@ func Load(configPath string) (*Config, error) {
 	} else {
 		var creds *cliutil.Credentials
 		var ok bool
+		credentialsRefused := false
 		if !cfg.hasCompleteCredentialFields() {
 			if explicitConfigFile {
-				creds, ok, err = cliutil.LoadCredentialsForConfig(path)
+				var status cliutil.CredentialLoadStatus
+				creds, status, err = cliutil.LoadCredentialsForConfigWithStatus(path)
 				if err != nil {
 					return nil, err
 				}
+				ok = status.Loaded
+				if status.Refusal != nil {
+					cfg.addCredentialRefusal(*status.Refusal)
+					credentialsRefused = status.Refusal.CredentialsPresent
+				}
 			}
-			if !ok || creds == nil || !creds.HasValues() {
-				creds, ok, err = cliutil.LoadCredentials()
+			if (!ok || creds == nil || !creds.HasValues()) && !credentialsRefused {
+				var status cliutil.CredentialLoadStatus
+				creds, status, err = cliutil.LoadCredentialsWithStatus()
 				if err != nil {
 					return nil, err
+				}
+				ok = status.Loaded
+				if status.Refusal != nil {
+					cfg.addCredentialRefusal(*status.Refusal)
 				}
 			}
 			if ok && creds.HasValues() {
@@ -233,6 +258,37 @@ func FileHasCredentialFields(path string) (bool, error) {
 	return cfg.hasCredentialFields(), nil
 }
 
+func (c *Config) addCredentialRefusal(refusal cliutil.CredentialRefusal) {
+	if c == nil || !refusal.CredentialsPresent {
+		return
+	}
+	c.CredentialRefusals = append(c.CredentialRefusals, refusal)
+	cliutil.ReportCredentialRefusal(refusal)
+}
+
+func (c *Config) HasCredentialRefusals() bool {
+	return c != nil && len(c.CredentialRefusals) > 0
+}
+
+func (c *Config) CredentialRefusalSummaries() []string {
+	if c == nil || len(c.CredentialRefusals) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(c.CredentialRefusals))
+	for _, refusal := range c.CredentialRefusals {
+		out = append(out, refusal.Error())
+	}
+	return out
+}
+
+func (c *Config) CredentialRefusalError() error {
+	summaries := c.CredentialRefusalSummaries()
+	if len(summaries) == 0 {
+		return nil
+	}
+	return fmt.Errorf("stored credentials refused: %s", strings.Join(summaries, "; "))
+}
+
 func (c *Config) AuthHeader() string {
 	if c.AuthHeaderVal != "" {
 		return c.AuthHeaderVal
@@ -245,6 +301,39 @@ func (c *Config) AuthHeader() string {
 		return ""
 	}
 	return token
+}
+
+func (c *Config) StoreScopeCredential() string {
+	if c == nil {
+		return ""
+	}
+	if header := c.AuthHeader(); header != "" {
+		return header
+	}
+
+	var parts []string
+	if c.AuthHeaderVal != "" {
+		parts = append(parts, "auth_header="+c.AuthHeaderVal)
+	}
+	if c.RefreshToken != "" {
+		parts = append(parts, "refresh_token="+c.RefreshToken)
+	}
+	if c.AccessToken != "" {
+		parts = append(parts, "access_token="+c.AccessToken)
+	}
+	if c.ClientID != "" {
+		parts = append(parts, "client_id="+c.ClientID)
+	}
+	if c.ClientSecret != "" {
+		parts = append(parts, "client_secret="+c.ClientSecret)
+	}
+	if c.PrintingPressGoldenApiKey != "" {
+		parts = append(parts, "press_golden_api_key="+c.PrintingPressGoldenApiKey)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "\n")
 }
 
 // Raw browser-session values count as credentials even when no header

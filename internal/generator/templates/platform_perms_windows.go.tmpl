@@ -5,9 +5,12 @@
 
 // Private-file permission checks (Windows).
 //
-// Windows mode bits do not model access control. Reuse cliutil's owner and DACL
-// check, but report it as advisory because generated writers do not establish
-// an explicit Windows DACL.
+// Windows mode bits do not model access control, so the POSIX 0600 check in
+// perms_unix.go has no meaning here.
+{{if ne .Auth.Type "none"}}//
+// Auth is configured, so cliutil carries the owner+DACL evaluator
+// (VerifyCredsPerms). Reuse it, but report the result as advisory because
+// generated writers do not establish an explicit Windows DACL.
 package platform
 
 import (
@@ -28,3 +31,14 @@ func verifyPrivatePerms(path string, _ os.FileInfo, label string) error {
 	}
 	return nil
 }
+{{else}}//
+// The remaining profile and cache metadata contain no credential material, and
+// Windows mode bits do not model access control, so this check is a no-op.
+package platform
+
+import "os"
+
+func verifyPrivatePerms(_ string, _ os.FileInfo, _ string) error {
+	return nil
+}
+{{end}}

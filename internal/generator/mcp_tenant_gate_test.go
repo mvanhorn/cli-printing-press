@@ -28,6 +28,8 @@ func TestGeneratedMCPEveryToolUsesExactlyOneFreshTenantGate(t *testing.T) {
 	gateTest := readGeneratedFile(t, outputDir, "internal", "mcp", "platform_gate_test.go")
 	require.Contains(t, gateTest, "TestMCPEveryRegisteredToolHasFreshTenantGate")
 	require.Contains(t, gateTest, "TestMCPTypedInvocationUsesSingleFreshTenantGate")
+	require.Contains(t, gateTest, "TestMCPUngatedInvocationUsesRealVerifier")
+	require.Contains(t, gateTest, "verifyFreshMCPInvocation = cli.VerifyMCPInvocation")
 
 	walker := readGeneratedFile(t, outputDir, "internal", "mcp", "cobratree", "walker.go")
 	require.Contains(t, walker, `tool.Meta.AdditionalFields["pp:tenant-gate"] = "child-cli"`)

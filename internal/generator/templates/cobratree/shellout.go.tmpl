@@ -76,7 +76,7 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 		if err != nil {
 			return boundedToolResultError(err.Error()), nil
 		}
-		return mcplib.NewToolResultText(bound.Text(out)), nil
+		return ToolResultFromCLICommand(out), nil
 	}
 }
 
@@ -189,21 +189,34 @@ var reservedStructuredArgs = map[string]bool{
 	"args": true,
 }
 
+// MCP runs commands as the server account. Letting clients choose filesystem
+// destinations would let a tool write or truncate anything that account can
+// reach.
+var blockedDestinationFlags = map[string]bool{
+	"audit-dir":    true,
+	"o":            true,
+	"output":       true,
+	"receipt-file": true,
+}
+
 // blockedRootFlags are root-level CLI flags that an MCP client must not be
 // able to override via structured tool parameters. Allowing them lets a
 // caller swap auth credentials, redirect the API base URL, select a different
 // per-client filesystem, relocate the config/data/state/cache roots, load a
-// malicious config file, or change the delivery target, all of which sit
-// outside the per-command surface the agent is supposed to be calling.
+// malicious config file, change receipt destinations, or change the delivery
+// target, all of which sit outside the per-command surface the agent is
+// supposed to be calling.
 var blockedRootFlags = map[string]bool{
-	"base-url": true,
-	"client":   true,
-	"config":   true,
-	"deliver":  true,
-	"home":     true,
-	"insecure": true,
-	"profile":  true,
-	"token":    true,
+	"audit-dir":    true,
+	"base-url":     true,
+	"client":       true,
+	"config":       true,
+	"deliver":      true,
+	"home":         true,
+	"insecure":     true,
+	"profile":      true,
+	"receipt-file": true,
+	"token":        true,
 }
 
 func cliArgsFromMCP(args map[string]any, blocked map[string]bool) []string {
@@ -286,10 +299,28 @@ func SplitShellArgs(s string) []string {
 	return tokens
 }
 
+// CLICommandResult carries the machine-readable stdout separately from
+// operator-facing stderr hints.
+type CLICommandResult struct {
+	Stdout      string
+	StderrHints []string
+}
+
+// ToolResultFromCLICommand keeps stdout in the first content block and places
+// filtered CLI hints in a separate block for clients that display auxiliary
+// content.
+func ToolResultFromCLICommand(result CLICommandResult) *mcplib.CallToolResult {
+	toolResult := mcplib.NewToolResultText(bound.Text(result.Stdout))
+	if len(result.StderrHints) > 0 {
+		toolResult.Content = append(toolResult.Content, mcplib.NewTextContent(bound.Text(strings.Join(result.StderrHints, "\n"))))
+	}
+	return toolResult
+}
+
 // RunCLICommand executes the companion CLI while preserving stdout as the
-// machine-readable channel. Stderr is included only in error text so post-run
-// telemetry or quota output cannot corrupt JSON results.
-func RunCLICommand(ctx context.Context, binPath string, args []string) (string, error) {
+// machine-readable channel. Hint and warning stderr lines are returned
+// separately on success so they cannot corrupt JSON results.
+func RunCLICommand(ctx context.Context, binPath string, args []string) (CLICommandResult, error) {
 	cmd := exec.CommandContext(ctx, binPath, args...) // #nosec G204 -- trusted companion CLI path, args pre-tokenized.
 	stdout := newCappedCapture()
 	stderr := newCappedCapture()
@@ -297,6 +328,10 @@ func RunCLICommand(ctx context.Context, binPath string, args []string) (string, 
 	cmd.Stderr = stderr
 	err := cmd.Run()
 	stdoutText := stdout.String()
+	result := CLICommandResult{
+		Stdout:      stdoutText,
+		StderrHints: stderrHintLines(stderr.String()),
+	}
 	if err != nil {
 		stderrText := strings.TrimSpace(stderr.String())
 		msg := stderrText
@@ -308,9 +343,23 @@ func RunCLICommand(ctx context.Context, binPath string, args []string) (string, 
 			if stderrText == "" {
 				label = "output"
 			}
-			return stdoutText, fmt.Errorf("cli %s: %w (%s: %s)", binPath, err, label, bound.Text(msg))
+			return result, fmt.Errorf("cli %s: %w (%s: %s)", binPath, err, label, bound.Text(msg))
 		}
-		return stdoutText, fmt.Errorf("cli %s: %w", binPath, err)
+		return result, fmt.Errorf("cli %s: %w", binPath, err)
 	}
-	return stdoutText, nil
+	return result, nil
+}
+
+func stderrHintLines(stderr string) []string {
+	var hints []string
+	for _, rawLine := range strings.Split(stderr, "\n") {
+		for _, segment := range strings.Split(rawLine, "\r") {
+			line := strings.TrimSpace(segment)
+			lower := strings.ToLower(line)
+			if strings.HasPrefix(lower, "hint:") || strings.HasPrefix(lower, "warning:") {
+				hints = append(hints, line)
+			}
+		}
+	}
+	return hints
 }

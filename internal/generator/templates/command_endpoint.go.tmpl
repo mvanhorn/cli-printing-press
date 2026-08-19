@@ -7,6 +7,7 @@
 {{- $hasJSONBody := and (or .Endpoint.Body .Endpoint.BodyJSONFallback) (not $isMultipart) (not $isForm)}}
 {{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk") (eq .Endpoint.Method "GET") .IsReadOnly}}
 {{- $dataSourceStrategy := dataSourceStrategy .Resource .Endpoint}}
+{{- $documentedFields := compactFieldMapLiteral .Endpoint.Response.Item .Types}}
 
 package cli
 
@@ -79,7 +80,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 		// TODO: replace placeholder example values before relying on this for live dogfood.
 {{- end}}
 		Example: {{printf "%q" $example}},
-		Annotations: map[string]string{ {{- if not .APISpec.IsLocalSQLiteSource}}"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, {{end}}"pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .EffectivePath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}{{if endpointSkipsErrorPathProbe .Endpoint}}, "pp:no-error-path-probe": "true"{{end}}{{if .Endpoint.HappyArgs}}, "pp:happy-args": {{printf "%q" .Endpoint.HappyArgs}}{{end}}{{if .Endpoint.LiveDogfoodRequiresTier}}, "pp:requires-tier": {{printf "%q" .Endpoint.LiveDogfoodRequiresTier}}{{end}}},
+		Annotations: map[string]string{ {{- if not .APISpec.IsLocalSQLiteSource}}"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, {{end}}"pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .EffectivePath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}{{if endpointSkipsErrorPathProbe .Endpoint}}, "pp:no-error-path-probe": "true"{{end}}{{if .Endpoint.HappyArgs}}, "pp:happy-args": {{printf "%q" .Endpoint.HappyArgs}}{{end}}{{if .Endpoint.HappyStdin}}, "pp:happy-stdin": {{printf "%q" .Endpoint.HappyStdin}}{{end}}{{if .Endpoint.LiveDogfoodRequiresTier}}, "pp:requires-tier": {{printf "%q" .Endpoint.LiveDogfoodRequiresTier}}{{end}}},
 		RunE: func(cmd *cobra.Command, args []string) error {
 {{- if endpointHasRequiredInput .Endpoint}}
 			// Bare invocation of a command with required input prints help
@@ -246,7 +247,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			htmlRequestParams["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam) (not (paramIsHeader .)) (not (isArrayQueryParam .)) (not (isDeepObjectQueryParam .))}}
-			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
+			if {{readParamPresenceExpr .}} {
 				htmlRequestParams["{{.Name}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
 {{- end}}
@@ -415,7 +416,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam) (not (paramIsHeader .)) (not (isArrayQueryParam .)) (not (isDeepObjectQueryParam .))}}
-				if {{if or (eq $.Endpoint.Method "GET") (eq $.Endpoint.Method "HEAD")}}flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}}{{else}}{{paramPresenceExpr .}}{{end}} {
+				if {{if or (eq $.Endpoint.Method "GET") (eq $.Endpoint.Method "HEAD")}}{{readParamPresenceExpr .}}{{else}}{{paramPresenceExpr .}}{{end}} {
 				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
 {{- end}}
@@ -534,7 +535,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				body = []any{}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- else}}
 				bodyMap := map[string]any{}
-				body = bodyMap
+				{{assignJSONBodyMap .Endpoint "bodyMap" "body"}}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- end}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}
 {{- if .IsReadOnly}}
@@ -596,7 +597,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				body = []any{}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- else}}
 				bodyMap := map[string]any{}
-				body = bodyMap
+				{{assignJSONBodyMap .Endpoint "bodyMap" "body"}}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- end}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}
 {{- if endpointHasRequestParams .Endpoint}}
@@ -695,7 +696,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				body = []any{}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- else}}
 				bodyMap := map[string]any{}
-				body = bodyMap
+				{{assignJSONBodyMap .Endpoint "bodyMap" "body"}}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- end}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}
 {{- if .IsReadOnly}}
@@ -788,7 +789,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				body = []any{}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- else}}
 				bodyMap := map[string]any{}
-				body = bodyMap
+				{{assignJSONBodyMap .Endpoint "bodyMap" "body"}}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- end}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}
 {{- if .IsReadOnly}}
@@ -807,16 +808,16 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- if eq .Endpoint.Method "DELETE"}}
 			if err != nil {
-				return classifyDeleteError(err, flags)
+				return classifyDeleteError(cmd.OutOrStdout(), err, flags)
 			}
 {{- else}}
 			if err != nil {
-				return classifyAPIError(err, flags)
+				return classifyAPIError(cmd.OutOrStdout(), err, flags)
 			}
 {{- if and .IsReadOnly (not .HasStore)}}
 			if isDryRunResponse(c.IsDryRun(), data) {
 				if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !flags.csv && !flags.quiet && !flags.plain) {
-					return printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "dry-run"})
+					return printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "dry-run"}, {{$documentedFields}})
 				}
 				return nil
 			}
@@ -841,7 +842,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				if flags.csv {
 					data = append(append(json.RawMessage{'['}, data...), ']')
 				}
-				return printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "live"})
+				return printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "live"}, {{$documentedFields}})
 			}
 			_, err = cmd.OutOrStdout().Write([]byte(textEnvelope.Body))
 			return err
@@ -1045,7 +1046,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				if flags.selectFields != "" {
 					filtered = filterFields(filtered, flags.selectFields)
 				} else if flags.compact {
-					filtered = compactFields(filtered)
+					filtered = compactFields(filtered, {{$documentedFields}})
 				}
 				if len(filtered) > 0 {
 					var parsed any
@@ -1105,7 +1106,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				if flags.selectFields != "" {
 					filtered = filterFields(filtered, flags.selectFields)
 				} else if flags.compact {
-					filtered = compactFields(filtered)
+					filtered = compactFields(filtered, {{$documentedFields}})
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 				if wrapErr != nil {
@@ -1152,7 +1153,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			if flags.csv || flags.plain {
 				formatData = outputData
 			}
-			return printOutputWithFlagsMeta(cmd.OutOrStdout(), formatData, flags, map[string]any{"source": "live"})
+			return printOutputWithFlagsMeta(cmd.OutOrStdout(), formatData, flags, map[string]any{"source": "live"}, {{$documentedFields}})
 {{- end}}
 {{- end}}
 		},

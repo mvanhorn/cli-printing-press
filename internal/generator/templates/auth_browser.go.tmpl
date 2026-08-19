@@ -23,6 +23,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 {{- end}}
+{{- if eq .Auth.Type "composed"}}
+	"encoding/base64"
+{{- end}}
 {{- if or $hasCookieBrowserAuth $hasBrowserCapture}}
 	"encoding/json"
 {{- end}}
@@ -362,15 +365,13 @@ profile by name when the installed backend supports it.`,
 				fmt.Fprintf(w, "%s Found session cookies via live Chrome.\n", green("OK"))
 			}
 
-			composed := "{{.Auth.Format}}"
-			for _, name := range requiredCookies {
-				composed = strings.ReplaceAll(composed, "{"+name+"}", cookieMap[name])
-			}
+			composed := composeAuthFromCookies("{{.Auth.Format}}", requiredCookies, cookieMap)
+			validationCookies := composeCookieHeader(requiredCookies, cookieMap)
 
 {{- if not .Auth.RequiresBrowserSession}}
 			// Validate the composed auth before saving — catch stale/expired sessions
 			fmt.Fprintf(w, "Validating session...")
-			if err := validateComposedAuth(composed); err != nil {
+			if err := validateComposedAuth(composed, validationCookies); err != nil {
 				loginURL := "https://" + strings.TrimPrefix(domain, ".")
 				fmt.Fprintf(w, " %s\n", red("expired"))
 				fmt.Fprintln(w, "")
@@ -390,6 +391,9 @@ profile by name when the installed backend supports it.`,
 			}
 {{- if .Auth.RequiresBrowserSession}}
 			cfg.ChromeProfile = loginProfileLocation
+{{- end}}
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+			cfg.CredentialDomain = "{{.Auth.CookieDomain}}"
 {{- end}}
 
 			if err := cfg.SaveTokens("", "", composed, "", time.Time{}); err != nil {
@@ -415,6 +419,9 @@ profile by name when the installed backend supports it.`,
 			fmt.Fprintf(w, "Validating browser session...")
 			if err := validateAndWriteBrowserSessionProof(cmd.Context(), cfg, flags); err != nil {
 				_ = cfg.ClearTokens()
+{{- if .Auth.HasCookies}}
+				_ = client.ClearCookieJar()
+{{- end}}
 				_ = clearBrowserSessionProof(cfg)
 				fmt.Fprintf(w, " %s\n", red("failed"))
 				return authErr(fmt.Errorf("browser session validation failed: %w", err))
@@ -459,6 +466,9 @@ profile by name when the installed backend supports it.`,
 {{- if .Auth.RequiresBrowserSession}}
 			cfg.ChromeProfile = loginProfileLocation
 {{- end}}
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+			cfg.CredentialDomain = "{{.Auth.CookieDomain}}"
+{{- end}}
 
 			if err := cfg.SaveTokens("", "", cookies, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving cookies: %w", err))
@@ -482,6 +492,9 @@ profile by name when the installed backend supports it.`,
 			fmt.Fprintf(w, "Validating browser session...")
 			if err := validateAndWriteBrowserSessionProof(cmd.Context(), cfg, flags); err != nil {
 				_ = cfg.ClearTokens()
+{{- if .Auth.HasCookies}}
+				_ = client.ClearCookieJar()
+{{- end}}
 				_ = clearBrowserSessionProof(cfg)
 				fmt.Fprintf(w, " %s\n", red("failed"))
 				return authErr(fmt.Errorf("browser session validation failed: %w", err))
@@ -560,16 +573,10 @@ when the CDP path is not available (other machine, headless server, etc.).`,
 
 			w := cmd.OutOrStdout()
 
-			// Honor verify-env (mock subprocess) and dogfood-env (live API
-			// matrix) per the side-effect-command rule. CDP attach launches
-			// real Chrome activity — explode-prone in both environments.
-			if cliutil.IsVerifyEnv() {
-				fmt.Fprintln(w, "PRINTING_PRESS_VERIFY=1; skipping Chrome CDP attach.")
-				return nil
-			}
-			if cliutil.IsDogfoodEnv() {
-				fmt.Fprintln(w, "PRINTING_PRESS_DOGFOOD=1; skipping Chrome CDP attach.")
-				return nil
+			// CDP attach launches real Chrome activity, so every Printing
+			// Press harness gets a structured refusal before the browser path.
+			if cliutil.IsAnyHarness() {
+				return writeHarnessRefusal(w, flags, "Chrome CDP attach")
 			}
 
 			token, err := captureAuth0SPABearer(cmd.Context(), debugPort, targetOrigin, auth0SPACaptureURL(), captureTimeout, w)
@@ -593,6 +600,9 @@ when the CDP path is not available (other machine, headless server, etc.).`,
 				return configErr(err)
 			}
 			cfg.AuthHeaderVal = ""
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+			cfg.CredentialDomain = ""
+{{- end}}
 			if err := cfg.SaveTokens("", "", token, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
@@ -1016,10 +1026,8 @@ func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
 			return fmt.Errorf("cookie %q not found for %s", name, domain)
 		}
 	}
-	composed := "{{.Auth.Format}}"
-	for _, name := range requiredCookies {
-		composed = strings.ReplaceAll(composed, "{"+name+"}", cookieMap[name])
-	}
+	composed := composeAuthFromCookies("{{.Auth.Format}}", requiredCookies, cookieMap)
+	cfg.CredentialDomain = "{{.Auth.CookieDomain}}"
 	if err := cfg.SaveTokens("", "", composed, "", time.Time{}); err != nil {
 		return configErr(fmt.Errorf("saving auth: %w", err))
 	}
@@ -1055,6 +1063,7 @@ func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
 	}
 	cookies = strings.Join(kept, "; ")
 {{- end}}
+	cfg.CredentialDomain = "{{.Auth.CookieDomain}}"
 	if err := cfg.SaveTokens("", "", cookies, "", time.Time{}); err != nil {
 		return configErr(fmt.Errorf("saving cookies: %w", err))
 	}
@@ -1310,8 +1319,11 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 
 			w := cmd.OutOrStdout()
 			credentialConfigured := cfg.CredentialConfigured()
+			refusals := cfg.CredentialRefusalSummaries()
+			credentialRefused := len(refusals) > 0
 			if !credentialConfigured {
 {{- if eq .Auth.Type "none"}}
+				_ = credentialRefused
 				// This CLI ships with auth.type:none — no credentials are ever
 				// required. Report ok status so agents don't treat `auth status`
 				// as a pre-flight failure.
@@ -1325,6 +1337,13 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 {{- end}}
+				if credentialRefused {
+					fmt.Fprintln(w, red("Credentials present but refused"))
+					for _, refusal := range refusals {
+						fmt.Fprintf(w, "  %s\n", refusal)
+					}
+					return authErr(cfg.CredentialRefusalError())
+				}
 				fmt.Fprintln(w, red("Not authenticated"))
 				fmt.Fprintln(w, "")
 				fmt.Fprintln(w, "Log in from your browser session:")
@@ -1394,6 +1413,9 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			// 401 on the next API call, same as the rest of the browser-auth
 			// flow. Matches ClearTokens / SaveBearerToken's zero-on-write
 			// invariant in config.go.tmpl.
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+			cfg.CredentialDomain = ""
+{{- end}}
 			if err := cfg.SaveTokens("", "", token, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
@@ -1444,6 +1466,11 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 			if err := cfg.ClearTokens(); err != nil {
 				return configErr(fmt.Errorf("clearing tokens: %w", err))
 			}
+{{- if .Auth.HasCookies}}
+			if err := client.ClearCookieJar(); err != nil {
+				return configErr(fmt.Errorf("clearing cookie jar: %w", err))
+			}
+{{- end}}
 {{- if .Auth.RequiresBrowserSession}}
 			if err := clearBrowserSessionProof(cfg); err != nil {
 				return configErr(fmt.Errorf("clearing browser-session proof: %w", err))
@@ -2198,17 +2225,52 @@ func extractViaCookieScoop(domain, profileDir string) (string, error) {
 {{- end}}
 
 {{- if eq .Auth.Type "composed"}}
-// validateComposedAuth makes a lightweight test request to verify the session is still active.
-// Uses the API base URL — any authenticated endpoint returning 401/403 indicates expiry.
-// A non-auth error (404, 500, timeout) is treated as "can't validate, assume OK" to avoid
-// blocking auth on unrelated API issues.
-func validateComposedAuth(authHeader string) error {
+func composeAuthFromCookies(format string, requiredCookies []string, cookieMap map[string]string) string {
+	composed := format
+	if len(requiredCookies) > 0 {
+		if value, ok := cookieMap[requiredCookies[0]]; ok {
+			composed = strings.ReplaceAll(composed, "{token}", value)
+			composed = strings.ReplaceAll(composed, "{access_token}", value)
+		}
+	}
+	for _, name := range requiredCookies {
+		composed = strings.ReplaceAll(composed, "{"+name+"}", cookieMap[name])
+	}
+	return composed
+}
+
+func composeCookieHeader(requiredCookies []string, cookieMap map[string]string) string {
+	parts := make([]string, 0, len(requiredCookies))
+	for _, name := range requiredCookies {
+		if value, ok := cookieMap[name]; ok {
+			parts = append(parts, name+"="+value)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// validateComposedAuth rejects expired JWTs locally before falling back to a
+// lightweight probe for opaque composed credentials.
+func validateComposedAuth(authHeader, cookieHeader string) error {
+	for _, credential := range []string{authHeader, cookieHeader} {
+		if expiry, ok := composedAuthJWTExpiry(credential); ok {
+			if !time.Now().Before(expiry) {
+				return fmt.Errorf("JWT expired at %s", expiry.Format(time.RFC3339))
+			}
+			return nil
+		}
+	}
+
 	testURL := "{{.BaseURL}}"
 	req, err := http.NewRequest("HEAD", testURL, nil)
 	if err != nil {
 		return nil // can't validate, assume OK
 	}
-	req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", authHeader)
+	if strings.TrimSpace(cookieHeader) != "" {
+		req.Header.Set("Cookie", cookieHeader)
+	} else {
+		req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", authHeader)
+	}
 {{- range .RequiredHeaders}}
 	req.Header.Set("{{.Name}}", "{{.Value}}")
 {{- end}}
@@ -2244,6 +2306,61 @@ func validateComposedAuth(authHeader string) error {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func composedAuthJWTExpiry(authHeader string) (time.Time, bool) {
+	for _, candidate := range strings.FieldsFunc(authHeader, func(r rune) bool {
+		isAlnum := (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		return !isAlnum && r != '-' && r != '_' && r != '.'
+	}) {
+		if strings.Count(candidate, ".") != 2 {
+			continue
+		}
+		expiry, ok := decodeJWTExpiry(candidate)
+		if ok {
+			return expiry, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func decodeJWTExpiry(candidate string) (time.Time, bool) {
+	parts := strings.Split(candidate, ".")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return time.Time{}, false
+	}
+	header, err := decodeBase64URLSegment(parts[0])
+	if err != nil {
+		return time.Time{}, false
+	}
+	var headerClaims map[string]any
+	if err := json.Unmarshal(header, &headerClaims); err != nil {
+		return time.Time{}, false
+	}
+	payload, err := decodeBase64URLSegment(parts[1])
+	if err != nil {
+		return time.Time{}, false
+	}
+	var claims struct {
+		Exp json.Number `json:"exp"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&claims); err != nil {
+		return time.Time{}, false
+	}
+	expUnix, err := claims.Exp.Int64()
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(expUnix, 0), true
+}
+
+func decodeBase64URLSegment(segment string) ([]byte, error) {
+	if decoded, err := base64.RawURLEncoding.DecodeString(segment); err == nil {
+		return decoded, nil
+	}
+	return base64.URLEncoding.DecodeString(segment)
 }
 {{- end}}
 

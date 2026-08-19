@@ -1,6 +1,9 @@
 package generator
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -205,6 +208,83 @@ func TestEndpointMCPPreservesHeaderAndEmptyValues(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "empty_wire_runtime_test.go"), []byte(mcpRuntimeTest), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "TestEndpointMCPPreservesHeaderAndEmptyValues", "-count=1")
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratedGetEmitsRequiredAndDefaultedZeroQueryParams(t *testing.T) {
+	requests := make(chan url.Values, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	apiSpec := minimalSpec("zero-query")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.BaseURL = server.URL
+	apiSpec.Resources = map[string]spec.Resource{
+		"items": {
+			Description: "Manage items",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/items",
+					Description: "List items",
+					Params: []spec.Param{
+						{Name: "requiredOffset", In: "query", Type: "int", Required: true},
+						{Name: "defaultOffset", In: "query", Type: "int", Default: 0},
+						{Name: "optionalOffset", In: "query", Type: "int"},
+					},
+				},
+				"get": {
+					Method:      "GET",
+					Path:        "/items/{id}",
+					Description: "Get an item",
+					Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true, PathParam: true}},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	listSrc := readGeneratedFile(t, outputDir, "internal", "cli", "items_list.go")
+	assert.Contains(t, listSrc, `if true {`, "required and explicitly defaulted params must be emitted even when their value is zero")
+	assert.Contains(t, listSrc, `if flagOptionalOffset != 0 {`, "optional params without defaults must retain zero-value omission")
+
+	binaryPath := filepath.Join(outputDir, "zero-query-pp-cli")
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/zero-query-pp-cli")
+	t.Setenv("ZERO_QUERY_BASE_URL", server.URL)
+	runGeneratedBinary(t, binaryPath, "items", "list", "--required-offset", "0", "--json")
+
+	got := <-requests
+	assert.Equal(t, []string{"0"}, got["requiredOffset"])
+	assert.Equal(t, []string{"0"}, got["defaultOffset"])
+	assert.NotContains(t, got, "optionalOffset")
+
+	promotedSpec := minimalSpec("zero-promoted")
+	promotedSpec.Auth = spec.AuthConfig{Type: "none"}
+	promotedSpec.Resources = map[string]spec.Resource{
+		"items": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method: "GET",
+					Path:   "/items",
+					Params: []spec.Param{
+						{Name: "requiredOffset", In: "query", Type: "int", Required: true},
+						{Name: "defaultOffset", In: "query", Type: "int", Default: 0},
+						{Name: "optionalOffset", In: "query", Type: "int"},
+					},
+				},
+			},
+		},
+	}
+	promotedDir := filepath.Join(t.TempDir(), naming.CLI(promotedSpec.Name))
+	require.NoError(t, New(promotedSpec, promotedDir).Generate())
+	promotedSrc := readPromotedCommandFile(t, promotedDir)
+	assert.Contains(t, promotedSrc, `if true {`)
+	assert.Contains(t, promotedSrc, `if flagOptionalOffset != 0 {`)
+	requireGeneratedCompiles(t, promotedDir)
 }
 
 func TestGenerateMutatingEndpointPassesQueryParams(t *testing.T) {

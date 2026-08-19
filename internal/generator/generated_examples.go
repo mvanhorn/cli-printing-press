@@ -2,6 +2,7 @@ package generator
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
@@ -110,6 +111,39 @@ func generatedExampleFields(typeDef spec.TypeDef) string {
 		}
 	}
 	return strings.Join(fields, ",")
+}
+
+func compactFieldNames(typeName string, types map[string]spec.TypeDef) []string {
+	typeDef, ok := typeDefByName(types, strings.TrimSpace(typeName))
+	if !ok {
+		return nil
+	}
+	fields := make([]string, 0, len(typeDef.Fields))
+	seen := make(map[string]struct{}, len(typeDef.Fields))
+	for _, field := range typeDef.Fields {
+		name := strings.TrimSpace(field.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		fields = append(fields, name)
+	}
+	return fields
+}
+
+func compactFieldMapLiteral(typeName string, types map[string]spec.TypeDef) string {
+	fields := compactFieldNames(typeName, types)
+	if len(fields) == 0 {
+		return "nil"
+	}
+	quoted := make([]string, len(fields))
+	for i, field := range fields {
+		quoted[i] = strconv.Quote(field) + ": true"
+	}
+	return "map[string]bool{" + strings.Join(quoted, ", ") + "}"
 }
 
 func safeGeneratedExampleField(name string) bool {

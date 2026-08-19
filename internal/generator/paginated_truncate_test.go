@@ -163,9 +163,48 @@ func TestPaginatedEnvelopeSelection(t *testing.T) {
 		t.Fatalf("output items = %s, err=%v; want two resources", outputData, err)
 	}
 }
+
+type repeatedOffsetClient struct {
+	responses []json.RawMessage
+	params    []map[string]string
+}
+
+func (c *repeatedOffsetClient) GetWithHeaders(_ context.Context, _ string, params map[string]string, _ map[string]string) (json.RawMessage, error) {
+	copied := make(map[string]string, len(params))
+	for key, value := range params {
+		copied[key] = value
+	}
+	c.params = append(c.params, copied)
+	response := c.responses[0]
+	c.responses = c.responses[1:]
+	return response, nil
+}
+
+func TestPaginatedGetStopsOnRepeatedOffsetPage(t *testing.T) {
+	page := json.RawMessage("{\"services\":[{\"name\":\"same\"},{\"name\":\"page\"}],\"meta\":{\"has_more\":true}}")
+	client := &repeatedOffsetClient{responses: []json.RawMessage{page, page}}
+	data, err := paginatedGet(context.Background(), client, "/services", map[string]string{"offset": "0", "limit": "2"}, nil, true, "offset", "offset", "limit", 100, "", "meta.has_more")
+	if err != nil {
+		t.Fatalf("paginatedGet: %v", err)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	var services []map[string]string
+	if err := json.Unmarshal(envelope["services"], &services); err != nil {
+		t.Fatalf("unmarshal services: %v", err)
+	}
+	if len(services) != 2 {
+		t.Fatalf("services = %v, want one page of two items", services)
+	}
+	if len(client.params) != 2 || client.params[1]["offset"] != "2" {
+		t.Fatalf("requests = %#v, want offsets 0 then 2", client.params)
+	}
+}
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "pagination_envelope_test.go"), []byte(behaviorTest), 0o644))
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPaginatedEnvelopeSelection", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPaginated(EnvelopeSelection|GetStopsOnRepeatedOffsetPage)", "-count=1")
 }
 
 func TestGeneratedSyncShortPageTerminationRespectsPaginationType(t *testing.T) {
@@ -227,6 +266,19 @@ func TestGeneratedSyncShortPageTerminationRespectsPaginationType(t *testing.T) {
 				},
 			},
 		},
+		"repeated": {
+			Description: "Manage repeated pages",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/repeated",
+					Description: "List repeated pages",
+					Params:      []spec.Param{{Name: "offset", Type: "integer"}, {Name: "limit", Type: "integer", Default: 2}},
+					Pagination:  &spec.Pagination{Type: "offset", CursorParam: "offset", LimitParam: "limit"},
+					Response:    spec.ResponseDef{Type: "array", Item: "Repeated"},
+				},
+			},
+		},
 	}
 
 	outputDir := filepath.Join(t.TempDir(), "sync-short-page-pp-cli")
@@ -242,6 +294,7 @@ import (
 	"encoding/json"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	%q
@@ -306,6 +359,28 @@ func TestCursorPageHasContinuation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := cursorPageHasContinuation(tt.cursorType, tt.hasMore, tt.nextCursor); got != tt.want {
 				t.Fatalf("cursorPageHasContinuation(%%q, %%v, %%q) = %%v, want %%v", tt.cursorType, tt.hasMore, tt.nextCursor, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSyncPaginationPageIsStuck(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		cursorType string
+		cursor     string
+		nextCursor string
+		want       bool
+	}{
+		{name: "advancing cursor continues", cursorType: "cursor", cursor: "page-1", nextCursor: "page-2", want: false},
+		{name: "repeated cursor stops", cursorType: "cursor", cursor: "page-2", nextCursor: "page-2", want: true},
+		{name: "advancing page token continues", cursorType: "page_token", cursor: "page-1", nextCursor: "page-2", want: false},
+		{name: "repeated offset page stops", cursorType: "offset", cursor: "2", nextCursor: "4", want: true},
+		{name: "repeated page page stops", cursorType: "page", cursor: "2", nextCursor: "3", want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := syncPaginationPageIsStuck(tt.cursorType, tt.cursor, tt.nextCursor); got != tt.want {
+				t.Fatalf("syncPaginationPageIsStuck(%%q, %%q, %%q) = %%v, want %%v", tt.cursorType, tt.cursor, tt.nextCursor, got, tt.want)
 			}
 		})
 	}
@@ -388,6 +463,29 @@ func TestSyncResourceFollowsEmptyCursorPage(t *testing.T) {
 	}
 }
 
+func TestSyncResourceStopsOnTerminalEmptyCursorPage(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %%v", err)
+	}
+	defer db.Close()
+
+	client := &shortPageSyncClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[{\"id\":\"one\"}],\"next_cursor\":\"page-2\",\"has_more\":true}"),
+		json.RawMessage("{\"items\":[],\"next_cursor\":\"\",\"has_more\":false}"),
+	}}
+	result := syncResource(context.Background(), client, db, "orders", "", true, 0, false, false, &syncUserParams{}, io.Discard)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%%v warning=%%v", result.Err, result.Warn)
+	}
+	if result.Count != 1 || len(client.params) != 2 {
+		t.Fatalf("sync count/calls = %%d/%%d, want 1/2", result.Count, len(client.params))
+	}
+	if got := client.params[1]["after"]; got != "page-2" {
+		t.Fatalf("second request after = %%q, want page-2", got)
+	}
+}
+
 func TestSyncResourceUsesPopulatedFallbackAfterEmptyItems(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
@@ -453,6 +551,30 @@ func TestSyncResourceDoesNotAdvancePastNullItems(t *testing.T) {
 	}
 }
 
+func TestSyncResourceStopsOnRepeatedEmptyCursorPage(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %%v", err)
+	}
+	defer db.Close()
+
+	client := &shortPageSyncClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[],\"next_cursor\":\"page-2\",\"has_more\":true}"),
+		json.RawMessage("{\"items\":[],\"next_cursor\":\"page-2\",\"has_more\":true}"),
+	}}
+	var events strings.Builder
+	result := syncResource(context.Background(), client, db, "orders", "", true, 0, false, false, &syncUserParams{}, &events)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%%v warning=%%v", result.Err, result.Warn)
+	}
+	if result.Count != 0 || len(client.params) != 2 {
+		t.Fatalf("sync count/calls = %%d/%%d, want 0/2", result.Count, len(client.params))
+	}
+	if !strings.Contains(events.String(), `+"`"+`"reason":"stuck_pagination"`+"`"+`) {
+		t.Fatalf("sync events missing stuck pagination warning: %%s", events.String())
+	}
+}
+
 func TestSyncResourceDoesNotLoopWithoutCursorParam(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
@@ -468,6 +590,28 @@ func TestSyncResourceDoesNotLoopWithoutCursorParam(t *testing.T) {
 	}
 	if len(client.params) != 1 {
 		t.Fatalf("sync calls = %%d, want 1 when no cursor parameter is declared", len(client.params))
+	}
+}
+
+func TestSyncResourceStopsOnRepeatedOffsetPage(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %%v", err)
+	}
+	defer db.Close()
+
+	page := json.RawMessage("{\"items\":[{\"id\":\"one\"},{\"id\":\"two\"}],\"has_more\":true}")
+	client := &shortPageSyncClient{responses: []json.RawMessage{page, page}}
+	var events strings.Builder
+	result := syncResource(context.Background(), client, db, "repeated", "", true, 0, false, false, &syncUserParams{}, &events)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%%v warning=%%v", result.Err, result.Warn)
+	}
+	if result.Count != 2 || len(client.params) != 2 {
+		t.Fatalf("sync count/calls = %%d/%%d, want 2/2", result.Count, len(client.params))
+	}
+	if !strings.Contains(events.String(), `+"`"+`"reason":"stuck_pagination"`+"`"+`) {
+		t.Fatalf("sync events missing stuck pagination warning: %%s", events.String())
 	}
 }
 `, modulePath+"/internal/store")
@@ -1182,6 +1326,28 @@ func TestPaginatedGetFallsBackToCursorParamResponseField(t *testing.T) {
 	}
 	if client.params[1]["cursor"] != "page-2" {
 		t.Fatalf("second request cursor = %q, want page-2", client.params[1]["cursor"])
+	}
+}
+
+func TestPaginatedGetPreservesAdvancingEmptyCursorPages(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"items":[],"cursor":"page-2"}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[],"cursor":"page-3"}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[{"id":"three"}],"cursor":""}` + "`" + `),
+	}}
+	data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, true, "cursor", "cursor", "limit", 100, "", "")
+	if err != nil {
+		t.Fatalf("paginatedGet returned error: %v", err)
+	}
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if len(got) != 1 || got[0]["id"] != "three" {
+		t.Fatalf("got items = %#v, want the populated third page", got)
+	}
+	if len(client.params) != 3 || client.params[1]["cursor"] != "page-2" || client.params[2]["cursor"] != "page-3" {
+		t.Fatalf("requests = %#v, want cursors page-2 then page-3", client.params)
 	}
 }
 
@@ -2136,6 +2302,68 @@ paths:
 	}
 	require.Contains(t, commandSrc.String(), `flagAll, "page", "page", "limit", 0, "meta.nextPage", ""`,
 		"generated command must pass parser-detected nested nextPage to resolvePaginatedRead")
+}
+
+func TestOpenAPINestedPageTokenAndTakeGeneratePaginationContract(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := openapi.Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Nested Cursor API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /agents:
+    get:
+      operationId: listAgents
+      parameters:
+        - name: page_token
+          in: query
+          schema: {type: string}
+        - name: take
+          in: query
+          schema: {type: integer}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      type: object
+                  pagination:
+                    type: object
+                    properties:
+                      next_page_token:
+                        type: string
+`))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), "nested-cursor-api-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	cliDir := filepath.Join(outputDir, "internal", "cli")
+	entries, err := os.ReadDir(cliDir)
+	require.NoError(t, err)
+	var commandSrc strings.Builder
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(cliDir, entry.Name()))
+		require.NoError(t, err)
+		commandSrc.Write(src)
+		commandSrc.WriteByte('\n')
+	}
+	require.Contains(t, commandSrc.String(), `flagAll, "page_token", "page_token", "take", 0, "pagination.next_page_token", ""`,
+		"generated command must preserve the declared take parameter and nested page-token path")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestOpenAPIHasMoreOnlyPageGeneratesPaginatedCommandSignal(t *testing.T) {

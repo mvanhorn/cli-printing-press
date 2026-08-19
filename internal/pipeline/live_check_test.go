@@ -238,6 +238,66 @@ esac
 	require.Equal(t, "products reviews list", result.Features[1].Command)
 }
 
+func TestLiveCheckSkipsGeneratedMutatingCommandsUnlessAllowed(t *testing.T) {
+	dir := t.TempDir()
+	mutationLog := filepath.Join(t.TempDir(), "mutations.log")
+	t.Setenv("PP_MUTATION_LOG", mutationLog)
+	writeStubBinary(t, dir, "stub", `
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{"commands":[
+  {"name":"things","subcommands":[
+    {"name":"create","annotations":{"pp:method":"POST"}},
+    {"name":"list","annotations":{"pp:method":"GET","mcp:read-only":"true"}}
+  ]}
+]}
+JSON
+  exit 0
+fi
+case "$1 $2 $3" in
+  "things create --json") echo create >> "$PP_MUTATION_LOG"; echo '{"id":"created"}' ;;
+  "things list --json") echo '{"data":[{"id":"t1"}]}' ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+`)
+	writeTestResearchJSON(t, dir, nil)
+
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: liveCheckIntegrationTimeout})
+	require.False(t, result.Unable, "result was Unable: %s", result.Reason)
+	require.Equal(t, 2, result.Checked())
+	require.Equal(t, 1, result.Passed)
+	require.Equal(t, 1, result.Skipped)
+	create := findLiveFeatureResult(t, result.Features, "things create")
+	assert.Equal(t, StatusSkip, create.Status)
+	assert.Contains(t, create.Reason, "--allow-destructive")
+	if _, err := os.Stat(mutationLog); !os.IsNotExist(err) {
+		t.Fatalf("mutating command ran without opt-in; stat err=%v", err)
+	}
+
+	allowed := RunLiveCheck(LiveCheckOptions{
+		CLIDir:           dir,
+		BinaryName:       "stub",
+		Timeout:          liveCheckIntegrationTimeout,
+		AllowDestructive: true,
+	})
+	require.False(t, allowed.Unable, "result was Unable: %s", allowed.Reason)
+	require.Equal(t, 2, allowed.Passed)
+	data, err := os.ReadFile(mutationLog)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "create")
+}
+
+func findLiveFeatureResult(t *testing.T, features []LiveFeatureResult, command string) LiveFeatureResult {
+	t.Helper()
+	for _, feature := range features {
+		if feature.Command == command {
+			return feature
+		}
+	}
+	t.Fatalf("feature result for command %q not found in %+v", command, features)
+	return LiveFeatureResult{}
+}
+
 // TestLiveCheck_UnableWhenNoBinary verifies the check reports Unable when the
 // binary doesn't exist — distinguishing "CLI wasn't built" from "CLI flunked".
 func TestLiveCheck_UnableWhenNoBinary(t *testing.T) {

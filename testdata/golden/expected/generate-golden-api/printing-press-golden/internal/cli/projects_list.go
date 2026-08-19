@@ -55,7 +55,7 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 				"cursor": formatCLIParamValue(flagCursor),
 			}, headerOverrides, flagAll, "cursor", "cursor", "limit", 25, "", "", "", cmd.ErrOrStderr())
 			if err != nil {
-				return classifyAPIError(err, flags)
+				return classifyAPIError(cmd.OutOrStdout(), err, flags)
 			}
 			outputData := collectionItemsForOutput(data, path)
 			// Print provenance to stderr for human-facing output only.
@@ -78,7 +78,7 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 				if flags.selectFields != "" {
 					filtered = filterFields(filtered, flags.selectFields)
 				} else if flags.compact {
-					filtered = compactFields(filtered)
+					filtered = compactFields(filtered, map[string]bool{"id": true, "name": true, "status": true, "visibility": true})
 				}
 				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
 				if wrapErr != nil {
@@ -107,7 +107,7 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 			if flags.csv || flags.plain {
 				formatData = outputData
 			}
-			return printOutputWithFlagsMeta(cmd.OutOrStdout(), formatData, flags, map[string]any{"source": "live"})
+			return printOutputWithFlagsMeta(cmd.OutOrStdout(), formatData, flags, map[string]any{"source": "live"}, map[string]bool{"id": true, "name": true, "status": true, "visibility": true})
 		},
 	}
 	cmd.Flags().StringVar(&flagXApiVersion, "x-api-version", "2026-04-01", "Required API version header.")

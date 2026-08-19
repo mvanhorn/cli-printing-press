@@ -1,9 +1,14 @@
 package mcpsync
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/format"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -161,6 +166,10 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	if state.State == pipeline.MCPSurfaceHandEdited && !opts.Force {
 		return Result{}, fmt.Errorf("%w: tools.go appears hand-edited; refusing to overwrite. Use --force to override at your own risk", ErrHandEdited)
 	}
+	preserveRecipeIntents, err := hasMCPRecipeIntentRegistration(cliDir)
+	if err != nil {
+		return Result{}, fmt.Errorf("checking MCP intent registration: %w", err)
+	}
 	if err := ensureMCPClientSurfaceCompatible(cliDir); err != nil {
 		return Result{}, err
 	}
@@ -284,9 +293,39 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	// Surface regen runs every sync — overrides applied above must reach
 	// tools.go, and WriteToolsManifest below rewrites the manifest
 	// unconditionally, so keeping tools.go in lockstep avoids drift.
+	preserveLegacyIntentFile := false
+	if preserveRecipeIntents {
+		legacyIntentsPath := filepath.Join(cliDir, "internal", "mcp", "intents.go")
+		recipeFilePath := filepath.Join(cliDir, "internal", "mcp", "recipe_intents.go")
+		_, recipeFileErr := os.Stat(recipeFilePath)
+		legacyRecipeFile := errors.Is(recipeFileErr, os.ErrNotExist)
+		if recipeFileErr != nil && !legacyRecipeFile {
+			return Result{}, fmt.Errorf("checking %s: %w", recipeFilePath, recipeFileErr)
+		}
+		preserveLegacyFile := false
+		if legacyRecipeFile && len(parsed.MCP.Intents) == 0 {
+			data, readErr := os.ReadFile(legacyIntentsPath)
+			if readErr != nil {
+				return Result{}, fmt.Errorf("reading %s: %w", legacyIntentsPath, readErr)
+			}
+			hasExplicit, parseErr := mcpIntentFileHasExplicitRegistration(string(data))
+			if parseErr != nil {
+				return Result{}, fmt.Errorf("checking explicit intents in %s: %w", legacyIntentsPath, parseErr)
+			}
+			preserveLegacyFile = !hasExplicit
+		}
+		if !preserveLegacyFile {
+			if err := preserveMCPRecipeIntentFile(cliDir, modulePath); err != nil {
+				return Result{}, fmt.Errorf("preserving MCP recipe intents: %w", err)
+			}
+		}
+		preserveLegacyIntentFile = preserveLegacyFile
+	}
 	gen := generator.New(parsed, cliDir)
 	gen.NovelFeatures = features
 	gen.ModulePath = modulePath
+	gen.PreserveMCPIntentRegistration = preserveRecipeIntents
+	gen.PreserveMCPIntentFile = preserveLegacyIntentFile
 	if err := gen.GenerateMCPSurface(); err != nil {
 		return Result{}, fmt.Errorf("rendering MCP surface: %w", err)
 	}
@@ -320,6 +359,198 @@ func Sync(cliDir string, opts Options) (Result, error) {
 		detail = "refreshed MCP surface, manifest.json, and tools-manifest.json from current spec / .printing-press.json / mcp-descriptions.json"
 	}
 	return Result{Changed: true, Detail: detail, UnmatchedOverrideKeys: unmatched}, nil
+}
+
+func hasMCPRecipeIntentRegistration(cliDir string) (bool, error) {
+	recipePath := filepath.Join(cliDir, "internal", "mcp", "recipe_intents.go")
+	data, err := os.ReadFile(recipePath)
+	if err == nil {
+		return strings.Contains(string(data), "func RegisterRecipeIntents(") && strings.Contains(string(data), "recipeCLIPath"), nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("reading %s: %w", recipePath, err)
+	}
+
+	intentsPath := filepath.Join(cliDir, "internal", "mcp", "intents.go")
+	data, err = os.ReadFile(intentsPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reading %s: %w", intentsPath, err)
+	}
+	source := string(data)
+	return strings.Contains(source, "func RegisterIntents(") && strings.Contains(source, "recipeCLIPath"), nil
+}
+
+func preserveMCPRecipeIntentFile(cliDir, modulePath string) error {
+	recipePath := filepath.Join(cliDir, "internal", "mcp", "recipe_intents.go")
+	if _, err := os.Stat(recipePath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("checking %s: %w", recipePath, err)
+	}
+
+	intentsPath := filepath.Join(cliDir, "internal", "mcp", "intents.go")
+	data, err := os.ReadFile(intentsPath)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", intentsPath, err)
+	}
+	recipeSource, err := extractMCPRecipeIntentSource(string(data), modulePath)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(recipePath, recipeSource)
+}
+
+func extractMCPRecipeIntentSource(source, modulePath string) ([]byte, error) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "intents.go", source, parser.ParseComments)
+	if err != nil {
+		return nil, fmt.Errorf("parsing intents.go: %w", err)
+	}
+
+	recipeHandlers := make(map[string]bool)
+	var registerIntents *ast.FuncDecl
+	var recipeDecls []ast.Decl
+	for _, decl := range file.Decls {
+		switch node := decl.(type) {
+		case *ast.FuncDecl:
+			if node.Name.Name == "RegisterIntents" {
+				registerIntents = node
+			}
+			if node.Body == nil {
+				continue
+			}
+			if containsMCPIntentIdentifier(node.Body, "recipeCLIPathErr") {
+				recipeHandlers[node.Name.Name] = true
+				recipeDecls = append(recipeDecls, node)
+			}
+			if node.Name.Name == "init" || strings.HasPrefix(node.Name.Name, "appendRecipe") || node.Name.Name == "recipeValueString" {
+				recipeDecls = append(recipeDecls, node)
+			}
+		case *ast.GenDecl:
+			if node.Tok != token.VAR {
+				continue
+			}
+			if containsMCPIntentIdentifier(node, "recipeCLIPath") || containsMCPIntentIdentifier(node, "recipeCLIPathErr") {
+				recipeDecls = append(recipeDecls, node)
+			}
+		}
+	}
+	if registerIntents == nil || len(recipeHandlers) == 0 {
+		return nil, fmt.Errorf("intents.go contains recipe markers but no extractable recipe handlers")
+	}
+
+	var registration bytes.Buffer
+	for _, stmt := range registerIntents.Body.List {
+		handler, ok := mcpIntentRegistrationHandler(stmt)
+		if !ok || !recipeHandlers[handler] {
+			continue
+		}
+		if err := format.Node(&registration, fileSet, stmt); err != nil {
+			return nil, fmt.Errorf("formatting recipe registration: %w", err)
+		}
+		registration.WriteByte('\n')
+	}
+	if registration.Len() == 0 {
+		return nil, fmt.Errorf("intents.go contains recipe handlers but no recipe registrations")
+	}
+
+	header := "// Generated by CLI Printing Press (https://github.com/mvanhorn/cli-printing-press). DO NOT EDIT.\n"
+	if prefix, _, ok := strings.Cut(source, "package mcp"); ok {
+		header = prefix
+	}
+	var out bytes.Buffer
+	fmt.Fprintf(&out, "%spackage mcp\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\t\"strings\"\n\n\tmcplib \"github.com/mark3labs/mcp-go/mcp\"\n\t\"github.com/mark3labs/mcp-go/server\"\n", header)
+	if declsContainIdentifier(recipeDecls, "bound") {
+		fmt.Fprintf(&out, "\t%q\n", modulePath+"/internal/mcp/bound")
+	}
+	fmt.Fprintf(&out, "\t%q\n)\n\nfunc RegisterRecipeIntents(s *server.MCPServer) {\n", modulePath+"/internal/mcp/cobratree")
+	out.Write(registration.Bytes())
+	out.WriteString("}\n\n")
+	for _, decl := range recipeDecls {
+		if err := format.Node(&out, fileSet, decl); err != nil {
+			return nil, fmt.Errorf("formatting recipe declaration: %w", err)
+		}
+		out.WriteString("\n\n")
+	}
+	formatted, err := format.Source(out.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("formatting recipe_intents.go: %w", err)
+	}
+	return formatted, nil
+}
+
+func declsContainIdentifier(decls []ast.Decl, name string) bool {
+	for _, decl := range decls {
+		if containsMCPIntentIdentifier(decl, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsMCPIntentIdentifier(node ast.Node, name string) bool {
+	found := false
+	ast.Inspect(node, func(node ast.Node) bool {
+		ident, ok := node.(*ast.Ident)
+		if ok && ident.Name == name {
+			found = true
+			return false
+		}
+		return !found
+	})
+	return found
+}
+
+func mcpIntentRegistrationHandler(stmt ast.Stmt) (string, bool) {
+	exprStmt, ok := stmt.(*ast.ExprStmt)
+	if !ok {
+		return "", false
+	}
+	call, ok := exprStmt.X.(*ast.CallExpr)
+	if !ok || len(call.Args) == 0 {
+		return "", false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "AddTool" {
+		return "", false
+	}
+	handler, ok := call.Args[len(call.Args)-1].(*ast.Ident)
+	return handler.Name, ok
+}
+
+func mcpIntentFileHasExplicitRegistration(source string) (bool, error) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "intents.go", source, 0)
+	if err != nil {
+		return false, err
+	}
+	var registerIntents *ast.FuncDecl
+	recipeHandlers := make(map[string]bool)
+	for _, decl := range file.Decls {
+		node, ok := decl.(*ast.FuncDecl)
+		if !ok || node.Body == nil {
+			continue
+		}
+		if node.Name.Name == "RegisterIntents" {
+			registerIntents = node
+		}
+		if containsMCPIntentIdentifier(node.Body, "recipeCLIPathErr") {
+			recipeHandlers[node.Name.Name] = true
+		}
+	}
+	if registerIntents == nil {
+		return false, fmt.Errorf("missing RegisterIntents function")
+	}
+	for _, stmt := range registerIntents.Body.List {
+		handler, ok := mcpIntentRegistrationHandler(stmt)
+		if ok && !recipeHandlers[handler] {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func loadArchivedSpec(cliDir string) (*spec.APISpec, error) {
