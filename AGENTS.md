@@ -298,6 +298,7 @@ Detail in [`docs/SKILLS.md`](docs/SKILLS.md): install targets, workflow parity, 
 ### Write-time defaults
 - No speculative future-proofing in comments.
 - No dates, incidents, or ticket numbers in code comments.
+- Exception for dependency-pin / floor comments: `GO-YYYY-NNNN` advisory IDs and CVE IDs are allowed so the floor stays tied to a named advisory (precedent: `internal/generator/xnet_guard.go` citing `GO-2026-5025..5030`). Still forbidden: GitHub issue/PR numbers, incident tickets, dates.
 - Code comments must be self-contained; do not make them load-bearing on in-repo skills, plans, or reference prose.
 - Do not restate the field or function name in its comment; document why, not what.
 - Categorical strings -> typed const at introduction.
