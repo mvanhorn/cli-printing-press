@@ -287,7 +287,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 	// these fields stay empty.
 	if specFile, data, err := findArchivedSpec(state.EffectiveWorkingDir()); err == nil && specFile != "" {
 		m.SpecFormat = detectSpecFormat(data)
-		if checksum, err := specChecksum(specFile); err == nil {
+		if checksum, err := specChecksum(specFile, m.SpecFormat); err == nil {
 			m.SpecChecksum = checksum
 		}
 

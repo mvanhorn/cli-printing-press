@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2699,12 +2697,14 @@ func retidyAfterMerge(dir string) {
 }
 
 // forceRegenSpecHashMatches reports whether the snapshot's recorded spec
-// checksum matches a sha256 over the current spec bytes. Returns true when:
+// checksum matches the canonical or legacy raw checksum for the current spec
+// bytes. Returns true when:
 //   - the snapshot manifest is missing (defensive — old binary or partial
 //     state from a CLI generated before SpecChecksum was populated),
 //   - the snapshot manifest has an empty SpecChecksum (plan-generated, old
 //     format, or docs source without a stored hash),
-//   - or the snapshot checksum equals the current spec hash.
+//   - or the snapshot checksum equals the current canonical hash or either
+//     line-ending form accepted during the transition window.
 //
 // Returns false when:
 //   - the manifest exists but cannot be decoded (corrupt JSON — treat as
@@ -2714,9 +2714,9 @@ func retidyAfterMerge(dir string) {
 //     lineage differs by construction so NOVEL-only is the safe fallback),
 //   - or both sides have a checksum and they differ.
 //
-// The hash matches climanifest.go's storage convention (sha256 over the
-// raw input spec bytes, "sha256:" + hex), so a same-spec regen produces a
-// byte-identical hash and the full-merge path runs.
+// The hash matches pipeline.ComputeSpecChecksum's storage convention. Legacy
+// all-LF and all-CRLF raw hashes remain accepted for known text spec formats so
+// a same-spec cross-platform regen still takes the full-merge path.
 func forceRegenSpecHashMatches(snapshotDir string, currentSpecBytes []byte) bool {
 	manifestPath := filepath.Join(snapshotDir, pipeline.CLIManifestFilename)
 	if _, err := os.Stat(manifestPath); errors.Is(err, os.ErrNotExist) {
@@ -2733,12 +2733,7 @@ func forceRegenSpecHashMatches(snapshotDir string, currentSpecBytes []byte) bool
 	if len(currentSpecBytes) == 0 {
 		return false
 	}
-	return manifest.SpecChecksum == currentSpecChecksum(currentSpecBytes)
-}
-
-func currentSpecChecksum(specBytes []byte) string {
-	sum := sha256.Sum256(specBytes)
-	return "sha256:" + hex.EncodeToString(sum[:])
+	return pipeline.SpecChecksumMatches(manifest.SpecChecksum, currentSpecBytes, manifest.SpecFormat)
 }
 
 // snapshotForceRegen renames absOut to a sibling tempdir for use as a regen
