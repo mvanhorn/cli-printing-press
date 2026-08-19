@@ -56,6 +56,12 @@ func (g *Generator) Validate() error {
 			},
 		},
 		{
+			name: "ensure safe golang.org/x/text",
+			run: func() error {
+				return ensureSafeXText(g.OutputDir)
+			},
+		},
+		{
 			name: "go test ./...",
 			run: func() error {
 				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "test", "-count=1", "./...")

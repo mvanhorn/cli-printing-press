@@ -7,7 +7,7 @@ problem_type: convention
 component: tooling
 severity: medium
 applies_when:
-  - "A printed CLI fails govulncheck on a transitively-pulled dependency (e.g. golang.org/x/net) and fresh prints should ship the patched version"
+  - "A printed CLI fails govulncheck on a transitively-pulled dependency (e.g. golang.org/x/net or golang.org/x/text) and fresh prints should ship the patched version"
   - "Deciding whether to pin a security-sensitive transitive dependency via a go.mod.tmpl condition or a post-tidy bump"
   - "A mechanical library-wide sweep trips the changed-module govulncheck gate on pre-existing dependency drift"
 related_components:
@@ -18,6 +18,7 @@ tags:
   - dependencies
   - govulncheck
   - golang-x-net
+  - golang-x-text
   - go-mod-tidy
   - transitive-dependencies
   - security
@@ -40,7 +41,7 @@ The generator's `go.mod.tmpl` *did* pin `golang.org/x/net v0.55.0`, but only beh
 
 ## Guidance
 
-**For a transitively-pulled dependency that must satisfy a version floor, pin it with a post-`go mod tidy` bump, not a `go.mod.tmpl` condition.** In this repo that is `ensureSafeXNet` (`internal/generator/xnet_guard.go`), run as a gate immediately after `go mod tidy` and before `govulncheck`:
+**For a transitively-pulled dependency that must satisfy a version floor, pin it with a post-`go mod tidy` bump, not a `go.mod.tmpl` condition.** In this repo that is `ensureSafeXNet` (`internal/generator/xnet_guard.go`) and `ensureSafeXText` (`internal/generator/xtext_guard.go`), run as gates immediately after `go mod tidy` and before `govulncheck`:
 
 ```go
 func ensureSafeXNet(dir string) error {
@@ -88,6 +89,7 @@ The fix shipped as a born-clean generator change plus a one-time library retrofi
 | Concern | Born-clean (generator) | One-time retrofit (library) |
 |---|---|---|
 | `x/net` floor | `ensureSafeXNet` post-tidy bump (PR #2410) | `go get golang.org/x/net@v0.55.0 && go mod tidy` across 37 CLIs (library PR #881) |
+| `x/text` floor | `ensureSafeXText` post-tidy bump (GO-2026-5970, v0.39.0) | reprint-time `go get` of already-bumped CLIs is unnecessary once generate pins before govulncheck |
 | SQLite DSN syntax | `_pragma=` in `store.go.tmpl` (#2399, #2407) | DSN sweep (library #877) |
 | gofmt drift | gofmt after module-path rewrite (#2405) | `gofmt -w` library sweep (library #879) |
 
@@ -97,4 +99,4 @@ A second, reusable observation came out of this: **a mechanical library-wide swe
 
 - mvanhorn/cli-printing-press#2394 (the originating SQLite `SQLITE_BUSY` bug that began this thread) and #2410 (the `ensureSafeXNet` born-clean fix)
 - [modernc.org/sqlite DSN pragma syntax silently ignored](../runtime-errors/modernc-sqlite-dsn-pragma-syntax-silently-ignored.md) — the DSN bug from the same investigation
-- `internal/generator/xnet_guard.go`, `internal/generator/validate.go`, `internal/generator/plan_generate.go`
+- `internal/generator/xnet_guard.go`, `internal/generator/xtext_guard.go`, `internal/generator/validate.go`, `internal/generator/plan_generate.go`
