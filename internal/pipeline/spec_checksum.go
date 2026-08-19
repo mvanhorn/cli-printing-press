@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"slices"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -27,12 +28,7 @@ func ComputeSpecChecksum(specBytes []byte, specFormat string) string {
 // text specs accept both all-LF and all-CRLF legacy hashes so a manifest written
 // on either platform keeps its lineage when regenerated on the other.
 func SpecChecksumMatches(checksum string, specBytes []byte, specFormat string) bool {
-	for _, candidate := range specChecksumCandidates(specBytes, specFormat) {
-		if checksum == candidate {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(specChecksumCandidates(specBytes, specFormat), checksum)
 }
 
 func specChecksumCandidates(specBytes []byte, specFormat string) []string {
@@ -53,10 +49,8 @@ func specChecksumCandidates(specBytes []byte, specFormat string) []string {
 }
 
 func appendUniqueSpecChecksum(checksums []string, candidate string) []string {
-	for _, checksum := range checksums {
-		if checksum == candidate {
-			return checksums
-		}
+	if slices.Contains(checksums, candidate) {
+		return checksums
 	}
 	return append(checksums, candidate)
 }
