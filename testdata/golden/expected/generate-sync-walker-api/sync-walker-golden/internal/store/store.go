@@ -400,6 +400,7 @@ func (s *Store) ensureColumn(ctx context.Context, conn *sql.Conn, table, column,
 func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 	for _, c := range []struct{ table, column, decl string }{
 		{table: "leagues", column: "parent_id", decl: "TEXT"},
+		{table: "standings", column: "parent_id", decl: "TEXT"},
 		{table: "sync_state", column: "last_cursor", decl: "TEXT"},
 		{table: "sync_state", column: "last_synced_at", decl: "DATETIME"},
 		{table: "sync_state", column: "total_count", decl: "INTEGER DEFAULT 0"},
@@ -621,6 +622,13 @@ func (s *Store) migrate(ctx context.Context) error {
 			"parent_id" TEXT
 		)`,
 		`CREATE INDEX IF NOT EXISTS "idx_leagues_parent_id" ON "leagues"("parent_id")`,
+		`CREATE TABLE IF NOT EXISTS "standings" (
+			"id" TEXT PRIMARY KEY,
+			"data" JSON NOT NULL,
+			"synced_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
+			"parent_id" TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS "idx_standings_parent_id" ON "standings"("parent_id")`,
 	}
 
 	// Run every migration — including the column backfill and the
@@ -1376,6 +1384,58 @@ func (s *Store) UpsertLeagues(data json.RawMessage) error {
 	return tx.Commit()
 }
 
+// upsertStandingsTx writes the per-resource domain-table portion of a
+// standings upsert inside an existing transaction. The caller is
+// responsible for the generic resources insert (via upsertGenericResourceTx)
+// and for committing the tx. Splitting this out lets UpsertBatch dispatch
+// domain inserts per item without opening a per-item transaction.
+func (s *Store) upsertStandingsTx(tx *sql.Tx, id string, obj map[string]any, data json.RawMessage) error {
+	if _, err := tx.Exec(
+		`INSERT INTO "standings" ("id", "data", "synced_at", "parent_id")
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT("id") DO UPDATE SET "data" = excluded."data", "synced_at" = excluded."synced_at", "parent_id" = excluded."parent_id"`,
+		id,
+		string(data),
+		time.Now().UTC().Format(time.RFC3339),
+		lookupFieldValue(obj, "parent_id"),
+	); err != nil {
+		return fmt.Errorf("insert into standings: %w", err)
+	}
+
+	return nil
+}
+
+// UpsertStandings inserts or updates a standings record with domain-specific columns.
+func (s *Store) UpsertStandings(data json.RawMessage) error {
+	obj, err := DecodeJSONObject(data)
+	if err != nil {
+		return fmt.Errorf("unmarshaling standings: %w", err)
+	}
+
+	id := extractObjectID(obj)
+	if id == "" {
+		return fmt.Errorf("missing id for standings")
+	}
+	storageID := resourceStorageID("standings", id, obj)
+
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := s.upsertGenericResourceTx(tx, "standings", storageID, data); err != nil {
+		return err
+	}
+	if err := s.upsertStandingsTx(tx, storageID, obj, data); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
 // resourceIDFieldOverrides projects per-resource IDField (set by the profiler
 // from x-resource-id or response-schema fallback) into a runtime lookup map.
 // UpsertBatch consults this first so the templated path wins over the
@@ -1399,7 +1459,8 @@ var genericDescriptiveIDFieldFallbacks = []string{"name", "slug", "key", "code"}
 // resourceIDBaseOverrides preserves the complete final collection name for
 // composed dependents whose child segment is itself multiword.
 var resourceIDBaseOverrides = map[string]string{
-	"leagues": "leagues",
+	"leagues":   "leagues",
+	"standings": "standings",
 }
 
 // resourceParentKeyColumns identifies generated dependent resources whose
@@ -1407,7 +1468,8 @@ var resourceIDBaseOverrides = map[string]string{
 // many-to-many sub-collections collapse every parent association onto the
 // child's bare id and silently keep only the last synced parent.
 var resourceParentKeyColumns = map[string][]string{
-	"leagues": {"parent_id"},
+	"leagues":   {"parent_id"},
+	"standings": {"parent_id"},
 }
 
 // ExtractResourceID resolves the bare resource id field that UpsertBatch
@@ -1716,6 +1778,8 @@ func (s *Store) UpsertBatchDetailed(resourceType string, items []json.RawMessage
 		switch resourceType {
 		case "leagues":
 			typedErr = s.upsertLeaguesTx(tx, storageID, obj, item)
+		case "standings":
+			typedErr = s.upsertStandingsTx(tx, storageID, obj, item)
 		}
 
 		if typedErr != nil {

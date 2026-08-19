@@ -5,11 +5,17 @@ description: |
   YouTube Data v3, MLB Stats) where the child endpoint's path placeholder
   is a field on the parent record that is not the parent's primary key.
 
-  Walker shape exercised: leagues declares `walker.parent=games` with
-  `key_field=game_key` and `key_param=game_key`. The child path
-  /games/{game_key}/leagues uses a placeholder whose stem ("game_key")
-  does not map to a parent resource via auto-detection's _id/_key
-  stripping — without the walker, no dependent would be detected.
+  Walker shapes exercised:
+  - leagues declares `walker.parent=games` with `key_field=game_key` and
+    `key_param=game_key`. The child path /games/{game_key}/leagues uses a
+    placeholder whose stem ("game_key") does not map to a parent resource
+    via auto-detection's _id/_key stripping — without the walker, no
+    dependent would be detected.
+  - standings declares the same parent/key_field with `key_param=gameId`
+    on a flat /standings path. gameId is a required query parameter, not a
+    path placeholder. Generated sync must put that value on the request
+    params map; spec authors must not template `?gameId={gameId}` into
+    the path.
 
   Fall-through behavior (walker without key_field → existing parent-PK
   flow via db.ListIDs) is covered by every existing flat-list CLI's
@@ -42,3 +48,22 @@ resources:
           parent: games
           key_field: game_key
           key_param: game_key
+  standings:
+    description: Standings fetched per-game by walking games and sending
+      each game's game_key as the required gameId query parameter. The
+      child path has no {placeholder}.
+    endpoints:
+      list:
+        method: GET
+        path: /standings
+        description: List standings for a game
+        walker:
+          parent: games
+          key_field: game_key
+          key_param: gameId
+        params:
+          - name: gameId
+            in: query
+            type: string
+            required: true
+            description: Game to list standings for

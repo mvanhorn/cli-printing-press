@@ -3126,6 +3126,49 @@ func TestProfileSpecWalker_SynthesizesMissingDependent(t *testing.T) {
 	assert.Equal(t, "/games/{game_key}/leagues", dep.Path)
 }
 
+// TestProfileSpecWalker_QueryParamKeyParam keeps a key_param that is not a
+// path placeholder on the dependent so generated sync can send it as a
+// query parameter (GET /messages?roomId=).
+func TestProfileSpecWalker_QueryParamKeyParam(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "rooms-api",
+		Resources: map[string]spec.Resource{
+			"rooms": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/rooms", Response: spec.ResponseDef{Type: "array"}},
+				},
+			},
+			"messages": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/messages",
+						Response: spec.ResponseDef{Type: "array"},
+						Params:   []spec.Param{{Name: "roomId", In: "query", Type: "string", Required: true}},
+						Walker: &spec.WalkerConfig{
+							Parent:   "rooms",
+							KeyField: "id",
+							KeyParam: "roomId",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.DependentSyncResources, 1)
+	dep := profile.DependentSyncResources[0]
+	assert.Equal(t, "messages", dep.Name)
+	assert.Equal(t, "rooms", dep.ParentResource)
+	assert.Equal(t, "roomId", dep.ParentIDParam)
+	assert.Equal(t, "id", dep.KeyField)
+	assert.Equal(t, "/messages", dep.Path)
+	require.Len(t, dep.PathParams, 1)
+	assert.Equal(t, "roomId", dep.PathParams[0].Param)
+	assert.Equal(t, "id", dep.PathParams[0].Field)
+}
+
 // TestProfileSpecWalker_SynthesizePropagatesSinceParam verifies that a
 // walker-synthesized DependentResource carries through endpoint-level
 // SinceParam — incremental sync stays available for walker-declared

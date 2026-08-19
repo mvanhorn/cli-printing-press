@@ -98,7 +98,7 @@ Resource scoping:
 		Example: `  # Sync all resources
   sync-walker-golden-pp-cli sync
   # Sync specific resources only
-  sync-walker-golden-pp-cli sync --resources games
+  sync-walker-golden-pp-cli sync --resources games,standings
 
   # Full resync (ignore previous checkpoint)
   sync-walker-golden-pp-cli sync --full
@@ -1868,6 +1868,8 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 	switch resource {
 	case "leagues":
 		return db.UpsertLeagues(data)
+	case "standings":
+		return db.UpsertStandings(data)
 	default:
 		return db.Upsert(resource, id, data)
 	}
@@ -1976,6 +1978,7 @@ func defaultSyncResources() []string {
 func knownSyncResourceNames() []string {
 	names := []string{
 		"games",
+		"standings",
 	}
 	for _, dep := range dependentResourceDefs() {
 		names = append(names, dep.Name)
@@ -2005,7 +2008,8 @@ func describeResourceFailure(count int, label string, resources []string) string
 // this preserves the actual endpoint path like "/ISteamApps/GetAppList/v2".
 func syncResourcePath(resource string) (string, error) {
 	paths := map[string]string{ // #nosec G101 -- endpoint paths, not credentials.
-		"games": "/games",
+		"games":     "/games",
+		"standings": "/standings",
 	}
 	if p, ok := paths[resource]; ok {
 		return p, nil
@@ -2128,11 +2132,19 @@ type dependentPathParamDef struct {
 }
 
 func replaceDependentPathParam(path, name, parentResource, field, value string) string {
+	return replacePathParam(path, name, dependentParentKeyValue(parentResource, field, value))
+}
+
+// dependentParentKeyValue prepares a parent-row value for a child request.
+// BareResourceID strips a composite storage-key prefix. URI-typed parent
+// fields then reduce to the trailing URL segment so path and query keys
+// share the same ID-tier contract.
+func dependentParentKeyValue(parentResource, field, value string) string {
 	bareValue := store.BareResourceID(value)
 	if resourceURLIDPathParam(parentResource, field) {
-		return replaceURLIDPathParam(path, name, bareValue)
+		return pathParamSegmentValue(bareValue)
 	}
-	return replacePathParam(path, name, bareValue)
+	return bareValue
 }
 
 func resourceURLIDPathParam(resource, field string) bool {
@@ -2154,6 +2166,9 @@ func dependentResourceDefs() []dependentResourceDef {
 	return []dependentResourceDef{
 		{Name: "leagues", ParentTable: "games", ParentIDParam: "game_key", PathTemplate: "/games/{game_key}/leagues", KeyField: "game_key", ReconcileMode: "none", GenericScopeJSONPath: "", PathParams: []dependentPathParamDef{
 			{Param: "game_key", Field: "game_key"},
+		}},
+		{Name: "standings", ParentTable: "games", ParentIDParam: "gameId", PathTemplate: "/standings", KeyField: "game_key", ReconcileMode: "none", GenericScopeJSONPath: "", PathParams: []dependentPathParamDef{
+			{Param: "gameId", Field: "game_key"},
 		}},
 	}
 }
@@ -2256,8 +2271,13 @@ func syncOneParent(
 	parentIDJSON, _ := json.Marshal(parentID)
 	parentFKKey := dep.ParentTable + "_id"
 	path := dep.PathTemplate
+	queryParams := make([]dependentPathParamDef, 0)
 	for _, pathParam := range pathParams {
-		path = replaceDependentPathParam(path, pathParam.Param, dep.ParentTable, pathParam.Field, parentRow[pathParam.Field])
+		if strings.Contains(path, "{"+pathParam.Param+"}") {
+			path = replaceDependentPathParam(path, pathParam.Param, dep.ParentTable, pathParam.Field, parentRow[pathParam.Field])
+			continue
+		}
+		queryParams = append(queryParams, pathParam)
 	}
 
 	cursor := ""
@@ -2282,6 +2302,14 @@ func syncOneParent(
 		if depSinceTS != "" {
 			params[depSinceParam] = depSinceTS
 		}
+		// key_param that is not a {placeholder} is a query parent key
+		// (e.g. GET /messages?roomId=). Inject before user flags so
+		// --resource-param can override deliberately.
+		for _, queryParam := range queryParams {
+			if value := parentRow[queryParam.Field]; value != "" {
+				params[queryParam.Param] = dependentParentKeyValue(dep.ParentTable, queryParam.Field, value)
+			}
+		}
 		// Apply user flags last so they win over spec-derived cursor/since/limit.
 		// Dependent path: --param is skipped (already scoped by the parent path
 		// segment); --global-param and --resource-param still apply.
@@ -2301,15 +2329,17 @@ func syncOneParent(
 				} else {
 					fmt.Fprintln(syncEvents, syncWarningJSON(dep.Name, parentID, w.Status, w.Reason, w.Message))
 				}
-			} else if humanFriendly {
-				outcome.reason = "fetch_error"
-				fmt.Fprintf(os.Stderr, "\n  %s: error for parent %s: %v\n", dep.Name, parentID, err)
 			} else {
 				outcome.reason = "fetch_error"
-				// Non-warning failures were previously silent in JSON mode —
-				// operators only saw the missing rows. Emit a structured
-				// sync_error so the API body and status are inspectable.
-				fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, parentID, err))
+				rep.failure = err
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\n  %s: error for parent %s: %v\n", dep.Name, parentID, err)
+				} else {
+					// Non-warning failures were previously silent in JSON mode —
+					// operators only saw the missing rows. Emit a structured
+					// sync_error so the API body and status are inspectable.
+					fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, parentID, err))
+				}
 			}
 			break
 		}
@@ -2880,7 +2910,8 @@ func flatReconcileDef(resource string) flatReconcileDefT {
 // actually emitted. Generic-only resources are absent and resolve to "" so
 // ReconcilePartition deletes only from the shared resources table.
 var reconcileTypedTables = map[string]string{
-	"leagues": "leagues",
+	"leagues":   "leagues",
+	"standings": "standings",
 }
 
 func reconcileTypedTable(resource string) string {

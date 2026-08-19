@@ -2410,11 +2410,11 @@ type WalkerConfig struct {
 	// (primary key) when empty. Use this when the child path needs a parent
 	// field that is not the parent's primary key.
 	KeyField string `yaml:"key_field,omitempty" json:"key_field,omitempty"`
-	// KeyParam is the placeholder name in the child path that receives the
-	// extracted key value. Defaults to the first {placeholder} found in the
-	// child's Path when empty. Set this explicitly when the child path has
-	// multiple placeholders or when the placeholder name does not match the
-	// auto-detection convention.
+	// KeyParam is the child request slot that receives the extracted key
+	// value: a {placeholder} in the path, or a query parameter name when
+	// the child path has no matching placeholder. Defaults to the first
+	// {placeholder} found in the child's Path when empty. Set this
+	// explicitly when the child path has zero or multiple placeholders.
 	KeyParam string `yaml:"key_param,omitempty" json:"key_param,omitempty"`
 }
 

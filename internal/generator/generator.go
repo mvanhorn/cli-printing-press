@@ -881,7 +881,7 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 				if len(e.EmbeddedPagedSubresources) > 0 {
 					flags.HasEmbeddedPaged = true
 				}
-				if strings.Contains(e.Path, "{") {
+				if strings.Contains(e.Path, "{") || e.Walker != nil {
 					flags.HasPathParams = true
 				}
 				positionalCount := 0
