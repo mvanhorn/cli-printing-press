@@ -26,6 +26,13 @@
       {
         "scope": ["internal/generator/templates/helpers.go.tmpl", "internal/generator/templates/sync.go.tmpl"],
         "rule": "Generated dependent path-param substitution intentionally reduces URL-valued resource IDs to the trailing path segment before escaping. Do not file a P1 asking replaceURLIDPathParam/pathParamSegmentValue or replaceDependentPathParam to preserve scheme, host, query, or earlier URL path components; APIs whose child paths take {id} must not receive a full URL as that segment. store.BareResourceID remains only the composite-storage-key suffix stripper, not a replacement for this URL-segment behavior."
+      },
+      {
+        "scope": [
+          "internal/generator/*_guard.go",
+          "docs/solutions/conventions/pin-transitive-security-deps-after-go-mod-tidy.md"
+        ],
+        "rule": "Do not file a P1 or P2 asking to remove GO-YYYY-NNNN advisory IDs or CVE IDs from dependency-pin / floor comments. Those identifiers keep the version floor tied to a named advisory (precedent: internal/generator/xnet_guard.go citing GO-2026-5025..5030). Dates, GitHub issue/PR numbers, and incident tickets remain prohibited."
       }
     ]
   }

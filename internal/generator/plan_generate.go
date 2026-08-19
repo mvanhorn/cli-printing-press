@@ -270,9 +270,13 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 		return fmt.Errorf("running go mod tidy: %w", err)
 	}
 
-	// Pin golang.org/x/net to a patched release when it resolved transitively
-	// below the safe version (see ensureSafeXNet).
+	// Pin golang.org/x/net and golang.org/x/text to patched releases when they
+	// resolved transitively below the safe versions (see ensureSafeXNet and
+	// ensureSafeXText).
 	if err := ensureSafeXNet(outputDir); err != nil {
+		return err
+	}
+	if err := ensureSafeXText(outputDir); err != nil {
 		return err
 	}
 
