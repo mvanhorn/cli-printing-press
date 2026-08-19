@@ -2161,11 +2161,19 @@ type dependentPathParamDef struct {
 }
 
 func replaceDependentPathParam(path, name, parentResource, field, value string) string {
+	return replacePathParam(path, name, dependentParentKeyValue(parentResource, field, value))
+}
+
+// dependentParentKeyValue prepares a parent-row value for a child request.
+// BareResourceID strips a composite storage-key prefix. URI-typed parent
+// fields then reduce to the trailing URL segment so path and query keys
+// share the same ID-tier contract.
+func dependentParentKeyValue(parentResource, field, value string) string {
 	bareValue := store.BareResourceID(value)
 	if resourceURLIDPathParam(parentResource, field) {
-		return replaceURLIDPathParam(path, name, bareValue)
+		return pathParamSegmentValue(bareValue)
 	}
-	return replacePathParam(path, name, bareValue)
+	return bareValue
 }
 
 func resourceURLIDPathParam(resource, field string) bool {
@@ -2289,8 +2297,13 @@ func syncOneParent(
 	parentIDJSON, _ := json.Marshal(parentID)
 	parentFKKey := dep.ParentTable + "_id"
 	path := dep.PathTemplate
+	queryParams := make([]dependentPathParamDef, 0)
 	for _, pathParam := range pathParams {
-		path = replaceDependentPathParam(path, pathParam.Param, dep.ParentTable, pathParam.Field, parentRow[pathParam.Field])
+		if strings.Contains(path, "{"+pathParam.Param+"}") {
+			path = replaceDependentPathParam(path, pathParam.Param, dep.ParentTable, pathParam.Field, parentRow[pathParam.Field])
+			continue
+		}
+		queryParams = append(queryParams, pathParam)
 	}
 
 	cursor := ""
@@ -2315,6 +2328,14 @@ func syncOneParent(
 		if depSinceTS != "" {
 			params[depSinceParam] = depSinceTS
 		}
+		// key_param that is not a {placeholder} is a query parent key
+		// (e.g. GET /messages?roomId=). Inject before user flags so
+		// --resource-param can override deliberately.
+		for _, queryParam := range queryParams {
+			if value := parentRow[queryParam.Field]; value != "" {
+				params[queryParam.Param] = dependentParentKeyValue(dep.ParentTable, queryParam.Field, value)
+			}
+		}
 		// Apply user flags last so they win over spec-derived cursor/since/limit.
 		// Dependent path: --param is skipped (already scoped by the parent path
 		// segment); --global-param and --resource-param still apply.
@@ -2334,15 +2355,17 @@ func syncOneParent(
 				} else {
 					fmt.Fprintln(syncEvents, syncWarningJSON(dep.Name, parentID, w.Status, w.Reason, w.Message))
 				}
-			} else if humanFriendly {
-				outcome.reason = "fetch_error"
-				fmt.Fprintf(os.Stderr, "\n  %s: error for parent %s: %v\n", dep.Name, parentID, err)
 			} else {
 				outcome.reason = "fetch_error"
-				// Non-warning failures were previously silent in JSON mode —
-				// operators only saw the missing rows. Emit a structured
-				// sync_error so the API body and status are inspectable.
-				fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, parentID, err))
+				rep.failure = err
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\n  %s: error for parent %s: %v\n", dep.Name, parentID, err)
+				} else {
+					// Non-warning failures were previously silent in JSON mode —
+					// operators only saw the missing rows. Emit a structured
+					// sync_error so the API body and status are inspectable.
+					fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, parentID, err))
+				}
 			}
 			break
 		}

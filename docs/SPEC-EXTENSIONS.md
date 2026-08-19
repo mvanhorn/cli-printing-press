@@ -1812,11 +1812,14 @@ Rules:
 - `key_field` (string, optional): the field to extract from each parent
   record for substitution into the child path. Defaults to the parent's
   primary key. Set this when the child path needs a non-PK field.
-- `key_param` (string, optional): the placeholder name in the child path
-  that receives the extracted value. Defaults to the first (and only)
-  `{placeholder}` in the child path when there is exactly one. **Required
-  explicitly when the child path has 0 or 2+ placeholders** — the
-  single-placeholder default would otherwise pick the wrong slot (or no
+- `key_param` (string, optional): the child request slot that receives the
+  extracted value. When that name is a `{placeholder}` in the child path,
+  generated sync substitutes it into the URL. When it is not — a query
+  parameter such as `GET /messages?roomId=` — generated sync writes the
+  parent-row value into the request `params` map. Defaults to the first
+  (and only) `{placeholder}` in the child path when there is exactly one.
+  **Required explicitly when the child path has 0 or 2+ placeholders** —
+  the single-placeholder default would otherwise pick the wrong slot (or no
   slot at all). The generator warns and drops the walker when it's ambiguous
   and `key_param` is missing.
 - Walker-emitted dependents flow through the same `syncDependentResource`
@@ -1846,6 +1849,20 @@ paths:
       parameters:
         - name: game_key
           in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+  /standings:
+    get:
+      summary: List standings for a game (query-param parent key)
+      x-pp-sync-walker:
+        parent: games
+        key_field: game_key
+        key_param: gameId
+      parameters:
+        - name: gameId
+          in: query
           required: true
           schema: {type: string}
       responses:

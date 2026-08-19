@@ -218,7 +218,7 @@ type SyncableResource struct {
 type DependentResource struct {
 	Name           string // child resource name, e.g. "messages"
 	ParentResource string // parent resource name, e.g. "channels"
-	ParentIDParam  string // path param name, e.g. "channel_id"
+	ParentIDParam  string // path or query param name, e.g. "channel_id" or "roomId"
 	Path           string // full path template, e.g. "/channels/{channel_id}/messages"
 	Method         string
 	Tier           string
@@ -2165,12 +2165,9 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 
 func dependentPathParams(path, parentResource, keyParam, keyField string) []DependentPathParam {
 	placeholders := orderedPathPlaceholders(path)
-	if len(placeholders) == 0 {
-		return nil
-	}
-
 	fields := dependentPathParamFields(path, parentResource)
-	params := make([]DependentPathParam, 0, len(placeholders))
+	params := make([]DependentPathParam, 0, len(placeholders)+1)
+	seen := make(map[string]bool, len(placeholders)+1)
 	for _, placeholder := range placeholders {
 		field := fields[placeholder]
 		if placeholder == keyParam && keyField != "" {
@@ -2181,6 +2178,20 @@ func dependentPathParams(path, parentResource, keyParam, keyField string) []Depe
 		}
 		params = append(params, DependentPathParam{
 			Param: placeholder,
+			Field: field,
+		})
+		seen[placeholder] = true
+	}
+	// key_param that is not a {placeholder} is a query (or matrix) parent
+	// key. Keep it on the dependent so generated sync can put the value
+	// into the request params map instead of dropping it.
+	if keyParam != "" && !seen[keyParam] {
+		field := "id"
+		if keyField != "" {
+			field = spec.ToSnakeCase(keyField)
+		}
+		params = append(params, DependentPathParam{
+			Param: keyParam,
 			Field: field,
 		})
 	}
