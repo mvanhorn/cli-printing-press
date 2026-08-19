@@ -8042,7 +8042,46 @@ paths:
 	require.NoError(t, err)
 
 	ep := findEndpoint(t, parsed, "/applications/{id}/restart")
-	assert.True(t, ep.Mutation)
+	value, set := ep.MutationOverride()
+	assert.True(t, set)
+	assert.True(t, value)
+}
+
+func TestParseReadsXPPMutationFalseExtension(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /sets/items:
+    post:
+      operationId: projectItems
+      x-pp-mutation: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+      responses:
+        "200":
+          description: OK
+`)
+
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	ep := findEndpoint(t, parsed, "/sets/items")
+	value, set := ep.MutationOverride()
+	assert.True(t, set)
+	assert.False(t, value)
 }
 
 func TestParseDataSourceStrategyExtension(t *testing.T) {

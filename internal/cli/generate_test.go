@@ -2267,6 +2267,49 @@ func TestMergeSpecsNamePrefixOptInKeepsNamespacedResourceForm(t *testing.T) {
 	assert.Equal(t, "/v1beta/accounts", merged.Resources["analytics-admin-accounts"].Endpoints["list"].Path)
 }
 
+func TestMergeSpecsKeepsExplicitMutationFalseWhenOverlappingUnset(t *testing.T) {
+	t.Parallel()
+
+	unset := spec.Endpoint{
+		Method: "POST",
+		Path:   "/items/search",
+		Params: []spec.Param{{Name: "term", In: "body", Type: "string"}},
+	}
+	explicitFalse := spec.Endpoint{
+		Method:   "POST",
+		Path:     "/items/search",
+		Params:   []spec.Param{{Name: "term", In: "body", Type: "string"}},
+		Mutation: new(false),
+	}
+	assert.NotEqual(t, endpointSignature(spec.Resource{}, unset), endpointSignature(spec.Resource{}, explicitFalse))
+
+	specA := &spec.APISpec{
+		Name:    "admin",
+		Version: "0.1.0",
+		BaseURL: "https://example.com",
+		Resources: map[string]spec.Resource{
+			"items": {Endpoints: map[string]spec.Endpoint{"search": unset}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:    "catalog",
+		Version: "0.1.0",
+		BaseURL: "https://example.com",
+		Resources: map[string]spec.Resource{
+			"items": {Endpoints: map[string]spec.Endpoint{"search": explicitFalse}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "merged")
+	require.Contains(t, merged.Resources, "admin")
+	require.Contains(t, merged.Resources, "catalog")
+	got := merged.Resources["catalog"].Endpoints["search"]
+	require.NotNil(t, got.Mutation)
+	assert.False(t, *got.Mutation)
+}
+
 func TestMergeSpecsNamePrefixDisambiguatesSameSpecNameCollision(t *testing.T) {
 	t.Parallel()
 

@@ -526,7 +526,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			}
 
 {{- end}}
-{{- if and (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")) .Endpoint.ResponsePath (not .HasStore)}}
+{{- if and (or .IsReadOnly (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")) .Endpoint.ResponsePath (not .HasStore)}}
 			if !flags.dryRun {
 				data = applyResponsePath(data, {{printf "%q" .Endpoint.ResponsePath}})
 			}

@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/post-read-search.yaml --output "$CASE_ACTUAL_DIR/post-read-golden" --force --validate=false

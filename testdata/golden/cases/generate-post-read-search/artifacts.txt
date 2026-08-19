@@ -1,0 +1,3 @@
+post-read-golden/internal/cli/sets_search.go
+post-read-golden/internal/cli/sets_items.go
+post-read-golden/internal/cli/sets_create.go
