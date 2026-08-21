@@ -300,12 +300,12 @@ func TestGenerateAllowsCollectionEndpointAndItemSubResourceSameLeaf(t *testing.T
 	collectionSrc, err := os.ReadFile(collectionPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(collectionSrc), "func newUsersEmailCmd(")
-	assert.Contains(t, string(collectionSrc), `Use:   "email"`)
+	assert.Regexp(t, `Use:\s+"email"`, string(collectionSrc))
 
 	itemParentSrc, err := os.ReadFile(itemParentPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(itemParentSrc), "func newUsersItemEmailCmd(")
-	assert.Contains(t, string(itemParentSrc), `Use:   "item-email"`)
+	assert.Regexp(t, `Use:\s+"item-email"`, string(itemParentSrc))
 	assert.Contains(t, string(itemParentSrc), "newUsersItemEmailUpdateCmd(flags)")
 
 	itemEndpointSrc, err := os.ReadFile(itemEndpointPath)
@@ -346,7 +346,7 @@ func TestGenerateKeepsUniqueCollectionAndItemStems(t *testing.T) {
 			},
 			wantFiles: []string{"users_email.go"},
 			wantIdent: "func newUsersEmailCmd(",
-			wantUse:   `Use:   "email"`,
+			wantUse:   `Use:\s+"email"`,
 		},
 		{
 			name: "item sub-resource only",
@@ -373,7 +373,7 @@ func TestGenerateKeepsUniqueCollectionAndItemStems(t *testing.T) {
 			},
 			wantFiles: []string{"users_email.go", "users_email_update.go"},
 			wantIdent: "func newUsersEmailCmd(",
-			wantUse:   `Use:   "email"`,
+			wantUse:   `Use:\s+"email"`,
 		},
 	}
 
@@ -395,7 +395,7 @@ func TestGenerateKeepsUniqueCollectionAndItemStems(t *testing.T) {
 			parentSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "users_email.go"))
 			require.NoError(t, err)
 			assert.Contains(t, string(parentSrc), tt.wantIdent)
-			assert.Contains(t, string(parentSrc), tt.wantUse)
+			assert.Regexp(t, tt.wantUse, string(parentSrc))
 
 			requireGeneratedCompiles(t, outputDir)
 		})
