@@ -284,11 +284,18 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		if req.URL.Host != via[0].URL.Host {
 			req.Header.Del("Authorization")
 		}
-		// Same-host gate mirrors Go's shouldCopyHeaderOnRedirect: a
+		// Same-origin gate mirrors Go's shouldCopyHeaderOnRedirect: a
 		// cross-domain 3xx (open redirect or partner handoff) must not
 		// receive the auth credential, even though we are inside
 		// CheckRedirect where Go's automatic stripping has already run.
-		if req.URL.Host == via[0].URL.Host {
+		//
+		// Scheme is compared as well as host, and that is not redundant.
+		// Host equality alone lets a same-host https -> http downgrade keep
+		// the credential, putting it on the wire in cleartext. Go's own
+		// stripping does not cover it: this is a custom header, so it is
+		// never in the set Go removes automatically, which is the same
+		// reason the cross-host branch below has to delete it by hand.
+		if req.URL.Host == via[0].URL.Host && req.URL.Scheme == via[0].URL.Scheme {
 			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
 				req.Header.Set("Authorization", h)
 			}
