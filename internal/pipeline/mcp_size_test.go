@@ -300,6 +300,62 @@ func newAPIResourceChildCmd() *cobra.Command {
 	assert.NotContains(t, names, "cobratree:catalog")
 }
 
+func TestEstimateMCPTokens_SkipsParentGroupCommands(t *testing.T) {
+	dir := writeMCPTools(t, `
+	s.AddTool(mcplib.NewTool("typed_get", mcplib.WithDescription("Typed endpoint.")), nil)
+	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
+`)
+	writeMCPCLISource(t, dir, "root.go", `package cli
+
+import "github.com/spf13/cobra"
+
+func RootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "demo-pp-cli"}
+	rootCmd.AddCommand(newCompaniesCmd())
+	return rootCmd
+}
+
+func newCompaniesCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:         "companies",
+		Annotations: map[string]string{"pp:api-resource": "true", "pp:parent-group": "true"},
+		RunE:        func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	cmd.AddCommand(newCompaniesSitesCmd())
+	return cmd
+}
+
+func newCompaniesSitesCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:         "sites",
+		Annotations: map[string]string{"pp:parent-group": "true"},
+		RunE:        func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	cmd.AddCommand(newCompaniesSitesListCmd())
+	return cmd
+}
+
+func newCompaniesSitesListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List company sites.",
+		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+`)
+
+	est := estimateMCPTokens(dir)
+	require.Equal(t, 2, est.ToolCount, "typed tool plus the novel leaf under a parent-group should count")
+	names := make([]string, 0, len(est.PerTool))
+	for _, tool := range est.PerTool {
+		names = append(names, tool.Name)
+	}
+	assert.Contains(t, names, "typed_get")
+	assert.Contains(t, names, "cobratree:companies_sites_list")
+	assert.NotContains(t, names, "cobratree:companies")
+	assert.NotContains(t, names, "cobratree:companies_sites")
+}
+
 func TestEstimateMCPTokens_CountsSharedConstructorsAtDistinctPaths(t *testing.T) {
 	dir := writeMCPTools(t, `
 	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)

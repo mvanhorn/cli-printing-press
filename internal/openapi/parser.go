@@ -3716,7 +3716,9 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			endpoint.TenantScopeColumn = pathTenantScopeColumn
 			endpoint.MembershipField = pathMembershipField
 			endpoint.Critical = pathCritical
-			endpoint.Mutation, _ = boolExtension(op.Extensions, extensionPPMutation)
+			if mutation, present := boolExtension(op.Extensions, extensionPPMutation); present {
+				endpoint.Mutation = new(mutation)
+			}
 			opSyncable, _ := boolExtension(op.Extensions, extensionPPSyncable)
 			endpoint.Syncable = pathSyncable || opSyncable
 			endpoint.Walker = readWalkerExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))

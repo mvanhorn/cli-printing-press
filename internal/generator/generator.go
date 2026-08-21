@@ -406,6 +406,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"bodyMap":                      bodyMap,
 		"bodyMapForEndpoint":           bodyMapForEndpoint,
 		"bodyMapForEndpointVars":       bodyMapForEndpointVars,
+		"assignJSONBodyMap":            assignJSONBodyMap,
+		"declareJSONBodyMap":           declareJSONBodyMap,
 		"bodyVarDecls":                 bodyVarDecls,
 		"bodyFlagRegs":                 bodyFlagRegs,
 		"bodyRequiredChecks":           bodyRequiredChecks,
@@ -858,7 +860,7 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 				if strings.EqualFold(e.Method, "DELETE") {
 					flags.HasDelete = true
 				}
-				if isMutationMethod(e.Method) {
+				if endpointIsWriteCommand(e, name) && isMutationMethod(e.Method) {
 					flags.HasMutationEndpoints = true
 				}
 				if e.UsesRawRequestBody() {
@@ -879,7 +881,7 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 				if len(e.EmbeddedPagedSubresources) > 0 {
 					flags.HasEmbeddedPaged = true
 				}
-				if strings.Contains(e.Path, "{") {
+				if strings.Contains(e.Path, "{") || e.Walker != nil {
 					flags.HasPathParams = true
 				}
 				positionalCount := 0
@@ -919,7 +921,7 @@ func partialFailureEmissionFlags(apiSpec *spec.APISpec, promotedCommands []Promo
 			if promotedEndpointName == endpointName {
 				continue
 			}
-			if isMutationMethod(endpoint.Method) {
+			if endpointIsWriteCommand(endpoint, endpointName) && isMutationMethod(endpoint.Method) {
 				hasSupport = true
 				hasTypedErr = true
 			}
@@ -952,13 +954,13 @@ func promotedCommandCanDetectPartialFailure(command PromotedCommand, hasStore bo
 	return method == "POST" || method == "PUT" || method == "PATCH"
 }
 
-// isMutationMethod reports whether method is a mutation verb that reaches the
-// partial-failure detection call sites in command_endpoint.go.tmpl. The
-// template emits those call sites for every non-GET/HEAD endpoint, so the
-// predicate must match the same shape — otherwise a DELETE-only CLI would
-// reference undefined detectPartialFailure / partialFailureReport symbols.
-// Detection itself is a no-op for DELETE bodies in practice; the cost is one
-// dead function on truly-DELETE-only CLIs.
+// isMutationMethod reports whether method is a mutating HTTP verb. Combined
+// with endpointIsWriteCommand it matches the $isMutationOutput gate in
+// command_endpoint.go.tmpl (write-classified non-GET/HEAD endpoints). The
+// helpers must stay in sync with that gate — otherwise a DELETE-only CLI
+// would reference undefined detectPartialFailure / partialFailureReport
+// symbols. Detection itself is a no-op for DELETE bodies in practice; the
+// cost is one dead function on truly-DELETE-only CLIs.
 func isMutationMethod(method string) bool {
 	if method == "" {
 		return false
@@ -2144,8 +2146,8 @@ func endpointIsWriteCommand(endpoint spec.Endpoint, opName string) bool {
 	if v, ok := endpoint.Meta["mcp:read-only"]; ok && strings.EqualFold(strings.TrimSpace(v), "true") {
 		return false
 	}
-	if endpoint.Mutation {
-		return true
+	if value, set := endpoint.MutationOverride(); set {
+		return value
 	}
 	tokens := camelCaseTokens(strings.TrimSpace(opName))
 	if !methodIsWrite(endpoint.Method) {
@@ -6922,8 +6924,9 @@ const maxBodyFlagDepth = 3
 // branch in command_promoted.go.tmpl. The four sites generated the
 // same Go code at different indentation levels; this consolidates them
 // and parameterizes the indent. The output is the body of the
-// `body := map[string]any{}` block — callers emit the surrounding
-// declaration and the closing brace themselves.
+// `bodyMap := map[string]any{}` block — callers emit the surrounding
+// declaration (including a resource-root wrap when the schema names one)
+// themselves.
 //
 // When a body Param has Type "object" with non-empty Fields, the block
 // recurses: each leaf field becomes its own flag (parent-prefixed in
@@ -6952,7 +6955,56 @@ func bodyMapForEndpointVars(endpoint spec.Endpoint, indent, mapVar, bodyVar stri
 	if endpoint.BodyJSONFallback {
 		return bodyJSONFallbackMap(endpoint, indent, bodyVar)
 	}
+	if wrapper, ok := bodyResourceWrap(endpoint); ok {
+		// Fill the inner resource fields into mapVar. The template wraps
+		// mapVar under the schema's single object key at assignment
+		// (`body = map[string]any{"issue": bodyMap}`) so we must not
+		// also nest that key here.
+		var b strings.Builder
+		renderBodyMap(&b, wrapper.Fields, 1, indent, mapVar, toCamel(paramIdent(wrapper)), publicFlagName(wrapper))
+		return b.String()
+	}
 	return bodyMapForVar(endpoint.Body, indent, mapVar)
+}
+
+// bodyResourceWrap reports the request-body schema's resource-root
+// wrapper when the body is a single object property whose value is an
+// object (Rails/ActiveModel `{"issue":{...}}`). Flat bodies
+// (`{"user_id": N}`) and multi-key objects stay unwrapped.
+func bodyResourceWrap(endpoint spec.Endpoint) (spec.Param, bool) {
+	if endpoint.BodyJSONFallback || endpoint.BodyIsArray || bodyUsesFlatEmission(endpoint) {
+		return spec.Param{}, false
+	}
+	body := flattenCollidingBodyFields(endpoint.Body)
+	if len(body) != 1 {
+		return spec.Param{}, false
+	}
+	p := body[0]
+	if p.Type != "object" || len(p.Fields) == 0 {
+		return spec.Param{}, false
+	}
+	return p, true
+}
+
+func bodyResourceWrapKey(endpoint spec.Endpoint) string {
+	if p, ok := bodyResourceWrap(endpoint); ok {
+		return p.BodyWireName()
+	}
+	return ""
+}
+
+func assignJSONBodyMap(endpoint spec.Endpoint, mapVar, bodyVar string) string {
+	if key := bodyResourceWrapKey(endpoint); key != "" {
+		return fmt.Sprintf("%s = map[string]any{%q: %s}", bodyVar, key, mapVar)
+	}
+	return fmt.Sprintf("%s = %s", bodyVar, mapVar)
+}
+
+func declareJSONBodyMap(endpoint spec.Endpoint, mapVar, bodyVar string) string {
+	if key := bodyResourceWrapKey(endpoint); key != "" {
+		return fmt.Sprintf("var %s any = map[string]any{%q: %s}", bodyVar, key, mapVar)
+	}
+	return fmt.Sprintf("var %s any = %s", bodyVar, mapVar)
 }
 
 // bodyJSONFallbackMap renders the body-population block used when an

@@ -6,6 +6,7 @@
 {{- $isRaw := endpointUsesRawRequest .Endpoint}}
 {{- $hasJSONBody := and (or .Endpoint.Body .Endpoint.BodyJSONFallback) (not $isMultipart) (not $isForm)}}
 {{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk") (eq .Endpoint.Method "GET") .IsReadOnly}}
+{{- $isMutationOutput := and (not .IsReadOnly) (not (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")))}}
 {{- $dataSourceStrategy := dataSourceStrategy .Resource .Endpoint}}
 {{- $documentedFields := compactFieldMapLiteral .Endpoint.Response.Item .Types}}
 
@@ -535,7 +536,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				body = []any{}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- else}}
 				bodyMap := map[string]any{}
-				body = bodyMap
+				{{assignJSONBodyMap .Endpoint "bodyMap" "body"}}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- end}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}
 {{- if .IsReadOnly}}
@@ -597,7 +598,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				body = []any{}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- else}}
 				bodyMap := map[string]any{}
-				body = bodyMap
+				{{assignJSONBodyMap .Endpoint "bodyMap" "body"}}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- end}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}
 {{- if endpointHasRequestParams .Endpoint}}
@@ -696,7 +697,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				body = []any{}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- else}}
 				bodyMap := map[string]any{}
-				body = bodyMap
+				{{assignJSONBodyMap .Endpoint "bodyMap" "body"}}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- end}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}
 {{- if .IsReadOnly}}
@@ -789,7 +790,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				body = []any{}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- else}}
 				bodyMap := map[string]any{}
-				body = bodyMap
+				{{assignJSONBodyMap .Endpoint "bodyMap" "body"}}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- end}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}
 {{- if .IsReadOnly}}
@@ -823,9 +824,15 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			}
 {{- end}}
 {{- end}}
+{{- if and (not $isMutationOutput) (not (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")))}}
+			_ = statusCode
+{{- if .HasStore}}
+			prov := attachFreshness(DataProvenance{Source: "live"}, flags)
+{{- end}}
+{{- end}}
 {{- if .Endpoint.UsesTextResponse}}
 			_ = os.Stderr
-{{- if and .HasStore (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD") $supportsAllPagination $isGraphQLEndpoint)}}
+{{- if and .HasStore (not $isMutationOutput)}}
 			_ = prov
 {{- end}}
 			var textEnvelope struct {
@@ -852,7 +859,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH") (eq .Endpoint.Method "DELETE")}}
 			_ = statusCode
 {{- end}}
-{{- if and .HasStore (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD") $supportsAllPagination $isGraphQLEndpoint)}}
+{{- if and .HasStore (not $isMutationOutput)}}
 			_ = prov
 {{- end}}
 			if flags.quiet {
@@ -896,7 +903,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			}
 {{- end}}
 
-{{- if and (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")) .Endpoint.ResponsePath (not .HasStore)}}
+{{- if and (not $isMutationOutput) .Endpoint.ResponsePath (not .HasStore)}}
 			if !flags.dryRun {
 				data = applyResponsePath(data, {{printf "%q" .Endpoint.ResponsePath}})
 			}
@@ -946,7 +953,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			}
 {{- end}}
 
-{{- if not (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD"))}}
+{{- if $isMutationOutput}}
 			// Inspect the mutate response body for a partial-failure-shaped
 			// field (e.g. Google Ads `partialFailureError`). Several Google
 			// APIs return 200 OK with a partial-failure field when some
@@ -1079,7 +1086,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				return nil
 			}
 {{- end}}
-{{- if or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")}}
+{{- if not $isMutationOutput}}
 {{- if $supportsAllPagination}}
 			outputData := collectionItemsForOutput(data, path)
 {{- else}}
@@ -1133,7 +1140,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				}
 			}
 {{- end}}
-{{- if not (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD"))}}
+{{- if $isMutationOutput}}
 			// Fall-through for mutate paths that did not hit the table or
 			// asJSON branches: --quiet, --csv, --plain, and default terminal
 			// raw output. printOutputWithFlags renders the body, then the

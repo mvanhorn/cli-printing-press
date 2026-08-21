@@ -57,7 +57,7 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
       list:                       # endpoint key becomes subcommand: users list
         method: GET               # string (REQUIRED) must be one of GET | POST | PUT | DELETE
         path: "/users"           # string (REQUIRED) API path; supports {param} placeholders
-        mutation: true             # bool optional; explicitly marks a GET action as state-changing
+        mutation: true             # bool optional; true marks a GET action as state-changing; false marks a POST/search/list endpoint as a read so the command prints the response body
         base_url: "https://search.example.com/v1" # string optional override for this endpoint only
         description: "List users" # string endpoint help text
         example: "  my-api-pp-cli users list --limit 25" # string optional Cobra Example override; include Cobra help indentation
@@ -410,6 +410,14 @@ Top-level scalars become typed flags. Object properties with their own
 `properties` become nested, parent-prefixed flags. Object and array properties
 without expandable scalar children remain JSON-string flags so the command can
 pass nested payloads without hand-written Go.
+
+When the request-body schema is a **single object property whose value is an
+object** (the resource root, e.g. `{"issue":{"notes":"..."}}`), generated
+create/update/patch/post commands wrap the constructed field map under that
+schema key. Keep the wrapper in the schema when the API requires it. A flat
+schema (`{"user_id": 1}` or `{id, name, ...}`) stays a flat body — do not
+invent a wrap key or flatten a named resource root away. `--stdin` still sends
+the caller's JSON as-is.
 
 ## 4. Validation Rules
 

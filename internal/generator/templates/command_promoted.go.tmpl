@@ -332,7 +332,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			var body any = []any{}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t" "bodyMap" "body"}}{{else}}
 			bodyMap := map[string]any{}
-			var body any = bodyMap
+			{{declareJSONBodyMap .Endpoint "bodyMap" "body"}}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t" "bodyMap" "body"}}{{end}}{{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}{{if endpointHasRequestParams .Endpoint}}			data, _, err := c.DeleteWithParamsAndBodyAndHeaders(cmd.Context(), path, params, body, headerOverrides)
 {{else}}			data, _, err := c.DeleteWithBodyAndHeaders(cmd.Context(), path, body, headerOverrides)
 {{end}}{{else}}{{if endpointHasRequestParams .Endpoint}}			data, _, err := c.DeleteWithParamsAndBody(cmd.Context(), path, params, body)
@@ -406,7 +406,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			var body any = []any{}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t" "bodyMap" "body"}}{{else}}
 			bodyMap := map[string]any{}
-			var body any = bodyMap
+			{{declareJSONBodyMap .Endpoint "bodyMap" "body"}}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t" "bodyMap" "body"}}{{end}}{{if .IsReadOnly}}{{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}QueryWithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
 {{else}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}QueryWithParams(cmd.Context(), path, params, body)
 {{end}}{{else}}{{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}WithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
@@ -526,7 +526,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			}
 
 {{- end}}
-{{- if and (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")) .Endpoint.ResponsePath (not .HasStore)}}
+{{- if and (or .IsReadOnly (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")) .Endpoint.ResponsePath (not .HasStore)}}
 			if !flags.dryRun {
 				data = applyResponsePath(data, {{printf "%q" .Endpoint.ResponsePath}})
 			}

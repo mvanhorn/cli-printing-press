@@ -27,6 +27,7 @@ The runtime walker in `internal/mcp/cobratree/` mirrors the Cobra tree at server
 1. Commands annotated `cmd.Annotations["pp:endpoint"] = "<resource>.<endpoint>"` already have typed tools and are skipped to avoid duplicates.
 2. Framework commands listed in `cobratree/classify.go.tmpl`'s `frameworkCommands` set are skipped because a typed equivalent is better (`sql`, `search`, `context`) or the command is non-functional via MCP (`auth`, `completion`, `doctor`, `version`, `feedback`, `profile`, `which`, `help`).
 3. `cmd.Annotations["mcp:hidden"] = "true"` opts out a domain command that needs human-in-the-loop input.
+4. Commands annotated `cmd.Annotations["pp:api-resource"] = "true"` or `cmd.Annotations["pp:parent-group"] = "true"` are grouping parents whose only behavior is printing help; they are skipped so they do not register as runnable MCP tools. Endpoint leaves stay exposed.
 Store-population commands stay exposed: `sync`, `stale`, `orphans`, `reconcile`, `load`, `export`, `import`, `workflow`, `analytics`. `sql` and `search` return empty until `sync` populates the store. When in doubt, leave it exposed.
 
 ### Tool safety annotations
@@ -297,6 +298,7 @@ Detail in [`docs/SKILLS.md`](docs/SKILLS.md): install targets, workflow parity, 
 ### Write-time defaults
 - No speculative future-proofing in comments.
 - No dates, incidents, or ticket numbers in code comments.
+- Exception for dependency-pin / floor comments: `GO-YYYY-NNNN` advisory IDs and CVE IDs are allowed so the floor stays tied to a named advisory (precedent: `internal/generator/xnet_guard.go` citing `GO-2026-5025..5030`). Still forbidden: GitHub issue/PR numbers, incident tickets, dates.
 - Code comments must be self-contained; do not make them load-bearing on in-repo skills, plans, or reference prose.
 - Do not restate the field or function name in its comment; document why, not what.
 - Categorical strings -> typed const at introduction.

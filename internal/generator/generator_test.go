@@ -506,8 +506,8 @@ func TestGenerateDedupesResourceRegistryMapEntries(t *testing.T) {
 }
 
 // TestGenerate_EmitsReconcile verifies that, for a spec with a single-path-param
-// dependent resource, the generator emits the ReconcilePartition wiring in both
-// store.go and sync.go, and that the generated code compiles successfully.
+// dependent resource, the generator emits ReconcilePartition and ReconcileAll
+// wiring in store.go and sync.go, and that the generated code compiles.
 func TestGenerate_EmitsReconcile(t *testing.T) {
 	t.Parallel()
 	apiSpec := minimalSpec("emits-reconcile")
@@ -537,7 +537,11 @@ func TestGenerate_EmitsReconcile(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Contains(t, string(storeSrc), "func (s *Store) ReconcilePartition")
+	assert.Contains(t, string(storeSrc), "func (s *Store) ReconcileAll")
 	assert.Contains(t, string(syncSrc), "ReconcilePartition(")
+	assert.Contains(t, string(syncSrc), "ReconcileAll(")
+	assert.Contains(t, string(syncSrc), `"flat_global"`,
+		"no-tenant-scope print must emit a reconcilable whole-table mode")
 	assert.Contains(t, string(syncSrc), "partitionOutcome")
 	assert.Contains(t, string(syncSrc), "reconcile_skipped")
 
@@ -5609,6 +5613,29 @@ func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
 	statusSuccess := json.RawMessage(` + "`" + `{"status": "success", "data": null}` + "`" + `)
 	if isEmptyPageResponse(statusSuccess) {
 		t.Fatalf("status=success null data envelope should not be treated as an empty page")
+	}
+
+	okFalse := json.RawMessage(` + "`" + `{"ok": false, "error": "not_authed"}` + "`" + `)
+	if isEmptyPageResponse(okFalse) {
+		t.Fatalf("ok:false envelope should not be treated as an empty page")
+	}
+	if !responseDeclaresFailure(okFalse) {
+		t.Fatalf("ok:false envelope should be detected as a declared failure")
+	}
+
+	okTrue := json.RawMessage(` + "`" + `{"ok": true, "data": [{"id": "ch1"}]}` + "`" + `)
+	if responseDeclaresFailure(okTrue) {
+		t.Fatalf("ok:true envelope should not be detected as a declared failure")
+	}
+
+	pascalOkFalse := json.RawMessage(` + "`" + `{"Ok": false, "error": "not_authed"}` + "`" + `)
+	if !responseDeclaresFailure(pascalOkFalse) {
+		t.Fatalf("PascalCase Ok:false envelope should be detected as a declared failure")
+	}
+
+	noEnvelope := json.RawMessage(` + "`" + `{"id": "plain-1", "name": "widget"}` + "`" + `)
+	if responseDeclaresFailure(noEnvelope) {
+		t.Fatalf("body without success/ok/status should not be a declared failure")
 	}
 }
 

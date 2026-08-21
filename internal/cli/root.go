@@ -2154,7 +2154,7 @@ func endpointSignature(resource spec.Resource, endpoint spec.Endpoint) string {
 	method := strings.ToUpper(strings.TrimSpace(endpoint.Method))
 	path := strings.TrimRight(strings.TrimSpace(endpoint.Path), "/")
 	shape := struct {
-		Mutation           bool                  `json:"mutation,omitempty"`
+		Mutation           *bool                 `json:"mutation,omitempty"`
 		RequestContentType string                `json:"request_content_type,omitempty"`
 		BodyJSONFallback   bool                  `json:"body_json_fallback,omitempty"`
 		BodyRequired       bool                  `json:"body_required,omitempty"`

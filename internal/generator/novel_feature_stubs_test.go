@@ -340,7 +340,7 @@ func TestGeneratorDoesNotTreatExplicitGETMutationAsReadOnlySpec(t *testing.T) {
 		Method:      "GET",
 		Path:        "/items/{id}/restart",
 		Description: "Restart an item",
-		Mutation:    true,
+		Mutation:    new(true),
 	}
 	apiSpec.Resources["items"] = items
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))

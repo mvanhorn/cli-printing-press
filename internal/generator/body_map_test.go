@@ -841,6 +841,134 @@ func TestBodyJSONFallback_BodyMap_TypedPath(t *testing.T) {
 	}
 }
 
+func TestBodyResourceWrapKey(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		endpoint spec.Endpoint
+		want     string
+	}{
+		{
+			name: "single object property wraps",
+			endpoint: spec.Endpoint{Body: []spec.Param{{
+				Name: "issue",
+				Type: "object",
+				Fields: []spec.Param{
+					{Name: "notes", Type: "string"},
+				},
+			}}},
+			want: "issue",
+		},
+		{
+			name: "body_name is the wrap key",
+			endpoint: spec.Endpoint{Body: []spec.Param{{
+				Name:     "Issue",
+				BodyName: "issue",
+				Type:     "object",
+				Fields:   []spec.Param{{Name: "notes", Type: "string"}},
+			}}},
+			want: "issue",
+		},
+		{
+			name:     "flat scalar stays unwrapped",
+			endpoint: spec.Endpoint{Body: []spec.Param{{Name: "user_id", Type: "int"}}},
+		},
+		{
+			name: "flat object-without-fields stays unwrapped",
+			endpoint: spec.Endpoint{Body: []spec.Param{{
+				Name: "metadata",
+				Type: "object",
+			}}},
+		},
+		{
+			name: "multi-key body stays unwrapped",
+			endpoint: spec.Endpoint{Body: []spec.Param{
+				{Name: "notes", Type: "string"},
+				{Name: "notify", Type: "bool"},
+			}},
+		},
+		{
+			name: "object plus sibling stays unwrapped",
+			endpoint: spec.Endpoint{Body: []spec.Param{
+				{
+					Name:   "issue",
+					Type:   "object",
+					Fields: []spec.Param{{Name: "notes", Type: "string"}},
+				},
+				{Name: "notify", Type: "bool"},
+			}},
+		},
+		{
+			name: "body-json fallback stays unwrapped",
+			endpoint: spec.Endpoint{
+				BodyJSONFallback: true,
+				Body: []spec.Param{{
+					Name:   "issue",
+					Type:   "object",
+					Fields: []spec.Param{{Name: "notes", Type: "string"}},
+				}},
+			},
+		},
+		{
+			name: "multipart stays unwrapped",
+			endpoint: spec.Endpoint{
+				RequestContentType: "multipart/form-data",
+				Body: []spec.Param{{
+					Name:   "issue",
+					Type:   "object",
+					Fields: []spec.Param{{Name: "notes", Type: "string"}},
+				}},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, bodyResourceWrapKey(tc.endpoint))
+		})
+	}
+}
+
+func TestAssignJSONBodyMap(t *testing.T) {
+	t.Parallel()
+
+	wrapped := spec.Endpoint{Body: []spec.Param{{
+		Name:   "issue",
+		Type:   "object",
+		Fields: []spec.Param{{Name: "notes", Type: "string"}},
+	}}}
+	require.Equal(t, `body = map[string]any{"issue": bodyMap}`, assignJSONBodyMap(wrapped, "bodyMap", "body"))
+	require.Equal(t, `var body any = map[string]any{"issue": bodyMap}`, declareJSONBodyMap(wrapped, "bodyMap", "body"))
+
+	flat := spec.Endpoint{Body: []spec.Param{{Name: "user_id", Type: "int"}}}
+	require.Equal(t, "body = bodyMap", assignJSONBodyMap(flat, "bodyMap", "body"))
+	require.Equal(t, "var body any = bodyMap", declareJSONBodyMap(flat, "bodyMap", "body"))
+}
+
+func TestBodyMapForEndpointVars_ResourceWrapFillsInnerFields(t *testing.T) {
+	t.Parallel()
+
+	wrapped := spec.Endpoint{Body: []spec.Param{{
+		Name: "issue",
+		Type: "object",
+		Fields: []spec.Param{
+			{Name: "notes", Type: "string"},
+			{Name: "subject", Type: "string"},
+		},
+	}}}
+	got := bodyMapForEndpointVars(wrapped, "\t", "bodyMap", "body")
+	require.Contains(t, got, `bodyMap["notes"] = bodyIssueNotes`)
+	require.Contains(t, got, `bodyMap["subject"] = bodyIssueSubject`)
+	require.NotContains(t, got, `bodyMap["issue"]`)
+	require.NotContains(t, got, "nestedIssue")
+
+	flat := spec.Endpoint{Body: []spec.Param{{Name: "user_id", Type: "int"}}}
+	got = bodyMapForEndpointVars(flat, "\t", "bodyMap", "body")
+	require.Contains(t, got, `bodyMap["user_id"] = bodyUserId`)
+	require.NotContains(t, got, `map[string]any{"`)
+}
+
 func TestBodyHasStringBackedBool(t *testing.T) {
 	t.Parallel()
 	endpoint := spec.Endpoint{Body: []spec.Param{{

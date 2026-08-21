@@ -2258,10 +2258,11 @@ func absoluteRequestPathTemplateSource(path string) string {
 type Endpoint struct {
 	Method string `yaml:"method" json:"method"`
 	Path   string `yaml:"path" json:"path"`
-	// Mutation explicitly marks an endpoint as mutating when its transport
-	// method is not enough to convey the side effect, such as a GET action.
-	// The generator uses this signal for MCP safety classification.
-	Mutation    bool   `yaml:"mutation,omitempty" json:"mutation,omitempty"`
+	// Mutation is the optional explicit read/write override. nil means
+	// unset (classify from verb, operation name, and body shape). true
+	// marks a GET action as state-changing; false marks a POST (or other
+	// non-GET) endpoint as a read so generated commands print the body.
+	Mutation    *bool  `yaml:"mutation,omitempty" json:"mutation,omitempty"`
 	BaseURL     string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
 	Description string `yaml:"description" json:"description"`
 	// Example is an optional Cobra Example string for this endpoint command.
@@ -2410,11 +2411,11 @@ type WalkerConfig struct {
 	// (primary key) when empty. Use this when the child path needs a parent
 	// field that is not the parent's primary key.
 	KeyField string `yaml:"key_field,omitempty" json:"key_field,omitempty"`
-	// KeyParam is the placeholder name in the child path that receives the
-	// extracted key value. Defaults to the first {placeholder} found in the
-	// child's Path when empty. Set this explicitly when the child path has
-	// multiple placeholders or when the placeholder name does not match the
-	// auto-detection convention.
+	// KeyParam is the child request slot that receives the extracted key
+	// value: a {placeholder} in the path, or a query parameter name when
+	// the child path has no matching placeholder. Defaults to the first
+	// {placeholder} found in the child's Path when empty. Set this
+	// explicitly when the child path has zero or multiple placeholders.
 	KeyParam string `yaml:"key_param,omitempty" json:"key_param,omitempty"`
 }
 
@@ -2474,6 +2475,15 @@ func (e *Endpoint) UnmarshalJSON(data []byte) error {
 	*e = Endpoint(out)
 	e.BodySet = bodySet
 	return nil
+}
+
+// MutationOverride reports the explicit mutation flag. set is false when
+// the spec omitted mutation, so callers can distinguish unset from false.
+func (e Endpoint) MutationOverride() (value, set bool) {
+	if e.Mutation == nil {
+		return false, false
+	}
+	return *e.Mutation, true
 }
 
 func (e Endpoint) EffectiveResponseFormat() string {

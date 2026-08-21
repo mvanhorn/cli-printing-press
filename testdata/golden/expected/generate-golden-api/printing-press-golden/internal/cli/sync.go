@@ -227,9 +227,9 @@ Resource scoping:
 
 			started := time.Now()
 			// prune gates deletion reconciliation: a full sync prunes local rows
-			// the API no longer returns within a fully-enumerated partition, unless
-			// --no-prune disables it. Flat tenant-scoped reconcile (per resource)
-			// and dependent per-parent reconcile share this gate.
+			// the API no longer returns after a complete walk, unless --no-prune
+			// disables it. Flat tenant-scoped / single-tenant reconcile (per
+			// resource) and dependent per-parent reconcile share this gate.
 			prune := full && !noPrune
 			work := make(chan string, len(resources))
 			results := make(chan syncResult, len(resources))
@@ -399,7 +399,7 @@ Resource scoping:
 
 	cmd.Flags().StringSliceVar(&resources, "resources", nil, "Comma-separated resource types to sync. Naming a parent also runs its parent-keyed dependents (see Long help for scoping).")
 	cmd.Flags().BoolVar(&full, "full", false, "Full resync (ignore previous checkpoint)")
-	cmd.Flags().BoolVar(&noPrune, "no-prune", false, "Disable deletion reconciliation on --full (by default a full sync prunes local rows the API no longer returns for a fully-enumerated parent partition)")
+	cmd.Flags().BoolVar(&noPrune, "no-prune", false, "Disable deletion reconciliation on --full (by default a full sync prunes local rows the API no longer returns after a complete walk)")
 	cmd.Flags().StringVar(&since, "since", "", "Incremental sync duration (e.g. 7d, 24h, 1w, 30m)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
 	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database file path (default: resolved data directory data.db)")
@@ -540,12 +540,14 @@ func syncResource(ctx context.Context, c interface {
 	var consumedTotal int
 	anomalyEmitted := false
 
-	// Flat tenant-scoped reconcile bookkeeping (mirrors the dependent loop's
-	// partitionOutcome machinery). flatReconcilable gates all of it: only
-	// resources classified reconcileMode=="flat" collect seen IDs and prune.
-	// outcome.complete is set ONLY at proven natural ends; any abnormal break
-	// sets outcome.reason and leaves complete=false so the reconcile SKIPS.
-	flatReconcilable := resourceReconcileMode(resource) == "flat"
+	// Flat reconcile bookkeeping (mirrors the dependent loop's partitionOutcome
+	// machinery). flatReconcilable gates all of it: only resources classified
+	// "flat" (tenant partition) or "flat_global" (whole table) collect seen IDs
+	// and prune. outcome.complete is set ONLY at proven natural ends; any
+	// abnormal break sets outcome.reason and leaves complete=false so the
+	// reconcile SKIPS.
+	reconcileMode := resourceReconcileMode(resource)
+	flatReconcilable := resourceIsFlatReconcilable(reconcileMode)
 	outcome := partitionOutcome{}
 	var seenIDs []string
 
@@ -838,6 +840,8 @@ func syncResource(ctx context.Context, c interface {
 			// the operator's page ceiling fired on that same request.
 			if capResumed {
 				outcome.reason = "max_pages_cap"
+			} else if paginationEndUnprovable(resourceSupportsPagination(resource), nextCursor, fetchedThisPage, capPageLimit, data, responsePathForResource(resource, path)...) {
+				outcome.reason = "cursor_unavailable"
 			} else if !hasMore ||
 				shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, capPageLimit) {
 				outcome.complete = true
@@ -871,6 +875,10 @@ func syncResource(ctx context.Context, c interface {
 			outcome.complete = true // resource declares no pagination: one page is the whole set
 			break
 		}
+		if paginationEndUnprovable(true, nextCursor, fetchedThisPage, pageSize.limit, data, responsePathForResource(resource, path)...) {
+			outcome.reason = "cursor_unavailable"
+			break
+		}
 		if !hasMore || shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, pageSize.limit) {
 			outcome.complete = true
 			break
@@ -897,36 +905,54 @@ func syncResource(ctx context.Context, c interface {
 		cursor = nextCursor
 	}
 
-	// Flat tenant-scoped reconcile: prune local rows the API no longer returns
-	// within THIS tenant's partition, gated on a proven-complete sync.
-	//   - Unknown tenant (resolveTenantID()=="") ⇒ SKIP, zero deletes. This is
-	//     the OPPOSITE of the dependent fan-out fallback (which enumerates
-	//     unscoped): a flat delete cannot be safely scoped without a tenant, so
-	//     we never delete on unknown.
+	// Flat reconcile: prune local rows the API no longer returns, gated on a
+	// proven-complete sync.
+	//   - flat_global (single-tenant): the table is the partition. No tenant
+	//     resolver is required.
+	//   - flat (tenant-scoped): unknown tenant (resolveTenantID()=="") ⇒ SKIP,
+	//     zero deletes. This is the OPPOSITE of the dependent fan-out fallback
+	//     (which enumerates unscoped): a tenant-scoped delete cannot be safely
+	//     scoped without a tenant, so we never delete on unknown.
 	//   - Incomplete sync (outcome.complete==false) ⇒ SKIP with the recorded
-	//     reason; an abnormal break never proves the partition was enumerated.
+	//     reason; an abnormal or unprovable end never proves the partition was
+	//     enumerated.
 	if prune && flatReconcilable {
-		def := flatReconcileDef(resource)
-		tenantUUID := resolveTenantID()
-		if tenantUUID == "" {
-			fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","reason":"unknown-tenant"}`+"\n", resource)
-		} else if outcome.complete {
-			deleted, rerr := db.ReconcilePartition(
-				resource, "$."+def.BodyField, tenantUUID,
-				seenIDs, reconcileTypedTable(resource), store.CascadeJunctionsFor(resource),
-			)
-			if rerr != nil {
-				fmt.Fprintf(syncEvents, `{"event":"reconcile_error","resource":"%s","scope":"%s","error":%q}`+"\n", resource, tenantUUID, rerr.Error())
+		if reconcileMode == "flat_global" {
+			if outcome.complete {
+				deleted, rerr := db.ReconcileAll(
+					resource, seenIDs, reconcileTypedTable(resource), store.CascadeJunctionsFor(resource),
+				)
+				if rerr != nil {
+					fmt.Fprintf(syncEvents, `{"event":"reconcile_error","resource":"%s","scope":"*","error":%q}`+"\n", resource, rerr.Error())
+				} else {
+					fmt.Fprintf(syncEvents, `{"event":"reconcile","resource":"%s","scope":"*","deleted":%d}`+"\n", resource, deleted)
+				}
 			} else {
-				fmt.Fprintf(syncEvents, `{"event":"reconcile","resource":"%s","scope":"%s","deleted":%d}`+"\n", resource, tenantUUID, deleted)
+				fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"*","reason":%q}`+"\n", resource, outcome.reason)
 			}
 		} else {
-			fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"%s","reason":%q}`+"\n", resource, tenantUUID, outcome.reason)
+			def := flatReconcileDef(resource)
+			tenantUUID := resolveTenantID()
+			if tenantUUID == "" {
+				fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","reason":"unknown-tenant"}`+"\n", resource)
+			} else if outcome.complete {
+				deleted, rerr := db.ReconcilePartition(
+					resource, "$."+def.BodyField, tenantUUID,
+					seenIDs, reconcileTypedTable(resource), store.CascadeJunctionsFor(resource),
+				)
+				if rerr != nil {
+					fmt.Fprintf(syncEvents, `{"event":"reconcile_error","resource":"%s","scope":"%s","error":%q}`+"\n", resource, tenantUUID, rerr.Error())
+				} else {
+					fmt.Fprintf(syncEvents, `{"event":"reconcile","resource":"%s","scope":"%s","deleted":%d}`+"\n", resource, tenantUUID, deleted)
+				}
+			} else {
+				fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"%s","reason":%q}`+"\n", resource, tenantUUID, outcome.reason)
+			}
 		}
 	} else if prune {
-		// Unpartitioned resources cannot be reconciled safely: the generated
-		// store only supports scoped mark-and-sweep deletion. Emit the decision
-		// so --full never implies that unsupported rows were pruned.
+		// Resources that are not flat-reconcilable (no PK, discriminator, or
+		// unscoped in a tenant-scoped print) cannot be pruned safely. Emit the
+		// decision so --full never implies that unsupported rows were pruned.
 		fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","reason":"unsupported-resource-shape"}`+"\n", resource)
 	}
 
@@ -1015,6 +1041,17 @@ type paginationDefaults struct {
 
 func shortPageEndsPagination(cursorType string, fetched, limit int) bool {
 	return cursorType != "cursor" && cursorType != "page_token" && fetched < limit
+}
+
+// paginationEndUnprovable is true when pagination is declared, the page is
+// full, there is no followable cursor, and the API did not explicitly say
+// has_more=false. extractPageItemsWithPagination reports hasMore=false for a
+// bare array, which is not a proven end — prune must skip.
+func paginationEndUnprovable(declared bool, nextCursor string, fetched, limit int, data json.RawMessage, responsePaths ...string) bool {
+	if !declared || nextCursor != "" || fetched < limit {
+		return false
+	}
+	return pageMayHaveMore(data, responsePaths...)
 }
 
 func syncPageItemsEqual(previous, current []json.RawMessage) bool {
@@ -1374,7 +1411,9 @@ func responseDeclaresFailure(data json.RawMessage) bool {
 }
 
 func envelopeReportsFailure(envelope map[string]json.RawMessage) bool {
-	for _, key := range []string{"success", "Success"} {
+	// JSend uses success; Slack-style RPC uses ok. Both declare failure
+	// in-band on HTTP 200, so a false value must not reach upsert.
+	for _, key := range []string{"success", "Success", "ok", "Ok"} {
 		if raw, ok := envelope[key]; ok {
 			var success bool
 			if json.Unmarshal(raw, &success) == nil {
@@ -2122,11 +2161,19 @@ type dependentPathParamDef struct {
 }
 
 func replaceDependentPathParam(path, name, parentResource, field, value string) string {
+	return replacePathParam(path, name, dependentParentKeyValue(parentResource, field, value))
+}
+
+// dependentParentKeyValue prepares a parent-row value for a child request.
+// BareResourceID strips a composite storage-key prefix. URI-typed parent
+// fields then reduce to the trailing URL segment so path and query keys
+// share the same ID-tier contract.
+func dependentParentKeyValue(parentResource, field, value string) string {
 	bareValue := store.BareResourceID(value)
 	if resourceURLIDPathParam(parentResource, field) {
-		return replaceURLIDPathParam(path, name, bareValue)
+		return pathParamSegmentValue(bareValue)
 	}
-	return replacePathParam(path, name, bareValue)
+	return bareValue
 }
 
 func resourceURLIDPathParam(resource, field string) bool {
@@ -2250,8 +2297,13 @@ func syncOneParent(
 	parentIDJSON, _ := json.Marshal(parentID)
 	parentFKKey := dep.ParentTable + "_id"
 	path := dep.PathTemplate
+	queryParams := make([]dependentPathParamDef, 0)
 	for _, pathParam := range pathParams {
-		path = replaceDependentPathParam(path, pathParam.Param, dep.ParentTable, pathParam.Field, parentRow[pathParam.Field])
+		if strings.Contains(path, "{"+pathParam.Param+"}") {
+			path = replaceDependentPathParam(path, pathParam.Param, dep.ParentTable, pathParam.Field, parentRow[pathParam.Field])
+			continue
+		}
+		queryParams = append(queryParams, pathParam)
 	}
 
 	cursor := ""
@@ -2276,6 +2328,14 @@ func syncOneParent(
 		if depSinceTS != "" {
 			params[depSinceParam] = depSinceTS
 		}
+		// key_param that is not a {placeholder} is a query parent key
+		// (e.g. GET /messages?roomId=). Inject before user flags so
+		// --resource-param can override deliberately.
+		for _, queryParam := range queryParams {
+			if value := parentRow[queryParam.Field]; value != "" {
+				params[queryParam.Param] = dependentParentKeyValue(dep.ParentTable, queryParam.Field, value)
+			}
+		}
 		// Apply user flags last so they win over spec-derived cursor/since/limit.
 		// Dependent path: --param is skipped (already scoped by the parent path
 		// segment); --global-param and --resource-param still apply.
@@ -2295,15 +2355,17 @@ func syncOneParent(
 				} else {
 					fmt.Fprintln(syncEvents, syncWarningJSON(dep.Name, parentID, w.Status, w.Reason, w.Message))
 				}
-			} else if humanFriendly {
-				outcome.reason = "fetch_error"
-				fmt.Fprintf(os.Stderr, "\n  %s: error for parent %s: %v\n", dep.Name, parentID, err)
 			} else {
 				outcome.reason = "fetch_error"
-				// Non-warning failures were previously silent in JSON mode —
-				// operators only saw the missing rows. Emit a structured
-				// sync_error so the API body and status are inspectable.
-				fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, parentID, err))
+				rep.failure = err
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\n  %s: error for parent %s: %v\n", dep.Name, parentID, err)
+				} else {
+					// Non-warning failures were previously silent in JSON mode —
+					// operators only saw the missing rows. Emit a structured
+					// sync_error so the API body and status are inspectable.
+					fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, parentID, err))
+				}
 			}
 			break
 		}
@@ -2480,6 +2542,10 @@ func syncOneParent(
 		lastNextCursor = nextCursor
 		if !resourceSupportsPagination(dep.Name) {
 			outcome.complete = true
+			break
+		}
+		if paginationEndUnprovable(true, nextCursor, len(items), pageSize.limit, data, responsePathForResource(dep.Name, path)...) {
+			outcome.reason = "cursor_unavailable"
 			break
 		}
 		if !hasMore || shortPageEndsPagination(pageSize.cursorType, len(items), pageSize.limit) {
@@ -2819,11 +2885,12 @@ var resourceIDFieldOverrides = map[string]string{
 	"tasks":    "id",
 }
 
-// partitionOutcome tracks whether a sync loop (flat tenant-scoped OR dependent
-// per-parent) enumerated its partition completely. complete is set ONLY at
-// proven natural ends; any abnormal break records a reason and leaves
-// complete=false so the gated reconcile SKIPS. scopeVal carries the dependent
-// loop's parent scope value (unused by the flat path).
+// partitionOutcome tracks whether a sync loop (flat tenant-scoped, single-tenant
+// whole-table, OR dependent per-parent) enumerated its partition completely.
+// complete is set ONLY at proven natural ends; any abnormal or unprovable break
+// records a reason and leaves complete=false so the gated reconcile SKIPS.
+// scopeVal carries the dependent loop's parent scope value (unused by the flat
+// path).
 type partitionOutcome struct {
 	complete bool
 	reason   string
@@ -2831,16 +2898,21 @@ type partitionOutcome struct {
 }
 
 // flatReconcileModes maps a flat resource to its reconcile mode classification
-// (from SyncableResource.ReconcileMode, set by the profiler when a flat resource
-// carries a tenant scope column AND an extractable IDField AND no discriminator).
-// Only "flat" resources are emitted; resourceReconcileMode returns "" for any
-// resource absent here, which is all the flat reconcile gate checks for.
-var flatReconcileModes = map[string]string{}
+// (from SyncableResource.ReconcileMode). "flat" is a tenant-scoped partition;
+// "flat_global" is a single-tenant whole-table partition. resourceReconcileMode
+// returns "" for any resource absent here.
+var flatReconcileModes = map[string]string{
+	"projects": "flat_global",
+}
 
 // resourceReconcileMode returns the flat reconcile classification for a resource,
 // or "" when it is not a flat-reconcilable resource.
 func resourceReconcileMode(resource string) string {
 	return flatReconcileModes[resource]
+}
+
+func resourceIsFlatReconcilable(mode string) bool {
+	return mode == "flat" || mode == "flat_global"
 }
 
 // flatReconcileDefT carries the per-resource metadata the flat reconcile call

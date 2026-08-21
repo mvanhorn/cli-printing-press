@@ -1,5 +1,29 @@
 # Changelog
 
+## [4.31.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.0...v4.31.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* **cli:** keep POST read/search/list response bodies ([#4274](https://github.com/mvanhorn/cli-printing-press/issues/4274)) ([2fb6337](https://github.com/mvanhorn/cli-printing-press/commit/2fb6337b595fb39651b1bfbcf2de131dac44dcd6))
+* **cli:** pin golang.org/x/text above GO-2026-5970 ([#4268](https://github.com/mvanhorn/cli-printing-press/issues/4268)) ([993667e](https://github.com/mvanhorn/cli-printing-press/commit/993667e18296f91efab690b555881c10ae297340))
+* **cli:** send x-pp-sync-walker query-param parent keys ([#4271](https://github.com/mvanhorn/cli-printing-press/issues/4271)) ([61dd4bf](https://github.com/mvanhorn/cli-printing-press/commit/61dd4bfd82b5600f8d47c68f114145c0b6b59589)), closes [#3816](https://github.com/mvanhorn/cli-printing-press/issues/3816)
+* **cli:** treat HTTP 200 ok:false envelopes as sync failures ([#4269](https://github.com/mvanhorn/cli-printing-press/issues/4269)) ([8944db4](https://github.com/mvanhorn/cli-printing-press/commit/8944db4a81c1d1a67d99f5e52db9b96ae340e000)), closes [#3956](https://github.com/mvanhorn/cli-printing-press/issues/3956)
+
+## [4.31.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.30.3...v4.31.0) (2026-08-18)
+
+
+### Features
+
+* **skills:** cut retro always-loaded context by 93% ([#3776](https://github.com/mvanhorn/cli-printing-press/issues/3776)) ([625e876](https://github.com/mvanhorn/cli-printing-press/commit/625e876ef83e401de6938eb1fa898152b1a01d17))
+
+
+### Bug Fixes
+
+* **cli:** prune single-tenant mirrors; do not mark truncated walks complete. ([#4247](https://github.com/mvanhorn/cli-printing-press/issues/4247)) ([47bf39b](https://github.com/mvanhorn/cli-printing-press/commit/47bf39b4529c17e42b1ceae68cf50e2c2a341d69))
+* **cli:** skip MCP tools for sub-resource parent groups ([#4245](https://github.com/mvanhorn/cli-printing-press/issues/4245)) ([de5bd88](https://github.com/mvanhorn/cli-printing-press/commit/de5bd88432f4830bd1ba38c22a92c24650c4402e))
+* **cli:** wrap mutation bodies under spec resource root. ([#4246](https://github.com/mvanhorn/cli-printing-press/issues/4246)) ([3ab775b](https://github.com/mvanhorn/cli-printing-press/commit/3ab775be0125416309f705e4670041e321f98d66))
+
 ## [4.30.3](https://github.com/mvanhorn/cli-printing-press/compare/v4.30.2...v4.30.3) (2026-08-17)
 
 
