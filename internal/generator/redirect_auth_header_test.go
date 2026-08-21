@@ -22,7 +22,7 @@ func TestClientCheckRedirectDeletesHeaderOnCrossHost(t *testing.T) {
 		client := generateClientSource(t, apiSpec)
 		closure := checkRedirectClosureBody(t, client)
 
-		require.Contains(t, closure, `if req.URL.Host != via[0].URL.Host {`)
+		require.Contains(t, closure, `if req.URL.Host != via[0].URL.Host || req.URL.Scheme != via[0].URL.Scheme {`)
 		require.Contains(t, closure, `if req.URL.Host == via[0].URL.Host && req.URL.Scheme == via[0].URL.Scheme {`)
 		require.Contains(t, closure, `req.Header.Set("X-Api-Key", h)`)
 		require.Contains(t, closure, `req.Header.Del("X-Api-Key")`)
