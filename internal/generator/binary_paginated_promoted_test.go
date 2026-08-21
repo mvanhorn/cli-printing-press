@@ -103,8 +103,8 @@ func TestGenerateBinaryStoreBackedPromotedThreadsHeader(t *testing.T) {
 		"store-backed binary GET must declare headerOverrides")
 	assert.Contains(t, endpointSrc, `"X-Printing-Press-Binary-Response": "true",`,
 		"store-backed binary GET must include the binary sentinel")
-	assert.Contains(t, endpointSrc, `resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "auto", "voices", false, path, params, headerOverrides, "", cmd.ErrOrStderr())`,
-		"store-backed binary GET must thread headerOverrides through the strategy-aware resolver")
+	assert.Contains(t, endpointSrc, `resolveReadWithStrategyResponsePathAndJSONGuard(cmd.Context(), c, flags, "auto", "voices", false, path, params, headerOverrides, "", false, cmd.ErrOrStderr())`,
+		"store-backed binary GET must skip the live JSON guard and thread headerOverrides")
 }
 
 func TestGenerateBinaryMCPToolsThreadHeaderOverrides(t *testing.T) {

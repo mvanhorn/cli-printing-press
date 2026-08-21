@@ -81,7 +81,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 		// TODO: replace placeholder example values before relying on this for live dogfood.
 {{- end}}
 		Example: {{printf "%q" $example}},
-		Annotations: map[string]string{ {{- if not .APISpec.IsLocalSQLiteSource}}"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, {{end}}"pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .EffectivePath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}{{if endpointSkipsErrorPathProbe .Endpoint}}, "pp:no-error-path-probe": "true"{{end}}{{if .Endpoint.HappyArgs}}, "pp:happy-args": {{printf "%q" .Endpoint.HappyArgs}}{{end}}{{if .Endpoint.HappyStdin}}, "pp:happy-stdin": {{printf "%q" .Endpoint.HappyStdin}}{{end}}{{if .Endpoint.LiveDogfoodRequiresTier}}, "pp:requires-tier": {{printf "%q" .Endpoint.LiveDogfoodRequiresTier}}{{end}}},
+		Annotations: map[string]string{ {{- if not .APISpec.IsLocalSQLiteSource}}"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, {{end}}"pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .EffectivePath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}{{if endpointSkipsErrorPathProbe .Endpoint}}, "pp:no-error-path-probe": "true"{{end}}{{if .Endpoint.HappyArgs}}, "pp:happy-args": {{printf "%q" .Endpoint.HappyArgs}}{{end}}{{if .Endpoint.HappyStdin}}, "pp:happy-stdin": {{printf "%q" .Endpoint.HappyStdin}}{{end}}{{if .Endpoint.LiveDogfoodRequiresTier}}, "pp:requires-tier": {{printf "%q" .Endpoint.LiveDogfoodRequiresTier}}{{end}}{{if .Endpoint.UsesBinaryResponse}}, "pp:typed-exit-codes": "0,1"{{end}}},
 		RunE: func(cmd *cobra.Command, args []string) error {
 {{- if endpointHasRequiredInput .Endpoint}}
 			// Bare invocation of a command with required input prints help
@@ -424,7 +424,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- if .HasStore}}
 {{- if .IsReadOnly}}
-{{- if eq .Endpoint.ResponseFormat "html"}}
+{{- if or .Endpoint.UsesHTMLResponse .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse}}
 			data, prov, err := resolveReadWithStrategyResponsePathAndJSONGuard(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, false, cmd.ErrOrStderr())
 {{- else}}
 			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, cmd.ErrOrStderr())
