@@ -2552,7 +2552,9 @@ func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, v
 // snapshot's recorded spec checksum to a sha256 over the current spec
 // bytes. Same checksum (or no recorded checksum) → run the full AST-aware
 // merge; mismatch or unreadable manifest → fall back to NOVEL-only
-// preservation.
+// preservation and print every skipped TEMPLATED-* hand-edit. Same-spec
+// regen still carries those edits; the drop list is the cross-spec
+// honesty so the operator sees the loss instead of a mode suffix alone.
 //
 // When the merge updates go.mod (snapshot had hand-added requires), the
 // caller must re-run `go mod tidy` against freshDir to refresh go.sum —
@@ -2600,6 +2602,11 @@ func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte) (
 		mode = " (cross-spec: novel-only preservation)"
 	}
 	fmt.Fprintf(os.Stderr, "Force regen merged %d preserved files / %d AddCommand calls%s\n", preserved, injected, mode)
+	if novelOnly {
+		if warning := regenmerge.FormatSkippedTemplatedHandEdits(report); warning != "" {
+			fmt.Fprint(os.Stderr, warning)
+		}
+	}
 	return report.GoMod != nil && report.GoMod.Merged, nil
 }
 
