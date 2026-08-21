@@ -412,19 +412,24 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			// "Moved Permanently" body back to the caller.
 			return errors.New("stopped after 10 redirects")
 		}
-		// Never carry credential material across a host-changing redirect.
+		// Never carry credential material across an origin-changing redirect.
 		// Go strips Authorization and Cookie in common cases, but custom
 		// headers and URL query values need explicit removal here.
-		if req.URL.Host != via[0].URL.Host {
+		//
+		// Scheme counts as part of the origin. A same-host https -> http
+		// downgrade would otherwise skip this branch and send the credential
+		// in cleartext.
+		if req.URL.Host != via[0].URL.Host || req.URL.Scheme != via[0].URL.Scheme {
 			req.Header.Del("Authorization")
 		}
 		// Tier routing picks header vs query at request time on a WithTier copy,
 		// while this redirect callback is installed once on the shared
-		// http.Client. On cross-host redirects, delete every tier auth header
-		// name the generated CLI can use; same-host redirects keep Go's copied
-		// header unchanged. Go strips Authorization/Cookie automatically on
-		// cross-host redirects, but not arbitrary tier header names.
-		if req.URL.Host != via[0].URL.Host {
+		// http.Client. On origin-changing redirects, delete every tier auth
+		// header name the generated CLI can use; same-origin redirects keep
+		// Go's copied header unchanged. Go strips Authorization/Cookie
+		// automatically on cross-host redirects, but not arbitrary tier header
+		// names, and a same-host scheme downgrade is not cross-host at all.
+		if req.URL.Host != via[0].URL.Host || req.URL.Scheme != via[0].URL.Scheme {
 			req.Header.Del("Authorization")
 		}
 		return nil

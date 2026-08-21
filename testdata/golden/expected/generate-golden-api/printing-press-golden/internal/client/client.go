@@ -309,10 +309,14 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			// "Moved Permanently" body back to the caller.
 			return errors.New("stopped after 10 redirects")
 		}
-		// Never carry credential material across a host-changing redirect.
+		// Never carry credential material across an origin-changing redirect.
 		// Go strips Authorization and Cookie in common cases, but custom
 		// headers and URL query values need explicit removal here.
-		if req.URL.Host != via[0].URL.Host {
+		//
+		// Scheme counts as part of the origin. A same-host https -> http
+		// downgrade would otherwise skip this branch and send the credential
+		// in cleartext.
+		if req.URL.Host != via[0].URL.Host || req.URL.Scheme != via[0].URL.Scheme {
 			req.Header.Del("X-API-Key")
 		}
 		// Same-origin gate mirrors Go's shouldCopyHeaderOnRedirect: a
