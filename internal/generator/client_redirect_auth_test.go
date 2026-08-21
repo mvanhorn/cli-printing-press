@@ -38,6 +38,8 @@ func TestClientCheckRedirectReappliesAuth(t *testing.T) {
 			"bearer auth must re-set Authorization on redirect to refresh nonce-bound headers")
 		require.Contains(t, closure, "req.URL.Host == via[0].URL.Host",
 			"auth re-stamp must be gated on same-host so a cross-domain 3xx (open redirect or partner handoff) does not leak the credential — Go's automatic Authorization stripping has already run by the time CheckRedirect is called, and any header set here is sent verbatim")
+		require.Contains(t, closure, "req.URL.Scheme == via[0].URL.Scheme",
+			"the gate must compare scheme as well as host: a same-host https -> http downgrade is same-host, so host equality alone replays the credential over cleartext, and Go's automatic stripping does not cover a custom header (see #4291)")
 	})
 
 	t.Run("api_key in custom header re-sets that header, not Authorization", func(t *testing.T) {
@@ -57,6 +59,8 @@ func TestClientCheckRedirectReappliesAuth(t *testing.T) {
 			"must not also stamp Authorization when the spec uses a custom header")
 		require.Contains(t, closure, "req.URL.Host == via[0].URL.Host",
 			"custom-header auth must also be same-host gated to avoid leaking credentials across domains")
+		require.Contains(t, closure, "req.URL.Scheme == via[0].URL.Scheme",
+			"custom-header auth is the case that matters most for the scheme check: a custom header is never in the set Go strips automatically, so a same-host https -> http downgrade sends it in cleartext (see #4291)")
 	})
 
 	t.Run("api_key in query parameter skips header re-set", func(t *testing.T) {
