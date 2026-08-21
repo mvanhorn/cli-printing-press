@@ -220,10 +220,9 @@ func (g *Generator) novelFeatureStubShouldSkipGenerated(parts []string, generate
 	return novelFeatureStubCollidesWithGeneratedCommand(parts, generatedPaths)
 }
 
-// novelFeatureStubCollidesWithActiveFrameworkCommand reports a root-level
-// novel path that would register the same cobra Use as a framework command
-// this CLI actually emits. Nested paths are left alone so features can
-// attach under an existing framework parent (`sync verify`).
+// Only root paths compete with framework commands for registration on rootCmd.
+// Nested paths remain valid because they attach beneath the existing framework
+// parent instead of shadowing it (`sync verify`).
 func (g *Generator) novelFeatureStubCollidesWithActiveFrameworkCommand(parts []string) bool {
 	if len(parts) != 1 {
 		return false

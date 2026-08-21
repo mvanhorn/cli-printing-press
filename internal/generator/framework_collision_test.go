@@ -180,7 +180,7 @@ func TestActiveFrameworkCobraUseNamesIncludesLearnCommands(t *testing.T) {
 	}
 
 	rootReserved := generatedRootReservedUseNames(t, outputDir)
-	for _, name := range []string{"recall", "teach", "learnings", "playbook"} {
+	for _, name := range []string{"recall", "teach", "learnings", "playbook", "teach-pattern", "teach-lookup", "teach-playbook"} {
 		_, ok := rootReserved[name]
 		assert.True(t, ok, "generated learn-enabled root must register reserved use %q", name)
 	}
