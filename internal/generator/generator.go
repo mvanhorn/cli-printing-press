@@ -248,6 +248,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"join":                                strings.Join,
 		"camel":                               toCamel,
 		"cmdIdent":                            commandIdent,
+		"subResourceCmdIdent":                 subResourceCmdIdent,
 		"snake":                               naming.Snake,
 		"pascal":                              toPascal,
 		"goType":                              goType,
@@ -3796,6 +3797,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				ResourceName  string
 				FuncPrefix    string
 				CommandPath   string
+				CommandUse    string
 				Short         string
 				Resource      spec.Resource
 				NovelChildren []novelFeatureChildRender
@@ -3850,14 +3852,21 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 		}
 
 		// Sub-resource parent + endpoint files
+		collidingLeaves := collectionItemCollisionLeaves(resource)
 		for subName, originalSubResource := range resource.SubResources {
 			// Same OPTIONS filter as the top-level resource, applied to
 			// the sub-resource view for the same consistency reason.
 			subResource := withoutOptionsEndpoints(originalSubResource)
+			naming := subResourceCommandNamesFor(name, subName, collidingLeaves[subName])
+			commandUse := ""
+			if collidingLeaves[subName] {
+				commandUse = naming.commandUse
+			}
 			subParentData := struct {
 				ResourceName  string
 				FuncPrefix    string
 				CommandPath   string
+				CommandUse    string
 				Short         string
 				Resource      spec.Resource
 				NovelChildren []novelFeatureChildRender
@@ -3865,15 +3874,16 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				*spec.APISpec
 			}{
 				ResourceName:  subName,
-				FuncPrefix:    name + "-" + subName,
-				CommandPath:   name + " " + subName,
+				FuncPrefix:    naming.funcPrefix,
+				CommandPath:   naming.commandPath,
+				CommandUse:    commandUse,
 				Short:         parentCommandShort(subName, name, subResource, ""),
 				Resource:      subResource,
-				NovelChildren: novelChildrenByParent[toKebab(name)+" "+toKebab(subName)],
+				NovelChildren: novelChildrenByParent[naming.commandPath],
 				APIResource:   false,
 				APISpec:       g.Spec,
 			}
-			subParentPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName)+".go")
+			subParentPath := filepath.Join("internal", "cli", naming.fileStem+".go")
 			if err := g.renderTemplate("command_parent.go.tmpl", subParentPath, subParentData); err != nil {
 				return fmt.Errorf("rendering sub-parent %s/%s: %w", name, subName, err)
 			}
@@ -3891,8 +3901,8 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 					ResourceName:  subName,
 					EffectivePath: effectiveSubEndpointPath(resource, subResource, endpoint),
 					EffectiveTier: g.Spec.EffectiveTier(effectiveResource, endpoint),
-					FuncPrefix:    name + "-" + subName,
-					CommandPath:   name + " " + subName,
+					FuncPrefix:    naming.funcPrefix,
+					CommandPath:   naming.commandPath,
 					EndpointName:  eName,
 					Endpoint:      endpoint,
 					Resource:      effectiveResource,
@@ -3903,7 +3913,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 					IsReadOnly:    endpointIsReadCommand(endpoint, eName),
 					APISpec:       g.Spec,
 				}
-				epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName+"_"+eName)+".go")
+				epPath := filepath.Join("internal", "cli", safeResourceFileStem(naming.rawStem+"_"+eName)+".go")
 				if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
 					return fmt.Errorf("rendering sub-endpoint %s/%s/%s: %w", name, subName, eName, err)
 				}
@@ -4882,11 +4892,13 @@ func detectAgentMoneyWorkflow(api *spec.APISpec, promotedEndpointNames map[strin
 				return workflow
 			}
 		}
+		collidingLeaves := collectionItemCollisionLeaves(resource)
 		for _, subName := range sortedResourceNames(resource.SubResources) {
 			sub := resource.SubResources[subName]
+			naming := subResourceCommandNamesFor(resourceName, subName, collidingLeaves[subName])
 			for _, endpointName := range sortedEndpointNames(sub.Endpoints) {
 				endpoint := sub.Endpoints[endpointName]
-				class, cmd := agentMoneyCommandForEndpoint(endpoint, []string{toKebab(resourceName), toKebab(subName), toKebab(endpointName)}, false)
+				class, cmd := agentMoneyCommandForEndpoint(endpoint, append(strings.Fields(naming.commandPath), toKebab(endpointName)), false)
 				assignAgentMoneyCommand(&workflow, class, cmd)
 				if workflow.complete() {
 					return workflow

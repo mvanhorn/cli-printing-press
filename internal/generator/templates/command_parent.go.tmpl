@@ -9,7 +9,7 @@ import (
 
 func new{{cmdIdent .FuncPrefix}}Cmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "{{kebab .ResourceName}}",
+		Use:   "{{if .CommandUse}}{{.CommandUse}}{{else}}{{kebab .ResourceName}}{{end}}",
 		Short: "{{.Short}}",
 		Annotations: map[string]string{"mcp:read-only": "true", "pp:parent-group": "true", {{if .APIResource}}"pp:api-resource": "true", {{end}}"pp:typed-exit-codes": "0,2"},
 		RunE: parentNoSubcommandRunE(flags),
@@ -18,7 +18,7 @@ func new{{cmdIdent .FuncPrefix}}Cmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(new{{cmdIdent $.FuncPrefix $eName}}Cmd(flags))
 {{- end}}
 {{- range $subName, $sub := .Resource.SubResources}}
-	cmd.AddCommand(new{{cmdIdent $.FuncPrefix $subName}}Cmd(flags))
+	cmd.AddCommand(new{{subResourceCmdIdent $.FuncPrefix $subName $.Resource}}Cmd(flags))
 {{- end}}
 {{- range .NovelChildren}}
 	addNovelCommandIfAbsent(cmd, newNovel{{.Ident}}Cmd(flags))

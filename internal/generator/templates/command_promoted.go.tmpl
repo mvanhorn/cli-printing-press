@@ -631,7 +631,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- range $subName, $sub := .Resource.SubResources}}
-	cmd.AddCommand(new{{cmdIdent $.FuncPrefix $subName}}Cmd(flags))
+	cmd.AddCommand(new{{subResourceCmdIdent $.FuncPrefix $subName $.Resource}}Cmd(flags))
 {{- end}}
 {{- range .NovelChildren}}
 	addNovelCommandIfAbsent(cmd, newNovel{{.Ident}}Cmd(flags))
