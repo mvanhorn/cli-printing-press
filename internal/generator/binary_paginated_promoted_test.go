@@ -68,6 +68,10 @@ func TestGenerateBinaryPaginatedPromotedThreadsHeader(t *testing.T) {
 		"paginated binary endpoint must pass headerOverrides, not nil")
 	assert.Contains(t, endpointSrc, `}, headerOverrides, flagAll && !flags.dryRun,`,
 		"paginated binary endpoint must thread headerOverrides into paginatedGetWithResponsePath")
+	assert.Contains(t, endpointSrc, `--all is not supported for live binary/text responses`,
+		"storeless paginated binary --all must reject before JSON aggregation")
+	assert.NotContains(t, endpointSrc, `--all is not supported for live HTML responses`,
+		"storeless paginated binary --all must not reuse the HTML rejection")
 }
 
 // Regression: store-backed binary GET previously passed nil to resolveRead,
@@ -145,8 +149,10 @@ func TestGenerateBinaryStoreBackedPaginatedSkipsJSONGuard(t *testing.T) {
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_voices.go")
 	assert.Contains(t, endpointSrc, `resolvePaginatedReadWithStrategyAndJSONGuard(`,
 		"store-backed paginated binary reads must use the JSON-guard variant")
-	assert.Contains(t, endpointSrc, `false, false, cmd.ErrOrStderr())`,
-		"store-backed paginated binary reads must skip the JSON guard without the HTML --all rejection")
+	assert.Contains(t, endpointSrc, `false, liveAllRejectNonJSON, cmd.ErrOrStderr())`,
+		"store-backed paginated binary reads must skip the JSON guard and reject --all as binary/text")
+	assert.NotContains(t, endpointSrc, `liveAllRejectHTML`,
+		"store-backed paginated binary reads must not reuse the HTML --all rejection")
 	assert.NotContains(t, endpointSrc, `resolvePaginatedReadWithStrategy(`,
 		"store-backed paginated binary reads must not use the wrapper that hardcodes guardLiveJSON=true")
 }

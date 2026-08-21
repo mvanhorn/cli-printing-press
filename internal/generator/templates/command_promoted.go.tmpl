@@ -237,9 +237,13 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 
 {{- if $supportsAllPagination}}
-{{- if and (eq .Endpoint.ResponseFormat "html") (not .HasStore)}}
+{{- if and $skipLiveJSONGuard (not .HasStore)}}
 			if flagAll {
+{{- if .Endpoint.UsesHTMLResponse}}
 				return fmt.Errorf("--all is not supported for live HTML responses; omit --all to extract the current page")
+{{- else}}
+				return fmt.Errorf("--all is not supported for live binary/text responses; omit --all to fetch the current page")
+{{- end}}
 			}
 {{- end}}
 {{- if .HasStore}}
@@ -252,7 +256,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				"{{paramWireName .}}": formatCLIParamValue(flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", {{.PageSize}}, "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}", {{printf "%q" .Endpoint.ResponsePath}}, {{if $skipLiveJSONGuard}}false, {{if .Endpoint.UsesHTMLResponse}}true{{else}}false{{end}}, {{end}}cmd.ErrOrStderr())
+			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", {{.PageSize}}, "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}", {{printf "%q" .Endpoint.ResponsePath}}, {{if $skipLiveJSONGuard}}false, {{if .Endpoint.UsesHTMLResponse}}liveAllRejectHTML{{else}}liveAllRejectNonJSON{{end}}, {{end}}cmd.ErrOrStderr())
 {{- else}}
 {{- if eq $dataSourceStrategy "local"}}
 			return fmt.Errorf("data_source_strategy local requires the local store data layer")

@@ -141,6 +141,165 @@ func TestGeneratedBinaryAndTextReadsSkipLiveJSONGuard(t *testing.T) {
 	requireExitCode(t, err, 2)
 }
 
+func TestGeneratedPaginatedBinaryTextRejectsLiveAll(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/feeds/sitemap.xml":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(sitemapXML))
+		case "/feeds/llms.txt":
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("# Docs\nUse the CLI.\n"))
+		case "/items":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"id":"1"}]`))
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	apiSpec := minimalSpec("binary-paginated-all")
+	apiSpec.BaseURL = server.URL
+	apiSpec.Learn.Disabled = true
+	apiSpec.Resources = map[string]spec.Resource{
+		"feeds": {
+			Description: "Non-JSON feeds",
+			Endpoints: map[string]spec.Endpoint{
+				"sitemap": {
+					Method:         http.MethodGet,
+					Path:           "/feeds/sitemap.xml",
+					Description:    "Fetch the XML sitemap",
+					ResponseFormat: spec.ResponseFormatBinary,
+					Params: []spec.Param{
+						{Name: "limit", Type: "integer"},
+						{Name: "after", Type: "string"},
+					},
+					Pagination: &spec.Pagination{
+						Type:           "cursor",
+						LimitParam:     "limit",
+						CursorParam:    "after",
+						NextCursorPath: "next_cursor",
+					},
+				},
+				"robots": {
+					Method:         http.MethodGet,
+					Path:           "/feeds/robots.txt",
+					Description:    "Fetch robots.txt",
+					ResponseFormat: spec.ResponseFormatBinary,
+				},
+			},
+		},
+		"docs": {
+			Description: "Plain-text docs",
+			Endpoints: map[string]spec.Endpoint{
+				"llms": {
+					Method:         http.MethodGet,
+					Path:           "/feeds/llms.txt",
+					Description:    "Fetch llms.txt",
+					ResponseFormat: spec.ResponseFormatText,
+					Params: []spec.Param{
+						{Name: "limit", Type: "integer"},
+						{Name: "after", Type: "string"},
+					},
+					Pagination: &spec.Pagination{
+						Type:           "cursor",
+						LimitParam:     "limit",
+						CursorParam:    "after",
+						NextCursorPath: "next_cursor",
+					},
+				},
+			},
+		},
+		"items": {
+			Description: "JSON items",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      http.MethodGet,
+					Path:        "/items",
+					Description: "List items",
+					Params: []spec.Param{
+						{Name: "limit", Type: "integer"},
+						{Name: "after", Type: "string"},
+					},
+					Pagination: &spec.Pagination{
+						Type:           "cursor",
+						LimitParam:     "limit",
+						CursorParam:    "after",
+						NextCursorPath: "next_cursor",
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, Search: true, MCP: true}
+	require.NoError(t, gen.Generate())
+	requireGeneratedCompiles(t, outputDir)
+
+	feedsSrc := readGeneratedFile(t, outputDir, "internal", "cli", "feeds_sitemap.go")
+	require.Contains(t, feedsSrc, `false, liveAllRejectNonJSON, cmd.ErrOrStderr())`)
+	require.NotContains(t, feedsSrc, `liveAllRejectHTML`)
+
+	docsSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_docs.go")
+	require.Contains(t, docsSrc, `false, liveAllRejectNonJSON, cmd.ErrOrStderr())`)
+
+	itemsSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_items.go")
+	require.Contains(t, itemsSrc, `resolvePaginatedReadWithStrategy(`)
+	require.NotContains(t, itemsSrc, `liveAllRejectNonJSON`)
+
+	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+
+	baseEnv := append(os.Environ(),
+		"HOME="+t.TempDir(),
+		"MYAPI_TOKEN=test-token",
+		strings.ToUpper(strings.ReplaceAll(apiSpec.Name, "-", "_"))+"_BASE_URL="+server.URL,
+	)
+
+	sitemapOut, err := runGeneratedCLI(t, binaryPath, baseEnv, "feeds", "sitemap")
+	require.NoError(t, err, sitemapOut)
+	require.Contains(t, sitemapOut, `<urlset`)
+	require.NotContains(t, sitemapOut, "[]")
+
+	allOut, err := runGeneratedCLI(t, binaryPath, baseEnv, "feeds", "sitemap", "--all")
+	require.Error(t, err, allOut)
+	require.Contains(t, allOut, "--all is not supported for live binary/text responses")
+	require.NotContains(t, allOut, "--all is not supported for live HTML responses")
+	require.NotContains(t, allOut, `"results":[]`)
+
+	docsAllOut, err := runGeneratedCLI(t, binaryPath, baseEnv, "docs", "--all")
+	require.Error(t, err, docsAllOut)
+	require.Contains(t, docsAllOut, "--all is not supported for live binary/text responses")
+	require.NotContains(t, docsAllOut, "--all is not supported for live HTML responses")
+
+	localAllOut, err := runGeneratedCLI(t, binaryPath, baseEnv, "feeds", "sitemap", "--all", "--data-source", "local")
+	require.Error(t, err, localAllOut)
+	require.NotContains(t, localAllOut, "--all is not supported for live binary/text responses")
+	require.Contains(t, localAllOut, "no local data")
+
+	itemsOut, err := runGeneratedCLI(t, binaryPath, baseEnv, "items", "--json", "--all")
+	require.NoError(t, err, itemsOut)
+	require.Contains(t, itemsOut, `"id": "1"`)
+
+	storelessSpec := *apiSpec
+	storelessSpec.Learn.Disabled = true
+	storelessDir := filepath.Join(t.TempDir(), naming.CLI(storelessSpec.Name))
+	storelessGen := New(&storelessSpec, storelessDir)
+	storelessGen.VisionSet = VisionTemplateSet{MCP: true}
+	require.NoError(t, storelessGen.Generate())
+	requireGeneratedCompiles(t, storelessDir)
+	storelessBinary := filepath.Join(storelessDir, naming.CLI(storelessSpec.Name))
+	runGoCommand(t, storelessDir, "build", "-o", storelessBinary, "./cmd/"+naming.CLI(storelessSpec.Name))
+
+	storelessAll, err := runGeneratedCLI(t, storelessBinary, baseEnv, "feeds", "sitemap", "--all")
+	require.Error(t, err, storelessAll)
+	require.Contains(t, storelessAll, "--all is not supported for live binary/text responses")
+	require.NotContains(t, storelessAll, "--all is not supported for live HTML responses")
+}
+
 func runGeneratedCLI(t *testing.T, binaryPath string, env []string, args ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command(binaryPath, args...)
