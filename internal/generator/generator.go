@@ -3337,6 +3337,16 @@ func (g *Generator) activeFrameworkCobraUseNames() map[string]struct{} {
 	if g.Spec.Share.Enabled {
 		names["share"] = struct{}{}
 	}
+	if g.Spec.Learn.Enabled {
+		// Same root verbs root.go.tmpl registers under Learn.Enabled.
+		names["learnings"] = struct{}{}
+		names["playbook"] = struct{}{}
+		names["recall"] = struct{}{}
+		names["teach"] = struct{}{}
+		names["teach-lookup"] = struct{}{}
+		names["teach-pattern"] = struct{}{}
+		names["teach-playbook"] = struct{}{}
+	}
 	if len(g.PromotedCommands) > 0 {
 		names["api"] = struct{}{}
 	}
