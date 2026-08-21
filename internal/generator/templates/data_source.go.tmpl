@@ -228,10 +228,10 @@ func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlag
 }
 
 func resolvePaginatedReadWithStrategy(ctx context.Context, c *client.Client, flags *rootFlags, strategy string, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam string, defaultPageSize int, nextCursorPath, hasMoreField, responsePath string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
-	return resolvePaginatedReadWithStrategyAndJSONGuard(ctx, c, flags, strategy, resourceType, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField, responsePath, true, hintWriter)
+	return resolvePaginatedReadWithStrategyAndJSONGuard(ctx, c, flags, strategy, resourceType, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField, responsePath, true, false, hintWriter)
 }
 
-func resolvePaginatedReadWithStrategyAndJSONGuard(ctx context.Context, c *client.Client, flags *rootFlags, strategy string, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam string, defaultPageSize int, nextCursorPath, hasMoreField, responsePath string, guardLiveJSON bool, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
+func resolvePaginatedReadWithStrategyAndJSONGuard(ctx context.Context, c *client.Client, flags *rootFlags, strategy string, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam string, defaultPageSize int, nextCursorPath, hasMoreField, responsePath string, guardLiveJSON bool, rejectLiveAll bool, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
 	if err := validateDataSourceStrategy(flags, strategy); err != nil {
 		return nil, DataProvenance{}, err
 	}
@@ -243,7 +243,7 @@ func resolvePaginatedReadWithStrategyAndJSONGuard(ctx context.Context, c *client
 		return data, attachFreshness(prov, flags), err
 	}
 	if strategy == "live" {
-		if !guardLiveJSON && fetchAll {
+		if rejectLiveAll && fetchAll {
 			return nil, DataProvenance{}, fmt.Errorf("--all is not supported for live HTML responses; omit --all to extract the current page")
 		}
 		data, err := paginatedGetWithResponsePath(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField, responsePath)
@@ -266,7 +266,7 @@ func resolvePaginatedReadWithStrategyAndJSONGuard(ctx context.Context, c *client
 		return data, attachFreshness(prov, flags), err
 
 	case "live":
-		if !guardLiveJSON && fetchAll {
+		if rejectLiveAll && fetchAll {
 			return nil, DataProvenance{}, fmt.Errorf("--all is not supported for live HTML responses; omit --all to extract the current page")
 		}
 		data, err := paginatedGetWithResponsePath(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField, responsePath)
@@ -284,7 +284,7 @@ func resolvePaginatedReadWithStrategyAndJSONGuard(ctx context.Context, c *client
 		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 
 	default: // "auto"
-		if !guardLiveJSON && fetchAll {
+		if rejectLiveAll && fetchAll {
 			return nil, DataProvenance{}, fmt.Errorf("--all is not supported for live HTML responses; omit --all or use --data-source local")
 		}
 		data, err := paginatedGetWithResponsePath(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, defaultPageSize, nextCursorPath, hasMoreField, responsePath)

@@ -145,8 +145,8 @@ func TestGenerateBinaryStoreBackedPaginatedSkipsJSONGuard(t *testing.T) {
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_voices.go")
 	assert.Contains(t, endpointSrc, `resolvePaginatedReadWithStrategyAndJSONGuard(`,
 		"store-backed paginated binary reads must use the JSON-guard variant")
-	assert.Contains(t, endpointSrc, `false, cmd.ErrOrStderr())`,
-		"store-backed paginated binary reads must pass guardLiveJSON=false")
+	assert.Contains(t, endpointSrc, `false, false, cmd.ErrOrStderr())`,
+		"store-backed paginated binary reads must skip the JSON guard without the HTML --all rejection")
 	assert.NotContains(t, endpointSrc, `resolvePaginatedReadWithStrategy(`,
 		"store-backed paginated binary reads must not use the wrapper that hardcodes guardLiveJSON=true")
 }
