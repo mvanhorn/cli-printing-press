@@ -613,6 +613,14 @@ func newRateLimiter(rateLimit float64) *cliutil.AdaptiveLimiter {
 	return cliutil.NewAdaptiveLimiter(rateLimit) // 0 -> nil (disabled); >0 -> explicit ceiling
 }
 
+// redirectLeavesOrigin reports whether a redirect hop should drop custom
+// credentials. Block protocol downgrade: leaving HTTPS for any other scheme.
+func redirectLeavesOrigin(next, prev *url.URL) bool {
+	hostChanged := next.Host != prev.Host
+	downgrade := prev.Scheme == "https" && next.Scheme != "https"
+	return hostChanged || downgrade
+}
+
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	cacheDir := ""
 	if dir, err := cliutil.CacheDir(); err == nil {
@@ -720,15 +728,11 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			return errors.New("stopped after 10 redirects")
 		}
 {{- if and (ne .Auth.Type "none") (ne .Auth.Type "")}}
-		// Never carry credential material across an origin-changing redirect.
-		// Go strips Authorization and Cookie in common cases, but custom
-		// headers and URL query values need explicit removal here.
-		//
-		// Origin matches browsers and Go's shouldCopyHeaderOnRedirect: same
-		// host + same scheme keeps the credential, and a same-host
-		// http -> https upgrade is also safe. A same-host https -> http
-		// downgrade is not — that would send the credential in cleartext.
-		if req.URL.Host != via[0].URL.Host || (via[0].URL.Scheme == "https" && req.URL.Scheme == "http") {
+		// Never carry credential material across a host change or protocol
+		// downgrade. Go strips Authorization and Cookie in common cases, but
+		// custom headers and URL query values need explicit removal here.
+		// Block protocol downgrade.
+		if redirectLeavesOrigin(req.URL, via[0].URL) {
 			req.Header.Del("{{authParameterName .Auth}}")
 {{- if eq .Auth.Type "session_handshake"}}
 			req.Header.Del("{{.Auth.TokenParamName}}")
@@ -761,13 +765,11 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- if .HasTierRouting}}
 		// Tier routing picks header vs query at request time on a WithTier copy,
 		// while this redirect callback is installed once on the shared
-		// http.Client. On origin-changing redirects, delete every tier auth
-		// header name the generated CLI can use; same-origin redirects keep
-		// Go's copied header unchanged. Go strips Authorization/Cookie
-		// automatically on cross-host redirects, but not arbitrary tier header
-		// names, and a same-host scheme downgrade is not cross-host at all.
-		// A same-host http -> https upgrade is safe and must keep the header.
-		if req.URL.Host != via[0].URL.Host || (via[0].URL.Scheme == "https" && req.URL.Scheme == "http") {
+		// http.Client. When the hop leaves the origin, delete every tier auth
+		// header name the generated CLI can use. Go strips Authorization/Cookie
+		// automatically on some hops, but not arbitrary tier header names.
+		// Block protocol downgrade.
+		if redirectLeavesOrigin(req.URL, via[0].URL) {
 	{{- range $tierName, $tier := .TierRouting.Tiers}}
 	{{- if and (ne $tier.Auth.Type "") (ne $tier.Auth.Type "none") (eq (authPlacement $tier.Auth) "header")}}
 			req.Header.Del({{printf "%q" (authParameterName $tier.Auth)}})
@@ -776,41 +778,32 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		}
 {{- else if eq .Auth.Type "session_handshake"}}
 {{- if eq .Auth.TokenParamIn "header"}}
-		// Same-origin gate mirrors Go's shouldCopyHeaderOnRedirect: a
-		// cross-domain 3xx (open redirect or partner handoff) must not
-		// receive the auth credential, even though we are inside
-		// CheckRedirect where Go's automatic stripping has already run.
-		//
-		// Same-host http -> https is a safe upgrade and is re-stamped.
-		// Same-host https -> http is a downgrade and is not: host equality
-		// alone would put the credential on the wire in cleartext. Go's own
-		// stripping does not cover it: this is a custom header, so it is
-		// never in the set Go removes automatically, which is the same
-		// reason the cross-host branch below has to delete it by hand.
-		if req.URL.Host == via[0].URL.Host && (req.URL.Scheme == via[0].URL.Scheme || (via[0].URL.Scheme == "http" && req.URL.Scheme == "https")) {
+		// Re-stamp only when the hop stays on the origin. Custom headers
+		// are never in the set Go removes automatically, so this gate
+		// has to do the work itself. Block protocol downgrade.
+		if !redirectLeavesOrigin(req.URL, via[0].URL) {
 			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
 				req.Header.Set("{{.Auth.TokenParamName}}", h)
 			}
 		} else {
-			// Cross-host hop: delete the custom auth header so the credential
-			// is not forwarded to the redirect target.
+			// Delete the custom auth header so the credential is not
+			// forwarded to the redirect target.
 			req.Header.Del("{{.Auth.TokenParamName}}")
 		}
 {{- end}}
 {{- else if and .Auth .Auth.In (eq .Auth.In "query")}}
-		// Query credentials are removed above on cross-host hops and remain
-		// unchanged on same-host redirects.
+		// Query credentials are removed above when the hop leaves the origin
+		// and remain unchanged otherwise.
 {{- else if and .Auth .Auth.In (eq .Auth.In "cookie") (not (isBrowserCookieAuth .Auth))}}
 		// The auth cookie set on the initial request is carried verbatim by Go
-		// on same-host redirects, so re-adding it here would double the Cookie
-		// header (the same hazard the cookie-jar branch below avoids). Only the
-		// origin-changing hop needs handling: Go does not strip a manually-set
-		// Cookie for custom names, so drop the auth cookie by name to keep the
-		// credential from leaking to a redirect target, while preserving any
-		// other cookies on the request. A scheme downgrade counts, since an
-		// http hop puts the cookie on the wire in cleartext. A same-host
-		// http -> https upgrade does not.
-		if req.URL.Host != via[0].URL.Host || (via[0].URL.Scheme == "https" && req.URL.Scheme == "http") {
+		// when the hop stays on the origin, so re-adding it here would double
+		// the Cookie header (the same hazard the cookie-jar branch below
+		// avoids). Only a host change or protocol downgrade needs handling:
+		// Go does not strip a manually-set Cookie for custom names, so drop
+		// the auth cookie by name to keep the credential from leaking to a
+		// redirect target, while preserving any other cookies on the request.
+		// Block protocol downgrade.
+		if redirectLeavesOrigin(req.URL, via[0].URL) {
 			preserved := req.Cookies()
 			req.Header.Del("Cookie")
 			for _, ck := range preserved {
@@ -825,18 +818,10 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// manually here would double the jar's cookies on the redirected
 		// request.
 {{- else}}
-		// Same-origin gate mirrors Go's shouldCopyHeaderOnRedirect: a
-		// cross-domain 3xx (open redirect or partner handoff) must not
-		// receive the auth credential, even though we are inside
-		// CheckRedirect where Go's automatic stripping has already run.
-		//
-		// Same-host http -> https is a safe upgrade and is re-stamped.
-		// Same-host https -> http is a downgrade and is not: host equality
-		// alone would put the credential on the wire in cleartext. Go's own
-		// stripping does not cover it: this is a custom header, so it is
-		// never in the set Go removes automatically, which is the same
-		// reason the cross-host branch below has to delete it by hand.
-		if req.URL.Host == via[0].URL.Host && (req.URL.Scheme == via[0].URL.Scheme || (via[0].URL.Scheme == "http" && req.URL.Scheme == "https")){{- if eq .Auth.Type "composed"}} && c.credentialAppliesToURL(req.URL.String()){{- end}} {
+		// Re-stamp only when the hop stays on the origin. Custom headers
+		// are never in the set Go removes automatically, so this gate
+		// has to do the work itself. Block protocol downgrade.
+		if !redirectLeavesOrigin(req.URL, via[0].URL){{- if eq .Auth.Type "composed"}} && c.credentialAppliesToURL(req.URL.String()){{- end}} {
 			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
 				req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", h)
 			}

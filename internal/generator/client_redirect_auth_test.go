@@ -36,12 +36,11 @@ func TestClientCheckRedirectReappliesAuth(t *testing.T) {
 			"CheckRedirect must call c.authHeader with the redirect request context so nonce-bound schemes get a fresh cancellable signature")
 		require.Contains(t, closure, `req.Header.Set("Authorization", h)`,
 			"bearer auth must re-set Authorization on redirect to refresh nonce-bound headers")
-		require.Contains(t, closure, "req.URL.Host == via[0].URL.Host",
-			"auth re-stamp must be gated on same-host so a cross-domain 3xx (open redirect or partner handoff) does not leak the credential — Go's automatic Authorization stripping has already run by the time CheckRedirect is called, and any header set here is sent verbatim")
-		require.Contains(t, closure, `req.URL.Scheme == via[0].URL.Scheme || (via[0].URL.Scheme == "http" && req.URL.Scheme == "https")`,
-			"the gate must keep same-scheme and same-host http -> https upgrades, and must not re-stamp a same-host https -> http downgrade; Go's automatic stripping does not cover a custom header (see #4291)")
-		require.Contains(t, closure, `via[0].URL.Scheme == "https" && req.URL.Scheme == "http"`,
-			"the strip path must drop the credential on a same-host https -> http downgrade")
+		requireRedirectOriginHelper(t, client)
+		require.Contains(t, closure, "if !redirectLeavesOrigin(req.URL, via[0].URL)",
+			"auth re-stamp must use redirectLeavesOrigin so a host change or protocol downgrade does not leak the credential")
+		require.Contains(t, closure, "if redirectLeavesOrigin(req.URL, via[0].URL)",
+			"the strip path must drop the credential on a host change or protocol downgrade")
 	})
 
 	t.Run("api_key in custom header re-sets that header, not Authorization", func(t *testing.T) {
@@ -59,12 +58,11 @@ func TestClientCheckRedirectReappliesAuth(t *testing.T) {
 			"api_key in custom header must re-set that header on redirect, not Authorization")
 		require.NotContains(t, closure, `req.Header.Set("Authorization", h)`,
 			"must not also stamp Authorization when the spec uses a custom header")
-		require.Contains(t, closure, "req.URL.Host == via[0].URL.Host",
-			"custom-header auth must also be same-host gated to avoid leaking credentials across domains")
-		require.Contains(t, closure, `req.URL.Scheme == via[0].URL.Scheme || (via[0].URL.Scheme == "http" && req.URL.Scheme == "https")`,
-			"custom-header auth is the case that matters most: a custom header is never in the set Go strips automatically, so a same-host https -> http downgrade must not re-stamp, while a same-host http -> https upgrade must keep the header (see #4291)")
-		require.Contains(t, closure, `via[0].URL.Scheme == "https" && req.URL.Scheme == "http"`,
-			"custom-header strip must drop the credential on a same-host https -> http downgrade")
+		requireRedirectOriginHelper(t, client)
+		require.Contains(t, closure, "if !redirectLeavesOrigin(req.URL, via[0].URL)",
+			"custom-header auth must re-stamp only when redirectLeavesOrigin is false so a protocol downgrade cannot keep the header")
+		require.Contains(t, closure, "if redirectLeavesOrigin(req.URL, via[0].URL)",
+			"custom-header strip must drop the credential on a host change or protocol downgrade")
 	})
 
 	t.Run("api_key in query parameter skips header re-set", func(t *testing.T) {
@@ -122,6 +120,16 @@ func checkRedirectClosureBody(t *testing.T, content string) string {
 	end := strings.Index(body, "\n\t}\n")
 	require.NotEqual(t, -1, end, "CheckRedirect closure must be properly closed")
 	return body[:end]
+}
+
+func requireRedirectOriginHelper(t *testing.T, client string) {
+	t.Helper()
+	require.Contains(t, client, "func redirectLeavesOrigin(next, prev *url.URL) bool {")
+	require.Contains(t, client, "hostChanged := next.Host != prev.Host")
+	require.Contains(t, client, `downgrade := prev.Scheme == "https" && next.Scheme != "https"`)
+	require.Contains(t, client, "return hostChanged || downgrade")
+	require.NotContains(t, client, "shouldCopyHeaderOnRedirect")
+	require.NotContains(t, client, "#4291")
 }
 
 func generateClientSource(t *testing.T, apiSpec *spec.APISpec) string {

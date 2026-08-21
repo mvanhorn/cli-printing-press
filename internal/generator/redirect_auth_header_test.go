@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -24,8 +25,9 @@ func TestClientCheckRedirectDeletesHeaderOnCrossHost(t *testing.T) {
 		client := generateClientSource(t, apiSpec)
 		closure := checkRedirectClosureBody(t, client)
 
-		require.Contains(t, closure, `if req.URL.Host != via[0].URL.Host || (via[0].URL.Scheme == "https" && req.URL.Scheme == "http") {`)
-		require.Contains(t, closure, `if req.URL.Host == via[0].URL.Host && (req.URL.Scheme == via[0].URL.Scheme || (via[0].URL.Scheme == "http" && req.URL.Scheme == "https")) {`)
+		requireRedirectOriginHelper(t, client)
+		require.Contains(t, closure, `if redirectLeavesOrigin(req.URL, via[0].URL) {`)
+		require.Contains(t, closure, `if !redirectLeavesOrigin(req.URL, via[0].URL) {`)
 		require.Contains(t, closure, `req.Header.Set("X-Api-Key", h)`)
 		require.Contains(t, closure, `req.Header.Del("X-Api-Key")`)
 	})
@@ -43,16 +45,115 @@ func TestClientCheckRedirectDeletesHeaderOnCrossHost(t *testing.T) {
 		client := generateClientSource(t, apiSpec)
 		closure := checkRedirectClosureBody(t, client)
 
-		require.Contains(t, closure, `if req.URL.Host == via[0].URL.Host && (req.URL.Scheme == via[0].URL.Scheme || (via[0].URL.Scheme == "http" && req.URL.Scheme == "https")) {`)
+		requireRedirectOriginHelper(t, client)
+		require.Contains(t, closure, `if !redirectLeavesOrigin(req.URL, via[0].URL) {`)
 		require.Contains(t, closure, `req.Header.Set("X-Kit-Api-Key", h)`)
 		require.Contains(t, closure, `} else {`)
 		require.Contains(t, closure, `req.Header.Del("X-Kit-Api-Key")`)
+		require.NotContains(t, closure, "Cross-host hop:")
+		require.NotContains(t, closure, "cross-host hops")
+		require.NotContains(t, closure, "same-host redirects")
 	})
 }
 
-// Same-host http -> https must keep a custom auth header; https -> http must
-// drop it. Exact-scheme equality treats the upgrade as an origin change and
-// strips the credential, which is the Greptile P1 on #4292.
+func TestClientCheckRedirectOriginHelperAtAllSites(t *testing.T) {
+	t.Parallel()
+
+	t.Run("custom header and query strip", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("redirect-site-strip")
+		apiSpec.Auth = spec.AuthConfig{
+			Type:    "api_key",
+			In:      "query",
+			Header:  "api_key",
+			EnvVars: []string{"REDIRECT_SITE_STRIP_TOKEN"},
+		}
+		client := generateClientSource(t, apiSpec)
+		closure := checkRedirectClosureBody(t, client)
+		requireRedirectOriginHelper(t, client)
+		require.Contains(t, closure, `if redirectLeavesOrigin(req.URL, via[0].URL) {`)
+		require.Contains(t, closure, "Query credentials are removed above when the hop leaves the origin")
+		require.NotContains(t, closure, "cross-host hops")
+		require.NotContains(t, closure, "same-host redirects")
+	})
+
+	t.Run("tier-routing header names", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("redirect-site-tier")
+		apiSpec.TierRouting = spec.TierRoutingConfig{
+			DefaultTier: "free",
+			Tiers: map[string]spec.TierConfig{
+				"free": {Auth: spec.AuthConfig{Type: "none"}},
+				"paid": {
+					Auth: spec.AuthConfig{
+						Type:    "api_key",
+						Header:  "X-Tier-Key",
+						EnvVars: []string{"REDIRECT_SITE_TIER_TOKEN"},
+					},
+				},
+			},
+		}
+		client := generateClientSource(t, apiSpec)
+		closure := checkRedirectClosureBody(t, client)
+		requireRedirectOriginHelper(t, client)
+		require.Equal(t, 2, strings.Count(closure, "if redirectLeavesOrigin(req.URL, via[0].URL) {"),
+			"tier-routing must use the shared helper for both the custom-header strip and the tier header-name strip")
+		require.Contains(t, closure, `req.Header.Del("X-Tier-Key")`)
+	})
+
+	t.Run("session handshake re-stamp", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("redirect-site-session")
+		apiSpec.Auth = spec.AuthConfig{
+			Type:           "session_handshake",
+			TokenParamIn:   "header",
+			TokenParamName: "X-Kit-Api-Key",
+			EnvVars:        []string{"REDIRECT_SITE_SESSION_TOKEN"},
+		}
+		client := generateClientSource(t, apiSpec)
+		closure := checkRedirectClosureBody(t, client)
+		requireRedirectOriginHelper(t, client)
+		require.Contains(t, closure, `if redirectLeavesOrigin(req.URL, via[0].URL) {`)
+		require.Contains(t, closure, `if !redirectLeavesOrigin(req.URL, via[0].URL) {`)
+	})
+
+	t.Run("in cookie non-jar drop by name", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("redirect-site-cookie")
+		apiSpec.Auth = spec.AuthConfig{
+			Type:    "api_key",
+			In:      "cookie",
+			Header:  "session_token",
+			EnvVars: []string{"REDIRECT_SITE_COOKIE_TOKEN"},
+		}
+		client := generateClientSource(t, apiSpec)
+		closure := checkRedirectClosureBody(t, client)
+		requireRedirectOriginHelper(t, client)
+		require.Equal(t, 2, strings.Count(closure, "if redirectLeavesOrigin(req.URL, via[0].URL) {"),
+			"in:cookie non-jar must use the shared helper for both the credential strip and the drop-by-name path")
+		require.Contains(t, closure, `if ck.Name != "session_token"`)
+	})
+
+	t.Run("default and composed re-stamp", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("redirect-site-composed")
+		apiSpec.Auth = spec.AuthConfig{
+			Type:         "composed",
+			Header:       "Authorization",
+			Format:       "Bearer {token}",
+			CookieDomain: ".auth.example.com",
+			Cookies:      []string{"session_id"},
+			EnvVars:      []string{"REDIRECT_SITE_COMPOSED_TOKEN"},
+		}
+		client := generateClientSource(t, apiSpec)
+		closure := checkRedirectClosureBody(t, client)
+		requireRedirectOriginHelper(t, client)
+		require.Contains(t, closure, `if !redirectLeavesOrigin(req.URL, via[0].URL) && c.credentialAppliesToURL(req.URL.String()) {`)
+	})
+}
+
+// Same-origin keeps a custom auth header; https -> http drops it; http -> https
+// keeps it. The shared helper is the only origin predicate.
 func TestClientCheckRedirectKeepsAuthOnHTTPUpgrade(t *testing.T) {
 	t.Parallel()
 
@@ -66,9 +167,11 @@ func TestClientCheckRedirectKeepsAuthOnHTTPUpgrade(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), apiSpec.Name+"-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
-	closure := checkRedirectClosureBody(t, readGeneratedFile(t, outputDir, "internal", "client", "client.go"))
-	require.Contains(t, closure, `via[0].URL.Scheme == "http" && req.URL.Scheme == "https"`)
-	require.Contains(t, closure, `via[0].URL.Scheme == "https" && req.URL.Scheme == "http"`)
+	client := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	closure := checkRedirectClosureBody(t, client)
+	requireRedirectOriginHelper(t, client)
+	require.Contains(t, closure, `if redirectLeavesOrigin(req.URL, via[0].URL) {`)
+	require.Contains(t, closure, `if !redirectLeavesOrigin(req.URL, via[0].URL) {`)
 	require.NotContains(t, closure, `req.URL.Host != via[0].URL.Host || req.URL.Scheme != via[0].URL.Scheme`)
 	require.NotContains(t, closure, `req.URL.Host == via[0].URL.Host && req.URL.Scheme == via[0].URL.Scheme {`)
 
@@ -111,17 +214,14 @@ func TestRedirectSchemeUpgradeKeepsCustomAuth(t *testing.T) {
 		}
 	}
 
-	t.Run("same-host http to https keeps header", func(t *testing.T) {
-		check(t, "http://api.example.com/start", "https://api.example.com/done", "secret-key")
-	})
-	t.Run("same-host https to http drops header", func(t *testing.T) {
-		check(t, "https://api.example.com/start", "http://api.example.com/done", "")
-	})
-	t.Run("same-origin https keeps header", func(t *testing.T) {
+	t.Run("same-origin keeps header", func(t *testing.T) {
 		check(t, "https://api.example.com/start", "https://api.example.com/done", "secret-key")
 	})
-	t.Run("cross-host drops header", func(t *testing.T) {
-		check(t, "https://api.example.com/start", "https://evil.example.net/done", "")
+	t.Run("https to http drops header", func(t *testing.T) {
+		check(t, "https://api.example.com/start", "http://api.example.com/done", "")
+	})
+	t.Run("http to https keeps header", func(t *testing.T) {
+		check(t, "http://api.example.com/start", "https://api.example.com/done", "secret-key")
 	})
 }
 `
