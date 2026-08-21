@@ -2517,7 +2517,8 @@ func claimOrForce(absOut string, force bool, explicitOutput bool) (resolvedAbsOu
 // finalizeForceMerge runs the post-Generate merge for any --force codepath:
 // classifies snapshotDir against freshDir, merges preserved hand-edits back,
 // re-runs `go mod tidy` when go.mod was merged (so go.sum keeps up with
-// preserved requires), and removes the snapshot on success. On merge
+// preserved requires), drops preserved files that reintroduce a
+// fresh-generation build break, and removes the snapshot on success. On merge
 // failure the snapshot is left in place and the error surfaces a recovery
 // command.
 //
@@ -2526,12 +2527,21 @@ func claimOrForce(absOut string, force bool, explicitOutput bool) (resolvedAbsOu
 // generation would silently lose user work and leave an orphan that blocks
 // future --force runs.
 func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, validate bool, validateMerged func() error) error {
-	gomodMerged, err := mergeForceSnapshot(snapshotDir, freshDir, currentSpecBytes)
+	freshBackup, cleanupFresh, err := backupFreshTree(freshDir)
+	if err != nil {
+		return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("backing up fresh tree before merge: %w; snapshot preserved at %s", err, snapshotDir)}
+	}
+	defer cleanupFresh()
+
+	gomodMerged, err := mergeForceSnapshot(snapshotDir, freshDir, currentSpecBytes, false)
 	if err != nil {
 		return &ExitError{Code: ExitGenerationError, Err: err}
 	}
 	if gomodMerged {
 		retidyAfterMerge(freshDir)
+	}
+	if err := repairPreserveBuildBreak(snapshotDir, freshDir, freshBackup, currentSpecBytes); err != nil {
+		return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("%w; snapshot preserved at %s", err, snapshotDir)}
 	}
 	if validate {
 		if validateMerged == nil {
@@ -2564,8 +2574,8 @@ func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, v
 // On failure the snapshot is intentionally left in place; the returned
 // error includes the snapshot path so the user can recover manually with
 // `rm -rf <freshDir> && mv <snapshotDir> <freshDir>`.
-func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte) (gomodMerged bool, err error) {
-	novelOnly := !forceRegenSpecHashMatches(snapshotDir, currentSpecBytes)
+func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte, forceNovelOnly bool) (gomodMerged bool, err error) {
+	novelOnly := forceNovelOnly || !forceRegenSpecHashMatches(snapshotDir, currentSpecBytes)
 	baseDir, cleanupBase := synthesizeForceRegenBase(snapshotDir, currentSpecBytes, novelOnly)
 	if cleanupBase != nil {
 		defer cleanupBase()
@@ -2596,7 +2606,10 @@ func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte) (
 		}
 	}
 	mode := ""
-	if novelOnly {
+	switch {
+	case forceNovelOnly:
+		mode = " (dropped templated preserves that reintroduced a fresh-generation build break)"
+	case novelOnly:
 		mode = " (cross-spec: novel-only preservation)"
 	}
 	fmt.Fprintf(os.Stderr, "Force regen merged %d preserved files / %d AddCommand calls%s\n", preserved, injected, mode)
