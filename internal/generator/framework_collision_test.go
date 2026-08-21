@@ -164,6 +164,28 @@ func TestActiveFrameworkCobraUseNamesMatchesGeneratedRoot(t *testing.T) {
 		"activeFrameworkCobraUseNames must stay aligned with generated root framework registrations")
 }
 
+func TestActiveFrameworkCobraUseNamesIncludesLearnCommands(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("learncmds")
+	apiSpec.Learn.Enabled = true
+	outputDir := filepath.Join(t.TempDir(), "learncmds-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	active := gen.activeFrameworkCobraUseNames()
+	for _, name := range []string{"recall", "teach", "learnings", "playbook", "teach-pattern", "teach-lookup", "teach-playbook"} {
+		_, ok := active[name]
+		assert.True(t, ok, "learn-enabled activeFrameworkCobraUseNames must include %q", name)
+	}
+
+	rootReserved := generatedRootReservedUseNames(t, outputDir)
+	for _, name := range []string{"recall", "teach", "learnings", "playbook", "teach-pattern", "teach-lookup", "teach-playbook"} {
+		_, ok := rootReserved[name]
+		assert.True(t, ok, "generated learn-enabled root must register reserved use %q", name)
+	}
+}
+
 func generatedRootReservedUseNames(t *testing.T, outputDir string) map[string]struct{} {
 	t.Helper()
 	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")

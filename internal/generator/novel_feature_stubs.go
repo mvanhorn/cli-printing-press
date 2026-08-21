@@ -172,6 +172,11 @@ func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, generated
 		data.Example = novelFeatureParentExample(renderedChildren, g.Spec.Name)
 	}
 	outPath := filepath.Join("internal", "cli", novelFeatureStubFileName(node.path))
+	if g.novelFeatureStubCollidesWithActiveFrameworkCommand(node.path) {
+		fmt.Fprintf(os.Stderr, "warning: novel feature command %q would shadow framework cobra command %q at runtime (every printed CLI registers `<cli> %s` as a built-in); skipping novel stub. Rename the feature — e.g. %q\n",
+			data.CommandPath, node.segment, node.segment, g.novelFeatureFrameworkCollisionSuggestion(node.segment))
+		return nil, nil
+	}
 	if g.novelFeatureStubShouldSkipGenerated(node.path, generatedPaths) {
 		fmt.Fprintf(os.Stderr, "warning: novel feature command %q maps to generated command path; skipping novel stub\n", data.CommandPath)
 		return nil, nil
@@ -208,11 +213,29 @@ func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, generated
 }
 
 func (g *Generator) novelFeatureStubShouldSkip(parts []string, generatedPaths map[string]struct{}) bool {
-	return g.novelFeatureStubShouldSkipGenerated(parts, generatedPaths) || g.novelFeatureStubExistingFileMissingConstructor(parts)
+	return g.novelFeatureStubShouldSkipGenerated(parts, generatedPaths) || g.novelFeatureStubCollidesWithActiveFrameworkCommand(parts) || g.novelFeatureStubExistingFileMissingConstructor(parts)
 }
 
 func (g *Generator) novelFeatureStubShouldSkipGenerated(parts []string, generatedPaths map[string]struct{}) bool {
 	return novelFeatureStubCollidesWithGeneratedCommand(parts, generatedPaths)
+}
+
+// Only root paths compete with framework commands for registration on rootCmd.
+// Nested paths remain valid because they attach beneath the existing framework
+// parent instead of shadowing it (`sync verify`).
+func (g *Generator) novelFeatureStubCollidesWithActiveFrameworkCommand(parts []string) bool {
+	if len(parts) != 1 {
+		return false
+	}
+	_, ok := g.activeFrameworkCobraUseNames()[parts[0]]
+	return ok
+}
+
+func (g *Generator) novelFeatureFrameworkCollisionSuggestion(use string) string {
+	if g != nil && g.Spec != nil && g.Spec.Name != "" {
+		return strings.ReplaceAll(strings.ToLower(g.Spec.Name), "_", "-") + "_" + use
+	}
+	return use + "_feature"
 }
 
 func (g *Generator) novelFeatureStubExistingFileMissingConstructor(parts []string) bool {
