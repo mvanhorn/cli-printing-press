@@ -14,6 +14,105 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestGeneratorSkipsReservedNovelFeatureRootCommands(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("recall-collide")
+	apiSpec.Learn.Enabled = true
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{
+		{
+			Name:        "Prior-art recall",
+			Command:     "recall",
+			Description: "Look up prior research notes.",
+			Example:     "recall-collide-pp-cli recall --json",
+		},
+		{
+			Name:        "Audit cache",
+			Command:     "audit",
+			Description: "Audit local cache state.",
+			Example:     "recall-collide-pp-cli audit --json",
+		},
+	}
+	stderr, err := captureNovelFeatureStderr(t, gen.Generate)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, `warning: novel feature command "recall" would shadow framework cobra command "recall"`)
+	assert.Contains(t, stderr, "recall-collide_recall")
+	assert.NotContains(t, stderr, `warning: novel feature command "audit"`)
+
+	root := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	assert.Contains(t, root, "rootCmd.AddCommand(newRecallCmd(flags, learnCfg))")
+	assert.NotContains(t, root, "newNovelRecallCmd")
+	assert.Contains(t, root, "addNovelCommandIfAbsent(rootCmd, newNovelAuditCmd(flags))")
+
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "recall.go"))
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "recall_test.go"))
+	require.FileExists(t, filepath.Join(outputDir, "internal", "cli", "audit.go"))
+
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "reserved_novel_runtime_test.go"), []byte(`package cli
+
+import "testing"
+
+func TestReservedNovelDoesNotDuplicateRecall(t *testing.T) {
+	var matches int
+	var short string
+	for _, command := range RootCmd().Commands() {
+		if command.Name() == "recall" {
+			matches++
+			short = command.Short
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("root contains %d recall commands, want exactly one", matches)
+	}
+	if short == "" || short == "Look up prior research notes." {
+		t.Fatalf("framework recall was shadowed by the novel stub: Short = %q", short)
+	}
+}
+
+func TestUnreservedNovelStillWires(t *testing.T) {
+	command, _, err := RootCmd().Find([]string{"audit"})
+	if err != nil {
+		t.Fatalf("Find(audit) error = %v", err)
+	}
+	if command == nil || command.Name() != "audit" {
+		t.Fatalf("Find(audit) = %#v", command)
+	}
+}
+`), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestReservedNovelDoesNotDuplicateRecall|TestUnreservedNovelStillWires")
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratorEmitsReservedNovelWhenFrameworkCommandInactive(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("recall-free")
+	apiSpec.Learn.Disabled = true
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{{
+		Name:        "Prior-art recall",
+		Command:     "recall",
+		Description: "Look up prior research notes.",
+		Example:     "recall-free-pp-cli recall --json",
+	}}
+	stderr, err := captureNovelFeatureStderr(t, gen.Generate)
+	require.NoError(t, err)
+	assert.NotContains(t, stderr, `would shadow framework cobra command "recall"`)
+	require.False(t, apiSpec.Learn.Enabled)
+
+	root := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	assert.NotContains(t, root, "newRecallCmd(flags, learnCfg)")
+	assert.Contains(t, root, "addNovelCommandIfAbsent(rootCmd, newNovelRecallCmd(flags))")
+
+	recall := readGeneratedFile(t, outputDir, "internal", "cli", "recall.go")
+	assert.Contains(t, recall, `Use:         "recall"`)
+	assert.Contains(t, recall, `TODO: implement novel feature %q", "recall"`)
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGeneratorEmitsNovelFeatureCommandStubs(t *testing.T) {
 	t.Parallel()
 
