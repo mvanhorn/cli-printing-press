@@ -68,8 +68,8 @@ var regenmergeGeneratorOwnedDirs = map[string]struct{}{
 // preserved; TEMPLATED-WITH-ADDITIONS, TEMPLATED-BODY-DRIFT, and
 // TEMPLATED-VALUE-DRIFT files are left as fresh emitted them unless the file
 // is a generated editable hook whose whole purpose is to carry agent-authored
-// additions. Those skipped files stay Applied=false so the caller can list
-// every dropped templated hand-edit instead of only printing a mode suffix.
+// additions. Leaving Applied unset on those skips is what distinguishes a
+// dropped hand-edit from a same-spec preserve.
 // Lost AddCommand re-injection still runs when its constructor is
 // preserved in the merged novel files. The non-classified file
 // sweep and go.mod merge still run because both are spec-orthogonal — non-Go
@@ -914,10 +914,10 @@ func pruneCollidingSpec(spec ast.Spec, collisions declSet) (ast.Spec, bool) {
 	return spec, false
 }
 
-// SkippedTemplatedHandEdits returns classifier-flagged templated hand-edits
-// that MergeIntoFreshTree left as fresh emission (Applied remains false).
-// Same-spec merges apply those verdicts, so the list is empty after a full
-// preserve. Cross-spec NovelOnly is the path that leaves them behind.
+// Applied=false on a TEMPLATED-* drift verdict is the only durable signal
+// that a hand-edit was classified and then left on the floor. Same-spec
+// merge flips Applied; NovelOnly does not. Clean templated files are
+// unapplied too, but they never carried a hand-edit.
 func SkippedTemplatedHandEdits(report *MergeReport) []FileClassification {
 	if report == nil {
 		return nil
@@ -938,8 +938,8 @@ func SkippedTemplatedHandEdits(report *MergeReport) []FileClassification {
 	return dropped
 }
 
-// FormatSkippedTemplatedHandEdits is the stderr warning for a NovelOnly
-// merge that discarded templated hand-edits. Empty when nothing was dropped.
+// A mode suffix does not identify which Applied=false templated hand-edits
+// were discarded; the operator needs the paths to recover them.
 func FormatSkippedTemplatedHandEdits(report *MergeReport) string {
 	dropped := SkippedTemplatedHandEdits(report)
 	if len(dropped) == 0 {
