@@ -352,10 +352,15 @@ resources:
 `)
 }
 
-func runForceRegenMatrixGenerate(t *testing.T, specPath, outputDir string, force bool) {
+func runForceRegenMatrixGenerate(t *testing.T, specPath, outputDir string, force bool, validate bool) {
 	t.Helper()
 	cmd := newGenerateCmd()
-	args := []string{"--spec", specPath, "--output", outputDir, "--validate=false"}
+	args := []string{"--spec", specPath, "--output", outputDir}
+	if validate {
+		args = append(args, "--validate=true")
+	} else {
+		args = append(args, "--validate=false")
+	}
 	if force {
 		args = append(args, "--force")
 	}
@@ -363,9 +368,8 @@ func runForceRegenMatrixGenerate(t *testing.T, specPath, outputDir string, force
 	require.NoError(t, cmd.Execute())
 }
 
-// TestGenerateCmdForceDoesNotResurrectFailedNonForceTree is validation case 1:
-// a non-force failed tree has no .preserve-* snapshot, so --force used to
-// rehydrate the break. Post-merge must match a fresh build.
+// A non-force failed tree has no .preserve-* snapshot; --force must not
+// rehydrate the break. Post-merge helpers.go must match a fresh build.
 func TestGenerateCmdForceDoesNotResurrectFailedNonForceTree(t *testing.T) {
 	t.Parallel()
 
@@ -375,7 +379,7 @@ func TestGenerateCmdForceDoesNotResurrectFailedNonForceTree(t *testing.T) {
 	freshDir := filepath.Join(dir, "fresh-baseline")
 	require.NoError(t, os.WriteFile(specPath, forceRegenMatrixSpec("failtree"), 0o644))
 
-	runForceRegenMatrixGenerate(t, specPath, outputDir, false)
+	runForceRegenMatrixGenerate(t, specPath, outputDir, false, false)
 
 	helpersPath := filepath.Join(outputDir, "internal", "cli", "helpers.go")
 	helpers, err := os.ReadFile(helpersPath)
@@ -383,14 +387,14 @@ func TestGenerateCmdForceDoesNotResurrectFailedNonForceTree(t *testing.T) {
 	broken := append(helpers, []byte("\nvar _ = definitelyUndefinedPreserveBreak\n")...)
 	require.NoError(t, os.WriteFile(helpersPath, broken, 0o644))
 
-	runForceRegenMatrixGenerate(t, specPath, outputDir, true)
+	runForceRegenMatrixGenerate(t, specPath, outputDir, true, true)
 
 	got, err := os.ReadFile(helpersPath)
 	require.NoError(t, err)
 	assert.NotContains(t, string(got), "definitelyUndefinedPreserveBreak",
 		"--force into a failed non-force tree must not resurrect the break")
 
-	runForceRegenMatrixGenerate(t, specPath, freshDir, false)
+	runForceRegenMatrixGenerate(t, specPath, freshDir, false, false)
 	want, err := os.ReadFile(filepath.Join(freshDir, "internal", "cli", "helpers.go"))
 	require.NoError(t, err)
 	assert.Equal(t, string(want), string(got),
@@ -400,8 +404,7 @@ func TestGenerateCmdForceDoesNotResurrectFailedNonForceTree(t *testing.T) {
 	runGoCommandForCLITest(t, outputDir, "build", "./...")
 }
 
-// TestGenerateCmdForceStillPreservesCompilingHandEdits is validation case 3:
-// same-spec --force must keep a compiling hand-edit on a templated file.
+// Same-spec --force must keep a compiling hand-edit on a templated file.
 func TestGenerateCmdForceStillPreservesCompilingHandEdits(t *testing.T) {
 	t.Parallel()
 
@@ -410,14 +413,14 @@ func TestGenerateCmdForceStillPreservesCompilingHandEdits(t *testing.T) {
 	outputDir := filepath.Join(dir, "handedit")
 	require.NoError(t, os.WriteFile(specPath, forceRegenMatrixSpec("handedit"), 0o644))
 
-	runForceRegenMatrixGenerate(t, specPath, outputDir, false)
+	runForceRegenMatrixGenerate(t, specPath, outputDir, false, false)
 
 	clientPath := filepath.Join(outputDir, "internal", "client", "client.go")
 	client, err := os.ReadFile(clientPath)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(clientPath, append(client, []byte("\nfunc HandAuthoredHelper() string { return \"kept\" }\n")...), 0o644))
 
-	runForceRegenMatrixGenerate(t, specPath, outputDir, true)
+	runForceRegenMatrixGenerate(t, specPath, outputDir, true, true)
 
 	got, err := os.ReadFile(clientPath)
 	require.NoError(t, err)

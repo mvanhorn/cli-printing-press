@@ -2540,7 +2540,7 @@ func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, v
 	if gomodMerged {
 		retidyAfterMerge(freshDir)
 	}
-	if err := repairPreserveBuildBreak(snapshotDir, freshDir, freshBackup, currentSpecBytes); err != nil {
+	if err := repairPreserveBuildBreak(snapshotDir, freshDir, freshBackup, currentSpecBytes, validate); err != nil {
 		return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("%w; snapshot preserved at %s", err, snapshotDir)}
 	}
 	if validate {

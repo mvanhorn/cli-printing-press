@@ -9,9 +9,8 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 )
 
-// backupFreshTree copies freshDir so a later preserve rematch can restore the
-// pre-merge emission. Merge mutates files in place (overwrites, AddCommand
-// injection, decl pruning, go.mod), so a whole-tree copy is the recovery unit.
+// Whole-tree copy is the recovery unit: merge overwrites files, injects
+// AddCommand calls, prunes decls, and rewrites go.mod in place.
 func backupFreshTree(freshDir string) (string, func(), error) {
 	tmp, err := os.MkdirTemp("", "printing-press-fresh-*")
 	if err != nil {
@@ -26,16 +25,16 @@ func backupFreshTree(freshDir string) (string, func(), error) {
 	return backup, cleanup, nil
 }
 
-// repairPreserveBuildBreak compiles the merged tree and, when that fails while
-// the pre-merge fresh tree compiles, restores fresh and rematches with
-// NovelOnly. Novel files stay; templated preserves that the fresh tree does
-// not need and that made the merge fail to build are dropped. If the rematch
-// still fails to compile, the error is returned and the snapshot stays in
-// place — novels that themselves break the new templates are not silently
-// dropped. If fresh also fails to compile, the merged tree is left as-is so
-// an environment/toolchain failure is not mistaken for a preserve break.
-func repairPreserveBuildBreak(snapshotDir, freshDir, freshBackup string, currentSpecBytes []byte) error {
-	if !generatedTreeHasGoMod(freshDir) {
+// A preserve that the fresh tree does not need must not ship a build the
+// fresh emission did not have. When the merged tree fails to compile and
+// the pre-merge fresh tree compiles, restore fresh and rematch NovelOnly:
+// novels stay, overlapping templated preserves are dropped as a group.
+// --validate=false skips this gate so generation does not tidy or build.
+// If rematch still fails, keep the snapshot rather than silently dropping
+// novels. If fresh also fails to compile, leave the merge as-is so an
+// environment failure is not treated as a preserve break.
+func repairPreserveBuildBreak(snapshotDir, freshDir, freshBackup string, currentSpecBytes []byte, validate bool) error {
+	if !validate || !generatedTreeHasGoMod(freshDir) {
 		return nil
 	}
 	if compileGeneratedTree(freshDir) == nil {
