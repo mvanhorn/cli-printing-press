@@ -41,6 +41,8 @@ const authPrefix = "` + literal + `"
 	require.NoError(t, err)
 	assert.Contains(t, string(got), `"Token "`,
 		"hand-edited literal must survive merge into fresh tree")
+	assert.Empty(t, FormatSkippedTemplatedHandEdits(report),
+		"same-spec preserve must not report applied templated edits as dropped")
 }
 
 // TestMergeIntoFreshTreePreservesDeclSetAdditions covers hand-authored
@@ -414,6 +416,8 @@ func TestMergeIntoFreshTreeNovelOnlyPreservesStoreExtrasEdits(t *testing.T) {
 	require.NoError(t, MergeIntoFreshTree(snap, fresh, report, Options{Force: true, NovelOnly: true}))
 
 	assertStoreExtrasMigrationPreserved(t, fresh, rel)
+	assert.Empty(t, FormatSkippedTemplatedHandEdits(report),
+		"editable-hook extras.go preserved under NovelOnly must not be listed as dropped")
 }
 
 func writeStoreExtrasFixture(t *testing.T) (string, string, string) {
@@ -921,6 +925,12 @@ const authPrefix = "` + literal + `"
 	require.NoError(t, err)
 	assert.Contains(t, string(novelGot), "Handcrafted",
 		"NovelOnly preserves novel hand-written files")
+
+	warning := FormatSkippedTemplatedHandEdits(report)
+	assert.Contains(t, warning, "warning: cross-spec --force dropped hand-edits in generated files:")
+	assert.Contains(t, warning, rel+" (TEMPLATED-VALUE-DRIFT)")
+	assert.NotContains(t, warning, novelRel,
+		"preserved novel files must not appear in the templated drop list")
 }
 
 func TestMergeIntoFreshTreeNovelOnlyPreservesHandAuthoredNovelCommandTest(t *testing.T) {
@@ -1137,6 +1147,30 @@ func TestRoot(t *testing.T) {
 	assert.Contains(t, string(got), "fresh generated test")
 	assert.NotContains(t, string(got), "operator edit",
 		"NovelOnly must not loosen DO NOT EDIT ownership for ordinary generated tests")
+	assert.Contains(t, FormatSkippedTemplatedHandEdits(report), rel+" (TEMPLATED-BODY-DRIFT)")
+}
+
+func TestFormatSkippedTemplatedHandEdits(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, FormatSkippedTemplatedHandEdits(nil))
+	assert.Empty(t, FormatSkippedTemplatedHandEdits(&MergeReport{}))
+
+	report := &MergeReport{
+		Files: []FileClassification{
+			{Path: "internal/cli/root.go", Verdict: VerdictTemplatedClean},
+			{Path: "internal/cli/z_flag.go", Verdict: VerdictTemplatedWithAdditions},
+			{Path: "internal/cli/search.go", Verdict: VerdictTemplatedBodyDrift},
+			{Path: "internal/config/config.go", Verdict: VerdictTemplatedValueDrift, Applied: true},
+			{Path: "internal/cli/novel.go", Verdict: VerdictNovel, Applied: true},
+			{Path: "internal/cli/stale.go", Verdict: VerdictPublishedOnlyTemplated},
+		},
+	}
+	got := FormatSkippedTemplatedHandEdits(report)
+	assert.Equal(t, ""+
+		"warning: cross-spec --force dropped hand-edits in generated files:\n"+
+		"  internal/cli/search.go (TEMPLATED-BODY-DRIFT)\n"+
+		"  internal/cli/z_flag.go (TEMPLATED-WITH-ADDITIONS)\n", got)
 }
 
 // TestMergeIntoFreshTreeRefusesSnapshotSymlinks verifies symlink safety in
