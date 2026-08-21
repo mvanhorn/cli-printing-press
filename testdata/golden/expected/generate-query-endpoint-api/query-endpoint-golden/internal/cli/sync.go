@@ -2223,13 +2223,16 @@ var pageItemKeys = []string{
 var dataEnvelopeKeys = []string{"data", "Data", "result", "Result"}
 
 func responsePathForResource(resource, path string) []string {
-	switch resource + "\x00" + path {
-	case "gadgets\x00/query":
+	// path is the live request URL and is not the unwrap key. Envelope
+	// lookup is keyed on resource identity so absolute, proxied, or
+	// otherwise rewritten paths still unwrap.
+	switch resource {
+	case "gadgets":
 		return []string{"QueryResponse.Gadget"}
-	case "widgets\x00/query":
+	case "widgets":
 		return []string{"QueryResponse.Widget"}
 	}
-	if _, ok := queryEntity[resource]; ok && path == queryPath {
+	if _, ok := queryEntity[resource]; ok {
 		return []string{"QueryResponse"}
 	}
 	return nil
