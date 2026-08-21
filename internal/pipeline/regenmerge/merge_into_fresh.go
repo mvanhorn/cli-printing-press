@@ -68,7 +68,9 @@ var regenmergeGeneratorOwnedDirs = map[string]struct{}{
 // preserved; TEMPLATED-WITH-ADDITIONS, TEMPLATED-BODY-DRIFT, and
 // TEMPLATED-VALUE-DRIFT files are left as fresh emitted them unless the file
 // is a generated editable hook whose whole purpose is to carry agent-authored
-// additions. Lost AddCommand re-injection still runs when its constructor is
+// additions. Leaving Applied unset on those skips is what distinguishes a
+// dropped hand-edit from a same-spec preserve.
+// Lost AddCommand re-injection still runs when its constructor is
 // preserved in the merged novel files. The non-classified file
 // sweep and go.mod merge still run because both are spec-orthogonal — non-Go
 // files and go.mod require additions are valid preservation targets even when
@@ -910,6 +912,49 @@ func pruneCollidingSpec(spec ast.Spec, collisions declSet) (ast.Spec, bool) {
 		return spec, true
 	}
 	return spec, false
+}
+
+// Applied=false on a TEMPLATED-* drift verdict is the only durable signal
+// that a hand-edit was classified and then left on the floor. Same-spec
+// merge flips Applied; NovelOnly does not. Clean templated files are
+// unapplied too, but they never carried a hand-edit.
+func SkippedTemplatedHandEdits(report *MergeReport) []FileClassification {
+	if report == nil {
+		return nil
+	}
+	var dropped []FileClassification
+	for _, fc := range report.Files {
+		if fc.Applied {
+			continue
+		}
+		switch fc.Verdict {
+		case VerdictTemplatedWithAdditions, VerdictTemplatedBodyDrift, VerdictTemplatedValueDrift:
+			dropped = append(dropped, fc)
+		}
+	}
+	slices.SortFunc(dropped, func(a, b FileClassification) int {
+		return strings.Compare(a.Path, b.Path)
+	})
+	return dropped
+}
+
+// A mode suffix does not identify which Applied=false templated hand-edits
+// were discarded; the operator needs the paths to recover them.
+func FormatSkippedTemplatedHandEdits(report *MergeReport) string {
+	dropped := SkippedTemplatedHandEdits(report)
+	if len(dropped) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("warning: cross-spec --force dropped hand-edits in generated files:\n")
+	for _, fc := range dropped {
+		b.WriteString("  ")
+		b.WriteString(fc.Path)
+		b.WriteString(" (")
+		b.WriteString(string(fc.Verdict))
+		b.WriteString(")\n")
+	}
+	return b.String()
 }
 
 func preserveTemplatedDriftInNovelOnly(snapshotDir, freshDir, rel string) bool {

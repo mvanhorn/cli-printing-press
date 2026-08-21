@@ -690,7 +690,8 @@ func newTransactionsHandAddedCmd(flags *rootFlags) *cobra.Command {
 // endpoint fusion). Novel hand-written files still survive because they are
 // spec-orthogonal.
 func TestGenerateCmdForceCrossSpecFallsBackToNovelOnly(t *testing.T) {
-	t.Parallel()
+	// Captures os.Stderr for the drop list; not parallel with other tests
+	// that write the process stderr.
 
 	dir := t.TempDir()
 	outputDir := filepath.Join(dir, "crossspecapp")
@@ -720,7 +721,7 @@ resources:
 	require.NoError(t, os.WriteFile(specA, specBody("crossspecapp"), 0o644))
 	require.NoError(t, os.WriteFile(specB, specBody("crossspecapprenamed"), 0o644))
 
-	runGenerateWith := func(specFile string) {
+	runGenerateWith := func(specFile string) string {
 		cmd := newGenerateCmd()
 		cmd.SetArgs([]string{
 			"--spec", specFile,
@@ -728,7 +729,9 @@ resources:
 			"--validate=false",
 			"--force",
 		})
-		require.NoError(t, cmd.Execute())
+		stderr, err := runWithCapturedStderr(t, cmd.Execute)
+		require.NoError(t, err)
+		return stderr
 	}
 
 	runGenerateWith(specA)
@@ -747,7 +750,7 @@ resources:
 func novelHelperFn() string { return "kept" }
 `), 0o644))
 
-	runGenerateWith(specB)
+	stderr := runGenerateWith(specB)
 
 	// Cross-spec: literal drift NOT preserved (NovelOnly skips
 	// TEMPLATED-VALUE-DRIFT).
@@ -763,6 +766,13 @@ func novelHelperFn() string { return "kept" }
 	require.NoError(t, err)
 	assert.Contains(t, string(gotNovel), "novelHelperFn",
 		"novel hand-written file is spec-orthogonal and must survive cross-spec regen")
+
+	assert.Contains(t, stderr, "cross-spec: novel-only preservation")
+	assert.Contains(t, stderr, "warning: cross-spec --force dropped hand-edits in generated files:")
+	assert.Contains(t, stderr, "internal/config/config.go (TEMPLATED-VALUE-DRIFT)",
+		"cross-spec --force must name each dropped templated hand-edit")
+	assert.NotContains(t, stderr, "novel_helper.go",
+		"preserved novel files must not appear in the templated drop list")
 }
 
 func TestGenerateCmdForceRefusesSymlinkedInternalCliPreservation(t *testing.T) {
