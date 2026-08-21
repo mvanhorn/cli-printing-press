@@ -82,10 +82,14 @@ func testGenerateSyncResponsePathDedup(t *testing.T, syncableName, nonSyncableNa
 	require.NoError(t, err)
 	syncContent := string(syncGo)
 
-	caseLabel := `case "roles\x00/customer/{customer}/roles":`
+	caseLabel := `case "roles":`
 	got := strings.Count(syncContent, caseLabel)
 	assert.Equal(t, 1, got,
-		"responsePathForResource must emit the shared resource+path key exactly once; got %d", got)
+		"responsePathForResource must emit the shared resource identity key exactly once; got %d", got)
+	assert.NotContains(t, syncContent, `resource + "\x00" + path`,
+		"unwrap must not key on the live request path")
+	assert.NotContains(t, syncContent, `case "roles\x00/customer/{customer}/roles":`,
+		"unwrap cases must not bake the spec request path")
 
 	assert.Contains(t, syncContent, `return []string{"items"}`,
 		"syncable endpoint should own the deduped case")

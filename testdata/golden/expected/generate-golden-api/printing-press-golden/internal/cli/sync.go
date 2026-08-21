@@ -2975,7 +2975,10 @@ var pageItemKeys = []string{
 var dataEnvelopeKeys = []string{"data", "Data", "result", "Result"}
 
 func responsePathForResource(resource, path string) []string {
-	switch resource + "\x00" + path {
+	// path is the live request URL and is not the unwrap key. Envelope
+	// lookup is keyed on resource identity so absolute, proxied, or
+	// otherwise rewritten paths still unwrap.
+	switch resource {
 	}
 	return nil
 }

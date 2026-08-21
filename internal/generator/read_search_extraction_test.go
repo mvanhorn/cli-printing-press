@@ -93,6 +93,10 @@ func TestGeneratedSyncExtractionHonorsResponsePath(t *testing.T) {
 	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
 	require.Contains(t, syncSrc, `responsePathForResource(resource, path)`)
 	require.Contains(t, syncSrc, `extractPageItemsWithPagination(data, pageSize.cursorParam, pageSize.nextCursorPath, responsePathForResource(resource, path)...)`)
+	require.Contains(t, syncSrc, `switch resource {`)
+	require.Contains(t, syncSrc, `case "widgets":`)
+	require.NotContains(t, syncSrc, `resource + "\x00" + path`)
+	require.NotContains(t, syncSrc, `case "widgets\x00/widgets":`)
 
 	testPath := filepath.Join(outputDir, "internal", "cli", "sync_response_path_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(`package cli

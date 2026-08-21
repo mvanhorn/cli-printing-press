@@ -6117,8 +6117,10 @@ func globalScopeEnvName(apiName string, p spec.Param) string {
 }
 
 // responsePathCase is one deduplicated entry for the sync template's
-// responsePathForResource switch: the switch key (resource + NUL + path) and
-// the response envelope path to return for it.
+// responsePathForResource switch: the switch key is the resource name (the
+// syncable endpoint wins when several share a resource) and the response
+// envelope path to return for it. The live request path is not part of the
+// key, so absolute or rewritten URLs still unwrap.
 type responsePathCase struct {
 	Key          string
 	ResponsePath string
@@ -6235,8 +6237,10 @@ func sortedResourcePathEntries(entries map[string]resourcePathEntry) []resourceP
 }
 
 // responsePathCases returns deterministic switch cases deduplicated by resource
-// and path. Syncable endpoints take precedence because the generated lookup is
-// used by sync; endpoint name breaks ties to keep output stable.
+// identity. Syncable endpoints take precedence because the generated lookup is
+// used by sync; endpoint name breaks ties to keep output stable. The request
+// path is not part of the key so unwrap still fires when the live URL differs
+// from the spec path.
 func responsePathCases(resources map[string]spec.Resource) []responsePathCase {
 	resourceNames := make([]string, 0, len(resources))
 	for name := range resources {
@@ -6265,12 +6269,11 @@ func responsePathCases(resources map[string]spec.Resource) []responsePathCase {
 			if endpoint.ResponsePath == "" {
 				continue
 			}
-			key := resourceName + "\x00" + endpoint.Path
-			if _, ok := seen[key]; ok {
+			if _, ok := seen[resourceName]; ok {
 				continue
 			}
-			seen[key] = struct{}{}
-			out = append(out, responsePathCase{Key: key, ResponsePath: endpoint.ResponsePath})
+			seen[resourceName] = struct{}{}
+			out = append(out, responsePathCase{Key: resourceName, ResponsePath: endpoint.ResponsePath})
 		}
 	}
 	return out
