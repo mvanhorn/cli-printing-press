@@ -16,6 +16,70 @@ type commandSurfaceEntry struct {
 	OutputPath  string
 }
 
+// collectionItemRole qualifies an item-scoped sub-resource when a collection
+// endpoint already claimed the same leaf name. Vendored specs cannot rename
+// either path, so the item side takes the qualifier and the collection stem stays.
+const collectionItemRole = "item"
+
+type subResourceCommandNames struct {
+	fileStem         string
+	rawStem          string
+	constructorIdent string
+	commandPath      string
+	funcPrefix       string
+	commandUse       string
+}
+
+func collectionItemCollisionLeaves(resource spec.Resource) map[string]bool {
+	endpointLeaves := make(map[string]struct{}, len(resource.Endpoints))
+	for name, endpoint := range resource.Endpoints {
+		if strings.EqualFold(endpoint.Method, "OPTIONS") {
+			continue
+		}
+		endpointLeaves[toKebab(name)] = struct{}{}
+	}
+	leaves := make(map[string]bool)
+	for name := range resource.SubResources {
+		if _, ok := endpointLeaves[toKebab(name)]; ok {
+			leaves[name] = true
+		}
+	}
+	return leaves
+}
+
+func subResourceCommandNamesFor(resourceName, subResourceName string, itemScoped bool) subResourceCommandNames {
+	resourceCommand := toKebab(resourceName)
+	if itemScoped {
+		rawStem := resourceName + "_" + collectionItemRole + "_" + subResourceName
+		commandUse := toKebab(collectionItemRole + "-" + subResourceName)
+		return subResourceCommandNames{
+			fileStem:         safeResourceFileStem(rawStem),
+			rawStem:          rawStem,
+			constructorIdent: commandIdent(resourceName, collectionItemRole, subResourceName),
+			commandPath:      strings.Join([]string{resourceCommand, commandUse}, " "),
+			funcPrefix:       resourceName + "-" + collectionItemRole + "-" + subResourceName,
+			commandUse:       commandUse,
+		}
+	}
+	rawStem := resourceName + "_" + subResourceName
+	commandUse := toKebab(subResourceName)
+	return subResourceCommandNames{
+		fileStem:         safeResourceFileStem(rawStem),
+		rawStem:          rawStem,
+		constructorIdent: commandIdent(resourceName, subResourceName),
+		commandPath:      strings.Join([]string{resourceCommand, commandUse}, " "),
+		funcPrefix:       resourceName + "-" + subResourceName,
+		commandUse:       commandUse,
+	}
+}
+
+func subResourceCmdIdent(parentPrefix, subName string, resource spec.Resource) string {
+	if collectionItemCollisionLeaves(resource)[subName] {
+		return commandIdent(parentPrefix, collectionItemRole, subName)
+	}
+	return commandIdent(parentPrefix, subName)
+}
+
 func buildCommandSurface(apiSpec *spec.APISpec, promotedCommands []PromotedCommand) []commandSurfaceEntry {
 	if apiSpec == nil {
 		return nil
@@ -52,6 +116,7 @@ func buildCommandSurface(apiSpec *spec.APISpec, promotedCommands []PromotedComma
 				OutputPath:  filepath.Join("internal", "cli", safeResourceFileStem(resourceName)+".go"),
 			})
 		}
+		collidingLeaves := collectionItemCollisionLeaves(resource)
 		for _, endpointName := range sortedEndpointNames(resource.Endpoints) {
 			if promoted && endpointName == promotedCommand.EndpointName {
 				continue
@@ -71,19 +136,19 @@ func buildCommandSurface(apiSpec *spec.APISpec, promotedCommands []PromotedComma
 		sort.Strings(subResourceNames)
 		for _, subResourceName := range subResourceNames {
 			subResource := withoutOptionsEndpoints(resource.SubResources[subResourceName])
-			subCommand := strings.Join([]string{resourceCommand, toKebab(subResourceName)}, " ")
+			naming := subResourceCommandNamesFor(resourceName, subResourceName, collidingLeaves[subResourceName])
 			entries = append(entries, commandSurfaceEntry{
 				SpecPath:    resourceSpecPath(resourceName, subResourceName),
-				CommandPath: subCommand,
-				Constructor: "new" + commandIdent(resourceName, subResourceName) + "Cmd",
-				OutputPath:  filepath.Join("internal", "cli", safeResourceFileStem(resourceName+"_"+subResourceName)+".go"),
+				CommandPath: naming.commandPath,
+				Constructor: "new" + naming.constructorIdent + "Cmd",
+				OutputPath:  filepath.Join("internal", "cli", naming.fileStem+".go"),
 			})
 			for _, endpointName := range sortedEndpointNames(subResource.Endpoints) {
 				entries = append(entries, commandSurfaceEntry{
 					SpecPath:    endpointSpecPath(resourceName, subResourceName, endpointName),
-					CommandPath: strings.Join([]string{subCommand, toKebab(endpointName)}, " "),
-					Constructor: "new" + commandIdent(resourceName, subResourceName, endpointName) + "Cmd",
-					OutputPath:  filepath.Join("internal", "cli", safeResourceFileStem(resourceName+"_"+subResourceName+"_"+endpointName)+".go"),
+					CommandPath: strings.Join([]string{naming.commandPath, toKebab(endpointName)}, " "),
+					Constructor: "new" + commandIdent(naming.funcPrefix, endpointName) + "Cmd",
+					OutputPath:  filepath.Join("internal", "cli", safeResourceFileStem(naming.rawStem+"_"+endpointName)+".go"),
 				})
 			}
 		}
