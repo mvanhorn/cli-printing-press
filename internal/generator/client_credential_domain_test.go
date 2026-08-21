@@ -61,8 +61,10 @@ func TestGeneratedBrowserCredentialBindsToCapturedDomain(t *testing.T) {
 		"requests must check the captured credential domain before injection")
 	assert.Contains(t, clientSrc, "if authHeader != \"\" && credentialAllowed {",
 		"the primary auth header must be withheld from unrelated hosts")
-	assert.Contains(t, clientSrc, `req.URL.Host == via[0].URL.Host && (req.URL.Scheme == via[0].URL.Scheme || (via[0].URL.Scheme == "http" && req.URL.Scheme == "https")) && c.credentialAppliesToURL(req.URL.String())`,
-		"same-host redirect re-stamping must retain the credential-domain gate and keep http -> https upgrades")
+	assert.Contains(t, clientSrc, "!redirectLeavesOrigin(req.URL, via[0].URL) && c.credentialAppliesToURL(req.URL.String())",
+		"composed-auth re-stamping must use redirectLeavesOrigin and retain the credential-domain gate")
+	assert.Contains(t, clientSrc, `downgrade := prev.Scheme == "https" && next.Scheme != "https"`,
+		"composed-auth clients must emit the shared protocol-downgrade helper")
 	assert.Contains(t, clientSrc, "publicsuffix.EffectiveTLDPlusOne",
 		"credential matching must use registrable domains")
 	assert.Contains(t, goMod, "golang.org/x/net v0.55.0",
