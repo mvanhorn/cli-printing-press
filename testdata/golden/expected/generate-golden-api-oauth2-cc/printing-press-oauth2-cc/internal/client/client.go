@@ -317,10 +317,11 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// Go strips Authorization and Cookie in common cases, but custom
 		// headers and URL query values need explicit removal here.
 		//
-		// Scheme counts as part of the origin. A same-host https -> http
-		// downgrade would otherwise skip this branch and send the credential
-		// in cleartext.
-		if req.URL.Host != via[0].URL.Host || req.URL.Scheme != via[0].URL.Scheme {
+		// Origin matches browsers and Go's shouldCopyHeaderOnRedirect: same
+		// host + same scheme keeps the credential, and a same-host
+		// http -> https upgrade is also safe. A same-host https -> http
+		// downgrade is not — that would send the credential in cleartext.
+		if req.URL.Host != via[0].URL.Host || (via[0].URL.Scheme == "https" && req.URL.Scheme == "http") {
 			req.Header.Del("Authorization")
 		}
 		// Same-origin gate mirrors Go's shouldCopyHeaderOnRedirect: a
@@ -328,13 +329,13 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// receive the auth credential, even though we are inside
 		// CheckRedirect where Go's automatic stripping has already run.
 		//
-		// Scheme is compared as well as host, and that is not redundant.
-		// Host equality alone lets a same-host https -> http downgrade keep
-		// the credential, putting it on the wire in cleartext. Go's own
+		// Same-host http -> https is a safe upgrade and is re-stamped.
+		// Same-host https -> http is a downgrade and is not: host equality
+		// alone would put the credential on the wire in cleartext. Go's own
 		// stripping does not cover it: this is a custom header, so it is
 		// never in the set Go removes automatically, which is the same
 		// reason the cross-host branch below has to delete it by hand.
-		if req.URL.Host == via[0].URL.Host && req.URL.Scheme == via[0].URL.Scheme {
+		if req.URL.Host == via[0].URL.Host && (req.URL.Scheme == via[0].URL.Scheme || (via[0].URL.Scheme == "http" && req.URL.Scheme == "https")) {
 			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
 				req.Header.Set("Authorization", h)
 			}

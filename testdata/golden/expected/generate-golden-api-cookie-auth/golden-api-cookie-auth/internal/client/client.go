@@ -331,10 +331,11 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// Go strips Authorization and Cookie in common cases, but custom
 		// headers and URL query values need explicit removal here.
 		//
-		// Scheme counts as part of the origin. A same-host https -> http
-		// downgrade would otherwise skip this branch and send the credential
-		// in cleartext.
-		if req.URL.Host != via[0].URL.Host || req.URL.Scheme != via[0].URL.Scheme {
+		// Origin matches browsers and Go's shouldCopyHeaderOnRedirect: same
+		// host + same scheme keeps the credential, and a same-host
+		// http -> https upgrade is also safe. A same-host https -> http
+		// downgrade is not — that would send the credential in cleartext.
+		if req.URL.Host != via[0].URL.Host || (via[0].URL.Scheme == "https" && req.URL.Scheme == "http") {
 			req.Header.Del("Cookie")
 			req.Header.Del("Cookie")
 		}
