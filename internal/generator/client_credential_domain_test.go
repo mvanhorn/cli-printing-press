@@ -69,8 +69,8 @@ func TestGeneratedBrowserCredentialBindsToCapturedDomain(t *testing.T) {
 		"the primary auth header must be withheld from unrelated hosts")
 	assert.Contains(t, clientSrc, "if !credentialAllowed && isCredentialHeader(k)",
 		"config Headers must not restore Authorization or Cookie after a deny")
-	assert.Contains(t, clientSrc, "req.URL.Host == via[0].URL.Host && req.URL.Scheme == via[0].URL.Scheme && c.credentialAppliesToURL(req.URL.String())",
-		"same-host redirect re-stamping must retain the credential-domain gate")
+	assert.Contains(t, clientSrc, `req.URL.Host == via[0].URL.Host && (req.URL.Scheme == via[0].URL.Scheme || (via[0].URL.Scheme == "http" && req.URL.Scheme == "https")) && c.credentialAppliesToURL(req.URL.String())`,
+		"same-host redirect re-stamping must retain the credential-domain gate and keep http -> https upgrades")
 	assert.NotContains(t, clientSrc, "publicsuffix.EffectiveTLDPlusOne",
 		"credential matching must not authorize eTLD+1 siblings of the canonical host")
 	assert.NotContains(t, clientSrc, "golang.org/x/net/publicsuffix",
