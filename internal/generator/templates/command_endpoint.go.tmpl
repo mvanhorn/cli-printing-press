@@ -9,6 +9,7 @@
 {{- $isMutationOutput := and (not .IsReadOnly) (not (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")))}}
 {{- $dataSourceStrategy := dataSourceStrategy .Resource .Endpoint}}
 {{- $documentedFields := compactFieldMapLiteral .Endpoint.Response.Item .Types}}
+{{- $skipLiveJSONGuard := or .Endpoint.UsesHTMLResponse .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse}}
 
 package cli
 
@@ -375,13 +376,17 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			}
 {{- end}}
 {{- else if $supportsAllPagination}}
-{{- if and (eq .Endpoint.ResponseFormat "html") (not .HasStore)}}
+{{- if and $skipLiveJSONGuard (not .HasStore)}}
 			if flagAll {
+{{- if .Endpoint.UsesHTMLResponse}}
 				return fmt.Errorf("--all is not supported for live HTML responses; omit --all to extract the current page")
+{{- else}}
+				return fmt.Errorf("--all is not supported for live binary/text responses; omit --all to fetch the current page")
+{{- end}}
 			}
 {{- end}}
 {{- if .HasStore}}
-			{{if eq .Endpoint.ResponseFormat "html"}}data, prov, err := resolvePaginatedReadWithStrategyAndJSONGuard{{else}}data, prov, err := resolvePaginatedReadWithStrategy{{end}}(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", path, map[string]string{
+			{{if $skipLiveJSONGuard}}data, prov, err := resolvePaginatedReadWithStrategyAndJSONGuard{{else}}data, prov, err := resolvePaginatedReadWithStrategy{{end}}(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", path, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
@@ -390,7 +395,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				"{{paramWireName .}}": formatCLIParamValue(flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", {{.PageSize}}, "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}", {{printf "%q" .Endpoint.ResponsePath}}, {{if eq .Endpoint.ResponseFormat "html"}}false, {{end}}cmd.ErrOrStderr())
+			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", {{.PageSize}}, "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}", {{printf "%q" .Endpoint.ResponsePath}}, {{if $skipLiveJSONGuard}}false, {{if .Endpoint.UsesHTMLResponse}}liveAllRejectHTML{{else}}liveAllRejectNonJSON{{end}}, {{end}}cmd.ErrOrStderr())
 {{- else}}
 {{- if eq $dataSourceStrategy "local"}}
 			return fmt.Errorf("data_source_strategy local requires the local store data layer")
@@ -424,7 +429,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- if .HasStore}}
 {{- if .IsReadOnly}}
-{{- if eq .Endpoint.ResponseFormat "html"}}
+{{- if $skipLiveJSONGuard}}
 			data, prov, err := resolveReadWithStrategyResponsePathAndJSONGuard(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, false, cmd.ErrOrStderr())
 {{- else}}
 			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, cmd.ErrOrStderr())
@@ -866,7 +871,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				return nil
 			}
 			if flags.asJSON || flags.csv || flags.compact || flags.plain || flags.selectFields != "" {
-				return fmt.Errorf("binary response cannot be rendered as structured output; redirect stdout or use --deliver file:<path>")
+				return usageErr(fmt.Errorf("binary response cannot be rendered as structured output; redirect stdout or use --deliver file:<path>"))
 			}
 			_, err = cmd.OutOrStdout().Write(data)
 			return err

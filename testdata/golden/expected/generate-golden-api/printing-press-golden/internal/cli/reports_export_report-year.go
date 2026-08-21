@@ -60,7 +60,7 @@ func newReportsExportReportYearCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			params := map[string]string{}
-			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "live", "export", false, path, params, headerOverrides, "", cmd.ErrOrStderr())
+			data, prov, err := resolveReadWithStrategyResponsePathAndJSONGuard(cmd.Context(), c, flags, "live", "export", false, path, params, headerOverrides, "", false, cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(cmd.OutOrStdout(), err, flags)
 			}
@@ -71,7 +71,7 @@ func newReportsExportReportYearCmd(flags *rootFlags) *cobra.Command {
 				return nil
 			}
 			if flags.asJSON || flags.csv || flags.compact || flags.plain || flags.selectFields != "" {
-				return fmt.Errorf("binary response cannot be rendered as structured output; redirect stdout or use --deliver file:<path>")
+				return usageErr(fmt.Errorf("binary response cannot be rendered as structured output; redirect stdout or use --deliver file:<path>"))
 			}
 			_, err = cmd.OutOrStdout().Write(data)
 			return err
