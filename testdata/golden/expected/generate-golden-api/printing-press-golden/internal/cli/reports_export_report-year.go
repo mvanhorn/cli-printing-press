@@ -21,7 +21,7 @@ func newReportsExportReportYearCmd(flags *rootFlags) *cobra.Command {
 		Short:   "Download the annual report as a binary file",
 		// TODO: replace placeholder example values before relying on this for live dogfood.
 		Example:     "  printing-press-golden-pp-cli reports export report-year --x-api-version example-value --year 42",
-		Annotations: map[string]string{"pp:endpoint": "export.report-year", "pp:method": "GET", "pp:path": "/reports/{year}/export", "mcp:read-only": "true", "pp:typed-exit-codes": "0,1"},
+		Annotations: map[string]string{"pp:endpoint": "export.report-year", "pp:method": "GET", "pp:path": "/reports/{year}/export", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Bare invocation of a command with required input prints help
 			// instead of pflag's terse "required flag not set" error. Optional-
@@ -71,7 +71,7 @@ func newReportsExportReportYearCmd(flags *rootFlags) *cobra.Command {
 				return nil
 			}
 			if flags.asJSON || flags.csv || flags.compact || flags.plain || flags.selectFields != "" {
-				return fmt.Errorf("binary response cannot be rendered as structured output; redirect stdout or use --deliver file:<path>")
+				return usageErr(fmt.Errorf("binary response cannot be rendered as structured output; redirect stdout or use --deliver file:<path>"))
 			}
 			_, err = cmd.OutOrStdout().Write(data)
 			return err

@@ -9,6 +9,7 @@
 {{- $isMutationOutput := and (not .IsReadOnly) (not (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")))}}
 {{- $dataSourceStrategy := dataSourceStrategy .Resource .Endpoint}}
 {{- $documentedFields := compactFieldMapLiteral .Endpoint.Response.Item .Types}}
+{{- $skipLiveJSONGuard := or .Endpoint.UsesHTMLResponse .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse}}
 
 package cli
 
@@ -81,7 +82,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 		// TODO: replace placeholder example values before relying on this for live dogfood.
 {{- end}}
 		Example: {{printf "%q" $example}},
-		Annotations: map[string]string{ {{- if not .APISpec.IsLocalSQLiteSource}}"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, {{end}}"pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .EffectivePath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}{{if endpointSkipsErrorPathProbe .Endpoint}}, "pp:no-error-path-probe": "true"{{end}}{{if .Endpoint.HappyArgs}}, "pp:happy-args": {{printf "%q" .Endpoint.HappyArgs}}{{end}}{{if .Endpoint.HappyStdin}}, "pp:happy-stdin": {{printf "%q" .Endpoint.HappyStdin}}{{end}}{{if .Endpoint.LiveDogfoodRequiresTier}}, "pp:requires-tier": {{printf "%q" .Endpoint.LiveDogfoodRequiresTier}}{{end}}{{if .Endpoint.UsesBinaryResponse}}, "pp:typed-exit-codes": "0,1"{{end}}},
+		Annotations: map[string]string{ {{- if not .APISpec.IsLocalSQLiteSource}}"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, {{end}}"pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .EffectivePath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}{{if endpointSkipsErrorPathProbe .Endpoint}}, "pp:no-error-path-probe": "true"{{end}}{{if .Endpoint.HappyArgs}}, "pp:happy-args": {{printf "%q" .Endpoint.HappyArgs}}{{end}}{{if .Endpoint.HappyStdin}}, "pp:happy-stdin": {{printf "%q" .Endpoint.HappyStdin}}{{end}}{{if .Endpoint.LiveDogfoodRequiresTier}}, "pp:requires-tier": {{printf "%q" .Endpoint.LiveDogfoodRequiresTier}}{{end}}},
 		RunE: func(cmd *cobra.Command, args []string) error {
 {{- if endpointHasRequiredInput .Endpoint}}
 			// Bare invocation of a command with required input prints help
@@ -381,7 +382,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			}
 {{- end}}
 {{- if .HasStore}}
-			{{if eq .Endpoint.ResponseFormat "html"}}data, prov, err := resolvePaginatedReadWithStrategyAndJSONGuard{{else}}data, prov, err := resolvePaginatedReadWithStrategy{{end}}(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", path, map[string]string{
+			{{if $skipLiveJSONGuard}}data, prov, err := resolvePaginatedReadWithStrategyAndJSONGuard{{else}}data, prov, err := resolvePaginatedReadWithStrategy{{end}}(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", path, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
@@ -390,7 +391,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				"{{paramWireName .}}": formatCLIParamValue(flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", {{.PageSize}}, "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}", {{printf "%q" .Endpoint.ResponsePath}}, {{if eq .Endpoint.ResponseFormat "html"}}false, {{end}}cmd.ErrOrStderr())
+			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", {{.PageSize}}, "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}", {{printf "%q" .Endpoint.ResponsePath}}, {{if $skipLiveJSONGuard}}false, {{end}}cmd.ErrOrStderr())
 {{- else}}
 {{- if eq $dataSourceStrategy "local"}}
 			return fmt.Errorf("data_source_strategy local requires the local store data layer")
@@ -424,7 +425,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- if .HasStore}}
 {{- if .IsReadOnly}}
-{{- if or .Endpoint.UsesHTMLResponse .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse}}
+{{- if $skipLiveJSONGuard}}
 			data, prov, err := resolveReadWithStrategyResponsePathAndJSONGuard(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, false, cmd.ErrOrStderr())
 {{- else}}
 			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse (endpointHasHeaderParams .Endpoint)}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, cmd.ErrOrStderr())
@@ -866,7 +867,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				return nil
 			}
 			if flags.asJSON || flags.csv || flags.compact || flags.plain || flags.selectFields != "" {
-				return fmt.Errorf("binary response cannot be rendered as structured output; redirect stdout or use --deliver file:<path>")
+				return usageErr(fmt.Errorf("binary response cannot be rendered as structured output; redirect stdout or use --deliver file:<path>"))
 			}
 			_, err = cmd.OutOrStdout().Write(data)
 			return err

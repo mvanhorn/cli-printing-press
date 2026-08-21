@@ -95,8 +95,8 @@ func TestGeneratedBinaryAndTextReadsSkipLiveJSONGuard(t *testing.T) {
 		"binary reads must pass guardLiveJSON=false")
 	require.NotContains(t, pageIndexSrc, `resolveReadWithStrategyAndResponsePath(`,
 		"binary reads must not use the wrapper that hardcodes guardLiveJSON=true")
-	require.Contains(t, pageIndexSrc, `"pp:typed-exit-codes": "0,1"`,
-		"binary commands that refuse --json must declare the designed exit")
+	require.NotContains(t, pageIndexSrc, `"pp:typed-exit-codes": "0,1"`,
+		"binary commands must not treat generic exit 1 as designed success")
 
 	docsSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_docs.go")
 	require.Contains(t, docsSrc, `resolveReadWithStrategyResponsePathAndJSONGuard(`,
@@ -138,7 +138,7 @@ func TestGeneratedBinaryAndTextReadsSkipLiveJSONGuard(t *testing.T) {
 	require.Error(t, err, jsonOut)
 	require.Contains(t, jsonOut, "binary response cannot be rendered as structured output")
 	require.NotContains(t, jsonOut, "returned HTML instead of JSON")
-	requireExitCode(t, err, 1)
+	requireExitCode(t, err, 2)
 }
 
 func runGeneratedCLI(t *testing.T, binaryPath string, env []string, args ...string) (string, error) {
