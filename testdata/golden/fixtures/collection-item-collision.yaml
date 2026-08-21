@@ -1,0 +1,41 @@
+name: collection-item-collision
+description: |
+  Collection-level /users/email alongside item-level /users/{userId}/email.
+  Pins that generation keeps the collection stem and qualifies the item side.
+version: 1.0.0
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  users:
+    description: Manage users
+    endpoints:
+      list:
+        method: GET
+        path: /users
+        description: List users
+        response: {type: array, item: User}
+      email:
+        method: GET
+        path: /users/email
+        description: Check whether an email is in use
+        response: {type: object, item: EmailCheck}
+    sub_resources:
+      email:
+        description: Manage a user's email
+        endpoints:
+          update:
+            method: PUT
+            path: /users/{userId}/email
+            description: Update a user's email
+            params:
+              - {name: userId, in: path, type: string, required: true, positional: true}
+            response: {type: object, item: User}
+types:
+  User:
+    fields:
+      - {name: id, type: string, description: User identifier}
+      - {name: email, type: string, description: Email address}
+  EmailCheck:
+    fields:
+      - {name: exists, type: boolean, description: Whether the email is taken}

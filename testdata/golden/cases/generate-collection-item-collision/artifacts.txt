@@ -1,0 +1,4 @@
+collection-item-collision/internal/cli/users.go
+collection-item-collision/internal/cli/users_email.go
+collection-item-collision/internal/cli/users_item_email.go
+collection-item-collision/internal/cli/users_item_email_update.go

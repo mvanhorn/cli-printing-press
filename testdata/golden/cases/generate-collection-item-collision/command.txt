@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/collection-item-collision.yaml --output "$CASE_ACTUAL_DIR/collection-item-collision" --force --validate=false
