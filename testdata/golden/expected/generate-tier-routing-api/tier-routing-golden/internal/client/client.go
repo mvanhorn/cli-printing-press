@@ -347,6 +347,14 @@ func newRateLimiter(rateLimit float64) *cliutil.AdaptiveLimiter {
 	return cliutil.NewAdaptiveLimiter(rateLimit) // 0 -> nil (disabled); >0 -> explicit ceiling
 }
 
+// redirectLeavesOrigin reports whether a redirect hop should drop custom
+// credentials. Block protocol downgrade: leaving HTTPS for any other scheme.
+func redirectLeavesOrigin(next, prev *url.URL) bool {
+	hostChanged := next.Host != prev.Host
+	downgrade := prev.Scheme == "https" && next.Scheme != "https"
+	return hostChanged || downgrade
+}
+
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	cacheDir := ""
 	if dir, err := cliutil.CacheDir(); err == nil {
@@ -377,19 +385,20 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			// "Moved Permanently" body back to the caller.
 			return errors.New("stopped after 10 redirects")
 		}
-		// Never carry credential material across a host-changing redirect.
-		// Go strips Authorization and Cookie in common cases, but custom
-		// headers and URL query values need explicit removal here.
-		if req.URL.Host != via[0].URL.Host {
+		// Never carry credential material across a host change or protocol
+		// downgrade. Go strips Authorization and Cookie in common cases, but
+		// custom headers and URL query values need explicit removal here.
+		// Block protocol downgrade.
+		if redirectLeavesOrigin(req.URL, via[0].URL) {
 			req.Header.Del("Authorization")
 		}
 		// Tier routing picks header vs query at request time on a WithTier copy,
 		// while this redirect callback is installed once on the shared
-		// http.Client. On cross-host redirects, delete every tier auth header
-		// name the generated CLI can use; same-host redirects keep Go's copied
-		// header unchanged. Go strips Authorization/Cookie automatically on
-		// cross-host redirects, but not arbitrary tier header names.
-		if req.URL.Host != via[0].URL.Host {
+		// http.Client. When the hop leaves the origin, delete every tier auth
+		// header name the generated CLI can use. Go strips Authorization/Cookie
+		// automatically on some hops, but not arbitrary tier header names.
+		// Block protocol downgrade.
+		if redirectLeavesOrigin(req.URL, via[0].URL) {
 			req.Header.Del("Authorization")
 		}
 		return nil
