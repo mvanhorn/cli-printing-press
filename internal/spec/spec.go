@@ -2587,6 +2587,7 @@ type Param struct {
 	Aliases      []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
 	Type         string   `yaml:"type" json:"type"`
 	Required     bool     `yaml:"required" json:"required"`
+	Deprecated   bool     `yaml:"-" json:"-"`
 	Positional   bool     `yaml:"positional" json:"positional"`
 	PathParam    bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true for path params rendered as flags (e.g., pagination)
 	GlobalScope  bool     `yaml:"global_scope,omitempty" json:"global_scope,omitempty"`

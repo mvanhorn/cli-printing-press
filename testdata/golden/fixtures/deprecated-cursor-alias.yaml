@@ -1,0 +1,45 @@
+openapi: "3.0.3"
+info:
+  title: Cursor Alias API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      tags: [items]
+      operationId: listItems
+      summary: List items
+      parameters:
+        - name: after
+          in: query
+          deprecated: true
+          description: Legacy cursor alias. Prefer cursor.
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          description: Canonical pagination cursor.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                  next_cursor:
+                    type: string

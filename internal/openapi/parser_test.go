@@ -12947,6 +12947,90 @@ func TestDetectPaginationCursorBeatsPage(t *testing.T) {
 	assert.Equal(t, "limit", pag.LimitParam)
 }
 
+func TestParsePrefersNonDeprecatedPaginationCursor(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Cursor Alias API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      operationId: listItems
+      parameters:
+        - name: after
+          in: query
+          deprecated: true
+          schema: {type: string}
+        - name: cursor
+          in: query
+          schema: {type: string}
+        - name: limit
+          in: query
+          schema: {type: integer}
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+                  next_cursor: {type: string}
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "GET", "/items")
+	require.NotNil(t, endpoint.Pagination)
+	assert.Equal(t, "cursor", endpoint.Pagination.CursorParam)
+	assert.Equal(t, "cursor", endpoint.Pagination.Type)
+	assert.Equal(t, "next_cursor", endpoint.Pagination.NextCursorPath)
+
+	params := make(map[string]spec.Param, len(endpoint.Params))
+	for _, param := range endpoint.Params {
+		params[param.Name] = param
+	}
+	require.Contains(t, params, "after")
+	require.Contains(t, params, "cursor")
+	assert.True(t, params["after"].Deprecated)
+	assert.False(t, params["cursor"].Deprecated)
+
+	if testing.Short() {
+		return
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(parsed.Name))
+	require.NoError(t, generator.New(parsed, outputDir).Generate())
+	runGo(t, outputDir, "mod", "tidy")
+	runGo(t, outputDir, "test", "./...")
+}
+
+func TestDetectPaginationPreservesCandidateOrderAtEqualDeprecation(t *testing.T) {
+	t.Parallel()
+
+	for _, deprecated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("deprecated=%t", deprecated), func(t *testing.T) {
+			t.Parallel()
+			pag := detectPagination([]spec.Param{
+				{Name: "cursor", Deprecated: deprecated},
+				{Name: "after", Deprecated: deprecated},
+			}, nil)
+			require.NotNil(t, pag)
+			assert.Equal(t, "after", pag.CursorParam)
+			assert.Equal(t, "cursor", pag.Type)
+		})
+	}
+}
+
 // TestDetectPaginationOffsetBeatsPage guards offset-based APIs (Atlassian
 // older endpoints, etc.) against the new page branch.
 func TestDetectPaginationOffsetBeatsPage(t *testing.T) {

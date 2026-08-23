@@ -1,0 +1,17 @@
+		mcplib.NewTool("items_list",
+			mcplib.WithDescription("List items. Optional: after, cursor, limit. Returns array of ItemsListItem."),
+			mcplib.WithString("after", mcplib.Description("Legacy cursor alias. Prefer cursor.")),
+			mcplib.WithNumber("limit", mcplib.Description("Limit")),
+			mcplib.WithString("cursor", mcplib.Description("Opaque pagination cursor returned by a previous MCP response")),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
+		),
+		makeAPIHandler("GET", "/items", true, false, nil, mcpPageConfig{CursorParam: "cursor", NextCursorPath: "next_cursor"}, []mcpParamBinding{{PublicName: "after", WireName: "after", Location: "query"}, {PublicName: "limit", WireName: "limit", Location: "query"}}, []string{}),
+	var flagAfter string
+	var flagCursor string
+			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "auto", "items", path, map[string]string{
+				"after":  formatCLIParamValue(flagAfter),
+				"cursor": formatCLIParamValue(flagCursor),
+	cmd.Flags().StringVar(&flagAfter, "after", "", "Legacy cursor alias. Prefer cursor.")
+	cmd.Flags().StringVar(&flagCursor, "cursor", "", "Canonical pagination cursor.")

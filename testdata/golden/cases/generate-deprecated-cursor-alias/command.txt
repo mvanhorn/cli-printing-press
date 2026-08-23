@@ -1,0 +1,6 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/deprecated-cursor-alias.yaml --output "$CASE_ACTUAL_DIR/cursor-alias" --force --spec-url file://testdata/golden/fixtures/deprecated-cursor-alias.yaml --validate=false
+{
+  awk '/mcplib.NewTool\("items_list"/,/makeAPIHandler\("GET", "\/items"/ { print }' "$CASE_ACTUAL_DIR/cursor-alias/internal/mcp/tools.go"
+  awk '/var flagAfter string/,/cmd.Flags\(\).BoolVar/ { if ($0 ~ /flagAfter|flagCursor|resolvePaginatedReadWithStrategy|"after":|"cursor":/) print }' "$CASE_ACTUAL_DIR/cursor-alias/internal/cli/promoted_items.go"
+} > "$CASE_ACTUAL_DIR/cursor-alias-contract.txt"
