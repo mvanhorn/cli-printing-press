@@ -62,6 +62,7 @@ type rootFlags struct {
 	platformMetadataEmitted bool
 	deliverSpec             string
 	timeout                 time.Duration
+	timeoutExplicit         bool
 	rateLimit               float64
 	maxAge                  time.Duration
 	dataSource              string
@@ -346,6 +347,7 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify auth and connectivity.
 			runLearnInitOnce(cmd.Context())
 			runPlaybookInitOnce(cmd.Context())
 		}
+		flags.timeoutExplicit = cmd.Flags().Changed("timeout")
 		return nil
 	}
 	rootCmd.AddCommand(newQuotesCmd(flags))
@@ -620,6 +622,9 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 		return nil, configErr(err)
 	}
 	c := client.New(cfg, f.timeout, f.rateLimit)
+	if f.timeoutExplicit {
+		c.SetTimeoutExplicit(true)
+	}
 	c.DryRun = f.dryRun
 	c.NoCache = f.noCache
 	if err := bindPlatformClient(c, f); err != nil {

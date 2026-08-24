@@ -4065,6 +4065,7 @@ var reservedRootFlagFieldNames = map[string]struct{}{
 	"receiptWriter":           {},
 	"deliverSpec":             {},
 	"timeout":                 {},
+	"timeoutExplicit":         {},
 	"rateLimit":               {},
 	"maxAge":                  {},
 	"dataSource":              {},

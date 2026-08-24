@@ -38,9 +38,13 @@ const maxErrorBodyBytes = 4096
 var ErrPlaceholderCredential = errors.New("auth placeholder credential")
 
 type Client struct {
-	BaseURL           string
-	Config            *config.Config
-	HTTPClient        *http.Client
+	BaseURL    string
+	Config     *config.Config
+	HTTPClient *http.Client
+	// timeoutExplicit is true when the operator set --timeout. Binary and
+	// stream transfers skip the whole-call client Timeout unless this is
+	// set, so a large download is not killed by the default JSON budget.
+	timeoutExplicit   bool
 	DryRun            bool
 	NoCache           bool
 	cacheDir          string
@@ -218,6 +222,42 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 		tr.MaxIdleConns = maxIdleConnsPerHost
 	}
 	return &http.Client{Timeout: timeout, Jar: jar, Transport: tr}
+}
+
+// SetTimeoutExplicit records that the operator passed --timeout. Binary and
+// stream transfers then honor the whole-call bound; the default budget stays
+// a JSON-only ceiling.
+func (c *Client) SetTimeoutExplicit(explicit bool) {
+	if c == nil {
+		return
+	}
+	c.timeoutExplicit = explicit
+}
+
+// StreamingHTTPClient returns a client that does not impose a whole-call
+// Timeout so binary and stream bodies can finish. Stalls waiting for the
+// first response header are still bounded by headerTimeout.
+func StreamingHTTPClient(base *http.Client, headerTimeout time.Duration) *http.Client {
+	if headerTimeout <= 0 {
+		if base != nil && base.Timeout > 0 {
+			headerTimeout = base.Timeout
+		} else {
+			headerTimeout = 60 * time.Second
+		}
+	}
+	if base == nil {
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.ResponseHeaderTimeout = headerTimeout
+		return &http.Client{Transport: tr}
+	}
+	clone := *base
+	clone.Timeout = 0
+	if t, ok := base.Transport.(*http.Transport); ok {
+		tr := t.Clone()
+		tr.ResponseHeaderTimeout = headerTimeout
+		clone.Transport = tr
+	}
+	return &clone
 }
 
 // RateLimitAuto is the default --rate-limit value: a negative sentinel meaning
@@ -1013,7 +1053,11 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		if c.platformSession != nil {
 			c.platformSession.RecordRateLimitRequest()
 		}
-		resp, err := c.HTTPClient.Do(req)
+		httpClient := c.HTTPClient
+		if binaryResponse && !c.timeoutExplicit {
+			httpClient = StreamingHTTPClient(c.HTTPClient, c.ConfiguredTimeout())
+		}
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, 0, ctxErr
