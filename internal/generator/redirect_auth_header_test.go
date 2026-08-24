@@ -26,8 +26,8 @@ func TestClientCheckRedirectDeletesHeaderOnCrossHost(t *testing.T) {
 		closure := checkRedirectClosureBody(t, client)
 
 		requireRedirectOriginHelper(t, client)
-		require.Contains(t, closure, `if redirectLeavesOrigin(req.URL, via[len(via)-1].URL) {`)
-		require.Contains(t, closure, `if !redirectLeavesOrigin(req.URL, via[len(via)-1].URL) {`)
+		require.Contains(t, closure, `if redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) {`)
+		require.Contains(t, closure, `if !redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) {`)
 		require.Contains(t, closure, `req.Header.Set("X-Api-Key", h)`)
 		require.Contains(t, closure, `req.Header.Del("X-Api-Key")`)
 	})
@@ -46,7 +46,7 @@ func TestClientCheckRedirectDeletesHeaderOnCrossHost(t *testing.T) {
 		closure := checkRedirectClosureBody(t, client)
 
 		requireRedirectOriginHelper(t, client)
-		require.Contains(t, closure, `if !redirectLeavesOrigin(req.URL, via[len(via)-1].URL) {`)
+		require.Contains(t, closure, `if !redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) {`)
 		require.Contains(t, closure, `req.Header.Set("X-Kit-Api-Key", h)`)
 		require.Contains(t, closure, `} else {`)
 		require.Contains(t, closure, `req.Header.Del("X-Kit-Api-Key")`)
@@ -71,7 +71,7 @@ func TestClientCheckRedirectOriginHelperAtAllSites(t *testing.T) {
 		client := generateClientSource(t, apiSpec)
 		closure := checkRedirectClosureBody(t, client)
 		requireRedirectOriginHelper(t, client)
-		require.Contains(t, closure, `if redirectLeavesOrigin(req.URL, via[len(via)-1].URL) {`)
+		require.Contains(t, closure, `if redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) {`)
 		require.Contains(t, closure, "Query credentials are removed above when the hop leaves the origin")
 		require.NotContains(t, closure, "cross-host hops")
 		require.NotContains(t, closure, "same-host redirects")
@@ -96,7 +96,7 @@ func TestClientCheckRedirectOriginHelperAtAllSites(t *testing.T) {
 		client := generateClientSource(t, apiSpec)
 		closure := checkRedirectClosureBody(t, client)
 		requireRedirectOriginHelper(t, client)
-		require.Equal(t, 2, strings.Count(closure, "if redirectLeavesOrigin(req.URL, via[len(via)-1].URL) {"),
+		require.Equal(t, 2, strings.Count(closure, "if redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) {"),
 			"tier-routing must use the shared helper for both the custom-header strip and the tier header-name strip")
 		require.Contains(t, closure, `req.Header.Del("X-Tier-Key")`)
 	})
@@ -113,8 +113,8 @@ func TestClientCheckRedirectOriginHelperAtAllSites(t *testing.T) {
 		client := generateClientSource(t, apiSpec)
 		closure := checkRedirectClosureBody(t, client)
 		requireRedirectOriginHelper(t, client)
-		require.Contains(t, closure, `if redirectLeavesOrigin(req.URL, via[len(via)-1].URL) {`)
-		require.Contains(t, closure, `if !redirectLeavesOrigin(req.URL, via[len(via)-1].URL) {`)
+		require.Contains(t, closure, `if redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) {`)
+		require.Contains(t, closure, `if !redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) {`)
 	})
 
 	t.Run("in cookie non-jar drop by name", func(t *testing.T) {
@@ -129,7 +129,7 @@ func TestClientCheckRedirectOriginHelperAtAllSites(t *testing.T) {
 		client := generateClientSource(t, apiSpec)
 		closure := checkRedirectClosureBody(t, client)
 		requireRedirectOriginHelper(t, client)
-		require.Equal(t, 2, strings.Count(closure, "if redirectLeavesOrigin(req.URL, via[len(via)-1].URL) {"),
+		require.Equal(t, 2, strings.Count(closure, "if redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) {"),
 			"in:cookie non-jar must use the shared helper for both the credential strip and the drop-by-name path")
 		require.Contains(t, closure, `if ck.Name != "session_token"`)
 	})
@@ -148,7 +148,7 @@ func TestClientCheckRedirectOriginHelperAtAllSites(t *testing.T) {
 		client := generateClientSource(t, apiSpec)
 		closure := checkRedirectClosureBody(t, client)
 		requireRedirectOriginHelper(t, client)
-		require.Contains(t, closure, `if !redirectLeavesOrigin(req.URL, via[len(via)-1].URL) && c.credentialAppliesToURL(req.URL.String()) {`)
+		require.Contains(t, closure, `if !redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) && c.credentialAppliesToURL(req.URL.String()) {`)
 	})
 }
 
@@ -170,8 +170,8 @@ func TestClientCheckRedirectKeepsAuthOnHTTPUpgrade(t *testing.T) {
 	client := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
 	closure := checkRedirectClosureBody(t, client)
 	requireRedirectOriginHelper(t, client)
-	require.Contains(t, closure, `if redirectLeavesOrigin(req.URL, via[len(via)-1].URL) {`)
-	require.Contains(t, closure, `if !redirectLeavesOrigin(req.URL, via[len(via)-1].URL) {`)
+	require.Contains(t, closure, `if redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) {`)
+	require.Contains(t, closure, `if !redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) {`)
 	require.NotContains(t, closure, `req.URL.Host != via[len(via)-1].URL.Host || req.URL.Scheme != via[len(via)-1].URL.Scheme`)
 	require.NotContains(t, closure, `req.URL.Host == via[len(via)-1].URL.Host && req.URL.Scheme == via[len(via)-1].URL.Scheme {`)
 
@@ -243,6 +243,28 @@ func TestRedirectSchemeUpgradeKeepsCustomAuth(t *testing.T) {
 		}
 		if got := req.Header.Get("X-API-Key"); got != "" {
 			t.Fatalf("http -> https -> http: X-API-Key = %q, want empty", got)
+		}
+	})
+	t.Run("foreign host then same-host hop drops header", func(t *testing.T) {
+		start, err := url.Parse("https://a.example/start")
+		if err != nil {
+			t.Fatal(err)
+		}
+		mid, err := url.Parse("https://b.example/mid")
+		if err != nil {
+			t.Fatal(err)
+		}
+		done, err := url.Parse("https://b.example/done")
+		if err != nil {
+			t.Fatal(err)
+		}
+		via := []*http.Request{{URL: start}, {URL: mid}}
+		req := &http.Request{URL: done, Header: http.Header{"X-Api-Key": {"secret-key"}}}
+		if err := c.HTTPClient.CheckRedirect(req, via); err != nil {
+			t.Fatalf("CheckRedirect returned error: %v", err)
+		}
+		if got := req.Header.Get("X-API-Key"); got != "" {
+			t.Fatalf("https://a.example -> https://b.example -> https://b.example: X-API-Key = %q, want empty", got)
 		}
 	})
 }

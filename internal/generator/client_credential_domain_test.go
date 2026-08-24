@@ -69,7 +69,7 @@ func TestGeneratedBrowserCredentialBindsToCapturedDomain(t *testing.T) {
 		"the primary auth header must be withheld from unrelated hosts")
 	assert.Contains(t, clientSrc, "if !credentialAllowed && isCredentialHeader(k)",
 		"config Headers must not restore Authorization or Cookie after a deny")
-	assert.Contains(t, clientSrc, "!redirectLeavesOrigin(req.URL, via[len(via)-1].URL) && c.credentialAppliesToURL(req.URL.String())",
+	assert.Contains(t, clientSrc, "!redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) && c.credentialAppliesToURL(req.URL.String())",
 		"composed-auth re-stamping must use redirectLeavesOrigin and retain the credential-domain gate")
 	assert.Contains(t, clientSrc, `downgrade := prev.Scheme == "https" && next.Scheme != "https"`,
 		"composed-auth clients must emit the shared protocol-downgrade helper")
