@@ -1335,7 +1335,7 @@ If a suggestion collides, skip it or increment the numeric suffix.
 
 **4. Rename the CLI in the publish repo:**
 
-Since Step 6 copied the staged CLI into `$PUBLISH_REPO_DIR`, the rename operates on that directory. Note: `--old-name`/`--new-name` still use CLI-name format (e.g., `dub-pp-cli`) because `RenameCLI` does content replacement — bare slugs would cause collateral damage. The `--dir` path uses the slug-keyed directory.
+Since Step 6 copied the staged CLI into `$PUBLISH_REPO_DIR`, the rename operates on that directory. Note: `--old-name`/`--new-name` still use CLI-name format (e.g., `dub-pp-cli`) because `RenameCLI` does content replacement — bare slugs would cause collateral damage. The `--dir` path uses the slug-keyed directory. Rename also rewrites `go.mod`, leftover module-path slugs, installer slugs, env prefixes, and `research.json` `api_name` (including under `.manuscripts/`). Do not hand-fix those after a successful rename.
 
 ```bash
 cli-printing-press publish rename \
