@@ -97,7 +97,9 @@ func TestMapKeyedRejectsOrdinaryNestedObjects(t *testing.T) {
 		` + "`" + `{"line_items":{"sku":"a"},"shipping_address":{"zip":"1"}}` + "`" + `,
 		` + "`" + `{"oauth2":{"scope":"read"}}` + "`" + `,
 		` + "`" + `{"id":"7788990011223344","title":"a detail record"}` + "`" + `,
-		` + "`" + `{"2026-08-19":{"id":"x"},"total":3}` + "`" + `,
+		` + "`" + `{"7788990011223344":{"id":"x"},"meta":{"total":3}}` + "`" + `,
+		` + "`" + `{"total":3,"next_cursor":"c2"}` + "`" + `,
+		` + "`" + `{"7788990011223344":"not an object"}` + "`" + `,
 		` + "`" + `{}` + "`" + `,
 		` + "`" + `[{"id":"1"}]` + "`" + `,
 	}
@@ -105,6 +107,44 @@ func TestMapKeyedRejectsOrdinaryNestedObjects(t *testing.T) {
 		if _, ok := FlattenMapKeyedCollection(json.RawMessage(payload)); ok {
 			t.Fatalf("payload must not be treated as a map-keyed collection: %s", payload)
 		}
+	}
+}
+
+// Paging metadata filed beside the records must not cost the records: an API
+// is free to mix a cursor into the collection object itself.
+func TestMapKeyedCollectionKeepsRecordsBesideScalarMetadata(t *testing.T) {
+	items, ok := FlattenMapKeyedCollection(json.RawMessage(` + "`" + `{"7788990011223344":{"id":"7788990011223344","title":"a"},"next_cursor":"c2","total":1}` + "`" + `))
+	if !ok || len(items) != 1 {
+		t.Fatalf("expected 1 item beside scalar metadata, ok=%v len=%d", ok, len(items))
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(items[0], &obj); err != nil {
+		t.Fatalf("decode item: %v", err)
+	}
+	if obj["title"] != "a" {
+		t.Fatalf("expected the record, got %#v", obj)
+	}
+	if _, leaked := obj["next_cursor"]; leaked {
+		t.Fatalf("metadata must stay in the envelope, not ride along on the record: %#v", obj)
+	}
+}
+
+// The enclosing key is the record's identity. A payload carrying the same field
+// name would otherwise file the row under a value the API never keyed it by.
+func TestMapKeyedStampOverwritesPayloadKeyField(t *testing.T) {
+	items, ok := FlattenMapKeyedCollection(json.RawMessage(` + "`" + `{"7788990011223344":{"title":"no id field","_pp_map_key":"stale"}}` + "`" + `))
+	if !ok || len(items) != 1 {
+		t.Fatalf("expected 1 flattened item, ok=%v len=%d", ok, len(items))
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(items[0], &obj); err != nil {
+		t.Fatalf("decode item: %v", err)
+	}
+	if obj[MapKeyIDField] != "7788990011223344" {
+		t.Fatalf("the enclosing key must win over a payload field of the same name, got %#v", obj)
+	}
+	if got := ExtractResourceID("calls", obj); got != "7788990011223344" {
+		t.Fatalf("id resolution must follow the enclosing key, got %q", got)
 	}
 }
 
@@ -203,6 +243,11 @@ func TestMapKeyedExtractPageItems(t *testing.T) {
 			wantCount: 1,
 		},
 		{
+			name:      "records mixed with scalar metadata at the record level",
+			payload:   ` + "`" + `{"7788990011223344":{"id":"7788990011223344"},"1122334455667788":{"id":"1122334455667788"},"next_cursor":"c2"}` + "`" + `,
+			wantCount: 2,
+		},
+		{
 			name:      "collection under a resource-named key beside scalar metadata",
 			payload:   ` + "`" + `{"calls_by_day":{"2026-08-19":{"7788990011223344":{"id":"7788990011223344"}}},"total":1}` + "`" + `,
 			wantCount: 1,
@@ -215,6 +260,19 @@ func TestMapKeyedExtractPageItems(t *testing.T) {
 				t.Fatalf("expected %d items, got %d", tc.wantCount, len(items))
 			}
 		})
+	}
+}
+
+// Recognizing the payload as a collection must not cost the continuation
+// cursor sitting beside the records; dropping it would silently end the sync
+// after one page.
+func TestMapKeyedMixedMetadataKeepsCursor(t *testing.T) {
+	items, cursor, hasMore := extractPageItems(json.RawMessage(` + "`" + `{"7788990011223344":{"id":"7788990011223344"},"next_cursor":"c2"}` + "`" + `), "cursor")
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if cursor != "c2" || !hasMore {
+		t.Fatalf("expected the sibling cursor to survive extraction, got %q hasMore=%v", cursor, hasMore)
 	}
 }
 
@@ -248,7 +306,7 @@ func TestMapKeyedWriteThroughCachesRecords(t *testing.T) {
 
 	ctx := context.Background()
 	writeThroughCache(ctx, "calls", json.RawMessage(` + "`" + `{"results":{"2026-08-19":{"7788990011223344":{"id":"7788990011223344","title":"a"},"1122334455667788":{"id":"1122334455667788","title":"b"}}}}` + "`" + `))
-	writeThroughCache(ctx, "notes", json.RawMessage(` + "`" + `{"7788990011223344":{"title":"no id field"}}` + "`" + `))
+	writeThroughCache(ctx, "notes", json.RawMessage(` + "`" + `{"7788990011223344":{"title":"no id field"},"next_cursor":"c2"}` + "`" + `))
 
 	db, err := openStoreForRead(ctx, "map-keyed-pp-cli")
 	if err != nil {
