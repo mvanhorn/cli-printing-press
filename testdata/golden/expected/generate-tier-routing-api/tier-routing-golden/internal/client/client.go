@@ -384,6 +384,8 @@ func newRateLimiter(rateLimit float64) *cliutil.AdaptiveLimiter {
 
 // redirectLeavesOrigin reports whether a redirect hop should drop custom
 // credentials. Block protocol downgrade: leaving HTTPS for any other scheme.
+// prev must be the immediate predecessor (via[len(via)-1]), not the original
+// request, so an http -> https -> http chain still strips on the last hop.
 func redirectLeavesOrigin(next, prev *url.URL) bool {
 	hostChanged := next.Host != prev.Host
 	downgrade := prev.Scheme == "https" && next.Scheme != "https"
@@ -424,7 +426,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// downgrade. Go strips Authorization and Cookie in common cases, but
 		// custom headers and URL query values need explicit removal here.
 		// Block protocol downgrade.
-		if redirectLeavesOrigin(req.URL, via[0].URL) {
+		if redirectLeavesOrigin(req.URL, via[len(via)-1].URL) {
 			req.Header.Del("Authorization")
 		}
 		// Tier routing picks header vs query at request time on a WithTier copy,
@@ -433,7 +435,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// header name the generated CLI can use. Go strips Authorization/Cookie
 		// automatically on some hops, but not arbitrary tier header names.
 		// Block protocol downgrade.
-		if redirectLeavesOrigin(req.URL, via[0].URL) {
+		if redirectLeavesOrigin(req.URL, via[len(via)-1].URL) {
 			req.Header.Del("Authorization")
 		}
 		return nil
