@@ -11,17 +11,28 @@ import (
 )
 
 // renameExtensions lists file extensions walked during CLI rename.
-// Makefile is handled separately by base-name check in shouldRenameFile.
+// Makefile, go.mod, NOTICE, and research.json are handled by basename
+// in shouldRenameFile / rewriteResearchJSON.
 var renameExtensions = []string{".go", ".yaml", ".yml", ".md"}
+
+var renameBasenames = map[string]struct{}{
+	"Makefile":   {},
+	".gitignore": {},
+	"go.mod":     {},
+	"NOTICE":     {},
+}
 
 // RenameCLI renames all user-visible CLI name references in a staged CLI
 // directory. It handles:
 //   - Filesystem: outer directory rename to the slug-keyed directory derived
 //     from newCLIName, and cmd/oldCLIName/ → cmd/newCLIName/
 //   - File content: replaces occurrences of oldCLIName with newCLIName in
-//     .go, .yaml, .yml, .md files and Makefiles (skips .manuscripts/)
-//   - Metadata: updates .printing-press.json, manifest.json, and
-//     tools-manifest.json to the final public slug/binary names
+//     .go, .yaml, .yml, .md files, Makefiles, go.mod, and NOTICE
+//     (skips .manuscripts/ prose; research.json is updated separately)
+//   - Name tokens: leftover module-path slug, installer slug, and env prefix
+//   - Metadata: updates .printing-press.json, manifest.json,
+//     tools-manifest.json, and research.json api_name to the final public
+//     slug/binary names
 //
 // This function does NOT call RewriteModulePath — that handles import
 // paths and is run separately during packaging. RenameCLI handles exactly
@@ -88,6 +99,9 @@ func RenameCLI(dir, oldCLIName, newCLIName, _ string) (int, error) {
 		}
 
 		result := renameCLIContent(string(content), oldCLIName, newCLIName, oldMCPName, newMCPName, oldSlug, newSlug)
+		if filepath.Base(path) == "go.mod" {
+			result = renameGoModModuleSegment(result, oldSlug, newSlug)
+		}
 		if filepath.Base(path) == ".gitignore" {
 			result = anchorRenamedGitignorePatterns(result, newCLIName, newMCPName)
 		}
@@ -129,6 +143,11 @@ func RenameCLI(dir, oldCLIName, newCLIName, _ string) (int, error) {
 	} else if modified {
 		filesModified++
 	}
+	researchModified, err := rewriteResearchJSON(absDir, oldCLIName, newCLIName, oldMCPName, newMCPName, oldSlug, newSlug)
+	if err != nil {
+		return filesModified, err
+	}
+	filesModified += researchModified
 
 	// 3. Rename cmd/ subdirectory if it exists.
 	oldCmdDir := filepath.Join(absDir, "cmd", oldCLIName)
@@ -184,7 +203,126 @@ func renameCLIContent(content, oldCLIName, newCLIName, oldMCPName, newMCPName, o
 	result = strings.ReplaceAll(result, oldMCPName, newMCPName)
 	result = strings.ReplaceAll(result, "pp-"+oldSlug, "pp-"+newSlug)
 	result = strings.ReplaceAll(result, "/"+oldSlug+"/cmd/", "/"+newSlug+"/cmd/")
+	result = strings.ReplaceAll(result, "/"+oldSlug+"/internal/", "/"+newSlug+"/internal/")
+	result = renameInstallSlug(result, oldSlug, newSlug)
+	result = renameEnvPrefix(result, oldSlug, newSlug)
 	return result
+}
+
+func renameInstallSlug(content, oldSlug, newSlug string) string {
+	if oldSlug == "" || oldSlug == newSlug {
+		return content
+	}
+	needle := "install " + oldSlug
+	var b strings.Builder
+	rest := content
+	for {
+		idx := strings.Index(rest, needle)
+		if idx == -1 {
+			b.WriteString(rest)
+			return b.String()
+		}
+		end := idx + len(needle)
+		if end < len(rest) && isRenameSlugContinue(rest[end]) {
+			b.WriteString(rest[:end])
+			rest = rest[end:]
+			continue
+		}
+		b.WriteString(rest[:idx])
+		b.WriteString("install " + newSlug)
+		rest = rest[end:]
+	}
+}
+
+func isRenameSlugContinue(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_'
+}
+
+func renameEnvPrefix(content, oldSlug, newSlug string) string {
+	oldPrefix := naming.EnvPrefix(oldSlug)
+	newPrefix := naming.EnvPrefix(newSlug)
+	if oldPrefix == "" || oldPrefix == newPrefix {
+		return content
+	}
+	result := strings.ReplaceAll(content, oldPrefix+"_", newPrefix+"_")
+	for _, q := range []string{`"`, "`", `'`} {
+		result = strings.ReplaceAll(result, q+oldPrefix+q, q+newPrefix+q)
+	}
+	return result
+}
+
+func renameGoModModuleSegment(content, oldSlug, newSlug string) string {
+	if oldSlug == "" || oldSlug == newSlug {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	changed := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "module ") {
+			continue
+		}
+		path := strings.TrimSpace(strings.TrimPrefix(trimmed, "module "))
+		path = strings.TrimSuffix(path, "\r")
+		switch {
+		case path == oldSlug:
+			lines[i] = strings.Replace(line, oldSlug, newSlug, 1)
+			changed = true
+		case strings.HasSuffix(path, "/"+oldSlug):
+			lines[i] = strings.Replace(line, "/"+oldSlug, "/"+newSlug, 1)
+			changed = true
+		}
+	}
+	if !changed {
+		return content
+	}
+	return strings.Join(lines, "\n")
+}
+
+func rewriteResearchJSON(root, oldCLIName, newCLIName, oldMCPName, newMCPName, oldSlug, newSlug string) (int, error) {
+	modified := 0
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() || d.Name() != "research.json" {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", path, err)
+		}
+		result := renameCLIContent(string(content), oldCLIName, newCLIName, oldMCPName, newMCPName, oldSlug, newSlug)
+		result = renameResearchAPIName(result, oldSlug, newSlug)
+		if result == string(content) {
+			return nil
+		}
+		if err := os.WriteFile(path, []byte(result), 0o644); err != nil {
+			return fmt.Errorf("writing %s: %w", path, err)
+		}
+		modified++
+		return nil
+	})
+	if err != nil {
+		return modified, fmt.Errorf("updating research.json: %w", err)
+	}
+	return modified, nil
+}
+
+func renameResearchAPIName(content, oldSlug, newSlug string) string {
+	if oldSlug == "" || oldSlug == newSlug {
+		return content
+	}
+	replacements := [][2]string{
+		{`"api_name": "` + oldSlug + `"`, `"api_name": "` + newSlug + `"`},
+		{`"api_name":"` + oldSlug + `"`, `"api_name":"` + newSlug + `"`},
+	}
+	for _, pair := range replacements {
+		if strings.Contains(content, pair[0]) {
+			return strings.Replace(content, pair[0], pair[1], 1)
+		}
+	}
+	return content
 }
 
 func anchorRenamedGitignorePatterns(content, cliName, mcpName string) string {
@@ -226,10 +364,12 @@ func updateToolsManifestAPIName(dir, apiName string) (bool, error) {
 }
 
 // shouldRenameFile returns true if a file should be processed during rename.
-// Checks extension (.go, .yaml, .yml, .md) and base name (Makefile).
+// Checks extension (.go, .yaml, .yml, .md) and identity basenames (Makefile,
+// go.mod, NOTICE). research.json is handled separately so .manuscripts
+// prose stays untouched.
 func shouldRenameFile(path string) bool {
 	base := filepath.Base(path)
-	if base == "Makefile" || base == ".gitignore" {
+	if _, ok := renameBasenames[base]; ok {
 		return true
 	}
 	for _, ext := range renameExtensions {
