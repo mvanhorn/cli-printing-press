@@ -28,10 +28,58 @@ func effectiveRequestPath(api *spec.APISpec, resourceName, path, method string) 
 	if !ok {
 		return path
 	}
+	got := effectivePathOf(resolved)
+	if (strings.TrimSpace(resourceName) == "" || strings.TrimSpace(method) == "") &&
+		!requestOverrideIsUnambiguous(api, path, method, got) {
+		return path
+	}
+	return got
+}
+
+func effectivePathOf(resolved resolvedRequestEndpoint) string {
 	if resolved.isSub {
 		return effectiveSubEndpointPath(resolved.parent, resolved.resource, resolved.endpoint)
 	}
 	return effectiveEndpointPath(resolved.resource, resolved.endpoint)
+}
+
+func requestOverrideIsUnambiguous(api *spec.APISpec, path, method, candidate string) bool {
+	if api == nil {
+		return true
+	}
+	path = strings.TrimSpace(path)
+	method = strings.ToUpper(strings.TrimSpace(method))
+	unambiguous := true
+	var walk func(parent spec.Resource, resources map[string]spec.Resource, isSub bool)
+	walk = func(parent spec.Resource, resources map[string]spec.Resource, isSub bool) {
+		if !unambiguous {
+			return
+		}
+		names := make([]string, 0, len(resources))
+		for name := range resources {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			resource := resources[name]
+			for _, endpoint := range resource.Endpoints {
+				if strings.TrimSpace(endpoint.Path) != path {
+					continue
+				}
+				if method != "" && !strings.EqualFold(strings.TrimSpace(endpoint.Method), method) {
+					continue
+				}
+				match := resolvedRequestEndpoint{parent: parent, resource: resource, endpoint: endpoint, isSub: isSub}
+				if effectivePathOf(match) != candidate {
+					unambiguous = false
+					return
+				}
+			}
+			walk(resource, resource.SubResources, true)
+		}
+	}
+	walk(spec.Resource{}, api.Resources, false)
+	return unambiguous
 }
 
 func resolveRequestEndpoint(api *spec.APISpec, resourceName, path, method string) (resolvedRequestEndpoint, bool) {

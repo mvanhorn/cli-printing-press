@@ -110,6 +110,146 @@ func TestEffectiveRequestPathHonorsBaseURLOverrides(t *testing.T) {
 	}
 }
 
+func TestEffectiveRequestPathRefusesAmbiguousQueryIdentity(t *testing.T) {
+	t.Parallel()
+
+	api := &spec.APISpec{
+		BaseURL: "https://webapi.example.com",
+		Resources: map[string]spec.Resource{
+			"gadgets": {
+				BaseURL: "https://gadgets.example.com",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/query"},
+				},
+			},
+			"widgets": {
+				BaseURL: "https://widgets.example.com",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/query"},
+				},
+			},
+		},
+	}
+
+	assert.Equal(t, "/query", effectiveRequestPath(api, "", "/query", ""),
+		"empty resource+method must not pick the first sorted host")
+	assert.Equal(t, "https://widgets.example.com/query",
+		effectiveRequestPath(api, "widgets", "/query", "GET"))
+	assert.Equal(t, "https://gadgets.example.com/query",
+		effectiveRequestPath(api, "gadgets", "/query", "GET"))
+}
+
+func TestGeneratedQuerySyncHonorsPerResourceBaseURL(t *testing.T) {
+	t.Parallel()
+
+	var (
+		widgetMu    sync.Mutex
+		widgetHits  int
+		gadgetMu    sync.Mutex
+		gadgetHits  int
+		widgetQuery string
+		gadgetQuery string
+	)
+	widgets := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		widgetMu.Lock()
+		widgetHits++
+		widgetQuery = r.URL.Query().Get("query")
+		widgetMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"QueryResponse":{"Widget":[{"id":"w1","name":"w"}]}}`))
+	}))
+	t.Cleanup(widgets.Close)
+	gadgets := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gadgetMu.Lock()
+		gadgetHits++
+		gadgetQuery = r.URL.Query().Get("query")
+		gadgetMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"QueryResponse":{"Gadget":[{"id":"g1","name":"g"}]}}`))
+	}))
+	t.Cleanup(gadgets.Close)
+
+	apiSpec := &spec.APISpec{
+		Name:    "querymultihost",
+		Version: "0.1.0",
+		BaseURL: "https://webapi.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/querymultihost-pp-cli/config.toml",
+		},
+		QuerySync: &spec.QuerySyncConfig{
+			Path:          "/query",
+			QueryParam:    "query",
+			QueryTemplate: "select * from {entity} startposition {start} maxresults {limit}",
+			PageSize:      2,
+			EnvelopeKey:   "QueryResponse",
+		},
+		Resources: map[string]spec.Resource{
+			"widgets": {
+				BaseURL:     widgets.URL,
+				Description: "Widgets",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:       "GET",
+						Path:         "/query",
+						Description:  "Query widgets",
+						Response:     spec.ResponseDef{Type: "array", Item: "Widget"},
+						ResponsePath: "QueryResponse.Widget",
+					},
+				},
+			},
+			"gadgets": {
+				BaseURL:     gadgets.URL,
+				Description: "Gadgets",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:       "GET",
+						Path:         "/query",
+						Description:  "Query gadgets",
+						Response:     spec.ResponseDef{Type: "array", Item: "Gadget"},
+						ResponsePath: "QueryResponse.Gadget",
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Widget": {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "name", Type: "string"}}},
+			"Gadget": {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "name", Type: "string"}}},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
+	assert.Contains(t, syncSrc, `"widgets": "`+widgets.URL+`/query"`)
+	assert.Contains(t, syncSrc, `"gadgets": "`+gadgets.URL+`/query"`)
+	assert.Contains(t, syncSrc, `queryPath     = "/query"`)
+	assert.Contains(t, syncSrc, "func isQuerySyncPath(resource, path string) bool")
+	assert.NotContains(t, syncSrc, `effectiveRequestPath .APISpec ""`)
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	binaryPath := filepath.Join(outputDir, "querymultihost-pp-cli")
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/querymultihost-pp-cli")
+
+	for _, resource := range []string{"widgets", "gadgets"} {
+		dbPath := filepath.Join(t.TempDir(), resource+".db")
+		cmd := exec.Command(binaryPath, "sync", "--resources", resource, "--max-pages", "1", "--json", "--db", dbPath)
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+	}
+
+	widgetMu.Lock()
+	defer widgetMu.Unlock()
+	gadgetMu.Lock()
+	defer gadgetMu.Unlock()
+	assert.GreaterOrEqual(t, widgetHits, 1, "widgets sync must hit the widgets host")
+	assert.GreaterOrEqual(t, gadgetHits, 1, "gadgets sync must hit the gadgets host")
+	assert.Contains(t, widgetQuery, "select * from Widget")
+	assert.Contains(t, gadgetQuery, "select * from Gadget")
+}
+
 func TestWithEffectiveSyncableRequestPathsRewritesHydratePath(t *testing.T) {
 	t.Parallel()
 
