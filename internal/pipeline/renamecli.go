@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -264,19 +265,27 @@ func renameGoModModuleSegment(content, oldSlug, newSlug string) string {
 		}
 		path := strings.TrimSpace(strings.TrimPrefix(trimmed, "module "))
 		path = strings.TrimSuffix(path, "\r")
-		switch {
-		case path == oldSlug:
-			lines[i] = strings.Replace(line, oldSlug, newSlug, 1)
-			changed = true
-		case strings.HasSuffix(path, "/"+oldSlug):
-			lines[i] = strings.Replace(line, "/"+oldSlug, "/"+newSlug, 1)
-			changed = true
+		newPath, ok := replaceFinalModuleSegment(path, oldSlug, newSlug)
+		if !ok {
+			continue
 		}
+		lines[i] = strings.Replace(line, path, newPath, 1)
+		changed = true
 	}
 	if !changed {
 		return content
 	}
 	return strings.Join(lines, "\n")
+}
+
+func replaceFinalModuleSegment(path, oldSlug, newSlug string) (string, bool) {
+	if path == oldSlug {
+		return newSlug, true
+	}
+	if strings.HasSuffix(path, "/"+oldSlug) {
+		return strings.TrimSuffix(path, oldSlug) + newSlug, true
+	}
+	return path, false
 }
 
 func rewriteResearchJSON(root, oldCLIName, newCLIName, oldMCPName, newMCPName, oldSlug, newSlug string) (int, error) {
@@ -286,6 +295,9 @@ func rewriteResearchJSON(root, oldCLIName, newCLIName, oldMCPName, newMCPName, o
 			return walkErr
 		}
 		if d.IsDir() || d.Name() != "research.json" {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
 		content, err := os.ReadFile(path)
@@ -313,14 +325,9 @@ func renameResearchAPIName(content, oldSlug, newSlug string) string {
 	if oldSlug == "" || oldSlug == newSlug {
 		return content
 	}
-	replacements := [][2]string{
-		{`"api_name": "` + oldSlug + `"`, `"api_name": "` + newSlug + `"`},
-		{`"api_name":"` + oldSlug + `"`, `"api_name":"` + newSlug + `"`},
-	}
-	for _, pair := range replacements {
-		if strings.Contains(content, pair[0]) {
-			return strings.Replace(content, pair[0], pair[1], 1)
-		}
+	re := regexp.MustCompile(`("api_name"\s*:\s*")` + regexp.QuoteMeta(oldSlug) + `(")`)
+	if re.MatchString(content) {
+		return re.ReplaceAllString(content, `${1}`+newSlug+`${2}`)
 	}
 	return content
 }
@@ -363,10 +370,9 @@ func updateToolsManifestAPIName(dir, apiName string) (bool, error) {
 	return true, nil
 }
 
-// shouldRenameFile returns true if a file should be processed during rename.
-// Checks extension (.go, .yaml, .yml, .md) and identity basenames (Makefile,
-// go.mod, NOTICE). research.json is handled separately so .manuscripts
-// prose stays untouched.
+// shouldRenameFile limits broad text replacement to generated text formats and
+// explicit identity files. research.json requires separate structured handling
+// so manuscript prose remains untouched.
 func shouldRenameFile(path string) bool {
 	base := filepath.Base(path)
 	if _, ok := renameBasenames[base]; ok {

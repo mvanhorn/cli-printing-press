@@ -636,7 +636,7 @@ import "`+oldMod+`/internal/client"
 		require.NoError(t, err)
 		assert.Contains(t, string(gomod), "module github.com/mvanhorn/printing-press-library/library/other/overpass")
 		assert.NotContains(t, string(gomod), oldMod)
-		assert.NotContains(t, string(gomod), "subject")
+		assert.NotContains(t, string(gomod), "/subject")
 
 		rootGo, err := os.ReadFile(filepath.Join(newDir, "internal", "cli", "root.go"))
 		require.NoError(t, err)
@@ -673,6 +673,38 @@ import "github.com/acme/library/other/subject/internal/cli"
 	got = renameGoModModuleSegment("module github.com/acme/library/other/subject\n", "subject", "overpass")
 	assert.Equal(t, "module github.com/acme/library/other/overpass\n", got)
 
+	// Earlier path segments that happen to equal the slug must stay put.
+	got = renameGoModModuleSegment("module github.com/subject/library/other/subject\n", "subject", "overpass")
+	assert.Equal(t, "module github.com/subject/library/other/overpass\n", got)
+
 	got = renameResearchAPIName(`{"api_name": "subject", "novelty_score": 8}`, "subject", "overpass")
 	assert.Equal(t, `{"api_name": "overpass", "novelty_score": 8}`, got)
+	got = renameResearchAPIName("{\n  \"api_name\" :\t\"subject\"\n}", "subject", "overpass")
+	assert.Equal(t, "{\n  \"api_name\" :\t\"overpass\"\n}", got)
+}
+
+func TestRenameCLISkipsResearchJSONSymlink(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	oldName := "subject-pp-cli"
+	newName := "overpass-pp-cli"
+	cliDir := filepath.Join(root, oldName)
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+
+	outside := filepath.Join(root, "outside-research.json")
+	require.NoError(t, os.WriteFile(outside, []byte(`{"api_name": "subject"}`+"\n"), 0o644))
+	require.NoError(t, os.Symlink(outside, filepath.Join(cliDir, "research.json")))
+
+	m := CLIManifest{SchemaVersion: 1, APIName: "subject", CLIName: oldName}
+	data, err := json.MarshalIndent(m, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, CLIManifestFilename), data, 0o644))
+
+	_, err = RenameCLI(cliDir, oldName, newName, "subject")
+	require.NoError(t, err)
+
+	outsideData, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	assert.Equal(t, `{"api_name": "subject"}`+"\n", string(outsideData), "symlink target outside the CLI tree must stay untouched")
 }
