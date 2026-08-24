@@ -546,7 +546,7 @@ func syncResource(ctx context.Context, c interface {
 		// the generator. The query + version params are set on top of any
 		// user-supplied --param overrides applied above (which are preserved);
 		// sync owns the query string itself so paging stays correct.
-		if entity, ok := queryEntity[resource]; ok && path == queryPath {
+		if entity, ok := queryEntity[resource]; ok && isQuerySyncPath(resource, path) {
 			start := 1
 			if cursor != "" {
 				if n, convErr := strconv.Atoi(cursor); convErr == nil && n > 0 {
@@ -640,7 +640,7 @@ func syncResource(ctx context.Context, c interface {
 		// surfaces no next page. A full page (== queryPageSize) means more rows
 		// may follow — advance the offset; a short page is the last. Without
 		// this the offline mirror silently truncates large books at one page.
-		if _, ok := queryEntity[resource]; ok && path == queryPath {
+		if _, ok := queryEntity[resource]; ok && isQuerySyncPath(resource, path) {
 			if len(items) >= queryPageSize {
 				start := 1
 				if cursor != "" {
@@ -809,7 +809,7 @@ func syncResource(ctx context.Context, c interface {
 		// sync_error output in the same stream.
 		if maxPages > 0 && pagesFetched >= maxPages {
 			truncatedByCap := resourceSupportsPagination(resource) && hasMore
-			if _, ok := queryEntity[resource]; ok && path == queryPath {
+			if _, ok := queryEntity[resource]; ok && isQuerySyncPath(resource, path) {
 				// Query resources page via STARTPOSITION, so resourceSupportsPagination
 				// is false for them; a full page (== queryPageSize) means rows remain,
 				// so the cap truncated and the STARTPOSITION resume cursor must persist.
@@ -831,7 +831,7 @@ func syncResource(ctx context.Context, c interface {
 			}
 			capResumed = truncatedByCap && capExitCursor != cursor
 			capPageLimit := pageSize.limit
-			if _, ok := queryEntity[resource]; ok && path == queryPath {
+			if _, ok := queryEntity[resource]; ok && isQuerySyncPath(resource, path) {
 				capPageLimit = queryPageSize
 			}
 			// A resume cursor alone does not prove that the page window was
@@ -857,7 +857,7 @@ func syncResource(ctx context.Context, c interface {
 			} else if paginationEndUnprovable(resourceSupportsPagination(resource), nextCursor, fetchedThisPage, capPageLimit, data, responsePathForResource(resource, path)...) {
 				outcome.reason = "cursor_unavailable"
 			} else if !hasMore ||
-				(path != queryPath && shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, capPageLimit)) {
+				(!isQuerySyncPath(resource, path) && shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, capPageLimit)) {
 				outcome.complete = true
 			} else {
 				outcome.reason = "max_pages_cap"
@@ -890,7 +890,7 @@ func syncResource(ctx context.Context, c interface {
 		// "resource declares no pagination" guard (resourceSupportsPagination is
 		// false for them) nor on the generic short-page check (their page size
 		// is the in-query page size, not pageSize.limit).
-		if !resourceSupportsPagination(resource) && path != queryPath {
+		if !resourceSupportsPagination(resource) && !isQuerySyncPath(resource, path) {
 			outcome.complete = true // resource declares no pagination: one page is the whole set
 			break
 		}
@@ -902,7 +902,7 @@ func syncResource(ctx context.Context, c interface {
 			outcome.complete = true
 			break
 		}
-		if path != queryPath && shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, pageSize.limit) {
+		if !isQuerySyncPath(resource, path) && shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, pageSize.limit) {
 			outcome.complete = true
 			break
 		}
@@ -2210,6 +2210,24 @@ const (
 	queryPath     = "/query"
 	queryPageSize = 2
 )
+
+// querySyncRequestPath is the host+path this resource's list/get command
+// would call. Shared query endpoints can carry per-resource base_url
+// overrides, so identity cannot be a single resolved URL.
+func querySyncRequestPath(resource string) string {
+	if _, ok := queryEntity[resource]; !ok {
+		return queryPath
+	}
+	resolved, err := syncResourcePath(resource)
+	if err != nil || resolved == "" {
+		return queryPath
+	}
+	return resolved
+}
+
+func isQuerySyncPath(resource, path string) bool {
+	return path == querySyncRequestPath(resource)
+}
 
 // pageItemKeys is scanned in priority order; lowercase REST-convention keys
 // come first, PascalCase .NET variants second. Without the PascalCase row,
