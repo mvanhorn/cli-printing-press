@@ -400,6 +400,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		},
 		"effectiveEndpointPath":        effectiveEndpointPath,
 		"effectiveSubEndpointPath":     effectiveSubEndpointPath,
+		"effectiveRequestPath":         effectiveRequestPath,
 		"enumLiteral":                  enumLiteral,
 		"enumDescriptionHint":          enumDescriptionHint,
 		"jsonStringParam":              isJSONStringParam,
@@ -4586,8 +4587,8 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		VisionSet:                    g.VisionSet,
 		CommandNames:                 maps.Clone(g.visionCommandNames),
 		HasSync:                      g.hasGeneratedSyncImplementation(),
-		SyncableResources:            g.profile.SyncableResources,
-		DependentSyncResources:       g.profile.DependentSyncResources,
+		SyncableResources:            withEffectiveSyncableRequestPaths(g.Spec, g.profile.SyncableResources),
+		DependentSyncResources:       withEffectiveDependentRequestPaths(g.Spec, g.profile.DependentSyncResources),
 		SyncResourcesExample:         syncResourcesExample(g.profile.SyncableResources, g.profile.DependentSyncResources),
 		TenantScopedParents:          g.profile.TenantScopedParents(),
 		MembershipScopedParents:      g.profile.MembershipScopedParents(),
@@ -4597,7 +4598,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		SearchableFields:             g.profile.SearchableFields,
 		Tables:                       schema,
 		Pagination:                   g.profile.Pagination,
-		SearchEndpointPath:           g.profile.SearchEndpointPath,
+		SearchEndpointPath:           effectiveRequestPath(g.Spec, "", g.profile.SearchEndpointPath, g.profile.SearchEndpointMethod),
 		SearchQueryParam:             g.profile.SearchQueryParam,
 		SearchEndpointMethod:         g.profile.SearchEndpointMethod,
 		SearchBodyFields:             g.profile.SearchBodyFields,
@@ -6137,6 +6138,7 @@ type resourcePathEntry struct {
 func resourceReadPathEntries(data visionRenderData) []resourcePathEntry {
 	entries := map[string]resourcePathEntry{}
 	pathCounts := map[string]int{}
+	rawPaths := map[string]string{}
 	for name, resource := range data.Resources {
 		endpoint, ok := resourceEndpointForMethod(resource, "GET")
 		if !ok {
@@ -6144,15 +6146,16 @@ func resourceReadPathEntries(data visionRenderData) []resourcePathEntry {
 		}
 		entries[name] = resourcePathEntry{
 			Name:         name,
-			Path:         endpoint.Path,
+			Path:         effectiveEndpointPath(resource, endpoint),
 			ResponsePath: endpoint.ResponsePath,
 			Pagination:   endpoint.Pagination,
 			PageSize:     resourcePathPageSize(data, endpoint),
 		}
+		rawPaths[name] = endpoint.Path
 		pathCounts[endpoint.Path]++
 	}
-	for name, entry := range entries {
-		if pathCounts[entry.Path] > 1 {
+	for name := range entries {
+		if pathCounts[rawPaths[name]] > 1 {
 			delete(entries, name)
 		}
 	}
@@ -6187,7 +6190,7 @@ func resourceWritePathEntries(data visionRenderData) []resourcePathEntry {
 		if !ok {
 			continue
 		}
-		entries[name] = resourcePathEntry{Name: name, Path: endpoint.Path}
+		entries[name] = resourcePathEntry{Name: name, Path: effectiveEndpointPath(resource, endpoint)}
 	}
 	return sortedResourcePathEntries(entries)
 }
@@ -6207,7 +6210,7 @@ func resourceDetailPathEntries(data visionRenderData) []resourcePathEntry {
 			if !strings.EqualFold(endpoint.Method, "GET") || endpoint.Response.Type == "array" || endpoint.Pagination != nil || strings.Count(endpoint.Path, "{") != 1 || strings.Count(endpoint.Path, "}") != 1 {
 				continue
 			}
-			entries[name] = resourcePathEntry{Name: name, Path: endpoint.Path}
+			entries[name] = resourcePathEntry{Name: name, Path: effectiveEndpointPath(resource, endpoint)}
 			break
 		}
 	}

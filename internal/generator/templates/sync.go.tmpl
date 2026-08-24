@@ -4159,7 +4159,7 @@ var queryEntity = map[string]string{
 // queryPath is the shared endpoint every query-sync resource reads through; its
 // page size ({limit}) and STARTPOSITION-style offset stride.
 const (
-	queryPath     = {{printf "%q" .QuerySync.Path}}
+	queryPath     = {{printf "%q" (effectiveRequestPath .APISpec "" .QuerySync.Path "")}}
 	queryPageSize = {{.QuerySync.EffectivePageSize}}
 )
 {{- end}}
