@@ -77,7 +77,7 @@ func TestValidatePatchRecordsMissingCallSiteFails(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `patch "drop-envelope"`)
 	assert.Contains(t, err.Error(), "if guardAgainstErrorEnvelope(")
-	assert.Contains(t, err.Error(), "absent from the tree")
+	assert.Contains(t, err.Error(), "absent from recorded files")
 }
 
 func TestValidatePatchRecordsIgnoresNeedleInsidePatchJSON(t *testing.T) {
@@ -97,7 +97,47 @@ func TestValidatePatchRecordsIgnoresNeedleInsidePatchJSON(t *testing.T) {
 
 	err := ValidatePatchRecords(dir)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "absent from the tree")
+	assert.Contains(t, err.Error(), "absent from recorded files")
+}
+
+func TestValidatePatchRecordsIgnoresNeedleOutsideRecordedFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := writePatchTree(t, patchTree{
+		files: map[string]string{
+			"internal/store/sync.go":  "package store\n\nfunc Sync() {}\n",
+			"internal/cli/refresh.go": "package cli\n\nfunc printRefreshTokenExpiry() {}\n",
+			"README.md":               "docs mention if guardAgainstErrorEnvelope(body)\n",
+		},
+		records: []string{`{
+  "schema_version": 2,
+  "id": "drop-envelope",
+  "files": ["internal/store/sync.go"],
+  "call_sites": ["if guardAgainstErrorEnvelope("]
+}`},
+	})
+
+	err := ValidatePatchRecords(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `patch "drop-envelope"`)
+	assert.Contains(t, err.Error(), "absent from recorded files")
+}
+
+func TestValidatePatchRecordsEmptyRecordFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	dir := writePatchTree(t, patchTree{
+		records: []string{`{
+  "schema_version": 2,
+  "id": "empty-claim",
+  "summary": "claims a customization shipped"
+}`},
+	})
+
+	err := ValidatePatchRecords(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `patch "empty-claim"`)
+	assert.Contains(t, err.Error(), "declares no files or call sites")
 }
 
 func TestValidatePatchRecordsLegacyIndex(t *testing.T) {

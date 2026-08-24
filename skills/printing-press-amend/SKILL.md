@@ -668,7 +668,7 @@ For each finding in dependency order:
        "internal/cli/drafts.go",
        "internal/cli/threads.go"
      ],
-     "call_sites": ["Refresh("],
+     "call_sites": ["printRefreshTokenExpiry("],
      "validated_outcome": "publish validate passed; focused drafts and refresh-token checks pass",
      "findings_addressed": ["F1", "F2", "F5", "F7"]
    }

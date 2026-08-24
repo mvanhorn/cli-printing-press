@@ -987,7 +987,7 @@ func guardAgainstErrorEnvelope(body []byte) bool { return len(body) > 0 && body[
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `patch "drop-envelope"`)
 	assert.Contains(t, err.Error(), "if guardAgainstErrorEnvelope(")
-	assert.Contains(t, err.Error(), "absent from the tree")
+	assert.Contains(t, err.Error(), "absent from recorded files")
 
 	_, statErr := os.Stat(filepath.Join(fresh, helperRel))
 	assert.NoError(t, statErr, "the novel helper must survive; the dropped call site is the lie")

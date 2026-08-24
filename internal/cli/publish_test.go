@@ -588,7 +588,7 @@ func TestCheckPatchRecordsFailsWhenCallSiteMissing(t *testing.T) {
 	assert.False(t, check.Passed)
 	assert.Equal(t, "patches", check.Name)
 	assert.Contains(t, check.Error, `patch "drop-envelope"`)
-	assert.Contains(t, check.Error, "absent from the tree")
+	assert.Contains(t, check.Error, "absent from recorded files")
 }
 
 func TestPublishValidateFailsWithoutPhase5Marker(t *testing.T) {

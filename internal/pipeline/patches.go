@@ -138,8 +138,10 @@ func loadLegacyPatchRecords(dir string) ([]PatchRecord, error) {
 
 // ValidatePatchRecords fails closed when a recorded customization is no
 // longer present in dir. A missing or empty patches index passes. A record
-// naming a missing file, or declaring a marker / call site absent from the
-// tree, fails and names the patch id.
+// naming a missing file, declaring no files or call sites, or declaring a
+// marker / call site absent from its recorded files, fails and names the
+// patch id. Needles are checked only in files[] when that list is present
+// so an unrelated leftover substring cannot mask a dropped call site.
 func ValidatePatchRecords(dir string) error {
 	records, err := LoadPatchRecords(dir)
 	if err != nil {
@@ -160,6 +162,8 @@ func patchRecordViolations(dir string, rec PatchRecord) []string {
 	if id == "" {
 		id = rec.Source
 	}
+	needles := recNeedles(rec)
+	var listed []string
 	var violations []string
 	for _, raw := range rec.Files {
 		rel, err := safePatchRelPath(raw)
@@ -167,18 +171,30 @@ func patchRecordViolations(dir string, rec PatchRecord) []string {
 			violations = append(violations, fmt.Sprintf("patch %q: recorded file %q is not a safe relative path", id, raw))
 			continue
 		}
+		listed = append(listed, rel)
 		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
 			violations = append(violations, fmt.Sprintf("patch %q: recorded file %q is missing", id, rel))
 		}
 	}
-	for _, needle := range recNeedles(rec) {
-		found, err := treeContainsPatchNeedle(dir, needle)
+	if len(listed) == 0 && len(needles) == 0 {
+		return append(violations, fmt.Sprintf("patch %q: record declares no files or call sites", id))
+	}
+	for _, needle := range needles {
+		var found bool
+		var err error
+		scope := "the tree"
+		if len(listed) > 0 {
+			found, err = listedFilesContainNeedle(dir, listed, needle)
+			scope = "recorded files"
+		} else {
+			found, err = treeContainsPatchNeedle(dir, needle)
+		}
 		if err != nil {
 			violations = append(violations, fmt.Sprintf("patch %q: searching for %q: %v", id, needle, err))
 			continue
 		}
 		if !found {
-			violations = append(violations, fmt.Sprintf("patch %q: recorded call site %q is absent from the tree", id, needle))
+			violations = append(violations, fmt.Sprintf("patch %q: recorded call site %q is absent from %s", id, needle, scope))
 		}
 	}
 	return violations
@@ -219,6 +235,22 @@ func safePatchRelPath(raw string) (string, error) {
 		return "", errors.New("parent segment")
 	}
 	return rel, nil
+}
+
+func listedFilesContainNeedle(dir string, rels []string, needle string) (bool, error) {
+	for _, rel := range rels {
+		data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return false, err
+		}
+		if bytes.Contains(data, []byte(needle)) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func treeContainsPatchNeedle(dir, needle string) (bool, error) {
@@ -275,6 +307,13 @@ func skipPatchSearchFile(relSlash string) bool {
 		return true
 	}
 	if strings.HasPrefix(relSlash, PatchesDirName+"/") {
+		return true
+	}
+	if strings.HasSuffix(relSlash, "_test.go") {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(base)) {
+	case ".md", ".txt":
 		return true
 	}
 	return false
