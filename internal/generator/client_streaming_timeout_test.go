@@ -43,10 +43,22 @@ func TestGeneratedClientStreamingTimeoutCarveOut(t *testing.T) {
 
 	assert.Contains(t, root, `rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", 60*time.Second, "Request timeout")`,
 		"root --timeout default must stay 60s for JSON calls")
-	assert.Contains(t, root, `flags.timeoutExplicit = cmd.Flags().Changed("timeout")`,
-		"root must record whether the operator set --timeout")
+	assert.Contains(t, root, "func timeoutExplicitFrom(cmd *cobra.Command, profile *Profile) bool",
+		"root must treat Flag.Changed and profile-supplied timeout as explicit")
+	assert.Contains(t, root, `if _, ok := profile.Values["timeout"]; ok {`,
+		"profile-supplied timeout must keep whole-call enforcement on binary transfers")
+	assert.Contains(t, root, "flags.timeoutExplicit = timeoutExplicitFrom(cmd, appliedProfile)",
+		"PreRun must honor profile timeout even though ApplyProfileToFlags leaves Flag.Changed false")
+	assert.Contains(t, root, "appliedProfile = profile",
+		"the applied run profile must stay in scope for timeout explicitness")
 	assert.Contains(t, root, "c.SetTimeoutExplicit(true)",
 		"newClient must mark an explicit --timeout so binary transfers still honor it")
+	assert.NotContains(t, client, "timeoutExplicit is true when the operator set --timeout",
+		"generated comments must not restate the timeoutExplicit identifier")
+	assert.NotContains(t, client, "SetTimeoutExplicit records that the operator passed --timeout",
+		"generated comments must not restate the SetTimeoutExplicit identifier")
+	assert.NotContains(t, client, "StreamingHTTPClient returns a client",
+		"generated comments must not restate the StreamingHTTPClient identifier")
 
 	doStart := strings.Index(client, "func (c *Client) doInternal(")
 	require.NotEqual(t, -1, doStart, "client.go must contain Client.doInternal")
@@ -65,9 +77,11 @@ func TestGeneratedClientStreamingTimeoutCarveOut(t *testing.T) {
 		"generated client tests must prove StreamingHTTPClient drops the whole-call Timeout")
 
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "streaming_timeout_test.go"), []byte(streamingTimeoutBehaviorTest), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "timeout_explicit_from_test.go"), []byte(timeoutExplicitFromTest), 0o644))
 
 	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "StreamingHTTPClientDropsWholeCallTimeout|BinaryResponseIgnoresDefaultClientTimeout|JSONResponseStillHonorsClientTimeout|ExplicitTimeoutStillAbortsBinaryTransfer|BinaryResponseStillTimesOutWhenHeadersStall", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TimeoutExplicitFrom", "-count=1")
 }
 
 const streamingTimeoutBehaviorTest = `package client
@@ -178,6 +192,55 @@ func TestBinaryResponseStillTimesOutWhenHeadersStall(t *testing.T) {
 
 	if _, err := c.GetWithHeaders(context.Background(), "/blob", nil, map[string]string{BinaryResponseHeader: "true"}); err == nil || !timeoutLike(err) {
 		t.Fatalf("binary transfer should still fail when response headers never arrive, got %v", err)
+	}
+}
+`
+
+const timeoutExplicitFromTest = `package cli
+
+import (
+	"testing"
+	"time"
+
+	"github.com/spf13/cobra"
+)
+
+func TestTimeoutExplicitFromDefaultIsNotExplicit(t *testing.T) {
+	cmd := &cobra.Command{Use: "get"}
+	var timeout time.Duration
+	cmd.Flags().DurationVar(&timeout, "timeout", 60*time.Second, "")
+	if err := cmd.ParseFlags(nil); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if timeoutExplicitFrom(cmd, nil) {
+		t.Fatal("default timeout must not count as explicit")
+	}
+}
+
+func TestTimeoutExplicitFromHonorsProfileTimeout(t *testing.T) {
+	cmd := &cobra.Command{Use: "get"}
+	var timeout time.Duration
+	cmd.Flags().DurationVar(&timeout, "timeout", 60*time.Second, "")
+	if err := cmd.ParseFlags(nil); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cmd.Flags().Changed("timeout") {
+		t.Fatal("sanity: profile overlay must be tested without Flag.Changed")
+	}
+	if !timeoutExplicitFrom(cmd, &Profile{Values: map[string]string{"timeout": "5s"}}) {
+		t.Fatal("profile-supplied timeout must keep whole-call enforcement")
+	}
+}
+
+func TestTimeoutExplicitFromHonorsChangedFlag(t *testing.T) {
+	cmd := &cobra.Command{Use: "get"}
+	var timeout time.Duration
+	cmd.Flags().DurationVar(&timeout, "timeout", 60*time.Second, "")
+	if err := cmd.ParseFlags([]string{"--timeout", "5s"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if !timeoutExplicitFrom(cmd, nil) {
+		t.Fatal("Flag.Changed --timeout must keep whole-call enforcement")
 	}
 }
 `

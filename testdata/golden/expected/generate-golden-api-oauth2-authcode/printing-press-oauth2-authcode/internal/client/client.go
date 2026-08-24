@@ -40,9 +40,8 @@ type Client struct {
 	BaseURL    string
 	Config     *config.Config
 	HTTPClient *http.Client
-	// timeoutExplicit is true when the operator set --timeout. Binary and
-	// stream transfers skip the whole-call client Timeout unless this is
-	// set, so a large download is not killed by the default JSON budget.
+	// When unset, binary/stream bodies skip the whole-call client Timeout
+	// so a large download is not killed by the default JSON budget.
 	timeoutExplicit   bool
 	DryRun            bool
 	NoCache           bool
@@ -223,9 +222,6 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 	return &http.Client{Timeout: timeout, Jar: jar, Transport: tr}
 }
 
-// SetTimeoutExplicit records that the operator passed --timeout. Binary and
-// stream transfers then honor the whole-call bound; the default budget stays
-// a JSON-only ceiling.
 func (c *Client) SetTimeoutExplicit(explicit bool) {
 	if c == nil {
 		return
@@ -233,9 +229,8 @@ func (c *Client) SetTimeoutExplicit(explicit bool) {
 	c.timeoutExplicit = explicit
 }
 
-// StreamingHTTPClient returns a client that does not impose a whole-call
-// Timeout so binary and stream bodies can finish. Stalls waiting for the
-// first response header are still bounded by headerTimeout.
+// Drops the whole-call Timeout so large bodies can finish. Header stalls
+// still use headerTimeout.
 func StreamingHTTPClient(base *http.Client, headerTimeout time.Duration) *http.Client {
 	if headerTimeout <= 0 {
 		if base != nil && base.Timeout > 0 {

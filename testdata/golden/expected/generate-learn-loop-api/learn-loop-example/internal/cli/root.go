@@ -281,6 +281,7 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", 0, "Max requests per second (0 to disable)")
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		var appliedProfile *Profile
 		if err := enforceMCPBoundProfile(cmd, flags); err != nil {
 			return err
 		}
@@ -314,6 +315,7 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 			if err := ApplyProfileToFlags(cmd, profile); err != nil {
 				return err
 			}
+			appliedProfile = profile
 		}
 		if platformCommandNeedsGate(cmd) {
 			if err := preparePlatformSession(flags); err != nil {
@@ -367,7 +369,7 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 			runLearnInitOnce(cmd.Context())
 			runPlaybookInitOnce(cmd.Context())
 		}
-		flags.timeoutExplicit = cmd.Flags().Changed("timeout")
+		flags.timeoutExplicit = timeoutExplicitFrom(cmd, appliedProfile)
 		return nil
 	}
 	rootCmd.AddCommand(newDoctorCmd(flags))
@@ -621,6 +623,21 @@ func commandTreeHasFlag(cmd *cobra.Command, name string) bool {
 	}
 	for _, child := range cmd.Commands() {
 		if commandTreeHasFlag(child, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// ApplyProfileToFlags overlays values without setting Flag.Changed, so a
+// profile-supplied timeout must count here or binary transfers would drop
+// the whole-call bound.
+func timeoutExplicitFrom(cmd *cobra.Command, profile *Profile) bool {
+	if cmd != nil && cmd.Flags().Changed("timeout") {
+		return true
+	}
+	if profile != nil {
+		if _, ok := profile.Values["timeout"]; ok {
 			return true
 		}
 	}
