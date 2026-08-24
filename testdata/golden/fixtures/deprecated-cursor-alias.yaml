@@ -1,29 +1,41 @@
-openapi: "3.0.3"
+openapi: "3.1.0"
 info:
-  title: Cursor Alias API
-  version: "1.0.0"
+  title: Xquik API
+  version: "1.0"
+  description: >-
+    Xquik is an independent third-party service. Not affiliated with X Corp.
+    "Twitter" and "X" are trademarks of X Corp.
 servers:
-  - url: https://api.example.com
+  - url: https://xquik.com/api/v1
+security:
+  - apiKey: []
 paths:
-  /items:
+  /x/users/{id}/followers:
     get:
-      tags: [items]
-      operationId: listItems
-      summary: List items
+      tags: [Users]
+      operationId: getUserFollowers
+      summary: List followers of a user
       parameters:
+        - name: id
+          in: path
+          required: true
+          description: Target user ID or username for follower lookup.
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          description: Cursor from the previous response.
+          schema:
+            type: string
         - name: after
           in: query
           deprecated: true
           description: Legacy cursor alias. Prefer cursor.
           schema:
             type: string
-        - name: cursor
-          in: query
-          description: Canonical pagination cursor.
-          schema:
-            type: string
         - name: limit
           in: query
+          description: Maximum user profiles to return.
           schema:
             type: integer
       responses:
@@ -34,7 +46,7 @@ paths:
               schema:
                 type: object
                 properties:
-                  data:
+                  users:
                     type: array
                     items:
                       type: object
@@ -43,3 +55,10 @@ paths:
                           type: string
                   next_cursor:
                     type: string
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: Xquik API key passed through the x-api-key header.

@@ -133,6 +133,31 @@ For example:
 
 `/printing-press` drives the `cli-printing-press` binary you installed — research, generation, scoring, and shipcheck all run through it. Two parts, one workflow.
 
+### Generate Xquik directly
+
+Xquik publishes an OpenAPI contract for X reads and automation. Generate its
+CLI and MCP server directly from that contract:
+
+```bash
+cli-printing-press generate \
+  --spec https://docs.xquik.com/openapi.yaml \
+  --spec-source official \
+  --auth-preference apiKey \
+  --output ./xquik-cli
+cd xquik-cli
+go install ./cmd/xquik-pp-cli ./cmd/xquik-pp-mcp
+```
+
+Set an API key, then run a bounded follower lookup:
+
+```bash
+export XQUIK_API_KEY="<your-key>"
+xquik-pp-cli x get-user-followers <user-id> --page-size 25 --agent
+```
+
+For MCP clients, configure `xquik-pp-mcp` as a stdio server. Supply
+`XQUIK_API_KEY` through the client's secret store.
+
 One command. Lean loop. Produces a Go CLI plus an MCP server that absorbs every feature from every competing tool, then transcends with compound use cases only possible with local data. REST, GraphQL, or browser-sniffed traffic. No OpenAPI spec required.
 
 Each run produces two binaries (`<api>-pp-cli` plus `<api>-pp-mcp`), research documents, verification proofs, and a Quality Score.
