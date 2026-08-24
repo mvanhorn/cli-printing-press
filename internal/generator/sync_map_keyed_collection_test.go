@@ -129,6 +129,35 @@ func TestMapKeyedCollectionKeepsRecordsBesideScalarMetadata(t *testing.T) {
 	}
 }
 
+// The pager needs the members the flattener skipped, so they come back beside
+// the records instead of being dropped.
+func TestMapKeyedFlattenReturnsSkippedMetadata(t *testing.T) {
+	items, metadata, ok := FlattenMapKeyedCollectionWithMetadata(json.RawMessage(` + "`" + `{"7788990011223344":{"id":"7788990011223344"},"next_cursor":"c2","total":1}` + "`" + `))
+	if !ok || len(items) != 1 {
+		t.Fatalf("expected 1 item, ok=%v len=%d", ok, len(items))
+	}
+	if string(metadata["next_cursor"]) != ` + "`" + `"c2"` + "`" + ` {
+		t.Fatalf("expected the sibling cursor in the metadata return, got %#v", metadata)
+	}
+	if _, ok := metadata["total"]; !ok {
+		t.Fatalf("every skipped member must come back, got %#v", metadata)
+	}
+}
+
+// A bucket's own metadata fills gaps the outer level left, and never overrides it.
+func TestMapKeyedBucketMetadataFillsGapsOnly(t *testing.T) {
+	_, metadata, ok := FlattenMapKeyedCollectionWithMetadata(json.RawMessage(` + "`" + `{"2026-08-19":{"7788990011223344":{"id":"a"},"next_cursor":"inner","page":2},"next_cursor":"outer"}` + "`" + `))
+	if !ok {
+		t.Fatalf("bucketed collection with metadata at both levels should be recognized")
+	}
+	if string(metadata["next_cursor"]) != ` + "`" + `"outer"` + "`" + ` {
+		t.Fatalf("the level closest to the caller must win, got %#v", metadata)
+	}
+	if string(metadata["page"]) != "2" {
+		t.Fatalf("bucket metadata must fill what the outer level lacks, got %#v", metadata)
+	}
+}
+
 // The enclosing key is the record's identity. A payload carrying the same field
 // name would otherwise file the row under a value the API never keyed it by.
 func TestMapKeyedStampOverwritesPayloadKeyField(t *testing.T) {
@@ -273,6 +302,63 @@ func TestMapKeyedMixedMetadataKeepsCursor(t *testing.T) {
 	}
 	if cursor != "c2" || !hasMore {
 		t.Fatalf("expected the sibling cursor to survive extraction, got %q hasMore=%v", cursor, hasMore)
+	}
+}
+
+// One case per site that lifts a map-keyed collection out of a sub-payload. A
+// cursor filed beside the records belongs to the page those records came from,
+// so it must outrank the envelope above them, and the envelope must still be
+// the answer when the collection carries none.
+func TestMapKeyedNestedCursorSurvives(t *testing.T) {
+	cases := []struct {
+		name       string
+		payload    string
+		paths      []string
+		wantItems  int
+		wantCursor string
+	}{
+		{
+			name:       "declared response path holds the collection and its cursor",
+			payload:    ` + "`" + `{"payload":{"7788990011223344":{"id":"7788990011223344"},"next_cursor":"p1"}}` + "`" + `,
+			paths:      []string{"payload"},
+			wantItems:  1,
+			wantCursor: "p1",
+		},
+		{
+			name:       "wrapper key holds the collection and its cursor",
+			payload:    ` + "`" + `{"data":{"7788990011223344":{"id":"7788990011223344"},"next_cursor":"w1"}}` + "`" + `,
+			wantItems:  1,
+			wantCursor: "w1",
+		},
+		{
+			name:       "resource-named sibling holds the collection and its cursor",
+			payload:    ` + "`" + `{"calls_by_day":{"7788990011223344":{"id":"7788990011223344"},"next_cursor":"s1"}}` + "`" + `,
+			wantItems:  1,
+			wantCursor: "s1",
+		},
+		{
+			name:       "bucketed collection carries the cursor at bucket level",
+			payload:    ` + "`" + `{"data":{"2026-08-19":{"7788990011223344":{"id":"7788990011223344"},"next_cursor":"b1"}}}` + "`" + `,
+			wantItems:  1,
+			wantCursor: "b1",
+		},
+		{
+			name:       "envelope cursor still wins when the collection carries none",
+			payload:    ` + "`" + `{"data":{"7788990011223344":{"id":"7788990011223344"}},"next_cursor":"o1"}` + "`" + `,
+			wantItems:  1,
+			wantCursor: "o1",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			items, cursor, hasMore := extractPageItems(json.RawMessage(tc.payload), "cursor", tc.paths...)
+			if len(items) != tc.wantItems {
+				t.Fatalf("expected %d items, got %d", tc.wantItems, len(items))
+			}
+			if cursor != tc.wantCursor || !hasMore {
+				t.Fatalf("expected cursor %q with hasMore, got %q hasMore=%v", tc.wantCursor, cursor, hasMore)
+			}
+		})
 	}
 }
 

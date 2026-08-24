@@ -1209,16 +1209,19 @@ func extractPageItemsWithPagination(data json.RawMessage, cursorParam, nextCurso
 			continue
 		}
 		pathItems, found := extractJSONItemsArray(pathData)
+		var pathMetadata map[string]json.RawMessage
 		if !found {
 			// A declared response path can resolve to a map-keyed collection
 			// rather than an array. No wrapper key is a record key, so this
 			// can never shadow an array-shaped or enveloped payload.
-			pathItems, found = store.FlattenMapKeyedCollection(pathData)
+			pathItems, pathMetadata, found = store.FlattenMapKeyedCollectionWithMetadata(pathData)
 		}
 		if found {
-			nextCursor, hasMore := "", false
-			if parentEnvelope, ok := responsePayloadParentAtPath(data, responsePath); ok {
-				nextCursor, hasMore = extractPaginationFromEnvelope(parentEnvelope, cursorParam, nextCursorPath)
+			nextCursor, hasMore := mapKeyedPagination(pathMetadata, cursorParam)
+			if nextCursor == "" && !hasMore {
+				if parentEnvelope, ok := responsePayloadParentAtPath(data, responsePath); ok {
+					nextCursor, hasMore = extractPaginationFromEnvelope(parentEnvelope, cursorParam, nextCursorPath)
+				}
 			}
 			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
 			if nextCursor == "" {
@@ -1241,9 +1244,13 @@ func extractPageItemsWithPagination(data json.RawMessage, cursorParam, nextCurso
 		}
 	}
 
-	if items, ok := extractItemsByKnownKeys(envelope); ok {
-		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
-		return items, nextCursor, hasMore
+	if items, metadata, ok := extractItemsByKnownKeysWithMetadata(envelope); ok {
+		nextCursor, hasMore := mapKeyedPagination(metadata, cursorParam)
+		outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
+		if nextCursor == "" {
+			nextCursor = outerCursor
+		}
+		return items, nextCursor, hasMore || outerHasMore
 	}
 
 	for _, key := range dataEnvelopeKeys {
@@ -1289,12 +1296,27 @@ func extractPageItemsWithPagination(data json.RawMessage, cursorParam, nextCurso
 		return items, nextCursor, hasMore
 	}
 
-	if items, ok := extractSingleMapKeyedSibling(envelope); ok {
-		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
-		return items, nextCursor, hasMore
+	if items, metadata, ok := extractSingleMapKeyedSibling(envelope); ok {
+		nextCursor, hasMore := mapKeyedPagination(metadata, cursorParam)
+		outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
+		if nextCursor == "" {
+			nextCursor = outerCursor
+		}
+		return items, nextCursor, hasMore || outerHasMore
 	}
 
 	return nil, "", false
+}
+
+// Metadata filed beside the records describes the page those records came from,
+// so it is consulted before the envelope above them. nextCursorPath is declared
+// against the response root, which this level is not, so only a plain field
+// match applies here.
+func mapKeyedPagination(metadata map[string]json.RawMessage, cursorParam string) (string, bool) {
+	if len(metadata) == 0 {
+		return "", false
+	}
+	return extractPaginationFromEnvelope(metadata, cursorParam, "")
 }
 
 func extractItemsFromEnvelope(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
@@ -1304,21 +1326,31 @@ func extractItemsFromEnvelope(envelope map[string]json.RawMessage) ([]json.RawMe
 	if items, ok := extractSingleObjectArraySibling(envelope); ok {
 		return items, true
 	}
-	return extractSingleMapKeyedSibling(envelope)
+	items, _, ok := extractSingleMapKeyedSibling(envelope)
+	return items, ok
 }
 
 // extractSingleMapKeyedSibling handles an envelope that carries a map-keyed
 // collection under a resource-named key alongside scalar metadata. Exactly one
 // non-metadata key may flatten: an envelope holding two candidate collections
 // is ambiguous and is left for the caller to reject.
-func extractSingleMapKeyedSibling(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+func extractSingleMapKeyedSibling(envelope map[string]json.RawMessage) ([]json.RawMessage, map[string]json.RawMessage, bool) {
 	return store.FlattenSoleMapKeyedSibling(envelope, func(key string) bool {
 		return pageEnvelopeMetadataKeys[key]
 	})
 }
 
 func extractItemsByKnownKeys(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	items, _, ok := extractItemsByKnownKeysWithMetadata(envelope)
+	return items, ok
+}
+
+// A wrapper key holding a map-keyed collection can carry that collection's own
+// paging metadata inside the wrapper. Callers that paginate take the metadata
+// return; the rest use the wrapper above and drop it.
+func extractItemsByKnownKeysWithMetadata(envelope map[string]json.RawMessage) ([]json.RawMessage, map[string]json.RawMessage, bool) {
 	var emptyItems []json.RawMessage
+	var emptyMetadata map[string]json.RawMessage
 	foundEmpty := false
 	for _, key := range pageItemKeys {
 		if raw, ok := envelope[key]; ok {
@@ -1328,7 +1360,7 @@ func extractItemsByKnownKeys(envelope map[string]json.RawMessage) ([]json.RawMes
 			}
 			if items, ok := extract(raw); ok {
 				if len(items) > 0 {
-					return items, true
+					return items, nil, true
 				}
 				emptyItems = items
 				foundEmpty = true
@@ -1343,20 +1375,20 @@ func extractItemsByKnownKeys(envelope map[string]json.RawMessage) ([]json.RawMes
 		if !ok {
 			continue
 		}
-		items, ok := store.FlattenMapKeyedCollection(raw)
+		items, metadata, ok := store.FlattenMapKeyedCollectionWithMetadata(raw)
 		if !ok {
 			continue
 		}
 		if len(items) > 0 {
-			return items, true
+			return items, metadata, true
 		}
-		emptyItems = items
+		emptyItems, emptyMetadata = items, metadata
 		foundEmpty = true
 	}
 	if foundEmpty {
-		return emptyItems, true
+		return emptyItems, emptyMetadata, true
 	}
-	return nil, false
+	return nil, nil, false
 }
 
 func extractSingleObjectArraySibling(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {

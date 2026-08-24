@@ -1325,6 +1325,11 @@ func FTSMatchQuery(query string) string {
 // object key here and the id resolvers below fall back to it once every real id
 // field has missed. Flattener and resolvers stay in one file because a shape
 // one recognizes and the other cannot key loses rows with no error.
+//
+// The _pp_ prefix is reserved for fields this CLI synthesizes, so the stamp
+// always wins over a same-named member of the payload: the enclosing key is
+// the record's identity, and a payload copy of it is either stale or a name
+// collision inside a namespace no API owns.
 const MapKeyIDField = "_pp_map_key"
 
 // One level covers {"<id>": {...}}, two covers a bucketed
@@ -1381,35 +1386,36 @@ type mapKeyedEntry struct {
 // dropping those members keeps the records reachable while the caller still
 // reads the cursor off the same envelope. Sorting makes repeated syncs of one
 // payload produce one row order.
-func mapKeyedEntries(raw json.RawMessage) ([]mapKeyedEntry, bool) {
+func mapKeyedEntries(raw json.RawMessage) ([]mapKeyedEntry, map[string]json.RawMessage, bool) {
 	if !isJSONObjectPayload(raw) {
-		return nil, false
+		return nil, nil, false
 	}
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(raw, &obj) != nil || len(obj) == 0 {
-		return nil, false
+		return nil, nil, false
 	}
 	keys := make([]string, 0, len(obj))
+	metadata := map[string]json.RawMessage{}
 	for key, value := range obj {
 		recordKeyed, objectValued := looksLikeRecordKey(key), isJSONObjectPayload(value)
 		switch {
 		case recordKeyed && objectValued:
 			keys = append(keys, key)
 		case !recordKeyed && !objectValued:
-			continue
+			metadata[key] = value
 		default:
-			return nil, false
+			return nil, nil, false
 		}
 	}
 	if len(keys) == 0 {
-		return nil, false
+		return nil, nil, false
 	}
 	sort.Strings(keys)
 	entries := make([]mapKeyedEntry, 0, len(keys))
 	for _, key := range keys {
 		entries = append(entries, mapKeyedEntry{key: key, value: obj[key]})
 	}
-	return entries, true
+	return entries, metadata, true
 }
 
 func isJSONObjectPayload(raw json.RawMessage) bool {
@@ -1427,19 +1433,35 @@ func isEmptyJSONObject(raw json.RawMessage) bool {
 // members are all empty reads as an empty page rather than as a shape this
 // could not extract.
 func FlattenMapKeyedCollection(raw json.RawMessage) ([]json.RawMessage, bool) {
+	items, _, ok := FlattenMapKeyedCollectionWithMetadata(raw)
+	return items, ok
+}
+
+// The members skipped as metadata come back with the records because a
+// collection nested under a wrapper key or a declared response path can carry
+// its own continuation cursor. Dropping them left the pager reading only the
+// envelope above, which ends a paginated sync after its first page.
+func FlattenMapKeyedCollectionWithMetadata(raw json.RawMessage) ([]json.RawMessage, map[string]json.RawMessage, bool) {
 	return flattenMapKeyedCollection(raw, mapKeyedMaxDepth)
 }
 
-func flattenMapKeyedCollection(raw json.RawMessage, depth int) ([]json.RawMessage, bool) {
-	entries, ok := mapKeyedEntries(raw)
+func flattenMapKeyedCollection(raw json.RawMessage, depth int) ([]json.RawMessage, map[string]json.RawMessage, bool) {
+	entries, metadata, ok := mapKeyedEntries(raw)
 	if !ok {
-		return nil, false
+		return nil, nil, false
 	}
 	items := make([]json.RawMessage, 0, len(entries))
 	for _, entry := range entries {
 		if depth > 1 {
-			if nested, ok := flattenMapKeyedCollection(entry.value, depth-1); ok {
+			if nested, nestedMetadata, ok := flattenMapKeyedCollection(entry.value, depth-1); ok {
 				items = append(items, nested...)
+				// A bucket's own metadata fills gaps only: the level closest to
+				// the caller describes the page it asked for.
+				for key, value := range nestedMetadata {
+					if _, taken := metadata[key]; !taken {
+						metadata[key] = value
+					}
+				}
 				continue
 			}
 		}
@@ -1448,7 +1470,7 @@ func flattenMapKeyedCollection(raw json.RawMessage, depth int) ([]json.RawMessag
 		}
 		items = append(items, stampMapKeyID(entry.value, entry.key))
 	}
-	return items, true
+	return items, metadata, true
 }
 
 // The enclosing key is the record's identity, so a same-named field already in
@@ -1476,22 +1498,23 @@ func stampMapKeyID(value json.RawMessage, key string) json.RawMessage {
 // their own isMetadataKey because the sync and live paths carry different
 // metadata vocabularies; recognition of the collection itself must not differ
 // between them.
-func FlattenSoleMapKeyedSibling(envelope map[string]json.RawMessage, isMetadataKey func(string) bool) ([]json.RawMessage, bool) {
+func FlattenSoleMapKeyedSibling(envelope map[string]json.RawMessage, isMetadataKey func(string) bool) ([]json.RawMessage, map[string]json.RawMessage, bool) {
 	var collection []json.RawMessage
+	var collectionMetadata map[string]json.RawMessage
 	matches := 0
 	for key, raw := range envelope {
 		if isMetadataKey(key) {
 			continue
 		}
-		if items, ok := FlattenMapKeyedCollection(raw); ok {
-			collection = items
+		if items, metadata, ok := FlattenMapKeyedCollectionWithMetadata(raw); ok {
+			collection, collectionMetadata = items, metadata
 			matches++
 		}
 	}
 	if matches == 1 {
-		return collection, true
+		return collection, collectionMetadata, true
 	}
-	return nil, false
+	return nil, nil, false
 }
 
 // Callers must try every real id field first: the stamped key is only the right

@@ -516,9 +516,12 @@ func extractWriteThroughMapKeyedItems(envelope map[string]json.RawMessage) ([]js
 		}
 	}
 
-	return store.FlattenSoleMapKeyedSibling(envelope, func(key string) bool {
+	// The live path serves one response, so a collection's own paging metadata
+	// has nothing to page and is dropped here.
+	items, _, ok := store.FlattenSoleMapKeyedSibling(envelope, func(key string) bool {
 		return listEnvelopeMetadataKeys[key]
 	})
+	return items, ok
 }
 
 func extractWriteThroughResourceItems(resourceType string, envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
