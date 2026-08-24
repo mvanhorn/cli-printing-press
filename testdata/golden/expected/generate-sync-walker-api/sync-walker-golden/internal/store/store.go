@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1201,13 +1202,201 @@ func FTSMatchQuery(query string) string {
 	return strings.Join(quoted, " ")
 }
 
+// MapKeyIDField is the synthetic field FlattenMapKeyedCollection stamps onto
+// every item it lifts out of a map-keyed collection, carrying the JSON object
+// key that identified the record. The id resolvers below consult it as a last
+// resort, so a leaf object that carries no id field of its own still resolves
+// to the key the API filed it under instead of being dropped.
+//
+// The flattener and the id resolvers live in this file together on purpose:
+// if one recognizes a shape the other cannot key, the rows disappear from the
+// local mirror without an error.
+const MapKeyIDField = "_pp_map_key"
+
+// mapKeyedMaxDepth bounds how far FlattenMapKeyedCollection descends. One
+// level covers {"<id>": {...}}; two covers a bucketed
+// {"<bucket>": {"<id>": {...}}}. Descending further would start treating an
+// item's own nested sub-objects as sibling records.
+const mapKeyedMaxDepth = 2
+
+// A map-keyed collection files each record under its identifier instead of
+// listing records in an array, so the discriminator has to separate record
+// identifiers from ordinary field names. Field names are words; record
+// identifiers are not. These patterns admit only key shapes that no API uses
+// as a field name, which keeps an ordinary detail object carrying nested
+// sub-objects ({"user": {...}, "account": {...}}) out of the collection path.
+var (
+	mapKeyNumericRE  = regexp.MustCompile(`^[0-9]+$`)
+	mapKeyUUIDRE     = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	mapKeyDateRE     = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}([T ][0-9A-Za-z:.+-]*)?$`)
+	mapKeyOpaqueRE   = regexp.MustCompile(`^[A-Za-z0-9]{20,}$`)
+	mapKeyPrefixedRE = regexp.MustCompile(`^[-_][A-Za-z0-9_-]{15,}$`)
+	mapKeyHasDigitRE = regexp.MustCompile(`[0-9]`)
+)
+
+// looksLikeRecordKey reports whether a JSON object key reads as a record
+// identifier rather than a field name. A separator-free token must be long and
+// carry a digit before it qualifies, because a short alphabetic token is
+// indistinguishable from a field name.
+func looksLikeRecordKey(key string) bool {
+	switch {
+	case key == "":
+		return false
+	case mapKeyNumericRE.MatchString(key):
+		return true
+	case mapKeyUUIDRE.MatchString(key):
+		return true
+	case mapKeyDateRE.MatchString(key):
+		return true
+	case mapKeyOpaqueRE.MatchString(key) && mapKeyHasDigitRE.MatchString(key):
+		return true
+	case mapKeyPrefixedRE.MatchString(key) && mapKeyHasDigitRE.MatchString(key):
+		return true
+	}
+	return false
+}
+
+type mapKeyedEntry struct {
+	key   string
+	value json.RawMessage
+}
+
+// mapKeyedEntries decodes raw as a map-keyed collection. Every key must read
+// as a record identifier and every value must be a JSON object; a single
+// disqualifying member rejects the whole payload, so a mixed envelope is never
+// mistaken for a collection. Entries come back key-sorted so repeated syncs of
+// the same payload always produce the same row order.
+func mapKeyedEntries(raw json.RawMessage) ([]mapKeyedEntry, bool) {
+	if !isJSONObjectPayload(raw) {
+		return nil, false
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil || len(obj) == 0 {
+		return nil, false
+	}
+	keys := make([]string, 0, len(obj))
+	for key, value := range obj {
+		if !looksLikeRecordKey(key) || !isJSONObjectPayload(value) {
+			return nil, false
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	entries := make([]mapKeyedEntry, 0, len(keys))
+	for _, key := range keys {
+		entries = append(entries, mapKeyedEntry{key: key, value: obj[key]})
+	}
+	return entries, true
+}
+
+func isJSONObjectPayload(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && trimmed[0] == '{'
+}
+
+func isEmptyJSONObject(raw json.RawMessage) bool {
+	var obj map[string]json.RawMessage
+	return json.Unmarshal(raw, &obj) == nil && len(obj) == 0
+}
+
+// FlattenMapKeyedCollection lifts the records out of a collection that files
+// each record under its own identifier — {"<id>": {...}} — including one level
+// of bucketing above the records — {"<bucket>": {"<id>": {...}}}. The second
+// return value reports whether raw was recognized as such a collection at all;
+// a recognized collection whose members are all empty yields no items, which
+// is an empty page rather than a failure to extract.
+func FlattenMapKeyedCollection(raw json.RawMessage) ([]json.RawMessage, bool) {
+	return flattenMapKeyedCollection(raw, mapKeyedMaxDepth)
+}
+
+func flattenMapKeyedCollection(raw json.RawMessage, depth int) ([]json.RawMessage, bool) {
+	entries, ok := mapKeyedEntries(raw)
+	if !ok {
+		return nil, false
+	}
+	items := make([]json.RawMessage, 0, len(entries))
+	for _, entry := range entries {
+		if depth > 1 {
+			if nested, ok := flattenMapKeyedCollection(entry.value, depth-1); ok {
+				items = append(items, nested...)
+				continue
+			}
+		}
+		if isEmptyJSONObject(entry.value) {
+			continue
+		}
+		items = append(items, stampMapKeyID(entry.value, entry.key))
+	}
+	return items, true
+}
+
+// stampMapKeyID records the collection key on the item it identified. A key
+// the payload already carries is left alone so re-flattening is idempotent.
+func stampMapKeyID(value json.RawMessage, key string) json.RawMessage {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(value, &obj) != nil {
+		return value
+	}
+	if _, exists := obj[MapKeyIDField]; exists {
+		return value
+	}
+	encodedKey, err := json.Marshal(key)
+	if err != nil {
+		return value
+	}
+	obj[MapKeyIDField] = encodedKey
+	stamped, err := json.Marshal(obj)
+	if err != nil {
+		return value
+	}
+	return stamped
+}
+
+// FlattenSoleMapKeyedSibling flattens the single member of an envelope that
+// holds a map-keyed collection alongside scalar metadata. Two flattenable
+// members leave the envelope ambiguous, so nothing is extracted. Callers pass
+// their own isMetadataKey because the sync and live paths each carry their own
+// metadata vocabulary; the collection recognition itself must not differ
+// between them.
+func FlattenSoleMapKeyedSibling(envelope map[string]json.RawMessage, isMetadataKey func(string) bool) ([]json.RawMessage, bool) {
+	var collection []json.RawMessage
+	matches := 0
+	for key, raw := range envelope {
+		if isMetadataKey(key) {
+			continue
+		}
+		if items, ok := FlattenMapKeyedCollection(raw); ok {
+			collection = items
+			matches++
+		}
+	}
+	if matches == 1 {
+		return collection, true
+	}
+	return nil, false
+}
+
+// mapKeyIDFallback resolves the identifier FlattenMapKeyedCollection stamped
+// onto an item. Callers must try every real id field first: the stamped key is
+// only the right answer when the record carries no identifier of its own.
+func mapKeyIDFallback(obj map[string]any) string {
+	v, ok := obj[MapKeyIDField]
+	if !ok {
+		return ""
+	}
+	if id := ResourceIDString(v); id != "" && id != "<nil>" {
+		return id
+	}
+	return ""
+}
+
 func extractObjectID(obj map[string]any) string {
 	for _, key := range []string{"id", "ID", "_id", "id_", "uuid", "slug", "name"} {
 		if s := canonicalIDFromKey(obj, key); s != "" {
 			return s
 		}
 	}
-	return ""
+	return mapKeyIDFallback(obj)
 }
 
 // ftsRowID derives a deterministic rowid from a string ID for use with FTS5.
@@ -1622,7 +1811,7 @@ func ExtractResourceID(resourceType string, obj map[string]any) string {
 			return s
 		}
 	}
-	return ""
+	return mapKeyIDFallback(obj)
 }
 
 // suffixIDFieldFallback resolves an id-less resource that keys on its own

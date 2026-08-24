@@ -1159,9 +1159,12 @@ func formatSyncSinceValue(value string, paramFormat string) string {
 
 // extractPageItems attempts to extract an array of items and pagination cursor from a response.
 // It tries multiple strategies:
-// 1. Direct JSON array
-// 2. Common wrapper keys: "data", "results", "items", "records", "nodes", "entries"
-// 3. JSend-style nested data envelopes: {"data":{"<resource>":[...]}}
+//  1. Direct JSON array
+//  2. Common wrapper keys: "data", "results", "items", "records", "nodes", "entries"
+//  3. JSend-style nested data envelopes: {"data":{"<resource>":[...]}}
+//  4. Map-keyed collections that file each record under its id instead of
+//     listing records in an array: {"<id>":{...}} and {"<bucket>":{"<id>":{...}}}
+//
 // It also extracts the next cursor from common response fields.
 func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ...string) ([]json.RawMessage, string, bool) {
 	return extractPageItemsWithPagination(data, cursorParam, "", responsePaths...)
@@ -1185,7 +1188,14 @@ func extractPageItemsWithPagination(data json.RawMessage, cursorParam, nextCurso
 		if !ok {
 			continue
 		}
-		if items, ok := extractJSONItemsArray(pathData); ok {
+		pathItems, found := extractJSONItemsArray(pathData)
+		if !found {
+			// A declared response path can resolve to a map-keyed collection
+			// rather than an array. No wrapper key is a record key, so this
+			// can never shadow an array-shaped or enveloped payload.
+			pathItems, found = store.FlattenMapKeyedCollection(pathData)
+		}
+		if found {
 			nextCursor, hasMore := "", false
 			if parentEnvelope, ok := responsePayloadParentAtPath(data, responsePath); ok {
 				nextCursor, hasMore = extractPaginationFromEnvelope(parentEnvelope, cursorParam, nextCursorPath)
@@ -1195,7 +1205,7 @@ func extractPageItemsWithPagination(data json.RawMessage, cursorParam, nextCurso
 				nextCursor = outerCursor
 			}
 			hasMore = hasMore || outerHasMore
-			return items, nextCursor, hasMore
+			return pathItems, nextCursor, hasMore
 		}
 		var inner map[string]json.RawMessage
 		if json.Unmarshal(pathData, &inner) == nil {
@@ -1251,6 +1261,19 @@ func extractPageItemsWithPagination(data json.RawMessage, cursorParam, nextCurso
 		return items, nextCursor, hasMore
 	}
 
+	// The response can be the collection itself, filing each record under its
+	// id rather than listing records in an array. Both map-keyed strategies
+	// run last so no array-shaped strategy is preempted.
+	if items, ok := store.FlattenMapKeyedCollection(data); ok {
+		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
+		return items, nextCursor, hasMore
+	}
+
+	if items, ok := extractSingleMapKeyedSibling(envelope); ok {
+		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
+		return items, nextCursor, hasMore
+	}
+
 	return nil, "", false
 }
 
@@ -1258,7 +1281,20 @@ func extractItemsFromEnvelope(envelope map[string]json.RawMessage) ([]json.RawMe
 	if items, ok := extractItemsByKnownKeys(envelope); ok {
 		return items, true
 	}
-	return extractSingleObjectArraySibling(envelope)
+	if items, ok := extractSingleObjectArraySibling(envelope); ok {
+		return items, true
+	}
+	return extractSingleMapKeyedSibling(envelope)
+}
+
+// extractSingleMapKeyedSibling handles an envelope that carries a map-keyed
+// collection under a resource-named key alongside scalar metadata. Exactly one
+// non-metadata key may flatten: an envelope holding two candidate collections
+// is ambiguous and is left for the caller to reject.
+func extractSingleMapKeyedSibling(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	return store.FlattenSoleMapKeyedSibling(envelope, func(key string) bool {
+		return pageEnvelopeMetadataKeys[key]
+	})
 }
 
 func extractItemsByKnownKeys(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
@@ -1278,6 +1314,24 @@ func extractItemsByKnownKeys(envelope map[string]json.RawMessage) ([]json.RawMes
 				foundEmpty = true
 			}
 		}
+	}
+	// A wrapper key can hold a map-keyed collection instead of an array. This
+	// runs only after every wrapper key has failed the array decode, so an
+	// array-shaped wrapper always wins.
+	for _, key := range pageItemKeys {
+		raw, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		items, ok := store.FlattenMapKeyedCollection(raw)
+		if !ok {
+			continue
+		}
+		if len(items) > 0 {
+			return items, true
+		}
+		emptyItems = items
+		foundEmpty = true
 	}
 	if foundEmpty {
 		return emptyItems, true
