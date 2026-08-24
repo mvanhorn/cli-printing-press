@@ -201,9 +201,10 @@ the hand-off.
 If `$PATCH_COUNT > 0`, surface a one-liner to the user before continuing:
 
 > Public `<api>` has `$PATCH_COUNT` recorded patch(es) against the prior
-> printed CLI. Will carry into the brief as a watch-list (informational,
-> not a re-apply mandate) so the fresh code doesn't silently regress
-> live-validated fixes.
+> printed CLI. Carry them into the brief as a watch-list. Regen and
+> publish-validate now read the records and fail closed if a recorded
+> file or declared call site / `pp:patch` marker is gone — do not treat
+> the index as a claim that the customization still shipped.
 
 Hold `$PATCHES_SOURCE` and `$PATCH_COUNT` for Phase D.
 

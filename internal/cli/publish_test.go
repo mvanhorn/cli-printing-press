@@ -564,11 +564,31 @@ func TestPublishValidateJSONHasAllChecks(t *testing.T) {
 	}
 
 	// All checks should be present (they may fail in test env, but must exist)
-	expectedChecks := []string{"manifest", "transcendence", "phase5", "go mod tidy", "module path", "govulncheck", "go vet", "go build", "--help", "--version", "verify-skill", "manuscripts"}
+	expectedChecks := []string{"manifest", "transcendence", "phase5", "go mod tidy", "module path", "govulncheck", "go vet", "go build", "--help", "--version", "verify-skill", "patches", "manuscripts"}
 	for _, name := range expectedChecks {
 		assert.True(t, checkNames[name], "should have %q check", name)
 	}
 	assert.Len(t, result.Checks, len(expectedChecks), "should have exactly the expected checks")
+}
+
+func TestCheckPatchRecordsFailsWhenCallSiteMissing(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, pipeline.EnsurePatchesDir(dir))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "store", "sync.go"), []byte("package store\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, pipeline.PatchesDirName, "drop-envelope.json"), []byte(`{
+  "schema_version": 2,
+  "id": "drop-envelope",
+  "files": ["internal/store/sync.go"],
+  "call_sites": ["if guardAgainstErrorEnvelope("]
+}
+`), 0o644))
+
+	check := checkPatchRecords(dir)
+	assert.False(t, check.Passed)
+	assert.Equal(t, "patches", check.Name)
+	assert.Contains(t, check.Error, `patch "drop-envelope"`)
+	assert.Contains(t, check.Error, "absent from the tree")
 }
 
 func TestPublishValidateFailsWithoutPhase5Marker(t *testing.T) {

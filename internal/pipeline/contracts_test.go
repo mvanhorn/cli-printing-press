@@ -1041,6 +1041,7 @@ func TestPublishSkillDocumentsPatchesIndexContract(t *testing.T) {
 	assert.Contains(t, block, "manifest entry")
 	assert.Contains(t, block, "Inline `// PATCH(...)` source comments are optional navigation aids")
 	assert.Contains(t, block, "does not require a marker/comment pairing")
+	assert.Contains(t, block, "`publish validate` reads the records")
 }
 
 func TestAmendSkillRequiresUpstreamBreadcrumbsForTemporaryPatches(t *testing.T) {
@@ -1102,6 +1103,7 @@ func TestGeneratedAgentsTemplatePointsToPublicLibraryForPatchMechanics(t *testin
 	// drift to the legacy patch form; a stable pointer cannot rot.
 	assert.Contains(t, template, "## Local Customizations")
 	assert.Contains(t, template, ".printing-press-patches/")
+	assert.Contains(t, template, "fail closed")
 	assert.Contains(t, template, "public library's `AGENTS.md`")
 
 	// Mechanics must not be re-inlined into the per-CLI template.
