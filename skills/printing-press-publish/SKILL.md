@@ -1159,7 +1159,13 @@ Rules:
   of the git diff.
 - Include non-Go support files in `files` when they are part of the same
   code-level customization. README/SKILL.md-only polish does not need a patch
-  manifest entry.
+  manifest entry. `publish validate` reads the records and fails if a
+  recorded `files[]` path is missing, the per-patch record omits
+  `schema_version` or declares an unsupported one, or a declared
+  `call_sites` / `markers` / `marker` string is absent from the recorded
+  files. `files[]` is required for every `call_sites` / `markers` /
+  `marker` needle so a leftover substring elsewhere cannot mask a dropped
+  customization. Needles are checked only in those recorded files.
 - Inline `// PATCH(...)` source comments are optional navigation aids. The public
   library verifier requires a patches index (the directory or the legacy file)
   and well-formed entries; it does not require a marker/comment pairing.
