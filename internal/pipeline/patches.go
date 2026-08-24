@@ -108,6 +108,24 @@ func decodePatchRecord(data []byte) (PatchRecord, error) {
 	return rec, nil
 }
 
+func supportedPatchSchema(version int) bool {
+	return version == 1 || version == CurrentPatchesIndexSchemaVersion
+}
+
+func patchRecordSchemaViolation(rec PatchRecord, id string) string {
+	version := rec.SchemaVersion
+	if rec.Source == PatchesIndexFilename && version == 0 {
+		return ""
+	}
+	if supportedPatchSchema(version) {
+		return ""
+	}
+	if version == 0 {
+		return fmt.Sprintf("patch %q: schema_version is required (supported: 1, %d)", id, CurrentPatchesIndexSchemaVersion)
+	}
+	return fmt.Sprintf("patch %q: unsupported schema_version %d (supported: 1, %d)", id, version, CurrentPatchesIndexSchemaVersion)
+}
+
 func loadLegacyPatchRecords(dir string) ([]PatchRecord, error) {
 	path := filepath.Join(dir, PatchesIndexFilename)
 	data, err := os.ReadFile(path)
@@ -142,6 +160,10 @@ func loadLegacyPatchRecords(dir string) ([]PatchRecord, error) {
 // marker / call site absent from its recorded files, fails and names the
 // patch id. Needles are checked only in files[] when that list is present
 // so an unrelated leftover substring cannot mask a dropped call site.
+// files[] is required for call_sites and non-pp:patch markers; tree-wide
+// search is only used for unique pp:patch markers. Per-patch files must
+// declare schema_version 1 or CurrentPatchesIndexSchemaVersion; omitted
+// schema is accepted only on legacy index entries.
 func ValidatePatchRecords(dir string) error {
 	records, err := LoadPatchRecords(dir)
 	if err != nil {
@@ -162,6 +184,9 @@ func patchRecordViolations(dir string, rec PatchRecord) []string {
 	if id == "" {
 		id = rec.Source
 	}
+	if msg := patchRecordSchemaViolation(rec, id); msg != "" {
+		return []string{msg}
+	}
 	needles := recNeedles(rec)
 	var listed []string
 	var violations []string
@@ -180,6 +205,10 @@ func patchRecordViolations(dir string, rec PatchRecord) []string {
 		return append(violations, fmt.Sprintf("patch %q: record declares no files or call sites", id))
 	}
 	for _, needle := range needles {
+		if len(listed) == 0 && !isPatchMarkerNeedle(needle) {
+			violations = append(violations, fmt.Sprintf("patch %q: call site %q requires files[] so leftover matches cannot mask a drop", id, needle))
+			continue
+		}
 		var found bool
 		var err error
 		scope := "the tree"
@@ -198,6 +227,10 @@ func patchRecordViolations(dir string, rec PatchRecord) []string {
 		}
 	}
 	return violations
+}
+
+func isPatchMarkerNeedle(needle string) bool {
+	return strings.HasPrefix(strings.TrimSpace(needle), "pp:patch")
 }
 
 func recNeedles(rec PatchRecord) []string {

@@ -140,6 +140,125 @@ func TestValidatePatchRecordsEmptyRecordFailsClosed(t *testing.T) {
 	assert.Contains(t, err.Error(), "declares no files or call sites")
 }
 
+func TestValidatePatchRecordsFilesLessCallSiteLeftoverFails(t *testing.T) {
+	t.Parallel()
+
+	dir := writePatchTree(t, patchTree{
+		files: map[string]string{
+			"internal/auth/refresh.go": "package auth\n\nfunc printRefreshTokenExpiry() {}\n",
+			"internal/cli/login.go":    "package cli\n\nfunc Login() { _ = client.Refresh }\n",
+		},
+		records: []string{`{
+  "schema_version": 2,
+  "id": "refresh-guard",
+  "call_sites": ["Refresh("]
+}`},
+	})
+
+	err := ValidatePatchRecords(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `patch "refresh-guard"`)
+	assert.Contains(t, err.Error(), "Refresh(")
+	assert.Contains(t, err.Error(), "requires files[]")
+}
+
+func TestValidatePatchRecordsFilesLessPatchMarkerPass(t *testing.T) {
+	t.Parallel()
+
+	dir := writePatchTree(t, patchTree{
+		files: map[string]string{
+			"internal/auth/refresh.go": "package auth\n\n// pp:patch refresh-guard\nfunc printRefreshTokenExpiry() {}\n",
+		},
+		records: []string{`{
+  "schema_version": 2,
+  "id": "refresh-guard",
+  "marker": "pp:patch refresh-guard"
+}`},
+	})
+
+	require.NoError(t, ValidatePatchRecords(dir))
+}
+
+func TestValidatePatchRecordsFilesLessPatchMarkerMissingFails(t *testing.T) {
+	t.Parallel()
+
+	dir := writePatchTree(t, patchTree{
+		files: map[string]string{
+			"internal/auth/refresh.go": "package auth\n\nfunc printRefreshTokenExpiry() {}\n",
+		},
+		records: []string{`{
+  "schema_version": 2,
+  "id": "refresh-guard",
+  "marker": "pp:patch refresh-guard"
+}`},
+	})
+
+	err := ValidatePatchRecords(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `patch "refresh-guard"`)
+	assert.Contains(t, err.Error(), "pp:patch refresh-guard")
+	assert.Contains(t, err.Error(), "absent from the tree")
+}
+
+func TestValidatePatchRecordsUnsupportedSchemaFails(t *testing.T) {
+	t.Parallel()
+
+	dir := writePatchTree(t, patchTree{
+		files: map[string]string{
+			"internal/store/sync.go": "package store\n\nfunc Sync() { guardAgainstErrorEnvelope(body) }\n",
+		},
+		records: []string{`{
+  "schema_version": 99,
+  "id": "future-schema",
+  "files": ["internal/store/sync.go"],
+  "call_sites": ["guardAgainstErrorEnvelope("]
+}`},
+	})
+
+	err := ValidatePatchRecords(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `patch "future-schema"`)
+	assert.Contains(t, err.Error(), "unsupported schema_version 99")
+}
+
+func TestValidatePatchRecordsOmittedSchemaFails(t *testing.T) {
+	t.Parallel()
+
+	dir := writePatchTree(t, patchTree{
+		files: map[string]string{
+			"internal/store/sync.go": "package store\n\nfunc Sync() { guardAgainstErrorEnvelope(body) }\n",
+		},
+		records: []string{`{
+  "id": "omitted-schema",
+  "files": ["internal/store/sync.go"],
+  "call_sites": ["guardAgainstErrorEnvelope("]
+}`},
+	})
+
+	err := ValidatePatchRecords(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `patch "omitted-schema"`)
+	assert.Contains(t, err.Error(), "schema_version is required")
+}
+
+func TestValidatePatchRecordsSchemaV1StillAccepted(t *testing.T) {
+	t.Parallel()
+
+	dir := writePatchTree(t, patchTree{
+		files: map[string]string{
+			"internal/store/sync.go": "package store\n\nfunc Sync() { guardAgainstErrorEnvelope(body) }\n",
+		},
+		records: []string{`{
+  "schema_version": 1,
+  "id": "legacy-shape",
+  "files": ["internal/store/sync.go"],
+  "call_sites": ["guardAgainstErrorEnvelope("]
+}`},
+	})
+
+	require.NoError(t, ValidatePatchRecords(dir))
+}
+
 func TestValidatePatchRecordsLegacyIndex(t *testing.T) {
 	t.Parallel()
 
