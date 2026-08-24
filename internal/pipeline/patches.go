@@ -181,7 +181,6 @@ func patchRecordViolations(dir string, rec PatchRecord) []string {
 			violations = append(violations, fmt.Sprintf("patch %q: recorded call site %q is absent from the tree", id, needle))
 		}
 	}
-	_ = listed
 	return violations
 }
 
