@@ -165,6 +165,15 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 		return fmt.Errorf("sweeping non-classified snapshot files: %w", err)
 	}
 
+	// Hidden-dir sweep skips .printing-press-patches; copy records back, then
+	// fail closed if a recorded file or call site did not survive the merge.
+	if err := pipeline.PreservePatchRecords(snapshotDir, freshDir); err != nil {
+		return fmt.Errorf("preserving patch records: %w", err)
+	}
+	if err := pipeline.ValidatePatchRecords(freshDir); err != nil {
+		return fmt.Errorf("recorded patches no longer match the merged tree: %w", err)
+	}
+
 	report.Applied = true
 	return nil
 }

@@ -187,6 +187,11 @@ func Apply(report *MergeReport, opts Options) error {
 		lr.Applied = true
 	}
 
+	if err := pipeline.ValidatePatchRecords(tempDir); err != nil {
+		cleanup()
+		return fmt.Errorf("recorded patches no longer match the merged tree: %w", err)
+	}
+
 	// Two-step rename with bak-recovery.
 	bakDir := filepath.Join(parent, fmt.Sprintf("%s.regen-merge-bak-%d", base, ts))
 	if err := os.Rename(cliDir, bakDir); err != nil {
