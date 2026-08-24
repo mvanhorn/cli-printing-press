@@ -117,13 +117,15 @@ func TestBrowserTransport_DropsChromeImpersonationWhenTrafficAnalysisMarksUnsafe
 		"the existing sniffed browser transport default should still force HTTP/2")
 }
 
-// TestNonBrowserTransport_DoesNotEmitOverride asserts the override only
-// fires inside the browser-transport branch. Vanilla *http.Client CLIs
-// already honor --timeout via http.Client.Timeout — they have no surf
-// middleware overriding ResponseHeaderTimeout, so emitting the override
-// there would be dead code (and would fail compilation since the surf
-// package isn't imported in non-browser branches).
-func TestNonBrowserTransport_DoesNotEmitOverride(t *testing.T) {
+// TestNonBrowserTransport_DoesNotEmitSurfOverride asserts the surf
+// GetTransport override only fires inside the browser-transport branch.
+// Vanilla *http.Client CLIs honor --timeout via http.Client.Timeout and
+// have no surf middleware, so the enetx type-assert override would be
+// dead code (and would fail compilation since surf isn't imported).
+// StreamingHTTPClient still sets ResponseHeaderTimeout on a cloned
+// *http.Transport so binary transfers can drop the whole-call Timeout
+// without leaving header stalls unbounded.
+func TestNonBrowserTransport_DoesNotEmitSurfOverride(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("plain-transport-canary")
@@ -137,6 +139,8 @@ func TestNonBrowserTransport_DoesNotEmitOverride(t *testing.T) {
 
 	require.NotContains(t, src, "Impersonate()",
 		"sanity: plain transport CLIs must not emit Impersonate()")
-	require.NotContains(t, src, "ResponseHeaderTimeout",
-		"plain transport CLIs must not emit the surf-specific ResponseHeaderTimeout override")
+	require.NotContains(t, src, "t.ResponseHeaderTimeout = timeout",
+		"plain transport CLIs must not emit the surf GetTransport ResponseHeaderTimeout override")
+	require.Contains(t, src, "tr.ResponseHeaderTimeout = headerTimeout",
+		"plain transport streaming clients must set ResponseHeaderTimeout so header stalls still die")
 }

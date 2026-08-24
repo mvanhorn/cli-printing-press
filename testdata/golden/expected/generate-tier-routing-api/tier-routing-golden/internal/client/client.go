@@ -37,9 +37,12 @@ const maxErrorBodyBytes = 4096
 var ErrPlaceholderCredential = errors.New("auth placeholder credential")
 
 type Client struct {
-	BaseURL           string
-	Config            *config.Config
-	HTTPClient        *http.Client
+	BaseURL    string
+	Config     *config.Config
+	HTTPClient *http.Client
+	// When unset, binary/stream bodies skip the whole-call client Timeout
+	// so a large download is not killed by the default JSON budget.
+	timeoutExplicit   bool
 	DryRun            bool
 	NoCache           bool
 	cacheDir          string
@@ -320,6 +323,38 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 		tr.MaxIdleConns = maxIdleConnsPerHost
 	}
 	return &http.Client{Timeout: timeout, Jar: jar, Transport: tr}
+}
+
+func (c *Client) SetTimeoutExplicit(explicit bool) {
+	if c == nil {
+		return
+	}
+	c.timeoutExplicit = explicit
+}
+
+// Drops the whole-call Timeout so large bodies can finish. Header stalls
+// still use headerTimeout.
+func StreamingHTTPClient(base *http.Client, headerTimeout time.Duration) *http.Client {
+	if headerTimeout <= 0 {
+		if base != nil && base.Timeout > 0 {
+			headerTimeout = base.Timeout
+		} else {
+			headerTimeout = 60 * time.Second
+		}
+	}
+	if base == nil {
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.ResponseHeaderTimeout = headerTimeout
+		return &http.Client{Transport: tr}
+	}
+	clone := *base
+	clone.Timeout = 0
+	if t, ok := base.Transport.(*http.Transport); ok {
+		tr := t.Clone()
+		tr.ResponseHeaderTimeout = headerTimeout
+		clone.Transport = tr
+	}
+	return &clone
 }
 
 // RateLimitAuto is the default --rate-limit value: a negative sentinel meaning
@@ -1096,7 +1131,11 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		if c.platformSession != nil {
 			c.platformSession.RecordRateLimitRequest()
 		}
-		resp, err := c.HTTPClient.Do(req)
+		httpClient := c.HTTPClient
+		if binaryResponse && !c.timeoutExplicit {
+			httpClient = StreamingHTTPClient(c.HTTPClient, c.ConfiguredTimeout())
+		}
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, 0, ctxErr

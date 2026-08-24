@@ -62,6 +62,7 @@ type rootFlags struct {
 	platformMetadataEmitted bool
 	deliverSpec             string
 	timeout                 time.Duration
+	timeoutExplicit         bool
 	rateLimit               float64
 	maxAge                  time.Duration
 	dataSource              string
@@ -261,6 +262,7 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify auth and connectivity.
 	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", 0, "Max requests per second (0 to disable)")
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		var appliedProfile *Profile
 		if err := enforceMCPBoundProfile(cmd, flags); err != nil {
 			return err
 		}
@@ -293,6 +295,7 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify auth and connectivity.
 			if err := ApplyProfileToFlags(cmd, profile); err != nil {
 				return err
 			}
+			appliedProfile = profile
 		}
 		if platformCommandNeedsGate(cmd) {
 			if err := preparePlatformSession(flags); err != nil {
@@ -346,6 +349,7 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify auth and connectivity.
 			runLearnInitOnce(cmd.Context())
 			runPlaybookInitOnce(cmd.Context())
 		}
+		flags.timeoutExplicit = timeoutExplicitFrom(cmd, appliedProfile)
 		return nil
 	}
 	rootCmd.AddCommand(newQuotesCmd(flags))
@@ -606,6 +610,21 @@ func commandTreeHasFlag(cmd *cobra.Command, name string) bool {
 	return false
 }
 
+// ApplyProfileToFlags overlays values without setting Flag.Changed, so a
+// profile-supplied timeout must count here or binary transfers would drop
+// the whole-call bound.
+func timeoutExplicitFrom(cmd *cobra.Command, profile *Profile) bool {
+	if cmd != nil && cmd.Flags().Changed("timeout") {
+		return true
+	}
+	if profile != nil {
+		if _, ok := profile.Values["timeout"]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func ExitCode(err error) int {
 	var codeErr *cliError
 	if As(err, &codeErr) {
@@ -620,6 +639,9 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 		return nil, configErr(err)
 	}
 	c := client.New(cfg, f.timeout, f.rateLimit)
+	if f.timeoutExplicit {
+		c.SetTimeoutExplicit(true)
+	}
 	c.DryRun = f.dryRun
 	c.NoCache = f.noCache
 	if err := bindPlatformClient(c, f); err != nil {

@@ -188,3 +188,23 @@ func TestGetWithHeadersValuesPreservesRepeatedQueryParams(t *testing.T) {
 		t.Fatalf("GetWithHeadersValues returned error: %v", err)
 	}
 }
+
+func TestStreamingHTTPClientDropsWholeCallTimeout(t *testing.T) {
+	t.Parallel()
+
+	base := &http.Client{Timeout: 60 * time.Second, Transport: http.DefaultTransport}
+	got := StreamingHTTPClient(base, 30*time.Second)
+	if got.Timeout != 0 {
+		t.Fatalf("streaming client Timeout = %s, want 0 so binary bodies are not killed mid-flight", got.Timeout)
+	}
+	tr, ok := got.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("streaming client Transport type = %T, want *http.Transport", got.Transport)
+	}
+	if tr.ResponseHeaderTimeout != 30*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %s, want 30s so header stalls still die", tr.ResponseHeaderTimeout)
+	}
+	if base.Timeout != 60*time.Second {
+		t.Fatalf("StreamingHTTPClient mutated the JSON client's Timeout to %s", base.Timeout)
+	}
+}
