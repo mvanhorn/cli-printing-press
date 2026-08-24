@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -158,12 +157,11 @@ func loadLegacyPatchRecords(dir string) ([]PatchRecord, error) {
 // longer present in dir. A missing or empty patches index passes. A record
 // naming a missing file, declaring no files or call sites, or declaring a
 // marker / call site absent from its recorded files, fails and names the
-// patch id. Needles are checked only in files[] when that list is present
-// so an unrelated leftover substring cannot mask a dropped call site.
-// files[] is required for call_sites and non-pp:patch markers; tree-wide
-// search is only used for unique pp:patch markers. Per-patch files must
-// declare schema_version 1 or CurrentPatchesIndexSchemaVersion; omitted
-// schema is accepted only on legacy index entries.
+// patch id. Needles are checked only in files[]; a leftover substring in
+// another file cannot mask a dropped call site. files[] is required whenever
+// a record declares call_sites or markers. Per-patch files must declare
+// schema_version 1 or CurrentPatchesIndexSchemaVersion; omitted schema is
+// accepted only on legacy index entries.
 func ValidatePatchRecords(dir string) error {
 	records, err := LoadPatchRecords(dir)
 	if err != nil {
@@ -205,32 +203,20 @@ func patchRecordViolations(dir string, rec PatchRecord) []string {
 		return append(violations, fmt.Sprintf("patch %q: record declares no files or call sites", id))
 	}
 	for _, needle := range needles {
-		if len(listed) == 0 && !isPatchMarkerNeedle(needle) {
+		if len(listed) == 0 {
 			violations = append(violations, fmt.Sprintf("patch %q: call site %q requires files[] so leftover matches cannot mask a drop", id, needle))
 			continue
 		}
-		var found bool
-		var err error
-		scope := "the tree"
-		if len(listed) > 0 {
-			found, err = listedFilesContainNeedle(dir, listed, needle)
-			scope = "recorded files"
-		} else {
-			found, err = treeContainsPatchNeedle(dir, needle)
-		}
+		found, err := listedFilesContainNeedle(dir, listed, needle)
 		if err != nil {
 			violations = append(violations, fmt.Sprintf("patch %q: searching for %q: %v", id, needle, err))
 			continue
 		}
 		if !found {
-			violations = append(violations, fmt.Sprintf("patch %q: recorded call site %q is absent from %s", id, needle, scope))
+			violations = append(violations, fmt.Sprintf("patch %q: recorded call site %q is absent from recorded files", id, needle))
 		}
 	}
 	return violations
-}
-
-func isPatchMarkerNeedle(needle string) bool {
-	return strings.HasPrefix(strings.TrimSpace(needle), "pp:patch")
 }
 
 func recNeedles(rec PatchRecord) []string {
@@ -284,72 +270,6 @@ func listedFilesContainNeedle(dir string, rels []string, needle string) (bool, e
 		}
 	}
 	return false, nil
-}
-
-func treeContainsPatchNeedle(dir, needle string) (bool, error) {
-	found := false
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		rel, err := filepath.Rel(dir, path)
-		if err != nil {
-			return err
-		}
-		relSlash := filepath.ToSlash(rel)
-		if d.IsDir() {
-			if skipPatchSearchDir(d.Name(), relSlash) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if skipPatchSearchFile(relSlash) {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if bytes.Contains(data, []byte(needle)) {
-			found = true
-			return errPatchNeedleFound
-		}
-		return nil
-	})
-	if errors.Is(err, errPatchNeedleFound) {
-		return true, nil
-	}
-	return found, err
-}
-
-var errPatchNeedleFound = errors.New("patch needle found")
-
-func skipPatchSearchDir(name, relSlash string) bool {
-	switch name {
-	case ".git", "node_modules", "vendor", "build", "dist", ".gotmp":
-		return true
-	case PatchesDirName, ".manuscripts":
-		return true
-	}
-	return relSlash == PatchesDirName || strings.HasPrefix(relSlash, PatchesDirName+"/")
-}
-
-func skipPatchSearchFile(relSlash string) bool {
-	base := filepath.Base(relSlash)
-	if base == PatchesIndexFilename {
-		return true
-	}
-	if strings.HasPrefix(relSlash, PatchesDirName+"/") {
-		return true
-	}
-	if strings.HasSuffix(relSlash, "_test.go") {
-		return true
-	}
-	switch strings.ToLower(filepath.Ext(base)) {
-	case ".md", ".txt":
-		return true
-	}
-	return false
 }
 
 // PreservePatchRecords copies snapshot patch records into dst so generate

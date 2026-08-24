@@ -1042,8 +1042,8 @@ func TestPublishSkillDocumentsPatchesIndexContract(t *testing.T) {
 	assert.Contains(t, block, "Inline `// PATCH(...)` source comments are optional navigation aids")
 	assert.Contains(t, block, "does not require a marker/comment pairing")
 	assert.Contains(t, block, "`publish validate` reads the records")
-	assert.Contains(t, block, "`files[]` is required for `call_sites`")
-	assert.Contains(t, block, "unique `pp:patch` markers")
+	assert.Contains(t, block, "`files[]` is required for every `call_sites`")
+	assert.Contains(t, block, "Needles are checked only in those recorded files")
 }
 
 func TestAmendSkillRequiresUpstreamBreadcrumbsForTemporaryPatches(t *testing.T) {

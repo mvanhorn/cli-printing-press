@@ -1163,10 +1163,9 @@ Rules:
   recorded `files[]` path is missing, the per-patch record omits
   `schema_version` or declares an unsupported one, or a declared
   `call_sites` / `markers` / `marker` string is absent from the recorded
-  files. `files[]` is required for `call_sites` and non-`pp:patch` markers
-  so a leftover substring elsewhere cannot mask a dropped customization.
-  Tree-wide search is only used for unique `pp:patch` markers when
-  `files[]` is omitted.
+  files. `files[]` is required for every `call_sites` / `markers` /
+  `marker` needle so a leftover substring elsewhere cannot mask a dropped
+  customization. Needles are checked only in those recorded files.
 - Inline `// PATCH(...)` source comments are optional navigation aids. The public
   library verifier requires a patches index (the directory or the legacy file)
   and well-formed entries; it does not require a marker/comment pairing.

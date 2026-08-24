@@ -162,7 +162,7 @@ func TestValidatePatchRecordsFilesLessCallSiteLeftoverFails(t *testing.T) {
 	assert.Contains(t, err.Error(), "requires files[]")
 }
 
-func TestValidatePatchRecordsFilesLessPatchMarkerPass(t *testing.T) {
+func TestValidatePatchRecordsFilesLessPatchMarkerRequiresFiles(t *testing.T) {
 	t.Parallel()
 
 	dir := writePatchTree(t, patchTree{
@@ -176,28 +176,34 @@ func TestValidatePatchRecordsFilesLessPatchMarkerPass(t *testing.T) {
 }`},
 	})
 
-	require.NoError(t, ValidatePatchRecords(dir))
+	err := ValidatePatchRecords(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `patch "refresh-guard"`)
+	assert.Contains(t, err.Error(), "pp:patch refresh-guard")
+	assert.Contains(t, err.Error(), "requires files[]")
 }
 
-func TestValidatePatchRecordsFilesLessPatchMarkerMissingFails(t *testing.T) {
+func TestValidatePatchRecordsRecordedFileMustContainNeedle(t *testing.T) {
 	t.Parallel()
 
 	dir := writePatchTree(t, patchTree{
 		files: map[string]string{
 			"internal/auth/refresh.go": "package auth\n\nfunc printRefreshTokenExpiry() {}\n",
+			"internal/cli/login.go":    "package cli\n\nfunc Login() { client.Refresh(ctx) }\n",
 		},
 		records: []string{`{
   "schema_version": 2,
   "id": "refresh-guard",
-  "marker": "pp:patch refresh-guard"
+  "files": ["internal/auth/refresh.go"],
+  "call_sites": ["Refresh("]
 }`},
 	})
 
 	err := ValidatePatchRecords(dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `patch "refresh-guard"`)
-	assert.Contains(t, err.Error(), "pp:patch refresh-guard")
-	assert.Contains(t, err.Error(), "absent from the tree")
+	assert.Contains(t, err.Error(), "Refresh(")
+	assert.Contains(t, err.Error(), "absent from recorded files")
 }
 
 func TestValidatePatchRecordsUnsupportedSchemaFails(t *testing.T) {
