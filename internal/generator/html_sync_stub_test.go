@@ -136,7 +136,7 @@ func TestGenerateHTMLMajorityWithJSONSyncKeepsGenericSync(t *testing.T) {
 	skillSrc := readGeneratedFile(t, outputDir, "SKILL.md")
 
 	assert.Contains(t, syncSrc, "func syncResource(")
-	assert.NotContains(t, syncSrc, "generic spec-driven sync template does not fit predominantly HTML page-mode endpoints")
+	assert.NotContains(t, syncSrc, "generic spec-driven sync template does not fit predominantly non-JSON endpoints")
 	assert.Contains(t, workflowSrc, "newWorkflowArchiveCmd")
 	assert.Contains(t, workflowSrc, "workflow archive")
 	assert.Contains(t, readmeSrc, "## Freshness")
@@ -276,4 +276,120 @@ func htmlPageEndpoint(path, description, responseType string) spec.Endpoint {
 		HTMLExtract:    &spec.HTMLExtract{Mode: spec.HTMLExtractModePage},
 		Response:       spec.ResponseDef{Type: responseType},
 	}
+}
+
+// TestGenerateBinarySyncablesEmitSyncStub covers the #4342 shape: a CLI whose
+// syncable resources are binary/text (sitemap indexes, downloads) has no JSON
+// enumeration for spec-driven sync, so it must get the sync stub — not a
+// generated sync that stamps sync_state and reports success over an empty
+// store. Before the fix, binary resources counted as JSON-syncable and diluted
+// the HTML-page-mode ratio below the stub threshold.
+func TestGenerateBinarySyncablesEmitSyncStub(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("binary-syncables")
+	apiSpec.Resources = map[string]spec.Resource{
+		"page": {
+			Description: "Documentation sitemap",
+			Endpoints: map[string]spec.Endpoint{
+				"index": {
+					Method:         "GET",
+					Path:           "/sitemap.xml",
+					Description:    "Fetch the documentation sitemap",
+					ResponseFormat: spec.ResponseFormatBinary,
+					Response:       spec.ResponseDef{Type: "array"},
+				},
+			},
+		},
+		"product": {
+			Description: "Product sitemap",
+			Endpoints: map[string]spec.Endpoint{
+				"index": {
+					Method:         "GET",
+					Path:           "/product-sitemap.xml",
+					Description:    "Fetch the product sitemap",
+					ResponseFormat: spec.ResponseFormatBinary,
+					Response:       spec.ResponseDef{Type: "array"},
+				},
+			},
+		},
+		"support": {
+			Description: "Support article export",
+			Endpoints: map[string]spec.Endpoint{
+				"index": {
+					Method:         "GET",
+					Path:           "/support-index.txt",
+					Description:    "Fetch the support article index",
+					ResponseFormat: spec.ResponseFormatText,
+					Response:       spec.ResponseDef{Type: "array"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
+	require.True(t, gen.shouldEmitHTMLSyncStub())
+	require.NoError(t, gen.Generate())
+
+	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
+	assert.Contains(t, syncSrc, "generic spec-driven sync template does not fit predominantly non-JSON endpoints")
+	assert.NotContains(t, syncSrc, "func syncResource(")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+// TestGenerateMinorityBinarySyncableKeepsGenericSync guards the other
+// direction: one binary resource among JSON list resources must not push the
+// CLI into the stub — the JSON resources still enumerate fine.
+func TestGenerateMinorityBinarySyncableKeepsGenericSync(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("binary-minority")
+	apiSpec.Resources = map[string]spec.Resource{
+		"sitemap": {
+			Description: "Sitemap",
+			Endpoints: map[string]spec.Endpoint{
+				"index": {
+					Method:         "GET",
+					Path:           "/sitemap.xml",
+					Description:    "Fetch the sitemap",
+					ResponseFormat: spec.ResponseFormatBinary,
+					Response:       spec.ResponseDef{Type: "array"},
+				},
+			},
+		},
+		"articles": {
+			Description: "Articles",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/articles", Description: "List articles", Response: spec.ResponseDef{Type: "array"}},
+			},
+		},
+		"authors": {
+			Description: "Authors",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/authors", Description: "List authors", Response: spec.ResponseDef{Type: "array"}},
+			},
+		},
+		"tags": {
+			Description: "Tags",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/tags", Description: "List tags", Response: spec.ResponseDef{Type: "array"}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
+	require.False(t, gen.shouldEmitHTMLSyncStub())
+	require.NoError(t, gen.Generate())
+
+	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
+	assert.Contains(t, syncSrc, "func syncResource(")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
 }

@@ -4690,19 +4690,23 @@ func (g *Generator) resetHTMLSyncStubCache() {
 	g.htmlSyncStub = false
 }
 
+// countHTMLPageModeSyncResources counts profiled sync resources overall and
+// how many of them lack a JSON enumeration (HTML page-mode, binary, or text
+// responses). The name keeps its historical HTML framing; the ratio feeds
+// shouldEmitHTMLSyncStub.
 func (g *Generator) countHTMLPageModeSyncResources() (total int, html int) {
 	if g == nil || g.profile == nil {
 		return 0, 0
 	}
 	for _, resource := range g.profile.SyncableResources {
 		total++
-		if syncableResourceUsesHTMLPageMode(resource) {
+		if syncableResourceLacksJSONEnumeration(resource) {
 			html++
 		}
 	}
 	for _, resource := range g.profile.DependentSyncResources {
 		total++
-		if dependentResourceUsesHTMLPageMode(resource) {
+		if dependentResourceLacksJSONEnumeration(resource) {
 			html++
 		}
 	}
@@ -4717,6 +4721,29 @@ func dependentResourceUsesHTMLPageMode(resource profiler.DependentResource) bool
 	return resource.UsesHTMLResponse && resource.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage
 }
 
+// syncableResourceLacksJSONEnumeration reports whether spec-driven sync cannot
+// produce a trustworthy JSON enumeration from this resource: HTML page-mode
+// extraction stores prose pages rather than records, and binary/text responses
+// (sitemaps, downloads, plain text) have no records at all. A CLI whose
+// syncable resources are predominantly of these shapes builds its corpus with
+// a hand-authored command, and its generated sync would stamp sync_state and
+// report success over an empty store — so such resources count toward the
+// sync-stub decision.
+func syncableResourceLacksJSONEnumeration(resource profiler.SyncableResource) bool {
+	return syncableResourceUsesHTMLPageMode(resource) || responseFormatLacksJSONEnumeration(resource.ResponseFormat)
+}
+
+func dependentResourceLacksJSONEnumeration(resource profiler.DependentResource) bool {
+	return dependentResourceUsesHTMLPageMode(resource) || responseFormatLacksJSONEnumeration(resource.ResponseFormat)
+}
+
+func responseFormatLacksJSONEnumeration(format string) bool {
+	return format == spec.ResponseFormatBinary || format == spec.ResponseFormatText
+}
+
+// countHTMLPageModeEndpoints is the spec-level fallback for
+// countHTMLPageModeSyncResources when profiling found no sync resources; it
+// applies the same lacks-JSON-enumeration test per endpoint.
 func countHTMLPageModeEndpoints(api *spec.APISpec) (total int, html int) {
 	if api == nil {
 		return 0, 0
@@ -4732,7 +4759,8 @@ func countHTMLPageModeEndpoints(api *spec.APISpec) (total int, html int) {
 func countResourceHTMLPageModeEndpoints(resource spec.Resource) (total int, html int) {
 	for _, endpoint := range resource.Endpoints {
 		total++
-		if endpoint.UsesHTMLResponse() && endpoint.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage {
+		if (endpoint.UsesHTMLResponse() && endpoint.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage) ||
+			responseFormatLacksJSONEnumeration(endpoint.EffectiveResponseFormat()) {
 			html++
 		}
 	}

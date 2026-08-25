@@ -165,6 +165,12 @@ type SyncableResource struct {
 	UsesHTMLResponse bool
 	HTMLExtract      *spec.HTMLExtract
 
+	// ResponseFormat is the chosen list endpoint's effective response_format
+	// ("json" when the spec omits it). The generator uses it to keep
+	// binary/text resources — which yield no JSON enumeration — from counting
+	// as spec-driven-syncable when deciding whether to emit the sync stub.
+	ResponseFormat string
+
 	// BodyFields names request-body fields on POST list endpoints. Sync uses
 	// this to send pagination and user-supplied params in the body for
 	// RPC-style list calls.
@@ -261,6 +267,10 @@ type DependentResource struct {
 	// paths.
 	UsesHTMLResponse bool
 	HTMLExtract      *spec.HTMLExtract
+
+	// ResponseFormat mirrors SyncableResource.ResponseFormat for child sync
+	// paths.
+	ResponseFormat string
 
 	// BodyFields mirrors SyncableResource.BodyFields for child sync paths.
 	BodyFields []SyncBodyField
@@ -1906,6 +1916,7 @@ func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[strin
 		PaginationPageSize:       entry.meta.PaginationPageSize,
 		UsesHTMLResponse:         entry.meta.UsesHTMLResponse,
 		HTMLExtract:              entry.meta.HTMLExtract,
+		ResponseFormat:           entry.meta.ResponseFormat,
 		BodyFields:               entry.meta.BodyFields,
 		IDWalkFilterParam:        entry.meta.IDWalkFilterParam,
 		IDWalkLimitParam:         entry.meta.IDWalkLimitParam,
@@ -2142,6 +2153,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				PaginationPageSize:       meta.PaginationPageSize,
 				UsesHTMLResponse:         meta.UsesHTMLResponse,
 				HTMLExtract:              meta.HTMLExtract,
+				ResponseFormat:           meta.ResponseFormat,
 				BodyFields:               meta.BodyFields,
 				IDWalkFilterParam:        meta.IDWalkFilterParam,
 				IDWalkLimitParam:         meta.IDWalkLimitParam,
@@ -2465,6 +2477,7 @@ type syncableMeta struct {
 	PaginationSortField      string
 	UsesHTMLResponse         bool
 	HTMLExtract              *spec.HTMLExtract
+	ResponseFormat           string
 	BodyFields               []SyncBodyField
 	IDWalkFilterParam        string
 	IDWalkLimitParam         string
@@ -2528,6 +2541,7 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		PaginationSortValue:      paginationSortValue,
 		PaginationSortField:      paginationSortField,
 		UsesHTMLResponse:         e.UsesHTMLResponse(),
+		ResponseFormat:           e.EffectiveResponseFormat(),
 		HTMLExtract:              e.HTMLExtract,
 		BodyFields:               syncBodyFieldsFromEndpoint(e),
 		IDWalkFilterParam:        idWalkFilterParam,
@@ -3575,6 +3589,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			PaginationSortField:      meta.PaginationSortField,
 			UsesHTMLResponse:         meta.UsesHTMLResponse,
 			HTMLExtract:              meta.HTMLExtract,
+			ResponseFormat:           meta.ResponseFormat,
 			BodyFields:               meta.BodyFields,
 			IDWalkFilterParam:        meta.IDWalkFilterParam,
 			IDWalkLimitParam:         meta.IDWalkLimitParam,

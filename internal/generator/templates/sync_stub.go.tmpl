@@ -17,7 +17,7 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 			"mcp:hidden": "true",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("sync is not implemented for this CLI; write internal/cli/sync_{{.Name}}.go because the generic spec-driven sync template does not fit predominantly HTML page-mode endpoints")
+			return fmt.Errorf("sync is not implemented for this CLI; write internal/cli/sync_{{.Name}}.go (or use this CLI's dedicated corpus-builder command — see its README) because the generic spec-driven sync template does not fit predominantly non-JSON endpoints (HTML page-mode, binary, or text responses)")
 		},
 	}
 }
