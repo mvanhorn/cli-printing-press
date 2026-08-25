@@ -129,7 +129,7 @@ See [Install](#install) above.
 Get your access token from your API provider's developer portal, then store it:
 
 ```bash
-learn-disabled-example-pp-cli auth set-token YOUR_TOKEN_HERE
+echo "$TOKEN" | learn-disabled-example-pp-cli auth set-token
 ```
 
 Or set it via environment variable:

@@ -1296,7 +1296,7 @@ func looksLikeCredentialPlaceholder(value string) bool {
 }
 
 func authPlaceholderCredentialError(cfg *config.Config) error {
-	return authPlaceholderCredentialErrorWithSetup(cfg, "printing-press-oauth2-pp-cli auth login --device-code or printing-press-oauth2-pp-cli auth set-token <token>")
+	return authPlaceholderCredentialErrorWithSetup(cfg, "printing-press-oauth2-pp-cli auth login --device-code or echo \"$TOKEN\" | printing-press-oauth2-pp-cli auth set-token")
 }
 
 func authPlaceholderCredentialErrorWithSetup(cfg *config.Config, setup string) error {

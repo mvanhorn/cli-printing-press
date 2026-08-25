@@ -240,7 +240,8 @@ func TestAuthStatusHintsOnlyRequestCredentialEnvVars(t *testing.T) {
 	require.NotContains(t, hintBlock, `STATUS_AUTH_CLIENT_ID`)
 	require.NotContains(t, hintBlock, `STATUS_AUTH_CLIENT_SECRET`)
 	require.NotContains(t, hintBlock, `STATUS_AUTH_SESSION_COOKIE`)
-	require.Contains(t, hintBlock, `auth set-token <token>`)
+	require.Contains(t, hintBlock, `echo \"$TOKEN\" | auth-status-rich-auth-pp-cli auth set-token`)
+	require.NotContains(t, hintBlock, `auth set-token <token>`)
 }
 
 func TestAuthStatusHintsUseDescriptionAndNameShapePlaceholders(t *testing.T) {

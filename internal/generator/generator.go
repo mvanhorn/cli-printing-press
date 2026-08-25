@@ -1777,9 +1777,13 @@ func authSetCredentialsAvailable(auth spec.AuthConfig) bool {
 	return len(basicAuthEnvVars(auth)) == 2
 }
 
+func authSetTokenStdinCommand(cliName string) string {
+	return fmt.Sprintf(`echo "$TOKEN" | %s-pp-cli auth set-token`, cliName)
+}
+
 func authCredentialPersistenceCommand(auth spec.AuthConfig, cliName string) string {
 	if authSetTokenAvailable(auth) {
-		return fmt.Sprintf("%s-pp-cli auth set-token YOUR_TOKEN_HERE", cliName)
+		return authSetTokenStdinCommand(cliName)
 	}
 	envVars := basicAuthEnvVars(auth)
 	if len(envVars) == 2 {
@@ -1814,9 +1818,9 @@ func authCredentialConsolidationAction(auth spec.AuthConfig) string {
 func authPlaceholderCredentialSetup(auth spec.AuthConfig, cliName string) string {
 	switch {
 	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && auth.TokenURL != "":
-		return fmt.Sprintf("%s-pp-cli auth login or %s-pp-cli auth set-token <token>", cliName, cliName)
+		return fmt.Sprintf("%s-pp-cli auth login or %s", cliName, authSetTokenStdinCommand(cliName))
 	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && auth.DeviceAuthorizationURL != "" && auth.TokenURL != "":
-		return fmt.Sprintf("%s-pp-cli auth login --device-code or %s-pp-cli auth set-token <token>", cliName, cliName)
+		return fmt.Sprintf("%s-pp-cli auth login --device-code or %s", cliName, authSetTokenStdinCommand(cliName))
 	case auth.Type == "oauth2" || authBrowserLoginAvailable(auth):
 		return fmt.Sprintf("%s-pp-cli auth login", cliName)
 	case auth.Type == "cookie" || auth.Type == "composed" || auth.Type == "session_handshake":
@@ -1930,7 +1934,7 @@ func authSetupHint(auth spec.AuthConfig, cliName string) string {
 		switch auth.Type {
 		case "bearer_token", "oauth2_refresh":
 			if authSetTokenAvailableForRequiredCount(auth, len(envVars)) {
-				return fmt.Sprintf("Set it with: %s-pp-cli auth set-token <token> or export %s", cliName, exports[0])
+				return fmt.Sprintf("Set it with: %s or export %s", authSetTokenStdinCommand(cliName), exports[0])
 			}
 			return fmt.Sprintf("Set it with: export %s", exports[0])
 		case "api_key":
@@ -4032,6 +4036,12 @@ func (g *Generator) renderMCPEntrypoint() error {
 		}
 		if err := g.renderTemplate("main_mcp.go.tmpl", filepath.Join("cmd", naming.MCP(g.Spec.Name), "main.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering MCP main: %w", err)
+		}
+		if g.Spec.HasMCPTransport("http") {
+			httpTestPath := filepath.Join("cmd", naming.MCP(g.Spec.Name), "http_auth_test.go")
+			if err := g.renderTemplate("main_mcp_http_test.go.tmpl", httpTestPath, g.Spec); err != nil {
+				return fmt.Errorf("rendering MCP HTTP auth tests: %w", err)
+			}
 		}
 	}
 

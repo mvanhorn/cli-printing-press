@@ -29,6 +29,7 @@ printing-press-golden/internal/mcp/cobratree/shellout_test.go
 printing-press-golden/internal/mcp/cobratree/cli_path.go
 printing-press-golden/internal/mcp/cobratree/names.go
 printing-press-golden/cmd/printing-press-golden-pp-mcp/main.go
+printing-press-golden/cmd/printing-press-golden-pp-mcp/http_auth_test.go
 printing-press-golden/internal/types/types.go
 dogfood.json
 scorecard.json

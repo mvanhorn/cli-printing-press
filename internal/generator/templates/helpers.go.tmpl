@@ -71,6 +71,24 @@ func formatCLIParamValue(v any) string {
 	}
 }
 
+func readSecretFromStdin(r io.Reader) (string, error) {
+	if f, ok := r.(*os.File); ok {
+		info, err := f.Stat()
+		if err == nil && info.Mode()&os.ModeCharDevice != 0 {
+			return "", fmt.Errorf("read the secret from stdin (pipe or redirect); it cannot be passed as a command argument")
+		}
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return "", fmt.Errorf("reading token from stdin: %w", err)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", fmt.Errorf("empty token on stdin")
+	}
+	return token, nil
+}
+
 {{- if .HasRawRequest}}
 func readRawRequestBody(filePath string, stdin bool) ([]byte, error) {
 	if stdin && filePath != "" && filePath != "-" {

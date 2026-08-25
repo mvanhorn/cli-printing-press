@@ -246,17 +246,23 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 
 func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
-		Use:     "set-token <token>",
-		Short:   "Save an API token to the credentials file (override the OAuth flow)",
-		Example: "  printing-press-oauth2-pp-cli auth set-token <bearer-jwt>",
-		Args:    cobra.ExactArgs(1),
+		Use:   "set-token",
+		Short: "Save an API token to the credentials file (override the OAuth flow)",
+		Long: "Save an API token to the credentials file (override the OAuth flow).\n\n" +
+			"The token is read from stdin so it never appears in process arguments or shell history.",
+		Example: "  echo \"$TOKEN\" | printing-press-oauth2-pp-cli auth set-token\n  printing-press-oauth2-pp-cli auth set-token < token-file",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			token, err := readSecretFromStdin(cmd.InOrStdin())
+			if err != nil {
+				return authErr(err)
+			}
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
 				return configErr(err)
 			}
 			cfg.AuthHeaderVal = ""
-			if err := cfg.SaveTokens("", "", args[0], "", cfg.TokenExpiry); err != nil {
+			if err := cfg.SaveTokens("", "", token, "", cfg.TokenExpiry); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
 			savePath := credentialSavePath(cfg)

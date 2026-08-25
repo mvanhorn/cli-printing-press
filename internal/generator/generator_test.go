@@ -144,9 +144,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +1: internal/cliutil/testenv, the sandbox helper every emitted test
 		// routes its HOME/USERPROFILE isolation through.
 		// +2: platform-specific private-file permission helpers.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 171},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 175},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 173},
+		// +1: cmd/<cli>-pp-mcp/http_auth_test.go for the HTTP caller-auth contract.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 172},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 176},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 174},
 	}
 
 	for _, tt := range tests {
@@ -11434,12 +11435,16 @@ func TestGeneratedAuthHints_DoNotDuplicateRecoveryCommands(t *testing.T) {
 
 		helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
 		helpers401 := generatedSourceBlock(t, helpers, `case strings.Contains(msg, "HTTP 401"):`, `case strings.Contains(msg, "HTTP 403"):`)
-		assert.Equal(t, 1, strings.Count(helpers401, "auth set-token <token>"), helpers401)
+		assert.Equal(t, 1, strings.Count(helpers401, "auth set-token"), helpers401)
+		assert.Contains(t, helpers401, `echo \"$TOKEN\" | bearerhints-pp-cli auth set-token`)
+		assert.NotContains(t, helpers401, "auth set-token <token>")
 		assert.Contains(t, helpers401, `or export BEARERHINTS_TOKEN=\"your-token-here\"`)
 
 		tools := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 		tools401 := generatedSourceBlock(t, tools, `case strings.Contains(msg, "HTTP 401"):`, `case strings.Contains(msg, "HTTP 403"):`)
-		assert.Equal(t, 1, strings.Count(tools401, "auth set-token <token>"), tools401)
+		assert.Equal(t, 1, strings.Count(tools401, "auth set-token"), tools401)
+		assert.Contains(t, tools401, `echo \"$TOKEN\" | bearerhints-pp-cli auth set-token`)
+		assert.NotContains(t, tools401, "auth set-token <token>")
 
 		requireGeneratedCompiles(t, outputDir)
 	})
@@ -18105,6 +18110,11 @@ func TestGenerateMCPMainSmallAPIDefaultsHTTP(t *testing.T) {
 		`server.NewStreamableHTTPServer(s)`,
 		`flag.String("transport"`,
 		`PP_MCP_TRANSPORT`,
+		`requireHTTPCallerToken()`,
+		`requireBearerAuth(`,
+		`requireTLSForNonLoopback(`,
+		`flag.String("tls-cert"`,
+		`flag.String("tls-key"`,
 	} {
 		assert.Contains(t, body, want, "small-API auto-http default should emit %q", want)
 	}
@@ -18135,6 +18145,9 @@ func TestGenerateMCPMainExplicitStdioOnlyHonored(t *testing.T) {
 	assert.NotContains(t, body, "flag.String", "explicit stdio-only spec must not pull in the flag package")
 	assert.NotContains(t, body, "NewStreamableHTTPServer", "explicit stdio-only spec must not reference the HTTP transport")
 	assert.NotContains(t, body, "PP_MCP_TRANSPORT", "explicit stdio-only spec must not reference the transport env override")
+	assert.NotContains(t, body, "requireHTTPCallerToken")
+	_, err = os.Stat(filepath.Join(outputDir, "cmd", naming.MCP(apiSpec.Name), "http_auth_test.go"))
+	assert.True(t, os.IsNotExist(err), "stdio-only spec must not emit HTTP auth tests")
 	assertMCPMainUsesVersionVar(t, body)
 }
 
@@ -18245,6 +18258,10 @@ func TestGenerateMCPMainRemoteOptInDefaultsHTTPAddrToLoopback(t *testing.T) {
 	body := readGeneratedMCPMain(t, outputDir, apiSpec.Name)
 	assert.Contains(t, body, `defaultHTTPAddr = "127.0.0.1:7777"`)
 	assert.NotContains(t, body, `defaultHTTPAddr = ":7777"`)
+	assert.Contains(t, body, "requireHTTPCallerToken()")
+	assert.Contains(t, body, `httpTokenEnvVar = "`+naming.EnvPrefix(apiSpec.Name)+`_MCP_HTTP_TOKEN"`)
+	_, err = os.Stat(filepath.Join(outputDir, "cmd", naming.MCP(apiSpec.Name), "http_auth_test.go"))
+	require.NoError(t, err, "HTTP transport must emit generated HTTP auth tests")
 }
 
 // TestGenerateMCPMainRemoteOptIn confirms that declaring mcp.transport: [stdio, http]
@@ -18273,13 +18290,19 @@ func TestGenerateMCPMainRemoteOptIn(t *testing.T) {
 		`defaultHTTPAddr = "0.0.0.0:7777"`,
 		`flag.String("transport"`,
 		`flag.String("addr"`,
+		`flag.String("tls-cert"`,
+		`flag.String("tls-key"`,
 		`server.ServeStdio(s)`,
 		`server.NewStreamableHTTPServer(s)`,
-		`httpSrv.Start(*addr)`,
+		`requireHTTPCallerToken()`,
+		`requireBearerAuth(`,
+		`requireTLSForNonLoopback(`,
+		`httpSrv.ListenAndServe()`,
 		`PP_MCP_TRANSPORT`,
 	} {
 		assert.Contains(t, body, want, "remote-opt-in main should contain %q", want)
 	}
+	assert.NotContains(t, body, "httpSrv.Start(*addr)")
 	assertMCPMainUsesVersionVar(t, body)
 }
 

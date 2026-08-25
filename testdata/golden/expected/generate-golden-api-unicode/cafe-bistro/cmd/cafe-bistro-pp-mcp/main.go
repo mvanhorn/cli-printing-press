@@ -4,8 +4,11 @@
 package main
 
 import (
+	"crypto/subtle"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"strings"
 
@@ -19,9 +22,16 @@ import (
 // The flag surface lets one binary serve stdio locally and streamable HTTP
 // when hosted in a container or remote sandbox, matching the Anthropic
 // guidance that production agents need a remote option.
+//
+// HTTP is never an unauthenticated open door: --transport http refuses to
+// start without CAFE_BISTRO_MCP_HTTP_TOKEN, rejects callers that omit
+// a matching Authorization: Bearer header, and requires --tls-cert/--tls-key
+// for any non-loopback bind. An empty host from :PORT binds every interface
+// and does not qualify as loopback.
 
 const (
 	defaultHTTPAddr = "127.0.0.1:7777"
+	httpTokenEnvVar = "CAFE_BISTRO_MCP_HTTP_TOKEN"
 )
 
 // version is the printed MCP server's version, overridable at build time via ldflags.
@@ -45,6 +55,8 @@ func main() {
 
 	transport := flag.String("transport", defaultTransport(), "MCP transport: stdio | http")
 	addr := flag.String("addr", defaultHTTPAddr, "bind address for http transport (host:port or :port)")
+	tlsCert := flag.String("tls-cert", "", "TLS certificate file; required with --tls-key for any non-loopback --addr")
+	tlsKey := flag.String("tls-key", "", "TLS private key file; required with --tls-cert for any non-loopback --addr")
 	flag.Parse()
 
 	switch strings.ToLower(*transport) {
@@ -54,9 +66,31 @@ func main() {
 			os.Exit(1)
 		}
 	case "http":
-		httpSrv := server.NewStreamableHTTPServer(s)
-		fmt.Fprintf(os.Stderr, "cafe-bistro-pp-mcp serving MCP over streamable HTTP at %s\n", *addr)
-		if err := httpSrv.Start(*addr); err != nil {
+		token, err := requireHTTPCallerToken()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
+			os.Exit(1)
+		}
+		if err := requireTLSForNonLoopback(*addr, *tlsCert, *tlsKey); err != nil {
+			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
+			os.Exit(1)
+		}
+		if (*tlsCert != "") != (*tlsKey != "") {
+			fmt.Fprintf(os.Stderr, "MCP server error: both --tls-cert and --tls-key are required for TLS\n")
+			os.Exit(1)
+		}
+		inner := server.NewStreamableHTTPServer(s)
+		httpSrv := &http.Server{
+			Addr:    *addr,
+			Handler: requireBearerAuth(token, inner),
+		}
+		fmt.Fprintf(os.Stderr, "cafe-bistro-pp-mcp serving MCP over streamable HTTP at %s (Authorization: Bearer $%s)\n", *addr, httpTokenEnvVar)
+		if *tlsCert != "" {
+			err = httpSrv.ListenAndServeTLS(*tlsCert, *tlsKey)
+		} else {
+			err = httpSrv.ListenAndServe()
+		}
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
 			os.Exit(1)
 		}
@@ -75,4 +109,57 @@ func defaultTransport() string {
 		return t
 	}
 	return "stdio"
+}
+
+func requireHTTPCallerToken() (string, error) {
+	token := strings.TrimSpace(os.Getenv(httpTokenEnvVar))
+	if token == "" {
+		return "", fmt.Errorf("%s must be set to a non-empty bearer token before starting --transport http", httpTokenEnvVar)
+	}
+	return token, nil
+}
+
+func httpBindIsLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func requireTLSForNonLoopback(addr, certFile, keyFile string) error {
+	if httpBindIsLoopback(addr) {
+		return nil
+	}
+	if certFile == "" || keyFile == "" {
+		return fmt.Errorf("non-loopback --addr %q requires --tls-cert and --tls-key; plaintext HTTP is only allowed on loopback", addr)
+	}
+	return nil
+}
+
+func requireBearerAuth(expected string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !bearerTokenMatches(r.Header.Get("Authorization"), expected) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="mcp"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func bearerTokenMatches(header, expected string) bool {
+	const prefix = "Bearer "
+	if expected == "" || !strings.HasPrefix(header, prefix) {
+		return false
+	}
+	got := strings.TrimSpace(header[len(prefix):])
+	if got == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
 }

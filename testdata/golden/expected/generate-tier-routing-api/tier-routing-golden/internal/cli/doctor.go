@@ -213,7 +213,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					configured, authSource := doctorAuthConfiguredState(cfg)
 					if !configured {
 						report["auth"] = "not configured"
-						report["auth_hint"] = "Set it with: tier-routing-golden-pp-cli auth set-token <token> or export TIER_GLOBAL_TOKEN=\"your-token-here\""
+						report["auth_hint"] = "Set it with: echo \"$TOKEN\" | tier-routing-golden-pp-cli auth set-token or export TIER_GLOBAL_TOKEN=\"your-token-here\""
 					} else {
 						authConfigured = true
 						report["auth"] = "configured"
