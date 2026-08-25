@@ -5,6 +5,7 @@ package client
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -149,15 +150,15 @@ func parseCookieJar(s string) []*http.Cookie {
 }
 
 // SeedCookieJar seeds jar with the cookies in a Cookie-header-style credential
-// string scoped to baseURL's host, so a session captured via the env var or
-// stored in credentials (not the on-disk cookies.json) still rides every
-// request. Seeding the jar (rather than setting a static Cookie header) lets
+// string scoped to the spec's canonical cookie domain, so a session captured
+// via the env var, set-token, or credentials file still rides requests to that
+// https host. Seeding the jar (rather than setting a static Cookie header) lets
 // net/http absorb Set-Cookie rotation — Cloudflare __cf_bm, AWS ALB AWSALB —
 // across a multi-request session that a static header would let go stale.
-// A no-op when the credential is empty, is not a cookie-jar string, or baseURL
-// does not parse.
+// A no-op when the credential is empty, is not a cookie-jar string, or
+// baseURL is not an https host on the canonical cookie domain.
 func SeedCookieJar(jar http.CookieJar, baseURL, cookieStr string) {
-	seedCookieJar(jar, baseURL, cookieStr, "")
+	seedCookieJar(jar, baseURL, cookieStr, ".cookie-auth.example")
 }
 
 // SeedCookieJarForDomain seeds a captured cookie session for the captured
@@ -171,18 +172,25 @@ func seedCookieJar(jar http.CookieJar, baseURL, cookieStr, cookieDomain string) 
 	if jar == nil || !looksLikeCookieJar(cookieStr) {
 		return
 	}
+	cookieDomain = strings.TrimPrefix(strings.TrimSpace(cookieDomain), ".")
+	if cookieDomain == "" {
+		return
+	}
 	u, err := url.Parse(baseURL)
-	if err != nil || u.Host == "" {
+	if err != nil || u.Hostname() == "" {
+		return
+	}
+	if !strings.EqualFold(u.Scheme, "https") || !seedHostMatchesDomain(u.Hostname(), cookieDomain) {
+		fmt.Fprintf(os.Stderr, "warning: base URL %q is not an https %s host — not sending your session cookie to it\n", baseURL, cookieDomain)
 		return
 	}
 	cookies := parseCookieJar(cookieStr)
 	if len(cookies) == 0 {
 		return
 	}
-	if cookieDomain != "" {
-		for _, cookie := range cookies {
-			cookie.Domain = cookieDomain
-		}
+	for _, cookie := range cookies {
+		cookie.Domain = cookieDomain
+		cookie.Secure = true
 	}
 	// Seed the in-memory jar only — never persist. The wrapper's SetCookies
 	// writes through to cookies.json (persistLocked -> mergeAndWriteCookieRows),
@@ -195,6 +203,15 @@ func seedCookieJar(jar http.CookieJar, baseURL, cookieStr, cookieDomain string) 
 		return
 	}
 	jar.SetCookies(u, cookies)
+}
+
+func seedHostMatchesDomain(host, domain string) bool {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	if host == "" || domain == "" {
+		return false
+	}
+	return host == domain || strings.HasSuffix(host, "."+domain)
 }
 
 // sanitizeCookieValue strips bytes that net/http's cookie jar rejects per
