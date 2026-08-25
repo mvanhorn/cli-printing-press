@@ -5,6 +5,7 @@ package main
 
 import (
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,6 +35,35 @@ func TestHTTPBindIsLoopback(t *testing.T) {
 		if got := httpBindIsLoopback(tc.addr); got != tc.want {
 			t.Fatalf("httpBindIsLoopback(%q) = %v, want %v", tc.addr, got, tc.want)
 		}
+	}
+}
+
+func TestClassifyHTTPBindPinsNamedLoopback(t *testing.T) {
+	t.Parallel()
+
+	pinned, ok := classifyHTTPBind("localhost:7777")
+	if !ok {
+		t.Fatal("localhost:7777 must classify as loopback")
+	}
+	host, port, err := net.SplitHostPort(pinned)
+	if err != nil {
+		t.Fatalf("pinned addr %q: %v", pinned, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		t.Fatalf("classifyHTTPBind(%q) = %q, want a loopback IP", "localhost:7777", pinned)
+	}
+	if port != "7777" {
+		t.Fatalf("pinned port = %q, want 7777", port)
+	}
+
+	same, ipLoopback := classifyHTTPBind("127.0.0.1:7777")
+	if !ipLoopback || same != "127.0.0.1:7777" {
+		t.Fatalf("classifyHTTPBind(127.0.0.1:7777) = %q, %v", same, ipLoopback)
+	}
+	open, openLoopback := classifyHTTPBind("0.0.0.0:7777")
+	if openLoopback || open != "0.0.0.0:7777" {
+		t.Fatalf("classifyHTTPBind(0.0.0.0:7777) = %q, %v", open, openLoopback)
 	}
 }
 

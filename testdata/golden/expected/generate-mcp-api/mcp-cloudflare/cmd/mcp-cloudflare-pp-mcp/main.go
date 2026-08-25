@@ -28,7 +28,8 @@ import (
 // a matching Authorization: Bearer header, and requires --tls-cert/--tls-key
 // for any non-loopback bind. An empty host from :PORT binds every interface
 // and does not qualify as loopback. Named hosts (including localhost) are
-// loopback only when every resolved address is loopback.
+// loopback only when every resolved address is loopback, and the listener
+// is then pinned to that IP so a later lookup cannot leave loopback.
 
 const (
 	defaultHTTPAddr = "127.0.0.1:7777"
@@ -72,6 +73,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
 			os.Exit(1)
 		}
+		bindAddr, _ := classifyHTTPBind(*addr)
 		if err := requireTLSForNonLoopback(*addr, *tlsCert, *tlsKey); err != nil {
 			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
 			os.Exit(1)
@@ -82,10 +84,10 @@ func main() {
 		}
 		inner := server.NewStreamableHTTPServer(s)
 		httpSrv := &http.Server{
-			Addr:    *addr,
+			Addr:    bindAddr,
 			Handler: requireBearerAuth(token, inner),
 		}
-		fmt.Fprintf(os.Stderr, "mcp-cloudflare-pp-mcp serving MCP over streamable HTTP at %s (Authorization: Bearer $%s)\n", *addr, httpTokenEnvVar)
+		fmt.Fprintf(os.Stderr, "mcp-cloudflare-pp-mcp serving MCP over streamable HTTP at %s (Authorization: Bearer $%s)\n", bindAddr, httpTokenEnvVar)
 		if *tlsCert != "" {
 			err = httpSrv.ListenAndServeTLS(*tlsCert, *tlsKey)
 		} else {
@@ -120,26 +122,36 @@ func requireHTTPCallerToken() (string, error) {
 	return token, nil
 }
 
-func httpBindIsLoopback(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
+func classifyHTTPBind(addr string) (string, bool) {
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil || host == "" {
-		return false
+		return addr, false
 	}
 	if ip := net.ParseIP(host); ip != nil {
-		return ip.IsLoopback()
+		return addr, ip.IsLoopback()
 	}
 	// Names such as localhost are loopback only when every resolved
-	// address is loopback. A remapped or unresolvable host is not.
+	// address is loopback. Pin the listener to that IP so a later
+	// ListenAndServe lookup cannot bind a remapped non-loopback host.
 	ips, err := net.LookupIP(host)
 	if err != nil || len(ips) == 0 {
-		return false
+		return addr, false
 	}
+	var chosen net.IP
 	for _, ip := range ips {
 		if !ip.IsLoopback() {
-			return false
+			return addr, false
+		}
+		if chosen == nil || ip.To4() != nil {
+			chosen = ip
 		}
 	}
-	return true
+	return net.JoinHostPort(chosen.String(), port), true
+}
+
+func httpBindIsLoopback(addr string) bool {
+	_, loopback := classifyHTTPBind(addr)
+	return loopback
 }
 
 func requireTLSForNonLoopback(addr, certFile, keyFile string) error {
