@@ -28,6 +28,7 @@ func TestHTTPBindIsLoopback(t *testing.T) {
 		{addr: "[::]:7777", want: false},
 		{addr: "192.168.1.10:7777", want: false},
 		{addr: "127.0.0.1", want: false},
+		{addr: "example.invalid:7777", want: false},
 	}
 	for _, tc := range cases {
 		if got := httpBindIsLoopback(tc.addr); got != tc.want {

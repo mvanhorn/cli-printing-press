@@ -27,7 +27,8 @@ import (
 // start without CAFE_BISTRO_MCP_HTTP_TOKEN, rejects callers that omit
 // a matching Authorization: Bearer header, and requires --tls-cert/--tls-key
 // for any non-loopback bind. An empty host from :PORT binds every interface
-// and does not qualify as loopback.
+// and does not qualify as loopback. Named hosts (including localhost) are
+// loopback only when every resolved address is loopback.
 
 const (
 	defaultHTTPAddr = "127.0.0.1:7777"
@@ -121,14 +122,24 @@ func requireHTTPCallerToken() (string, error) {
 
 func httpBindIsLoopback(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
+	if err != nil || host == "" {
 		return false
 	}
-	if host == "localhost" {
-		return true
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	// Names such as localhost are loopback only when every resolved
+	// address is loopback. A remapped or unresolvable host is not.
+	ips, err := net.LookupIP(host)
+	if err != nil || len(ips) == 0 {
+		return false
+	}
+	for _, ip := range ips {
+		if !ip.IsLoopback() {
+			return false
+		}
+	}
+	return true
 }
 
 func requireTLSForNonLoopback(addr, certFile, keyFile string) error {
