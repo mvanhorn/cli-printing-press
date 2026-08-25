@@ -73,8 +73,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
 			os.Exit(1)
 		}
-		bindAddr, _ := classifyHTTPBind(*addr)
-		if err := requireTLSForNonLoopback(*addr, *tlsCert, *tlsKey); err != nil {
+		bindAddr, loopback := classifyHTTPBind(*addr)
+		if err := requireTLSForNonLoopback(*addr, loopback, *tlsCert, *tlsKey); err != nil {
 			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
 			os.Exit(1)
 		}
@@ -154,8 +154,8 @@ func httpBindIsLoopback(addr string) bool {
 	return loopback
 }
 
-func requireTLSForNonLoopback(addr, certFile, keyFile string) error {
-	if httpBindIsLoopback(addr) {
+func requireTLSForNonLoopback(addr string, loopback bool, certFile, keyFile string) error {
+	if loopback {
 		return nil
 	}
 	if certFile == "" || keyFile == "" {

@@ -39,6 +39,8 @@ func TestGeneratedHTTPMCPRequiresCallerAuthAndTLS(t *testing.T) {
 		"func httpBindIsLoopback(",
 		"net.LookupIP(host)",
 		"net.JoinHostPort(chosen.String(), port)",
+		"bindAddr, loopback := classifyHTTPBind(*addr)",
+		"requireTLSForNonLoopback(*addr, loopback",
 		"Addr:    bindAddr",
 		"func requireTLSForNonLoopback(",
 		"func requireBearerAuth(",

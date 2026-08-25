@@ -70,16 +70,16 @@ func TestClassifyHTTPBindPinsNamedLoopback(t *testing.T) {
 func TestRequireTLSForNonLoopback(t *testing.T) {
 	t.Parallel()
 
-	if err := requireTLSForNonLoopback("127.0.0.1:7777", "", ""); err != nil {
+	if err := requireTLSForNonLoopback("127.0.0.1:7777", true, "", ""); err != nil {
 		t.Fatalf("loopback without TLS: %v", err)
 	}
-	if err := requireTLSForNonLoopback("0.0.0.0:7777", "", ""); err == nil {
+	if err := requireTLSForNonLoopback("0.0.0.0:7777", false, "", ""); err == nil {
 		t.Fatal("non-loopback without TLS must fail")
 	}
-	if err := requireTLSForNonLoopback(":7777", "cert.pem", ""); err == nil {
+	if err := requireTLSForNonLoopback(":7777", false, "cert.pem", ""); err == nil {
 		t.Fatal("empty-host bind without both TLS files must fail")
 	}
-	if err := requireTLSForNonLoopback("0.0.0.0:7777", "cert.pem", "key.pem"); err != nil {
+	if err := requireTLSForNonLoopback("0.0.0.0:7777", false, "cert.pem", "key.pem"); err != nil {
 		t.Fatalf("non-loopback with TLS files: %v", err)
 	}
 }
