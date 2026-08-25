@@ -2013,23 +2013,16 @@ func extractViaPycookiecheat(tool cookieTool, domain string, profile chromeProfi
 		cookiePath = filepath.Join(profile.DataDir, profile.Dir, "Cookies")
 	}
 
-	var script string
+	// Static program: URL and optional cookie path arrive via argv so a
+	// hostile Chrome profile name cannot close a Python string literal.
+	script := `import json, sys; from pycookiecheat import chrome_cookies; url = sys.argv[1]; print(json.dumps(chrome_cookies(url, cookie_file=sys.argv[2]) if len(sys.argv) > 2 else chrome_cookies(url)))`
+	args := append(append([]string{}, tool.pyArgs...), "-c", script, "https://"+cleanDomain)
 	if cookiePath != "" {
-		// Use forward slashes so Python doesn't interpret backslashes as escapes on Windows
-		safePath := filepath.ToSlash(cookiePath)
-		script = fmt.Sprintf(
-			`import json; from pycookiecheat import chrome_cookies; print(json.dumps(chrome_cookies("https://%s", cookie_file="%s")))`,
-			cleanDomain, safePath,
-		)
-	} else {
-		script = fmt.Sprintf(
-			`import json; from pycookiecheat import chrome_cookies; print(json.dumps(chrome_cookies("https://%s")))`,
-			cleanDomain,
-		)
+		args = append(args, cookiePath)
 	}
 
 	var out bytes.Buffer
-	cmd := exec.Command(tool.pyBin, append(append([]string{}, tool.pyArgs...), "-c", script)...)
+	cmd := exec.Command(tool.pyBin, args...)
 	cmd.Stdout = &out
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
