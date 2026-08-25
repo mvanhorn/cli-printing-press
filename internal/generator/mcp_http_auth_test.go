@@ -35,8 +35,11 @@ func TestGeneratedHTTPMCPRequiresCallerAuthAndTLS(t *testing.T) {
 	for _, want := range []string{
 		`httpTokenEnvVar = "HTTP_AUTH_PROOF_MCP_HTTP_TOKEN"`,
 		"func requireHTTPCallerToken()",
+		"func classifyHTTPBind(",
 		"func httpBindIsLoopback(",
 		"net.LookupIP(host)",
+		"net.JoinHostPort(chosen.String(), port)",
+		"Addr:    bindAddr",
 		"func requireTLSForNonLoopback(",
 		"func requireBearerAuth(",
 		"func bearerTokenMatches(",
@@ -49,9 +52,11 @@ func TestGeneratedHTTPMCPRequiresCallerAuthAndTLS(t *testing.T) {
 		require.Contains(t, mainSrc, want)
 	}
 	require.NotContains(t, mainSrc, "httpSrv.Start(")
+	require.NotContains(t, mainSrc, "Addr:    *addr")
 
 	testSrc := readGeneratedFile(t, outputDir, "cmd", naming.MCP(apiSpec.Name), "http_auth_test.go")
 	require.Contains(t, testSrc, "TestRequireBearerAuthRejectsMissingAndWrongTokens")
+	require.Contains(t, testSrc, "TestClassifyHTTPBindPinsNamedLoopback")
 	require.Contains(t, testSrc, "httptest.NewServer")
 
 	runGoCommandRequired(t, outputDir, "test", "./cmd/"+naming.MCP(apiSpec.Name))
