@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -162,9 +163,11 @@ func TestSchemaVersion_StampedOnFreshDB(t *testing.T) {
 
 // TestOpenAppliesPragmas pins the connection-string contract: the store
 // must use the profile-selected journal mode with a non-zero busy_timeout and
-// disabled mmap so concurrent cross-process access stays pread-based. It fails
-// the instant the DSN regresses to the mattn-style pragma form, which
-// modernc.org/sqlite silently drops.
+// disabled mmap so the main database file stays pread-based. The read-only
+// handle reports delete journal mode because immutable=1 skips the WAL-index
+// mmap that mmap_size does not govern. It fails the instant the DSN
+// regresses to the mattn-style pragma form, which modernc.org/sqlite
+// silently drops.
 func TestOpenAppliesPragmas(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	s, err := Open(dbPath)
@@ -181,23 +184,18 @@ func TestOpenAppliesPragmas(t *testing.T) {
 	requirePragma(t, s.DB(), "busy_timeout", "5000")
 	requirePragma(t, s.DB(), "mmap_size", "0")
 
-	// The read-only handle (MCP sql/search, analytics) must retain its
-	// profile-compatible journal mode, carry the busy_timeout so it waits on a
-	// concurrent writer rather than erroring, and keep mmap disabled.
+	// The read-only handle (MCP sql/search, analytics) must carry the
+	// busy_timeout so it waits on a concurrent writer rather than erroring,
+	// keep mmap disabled, and skip the WAL-index. immutable=1 makes even a
+	// WAL file report delete journal mode because the connection does not
+	// attach the -shm mapping.
 	ro, err := OpenReadOnly(dbPath)
 	if err != nil {
 		t.Fatalf("open read-only: %v", err)
 	}
 	defer ro.Close()
 
-	{{- if .Cache.Enabled}}
-	// TRUNCATE is a per-connection setting. A read-only handle that does not
-	// set journal_mode reports SQLite's default delete mode, which is safe
-	// because the handle never creates a journal.
 	requirePragma(t, ro.DB(), "journal_mode", "delete")
-	{{- else}}
-	requirePragma(t, ro.DB(), "journal_mode", "wal")
-	{{- end}}
 	requirePragma(t, ro.DB(), "busy_timeout", "5000")
 	requirePragma(t, ro.DB(), "mmap_size", "0")
 }
@@ -213,6 +211,115 @@ func requirePragma(t *testing.T, db *sql.DB, name, want string) {
 	}
 	if got != want {
 		t.Fatalf("PRAGMA %s = %q, want %q", name, got, want)
+	}
+}
+
+// assertNoWALIndexSidecars fails if a read-only open recreated the WAL-index
+// mapping SQLite would otherwise place in -shm. mmap_size(0) does not govern
+// that mapping; the read-only DSN must skip it.
+func assertNoWALIndexSidecars(t *testing.T, dbPath string) {
+	t.Helper()
+	for _, sidecar := range []string{dbPath + "-shm", dbPath + "-wal"} {
+		if _, err := os.Stat(sidecar); err == nil {
+			t.Fatalf("read-only open created WAL sidecar %s", sidecar)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat %s: %v", sidecar, err)
+		}
+	}
+}
+
+// TestOpenReadOnly_SkipsWALIndexSidecars proves a settled WAL store can be
+// opened read-only without recreating -shm. The current-ro DSN (mmap_size 0
+// without immutable=1) remaps the WAL-index on the next open; that mapping
+// is the concurrent-reader fault surface.
+func TestOpenReadOnly_SkipsWALIndexSidecars(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	ro, err := OpenReadOnly(dbPath)
+	if err != nil {
+		t.Fatalf("open read-only: %v", err)
+	}
+	defer ro.Close()
+
+	var n int
+	if err := ro.DB().QueryRow(`SELECT count(*) FROM sqlite_master`).Scan(&n); err != nil {
+		t.Fatalf("read-only query: %v", err)
+	}
+	if n < 1 {
+		t.Fatalf("read-only query returned empty catalog")
+	}
+	assertNoWALIndexSidecars(t, dbPath)
+}
+
+// TestOpenReadOnly_ConcurrentProcesses runs two sibling read-only processes
+// against one store. Serial access never hits the WAL-index fault; two
+// concurrent OpenReadOnly processes is the smallest reproduction.
+func TestOpenReadOnly_ConcurrentProcesses(t *testing.T) {
+	if os.Getenv("PP_STORE_RO_HELPER") == "1" {
+		runOpenReadOnlyHelper()
+		return
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open seed: %v", err)
+	}
+	if _, err := s.DB().Exec(`INSERT INTO resources (id, resource_type, data) VALUES (?, ?, ?)`, "ro-1", "concurrent", `{"id":"ro-1"}`); err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close seed: %v", err)
+	}
+
+	const helpers = 2
+	cmds := make([]*exec.Cmd, helpers)
+	for i := 0; i < helpers; i++ {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestOpenReadOnly_ConcurrentProcesses$", "-test.count=1")
+		cmd.Env = append(os.Environ(),
+			"PP_STORE_RO_HELPER=1",
+			"PP_STORE_RO_DB="+dbPath,
+		)
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start helper %d: %v", i, err)
+		}
+		cmds[i] = cmd
+	}
+	for i, cmd := range cmds {
+		if err := cmd.Wait(); err != nil {
+			t.Fatalf("helper %d: %v", i, err)
+		}
+	}
+	assertNoWALIndexSidecars(t, dbPath)
+}
+
+func runOpenReadOnlyHelper() {
+	dbPath := os.Getenv("PP_STORE_RO_DB")
+	if dbPath == "" {
+		fmt.Fprintln(os.Stderr, "PP_STORE_RO_DB is required")
+		os.Exit(2)
+	}
+	ro, err := OpenReadOnly(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open read-only: %v\n", err)
+		os.Exit(3)
+	}
+	defer ro.Close()
+	var n int
+	if err := ro.DB().QueryRow(`SELECT count(*) FROM resources`).Scan(&n); err != nil {
+		fmt.Fprintf(os.Stderr, "read-only query: %v\n", err)
+		os.Exit(4)
+	}
+	if n < 1 {
+		fmt.Fprintf(os.Stderr, "read-only count=%d\n", n)
+		os.Exit(5)
 	}
 }
 
