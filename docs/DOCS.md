@@ -24,6 +24,7 @@ The extracted developer docs are:
 - `docs/RELEASE.md` — release-please / goreleaser flow
 - `docs/ATTRIBUTION.md` — creator + contributors attribution model
 - `docs/ARTIFACTS.md` — local library, manuscripts, and public-library flow
+- `docs/STUDIO_COMMAND_JSON.md` — engine `--json` surfaces for Press Studio / subprocess consumers (product contract stays in MLX-Studio)
 - `docs/CODEX.md` — installing and using Printing Press skills in Codex
 - `docs/CURSOR.md` — using printed CLIs and skills in Cursor
 - `docs/DOCS.md` — this doc-authoring guidance

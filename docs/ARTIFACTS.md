@@ -35,4 +35,4 @@ Discovery methods write evidence under the run's discovery archive before genera
 
 - Browser Sniff archives traffic analysis and replayable HTTP evidence.
 - Crowd Sniff archives community-source findings and wrapper-library evidence.
-- Device Sniff archives device specs, BLE analysis reports, and redacted BLE evidence. Raw stable device identifiers and executable control payloads are sensitive; redacted evidence is the default archive shape, and raw evidence retention is opt-in.
+- Device Sniff archives device specs, BLE analysis reports, and redacted BLE evidence. Raw stable device identifiers and executable control payloads are sensitive; redacted evidence is the default archive shape, and raw evidence retention is opt-in. Machine-readable command shapes for Studio/BLE consumers: [`STUDIO_COMMAND_JSON.md`](STUDIO_COMMAND_JSON.md).

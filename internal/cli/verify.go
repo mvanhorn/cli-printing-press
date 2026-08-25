@@ -100,7 +100,8 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 			// Run fix loop if requested and score is below threshold
 			var fixReport *pipeline.FixLoopReport
 			if fix && shouldRunFixLoop(report) {
-				fmt.Printf("\nVerification verdict %s (pass rate %.0f%%, threshold %d%%). Running fix loop (max %d iterations)...\n\n",
+				// Progress belongs on stderr so --json stdout stays a single JSON value.
+				fmt.Fprintf(os.Stderr, "\nVerification verdict %s (pass rate %.0f%%, threshold %d%%). Running fix loop (max %d iterations)...\n\n",
 					report.Verdict, report.PassRate, threshold, maxIterations)
 				fixReport, err = opts.runFixLoop(cfg, report, maxIterations)
 				if err != nil {
