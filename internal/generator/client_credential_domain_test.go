@@ -71,10 +71,12 @@ func TestGeneratedBrowserCredentialBindsToCapturedDomain(t *testing.T) {
 		"config Headers must not restore Authorization or Cookie after a deny")
 	assert.Contains(t, clientSrc, "req.URL.Host == via[0].URL.Host && c.credentialAppliesToURL(req.URL.String())",
 		"same-host redirect re-stamping must retain the credential-domain gate")
-	assert.Contains(t, clientSrc, "publicsuffix.EffectiveTLDPlusOne",
-		"credential matching must use registrable domains")
-	assert.Contains(t, goMod, "golang.org/x/net v0.55.0",
-		"browser-session clients must declare the publicsuffix dependency")
+	assert.NotContains(t, clientSrc, "publicsuffix.EffectiveTLDPlusOne",
+		"credential matching must not authorize eTLD+1 siblings of the canonical host")
+	assert.NotContains(t, clientSrc, "golang.org/x/net/publicsuffix",
+		"credential binding must not import publicsuffix")
+	assert.NotContains(t, goMod, "golang.org/x/net v0.55.0",
+		"cookie binding must not pull x/net just for host matching")
 
 	// The negative path must remain unchanged for ordinary token auth: it has
 	// no capture-time domain to bind and should not gain browser-only baggage.
@@ -115,6 +117,7 @@ import (
 
 func TestCredentialAppliesToURL(t *testing.T) {
 	bound := &Client{Config: &config.Config{CredentialDomain: ".auth.example.com"}}
+	hostSpecific := &Client{Config: &config.Config{CredentialDomain: ".app.example.com"}}
 	unbound := &Client{Config: &config.Config{}}
 	envTok := &Client{Config: &config.Config{AuthSource: "env:CREDENTIALDOMAIN_SESSION"}}
 	for _, tc := range []struct {
@@ -124,15 +127,22 @@ func TestCredentialAppliesToURL(t *testing.T) {
 		want   bool
 	}{
 		{name: "captured host", client: bound, url: "https://login.auth.example.com/session", want: true},
-		{name: "same registrable domain", client: bound, url: "https://api.auth.example.com/items", want: true},
+		{name: "canonical subdomain", client: bound, url: "https://api.auth.example.com/items", want: true},
+		{name: "sibling eTLD+1 host", client: bound, url: "https://api.example.com/items", want: false},
+		{name: "sibling other.example.com", client: bound, url: "https://other.example.com/items", want: false},
+		{name: "host-specific exact", client: hostSpecific, url: "https://app.example.com/session", want: true},
+		{name: "host-specific subdomain", client: hostSpecific, url: "https://login.app.example.com/session", want: true},
+		{name: "host-specific sibling", client: hostSpecific, url: "https://api.example.com/items", want: false},
 		{name: "http canonical host", client: bound, url: "http://login.auth.example.com/session", want: false},
 		{name: "credential-free host", client: bound, url: "https://api.credential-free.example/items", want: false},
 		{name: "empty domain uses spec https host", client: unbound, url: "https://login.auth.example.com/session", want: true},
 		{name: "empty domain denies http", client: unbound, url: "http://login.auth.example.com/session", want: false},
 		{name: "empty domain denies wrong host", client: unbound, url: "https://api.credential-free.example/items", want: false},
+		{name: "empty domain denies sibling eTLD+1", client: unbound, url: "https://api.example.com/items", want: false},
 		{name: "env token uses spec https host", client: envTok, url: "https://api.auth.example.com/items", want: true},
 		{name: "env token denies http", client: envTok, url: "http://api.auth.example.com/items", want: false},
 		{name: "env token denies wrong host", client: envTok, url: "https://api.credential-free.example/items", want: false},
+		{name: "env token denies sibling eTLD+1", client: envTok, url: "https://api.example.com/items", want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.client.credentialAppliesToURL(tc.url); got != tc.want {
@@ -310,6 +320,9 @@ func TestSetTokenCredentialBindsToCanonicalHTTPSHost(t *testing.T) {
 	}
 	if client.credentialAppliesToURL("https://api.credential-free.example/items") {
 		t.Fatal("set-token must not send Authorization to a wrong host")
+	}
+	if client.credentialAppliesToURL("https://api.example.com/items") {
+		t.Fatal("set-token must not send Authorization to an eTLD+1 sibling")
 	}
 }
 

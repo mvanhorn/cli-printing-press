@@ -36,9 +36,6 @@ import (
 {{- if eq .Auth.Subtype "google_service_account"}}
 	"golang.org/x/oauth2/google"
 {{- end}}
-{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
-	"golang.org/x/net/publicsuffix"
-{{- end}}
 {{- if .UsesBrowserHTTPTransport}}
 	enetxhttp "github.com/enetx/http"
 	"github.com/enetx/surf"
@@ -3055,12 +3052,7 @@ func (c *Client) credentialAppliesToURL(rawURL string) bool {
 		return false
 	}
 	targetHost := strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
-	if targetHost == boundHost || strings.HasSuffix(targetHost, "."+boundHost) {
-		return true
-	}
-	targetRegistered, targetErr := publicsuffix.EffectiveTLDPlusOne(targetHost)
-	boundRegistered, boundErr := publicsuffix.EffectiveTLDPlusOne(boundHost)
-	return targetErr == nil && boundErr == nil && targetRegistered == boundRegistered
+	return targetHost == boundHost || strings.HasSuffix(targetHost, "."+boundHost)
 }
 
 func credentialBoundHost(configDomain string) string {

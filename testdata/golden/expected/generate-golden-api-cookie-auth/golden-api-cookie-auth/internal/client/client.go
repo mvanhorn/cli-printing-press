@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"golang.org/x/net/publicsuffix"
 	"golden-api-cookie-auth-pp-cli/internal/cliutil"
 	"golden-api-cookie-auth-pp-cli/internal/config"
 	"golden-api-cookie-auth-pp-cli/internal/platform"
@@ -1353,12 +1352,7 @@ func (c *Client) credentialAppliesToURL(rawURL string) bool {
 		return false
 	}
 	targetHost := strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
-	if targetHost == boundHost || strings.HasSuffix(targetHost, "."+boundHost) {
-		return true
-	}
-	targetRegistered, targetErr := publicsuffix.EffectiveTLDPlusOne(targetHost)
-	boundRegistered, boundErr := publicsuffix.EffectiveTLDPlusOne(boundHost)
-	return targetErr == nil && boundErr == nil && targetRegistered == boundRegistered
+	return targetHost == boundHost || strings.HasSuffix(targetHost, "."+boundHost)
 }
 
 func credentialBoundHost(configDomain string) string {
