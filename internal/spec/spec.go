@@ -2096,8 +2096,9 @@ type LookupSeed struct {
 // Opting http into Transport adds a --transport flag (stdio|http) and, for http,
 // an --addr flag so the same binary can also serve an HTTP streamable transport.
 // The HTTP listener requires a per-CLI bearer env var and refuses non-loopback
-// binds without --tls-cert/--tls-key; loopback plaintext still requires the
-// caller Authorization header.
+// binds without --tls-cert/--tls-key; named hosts including localhost are
+// loopback only when every resolved address is loopback. Loopback plaintext
+// still requires the caller Authorization header.
 //
 // Rationale: stdio-only servers can only reach clients that share a filesystem
 // and can spawn a subprocess. Cloud-hosted agents (hosted Claude Code sessions,

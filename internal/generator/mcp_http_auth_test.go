@@ -36,6 +36,7 @@ func TestGeneratedHTTPMCPRequiresCallerAuthAndTLS(t *testing.T) {
 		`httpTokenEnvVar = "HTTP_AUTH_PROOF_MCP_HTTP_TOKEN"`,
 		"func requireHTTPCallerToken()",
 		"func httpBindIsLoopback(",
+		"net.LookupIP(host)",
 		"func requireTLSForNonLoopback(",
 		"func requireBearerAuth(",
 		"func bearerTokenMatches(",

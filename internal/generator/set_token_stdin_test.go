@@ -44,6 +44,8 @@ func TestGeneratedSetTokenReadsStdinAndRejectsArgv(t *testing.T) {
 
 	helpersSrc := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
 	require.Contains(t, helpersSrc, "func readSecretFromStdin(")
+	require.Contains(t, helpersSrc, "maxSecretFromStdin")
+	require.Contains(t, helpersSrc, "io.LimitReader(")
 
 	binPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
 	runGoCommandRequired(t, outputDir, "build", "-o", binPath, "./cmd/"+naming.CLI(apiSpec.Name))
@@ -60,6 +62,14 @@ func TestGeneratedSetTokenReadsStdinAndRejectsArgv(t *testing.T) {
 	positional.Env = env
 	out, err := positional.CombinedOutput()
 	require.Error(t, err, "positional set-token must fail: %s", out)
+	require.NotContains(t, string(out), "Token saved")
+
+	oversized := exec.Command(binPath, "auth", "set-token")
+	oversized.Stdin = strings.NewReader(strings.Repeat("x", 64<<10+1))
+	oversized.Env = env
+	out, err = oversized.CombinedOutput()
+	require.Error(t, err, "oversized stdin must fail: %s", out)
+	require.Contains(t, string(out), "exceeds")
 	require.NotContains(t, string(out), "Token saved")
 
 	stdinCmd := exec.Command(binPath, "auth", "set-token")
