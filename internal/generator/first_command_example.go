@@ -24,11 +24,12 @@ func firstCommandExampleCandidate(resources map[string]spec.Resource) (commandEx
 	}
 	sort.Strings(resNames)
 	preferredVerbs := []string{"list", "get", "search", "query"}
+	shared := sharedGETRPCPaths(resources)
 
 	for _, rName := range resNames {
 		r := resources[rName]
 		for _, verb := range preferredVerbs {
-			if ep, ok := r.Endpoints[verb]; ok && endpointIsReadCommand(ep, verb) {
+			if ep, ok := r.Endpoints[verb]; ok && endpointIsReadCommandShared(ep, verb, shared) {
 				return commandExampleCandidate{resourceName: rName, resource: r, endpointName: verb, endpoint: ep}, true
 			}
 		}
@@ -36,7 +37,7 @@ func firstCommandExampleCandidate(resources map[string]spec.Resource) (commandEx
 	for _, rName := range resNames {
 		r := resources[rName]
 		for _, eName := range sortedEndpointNames(r.Endpoints) {
-			if ep := r.Endpoints[eName]; endpointIsReadCommand(ep, eName) {
+			if ep := r.Endpoints[eName]; endpointIsReadCommandShared(ep, eName, shared) {
 				return commandExampleCandidate{resourceName: rName, resource: r, endpointName: eName, endpoint: ep}, true
 			}
 		}

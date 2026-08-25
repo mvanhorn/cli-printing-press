@@ -55,6 +55,76 @@ func TestEndpointIsWriteCommand(t *testing.T) {
 			want:     true,
 		},
 		{
+			name:   "GET RPC login without mutation token is write",
+			opName: "login",
+			endpoint: spec.Endpoint{
+				Method: "GET",
+				Path:   "/webapi/entry.cgi?api=SYNO.API.Auth&method=login&version=7",
+			},
+			want: true,
+		},
+		{
+			name:   "GET RPC rename without mutation token is write",
+			opName: "rename",
+			endpoint: spec.Endpoint{
+				Method: "GET",
+				Path:   "/webapi/entry.cgi?api=SYNO.FileStation.Rename&method=rename&version=2",
+			},
+			want: true,
+		},
+		{
+			name:   "GET RPC delete is write",
+			opName: "delete",
+			endpoint: spec.Endpoint{
+				Method: "GET",
+				Path:   "/webapi/entry.cgi?api=SYNO.FileStation.Delete&method=delete&version=2",
+			},
+			want: true,
+		},
+		{
+			name:   "GET RPC list keeps read signal",
+			opName: "list",
+			endpoint: spec.Endpoint{
+				Method: "GET",
+				Path:   "/webapi/entry.cgi?api=SYNO.FileStation.List&method=list&version=2",
+			},
+			want: false,
+		},
+		{
+			name:   "GET RPC getInfo keeps read signal",
+			opName: "getInfo",
+			endpoint: spec.Endpoint{
+				Method: "GET",
+				Path:   "/webapi/entry.cgi?api=SYNO.FileStation.Info&method=get&version=2",
+			},
+			want: false,
+		},
+		{
+			name:   "GET RPC login via query param name is write",
+			opName: "login",
+			endpoint: spec.Endpoint{
+				Method: "GET",
+				Path:   "/webapi/entry.cgi",
+				Params: []spec.Param{
+					{Name: "api", In: "query", Type: "string"},
+					{Name: "method", In: "query", Type: "string", Default: "login"},
+				},
+			},
+			want: true,
+		},
+		{
+			name:     "unique REST GET without read prefix stays read",
+			opName:   "check",
+			endpoint: spec.Endpoint{Method: "GET", Path: "/health"},
+			want:     false,
+		},
+		{
+			name:     "unique REST GET report-year stays read",
+			opName:   "report-year",
+			endpoint: spec.Endpoint{Method: "GET", Path: "/reports/{year}/export"},
+			want:     false,
+		},
+		{
 			name:     "HEAD endpoint is read",
 			opName:   "headStatus",
 			endpoint: spec.Endpoint{Method: "HEAD", Path: "/status"},
@@ -275,8 +345,29 @@ func TestEndpointIsWriteCommand(t *testing.T) {
 	}
 }
 
+func TestSharedGETRPCPathFailsClosedWithoutQuerySelector(t *testing.T) {
+	t.Parallel()
+
+	login := spec.Endpoint{Method: "GET", Path: "/webapi/entry"}
+	list := spec.Endpoint{Method: "GET", Path: "/webapi/entry"}
+	resources := map[string]spec.Resource{
+		"session": {Endpoints: map[string]spec.Endpoint{"login": login}},
+		"files":   {Endpoints: map[string]spec.Endpoint{"list": list}},
+	}
+	shared := sharedGETRPCPaths(resources)
+
+	assert.True(t, endpointIsWriteCommandShared(login, "login", shared),
+		"shared-path GET login without a read token must fail closed")
+	assert.False(t, endpointIsWriteCommandShared(list, "list", shared),
+		"shared-path GET list keeps the read token")
+	assert.False(t, endpointIsWriteCommand(login, "login"),
+		"a lone GET /webapi/entry login is not RPC-shaped without siblings or a selector")
+	assert.True(t, hasWriteCommands(resources),
+		"a spec that shares one GET path across login and list is not read-only")
+}
+
 // TestHasWriteCommands_PostAsQueryFlipsHasWriteFalse verifies the
-// classifier propagates through resourceHasWriteCommand and hasWriteCommands
+// classifier propagates through resourceHasWriteCommandShared and hasWriteCommands
 // so a resource containing only a POST search endpoint flips HasWriteCommands
 // to false — that signal drives the README's read-only branching.
 func TestHasWriteCommands_PostAsQueryFlipsHasWriteFalse(t *testing.T) {
@@ -668,6 +759,42 @@ func TestMCPReadOnlyAnnotationEmission(t *testing.T) {
 				Description: "List items",
 			},
 			wantReadOnly: true,
+		},
+		{
+			name:         "GET RPC login omits mcp:read-only annotation",
+			apiName:      "get-rpc-login",
+			resourceName: "session",
+			endpointName: "login",
+			endpoint: spec.Endpoint{
+				Method:      "GET",
+				Path:        "/webapi/entry.cgi?api=SYNO.API.Auth&method=login&version=7",
+				Description: "Log in",
+			},
+			wantReadOnly: false,
+		},
+		{
+			name:         "GET RPC rename omits mcp:read-only annotation",
+			apiName:      "get-rpc-rename",
+			resourceName: "files",
+			endpointName: "rename",
+			endpoint: spec.Endpoint{
+				Method:      "GET",
+				Path:        "/webapi/entry.cgi?api=SYNO.FileStation.Rename&method=rename&version=2",
+				Description: "Rename a file",
+			},
+			wantReadOnly: false,
+		},
+		{
+			name:         "GET RPC delete omits mcp:read-only annotation",
+			apiName:      "get-rpc-delete",
+			resourceName: "files",
+			endpointName: "delete",
+			endpoint: spec.Endpoint{
+				Method:      "GET",
+				Path:        "/webapi/entry.cgi?api=SYNO.FileStation.Delete&method=delete&version=2",
+				Description: "Delete a file",
+			},
+			wantReadOnly: false,
 		},
 		{
 			name:         "GET action mutation omits mcp:read-only annotation",

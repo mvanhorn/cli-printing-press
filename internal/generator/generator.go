@@ -398,31 +398,33 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			e, _ := lookupEndpointForTemplate(api, ref)
 			return e
 		},
-		"effectiveEndpointPath":        effectiveEndpointPath,
-		"effectiveSubEndpointPath":     effectiveSubEndpointPath,
-		"enumLiteral":                  enumLiteral,
-		"enumDescriptionHint":          enumDescriptionHint,
-		"jsonStringParam":              isJSONStringParam,
-		"jsonEnumSuggestion":           jsonEnumSuggestion,
-		"bodyMap":                      bodyMap,
-		"bodyMapForEndpoint":           bodyMapForEndpoint,
-		"bodyMapForEndpointVars":       bodyMapForEndpointVars,
-		"assignJSONBodyMap":            assignJSONBodyMap,
-		"declareJSONBodyMap":           declareJSONBodyMap,
-		"bodyVarDecls":                 bodyVarDecls,
-		"bodyFlagRegs":                 bodyFlagRegs,
-		"bodyRequiredChecks":           bodyRequiredChecks,
-		"bodyExceedsFlagDepth":         bodyExceedsFlagDepth,
-		"bodyHasStringBackedBool":      bodyHasStringBackedBool,
-		"multipartBodyMaps":            multipartBodyMaps,
-		"endpointUsesMultipart":        endpointUsesMultipart,
-		"endpointUsesRawRequest":       endpointUsesRawRequest,
-		"endpointUsesCSVArray":         endpointUsesCSVArray,
-		"endpointHasQueryFlags":        endpointHasQueryFlags,
-		"endpointHasRequestParams":     endpointHasRequestParams,
-		"endpointHasRequiredInput":     endpointHasRequiredInput,
-		"endpointSkipsErrorPathProbe":  endpointSkipsErrorPathProbe,
-		"endpointIsReadCommand":        endpointIsReadCommand,
+		"effectiveEndpointPath":       effectiveEndpointPath,
+		"effectiveSubEndpointPath":    effectiveSubEndpointPath,
+		"enumLiteral":                 enumLiteral,
+		"enumDescriptionHint":         enumDescriptionHint,
+		"jsonStringParam":             isJSONStringParam,
+		"jsonEnumSuggestion":          jsonEnumSuggestion,
+		"bodyMap":                     bodyMap,
+		"bodyMapForEndpoint":          bodyMapForEndpoint,
+		"bodyMapForEndpointVars":      bodyMapForEndpointVars,
+		"assignJSONBodyMap":           assignJSONBodyMap,
+		"declareJSONBodyMap":          declareJSONBodyMap,
+		"bodyVarDecls":                bodyVarDecls,
+		"bodyFlagRegs":                bodyFlagRegs,
+		"bodyRequiredChecks":          bodyRequiredChecks,
+		"bodyExceedsFlagDepth":        bodyExceedsFlagDepth,
+		"bodyHasStringBackedBool":     bodyHasStringBackedBool,
+		"multipartBodyMaps":           multipartBodyMaps,
+		"endpointUsesMultipart":       endpointUsesMultipart,
+		"endpointUsesRawRequest":      endpointUsesRawRequest,
+		"endpointUsesCSVArray":        endpointUsesCSVArray,
+		"endpointHasQueryFlags":       endpointHasQueryFlags,
+		"endpointHasRequestParams":    endpointHasRequestParams,
+		"endpointHasRequiredInput":    endpointHasRequiredInput,
+		"endpointSkipsErrorPathProbe": endpointSkipsErrorPathProbe,
+		"endpointIsReadCommand": func(endpoint spec.Endpoint, opName string) bool {
+			return endpointIsReadCommandShared(endpoint, opName, sharedGETRPCPaths(g.Spec.Resources))
+		},
 		"hasMultipartRequest":          hasMultipartRequest,
 		"hasRawRequest":                hasRawRequest,
 		"formBodyMaps":                 formBodyMaps,
@@ -1043,8 +1045,8 @@ type endpointTemplateData struct {
 	IsAsync       bool
 	Async         AsyncJobInfo
 	PageSize      int
-	// IsReadOnly mirrors !endpointIsWriteCommand(endpoint, name). The
-	// emitted command sets Annotations["mcp:read-only"] = "true" when
+	// IsReadOnly mirrors !endpointIsWriteCommandShared(endpoint, name, shared).
+	// The emitted command sets Annotations["mcp:read-only"] = "true" when
 	// it's true so the cobratree MCP walker marks the tool with
 	// readOnlyHint and hosts skip the per-call permission prompt.
 	IsReadOnly bool
@@ -1985,8 +1987,9 @@ func effectiveSubTier(api *spec.APISpec, parent spec.Resource, subResource spec.
 }
 
 func hasWriteCommands(resources map[string]spec.Resource) bool {
+	shared := sharedGETRPCPaths(resources)
 	for _, resource := range resources {
-		if resourceHasWriteCommand(resource) {
+		if resourceHasWriteCommandShared(resource, shared) {
 			return true
 		}
 	}
@@ -2002,14 +2005,14 @@ func hasCreateCommands(resources map[string]spec.Resource) bool {
 	return false
 }
 
-func resourceHasWriteCommand(resource spec.Resource) bool {
+func resourceHasWriteCommandShared(resource spec.Resource, sharedGETPaths map[string]bool) bool {
 	for name, endpoint := range resource.Endpoints {
-		if endpointIsWriteCommand(endpoint, name) {
+		if endpointIsWriteCommandShared(endpoint, name, sharedGETPaths) {
 			return true
 		}
 	}
 	for _, sub := range resource.SubResources {
-		if resourceHasWriteCommand(sub) {
+		if resourceHasWriteCommandShared(sub, sharedGETPaths) {
 			return true
 		}
 	}
@@ -2057,9 +2060,9 @@ var readOperationIDPrefixes = map[string]bool{
 }
 
 // mutationOperationIDPrefixes are conservative action tokens for GET-based
-// RPC endpoints. HTTP method remains the default signal; these leading tokens
-// only opt a GET into the write path when an operation name clearly describes
-// a state-changing action.
+// endpoints. A leading token in this set opts a GET into the write path
+// even when the path looks like ordinary REST. RPC-over-GET without a
+// read signal fails closed independently of this list.
 var mutationOperationIDPrefixes = map[string]bool{
 	"activate":   true,
 	"add":        true,
@@ -2139,11 +2142,16 @@ var readBodyParamNames = map[string]bool{
 // state. Read signals are checked in cost order: read-only annotation,
 // explicit mutation signal, verb, name token, body shape. The read-only
 // annotation remains the strongest override so an explicitly safe endpoint
-// cannot be made destructive by a broad fallback. Unknown GET shapes remain
-// read-only unless the spec or operation name supplies a mutation signal.
+// cannot be made destructive by a broad fallback. Unknown GET RPCs fail
+// closed (write) unless a read token, mutation:false, or mcp:read-only
+// supplies a positive read signal. Conventional REST GETs stay readable.
 //
 // opName is the map key from Resource.Endpoints (the operation id).
 func endpointIsWriteCommand(endpoint spec.Endpoint, opName string) bool {
+	return endpointIsWriteCommandShared(endpoint, opName, nil)
+}
+
+func endpointIsWriteCommandShared(endpoint spec.Endpoint, opName string, sharedGETPaths map[string]bool) bool {
 	if v, ok := endpoint.Meta["mcp:read-only"]; ok && strings.EqualFold(strings.TrimSpace(v), "true") {
 		return false
 	}
@@ -2151,21 +2159,143 @@ func endpointIsWriteCommand(endpoint spec.Endpoint, opName string) bool {
 		return value
 	}
 	tokens := camelCaseTokens(strings.TrimSpace(opName))
+	leading := ""
+	if len(tokens) > 0 {
+		leading = strings.ToLower(tokens[0])
+	}
 	if !methodIsWrite(endpoint.Method) {
 		if !strings.EqualFold(strings.TrimSpace(endpoint.Method), "GET") {
 			return false
 		}
-		return len(tokens) > 0 && mutationOperationIDPrefixes[strings.ToLower(tokens[0])]
+		if mutationOperationIDPrefixes[leading] {
+			return true
+		}
+		if readOperationIDPrefixes[leading] {
+			return leadingTokenHasWriteFragment(tokens)
+		}
+		return getLooksLikeRPC(endpoint, sharedGETPaths)
 	}
-	if len(tokens) > 0 && readOperationIDPrefixes[strings.ToLower(tokens[0])] {
-		for _, tok := range tokens[1:] {
-			if writeOperationIDFragments[strings.ToLower(tok)] {
+	if readOperationIDPrefixes[leading] {
+		return leadingTokenHasWriteFragment(tokens)
+	}
+	return !bodyIsAllFilterShape(endpoint.Body)
+}
+
+func leadingTokenHasWriteFragment(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if writeOperationIDFragments[strings.ToLower(tok)] {
+			return true
+		}
+	}
+	return false
+}
+
+func getLooksLikeRPC(endpoint spec.Endpoint, sharedGETPaths map[string]bool) bool {
+	if endpointLooksLikeRPC(endpoint) {
+		return true
+	}
+	return sharedGETPaths[canonicalRPCPath(endpoint.Path)]
+}
+
+func canonicalRPCPath(raw string) string {
+	path := strings.TrimSpace(raw)
+	if i := strings.Index(path, "?"); i >= 0 {
+		path = path[:i]
+	}
+	return path
+}
+
+var rpcQuerySelectorNames = map[string]bool{
+	"method":    true,
+	"action":    true,
+	"op":        true,
+	"operation": true,
+	"cmd":       true,
+	"command":   true,
+}
+
+func endpointLooksLikeRPC(endpoint spec.Endpoint) bool {
+	raw := strings.TrimSpace(endpoint.Path)
+	base := strings.ToLower(canonicalRPCPath(raw))
+	if strings.HasSuffix(base, ".cgi") {
+		return true
+	}
+	seg := base
+	if i := strings.LastIndex(seg, "/"); i >= 0 {
+		seg = seg[i+1:]
+	}
+	switch seg {
+	case "rpc", "jsonrpc", "xmlrpc", "json-rpc":
+		return true
+	}
+	if i := strings.Index(raw, "?"); i >= 0 && queryHasRPCSelector(raw[i+1:]) {
+		return true
+	}
+	for _, p := range endpoint.Params {
+		if paramLooksLikeRPCSelector(p) {
+			return true
+		}
+	}
+	return false
+}
+
+func queryHasRPCSelector(rawQuery string) bool {
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		lower := strings.ToLower(rawQuery)
+		for name := range rpcQuerySelectorNames {
+			if strings.Contains(lower, name+"=") {
 				return true
 			}
 		}
 		return false
 	}
-	return !bodyIsAllFilterShape(endpoint.Body)
+	for name := range values {
+		if rpcQuerySelectorNames[strings.ToLower(name)] {
+			return true
+		}
+	}
+	return false
+}
+
+func paramLooksLikeRPCSelector(p spec.Param) bool {
+	in := strings.ToLower(strings.TrimSpace(p.In))
+	if p.PathParam || in == "path" || in == "header" {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(p.Name))
+	if alias := strings.ToLower(strings.TrimSpace(p.URLName)); alias != "" {
+		name = alias
+	}
+	return rpcQuerySelectorNames[name]
+}
+
+func sharedGETRPCPaths(resources map[string]spec.Resource) map[string]bool {
+	counts := map[string]int{}
+	var walk func(spec.Resource)
+	walk = func(resource spec.Resource) {
+		for _, endpoint := range resource.Endpoints {
+			if !strings.EqualFold(strings.TrimSpace(endpoint.Method), "GET") {
+				continue
+			}
+			if path := canonicalRPCPath(endpoint.Path); path != "" {
+				counts[path]++
+			}
+		}
+		for _, sub := range resource.SubResources {
+			walk(sub)
+		}
+	}
+	for _, resource := range resources {
+		walk(resource)
+	}
+	shared := map[string]bool{}
+	for path, n := range counts {
+		if n > 1 {
+			shared[path] = true
+		}
+	}
+	return shared
 }
 
 func endpointIsCreateCommand(endpoint spec.Endpoint, opName string) bool {
@@ -2189,6 +2319,10 @@ func endpointIsCreateCommand(endpoint spec.Endpoint, opName string) bool {
 // one update site.
 func endpointIsReadCommand(endpoint spec.Endpoint, opName string) bool {
 	return !endpointIsWriteCommand(endpoint, opName)
+}
+
+func endpointIsReadCommandShared(endpoint spec.Endpoint, opName string, sharedGETPaths map[string]bool) bool {
+	return !endpointIsWriteCommandShared(endpoint, opName, sharedGETPaths)
 }
 
 // camelCaseTokens splits "getOrCreate" → ["get", "Or", "Create"] and
@@ -2340,9 +2474,9 @@ func safeDisplayURL(value string) string {
 // evaluated independently, so this deliberately does NOT recurse into
 // r.SubResources — a read-only parent must not inherit a child's writability,
 // and vice versa.
-func resourceHasMutation(r spec.Resource) bool {
+func resourceHasMutationShared(r spec.Resource, sharedGETPaths map[string]bool) bool {
 	for name, endpoint := range r.Endpoints {
-		if endpointIsWriteCommand(endpoint, name) {
+		if endpointIsWriteCommandShared(endpoint, name, sharedGETPaths) {
 			return true
 		}
 	}
@@ -2367,6 +2501,7 @@ func (g *Generator) buildDomainContext() DomainContext {
 		for _, sr := range g.profile.SyncableResources {
 			syncSet[sr.Name] = true
 		}
+		sharedGETPaths := sharedGETRPCPaths(g.Spec.Resources)
 
 		// addResourceSummaries emits one ResourceSummary for the resource named
 		// `name` (dotted path for sub-resources, e.g. "projects.issues") and
@@ -2381,7 +2516,7 @@ func (g *Generator) buildDomainContext() DomainContext {
 				Description: naming.OneLine(r.Description),
 				Syncable:    syncSet[name],
 				Searchable:  len(g.profile.SearchableFields[name]) > 0,
-				Writable:    resourceHasMutation(r),
+				Writable:    resourceHasMutationShared(r, sharedGETPaths),
 			}
 			for eName := range r.Endpoints {
 				rs.Endpoints = append(rs.Endpoints, eName)
@@ -3852,7 +3987,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				IsAsync:       isAsync,
 				Async:         asyncInfo,
 				PageSize:      g.paginationPageSizeForEndpoint(endpoint),
-				IsReadOnly:    endpointIsReadCommand(endpoint, eName),
+				IsReadOnly:    endpointIsReadCommandShared(endpoint, eName, sharedGETRPCPaths(g.Spec.Resources)),
 				APISpec:       g.Spec,
 			}
 			epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+eName)+".go")
@@ -3920,7 +4055,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 					IsAsync:       isAsync,
 					Async:         asyncInfo,
 					PageSize:      g.paginationPageSizeForEndpoint(endpoint),
-					IsReadOnly:    endpointIsReadCommand(endpoint, eName),
+					IsReadOnly:    endpointIsReadCommandShared(endpoint, eName, sharedGETRPCPaths(g.Spec.Resources)),
 					APISpec:       g.Spec,
 				}
 				epPath := filepath.Join("internal", "cli", safeResourceFileStem(naming.rawStem+"_"+eName)+".go")
@@ -5212,7 +5347,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			PageSize:          g.paginationPageSizeForEndpoint(pc.Endpoint),
 			Resource:          resource,
 			FuncPrefix:        pc.ResourceName,
-			IsReadOnly:        endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
+			IsReadOnly:        endpointIsReadCommandShared(pc.Endpoint, pc.EndpointName, sharedGETRPCPaths(g.Spec.Resources)),
 			NovelChildren:     novelChildrenByParent[toKebab(pc.PromotedName)],
 			APISpec:           g.Spec,
 		}
