@@ -656,27 +656,32 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 	env = append(env, "HOME="+tmpDir) // so sync uses temp location
 
 	// Test sync (if it exists)
+	// Discover whether live sync supports pagination before adding the
+	// bounding flag; some CLIs expose a complete, non-paginated sync.
+	syncArgs := func(args []string) []string {
+		return boundedSyncProbeArgs(binary, env, mode, args)
+	}
 	var syncErrors []error
-	syncErr := runCLI(binary, boundedSyncProbeArgs(mode, []string{"sync", "--db", dbPath, "--resources", "repos", "--full"}), env, 30*time.Second)
+	syncErr := runCLI(binary, syncArgs([]string{"sync", "--db", dbPath, "--resources", "repos", "--full"}), env, 30*time.Second)
 	if syncErr != nil {
 		syncErrors = append(syncErrors, syncErr)
-		syncErr = runCLI(binary, boundedSyncProbeArgs(mode, []string{"sync", "--db", dbPath, "--full"}), env, 30*time.Second)
+		syncErr = runCLI(binary, syncArgs([]string{"sync", "--db", dbPath, "--full"}), env, 30*time.Second)
 	}
 	if syncErr != nil {
 		syncErrors = append(syncErrors, syncErr)
 		// Sync might not accept --resources or --full; keep --db when
 		// possible so downstream sql probes read the same temporary store.
-		syncErr = runCLI(binary, boundedSyncProbeArgs(mode, []string{"sync", "--db", dbPath}), env, 30*time.Second)
+		syncErr = runCLI(binary, syncArgs([]string{"sync", "--db", dbPath}), env, 30*time.Second)
 	}
 	if syncErr != nil {
 		syncErrors = append(syncErrors, syncErr)
 		// Sync might not accept --db either; try the bare command before
 		// deciding the pipeline crashed.
-		syncErr = runCLI(binary, boundedSyncProbeArgs(mode, []string{"sync", "--full"}), env, 30*time.Second)
+		syncErr = runCLI(binary, syncArgs([]string{"sync", "--full"}), env, 30*time.Second)
 	}
 	if syncErr != nil {
 		syncErrors = append(syncErrors, syncErr)
-		syncErr = runCLI(binary, boundedSyncProbeArgs(mode, []string{"sync"}), env, 30*time.Second)
+		syncErr = runCLI(binary, syncArgs([]string{"sync"}), env, 30*time.Second)
 	}
 	if syncErr != nil {
 		syncErrors = append(syncErrors, syncErr)
@@ -754,12 +759,20 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 	return false, fmt.Sprintf("FAIL: %d domain tables created but 0 rows after sync (%s mode)", len(tables), mode)
 }
 
-func boundedSyncProbeArgs(mode string, args []string) []string {
-	if mode != "live" {
+func boundedSyncProbeArgs(binary string, env []string, mode string, args []string) []string {
+	if mode != "live" || !syncSupportsFlag(binary, env, "--max-pages") {
 		return args
 	}
 	bounded := append([]string(nil), args...)
 	return append(bounded, "--max-pages", "1")
+}
+
+func syncSupportsFlag(binary string, env []string, flag string) bool {
+	out, err := runCLIWithOutput(binary, []string{"sync", "--help"}, env, 10*time.Second)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), flag)
 }
 
 func allSyncAttemptsWereUnknownCommand(errs []error) bool {
