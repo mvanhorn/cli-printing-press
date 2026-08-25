@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -348,6 +349,25 @@ func TestRunDataPipelineTestLeavesUnpaginatedLiveSyncUnmodified(t *testing.T) {
 
 	assert.True(t, pass)
 	assert.Contains(t, detail, "items has 1 rows")
+}
+
+func TestRunDataPipelineTestProbesLiveSyncCapabilitiesOnce(t *testing.T) {
+	binary := buildLiveBoundedSyncProbeBinary(t)
+	logPath := filepath.Join(t.TempDir(), "sync-help.log")
+	envFn := func() []string {
+		return append(os.Environ(),
+			"PP_SYNC_HELP_LOG="+logPath,
+			"PP_FORCE_SYNC_FALLBACK=1",
+		)
+	}
+
+	pass, detail := runDataPipelineTest(binary, "", "live", envFn, 1)
+
+	assert.True(t, pass)
+	assert.Contains(t, detail, "items has 1 rows")
+	contents, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(contents), "help\n"))
 }
 
 func TestUnknownSyncFlagIgnoresEmptyFlagName(t *testing.T) {
@@ -907,8 +927,19 @@ func main() {
 	switch args[0] {
 	case "sync":
 		if len(args) > 1 && args[1] == "--help" {
+			if logPath := os.Getenv("PP_SYNC_HELP_LOG"); logPath != "" {
+				f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+				if err == nil {
+					_, _ = f.WriteString("help\n")
+					_ = f.Close()
+				}
+			}
 			fmt.Println("--max-pages int")
 			return
+		}
+		if os.Getenv("PP_FORCE_SYNC_FALLBACK") == "1" && (hasFlag(args[1:], "--resources") || hasFlag(args[1:], "--full")) {
+			fmt.Fprintln(os.Stderr, "unsupported sync shape")
+			os.Exit(1)
 		}
 		if !hasFlagValue(args[1:], "--max-pages", "1") {
 			fmt.Fprintln(os.Stderr, "live sync probe requires --max-pages 1")
@@ -947,6 +978,15 @@ func main() {
 func hasFlagValue(args []string, flag, want string) bool {
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == flag && args[i+1] == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFlag(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag {
 			return true
 		}
 	}

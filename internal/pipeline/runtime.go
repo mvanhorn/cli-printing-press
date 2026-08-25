@@ -655,11 +655,13 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 	dbPath := filepath.Join(tmpDir, "test.db")
 	env = append(env, "HOME="+tmpDir) // so sync uses temp location
 
-	// Test sync (if it exists)
-	// Discover whether live sync supports pagination before adding the
-	// bounding flag; some CLIs expose a complete, non-paginated sync.
+	// Test sync (if it exists). Discover whether live sync supports pagination
+	// once before trying fallback command shapes; probing --help for every
+	// attempt can be slow and can produce inconsistent answers on a transient
+	// CLI failure.
+	maxPagesSupported := mode == "live" && syncSupportsFlag(binary, env, "--max-pages")
 	syncArgs := func(args []string) []string {
-		return boundedSyncProbeArgs(binary, env, mode, args)
+		return boundedSyncProbeArgs(maxPagesSupported, mode, args)
 	}
 	var syncErrors []error
 	syncErr := runCLI(binary, syncArgs([]string{"sync", "--db", dbPath, "--resources", "repos", "--full"}), env, 30*time.Second)
@@ -759,8 +761,8 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 	return false, fmt.Sprintf("FAIL: %d domain tables created but 0 rows after sync (%s mode)", len(tables), mode)
 }
 
-func boundedSyncProbeArgs(binary string, env []string, mode string, args []string) []string {
-	if mode != "live" || !syncSupportsFlag(binary, env, "--max-pages") {
+func boundedSyncProbeArgs(maxPagesSupported bool, mode string, args []string) []string {
+	if mode != "live" || !maxPagesSupported {
 		return args
 	}
 	bounded := append([]string(nil), args...)
