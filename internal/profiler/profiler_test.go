@@ -2,7 +2,6 @@ package profiler
 
 import (
 	"bytes"
-	"os"
 	"slices"
 	"testing"
 
@@ -11,21 +10,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// captureStderr swaps os.Stderr for a pipe, runs fn, and returns whatever
-// fn wrote to stderr. The swap is single-threaded — safe for go test's
-// per-package sequential execution; do not use across parallel subtests
-// that both touch stderr.
+// captureStderr redirects profiler diagnostics into a buffer. It does not
+// swap process-wide os.Stderr, which races with other packages under
+// `go test ./...`.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
-	orig := os.Stderr
-	r, w, err := os.Pipe()
-	require.NoError(t, err)
-	os.Stderr = w
-	t.Cleanup(func() { os.Stderr = orig })
-	fn()
-	require.NoError(t, w.Close())
 	var buf bytes.Buffer
-	_, _ = buf.ReadFrom(r)
+	orig := warnWriter
+	warnWriter = &buf
+	t.Cleanup(func() { warnWriter = orig })
+	fn()
 	return buf.String()
 }
 
@@ -3480,6 +3474,158 @@ func TestProfilePagination_ClampsToParamMaximum(t *testing.T) {
 		"an exclusive maximum must clamp to the largest value strictly below it")
 	assert.Equal(t, 30, byName["webhooks"].PaginationPageSize,
 		"the most restrictive of a co-declared inclusive and exclusive bound must win")
+}
+
+func TestSyncPageSizeFromEndpoint_LimitOnlyIgnoresDeclaredDefault(t *testing.T) {
+	max30 := 30.0
+	max500 := 500.0
+	for _, tc := range []struct {
+		name       string
+		endpoint   spec.Endpoint
+		wantCursor string
+		wantType   string
+		wantLimit  string
+		wantSize   int
+	}{
+		{
+			name: "limit-only default is not a client page size",
+			endpoint: spec.Endpoint{
+				Params: []spec.Param{{Name: "limit", Type: "integer", Default: 25}},
+			},
+			wantLimit: "limit",
+			wantSize:  100,
+		},
+		{
+			name: "limit-only default above generator size is a floor",
+			endpoint: spec.Endpoint{
+				Params: []spec.Param{{Name: "limit", Type: "integer", Default: 200}},
+			},
+			wantLimit: "limit",
+			wantSize:  200,
+		},
+		{
+			name: "limit-only prefers declared maximum",
+			endpoint: spec.Endpoint{
+				Params: []spec.Param{{Name: "limit", Type: "integer", Default: 25, Maximum: &max500}},
+			},
+			wantLimit: "limit",
+			wantSize:  500,
+		},
+		{
+			name: "limit-only clamps generator size to a smaller maximum",
+			endpoint: spec.Endpoint{
+				Params: []spec.Param{{Name: "limit", Type: "integer", Default: 25, Maximum: &max30}},
+			},
+			wantLimit: "limit",
+			wantSize:  30,
+		},
+		{
+			name: "cursor resources still honor a declared default",
+			endpoint: spec.Endpoint{
+				Params: []spec.Param{
+					{Name: "cursor", Type: "string"},
+					{Name: "limit", Type: "integer", Default: 25},
+				},
+			},
+			wantCursor: "cursor",
+			wantType:   "cursor",
+			wantLimit:  "limit",
+			wantSize:   25,
+		},
+		{
+			name: "offset resources still honor a declared default",
+			endpoint: spec.Endpoint{
+				Params: []spec.Param{
+					{Name: "offset", Type: "int"},
+					{Name: "count", Type: "int", Default: 25},
+				},
+			},
+			wantCursor: "offset",
+			wantType:   "offset",
+			wantLimit:  "count",
+			wantSize:   25,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cursor, cursorType, limit, pageSize := syncPaginationDefaultsFromEndpoint(tc.endpoint)
+			assert.Equal(t, tc.wantCursor, cursor)
+			assert.Equal(t, tc.wantType, cursorType)
+			assert.Equal(t, tc.wantLimit, limit)
+			assert.Equal(t, tc.wantSize, pageSize)
+		})
+	}
+}
+
+func TestProfilePagination_LimitOnlyDoesNotCopyDeclaredDefault(t *testing.T) {
+	max500 := 500.0
+	s := &spec.APISpec{
+		Name: "limit-only-pagination",
+		Resources: map[string]spec.Resource{
+			"computers": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/api/v1/computers",
+						Params:   []spec.Param{{Name: "limit", Type: "integer", Default: 25}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"devices": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/api/v1/devices",
+						Params: []spec.Param{
+							{Name: "limit", Type: "integer", Default: 25, Maximum: &max500},
+						},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"agents": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/api/v1/agents",
+						Params:   []spec.Param{{Name: "offset", Type: "int"}, {Name: "limit", Type: "integer", Default: 25}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	var profile *APIProfile
+	stderr := captureStderr(t, func() {
+		profile = Profile(s)
+	})
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+
+	require.Contains(t, byName, "computers")
+	assert.True(t, byName["computers"].SupportsPagination,
+		"limit-only resources stay pagination-capable; sync still reports cursor_unavailable")
+	assert.Equal(t, "limit", byName["computers"].PaginationLimitParam)
+	assert.Empty(t, byName["computers"].PaginationCursorParam)
+	assert.Equal(t, 100, byName["computers"].PaginationPageSize,
+		"a declared limit default must not cap a cursorless first page")
+	assert.Contains(t, stderr, warningPaginationUndeterminable)
+	assert.Contains(t, stderr, `resource "computers"`)
+	assert.Contains(t, stderr, `page-size parameter "limit"`)
+
+	require.Contains(t, byName, "devices")
+	assert.Equal(t, 500, byName["devices"].PaginationPageSize,
+		"limit-only sync should request the declared maximum on the only page")
+	assert.Contains(t, stderr, `resource "devices"`)
+
+	require.Contains(t, byName, "agents")
+	assert.Equal(t, "offset", byName["agents"].PaginationCursorParam)
+	assert.Equal(t, 25, byName["agents"].PaginationPageSize,
+		"resources that can advance must keep using a declared default")
+	assert.NotContains(t, stderr, `resource "agents"`)
 }
 
 // The ID-walk sync path (pagination.type: id_walk over a POST search endpoint)

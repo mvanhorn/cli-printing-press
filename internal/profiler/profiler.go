@@ -2,6 +2,7 @@ package profiler
 
 import (
 	"fmt"
+	"io"
 	"maps"
 	"math"
 	"os"
@@ -13,6 +14,15 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/vision"
 )
+
+// warnWriter receives profiler diagnostics. Tests redirect it so they do not
+// swap process-wide os.Stderr, which races with other packages' t.Parallel
+// generate tests under `go test ./...`.
+var warnWriter io.Writer = os.Stderr
+
+func writeProfilerWarning(format string, args ...any) {
+	fmt.Fprintf(warnWriter, format, args...)
+}
 
 type DomainArchetype string
 
@@ -32,6 +42,11 @@ const (
 	ReconcileModeFlat       = "flat"
 	ReconcileModeFlatGlobal = "flat_global"
 	ReconcileModePerParent  = "per_parent"
+)
+
+const (
+	generatorSyncPageSize           = 100
+	warningPaginationUndeterminable = "pagination_undeterminable"
 )
 
 type DomainSignals struct {
@@ -708,6 +723,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 	sortDependentResources(p.DependentSyncResources, nil)
 	addUnresolvedPathTemplateCollections(syncable, parameterized, p.DependentSyncResources)
 	p.SyncableResources = sortedSyncableResources(syncable)
+	warnUndeterminablePagination(p.SyncableResources, p.DependentSyncResources)
 	classifyFlatReconcileModes(p.SyncableResources, specHasTenantScopeColumn(s))
 	// Populate reconcile metadata for each dependent resource.
 	// per_parent is safe only for a single-path-param dependent with a PK.
@@ -737,7 +753,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 		SortValue:       sortValue,
 		DateRangeParam:  mostCommon(dateRangeParams, ""),
 		ItemsKey:        mostCommon(responsePaths, ""),
-		DefaultPageSize: 100,
+		DefaultPageSize: generatorSyncPageSize,
 	}
 
 	return p
@@ -2079,7 +2095,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 			}
 			parent := strings.ToLower(strings.TrimSpace(e.Walker.Parent))
 			if _, ok := syncable[parent]; !ok {
-				fmt.Fprintf(os.Stderr,
+				writeProfilerWarning(
 					"warning: walker on %s.%s: parent %q is not a syncable resource; ignoring\n",
 					resourceName, endpointName, e.Walker.Parent)
 				continue
@@ -2093,12 +2109,12 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 						keyParam = p
 					}
 				case 0:
-					fmt.Fprintf(os.Stderr,
+					writeProfilerWarning(
 						"warning: walker on %s.%s: path %q has no {placeholder}; declare key_param explicitly\n",
 						resourceName, endpointName, e.Path)
 					continue
 				default:
-					fmt.Fprintf(os.Stderr,
+					writeProfilerWarning(
 						"warning: walker on %s.%s: path %q has %d placeholders; declare key_param explicitly\n",
 						resourceName, endpointName, e.Path, placeholders)
 					continue
@@ -2859,7 +2875,7 @@ func detectIDWalkParams(endpoint spec.Endpoint) (string, string, int) {
 	if !hasLimit || filterParam == "" {
 		return "", "", 0
 	}
-	pageSize := 100
+	pageSize := generatorSyncPageSize
 	if defaultSize, ok := paginationLimitDefault(endpoint, resolvedLimitParam); ok {
 		pageSize = defaultSize
 	}
@@ -2973,18 +2989,65 @@ func syncPaginationDefaultsFromEndpoint(endpoint spec.Endpoint) (string, string,
 		(cursorType == "page" || cursorType == "offset") {
 		cursorType = inferredType
 	}
-	pageSize := 100
-	if defaultSize, ok := paginationLimitDefault(endpoint, limitParam); ok {
+	return cursorParam, cursorType, limitParam, syncPageSizeFromEndpoint(endpoint, cursorParam, limitParam)
+}
+
+// syncPageSizeFromEndpoint chooses the page size sync will send. A spec-declared
+// default on a page-size parameter is the server's no-param fallback, not a
+// client request size. Copying it onto a cursorless resource caps the first
+// (and only) page at that conservative number.
+func syncPageSizeFromEndpoint(endpoint spec.Endpoint, cursorParam, limitParam string) int {
+	maxSize, hasMax := paginationLimitMaximum(endpoint, limitParam)
+	defaultSize, hasDefault := paginationLimitDefault(endpoint, limitParam)
+
+	if strings.TrimSpace(cursorParam) == "" {
+		if hasMax {
+			return maxSize
+		}
+		if hasDefault && defaultSize > generatorSyncPageSize {
+			return defaultSize
+		}
+		return generatorSyncPageSize
+	}
+
+	pageSize := generatorSyncPageSize
+	if hasDefault {
 		pageSize = defaultSize
 	}
 	// Clamp to the limit param's declared maximum so sync never requests a
 	// page size the API rejects with a validation error. An API-declared cap
 	// always wins over the default (e.g. Granola's public API caps page_size
 	// at 30, and a spec may declare a maximum without any default).
-	if maxSize, ok := paginationLimitMaximum(endpoint, limitParam); ok && pageSize > maxSize {
+	if hasMax && pageSize > maxSize {
 		pageSize = maxSize
 	}
-	return cursorParam, cursorType, limitParam, pageSize
+	return pageSize
+}
+
+func isLimitWithoutCursor(cursorParam, limitParam string) bool {
+	return strings.TrimSpace(limitParam) != "" && strings.TrimSpace(cursorParam) == ""
+}
+
+func warnUndeterminablePagination(resources []SyncableResource, deps []DependentResource) {
+	for _, resource := range resources {
+		warnLimitWithoutCursor(resource.Name, resource.PaginationCursorParam, resource.PaginationLimitParam)
+	}
+	for _, dep := range deps {
+		name := dep.Name
+		if dep.ParentResource != "" {
+			name = dep.ParentResource + "/" + dep.Name
+		}
+		warnLimitWithoutCursor(name, dep.PaginationCursorParam, dep.PaginationLimitParam)
+	}
+}
+
+func warnLimitWithoutCursor(resourceName, cursorParam, limitParam string) {
+	if !isLimitWithoutCursor(cursorParam, limitParam) {
+		return
+	}
+	writeProfilerWarning(
+		"warning: %s: resource %q declares page-size parameter %q without a cursor, page, or offset parameter; sync cannot page beyond the first request\n",
+		warningPaginationUndeterminable, resourceName, limitParam)
 }
 
 func inferPaginationParamsFromEndpoint(endpoint spec.Endpoint) (string, string) {
