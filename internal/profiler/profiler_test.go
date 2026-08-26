@@ -10,15 +10,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// captureStderr redirects profiler diagnostics into a buffer. It does not
-// swap process-wide os.Stderr, which races with other packages under
-// `go test ./...`.
+// Redirects profiler diagnostics into a buffer. Not safe with t.Parallel in
+// this package: the writer is process-wide, so concurrent captures would
+// interleave. A mutex only makes the pointer swap race-free.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
 	var buf bytes.Buffer
+	warnMu.Lock()
 	orig := warnWriter
 	warnWriter = &buf
-	t.Cleanup(func() { warnWriter = orig })
+	warnMu.Unlock()
+	t.Cleanup(func() {
+		warnMu.Lock()
+		warnWriter = orig
+		warnMu.Unlock()
+	})
 	fn()
 	return buf.String()
 }

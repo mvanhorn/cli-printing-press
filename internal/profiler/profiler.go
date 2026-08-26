@@ -10,18 +10,24 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/vision"
 )
 
-// warnWriter receives profiler diagnostics. Tests redirect it so they do not
-// swap process-wide os.Stderr, which races with other packages' t.Parallel
-// generate tests under `go test ./...`.
-var warnWriter io.Writer = os.Stderr
+// Tests redirect diagnostics here instead of swapping process-wide stderr,
+// which races with other packages under `go test ./...`.
+var (
+	warnMu     sync.Mutex
+	warnWriter io.Writer = os.Stderr
+)
 
 func writeProfilerWarning(format string, args ...any) {
-	fmt.Fprintf(warnWriter, format, args...)
+	warnMu.Lock()
+	w := warnWriter
+	warnMu.Unlock()
+	fmt.Fprintf(w, format, args...)
 }
 
 type DomainArchetype string
@@ -2992,8 +2998,7 @@ func syncPaginationDefaultsFromEndpoint(endpoint spec.Endpoint) (string, string,
 	return cursorParam, cursorType, limitParam, syncPageSizeFromEndpoint(endpoint, cursorParam, limitParam)
 }
 
-// syncPageSizeFromEndpoint chooses the page size sync will send. A spec-declared
-// default on a page-size parameter is the server's no-param fallback, not a
+// A spec-declared page-size default is the server's no-param fallback, not a
 // client request size. Copying it onto a cursorless resource caps the first
 // (and only) page at that conservative number.
 func syncPageSizeFromEndpoint(endpoint spec.Endpoint, cursorParam, limitParam string) int {

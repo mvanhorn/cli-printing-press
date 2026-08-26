@@ -12,9 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// limitOnlyPaginationSpec is the cursorless shape that used to copy a
-// declared page-size default into sync, capping the local mirror at that
-// many rows with no way to advance.
+// Cursorless list whose spec default used to become the sync page size.
 func limitOnlyPaginationSpec(name string, defaultLimit int, maximum *float64) *spec.APISpec {
 	apiSpec := minimalSpec(name)
 	param := spec.Param{Name: "limit", Type: "integer", Default: defaultLimit}
@@ -37,10 +35,8 @@ func limitOnlyPaginationSpec(name string, defaultLimit int, maximum *float64) *s
 	return apiSpec
 }
 
-// TestGeneratedSyncLimitOnlyIgnoresPageSizeDefault proves the emitted
-// determinePaginationDefaults does not copy a spec-declared limit default
-// onto a cursorless resource. The assertion runs the generated helper so it
-// is compile-level, not a comment or template-source check.
+// Proves the emitted helper does not copy a spec-declared limit default
+// onto a cursorless resource. Compile-level: runs the generated helper.
 func TestGeneratedSyncLimitOnlyIgnoresPageSizeDefault(t *testing.T) {
 	t.Parallel()
 
