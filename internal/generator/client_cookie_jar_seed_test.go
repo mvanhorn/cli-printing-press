@@ -23,10 +23,11 @@ func TestCookieAuthClientSeedsJar(t *testing.T) {
 	apiSpec := minimalSpec("cookieseed")
 	apiSpec.BaseURL = "https://api.cookieseed.example"
 	apiSpec.Auth = spec.AuthConfig{
-		Type:    "cookie",
-		Header:  "Cookie",
-		Cookies: []string{"session_id", "csrf_token"},
-		EnvVars: []string{"COOKIESEED_SESSION"},
+		Type:         "cookie",
+		Header:       "Cookie",
+		CookieDomain: ".cookieseed.example",
+		Cookies:      []string{"session_id", "csrf_token"},
+		EnvVars:      []string{"COOKIESEED_SESSION"},
 	}
 
 	outputDir := filepath.Join(t.TempDir(), "cookieseed-pp-cli")
@@ -39,10 +40,12 @@ func TestCookieAuthClientSeedsJar(t *testing.T) {
 	// New() must load the persistent jar AND seed it from the cookie credential.
 	assert.Contains(t, clientSrc, "cookieJar := LoadCookieJar()",
 		"cookie-auth New() must build the persistent jar")
-	assert.Contains(t, clientSrc, "SeedCookieJar(cookieJar, cfg.BaseURL, cfg.CookieCredential())",
-		"cookie-auth New() must seed legacy credentials at the configured base URL")
-	assert.Contains(t, clientSrc, "SeedCookieJarForDomain(cookieJar, seedBaseURL, cfg.CookieCredential(), cfg.CredentialDomain)",
-		"cookie-auth New() must seed the jar from the stored cookie credential at its bound domain")
+	assert.NotContains(t, clientSrc, "SeedCookieJar(cookieJar, cfg.BaseURL, cfg.CookieCredential())",
+		"cookie-auth New() must not seed a session against an overridable BaseURL")
+	assert.Contains(t, clientSrc, "seedDomain = canonicalCredentialDomain",
+		"cookie-auth New() must fall back to the spec cookie domain for env and set-token")
+	assert.Contains(t, clientSrc, "SeedCookieJarForDomain(cookieJar, seedBaseURL, cfg.CookieCredential(), seedDomain)",
+		"cookie-auth New() must seed the jar from the stored cookie credential at the https canonical host")
 	assert.Contains(t, clientSrc, "httpClient := newHTTPClient(timeout, cookieJar)",
 		"cookie-auth client must use the seeded jar, not a nil jar")
 	assert.NotContains(t, clientSrc, "newHTTPClient(timeout, nil)",
@@ -74,6 +77,10 @@ func TestCookieAuthClientSeedsJar(t *testing.T) {
 	assert.Contains(t, jarSrc, "func SeedCookieJar(jar http.CookieJar, baseURL, cookieStr string)")
 	assert.Contains(t, jarSrc, "func parseCookieJar(s string) []*http.Cookie")
 	assert.Contains(t, jarSrc, "func looksLikeCookieJar(s string) bool")
+	assert.Contains(t, jarSrc, "cookie.Secure = true",
+		"seeded session cookies must be https-only")
+	assert.Contains(t, jarSrc, "not sending your session cookie to it",
+		"rejected seed URLs must warn instead of attaching the credential")
 
 	// Runtime proof: a seeded jar attaches the stored cookies to a request for
 	// the base URL, and parseCookieJar handles the "k=v; k=v" wire format.
@@ -113,6 +120,27 @@ func TestSeedCookieJarForDomainAttachesSubdomainCookies(t *testing.T) {
 	u, _ = url.Parse("https://api.other.example/items")
 	if cs := jar.Cookies(u); len(cs) != 0 {
 		t.Fatalf("domain-scoped seed leaked outside its binding: %v", cs)
+	}
+}
+
+func TestSeedCookieJarRejectsHTTPAndWrongHost(t *testing.T) {
+	jar, _ := cookiejar.New(nil)
+	SeedCookieJar(jar, "http://api.cookieseed.example", "session_id=abc")
+	httpsURL, _ := url.Parse("https://api.cookieseed.example/items")
+	httpURL, _ := url.Parse("http://api.cookieseed.example/items")
+	if cs := jar.Cookies(httpsURL); len(cs) != 0 {
+		t.Fatalf("http seed must not attach cookies: %v", cs)
+	}
+	if cs := jar.Cookies(httpURL); len(cs) != 0 {
+		t.Fatalf("http seed must not attach cookies for http://: %v", cs)
+	}
+	SeedCookieJar(jar, "https://evil.example.net", "session_id=abc")
+	evil, _ := url.Parse("https://evil.example.net/items")
+	if cs := jar.Cookies(evil); len(cs) != 0 {
+		t.Fatalf("wrong-host seed must not attach cookies: %v", cs)
+	}
+	if cs := jar.Cookies(httpsURL); len(cs) != 0 {
+		t.Fatalf("wrong-host seed must not attach cookies to the canonical host: %v", cs)
 	}
 }
 
