@@ -4361,10 +4361,45 @@ func TestGenerateStoreDSNUsesImmediateTransactionsAndProfileJournalMode(t *testi
 				"read-write DSN must acquire immediate transactions and select the profile journal mode")
 			assert.NotContains(t, codeOnly, "_pragma=journal_mode("+tc.otherMode+")&_pragma=synchronous",
 				"read-write DSN must not emit the other profile journal mode")
+			assert.Contains(t, codeOnly, `?mode=ro&immutable=1&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)`,
+				"read-only DSN must skip the WAL-index mmap while keeping mmap_size(0)")
 			requireGeneratedCompiles(t, outputDir)
-			runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "^Test(OpenHardensSQLiteFilePermissions|HardenSQLiteFilesSkipsSymlinkSidecars|OpenAppliesPragmas)$", "-count=1")
+			runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "^Test(OpenHardensSQLiteFilePermissions|HardenSQLiteFilesSkipsSymlinkSidecars|OpenAppliesPragmas|OpenReadOnly_SkipsWALIndexSidecars|OpenReadOnly_ConcurrentProcesses)$", "-count=1")
 		})
 	}
+}
+
+// TestGenerateStoreReadOnlyDSNSkipsWALIndex pins the read-only DSN control
+// that stops concurrent OpenReadOnly processes from mapping the WAL-index.
+// mmap_size(0) is kept; it does not govern -shm. The generated module must
+// compile and the emitted store tests must prove two reader processes can
+// share one database without recreating -shm.
+func TestGenerateStoreReadOnlyDSNSkipsWALIndex(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("wal-index-ro")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	codeOnly := stripGoComments(string(storeSrc))
+
+	assert.Contains(t, codeOnly, `?mode=ro&immutable=1&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)`,
+		"read-only DSN must set immutable=1 so SQLite skips the WAL-index mmap")
+	assert.Contains(t, codeOnly, `?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)`,
+		"read-write DSN must keep WAL, immediate transactions, and mmap_size(0)")
+	assert.Contains(t, codeOnly, `?mode=ro&immutable=1&_pragma=busy_timeout(1000)&_pragma=mmap_size(0)`,
+		"schema preflight probe must skip the WAL-index mmap")
+	assert.NotContains(t, codeOnly, "nolock=1",
+		"read-only DSN must not use nolock; WAL databases refuse that URI flag")
+	assert.NotContains(t, codeOnly, "vfs=unix-none",
+		"read-only DSN must not use unix-none; WAL databases refuse that VFS")
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "^Test(OpenAppliesPragmas|OpenReadOnly_SkipsWALIndexSidecars|OpenReadOnly_ConcurrentProcesses|OpenReadOnly_DeleteModeDBDoesNotWrite)$", "-count=1")
 }
 
 // Callers gating on existence rely on errors.Is(err, sql.ErrNoRows); the
@@ -4438,8 +4473,10 @@ func TestGenerateMCPSQLToolUsesReadOnlyStore(t *testing.T) {
 	// read-only handle.
 	assert.Contains(t, storeCode, `dsn := "file:" + dbPath`,
 		"OpenReadOnly DSN must use the file: URI prefix with mode=ro")
-	assert.Contains(t, storeCode, `?mode=ro`,
-		"OpenReadOnly DSN must request SQLite read-only mode")
+	assert.Contains(t, storeCode, `?mode=ro&immutable=1`,
+		"OpenReadOnly DSN must request SQLite read-only mode and skip the WAL-index mmap")
+	assert.Contains(t, storeCode, `_pragma=mmap_size(0)`,
+		"OpenReadOnly DSN must keep mmap_size(0) so the main database file stays pread-based")
 
 	mcpSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)

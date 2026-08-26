@@ -51,7 +51,7 @@ Switch both opens to the `_pragma=` form (verify with the pinned driver version,
 
 ```go
 // read-only
-sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)")
+sql.Open("sqlite", "file:"+dbPath+"?mode=ro&immutable=1&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)")
 
 // read-write (adds synchronous)
 sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)")
@@ -65,7 +65,7 @@ Empirical proof with the pinned driver — the mattn-style DSN is byte-for-byte 
 | no params | `delete` | `0` | `0` |
 | `?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&…` | `wal` | `5000` | `1` |
 
-A `mode=ro` open of a WAL file is fine; `journal_mode(WAL)` on a read-only handle is a harmless no-op. The read-write open performs the one-time `delete`→`wal` conversion, and published CLIs convert automatically on their next read-write open.
+A `mode=ro` open of a WAL file is fine; `journal_mode(WAL)` on a read-only handle is a write and is omitted. `immutable=1` is required on that read-only URI so the connection skips the `-shm` WAL-index mmap, which `mmap_size(0)` does not govern. The read-write open performs the one-time `delete`→`wal` conversion, and published CLIs convert automatically on their next read-write open.
 
 ### Second bug, exposed by the first fix
 
