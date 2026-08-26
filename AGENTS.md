@@ -32,7 +32,7 @@ Store-population commands stay exposed: `sync`, `stale`, `orphans`, `reconcile`,
 
 ### Tool safety annotations
 MCP hosts use `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` to decide when to ask for permission. Missing annotations default to "could write or delete."
-- Endpoint mirrors: `GET` -> read-only + open-world, `DELETE` -> destructive + open-world, `POST`/`PUT`/`PATCH` -> open-world.
+- Endpoint mirrors: conventional REST `GET` -> read-only + open-world; RPC-over-GET without a read signal (or an explicit / name-token mutation) is not read-only. `DELETE` -> destructive + open-world, `POST`/`PUT`/`PATCH` -> open-world unless a read signal applies.
 - Built-in tools: `context`, `sql`, `search` are read-only and local-only.
 - Runtime walker shell-out tools get no annotations by default. Opt into read-only with `cmd.Annotations["mcp:read-only"] = "true"` for novel commands that only read from the API, the local store, or the CLI tree itself. Skip the annotation when the command can mutate external state (writes via API, store updates other than telemetry-class writes below, git pushes) or write to user-visible files outside the local cache (commands accepting `--output <file>`, `--repo <dir>`, etc.).
 - Telemetry-class local writes do not disqualify `mcp:read-only`: a best-effort local write that never fails the command and is never observable in domain output (recall's usage-event insert, journal appends) is telemetry, not a store update in the sense above. Keep `readOnlyHint: true` on such commands.

@@ -1479,13 +1479,14 @@ Overrides the generator's read/write classification when the HTTP method is
 not enough. `true` marks a GET action as state-changing (start, stop, restart,
 deploy). `false` marks a POST (or other non-GET) endpoint as a read so the
 generated command prints the response body instead of the mutation
-acknowledgment envelope.
+acknowledgment envelope. Unset RPC-over-GET operations without a read token
+fail closed (not `mcp:read-only`).
 
 Parsed field: `Endpoint.Mutation`
 
 Rules:
 - Optional.
-- Unset means classify from the HTTP verb, operation name, and body shape.
+- Unset means classify from the HTTP verb, operation name, path shape, and body shape. RPC-over-GET without a read signal is a write.
 - Must be a native boolean.
 - Applies only at the operation level.
 - When set, the generator uses this value before HTTP-verb and operation-name

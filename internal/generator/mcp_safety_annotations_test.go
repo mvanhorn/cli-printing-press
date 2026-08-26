@@ -170,3 +170,137 @@ func TestPlatformClientMCPAnnotations(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "platform_mcp_annotations_test.go"), []byte(runtimeTest), 0o644))
 	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestPlatformClientMCPAnnotations$", "-count=1")
 }
+
+func TestGenerateGETRPCEndpointsFailClosedMCPReadOnly(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("rpc-get-safety")
+	apiSpec.Resources = map[string]spec.Resource{
+		"session": {
+			Description: "Auth session",
+			Endpoints: map[string]spec.Endpoint{
+				"login": {
+					Method:      "GET",
+					Path:        "/webapi/entry.cgi?api=SYNO.API.Auth&method=login&version=7",
+					Description: "Log in",
+				},
+			},
+		},
+		"files": {
+			Description: "File station",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/webapi/entry.cgi?api=SYNO.FileStation.List&method=list&version=2",
+					Description: "List files",
+				},
+				"rename": {
+					Method:      "GET",
+					Path:        "/webapi/entry.cgi?api=SYNO.FileStation.Rename&method=rename&version=2",
+					Description: "Rename a file",
+				},
+				"delete": {
+					Method:      "GET",
+					Path:        "/webapi/entry.cgi?api=SYNO.FileStation.Delete&method=delete&version=2",
+					Description: "Delete a file",
+				},
+			},
+		},
+		"sets": {
+			Description: "Search sets",
+			Endpoints: map[string]spec.Endpoint{
+				"search": {
+					Method:      "POST",
+					Path:        "/sets/search",
+					Description: "Search sets",
+					Body:        []spec.Param{{Name: "query", Type: "string"}},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{MCP: true}
+	require.NoError(t, gen.Generate())
+
+	assertGeneratedEndpointReadOnly(t, outputDir, "session.login", false)
+	assertGeneratedEndpointReadOnly(t, outputDir, "files.rename", false)
+	assertGeneratedEndpointReadOnly(t, outputDir, "files.delete", false)
+	assertGeneratedEndpointReadOnly(t, outputDir, "files.list", true)
+	assertGeneratedEndpointReadOnly(t, outputDir, "sets.search", true)
+
+	toolsSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+	assertMCPToolReadOnlyHint(t, toolsSrc, "session_login", false)
+	assertMCPToolReadOnlyHint(t, toolsSrc, "files_rename", false)
+	assertMCPToolReadOnlyHint(t, toolsSrc, "files_delete", false)
+	assertMCPToolReadOnlyHint(t, toolsSrc, "files_list", true)
+	assertMCPToolReadOnlyHint(t, toolsSrc, "sets_search", true)
+
+	requireGeneratedCompiles(t, outputDir)
+
+	runtimeTest := `package mcp
+
+import (
+	"testing"
+
+	"github.com/mark3labs/mcp-go/server"
+)
+
+func TestGETRPCSafetyMetadata(t *testing.T) {
+	s := server.NewMCPServer("rpc-get-safety", "test")
+	RegisterTools(s)
+	tools := s.ListTools()
+
+	tests := map[string]bool{
+		"session_login": false,
+		"files_rename":  false,
+		"files_delete":  false,
+		"files_list":    true,
+		"sets_search":   true,
+	}
+	for name, wantReadOnly := range tests {
+		entry, ok := tools[name]
+		if !ok {
+			t.Fatalf("tool %q missing from tools/list: %#v", name, tools)
+		}
+		got := entry.Tool.Annotations.ReadOnlyHint != nil && *entry.Tool.Annotations.ReadOnlyHint
+		if got != wantReadOnly {
+			t.Fatalf("%s readOnlyHint = %v, want %v", name, entry.Tool.Annotations.ReadOnlyHint, wantReadOnly)
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "rpc_get_safety_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "^TestGETRPCSafetyMetadata$", "-count=1")
+}
+
+func assertGeneratedEndpointReadOnly(t *testing.T, outputDir, endpointID string, wantReadOnly bool) {
+	t.Helper()
+	needle := `"pp:endpoint": "` + endpointID + `"`
+	src := readGeneratedCLIFileContaining(t, outputDir, needle)
+	marker := `"mcp:read-only": "true"`
+	if wantReadOnly {
+		require.Contains(t, src, marker, "%s must emit mcp:read-only so hosts treat it as safe", endpointID)
+		return
+	}
+	require.NotContains(t, src, marker, "%s must not emit mcp:read-only; a false positive skips MCP safety", endpointID)
+}
+
+func assertMCPToolReadOnlyHint(t *testing.T, toolsSrc, toolName string, wantReadOnly bool) {
+	t.Helper()
+	quoted := `"` + toolName + `"`
+	idx := strings.Index(toolsSrc, quoted)
+	require.NotEqual(t, -1, idx, "MCP tool %s missing from generated tools.go", toolName)
+	next := strings.Index(toolsSrc[idx+len(quoted):], "s.AddTool(")
+	block := toolsSrc[idx:]
+	if next != -1 {
+		block = toolsSrc[idx : idx+len(quoted)+next]
+	}
+	hasHint := strings.Contains(block, "WithReadOnlyHintAnnotation(true)")
+	if wantReadOnly {
+		require.True(t, hasHint, "MCP tool %s must carry WithReadOnlyHintAnnotation(true)", toolName)
+		return
+	}
+	require.False(t, hasHint, "MCP tool %s must not carry WithReadOnlyHintAnnotation(true)", toolName)
+}

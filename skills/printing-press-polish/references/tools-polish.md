@@ -117,7 +117,7 @@ This is where the actual quality assessment happens. Walk every user-facing comm
 For each command:
 
 - Read its `RunE` body (or for typed endpoint tools, the underlying spec method/path). Does it call an HTTP method (`client.Get`, `resolveRead`, `c.Post`, …)? Does it write to the local store, the filesystem, or config?
-  - **HTTP GET only, no local writes** → mark `mcp:read-only` (even if the audit didn't flag).
+  - **HTTP GET only, no local writes** → mark `mcp:read-only` (even if the audit didn't flag), unless the GET is an RPC-style mutation (`method=`/`action=` selector, shared gateway path, or a verb like login/rename/delete).
   - **Any local write or external mutation** → do NOT mark; the default destructive hint is correct.
   - **Side effect** (browser open, notification, audio) → do NOT mark; agents should be prompted.
 - Read the description (Cobra `Short` for shell-out, manifest entry for typed endpoint). Test against the criteria below — not just "is it long enough" but "does it actually answer the four questions an agent needs answered before calling this tool?" If the answer is "not really," rewrite.
