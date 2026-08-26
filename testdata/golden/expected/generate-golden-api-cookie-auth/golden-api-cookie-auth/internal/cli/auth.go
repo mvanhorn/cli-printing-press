@@ -365,27 +365,32 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 // silently land as the access token.
 func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
-		Use:     "set-token <jwt>",
+		Use:     "set-token",
 		Short:   "Save a bearer JWT pasted from DevTools (escape hatch for in-memory tokens)",
-		Example: "  golden-api-cookie-auth-pp-cli auth set-token eyJhbGciOi...",
+		Example: "  echo \"$TOKEN\" | golden-api-cookie-auth-pp-cli auth set-token\n  golden-api-cookie-auth-pp-cli auth set-token < token-file",
 		Long: "Save a bearer JWT pasted from DevTools (escape hatch for in-memory tokens).\n\n" +
 			"Use this when `auth login --chrome` can't reach the access token — most\n" +
 			"commonly Auth0 SPA SDK deployments that keep the JWT in JS heap memory.\n" +
 			"Open DevTools → Network → any authenticated request → copy the\n" +
-			"`Authorization: Bearer ...` value and paste the JWT portion here.\n\n" +
-			"The token is validated for JWT shape (three base64url segments, length\n" +
-			"floor) so short tracking cookies don't get saved as credentials.",
-		Args: cobra.ExactArgs(1),
+			"`Authorization: Bearer ...` value and pipe the JWT portion on stdin.\n\n" +
+			"The token is read from stdin so it never appears in process arguments or\n" +
+			"shell history. It is validated for JWT shape (three base64url segments,\n" +
+			"length floor) so short tracking cookies don't get saved as credentials.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			token, err := readSecretFromStdin(cmd.InOrStdin())
+			if err != nil {
+				return authErr(err)
+			}
+
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
 				return configErr(err)
 			}
 
-			token := strings.TrimSpace(args[0])
 			token = strings.TrimPrefix(token, "Bearer ")
 			if !cliutil.LooksLikeJWT(token) {
-				return authErr(fmt.Errorf("argument is not JWT-shaped (three base64url segments, ≥150 chars total). " +
+				return authErr(fmt.Errorf("stdin is not JWT-shaped (three base64url segments, ≥150 chars total). " +
 					"This is the cookie-vs-JWT-shape gate — short tracking cookies like Cloudflare's __cf_bm " +
 					"share the segment shape but aren't credentials. Paste the `Authorization: Bearer ...` value " +
 					"from DevTools → Network, not a cookie jar"))

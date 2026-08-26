@@ -2914,7 +2914,10 @@ paths:
 
 	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
 	require.NoError(t, err)
-	require.Contains(t, string(authSrc), `"set-token <token>"`)
+	require.Contains(t, string(authSrc), `"set-token"`)
+	require.Contains(t, string(authSrc), "cobra.NoArgs")
+	require.Contains(t, string(authSrc), "readSecretFromStdin")
+	require.NotContains(t, string(authSrc), `"set-token <token>"`)
 
 	runGo(t, outputDir, "mod", "tidy")
 	runGo(t, outputDir, "test", "./...")

@@ -1386,7 +1386,7 @@ func looksLikeCredentialPlaceholder(value string) bool {
 }
 
 func authPlaceholderCredentialError(cfg *config.Config) error {
-	return authPlaceholderCredentialErrorWithSetup(cfg, "export PRINTING_PRESS_GOLDEN_API_KEY=<your-token-here> or printing-press-golden-pp-cli auth set-token YOUR_TOKEN_HERE")
+	return authPlaceholderCredentialErrorWithSetup(cfg, "export PRINTING_PRESS_GOLDEN_API_KEY=<your-token-here> or echo \"$TOKEN\" | printing-press-golden-pp-cli auth set-token")
 }
 
 func authPlaceholderCredentialErrorWithSetup(cfg *config.Config, setup string) error {

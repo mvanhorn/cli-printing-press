@@ -48,6 +48,29 @@ func formatCLIParamValue(v any) string {
 		return fmt.Sprintf("%v", v)
 	}
 }
+
+const maxSecretFromStdin = 64 << 10
+
+func readSecretFromStdin(r io.Reader) (string, error) {
+	if f, ok := r.(*os.File); ok {
+		info, err := f.Stat()
+		if err == nil && info.Mode()&os.ModeCharDevice != 0 {
+			return "", fmt.Errorf("read the secret from stdin (pipe or redirect); it cannot be passed as a command argument")
+		}
+	}
+	data, err := io.ReadAll(io.LimitReader(r, int64(maxSecretFromStdin)+1))
+	if err != nil {
+		return "", fmt.Errorf("reading token from stdin: %w", err)
+	}
+	if len(data) > maxSecretFromStdin {
+		return "", fmt.Errorf("token on stdin exceeds %d bytes", maxSecretFromStdin)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", fmt.Errorf("empty token on stdin")
+	}
+	return token, nil
+}
 func appendArrayQueryParam(path, name, raw, style string, explode bool) string {
 	values := make([]string, 0)
 	var decoded []any

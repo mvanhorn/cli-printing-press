@@ -225,7 +225,7 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- if $authSetTokenAvailable}}
-			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth set-token <token>")
+			fmt.Fprintln(w, "  echo \"$TOKEN\" | {{.Name}}-pp-cli auth set-token")
 {{- end}}
 {{- if $authSetCredentialsAvailable}}
 			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth set-credentials {{authEnvPlaceholder (index $basicAuthEnvVars 0)}} {{authEnvPlaceholder (index $basicAuthEnvVars 1)}}")
@@ -249,7 +249,7 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 			fmt.Fprintln(w, "  export {{.}}=\"{{authEnvPlaceholderByName .}}\"")
 {{- end}}
 {{- if $authSetTokenAvailable}}
-			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth set-token <token>")
+			fmt.Fprintln(w, "  echo \"$TOKEN\" | {{.Name}}-pp-cli auth set-token")
 {{- end}}
 {{- if $authSetCredentialsAvailable}}
 			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth set-credentials {{authEnvPlaceholder (index $basicAuthEnvVars 0)}} {{authEnvPlaceholder (index $basicAuthEnvVars 1)}}")
@@ -499,7 +499,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- if $authSetTokenAvailable}}
-				fmt.Fprintf(w, "  {{.Name}}-pp-cli auth set-token <token>\n")
+				fmt.Fprintf(w, "  echo \"$TOKEN\" | {{.Name}}-pp-cli auth set-token\n")
 {{- end}}
 {{- if $authSetCredentialsAvailable}}
 				fmt.Fprintf(w, "  {{.Name}}-pp-cli auth set-credentials {{authEnvPlaceholder (index $basicAuthEnvVars 0)}} {{authEnvPlaceholder (index $basicAuthEnvVars 1)}}\n")
@@ -532,11 +532,18 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 
 func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
-		Use:   "set-token <token>",
+		Use:   "set-token",
 		Short: "Save an API token to the credentials file",
-		Example: "  {{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE",
-		Args:  cobra.ExactArgs(1),
+		Long: "Save an API token to the credentials file.\n\n" +
+			"The token is read from stdin so it never appears in process arguments or shell history.",
+		Example: "  echo \"$TOKEN\" | {{.Name}}-pp-cli auth set-token\n  {{.Name}}-pp-cli auth set-token < token-file",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			token, err := readSecretFromStdin(cmd.InOrStdin())
+			if err != nil {
+				return authErr(err)
+			}
+
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
 				return configErr(err)
@@ -555,11 +562,11 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			// AccessToken. Writing the token to AccessToken via SaveTokens
 			// would persist the bytes but leave doctor reporting "not
 			// configured" — the slot the header builder consults stays empty.
-			if err := cfg.SaveCredential(args[0]); err != nil {
+			if err := cfg.SaveCredential(token); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
 {{- else}}
-			if err := cfg.SaveTokens("", "", args[0], "", cfg.TokenExpiry); err != nil {
+			if err := cfg.SaveTokens("", "", token, "", cfg.TokenExpiry); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
 {{- end}}

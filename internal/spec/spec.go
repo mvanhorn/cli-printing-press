@@ -2095,6 +2095,11 @@ type LookupSeed struct {
 //
 // Opting http into Transport adds a --transport flag (stdio|http) and, for http,
 // an --addr flag so the same binary can also serve an HTTP streamable transport.
+// The HTTP listener requires a per-CLI bearer env var and refuses non-loopback
+// binds without --tls-cert/--tls-key; named hosts including localhost are
+// loopback only when every resolved address is loopback, and the listener
+// is then pinned to that IP. Loopback plaintext still requires the caller
+// Authorization header.
 //
 // Rationale: stdio-only servers can only reach clients that share a filesystem
 // and can spawn a subprocess. Cloud-hosted agents (hosted Claude Code sessions,
@@ -2110,7 +2115,7 @@ type LookupSeed struct {
 // prevents silent drift when new transports are introduced.
 type MCPConfig struct {
 	Transport              []string `yaml:"transport,omitempty" json:"transport,omitempty"`                             // allowed transports the generated binary compiles support for; empty resolves via APISpec.EffectiveMCPTransports for small APIs and via the large-surface generator default when code orchestration is auto-applied. Runtime transport is chosen via the --transport flag and PP_MCP_TRANSPORT env.
-	Addr                   string   `yaml:"addr,omitempty" json:"addr,omitempty"`                                       // default bind address for the http transport (e.g., ":7777"). Blank means runtime default (":7777"). Ignored unless http is in Transport.
+	Addr                   string   `yaml:"addr,omitempty" json:"addr,omitempty"`                                       // default bind address for the http transport (e.g., "127.0.0.1:7777"). Blank means runtime default ("127.0.0.1:7777"). Empty-host forms like ":7777" bind every interface and require TLS. Ignored unless http is in Transport.
 	Intents                []Intent `yaml:"intents,omitempty" json:"intents,omitempty"`                                 // higher-level MCP tools that compose multiple endpoint calls. The agent sees one intent tool; the generator emits a handler that fans out to the declared endpoints sequentially. Anti-pattern to fight: one-tool-per-endpoint mirrors that force agents to stitch primitives.
 	EndpointTools          string   `yaml:"endpoint_tools,omitempty" json:"endpoint_tools,omitempty"`                   // "visible" (default) keeps the per-endpoint MCP tools; "hidden" suppresses them so only intents + generator-emitted tools appear. Use "hidden" when intents fully cover the surface and raw endpoints would be noise.
 	Orchestration          string   `yaml:"orchestration,omitempty" json:"orchestration,omitempty"`                     // "endpoint-mirror" (default), "intent", or "code". Code-orchestration emits a thin <api>_search + <api>_execute pair covering the full surface in ~1K tokens; used for very large APIs where even intent-grouped tools would overflow context. Mutually exclusive with endpoint-mirror at emission time.

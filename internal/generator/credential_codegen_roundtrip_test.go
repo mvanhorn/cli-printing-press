@@ -107,7 +107,8 @@ func TestCredentialAliasFieldsRoundTripIndependently(t *testing.T) {
 			runGoCommandRequired(t, outputDir, "build", "-o", binPath, "./cmd/"+naming.CLI(apiSpec.Name))
 			home := t.TempDir()
 			dataHome := filepath.Join(home, "data")
-			cmd := exec.Command(binPath, "auth", "set-token", "set-token-secret")
+			cmd := exec.Command(binPath, "auth", "set-token")
+			cmd.Stdin = strings.NewReader("set-token-secret\n")
 			cmd.Env = append(os.Environ(),
 				"HOME="+home,
 				"XDG_CONFIG_HOME="+filepath.Join(home, "config"),

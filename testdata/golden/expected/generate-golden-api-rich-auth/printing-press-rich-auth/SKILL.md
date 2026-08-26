@@ -58,7 +58,7 @@ Run `printing-press-rich-pp-cli auth setup` to print the URL and steps for getti
 ```bash
 export RICH_AUTH_API_KEY="<your-key>"
 ```
-To persist credentials, use `printing-press-rich-pp-cli auth set-token YOUR_TOKEN_HERE`. Stored secrets live in `credentials.toml` under the data dir, not in `config.toml`.
+To persist credentials, use `echo "$TOKEN" | printing-press-rich-pp-cli auth set-token`. Stored secrets live in `credentials.toml` under the data dir, not in `config.toml`.
 
 Run `printing-press-rich-pp-cli doctor` to verify setup.
 

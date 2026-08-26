@@ -43,7 +43,7 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "Then set:")
 			fmt.Fprintln(w, "  export PRINTING_PRESS_GOLDEN_API_KEY=\"your-token-here\"")
-			fmt.Fprintln(w, "  printing-press-golden-pp-cli auth set-token <token>")
+			fmt.Fprintln(w, "  echo \"$TOKEN\" | printing-press-golden-pp-cli auth set-token")
 			if !launch {
 				return nil
 			}
@@ -108,7 +108,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintln(w, "")
 				fmt.Fprintln(w, "Set your token:")
 				fmt.Fprintln(w, "  export PRINTING_PRESS_GOLDEN_API_KEY=\"your-token-here\"")
-				fmt.Fprintf(w, "  printing-press-golden-pp-cli auth set-token <token>\n")
+				fmt.Fprintf(w, "  echo \"$TOKEN\" | printing-press-golden-pp-cli auth set-token\n")
 				return authErr(fmt.Errorf("no credentials configured"))
 			}
 
@@ -122,11 +122,18 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 
 func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
-		Use:     "set-token <token>",
-		Short:   "Save an API token to the credentials file",
-		Example: "  printing-press-golden-pp-cli auth set-token YOUR_TOKEN_HERE",
-		Args:    cobra.ExactArgs(1),
+		Use:   "set-token",
+		Short: "Save an API token to the credentials file",
+		Long: "Save an API token to the credentials file.\n\n" +
+			"The token is read from stdin so it never appears in process arguments or shell history.",
+		Example: "  echo \"$TOKEN\" | printing-press-golden-pp-cli auth set-token\n  printing-press-golden-pp-cli auth set-token < token-file",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			token, err := readSecretFromStdin(cmd.InOrStdin())
+			if err != nil {
+				return authErr(err)
+			}
+
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
 				return configErr(err)
@@ -143,7 +150,7 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			// AccessToken. Writing the token to AccessToken via SaveTokens
 			// would persist the bytes but leave doctor reporting "not
 			// configured" — the slot the header builder consults stays empty.
-			if err := cfg.SaveCredential(args[0]); err != nil {
+			if err := cfg.SaveCredential(token); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
 

@@ -65,7 +65,7 @@ learn-disabled-example-pp-cli which "<capability in your own words>"
 Run `learn-disabled-example-pp-cli auth setup` for the URL and steps to obtain a token (add `--launch` to open the URL). Then store it:
 
 ```bash
-learn-disabled-example-pp-cli auth set-token YOUR_TOKEN_HERE
+echo "$TOKEN" | learn-disabled-example-pp-cli auth set-token
 ```
 
 Or set `LEARN_DISABLED_TOKEN` as an environment variable.
