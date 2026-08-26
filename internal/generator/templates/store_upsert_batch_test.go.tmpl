@@ -185,7 +185,7 @@ func TestUpsertBatch_GenericFallbackList(t *testing.T) {
 	}
 	defer s.Close()
 
-	for _, key := range []string{"id", "ID", "_id", "gid", "sid", "uid", "uuid", "guid", "api_id", "name", "slug", "key", "code"} {
+	for _, key := range []string{"id", "ID", "_id", "id_", "gid", "sid", "uid", "uuid", "guid", "api_id", "name", "slug", "key", "code"} {
 		t.Run(key, func(t *testing.T) {
 			rt := "fallback_" + key
 			items := []json.RawMessage{
@@ -417,6 +417,142 @@ func TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses(t *testing.T) {
 	}
 	if extractFailures != 2 {
 		t.Fatalf("extractFailures = %d, want 2 (two items have no extractable PK)", extractFailures)
+	}
+}
+
+func TestLookupFieldValue_DottedPathAndTrailingUnderscore(t *testing.T) {
+	nested := map[string]any{
+		"entityInfo": map[string]any{"entityId": "ent-1"},
+	}
+	if v := LookupFieldValue(nested, "entityInfo.entityId"); v != "ent-1" {
+		t.Fatalf("dotted camel path: want ent-1, got %v", v)
+	}
+	snakeNested := map[string]any{
+		"entity_info": map[string]any{"entity_id": "ent-2"},
+	}
+	if v := LookupFieldValue(snakeNested, "entity_info.entity_id"); v != "ent-2" {
+		t.Fatalf("dotted snake path: want ent-2, got %v", v)
+	}
+	if v := LookupFieldValue(map[string]any{"id_": "py-1"}, "id"); v != "py-1" {
+		t.Fatalf("trailing-underscore id_: want py-1, got %v", v)
+	}
+	if v := LookupFieldValue(map[string]any{"Id": "net-1"}, "id"); v != "net-1" {
+		t.Fatalf("PascalCase Id: want net-1, got %v", v)
+	}
+}
+
+func TestExtractResourceID_NestedOverrideAndIDUnderscore(t *testing.T) {
+	prev, hadPrev := resourceIDFieldOverrides["nestedEntities"]
+	resourceIDFieldOverrides["nestedEntities"] = "entityInfo.entityId"
+	defer func() {
+		if hadPrev {
+			resourceIDFieldOverrides["nestedEntities"] = prev
+		} else {
+			delete(resourceIDFieldOverrides, "nestedEntities")
+		}
+	}()
+
+	obj := map[string]any{
+		"name": "display",
+		"entityInfo": map[string]any{
+			"entityId": "ent-nested",
+		},
+	}
+	if got := ExtractResourceID("nestedEntities", obj); got != "ent-nested" {
+		t.Fatalf("dotted override = %q, want ent-nested", got)
+	}
+	if got := ExtractResourceID("devices", map[string]any{"id_": "dev-1", "name": "ignored"}); got != "dev-1" {
+		t.Fatalf("id_ fallback = %q, want dev-1", got)
+	}
+}
+
+func TestExtractResourceID_RefusesUnusableValues(t *testing.T) {
+	if got := ExtractResourceID("devices", map[string]any{"id": 0, "name": "keep-me"}); got != "keep-me" {
+		t.Fatalf("zero id must fall through, got %q", got)
+	}
+	if got := ExtractResourceID("devices", map[string]any{"id": "0", "uuid": "real-uuid"}); got != "real-uuid" {
+		t.Fatalf("string zero id must fall through, got %q", got)
+	}
+	if got := ExtractResourceID("devices", map[string]any{"id": "2026-08-22T15:04:05Z", "slug": "stable"}); got != "stable" {
+		t.Fatalf("timestamp id must fall through, got %q", got)
+	}
+	if got := ExtractResourceID("devices", map[string]any{"id": true}); got != "" {
+		t.Fatalf("boolean id must be refused, got %q", got)
+	}
+	if got := CanonicalResourceID("0"); got != "" {
+		t.Fatalf("CanonicalResourceID(0) = %q, want empty", got)
+	}
+	if got := CanonicalResourceID("2026-08-22"); got != "" {
+		t.Fatalf("CanonicalResourceID(date) = %q, want empty", got)
+	}
+}
+
+func TestUpsertBatch_NestedOverrideStoresRows(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	prev, hadPrev := resourceIDFieldOverrides["nestedEntities"]
+	resourceIDFieldOverrides["nestedEntities"] = "entityInfo.entityId"
+	defer func() {
+		if hadPrev {
+			resourceIDFieldOverrides["nestedEntities"] = prev
+		} else {
+			delete(resourceIDFieldOverrides, "nestedEntities")
+		}
+	}()
+
+	items := []json.RawMessage{
+		json.RawMessage(`{"name":"alpha","entityInfo":{"entityId":"ent-a"}}`),
+		json.RawMessage(`{"name":"beta","entityInfo":{"entityId":"ent-b"}}`),
+	}
+	stored, extractFailures, err := s.UpsertBatch("nestedEntities", items)
+	if err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	}
+	if stored != 2 || extractFailures != 0 {
+		t.Fatalf("nested override stored=%d extractFailures=%d, want 2/0", stored, extractFailures)
+	}
+	row, err := s.Get("nestedEntities", "ent-a")
+	if err != nil {
+		t.Fatalf("Get ent-a: %v", err)
+	}
+	if !strings.Contains(string(row), `"ent-a"`) {
+		t.Fatalf("stored row missing nested id, got %s", row)
+	}
+}
+
+func TestUpsertBatch_RefusesUnusableIDsInsteadOfWritingThem(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	stored, extractFailures, err := s.UpsertBatch("restore_points", []json.RawMessage{
+		json.RawMessage(`{"id":"2026-08-22T15:04:05Z","label":"snapshot"}`),
+		json.RawMessage(`{"id":0,"label":"zero"}`),
+		json.RawMessage(`{"id_":"rp-1","label":"ok"}`),
+	})
+	if err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	}
+	if stored != 1 || extractFailures != 2 {
+		t.Fatalf("unusable ids stored=%d extractFailures=%d, want 1/2", stored, extractFailures)
+	}
+	if _, err := s.Get("restore_points", "rp-1"); err != nil {
+		t.Fatalf("usable id_ row missing: %v", err)
+	}
+	var writtenZeros int
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM resources WHERE resource_type = ? AND id IN ('0', '2026-08-22T15:04:05Z')`, "restore_points").Scan(&writtenZeros); err != nil {
+		t.Fatalf("count unusable ids: %v", err)
+	}
+	if writtenZeros != 0 {
+		t.Fatalf("unusable ids were written: count=%d", writtenZeros)
 	}
 }
 

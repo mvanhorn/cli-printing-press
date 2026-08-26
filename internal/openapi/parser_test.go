@@ -7971,9 +7971,10 @@ func TestParseReadsXResourceIDCriticalAndSyncable(t *testing.T) {
 			wantSyncable: true,
 		},
 		{
-			name:        "no extensions: response-schema fallback picks id",
-			extraExt:    ``,
-			wantIDField: "id",
+			name: "x-resource-id dotted path is preserved as a field path",
+			extraExt: `    x-resource-id: entityInfo.entityId
+`,
+			wantIDField: "entityInfo.entityId",
 		},
 	}
 
