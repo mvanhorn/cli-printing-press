@@ -105,6 +105,20 @@ type MCPBLaunchSpec struct {
 	Command string            `json:"command"`
 	Args    []string          `json:"args"`
 	Env     map[string]string `json:"env,omitempty"`
+	// PlatformOverrides selects a different command per OS. The MCPB spec keys
+	// this on OS only - "darwin", "linux", "win32" - with no CPU-architecture
+	// axis and no ${arch} template variable, so a bundle carrying one binary per
+	// (os, arch) cannot be addressed by Command alone. See BuildMCPBBundle for
+	// how a multi-platform bundle keeps every declared path resolvable.
+	PlatformOverrides map[string]MCPBLaunchOverride `json:"platform_overrides,omitempty"`
+}
+
+// MCPBLaunchOverride is the per-OS half of platform_overrides. Every field is
+// optional; the host merges what is present over the base MCPConfig.
+type MCPBLaunchOverride struct {
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
 }
 
 // MCPBVar is one entry in user_config — a value the host collects from the

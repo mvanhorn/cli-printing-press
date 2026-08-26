@@ -117,7 +117,13 @@ func BuildMCPBBundle(params BundleParams) error {
 	if err := zw.Close(); err != nil {
 		return fmt.Errorf("finalizing bundle archive: %w", err)
 	}
-	return nil
+	// Assert the finished archive actually contains every path its manifest
+	// declares. The single-platform path writes the binary to the declared
+	// entry_point, so this is normally a tautology - but it is the cheap guard
+	// that stops a future change to either half from shipping a bundle that
+	// installs, prompts for credentials, and fails at the first tool call
+	// (mvanhorn/cli-printing-press#3547 finding 2).
+	return ValidateMCPBBundle(params.OutputPath)
 }
 
 func rewriteMCPBManifestVersion(data []byte, version string) ([]byte, error) {
