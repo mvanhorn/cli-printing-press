@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"golang.org/x/net/publicsuffix"
 	"golden-api-cookie-auth-pp-cli/internal/cliutil"
 	"golden-api-cookie-auth-pp-cli/internal/config"
 	"golden-api-cookie-auth-pp-cli/internal/platform"
@@ -289,15 +288,19 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	if cfg != nil && !cfg.UsePersistedCookieJar() {
 		cookieJar = NewCookieJar()
 	}
-	// Seed the jar from a session captured via the env var or stored in
-	// credentials but not yet in cookies.json, so the credential rides every
-	// request and net/http absorbs Set-Cookie rotation across the session.
+	// Seed the jar from a session captured via the env var, set-token, or
+	// credentials file so the credential rides https requests to the
+	// canonical host. Always seed against that host — never cfg.BaseURL —
+	// so an env override or http:// / wrong-host BaseURL cannot attach the
+	// session to an untrusted origin.
 	if cfg != nil {
-		if cfg.CredentialDomain != "" && cfg.UsePersistedCookieJar() {
-			seedBaseURL := "https://" + strings.TrimPrefix(cfg.CredentialDomain, ".")
-			SeedCookieJarForDomain(cookieJar, seedBaseURL, cfg.CookieCredential(), cfg.CredentialDomain)
-		} else {
-			SeedCookieJar(cookieJar, cfg.BaseURL, cfg.CookieCredential())
+		seedDomain := strings.TrimSpace(cfg.CredentialDomain)
+		if seedDomain == "" {
+			seedDomain = canonicalCredentialDomain
+		}
+		if seedDomain != "" {
+			seedBaseURL := "https://" + strings.TrimPrefix(seedDomain, ".")
+			SeedCookieJarForDomain(cookieJar, seedBaseURL, cfg.CookieCredential(), seedDomain)
 		}
 	}
 	httpClient := newHTTPClient(timeout, cookieJar)
@@ -1000,11 +1003,17 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		}
 		if c.Config != nil {
 			for k, v := range c.Config.Headers {
+				if !credentialAllowed && isCredentialHeader(k) {
+					continue
+				}
 				req.Header.Set(k, v)
 			}
 		}
 		// Per-endpoint header overrides (e.g., different API version per resource)
 		for k, v := range headerOverrides {
+			if !credentialAllowed && isCredentialHeader(k) {
+				continue
+			}
 			req.Header.Set(k, v)
 		}
 		binaryResponse := strings.EqualFold(req.Header.Get(BinaryResponseHeader), "true")
@@ -1313,12 +1322,20 @@ func authPlaceholderCredentialErrorWithSetup(cfg *config.Config, setup string) e
 	return fmt.Errorf("%w configured in %s; set a real token with: %s", ErrPlaceholderCredential, location, setup)
 }
 
-// credentialAppliesToURL keeps a browser-captured credential on its own
-// registrable domain. An empty binding preserves legacy credentials and
-// explicit verify-live HTTP uses mock hosts that cannot match the real site.
+// canonicalCredentialDomain is the spec's cookie_domain (or the base_url
+// host derived at generate time). Env, set-token, and credentials-file
+// tokens all bind to this https host even when Config.CredentialDomain is
+// empty.
+const canonicalCredentialDomain = ".cookie-auth.example"
+
+// credentialAppliesToURL keeps a cookie or Authorization credential on the
+// https canonical host. Env and set-token clear Config.CredentialDomain so
+// they do not inherit a persisted browser jar; the spec domain still binds
+// those tokens. Verify-live HTTP is the only fail-open, and only for mock
+// loopback hosts.
 func (c *Client) credentialAppliesToURL(rawURL string) bool {
-	if c == nil || c.Config == nil || !c.Config.UsePersistedCookieJar() || strings.TrimSpace(c.Config.CredentialDomain) == "" {
-		return true
+	if c == nil || c.Config == nil {
+		return false
 	}
 	if cliutil.IsVerifyEnv() && cliutil.IsVerifyLiveHTTPEnv() && isVerifyMockURL(rawURL) {
 		return true
@@ -1327,14 +1344,32 @@ func (c *Client) credentialAppliesToURL(rawURL string) bool {
 	if err != nil || target.Hostname() == "" {
 		return false
 	}
+	if !strings.EqualFold(target.Scheme, "https") {
+		return false
+	}
+	boundHost := credentialBoundHost(c.Config.CredentialDomain)
+	if boundHost == "" {
+		return false
+	}
 	targetHost := strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
-	boundHost := strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(c.Config.CredentialDomain), "."), "."))
-	if targetHost == boundHost || strings.HasSuffix(targetHost, "."+boundHost) {
+	return targetHost == boundHost || strings.HasSuffix(targetHost, "."+boundHost)
+}
+
+func credentialBoundHost(configDomain string) string {
+	d := strings.TrimSpace(configDomain)
+	if d == "" {
+		d = canonicalCredentialDomain
+	}
+	return strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(d, "."), "."))
+}
+
+func isCredentialHeader(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case "authorization", "cookie", "proxy-authorization":
 		return true
 	}
-	targetRegistered, targetErr := publicsuffix.EffectiveTLDPlusOne(targetHost)
-	boundRegistered, boundErr := publicsuffix.EffectiveTLDPlusOne(boundHost)
-	return targetErr == nil && boundErr == nil && targetRegistered == boundRegistered
+	return false
 }
 
 func isVerifyMockURL(rawURL string) bool {
