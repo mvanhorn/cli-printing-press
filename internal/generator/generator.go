@@ -1045,10 +1045,9 @@ type endpointTemplateData struct {
 	IsAsync       bool
 	Async         AsyncJobInfo
 	PageSize      int
-	// IsReadOnly mirrors !endpointIsWriteCommandShared(endpoint, name, shared).
-	// The emitted command sets Annotations["mcp:read-only"] = "true" when
-	// it's true so the cobratree MCP walker marks the tool with
-	// readOnlyHint and hosts skip the per-call permission prompt.
+	// IsReadOnly drives mcp:read-only on the emitted command so hosts can
+	// skip the per-call prompt. GET RPCs without a read signal stay false
+	// so a mutation is never treated as unattended-safe.
 	IsReadOnly bool
 	*spec.APISpec
 }
@@ -2059,10 +2058,10 @@ var readOperationIDPrefixes = map[string]bool{
 	"fetch":    true,
 }
 
-// mutationOperationIDPrefixes are conservative action tokens for GET-based
-// endpoints. A leading token in this set opts a GET into the write path
-// even when the path looks like ordinary REST. RPC-over-GET without a
-// read signal fails closed independently of this list.
+// Conservative action tokens for GET-based endpoints. A leading token
+// here opts a GET into the write path even on an ordinary REST path.
+// RPC-over-GET without a read signal fails closed independently of
+// these tokens.
 var mutationOperationIDPrefixes = map[string]bool{
 	"activate":   true,
 	"add":        true,
@@ -2231,12 +2230,7 @@ func endpointLooksLikeRPC(endpoint spec.Endpoint) bool {
 	if i := strings.Index(raw, "?"); i >= 0 && queryHasRPCSelector(raw[i+1:]) {
 		return true
 	}
-	for _, p := range endpoint.Params {
-		if paramLooksLikeRPCSelector(p) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(endpoint.Params, paramLooksLikeRPCSelector)
 }
 
 func queryHasRPCSelector(rawQuery string) bool {
