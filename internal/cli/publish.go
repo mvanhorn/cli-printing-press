@@ -473,11 +473,12 @@ func newPublishPackageCmd() *cobra.Command {
 					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("rewriting module path: %w", err)}
 				}
 			}
-			// Verify the staged tree's module path is library-canonical. Runs
-			// after the rewrite in both branches: without --module-path the
-			// bare module name fails here; with a wrong --module-path value
-			// the mismatch is caught before it reaches the library CI.
-			modulePathCheck := checkModulePath(outCLIDir)
+			// Verify the staged tree's module path. Runs after the rewrite in
+			// both branches: without --module-path the bare module name fails
+			// the canonical-prefix requirement here; with --module-path the
+			// staged go.mod must declare exactly the requested path, so a
+			// failed or partial rewrite is caught before it reaches CI.
+			modulePathCheck := checkModulePath(outCLIDir, modulePath)
 			if !modulePathCheck.Passed {
 				if asJSON {
 					enc := json.NewEncoder(os.Stdout)
@@ -856,8 +857,9 @@ func runValidation(dir string) ValidateResult {
 	// legitimately declares the bare CLI module path; the check is
 	// authoritative in the package flow, which validates the staged tree after
 	// --module-path rewrite. Surface it as a warning so a library-shaped tree
-	// with a wrong module path is still flagged before packaging.
-	modulePathCheck := checkModulePath(dir)
+	// with a wrong module path is still flagged before packaging. Standalone
+	// validate has no --module-path context, so the canonical prefix applies.
+	modulePathCheck := checkModulePath(dir, "")
 	if !modulePathCheck.Passed {
 		modulePathCheck.Warning = modulePathCheck.Error
 		modulePathCheck.Error = ""
@@ -1517,9 +1519,20 @@ func checkGoModTidy(dir string) CheckResult {
 	return CheckResult{Name: "go mod tidy", Passed: true}
 }
 
+// canonicalLibraryModulePrefix is the module path prefix the upstream library
+// CI requires when no module path was requested explicitly.
+const canonicalLibraryModulePrefix = "github.com/mvanhorn/printing-press-library/library/"
+
 // checkModulePath catches the bare CLI-name module declaration the library CI
 // rejects, before the PR opens.
-func checkModulePath(dir string) CheckResult {
+//
+// requested is the explicit `publish package --module-path` value, or "" when
+// none was given. With an explicit request the check is internal consistency:
+// go.mod must declare exactly the path that was asked for, which honors the
+// documented $PUBLISH_CONFIG module_path_base override while still rejecting a
+// bare CLI name. With no request the canonical library prefix is required,
+// exactly as before.
+func checkModulePath(dir, requested string) CheckResult {
 	modPath := filepath.Join(dir, "go.mod")
 	modBytes, err := os.ReadFile(modPath)
 	if err != nil {
@@ -1536,11 +1549,31 @@ func checkModulePath(dir string) CheckResult {
 	if declared == "" {
 		return CheckResult{Name: "module path", Passed: false, Error: "go.mod declares no module line"}
 	}
-	if strings.HasPrefix(declared, "github.com/mvanhorn/printing-press-library/library/") {
+	if requested != "" {
+		if declared != requested {
+			return CheckResult{Name: "module path", Passed: false,
+				Error: fmt.Sprintf("go.mod module path %q does not match the requested --module-path %q", declared, requested)}
+		}
+		if isBareModuleName(declared) {
+			return CheckResult{Name: "module path", Passed: false,
+				Error: fmt.Sprintf("go.mod module path %q is a bare CLI name; use a domain-qualified module path like github.com/<org>/<repo>/library/<category>/<slug>", declared)}
+		}
+		return CheckResult{Name: "module path", Passed: true}
+	}
+	if strings.HasPrefix(declared, canonicalLibraryModulePrefix) {
 		return CheckResult{Name: "module path", Passed: true}
 	}
 	return CheckResult{Name: "module path", Passed: false,
 		Error: fmt.Sprintf("go.mod module path %q does not start with the canonical library prefix github.com/mvanhorn/printing-press-library/library/<category>/<slug>", declared)}
+}
+
+// isBareModuleName reports whether a declared module path is a bare name like
+// "exa-pp-cli" rather than a fetchable, domain-qualified path. Go treats the
+// first path element as the host, so a first element with no dot is never
+// resolvable by the library CI.
+func isBareModuleName(declared string) bool {
+	host, _, _ := strings.Cut(declared, "/")
+	return !strings.Contains(host, ".")
 }
 
 func buildValidationBinary(dir, cliName string) (path string, cleanup func(), err error) {

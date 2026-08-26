@@ -2416,21 +2416,55 @@ func TestCheckModulePath(t *testing.T) {
 	t.Run("canonical prefix passes", func(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
 			[]byte("module github.com/mvanhorn/printing-press-library/library/ai/exa\n\ngo 1.26.6\n"), 0o644))
-		res := checkModulePath(dir)
+		res := checkModulePath(dir, "")
 		assert.True(t, res.Passed, res.Error)
 		assert.Equal(t, "module path", res.Name)
+	})
+
+	t.Run("canonical prefix passes when requested explicitly", func(t *testing.T) {
+		const canonical = "github.com/mvanhorn/printing-press-library/library/ai/exa"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+			[]byte("module "+canonical+"\n\ngo 1.26.6\n"), 0o644))
+		res := checkModulePath(dir, canonical)
+		assert.True(t, res.Passed, res.Error)
+	})
+
+	t.Run("custom requested path passes when go.mod matches", func(t *testing.T) {
+		// The documented $PUBLISH_CONFIG module_path_base override: a
+		// non-mvanhorn base is honored as long as the rewrite landed.
+		const custom = "github.com/acme/my-library/library/ai/exa"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+			[]byte("module "+custom+"\n\ngo 1.26.6\n"), 0o644))
+		res := checkModulePath(dir, custom)
+		assert.True(t, res.Passed, res.Error)
+	})
+
+	t.Run("declared path that differs from the requested path fails", func(t *testing.T) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+			[]byte("module github.com/acme/my-library/library/ai/exa\n\ngo 1.26.6\n"), 0o644))
+		res := checkModulePath(dir, "github.com/acme/my-library/library/ai/other")
+		assert.False(t, res.Passed)
+		assert.Contains(t, res.Error, "does not match the requested --module-path")
 	})
 
 	t.Run("bare CLI name fails", func(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
 			[]byte("module exa-pp-cli\n\ngo 1.26.6\n"), 0o644))
-		res := checkModulePath(dir)
+		res := checkModulePath(dir, "")
 		assert.False(t, res.Passed)
 		assert.Contains(t, res.Error, "does not start with the canonical library prefix")
 	})
 
+	t.Run("bare CLI name fails even when requested explicitly", func(t *testing.T) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+			[]byte("module exa-pp-cli\n\ngo 1.26.6\n"), 0o644))
+		res := checkModulePath(dir, "exa-pp-cli")
+		assert.False(t, res.Passed)
+		assert.Contains(t, res.Error, "is a bare CLI name")
+	})
+
 	t.Run("missing go.mod fails", func(t *testing.T) {
-		res := checkModulePath(filepath.Join(t.TempDir(), "nope"))
+		res := checkModulePath(filepath.Join(t.TempDir(), "nope"), "")
 		assert.False(t, res.Passed)
 		assert.Contains(t, res.Error, "go.mod not found")
 	})
@@ -2438,7 +2472,7 @@ func TestCheckModulePath(t *testing.T) {
 	t.Run("no module line fails", func(t *testing.T) {
 		emptyDir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(emptyDir, "go.mod"), []byte("go 1.26.6\n"), 0o644))
-		res := checkModulePath(emptyDir)
+		res := checkModulePath(emptyDir, "")
 		assert.False(t, res.Passed)
 		assert.Contains(t, res.Error, "declares no module line")
 	})
@@ -2477,4 +2511,49 @@ func TestPublishValidateModulePathCheckWired(t *testing.T) {
 	// authoritative failure lives in the package flow's staged-tree check.
 	assert.NotEmpty(t, modulePathCheck.Warning)
 	assert.Contains(t, modulePathCheck.Warning, "canonical library prefix")
+}
+
+// TestPublishPackageHonorsCustomModulePath covers the documented
+// $PUBLISH_CONFIG module_path_base override: an explicitly requested
+// --module-path outside the mvanhorn library must package, not be rejected by
+// the module-path check that runs right after the rewrite.
+func TestPublishPackageHonorsCustomModulePath(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	stubPublishPackageValidation(t)
+
+	const custom = "github.com/acme/my-library/library/other/test"
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", custom, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err, "a custom --module-path must not be rejected by the module-path check")
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.Equal(t, custom, result.ModulePath)
+
+	staged, err := os.ReadFile(filepath.Join(result.StagedDir, "go.mod"))
+	require.NoError(t, err)
+	assert.Contains(t, string(staged), "module "+custom)
+}
+
+// TestPublishPackageRejectsBareModulePathRequest keeps the check's original
+// purpose intact: a bare CLI-name module the library CI rejects still fails,
+// even when it is what --module-path asked for.
+func TestPublishPackageRejectsBareModulePathRequest(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	stubPublishPackageValidation(t)
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "test-pp-cli", "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is a bare CLI name")
 }
