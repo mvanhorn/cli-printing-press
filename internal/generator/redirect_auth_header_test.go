@@ -223,6 +223,28 @@ func TestRedirectSchemeUpgradeKeepsCustomAuth(t *testing.T) {
 	t.Run("http to https keeps header", func(t *testing.T) {
 		check(t, "http://api.example.com/start", "https://api.example.com/done", "secret-key")
 	})
+	t.Run("https to http to http drops header", func(t *testing.T) {
+		httpsStart, err := url.Parse("https://api.example.com/start")
+		if err != nil {
+			t.Fatal(err)
+		}
+		httpMid, err := url.Parse("http://api.example.com/mid")
+		if err != nil {
+			t.Fatal(err)
+		}
+		httpEnd, err := url.Parse("http://api.example.com/done")
+		if err != nil {
+			t.Fatal(err)
+		}
+		via := []*http.Request{{URL: httpsStart}, {URL: httpMid}}
+		req := &http.Request{URL: httpEnd, Header: http.Header{"X-Api-Key": {"secret-key"}}}
+		if err := c.HTTPClient.CheckRedirect(req, via); err != nil {
+			t.Fatalf("CheckRedirect returned error: %v", err)
+		}
+		if got := req.Header.Get("X-API-Key"); got != "" {
+			t.Fatalf("https -> http -> http: X-API-Key = %q, want empty", got)
+		}
+	})
 	t.Run("http to https to http drops header", func(t *testing.T) {
 		httpStart, err := url.Parse("http://api.example.com/start")
 		if err != nil {

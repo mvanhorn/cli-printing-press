@@ -617,11 +617,14 @@ func newRateLimiter(rateLimit float64) *cliutil.AdaptiveLimiter {
 // credentials. Host is compared against the original request so a foreign
 // hop (A -> B -> B) cannot re-stamp A's credential onto B. Block protocol
 // downgrade against the immediate predecessor so http -> https -> http
-// still strips on the last hop.
+// still strips on the last hop. Also treat the original https origin as
+// sticky: https -> http -> http must not re-stamp onto plaintext after
+// the first hop already stripped the credential.
 func redirectLeavesOrigin(next, original, prev *url.URL) bool {
 	hostChanged := next.Host != original.Host
 	downgrade := prev.Scheme == "https" && next.Scheme != "https"
-	return hostChanged || downgrade
+	leftHTTPS := original.Scheme == "https" && next.Scheme != "https"
+	return hostChanged || downgrade || leftHTTPS
 }
 
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
