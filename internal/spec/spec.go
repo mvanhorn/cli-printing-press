@@ -2353,9 +2353,10 @@ type Endpoint struct {
 	// IDField is the resolved primary-key field name for items returned by this
 	// endpoint, populated either by a path-item-level `x-resource-id` extension,
 	// a resource member path parameter that also appears in the response item,
-	// or, for OpenAPI specs, by walking the response schema. Empty when no key
-	// could be resolved; templates fall back to runtime list scanning. Internal
-	// YAML specs may set this directly.
+	// or, for OpenAPI specs, by walking the response schema. May be a dotted
+	// path (`entityInfo.entityId`); generated LookupFieldValue walks it.
+	// Empty when no key could be resolved; templates fall back to runtime list
+	// scanning. Internal YAML specs may set this directly.
 	IDField string `yaml:"id_field,omitempty" json:"id_field,omitempty"`
 	// TenantScopeColumn is the tenant discriminator column declared by the
 	// path-item-level `x-pp-tenant-scope-column` extension (e.g. "workspace").

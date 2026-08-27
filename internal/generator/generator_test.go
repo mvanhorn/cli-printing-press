@@ -16215,7 +16215,7 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 	// Vendor identifiers (gid, sid, uid, uuid, guid) and resource-specific
 	// suffixes precede descriptive fields so APIs do not key rows by names.
 	assert.Contains(t, storeContent,
-		`var genericIDFieldFallbacks = []string{"id", "ID", "_id", "gid", "sid", "uid", "uuid", "guid", "api_id"}`,
+		`var genericIDFieldFallbacks = []string{"id", "ID", "_id", "id_", "gid", "sid", "uid", "uuid", "guid", "api_id"}`,
 		"store.go genericIDFieldFallbacks must include stable vendor identifiers")
 	assert.Contains(t, storeContent,
 		`var genericDescriptiveIDFieldFallbacks = []string{"name", "slug", "key", "code"}`,

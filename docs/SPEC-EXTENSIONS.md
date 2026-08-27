@@ -1355,7 +1355,9 @@ Parsed field: `Endpoint.IDField`
 
 Rules:
 - Optional.
-- Must be a string.
+- Must be a string. A dotted path (`entityInfo.entityId`) is stored verbatim
+  and walked at runtime by `LookupFieldValue`; it is not limited to a
+  single top-level key.
 - Leading and trailing whitespace is trimmed.
 - Non-string values emit a warning and are ignored.
 - A non-empty `x-resource-id` wins over every automatic response-schema
@@ -1387,6 +1389,23 @@ paths:
     x-resource-id: widget_uid
     get:
       operationId: listWidgets
+      responses:
+        "200":
+          description: OK
+```
+
+Nested identifiers use the same extension with a dotted path. Generated
+`LookupFieldValue` walks each segment with snake/camel/Pascal spellings and
+a trailing-underscore variant, so `entityInfo.entityId` reaches a payload
+shaped like `{"entityInfo":{"entityId":"..."}}` without a hand-written
+override:
+
+```yaml
+paths:
+  /entities:
+    x-resource-id: entityInfo.entityId
+    get:
+      operationId: listEntities
       responses:
         "200":
           description: OK
