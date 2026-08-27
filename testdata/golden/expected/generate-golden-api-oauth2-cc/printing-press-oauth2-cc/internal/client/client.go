@@ -1149,13 +1149,19 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				if c.ccMu == nil {
 					c.ccMu = &sync.Mutex{}
 				}
+				// Read the refreshed header inside the same critical section
+				// as the mint so a concurrent mint cannot replace Config
+				// fields mid-read. The tier-routing variant re-derives auth
+				// via authForRequest instead, which takes ccMu internally.
 				c.ccMu.Lock()
 				mintErr := c.mintClientCredentials(ctx, clientID, clientSecret)
+				if mintErr == nil {
+					authHeader = c.Config.AuthHeader()
+				}
 				c.ccMu.Unlock()
 				if mintErr != nil {
 					return nil, resp.StatusCode, fmt.Errorf("re-minting access token after 401: %w", mintErr)
 				}
-				authHeader = c.Config.AuthHeader()
 				refreshedAfterUnauthorized = true
 				lastErr = apiErr
 				continue
