@@ -253,7 +253,8 @@ func renameEnvPrefix(content, oldSlug, newSlug string) string {
 	// Prefix-extending renames (notion → notion-alt) must not rewrite
 	// names that already have the destination prefix. ReplaceAll of
 	// NOTION_ with NOTION_ALT_ would turn NOTION_ALT_SHOP into
-	// NOTION_ALT_ALT_SHOP and desync the stored override from the
+	// NOTION_ALT_ALT_SHOP, and a bare destination name NOTION_ALT
+	// into NOTION_ALT_ALT, so the generated client would ignore the
 	// operator's existing env.
 	result := replaceEnvPrefixToken(content, oldPrefix+"_", newPrefix+"_")
 	for _, q := range []string{`"`, "`", `'`} {
@@ -277,15 +278,36 @@ func replaceEnvPrefixToken(content, oldTok, newTok string) string {
 			b.WriteString(rest)
 			return b.String()
 		}
-		if strings.HasPrefix(rest[idx:], newTok) {
-			b.WriteString(rest[:idx+len(newTok)])
-			rest = rest[idx+len(newTok):]
+		if n := destinationEnvPrefixLen(rest[idx:], newTok); n > 0 {
+			b.WriteString(rest[:idx+n])
+			rest = rest[idx+n:]
 			continue
 		}
 		b.WriteString(rest[:idx])
 		b.WriteString(newTok)
 		rest = rest[idx+len(oldTok):]
 	}
+}
+
+// A prefix-extending destination token is already current as either the
+// underscore-terminated form (NOTION_ALT_SHOP) or the bare exact name
+// (NOTION_ALT). Skip both so they are not rewritten to NOTION_ALT_ALT*.
+func destinationEnvPrefixLen(rest, newTok string) int {
+	if strings.HasPrefix(rest, newTok) {
+		return len(newTok)
+	}
+	dest := strings.TrimSuffix(newTok, "_")
+	if dest == "" || dest == newTok || !strings.HasPrefix(rest, dest) {
+		return 0
+	}
+	if len(rest) > len(dest) && isEnvNameContinue(rest[len(dest)]) {
+		return 0
+	}
+	return len(dest)
+}
+
+func isEnvNameContinue(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
 }
 
 func rewriteCLIManifestEnvPrefixes(m *CLIManifest, oldSlug, newSlug string) {
