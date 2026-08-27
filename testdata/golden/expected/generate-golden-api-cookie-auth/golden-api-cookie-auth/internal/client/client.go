@@ -281,16 +281,24 @@ func newRateLimiter(rateLimit float64) *cliutil.AdaptiveLimiter {
 
 // redirectLeavesOrigin reports whether a redirect hop should drop custom
 // credentials. Host is compared against the original request so a foreign
-// hop (A -> B -> B) cannot re-stamp A's credential onto B. Block protocol
-// downgrade against the immediate predecessor so http -> https -> http
-// still strips on the last hop. Also treat the original https origin as
-// sticky: https -> http -> http must not re-stamp onto plaintext after
-// the first hop already stripped the credential.
-func redirectLeavesOrigin(next, original, prev *url.URL) bool {
-	hostChanged := next.Host != original.Host
-	downgrade := prev.Scheme == "https" && next.Scheme != "https"
-	leftHTTPS := original.Scheme == "https" && next.Scheme != "https"
-	return hostChanged || downgrade || leftHTTPS
+// hop (A -> B -> B) cannot re-stamp A's credential onto B. Same-host
+// http -> https keeps the credential. Once any hop in the chain was
+// https, later plaintext hops must not re-stamp; comparing only the
+// original URL and the immediate predecessor misses
+// http -> https -> http -> http.
+func redirectLeavesOrigin(next *url.URL, via []*http.Request) bool {
+	if next.Host != via[0].URL.Host {
+		return true
+	}
+	if next.Scheme == "https" {
+		return false
+	}
+	for _, hop := range via {
+		if hop.URL.Scheme == "https" {
+			return true
+		}
+	}
+	return false
 }
 
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
@@ -345,7 +353,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// downgrade. Go strips Authorization and Cookie in common cases, but
 		// custom headers and URL query values need explicit removal here.
 		// Block protocol downgrade.
-		if redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) {
+		if redirectLeavesOrigin(req.URL, via) {
 			req.Header.Del("Cookie")
 			req.Header.Del("Cookie")
 		}
