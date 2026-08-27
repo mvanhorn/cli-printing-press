@@ -484,9 +484,8 @@ func (c *Config) saveCredentialsFirst() error {
 	return nil
 }
 
-// MarkCredentialsExplicit clears env-override markers so a later SaveTokens
-// can persist credentials the caller supplied on auth login. Pass whether
-// each value came from a flag, captured before any env fallback.
+// Explicit login flags intentionally opt these fields out of environment-value
+// filtering; capture their provenance before applying any fallback.
 func (c *Config) MarkCredentialsExplicit(clientID, clientSecret bool) {
 	if clientID {
 		delete(c.envOverrides, "ClientID")

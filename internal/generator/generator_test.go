@@ -1919,6 +1919,10 @@ func TestGenerateOAuth2DeviceCodeAuth(t *testing.T) {
 		"flag provenance must be captured before the env fallback overwrites clientID")
 	assert.Contains(t, authGo, `cfg.MarkCredentialsExplicit(clientIDFromFlag, false)`,
 		"auth login declares explicit client ID before SaveTokens")
+	assert.Contains(t, authGo, `ClientIDFromFlag: clientIDFromFlag,`,
+		"deferred device-code state keeps flag provenance for auth poll")
+	assert.Contains(t, authGo, `cfg.MarkCredentialsExplicit(state.ClientIDFromFlag, false)`,
+		"auth poll reapplies login flag provenance before SaveTokens")
 	assert.Contains(t, authGo, `cliutil.IsVerifyEnv()`, "login and refresh short-circuit in verify mode")
 	assert.Contains(t, authGo, `Annotations: map[string]string{"mcp:hidden": "true"}`, "interactive auth commands stay out of MCP")
 	assert.Contains(t, oauthGo, `const DeviceCodeGrant = "urn:ietf:params:oauth:grant-type:device_code"`)
