@@ -161,3 +161,99 @@ func runPostReadCommand(t *testing.T, args ...string) string {
 	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPOSTReadCommandsPrintCollectionBody", "-count=1")
 }
+
+// Guards #4390: mutation-output commands must unwrap single-key collection
+// envelopes before wrapping, so a POST that answers {"data":[...]} nests the
+// rows once (envelope data = array), not twice (data.data). Plain
+// created-object responses must pass through untouched.
+func TestMutationOutputUnwrapsCollectionEnvelope(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := postReadOutputSpec()
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	createSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sets_create.go")
+	require.Contains(t, createSrc, "filtered := unwrapSingleKeyArray(data)",
+		"mutation output must normalize collection envelopes before wrapping")
+
+	behaviorTest := `package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestMutationEnvelopeNestsRowsOnce(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/sets" {
+			reqBody, _ := io.ReadAll(r.Body)
+			if strings.Contains(string(reqBody), "Solo") {
+				fmt.Fprint(w, "{\"id\":\"set-9\",\"name\":\"Solo\"}")
+				return
+			}
+			fmt.Fprint(w, "{\"data\":[{\"id\":\"row-1\",\"name\":\"First\"}],\"hasMore\":false}")
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("POST_READ_OUTPUT_BASE_URL", server.URL)
+
+	out := runMutationEnvelopeCommand(t, "sets", "create", "--name", "First", "--json")
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
+		t.Fatalf("create output is not JSON: %v\n%s", err, out)
+	}
+	rows, ok := envelope["data"].([]any)
+	if !ok {
+		t.Fatalf("envelope data should be the unwrapped row array, got %T: %s", envelope["data"], out)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d: %s", len(rows), out)
+	}
+	row, _ := rows[0].(map[string]any)
+	if row["id"] != "row-1" {
+		t.Fatalf("row id = %v, want row-1: %s", row["id"], out)
+	}
+
+	out = runMutationEnvelopeCommand(t, "sets", "create", "--name", "Solo", "--json")
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
+		t.Fatalf("object-shape output is not JSON: %v\n%s", err, out)
+	}
+	obj, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("plain object response must pass through untouched, got %T: %s", envelope["data"], out)
+	}
+	if obj["id"] != "set-9" {
+		t.Fatalf("object id = %v, want set-9: %s", obj["id"], out)
+	}
+}
+
+func runMutationEnvelopeCommand(t *testing.T, args ...string) string {
+	t.Helper()
+	var stdout bytes.Buffer
+	var flags rootFlags
+	cmd := newRootCmd(&flags)
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("%v failed: %v\n%s", args, err, stdout.String())
+	}
+	return stdout.String()
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "mutation_envelope_test.go"), []byte(behaviorTest), 0o644))
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestMutationEnvelopeNestsRowsOnce", "-count=1")
+}

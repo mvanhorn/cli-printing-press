@@ -2084,7 +2084,7 @@ func TestGenerateOAuth2ClientCredentialsClientRefresh(t *testing.T) {
 	body := string(clientBytes)
 	mintBlock := generatedSourceBlock(t, body, "func (c *Client) mintClientCredentials", "func (c *Client) refreshAccessToken")
 
-	assert.Contains(t, body, "func needsClientCredentialsMint",
+	assert.Contains(t, body, "func (c *Client) needsClientCredentialsMint",
 		"client_credentials spec emits the safety-window helper")
 	assert.Contains(t, body, "func resolveClientCredentials",
 		"client_credentials spec emits the env-var-fallback resolver")
