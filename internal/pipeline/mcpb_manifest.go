@@ -424,12 +424,23 @@ func mcpbUserConfigAuthEnvVars(m CLIManifest) []spec.AuthEnvVar {
 }
 
 func endpointTemplateEnvVar(m CLIManifest, templateVar string) string {
+	defaultName := spec.DefaultEndpointTemplateEnvName(m.APIName, templateVar)
 	if override, ok := m.EndpointTemplateEnvOverrides[templateVar]; ok {
-		if trimmed := strings.TrimSpace(override); trimmed != "" && !isAuthOrCredentialEnvVar(m, trimmed) {
-			return trimmed
+		trimmed := strings.TrimSpace(override)
+		if trimmed == "" {
+			return defaultName
 		}
+		// A {shop} → ACCESS_TOKEN mapping would collect the secret as
+		// an unmasked endpoint field. This placeholder's own default
+		// name is kept even when that default is credential-shaped
+		// ({access_token} → SHOPIFY_ACCESS_TOKEN); dropping it leaves
+		// the generated client unset.
+		if isAuthOrCredentialEnvVar(m, trimmed) && trimmed != defaultName {
+			return defaultName
+		}
+		return trimmed
 	}
-	return spec.DefaultEndpointTemplateEnvName(m.APIName, templateVar)
+	return defaultName
 }
 
 // Generated Getenv names move with the CLI env prefix; stored overrides
@@ -566,14 +577,13 @@ func isCredentialShapedEnvVarName(name string) bool {
 // platform profile selector does not fill them, and the first API call
 // fails if they are unset. Spec-defaulted placeholders stay optional so
 // MCPB hosts do not present Required+Default as a contradictory install
-// field. Credential-named overrides are rejected so the installer never
-// collects an access token in an unmasked endpoint field.
+// field. Credential-named *overrides* of a different placeholder are
+// rejected so the installer never collects an access token in an
+// unmasked field; a placeholder whose own default name is
+// credential-shaped is still bound, masked.
 func bindEndpointTemplateVars(m CLIManifest, env map[string]string, vars map[string]MCPBVar) {
 	for _, templateVar := range m.EndpointTemplateVars {
 		name, entry := endpointTemplateUserConfigEntry(m, templateVar)
-		if isAuthOrCredentialEnvVar(m, name) {
-			continue
-		}
 		if env != nil {
 			env[name] = "${user_config." + userConfigKey(name) + "}"
 		}
@@ -592,13 +602,11 @@ func endpointTemplateUserConfigEntry(m CLIManifest, templateVar string) (string,
 		Description: endpointTemplateVarDescription(templateVar, name),
 		Required:    defaultValue == "",
 		Default:     defaultValue,
+		Sensitive:   isAuthOrCredentialEnvVar(m, name),
 	}
 }
 
 func endpointTemplateVarForEnv(m CLIManifest, name string) (string, bool) {
-	if isAuthOrCredentialEnvVar(m, name) {
-		return "", false
-	}
 	for _, templateVar := range m.EndpointTemplateVars {
 		if endpointTemplateEnvVar(m, templateVar) == name {
 			return templateVar, true

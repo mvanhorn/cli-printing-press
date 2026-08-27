@@ -682,6 +682,17 @@ import "github.com/acme/library/other/subject/internal/cli"
 	assert.Equal(t, "NOTION_ALT_SHOP", m.EndpointTemplateEnvOverrides["shop"])
 	assert.Equal(t, "NOTION_ALT_SHOP", m.EndpointTemplateEnvOverrides["fallback"])
 
+	// Shortening must rewrite a bare prefix override (no _SHOP suffix).
+	// File-content rename only touches OLD_… and quoted "OLD"; the
+	// unquoted metadata value would otherwise stay NOTION_ALT.
+	bare := CLIManifest{EndpointTemplateEnvOverrides: map[string]string{
+		"workspace": "NOTION_ALT",
+		"shop":      "NOTION_ALT_SHOP",
+	}}
+	rewriteCLIManifestEnvPrefixes(&bare, "notion-alt", "notion")
+	assert.Equal(t, "NOTION", bare.EndpointTemplateEnvOverrides["workspace"])
+	assert.Equal(t, "NOTION_SHOP", bare.EndpointTemplateEnvOverrides["shop"])
+
 	// Installer slug must not clip a longer token that only shares a prefix.
 	got = renameInstallSlug("npx install subject-extra --cli-only", "subject", "overpass")
 	assert.Equal(t, "npx install subject-extra --cli-only", got)
@@ -746,6 +757,62 @@ func Load() {
 	assert.Equal(t, "${user_config.shopify_alt_shop}", got.Server.MCPConfig.Env["SHOPIFY_ALT_SHOP"])
 	_, stale := got.Server.MCPConfig.Env["SHOPIFY_SHOP"]
 	assert.False(t, stale)
+}
+
+func TestRenameCLIRewritesBarePrefixOverrideOnShortening(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	oldName := "notion-alt-pp-cli"
+	newName := "notion-pp-cli"
+	cliDir := filepath.Join(root, oldName)
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "platform"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "platform", "profile.go"), []byte("package platform\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "config"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "config", "config.go"), []byte(`package config
+
+import "os"
+
+func Load() {
+	_ = os.Getenv("NOTION_ALT")
+	_ = os.Getenv("NOTION_ALT_ACCESS_TOKEN")
+}
+`), 0o644))
+
+	m := CLIManifest{
+		SchemaVersion:                1,
+		APIName:                      "notion-alt",
+		CLIName:                      oldName,
+		MCPBinary:                    naming.MCP("notion-alt"),
+		AuthType:                     "api_key",
+		AuthEnvVars:                  []string{"NOTION_ALT_ACCESS_TOKEN"},
+		EndpointTemplateVars:         []string{"workspace"},
+		EndpointTemplateEnvOverrides: map[string]string{"workspace": "NOTION_ALT"},
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, CLIManifestFilename), data, 0o644))
+
+	_, err = RenameCLI(cliDir, oldName, newName, "notion-alt")
+	require.NoError(t, err)
+
+	newDir := filepath.Join(root, naming.LibraryDirName(newName))
+	configSrc, err := os.ReadFile(filepath.Join(newDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(configSrc), `os.Getenv("NOTION")`)
+	require.NotContains(t, string(configSrc), `os.Getenv("NOTION_ALT")`)
+
+	cliData, err := os.ReadFile(filepath.Join(newDir, CLIManifestFilename))
+	require.NoError(t, err)
+	var cli CLIManifest
+	require.NoError(t, json.Unmarshal(cliData, &cli))
+	assert.Equal(t, "NOTION", cli.EndpointTemplateEnvOverrides["workspace"],
+		"bare prefix override must match the rewritten Getenv after a shortening rename")
+
+	got := readMCPBManifest(t, newDir)
+	assert.Equal(t, "${user_config.notion}", got.Server.MCPConfig.Env["NOTION"])
+	_, stale := got.Server.MCPConfig.Env["NOTION_ALT"]
+	assert.False(t, stale, "stale bare NOTION_ALT must not remain on the installer prompt")
 }
 
 func TestRenameCLISkipsResearchJSONSymlink(t *testing.T) {

@@ -293,11 +293,25 @@ func rewriteCLIManifestEnvPrefixes(m *CLIManifest, oldSlug, newSlug string) {
 		return
 	}
 	for key, value := range m.EndpointTemplateEnvOverrides {
-		rewritten := renameEnvPrefix(value, oldSlug, newSlug)
+		rewritten := rewriteEndpointOverrideEnvName(value, oldSlug, newSlug)
 		if rewritten != value {
 			m.EndpointTemplateEnvOverrides[key] = rewritten
 		}
 	}
+}
+
+// File-content rename only rewrites OLD_… tokens and quoted "OLD" Getenv
+// names. Override metadata is an unquoted env name, so a bare prefix
+// (NOTION_ALT with no _SHOP suffix) would otherwise stay stale when
+// shortening notion-alt → notion.
+func rewriteEndpointOverrideEnvName(value, oldSlug, newSlug string) string {
+	rewritten := renameEnvPrefix(value, oldSlug, newSlug)
+	oldPrefix := naming.EnvPrefix(oldSlug)
+	newPrefix := naming.EnvPrefix(newSlug)
+	if oldPrefix != "" && oldPrefix != newPrefix && value == oldPrefix {
+		return newPrefix
+	}
+	return rewritten
 }
 
 func renameGoModModuleSegment(content, oldSlug, newSlug string) string {

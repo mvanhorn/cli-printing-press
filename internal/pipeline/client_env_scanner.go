@@ -272,13 +272,17 @@ func isNonCredentialDiscoveredEnvVar(name string) bool {
 	return false
 }
 
-// The profile selector covers credentials. Suffix-classified knobs and
-// endpoint-template placeholders are the remaining operator inputs the
-// installer must still collect; treating them as secrets would either
-// drop {shop} or prompt for HUDU_API_KEY beside the profile.
+// The profile selector covers credentials that are not also required
+// endpoint placeholders. Suffix-classified knobs and declared endpoint
+// vars (including a credential-shaped default such as {access_token})
+// stay collectible; a colliding auth override is not an endpoint var
+// and stays off the installer.
 func isPlatformProfileSafeDiscoveredEnvVar(cli CLIManifest, name string) bool {
+	if isEndpointTemplateEnvVar(cli, name) {
+		return true
+	}
 	if isAuthOrCredentialEnvVar(cli, name) {
 		return false
 	}
-	return isNonCredentialDiscoveredEnvVar(name) || isEndpointTemplateEnvVar(cli, name)
+	return isNonCredentialDiscoveredEnvVar(name)
 }

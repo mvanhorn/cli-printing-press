@@ -1553,6 +1553,36 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.False(t, shop.Sensitive)
 	})
 
+	t.Run("platform runtime keeps required credential-shaped endpoint default", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "platform"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "platform", "profile.go"), []byte("package platform\n"), 0o644))
+		writeManifest(t, dir, CLIManifest{
+			APIName:              "shopify",
+			DisplayName:          "Shopify",
+			MCPBinary:            "shopify-pp-mcp",
+			MCPReady:             "full",
+			AuthType:             "api_key",
+			AuthEnvVars:          []string{"PRINTING_PRESS_CLIENT_PROFILE"},
+			EndpointTemplateVars: []string{"access_token"},
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		assert.Equal(t, "${user_config.printing_press_client_profile}", got.Server.MCPConfig.Env["PRINTING_PRESS_CLIENT_PROFILE"])
+		assert.Equal(t, "${user_config.shopify_access_token}", got.Server.MCPConfig.Env["SHOPIFY_ACCESS_TOKEN"],
+			"required {access_token} must still be collected when its default env name is credential-shaped")
+		token, ok := got.UserConfig["shopify_access_token"]
+		require.True(t, ok, "omitting the binding leaves the generated client unset")
+		assert.Equal(t, "SHOPIFY_ACCESS_TOKEN", token.Title)
+		assert.True(t, token.Required)
+		assert.True(t, token.Sensitive, "credential-shaped endpoint defaults stay masked; they must not bypass the profile as an unmasked field")
+		profile, ok := got.UserConfig["printing_press_client_profile"]
+		require.True(t, ok)
+		assert.False(t, profile.Sensitive)
+	})
+
 	t.Run("endpoint template vars emit required user_config fields", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, CLIManifest{
@@ -1902,18 +1932,22 @@ func TestEndpointTemplateEnvVarRejectsAuthCollision(t *testing.T) {
 
 	assert.Equal(t, "SHOPIFY_SHOP", endpointTemplateEnvVar(m, "shop"),
 		"credential-named override must fall back to the default endpoint env name")
-	assert.Equal(t, "SHOPIFY_ACCESS_TOKEN", spec.DefaultEndpointTemplateEnvName("shopify", "access_token"))
+	assert.Equal(t, "SHOPIFY_ACCESS_TOKEN", endpointTemplateEnvVar(m, "access_token"),
+		"a placeholder whose own default name is credential-shaped is kept")
 
 	env := map[string]string{}
 	vars := map[string]MCPBVar{}
 	bindEndpointTemplateVars(m, env, vars)
-	_, hasToken := env["SHOPIFY_ACCESS_TOKEN"]
-	assert.False(t, hasToken, "credential-shaped default names must not bind as endpoint fields")
 	assert.Equal(t, "${user_config.shopify_shop}", env["SHOPIFY_SHOP"])
-	_, hasTokenField := vars["shopify_access_token"]
-	assert.False(t, hasTokenField)
-	_, hasShop := vars["shopify_shop"]
-	assert.True(t, hasShop)
+	assert.Equal(t, "${user_config.shopify_access_token}", env["SHOPIFY_ACCESS_TOKEN"],
+		"required {access_token} must bind even though the default name looks like a credential")
+	shop, ok := vars["shopify_shop"]
+	require.True(t, ok)
+	assert.False(t, shop.Sensitive)
+	token, ok := vars["shopify_access_token"]
+	require.True(t, ok)
+	assert.True(t, token.Sensitive)
+	assert.True(t, token.Required)
 }
 
 func TestWriteMCPBManifestPreservesExistingDisplayName(t *testing.T) {
