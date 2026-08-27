@@ -115,7 +115,7 @@ func pollDeviceTokenOnce(ctx context.Context, httpClient *http.Client, tokenURL,
 		return nil, "", fmt.Errorf("building token poll request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := httpClient.Do(req)
+	resp, err := cliutil.OAuthTokenHTTPClient(httpClient).Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("polling token endpoint: %w", err)
 	}
@@ -162,7 +162,7 @@ func RefreshToken(ctx context.Context, httpClient *http.Client, tokenURL, client
 		return nil, fmt.Errorf("building refresh request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := httpClient.Do(req)
+	resp, err := cliutil.OAuthTokenHTTPClient(httpClient).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("refreshing access token: %w", err)
 	}

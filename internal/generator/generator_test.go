@@ -1909,6 +1909,8 @@ func TestGenerateOAuth2DeviceCodeAuth(t *testing.T) {
 	assert.Contains(t, authGo, `cliutil.IsVerifyEnv()`, "login and refresh short-circuit in verify mode")
 	assert.Contains(t, authGo, `Annotations: map[string]string{"mcp:hidden": "true"}`, "interactive auth commands stay out of MCP")
 	assert.Contains(t, oauthGo, `const DeviceCodeGrant = "urn:ietf:params:oauth:grant-type:device_code"`)
+	assert.Contains(t, oauthGo, "cliutil.OAuthTokenHTTPClient(httpClient).Do(req)",
+		"device-code token POSTs must use the same-origin token client")
 	assert.Contains(t, oauthGo, `case "slow_down":`, "poller handles slow_down backoff")
 	assert.Contains(t, configGo, `if c.AccessToken != ""`, "config auth uses stored OAuth access token")
 	assert.Contains(t, configGo, `DeviceAuthorizationURL string`, "config supports device endpoint overrides")
@@ -2079,6 +2081,10 @@ func TestGenerateOAuth2ClientCredentialsClientRefresh(t *testing.T) {
 		"refresh path must not send client_secret in the form body")
 	assert.Contains(t, mintBlock, "req.SetBasicAuth(clientID, clientSecret)",
 		"refresh path authenticates the token request via HTTP Basic")
+	assert.Contains(t, mintBlock, "cliutil.OAuthTokenHTTPClient(c.HTTPClient).Do(req)",
+		"token mint must use the same-origin token client, not the shared API client")
+	assert.NotContains(t, mintBlock, "c.HTTPClient.Do(req)",
+		"token mint must not follow the shared API CheckRedirect policy")
 	assert.Contains(t, mintBlock, "req.Header.Set(\"User-Agent\", resolveClientCredentialsUserAgent())",
 		"refresh path sets a descriptive user agent")
 	assert.Contains(t, body, `"https://api.example.com/oauth/token"`,
@@ -2133,6 +2139,8 @@ func TestGenerateOAuth2AuthorizationCodeClientRefreshUnchanged(t *testing.T) {
 
 	assert.Contains(t, body, `"grant_type":    {"refresh_token"}`,
 		"authorization_code spec keeps refresh_token grant in refresh path")
+	assert.Contains(t, body, "cliutil.OAuthTokenHTTPClient(c.HTTPClient).Do(req)",
+		"token refresh must use the same-origin token client, not the shared API client")
 	assert.NotContains(t, body, "func mintClientCredentials",
 		"authorization_code spec must NOT emit client_credentials helpers")
 	assert.NotContains(t, body, "func needsClientCredentialsMint",

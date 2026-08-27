@@ -301,7 +301,7 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 		return fmt.Errorf("building token request: %w", err)
 	}
 	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	tokenClient := &http.Client{Timeout: 30 * time.Second}
+	tokenClient := cliutil.OAuthTokenHTTPClient(&http.Client{Timeout: 30 * time.Second})
 	resp, err := tokenClient.Do(tokenReq)
 	if err != nil {
 		return fmt.Errorf("exchanging code for token: %w", err)
