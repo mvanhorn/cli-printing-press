@@ -1194,11 +1194,9 @@ func FTSMatchQuery(query string) string {
 }
 
 func extractObjectID(obj map[string]any) string {
-	for _, key := range []string{"id", "Id", "ID", "_id", "uuid", "slug", "name"} {
-		if v, ok := obj[key]; ok {
-			if id := ResourceIDString(v); id != "" && id != "<nil>" {
-				return id
-			}
+	for _, key := range []string{"id", "ID", "_id", "id_", "uuid", "slug", "name"} {
+		if s := canonicalIDFromKey(obj, key); s != "" {
+			return s
 		}
 	}
 	return ""
@@ -1217,16 +1215,85 @@ func ftsRowID(scope, id string) int64 {
 	return int64(h.Sum64() & 0x7FFFFFFFFFFFFFFF) // ensure positive
 }
 
-// LookupFieldValue resolves a field value from a JSON object map, trying the
-// snake_case key first, then the camelCase rendering, then the PascalCase
-// rendering. Exported so the sync command's extractID and the upsert path
-// resolve fields the same way — a divergence here produces silent drops on
-// heterogeneous payloads. The PascalCase pass handles .NET-shaped responses
-// (`Id`, `Name`, `OrderId`) without forcing each spec to declare casing.
+// LookupFieldValue resolves a field value from a JSON object map. A dotted
+// key is walked as a path (`entityInfo.entityId`); each segment tries snake,
+// camel, and Pascal spellings, then the Python-style trailing-underscore
+// sibling (`id` → `id_`). Exported so the sync command's extractID and the
+// upsert path resolve fields the same way — a divergence here produces
+// silent drops on heterogeneous payloads. The PascalCase pass handles
+// .NET-shaped responses (`Id`, `Name`, `OrderId`) without forcing each spec
+// to declare casing.
 func LookupFieldValue(obj map[string]any, snakeKey string) any {
-	if v, ok := obj[snakeKey]; ok {
-		return sqliteFieldValue(v)
+	v, ok := lookupRawFieldValue(obj, snakeKey)
+	if !ok {
+		return nil
 	}
+	return sqliteFieldValue(v)
+}
+
+func lookupRawFieldValue(obj map[string]any, key string) (any, bool) {
+	if obj == nil || key == "" {
+		return nil, false
+	}
+	if strings.Contains(key, ".") {
+		return lookupRawDottedFieldValue(obj, key)
+	}
+	return lookupRawFlatFieldValue(obj, key)
+}
+
+func lookupRawDottedFieldValue(obj map[string]any, path string) (any, bool) {
+	if v, ok := lookupRawFlatFieldValue(obj, path); ok {
+		return v, true
+	}
+	segments := strings.Split(path, ".")
+	if len(segments) < 2 {
+		return nil, false
+	}
+	current := obj
+	for i, segment := range segments {
+		if segment == "" {
+			return nil, false
+		}
+		v, ok := lookupRawFlatFieldValue(current, segment)
+		if !ok {
+			return nil, false
+		}
+		if i == len(segments)-1 {
+			return v, true
+		}
+		next, ok := v.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current = next
+	}
+	return nil, false
+}
+
+func lookupRawFlatFieldValue(obj map[string]any, snakeKey string) (any, bool) {
+	for _, key := range fieldKeySpellings(snakeKey) {
+		if v, ok := obj[key]; ok {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+func fieldKeySpellings(snakeKey string) []string {
+	seen := make(map[string]struct{}, 8)
+	out := make([]string, 0, 8)
+	add := func(s string) {
+		if s == "" {
+			return
+		}
+		if _, ok := seen[s]; ok {
+			return
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+
+	add(snakeKey)
 	parts := strings.Split(snakeKey, "_")
 	for i := 1; i < len(parts); i++ {
 		if parts[i] == "" {
@@ -1234,17 +1301,17 @@ func LookupFieldValue(obj map[string]any, snakeKey string) any {
 		}
 		parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
 	}
-	camel := strings.Join(parts, "")
-	if v, ok := obj[camel]; ok {
-		return sqliteFieldValue(v)
-	}
+	add(strings.Join(parts, ""))
 	if parts[0] != "" {
-		pascal := strings.ToUpper(parts[0][:1]) + parts[0][1:] + strings.Join(parts[1:], "")
-		if v, ok := obj[pascal]; ok {
-			return sqliteFieldValue(v)
+		add(strings.ToUpper(parts[0][:1]) + parts[0][1:] + strings.Join(parts[1:], ""))
+	}
+	n := len(out)
+	for i := 0; i < n; i++ {
+		if !strings.HasSuffix(out[i], "_") {
+			add(out[i] + "_")
 		}
 	}
-	return nil
+	return out
 }
 
 func sqliteFieldValue(v any) any {
@@ -1280,6 +1347,51 @@ func DecodeJSONObject(data json.RawMessage) (map[string]any, error) {
 		return nil, err
 	}
 	return obj, nil
+}
+
+// CanonicalResourceID is the identity invariant for generated stores: a value
+// becomes resources.id only when it can stably distinguish a row. ResourceIDString
+// will stringify zeros, timestamps, and booleans, and writing those keys
+// silently collapses or duplicates records on the next sync.
+func CanonicalResourceID(v any) string {
+	switch v.(type) {
+	case nil, bool:
+		return ""
+	}
+	s := strings.TrimSpace(ResourceIDString(v))
+	if unusableResourceID(s) {
+		return ""
+	}
+	return s
+}
+
+func unusableResourceID(s string) bool {
+	if s == "" || s == "<nil>" {
+		return true
+	}
+	if isoDatePattern.MatchString(s) {
+		return true
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil && f == 0 {
+		return true
+	}
+	return false
+}
+
+func canonicalIDFromKey(obj map[string]any, key string) string {
+	if v, ok := lookupRawFieldValue(obj, key); ok {
+		if s := CanonicalResourceID(v); s != "" {
+			return s
+		}
+	}
+	if obj == nil || strings.HasSuffix(key, "_") {
+		return ""
+	}
+	v, ok := obj[key+"_"]
+	if !ok {
+		return ""
+	}
+	return CanonicalResourceID(v)
 }
 
 // ResourceIDString returns the stable text form used for resources.id.
@@ -1363,7 +1475,7 @@ func (s *Store) UpsertLeagues(data json.RawMessage) error {
 		return fmt.Errorf("unmarshaling leagues: %w", err)
 	}
 
-	id := extractObjectID(obj)
+	id := ExtractResourceID("leagues", obj)
 	if id == "" {
 		return fmt.Errorf("missing id for leagues")
 	}
@@ -1404,7 +1516,9 @@ var resourceIDFieldOverrides = map[string]string{
 // Stable vendor identifiers win first; then fields derived from the resource
 // name (accountId, workspaceId); descriptive fallbacks are last. Keeping name
 // ahead of the resource-specific probe silently keys rows by display labels.
-var genericIDFieldFallbacks = []string{"id", "ID", "_id", "gid", "sid", "uid", "uuid", "guid", "api_id"}
+// `id_` is the Python-style trailing-underscore sibling of `id`; LookupFieldValue
+// also probes that spelling for every other key in this list.
+var genericIDFieldFallbacks = []string{"id", "ID", "_id", "id_", "gid", "sid", "uid", "uuid", "guid", "api_id"}
 var genericDescriptiveIDFieldFallbacks = []string{"name", "slug", "key", "code"}
 
 // resourceIDBaseOverrides preserves the complete final collection name for
@@ -1429,30 +1543,21 @@ var resourceParentKeyColumns = map[string][]string{
 // non-entity envelopes into the batch path.
 func ExtractResourceID(resourceType string, obj map[string]any) string {
 	if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
-		if v := lookupFieldValue(obj, override); v != nil {
-			s := ResourceIDString(v)
-			if s != "" && s != "<nil>" {
-				return s
-			}
+		if s := canonicalIDFromKey(obj, override); s != "" {
+			return s
 		}
 	}
 	for _, key := range genericIDFieldFallbacks {
-		if v := lookupFieldValue(obj, key); v != nil {
-			s := ResourceIDString(v)
-			if s != "" && s != "<nil>" {
-				return s
-			}
+		if s := canonicalIDFromKey(obj, key); s != "" {
+			return s
 		}
 	}
 	if s := suffixIDFieldFallback(resourceType, obj); s != "" {
 		return s
 	}
 	for _, key := range genericDescriptiveIDFieldFallbacks {
-		if v := lookupFieldValue(obj, key); v != nil {
-			s := ResourceIDString(v)
-			if s != "" && s != "<nil>" {
-				return s
-			}
+		if s := canonicalIDFromKey(obj, key); s != "" {
+			return s
 		}
 	}
 	return ""
@@ -1462,27 +1567,31 @@ func ExtractResourceID(resourceType string, obj map[string]any) string {
 // "<name>_code" / "<name>_id" / "<name>_key" / "<name>_slug" field (e.g. the
 // "currencies" resource keying on "currency_code" — see #2327). It is scoped to
 // the resource's OWN name so a foreign key like account_id/parent_id is never
-// promoted to the primary key, and it uses direct map lookups in a fixed suffix
-// order so the chosen id is deterministic.
+// promoted to the primary key, and it walks the same key spellings as
+// LookupFieldValue in a fixed suffix order so the chosen id is deterministic.
 func suffixIDFieldFallback(resourceType string, obj map[string]any) string {
 	for _, base := range resourceIDBaseNames(resourceType) {
 		for _, suffix := range []string{"_id", "_code", "_key", "_slug"} {
-			if v, ok := obj[base+suffix]; ok {
-				if s := scalarIDString(v); s != "" && s != "<nil>" {
-					return s
-				}
+			if s := canonicalScalarIDFromKey(obj, base+suffix); s != "" {
+				return s
 			}
 		}
 		camelBase := lowerCamelResourceIDBase(base)
 		for _, suffix := range []string{"Id", "Code", "Key", "Slug"} {
-			if v, ok := obj[camelBase+suffix]; ok {
-				if s := scalarIDString(v); s != "" && s != "<nil>" {
-					return s
-				}
+			if s := canonicalScalarIDFromKey(obj, camelBase+suffix); s != "" {
+				return s
 			}
 		}
 	}
 	return ""
+}
+
+func canonicalScalarIDFromKey(obj map[string]any, key string) string {
+	v, ok := lookupRawFieldValue(obj, key)
+	if !ok || scalarIDString(v) == "" {
+		return ""
+	}
+	return CanonicalResourceID(v)
 }
 
 // resourceIDBaseNames returns lowercase candidate singular/plural stems of a

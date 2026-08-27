@@ -4284,8 +4284,7 @@ func extractID(resource string, obj map[string]any) string {
 func resourceIDFieldOverrideID(resource string, obj map[string]any) (string, bool) {
 	if override, ok := resourceIDFieldOverrides[resource]; ok && override != "" {
 		if v := store.LookupFieldValue(obj, override); v != nil {
-			s := store.ResourceIDString(v)
-			if s != "" && s != "<nil>" {
+			if s := store.CanonicalResourceID(v); s != "" {
 				return s, true
 			}
 		}
@@ -4300,8 +4299,7 @@ func synthesizeHTMLPageModeID(resource string, obj map[string]any) string {
 	}
 	for _, key := range []string{"canonical_url", "url", "image_url"} {
 		if v := store.LookupFieldValue(obj, key); v != nil {
-			s := store.ResourceIDString(v)
-			if s != "" && s != "<nil>" {
+			if s := store.CanonicalResourceID(v); s != "" {
 				return s
 			}
 		}
