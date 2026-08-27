@@ -162,10 +162,10 @@ func runPostReadCommand(t *testing.T, args ...string) string {
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPOSTReadCommandsPrintCollectionBody", "-count=1")
 }
 
-// Guards #4390: mutation-output commands must unwrap single-key collection
-// envelopes before wrapping, so a POST that answers {"data":[...]} nests the
-// rows once (envelope data = array), not twice (data.data). Plain
-// created-object responses must pass through untouched.
+// Mutation-output commands must unwrap single-key collection envelopes
+// before wrapping, so a POST that answers {"data":[...]} nests the rows
+// once (envelope data = array), not twice (data.data). Plain created-object
+// responses must pass through untouched.
 func TestMutationOutputUnwrapsCollectionEnvelope(t *testing.T) {
 	t.Parallel()
 

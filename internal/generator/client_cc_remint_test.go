@@ -13,11 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Guards #4000 (defects 1+2): the client_credentials grant issues no refresh
-// token, so the generated 401-recovery branch must re-mint via the token
-// endpoint instead of gating on RefreshToken (which structurally never fires
-// for this grant), and a stored token with no recorded expiry must be
-// re-minted once per process instead of trusted forever.
+// The client_credentials grant issues no refresh token, so the generated
+// 401-recovery branch must re-mint via the token endpoint instead of gating
+// on RefreshToken (which structurally never fires for this grant), and a
+// stored token with no recorded expiry must be re-minted once per process
+// instead of trusted forever.
 func ccRemintSpec() *spec.APISpec {
 	return &spec.APISpec{
 		Name:    "ccremint",
