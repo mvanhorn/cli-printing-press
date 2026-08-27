@@ -823,7 +823,7 @@ func syncResource(ctx context.Context, c interface {
 {{ else if $hasPostSync -}}
 	data, err := syncFetch(ctx, c, resource, path, params)
 {{ else -}}
-	data, err := c.Get(ctx, path, params)
+	data, err := syncGet(ctx, c, resource, "", path, params)
 {{ end -}}
 	if err != nil {
 		if w, ok := isSyncAccessWarning(err); ok {
@@ -1523,7 +1523,7 @@ func syncFetch(ctx context.Context, c interface {
 	PostQueryWithParams(context.Context, string, map[string]string, any) (json.RawMessage, int, error)
 }, resource string, path string, params map[string]string{{if $hasIDWalk}}, idWalk idWalkConfig, cursor string{{end}}) (json.RawMessage, error) {
 	if syncResourceMethod(resource) != "POST" {
-		return c.Get(ctx, path, params)
+		return syncGet(ctx, c, resource, "", path, params)
 	}
 	queryParams, body := splitSyncPostParams(resource, params)
 {{- if $hasIDWalk}}
@@ -2971,6 +2971,31 @@ func isNullOrEmptyJSON(data json.RawMessage) bool {
 	return trimmed == "" || trimmed == "null"
 }
 
+func syncGet(ctx context.Context, c interface {
+	Get(context.Context, string, map[string]string) (json.RawMessage, error)
+}, resource, parentResource, path string, params map[string]string) (json.RawMessage, error) {
+	headers := syncHTMLRequestHeaders(resource, parentResource)
+	if len(headers) == 0 {
+		return c.Get(ctx, path, params)
+	}
+	type headerGetter interface {
+		GetWithHeaders(context.Context, string, map[string]string, map[string]string) (json.RawMessage, error)
+	}
+	if hg, ok := c.(headerGetter); ok {
+		return hg.GetWithHeaders(ctx, path, params, headers)
+	}
+	return c.Get(ctx, path, params)
+}
+
+func syncHTMLRequestHeaders(resource, parentResource string) map[string]string {
+{{- if $hasHTMLSync}}
+	if _, ok := syncHTMLExtractionOptions(resource, parentResource, "", "", "", nil); ok {
+		return map[string]string{"X-Printing-Press-HTML-Response": "true"}
+	}
+{{- end}}
+	return nil
+}
+
 {{- if $hasHTMLSync}}
 
 func syncHTMLExtractionOptions(resource string, parentResource string, baseURL string, contentType string, path string, params map[string]string) (htmlExtractionOptions, bool) {
@@ -3422,7 +3447,7 @@ func syncOneParent(
 {{ else if $hasPostSync -}}
 		data, err := syncFetch(ctx, c, dep.Name, path, params)
 {{ else -}}
-		data, err := c.Get(ctx, path, params)
+		data, err := syncGet(ctx, c, dep.Name, dep.ParentTable, path, params)
 {{ end -}}
 		if err != nil {
 			// Non-fatal per parent: log and continue to next parent.
