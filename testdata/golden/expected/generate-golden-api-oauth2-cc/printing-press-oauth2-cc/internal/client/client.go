@@ -1141,19 +1141,22 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		// an unauthorized response is a fresh mint: re-mint once and retry;
 		// a 401 that survives a fresh token surfaces as the real error.
 		if resp.StatusCode == http.StatusUnauthorized && !refreshedAfterUnauthorized && attempt < maxRetries && c.Config != nil && !(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()) {
+			if c.ccMu == nil {
+				c.ccMu = &sync.Mutex{}
+			}
+			// Resolve the credential pair, validate it, mint, and (without
+			// tier routing) read the refreshed header inside one critical
+			// section, so a concurrent mint persisting Config fields cannot
+			// interleave a stale or mismatched pair mid-recovery. The
+			// tier-routing variant re-derives auth via authForRequest after
+			// unlock instead, which takes ccMu internally.
+			c.ccMu.Lock()
 			clientID, clientSecret := resolveClientCredentials(c.Config)
 			if clientID != "" && clientSecret != "" {
 				if authHeaderLooksLikePlaceholderCredential(clientID) || authHeaderLooksLikePlaceholderCredential(clientSecret) {
+					c.ccMu.Unlock()
 					return nil, resp.StatusCode, authPlaceholderCredentialError(c.Config)
 				}
-				if c.ccMu == nil {
-					c.ccMu = &sync.Mutex{}
-				}
-				// Read the refreshed header inside the same critical section
-				// as the mint so a concurrent mint cannot replace Config
-				// fields mid-read. The tier-routing variant re-derives auth
-				// via authForRequest instead, which takes ccMu internally.
-				c.ccMu.Lock()
 				mintErr := c.mintClientCredentials(ctx, clientID, clientSecret)
 				if mintErr == nil {
 					authHeader = c.Config.AuthHeader()
@@ -1166,6 +1169,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				lastErr = apiErr
 				continue
 			}
+			c.ccMu.Unlock()
 		}
 
 		// Rate limited: classify before provider decoding. Unsafe-to-replay
