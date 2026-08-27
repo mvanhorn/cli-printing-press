@@ -1040,6 +1040,78 @@ func TestWriteManifestForGenerate_CollidingEndpointOverrideAgreesWithGetenv(t *t
 	assert.False(t, shop.Sensitive)
 }
 
+// A later MCPB refresh does not regenerate client source. If generate already
+// dropped a colliding {shop} → ACCESS_TOKEN override, the printed Getenv is
+// SHOPIFY_SHOP and the installer must follow it. If the existing tree still
+// Getenvs the credential name, rebinding to SHOPIFY_SHOP leaves the first
+// request unset. Keep the installer key paired with the scan-confirmed
+// Getenv and mask it so it does not sit unmasked beside the profile selector.
+func TestWriteMCPBManifest_LegacyCollidingGetenvKeepsInstallerAligned(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "platform"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "platform", "profile.go"), []byte("package platform\n"), 0o644))
+	writeConfigFile(t, dir, "config.go", `package config
+
+import "os"
+
+func Load() {
+	_ = os.Getenv("SHOPIFY_ACCESS_TOKEN")
+}
+`)
+	writeManifest(t, dir, CLIManifest{
+		APIName:     "shopify",
+		DisplayName: "Shopify",
+		CLIName:     "shopify-pp-cli",
+		MCPBinary:   "shopify-pp-mcp",
+		MCPReady:    "full",
+		AuthType:    "api_key",
+		AuthEnvVars: []string{"SHOPIFY_ACCESS_TOKEN"},
+		AuthEnvVarSpecs: []spec.AuthEnvVar{{
+			Name: "SHOPIFY_ACCESS_TOKEN", Kind: spec.AuthEnvVarKindPerCall,
+			Required: true, Sensitive: true,
+		}},
+		EndpointTemplateVars:         []string{"shop"},
+		EndpointTemplateEnvOverrides: map[string]string{"shop": "SHOPIFY_ACCESS_TOKEN"},
+	})
+
+	require.NoError(t, WriteMCPBManifest(dir))
+	got := readMCPBManifest(t, dir)
+
+	require.Contains(t, got.Server.MCPConfig.Env, "SHOPIFY_ACCESS_TOKEN",
+		"manifest-only refresh must collect the Getenv the existing client still reads")
+	assert.Equal(t, "${user_config.shopify_access_token}", got.Server.MCPConfig.Env["SHOPIFY_ACCESS_TOKEN"])
+	_, hasShop := got.Server.MCPConfig.Env["SHOPIFY_SHOP"]
+	assert.False(t, hasShop, "must not silently rebind the installer to the default shop name")
+
+	assert.Equal(t, "${user_config.printing_press_client_profile}", got.Server.MCPConfig.Env["PRINTING_PRESS_CLIENT_PROFILE"])
+	profile, ok := got.UserConfig["printing_press_client_profile"]
+	require.True(t, ok)
+	assert.True(t, profile.Required)
+	assert.False(t, profile.Sensitive)
+
+	token, ok := got.UserConfig["shopify_access_token"]
+	require.True(t, ok, "legacy colliding Getenv must stay on the installer")
+	assert.Equal(t, "SHOPIFY_ACCESS_TOKEN", token.Title)
+	assert.True(t, token.Sensitive, "credential-named shop binding must stay masked beside the profile selector")
+	assert.True(t, token.Required)
+
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion:                CurrentCLIManifestSchemaVersion,
+		APIName:                      "shopify",
+		CLIName:                      "shopify-pp-cli",
+		MCPBinary:                    "shopify-pp-mcp",
+		MCPReady:                     "full",
+		AuthType:                     "api_key",
+		AuthEnvVars:                  []string{"SHOPIFY_ACCESS_TOKEN"},
+		EndpointTemplateVars:         []string{"shop"},
+		EndpointTemplateEnvOverrides: map[string]string{"shop": "SHOPIFY_ACCESS_TOKEN"},
+	}))
+	cli, err := ReadCLIManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "SHOPIFY_ACCESS_TOKEN", cli.EndpointTemplateEnvOverrides["shop"],
+		"CLI manifest write must keep the scan-confirmed colliding override")
+}
+
 func TestAlignPrefixedEnvName(t *testing.T) {
 	t.Parallel()
 

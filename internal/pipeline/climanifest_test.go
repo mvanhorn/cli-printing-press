@@ -1935,6 +1935,18 @@ func TestEndpointTemplateEnvVarRejectsAuthCollision(t *testing.T) {
 	assert.Equal(t, "SHOPIFY_ACCESS_TOKEN", endpointTemplateEnvVar(m, "access_token"),
 		"a placeholder whose own default name is credential-shaped is kept")
 
+	legacy := m
+	legacy.generatedEnvReads = map[string]struct{}{"SHOPIFY_ACCESS_TOKEN": {}}
+	assert.Equal(t, "SHOPIFY_ACCESS_TOKEN", endpointTemplateEnvVar(legacy, "shop"),
+		"scan-confirmed legacy Getenv must keep the colliding installer name")
+	both := m
+	both.generatedEnvReads = map[string]struct{}{
+		"SHOPIFY_ACCESS_TOKEN": {},
+		"SHOPIFY_SHOP":         {},
+	}
+	assert.Equal(t, "SHOPIFY_SHOP", endpointTemplateEnvVar(both, "shop"),
+		"fresh source that already reads the default must not keep the colliding override")
+
 	env := map[string]string{}
 	vars := map[string]MCPBVar{}
 	bindEndpointTemplateVars(m, env, vars)

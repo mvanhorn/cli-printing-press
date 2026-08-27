@@ -179,6 +179,13 @@ func reconcileMCPBManifestFromClient(dir string, cli CLIManifest) error {
 		return nil
 	}
 
+	generated := make(map[string]struct{}, len(envReads))
+	for _, name := range envReads {
+		generated[name] = struct{}{}
+	}
+	cli.generatedEnvReads = generated
+	cli = dropCollidingEndpointTemplateOverrides(cli, generated)
+
 	platformProfiles := usesPlatformClientProfiles(dir)
 	var missing []string
 	for _, name := range envReads {

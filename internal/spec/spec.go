@@ -540,10 +540,8 @@ func IsAuthOrCredentialEnvName(name string, authNames []string) bool {
 	if name == clientProfileEnvName {
 		return true
 	}
-	for _, auth := range authNames {
-		if auth == name {
-			return true
-		}
+	if slices.Contains(authNames, name) {
+		return true
 	}
 	return IsCredentialShapedEnvVarName(name)
 }

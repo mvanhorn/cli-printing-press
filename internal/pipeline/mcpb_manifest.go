@@ -159,9 +159,13 @@ func WriteMCPBManifestFromStruct(dir string, m CLIManifest) error {
 	// Generated os.Getenv names move with the CLI env prefix; endpoint
 	// metadata can still name the pre-rename variable. Bind against the
 	// name the printed client reads so the installer and first request
-	// stay paired. Drop colliding auth-named overrides first so bind
-	// and a freshly generated Getenv cannot diverge.
-	m = dropCollidingEndpointTemplateOverrides(m)
+	// stay paired. Drop colliding auth-named overrides only when the
+	// printed client already reads the default name (or no longer reads
+	// the override); a manifest-only refresh must not rebind to
+	// SHOPIFY_SHOP while legacy source still Getenvs the credential.
+	generated := scanGeneratedEnvSet(dir)
+	m.generatedEnvReads = generated
+	m = dropCollidingEndpointTemplateOverrides(m, generated)
 	m = alignEndpointTemplateEnvNames(dir, m)
 	out, err := marshalMCPBManifest(buildMCPBManifest(dir, m))
 	if err != nil {
@@ -430,7 +434,15 @@ func endpointTemplateEnvVar(m CLIManifest, templateVar string) string {
 	if v, ok := m.EndpointTemplateEnvOverrides[templateVar]; ok {
 		override = v
 	}
-	return spec.ResolveEndpointTemplateEnvName(m.APIName, templateVar, override, manifestAuthEnvNames(m))
+	resolved := spec.ResolveEndpointTemplateEnvName(m.APIName, templateVar, override, manifestAuthEnvNames(m))
+	// Resolve rejects a credential-named override of a different
+	// placeholder. Fresh prints drop that override and emit the default
+	// Getenv. A later manifest-only refresh must not rebind to the
+	// default while existing source still reads the colliding name.
+	if generatedReadsLegacyOverride(m.generatedEnvReads, strings.TrimSpace(override), spec.DefaultEndpointTemplateEnvName(m.APIName, templateVar)) {
+		return strings.TrimSpace(override)
+	}
+	return resolved
 }
 
 func manifestAuthEnvNames(m CLIManifest) []string {
@@ -449,24 +461,51 @@ func manifestAuthEnvNames(m CLIManifest) []string {
 	return names
 }
 
-func dropCollidingEndpointTemplateOverrides(m CLIManifest) CLIManifest {
+func dropCollidingEndpointTemplateOverrides(m CLIManifest, generated map[string]struct{}) CLIManifest {
 	if len(m.EndpointTemplateEnvOverrides) == 0 {
 		return m
 	}
 	cleaned := cloneEndpointTemplateEnvOverrides(m.EndpointTemplateEnvOverrides)
 	changed := false
+	authNames := manifestAuthEnvNames(m)
 	for placeholder, override := range cleaned {
-		resolved := spec.ResolveEndpointTemplateEnvName(m.APIName, placeholder, override, manifestAuthEnvNames(m))
-		if resolved != strings.TrimSpace(override) {
-			delete(cleaned, placeholder)
-			changed = true
+		trimmed := strings.TrimSpace(override)
+		resolved := spec.ResolveEndpointTemplateEnvName(m.APIName, placeholder, override, authNames)
+		if resolved == trimmed {
+			continue
 		}
+		if generatedReadsLegacyOverride(generated, trimmed, resolved) {
+			continue
+		}
+		delete(cleaned, placeholder)
+		changed = true
 	}
 	if !changed {
 		return m
 	}
 	m.EndpointTemplateEnvOverrides = cleaned
 	return m
+}
+
+func generatedReadsLegacyOverride(generated map[string]struct{}, override, defaultName string) bool {
+	if len(generated) == 0 || override == "" {
+		return false
+	}
+	_, readsOverride := generated[override]
+	_, readsDefault := generated[defaultName]
+	return readsOverride && !readsDefault
+}
+
+func scanGeneratedEnvSet(dir string) map[string]struct{} {
+	reads, err := scanClientEnvReads(dir)
+	if err != nil || len(reads) == 0 {
+		return nil
+	}
+	generated := make(map[string]struct{}, len(reads))
+	for _, name := range reads {
+		generated[name] = struct{}{}
+	}
+	return generated
 }
 
 // Generated Getenv names move with the CLI env prefix; stored overrides
@@ -487,6 +526,14 @@ func alignEndpointTemplateEnvNames(dir string, m CLIManifest) CLIManifest {
 	}
 	cloned := false
 	for _, templateVar := range m.EndpointTemplateVars {
+		override := ""
+		if v, ok := m.EndpointTemplateEnvOverrides[templateVar]; ok {
+			override = strings.TrimSpace(v)
+		}
+		defaultName := spec.DefaultEndpointTemplateEnvName(m.APIName, templateVar)
+		if generatedReadsLegacyOverride(generated, override, defaultName) {
+			continue
+		}
 		name := endpointTemplateEnvVar(m, templateVar)
 		if _, ok := generated[name]; ok {
 			continue
