@@ -585,6 +585,7 @@ Resource scoping:
 // keep both call sites in sync if this signature changes.
 func syncResource(ctx context.Context, c interface {
 	Get(context.Context, string, map[string]string) (json.RawMessage, error)
+	GetWithHeaders(context.Context, string, map[string]string, map[string]string) (json.RawMessage, error)
 {{- if $hasPostSync}}
 	PostWithParams(context.Context, string, map[string]string, any) (json.RawMessage, int, error)
 	PostQueryWithParams(context.Context, string, map[string]string, any) (json.RawMessage, int, error)
@@ -823,7 +824,7 @@ func syncResource(ctx context.Context, c interface {
 {{ else if $hasPostSync -}}
 	data, err := syncFetch(ctx, c, resource, path, params)
 {{ else -}}
-	data, err := c.Get(ctx, path, params)
+	data, err := c.GetWithHeaders(ctx, path, params, syncHTMLRequestHeaders(resource, ""))
 {{ end -}}
 	if err != nil {
 		if w, ok := isSyncAccessWarning(err); ok {
@@ -1519,11 +1520,12 @@ func syncResourceIDField(resource string) string {
 
 func syncFetch(ctx context.Context, c interface {
 	Get(context.Context, string, map[string]string) (json.RawMessage, error)
+	GetWithHeaders(context.Context, string, map[string]string, map[string]string) (json.RawMessage, error)
 	PostWithParams(context.Context, string, map[string]string, any) (json.RawMessage, int, error)
 	PostQueryWithParams(context.Context, string, map[string]string, any) (json.RawMessage, int, error)
 }, resource string, path string, params map[string]string{{if $hasIDWalk}}, idWalk idWalkConfig, cursor string{{end}}) (json.RawMessage, error) {
 	if syncResourceMethod(resource) != "POST" {
-		return c.Get(ctx, path, params)
+		return c.GetWithHeaders(ctx, path, params, syncHTMLRequestHeaders(resource, ""))
 	}
 	queryParams, body := splitSyncPostParams(resource, params)
 {{- if $hasIDWalk}}
@@ -2971,6 +2973,15 @@ func isNullOrEmptyJSON(data json.RawMessage) bool {
 	return trimmed == "" || trimmed == "null"
 }
 
+func syncHTMLRequestHeaders(resource, parentResource string) map[string]string {
+{{- if $hasHTMLSync}}
+	if _, ok := syncHTMLExtractionOptions(resource, parentResource, "", "", "", nil); ok {
+		return map[string]string{"X-Printing-Press-HTML-Response": "true"}
+	}
+{{- end}}
+	return nil
+}
+
 {{- if $hasHTMLSync}}
 
 func syncHTMLExtractionOptions(resource string, parentResource string, baseURL string, contentType string, path string, params map[string]string) (htmlExtractionOptions, bool) {
@@ -3144,6 +3155,7 @@ func dependentResourceDefs() []dependentResourceDef {
 // runs when its parent table or its own name appears in the filter.
 func syncDependentResources(ctx context.Context, c {{if .HasTierRouting}}*client.Client{{else}}interface {
 	Get(context.Context, string, map[string]string) (json.RawMessage, error)
+	GetWithHeaders(context.Context, string, map[string]string, map[string]string) (json.RawMessage, error)
 {{- if $hasPostSync}}
 	PostWithParams(context.Context, string, map[string]string, any) (json.RawMessage, int, error)
 	PostQueryWithParams(context.Context, string, map[string]string, any) (json.RawMessage, int, error)
@@ -3422,7 +3434,7 @@ func syncOneParent(
 {{ else if $hasPostSync -}}
 		data, err := syncFetch(ctx, c, dep.Name, path, params)
 {{ else -}}
-		data, err := c.Get(ctx, path, params)
+		data, err := c.GetWithHeaders(ctx, path, params, syncHTMLRequestHeaders(dep.Name, dep.ParentTable))
 {{ end -}}
 		if err != nil {
 			// Non-fatal per parent: log and continue to next parent.
