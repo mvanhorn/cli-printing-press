@@ -614,6 +614,28 @@ func newRateLimiter(rateLimit float64) *cliutil.AdaptiveLimiter {
 	return cliutil.NewAdaptiveLimiter(rateLimit) // 0 -> nil (disabled); >0 -> explicit ceiling
 }
 
+// redirectLeavesOrigin reports whether a redirect hop should drop custom
+// credentials. Host is compared against the original request so a foreign
+// hop (A -> B -> B) cannot re-stamp A's credential onto B. Same-host
+// http -> https keeps the credential. Once any hop in the chain was
+// https, later plaintext hops must not re-stamp; comparing only the
+// original URL and the immediate predecessor misses
+// http -> https -> http -> http.
+func redirectLeavesOrigin(next *url.URL, via []*http.Request) bool {
+	if next.Host != via[0].URL.Host {
+		return true
+	}
+	if next.Scheme == "https" {
+		return false
+	}
+	for _, hop := range via {
+		if hop.URL.Scheme == "https" {
+			return true
+		}
+	}
+	return false
+}
+
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	cacheDir := ""
 	if dir, err := cliutil.CacheDir(); err == nil {
@@ -721,10 +743,11 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			return errors.New("stopped after 10 redirects")
 		}
 {{- if and (ne .Auth.Type "none") (ne .Auth.Type "")}}
-		// Never carry credential material across a host-changing redirect.
-		// Go strips Authorization and Cookie in common cases, but custom
-		// headers and URL query values need explicit removal here.
-		if req.URL.Host != via[0].URL.Host {
+		// Never carry credential material across a host change or protocol
+		// downgrade. Go strips Authorization and Cookie in common cases, but
+		// custom headers and URL query values need explicit removal here.
+		// Block protocol downgrade.
+		if redirectLeavesOrigin(req.URL, via) {
 			req.Header.Del("{{authParameterName .Auth}}")
 {{- if eq .Auth.Type "session_handshake"}}
 			req.Header.Del("{{.Auth.TokenParamName}}")
@@ -757,11 +780,11 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- if .HasTierRouting}}
 		// Tier routing picks header vs query at request time on a WithTier copy,
 		// while this redirect callback is installed once on the shared
-		// http.Client. On cross-host redirects, delete every tier auth header
-		// name the generated CLI can use; same-host redirects keep Go's copied
-		// header unchanged. Go strips Authorization/Cookie automatically on
-		// cross-host redirects, but not arbitrary tier header names.
-		if req.URL.Host != via[0].URL.Host {
+		// http.Client. When the hop leaves the origin, delete every tier auth
+		// header name the generated CLI can use. Go strips Authorization/Cookie
+		// automatically on some hops, but not arbitrary tier header names.
+		// Block protocol downgrade.
+		if redirectLeavesOrigin(req.URL, via) {
 	{{- range $tierName, $tier := .TierRouting.Tiers}}
 	{{- if and (ne $tier.Auth.Type "") (ne $tier.Auth.Type "none") (eq (authPlacement $tier.Auth) "header")}}
 			req.Header.Del({{printf "%q" (authParameterName $tier.Auth)}})
@@ -770,32 +793,32 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		}
 {{- else if eq .Auth.Type "session_handshake"}}
 {{- if eq .Auth.TokenParamIn "header"}}
-		// Same-host gate mirrors Go's shouldCopyHeaderOnRedirect: a
-		// cross-domain 3xx (open redirect or partner handoff) must not
-		// receive the auth credential, even though we are inside
-		// CheckRedirect where Go's automatic stripping has already run.
-		if req.URL.Host == via[0].URL.Host {
+		// Re-stamp only when the hop stays on the origin. Custom headers
+		// are never in the set Go removes automatically, so this gate
+		// has to do the work itself. Block protocol downgrade.
+		if !redirectLeavesOrigin(req.URL, via) {
 			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
 				req.Header.Set("{{.Auth.TokenParamName}}", h)
 			}
 		} else {
-			// Cross-host hop: delete the custom auth header so the credential
-			// is not forwarded to the redirect target.
+			// Delete the custom auth header so the credential is not
+			// forwarded to the redirect target.
 			req.Header.Del("{{.Auth.TokenParamName}}")
 		}
 {{- end}}
 {{- else if and .Auth .Auth.In (eq .Auth.In "query")}}
-		// Query credentials are removed above on cross-host hops and remain
-		// unchanged on same-host redirects.
+		// Query credentials are removed above when the hop leaves the origin
+		// and remain unchanged otherwise.
 {{- else if and .Auth .Auth.In (eq .Auth.In "cookie") (not (isBrowserCookieAuth .Auth))}}
 		// The auth cookie set on the initial request is carried verbatim by Go
-		// on same-host redirects, so re-adding it here would double the Cookie
-		// header (the same hazard the cookie-jar branch below avoids). Only the
-		// cross-host hop needs handling: Go does not strip a manually-set Cookie
-		// for custom names, so drop the auth cookie by name to keep the
-		// credential from leaking to a redirect target, while preserving any
-		// other cookies on the request.
-		if req.URL.Host != via[0].URL.Host {
+		// when the hop stays on the origin, so re-adding it here would double
+		// the Cookie header (the same hazard the cookie-jar branch below
+		// avoids). Only a host change or protocol downgrade needs handling:
+		// Go does not strip a manually-set Cookie for custom names, so drop
+		// the auth cookie by name to keep the credential from leaking to a
+		// redirect target, while preserving any other cookies on the request.
+		// Block protocol downgrade.
+		if redirectLeavesOrigin(req.URL, via) {
 			preserved := req.Cookies()
 			req.Header.Del("Cookie")
 			for _, ck := range preserved {
@@ -810,11 +833,10 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// manually here would double the jar's cookies on the redirected
 		// request.
 {{- else}}
-		// Same-host gate mirrors Go's shouldCopyHeaderOnRedirect: a
-		// cross-domain 3xx (open redirect or partner handoff) must not
-		// receive the auth credential, even though we are inside
-		// CheckRedirect where Go's automatic stripping has already run.
-		if req.URL.Host == via[0].URL.Host{{- if eq .Auth.Type "composed"}} && c.credentialAppliesToURL(req.URL.String()){{- end}} {
+		// Re-stamp only when the hop stays on the origin. Custom headers
+		// are never in the set Go removes automatically, so this gate
+		// has to do the work itself. Block protocol downgrade.
+		if !redirectLeavesOrigin(req.URL, via){{- if eq .Auth.Type "composed"}} && c.credentialAppliesToURL(req.URL.String()){{- end}} {
 			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
 				req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", h)
 			}
