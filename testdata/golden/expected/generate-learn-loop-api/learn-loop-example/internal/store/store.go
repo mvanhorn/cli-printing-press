@@ -1349,10 +1349,10 @@ func DecodeJSONObject(data json.RawMessage) (map[string]any, error) {
 	return obj, nil
 }
 
-// CanonicalResourceID returns the stable text form used for resources.id, or
-// empty when the value cannot be a primary key (nil, boolean, zero, or a
-// timestamp). Callers that would otherwise store ResourceIDString output
-// must use this so unusable values are refused instead of written.
+// CanonicalResourceID is the identity invariant for generated stores: a value
+// becomes resources.id only when it can stably distinguish a row. ResourceIDString
+// will stringify zeros, timestamps, and booleans, and writing those keys
+// silently collapses or duplicates records on the next sync.
 func CanonicalResourceID(v any) string {
 	switch v.(type) {
 	case nil, bool:
