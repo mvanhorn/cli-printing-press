@@ -425,7 +425,7 @@ func mcpbUserConfigAuthEnvVars(m CLIManifest) []spec.AuthEnvVar {
 
 func endpointTemplateEnvVar(m CLIManifest, templateVar string) string {
 	if override, ok := m.EndpointTemplateEnvOverrides[templateVar]; ok {
-		if trimmed := strings.TrimSpace(override); trimmed != "" {
+		if trimmed := strings.TrimSpace(override); trimmed != "" && !isAuthOrCredentialEnvVar(m, trimmed) {
 			return trimmed
 		}
 	}
@@ -501,14 +501,79 @@ func alignPrefixedEnvName(name, apiName string) string {
 	return name
 }
 
+// credentialEnvSuffixes name secret-bearing env vars even after a
+// platform-profile write remaps AuthEnvVars to PRINTING_PRESS_CLIENT_PROFILE.
+// Keep this list secret-shaped; per-instance knobs such as *_TENANT_ID and
+// *_SHOP stay bindable as endpoint fields.
+var credentialEnvSuffixes = []string{
+	"_ACCESS_TOKEN",
+	"_REFRESH_TOKEN",
+	"_API_KEY",
+	"_API_SECRET",
+	"_API_TOKEN",
+	"_CLIENT_SECRET",
+	"_PASSWORD",
+	"_SECRET",
+	"_PRIVATE_KEY",
+	"_BEARER_TOKEN",
+	"_AUTH_TOKEN",
+	"_TOKEN",
+}
+
+var credentialEnvExactNames = map[string]struct{}{
+	"ACCESS_TOKEN":  {},
+	"API_KEY":       {},
+	"API_SECRET":    {},
+	"API_TOKEN":     {},
+	"AUTH_TOKEN":    {},
+	"BEARER_TOKEN":  {},
+	"CLIENT_SECRET": {},
+	"PASSWORD":      {},
+	"PRIVATE_KEY":   {},
+	"REFRESH_TOKEN": {},
+	"SECRET":        {},
+	"TOKEN":         {},
+}
+
+// Auth-named or credential-shaped env vars stay on the profile selector
+// (or the sensitive auth user_config slot). Emitting them as endpoint
+// fields would prompt the installer for the raw secret unmasked.
+func isAuthOrCredentialEnvVar(m CLIManifest, name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, envVar := range mcpbUserConfigAuthEnvVars(m) {
+		if envVar.Name == name {
+			return true
+		}
+	}
+	return isCredentialShapedEnvVarName(name)
+}
+
+func isCredentialShapedEnvVarName(name string) bool {
+	if _, ok := credentialEnvExactNames[name]; ok {
+		return true
+	}
+	for _, suffix := range credentialEnvSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 // Path-positional placeholders such as {shop} are not credentials: the
 // platform profile selector does not fill them, and the first API call
 // fails if they are unset. Spec-defaulted placeholders stay optional so
 // MCPB hosts do not present Required+Default as a contradictory install
-// field.
+// field. Credential-named overrides are rejected so the installer never
+// collects an access token in an unmasked endpoint field.
 func bindEndpointTemplateVars(m CLIManifest, env map[string]string, vars map[string]MCPBVar) {
 	for _, templateVar := range m.EndpointTemplateVars {
 		name, entry := endpointTemplateUserConfigEntry(m, templateVar)
+		if isAuthOrCredentialEnvVar(m, name) {
+			continue
+		}
 		if env != nil {
 			env[name] = "${user_config." + userConfigKey(name) + "}"
 		}
@@ -531,6 +596,9 @@ func endpointTemplateUserConfigEntry(m CLIManifest, templateVar string) (string,
 }
 
 func endpointTemplateVarForEnv(m CLIManifest, name string) (string, bool) {
+	if isAuthOrCredentialEnvVar(m, name) {
+		return "", false
+	}
 	for _, templateVar := range m.EndpointTemplateVars {
 		if endpointTemplateEnvVar(m, templateVar) == name {
 			return templateVar, true

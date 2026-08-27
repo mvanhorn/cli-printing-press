@@ -277,5 +277,8 @@ func isNonCredentialDiscoveredEnvVar(name string) bool {
 // installer must still collect; treating them as secrets would either
 // drop {shop} or prompt for HUDU_API_KEY beside the profile.
 func isPlatformProfileSafeDiscoveredEnvVar(cli CLIManifest, name string) bool {
+	if isAuthOrCredentialEnvVar(cli, name) {
+		return false
+	}
 	return isNonCredentialDiscoveredEnvVar(name) || isEndpointTemplateEnvVar(cli, name)
 }

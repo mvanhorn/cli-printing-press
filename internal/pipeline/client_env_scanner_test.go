@@ -506,6 +506,53 @@ func Load() {
 		assert.NotContains(t, shop.Description, "credential refresh")
 	})
 
+	t.Run("platform profile rejects auth-named endpoint override", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "platform"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "platform", "profile.go"), []byte("package platform\n"), 0o644))
+		cli := CLIManifest{
+			APIName:                      "shopify",
+			DisplayName:                  "Shopify",
+			MCPBinary:                    "shopify-pp-mcp",
+			AuthType:                     "api_key",
+			AuthEnvVars:                  []string{"PRINTING_PRESS_CLIENT_PROFILE"},
+			EndpointTemplateVars:         []string{"shop"},
+			EndpointTemplateEnvOverrides: map[string]string{"shop": "SHOPIFY_ACCESS_TOKEN"},
+		}
+		writeMCPBManifest(t, dir, MCPBManifest{
+			Name: "shopify-pp-mcp",
+			Server: MCPBServer{
+				MCPConfig: MCPBLaunchSpec{Env: map[string]string{
+					"PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}",
+				}},
+			},
+			UserConfig: map[string]MCPBVar{
+				"printing_press_client_profile": {Type: "string", Title: "Client profile", Required: true},
+			},
+		})
+		writeConfigFile(t, dir, "config.go", `package config
+
+import "os"
+
+func Load() {
+	_ = os.Getenv("SHOPIFY_ACCESS_TOKEN")
+	_ = os.Getenv("SHOPIFY_SHOP")
+}
+`)
+
+		require.NoError(t, reconcileMCPBManifestFromClient(dir, cli))
+
+		got := readMCPBManifest(t, dir)
+		_, hasToken := got.Server.MCPConfig.Env["SHOPIFY_ACCESS_TOKEN"]
+		assert.False(t, hasToken, "auth-named endpoint override must not re-add the credential beside the profile selector")
+		_, hasTokenField := got.UserConfig["shopify_access_token"]
+		assert.False(t, hasTokenField)
+		assert.Equal(t, "${user_config.shopify_shop}", got.Server.MCPConfig.Env["SHOPIFY_SHOP"])
+		shop, ok := got.UserConfig["shopify_shop"]
+		require.True(t, ok)
+		assert.False(t, shop.Sensitive)
+	})
+
 	t.Run("platform profile does not promote undeclared shop-shaped names", func(t *testing.T) {
 		dir := t.TempDir()
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "platform"), 0o755))

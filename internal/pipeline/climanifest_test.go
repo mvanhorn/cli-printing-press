@@ -1507,6 +1507,52 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.Contains(t, shop.Description, "{shop}")
 	})
 
+	t.Run("platform runtime rejects auth-named endpoint override", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "platform"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "platform", "profile.go"), []byte("package platform\n"), 0o644))
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+			SchemaVersion: CurrentCLIManifestSchemaVersion,
+			APIName:       "shopify",
+			DisplayName:   "Shopify",
+			CLIName:       "shopify-pp-cli",
+			MCPBinary:     "shopify-pp-mcp",
+			MCPReady:      "full",
+			AuthType:      "api_key",
+			AuthEnvVars:   []string{"SHOPIFY_ACCESS_TOKEN"},
+			AuthEnvVarSpecs: []spec.AuthEnvVar{{
+				Name: "SHOPIFY_ACCESS_TOKEN", Kind: spec.AuthEnvVarKindPerCall,
+				Required: true, Sensitive: true,
+			}},
+			EndpointTemplateVars:         []string{"shop"},
+			EndpointTemplateEnvOverrides: map[string]string{"shop": "SHOPIFY_ACCESS_TOKEN"},
+		}))
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		_, hasToken := got.Server.MCPConfig.Env["SHOPIFY_ACCESS_TOKEN"]
+		assert.False(t, hasToken, "auth-named endpoint override must not collect the credential beside the profile selector")
+		tokenField, hasTokenField := got.UserConfig["shopify_access_token"]
+		assert.False(t, hasTokenField, "installer must not prompt for SHOPIFY_ACCESS_TOKEN as a non-sensitive endpoint field")
+		if hasTokenField {
+			assert.True(t, tokenField.Sensitive, "if the access token appears at all it must stay masked")
+		}
+
+		assert.Equal(t, "${user_config.printing_press_client_profile}", got.Server.MCPConfig.Env["PRINTING_PRESS_CLIENT_PROFILE"])
+		profile, ok := got.UserConfig["printing_press_client_profile"]
+		require.True(t, ok)
+		assert.True(t, profile.Required)
+		assert.False(t, profile.Sensitive)
+
+		assert.Equal(t, "${user_config.shopify_shop}", got.Server.MCPConfig.Env["SHOPIFY_SHOP"])
+		shop, ok := got.UserConfig["shopify_shop"]
+		require.True(t, ok, "rejected credential override must fall back to the default {shop} env name")
+		assert.Equal(t, "SHOPIFY_SHOP", shop.Title)
+		assert.True(t, shop.Required)
+		assert.False(t, shop.Sensitive)
+	})
+
 	t.Run("endpoint template vars emit required user_config fields", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, CLIManifest{
@@ -1839,6 +1885,35 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.Empty(t, got.UserConfig)
 		assert.Empty(t, got.Server.MCPConfig.Env)
 	})
+}
+
+func TestEndpointTemplateEnvVarRejectsAuthCollision(t *testing.T) {
+	m := CLIManifest{
+		APIName:                      "shopify",
+		AuthEnvVars:                  []string{"PRINTING_PRESS_CLIENT_PROFILE"},
+		EndpointTemplateVars:         []string{"shop", "access_token"},
+		EndpointTemplateEnvOverrides: map[string]string{"shop": "SHOPIFY_ACCESS_TOKEN"},
+	}
+
+	assert.True(t, isAuthOrCredentialEnvVar(m, "SHOPIFY_ACCESS_TOKEN"))
+	assert.True(t, isAuthOrCredentialEnvVar(m, "PRINTING_PRESS_CLIENT_PROFILE"))
+	assert.False(t, isAuthOrCredentialEnvVar(m, "SHOPIFY_SHOP"))
+	assert.False(t, isAuthOrCredentialEnvVar(m, "ST_TENANT_ID"))
+
+	assert.Equal(t, "SHOPIFY_SHOP", endpointTemplateEnvVar(m, "shop"),
+		"credential-named override must fall back to the default endpoint env name")
+	assert.Equal(t, "SHOPIFY_ACCESS_TOKEN", spec.DefaultEndpointTemplateEnvName("shopify", "access_token"))
+
+	env := map[string]string{}
+	vars := map[string]MCPBVar{}
+	bindEndpointTemplateVars(m, env, vars)
+	_, hasToken := env["SHOPIFY_ACCESS_TOKEN"]
+	assert.False(t, hasToken, "credential-shaped default names must not bind as endpoint fields")
+	assert.Equal(t, "${user_config.shopify_shop}", env["SHOPIFY_SHOP"])
+	_, hasTokenField := vars["shopify_access_token"]
+	assert.False(t, hasTokenField)
+	_, hasShop := vars["shopify_shop"]
+	assert.True(t, hasShop)
 }
 
 func TestWriteMCPBManifestPreservesExistingDisplayName(t *testing.T) {
