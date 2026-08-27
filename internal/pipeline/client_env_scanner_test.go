@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -918,6 +920,155 @@ func TestWriteManifestForGenerate_IncludesRequiredEndpointTemplateVar(t *testing
 	assert.True(t, entry.Required)
 	assert.False(t, entry.Sensitive)
 	assert.Contains(t, entry.Description, "{shop}")
+}
+
+func TestAlignPrefixedEnvName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		envName string
+		apiName string
+		want    string
+	}{
+		{name: "stale default after hyphenated rename", envName: "SHOPIFY_SHOP", apiName: "shopify-alt", want: "SHOPIFY_ALT_SHOP"},
+		{name: "already current prefix", envName: "SHOPIFY_SHOP", apiName: "shopify", want: "SHOPIFY_SHOP"},
+		{name: "custom suffix under old prefix", envName: "SHOPIFY_STORE", apiName: "shopify-alt", want: "SHOPIFY_ALT_STORE"},
+		{name: "foreign override stays", envName: "ST_TENANT_ID", apiName: "servicetitan-alt", want: "ST_TENANT_ID"},
+		{name: "bare prefix", envName: "SHOPIFY", apiName: "shopify-alt", want: "SHOPIFY_ALT"},
+		{name: "empty name", envName: "", apiName: "shopify-alt", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, alignPrefixedEnvName(tt.envName, tt.apiName))
+		})
+	}
+}
+
+// Rename rewrites generated os.Getenv names that begin with the old CLI
+// prefix, but used to leave EndpointTemplateEnvOverrides on the old
+// name. The installer then collected SHOPIFY_SHOP while the client read
+// SHOPIFY_ALT_SHOP. This print-then-rename proof is the contract: the
+// MCPB env key must be the rewritten Getenv.
+func TestRenameCLI_PlatformProfileEndpointEnvMatchesRewrittenGetenv(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Name:                 "shopify",
+		Version:              "2026-04",
+		BaseURL:              "https://{shop}.myshopify.com/admin/api/2026-04",
+		EndpointTemplateVars: []string{"shop"},
+		EndpointTemplateEnvOverrides: map[string]string{
+			"shop": "SHOPIFY_SHOP",
+		},
+		Owner:     "test-owner",
+		OwnerName: "Test Author",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "X-Shopify-Access-Token",
+			EnvVars: []string{"SHOPIFY_ACCESS_TOKEN"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/shopify-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"orders": {
+				Description: "Orders",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/orders", Description: "List orders"},
+				},
+			},
+		},
+	}
+
+	root := t.TempDir()
+	cliDir := filepath.Join(root, "shopify-pp-cli")
+	require.NoError(t, generator.New(apiSpec, cliDir).Generate())
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "shopify",
+		OutputDir: cliDir,
+		Spec:      apiSpec,
+	}))
+
+	_, err := os.Stat(filepath.Join(cliDir, "internal", "platform", "profile.go"))
+	require.NoError(t, err, "fixture must be a platform-profile CLI so the rename hits the profile+endpoint bind path")
+
+	preConfig, err := os.ReadFile(filepath.Join(cliDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(preConfig), `os.Getenv("SHOPIFY_SHOP")`)
+
+	preManifest := readMCPBManifest(t, cliDir)
+	require.Contains(t, preManifest.Server.MCPConfig.Env, "SHOPIFY_SHOP")
+
+	_, err = RenameCLI(cliDir, "shopify-pp-cli", "shopify-alt-pp-cli", "shopify")
+	require.NoError(t, err)
+
+	newDir := filepath.Join(root, naming.LibraryDirName("shopify-alt-pp-cli"))
+	configSrc, err := os.ReadFile(filepath.Join(newDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	rewritten := extractEndpointGetenv(t, string(configSrc), "_SHOP")
+	require.NotEqual(t, "SHOPIFY_SHOP", rewritten, "rename must rewrite the generated {shop} Getenv")
+	require.Contains(t, string(configSrc), `os.Getenv("`+rewritten+`")`)
+	require.NotContains(t, string(configSrc), `os.Getenv("SHOPIFY_SHOP")`)
+
+	got := readMCPBManifest(t, newDir)
+	assert.Equal(t, "${user_config."+userConfigKey(rewritten)+"}", got.Server.MCPConfig.Env[rewritten],
+		"MCPB manifest must collect the rewritten Getenv, not the pre-rename override")
+	_, stale := got.Server.MCPConfig.Env["SHOPIFY_SHOP"]
+	assert.False(t, stale, "stale SHOPIFY_SHOP must not remain on the installer prompt")
+	_, hasToken := got.Server.MCPConfig.Env["SHOPIFY_ACCESS_TOKEN"]
+	assert.False(t, hasToken, "platform-profile rename must not re-add the access token beside the profile selector")
+
+	cliData, err := os.ReadFile(filepath.Join(newDir, CLIManifestFilename))
+	require.NoError(t, err)
+	var cli CLIManifest
+	require.NoError(t, json.Unmarshal(cliData, &cli))
+	assert.Equal(t, rewritten, cli.EndpointTemplateEnvOverrides["shop"],
+		"stored override must move with the generated Getenv so a later manifest write stays paired")
+}
+
+func TestAlignEndpointTemplateEnvNamesScanConfirmed(t *testing.T) {
+	t.Parallel()
+
+	t.Run("rewrites stale override when generated client already moved", func(t *testing.T) {
+		dir := t.TempDir()
+		writeConfigFile(t, dir, "config.go", `package config
+
+import "os"
+
+func Load() { _ = os.Getenv("SHOPIFY_ALT_SHOP") }
+`)
+		got := alignEndpointTemplateEnvNames(dir, CLIManifest{
+			APIName:                      "shopify-alt",
+			EndpointTemplateVars:         []string{"shop"},
+			EndpointTemplateEnvOverrides: map[string]string{"shop": "SHOPIFY_SHOP"},
+		})
+		assert.Equal(t, "SHOPIFY_ALT_SHOP", got.EndpointTemplateEnvOverrides["shop"])
+	})
+
+	t.Run("keeps vendor-short override the generated client still reads", func(t *testing.T) {
+		dir := t.TempDir()
+		writeConfigFile(t, dir, "config.go", `package config
+
+import "os"
+
+func Load() { _ = os.Getenv("SHOPIFY_SHOP") }
+`)
+		original := CLIManifest{
+			APIName:                      "shopify-plus",
+			EndpointTemplateVars:         []string{"shop"},
+			EndpointTemplateEnvOverrides: map[string]string{"shop": "SHOPIFY_SHOP"},
+		}
+		got := alignEndpointTemplateEnvNames(dir, original)
+		assert.Equal(t, "SHOPIFY_SHOP", got.EndpointTemplateEnvOverrides["shop"])
+	})
+}
+
+func extractEndpointGetenv(t *testing.T, src, suffix string) string {
+	t.Helper()
+	matches := regexp.MustCompile(`os\.Getenv\("([^"]+`+regexp.QuoteMeta(suffix)+`)"\)`).FindAllStringSubmatch(src, -1)
+	require.NotEmpty(t, matches, "expected a Getenv ending in %s", suffix)
+	require.Len(t, matches[0], 2)
+	return matches[0][1]
 }
 
 // Sanity check that MCPBVar json round-trips the new Sensitive+Required flags.

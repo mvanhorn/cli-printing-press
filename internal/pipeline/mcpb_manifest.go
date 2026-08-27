@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -155,6 +156,11 @@ func WriteMCPBManifestFromStruct(dir string, m CLIManifest) error {
 	if m.MCPBinary == "" {
 		return nil
 	}
+	// Generated os.Getenv names move with the CLI env prefix; endpoint
+	// metadata can still name the pre-rename variable. Bind against the
+	// name the printed client reads so the installer and first request
+	// stay paired.
+	m = alignEndpointTemplateEnvNames(dir, m)
 	out, err := marshalMCPBManifest(buildMCPBManifest(dir, m))
 	if err != nil {
 		return err
@@ -424,6 +430,75 @@ func endpointTemplateEnvVar(m CLIManifest, templateVar string) string {
 		}
 	}
 	return spec.DefaultEndpointTemplateEnvName(m.APIName, templateVar)
+}
+
+// Generated Getenv names move with the CLI env prefix; stored overrides
+// can still name the pre-rename variable. Only accept a rewrite when the
+// printed client actually reads the aligned name — an intentional
+// override that keeps a vendor's shorter env var must stay put.
+func alignEndpointTemplateEnvNames(dir string, m CLIManifest) CLIManifest {
+	if len(m.EndpointTemplateVars) == 0 {
+		return m
+	}
+	reads, err := scanClientEnvReads(dir)
+	if err != nil || len(reads) == 0 {
+		return m
+	}
+	generated := make(map[string]struct{}, len(reads))
+	for _, name := range reads {
+		generated[name] = struct{}{}
+	}
+	cloned := false
+	for _, templateVar := range m.EndpointTemplateVars {
+		name := endpointTemplateEnvVar(m, templateVar)
+		if _, ok := generated[name]; ok {
+			continue
+		}
+		aligned := alignPrefixedEnvName(name, m.APIName)
+		if aligned == name {
+			continue
+		}
+		if _, ok := generated[aligned]; !ok {
+			continue
+		}
+		if !cloned {
+			m.EndpointTemplateEnvOverrides = cloneEndpointTemplateEnvOverrides(m.EndpointTemplateEnvOverrides)
+			cloned = true
+		}
+		m.EndpointTemplateEnvOverrides[templateVar] = aligned
+	}
+	return m
+}
+
+func cloneEndpointTemplateEnvOverrides(in map[string]string) map[string]string {
+	if in == nil {
+		return map[string]string{}
+	}
+	return maps.Clone(in)
+}
+
+// A stale override begins with a leading segment of the current CLI env
+// prefix (SHOPIFY_SHOP after shopify → shopify-alt). Custom names that
+// do not share that prefix (ST_TENANT_ID) are left alone.
+func alignPrefixedEnvName(name, apiName string) string {
+	if strings.TrimSpace(name) == "" || strings.TrimSpace(apiName) == "" {
+		return name
+	}
+	newPrefix := naming.EnvPrefix(apiName)
+	if newPrefix == "" || name == newPrefix || strings.HasPrefix(name, newPrefix+"_") {
+		return name
+	}
+	parts := strings.Split(newPrefix, "_")
+	for i := len(parts) - 1; i >= 1; i-- {
+		oldPrefix := strings.Join(parts[:i], "_")
+		if name == oldPrefix {
+			return newPrefix
+		}
+		if strings.HasPrefix(name, oldPrefix+"_") {
+			return newPrefix + name[len(oldPrefix):]
+		}
+	}
+	return name
 }
 
 // Path-positional placeholders such as {shop} are not credentials: the

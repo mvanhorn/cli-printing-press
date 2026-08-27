@@ -683,6 +683,55 @@ import "github.com/acme/library/other/subject/internal/cli"
 	assert.Equal(t, "{\n  \"api_name\" :\t\"overpass\"\n}", got)
 }
 
+func TestRenameCLIRewritesEndpointOverrideMatchingOldPrefix(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	oldName := "shopify-pp-cli"
+	newName := "shopify-alt-pp-cli"
+	cliDir := filepath.Join(root, oldName)
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "platform"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "platform", "profile.go"), []byte("package platform\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "config"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "config", "config.go"), []byte(`package config
+
+import "os"
+
+func Load() {
+	_ = os.Getenv("SHOPIFY_SHOP")
+	_ = os.Getenv("SHOPIFY_ACCESS_TOKEN")
+}
+`), 0o644))
+
+	m := CLIManifest{
+		SchemaVersion:                1,
+		APIName:                      "shopify",
+		CLIName:                      oldName,
+		MCPBinary:                    naming.MCP("shopify"),
+		AuthType:                     "api_key",
+		AuthEnvVars:                  []string{"SHOPIFY_ACCESS_TOKEN"},
+		EndpointTemplateVars:         []string{"shop"},
+		EndpointTemplateEnvOverrides: map[string]string{"shop": "SHOPIFY_SHOP"},
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, CLIManifestFilename), data, 0o644))
+
+	_, err = RenameCLI(cliDir, oldName, newName, "shopify")
+	require.NoError(t, err)
+
+	newDir := filepath.Join(root, naming.LibraryDirName(newName))
+	configSrc, err := os.ReadFile(filepath.Join(newDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(configSrc), `os.Getenv("SHOPIFY_ALT_SHOP")`)
+	require.NotContains(t, string(configSrc), `os.Getenv("SHOPIFY_SHOP")`)
+
+	got := readMCPBManifest(t, newDir)
+	assert.Equal(t, "${user_config.shopify_alt_shop}", got.Server.MCPConfig.Env["SHOPIFY_ALT_SHOP"])
+	_, stale := got.Server.MCPConfig.Env["SHOPIFY_SHOP"]
+	assert.False(t, stale)
+}
+
 func TestRenameCLISkipsResearchJSONSymlink(t *testing.T) {
 	t.Parallel()
 

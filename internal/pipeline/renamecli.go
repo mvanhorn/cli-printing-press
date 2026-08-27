@@ -130,6 +130,11 @@ func RenameCLI(dir, oldCLIName, newCLIName, _ string) (int, error) {
 			if m.MCPBinary != "" {
 				m.MCPBinary = newMCPName
 			}
+			// File content already rewrote os.Getenv names that began
+			// with the old CLI prefix. Stored endpoint overrides have
+			// to move with them or the MCPB installer collects a
+			// different variable than the generated client reads.
+			rewriteCLIManifestEnvPrefixes(&m, oldSlug, newSlug)
 			if writeErr := WriteCLIManifest(absDir, m); writeErr != nil {
 				return filesModified, fmt.Errorf("updating manifest: %w", writeErr)
 			}
@@ -250,6 +255,18 @@ func renameEnvPrefix(content, oldSlug, newSlug string) string {
 		result = strings.ReplaceAll(result, q+oldPrefix+q, q+newPrefix+q)
 	}
 	return result
+}
+
+func rewriteCLIManifestEnvPrefixes(m *CLIManifest, oldSlug, newSlug string) {
+	if m == nil || len(m.EndpointTemplateEnvOverrides) == 0 {
+		return
+	}
+	for key, value := range m.EndpointTemplateEnvOverrides {
+		rewritten := renameEnvPrefix(value, oldSlug, newSlug)
+		if rewritten != value {
+			m.EndpointTemplateEnvOverrides[key] = rewritten
+		}
+	}
 }
 
 func renameGoModModuleSegment(content, oldSlug, newSlug string) string {
