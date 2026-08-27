@@ -163,12 +163,13 @@ func TestGenerateReadOnlyFormHTMLTableEndpoint(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_contracts.go")
-	assert.Contains(t, endpointSrc, `c.PostQueryFormWithParams(cmd.Context(), path, params, fields)`)
+	assert.Contains(t, endpointSrc, `c.PostQueryFormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)`)
+	assert.Contains(t, endpointSrc, `"X-Printing-Press-HTML-Response": "true"`)
 	assert.Contains(t, endpointSrc, `"mcp:read-only": "true"`)
 	assert.NotContains(t, endpointSrc, `c.PostFormWithParams(cmd.Context(), path, params, fields)`)
 
 	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
-	assert.Contains(t, mcpSrc, `data, _, err = c.PostQueryFormWithParams(ctx, path, params, formFields)`)
+	assert.Contains(t, mcpSrc, `data, _, err = c.PostQueryFormWithParamsAndHeaders(ctx, path, params, formFields, headers)`)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	binaryPath := filepath.Join(outputDir, "formhtml-pp-cli")

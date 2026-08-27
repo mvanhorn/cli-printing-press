@@ -132,7 +132,7 @@ func TestGeneratedBinaryAndTextReadsSkipLiveJSONGuard(t *testing.T) {
 	itemsOut, err := runGeneratedCLI(t, binaryPath, baseEnv, "items", "--json")
 	require.Error(t, err, itemsOut)
 	require.Contains(t, itemsOut, "returned HTML instead of JSON")
-	requireExitCode(t, err, 1)
+	requireExitCode(t, err, 5)
 
 	jsonOut, err := runGeneratedCLI(t, binaryPath, baseEnv, "page", "index", "--json")
 	require.Error(t, err, jsonOut)
