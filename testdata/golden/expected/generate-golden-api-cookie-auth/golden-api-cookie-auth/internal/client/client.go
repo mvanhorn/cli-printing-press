@@ -32,6 +32,7 @@ import (
 )
 
 const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
+const HTMLResponseHeader = "X-Printing-Press-HTML-Response"
 const maxErrorBodyBytes = 4096
 
 var ErrPlaceholderCredential = errors.New("auth placeholder credential")
@@ -1020,6 +1021,10 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		if binaryResponse {
 			req.Header.Del(BinaryResponseHeader)
 		}
+		htmlResponse := strings.EqualFold(req.Header.Get(HTMLResponseHeader), "true")
+		if htmlResponse {
+			req.Header.Del(HTMLResponseHeader)
+		}
 		if req.Header.Get("User-Agent") == "" {
 			// Browser-shaped UA: synthetic specs and cookie/composed/
 			// session_handshake auth almost always target website-itself
@@ -1115,6 +1120,11 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 					return nil, 0, encErr
 				}
 				return env, resp.StatusCode, nil
+			}
+			if !htmlResponse {
+				if summary, ok := summarizeHTMLDocument(respBody); ok {
+					return nil, resp.StatusCode, fmt.Errorf("%s %s: expected JSON, API returned HTML instead of JSON: %s", method, c.displayURL(path, authHeader), summary)
+				}
 			}
 			return json.RawMessage(sanitizeJSONResponse(respBody)), resp.StatusCode, nil
 		}
@@ -1572,6 +1582,14 @@ func truncateBody(b []byte) string {
 }
 
 func collapseHTMLErrorBody(b []byte) (string, bool) {
+	return summarizeHTMLBody(b, "HTML error page")
+}
+
+func summarizeHTMLDocument(b []byte) (string, bool) {
+	return summarizeHTMLBody(b, "HTML document")
+}
+
+func summarizeHTMLBody(b []byte, kind string) (string, bool) {
 	scanBytes := b
 	if len(scanBytes) > maxErrorBodyBytes {
 		scanBytes = scanBytes[:maxErrorBodyBytes]
@@ -1582,7 +1600,7 @@ func collapseHTMLErrorBody(b []byte) (string, bool) {
 		return "", false
 	}
 
-	summary := fmt.Sprintf("HTML error page (%d bytes)", len(b))
+	summary := fmt.Sprintf("%s (%d bytes)", kind, len(b))
 	if title := extractHTMLTitle(trimmed); title != "" {
 		summary += ": " + truncateRunes(title, 160)
 	}

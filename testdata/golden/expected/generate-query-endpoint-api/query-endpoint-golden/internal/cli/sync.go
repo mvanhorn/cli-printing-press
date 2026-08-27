@@ -560,7 +560,7 @@ func syncResource(ctx context.Context, c interface {
 			params["minorversion"] = "75"
 		}
 
-		data, err := c.Get(ctx, path, params)
+		data, err := syncGet(ctx, c, resource, "", path, params)
 		if err != nil {
 			if w, ok := isSyncAccessWarning(err); ok {
 				if !humanFriendly {
@@ -2108,6 +2108,26 @@ func scalarItemID(item json.RawMessage) string {
 func isNullOrEmptyJSON(data json.RawMessage) bool {
 	trimmed := strings.TrimSpace(string(data))
 	return trimmed == "" || trimmed == "null"
+}
+
+func syncGet(ctx context.Context, c interface {
+	Get(context.Context, string, map[string]string) (json.RawMessage, error)
+}, resource, parentResource, path string, params map[string]string) (json.RawMessage, error) {
+	headers := syncHTMLRequestHeaders(resource, parentResource)
+	if len(headers) == 0 {
+		return c.Get(ctx, path, params)
+	}
+	type headerGetter interface {
+		GetWithHeaders(context.Context, string, map[string]string, map[string]string) (json.RawMessage, error)
+	}
+	if hg, ok := c.(headerGetter); ok {
+		return hg.GetWithHeaders(ctx, path, params, headers)
+	}
+	return c.Get(ctx, path, params)
+}
+
+func syncHTMLRequestHeaders(resource, parentResource string) map[string]string {
+	return nil
 }
 
 // resourceIDFieldOverrides projects per-resource IDField (set by the profiler
