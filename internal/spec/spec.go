@@ -435,18 +435,48 @@ func (m StreamingMetadataConfig) EffectivePrimaryKey() string {
 // existing <APINAME>_<UPPER_PLACEHOLDER> convention so unannotated specs
 // (the common case) regenerate byte-for-byte.
 func (s *APISpec) EndpointTemplateEnvName(placeholder string) string {
-	if s != nil {
-		if override, ok := s.EndpointTemplateEnvOverrides[placeholder]; ok {
-			if trimmed := strings.TrimSpace(override); trimmed != "" {
-				return trimmed
-			}
-		}
-	}
 	apiName := ""
+	override := ""
+	var authNames []string
 	if s != nil {
 		apiName = s.Name
+		if v, ok := s.EndpointTemplateEnvOverrides[placeholder]; ok {
+			override = v
+		}
+		authNames = s.Auth.DeclaredEnvVarNames()
 	}
-	return DefaultEndpointTemplateEnvName(apiName, placeholder)
+	return ResolveEndpointTemplateEnvName(apiName, placeholder, override, authNames)
+}
+
+// ResolveEndpointTemplateEnvName is the shared override-vs-default rule
+// used by generate and the MCPB binder. A credential-shaped override that
+// is not this placeholder's own default (e.g. {shop} → ACCESS_TOKEN) is
+// rejected so the printed Getenv and the installer collect the same name.
+func ResolveEndpointTemplateEnvName(apiName, placeholder, override string, authNames []string) string {
+	defaultName := DefaultEndpointTemplateEnvName(apiName, placeholder)
+	trimmed := strings.TrimSpace(override)
+	if trimmed == "" {
+		return defaultName
+	}
+	if IsAuthOrCredentialEnvName(trimmed, authNames) && trimmed != defaultName {
+		return defaultName
+	}
+	return trimmed
+}
+
+// DropCollidingEndpointTemplateEnvOverrides removes stored overrides that
+// ResolveEndpointTemplateEnvName would ignore, so later manifest writes
+// and reprints do not re-apply a rejected {shop} → ACCESS_TOKEN mapping.
+func (s *APISpec) DropCollidingEndpointTemplateEnvOverrides() {
+	if s == nil || len(s.EndpointTemplateEnvOverrides) == 0 {
+		return
+	}
+	authNames := s.Auth.DeclaredEnvVarNames()
+	for placeholder, override := range s.EndpointTemplateEnvOverrides {
+		if ResolveEndpointTemplateEnvName(s.Name, placeholder, override, authNames) != strings.TrimSpace(override) {
+			delete(s.EndpointTemplateEnvOverrides, placeholder)
+		}
+	}
 }
 
 // DefaultEndpointTemplateEnvName builds the conventional env-var name for a
@@ -454,6 +484,88 @@ func (s *APISpec) EndpointTemplateEnvName(placeholder string) string {
 // manifest emitter can reuse the same rule without importing the generator.
 func DefaultEndpointTemplateEnvName(apiName, placeholder string) string {
 	return strings.ToUpper(strings.ReplaceAll(naming.Snake(apiName), "-", "_") + "_" + strings.ReplaceAll(naming.Snake(placeholder), "-", "_"))
+}
+
+const clientProfileEnvName = "PRINTING_PRESS_CLIENT_PROFILE"
+
+// credentialEnvSuffixes name secret-bearing env vars. Keep this list
+// secret-shaped; per-instance knobs such as *_TENANT_ID and *_SHOP are
+// valid endpoint bindings.
+var credentialEnvSuffixes = []string{
+	"_ACCESS_TOKEN",
+	"_REFRESH_TOKEN",
+	"_API_KEY",
+	"_API_SECRET",
+	"_API_TOKEN",
+	"_CLIENT_SECRET",
+	"_PASSWORD",
+	"_SECRET",
+	"_PRIVATE_KEY",
+	"_BEARER_TOKEN",
+	"_AUTH_TOKEN",
+	"_TOKEN",
+}
+
+var credentialEnvExactNames = map[string]struct{}{
+	"ACCESS_TOKEN":  {},
+	"API_KEY":       {},
+	"API_SECRET":    {},
+	"API_TOKEN":     {},
+	"AUTH_TOKEN":    {},
+	"BEARER_TOKEN":  {},
+	"CLIENT_SECRET": {},
+	"PASSWORD":      {},
+	"PRIVATE_KEY":   {},
+	"REFRESH_TOKEN": {},
+	"SECRET":        {},
+	"TOKEN":         {},
+}
+
+func IsCredentialShapedEnvVarName(name string) bool {
+	if _, ok := credentialEnvExactNames[name]; ok {
+		return true
+	}
+	for _, suffix := range credentialEnvSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func IsAuthOrCredentialEnvName(name string, authNames []string) bool {
+	if name == "" {
+		return false
+	}
+	if name == clientProfileEnvName {
+		return true
+	}
+	for _, auth := range authNames {
+		if auth == name {
+			return true
+		}
+	}
+	return IsCredentialShapedEnvVarName(name)
+}
+
+func (c AuthConfig) DeclaredEnvVarNames() []string {
+	names := make([]string, 0, len(c.EnvVars)+len(c.EnvVarSpecs)+len(c.AdditionalHeaders))
+	for _, name := range c.EnvVars {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	for _, envVar := range c.EnvVarSpecs {
+		if envVar.Name != "" {
+			names = append(names, envVar.Name)
+		}
+	}
+	for _, header := range c.AdditionalHeaders {
+		if header.EnvVar.Name != "" {
+			names = append(names, header.EnvVar.Name)
+		}
+	}
+	return names
 }
 
 // EndpointTemplateDefault returns the spec-declared default value for the

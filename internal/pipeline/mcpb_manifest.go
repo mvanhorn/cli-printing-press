@@ -159,7 +159,9 @@ func WriteMCPBManifestFromStruct(dir string, m CLIManifest) error {
 	// Generated os.Getenv names move with the CLI env prefix; endpoint
 	// metadata can still name the pre-rename variable. Bind against the
 	// name the printed client reads so the installer and first request
-	// stay paired.
+	// stay paired. Drop colliding auth-named overrides first so bind
+	// and a freshly generated Getenv cannot diverge.
+	m = dropCollidingEndpointTemplateOverrides(m)
 	m = alignEndpointTemplateEnvNames(dir, m)
 	out, err := marshalMCPBManifest(buildMCPBManifest(dir, m))
 	if err != nil {
@@ -424,23 +426,47 @@ func mcpbUserConfigAuthEnvVars(m CLIManifest) []spec.AuthEnvVar {
 }
 
 func endpointTemplateEnvVar(m CLIManifest, templateVar string) string {
-	defaultName := spec.DefaultEndpointTemplateEnvName(m.APIName, templateVar)
-	if override, ok := m.EndpointTemplateEnvOverrides[templateVar]; ok {
-		trimmed := strings.TrimSpace(override)
-		if trimmed == "" {
-			return defaultName
-		}
-		// A {shop} → ACCESS_TOKEN mapping would collect the secret as
-		// an unmasked endpoint field. This placeholder's own default
-		// name is kept even when that default is credential-shaped
-		// ({access_token} → SHOPIFY_ACCESS_TOKEN); dropping it leaves
-		// the generated client unset.
-		if isAuthOrCredentialEnvVar(m, trimmed) && trimmed != defaultName {
-			return defaultName
-		}
-		return trimmed
+	override := ""
+	if v, ok := m.EndpointTemplateEnvOverrides[templateVar]; ok {
+		override = v
 	}
-	return defaultName
+	return spec.ResolveEndpointTemplateEnvName(m.APIName, templateVar, override, manifestAuthEnvNames(m))
+}
+
+func manifestAuthEnvNames(m CLIManifest) []string {
+	names := make([]string, 0, len(m.AuthEnvVars)+len(m.AuthEnvVarSpecs))
+	for _, envVar := range mcpbUserConfigAuthEnvVars(m) {
+		if envVar.Name != "" {
+			names = append(names, envVar.Name)
+		}
+	}
+	names = append(names, m.AuthEnvVars...)
+	for _, envVar := range m.AuthEnvVarSpecs {
+		if envVar.Name != "" {
+			names = append(names, envVar.Name)
+		}
+	}
+	return names
+}
+
+func dropCollidingEndpointTemplateOverrides(m CLIManifest) CLIManifest {
+	if len(m.EndpointTemplateEnvOverrides) == 0 {
+		return m
+	}
+	cleaned := cloneEndpointTemplateEnvOverrides(m.EndpointTemplateEnvOverrides)
+	changed := false
+	for placeholder, override := range cleaned {
+		resolved := spec.ResolveEndpointTemplateEnvName(m.APIName, placeholder, override, manifestAuthEnvNames(m))
+		if resolved != strings.TrimSpace(override) {
+			delete(cleaned, placeholder)
+			changed = true
+		}
+	}
+	if !changed {
+		return m
+	}
+	m.EndpointTemplateEnvOverrides = cleaned
+	return m
 }
 
 // Generated Getenv names move with the CLI env prefix; stored overrides
@@ -512,65 +538,11 @@ func alignPrefixedEnvName(name, apiName string) string {
 	return name
 }
 
-// credentialEnvSuffixes name secret-bearing env vars even after a
-// platform-profile write remaps AuthEnvVars to PRINTING_PRESS_CLIENT_PROFILE.
-// Keep this list secret-shaped; per-instance knobs such as *_TENANT_ID and
-// *_SHOP stay bindable as endpoint fields.
-var credentialEnvSuffixes = []string{
-	"_ACCESS_TOKEN",
-	"_REFRESH_TOKEN",
-	"_API_KEY",
-	"_API_SECRET",
-	"_API_TOKEN",
-	"_CLIENT_SECRET",
-	"_PASSWORD",
-	"_SECRET",
-	"_PRIVATE_KEY",
-	"_BEARER_TOKEN",
-	"_AUTH_TOKEN",
-	"_TOKEN",
-}
-
-var credentialEnvExactNames = map[string]struct{}{
-	"ACCESS_TOKEN":  {},
-	"API_KEY":       {},
-	"API_SECRET":    {},
-	"API_TOKEN":     {},
-	"AUTH_TOKEN":    {},
-	"BEARER_TOKEN":  {},
-	"CLIENT_SECRET": {},
-	"PASSWORD":      {},
-	"PRIVATE_KEY":   {},
-	"REFRESH_TOKEN": {},
-	"SECRET":        {},
-	"TOKEN":         {},
-}
-
 // Auth-named or credential-shaped env vars stay on the profile selector
-// (or the sensitive auth user_config slot). Emitting them as endpoint
-// fields would prompt the installer for the raw secret unmasked.
+// (or the sensitive auth user_config slot). Emitting them as unmasked
+// endpoint fields would prompt the installer for the raw secret.
 func isAuthOrCredentialEnvVar(m CLIManifest, name string) bool {
-	if name == "" {
-		return false
-	}
-	for _, envVar := range mcpbUserConfigAuthEnvVars(m) {
-		if envVar.Name == name {
-			return true
-		}
-	}
-	return isCredentialShapedEnvVarName(name)
-}
-
-func isCredentialShapedEnvVarName(name string) bool {
-	if _, ok := credentialEnvExactNames[name]; ok {
-		return true
-	}
-	for _, suffix := range credentialEnvSuffixes {
-		if strings.HasSuffix(name, suffix) {
-			return true
-		}
-	}
-	return false
+	return spec.IsAuthOrCredentialEnvName(name, manifestAuthEnvNames(m))
 }
 
 // Path-positional placeholders such as {shop} are not credentials: the

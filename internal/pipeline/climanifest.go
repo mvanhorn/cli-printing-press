@@ -345,7 +345,7 @@ func normalizeCLIManifestForWrite(dir string, m CLIManifest) CLIManifest {
 		}}
 		m.AuthAdditionalHeaders = nil
 	}
-	return m
+	return dropCollidingEndpointTemplateOverrides(m)
 }
 
 func writeCLIManifestPreservingRaw(dir string, m CLIManifest, existingRaw map[string]json.RawMessage) error {
@@ -946,6 +946,7 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	}
 	m.AuthAdditionalHeaders = parsed.Auth.AdditionalHeaders
 	m.EndpointTemplateVars = parsed.EndpointTemplateVars
+	parsed.DropCollidingEndpointTemplateEnvOverrides()
 	m.EndpointTemplateEnvOverrides = parsed.EndpointTemplateEnvOverrides
 	m.EndpointTemplateVarDefaults = parsed.EndpointTemplateVarDefaults
 	if parsed.Auth.KeyURL != "" {

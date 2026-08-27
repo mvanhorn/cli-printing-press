@@ -6334,6 +6334,27 @@ func TestNormalizeCookieDomain(t *testing.T) {
 	}
 }
 
+func TestResolveEndpointTemplateEnvNameRejectsAuthCollision(t *testing.T) {
+	t.Parallel()
+
+	s := &APISpec{
+		Name:                 "shopify",
+		EndpointTemplateVars: []string{"shop", "access_token"},
+		EndpointTemplateEnvOverrides: map[string]string{
+			"shop": "SHOPIFY_ACCESS_TOKEN",
+		},
+		Auth: AuthConfig{EnvVars: []string{"SHOPIFY_ACCESS_TOKEN"}},
+	}
+
+	assert.Equal(t, "SHOPIFY_SHOP", s.EndpointTemplateEnvName("shop"))
+	assert.Equal(t, "SHOPIFY_ACCESS_TOKEN", s.EndpointTemplateEnvName("access_token"))
+
+	s.DropCollidingEndpointTemplateEnvOverrides()
+	_, kept := s.EndpointTemplateEnvOverrides["shop"]
+	assert.False(t, kept)
+	assert.Equal(t, "SHOPIFY_SHOP", s.EndpointTemplateEnvName("shop"))
+}
+
 func TestInferEndpointTemplateVarsFromBaseURLs(t *testing.T) {
 	t.Parallel()
 

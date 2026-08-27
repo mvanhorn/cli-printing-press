@@ -969,6 +969,77 @@ func TestWriteManifestForGenerate_IncludesRequiredEndpointTemplateVar(t *testing
 	assert.Contains(t, entry.Description, "{shop}")
 }
 
+func TestWriteManifestForGenerate_CollidingEndpointOverrideAgreesWithGetenv(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Name:                 "shopify",
+		Version:              "2026-04",
+		BaseURL:              "https://{shop}.myshopify.com/admin/api/2026-04",
+		EndpointTemplateVars: []string{"shop"},
+		EndpointTemplateEnvOverrides: map[string]string{
+			"shop": "SHOPIFY_ACCESS_TOKEN",
+		},
+		Owner:     "test-owner",
+		OwnerName: "Test Author",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "X-Shopify-Access-Token",
+			EnvVars: []string{"SHOPIFY_ACCESS_TOKEN"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/shopify-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"orders": {
+				Description: "Orders",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/orders", Description: "List orders"},
+				},
+			},
+		},
+	}
+
+	dir := filepath.Join(t.TempDir(), "shopify-pp-cli")
+	require.NoError(t, generator.New(apiSpec, dir).Generate())
+
+	configSrc, err := os.ReadFile(filepath.Join(dir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	shopGetenv := extractEndpointGetenv(t, string(configSrc), "_SHOP")
+	require.Equal(t, "SHOPIFY_SHOP", shopGetenv,
+		"rejected {shop} → ACCESS_TOKEN override must generate the default shop Getenv, not the credential name")
+
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "shopify",
+		OutputDir: dir,
+		Spec:      apiSpec,
+	}))
+
+	cli, err := ReadCLIManifest(dir)
+	require.NoError(t, err)
+	_, hasOverride := cli.EndpointTemplateEnvOverrides["shop"]
+	assert.False(t, hasOverride, "stored override must be dropped so a later manifest write cannot re-bind the credential name")
+
+	got := readMCPBManifest(t, dir)
+	require.Contains(t, got.Server.MCPConfig.Env, shopGetenv,
+		"MCPB env key must be the generated {shop} Getenv")
+	assert.Equal(t, "${user_config."+userConfigKey(shopGetenv)+"}", got.Server.MCPConfig.Env[shopGetenv])
+	_, hasToken := got.Server.MCPConfig.Env["SHOPIFY_ACCESS_TOKEN"]
+	assert.False(t, hasToken, "SHOPIFY_ACCESS_TOKEN must not be an installer field beside the profile selector")
+	tokenField, hasTokenField := got.UserConfig["shopify_access_token"]
+	assert.False(t, hasTokenField, "installer must not prompt for the access token as an unmasked endpoint field")
+	if hasTokenField {
+		assert.True(t, tokenField.Sensitive)
+	}
+	assert.Equal(t, "${user_config.printing_press_client_profile}", got.Server.MCPConfig.Env["PRINTING_PRESS_CLIENT_PROFILE"])
+	profile, ok := got.UserConfig["printing_press_client_profile"]
+	require.True(t, ok)
+	assert.True(t, profile.Required)
+	assert.False(t, profile.Sensitive)
+	shop, ok := got.UserConfig[userConfigKey(shopGetenv)]
+	require.True(t, ok)
+	assert.False(t, shop.Sensitive)
+}
+
 func TestAlignPrefixedEnvName(t *testing.T) {
 	t.Parallel()
 
