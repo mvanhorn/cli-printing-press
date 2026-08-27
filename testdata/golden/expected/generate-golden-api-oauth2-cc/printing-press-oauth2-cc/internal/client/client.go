@@ -56,6 +56,10 @@ type Client struct {
 	// API calls inside the 60s pre-expiry window don't all dial the token
 	// endpoint and race on Config field writes / file persistence.
 	ccMu *sync.Mutex
+	// ccMintedUnknownExpiry caps the unknown-expiry mint policy at one
+	// token-endpoint POST per process: a stored token with no recorded
+	// expiry is re-minted once instead of trusted forever.
+	ccMintedUnknownExpiry bool
 }
 
 func (c *Client) IsDryRun() bool {
@@ -1130,22 +1134,30 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			StatusCode: resp.StatusCode,
 			Body:       c.maskCredentialText(truncateBody(respBody), authHeader),
 		}
-		// OAuth providers can expire tokens early, omit expires_in, or disagree
-		// with the local clock. Retry one unauthorized response after refreshing.
-		if resp.StatusCode == http.StatusUnauthorized && !refreshedAfterUnauthorized && attempt < maxRetries && c.Config != nil && c.Config.RefreshToken != "" && !(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()) {
-			if authHeaderLooksLikePlaceholderCredential(c.Config.AccessToken) || authHeaderLooksLikePlaceholderCredential(c.Config.RefreshToken) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientID) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientSecret) {
-				return nil, resp.StatusCode, authPlaceholderCredentialError(c.Config)
+		// OAuth providers can expire or revoke tokens early. The
+		// client_credentials grant issues no refresh token, so recovery from
+		// an unauthorized response is a fresh mint: re-mint once and retry;
+		// a 401 that survives a fresh token surfaces as the real error.
+		if resp.StatusCode == http.StatusUnauthorized && !refreshedAfterUnauthorized && attempt < maxRetries && c.Config != nil && !(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()) {
+			clientID, clientSecret := resolveClientCredentials(c.Config)
+			if clientID != "" && clientSecret != "" {
+				if authHeaderLooksLikePlaceholderCredential(clientID) || authHeaderLooksLikePlaceholderCredential(clientSecret) {
+					return nil, resp.StatusCode, authPlaceholderCredentialError(c.Config)
+				}
+				if c.ccMu == nil {
+					c.ccMu = &sync.Mutex{}
+				}
+				c.ccMu.Lock()
+				mintErr := c.mintClientCredentials(ctx, clientID, clientSecret)
+				c.ccMu.Unlock()
+				if mintErr != nil {
+					return nil, resp.StatusCode, fmt.Errorf("re-minting access token after 401: %w", mintErr)
+				}
+				authHeader = c.Config.AuthHeader()
+				refreshedAfterUnauthorized = true
+				lastErr = apiErr
+				continue
 			}
-			if err := c.refreshAccessToken(ctx); err != nil {
-				return nil, resp.StatusCode, fmt.Errorf("refreshing access token after 401: %w", err)
-			}
-			authHeader = c.Config.AuthHeader()
-			if authHeaderLooksLikePlaceholderCredential(authHeader) {
-				return nil, resp.StatusCode, authPlaceholderCredentialError(c.Config)
-			}
-			refreshedAfterUnauthorized = true
-			lastErr = apiErr
-			continue
 		}
 
 		// Rate limited: classify before provider decoding. Unsafe-to-replay
@@ -1279,12 +1291,12 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 	}
 	// 60s window avoids in-flight requests racing the expiry boundary.
 	// Double-checked lock so only one goroutine mints under contention.
-	if needsClientCredentialsMint(c.Config) {
+	if c.needsClientCredentialsMint() {
 		if c.ccMu == nil {
 			c.ccMu = &sync.Mutex{}
 		}
 		c.ccMu.Lock()
-		if needsClientCredentialsMint(c.Config) {
+		if c.needsClientCredentialsMint() {
 			clientID, clientSecret := resolveClientCredentials(c.Config)
 			if clientID != "" && clientSecret != "" {
 				if authHeaderLooksLikePlaceholderCredential(clientID) || authHeaderLooksLikePlaceholderCredential(clientSecret) {
@@ -1366,12 +1378,20 @@ func authPlaceholderCredentialErrorWithSetup(cfg *config.Config, setup string) e
 	return fmt.Errorf("%w configured in %s; set a real token with: %s", ErrPlaceholderCredential, location, setup)
 }
 
-func needsClientCredentialsMint(cfg *config.Config) bool {
+func (c *Client) needsClientCredentialsMint() bool {
+	cfg := c.Config
 	if cfg.AccessToken == "" {
 		return true
 	}
 	if cfg.TokenExpiry.IsZero() {
-		return false
+		// A stored token with no recorded expiry can be long-dead. Mint once
+		// per process instead of trusting it forever: one extra POST beats
+		// every call failing until a human intervenes. Verify harnesses must
+		// not dial a real token endpoint, so they keep the old trust.
+		if cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
+			return false
+		}
+		return !c.ccMintedUnknownExpiry
 	}
 	return time.Until(cfg.TokenExpiry) < 60*time.Second
 }
@@ -1459,6 +1479,7 @@ func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecr
 	if err := c.Config.SaveTokens(clientID, clientSecret, tokenResp.AccessToken, "", expiry); err != nil {
 		return fmt.Errorf("saving minted token: %w", err)
 	}
+	c.ccMintedUnknownExpiry = true
 	return nil
 }
 
