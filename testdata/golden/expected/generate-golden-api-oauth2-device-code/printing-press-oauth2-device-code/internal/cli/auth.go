@@ -83,6 +83,7 @@ for CLIs and agents: no localhost callback server and no client secret.
 			if err != nil {
 				return configErr(err)
 			}
+			clientIDFromFlag := clientID != ""
 			if clientID == "" {
 				clientID = os.Getenv("DEVICE_CODE_CLIENT_ID")
 			}
@@ -160,6 +161,7 @@ for CLIs and agents: no localhost callback server and no client secret.
 				expiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
 			}
 			cfg.AuthHeaderVal = ""
+			cfg.MarkCredentialsExplicit(clientIDFromFlag, false)
 			if err := cfg.SaveTokens(clientID, "", tok.AccessToken, tok.RefreshToken, expiry); err != nil {
 				return configErr(fmt.Errorf("saving tokens: %w", err))
 			}

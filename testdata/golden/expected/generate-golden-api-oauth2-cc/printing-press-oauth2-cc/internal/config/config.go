@@ -491,14 +491,24 @@ func (c *Config) saveCredentialsFirst() error {
 	return nil
 }
 
+// MarkCredentialsExplicit clears env-override markers so a later SaveTokens
+// can persist credentials the caller supplied on auth login. Pass whether
+// each value came from a flag, captured before any env fallback.
+func (c *Config) MarkCredentialsExplicit(clientID, clientSecret bool) {
+	if clientID {
+		delete(c.envOverrides, "ClientID")
+	}
+	if clientSecret {
+		delete(c.envOverrides, "ClientSecret")
+	}
+}
+
 func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken string, expiry time.Time) error {
 	c.ClientID = clientID
 	c.ClientSecret = clientSecret
 	c.AccessToken = accessToken
 	c.RefreshToken = refreshToken
 	c.TokenExpiry = expiry
-	delete(c.envOverrides, "ClientID")
-	delete(c.envOverrides, "ClientSecret")
 	delete(c.envOverrides, "AccessToken")
 	delete(c.envOverrides, "RefreshToken")
 	delete(c.envOverrides, "TokenExpiry")
