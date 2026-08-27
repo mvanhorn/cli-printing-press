@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 )
@@ -58,8 +59,9 @@ type Client struct {
 	ccMu *sync.Mutex
 	// ccMintedUnknownExpiry caps the unknown-expiry mint policy at one
 	// token-endpoint POST per process: a stored token with no recorded
-	// expiry is re-minted once instead of trusted forever.
-	ccMintedUnknownExpiry bool
+	// expiry is re-minted once instead of trusted forever. Atomic because
+	// the pre-lock fast-path check reads it outside ccMu.
+	ccMintedUnknownExpiry atomic.Bool
 }
 
 func (c *Client) IsDryRun() bool {
@@ -1391,7 +1393,7 @@ func (c *Client) needsClientCredentialsMint() bool {
 		if cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
 			return false
 		}
-		return !c.ccMintedUnknownExpiry
+		return !c.ccMintedUnknownExpiry.Load()
 	}
 	return time.Until(cfg.TokenExpiry) < 60*time.Second
 }
@@ -1479,7 +1481,7 @@ func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecr
 	if err := c.Config.SaveTokens(clientID, clientSecret, tokenResp.AccessToken, "", expiry); err != nil {
 		return fmt.Errorf("saving minted token: %w", err)
 	}
-	c.ccMintedUnknownExpiry = true
+	c.ccMintedUnknownExpiry.Store(true)
 	return nil
 }
 
