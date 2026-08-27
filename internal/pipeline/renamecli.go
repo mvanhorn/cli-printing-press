@@ -250,11 +250,42 @@ func renameEnvPrefix(content, oldSlug, newSlug string) string {
 	if oldPrefix == "" || oldPrefix == newPrefix {
 		return content
 	}
-	result := strings.ReplaceAll(content, oldPrefix+"_", newPrefix+"_")
+	// Prefix-extending renames (notion → notion-alt) must not rewrite
+	// names that already have the destination prefix. ReplaceAll of
+	// NOTION_ with NOTION_ALT_ would turn NOTION_ALT_SHOP into
+	// NOTION_ALT_ALT_SHOP and desync the stored override from the
+	// operator's existing env.
+	result := replaceEnvPrefixToken(content, oldPrefix+"_", newPrefix+"_")
 	for _, q := range []string{`"`, "`", `'`} {
 		result = strings.ReplaceAll(result, q+oldPrefix+q, q+newPrefix+q)
 	}
 	return result
+}
+
+func replaceEnvPrefixToken(content, oldTok, newTok string) string {
+	if oldTok == "" || oldTok == newTok {
+		return content
+	}
+	if !strings.HasPrefix(newTok, oldTok) {
+		return strings.ReplaceAll(content, oldTok, newTok)
+	}
+	var b strings.Builder
+	rest := content
+	for {
+		idx := strings.Index(rest, oldTok)
+		if idx == -1 {
+			b.WriteString(rest)
+			return b.String()
+		}
+		if strings.HasPrefix(rest[idx:], newTok) {
+			b.WriteString(rest[:idx+len(newTok)])
+			rest = rest[idx+len(newTok):]
+			continue
+		}
+		b.WriteString(rest[:idx])
+		b.WriteString(newTok)
+		rest = rest[idx+len(oldTok):]
+	}
 }
 
 func rewriteCLIManifestEnvPrefixes(m *CLIManifest, oldSlug, newSlug string) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -665,6 +666,21 @@ import "github.com/acme/library/other/subject/internal/cli"
 	assert.NotContains(t, got, "SUBJECT")
 	assert.Contains(t, got, "/other/overpass/internal/cli")
 	assert.NotContains(t, got, "/other/subject/internal/cli")
+
+	// Prefix-extending rename must not double a name that already uses
+	// the destination prefix (NOTION_ALT_SHOP stays put when notion → notion-alt).
+	got = renameEnvPrefix("os.Getenv(\"NOTION_ALT_SHOP\")\nos.Getenv(\"NOTION_SHOP\")", "notion", "notion-alt")
+	assert.Equal(t, 2, strings.Count(got, `os.Getenv("NOTION_ALT_SHOP")`))
+	assert.NotContains(t, got, "NOTION_ALT_ALT_SHOP")
+	assert.NotContains(t, got, `os.Getenv("NOTION_SHOP")`)
+
+	m := CLIManifest{EndpointTemplateEnvOverrides: map[string]string{
+		"shop":     "NOTION_ALT_SHOP",
+		"fallback": "NOTION_SHOP",
+	}}
+	rewriteCLIManifestEnvPrefixes(&m, "notion", "notion-alt")
+	assert.Equal(t, "NOTION_ALT_SHOP", m.EndpointTemplateEnvOverrides["shop"])
+	assert.Equal(t, "NOTION_ALT_SHOP", m.EndpointTemplateEnvOverrides["fallback"])
 
 	// Installer slug must not clip a longer token that only shares a prefix.
 	got = renameInstallSlug("npx install subject-extra --cli-only", "subject", "overpass")
