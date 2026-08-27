@@ -16,6 +16,7 @@ Use this checklist for printed CLI commands that obtain user-context tokens thro
 - Require the redirect URI to match the provider registration and the command's listener.
 - Store access tokens, refresh tokens, scopes, and expiry metadata through the CLI's normal config/storage path.
 - Keep cookie/browser-session login paths distinct from OAuth2 token acquisition paths.
+- Token-endpoint POSTs (authorization code exchange, refresh, client_credentials) must use a client that refuses cross-origin redirects. Do not reuse the shared API client's `CheckRedirect`, and never set `CheckRedirect` to nil (that restores Go's default 10-hop cross-host policy, which replays 307/308 POST bodies including `client_secret`).
 
 ## Timeout handling
 

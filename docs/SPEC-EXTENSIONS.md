@@ -1355,7 +1355,9 @@ Parsed field: `Endpoint.IDField`
 
 Rules:
 - Optional.
-- Must be a string.
+- Must be a string. A dotted path (`entityInfo.entityId`) is stored verbatim
+  and walked at runtime by `LookupFieldValue`; it is not limited to a
+  single top-level key.
 - Leading and trailing whitespace is trimmed.
 - Non-string values emit a warning and are ignored.
 - A non-empty `x-resource-id` wins over every automatic response-schema
@@ -1387,6 +1389,23 @@ paths:
     x-resource-id: widget_uid
     get:
       operationId: listWidgets
+      responses:
+        "200":
+          description: OK
+```
+
+Nested identifiers use the same extension with a dotted path. Generated
+`LookupFieldValue` walks each segment with snake/camel/Pascal spellings and
+a trailing-underscore variant, so `entityInfo.entityId` reaches a payload
+shaped like `{"entityInfo":{"entityId":"..."}}` without a hand-written
+override:
+
+```yaml
+paths:
+  /entities:
+    x-resource-id: entityInfo.entityId
+    get:
+      operationId: listEntities
       responses:
         "200":
           description: OK
@@ -1479,13 +1498,14 @@ Overrides the generator's read/write classification when the HTTP method is
 not enough. `true` marks a GET action as state-changing (start, stop, restart,
 deploy). `false` marks a POST (or other non-GET) endpoint as a read so the
 generated command prints the response body instead of the mutation
-acknowledgment envelope.
+acknowledgment envelope. Unset RPC-over-GET operations without a read token
+fail closed (not `mcp:read-only`).
 
 Parsed field: `Endpoint.Mutation`
 
 Rules:
 - Optional.
-- Unset means classify from the HTTP verb, operation name, and body shape.
+- Unset means classify from the HTTP verb, operation name, path shape, and body shape. RPC-over-GET without a read signal is a write.
 - Must be a native boolean.
 - Applies only at the operation level.
 - When set, the generator uses this value before HTTP-verb and operation-name

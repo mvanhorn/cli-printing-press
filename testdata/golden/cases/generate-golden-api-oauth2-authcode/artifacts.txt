@@ -18,6 +18,10 @@ printing-press-oauth2-authcode/internal/cli/auth.go
 # refresh shape (client_id always sent, client_secret only when present).
 printing-press-oauth2-authcode/internal/client/client.go
 
+# Token-endpoint POSTs must use the same-origin redirect client so a
+# cross-host 307/308 cannot replay client_secret in the body.
+printing-press-oauth2-authcode/internal/cliutil/oauth_token.go
+
 # config.go's AuthHeader must emit the direct-bearer env fallback for
 # authorization-code flows (minted AccessToken wins; a directly-held bearer
 # in the canonical env var authenticates when no token has been minted).
