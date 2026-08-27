@@ -1477,7 +1477,7 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.Contains(t, key.Description, "https://dashboard.stripe.com/apikeys")
 	})
 
-	t.Run("platform runtime emits only the non-secret client profile selector", func(t *testing.T) {
+	t.Run("platform runtime emits profile selector plus required endpoint template vars", func(t *testing.T) {
 		dir := t.TempDir()
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "platform"), 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "platform", "profile.go"), []byte("package platform\n"), 0o644))
@@ -1488,12 +1488,23 @@ func TestWriteMCPBManifest(t *testing.T) {
 
 		require.NoError(t, WriteMCPBManifest(dir))
 		got := readMCPBManifest(t, dir)
-		assert.Equal(t, map[string]string{"PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}"}, got.Server.MCPConfig.Env)
-		require.Len(t, got.UserConfig, 1)
+		assert.Equal(t, map[string]string{
+			"PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}",
+			"SHOPIFY_SHOP":                  "${user_config.shopify_shop}",
+		}, got.Server.MCPConfig.Env)
+		_, hasToken := got.Server.MCPConfig.Env["SHOPIFY_ACCESS_TOKEN"]
+		assert.False(t, hasToken, "platform-profile manifests must not collect the access token beside the profile selector")
+		require.Len(t, got.UserConfig, 2)
 		profile := got.UserConfig["printing_press_client_profile"]
 		assert.Equal(t, "Client profile", profile.Title)
 		assert.True(t, profile.Required)
 		assert.False(t, profile.Sensitive)
+		shop, ok := got.UserConfig["shopify_shop"]
+		require.True(t, ok, "required {shop} must still be collected when credentials ride the profile selector")
+		assert.Equal(t, "SHOPIFY_SHOP", shop.Title)
+		assert.True(t, shop.Required, "{shop} has no spec-level default; user must supply it")
+		assert.False(t, shop.Sensitive)
+		assert.Contains(t, shop.Description, "{shop}")
 	})
 
 	t.Run("endpoint template vars emit required user_config fields", func(t *testing.T) {

@@ -162,15 +162,13 @@ func WriteMCPBManifestFromStruct(dir string, m CLIManifest) error {
 	if err := os.WriteFile(filepath.Join(dir, MCPBManifestFilename), out, 0o644); err != nil {
 		return err
 	}
-	if usesPlatformClientProfiles(dir) {
-		return nil
-	}
-	// Extend the just-written manifest with env vars read by
-	// internal/client/*.go that the spec-driven build didn't surface
-	// (credential-flow JWT refreshers, hand-written auth helpers, etc.).
-	// Runs from every writer call site so the bundle path reads a
-	// reconciled manifest regardless of whether it came through lock+promote
-	// or a one-off bundle build.
+	// Extend the just-written manifest with env vars the spec-driven
+	// build didn't surface (per-instance BASE_URL, credential-flow JWT
+	// refreshers, hand-written auth helpers). Runs from every writer
+	// call site so lock+promote and one-off bundle builds read the same
+	// reconciled file. Platform-profile CLIs still go through this pass
+	// so *_BASE_URL and required endpoint placeholders land; credential
+	// Getenv calls are not re-added beside the profile selector.
 	return reconcileMCPBManifestFromClient(dir, m)
 }
 
@@ -205,6 +203,10 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 	launchEnv := buildMCPBEnv(m)
 	userConfig := buildMCPBUserConfig(m)
 	if usesPlatformClientProfiles(dir) {
+		// The profile selector is the credential surface. Endpoint
+		// placeholders such as {shop} are not credentials — dropping them
+		// here means the installer never collects them and the first API
+		// call fails with "<API>_SHOP not set".
 		launchEnv = map[string]string{"PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}"}
 		userConfig = map[string]MCPBVar{
 			"printing_press_client_profile": {
@@ -212,6 +214,7 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 				Description: "Binds the MCP server to an existing tenant-gated Printing Press client profile.",
 			},
 		}
+		bindEndpointTemplateVars(m, launchEnv, userConfig)
 	}
 
 	return MCPBManifest{
@@ -333,10 +336,7 @@ func buildMCPBEnv(m CLIManifest) map[string]string {
 	for _, envVar := range authEnvVarSpecs {
 		env[envVar.Name] = "${user_config." + userConfigKey(envVar.Name) + "}"
 	}
-	for _, templateVar := range m.EndpointTemplateVars {
-		name := endpointTemplateEnvVar(m, templateVar)
-		env[name] = "${user_config." + userConfigKey(name) + "}"
-	}
+	bindEndpointTemplateVars(m, env, nil)
 	return env
 }
 
@@ -370,17 +370,7 @@ func buildMCPBUserConfig(m CLIManifest) map[string]MCPBVar {
 			Required:    required,
 		}
 	}
-	for _, templateVar := range m.EndpointTemplateVars {
-		name := endpointTemplateEnvVar(m, templateVar)
-		defaultValue := endpointTemplateDefault(m, templateVar)
-		vars[userConfigKey(name)] = MCPBVar{
-			Type:        mcpbVarTypeString,
-			Title:       name,
-			Description: endpointTemplateVarDescription(templateVar, name),
-			Required:    defaultValue == "",
-			Default:     defaultValue,
-		}
-	}
+	bindEndpointTemplateVars(m, nil, vars)
 	return vars
 }
 
@@ -434,6 +424,49 @@ func endpointTemplateEnvVar(m CLIManifest, templateVar string) string {
 		}
 	}
 	return spec.DefaultEndpointTemplateEnvName(m.APIName, templateVar)
+}
+
+// Path-positional placeholders such as {shop} are not credentials: the
+// platform profile selector does not fill them, and the first API call
+// fails if they are unset. Spec-defaulted placeholders stay optional so
+// MCPB hosts do not present Required+Default as a contradictory install
+// field.
+func bindEndpointTemplateVars(m CLIManifest, env map[string]string, vars map[string]MCPBVar) {
+	for _, templateVar := range m.EndpointTemplateVars {
+		name, entry := endpointTemplateUserConfigEntry(m, templateVar)
+		if env != nil {
+			env[name] = "${user_config." + userConfigKey(name) + "}"
+		}
+		if vars != nil {
+			vars[userConfigKey(name)] = entry
+		}
+	}
+}
+
+func endpointTemplateUserConfigEntry(m CLIManifest, templateVar string) (string, MCPBVar) {
+	name := endpointTemplateEnvVar(m, templateVar)
+	defaultValue := endpointTemplateDefault(m, templateVar)
+	return name, MCPBVar{
+		Type:        mcpbVarTypeString,
+		Title:       name,
+		Description: endpointTemplateVarDescription(templateVar, name),
+		Required:    defaultValue == "",
+		Default:     defaultValue,
+	}
+}
+
+func endpointTemplateVarForEnv(m CLIManifest, name string) (string, bool) {
+	for _, templateVar := range m.EndpointTemplateVars {
+		if endpointTemplateEnvVar(m, templateVar) == name {
+			return templateVar, true
+		}
+	}
+	return "", false
+}
+
+func isEndpointTemplateEnvVar(m CLIManifest, name string) bool {
+	_, ok := endpointTemplateVarForEnv(m, name)
+	return ok
 }
 
 // userConfigKey lowercases the env var so manifest user_config keys match
