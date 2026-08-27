@@ -53,18 +53,18 @@ func TestEndpoint_VerifyNoopPropagation(t *testing.T) {
 		"endpoint handler should flip success=false on synthetic envelope detection")
 
 	// Ordering invariant: detection MUST run against RAW data (before the
-	// `filtered := data` assignment) so the sentinel field cannot be
-	// stripped by --compact / --select before detection sees it. The
-	// verify_noop assignment must appear BEFORE the `filtered := data`
-	// line, and the envelope marshal must follow.
+	// `filtered := unwrapSingleKeyArray(data)` assignment) so the sentinel
+	// field cannot be stripped by --compact / --select / envelope unwrap
+	// before detection sees it. The verify_noop assignment must appear
+	// BEFORE the filtered assignment, and the envelope marshal must follow.
 	verifyNoop := strings.Index(emitted, `envelope["verify_noop"] = true`)
-	filteredAssign := strings.Index(emitted, `filtered := data`)
+	filteredAssign := strings.Index(emitted, `filtered := unwrapSingleKeyArray(data)`)
 	marshal := strings.Index(emitted, `envelopeJSON, err := json.Marshal(envelope)`)
 	require.NotEqual(t, -1, verifyNoop, "envelope[\"verify_noop\"] = true must exist")
-	require.NotEqual(t, -1, filteredAssign, "filtered := data assignment must exist")
+	require.NotEqual(t, -1, filteredAssign, "filtered := unwrapSingleKeyArray(data) assignment must exist")
 	require.NotEqual(t, -1, marshal, "envelopeJSON marshal call must exist")
 	assert.True(t, verifyNoop < filteredAssign,
-		"verify_noop detection must precede filtered := data so --compact/--select cannot strip the sentinel before detection")
+		"verify_noop detection must precede the filtered assignment so --compact/--select cannot strip the sentinel before detection")
 	assert.True(t, filteredAssign < marshal,
 		"filtered assignment must precede envelope marshal so populated data field makes it into output")
 

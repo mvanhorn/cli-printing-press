@@ -110,7 +110,7 @@ func TestClientCredentials401RemintBehavior(t *testing.T) {
 	goModBytes, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))
 	require.NoError(t, err)
 	modulePath := ""
-	for _, line := range strings.Split(string(goModBytes), "\n") {
+	for line := range strings.SplitSeq(string(goModBytes), "\n") {
 		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
 			modulePath = strings.TrimSpace(rest)
 			break
