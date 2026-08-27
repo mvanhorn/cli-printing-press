@@ -37,9 +37,9 @@ func TestClientCheckRedirectReappliesAuth(t *testing.T) {
 		require.Contains(t, closure, `req.Header.Set("Authorization", h)`,
 			"bearer auth must re-set Authorization on redirect to refresh nonce-bound headers")
 		requireRedirectOriginHelper(t, client)
-		require.Contains(t, closure, "if !redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL)",
+		require.Contains(t, closure, "if !redirectLeavesOrigin(req.URL, via)",
 			"auth re-stamp must use redirectLeavesOrigin so a host change or protocol downgrade does not leak the credential")
-		require.Contains(t, closure, "if redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL)",
+		require.Contains(t, closure, "if redirectLeavesOrigin(req.URL, via)",
 			"the strip path must drop the credential on a host change or protocol downgrade")
 	})
 
@@ -59,9 +59,9 @@ func TestClientCheckRedirectReappliesAuth(t *testing.T) {
 		require.NotContains(t, closure, `req.Header.Set("Authorization", h)`,
 			"must not also stamp Authorization when the spec uses a custom header")
 		requireRedirectOriginHelper(t, client)
-		require.Contains(t, closure, "if !redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL)",
+		require.Contains(t, closure, "if !redirectLeavesOrigin(req.URL, via)",
 			"custom-header auth must re-stamp only when redirectLeavesOrigin is false so a protocol downgrade cannot keep the header")
-		require.Contains(t, closure, "if redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL)",
+		require.Contains(t, closure, "if redirectLeavesOrigin(req.URL, via)",
 			"custom-header strip must drop the credential on a host change or protocol downgrade")
 	})
 
@@ -124,12 +124,12 @@ func checkRedirectClosureBody(t *testing.T, content string) string {
 
 func requireRedirectOriginHelper(t *testing.T, client string) {
 	t.Helper()
-	require.Contains(t, client, "func redirectLeavesOrigin(next, original, prev *url.URL) bool {")
-	require.Contains(t, client, "hostChanged := next.Host != original.Host")
-	require.Contains(t, client, `downgrade := prev.Scheme == "https" && next.Scheme != "https"`)
-	require.Contains(t, client, `leftHTTPS := original.Scheme == "https" && next.Scheme != "https"`)
-	require.Contains(t, client, "return hostChanged || downgrade || leftHTTPS")
-	require.Contains(t, client, "redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL)")
+	require.Contains(t, client, "func redirectLeavesOrigin(next *url.URL, via []*http.Request) bool {")
+	require.Contains(t, client, "if next.Host != via[0].URL.Host")
+	require.Contains(t, client, `if next.Scheme == "https"`)
+	require.Contains(t, client, `hop.URL.Scheme == "https"`)
+	require.Contains(t, client, "redirectLeavesOrigin(req.URL, via)")
+	require.NotContains(t, client, "redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL)")
 	require.NotContains(t, client, "redirectLeavesOrigin(req.URL, via[len(via)-1].URL)")
 	require.NotContains(t, client, "shouldCopyHeaderOnRedirect")
 	require.NotContains(t, client, "#4291")

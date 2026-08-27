@@ -615,16 +615,24 @@ func newRateLimiter(rateLimit float64) *cliutil.AdaptiveLimiter {
 
 // redirectLeavesOrigin reports whether a redirect hop should drop custom
 // credentials. Host is compared against the original request so a foreign
-// hop (A -> B -> B) cannot re-stamp A's credential onto B. Block protocol
-// downgrade against the immediate predecessor so http -> https -> http
-// still strips on the last hop. Also treat the original https origin as
-// sticky: https -> http -> http must not re-stamp onto plaintext after
-// the first hop already stripped the credential.
-func redirectLeavesOrigin(next, original, prev *url.URL) bool {
-	hostChanged := next.Host != original.Host
-	downgrade := prev.Scheme == "https" && next.Scheme != "https"
-	leftHTTPS := original.Scheme == "https" && next.Scheme != "https"
-	return hostChanged || downgrade || leftHTTPS
+// hop (A -> B -> B) cannot re-stamp A's credential onto B. Same-host
+// http -> https keeps the credential. Once any hop in the chain was
+// https, later plaintext hops must not re-stamp; comparing only the
+// original URL and the immediate predecessor misses
+// http -> https -> http -> http.
+func redirectLeavesOrigin(next *url.URL, via []*http.Request) bool {
+	if next.Host != via[0].URL.Host {
+		return true
+	}
+	if next.Scheme == "https" {
+		return false
+	}
+	for _, hop := range via {
+		if hop.URL.Scheme == "https" {
+			return true
+		}
+	}
+	return false
 }
 
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
@@ -738,7 +746,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// downgrade. Go strips Authorization and Cookie in common cases, but
 		// custom headers and URL query values need explicit removal here.
 		// Block protocol downgrade.
-		if redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) {
+		if redirectLeavesOrigin(req.URL, via) {
 			req.Header.Del("{{authParameterName .Auth}}")
 {{- if eq .Auth.Type "session_handshake"}}
 			req.Header.Del("{{.Auth.TokenParamName}}")
@@ -775,7 +783,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// header name the generated CLI can use. Go strips Authorization/Cookie
 		// automatically on some hops, but not arbitrary tier header names.
 		// Block protocol downgrade.
-		if redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) {
+		if redirectLeavesOrigin(req.URL, via) {
 	{{- range $tierName, $tier := .TierRouting.Tiers}}
 	{{- if and (ne $tier.Auth.Type "") (ne $tier.Auth.Type "none") (eq (authPlacement $tier.Auth) "header")}}
 			req.Header.Del({{printf "%q" (authParameterName $tier.Auth)}})
@@ -787,7 +795,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// Re-stamp only when the hop stays on the origin. Custom headers
 		// are never in the set Go removes automatically, so this gate
 		// has to do the work itself. Block protocol downgrade.
-		if !redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) {
+		if !redirectLeavesOrigin(req.URL, via) {
 			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
 				req.Header.Set("{{.Auth.TokenParamName}}", h)
 			}
@@ -809,7 +817,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// the auth cookie by name to keep the credential from leaking to a
 		// redirect target, while preserving any other cookies on the request.
 		// Block protocol downgrade.
-		if redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL) {
+		if redirectLeavesOrigin(req.URL, via) {
 			preserved := req.Cookies()
 			req.Header.Del("Cookie")
 			for _, ck := range preserved {
@@ -827,7 +835,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// Re-stamp only when the hop stays on the origin. Custom headers
 		// are never in the set Go removes automatically, so this gate
 		// has to do the work itself. Block protocol downgrade.
-		if !redirectLeavesOrigin(req.URL, via[0].URL, via[len(via)-1].URL){{- if eq .Auth.Type "composed"}} && c.credentialAppliesToURL(req.URL.String()){{- end}} {
+		if !redirectLeavesOrigin(req.URL, via){{- if eq .Auth.Type "composed"}} && c.credentialAppliesToURL(req.URL.String()){{- end}} {
 			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
 				req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", h)
 			}
