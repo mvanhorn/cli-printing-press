@@ -219,6 +219,12 @@ Manage public
 Manage reports
 
 
+### tickets
+
+Manage tickets
+
+- **`printing-press-golden-pp-cli tickets`** - Query tickets
+
 
 ### Self-learning loop
 
@@ -286,6 +292,10 @@ Covered command paths:
 - `printing-press-golden-pp-cli projects get`
 - `printing-press-golden-pp-cli projects list`
 - `printing-press-golden-pp-cli projects search`
+- `printing-press-golden-pp-cli tickets`
+- `printing-press-golden-pp-cli tickets get`
+- `printing-press-golden-pp-cli tickets list`
+- `printing-press-golden-pp-cli tickets search`
 
 JSON outputs that use the generated provenance envelope include freshness metadata at `meta.freshness`. This metadata describes the freshness decision for the covered command path; it does not claim full historical backfill or API-specific enrichment.
 

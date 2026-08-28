@@ -35,6 +35,7 @@ func TestDeclaredAPISurfaceReachable(t *testing.T) {
 		"reports export report-year",
 		"reports summary",
 		"reports summary get-report-year",
+		"tickets",
 	}
 	actual := make(map[string]struct{}, len(expected))
 	type pendingCommand struct {
