@@ -163,6 +163,11 @@ type CLIManifest struct {
 	NovelFeatures              []NovelFeatureManifest      `json:"novel_features,omitempty"`
 	Scorecard                  *CLIManifestScorecard       `json:"scorecard,omitempty"`
 	Verify                     *CLIManifestVerify          `json:"verify,omitempty"`
+	// generatedEnvReads is a write-scoped scan of os.Getenv names already
+	// emitted into the printed CLI. It is not serialized; WriteMCPBManifest
+	// and reconcile attach it so a kept colliding override can bind the
+	// name the existing client still reads.
+	generatedEnvReads map[string]struct{} `json:"-"`
 }
 
 type CLIManifestScorecard struct {
@@ -345,7 +350,7 @@ func normalizeCLIManifestForWrite(dir string, m CLIManifest) CLIManifest {
 		}}
 		m.AuthAdditionalHeaders = nil
 	}
-	return m
+	return dropCollidingEndpointTemplateOverrides(m, scanGeneratedEnvSet(dir))
 }
 
 func writeCLIManifestPreservingRaw(dir string, m CLIManifest, existingRaw map[string]json.RawMessage) error {
@@ -946,6 +951,7 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	}
 	m.AuthAdditionalHeaders = parsed.Auth.AdditionalHeaders
 	m.EndpointTemplateVars = parsed.EndpointTemplateVars
+	parsed.DropCollidingEndpointTemplateEnvOverrides()
 	m.EndpointTemplateEnvOverrides = parsed.EndpointTemplateEnvOverrides
 	m.EndpointTemplateVarDefaults = parsed.EndpointTemplateVarDefaults
 	if parsed.Auth.KeyURL != "" {
