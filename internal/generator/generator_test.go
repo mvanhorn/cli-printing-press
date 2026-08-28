@@ -5259,7 +5259,7 @@ func TestSyncIDWalkPostQueryAdvancesAfterFullPage(t *testing.T) {
 						IDField:     "id",
 						Body: []spec.Param{
 							{Name: "MaxRecords", Type: "integer", Default: 500},
-							{Name: "filter", Type: "array"},
+							{Name: "filter", Type: "array", Required: true},
 						},
 						Pagination: &spec.Pagination{
 							Type:       spec.PaginationTypeIDWalk,
@@ -5292,12 +5292,28 @@ func TestSyncIDWalkPostQueryAdvancesAfterFullPage(t *testing.T) {
 	assert.NotContains(t, queryCmd, `"all", false, "Fetch all pages"`)
 	assert.NotContains(t, queryCmd, "paginatedGet(")
 	assert.NotContains(t, queryCmd, "resolvePaginatedRead(")
+
+	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
+	assert.Contains(t, syncSrc, "func seedIDWalkFilter(",
+		"POST-query id-walk sync must emit a first-page filter seed")
+	assert.Contains(t, syncSrc, `} else if err := seedIDWalkFilter(body, idWalk); err != nil {`,
+		"page 1 must seed the id-walk filter when no cursor exists")
+	assert.Contains(t, syncSrc, "int64(math.MinInt64)",
+		"first-page seed must include signed numeric IDs")
+	assert.NotContains(t, syncSrc, `coerceIDWalkValue("0")`,
+		"gte 0 would drop negative IDs")
+	assert.NotContains(t, syncSrc, `"filter": []any{}`,
+		"an empty filter array is not a valid first-page seed")
+	assert.NotContains(t, syncSrc, `"filter": []`,
+		"an empty filter array is not a valid first-page seed")
 	inlineTest := `package cli
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strings"
 	"testing"
 
 	"` + naming.CLI(apiSpec.Name) + `/internal/store"
@@ -5380,9 +5396,86 @@ func TestSyncResourceIDWalksPostQueryPages(t *testing.T) {
 	if len(client.bodies) != 3 {
 		t.Fatalf("POST calls = %d, want 3", len(client.bodies))
 	}
-	assertIDWalkBody(t, client.bodies[0], nil)
-	assertIDWalkBody(t, client.bodies[1], int64(500))
-	assertIDWalkBody(t, client.bodies[2], int64(1000))
+	assertIDWalkBody(t, client.bodies[0], "gte", int64(math.MinInt64))
+	assertIDWalkBody(t, client.bodies[1], "gt", int64(500))
+	assertIDWalkBody(t, client.bodies[2], "gt", int64(1000))
+}
+
+func TestSyncFetchHonorsCallerIDWalkFilter(t *testing.T) {
+	client := &postQuerySyncClient{}
+	idWalk, ok := syncResourceIDWalkConfig("tickets")
+	if !ok {
+		t.Fatal("tickets must use id-walk")
+	}
+	callerFilter := ` + "`" + `[{"field":"status","op":"eq","value":"open"}]` + "`" + `
+	if _, err := syncFetch(context.Background(), client, "tickets", "/tickets/query", map[string]string{
+		"MaxRecords": "500",
+		"filter":     callerFilter,
+	}, idWalk, ""); err != nil {
+		t.Fatalf("syncFetch error: %v", err)
+	}
+	if len(client.bodies) != 1 {
+		t.Fatalf("POST calls = %d, want 1", len(client.bodies))
+	}
+	filters, ok := client.bodies[0]["filter"].([]any)
+	if !ok {
+		// Caller JSON may still be a string until a later page appends; either
+		// shape is fine as long as the seed did not replace it.
+		got, _ := client.bodies[0]["filter"].(string)
+		if got != callerFilter {
+			t.Fatalf("filter = %#v, want caller-supplied %s", client.bodies[0]["filter"], callerFilter)
+		}
+		return
+	}
+	if len(filters) != 1 {
+		t.Fatalf("filter = %#v, want the caller-supplied predicate only", filters)
+	}
+	predicate, ok := filters[0].(map[string]any)
+	if !ok {
+		t.Fatalf("filter[0] = %#v, want object", filters[0])
+	}
+	if predicate["field"] != "status" || predicate["op"] != "eq" || predicate["value"] != "open" {
+		t.Fatalf("filter[0] = %#v, want status eq open", predicate)
+	}
+}
+
+func TestSyncFetchSeedsEmptyCallerFilter(t *testing.T) {
+	client := &postQuerySyncClient{}
+	idWalk, ok := syncResourceIDWalkConfig("tickets")
+	if !ok {
+		t.Fatal("tickets must use id-walk")
+	}
+	if _, err := syncFetch(context.Background(), client, "tickets", "/tickets/query", map[string]string{
+		"MaxRecords": "500",
+		"filter":     "[]",
+	}, idWalk, ""); err != nil {
+		t.Fatalf("syncFetch error: %v", err)
+	}
+	if len(client.bodies) != 1 {
+		t.Fatalf("POST calls = %d, want 1", len(client.bodies))
+	}
+	assertIDWalkBody(t, client.bodies[0], "gte", int64(math.MinInt64))
+}
+
+func TestSyncFetchRejectsNonArrayIDWalkFilter(t *testing.T) {
+	client := &postQuerySyncClient{}
+	idWalk, ok := syncResourceIDWalkConfig("tickets")
+	if !ok {
+		t.Fatal("tickets must use id-walk")
+	}
+	_, err := syncFetch(context.Background(), client, "tickets", "/tickets/query", map[string]string{
+		"MaxRecords": "500",
+		"filter":     ` + "`" + `{"field":"status","op":"eq","value":"open"}` + "`" + `,
+	}, idWalk, "")
+	if err == nil {
+		t.Fatal("syncFetch succeeded, want invalid id-walk filter error")
+	}
+	if !strings.Contains(err.Error(), "invalid id-walk filter \"filter\"") {
+		t.Fatalf("error = %v, want invalid id-walk filter", err)
+	}
+	if len(client.bodies) != 0 {
+		t.Fatalf("POST calls = %d, want 0 after a rejected filter", len(client.bodies))
+	}
 }
 
 func TestNextIDWalkCursorPreservesLargeJSONNumber(t *testing.T) {
@@ -5397,18 +5490,12 @@ func TestNextIDWalkCursorPreservesLargeJSONNumber(t *testing.T) {
 	}
 }
 
-func assertIDWalkBody(t *testing.T, body map[string]any, wantAfter any) {
+func assertIDWalkBody(t *testing.T, body map[string]any, wantOp string, wantAfter any) {
 	t.Helper()
 	if body["MaxRecords"] != int64(500) {
 		t.Fatalf("MaxRecords = %#v, want int64(500)", body["MaxRecords"])
 	}
 	filters, ok := body["filter"].([]any)
-	if wantAfter == nil {
-		if ok && len(filters) > 0 {
-			t.Fatalf("first request filter = %#v, want empty", filters)
-		}
-		return
-	}
 	if !ok || len(filters) != 1 {
 		t.Fatalf("filter = %#v, want one id-walk predicate", body["filter"])
 	}
@@ -5416,8 +5503,8 @@ func assertIDWalkBody(t *testing.T, body map[string]any, wantAfter any) {
 	if !ok {
 		t.Fatalf("filter[0] = %#v, want object", filters[0])
 	}
-	if predicate["field"] != "id" || predicate["op"] != "gt" || predicate["value"] != wantAfter {
-		t.Fatalf("filter[0] = %#v, want id gt %v", predicate, wantAfter)
+	if predicate["field"] != "id" || predicate["op"] != wantOp || predicate["value"] != wantAfter {
+		t.Fatalf("filter[0] = %#v, want id %s %v", predicate, wantOp, wantAfter)
 	}
 }
 `
@@ -5425,7 +5512,7 @@ func assertIDWalkBody(t *testing.T, body map[string]any, wantAfter any) {
 	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
-	runGoCommandRequired(t, outputDir, "test", "-run", "TestSyncResourceIDWalksPostQueryPages", "./internal/cli")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestSyncResourceIDWalksPostQueryPages|TestSyncFetchHonorsCallerIDWalkFilter|TestSyncFetchSeedsEmptyCallerFilter|TestSyncFetchRejectsNonArrayIDWalkFilter", "./internal/cli")
 }
 
 func generatedCLISourceContaining(t *testing.T, outputDir string, needle string) string {

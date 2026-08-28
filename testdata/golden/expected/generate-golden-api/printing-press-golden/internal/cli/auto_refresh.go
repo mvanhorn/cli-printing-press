@@ -29,6 +29,10 @@ var readCommandResources = map[string][]string{
 	"printing-press-golden-pp-cli projects list":     {"projects"},
 	"printing-press-golden-pp-cli projects get":      {"projects"},
 	"printing-press-golden-pp-cli projects search":   {"projects"},
+	"printing-press-golden-pp-cli tickets":           {"tickets"},
+	"printing-press-golden-pp-cli tickets list":      {"tickets"},
+	"printing-press-golden-pp-cli tickets get":       {"tickets"},
+	"printing-press-golden-pp-cli tickets search":    {"tickets"},
 }
 
 // cachePolicy returns the cache freshness policy assembled from spec
