@@ -411,6 +411,7 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.AddCommand(newAPICmd(flags))
 	rootCmd.AddCommand(newCurrenciesPromotedCmd(flags))
 	rootCmd.AddCommand(newPublicPromotedCmd(flags))
+	rootCmd.AddCommand(newTicketsPromotedCmd(flags))
 	rootCmd.AddCommand(newVersionCmd())
 	// Self-learning loop commands. newLearnConfig (defined in
 	// learn_init.go) reads spec.Learn.TickerPatterns + Stopwords and

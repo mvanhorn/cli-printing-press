@@ -30,6 +30,11 @@ type Task struct {
 	Title     string `json:"title"`
 }
 
+type TicketsQueryItem struct {
+	Id      int    `json:"id"`
+	Summary string `json:"summary"`
+}
+
 type UpdateTaskRequest struct {
 	Completed bool   `json:"completed"`
 	Priority  string `json:"priority"`
