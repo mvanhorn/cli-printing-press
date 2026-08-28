@@ -867,8 +867,10 @@ func TestLearnEvents_AliasMediatedRecallCreditsTaughtRowID(t *testing.T) {
 	dbPath := filepath.Join(home, "data.db")
 
 	// Register the alias pair so the cross-alias canonical resolver
-	// can bridge the two phrasings.
-	for _, value := range []string{"WidgetCo", "WC"} {
+	// can bridge the two phrasings. The short form is hyphenated
+	// lowercase so seeded ticker_patterns that match short uppercase
+	// tokens cannot claim it before teach-lookup promotion.
+	for _, value := range []string{"WidgetCo", "widget-co"} {
 		if _, _, err := runRootArgs(t,
 			"teach-lookup", "--kind", "org",
 			"--canonical", "WidgetCo", "--value", value,
@@ -887,7 +889,7 @@ func TestLearnEvents_AliasMediatedRecallCreditsTaughtRowID(t *testing.T) {
 	}
 
 	stdout, _, err := runRootArgs(t,
-		"recall", "display quarterly report for WC",
+		"recall", "display quarterly report for widget-co",
 		"--db", dbPath, "--agent",
 	)
 	if err != nil {
