@@ -9069,10 +9069,10 @@ paths:
 }
 
 // TestParseIDFieldResourcePrefixedHeuristic covers list responses whose item
-// schemas key off `<singular_resource>_id` (or `_uuid`/`_guid`) instead of a
-// bare `id`. Without this heuristic, APIs like podscan whose Category items
-// only carry `category_id` would fall through every fallback tier and leave
-// IDField empty, causing sync to silently drop every row.
+// schemas key off `<singular_resource>_id` (or `_uuid`/`_guid`/`_uid`) instead
+// of a bare `id`. Without this heuristic, APIs like podscan whose Category
+// items only carry `category_id` would fall through every fallback tier and
+// leave IDField empty, causing sync to silently drop every row.
 func TestParseIDFieldResourcePrefixedHeuristic(t *testing.T) {
 	t.Parallel()
 
@@ -9142,6 +9142,79 @@ func TestParseIDFieldResourcePrefixedHeuristic(t *testing.T) {
                     last_seen: {type: string}
 `,
 			wantID: "device_guid",
+		},
+		{
+			name: "_uid suffix is recognized when _id/_uuid/_guid are absent",
+			path: "/alerts",
+			schemaYAML: `                  type: object
+                  properties:
+                    alert_uid: {type: string}
+                    severity: {type: string}
+`,
+			wantID: "alert_uid",
+		},
+		{
+			name: "camelCase stemUid when resource name does not yield that stem",
+			path: "/account-alerts-open",
+			schemaYAML: `                  type: object
+                  properties:
+                    alertUid: {type: string}
+                    alertContext: {type: string}
+                    severity: {type: string}
+`,
+			wantID: "alertUid",
+		},
+		{
+			name: "snake stem_uid when resource name does not yield that stem",
+			path: "/account-alerts-open",
+			schemaYAML: `                  type: object
+                  properties:
+                    alert_uid: {type: string}
+                    alert_context: {type: string}
+                    severity: {type: string}
+`,
+			wantID: "alert_uid",
+		},
+		{
+			name: "id still wins over a sole stemUid",
+			path: "/account-alerts-open",
+			schemaYAML: `                  type: object
+                  properties:
+                    id: {type: string}
+                    alertUid: {type: string}
+`,
+			wantID: "id",
+		},
+		{
+			name: "exact uid still wins over a prefixed stemUid",
+			path: "/account-alerts-open",
+			schemaYAML: `                  type: object
+                  properties:
+                    uid: {type: string}
+                    alertUid: {type: string}
+`,
+			wantID: "uid",
+		},
+		{
+			name: "two stemUid fields stay ambiguous and fall through to name",
+			path: "/account-alerts-open",
+			schemaYAML: `                  type: object
+                  properties:
+                    alertUid: {type: string}
+                    deviceUid: {type: string}
+                    name: {type: string}
+`,
+			wantID: "name",
+		},
+		{
+			name: "_id still preferred over _uid for the same resource stem",
+			path: "/alerts",
+			schemaYAML: `                  type: object
+                  properties:
+                    alert_id: {type: string}
+                    alert_uid: {type: string}
+`,
+			wantID: "alert_id",
 		},
 		{
 			name: "camelCase property name normalizes to snake match",

@@ -6172,10 +6172,12 @@ func responseItemSchema(op *openapi3.Operation) *openapi3.Schema {
 
 // resolveIDFieldFromResponseSchema implements tiers 2-6 of the IDField fallback
 // chain: prefer "id", then a resource-prefixed key (`<singular>_id` /
-// `_uuid` / `_guid`), then a vendor identifier (`gid` / `sid` / `uid` /
-// `uuid` / `guid`), then a URL-shaped identifier (`uri` / `self` /
-// `selfLink` / `href` / `url`), then "name", then the first scalar field listed
-// in the response schema's `required:` array (walking properties in their schema order).
+// `_uuid` / `_guid` / `_uid`), then a vendor identifier (`gid` / `sid` /
+// `uid` / `uuid` / `guid`), then a sole remaining `<stem>_uid` field when the
+// resource name does not yield that stem, then a URL-shaped identifier
+// (`uri` / `self` / `selfLink` / `href` / `url`), then "name", then the first
+// scalar field listed in the response schema's `required:` array (walking
+// properties in their schema order).
 // Returns "" when no field qualifies; templates fall through to runtime list
 // scanning. Tier 1 (`x-resource-id` extension) is handled separately by the
 // caller — it overrides every tier here.
@@ -6218,6 +6220,15 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation, resourceName strin
 		if _, ok := itemSchema.Properties[key]; ok {
 			return key
 		}
+	}
+
+	// Tier 3.6: sole remaining `<stem>_uid` / camelCase `stemUid`. Resource
+	// names like `account-alerts-open` do not yield the mid-name stem
+	// `alert`, so tier 3 misses `alertUid`. Exactly one such field keeps
+	// this from promoting a foreign key when `deviceUid` and `siteUid` both
+	// appear. Exact `uid` stays in tier 3.5.
+	if id := soleStemUIDField(itemSchema); id != "" {
+		return id
 	}
 
 	// Tier 4: URL-shaped identifiers. These trail id-shaped keys so APIs that
@@ -6307,10 +6318,10 @@ func collectIDSchemaFieldsInto(schemaRef *openapi3.SchemaRef, fields *idSchemaFi
 }
 
 // resourcePrefixedIDField returns the first property whose snake-cased name
-// matches a resource-derived base plus `_id`, then `_uuid`, then `_guid`.
-// Composed resource names also probe their leaf segment so child collections
-// like `projects_tasks` can key on `taskId`. Property names are returned
-// verbatim so callers preserve the spec's original casing.
+// matches a resource-derived base plus `_id`, then `_uuid`, then `_guid`,
+// then `_uid`. Composed resource names also probe their leaf segment so
+// child collections like `projects_tasks` can key on `taskId`. Property
+// names are returned verbatim so callers preserve the spec's original casing.
 func resourcePrefixedIDField(schema *openapi3.Schema, resourceName string) string {
 	bases := resourceIDBaseCandidates(resourceName)
 	if len(bases) == 0 {
@@ -6324,7 +6335,7 @@ func resourcePrefixedIDField(schema *openapi3.Schema, resourceName string) strin
 		propNames = append(propNames, name)
 	}
 	sort.Strings(propNames)
-	for _, suffix := range []string{"_id", "_uuid", "_guid"} {
+	for _, suffix := range []string{"_id", "_uuid", "_guid", "_uid"} {
 		for _, base := range bases {
 			target := base + suffix
 			for _, propName := range propNames {
@@ -6335,6 +6346,35 @@ func resourcePrefixedIDField(schema *openapi3.Schema, resourceName string) strin
 		}
 	}
 	return ""
+}
+
+// soleStemUIDField returns the sole property whose snake-cased name is
+// `<stem>_uid` with a non-empty stem and a plausible scalar schema. Bare
+// `uid` is left to the vendor-identifier tier. Two or more such fields are
+// ambiguous and return "".
+func soleStemUIDField(schema *openapi3.Schema) string {
+	if schema == nil {
+		return ""
+	}
+	var match string
+	for name, propRef := range schema.Properties {
+		if !isStemUIDFieldName(name) {
+			continue
+		}
+		if !isPlausibleIDFieldSchema(schemaRefValue(propRef)) {
+			continue
+		}
+		if match != "" {
+			return ""
+		}
+		match = name
+	}
+	return match
+}
+
+func isStemUIDFieldName(propName string) bool {
+	snake := toSnakeCase(propName)
+	return strings.HasSuffix(snake, "_uid") && len(snake) > len("_uid")
 }
 
 func resourceIDBaseCandidates(resourceName string) []string {
