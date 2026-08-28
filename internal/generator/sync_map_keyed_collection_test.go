@@ -87,6 +87,43 @@ func TestMapKeyedStampNeverOutranksARealID(t *testing.T) {
 	}
 }
 
+// A one-level date-keyed collection uses the date as the record id. That
+// string is a valid collection key, so the last-resort stamp must keep it.
+// CanonicalResourceID refuses ISO dates (a created_at-shaped field is not a
+// row id); running the stamp through that helper would drop the row.
+func TestMapKeyedOneLevelDateKeySurvivesUnusableIDGate(t *testing.T) {
+	if got := CanonicalResourceID("2026-08-19"); got != "" {
+		t.Fatalf("CanonicalResourceID must still refuse ISO dates, got %q", got)
+	}
+	items, ok := FlattenMapKeyedCollection(json.RawMessage(` + "`" + `{"2026-08-19":{"title":"day bucket"}}` + "`" + `))
+	if !ok || len(items) != 1 {
+		t.Fatalf("expected 1 date-keyed item, ok=%v len=%d", ok, len(items))
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(items[0], &obj); err != nil {
+		t.Fatalf("decode item: %v", err)
+	}
+	if obj[MapKeyIDField] != "2026-08-19" {
+		t.Fatalf("expected the date key stamped, got %#v", obj)
+	}
+	if got := ExtractResourceID("calls", obj); got != "2026-08-19" {
+		t.Fatalf("date-shaped map keys must resolve via ResourceIDString, got %q", got)
+	}
+	if got := extractObjectID(obj); got != "2026-08-19" {
+		t.Fatalf("extractObjectID must keep a date-shaped map key, got %q", got)
+	}
+
+	// A leaf that also copies the date into id is refused by the #4379
+	// canonical chain; the stamp is the arm that recovers it.
+	obj["id"] = "2026-08-19"
+	if got := ExtractResourceID("calls", obj); got != "2026-08-19" {
+		t.Fatalf("mapKeyIDFallback must recover after CanonicalResourceID refuses the date-shaped id field, got %q", got)
+	}
+	if got := extractObjectID(obj); got != "2026-08-19" {
+		t.Fatalf("extractObjectID must recover a date-shaped id via the stamped key, got %q", got)
+	}
+}
+
 // A detail object whose fields happen to hold sub-objects is the shape most at
 // risk of being misread as a collection. Field names are words, record keys are
 // not, and that is the whole discriminator.
