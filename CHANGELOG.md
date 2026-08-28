@@ -1,5 +1,38 @@
 # Changelog
 
+## [4.31.2](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.1...v4.31.2) (2026-08-28)
+
+
+### Bug Fixes
+
+* **auth:** pass Chrome cookie path via argv, not python -c ([#4362](https://github.com/mvanhorn/cli-printing-press/issues/4362)) ([8523d5a](https://github.com/mvanhorn/cli-printing-press/commit/8523d5ac55dbf01ac710060bd0ef95c86082c035)), closes [#4281](https://github.com/mvanhorn/cli-printing-press/issues/4281)
+* **auth:** same-origin redirect policy for OAuth token exchanges ([#4378](https://github.com/mvanhorn/cli-printing-press/issues/4378)) ([f3855b7](https://github.com/mvanhorn/cli-printing-press/commit/f3855b780535680cac89a54b58d955fd0d480dee))
+* **cli:** apply reserved-name gate to novel-feature command names ([#4298](https://github.com/mvanhorn/cli-printing-press/issues/4298)) ([6870e64](https://github.com/mvanhorn/cli-printing-press/commit/6870e640aff53c86e1962fb774a3420f17358f51))
+* **cli:** disambiguate collection vs item command stems ([#4294](https://github.com/mvanhorn/cli-printing-press/issues/4294)) ([62b8950](https://github.com/mvanhorn/cli-printing-press/commit/62b8950778b1c11bda8bd0b061bf7f03085a65b7))
+* **cli:** do not kill streaming transfers with the default timeout ([#4334](https://github.com/mvanhorn/cli-printing-press/issues/4334)) ([50ed53c](https://github.com/mvanhorn/cli-printing-press/commit/50ed53c89a76dbbc2d32cb793e71aa99112a5fe5))
+* **cli:** do not preserve files that reintroduce a fresh-generation build break ([#4300](https://github.com/mvanhorn/cli-printing-press/issues/4300)) ([6c9e737](https://github.com/mvanhorn/cli-printing-press/commit/6c9e7372c695d9b7c67b8595ac49fdc18c5c45dc))
+* **client:** bind cookie credentials to https canonical host for every token source ([#4363](https://github.com/mvanhorn/cli-printing-press/issues/4363)) ([ea85b49](https://github.com/mvanhorn/cli-printing-press/commit/ea85b490e79f850299b6c688efa2fb9e085aa4f9))
+* **client:** treat scheme as part of the origin before replaying auth credentials ([#4292](https://github.com/mvanhorn/cli-printing-press/issues/4292)) ([1eecefc](https://github.com/mvanhorn/cli-printing-press/commit/1eecefc4b9a9d1279e027614b765fefe4a177a63))
+* **cli:** extract items from map-keyed collections ([#4335](https://github.com/mvanhorn/cli-printing-press/issues/4335)) ([81d5a6b](https://github.com/mvanhorn/cli-printing-press/commit/81d5a6b65803d4a011299cb6167ca2f247f19113))
+* **cli:** fail loud when a JSON endpoint returns HTML ([#4391](https://github.com/mvanhorn/cli-printing-press/issues/4391)) ([a1494f3](https://github.com/mvanhorn/cli-printing-press/commit/a1494f36bfca21186943ec1ecec5ab986fb54679))
+* **cli:** keep env OAuth secrets out of config.toml ([#4393](https://github.com/mvanhorn/cli-printing-press/issues/4393)) ([e0e0107](https://github.com/mvanhorn/cli-printing-press/commit/e0e01070f0d1e35563d3a2145d7ffa2c536ef449))
+* **cli:** key response-path unwrap on resource+endpoint identity ([#4301](https://github.com/mvanhorn/cli-printing-press/issues/4301)) ([54360bd](https://github.com/mvanhorn/cli-printing-press/commit/54360bd9714e03b5189d2769e4bdf0324d8beb8c))
+* **cli:** normalize text spec checksums ([#4264](https://github.com/mvanhorn/cli-printing-press/issues/4264)) ([4bfd0ec](https://github.com/mvanhorn/cli-printing-press/commit/4bfd0eccce5cd252d55b5f1e99a305bb6cafc211))
+* **cli:** re-mint client_credentials on 401 and unwrap mutation-output envelopes ([#4392](https://github.com/mvanhorn/cli-printing-press/issues/4392)) ([3c9a017](https://github.com/mvanhorn/cli-printing-press/commit/3c9a017c92d69a0b64189a70c5c641980f2cacf0))
+* **cli:** rewrite go.mod and name tokens on publish rename ([#4333](https://github.com/mvanhorn/cli-printing-press/issues/4333)) ([1a4ece3](https://github.com/mvanhorn/cli-printing-press/commit/1a4ece3c849ba1affa1ad05431500d57acaf8fc4))
+* **cli:** send spec-declared query param defaults from sync ([#4343](https://github.com/mvanhorn/cli-printing-press/issues/4343)) ([2880827](https://github.com/mvanhorn/cli-printing-press/commit/2880827b458df48d9bcb38035930a99c1f3acb8a))
+* **cli:** skip JSON guard on binary response bodies ([#4293](https://github.com/mvanhorn/cli-printing-press/issues/4293)) ([ac1bd4a](https://github.com/mvanhorn/cli-printing-press/commit/ac1bd4abd3ebfbcfe909a2017602ec3df9f42215))
+* **cli:** warn or carry templated hand-edits on cross-spec --force ([#4299](https://github.com/mvanhorn/cli-printing-press/issues/4299)) ([f094593](https://github.com/mvanhorn/cli-printing-press/commit/f0945937066741b0027fba91ddd4da7d271d1c04))
+* **generator:** add missing Example to feedback command template ([#4290](https://github.com/mvanhorn/cli-printing-press/issues/4290)) ([bd9fab0](https://github.com/mvanhorn/cli-printing-press/commit/bd9fab0ab8955a310d73080e3ff2208212f09526))
+* **generator:** fail-closed mcp:read-only for GET RPCs without a mutation signal ([#4361](https://github.com/mvanhorn/cli-printing-press/issues/4361)) ([401a590](https://github.com/mvanhorn/cli-printing-press/commit/401a590827f7fb30dfe2fb724a135f7b985763fb))
+* **generator:** honor patch records across regen ([#4332](https://github.com/mvanhorn/cli-printing-press/issues/4332)) ([54ad99e](https://github.com/mvanhorn/cli-printing-press/commit/54ad99eb68385245f2cff1b3f7c7880813d84472))
+* **mcp,auth:** require HTTP MCP caller auth and stdin set-token ([#4360](https://github.com/mvanhorn/cli-printing-press/issues/4360)) ([f2dc1e5](https://github.com/mvanhorn/cli-printing-press/commit/f2dc1e5213656b47daaeab0e50cce08d588bf5d9))
+* **mcp:** include internal/config env reads in manifest operator declaration ([#4377](https://github.com/mvanhorn/cli-printing-press/issues/4377)) ([56e2e46](https://github.com/mvanhorn/cli-printing-press/commit/56e2e46b8decb11fcca246b7c6f45ec04250fe08))
+* **profiler:** stop using page-size defaults as sync pageSize ([#4380](https://github.com/mvanhorn/cli-printing-press/issues/4380)) ([86c6b3d](https://github.com/mvanhorn/cli-printing-press/commit/86c6b3d76b82705a8f872b4a72bf2166204970b4))
+* **store:** nested/id_/unusable record-ID resolution ([#4379](https://github.com/mvanhorn/cli-printing-press/issues/4379)) ([2c57c2e](https://github.com/mvanhorn/cli-printing-press/commit/2c57c2ed55002e48baae54c094b47e7c609ff09d))
+* **store:** stop concurrent-reader SIGBUS on WAL-index mmap ([#4359](https://github.com/mvanhorn/cli-printing-press/issues/4359)) ([74fea21](https://github.com/mvanhorn/cli-printing-press/commit/74fea21796b9ba76a206ca007133aa0ecf0770c5))
+* **sync:** honor per-endpoint base_url overrides ([#4331](https://github.com/mvanhorn/cli-printing-press/issues/4331)) ([3cd6cba](https://github.com/mvanhorn/cli-printing-press/commit/3cd6cba04899430a1cb2e4911de8d7270875c595))
+
 ## [4.31.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.0...v4.31.1) (2026-08-19)
 
 
