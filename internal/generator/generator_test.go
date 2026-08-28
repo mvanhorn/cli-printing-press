@@ -10374,6 +10374,10 @@ func TestGeneratedOutput_WorkflowArchiveDelegatesToSyncResource(t *testing.T) {
 			"archive --json must route syncResource event NDJSON away from stdout")
 		assert.Contains(t, src, `nil, syncEventWriter)`,
 			"archive must pass the wrapper-selected event writer into syncResource")
+		assert.Contains(t, src, `if resourcesSynced == 0 && len(resources) > 0`,
+			"archive must fail closed when every attempted resource failed")
+		assert.Contains(t, src, `workflow archive failed: 0 of %d resource(s) archived`,
+			"archive all-failed error must name the attempted resource count")
 		assert.Contains(t, syncSrc, "syncEvents io.Writer",
 			"syncResource should expose an event writer parameter for wrapper callers")
 		assert.Contains(t, syncSrc, "syncEventWriter := cmd.OutOrStdout()",
@@ -10669,6 +10673,10 @@ func TestGeneratedOutput_WorkflowBoundaries(t *testing.T) {
 		"workflow archive must cap the resource list under dogfood")
 	assert.Contains(t, src, `archiveMaxPages, false`,
 		"workflow archive must pass the dogfood-aware page limit to syncResource")
+	assert.Contains(t, src, `if resourcesSynced == 0 && len(resources) > 0`,
+		"workflow archive must fail closed when every attempted resource failed")
+	assert.Contains(t, src, `workflow archive failed: 0 of %d resource(s) archived`,
+		"workflow archive all-failed error must name the attempted resource count")
 
 	substackSpec := minimalSpec("substack")
 	substackDir := filepath.Join(t.TempDir(), naming.CLI(substackSpec.Name))
@@ -10928,6 +10936,65 @@ func TestWorkflowArchiveRejectsNegativeBounds(t *testing.T) {
 				t.Fatalf("negative %s created db path: stat err=%v", tc.flag, statErr)
 			}
 		})
+	}
+}
+
+func TestWorkflowArchiveFailsWhenEveryResourceErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("{\"error\":\"unauthorized\"}"))
+	}))
+	defer server.Close()
+	t.Setenv("WORKFLOWBOUNDARY_BASE_URL", server.URL)
+
+	stdout, stderr, err := runWorkflowBoundaryCommand("workflow", "archive", "--json", "--db", filepath.Join(t.TempDir(), "all-fail.db"))
+	if err == nil {
+		t.Fatalf("all-failed archive unexpectedly succeeded; stdout=%s stderr=%s", stdout, stderr)
+	}
+	if !strings.Contains(err.Error(), "workflow archive failed: 0 of 4 resource(s) archived") {
+		t.Fatalf("all-failed archive error = %v; stderr=%s", err, stderr)
+	}
+	if !strings.Contains(stdout, "\"resources_synced\": 0") {
+		t.Fatalf("all-failed archive stdout = %q, want resources_synced 0", stdout)
+	}
+	if strings.Contains(stdout, "Archived 0 items") {
+		t.Fatalf("all-failed archive stdout = %q, want no success-shaped human summary", stdout)
+	}
+
+	stdout, stderr, err = runWorkflowBoundaryCommand("workflow", "archive", "--db", filepath.Join(t.TempDir(), "all-fail-human.db"))
+	if err == nil {
+		t.Fatalf("all-failed human archive unexpectedly succeeded; stdout=%s stderr=%s", stdout, stderr)
+	}
+	if !strings.Contains(err.Error(), "workflow archive failed: 0 of 4 resource(s) archived") {
+		t.Fatalf("all-failed human archive error = %v; stderr=%s", err, stderr)
+	}
+	if strings.Contains(stdout, "Archived 0 items") {
+		t.Fatalf("all-failed human archive stdout = %q, want no success-shaped summary", stdout)
+	}
+}
+
+func TestWorkflowArchivePartialSuccessExitsZero(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/alpha") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("{\"items\":[{\"id\":\"a1\"}],\"has_more\":false,\"next_cursor\":\"\"}"))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("{\"error\":\"unauthorized\"}"))
+	}))
+	defer server.Close()
+	t.Setenv("WORKFLOWBOUNDARY_BASE_URL", server.URL)
+
+	stdout, stderr, err := runWorkflowBoundaryCommand("workflow", "archive", "--json", "--db", filepath.Join(t.TempDir(), "partial.db"))
+	if err != nil {
+		t.Fatalf("partial archive: %v; stdout=%s stderr=%s", err, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "\"resources_synced\": 1") {
+		t.Fatalf("partial archive stdout = %q, want resources_synced 1", stdout)
+	}
+	if !strings.Contains(stderr, "error:") {
+		t.Fatalf("partial archive stderr = %q, want per-resource errors", stderr)
 	}
 }
 `
