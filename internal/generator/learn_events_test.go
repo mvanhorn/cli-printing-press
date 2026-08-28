@@ -149,8 +149,7 @@ func TestGenerateLearnEvents_EmittedCLITestsPass(t *testing.T) {
 		"-run", "TestRecall_HitCarriesLearningID|TestFamilyHash_|TestScanPII_", "-count=1")
 }
 
-// TestGenerateLearnEvents_AliasFixtureSurvivesShortTickerPatterns
-// locks the emitted alias-mediated recall fixture to a token that
+// Locks the emitted alias-mediated recall fixture to a token that
 // short uppercase ticker_patterns cannot claim. A 2-char uppercase
 // alias such as WC is extracted as a ticker first, so recall misses
 // and generate --validate hard-fails for valid stock/currency/airport
