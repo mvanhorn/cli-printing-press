@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1199,13 +1200,281 @@ func FTSMatchQuery(query string) string {
 	return strings.Join(quoted, " ")
 }
 
+// A record filed under its own identifier often carries no id field inside the
+// object, and would be dropped for want of one. The flattener stamps the JSON
+// object key here and the id resolvers below fall back to it once every real id
+// field has missed. Flattener and resolvers stay in one file because a shape
+// one recognizes and the other cannot key loses rows with no error.
+//
+// The _pp_ prefix is reserved for fields this CLI synthesizes, so the stamp
+// always wins over a same-named member of the payload: the enclosing key is
+// the record's identity, and a payload copy of it is either stale or a name
+// collision inside a namespace no API owns.
+const MapKeyIDField = "_pp_map_key"
+
+// One level covers {"<id>": {...}}, two covers a bucketed
+// {"<bucket>": {"<id>": {...}}}. Descending further would start treating an
+// item's own nested sub-objects as sibling records.
+const mapKeyedMaxDepth = 2
+
+// A map-keyed collection files each record under its identifier instead of
+// listing records in an array, so the discriminator has to separate record
+// identifiers from ordinary field names. Field names are words; record
+// identifiers are not. These patterns admit only key shapes that no API uses
+// as a field name, which keeps an ordinary detail object carrying nested
+// sub-objects ({"user": {...}, "account": {...}}) out of the collection path.
+var (
+	mapKeyNumericRE  = regexp.MustCompile(`^[0-9]+$`)
+	mapKeyUUIDRE     = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	mapKeyDateRE     = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}([T ][0-9A-Za-z:.+-]*)?$`)
+	mapKeyOpaqueRE   = regexp.MustCompile(`^[A-Za-z0-9]{20,}$`)
+	mapKeyPrefixedRE = regexp.MustCompile(`^[-_][A-Za-z0-9_-]{15,}$`)
+	mapKeyHasDigitRE = regexp.MustCompile(`[0-9]`)
+)
+
+// A separator-free token must be long and carry a digit before it qualifies as
+// an identifier, because a short alphabetic token is indistinguishable from a
+// field name.
+func looksLikeRecordKey(key string) bool {
+	switch {
+	case key == "":
+		return false
+	case mapKeyNumericRE.MatchString(key):
+		return true
+	case mapKeyUUIDRE.MatchString(key):
+		return true
+	case mapKeyDateRE.MatchString(key):
+		return true
+	case mapKeyOpaqueRE.MatchString(key) && mapKeyHasDigitRE.MatchString(key):
+		return true
+	case mapKeyPrefixedRE.MatchString(key) && mapKeyHasDigitRE.MatchString(key):
+		return true
+	}
+	return false
+}
+
+type mapKeyedEntry struct {
+	key   string
+	value json.RawMessage
+}
+
+// Field-name scalar/array siblings are list metadata only. Treating every
+// non-object field-name member as skippable metadata made a detail object
+// with one numeric-keyed child look like a one-record page, so sync and
+// write-through cached the child and dropped the remaining fields.
+var mapKeyedListMetadataKeys = map[string]bool{
+	"next_cursor": true, "nextCursor": true, "NextCursor": true,
+	"next_token": true, "nextToken": true, "NextToken": true,
+	"next_page_token": true, "nextPageToken": true, "NextPageToken": true,
+	"page_token": true, "pageToken": true, "PageToken": true,
+	"end_cursor": true, "endCursor": true, "EndCursor": true,
+	"start_cursor": true, "startCursor": true, "StartCursor": true,
+	"cursor": true, "Cursor": true, "after": true, "After": true, "before": true, "Before": true,
+	"has_more": true, "hasMore": true, "HasMore": true,
+	"has_next": true, "hasNext": true, "HasNext": true,
+	"next_page": true, "nextPage": true, "NextPage": true,
+	"previous_page": true, "previousPage": true, "PreviousPage": true,
+	"page": true, "Page": true, "page_size": true, "pageSize": true, "PageSize": true,
+	"per_page": true, "perPage": true, "PerPage": true,
+	"total": true, "Total": true, "count": true, "Count": true, "size": true, "Size": true,
+	"total_count": true, "totalCount": true, "TotalCount": true,
+	"success": true, "status": true, "message": true, "error": true, "errors": true,
+	"warnings": true, "Warnings": true, "ok": true, "Ok": true,
+	"next": true, "prev": true, "previous": true, "first": true, "last": true,
+}
+
+// A lone record-shaped child plus only count/JSend fields is still a
+// detail object (status, message, total, count). A one-record page is
+// recognized only when a cursor, has-more flag, or page key is present.
+var mapKeyedPagingSignalKeys = map[string]bool{
+	"next_cursor": true, "nextCursor": true, "NextCursor": true,
+	"next_token": true, "nextToken": true, "NextToken": true,
+	"next_page_token": true, "nextPageToken": true, "NextPageToken": true,
+	"page_token": true, "pageToken": true, "PageToken": true,
+	"end_cursor": true, "endCursor": true, "EndCursor": true,
+	"start_cursor": true, "startCursor": true, "StartCursor": true,
+	"cursor": true, "Cursor": true, "after": true, "After": true, "before": true, "Before": true,
+	"has_more": true, "hasMore": true, "HasMore": true,
+	"has_next": true, "hasNext": true, "HasNext": true,
+	"next_page": true, "nextPage": true, "NextPage": true,
+	"previous_page": true, "previousPage": true, "PreviousPage": true,
+	"page": true, "Page": true, "page_size": true, "pageSize": true, "PageSize": true,
+	"per_page": true, "perPage": true, "PerPage": true,
+}
+
+// A record identifier keying a JSON object is the only member shape a
+// collection may contain; anything else keyed like a record, or any object
+// keyed like a field, means the payload is something other than a collection
+// and is rejected whole. Scalar and array members under field-name keys are
+// kept only when the key is list metadata, so a real collection can still
+// file a cursor or total beside its records. A detail field (id, title, tags)
+// beside a single record-shaped child is not metadata: that payload stays a
+// detail object. One record plus only count/JSend siblings is also a detail
+// object; a one-record page needs a cursor, has-more flag, or page key.
+// Sorting makes repeated syncs of one payload produce one row order.
+func mapKeyedEntries(raw json.RawMessage) ([]mapKeyedEntry, map[string]json.RawMessage, bool) {
+	if !isJSONObjectPayload(raw) {
+		return nil, nil, false
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil || len(obj) == 0 {
+		return nil, nil, false
+	}
+	keys := make([]string, 0, len(obj))
+	metadata := map[string]json.RawMessage{}
+	for key, value := range obj {
+		recordKeyed, objectValued := looksLikeRecordKey(key), isJSONObjectPayload(value)
+		switch {
+		case recordKeyed && objectValued:
+			keys = append(keys, key)
+		case !recordKeyed && !objectValued && mapKeyedListMetadataKeys[key]:
+			metadata[key] = value
+		default:
+			return nil, nil, false
+		}
+	}
+	if len(keys) == 0 {
+		return nil, nil, false
+	}
+	if len(keys) == 1 && len(metadata) > 0 && !hasMapKeyedPagingSignal(metadata) {
+		return nil, nil, false
+	}
+	sort.Strings(keys)
+	entries := make([]mapKeyedEntry, 0, len(keys))
+	for _, key := range keys {
+		entries = append(entries, mapKeyedEntry{key: key, value: obj[key]})
+	}
+	return entries, metadata, true
+}
+
+func hasMapKeyedPagingSignal(metadata map[string]json.RawMessage) bool {
+	for key := range metadata {
+		if mapKeyedPagingSignalKeys[key] {
+			return true
+		}
+	}
+	return false
+}
+
+func isJSONObjectPayload(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && trimmed[0] == '{'
+}
+
+func isEmptyJSONObject(raw json.RawMessage) bool {
+	var obj map[string]json.RawMessage
+	return json.Unmarshal(raw, &obj) == nil && len(obj) == 0
+}
+
+// Recognition and extraction are separate answers: the second return reports
+// only whether raw was a collection at all, so a recognized collection whose
+// members are all empty reads as an empty page rather than as a shape this
+// could not extract.
+func FlattenMapKeyedCollection(raw json.RawMessage) ([]json.RawMessage, bool) {
+	items, _, ok := FlattenMapKeyedCollectionWithMetadata(raw)
+	return items, ok
+}
+
+// The members skipped as metadata come back with the records because a
+// collection nested under a wrapper key or a declared response path can carry
+// its own continuation cursor. Dropping them left the pager reading only the
+// envelope above, which ends a paginated sync after its first page.
+func FlattenMapKeyedCollectionWithMetadata(raw json.RawMessage) ([]json.RawMessage, map[string]json.RawMessage, bool) {
+	return flattenMapKeyedCollection(raw, mapKeyedMaxDepth)
+}
+
+func flattenMapKeyedCollection(raw json.RawMessage, depth int) ([]json.RawMessage, map[string]json.RawMessage, bool) {
+	entries, metadata, ok := mapKeyedEntries(raw)
+	if !ok {
+		return nil, nil, false
+	}
+	items := make([]json.RawMessage, 0, len(entries))
+	for _, entry := range entries {
+		if depth > 1 {
+			if nested, nestedMetadata, ok := flattenMapKeyedCollection(entry.value, depth-1); ok {
+				items = append(items, nested...)
+				// A bucket's own metadata fills gaps only: the level closest to
+				// the caller describes the page it asked for.
+				for key, value := range nestedMetadata {
+					if _, taken := metadata[key]; !taken {
+						metadata[key] = value
+					}
+				}
+				continue
+			}
+		}
+		if isEmptyJSONObject(entry.value) {
+			continue
+		}
+		items = append(items, stampMapKeyID(entry.value, entry.key))
+	}
+	return items, metadata, true
+}
+
+// The enclosing key is the record's identity, so a same-named field already in
+// the payload is overwritten rather than trusted: keeping it would file the row
+// under a value the API never used as its key.
+func stampMapKeyID(value json.RawMessage, key string) json.RawMessage {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(value, &obj) != nil {
+		return value
+	}
+	encodedKey, err := json.Marshal(key)
+	if err != nil {
+		return value
+	}
+	obj[MapKeyIDField] = encodedKey
+	stamped, err := json.Marshal(obj)
+	if err != nil {
+		return value
+	}
+	return stamped
+}
+
+// Two flattenable members leave the envelope ambiguous, so nothing is
+// extracted rather than guessing which one holds the records. Callers pass
+// their own isMetadataKey because the sync and live paths carry different
+// metadata vocabularies; recognition of the collection itself must not differ
+// between them.
+func FlattenSoleMapKeyedSibling(envelope map[string]json.RawMessage, isMetadataKey func(string) bool) ([]json.RawMessage, map[string]json.RawMessage, bool) {
+	var collection []json.RawMessage
+	var collectionMetadata map[string]json.RawMessage
+	matches := 0
+	for key, raw := range envelope {
+		if isMetadataKey(key) {
+			continue
+		}
+		if items, metadata, ok := FlattenMapKeyedCollectionWithMetadata(raw); ok {
+			collection, collectionMetadata = items, metadata
+			matches++
+		}
+	}
+	if matches == 1 {
+		return collection, collectionMetadata, true
+	}
+	return nil, nil, false
+}
+
+// Callers must try every real id field first: the stamped key is only the right
+// answer when the record carries no identifier of its own.
+func mapKeyIDFallback(obj map[string]any) string {
+	v, ok := obj[MapKeyIDField]
+	if !ok {
+		return ""
+	}
+	if id := ResourceIDString(v); id != "" && id != "<nil>" {
+		return id
+	}
+	return ""
+}
+
 func extractObjectID(obj map[string]any) string {
 	for _, key := range []string{"id", "ID", "_id", "id_", "uuid", "slug", "name"} {
 		if s := canonicalIDFromKey(obj, key); s != "" {
 			return s
 		}
 	}
-	return ""
+	return mapKeyIDFallback(obj)
 }
 
 // ftsRowID derives a deterministic rowid from a string ID for use with FTS5.
@@ -1612,7 +1881,7 @@ func ExtractResourceID(resourceType string, obj map[string]any) string {
 			return s
 		}
 	}
-	return ""
+	return mapKeyIDFallback(obj)
 }
 
 // suffixIDFieldFallback resolves an id-less resource that keys on its own

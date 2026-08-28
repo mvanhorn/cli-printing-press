@@ -486,7 +486,42 @@ func extractWriteThroughListItems(resourceType string, envelope map[string]json.
 		}
 	}
 
-	return extractWriteThroughSingleArraySibling(envelope, decodeWriteThroughNonEmptyArray)
+	if items, ok := extractWriteThroughSingleArraySibling(envelope, decodeWriteThroughNonEmptyArray); ok {
+		return items, true
+	}
+	return extractWriteThroughMapKeyedItems(envelope)
+}
+
+// extractWriteThroughMapKeyedItems mirrors the sync path's handling of a
+// collection that files each record under its id instead of listing records in
+// an array. Without it a live list and a sync of the same endpoint disagree:
+// sync caches the records, the live path caches the whole envelope or nothing.
+// The strategy order matches sync's — a wrapper key holding the collection,
+// then the envelope as the collection itself, then a lone non-metadata sibling
+// — so both paths pick the same records out of the same payload.
+func extractWriteThroughMapKeyedItems(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	for _, key := range writeThroughListWrapperKeys {
+		raw, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		if items, ok := store.FlattenMapKeyedCollection(raw); ok {
+			return items, true
+		}
+	}
+
+	if envelopeJSON, err := json.Marshal(envelope); err == nil {
+		if items, ok := store.FlattenMapKeyedCollection(envelopeJSON); ok {
+			return items, true
+		}
+	}
+
+	// The live path serves one response, so a collection's own paging metadata
+	// has nothing to page and is dropped here.
+	items, _, ok := store.FlattenSoleMapKeyedSibling(envelope, func(key string) bool {
+		return listEnvelopeMetadataKeys[key]
+	})
+	return items, ok
 }
 
 func extractWriteThroughResourceItems(resourceType string, envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
