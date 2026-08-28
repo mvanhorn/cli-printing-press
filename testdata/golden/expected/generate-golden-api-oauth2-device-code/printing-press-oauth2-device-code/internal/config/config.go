@@ -484,14 +484,23 @@ func (c *Config) saveCredentialsFirst() error {
 	return nil
 }
 
+// Explicit login flags intentionally opt these fields out of environment-value
+// filtering; capture their provenance before applying any fallback.
+func (c *Config) MarkCredentialsExplicit(clientID, clientSecret bool) {
+	if clientID {
+		delete(c.envOverrides, "ClientID")
+	}
+	if clientSecret {
+		delete(c.envOverrides, "ClientSecret")
+	}
+}
+
 func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken string, expiry time.Time) error {
 	c.ClientID = clientID
 	c.ClientSecret = clientSecret
 	c.AccessToken = accessToken
 	c.RefreshToken = refreshToken
 	c.TokenExpiry = expiry
-	delete(c.envOverrides, "ClientID")
-	delete(c.envOverrides, "ClientSecret")
 	delete(c.envOverrides, "AccessToken")
 	delete(c.envOverrides, "RefreshToken")
 	delete(c.envOverrides, "TokenExpiry")

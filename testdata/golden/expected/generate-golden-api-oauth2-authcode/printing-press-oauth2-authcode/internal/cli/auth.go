@@ -81,18 +81,26 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 			"mcp:hidden": "true",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runOAuthLogin(cmd, flags, clientID, clientSecret, port)
+			clientIDFromFlag := clientID != ""
+			clientSecretFromFlag := clientSecret != ""
+			if clientID == "" {
+				clientID = os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_ID")
+			}
+			if clientSecret == "" {
+				clientSecret = os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_SECRET")
+			}
+			return runOAuthLogin(cmd, flags, clientID, clientSecret, port, clientIDFromFlag, clientSecretFromFlag)
 		},
 	}
 
-	cmd.Flags().StringVar(&clientID, "client-id", os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_ID"), "OAuth2 client ID")
-	cmd.Flags().StringVar(&clientSecret, "client-secret", os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_SECRET"), "OAuth2 client secret")
+	cmd.Flags().StringVar(&clientID, "client-id", "", "OAuth2 client ID")
+	cmd.Flags().StringVar(&clientSecret, "client-secret", "", "OAuth2 client secret")
 	cmd.Flags().IntVar(&port, "port", 8085, "Local callback server port")
 
 	return cmd
 }
 
-func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret string, port int) error {
+func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret string, port int, clientIDFromFlag, clientSecretFromFlag bool) error {
 	w := cmd.OutOrStdout()
 	cfg, err := config.Load(flags.configPath)
 	if err != nil {
@@ -278,6 +286,7 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	if tokenResp.ExpiresIn > 0 {
 		expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	}
+	cfg.MarkCredentialsExplicit(clientIDFromFlag, clientSecretFromFlag)
 	if err := cfg.SaveTokens(clientID, clientSecret, tokenResp.AccessToken, tokenResp.RefreshToken, expiry); err != nil {
 		return fmt.Errorf("saving tokens: %w", err)
 	}

@@ -68,6 +68,8 @@ Credentials default to PRINTING_PRESS_OAUTH2_CLIENT_ID (Client ID) and PRINTING_
 				return nil
 			}
 
+			clientIDFromFlag := clientID != ""
+			clientSecretFromFlag := clientSecret != ""
 			if clientID == "" {
 				clientID = strings.TrimSpace(os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_ID"))
 			}
@@ -100,6 +102,7 @@ Credentials default to PRINTING_PRESS_OAUTH2_CLIENT_ID (Client ID) and PRINTING_
 			if tok.ExpiresIn > 0 {
 				expiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
 			}
+			cfg.MarkCredentialsExplicit(clientIDFromFlag, clientSecretFromFlag)
 			if err := cfg.SaveTokens(clientID, clientSecret, tok.AccessToken, "", expiry); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
