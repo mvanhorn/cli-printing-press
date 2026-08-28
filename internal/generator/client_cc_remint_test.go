@@ -55,8 +55,10 @@ func TestClientCredentials401RemintEmission(t *testing.T) {
 		"client_credentials 401 branch must not gate on a refresh token the grant never issues")
 	assert.Contains(t, body, "func (c *Client) needsClientCredentialsMint()",
 		"mint-window helper is a method so it can see the per-process unknown-expiry cap")
-	assert.Contains(t, body, "ccMintedUnknownExpiry",
-		"unknown-expiry tokens re-mint once per process instead of being trusted forever")
+	assert.Contains(t, body, "ccMintedUnknownExpiry *atomic.Bool",
+		"unknown-expiry cap is a pointer so WithTier copies share one process flag")
+	assert.Contains(t, body, "ccMintedUnknownExpiry: &atomic.Bool{}",
+		"New initializes the shared unknown-expiry cap")
 }
 
 func TestAuthorizationCode401RefreshUnchanged(t *testing.T) {
@@ -92,6 +94,38 @@ func TestAuthorizationCode401RefreshUnchanged(t *testing.T) {
 		"refresh-token grants keep the RefreshToken gate")
 	assert.NotContains(t, body, "re-minting access token after 401",
 		"non-client_credentials specs must not emit the mint-based recovery")
+}
+
+// WithTier value-copies Client. The unknown-expiry cap must be a pointer so
+// the copy shares one process flag and go vet copylocks stays clean.
+func TestClientCredentialsWithTierSharesMintCap(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := ccRemintSpec()
+	apiSpec.Name = "cctier"
+	apiSpec.Auth.EnvVars = []string{"CCTIER_API_KEY", "CCTIER_SECRET_KEY"}
+	apiSpec.Config.Path = "~/.config/cctier-pp-cli/config.toml"
+	apiSpec.TierRouting = spec.TierRoutingConfig{
+		DefaultTier: "free",
+		Tiers: map[string]spec.TierConfig{
+			"free": {Auth: spec.AuthConfig{Type: "none"}},
+			"paid": {
+				BaseURL: "https://paid.example.com",
+				Auth:    apiSpec.Auth,
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	body := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	assert.Contains(t, body, "func (c *Client) WithTier")
+	assert.Contains(t, body, "ccMintedUnknownExpiry *atomic.Bool")
+	assert.Contains(t, body, "ccMintedUnknownExpiry: &atomic.Bool{}")
+	assert.NotContains(t, body, "ccMintedUnknownExpiry atomic.Bool")
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // TestClientCredentials401RemintBehavior proves the emitted client actually

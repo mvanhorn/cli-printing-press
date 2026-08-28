@@ -2114,8 +2114,10 @@ func TestGenerateOAuth2ClientCredentialsClientRefresh(t *testing.T) {
 		"client-secret resolver falls back to second env var")
 	assert.Contains(t, body, "ccMu *sync.Mutex",
 		"client_credentials spec emits a shared mutex to serialize concurrent mints")
-	assert.Contains(t, body, "ccMu:       &sync.Mutex{}",
+	assert.Contains(t, body, "ccMu:                  &sync.Mutex{}",
 		"client_credentials spec initializes the shared mint mutex")
+	assert.Contains(t, body, "ccMintedUnknownExpiry: &atomic.Bool{}",
+		"client_credentials spec initializes the shared unknown-expiry cap")
 	assert.Contains(t, body, "c.ccMu.Lock()",
 		"authHeader takes the mint mutex before re-checking the window")
 }

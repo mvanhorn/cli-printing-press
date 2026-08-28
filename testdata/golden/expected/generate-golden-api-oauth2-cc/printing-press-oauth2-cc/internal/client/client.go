@@ -59,9 +59,10 @@ type Client struct {
 	ccMu *sync.Mutex
 	// ccMintedUnknownExpiry caps the unknown-expiry mint policy at one
 	// token-endpoint POST per process: a stored token with no recorded
-	// expiry is re-minted once instead of trusted forever. Atomic because
-	// the pre-lock fast-path check reads it outside ccMu.
-	ccMintedUnknownExpiry atomic.Bool
+	// expiry is re-minted once instead of trusted forever. Pointer so
+	// WithTier's value copy shares the cap (and so copylocks stays clean).
+	// Atomic because the pre-lock fast-path check reads it outside ccMu.
+	ccMintedUnknownExpiry *atomic.Bool
 }
 
 func (c *Client) IsDryRun() bool {
@@ -319,12 +320,13 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	}
 	httpClient := newHTTPClient(timeout, nil)
 	c := &Client{
-		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
-		Config:     cfg,
-		HTTPClient: httpClient,
-		cacheDir:   cacheDir,
-		limiter:    newRateLimiter(rateLimit),
-		ccMu:       &sync.Mutex{},
+		BaseURL:               strings.TrimRight(cfg.BaseURL, "/"),
+		Config:                cfg,
+		HTTPClient:            httpClient,
+		cacheDir:              cacheDir,
+		limiter:               newRateLimiter(rateLimit),
+		ccMu:                  &sync.Mutex{},
+		ccMintedUnknownExpiry: &atomic.Bool{},
 	}
 	// CheckRedirect re-derives auth on each hop. Go's default replays the
 	// original Authorization header verbatim, which breaks nonce-bound
@@ -1403,7 +1405,7 @@ func (c *Client) needsClientCredentialsMint() bool {
 		if cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
 			return false
 		}
-		return !c.ccMintedUnknownExpiry.Load()
+		return c.ccMintedUnknownExpiry == nil || !c.ccMintedUnknownExpiry.Load()
 	}
 	return time.Until(cfg.TokenExpiry) < 60*time.Second
 }
@@ -1490,6 +1492,9 @@ func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecr
 	c.Config.AuthHeaderVal = "" // force AuthHeader() to use the new AccessToken path
 	if err := c.Config.SaveTokens(clientID, clientSecret, tokenResp.AccessToken, "", expiry); err != nil {
 		return fmt.Errorf("saving minted token: %w", err)
+	}
+	if c.ccMintedUnknownExpiry == nil {
+		c.ccMintedUnknownExpiry = &atomic.Bool{}
 	}
 	c.ccMintedUnknownExpiry.Store(true)
 	return nil
