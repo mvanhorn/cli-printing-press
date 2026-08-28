@@ -3285,6 +3285,12 @@ func dependentParentKeyValue(parentResource, field, value string) string {
 	return bareValue
 }
 
+// Schema generation and dependent sync must share this hyphen-to-underscore
+// rule; a mismatched key leaves the typed NOT NULL parent column empty.
+func parentFKColumnName(parentTable string) string {
+	return strings.ReplaceAll(parentTable, "-", "_") + "_id"
+}
+
 func resourceURLIDPathParam(resource, field string) bool {
 	idField, ok := resourceIDFieldOverrides[resource]
 	return ok && idField == field && urlIDFieldName(field)
@@ -3518,7 +3524,7 @@ func syncOneParent(
 		parentID = parentRow[pathParams[0].Field]
 	}
 	parentIDJSON, _ := json.Marshal(parentID)
-	parentFKKey := dep.ParentTable + "_id"
+	parentFKKey := parentFKColumnName(dep.ParentTable)
 	path := dep.PathTemplate
 	queryParams := make([]dependentPathParamDef, 0)
 	for _, pathParam := range pathParams {

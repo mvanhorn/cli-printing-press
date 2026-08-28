@@ -471,7 +471,7 @@ func hasTypeField(fields []spec.TypeField, name string) bool {
 // parent_id column between id and data.
 func buildSubResourceTable(name string, r spec.Resource, parentTable string) TableDef {
 	tableName := toSnakeCase(name)
-	parentCol := parentTable + "_id"
+	parentCol := parentFKColumnName(parentTable)
 
 	columns := make([]ColumnDef, 0, len(baseTableColumns)+1)
 	columns = append(columns, baseTableColumns[0]) // id
@@ -511,4 +511,10 @@ func sqlStringLiteral(s string) string {
 // toSnakeCase aliases spec.ToSnakeCase; shared so profiler/schema agree.
 func toSnakeCase(s string) string {
 	return spec.ToSnakeCase(s)
+}
+
+// Hyphenated parent resource names must produce the same typed FK column
+// that dependent sync injects; both sides call this.
+func parentFKColumnName(parentTable string) string {
+	return strings.ReplaceAll(parentTable, "-", "_") + "_id"
 }
