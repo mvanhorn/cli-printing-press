@@ -26,6 +26,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+{{- if $hasIDWalk}}
+	"math"
+{{- end}}
 	"net/url"
 	"os"
 	"regexp"
@@ -1565,10 +1568,12 @@ func appendIDWalkFilter(body map[string]any, config idWalkConfig, cursor string)
 	return nil
 }
 
-// seedIDWalkFilter writes the walk's own inclusive bound when page 1 would
-// otherwise omit the filter array. An empty array is not a valid seed: APIs
-// that match records against filter conditions return zero rows for
-// filter:[] and turn a missing-filter error into a silent empty sync.
+// seedIDWalkFilter writes an inclusive id lower bound when page 1 would
+// otherwise omit the filter array. The bound is math.MinInt64 so signed
+// numeric IDs still walk; gte 0 would drop negatives. An empty array is
+// not a valid seed: APIs that match records against filter conditions
+// return zero rows for filter:[] and turn a missing-filter error into a
+// silent empty sync.
 func seedIDWalkFilter(body map[string]any, config idWalkConfig) error {
 	if config.filterParam == "" || config.idField == "" {
 		return nil
@@ -1584,7 +1589,7 @@ func seedIDWalkFilter(body map[string]any, config idWalkConfig) error {
 		map[string]any{
 			"field": config.idField,
 			"op":    "gte",
-			"value": coerceIDWalkValue("0"),
+			"value": int64(math.MinInt64),
 		},
 	}
 	return nil

@@ -5298,6 +5298,10 @@ func TestSyncIDWalkPostQueryAdvancesAfterFullPage(t *testing.T) {
 		"POST-query id-walk sync must emit a first-page filter seed")
 	assert.Contains(t, syncSrc, `} else if err := seedIDWalkFilter(body, idWalk); err != nil {`,
 		"page 1 must seed the id-walk filter when no cursor exists")
+	assert.Contains(t, syncSrc, "int64(math.MinInt64)",
+		"first-page seed must include signed numeric IDs")
+	assert.NotContains(t, syncSrc, `coerceIDWalkValue("0")`,
+		"gte 0 would drop negative IDs")
 	assert.NotContains(t, syncSrc, `"filter": []any{}`,
 		"an empty filter array is not a valid first-page seed")
 	assert.NotContains(t, syncSrc, `"filter": []`,
@@ -5308,6 +5312,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -5391,7 +5396,7 @@ func TestSyncResourceIDWalksPostQueryPages(t *testing.T) {
 	if len(client.bodies) != 3 {
 		t.Fatalf("POST calls = %d, want 3", len(client.bodies))
 	}
-	assertIDWalkBody(t, client.bodies[0], "gte", int64(0))
+	assertIDWalkBody(t, client.bodies[0], "gte", int64(math.MinInt64))
 	assertIDWalkBody(t, client.bodies[1], "gt", int64(500))
 	assertIDWalkBody(t, client.bodies[2], "gt", int64(1000))
 }
@@ -5449,7 +5454,7 @@ func TestSyncFetchSeedsEmptyCallerFilter(t *testing.T) {
 	if len(client.bodies) != 1 {
 		t.Fatalf("POST calls = %d, want 1", len(client.bodies))
 	}
-	assertIDWalkBody(t, client.bodies[0], "gte", int64(0))
+	assertIDWalkBody(t, client.bodies[0], "gte", int64(math.MinInt64))
 }
 
 func TestSyncFetchRejectsNonArrayIDWalkFilter(t *testing.T) {
