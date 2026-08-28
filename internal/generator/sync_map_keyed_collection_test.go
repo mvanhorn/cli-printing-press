@@ -136,6 +136,8 @@ func TestMapKeyedRejectsOrdinaryNestedObjects(t *testing.T) {
 		` + "`" + `{"id":"7788990011223344","title":"a detail record"}` + "`" + `,
 		` + "`" + `{"7788990011223344":{"id":"x"},"meta":{"total":3}}` + "`" + `,
 		` + "`" + `{"id":"detail-1","title":"Alice","tags":["a"],"7788990011223344":{"role":"admin"}}` + "`" + `,
+		` + "`" + `{"status":"pending","message":"ok","7788990011223344":{"role":"admin"}}` + "`" + `,
+		` + "`" + `{"total":5,"count":1,"7788990011223344":{"role":"admin"}}` + "`" + `,
 		` + "`" + `{"total":3,"next_cursor":"c2"}` + "`" + `,
 		` + "`" + `{"7788990011223344":"not an object"}` + "`" + `,
 		` + "`" + `{}` + "`" + `,
@@ -154,6 +156,27 @@ func TestMapKeyedRejectsNumericChildOnDetailObject(t *testing.T) {
 	payload := ` + "`" + `{"id":"detail-1","title":"Alice","tags":["a"],"7788990011223344":{"role":"admin"}}` + "`" + `
 	if _, ok := FlattenMapKeyedCollection(json.RawMessage(payload)); ok {
 		t.Fatalf("a detail object with one numeric-keyed child must not flatten: %s", payload)
+	}
+}
+
+// status/message/total/count are list-metadata names, but on a lone
+// record-shaped child they are ordinary detail fields. A one-record page
+// still needs a cursor or page signal.
+func TestMapKeyedRejectsAllowlistedDetailFieldsBesideOneChild(t *testing.T) {
+	rejected := []string{
+		` + "`" + `{"status":"pending","7788990011223344":{"role":"admin"}}` + "`" + `,
+		` + "`" + `{"message":"ok","7788990011223344":{"role":"admin"}}` + "`" + `,
+		` + "`" + `{"total":5,"count":1,"7788990011223344":{"role":"admin"}}` + "`" + `,
+		` + "`" + `{"success":true,"ok":true,"7788990011223344":{"role":"admin"}}` + "`" + `,
+	}
+	for _, payload := range rejected {
+		if _, ok := FlattenMapKeyedCollection(json.RawMessage(payload)); ok {
+			t.Fatalf("allowlisted detail fields beside one child must not flatten: %s", payload)
+		}
+	}
+	items, ok := FlattenMapKeyedCollection(json.RawMessage(` + "`" + `{"7788990011223344":{"id":"7788990011223344"},"1122334455667788":{"id":"1122334455667788"},"total":2}` + "`" + `))
+	if !ok || len(items) != 2 {
+		t.Fatalf("two records plus total must still flatten, ok=%v len=%d", ok, len(items))
 	}
 }
 
@@ -429,6 +452,10 @@ func TestMapKeyedExtractPageItemsRejectsNumericChildOnDetail(t *testing.T) {
 	items, _, _ := extractPageItems(json.RawMessage(` + "`" + `{"id":"detail-1","title":"Alice","tags":["a"],"7788990011223344":{"role":"admin"}}` + "`" + `), "cursor")
 	if len(items) != 0 {
 		t.Fatalf("a detail object with one numeric-keyed child must not flatten, got %d items", len(items))
+	}
+	items, _, _ = extractPageItems(json.RawMessage(` + "`" + `{"status":"pending","total":1,"7788990011223344":{"role":"admin"}}` + "`" + `), "cursor")
+	if len(items) != 0 {
+		t.Fatalf("status/total beside one numeric-keyed child must not flatten, got %d items", len(items))
 	}
 }
 
