@@ -514,6 +514,11 @@ func syncResource(ctx context.Context, c interface {
 
 	for {
 		params := map[string]string{}
+		// Seed spec-declared param defaults before anything sync computes, so
+		// paging, the since filter, and user --param overrides all still win.
+		for defaultKey, defaultValue := range syncResourceParamDefaults(resource) {
+			params[defaultKey] = defaultValue
+		}
 
 		if resourceSupportsPagination(resource) {
 			params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
@@ -1128,6 +1133,28 @@ func syncResourceSinceParam(resource string) string {
 	switch resource {
 	}
 	return ""
+}
+
+// syncResourceParamDefaults returns the query params this resource's list
+// endpoint declares a spec `default:` for. Endpoint commands bind the same
+// defaults to their cobra flags, so a list command already sends them; sync
+// seeds them at the top of each page request so both surfaces address the same
+// slice of the API. Everything sync assigns afterwards (paging, the since
+// filter, --param overrides) still wins on key conflict.
+func syncResourceParamDefaults(resource string) map[string]string {
+	switch resource {
+	case "gadgets":
+		return map[string]string{
+			"query":        "select * from Gadget maxresults 100",
+			"minorversion": "75",
+		}
+	case "widgets":
+		return map[string]string{
+			"query":        "select * from Widget maxresults 100",
+			"minorversion": "75",
+		}
+	}
+	return nil
 }
 
 // syncResourceSortParam and syncResourceSortValue describe a spec-declared
