@@ -113,7 +113,7 @@ func TestMapKeyedOneLevelDateKeySurvivesUnusableIDGate(t *testing.T) {
 		t.Fatalf("extractObjectID must keep a date-shaped map key, got %q", got)
 	}
 
-	// A leaf that also copies the date into id is refused by the #4379
+	// A leaf that also copies the date into id is refused by the
 	// canonical chain; the stamp is the arm that recovers it.
 	obj["id"] = "2026-08-19"
 	if got := ExtractResourceID("calls", obj); got != "2026-08-19" {
