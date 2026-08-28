@@ -646,6 +646,60 @@ func TestBuildSchema_SubResourceUniqueKeepsBareName(t *testing.T) {
 	messages := byName["messages"]
 	require.Greater(t, len(messages.Columns), 1)
 	assert.Equal(t, "channels_id", messages.Columns[1].Name, "FK column matches sole parent")
+	assert.Equal(t, parentFKColumnName("channels"), messages.Columns[1].Name,
+		"single-word parent FK must stay the helper's unchanged form")
+}
+
+func TestParentFKColumnName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		parent string
+		want   string
+	}{
+		{parent: "chats", want: "chats_id"},
+		{parent: "chat-attendees", want: "chat_attendees_id"},
+		{parent: "groups-2", want: "groups_2_id"},
+		{parent: "routing-forms", want: "routing_forms_id"},
+		{parent: "agent-runners", want: "agent_runners_id"},
+		{parent: "chat_attendees", want: "chat_attendees_id"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.parent, func(t *testing.T) {
+			assert.Equal(t, tt.want, parentFKColumnName(tt.parent))
+		})
+	}
+}
+
+func TestBuildSchema_HyphenatedParentFKColumn(t *testing.T) {
+	t.Parallel()
+
+	s := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"chat-attendees": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/chat-attendees"},
+				},
+				SubResources: map[string]spec.Resource{
+					"chats": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {Method: "GET", Path: "/chat-attendees/{id}/chats"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tables := BuildSchema(s)
+	chats := findTable(tables, "chats")
+	require.NotNil(t, chats, "unique chats sub-resource should keep its bare table")
+	require.Greater(t, len(chats.Columns), 1)
+	assert.Equal(t, "chat_attendees_id", chats.Columns[1].Name)
+	assert.Equal(t, parentFKColumnName("chat-attendees"), chats.Columns[1].Name,
+		"typed-table FK column and helper must agree for hyphenated parents")
+	assert.Equal(t, parentFKColumnName(toSnakeCase("chat-attendees")), chats.Columns[1].Name,
+		"helper must be stable on already-normalized parent table names")
 }
 
 // findTable returns nil when no match exists so callers can render

@@ -2282,6 +2282,12 @@ func dependentParentKeyValue(parentResource, field, value string) string {
 	return bareValue
 }
 
+// parentFKColumnName is the typed parent foreign-key column. The schema
+// builder uses the same helper so hyphenated parents keep one name.
+func parentFKColumnName(parentTable string) string {
+	return strings.ReplaceAll(parentTable, "-", "_") + "_id"
+}
+
 func resourceURLIDPathParam(resource, field string) bool {
 	idField, ok := resourceIDFieldOverrides[resource]
 	return ok && idField == field && urlIDFieldName(field)
@@ -2401,7 +2407,7 @@ func syncOneParent(
 		parentID = parentRow[pathParams[0].Field]
 	}
 	parentIDJSON, _ := json.Marshal(parentID)
-	parentFKKey := dep.ParentTable + "_id"
+	parentFKKey := parentFKColumnName(dep.ParentTable)
 	path := dep.PathTemplate
 	queryParams := make([]dependentPathParamDef, 0)
 	for _, pathParam := range pathParams {

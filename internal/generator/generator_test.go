@@ -6149,8 +6149,10 @@ func TestGenerateDependentSyncInjectsSubResourceParentFK(t *testing.T) {
 		"test fixture should exercise the dependent-resource sync path")
 	assert.Contains(t, syncContent, `obj["parent_id"] = parentIDJSON`,
 		"dependent sync should keep populating the generic parent_id context column")
-	assert.Contains(t, syncContent, `parentFKKey := dep.ParentTable + "_id"`,
+	assert.Contains(t, syncContent, `parentFKKey := parentFKColumnName(dep.ParentTable)`,
 		"dependent sync should derive the typed parent FK column from the parent table")
+	assert.Contains(t, syncContent, `return strings.ReplaceAll(parentTable, "-", "_") + "_id"`,
+		"typed parent FK derivation must share the schema builder hyphen-to-underscore helper")
 	assert.Contains(t, syncContent, `if _, ok := obj[parentFKKey]; !ok {`,
 		"dependent sync should not overwrite a response body value for the typed parent FK")
 	assert.Contains(t, syncContent, `obj[parentFKKey] = parentIDJSON`,
