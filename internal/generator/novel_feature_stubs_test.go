@@ -909,12 +909,14 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 func captureNovelFeatureStderr(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
 
+	stderrSwapMu.Lock()
 	oldErr := os.Stderr
 	r, w, err := os.Pipe()
 	require.NoError(t, err)
 	os.Stderr = w
 	defer func() {
 		os.Stderr = oldErr
+		stderrSwapMu.Unlock()
 	}()
 	callErr := fn()
 	require.NoError(t, w.Close())
