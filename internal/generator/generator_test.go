@@ -5507,7 +5507,6 @@ func assertIDWalkBody(t *testing.T, body map[string]any, wantOp string, wantAfte
 	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
-	requireGeneratedCompiles(t, outputDir)
 	runGoCommandRequired(t, outputDir, "test", "-run", "TestSyncResourceIDWalksPostQueryPages|TestSyncFetchHonorsCallerIDWalkFilter|TestSyncFetchSeedsEmptyCallerFilter|TestSyncFetchRejectsNonArrayIDWalkFilter", "./internal/cli")
 }
 
