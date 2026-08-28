@@ -463,10 +463,10 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"envName":                   naming.EnvPrefix,
 		// endpointTemplateEnvName resolves the env-var name for a
 		// {placeholder} in EndpointTemplateVars. Returns the spec-declared
-		// override (e.g. ST_TENANT_ID for {tenant}) when one exists, else
-		// the conventional <APINAME>_<UPPER_PLACEHOLDER>. Bound to the
-		// generator's current spec; callers in templates pass just the
-		// placeholder name.
+		// override (e.g. ST_TENANT_ID for {tenant}) when one exists and
+		// is not a colliding auth/credential name, else the conventional
+		// <APINAME>_<UPPER_PLACEHOLDER>. Bound to the generator's current
+		// spec; callers in templates pass just the placeholder name.
 		"endpointTemplateEnvName": func(placeholder string) string {
 			return s.EndpointTemplateEnvName(placeholder)
 		},
@@ -3320,6 +3320,7 @@ func (g *Generator) renderLearnFiles() error {
 }
 
 func (g *Generator) Generate() error {
+	g.Spec.DropCollidingEndpointTemplateEnvOverrides()
 	applyLargeMCPSurfaceDefault(g.Spec, os.Stderr)
 	// Fresh prints default the self-learning loop on (opt out with
 	// learn.disabled: true). Deliberately absent from GenerateMCPSurface:

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -666,6 +667,39 @@ import "github.com/acme/library/other/subject/internal/cli"
 	assert.Contains(t, got, "/other/overpass/internal/cli")
 	assert.NotContains(t, got, "/other/subject/internal/cli")
 
+	// Prefix-extending rename must not double a name that already uses
+	// the destination prefix (NOTION_ALT_SHOP stays put; a bare
+	// destination name NOTION_ALT stays NOTION_ALT, not NOTION_ALT_ALT).
+	got = renameEnvPrefix("os.Getenv(\"NOTION_ALT_SHOP\")\nos.Getenv(\"NOTION_SHOP\")\nos.Getenv(\"NOTION_ALT\")\nos.Getenv(\"NOTION\")", "notion", "notion-alt")
+	assert.Equal(t, 2, strings.Count(got, `os.Getenv("NOTION_ALT_SHOP")`))
+	assert.Equal(t, 2, strings.Count(got, `os.Getenv("NOTION_ALT")`))
+	assert.NotContains(t, got, "NOTION_ALT_ALT")
+	assert.NotContains(t, got, `os.Getenv("NOTION_SHOP")`)
+	assert.NotContains(t, got, `os.Getenv("NOTION")`)
+
+	m := CLIManifest{EndpointTemplateEnvOverrides: map[string]string{
+		"shop":      "NOTION_ALT_SHOP",
+		"fallback":  "NOTION_SHOP",
+		"workspace": "NOTION_ALT",
+		"source":    "NOTION",
+	}}
+	rewriteCLIManifestEnvPrefixes(&m, "notion", "notion-alt")
+	assert.Equal(t, "NOTION_ALT_SHOP", m.EndpointTemplateEnvOverrides["shop"])
+	assert.Equal(t, "NOTION_ALT_SHOP", m.EndpointTemplateEnvOverrides["fallback"])
+	assert.Equal(t, "NOTION_ALT", m.EndpointTemplateEnvOverrides["workspace"])
+	assert.Equal(t, "NOTION_ALT", m.EndpointTemplateEnvOverrides["source"])
+
+	// Shortening must rewrite a bare prefix override (no _SHOP suffix).
+	// File-content rename only touches OLD_… and quoted "OLD"; the
+	// unquoted metadata value would otherwise stay NOTION_ALT.
+	bare := CLIManifest{EndpointTemplateEnvOverrides: map[string]string{
+		"workspace": "NOTION_ALT",
+		"shop":      "NOTION_ALT_SHOP",
+	}}
+	rewriteCLIManifestEnvPrefixes(&bare, "notion-alt", "notion")
+	assert.Equal(t, "NOTION", bare.EndpointTemplateEnvOverrides["workspace"])
+	assert.Equal(t, "NOTION_SHOP", bare.EndpointTemplateEnvOverrides["shop"])
+
 	// Installer slug must not clip a longer token that only shares a prefix.
 	got = renameInstallSlug("npx install subject-extra --cli-only", "subject", "overpass")
 	assert.Equal(t, "npx install subject-extra --cli-only", got)
@@ -681,6 +715,164 @@ import "github.com/acme/library/other/subject/internal/cli"
 	assert.Equal(t, `{"api_name": "overpass", "novelty_score": 8}`, got)
 	got = renameResearchAPIName("{\n  \"api_name\" :\t\"subject\"\n}", "subject", "overpass")
 	assert.Equal(t, "{\n  \"api_name\" :\t\"overpass\"\n}", got)
+}
+
+func TestRenameCLIRewritesEndpointOverrideMatchingOldPrefix(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	oldName := "shopify-pp-cli"
+	newName := "shopify-alt-pp-cli"
+	cliDir := filepath.Join(root, oldName)
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "platform"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "platform", "profile.go"), []byte("package platform\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "config"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "config", "config.go"), []byte(`package config
+
+import "os"
+
+func Load() {
+	_ = os.Getenv("SHOPIFY_SHOP")
+	_ = os.Getenv("SHOPIFY_ACCESS_TOKEN")
+}
+`), 0o644))
+
+	m := CLIManifest{
+		SchemaVersion:                1,
+		APIName:                      "shopify",
+		CLIName:                      oldName,
+		MCPBinary:                    naming.MCP("shopify"),
+		AuthType:                     "api_key",
+		AuthEnvVars:                  []string{"SHOPIFY_ACCESS_TOKEN"},
+		EndpointTemplateVars:         []string{"shop"},
+		EndpointTemplateEnvOverrides: map[string]string{"shop": "SHOPIFY_SHOP"},
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, CLIManifestFilename), data, 0o644))
+
+	_, err = RenameCLI(cliDir, oldName, newName, "shopify")
+	require.NoError(t, err)
+
+	newDir := filepath.Join(root, naming.LibraryDirName(newName))
+	configSrc, err := os.ReadFile(filepath.Join(newDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(configSrc), `os.Getenv("SHOPIFY_ALT_SHOP")`)
+	require.NotContains(t, string(configSrc), `os.Getenv("SHOPIFY_SHOP")`)
+
+	got := readMCPBManifest(t, newDir)
+	assert.Equal(t, "${user_config.shopify_alt_shop}", got.Server.MCPConfig.Env["SHOPIFY_ALT_SHOP"])
+	_, stale := got.Server.MCPConfig.Env["SHOPIFY_SHOP"]
+	assert.False(t, stale)
+}
+
+func TestRenameCLIRewritesBarePrefixOverrideOnShortening(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	oldName := "notion-alt-pp-cli"
+	newName := "notion-pp-cli"
+	cliDir := filepath.Join(root, oldName)
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "platform"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "platform", "profile.go"), []byte("package platform\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "config"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "config", "config.go"), []byte(`package config
+
+import "os"
+
+func Load() {
+	_ = os.Getenv("NOTION_ALT")
+	_ = os.Getenv("NOTION_ALT_ACCESS_TOKEN")
+}
+`), 0o644))
+
+	m := CLIManifest{
+		SchemaVersion:                1,
+		APIName:                      "notion-alt",
+		CLIName:                      oldName,
+		MCPBinary:                    naming.MCP("notion-alt"),
+		AuthType:                     "api_key",
+		AuthEnvVars:                  []string{"NOTION_ALT_ACCESS_TOKEN"},
+		EndpointTemplateVars:         []string{"workspace"},
+		EndpointTemplateEnvOverrides: map[string]string{"workspace": "NOTION_ALT"},
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, CLIManifestFilename), data, 0o644))
+
+	_, err = RenameCLI(cliDir, oldName, newName, "notion-alt")
+	require.NoError(t, err)
+
+	newDir := filepath.Join(root, naming.LibraryDirName(newName))
+	configSrc, err := os.ReadFile(filepath.Join(newDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(configSrc), `os.Getenv("NOTION")`)
+	require.NotContains(t, string(configSrc), `os.Getenv("NOTION_ALT")`)
+
+	cliData, err := os.ReadFile(filepath.Join(newDir, CLIManifestFilename))
+	require.NoError(t, err)
+	var cli CLIManifest
+	require.NoError(t, json.Unmarshal(cliData, &cli))
+	assert.Equal(t, "NOTION", cli.EndpointTemplateEnvOverrides["workspace"],
+		"bare prefix override must match the rewritten Getenv after a shortening rename")
+
+	got := readMCPBManifest(t, newDir)
+	assert.Equal(t, "${user_config.notion}", got.Server.MCPConfig.Env["NOTION"])
+	_, stale := got.Server.MCPConfig.Env["NOTION_ALT"]
+	assert.False(t, stale, "stale bare NOTION_ALT must not remain on the installer prompt")
+}
+
+func TestRenameCLIKeepsBareDestinationOverrideOnExtending(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	oldName := "notion-pp-cli"
+	newName := "notion-alt-pp-cli"
+	cliDir := filepath.Join(root, oldName)
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "platform"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "platform", "profile.go"), []byte("package platform\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "config"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "config", "config.go"), []byte(`package config
+
+import "os"
+
+func Load() {
+	_ = os.Getenv("NOTION_ALT")
+	_ = os.Getenv("NOTION_ACCESS_TOKEN")
+}
+`), 0o644))
+
+	m := CLIManifest{
+		SchemaVersion:                1,
+		APIName:                      "notion",
+		CLIName:                      oldName,
+		MCPBinary:                    naming.MCP("notion"),
+		AuthType:                     "api_key",
+		AuthEnvVars:                  []string{"NOTION_ACCESS_TOKEN"},
+		EndpointTemplateVars:         []string{"workspace"},
+		EndpointTemplateEnvOverrides: map[string]string{"workspace": "NOTION_ALT"},
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, CLIManifestFilename), data, 0o644))
+
+	_, err = RenameCLI(cliDir, oldName, newName, "notion")
+	require.NoError(t, err)
+
+	newDir := filepath.Join(root, naming.LibraryDirName(newName))
+	configSrc, err := os.ReadFile(filepath.Join(newDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(configSrc), `os.Getenv("NOTION_ALT")`,
+		"bare destination Getenv must stay put on a prefix-extending rename")
+	require.NotContains(t, string(configSrc), `os.Getenv("NOTION_ALT_ALT")`)
+	require.NotContains(t, string(configSrc), "NOTION_ALT_ALT")
+
+	cliData, err := os.ReadFile(filepath.Join(newDir, CLIManifestFilename))
+	require.NoError(t, err)
+	var cli CLIManifest
+	require.NoError(t, json.Unmarshal(cliData, &cli))
+	assert.Equal(t, "NOTION_ALT", cli.EndpointTemplateEnvOverrides["workspace"],
+		"bare destination override must stay NOTION_ALT, not NOTION_ALT_ALT")
 }
 
 func TestRenameCLISkipsResearchJSONSymlink(t *testing.T) {
