@@ -1368,8 +1368,10 @@ Rules:
   snake-case normalization, so camelCase and PascalCase spellings such as
   `widgetId` are preserved when emitted); then vendor identifier keys `gid`,
   `sid`, `uid`, `uuid`, and `guid`; then a sole remaining `<stem>_uid` /
-  camelCase `stemUid` field when the resource name does not yield that stem
-  (two or more such fields stay ambiguous and fall through); then URL-shaped
+  camelCase `stemUid` field whose stem is the resource's own collection noun
+  (so `alertUid` matches `account-alerts-open`, while a foreign `accountUid`
+  on `/sites` falls through; two own-stem spellings stay ambiguous); then
+  URL-shaped
   identifier keys `uri`, `self`, `selfLink`, `href`, and `url`; then `name`;
   then the first plausible required scalar field. URL-shaped keys qualify only
   when the field schema is a plausible ID and either the field is required or

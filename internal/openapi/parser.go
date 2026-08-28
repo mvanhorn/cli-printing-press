@@ -6173,8 +6173,8 @@ func responseItemSchema(op *openapi3.Operation) *openapi3.Schema {
 // resolveIDFieldFromResponseSchema implements tiers 2-6 of the IDField fallback
 // chain: prefer "id", then a resource-prefixed key (`<singular>_id` /
 // `_uuid` / `_guid` / `_uid`), then a vendor identifier (`gid` / `sid` /
-// `uid` / `uuid` / `guid`), then a sole remaining `<stem>_uid` field when the
-// resource name does not yield that stem, then a URL-shaped identifier
+// `uid` / `uuid` / `guid`), then a sole remaining `<own>_uid` field whose
+// stem is the resource's collection noun, then a URL-shaped identifier
 // (`uri` / `self` / `selfLink` / `href` / `url`), then "name", then the first
 // scalar field listed in the response schema's `required:` array (walking
 // properties in their schema order).
@@ -6222,12 +6222,13 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation, resourceName strin
 		}
 	}
 
-	// Tier 3.6: sole remaining `<stem>_uid` / camelCase `stemUid`. Resource
-	// names like `account-alerts-open` do not yield the mid-name stem
-	// `alert`, so tier 3 misses `alertUid`. Exactly one such field keeps
-	// this from promoting a foreign key when `deviceUid` and `siteUid` both
-	// appear. Exact `uid` stays in tier 3.5.
-	if id := soleStemUIDField(itemSchema); id != "" {
+	// Tier 3.6: sole remaining `<stem>_uid` / camelCase `stemUid` whose
+	// stem is the resource's own collection noun. Resource names like
+	// `account-alerts-open` do not yield the mid-name stem `alert` in
+	// tier 3, so `alertUid` would otherwise be missed. A foreign
+	// reference such as `accountUid` on `/sites` must not win over
+	// `name` or a qualified URL. Exact `uid` stays in tier 3.5.
+	if id := soleStemUIDField(itemSchema, resourceName); id != "" {
 		return id
 	}
 
@@ -6349,16 +6350,22 @@ func resourcePrefixedIDField(schema *openapi3.Schema, resourceName string) strin
 }
 
 // soleStemUIDField returns the sole property whose snake-cased name is
-// `<stem>_uid` with a non-empty stem and a plausible scalar schema. Bare
-// `uid` is left to the vendor-identifier tier. Two or more such fields are
-// ambiguous and return "".
-func soleStemUIDField(schema *openapi3.Schema) string {
+// `<own>_uid` for this resource's collection noun, with a plausible scalar
+// schema. Bare `uid` is left to the vendor-identifier tier. A foreign
+// `accountUid` on a non-account collection is ignored so later tiers can
+// keep `name` or a qualified URL. Two own-stem spellings are ambiguous
+// and return "".
+func soleStemUIDField(schema *openapi3.Schema, resourceName string) string {
 	if schema == nil {
+		return ""
+	}
+	own := resourceOwnIdentityStem(resourceName)
+	if own == "" {
 		return ""
 	}
 	var match string
 	for name, propRef := range schema.Properties {
-		if !isStemUIDFieldName(name) {
+		if stemUIDFieldStem(name) != own {
 			continue
 		}
 		if !isPlausibleIDFieldSchema(schemaRefValue(propRef)) {
@@ -6372,9 +6379,39 @@ func soleStemUIDField(schema *openapi3.Schema) string {
 	return match
 }
 
-func isStemUIDFieldName(propName string) bool {
+func stemUIDFieldStem(propName string) string {
 	snake := toSnakeCase(propName)
-	return strings.HasSuffix(snake, "_uid") && len(snake) > len("_uid")
+	if !strings.HasSuffix(snake, "_uid") || len(snake) <= len("_uid") {
+		return ""
+	}
+	return strings.TrimSuffix(snake, "_uid")
+}
+
+// resourceOwnIdentityStem is the collection noun a resource's own
+// `<stem>_uid` would use. Multi-segment names keep the last token that
+// actually singularizes (`account-alerts-open` → `alert`) so a parent
+// or status segment is not treated as the item identity.
+func resourceOwnIdentityStem(resourceName string) string {
+	snake := strings.Trim(toSnakeCase(resourceName), "_")
+	if snake == "" {
+		return ""
+	}
+	tokens := strings.Split(snake, "_")
+	own := ""
+	for _, tok := range tokens {
+		tok = strings.Trim(tok, "_")
+		if tok == "" {
+			continue
+		}
+		singular := singularizeIdentifier(tok)
+		if singular != tok {
+			own = singular
+		}
+	}
+	if own != "" {
+		return own
+	}
+	return singularizeIdentifier(tokens[len(tokens)-1])
 }
 
 func resourceIDBaseCandidates(resourceName string) []string {

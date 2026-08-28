@@ -9196,7 +9196,7 @@ func TestParseIDFieldResourcePrefixedHeuristic(t *testing.T) {
 			wantID: "uid",
 		},
 		{
-			name: "two stemUid fields stay ambiguous and fall through to name",
+			name: "own stemUid wins over a foreign stemUid",
 			path: "/account-alerts-open",
 			schemaYAML: `                  type: object
                   properties:
@@ -9204,7 +9204,28 @@ func TestParseIDFieldResourcePrefixedHeuristic(t *testing.T) {
                     deviceUid: {type: string}
                     name: {type: string}
 `,
+			wantID: "alertUid",
+		},
+		{
+			name: "foreign accountUid does not beat per-item name",
+			path: "/sites",
+			schemaYAML: `                  type: object
+                  properties:
+                    accountUid: {type: string}
+                    name: {type: string}
+`,
 			wantID: "name",
+		},
+		{
+			name: "foreign accountUid does not beat a required per-item URL",
+			path: "/sites",
+			schemaYAML: `                  type: object
+                  required: [uri]
+                  properties:
+                    accountUid: {type: string}
+                    uri: {type: string}
+`,
+			wantID: "uri",
 		},
 		{
 			name: "_id still preferred over _uid for the same resource stem",
@@ -9318,6 +9339,28 @@ paths:
 
 			ep := findEndpoint(t, parsed, tt.path)
 			assert.Equal(t, tt.wantID, ep.IDField)
+		})
+	}
+}
+
+func TestResourceOwnIdentityStem(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		resource string
+		want     string
+	}{
+		{resource: "account-alerts-open", want: "alert"},
+		{resource: "account-alerts-resolved", want: "alert"},
+		{resource: "sites", want: "site"},
+		{resource: "alerts", want: "alert"},
+		{resource: "auth-tokens", want: "token"},
+		{resource: "user", want: "user"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.resource, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, resourceOwnIdentityStem(tt.resource))
 		})
 	}
 }
