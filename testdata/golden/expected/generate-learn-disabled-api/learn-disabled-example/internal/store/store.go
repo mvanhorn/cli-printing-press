@@ -1115,6 +1115,25 @@ var mapKeyedListMetadataKeys = map[string]bool{
 	"next": true, "prev": true, "previous": true, "first": true, "last": true,
 }
 
+// A lone record-shaped child plus only count/JSend fields is still a
+// detail object (status, message, total, count). A one-record page is
+// recognized only when a cursor, has-more flag, or page key is present.
+var mapKeyedPagingSignalKeys = map[string]bool{
+	"next_cursor": true, "nextCursor": true, "NextCursor": true,
+	"next_token": true, "nextToken": true, "NextToken": true,
+	"next_page_token": true, "nextPageToken": true, "NextPageToken": true,
+	"page_token": true, "pageToken": true, "PageToken": true,
+	"end_cursor": true, "endCursor": true, "EndCursor": true,
+	"start_cursor": true, "startCursor": true, "StartCursor": true,
+	"cursor": true, "Cursor": true, "after": true, "After": true, "before": true, "Before": true,
+	"has_more": true, "hasMore": true, "HasMore": true,
+	"has_next": true, "hasNext": true, "HasNext": true,
+	"next_page": true, "nextPage": true, "NextPage": true,
+	"previous_page": true, "previousPage": true, "PreviousPage": true,
+	"page": true, "Page": true, "page_size": true, "pageSize": true, "PageSize": true,
+	"per_page": true, "perPage": true, "PerPage": true,
+}
+
 // A record identifier keying a JSON object is the only member shape a
 // collection may contain; anything else keyed like a record, or any object
 // keyed like a field, means the payload is something other than a collection
@@ -1122,8 +1141,9 @@ var mapKeyedListMetadataKeys = map[string]bool{
 // kept only when the key is list metadata, so a real collection can still
 // file a cursor or total beside its records. A detail field (id, title, tags)
 // beside a single record-shaped child is not metadata: that payload stays a
-// detail object. Sorting makes repeated syncs of one payload produce one
-// row order.
+// detail object. One record plus only count/JSend siblings is also a detail
+// object; a one-record page needs a cursor, has-more flag, or page key.
+// Sorting makes repeated syncs of one payload produce one row order.
 func mapKeyedEntries(raw json.RawMessage) ([]mapKeyedEntry, map[string]json.RawMessage, bool) {
 	if !isJSONObjectPayload(raw) {
 		return nil, nil, false
@@ -1148,12 +1168,24 @@ func mapKeyedEntries(raw json.RawMessage) ([]mapKeyedEntry, map[string]json.RawM
 	if len(keys) == 0 {
 		return nil, nil, false
 	}
+	if len(keys) == 1 && len(metadata) > 0 && !hasMapKeyedPagingSignal(metadata) {
+		return nil, nil, false
+	}
 	sort.Strings(keys)
 	entries := make([]mapKeyedEntry, 0, len(keys))
 	for _, key := range keys {
 		entries = append(entries, mapKeyedEntry{key: key, value: obj[key]})
 	}
 	return entries, metadata, true
+}
+
+func hasMapKeyedPagingSignal(metadata map[string]json.RawMessage) bool {
+	for key := range metadata {
+		if mapKeyedPagingSignalKeys[key] {
+			return true
+		}
+	}
+	return false
 }
 
 func isJSONObjectPayload(raw json.RawMessage) bool {
