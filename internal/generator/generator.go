@@ -460,6 +460,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointClientSideFilters": endpointClientSideFilters,
 		"globalScopeParams":         globalScopeParams,
 		"responsePathCases":         responsePathCases,
+		"syncParamDefaultCases":     syncParamDefaultCases,
 		"envName":                   naming.EnvPrefix,
 		// endpointTemplateEnvName resolves the env-var name for a
 		// {placeholder} in EndpointTemplateVars. Returns the spec-declared
@@ -6397,6 +6398,39 @@ func sortedResourcePathEntries(entries map[string]resourcePathEntry) []resourceP
 	out := make([]resourcePathEntry, 0, len(names))
 	for _, name := range names {
 		out = append(out, entries[name])
+	}
+	return out
+}
+
+// syncParamDefaultCase is one deduplicated entry for the sync template's
+// syncResourceParamDefaults switch. Flat and dependent resource sets can carry
+// the same resource name, and a repeated case in a Go switch does not compile.
+type syncParamDefaultCase struct {
+	Resource string
+	Defaults []profiler.SyncQueryParamDefault
+}
+
+// syncParamDefaultCases returns the resources whose list endpoint declares a
+// query-param default, flat set first so a name present in both wins the same
+// way it does everywhere else sync resolves a resource.
+func syncParamDefaultCases(syncable []profiler.SyncableResource, dependents []profiler.DependentResource) []syncParamDefaultCase {
+	seen := map[string]struct{}{}
+	var out []syncParamDefaultCase
+	add := func(name string, defaults []profiler.SyncQueryParamDefault) {
+		if len(defaults) == 0 {
+			return
+		}
+		if _, dup := seen[name]; dup {
+			return
+		}
+		seen[name] = struct{}{}
+		out = append(out, syncParamDefaultCase{Resource: name, Defaults: defaults})
+	}
+	for _, resource := range syncable {
+		add(resource.Name, resource.QueryParamDefaults)
+	}
+	for _, dependent := range dependents {
+		add(dependent.Name, dependent.QueryParamDefaults)
 	}
 	return out
 }
