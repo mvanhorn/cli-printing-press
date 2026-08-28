@@ -1673,6 +1673,14 @@ func TestGenerateOAuth2ClientCredentialsAuthTemplate(t *testing.T) {
 		"client-id defaults to first env var")
 	assert.Contains(t, body, `os.Getenv("CCGRANT_SECRET_KEY")`,
 		"client-secret defaults to second env var")
+	assert.Contains(t, body, `clientIDFromFlag := clientID != ""`,
+		"auth login captures flag provenance before env fallback")
+	assert.Contains(t, body, `clientSecretFromFlag := clientSecret != ""`,
+		"auth login captures secret flag provenance before env fallback")
+	assert.Less(t, strings.Index(body, `clientIDFromFlag := clientID != ""`), strings.Index(body, `os.Getenv("CCGRANT_API_KEY")`),
+		"flag provenance must be captured before the env fallback overwrites clientID")
+	assert.Contains(t, body, `cfg.MarkCredentialsExplicit(clientIDFromFlag, clientSecretFromFlag)`,
+		"auth login declares explicit credentials before SaveTokens")
 	// Verify-env short-circuit is present so the side-effect classifier
 	// doesn't false-positive during shipcheck.
 	assert.Contains(t, body, `cliutil.IsVerifyEnv()`,
@@ -1906,6 +1914,15 @@ func TestGenerateOAuth2DeviceCodeAuth(t *testing.T) {
 	assert.Contains(t, authGo, `"https://login.example.com/device"`, "login falls back to the configured device endpoint")
 	assert.Contains(t, authGo, `"public-client-id"`, "login uses the spec default client id")
 	assert.Contains(t, authGo, `os.Getenv("DEVICEAUTH_CLIENT_ID")`, "client id can be overridden by env var")
+	assert.Contains(t, authGo, `clientIDFromFlag := clientID != ""`, "auth login captures flag provenance before env fallback")
+	assert.Less(t, strings.Index(authGo, `clientIDFromFlag := clientID != ""`), strings.Index(authGo, `os.Getenv("DEVICEAUTH_CLIENT_ID")`),
+		"flag provenance must be captured before the env fallback overwrites clientID")
+	assert.Contains(t, authGo, `cfg.MarkCredentialsExplicit(clientIDFromFlag, false)`,
+		"auth login declares explicit client ID before SaveTokens")
+	assert.Contains(t, authGo, `ClientIDFromFlag: clientIDFromFlag,`,
+		"deferred device-code state keeps flag provenance for auth poll")
+	assert.Contains(t, authGo, `cfg.MarkCredentialsExplicit(state.ClientIDFromFlag, false)`,
+		"auth poll reapplies login flag provenance before SaveTokens")
 	assert.Contains(t, authGo, `cliutil.IsVerifyEnv()`, "login and refresh short-circuit in verify mode")
 	assert.Contains(t, authGo, `Annotations: map[string]string{"mcp:hidden": "true"}`, "interactive auth commands stay out of MCP")
 	assert.Contains(t, oauthGo, `const DeviceCodeGrant = "urn:ietf:params:oauth:grant-type:device_code"`)

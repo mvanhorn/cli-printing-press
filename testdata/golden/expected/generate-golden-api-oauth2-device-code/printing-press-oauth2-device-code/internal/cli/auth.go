@@ -83,6 +83,7 @@ for CLIs and agents: no localhost callback server and no client secret.
 			if err != nil {
 				return configErr(err)
 			}
+			clientIDFromFlag := clientID != ""
 			if clientID == "" {
 				clientID = os.Getenv("DEVICE_CODE_CLIENT_ID")
 			}
@@ -129,9 +130,10 @@ for CLIs and agents: no localhost callback server and no client secret.
 					fmt.Fprintf(w, "Code expires in %d seconds.\n", device.ExpiresIn)
 				}
 				state := pendingDeviceCodeState{
-					DeviceCode: device.DeviceCode,
-					ClientID:   clientID,
-					TokenURL:   tokenURL,
+					DeviceCode:       device.DeviceCode,
+					ClientID:         clientID,
+					ClientIDFromFlag: clientIDFromFlag,
+					TokenURL:         tokenURL,
 				}
 				if device.ExpiresIn > 0 {
 					state.ExpiresAt = time.Now().Add(time.Duration(device.ExpiresIn) * time.Second)
@@ -160,6 +162,7 @@ for CLIs and agents: no localhost callback server and no client secret.
 				expiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
 			}
 			cfg.AuthHeaderVal = ""
+			cfg.MarkCredentialsExplicit(clientIDFromFlag, false)
 			if err := cfg.SaveTokens(clientID, "", tok.AccessToken, tok.RefreshToken, expiry); err != nil {
 				return configErr(fmt.Errorf("saving tokens: %w", err))
 			}
@@ -221,6 +224,7 @@ func newAuthPollCmd(flags *rootFlags) *cobra.Command {
 				expiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
 			}
 			cfg.AuthHeaderVal = ""
+			cfg.MarkCredentialsExplicit(state.ClientIDFromFlag, false)
 			if err := cfg.SaveTokens(clientID, "", tok.AccessToken, tok.RefreshToken, expiry); err != nil {
 				return configErr(fmt.Errorf("saving tokens: %w", err))
 			}
@@ -282,10 +286,11 @@ func outputIsTerminal() bool {
 }
 
 type pendingDeviceCodeState struct {
-	DeviceCode string    `json:"device_code"`
-	ClientID   string    `json:"client_id"`
-	TokenURL   string    `json:"token_url"`
-	ExpiresAt  time.Time `json:"expires_at,omitempty"`
+	DeviceCode       string    `json:"device_code"`
+	ClientID         string    `json:"client_id"`
+	ClientIDFromFlag bool      `json:"client_id_from_flag,omitempty"`
+	TokenURL         string    `json:"token_url"`
+	ExpiresAt        time.Time `json:"expires_at,omitempty"`
 }
 
 func savePendingDeviceCode(cfg *config.Config, state pendingDeviceCodeState) error {
