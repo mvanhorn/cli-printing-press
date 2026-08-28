@@ -1539,6 +1539,8 @@ func syncFetch(ctx context.Context, c interface {
 		if err := appendIDWalkFilter(body, idWalk, cursor); err != nil {
 			return nil, err
 		}
+	} else if err := seedIDWalkFilter(body, idWalk); err != nil {
+		return nil, err
 	}
 {{- end}}
 	data, _, err := c.PostQueryWithParams(ctx, path, queryParams, body)
@@ -1560,6 +1562,31 @@ func appendIDWalkFilter(body map[string]any, config idWalkConfig, cursor string)
 		"op":    "gt",
 		"value": coerceIDWalkValue(cursor),
 	})
+	return nil
+}
+
+// seedIDWalkFilter writes the walk's own inclusive bound when page 1 would
+// otherwise omit the filter array. An empty array is not a valid seed: APIs
+// that match records against filter conditions return zero rows for
+// filter:[] and turn a missing-filter error into a silent empty sync.
+func seedIDWalkFilter(body map[string]any, config idWalkConfig) error {
+	if config.filterParam == "" || config.idField == "" {
+		return nil
+	}
+	filters, ok := coerceIDWalkFilters(body[config.filterParam])
+	if !ok {
+		return fmt.Errorf("invalid id-walk filter %q: expected a JSON array", config.filterParam)
+	}
+	if len(filters) > 0 {
+		return nil
+	}
+	body[config.filterParam] = []any{
+		map[string]any{
+			"field": config.idField,
+			"op":    "gte",
+			"value": coerceIDWalkValue("0"),
+		},
+	}
 	return nil
 }
 
@@ -1585,7 +1612,7 @@ func coerceIDWalkFilters(value any) ([]any, bool) {
 		}
 		return nil, false
 	}
-	return nil, true
+	return nil, false
 }
 
 func coerceIDWalkValue(cursor string) any {
