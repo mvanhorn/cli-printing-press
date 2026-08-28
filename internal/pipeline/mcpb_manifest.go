@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -155,6 +156,17 @@ func WriteMCPBManifestFromStruct(dir string, m CLIManifest) error {
 	if m.MCPBinary == "" {
 		return nil
 	}
+	// Generated os.Getenv names move with the CLI env prefix; endpoint
+	// metadata can still name the pre-rename variable. Bind against the
+	// name the printed client reads so the installer and first request
+	// stay paired. Drop colliding auth-named overrides only when the
+	// printed client already reads the default name (or no longer reads
+	// the override); a manifest-only refresh must not rebind to
+	// SHOPIFY_SHOP while legacy source still Getenvs the credential.
+	generated := scanGeneratedEnvSet(dir)
+	m.generatedEnvReads = generated
+	m = dropCollidingEndpointTemplateOverrides(m, generated)
+	m = alignEndpointTemplateEnvNames(dir, m)
 	out, err := marshalMCPBManifest(buildMCPBManifest(dir, m))
 	if err != nil {
 		return err
@@ -162,15 +174,13 @@ func WriteMCPBManifestFromStruct(dir string, m CLIManifest) error {
 	if err := os.WriteFile(filepath.Join(dir, MCPBManifestFilename), out, 0o644); err != nil {
 		return err
 	}
-	if usesPlatformClientProfiles(dir) {
-		return nil
-	}
-	// Extend the just-written manifest with env vars read by
-	// internal/client/*.go that the spec-driven build didn't surface
-	// (credential-flow JWT refreshers, hand-written auth helpers, etc.).
-	// Runs from every writer call site so the bundle path reads a
-	// reconciled manifest regardless of whether it came through lock+promote
-	// or a one-off bundle build.
+	// Extend the just-written manifest with env vars the spec-driven
+	// build didn't surface (per-instance BASE_URL, credential-flow JWT
+	// refreshers, hand-written auth helpers). Runs from every writer
+	// call site so lock+promote and one-off bundle builds read the same
+	// reconciled file. Platform-profile CLIs still go through this pass
+	// so *_BASE_URL and required endpoint placeholders land; credential
+	// Getenv calls are not re-added beside the profile selector.
 	return reconcileMCPBManifestFromClient(dir, m)
 }
 
@@ -205,6 +215,10 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 	launchEnv := buildMCPBEnv(m)
 	userConfig := buildMCPBUserConfig(m)
 	if usesPlatformClientProfiles(dir) {
+		// The profile selector is the credential surface. Endpoint
+		// placeholders such as {shop} are not credentials — dropping them
+		// here means the installer never collects them and the first API
+		// call fails with "<API>_SHOP not set".
 		launchEnv = map[string]string{"PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}"}
 		userConfig = map[string]MCPBVar{
 			"printing_press_client_profile": {
@@ -212,6 +226,7 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 				Description: "Binds the MCP server to an existing tenant-gated Printing Press client profile.",
 			},
 		}
+		bindEndpointTemplateVars(m, launchEnv, userConfig)
 	}
 
 	return MCPBManifest{
@@ -333,10 +348,7 @@ func buildMCPBEnv(m CLIManifest) map[string]string {
 	for _, envVar := range authEnvVarSpecs {
 		env[envVar.Name] = "${user_config." + userConfigKey(envVar.Name) + "}"
 	}
-	for _, templateVar := range m.EndpointTemplateVars {
-		name := endpointTemplateEnvVar(m, templateVar)
-		env[name] = "${user_config." + userConfigKey(name) + "}"
-	}
+	bindEndpointTemplateVars(m, env, nil)
 	return env
 }
 
@@ -370,17 +382,7 @@ func buildMCPBUserConfig(m CLIManifest) map[string]MCPBVar {
 			Required:    required,
 		}
 	}
-	for _, templateVar := range m.EndpointTemplateVars {
-		name := endpointTemplateEnvVar(m, templateVar)
-		defaultValue := endpointTemplateDefault(m, templateVar)
-		vars[userConfigKey(name)] = MCPBVar{
-			Type:        mcpbVarTypeString,
-			Title:       name,
-			Description: endpointTemplateVarDescription(templateVar, name),
-			Required:    defaultValue == "",
-			Default:     defaultValue,
-		}
-	}
+	bindEndpointTemplateVars(m, nil, vars)
 	return vars
 }
 
@@ -428,12 +430,213 @@ func mcpbUserConfigAuthEnvVars(m CLIManifest) []spec.AuthEnvVar {
 }
 
 func endpointTemplateEnvVar(m CLIManifest, templateVar string) string {
-	if override, ok := m.EndpointTemplateEnvOverrides[templateVar]; ok {
-		if trimmed := strings.TrimSpace(override); trimmed != "" {
-			return trimmed
+	override := ""
+	if v, ok := m.EndpointTemplateEnvOverrides[templateVar]; ok {
+		override = v
+	}
+	resolved := spec.ResolveEndpointTemplateEnvName(m.APIName, templateVar, override, manifestAuthEnvNames(m))
+	// Resolve rejects a credential-named override of a different
+	// placeholder. Fresh prints drop that override and emit the default
+	// Getenv. A later manifest-only refresh must not rebind to the
+	// default while existing source still reads the colliding name.
+	if generatedReadsLegacyOverride(m.generatedEnvReads, strings.TrimSpace(override), spec.DefaultEndpointTemplateEnvName(m.APIName, templateVar)) {
+		return strings.TrimSpace(override)
+	}
+	return resolved
+}
+
+func manifestAuthEnvNames(m CLIManifest) []string {
+	names := make([]string, 0, len(m.AuthEnvVars)+len(m.AuthEnvVarSpecs))
+	for _, envVar := range mcpbUserConfigAuthEnvVars(m) {
+		if envVar.Name != "" {
+			names = append(names, envVar.Name)
 		}
 	}
-	return spec.DefaultEndpointTemplateEnvName(m.APIName, templateVar)
+	names = append(names, m.AuthEnvVars...)
+	for _, envVar := range m.AuthEnvVarSpecs {
+		if envVar.Name != "" {
+			names = append(names, envVar.Name)
+		}
+	}
+	return names
+}
+
+func dropCollidingEndpointTemplateOverrides(m CLIManifest, generated map[string]struct{}) CLIManifest {
+	if len(m.EndpointTemplateEnvOverrides) == 0 {
+		return m
+	}
+	cleaned := cloneEndpointTemplateEnvOverrides(m.EndpointTemplateEnvOverrides)
+	changed := false
+	authNames := manifestAuthEnvNames(m)
+	for placeholder, override := range cleaned {
+		trimmed := strings.TrimSpace(override)
+		resolved := spec.ResolveEndpointTemplateEnvName(m.APIName, placeholder, override, authNames)
+		if resolved == trimmed {
+			continue
+		}
+		if generatedReadsLegacyOverride(generated, trimmed, resolved) {
+			continue
+		}
+		delete(cleaned, placeholder)
+		changed = true
+	}
+	if !changed {
+		return m
+	}
+	m.EndpointTemplateEnvOverrides = cleaned
+	return m
+}
+
+func generatedReadsLegacyOverride(generated map[string]struct{}, override, defaultName string) bool {
+	if len(generated) == 0 || override == "" {
+		return false
+	}
+	_, readsOverride := generated[override]
+	_, readsDefault := generated[defaultName]
+	return readsOverride && !readsDefault
+}
+
+func scanGeneratedEnvSet(dir string) map[string]struct{} {
+	reads, err := scanClientEnvReads(dir)
+	if err != nil || len(reads) == 0 {
+		return nil
+	}
+	generated := make(map[string]struct{}, len(reads))
+	for _, name := range reads {
+		generated[name] = struct{}{}
+	}
+	return generated
+}
+
+// Generated Getenv names move with the CLI env prefix; stored overrides
+// can still name the pre-rename variable. Only accept a rewrite when the
+// printed client actually reads the aligned name — an intentional
+// override that keeps a vendor's shorter env var must stay put.
+func alignEndpointTemplateEnvNames(dir string, m CLIManifest) CLIManifest {
+	if len(m.EndpointTemplateVars) == 0 {
+		return m
+	}
+	reads, err := scanClientEnvReads(dir)
+	if err != nil || len(reads) == 0 {
+		return m
+	}
+	generated := make(map[string]struct{}, len(reads))
+	for _, name := range reads {
+		generated[name] = struct{}{}
+	}
+	cloned := false
+	for _, templateVar := range m.EndpointTemplateVars {
+		override := ""
+		if v, ok := m.EndpointTemplateEnvOverrides[templateVar]; ok {
+			override = strings.TrimSpace(v)
+		}
+		defaultName := spec.DefaultEndpointTemplateEnvName(m.APIName, templateVar)
+		if generatedReadsLegacyOverride(generated, override, defaultName) {
+			continue
+		}
+		name := endpointTemplateEnvVar(m, templateVar)
+		if _, ok := generated[name]; ok {
+			continue
+		}
+		aligned := alignPrefixedEnvName(name, m.APIName)
+		if aligned == name {
+			continue
+		}
+		if _, ok := generated[aligned]; !ok {
+			continue
+		}
+		if !cloned {
+			m.EndpointTemplateEnvOverrides = cloneEndpointTemplateEnvOverrides(m.EndpointTemplateEnvOverrides)
+			cloned = true
+		}
+		m.EndpointTemplateEnvOverrides[templateVar] = aligned
+	}
+	return m
+}
+
+func cloneEndpointTemplateEnvOverrides(in map[string]string) map[string]string {
+	if in == nil {
+		return map[string]string{}
+	}
+	return maps.Clone(in)
+}
+
+// A stale override begins with a leading segment of the current CLI env
+// prefix (SHOPIFY_SHOP after shopify → shopify-alt). Custom names that
+// do not share that prefix (ST_TENANT_ID) are left alone.
+func alignPrefixedEnvName(name, apiName string) string {
+	if strings.TrimSpace(name) == "" || strings.TrimSpace(apiName) == "" {
+		return name
+	}
+	newPrefix := naming.EnvPrefix(apiName)
+	if newPrefix == "" || name == newPrefix || strings.HasPrefix(name, newPrefix+"_") {
+		return name
+	}
+	parts := strings.Split(newPrefix, "_")
+	for i := len(parts) - 1; i >= 1; i-- {
+		oldPrefix := strings.Join(parts[:i], "_")
+		if name == oldPrefix {
+			return newPrefix
+		}
+		if strings.HasPrefix(name, oldPrefix+"_") {
+			return newPrefix + name[len(oldPrefix):]
+		}
+	}
+	return name
+}
+
+// Auth-named or credential-shaped env vars stay on the profile selector
+// (or the sensitive auth user_config slot). Emitting them as unmasked
+// endpoint fields would prompt the installer for the raw secret.
+func isAuthOrCredentialEnvVar(m CLIManifest, name string) bool {
+	return spec.IsAuthOrCredentialEnvName(name, manifestAuthEnvNames(m))
+}
+
+// Path-positional placeholders such as {shop} are not credentials: the
+// platform profile selector does not fill them, and the first API call
+// fails if they are unset. Spec-defaulted placeholders stay optional so
+// MCPB hosts do not present Required+Default as a contradictory install
+// field. Credential-named *overrides* of a different placeholder are
+// rejected so the installer never collects an access token in an
+// unmasked field; a placeholder whose own default name is
+// credential-shaped is still bound, masked.
+func bindEndpointTemplateVars(m CLIManifest, env map[string]string, vars map[string]MCPBVar) {
+	for _, templateVar := range m.EndpointTemplateVars {
+		name, entry := endpointTemplateUserConfigEntry(m, templateVar)
+		if env != nil {
+			env[name] = "${user_config." + userConfigKey(name) + "}"
+		}
+		if vars != nil {
+			vars[userConfigKey(name)] = entry
+		}
+	}
+}
+
+func endpointTemplateUserConfigEntry(m CLIManifest, templateVar string) (string, MCPBVar) {
+	name := endpointTemplateEnvVar(m, templateVar)
+	defaultValue := endpointTemplateDefault(m, templateVar)
+	return name, MCPBVar{
+		Type:        mcpbVarTypeString,
+		Title:       name,
+		Description: endpointTemplateVarDescription(templateVar, name),
+		Required:    defaultValue == "",
+		Default:     defaultValue,
+		Sensitive:   isAuthOrCredentialEnvVar(m, name),
+	}
+}
+
+func endpointTemplateVarForEnv(m CLIManifest, name string) (string, bool) {
+	for _, templateVar := range m.EndpointTemplateVars {
+		if endpointTemplateEnvVar(m, templateVar) == name {
+			return templateVar, true
+		}
+	}
+	return "", false
+}
+
+func isEndpointTemplateEnvVar(m CLIManifest, name string) bool {
+	_, ok := endpointTemplateVarForEnv(m, name)
+	return ok
 }
 
 // userConfigKey lowercases the env var so manifest user_config keys match
