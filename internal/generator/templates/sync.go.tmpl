@@ -9,6 +9,7 @@
 {{- $hasHTMLSync := false -}}
 {{- range .SyncableResources}}{{if .UsesHTMLResponse}}{{- $hasHTMLSync = true -}}{{end}}{{end -}}
 {{- range .DependentSyncResources}}{{if .UsesHTMLResponse}}{{- $hasHTMLSync = true -}}{{end}}{{end }}
+{{- $syncParamDefaultCases := syncParamDefaultCases .SyncableResources .DependentSyncResources -}}
 {{- $hasHTMLPageModeSync := false -}}
 {{- range .HTMLPageModeResources}}{{- $hasHTMLPageModeSync = true -}}{{end }}
 {{- $hasDomainTable := false -}}
@@ -747,6 +748,13 @@ func syncResource(ctx context.Context, c interface {
 
 	for {
 	params := map[string]string{}
+{{- if $syncParamDefaultCases}}
+	// Seed spec-declared param defaults before anything sync computes, so
+	// paging, the since filter, and user --param overrides all still win.
+	for defaultKey, defaultValue := range syncResourceParamDefaults(resource) {
+		params[defaultKey] = defaultValue
+	}
+{{- end}}
 
 {{ if $hasIDWalk}}
 	if usesIDWalk {
@@ -1759,6 +1767,29 @@ func syncResourceSinceParam(resource string) string {
 	}
 	return ""
 }
+
+{{- if $syncParamDefaultCases}}
+
+// syncResourceParamDefaults returns the query params this resource's list
+// endpoint declares a spec `default:` for. Endpoint commands bind the same
+// defaults to their cobra flags, so a list command already sends them; sync
+// seeds them at the top of each page request so both surfaces address the same
+// slice of the API. Everything sync assigns afterwards (paging, the since
+// filter, --param overrides) still wins on key conflict.
+func syncResourceParamDefaults(resource string) map[string]string {
+	switch resource {
+{{- range $syncParamDefaultCases}}
+	case {{printf "%q" .Resource}}:
+		return map[string]string{
+{{- range .Defaults}}
+			{{printf "%q" .Name}}: {{printf "%q" .Value}},
+{{- end}}
+		}
+{{- end}}
+	}
+	return nil
+}
+{{- end}}
 
 // syncResourceSortParam and syncResourceSortValue describe a spec-declared
 // ascending last-modified ordering. Sync adds them only when it sends a since
@@ -3399,6 +3430,13 @@ func syncOneParent(
 
 	for {
 		params := map[string]string{}
+{{- if $syncParamDefaultCases}}
+		// Same seeding as the flat loop: spec defaults first, everything
+		// sync or the operator sets afterwards overrides them.
+		for defaultKey, defaultValue := range syncResourceParamDefaults(dep.Name) {
+			params[defaultKey] = defaultValue
+		}
+{{- end}}
 {{- if $hasIDWalk}}
 		if usesIDWalk {
 			params[idWalk.limitParam] = strconv.Itoa(idWalk.limit)
