@@ -15,37 +15,29 @@ import (
 func TestGenerateDependentSyncHyphenatedParentFKPopulatesTypedTable(t *testing.T) {
 	t.Parallel()
 
-	apiSpec := &spec.APISpec{
-		Name:    "hyphenated-parent-fk",
-		Version: "0.1.0",
-		BaseURL: "https://api.example.com",
-		Auth:    spec.AuthConfig{Type: "none"},
-		Config: spec.ConfigSpec{
-			Format: "toml",
-			Path:   "~/.config/hyphenated-parent-fk-pp-cli/config.toml",
-		},
-		Resources: map[string]spec.Resource{
-			"chat-attendees": {
-				Description: "Chat attendees",
-				Endpoints: map[string]spec.Endpoint{
-					"list": {
-						Method:      "GET",
-						Path:        "/chat-attendees",
-						Description: "List chat attendees",
-						Response:    spec.ResponseDef{Type: "array"},
-					},
+	apiSpec := minimalSpec("hyphenated-parent-fk")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources = map[string]spec.Resource{
+		"chat-attendees": {
+			Description: "Chat attendees",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/chat-attendees",
+					Description: "List chat attendees",
+					Response:    spec.ResponseDef{Type: "array"},
 				},
-				SubResources: map[string]spec.Resource{
-					"chats": {
-						Description: "Attendee chats",
-						Endpoints: map[string]spec.Endpoint{
-							"list": {
-								Method:      "GET",
-								Path:        "/chat-attendees/{id}/chats",
-								Description: "List chats for an attendee",
-								Response:    spec.ResponseDef{Type: "array"},
-								Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
-							},
+			},
+			SubResources: map[string]spec.Resource{
+				"chats": {
+					Description: "Attendee chats",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:      "GET",
+							Path:        "/chat-attendees/{id}/chats",
+							Description: "List chats for an attendee",
+							Response:    spec.ResponseDef{Type: "array"},
+							Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
 						},
 					},
 				},
@@ -55,7 +47,7 @@ func TestGenerateDependentSyncHyphenatedParentFKPopulatesTypedTable(t *testing.T
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
 	gen.profile = &profiler.APIProfile{
 		SyncableResources: []profiler.SyncableResource{
 			{Name: "chat-attendees", Path: "/chat-attendees", Method: "GET"},
@@ -65,6 +57,7 @@ func TestGenerateDependentSyncHyphenatedParentFKPopulatesTypedTable(t *testing.T
 		},
 	}
 	require.NoError(t, gen.Generate())
+	requireGeneratedCompiles(t, outputDir)
 
 	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
 	require.NoError(t, err)

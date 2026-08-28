@@ -2255,8 +2255,8 @@ func dependentParentKeyValue(parentResource, field, value string) string {
 	return bareValue
 }
 
-// parentFKColumnName is the typed parent foreign-key column. The schema
-// builder uses the same helper so hyphenated parents keep one name.
+// Schema generation and dependent sync must share this hyphen-to-underscore
+// rule; a mismatched key leaves the typed NOT NULL parent column empty.
 func parentFKColumnName(parentTable string) string {
 	return strings.ReplaceAll(parentTable, "-", "_") + "_id"
 }
