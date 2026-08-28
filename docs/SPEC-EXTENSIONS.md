@@ -1364,15 +1364,19 @@ Rules:
   fallback.
 - An empty or missing value falls through to the parser's automatic
   `resolveIDFieldFromResponseSchema` chain: bare `id`; then a resource-derived
-  singular key ending in `_id`, `_uuid`, or `_guid` (matched through
+  singular key ending in `_id`, `_uuid`, `_guid`, or `_uid` (matched through
   snake-case normalization, so camelCase and PascalCase spellings such as
   `widgetId` are preserved when emitted); then vendor identifier keys `gid`,
-  `sid`, `uid`, `uuid`, and `guid`; then URL-shaped identifier keys `uri`,
-  `self`, `selfLink`, `href`, and `url`; then `name`; then the first plausible
-  required scalar field. URL-shaped keys qualify only when the field schema is a
-  plausible ID and either the field is required or its name, title, description,
-  or format carries an identifier hint; an optional generic `url` therefore
-  falls through to `name`.
+  `sid`, `uid`, `uuid`, and `guid`; then a sole remaining `<stem>_uid` /
+  camelCase `stemUid` field whose stem is the resource's own collection noun
+  (so `alertUid` matches `account-alerts-open`, while a foreign `accountUid`
+  on `/sites` falls through; two own-stem spellings stay ambiguous); then
+  URL-shaped
+  identifier keys `uri`, `self`, `selfLink`, `href`, and `url`; then `name`;
+  then the first plausible required scalar field. URL-shaped keys qualify only
+  when the field schema is a plausible ID and either the field is required or
+  its name, title, description, or format carries an identifier hint; an
+  optional generic `url` therefore falls through to `name`.
 - URL-shaped keys intentionally trail id-shaped keys, so APIs that expose both
   `id` and `self` keep the compact primary key.
 - Qualified URL-shaped keys intentionally win over display `name` when no
