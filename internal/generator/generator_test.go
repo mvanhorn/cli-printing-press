@@ -2084,7 +2084,7 @@ func TestGenerateOAuth2ClientCredentialsClientRefresh(t *testing.T) {
 	body := string(clientBytes)
 	mintBlock := generatedSourceBlock(t, body, "func (c *Client) mintClientCredentials", "func (c *Client) refreshAccessToken")
 
-	assert.Contains(t, body, "func needsClientCredentialsMint",
+	assert.Contains(t, body, "func (c *Client) needsClientCredentialsMint",
 		"client_credentials spec emits the safety-window helper")
 	assert.Contains(t, body, "func resolveClientCredentials",
 		"client_credentials spec emits the env-var-fallback resolver")
@@ -2114,8 +2114,10 @@ func TestGenerateOAuth2ClientCredentialsClientRefresh(t *testing.T) {
 		"client-secret resolver falls back to second env var")
 	assert.Contains(t, body, "ccMu *sync.Mutex",
 		"client_credentials spec emits a shared mutex to serialize concurrent mints")
-	assert.Contains(t, body, "ccMu:       &sync.Mutex{}",
+	assert.Contains(t, body, "ccMu:                  &sync.Mutex{}",
 		"client_credentials spec initializes the shared mint mutex")
+	assert.Contains(t, body, "ccMintedUnknownExpiry: &atomic.Bool{}",
+		"client_credentials spec initializes the shared unknown-expiry cap")
 	assert.Contains(t, body, "c.ccMu.Lock()",
 		"authHeader takes the mint mutex before re-checking the window")
 }
@@ -7537,8 +7539,9 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	// --quiet is respected before envelope output
 	assert.Contains(t, content, "if flags.quiet {")
 
-	// --select and --compact are applied to inner data before wrapping in envelope
-	assert.Contains(t, content, "filtered := data")
+	// --select and --compact are applied to inner data before wrapping in
+	// envelope; collection envelopes are unwrapped first so rows nest once.
+	assert.Contains(t, content, "filtered := unwrapSingleKeyArray(data)")
 	assert.Contains(t, content, "compactFields(filtered,")
 	assert.Contains(t, content, "filterFields(filtered, flags.selectFields)")
 	assert.Contains(t, content, `json.Unmarshal(filtered, &parsed)`)
