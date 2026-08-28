@@ -135,6 +135,7 @@ func TestMapKeyedRejectsOrdinaryNestedObjects(t *testing.T) {
 		` + "`" + `{"oauth2":{"scope":"read"}}` + "`" + `,
 		` + "`" + `{"id":"7788990011223344","title":"a detail record"}` + "`" + `,
 		` + "`" + `{"7788990011223344":{"id":"x"},"meta":{"total":3}}` + "`" + `,
+		` + "`" + `{"id":"detail-1","title":"Alice","tags":["a"],"7788990011223344":{"role":"admin"}}` + "`" + `,
 		` + "`" + `{"total":3,"next_cursor":"c2"}` + "`" + `,
 		` + "`" + `{"7788990011223344":"not an object"}` + "`" + `,
 		` + "`" + `{}` + "`" + `,
@@ -144,6 +145,15 @@ func TestMapKeyedRejectsOrdinaryNestedObjects(t *testing.T) {
 		if _, ok := FlattenMapKeyedCollection(json.RawMessage(payload)); ok {
 			t.Fatalf("payload must not be treated as a map-keyed collection: %s", payload)
 		}
+	}
+}
+
+// A detail object may carry one numeric-keyed child beside ordinary fields.
+// Those siblings are not list metadata, so the child must not become the row.
+func TestMapKeyedRejectsNumericChildOnDetailObject(t *testing.T) {
+	payload := ` + "`" + `{"id":"detail-1","title":"Alice","tags":["a"],"7788990011223344":{"role":"admin"}}` + "`" + `
+	if _, ok := FlattenMapKeyedCollection(json.RawMessage(payload)); ok {
+		t.Fatalf("a detail object with one numeric-keyed child must not flatten: %s", payload)
 	}
 }
 
@@ -415,6 +425,13 @@ func TestMapKeyedExtractPageItemsRejectsDetailObject(t *testing.T) {
 	}
 }
 
+func TestMapKeyedExtractPageItemsRejectsNumericChildOnDetail(t *testing.T) {
+	items, _, _ := extractPageItems(json.RawMessage(` + "`" + `{"id":"detail-1","title":"Alice","tags":["a"],"7788990011223344":{"role":"admin"}}` + "`" + `), "cursor")
+	if len(items) != 0 {
+		t.Fatalf("a detail object with one numeric-keyed child must not flatten, got %d items", len(items))
+	}
+}
+
 // The live path and sync must agree: both cache the records, not the envelope.
 func TestMapKeyedWriteThroughCachesRecords(t *testing.T) {
 	// Redirect every path root the store resolver consults, not just HOME, so
@@ -454,6 +471,56 @@ func TestMapKeyedWriteThroughCachesRecords(t *testing.T) {
 	}
 	if len(noteIDs) != 1 || noteIDs[0] != "7788990011223344" {
 		t.Fatalf("expected the map key to key the id-less record, got %#v", noteIDs)
+	}
+}
+
+// A live detail response with one numeric-keyed child must cache the
+// envelope, not the child. Flattening would drop title and key the row
+// by the child's map key.
+func TestMapKeyedWriteThroughLeavesDetailNumericChildIntact(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	ctx := context.Background()
+	writeThroughCache(ctx, "orders", json.RawMessage(` + "`" + `{"id":"detail-1","title":"Alice","tags":["a"],"7788990011223344":{"role":"admin"}}` + "`" + `))
+
+	db, err := openStoreForRead(ctx, "map-keyed-pp-cli")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if db == nil {
+		t.Fatalf("expected a store after write-through cache")
+	}
+	defer db.Close()
+
+	ids, err := db.ListIDs("orders")
+	if err != nil {
+		t.Fatalf("list order ids: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "detail-1" {
+		t.Fatalf("expected the detail object to stay the row, got %#v", ids)
+	}
+	rows, err := db.List("orders", 10)
+	if err != nil {
+		t.Fatalf("list orders: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 cached detail row, got %d", len(rows))
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(rows[0], &obj); err != nil {
+		t.Fatalf("decode cached row: %v", err)
+	}
+	if obj["title"] != "Alice" {
+		t.Fatalf("detail fields must survive write-through, got %#v", obj)
+	}
+	if _, ok := obj["7788990011223344"]; !ok {
+		t.Fatalf("the numeric-keyed child must remain on the detail row, got %#v", obj)
 	}
 }
 `
