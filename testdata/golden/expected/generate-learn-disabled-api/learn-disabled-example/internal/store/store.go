@@ -1090,14 +1090,40 @@ type mapKeyedEntry struct {
 	value json.RawMessage
 }
 
+// Field-name scalar/array siblings are list metadata only. Treating every
+// non-object field-name member as skippable metadata made a detail object
+// with one numeric-keyed child look like a one-record page, so sync and
+// write-through cached the child and dropped the remaining fields.
+var mapKeyedListMetadataKeys = map[string]bool{
+	"next_cursor": true, "nextCursor": true, "NextCursor": true,
+	"next_token": true, "nextToken": true, "NextToken": true,
+	"next_page_token": true, "nextPageToken": true, "NextPageToken": true,
+	"page_token": true, "pageToken": true, "PageToken": true,
+	"end_cursor": true, "endCursor": true, "EndCursor": true,
+	"start_cursor": true, "startCursor": true, "StartCursor": true,
+	"cursor": true, "Cursor": true, "after": true, "After": true, "before": true, "Before": true,
+	"has_more": true, "hasMore": true, "HasMore": true,
+	"has_next": true, "hasNext": true, "HasNext": true,
+	"next_page": true, "nextPage": true, "NextPage": true,
+	"previous_page": true, "previousPage": true, "PreviousPage": true,
+	"page": true, "Page": true, "page_size": true, "pageSize": true, "PageSize": true,
+	"per_page": true, "perPage": true, "PerPage": true,
+	"total": true, "Total": true, "count": true, "Count": true, "size": true, "Size": true,
+	"total_count": true, "totalCount": true, "TotalCount": true,
+	"success": true, "status": true, "message": true, "error": true, "errors": true,
+	"warnings": true, "Warnings": true, "ok": true, "Ok": true,
+	"next": true, "prev": true, "previous": true, "first": true, "last": true,
+}
+
 // A record identifier keying a JSON object is the only member shape a
 // collection may contain; anything else keyed like a record, or any object
 // keyed like a field, means the payload is something other than a collection
 // and is rejected whole. Scalar and array members under field-name keys are
-// the exception: an API is free to file paging metadata beside the records, so
-// dropping those members keeps the records reachable while the caller still
-// reads the cursor off the same envelope. Sorting makes repeated syncs of one
-// payload produce one row order.
+// kept only when the key is list metadata, so a real collection can still
+// file a cursor or total beside its records. A detail field (id, title, tags)
+// beside a single record-shaped child is not metadata: that payload stays a
+// detail object. Sorting makes repeated syncs of one payload produce one
+// row order.
 func mapKeyedEntries(raw json.RawMessage) ([]mapKeyedEntry, map[string]json.RawMessage, bool) {
 	if !isJSONObjectPayload(raw) {
 		return nil, nil, false
@@ -1113,7 +1139,7 @@ func mapKeyedEntries(raw json.RawMessage) ([]mapKeyedEntry, map[string]json.RawM
 		switch {
 		case recordKeyed && objectValued:
 			keys = append(keys, key)
-		case !recordKeyed && !objectValued:
+		case !recordKeyed && !objectValued && mapKeyedListMetadataKeys[key]:
 			metadata[key] = value
 		default:
 			return nil, nil, false
