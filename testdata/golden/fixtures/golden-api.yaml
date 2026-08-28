@@ -359,3 +359,57 @@ paths:
               schema:
                 type: string
                 format: byte
+  # POST-query id-walk: required filter array with no default. Generated
+  # sync must seed page 1 with the walk condition (id gte MinInt64) so the
+  # first request is not filterless and signed numeric IDs still walk.
+  /tickets/query:
+    x-resource-id: id
+    post:
+      tags: [tickets]
+      operationId: queryTickets
+      summary: Query tickets
+      parameters:
+        - $ref: "#/components/parameters/ApiVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filter]
+              properties:
+                MaxRecords:
+                  type: integer
+                  default: 500
+                filter:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      field:
+                        type: string
+                      op:
+                        type: string
+                      value: {}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        summary:
+                          type: string
+                  pageDetails:
+                    type: object
+                    properties:
+                      nextPageUrl:
+                        type: string

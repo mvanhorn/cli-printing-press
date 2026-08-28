@@ -50,6 +50,10 @@ Purpose-built fixture for golden generation coverage.
 **reports** — Manage reports
 
 
+**tickets** — Manage tickets
+
+- `printing-press-golden-pp-cli tickets` — Query tickets
+
 
 ## Freshness Contract
 
@@ -65,6 +69,10 @@ Covered paths:
 - `printing-press-golden-pp-cli projects get`
 - `printing-press-golden-pp-cli projects list`
 - `printing-press-golden-pp-cli projects search`
+- `printing-press-golden-pp-cli tickets`
+- `printing-press-golden-pp-cli tickets get`
+- `printing-press-golden-pp-cli tickets list`
+- `printing-press-golden-pp-cli tickets search`
 
 When JSON output uses the generated provenance envelope, freshness metadata appears at `meta.freshness`. Treat it as current-cache freshness for the covered command path, not a guarantee of complete historical backfill or API-specific enrichment.
 

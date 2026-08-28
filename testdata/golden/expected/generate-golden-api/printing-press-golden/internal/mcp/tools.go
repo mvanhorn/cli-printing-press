@@ -156,6 +156,18 @@ func RegisterTools(s *server.MCPServer) {
 		),
 		makeAPIHandler("GET", "/reports/{year}/summary", true, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "X-Api-Version", WireName: "X-Api-Version", Location: "header", Default: "2026-04-01"}, {PublicName: "year", WireName: "year", Location: "path"}}, []string{"year"}),
 	)
+	s.AddTool(
+		mcplib.NewTool("tickets_query",
+			mcplib.WithDescription("Query tickets. Required: X-Api-Version (default: 2026-04-01), filter. Optional: MaxRecords (default: 500). Returns array of TicketsQueryItem."),
+			mcplib.WithString("X-Api-Version", mcplib.Required(), mcplib.Description("Required API version header.")),
+			mcplib.WithNumber("MaxRecords", mcplib.Description("Max records")),
+			mcplib.WithArray("filter", mcplib.Required(), mcplib.Description("Filter")),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
+		),
+		makeAPIHandler("POST", "/tickets/query", true, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "X-Api-Version", WireName: "X-Api-Version", Location: "header", Default: "2026-04-01"}, {PublicName: "MaxRecords", WireName: "MaxRecords", Location: "body"}, {PublicName: "filter", WireName: "filter", Location: "body"}}, []string{}),
+	)
 	// Search tool — faster than iterating list endpoints for finding specific items
 	s.AddTool(
 		mcplib.NewTool("search",
@@ -985,7 +997,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 		"api":         "printing-press-golden",
 		"description": "Purpose-built fixture for golden generation coverage.",
 		"archetype":   "project-management",
-		"tool_count":  10,
+		"tool_count":  11,
 		"paths":       paths,
 		// tool_surface tells agents which surface a capability lives on.
 		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion printing-press-golden-pp-cli binary.",
@@ -1053,6 +1065,12 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 				"name":        "reports.summary",
 				"description": "Manage summary",
 				"endpoints":   []string{"get-report-year"},
+			},
+			{
+				"name":        "tickets",
+				"description": "Manage tickets",
+				"endpoints":   []string{"query"},
+				"syncable":    true,
 			},
 		},
 		"query_tips": []string{
