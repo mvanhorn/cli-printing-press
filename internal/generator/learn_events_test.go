@@ -148,3 +148,37 @@ func TestGenerateLearnEvents_EmittedCLITestsPass(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/learn",
 		"-run", "TestRecall_HitCarriesLearningID|TestFamilyHash_|TestScanPII_", "-count=1")
 }
+
+// Locks the emitted alias-mediated recall fixture to a token that
+// short uppercase ticker_patterns cannot claim. A 2-char uppercase
+// alias such as WC is extracted as a ticker first, so recall misses
+// and generate --validate hard-fails for valid stock/currency/airport
+// specs.
+func TestGenerateLearnEvents_AliasFixtureSurvivesShortTickerPatterns(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("compile-and-test of emitted alias-mediated recall fixture skipped in -short mode")
+	}
+
+	apiSpec := minimalSpec("levalias")
+	apiSpec.Learn.Enabled = true
+	apiSpec.Learn.TickerPatterns = []string{"^[A-Z]{2,4}$"}
+	outputDir := filepath.Join(t.TempDir(), "levalias-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	teachTest := readEmitted(t, outputDir, "internal", "cli", "teach_test.go")
+	require.Contains(t, teachTest, `"widget-co"`,
+		"alias fixture must use a hyphenated lowercase short form")
+	require.Contains(t, teachTest, `display quarterly report for widget-co`,
+		"recall query must use the non-ticker alias")
+	require.NotContains(t, teachTest, `"WC"`,
+		"alias fixture must not seed a short uppercase token that ticker_patterns can claim")
+	require.NotContains(t, teachTest, " for WC",
+		"recall query must not use a short uppercase alias")
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "-race", "./internal/cli",
+		"-run", "TestLearnEvents_AliasMediatedRecallCreditsTaughtRowID", "-count=1")
+}
