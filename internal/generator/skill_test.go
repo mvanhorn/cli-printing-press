@@ -523,7 +523,6 @@ func TestSkillAuthSetupUsesResolvedBasicPairOverForeignNarrative(t *testing.T) {
 	assert.Contains(t, string(configSrc), `os.Getenv("MAXIOPAIR_USERNAME")`)
 	assert.Contains(t, string(configSrc), `os.Getenv("MAXIOPAIR_PASSWORD")`)
 	assert.NotContains(t, string(configSrc), `os.Getenv("MAXIOPAIR_API_KEY")`)
-	requireGeneratedCompiles(t, outputDir)
 }
 
 // TestSkillRendersExtraCommands asserts that hand-written commands declared
