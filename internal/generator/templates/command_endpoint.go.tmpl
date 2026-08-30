@@ -911,7 +911,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			data = truncateJSONArray(cmd.Context(), data, flagLimit)
 {{- end}}
 
-{{- if and (not $isMutationOutput) .Endpoint.ResponsePath (not .HasStore)}}
+{{- if and (not $isMutationOutput) .Endpoint.ResponsePath (or (not .HasStore) .Endpoint.UsesHTMLResponse)}}
 			if !flags.dryRun {
 				data = applyResponsePath(data, {{printf "%q" .Endpoint.ResponsePath}})
 			}
