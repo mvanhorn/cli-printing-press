@@ -750,14 +750,16 @@ func classifyAPIError(w io.Writer, err error, flags *rootFlags) error {
 	return classified
 }
 
+// Byte slicing splits multi-byte runes and corrupts table/JSON display.
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
 	if max <= 3 {
-		return s[:max]
+		return string(runes[:max])
 	}
-	return s[:max-3] + "..."
+	return string(runes[:max-3]) + "..."
 }
 
 func newTabWriter(w io.Writer) *tabwriter.Writer {
