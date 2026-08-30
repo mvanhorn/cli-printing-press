@@ -108,6 +108,46 @@ Agent mode: add --agent to any command.
 		"root.go Highlights-only rewrites are research input, not hand-edits")
 }
 
+func TestDetectValueDriftCatchesRootShortHandEdit(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	rootRel := filepath.Join("internal", "cli", "root.go")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "pub", filepath.Dir(rootRel)), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "fresh", filepath.Dir(rootRel)), 0o755))
+	rootSrc := func(short string) string {
+		return `package cli
+
+func newRootCmd() {
+	_ = struct {
+		Use   string
+		Short string
+		Long  string
+	}{
+		Use:   "demo-pp-cli",
+		Short: "` + short + `",
+		Long: ` + "`" + `Manage demo resources
+
+Highlights (not in the official API docs):
+  • items insight
+
+Agent mode: add --agent to any command.
+` + "`" + `,
+	}
+}
+`
+	}
+	pub := filepath.Join(dir, "pub", rootRel)
+	fresh := filepath.Join(dir, "fresh", rootRel)
+	require.NoError(t, os.WriteFile(pub, []byte(rootSrc("hand-edited short")), 0o644))
+	require.NoError(t, os.WriteFile(fresh, []byte(rootSrc("Manage demo resources")), 0o644))
+
+	drift := detectValueDrift(pub, fresh)
+	require.NotNil(t, drift, "Short hand-edits must not be masked by Highlights normalization")
+	_, ok := drift.Decls["newRootCmd"]
+	assert.True(t, ok, "expected drift entry for newRootCmd; got %v", drift.Decls)
+}
+
 func TestDetectValueDriftCatchesSelectorIdentifierRename(t *testing.T) {
 	t.Parallel()
 

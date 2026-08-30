@@ -9,6 +9,8 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/dave/dst"
 	"github.com/dave/dst/decorator"
@@ -63,6 +65,8 @@ func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error
 	}
 
 	pubByName := overlayDeclMap(pubFile)
+	pubSpecs := canonicalSpecTexts(pubPath)
+	baseSpecs := canonicalSpecTexts(basePath)
 	for i, d := range freshFile.Decls {
 		name := overlayDeclName(d)
 		if !fromPub[name] {
@@ -72,9 +76,13 @@ func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error
 		if !ok {
 			continue
 		}
+		if merged := mergeGroupedIfNeeded(d, repl, pubSpecs, baseSpecs); merged != nil {
+			freshFile.Decls[i] = merged
+			continue
+		}
 		freshFile.Decls[i] = repl
 	}
-	addMissingImports(freshFile, pubFile)
+	addImportsUsedByOverlaidDecls(freshFile, pubFile, fromPub)
 
 	var buf bytes.Buffer
 	if err := decorator.Fprint(&buf, freshFile); err != nil {
@@ -157,7 +165,75 @@ func overlayDeclName(d dst.Decl) string {
 		if len(names) == 0 {
 			return ""
 		}
-		return decl.Tok.String() + ":" + joinOverlayNames(names)
+		return decl.Tok.String() + ":" + strings.Join(names, ",")
+	}
+	return ""
+}
+
+func mergeGroupedIfNeeded(fresh, pub dst.Decl, pubSpecs, baseSpecs map[string]string) dst.Decl {
+	fg, ok := fresh.(*dst.GenDecl)
+	if !ok || fg.Tok == token.IMPORT || len(fg.Specs) < 2 {
+		return nil
+	}
+	pg, ok := pub.(*dst.GenDecl)
+	if !ok {
+		return nil
+	}
+	mergeGroupedGenDecl(fg, pg, pubSpecs, baseSpecs)
+	return fg
+}
+
+func mergeGroupedGenDecl(fresh, pub *dst.GenDecl, pubSpecs, baseSpecs map[string]string) {
+	if fresh == nil || pub == nil {
+		return
+	}
+	pubByKey := map[string]dst.Spec{}
+	for _, spec := range pub.Specs {
+		if key := dstSpecKey(spec); key != "" {
+			pubByKey[key] = spec
+		}
+	}
+	for i, spec := range fresh.Specs {
+		key := dstSpecKey(spec)
+		pubSpec, ok := pubByKey[key]
+		if !ok {
+			continue
+		}
+		if baseSpecs[key] != "" && pubSpecs[key] == baseSpecs[key] {
+			continue
+		}
+		fresh.Specs[i] = pubSpec
+	}
+	freshKeys := map[string]bool{}
+	for _, spec := range fresh.Specs {
+		if key := dstSpecKey(spec); key != "" {
+			freshKeys[key] = true
+		}
+	}
+	for _, spec := range pub.Specs {
+		key := dstSpecKey(spec)
+		if key == "" || freshKeys[key] {
+			continue
+		}
+		if baseSpecs[key] != "" && pubSpecs[key] == baseSpecs[key] {
+			continue
+		}
+		fresh.Specs = append(fresh.Specs, spec)
+	}
+}
+
+func dstSpecKey(spec dst.Spec) string {
+	switch s := spec.(type) {
+	case *dst.TypeSpec:
+		if s.Name != nil {
+			return s.Name.Name
+		}
+	case *dst.ValueSpec:
+		var names []string
+		for _, n := range s.Names {
+			names = append(names, n.Name)
+		}
+		return strings.Join(names, ",")
 	}
 	return ""
 }
@@ -176,18 +252,23 @@ func dstReceiverTypeName(expr dst.Expr) string {
 	return ""
 }
 
-func joinOverlayNames(names []string) string {
-	out := names[0]
-	for i := 1; i < len(names); i++ {
-		out += "," + names[i]
-	}
-	return out
-}
-
-func addMissingImports(fresh, pub *dst.File) {
-	if fresh == nil || pub == nil {
+func addImportsUsedByOverlaidDecls(fresh, pub *dst.File, fromPub map[string]bool) {
+	if fresh == nil || pub == nil || len(fromPub) == 0 {
 		return
 	}
+	aliasToPath := importAliasMap(pub)
+	for alias, path := range importAliasMap(fresh) {
+		if _, ok := aliasToPath[alias]; !ok {
+			aliasToPath[alias] = path
+		}
+	}
+	var overlaid []dst.Decl
+	for _, d := range fresh.Decls {
+		if fromPub[overlayDeclName(d)] {
+			overlaid = append(overlaid, d)
+		}
+	}
+	needed := importPathsUsedByDecls(overlaid, aliasToPath)
 	have := map[string]bool{}
 	for _, path := range importPathsOf(fresh) {
 		have[path] = true
@@ -203,7 +284,7 @@ func addMissingImports(fresh, pub *dst.File) {
 			if !ok || is.Path == nil {
 				continue
 			}
-			if have[is.Path.Value] {
+			if have[is.Path.Value] || !needed[is.Path.Value] {
 				continue
 			}
 			have[is.Path.Value] = true
@@ -223,6 +304,66 @@ func addMissingImports(fresh, pub *dst.File) {
 		return
 	}
 	fresh.Decls = append([]dst.Decl{&dst.GenDecl{Tok: token.IMPORT, Specs: missing}}, fresh.Decls...)
+}
+
+func importAliasMap(file *dst.File) map[string]string {
+	out := map[string]string{}
+	if file == nil {
+		return out
+	}
+	for _, d := range file.Decls {
+		gd, ok := d.(*dst.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			is, ok := spec.(*dst.ImportSpec)
+			if !ok || is.Path == nil {
+				continue
+			}
+			alias := importSpecAlias(is)
+			if alias == "" || alias == "_" || alias == "." {
+				continue
+			}
+			out[alias] = is.Path.Value
+		}
+	}
+	return out
+}
+
+func importSpecAlias(is *dst.ImportSpec) string {
+	if is.Name != nil {
+		return is.Name.Name
+	}
+	path, err := strconv.Unquote(is.Path.Value)
+	if err != nil {
+		return ""
+	}
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		return path[i+1:]
+	}
+	return path
+}
+
+func importPathsUsedByDecls(decls []dst.Decl, aliasToPath map[string]string) map[string]bool {
+	used := map[string]bool{}
+	for _, d := range decls {
+		dst.Inspect(d, func(n dst.Node) bool {
+			sel, ok := n.(*dst.SelectorExpr)
+			if !ok {
+				return true
+			}
+			id, ok := sel.X.(*dst.Ident)
+			if !ok {
+				return true
+			}
+			if path, ok := aliasToPath[id.Name]; ok {
+				used[path] = true
+			}
+			return true
+		})
+	}
+	return used
 }
 
 func importPathsOf(file *dst.File) []string {

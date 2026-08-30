@@ -1,6 +1,9 @@
 package regenmerge
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"path/filepath"
 	"strings"
 )
@@ -76,4 +79,61 @@ func filterBodyDriftAgainstBase(drift *BodyDrift, pubPath, basePath string) *Bod
 		return nil
 	}
 	return &BodyDrift{Functions: filtered}
+}
+
+// canonicalSpecTexts maps each const/var/type spec name to its canonical
+// render so a grouped GenDecl can overlay only the members that actually
+// differ from the original emission.
+func canonicalSpecTexts(filename string) map[string]string {
+	if filename == "" {
+		return nil
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filename, nil, parser.SkipObjectResolution)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]string)
+	for _, d := range file.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok == token.IMPORT {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			name := astSpecKey(spec)
+			if name == "" {
+				continue
+			}
+			switch s := spec.(type) {
+			case *ast.TypeSpec:
+				s.Doc = nil
+				s.Comment = nil
+			case *ast.ValueSpec:
+				s.Doc = nil
+				s.Comment = nil
+			}
+			text, err := canonicalRender(fset, spec)
+			if err != nil {
+				continue
+			}
+			out[name] = text
+		}
+	}
+	return out
+}
+
+func astSpecKey(spec ast.Spec) string {
+	switch s := spec.(type) {
+	case *ast.TypeSpec:
+		if s.Name != nil {
+			return s.Name.Name
+		}
+	case *ast.ValueSpec:
+		var names []string
+		for _, n := range s.Names {
+			names = append(names, n.Name)
+		}
+		return strings.Join(names, ",")
+	}
+	return ""
 }
