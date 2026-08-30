@@ -286,7 +286,10 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 		}
 	}
 	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")
-	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", 0, "Max requests per second (0 to disable)")
+	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", client.RateLimitAuto, "Max requests per second (0 to disable; default auto — pace to server rate-limit headers)")
+	if f := rootCmd.PersistentFlags().Lookup("rate-limit"); f != nil {
+		f.DefValue = "auto"
+	}
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		var appliedProfile *Profile
