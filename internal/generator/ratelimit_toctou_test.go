@@ -26,21 +26,23 @@ func TestAdaptiveLimiterWait_ReservesUnderSingleLock(t *testing.T) {
 	require.NoError(t, err)
 	src := string(srcBytes)
 
-	require.Contains(t, src, "l.lastRequest = time.Now().Add(sleep)",
+	require.Contains(t, src, "l.lastRequest = reservedAt",
 		"Wait must reserve the next slot under lock")
+	require.Contains(t, src, "l.releaseUnusedReservation(prevLast, reservedAt)",
+		"a canceled Wait must release a slot it never used")
 
 	waitStart := strings.Index(src, "func (l *AdaptiveLimiter) Wait(ctx context.Context) error {")
 	require.NotEqual(t, -1, waitStart, "Wait function must be emitted")
-	onSuccessStart := strings.Index(src[waitStart:], "func (l *AdaptiveLimiter) OnSuccess()")
-	require.NotEqual(t, -1, onSuccessStart, "OnSuccess marker must be emitted after Wait")
-	waitBody := src[waitStart : waitStart+onSuccessStart]
+	nextFunc := strings.Index(src[waitStart+1:], "\nfunc ")
+	require.NotEqual(t, -1, nextFunc, "Wait must be followed by another func")
+	waitBody := src[waitStart : waitStart+1+nextFunc]
 
 	require.Equal(t, 1, strings.Count(waitBody, "l.mu.Lock()"),
 		"Wait should lock once and keep the lock across read+reservation")
 	require.Equal(t, 1, strings.Count(waitBody, "l.mu.Unlock()"),
 		"Wait should unlock once after reserving lastRequest")
 
-	writeIdx := strings.Index(waitBody, "l.lastRequest = time.Now().Add(sleep)")
+	writeIdx := strings.Index(waitBody, "l.lastRequest = reservedAt")
 	lockIdx := strings.Index(waitBody, "l.mu.Lock()")
 	unlockIdx := strings.Index(waitBody, "l.mu.Unlock()")
 	require.NotEqual(t, -1, writeIdx, "reservation write must exist in Wait")

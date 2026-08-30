@@ -769,6 +769,29 @@ func TestAdaptiveLimiter_WaitHonorsCanceledContext(t *testing.T) {
 	}
 }
 
+func TestAdaptiveLimiter_CanceledWaitDoesNotConsumeNextSlot(t *testing.T) {
+	l := NewAdaptiveLimiter(5.0)
+	if err := l.Wait(context.Background()); err != nil {
+		t.Fatalf("prime Wait() = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if err := l.Wait(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("canceled Wait() = %v, want context deadline exceeded", err)
+	}
+	start := time.Now()
+	if err := l.Wait(context.Background()); err != nil {
+		t.Fatalf("next Wait() = %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed > 350*time.Millisecond {
+		t.Fatalf("next Wait after cancel elapsed %s; an unused reservation would add a full extra interval", elapsed)
+	}
+	if elapsed < 120*time.Millisecond {
+		t.Fatalf("next Wait elapsed %s, want remaining pace from the last successful Wait", elapsed)
+	}
+}
+
 func TestAdaptiveLimiter_ObserveHeadersPacesToBudgetAndSuppressesRamp(t *testing.T) {
 	l := NewAdaptiveLimiterAuto(2.0)
 	// Full bucket: 100 requests left over a 20s window => ~5 rps sustainable.
