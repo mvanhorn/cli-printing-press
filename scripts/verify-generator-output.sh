@@ -38,6 +38,7 @@ fi
 default_cases=(
   generate-golden-api
   generate-golden-api-rich-auth
+  generate-deprecated-cursor-alias
   generate-mcp-api
   generate-graphql-shared-endpoint
   generate-learn-loop-api

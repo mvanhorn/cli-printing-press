@@ -4677,6 +4677,7 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) ([]spec.
 			In:          string(parameter.In),
 			Type:        mapSchemaType(schema),
 			Required:    parameter.Required,
+			Deprecated:  parameter.Deprecated,
 			Positional:  parameter.In == openapi3.ParameterInPath,
 			Description: description,
 			Enum:        schemaEnum(schema),
@@ -8518,21 +8519,23 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 		}
 	}
 
-	// Detect cursor param and pagination type
-	for _, name := range []string{"pagetoken", "page_token"} {
-		if orig, ok := originalCase[name]; ok {
-			pag.CursorParam = orig
-			pag.Type = "page_token"
-			break
-		}
+	// Prefer canonical cursor parameters over deprecated compatibility aliases.
+	// Preserve the historical candidate order when deprecation status is equal.
+	cursorCandidates := []struct{ name, paginationType string }{
+		{"pagetoken", "page_token"}, {"page_token", "page_token"},
+		{"after", "cursor"}, {"cursor", "cursor"}, {"page[cursor]", "cursor"},
+		{"nexttoken", "cursor"}, {"next_token", "cursor"},
 	}
-	if pag.Type == "" {
-		for _, name := range []string{"after", "cursor", "page[cursor]", "nexttoken", "next_token"} {
-			if orig, ok := originalCase[name]; ok {
-				pag.CursorParam = orig
-				pag.Type = "cursor"
+	for _, deprecated := range []bool{false, true} {
+		for _, candidate := range cursorCandidates {
+			if param, ok := paramsByLowerName[candidate.name]; ok && param.Deprecated == deprecated {
+				pag.CursorParam = param.Name
+				pag.Type = candidate.paginationType
 				break
 			}
+		}
+		if pag.Type != "" {
+			break
 		}
 	}
 	if pag.Type == "" {

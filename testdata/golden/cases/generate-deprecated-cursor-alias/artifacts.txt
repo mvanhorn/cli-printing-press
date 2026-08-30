@@ -1,0 +1,3 @@
+# Locks Xquik generation when its deprecated cursor alias coexists.
+# Full generated-module compilation runs through verify-generator-output.sh.
+cursor-alias-contract.txt

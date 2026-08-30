@@ -1,0 +1,18 @@
+		mcplib.NewTool("followers_get-user",
+			mcplib.WithDescription("List followers of a user. Required: id. Optional: cursor, after, limit. Returns array of FollowersGetUserItem."),
+			mcplib.WithString("id", mcplib.Required(), mcplib.Description("Target user ID or username for follower lookup.")),
+			mcplib.WithString("after", mcplib.Description("Legacy cursor alias. Prefer cursor.")),
+			mcplib.WithNumber("limit", mcplib.Description("Maximum user profiles to return.")),
+			mcplib.WithString("cursor", mcplib.Description("Opaque pagination cursor returned by a previous MCP response")),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
+		),
+		makeAPIHandler("GET", "/x/users/{id}/followers", true, false, nil, mcpPageConfig{CursorParam: "cursor", NextCursorPath: "next_cursor"}, []mcpParamBinding{{PublicName: "id", WireName: "id", Location: "path"}, {PublicName: "after", WireName: "after", Location: "query"}, {PublicName: "limit", WireName: "limit", Location: "query"}}, []string{"id"}),
+	var flagCursor string
+	var flagAfter string
+			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "live", "followers", path, map[string]string{
+				"cursor": formatCLIParamValue(flagCursor),
+				"after":  formatCLIParamValue(flagAfter),
+	cmd.Flags().StringVar(&flagCursor, "cursor", "", "Cursor from the previous response.")
+	cmd.Flags().StringVar(&flagAfter, "after", "", "Legacy cursor alias. Prefer cursor.")

@@ -1,0 +1,6 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/deprecated-cursor-alias.yaml --output "$CASE_ACTUAL_DIR/xquik" --force --spec-url https://docs.xquik.com/openapi.yaml --validate=false
+{
+  awk '/mcplib.NewTool\("followers_get-user"/,/makeAPIHandler\("GET", "\/x\/users\/\{id\}\/followers"/ { print }' "$CASE_ACTUAL_DIR/xquik/internal/mcp/tools.go"
+  awk '/var flagCursor string/,/cmd.Flags\(\).BoolVar/ { if ($0 ~ /flagAfter|flagCursor|resolvePaginatedReadWithStrategy|"after":|"cursor":/) print }' "$CASE_ACTUAL_DIR/xquik/internal/cli/promoted_followers.go"
+} > "$CASE_ACTUAL_DIR/cursor-alias-contract.txt"
