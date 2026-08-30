@@ -23,7 +23,7 @@
       "env": {
         "LEARN_LOOP_EXAMPLE_BASE_URL": "${user_config.learn_loop_example_base_url}",
         "LEARN_LOOP_EXAMPLE_USER_AGENT": "${user_config.learn_loop_example_user_agent}",
-        "PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}"
+        "LEARN_LOOP_TOKEN": "${user_config.learn_loop_token}"
       }
     },
     "type": "binary"
@@ -39,10 +39,11 @@
       "title": "LEARN_LOOP_EXAMPLE_USER_AGENT",
       "type": "string"
     },
-    "printing_press_client_profile": {
-      "description": "Binds the MCP server to an existing tenant-gated Printing Press client profile.",
+    "learn_loop_token": {
+      "description": "Sets LEARN_LOOP_TOKEN for the Learn Loop Example MCP server.",
       "required": true,
-      "title": "Client profile",
+      "sensitive": true,
+      "title": "LEARN_LOOP_TOKEN",
       "type": "string"
     }
   },

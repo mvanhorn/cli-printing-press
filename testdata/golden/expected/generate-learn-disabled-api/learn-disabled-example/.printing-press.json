@@ -1,16 +1,8 @@
 {
   "api_name": "learn-disabled-example",
   "api_version": "1.0.0",
-  "auth_env_var_specs": [
-    {
-      "kind": "per_call",
-      "name": "PRINTING_PRESS_CLIENT_PROFILE",
-      "required": true,
-      "sensitive": false
-    }
-  ],
   "auth_env_vars": [
-    "PRINTING_PRESS_CLIENT_PROFILE"
+    "LEARN_DISABLED_TOKEN"
   ],
   "auth_type": "bearer_token",
   "cli_name": "learn-disabled-example-pp-cli",

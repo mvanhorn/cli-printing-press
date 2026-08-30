@@ -209,10 +209,29 @@ These commands are declared by the spec author and require separate hand-written
 {{- end}}
 
 ## Auth Setup
+{{- /* Published-library sweep: heading stays "## Auth Setup"; body must name only resolved credential env vars (same set as .printing-press.json auth_env_vars). Drop independently authored prose that names unread vars; prefer the type-aware export block, including the basic-auth pair. */}}
 {{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
+{{- $basicAuthEnvVars := basicAuthEnvVars .Auth}}
+{{- $authNarrative := ""}}
 {{- if and .Narrative .Narrative.AuthNarrative}}
+{{- $authNarrative = skillAuthNarrative .Auth .Narrative.AuthNarrative}}
+{{- end}}
+{{- if $authNarrative}}
 
-{{.Narrative.AuthNarrative}}
+{{$authNarrative}}
+{{- else if $basicAuthEnvVars}}
+
+Run `{{.Name}}-pp-cli auth setup` to print the URL and steps for getting credentials (add `--launch` to open the URL). Then set:
+
+```bash
+{{- range $basicAuthEnvVars}}
+export {{.Name}}="{{authEnvPlaceholder .}}"
+{{- end}}
+```
+
+{{- if $authPersistenceCommand}}
+To persist credentials, use `{{$authPersistenceCommand}}`. Stored secrets live in `credentials.toml` under the data dir, not in `config.toml`.
+{{- end}}
 {{- else if eq .Auth.Type "api_key"}}
 
 {{- with $canonicalEnvVar}}

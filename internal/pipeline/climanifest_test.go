@@ -97,7 +97,7 @@ func TestReadCLIBinaryNameRejectsPathComponents(t *testing.T) {
 	}
 }
 
-func TestWriteCLIManifestUsesOnlyClientProfileForPlatformRuntime(t *testing.T) {
+func TestWriteCLIManifestPreservesResolvedAuthEnvVarsForPlatformRuntime(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "platform"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "platform", "profile.go"), []byte("package platform\n"), 0o644))
@@ -108,11 +108,12 @@ func TestWriteCLIManifestUsesOnlyClientProfileForPlatformRuntime(t *testing.T) {
 	}))
 	got, err := ReadCLIManifest(dir)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"PRINTING_PRESS_CLIENT_PROFILE"}, got.AuthEnvVars)
+	assert.Equal(t, []string{"SHOPIFY_ACCESS_TOKEN"}, got.AuthEnvVars)
 	require.Len(t, got.AuthEnvVarSpecs, 1)
-	assert.Equal(t, "PRINTING_PRESS_CLIENT_PROFILE", got.AuthEnvVarSpecs[0].Name)
+	assert.Equal(t, "SHOPIFY_ACCESS_TOKEN", got.AuthEnvVarSpecs[0].Name)
 	assert.True(t, got.AuthEnvVarSpecs[0].Required)
-	assert.False(t, got.AuthEnvVarSpecs[0].Sensitive)
+	assert.True(t, got.AuthEnvVarSpecs[0].Sensitive)
+	assert.NotContains(t, got.AuthEnvVars, "PRINTING_PRESS_CLIENT_PROFILE")
 }
 
 func TestWriteCLIManifestPreservesExistingReleaseLedger(t *testing.T) {
@@ -1477,7 +1478,7 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.Contains(t, key.Description, "https://dashboard.stripe.com/apikeys")
 	})
 
-	t.Run("platform runtime emits profile selector plus required endpoint template vars", func(t *testing.T) {
+	t.Run("platform runtime emits resolved credentials plus required endpoint template vars", func(t *testing.T) {
 		dir := t.TempDir()
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "platform"), 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "platform", "profile.go"), []byte("package platform\n"), 0o644))
@@ -1489,22 +1490,76 @@ func TestWriteMCPBManifest(t *testing.T) {
 		require.NoError(t, WriteMCPBManifest(dir))
 		got := readMCPBManifest(t, dir)
 		assert.Equal(t, map[string]string{
-			"PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}",
-			"SHOPIFY_SHOP":                  "${user_config.shopify_shop}",
+			"SHOPIFY_ACCESS_TOKEN": "${user_config.shopify_access_token}",
+			"SHOPIFY_SHOP":         "${user_config.shopify_shop}",
 		}, got.Server.MCPConfig.Env)
-		_, hasToken := got.Server.MCPConfig.Env["SHOPIFY_ACCESS_TOKEN"]
-		assert.False(t, hasToken, "platform-profile manifests must not collect the access token beside the profile selector")
+		_, hasProfile := got.Server.MCPConfig.Env["PRINTING_PRESS_CLIENT_PROFILE"]
+		assert.False(t, hasProfile, "tenant profile selector is not a credential the binary reads")
 		require.Len(t, got.UserConfig, 2)
-		profile := got.UserConfig["printing_press_client_profile"]
-		assert.Equal(t, "Client profile", profile.Title)
-		assert.True(t, profile.Required)
-		assert.False(t, profile.Sensitive)
+		token := got.UserConfig["shopify_access_token"]
+		assert.Equal(t, "SHOPIFY_ACCESS_TOKEN", token.Title)
+		assert.True(t, token.Required)
+		assert.True(t, token.Sensitive)
 		shop, ok := got.UserConfig["shopify_shop"]
-		require.True(t, ok, "required {shop} must still be collected when credentials ride the profile selector")
+		require.True(t, ok, "required {shop} must still be collected alongside the credential")
 		assert.Equal(t, "SHOPIFY_SHOP", shop.Title)
 		assert.True(t, shop.Required, "{shop} has no spec-level default; user must supply it")
 		assert.False(t, shop.Sensitive)
 		assert.Contains(t, shop.Description, "{shop}")
+	})
+
+	t.Run("registered platform source binds client profile alongside credentials", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "adapter.go"), []byte(`package cli
+
+func init() {
+	registerPlatformSource(platformSourceRegistration{Source: "shopify"})
+}
+`), 0o644))
+		writeManifest(t, dir, CLIManifest{
+			APIName: "shopify", DisplayName: "Shopify", MCPBinary: "shopify-pp-mcp", MCPReady: "full",
+			AuthType: "api_key", AuthEnvVars: []string{"SHOPIFY_ACCESS_TOKEN"},
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		assert.Equal(t, "${user_config.shopify_access_token}", got.Server.MCPConfig.Env["SHOPIFY_ACCESS_TOKEN"],
+			"installer must still collect the credential the binary reads")
+		assert.Equal(t, "${user_config.printing_press_client_profile}", got.Server.MCPConfig.Env["PRINTING_PRESS_CLIENT_PROFILE"],
+			"fresh MCPB installs have no default profile; startup requires the selector")
+		token, ok := got.UserConfig["shopify_access_token"]
+		require.True(t, ok)
+		assert.True(t, token.Required)
+		assert.True(t, token.Sensitive)
+		profile, ok := got.UserConfig["printing_press_client_profile"]
+		require.True(t, ok, "missing-client-profile at MCP startup when no default_client_profile is configured")
+		assert.Equal(t, "Client profile", profile.Title)
+		assert.True(t, profile.Required)
+		assert.False(t, profile.Sensitive)
+	})
+
+	t.Run("registered platform source binds client profile even without credentials", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "adapter.go"), []byte(`package cli
+
+func init() {
+	registerPlatformSource(platformSourceRegistration{Source: "public-site"})
+}
+`), 0o644))
+		writeManifest(t, dir, CLIManifest{
+			APIName: "espn", MCPBinary: "espn-pp-mcp", MCPReady: "full", AuthType: "none",
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+		assert.Equal(t, "${user_config.printing_press_client_profile}", got.Server.MCPConfig.Env["PRINTING_PRESS_CLIENT_PROFILE"])
+		profile, ok := got.UserConfig["printing_press_client_profile"]
+		require.True(t, ok)
+		assert.True(t, profile.Required)
+		assert.False(t, profile.Sensitive)
 	})
 
 	t.Run("platform runtime rejects auth-named endpoint override", func(t *testing.T) {
@@ -1531,19 +1586,13 @@ func TestWriteMCPBManifest(t *testing.T) {
 		require.NoError(t, WriteMCPBManifest(dir))
 		got := readMCPBManifest(t, dir)
 
-		_, hasToken := got.Server.MCPConfig.Env["SHOPIFY_ACCESS_TOKEN"]
-		assert.False(t, hasToken, "auth-named endpoint override must not collect the credential beside the profile selector")
+		assert.Equal(t, "${user_config.shopify_access_token}", got.Server.MCPConfig.Env["SHOPIFY_ACCESS_TOKEN"],
+			"resolved credential must still reach the installer after a colliding {shop} override is rejected")
 		tokenField, hasTokenField := got.UserConfig["shopify_access_token"]
-		assert.False(t, hasTokenField, "installer must not prompt for SHOPIFY_ACCESS_TOKEN as a non-sensitive endpoint field")
-		if hasTokenField {
-			assert.True(t, tokenField.Sensitive, "if the access token appears at all it must stay masked")
-		}
-
-		assert.Equal(t, "${user_config.printing_press_client_profile}", got.Server.MCPConfig.Env["PRINTING_PRESS_CLIENT_PROFILE"])
-		profile, ok := got.UserConfig["printing_press_client_profile"]
-		require.True(t, ok)
-		assert.True(t, profile.Required)
-		assert.False(t, profile.Sensitive)
+		require.True(t, hasTokenField, "installer must prompt for the credential the binary reads")
+		assert.True(t, tokenField.Sensitive, "the access token must stay masked")
+		_, hasProfile := got.Server.MCPConfig.Env["PRINTING_PRESS_CLIENT_PROFILE"]
+		assert.False(t, hasProfile)
 
 		assert.Equal(t, "${user_config.shopify_shop}", got.Server.MCPConfig.Env["SHOPIFY_SHOP"])
 		shop, ok := got.UserConfig["shopify_shop"]
@@ -1558,12 +1607,16 @@ func TestWriteMCPBManifest(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "platform"), 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "platform", "profile.go"), []byte("package platform\n"), 0o644))
 		writeManifest(t, dir, CLIManifest{
-			APIName:              "shopify",
-			DisplayName:          "Shopify",
-			MCPBinary:            "shopify-pp-mcp",
-			MCPReady:             "full",
-			AuthType:             "api_key",
-			AuthEnvVars:          []string{"PRINTING_PRESS_CLIENT_PROFILE"},
+			APIName:     "shopify",
+			DisplayName: "Shopify",
+			MCPBinary:   "shopify-pp-mcp",
+			MCPReady:    "full",
+			AuthType:    "api_key",
+			AuthEnvVars: []string{"PRINTING_PRESS_CLIENT_PROFILE"},
+			AuthEnvVarSpecs: []spec.AuthEnvVar{{
+				Name: "PRINTING_PRESS_CLIENT_PROFILE", Kind: spec.AuthEnvVarKindPerCall,
+				Required: true, Sensitive: false,
+			}},
 			EndpointTemplateVars: []string{"access_token"},
 		})
 
@@ -1577,9 +1630,9 @@ func TestWriteMCPBManifest(t *testing.T) {
 		require.True(t, ok, "omitting the binding leaves the generated client unset")
 		assert.Equal(t, "SHOPIFY_ACCESS_TOKEN", token.Title)
 		assert.True(t, token.Required)
-		assert.True(t, token.Sensitive, "credential-shaped endpoint defaults stay masked; they must not bypass the profile as an unmasked field")
+		assert.True(t, token.Sensitive, "credential-shaped endpoint defaults stay masked")
 		profile, ok := got.UserConfig["printing_press_client_profile"]
-		require.True(t, ok)
+		require.True(t, ok, "a CLI that only declares the profile variable keeps that binding")
 		assert.False(t, profile.Sensitive)
 	})
 
@@ -3029,4 +3082,42 @@ func TestWriteManifestForGenerateUsesSelectedArchiveName(t *testing.T) {
 			assert.Equal(t, tt.wantPath, got.SpecPath)
 		})
 	}
+}
+
+func TestSourceRegistersPlatformSource(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		src  string
+		want bool
+	}{
+		{name: "definition only", src: "func registerPlatformSource(registration platformSourceRegistration) {\n}\n", want: false},
+		{name: "call in init", src: "func init() {\n\tregisterPlatformSource(platformSourceRegistration{Source: \"shopify\"})\n}\n", want: true},
+		{name: "definition then call", src: "func registerPlatformSource(registration platformSourceRegistration) {}\nfunc init() { registerPlatformSource(platformSourceRegistration{}) }\n", want: true},
+		{name: "unrelated", src: "package cli\n", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, sourceRegistersPlatformSource(tt.src))
+		})
+	}
+}
+
+func TestNeedsMCPBClientProfileBindingSkipsGeneratedDefinition(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "platform_cli.go"), []byte(`package cli
+
+func registerPlatformSource(registration platformSourceRegistration) {
+}
+`), 0o644))
+	assert.False(t, needsMCPBClientProfileBinding(dir))
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "adapter.go"), []byte(`package cli
+
+func init() {
+	registerPlatformSource(platformSourceRegistration{Source: "shopify"})
+}
+`), 0o644))
+	assert.True(t, needsMCPBClientProfileBinding(dir))
 }

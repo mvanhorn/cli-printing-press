@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -307,6 +308,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"clientCredentialsTokenURLHasTenant":  clientCredentialsTokenURLHasTenant,
 		"hasNonCookieAuth":                    hasNonCookieAuth,
 		"authAgentEnvVars":                    authAgentEnvVars,
+		"skillAuthNarrative":                  skillAuthNarrative,
 		"hasAuthEnvVarKind":                   hasAuthEnvVarKind,
 		"isRequestAuthEnvVar":                 isRequestAuthEnvVar,
 		"requiredRequestAuthEnvVars":          requiredRequestAuthEnvVars,
@@ -1587,6 +1589,41 @@ func isTenantAuthEnvVar(name string) bool {
 func isClientIDAuthEnvVar(name string) bool {
 	placeholder := naming.EnvVarPlaceholder(name)
 	return placeholder == "client_id" || strings.HasSuffix(placeholder, "_client_id")
+}
+
+var skillAuthEnvVarToken = regexp.MustCompile(`\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b`)
+
+// Independently authored prose can name secrets the compiled binary
+// ignores; drop it so Auth Setup lists only credentials the CLI reads.
+func skillAuthNarrative(auth spec.AuthConfig, narrative string) string {
+	narrative = strings.TrimSpace(narrative)
+	if narrative == "" {
+		return ""
+	}
+	resolved := resolvedSkillAuthEnvVarNames(auth)
+	for _, name := range skillAuthEnvVarToken.FindAllString(narrative, -1) {
+		if _, ok := resolved[name]; !ok {
+			return ""
+		}
+	}
+	return narrative
+}
+
+func resolvedSkillAuthEnvVarNames(auth spec.AuthConfig) map[string]struct{} {
+	names := make(map[string]struct{})
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		names[name] = struct{}{}
+	}
+	for _, envVar := range authAgentEnvVars(auth) {
+		add(envVar.Name)
+	}
+	for _, envVar := range requestAuthEnvVars(auth) {
+		add(envVar.Name)
+	}
+	return names
 }
 
 func authAgentEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {

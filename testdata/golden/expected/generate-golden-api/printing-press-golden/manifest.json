@@ -21,7 +21,7 @@
       "args": [],
       "command": "${__dirname}/bin/printing-press-golden-pp-mcp",
       "env": {
-        "PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}",
+        "PRINTING_PRESS_GOLDEN_API_KEY": "${user_config.printing_press_golden_api_key}",
         "PRINTING_PRESS_GOLDEN_BASE_URL": "${user_config.printing_press_golden_base_url}",
         "PRINTING_PRESS_GOLDEN_USER_AGENT": "${user_config.printing_press_golden_user_agent}"
       }
@@ -29,10 +29,11 @@
     "type": "binary"
   },
   "user_config": {
-    "printing_press_client_profile": {
-      "description": "Binds the MCP server to an existing tenant-gated Printing Press client profile.",
+    "printing_press_golden_api_key": {
+      "description": "Sets PRINTING_PRESS_GOLDEN_API_KEY for the Printing Press Studio MCP server.",
       "required": true,
-      "title": "Client profile",
+      "sensitive": true,
+      "title": "PRINTING_PRESS_GOLDEN_API_KEY",
       "type": "string"
     },
     "printing_press_golden_base_url": {
