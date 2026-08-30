@@ -19,6 +19,11 @@ func TestGeneratedClientRetrySafety(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
+	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	require.Contains(t, clientSrc, "func (c *Client) waitForRateLimitRefill(ctx context.Context, wait time.Duration) error")
+	require.Contains(t, clientSrc, "timed out waiting %s for rate-limit budget to refill")
+	require.Contains(t, clientSrc, "if canRetryAmbiguousFailure && attempt >= maxRetries {")
+
 	const runtimeTest = `package client
 
 import (
@@ -402,6 +407,83 @@ func TestRetrySafety_GetMutationVerifyShortCircuitsWithoutDial(t *testing.T) {
 	}
 	if envelope["__pp_verify_synthetic__"] != true {
 		t.Fatalf("verify envelope = %#v; want synthetic sentinel", envelope)
+	}
+}
+
+func TestRetrySafety_ThreeSequentialReadsPaceWithoutError(t *testing.T) {
+	var calls int
+	c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return retryResponse(req, http.StatusOK), nil
+	}))
+	c.limiter = newRateLimiter(2)
+
+	started := time.Now()
+	for i := 0; i < 3; i++ {
+		if _, err := c.Get(context.Background(), "/items", nil); err != nil {
+			t.Fatalf("Get(%d) = %v; want success without --rate-limit 0", i+1, err)
+		}
+	}
+	elapsed := time.Since(started)
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3", calls)
+	}
+	if elapsed < 900*time.Millisecond {
+		t.Fatalf("three paced reads elapsed %s, want the third visibly delayed", elapsed)
+	}
+}
+
+func TestRetrySafety_WaitsAfterRetriesInsteadOfRateLimitedError(t *testing.T) {
+	var calls int
+	c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if calls <= 4 {
+			resp := retryResponse(req, http.StatusTooManyRequests)
+			resp.Header.Set("Retry-After", "0")
+			return resp, nil
+		}
+		return retryResponse(req, http.StatusOK), nil
+	}))
+
+	started := time.Now()
+	if _, err := c.Get(context.Background(), "/items", nil); err != nil {
+		t.Fatalf("Get() after exhausted 429 retries = %v; want wait-for-refill then success", err)
+	}
+	elapsed := time.Since(started)
+	if calls != 5 {
+		t.Fatalf("calls = %d, want 4 exhausted 429s then 1 success", calls)
+	}
+	if elapsed < 900*time.Millisecond {
+		t.Fatalf("refill wait elapsed %s, want ~1s fallback after Retry-After: 0", elapsed)
+	}
+}
+
+func TestRetrySafety_ShortTimeoutIsTimeoutNotRateLimitedError(t *testing.T) {
+	var calls int
+	c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		resp := retryResponse(req, http.StatusTooManyRequests)
+		resp.Header.Set("Retry-After", "0")
+		return resp, nil
+	}))
+	c.HTTPClient.Timeout = 80 * time.Millisecond
+
+	_, err := c.Get(context.Background(), "/items", nil)
+	if err == nil {
+		t.Fatal("Get() = nil; want timeout while waiting for refill")
+	}
+	var limited *platform.RateLimitedError
+	if errors.As(err, &limited) {
+		t.Fatalf("Get() = %v; want timeout, not RateLimitedError", err)
+	}
+	if !strings.Contains(err.Error(), "timed out waiting") {
+		t.Fatalf("Get() = %v; want a clear rate-limit wait timeout", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Get() = %v; want context deadline exceeded", err)
+	}
+	if calls != 4 {
+		t.Fatalf("calls = %d, want 4 (retry policy) before the refill wait times out", calls)
 	}
 }
 `
