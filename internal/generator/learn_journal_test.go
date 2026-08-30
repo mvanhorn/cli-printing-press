@@ -49,8 +49,12 @@ func TestGenerateJournalEmitsFiles(t *testing.T) {
 		// Append path + fail-open entry point used by root.go.
 		"func AppendJournalEntry(",
 		"func JournalInvocation(",
-		// Session key: env var else parent-pid lineage.
+		// Session key: LEARN_SESSION override, else hashed harness id, else ppid.
 		"JOURNAL_EMIT_LEARN_SESSION",
+		"JournalHarnessSessionEnvVars",
+		`"h:"`,
+		"CODEX_SESSION_ID",
+		"CURSOR_SESSION_ID",
 		// Silence switches (verify/dogfood handled via cliutil).
 		"JOURNAL_EMIT_NO_LEARN",
 		"JOURNAL_EMIT_LEARN_NO_CAPTURE",

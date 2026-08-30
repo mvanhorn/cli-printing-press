@@ -33,6 +33,9 @@ func withJournalHome(t *testing.T) string {
 	t.Setenv("{{envPrefix .Name}}_NO_LEARN", "")
 	t.Setenv("{{envPrefix .Name}}_LEARN_NO_CAPTURE", "")
 	t.Setenv("{{envPrefix .Name}}_LEARN_SESSION", "")
+	for _, name := range learn.JournalHarnessSessionEnvVars {
+		t.Setenv(name, "")
+	}
 	return dir
 }
 
@@ -142,6 +145,45 @@ func TestJournal_SessionKeyFromEnv(t *testing.T) {
 	entries := readAllJournalEntries(t)
 	if len(entries) != 1 || entries[0].SessionKey != "session-abc123" {
 		t.Errorf("session_key = %+v, want session-abc123", entries)
+	}
+}
+
+func TestJournal_HarnessSessionIsHashed(t *testing.T) {
+	withJournalHome(t)
+	raw := "raw-harness-session-id-must-not-leak"
+	t.Setenv("CODEX_SESSION_ID", raw)
+	if err := runCLI(t, "version"); err != nil {
+		t.Fatalf("version: %v", err)
+	}
+	entries := readAllJournalEntries(t)
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(entries))
+	}
+	key := entries[0].SessionKey
+	if !strings.HasPrefix(key, "h:") {
+		t.Errorf("session_key = %q, want hashed harness prefix h:", key)
+	}
+	if strings.Contains(key, raw) {
+		t.Errorf("session_key leaked the raw harness id: %q", key)
+	}
+	if strings.Contains(journalRawBytes(t), raw) {
+		t.Error("raw harness session id must not appear anywhere in the journal")
+	}
+}
+
+func TestJournal_LearnSessionOverridesHarness(t *testing.T) {
+	withJournalHome(t)
+	t.Setenv("CODEX_SESSION_ID", "harness-should-lose")
+	t.Setenv("{{envPrefix .Name}}_LEARN_SESSION", "session-abc123")
+	if err := runCLI(t, "version"); err != nil {
+		t.Fatalf("version: %v", err)
+	}
+	entries := readAllJournalEntries(t)
+	if len(entries) != 1 || entries[0].SessionKey != "session-abc123" {
+		t.Errorf("LEARN_SESSION must win over harness id; got %+v", entries)
+	}
+	if strings.Contains(journalRawBytes(t), "harness-should-lose") {
+		t.Error("raw harness session id must not appear when LEARN_SESSION is set")
 	}
 }
 

@@ -575,6 +575,52 @@ func TestRecallCommand_EnvelopeCarriesQueryEntities(t *testing.T) {
 	}
 }
 
+func TestTeachRecall_IdentifierOnlyFindsRow(t *testing.T) {
+	cfg := newLearnConfig()
+	candidates := []string{"EXAMPLE-42", "TICKER-ABC", "WIDGET-1", "10.6.1.60"}
+	var ident string
+	for _, c := range candidates {
+		n := learn.Normalize("where is "+c, cfg)
+		if len(n.Tickers) == 1 && n.Tickers[0] == c {
+			ident = c
+			break
+		}
+	}
+	if ident == "" {
+		t.Skip("spec ticker patterns do not match the identifier-only fixtures")
+	}
+
+	home := withTempLearnHome(t)
+	dbPath := filepath.Join(home, "data.db")
+	query := "where is " + ident
+	if _, _, err := runRootArgs(t,
+		"teach", "--query", query,
+		"--resource", ident, "--resource-type", "items",
+		"--db", dbPath,
+	); err != nil {
+		t.Fatalf("teach: %v", err)
+	}
+	stdout, _, err := runRootArgs(t, "recall", query, "--db", dbPath, "--agent")
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	var env recallEnvelope
+	unmarshalAgentResults(t, stdout, &env)
+	if !env.Found {
+		t.Fatalf("identifier-only recall want found=true, got %+v", env)
+	}
+	foundIdent := false
+	for _, e := range env.QueryEntities {
+		if e == ident {
+			foundIdent = true
+			break
+		}
+	}
+	if !foundIdent {
+		t.Errorf("query_entities = %v, want to include %q", env.QueryEntities, ident)
+	}
+}
+
 // Defense: assert the per-CLI entity Config the tests use is non-nil
 // by referencing the package so the unused-import lint doesn't fire
 // when the suite shrinks.
