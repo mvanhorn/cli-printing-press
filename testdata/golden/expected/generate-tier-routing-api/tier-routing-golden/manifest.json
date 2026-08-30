@@ -21,7 +21,9 @@
       "args": [],
       "command": "${__dirname}/bin/tier-routing-golden-pp-mcp",
       "env": {
-        "PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}",
+        "TIER_ENTERPRISE_TOKEN": "${user_config.tier_enterprise_token}",
+        "TIER_GLOBAL_TOKEN": "${user_config.tier_global_token}",
+        "TIER_PAID_KEY": "${user_config.tier_paid_key}",
         "TIER_ROUTING_GOLDEN_BASE_URL": "${user_config.tier_routing_golden_base_url}",
         "TIER_ROUTING_GOLDEN_USER_AGENT": "${user_config.tier_routing_golden_user_agent}"
       }
@@ -29,10 +31,25 @@
     "type": "binary"
   },
   "user_config": {
-    "printing_press_client_profile": {
-      "description": "Binds the MCP server to an existing tenant-gated Printing Press client profile.",
+    "tier_enterprise_token": {
+      "description": "Sets TIER_ENTERPRISE_TOKEN for the Tier Routing Golden MCP server.",
       "required": true,
-      "title": "Client profile",
+      "sensitive": true,
+      "title": "TIER_ENTERPRISE_TOKEN",
+      "type": "string"
+    },
+    "tier_global_token": {
+      "description": "Sets TIER_GLOBAL_TOKEN for the Tier Routing Golden MCP server.",
+      "required": true,
+      "sensitive": true,
+      "title": "TIER_GLOBAL_TOKEN",
+      "type": "string"
+    },
+    "tier_paid_key": {
+      "description": "Sets TIER_PAID_KEY for the Tier Routing Golden MCP server.",
+      "required": true,
+      "sensitive": true,
+      "title": "TIER_PAID_KEY",
       "type": "string"
     },
     "tier_routing_golden_base_url": {

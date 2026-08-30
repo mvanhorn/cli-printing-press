@@ -91,6 +91,9 @@ func scanPackageEnvReads(pkgDir string, seen map[string]struct{}) error {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
 		}
+		if strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
 		path := filepath.Join(pkgDir, e.Name())
 		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err != nil {
@@ -146,16 +149,9 @@ func isDeniedDiscoveredEnvVar(name string) bool {
 // Safe by construction:
 //   - APIs with neither scanned package produce no changes.
 //   - Env vars already declared in mcp_config.env are skipped.
-//   - Platform-profile CLIs keep PRINTING_PRESS_CLIENT_PROFILE as the
-//     credential surface. Suffix-classified per-instance reads (BASE_URL
-//     and similar) and endpoint-template placeholders ({shop}) are still
-//     promoted: the profile selector does not fill a store hostname.
-//     Credential Getenv calls in config.go are not re-added beside the
-//     profile selector.
 //   - Goldens for spec-driven APIs without hand-written client code are
 //     untouched for credential names because those os.Getenv calls all
-//     resolve to names already in mcp_config.env (or are skipped under
-//     the platform-profile rule).
+//     resolve to names already in mcp_config.env.
 func reconcileMCPBManifestFromClient(dir string, cli CLIManifest) error {
 	manifestPath := filepath.Join(dir, MCPBManifestFilename)
 	data, err := os.ReadFile(manifestPath)
@@ -186,13 +182,9 @@ func reconcileMCPBManifestFromClient(dir string, cli CLIManifest) error {
 	cli.generatedEnvReads = generated
 	cli = dropCollidingEndpointTemplateOverrides(cli, generated)
 
-	platformProfiles := usesPlatformClientProfiles(dir)
 	var missing []string
 	for _, name := range envReads {
 		if _, declared := manifest.Server.MCPConfig.Env[name]; declared {
-			continue
-		}
-		if platformProfiles && !isPlatformProfileSafeDiscoveredEnvVar(cli, name) {
 			continue
 		}
 		missing = append(missing, name)
@@ -277,19 +269,4 @@ func isNonCredentialDiscoveredEnvVar(name string) bool {
 		}
 	}
 	return false
-}
-
-// The profile selector covers credentials that are not also required
-// endpoint placeholders. Suffix-classified knobs and declared endpoint
-// vars (including a credential-shaped default such as {access_token})
-// stay collectible; a colliding auth override is not an endpoint var
-// and stays off the installer.
-func isPlatformProfileSafeDiscoveredEnvVar(cli CLIManifest, name string) bool {
-	if isEndpointTemplateEnvVar(cli, name) {
-		return true
-	}
-	if isAuthOrCredentialEnvVar(cli, name) {
-		return false
-	}
-	return isNonCredentialDiscoveredEnvVar(name)
 }

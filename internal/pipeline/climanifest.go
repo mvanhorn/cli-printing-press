@@ -342,14 +342,6 @@ func WriteCLIManifest(dir string, m CLIManifest) error {
 }
 
 func normalizeCLIManifestForWrite(dir string, m CLIManifest) CLIManifest {
-	if usesPlatformClientProfiles(dir) {
-		m.AuthEnvVars = []string{"PRINTING_PRESS_CLIENT_PROFILE"}
-		m.AuthEnvVarSpecs = []spec.AuthEnvVar{{
-			Name: "PRINTING_PRESS_CLIENT_PROFILE", Kind: spec.AuthEnvVarKindPerCall,
-			Required: true, Sensitive: false,
-		}}
-		m.AuthAdditionalHeaders = nil
-	}
 	return dropCollidingEndpointTemplateOverrides(m, scanGeneratedEnvSet(dir))
 }
 
