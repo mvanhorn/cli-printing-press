@@ -28,7 +28,7 @@ func TestAdaptiveLimiterWait_ReservesUnderSingleLock(t *testing.T) {
 
 	require.Contains(t, src, "l.lastRequest = reservedAt",
 		"Wait must reserve the next slot under lock")
-	require.Contains(t, src, "l.releaseUnusedReservation(prevLast, reservedAt)",
+	require.Contains(t, src, "l.releaseUnusedReservation(reservedAt)",
 		"a canceled Wait must release a slot it never used")
 
 	waitStart := strings.Index(src, "func (l *AdaptiveLimiter) Wait(ctx context.Context) error {")
@@ -50,6 +50,24 @@ func TestAdaptiveLimiterWait_ReservesUnderSingleLock(t *testing.T) {
 	require.NotEqual(t, -1, unlockIdx, "unlock call must exist in Wait")
 	require.Less(t, lockIdx, writeIdx, "Wait must hold lock before reservation write")
 	require.Less(t, writeIdx, unlockIdx, "Wait must not unlock before reservation write")
+}
+
+func TestAdaptiveLimiterWait_ConcurrentCancelDoesNotRestoreAbandonedSlot(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("ratelimit-cancel-order")
+	outputDir := filepath.Join(t.TempDir(), "ratelimit-cancel-order-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	requireGeneratedTestsPass(
+		t,
+		outputDir,
+		"TestAdaptiveLimiter_(ConcurrentCancelInReservationOrderDoesNotRestoreAbandonedSlot|CanceledWaitDoesNotConsumeNextSlot)$",
+		[]string{
+			"TestAdaptiveLimiter_ConcurrentCancelInReservationOrderDoesNotRestoreAbandonedSlot",
+			"TestAdaptiveLimiter_CanceledWaitDoesNotConsumeNextSlot",
+		},
+	)
 }
 
 func TestAdaptiveLimiterFloor_AllowsBackoffToHalfRPS(t *testing.T) {

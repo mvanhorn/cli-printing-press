@@ -769,6 +769,63 @@ func TestAdaptiveLimiter_WaitHonorsCanceledContext(t *testing.T) {
 	}
 }
 
+func TestAdaptiveLimiter_ConcurrentCancelInReservationOrderDoesNotRestoreAbandonedSlot(t *testing.T) {
+	l := NewAdaptiveLimiter(2.0)
+	if err := l.Wait(context.Background()); err != nil {
+		t.Fatalf("prime Wait() = %v", err)
+	}
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstErr := make(chan error, 1)
+	go func() { firstErr <- l.Wait(firstCtx) }()
+
+	waitForReservation := func(minAhead time.Duration) bool {
+		deadline := time.Now().Add(200 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			l.mu.Lock()
+			ahead := time.Until(l.lastRequest)
+			l.mu.Unlock()
+			if ahead >= minAhead {
+				return true
+			}
+			time.Sleep(time.Millisecond)
+		}
+		return false
+	}
+	if !waitForReservation(300 * time.Millisecond) {
+		cancelFirst()
+		t.Fatal("first waiter did not reserve a future slot")
+	}
+
+	secondCtx, cancelSecond := context.WithCancel(context.Background())
+	secondErr := make(chan error, 1)
+	go func() { secondErr <- l.Wait(secondCtx) }()
+	if !waitForReservation(700 * time.Millisecond) {
+		cancelFirst()
+		cancelSecond()
+		t.Fatal("second waiter did not reserve past the first slot")
+	}
+
+	cancelFirst()
+	if err := <-firstErr; !errors.Is(err, context.Canceled) {
+		cancelSecond()
+		t.Fatalf("first Wait() = %v, want canceled", err)
+	}
+	cancelSecond()
+	if err := <-secondErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("second Wait() = %v, want canceled", err)
+	}
+
+	start := time.Now()
+	if err := l.Wait(context.Background()); err != nil {
+		t.Fatalf("next Wait() = %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed > 700*time.Millisecond {
+		t.Fatalf("next Wait after ordered cancels elapsed %s; restoring the first abandoned slot would add an extra interval", elapsed)
+	}
+}
+
 func TestAdaptiveLimiter_CanceledWaitDoesNotConsumeNextSlot(t *testing.T) {
 	l := NewAdaptiveLimiter(5.0)
 	if err := l.Wait(context.Background()); err != nil {
