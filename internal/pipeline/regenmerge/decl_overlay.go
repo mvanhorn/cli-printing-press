@@ -645,15 +645,21 @@ func walkOverlayStmt(s dst.Stmt, sc *bindingScopes, visit func(*dst.Ident)) {
 			return
 		}
 		for _, spec := range gd.Specs {
-			vs, ok := spec.(*dst.ValueSpec)
-			if !ok {
-				continue
-			}
-			for _, e := range vs.Values {
-				walkOverlayExpr(e, sc, visit)
-			}
-			for _, n := range vs.Names {
-				sc.bind(n.Name)
+			switch s := spec.(type) {
+			case *dst.ValueSpec:
+				walkOverlayExpr(s.Type, sc, visit)
+				for _, e := range s.Values {
+					walkOverlayExpr(e, sc, visit)
+				}
+				for _, n := range s.Names {
+					sc.bind(n.Name)
+				}
+			case *dst.TypeSpec:
+				walkFieldListTypes(s.TypeParams, sc, visit)
+				walkOverlayExpr(s.Type, sc, visit)
+				if s.Name != nil {
+					sc.bind(s.Name.Name)
+				}
 			}
 		}
 	case *dst.ExprStmt:
