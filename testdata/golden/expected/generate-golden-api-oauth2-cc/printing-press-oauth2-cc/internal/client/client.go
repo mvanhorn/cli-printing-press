@@ -1225,7 +1225,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				lastErr = apiErr
 				continue
 			}
-			if canRetryAmbiguousFailure && attempt >= maxRetries {
+			if canRetryAmbiguousFailure && maxRetries > 0 && attempt >= maxRetries {
 				if c.platformSession != nil {
 					c.platformSession.RecordRateLimitWait(wait)
 				}

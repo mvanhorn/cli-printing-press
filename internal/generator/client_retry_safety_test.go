@@ -22,7 +22,7 @@ func TestGeneratedClientRetrySafety(t *testing.T) {
 	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
 	require.Contains(t, clientSrc, "func (c *Client) waitForRateLimitRefill(ctx context.Context, wait time.Duration) error")
 	require.Contains(t, clientSrc, "timed out waiting %s for rate-limit budget to refill")
-	require.Contains(t, clientSrc, "if canRetryAmbiguousFailure && attempt >= maxRetries {")
+	require.Contains(t, clientSrc, "if canRetryAmbiguousFailure && maxRetries > 0 && attempt >= maxRetries {")
 
 	const runtimeTest = `package client
 
