@@ -74,6 +74,41 @@ func TestValidateResourceShape_NilDBReturnsNil(t *testing.T) {
 	}
 }
 
+func TestValidateResourceShape_TickerMismatchEmitsWarning(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+	seedRecallResource(t, db, "widgets", "TICKER-BR", `{"title":"TICKER-BR widget"}`)
+	got := ValidateResourceShape(
+		context.Background(), db, testConfig(),
+		"where is TICKER-AL",
+		"TICKER-BR",
+		"widgets",
+		[]string{"title"},
+	)
+	if len(got) != 1 {
+		t.Fatalf("want 1 warning, got %d: %+v", len(got), got)
+	}
+	if got[0].Code != "no_entity_overlap" {
+		t.Errorf("Code = %q, want no_entity_overlap", got[0].Code)
+	}
+}
+
+func TestValidateResourceShape_TickerOverlapNoWarning(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+	seedRecallResource(t, db, "widgets", "TICKER-AL", `{"title":"TICKER-AL widget"}`)
+	got := ValidateResourceShape(
+		context.Background(), db, testConfig(),
+		"where is TICKER-AL",
+		"TICKER-AL",
+		"widgets",
+		[]string{"title"},
+	)
+	if got != nil {
+		t.Errorf("matching ticker: want nil, got %+v", got)
+	}
+}
+
 func TestValidateResourceShape_EmptyResourceIDReturnsNil(t *testing.T) {
 	t.Parallel()
 	db := openRecallTestDB(t)

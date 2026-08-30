@@ -3213,7 +3213,10 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		// (which teach.go's command constructors call) and initLearn(),
 		// which root.go invokes from PersistentPreRunE under the same
 		// Learn.Enabled gate.
-		if err := g.renderTemplate("learn_init.go.tmpl", filepath.Join("internal", "cli", "learn_init.go"), g.Spec); err != nil {
+		if err := g.renderTemplate("learn_init.go.tmpl", filepath.Join("internal", "cli", "learn_init.go"), learnInitTemplateData{
+			APISpec:                g.Spec,
+			ResourceIdentityFields: learnResourceIdentityFieldEntries(g.Spec, g.profile),
+		}); err != nil {
 			return fmt.Errorf("rendering learn init: %w", err)
 		}
 		if err := g.renderTemplate("learn_init_test.go.tmpl", filepath.Join("internal", "cli", "learn_init_test.go"), g.Spec); err != nil {
@@ -4477,6 +4480,109 @@ type visionRenderData struct {
 type resourceIDFieldOverrideEntry struct {
 	Name  string
 	Value string
+}
+
+type learnInitTemplateData struct {
+	*spec.APISpec
+	ResourceIdentityFields []learnIdentityFieldEntry
+}
+
+type learnIdentityFieldEntry struct {
+	ResourceType string
+	Fields       []string
+}
+
+func learnCommonIdentityFields() []string {
+	return []string{
+		"name", "title", "display_name", "full_name", "short_name", "label",
+		"slug", "key", "code", "id", "address",
+	}
+}
+
+func learnResourceIdentityFieldEntries(api *spec.APISpec, profile *profiler.APIProfile) []learnIdentityFieldEntry {
+	idByType := map[string]string{}
+	add := func(name, idField string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if idField != "" {
+			idByType[name] = idField
+			return
+		}
+		if _, ok := idByType[name]; !ok {
+			idByType[name] = ""
+		}
+	}
+	if api != nil {
+		var walk func(map[string]spec.Resource)
+		walk = func(resources map[string]spec.Resource) {
+			for name, res := range resources {
+				add(name, firstEndpointIDField(res))
+				if len(res.SubResources) > 0 {
+					walk(res.SubResources)
+				}
+			}
+		}
+		walk(api.Resources)
+	}
+	if profile != nil {
+		for _, r := range profile.SyncableResources {
+			add(r.Name, r.IDField)
+		}
+		for _, r := range profile.DependentSyncResources {
+			add(r.Name, r.IDField)
+		}
+	}
+	names := make([]string, 0, len(idByType))
+	for name := range idByType {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	common := learnCommonIdentityFields()
+	entries := make([]learnIdentityFieldEntry, 0, len(names))
+	for _, name := range names {
+		entries = append(entries, learnIdentityFieldEntry{
+			ResourceType: name,
+			Fields:       identityFieldsForResource(idByType[name], common),
+		})
+	}
+	return entries
+}
+
+func identityFieldsForResource(idField string, common []string) []string {
+	out := make([]string, 0, len(common)+1)
+	seen := map[string]struct{}{}
+	add := func(f string) {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			return
+		}
+		if _, ok := seen[f]; ok {
+			return
+		}
+		seen[f] = struct{}{}
+		out = append(out, f)
+	}
+	add(idField)
+	for _, f := range common {
+		add(f)
+	}
+	return out
+}
+
+func firstEndpointIDField(r spec.Resource) string {
+	names := make([]string, 0, len(r.Endpoints))
+	for name := range r.Endpoints {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if id := strings.TrimSpace(r.Endpoints[name].IDField); id != "" {
+			return id
+		}
+	}
+	return ""
 }
 
 type resourceParentKeyColumnEntry struct {

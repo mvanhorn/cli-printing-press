@@ -246,7 +246,7 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 				}
 				learningID, _, uerr := s.UpsertLearning(cmd.Context(), store.UpsertLearningInput{
 					Query:         query,
-					QueryEntities: normalized.Entities,
+					QueryEntities: learn.QueryIdentityEntities(normalized),
 					ResourceID:    rid,
 					ResourceType:  resourceType,
 					Venue:         venueArg,
@@ -260,7 +260,7 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 				taughtRowIDs = append(taughtRowIDs, learningID)
 
 				if !noValidate {
-					for _, w := range learn.ValidateResourceShape(cmd.Context(), s.DB(), learnCfg, query, rid, resourceType, nil) {
+					for _, w := range learn.ValidateResourceShape(cmd.Context(), s.DB(), learnCfg, query, rid, resourceType, learnIdentityFieldsFor(resourceType)) {
 						if logErr := learn.AppendTeachLogWarning("teach", query, w); logErr != nil {
 							writeTeachErrLog(fmt.Sprintf("teach: warn append: %v", logErr))
 						}
@@ -485,7 +485,7 @@ when learnings exist.`,
 			if noLearnActive(flags) {
 				normalized := learn.Normalize(query, learnCfg)
 				envelope.Normalized = normalized.NonEntityNormalized
-				envelope.QueryEntities = append([]string{}, normalized.Entities...)
+				envelope.QueryEntities = append([]string{}, learn.QueryIdentityEntities(normalized)...)
 				if envelope.QueryEntities == nil {
 					envelope.QueryEntities = []string{}
 				}
@@ -499,10 +499,11 @@ when learnings exist.`,
 			defer s.Close()
 
 			result, err := learn.Recall(cmd.Context(), s.DB(), query, learn.Opts{
-				EntityConfig:    learnCfg,
-				MinConfidence:   minConf,
-				Limit:           limit,
-				DebugMismatches: debugMismatches,
+				EntityConfig:       learnCfg,
+				MinConfidence:      minConf,
+				Limit:              limit,
+				DebugMismatches:    debugMismatches,
+				ResourceTypeFields: learnResourceTypeFields(),
 			})
 			if err != nil {
 				return fmt.Errorf("recall: %w", err)

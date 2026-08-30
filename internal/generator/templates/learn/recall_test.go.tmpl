@@ -709,6 +709,55 @@ func TestRecall_HitCarriesLearningID(t *testing.T) {
 	}
 }
 
+// TestRecall_IdentifierOnlyTickerFindsRow is the identifier-only
+// teach→recall contract: the stored pattern still carries leftover
+// write-side tokens (punctuation-split identifier), but recall scores
+// on identity overlap and returns the row with the ticker in
+// query_entities. entity_match is exact when the resource JSON
+// carries the same identifier on a configured identity field.
+func TestRecall_IdentifierOnlyTickerFindsRow(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+	seedRecallResource(t, db, "widgets", "TICKER-ABC", `{"title":"TICKER-ABC widget","id":"TICKER-ABC"}`)
+	identity, err := json.Marshal(QueryIdentityEntities(Normalize("where is TICKER-ABC", testConfig())))
+	if err != nil {
+		t.Fatalf("marshal identity: %v", err)
+	}
+	// Simulate the write-side split: punctuation becomes spaces and
+	// the ticker is no longer a single stored token.
+	seedLearning(t, db, "where ticker abc", string(identity), "TICKER-ABC", "widgets", "boost", 3)
+
+	got, err := Recall(context.Background(), db, "where is TICKER-ABC", Opts{
+		EntityConfig:       testConfig(),
+		ResourceTypeFields: map[string][]string{"widgets": {"title", "id"}},
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if !got.Found {
+		t.Fatalf("want Found=true, got %+v", got)
+	}
+	if got.Family != "" {
+		t.Errorf("identifier-only family must stay empty NonEntityNormalized; Family=%q", got.Family)
+	}
+	foundIdent := false
+	for _, e := range got.QueryEntities {
+		if e == "TICKER-ABC" {
+			foundIdent = true
+			break
+		}
+	}
+	if !foundIdent {
+		t.Errorf("QueryEntities = %v, want to include TICKER-ABC", got.QueryEntities)
+	}
+	if len(got.Results) != 1 {
+		t.Fatalf("want 1 hit, got %d (%+v)", len(got.Results), got.Results)
+	}
+	if got.Results[0].EntityMatch != EntityMatchExact {
+		t.Errorf("EntityMatch = %q, want %q", got.Results[0].EntityMatch, EntityMatchExact)
+	}
+}
+
 // TestFamilyHash_StableNonReversibleEmpty pins the event-key contract:
 // deterministic, distinct across families, no family text leaking
 // through, and "" for an empty family (stored as NULL).
