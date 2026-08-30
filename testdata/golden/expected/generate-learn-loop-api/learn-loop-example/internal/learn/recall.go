@@ -164,10 +164,11 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		cfg = entities.NewConfig()
 	}
 	normalized := Normalize(query, cfg)
+	queryIdentity := QueryIdentityEntities(normalized)
 	result := Result{
 		Query:         query,
 		Normalized:    normalized.NonEntityNormalized,
-		QueryEntities: append([]string(nil), normalized.Entities...),
+		QueryEntities: append([]string(nil), queryIdentity...),
 		Results:       []Hit{},
 	}
 	if result.QueryEntities == nil {
@@ -221,7 +222,8 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 	normalized = PromoteEntities(normalized, resolver)
 	result.Family = QueryFamily(normalized)
 	queryTokens := strings.Fields(normalized.NonEntityNormalized)
-	result.QueryEntities = append([]string(nil), normalized.Entities...)
+	queryIdentity = QueryIdentityEntities(normalized)
+	result.QueryEntities = append([]string(nil), queryIdentity...)
 	if result.QueryEntities == nil {
 		result.QueryEntities = []string{}
 	}
@@ -300,7 +302,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		storedNorm := Normalize(queryPattern, cfg)
 		storedEntitySlice, _ := ParseStoredEntities(storedEntities)
 		if len(storedEntitySlice) == 0 {
-			storedEntitySlice = storedNorm.Entities
+			storedEntitySlice = QueryIdentityEntities(storedNorm)
 		}
 		// Opportunistic backfill for legacy null-entity rows. Rows
 		// written before symmetric teach-time promotion landed have
@@ -370,9 +372,16 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		//      happens to canonical-overlap a stored row still gets
 		//      caught at that layer.
 		if score < jMin {
-			if len(queryTokens) == 0 && len(storedNonEntityTokens) == 0 &&
-				len(normalized.Entities) > 0 && len(storedEntitySlice) > 0 {
-				score = Jaccard(normalized.Entities, storedEntitySlice)
+			// Identifier-only queries normalize to an empty non-entity
+			// bag on the read side. Score on identity overlap whenever
+			// the query has no content tokens and the stored row shares
+			// an identity token, even if the write-side pattern still
+			// carries leftover tokens (punctuation-split identifiers).
+			if len(queryTokens) == 0 && entitySlicesIntersect(queryIdentity, storedEntitySlice) {
+				score = Jaccard(queryIdentity, storedEntitySlice)
+			} else if len(queryTokens) == 0 && len(storedNonEntityTokens) == 0 &&
+				len(queryIdentity) > 0 && len(storedEntitySlice) > 0 {
+				score = Jaccard(queryIdentity, storedEntitySlice)
 			}
 			if score < jMin {
 				// Three fallback branches, gated by the lower
@@ -402,7 +411,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 					// only fire when literal entities genuinely differ.
 					// Same-entity rows that miss jMin are genuine
 					// structural noise and should drop.
-					if entitySlicesIntersect(normalized.Entities, storedEntitySlice) {
+					if entitySlicesIntersect(queryIdentity, storedEntitySlice) {
 						continue
 					}
 					canonScore := canonicalJaccard(queryCanonicals, storedCanonicals)
@@ -427,7 +436,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 					// such rows instead -- case 1 covers the matching-
 					// canonical path, case 2 is reserved for actually
 					// different entities.
-					if entitySlicesIntersect(normalized.Entities, storedEntitySlice) {
+					if entitySlicesIntersect(queryIdentity, storedEntitySlice) {
 						continue
 					}
 					if score < crossAliasMin {
@@ -454,7 +463,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 			t := lastObserved.Time
 			hit.LastObservedAt = &t
 		}
-		validateResource(ctx, db, cfg, &hit, normalized.Entities, storedEntitySlice, opts.ResourceTypeFields)
+		validateResource(ctx, db, cfg, &hit, queryIdentity, storedEntitySlice, opts.ResourceTypeFields)
 		// Cross-alias promotion: if canonicals overlap, the entities
 		// are equivalent even when their literal forms differ. Override
 		// a Mismatch verdict so the learning isn't filtered into the
@@ -491,7 +500,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 	// Generalization layer: ask the pattern engine whether any template
 	// applies to this query. Errors are swallowed; pattern hits are
 	// additive on top of direct hits.
-	patternHits, _ := patterns.Apply(ctx, db, query, normalized.NonEntityNormalized, normalized.Entities, patterns.Opts{
+	patternHits, _ := patterns.Apply(ctx, db, query, normalized.NonEntityNormalized, queryIdentity, patterns.Opts{
 		JaccardMin:      jMin,
 		Limit:           limit,
 		AdditionalKinds: opts.PatternKinds,
