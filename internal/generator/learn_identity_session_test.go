@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/require"
 )
@@ -35,10 +34,10 @@ func TestGenerateLearnIdentityAndSessionContract(t *testing.T) {
 		t.Skip("generated-output compile-and-test skipped in -short mode")
 	}
 
-	apiSpec := identifierLearnSpec("learn-identity")
-	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	apiSpec := identifierLearnSpec("lident")
+	outputDir := filepath.Join(t.TempDir(), "lident-pp-cli")
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
 	normalize := readEmitted(t, outputDir, "internal", "learn", "normalize.go")
@@ -73,8 +72,8 @@ func TestGenerateLearnIdentityAndSessionContract(t *testing.T) {
 func TestGenerateLearnIdentityEmitsPerResourceFields(t *testing.T) {
 	t.Parallel()
 
-	apiSpec := identifierLearnSpec("learn-fields")
-	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	apiSpec := identifierLearnSpec("lfields")
+	outputDir := filepath.Join(t.TempDir(), "lfields-pp-cli")
 	gen := New(apiSpec, outputDir)
 	gen.VisionSet = VisionTemplateSet{Store: true}
 	require.NoError(t, gen.Generate())
