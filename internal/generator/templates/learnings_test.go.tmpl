@@ -35,7 +35,7 @@ func TestNormalizeQuery_KeepsRegisteredTickersWhole(t *testing.T) {
 	}{
 		{"where is 10.6.1.60", "where 10.6.1.60"},
 		{"where is TICKER-ABC", "where ticker-abc"},
-		{"look up 10.6.1.60 now", "look 10.6.1.60 now"},
+		{"look at 10.6.1.60 now", "look 10.6.1.60 now"},
 	}
 	for _, tc := range cases {
 		got := store.NormalizeQuery(tc.in)
