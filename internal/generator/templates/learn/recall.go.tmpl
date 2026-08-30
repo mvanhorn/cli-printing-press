@@ -373,15 +373,13 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		//      caught at that layer.
 		if score < jMin {
 			// Identifier-only queries normalize to an empty non-entity
-			// bag on the read side. Score on identity overlap only when
-			// leftover stored tokens are empty or punctuation-split
-			// identifier fragments. Distinct leftover intent tokens
-			// (different resource/action, same identifier) must not
-			// become exact skip-discovery hits.
-			identityForFragments := append(append([]string{}, queryIdentity...), storedEntitySlice...)
-			if len(queryTokens) == 0 && entitySlicesIntersect(queryIdentity, storedEntitySlice) &&
-				leftoverTokensAreIdentityFragments(storedNonEntityTokens, identityForFragments) {
-				score = Jaccard(queryIdentity, storedEntitySlice)
+			// bag on the read side. Score identity overlap together with
+			// leftover stored tokens: punctuation-split identifier
+			// fragments stay identity-equivalent, leftover intent tokens
+			// enter the bag so same-identifier / different-intent rows
+			// cannot all become exact skip-discovery hits.
+			if len(queryTokens) == 0 && entitySlicesIntersect(queryIdentity, storedEntitySlice) {
+				score = identifierOnlyScore(queryIdentity, storedEntitySlice, storedNonEntityTokens)
 			} else if len(queryTokens) == 0 && len(storedNonEntityTokens) == 0 &&
 				len(queryIdentity) > 0 && len(storedEntitySlice) > 0 {
 				score = Jaccard(queryIdentity, storedEntitySlice)
@@ -750,11 +748,26 @@ func entityMatchPriority(em string) int {
 	}
 }
 
+// identifierOnlyScore is Jaccard of query identity against stored
+// identity plus leftover stored tokens that are not punctuation-split
+// identifier fragments. Fragment leftovers stay identity-equivalent;
+// leftover intent tokens stay in the bag.
+func identifierOnlyScore(queryIdentity, storedIdentity, leftover []string) float64 {
+	identity := append(append([]string{}, queryIdentity...), storedIdentity...)
+	storedBag := append([]string{}, storedIdentity...)
+	for _, tok := range leftover {
+		if leftoverTokensAreIdentityFragments([]string{tok}, identity) {
+			continue
+		}
+		storedBag = append(storedBag, tok)
+	}
+	return Jaccard(queryIdentity, storedBag)
+}
+
 // leftoverTokensAreIdentityFragments reports whether every leftover
 // stored token is an identity token or an alphanumeric fragment of
 // one. Write-side punctuation splits ("ticker" "abc" from TICKER-ABC)
-// stay eligible for the identifier-only boost; leftover intent tokens
-// do not.
+// stay identity-equivalent; leftover intent tokens do not.
 func leftoverTokensAreIdentityFragments(tokens, identity []string) bool {
 	if len(tokens) == 0 {
 		return true

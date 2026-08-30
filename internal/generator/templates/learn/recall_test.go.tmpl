@@ -775,6 +775,20 @@ func TestLeftoverTokensAreIdentityFragments(t *testing.T) {
 	}
 }
 
+func TestIdentifierOnlyScore_IncludesLeftoverIntent(t *testing.T) {
+	t.Parallel()
+	id := []string{"TICKER-ABC"}
+	if got := identifierOnlyScore(id, id, nil); got != 1 {
+		t.Fatalf("empty leftover: got %v, want 1", got)
+	}
+	if got := identifierOnlyScore(id, id, []string{"ticker", "abc"}); got != 1 {
+		t.Fatalf("identifier fragments: got %v, want 1", got)
+	}
+	if got := identifierOnlyScore(id, id, []string{"owns"}); got >= 0.6 {
+		t.Fatalf("intent leftover must stay below jMin; got %v", got)
+	}
+}
+
 // TestRecall_SameIdentifierDifferentIntentDoesNotSkipDiscovery pins
 // that two teachings sharing an identifier but naming different
 // resources and actions cannot both become exact skip-discovery hits.
