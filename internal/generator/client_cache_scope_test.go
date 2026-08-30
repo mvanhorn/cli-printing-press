@@ -57,6 +57,8 @@ func TestGeneratedCacheWritesUsePrivatePermissions(t *testing.T) {
 	client := string(clientSrc)
 	require.Contains(t, client, "os.MkdirAll(resourceDir, 0o700)")
 	require.Contains(t, client, "os.WriteFile(cacheFile, []byte(data), 0o600)")
+	require.Contains(t, client, "os.Chmod(cacheFile, 0o600)",
+		"rewriting an existing cache file must chmod 0600; WriteFile ignores perm on an extant file")
 	require.NotContains(t, client, "os.MkdirAll(resourceDir, 0o755)")
 	require.NotContains(t, client, "os.WriteFile(cacheFile, []byte(data), 0o644)")
 
@@ -70,6 +72,62 @@ func TestGeneratedCacheWritesUsePrivatePermissions(t *testing.T) {
 	require.Contains(t, config, "cliutil.AtomicWritePrivateFile(c.Path, data, 0o600, 0o700)")
 	require.NotContains(t, config, "os.WriteFile(c.Path, data, 0o644)")
 	require.NotContains(t, config, "os.MkdirAll(dir, 0o755)")
+}
+
+func TestWriteCacheWithHeadersRechmodsExistingFile(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("cache-chmod")
+	outputDir := filepath.Join(t.TempDir(), "cache-chmod-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const runtimeTest = `package client
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+	"time"
+
+	"cache-chmod-pp-cli/internal/config"
+)
+
+func TestWriteCacheWithHeadersRechmodsExistingFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits are not preserved on Windows")
+	}
+
+	c := New(&config.Config{BaseURL: "https://api.example.invalid"}, time.Second, 0)
+	c.cacheDir = t.TempDir()
+
+	c.writeCacheWithHeaders("/items", nil, nil, json.RawMessage(` + "`" + `{"ok":true}` + "`" + `))
+	matches, err := filepath.Glob(filepath.Join(c.cacheDir, "resources", "*", "*.json"))
+	if err != nil {
+		t.Fatalf("glob cache files: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("wrote %d cache files, want 1: %v", len(matches), matches)
+	}
+	cacheFile := matches[0]
+	if err := os.Chmod(cacheFile, 0o644); err != nil {
+		t.Fatalf("chmod leftover 0644: %v", err)
+	}
+
+	c.writeCacheWithHeaders("/items", nil, nil, json.RawMessage(` + "`" + `{"ok":true}` + "`" + `))
+	info, err := os.Stat(cacheFile)
+	if err != nil {
+		t.Fatalf("stat rewritten cache file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("rewritten cache mode = %04o, want 0600", got)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "cache_chmod_runtime_test.go"), []byte(runtimeTest), 0o600))
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^TestWriteCacheWithHeadersRechmodsExistingFile$", "-count=1")
 }
 
 func TestGeneratedClientQueryParamContractsPass(t *testing.T) {
