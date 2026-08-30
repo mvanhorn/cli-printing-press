@@ -6,6 +6,7 @@ package store_test
 import (
 	"context"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"learn-loop-example-pp-cli/internal/store"
@@ -20,6 +21,36 @@ func openLearnings(t *testing.T) *store.Store {
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+func TestNormalizeQuery_KeepsRegisteredTickersWhole(t *testing.T) {
+	defer store.RegisterTickerPatterns(nil)
+	store.RegisterTickerPatterns([]*regexp.Regexp{
+		regexp.MustCompile(`^\d{1,3}(\.\d{1,3}){3}$`),
+		regexp.MustCompile(`^TICKER-[A-Z0-9]+$`),
+	})
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"where is 10.6.1.60", "where 10.6.1.60"},
+		{"where is TICKER-ABC", "where ticker-abc"},
+		{"look at 10.6.1.60 now", "look 10.6.1.60 now"},
+	}
+	for _, tc := range cases {
+		got := store.NormalizeQuery(tc.in)
+		if got != tc.want {
+			t.Errorf("NormalizeQuery(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestNormalizeQuery_UnregisteredIdentifierStillSplits(t *testing.T) {
+	store.RegisterTickerPatterns(nil)
+	got := store.NormalizeQuery("where is 10.6.1.60")
+	if got != "where 10 6 1 60" {
+		t.Errorf("NormalizeQuery without ticker registration = %q, want %q", got, "where 10 6 1 60")
+	}
 }
 
 func TestNormalizeQuery_StripsStopwordsAndPunctuation(t *testing.T) {

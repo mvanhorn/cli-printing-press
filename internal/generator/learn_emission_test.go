@@ -161,6 +161,10 @@ func TestGenerateLearnCLICommandsCompileAndTest(t *testing.T) {
 
 	apiSpec := minimalSpec("learn-cli")
 	apiSpec.Learn.Enabled = true
+	apiSpec.Learn.TickerPatterns = []string{
+		`^EXAMPLE-[A-Z0-9]+(-[A-Z0-9]+)*$`,
+		`^\d{1,3}(\.\d{1,3}){3}$`,
+	}
 	outputDir := filepath.Join(t.TempDir(), "learn-cli-pp-cli")
 	gen := New(apiSpec, outputDir)
 	gen.VisionSet = VisionTemplateSet{Store: true}
@@ -241,6 +245,9 @@ func TestGenerateLearnInitWiresSpec(t *testing.T) {
 		`{Canonical: "US", Values: []string{"USA", "America"}}`,
 		`lookups.SeedFromConfig(db, seeds)`,
 		`learnInitOnce`,
+		`store.RegisterTickerPatterns(tickerPatterns)`,
+		`func learnResourceTypeFields()`,
+		`func learnIdentityFieldsFor(`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("learn_init.go missing %q\n--- emitted ---\n%s", want, got)
@@ -272,5 +279,8 @@ func TestGenerateLearnInitEmptyConfigOmitsImports(t *testing.T) {
 	}
 	if strings.Contains(got, `/learn/lookups"`) {
 		t.Errorf("learn_init.go must not import lookups when no EntityLookupSeeds declared\n--- emitted ---\n%s", got)
+	}
+	if strings.Contains(got, "store.RegisterTickerPatterns") {
+		t.Errorf("learn_init.go must not register ticker patterns when none are declared\n--- emitted ---\n%s", got)
 	}
 }

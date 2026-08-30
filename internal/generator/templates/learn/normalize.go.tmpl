@@ -80,3 +80,14 @@ func normalize(query string, cfg *entities.Config, fold bool) NormalizedQuery {
 		NonEntityNormalized: strings.Join(tokens, " "),
 	}
 }
+
+// QueryIdentityEntities returns the query-side identity tokens used at
+// teach-write and recall-match: Entities plus Tickers. Resource-side
+// extraction already folds both into one slice so a ticker-shaped
+// identifier can match the resource that is that identifier. Family
+// keys stay on NonEntityNormalized and are not affected.
+func QueryIdentityEntities(n NormalizedQuery) []string {
+	out := make([]string, 0, len(n.Entities)+len(n.Tickers))
+	out = append(out, n.Entities...)
+	return append(out, n.Tickers...)
+}

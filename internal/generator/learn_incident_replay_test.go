@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -64,6 +65,7 @@ func TestIncidentReplay(t *testing.T) {
 	t.Run("AE4_phrasing_convergence", h.testAE4PhrasingConvergence)
 	t.Run("AE6_harness_silence", h.testAE6HarnessSilence)
 	t.Run("SessionKeyFallback_pid_lineage", h.testSessionKeyFallbackPidLineage)
+	t.Run("SessionKeyFallback_harness_hash_across_ppids", h.testSessionKeyHarnessHashAcrossPPIDs)
 }
 
 // incidentReplaySpec is minimalSpec plus a second endpoint so the
@@ -639,4 +641,89 @@ func (h *incidentHarness) testSessionKeyFallbackPidLineage(t *testing.T) {
 	open := h.listCandidates(home, "pid-harness", "open")
 	require.Len(t, open, 1, "pid-lineage keyed failure pair must still derive the flag_alias candidate")
 	require.Equal(t, "flag_alias", open[0].Class)
+}
+
+// runViaShell starts the CLI under a short-lived shell without exec, so
+// the CLI's PPID is the shell rather than this test process. Combined
+// with a shared harness session env and no LEARN_SESSION, this is the
+// Codex-style sibling-tool-call shape: different PPIDs, one episode.
+func (h *incidentHarness) runViaShell(home string, extraEnv []string, args ...string) (stdout, stderr string, exitCode int) {
+	h.t.Helper()
+	script := strconv.Quote(h.binary) + ` "$@"`
+	cmd := exec.Command("sh", append([]string{"-c", script, "_"}, args...)...)
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + home,
+		"TMPDIR=" + os.TempDir(),
+		h.envPrefix + "_HOME=" + home,
+		h.envPrefix + "_BASE_URL=" + h.baseURL,
+		"MYAPI_TOKEN=dummy-token-for-harness",
+	}
+	cmd.Env = append(cmd.Env, extraEnv...)
+	var out, errBuf strings.Builder
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	exitCode = 0
+	if err != nil {
+		exitErr, ok := err.(*exec.ExitError)
+		require.True(h.t, ok, "shell invocation %v failed to run: %v", args, err)
+		exitCode = exitErr.ExitCode()
+	}
+	return out.String(), errBuf.String(), exitCode
+}
+
+func (h *incidentHarness) journalRaw(home string) string {
+	h.t.Helper()
+	segments, err := filepath.Glob(filepath.Join(home, "state", "learn", "journal-*.jsonl"))
+	require.NoError(h.t, err)
+	var b strings.Builder
+	for _, seg := range segments {
+		data, err := os.ReadFile(seg)
+		require.NoError(h.t, err)
+		b.Write(data)
+	}
+	return b.String()
+}
+
+// testSessionKeyHarnessHashAcrossPPIDs proves a recall → discover →
+// teach episode assembled across separate child processes that do not
+// share a parent pid still synthesizes exactly one quarantined
+// playbook_candidate when a harness session id is present.
+func (h *incidentHarness) testSessionKeyHarnessHashAcrossPPIDs(t *testing.T) {
+	home := t.TempDir()
+	const raw = "codex-session-raw-must-not-appear-xyz"
+	extra := []string{"CODEX_SESSION_ID=" + raw}
+
+	stdout, stderr, exit := h.runViaShell(home, extra, "recall", incidentFamilyQueryA, "--json")
+	require.Equal(t, 0, exit, "recall must exit 0; stderr:\n%s\nstdout:\n%s", stderr, stdout)
+	_, stderr, exit = h.runViaShell(home, extra, "items", "list", "--json")
+	require.Equal(t, 0, exit, "items list must exit 0; stderr:\n%s", stderr)
+	_, stderr, exit = h.runViaShell(home, extra, "teach",
+		"--query", incidentFamilyQueryA,
+		"--resource-type", "items",
+		"--resource", "alpha-recap",
+		"--json")
+	require.Equal(t, 0, exit, "teach must exit 0; stderr:\n%s", stderr)
+
+	entries := h.readJournal(home)
+	require.GreaterOrEqual(t, len(entries), 3, "recall, discovery, and teach must journal")
+	key := entries[0].SessionKey
+	require.True(t, strings.HasPrefix(key, "h:"), "harness session must hash; got %q", key)
+	for _, e := range entries {
+		require.Equal(t, key, e.SessionKey, "separate-process invocations must share the hashed harness key")
+		require.False(t, strings.HasPrefix(e.SessionKey, "ppid:"), "PPID must not win when a harness id is set")
+	}
+	rawJournal := h.journalRaw(home)
+	require.NotContains(t, rawJournal, raw, "raw harness session id must not land in the journal")
+
+	open := h.listCandidates(home, "harness-inspect", "open")
+	var playbooks int
+	for _, row := range open {
+		if row.Class == "playbook_candidate" {
+			playbooks++
+			require.Equal(t, incidentExpectedFamily, row.QueryFamily)
+		}
+	}
+	require.Equal(t, 1, playbooks, "want exactly one quarantined playbook_candidate; open=%+v", open)
 }
