@@ -361,25 +361,19 @@ func (s *Store) ensureColumn(ctx context.Context, conn *sql.Conn, table, column,
 		return fmt.Errorf("checking table %s: %w", table, err)
 	}
 
-	rows, err := conn.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info("%s")`, table))
-	if err != nil {
-		return fmt.Errorf("table_info %s: %w", table, err)
+	// table_info omits generated columns (VIRTUAL/STORED). table_xinfo
+	// reports them so a later Open does not re-ADD a column CREATE TABLE
+	// already declared, and so upgrades can see a prior ADD of bare_id.
+	var existing string
+	err = conn.QueryRowContext(ctx,
+		`SELECT name FROM pragma_table_xinfo(?) WHERE name=?`,
+		table, column,
+	).Scan(&existing)
+	if err == nil {
+		return nil
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var n, typ string
-		var notnull, pk int
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &n, &typ, &notnull, &dflt, &pk); err != nil {
-			return fmt.Errorf("scan table_info %s: %w", table, err)
-		}
-		if n == column {
-			return nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterating table_info %s: %w", table, err)
+	if err != sql.ErrNoRows {
+		return fmt.Errorf("table_xinfo %s: %w", table, err)
 	}
 
 	if _, err := conn.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE "%s" ADD COLUMN "%s" %s`, table, column, decl)); err != nil {
@@ -412,7 +406,9 @@ func (s *Store) ensureColumn(ctx context.Context, conn *sql.Conn, table, column,
 func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 	for _, c := range []struct{ table, column, decl string }{
 		{table: "leagues", column: "parent_id", decl: "TEXT"},
+		{table: "leagues", column: "bare_id", decl: "TEXT GENERATED ALWAYS AS (substr(id, 1, coalesce(nullif(instr(id, char(0)), 0) - 1, length(id)))) VIRTUAL"},
 		{table: "standings", column: "parent_id", decl: "TEXT"},
+		{table: "standings", column: "bare_id", decl: "TEXT GENERATED ALWAYS AS (substr(id, 1, coalesce(nullif(instr(id, char(0)), 0) - 1, length(id)))) VIRTUAL"},
 		{table: "sync_state", column: "last_cursor", decl: "TEXT"},
 		{table: "sync_state", column: "last_synced_at", decl: "DATETIME"},
 		{table: "sync_state", column: "total_count", decl: "INTEGER DEFAULT 0"},
@@ -631,16 +627,20 @@ func (s *Store) migrate(ctx context.Context) error {
 			"id" TEXT PRIMARY KEY,
 			"data" JSON NOT NULL,
 			"synced_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
-			"parent_id" TEXT
+			"parent_id" TEXT,
+			"bare_id" TEXT GENERATED ALWAYS AS (substr(id, 1, coalesce(nullif(instr(id, char(0)), 0) - 1, length(id)))) VIRTUAL
 		)`,
 		`CREATE INDEX IF NOT EXISTS "idx_leagues_parent_id" ON "leagues"("parent_id")`,
+		`CREATE INDEX IF NOT EXISTS "idx_leagues_bare_id" ON "leagues"("bare_id")`,
 		`CREATE TABLE IF NOT EXISTS "standings" (
 			"id" TEXT PRIMARY KEY,
 			"data" JSON NOT NULL,
 			"synced_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
-			"parent_id" TEXT
+			"parent_id" TEXT,
+			"bare_id" TEXT GENERATED ALWAYS AS (substr(id, 1, coalesce(nullif(instr(id, char(0)), 0) - 1, length(id)))) VIRTUAL
 		)`,
 		`CREATE INDEX IF NOT EXISTS "idx_standings_parent_id" ON "standings"("parent_id")`,
+		`CREATE INDEX IF NOT EXISTS "idx_standings_bare_id" ON "standings"("bare_id")`,
 	}
 
 	// Run every migration — including the column backfill and the
@@ -2050,6 +2050,11 @@ func resourceStorageID(resourceType, id string, obj map[string]any) string {
 // returns composite keys for parent-keyed resources, so callers comparing those
 // ids against bare API ids must run them through this first. For non-composite
 // ids it returns the input unchanged, so it is safe to apply to every id.
+//
+// Parent-keyed typed tables also project this value as a generated bare_id
+// column (indexed) so SQL/store queries can filter on the entity id without
+// matching the hidden parent suffix. WHERE id = ? against a bare API id
+// misses those rows; WHERE bare_id = ? finds them.
 func BareResourceID(storageID string) string {
 	if i := strings.IndexByte(storageID, 0); i >= 0 {
 		return storageID[:i]
@@ -2314,7 +2319,8 @@ func (s *Store) GetSyncCursor(resourceType string) string {
 // ListIDs returns all IDs from a resource's domain table, or from the generic
 // resources table if no domain table exists. Used by dependent sync to iterate parents.
 // For parent-keyed resource types these are composite storage keys; run them
-// through BareResourceID before comparing against bare API ids.
+// through BareResourceID before comparing against bare API ids, or filter the
+// typed table's generated bare_id column from SQL.
 //
 // resourceType is never interpolated into SQL directly. We resolve it to a real
 // table name via a parameterized sqlite_master lookup; only that trusted name is

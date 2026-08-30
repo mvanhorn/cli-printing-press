@@ -1540,20 +1540,18 @@ func TestMigrate_AddsColumnsOnUpgrade_{{pascal $table.Name}}(t *testing.T) {
 	}
 	defer s.Close()
 
-	// The migration must have added every generated column.
-	rows, err := s.DB().Query(`PRAGMA table_info({{safeName $table.Name}})`)
+	// table_info hides generated columns; table_xinfo is the verify
+	// surface for VIRTUAL backfills such as bare_id.
+	rows, err := s.DB().Query(`SELECT name FROM pragma_table_xinfo(?)`, "{{$table.Name}}")
 	if err != nil {
-		t.Fatalf("table_info: %v", err)
+		t.Fatalf("table_xinfo: %v", err)
 	}
 	defer rows.Close()
 
 	hasColumn := make(map[string]bool)
 	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notnull, pk int
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+		var name string
+		if err := rows.Scan(&name); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
 		hasColumn[name] = true
@@ -1571,6 +1569,20 @@ func TestMigrate_AddsColumnsOnUpgrade_{{pascal $table.Name}}(t *testing.T) {
 	} {
 		if !hasColumn[want] {
 			t.Fatalf("%s column missing from {{$table.Name}} after migrate", want)
+		}
+	}
+
+	for _, wantIdx := range []string{
+{{- range $idx := $table.Indexes}}
+		"{{$idx.Name}}",
+{{- end}}
+	} {
+		var got string
+		if err := s.DB().QueryRow(
+			`SELECT name FROM sqlite_master WHERE type='index' AND name=?`,
+			wantIdx,
+		).Scan(&got); err != nil {
+			t.Fatalf("%s index missing from {{$table.Name}} after migrate: %v", wantIdx, err)
 		}
 	}
 }

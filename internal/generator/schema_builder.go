@@ -34,7 +34,18 @@ type ColumnDef struct {
 	Type       string
 	PrimaryKey bool
 	NotNull    bool
+	// Generated marks a SQLite generated column. Writers must omit it from
+	// INSERT/UPDATE; the engine computes it from other columns on read.
+	Generated bool
 }
+
+const (
+	storeBareIDColumn = "bare_id"
+	// VIRTUAL so existing databases can ADD COLUMN on open. SQLite rejects
+	// ALTER TABLE ADD of a STORED generated column; the matching index
+	// materializes the value for lookups.
+	storeBareIDType = `TEXT GENERATED ALWAYS AS (substr(id, 1, coalesce(nullif(instr(id, char(0)), 0) - 1, length(id)))) VIRTUAL`
+)
 
 type IndexDef struct {
 	Name      string
