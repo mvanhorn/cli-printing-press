@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.31.3](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.2...v4.31.3) (2026-08-30)
+
+
+### Bug Fixes
+
+* **cli:** apply --limit after HTML extraction, not on raw markup ([#4432](https://github.com/mvanhorn/cli-printing-press/issues/4432)) ([8719b83](https://github.com/mvanhorn/cli-printing-press/commit/8719b83dde10b3b7580d7ca527ed503d77c2f330))
+* **cli:** chmod rewritten cache files to 0600 and skip multipart file IO on --dry-run ([#4429](https://github.com/mvanhorn/cli-printing-press/issues/4429)) ([c9e942d](https://github.com/mvanhorn/cli-printing-press/commit/c9e942d12d476ec1c2b0f8e3a5c8c58380b82256)), closes [#4428](https://github.com/mvanhorn/cli-printing-press/issues/4428) [#4424](https://github.com/mvanhorn/cli-printing-press/issues/4424)
+* **cli:** derive manifest, MCPB, and SKILL auth env vars from the credentials the binary reads ([#4431](https://github.com/mvanhorn/cli-printing-press/issues/4431)) ([c5bd247](https://github.com/mvanhorn/cli-printing-press/commit/c5bd2474f76516bf09ac7f64e5dac8d16367faf4))
+* **cli:** expose a queryable bare id for parent-keyed typed tables ([#4434](https://github.com/mvanhorn/cli-printing-press/issues/4434)) ([1de9e66](https://github.com/mvanhorn/cli-printing-press/commit/1de9e66a3a3c2a979bd8064492dfba3cd67d2618))
+* **cli:** fail workflow archive when every resource errors ([#4410](https://github.com/mvanhorn/cli-printing-press/issues/4410)) ([28c43fa](https://github.com/mvanhorn/cli-printing-press/commit/28c43fa99ad1b74907a6dfd5c660b40704c52f08))
+* **cli:** normalize hyphenated parent FK for typed-table sync ([#4413](https://github.com/mvanhorn/cli-printing-press/issues/4413)) ([691921b](https://github.com/mvanhorn/cli-printing-press/commit/691921b6da5eceb76c4ba032706300b9901fd2b1))
+* **cli:** recognize camelCase stemUid as resource primary key ([#4412](https://github.com/mvanhorn/cli-printing-press/issues/4412)) ([fb3b43e](https://github.com/mvanhorn/cli-printing-press/commit/fb3b43efa184c69ba118368d05c30fe97dc29b67))
+* **cli:** seed POST-query sync first page with id-walk filter ([#4411](https://github.com/mvanhorn/cli-printing-press/issues/4411)) ([507f207](https://github.com/mvanhorn/cli-printing-press/commit/507f2071da5a96bfdf2ef5b13ecdfb7de093e8f7))
+* **cli:** stop --force reprint from keeping stale generated bodies ([#4430](https://github.com/mvanhorn/cli-printing-press/issues/4430)) ([4e3b7a3](https://github.com/mvanhorn/cli-printing-press/commit/4e3b7a3fc6088e29d51f711273feaa56a83ddc4f))
+* **cli:** use non-ticker alias fixture in learn teach test ([#4409](https://github.com/mvanhorn/cli-printing-press/issues/4409)) ([a3896a2](https://github.com/mvanhorn/cli-printing-press/commit/a3896a2866af7f638a9c600006336070bd85c29e))
+
 ## [4.31.2](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.1...v4.31.2) (2026-08-28)
 
 
