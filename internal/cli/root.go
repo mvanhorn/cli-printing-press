@@ -2580,6 +2580,12 @@ func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte, f
 	if cleanupBase != nil {
 		defer cleanupBase()
 	}
+	if !novelOnly && baseDir == "" && snapshotPrintingPressVersionDiffers(snapshotDir) {
+		// Three-way base was unavailable, so keep novels and let fresh
+		// replace templated bodies instead of shipping the still-compiling
+		// older rewrite.
+		novelOnly = true
+	}
 
 	classifyOpts := regenmerge.Options{Force: true, BaseDir: baseDir}
 	report, err := regenmerge.Classify(snapshotDir, freshDir, classifyOpts)
@@ -2587,7 +2593,7 @@ func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte, f
 		return false, fmt.Errorf("classifying snapshot vs fresh: %w; snapshot preserved at %s", err, snapshotDir)
 	}
 
-	mergeOpts := regenmerge.Options{Force: true, NovelOnly: novelOnly}
+	mergeOpts := regenmerge.Options{Force: true, NovelOnly: novelOnly, BaseDir: baseDir}
 	if err := regenmerge.MergeIntoFreshTree(snapshotDir, freshDir, report, mergeOpts); err != nil {
 		return false, fmt.Errorf("merging snapshot into fresh tree: %w; snapshot preserved at %s — recover with `rm -rf %s && mv %s %s`",
 			err, snapshotDir, freshDir, snapshotDir, freshDir)
@@ -2670,6 +2676,15 @@ func synthesizeForceRegenBase(snapshotDir string, currentSpecBytes []byte, novel
 		return "", nil
 	}
 	return baseDir, cleanup
+}
+
+func snapshotPrintingPressVersionDiffers(snapshotDir string) bool {
+	manifest, err := pipeline.ReadCLIManifest(snapshotDir)
+	if err != nil {
+		return false
+	}
+	prior := strings.TrimSpace(manifest.PrintingPressVersion)
+	return prior != "" && !sameSemver(prior, version.Version)
 }
 
 func sameSemver(a, b string) bool {

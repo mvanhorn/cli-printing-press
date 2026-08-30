@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline/regenmerge"
@@ -13,6 +15,7 @@ import (
 func newRegenMergeCmd() *cobra.Command {
 	var (
 		freshDir string
+		baseDir  string
 		apply    bool
 		asJSON   bool
 		force    bool
@@ -66,13 +69,29 @@ tree at <cli-dir> by default; --force overrides.`,
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("resolving fresh dir: %w", err)}
 			}
 
-			report, err := regenmerge.Classify(cliDir, freshAbs, regenmerge.Options{Force: force})
+			resolvedBase := baseDir
+			if resolvedBase == "" {
+				var cleanup func()
+				resolvedBase, cleanup = synthesizeForceRegenBase(cliDir, specBytesForRegenBase(cliDir, freshAbs), false)
+				if cleanup != nil {
+					defer cleanup()
+				}
+			} else {
+				absBase, err := filepath.Abs(resolvedBase)
+				if err != nil {
+					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("resolving --base: %w", err)}
+				}
+				resolvedBase = absBase
+			}
+
+			opts := regenmerge.Options{Force: force, BaseDir: resolvedBase}
+			report, err := regenmerge.Classify(cliDir, freshAbs, opts)
 			if err != nil {
 				return &ExitError{Code: ExitInputError, Err: err}
 			}
 
 			if apply {
-				if err := regenmerge.Apply(report, regenmerge.Options{Force: force}); err != nil {
+				if err := regenmerge.Apply(report, opts); err != nil {
 					return &ExitError{Code: ExitPublishError, Err: err}
 				}
 			}
@@ -84,10 +103,23 @@ tree at <cli-dir> by default; --force overrides.`,
 		},
 	}
 	cmd.Flags().StringVar(&freshDir, "fresh", "", "Path to the fresh-generated CLI tree (required)")
+	cmd.Flags().StringVar(&baseDir, "base", "", "Original template emission for the published tree (optional; synthesized from printing_press_version when omitted)")
 	cmd.Flags().BoolVar(&apply, "apply", false, "Apply safe changes (default: dry-run)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit machine-readable JSON instead of the human report")
 	cmd.Flags().BoolVar(&force, "force", false, "Override path-containment and dirty-tree safety checks")
 	return cmd
+}
+
+func specBytesForRegenBase(cliDir, freshDir string) []byte {
+	for _, dir := range []string{freshDir, cliDir} {
+		for _, name := range []string{"spec.yaml", "spec.yml", "spec.json"} {
+			data, err := os.ReadFile(filepath.Join(dir, name))
+			if err == nil && len(bytes.TrimSpace(data)) > 0 {
+				return data
+			}
+		}
+	}
+	return nil
 }
 
 func printJSONReport(w io.Writer, report *regenmerge.MergeReport) error {

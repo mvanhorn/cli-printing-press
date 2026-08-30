@@ -6,6 +6,7 @@ import (
 	"go/format"
 	"go/parser"
 	"go/token"
+	"strconv"
 	"strings"
 )
 
@@ -90,6 +91,9 @@ func canonicalDeclTexts(filename string) map[string]string {
 			decl.Doc = nil
 			if decl.Body != nil {
 				decl.Body.List = stripAddCommandStmts(decl.Body.List)
+				if isCLIRootGo(filename) {
+					stripGeneratedHighlights(decl.Body)
+				}
 			}
 		case *ast.GenDecl:
 			name = genDeclName(decl)
@@ -219,6 +223,57 @@ func isClientHooksASTStmt(stmt ast.Stmt) bool {
 func isIdent(expr ast.Expr, name string) bool {
 	id, ok := expr.(*ast.Ident)
 	return ok && id.Name == name
+}
+
+const generatedHighlightsMarker = "Highlights (not in the official API docs):"
+
+// stripGeneratedHighlights blanks only the generated Highlights list inside
+// string literals so a research-only rewrite of that block does not look like
+// a hand-edit of root.go. Short and the rest of Long stay in the comparison
+// so same-spec customizations still classify as drift.
+func stripGeneratedHighlights(body *ast.BlockStmt) {
+	if body == nil {
+		return
+	}
+	ast.Inspect(body, func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		s, ok := unquoteStringLit(lit.Value)
+		if !ok || !strings.Contains(s, generatedHighlightsMarker) {
+			return true
+		}
+		lit.Value = quoteLike(lit.Value, blankHighlightsSection(s))
+		return true
+	})
+}
+
+func blankHighlightsSection(s string) string {
+	before, rest, ok := strings.Cut(s, generatedHighlightsMarker)
+	if !ok {
+		return s
+	}
+	_, after, found := strings.Cut(rest, "\n\n")
+	if found {
+		return before + generatedHighlightsMarker + "\n\n" + after
+	}
+	return before + generatedHighlightsMarker
+}
+
+func unquoteStringLit(raw string) (string, bool) {
+	if len(raw) >= 2 && raw[0] == '`' && raw[len(raw)-1] == '`' {
+		return raw[1 : len(raw)-1], true
+	}
+	s, err := strconv.Unquote(raw)
+	return s, err == nil
+}
+
+func quoteLike(original, s string) string {
+	if len(original) >= 2 && original[0] == '`' && !strings.Contains(s, "`") {
+		return "`" + s + "`"
+	}
+	return strconv.Quote(s)
 }
 
 // isAddCommandASTStmt reports whether stmt is an `<recv>.AddCommand(...)`
