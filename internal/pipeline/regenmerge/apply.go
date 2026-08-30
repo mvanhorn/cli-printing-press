@@ -102,11 +102,15 @@ func Apply(report *MergeReport, opts Options) error {
 				return fmt.Errorf("removing stale %s: %w", fc.Path, err)
 			}
 			fc.Applied = true
+		case VerdictTemplatedBodyDrift, VerdictTemplatedValueDrift:
+			if tryOverlayHandEditedDecls(cliDir, freshDir, opts.BaseDir, tempDir, fc.Path) {
+				fc.Applied = true
+				continue
+			}
+			// Preserve: tempDir already holds published's copy.
 		case VerdictNovel,
 			VerdictNovelCollision,
-			VerdictTemplatedWithAdditions,
-			VerdictTemplatedBodyDrift,
-			VerdictTemplatedValueDrift:
+			VerdictTemplatedWithAdditions:
 			// Preserve verdicts: tempDir already holds published's copy from
 			// the deep-copy step, and the human-review path keeps it
 			// untouched. No file-level action needed here.

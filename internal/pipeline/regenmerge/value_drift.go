@@ -90,6 +90,9 @@ func canonicalDeclTexts(filename string) map[string]string {
 			decl.Doc = nil
 			if decl.Body != nil {
 				decl.Body.List = stripAddCommandStmts(decl.Body.List)
+				if isCLIRootGo(filename) {
+					stripCobraHelpStrings(decl.Body)
+				}
 			}
 		case *ast.GenDecl:
 			name = genDeclName(decl)
@@ -219,6 +222,35 @@ func isClientHooksASTStmt(stmt ast.Stmt) bool {
 func isIdent(expr ast.Expr, name string) bool {
 	id, ok := expr.(*ast.Ident)
 	return ok && id.Name == name
+}
+
+// stripCobraHelpStrings blanks Short/Long keys on composite literals so a
+// research-only Highlights rewrite does not look like a hand-edit of root.go.
+// AddCommand re-injection still owns operator wiring after fresh wins.
+func stripCobraHelpStrings(body *ast.BlockStmt) {
+	if body == nil {
+		return
+	}
+	ast.Inspect(body, func(n ast.Node) bool {
+		cl, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		for _, elt := range cl.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			key, ok := kv.Key.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			if key.Name == "Short" || key.Name == "Long" {
+				kv.Value = &ast.BasicLit{Kind: token.STRING, Value: `""`}
+			}
+		}
+		return true
+	})
 }
 
 // isAddCommandASTStmt reports whether stmt is an `<recv>.AddCommand(...)`

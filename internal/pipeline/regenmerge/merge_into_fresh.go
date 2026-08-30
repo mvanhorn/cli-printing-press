@@ -100,6 +100,11 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 			if opts.NovelOnly && !preserveTemplatedDriftInNovelOnly(snapshotDir, freshDir, fc.Path) {
 				continue
 			}
+			if (fc.Verdict == VerdictTemplatedBodyDrift || fc.Verdict == VerdictTemplatedValueDrift) &&
+				tryOverlayHandEditedDecls(snapshotDir, freshDir, opts.BaseDir, freshDir, fc.Path) {
+				fc.Applied = true
+				continue
+			}
 			if err := copyPreserveFile(snapshotDir, freshDir, fc.Path); err != nil {
 				return err
 			}

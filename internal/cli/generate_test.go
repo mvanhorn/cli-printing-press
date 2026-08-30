@@ -1388,6 +1388,183 @@ resources:
 	assert.NotContains(t, string(which), "items planned")
 }
 
+func TestGenerateCmdForceRefreshesResearchSurfaces(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	researchDir := filepath.Join(dir, "research")
+	outputDir := filepath.Join(dir, "refreshapp")
+	require.NoError(t, os.MkdirAll(researchDir, 0o755))
+	require.NoError(t, os.WriteFile(specPath, []byte(`name: refreshapp
+description: Research refresh API
+version: 0.1.0
+base_url: https://api.example.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/refreshapp-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`), 0o644))
+
+	writeResearch := func(command, description string) {
+		require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), []byte(`{
+  "api_name": "refreshapp",
+  "novelty_score": 8,
+  "alternatives": [],
+  "gaps": [],
+  "patterns": [],
+  "recommendation": "proceed",
+  "researched_at": "2026-04-25T00:00:00Z",
+  "novel_features": [
+    {
+      "name": "Item insight",
+      "command": "items planned",
+      "description": "planned only",
+      "rationale": "Requires local correlation"
+    }
+  ],
+  "novel_features_built": [
+    {
+      "name": "Item insight",
+      "command": "`+command+`",
+      "description": "`+description+`",
+      "rationale": "Requires local correlation"
+    }
+  ]
+}`), 0o644))
+	}
+
+	runGenerate := func() {
+		cmd := newGenerateCmd()
+		cmd.SetArgs([]string{
+			"--spec", specPath,
+			"--output", outputDir,
+			"--research-dir", researchDir,
+			"--validate=false",
+			"--force",
+		})
+		require.NoError(t, cmd.Execute())
+	}
+
+	writeResearch("items stale", "old stale insight")
+	runGenerate()
+
+	configPath := filepath.Join(outputDir, "internal", "config", "config.go")
+	configBefore, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	configEdited := bytes.Replace(configBefore, []byte(`"Bearer "`), []byte(`"Token "`), 1)
+	if bytes.Equal(configBefore, configEdited) {
+		configEdited = append(configBefore, []byte("\nconst handEditedRefresh = \"kept\"\n")...)
+	}
+	require.NoError(t, os.WriteFile(configPath, configEdited, 0o644))
+
+	writeResearch("items insight", "new refreshed insight")
+	runGenerate()
+
+	which, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "which.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(which), `Command: "items insight"`)
+	assert.NotContains(t, string(which), "items stale")
+
+	root, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(root), "items insight")
+	assert.NotContains(t, string(root), "items stale")
+
+	tools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(tools), "items insight")
+	assert.NotContains(t, string(tools), "items stale")
+
+	gotConfig, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	if bytes.Contains(configEdited, []byte(`"Token "`)) {
+		assert.Contains(t, string(gotConfig), `"Token "`,
+			"same-spec hand-edit to config.go must still be preserved")
+	} else {
+		assert.Contains(t, string(gotConfig), `handEditedRefresh`,
+			"same-spec hand-edit to config.go must still be preserved")
+	}
+}
+
+func TestGenerateCmdForceRefreshesLearnInitWhenSpecChecksumMissing(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	outputDir := filepath.Join(dir, "learnrefreshapp")
+	writeSpec := func(pattern string) {
+		require.NoError(t, os.WriteFile(specPath, []byte(`name: learnrefreshapp
+description: Learn refresh API
+version: 0.1.0
+base_url: https://api.example.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/learnrefreshapp-pp-cli/config.toml
+learn:
+  enabled: true
+  ticker_patterns:
+    - "`+pattern+`"
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`), 0o644))
+	}
+
+	runGenerate := func() {
+		cmd := newGenerateCmd()
+		cmd.SetArgs([]string{
+			"--spec", specPath,
+			"--output", outputDir,
+			"--validate=false",
+			"--force",
+		})
+		require.NoError(t, cmd.Execute())
+	}
+
+	writeSpec("^[A-Z][A-Z0-9]{1,11}$")
+	runGenerate()
+
+	initPath := filepath.Join(outputDir, "internal", "cli", "learn_init.go")
+	first, err := os.ReadFile(initPath)
+	require.NoError(t, err)
+	require.Contains(t, string(first), `^[A-Z][A-Z0-9]{1,11}$`)
+
+	manifestPath := filepath.Join(outputDir, pipeline.CLIManifestFilename)
+	var manifest map[string]any
+	data, err := os.ReadFile(manifestPath)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(data, &manifest))
+	delete(manifest, "spec_checksum")
+	rewritten, err := json.Marshal(manifest)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(manifestPath, rewritten, 0o644))
+
+	writeSpec("^[A-Z0-9]{3,12}$")
+	runGenerate()
+
+	got, err := os.ReadFile(initPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(got), `^[A-Z0-9]{3,12}$`)
+	assert.NotContains(t, string(got), `^[A-Z][A-Z0-9]{1,11}$`)
+}
+
 func TestGenerateCmdAppliesBrowserClearanceReachability(t *testing.T) {
 	t.Parallel()
 
