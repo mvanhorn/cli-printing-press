@@ -717,17 +717,21 @@ func walkOverlayStmt(s dst.Stmt, sc *bindingScopes, visit func(*dst.Ident)) {
 	case *dst.SelectStmt:
 		walkOverlayStmt(x.Body, sc, visit)
 	case *dst.CaseClause:
+		sc.push()
 		for _, e := range x.List {
 			walkOverlayExpr(e, sc, visit)
 		}
 		for _, c := range x.Body {
 			walkOverlayStmt(c, sc, visit)
 		}
+		sc.pop()
 	case *dst.CommClause:
+		sc.push()
 		walkOverlayStmt(x.Comm, sc, visit)
 		for _, c := range x.Body {
 			walkOverlayStmt(c, sc, visit)
 		}
+		sc.pop()
 	case *dst.LabeledStmt:
 		walkOverlayStmt(x.Stmt, sc, visit)
 	case *dst.SendStmt:
