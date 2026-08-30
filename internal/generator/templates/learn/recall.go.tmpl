@@ -373,11 +373,14 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		//      caught at that layer.
 		if score < jMin {
 			// Identifier-only queries normalize to an empty non-entity
-			// bag on the read side. Score on identity overlap whenever
-			// the query has no content tokens and the stored row shares
-			// an identity token, even if the write-side pattern still
-			// carries leftover tokens (punctuation-split identifiers).
-			if len(queryTokens) == 0 && entitySlicesIntersect(queryIdentity, storedEntitySlice) {
+			// bag on the read side. Score on identity overlap only when
+			// leftover stored tokens are empty or punctuation-split
+			// identifier fragments. Distinct leftover intent tokens
+			// (different resource/action, same identifier) must not
+			// become exact skip-discovery hits.
+			identityForFragments := append(append([]string{}, queryIdentity...), storedEntitySlice...)
+			if len(queryTokens) == 0 && entitySlicesIntersect(queryIdentity, storedEntitySlice) &&
+				leftoverTokensAreIdentityFragments(storedNonEntityTokens, identityForFragments) {
 				score = Jaccard(queryIdentity, storedEntitySlice)
 			} else if len(queryTokens) == 0 && len(storedNonEntityTokens) == 0 &&
 				len(queryIdentity) > 0 && len(storedEntitySlice) > 0 {
@@ -755,6 +758,63 @@ func entityMatchPriority(em string) int {
 // teach time). A naive case-sensitive comparison would miss the match.
 // Same-entity rows must not slip through the lower crossAliasMin floor
 // or get inflated by canonicalJaccard.
+// leftoverTokensAreIdentityFragments reports whether every leftover
+// stored token is an identity token or an alphanumeric fragment of
+// one. Write-side punctuation splits ("ticker" "abc" from TICKER-ABC)
+// stay eligible for the identifier-only boost; leftover intent tokens
+// do not.
+func leftoverTokensAreIdentityFragments(tokens, identity []string) bool {
+	if len(tokens) == 0 {
+		return true
+	}
+	allowed := make(map[string]struct{})
+	for _, id := range identity {
+		n := strings.ToLower(strings.TrimSpace(id))
+		if n == "" {
+			continue
+		}
+		allowed[n] = struct{}{}
+		for _, frag := range identityCharFragments(n) {
+			if frag != "" {
+				allowed[frag] = struct{}{}
+			}
+		}
+	}
+	if len(allowed) == 0 {
+		return false
+	}
+	for _, tok := range tokens {
+		t := strings.ToLower(strings.TrimSpace(tok))
+		if t == "" {
+			continue
+		}
+		if _, ok := allowed[t]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// identityCharFragments splits on non-alphanumeric runes the same way
+// the write-side query tokenizer does, so a leftover bag of identifier
+// pieces still counts as the same identity.
+func identityCharFragments(s string) []string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte(' ')
+		}
+	}
+	return strings.Fields(b.String())
+}
+
 func entitySlicesIntersect(a, b []string) bool {
 	if len(a) == 0 || len(b) == 0 {
 		return false

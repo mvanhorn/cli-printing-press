@@ -46,6 +46,7 @@ func TestGenerateLearnIdentityAndSessionContract(t *testing.T) {
 	recall := readEmitted(t, outputDir, "internal", "learn", "recall.go")
 	require.Contains(t, recall, "queryIdentity := QueryIdentityEntities(normalized)")
 	require.Contains(t, recall, "entitySlicesIntersect(queryIdentity, storedEntitySlice)")
+	require.Contains(t, recall, "leftoverTokensAreIdentityFragments(")
 
 	teachCLI := readEmitted(t, outputDir, "internal", "cli", "teach.go")
 	require.Contains(t, teachCLI, "learn.QueryIdentityEntities(normalized)")
@@ -65,7 +66,7 @@ func TestGenerateLearnIdentityAndSessionContract(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 
 	runGoCommand(t, outputDir, "test",
-		"-run", "^(TestQueryIdentityEntities_|TestRecall_IdentifierOnlyTickerFindsRow|TestValidateResourceShape_Ticker|TestNormalizeQuery_KeepsRegisteredTickersWhole|TestJournal_HarnessSessionIsHashed|TestJournal_LearnSessionOverridesHarness|TestTeachRecall_IdentifierOnlyFindsRow|TestLearnNormalizers_TickerKeepSymmetry|TestLearnIdentityFields_CommonFallback)$",
+		"-run", "^(TestQueryIdentityEntities_|TestRecall_IdentifierOnlyTickerFindsRow|TestRecall_SameIdentifierDifferentIntentDoesNotSkipDiscovery|TestLeftoverTokensAreIdentityFragments|TestValidateResourceShape_Ticker|TestNormalizeQuery_KeepsRegisteredTickersWhole|TestJournal_HarnessSessionIsHashed|TestJournal_LearnSessionOverridesHarness|TestTeachRecall_IdentifierOnlyFindsRow|TestLearnNormalizers_TickerKeepSymmetry|TestLearnIdentityFields_CommonFallback)$",
 		"./internal/learn/...", "./internal/cli/...", "./internal/store/...")
 }
 
