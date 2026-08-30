@@ -987,9 +987,11 @@ func (c *Client) waitForRateLimitRefill(ctx context.Context, wait time.Duration)
 	return nil
 }
 
-// One --timeout (or the caller's deadline) covers every refill wait and
-// limiter pace in this doInternal call. A fresh timeout per wait would
-// let a persistently 429ing endpoint run indefinitely.
+// One --timeout (or the caller's deadline) covers refill waits, limiter
+// pacing, and retry sleeps. A fresh timeout per wait would let a
+// persistently 429ing endpoint run indefinitely. The HTTP request keeps
+// the caller's ctx so unmarked binary streams can outlive the default
+// whole-call budget.
 func (c *Client) bindOperationDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -1054,7 +1056,10 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	if err := rejectUnresolvedPathParams(path, nil); err != nil {
 		return nil, 0, err
 	}
-	ctx, cancel := c.bindOperationDeadline(ctx)
+	// Bound waits and retries once. Do not attach this deadline to the
+	// HTTP request: unmarked binary transfers drop the whole-call
+	// Timeout and must keep streaming after --timeout's default budget.
+	opCtx, cancel := c.bindOperationDeadline(ctx)
 	defer cancel()
 	targetURL := c.BaseURL + path
 
@@ -1129,12 +1134,12 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	var lastErr error
 
 	for attempt := 0; ; attempt++ {
-		if err := c.waitForPlatformBudget(ctx, endpointClass); err != nil {
+		if err := c.waitForPlatformBudget(opCtx, endpointClass); err != nil {
 			return nil, 0, err
 		}
 		// Proactive rate limiting — wait before sending
 		adaptiveStarted := time.Now()
-		if err := c.limiter.Wait(ctx); err != nil {
+		if err := c.limiter.Wait(opCtx); err != nil {
 			return nil, 0, err
 		}
 		if c.platformSession != nil {
@@ -1233,7 +1238,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 					return nil, 0, lastErr
 				}
 				fmt.Fprintf(os.Stderr, "network error (%v), retrying in %s (attempt %d/%d)\n", c.maskError(err, authHeader), wait, attempt+1, maxRetries)
-				if serr := sleepContext(ctx, wait); serr != nil {
+				if serr := sleepContext(opCtx, wait); serr != nil {
 					return nil, 0, serr
 				}
 				continue
@@ -1305,7 +1310,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 					c.platformSession.RecordRateLimitRetry(wait)
 				}
 				fmt.Fprintf(os.Stderr, "rate limited, waiting %s (attempt %d/%d, rate adjusted to %.1f req/s)\n", wait, attempt+1, maxRetries, c.limiter.Rate())
-				if err := sleepContext(ctx, wait); err != nil {
+				if err := sleepContext(opCtx, wait); err != nil {
 					return nil, 0, err
 				}
 				lastErr = apiErr
@@ -1315,7 +1320,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				if c.platformSession != nil {
 					c.platformSession.RecordRateLimitWait(wait)
 				}
-				if err := c.waitForRateLimitRefill(ctx, wait); err != nil {
+				if err := c.waitForRateLimitRefill(opCtx, wait); err != nil {
 					return nil, 0, err
 				}
 				lastErr = apiErr
@@ -1347,7 +1352,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				return nil, resp.StatusCode, apiErr
 			}
 			fmt.Fprintf(os.Stderr, "server error %d, retrying in %s (attempt %d/%d)\n", resp.StatusCode, wait, attempt+1, maxRetries)
-			if err := sleepContext(ctx, wait); err != nil {
+			if err := sleepContext(opCtx, wait); err != nil {
 				return nil, 0, err
 			}
 			lastErr = apiErr
