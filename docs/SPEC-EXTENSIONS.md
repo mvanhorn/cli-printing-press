@@ -276,9 +276,10 @@ Rules:
 - `"auto"` selects the header-driven adaptive limiter so the CLI paces itself
   to the server's `X-Ratelimit-*` headers with no hardcoded ceiling. A numeric
   value (e.g. `2`) pins a fixed requests-per-second ceiling.
-- When absent, the legacy provenance default applies (2 for sniffed specs, else
-  0 = disabled). This only sets the default; the generated `--rate-limit` flag
-  still overrides it at runtime.
+- When absent, the generated `--rate-limit` default is `client.RateLimitAuto`
+  (the same as `"auto"`), for both sniffed and documented specs. This only
+  sets the default; the generated `--rate-limit` flag still overrides it at
+  runtime.
 
 Example:
 
