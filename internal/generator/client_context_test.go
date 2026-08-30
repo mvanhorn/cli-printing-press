@@ -52,16 +52,16 @@ func TestClientThreadsCallContextThroughHTTPRequestsAndRetryWaits(t *testing.T) 
 	require.NotEqual(t, -1, nextFunc, "client.go should have at least one func after doInternal")
 	doBody := doRest[:nextFunc+1]
 
-	assert.Contains(t, doBody, "ctx, cancel := c.bindOperationDeadline(ctx)",
-		"doInternal should pin --timeout once for the whole attempt loop")
-	assert.Contains(t, doBody, "if err := c.limiter.Wait(ctx); err != nil {\n\t\t\treturn nil, 0, err\n\t\t}",
-		"proactive limiter wait should honor the request context")
+	assert.Contains(t, doBody, "opCtx, cancel := c.bindOperationDeadline(ctx)",
+		"doInternal should pin --timeout once for waits and retries")
+	assert.Contains(t, doBody, "if err := c.limiter.Wait(opCtx); err != nil {\n\t\t\treturn nil, 0, err\n\t\t}",
+		"proactive limiter wait should honor the operation deadline")
 	assert.Contains(t, doBody, "http.NewRequestWithContext(ctx, method, targetURL, bodyReader)",
 		"regular client requests should use the caller's context")
 	assert.Contains(t, doBody, "if ctxErr := ctx.Err(); ctxErr != nil {\n\t\t\t\treturn nil, 0, ctxErr\n\t\t\t}",
 		"request cancellation should not burn through retry attempts")
-	assert.Contains(t, doBody, "if err := sleepContext(ctx, wait); err != nil {\n\t\t\t\treturn nil, 0, err\n\t\t\t}",
-		"retry sleeps should return promptly when the caller context is cancelled")
+	assert.Contains(t, doBody, "if err := sleepContext(opCtx, wait); err != nil {\n\t\t\t\treturn nil, 0, err\n\t\t\t}",
+		"retry sleeps should return promptly when the operation deadline is cancelled")
 	assert.NotContains(t, doBody, "http.NewRequest(method, targetURL, bodyReader)")
 	assert.NotContains(t, doBody, "time.Sleep(wait)")
 	assert.NotContains(t, doBody, "c.limiter.Wait()")

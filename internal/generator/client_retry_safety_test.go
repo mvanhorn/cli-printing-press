@@ -24,7 +24,7 @@ func TestGeneratedClientRetrySafety(t *testing.T) {
 	require.Contains(t, clientSrc, "func (c *Client) bindOperationDeadline(ctx context.Context) (context.Context, context.CancelFunc)")
 	require.Contains(t, clientSrc, "timed out waiting %s for rate-limit budget to refill")
 	require.Contains(t, clientSrc, "if canRetryAmbiguousFailure && maxRetries > 0 && attempt >= maxRetries {")
-	require.Contains(t, clientSrc, "if err := c.limiter.Wait(ctx); err != nil {")
+	require.Contains(t, clientSrc, "if err := c.limiter.Wait(opCtx); err != nil {")
 	require.NotContains(t, clientSrc, "c.limiter.Wait()")
 	refillStart := strings.Index(clientSrc, "func (c *Client) waitForRateLimitRefill(ctx context.Context, wait time.Duration) error")
 	require.NotEqual(t, -1, refillStart)
