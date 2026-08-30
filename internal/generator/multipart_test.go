@@ -61,7 +61,9 @@ func TestGenerateMultipartRequestBodyUsesMultipartClient(t *testing.T) {
 
 	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
 	assert.Contains(t, clientSrc, `func (c *Client) PostMultipart(ctx context.Context, path string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error)`)
-	assert.Contains(t, clientSrc, `writer.CreateFormFile(fieldName, filepath.Base(filePath))`)
+	assert.Contains(t, clientSrc, `mime.TypeByExtension(filepath.Ext(path))`)
+	assert.Contains(t, clientSrc, `writer.CreatePart(h)`)
+	assert.NotContains(t, clientSrc, `writer.CreateFormFile(`)
 	assert.Contains(t, clientSrc, `req.Header.Set("Content-Type", contentType)`)
 
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "assets_upload.go")
@@ -326,6 +328,102 @@ paths:
 	assert.NotContains(t, createSrc, `c.PostMultipartWithParams`)
 
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestMultipartFilePartContentTypeFromExtension(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("multipart-part-type")
+	apiSpec.Resources = map[string]spec.Resource{
+		"assets": {
+			Description: "Manage assets",
+			Endpoints: map[string]spec.Endpoint{
+				"upload": {
+					Method:             "POST",
+					Path:               "/assets",
+					Description:        "Upload an asset",
+					RequestContentType: "multipart/form-data",
+					Body: []spec.Param{
+						{Name: "assetData", Type: "string", Format: "binary", Required: true, Description: "Asset file"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	assert.Contains(t, clientSrc, `mime.TypeByExtension(filepath.Ext(path))`)
+	assert.Contains(t, clientSrc, `writer.CreatePart(h)`)
+	assert.NotContains(t, clientSrc, `writer.CreateFormFile(`)
+
+	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_assets.go")
+	assert.Contains(t, endpointSrc, `fileFields["assetData"] = bodyAssetData`)
+	assert.NotContains(t, endpointSrc, `fields["assetData"]`)
+
+	const runtimeTest = `package client
+
+import (
+	"bytes"
+	"mime"
+	"mime/multipart"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestEncodeMultipartFilePartContentType(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name string
+		ext  string
+		want string
+	}{
+		{name: "pdf", ext: ".pdf", want: "application/pdf"},
+		{name: "png", ext: ".png", want: "image/png"},
+		{name: "jpeg", ext: ".jpeg", want: "image/jpeg"},
+		{name: "unknown", ext: ".nope123", want: "application/octet-stream"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, "sample"+tc.ext)
+			if err := os.WriteFile(path, []byte("sample"), 0o600); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			if got := multipartFileContentType(path); got != tc.want {
+				t.Fatalf("multipartFileContentType(%q) = %q, want %q", path, got, tc.want)
+			}
+			body, contentType, err := encodeMultipartBody(multipartRequestBody{
+				FileFields: map[string]string{"assetData": path},
+			})
+			if err != nil {
+				t.Fatalf("encodeMultipartBody() error = %v", err)
+			}
+			_, params, err := mime.ParseMediaType(contentType)
+			if err != nil {
+				t.Fatalf("ParseMediaType() error = %v", err)
+			}
+			part, err := multipart.NewReader(bytes.NewReader(body), params["boundary"]).NextPart()
+			if err != nil {
+				t.Fatalf("NextPart() error = %v", err)
+			}
+			got := part.Header.Get("Content-Type")
+			if got != tc.want {
+				t.Fatalf("part Content-Type = %q, want %q", got, tc.want)
+			}
+			if tc.want != "application/octet-stream" && strings.EqualFold(got, "application/octet-stream") {
+				t.Fatalf("known extension %q still encoded as application/octet-stream", tc.ext)
+			}
+		})
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "multipart_part_type_runtime_test.go"), []byte(runtimeTest), 0o600))
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^TestEncodeMultipartFilePartContentType$", "-count=1")
 }
 
 func TestGenerateBinaryResponseWritesRawBytes(t *testing.T) {
