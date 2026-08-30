@@ -409,9 +409,9 @@ func WithResearchDir(dir string) DogfoodOption {
 	}
 }
 
-// WithOverwriteCommandMirror replaces a differing command_mirror_capabilities
-// block in internal/mcp/tools.go from research.json. Without it, dogfood
-// leaves a hand-corrected block unmodified and reports the path.
+// WithOverwriteCommandMirror explicitly permits dogfood to discard a
+// hand-corrected command_mirror_capabilities block in favor of research.json.
+// Without it, dogfood preserves the on-disk block and reports the path.
 func WithOverwriteCommandMirror() DogfoodOption {
 	return func(c *dogfoodConfig) {
 		c.overwriteCommandMirror = true
