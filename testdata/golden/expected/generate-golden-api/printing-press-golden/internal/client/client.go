@@ -935,7 +935,7 @@ func encodeMultipartBody(body multipartRequestBody) ([]byte, string, error) {
 	return buf.Bytes(), writer.FormDataContentType(), nil
 }
 
-// Whitelist-style upload APIs reject a hardcoded octet-stream part type.
+// APIs that whitelist part Content-Types reject a hardcoded octet-stream.
 func multipartFileContentType(path string) string {
 	if ct := mime.TypeByExtension(filepath.Ext(path)); ct != "" {
 		return ct
