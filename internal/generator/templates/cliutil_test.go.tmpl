@@ -849,6 +849,66 @@ func TestAdaptiveLimiter_CanceledWaitDoesNotConsumeNextSlot(t *testing.T) {
 	}
 }
 
+func TestAdaptiveLimiter_LaterCancelDoesNotRewindPastEarlierPendingReservation(t *testing.T) {
+	l := NewAdaptiveLimiter(2.0)
+	if err := l.Wait(context.Background()); err != nil {
+		t.Fatalf("prime Wait() = %v", err)
+	}
+
+	waitForReservation := func(minAhead time.Duration) bool {
+		deadline := time.Now().Add(200 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			l.mu.Lock()
+			ahead := time.Until(l.lastRequest)
+			l.mu.Unlock()
+			if ahead >= minAhead {
+				return true
+			}
+			time.Sleep(time.Millisecond)
+		}
+		return false
+	}
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- l.Wait(context.Background()) }()
+	if !waitForReservation(300 * time.Millisecond) {
+		t.Fatal("first waiter did not reserve a future slot")
+	}
+
+	secondCtx, cancelSecond := context.WithCancel(context.Background())
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- l.Wait(secondCtx) }()
+	if !waitForReservation(700 * time.Millisecond) {
+		cancelSecond()
+		t.Fatal("second waiter did not reserve past the first slot")
+	}
+
+	cancelSecond()
+	if err := <-secondDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("second Wait() = %v, want canceled", err)
+	}
+
+	l.mu.Lock()
+	ahead := time.Until(l.lastRequest)
+	l.mu.Unlock()
+	if ahead < 200*time.Millisecond {
+		t.Fatalf("lastRequest is only %s ahead; later-waiter cancel rewound past the still-pending first reservation", ahead)
+	}
+
+	start := time.Now()
+	if err := l.Wait(context.Background()); err != nil {
+		t.Fatalf("third Wait() = %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed < 700*time.Millisecond {
+		t.Fatalf("third Wait elapsed %s; later-waiter cancel rewound lastRequest past the still-pending first reservation", elapsed)
+	}
+
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Wait() = %v", err)
+	}
+}
+
 func TestAdaptiveLimiter_ObserveHeadersPacesToBudgetAndSuppressesRamp(t *testing.T) {
 	l := NewAdaptiveLimiterAuto(2.0)
 	// Full bucket: 100 requests left over a 20s window => ~5 rps sustainable.

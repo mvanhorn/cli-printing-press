@@ -30,6 +30,10 @@ func TestAdaptiveLimiterWait_ReservesUnderSingleLock(t *testing.T) {
 		"Wait must reserve the next slot under lock")
 	require.Contains(t, src, "l.releaseUnusedReservation(reservedAt)",
 		"a canceled Wait must release a slot it never used")
+	require.Contains(t, src, "l.completeReservation(reservedAt)",
+		"a successful Wait must drop its in-flight reservation")
+	require.Contains(t, src, "l.pending = append(l.pending, reservedAt)",
+		"Wait must track in-flight reservations so cancel cannot rewind past them")
 
 	waitStart := strings.Index(src, "func (l *AdaptiveLimiter) Wait(ctx context.Context) error {")
 	require.NotEqual(t, -1, waitStart, "Wait function must be emitted")
@@ -50,6 +54,9 @@ func TestAdaptiveLimiterWait_ReservesUnderSingleLock(t *testing.T) {
 	require.NotEqual(t, -1, unlockIdx, "unlock call must exist in Wait")
 	require.Less(t, lockIdx, writeIdx, "Wait must hold lock before reservation write")
 	require.Less(t, writeIdx, unlockIdx, "Wait must not unlock before reservation write")
+	pendingIdx := strings.Index(waitBody, "l.pending = append(l.pending, reservedAt)")
+	require.NotEqual(t, -1, pendingIdx, "pending append must exist in Wait")
+	require.Less(t, pendingIdx, unlockIdx, "Wait must track the reservation before unlock")
 }
 
 func TestAdaptiveLimiterWait_ConcurrentCancelDoesNotRestoreAbandonedSlot(t *testing.T) {
@@ -62,10 +69,11 @@ func TestAdaptiveLimiterWait_ConcurrentCancelDoesNotRestoreAbandonedSlot(t *test
 	requireGeneratedTestsPass(
 		t,
 		outputDir,
-		"TestAdaptiveLimiter_(ConcurrentCancelInReservationOrderDoesNotRestoreAbandonedSlot|CanceledWaitDoesNotConsumeNextSlot)$",
+		"TestAdaptiveLimiter_(ConcurrentCancelInReservationOrderDoesNotRestoreAbandonedSlot|CanceledWaitDoesNotConsumeNextSlot|LaterCancelDoesNotRewindPastEarlierPendingReservation)$",
 		[]string{
 			"TestAdaptiveLimiter_ConcurrentCancelInReservationOrderDoesNotRestoreAbandonedSlot",
 			"TestAdaptiveLimiter_CanceledWaitDoesNotConsumeNextSlot",
+			"TestAdaptiveLimiter_LaterCancelDoesNotRewindPastEarlierPendingReservation",
 		},
 	)
 }
