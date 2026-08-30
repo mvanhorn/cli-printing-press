@@ -29,7 +29,7 @@ func TestAdaptiveLimiterWait_ReservesUnderSingleLock(t *testing.T) {
 	require.Contains(t, src, "l.lastRequest = time.Now().Add(sleep)",
 		"Wait must reserve the next slot under lock")
 
-	waitStart := strings.Index(src, "func (l *AdaptiveLimiter) Wait() {")
+	waitStart := strings.Index(src, "func (l *AdaptiveLimiter) Wait(ctx context.Context) error {")
 	require.NotEqual(t, -1, waitStart, "Wait function must be emitted")
 	onSuccessStart := strings.Index(src[waitStart:], "func (l *AdaptiveLimiter) OnSuccess()")
 	require.NotEqual(t, -1, onSuccessStart, "OnSuccess marker must be emitted after Wait")

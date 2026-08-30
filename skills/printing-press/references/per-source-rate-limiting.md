@@ -31,7 +31,9 @@ func New() *Client {
 }
 
 func (c *Client) Fetch(ctx context.Context, url string) ([]byte, error) {
-    c.limiter.Wait()
+    if err := c.limiter.Wait(ctx); err != nil {
+        return nil, err
+    }
     req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
     if err != nil {
         return nil, err

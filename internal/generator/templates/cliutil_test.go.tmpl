@@ -674,7 +674,9 @@ func TestAdaptiveLimiter_NewNilOnNonPositive(t *testing.T) {
 
 func TestAdaptiveLimiter_NilSafeMethods(t *testing.T) {
 	var l *AdaptiveLimiter
-	l.Wait()
+	if err := l.Wait(context.Background()); err != nil {
+		t.Fatalf("nil Wait() = %v, want nil", err)
+	}
 	l.OnSuccess()
 	l.OnRateLimit()
 	if got := l.Rate(); got != 0 {
@@ -736,12 +738,34 @@ func TestAdaptiveLimiter_DoesNotRampBelowFloorAfterRateLimit(t *testing.T) {
 
 func TestAdaptiveLimiter_WaitEnforcesPacing(t *testing.T) {
 	l := NewAdaptiveLimiter(10.0)
-	l.Wait()
+	if err := l.Wait(context.Background()); err != nil {
+		t.Fatalf("first Wait() = %v", err)
+	}
 	start := time.Now()
-	l.Wait()
+	if err := l.Wait(context.Background()); err != nil {
+		t.Fatalf("second Wait() = %v", err)
+	}
 	elapsed := time.Since(start)
 	if elapsed < 80*time.Millisecond {
 		t.Errorf("second Wait() took %v, want >= 80ms", elapsed)
+	}
+}
+
+func TestAdaptiveLimiter_WaitHonorsCanceledContext(t *testing.T) {
+	l := NewAdaptiveLimiter(0.5)
+	if err := l.Wait(context.Background()); err != nil {
+		t.Fatalf("prime Wait() = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := l.Wait(ctx)
+	elapsed := time.Since(start)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Wait() = %v, want context deadline exceeded", err)
+	}
+	if elapsed > 400*time.Millisecond {
+		t.Fatalf("Wait() elapsed %s, want cancel near 40ms not the ~2s pace", elapsed)
 	}
 }
 
