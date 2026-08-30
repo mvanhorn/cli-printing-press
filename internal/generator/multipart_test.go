@@ -1,7 +1,9 @@
 package generator
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -96,8 +98,136 @@ func TestGenerateMultipartRequestBodyUsesMultipartClient(t *testing.T) {
 	assert.Contains(t, mcpSrc, `multipartFields[binding.WireName] = mcpMultipartFieldValue(v)`)
 	assert.Regexp(t, `(?s)func mcpMultipartFieldValue\(v any\) string \{.*?json\.Marshal\(v\)`, mcpSrc)
 
+	assertMultipartDryRunSkipsFileIO(t, clientSrc)
+
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestMultipartDryRunDoesNotOpenFileFields(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("multipart-dryrun")
+	apiSpec.Resources = map[string]spec.Resource{
+		"assets": {
+			Description: "Manage assets",
+			Endpoints: map[string]spec.Endpoint{
+				"upload": {
+					Method:             "POST",
+					Path:               "/assets",
+					Description:        "Upload an asset",
+					RequestContentType: "multipart/form-data",
+					Body: []spec.Param{
+						{Name: "assetData", Type: "string", Format: "binary", Required: true, Description: "Asset file"},
+						{Name: "filename", Type: "string", Required: true, Description: "File name"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	assertMultipartDryRunSkipsFileIO(t, clientSrc)
+
+	const runtimeTest = `package client
+
+import (
+	"context"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"multipart-dryrun-pp-cli/internal/config"
+)
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	original := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe() error = %v", err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = original }()
+	fn()
+	if err := w.Close(); err != nil {
+		t.Fatalf("closing stderr pipe: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("reading stderr pipe: %v", err)
+	}
+	return string(out)
+}
+
+func TestMultipartDryRunDoesNotOpenFileFields(t *testing.T) {
+	c := New(&config.Config{BaseURL: "https://api.example.invalid"}, time.Second, 0)
+	c.DryRun = true
+	c.NoCache = true
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist.bin")
+	stderr := captureStderr(t, func() {
+		_, _, err := c.PostMultipartWithParams(context.Background(), "/assets", nil,
+			map[string]string{"filename": "clip.wav"},
+			map[string]string{"assetData": missing})
+		if err != nil {
+			t.Fatalf("dry-run opened or failed on missing file: %v", err)
+		}
+	})
+	if !strings.Contains(stderr, "@"+missing) {
+		t.Fatalf("dry-run preview did not name the file field; stderr=%s", stderr)
+	}
+	if !strings.Contains(stderr, "assetData") {
+		t.Fatalf("dry-run preview omitted the file field name; stderr=%s", stderr)
+	}
+	if !strings.Contains(stderr, "clip.wav") {
+		t.Fatalf("dry-run preview did not name the text field; stderr=%s", stderr)
+	}
+}
+
+func TestMultipartLivePathStillOpensFileFields(t *testing.T) {
+	c := New(&config.Config{BaseURL: "https://api.example.invalid"}, time.Second, 0)
+	c.NoCache = true
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist.bin")
+	_, _, err := c.PostMultipartWithParams(context.Background(), "/assets", nil,
+		map[string]string{"filename": "clip.wav"},
+		map[string]string{"assetData": missing})
+	if err == nil {
+		t.Fatal("live multipart path must still open FileFields")
+	}
+	if !strings.Contains(err.Error(), "opening multipart file field") {
+		t.Fatalf("live error = %v, want opening multipart file field", err)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "multipart_dryrun_runtime_test.go"), []byte(runtimeTest), 0o600))
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^TestMultipart(DryRunDoesNotOpenFileFields|LivePathStillOpensFileFields)$", "-count=1")
+}
+
+func assertMultipartDryRunSkipsFileIO(t *testing.T, clientSrc string) {
+	t.Helper()
+
+	implStart := strings.Index(clientSrc, "func (c *Client) doInternal(")
+	require.NotEqual(t, -1, implStart, "client.go must contain Client.doInternal")
+	implBody := clientSrc[implStart:]
+	if next := strings.Index(implBody[1:], "\nfunc "); next != -1 {
+		implBody = implBody[:next+1]
+	}
+	dryRunIdx := strings.Index(implBody, "if c.DryRun {")
+	encodeIdx := strings.Index(implBody, "b, ct, err := encodeMultipartBody(multipartBody)")
+	require.GreaterOrEqual(t, dryRunIdx, 0, "doInternal must short-circuit multipart encoding under DryRun")
+	require.GreaterOrEqual(t, encodeIdx, 0, "doInternal must still call encodeMultipartBody on the live path")
+	assert.Less(t, dryRunIdx, encodeIdx, "doInternal must skip encodeMultipartBody (and its os.Open) under DryRun")
+	assert.Contains(t, implBody, `preview[name] = "@" + filePath`)
+	assert.Contains(t, clientSrc, "file, err := os.Open(filePath)")
 }
 
 func TestGenerateOpenAPIMultipartRequestBodyUsesMultipartClient(t *testing.T) {

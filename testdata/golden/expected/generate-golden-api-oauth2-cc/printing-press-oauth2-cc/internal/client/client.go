@@ -625,6 +625,8 @@ func (c *Client) writeCacheWithHeaders(path string, params map[string]string, he
 	_ = os.Chmod(resourceDir, 0o700)
 	cacheFile := filepath.Join(resourceDir, c.cacheKeyFor(http.MethodGet, path, params, headers, nil)+".json")
 	_ = os.WriteFile(cacheFile, []byte(data), 0o600)
+	// WriteFile's perm applies only on create; tighten a leftover 0644 rewrite.
+	_ = os.Chmod(cacheFile, 0o600)
 	if c.platformSession != nil {
 		c.writePlatformCacheMetadata(cacheFile)
 	}
