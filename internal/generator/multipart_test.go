@@ -354,9 +354,14 @@ func TestMultipartFilePartContentTypeFromExtension(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
-	clientSrc := readGeneratedFile(t, outputDir, "internal", "cli", "assets_upload.go")
-	assert.Contains(t, clientSrc, `fileFields["assetData"] = bodyAssetData`)
-	assert.NotContains(t, clientSrc, `fields["assetData"]`)
+	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	assert.Contains(t, clientSrc, `mime.TypeByExtension(filepath.Ext(path))`)
+	assert.Contains(t, clientSrc, `writer.CreatePart(h)`)
+	assert.NotContains(t, clientSrc, `writer.CreateFormFile(`)
+
+	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_assets.go")
+	assert.Contains(t, endpointSrc, `fileFields["assetData"] = bodyAssetData`)
+	assert.NotContains(t, endpointSrc, `fields["assetData"]`)
 
 	const runtimeTest = `package client
 
