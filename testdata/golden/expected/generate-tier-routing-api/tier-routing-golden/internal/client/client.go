@@ -976,6 +976,39 @@ func sleepContext(ctx context.Context, wait time.Duration) error {
 	}
 }
 
+// Exhausted 429 retries are a pacing signal, not a command failure. Sleep
+// the last Retry-After so the attempt can continue while the operation
+// deadline still has time; a non-positive wait falls back to one second
+// so Retry-After: 0 cannot tight-loop.
+func (c *Client) waitForRateLimitRefill(ctx context.Context, wait time.Duration) error {
+	if wait <= 0 {
+		wait = time.Second
+	}
+	fmt.Fprintf(os.Stderr, "rate-limit budget empty, waiting %s for refill\n", wait)
+	if err := sleepContext(ctx, wait); err != nil {
+		return fmt.Errorf("timed out waiting %s for rate-limit budget to refill: %w", wait, err)
+	}
+	return nil
+}
+
+// One --timeout (or the caller's deadline) covers refill waits, limiter
+// pacing, and retry sleeps. A fresh timeout per wait would let a
+// persistently 429ing endpoint run indefinitely. The HTTP request keeps
+// the caller's ctx so unmarked binary streams can outlive the default
+// whole-call budget.
+func (c *Client) bindOperationDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	if timeout := c.ConfiguredTimeout(); timeout > 0 {
+		return context.WithTimeout(ctx, timeout)
+	}
+	return ctx, func() {}
+}
+
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
@@ -1027,6 +1060,11 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	if err := rejectUnresolvedPathParams(path, nil); err != nil {
 		return nil, 0, err
 	}
+	// Bound waits and retries once. Do not attach this deadline to the
+	// HTTP request: unmarked binary transfers drop the whole-call
+	// Timeout and must keep streaming after --timeout's default budget.
+	opCtx, cancel := c.bindOperationDeadline(ctx)
+	defer cancel()
 	requestBaseURL := c.baseURLForRequest()
 	targetURL := requestBaseURL + path
 
@@ -1073,13 +1111,15 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	}
 	var lastErr error
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if err := c.waitForPlatformBudget(ctx, endpointClass); err != nil {
+	for attempt := 0; ; attempt++ {
+		if err := c.waitForPlatformBudget(opCtx, endpointClass); err != nil {
 			return nil, 0, err
 		}
 		// Proactive rate limiting — wait before sending
 		adaptiveStarted := time.Now()
-		c.limiter.Wait()
+		if err := c.limiter.Wait(opCtx); err != nil {
+			return nil, 0, err
+		}
 		if c.platformSession != nil {
 			c.platformSession.RecordRateLimitWait(time.Since(adaptiveStarted))
 		}
@@ -1181,7 +1221,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 					return nil, 0, lastErr
 				}
 				fmt.Fprintf(os.Stderr, "network error (%v), retrying in %s (attempt %d/%d)\n", c.maskError(err, authHeader), wait, attempt+1, maxRetries)
-				if serr := sleepContext(ctx, wait); serr != nil {
+				if serr := sleepContext(opCtx, wait); serr != nil {
 					return nil, 0, serr
 				}
 				continue
@@ -1239,8 +1279,12 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			Body:       c.maskCredentialText(truncateBody(respBody), authHeader),
 		}
 
-		// Rate limited: classify before provider decoding. Unsafe-to-replay
-		// writes and exhausted retries return the shared typed error.
+		// Rate limited: classify before provider decoding. The server-driven
+		// 429 / Retry-After retry policy is unchanged (maxRetries, RetryBudget,
+		// RetryAfterDelay). Unsafe-to-replay writes still return the shared
+		// typed error. After that policy is exhausted, wait for the local
+		// politeness budget to refill — bounded by ctx / --timeout — instead
+		// of failing the command while time remains.
 		if resp.StatusCode == http.StatusTooManyRequests {
 			c.limiter.OnRateLimit()
 			wait := platform.RetryAfterDelay(resp.Header.Get("Retry-After"), attempt, time.Now().UTC(), nil)
@@ -1249,7 +1293,17 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 					c.platformSession.RecordRateLimitRetry(wait)
 				}
 				fmt.Fprintf(os.Stderr, "rate limited, waiting %s (attempt %d/%d, rate adjusted to %.1f req/s)\n", wait, attempt+1, maxRetries, c.limiter.Rate())
-				if err := sleepContext(ctx, wait); err != nil {
+				if err := sleepContext(opCtx, wait); err != nil {
+					return nil, 0, err
+				}
+				lastErr = apiErr
+				continue
+			}
+			if canRetryAmbiguousFailure && maxRetries > 0 && attempt >= maxRetries {
+				if c.platformSession != nil {
+					c.platformSession.RecordRateLimitWait(wait)
+				}
+				if err := c.waitForRateLimitRefill(opCtx, wait); err != nil {
 					return nil, 0, err
 				}
 				lastErr = apiErr
@@ -1281,7 +1335,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				return nil, resp.StatusCode, apiErr
 			}
 			fmt.Fprintf(os.Stderr, "server error %d, retrying in %s (attempt %d/%d)\n", resp.StatusCode, wait, attempt+1, maxRetries)
-			if err := sleepContext(ctx, wait); err != nil {
+			if err := sleepContext(opCtx, wait); err != nil {
 				return nil, 0, err
 			}
 			lastErr = apiErr
@@ -1291,8 +1345,6 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		// Client error or retries exhausted - return the error
 		return nil, resp.StatusCode, apiErr
 	}
-
-	return nil, 0, lastErr
 }
 
 func safeEndpointClass(method, path string) string {

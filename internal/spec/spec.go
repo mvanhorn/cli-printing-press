@@ -305,8 +305,8 @@ type APISpec struct {
 	// --rate-limit flag. "auto" selects the header-driven adaptive limiter
 	// (client.RateLimitAuto) so the CLI paces itself to the server's
 	// X-Ratelimit-* headers with no hardcoded ceiling; a numeric string
-	// (e.g. "2") pins a fixed requests-per-second ceiling. Empty keeps the
-	// legacy provenance default (2 for sniffed specs, else 0 = disabled).
+	// (e.g. "2") pins a fixed requests-per-second ceiling. Empty is the
+	// same as "auto" — sniffed and documented specs share that rule.
 	// Populated from the yaml field or the OpenAPI x-pp-default-rate-limit
 	// extension.
 	DefaultRateLimit string              `yaml:"default_rate_limit,omitempty" json:"default_rate_limit,omitempty"`
