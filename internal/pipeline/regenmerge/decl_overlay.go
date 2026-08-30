@@ -88,6 +88,7 @@ func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error
 		installed = append(installed, repl)
 	}
 	addImportsUsedByDecls(freshFile, pubFile, installed)
+	rewriteInstalledSelectorsToDestAliases(freshFile, pubFile, installed)
 	dropUnusedImports(freshFile)
 
 	var buf bytes.Buffer
@@ -346,6 +347,42 @@ func addImportsUsedByDecls(fresh, pub *dst.File, installed []dst.Decl) {
 		return
 	}
 	fresh.Decls = append([]dst.Decl{&dst.GenDecl{Tok: token.IMPORT, Specs: missing}}, fresh.Decls...)
+}
+
+func rewriteInstalledSelectorsToDestAliases(fresh, pub *dst.File, installed []dst.Decl) {
+	if fresh == nil || pub == nil || len(installed) == 0 {
+		return
+	}
+	destAliasToPath := importAliasMap(fresh)
+	destPathToAlias := map[string]string{}
+	for alias, path := range destAliasToPath {
+		if _, ok := destPathToAlias[path]; !ok {
+			destPathToAlias[path] = alias
+		}
+	}
+	pubAliasToPath := importAliasMap(pub)
+	for _, d := range installed {
+		dst.Inspect(d, func(n dst.Node) bool {
+			sel, ok := n.(*dst.SelectorExpr)
+			if !ok {
+				return true
+			}
+			id, ok := sel.X.(*dst.Ident)
+			if !ok || destAliasToPath[id.Name] != "" {
+				return true
+			}
+			path := pubAliasToPath[id.Name]
+			if path == "" {
+				return true
+			}
+			destAlias, ok := destPathToAlias[path]
+			if !ok || destAlias == id.Name {
+				return true
+			}
+			id.Name = destAlias
+			return true
+		})
+	}
 }
 
 func dropUnusedImports(file *dst.File) {

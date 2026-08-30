@@ -87,6 +87,45 @@ func Other() {}
 	assert.Contains(t, string(got), "func Other")
 }
 
+func TestOverlayRewritesPublishedAliasToDestAlias(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+		return path
+	}
+	pub := write("pub.go", `package client
+
+import p "fmt"
+
+func HandPatched() string { return p.Sprint("kept") }
+func Other() {}
+`)
+	fresh := write("fresh.go", `package client
+
+import f "fmt"
+
+func HandPatched() string { return f.Sprint("fresh") }
+func Other() { _ = f.Sprint("other") }
+`)
+	base := write("base.go", `package client
+
+func HandPatched() string { return "orig" }
+func Other() {}
+`)
+	dest := filepath.Join(dir, "dest.go")
+	require.NoError(t, overlayHandEditedDecls(pub, fresh, base, dest))
+
+	got, err := os.ReadFile(dest)
+	require.NoError(t, err)
+	assert.Contains(t, string(got), `f.Sprint("kept")`)
+	assert.Contains(t, string(got), `"fmt"`)
+	assert.NotContains(t, string(got), `p.Sprint`)
+	assert.Contains(t, string(got), `f.Sprint("other")`)
+}
+
 func TestOverlayKeepsFreshMemberOfGroupedDecl(t *testing.T) {
 	t.Parallel()
 
