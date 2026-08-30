@@ -568,9 +568,6 @@ func bindFields(sc *bindingScopes, fl *dst.FieldList) {
 }
 
 func isPackageSelectorIdent(id *dst.Ident, sc *bindingScopes) bool {
-	if id.Obj != nil && id.Obj.Kind != dst.Pkg {
-		return false
-	}
 	return !sc.isLocal(id.Name)
 }
 
@@ -711,8 +708,20 @@ func walkOverlayStmt(s dst.Stmt, sc *bindingScopes, visit func(*dst.Ident)) {
 	case *dst.TypeSwitchStmt:
 		sc.push()
 		walkOverlayStmt(x.Init, sc, visit)
-		walkOverlayStmt(x.Assign, sc, visit)
-		walkOverlayStmt(x.Body, sc, visit)
+		walkTypeSwitchAssignRHS(x.Assign, sc, visit)
+		for _, cc := range typeSwitchCaseClauses(x.Body) {
+			for _, e := range cc.List {
+				walkOverlayExpr(e, sc, visit)
+			}
+		}
+		bindTypeSwitchAssign(x.Assign, sc)
+		for _, cc := range typeSwitchCaseClauses(x.Body) {
+			sc.push()
+			for _, c := range cc.Body {
+				walkOverlayStmt(c, sc, visit)
+			}
+			sc.pop()
+		}
 		sc.pop()
 	case *dst.SelectStmt:
 		walkOverlayStmt(x.Body, sc, visit)
@@ -740,6 +749,44 @@ func walkOverlayStmt(s dst.Stmt, sc *bindingScopes, visit func(*dst.Ident)) {
 	case *dst.IncDecStmt:
 		walkOverlayExpr(x.X, sc, visit)
 	}
+}
+
+func walkTypeSwitchAssignRHS(s dst.Stmt, sc *bindingScopes, visit func(*dst.Ident)) {
+	switch x := s.(type) {
+	case *dst.AssignStmt:
+		for _, e := range x.Rhs {
+			walkOverlayExpr(e, sc, visit)
+		}
+	case *dst.ExprStmt:
+		walkOverlayExpr(x.X, sc, visit)
+	default:
+		walkOverlayStmt(s, sc, visit)
+	}
+}
+
+func bindTypeSwitchAssign(s dst.Stmt, sc *bindingScopes) {
+	as, ok := s.(*dst.AssignStmt)
+	if !ok || as.Tok != token.DEFINE {
+		return
+	}
+	for _, e := range as.Lhs {
+		if id, ok := e.(*dst.Ident); ok {
+			sc.bind(id.Name)
+		}
+	}
+}
+
+func typeSwitchCaseClauses(body *dst.BlockStmt) []*dst.CaseClause {
+	if body == nil {
+		return nil
+	}
+	var out []*dst.CaseClause
+	for _, s := range body.List {
+		if cc, ok := s.(*dst.CaseClause); ok {
+			out = append(out, cc)
+		}
+	}
+	return out
 }
 
 func walkOverlayExpr(e dst.Expr, sc *bindingScopes, visit func(*dst.Ident)) {

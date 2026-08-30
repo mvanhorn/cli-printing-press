@@ -405,6 +405,50 @@ func Other() {}
 	assert.Contains(t, string(got), `os := "local"`)
 }
 
+func TestOverlayKeepsTypeSwitchCaseTypeImport(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+		return path
+	}
+	pub := write("pub.go", `package client
+
+import "os"
+
+func HandPatched(v any) string {
+	switch os := v.(type) {
+	case *os.File:
+		_ = os
+		return "kept"
+	}
+	return ""
+}
+func Other() {}
+`)
+	fresh := write("fresh.go", `package client
+
+func HandPatched() string { return "fresh" }
+func Other() {}
+`)
+	base := write("base.go", `package client
+
+func HandPatched() string { return "orig" }
+func Other() {}
+`)
+	dest := filepath.Join(dir, "dest.go")
+	require.NoError(t, overlayHandEditedDecls(pub, fresh, base, dest))
+
+	got, err := os.ReadFile(dest)
+	require.NoError(t, err)
+	assert.Contains(t, string(got), `*os.File`)
+	assert.Contains(t, string(got), `"os"`)
+	assert.Contains(t, string(got), `"kept"`)
+	assert.Contains(t, string(got), `switch os := v.(type)`)
+}
+
 func TestOverlayKeepsFreshMemberOfGroupedDecl(t *testing.T) {
 	t.Parallel()
 
