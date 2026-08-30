@@ -137,3 +137,43 @@ func astSpecKey(spec ast.Spec) string {
 	}
 	return ""
 }
+
+// canonicalNameValueTexts maps each const/var name to the canonical render of
+// its value expression so a multi-name spec (`const A, B = x, y`) can overlay
+// only the names that actually differ from the original emission.
+func canonicalNameValueTexts(filename string) map[string]string {
+	if filename == "" {
+		return nil
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filename, nil, parser.SkipObjectResolution)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]string)
+	for _, d := range file.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok == token.IMPORT {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			vs.Doc = nil
+			vs.Comment = nil
+			for i, n := range vs.Names {
+				if i >= len(vs.Values) {
+					break
+				}
+				text, err := canonicalRender(fset, vs.Values[i])
+				if err != nil {
+					continue
+				}
+				out[n.Name] = text
+			}
+		}
+	}
+	return out
+}

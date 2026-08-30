@@ -67,6 +67,9 @@ func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error
 	pubByName := overlayDeclMap(pubFile)
 	pubSpecs := canonicalSpecTexts(pubPath)
 	baseSpecs := canonicalSpecTexts(basePath)
+	pubNameVals := canonicalNameValueTexts(pubPath)
+	baseNameVals := canonicalNameValueTexts(basePath)
+	var installed []dst.Decl
 	for i, d := range freshFile.Decls {
 		name := overlayDeclName(d)
 		if !fromPub[name] {
@@ -76,13 +79,15 @@ func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error
 		if !ok {
 			continue
 		}
-		if merged := mergeGroupedIfNeeded(d, repl, pubSpecs, baseSpecs); merged != nil {
+		if merged := mergeGroupedIfNeeded(d, repl, pubSpecs, baseSpecs, pubNameVals, baseNameVals); merged != nil {
 			freshFile.Decls[i] = merged
+			installed = append(installed, merged)
 			continue
 		}
 		freshFile.Decls[i] = repl
+		installed = append(installed, repl)
 	}
-	addImportsUsedByOverlaidDecls(freshFile, pubFile, fromPub)
+	addImportsUsedByDecls(freshFile, pubFile, installed)
 
 	var buf bytes.Buffer
 	if err := decorator.Fprint(&buf, freshFile); err != nil {
@@ -170,20 +175,20 @@ func overlayDeclName(d dst.Decl) string {
 	return ""
 }
 
-func mergeGroupedIfNeeded(fresh, pub dst.Decl, pubSpecs, baseSpecs map[string]string) dst.Decl {
+func mergeGroupedIfNeeded(fresh, pub dst.Decl, pubSpecs, baseSpecs, pubNameVals, baseNameVals map[string]string) dst.Decl {
 	fg, ok := fresh.(*dst.GenDecl)
-	if !ok || fg.Tok == token.IMPORT || len(fg.Specs) < 2 {
+	if !ok || fg.Tok == token.IMPORT || (!hasMultiNameValueSpec(fg) && len(fg.Specs) < 2) {
 		return nil
 	}
 	pg, ok := pub.(*dst.GenDecl)
 	if !ok {
 		return nil
 	}
-	mergeGroupedGenDecl(fg, pg, pubSpecs, baseSpecs)
+	mergeGroupedGenDecl(fg, pg, pubSpecs, baseSpecs, pubNameVals, baseNameVals)
 	return fg
 }
 
-func mergeGroupedGenDecl(fresh, pub *dst.GenDecl, pubSpecs, baseSpecs map[string]string) {
+func mergeGroupedGenDecl(fresh, pub *dst.GenDecl, pubSpecs, baseSpecs, pubNameVals, baseNameVals map[string]string) {
 	if fresh == nil || pub == nil {
 		return
 	}
@@ -194,6 +199,12 @@ func mergeGroupedGenDecl(fresh, pub *dst.GenDecl, pubSpecs, baseSpecs map[string
 		}
 	}
 	for i, spec := range fresh.Specs {
+		if vs, ok := spec.(*dst.ValueSpec); ok && len(vs.Names) > 1 {
+			if pubSpec, ok := pubByKey[dstSpecKey(spec)].(*dst.ValueSpec); ok {
+				mergeMultiNameValueSpec(vs, pubSpec, pubNameVals, baseNameVals)
+			}
+			continue
+		}
 		key := dstSpecKey(spec)
 		pubSpec, ok := pubByKey[key]
 		if !ok {
@@ -219,6 +230,42 @@ func mergeGroupedGenDecl(fresh, pub *dst.GenDecl, pubSpecs, baseSpecs map[string
 			continue
 		}
 		fresh.Specs = append(fresh.Specs, spec)
+	}
+}
+
+func hasMultiNameValueSpec(gd *dst.GenDecl) bool {
+	if gd == nil {
+		return false
+	}
+	for _, spec := range gd.Specs {
+		if vs, ok := spec.(*dst.ValueSpec); ok && len(vs.Names) > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeMultiNameValueSpec(fresh, pub *dst.ValueSpec, pubNameVals, baseNameVals map[string]string) {
+	if fresh == nil || pub == nil {
+		return
+	}
+	pubVal := map[string]dst.Expr{}
+	for i, n := range pub.Names {
+		if i < len(pub.Values) {
+			pubVal[n.Name] = pub.Values[i]
+		}
+	}
+	for i, n := range fresh.Names {
+		if i >= len(fresh.Values) {
+			break
+		}
+		name := n.Name
+		if baseNameVals[name] != "" && pubNameVals[name] == baseNameVals[name] {
+			continue
+		}
+		if v, ok := pubVal[name]; ok {
+			fresh.Values[i] = v
+		}
 	}
 }
 
@@ -252,8 +299,8 @@ func dstReceiverTypeName(expr dst.Expr) string {
 	return ""
 }
 
-func addImportsUsedByOverlaidDecls(fresh, pub *dst.File, fromPub map[string]bool) {
-	if fresh == nil || pub == nil || len(fromPub) == 0 {
+func addImportsUsedByDecls(fresh, pub *dst.File, installed []dst.Decl) {
+	if fresh == nil || pub == nil || len(installed) == 0 {
 		return
 	}
 	aliasToPath := importAliasMap(pub)
@@ -262,13 +309,7 @@ func addImportsUsedByOverlaidDecls(fresh, pub *dst.File, fromPub map[string]bool
 			aliasToPath[alias] = path
 		}
 	}
-	var overlaid []dst.Decl
-	for _, d := range fresh.Decls {
-		if fromPub[overlayDeclName(d)] {
-			overlaid = append(overlaid, d)
-		}
-	}
-	needed := importPathsUsedByDecls(overlaid, aliasToPath)
+	needed := importPathsUsedByDecls(installed, aliasToPath)
 	have := map[string]bool{}
 	for _, path := range importPathsOf(fresh) {
 		have[path] = true
