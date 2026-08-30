@@ -126,6 +126,86 @@ func Other() {}
 	assert.Contains(t, string(got), `f.Sprint("other")`)
 }
 
+func TestOverlayRewritesCollidingAliasToDestPath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+		return path
+	}
+	pub := write("pub.go", `package client
+
+import f "os"
+
+func HandPatched() string { return f.Getenv("kept") }
+func Other() {}
+`)
+	fresh := write("fresh.go", `package client
+
+import (
+	f "fmt"
+	"os"
+)
+
+func HandPatched() string { return f.Sprint("fresh") }
+func Other() string { return f.Sprint("other") + os.Getenv("x") }
+`)
+	base := write("base.go", `package client
+
+func HandPatched() string { return "orig" }
+func Other() {}
+`)
+	dest := filepath.Join(dir, "dest.go")
+	require.NoError(t, overlayHandEditedDecls(pub, fresh, base, dest))
+
+	got, err := os.ReadFile(dest)
+	require.NoError(t, err)
+	assert.Contains(t, string(got), `os.Getenv("kept")`)
+	assert.Contains(t, string(got), `f.Sprint("other")`)
+	assert.NotContains(t, string(got), `f.Getenv`)
+}
+
+func TestOverlayAddsImportWhenAliasCollides(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+		return path
+	}
+	pub := write("pub.go", `package client
+
+import f "os"
+
+func HandPatched() { f.Exit(0) }
+func Other() {}
+`)
+	fresh := write("fresh.go", `package client
+
+import f "fmt"
+
+func HandPatched() string { return f.Sprint("fresh") }
+func Other() string { return f.Sprint("other") }
+`)
+	base := write("base.go", `package client
+
+func HandPatched() string { return "orig" }
+func Other() {}
+`)
+	dest := filepath.Join(dir, "dest.go")
+	require.NoError(t, overlayHandEditedDecls(pub, fresh, base, dest))
+
+	got, err := os.ReadFile(dest)
+	require.NoError(t, err)
+	assert.Contains(t, string(got), `os.Exit(0)`)
+	assert.Contains(t, string(got), `"os"`)
+	assert.Contains(t, string(got), `f.Sprint("other")`)
+	assert.NotContains(t, string(got), `f.Exit`)
+}
+
 func TestOverlayKeepsFreshMemberOfGroupedDecl(t *testing.T) {
 	t.Parallel()
 

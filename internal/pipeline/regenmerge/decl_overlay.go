@@ -316,6 +316,7 @@ func addImportsUsedByDecls(fresh, pub *dst.File, installed []dst.Decl) {
 	for _, path := range importPathsOf(fresh) {
 		have[path] = true
 	}
+	bound := importAliasMap(fresh)
 	var missing []dst.Spec
 	for _, d := range pub.Decls {
 		gd, ok := d.(*dst.GenDecl)
@@ -331,7 +332,14 @@ func addImportsUsedByDecls(fresh, pub *dst.File, installed []dst.Decl) {
 				continue
 			}
 			have[is.Path.Value] = true
-			missing = append(missing, is)
+			alias := importSpecAlias(is)
+			if alias == "_" || alias == "." {
+				missing = append(missing, is)
+				continue
+			}
+			free := unusedImportAlias(bound, alias, is.Path.Value)
+			bound[free] = is.Path.Value
+			missing = append(missing, importSpecWithAlias(is, free))
 		}
 	}
 	if len(missing) == 0 {
@@ -368,11 +376,14 @@ func rewriteInstalledSelectorsToDestAliases(fresh, pub *dst.File, installed []ds
 				return true
 			}
 			id, ok := sel.X.(*dst.Ident)
-			if !ok || destAliasToPath[id.Name] != "" {
+			if !ok {
 				return true
 			}
 			path := pubAliasToPath[id.Name]
 			if path == "" {
+				return true
+			}
+			if destAliasToPath[id.Name] == path {
 				return true
 			}
 			destAlias, ok := destPathToAlias[path]
@@ -459,7 +470,11 @@ func importSpecAlias(is *dst.ImportSpec) string {
 	if is.Name != nil {
 		return is.Name.Name
 	}
-	path, err := strconv.Unquote(is.Path.Value)
+	return importPathDefaultAlias(is.Path.Value)
+}
+
+func importPathDefaultAlias(quotedPath string) string {
+	path, err := strconv.Unquote(quotedPath)
 	if err != nil {
 		return ""
 	}
@@ -467,6 +482,35 @@ func importSpecAlias(is *dst.ImportSpec) string {
 		return path[i+1:]
 	}
 	return path
+}
+
+func unusedImportAlias(bound map[string]string, preferred, path string) string {
+	if bound[preferred] == "" || bound[preferred] == path {
+		return preferred
+	}
+	def := importPathDefaultAlias(path)
+	if def != "" && (bound[def] == "" || bound[def] == path) {
+		return def
+	}
+	if def == "" {
+		def = "pkg"
+	}
+	for i := 2; ; i++ {
+		cand := def + strconv.Itoa(i)
+		if bound[cand] == "" {
+			return cand
+		}
+	}
+}
+
+func importSpecWithAlias(is *dst.ImportSpec, alias string) *dst.ImportSpec {
+	out := &dst.ImportSpec{
+		Path: &dst.BasicLit{Kind: token.STRING, Value: is.Path.Value},
+	}
+	if alias != "" && alias != importPathDefaultAlias(is.Path.Value) {
+		out.Name = &dst.Ident{Name: alias}
+	}
+	return out
 }
 
 func importPathsUsedByDecls(decls []dst.Decl, aliasToPath map[string]string) map[string]bool {
