@@ -4299,7 +4299,64 @@ func (g *Generator) schemaWithDependentParents() []TableDef {
 	// domain table routed through generic storage by BuildSchema.
 	routeReservedStoreTablesToGenericOnly(domainSchema, reservedStoreObjectNames(g.Spec))
 
+	var dependent []profiler.DependentResource
+	if g.profile != nil {
+		dependent = g.profile.DependentSyncResources
+	}
+	attachBareIDColumns(schema, dependent)
+
 	return schema
+}
+
+// attachBareIDColumns adds a queryable generated bare_id to parent-keyed
+// typed tables. resourceStorageID writes id+NUL+parent as the primary key;
+// SQL that compares id to a bare API id therefore misses. The column
+// projects the same value BareResourceID returns so store queries can
+// filter without matching the hidden parent suffix.
+func attachBareIDColumns(tables []TableDef, dependent []profiler.DependentResource) {
+	parentKeyed := make(map[string]struct{})
+	for _, entry := range resourceParentKeyColumnEntries(tables, dependent) {
+		parentKeyed[entry.Name] = struct{}{}
+	}
+	for i := range tables {
+		table := &tables[i]
+		if !emitsDomainTable(*table) || !isParentKeyedTypedTable(*table, parentKeyed) {
+			continue
+		}
+		if hasNamedColumn(*table, storeBareIDColumn) {
+			continue
+		}
+		table.Columns = append(table.Columns, ColumnDef{
+			Name:      storeBareIDColumn,
+			Type:      storeBareIDType,
+			Generated: true,
+		})
+		table.Indexes = append(table.Indexes, IndexDef{
+			Name:      "idx_" + table.Name + "_" + storeBareIDColumn,
+			TableName: table.Name,
+			Columns:   storeBareIDColumn,
+		})
+	}
+}
+
+func isParentKeyedTypedTable(table TableDef, parentKeyed map[string]struct{}) bool {
+	if table.ParentKeyColumn != "" {
+		return true
+	}
+	if _, ok := parentKeyed[table.Resource]; ok {
+		return true
+	}
+	_, ok := parentKeyed[table.Name]
+	return ok
+}
+
+func hasNamedColumn(table TableDef, name string) bool {
+	for _, col := range table.Columns {
+		if col.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *Generator) renderStoreFiles(schema []TableDef) error {
@@ -6025,7 +6082,19 @@ func camelToJSON(s string) string {
 	return strings.Join(parts, "")
 }
 
+func writableStoreColumns(cols []ColumnDef) []ColumnDef {
+	out := make([]ColumnDef, 0, len(cols))
+	for _, col := range cols {
+		if col.Generated {
+			continue
+		}
+		out = append(out, col)
+	}
+	return out
+}
+
 func columnNames(cols []ColumnDef) string {
+	cols = writableStoreColumns(cols)
 	names := make([]string, 0, len(cols))
 	for _, col := range cols {
 		names = append(names, safeSQLName(col.Name))
@@ -6034,6 +6103,7 @@ func columnNames(cols []ColumnDef) string {
 }
 
 func columnPlaceholders(cols []ColumnDef) string {
+	cols = writableStoreColumns(cols)
 	if len(cols) == 0 {
 		return ""
 	}
@@ -6046,7 +6116,7 @@ func columnPlaceholders(cols []ColumnDef) string {
 
 func updateSet(cols []ColumnDef) string {
 	var updates []string
-	for _, col := range cols {
+	for _, col := range writableStoreColumns(cols) {
 		if col.PrimaryKey {
 			continue
 		}

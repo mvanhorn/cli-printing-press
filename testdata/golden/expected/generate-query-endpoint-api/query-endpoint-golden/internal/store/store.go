@@ -2040,6 +2040,11 @@ func resourceStorageID(resourceType, id string, obj map[string]any) string {
 // returns composite keys for parent-keyed resources, so callers comparing those
 // ids against bare API ids must run them through this first. For non-composite
 // ids it returns the input unchanged, so it is safe to apply to every id.
+//
+// Parent-keyed typed tables also project this value as a generated bare_id
+// column (indexed) so SQL/store queries can filter on the entity id without
+// matching the hidden parent suffix. WHERE id = ? against a bare API id
+// misses those rows; WHERE bare_id = ? finds them.
 func BareResourceID(storageID string) string {
 	if i := strings.IndexByte(storageID, 0); i >= 0 {
 		return storageID[:i]
@@ -2302,7 +2307,8 @@ func (s *Store) GetSyncCursor(resourceType string) string {
 // ListIDs returns all IDs from a resource's domain table, or from the generic
 // resources table if no domain table exists. Used by dependent sync to iterate parents.
 // For parent-keyed resource types these are composite storage keys; run them
-// through BareResourceID before comparing against bare API ids.
+// through BareResourceID before comparing against bare API ids, or filter the
+// typed table's generated bare_id column from SQL.
 //
 // resourceType is never interpolated into SQL directly. We resolve it to a real
 // table name via a parameterized sqlite_master lookup; only that trusted name is
