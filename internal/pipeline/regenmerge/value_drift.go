@@ -250,15 +250,15 @@ func stripGeneratedHighlights(body *ast.BlockStmt) {
 }
 
 func blankHighlightsSection(s string) string {
-	i := strings.Index(s, generatedHighlightsMarker)
-	if i < 0 {
+	before, rest, ok := strings.Cut(s, generatedHighlightsMarker)
+	if !ok {
 		return s
 	}
-	rest := s[i+len(generatedHighlightsMarker):]
-	if j := strings.Index(rest, "\n\n"); j >= 0 {
-		return s[:i] + generatedHighlightsMarker + rest[j:]
+	_, after, found := strings.Cut(rest, "\n\n")
+	if found {
+		return before + generatedHighlightsMarker + "\n\n" + after
 	}
-	return s[:i] + generatedHighlightsMarker
+	return before + generatedHighlightsMarker
 }
 
 func unquoteStringLit(raw string) (string, bool) {
