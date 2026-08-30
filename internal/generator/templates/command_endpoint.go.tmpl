@@ -906,7 +906,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				}
 			}
 {{- end}}
-{{- if endpointNeedsClientLimit .Endpoint}}
+{{- if and (endpointNeedsClientLimit .Endpoint) (not .Endpoint.UsesHTMLResponse)}}
 			// Honor --limit when the API accepts but ignores ?limit=N.
 			data = truncateJSONArray(cmd.Context(), data, flagLimit)
 {{- end}}
@@ -916,6 +916,10 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				data = applyResponsePath(data, {{printf "%q" .Endpoint.ResponsePath}})
 			}
 
+{{- end}}
+{{- if and (endpointNeedsClientLimit .Endpoint) .Endpoint.UsesHTMLResponse}}
+			// Honor --limit on extracted items, after any response-path unwrap.
+			data = truncateJSONArray(cmd.Context(), data, flagLimit)
 {{- end}}
 {{- if .IsAsync}}
 			if asyncJobID := ExtractJobID(data, "{{.Async.JobIDField}}"); asyncJobID != "" {

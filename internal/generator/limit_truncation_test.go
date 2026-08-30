@@ -267,8 +267,8 @@ func TestHTMLResponseLimitAppliesAfterExtraction(t *testing.T) {
 	promotedHTML := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_listings.go")
 	nestedHTML := readGeneratedFile(t, outputDir, "internal", "cli", "catalog_list.go")
 	jsonSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_orders.go")
-	assertTruncateAfterHTMLExtract(t, promotedHTML)
-	assertTruncateAfterHTMLExtract(t, nestedHTML)
+	assertHTMLLimitOrder(t, promotedHTML)
+	assertHTMLLimitOrder(t, nestedHTML)
 	require.Contains(t, jsonSrc, "truncateJSONArray(cmd.Context(), data,",
 		"JSON list endpoints must keep client-side --limit truncation")
 	require.NotContains(t, jsonSrc, "extractHTMLResponse(",
@@ -277,8 +277,8 @@ func TestHTMLResponseLimitAppliesAfterExtraction(t *testing.T) {
 	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
 
-	baseEnv := append(os.Environ(),
-		"HOME="+t.TempDir(),
+	home := t.TempDir()
+	baseEnv := isolatedCLIEnv(t, home,
 		strings.ToUpper(strings.ReplaceAll(apiSpec.Name, "-", "_"))+"_BASE_URL="+server.URL,
 	)
 	for _, tc := range []struct {
@@ -301,7 +301,7 @@ func TestHTMLResponseLimitAppliesAfterExtraction(t *testing.T) {
 	}
 }
 
-func assertTruncateAfterHTMLExtract(t *testing.T, src string) {
+func assertHTMLLimitOrder(t *testing.T, src string) {
 	t.Helper()
 	extractIdx := strings.Index(src, "extractHTMLResponse(")
 	truncateIdx := strings.Index(src, "truncateJSONArray(")
@@ -309,6 +309,83 @@ func assertTruncateAfterHTMLExtract(t *testing.T, src string) {
 	require.NotEqual(t, -1, truncateIdx, "html-response command with --limit must call truncateJSONArray")
 	require.Less(t, extractIdx, truncateIdx,
 		"truncateJSONArray must run after extractHTMLResponse so --limit applies to extracted items")
+	if pathIdx := strings.Index(src, "applyResponsePath("); pathIdx != -1 {
+		require.Less(t, pathIdx, truncateIdx,
+			"truncateJSONArray must run after applyResponsePath so --limit applies to the selected array")
+	}
+}
+
+func TestHTMLResponseLimitFollowsStorelessResponsePath(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("html-limit-path")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Learn.Disabled = true
+	apiSpec.Resources = map[string]spec.Resource{
+		"gallery": {
+			Description: "HTML gallery page",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:         http.MethodGet,
+					Path:           "/gallery",
+					Description:    "List gallery links from a page object",
+					Params:         []spec.Param{{Name: "limit", Type: "integer", Default: 10}},
+					ResponseFormat: spec.ResponseFormatHTML,
+					ResponsePath:   "links",
+					HTMLExtract: &spec.HTMLExtract{
+						Mode:         spec.HTMLExtractModePage,
+						LinkPrefixes: []string{"/items"},
+					},
+					Response: spec.ResponseDef{Type: "array", Item: "html_link"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{MCP: true}
+	require.NoError(t, gen.Generate())
+
+	src := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_gallery.go")
+	extractIdx := strings.Index(src, "extractHTMLResponse(")
+	pathIdx := strings.Index(src, "applyResponsePath(")
+	truncateIdx := strings.Index(src, "truncateJSONArray(")
+	require.NotEqual(t, -1, extractIdx)
+	require.NotEqual(t, -1, pathIdx)
+	require.NotEqual(t, -1, truncateIdx)
+	require.Less(t, extractIdx, pathIdx)
+	require.Less(t, pathIdx, truncateIdx,
+		"storeless html-response commands must truncate after ResponsePath unwraps extracted items")
+}
+
+func isolatedCLIEnv(t *testing.T, home string, extra ...string) []string {
+	t.Helper()
+	drop := map[string]struct{}{
+		"HOME": {}, "USERPROFILE": {},
+		"XDG_CONFIG_HOME": {}, "XDG_DATA_HOME": {},
+		"XDG_STATE_HOME": {}, "XDG_CACHE_HOME": {},
+	}
+	env := make([]string, 0, len(os.Environ())+len(extra)+6)
+	for _, kv := range os.Environ() {
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		if _, skip := drop[key]; skip {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env,
+		"HOME="+home,
+		"USERPROFILE="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
+		"XDG_STATE_HOME="+filepath.Join(home, ".local", "state"),
+		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+	)
+	return append(env, extra...)
 }
 
 func jsonResultCount(t *testing.T, out []byte) int {
