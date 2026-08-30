@@ -142,7 +142,9 @@ func (l *AdaptiveLimiter) Wait(ctx context.Context) error {
 	if elapsed < delay {
 		sleep = delay - elapsed
 	}
-	l.lastRequest = time.Now().Add(sleep)
+	prevLast := l.lastRequest
+	reservedAt := time.Now().Add(sleep)
+	l.lastRequest = reservedAt
 	l.mu.Unlock()
 	if sleep <= 0 {
 		return nil
@@ -153,7 +155,22 @@ func (l *AdaptiveLimiter) Wait(ctx context.Context) error {
 	case <-timer.C:
 		return nil
 	case <-ctx.Done():
+		l.releaseUnusedReservation(prevLast, reservedAt)
 		return ctx.Err()
+	}
+}
+
+// A canceled Wait never sent a request, so it must not keep the slot it
+// reserved. Later waiters that already reserved past this slot keep their
+// place.
+func (l *AdaptiveLimiter) releaseUnusedReservation(prevLast, reservedAt time.Time) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.lastRequest.After(reservedAt) {
+		l.lastRequest = prevLast
 	}
 }
 
