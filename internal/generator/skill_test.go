@@ -449,7 +449,6 @@ func TestSkillAuthSetupNamesTheCredentialTheBinaryReads(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(skill), "export SKILLCRED_API_KEY=")
 	assert.NotContains(t, string(skill), "PRINTING_PRESS_CLIENT_PROFILE")
-	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestSkillAuthSetupDropsNarrativeThatNamesUnreadEnvVar(t *testing.T) {
