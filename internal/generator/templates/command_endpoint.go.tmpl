@@ -885,11 +885,6 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				data = filterJSONByFieldValues(data, {{printf "%q" .Field}}, formatCLIParamValue(flag{{camel (paramIdent .Param)}}))
 			}
 {{- end}}
-{{- if endpointNeedsClientLimit .Endpoint}}
-			// Honor --limit when the API accepts but ignores ?limit=N.
-			data = truncateJSONArray(cmd.Context(), data, flagLimit)
-{{- end}}
-
 {{- if .Endpoint.UsesHTMLResponse}}
 			if !flags.dryRun {
 				data, err = extractHTMLResponse(data, htmlExtractionOptions{
@@ -910,6 +905,10 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 					return err
 				}
 			}
+{{- end}}
+{{- if endpointNeedsClientLimit .Endpoint}}
+			// Honor --limit when the API accepts but ignores ?limit=N.
+			data = truncateJSONArray(cmd.Context(), data, flagLimit)
 {{- end}}
 
 {{- if and (not $isMutationOutput) .Endpoint.ResponsePath (not .HasStore)}}

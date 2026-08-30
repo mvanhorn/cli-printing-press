@@ -508,10 +508,6 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				data = filterJSONByFieldValues(data, {{printf "%q" .Field}}, formatCLIParamValue(flag{{camel (paramIdent .Param)}}))
 			}
 {{- end}}
-{{- if endpointNeedsClientLimit .Endpoint}}
-			// Honor --limit when the API accepts but ignores ?limit=N.
-			data = truncateJSONArray(cmd.Context(), data, flagLimit)
-{{- end}}
 {{- if .Endpoint.UsesHTMLResponse}}
 			if !flags.dryRun {
 				data, err = extractHTMLResponse(data, htmlExtractionOptions{
@@ -534,6 +530,10 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				}
 			}
 
+{{- end}}
+{{- if endpointNeedsClientLimit .Endpoint}}
+			// Honor --limit when the API accepts but ignores ?limit=N.
+			data = truncateJSONArray(cmd.Context(), data, flagLimit)
 {{- end}}
 {{- if and (or .IsReadOnly (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")) .Endpoint.ResponsePath (not .HasStore)}}
 			if !flags.dryRun {

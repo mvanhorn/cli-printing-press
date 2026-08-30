@@ -1,10 +1,16 @@
 package generator
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -180,4 +186,141 @@ func TestNumberTypedLimitParamCoercesToInt(t *testing.T) {
 		"number-typed limit param must not declare flagLimit as float64")
 
 	runGoCommand(t, outputDir, "build", "./internal/cli")
+}
+
+func TestHTMLResponseLimitAppliesAfterExtraction(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/orders":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"id":"1"},{"id":"2"},{"id":"3"},{"id":"4"},{"id":"5"}]`))
+		default:
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body>
+				<a href="/items/1">One</a>
+				<a href="/items/2">Two</a>
+				<a href="/items/3">Three</a>
+				<a href="/items/4">Four</a>
+				<a href="/items/5">Five</a>
+			</body></html>`))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	limitParam := spec.Param{Name: "limit", Type: "integer", Default: 10}
+	htmlList := spec.Endpoint{
+		Method:         http.MethodGet,
+		Path:           "/listings",
+		Description:    "List listings from HTML",
+		Params:         []spec.Param{limitParam},
+		ResponseFormat: spec.ResponseFormatHTML,
+		HTMLExtract: &spec.HTMLExtract{
+			Mode:         spec.HTMLExtractModeLinks,
+			LinkPrefixes: []string{"/items"},
+		},
+		Response: spec.ResponseDef{Type: "array", Item: "html_link"},
+	}
+
+	apiSpec := minimalSpec("html-limit")
+	apiSpec.BaseURL = server.URL
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Learn.Disabled = true
+	apiSpec.Resources = map[string]spec.Resource{
+		"listings": {
+			Description: "HTML listings",
+			Endpoints: map[string]spec.Endpoint{
+				"list": htmlList,
+			},
+		},
+		"catalog": {
+			Description: "Nested HTML catalog",
+			Endpoints: map[string]spec.Endpoint{
+				"list": htmlList,
+				"page": {
+					Method:         http.MethodGet,
+					Path:           "/catalog/page",
+					Description:    "Read a catalog page",
+					ResponseFormat: spec.ResponseFormatHTML,
+					HTMLExtract:    &spec.HTMLExtract{Mode: spec.HTMLExtractModePage},
+				},
+			},
+		},
+		"orders": {
+			Description: "JSON orders",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      http.MethodGet,
+					Path:        "/orders",
+					Description: "List orders",
+					Params:      []spec.Param{limitParam},
+					Response:    spec.ResponseDef{Type: "array", Item: "Order"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	promotedHTML := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_listings.go")
+	nestedHTML := readGeneratedFile(t, outputDir, "internal", "cli", "catalog_list.go")
+	jsonSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_orders.go")
+	assertTruncateAfterHTMLExtract(t, promotedHTML)
+	assertTruncateAfterHTMLExtract(t, nestedHTML)
+	require.Contains(t, jsonSrc, "truncateJSONArray(cmd.Context(), data,",
+		"JSON list endpoints must keep client-side --limit truncation")
+	require.NotContains(t, jsonSrc, "extractHTMLResponse(",
+		"JSON list endpoints must not route through HTML extraction")
+
+	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+
+	baseEnv := append(os.Environ(),
+		"HOME="+t.TempDir(),
+		strings.ToUpper(strings.ReplaceAll(apiSpec.Name, "-", "_"))+"_BASE_URL="+server.URL,
+	)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want int
+	}{
+		{name: "promoted html honors limit", args: []string{"listings", "--limit", "2", "--json"}, want: 2},
+		{name: "nested html honors limit", args: []string{"catalog", "list", "--limit", "2", "--json"}, want: 2},
+		{name: "json still truncates before parse", args: []string{"orders", "--limit", "2", "--json"}, want: 2},
+		{name: "promoted html keeps all extracted items without tighter limit", args: []string{"listings", "--json"}, want: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(binaryPath, tc.args...)
+			cmd.Env = baseEnv
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, string(out))
+			require.Equal(t, tc.want, jsonResultCount(t, out), string(out))
+		})
+	}
+}
+
+func assertTruncateAfterHTMLExtract(t *testing.T, src string) {
+	t.Helper()
+	extractIdx := strings.Index(src, "extractHTMLResponse(")
+	truncateIdx := strings.Index(src, "truncateJSONArray(")
+	require.NotEqual(t, -1, extractIdx, "html-response command must call extractHTMLResponse")
+	require.NotEqual(t, -1, truncateIdx, "html-response command with --limit must call truncateJSONArray")
+	require.Less(t, extractIdx, truncateIdx,
+		"truncateJSONArray must run after extractHTMLResponse so --limit applies to extracted items")
+}
+
+func jsonResultCount(t *testing.T, out []byte) int {
+	t.Helper()
+	var envelope struct {
+		Results []json.RawMessage `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(out, &envelope), string(out))
+	if envelope.Results != nil {
+		return len(envelope.Results)
+	}
+	var arr []json.RawMessage
+	require.NoError(t, json.Unmarshal(out, &arr), string(out))
+	return len(arr)
 }
