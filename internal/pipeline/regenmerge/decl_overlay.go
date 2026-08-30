@@ -88,6 +88,7 @@ func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error
 		installed = append(installed, repl)
 	}
 	addImportsUsedByDecls(freshFile, pubFile, installed)
+	dropUnusedImports(freshFile)
 
 	var buf bytes.Buffer
 	if err := decorator.Fprint(&buf, freshFile); err != nil {
@@ -345,6 +346,51 @@ func addImportsUsedByDecls(fresh, pub *dst.File, installed []dst.Decl) {
 		return
 	}
 	fresh.Decls = append([]dst.Decl{&dst.GenDecl{Tok: token.IMPORT, Specs: missing}}, fresh.Decls...)
+}
+
+func dropUnusedImports(file *dst.File) {
+	if file == nil {
+		return
+	}
+	aliasToPath := importAliasMap(file)
+	var body []dst.Decl
+	for _, d := range file.Decls {
+		if gd, ok := d.(*dst.GenDecl); ok && gd.Tok == token.IMPORT {
+			continue
+		}
+		body = append(body, d)
+	}
+	needed := importPathsUsedByDecls(body, aliasToPath)
+
+	var decls []dst.Decl
+	for _, d := range file.Decls {
+		gd, ok := d.(*dst.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			decls = append(decls, d)
+			continue
+		}
+		var specs []dst.Spec
+		for _, spec := range gd.Specs {
+			is, ok := spec.(*dst.ImportSpec)
+			if !ok || is.Path == nil {
+				specs = append(specs, spec)
+				continue
+			}
+			if alias := importSpecAlias(is); alias == "_" || alias == "." {
+				specs = append(specs, spec)
+				continue
+			}
+			if needed[is.Path.Value] {
+				specs = append(specs, spec)
+			}
+		}
+		if len(specs) == 0 {
+			continue
+		}
+		gd.Specs = specs
+		decls = append(decls, gd)
+	}
+	file.Decls = decls
 }
 
 func importAliasMap(file *dst.File) map[string]string {

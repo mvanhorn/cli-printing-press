@@ -50,6 +50,43 @@ func Moved() { os.Exit(1) }
 	assert.Contains(t, string(got), "func Rewritten")
 }
 
+func TestOverlayDropsUnusedFreshImports(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+		return path
+	}
+	pub := write("pub.go", `package client
+
+func HandPatched() string { return "kept" }
+func Other() {}
+`)
+	fresh := write("fresh.go", `package client
+
+import "fmt"
+
+func HandPatched() string { return fmt.Sprint("fresh") }
+func Other() {}
+`)
+	base := write("base.go", `package client
+
+func HandPatched() string { return "orig" }
+func Other() {}
+`)
+	dest := filepath.Join(dir, "dest.go")
+	require.NoError(t, overlayHandEditedDecls(pub, fresh, base, dest))
+
+	got, err := os.ReadFile(dest)
+	require.NoError(t, err)
+	assert.Contains(t, string(got), `"kept"`)
+	assert.NotContains(t, string(got), `"fmt"`)
+	assert.NotContains(t, string(got), "fmt.Sprint")
+	assert.Contains(t, string(got), "func Other")
+}
+
 func TestOverlayKeepsFreshMemberOfGroupedDecl(t *testing.T) {
 	t.Parallel()
 
