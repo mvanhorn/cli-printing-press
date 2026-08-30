@@ -83,9 +83,10 @@ func TestAttachBareIDColumnsJSONOnlyFallbackDependent(t *testing.T) {
 	}}
 	attachBareIDColumns(tables, []profiler.DependentResource{{Name: "items"}})
 
-	require.True(t, hasNamedColumn(tables[0], storeBareIDColumn),
-		"JSON-only dependent tables still store a composite id and need a queryable bare_id")
-	assert.True(t, tables[0].Columns[len(tables[0].Columns)-1].Generated)
+	assert.False(t, hasNamedColumn(tables[0], storeBareIDColumn),
+		"JSON-only fallback must keep only id/data/synced_at")
+	assert.Empty(t, tables[0].Indexes,
+		"JSON-only fallback must not grow a bare_id index")
 }
 
 func TestAttachBareIDColumnsSkipsExistingBareID(t *testing.T) {
@@ -194,6 +195,8 @@ func TestGeneratedStoreBareIDQueryable(t *testing.T) {
 		"bare_id must be indexed for SQL lookups")
 	require.Contains(t, src, `{table: "verify", column: "bare_id", decl: "TEXT GENERATED ALWAYS AS (substr(id, 1, coalesce(nullif(instr(id, char(0)), 0) - 1, length(id)))) VIRTUAL"}`,
 		"existing databases must backfill bare_id on open")
+	require.Contains(t, src, `SELECT name FROM pragma_table_xinfo(?) WHERE name=?`,
+		"ensureColumn must see generated columns; table_info omits them")
 	require.Contains(t, src, `INSERT INTO "verify" ("id", "domains_id", "data", "synced_at")`,
 		"generated bare_id must not appear in INSERT")
 	require.NotContains(t, src, `lookupFieldValue(obj, "bare_id")`,
@@ -205,6 +208,13 @@ func TestGeneratedStoreBareIDQueryable(t *testing.T) {
 	require.Contains(t, src, `CREATE TABLE IF NOT EXISTS "widgets"`)
 	require.NotContains(t, src, `"idx_widgets_bare_id"`)
 	require.NotContains(t, src, `{table: "widgets", column: "bare_id"`)
+
+	schemaTest, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "schema_version_test.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(schemaTest), `SELECT name FROM pragma_table_xinfo(?)`,
+		"upgrade verify must use table_xinfo so generated bare_id is visible")
+	require.NotContains(t, string(schemaTest), `PRAGMA table_info("verify")`,
+		"table_info hides generated columns and would false-fail the upgrade check")
 
 	testPath := filepath.Join(outputDir, "internal", "store", "bare_id_query_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(generatedBareIDQueryTest), 0o644))

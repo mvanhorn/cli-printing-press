@@ -361,25 +361,19 @@ func (s *Store) ensureColumn(ctx context.Context, conn *sql.Conn, table, column,
 		return fmt.Errorf("checking table %s: %w", table, err)
 	}
 
-	rows, err := conn.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info("%s")`, table))
-	if err != nil {
-		return fmt.Errorf("table_info %s: %w", table, err)
+	// table_info omits generated columns (VIRTUAL/STORED). table_xinfo
+	// reports them so a later Open does not re-ADD a column CREATE TABLE
+	// already declared, and so upgrades can see a prior ADD of bare_id.
+	var existing string
+	err = conn.QueryRowContext(ctx,
+		`SELECT name FROM pragma_table_xinfo(?) WHERE name=?`,
+		table, column,
+	).Scan(&existing)
+	if err == nil {
+		return nil
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var n, typ string
-		var notnull, pk int
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &n, &typ, &notnull, &dflt, &pk); err != nil {
-			return fmt.Errorf("scan table_info %s: %w", table, err)
-		}
-		if n == column {
-			return nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterating table_info %s: %w", table, err)
+	if err != sql.ErrNoRows {
+		return fmt.Errorf("table_xinfo %s: %w", table, err)
 	}
 
 	if _, err := conn.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE "%s" ADD COLUMN "%s" %s`, table, column, decl)); err != nil {

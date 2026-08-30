@@ -4320,7 +4320,11 @@ func attachBareIDColumns(tables []TableDef, dependent []profiler.DependentResour
 	}
 	for i := range tables {
 		table := &tables[i]
-		if !emitsDomainTable(*table) || !isParentKeyedTypedTable(*table, parentKeyed) {
+		// JSON-only fallback keeps id/data/synced_at only; parent context
+		// for those rows lives in the generic resources table, so the
+		// parent-keyed bare_id projection must not come back after a
+		// wide-cap reset.
+		if table.JSONOnlyFallback || !emitsDomainTable(*table) || !isParentKeyedTypedTable(*table, parentKeyed) {
 			continue
 		}
 		if hasNamedColumn(*table, storeBareIDColumn) {
