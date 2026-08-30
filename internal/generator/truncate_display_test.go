@@ -20,8 +20,10 @@ func TestGeneratedTruncateCutsOnRuneBoundaries(t *testing.T) {
 	body := emittedTruncateBody(t, helpersSrc)
 	require.Contains(t, body, "[]rune(s)", "display truncate must count runes, not bytes")
 	require.NotContains(t, body, "len(s)", "byte-length width checks truncate CJK that still fits the column")
-	require.NotContains(t, body, "s[:max]", "byte slices split multi-byte runes")
-	require.NotContains(t, body, "s[:max-3]", "byte slices split multi-byte runes")
+	require.False(t, containsBareIdentSlice(body, "s[:max]"),
+		"byte slices of s split multi-byte runes; runes[:max] is the safe form")
+	require.False(t, containsBareIdentSlice(body, "s[:max-3]"),
+		"byte slices of s split multi-byte runes; runes[:max-3] is the safe form")
 
 	const runtimeTest = `package cli
 
@@ -74,6 +76,46 @@ func TestTruncateASCIIUnchanged(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "truncate_runtime_test.go"), []byte(runtimeTest), 0o600))
 	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^TestTruncate(CJKValidUTF8AndFitsColumn|ASCIIUnchanged)$", "-count=1")
+}
+
+// containsBareIdentSlice reports whether expr (e.g. "s[:max]") appears as its
+// own identifier, not as a suffix of a longer name such as runes[:max].
+func containsBareIdentSlice(body, expr string) bool {
+	for i := 0; ; {
+		idx := strings.Index(body[i:], expr)
+		if idx < 0 {
+			return false
+		}
+		abs := i + idx
+		if abs == 0 || !isIdentByte(body[abs-1]) {
+			return true
+		}
+		i = abs + len(expr)
+	}
+}
+
+func isIdentByte(b byte) bool {
+	return b == '_' || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+}
+
+func TestContainsBareIdentSliceDistinguishesRunesFromString(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		body string
+		expr string
+		want bool
+	}{
+		{body: `return s[:max]`, expr: "s[:max]", want: true},
+		{body: `return s[:max-3] + "..."`, expr: "s[:max-3]", want: true},
+		{body: `return string(runes[:max])`, expr: "s[:max]", want: false},
+		{body: `return string(runes[:max-3]) + "..."`, expr: "s[:max-3]", want: false},
+	}
+	for _, tc := range cases {
+		if got := containsBareIdentSlice(tc.body, tc.expr); got != tc.want {
+			t.Fatalf("containsBareIdentSlice(%q, %q) = %v, want %v", tc.body, tc.expr, got, tc.want)
+		}
+	}
 }
 
 func emittedTruncateBody(t *testing.T, helpersSrc string) string {
