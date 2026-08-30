@@ -341,15 +341,9 @@ func WriteCLIManifest(dir string, m CLIManifest) error {
 	return nil
 }
 
+// AuthEnvVars stay the credentials the generated binary reads. The optional
+// tenant profile selector is a separate binding, not a substitute credential.
 func normalizeCLIManifestForWrite(dir string, m CLIManifest) CLIManifest {
-	if usesPlatformClientProfiles(dir) {
-		m.AuthEnvVars = []string{"PRINTING_PRESS_CLIENT_PROFILE"}
-		m.AuthEnvVarSpecs = []spec.AuthEnvVar{{
-			Name: "PRINTING_PRESS_CLIENT_PROFILE", Kind: spec.AuthEnvVarKindPerCall,
-			Required: true, Sensitive: false,
-		}}
-		m.AuthAdditionalHeaders = nil
-	}
 	return dropCollidingEndpointTemplateOverrides(m, scanGeneratedEnvSet(dir))
 }
 

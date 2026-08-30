@@ -178,9 +178,7 @@ func WriteMCPBManifestFromStruct(dir string, m CLIManifest) error {
 	// build didn't surface (per-instance BASE_URL, credential-flow JWT
 	// refreshers, hand-written auth helpers). Runs from every writer
 	// call site so lock+promote and one-off bundle builds read the same
-	// reconciled file. Platform-profile CLIs still go through this pass
-	// so *_BASE_URL and required endpoint placeholders land; credential
-	// Getenv calls are not re-added beside the profile selector.
+	// reconciled file.
 	return reconcileMCPBManifestFromClient(dir, m)
 }
 
@@ -214,20 +212,6 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 	}
 	launchEnv := buildMCPBEnv(m)
 	userConfig := buildMCPBUserConfig(m)
-	if usesPlatformClientProfiles(dir) {
-		// The profile selector is the credential surface. Endpoint
-		// placeholders such as {shop} are not credentials — dropping them
-		// here means the installer never collects them and the first API
-		// call fails with "<API>_SHOP not set".
-		launchEnv = map[string]string{"PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}"}
-		userConfig = map[string]MCPBVar{
-			"printing_press_client_profile": {
-				Type: mcpbVarTypeString, Title: "Client profile", Required: true,
-				Description: "Binds the MCP server to an existing tenant-gated Printing Press client profile.",
-			},
-		}
-		bindEndpointTemplateVars(m, launchEnv, userConfig)
-	}
 
 	return MCPBManifest{
 		ManifestVersion: MCPBManifestVersion,
@@ -255,11 +239,6 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 			Platforms:     defaultMCPBPlatforms,
 		},
 	}
-}
-
-func usesPlatformClientProfiles(dir string) bool {
-	info, err := os.Stat(filepath.Join(dir, "internal", "platform", "profile.go"))
-	return err == nil && !info.IsDir()
 }
 
 // bundleVersion returns the best known printed CLI bundle version at generate
@@ -585,9 +564,9 @@ func alignPrefixedEnvName(name, apiName string) string {
 	return name
 }
 
-// Auth-named or credential-shaped env vars stay on the profile selector
-// (or the sensitive auth user_config slot). Emitting them as unmasked
-// endpoint fields would prompt the installer for the raw secret.
+// Auth-named or credential-shaped env vars stay on the sensitive auth
+// user_config slot. Emitting them as unmasked endpoint fields would
+// prompt the installer for the raw secret.
 func isAuthOrCredentialEnvVar(m CLIManifest, name string) bool {
 	return spec.IsAuthOrCredentialEnvName(name, manifestAuthEnvNames(m))
 }
@@ -632,11 +611,6 @@ func endpointTemplateVarForEnv(m CLIManifest, name string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-func isEndpointTemplateEnvVar(m CLIManifest, name string) bool {
-	_, ok := endpointTemplateVarForEnv(m, name)
-	return ok
 }
 
 // userConfigKey lowercases the env var so manifest user_config keys match
