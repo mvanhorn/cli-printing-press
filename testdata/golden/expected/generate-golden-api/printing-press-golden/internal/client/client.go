@@ -15,9 +15,11 @@ import (
 	"html"
 	"io"
 	"math"
+	"mime"
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -907,7 +909,11 @@ func encodeMultipartBody(body multipartRequestBody) ([]byte, string, error) {
 			_ = writer.Close()
 			return nil, "", fmt.Errorf("opening multipart file field %q (%q): %w", fieldName, filePath, err)
 		}
-		part, err := writer.CreateFormFile(fieldName, filepath.Base(filePath))
+		h := make(textproto.MIMEHeader)
+		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`,
+			escapeMultipartQuotes(fieldName), escapeMultipartQuotes(filepath.Base(filePath))))
+		h.Set("Content-Type", multipartFileContentType(filePath))
+		part, err := writer.CreatePart(h)
 		if err != nil {
 			_ = file.Close()
 			_ = writer.Close()
@@ -927,6 +933,19 @@ func encodeMultipartBody(body multipartRequestBody) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("finalizing multipart body: %w", err)
 	}
 	return buf.Bytes(), writer.FormDataContentType(), nil
+}
+
+// CreateFormFile hardcodes application/octet-stream, which APIs that
+// whitelist part types reject. Derive the type from the filename.
+func multipartFileContentType(path string) string {
+	if ct := mime.TypeByExtension(filepath.Ext(path)); ct != "" {
+		return ct
+	}
+	return "application/octet-stream"
+}
+
+func escapeMultipartQuotes(s string) string {
+	return strings.NewReplacer("\\", "\\\\", `"`, "\\\"").Replace(s)
 }
 
 // isMutatingVerb reports whether the HTTP method writes server state.
