@@ -750,14 +750,6 @@ func entityMatchPriority(em string) int {
 	}
 }
 
-// entitySlicesIntersect reports whether two literal entity slices
-// share at least one element after case-insensitive comparison.
-// Used to detect "same literal entity" -- normalized.Entities is
-// lowercased by Normalize, but storedEntitySlice comes straight from
-// ParseStoredEntities (which preserves the case the extractor saw at
-// teach time). A naive case-sensitive comparison would miss the match.
-// Same-entity rows must not slip through the lower crossAliasMin floor
-// or get inflated by canonicalJaccard.
 // leftoverTokensAreIdentityFragments reports whether every leftover
 // stored token is an identity token or an alphanumeric fragment of
 // one. Write-side punctuation splits ("ticker" "abc" from TICKER-ABC)
@@ -815,6 +807,14 @@ func identityCharFragments(s string) []string {
 	return strings.Fields(b.String())
 }
 
+// entitySlicesIntersect reports whether two literal entity slices
+// share at least one element after case-insensitive comparison.
+// Used to detect "same literal entity" -- normalized.Entities is
+// lowercased by Normalize, but storedEntitySlice comes straight from
+// ParseStoredEntities (which preserves the case the extractor saw at
+// teach time). A naive case-sensitive comparison would miss the match.
+// Same-entity rows must not slip through the lower crossAliasMin floor
+// or get inflated by canonicalJaccard.
 func entitySlicesIntersect(a, b []string) bool {
 	if len(a) == 0 || len(b) == 0 {
 		return false
