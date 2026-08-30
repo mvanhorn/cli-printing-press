@@ -1,10 +1,16 @@
 package generator
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -180,4 +186,335 @@ func TestNumberTypedLimitParamCoercesToInt(t *testing.T) {
 		"number-typed limit param must not declare flagLimit as float64")
 
 	runGoCommand(t, outputDir, "build", "./internal/cli")
+}
+
+func TestHTMLResponseLimitAppliesAfterExtraction(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/orders":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"id":"1"},{"id":"2"},{"id":"3"},{"id":"4"},{"id":"5"}]`))
+		default:
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body>
+				<a href="/items/1">One</a>
+				<a href="/items/2">Two</a>
+				<a href="/items/3">Three</a>
+				<a href="/items/4">Four</a>
+				<a href="/items/5">Five</a>
+			</body></html>`))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	limitParam := spec.Param{Name: "limit", Type: "integer", Default: 10}
+	htmlList := spec.Endpoint{
+		Method:         http.MethodGet,
+		Path:           "/listings",
+		Description:    "List listings from HTML",
+		Params:         []spec.Param{limitParam},
+		ResponseFormat: spec.ResponseFormatHTML,
+		HTMLExtract: &spec.HTMLExtract{
+			Mode:         spec.HTMLExtractModeLinks,
+			LinkPrefixes: []string{"/items"},
+		},
+		Response: spec.ResponseDef{Type: "array", Item: "html_link"},
+	}
+
+	apiSpec := minimalSpec("html-limit")
+	apiSpec.BaseURL = server.URL
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Learn.Disabled = true
+	apiSpec.Resources = map[string]spec.Resource{
+		"listings": {
+			Description: "HTML listings",
+			Endpoints: map[string]spec.Endpoint{
+				"list": htmlList,
+			},
+		},
+		"catalog": {
+			Description: "Nested HTML catalog",
+			Endpoints: map[string]spec.Endpoint{
+				"list": htmlList,
+				"page": {
+					Method:         http.MethodGet,
+					Path:           "/catalog/page",
+					Description:    "Read a catalog page",
+					ResponseFormat: spec.ResponseFormatHTML,
+					HTMLExtract:    &spec.HTMLExtract{Mode: spec.HTMLExtractModePage},
+				},
+			},
+		},
+		"orders": {
+			Description: "JSON orders",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      http.MethodGet,
+					Path:        "/orders",
+					Description: "List orders",
+					Params:      []spec.Param{limitParam},
+					Response:    spec.ResponseDef{Type: "array", Item: "Order"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	promotedHTML := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_listings.go")
+	nestedHTML := readGeneratedFile(t, outputDir, "internal", "cli", "catalog_list.go")
+	jsonSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_orders.go")
+	assertHTMLLimitOrder(t, promotedHTML)
+	assertHTMLLimitOrder(t, nestedHTML)
+	require.Contains(t, jsonSrc, "truncateJSONArray(cmd.Context(), data,",
+		"JSON list endpoints must keep client-side --limit truncation")
+	require.NotContains(t, jsonSrc, "extractHTMLResponse(",
+		"JSON list endpoints must not route through HTML extraction")
+
+	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+
+	home := t.TempDir()
+	baseEnv := isolatedCLIEnv(t, home,
+		strings.ToUpper(strings.ReplaceAll(apiSpec.Name, "-", "_"))+"_BASE_URL="+server.URL,
+	)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want int
+	}{
+		{name: "promoted html honors limit", args: []string{"listings", "--limit", "2", "--json"}, want: 2},
+		{name: "nested html honors limit", args: []string{"catalog", "list", "--limit", "2", "--json"}, want: 2},
+		{name: "json still truncates before parse", args: []string{"orders", "--limit", "2", "--json"}, want: 2},
+		{name: "promoted html keeps all extracted items without tighter limit", args: []string{"listings", "--json"}, want: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(binaryPath, tc.args...)
+			cmd.Env = baseEnv
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, string(out))
+			require.Equal(t, tc.want, jsonResultCount(t, out), string(out))
+		})
+	}
+}
+
+func assertHTMLLimitOrder(t *testing.T, src string) {
+	t.Helper()
+	extractIdx := strings.Index(src, "extractHTMLResponse(")
+	truncateIdx := strings.Index(src, "truncateJSONArray(")
+	require.NotEqual(t, -1, extractIdx, "html-response command must call extractHTMLResponse")
+	require.NotEqual(t, -1, truncateIdx, "html-response command with --limit must call truncateJSONArray")
+	require.Less(t, extractIdx, truncateIdx,
+		"truncateJSONArray must run after extractHTMLResponse so --limit applies to extracted items")
+	if pathIdx := strings.Index(src, "applyResponsePath("); pathIdx != -1 {
+		require.Less(t, pathIdx, truncateIdx,
+			"truncateJSONArray must run after applyResponsePath so --limit applies to the selected array")
+	}
+}
+
+func TestHTMLResponseLimitFollowsStorelessResponsePath(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("html-limit-path")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Learn.Disabled = true
+	apiSpec.Resources = map[string]spec.Resource{
+		"gallery": {
+			Description: "HTML gallery page",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:         http.MethodGet,
+					Path:           "/gallery",
+					Description:    "List gallery links from a page object",
+					Params:         []spec.Param{{Name: "limit", Type: "integer", Default: 10}},
+					ResponseFormat: spec.ResponseFormatHTML,
+					ResponsePath:   "links",
+					HTMLExtract: &spec.HTMLExtract{
+						Mode:         spec.HTMLExtractModePage,
+						LinkPrefixes: []string{"/items"},
+					},
+					Response: spec.ResponseDef{Type: "array", Item: "html_link"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{MCP: true}
+	require.NoError(t, gen.Generate())
+
+	src := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_gallery.go")
+	extractIdx := strings.Index(src, "extractHTMLResponse(")
+	pathIdx := strings.Index(src, "applyResponsePath(")
+	truncateIdx := strings.Index(src, "truncateJSONArray(")
+	require.NotEqual(t, -1, extractIdx)
+	require.NotEqual(t, -1, pathIdx)
+	require.NotEqual(t, -1, truncateIdx)
+	require.Less(t, extractIdx, pathIdx)
+	require.Less(t, pathIdx, truncateIdx,
+		"storeless html-response commands must truncate after ResponsePath unwraps extracted items")
+}
+
+func TestHTMLResponseLimitFollowsStoreBackedResponsePath(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/orders":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"results":[{"id":"1"},{"id":"2"},{"id":"3"},{"id":"4"},{"id":"5"}]}`))
+		default:
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body>
+				<a href="/items/1">One</a>
+				<a href="/items/2">Two</a>
+				<a href="/items/3">Three</a>
+				<a href="/items/4">Four</a>
+				<a href="/items/5">Five</a>
+			</body></html>`))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	limitParam := spec.Param{Name: "limit", Type: "integer", Default: 10}
+	htmlPage := spec.Endpoint{
+		Method:         http.MethodGet,
+		Path:           "/gallery",
+		Description:    "List gallery links from a page object",
+		Params:         []spec.Param{limitParam},
+		ResponseFormat: spec.ResponseFormatHTML,
+		ResponsePath:   "links",
+		HTMLExtract: &spec.HTMLExtract{
+			Mode:         spec.HTMLExtractModePage,
+			LinkPrefixes: []string{"/items"},
+		},
+		Response: spec.ResponseDef{Type: "array", Item: "html_link"},
+	}
+
+	apiSpec := minimalSpec("html-limit-store")
+	apiSpec.BaseURL = server.URL
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Learn.Disabled = true
+	apiSpec.Resources = map[string]spec.Resource{
+		"gallery": {
+			Description: "Promoted HTML gallery",
+			Endpoints:   map[string]spec.Endpoint{"list": htmlPage},
+		},
+		"album": {
+			Description: "Nested HTML album",
+			Endpoints: map[string]spec.Endpoint{
+				"list": htmlPage,
+				"page": {
+					Method:         http.MethodGet,
+					Path:           "/album/page",
+					Description:    "Read an album page",
+					ResponseFormat: spec.ResponseFormatHTML,
+					HTMLExtract:    &spec.HTMLExtract{Mode: spec.HTMLExtractModePage},
+				},
+			},
+		},
+		"orders": {
+			Description: "JSON orders",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:       http.MethodGet,
+					Path:         "/orders",
+					Description:  "List orders",
+					Params:       []spec.Param{limitParam},
+					ResponsePath: "results",
+					Response:     spec.ResponseDef{Type: "array", Item: "Order"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	promotedHTML := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_gallery.go")
+	nestedHTML := readGeneratedFile(t, outputDir, "internal", "cli", "album_list.go")
+	jsonSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_orders.go")
+	assertHTMLLimitOrder(t, promotedHTML)
+	assertHTMLLimitOrder(t, nestedHTML)
+	require.Contains(t, promotedHTML, "applyResponsePath(",
+		"store-backed html-response commands must reapply ResponsePath after extract")
+	require.Contains(t, nestedHTML, "applyResponsePath(",
+		"store-backed nested html-response commands must reapply ResponsePath after extract")
+	require.NotContains(t, jsonSrc, "data = applyResponsePath(",
+		"store-backed JSON commands must not reapply ResponsePath after the resolver")
+	require.Contains(t, jsonSrc, "truncateJSONArray(cmd.Context(), data,")
+
+	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+
+	home := t.TempDir()
+	baseEnv := isolatedCLIEnv(t, home,
+		strings.ToUpper(strings.ReplaceAll(apiSpec.Name, "-", "_"))+"_BASE_URL="+server.URL,
+	)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want int
+	}{
+		{name: "promoted store html honors limit", args: []string{"gallery", "--limit", "2", "--json", "--data-source", "live"}, want: 2},
+		{name: "nested store html honors limit", args: []string{"album", "list", "--limit", "2", "--json", "--data-source", "live"}, want: 2},
+		{name: "store json still truncates selected array once", args: []string{"orders", "--limit", "2", "--json", "--data-source", "live"}, want: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(binaryPath, tc.args...)
+			cmd.Env = baseEnv
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, string(out))
+			require.Equal(t, tc.want, jsonResultCount(t, out), string(out))
+		})
+	}
+}
+
+func isolatedCLIEnv(t *testing.T, home string, extra ...string) []string {
+	t.Helper()
+	drop := map[string]struct{}{
+		"HOME": {}, "USERPROFILE": {},
+		"XDG_CONFIG_HOME": {}, "XDG_DATA_HOME": {},
+		"XDG_STATE_HOME": {}, "XDG_CACHE_HOME": {},
+	}
+	env := make([]string, 0, len(os.Environ())+len(extra)+6)
+	for _, kv := range os.Environ() {
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		if _, skip := drop[key]; skip {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env,
+		"HOME="+home,
+		"USERPROFILE="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
+		"XDG_STATE_HOME="+filepath.Join(home, ".local", "state"),
+		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+	)
+	return append(env, extra...)
+}
+
+func jsonResultCount(t *testing.T, out []byte) int {
+	t.Helper()
+	var envelope struct {
+		Results []json.RawMessage `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(out, &envelope), string(out))
+	if envelope.Results != nil {
+		return len(envelope.Results)
+	}
+	var arr []json.RawMessage
+	require.NoError(t, json.Unmarshal(out, &arr), string(out))
+	return len(arr)
 }
