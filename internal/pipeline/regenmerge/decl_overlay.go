@@ -547,6 +547,15 @@ func (s *bindingScopes) isLocal(name string) bool {
 	return false
 }
 
+func walkFieldListTypes(fl *dst.FieldList, sc *bindingScopes, visit func(*dst.Ident)) {
+	if fl == nil {
+		return
+	}
+	for _, f := range fl.List {
+		walkOverlayExpr(f.Type, sc, visit)
+	}
+}
+
 func bindFields(sc *bindingScopes, fl *dst.FieldList) {
 	if fl == nil {
 		return
@@ -572,6 +581,15 @@ func forEachPackageSelector(d dst.Decl, visit func(*dst.Ident)) {
 	if fd, ok := d.(*dst.FuncDecl); ok {
 		sc := &bindingScopes{}
 		sc.push()
+		if fd.Type != nil {
+			walkFieldListTypes(fd.Type.TypeParams, sc, visit)
+			bindFields(sc, fd.Type.TypeParams)
+		}
+		walkFieldListTypes(fd.Recv, sc, visit)
+		if fd.Type != nil {
+			walkFieldListTypes(fd.Type.Params, sc, visit)
+			walkFieldListTypes(fd.Type.Results, sc, visit)
+		}
 		bindFields(sc, fd.Recv)
 		if fd.Type != nil {
 			bindFields(sc, fd.Type.Params)
@@ -723,6 +741,10 @@ func walkOverlayExpr(e dst.Expr, sc *bindingScopes, visit func(*dst.Ident)) {
 		case *dst.FuncLit:
 			sc.push()
 			if x.Type != nil {
+				walkFieldListTypes(x.Type.TypeParams, sc, visit)
+				bindFields(sc, x.Type.TypeParams)
+				walkFieldListTypes(x.Type.Params, sc, visit)
+				walkFieldListTypes(x.Type.Results, sc, visit)
 				bindFields(sc, x.Type.Params)
 				bindFields(sc, x.Type.Results)
 			}
