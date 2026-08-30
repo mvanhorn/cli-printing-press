@@ -868,33 +868,35 @@ func sleepContext(ctx context.Context, wait time.Duration) error {
 	}
 }
 
-// waitForRateLimitRefill blocks until the local politeness budget can admit
-// another request. Used after the server-driven 429 retry policy is exhausted
-// so a pacing decision does not fail the command while the command timeout
-// still has time remaining. wait is the last Retry-After (or equivalent);
-// a non-positive value falls back to one second so Retry-After: 0 cannot
-// tight-loop. Bounded by ctx's deadline, or by the client's --timeout when
-// ctx has none.
+// Exhausted 429 retries are a pacing signal, not a command failure. Sleep
+// the last Retry-After so the attempt can continue while the operation
+// deadline still has time; a non-positive wait falls back to one second
+// so Retry-After: 0 cannot tight-loop.
 func (c *Client) waitForRateLimitRefill(ctx context.Context, wait time.Duration) error {
 	if wait <= 0 {
 		wait = time.Second
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	waitCtx := ctx
-	cancel := func() {}
-	if _, ok := ctx.Deadline(); !ok {
-		if timeout := c.ConfiguredTimeout(); timeout > 0 {
-			waitCtx, cancel = context.WithTimeout(ctx, timeout)
-		}
-	}
-	defer cancel()
 	fmt.Fprintf(os.Stderr, "rate-limit budget empty, waiting %s for refill\n", wait)
-	if err := sleepContext(waitCtx, wait); err != nil {
+	if err := sleepContext(ctx, wait); err != nil {
 		return fmt.Errorf("timed out waiting %s for rate-limit budget to refill: %w", wait, err)
 	}
 	return nil
+}
+
+// One --timeout (or the caller's deadline) covers every refill wait and
+// limiter pace in this doInternal call. A fresh timeout per wait would
+// let a persistently 429ing endpoint run indefinitely.
+func (c *Client) bindOperationDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	if timeout := c.ConfiguredTimeout(); timeout > 0 {
+		return context.WithTimeout(ctx, timeout)
+	}
+	return ctx, func() {}
 }
 
 // do executes an HTTP request. headerOverrides, when non-nil, override global
@@ -948,6 +950,8 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	if err := rejectUnresolvedPathParams(path, nil); err != nil {
 		return nil, 0, err
 	}
+	ctx, cancel := c.bindOperationDeadline(ctx)
+	defer cancel()
 	targetURL := c.BaseURL + path
 
 	var bodyBytes []byte
@@ -999,7 +1003,9 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		}
 		// Proactive rate limiting — wait before sending
 		adaptiveStarted := time.Now()
-		c.limiter.Wait()
+		if err := c.limiter.Wait(ctx); err != nil {
+			return nil, 0, err
+		}
 		if c.platformSession != nil {
 			c.platformSession.RecordRateLimitWait(time.Since(adaptiveStarted))
 		}

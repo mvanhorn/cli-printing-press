@@ -4,6 +4,7 @@
 package cliutil
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"net/http"
@@ -127,9 +128,12 @@ func (l *AdaptiveLimiter) ObserveHeaders(remaining int, resetAt time.Time) {
 	l.successes = 0
 }
 
-func (l *AdaptiveLimiter) Wait() {
+func (l *AdaptiveLimiter) Wait(ctx context.Context) error {
 	if l == nil {
-		return
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	l.mu.Lock()
 	delay := time.Duration(float64(time.Second) / l.rate)
@@ -140,8 +144,16 @@ func (l *AdaptiveLimiter) Wait() {
 	}
 	l.lastRequest = time.Now().Add(sleep)
 	l.mu.Unlock()
-	if sleep > 0 {
-		time.Sleep(sleep)
+	if sleep <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(sleep)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
