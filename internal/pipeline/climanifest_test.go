@@ -1508,6 +1508,60 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.Contains(t, shop.Description, "{shop}")
 	})
 
+	t.Run("registered platform source binds client profile alongside credentials", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "adapter.go"), []byte(`package cli
+
+func init() {
+	registerPlatformSource(platformSourceRegistration{Source: "shopify"})
+}
+`), 0o644))
+		writeManifest(t, dir, CLIManifest{
+			APIName: "shopify", DisplayName: "Shopify", MCPBinary: "shopify-pp-mcp", MCPReady: "full",
+			AuthType: "api_key", AuthEnvVars: []string{"SHOPIFY_ACCESS_TOKEN"},
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		assert.Equal(t, "${user_config.shopify_access_token}", got.Server.MCPConfig.Env["SHOPIFY_ACCESS_TOKEN"],
+			"installer must still collect the credential the binary reads")
+		assert.Equal(t, "${user_config.printing_press_client_profile}", got.Server.MCPConfig.Env["PRINTING_PRESS_CLIENT_PROFILE"],
+			"fresh MCPB installs have no default profile; startup requires the selector")
+		token, ok := got.UserConfig["shopify_access_token"]
+		require.True(t, ok)
+		assert.True(t, token.Required)
+		assert.True(t, token.Sensitive)
+		profile, ok := got.UserConfig["printing_press_client_profile"]
+		require.True(t, ok, "missing-client-profile at MCP startup when no default_client_profile is configured")
+		assert.Equal(t, "Client profile", profile.Title)
+		assert.True(t, profile.Required)
+		assert.False(t, profile.Sensitive)
+	})
+
+	t.Run("registered platform source binds client profile even without credentials", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "adapter.go"), []byte(`package cli
+
+func init() {
+	registerPlatformSource(platformSourceRegistration{Source: "public-site"})
+}
+`), 0o644))
+		writeManifest(t, dir, CLIManifest{
+			APIName: "espn", MCPBinary: "espn-pp-mcp", MCPReady: "full", AuthType: "none",
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+		assert.Equal(t, "${user_config.printing_press_client_profile}", got.Server.MCPConfig.Env["PRINTING_PRESS_CLIENT_PROFILE"])
+		profile, ok := got.UserConfig["printing_press_client_profile"]
+		require.True(t, ok)
+		assert.True(t, profile.Required)
+		assert.False(t, profile.Sensitive)
+	})
+
 	t.Run("platform runtime rejects auth-named endpoint override", func(t *testing.T) {
 		dir := t.TempDir()
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "platform"), 0o755))
@@ -3028,4 +3082,42 @@ func TestWriteManifestForGenerateUsesSelectedArchiveName(t *testing.T) {
 			assert.Equal(t, tt.wantPath, got.SpecPath)
 		})
 	}
+}
+
+func TestSourceRegistersPlatformSource(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		src  string
+		want bool
+	}{
+		{name: "definition only", src: "func registerPlatformSource(registration platformSourceRegistration) {\n}\n", want: false},
+		{name: "call in init", src: "func init() {\n\tregisterPlatformSource(platformSourceRegistration{Source: \"shopify\"})\n}\n", want: true},
+		{name: "definition then call", src: "func registerPlatformSource(registration platformSourceRegistration) {}\nfunc init() { registerPlatformSource(platformSourceRegistration{}) }\n", want: true},
+		{name: "unrelated", src: "package cli\n", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, sourceRegistersPlatformSource(tt.src))
+		})
+	}
+}
+
+func TestNeedsMCPBClientProfileBindingSkipsGeneratedDefinition(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "platform_cli.go"), []byte(`package cli
+
+func registerPlatformSource(registration platformSourceRegistration) {
+}
+`), 0o644))
+	assert.False(t, needsMCPBClientProfileBinding(dir))
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "adapter.go"), []byte(`package cli
+
+func init() {
+	registerPlatformSource(platformSourceRegistration{Source: "shopify"})
+}
+`), 0o644))
+	assert.True(t, needsMCPBClientProfileBinding(dir))
 }

@@ -1593,10 +1593,8 @@ func isClientIDAuthEnvVar(name string) bool {
 
 var skillAuthEnvVarToken = regexp.MustCompile(`\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b`)
 
-// skillAuthNarrative returns independently authored auth prose only when
-// every env-var-shaped token is in the resolved credential set the binary
-// reads. A narrative that names a variable the CLI ignores is dropped so
-// SKILL.md falls through to the type-aware Auth Setup branch.
+// Independently authored prose can name secrets the compiled binary
+// ignores; drop it so Auth Setup lists only credentials the CLI reads.
 func skillAuthNarrative(auth spec.AuthConfig, narrative string) string {
 	narrative = strings.TrimSpace(narrative)
 	if narrative == "" {

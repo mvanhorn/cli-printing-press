@@ -209,6 +209,7 @@ These commands are declared by the spec author and require separate hand-written
 {{- end}}
 
 ## Auth Setup
+{{- /* Published-library sweep: heading stays "## Auth Setup"; body must name only resolved credential env vars (same set as .printing-press.json auth_env_vars). Drop independently authored prose that names unread vars; prefer the type-aware export block, including the basic-auth pair. */}}
 {{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
 {{- $basicAuthEnvVars := basicAuthEnvVars .Auth}}
 {{- $authNarrative := ""}}

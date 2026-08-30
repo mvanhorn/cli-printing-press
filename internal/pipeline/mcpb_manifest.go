@@ -26,6 +26,9 @@ const (
 	authTypeBearerToken   = "bearer_token"
 	authTypeOAuth2        = "oauth2"
 	authTypeOAuth2Refresh = "oauth2_refresh"
+
+	mcpbClientProfileEnvName = "PRINTING_PRESS_CLIENT_PROFILE"
+	mcpbClientProfileUserKey = "printing_press_client_profile"
 )
 
 // defaultMCPBPlatforms is the set of host platforms our generated bundles
@@ -212,6 +215,7 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 	}
 	launchEnv := buildMCPBEnv(m)
 	userConfig := buildMCPBUserConfig(m)
+	launchEnv, userConfig = ensureMCPBClientProfileBinding(dir, launchEnv, userConfig)
 
 	return MCPBManifest{
 		ManifestVersion: MCPBManifestVersion,
@@ -312,6 +316,75 @@ func loadExistingMCPBManifest(dir string) *existingMCPBManifest {
 		return nil
 	}
 	return &existing
+}
+
+// Fresh MCPB installs have no default_client_profile. A registered
+// platform source exits at startup unless the installer collects the
+// tenant selector. That selector is not a substitute for the credentials
+// the binary reads.
+func ensureMCPBClientProfileBinding(dir string, env map[string]string, vars map[string]MCPBVar) (map[string]string, map[string]MCPBVar) {
+	if !needsMCPBClientProfileBinding(dir) {
+		return env, vars
+	}
+	if env == nil {
+		env = make(map[string]string, 1)
+	}
+	if vars == nil {
+		vars = make(map[string]MCPBVar, 1)
+	}
+	env[mcpbClientProfileEnvName] = "${user_config." + mcpbClientProfileUserKey + "}"
+	vars[mcpbClientProfileUserKey] = MCPBVar{
+		Type:        mcpbVarTypeString,
+		Title:       "Client profile",
+		Required:    true,
+		Description: "Binds the MCP server to an existing tenant-gated Printing Press client profile.",
+	}
+	return env, vars
+}
+
+func needsMCPBClientProfileBinding(dir string) bool {
+	var needed bool
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || needed {
+			return nil
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case "testdata", "vendor", ".git":
+				return filepath.SkipDir
+			default:
+				return nil
+			}
+		}
+		if !strings.HasSuffix(d.Name(), ".go") || strings.HasSuffix(d.Name(), "_test.go") {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		if sourceRegistersPlatformSource(string(data)) {
+			needed = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return needed
+}
+
+func sourceRegistersPlatformSource(src string) bool {
+	for {
+		i := strings.Index(src, "registerPlatformSource(")
+		if i < 0 {
+			return false
+		}
+		prefix := strings.TrimRight(src[:i], " \t")
+		if strings.HasSuffix(prefix, "func") {
+			src = src[i+len("registerPlatformSource("):]
+			continue
+		}
+		return true
+	}
 }
 
 // buildMCPBEnv maps each declared auth env var into the launch spec's env
