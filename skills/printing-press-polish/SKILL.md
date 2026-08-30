@@ -683,6 +683,7 @@ only to inspect the current output.
 | --- | --- | --- |
 | README `## Unique Features` | `research.json::novel_features_built[]` | Edit the underlying `research.json` feature description/example, then re-run dogfood with `--research-dir`. |
 | SKILL `## Unique Capabilities` | `research.json::novel_features_built[]` | Edit the underlying `research.json` feature description/example, then re-run dogfood with `--research-dir`. |
+| `internal/mcp/tools.go` `command_mirror_capabilities` | `research.json::novel_features_built[]` | Dogfood reports a differing on-disk block and leaves it unmodified. Pass `--overwrite-command-mirror` only to replace it from `research.json`. |
 | README Quick Start | `research.json::narrative.quickstart[]` | Edit the command/comment in `research.json`, then regenerate or re-run the dogfood/rendering step. |
 | SKILL Recipes | `research.json::narrative.recipes[]` | Edit the recipe title, command, or explanation in `research.json`, then regenerate or re-run the dogfood/rendering step. |
 | README/SKILL Troubleshooting | `research.json::narrative.troubleshoots[]` | Edit the symptom/fix pair in `research.json`, then regenerate or re-run the dogfood/rendering step. |
@@ -711,7 +712,9 @@ flag references, fix the corresponding field in that file first. For novel
 features, dogfood verifies `research.json::novel_features[]`, writes the
 surviving set to `research.json::novel_features_built[]`, and syncs README
 `## Unique Features`, SKILL `## Unique Capabilities`, `.printing-press.json`
-`novel_features`, and root help Highlights from that verified set.
+`novel_features`, and root help Highlights from that verified set. A
+differing `command_mirror_capabilities` block in `internal/mcp/tools.go` is
+left unmodified unless `--overwrite-command-mirror` is passed.
 
 #### Required sections (must be present and correct)
 

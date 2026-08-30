@@ -2629,17 +2629,25 @@ func context() map[string]any {
 }
 `)
 
-	artifacts, err := SyncCLITranscendenceDocs(cliDir, []NovelFeature{{
+	features := []NovelFeature{{
 		Name:         "Fresh insight",
 		Command:      "fresh scan",
 		Description:  "Fresh copy from research",
 		Rationale:    "Requires current research",
 		WhyItMatters: "Agents get the current path",
 		Group:        "Analysis",
-	}})
-	require.NoError(t, err)
+	}}
+
+	var stderr string
+	artifacts := captureStderr(t, &stderr, func() []syncedArtifact {
+		got, syncErr := SyncCLITranscendenceDocs(cliDir, features)
+		require.NoError(t, syncErr)
+		return got
+	})
 	assert.Contains(t, artifacts, syncedArtifact{Path: filepath.Join("internal", "cli", "which.go"), Detail: "whichIndex"})
-	assert.Contains(t, artifacts, syncedArtifact{Path: filepath.Join("internal", "mcp", "tools.go"), Detail: "command_mirror_capabilities"})
+	assert.NotContains(t, artifacts, syncedArtifact{Path: filepath.Join("internal", "mcp", "tools.go"), Detail: "command_mirror_capabilities"})
+	assert.Contains(t, stderr, "dogfood: left unmodified "+filepath.Join("internal", "mcp", "tools.go")+" (command_mirror_capabilities)")
+	assert.Contains(t, stderr, "on-disk block differs from research.json")
 
 	whichData, err := os.ReadFile(filepath.Join(cliDir, "internal", "cli", "which.go"))
 	require.NoError(t, err)
@@ -2651,11 +2659,133 @@ func context() map[string]any {
 	mcpData, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
 	mcp := string(mcpData)
+	assert.Contains(t, mcp, `"name": "Old"`)
+	assert.Contains(t, mcp, `"command": "old"`)
+	assert.Contains(t, mcp, "old copy")
+	assert.Contains(t, mcp, `{"topic": "Resource discovery", "insight": "Use the target site's resource hierarchy before narrowing to records."}`)
+	assert.NotContains(t, mcp, `"name": "Fresh insight"`)
+}
+
+func TestSyncCLITranscendenceDocsOverwritesCommandMirrorWhenRequested(t *testing.T) {
+	cliDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "mcp"), 0o755))
+	writeTestFile(t, filepath.Join(cliDir, "internal", "mcp", "tools.go"), `package mcp
+
+func context() map[string]any {
+	return map[string]any{
+		"command_mirror_capabilities": []map[string]string{
+			{"name": "Old", "tool": "watch_run", "cli_command": "watch run", "description": "hand-corrected", "rationale": "", "via": "mcp-command-mirror"},
+		},
+		"playbook": []map[string]string{
+			{"topic": "Resource discovery", "insight": "Use the target site's resource hierarchy before narrowing to records."},
+		},
+	}
+}
+`)
+
+	artifacts, err := syncCLITranscendenceDocs(cliDir, []NovelFeature{{
+		Name:        "Fresh insight",
+		Command:     "fresh scan",
+		Description: "Fresh copy from research",
+		Rationale:   "Requires current research",
+	}}, true)
+	require.NoError(t, err)
+	assert.Contains(t, artifacts, syncedArtifact{Path: filepath.Join("internal", "mcp", "tools.go"), Detail: "command_mirror_capabilities"})
+
+	mcpData, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcp := string(mcpData)
 	assert.Contains(t, mcp, `"name": "Fresh insight"`)
 	assert.Contains(t, mcp, `"command": "fresh scan"`)
 	assert.Contains(t, mcp, `{"topic": "Resource discovery", "insight": "Use the target site's resource hierarchy before narrowing to records."}`)
-	assert.NotContains(t, mcp, `"topic": "Fresh insight"`)
-	assert.NotContains(t, mcp, "old copy")
+	assert.NotContains(t, mcp, `"tool": "watch_run"`)
+	assert.NotContains(t, mcp, "hand-corrected")
+}
+
+func TestSyncCLITranscendenceDocsLeavesMatchingCommandMirrorQuiet(t *testing.T) {
+	cliDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "mcp"), 0o755))
+	features := []NovelFeature{{
+		Name:        "Health",
+		Command:     "health",
+		Description: "See scheduling health",
+		Rationale:   "One command",
+	}}
+	matching := "package mcp\n\nfunc context() map[string]any {\n\treturn map[string]any{\n\t\t" +
+		renderMCPCommandMirrorCapabilities(features) + "\n\t}\n}\n"
+	writeTestFile(t, filepath.Join(cliDir, "internal", "mcp", "tools.go"), matching)
+
+	var stderr string
+	artifacts := captureStderr(t, &stderr, func() []syncedArtifact {
+		got, syncErr := SyncCLITranscendenceDocs(cliDir, features)
+		require.NoError(t, syncErr)
+		return got
+	})
+	assert.NotContains(t, artifacts, syncedArtifact{Path: filepath.Join("internal", "mcp", "tools.go"), Detail: "command_mirror_capabilities"})
+	assert.NotContains(t, stderr, "left unmodified")
+	assert.NotContains(t, stderr, "command_mirror_capabilities")
+
+	mcpData, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	assert.Equal(t, matching, string(mcpData))
+}
+
+func TestCheckNovelFeaturesLeavesHandCorrectedCommandMirrorUnmodified(t *testing.T) {
+	cliDir := t.TempDir()
+	cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "mcp"), 0o755))
+	writeTestFile(t, filepath.Join(cliCodeDir, "watch.go"),
+		`package cli
+func newWatchCmd() *cobra.Command {
+	return &cobra.Command{Use: "watch"}
+}`)
+	handCorrected := `package mcp
+
+func context() map[string]any {
+	return map[string]any{
+		"command_mirror_capabilities": []map[string]string{
+			{"name": "Watch & Diff query salvate", "tool": "watch_run", "cli_command": "watch run", "description": "Re-run a saved watch.", "rationale": "", "via": "mcp-command-mirror"},
+		},
+	}
+}
+`
+	writeTestFile(t, filepath.Join(cliDir, "internal", "mcp", "tools.go"), handCorrected)
+
+	researchDir := t.TempDir()
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		APIName: "test",
+		NovelFeatures: []NovelFeature{{
+			Name:        "Watch & Diff query salvate",
+			Command:     "watch",
+			Description: "Re-run a saved watch.",
+		}},
+	}, researchDir))
+
+	var stderr string
+	result := captureStderr(t, &stderr, func() NovelFeaturesCheckResult {
+		return checkNovelFeatures(cliDir, researchDir)
+	})
+	assert.Equal(t, 1, result.Found)
+	assert.Contains(t, stderr, "dogfood: left unmodified "+filepath.Join("internal", "mcp", "tools.go")+" (command_mirror_capabilities)")
+	assert.NotContains(t, stderr, "dogfood: synced "+filepath.Join("internal", "mcp", "tools.go")+" (command_mirror_capabilities)")
+
+	mcpData, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	assert.Equal(t, handCorrected, string(mcpData))
+
+	stderr = ""
+	_ = captureStderr(t, &stderr, func() NovelFeaturesCheckResult {
+		return checkNovelFeaturesOpts(cliDir, researchDir, true)
+	})
+	assert.Contains(t, stderr, "dogfood: synced "+filepath.Join("internal", "mcp", "tools.go")+" (command_mirror_capabilities)")
+	assert.NotContains(t, stderr, "left unmodified")
+
+	mcpData, err = os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcp := string(mcpData)
+	assert.Contains(t, mcp, `"command": "watch"`)
+	assert.NotContains(t, mcp, `"tool": "watch_run"`)
 }
 
 func TestSyncCLITranscendenceDocsWarnsBeforeDroppingDocumentedCommands(t *testing.T) {

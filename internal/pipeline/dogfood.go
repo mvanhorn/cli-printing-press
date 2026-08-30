@@ -371,7 +371,7 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	report.PipelineCheck = checkPipelineIntegrity(dir)
 	report.ExampleCheck = checkExamples(dir)
 	report.WiringCheck = checkWiring(dir)
-	report.NovelFeaturesCheck = checkNovelFeatures(dir, cfg.researchDir)
+	report.NovelFeaturesCheck = checkNovelFeaturesOpts(dir, cfg.researchDir, cfg.overwriteCommandMirror)
 	report.MCPSurfaceParityCheck = checkMCPSurfaceParity(dir)
 	report.ReimplementationCheck = checkReimplementation(dir, cfg.researchDir)
 	if drift := checkDescriptionDrift(dir, cfg.researchDir); shouldReportDescriptionDrift(drift) {
@@ -393,8 +393,9 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 }
 
 type dogfoodConfig struct {
-	researchDir         string
-	trafficAnalysisPath string
+	researchDir            string
+	trafficAnalysisPath    string
+	overwriteCommandMirror bool
 }
 
 // DogfoodOption configures optional behavior for RunDogfood.
@@ -405,6 +406,15 @@ type DogfoodOption func(*dogfoodConfig)
 func WithResearchDir(dir string) DogfoodOption {
 	return func(c *dogfoodConfig) {
 		c.researchDir = dir
+	}
+}
+
+// WithOverwriteCommandMirror replaces a differing command_mirror_capabilities
+// block in internal/mcp/tools.go from research.json. Without it, dogfood
+// leaves a hand-corrected block unmodified and reports the path.
+func WithOverwriteCommandMirror() DogfoodOption {
+	return func(c *dogfoodConfig) {
+		c.overwriteCommandMirror = true
 	}
 }
 
@@ -471,6 +481,10 @@ func checkMCPSurfaceParity(cliDir string) MCPSurfaceResult {
 // the verified list back as novel_features_built so downstream consumers
 // (README, publish) only claim what actually exists.
 func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
+	return checkNovelFeaturesOpts(cliDir, researchDir, false)
+}
+
+func checkNovelFeaturesOpts(cliDir, researchDir string, overwriteCommandMirror bool) NovelFeaturesCheckResult {
 	if canonicalDir, err := ResolveTargetDir(cliDir); err == nil {
 		cliDir = canonicalDir
 	}
@@ -519,7 +533,7 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 		} else if changed {
 			fmt.Fprintln(os.Stderr, "dogfood: synced .printing-press.json (novel_features) from novel_features_built")
 		}
-		if artifacts, err := SyncCLITranscendenceDocs(cliDir, built); err != nil {
+		if artifacts, err := syncCLITranscendenceDocs(cliDir, built, overwriteCommandMirror); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not sync transcendence docs: %v\n", err)
 		} else {
 			for _, artifact := range artifacts {

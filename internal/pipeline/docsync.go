@@ -127,7 +127,13 @@ func SyncCLINarrativeDocs(dir, apiName string, narrative *ReadmeNarrative) ([]sy
 
 // SyncCLITranscendenceDocs rewrites generated README/SKILL transcendence
 // blocks from dogfood-verified features. Empty verified sets remove the blocks.
+// A command_mirror_capabilities block that differs from the rendered
+// research.json shape is left unmodified unless overwrite is requested.
 func SyncCLITranscendenceDocs(dir string, features []NovelFeature) ([]syncedArtifact, error) {
+	return syncCLITranscendenceDocs(dir, features, false)
+}
+
+func syncCLITranscendenceDocs(dir string, features []NovelFeature, overwriteCommandMirror bool) ([]syncedArtifact, error) {
 	var synced []syncedArtifact
 	warnBeforeDroppingDocumentedFeatures(filepath.Join(dir, "README.md"), "README.md", "## Unique Features", features)
 	changed, err := syncMarkdownFeatureSection(
@@ -165,7 +171,7 @@ func SyncCLITranscendenceDocs(dir string, features []NovelFeature) ([]syncedArti
 		synced = append(synced, syncedArtifact{Path: filepath.Join("internal", "cli", "which.go"), Detail: "whichIndex"})
 	}
 
-	changed, err = syncMCPNovelFeatureContext(filepath.Join(dir, "internal", "mcp", "tools.go"), features)
+	changed, err = syncMCPNovelFeatureContext(filepath.Join(dir, "internal", "mcp", "tools.go"), features, overwriteCommandMirror)
 	if err != nil {
 		return nil, err
 	}
@@ -530,10 +536,50 @@ func renderWhichIndex(features []NovelFeature) string {
 	return b.String()
 }
 
-func syncMCPNovelFeatureContext(path string, features []NovelFeature) (bool, error) {
-	return syncGoFile(path, func(content string) string {
-		return syncMCPMapList(content, `"command_mirror_capabilities": []map[string]string{`, renderMCPCommandMirrorCapabilities(features))
-	})
+const mcpCommandMirrorKey = `"command_mirror_capabilities": []map[string]string{`
+
+func syncMCPNovelFeatureContext(path string, features []NovelFeature, overwrite bool) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reading %s: %w", path, err)
+	}
+	content := string(data)
+	existing, found := mcpMapListBlock(content, mcpCommandMirrorKey)
+	if !found {
+		return false, nil
+	}
+	replacement := renderMCPCommandMirrorCapabilities(features)
+	if existing == replacement {
+		return false, nil
+	}
+	if !overwrite {
+		fmt.Fprintf(os.Stderr, "dogfood: left unmodified %s (command_mirror_capabilities); on-disk block differs from research.json\n",
+			filepath.Join("internal", "mcp", "tools.go"))
+		return false, nil
+	}
+	updated := syncMCPMapList(content, mcpCommandMirrorKey, replacement)
+	if updated == content {
+		return false, nil
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		return false, fmt.Errorf("writing %s: %w", path, err)
+	}
+	return true, nil
+}
+
+func mcpMapListBlock(content, key string) (string, bool) {
+	start := strings.Index(content, key)
+	if start < 0 {
+		return "", false
+	}
+	end := findGoCompositeLiteralEnd(content, start+len(key)-1)
+	if end < 0 {
+		return "", false
+	}
+	return content[start:end], true
 }
 
 func renderMCPCommandMirrorCapabilities(features []NovelFeature) string {
@@ -542,10 +588,10 @@ func renderMCPCommandMirrorCapabilities(features []NovelFeature) string {
 		// literal rather than "" so syncMCPMapList does a normal in-place replace
 		// (preserving the surrounding indentation) instead of taking its delete
 		// branch, which would strip the leading tabs off the following map entry.
-		return "\"command_mirror_capabilities\": []map[string]string{\n\t\t},"
+		return mcpCommandMirrorKey + "\n\t\t},"
 	}
 	var b strings.Builder
-	b.WriteString(`"command_mirror_capabilities": []map[string]string{`)
+	b.WriteString(mcpCommandMirrorKey)
 	for _, feature := range features {
 		b.WriteString("\n\t\t\t{\"name\": ")
 		b.WriteString(goStringLiteral(feature.Name))
