@@ -21,14 +21,21 @@
       "args": [],
       "command": "${__dirname}/bin/cafe-bistro-pp-mcp",
       "env": {
+        "CAFE_BISTRO_API_KEY": "${user_config.cafe_bistro_api_key}",
         "CAFE_BISTRO_BASE_URL": "${user_config.cafe_bistro_base_url}",
-        "CAFE_BISTRO_USER_AGENT": "${user_config.cafe_bistro_user_agent}",
-        "PRINTING_PRESS_CLIENT_PROFILE": "${user_config.printing_press_client_profile}"
+        "CAFE_BISTRO_USER_AGENT": "${user_config.cafe_bistro_user_agent}"
       }
     },
     "type": "binary"
   },
   "user_config": {
+    "cafe_bistro_api_key": {
+      "description": "Sets CAFE_BISTRO_API_KEY for the Café Bistro MCP server.",
+      "required": true,
+      "sensitive": true,
+      "title": "CAFE_BISTRO_API_KEY",
+      "type": "string"
+    },
     "cafe_bistro_base_url": {
       "description": "Optional. Sets CAFE_BISTRO_BASE_URL for the Café Bistro MCP server. Per-instance, non-secret setting; not a credential.",
       "title": "CAFE_BISTRO_BASE_URL",
@@ -37,12 +44,6 @@
     "cafe_bistro_user_agent": {
       "description": "Optional. Sets CAFE_BISTRO_USER_AGENT for the Café Bistro MCP server. Per-instance, non-secret setting; not a credential.",
       "title": "CAFE_BISTRO_USER_AGENT",
-      "type": "string"
-    },
-    "printing_press_client_profile": {
-      "description": "Binds the MCP server to an existing tenant-gated Printing Press client profile.",
-      "required": true,
-      "title": "Client profile",
       "type": "string"
     }
   },
