@@ -206,6 +206,46 @@ func Other() {}
 	assert.NotContains(t, string(got), `f.Exit`)
 }
 
+func TestOverlayDoesNotRewriteShadowedImportAlias(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+		return path
+	}
+	pub := write("pub.go", `package client
+
+import f "os"
+
+func HandPatched(f interface{ Close() error }) string {
+	f.Close()
+	return "kept"
+}
+`)
+	fresh := write("fresh.go", `package client
+
+import pkgos "os"
+
+func HandPatched() string { return pkgos.Getenv("fresh") }
+func Other() string { return pkgos.Getenv("other") }
+`)
+	base := write("base.go", `package client
+
+func HandPatched() string { return "orig" }
+func Other() {}
+`)
+	dest := filepath.Join(dir, "dest.go")
+	require.NoError(t, overlayHandEditedDecls(pub, fresh, base, dest))
+
+	got, err := os.ReadFile(dest)
+	require.NoError(t, err)
+	assert.Contains(t, string(got), "f.Close()")
+	assert.Contains(t, string(got), `"kept"`)
+	assert.NotContains(t, string(got), "pkgos.Close")
+}
+
 func TestOverlayKeepsFreshMemberOfGroupedDecl(t *testing.T) {
 	t.Parallel()
 

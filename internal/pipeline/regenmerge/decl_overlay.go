@@ -370,28 +370,16 @@ func rewriteInstalledSelectorsToDestAliases(fresh, pub *dst.File, installed []ds
 	}
 	pubAliasToPath := importAliasMap(pub)
 	for _, d := range installed {
-		dst.Inspect(d, func(n dst.Node) bool {
-			sel, ok := n.(*dst.SelectorExpr)
-			if !ok {
-				return true
-			}
-			id, ok := sel.X.(*dst.Ident)
-			if !ok {
-				return true
-			}
+		forEachPackageSelector(d, func(id *dst.Ident) {
 			path := pubAliasToPath[id.Name]
-			if path == "" {
-				return true
-			}
-			if destAliasToPath[id.Name] == path {
-				return true
+			if path == "" || destAliasToPath[id.Name] == path {
+				return
 			}
 			destAlias, ok := destPathToAlias[path]
 			if !ok || destAlias == id.Name {
-				return true
+				return
 			}
 			id.Name = destAlias
-			return true
 		})
 	}
 }
@@ -516,22 +504,238 @@ func importSpecWithAlias(is *dst.ImportSpec, alias string) *dst.ImportSpec {
 func importPathsUsedByDecls(decls []dst.Decl, aliasToPath map[string]string) map[string]bool {
 	used := map[string]bool{}
 	for _, d := range decls {
-		dst.Inspect(d, func(n dst.Node) bool {
-			sel, ok := n.(*dst.SelectorExpr)
-			if !ok {
-				return true
-			}
-			id, ok := sel.X.(*dst.Ident)
-			if !ok {
-				return true
-			}
+		forEachPackageSelector(d, func(id *dst.Ident) {
 			if path, ok := aliasToPath[id.Name]; ok {
 				used[path] = true
 			}
-			return true
 		})
 	}
 	return used
+}
+
+type bindingScopes struct {
+	stack []map[string]bool
+}
+
+func (s *bindingScopes) push() {
+	s.stack = append(s.stack, map[string]bool{})
+}
+
+func (s *bindingScopes) pop() {
+	if len(s.stack) == 0 {
+		return
+	}
+	s.stack = s.stack[:len(s.stack)-1]
+}
+
+func (s *bindingScopes) bind(name string) {
+	if s == nil || name == "" || name == "_" || len(s.stack) == 0 {
+		return
+	}
+	s.stack[len(s.stack)-1][name] = true
+}
+
+func (s *bindingScopes) isLocal(name string) bool {
+	if s == nil {
+		return false
+	}
+	for i := len(s.stack) - 1; i >= 0; i-- {
+		if s.stack[i][name] {
+			return true
+		}
+	}
+	return false
+}
+
+func bindFields(sc *bindingScopes, fl *dst.FieldList) {
+	if fl == nil {
+		return
+	}
+	for _, f := range fl.List {
+		for _, n := range f.Names {
+			sc.bind(n.Name)
+		}
+	}
+}
+
+func isPackageSelectorIdent(id *dst.Ident, sc *bindingScopes) bool {
+	if id.Obj != nil && id.Obj.Kind != dst.Pkg {
+		return false
+	}
+	return !sc.isLocal(id.Name)
+}
+
+func forEachPackageSelector(d dst.Decl, visit func(*dst.Ident)) {
+	if d == nil || visit == nil {
+		return
+	}
+	if fd, ok := d.(*dst.FuncDecl); ok {
+		sc := &bindingScopes{}
+		sc.push()
+		bindFields(sc, fd.Recv)
+		if fd.Type != nil {
+			bindFields(sc, fd.Type.Params)
+			bindFields(sc, fd.Type.Results)
+		}
+		walkOverlayStmt(fd.Body, sc, visit)
+		return
+	}
+	dst.Inspect(d, func(n dst.Node) bool {
+		sel, ok := n.(*dst.SelectorExpr)
+		if !ok {
+			return true
+		}
+		id, ok := sel.X.(*dst.Ident)
+		if ok && isPackageSelectorIdent(id, nil) {
+			visit(id)
+		}
+		return true
+	})
+}
+
+func walkOverlayStmt(s dst.Stmt, sc *bindingScopes, visit func(*dst.Ident)) {
+	if s == nil {
+		return
+	}
+	switch x := s.(type) {
+	case *dst.BlockStmt:
+		sc.push()
+		for _, c := range x.List {
+			walkOverlayStmt(c, sc, visit)
+		}
+		sc.pop()
+	case *dst.AssignStmt:
+		for _, e := range x.Rhs {
+			walkOverlayExpr(e, sc, visit)
+		}
+		if x.Tok == token.DEFINE {
+			for _, e := range x.Lhs {
+				if id, ok := e.(*dst.Ident); ok {
+					sc.bind(id.Name)
+					continue
+				}
+				walkOverlayExpr(e, sc, visit)
+			}
+			return
+		}
+		for _, e := range x.Lhs {
+			walkOverlayExpr(e, sc, visit)
+		}
+	case *dst.DeclStmt:
+		gd, ok := x.Decl.(*dst.GenDecl)
+		if !ok {
+			return
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*dst.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, e := range vs.Values {
+				walkOverlayExpr(e, sc, visit)
+			}
+			for _, n := range vs.Names {
+				sc.bind(n.Name)
+			}
+		}
+	case *dst.ExprStmt:
+		walkOverlayExpr(x.X, sc, visit)
+	case *dst.IfStmt:
+		sc.push()
+		walkOverlayStmt(x.Init, sc, visit)
+		walkOverlayExpr(x.Cond, sc, visit)
+		walkOverlayStmt(x.Body, sc, visit)
+		walkOverlayStmt(x.Else, sc, visit)
+		sc.pop()
+	case *dst.RangeStmt:
+		walkOverlayExpr(x.X, sc, visit)
+		sc.push()
+		if x.Tok == token.DEFINE {
+			if id, ok := x.Key.(*dst.Ident); ok {
+				sc.bind(id.Name)
+			}
+			if id, ok := x.Value.(*dst.Ident); ok {
+				sc.bind(id.Name)
+			}
+		} else {
+			walkOverlayExpr(x.Key, sc, visit)
+			walkOverlayExpr(x.Value, sc, visit)
+		}
+		walkOverlayStmt(x.Body, sc, visit)
+		sc.pop()
+	case *dst.ForStmt:
+		sc.push()
+		walkOverlayStmt(x.Init, sc, visit)
+		walkOverlayExpr(x.Cond, sc, visit)
+		walkOverlayStmt(x.Post, sc, visit)
+		walkOverlayStmt(x.Body, sc, visit)
+		sc.pop()
+	case *dst.ReturnStmt:
+		for _, e := range x.Results {
+			walkOverlayExpr(e, sc, visit)
+		}
+	case *dst.GoStmt:
+		walkOverlayExpr(x.Call, sc, visit)
+	case *dst.DeferStmt:
+		walkOverlayExpr(x.Call, sc, visit)
+	case *dst.SwitchStmt:
+		sc.push()
+		walkOverlayStmt(x.Init, sc, visit)
+		walkOverlayExpr(x.Tag, sc, visit)
+		walkOverlayStmt(x.Body, sc, visit)
+		sc.pop()
+	case *dst.TypeSwitchStmt:
+		sc.push()
+		walkOverlayStmt(x.Init, sc, visit)
+		walkOverlayStmt(x.Assign, sc, visit)
+		walkOverlayStmt(x.Body, sc, visit)
+		sc.pop()
+	case *dst.SelectStmt:
+		walkOverlayStmt(x.Body, sc, visit)
+	case *dst.CaseClause:
+		for _, e := range x.List {
+			walkOverlayExpr(e, sc, visit)
+		}
+		for _, c := range x.Body {
+			walkOverlayStmt(c, sc, visit)
+		}
+	case *dst.CommClause:
+		walkOverlayStmt(x.Comm, sc, visit)
+		for _, c := range x.Body {
+			walkOverlayStmt(c, sc, visit)
+		}
+	case *dst.LabeledStmt:
+		walkOverlayStmt(x.Stmt, sc, visit)
+	case *dst.SendStmt:
+		walkOverlayExpr(x.Chan, sc, visit)
+		walkOverlayExpr(x.Value, sc, visit)
+	case *dst.IncDecStmt:
+		walkOverlayExpr(x.X, sc, visit)
+	}
+}
+
+func walkOverlayExpr(e dst.Expr, sc *bindingScopes, visit func(*dst.Ident)) {
+	if e == nil {
+		return
+	}
+	dst.Inspect(e, func(n dst.Node) bool {
+		switch x := n.(type) {
+		case *dst.FuncLit:
+			sc.push()
+			if x.Type != nil {
+				bindFields(sc, x.Type.Params)
+				bindFields(sc, x.Type.Results)
+			}
+			walkOverlayStmt(x.Body, sc, visit)
+			sc.pop()
+			return false
+		case *dst.SelectorExpr:
+			if id, ok := x.X.(*dst.Ident); ok && isPackageSelectorIdent(id, sc) {
+				visit(id)
+			}
+		}
+		return true
+	})
 }
 
 func importPathsOf(file *dst.File) []string {
