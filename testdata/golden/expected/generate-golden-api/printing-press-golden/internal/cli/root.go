@@ -110,6 +110,36 @@ func addNovelCommandIfAbsent(parent *cobra.Command, candidate *cobra.Command) {
 	parent.AddCommand(candidate)
 }
 
+func preferImplementedNovelCommands(cmd *cobra.Command) {
+	if cmd == nil {
+		return
+	}
+	byName := map[string][]*cobra.Command{}
+	for _, child := range cmd.Commands() {
+		byName[child.Name()] = append(byName[child.Name()], child)
+	}
+	for _, group := range byName {
+		var keep *cobra.Command
+		for _, child := range group {
+			if !isNovelScaffoldCommand(child) {
+				keep = child
+				break
+			}
+		}
+		if keep == nil {
+			continue
+		}
+		for _, child := range group {
+			if child != keep && isNovelScaffoldCommand(child) {
+				cmd.RemoveCommand(child)
+			}
+		}
+	}
+	for _, child := range cmd.Commands() {
+		preferImplementedNovelCommands(child)
+	}
+}
+
 // clientHooks let preserved package-local extensions configure a newly-created
 // client without editing generated code. Hooks are additive and run once per
 // client construction; they must not perform provider-specific behavior here.
@@ -448,6 +478,7 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 	for _, hook := range novelCommandHooks {
 		hook(rootCmd, flags)
 	}
+	preferImplementedNovelCommands(rootCmd)
 	// Attach the conditional platform identity command last so ordinary,
 	// promoted, and novel API-owned `whoami` commands all win the name.
 	if registeredPlatformSource != nil {
