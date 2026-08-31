@@ -388,12 +388,10 @@ func TestUpsertBatch_PreservesLargeIntegerResourceIDs(t *testing.T) {
 	}
 }
 
-// TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses pins the third
-// return value: items that survive JSON unmarshal but have no extractable
-// PK (templated override AND generic fallback both miss) bump
-// extractFailures. The sync.go.tmpl call site uses this to emit the
-// per-resource primary_key_unresolved sync_anomaly the first time silent
-// drops occur.
+// TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses pins extractFailures
+// to payloads that still cannot be stored: empty objects, and items whose
+// identity-shaped key was refused (timestamp/zero). Parameter-shaped
+// objects with no identity keys are stored via ResolveStorageID instead.
 func TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	s, err := Open(dbPath)
@@ -404,19 +402,195 @@ func TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses(t *testing.T) {
 
 	items := []json.RawMessage{
 		json.RawMessage(`{"id": "ok-1"}`),
-		json.RawMessage(`{"some_random_field": "no-pk-here"}`),
+		json.RawMessage(`{}`),
 		json.RawMessage(`{"id": "ok-2"}`),
-		json.RawMessage(`{"another_field": 42}`),
+		json.RawMessage(`{"id": 0}`),
 	}
 	stored, extractFailures, err := s.UpsertBatch("mixed_extraction", items)
 	if err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
 	}
 	if stored != 2 {
-		t.Fatalf("stored = %d, want 2 (only items with id should land)", stored)
+		t.Fatalf("stored = %d, want 2 (only items with a usable id should land)", stored)
 	}
 	if extractFailures != 2 {
-		t.Fatalf("extractFailures = %d, want 2 (two items have no extractable PK)", extractFailures)
+		t.Fatalf("extractFailures = %d, want 2 (empty object and refused identity)", extractFailures)
+	}
+}
+
+func TestResolveStorageID_ParameterShapedAndEntityIDs(t *testing.T) {
+	forecast := map[string]any{
+		"latitude":         json.Number("52.52"),
+		"longitude":        json.Number("13.41"),
+		"generationtime_ms": json.Number("0.12"),
+		"hourly":           map[string]any{"temperature_2m": []any{json.Number("1")}},
+	}
+	id := ResolveStorageID("forecast", forecast)
+	if id == "" || !strings.HasPrefix(id, "pp:params:") {
+		t.Fatalf("id-less forecast id = %q, want pp:params: fingerprint", id)
+	}
+	sameLocation := map[string]any{
+		"latitude":         json.Number("52.52"),
+		"longitude":        json.Number("13.41"),
+		"generationtime_ms": json.Number("9.9"),
+		"hourly":           map[string]any{"temperature_2m": []any{json.Number("3"), json.Number("4")}},
+	}
+	if got := ResolveStorageID("forecast", sameLocation); got != id {
+		t.Fatalf("same-location fingerprint = %q, want %q", got, id)
+	}
+	if got := ResolveStorageID("widgets", map[string]any{"id": "w-1", "name": "kept"}); got != "w-1" {
+		t.Fatalf("entity id = %q, want w-1", got)
+	}
+	if got := ResolveStorageID("restore_points", map[string]any{"id": 0, "label": "zero"}); got != "" {
+		t.Fatalf("refused identity must not fingerprint, got %q", got)
+	}
+	if got := ResolveStorageID("empty", map[string]any{}); got != "" {
+		t.Fatalf("empty object id = %q, want empty", got)
+	}
+}
+
+func TestUpsertBatch_StoresIDLessParameterShapedPayload(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	first := json.RawMessage(`{"latitude":52.52,"longitude":13.41,"generationtime_ms":0.1,"hourly":{"temperature_2m":[1,2]}}`)
+	stored, extractFailures, err := s.UpsertBatch("forecast", []json.RawMessage{first})
+	if err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	}
+	if stored != 1 || extractFailures != 0 {
+		t.Fatalf("stored/extractFailures = %d/%d, want 1/0", stored, extractFailures)
+	}
+	rows, err := s.List("forecast", 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("forecast rows = %d, want 1", len(rows))
+	}
+
+	updated := json.RawMessage(`{"latitude":52.52,"longitude":13.41,"generationtime_ms":9.9,"hourly":{"temperature_2m":[3,4]}}`)
+	if stored, extractFailures, err = s.UpsertBatch("forecast", []json.RawMessage{updated}); err != nil {
+		t.Fatalf("update upsert: %v", err)
+	}
+	if stored != 1 || extractFailures != 0 {
+		t.Fatalf("update stored/extractFailures = %d/%d, want 1/0", stored, extractFailures)
+	}
+	rows, err = s.List("forecast", 10)
+	if err != nil {
+		t.Fatalf("list after update: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("same-location rows = %d, want 1", len(rows))
+	}
+	if !strings.Contains(string(rows[0]), "[3,4]") && !strings.Contains(string(rows[0]), `"3"`) {
+		t.Fatalf("updated forecast missing new hourly values, got %s", rows[0])
+	}
+
+	other := json.RawMessage(`{"latitude":40.7,"longitude":-74.0,"hourly":{"temperature_2m":[10]}}`)
+	if stored, extractFailures, err = s.UpsertBatch("forecast", []json.RawMessage{other}); err != nil {
+		t.Fatalf("other location upsert: %v", err)
+	}
+	if stored != 1 || extractFailures != 0 {
+		t.Fatalf("other location stored/extractFailures = %d/%d, want 1/0", stored, extractFailures)
+	}
+	rows, err = s.List("forecast", 10)
+	if err != nil {
+		t.Fatalf("list after other location: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("distinct-location rows = %d, want 2", len(rows))
+	}
+}
+
+func TestUpsert_PreservesRicherCachedDetail(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	detail := json.RawMessage(`{"id":"mut-1","name":"Invoice","rows":[{"vat":21,"amount":100}]}`)
+	if stored, extractFailures, err := s.UpsertBatch("mutations", []json.RawMessage{detail}); err != nil {
+		t.Fatalf("detail upsert: %v", err)
+	} else if stored != 1 || extractFailures != 0 {
+		t.Fatalf("detail stored/extractFailures = %d/%d, want 1/0", stored, extractFailures)
+	}
+
+	list := json.RawMessage(`{"id":"mut-1","name":"Invoice list"}`)
+	if stored, extractFailures, err := s.UpsertBatch("mutations", []json.RawMessage{list}); err != nil {
+		t.Fatalf("list upsert: %v", err)
+	} else if stored != 1 || extractFailures != 0 {
+		t.Fatalf("list stored/extractFailures = %d/%d, want 1/0", stored, extractFailures)
+	}
+
+	got, err := s.Get("mutations", "mut-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(got, &obj); err != nil {
+		t.Fatalf("unmarshal stored: %v", err)
+	}
+	if obj["name"] != "Invoice list" {
+		t.Fatalf("name = %v, want refreshed list value", obj["name"])
+	}
+	rows, ok := obj["rows"].([]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("rows not preserved, stored %s", got)
+	}
+	row, _ := rows[0].(map[string]any)
+	if fmt.Sprint(row["vat"]) != "21" {
+		t.Fatalf("rich vat field lost, stored %s", got)
+	}
+
+	if stored, extractFailures, err := s.UpsertBatch("others", []json.RawMessage{
+		json.RawMessage(`{"id":"o-1","name":"Thin"}`),
+	}); err != nil {
+		t.Fatalf("list-only first write: %v", err)
+	} else if stored != 1 || extractFailures != 0 {
+		t.Fatalf("list-only stored/extractFailures = %d/%d, want 1/0", stored, extractFailures)
+	}
+	thin, err := s.Get("others", "o-1")
+	if err != nil {
+		t.Fatalf("get thin: %v", err)
+	}
+	if !strings.Contains(string(thin), `"Thin"`) {
+		t.Fatalf("list-only first write missing payload, got %s", thin)
+	}
+}
+
+func TestMergeKeepRicherJSON(t *testing.T) {
+	merged, ok := mergeKeepRicherJSON(
+		json.RawMessage(`{"id":"1","rows":[{"vat":21}],"meta":{"a":1,"b":2}}`),
+		json.RawMessage(`{"id":"1","name":"list","meta":{"a":9}}`),
+	)
+	if !ok {
+		t.Fatal("mergeKeepRicherJSON returned !ok")
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(merged, &obj); err != nil {
+		t.Fatalf("unmarshal merge: %v", err)
+	}
+	if obj["name"] != "list" {
+		t.Fatalf("incoming scalar should win, name=%v", obj["name"])
+	}
+	if _, ok := obj["rows"]; !ok {
+		t.Fatalf("existing rows must be kept, got %s", merged)
+	}
+	meta, _ := obj["meta"].(map[string]any)
+	if fmt.Sprint(meta["a"]) != "9" || fmt.Sprint(meta["b"]) != "2" {
+		t.Fatalf("nested object merge failed, meta=%v", meta)
+	}
+
+	first, ok := mergeKeepRicherJSON(nil, json.RawMessage(`{"id":"1","name":"only"}`))
+	if !ok || !strings.Contains(string(first), `"only"`) {
+		t.Fatalf("first write should store incoming, ok=%v got %s", ok, first)
 	}
 }
 

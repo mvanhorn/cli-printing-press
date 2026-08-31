@@ -9,7 +9,9 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -1047,6 +1049,26 @@ func isSQLiteBusy(err error) bool {
 		strings.Contains(msg, "database table is locked")
 }
 
+// mergeIncomingResourceData applies the keep-richer policy against any row
+// already cached for this (resourceType, id). First write returns incoming
+// unchanged. Callers must use the result for both the generic resources
+// blob and the typed-table projection so list sync cannot shrink detail.
+func (s *Store) mergeIncomingResourceData(tx *sql.Tx, resourceType, id string, incoming json.RawMessage) json.RawMessage {
+	var existing string
+	err := tx.QueryRow(
+		`SELECT data FROM resources WHERE resource_type = ? AND id = ?`,
+		resourceType, id,
+	).Scan(&existing)
+	if err != nil || existing == "" {
+		return incoming
+	}
+	merged, ok := mergeKeepRicherJSON(json.RawMessage(existing), incoming)
+	if !ok {
+		return incoming
+	}
+	return merged
+}
+
 func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, data json.RawMessage) error {
 	_, err := tx.Exec(
 		`INSERT INTO resources (id, resource_type, data, synced_at, updated_at)
@@ -1086,7 +1108,7 @@ func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
 	}
 	defer tx.Rollback()
 
-	if err := s.upsertGenericResourceTx(tx, resourceType, id, data); err != nil {
+	if err := s.upsertGenericResourceTx(tx, resourceType, id, s.mergeIncomingResourceData(tx, resourceType, id, data)); err != nil {
 		return err
 	}
 
@@ -1890,7 +1912,7 @@ func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 		return fmt.Errorf("unmarshaling {{.Name}}: %w", err)
 	}
 
-	id := ExtractResourceID("{{.Resource}}", obj)
+	id := ResolveStorageID("{{.Resource}}", obj)
 	if id == "" {
 		return fmt.Errorf("missing id for {{.Name}}")
 	}
@@ -1903,6 +1925,11 @@ func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 		return err
 	}
 	defer tx.Rollback()
+
+	data = s.mergeIncomingResourceData(tx, "{{.Resource}}", storageID, data)
+	if merged, err := DecodeJSONObject(data); err == nil {
+		obj = merged
+	}
 
 	if err := s.upsertGenericResourceTx(tx, "{{.Resource}}", storageID, data); err != nil {
 		return err
@@ -1985,6 +2012,289 @@ func ExtractResourceID(resourceType string, obj map[string]any) string {
 		}
 	}
 	return mapKeyIDFallback(obj)
+}
+
+// ResolveStorageID is the writer-side identity. ExtractResourceID wins when
+// the payload has a real resource id. Parameter-shaped / id-less payloads
+// (no identity-candidate keys at all) get a fingerprint of their top-level
+// scalars so Upsert can store a row without inventing a field. Identity
+// probes such as unwrap and sync extractID must keep using ExtractResourceID
+// so a fingerprint is never mistaken for an entity id.
+//
+// Objects that carry an identity-shaped key whose value was refused
+// (timestamp, zero, empty) still return "" — fingerprinting those would
+// hide a rejected entity id.
+func ResolveStorageID(resourceType string, obj map[string]any) string {
+	if id := ExtractResourceID(resourceType, obj); id != "" {
+		return id
+	}
+	if identityKeyPresent(resourceType, obj) {
+		return ""
+	}
+	return parameterSnapshotID(obj)
+}
+
+func identityKeyPresent(resourceType string, obj map[string]any) bool {
+	if obj == nil {
+		return false
+	}
+	if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
+		if _, found := lookupRawFieldValue(obj, override); found {
+			return true
+		}
+	}
+	for _, key := range genericIDFieldFallbacks {
+		if _, found := lookupRawFieldValue(obj, key); found {
+			return true
+		}
+	}
+	if suffixIdentityKeyPresent(resourceType, obj) {
+		return true
+	}
+	for _, key := range genericDescriptiveIDFieldFallbacks {
+		if _, found := lookupRawFieldValue(obj, key); found {
+			return true
+		}
+	}
+	if _, found := obj[MapKeyIDField]; found {
+		return true
+	}
+	return false
+}
+
+func suffixIdentityKeyPresent(resourceType string, obj map[string]any) bool {
+	for _, base := range resourceIDBaseNames(resourceType) {
+		for _, suffix := range []string{"_id", "_code", "_key", "_slug"} {
+			if _, found := lookupRawFieldValue(obj, base+suffix); found {
+				return true
+			}
+		}
+		camelBase := lowerCamelResourceIDBase(base)
+		for _, suffix := range []string{"Id", "Code", "Key", "Slug"} {
+			if _, found := lookupRawFieldValue(obj, camelBase+suffix); found {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// parameterSnapshotID keys an id-less payload by a hash of its top-level
+// scalars — the request-equivalent identity (lat/lon, timezone) — and
+// excludes nested blocks (hourly, current, results) so a later fetch of
+// the same parameters updates the same row. Volatile telemetry keys
+// (*_ms, *_at, timestamp, generationtime*) are omitted from the key.
+// When the object has no stable scalars the whole payload is hashed so
+// the row can still be stored.
+func parameterSnapshotID(obj map[string]any) string {
+	if len(obj) == 0 {
+		return ""
+	}
+	fields := parameterFingerprintFields(obj)
+	var payload any
+	if len(fields) > 0 {
+		payload = fields
+	} else {
+		payload = obj
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil || len(raw) == 0 || string(raw) == "null" || string(raw) == "{}" {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return "pp:params:" + hex.EncodeToString(sum[:16])
+}
+
+func parameterFingerprintFields(obj map[string]any) map[string]any {
+	out := make(map[string]any, len(obj))
+	for key, value := range obj {
+		if isVolatileParameterKey(key) {
+			continue
+		}
+		if scalar, ok := fingerprintScalar(value); ok {
+			out[key] = scalar
+		}
+	}
+	return out
+}
+
+func isVolatileParameterKey(key string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	switch {
+	case strings.HasSuffix(k, "_ms"), strings.HasSuffix(k, "_at"):
+		return true
+	case k == "timestamp", k == "generated", k == "generation_time", k == "generationtime":
+		return true
+	default:
+		return strings.HasPrefix(k, "generationtime")
+	}
+}
+
+func fingerprintScalar(value any) (any, bool) {
+	switch t := value.(type) {
+	case nil:
+		return nil, false
+	case string:
+		return t, t != ""
+	case bool:
+		return t, true
+	case json.Number:
+		return t, t.String() != ""
+	case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return t, true
+	default:
+		return nil, false
+	}
+}
+
+// mergeKeepRicherJSON combines a previously cached JSON blob with an
+// incoming write so a thinner list-shaped payload cannot destroy richer
+// detail already stored for the same id.
+//
+// Policy (do-not-shrink / keep-richer):
+//   - First write (no existing) stores incoming unchanged.
+//   - Object keys present only on existing are kept.
+//   - Objects merge recursively; incoming keys go through the same policy
+//     rather than wholesale replacement.
+//   - A container (object/array) is never replaced by a scalar or null.
+//   - An incoming empty array does not replace a non-empty existing array.
+//   - Arrays of objects merge element-wise; extra existing elements are
+//     kept when incoming is shorter.
+//   - Arrays of non-objects: the longer array wins; equal length prefers
+//     incoming (authoritative remote refresh of the same collection).
+//   - Incoming scalars replace existing scalars.
+func mergeKeepRicherJSON(existing, incoming json.RawMessage) (json.RawMessage, bool) {
+	if len(existing) == 0 {
+		return incoming, len(incoming) > 0
+	}
+	if len(incoming) == 0 {
+		return existing, true
+	}
+	existingVal, err := decodeJSONValue(existing)
+	if err != nil {
+		return incoming, len(incoming) > 0
+	}
+	incomingVal, err := decodeJSONValue(incoming)
+	if err != nil {
+		return existing, true
+	}
+	merged, err := json.Marshal(mergeKeepRicherValue(existingVal, incomingVal))
+	if err != nil {
+		return incoming, len(incoming) > 0
+	}
+	return merged, true
+}
+
+func decodeJSONValue(data json.RawMessage) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var value any
+	if err := dec.Decode(&value); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func mergeKeepRicherValue(existing, incoming any) any {
+	if incoming == nil {
+		if existing != nil {
+			return existing
+		}
+		return incoming
+	}
+	existingObj, existingIsObj := existing.(map[string]any)
+	incomingObj, incomingIsObj := incoming.(map[string]any)
+	if existingIsObj && incomingIsObj {
+		return mergeKeepRicherObject(existingObj, incomingObj)
+	}
+	existingArr, existingIsArr := existing.([]any)
+	incomingArr, incomingIsArr := incoming.([]any)
+	if existingIsArr && incomingIsArr {
+		return mergeKeepRicherArray(existingArr, incomingArr)
+	}
+	if isJSONContainer(existing) && !isJSONContainer(incoming) {
+		return existing
+	}
+	if isJSONEmpty(incoming) && !isJSONEmpty(existing) {
+		return existing
+	}
+	return incoming
+}
+
+func mergeKeepRicherObject(existing, incoming map[string]any) map[string]any {
+	out := make(map[string]any, len(existing)+len(incoming))
+	for key, value := range existing {
+		out[key] = value
+	}
+	for key, incomingVal := range incoming {
+		if existingVal, ok := out[key]; ok {
+			out[key] = mergeKeepRicherValue(existingVal, incomingVal)
+			continue
+		}
+		out[key] = incomingVal
+	}
+	return out
+}
+
+func mergeKeepRicherArray(existing, incoming []any) []any {
+	if len(incoming) == 0 && len(existing) > 0 {
+		return existing
+	}
+	if !arrayItemsAreObjects(existing) && !arrayItemsAreObjects(incoming) {
+		if len(incoming) < len(existing) {
+			return existing
+		}
+		return incoming
+	}
+	n := len(incoming)
+	if len(existing) > n {
+		n = len(existing)
+	}
+	out := make([]any, n)
+	for i := 0; i < n; i++ {
+		switch {
+		case i < len(existing) && i < len(incoming):
+			out[i] = mergeKeepRicherValue(existing[i], incoming[i])
+		case i < len(existing):
+			out[i] = existing[i]
+		default:
+			out[i] = incoming[i]
+		}
+	}
+	return out
+}
+
+func arrayItemsAreObjects(items []any) bool {
+	for _, item := range items {
+		if _, ok := item.(map[string]any); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func isJSONContainer(value any) bool {
+	switch value.(type) {
+	case map[string]any, []any:
+		return true
+	default:
+		return false
+	}
+}
+
+func isJSONEmpty(value any) bool {
+	switch t := value.(type) {
+	case nil:
+		return true
+	case string:
+		return t == ""
+	case map[string]any:
+		return len(t) == 0
+	case []any:
+		return len(t) == 0
+	default:
+		return false
+	}
 }
 
 // suffixIDFieldFallback resolves an id-less resource that keys on its own
@@ -2243,11 +2553,18 @@ func (s *Store) UpsertBatchDetailed(resourceType string, items []json.RawMessage
 			}
 		}
 		if id == "" {
+			id = ResolveStorageID(resourceType, obj)
+		}
+		if id == "" {
 			skippedCount++
 			extractFailures++
 			continue
 		}
 		storageID := resourceStorageID(resourceType, id, obj)
+		item = s.mergeIncomingResourceData(tx, resourceType, storageID, item)
+		if merged, err := DecodeJSONObject(item); err == nil {
+			obj = merged
+		}
 
 		if err := s.upsertGenericResourceTx(tx, resourceType, storageID, item); err != nil {
 			// Return the running stored count rather than zero so callers
