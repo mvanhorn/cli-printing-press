@@ -702,6 +702,60 @@ func TestBuildSchema_HyphenatedParentFKColumn(t *testing.T) {
 		"helper must be stable on already-normalized parent table names")
 }
 
+func TestBuildSchemaMarksParameterKeyedResources(t *testing.T) {
+	t.Parallel()
+
+	s := &spec.APISpec{
+		Name: "param-key",
+		Resources: map[string]spec.Resource{
+			"forecast": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {Method: "GET", Path: "/v1/forecast", Response: spec.ResponseDef{Type: "object", Item: "Forecast"}},
+				},
+			},
+			"widgets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/widgets", Response: spec.ResponseDef{Type: "array", Item: "Widget"}},
+				},
+			},
+			"currencies": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/currencies", Response: spec.ResponseDef{Type: "array", Item: "Currency"}},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Forecast": {Fields: []spec.TypeField{
+				{Name: "latitude", Type: "number"},
+				{Name: "longitude", Type: "number"},
+				{Name: "timezone", Type: "string"},
+				{Name: "hourly", Type: "object"},
+			}},
+			"Widget": {Fields: []spec.TypeField{
+				{Name: "id", Type: "string"},
+				{Name: "name", Type: "string"},
+			}},
+			"Currency": {Fields: []spec.TypeField{
+				{Name: "currency_code", Type: "string"},
+				{Name: "symbol", Type: "string"},
+			}},
+		},
+	}
+
+	tables := BuildSchema(s)
+	forecast := findTable(tables, "forecast")
+	require.NotNil(t, forecast)
+	assert.True(t, forecast.ParameterKeyed, "id-less forecast must be parameter-keyed")
+
+	widgets := findTable(tables, "widgets")
+	require.NotNil(t, widgets)
+	assert.False(t, widgets.ParameterKeyed, "id-bearing widgets must stay entity-keyed")
+
+	currencies := findTable(tables, "currencies")
+	require.NotNil(t, currencies)
+	assert.False(t, currencies.ParameterKeyed, "currency_code is a store identity suffix")
+}
+
 // findTable returns nil when no match exists so callers can render
 // a clearer assertion failure than `tables[0]` panicking.
 func findTable(tables []TableDef, name string) *TableDef {

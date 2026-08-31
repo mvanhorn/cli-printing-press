@@ -388,10 +388,13 @@ func TestUpsertBatch_PreservesLargeIntegerResourceIDs(t *testing.T) {
 	}
 }
 
-// TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses pins extractFailures
-// to payloads that still cannot be stored: empty objects, and items whose
-// identity-shaped key was refused (timestamp/zero). Parameter-shaped
-// objects with no identity keys are stored via ResolveStorageID instead.
+// TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses pins the third
+// return value: items that survive JSON unmarshal but have no extractable
+// PK (templated override AND generic fallback both miss) bump
+// extractFailures. The sync.go.tmpl call site uses this to emit the
+// per-resource primary_key_unresolved sync_anomaly the first time silent
+// drops occur. Parameter-shaped resources are opted in separately via
+// parameterKeyedResources and are not covered here.
 func TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	s, err := Open(dbPath)
@@ -402,42 +405,23 @@ func TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses(t *testing.T) {
 
 	items := []json.RawMessage{
 		json.RawMessage(`{"id": "ok-1"}`),
-		json.RawMessage(`{}`),
+		json.RawMessage(`{"some_random_field": "no-pk-here"}`),
 		json.RawMessage(`{"id": "ok-2"}`),
-		json.RawMessage(`{"id": 0}`),
+		json.RawMessage(`{"another_field": 42}`),
 	}
 	stored, extractFailures, err := s.UpsertBatch("mixed_extraction", items)
 	if err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
 	}
 	if stored != 2 {
-		t.Fatalf("stored = %d, want 2 (only items with a usable id should land)", stored)
+		t.Fatalf("stored = %d, want 2 (only items with id should land)", stored)
 	}
 	if extractFailures != 2 {
-		t.Fatalf("extractFailures = %d, want 2 (empty object and refused identity)", extractFailures)
+		t.Fatalf("extractFailures = %d, want 2 (two items have no extractable PK)", extractFailures)
 	}
 }
 
-func TestResolveStorageID_ParameterShapedAndEntityIDs(t *testing.T) {
-	forecast := map[string]any{
-		"latitude":         json.Number("52.52"),
-		"longitude":        json.Number("13.41"),
-		"generationtime_ms": json.Number("0.12"),
-		"hourly":           map[string]any{"temperature_2m": []any{json.Number("1")}},
-	}
-	id := ResolveStorageID("forecast", forecast)
-	if id == "" || !strings.HasPrefix(id, "pp:params:") {
-		t.Fatalf("id-less forecast id = %q, want pp:params: fingerprint", id)
-	}
-	sameLocation := map[string]any{
-		"latitude":         json.Number("52.52"),
-		"longitude":        json.Number("13.41"),
-		"generationtime_ms": json.Number("9.9"),
-		"hourly":           map[string]any{"temperature_2m": []any{json.Number("3"), json.Number("4")}},
-	}
-	if got := ResolveStorageID("forecast", sameLocation); got != id {
-		t.Fatalf("same-location fingerprint = %q, want %q", got, id)
-	}
+func TestResolveStorageID_KeepsEntityIDsAndRefusesUnusable(t *testing.T) {
 	if got := ResolveStorageID("widgets", map[string]any{"id": "w-1", "name": "kept"}); got != "w-1" {
 		t.Fatalf("entity id = %q, want w-1", got)
 	}
@@ -447,63 +431,8 @@ func TestResolveStorageID_ParameterShapedAndEntityIDs(t *testing.T) {
 	if got := ResolveStorageID("empty", map[string]any{}); got != "" {
 		t.Fatalf("empty object id = %q, want empty", got)
 	}
-}
-
-func TestUpsertBatch_StoresIDLessParameterShapedPayload(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "data.db")
-	s, err := Open(dbPath)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer s.Close()
-
-	first := json.RawMessage(`{"latitude":52.52,"longitude":13.41,"generationtime_ms":0.1,"hourly":{"temperature_2m":[1,2]}}`)
-	stored, extractFailures, err := s.UpsertBatch("forecast", []json.RawMessage{first})
-	if err != nil {
-		t.Fatalf("UpsertBatch: %v", err)
-	}
-	if stored != 1 || extractFailures != 0 {
-		t.Fatalf("stored/extractFailures = %d/%d, want 1/0", stored, extractFailures)
-	}
-	rows, err := s.List("forecast", 10)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(rows) != 1 {
-		t.Fatalf("forecast rows = %d, want 1", len(rows))
-	}
-
-	updated := json.RawMessage(`{"latitude":52.52,"longitude":13.41,"generationtime_ms":9.9,"hourly":{"temperature_2m":[3,4]}}`)
-	if stored, extractFailures, err = s.UpsertBatch("forecast", []json.RawMessage{updated}); err != nil {
-		t.Fatalf("update upsert: %v", err)
-	}
-	if stored != 1 || extractFailures != 0 {
-		t.Fatalf("update stored/extractFailures = %d/%d, want 1/0", stored, extractFailures)
-	}
-	rows, err = s.List("forecast", 10)
-	if err != nil {
-		t.Fatalf("list after update: %v", err)
-	}
-	if len(rows) != 1 {
-		t.Fatalf("same-location rows = %d, want 1", len(rows))
-	}
-	if !strings.Contains(string(rows[0]), "[3,4]") && !strings.Contains(string(rows[0]), `"3"`) {
-		t.Fatalf("updated forecast missing new hourly values, got %s", rows[0])
-	}
-
-	other := json.RawMessage(`{"latitude":40.7,"longitude":-74.0,"hourly":{"temperature_2m":[10]}}`)
-	if stored, extractFailures, err = s.UpsertBatch("forecast", []json.RawMessage{other}); err != nil {
-		t.Fatalf("other location upsert: %v", err)
-	}
-	if stored != 1 || extractFailures != 0 {
-		t.Fatalf("other location stored/extractFailures = %d/%d, want 1/0", stored, extractFailures)
-	}
-	rows, err = s.List("forecast", 10)
-	if err != nil {
-		t.Fatalf("list after other location: %v", err)
-	}
-	if len(rows) != 2 {
-		t.Fatalf("distinct-location rows = %d, want 2", len(rows))
+	if got := ResolveStorageID("dropped_ticker", map[string]any{"ticker": "AAPL"}); got != "" {
+		t.Fatalf("unflagged id-less payload must not fingerprint, got %q", got)
 	}
 }
 

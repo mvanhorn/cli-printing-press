@@ -1959,6 +1959,18 @@ var resourceIDFieldOverrides = map[string]string{
 {{- end}}
 }
 
+// parameterKeyedResources are typed resources whose responses have no
+// identity field. Upsert stores those rows under a parameter fingerprint
+// instead of failing ExtractResourceID. Unlisted resources keep today's
+// extract-failure contract for items with no usable id.
+var parameterKeyedResources = map[string]bool{
+{{- range .Tables}}
+{{- if .ParameterKeyed}}
+	{{printf "%q" .Resource}}: true,
+{{- end}}
+{{- end}}
+}
+
 // Generic ID fields are split around the resource-specific suffix probe.
 // Stable vendor identifiers win first; then fields derived from the resource
 // name (accountId, workspaceId); descriptive fallbacks are last. Keeping name
@@ -2027,6 +2039,9 @@ func ExtractResourceID(resourceType string, obj map[string]any) string {
 func ResolveStorageID(resourceType string, obj map[string]any) string {
 	if id := ExtractResourceID(resourceType, obj); id != "" {
 		return id
+	}
+	if !parameterKeyedResources[resourceType] {
+		return ""
 	}
 	if identityKeyPresent(resourceType, obj) {
 		return ""

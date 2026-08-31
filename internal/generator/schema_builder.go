@@ -27,6 +27,11 @@ type TableDef struct {
 
 	JSONOnlyFallback    bool
 	OriginalColumnCount int
+
+	// ParameterKeyed is set when the resource's typed responses have no
+	// identity field. Writers then store rows under a request-equivalent
+	// fingerprint instead of failing ExtractResourceID.
+	ParameterKeyed bool
 }
 
 type ColumnDef struct {
@@ -132,9 +137,10 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 		tableName := toSnakeCase(name)
 
 		table := TableDef{
-			Name:     tableName,
-			Resource: name,
-			Columns:  append([]ColumnDef(nil), baseTableColumns...),
+			Name:           tableName,
+			Resource:       name,
+			Columns:        append([]ColumnDef(nil), baseTableColumns...),
+			ParameterKeyed: resourceIsParameterKeyed(name, resource, fields),
 		}
 
 		if gravity >= 2 {
@@ -212,6 +218,7 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 				effectiveName = spec.ShardedSubResourceTableName(name, subName)
 			}
 			subTable := buildSubResourceTable(effectiveName, subResource, tableName)
+			subTable.ParameterKeyed = resourceIsParameterKeyed(effectiveName, subResource, collectResponseFields(s, subResource))
 			tables = append(tables, subTable)
 		}
 	}
@@ -247,6 +254,46 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 	})
 
 	return tables
+}
+
+func resourceIsParameterKeyed(name string, resource spec.Resource, fields []spec.TypeField) bool {
+	for _, endpoint := range resource.Endpoints {
+		if strings.TrimSpace(endpoint.IDField) != "" {
+			return false
+		}
+	}
+	if len(fields) == 0 {
+		return false
+	}
+	return !responseFieldsHaveStoreIdentity(name, fields)
+}
+
+func responseFieldsHaveStoreIdentity(resourceName string, fields []spec.TypeField) bool {
+	names := make(map[string]struct{}, len(fields)*2)
+	for _, field := range fields {
+		names[strings.ToLower(strings.TrimSpace(field.Name))] = struct{}{}
+		names[strings.ToLower(toSnakeCase(field.Name))] = struct{}{}
+	}
+	for _, key := range []string{"id", "gid", "sid", "uid", "uuid", "guid", "api_id", "name", "slug", "key", "code"} {
+		if _, ok := names[key]; ok {
+			return true
+		}
+	}
+	base := strings.ToLower(toSnakeCase(strings.TrimSpace(resourceName)))
+	bases := []string{base}
+	if strings.HasSuffix(base, "ies") && len(base) > 3 {
+		bases = append(bases, base[:len(base)-3]+"y")
+	} else if strings.HasSuffix(base, "s") && len(base) > 1 {
+		bases = append(bases, strings.TrimSuffix(base, "s"))
+	}
+	for _, stem := range bases {
+		for _, suffix := range []string{"_id", "_code", "_key", "_slug"} {
+			if _, ok := names[stem+suffix]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func reservedStoreObjectNames(s *spec.APISpec) map[string]struct{} {

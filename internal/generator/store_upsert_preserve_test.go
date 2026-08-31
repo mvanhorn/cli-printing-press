@@ -92,6 +92,10 @@ func TestGeneratedStoreKeepsIDLessAndRicherUpserts(t *testing.T) {
 		"conflict writes must apply the documented keep-richer merge")
 	require.Contains(t, src, "func (s *Store) mergeIncomingResourceData(",
 		"generic and typed upserts must merge against the cached blob")
+	require.Contains(t, src, `"forecast": true`,
+		"id-less forecast must be opted into parameter-fingerprint writes")
+	require.NotContains(t, src, `"mutations": true`,
+		"resources with a real id must keep ExtractResourceID keying")
 	require.Contains(t, src, `id := ResolveStorageID("forecast", obj)`,
 		"typed id-less Upsert must not require ExtractResourceID")
 	require.Contains(t, src, `data = s.mergeIncomingResourceData(tx, "forecast", storageID, data)`,
@@ -107,7 +111,7 @@ func TestGeneratedStoreKeepsIDLessAndRicherUpserts(t *testing.T) {
 	require.NoError(t, os.WriteFile(testPath, []byte(generatedIDLessRicherRuntimeTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/store",
-		"-run", "Test(ResolveStorageID_ParameterShapedAndEntityIDs|UpsertBatch_StoresIDLessParameterShapedPayload|Upsert_PreservesRicherCachedDetail|MergeKeepRicherJSON|UpsertForecast_StoresIDLessPayload|UpsertMutations_ListDoesNotShrinkDetail)",
+		"-run", "Test(ResolveStorageID_KeepsEntityIDsAndRefusesUnusable|Upsert_PreservesRicherCachedDetail|MergeKeepRicherJSON|UpsertForecast_StoresIDLessPayload|UpsertForecast_BatchSameLocation|UpsertMutations_ListDoesNotShrinkDetail)",
 		"-count=1")
 }
 
@@ -144,6 +148,49 @@ const generatedIDLessRicherRuntimeTest = "package store\n\n" +
 	"\t}\n" +
 	"\tif typed != 1 {\n" +
 	"\t\tt.Fatalf(\"typed forecast rows = %d, want 1\", typed)\n" +
+	"\t}\n" +
+	"}\n\n" +
+	"func TestUpsertForecast_BatchSameLocation(t *testing.T) {\n" +
+	"\ts, err := Open(filepath.Join(t.TempDir(), \"data.db\"))\n" +
+	"\tif err != nil {\n" +
+	"\t\tt.Fatalf(\"open: %v\", err)\n" +
+	"\t}\n" +
+	"\tdefer s.Close()\n\n" +
+	"\tfirst := json.RawMessage(`{\"latitude\":52.52,\"longitude\":13.41,\"generationtime_ms\":0.1,\"hourly\":{\"temperature_2m\":[1,2]}}`)\n" +
+	"\tstored, extractFailures, err := s.UpsertBatch(\"forecast\", []json.RawMessage{first})\n" +
+	"\tif err != nil {\n" +
+	"\t\tt.Fatalf(\"UpsertBatch: %v\", err)\n" +
+	"\t}\n" +
+	"\tif stored != 1 || extractFailures != 0 {\n" +
+	"\t\tt.Fatalf(\"stored/extractFailures = %d/%d, want 1/0\", stored, extractFailures)\n" +
+	"\t}\n" +
+	"\tupdated := json.RawMessage(`{\"latitude\":52.52,\"longitude\":13.41,\"generationtime_ms\":9.9,\"hourly\":{\"temperature_2m\":[3,4]}}`)\n" +
+	"\tif stored, extractFailures, err = s.UpsertBatch(\"forecast\", []json.RawMessage{updated}); err != nil {\n" +
+	"\t\tt.Fatalf(\"update: %v\", err)\n" +
+	"\t}\n" +
+	"\tif stored != 1 || extractFailures != 0 {\n" +
+	"\t\tt.Fatalf(\"update stored/extractFailures = %d/%d, want 1/0\", stored, extractFailures)\n" +
+	"\t}\n" +
+	"\trows, err := s.List(\"forecast\", 10)\n" +
+	"\tif err != nil {\n" +
+	"\t\tt.Fatalf(\"list: %v\", err)\n" +
+	"\t}\n" +
+	"\tif len(rows) != 1 {\n" +
+	"\t\tt.Fatalf(\"same-location rows = %d, want 1\", len(rows))\n" +
+	"\t}\n" +
+	"\tother := json.RawMessage(`{\"latitude\":40.7,\"longitude\":-74.0,\"hourly\":{\"temperature_2m\":[10]}}`)\n" +
+	"\tif stored, extractFailures, err = s.UpsertBatch(\"forecast\", []json.RawMessage{other}); err != nil {\n" +
+	"\t\tt.Fatalf(\"other location: %v\", err)\n" +
+	"\t}\n" +
+	"\tif stored != 1 || extractFailures != 0 {\n" +
+	"\t\tt.Fatalf(\"other stored/extractFailures = %d/%d, want 1/0\", stored, extractFailures)\n" +
+	"\t}\n" +
+	"\trows, err = s.List(\"forecast\", 10)\n" +
+	"\tif err != nil {\n" +
+	"\t\tt.Fatalf(\"list after other: %v\", err)\n" +
+	"\t}\n" +
+	"\tif len(rows) != 2 {\n" +
+	"\t\tt.Fatalf(\"distinct-location rows = %d, want 2\", len(rows))\n" +
 	"\t}\n" +
 	"}\n\n" +
 	"func TestUpsertMutations_ListDoesNotShrinkDetail(t *testing.T) {\n" +
