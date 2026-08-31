@@ -1,5 +1,22 @@
 # Changelog
 
+## [4.31.4](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.3...v4.31.4) (2026-08-31)
+
+
+### Bug Fixes
+
+* **cli:** chmod legacy cache files on cache-hit reads ([#4471](https://github.com/mvanhorn/cli-printing-press/issues/4471)) ([2871d6b](https://github.com/mvanhorn/cli-printing-press/commit/2871d6be9e24621b3ba75e0669d85e662551d1bc))
+* **cli:** keep hand-corrected MCP command mirrors during dogfood ([#4439](https://github.com/mvanhorn/cli-printing-press/issues/4439)) ([f9a58df](https://github.com/mvanhorn/cli-printing-press/commit/f9a58df4fa54733678981b00deb1b13686a6bc31))
+* **cli:** keep novel implementations and fix novel hook order ([#4474](https://github.com/mvanhorn/cli-printing-press/issues/4474)) ([c08d3bc](https://github.com/mvanhorn/cli-printing-press/commit/c08d3bc274f95daf005729149a3765d1460e6b19))
+* **cli:** keep store upserts for id-less and detail-rich resources ([#4472](https://github.com/mvanhorn/cli-printing-press/issues/4472)) ([b0fb907](https://github.com/mvanhorn/cli-printing-press/commit/b0fb907fddbd35f4fd038b24bef66c1fff894b3f))
+* **cli:** recall identifier-only teaches and keep journal sessions ([#4443](https://github.com/mvanhorn/cli-printing-press/issues/4443)) ([71c6995](https://github.com/mvanhorn/cli-printing-press/commit/71c6995ff43c6e0a33ad84792dc00c13ac18ecf5))
+* **cli:** required-param guards honor resolved flag values ([#4473](https://github.com/mvanhorn/cli-printing-press/issues/4473)) ([107521a](https://github.com/mvanhorn/cli-printing-press/commit/107521a64cf764c68672c7f87a4a3f14dd7fa8be))
+* **cli:** set multipart file-part Content-Type from extension ([#4440](https://github.com/mvanhorn/cli-printing-press/issues/4440)) ([22bd536](https://github.com/mvanhorn/cli-printing-press/commit/22bd53640a048c62424f25f66665f1d53b02ee0a))
+* **cli:** tolerate vanished entries during --force fresh-tree backup ([#4475](https://github.com/mvanhorn/cli-printing-press/issues/4475)) ([3a397e2](https://github.com/mvanhorn/cli-printing-press/commit/3a397e2d3e1d65e098fdd70f4194f2c8ef1d0398))
+* **cli:** treat zero sync times as never synced ([#4426](https://github.com/mvanhorn/cli-printing-press/issues/4426)) ([d90249c](https://github.com/mvanhorn/cli-printing-press/commit/d90249cf97f53623e5084b7ba564861a499d1b2e))
+* **cli:** truncate on rune boundaries ([#4442](https://github.com/mvanhorn/cli-printing-press/issues/4442)) ([2951760](https://github.com/mvanhorn/cli-printing-press/commit/2951760c970818b689d9a5370c79e07b3b1226eb))
+* **cli:** wait for rate-limit budget instead of failing ([#4441](https://github.com/mvanhorn/cli-printing-press/issues/4441)) ([bdcda55](https://github.com/mvanhorn/cli-printing-press/commit/bdcda558102a9336bc25847a7cae909764c8d690))
+
 ## [4.31.3](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.2...v4.31.3) (2026-08-30)
 
 
