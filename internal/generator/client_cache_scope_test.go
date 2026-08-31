@@ -57,8 +57,14 @@ func TestGeneratedCacheWritesUsePrivatePermissions(t *testing.T) {
 	client := string(clientSrc)
 	require.Contains(t, client, "os.MkdirAll(resourceDir, 0o700)")
 	require.Contains(t, client, "os.WriteFile(cacheFile, []byte(data), 0o600)")
+	require.Contains(t, client, "os.Chmod(resourceDir, 0o700)",
+		"cache resource dirs must be owner-only even when a leftover 0755 dir is reused")
 	require.Contains(t, client, "os.Chmod(cacheFile, 0o600)",
 		"rewriting an existing cache file must chmod 0600; WriteFile ignores perm on an extant file")
+	require.Contains(t, clientFuncBody(t, client, "func (c *Client) readCacheWithHeaders("), "ensureCachePerms(",
+		"a cache-hit read of a leftover 0644 file must tighten perms before returning content")
+	require.Contains(t, clientFuncBody(t, client, "func (c *Client) writeCacheWithHeaders("), "ensureCachePerms(",
+		"the write path must share the same cache permission contract as the hit-read path")
 	require.NotContains(t, client, "os.MkdirAll(resourceDir, 0o755)")
 	require.NotContains(t, client, "os.WriteFile(cacheFile, []byte(data), 0o644)")
 
@@ -130,6 +136,81 @@ func TestWriteCacheWithHeadersRechmodsExistingFile(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^TestWriteCacheWithHeadersRechmodsExistingFile$", "-count=1")
 }
 
+func TestReadCacheWithHeadersRechmodsFreshLegacyFile(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("cache-hit-chmod")
+	outputDir := filepath.Join(t.TempDir(), "cache-hit-chmod-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const runtimeTest = `package client
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+	"time"
+
+	"cache-hit-chmod-pp-cli/internal/config"
+)
+
+func TestReadCacheWithHeadersRechmodsFreshLegacyFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits are not preserved on Windows")
+	}
+
+	c := New(&config.Config{BaseURL: "https://api.example.invalid"}, time.Second, 0)
+	c.cacheDir = t.TempDir()
+
+	want := json.RawMessage(` + "`" + `{"ok":true}` + "`" + `)
+	c.writeCacheWithHeaders("/items", nil, nil, want)
+	matches, err := filepath.Glob(filepath.Join(c.cacheDir, "resources", "*", "*.json"))
+	if err != nil {
+		t.Fatalf("glob cache files: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("wrote %d cache files, want 1: %v", len(matches), matches)
+	}
+	cacheFile := matches[0]
+	resourceDir := filepath.Dir(cacheFile)
+	if err := os.Chmod(cacheFile, 0o644); err != nil {
+		t.Fatalf("chmod leftover 0644: %v", err)
+	}
+	if err := os.Chmod(resourceDir, 0o755); err != nil {
+		t.Fatalf("chmod leftover 0755 dir: %v", err)
+	}
+
+	got, ok := c.readCacheWithHeaders("/items", nil, nil)
+	if !ok {
+		t.Fatal("expected cache hit for a fresh leftover file")
+	}
+	if string(got) != string(want) {
+		t.Fatalf("cache hit data = %s, want %s", got, want)
+	}
+
+	info, err := os.Stat(cacheFile)
+	if err != nil {
+		t.Fatalf("stat cache-hit file: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Fatalf("cache-hit file mode = %04o, want 0600", mode)
+	}
+	dirInfo, err := os.Stat(resourceDir)
+	if err != nil {
+		t.Fatalf("stat cache-hit resource dir: %v", err)
+	}
+	if mode := dirInfo.Mode().Perm(); mode != 0o700 {
+		t.Fatalf("cache-hit resource dir mode = %04o, want 0700", mode)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "cache_hit_chmod_runtime_test.go"), []byte(runtimeTest), 0o600))
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^TestReadCacheWithHeadersRechmodsFreshLegacyFile$", "-count=1")
+}
+
 func TestGeneratedClientQueryParamContractsPass(t *testing.T) {
 	t.Parallel()
 
@@ -142,8 +223,13 @@ func TestGeneratedClientQueryParamContractsPass(t *testing.T) {
 
 func clientCacheKeyForBody(t *testing.T, content string) string {
 	t.Helper()
-	start := strings.Index(content, "func (c *Client) cacheKeyFor(")
-	require.NotEqual(t, -1, start, "cacheKeyFor function must be emitted")
+	return clientFuncBody(t, content, "func (c *Client) cacheKeyFor(")
+}
+
+func clientFuncBody(t *testing.T, content, signature string) string {
+	t.Helper()
+	start := strings.Index(content, signature)
+	require.NotEqual(t, -1, start, "%s must be emitted", signature)
 	body := content[start:]
 	if next := strings.Index(body[1:], "\nfunc "); next != -1 {
 		body = body[:next+1]

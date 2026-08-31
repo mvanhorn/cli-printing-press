@@ -583,7 +583,8 @@ func (c *Client) readCache(path string, params map[string]string) (json.RawMessa
 }
 
 func (c *Client) readCacheWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, bool) {
-	cacheFile := filepath.Join(c.cacheResourceDir(path), c.cacheKeyFor(http.MethodGet, path, params, headers, nil)+".json")
+	resourceDir := c.cacheResourceDir(path)
+	cacheFile := filepath.Join(resourceDir, c.cacheKeyFor(http.MethodGet, path, params, headers, nil)+".json")
 	info, err := os.Stat(cacheFile)
 	if err != nil || time.Since(info.ModTime()) > 5*time.Minute {
 		return nil, false
@@ -595,6 +596,8 @@ func (c *Client) readCacheWithHeaders(path string, params map[string]string, hea
 	if err != nil {
 		return nil, false
 	}
+	// A leftover 0644 file can still be inside the TTL after upgrade; tighten before returning.
+	ensureCachePerms(resourceDir, cacheFile)
 	return json.RawMessage(data), true
 }
 
@@ -605,14 +608,18 @@ func (c *Client) writeCache(path string, params map[string]string, data json.Raw
 func (c *Client) writeCacheWithHeaders(path string, params map[string]string, headers map[string]string, data json.RawMessage) {
 	resourceDir := c.cacheResourceDir(path)
 	_ = os.MkdirAll(resourceDir, 0o700)
-	_ = os.Chmod(resourceDir, 0o700)
 	cacheFile := filepath.Join(resourceDir, c.cacheKeyFor(http.MethodGet, path, params, headers, nil)+".json")
 	_ = os.WriteFile(cacheFile, []byte(data), 0o600)
 	// WriteFile's perm applies only on create; tighten a leftover 0644 rewrite.
-	_ = os.Chmod(cacheFile, 0o600)
+	ensureCachePerms(resourceDir, cacheFile)
 	if c.platformSession != nil {
 		c.writePlatformCacheMetadata(cacheFile)
 	}
+}
+
+func ensureCachePerms(resourceDir, cacheFile string) {
+	_ = os.Chmod(resourceDir, 0o700)
+	_ = os.Chmod(cacheFile, 0o600)
 }
 
 type platformCacheMetadata struct {
