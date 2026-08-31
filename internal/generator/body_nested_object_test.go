@@ -179,7 +179,7 @@ func TestOptionalNestedRequiredRuntime(t *testing.T) {
 	require.NoError(t, New(promotedSpec, promotedOutputDir).Generate())
 	promoted := readGeneratedFile(t, promotedOutputDir, "internal", "cli", "promoted_events.go")
 	require.Contains(t, promoted, `if (cmd.Flags().Changed("start-date-time") || bodyStartDateTime != "") || (cmd.Flags().Changed("start-time-zone") || bodyStartTimeZone != "") {`)
-	require.Contains(t, promoted, `if !cmd.Flags().Changed("start-date-time") && !flags.dryRun {`)
+	require.Contains(t, promoted, `if !cmd.Flags().Changed("start-date-time") && bodyStartDateTime == "" && !flags.dryRun {`)
 	requireGeneratedCompiles(t, promotedOutputDir)
 }
 

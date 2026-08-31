@@ -63,6 +63,23 @@ func TestFlagRequiredUnsatisfiedExpr(t *testing.T) {
 	}
 }
 
+func TestBodyRequiredChecksHonorResolvedValue(t *testing.T) {
+	t.Parallel()
+
+	got := bodyRequiredChecks(spec.Endpoint{
+		Body: []spec.Param{
+			{Name: "name", Type: "string", Required: true},
+			{Name: "visibility", Type: "string", Required: true},
+			{Name: "filter", Type: "array", Required: true},
+			{Name: "store_code", FlagName: "store-code", Aliases: []string{"code"}, Type: "string", Required: true},
+		},
+	}, "\t\t\t")
+	assert.Contains(t, got, `!cmd.Flags().Changed("name") && bodyName == "" && !flags.dryRun`)
+	assert.Contains(t, got, `!cmd.Flags().Changed("visibility") && bodyVisibility == "" && !flags.dryRun`)
+	assert.Contains(t, got, `!cmd.Flags().Changed("filter") && bodyFilter == "" && !flags.dryRun`)
+	assert.Contains(t, got, `!(cmd.Flags().Changed("store-code") || cmd.Flags().Changed("code")) && bodyStoreCode == "" && !flags.dryRun`)
+}
+
 func TestGeneratedOutput_RequiredFlagGuardHonorsResolvedValue(t *testing.T) {
 	t.Parallel()
 
