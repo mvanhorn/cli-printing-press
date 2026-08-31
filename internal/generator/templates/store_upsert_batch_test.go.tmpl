@@ -631,6 +631,36 @@ func TestMergeKeepRicherJSON(t *testing.T) {
 		"sku", "sku-a", "sku-c",
 	)
 
+	// Shared FK + own identity: alphabetical first-key would pick
+	// account_id for every sibling and merge USD detail into EUR.
+	sharedFK, ok := mergeKeepRicherJSON(
+		"accounts",
+		json.RawMessage(`{"id":"1","rows":[{"account_id":"acct","currency_code":"USD","notes":"usd"},{"account_id":"acct","currency_code":"EUR","notes":"eur"}]}`),
+		json.RawMessage(`{"id":"1","rows":[{"account_id":"acct","currency_code":"EUR"},{"account_id":"acct","currency_code":"USD"}]}`),
+	)
+	if !ok {
+		t.Fatal("shared FK + currency_code merge returned !ok")
+	}
+	var sharedObj map[string]any
+	if err := json.Unmarshal(sharedFK, &sharedObj); err != nil {
+		t.Fatalf("unmarshal shared FK merge: %v", err)
+	}
+	sharedRows, _ := sharedObj["rows"].([]any)
+	if len(sharedRows) != 2 {
+		t.Fatalf("shared FK array length must follow incoming, stored %s", sharedFK)
+	}
+	sharedFirst, _ := sharedRows[0].(map[string]any)
+	sharedSecond, _ := sharedRows[1].(map[string]any)
+	if fmt.Sprint(sharedFirst["currency_code"]) != "EUR" || fmt.Sprint(sharedSecond["currency_code"]) != "USD" {
+		t.Fatalf("shared FK must pair on currency_code, stored %s", sharedFK)
+	}
+	if fmt.Sprint(sharedFirst["notes"]) != "eur" {
+		t.Fatalf("EUR row must keep its own notes, stored %s", sharedFK)
+	}
+	if fmt.Sprint(sharedSecond["notes"]) != "usd" {
+		t.Fatalf("USD row must keep its own notes, stored %s", sharedFK)
+	}
+
 	prevOverride, hadOverride := resourceIDFieldOverrides["widgets"]
 	resourceIDFieldOverrides["widgets"] = "entityInfo.entityId"
 	defer func() {

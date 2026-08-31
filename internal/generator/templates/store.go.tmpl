@@ -2170,9 +2170,13 @@ func fingerprintScalar(value any) (any, bool) {
 //   - Object arrays match by the same identity stack as ExtractResourceID
 //     (configured / dotted override, generic id, resource-scoped suffix)
 //     plus item-local suffix keys (currency_code, accountId) and sku.
-//     Display name is not an array identity. Result order and length
-//     follow incoming so a reorder or middle delete cannot join
-//     unrelated objects or keep leftover old entries.
+//     Own-identity suffixes (_code/_slug/_key) win over shared foreign
+//     keys so sibling rows that share account_id still pair on
+//     currency_code. A lone accountId remains identity when it is the
+//     only identity-shaped field. Display name is not an array
+//     identity. Result order and length follow incoming so a reorder
+//     or middle delete cannot join unrelated objects or keep leftover
+//     old entries.
 //   - Arrays without identity keys, and scalar arrays, take incoming
 //     wholesale. Index-wise merge would pair unrelated items.
 //   - Incoming scalars replace existing scalars.
@@ -2332,16 +2336,86 @@ func suffixIdentityFromItemKeys(obj map[string]any) string {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	var own, localID, sharedID string
 	for _, key := range keys {
 		stem := identitySuffixStem(key)
 		if stem == "" || stem == "parent" {
 			continue
 		}
-		if s := suffixIDFieldFallback(stem, obj); s != "" {
-			return s
+		s := suffixIDFieldFallback(stem, obj)
+		if s == "" {
+			continue
+		}
+		switch itemKeyIdentityKind(key) {
+		case itemIdentOwn:
+			if own == "" {
+				own = s
+			}
+		case itemIdentLocalID:
+			if localID == "" {
+				localID = s
+			}
+		case itemIdentSharedID:
+			if sharedID == "" {
+				sharedID = s
+			}
 		}
 	}
-	return ""
+	if own != "" {
+		return own
+	}
+	if localID != "" {
+		return localID
+	}
+	return sharedID
+}
+
+type itemIdentKind int
+
+const (
+	itemIdentNone itemIdentKind = iota
+	itemIdentOwn
+	itemIdentLocalID
+	itemIdentSharedID
+)
+
+func itemKeyIdentityKind(key string) itemIdentKind {
+	if itemKeyLooksLikeOwnIdentity(key) {
+		return itemIdentOwn
+	}
+	stem := identitySuffixStem(key)
+	if stem == "" {
+		return itemIdentNone
+	}
+	if sharedForeignKeyStem(stem) {
+		return itemIdentSharedID
+	}
+	return itemIdentLocalID
+}
+
+func itemKeyLooksLikeOwnIdentity(key string) bool {
+	k := strings.TrimSpace(key)
+	for _, suffix := range []string{"_code", "_key", "_slug"} {
+		if strings.HasSuffix(k, suffix) && len(k) > len(suffix) {
+			return true
+		}
+	}
+	for _, suffix := range []string{"Code", "Key", "Slug"} {
+		if strings.HasSuffix(k, suffix) && len(k) > len(suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func sharedForeignKeyStem(stem string) bool {
+	switch strings.ToLower(stem) {
+	case "parent", "account", "owner", "org", "organization", "user",
+		"customer", "workspace", "tenant", "team", "company", "member":
+		return true
+	default:
+		return false
+	}
 }
 
 func identitySuffixStem(key string) string {
