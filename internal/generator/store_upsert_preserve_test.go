@@ -104,6 +104,10 @@ func TestGeneratedStoreKeepsIDLessAndRicherUpserts(t *testing.T) {
 		"batch upsert must merge before both generic and typed writes")
 	require.Contains(t, src, "func arrayItemIdentity(",
 		"object arrays must match by a stable id, not numeric index")
+	require.Contains(t, src, "func suffixIdentityFromItemKeys(",
+		"nested items must pair on suffix identities like currency_code")
+	require.Contains(t, src, `canonicalIDFromKey(obj, "sku")`,
+		"line items keyed by sku must keep-richer-merge")
 	require.Contains(t, src, "func indexObjectArrayByIdentity(",
 		"cached array leftovers must be indexed by identity for keep-richer pairing")
 	require.NotContains(t, src, `id := ExtractResourceID("forecast", obj)`,
@@ -115,7 +119,7 @@ func TestGeneratedStoreKeepsIDLessAndRicherUpserts(t *testing.T) {
 	require.NoError(t, os.WriteFile(testPath, []byte(generatedIDLessRicherRuntimeTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/store",
-		"-run", "Test(ResolveStorageID_KeepsEntityIDsAndRefusesUnusable|Upsert_PreservesRicherCachedDetail|MergeKeepRicherJSON|UpsertForecast_StoresIDLessPayload|UpsertForecast_BatchSameLocation|UpsertMutations_ListDoesNotShrinkDetail|UpsertMutations_ArrayReorderDoesNotCorrupt)",
+		"-run", "Test(ResolveStorageID_KeepsEntityIDsAndRefusesUnusable|Upsert_PreservesRicherCachedDetail|MergeKeepRicherJSON|UpsertForecast_StoresIDLessPayload|UpsertForecast_BatchSameLocation|UpsertMutations_ListDoesNotShrinkDetail|UpsertMutations_ArrayReorderDoesNotCorrupt|UpsertMutations_SuffixArrayIdentityKeepsDetail)",
 		"-count=1")
 }
 
@@ -272,5 +276,39 @@ const generatedIDLessRicherRuntimeTest = "package store\n\n" +
 	"\t\tif fmt.Sprint(obj[\"id\"]) == \"b\" {\n" +
 	"\t\t\tt.Fatalf(\"dropped middle entry must not remain, stored %s\", got)\n" +
 	"\t\t}\n" +
+	"\t}\n" +
+	"}\n\n" +
+	"func TestUpsertMutations_SuffixArrayIdentityKeepsDetail(t *testing.T) {\n" +
+	"\ts, err := Open(filepath.Join(t.TempDir(), \"data.db\"))\n" +
+	"\tif err != nil {\n" +
+	"\t\tt.Fatalf(\"open: %v\", err)\n" +
+	"\t}\n" +
+	"\tdefer s.Close()\n\n" +
+	"\tdetail := json.RawMessage(`{\"id\":\"mut-3\",\"rows\":[{\"currency_code\":\"USD\",\"notes\":\"keep\"},{\"currency_code\":\"EUR\"},{\"currency_code\":\"GBP\"}]}`)\n" +
+	"\tif err := s.UpsertMutations(detail); err != nil {\n" +
+	"\t\tt.Fatalf(\"detail: %v\", err)\n" +
+	"\t}\n" +
+	"\tlist := json.RawMessage(`{\"id\":\"mut-3\",\"rows\":[{\"currency_code\":\"EUR\"},{\"currency_code\":\"USD\"}]}`)\n" +
+	"\tif err := s.UpsertMutations(list); err != nil {\n" +
+	"\t\tt.Fatalf(\"list: %v\", err)\n" +
+	"\t}\n" +
+	"\tgot, err := s.Get(\"mutations\", \"mut-3\")\n" +
+	"\tif err != nil {\n" +
+	"\t\tt.Fatalf(\"get: %v\", err)\n" +
+	"\t}\n" +
+	"\tvar obj map[string]any\n" +
+	"\tif err := json.Unmarshal(got, &obj); err != nil {\n" +
+	"\t\tt.Fatalf(\"unmarshal: %v\", err)\n" +
+	"\t}\n" +
+	"\trows, _ := obj[\"rows\"].([]any)\n" +
+	"\tif len(rows) != 2 {\n" +
+	"\t\tt.Fatalf(\"length must follow incoming, got %d stored %s\", len(rows), got)\n" +
+	"\t}\n" +
+	"\tsecond, _ := rows[1].(map[string]any)\n" +
+	"\tif fmt.Sprint(second[\"currency_code\"]) != \"USD\" {\n" +
+	"\t\tt.Fatalf(\"order must follow incoming, stored %s\", got)\n" +
+	"\t}\n" +
+	"\tif fmt.Sprint(second[\"notes\"]) != \"keep\" {\n" +
+	"\t\tt.Fatalf(\"suffix identity lost detail, stored %s\", got)\n" +
 	"\t}\n" +
 	"}\n"

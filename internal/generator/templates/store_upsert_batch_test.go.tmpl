@@ -496,6 +496,7 @@ func TestUpsert_PreservesRicherCachedDetail(t *testing.T) {
 
 func TestMergeKeepRicherJSON(t *testing.T) {
 	merged, ok := mergeKeepRicherJSON(
+		"mutations",
 		json.RawMessage(`{"id":"1","rows":[{"vat":21}],"meta":{"a":1,"b":2}}`),
 		json.RawMessage(`{"id":"1","name":"list","meta":{"a":9}}`),
 	)
@@ -517,7 +518,7 @@ func TestMergeKeepRicherJSON(t *testing.T) {
 		t.Fatalf("nested object merge failed, meta=%v", meta)
 	}
 
-	first, ok := mergeKeepRicherJSON(nil, json.RawMessage(`{"id":"1","name":"only"}`))
+	first, ok := mergeKeepRicherJSON("mutations", nil, json.RawMessage(`{"id":"1","name":"only"}`))
 	if !ok || !strings.Contains(string(first), `"only"`) {
 		t.Fatalf("first write should store incoming, ok=%v got %s", ok, first)
 	}
@@ -525,6 +526,7 @@ func TestMergeKeepRicherJSON(t *testing.T) {
 	// Reorder + drop the middle id-bearing object: match by id, keep
 	// richer fields on the surviving pair, follow incoming order/length.
 	reordered, ok := mergeKeepRicherJSON(
+		"mutations",
 		json.RawMessage(`{"id":"1","rows":[{"id":"a","vat":21,"notes":"keep"},{"id":"b","vat":9},{"id":"c","vat":0}]}`),
 		json.RawMessage(`{"id":"1","rows":[{"id":"c","vat":0},{"id":"a","vat":22}]}`),
 	)
@@ -560,6 +562,7 @@ func TestMergeKeepRicherJSON(t *testing.T) {
 	// No identity keys: incoming collection is authoritative. Index merge
 	// would attach the first cached extra field onto the first incoming item.
 	idless, ok := mergeKeepRicherJSON(
+		"mutations",
 		json.RawMessage(`{"id":"1","rows":[{"name":"x","extra":1},{"name":"y","extra":2}]}`),
 		json.RawMessage(`{"id":"1","rows":[{"name":"y"},{"name":"x"}]}`),
 	)
@@ -580,6 +583,82 @@ func TestMergeKeepRicherJSON(t *testing.T) {
 	}
 	if _, ok := firstIDLess["extra"]; ok {
 		t.Fatalf("id-less arrays must not merge by index, stored %s", idless)
+	}
+
+	assertArrayKeepRicher := func(label, resourceType, existingJSON, incomingJSON, idKey, idA, idB string) {
+		t.Helper()
+		got, ok := mergeKeepRicherJSON(resourceType, json.RawMessage(existingJSON), json.RawMessage(incomingJSON))
+		if !ok {
+			t.Fatalf("%s: merge returned !ok", label)
+		}
+		var obj map[string]any
+		if err := json.Unmarshal(got, &obj); err != nil {
+			t.Fatalf("%s: unmarshal: %v", label, err)
+		}
+		items, _ := obj["rows"].([]any)
+		if len(items) != 2 {
+			t.Fatalf("%s: length must follow incoming, got %d stored %s", label, len(items), got)
+		}
+		firstItem, _ := items[0].(map[string]any)
+		secondItem, _ := items[1].(map[string]any)
+		if fmt.Sprint(firstItem[idKey]) != idB || fmt.Sprint(secondItem[idKey]) != idA {
+			t.Fatalf("%s: order must follow incoming, stored %s", label, got)
+		}
+		if fmt.Sprint(secondItem["notes"]) != "keep" {
+			t.Fatalf("%s: keep-richer lost detail on identity match, stored %s", label, got)
+		}
+	}
+
+	assertArrayKeepRicher(
+		"currency_code",
+		"accounts",
+		`{"id":"1","rows":[{"currency_code":"USD","notes":"keep"},{"currency_code":"EUR"},{"currency_code":"GBP"}]}`,
+		`{"id":"1","rows":[{"currency_code":"EUR"},{"currency_code":"USD"}]}`,
+		"currency_code", "USD", "EUR",
+	)
+	assertArrayKeepRicher(
+		"accountId",
+		"teams",
+		`{"id":"1","rows":[{"accountId":"a1","notes":"keep"},{"accountId":"a2"},{"accountId":"a3"}]}`,
+		`{"id":"1","rows":[{"accountId":"a3"},{"accountId":"a1"}]}`,
+		"accountId", "a1", "a3",
+	)
+	assertArrayKeepRicher(
+		"sku",
+		"orders",
+		`{"id":"1","rows":[{"sku":"sku-a","notes":"keep"},{"sku":"sku-b"},{"sku":"sku-c"}]}`,
+		`{"id":"1","rows":[{"sku":"sku-c"},{"sku":"sku-a"}]}`,
+		"sku", "sku-a", "sku-c",
+	)
+
+	prevOverride, hadOverride := resourceIDFieldOverrides["widgets"]
+	resourceIDFieldOverrides["widgets"] = "entityInfo.entityId"
+	defer func() {
+		if hadOverride {
+			resourceIDFieldOverrides["widgets"] = prevOverride
+		} else {
+			delete(resourceIDFieldOverrides, "widgets")
+		}
+	}()
+	dotted, ok := mergeKeepRicherJSON(
+		"widgets",
+		json.RawMessage(`{"id":"1","rows":[{"entityInfo":{"entityId":"e-a"},"notes":"keep"},{"entityInfo":{"entityId":"e-b"}},{"entityInfo":{"entityId":"e-c"}}]}`),
+		json.RawMessage(`{"id":"1","rows":[{"entityInfo":{"entityId":"e-c"}},{"entityInfo":{"entityId":"e-a"}}]}`),
+	)
+	if !ok {
+		t.Fatal("dotted configured identity merge returned !ok")
+	}
+	var dottedObj map[string]any
+	if err := json.Unmarshal(dotted, &dottedObj); err != nil {
+		t.Fatalf("unmarshal dotted merge: %v", err)
+	}
+	dottedRows, _ := dottedObj["rows"].([]any)
+	if len(dottedRows) != 2 {
+		t.Fatalf("dotted array length must follow incoming, stored %s", dotted)
+	}
+	dottedSecond, _ := dottedRows[1].(map[string]any)
+	if fmt.Sprint(dottedSecond["notes"]) != "keep" {
+		t.Fatalf("dotted identity must keep-richer-merge, stored %s", dotted)
 	}
 }
 
