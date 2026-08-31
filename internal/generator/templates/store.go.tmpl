@@ -2310,10 +2310,14 @@ func arrayItemIdentity(resourceType string, obj map[string]any) string {
 			return s
 		}
 	}
-	if s := suffixIDFieldFallback(resourceType, obj); s != "" {
+	// Item-local own identity wins over the parent resource's suffix.
+	// mergeKeepRicherJSON threads the parent type through nested arrays,
+	// so suffixIDFieldFallback("accounts") would treat a copied
+	// account_id as every child's id and collide sibling rates.
+	if s := suffixIdentityFromItemKeys(obj); s != "" {
 		return s
 	}
-	if s := suffixIdentityFromItemKeys(obj); s != "" {
+	if s := suffixIDFieldFallback(resourceType, obj); s != "" {
 		return s
 	}
 	if s := canonicalIDFromKey(obj, "sku"); s != "" {
