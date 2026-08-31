@@ -39,7 +39,7 @@ func newStandingsPromotedCmd(flags *rootFlags) *cobra.Command {
 				}
 				return cmd.Help()
 			}
-			if !cmd.Flags().Changed("game-id") && !flags.dryRun {
+			if !cmd.Flags().Changed("game-id") && flagGameId == "" && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "game-id")
 			}
 			c, err := flags.newClient()
