@@ -2214,7 +2214,7 @@ func arrayItemIdentity(resourceType string, obj map[string]any) string {
 	}
 	for _, key := range genericIDFieldFallbacks {
 		if s := canonicalIDFromKey(obj, key); s != "" {
-			return qualifyArrayItemIdentity(key, s)
+			return qualifyArrayItemIdentity(canonicalGenericIDField(key), s)
 		}
 	}
 	// Item-local own identity wins over the parent resource's suffix.
@@ -2245,6 +2245,17 @@ func qualifyArrayItemIdentity(field, value string) string {
 		return ""
 	}
 	return field + arrayItemIdentitySep + value
+}
+
+// lookupRawFieldValue("id") finds Id/id_ via fieldKeySpellings but not
+// _id or ID, so those probes would otherwise mint distinct map keys.
+func canonicalGenericIDField(probe string) string {
+	switch strings.TrimSpace(probe) {
+	case "id", "ID", "_id", "id_", "Id":
+		return "id"
+	default:
+		return probe
+	}
 }
 
 func suffixIdentityFromItemKeys(obj map[string]any) (string, string) {
