@@ -3611,8 +3611,10 @@ func newNovelXxxCmd(flags *rootFlags) *cobra.Command {
 }
 
 // Multi-word Commands like "issues stale": register the child from the
-// preserved file through the novel hook. Resolve the generated parent by
-// its command path and use the duplicate-safe helper:
+// preserved file through the novel hook. Hooks run after generated novel
+// parent groups are attached, so Find sees those parents. Resolve the
+// generated parent by its command path and use the duplicate-safe helper
+// (a real command replaces a TODO scaffold with the same name):
 //   registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
 //       issuesCmd, _, err := root.Find([]string{"issues"})
 //       if err == nil {
@@ -3625,6 +3627,8 @@ func newNovelXxxCmd(flags *rootFlags) *cobra.Command {
 // Do not rely on parent-local flags like --org or --project being accepted by
 // child commands unless the parent registered them with PersistentFlags().
 // Single-word Commands use the same hook: addNovelCommandIfAbsent(root, newNovelXxxCmd(flags)).
+// A preserved hook that still uses root.AddCommand for the same name also
+// wins: after hooks run, generated TODO scaffolds with a real sibling are dropped.
 ```
 
 **RunE skeleton — API-call shape** (live data via a sibling typed client):
@@ -3902,7 +3906,7 @@ For an extension to be durable, put it in its own file beside the emitted one:
 - **Custom request headers** (vendor fingerprint, `X-CSRF`, app-version, signed timestamps): create `internal/client/<api>_headers.go` exporting a func that builds the header map; novel code passes that map to `client.GetWithHeaders` / `PostWithHeaders` when it calls the API. The generated `client.go` has no global request mutator, so this pattern only covers requests made directly from novel code — it does not intercept calls from generated endpoint commands. Do not edit the templated header block in `client.go`.
 - **Custom auth flow** (browser-sniffed sessions, vendor SSO, refresh hooks beyond OAuth2): create `internal/cli/<api>_auth.go` (package `cli`, same as the generated `auth.go`) with the API-specific token capture or refresh, and wire it from a novel command rather than editing the templated `auth.go` constructor functions (`newAuthLoginCmd`, `newAuthSetupCmd`, etc.). If the custom flow implements OAuth2 Authorization Code + PKCE, read [references/oauth2-pkce-cli-checklist.md](references/oauth2-pkce-cli-checklist.md) before writing or reviewing the command.
 - **Extended store schema** (typed tables beyond `resources`, vendor JSON columns, full-text indexes): create `internal/store/<api>_migrations.go` running its own `CREATE TABLE ... IF NOT EXISTS` from a lazy init invoked by the novel commands that need it. Do not edit the migration slice in `store.go`.
-- **New novel command:** put the command body and its `registerNovelCommand` hook in their own `internal/cli/<feature>.go` file. Generated TODO scaffolds may refresh on `generate --force`; once you replace the TODO body with a real implementation, regen preserves that hand-authored file instead of re-emitting the scaffold. Do not edit `root.go` for novel wiring. The hook file is preserved, and `generate --force` also re-injects any lost `AddCommand` call whose constructor remains in a preserved novel file. Use standalone `regen-merge` when you want to inspect the merge report before applying. Spec-declared commands are picked up by the generator's typed-tool path and need no hand-wired `AddCommand` at all.
+- **New novel command:** put the command body and its `registerNovelCommand` hook in their own `internal/cli/<feature>.go` file. Generated TODO scaffolds may refresh on `generate --force`; once you replace the TODO body with a real implementation, regen preserves that hand-authored file instead of re-emitting the scaffold. A separate hook file is also preserved, and `addNovelCommandIfAbsent` prefers that real command over a TODO scaffold with the same name so the scaffold cannot shadow it. Do not edit `root.go` for novel wiring. `generate --force` also re-injects any lost `AddCommand` call whose constructor remains in a preserved novel file. Use standalone `regen-merge` when you want to inspect the merge report before applying. Spec-declared commands are picked up by the generator's typed-tool path and need no hand-wired `AddCommand` at all.
 
 If an extension genuinely cannot live in a separate file (a `case` branch in a templated method switch, an inline modification to a generated handler with no registry hook), file a generator issue requesting the hook rather than depending on repeated conflict-prone merges. The `AddCommand` case above is covered by the merge path.
 
