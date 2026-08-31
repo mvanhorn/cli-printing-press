@@ -130,31 +130,6 @@ func TestWriteCacheWithHeadersRechmodsExistingFile(t *testing.T) {
 		t.Fatalf("rewritten cache mode = %04o, want 0600", got)
 	}
 }
-`
-	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "cache_chmod_runtime_test.go"), []byte(runtimeTest), 0o600))
-	requireGeneratedCompiles(t, outputDir)
-	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^TestWriteCacheWithHeadersRechmodsExistingFile$", "-count=1")
-}
-
-func TestReadCacheWithHeadersRechmodsFreshLegacyFile(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := minimalSpec("cache-hit-chmod")
-	outputDir := filepath.Join(t.TempDir(), "cache-hit-chmod-pp-cli")
-	require.NoError(t, New(apiSpec, outputDir).Generate())
-
-	const runtimeTest = `package client
-
-import (
-	"encoding/json"
-	"os"
-	"path/filepath"
-	"runtime"
-	"testing"
-	"time"
-
-	"cache-hit-chmod-pp-cli/internal/config"
-)
 
 func TestReadCacheWithHeadersRechmodsFreshLegacyFile(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -206,9 +181,9 @@ func TestReadCacheWithHeadersRechmodsFreshLegacyFile(t *testing.T) {
 	}
 }
 `
-	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "cache_hit_chmod_runtime_test.go"), []byte(runtimeTest), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "cache_chmod_runtime_test.go"), []byte(runtimeTest), 0o600))
 	requireGeneratedCompiles(t, outputDir)
-	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^TestReadCacheWithHeadersRechmodsFreshLegacyFile$", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^Test(WriteCacheWithHeadersRechmodsExistingFile|ReadCacheWithHeadersRechmodsFreshLegacyFile)$", "-count=1")
 }
 
 func TestGeneratedClientQueryParamContractsPass(t *testing.T) {
