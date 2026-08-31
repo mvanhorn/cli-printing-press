@@ -982,7 +982,7 @@ func (s *Store) mergeIncomingResourceData(tx *sql.Tx, resourceType, id string, i
 	if err != nil || existing == "" {
 		return incoming
 	}
-	merged, ok := mergeKeepRicherJSON(json.RawMessage(existing), incoming)
+	merged, ok := mergeKeepRicherJSON(resourceType, json.RawMessage(existing), incoming)
 	if !ok {
 		return incoming
 	}
@@ -2003,14 +2003,16 @@ func fingerprintScalar(value any) (any, bool) {
 //   - A container (object/array) is never replaced by a scalar or null.
 //   - An incoming empty array does not replace a non-empty existing array
 //     (list omitted the collection vs sent a new one).
-//   - Object arrays match by a stable id key when present, then apply the
-//     same object policy to the pair. Result order and length follow
-//     incoming so a reorder or middle delete cannot join unrelated
-//     objects or keep leftover old entries.
+//   - Object arrays match by the same identity stack as ExtractResourceID
+//     (configured / dotted override, generic id, resource-scoped suffix)
+//     plus item-local suffix keys (currency_code, accountId) and sku.
+//     Display name is not an array identity. Result order and length
+//     follow incoming so a reorder or middle delete cannot join
+//     unrelated objects or keep leftover old entries.
 //   - Arrays without identity keys, and scalar arrays, take incoming
 //     wholesale. Index-wise merge would pair unrelated items.
 //   - Incoming scalars replace existing scalars.
-func mergeKeepRicherJSON(existing, incoming json.RawMessage) (json.RawMessage, bool) {
+func mergeKeepRicherJSON(resourceType string, existing, incoming json.RawMessage) (json.RawMessage, bool) {
 	if len(existing) == 0 {
 		return incoming, len(incoming) > 0
 	}
@@ -2025,7 +2027,7 @@ func mergeKeepRicherJSON(existing, incoming json.RawMessage) (json.RawMessage, b
 	if err != nil {
 		return existing, true
 	}
-	merged, err := json.Marshal(mergeKeepRicherValue(existingVal, incomingVal))
+	merged, err := json.Marshal(mergeKeepRicherValue(resourceType, existingVal, incomingVal))
 	if err != nil {
 		return incoming, len(incoming) > 0
 	}
@@ -2042,7 +2044,7 @@ func decodeJSONValue(data json.RawMessage) (any, error) {
 	return value, nil
 }
 
-func mergeKeepRicherValue(existing, incoming any) any {
+func mergeKeepRicherValue(resourceType string, existing, incoming any) any {
 	if incoming == nil {
 		if existing != nil {
 			return existing
@@ -2052,12 +2054,12 @@ func mergeKeepRicherValue(existing, incoming any) any {
 	existingObj, existingIsObj := existing.(map[string]any)
 	incomingObj, incomingIsObj := incoming.(map[string]any)
 	if existingIsObj && incomingIsObj {
-		return mergeKeepRicherObject(existingObj, incomingObj)
+		return mergeKeepRicherObject(resourceType, existingObj, incomingObj)
 	}
 	existingArr, existingIsArr := existing.([]any)
 	incomingArr, incomingIsArr := incoming.([]any)
 	if existingIsArr && incomingIsArr {
-		return mergeKeepRicherArray(existingArr, incomingArr)
+		return mergeKeepRicherArray(resourceType, existingArr, incomingArr)
 	}
 	if isJSONContainer(existing) && !isJSONContainer(incoming) {
 		return existing
@@ -2068,14 +2070,14 @@ func mergeKeepRicherValue(existing, incoming any) any {
 	return incoming
 }
 
-func mergeKeepRicherObject(existing, incoming map[string]any) map[string]any {
+func mergeKeepRicherObject(resourceType string, existing, incoming map[string]any) map[string]any {
 	out := make(map[string]any, len(existing)+len(incoming))
 	for key, value := range existing {
 		out[key] = value
 	}
 	for key, incomingVal := range incoming {
 		if existingVal, ok := out[key]; ok {
-			out[key] = mergeKeepRicherValue(existingVal, incomingVal)
+			out[key] = mergeKeepRicherValue(resourceType, existingVal, incomingVal)
 			continue
 		}
 		out[key] = incomingVal
@@ -2083,11 +2085,11 @@ func mergeKeepRicherObject(existing, incoming map[string]any) map[string]any {
 	return out
 }
 
-func mergeKeepRicherArray(existing, incoming []any) []any {
+func mergeKeepRicherArray(resourceType string, existing, incoming []any) []any {
 	if len(incoming) == 0 && len(existing) > 0 {
 		return existing
 	}
-	existingByID := indexObjectArrayByIdentity(existing)
+	existingByID := indexObjectArrayByIdentity(resourceType, existing)
 	if len(existingByID) == 0 {
 		return incoming
 	}
@@ -2098,26 +2100,26 @@ func mergeKeepRicherArray(existing, incoming []any) []any {
 			out[i] = item
 			continue
 		}
-		id := arrayItemIdentity(incomingObj)
+		id := arrayItemIdentity(resourceType, incomingObj)
 		existingObj, ok := existingByID[id]
 		if id == "" || !ok {
 			out[i] = item
 			continue
 		}
 		delete(existingByID, id)
-		out[i] = mergeKeepRicherObject(existingObj, incomingObj)
+		out[i] = mergeKeepRicherObject(resourceType, existingObj, incomingObj)
 	}
 	return out
 }
 
-func indexObjectArrayByIdentity(items []any) map[string]map[string]any {
+func indexObjectArrayByIdentity(resourceType string, items []any) map[string]map[string]any {
 	out := make(map[string]map[string]any)
 	for _, item := range items {
 		obj, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		id := arrayItemIdentity(obj)
+		id := arrayItemIdentity(resourceType, obj)
 		if id == "" {
 			continue
 		}
@@ -2129,10 +2131,68 @@ func indexObjectArrayByIdentity(items []any) map[string]map[string]any {
 	return out
 }
 
-func arrayItemIdentity(obj map[string]any) string {
+func arrayItemIdentity(resourceType string, obj map[string]any) string {
+	if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
+		if s := canonicalIDFromKey(obj, override); s != "" {
+			return s
+		}
+	}
 	for _, key := range genericIDFieldFallbacks {
 		if s := canonicalIDFromKey(obj, key); s != "" {
 			return s
+		}
+	}
+	if s := suffixIDFieldFallback(resourceType, obj); s != "" {
+		return s
+	}
+	if s := suffixIdentityFromItemKeys(obj); s != "" {
+		return s
+	}
+	if s := canonicalIDFromKey(obj, "sku"); s != "" {
+		return s
+	}
+	for _, key := range []string{"slug", "key", "code"} {
+		if s := canonicalIDFromKey(obj, key); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func suffixIdentityFromItemKeys(obj map[string]any) string {
+	if obj == nil {
+		return ""
+	}
+	keys := make([]string, 0, len(obj))
+	for key := range obj {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		stem := identitySuffixStem(key)
+		if stem == "" || stem == "parent" {
+			continue
+		}
+		if s := suffixIDFieldFallback(stem, obj); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func identitySuffixStem(key string) string {
+	k := strings.TrimSpace(key)
+	if k == "" {
+		return ""
+	}
+	for _, suffix := range []string{"_id", "_code", "_key", "_slug"} {
+		if strings.HasSuffix(k, suffix) && len(k) > len(suffix) {
+			return strings.TrimSuffix(k, suffix)
+		}
+	}
+	for _, suffix := range []string{"Id", "Code", "Key", "Slug"} {
+		if strings.HasSuffix(k, suffix) && len(k) > len(suffix) {
+			return strings.ToLower(k[:len(k)-len(suffix)])
 		}
 	}
 	return ""
