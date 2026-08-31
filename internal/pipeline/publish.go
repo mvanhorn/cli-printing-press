@@ -727,13 +727,17 @@ func invokeCopyDirTestHook(path string, d fs.DirEntry) {
 }
 
 func SetCopyDirWalkHookForTest(fn func(path string, d fs.DirEntry)) func() {
-	if fn == nil {
-		copyDirTestHook.Store(nil)
-		return func() {}
+	prev := copyDirTestHook.Load()
+	var installed *copyDirWalkHook
+	if fn != nil {
+		hook := copyDirWalkHook(fn)
+		installed = &hook
 	}
-	hook := copyDirWalkHook(fn)
-	copyDirTestHook.Store(&hook)
-	return func() { copyDirTestHook.Store(nil) }
+	copyDirTestHook.Store(installed)
+	return func() {
+		// Leave a later installation in place; restore only what this call set.
+		copyDirTestHook.CompareAndSwap(installed, prev)
+	}
 }
 
 func copyDirFiltered(src, dst string, skipFile func(path string, info fs.FileInfo) bool) error {
@@ -844,7 +848,10 @@ func copyDirFiltered(src, dst string, skipFile func(path string, info fs.FileInf
 		if skipFile != nil && skipFile(path, info) {
 			return nil
 		}
-		return copyFile(path, target, info.Mode())
+		if err := copyFile(path, target, info.Mode()); err != nil {
+			return skipIfVanished(err, false)
+		}
+		return nil
 	})
 }
 
@@ -874,7 +881,7 @@ func copyFile(src, dst string, mode os.FileMode) error {
 
 	in, err := os.Open(src)
 	if err != nil {
-		return skipIfVanished(err, false)
+		return err
 	}
 	defer func() { _ = in.Close() }()
 

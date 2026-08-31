@@ -312,6 +312,73 @@ func TestCopyDirStillFailsOnUnreadableDirectory(t *testing.T) {
 	assert.False(t, errors.Is(err, fs.ErrNotExist), "permission failures must stay fatal, got %v", err)
 }
 
+func TestCopyFileReportsVanishedSource(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		dest string
+	}{
+		{name: "research.json", dest: "research.json"},
+		{name: "patch record", dest: filepath.Join(PatchesDirName, "drop-envelope.json")},
+		{name: "legacy patch index", dest: PatchesIndexFilename},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dst := filepath.Join(t.TempDir(), tt.dest)
+			err := copyFile(filepath.Join(t.TempDir(), filepath.Base(tt.dest)), dst, 0o644)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, fs.ErrNotExist)
+			assert.NoFileExists(t, dst)
+		})
+	}
+}
+
+func TestSetCopyDirWalkHookForTestRestoresPrevious(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	require.NoError(t, os.MkdirAll(src, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "keep.txt"), []byte("keep"), 0o644))
+
+	var hits []string
+	clearOuter := SetCopyDirWalkHookForTest(func(string, fs.DirEntry) { hits = append(hits, "outer") })
+	t.Cleanup(func() { copyDirTestHook.Store(nil) })
+	clearInner := SetCopyDirWalkHookForTest(func(string, fs.DirEntry) { hits = append(hits, "inner") })
+
+	require.NoError(t, CopyDir(src, filepath.Join(t.TempDir(), "inner")))
+	assert.NotContains(t, hits, "outer")
+	assert.Contains(t, hits, "inner")
+
+	clearInner()
+	hits = nil
+	require.NoError(t, CopyDir(src, filepath.Join(t.TempDir(), "outer")))
+	assert.Contains(t, hits, "outer")
+	assert.NotContains(t, hits, "inner")
+
+	clearOuter()
+	hits = nil
+	require.NoError(t, CopyDir(src, filepath.Join(t.TempDir(), "none")))
+	assert.Empty(t, hits)
+}
+
+func TestSetCopyDirWalkHookForTestEarlierCleanupDoesNotClobberLater(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	require.NoError(t, os.MkdirAll(src, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "keep.txt"), []byte("keep"), 0o644))
+
+	var hits []string
+	clearFirst := SetCopyDirWalkHookForTest(func(string, fs.DirEntry) { hits = append(hits, "first") })
+	clearSecond := SetCopyDirWalkHookForTest(func(string, fs.DirEntry) { hits = append(hits, "second") })
+	t.Cleanup(func() { copyDirTestHook.Store(nil) })
+
+	clearFirst()
+	require.NoError(t, CopyDir(src, filepath.Join(t.TempDir(), "dst")))
+	assert.NotContains(t, hits, "first")
+	assert.Contains(t, hits, "second")
+
+	clearSecond()
+}
+
 func TestCopyPublishableManuscriptDirFiltersSymlinks(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "src")
 	dst := filepath.Join(t.TempDir(), "dst")
