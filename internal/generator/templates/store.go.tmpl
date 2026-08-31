@@ -9,7 +9,9 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -1047,6 +1049,25 @@ func isSQLiteBusy(err error) bool {
 		strings.Contains(msg, "database table is locked")
 }
 
+// A later list-shaped write must not shrink a richer cached blob. First
+// write is incoming as-is. Callers apply the result to both the generic
+// resources blob and the typed-table projection.
+func (s *Store) mergeIncomingResourceData(tx *sql.Tx, resourceType, id string, incoming json.RawMessage) json.RawMessage {
+	var existing string
+	err := tx.QueryRow(
+		`SELECT data FROM resources WHERE resource_type = ? AND id = ?`,
+		resourceType, id,
+	).Scan(&existing)
+	if err != nil || existing == "" {
+		return incoming
+	}
+	merged, ok := mergeKeepRicherJSON(resourceType, json.RawMessage(existing), incoming)
+	if !ok {
+		return incoming
+	}
+	return merged
+}
+
 func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, data json.RawMessage) error {
 	_, err := tx.Exec(
 		`INSERT INTO resources (id, resource_type, data, synced_at, updated_at)
@@ -1086,7 +1107,7 @@ func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
 	}
 	defer tx.Rollback()
 
-	if err := s.upsertGenericResourceTx(tx, resourceType, id, data); err != nil {
+	if err := s.upsertGenericResourceTx(tx, resourceType, id, s.mergeIncomingResourceData(tx, resourceType, id, data)); err != nil {
 		return err
 	}
 
@@ -1890,7 +1911,7 @@ func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 		return fmt.Errorf("unmarshaling {{.Name}}: %w", err)
 	}
 
-	id := ExtractResourceID("{{.Resource}}", obj)
+	id := ResolveStorageID("{{.Resource}}", obj)
 	if id == "" {
 		return fmt.Errorf("missing id for {{.Name}}")
 	}
@@ -1903,6 +1924,11 @@ func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 		return err
 	}
 	defer tx.Rollback()
+
+	data = s.mergeIncomingResourceData(tx, "{{.Resource}}", storageID, data)
+	if merged, err := DecodeJSONObject(data); err == nil {
+		obj = merged
+	}
 
 	if err := s.upsertGenericResourceTx(tx, "{{.Resource}}", storageID, data); err != nil {
 		return err
@@ -1929,6 +1955,17 @@ func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 var resourceIDFieldOverrides = map[string]string{
 {{- range resourceIDFieldOverrideEntries .SyncableResources .DependentSyncResources}}
 	{{printf "%q" .Name}}: {{printf "%q" .Value}},
+{{- end}}
+}
+
+// Only typed resources with no identity field may be stored under a
+// parameter fingerprint. Unlisted resources still increment extractFailures
+// when an item has no usable id.
+var parameterKeyedResources = map[string]bool{
+{{- range .Tables}}
+{{- if .ParameterKeyed}}
+	{{printf "%q" .Resource}}: true,
+{{- end}}
 {{- end}}
 }
 
@@ -1987,6 +2024,488 @@ func ExtractResourceID(resourceType string, obj map[string]any) string {
 	return mapKeyIDFallback(obj)
 }
 
+// Writer identity prefers a real resource id. A parameter-shaped payload
+// with no identity-candidate keys is fingerprinted from top-level scalars
+// so the row can be stored without inventing a field. Unwrap and sync
+// extractID must keep using ExtractResourceID so a fingerprint is never
+// mistaken for an entity id.
+//
+// An identity-shaped key whose value was refused (timestamp, zero, empty)
+// still returns "" — fingerprinting those would hide a rejected entity id.
+func ResolveStorageID(resourceType string, obj map[string]any) string {
+	if id := ExtractResourceID(resourceType, obj); id != "" {
+		return id
+	}
+	if !parameterKeyedResources[resourceType] {
+		return ""
+	}
+	if identityKeyPresent(resourceType, obj) {
+		return ""
+	}
+	return parameterSnapshotID(obj)
+}
+
+func identityKeyPresent(resourceType string, obj map[string]any) bool {
+	if obj == nil {
+		return false
+	}
+	if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
+		if _, found := lookupRawFieldValue(obj, override); found {
+			return true
+		}
+	}
+	for _, key := range genericIDFieldFallbacks {
+		if _, found := lookupRawFieldValue(obj, key); found {
+			return true
+		}
+	}
+	if suffixIdentityKeyPresent(resourceType, obj) {
+		return true
+	}
+	for _, key := range genericDescriptiveIDFieldFallbacks {
+		if _, found := lookupRawFieldValue(obj, key); found {
+			return true
+		}
+	}
+	if _, found := obj[MapKeyIDField]; found {
+		return true
+	}
+	return false
+}
+
+func suffixIdentityKeyPresent(resourceType string, obj map[string]any) bool {
+	for _, base := range resourceIDBaseNames(resourceType) {
+		for _, suffix := range []string{"_id", "_code", "_key", "_slug"} {
+			if _, found := lookupRawFieldValue(obj, base+suffix); found {
+				return true
+			}
+		}
+		camelBase := lowerCamelResourceIDBase(base)
+		for _, suffix := range []string{"Id", "Code", "Key", "Slug"} {
+			if _, found := lookupRawFieldValue(obj, camelBase+suffix); found {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Id-less rows key on a hash of top-level scalars (lat/lon, timezone)
+// and omit nested blocks so a later fetch of the same parameters updates
+// the same row. Volatile telemetry keys (*_ms, *_at, timestamp,
+// generationtime*) stay out of the key. No stable scalars means the
+// whole payload is hashed so the row can still be stored.
+func parameterSnapshotID(obj map[string]any) string {
+	if len(obj) == 0 {
+		return ""
+	}
+	fields := parameterFingerprintFields(obj)
+	var payload any
+	if len(fields) > 0 {
+		payload = fields
+	} else {
+		payload = obj
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil || len(raw) == 0 || string(raw) == "null" || string(raw) == "{}" {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return "pp:params:" + hex.EncodeToString(sum[:16])
+}
+
+func parameterFingerprintFields(obj map[string]any) map[string]any {
+	out := make(map[string]any, len(obj))
+	for key, value := range obj {
+		if isVolatileParameterKey(key) {
+			continue
+		}
+		if scalar, ok := fingerprintScalar(value); ok {
+			out[key] = scalar
+		}
+	}
+	return out
+}
+
+func isVolatileParameterKey(key string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	switch {
+	case strings.HasSuffix(k, "_ms"), strings.HasSuffix(k, "_at"):
+		return true
+	case k == "timestamp", k == "generated", k == "generation_time", k == "generationtime":
+		return true
+	default:
+		return strings.HasPrefix(k, "generationtime")
+	}
+}
+
+func fingerprintScalar(value any) (any, bool) {
+	switch t := value.(type) {
+	case nil:
+		return nil, false
+	case string:
+		return t, t != ""
+	case bool:
+		return t, true
+	case json.Number:
+		return t, t.String() != ""
+	case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return t, true
+	default:
+		return nil, false
+	}
+}
+
+// A thinner list-shaped payload cannot destroy richer detail already
+// stored for the same id.
+//
+// Policy (do-not-shrink / keep-richer):
+//   - First write (no existing) stores incoming unchanged.
+//   - Object keys present only on existing are kept.
+//   - Objects merge recursively; incoming keys go through the same policy
+//     rather than wholesale replacement.
+//   - A container (object/array) is never replaced by a scalar or null.
+//   - An incoming empty array does not replace a non-empty existing array
+//     (list omitted the collection vs sent a new one).
+//   - Object arrays match by the same identity stack as ExtractResourceID
+//     (configured / dotted override, generic id, resource-scoped suffix)
+//     plus item-local suffix keys (currency_code, accountId) and sku.
+//     Own-identity suffixes (_code/_slug/_key) win over shared foreign
+//     keys so sibling rows that share account_id still pair on
+//     currency_code. A lone accountId remains identity when it is the
+//     only identity-shaped field. Identity map keys include the field
+//     that produced them so id:"USD" and currency_code:"USD" cannot
+//     share a slot. Display name is not an array identity. Result
+//     order and length follow incoming so a reorder or middle delete
+//     cannot join unrelated objects or keep leftover old entries.
+//   - Arrays without identity keys, and scalar arrays, take incoming
+//     wholesale. Index-wise merge would pair unrelated items.
+//   - Incoming scalars replace existing scalars.
+func mergeKeepRicherJSON(resourceType string, existing, incoming json.RawMessage) (json.RawMessage, bool) {
+	if len(existing) == 0 {
+		return incoming, len(incoming) > 0
+	}
+	if len(incoming) == 0 {
+		return existing, true
+	}
+	existingVal, err := decodeJSONValue(existing)
+	if err != nil {
+		return incoming, len(incoming) > 0
+	}
+	incomingVal, err := decodeJSONValue(incoming)
+	if err != nil {
+		return existing, true
+	}
+	merged, err := json.Marshal(mergeKeepRicherValue(resourceType, existingVal, incomingVal))
+	if err != nil {
+		return incoming, len(incoming) > 0
+	}
+	return merged, true
+}
+
+func decodeJSONValue(data json.RawMessage) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var value any
+	if err := dec.Decode(&value); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func mergeKeepRicherValue(resourceType string, existing, incoming any) any {
+	if incoming == nil {
+		if existing != nil {
+			return existing
+		}
+		return incoming
+	}
+	existingObj, existingIsObj := existing.(map[string]any)
+	incomingObj, incomingIsObj := incoming.(map[string]any)
+	if existingIsObj && incomingIsObj {
+		return mergeKeepRicherObject(resourceType, existingObj, incomingObj)
+	}
+	existingArr, existingIsArr := existing.([]any)
+	incomingArr, incomingIsArr := incoming.([]any)
+	if existingIsArr && incomingIsArr {
+		return mergeKeepRicherArray(resourceType, existingArr, incomingArr)
+	}
+	if isJSONContainer(existing) && !isJSONContainer(incoming) {
+		return existing
+	}
+	if isJSONEmpty(incoming) && !isJSONEmpty(existing) {
+		return existing
+	}
+	return incoming
+}
+
+func mergeKeepRicherObject(resourceType string, existing, incoming map[string]any) map[string]any {
+	out := make(map[string]any, len(existing)+len(incoming))
+	for key, value := range existing {
+		out[key] = value
+	}
+	for key, incomingVal := range incoming {
+		if existingVal, ok := out[key]; ok {
+			out[key] = mergeKeepRicherValue(resourceType, existingVal, incomingVal)
+			continue
+		}
+		out[key] = incomingVal
+	}
+	return out
+}
+
+func mergeKeepRicherArray(resourceType string, existing, incoming []any) []any {
+	if len(incoming) == 0 && len(existing) > 0 {
+		return existing
+	}
+	existingByID := indexObjectArrayByIdentity(resourceType, existing)
+	if len(existingByID) == 0 {
+		return incoming
+	}
+	out := make([]any, len(incoming))
+	for i, item := range incoming {
+		incomingObj, ok := item.(map[string]any)
+		if !ok {
+			out[i] = item
+			continue
+		}
+		id := arrayItemIdentity(resourceType, incomingObj)
+		existingObj, ok := existingByID[id]
+		if id == "" || !ok {
+			out[i] = item
+			continue
+		}
+		delete(existingByID, id)
+		out[i] = mergeKeepRicherObject(resourceType, existingObj, incomingObj)
+	}
+	return out
+}
+
+func indexObjectArrayByIdentity(resourceType string, items []any) map[string]map[string]any {
+	out := make(map[string]map[string]any)
+	for _, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := arrayItemIdentity(resourceType, obj)
+		if id == "" {
+			continue
+		}
+		if _, exists := out[id]; exists {
+			continue
+		}
+		out[id] = obj
+	}
+	return out
+}
+
+func arrayItemIdentity(resourceType string, obj map[string]any) string {
+	if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
+		if s := canonicalIDFromKey(obj, override); s != "" {
+			return qualifyArrayItemIdentity(override, s)
+		}
+	}
+	for _, key := range genericIDFieldFallbacks {
+		if s := canonicalIDFromKey(obj, key); s != "" {
+			return qualifyArrayItemIdentity(canonicalGenericIDField(key), s)
+		}
+	}
+	// Item-local own identity wins over the parent resource's suffix.
+	// mergeKeepRicherJSON threads the parent type through nested arrays,
+	// so suffixIDFieldFallback("accounts") would treat a copied
+	// account_id as every child's id and collide sibling rates.
+	if field, s := suffixIdentityFromItemKeys(obj); s != "" {
+		return qualifyArrayItemIdentity(field, s)
+	}
+	if field, s := suffixIDFieldAndName(resourceType, obj); s != "" {
+		return qualifyArrayItemIdentity(field, s)
+	}
+	if s := canonicalIDFromKey(obj, "sku"); s != "" {
+		return qualifyArrayItemIdentity("sku", s)
+	}
+	for _, key := range []string{"slug", "key", "code"} {
+		if s := canonicalIDFromKey(obj, key); s != "" {
+			return qualifyArrayItemIdentity(key, s)
+		}
+	}
+	return ""
+}
+
+const arrayItemIdentitySep = "\x1f"
+
+func qualifyArrayItemIdentity(field, value string) string {
+	if field == "" || value == "" {
+		return ""
+	}
+	return field + arrayItemIdentitySep + value
+}
+
+// lookupRawFieldValue("id") finds Id/id_ via fieldKeySpellings but not
+// _id or ID, so those probes would otherwise mint distinct map keys.
+func canonicalGenericIDField(probe string) string {
+	switch strings.TrimSpace(probe) {
+	case "id", "ID", "_id", "id_", "Id":
+		return "id"
+	default:
+		return probe
+	}
+}
+
+func suffixIdentityFromItemKeys(obj map[string]any) (string, string) {
+	if obj == nil {
+		return "", ""
+	}
+	keys := make([]string, 0, len(obj))
+	for key := range obj {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var ownField, own, localField, localID, sharedField, sharedID string
+	for _, key := range keys {
+		stem := identitySuffixStem(key)
+		if stem == "" || stem == "parent" {
+			continue
+		}
+		s := suffixIDFieldFallback(stem, obj)
+		if s == "" {
+			continue
+		}
+		field := canonicalArrayIdentityField(key)
+		switch itemKeyIdentityKind(key) {
+		case itemIdentOwn:
+			if own == "" {
+				ownField, own = field, s
+			}
+		case itemIdentLocalID:
+			if localID == "" {
+				localField, localID = field, s
+			}
+		case itemIdentSharedID:
+			if sharedID == "" {
+				sharedField, sharedID = field, s
+			}
+		}
+	}
+	if own != "" {
+		return ownField, own
+	}
+	if localID != "" {
+		return localField, localID
+	}
+	return sharedField, sharedID
+}
+
+func canonicalArrayIdentityField(key string) string {
+	k := strings.TrimSpace(key)
+	stem := identitySuffixStem(k)
+	if stem == "" {
+		return k
+	}
+	switch {
+	case strings.HasSuffix(k, "_id") || strings.HasSuffix(k, "Id") || strings.HasSuffix(k, "ID"):
+		return stem + "_id"
+	case strings.HasSuffix(k, "_code") || strings.HasSuffix(k, "Code"):
+		return stem + "_code"
+	case strings.HasSuffix(k, "_key") || strings.HasSuffix(k, "Key"):
+		return stem + "_key"
+	case strings.HasSuffix(k, "_slug") || strings.HasSuffix(k, "Slug"):
+		return stem + "_slug"
+	default:
+		return k
+	}
+}
+
+type itemIdentKind int
+
+const (
+	itemIdentNone itemIdentKind = iota
+	itemIdentOwn
+	itemIdentLocalID
+	itemIdentSharedID
+)
+
+func itemKeyIdentityKind(key string) itemIdentKind {
+	if itemKeyLooksLikeOwnIdentity(key) {
+		return itemIdentOwn
+	}
+	stem := identitySuffixStem(key)
+	if stem == "" {
+		return itemIdentNone
+	}
+	if sharedForeignKeyStem(stem) {
+		return itemIdentSharedID
+	}
+	return itemIdentLocalID
+}
+
+func itemKeyLooksLikeOwnIdentity(key string) bool {
+	k := strings.TrimSpace(key)
+	for _, suffix := range []string{"_code", "_key", "_slug"} {
+		if strings.HasSuffix(k, suffix) && len(k) > len(suffix) {
+			return true
+		}
+	}
+	for _, suffix := range []string{"Code", "Key", "Slug"} {
+		if strings.HasSuffix(k, suffix) && len(k) > len(suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func sharedForeignKeyStem(stem string) bool {
+	switch strings.ToLower(stem) {
+	case "parent", "account", "owner", "org", "organization", "user",
+		"customer", "workspace", "tenant", "team", "company", "member":
+		return true
+	default:
+		return false
+	}
+}
+
+func identitySuffixStem(key string) string {
+	k := strings.TrimSpace(key)
+	if k == "" {
+		return ""
+	}
+	for _, suffix := range []string{"_id", "_code", "_key", "_slug"} {
+		if strings.HasSuffix(k, suffix) && len(k) > len(suffix) {
+			return strings.TrimSuffix(k, suffix)
+		}
+	}
+	for _, suffix := range []string{"Id", "Code", "Key", "Slug"} {
+		if strings.HasSuffix(k, suffix) && len(k) > len(suffix) {
+			return strings.ToLower(k[:len(k)-len(suffix)])
+		}
+	}
+	return ""
+}
+
+func isJSONContainer(value any) bool {
+	switch value.(type) {
+	case map[string]any, []any:
+		return true
+	default:
+		return false
+	}
+}
+
+func isJSONEmpty(value any) bool {
+	switch t := value.(type) {
+	case nil:
+		return true
+	case string:
+		return t == ""
+	case map[string]any:
+		return len(t) == 0
+	case []any:
+		return len(t) == 0
+	default:
+		return false
+	}
+}
+
 // suffixIDFieldFallback resolves an id-less resource that keys on its own
 // "<name>_code" / "<name>_id" / "<name>_key" / "<name>_slug" field (e.g. the
 // "currencies" resource keying on "currency_code" — see #2327). It is scoped to
@@ -1994,20 +2513,27 @@ func ExtractResourceID(resourceType string, obj map[string]any) string {
 // promoted to the primary key, and it walks the same key spellings as
 // LookupFieldValue in a fixed suffix order so the chosen id is deterministic.
 func suffixIDFieldFallback(resourceType string, obj map[string]any) string {
+	_, value := suffixIDFieldAndName(resourceType, obj)
+	return value
+}
+
+func suffixIDFieldAndName(resourceType string, obj map[string]any) (string, string) {
 	for _, base := range resourceIDBaseNames(resourceType) {
 		for _, suffix := range []string{"_id", "_code", "_key", "_slug"} {
-			if s := canonicalScalarIDFromKey(obj, base+suffix); s != "" {
-				return s
+			key := base + suffix
+			if s := canonicalScalarIDFromKey(obj, key); s != "" {
+				return canonicalArrayIdentityField(key), s
 			}
 		}
 		camelBase := lowerCamelResourceIDBase(base)
 		for _, suffix := range []string{"Id", "Code", "Key", "Slug"} {
-			if s := canonicalScalarIDFromKey(obj, camelBase+suffix); s != "" {
-				return s
+			key := camelBase + suffix
+			if s := canonicalScalarIDFromKey(obj, key); s != "" {
+				return canonicalArrayIdentityField(key), s
 			}
 		}
 	}
-	return ""
+	return "", ""
 }
 
 func canonicalScalarIDFromKey(obj map[string]any, key string) string {
@@ -2243,11 +2769,18 @@ func (s *Store) UpsertBatchDetailed(resourceType string, items []json.RawMessage
 			}
 		}
 		if id == "" {
+			id = ResolveStorageID(resourceType, obj)
+		}
+		if id == "" {
 			skippedCount++
 			extractFailures++
 			continue
 		}
 		storageID := resourceStorageID(resourceType, id, obj)
+		item = s.mergeIncomingResourceData(tx, resourceType, storageID, item)
+		if merged, err := DecodeJSONObject(item); err == nil {
+			obj = merged
+		}
 
 		if err := s.upsertGenericResourceTx(tx, resourceType, storageID, item); err != nil {
 			// Return the running stored count rather than zero so callers
