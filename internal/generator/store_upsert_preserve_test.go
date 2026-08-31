@@ -71,8 +71,8 @@ func idlessAndDetailStoreSpec() *spec.APISpec {
 	return apiSpec
 }
 
-// TestGeneratedStoreKeepsIDLessAndRicherUpserts proves the emitted store
-// contract for parameter-shaped writes and keep-richer list/detail merges.
+// Emitted store must compile and honor id-less fingerprint writes plus
+// keep-richer list/detail merges, including identity-keyed array merge.
 func TestGeneratedStoreKeepsIDLessAndRicherUpserts(t *testing.T) {
 	t.Parallel()
 
@@ -102,6 +102,10 @@ func TestGeneratedStoreKeepsIDLessAndRicherUpserts(t *testing.T) {
 		"typed upsert must merge before projecting columns")
 	require.Contains(t, src, `item = s.mergeIncomingResourceData(tx, resourceType, storageID, item)`,
 		"batch upsert must merge before both generic and typed writes")
+	require.Contains(t, src, "func arrayItemIdentity(",
+		"object arrays must match by a stable id, not numeric index")
+	require.Contains(t, src, "func indexObjectArrayByIdentity(",
+		"cached array leftovers must be indexed by identity for keep-richer pairing")
 	require.NotContains(t, src, `id := ExtractResourceID("forecast", obj)`,
 		"typed forecast writer must not still key only on ExtractResourceID")
 
@@ -111,13 +115,14 @@ func TestGeneratedStoreKeepsIDLessAndRicherUpserts(t *testing.T) {
 	require.NoError(t, os.WriteFile(testPath, []byte(generatedIDLessRicherRuntimeTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/store",
-		"-run", "Test(ResolveStorageID_KeepsEntityIDsAndRefusesUnusable|Upsert_PreservesRicherCachedDetail|MergeKeepRicherJSON|UpsertForecast_StoresIDLessPayload|UpsertForecast_BatchSameLocation|UpsertMutations_ListDoesNotShrinkDetail)",
+		"-run", "Test(ResolveStorageID_KeepsEntityIDsAndRefusesUnusable|Upsert_PreservesRicherCachedDetail|MergeKeepRicherJSON|UpsertForecast_StoresIDLessPayload|UpsertForecast_BatchSameLocation|UpsertMutations_ListDoesNotShrinkDetail|UpsertMutations_ArrayReorderDoesNotCorrupt)",
 		"-count=1")
 }
 
 const generatedIDLessRicherRuntimeTest = "package store\n\n" +
 	"import (\n" +
 	"\t\"encoding/json\"\n" +
+	"\t\"fmt\"\n" +
 	"\t\"path/filepath\"\n" +
 	"\t\"strings\"\n" +
 	"\t\"testing\"\n" +
@@ -223,5 +228,49 @@ const generatedIDLessRicherRuntimeTest = "package store\n\n" +
 	"\t}\n" +
 	"\tif !strings.Contains(typedData, \"rows\") {\n" +
 	"\t\tt.Fatalf(\"typed table lost rows, got %s\", typedData)\n" +
+	"\t}\n" +
+	"}\n\n" +
+	"func TestUpsertMutations_ArrayReorderDoesNotCorrupt(t *testing.T) {\n" +
+	"\ts, err := Open(filepath.Join(t.TempDir(), \"data.db\"))\n" +
+	"\tif err != nil {\n" +
+	"\t\tt.Fatalf(\"open: %v\", err)\n" +
+	"\t}\n" +
+	"\tdefer s.Close()\n\n" +
+	"\tdetail := json.RawMessage(`{\"id\":\"mut-2\",\"name\":\"Invoice\",\"rows\":[{\"id\":\"a\",\"vat\":21,\"notes\":\"keep\"},{\"id\":\"b\",\"vat\":9},{\"id\":\"c\",\"vat\":0}]}`)\n" +
+	"\tif err := s.UpsertMutations(detail); err != nil {\n" +
+	"\t\tt.Fatalf(\"detail UpsertMutations: %v\", err)\n" +
+	"\t}\n" +
+	"\treordered := json.RawMessage(`{\"id\":\"mut-2\",\"rows\":[{\"id\":\"c\",\"vat\":0},{\"id\":\"a\",\"vat\":22}]}`)\n" +
+	"\tif err := s.UpsertMutations(reordered); err != nil {\n" +
+	"\t\tt.Fatalf(\"reordered UpsertMutations: %v\", err)\n" +
+	"\t}\n" +
+	"\tgot, err := s.Get(\"mutations\", \"mut-2\")\n" +
+	"\tif err != nil {\n" +
+	"\t\tt.Fatalf(\"get: %v\", err)\n" +
+	"\t}\n" +
+	"\tvar obj map[string]any\n" +
+	"\tif err := json.Unmarshal(got, &obj); err != nil {\n" +
+	"\t\tt.Fatalf(\"unmarshal: %v\", err)\n" +
+	"\t}\n" +
+	"\trows, _ := obj[\"rows\"].([]any)\n" +
+	"\tif len(rows) != 2 {\n" +
+	"\t\tt.Fatalf(\"array length must follow incoming, got %d stored %s\", len(rows), got)\n" +
+	"\t}\n" +
+	"\tfirst, _ := rows[0].(map[string]any)\n" +
+	"\tsecond, _ := rows[1].(map[string]any)\n" +
+	"\tif fmt.Sprint(first[\"id\"]) != \"c\" || fmt.Sprint(second[\"id\"]) != \"a\" {\n" +
+	"\t\tt.Fatalf(\"array order must follow incoming, stored %s\", got)\n" +
+	"\t}\n" +
+	"\tif fmt.Sprint(second[\"vat\"]) != \"22\" {\n" +
+	"\t\tt.Fatalf(\"incoming scalar on matched object should win, stored %s\", got)\n" +
+	"\t}\n" +
+	"\tif fmt.Sprint(second[\"notes\"]) != \"keep\" {\n" +
+	"\t\tt.Fatalf(\"keep-richer lost notes on id match, stored %s\", got)\n" +
+	"\t}\n" +
+	"\tfor _, row := range rows {\n" +
+	"\t\tobj, _ := row.(map[string]any)\n" +
+	"\t\tif fmt.Sprint(obj[\"id\"]) == \"b\" {\n" +
+	"\t\t\tt.Fatalf(\"dropped middle entry must not remain, stored %s\", got)\n" +
+	"\t\t}\n" +
 	"\t}\n" +
 	"}\n"

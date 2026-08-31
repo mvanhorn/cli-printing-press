@@ -521,6 +521,66 @@ func TestMergeKeepRicherJSON(t *testing.T) {
 	if !ok || !strings.Contains(string(first), `"only"`) {
 		t.Fatalf("first write should store incoming, ok=%v got %s", ok, first)
 	}
+
+	// Reorder + drop the middle id-bearing object: match by id, keep
+	// richer fields on the surviving pair, follow incoming order/length.
+	reordered, ok := mergeKeepRicherJSON(
+		json.RawMessage(`{"id":"1","rows":[{"id":"a","vat":21,"notes":"keep"},{"id":"b","vat":9},{"id":"c","vat":0}]}`),
+		json.RawMessage(`{"id":"1","rows":[{"id":"c","vat":0},{"id":"a","vat":22}]}`),
+	)
+	if !ok {
+		t.Fatal("identity-keyed array merge returned !ok")
+	}
+	var reorderObj map[string]any
+	if err := json.Unmarshal(reordered, &reorderObj); err != nil {
+		t.Fatalf("unmarshal reorder merge: %v", err)
+	}
+	rows, _ := reorderObj["rows"].([]any)
+	if len(rows) != 2 {
+		t.Fatalf("array length must follow incoming, got %d stored %s", len(rows), reordered)
+	}
+	firstRow, _ := rows[0].(map[string]any)
+	secondRow, _ := rows[1].(map[string]any)
+	if fmt.Sprint(firstRow["id"]) != "c" || fmt.Sprint(secondRow["id"]) != "a" {
+		t.Fatalf("array order must follow incoming, stored %s", reordered)
+	}
+	if fmt.Sprint(secondRow["vat"]) != "22" {
+		t.Fatalf("incoming scalar on matched object should win, stored %s", reordered)
+	}
+	if fmt.Sprint(secondRow["notes"]) != "keep" {
+		t.Fatalf("keep-richer must preserve unmatched fields on the id match, stored %s", reordered)
+	}
+	for _, row := range rows {
+		obj, _ := row.(map[string]any)
+		if fmt.Sprint(obj["id"]) == "b" {
+			t.Fatalf("dropped middle entry must not be kept, stored %s", reordered)
+		}
+	}
+
+	// No identity keys: incoming collection is authoritative. Index merge
+	// would attach the first cached extra field onto the first incoming item.
+	idless, ok := mergeKeepRicherJSON(
+		json.RawMessage(`{"id":"1","rows":[{"name":"x","extra":1},{"name":"y","extra":2}]}`),
+		json.RawMessage(`{"id":"1","rows":[{"name":"y"},{"name":"x"}]}`),
+	)
+	if !ok {
+		t.Fatal("id-less array merge returned !ok")
+	}
+	var idlessObj map[string]any
+	if err := json.Unmarshal(idless, &idlessObj); err != nil {
+		t.Fatalf("unmarshal id-less merge: %v", err)
+	}
+	idlessRows, _ := idlessObj["rows"].([]any)
+	if len(idlessRows) != 2 {
+		t.Fatalf("id-less array length must follow incoming, stored %s", idless)
+	}
+	firstIDLess, _ := idlessRows[0].(map[string]any)
+	if firstIDLess["name"] != "y" {
+		t.Fatalf("id-less array order must follow incoming, stored %s", idless)
+	}
+	if _, ok := firstIDLess["extra"]; ok {
+		t.Fatalf("id-less arrays must not merge by index, stored %s", idless)
+	}
 }
 
 func TestLookupFieldValue_DottedPathAndTrailingUnderscore(t *testing.T) {

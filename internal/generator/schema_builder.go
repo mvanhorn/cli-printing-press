@@ -28,9 +28,8 @@ type TableDef struct {
 	JSONOnlyFallback    bool
 	OriginalColumnCount int
 
-	// ParameterKeyed is set when the resource's typed responses have no
-	// identity field. Writers then store rows under a request-equivalent
-	// fingerprint instead of failing ExtractResourceID.
+	// Fingerprint storage is only for typed responses with no identity
+	// field. Unflagged resources still fail ExtractResourceID as today.
 	ParameterKeyed bool
 }
 
