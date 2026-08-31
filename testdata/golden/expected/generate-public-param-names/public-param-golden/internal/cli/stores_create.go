@@ -43,7 +43,7 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 				return cmd.Help()
 			}
 			if !stdinBody {
-				if !(cmd.Flags().Changed("store-code") || cmd.Flags().Changed("code")) && !flags.dryRun {
+				if !(cmd.Flags().Changed("store-code") || cmd.Flags().Changed("code")) && bodyStoreCode == "" && !flags.dryRun {
 					return fmt.Errorf("required flag \"%s\" not set", "store-code")
 				}
 			}
