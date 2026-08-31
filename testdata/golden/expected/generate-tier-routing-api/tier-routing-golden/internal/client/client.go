@@ -717,6 +717,8 @@ func (c *Client) writeCacheWithHeaders(path string, params map[string]string, he
 	resourceDir := c.cacheResourceDir(path)
 	_ = os.MkdirAll(resourceDir, 0o700)
 	cacheFile := filepath.Join(resourceDir, c.cacheKeyFor(http.MethodGet, path, params, headers, nil)+".json")
+	// Restrict a leftover 0644 file before rewriting so new contents are not world-readable.
+	ensureCachePerms(resourceDir, cacheFile)
 	_ = os.WriteFile(cacheFile, []byte(data), 0o600)
 	// WriteFile's perm applies only on create; tighten a leftover 0644 rewrite.
 	ensureCachePerms(resourceDir, cacheFile)

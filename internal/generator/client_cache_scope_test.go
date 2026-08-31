@@ -63,8 +63,16 @@ func TestGeneratedCacheWritesUsePrivatePermissions(t *testing.T) {
 		"rewriting an existing cache file must chmod 0600; WriteFile ignores perm on an extant file")
 	require.Contains(t, clientFuncBody(t, client, "func (c *Client) readCacheWithHeaders("), "ensureCachePerms(",
 		"a cache-hit read of a leftover 0644 file must tighten perms before returning content")
-	require.Contains(t, clientFuncBody(t, client, "func (c *Client) writeCacheWithHeaders("), "ensureCachePerms(",
-		"the write path must share the same cache permission contract as the hit-read path")
+	writeBody := clientFuncBody(t, client, "func (c *Client) writeCacheWithHeaders(")
+	preChmod := strings.Index(writeBody, "ensureCachePerms(")
+	writeCall := strings.Index(writeBody, "os.WriteFile(cacheFile")
+	postChmod := strings.LastIndex(writeBody, "ensureCachePerms(")
+	require.NotEqual(t, -1, preChmod, "write path must call ensureCachePerms")
+	require.NotEqual(t, -1, writeCall, "write path must WriteFile the cache file")
+	require.Less(t, preChmod, writeCall,
+		"restrict a leftover 0644 file before rewriting so new contents are not world-readable")
+	require.Greater(t, postChmod, writeCall,
+		"WriteFile perm applies only on create; chmod again after rewrite")
 	require.NotContains(t, client, "os.MkdirAll(resourceDir, 0o755)")
 	require.NotContains(t, client, "os.WriteFile(cacheFile, []byte(data), 0o644)")
 
