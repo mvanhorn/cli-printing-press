@@ -112,6 +112,8 @@ func TestGeneratedStoreKeepsIDLessAndRicherUpserts(t *testing.T) {
 		"line items keyed by sku must keep-richer-merge")
 	require.Contains(t, src, "func indexObjectArrayByIdentity(",
 		"cached array leftovers must be indexed by identity for keep-richer pairing")
+	require.Contains(t, src, "func qualifyArrayItemIdentity(",
+		"array identity keys must include the field that produced them")
 	require.NotContains(t, src, `id := ExtractResourceID("forecast", obj)`,
 		"typed forecast writer must not still key only on ExtractResourceID")
 
@@ -121,7 +123,7 @@ func TestGeneratedStoreKeepsIDLessAndRicherUpserts(t *testing.T) {
 	require.NoError(t, os.WriteFile(testPath, []byte(generatedIDLessRicherRuntimeTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/store",
-		"-run", "Test(ResolveStorageID_KeepsEntityIDsAndRefusesUnusable|Upsert_PreservesRicherCachedDetail|MergeKeepRicherJSON|UpsertForecast_StoresIDLessPayload|UpsertForecast_BatchSameLocation|UpsertMutations_ListDoesNotShrinkDetail|UpsertMutations_ArrayReorderDoesNotCorrupt|UpsertMutations_SuffixArrayIdentityKeepsDetail|UpsertMutations_SharedFKDoesNotStealSuffixIdentity)",
+		"-run", "Test(ResolveStorageID_KeepsEntityIDsAndRefusesUnusable|Upsert_PreservesRicherCachedDetail|MergeKeepRicherJSON|UpsertForecast_StoresIDLessPayload|UpsertForecast_BatchSameLocation|UpsertMutations_ListDoesNotShrinkDetail|UpsertMutations_ArrayReorderDoesNotCorrupt|UpsertMutations_SuffixArrayIdentityKeepsDetail|UpsertMutations_SharedFKDoesNotStealSuffixIdentity|UpsertMutations_CrossFieldIdentitiesDoNotCollide)",
 		"-count=1")
 }
 
@@ -350,5 +352,52 @@ const generatedIDLessRicherRuntimeTest = "package store\n\n" +
 	"\t}\n" +
 	"\tif fmt.Sprint(second[\"notes\"]) != \"usd\" {\n" +
 	"\t\tt.Fatalf(\"USD row lost its notes, stored %s\", got)\n" +
+	"\t}\n" +
+	"}\n\n" +
+	"func TestUpsertMutations_CrossFieldIdentitiesDoNotCollide(t *testing.T) {\n" +
+	"\ts, err := Open(filepath.Join(t.TempDir(), \"data.db\"))\n" +
+	"\tif err != nil {\n" +
+	"\t\tt.Fatalf(\"open: %v\", err)\n" +
+	"\t}\n" +
+	"\tdefer s.Close()\n\n" +
+	"\tdetail := json.RawMessage(`{\"id\":\"mut-5\",\"rows\":[{\"id\":\"USD\",\"notes\":\"from-id\"},{\"currency_code\":\"USD\",\"notes\":\"from-code\"}]}`)\n" +
+	"\tif err := s.UpsertMutations(detail); err != nil {\n" +
+	"\t\tt.Fatalf(\"detail: %v\", err)\n" +
+	"\t}\n" +
+	"\tlist := json.RawMessage(`{\"id\":\"mut-5\",\"rows\":[{\"currency_code\":\"USD\"},{\"id\":\"USD\"}]}`)\n" +
+	"\tif err := s.UpsertMutations(list); err != nil {\n" +
+	"\t\tt.Fatalf(\"list: %v\", err)\n" +
+	"\t}\n" +
+	"\tgot, err := s.Get(\"mutations\", \"mut-5\")\n" +
+	"\tif err != nil {\n" +
+	"\t\tt.Fatalf(\"get: %v\", err)\n" +
+	"\t}\n" +
+	"\tvar obj map[string]any\n" +
+	"\tif err := json.Unmarshal(got, &obj); err != nil {\n" +
+	"\t\tt.Fatalf(\"unmarshal: %v\", err)\n" +
+	"\t}\n" +
+	"\trows, _ := obj[\"rows\"].([]any)\n" +
+	"\tif len(rows) != 2 {\n" +
+	"\t\tt.Fatalf(\"length must follow incoming, got %d stored %s\", len(rows), got)\n" +
+	"\t}\n" +
+	"\tfirst, _ := rows[0].(map[string]any)\n" +
+	"\tsecond, _ := rows[1].(map[string]any)\n" +
+	"\tif fmt.Sprint(first[\"currency_code\"]) != \"USD\" {\n" +
+	"\t\tt.Fatalf(\"first row must stay the currency_code item, stored %s\", got)\n" +
+	"\t}\n" +
+	"\tif _, hasID := first[\"id\"]; hasID {\n" +
+	"\t\tt.Fatalf(\"currency_code row must not absorb the id sibling, stored %s\", got)\n" +
+	"\t}\n" +
+	"\tif fmt.Sprint(first[\"notes\"]) != \"from-code\" {\n" +
+	"\t\tt.Fatalf(\"currency_code row lost its notes, stored %s\", got)\n" +
+	"\t}\n" +
+	"\tif fmt.Sprint(second[\"id\"]) != \"USD\" {\n" +
+	"\t\tt.Fatalf(\"second row must stay the id item, stored %s\", got)\n" +
+	"\t}\n" +
+	"\tif _, hasCode := second[\"currency_code\"]; hasCode {\n" +
+	"\t\tt.Fatalf(\"id row must not absorb the currency_code sibling, stored %s\", got)\n" +
+	"\t}\n" +
+	"\tif fmt.Sprint(second[\"notes\"]) != \"from-id\" {\n" +
+	"\t\tt.Fatalf(\"id row lost its notes, stored %s\", got)\n" +
 	"\t}\n" +
 	"}\n"

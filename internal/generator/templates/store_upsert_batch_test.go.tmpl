@@ -661,6 +661,44 @@ func TestMergeKeepRicherJSON(t *testing.T) {
 		t.Fatalf("USD row must keep its own notes, stored %s", sharedFK)
 	}
 
+	// Same scalar on different identity fields must not share a map key.
+	crossField, ok := mergeKeepRicherJSON(
+		"mutations",
+		json.RawMessage(`{"id":"1","rows":[{"id":"USD","notes":"from-id"},{"currency_code":"USD","notes":"from-code"}]}`),
+		json.RawMessage(`{"id":"1","rows":[{"currency_code":"USD"},{"id":"USD"}]}`),
+	)
+	if !ok {
+		t.Fatal("cross-field identity merge returned !ok")
+	}
+	var crossObj map[string]any
+	if err := json.Unmarshal(crossField, &crossObj); err != nil {
+		t.Fatalf("unmarshal cross-field merge: %v", err)
+	}
+	crossRows, _ := crossObj["rows"].([]any)
+	if len(crossRows) != 2 {
+		t.Fatalf("cross-field array length must follow incoming, stored %s", crossField)
+	}
+	crossFirst, _ := crossRows[0].(map[string]any)
+	crossSecond, _ := crossRows[1].(map[string]any)
+	if fmt.Sprint(crossFirst["currency_code"]) != "USD" {
+		t.Fatalf("first row must stay the currency_code item, stored %s", crossField)
+	}
+	if _, hasID := crossFirst["id"]; hasID {
+		t.Fatalf("currency_code row must not absorb the id sibling, stored %s", crossField)
+	}
+	if fmt.Sprint(crossFirst["notes"]) != "from-code" {
+		t.Fatalf("currency_code row must keep its own notes, stored %s", crossField)
+	}
+	if fmt.Sprint(crossSecond["id"]) != "USD" {
+		t.Fatalf("second row must stay the id item, stored %s", crossField)
+	}
+	if _, hasCode := crossSecond["currency_code"]; hasCode {
+		t.Fatalf("id row must not absorb the currency_code sibling, stored %s", crossField)
+	}
+	if fmt.Sprint(crossSecond["notes"]) != "from-id" {
+		t.Fatalf("id row must keep its own notes, stored %s", crossField)
+	}
+
 	prevOverride, hadOverride := resourceIDFieldOverrides["widgets"]
 	resourceIDFieldOverrides["widgets"] = "entityInfo.entityId"
 	defer func() {
