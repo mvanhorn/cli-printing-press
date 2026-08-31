@@ -165,7 +165,7 @@ func canonicalRender(fset *token.FileSet, node ast.Node) (string, error) {
 func stripAddCommandStmts(stmts []ast.Stmt) []ast.Stmt {
 	out := make([]ast.Stmt, 0, len(stmts))
 	for _, stmt := range stmts {
-		if isAddCommandASTStmt(stmt) || isNovelCommandsHookASTStmt(stmt) || isClientHooksASTStmt(stmt) {
+		if isAddCommandASTStmt(stmt) || isNovelCommandsHookASTStmt(stmt) || isPreferImplementedNovelCommandsASTStmt(stmt) || isClientHooksASTStmt(stmt) {
 			continue
 		}
 		out = append(out, stmt)
@@ -198,6 +198,15 @@ func isNovelCommandsHookASTStmt(stmt ast.Stmt) bool {
 	}
 	call, ok := expr.X.(*ast.CallExpr)
 	return ok && isIdent(call.Fun, "hook")
+}
+
+func isPreferImplementedNovelCommandsASTStmt(stmt ast.Stmt) bool {
+	expr, ok := stmt.(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := expr.X.(*ast.CallExpr)
+	return ok && isIdent(call.Fun, "preferImplementedNovelCommands")
 }
 
 // isClientHooksASTStmt recognizes the generated client-extension loop. It is

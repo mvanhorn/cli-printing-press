@@ -3627,6 +3627,8 @@ func newNovelXxxCmd(flags *rootFlags) *cobra.Command {
 // Do not rely on parent-local flags like --org or --project being accepted by
 // child commands unless the parent registered them with PersistentFlags().
 // Single-word Commands use the same hook: addNovelCommandIfAbsent(root, newNovelXxxCmd(flags)).
+// A preserved hook that still uses root.AddCommand for the same name also
+// wins: after hooks run, generated TODO scaffolds with a real sibling are dropped.
 ```
 
 **RunE skeleton — API-call shape** (live data via a sibling typed client):

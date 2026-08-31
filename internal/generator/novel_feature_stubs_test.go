@@ -518,6 +518,92 @@ func TestNovelHookCollisionHasSingleReachableCommand(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestNovelHookCollisionHasSingleReachableCommand")
 }
 
+func TestNovelHookDirectAddCommandReplacesGeneratedScaffold(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("novel-hook-addcommand")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{{
+		Name:        "Call actor",
+		Command:     "call",
+		Description: "Call an actor.",
+		Example:     "novel-hook-addcommand-pp-cli call",
+	}}
+	require.NoError(t, gen.Generate())
+
+	root := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	assert.Contains(t, root, "preferImplementedNovelCommands(rootCmd)")
+	hookIdx := strings.Index(root, "for _, hook := range novelCommandHooks {")
+	preferIdx := strings.Index(root, "preferImplementedNovelCommands(rootCmd)")
+	require.Greater(t, hookIdx, -1)
+	require.Greater(t, preferIdx, hookIdx)
+
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "novel_call_addcommand_hook.go"), []byte(`package cli
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+)
+
+func init() {
+	registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+		_ = flags
+		root.AddCommand(&cobra.Command{
+			Use:   "call",
+			Short: "hand-authored",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				fmt.Fprintln(cmd.OutOrStdout(), "hook call")
+				return nil
+			},
+		})
+	})
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "novel_hook_addcommand_test.go"), []byte(`package cli
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
+
+func TestNovelHookDirectAddCommandWins(t *testing.T) {
+	var matches int
+	var short string
+	for _, command := range RootCmd().Commands() {
+		if command.Name() == "call" {
+			matches++
+			short = command.Short
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("root contains %d call commands, want exactly one", matches)
+	}
+	if short != "hand-authored" {
+		t.Fatalf("generated stub shadowed direct AddCommand hook: Short = %q", short)
+	}
+
+	cmd := RootCmd()
+	cmd.SetArgs([]string{"call"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("call: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "hook call") {
+		t.Fatalf("hand-authored AddCommand hook did not run:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "TODO: implement novel feature") {
+		t.Fatalf("TODO scaffold still ran:\n%s", out.String())
+	}
+}
+`), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestNovelHookDirectAddCommandWins")
+}
+
 func TestNovelHookAttachesChildUnderGeneratedNovelParent(t *testing.T) {
 	t.Parallel()
 
