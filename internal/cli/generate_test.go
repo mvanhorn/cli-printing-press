@@ -1298,6 +1298,34 @@ func TestRetellTablesSentinel(t *testing.T) {
 		require.NoError(t, err, "%s must survive force regen", rel)
 		assert.Equal(t, string(want), string(got), "%s must survive same-spec generate --force verbatim", rel)
 	}
+
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "calls_cost_runtime_test.go"), []byte(`package cli
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
+
+func TestImplementedCallsCostSurvivesForceRegen(t *testing.T) {
+	cmd := RootCmd()
+	cmd.SetArgs([]string{"calls", "cost"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("calls cost after force regen: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "implemented call cost") {
+		t.Fatalf("implemented novel command did not run after force regen:\n%s", out.String())
+	}
+}
+`), 0o644))
+	testCmd := exec.Command("go", "test", "-mod=mod", "./internal/cli", "-run", "TestImplementedCallsCostSurvivesForceRegen", "-count=1")
+	testCmd.Dir = outputDir
+	testCmd.Env = os.Environ()
+	output, err := testCmd.CombinedOutput()
+	require.NoError(t, err, string(output))
 }
 
 func TestValidateBeforeForceMergeDefersWhenSnapshotExists(t *testing.T) {

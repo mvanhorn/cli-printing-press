@@ -101,19 +101,35 @@ type rootFlags struct {
 // novelCommandHooks are optional hooks for hand-authored command extensions.
 // A markerless file in package cli may register one from init without editing
 // this generated root, so force regeneration preserves both the source and
-// wiring. Registration is additive: independent extensions never replace one
-// another.
+// wiring. Hooks run after generated novel parent groups are attached so a
+// hook can Find a novel parent and add children. Registration is additive:
+// independent extensions never replace one another, except that a real
+// command replaces a TODO scaffold with the same name.
 var novelCommandHooks []func(root *cobra.Command, flags *rootFlags)
 
 func registerNovelCommand(hook func(root *cobra.Command, flags *rootFlags)) {
 	novelCommandHooks = append(novelCommandHooks, hook)
 }
 
+const novelScaffoldAnnotation = "pp:novel-scaffold"
+
+func isNovelScaffoldCommand(cmd *cobra.Command) bool {
+	return cmd != nil && cmd.Annotations[novelScaffoldAnnotation] == "true"
+}
+
 func addNovelCommandIfAbsent(parent *cobra.Command, candidate *cobra.Command) {
+	if parent == nil || candidate == nil {
+		return
+	}
 	for _, existing := range parent.Commands() {
-		if existing.Name() == candidate.Name() {
-			return
+		if existing.Name() != candidate.Name() {
+			continue
 		}
+		if isNovelScaffoldCommand(existing) && !isNovelScaffoldCommand(candidate) {
+			parent.RemoveCommand(existing)
+			parent.AddCommand(candidate)
+		}
+		return
 	}
 	parent.AddCommand(candidate)
 }
@@ -613,9 +629,6 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	rootCmd.AddCommand(newTeachPlaybookCmd(flags, learnCfg))
 	rootCmd.AddCommand(newPlaybookCmd(flags, learnCfg))
 {{- end}}
-	for _, hook := range novelCommandHooks {
-		hook(rootCmd, flags)
-	}
 {{- if .NovelFrameworkChildren}}
 	// Cobra creates its default help and completion parents lazily during
 	// Execute. Initialize them here too so novel features can attach to the
@@ -633,6 +646,9 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 {{- range .NovelCommandStubs}}
 	addNovelCommandIfAbsent(rootCmd, newNovel{{.Ident}}Cmd(flags))
 {{- end}}
+	for _, hook := range novelCommandHooks {
+		hook(rootCmd, flags)
+	}
 	// Attach the conditional platform identity command last so ordinary,
 	// promoted, and novel API-owned `whoami` commands all win the name.
 	if registeredPlatformSource != nil {
