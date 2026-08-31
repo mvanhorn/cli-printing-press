@@ -710,7 +710,7 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 			continue
 		}
 		r := map[string]any{"type": rtype, "rows": count}
-		if lastSynced.Valid {
+		if lastSynced.Valid && !lastSynced.Time.IsZero() {
 			haveAny = true
 			r["last_synced_at"] = lastSynced.Time.UTC().Format(time.RFC3339)
 			age := time.Since(lastSynced.Time)
@@ -731,7 +731,7 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 	report["stale_after"] = staleAfter.String()
 
 	switch {
-	case !haveAny && len(resources) == 0:
+	case !haveAny:
 		report["status"] = "empty"
 		// Only sync-tracked resources are counted here. A store seeded by
 		// other paths (built-in reference data, local writes) can hold rows
