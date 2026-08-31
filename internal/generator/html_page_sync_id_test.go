@@ -210,8 +210,25 @@ func TestSyncSingleObjectHTMLPageModeIDFallbacks(t *testing.T) {
 	}
 	assertStoredID(t, db, "ships", "ships", "IMO-123")
 
-	if err := upsertSingleObject(db, "articles", json.RawMessage(` + "`" + `{"title":"JSON article","canonical_url":"https://example.test/articles/a"}` + "`" + `)); err == nil {
-		t.Fatalf("JSON single-object resource without an id-shaped field unexpectedly succeeded")
+	if err := upsertSingleObject(db, "articles", json.RawMessage(` + "`" + `{"title":"JSON article","canonical_url":"https://example.test/articles/a"}` + "`" + `)); err != nil {
+		t.Fatalf("parameter-shaped JSON article should store: %v", err)
+	}
+	articleRows, err := db.List("articles", 10)
+	if err != nil {
+		t.Fatalf("list articles: %v", err)
+	}
+	if len(articleRows) != 1 {
+		t.Fatalf("article rows = %d, want 1", len(articleRows))
+	}
+	var articleID string
+	if err := db.DB().QueryRow("SELECT id FROM resources WHERE resource_type = ?", "articles").Scan(&articleID); err != nil {
+		t.Fatalf("article storage id: %v", err)
+	}
+	if len(articleID) < 10 || articleID[:10] != "pp:params:" {
+		t.Fatalf("article storage id = %q, want pp:params: fingerprint", articleID)
+	}
+	if articleID == "articles" || articleID == "https://example.test/articles/a" {
+		t.Fatalf("article must not use the resource name or HTML URL fallback, got %q", articleID)
 	}
 }
 `
