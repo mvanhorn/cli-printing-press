@@ -114,6 +114,8 @@ func TestGeneratedStoreKeepsIDLessAndRicherUpserts(t *testing.T) {
 		"cached array leftovers must be indexed by identity for keep-richer pairing")
 	require.Contains(t, src, "func qualifyArrayItemIdentity(",
 		"array identity keys must include the field that produced them")
+	require.Contains(t, src, "func canonicalGenericIDField(",
+		"id/ID/_id/id_ must share one qualified array identity key")
 	require.NotContains(t, src, `id := ExtractResourceID("forecast", obj)`,
 		"typed forecast writer must not still key only on ExtractResourceID")
 
@@ -123,7 +125,7 @@ func TestGeneratedStoreKeepsIDLessAndRicherUpserts(t *testing.T) {
 	require.NoError(t, os.WriteFile(testPath, []byte(generatedIDLessRicherRuntimeTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/store",
-		"-run", "Test(ResolveStorageID_KeepsEntityIDsAndRefusesUnusable|Upsert_PreservesRicherCachedDetail|MergeKeepRicherJSON|UpsertForecast_StoresIDLessPayload|UpsertForecast_BatchSameLocation|UpsertMutations_ListDoesNotShrinkDetail|UpsertMutations_ArrayReorderDoesNotCorrupt|UpsertMutations_SuffixArrayIdentityKeepsDetail|UpsertMutations_SharedFKDoesNotStealSuffixIdentity|UpsertMutations_CrossFieldIdentitiesDoNotCollide)",
+		"-run", "Test(ResolveStorageID_KeepsEntityIDsAndRefusesUnusable|Upsert_PreservesRicherCachedDetail|MergeKeepRicherJSON|UpsertForecast_StoresIDLessPayload|UpsertForecast_BatchSameLocation|UpsertMutations_ListDoesNotShrinkDetail|UpsertMutations_ArrayReorderDoesNotCorrupt|UpsertMutations_SuffixArrayIdentityKeepsDetail|UpsertMutations_SharedFKDoesNotStealSuffixIdentity|UpsertMutations_CrossFieldIdentitiesDoNotCollide|UpsertMutations_GenericIDAliasesKeepDetail)",
 		"-count=1")
 }
 
@@ -400,4 +402,53 @@ const generatedIDLessRicherRuntimeTest = "package store\n\n" +
 	"\tif fmt.Sprint(second[\"notes\"]) != \"from-id\" {\n" +
 	"\t\tt.Fatalf(\"id row lost its notes, stored %s\", got)\n" +
 	"\t}\n" +
+	"}\n\n" +
+	"func TestUpsertMutations_GenericIDAliasesKeepDetail(t *testing.T) {\n" +
+	"\tassertAlias := func(label, id, existingJSON, incomingJSON, incomingIDKey string) {\n" +
+	"\t\tt.Helper()\n" +
+	"\t\ts, err := Open(filepath.Join(t.TempDir(), \"data.db\"))\n" +
+	"\t\tif err != nil {\n" +
+	"\t\t\tt.Fatalf(\"%s open: %v\", label, err)\n" +
+	"\t\t}\n" +
+	"\t\tdefer s.Close()\n" +
+	"\t\tif err := s.UpsertMutations(json.RawMessage(existingJSON)); err != nil {\n" +
+	"\t\t\tt.Fatalf(\"%s detail: %v\", label, err)\n" +
+	"\t\t}\n" +
+	"\t\tif err := s.UpsertMutations(json.RawMessage(incomingJSON)); err != nil {\n" +
+	"\t\t\tt.Fatalf(\"%s list: %v\", label, err)\n" +
+	"\t\t}\n" +
+	"\t\tgot, err := s.Get(\"mutations\", id)\n" +
+	"\t\tif err != nil {\n" +
+	"\t\t\tt.Fatalf(\"%s get: %v\", label, err)\n" +
+	"\t\t}\n" +
+	"\t\tvar obj map[string]any\n" +
+	"\t\tif err := json.Unmarshal(got, &obj); err != nil {\n" +
+	"\t\t\tt.Fatalf(\"%s unmarshal: %v\", label, err)\n" +
+	"\t\t}\n" +
+	"\t\trows, _ := obj[\"rows\"].([]any)\n" +
+	"\t\tif len(rows) != 1 {\n" +
+	"\t\t\tt.Fatalf(\"%s length must follow incoming, got %d stored %s\", label, len(rows), got)\n" +
+	"\t\t}\n" +
+	"\t\titem, _ := rows[0].(map[string]any)\n" +
+	"\t\tif fmt.Sprint(item[incomingIDKey]) != \"x\" {\n" +
+	"\t\t\tt.Fatalf(\"%s incoming identity must remain, stored %s\", label, got)\n" +
+	"\t\t}\n" +
+	"\t\tif fmt.Sprint(item[\"notes\"]) != \"keep\" {\n" +
+	"\t\t\tt.Fatalf(\"%s id alias lost detail, stored %s\", label, got)\n" +
+	"\t\t}\n" +
+	"\t}\n" +
+	"\tassertAlias(\n" +
+	"\t\t\"id vs _id\",\n" +
+	"\t\t\"mut-6\",\n" +
+	"\t\t`{\"id\":\"mut-6\",\"rows\":[{\"id\":\"x\",\"notes\":\"keep\"}]}`,\n" +
+	"\t\t`{\"id\":\"mut-6\",\"rows\":[{\"_id\":\"x\"}]}`,\n" +
+	"\t\t\"_id\",\n" +
+	"\t)\n" +
+	"\tassertAlias(\n" +
+	"\t\t\"id vs ID\",\n" +
+	"\t\t\"mut-7\",\n" +
+	"\t\t`{\"id\":\"mut-7\",\"rows\":[{\"id\":\"x\",\"notes\":\"keep\"}]}`,\n" +
+	"\t\t`{\"id\":\"mut-7\",\"rows\":[{\"ID\":\"x\"}]}`,\n" +
+	"\t\t\"ID\",\n" +
+	"\t)\n" +
 	"}\n"

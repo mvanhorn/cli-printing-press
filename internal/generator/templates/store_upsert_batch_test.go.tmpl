@@ -699,6 +699,41 @@ func TestMergeKeepRicherJSON(t *testing.T) {
 		t.Fatalf("id row must keep its own notes, stored %s", crossField)
 	}
 
+	assertGenericIDAliasKeepRicher := func(label, existingJSON, incomingJSON, incomingIDKey string) {
+		t.Helper()
+		got, ok := mergeKeepRicherJSON("mutations", json.RawMessage(existingJSON), json.RawMessage(incomingJSON))
+		if !ok {
+			t.Fatalf("%s: merge returned !ok", label)
+		}
+		var obj map[string]any
+		if err := json.Unmarshal(got, &obj); err != nil {
+			t.Fatalf("%s: unmarshal: %v", label, err)
+		}
+		items, _ := obj["rows"].([]any)
+		if len(items) != 1 {
+			t.Fatalf("%s: length must follow incoming, got %d stored %s", label, len(items), got)
+		}
+		item, _ := items[0].(map[string]any)
+		if fmt.Sprint(item[incomingIDKey]) != "x" {
+			t.Fatalf("%s: incoming identity must remain, stored %s", label, got)
+		}
+		if fmt.Sprint(item["notes"]) != "keep" {
+			t.Fatalf("%s: id alias must keep-richer-merge, stored %s", label, got)
+		}
+	}
+	assertGenericIDAliasKeepRicher(
+		"id vs _id",
+		`{"id":"1","rows":[{"id":"x","notes":"keep"}]}`,
+		`{"id":"1","rows":[{"_id":"x"}]}`,
+		"_id",
+	)
+	assertGenericIDAliasKeepRicher(
+		"id vs ID",
+		`{"id":"1","rows":[{"id":"x","notes":"keep"}]}`,
+		`{"id":"1","rows":[{"ID":"x"}]}`,
+		"ID",
+	)
+
 	prevOverride, hadOverride := resourceIDFieldOverrides["widgets"]
 	resourceIDFieldOverrides["widgets"] = "entityInfo.entityId"
 	defer func() {
