@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -10,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
@@ -701,6 +703,39 @@ func pathHasComponent(path, component string) bool {
 	return slices.Contains(strings.Split(filepath.ToSlash(filepath.Clean(path)), "/"), component)
 }
 
+// A WalkDir child can disappear between enumeration and stat (Windows
+// GetFileAttributesEx on a vanished .gotmp during --force backup). Skip
+// that entry; keep real IO errors and a vanished source root fatal.
+func skipIfVanished(err error, isDir bool) error {
+	if err == nil || !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if isDir {
+		return filepath.SkipDir
+	}
+	return nil
+}
+
+type copyDirWalkHook func(path string, d fs.DirEntry)
+
+var copyDirTestHook atomic.Pointer[copyDirWalkHook]
+
+func invokeCopyDirTestHook(path string, d fs.DirEntry) {
+	if p := copyDirTestHook.Load(); p != nil {
+		(*p)(path, d)
+	}
+}
+
+func SetCopyDirWalkHookForTest(fn func(path string, d fs.DirEntry)) func() {
+	if fn == nil {
+		copyDirTestHook.Store(nil)
+		return func() {}
+	}
+	hook := copyDirWalkHook(fn)
+	copyDirTestHook.Store(&hook)
+	return func() { copyDirTestHook.Store(nil) }
+}
+
 func copyDirFiltered(src, dst string, skipFile func(path string, info fs.FileInfo) bool) error {
 	info, err := os.Stat(src)
 	if err != nil {
@@ -723,8 +758,12 @@ func copyDirFiltered(src, dst string, skipFile func(path string, info fs.FileInf
 	// callback sees them as symlink entries and we can validate them
 	// without descending into potentially huge or circular targets.
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, walkErr error) error {
+		invokeCopyDirTestHook(path, d)
 		if walkErr != nil {
-			return walkErr
+			if path == src {
+				return walkErr
+			}
+			return skipIfVanished(walkErr, d != nil && d.IsDir())
 		}
 		if path == src {
 			return nil
@@ -756,7 +795,7 @@ func copyDirFiltered(src, dst string, skipFile func(path string, info fs.FileInf
 		if d.Type()&os.ModeSymlink != 0 {
 			link, err := os.Readlink(path)
 			if err != nil {
-				return err
+				return skipIfVanished(err, false)
 			}
 			ok, err := symlinkTargetWithinRoot(srcRoot, path, link)
 			if err != nil {
@@ -768,7 +807,7 @@ func copyDirFiltered(src, dst string, skipFile func(path string, info fs.FileInf
 			if skipFile != nil {
 				info, err := d.Info()
 				if err != nil {
-					return err
+					return skipIfVanished(err, d.IsDir())
 				}
 				if skipFile(path, info) {
 					return nil
@@ -787,7 +826,7 @@ func copyDirFiltered(src, dst string, skipFile func(path string, info fs.FileInf
 		if d.IsDir() {
 			info, err := d.Info()
 			if err != nil {
-				return err
+				return skipIfVanished(err, true)
 			}
 			// A filtered copy may prune whole subtrees (e.g. downloaded
 			// third-party `sources/` in manuscripts). The unfiltered CopyDir
@@ -800,7 +839,7 @@ func copyDirFiltered(src, dst string, skipFile func(path string, info fs.FileInf
 
 		info, err := d.Info()
 		if err != nil {
-			return err
+			return skipIfVanished(err, false)
 		}
 		if skipFile != nil && skipFile(path, info) {
 			return nil
@@ -835,7 +874,7 @@ func copyFile(src, dst string, mode os.FileMode) error {
 
 	in, err := os.Open(src)
 	if err != nil {
-		return err
+		return skipIfVanished(err, false)
 	}
 	defer func() { _ = in.Close() }()
 

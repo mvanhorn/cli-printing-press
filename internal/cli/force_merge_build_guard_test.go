@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -116,4 +118,34 @@ func TestFinalizeForceMergeReplacesRewrittenBodyOnVersionBumpWithoutBase(t *test
 	require.NoError(t, err)
 	assert.Contains(t, string(novel), "NovelKeep")
 	require.NoError(t, compileGeneratedTree(freshDir))
+}
+
+func TestFinalizeForceMergeSkipsVanishedFreshTreeEntry(t *testing.T) {
+	dir := t.TempDir()
+	snapshotDir := filepath.Join(dir, "mini.preserve-1")
+	freshDir := filepath.Join(dir, "mini")
+
+	writeMiniModule(t, snapshotDir, map[string]string{
+		"internal/cli/novel.go": "package cli\n\nfunc NovelKeep() string { return \"implemented\" }\n",
+	})
+	writeMiniModule(t, freshDir, map[string]string{
+		"internal/cli/novel.go": "package cli\n\nfunc NovelKeep() string { return \"TODO scaffold\" }\n",
+	})
+	gotmp := filepath.Join(freshDir, ".gotmp")
+	require.NoError(t, os.MkdirAll(gotmp, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(gotmp, "x"), []byte("tmp"), 0o644))
+
+	clear := pipeline.SetCopyDirWalkHookForTest(func(path string, _ fs.DirEntry) {
+		if path == gotmp {
+			require.NoError(t, os.RemoveAll(path))
+		}
+	})
+	t.Cleanup(clear)
+
+	require.NoError(t, finalizeForceMerge(snapshotDir, freshDir, nil, false, nil))
+
+	novel, err := os.ReadFile(filepath.Join(freshDir, "internal", "cli", "novel.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(novel), "implemented")
+	assert.NotContains(t, string(novel), "TODO scaffold")
 }

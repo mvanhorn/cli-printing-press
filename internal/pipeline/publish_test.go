@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -187,6 +189,127 @@ func TestCopyDirRejectsExternalSymlinks(t *testing.T) {
 			assert.ErrorContains(t, err, "points outside source tree")
 		})
 	}
+}
+
+func installCopyDirTestHook(t *testing.T, fn copyDirWalkHook) {
+	t.Helper()
+	t.Cleanup(SetCopyDirWalkHookForTest(fn))
+}
+
+func TestSkipIfVanished(t *testing.T) {
+	t.Parallel()
+
+	denied := &os.PathError{Op: "stat", Path: "secret", Err: fs.ErrPermission}
+	windowsGone := &os.PathError{Op: "GetFileAttributesEx", Path: `\.gotmp`, Err: fs.ErrNotExist}
+
+	tests := []struct {
+		name  string
+		err   error
+		isDir bool
+		want  error
+	}{
+		{name: "nil"},
+		{name: "vanished file", err: fs.ErrNotExist},
+		{name: "vanished directory", err: fs.ErrNotExist, isDir: true, want: filepath.SkipDir},
+		{name: "windows GetFileAttributesEx", err: windowsGone, isDir: true, want: filepath.SkipDir},
+		{name: "permission denied", err: denied, isDir: true, want: denied},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := skipIfVanished(tt.err, tt.isDir)
+			if tt.want == nil {
+				assert.NoError(t, got)
+				return
+			}
+			if errors.Is(tt.want, filepath.SkipDir) {
+				assert.ErrorIs(t, got, filepath.SkipDir)
+				return
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// backupFreshTree's --force pre-merge copy walks a live output tree. A child
+// that disappears between WalkDir enumeration and stat must not abort the copy.
+func TestCopyDirSkipsVanishedMidWalkEntry(t *testing.T) {
+	t.Run("vanished directory", func(t *testing.T) {
+		src := filepath.Join(t.TempDir(), "src")
+		dst := filepath.Join(t.TempDir(), "dst")
+		gotmp := filepath.Join(src, ".gotmp")
+		require.NoError(t, os.MkdirAll(filepath.Join(gotmp, "cache"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(gotmp, "cache", "x"), []byte("tmp"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(src, "novel.go"), []byte("package cli\nfunc Novel() {}\n"), 0o644))
+
+		installCopyDirTestHook(t, func(path string, _ fs.DirEntry) {
+			if path == gotmp {
+				require.NoError(t, os.RemoveAll(path))
+			}
+		})
+
+		require.NoError(t, CopyDir(src, dst))
+		assert.FileExists(t, filepath.Join(dst, "novel.go"))
+		got, err := os.ReadFile(filepath.Join(dst, "novel.go"))
+		require.NoError(t, err)
+		assert.Contains(t, string(got), "func Novel()")
+		assert.NoDirExists(t, filepath.Join(dst, ".gotmp"))
+	})
+
+	t.Run("vanished file", func(t *testing.T) {
+		src := filepath.Join(t.TempDir(), "src")
+		dst := filepath.Join(t.TempDir(), "dst")
+		require.NoError(t, os.MkdirAll(src, 0o755))
+		scratch := filepath.Join(src, "scratch.tmp")
+		require.NoError(t, os.WriteFile(scratch, []byte("tmp"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(src, "keep.txt"), []byte("keep"), 0o644))
+
+		installCopyDirTestHook(t, func(path string, _ fs.DirEntry) {
+			if path == scratch {
+				require.NoError(t, os.Remove(path))
+			}
+		})
+
+		require.NoError(t, CopyDir(src, dst))
+		assert.FileExists(t, filepath.Join(dst, "keep.txt"))
+		assert.NoFileExists(t, filepath.Join(dst, "scratch.tmp"))
+	})
+}
+
+func TestCopyDirFailsWhenSourceRootVanishes(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	dst := filepath.Join(t.TempDir(), "dst")
+	require.NoError(t, os.MkdirAll(src, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "keep.txt"), []byte("keep"), 0o644))
+
+	installCopyDirTestHook(t, func(path string, _ fs.DirEntry) {
+		if path == src {
+			require.NoError(t, os.RemoveAll(src))
+		}
+	})
+
+	err := CopyDir(src, dst)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, fs.ErrNotExist)
+}
+
+func TestCopyDirStillFailsOnUnreadableDirectory(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+
+	src := filepath.Join(t.TempDir(), "src")
+	dst := filepath.Join(t.TempDir(), "dst")
+	secret := filepath.Join(src, "secret")
+	require.NoError(t, os.MkdirAll(secret, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(secret, "x.txt"), []byte("x"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "keep.txt"), []byte("keep"), 0o644))
+	require.NoError(t, os.Chmod(secret, 0))
+	t.Cleanup(func() { _ = os.Chmod(secret, 0o755) })
+
+	err := CopyDir(src, dst)
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, fs.ErrNotExist), "permission failures must stay fatal, got %v", err)
 }
 
 func TestCopyPublishableManuscriptDirFiltersSymlinks(t *testing.T) {
