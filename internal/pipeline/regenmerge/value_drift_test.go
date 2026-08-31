@@ -420,6 +420,7 @@ func registerClientHook(hook func(*Client) error) { clientHooks = append(clientH
 func newRootCmd(flags *rootFlags) *Cmd {
 	root := &Cmd{}
 	for _, hook := range novelCommandHooks { hook(root, flags) }
+	preferImplementedNovelCommands(root)
 	return root
 }
 
