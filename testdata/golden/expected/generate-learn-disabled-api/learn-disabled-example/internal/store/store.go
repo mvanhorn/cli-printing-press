@@ -1780,9 +1780,14 @@ func fingerprintScalar(value any) (any, bool) {
 //   - Object arrays match by the same identity stack as ExtractResourceID
 //     (configured / dotted override, generic id, resource-scoped suffix)
 //     plus item-local suffix keys (currency_code, accountId) and sku.
-//     Display name is not an array identity. Result order and length
-//     follow incoming so a reorder or middle delete cannot join
-//     unrelated objects or keep leftover old entries.
+//     Own-identity suffixes (_code/_slug/_key) win over shared foreign
+//     keys so sibling rows that share account_id still pair on
+//     currency_code. A lone accountId remains identity when it is the
+//     only identity-shaped field. Identity map keys include the field
+//     that produced them so id:"USD" and currency_code:"USD" cannot
+//     share a slot. Display name is not an array identity. Result
+//     order and length follow incoming so a reorder or middle delete
+//     cannot join unrelated objects or keep leftover old entries.
 //   - Arrays without identity keys, and scalar arrays, take incoming
 //     wholesale. Index-wise merge would pair unrelated items.
 //   - Incoming scalars replace existing scalars.
@@ -1908,50 +1913,154 @@ func indexObjectArrayByIdentity(resourceType string, items []any) map[string]map
 func arrayItemIdentity(resourceType string, obj map[string]any) string {
 	if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
 		if s := canonicalIDFromKey(obj, override); s != "" {
-			return s
+			return qualifyArrayItemIdentity(override, s)
 		}
 	}
 	for _, key := range genericIDFieldFallbacks {
 		if s := canonicalIDFromKey(obj, key); s != "" {
-			return s
+			return qualifyArrayItemIdentity(key, s)
 		}
 	}
-	if s := suffixIDFieldFallback(resourceType, obj); s != "" {
-		return s
+	// Item-local own identity wins over the parent resource's suffix.
+	// mergeKeepRicherJSON threads the parent type through nested arrays,
+	// so suffixIDFieldFallback("accounts") would treat a copied
+	// account_id as every child's id and collide sibling rates.
+	if field, s := suffixIdentityFromItemKeys(obj); s != "" {
+		return qualifyArrayItemIdentity(field, s)
 	}
-	if s := suffixIdentityFromItemKeys(obj); s != "" {
-		return s
+	if field, s := suffixIDFieldAndName(resourceType, obj); s != "" {
+		return qualifyArrayItemIdentity(field, s)
 	}
 	if s := canonicalIDFromKey(obj, "sku"); s != "" {
-		return s
+		return qualifyArrayItemIdentity("sku", s)
 	}
 	for _, key := range []string{"slug", "key", "code"} {
 		if s := canonicalIDFromKey(obj, key); s != "" {
-			return s
+			return qualifyArrayItemIdentity(key, s)
 		}
 	}
 	return ""
 }
 
-func suffixIdentityFromItemKeys(obj map[string]any) string {
-	if obj == nil {
+const arrayItemIdentitySep = "\x1f"
+
+func qualifyArrayItemIdentity(field, value string) string {
+	if field == "" || value == "" {
 		return ""
+	}
+	return field + arrayItemIdentitySep + value
+}
+
+func suffixIdentityFromItemKeys(obj map[string]any) (string, string) {
+	if obj == nil {
+		return "", ""
 	}
 	keys := make([]string, 0, len(obj))
 	for key := range obj {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	var ownField, own, localField, localID, sharedField, sharedID string
 	for _, key := range keys {
 		stem := identitySuffixStem(key)
 		if stem == "" || stem == "parent" {
 			continue
 		}
-		if s := suffixIDFieldFallback(stem, obj); s != "" {
-			return s
+		s := suffixIDFieldFallback(stem, obj)
+		if s == "" {
+			continue
+		}
+		field := canonicalArrayIdentityField(key)
+		switch itemKeyIdentityKind(key) {
+		case itemIdentOwn:
+			if own == "" {
+				ownField, own = field, s
+			}
+		case itemIdentLocalID:
+			if localID == "" {
+				localField, localID = field, s
+			}
+		case itemIdentSharedID:
+			if sharedID == "" {
+				sharedField, sharedID = field, s
+			}
 		}
 	}
-	return ""
+	if own != "" {
+		return ownField, own
+	}
+	if localID != "" {
+		return localField, localID
+	}
+	return sharedField, sharedID
+}
+
+func canonicalArrayIdentityField(key string) string {
+	k := strings.TrimSpace(key)
+	stem := identitySuffixStem(k)
+	if stem == "" {
+		return k
+	}
+	switch {
+	case strings.HasSuffix(k, "_id") || strings.HasSuffix(k, "Id") || strings.HasSuffix(k, "ID"):
+		return stem + "_id"
+	case strings.HasSuffix(k, "_code") || strings.HasSuffix(k, "Code"):
+		return stem + "_code"
+	case strings.HasSuffix(k, "_key") || strings.HasSuffix(k, "Key"):
+		return stem + "_key"
+	case strings.HasSuffix(k, "_slug") || strings.HasSuffix(k, "Slug"):
+		return stem + "_slug"
+	default:
+		return k
+	}
+}
+
+type itemIdentKind int
+
+const (
+	itemIdentNone itemIdentKind = iota
+	itemIdentOwn
+	itemIdentLocalID
+	itemIdentSharedID
+)
+
+func itemKeyIdentityKind(key string) itemIdentKind {
+	if itemKeyLooksLikeOwnIdentity(key) {
+		return itemIdentOwn
+	}
+	stem := identitySuffixStem(key)
+	if stem == "" {
+		return itemIdentNone
+	}
+	if sharedForeignKeyStem(stem) {
+		return itemIdentSharedID
+	}
+	return itemIdentLocalID
+}
+
+func itemKeyLooksLikeOwnIdentity(key string) bool {
+	k := strings.TrimSpace(key)
+	for _, suffix := range []string{"_code", "_key", "_slug"} {
+		if strings.HasSuffix(k, suffix) && len(k) > len(suffix) {
+			return true
+		}
+	}
+	for _, suffix := range []string{"Code", "Key", "Slug"} {
+		if strings.HasSuffix(k, suffix) && len(k) > len(suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func sharedForeignKeyStem(stem string) bool {
+	switch strings.ToLower(stem) {
+	case "parent", "account", "owner", "org", "organization", "user",
+		"customer", "workspace", "tenant", "team", "company", "member":
+		return true
+	default:
+		return false
+	}
 }
 
 func identitySuffixStem(key string) string {
@@ -2003,20 +2112,27 @@ func isJSONEmpty(value any) bool {
 // promoted to the primary key, and it walks the same key spellings as
 // LookupFieldValue in a fixed suffix order so the chosen id is deterministic.
 func suffixIDFieldFallback(resourceType string, obj map[string]any) string {
+	_, value := suffixIDFieldAndName(resourceType, obj)
+	return value
+}
+
+func suffixIDFieldAndName(resourceType string, obj map[string]any) (string, string) {
 	for _, base := range resourceIDBaseNames(resourceType) {
 		for _, suffix := range []string{"_id", "_code", "_key", "_slug"} {
-			if s := canonicalScalarIDFromKey(obj, base+suffix); s != "" {
-				return s
+			key := base + suffix
+			if s := canonicalScalarIDFromKey(obj, key); s != "" {
+				return canonicalArrayIdentityField(key), s
 			}
 		}
 		camelBase := lowerCamelResourceIDBase(base)
 		for _, suffix := range []string{"Id", "Code", "Key", "Slug"} {
-			if s := canonicalScalarIDFromKey(obj, camelBase+suffix); s != "" {
-				return s
+			key := camelBase + suffix
+			if s := canonicalScalarIDFromKey(obj, key); s != "" {
+				return canonicalArrayIdentityField(key), s
 			}
 		}
 	}
-	return ""
+	return "", ""
 }
 
 func canonicalScalarIDFromKey(obj map[string]any, key string) string {
