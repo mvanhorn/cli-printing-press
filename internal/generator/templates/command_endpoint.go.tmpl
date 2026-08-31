@@ -124,15 +124,9 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- range .Endpoint.Params}}
 {{- if and .Required (not .Positional) (not .Default)}}
-{{- if paramHasEnvDefault .}}
-			if !{{flagChangedExpr .}} && flag{{camel (paramIdent .)}} == "" && !flags.dryRun {
+			if {{flagRequiredUnsatisfiedExpr .}} {
 				return fmt.Errorf("required flag \"%s\" not set", "{{publicFlagName .}}")
 			}
-{{- else}}
-			if !{{flagChangedExpr .}} && !flags.dryRun {
-				return fmt.Errorf("required flag \"%s\" not set", "{{publicFlagName .}}")
-			}
-{{- end}}
 {{- end}}
 {{- end}}
 {{- range .Endpoint.Params}}

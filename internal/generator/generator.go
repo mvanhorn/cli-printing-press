@@ -439,6 +439,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"publicFlagName":               publicFlagName,
 		"publicFlagAliases":            publicFlagAliases,
 		"flagChangedExpr":              flagChangedExpr,
+		"flagRequiredUnsatisfiedExpr":  flagRequiredUnsatisfiedExpr,
 		"graphqlListParams":            graphqlListParams,
 		"graphqlLatestParams":          graphqlLatestParams,
 		"graphqlVariableType":          graphqlVariableType,
@@ -6793,6 +6794,15 @@ func flagChangedExpr(p spec.Param) string {
 		return parts[0]
 	}
 	return "(" + strings.Join(parts, " || ") + ")"
+}
+
+// flagRequiredUnsatisfiedExpr is the generated required-flag guard condition.
+// Changed alone is not enough: a PreRunE or other resolver can write the
+// bound value without flipping cobra's Changed bit.
+func flagRequiredUnsatisfiedExpr(p spec.Param) string {
+	zero := zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p))
+	return fmt.Sprintf("!%s && flag%s == %s && !flags.dryRun",
+		flagChangedExpr(p), toCamel(paramIdent(p)), zero)
 }
 
 func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBinding {
