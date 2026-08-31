@@ -71,6 +71,7 @@ func TestGeneratedOutput_RequiredFlagGuardHonorsResolvedValue(t *testing.T) {
 		Version: "0.1.0",
 		BaseURL: "https://api.example.com",
 		Auth:    spec.AuthConfig{Type: "none"},
+		Learn:   spec.LearnConfig{Disabled: true},
 		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/reqguard-pp-cli/config.toml"},
 		Types: map[string]spec.TypeDef{
 			"Tenant": {
@@ -150,14 +151,14 @@ func TestGeneratedOutput_RequiredFlagGuardHonorsResolvedValue(t *testing.T) {
 	guard := `!cmd.Flags().Changed("instance-key") && flagInstanceKey == "" && !flags.dryRun`
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "tenants_list.go")
 	assert.Contains(t, endpointSrc, guard)
-	assert.Contains(t, endpointSrc, `required flag "%s" not set", "instance-key"`)
-	assert.NotContains(t, endpointSrc, `required flag "%s" not set", "label"`)
+	assert.Contains(t, endpointSrc, `return fmt.Errorf("required flag \"%s\" not set", "instance-key")`)
+	assert.NotContains(t, endpointSrc, `return fmt.Errorf("required flag \"%s\" not set", "label")`)
 	assert.NotContains(t, endpointSrc, `.MarkFlagRequired("`)
 
 	promotedSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_whoami.go")
 	assert.Contains(t, promotedSrc, guard)
-	assert.Contains(t, promotedSrc, `required flag "%s" not set", "instance-key"`)
-	assert.NotContains(t, promotedSrc, `required flag "%s" not set", "label"`)
+	assert.Contains(t, promotedSrc, `return fmt.Errorf("required flag \"%s\" not set", "instance-key")`)
+	assert.NotContains(t, promotedSrc, `return fmt.Errorf("required flag \"%s\" not set", "label")`)
 
 	requireGeneratedCompiles(t, outputDir)
 
