@@ -65,14 +65,18 @@ func TestGeneratedCacheWritesUsePrivatePermissions(t *testing.T) {
 		"a cache-hit read of a leftover 0644 file must tighten perms before returning content")
 	writeBody := clientFuncBody(t, client, "func (c *Client) writeCacheWithHeaders(")
 	preChmod := strings.Index(writeBody, "ensureCachePerms(")
+	removeCall := strings.Index(writeBody, "os.Remove(cacheFile)")
 	writeCall := strings.Index(writeBody, "os.WriteFile(cacheFile")
 	postChmod := strings.LastIndex(writeBody, "ensureCachePerms(")
 	require.NotEqual(t, -1, preChmod, "write path must call ensureCachePerms")
+	require.NotEqual(t, -1, removeCall, "write path must unlink a leftover cache inode before rewrite")
 	require.NotEqual(t, -1, writeCall, "write path must WriteFile the cache file")
-	require.Less(t, preChmod, writeCall,
-		"restrict a leftover 0644 file before rewriting so new contents are not world-readable")
+	require.Less(t, preChmod, removeCall,
+		"restrict a leftover 0644 file and its dir before replacing the inode")
+	require.Less(t, removeCall, writeCall,
+		"unlink the leftover inode so an open FD cannot see the new body")
 	require.Greater(t, postChmod, writeCall,
-		"WriteFile perm applies only on create; chmod again after rewrite")
+		"WriteFile perm applies only on create; chmod the new inode and dir")
 	require.NotContains(t, client, "os.MkdirAll(resourceDir, 0o755)")
 	require.NotContains(t, client, "os.WriteFile(cacheFile, []byte(data), 0o644)")
 
@@ -99,9 +103,11 @@ func TestWriteCacheWithHeadersRechmodsExistingFile(t *testing.T) {
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"testing"
 	"time"
 
@@ -136,6 +142,70 @@ func TestWriteCacheWithHeadersRechmodsExistingFile(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("rewritten cache mode = %04o, want 0600", got)
+	}
+}
+
+func TestWriteCacheWithHeadersReplacesOpenInode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix inode replacement is not preserved on Windows")
+	}
+
+	c := New(&config.Config{BaseURL: "https://api.example.invalid"}, time.Second, 0)
+	c.cacheDir = t.TempDir()
+
+	old := json.RawMessage(` + "`" + `{"ok":"old"}` + "`" + `)
+	c.writeCacheWithHeaders("/items", nil, nil, old)
+	matches, err := filepath.Glob(filepath.Join(c.cacheDir, "resources", "*", "*.json"))
+	if err != nil {
+		t.Fatalf("glob cache files: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("wrote %d cache files, want 1: %v", len(matches), matches)
+	}
+	cacheFile := matches[0]
+	if err := os.Chmod(cacheFile, 0o644); err != nil {
+		t.Fatalf("chmod leftover 0644: %v", err)
+	}
+	held, err := os.Open(cacheFile)
+	if err != nil {
+		t.Fatalf("open leftover cache file: %v", err)
+	}
+	defer held.Close()
+	oldInfo, err := held.Stat()
+	if err != nil {
+		t.Fatalf("stat open leftover inode: %v", err)
+	}
+
+	c.writeCacheWithHeaders("/items", nil, nil, json.RawMessage(` + "`" + `{"ok":"new"}` + "`" + `))
+
+	got, err := io.ReadAll(held)
+	if err != nil {
+		t.Fatalf("read open leftover FD: %v", err)
+	}
+	if string(got) != string(old) {
+		t.Fatalf("open FD saw %s, want leftover body %s", got, old)
+	}
+	fresh, err := os.ReadFile(cacheFile)
+	if err != nil {
+		t.Fatalf("read replaced cache file: %v", err)
+	}
+	if string(fresh) != ` + "`" + `{"ok":"new"}` + "`" + ` {
+		t.Fatalf("path data = %s, want new body", fresh)
+	}
+	newInfo, err := os.Stat(cacheFile)
+	if err != nil {
+		t.Fatalf("stat replaced cache file: %v", err)
+	}
+	if mode := newInfo.Mode().Perm(); mode != 0o600 {
+		t.Fatalf("replaced cache mode = %04o, want 0600", mode)
+	}
+	oldSys, oldOK := oldInfo.Sys().(*syscall.Stat_t)
+	newSys, newOK := newInfo.Sys().(*syscall.Stat_t)
+	if !oldOK || !newOK {
+		t.Fatal("expected syscall.Stat_t for inode comparison")
+	}
+	if oldSys.Ino == newSys.Ino {
+		t.Fatal("rewrite reused inode; an open leftover FD would see the new body")
 	}
 }
 
@@ -191,7 +261,7 @@ func TestReadCacheWithHeadersRechmodsFreshLegacyFile(t *testing.T) {
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "cache_chmod_runtime_test.go"), []byte(runtimeTest), 0o600))
 	requireGeneratedCompiles(t, outputDir)
-	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^Test(WriteCacheWithHeadersRechmodsExistingFile|ReadCacheWithHeadersRechmodsFreshLegacyFile)$", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^Test(WriteCacheWithHeadersRechmodsExistingFile|WriteCacheWithHeadersReplacesOpenInode|ReadCacheWithHeadersRechmodsFreshLegacyFile)$", "-count=1")
 }
 
 func TestGeneratedClientQueryParamContractsPass(t *testing.T) {
