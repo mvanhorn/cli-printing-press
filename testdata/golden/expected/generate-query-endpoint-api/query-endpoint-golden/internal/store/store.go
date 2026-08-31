@@ -973,10 +973,9 @@ func isSQLiteBusy(err error) bool {
 		strings.Contains(msg, "database table is locked")
 }
 
-// mergeIncomingResourceData applies the keep-richer policy against any row
-// already cached for this (resourceType, id). First write returns incoming
-// unchanged. Callers must use the result for both the generic resources
-// blob and the typed-table projection so list sync cannot shrink detail.
+// A later list-shaped write must not shrink a richer cached blob. First
+// write is incoming as-is. Callers apply the result to both the generic
+// resources blob and the typed-table projection.
 func (s *Store) mergeIncomingResourceData(tx *sql.Tx, resourceType, id string, incoming json.RawMessage) json.RawMessage {
 	var existing string
 	err := tx.QueryRow(
@@ -1863,10 +1862,9 @@ func (s *Store) UpsertWidgets(data json.RawMessage) error {
 // path-item.
 var resourceIDFieldOverrides = map[string]string{}
 
-// parameterKeyedResources are typed resources whose responses have no
-// identity field. Upsert stores those rows under a parameter fingerprint
-// instead of failing ExtractResourceID. Unlisted resources keep today's
-// extract-failure contract for items with no usable id.
+// Only typed resources with no identity field may be stored under a
+// parameter fingerprint. Unlisted resources still increment extractFailures
+// when an item has no usable id.
 var parameterKeyedResources = map[string]bool{}
 
 // Generic ID fields are split around the resource-specific suffix probe.
@@ -1916,16 +1914,14 @@ func ExtractResourceID(resourceType string, obj map[string]any) string {
 	return mapKeyIDFallback(obj)
 }
 
-// ResolveStorageID is the writer-side identity. ExtractResourceID wins when
-// the payload has a real resource id. Parameter-shaped / id-less payloads
-// (no identity-candidate keys at all) get a fingerprint of their top-level
-// scalars so Upsert can store a row without inventing a field. Identity
-// probes such as unwrap and sync extractID must keep using ExtractResourceID
-// so a fingerprint is never mistaken for an entity id.
+// Writer identity prefers a real resource id. A parameter-shaped payload
+// with no identity-candidate keys is fingerprinted from top-level scalars
+// so the row can be stored without inventing a field. Unwrap and sync
+// extractID must keep using ExtractResourceID so a fingerprint is never
+// mistaken for an entity id.
 //
-// Objects that carry an identity-shaped key whose value was refused
-// (timestamp, zero, empty) still return "" — fingerprinting those would
-// hide a rejected entity id.
+// An identity-shaped key whose value was refused (timestamp, zero, empty)
+// still returns "" — fingerprinting those would hide a rejected entity id.
 func ResolveStorageID(resourceType string, obj map[string]any) string {
 	if id := ExtractResourceID(resourceType, obj); id != "" {
 		return id
@@ -1984,13 +1980,11 @@ func suffixIdentityKeyPresent(resourceType string, obj map[string]any) bool {
 	return false
 }
 
-// parameterSnapshotID keys an id-less payload by a hash of its top-level
-// scalars — the request-equivalent identity (lat/lon, timezone) — and
-// excludes nested blocks (hourly, current, results) so a later fetch of
-// the same parameters updates the same row. Volatile telemetry keys
-// (*_ms, *_at, timestamp, generationtime*) are omitted from the key.
-// When the object has no stable scalars the whole payload is hashed so
-// the row can still be stored.
+// Id-less rows key on a hash of top-level scalars (lat/lon, timezone)
+// and omit nested blocks so a later fetch of the same parameters updates
+// the same row. Volatile telemetry keys (*_ms, *_at, timestamp,
+// generationtime*) stay out of the key. No stable scalars means the
+// whole payload is hashed so the row can still be stored.
 func parameterSnapshotID(obj map[string]any) string {
 	if len(obj) == 0 {
 		return ""
@@ -2052,9 +2046,8 @@ func fingerprintScalar(value any) (any, bool) {
 	}
 }
 
-// mergeKeepRicherJSON combines a previously cached JSON blob with an
-// incoming write so a thinner list-shaped payload cannot destroy richer
-// detail already stored for the same id.
+// A thinner list-shaped payload cannot destroy richer detail already
+// stored for the same id.
 //
 // Policy (do-not-shrink / keep-richer):
 //   - First write (no existing) stores incoming unchanged.
@@ -2062,11 +2055,14 @@ func fingerprintScalar(value any) (any, bool) {
 //   - Objects merge recursively; incoming keys go through the same policy
 //     rather than wholesale replacement.
 //   - A container (object/array) is never replaced by a scalar or null.
-//   - An incoming empty array does not replace a non-empty existing array.
-//   - Arrays of objects merge element-wise; extra existing elements are
-//     kept when incoming is shorter.
-//   - Arrays of non-objects: the longer array wins; equal length prefers
-//     incoming (authoritative remote refresh of the same collection).
+//   - An incoming empty array does not replace a non-empty existing array
+//     (list omitted the collection vs sent a new one).
+//   - Object arrays match by a stable id key when present, then apply the
+//     same object policy to the pair. Result order and length follow
+//     incoming so a reorder or middle delete cannot join unrelated
+//     objects or keep leftover old entries.
+//   - Arrays without identity keys, and scalar arrays, take incoming
+//     wholesale. Index-wise merge would pair unrelated items.
 //   - Incoming scalars replace existing scalars.
 func mergeKeepRicherJSON(existing, incoming json.RawMessage) (json.RawMessage, bool) {
 	if len(existing) == 0 {
@@ -2145,37 +2141,55 @@ func mergeKeepRicherArray(existing, incoming []any) []any {
 	if len(incoming) == 0 && len(existing) > 0 {
 		return existing
 	}
-	if !arrayItemsAreObjects(existing) && !arrayItemsAreObjects(incoming) {
-		if len(incoming) < len(existing) {
-			return existing
-		}
+	existingByID := indexObjectArrayByIdentity(existing)
+	if len(existingByID) == 0 {
 		return incoming
 	}
-	n := len(incoming)
-	if len(existing) > n {
-		n = len(existing)
-	}
-	out := make([]any, n)
-	for i := 0; i < n; i++ {
-		switch {
-		case i < len(existing) && i < len(incoming):
-			out[i] = mergeKeepRicherValue(existing[i], incoming[i])
-		case i < len(existing):
-			out[i] = existing[i]
-		default:
-			out[i] = incoming[i]
+	out := make([]any, len(incoming))
+	for i, item := range incoming {
+		incomingObj, ok := item.(map[string]any)
+		if !ok {
+			out[i] = item
+			continue
 		}
+		id := arrayItemIdentity(incomingObj)
+		existingObj, ok := existingByID[id]
+		if id == "" || !ok {
+			out[i] = item
+			continue
+		}
+		delete(existingByID, id)
+		out[i] = mergeKeepRicherObject(existingObj, incomingObj)
 	}
 	return out
 }
 
-func arrayItemsAreObjects(items []any) bool {
+func indexObjectArrayByIdentity(items []any) map[string]map[string]any {
+	out := make(map[string]map[string]any)
 	for _, item := range items {
-		if _, ok := item.(map[string]any); ok {
-			return true
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := arrayItemIdentity(obj)
+		if id == "" {
+			continue
+		}
+		if _, exists := out[id]; exists {
+			continue
+		}
+		out[id] = obj
+	}
+	return out
+}
+
+func arrayItemIdentity(obj map[string]any) string {
+	for _, key := range genericIDFieldFallbacks {
+		if s := canonicalIDFromKey(obj, key); s != "" {
+			return s
 		}
 	}
-	return false
+	return ""
 }
 
 func isJSONContainer(value any) bool {
