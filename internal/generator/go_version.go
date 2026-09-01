@@ -1,53 +1,30 @@
 package generator
 
-import (
-	"fmt"
-	"os/exec"
-	"regexp"
-	"runtime"
-	"strings"
-)
-
-var goRuntimeVersionRE = regexp.MustCompile(`go([0-9]+\.[0-9]+)(?:\.([0-9]+))?`)
+// librarySafeGoDirective is the go line emitted into every printed CLI.
+// It is the public-library CI / stdlib CVE floor (GO-2026-6090, GO-2026-6218,
+// GO-2026-6089, GO-2026-5972), not the print-host toolchain.
+const librarySafeGoDirective = "1.26.6"
 
 func currentGoDirectiveVersion() string {
-	version, _ := resolveCurrentGoDirectiveVersion()
-	return version
+	return librarySafeGoDirective
 }
 
 func currentGoToolchainVersion() string {
-	version, _ := resolveCurrentGoToolchainVersion()
-	return version
+	return "go" + librarySafeGoDirective
 }
 
 func resolveCurrentGoDirectiveVersion() (string, error) {
-	if version := goDirectiveVersionFromRuntime(runtime.Version()); version != "" {
-		return version, nil
-	}
-	out, err := exec.Command("go", "env", "GOVERSION").Output()
-	if err == nil {
-		if version := goDirectiveVersionFromRuntime(strings.TrimSpace(string(out))); version != "" {
-			return version, nil
-		}
-	}
-	return "", fmt.Errorf("could not determine Go toolchain version from runtime %q or go env GOVERSION", runtime.Version())
+	return librarySafeGoDirective, nil
 }
 
 func resolveCurrentGoToolchainVersion() (string, error) {
-	version, err := resolveCurrentGoDirectiveVersion()
-	if err != nil {
-		return "", err
-	}
-	return "go" + version, nil
+	return currentGoToolchainVersion(), nil
 }
 
-func goDirectiveVersionFromRuntime(version string) string {
-	match := goRuntimeVersionRE.FindStringSubmatch(version)
-	if match == nil {
-		return ""
-	}
-	if match[2] == "" {
-		return match[1] + ".0"
-	}
-	return match[1] + "." + match[2]
+// selectEmittedGoDirective is the printed go.mod selection policy.
+// The host or binary runtime version is accepted so tests can prove it is
+// never copied in either direction: an older host must not freeze stdlib
+// CVEs, and a newer host must not exceed library CI GOTOOLCHAIN=local.
+func selectEmittedGoDirective(_ string) string {
+	return librarySafeGoDirective
 }
