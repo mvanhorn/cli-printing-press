@@ -569,10 +569,10 @@ func canonicalTenantSelectingHeaders(cfg *config.Config, overrides map[string]st
 	return canonicalStringMap(values)
 }
 
-func isTenantSelectingHeader(name string) bool {
+func foldHeaderName(name string) string {
 	normalized := strings.ToLower(strings.TrimSpace(name))
 	if normalized == "" {
-		return false
+		return ""
 	}
 	var b strings.Builder
 	b.Grow(len(normalized))
@@ -581,28 +581,42 @@ func isTenantSelectingHeader(name string) bool {
 			b.WriteRune(r)
 		}
 	}
-	folded := b.String()
-	if folded == "" {
+	return b.String()
+}
+
+func isRepresentationHeaderName(folded string) bool {
+	return folded == "accept" || folded == "contenttype" || folded == "revision" ||
+		folded == "version" || strings.Contains(folded, "apiversion")
+}
+
+func isNonTenantHeaderName(folded string) bool {
+	switch folded {
+	case "useragent", "authorization", "cookie", "host", "connection",
+		"acceptencoding", "contentlength", "transferencoding", "cachecontrol",
+		"pragma", "te", "upgrade", "via", "forwarded", "xforwardedfor",
+		"xforwardedproto", "xforwardedhost", "xrealip", "traceparent", "tracestate":
+		return true
+	}
+	for _, stem := range []string{
+		"requestid", "correlationid", "traceid", "spanid", "idempotencykey",
+	} {
+		if folded == stem || strings.HasSuffix(folded, stem) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTenantSelectingHeader(name string) bool {
+	folded := foldHeaderName(name)
+	if folded == "" || isRepresentationHeaderName(folded) || isNonTenantHeaderName(folded) {
 		return false
 	}
 	switch folded {
 	case "tenant", "workspace", "organization", "organisation", "org", "region", "account":
 		return true
 	}
-	for _, stem := range []string{
-		"tenantid", "tenantfilter",
-		"workspaceid", "workspacefilter",
-		"organizationid", "organizationfilter",
-		"organisationid", "organisationfilter",
-		"orgid",
-		"regionid", "regionfilter",
-		"accountid", "accountfilter",
-	} {
-		if strings.HasSuffix(folded, stem) {
-			return true
-		}
-	}
-	return false
+	return strings.HasSuffix(folded, "id") || strings.HasSuffix(folded, "filter")
 }
 
 func requestIdempotencyKey(cfg *config.Config, overrides map[string]string) string {

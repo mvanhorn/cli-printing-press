@@ -1832,6 +1832,58 @@ func TestProfileQueryParamDependentIgnoresNonParentFilters(t *testing.T) {
 		"unmatched required query filters stay SkipDefaultSync flat resources")
 }
 
+func TestProfileQueryParamDependentIgnoresMultipleParentKeys(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "multi-key-api",
+		Resources: map[string]spec.Resource{
+			"organizations": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/organizations",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"projects": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/projects",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"files": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/files",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "organization_id", In: "query", Type: "string", Required: true},
+							{Name: "project_id", In: "query", Type: "string", Required: true},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	assert.Empty(t, profile.DependentSyncResources,
+		"a child with two required parent keys must not bind only the first")
+	names := make([]string, 0, len(profile.SyncableResources))
+	skip := map[string]bool{}
+	for _, sr := range profile.SyncableResources {
+		names = append(names, sr.Name)
+		skip[sr.Name] = sr.SkipDefaultSync
+	}
+	assert.Contains(t, names, "files")
+	assert.True(t, skip["files"],
+		"multi-key children stay SkipDefaultSync; x-pp-sync-walker remains the escape hatch")
+}
+
 func TestProfileSyncableResourceSupportsCursorOnlyPagination(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "cursor-only",

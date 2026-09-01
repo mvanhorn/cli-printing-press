@@ -570,7 +570,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 				requiredScope := hasRequiredScopeParams(endpoint)
 				standaloneList := pathCallable && (!requiredScope || endpoint.Syncable)
 				queryKeyParams := requiredQueryParentKeyCandidates(endpoint)
-				queryDependentCandidate := len(queryKeyParams) > 0 && !endpoint.Syncable && (!strings.Contains(endpoint.Path, "{") || resolvable)
+				queryDependentCandidate := len(queryKeyParams) == 1 && !endpoint.Syncable && (!strings.Contains(endpoint.Path, "{") || resolvable) && !hasUnsatisfiedDependentScopeParams(endpoint, queryKeyParams[0])
 				addStandaloneCandidate := func() {
 					meta := metaFromEndpoint(s, resourceName, r, endpoint, s.Types, resourceNameIndex)
 					if requiredScope && !endpoint.Syncable {
@@ -1188,6 +1188,14 @@ func hasRequiredDependentScopeParams(endpoint spec.Endpoint) bool {
 }
 
 func hasRequiredScopeParamsForSync(endpoint spec.Endpoint, allowEnumExpansion bool) bool {
+	return hasRequiredScopeParamsForSyncExcluding(endpoint, allowEnumExpansion, "")
+}
+
+func hasUnsatisfiedDependentScopeParams(endpoint spec.Endpoint, satisfiedParam string) bool {
+	return hasRequiredScopeParamsForSyncExcluding(endpoint, false, satisfiedParam)
+}
+
+func hasRequiredScopeParamsForSyncExcluding(endpoint spec.Endpoint, allowEnumExpansion bool, satisfiedParam string) bool {
 	temporalOrFormatParams := map[string]bool{
 		"since": true, "updated_after": true, "modified_since": true, "since_id": true,
 		"from": true, "to": true, "start_date": true, "end_date": true,
@@ -1200,6 +1208,9 @@ func hasRequiredScopeParamsForSync(endpoint spec.Endpoint, allowEnumExpansion bo
 		// They were historically absent from parsed endpoint params; preserve
 		// that sync classification now that OpenAPI header params are retained.
 		if loc := strings.TrimSpace(param.In); loc != "" && !strings.EqualFold(loc, "query") {
+			continue
+		}
+		if satisfiedParam != "" && strings.EqualFold(param.Name, satisfiedParam) {
 			continue
 		}
 		if param.Required && !param.Positional && !param.PathParam {
@@ -2082,26 +2093,26 @@ func dependentPathContext(entry parameterizedEntry, knownParents map[string]bool
 }
 
 func queryParamDependentContext(entry parameterizedEntry, knownParents map[string]bool) (dependentContext, bool) {
-	childName := spec.ToSnakeCase(entry.name)
-	for _, paramName := range entry.queryKeyParams {
-		parentResource := resolveParentResourceName(entry.parentName, paramName, knownParents)
-		if parentResource == "" {
-			continue
-		}
-		parentSegment := parentResource
-		if entry.parentName != "" {
-			if candidate := spec.ToSnakeCase(entry.parentName); knownParents[candidate] {
-				parentSegment = candidate
-			}
-		}
-		return dependentContext{
-			name:              childName,
-			parentResource:    parentResource,
-			parentPathSegment: parentSegment,
-			firstParam:        paramName,
-		}, true
+	if len(entry.queryKeyParams) != 1 {
+		return dependentContext{}, false
 	}
-	return dependentContext{}, false
+	paramName := entry.queryKeyParams[0]
+	parentResource := resolveParentResourceName(entry.parentName, paramName, knownParents)
+	if parentResource == "" {
+		return dependentContext{}, false
+	}
+	parentSegment := parentResource
+	if entry.parentName != "" {
+		if candidate := spec.ToSnakeCase(entry.parentName); knownParents[candidate] {
+			parentSegment = candidate
+		}
+	}
+	return dependentContext{
+		name:              spec.ToSnakeCase(entry.name),
+		parentResource:    parentResource,
+		parentPathSegment: parentSegment,
+		firstParam:        paramName,
+	}, true
 }
 
 func pathCollectionContext(segments []string) (child, parent string, ok bool) {
