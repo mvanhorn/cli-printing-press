@@ -1212,9 +1212,9 @@ func openMCPReadOnlyStore(path string) (*store.Store, *mcplib.CallToolResult) {
 	db, err := store.OpenReadOnly(path)
 	if err != nil {
 {{- if .APISpec.IsLocalSQLiteSource}}
-		return nil, mcplib.NewToolResultError(fmt.Sprintf("opening local data store %s: %v. {{if syncHintInvocation}}Run {{syncHintInvocation}} to refresh the store before using MCP search/sql.{{else}}Populate the local store through a store-backed command before using MCP search/sql.{{end}}", path, err))
+		return nil, mcplib.NewToolResultError(fmt.Sprintf("opening local data store %s: %v. {{if syncHintInvocation}}Run {{goString (syncHintInvocation)}} to refresh the store before using MCP search/sql.{{else}}Populate the local store through a store-backed command before using MCP search/sql.{{end}}", path, err))
 {{- else}}
-		return nil, mcplib.NewToolResultError(fmt.Sprintf("opening local data store %s: %v. {{if syncHintInvocation}}Run {{syncHintInvocation}} to refresh the store, or use live endpoint MCP tools for unsynced data.{{else}}Use live endpoint MCP tools for unsynced data, or populate the local store through a store-backed command.{{end}}", path, err))
+		return nil, mcplib.NewToolResultError(fmt.Sprintf("opening local data store %s: %v. {{if syncHintInvocation}}Run {{goString (syncHintInvocation)}} to refresh the store, or use live endpoint MCP tools for unsynced data.{{else}}Use live endpoint MCP tools for unsynced data, or populate the local store through a store-backed command.{{end}}", path, err))
 {{- end}}
 	}
 	return db, nil
@@ -1222,9 +1222,9 @@ func openMCPReadOnlyStore(path string) (*store.Store, *mcplib.CallToolResult) {
 
 func mcpMissingStoreMessage(path string) string {
 {{- if .APISpec.IsLocalSQLiteSource}}
-	return fmt.Sprintf("No local data store found at %s. {{if syncHintInvocation}}Run {{syncHintInvocation}} before using MCP search/sql.{{else}}Populate the local store through a store-backed command before using MCP search/sql.{{end}}", path)
+	return fmt.Sprintf("No local data store found at %s. {{if syncHintInvocation}}Run {{goString (syncHintInvocation)}} before using MCP search/sql.{{else}}Populate the local store through a store-backed command before using MCP search/sql.{{end}}", path)
 {{- else}}
-	return fmt.Sprintf("No local data store found at %s. {{if syncHintInvocation}}Run {{syncHintInvocation}} before using MCP search/sql, or use live endpoint MCP tools for unsynced data.{{else}}Use live endpoint MCP tools for unsynced data, or populate the local store through a store-backed command.{{end}}", path)
+	return fmt.Sprintf("No local data store found at %s. {{if syncHintInvocation}}Run {{goString (syncHintInvocation)}} before using MCP search/sql, or use live endpoint MCP tools for unsynced data.{{else}}Use live endpoint MCP tools for unsynced data, or populate the local store through a store-backed command.{{end}}", path)
 {{- end}}
 }
 
@@ -1284,7 +1284,7 @@ func mcpSyncStateUnavailable(err error) bool {
 
 func mcpEmptyStoreNextStep() string {
 {{- if syncHintInvocation}}
-	return "Run {{syncHintInvocation}} to populate the local SQLite store before using MCP search/sql."
+	return "Run {{goString (syncHintInvocation)}} to populate the local SQLite store before using MCP search/sql."
 {{- else}}
 	return "The local SQLite store is empty. Use live endpoint MCP tools or populate the store through a store-backed command before using MCP search/sql."
 {{- end}}
@@ -1605,7 +1605,7 @@ func mcpSQLEnvelope(rows []map[string]any, columns []string, storeStatus mcpStor
 		if storeStatus == mcpStoreStatusEmpty {
 			out["next_step"] = mcpEmptyStoreNextStep()
 		} else {
-			out["next_step"] = "The read-only SQL query returned no rows. Check resource_type filters, json_extract paths{{if syncHintInvocation}}, or run {{if syncHintIsBare}}sync{{else}}{{syncHintInvocation}}{{end}} again if data may be stale{{end}}."
+			out["next_step"] = "The read-only SQL query returned no rows. Check resource_type filters, json_extract paths{{if syncHintInvocation}}, or run {{if syncHintIsBare}}sync{{else}}{{goString (syncHintInvocation)}}{{end}} again if data may be stale{{end}}."
 		}
 	}
 	return out

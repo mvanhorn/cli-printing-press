@@ -1,6 +1,8 @@
 package generator
 
 import (
+	"go/parser"
+	"go/token"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -66,6 +68,16 @@ func TestSyncHintInvocationShapes(t *testing.T) {
 				{Name: "items"},
 			},
 			want: "",
+		},
+		{
+			name:    "adversarial resource names stay in the working invocation",
+			cliName: "hint-escape",
+			syncable: []profiler.SyncableResource{
+				{Name: `foo"bar`, SkipDefaultSync: true},
+				{Name: `baz\qux`, SkipDefaultSync: true},
+				{Name: "line\nbreak", SkipDefaultSync: true},
+			},
+			want: "hint-escape-pp-cli sync --resources baz\\qux,foo\"bar,line\nbreak",
 		},
 	}
 	for _, tt := range tests {
@@ -179,6 +191,24 @@ func TestGeneratedHintsKeepPopulatedSyncAndAuth(t *testing.T) {
 	assert.NotContains(t, mcpSrc, "or run hint-bearer-pp-cli sync again")
 
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGoStringLiteralContentEscapesHintInvocation(t *testing.T) {
+	t.Parallel()
+
+	inv := syncHintInvocation("hint-escape", []profiler.SyncableResource{
+		{Name: `foo"bar`, SkipDefaultSync: true},
+		{Name: `baz\qux`, SkipDefaultSync: true},
+		{Name: "line\nbreak", SkipDefaultSync: true},
+	})
+	require.NotEmpty(t, inv)
+
+	src := "package p\nvar s = \"Run '" + goStringLiteralContent(inv) + "' first.\"\n"
+	_, err := parser.ParseFile(token.NewFileSet(), "hint.go", src, parser.AllErrors)
+	require.NoError(t, err, "escaped sync hint must remain a valid Go string literal:\n%s", src)
+	assert.NotContains(t, src, `foo"bar`, "raw resource quotes must not appear unescaped in generated source")
+	assert.Contains(t, src, `foo\"bar`)
+	assert.Contains(t, src, `\n`)
 }
 
 func skipDefaultSyncAuthNoneSpec(name string) *spec.APISpec {

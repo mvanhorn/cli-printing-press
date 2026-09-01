@@ -1,6 +1,10 @@
 public-param-golden/internal/cli/stores_find.go
 public-param-golden/internal/cli/stores_create.go
 public-param-golden/internal/cli/helpers.go
+public-param-golden/internal/cli/data_source.go
+public-param-golden/internal/cli/doctor.go
+public-param-golden/internal/cli/search.go
+public-param-golden/internal/cli/sync_hint.go
 public-param-golden/internal/mcp/tools.go
 public-param-golden/tools-manifest.json
 public-param-golden/README.md

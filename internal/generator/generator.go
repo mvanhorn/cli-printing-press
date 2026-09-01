@@ -599,6 +599,10 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"goRawSafe": func(s string) string {
 			return strings.ReplaceAll(s, "`", "'")
 		},
+		// goString escapes a value so it is safe to interpolate inside a
+		// generated double-quoted Go string literal. Resource keys and
+		// other spec-derived tokens can carry ", \, or newlines.
+		"goString": goStringLiteralContent,
 		// truncate clips a string to max runes with an ellipsis. Used to
 		// enforce the root --help Long size budget: LLM-authored headlines
 		// and novel-feature descriptions have no inherent length ceiling,
@@ -4915,6 +4919,12 @@ func syncableHintResourceNames(syncable []profiler.SyncableResource) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// Quote, backslash, or newline in spec-derived tokens break generated "..." literals.
+func goStringLiteralContent(s string) string {
+	quoted := strconv.Quote(s)
+	return quoted[1 : len(quoted)-1]
 }
 
 // syncHintInvocation is the working sync command for generated hints and

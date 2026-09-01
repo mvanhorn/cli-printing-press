@@ -164,7 +164,8 @@ func TestIsInsideGoDoubleQuotedStringSkipsTemplateActionSyntax(t *testing.T) {
 
 func goTemplateActionEscapesSpecText(action string) bool {
 	return strings.Contains(action, "oneline ") ||
-		strings.Contains(action, "printf \"%q\"")
+		strings.Contains(action, "printf \"%q\"") ||
+		strings.Contains(action, "goString ")
 }
 
 func TestGoTemplateActionEscapesSpecTextRejectsRawStringHelper(t *testing.T) {
@@ -172,7 +173,56 @@ func TestGoTemplateActionEscapesSpecTextRejectsRawStringHelper(t *testing.T) {
 
 	assert.True(t, goTemplateActionEscapesSpecText(`{{oneline .Description}}`))
 	assert.True(t, goTemplateActionEscapesSpecText(`{{printf "%q" .Description}}`))
+	assert.True(t, goTemplateActionEscapesSpecText(`{{goString (syncHintInvocation)}}`))
 	assert.False(t, goTemplateActionEscapesSpecText(`{{goRawSafe .Description}}`))
+	assert.False(t, goTemplateActionEscapesSpecText(`{{syncHintInvocation}}`))
+}
+
+func TestGoTemplatesEscapeSyncHintInvocationInStringLiterals(t *testing.T) {
+	t.Parallel()
+
+	var violations []string
+	err := fs.WalkDir(templateFS, "templates", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go.tmpl") {
+			return nil
+		}
+
+		data, err := templateFS.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for lineNo, line := range strings.Split(string(data), "\n") {
+			for start := strings.Index(line, "{{"); start >= 0; {
+				end := strings.Index(line[start+2:], "}}")
+				if end < 0 {
+					break
+				}
+				end += start + 2
+				action := line[start : end+2]
+				if isInsideGoDoubleQuotedString(line[:start]) &&
+					strings.Contains(action, "syncHintInvocation") &&
+					!strings.Contains(action, "if ") &&
+					!goTemplateActionEscapesSpecText(action) {
+					violations = append(violations, path+":"+strconv.Itoa(lineNo+1)+": "+strings.TrimSpace(line))
+				}
+				next := end + 2
+				if next >= len(line) {
+					break
+				}
+				if rel := strings.Index(line[next:], "{{"); rel >= 0 {
+					start = next + rel
+				} else {
+					break
+				}
+			}
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.Empty(t, violations, "syncHintInvocation inside Go string literals must use goString/printf %%q; unsafe template sites:\n%s", strings.Join(violations, "\n"))
 }
 
 func TestDoctorTemplateRendersKindAwareAuthEnvPresence(t *testing.T) {
