@@ -1,0 +1,6 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/keyless-openapi.yaml --output "$CASE_ACTUAL_DIR/keyless-openapi" --force --validate=false
+"$BINARY" generate --spec testdata/golden/fixtures/keyless-leftover-env.yaml --output "$CASE_ACTUAL_DIR/keyless-leftover-env" --force --validate=false
+test ! -e "$CASE_ACTUAL_DIR/keyless-openapi/agentcookie.toml"
+test ! -e "$CASE_ACTUAL_DIR/keyless-leftover-env/agentcookie.toml"
+printf 'absent\n' > "$CASE_ACTUAL_DIR/agentcookie-absent.txt"

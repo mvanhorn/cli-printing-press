@@ -248,6 +248,10 @@ type APISpec struct {
 	// enough across the API to resolve from root CLI flags / env-backed
 	// TemplateVars instead of per-command positional arguments.
 	GlobalPathTemplateVars []string `yaml:"-" json:"global_path_template_vars,omitempty"`
+	// SyncPathContextVars lists ordinary path placeholders that skip default
+	// sync until a caller supplies them via --path-context. They are not
+	// tenant/base-url template vars and must not be advertised as required env.
+	SyncPathContextVars []string `yaml:"-" json:"-"`
 	// EndpointTemplateEnvOverrides maps a placeholder in EndpointTemplateVars
 	// to an explicit env-var name, overriding the default
 	// <APINAME>_<UPPER_PLACEHOLDER> resolution. Used for per-tenant or
@@ -1736,6 +1740,9 @@ func (c AuthConfig) HasCookies() bool {
 // callers do not add secrets-bus plumbing where browser cookies are the
 // credential source.
 func (c AuthConfig) HasNonCookieAuth() bool {
+	if strings.EqualFold(strings.TrimSpace(c.Type), "none") {
+		return false
+	}
 	return len(c.EnvVarSpecs) > 0 || len(c.EnvVars) > 0
 }
 

@@ -2726,7 +2726,7 @@ func (g *Generator) prepareOutput() error {
 		g.profile = profiler.Profile(g.Spec)
 		g.resetHTMLSyncStubCache()
 	}
-	promoteSyncPathTemplateVars(g.Spec, g.profile)
+	promoteSyncPathContextVars(g.Spec, g.profile)
 	if err := g.validateFreshnessCommandCoverage(); err != nil {
 		return err
 	}
@@ -4197,7 +4197,8 @@ func (g *Generator) renderAuthFiles() error {
 // HasAuthCommand, and scoreAuth exempts them from the "no auth subcommand"
 // deduction. All three call sites must agree -- they call this method.
 func (g *Generator) shouldEmitAuth() bool {
-	return g.Spec.Auth.Type != "none" ||
+	typ := strings.ToLower(strings.TrimSpace(g.Spec.Auth.Type))
+	return (typ != "" && typ != "none") ||
 		g.Spec.Auth.AuthorizationURL != "" ||
 		g.hasTrafficAnalysisHint("graphql_persisted_query")
 }
@@ -4611,6 +4612,59 @@ type paginationDefaultEntry struct {
 	Limit          int
 }
 
+func promoteSyncPathContextVars(api *spec.APISpec, profile *profiler.APIProfile) {
+	if api == nil || profile == nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(api.SyncPathContextVars)+len(api.EndpointTemplateVars))
+	for _, name := range api.SyncPathContextVars {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			seen[trimmed] = struct{}{}
+		}
+	}
+	for _, name := range api.EndpointTemplateVars {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			seen[trimmed] = struct{}{}
+		}
+	}
+	for _, resource := range profile.SyncableResources {
+		if !resource.SkipDefaultSync {
+			continue
+		}
+		for _, name := range pathTemplateVarNames(resource.Path) {
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			api.SyncPathContextVars = append(api.SyncPathContextVars, name)
+		}
+	}
+	slices.Sort(api.SyncPathContextVars)
+}
+
+func pathTemplateVarNames(path string) []string {
+	var names []string
+	seen := map[string]struct{}{}
+	for i := 0; i < len(path); i++ {
+		if path[i] != '{' {
+			continue
+		}
+		j := strings.IndexByte(path[i:], '}')
+		if j < 0 {
+			break
+		}
+		name := strings.TrimSpace(path[i+1 : i+j])
+		if name != "" {
+			if _, ok := seen[name]; !ok {
+				seen[name] = struct{}{}
+				names = append(names, name)
+			}
+		}
+		i += j
+	}
+	return names
+}
+
 func paginationDefaultEntries(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []paginationDefaultEntry {
 	defaults := map[string]paginationDefaultEntry{}
 	add := func(key, name, cursorParam, cursorType, nextCursorPath, limitParam string, limit int, supportsPagination bool) {
@@ -4648,54 +4702,6 @@ func paginationDefaultEntries(syncable []profiler.SyncableResource, dependent []
 		entries[i] = defaults[key]
 	}
 	return entries
-}
-
-func promoteSyncPathTemplateVars(api *spec.APISpec, profile *profiler.APIProfile) {
-	if api == nil || profile == nil {
-		return
-	}
-	seen := make(map[string]struct{}, len(api.EndpointTemplateVars))
-	for _, name := range api.EndpointTemplateVars {
-		if trimmed := strings.TrimSpace(name); trimmed != "" {
-			seen[trimmed] = struct{}{}
-		}
-	}
-	for _, resource := range profile.SyncableResources {
-		if !resource.SkipDefaultSync {
-			continue
-		}
-		for _, name := range pathTemplateVarNames(resource.Path) {
-			if _, ok := seen[name]; ok {
-				continue
-			}
-			seen[name] = struct{}{}
-			api.EndpointTemplateVars = append(api.EndpointTemplateVars, name)
-		}
-	}
-	slices.Sort(api.EndpointTemplateVars)
-}
-
-func pathTemplateVarNames(path string) []string {
-	var names []string
-	seen := map[string]struct{}{}
-	for i := 0; i < len(path); i++ {
-		if path[i] != '{' {
-			continue
-		}
-		j := strings.IndexByte(path[i:], '}')
-		if j < 0 {
-			break
-		}
-		name := strings.TrimSpace(path[i+1 : i+j])
-		if name != "" {
-			if _, ok := seen[name]; !ok {
-				seen[name] = struct{}{}
-				names = append(names, name)
-			}
-		}
-		i += j
-	}
-	return names
 }
 
 func resourceIDFieldOverrideEntries(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []resourceIDFieldOverrideEntry {

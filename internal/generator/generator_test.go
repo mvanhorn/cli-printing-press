@@ -1390,12 +1390,22 @@ func TestGenerateComposedApiKeyPlusBearerEmitsAdditionalHeader(t *testing.T) {
 	doctorBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
 	require.NoError(t, err)
 	doctorSrc := string(doctorBytes)
-	assert.Contains(t, doctorSrc, `recordAdditionalAuthEnv("ST_APP_KEY", configuredValue)`,
+	assert.Contains(t, doctorSrc, `recordAdditionalAuthEnv("ST_APP_KEY", configuredValue, true)`,
 		"doctor must check the sibling apiKey env var")
 	assert.Contains(t, doctorSrc, `configuredValue = cfg.StAppKey`,
 		"doctor must accept sibling apiKey credentials from config files")
-	assert.Contains(t, doctorSrc, `} else if authConfigured {`,
-		"doctor must apply the config fallback consistently for sibling apiKey credentials")
+	assert.Contains(t, doctorSrc, `if os.Getenv(name) != "" || configuredValue != "" {`,
+		"doctor must treat a missing additional required auth var as missing even when the primary token is configured")
+	assert.NotContains(t, doctorSrc, `} else if authConfigured {
+					authSource, _ := report["auth_source"].(string)
+					if authSource == "" {
+						authSource = "config"
+					}
+					authEnvInfo = append(authEnvInfo, "credentials available from "+authSource)
+				} else {
+					authEnvRequiredMissing = append(authEnvRequiredMissing, name)
+				}`,
+		"primary-token coverage must not excuse a missing additional required auth variable")
 	assert.Contains(t, doctorSrc, `OK %d/%d available", len(authEnvSet), 3`,
 		"doctor must include sibling apiKey credentials in the env-var count")
 
@@ -1537,7 +1547,7 @@ paths:
 	doctorBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
 	require.NoError(t, err)
 	doctorSrc := string(doctorBytes)
-	assert.Contains(t, doctorSrc, `recordAdditionalAuthEnv("TRELLO_TOKEN", configuredValue)`,
+	assert.Contains(t, doctorSrc, `recordAdditionalAuthEnv("TRELLO_TOKEN", configuredValue, true)`,
 		"doctor must check the sibling query apiKey env var")
 	assert.Contains(t, doctorSrc, `OK %d/%d available", len(authEnvSet), 2`,
 		"doctor must include sibling query apiKey credentials in the env-var count")
@@ -17946,6 +17956,8 @@ func TestGenerateNoEndpointTemplateVarsByteCompat(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
+	require.Empty(t, apiSpec.SyncPathContextVars,
+		"loops fixture must not invent sync path-context vars from ordinary path params")
 
 	_, err = os.Stat(filepath.Join(outputDir, "internal", "client", "url.go"))
 	assert.True(t, os.IsNotExist(err),

@@ -2857,25 +2857,15 @@ var bearerKeywords = []string{
 	"personal access token",
 }
 
-// apiKeyKeywords indicate API-key auth when found in info.description.
-// Produces Type="api_key" with EnvVars suffix "_API_KEY".
-// Only secret-key vendor prefixes (sk_*, cal_*), not publishable (pk_*).
-var apiKeyKeywords = []string{
-	"api key",
-	"api_key",
-	"authorization header",
-	"sk_live_",
-	"sk_test_",
-	"cal_live_",
-}
-
 // negationWords suppress a keyword match when they appear within 5 words
 // before the keyword, catching "does not require Bearer" patterns.
 var negationWords = []string{"not", "no", "without", "unnecessary", "optional"}
 
-// inferDescriptionAuth scans info.description for auth keywords when both
-// selectSecurityScheme and inferQueryParamAuth produce nothing. This is the
-// third and final tier of the auth detection pipeline.
+// inferDescriptionAuth scans info.description for bearer/token keywords when
+// selectSecurityScheme and query/header-param inference produce nothing.
+// Prose that mentions an API key is not enough to invent a credential: a
+// keyless spec with zero securitySchemes must stay keyless unless a
+// structural signal (scheme, required auth-like param) exists.
 func inferDescriptionAuth(doc *openapi3.T, name string, fallback spec.AuthConfig) spec.AuthConfig {
 	if doc == nil || doc.Info == nil {
 		return fallback
@@ -2897,19 +2887,6 @@ func inferDescriptionAuth(doc *openapi3.T, name string, fallback spec.AuthConfig
 				In:       "header",
 				Header:   "Authorization",
 				EnvVars:  []string{envPrefix + "_TOKEN"},
-				Inferred: true,
-			}
-		}
-	}
-
-	// Check API key keywords
-	for _, kw := range apiKeyKeywords {
-		if findUnnegated(desc, kw) {
-			return spec.AuthConfig{
-				Type:     "api_key",
-				In:       "header",
-				Header:   detectHeaderName(desc),
-				EnvVars:  []string{envPrefix + "_API_KEY"},
 				Inferred: true,
 			}
 		}
@@ -2991,27 +2968,6 @@ func authorizationParamMentionsBearer(p *openapi3.Parameter) bool {
 		return findUnnegated(strings.ToLower(p.Schema.Value.Description), "bearer")
 	}
 	return false
-}
-
-// commonCustomHeaders are header names that APIs use instead of Authorization.
-// Checked case-insensitively against the description text.
-var commonCustomHeaders = []string{
-	"X-Api-Key",
-	"X-API-Key",
-	"X-Auth-Token",
-	"X-Access-Token",
-}
-
-// detectHeaderName scans description text for a known custom auth header name.
-// Returns the canonical casing if found, "Authorization" otherwise.
-func detectHeaderName(desc string) string {
-	lower := strings.ToLower(desc)
-	for _, h := range commonCustomHeaders {
-		if strings.Contains(lower, strings.ToLower(h)) {
-			return h
-		}
-	}
-	return "Authorization"
 }
 
 // findUnnegated scans all occurrences of keyword in text and returns true if
