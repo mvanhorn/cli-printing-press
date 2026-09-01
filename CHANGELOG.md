@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.31.5](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.4...v4.31.5) (2026-09-01)
+
+
+### Bug Fixes
+
+* **cli:** derive sync and auth hints from emitted capabilities ([#4487](https://github.com/mvanhorn/cli-printing-press/issues/4487)) ([93f2c90](https://github.com/mvanhorn/cli-printing-press/commit/93f2c90f1c2415cfcb5c6f6bbde5fb6ea1d50f92))
+* **cli:** honest doctor auth reporting and env advertising ([#4488](https://github.com/mvanhorn/cli-printing-press/issues/4488)) ([b15cae1](https://github.com/mvanhorn/cli-printing-press/commit/b15cae19ec543bef77aaa35caf17af2c950b8f1a))
+* **cli:** pin go directive to a library-safe floor ([#4485](https://github.com/mvanhorn/cli-printing-press/issues/4485)) ([5a1332f](https://github.com/mvanhorn/cli-printing-press/commit/5a1332f6048f3b64e11eef32b20af87e3e096661))
+* **cli:** stop GraphQL false-positives on description prose ([#4486](https://github.com/mvanhorn/cli-printing-press/issues/4486)) ([c6d4848](https://github.com/mvanhorn/cli-printing-press/commit/c6d48489fdfc2326682f9c817a15233264a19715))
+* **cli:** tenant cache key, runnable doctor reads, query-param dependents ([#4489](https://github.com/mvanhorn/cli-printing-press/issues/4489)) ([0282159](https://github.com/mvanhorn/cli-printing-press/commit/0282159de3a65e70b6be3cc4f55d953483b3f48a))
+
 ## [4.31.4](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.3...v4.31.4) (2026-08-31)
 
 
