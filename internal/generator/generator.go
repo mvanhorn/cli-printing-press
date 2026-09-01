@@ -4938,10 +4938,10 @@ func syncHintInvocation(cliName string, syncable []profiler.SyncableResource) st
 	}
 	bin := cliName + "-pp-cli"
 	if len(defaultSyncResourceNames(syncable)) > 0 {
-		return bin + " sync"
+		return shellargs.Join([]string{bin, "sync"})
 	}
 	if names := syncableHintResourceNames(syncable); len(names) > 0 {
-		return bin + " sync --resources " + strings.Join(names, ",")
+		return shellargs.Join([]string{bin, "sync", "--resources", strings.Join(names, ",")})
 	}
 	return ""
 }

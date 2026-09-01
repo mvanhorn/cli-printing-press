@@ -9,6 +9,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -77,7 +78,10 @@ func TestSyncHintInvocationShapes(t *testing.T) {
 				{Name: `baz\qux`, SkipDefaultSync: true},
 				{Name: "line\nbreak", SkipDefaultSync: true},
 			},
-			want: "hint-escape-pp-cli sync --resources baz\\qux,foo\"bar,line\nbreak",
+			want: shellargs.Join([]string{
+				"hint-escape-pp-cli", "sync", "--resources",
+				"baz\\qux,foo\"bar,line\nbreak",
+			}),
 		},
 	}
 	for _, tt := range tests {
@@ -202,6 +206,8 @@ func TestGoStringLiteralContentEscapesHintInvocation(t *testing.T) {
 		{Name: "line\nbreak", SkipDefaultSync: true},
 	})
 	require.NotEmpty(t, inv)
+	assert.Contains(t, inv, "--resources '",
+		"metacharacters in resource names must be shell-quoted in the copyable hint")
 
 	src := "package p\nvar s = \"Run '" + goStringLiteralContent(inv) + "' first.\"\n"
 	_, err := parser.ParseFile(token.NewFileSet(), "hint.go", src, parser.AllErrors)
