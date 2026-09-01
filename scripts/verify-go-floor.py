@@ -106,6 +106,9 @@ def main() -> int:
                 current_line = line_text(content, match.start())
                 if is_allowed_old_fixture(rel, current_line):
                     continue
+                # NotContains names a version that must not appear; it is not a floor pin.
+                if "NotContains" in current_line:
+                    continue
                 if version != floor:
                     failures.append(
                         f"{rel}:{line_number(content, match.start())}: expected {floor}, found {version}"
