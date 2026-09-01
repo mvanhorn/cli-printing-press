@@ -98,7 +98,7 @@ Resource scoping:
 		Example: `  # Sync all resources
   sync-walker-golden-pp-cli sync
   # Sync specific resources only
-  sync-walker-golden-pp-cli sync --resources games,standings
+  sync-walker-golden-pp-cli sync --resources games
 
   # Full resync (ignore previous checkpoint)
   sync-walker-golden-pp-cli sync --full
@@ -2066,7 +2066,6 @@ func defaultSyncResources() []string {
 func knownSyncResourceNames() []string {
 	names := []string{
 		"games",
-		"standings",
 	}
 	for _, dep := range dependentResourceDefs() {
 		names = append(names, dep.Name)
@@ -2096,8 +2095,7 @@ func describeResourceFailure(count int, label string, resources []string) string
 // this preserves the actual endpoint path like "/ISteamApps/GetAppList/v2".
 func syncResourcePath(resource string) (string, error) {
 	paths := map[string]string{ // #nosec G101 -- endpoint paths, not credentials.
-		"games":     "/games",
-		"standings": "/standings",
+		"games": "/games",
 	}
 	if p, ok := paths[resource]; ok {
 		return p, nil
