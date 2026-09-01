@@ -587,7 +587,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 	// healing print-time seed staleness without a reprint. No candidate
 	// row backs this; the warning is recomputed each call and clears on
 	// its own once the entity resolves.
-	{{- if .HasSync}}
+	{{- if syncHintInvocation}}
 	if !result.Found {
 		for _, e := range unresolvedEntities {
 			result.Warnings = append(result.Warnings,
