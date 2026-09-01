@@ -86,6 +86,43 @@ func TestGeneratedDoctorFailsWhenAdditionalRequiredAuthVarMissing(t *testing.T) 
 		"both token and organization id present should keep Env Vars OK; got %q", envVars)
 }
 
+func TestGeneratedDoctorOptionalAdditionalAuthVarDoesNotFail(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := additionalAuthDoctorSpec("doctor-opt-auth")
+	apiSpec.BaseURL = ""
+	labelEnv := naming.EnvPrefix(apiSpec.Name) + "_ACCOUNT_LABEL"
+	apiSpec.Auth.AdditionalHeaders = append(apiSpec.Auth.AdditionalHeaders, spec.AdditionalAuthHeader{
+		Header: "X-Account-Label",
+		In:     "header",
+		EnvVar: spec.AuthEnvVar{
+			Name:      labelEnv,
+			Kind:      spec.AuthEnvVarKindPerCall,
+			Required:  false,
+			Sensitive: false,
+		},
+	})
+
+	outputDir, binaryPath := buildGeneratedBinary(t, apiSpec)
+	doctorSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(doctorSrc), `recordAdditionalAuthEnv("`+labelEnv+`", configuredValue, false)`)
+
+	prefix := naming.EnvPrefix(apiSpec.Name)
+	orgEnv := prefix + "_ORGANIZATION_ID"
+	home := t.TempDir()
+	env := append(doctorEnv(home, prefix), prefix+"_TOKEN=not-a-real-token", orgEnv+"=12345")
+	payload, err := runDoctorJSON(t, binaryPath, env)
+	require.NoError(t, err)
+	require.Equal(t, "configured", payload["auth"])
+	envVars, _ := payload["env_vars"].(string)
+	require.NotContains(t, envVars, "ERROR missing required")
+	require.Contains(t, envVars, labelEnv+" optional")
+
+	_, err = runDoctorJSON(t, binaryPath, env, "--fail-on", "error")
+	require.NoError(t, err, "--fail-on=error must not trip on a missing optional additional auth var")
+}
+
 func TestGeneratedDoctorKeylessAuthDoesNotInventAPIKey(t *testing.T) {
 	t.Parallel()
 

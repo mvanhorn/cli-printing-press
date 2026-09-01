@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/additional-auth-doctor.yaml --output "$CASE_ACTUAL_DIR/additional-auth-doctor" --force --validate=false

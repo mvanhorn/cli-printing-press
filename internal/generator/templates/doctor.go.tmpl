@@ -427,12 +427,16 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// Validation rejects multi-OR-group specs upstream, so the single optional-satisfied state is sufficient at runtime.
 			authEnvOptionalSatisfied := false
 {{- if .Auth.AdditionalHeaders}}
-			recordAdditionalAuthEnv := func(name, configuredValue string) {
+			recordAdditionalAuthEnv := func(name, configuredValue string, required bool) {
 				if os.Getenv(name) != "" || configuredValue != "" {
 					authEnvSet = append(authEnvSet, name)
 					return
 				}
-				authEnvRequiredMissing = append(authEnvRequiredMissing, name)
+				if required {
+					authEnvRequiredMissing = append(authEnvRequiredMissing, name)
+					return
+				}
+				authEnvInfo = append(authEnvInfo, name+" optional")
 			}
 {{- end}}
 {{- if hasAuthEnvVarKind .Auth.EnvVarSpecs "harvested"}}
@@ -488,7 +492,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				if cfg != nil {
 					configuredValue = cfg.{{resolveEnvVarField .EnvVar.Name}}
 				}
-				recordAdditionalAuthEnv("{{.EnvVar.Name}}", configuredValue)
+				recordAdditionalAuthEnv("{{.EnvVar.Name}}", configuredValue, {{.EnvVar.Required}})
 			}
 {{- end}}
 			switch {

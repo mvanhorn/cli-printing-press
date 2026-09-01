@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/path-param-not-tenant.yaml --output "$CASE_ACTUAL_DIR/path-param-posts" --force --validate=false

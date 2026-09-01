@@ -1390,7 +1390,7 @@ func TestGenerateComposedApiKeyPlusBearerEmitsAdditionalHeader(t *testing.T) {
 	doctorBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
 	require.NoError(t, err)
 	doctorSrc := string(doctorBytes)
-	assert.Contains(t, doctorSrc, `recordAdditionalAuthEnv("ST_APP_KEY", configuredValue)`,
+	assert.Contains(t, doctorSrc, `recordAdditionalAuthEnv("ST_APP_KEY", configuredValue, true)`,
 		"doctor must check the sibling apiKey env var")
 	assert.Contains(t, doctorSrc, `configuredValue = cfg.StAppKey`,
 		"doctor must accept sibling apiKey credentials from config files")
@@ -1547,7 +1547,7 @@ paths:
 	doctorBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
 	require.NoError(t, err)
 	doctorSrc := string(doctorBytes)
-	assert.Contains(t, doctorSrc, `recordAdditionalAuthEnv("TRELLO_TOKEN", configuredValue)`,
+	assert.Contains(t, doctorSrc, `recordAdditionalAuthEnv("TRELLO_TOKEN", configuredValue, true)`,
 		"doctor must check the sibling query apiKey env var")
 	assert.Contains(t, doctorSrc, `OK %d/%d available", len(authEnvSet), 2`,
 		"doctor must include sibling query apiKey credentials in the env-var count")
