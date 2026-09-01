@@ -44,7 +44,7 @@ work items, tickets, or tasks.`,
 
 			db, err := store.OpenWithContext(cmd.Context(), dbPath)
 			if err != nil {
-				return fmt.Errorf("opening local database: %w\nRun '{{.Name}}-pp-cli sync' first.", err)
+				return fmt.Errorf("opening local database: %w\n{{if syncHintInvocation}}Run '{{syncHintInvocation}}' first.{{else}}Populate the local store through a custom store-backed command first.{{end}}", err)
 			}
 			defer db.Close()
 

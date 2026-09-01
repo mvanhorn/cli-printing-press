@@ -366,23 +366,23 @@ Highlights (not in the official API docs):
 {{- end}}
 
 Agent mode: add --agent to any command for JSON output + non-interactive mode.
-Health check: run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.
+Health check: run '{{.Name}}-pp-cli doctor' to {{if .HasAuthCommand}}verify auth and connectivity{{else}}verify connectivity{{end}}.
 See README.md or the bundled SKILL.md for recipes.{{backtick}},
 {{- else if .CLIDescription}}
 		Long: {{backtick}}{{goRawSafe .CLIDescription}}
 
 Add --agent to any command for JSON output + non-interactive mode.
-Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
+Run '{{.Name}}-pp-cli doctor' to {{if .HasAuthCommand}}verify auth and connectivity{{else}}verify connectivity{{end}}.{{backtick}},
 {{- else if and .Narrative .Narrative.Headline}}
 		Long: {{backtick}}{{humanName .Name}} CLI — {{goRawSafe .Narrative.Headline}}
 
 Add --agent to any command for JSON output + non-interactive mode.
-Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
+Run '{{.Name}}-pp-cli doctor' to {{if .HasAuthCommand}}verify auth and connectivity{{else}}verify connectivity{{end}}.{{backtick}},
 {{- else}}
 		Long: {{backtick}}Manage {{.Name}} resources via the {{.Name}} API.
 
 Add --agent to any command for JSON output + non-interactive mode.
-Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
+Run '{{.Name}}-pp-cli doctor' to {{if .HasAuthCommand}}verify auth and connectivity{{else}}verify connectivity{{end}}.{{backtick}},
 {{- end}}
 		SilenceUsage: true,
 		Version:      version,

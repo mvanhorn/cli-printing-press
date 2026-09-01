@@ -19816,7 +19816,7 @@ func TestProjectManagementWorkflowsEmitSyncHints(t *testing.T) {
 	for _, snippet := range []string{
 		"func hintIfUnsynced(cmd *cobra.Command, db *store.Store, resourceType string) bool",
 		"func hintIfStale(cmd *cobra.Command, db *store.Store, resourceType string, maxAge time.Duration) bool",
-		"Run 'pmworkflows-pp-cli sync'",
+		`const syncHintCommand = "pmworkflows-pp-cli sync"`,
 	} {
 		assert.Contains(t, string(syncHintSrc), snippet, "sync_hint.go missing %q", snippet)
 	}

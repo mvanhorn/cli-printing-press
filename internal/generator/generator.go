@@ -337,6 +337,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"composeMCPSubDesc":                   composeMCPSubDesc,
 		"mcpParamDesc":                        g.mcpParamDescription,
 		"hasDefaultSyncResources":             hasDefaultSyncResources,
+		"syncHintInvocation":                  g.syncHintInvocation,
 		"flagName":                            flagName,
 		"paramIdent":                          paramIdent,
 		"paramWireName":                       paramWireName,
@@ -4884,12 +4885,65 @@ func paginationSupportedResources(syncable []profiler.SyncableResource, dependen
 }
 
 func hasDefaultSyncResources(syncable []profiler.SyncableResource) bool {
+	return len(defaultSyncResourceNames(syncable)) > 0
+}
+
+func defaultSyncResourceNames(syncable []profiler.SyncableResource) []string {
+	names := make([]string, 0, len(syncable))
 	for _, resource := range syncable {
-		if !resource.SkipDefaultSync {
-			return true
+		if resource.SkipDefaultSync {
+			continue
+		}
+		if name := strings.TrimSpace(resource.Name); name != "" {
+			names = append(names, name)
 		}
 	}
-	return false
+	sort.Strings(names)
+	return names
+}
+
+func syncableHintResourceNames(syncable []profiler.SyncableResource) []string {
+	names := make([]string, 0, len(syncable))
+	for _, resource := range syncable {
+		if isVestigialSyncResource(resource) {
+			continue
+		}
+		if name := strings.TrimSpace(resource.Name); name != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// syncHintInvocation is the working sync command for generated hints and
+// help. Bare `sync` when defaultSyncResources is populated; `sync --resources
+// a,b` when resources exist but none are default; empty when no hint should
+// name sync.
+func syncHintInvocation(cliName string, syncable []profiler.SyncableResource) string {
+	cliName = strings.TrimSpace(cliName)
+	if cliName == "" {
+		return ""
+	}
+	bin := cliName + "-pp-cli"
+	if len(defaultSyncResourceNames(syncable)) > 0 {
+		return bin + " sync"
+	}
+	if names := syncableHintResourceNames(syncable); len(names) > 0 {
+		return bin + " sync --resources " + strings.Join(names, ",")
+	}
+	return ""
+}
+
+func (g *Generator) syncHintInvocation() string {
+	if g == nil || g.Spec == nil || !g.hasGeneratedSyncImplementation() {
+		return ""
+	}
+	var syncable []profiler.SyncableResource
+	if g.profile != nil {
+		syncable = g.profile.SyncableResources
+	}
+	return syncHintInvocation(g.Spec.Name, syncable)
 }
 
 func specDateTimeFieldNames(api *spec.APISpec) []string {

@@ -191,7 +191,7 @@ Run sync first to populate the local search index.`,
 
 			db, err := store.OpenWithContext(cmd.Context(), dbPath)
 			if err != nil {
-				return fmt.Errorf("opening local database: %w\nRun '{{.Name}}-pp-cli sync' first to populate the local database.", err)
+				return fmt.Errorf("opening local database: %w\n{{if syncHintInvocation}}Run '{{syncHintInvocation}}' first to populate the local database.{{else}}Populate the local store through a custom store-backed command first.{{end}}", err)
 			}
 			defer db.Close()
 
