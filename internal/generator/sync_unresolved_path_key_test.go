@@ -214,6 +214,12 @@ func TestGenerateSyncRegistersParentScopedPathTemplateCollection(t *testing.T) {
 		"sync should expose --path-context so callers can provide the parent template value")
 	assert.Contains(t, syncContent, `"adAccountId": true`,
 		"the parent template variable should be treated as runtime-resolvable when --path-context supplies it")
+	assert.Contains(t, apiSpec.SyncPathContextVars, "adAccountId")
+	assert.NotContains(t, apiSpec.EndpointTemplateVars, "adAccountId",
+		"ordinary parent path params must not be advertised as tenant template env vars")
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(readme), "ACCOUNT_SCOPED_ADACCOUNTID")
 	defaultResourcesBody := generatedFunctionBody(t, syncContent, "func defaultSyncResources() []string")
 	assert.NotContains(t, defaultResourcesBody, `"campaigns"`,
 		"parent-scoped collections should not run by default without explicit context")

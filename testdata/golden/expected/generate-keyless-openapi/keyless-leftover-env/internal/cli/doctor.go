@@ -14,10 +14,10 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"printing-press-rich-pp-cli/internal/client"
-	"printing-press-rich-pp-cli/internal/cliutil"
-	"printing-press-rich-pp-cli/internal/config"
-	"printing-press-rich-pp-cli/internal/store"
+	"keyless-leftover-env-pp-cli/internal/client"
+	"keyless-leftover-env-pp-cli/internal/cliutil"
+	"keyless-leftover-env-pp-cli/internal/config"
+	"keyless-leftover-env-pp-cli/internal/store"
 )
 
 // Hand-coded auth flows can report credentials that are intentionally not
@@ -164,10 +164,10 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check CLI health",
-		Example: `  printing-press-rich-pp-cli doctor
-  printing-press-rich-pp-cli doctor --json
-  printing-press-rich-pp-cli doctor --fail-on warn
-  printing-press-rich-pp-cli doctor --fail-on stale`,
+		Example: `  keyless-leftover-env-pp-cli doctor
+  keyless-leftover-env-pp-cli doctor --json
+  keyless-leftover-env-pp-cli doctor --fail-on warn
+  keyless-leftover-env-pp-cli doctor --fail-on stale`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if registeredPlatformSource != nil {
 				if flags.platformSession == nil {
@@ -197,121 +197,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				report["config"] = "ok"
 				report["config_path"] = cfg.Path
 				report["base_url"] = cfg.BaseURL
-				// agentcookie integration is soft: if the agentcookie daemon manages
-				// this CLI's config, it writes a marker file alongside the config and
-				// AuthSource is upgraded to "agentcookie" in config.Load. Surface the
-				// state explicitly so users can tell whether the bus is wired up.
-				if cfg.AuthSource == "agentcookie" {
-					report["agentcookie"] = "detected (managing credentials)"
-				} else {
-					report["agentcookie"] = "not detected (optional)"
-				}
-				collectCredentialsLocationReport(report, cfg)
 			}
 
 			// Check auth
-			authConfigured := false
-			credentialRefused := cfg != nil && cfg.HasCredentialRefusals()
-			if credentialRefused {
-				report["auth"] = "refused: credential present but not loaded"
-				report["auth_refusals"] = cfg.CredentialRefusalSummaries()
-				report["credentials"] = "refused: credential present but not loaded"
-			} else {
-				if cfg != nil {
-					configured, authSource := doctorAuthConfiguredState(cfg)
-					if !configured {
-						report["auth"] = "not configured"
-						report["auth_hint"] = "Set your API key with: export RICH_AUTH_API_KEY=\"your-token-here\""
-					} else {
-						authConfigured = true
-						report["auth"] = "configured"
-						report["auth_source"] = authSource
-					}
-				}
-			}
+			report["auth"] = "not required"
 
 			// Check auth environment variables
-			authEnvSet := []string{}
-			authEnvRequiredMissing := []string{}
-			authEnvInfo := []string{}
-			authEnvOptionalNames := []string{}
-			// Validation rejects multi-OR-group specs upstream, so the single optional-satisfied state is sufficient at runtime.
-			authEnvOptionalSatisfied := false
-			authHeader := ""
-			if cfg != nil {
-				authHeader = cfg.AuthHeader()
-			}
-			if os.Getenv("RICH_AUTH_API_KEY") != "" {
-				authEnvSet = append(authEnvSet, "RICH_AUTH_API_KEY")
-			} else if authConfigured {
-				authSource, _ := report["auth_source"].(string)
-				if authSource == "" {
-					authSource = "config"
-				}
-				authEnvInfo = append(authEnvInfo, "credentials available from "+authSource)
-			} else {
-				authEnvRequiredMissing = append(authEnvRequiredMissing, "RICH_AUTH_API_KEY")
-			}
-			if os.Getenv("RICH_AUTH_CLIENT_ID") != "" {
-				authEnvSet = append(authEnvSet, "RICH_AUTH_CLIENT_ID")
-			} else {
-				authEnvInfo = append(authEnvInfo, "RICH_AUTH_CLIENT_ID set during auth login")
-			}
-			if os.Getenv("RICH_AUTH_CLIENT_SECRET") != "" {
-				authEnvSet = append(authEnvSet, "RICH_AUTH_CLIENT_SECRET")
-			} else {
-				authEnvInfo = append(authEnvInfo, "RICH_AUTH_CLIENT_SECRET set during auth login")
-			}
-			if os.Getenv("RICH_AUTH_SESSION_COOKIE") != "" || authHeader != "" {
-				authEnvSet = append(authEnvSet, "RICH_AUTH_SESSION_COOKIE")
-			} else {
-				authEnvInfo = append(authEnvInfo, "RICH_AUTH_SESSION_COOKIE set with auth set-token")
-			}
-			if strings.Contains("Optional token for elevated read limits.", " OR ") {
-				authEnvOptionalNames = append(authEnvOptionalNames, "RICH_AUTH_OPTIONAL_TOKEN")
-				if os.Getenv("RICH_AUTH_OPTIONAL_TOKEN") != "" {
-					authEnvSet = append(authEnvSet, "RICH_AUTH_OPTIONAL_TOKEN")
-					authEnvOptionalSatisfied = true
-				}
-			} else if os.Getenv("RICH_AUTH_OPTIONAL_TOKEN") != "" {
-				authEnvSet = append(authEnvSet, "RICH_AUTH_OPTIONAL_TOKEN")
-			} else {
-				authEnvInfo = append(authEnvInfo, "RICH_AUTH_OPTIONAL_TOKEN optional")
-			}
-			if strings.Contains("Set this OR RICH_AUTH_USER_TOKEN for workspace access.", " OR ") {
-				authEnvOptionalNames = append(authEnvOptionalNames, "RICH_AUTH_BOT_TOKEN")
-				if os.Getenv("RICH_AUTH_BOT_TOKEN") != "" {
-					authEnvSet = append(authEnvSet, "RICH_AUTH_BOT_TOKEN")
-					authEnvOptionalSatisfied = true
-				}
-			} else if os.Getenv("RICH_AUTH_BOT_TOKEN") != "" {
-				authEnvSet = append(authEnvSet, "RICH_AUTH_BOT_TOKEN")
-			} else {
-				authEnvInfo = append(authEnvInfo, "RICH_AUTH_BOT_TOKEN optional")
-			}
-			if strings.Contains("Set this OR RICH_AUTH_BOT_TOKEN for workspace access.", " OR ") {
-				authEnvOptionalNames = append(authEnvOptionalNames, "RICH_AUTH_USER_TOKEN")
-				if os.Getenv("RICH_AUTH_USER_TOKEN") != "" {
-					authEnvSet = append(authEnvSet, "RICH_AUTH_USER_TOKEN")
-					authEnvOptionalSatisfied = true
-				}
-			} else if os.Getenv("RICH_AUTH_USER_TOKEN") != "" {
-				authEnvSet = append(authEnvSet, "RICH_AUTH_USER_TOKEN")
-			} else {
-				authEnvInfo = append(authEnvInfo, "RICH_AUTH_USER_TOKEN optional")
-			}
-			switch {
-			case len(authEnvRequiredMissing) > 0:
-				report["env_vars"] = "ERROR missing required: " + strings.Join(authEnvRequiredMissing, ", ")
-			case len(authEnvOptionalNames) > 1 && !authEnvOptionalSatisfied:
-				report["env_vars"] = "INFO set one of: " + strings.Join(authEnvOptionalNames, " or ")
-			case len(authEnvInfo) > 0 && authConfigured:
-				report["env_vars"] = "OK " + strings.Join(authEnvInfo, "; ")
-			case len(authEnvInfo) > 0:
-				report["env_vars"] = "INFO " + strings.Join(authEnvInfo, "; ")
-			default:
-				report["env_vars"] = fmt.Sprintf("OK %d/%d available", len(authEnvSet), 7)
-			}
 
 			// Check API connectivity and validate credentials.
 			//
@@ -368,7 +259,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					} else {
 						suggestion := suggestReadCommand(cmd.Root())
 						if suggestion != "" {
-							report["credentials"] = fmt.Sprintf("present, not verified. Run `%s %s` to confirm the token works end-to-end.", "printing-press-rich-pp-cli", suggestion)
+							report["credentials"] = fmt.Sprintf("present, not verified. Run `%s %s` to confirm the token works end-to-end.", "keyless-leftover-env-pp-cli", suggestion)
 						} else {
 							report["credentials"] = "present, not verified. Run any read command to confirm the token works end-to-end."
 						}
@@ -480,7 +371,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			return doctorExitForFailOn(failOn, report)
 		},
 	}
-	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit non-zero for selected health gates. stale: cache freshness plus errors; warn: credential/path warnings plus errors; error: errors only. Default is never.")
+	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit non-zero for selected health gates. stale: cache freshness plus errors; warn: path warnings plus errors; error: errors only. Default is never.")
 	return cmd
 }
 
@@ -579,67 +470,6 @@ func renderPathsReport(w io.Writer, rep map[string]any) {
 		}
 	}
 }
-func collectCredentialsLocationReport(report map[string]any, cfg *config.Config) {
-	if cfg == nil {
-		return
-	}
-	credentialRemediation := "run auth set-token or auth logout"
-	if cfg.CredentialSource != "" {
-		report["credentials_location"] = cfg.CredentialSource
-	} else {
-		report["credentials_location"] = "none"
-	}
-	if cfg.AgentcookieManagedByExternalStore() {
-		return
-	}
-
-	locations := []string{}
-	credsPresent, err := cliutil.CredentialsFileHasValues()
-	if err == nil && credsPresent {
-		locations = append(locations, "credentials file")
-	}
-	legacySecretsElsewhere := ""
-	for _, path := range legacyCredentialProbePaths(cfg) {
-		ok, err := config.FileHasCredentialFields(path)
-		if err == nil && ok {
-			locations = append(locations, path)
-			if path != cfg.Path {
-				legacySecretsElsewhere = path
-			}
-		}
-	}
-	if len(locations) > 0 {
-		report["credentials_locations"] = locations
-	}
-	if credsPresent && len(locations) > 1 {
-		if legacySecretsElsewhere != "" {
-			report["credentials_location_warning"] = "WARN credentials stored in more than one location; legacy secrets remain at " + legacySecretsElsewhere + "; " + credentialRemediation + " to consolidate and remove legacy secrets"
-		} else {
-			report["credentials_location_warning"] = "WARN credentials stored in more than one location; current reads use credentials file; " + credentialRemediation + " to consolidate"
-		}
-	}
-}
-
-func legacyCredentialProbePaths(cfg *config.Config) []string {
-	seen := map[string]bool{}
-	var paths []string
-	add := func(path string) {
-		if path == "" || seen[path] {
-			return
-		}
-		seen[path] = true
-		paths = append(paths, path)
-	}
-	if cfg != nil && cfg.Path != "" {
-		// Probe only the active config; a same-dir standard-named file may
-		// belong to an unrelated CLI sharing that directory.
-		add(cfg.Path)
-	}
-	if legacyPath, err := config.LegacyConfigPath(); err == nil {
-		add(legacyPath)
-	}
-	return paths
-}
 
 // doctorExitForFailOn returns a non-nil error when the report's worst
 // status meets the --fail-on gate. "error" trips on failing sections, "warn"
@@ -701,14 +531,14 @@ func doctorExitForFailOn(failOn string, report map[string]any) error {
 // because the alternative is no freshness story at all.
 func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]any {
 	report := map[string]any{}
-	dbPath := defaultDBPath("printing-press-rich-pp-cli")
+	dbPath := defaultDBPath("keyless-leftover-env-pp-cli")
 	report["db_path"] = dbPath
 
 	fi, err := os.Stat(dbPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			report["status"] = "unknown"
-			report["hint"] = "Database not created yet; run 'printing-press-rich-pp-cli sync' to hydrate."
+			report["hint"] = "Database not created yet; run 'keyless-leftover-env-pp-cli sync' to hydrate."
 			return report
 		}
 		report["status"] = "error"
@@ -741,7 +571,7 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 		// sync_state may not exist on a fresh DB that has migrated but not
 		// yet had any sync runs — treat as unknown rather than error.
 		report["status"] = "unknown"
-		report["hint"] = "No sync state recorded; run 'printing-press-rich-pp-cli sync' to populate."
+		report["hint"] = "No sync state recorded; run 'keyless-leftover-env-pp-cli sync' to populate."
 		return report
 	}
 	defer rows.Close()
@@ -784,13 +614,13 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 		// Only sync-tracked resources are counted here. A store seeded by
 		// other paths (built-in reference data, local writes) can hold rows
 		// while sync_state stays empty, so say what was measured.
-		report["hint"] = "No sync recorded; run 'printing-press-rich-pp-cli sync' to hydrate API-backed resources. Rows written by other paths are not tracked in sync_state."
+		report["hint"] = "No sync recorded; run 'keyless-leftover-env-pp-cli sync' to hydrate API-backed resources. Rows written by other paths are not tracked in sync_state."
 	case fresh:
 		report["status"] = "fresh"
 	default:
 		report["status"] = "stale"
 		report["oldest_age"] = oldest.Round(time.Minute).String()
-		report["hint"] = "Some resources are older than stale_after; run 'printing-press-rich-pp-cli sync' to refresh."
+		report["hint"] = "Some resources are older than stale_after; run 'keyless-leftover-env-pp-cli sync' to refresh."
 	}
 	return report
 }

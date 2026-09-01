@@ -1,0 +1,23 @@
+openapi: "3.0.3"
+info:
+  title: Path Param Posts
+  version: "1.0.0"
+servers:
+  - url: https://{shop}.example.com
+    variables:
+      shop:
+        default: api
+paths:
+  /api/v1/posts:
+    get:
+      responses:
+        "200": { description: OK }
+  /api/v1/posts/{post_id}:
+    get:
+      parameters:
+        - name: post_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }

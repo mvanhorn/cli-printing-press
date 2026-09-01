@@ -77,6 +77,26 @@ func TestWriteAgentcookieManifest_EnvVarSpecsRespectsSensitivity(t *testing.T) {
 	}
 }
 
+func TestWriteAgentcookieManifest_SkipsAuthNone(t *testing.T) {
+	dir := t.TempDir()
+	p := GenerateManifestParams{
+		APIName:   "open-meteo",
+		OutputDir: dir,
+		Spec: &spec.APISpec{
+			Auth: spec.AuthConfig{
+				Type:    "none",
+				EnvVars: []string{"OPEN_METEO_WEATHER_API_KEY"},
+			},
+		},
+	}
+	if err := WriteAgentcookieManifest(p); err != nil {
+		t.Fatalf("WriteAgentcookieManifest: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, AgentcookieManifestFilename)); err == nil {
+		t.Error("expected no secrets-bus manifest for keyless auth; file was created")
+	}
+}
+
 func TestWriteAgentcookieManifest_SkipsCookieOnly(t *testing.T) {
 	dir := t.TempDir()
 	p := GenerateManifestParams{

@@ -1,0 +1,8 @@
+info: learn: defaulting self-learning loop on (opt out with learn.disabled: true)
+warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it
+agentcookie: skipping keyless (cookie-only or no env-var auth)
+Generated keyless at <ARTIFACT_DIR>/generate-keyless-openapi/keyless-openapi
+info: learn: defaulting self-learning loop on (opt out with learn.disabled: true)
+warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it
+agentcookie: skipping keyless-leftover-env (cookie-only or no env-var auth)
+Generated keyless-leftover-env at <ARTIFACT_DIR>/generate-keyless-openapi/keyless-leftover-env

@@ -1,0 +1,15 @@
+name: keyless-leftover-env
+description: Keyless spec that still lists a leftover invented API key env var.
+version: 1.0.0
+base_url: https://api.keyless.example
+auth:
+  type: none
+  env_vars: [KEYLESS_LEFTOVER_ENV_API_KEY]
+resources:
+  forecast:
+    description: Forecast
+    endpoints:
+      list:
+        method: GET
+        path: /v1/forecast
+        description: Forecast

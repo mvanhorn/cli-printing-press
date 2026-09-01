@@ -1,0 +1,17 @@
+openapi: "3.0.3"
+info:
+  title: Keyless OpenAPI
+  version: "1.0.0"
+  description: "Free weather API. No API key required for the public forecast endpoints."
+servers:
+  - url: https://api.keyless.example
+paths:
+  /v1/forecast:
+    get:
+      summary: Forecast
+      parameters:
+        - name: latitude
+          in: query
+          schema: { type: number }
+      responses:
+        "200": { description: OK }
