@@ -61,11 +61,7 @@ func TestGeneratedDoctorFailsWhenAdditionalRequiredAuthVarMissing(t *testing.T) 
 	orgEnv := prefix + "_ORGANIZATION_ID"
 
 	home := t.TempDir()
-	dataDir := filepath.Join(home, ".local", "share", apiSpec.Name+"-pp-cli")
-	require.NoError(t, os.MkdirAll(dataDir, 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "credentials.toml"), []byte("token = \"not-a-real-token\"\n"), 0o600))
-
-	env := append(doctorEnv(home, prefix), prefix+"_TOKEN=")
+	env := append(doctorEnv(home, prefix), prefix+"_TOKEN=not-a-real-token")
 	payload, err := runDoctorJSON(t, binaryPath, env)
 	require.NoError(t, err)
 	require.Equal(t, "configured", payload["auth"], "primary token in credentials still configures auth")
