@@ -25,7 +25,7 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 		Short: "Create project",
 		// TODO: replace placeholder example values before relying on this for live dogfood.
 		Example:     "  printing-press-golden-pp-cli projects create --x-api-version example-value --name example-resource",
-		Annotations: map[string]string{"pp:endpoint": "projects.create", "pp:method": "POST", "pp:path": "/projects"},
+		Annotations: map[string]string{"pp:endpoint": "projects.create", "pp:method": "POST", "pp:path": "/projects", "pp:requires-input": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Bare invocation of a command with required input prints help
 			// instead of pflag's terse "required flag not set" error. Optional-

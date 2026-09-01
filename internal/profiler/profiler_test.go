@@ -1744,6 +1744,94 @@ func TestProfileDependentResources(t *testing.T) {
 	assert.Equal(t, "/channels/{channelId}/messages", dep.Path)
 }
 
+func TestProfileQueryParamDependentResources(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "orgs-api",
+		Resources: map[string]spec.Resource{
+			"organizations": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/organizations",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+			"application_files": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/application_files",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Params:     []spec.Param{{Name: "organization_id", In: "query", Type: "string", Required: true}},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	syncNames := make([]string, 0, len(profile.SyncableResources))
+	for _, sr := range profile.SyncableResources {
+		syncNames = append(syncNames, sr.Name)
+	}
+	assert.Contains(t, syncNames, "organizations")
+	assert.NotContains(t, syncNames, "application_files",
+		"a child keyed by a parent query param must not stay a flat sync resource")
+
+	require.Len(t, profile.DependentSyncResources, 1)
+	dep := profile.DependentSyncResources[0]
+	assert.Equal(t, "application_files", dep.Name)
+	assert.Equal(t, "organizations", dep.ParentResource)
+	assert.Equal(t, "organization_id", dep.ParentIDParam)
+	assert.Equal(t, "/application_files", dep.Path)
+	require.Len(t, dep.PathParams, 1)
+	assert.Equal(t, "organization_id", dep.PathParams[0].Param)
+}
+
+func TestProfileQueryParamDependentIgnoresNonParentFilters(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "filter-api",
+		Resources: map[string]spec.Resource{
+			"organizations": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/organizations",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"widgets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/widgets",
+						Response: spec.ResponseDef{Type: "array"},
+						Params:   []spec.Param{{Name: "status", In: "query", Type: "string", Required: true}},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	assert.Empty(t, profile.DependentSyncResources,
+		"a required filter that is not a parent key must not become a dependent")
+	names := make([]string, 0, len(profile.SyncableResources))
+	skip := map[string]bool{}
+	for _, sr := range profile.SyncableResources {
+		names = append(names, sr.Name)
+		skip[sr.Name] = sr.SkipDefaultSync
+	}
+	assert.Contains(t, names, "widgets")
+	assert.True(t, skip["widgets"],
+		"unmatched required query filters stay SkipDefaultSync flat resources")
+}
+
 func TestProfileSyncableResourceSupportsCursorOnlyPagination(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "cursor-only",

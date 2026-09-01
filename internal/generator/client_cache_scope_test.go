@@ -35,6 +35,14 @@ func TestClientCacheKeyScopesByBaseURLAndAuthIdentity(t *testing.T) {
 	require.NotContains(t, body, `sha256.Sum256([]byte(c.Config.AuthHeader()))`, "cache keys should reuse the captured authHeader, not call AuthHeader() twice")
 	require.Contains(t, body, `query := url.Values{}`, "cache keys should encode query params with structured delimiters")
 	require.Contains(t, body, `key += "|query=" + query.Encode()`, "cache keys should use url.Values.Encode for deterministic query boundaries")
+	require.Contains(t, body, `key += "|tenant=" + canonicalTenantSelectingHeaders(c.Config, headers)`,
+		"cache keys must fold spec-declared / config tenant headers so two orgs never share a row")
+	require.Contains(t, client, "func canonicalTenantSelectingHeaders(",
+		"generated client must emit the tenant-header cache identity helper")
+	require.Contains(t, client, "func isTenantSelectingHeader(",
+		"generated client must classify tenant-selecting headers separately from representation headers")
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/client", "-run", "^TestCacheKeyPartitionsTenantSelectingHeaders$", "-count=1")
 }
 
 func TestGeneratedCacheWritesUsePrivatePermissions(t *testing.T) {

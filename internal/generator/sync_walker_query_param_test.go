@@ -46,6 +46,62 @@ func walkerQueryParamSpec(name string) *spec.APISpec {
 	return apiSpec
 }
 
+func queryParamDependentSpec(name string) *spec.APISpec {
+	apiSpec := minimalSpec(name)
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources = map[string]spec.Resource{
+		"organizations": {
+			Description: "Organizations",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:     "GET",
+					Path:       "/organizations",
+					Response:   spec.ResponseDef{Type: "array"},
+					Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+				},
+			},
+		},
+		"application_files": {
+			Description: "Files scoped by organization query param",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:     "GET",
+					Path:       "/application_files",
+					Response:   spec.ResponseDef{Type: "array"},
+					Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					Params:     []spec.Param{{Name: "organization_id", In: "query", Type: "string", Required: true}},
+				},
+			},
+		},
+	}
+	return apiSpec
+}
+
+func TestGeneratedSyncDetectsQueryParamDependent(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := queryParamDependentSpec("query-dep")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
+	assert.Contains(t, syncSrc, `ParentTable: "organizations"`,
+		"auto-detect must wire the child under the matching parent resource")
+	assert.Contains(t, syncSrc, `ParentIDParam: "organization_id"`,
+		"required query parent key must become ParentIDParam without x-pp-sync-walker")
+	assert.Contains(t, syncSrc, `PathTemplate: "/application_files"`,
+		"child path stays flat; the parent key is a query param")
+	assert.Contains(t, syncSrc, `{Param: "organization_id"`,
+		"generated dependent PathParams must include the query parent key")
+	defaultIdx := strings.Index(syncSrc, "func defaultSyncResources()")
+	knownIdx := strings.Index(syncSrc, "func knownSyncResourceNames()")
+	require.NotEqual(t, -1, defaultIdx)
+	require.NotEqual(t, -1, knownIdx)
+	assert.NotContains(t, syncSrc[defaultIdx:knownIdx], `"application_files"`,
+		"query-param child must not remain a flat default-sync resource")
+}
+
 // TestGeneratedSyncWalkerSendsQueryParamParentKey proves that a walker whose
 // key_param is a query name (child path has no {placeholder}) emits that
 // param on each parent fetch, and that a walk whose every fetch fails is

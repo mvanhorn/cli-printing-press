@@ -525,6 +525,11 @@ func (c *Client) cacheKeyFor(method, path string, params map[string]string, head
 		key += "|body_sha256=" + hex.EncodeToString(bodyHash[:])
 	}
 	key += "|representation=" + canonicalRepresentationHeaders(c.Config, headers)
+	// Tenant-selecting headers choose which resource comes back (MSP org,
+	// workspace). Fold them into the cache identity so two invocations that
+	// differ only by that header never share a row. Representation headers
+	// stay in canonicalRepresentationHeaders and are not treated as tenancy.
+	key += "|tenant=" + canonicalTenantSelectingHeaders(c.Config, headers)
 	h := sha256.Sum256([]byte(key))
 	if c.platformSession != nil {
 		return hex.EncodeToString(h[:])
@@ -561,6 +566,59 @@ func canonicalRepresentationHeaders(cfg *config.Config, overrides map[string]str
 	}
 	add(overrides)
 	return canonicalStringMap(values)
+}
+
+func canonicalTenantSelectingHeaders(cfg *config.Config, overrides map[string]string) string {
+	values := map[string]string{}
+	add := func(headers map[string]string) {
+		for name, value := range headers {
+			if !isTenantSelectingHeader(name) {
+				continue
+			}
+			values[strings.ToLower(strings.TrimSpace(name))] = strings.TrimSpace(value)
+		}
+	}
+	if cfg != nil {
+		add(cfg.Headers)
+	}
+	add(overrides)
+	return canonicalStringMap(values)
+}
+
+func isTenantSelectingHeader(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == "" {
+		return false
+	}
+	var b strings.Builder
+	b.Grow(len(normalized))
+	for _, r := range normalized {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	folded := b.String()
+	if folded == "" {
+		return false
+	}
+	switch folded {
+	case "tenant", "workspace", "organization", "organisation", "org", "region", "account":
+		return true
+	}
+	for _, stem := range []string{
+		"tenantid", "tenantfilter",
+		"workspaceid", "workspacefilter",
+		"organizationid", "organizationfilter",
+		"organisationid", "organisationfilter",
+		"orgid",
+		"regionid", "regionfilter",
+		"accountid", "accountfilter",
+	} {
+		if strings.HasSuffix(folded, stem) {
+			return true
+		}
+	}
+	return false
 }
 
 func requestIdempotencyKey(cfg *config.Config, overrides map[string]string) string {

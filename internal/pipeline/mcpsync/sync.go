@@ -38,7 +38,7 @@ var (
 	errAnnotationSoftFail = errors.New("endpoint annotation skipped")
 )
 
-var endpointAnnotationLine = regexp.MustCompile(`(?m)^\s*Annotations: map\[string\]string\{"pp:endpoint": "[^"]+", "pp:method": "[^"]+", "pp:path": "[^"]+"(?:, "mcp:read-only": "true")?\},\s*$`)
+var endpointAnnotationLine = regexp.MustCompile(`(?m)^\s*Annotations: map\[string\]string\{"pp:endpoint": "[^"]+", "pp:method": "[^"]+", "pp:path": "[^"]+"(?:, "[^"]+": "[^"]+")*\},\s*$`)
 var staleEndpointAnnotationLine = regexp.MustCompile(`(?m)^\s*Annotations: map\[string\]string\{"pp:endpoint": "[^"]+"(?:, "mcp:read-only": "true")?\},\s*$`)
 
 type Result struct {
