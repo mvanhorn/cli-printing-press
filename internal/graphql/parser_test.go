@@ -204,6 +204,9 @@ paths:
 	gqlWithNameAndResourcesFields := []byte("type Query {\nname: String\nresources: [Widget!]!\n}\n\ntype Widget {\n  id: ID!\n}\n")
 	assert.True(t, IsGraphQLSDL(gqlWithNameAndResourcesFields), "unindented GraphQL fields named name/resources are still SDL")
 
+	gqlWithIndentedCloser := []byte("type Query {\nname: String\nresources: [Widget!]!\n  }\n\ntype Widget {\n  id: ID!\n}\n")
+	assert.True(t, IsGraphQLSDL(gqlWithIndentedCloser), "indented closing brace after resources: [Type] is still SDL")
+
 	flowInternalWithSDLProse := []byte("name: payments\ndescription: |\n  type Query {\n    ignored: String\n  }\nbase_url: https://api.example.com\nresources: {payments: {}}\n")
 	assert.False(t, IsGraphQLSDL(flowInternalWithSDLProse), "flow-style internal YAML stays internal even when a description block contains type Query")
 }

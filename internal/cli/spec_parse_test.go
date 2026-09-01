@@ -114,6 +114,16 @@ resources: {payments: {description: Manage payments, endpoints: {list: {method: 
 	require.Contains(t, parsed.Resources, "payments")
 }
 
+func TestParseSpecBytesGraphQLFieldsWithIndentedCloser(t *testing.T) {
+	t.Parallel()
+
+	sdl := []byte("type Query {\nname: String\nresources: [Widget!]!\nwidget(id: ID!): Widget!\n  }\n\ntype Widget {\n  id: ID!\n  name: String!\n}\n")
+	parsed, err := parseSpecBytes("schema.graphql", sdl, openapi.ParseOptions{})
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	assert.NotEmpty(t, parsed.GraphQLEndpointPath)
+}
+
 func TestParseSpecBytesGraphQLFieldsNamedNameAndResources(t *testing.T) {
 	t.Parallel()
 

@@ -60,6 +60,11 @@ func TestLooksLikeInternalYAML(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "graphql fields with indented closing brace",
+			data: []byte("type Query {\nname: String\nresources: [Widget!]!\n  }\n\ntype Widget {\n  id: ID!\n}\n"),
+			want: false,
+		},
+		{
 			name: "flow-style resources mapping",
 			data: []byte("name: payments\nbase_url: https://api.example.com\nresources: {payments: {endpoints: {list: {method: GET, path: /payments}}}}\n"),
 			want: true,

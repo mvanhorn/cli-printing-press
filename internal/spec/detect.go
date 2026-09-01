@@ -8,9 +8,10 @@ var (
 	topLevelYAMLKeyRE = regexp.MustCompile(`(?m)^([A-Za-z_][A-Za-z0-9_-]*)\s*:`)
 	// GraphQL fields may be written unindented (`name: String`), so a bare
 	// key scan is not enough. An internal spec names the API with a scalar
-	// and nests resources as a YAML mapping.
+	// and nests resources as a YAML mapping (block key or nonempty flow
+	// `{payments:`). An indented `}` after `resources: [Type]!` is SDL.
 	yamlNameScalarRE   = regexp.MustCompile(`(?m)^name:\s+(?:"[^"]+"|'[^']+'|[A-Za-z][A-Za-z0-9._-]*)\s*$`)
-	yamlResourcesMapRE = regexp.MustCompile(`(?m)^resources:\s*(?:\{|(?:#.*)?\n[ \t]+\S)`)
+	yamlResourcesMapRE = regexp.MustCompile(`(?m)^resources:\s*(?:\{[ \t]*[A-Za-z_]|(?:#.*)?\n[ \t]+[A-Za-z_][A-Za-z0-9_-]*\s*:)`)
 )
 
 // LooksLikeInternalYAML reports whether data is an authored internal YAML spec
