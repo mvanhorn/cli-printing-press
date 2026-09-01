@@ -123,6 +123,27 @@ func TestGeneratedDoctorOptionalAdditionalAuthVarDoesNotFail(t *testing.T) {
 	require.NoError(t, err, "--fail-on=error must not trip on a missing optional additional auth var")
 }
 
+func TestGeneratedDoctorAuthNoneIgnoresLeftoverEnvVars(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("doctor-none-leftover")
+	leftover := naming.EnvPrefix(apiSpec.Name) + "_API_KEY"
+	apiSpec.Auth = spec.AuthConfig{Type: "none", EnvVars: []string{leftover}}
+
+	outputDir, binaryPath := buildGeneratedBinary(t, apiSpec)
+	doctorSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	doctor := string(doctorSrc)
+	require.Contains(t, doctor, `report["auth"] = "not required"`)
+	require.NotContains(t, doctor, leftover)
+	require.NotContains(t, doctor, "authEnvRequiredMissing")
+
+	payload, err := runDoctorJSON(t, binaryPath, doctorEnv(t.TempDir(), naming.EnvPrefix(apiSpec.Name)))
+	require.NoError(t, err)
+	require.Equal(t, "not required", payload["auth"])
+	require.NotContains(t, payload, "env_vars")
+}
+
 func TestGeneratedDoctorKeylessAuthDoesNotInventAPIKey(t *testing.T) {
 	t.Parallel()
 

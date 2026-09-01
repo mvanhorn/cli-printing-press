@@ -3,6 +3,8 @@
 {{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
 {{- $authSetupHint := authSetupHint .Auth .Name}}
 {{- $authCredentialConsolidationAction := authCredentialConsolidationAction .Auth}}
+{{- $authNone := or (eq .Auth.Type "") (eq .Auth.Type "none")}}
+{{- $checkAuthEnv := and (not $authNone) (or .Auth.EnvVarSpecs .Auth.EnvVars .Auth.AdditionalHeaders)}}
 
 package cli
 
@@ -419,6 +421,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 
 			// Check auth environment variables
+{{- if $checkAuthEnv}}
 {{- if or .Auth.EnvVarSpecs .Auth.AdditionalHeaders}}
 			authEnvSet := []string{}
 			authEnvRequiredMissing := []string{}
@@ -527,6 +530,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			} else {
 				report["env_vars"] = fmt.Sprintf("%d/%d set", authEnvSet, authEnvChecked)
 			}
+{{- end}}
 {{- end}}
 {{- if .HasTierRouting}}
 			tierEnvStatus := map[string]string{}

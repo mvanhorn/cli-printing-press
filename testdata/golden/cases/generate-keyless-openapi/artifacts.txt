@@ -1,4 +1,5 @@
 keyless-openapi/.printing-press.json
 keyless-openapi/internal/cli/doctor.go
 keyless-leftover-env/.printing-press.json
+keyless-leftover-env/internal/cli/doctor.go
 agentcookie-absent.txt
