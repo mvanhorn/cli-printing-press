@@ -444,3 +444,70 @@ func TestGeneratedDoctorCredentialLocationLabels(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "legacy config path", payload["credentials_location"])
 }
+
+func TestGeneratedDoctorHumanOutputShowsCollectedFailureReasons(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := readOnlyCollectionSpec("doctor-render-errors")
+	apiSpec.Cache.Enabled = true
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	doctorSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	doctor := string(doctorSrc)
+	require.Contains(t, doctor, `if v, ok := rep["error"]; ok {`,
+		"renderCacheReport must print the collected cache error")
+	require.Contains(t, doctor, `fmt.Fprintf(w, "    error: %v\n", v)`,
+		"cache human output must include the collected error string")
+	require.Contains(t, doctor, `if status, _ := rep["status"].(string); status == "error" {`,
+		"renderPathsReport must surface a path-resolution failure")
+	require.Contains(t, doctor, `fmt.Fprintf(w, "    detail: %v\n", v)`,
+		"paths human output must include the collected detail string")
+
+	testSrc := `package cli
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
+
+func TestRenderCacheReportPrintsError(t *testing.T) {
+	var buf bytes.Buffer
+	renderCacheReport(&buf, map[string]any{
+		"status":  "error",
+		"db_path": "/tmp/data.db",
+		"error":   "running migrations: database schema version 9 is newer than supported version 4; upgrade the CLI binary or open an older database",
+	})
+	out := buf.String()
+	if !strings.Contains(out, "FAIL") {
+		t.Fatalf("cache human output missing FAIL: %q", out)
+	}
+	if !strings.Contains(out, "running migrations: database schema version 9") {
+		t.Fatalf("cache human output discarded collected error: %q", out)
+	}
+}
+
+func TestRenderPathsReportPrintsDetail(t *testing.T) {
+	var buf bytes.Buffer
+	renderPathsReport(&buf, map[string]any{
+		"status": "error",
+		"detail": "HOME is unset and no platform default is available",
+	})
+	out := buf.String()
+	if !strings.Contains(out, "FAIL") {
+		t.Fatalf("paths human output missing FAIL: %q", out)
+	}
+	if !strings.Contains(out, "HOME is unset and no platform default is available") {
+		t.Fatalf("paths human output discarded collected detail: %q", out)
+	}
+	if strings.TrimSpace(out) == "Paths:" {
+		t.Fatalf("paths failure rendered as a bare header")
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "doctor_render_error_test.go"), []byte(testSrc), 0o644))
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestRender(Cache|Paths)Report", "-count=1")
+}

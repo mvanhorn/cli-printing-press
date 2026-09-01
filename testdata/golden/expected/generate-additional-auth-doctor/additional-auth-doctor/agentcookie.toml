@@ -1,0 +1,16 @@
+# agentcookie.toml: secrets-bus adoption manifest v2
+# See docs/spec-agentcookie-secrets-bus-v2-adoption.md
+schema_version = 2
+name = "additional-auth-doctor-pp-cli"
+display_name = "Additional Auth Doctor"
+description = "Bearer plus required and optional additional auth headers."
+project_kind = "cli"
+
+[secrets.file]
+path = "~/.config/additional-auth-doctor-pp-cli/config.toml"
+
+[sync]
+default = false
+
+[sync.keys]
+ADDITIONAL_AUTH_DOCTOR_TOKEN = true
