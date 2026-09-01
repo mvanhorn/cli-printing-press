@@ -24,8 +24,6 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/docspec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/googlediscovery"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llm"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llmpolish"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -420,19 +418,11 @@ func newGenerateCmd() *cobra.Command {
 				specRawBytes = append(specRawBytes, data)
 
 				var apiSpec *spec.APISpec
-				if openapi.IsOpenAPI(data) {
-					apiSpec, err = parseOpenAPISpec(specFile, data, openapi.ParseOptions{
-						Lenient:        lenient,
-						StrictRefs:     strictRefs,
-						AuthPreference: openAPIParseAuthPref,
-					})
-				} else if graphql.IsGraphQLSDL(data) {
-					apiSpec, err = graphql.ParseSDLBytes(specFile, data)
-				} else if googlediscovery.IsDiscovery(data) {
-					apiSpec, err = googlediscovery.Parse(specFile, data)
-				} else {
-					apiSpec, err = spec.ParseBytes(data)
-				}
+				apiSpec, err = parseSpecBytes(specFile, data, openapi.ParseOptions{
+					Lenient:        lenient,
+					StrictRefs:     strictRefs,
+					AuthPreference: openAPIParseAuthPref,
+				})
 				if err != nil {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing spec %s: %w", specFile, err)}
 				}

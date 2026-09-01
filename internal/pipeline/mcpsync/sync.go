@@ -566,6 +566,9 @@ func loadArchivedSpec(cliDir string) (*spec.APISpec, error) {
 		if openapi.IsOpenAPI(data) {
 			return openapi.ParseWithPathLenient(data, path)
 		}
+		if spec.LooksLikeInternalYAML(data) {
+			return spec.ParseBytes(data)
+		}
 		if graphql.IsGraphQLSDL(data) {
 			return graphql.ParseSDLBytes(path, data)
 		}

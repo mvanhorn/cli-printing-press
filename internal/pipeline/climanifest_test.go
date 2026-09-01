@@ -2277,6 +2277,11 @@ func TestDetectSpecFormat(t *testing.T) {
 			expected: "internal",
 		},
 		{
+			name:     "internal spec with type prose in description",
+			data:     []byte("name: payments\nbase_url: https://api.example.com\nresources:\n  payments:\n    endpoints:\n      list:\n        method: GET\n        path: /payments\n        params:\n          - name: payment_type\n            description: Free-text payment type label mentioning type Query and a scalar value\n"),
+			expected: "internal",
+		},
+		{
 			name:     "empty",
 			data:     []byte{},
 			expected: "internal",
