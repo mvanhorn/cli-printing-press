@@ -591,13 +591,13 @@ func openMCPReadOnlyStore(path string) (*store.Store, *mcplib.CallToolResult) {
 	}
 	db, err := store.OpenReadOnly(path)
 	if err != nil {
-		return nil, mcplib.NewToolResultError(fmt.Sprintf("opening local data store %s: %v. Run public-param-golden-pp-cli sync to refresh the store, or use live endpoint MCP tools for unsynced data.", path, err))
+		return nil, mcplib.NewToolResultError(fmt.Sprintf("opening local data store %s: %v. Run public-param-golden-pp-cli sync --resources stores to refresh the store, or use live endpoint MCP tools for unsynced data.", path, err))
 	}
 	return db, nil
 }
 
 func mcpMissingStoreMessage(path string) string {
-	return fmt.Sprintf("No local data store found at %s. Run public-param-golden-pp-cli sync before using MCP search/sql, or use live endpoint MCP tools for unsynced data.", path)
+	return fmt.Sprintf("No local data store found at %s. Run public-param-golden-pp-cli sync --resources stores before using MCP search/sql, or use live endpoint MCP tools for unsynced data.", path)
 }
 
 func mcpStoreStatus(db *store.Store) (mcpStoreStatusKind, error) {
@@ -612,7 +612,7 @@ func mcpStoreStatus(db *store.Store) (mcpStoreStatusKind, error) {
 }
 
 func mcpEmptyStoreNextStep() string {
-	return "Run public-param-golden-pp-cli sync to populate the local SQLite store before using MCP search/sql."
+	return "Run public-param-golden-pp-cli sync --resources stores to populate the local SQLite store before using MCP search/sql."
 }
 
 func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
@@ -894,7 +894,7 @@ func mcpSQLEnvelope(rows []map[string]any, columns []string, storeStatus mcpStor
 		if storeStatus == mcpStoreStatusEmpty {
 			out["next_step"] = mcpEmptyStoreNextStep()
 		} else {
-			out["next_step"] = "The read-only SQL query returned no rows. Check resource_type filters, json_extract paths, or run sync again if data may be stale."
+			out["next_step"] = "The read-only SQL query returned no rows. Check resource_type filters, json_extract paths, or run public-param-golden-pp-cli sync --resources stores again if data may be stale."
 		}
 	}
 	return out

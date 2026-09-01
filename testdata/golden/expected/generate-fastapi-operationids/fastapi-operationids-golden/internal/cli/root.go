@@ -266,7 +266,7 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 		Long: `Manage fastapi-operationids-golden resources via the fastapi-operationids-golden API.
 
 Add --agent to any command for JSON output + non-interactive mode.
-Run 'fastapi-operationids-golden-pp-cli doctor' to verify auth and connectivity.`,
+Run 'fastapi-operationids-golden-pp-cli doctor' to verify connectivity.`,
 		SilenceUsage: true,
 		Version:      version,
 	}
