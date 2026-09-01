@@ -93,6 +93,17 @@ paths: {}
 	assert.NotContains(t, err.Error(), "no GraphQL root operation types found")
 }
 
+func TestParseSpecBytesGraphQLFieldsNamedNameAndResources(t *testing.T) {
+	t.Parallel()
+
+	sdl := []byte("type Query {\nname: String\nresources: [Widget!]!\nwidget(id: ID!): Widget!\n}\n\ntype Widget {\n  id: ID!\n  name: String!\n}\n")
+	parsed, err := parseSpecBytes("schema.graphql", sdl, openapi.ParseOptions{})
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	assert.NotEmpty(t, parsed.GraphQLEndpointPath)
+	assert.NotContains(t, parsed.Resources, "payments")
+}
+
 func TestParseSpecBytesGraphQLSDLStillParses(t *testing.T) {
 	t.Parallel()
 

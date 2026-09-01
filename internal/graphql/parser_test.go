@@ -200,6 +200,9 @@ paths:
           description: OK
 `)
 	assert.False(t, IsGraphQLSDL(openapiWithTypeProse), "OpenAPI must not be GraphQL because descriptions mention type Query")
+
+	gqlWithNameAndResourcesFields := []byte("type Query {\nname: String\nresources: [Widget!]!\n}\n\ntype Widget {\n  id: ID!\n}\n")
+	assert.True(t, IsGraphQLSDL(gqlWithNameAndResourcesFields), "unindented GraphQL fields named name/resources are still SDL")
 }
 
 func TestParseSDLMissingRootOperations(t *testing.T) {

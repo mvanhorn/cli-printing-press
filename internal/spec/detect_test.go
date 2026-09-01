@@ -55,6 +55,11 @@ func TestLooksLikeInternalYAML(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "graphql fields named name and resources",
+			data: []byte("type Query {\nname: String\nresources: [Widget!]!\n}\n\ntype Widget {\n  id: ID!\n}\n"),
+			want: false,
+		},
+		{
 			name: "empty",
 			data: []byte{},
 			want: false,

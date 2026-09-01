@@ -4,11 +4,18 @@ import (
 	"regexp"
 )
 
-var topLevelYAMLKeyRE = regexp.MustCompile(`(?m)^([A-Za-z_][A-Za-z0-9_-]*)\s*:`)
+var (
+	topLevelYAMLKeyRE = regexp.MustCompile(`(?m)^([A-Za-z_][A-Za-z0-9_-]*)\s*:`)
+	// GraphQL fields may be written unindented (`name: String`), so a bare
+	// key scan is not enough. An internal spec names the API with a scalar
+	// and nests resources as a YAML mapping.
+	yamlNameScalarRE   = regexp.MustCompile(`(?m)^name:\s+(?:"[^"]+"|'[^']+'|[A-Za-z][A-Za-z0-9._-]*)\s*$`)
+	yamlResourcesMapRE = regexp.MustCompile(`(?m)^resources:\s*(?:#.*)?\n[ \t]+\S`)
+)
 
 // LooksLikeInternalYAML reports whether data is an authored internal YAML spec
-// (unindented name: and resources:) rather than OpenAPI or GraphQL SDL.
-// Description prose is ignored because only top-level keys are scanned.
+// rather than OpenAPI or GraphQL SDL. Description prose is ignored because
+// only top-level YAML structure is scanned.
 func LooksLikeInternalYAML(data []byte) bool {
 	if len(data) == 0 {
 		return false
@@ -17,7 +24,10 @@ func LooksLikeInternalYAML(data []byte) bool {
 	if keys["openapi"] || keys["swagger"] {
 		return false
 	}
-	return keys["name"] && keys["resources"]
+	if !keys["name"] || !keys["resources"] {
+		return false
+	}
+	return yamlNameScalarRE.Match(data) && yamlResourcesMapRE.Match(data)
 }
 
 func topLevelYAMLKeys(data []byte) map[string]bool {
