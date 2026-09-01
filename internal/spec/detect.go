@@ -10,7 +10,7 @@ var (
 	// key scan is not enough. An internal spec names the API with a scalar
 	// and nests resources as a YAML mapping.
 	yamlNameScalarRE   = regexp.MustCompile(`(?m)^name:\s+(?:"[^"]+"|'[^']+'|[A-Za-z][A-Za-z0-9._-]*)\s*$`)
-	yamlResourcesMapRE = regexp.MustCompile(`(?m)^resources:\s*(?:#.*)?\n[ \t]+\S`)
+	yamlResourcesMapRE = regexp.MustCompile(`(?m)^resources:\s*(?:\{|(?:#.*)?\n[ \t]+\S)`)
 )
 
 // LooksLikeInternalYAML reports whether data is an authored internal YAML spec

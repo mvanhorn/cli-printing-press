@@ -93,6 +93,27 @@ paths: {}
 	assert.NotContains(t, err.Error(), "no GraphQL root operation types found")
 }
 
+func TestParseSpecBytesFlowStyleResourcesWithTypeProse(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`name: flowprose
+description: |
+  type Query {
+    ignored: String
+  }
+version: 0.1.0
+base_url: https://api.example.com
+auth:
+  type: none
+resources: {payments: {description: Manage payments, endpoints: {list: {method: GET, path: /payments}}}}
+`)
+	parsed, err := parseSpecBytes("internal-spec.yaml", data, openapi.ParseOptions{})
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	assert.Equal(t, "flowprose", parsed.Name)
+	require.Contains(t, parsed.Resources, "payments")
+}
+
 func TestParseSpecBytesGraphQLFieldsNamedNameAndResources(t *testing.T) {
 	t.Parallel()
 

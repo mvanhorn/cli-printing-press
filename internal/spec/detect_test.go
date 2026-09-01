@@ -60,6 +60,16 @@ func TestLooksLikeInternalYAML(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "flow-style resources mapping",
+			data: []byte("name: payments\nbase_url: https://api.example.com\nresources: {payments: {endpoints: {list: {method: GET, path: /payments}}}}\n"),
+			want: true,
+		},
+		{
+			name: "flow-style resources with line-anchored type Query in description",
+			data: []byte("name: payments\ndescription: |\n  type Query {\n    ignored: String\n  }\nresources: {payments: {}}\n"),
+			want: true,
+		},
+		{
 			name: "empty",
 			data: []byte{},
 			want: false,
