@@ -152,25 +152,20 @@ func detectFormat(data []byte, path string) string {
 	s := string(data)
 	lowerPath := strings.ToLower(path)
 
-	// GraphQL SDL detection.
 	if strings.HasSuffix(lowerPath, ".graphql") || strings.HasSuffix(lowerPath, ".gql") {
 		return "graphql"
 	}
-	if strings.Contains(s, "type Query") || strings.Contains(s, "type Mutation") {
-		return "graphql"
-	}
-
-	// OpenAPI detection.
-	if strings.Contains(s, "openapi:") || strings.Contains(s, "\"openapi\"") ||
-		strings.Contains(s, "swagger:") || strings.Contains(s, "\"swagger\"") {
+	if openapi.IsOpenAPI(data) {
 		return "openapi"
 	}
-
-	// Internal spec detection.
+	if spec.LooksLikeInternalYAML(data) {
+		return "internal"
+	}
+	if graphql.IsGraphQLSDL(data) {
+		return "graphql"
+	}
 	if strings.Contains(s, "base_url:") || strings.Contains(s, "resources:") {
 		return "internal"
 	}
-
-	// Default to OpenAPI.
 	return "openapi"
 }

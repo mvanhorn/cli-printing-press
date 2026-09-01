@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -96,14 +95,7 @@ func parsePublicParamAuditSpec(specFiles []string, cliName string, opts openapi.
 			return nil, &ExitError{Code: ExitSpecError, Err: fmt.Errorf("reading spec %s: %w", specFile, err)}
 		}
 
-		var apiSpec *spec.APISpec
-		if openapi.IsOpenAPI(data) {
-			apiSpec, err = parseOpenAPISpec(specFile, data, opts)
-		} else if graphql.IsGraphQLSDL(data) {
-			apiSpec, err = graphql.ParseSDLBytes(specFile, data)
-		} else {
-			apiSpec, err = spec.ParseBytes(data)
-		}
+		apiSpec, err := parseSpecBytes(specFile, data, opts)
 		if err != nil {
 			return nil, &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing spec %s: %w", specFile, err)}
 		}
