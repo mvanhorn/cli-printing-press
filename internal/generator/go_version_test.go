@@ -69,6 +69,8 @@ func TestGeneratedGoModUsesLibrarySafeFloor(t *testing.T) {
 	goMod := readGeneratedFile(t, outputDir, "go.mod")
 	assert.Contains(t, goMod, "\ngo "+librarySafeGoDirective+"\n")
 	assert.Contains(t, goMod, "\ntoolchain go"+librarySafeGoDirective+"\n")
+	assert.Contains(t, goMod, "\ngo 1.26.6\n")
+	assert.Contains(t, goMod, "\ntoolchain go1.26.6\n")
 	assert.NotContains(t, goMod, "\ngo 1.26\n")
 	assert.NotContains(t, goMod, "\ngo 1.26.5\n")
 	assert.NotContains(t, goMod, "\ngo 1.26.7\n")
