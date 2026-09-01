@@ -1394,8 +1394,18 @@ func TestGenerateComposedApiKeyPlusBearerEmitsAdditionalHeader(t *testing.T) {
 		"doctor must check the sibling apiKey env var")
 	assert.Contains(t, doctorSrc, `configuredValue = cfg.StAppKey`,
 		"doctor must accept sibling apiKey credentials from config files")
-	assert.Contains(t, doctorSrc, `} else if authConfigured {`,
-		"doctor must apply the config fallback consistently for sibling apiKey credentials")
+	assert.Contains(t, doctorSrc, `if os.Getenv(name) != "" || configuredValue != "" {`,
+		"doctor must treat a missing additional required auth var as missing even when the primary token is configured")
+	assert.NotContains(t, doctorSrc, `} else if authConfigured {
+					authSource, _ := report["auth_source"].(string)
+					if authSource == "" {
+						authSource = "config"
+					}
+					authEnvInfo = append(authEnvInfo, "credentials available from "+authSource)
+				} else {
+					authEnvRequiredMissing = append(authEnvRequiredMissing, name)
+				}`,
+		"primary-token coverage must not excuse a missing additional required auth variable")
 	assert.Contains(t, doctorSrc, `OK %d/%d available", len(authEnvSet), 3`,
 		"doctor must include sibling apiKey credentials in the env-var count")
 

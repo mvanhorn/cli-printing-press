@@ -187,6 +187,13 @@ type Widget {
 	assert.Contains(t, err.Error(), "no GraphQL root operation types found")
 }
 
+func TestParseSDLKeylessDefaultsToNone(t *testing.T) {
+	parsed, err := ParseSDLBytes("widgets.graphql", []byte(testSDL))
+	require.NoError(t, err)
+	assert.Equal(t, "none", parsed.Auth.Type)
+	assert.Empty(t, parsed.Auth.EnvVars)
+}
+
 func TestParseSDLContent(t *testing.T) {
 	parsed, err := ParseSDLBytes("linear-schema.graphql", []byte(testSDL))
 	require.NoError(t, err)

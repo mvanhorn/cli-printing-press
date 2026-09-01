@@ -100,11 +100,7 @@ func parseSDLContent(source, raw string) (*spec.APISpec, error) {
 		endpointPath = "/graphql"
 	}
 	if auth.Type == "" {
-		auth = spec.AuthConfig{
-			Type:    "api_key",
-			Header:  "Authorization",
-			EnvVars: []string{strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_API_KEY"},
-		}
+		auth = spec.AuthConfig{Type: "none"}
 	}
 
 	apiSpec := &spec.APISpec{

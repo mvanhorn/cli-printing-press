@@ -7213,6 +7213,7 @@ func TestAuthHasNonCookieAuth(t *testing.T) {
 		{name: "env var specs", auth: AuthConfig{EnvVarSpecs: []AuthEnvVar{{Name: "API_TOKEN"}}}, want: true},
 		{name: "legacy env vars", auth: AuthConfig{EnvVars: []string{"API_TOKEN"}}, want: true},
 		{name: "cookie-only", auth: AuthConfig{Type: "cookie", Cookies: []string{"session_id"}}, want: false},
+		{name: "none with leftover env vars", auth: AuthConfig{Type: "none", EnvVars: []string{"EXAMPLE_API_KEY"}}, want: false},
 		{name: "empty", auth: AuthConfig{}, want: false},
 	}
 	for _, tt := range tests {

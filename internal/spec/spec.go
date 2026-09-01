@@ -1736,6 +1736,9 @@ func (c AuthConfig) HasCookies() bool {
 // callers do not add secrets-bus plumbing where browser cookies are the
 // credential source.
 func (c AuthConfig) HasNonCookieAuth() bool {
+	if strings.EqualFold(strings.TrimSpace(c.Type), "none") {
+		return false
+	}
 	return len(c.EnvVarSpecs) > 0 || len(c.EnvVars) > 0
 }
 

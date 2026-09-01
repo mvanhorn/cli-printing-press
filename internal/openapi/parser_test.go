@@ -4715,16 +4715,16 @@ paths:
 		assert.False(t, result.Inferred)
 	})
 
-	t.Run("api_key keyword produces api_key type", func(t *testing.T) {
+	t.Run("api_key keyword does not invent a credential", func(t *testing.T) {
 		doc := &openapi3.T{
 			Info: &openapi3.Info{
 				Description: "Authenticate with your API key in the Authorization header",
 			},
 		}
 		result := inferDescriptionAuth(doc, "example", spec.AuthConfig{Type: "none"})
-		assert.Equal(t, "api_key", result.Type)
-		assert.Equal(t, "EXAMPLE_API_KEY", result.EnvVars[0])
-		assert.True(t, result.Inferred)
+		assert.Equal(t, "none", result.Type)
+		assert.Empty(t, result.EnvVars)
+		assert.False(t, result.Inferred)
 	})
 
 	t.Run("scans past negated match to find positive mention", func(t *testing.T) {
@@ -4749,22 +4749,92 @@ paths:
 		assert.True(t, result.Inferred)
 	})
 
-	t.Run("custom header X-Api-Key extracted from description", func(t *testing.T) {
+	t.Run("custom header X-Api-Key in prose stays keyless", func(t *testing.T) {
 		doc := &openapi3.T{
 			Info: &openapi3.Info{
 				Description: "Send your API key in the X-Api-Key header",
 			},
 		}
 		result := inferDescriptionAuth(doc, "example", spec.AuthConfig{Type: "none"})
-		assert.Equal(t, "api_key", result.Type)
-		assert.Equal(t, "X-Api-Key", result.Header, "should extract X-Api-Key, not default to Authorization")
-		assert.True(t, result.Inferred)
+		assert.Equal(t, "none", result.Type)
+		assert.Empty(t, result.EnvVars)
+		assert.False(t, result.Inferred)
 	})
 
 	t.Run("nil doc returns fallback", func(t *testing.T) {
 		fb := spec.AuthConfig{Type: "none"}
 		assert.Equal(t, fb, inferDescriptionAuth(nil, "test", fb))
 	})
+}
+
+func TestParseKeylessSpecDoesNotInventAPIKey(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Open-Meteo Weather
+  version: "1.0.0"
+  description: "Free weather API. No API key required for the public forecast endpoints."
+servers:
+  - url: https://api.open-meteo.com
+paths:
+  /v1/forecast:
+    get:
+      summary: Forecast
+      parameters:
+        - name: latitude
+          in: query
+          required: true
+          schema: { type: number }
+        - name: longitude
+          in: query
+          required: true
+          schema: { type: number }
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "none", parsed.Auth.Type)
+	assert.False(t, parsed.Auth.Inferred)
+	assert.Empty(t, parsed.Auth.EnvVars)
+	assert.Empty(t, parsed.Auth.EnvVarSpecs)
+	assert.NotContains(t, parsed.Auth.EnvVars, "OPEN_METEO_WEATHER_API_KEY")
+}
+
+func TestParseDoesNotPromoteOrdinaryPathParamsToTemplateVars(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Unipile Posts
+  version: "1.0.0"
+servers:
+  - url: https://{shop}.example.com
+    variables:
+      shop:
+        default: api
+paths:
+  /api/v1/posts:
+    get:
+      responses:
+        "200": { description: OK }
+  /api/v1/posts/{post_id}:
+    get:
+      parameters:
+        - name: post_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"shop"}, parsed.EndpointTemplateVars)
+	assert.NotContains(t, parsed.EndpointTemplateVars, "post_id")
 }
 
 func TestInferredAuthEnvVarsAreASCIISafe(t *testing.T) {
@@ -4777,6 +4847,12 @@ info:
   description: Authenticate with your API key in the Authorization header.
 servers:
   - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
 paths:
   /pokemon:
     get:
