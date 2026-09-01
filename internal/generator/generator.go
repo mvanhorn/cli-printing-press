@@ -338,6 +338,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"mcpParamDesc":                        g.mcpParamDescription,
 		"hasDefaultSyncResources":             hasDefaultSyncResources,
 		"syncHintInvocation":                  g.syncHintInvocation,
+		"syncHintIsBare":                      g.syncHintIsBare,
 		"flagName":                            flagName,
 		"paramIdent":                          paramIdent,
 		"paramWireName":                       paramWireName,
@@ -4944,6 +4945,11 @@ func (g *Generator) syncHintInvocation() string {
 		syncable = g.profile.SyncableResources
 	}
 	return syncHintInvocation(g.Spec.Name, syncable)
+}
+
+func (g *Generator) syncHintIsBare() bool {
+	inv := g.syncHintInvocation()
+	return strings.HasSuffix(inv, " sync")
 }
 
 func specDateTimeFieldNames(api *spec.APISpec) []string {

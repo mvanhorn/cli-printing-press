@@ -174,6 +174,10 @@ func TestGeneratedHintsKeepPopulatedSyncAndAuth(t *testing.T) {
 	assert.Contains(t, syncHintSrc, `const syncHintCommand = "hint-bearer-pp-cli sync"`)
 	assert.NotContains(t, syncHintSrc, "--resources")
 
+	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+	assert.Contains(t, mcpSrc, `or run sync again if data may be stale`)
+	assert.NotContains(t, mcpSrc, "or run hint-bearer-pp-cli sync again")
+
 	requireGeneratedCompiles(t, outputDir)
 }
 

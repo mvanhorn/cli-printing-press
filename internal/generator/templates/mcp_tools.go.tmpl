@@ -1605,7 +1605,7 @@ func mcpSQLEnvelope(rows []map[string]any, columns []string, storeStatus mcpStor
 		if storeStatus == mcpStoreStatusEmpty {
 			out["next_step"] = mcpEmptyStoreNextStep()
 		} else {
-			out["next_step"] = "The read-only SQL query returned no rows. Check resource_type filters, json_extract paths{{if syncHintInvocation}}, or run {{syncHintInvocation}} again if data may be stale{{end}}."
+			out["next_step"] = "The read-only SQL query returned no rows. Check resource_type filters, json_extract paths{{if syncHintInvocation}}, or run {{if syncHintIsBare}}sync{{else}}{{syncHintInvocation}}{{end}} again if data may be stale{{end}}."
 		}
 	}
 	return out
