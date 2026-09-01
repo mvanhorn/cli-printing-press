@@ -105,6 +105,56 @@ func TestCacheKeyDelimitsSortedQueryParams(t *testing.T) {
 	}
 }
 
+func TestCacheKeyPartitionsTenantSelectingHeaders(t *testing.T) {
+	t.Parallel()
+
+	newClient := func(org string, extra map[string]string) *Client {
+		headers := map[string]string{}
+		for k, v := range extra {
+			headers[k] = v
+		}
+		if org != "" {
+			headers["ManagedOrganizationId"] = org
+		}
+		return &Client{
+			BaseURL: "https://api.example.test",
+			Config:  &config.Config{Path: "/home/user/.config/example-pp-cli/config.toml", Headers: headers},
+		}
+	}
+
+	keyA := newClient("customer-A", nil).cacheKeyFor(http.MethodGet, "/widgets", nil, nil, nil)
+	keyB := newClient("customer-B", nil).cacheKeyFor(http.MethodGet, "/widgets", nil, nil, nil)
+	if keyA == keyB {
+		t.Fatalf("tenant header did not partition cache keys: both produced %q", keyA)
+	}
+
+	acceptA := newClient("", map[string]string{"Accept": "application/json"}).cacheKeyFor(http.MethodGet, "/widgets", nil, nil, nil)
+	acceptB := newClient("", map[string]string{"Accept": "application/xml"}).cacheKeyFor(http.MethodGet, "/widgets", nil, nil, nil)
+	if acceptA == acceptB {
+		t.Fatalf("representation Accept header should still partition via the representation fold")
+	}
+
+	uaA := newClient("", map[string]string{"User-Agent": "cli-a"}).cacheKeyFor(http.MethodGet, "/widgets", nil, nil, nil)
+	uaB := newClient("", map[string]string{"User-Agent": "cli-b"}).cacheKeyFor(http.MethodGet, "/widgets", nil, nil, nil)
+	if uaA != uaB {
+		t.Fatalf("representation-only / transport headers must not partition as tenancy: %q != %q", uaA, uaB)
+	}
+
+	for _, header := range []string{"X-Customer-Id", "X-Shop-Id", "X-Project-Id"} {
+		keyA := newClient("", map[string]string{header: "tenant-a"}).cacheKeyFor(http.MethodGet, "/widgets", nil, nil, nil)
+		keyB := newClient("", map[string]string{header: "tenant-b"}).cacheKeyFor(http.MethodGet, "/widgets", nil, nil, nil)
+		if keyA == keyB {
+			t.Fatalf("%s tenant header did not partition cache keys: both produced %q", header, keyA)
+		}
+	}
+
+	reqA := newClient("", map[string]string{"X-Request-Id": "req-a"}).cacheKeyFor(http.MethodGet, "/widgets", nil, nil, nil)
+	reqB := newClient("", map[string]string{"X-Request-Id": "req-b"}).cacheKeyFor(http.MethodGet, "/widgets", nil, nil, nil)
+	if reqA != reqB {
+		t.Fatalf("tracing request-id headers must not partition as tenancy: %q != %q", reqA, reqB)
+	}
+}
+
 func TestPlatformCacheKeyContract(t *testing.T) {
 	newClient := func() *Client {
 		c := &Client{BaseURL: "https://api.example.test"}
