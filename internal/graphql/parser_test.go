@@ -166,7 +166,40 @@ func TestIsGraphQLSDLDetectsCustomRootSchema(t *testing.T) {
 
 	// Conventional and clearly-non-GraphQL inputs are unchanged.
 	assert.True(t, IsGraphQLSDL([]byte("type Query {\n  me: User\n}\n")))
+	assert.True(t, IsGraphQLSDL([]byte("extend type Query {\n  extra: String\n}\n")))
+	assert.True(t, IsGraphQLSDL([]byte("type User {\n  name: String\n}\n\nscalar DateTime\n")))
 	assert.False(t, IsGraphQLSDL([]byte(`{"openapi":"3.0.0","paths":{"/x":{"get":{"responses":{}}}}}`)))
+}
+
+func TestIsGraphQLSDLIgnoresDescriptionProse(t *testing.T) {
+	t.Parallel()
+
+	internalWithTypeProse := []byte(`name: payments
+base_url: https://api.example.com
+resources:
+  payments:
+    endpoints:
+      list:
+        method: GET
+        path: /payments
+        params:
+          - name: payment_type
+            description: Free-text payment type label. The accepted type Query and scalar value set is undocumented.
+`)
+	assert.False(t, IsGraphQLSDL(internalWithTypeProse), "internal YAML must not be GraphQL just because descriptions mention type/scalar")
+
+	openapiWithTypeProse := []byte(`openapi: 3.0.0
+info:
+  title: Payments
+  description: Free-text payment type label mentioning type Query
+paths:
+  /payments:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	assert.False(t, IsGraphQLSDL(openapiWithTypeProse), "OpenAPI must not be GraphQL because descriptions mention type Query")
 }
 
 func TestParseSDLMissingRootOperations(t *testing.T) {
