@@ -121,11 +121,12 @@ func looksLikeDoctorInterstitial(body []byte) string {
 // an operator can run to confirm credentials work end-to-end. Picks the
 // first leaf that (a) carries the `pp:endpoint` annotation, so it actually
 // dials the API rather than reading a local file like `feedback list` or
-// `profile list`; (b) has a list/get verb; and (c) takes no positional
-// arguments, so the suggestion is copy-paste runnable. Returns the dotted
-// command path (e.g. "issues list") or "" when no such command exists —
-// common in mutation-only CLIs and in CLIs where every read command has
-// required positional arguments.
+// `profile list`; (b) has a list/get verb; (c) takes no positional
+// arguments; and (d) has no required flags (`pp:requires-input`), so a
+// bare invocation actually dials instead of printing help and exiting 0.
+// Returns the command path (e.g. "issues list") or "" when no such
+// command exists — common in mutation-only CLIs and in CLIs where every
+// read command has required input.
 func suggestReadCommand(root *cobra.Command) string {
 	if root == nil {
 		return ""
@@ -156,6 +157,8 @@ func suggestReadCommand(root *cobra.Command) string {
 	return found
 }
 
+const requiresInputAnnotation = "pp:requires-input"
+
 func isSuggestableReadLeaf(cmd *cobra.Command) bool {
 	if cmd == nil || cmd.Hidden || cmd.HasSubCommands() || !cmd.Runnable() {
 		return false
@@ -165,6 +168,11 @@ func isSuggestableReadLeaf(cmd *cobra.Command) bool {
 	// recreate the false-confidence failure mode the suggestion is
 	// supposed to avoid.
 	if cmd.Annotations["pp:endpoint"] == "" {
+		return false
+	}
+	// Required non-positional flags print help and exit 0 in default
+	// mode. Suggesting one would look like a successful token check.
+	if cmd.Annotations[requiresInputAnnotation] != "" {
 		return false
 	}
 	verb := strings.ToLower(strings.SplitN(cmd.Use, " ", 2)[0])
@@ -875,7 +883,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			return doctorExitForFailOn(failOn, report)
 		},
 	}
-	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit non-zero for selected health gates. stale: cache freshness plus errors; warn: credential/path warnings plus errors; error: errors only. Default is never.")
+	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit non-zero for selected health gates. stale: cache freshness plus errors; warn: {{if .HasAuthCommand}}credential/path warnings plus errors{{else}}path warnings plus errors{{end}}; error: errors only. Default is never.")
 {{- if .BearerRefresh.Enabled}}
 	cmd.Flags().BoolVar(&refreshBearer, "refresh-bearer", false, "Fetch and store the current public bearer token")
 	cmd.Flags().StringVar(&refreshBearerBundleURL, "bearer-bundle-url", {{printf "%q" .BearerRefresh.BundleURL}}, "Override the browser bundle URL used by --refresh-bearer")
@@ -1283,7 +1291,7 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 	if err != nil {
 		if os.IsNotExist(err) {
 			report["status"] = "unknown"
-			report["hint"] = "Database not created yet; run '{{.Name}}-pp-cli sync' to hydrate."
+			report["hint"] = "Database not created yet{{if syncHintInvocation}}; run '{{goString (syncHintInvocation)}}' to hydrate{{end}}."
 			return report
 		}
 		report["status"] = "error"
@@ -1316,7 +1324,7 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 		// sync_state may not exist on a fresh DB that has migrated but not
 		// yet had any sync runs — treat as unknown rather than error.
 		report["status"] = "unknown"
-		report["hint"] = "No sync state recorded; run '{{.Name}}-pp-cli sync' to populate."
+		report["hint"] = "No sync state recorded{{if syncHintInvocation}}; run '{{goString (syncHintInvocation)}}' to populate{{end}}."
 		return report
 	}
 	defer rows.Close()
@@ -1359,13 +1367,13 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 		// Only sync-tracked resources are counted here. A store seeded by
 		// other paths (built-in reference data, local writes) can hold rows
 		// while sync_state stays empty, so say what was measured.
-		report["hint"] = "No sync recorded; run '{{.Name}}-pp-cli sync' to hydrate API-backed resources. Rows written by other paths are not tracked in sync_state."
+		report["hint"] = "No sync recorded{{if syncHintInvocation}}; run '{{goString (syncHintInvocation)}}' to hydrate API-backed resources{{end}}. Rows written by other paths are not tracked in sync_state."
 	case fresh:
 		report["status"] = "fresh"
 	default:
 		report["status"] = "stale"
 		report["oldest_age"] = oldest.Round(time.Minute).String()
-		report["hint"] = "Some resources are older than stale_after; run '{{.Name}}-pp-cli sync' to refresh."
+		report["hint"] = "Some resources are older than stale_after{{if syncHintInvocation}}; run '{{goString (syncHintInvocation)}}' to refresh{{end}}."
 	}
 	return report
 }

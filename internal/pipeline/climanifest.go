@@ -1452,6 +1452,9 @@ func detectSpecFormat(data []byte) string {
 	if openapi.IsOpenAPI(data) {
 		return "openapi3"
 	}
+	if spec.LooksLikeInternalYAML(data) {
+		return "internal"
+	}
 	if openapi.IsGraphQLSDL(data) {
 		return "graphql"
 	}

@@ -569,12 +569,26 @@ func Profile(s *spec.APISpec) *APIProfile {
 				pathCallable := !strings.Contains(endpoint.Path, "{") || resolvable || endpoint.Syncable
 				requiredScope := hasRequiredScopeParams(endpoint)
 				standaloneList := pathCallable && (!requiredScope || endpoint.Syncable)
+				queryKeyParams := requiredQueryParentKeyCandidates(endpoint)
+				queryDependentCandidate := len(queryKeyParams) == 1 && !endpoint.Syncable && (!strings.Contains(endpoint.Path, "{") || resolvable) && !hasUnsatisfiedDependentScopeParams(endpoint, queryKeyParams[0])
 				addStandaloneCandidate := func() {
 					meta := metaFromEndpoint(s, resourceName, r, endpoint, s.Types, resourceNameIndex)
 					if requiredScope && !endpoint.Syncable {
 						meta.SkipDefaultSync = true
 					}
 					addSyncCandidate(resourceName, endpointName, meta)
+				}
+				trackParameterized := func(queryKeys []string) {
+					key := strings.ToUpper(endpoint.Method) + " " + endpoint.Path
+					if _, ok := parameterized[key]; ok {
+						return
+					}
+					parameterized[key] = parameterizedEntry{
+						name:           name,
+						parentName:     parentName,
+						meta:           metaFromEndpoint(s, resourceName, r, endpoint, s.Types, resourceNameIndex),
+						queryKeyParams: queryKeys,
+					}
 				}
 
 				if endpoint.Pagination != nil {
@@ -604,19 +618,19 @@ func Profile(s *spec.APISpec) *APIProfile {
 						// annotations on a child path-item flow into the override
 						// and critical-resource maps. Store raw names so
 						// detectDependentResources can snake-case downstream.
-						key := strings.ToUpper(endpoint.Method) + " " + endpoint.Path
-						if _, ok := parameterized[key]; !ok {
-							parameterized[key] = parameterizedEntry{
-								name:       name,
-								parentName: parentName,
-								meta:       metaFromEndpoint(s, resourceName, r, endpoint, s.Types, resourceNameIndex),
-							}
-						}
+						trackParameterized(nil)
+					} else if queryDependentCandidate {
+						// Child collection keyed by a required query param
+						// (GET /files?organization_id=) — same parent-child
+						// inference as a path {placeholder}.
+						trackParameterized(queryKeyParams)
 					} else if standaloneList {
 						addStandaloneCandidate()
 					} else if pathCallable && requiredScope {
 						addStandaloneCandidate()
 					}
+				} else if queryDependentCandidate {
+					trackParameterized(queryKeyParams)
 				} else if standaloneList {
 					addStandaloneCandidate()
 				} else if pathCallable && requiredScope {
@@ -1174,6 +1188,14 @@ func hasRequiredDependentScopeParams(endpoint spec.Endpoint) bool {
 }
 
 func hasRequiredScopeParamsForSync(endpoint spec.Endpoint, allowEnumExpansion bool) bool {
+	return hasRequiredScopeParamsForSyncExcluding(endpoint, allowEnumExpansion, "")
+}
+
+func hasUnsatisfiedDependentScopeParams(endpoint spec.Endpoint, satisfiedParam string) bool {
+	return hasRequiredScopeParamsForSyncExcluding(endpoint, false, satisfiedParam)
+}
+
+func hasRequiredScopeParamsForSyncExcluding(endpoint spec.Endpoint, allowEnumExpansion bool, satisfiedParam string) bool {
 	temporalOrFormatParams := map[string]bool{
 		"since": true, "updated_after": true, "modified_since": true, "since_id": true,
 		"from": true, "to": true, "start_date": true, "end_date": true,
@@ -1186,6 +1208,9 @@ func hasRequiredScopeParamsForSync(endpoint spec.Endpoint, allowEnumExpansion bo
 		// They were historically absent from parsed endpoint params; preserve
 		// that sync classification now that OpenAPI header params are retained.
 		if loc := strings.TrimSpace(param.In); loc != "" && !strings.EqualFold(loc, "query") {
+			continue
+		}
+		if satisfiedParam != "" && strings.EqualFold(param.Name, satisfiedParam) {
 			continue
 		}
 		if param.Required && !param.Positional && !param.PathParam {
@@ -1206,6 +1231,43 @@ func hasRequiredScopeParamsForSync(endpoint spec.Endpoint, allowEnumExpansion bo
 		}
 	}
 	return false
+}
+
+func requiredQueryParentKeyCandidates(endpoint spec.Endpoint) []string {
+	var out []string
+	for _, param := range endpoint.Params {
+		if loc := strings.TrimSpace(param.In); loc != "" && !strings.EqualFold(loc, "query") {
+			continue
+		}
+		if !param.Required || param.Positional || param.PathParam || param.GlobalScope {
+			continue
+		}
+		lower := strings.ToLower(param.Name)
+		if pageSizeParamCandidates[lower] || cursorParamCandidates[lower] {
+			continue
+		}
+		if !looksLikeParentKeyParam(param.Name) {
+			continue
+		}
+		out = append(out, param.Name)
+	}
+	return out
+}
+
+func looksLikeParentKeyParam(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if strings.HasSuffix(name, "_id") || strings.HasSuffix(name, "Id") || strings.HasSuffix(name, "ID") {
+		return true
+	}
+	switch strings.ToLower(name) {
+	case "tenant", "workspace", "organization", "organisation", "org", "account", "region":
+		return true
+	default:
+		return false
+	}
 }
 
 // samplerPathSegments mark endpoints that return a non-deterministic sample
@@ -1878,7 +1940,7 @@ func addUnresolvedPathTemplateCollections(syncable map[string]syncableMeta, para
 		if _, ok := dependentPaths[entry.meta.Path]; ok {
 			continue
 		}
-		if !isPathTemplateCollection(entry.meta.Path) {
+		if !isPathTemplateCollection(entry.meta.Path) && len(entry.queryKeyParams) == 0 {
 			continue
 		}
 		meta := entry.meta
@@ -1981,7 +2043,7 @@ type dependentContext struct {
 func dependentPathContext(entry parameterizedEntry, knownParents map[string]bool, shardedSubResources spec.SubResourceShards) (dependentContext, bool) {
 	firstParam, ok := firstPathParam(entry.meta.Path)
 	if !ok {
-		return dependentContext{}, false
+		return queryParamDependentContext(entry, knownParents)
 	}
 
 	segments := pathSegments(entry.meta.Path)
@@ -2027,6 +2089,29 @@ func dependentPathContext(entry parameterizedEntry, knownParents map[string]bool
 		parentResource:    parentResource,
 		parentPathSegment: parentSegment,
 		firstParam:        firstParam,
+	}, true
+}
+
+func queryParamDependentContext(entry parameterizedEntry, knownParents map[string]bool) (dependentContext, bool) {
+	if len(entry.queryKeyParams) != 1 {
+		return dependentContext{}, false
+	}
+	paramName := entry.queryKeyParams[0]
+	parentResource := resolveParentResourceName(entry.parentName, paramName, knownParents)
+	if parentResource == "" {
+		return dependentContext{}, false
+	}
+	parentSegment := parentResource
+	if entry.parentName != "" {
+		if candidate := spec.ToSnakeCase(entry.parentName); knownParents[candidate] {
+			parentSegment = candidate
+		}
+	}
+	return dependentContext{
+		name:              spec.ToSnakeCase(entry.name),
+		parentResource:    parentResource,
+		parentPathSegment: parentSegment,
+		firstParam:        paramName,
 	}, true
 }
 
@@ -2537,9 +2622,10 @@ type syncableCandidate struct {
 // empty for top-level resources whose paths happen to be parameterized;
 // detectDependentResources then falls back to the path-param heuristic.
 type parameterizedEntry struct {
-	name       string
-	parentName string
-	meta       syncableMeta
+	name           string
+	parentName     string
+	meta           syncableMeta
+	queryKeyParams []string
 }
 
 // metaFromEndpoint extracts the IDField and Critical fields a parser populated

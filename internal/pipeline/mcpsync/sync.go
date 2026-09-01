@@ -38,7 +38,7 @@ var (
 	errAnnotationSoftFail = errors.New("endpoint annotation skipped")
 )
 
-var endpointAnnotationLine = regexp.MustCompile(`(?m)^\s*Annotations: map\[string\]string\{"pp:endpoint": "[^"]+", "pp:method": "[^"]+", "pp:path": "[^"]+"(?:, "mcp:read-only": "true")?\},\s*$`)
+var endpointAnnotationLine = regexp.MustCompile(`(?m)^\s*Annotations: map\[string\]string\{"pp:endpoint": "[^"]+", "pp:method": "[^"]+", "pp:path": "[^"]+"(?:, "[^"]+": "[^"]+")*\},\s*$`)
 var staleEndpointAnnotationLine = regexp.MustCompile(`(?m)^\s*Annotations: map\[string\]string\{"pp:endpoint": "[^"]+"(?:, "mcp:read-only": "true")?\},\s*$`)
 
 type Result struct {
@@ -565,6 +565,9 @@ func loadArchivedSpec(cliDir string) (*spec.APISpec, error) {
 		}
 		if openapi.IsOpenAPI(data) {
 			return openapi.ParseWithPathLenient(data, path)
+		}
+		if spec.LooksLikeInternalYAML(data) {
+			return spec.ParseBytes(data)
 		}
 		if graphql.IsGraphQLSDL(data) {
 			return graphql.ParseSDLBytes(path, data)
