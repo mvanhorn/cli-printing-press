@@ -1,0 +1,26 @@
+{
+  "api_name": "keyless",
+  "api_version": "1.0.0",
+  "auth_type": "none",
+  "cli_name": "keyless-pp-cli",
+  "creator": {
+    "handle": "printing-press-golden",
+    "name": "printing-press-golden"
+  },
+  "description": "Free weather API. No API key required for the public forecast endpoints.",
+  "display_name": "Keyless",
+  "generated_at": "<GENERATED_AT>",
+  "mcp_binary": "keyless-pp-mcp",
+  "mcp_public_tool_count": 1,
+  "mcp_ready": "full",
+  "mcp_tool_count": 1,
+  "owner": "printing-press-golden",
+  "printer": "printing-press-golden",
+  "printer_name": "printing-press-golden",
+  "printing_press_version": "<PRINTING_PRESS_VERSION>",
+  "run_id": "<RUN_ID>",
+  "schema_version": 2,
+  "spec_checksum": "sha256:ed6b1c06af1a14420928d49b4c7723dc94de1e4fb586a4fd06c76e1dbaac24cf",
+  "spec_format": "openapi3",
+  "spec_path": "spec.yaml"
+}
