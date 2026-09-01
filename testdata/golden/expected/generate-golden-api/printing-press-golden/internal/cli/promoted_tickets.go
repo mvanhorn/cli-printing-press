@@ -22,7 +22,7 @@ func newTicketsPromotedCmd(flags *rootFlags) *cobra.Command {
 		Long:  "Query tickets",
 		// TODO: replace placeholder example values before relying on this for live dogfood.
 		Example:     "  printing-press-golden-pp-cli tickets --x-api-version example-value",
-		Annotations: map[string]string{"pp:endpoint": "tickets.query", "pp:method": "POST", "pp:path": "/tickets/query", "mcp:read-only": "true"},
+		Annotations: map[string]string{"pp:endpoint": "tickets.query", "pp:method": "POST", "pp:path": "/tickets/query", "mcp:read-only": "true", "pp:requires-input": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Bare invocation of a command with a required flag/body prints help
 			// instead of pflag's terse "required flag not set" error. Optional-

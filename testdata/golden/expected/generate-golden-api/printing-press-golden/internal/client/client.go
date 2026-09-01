@@ -512,6 +512,11 @@ func (c *Client) cacheKeyFor(method, path string, params map[string]string, head
 		key += "|body_sha256=" + hex.EncodeToString(bodyHash[:])
 	}
 	key += "|representation=" + canonicalRepresentationHeaders(c.Config, headers)
+	// Tenant-selecting headers choose which resource comes back (MSP org,
+	// workspace). Fold them into the cache identity so two invocations that
+	// differ only by that header never share a row. Representation headers
+	// stay in canonicalRepresentationHeaders and are not treated as tenancy.
+	key += "|tenant=" + canonicalTenantSelectingHeaders(c.Config, headers)
 	h := sha256.Sum256([]byte(key))
 	if c.platformSession != nil {
 		return hex.EncodeToString(h[:])
@@ -548,6 +553,73 @@ func canonicalRepresentationHeaders(cfg *config.Config, overrides map[string]str
 	}
 	add(overrides)
 	return canonicalStringMap(values)
+}
+
+func canonicalTenantSelectingHeaders(cfg *config.Config, overrides map[string]string) string {
+	values := map[string]string{}
+	add := func(headers map[string]string) {
+		for name, value := range headers {
+			if !isTenantSelectingHeader(name) {
+				continue
+			}
+			values[strings.ToLower(strings.TrimSpace(name))] = strings.TrimSpace(value)
+		}
+	}
+	if cfg != nil {
+		add(cfg.Headers)
+	}
+	add(overrides)
+	return canonicalStringMap(values)
+}
+
+func foldHeaderName(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(normalized))
+	for _, r := range normalized {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func isRepresentationHeaderName(folded string) bool {
+	return folded == "accept" || folded == "contenttype" || folded == "revision" ||
+		folded == "version" || strings.Contains(folded, "apiversion")
+}
+
+func isNonTenantHeaderName(folded string) bool {
+	switch folded {
+	case "useragent", "authorization", "cookie", "host", "connection",
+		"acceptencoding", "contentlength", "transferencoding", "cachecontrol",
+		"pragma", "te", "upgrade", "via", "forwarded", "xforwardedfor",
+		"xforwardedproto", "xforwardedhost", "xrealip", "traceparent", "tracestate":
+		return true
+	}
+	for _, stem := range []string{
+		"requestid", "correlationid", "traceid", "spanid", "idempotencykey",
+	} {
+		if folded == stem || strings.HasSuffix(folded, stem) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTenantSelectingHeader(name string) bool {
+	folded := foldHeaderName(name)
+	if folded == "" || isRepresentationHeaderName(folded) || isNonTenantHeaderName(folded) {
+		return false
+	}
+	switch folded {
+	case "tenant", "workspace", "organization", "organisation", "org", "region", "account":
+		return true
+	}
+	return strings.HasSuffix(folded, "id") || strings.HasSuffix(folded, "filter")
 }
 
 func requestIdempotencyKey(cfg *config.Config, overrides map[string]string) string {
