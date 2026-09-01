@@ -1,7 +1,6 @@
 fastapi-operationids-golden/.printing-press.json
 fastapi-operationids-golden/manifest.json
 fastapi-operationids-golden/internal/cli/root.go
-fastapi-operationids-golden/internal/cli/doctor.go
 fastapi-operationids-golden/internal/cli/quotes_list.go
 fastapi-operationids-golden/internal/cli/quotes_create.go
 fastapi-operationids-golden/internal/cli/quotes_get.go

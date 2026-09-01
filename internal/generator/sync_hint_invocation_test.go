@@ -200,11 +200,7 @@ func TestGeneratedHintsKeepPopulatedSyncAndAuth(t *testing.T) {
 func TestGoStringLiteralContentEscapesHintInvocation(t *testing.T) {
 	t.Parallel()
 
-	inv := syncHintInvocation("hint-escape", []profiler.SyncableResource{
-		{Name: `foo"bar`, SkipDefaultSync: true},
-		{Name: `baz\qux`, SkipDefaultSync: true},
-		{Name: "line\nbreak", SkipDefaultSync: true},
-	})
+	inv := adversarialSyncHintInvocation()
 	require.NotEmpty(t, inv)
 	assert.Contains(t, inv, "--resources '",
 		"metacharacters in resource names must be shell-quoted in the copyable hint")
@@ -215,6 +211,98 @@ func TestGoStringLiteralContentEscapesHintInvocation(t *testing.T) {
 	assert.NotContains(t, src, `foo"bar`, "raw resource quotes must not appear unescaped in generated source")
 	assert.Contains(t, src, `foo\"bar`)
 	assert.Contains(t, src, `\n`)
+}
+
+func TestGeneratedSyncHintCompilesWithAdversarialResourceNames(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := skipDefaultSyncAuthNoneSpec("hint-escape")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{
+		Store:     true,
+		Sync:      true,
+		Search:    true,
+		Analytics: true,
+		MCP:       true,
+	}
+	require.NoError(t, gen.Generate())
+
+	// Spec keys stay identifier-safe so sync.go `case "{{.Name}}":` still
+	// compiles. The hint helper reads profile names, so quote / backslash /
+	// newline are injected there and the hint-bearing templates are re-emitted.
+	applyAdversarialSyncHintNames(t, gen)
+	inv := gen.syncHintInvocation()
+	require.Equal(t, adversarialSyncHintInvocation(), inv)
+
+	rerenderHintBearingFiles(t, gen)
+
+	hintFiles := []string{
+		filepath.Join("internal", "cli", "sync_hint.go"),
+		filepath.Join("internal", "cli", "doctor.go"),
+		filepath.Join("internal", "cli", "data_source.go"),
+		filepath.Join("internal", "cli", "search.go"),
+		filepath.Join("internal", "cli", "analytics.go"),
+		filepath.Join("internal", "mcp", "tools.go"),
+	}
+	for _, rel := range hintFiles {
+		src := readGeneratedFile(t, outputDir, strings.Split(rel, string(filepath.Separator))...)
+		_, err := parser.ParseFile(token.NewFileSet(), rel, src, parser.AllErrors)
+		require.NoError(t, err, "%s must remain valid Go after adversarial hint names:\n%s", rel, src)
+		assert.NotContains(t, src, `foo"bar`,
+			"%s must not embed a raw resource quote in a Go string", rel)
+		assert.Contains(t, src, `foo\"bar`, "%s should keep the escaped resource quote", rel)
+		assert.Contains(t, src, `\n`, "%s should keep the escaped newline", rel)
+	}
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func adversarialSyncHintInvocation() string {
+	return syncHintInvocation("hint-escape", []profiler.SyncableResource{
+		{Name: `foo"bar`, SkipDefaultSync: true},
+		{Name: `baz\qux`, SkipDefaultSync: true},
+		{Name: "line\nbreak", SkipDefaultSync: true},
+	})
+}
+
+func applyAdversarialSyncHintNames(t *testing.T, gen *Generator) {
+	t.Helper()
+	require.NotNil(t, gen.profile)
+	names := []string{`foo"bar`, `baz\qux`, "line\nbreak"}
+	resources := make([]profiler.SyncableResource, len(names))
+	for i, name := range names {
+		res := profiler.SyncableResource{Name: name, SkipDefaultSync: true, Path: "/adversarial", Method: "GET"}
+		if i < len(gen.profile.SyncableResources) {
+			res = gen.profile.SyncableResources[i]
+			res.Name = name
+			res.SkipDefaultSync = true
+		}
+		resources[i] = res
+	}
+	gen.profile.SyncableResources = resources
+}
+
+func rerenderHintBearingFiles(t *testing.T, gen *Generator) {
+	t.Helper()
+	schema := gen.schemaWithDependentParents()
+	visionData := gen.visionRenderData(schema)
+	require.NoError(t, gen.renderTemplate("sync_hint.go.tmpl",
+		filepath.Join("internal", "cli", "sync_hint.go"), gen.Spec))
+	require.NoError(t, gen.renderTemplate("doctor.go.tmpl",
+		filepath.Join("internal", "cli", "doctor.go"), &doctorTemplateData{
+			APISpec:        gen.Spec,
+			HasStore:       gen.hasDataLayer(),
+			HasCacheReport: gen.hasGeneratedSyncImplementation(),
+			HasAuthCommand: gen.shouldEmitAuth(),
+		}))
+	require.NoError(t, gen.renderTemplate("data_source.go.tmpl",
+		filepath.Join("internal", "cli", "data_source.go"), visionData))
+	require.NoError(t, gen.renderTemplate("search.go.tmpl",
+		filepath.Join("internal", "cli", "search.go"), visionData))
+	require.NoError(t, gen.renderTemplate("analytics.go.tmpl",
+		filepath.Join("internal", "cli", "analytics.go"), visionData))
+	require.NoError(t, gen.renderMCPToolFiles(schema))
 }
 
 func skipDefaultSyncAuthNoneSpec(name string) *spec.APISpec {
