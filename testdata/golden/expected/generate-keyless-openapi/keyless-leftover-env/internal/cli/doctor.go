@@ -84,11 +84,12 @@ func looksLikeDoctorInterstitial(body []byte) string {
 // an operator can run to confirm credentials work end-to-end. Picks the
 // first leaf that (a) carries the `pp:endpoint` annotation, so it actually
 // dials the API rather than reading a local file like `feedback list` or
-// `profile list`; (b) has a list/get verb; and (c) takes no positional
-// arguments, so the suggestion is copy-paste runnable. Returns the dotted
-// command path (e.g. "issues list") or "" when no such command exists —
-// common in mutation-only CLIs and in CLIs where every read command has
-// required positional arguments.
+// `profile list`; (b) has a list/get verb; (c) takes no positional
+// arguments; and (d) has no required flags (`pp:requires-input`), so a
+// bare invocation actually dials instead of printing help and exiting 0.
+// Returns the command path (e.g. "issues list") or "" when no such
+// command exists — common in mutation-only CLIs and in CLIs where every
+// read command has required input.
 func suggestReadCommand(root *cobra.Command) string {
 	if root == nil {
 		return ""
@@ -119,6 +120,8 @@ func suggestReadCommand(root *cobra.Command) string {
 	return found
 }
 
+const requiresInputAnnotation = "pp:requires-input"
+
 func isSuggestableReadLeaf(cmd *cobra.Command) bool {
 	if cmd == nil || cmd.Hidden || cmd.HasSubCommands() || !cmd.Runnable() {
 		return false
@@ -128,6 +131,11 @@ func isSuggestableReadLeaf(cmd *cobra.Command) bool {
 	// recreate the false-confidence failure mode the suggestion is
 	// supposed to avoid.
 	if cmd.Annotations["pp:endpoint"] == "" {
+		return false
+	}
+	// Required non-positional flags print help and exit 0 in default
+	// mode. Suggesting one would look like a successful token check.
+	if cmd.Annotations[requiresInputAnnotation] != "" {
 		return false
 	}
 	verb := strings.ToLower(strings.SplitN(cmd.Use, " ", 2)[0])
@@ -363,7 +371,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			return doctorExitForFailOn(failOn, report)
 		},
 	}
-	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit non-zero for selected health gates. stale: cache freshness plus errors; warn: credential/path warnings plus errors; error: errors only. Default is never.")
+	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit non-zero for selected health gates. stale: cache freshness plus errors; warn: path warnings plus errors; error: errors only. Default is never.")
 	return cmd
 }
 
