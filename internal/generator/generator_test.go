@@ -17956,6 +17956,8 @@ func TestGenerateNoEndpointTemplateVarsByteCompat(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
+	require.Empty(t, apiSpec.SyncPathContextVars,
+		"loops fixture must not invent sync path-context vars from ordinary path params")
 
 	_, err = os.Stat(filepath.Join(outputDir, "internal", "client", "url.go"))
 	assert.True(t, os.IsNotExist(err),

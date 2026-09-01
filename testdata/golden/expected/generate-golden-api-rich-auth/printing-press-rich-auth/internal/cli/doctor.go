@@ -540,6 +540,16 @@ func pathsWarning(report map[string]any) string {
 }
 
 func renderPathsReport(w io.Writer, rep map[string]any) {
+	if status, _ := rep["status"].(string); status == "error" {
+		fmt.Fprintf(w, "  %s Paths: %s\n", red("FAIL"), status)
+		if v, ok := rep["detail"]; ok {
+			fmt.Fprintf(w, "    detail: %v\n", v)
+		}
+		if v, ok := rep["error"]; ok {
+			fmt.Fprintf(w, "    error: %v\n", v)
+		}
+		return
+	}
 	fmt.Fprintf(w, "  Paths:\n")
 	for _, kind := range []string{"config", "data", "state", "cache"} {
 		entry, ok := rep[kind].(map[string]any)
@@ -791,6 +801,9 @@ func renderCacheReport(w io.Writer, rep map[string]any) {
 		indicator = yellow("INFO")
 	}
 	fmt.Fprintf(w, "  %s Cache: %s\n", indicator, status)
+	if v, ok := rep["error"]; ok {
+		fmt.Fprintf(w, "    error: %v\n", v)
+	}
 	if v, ok := rep["db_path"]; ok {
 		fmt.Fprintf(w, "    db_path: %v\n", v)
 	}

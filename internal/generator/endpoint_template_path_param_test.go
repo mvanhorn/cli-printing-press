@@ -46,6 +46,8 @@ func TestGenerateDoesNotPromoteOrdinaryPathParamsToTemplateVars(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 	assert.NotContains(t, apiSpec.EndpointTemplateVars, "post_id",
 		"ordinary per-request path params must not become tenant template vars")
+	assert.NotContains(t, apiSpec.SyncPathContextVars, "post_id",
+		"listable collections must not promote item-id path params into sync path-context")
 
 	_, err := os.Stat(filepath.Join(outputDir, "internal", "client", "url.go"))
 	require.True(t, os.IsNotExist(err), "url.go must not be emitted for ordinary path params")
