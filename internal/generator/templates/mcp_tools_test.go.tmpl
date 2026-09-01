@@ -135,11 +135,22 @@ func TestMCPSearchMissingStoreIsActionable(t *testing.T) {
 		t.Fatalf("handleSearch missing store IsError = %v, want true", result != nil && result.IsError)
 	}
 	text := mcpTextContent(t, result)
-	for _, want := range []string{"No local data store found", "data.db", "Run", "sync"} {
+	for _, want := range []string{"No local data store found", "data.db"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing-store error %q missing %q", text, want)
 		}
 	}
+{{- if syncHintInvocation}}
+	for _, want := range []string{"Run", "sync"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing-store error %q missing %q", text, want)
+		}
+	}
+{{- else}}
+	if !strings.Contains(text, "populate") {
+		t.Fatalf("missing-store error %q should tell the operator how to populate the store", text)
+	}
+{{- end}}
 }
 
 func TestMCPSearchEmptyStoreReturnsActionableEnvelope(t *testing.T) {
@@ -196,9 +207,15 @@ func TestMCPSearchEmptyStoreReturnsActionableEnvelope(t *testing.T) {
 		t.Fatalf("empty-store meta.source = %#v, want local in %s", envelope.Meta["source"], text)
 	}
 {{- end}}
+{{- if syncHintInvocation}}
 	if !strings.Contains(envelope.NextStep, "sync") {
 		t.Fatalf("empty-store next_step should mention sync: %s", text)
 	}
+{{- else}}
+	if !strings.Contains(envelope.NextStep, "populate") {
+		t.Fatalf("empty-store next_step should tell the operator how to populate the store: %s", text)
+	}
+{{- end}}
 }
 {{- end}}
 
@@ -249,11 +266,22 @@ func TestMCPSQLMissingStoreIsActionable(t *testing.T) {
 		t.Fatalf("handleSQL missing store IsError = %v, want true", result != nil && result.IsError)
 	}
 	text := mcpTextContent(t, result)
-	for _, want := range []string{"No local data store found", "data.db", "Run", "sync"} {
+	for _, want := range []string{"No local data store found", "data.db"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing-store error %q missing %q", text, want)
 		}
 	}
+{{- if syncHintInvocation}}
+	for _, want := range []string{"Run", "sync"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing-store error %q missing %q", text, want)
+		}
+	}
+{{- else}}
+	if !strings.Contains(text, "populate") {
+		t.Fatalf("missing-store error %q should tell the operator how to populate the store", text)
+	}
+{{- end}}
 }
 
 func TestMCPSQLEmptyStoreReturnsActionableEnvelope(t *testing.T) {
@@ -314,9 +342,15 @@ func TestMCPSQLEmptyStoreReturnsActionableEnvelope(t *testing.T) {
 		t.Fatalf("empty-store SQL meta.source = %#v, want local in %s", envelope.Meta["source"], text)
 	}
 {{- end}}
+{{- if syncHintInvocation}}
 	if !strings.Contains(envelope.NextStep, "sync") {
 		t.Fatalf("empty-store SQL next_step should mention sync: %s", text)
 	}
+{{- else}}
+	if !strings.Contains(envelope.NextStep, "populate") {
+		t.Fatalf("empty-store SQL next_step should tell the operator how to populate the store: %s", text)
+	}
+{{- end}}
 }
 
 func TestMCPSQLDomainTableMismatchIsActionable(t *testing.T) {

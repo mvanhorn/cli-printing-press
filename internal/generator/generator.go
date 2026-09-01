@@ -337,6 +337,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"composeMCPSubDesc":                   composeMCPSubDesc,
 		"mcpParamDesc":                        g.mcpParamDescription,
 		"hasDefaultSyncResources":             hasDefaultSyncResources,
+		"syncHintInvocation":                  g.syncHintInvocation,
+		"syncHintIsBare":                      g.syncHintIsBare,
 		"flagName":                            flagName,
 		"paramIdent":                          paramIdent,
 		"paramWireName":                       paramWireName,
@@ -597,6 +599,10 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"goRawSafe": func(s string) string {
 			return strings.ReplaceAll(s, "`", "'")
 		},
+		// goString escapes a value so it is safe to interpolate inside a
+		// generated double-quoted Go string literal. Resource keys and
+		// other spec-derived tokens can carry ", \, or newlines.
+		"goString": goStringLiteralContent,
 		// truncate clips a string to max runes with an ellipsis. Used to
 		// enforce the root --help Long size budget: LLM-authored headlines
 		// and novel-feature descriptions have no inherent length ceiling,
@@ -4884,12 +4890,76 @@ func paginationSupportedResources(syncable []profiler.SyncableResource, dependen
 }
 
 func hasDefaultSyncResources(syncable []profiler.SyncableResource) bool {
+	return len(defaultSyncResourceNames(syncable)) > 0
+}
+
+func defaultSyncResourceNames(syncable []profiler.SyncableResource) []string {
+	names := make([]string, 0, len(syncable))
 	for _, resource := range syncable {
-		if !resource.SkipDefaultSync {
-			return true
+		if resource.SkipDefaultSync {
+			continue
+		}
+		if name := strings.TrimSpace(resource.Name); name != "" {
+			names = append(names, name)
 		}
 	}
-	return false
+	sort.Strings(names)
+	return names
+}
+
+func syncableHintResourceNames(syncable []profiler.SyncableResource) []string {
+	names := make([]string, 0, len(syncable))
+	for _, resource := range syncable {
+		if isVestigialSyncResource(resource) {
+			continue
+		}
+		if name := strings.TrimSpace(resource.Name); name != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Quote, backslash, or newline in spec-derived tokens break generated "..." literals.
+func goStringLiteralContent(s string) string {
+	quoted := strconv.Quote(s)
+	return quoted[1 : len(quoted)-1]
+}
+
+// syncHintInvocation is the working sync command for generated hints and
+// help. Bare `sync` when defaultSyncResources is populated; `sync --resources
+// a,b` when resources exist but none are default; empty when no hint should
+// name sync.
+func syncHintInvocation(cliName string, syncable []profiler.SyncableResource) string {
+	cliName = strings.TrimSpace(cliName)
+	if cliName == "" {
+		return ""
+	}
+	bin := cliName + "-pp-cli"
+	if len(defaultSyncResourceNames(syncable)) > 0 {
+		return shellargs.Join([]string{bin, "sync"})
+	}
+	if names := syncableHintResourceNames(syncable); len(names) > 0 {
+		return shellargs.Join([]string{bin, "sync", "--resources", strings.Join(names, ",")})
+	}
+	return ""
+}
+
+func (g *Generator) syncHintInvocation() string {
+	if g == nil || g.Spec == nil || !g.hasGeneratedSyncImplementation() {
+		return ""
+	}
+	var syncable []profiler.SyncableResource
+	if g.profile != nil {
+		syncable = g.profile.SyncableResources
+	}
+	return syncHintInvocation(g.Spec.Name, syncable)
+}
+
+func (g *Generator) syncHintIsBare() bool {
+	inv := g.syncHintInvocation()
+	return strings.HasSuffix(inv, " sync")
 }
 
 func specDateTimeFieldNames(api *spec.APISpec) []string {
