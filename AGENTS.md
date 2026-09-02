@@ -147,6 +147,7 @@ The same lockstep applies to the learn-loop templates under `internal/generator/
 - `docs/RELEASE.md` - release-please / goreleaser flow
 - `docs/ATTRIBUTION.md` - Creator + contributors model: resolver fallback, validation layers, legacy-field dual-write window
 - `docs/ARTIFACTS.md` - Local library, manuscripts, and public-library flow
+- `docs/STUDIO_COMMAND_JSON.md` - Stable `--json` argv/exit/stdout shapes for Press Studio (and other subprocess consumers); product contract stays in MLX-Studio
 - `docs/DOCS.md` - Doc-authoring rules, including pointer-rot prevention
 - `docs/solutions/` - Documented solutions to past problems (bugs, design patterns, best practices, conventions), organized by category subdir with YAML frontmatter (`module`, `tags`, `problem_type`). Relevant when implementing or debugging in documented areas.
 

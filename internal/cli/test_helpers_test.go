@@ -79,6 +79,48 @@ func runWithCapturedStderr(t *testing.T, fn func() error) (string, error) {
 	return out, execErr
 }
 
+// runWithCapturedStdoutAndStderr captures both streams concurrently so
+// progress banners and JSON payloads can be asserted independently.
+func runWithCapturedStdoutAndStderr(t *testing.T, fn func() error) (stdout string, stderr string, err error) {
+	t.Helper()
+	outR, outW, err := os.Pipe()
+	require.NoError(t, err)
+	errR, errW, err := os.Pipe()
+	require.NoError(t, err)
+
+	origStdout, origStderr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = outW, errW
+
+	outCh := make(chan string, 1)
+	errCh := make(chan string, 1)
+	go func() {
+		defer outR.Close()
+		b, _ := io.ReadAll(outR)
+		outCh <- string(b)
+	}()
+	go func() {
+		defer errR.Close()
+		b, _ := io.ReadAll(errR)
+		errCh <- string(b)
+	}()
+
+	restored := false
+	restore := func() {
+		if restored {
+			return
+		}
+		_ = outW.Close()
+		_ = errW.Close()
+		os.Stdout, os.Stderr = origStdout, origStderr
+		restored = true
+	}
+	defer restore()
+
+	execErr := fn()
+	restore()
+	return <-outCh, <-errCh, execErr
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	out, err := runWithCapturedStdout(t, func() error {

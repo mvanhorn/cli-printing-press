@@ -445,8 +445,8 @@ type shipcheckJSONLeg struct {
 }
 
 // shipcheckJSONEnvelope is the structured output emitted with --json. The
-// envelope is end-of-run; per-leg stdout/stderr still streams during the
-// run. Operators piping --json output to jq should redirect stderr.
+// envelope is end-of-run; in --json mode per-leg stdout/stderr are discarded
+// so the envelope is the only stdout payload (see runShipcheckLeg).
 type shipcheckJSONEnvelope struct {
 	Passed    bool               `json:"passed"`
 	ExitCode  int                `json:"exit_code"`
@@ -590,9 +590,8 @@ Each leg remains callable standalone — this command is additive orchestration.
 			for _, leg := range shipcheckLegs {
 				// Don't print the per-leg banner in JSON mode — the
 				// envelope at end-of-run is the structured signal.
-				// Per-leg stdout/stderr still streams (some legs print
-				// their own JSON or progress) so operators piping --json
-				// to jq should redirect stderr.
+				// Per-leg stdout/stderr are discarded in --json mode
+				// (runShipcheckLeg); re-run legs standalone for detail.
 				if !opts.asJSON {
 					fmt.Fprintf(os.Stdout, "\n=== %s ===\n", leg.name)
 				}

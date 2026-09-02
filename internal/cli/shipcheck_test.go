@@ -683,14 +683,10 @@ func TestShipcheck_JSONEnvelope_AllPass(t *testing.T) {
 		}
 	})
 
-	// The output stream is mixed: stub's own stdout plus the JSON
-	// envelope at end-of-run. Find the JSON envelope by locating the
-	// final `}` and walking back to the matching `{`.
-	envelopeJSON := extractFinalJSONObject(t, out)
-
+	// --json discards per-leg stdio; stdout must be a single JSON envelope.
 	var env shipcheckJSONEnvelope
-	if err := json.Unmarshal([]byte(envelopeJSON), &env); err != nil {
-		t.Fatalf("envelope is not valid JSON: %v\n--- envelope ---\n%s", err, envelopeJSON)
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("stdout is not a single JSON envelope: %v\n--- stdout ---\n%s", err, out)
 	}
 	if !env.Passed {
 		t.Errorf("expected passed=true; got %+v", env)
@@ -930,8 +926,8 @@ func TestShipcheck_JSONEnvelopeFailureTakesPrecedenceOverHold(t *testing.T) {
 }
 
 // extractFinalJSONObject finds the last balanced `{...}` block in s.
-// The umbrella's --json mode mixes per-leg stub output with the final
-// envelope; this walks from the end back to the matching brace.
+// Defensive helper for --json envelope extraction if incidental output
+// appears before the final object.
 func extractFinalJSONObject(t *testing.T, s string) string {
 	t.Helper()
 	end := strings.LastIndex(s, "}")
