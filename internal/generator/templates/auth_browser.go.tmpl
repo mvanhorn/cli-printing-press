@@ -165,8 +165,8 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 
 Use --chrome to read cookies from Chrome for {{.Auth.CookieDomain}}.
 Use --browser as an alias for --chrome.
+--chrome and --browser require a cookie extraction tool (pycookiecheat, cookies, or cookie-scoop-cli).
 Use --cookies-file to import Playwright storage-state JSON or a raw Cookie header file.
-Requires a cookie extraction tool (pycookiecheat, cookies, or cookie-scoop-cli).
 
 If you have multiple Chrome profiles, pycookiecheat and cookie-scoop-cli can
 auto-detect which profile is logged in. Use --profile to select a specific
@@ -246,8 +246,8 @@ profile by name when the installed backend supports it.`,
 				fmt.Fprintln(w, red("No cookie extraction tool found."))
 				fmt.Fprintln(w, "")
 				if runtime.GOOS == "windows" {
-					fmt.Fprintln(w, "pycookiecheat does not support Windows. Read cookies from a live Chrome session instead:")
-					fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --browser\n\n")
+					fmt.Fprintln(w, "pycookiecheat does not support Windows. Import cookies from a file instead:")
+					fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --cookies-file <path>\n\n")
 					fmt.Fprintln(w, "Or install a cross-platform reader:")
 					fmt.Fprintln(w, "  cargo install cookie-scoop-cli     # Rust")
 				} else {
@@ -1982,7 +1982,7 @@ func detectCookieTool() (cookieTool, error) {
 		return cookieTool{name: "cookie-scoop"}, nil
 	}
 	if runtime.GOOS == "windows" {
-		return cookieTool{}, fmt.Errorf("no cookie extraction tool found; pycookiecheat does not support Windows. Use `auth login --browser` (live Chrome via CDP) or install cookie-scoop-cli")
+		return cookieTool{}, fmt.Errorf("no cookie extraction tool found; pycookiecheat does not support Windows. Use `auth login --cookies-file` or install cookie-scoop-cli")
 	}
 	return cookieTool{}, fmt.Errorf("no cookie extraction tool found; install one: pip install pycookiecheat")
 }

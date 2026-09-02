@@ -33,6 +33,9 @@ func TestCookieAuthLoginEmitsCookiesFileImport(t *testing.T) {
 	assert.Contains(t, authGo, "parseCookieHeaderCookies")
 	assert.Contains(t, authGo, "cookieDomainMatches")
 	assert.Contains(t, authGo, "client.WriteCookieJarFromMap(domain, jarCookies)")
+	assert.Contains(t, authGo, "Use --cookies-file to import Playwright storage-state JSON or a raw Cookie header file.")
+	assert.Contains(t, authGo, "--chrome and --browser require a cookie extraction tool")
+	assert.NotContains(t, authGo, "Use --cookies-file to import Playwright storage-state JSON or a raw Cookie header file.\nRequires a cookie extraction tool")
 
 	readme := readGeneratedFile(t, outputDir, "README.md")
 	assert.Contains(t, readme, "auth login --cookies-file storage-state.json")
