@@ -203,6 +203,38 @@ func Execute() {
 	assert.Contains(t, err.Error(), "not found")
 }
 
+func TestInjectAddCommandsKeepsSameCtorUnderDifferentParent(t *testing.T) {
+	t.Parallel()
+
+	host := `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "x"}
+	parentCmd := &cobra.Command{Use: "parent"}
+	rootCmd.AddCommand(parentCmd)
+	rootCmd.AddCommand(newSharedCmd())
+	_ = rootCmd.Execute()
+}
+`
+	hostPath := filepath.Join(t.TempDir(), "root.go")
+	require.NoError(t, os.WriteFile(hostPath, []byte(host), 0o644))
+
+	require.NoError(t, injectAddCommands(hostPath, []string{
+		"parentCmd.AddCommand(newSharedCmd())",
+		"rootCmd.AddCommand(newSharedCmd())",
+	}, "Execute"))
+
+	out, err := os.ReadFile(hostPath)
+	require.NoError(t, err)
+	src := string(out)
+	assert.Contains(t, src, "parentCmd.AddCommand(newSharedCmd())",
+		"lost parent-specific registration must be injected even when the same ctor is already on rootCmd")
+	assert.Equal(t, 1, strings.Count(src, "rootCmd.AddCommand(newSharedCmd())"),
+		"same parent+ctor must not be injected twice")
+}
+
 // TestMergeReportJSONShapeStable pins the JSON contract for the agent surface.
 // This isn't a golden file (the test would need updates with every fixture
 // tweak); it pins the field names that downstream agents branch on.

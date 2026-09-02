@@ -50,7 +50,9 @@ var regenmergeGeneratorOwnedDirs = map[string]struct{}{
 //
 // Steps in order:
 //  1. Per-file verdict switch — copy preserve-worthy files from snapshot
-//     into fresh; no-op on TEMPLATED-CLEAN / NEW-TEMPLATE-EMISSION;
+//     into fresh; overlay TEMPLATED-* drift/additions onto fresh so
+//     rewritten templated bodies land while hand-authored decls stay;
+//     no-op on TEMPLATED-CLEAN / NEW-TEMPLATE-EMISSION;
 //     leave PUBLISHED-ONLY-TEMPLATED files alone (fresh didn't emit them).
 //  2. Re-inject lost AddCommand calls into fresh-derived host files.
 //  3. Merge go.mod requires/replaces from snapshot into fresh's go.mod via
@@ -98,7 +100,7 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 		if !shouldPreserveFromSnapshot(*fc, snapshotDir, freshDir, opts) {
 			continue
 		}
-		if (fc.Verdict == VerdictTemplatedBodyDrift || fc.Verdict == VerdictTemplatedValueDrift) &&
+		if (fc.Verdict == VerdictTemplatedWithAdditions || fc.Verdict == VerdictTemplatedBodyDrift || fc.Verdict == VerdictTemplatedValueDrift) &&
 			tryOverlayHandEditedDecls(snapshotDir, freshDir, opts.BaseDir, freshDir, fc.Path) {
 			fc.Applied = true
 			continue

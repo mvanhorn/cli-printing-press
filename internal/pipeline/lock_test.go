@@ -107,9 +107,8 @@ func TestAcquireLock_StaleLockAutoReclaim(t *testing.T) {
 	assert.Equal(t, "new-scope", lock.Scope)
 }
 
-func TestAcquireLock_FreshLockDeadPIDAutoReclaim(t *testing.T) {
+func TestAcquireLock_FreshLockDeadPIDNotReclaimed(t *testing.T) {
 	setupLockTest(t)
-	setLockOwnerAliveForTest(t, false)
 
 	require.NoError(t, os.MkdirAll(LocksDir(), 0o755))
 	deadLock := &LockState{
@@ -121,9 +120,9 @@ func TestAcquireLock_FreshLockDeadPIDAutoReclaim(t *testing.T) {
 	}
 	require.NoError(t, writeLock(LockFilePath("test-pp-cli"), deadLock))
 
-	lock, err := AcquireLock("test-pp-cli", "new-scope", false)
-	require.NoError(t, err)
-	assert.Equal(t, "new-scope", lock.Scope)
+	_, err := AcquireLock("test-pp-cli", "new-scope", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lock held by scope")
 }
 
 func TestAcquireLock_FreshLockDifferentScope_Blocked(t *testing.T) {
@@ -190,25 +189,51 @@ func TestLockStatus_ActiveLock(t *testing.T) {
 	assert.NotNil(t, status.Lock)
 }
 
-func TestLockStatus_FreshLockDeadPIDIsStale(t *testing.T) {
+func TestLockStatus_StaleFollowsHeartbeatAge(t *testing.T) {
 	setupLockTest(t)
-	setLockOwnerAliveForTest(t, false)
-
 	require.NoError(t, os.MkdirAll(LocksDir(), 0o755))
-	deadLock := &LockState{
-		Scope:      "old-scope",
-		Phase:      "build",
-		PID:        12345,
-		AcquiredAt: time.Now(),
-		UpdatedAt:  time.Now(),
-	}
-	require.NoError(t, writeLock(LockFilePath("test-pp-cli"), deadLock))
 
-	status := LockStatus("test-pp-cli")
-	assert.True(t, status.Held)
-	assert.True(t, status.Stale)
-	assert.Equal(t, "build", status.Phase)
-	assert.Equal(t, "old-scope", status.Scope)
+	offset := time.FixedZone("UTC+03:00", 3*60*60)
+	freshAt := time.Now().In(offset)
+	cliName := "test-pp-cli"
+	lockPath := LockFilePath(cliName)
+
+	require.NoError(t, writeLock(lockPath, &LockState{
+		Scope:      "scope-1",
+		Phase:      "acquire",
+		PID:        99999,
+		AcquiredAt: freshAt,
+		UpdatedAt:  freshAt,
+	}))
+	fresh := LockStatus(cliName)
+	assert.True(t, fresh.Held)
+	assert.False(t, fresh.Stale, "fresh acquire must not report stale, even with a dead owner PID")
+	assert.Less(t, fresh.AgeSeconds, 2.0)
+	assert.Equal(t, "acquire", fresh.Phase)
+
+	require.NoError(t, UpdateLock(cliName, "build"))
+	heartbeatLock, err := readLock(lockPath)
+	require.NoError(t, err)
+	heartbeatLock.PID = 99999
+	require.NoError(t, writeLock(lockPath, heartbeatLock))
+	heartbeat := LockStatus(cliName)
+	assert.True(t, heartbeat.Held)
+	assert.False(t, heartbeat.Stale, "fresh heartbeat must not report stale")
+	assert.Less(t, heartbeat.AgeSeconds, 2.0)
+	assert.Equal(t, "build", heartbeat.Phase)
+
+	staleAt := time.Now().In(offset).Add(-StaleLockThreshold - time.Second)
+	require.NoError(t, writeLock(lockPath, &LockState{
+		Scope:      "scope-1",
+		Phase:      "build",
+		PID:        os.Getpid(),
+		AcquiredAt: staleAt,
+		UpdatedAt:  staleAt,
+	}))
+	stale := LockStatus(cliName)
+	assert.True(t, stale.Held)
+	assert.True(t, stale.Stale, "lock older than StaleLockThreshold must report stale")
+	assert.Greater(t, stale.AgeSeconds, StaleLockThreshold.Seconds())
 }
 
 func TestLockStatus_NoLock(t *testing.T) {
@@ -1233,10 +1258,10 @@ func TestPromoteWorkingCLI_StagingNoopForMinimalState(t *testing.T) {
 }
 
 func TestIsStale(t *testing.T) {
-	fresh := &LockState{UpdatedAt: time.Now()}
+	fresh := &LockState{UpdatedAt: time.Now(), PID: 99999}
 	assert.False(t, IsStale(fresh))
 
-	stale := &LockState{UpdatedAt: time.Now().Add(-31 * time.Minute)}
+	stale := &LockState{UpdatedAt: time.Now().Add(-31 * time.Minute), PID: os.Getpid()}
 	assert.True(t, IsStale(stale))
 
 	boundary := &LockState{UpdatedAt: time.Now().Add(-30*time.Minute - time.Second)}
@@ -1292,14 +1317,6 @@ func TestConcurrentAcquire(t *testing.T) {
 		winners++
 	}
 	assert.GreaterOrEqual(t, winners, 1, "at least one goroutine should acquire the lock")
-}
-
-func setLockOwnerAliveForTest(t *testing.T, alive bool) {
-	t.Helper()
-
-	original := lockOwnerAliveFunc
-	lockOwnerAliveFunc = func(pid int) bool { return alive }
-	t.Cleanup(func() { lockOwnerAliveFunc = original })
 }
 
 func TestShellQuote(t *testing.T) {
