@@ -264,7 +264,35 @@ type intentDecl struct {
 
 func isGeneratedIntentHandler(decl ast.Decl) bool {
 	fn, ok := decl.(*ast.FuncDecl)
-	return ok && strings.HasPrefix(fn.Name.Name, "handle")
+	if !ok || fn.Type == nil || !strings.HasPrefix(fn.Name.Name, "handle") {
+		return false
+	}
+	return hasNamedType(fn.Type.Params, "CallToolRequest") && hasNamedType(fn.Type.Results, "CallToolResult")
+}
+
+func hasNamedType(fields *ast.FieldList, name string) bool {
+	if fields == nil {
+		return false
+	}
+	for _, field := range fields.List {
+		if typeIdentName(field.Type) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func typeIdentName(expr ast.Expr) string {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.SelectorExpr:
+		return t.Sel.Name
+	case *ast.StarExpr:
+		return typeIdentName(t.X)
+	default:
+		return ""
+	}
 }
 
 func expandPreservedIntentDeps(keep map[string]bool, beforeByName map[string]intentDecl, afterNames map[string]bool) {

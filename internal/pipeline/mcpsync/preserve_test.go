@@ -1,6 +1,8 @@
 package mcpsync
 
 import (
+	"go/parser"
+	"go/token"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -97,6 +99,56 @@ func TestMergeHandAuthoredIntentFileNoopsWithoutMarkers(t *testing.T) {
 	assert.Equal(t, string(after), string(merged))
 }
 
+func TestIsGeneratedIntentHandler(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		src  string
+		want bool
+	}{
+		{
+			name: "generated mcp tool handler",
+			src: `package mcp
+func handleCreateOperation(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	return nil, nil
+}`,
+			want: true,
+		},
+		{
+			name: "hand-authored handle helper",
+			src: `package mcp
+func handleCustomPoll(ctx context.Context, c *client.Client, opID string) (bool, error) {
+	return false, nil
+}`,
+			want: false,
+		},
+		{
+			name: "handle prefix without tool signature",
+			src: `package mcp
+func handleOldExplicit(ctx context.Context) error { return nil }`,
+			want: false,
+		},
+		{
+			name: "non-handle helper",
+			src: `package mcp
+func waitForIntentPoll(ctx context.Context) error { return nil }`,
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "intents.go", tc.src, 0)
+			require.NoError(t, err)
+			require.NotEmpty(t, file.Decls)
+			assert.Equal(t, tc.want, isGeneratedIntentHandler(file.Decls[0]))
+		})
+	}
+}
+
 func TestMergeHandAuthoredIntentFileDropsRemovedGeneratedHandlers(t *testing.T) {
 	t.Parallel()
 
@@ -106,11 +158,13 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	mcplib "github.com/mark3labs/mcp-go/mcp"
 )
 
-func handleOldExplicit(ctx context.Context) error {
+func handleOldExplicit(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	_, err := waitForIntentPoll(ctx, pollAfter, operationTimeout)
-	return err
+	return nil, err
 }
 
 func handleWaitForOperation(ctx context.Context) error {
@@ -165,4 +219,63 @@ func callIntentEndpoint(ctx context.Context) (any, error) { return nil, nil }
 	assert.Contains(t, src, "func waitForIntentPoll(")
 	assert.Contains(t, src, "func intentPollComplete(")
 	assert.Contains(t, src, "waitForIntentPoll(ctx, pollAfter, operationTimeout)")
+}
+
+func TestMergeHandAuthoredIntentFileKeepsCustomHandleHelper(t *testing.T) {
+	t.Parallel()
+
+	before := []byte(`package mcp
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	mcplib "github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/example/fixture-pp-cli/internal/client"
+)
+
+func handleCreateOperation(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	_, err := waitForIntentPoll(ctx, nil, "op")
+	return nil, err
+}
+
+func handleCustomPoll(ctx context.Context, c *client.Client, opID string) (bool, error) {
+	return waitForIntentPoll(ctx, c, opID)
+}
+
+func handleOldExplicit(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	_, err := waitForIntentPoll(ctx, nil, "gone")
+	return nil, err
+}
+
+func waitForIntentPoll(ctx context.Context, c *client.Client, opID string) (any, error) {
+	_ = operationTimeout
+	return nil, fmt.Errorf("unfinished")
+}
+
+const operationTimeout = 5 * time.Second
+`)
+	after := []byte(`package mcp
+
+import (
+	"context"
+
+	mcplib "github.com/mark3labs/mcp-go/mcp"
+)
+
+func handleCreateOperation(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	return nil, nil
+}
+`)
+
+	merged, err := mergeHandAuthoredIntentFile(before, after)
+	require.NoError(t, err)
+	src := string(merged)
+	assert.Contains(t, src, "func handleCustomPoll(")
+	assert.Contains(t, src, "func waitForIntentPoll(")
+	assert.Contains(t, src, "func handleCreateOperation(")
+	assert.Contains(t, src, `waitForIntentPoll(ctx, nil, "op")`)
+	assert.NotContains(t, src, "func handleOldExplicit(")
 }
