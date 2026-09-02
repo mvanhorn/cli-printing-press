@@ -12527,9 +12527,17 @@ func TestGenerate_CookieAuthWindowsCompatibility(t *testing.T) {
 	assert.NotContains(t, content, `exec.Command("python3", "-c", script)`)
 	assert.Contains(t, content, `exec.Command(tool.pyBin,`)
 
-	// Windows users get a workable next step instead of the Unix install hint.
-	assert.Contains(t, content, "auth login --browser")
+	// Windows no-extractor remedy must name file import, not --browser
+	// (an alias of the --chrome path that just failed).
+	assert.Contains(t, content, "pycookiecheat does not support Windows. Import cookies from a file instead:")
+	assert.Contains(t, content, "auth login --cookies-file")
+	assert.NotContains(t, content, "Read cookies from a live Chrome session instead:")
+	assert.NotContains(t, content, "Use `auth login --browser`")
 	assert.Contains(t, content, "cookie-scoop-cli")
+
+	// Unix install hint stays on the non-Windows branch.
+	assert.Contains(t, content, "pip install pycookiecheat")
+	assert.Contains(t, content, "brew install barnardb/cookies/cookies")
 }
 
 // TestGenerate_CookieAuthFiltersAllowlistOnLogin pins that `auth login --chrome`
