@@ -200,3 +200,166 @@ func TestResponsePathCasesPrefersSyncableAcrossDifferentPaths(t *testing.T) {
 		ResponsePath: "catalog.items",
 	}}, cases)
 }
+
+func TestResponsePathCasesPrefersListOverCreate(t *testing.T) {
+	t.Parallel()
+
+	cases := responsePathCases(map[string]spec.Resource{
+		"invoices": {
+			Endpoints: map[string]spec.Endpoint{
+				"create": {
+					Method:       "POST",
+					Path:         "/invoices",
+					ResponsePath: "data",
+					Response:     spec.ResponseDef{Type: "object"},
+				},
+				"list": {
+					Method:       "GET",
+					Path:         "/invoices",
+					ResponsePath: "data.list",
+					Response:     spec.ResponseDef{Type: "array"},
+				},
+			},
+		},
+	})
+
+	require.Equal(t, []responsePathCase{{
+		Key:          "invoices",
+		ResponsePath: "data.list",
+	}}, cases, "resource-level sync fallback must use list's envelope, not create's")
+}
+
+func TestResponsePathCasesUniformPathUnchanged(t *testing.T) {
+	t.Parallel()
+
+	cases := responsePathCases(map[string]spec.Resource{
+		"notes": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:       "GET",
+					Path:         "/notes",
+					ResponsePath: "results",
+				},
+			},
+		},
+	})
+
+	assert.Equal(t, []responsePathCase{{
+		Key:          "notes",
+		ResponsePath: "results",
+	}}, cases)
+}
+
+func TestGeneratedSyncPrefersListResponsePathWhenCreateDiffers(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("invoice-path")
+	apiSpec.Resources = map[string]spec.Resource{
+		"invoices": {
+			Description: "Invoices",
+			Endpoints: map[string]spec.Endpoint{
+				"create": {
+					Method:       "POST",
+					Path:         "/invoices",
+					Description:  "Create invoice",
+					ResponsePath: "data",
+					Response:     spec.ResponseDef{Type: "object", Item: "Invoice"},
+					Body: []spec.Param{
+						{Name: "amount", Type: "number", Required: true},
+					},
+				},
+				"list": {
+					Method:       "GET",
+					Path:         "/invoices",
+					Description:  "List invoices",
+					Syncable:     true,
+					ResponsePath: "data.list",
+					Response:     spec.ResponseDef{Type: "array", Item: "Invoice"},
+				},
+			},
+		},
+	}
+	apiSpec.Types = map[string]spec.TypeDef{
+		"Invoice": {Fields: []spec.TypeField{
+			{Name: "id", Type: "string"},
+			{Name: "amount", Type: "number"},
+		}},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
+	require.Contains(t, syncSrc, `case "invoices":`)
+	require.Contains(t, syncSrc, `return []string{"data.list"}`)
+	require.NotContains(t, syncSrc, `return []string{"data"}`,
+		"resource-level sync fallback must not collapse to create's envelope")
+
+	listSrc := readGeneratedFile(t, outputDir, "internal", "cli", "invoices_list.go")
+	require.Contains(t, listSrc, `"data.list"`)
+
+	createSrc := readGeneratedFile(t, outputDir, "internal", "cli", "invoices_create.go")
+	require.Contains(t, createSrc, `"data"`,
+		"create must keep its endpoint-level response_path")
+	require.NotContains(t, createSrc, `"data.list"`,
+		"create must not inherit list's response_path")
+
+	testPath := filepath.Join(outputDir, "internal", "cli", "sync_response_path_list_pref_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(`package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"testing"
+
+	"`+naming.CLI(apiSpec.Name)+`/internal/store"
+)
+
+type fakeInvoiceClient struct {
+	responses map[string]json.RawMessage
+}
+
+func (f *fakeInvoiceClient) Get(_ context.Context, path string, _ map[string]string) (json.RawMessage, error) {
+	if response, ok := f.responses[path]; ok {
+		return response, nil
+	}
+	return json.RawMessage(`+"`"+`null`+"`"+`), nil
+}
+
+func (f *fakeInvoiceClient) RateLimit() float64 { return 0 }
+
+func TestResponsePathForResourceUsesListEnvelope(t *testing.T) {
+	got := responsePathForResource("invoices", "/invoices")
+	if len(got) != 1 || got[0] != "data.list" {
+		t.Fatalf("responsePathForResource(invoices) = %#v, want [data.list]", got)
+	}
+}
+
+func TestSyncResourceUnwrapsNestedListEnvelope(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+	body := json.RawMessage(`+"`"+`{"data":{"list":[{"id":"inv_1","amount":10},{"id":"inv_2","amount":20}]}}`+"`"+`)
+	client := &fakeInvoiceClient{responses: map[string]json.RawMessage{"/invoices": body}}
+	var events bytes.Buffer
+	res := syncResource(context.Background(), client, db, "invoices", "", true, 0, false, false, nil, &events)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v\nevents: %s", res.Err, events.String())
+	}
+	if res.Count != 2 {
+		t.Fatalf("syncResource count = %d, want 2; events: %s", res.Count, events.String())
+	}
+}
+`), 0o644))
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "Test(ResponsePathForResourceUsesListEnvelope|SyncResourceUnwrapsNestedListEnvelope)", "-count=1")
+}
