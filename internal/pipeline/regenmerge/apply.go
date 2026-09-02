@@ -402,18 +402,18 @@ func injectAddCommands(hostPath string, calls []string, enclosingFunc string) er
 			return true
 		}
 
-		have := existingAddCommandCtors(fn)
+		have := existingAddCommandRegs(fn)
 		var newStmts []dst.Stmt
 		for _, src := range calls {
 			stmt, perr := parseStmtViaDST(src)
 			if perr != nil {
 				continue
 			}
-			if ctor := addCommandCtor(stmt); ctor != "" {
-				if have[ctor] {
+			if key := addCommandRegistrationKey(stmt); key != "" {
+				if have[key] {
 					continue
 				}
-				have[ctor] = true
+				have[key] = true
 			}
 			newStmts = append(newStmts, stmt)
 		}
@@ -446,41 +446,54 @@ func injectAddCommands(hostPath string, calls []string, enclosingFunc string) er
 	return writeFileAtomic(hostPath, []byte(buf.String()))
 }
 
-func existingAddCommandCtors(fn *dst.FuncDecl) map[string]bool {
+func existingAddCommandRegs(fn *dst.FuncDecl) map[string]bool {
 	have := map[string]bool{}
 	if fn == nil || fn.Body == nil {
 		return have
 	}
 	for _, stmt := range fn.Body.List {
-		if ctor := addCommandCtor(stmt); ctor != "" {
-			have[ctor] = true
+		if key := addCommandRegistrationKey(stmt); key != "" {
+			have[key] = true
 		}
 	}
 	return have
 }
 
-func addCommandCtor(stmt dst.Stmt) string {
+func addCommandRegistrationKey(stmt dst.Stmt) string {
+	parent, ctor := addCommandParentAndCtor(stmt)
+	if parent == "" || ctor == "" {
+		return ""
+	}
+	return parent + ".AddCommand(" + ctor + ")"
+}
+
+func addCommandParentAndCtor(stmt dst.Stmt) (string, string) {
 	es, ok := stmt.(*dst.ExprStmt)
 	if !ok {
-		return ""
+		return "", ""
 	}
 	ce, ok := es.X.(*dst.CallExpr)
 	if !ok {
-		return ""
+		return "", ""
 	}
 	sel, ok := ce.Fun.(*dst.SelectorExpr)
 	if !ok || sel.Sel == nil || sel.Sel.Name != "AddCommand" || len(ce.Args) == 0 {
-		return ""
+		return "", ""
 	}
+	parent := ""
+	if id, ok := sel.X.(*dst.Ident); ok {
+		parent = id.Name
+	}
+	var ctor string
 	switch arg := ce.Args[0].(type) {
 	case *dst.CallExpr:
 		if id, ok := arg.Fun.(*dst.Ident); ok {
-			return id.Name
+			ctor = id.Name
 		}
 	case *dst.Ident:
-		return arg.Name
+		ctor = arg.Name
 	}
-	return ""
+	return parent, ctor
 }
 
 // isAddCommandStmt returns true if the statement is a call to
