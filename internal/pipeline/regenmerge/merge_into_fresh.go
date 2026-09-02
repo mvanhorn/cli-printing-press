@@ -91,28 +91,24 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 	for i := range report.Files {
 		fc := &report.Files[i]
 		switch fc.Verdict {
-		case VerdictTemplatedClean, VerdictNewTemplateEmission, VerdictPublishedOnlyTemplated:
-			// fresh's emission is authoritative; nothing to copy from snapshot.
-		case VerdictNovel, VerdictNovelCollision:
-			if err := copyPreserveFile(snapshotDir, freshDir, fc.Path); err != nil {
-				return err
-			}
-			fc.Applied = true
-		case VerdictTemplatedWithAdditions, VerdictTemplatedBodyDrift, VerdictTemplatedValueDrift:
-			if opts.NovelOnly && !preserveTemplatedDriftInNovelOnly(snapshotDir, freshDir, fc.Path) {
-				continue
-			}
-			if tryOverlayHandEditedDecls(snapshotDir, freshDir, opts.BaseDir, freshDir, fc.Path) {
-				fc.Applied = true
-				continue
-			}
-			if err := copyPreserveFile(snapshotDir, freshDir, fc.Path); err != nil {
-				return err
-			}
-			fc.Applied = true
+		case VerdictTemplatedClean, VerdictNewTemplateEmission, VerdictPublishedOnlyTemplated,
+			VerdictNovel, VerdictNovelCollision,
+			VerdictTemplatedWithAdditions, VerdictTemplatedBodyDrift, VerdictTemplatedValueDrift:
 		default:
 			return fmt.Errorf("unhandled verdict %q for %s", fc.Verdict, fc.Path)
 		}
+		if !shouldPreserveFromSnapshot(*fc, snapshotDir, freshDir, opts) {
+			continue
+		}
+		if (fc.Verdict == VerdictTemplatedWithAdditions || fc.Verdict == VerdictTemplatedBodyDrift || fc.Verdict == VerdictTemplatedValueDrift) &&
+			tryOverlayHandEditedDecls(snapshotDir, freshDir, opts.BaseDir, freshDir, fc.Path) {
+			fc.Applied = true
+			continue
+		}
+		if err := copyPreserveFile(snapshotDir, freshDir, fc.Path); err != nil {
+			return err
+		}
+		fc.Applied = true
 	}
 
 	var novelDecls declSet
@@ -970,6 +966,17 @@ func FormatSkippedTemplatedHandEdits(report *MergeReport) string {
 		b.WriteString(")\n")
 	}
 	return b.String()
+}
+
+func shouldPreserveFromSnapshot(fc FileClassification, snapshotDir, freshDir string, opts Options) bool {
+	switch fc.Verdict {
+	case VerdictNovel, VerdictNovelCollision:
+		return true
+	case VerdictTemplatedWithAdditions, VerdictTemplatedBodyDrift, VerdictTemplatedValueDrift:
+		return !opts.NovelOnly || preserveTemplatedDriftInNovelOnly(snapshotDir, freshDir, fc.Path)
+	default:
+		return false
+	}
 }
 
 func preserveTemplatedDriftInNovelOnly(snapshotDir, freshDir, rel string) bool {

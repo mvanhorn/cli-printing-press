@@ -115,6 +115,7 @@ func newGenerateCmd() *cobra.Command {
 	var validate bool
 	var refresh bool
 	var force bool
+	var yes bool
 	var lenient bool
 	var strictRefs bool
 	var docsURL string
@@ -210,7 +211,7 @@ func newGenerateCmd() *cobra.Command {
 				}
 
 				if snapshotDir != "" {
-					if err := finalizeForceMerge(snapshotDir, absOut, docYAML, validate, generateResult.Validate); err != nil {
+					if err := finalizeForceMerge(snapshotDir, absOut, docYAML, validate, generateResult.Validate, yes); err != nil {
 						return err
 					}
 				}
@@ -299,7 +300,7 @@ func newGenerateCmd() *cobra.Command {
 					// manifest hash that does exist still gates merge mode.
 					// Plan mode has no non-force validation suite to mirror,
 					// so force merge should not invent a build-only subset.
-					if err := finalizeForceMerge(snapshotDir, absOut, nil, false, nil); err != nil {
+					if err := finalizeForceMerge(snapshotDir, absOut, nil, false, nil, yes); err != nil {
 						return err
 					}
 				}
@@ -355,7 +356,7 @@ func newGenerateCmd() *cobra.Command {
 						return err
 					}
 					if snapshotDir != "" {
-						if err := finalizeForceMerge(snapshotDir, absOut, archivedDeviceSpec, validate, generateResult.Validate); err != nil {
+						if err := finalizeForceMerge(snapshotDir, absOut, archivedDeviceSpec, validate, generateResult.Validate, yes); err != nil {
 							return err
 						}
 					}
@@ -494,7 +495,7 @@ func newGenerateCmd() *cobra.Command {
 				if len(specRawBytes) > 0 {
 					primarySpec = specRawBytes[0]
 				}
-				if err := finalizeForceMerge(snapshotDir, absOut, primarySpec, validate, generateResult.Validate); err != nil {
+				if err := finalizeForceMerge(snapshotDir, absOut, primarySpec, validate, generateResult.Validate, yes); err != nil {
 					return err
 				}
 			}
@@ -575,6 +576,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
 	cmd.Flags().BoolVar(&force, "force", false, "Recreate the base output directory while preserving hand-edits to generated files via AST-based merge")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm deleting non-generator-owned files that --force would not preserve")
 	cmd.Flags().Bool("allow-novel-wipe", false, "Deprecated compatibility no-op; --force now preserves hand-authored files via regen-merge")
 	_ = cmd.Flags().MarkHidden("allow-novel-wipe")
 	cmd.Flags().BoolVar(&lenient, "lenient", false, "Skip validation errors from broken $refs in OpenAPI specs")
@@ -2502,33 +2504,32 @@ func claimOrForce(absOut string, force bool, explicitOutput bool) (resolvedAbsOu
 	return resolved, "", nil
 }
 
-// finalizeForceMerge runs the post-Generate merge for any --force codepath:
-// classifies snapshotDir against freshDir, merges preserved hand-edits back,
-// re-runs `go mod tidy` when go.mod was merged (so go.sum keeps up with
-// preserved requires), drops preserved files that reintroduce a
-// fresh-generation build break, and removes the snapshot on success. On merge
-// failure the snapshot is left in place and the error surfaces a recovery
-// command.
-//
-// Wired from the three --force codepaths (--spec, --docs, --plan) so each
-// one preserves hand-edits consistently — discarding snapshotDir after
-// generation would silently lose user work and leave an orphan that blocks
-// future --force runs.
-func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, validate bool, validateMerged func() error) error {
+// finalizeForceMerge is the --force contract: the freshly generated tree
+// must not replace operator-owned files without confirmation, and a refused
+// confirmation must leave the pre-force tree in place. SnapshotDir stays on
+// merge failure so the operator can recover; success removes it so a later
+// --force is not blocked by an orphan.
+func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, validate bool, validateMerged func() error, yes bool) error {
 	freshBackup, cleanupFresh, err := backupFreshTree(freshDir)
 	if err != nil {
 		return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("backing up fresh tree before merge: %w; snapshot preserved at %s", err, snapshotDir)}
 	}
 	defer cleanupFresh()
 
-	gomodMerged, err := mergeForceSnapshot(snapshotDir, freshDir, currentSpecBytes, false)
+	gomodMerged, err := mergeForceSnapshot(snapshotDir, freshDir, currentSpecBytes, false, yes)
 	if err != nil {
+		if asExitError(err) != nil {
+			return err
+		}
 		return &ExitError{Code: ExitGenerationError, Err: err}
 	}
 	if gomodMerged {
 		retidyAfterMerge(freshDir)
 	}
-	if err := repairPreserveBuildBreak(snapshotDir, freshDir, freshBackup, currentSpecBytes, validate); err != nil {
+	if err := repairPreserveBuildBreak(snapshotDir, freshDir, freshBackup, currentSpecBytes, validate, yes); err != nil {
+		if asExitError(err) != nil {
+			return err
+		}
 		return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("%w; snapshot preserved at %s", err, snapshotDir)}
 	}
 	if validate {
@@ -2564,7 +2565,7 @@ func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, v
 // On failure the snapshot is intentionally left in place; the returned
 // error includes the snapshot path so the user can recover manually with
 // `rm -rf <freshDir> && mv <snapshotDir> <freshDir>`.
-func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte, forceNovelOnly bool) (gomodMerged bool, err error) {
+func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte, forceNovelOnly, yes bool) (gomodMerged bool, err error) {
 	novelOnly := forceNovelOnly || !forceRegenSpecHashMatches(snapshotDir, currentSpecBytes)
 	baseDir, cleanupBase := synthesizeForceRegenBase(snapshotDir, currentSpecBytes, novelOnly)
 	if cleanupBase != nil {
@@ -2584,6 +2585,9 @@ func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte, f
 	}
 
 	mergeOpts := regenmerge.Options{Force: true, NovelOnly: novelOnly, BaseDir: baseDir}
+	if err := confirmOrRestoreForceDrops(snapshotDir, freshDir, report, mergeOpts, yes); err != nil {
+		return false, err
+	}
 	if err := regenmerge.MergeIntoFreshTree(snapshotDir, freshDir, report, mergeOpts); err != nil {
 		return false, fmt.Errorf("merging snapshot into fresh tree: %w; snapshot preserved at %s — recover with `rm -rf %s && mv %s %s`",
 			err, snapshotDir, freshDir, snapshotDir, freshDir)

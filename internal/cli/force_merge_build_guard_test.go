@@ -45,7 +45,7 @@ func TestFinalizeForceMergeDropsVersionBumpHelperRenamePreserve(t *testing.T) {
 		"internal/cli/promoted.go": generatedCLIFile("func Promoted() string { return newHelper() }\n"),
 	})
 
-	require.NoError(t, finalizeForceMerge(snapshotDir, freshDir, nil, true, func() error { return nil }))
+	require.NoError(t, finalizeForceMerge(snapshotDir, freshDir, nil, true, func() error { return nil }, false))
 
 	promoted, err := os.ReadFile(filepath.Join(freshDir, "internal", "cli", "promoted.go"))
 	require.NoError(t, err)
@@ -79,7 +79,7 @@ func TestFinalizeForceMergePreservesCompilingHandEdits(t *testing.T) {
 		"internal/cli/root.go": generatedCLIFile("func Execute() {}\n"),
 	})
 
-	require.NoError(t, finalizeForceMerge(snapshotDir, freshDir, nil, true, func() error { return nil }))
+	require.NoError(t, finalizeForceMerge(snapshotDir, freshDir, nil, true, func() error { return nil }, false))
 
 	got, err := os.ReadFile(filepath.Join(freshDir, "internal", "cli", "root.go"))
 	require.NoError(t, err)
@@ -106,7 +106,7 @@ func TestFinalizeForceMergeReplacesRewrittenBodyOnVersionBumpWithoutBase(t *test
 		"internal/client/client.go": newClient,
 	})
 
-	require.NoError(t, finalizeForceMerge(snapshotDir, freshDir, nil, true, func() error { return nil }))
+	require.NoError(t, finalizeForceMerge(snapshotDir, freshDir, nil, true, func() error { return nil }, false))
 
 	got, err := os.ReadFile(filepath.Join(freshDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
@@ -142,7 +142,7 @@ func TestFinalizeForceMergeSkipsVanishedFreshTreeEntry(t *testing.T) {
 	})
 	t.Cleanup(clear)
 
-	require.NoError(t, finalizeForceMerge(snapshotDir, freshDir, nil, false, nil))
+	require.NoError(t, finalizeForceMerge(snapshotDir, freshDir, nil, false, nil, false))
 
 	novel, err := os.ReadFile(filepath.Join(freshDir, "internal", "cli", "novel.go"))
 	require.NoError(t, err)
