@@ -92,9 +92,9 @@ func snapshotHasFunctionBodyChange(snapPath, freshPath string) bool {
 	if snapDecls == nil || freshDecls == nil {
 		return false
 	}
-	// Generated tests embed {{.Name}} / {{.Name}}-pp-cli in helper
-	// bodies. Normalize that identity so a spec rename is not treated
-	// as a hand-authored delete; assertion and control-flow edits stay.
+	// Generated tests embed exact {{.Name}} / {{.Name}}-pp-cli helper
+	// literals. Normalize those tokens so a spec rename is not treated
+	// as a hand-authored delete. Larger strings stay intact.
 	if strings.HasSuffix(filepath.ToSlash(snapPath), "_test.go") {
 		if snapName, snapOK := specIdentityName(snapPath); snapOK {
 			if freshName, freshOK := specIdentityName(freshPath); freshOK {
@@ -147,14 +147,9 @@ func rewriteSpecIdentityStringLits(file *ast.File, specName string) {
 		case ident:
 			next = specIdentityPlaceholder + generatedCLINameSuffix
 		default:
-			// Keep the generated name-pp-cli token in command/path
-			// strings. Do not rewrite a bare spec name inside a
-			// larger literal — that hides hand-authored edits.
-			next = strings.ReplaceAll(s, ident, specIdentityPlaceholder+generatedCLINameSuffix)
+			return true
 		}
-		if next != s {
-			lit.Value = strconv.Quote(next)
-		}
+		lit.Value = strconv.Quote(next)
 		return true
 	})
 }
