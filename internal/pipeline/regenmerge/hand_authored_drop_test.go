@@ -142,6 +142,132 @@ func TestMarkerlessFilesWouldDropSkipsSpecDerivedTestFunctionLiterals(t *testing
 		"spec-derived literals in a markerless generated test helper are not a hand-authored delete")
 }
 
+func TestMarkerlessFilesWouldDropListsHandEditedTestAssertions(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh := makeMergeFixture(t)
+	rel := filepath.Join("internal", "client", "items_test.go")
+	require.NoError(t, os.MkdirAll(filepath.Join(snap, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(fresh, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(snap, rel), []byte(`package client
+
+import "testing"
+
+func TestItems(t *testing.T) {
+	got := 3
+	if got != 3 {
+		t.Fatalf("got %d", got)
+	}
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, rel), []byte(`package client
+
+import "testing"
+
+func TestItems(t *testing.T) {
+	got := 3
+	if got != 5 {
+		t.Fatalf("got %d", got)
+	}
+}
+`), 0o644))
+
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	assert.Empty(t, MarkerlessFilesWouldDrop(snap, fresh, report, Options{Force: true}),
+		"same-spec merge preserves a markerless hand-edited test")
+	assert.Equal(t, []string{filepath.ToSlash(rel)}, MarkerlessFilesWouldDrop(snap, fresh, report, Options{Force: true, NovelOnly: true}),
+		"NovelOnly overwrite of a same-decl hand-authored test assertion must be listed")
+}
+
+func TestMarkerlessFilesWouldDropListsHandEditedTestControlFlow(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh := makeMergeFixture(t)
+	rel := filepath.Join("internal", "client", "items_test.go")
+	require.NoError(t, os.MkdirAll(filepath.Join(snap, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(fresh, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(snap, rel), []byte(`package client
+
+import "testing"
+
+func TestItems(t *testing.T) {
+	t.Fatal("no")
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, rel), []byte(`package client
+
+import "testing"
+
+func TestItems(t *testing.T) {
+	if true {
+		t.Fatal("no")
+	}
+}
+`), 0o644))
+
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{filepath.ToSlash(rel)}, MarkerlessFilesWouldDrop(snap, fresh, report, Options{Force: true, NovelOnly: true}),
+		"NovelOnly overwrite of a same-decl hand-authored test control-flow edit must be listed")
+}
+
+func TestMarkerlessFilesWouldDropListsHandEditedTestReturn(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh := makeMergeFixture(t)
+	rel := filepath.Join("internal", "client", "items_test.go")
+	require.NoError(t, os.MkdirAll(filepath.Join(snap, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(fresh, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(snap, rel), []byte("package client\n\nfunc helper() bool { return true }\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, rel), []byte("package client\n\nfunc helper() bool { return false }\n"), 0o644))
+
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{filepath.ToSlash(rel)}, MarkerlessFilesWouldDrop(snap, fresh, report, Options{Force: true, NovelOnly: true}),
+		"NovelOnly overwrite of a same-decl hand-authored test return must be listed")
+}
+
+func TestMarkerlessFilesWouldDropListsHandEditedTestDespiteSpecLiteralRefresh(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh := makeMergeFixture(t)
+	rel := filepath.Join("internal", "client", "platform_rate_limit_test.go")
+	require.NoError(t, os.MkdirAll(filepath.Join(snap, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(fresh, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(snap, rel), []byte(`package client
+
+import "testing"
+
+func platformRateLimitTestClient() string { return "old-pp-cli" }
+
+func TestRateLimit(t *testing.T) {
+	got := 3
+	if got != 3 {
+		t.Fatalf("got %d", got)
+	}
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, rel), []byte(`package client
+
+import "testing"
+
+func platformRateLimitTestClient() string { return "new-pp-cli" }
+
+func TestRateLimit(t *testing.T) {
+	got := 3
+	if got != 5 {
+		t.Fatalf("got %d", got)
+	}
+}
+`), 0o644))
+
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{filepath.ToSlash(rel)}, MarkerlessFilesWouldDrop(snap, fresh, report, Options{Force: true, NovelOnly: true}),
+		"spec-literal helper refresh must not hide a hand-authored test assertion")
+}
+
 func TestMarkerlessFilesWouldDropSkipsGeneratorValueDrift(t *testing.T) {
 	t.Parallel()
 

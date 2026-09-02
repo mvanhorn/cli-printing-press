@@ -76,10 +76,17 @@ func detectValueDrift(pubPath, freshPath string) *ValueDrift {
 // a fresh token.FileSet and parser.ParseFile, and the AST is discarded after
 // rendering.
 func canonicalDeclTexts(filename string) map[string]string {
+	return declTextsFromFile(filename, nil)
+}
+
+func declTextsFromFile(filename string, rewrite func(*ast.File)) map[string]string {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, filename, nil, parser.SkipObjectResolution)
 	if err != nil {
 		return nil
+	}
+	if rewrite != nil {
+		rewrite(file)
 	}
 
 	out := make(map[string]string, len(file.Decls))

@@ -2,13 +2,22 @@ package regenmerge
 
 import (
 	"bytes"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generatedmarker"
 )
+
+const generatedCLINameSuffix = "-pp-cli"
+const specIdentityPlaceholder = "__pp_spec_identity__"
 
 // MarkerlessFilesWouldDrop is the --force confirmation set: snapshot files
 // the merge will not preserve and whose deletion would discard operator-owned
@@ -78,17 +87,26 @@ func wouldLoseHandAuthoredSnapshot(snapshotDir, freshDir string, fc FileClassifi
 }
 
 func snapshotHasFunctionBodyChange(snapPath, freshPath string) bool {
-	// Generated tests embed spec-derived literals in helper bodies
-	// ({{.Name}} in platform_rate_limit_test.go). Call-target drift is
-	// the hand-authored signal there; const/var-only files stay quiet.
-	if strings.HasSuffix(filepath.ToSlash(snapPath), "_test.go") {
-		return detectBodyDrift(snapPath, freshPath) != nil
-	}
 	snapDecls := canonicalDeclTexts(snapPath)
 	freshDecls := canonicalDeclTexts(freshPath)
 	if snapDecls == nil || freshDecls == nil {
 		return false
 	}
+	// Generated tests embed {{.Name}} / {{.Name}}-pp-cli in helper
+	// bodies. Normalize that identity so a spec rename is not treated
+	// as a hand-authored delete; assertion and control-flow edits stay.
+	if strings.HasSuffix(filepath.ToSlash(snapPath), "_test.go") {
+		if snapName, snapOK := specIdentityName(snapPath); snapOK {
+			if freshName, freshOK := specIdentityName(freshPath); freshOK {
+				snapDecls = specNormalizedDeclTexts(snapPath, snapName)
+				freshDecls = specNormalizedDeclTexts(freshPath, freshName)
+			}
+		}
+	}
+	return functionDeclTextsDiffer(snapDecls, freshDecls)
+}
+
+func functionDeclTextsDiffer(snapDecls, freshDecls map[string]string) bool {
 	for name, snapText := range snapDecls {
 		if strings.Contains(name, ":") {
 			continue
@@ -100,6 +118,92 @@ func snapshotHasFunctionBodyChange(snapPath, freshPath string) bool {
 		return true
 	}
 	return false
+}
+
+func specNormalizedDeclTexts(path, specName string) map[string]string {
+	if specName == "" {
+		return canonicalDeclTexts(path)
+	}
+	return declTextsFromFile(path, func(file *ast.File) {
+		rewriteSpecIdentityStringLits(file, specName)
+	})
+}
+
+func rewriteSpecIdentityStringLits(file *ast.File, specName string) {
+	ast.Inspect(file, func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		s, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			return true
+		}
+		next := strings.ReplaceAll(s, specName+generatedCLINameSuffix, specIdentityPlaceholder+generatedCLINameSuffix)
+		next = strings.ReplaceAll(next, specName, specIdentityPlaceholder)
+		if next != s {
+			lit.Value = strconv.Quote(next)
+		}
+		return true
+	})
+}
+
+func specIdentityName(path string) (string, bool) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		return "", false
+	}
+	names := map[string]struct{}{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		s, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			return true
+		}
+		for _, name := range specIdentityNamesIn(s) {
+			if name != "" {
+				names[name] = struct{}{}
+			}
+		}
+		return true
+	})
+	if len(names) != 1 {
+		return "", false
+	}
+	for name := range names {
+		return name, true
+	}
+	return "", false
+}
+
+func specIdentityNamesIn(s string) []string {
+	var out []string
+	for {
+		i := strings.Index(s, generatedCLINameSuffix)
+		if i < 0 {
+			return out
+		}
+		start := i
+		for start > 0 {
+			r, size := utf8.DecodeLastRuneInString(s[:start])
+			if !isSpecSlugRune(r) {
+				break
+			}
+			start -= size
+		}
+		if start < i {
+			out = append(out, s[start:i])
+		}
+		s = s[i+len(generatedCLINameSuffix):]
+	}
+}
+
+func isSpecSlugRune(r rune) bool {
+	return r == '-' || r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 func snapshotHasUniqueDecls(fc FileClassification) bool {
