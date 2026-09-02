@@ -33,7 +33,7 @@ func backupFreshTree(freshDir string) (string, func(), error) {
 // If rematch still fails, keep the snapshot rather than silently dropping
 // novels. If fresh also fails to compile, leave the merge as-is so an
 // environment failure is not treated as a preserve break.
-func repairPreserveBuildBreak(snapshotDir, freshDir, freshBackup string, currentSpecBytes []byte, validate bool) error {
+func repairPreserveBuildBreak(snapshotDir, freshDir, freshBackup string, currentSpecBytes []byte, validate, yes bool) error {
 	if !validate || !generatedTreeHasGoMod(freshDir) {
 		return nil
 	}
@@ -46,7 +46,7 @@ func repairPreserveBuildBreak(snapshotDir, freshDir, freshBackup string, current
 	if err := replaceTree(freshDir, freshBackup); err != nil {
 		return fmt.Errorf("restoring fresh tree after preserve build break: %w", err)
 	}
-	gomodMerged, err := mergeForceSnapshot(snapshotDir, freshDir, currentSpecBytes, true)
+	gomodMerged, err := mergeForceSnapshot(snapshotDir, freshDir, currentSpecBytes, true, yes)
 	if err != nil {
 		return err
 	}
