@@ -96,3 +96,73 @@ func TestMergeHandAuthoredIntentFileNoopsWithoutMarkers(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, string(after), string(merged))
 }
+
+func TestMergeHandAuthoredIntentFileDropsRemovedGeneratedHandlers(t *testing.T) {
+	t.Parallel()
+
+	before := []byte(`package mcp
+
+import (
+	"context"
+	"fmt"
+	"time"
+)
+
+func handleOldExplicit(ctx context.Context) error {
+	_, err := waitForIntentPoll(ctx, pollAfter, operationTimeout)
+	return err
+}
+
+func handleWaitForOperation(ctx context.Context) error {
+	_, err := waitForIntentPoll(ctx, pollAfter, operationTimeout)
+	return err
+}
+
+func callIntentEndpoint(ctx context.Context) (any, error) { return nil, nil }
+
+const (
+	pollAfter        = 200 * time.Millisecond
+	operationTimeout = 5 * time.Second
+)
+
+func intentDuration(d *time.Duration) time.Duration { return 0 }
+
+func waitForIntentPoll(ctx context.Context, pollAfter, operationTimeout time.Duration) (any, error) {
+	_ = intentDuration(&operationTimeout)
+	if !intentPollComplete(nil) {
+		return nil, fmt.Errorf("unfinished")
+	}
+	return callIntentEndpoint(ctx)
+}
+
+func intentPollComplete(resp any) bool { return resp != nil }
+`)
+	after := []byte(`package mcp
+
+import (
+	"context"
+	"fmt"
+)
+
+func handleNewExplicit(ctx context.Context) error {
+	_, err := callIntentEndpoint(ctx)
+	return err
+}
+
+func handleWaitForOperation(ctx context.Context) error {
+	_, err := callIntentEndpoint(ctx)
+	return err
+}
+
+func callIntentEndpoint(ctx context.Context) (any, error) { return nil, nil }
+`)
+
+	merged, err := mergeHandAuthoredIntentFile(before, after)
+	require.NoError(t, err)
+	src := string(merged)
+	assert.Contains(t, src, "func handleNewExplicit(")
+	assert.NotContains(t, src, "func handleOldExplicit(", "removed generated handlers must not be re-appended")
+	assert.Contains(t, src, "func waitForIntentPoll(")
+	assert.Contains(t, src, "func intentPollComplete(")
+	assert.Contains(t, src, "waitForIntentPoll(ctx, pollAfter, operationTimeout)")
+}

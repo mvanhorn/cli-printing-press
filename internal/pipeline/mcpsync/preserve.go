@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -162,33 +163,62 @@ func mergeHandAuthoredIntentFile(before, after []byte) ([]byte, error) {
 		}
 	}
 
-	merged := string(after)
+	beforeByName := map[string]intentDecl{}
 	for _, decl := range fileBefore.Decls {
 		if isImportDecl(decl) {
 			continue
 		}
-		beforeSrc := nodeSource(fsetBefore, before, decl)
-		names := collectDeclNames(decl)
-		if declHasIntentMarkers(beforeSrc) && len(names) == 1 && afterNames[names[0]] {
-			afterSrc, ok := declSourceByName(fsetAfter, after, fileAfter, names[0])
-			if ok && afterSrc != beforeSrc {
-				merged = strings.Replace(merged, afterSrc, beforeSrc, 1)
+		item := intentDecl{decl: decl, src: nodeSource(fsetBefore, before, decl)}
+		for _, name := range collectDeclNames(decl) {
+			beforeByName[name] = item
+		}
+	}
+
+	keep := map[string]bool{}
+	for _, decl := range fileBefore.Decls {
+		if isImportDecl(decl) {
+			continue
+		}
+		src := nodeSource(fsetBefore, before, decl)
+		if !declHasIntentMarkers(src) {
+			continue
+		}
+		if isGeneratedIntentHandler(decl) {
+			for _, name := range collectDeclNames(decl) {
+				if afterNames[name] {
+					keep[name] = true
+				}
 			}
 			continue
 		}
-		allPresent := len(names) > 0
-		for _, name := range names {
-			if !afterNames[name] {
-				allPresent = false
-				break
-			}
+		for _, name := range collectDeclNames(decl) {
+			keep[name] = true
 		}
-		if !allPresent {
-			merged = strings.TrimRight(merged, "\n") + "\n\n" + beforeSrc + "\n"
-			for _, name := range names {
-				afterNames[name] = true
-			}
+	}
+	expandPreservedIntentDeps(keep, beforeByName, afterNames)
+
+	merged := string(after)
+	appended := map[string]bool{}
+	for _, name := range sortedKeepNames(keep) {
+		item, ok := beforeByName[name]
+		if !ok {
+			continue
 		}
+		if afterNames[name] {
+			if !declHasIntentMarkers(item.src) {
+				continue
+			}
+			afterSrc, found := declSourceByName(fsetAfter, after, fileAfter, name)
+			if found && afterSrc != item.src {
+				merged = strings.Replace(merged, afterSrc, item.src, 1)
+			}
+			continue
+		}
+		if appended[item.src] {
+			continue
+		}
+		merged = strings.TrimRight(merged, "\n") + "\n\n" + item.src + "\n"
+		appended[item.src] = true
 	}
 
 	for _, path := range importPaths(fileBefore) {
@@ -227,12 +257,70 @@ func collectDeclNames(decl ast.Decl) []string {
 	return nil
 }
 
+type intentDecl struct {
+	decl ast.Decl
+	src  string
+}
+
+func isGeneratedIntentHandler(decl ast.Decl) bool {
+	fn, ok := decl.(*ast.FuncDecl)
+	return ok && strings.HasPrefix(fn.Name.Name, "handle")
+}
+
+func expandPreservedIntentDeps(keep map[string]bool, beforeByName map[string]intentDecl, afterNames map[string]bool) {
+	changed := true
+	for changed {
+		changed = false
+		for name := range keep {
+			item, ok := beforeByName[name]
+			if !ok {
+				continue
+			}
+			for _, ident := range packageIdentNames(item.decl) {
+				dep, ok := beforeByName[ident]
+				if !ok {
+					continue
+				}
+				if isGeneratedIntentHandler(dep.decl) && !afterNames[ident] {
+					continue
+				}
+				if !keep[ident] {
+					keep[ident] = true
+					changed = true
+				}
+			}
+		}
+	}
+}
+
+func packageIdentNames(decl ast.Decl) []string {
+	seen := map[string]bool{}
+	var names []string
+	ast.Inspect(decl, func(node ast.Node) bool {
+		ident, ok := node.(*ast.Ident)
+		if !ok || ident.Name == "" || seen[ident.Name] {
+			return true
+		}
+		seen[ident.Name] = true
+		names = append(names, ident.Name)
+		return true
+	})
+	return names
+}
+
+func sortedKeepNames(keep map[string]bool) []string {
+	names := make([]string, 0, len(keep))
+	for name := range keep {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
 func declSourceByName(fset *token.FileSet, src []byte, file *ast.File, name string) (string, bool) {
 	for _, decl := range file.Decls {
-		for _, n := range collectDeclNames(decl) {
-			if n == name {
-				return nodeSource(fset, src, decl), true
-			}
+		if slices.Contains(collectDeclNames(decl), name) {
+			return nodeSource(fset, src, decl), true
 		}
 	}
 	return "", false

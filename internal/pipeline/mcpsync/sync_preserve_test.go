@@ -18,8 +18,8 @@ import (
 
 const handAuthoredOverride = "List operations with the required cursor and optional status filter for agents."
 
-// TestSyncPreservesHandAuthoredMCPBehavior locks #4501: mcp-sync on a
-// runtime-walking tree must apply mcp-descriptions.json without deleting
+// TestSyncPreservesHandAuthoredMCPBehavior verifies that mcp-sync on a
+// runtime-walking tree applies mcp-descriptions.json without deleting
 // hand-authored poll loops, local-write-wins annotations, blocked
 // destination flags, HTTP server timeouts, or leftover test helpers.
 func TestSyncPreservesHandAuthoredMCPBehavior(t *testing.T) {
@@ -96,6 +96,51 @@ func TestSyncPreservesHandAuthoredMCPBehavior(t *testing.T) {
 	vet.Dir = cliDir
 	output, err := vet.CombinedOutput()
 	require.NoError(t, err, "post-sync MCP surface must go vet cleanly: %s", output)
+}
+
+func TestSyncDropsRemovedGeneratedIntentHandler(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := handAuthoredMCPSpec()
+	apiSpec.MCP.Intents = append(apiSpec.MCP.Intents, spec.Intent{
+		Name:        "describe_operation",
+		Description: "Describe a single operation.",
+		Params: []spec.IntentParam{{
+			Name:        "id",
+			Type:        "string",
+			Required:    true,
+			Description: "Operation id",
+		}},
+		Steps: []spec.IntentStep{
+			{Endpoint: "operations.status", Bind: map[string]string{"id": "${input.id}"}, Capture: "status"},
+		},
+		Returns: "status",
+	})
+	cliDir := filepath.Join(t.TempDir(), "handmcp")
+	gen := generator.New(apiSpec, cliDir)
+	gen.VisionSet = generator.VisionTemplateSet{MCP: true, Store: true}
+	require.NoError(t, gen.Generate())
+	require.NoError(t, pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
+		APIName:   apiSpec.Name,
+		OutputDir: cliDir,
+		Spec:      apiSpec,
+	}))
+	require.NoError(t, plantHandAuthoredMCPBehavior(cliDir))
+
+	apiSpec.MCP.Intents = apiSpec.MCP.Intents[:1]
+	specData, err := yaml.Marshal(apiSpec)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "spec.yaml"), specData, 0o644))
+
+	_, err = Sync(cliDir, Options{})
+	require.NoError(t, err)
+
+	intentsAfter, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "intents.go"))
+	require.NoError(t, err)
+	src := string(intentsAfter)
+	assert.NotContains(t, src, "func handleDescribeOperation(", "removed spec intents must not leave a generated handler")
+	assert.Contains(t, src, "func waitForIntentPoll(")
+	assert.Contains(t, src, `waitForIntentPoll(ctx, c, "operations.status"`)
 }
 
 func handAuthoredMCPSpec() *spec.APISpec {
