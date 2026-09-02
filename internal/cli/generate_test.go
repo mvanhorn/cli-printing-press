@@ -976,48 +976,65 @@ resources:
 	require.NoError(t, os.WriteFile(specA, specBody("crossspecapp"), 0o644))
 	require.NoError(t, os.WriteFile(specB, specBody("crossspecapprenamed"), 0o644))
 
-	runGenerateWith := func(specFile string) string {
+	runGenerate := func(specFile string, extra ...string) (string, error) {
 		cmd := newGenerateCmd()
-		cmd.SetArgs([]string{
+		args := []string{
 			"--spec", specFile,
 			"--output", outputDir,
 			"--validate=false",
 			"--force",
-		})
-		stderr, err := runWithCapturedStderr(t, cmd.Execute)
-		require.NoError(t, err)
-		return stderr
+		}
+		cmd.SetArgs(append(args, extra...))
+		return runWithCapturedStderr(t, cmd.Execute)
 	}
 
-	runGenerateWith(specA)
+	_, err := runGenerate(specA)
+	require.NoError(t, err)
 
 	// Hand-edit a templated config.go (literal drift).
 	configPath := filepath.Join(outputDir, "internal", "config", "config.go")
 	configBefore, err := os.ReadFile(configPath)
 	require.NoError(t, err)
+	replacedBearer := bytes.Contains(configBefore, []byte(`"Bearer "`))
 	configEdited := bytes.Replace(configBefore, []byte(`"Bearer "`), []byte(`"Token "`), 1)
 	require.NoError(t, os.WriteFile(configPath, configEdited, 0o644))
 
 	// Add a novel hand-written file (no marker, will be NOVEL).
-	novelPath := filepath.Join(outputDir, "internal", "cli", "novel_helper.go")
-	require.NoError(t, os.WriteFile(novelPath, []byte(`package cli
+	novelBody := []byte(`package cli
 
 func novelHelperFn() string { return "kept" }
-`), 0o644))
+`)
+	novelPath := filepath.Join(outputDir, "internal", "cli", "novel_helper.go")
+	require.NoError(t, os.WriteFile(novelPath, novelBody, 0o644))
 
-	stderr := runGenerateWith(specB)
+	stderr, err := runGenerate(specB)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pass --yes to confirm")
+	gotNovel, readErr := os.ReadFile(novelPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, string(novelBody), string(gotNovel),
+		"refusing confirmation must restore the pre-force tree")
+	gotConfig, readErr := os.ReadFile(configPath)
+	require.NoError(t, readErr)
+	if replacedBearer {
+		assert.Contains(t, string(gotConfig), `"Token "`,
+			"refusing confirmation must keep the pre-force config edit")
+	}
+
+	stderr, err = runGenerate(specB, "--yes")
+	require.NoError(t, err)
 
 	// Cross-spec: literal drift NOT preserved (NovelOnly skips
 	// TEMPLATED-VALUE-DRIFT).
-	gotConfig, err := os.ReadFile(configPath)
+	gotConfig, err = os.ReadFile(configPath)
 	require.NoError(t, err)
-	if bytes.Contains(configBefore, []byte(`"Bearer "`)) {
+	if replacedBearer {
 		assert.NotContains(t, string(gotConfig), `"Token "`,
 			"cross-spec --force must NOT preserve TEMPLATED-VALUE-DRIFT (silent fusion guard)")
 	}
 
 	// Novel file still preserved.
-	gotNovel, err := os.ReadFile(novelPath)
+	gotNovel, err = os.ReadFile(novelPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(gotNovel), "novelHelperFn",
 		"novel hand-written file is spec-orthogonal and must survive cross-spec regen")
