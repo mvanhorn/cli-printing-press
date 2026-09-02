@@ -268,6 +268,44 @@ func TestRateLimit(t *testing.T) {
 		"spec-literal helper refresh must not hide a hand-authored test assertion")
 }
 
+func TestMarkerlessFilesWouldDropListsSpecNameSubstringInTestLiteral(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh := makeMergeFixture(t)
+	rel := filepath.Join("internal", "client", "platform_rate_limit_test.go")
+	require.NoError(t, os.MkdirAll(filepath.Join(snap, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(fresh, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(snap, rel), []byte(`package client
+
+import "testing"
+
+func platformRateLimitTestClient() string { return "oldapi-pp-cli" }
+
+func TestItems(t *testing.T) {
+	if got := "x"; got != "cache-oldapi-snapshot" {
+		t.Fatal(got)
+	}
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, rel), []byte(`package client
+
+import "testing"
+
+func platformRateLimitTestClient() string { return "newapi-pp-cli" }
+
+func TestItems(t *testing.T) {
+	if got := "x"; got != "cache-newapi-snapshot" {
+		t.Fatal(got)
+	}
+}
+`), 0o644))
+
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{filepath.ToSlash(rel)}, MarkerlessFilesWouldDrop(snap, fresh, report, Options{Force: true, NovelOnly: true}),
+		"a spec-name substring inside a larger hand-authored literal is not identity refresh")
+}
+
 func TestMarkerlessFilesWouldDropSkipsGeneratorValueDrift(t *testing.T) {
 	t.Parallel()
 

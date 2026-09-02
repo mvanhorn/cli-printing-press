@@ -130,6 +130,7 @@ func specNormalizedDeclTexts(path, specName string) map[string]string {
 }
 
 func rewriteSpecIdentityStringLits(file *ast.File, specName string) {
+	ident := specName + generatedCLINameSuffix
 	ast.Inspect(file, func(n ast.Node) bool {
 		lit, ok := n.(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
@@ -139,8 +140,18 @@ func rewriteSpecIdentityStringLits(file *ast.File, specName string) {
 		if err != nil {
 			return true
 		}
-		next := strings.ReplaceAll(s, specName+generatedCLINameSuffix, specIdentityPlaceholder+generatedCLINameSuffix)
-		next = strings.ReplaceAll(next, specName, specIdentityPlaceholder)
+		var next string
+		switch s {
+		case specName:
+			next = specIdentityPlaceholder
+		case ident:
+			next = specIdentityPlaceholder + generatedCLINameSuffix
+		default:
+			// Keep the generated name-pp-cli token in command/path
+			// strings. Do not rewrite a bare spec name inside a
+			// larger literal — that hides hand-authored edits.
+			next = strings.ReplaceAll(s, ident, specIdentityPlaceholder+generatedCLINameSuffix)
+		}
 		if next != s {
 			lit.Value = strconv.Quote(next)
 		}
