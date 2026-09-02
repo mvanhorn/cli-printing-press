@@ -647,20 +647,12 @@ func piiAuditOptionsForPromote(state *PipelineState) artifacts.PIIAuditOptions {
 	return artifacts.PIIAuditOptions{ManuscriptsDir: runRoot}
 }
 
-// IsStale returns true if the lock's heartbeat is too old or its owner
-// process is known to have exited.
+// IsStale reports whether the lock heartbeat is older than StaleLockThreshold.
+// Owner PID liveness is ignored: acquire/update are discrete CLI processes
+// that exit immediately, so a dead PID is the normal live-lock state.
 func IsStale(lock *LockState) bool {
-	if time.Since(lock.UpdatedAt) > StaleLockThreshold {
-		return true
-	}
-	return lockOwnerDead(lock)
+	return time.Since(lock.UpdatedAt) > StaleLockThreshold
 }
-
-func lockOwnerDead(lock *LockState) bool {
-	return lock.PID > 0 && !lockOwnerAliveFunc(lock.PID)
-}
-
-var lockOwnerAliveFunc = lockOwnerAlive
 
 func readLock(path string) (*LockState, error) {
 	data, err := os.ReadFile(path)
