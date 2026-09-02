@@ -90,11 +90,12 @@ func snapshotHasFunctionBodyChange(snapPath, freshPath string) bool {
 	snapDecls := canonicalDeclTexts(snapPath)
 	freshDecls := canonicalDeclTexts(freshPath)
 	if snapDecls == nil || freshDecls == nil {
-		return false
+		return true
 	}
-	// Generated tests embed exact {{.Name}} / {{.Name}}-pp-cli helper
-	// literals. Normalize those tokens so a spec rename is not treated
-	// as a hand-authored delete. Larger strings stay intact.
+	// Generated tests embed exact {{.Name}} / {{.Name}}-pp-cli in
+	// identity helpers. Normalize only those helper returns so a spec
+	// rename is not treated as a hand-authored delete. Exact identity
+	// literals in other functions stay intact.
 	if strings.HasSuffix(filepath.ToSlash(snapPath), "_test.go") {
 		if snapName, snapOK := specIdentityName(snapPath); snapOK {
 			if freshName, freshOK := specIdentityName(freshPath); freshOK {
@@ -131,27 +132,42 @@ func specNormalizedDeclTexts(path, specName string) map[string]string {
 
 func rewriteSpecIdentityStringLits(file *ast.File, specName string) {
 	ident := specName + generatedCLINameSuffix
-	ast.Inspect(file, func(n ast.Node) bool {
-		lit, ok := n.(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING {
-			return true
+	for _, d := range file.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok || !isIdentityHelperFunc(fn, specName) {
+			continue
 		}
+		lit := fn.Body.List[0].(*ast.ReturnStmt).Results[0].(*ast.BasicLit)
 		s, err := strconv.Unquote(lit.Value)
 		if err != nil {
-			return true
+			continue
 		}
-		var next string
 		switch s {
 		case specName:
-			next = specIdentityPlaceholder
+			lit.Value = strconv.Quote(specIdentityPlaceholder)
 		case ident:
-			next = specIdentityPlaceholder + generatedCLINameSuffix
-		default:
-			return true
+			lit.Value = strconv.Quote(specIdentityPlaceholder + generatedCLINameSuffix)
 		}
-		lit.Value = strconv.Quote(next)
-		return true
-	})
+	}
+}
+
+func isIdentityHelperFunc(fn *ast.FuncDecl, specName string) bool {
+	if fn == nil || fn.Body == nil || len(fn.Body.List) != 1 {
+		return false
+	}
+	ret, ok := fn.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(ret.Results) != 1 {
+		return false
+	}
+	lit, ok := ret.Results[0].(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return false
+	}
+	s, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return false
+	}
+	return s == specName || s == specName+generatedCLINameSuffix
 }
 
 func specIdentityName(path string) (string, bool) {

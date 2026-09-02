@@ -344,6 +344,60 @@ func TestItems(t *testing.T) {
 		"an embedded name-pp-cli token inside a larger hand-authored literal is not identity refresh")
 }
 
+func TestMarkerlessFilesWouldDropListsExactIdentityLiteralInNonHelper(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh := makeMergeFixture(t)
+	rel := filepath.Join("internal", "client", "platform_rate_limit_test.go")
+	require.NoError(t, os.MkdirAll(filepath.Join(snap, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(fresh, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(snap, rel), []byte(`package client
+
+import "testing"
+
+func platformRateLimitTestClient() string { return "old-pp-cli" }
+
+func TestItems(t *testing.T) {
+	if got := "x"; got != "old-pp-cli" {
+		t.Fatal(got)
+	}
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, rel), []byte(`package client
+
+import "testing"
+
+func platformRateLimitTestClient() string { return "new-pp-cli" }
+
+func TestItems(t *testing.T) {
+	if got := "x"; got != "new-pp-cli" {
+		t.Fatal(got)
+	}
+}
+`), 0o644))
+
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{filepath.ToSlash(rel)}, MarkerlessFilesWouldDrop(snap, fresh, report, Options{Force: true, NovelOnly: true}),
+		"an exact identity literal in a non-helper test function is not identity refresh")
+}
+
+func TestMarkerlessFilesWouldDropListsUnparseableSnapshot(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh := makeMergeFixture(t)
+	rel := filepath.Join("internal", "client", "client.go")
+	require.NoError(t, os.MkdirAll(filepath.Join(snap, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(fresh, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(snap, rel), []byte("package client\n\nfunc Broken( {\n\treturn \"hand\"\n}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, rel), []byte("package client\n\nfunc New() string { return \"fresh\" }\n"), 0o644))
+
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{filepath.ToSlash(rel)}, MarkerlessFilesWouldDrop(snap, fresh, report, Options{Force: true, NovelOnly: true}),
+		"an unparseable markerless snapshot file cannot be proven safe to replace")
+}
+
 func TestMarkerlessFilesWouldDropSkipsGeneratorValueDrift(t *testing.T) {
 	t.Parallel()
 
