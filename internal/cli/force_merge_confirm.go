@@ -88,7 +88,7 @@ func confirmOrRestoreForceDrops(snapshotDir, freshDir string, report *regenmerge
 	dropped := regenmerge.MarkerlessFilesWouldDrop(snapshotDir, freshDir, report, opts)
 	if err := confirmForceHandAuthoredDeletes(yes, dropped, os.Stdin, os.Stderr); err != nil {
 		if restoreErr := restoreForceSnapshot(freshDir, snapshotDir); restoreErr != nil {
-			return fmt.Errorf("%w; %v", err, restoreErr)
+			return wrapKeepingExitClass(err, restoreErr)
 		}
 		return err
 	}

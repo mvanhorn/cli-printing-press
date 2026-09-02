@@ -10,10 +10,11 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generatedmarker"
 )
 
-// MarkerlessFilesWouldDrop lists snapshot-relative paths that MergeIntoFreshTree
-// would leave as fresh emission (not copy from snapshot) and that lack the
-// generator marker. Unimplemented novel TODO scaffolds are omitted because
-// fusion-guard rules may refresh them.
+// MarkerlessFilesWouldDrop is the --force confirmation set: snapshot files
+// the merge will not preserve and whose deletion would discard operator-owned
+// Go. Generator-marked files, unimplemented novel scaffolds, and spec-derived
+// literal drift stay off the list so fusion-guard refresh is not treated as a
+// hand-authored delete.
 func MarkerlessFilesWouldDrop(snapshotDir, freshDir string, report *MergeReport, opts Options) []string {
 	if report == nil {
 		return nil
@@ -38,7 +39,7 @@ func MarkerlessFilesWouldDrop(snapshotDir, freshDir string, report *MergeReport,
 				continue
 			}
 		}
-		if !snapshotHasUniqueDecls(fc) {
+		if !wouldLoseHandAuthoredSnapshot(freshDir, fc) {
 			continue
 		}
 		dropped = append(dropped, fc.Path)
@@ -60,6 +61,16 @@ func isMarkerlessHandAuthoredSnapshotFile(snapshotDir, freshDir, rel string) boo
 		return false
 	}
 	return !isUnimplementedNovelCommandScaffold(snapshotDir, freshDir, rel)
+}
+
+func wouldLoseHandAuthoredSnapshot(freshDir string, fc FileClassification) bool {
+	if snapshotHasUniqueDecls(fc) {
+		return true
+	}
+	// Same declaration names can still carry a hand-authored replacement
+	// that NovelOnly overwrites. Ask only when fresh is generator-owned so
+	// spec-derived value drift in markerless generated files stays quiet.
+	return generatedmarker.HasInFile(filepath.Join(freshDir, fc.Path))
 }
 
 func snapshotHasUniqueDecls(fc FileClassification) bool {

@@ -2504,19 +2504,11 @@ func claimOrForce(absOut string, force bool, explicitOutput bool) (resolvedAbsOu
 	return resolved, "", nil
 }
 
-// finalizeForceMerge runs the post-Generate merge for any --force codepath:
-// classifies snapshotDir against freshDir, confirms before dropping a
-// markerless file the merge would not preserve, merges preserved hand-edits
-// back, re-runs `go mod tidy` when go.mod was merged (so go.sum keeps up with
-// preserved requires), drops preserved files that reintroduce a
-// fresh-generation build break, and removes the snapshot on success. On merge
-// failure the snapshot is left in place and the error surfaces a recovery
-// command. A refused confirmation restores the snapshot into freshDir.
-//
-// Wired from the three --force codepaths (--spec, --docs, --plan) so each
-// one preserves hand-edits consistently — discarding snapshotDir after
-// generation would silently lose user work and leave an orphan that blocks
-// future --force runs.
+// finalizeForceMerge is the --force contract: the freshly generated tree
+// must not replace operator-owned files without confirmation, and a refused
+// confirmation must leave the pre-force tree in place. SnapshotDir stays on
+// merge failure so the operator can recover; success removes it so a later
+// --force is not blocked by an orphan.
 func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, validate bool, validateMerged func() error, yes bool) error {
 	freshBackup, cleanupFresh, err := backupFreshTree(freshDir)
 	if err != nil {
@@ -2526,7 +2518,7 @@ func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, v
 
 	gomodMerged, err := mergeForceSnapshot(snapshotDir, freshDir, currentSpecBytes, false, yes)
 	if err != nil {
-		if _, ok := err.(*ExitError); ok {
+		if asExitError(err) != nil {
 			return err
 		}
 		return &ExitError{Code: ExitGenerationError, Err: err}
@@ -2535,7 +2527,7 @@ func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, v
 		retidyAfterMerge(freshDir)
 	}
 	if err := repairPreserveBuildBreak(snapshotDir, freshDir, freshBackup, currentSpecBytes, validate, yes); err != nil {
-		if _, ok := err.(*ExitError); ok {
+		if asExitError(err) != nil {
 			return err
 		}
 		return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("%w; snapshot preserved at %s", err, snapshotDir)}

@@ -34,6 +34,42 @@ func TestExitError_As(t *testing.T) {
 	}
 }
 
+func TestAsExitErrorUnwrapsWrappedCancellation(t *testing.T) {
+	inner := &ExitError{Code: ExitInputError, Err: fmt.Errorf("cancelled — non-generator-owned files left intact")}
+	wrapped := fmt.Errorf("%w; restoring tree after refused hand-authored delete: boom", inner)
+
+	if _, ok := wrapped.(*ExitError); ok {
+		t.Fatal("direct type assertion must not see the wrapped ExitError")
+	}
+	got := asExitError(wrapped)
+	if got == nil {
+		t.Fatal("asExitError should unwrap the input-class ExitError")
+	}
+	if got.Code != ExitInputError {
+		t.Errorf("got code %d, want %d", got.Code, ExitInputError)
+	}
+}
+
+func TestWrapKeepingExitClassPreservesInputCode(t *testing.T) {
+	cancel := &ExitError{Code: ExitInputError, Err: fmt.Errorf("cancelled — non-generator-owned files left intact")}
+	restore := fmt.Errorf("restoring tree after refused hand-authored delete: boom")
+
+	got := wrapKeepingExitClass(cancel, restore)
+	exitErr := asExitError(got)
+	if exitErr == nil {
+		t.Fatal("wrapKeepingExitClass should keep an ExitError")
+	}
+	if exitErr.Code != ExitInputError {
+		t.Errorf("got code %d, want %d", exitErr.Code, ExitInputError)
+	}
+	if !errors.Is(got, cancel) {
+		t.Error("wrapped error should still unwrap to the cancellation")
+	}
+	if got.Error() == cancel.Error() {
+		t.Error("wrapped error should include the restore failure")
+	}
+}
+
 func TestExitCodes_Values(t *testing.T) {
 	if ExitSuccess != 0 {
 		t.Errorf("ExitSuccess = %d, want 0", ExitSuccess)
