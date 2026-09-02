@@ -253,6 +253,38 @@ func TestFindCLINamesAndScopedEnvCoverMultipleCommandVariants(t *testing.T) {
 	assertEnv(t, env, "BETA_API_TOKEN", "beta-secret")
 }
 
+func TestApplyEnvStripDropsExactKeys(t *testing.T) {
+	got := applyEnvStrip([]string{
+		"FOO_REFRESH_TOKEN=secret",
+		"FOO_API_KEY=keep",
+		"FOO_REFRESH_TOKEN_EXTRA=keep2",
+	}, []string{"FOO_REFRESH_TOKEN"})
+	assertEnv(t, got, "FOO_API_KEY", "keep")
+	assertEnv(t, got, "FOO_REFRESH_TOKEN_EXTRA", "keep2")
+	if envValue(got, "FOO_REFRESH_TOKEN") != "" {
+		t.Fatalf("rotating token not stripped: %v", got)
+	}
+}
+
+func TestSubprocessEnvStripsInstalledNames(t *testing.T) {
+	t.Setenv("FOO_REFRESH_TOKEN", "secret")
+	t.Setenv("FOO_API_KEY", "keep")
+
+	cleanup, err := scopeSubprocessHome()
+	if err != nil {
+		t.Fatalf("scopeSubprocessHome: %v", err)
+	}
+	defer cleanup()
+	restore := installSubprocessEnvStrip([]string{"FOO_REFRESH_TOKEN"})
+	defer restore()
+
+	env := subprocessEnv()
+	assertEnv(t, env, "FOO_API_KEY", "keep")
+	if envValue(env, "FOO_REFRESH_TOKEN") != "" {
+		t.Fatalf("rotating token leaked into scoped subprocess env: %v", env)
+	}
+}
+
 func TestApplyDefaultSubprocessEnvDogfoodAppendPreservesAPICredential(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")

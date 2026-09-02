@@ -4315,6 +4315,16 @@ the 401s as failures: it records a clean skip verdict
 accepts that skip marker, so do not hand-author or fabricate a pass marker for a
 cookie-auth CLI you could not exercise.
 
+**OAuth2 refresh-token rotation (`auth.type: oauth2_refresh`).** Pass
+`--auth-env <VAR>` when the refresh token lives in the environment. The runner
+copies that value into a shared sandbox `credentials.toml` and strips the
+rotating env var from subprocesses so the first refresh persists for later
+commands. Do not expect a static env value to survive Casdoor/Auth0/Okta
+rotation across N subprocesses. If `invalid_grant` still appears after a live
+pass, the runner aborts the matrix with that diagnosis instead of recording
+hundreds of command failures; the operator's stored refresh token may have
+been revoked and needs a fresh login.
+
 The live dogfood runner enumerates the CLI's `agent-context` command tree,
 runs help, happy-path, JSON-fidelity, and error-path checks where applicable,
 captures subprocess exit codes directly without shell pipes, and emits a

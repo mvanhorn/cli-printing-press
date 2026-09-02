@@ -147,6 +147,7 @@ var (
 	scopedHomeDirMu       sync.RWMutex
 	scopedHomeDir         string
 	scopedHomeCLIEnvNames []string
+	scopedStripEnvNames   []string
 )
 
 // currentSubprocessHome returns the active scoped home or "" if none.
@@ -160,6 +161,56 @@ func currentSubprocessCLIEnvNames() []string {
 	scopedHomeDirMu.RLock()
 	defer scopedHomeDirMu.RUnlock()
 	return append([]string(nil), scopedHomeCLIEnvNames...)
+}
+
+func currentSubprocessStripEnvNames() []string {
+	scopedHomeDirMu.RLock()
+	defer scopedHomeDirMu.RUnlock()
+	return append([]string(nil), scopedStripEnvNames...)
+}
+
+// installSubprocessEnvStrip drops named env vars from printed-CLI
+// subprocesses for the rest of the scoped session. Used by live dogfood
+// so a rotating refresh token in --auth-env cannot override the shared
+// credential file. Restores the previous strip list on cleanup.
+func installSubprocessEnvStrip(names []string) func() {
+	scopedHomeDirMu.Lock()
+	prev := append([]string(nil), scopedStripEnvNames...)
+	scopedStripEnvNames = append([]string(nil), names...)
+	scopedHomeDirMu.Unlock()
+	return func() {
+		scopedHomeDirMu.Lock()
+		scopedStripEnvNames = prev
+		scopedHomeDirMu.Unlock()
+	}
+}
+
+func applyEnvStrip(env []string, names []string) []string {
+	if len(env) == 0 || len(names) == 0 {
+		return env
+	}
+	drop := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		drop[name] = struct{}{}
+	}
+	if len(drop) == 0 {
+		return env
+	}
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, found := strings.Cut(entry, "=")
+		if found {
+			if _, ok := drop[key]; ok {
+				continue
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 // installScopedSubprocessHome installs homeDir as the active scoped
@@ -200,7 +251,8 @@ func scopeSubprocessHome(cliNames ...string) (func(), error) {
 // subprocessEnv returns os.Environ() with the active scoped home
 // overlaid, or os.Environ() unchanged when no session is active.
 func subprocessEnv() []string {
-	return applyScopedConfigHome(os.Environ(), currentSubprocessHome(), currentSubprocessCLIEnvNames()...)
+	env := applyScopedConfigHome(os.Environ(), currentSubprocessHome(), currentSubprocessCLIEnvNames()...)
+	return applyEnvStrip(env, currentSubprocessStripEnvNames())
 }
 
 // applyDefaultSubprocessEnv installs subprocessEnv() on cmd if the

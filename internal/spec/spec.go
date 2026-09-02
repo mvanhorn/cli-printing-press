@@ -1465,7 +1465,10 @@ func isOAuthClientSecretEnvVar(name string) bool {
 	return placeholder == "client_secret" || strings.HasSuffix(placeholder, "_client_secret")
 }
 
-func isOAuthRefreshTokenEnvVar(name string) bool {
+// Long-lived oauth2_refresh token env (REFRESH_TOKEN or *_REFRESH_TOKEN).
+// Live dogfood strips it from subprocesses so a static env value cannot
+// override file rotation.
+func IsOAuthRefreshTokenEnvVar(name string) bool {
 	placeholder := naming.EnvVarPlaceholder(name)
 	return placeholder == "refresh_token" || strings.HasSuffix(placeholder, "_refresh_token")
 }
@@ -1528,7 +1531,7 @@ func (c *AuthConfig) OAuth2RefreshTokenEnvVar() *AuthEnvVar {
 	}
 	c.NormalizeEnvVarSpecs("")
 	for i := range c.EnvVarSpecs {
-		if isOAuthRefreshTokenEnvVar(c.EnvVarSpecs[i].Name) {
+		if IsOAuthRefreshTokenEnvVar(c.EnvVarSpecs[i].Name) {
 			return &c.EnvVarSpecs[i]
 		}
 	}

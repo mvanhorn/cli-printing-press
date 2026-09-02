@@ -62,6 +62,13 @@ const reasonUnverifiedNeedsAccess = "unverified-needs-access"
 // marker is accepted by `lock promote`.
 const reasonCookieAuthNoHarnessSession = "cookie-auth-no-harness-session"
 
+// reasonRefreshTokenRotationCascade is the Fail reason when live dogfood
+// sees invalid_grant after an earlier live pass. Rotating IdPs revoke the
+// previous refresh token on use; a static --auth-env value then poisons
+// every later subprocess. Prefer the shared credential file; this abort is
+// the safety net when rotation still leaked.
+const reasonRefreshTokenRotationCascade = "invalid_grant cascade: a refresh token was rotated by an earlier command and later commands reused the revoked value. oauth2_refresh live dogfood persists rotation in a shared sandbox credential file and strips the rotating env var; the operator's stored refresh token may now be revoked. Re-authenticate before retrying."
+
 // liveDogfoodVerdictCookieAuthNoSession is the report Verdict for a clean
 // cookie-auth skip outcome. Distinct from PASS/FAIL so the CLI exits 0 (the
 // 401s are not a defect) and writeLiveDogfoodAcceptance emits a skip marker
@@ -177,7 +184,7 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 			}},
 		}, nil
 	}
-	homeScope, err := scopeLiveDogfoodSubprocessHome(opts.CLIDir, opts.BinaryName)
+	homeScope, err := scopeLiveDogfoodSubprocessHome(opts.CLIDir, opts.BinaryName, opts.AuthEnv)
 	if err != nil {
 		return nil, err
 	}
@@ -231,10 +238,21 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	}
 	runLiveDogfoodPreSync(commands, ctx)
 
+	cascade := invalidGrantCascadeTracker{}
+	abortedCascade := false
 	for _, command := range commands {
 		commandName := strings.Join(command.Path, " ")
 		report.Commands = append(report.Commands, commandName)
-		report.Tests = append(report.Tests, runLiveDogfoodCommand(command, ctx)...)
+		if abortedCascade {
+			report.Tests = append(report.Tests, skippedLiveDogfoodCommandResults(commandName, reasonRefreshTokenRotationCascade)...)
+			continue
+		}
+		results := runLiveDogfoodCommand(command, ctx)
+		report.Tests = append(report.Tests, results...)
+		if cascade.observe(results) {
+			abortedCascade = true
+			report.Tests = append(report.Tests, failedLiveDogfoodResult("live-dogfood", LiveDogfoodTestHappy, nil, reasonRefreshTokenRotationCascade))
+		}
 	}
 
 	_, _, authType := resolveLiveDogfoodAcceptanceIdentity(opts.CLIDir)
@@ -254,12 +272,21 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	if err := homeScope.syncBack(); err != nil {
 		return report, err
 	}
+	homeScope.warnSeededEnv()
 	return report, nil
 }
 
 type liveDogfoodHomeScope struct {
-	release  func()
-	syncBack func() error
+	release      func()
+	syncBack     func() error
+	seededEnvVar string
+}
+
+func (s *liveDogfoodHomeScope) warnSeededEnv() {
+	if s == nil || strings.TrimSpace(s.seededEnvVar) == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "live dogfood: oauth2_refresh rotated %s into the CLI credential store; unset %s (it now holds a revoked refresh token)\n", s.seededEnvVar, s.seededEnvVar)
 }
 
 func noopLiveDogfoodHomeScope() *liveDogfoodHomeScope {
@@ -269,7 +296,7 @@ func noopLiveDogfoodHomeScope() *liveDogfoodHomeScope {
 	}
 }
 
-func scopeLiveDogfoodSubprocessHome(cliDir, binaryName string) (*liveDogfoodHomeScope, error) {
+func scopeLiveDogfoodSubprocessHome(cliDir, binaryName, authEnv string) (*liveDogfoodHomeScope, error) {
 	manifest, err := ReadCLIManifest(cliDir)
 	if err == nil && manifest.IsLocalDatastore() && strings.EqualFold(strings.TrimSpace(manifest.AuthType), "none") {
 		return noopLiveDogfoodHomeScope(), nil
@@ -287,10 +314,10 @@ func scopeLiveDogfoodSubprocessHome(cliDir, binaryName string) (*liveDogfoodHome
 	// <PREFIX>_HOME / <PREFIX>_<KIND>_DIR for any variant would otherwise
 	// leak through the scoped home into the live-dogfood subprocesses.
 	scrubNames := append([]string{cliName}, findCLINames(cliDir)...)
-	return scopeSubprocessHomeWithCredentialMirror(cliName, syncConfigBack, scrubNames)
+	return scopeSubprocessHomeWithCredentialMirror(cliName, syncConfigBack, scrubNames, manifest, authEnv)
 }
 
-func scopeSubprocessHomeWithCredentialMirror(cliName string, syncConfigBack bool, scrubCLINames []string) (*liveDogfoodHomeScope, error) {
+func scopeSubprocessHomeWithCredentialMirror(cliName string, syncConfigBack bool, scrubCLINames []string, manifest CLIManifest, authEnv string) (*liveDogfoodHomeScope, error) {
 	homeDir, removeHome, err := newScopedConfigHome()
 	if err != nil {
 		return nil, err
@@ -300,26 +327,38 @@ func scopeSubprocessHomeWithCredentialMirror(cliName string, syncConfigBack bool
 		removeHome()
 		return nil, err
 	}
+	seed, err := seedLiveDogfoodRotatingRefresh(homeDir, cliName, manifest, authEnv)
+	if err != nil {
+		removeHome()
+		return nil, err
+	}
+	if seed.mirror != nil {
+		mirrors = append(mirrors, *seed.mirror)
+	}
 	if len(scrubCLINames) == 0 {
 		scrubCLINames = []string{cliName}
 	}
-	restore := installScopedSubprocessHome(homeDir, scrubCLINames...)
+	restoreHome := installScopedSubprocessHome(homeDir, scrubCLINames...)
+	restoreStrip := installSubprocessEnvStrip(seed.stripEnv)
 	return &liveDogfoodHomeScope{
 		release: func() {
-			restore()
+			restoreStrip()
+			restoreHome()
 			removeHome()
 		},
 		syncBack: func() error {
 			return syncLiveDogfoodCredentialMirrors(mirrors)
 		},
+		seededEnvVar: seed.seededEnvVar,
 	}, nil
 }
 
 type liveDogfoodCredentialMirror struct {
-	src      string
-	dst      string
-	original []byte
-	mode     os.FileMode
+	src         string
+	dst         string
+	original    []byte
+	mode        os.FileMode
+	allowCreate bool
 }
 
 func mirrorLiveDogfoodCredentialFiles(scopedHome, cliName string, syncConfigBack bool) ([]liveDogfoodCredentialMirror, error) {
@@ -337,6 +376,7 @@ func mirrorLiveDogfoodCredentialFiles(scopedHome, cliName string, syncConfigBack
 	}{
 		{rel: filepath.Join(".config", cliName, "config.toml"), syncBack: syncConfigBack},
 		{rel: filepath.Join(".config", cliName, "config.json"), syncBack: syncConfigBack},
+		{rel: filepath.Join(".local", "share", cliName, "credentials.toml"), syncBack: syncConfigBack},
 		{rel: filepath.Join(".local", "share", cliName, "cookies.json")},
 	}
 	var mirrors []liveDogfoodCredentialMirror
@@ -407,10 +447,13 @@ func writeLiveDogfoodCredentialFileIfUnchanged(mirror liveDogfoodCredentialMirro
 	// last comparison catches operator edits made before live dogfood commits
 	// the rotated credential.
 	current, err := os.ReadFile(mirror.src)
-	if err != nil {
+	if os.IsNotExist(err) {
+		if !mirror.allowCreate || len(mirror.original) != 0 {
+			return fmt.Errorf("reading operator credential file before sync-back %s: %w", mirror.src, err)
+		}
+	} else if err != nil {
 		return fmt.Errorf("reading operator credential file before sync-back %s: %w", mirror.src, err)
-	}
-	if !bytes.Equal(current, mirror.original) {
+	} else if !bytes.Equal(current, mirror.original) {
 		return fmt.Errorf("refusing to sync refreshed live dogfood credentials to %s: operator config changed during dogfood", mirror.src)
 	}
 	if err := os.Rename(tmpName, mirror.src); err != nil {
@@ -2117,6 +2160,15 @@ func skippedLiveDogfoodResult(command string, kind LiveDogfoodTestKind, reason s
 		Kind:    kind,
 		Status:  LiveDogfoodStatusSkip,
 		Reason:  reason,
+	}
+}
+
+func skippedLiveDogfoodCommandResults(command, reason string) []LiveDogfoodTestResult {
+	return []LiveDogfoodTestResult{
+		skippedLiveDogfoodResult(command, LiveDogfoodTestHelp, reason),
+		skippedLiveDogfoodResult(command, LiveDogfoodTestHappy, reason),
+		skippedLiveDogfoodResult(command, LiveDogfoodTestJSON, reason),
+		skippedLiveDogfoodResult(command, LiveDogfoodTestError, reason),
 	}
 }
 
