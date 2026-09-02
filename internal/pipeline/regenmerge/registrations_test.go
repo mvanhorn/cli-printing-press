@@ -316,11 +316,10 @@ func newSubCmd() *cobra.Command { return nil }
 }
 
 // TestExtractLostRegistrationsSkipsPreservedHosts pins the contract that hosts
-// whose Apply verdict preserves published verbatim (TEMPLATED-BODY-DRIFT,
-// TEMPLATED-WITH-ADDITIONS, NOVEL, NOVEL-COLLISION) do NOT contribute lost
-// registrations. The published file already has the calls; re-injection
-// would duplicate them and crash the resulting CLI at startup with
-// "command is already added".
+// whose Apply verdict preserves published verbatim (NOVEL, NOVEL-COLLISION)
+// do NOT contribute lost registrations. Overlay hosts (TEMPLATED-BODY-DRIFT,
+// TEMPLATED-WITH-ADDITIONS) take fresh shared functions, so their lost calls
+// still need injection.
 func TestExtractLostRegistrationsSkipsPreservedHosts(t *testing.T) {
 	t.Parallel()
 
@@ -364,21 +363,22 @@ func newHandAddedCmd() *cobra.Command { return nil }
 	require.Len(t, regsNoFilter, 1, "without verdict filter, lost call must be flagged")
 	assert.Contains(t, regsNoFilter[0].Calls, "rootCmd.AddCommand(newHandAddedCmd())")
 
-	// With root.go marked TEMPLATED-BODY-DRIFT (Apply preserves published
-	// verbatim), the same call must NOT be flagged — it already lives in
-	// the file that survives the merge.
 	verdicts := map[string]Verdict{"internal/cli/root.go": VerdictTemplatedBodyDrift}
 	regsWithFilter, err := extractLostRegistrations(pubDir, freshDir, verdicts)
 	require.NoError(t, err)
-	assert.Empty(t, regsWithFilter,
-		"TEMPLATED-BODY-DRIFT host must contribute zero lost registrations to avoid duplicate AddCommand injection")
+	require.Len(t, regsWithFilter, 1, "TEMPLATED-BODY-DRIFT overlay host must still inject lost AddCommand calls")
+	assert.Contains(t, regsWithFilter[0].Calls, "rootCmd.AddCommand(newHandAddedCmd())")
 
-	// Same for TEMPLATED-WITH-ADDITIONS: published is preserved.
 	verdicts["internal/cli/root.go"] = VerdictTemplatedWithAdditions
 	regsAdditions, err := extractLostRegistrations(pubDir, freshDir, verdicts)
 	require.NoError(t, err)
-	assert.Empty(t, regsAdditions,
-		"TEMPLATED-WITH-ADDITIONS host must also be skipped — published is preserved")
+	require.Len(t, regsAdditions, 1, "TEMPLATED-WITH-ADDITIONS overlay host must still inject lost AddCommand calls")
+	assert.Contains(t, regsAdditions[0].Calls, "rootCmd.AddCommand(newHandAddedCmd())")
+
+	verdicts["internal/cli/root.go"] = VerdictNovel
+	regsNovel, err := extractLostRegistrations(pubDir, freshDir, verdicts)
+	require.NoError(t, err)
+	assert.Empty(t, regsNovel, "NOVEL host is preserved verbatim and must not be re-injected")
 
 	// TEMPLATED-CLEAN host (rare for hand-added registrations but possible
 	// when the calls are inside a function whose decl-set still matches):

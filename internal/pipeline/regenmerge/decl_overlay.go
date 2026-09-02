@@ -8,31 +8,53 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/dave/dst"
 	"github.com/dave/dst/decorator"
 )
 
-// overlayHandEditedDecls writes dest as fresh, then replaces only the decls
-// whose published text differs from the original emission. Decls that still
-// match the base keep the fresh rewrite so a patched file cannot freeze
-// unpatched function bodies across a reprint.
+// overlayHandEditedDecls writes dest as fresh, then overlays published decls
+// that are hand-authored: published-only additions, and (when base exists)
+// shared decls that no longer match the original emission. Shared function
+// bodies stay on fresh when there is no base so a reprint cannot freeze
+// unpatched templated implementations.
 func tryOverlayHandEditedDecls(pubDir, freshDir, baseDir, destDir, rel string) bool {
-	if baseDir == "" || destDir == "" {
+	if destDir == "" {
 		return false
 	}
 	rel = filepath.ToSlash(rel)
 	pubPath := filepath.Join(pubDir, filepath.FromSlash(rel))
 	freshPath := filepath.Join(freshDir, filepath.FromSlash(rel))
-	basePath := filepath.Join(baseDir, filepath.FromSlash(rel))
 	destPath := filepath.Join(destDir, filepath.FromSlash(rel))
-	if _, err := os.Stat(basePath); err != nil {
+	if !shouldOverlayOntoFresh(rel, pubPath, freshPath) {
 		return false
 	}
+	basePath := ""
+	if baseDir != "" {
+		candidate := filepath.Join(baseDir, filepath.FromSlash(rel))
+		if _, err := os.Stat(candidate); err == nil {
+			basePath = candidate
+		}
+	}
 	return overlayHandEditedDecls(pubPath, freshPath, basePath, destPath) == nil
+}
+
+func shouldOverlayOntoFresh(rel, pubPath, freshPath string) bool {
+	if _, ok := novelOnlyEditableHookPaths[filepath.ToSlash(rel)]; ok {
+		return false
+	}
+	for _, path := range []string{pubPath, freshPath} {
+		data, err := os.ReadFile(path)
+		if err == nil && hasGeneratedMarkerBytes(data) {
+			return true
+		}
+	}
+	return false
 }
 
 func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error {
@@ -87,6 +109,19 @@ func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error
 		freshFile.Decls[i] = repl
 		installed = append(installed, repl)
 	}
+	freshByName := overlayDeclMap(freshFile)
+	for _, d := range pubFile.Decls {
+		name := overlayDeclName(d)
+		if !fromPub[name] {
+			continue
+		}
+		if _, exists := freshByName[name]; exists {
+			continue
+		}
+		freshFile.Decls = append(freshFile.Decls, d)
+		installed = append(installed, d)
+		freshByName[name] = d
+	}
 	addImportsUsedByDecls(freshFile, pubFile, installed)
 	rewriteInstalledSelectorsToDestAliases(freshFile, pubFile, installed)
 	dropUnusedImports(freshFile)
@@ -118,15 +153,31 @@ func handEditedDeclNames(pubPath, freshPath, basePath string) map[string]bool {
 	out := map[string]bool{}
 	for name, pubText := range pubTexts {
 		freshText, inFresh := freshTexts[name]
-		if !inFresh || pubText == freshText {
+		if inFresh && pubText == freshText {
+			continue
+		}
+		if !inFresh {
+			if baseTexts != nil && baseTexts[name] != "" && pubText == baseTexts[name] {
+				continue
+			}
+			out[name] = true
 			continue
 		}
 		if baseTexts != nil && baseTexts[name] != "" && pubText == baseTexts[name] {
 			continue
 		}
+		if baseTexts == nil && isOverlayFuncDeclName(name) {
+			continue
+		}
 		out[name] = true
 	}
 	return out
+}
+
+func isOverlayFuncDeclName(name string) bool {
+	return !strings.HasPrefix(name, "const:") &&
+		!strings.HasPrefix(name, "var:") &&
+		!strings.HasPrefix(name, "type:")
 }
 
 func overlayDeclMap(file *dst.File) map[string]dst.Decl {
@@ -462,14 +513,30 @@ func importSpecAlias(is *dst.ImportSpec) string {
 }
 
 func importPathDefaultAlias(quotedPath string) string {
-	path, err := strconv.Unquote(quotedPath)
+	importPath, err := strconv.Unquote(quotedPath)
 	if err != nil {
 		return ""
 	}
-	if i := strings.LastIndex(path, "/"); i >= 0 {
-		return path[i+1:]
+	return assumedImportName(importPath)
+}
+
+func assumedImportName(importPath string) string {
+	base := path.Base(importPath)
+	if strings.HasPrefix(base, "v") {
+		if _, err := strconv.Atoi(base[1:]); err == nil {
+			dir := path.Dir(importPath)
+			if dir != "." {
+				base = path.Base(dir)
+			}
+		}
 	}
-	return path
+	base = strings.TrimPrefix(base, "go-")
+	if i := strings.IndexFunc(base, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
+	}); i >= 0 {
+		base = base[:i]
+	}
+	return base
 }
 
 func unusedImportAlias(bound map[string]string, preferred, path string) string {
