@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.31.6](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.5...v4.31.6) (2026-09-02)
+
+
+### Bug Fixes
+
+* **cli:** keep in-use imports and take fresh bodies on regen-merge ([#4505](https://github.com/mvanhorn/cli-printing-press/issues/4505)) ([042bdd3](https://github.com/mvanhorn/cli-printing-press/commit/042bdd3a6e0e05e54ef7a5c090f4ba298e132a4c))
+* **cli:** preserve hand-authored files on generate --force ([#4509](https://github.com/mvanhorn/cli-printing-press/issues/4509)) ([545122b](https://github.com/mvanhorn/cli-printing-press/commit/545122bc45deaa57b9f25d1edb66b1ccf28bc640))
+* **cli:** preserve hand-authored MCP behavior during mcp-sync ([#4507](https://github.com/mvanhorn/cli-printing-press/issues/4507)) ([ec23ea0](https://github.com/mvanhorn/cli-printing-press/commit/ec23ea0c54aae321f8ae779f01e674b32237990f))
+* **cli:** report lock stale only when the lock is actually stale ([#4506](https://github.com/mvanhorn/cli-printing-press/issues/4506)) ([e416dd4](https://github.com/mvanhorn/cli-printing-press/commit/e416dd45c0a39faebf0d8f5876d988992b374a39)), closes [#4468](https://github.com/mvanhorn/cli-printing-press/issues/4468)
+* **cli:** Windows auth remedy and cookies-file help ([#4508](https://github.com/mvanhorn/cli-printing-press/issues/4508)) ([49fbda4](https://github.com/mvanhorn/cli-printing-press/commit/49fbda4f4b1f4529db85e7e07bafccbafb12db21))
+
 ## [4.31.5](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.4...v4.31.5) (2026-09-01)
 
 
