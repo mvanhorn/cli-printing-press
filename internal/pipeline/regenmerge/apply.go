@@ -1,6 +1,7 @@
 package regenmerge
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -24,10 +25,12 @@ import (
 // Steps:
 //  1. Pre-flight: refuse non-clean git tree unless opts.Force
 //  2. Stage to sibling tempdir <parent>/<basename>.regen-merge-<ts>/
-//  3. Deep-copy published → tempdir (preserves novels, additions, collisions)
+//  3. Deep-copy published → tempdir (preserves novels and collisions)
 //  4. Overwrite TEMPLATED-CLEAN files from fresh
 //  5. Copy NEW-TEMPLATE-EMISSION files from fresh
 //  6. Delete PUBLISHED-ONLY-TEMPLATED files from tempdir
+//     6b. Overlay TEMPLATED-BODY-DRIFT / VALUE-DRIFT / WITH-ADDITIONS onto
+//     fresh (hand additions kept; rewritten templated bodies from fresh)
 //  7. Write fresh's go.mod into tempdir, then run RewriteModulePath
 //     (rewrites all .go imports + go.mod module line in one sweep)
 //  8. Overwrite tempdir's go.mod with the merged form (published module +
@@ -102,15 +105,14 @@ func Apply(report *MergeReport, opts Options) error {
 				return fmt.Errorf("removing stale %s: %w", fc.Path, err)
 			}
 			fc.Applied = true
-		case VerdictTemplatedBodyDrift, VerdictTemplatedValueDrift:
+		case VerdictTemplatedBodyDrift, VerdictTemplatedValueDrift, VerdictTemplatedWithAdditions:
 			if tryOverlayHandEditedDecls(cliDir, freshDir, opts.BaseDir, tempDir, fc.Path) {
 				fc.Applied = true
 				continue
 			}
 			// Preserve: tempDir already holds published's copy.
 		case VerdictNovel,
-			VerdictNovelCollision,
-			VerdictTemplatedWithAdditions:
+			VerdictNovelCollision:
 			// Preserve verdicts: tempDir already holds published's copy from
 			// the deep-copy step, and the human-review path keeps it
 			// untouched. No file-level action needed here.
@@ -189,6 +191,11 @@ func Apply(report *MergeReport, opts Options) error {
 			return fmt.Errorf("injecting AddCommand into %s: %w", lr.HostFile, err)
 		}
 		lr.Applied = true
+	}
+
+	if err := refreshMergedCLIManifest(freshDir, tempDir); err != nil {
+		cleanup()
+		return fmt.Errorf("refreshing CLI manifest provenance: %w", err)
 	}
 
 	if err := pipeline.ValidatePatchRecords(tempDir); err != nil {
@@ -272,6 +279,57 @@ func preserveGitMetadata(srcDir, dstDir string) error {
 	return nil
 }
 
+var regenManifestProvenanceKeys = []string{
+	"printing_press_version",
+	"generated_at",
+	"run_id",
+	"schema_version",
+}
+
+func refreshMergedCLIManifest(freshDir, destDir string) error {
+	freshPath := filepath.Join(freshDir, pipeline.CLIManifestFilename)
+	destPath := filepath.Join(destDir, pipeline.CLIManifestFilename)
+	freshData, err := os.ReadFile(freshPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("reading fresh %s: %w", pipeline.CLIManifestFilename, err)
+	}
+	destData, err := os.ReadFile(destPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return writeFileAtomic(destPath, freshData)
+		}
+		return fmt.Errorf("reading dest %s: %w", pipeline.CLIManifestFilename, err)
+	}
+	var destObj, freshObj map[string]json.RawMessage
+	if json.Unmarshal(destData, &destObj) != nil || json.Unmarshal(freshData, &freshObj) != nil {
+		return writeFileAtomic(destPath, freshData)
+	}
+	changed := false
+	for _, key := range regenManifestProvenanceKeys {
+		v, ok := freshObj[key]
+		if !ok {
+			continue
+		}
+		if string(destObj[key]) == string(v) {
+			continue
+		}
+		destObj[key] = v
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	out, err := json.MarshalIndent(destObj, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding merged %s: %w", pipeline.CLIManifestFilename, err)
+	}
+	out = append(out, '\n')
+	return writeFileAtomic(destPath, out)
+}
+
 // readModulePaths reads the module paths from both go.mod files. Either
 // or both may be empty if go.mod is missing.
 func readModulePaths(pubDir, freshDir string) (string, string, error) {
@@ -344,12 +402,18 @@ func injectAddCommands(hostPath string, calls []string, enclosingFunc string) er
 			return true
 		}
 
-		// Build new statements from source strings.
+		have := existingAddCommandCtors(fn)
 		var newStmts []dst.Stmt
 		for _, src := range calls {
 			stmt, perr := parseStmtViaDST(src)
 			if perr != nil {
 				continue
+			}
+			if ctor := addCommandCtor(stmt); ctor != "" {
+				if have[ctor] {
+					continue
+				}
+				have[ctor] = true
 			}
 			newStmts = append(newStmts, stmt)
 		}
@@ -380,6 +444,43 @@ func injectAddCommands(hostPath string, calls []string, enclosingFunc string) er
 		return fmt.Errorf("rendering %s: %w", hostPath, err)
 	}
 	return writeFileAtomic(hostPath, []byte(buf.String()))
+}
+
+func existingAddCommandCtors(fn *dst.FuncDecl) map[string]bool {
+	have := map[string]bool{}
+	if fn == nil || fn.Body == nil {
+		return have
+	}
+	for _, stmt := range fn.Body.List {
+		if ctor := addCommandCtor(stmt); ctor != "" {
+			have[ctor] = true
+		}
+	}
+	return have
+}
+
+func addCommandCtor(stmt dst.Stmt) string {
+	es, ok := stmt.(*dst.ExprStmt)
+	if !ok {
+		return ""
+	}
+	ce, ok := es.X.(*dst.CallExpr)
+	if !ok {
+		return ""
+	}
+	sel, ok := ce.Fun.(*dst.SelectorExpr)
+	if !ok || sel.Sel == nil || sel.Sel.Name != "AddCommand" || len(ce.Args) == 0 {
+		return ""
+	}
+	switch arg := ce.Args[0].(type) {
+	case *dst.CallExpr:
+		if id, ok := arg.Fun.(*dst.Ident); ok {
+			return id.Name
+		}
+	case *dst.Ident:
+		return arg.Name
+	}
+	return ""
 }
 
 // isAddCommandStmt returns true if the statement is a call to
