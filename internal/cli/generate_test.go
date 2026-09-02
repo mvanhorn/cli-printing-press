@@ -1007,7 +1007,7 @@ func novelHelperFn() string { return "kept" }
 	novelPath := filepath.Join(outputDir, "internal", "cli", "novel_helper.go")
 	require.NoError(t, os.WriteFile(novelPath, novelBody, 0o644))
 
-	stderr, err := runGenerate(specB)
+	_, err = runGenerate(specB)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "pass --yes to confirm")
 	gotNovel, readErr := os.ReadFile(novelPath)
@@ -1021,7 +1021,7 @@ func novelHelperFn() string { return "kept" }
 			"refusing confirmation must keep the pre-force config edit")
 	}
 
-	stderr, err = runGenerate(specB, "--yes")
+	stderr, err := runGenerate(specB, "--yes")
 	require.NoError(t, err)
 
 	// Cross-spec: literal drift NOT preserved (NovelOnly skips
