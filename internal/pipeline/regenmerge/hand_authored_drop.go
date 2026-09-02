@@ -39,7 +39,7 @@ func MarkerlessFilesWouldDrop(snapshotDir, freshDir string, report *MergeReport,
 				continue
 			}
 		}
-		if !wouldLoseHandAuthoredSnapshot(freshDir, fc) {
+		if !wouldLoseHandAuthoredSnapshot(snapshotDir, freshDir, fc) {
 			continue
 		}
 		dropped = append(dropped, fc.Path)
@@ -63,14 +63,43 @@ func isMarkerlessHandAuthoredSnapshotFile(snapshotDir, freshDir, rel string) boo
 	return !isUnimplementedNovelCommandScaffold(snapshotDir, freshDir, rel)
 }
 
-func wouldLoseHandAuthoredSnapshot(freshDir string, fc FileClassification) bool {
+func wouldLoseHandAuthoredSnapshot(snapshotDir, freshDir string, fc FileClassification) bool {
 	if snapshotHasUniqueDecls(fc) {
 		return true
 	}
-	// Same declaration names can still carry a hand-authored replacement
-	// that NovelOnly overwrites. Ask only when fresh is generator-owned so
-	// spec-derived value drift in markerless generated files stays quiet.
-	return generatedmarker.HasInFile(filepath.Join(freshDir, fc.Path))
+	freshPath := filepath.Join(freshDir, fc.Path)
+	if generatedmarker.HasInFile(freshPath) {
+		return true
+	}
+	// Fresh can also be markerless (testenv, extras). Same-decl NovelOnly
+	// still destroys a hand-authored function body; const/var-only spec
+	// drift stays off the list.
+	return snapshotHasFunctionBodyChange(filepath.Join(snapshotDir, fc.Path), freshPath)
+}
+
+func snapshotHasFunctionBodyChange(snapPath, freshPath string) bool {
+	// Generated tests embed spec-derived literals in helper bodies
+	// ({{.Name}} in platform_rate_limit_test.go). Call-target drift is
+	// the hand-authored signal there; const/var-only files stay quiet.
+	if strings.HasSuffix(filepath.ToSlash(snapPath), "_test.go") {
+		return detectBodyDrift(snapPath, freshPath) != nil
+	}
+	snapDecls := canonicalDeclTexts(snapPath)
+	freshDecls := canonicalDeclTexts(freshPath)
+	if snapDecls == nil || freshDecls == nil {
+		return false
+	}
+	for name, snapText := range snapDecls {
+		if strings.Contains(name, ":") {
+			continue
+		}
+		freshText, ok := freshDecls[name]
+		if !ok || snapText == freshText {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func snapshotHasUniqueDecls(fc FileClassification) bool {

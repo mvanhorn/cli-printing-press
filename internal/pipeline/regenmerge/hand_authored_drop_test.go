@@ -108,6 +108,40 @@ func New() string { return "fresh" }
 		"NovelOnly overwrite of a same-decl hand-authored body must be listed")
 }
 
+func TestMarkerlessFilesWouldDropListsSameDeclBodyReplacementWhenFreshIsMarkerless(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh := makeMergeFixture(t)
+	rel := filepath.Join("internal", "cliutil", "testenv", "testenv.go")
+	require.NoError(t, os.MkdirAll(filepath.Join(snap, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(fresh, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(snap, rel), []byte("package testenv\n\nfunc Isolate() string { return \"hand\" }\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, rel), []byte("package testenv\n\nfunc Isolate() string { return \"fresh\" }\n"), 0o644))
+
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	assert.Empty(t, MarkerlessFilesWouldDrop(snap, fresh, report, Options{Force: true}),
+		"same-spec merge preserves a markerless same-decl replacement")
+	assert.Equal(t, []string{filepath.ToSlash(rel)}, MarkerlessFilesWouldDrop(snap, fresh, report, Options{Force: true, NovelOnly: true}),
+		"NovelOnly overwrite of a markerless same-decl hand-authored body must be listed")
+}
+
+func TestMarkerlessFilesWouldDropSkipsSpecDerivedTestFunctionLiterals(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh := makeMergeFixture(t)
+	rel := filepath.Join("internal", "client", "platform_rate_limit_test.go")
+	require.NoError(t, os.MkdirAll(filepath.Join(snap, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(fresh, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(snap, rel), []byte("package client\n\nfunc platformRateLimitTestClient() string { return \"old-pp-cli\" }\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, rel), []byte("package client\n\nfunc platformRateLimitTestClient() string { return \"new-pp-cli\" }\n"), 0o644))
+
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	assert.Empty(t, MarkerlessFilesWouldDrop(snap, fresh, report, Options{Force: true, NovelOnly: true}),
+		"spec-derived literals in a markerless generated test helper are not a hand-authored delete")
+}
+
 func TestMarkerlessFilesWouldDropSkipsGeneratorValueDrift(t *testing.T) {
 	t.Parallel()
 
