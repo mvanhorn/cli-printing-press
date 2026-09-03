@@ -173,8 +173,8 @@ func registerClientHook(hook func(*client.Client) error) {
 	clientHooks = append(clientHooks, hook)
 }
 
-// ApplyClientHooks runs the preserved clientHooks registry. MCP constructors
-// call this so agent traffic gets the same post-construction setup as the CLI.
+// Keeps preserved post-construction setup consistent across interactive CLI
+// and MCP clients.
 func ApplyClientHooks(c *client.Client) error {
 	for _, hook := range clientHooks {
 		if err := hook(c); err != nil {
