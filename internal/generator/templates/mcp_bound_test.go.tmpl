@@ -4,10 +4,12 @@
 package bound
 
 import (
+	"context"
 	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -663,5 +665,142 @@ func TestTextPreviewPreservesUTF8RuneBoundaries(t *testing.T) {
 	}
 	if strings.ContainsRune(envelope.Preview, utf8.RuneError) {
 		t.Fatalf("preview introduced a replacement character at a split UTF-8 boundary: %q", envelope.Preview[len(envelope.Preview)-12:])
+	}
+}
+
+func TestWithSQLQueryDeadlineAppliesDefault(t *testing.T) {
+	ctx, cancel := WithSQLQueryDeadline(context.Background())
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("WithSQLQueryDeadline should apply a default deadline")
+	}
+	remain := time.Until(deadline)
+	if remain < SQLQueryTimeout/2 || remain > SQLQueryTimeout+time.Second {
+		t.Fatalf("deadline remaining %s, want about %s", remain, SQLQueryTimeout)
+	}
+}
+
+func TestWithSQLQueryDeadlineKeepsTighterCaller(t *testing.T) {
+	parent, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	parentDeadline, ok := parent.Deadline()
+	if !ok {
+		t.Fatal("parent should have a deadline")
+	}
+	ctx, cancel2 := WithSQLQueryDeadline(parent)
+	defer cancel2()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("child should have a deadline")
+	}
+	if deadline.After(parentDeadline) {
+		t.Fatalf("child deadline %v is later than tighter parent %v", deadline, parentDeadline)
+	}
+}
+
+func TestSQLScanStateStopsAtByteBudget(t *testing.T) {
+	s := NewSQLScanState([]string{"blob"})
+	row := map[string]any{"blob": strings.Repeat("z", 3000)}
+	added := 0
+	for i := 0; i < 100; i++ {
+		if !s.Add(row) {
+			break
+		}
+		added++
+	}
+	if !s.Truncated {
+		t.Fatal("expected byte-budget truncation")
+	}
+	if added == 0 || added >= 100 {
+		t.Fatalf("added %d rows, want a bounded positive count", added)
+	}
+	if len(s.Rows) != added {
+		t.Fatalf("rows = %d, want %d", len(s.Rows), added)
+	}
+}
+
+func TestSQLScanStateStopsAtRowBudget(t *testing.T) {
+	s := NewSQLScanState(nil)
+	row := map[string]any{}
+	for i := 0; i < SQLMaxRows+5; i++ {
+		s.Add(row)
+	}
+	if !s.Truncated {
+		t.Fatal("expected row-budget truncation")
+	}
+	if len(s.Rows) != SQLMaxRows {
+		t.Fatalf("rows = %d, want %d", len(s.Rows), SQLMaxRows)
+	}
+}
+
+func TestSQLScanStateKeepsCompleteSmallResult(t *testing.T) {
+	s := NewSQLScanState([]string{"n"})
+	if !s.Add(map[string]any{"n": 1}) {
+		t.Fatal("small row should fit")
+	}
+	if s.Truncated {
+		t.Fatal("small result should not be truncated")
+	}
+	if len(s.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(s.Rows))
+	}
+}
+
+func TestSQLScanStateRejectsFirstOversizedRow(t *testing.T) {
+	s := NewSQLScanState([]string{"blob"})
+	row := map[string]any{"blob": strings.Repeat("z", MaxBytes)}
+	if s.Add(row) {
+		t.Fatal("oversized first row should be rejected")
+	}
+	if !s.Truncated || len(s.Rows) != 0 {
+		t.Fatalf("truncated=%v rows=%d, want truncated empty scan", s.Truncated, len(s.Rows))
+	}
+}
+
+func TestSQLScanStateLongColumnsStaySQLEnvelope(t *testing.T) {
+	cols := make([]string, 25)
+	row := make(map[string]any, len(cols))
+	for i := range cols {
+		cols[i] = strings.Repeat("col", 80) + strings.Repeat("x", i+1)
+		row[cols[i]] = strings.Repeat("z", 400)
+	}
+	s := NewSQLScanState(cols)
+	for i := 0; i < 20; i++ {
+		if !s.Add(row) {
+			break
+		}
+	}
+	if !s.Truncated {
+		t.Fatal("wide columns plus repeated rows should hit the envelope budget")
+	}
+	if len(s.Rows) == 0 {
+		t.Fatal("wide-column scan should keep a bounded SQL sample")
+	}
+
+	envelope := map[string]any{
+		"count":          len(s.Rows),
+		"columns":        cols,
+		"rows":           s.Rows,
+		"store_status":   "ready",
+		"resumable":      false,
+		"truncated":      s.Truncated,
+		"returned_count": len(s.Rows),
+		"max_bytes":      MaxBytes,
+		"note":           SQLResultBoundNote,
+		"meta":           map[string]any{"source": "local"},
+	}
+	text, err := JSON(envelope)
+	if err != nil {
+		t.Fatalf("JSON(envelope) error = %v", err)
+	}
+	if len(text) > MaxBytes {
+		t.Fatalf("SQL envelope length = %d, want <= %d", len(text), MaxBytes)
+	}
+	if !strings.Contains(text, `"columns"`) || !strings.Contains(text, `"rows"`) || !strings.Contains(text, `"count"`) {
+		t.Fatalf("expected SQL envelope fields, got preview: %s", text)
+	}
+	if strings.Contains(text, `"preview"`) && !strings.Contains(text, `"columns"`) {
+		t.Fatalf("wide-column result fell back to a generic preview: %s", text)
 	}
 }

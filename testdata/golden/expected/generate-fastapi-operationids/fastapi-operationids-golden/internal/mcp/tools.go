@@ -768,9 +768,12 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 	}
 	defer db.Close()
 
-	rows, err := db.DB().QueryContext(ctx, query)
+	queryCtx, cancel := bound.WithSQLQueryDeadline(ctx)
+	defer cancel()
+
+	rows, err := db.DB().QueryContext(queryCtx, query)
 	if err != nil {
-		return mcplib.NewToolResultError(mcpSQLQueryError(err)), nil
+		return mcplib.NewToolResultError(mcpSQLQueryError(queryCtx, err)), nil
 	}
 	defer rows.Close()
 
@@ -778,7 +781,7 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("reading columns: %v", err)), nil
 	}
-	var results []map[string]any
+	scan := bound.NewSQLScanState(cols)
 	for rows.Next() {
 		values := make([]any, len(cols))
 		ptrs := make([]any, len(cols))
@@ -792,22 +795,24 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 		for i, col := range cols {
 			row[col] = values[i]
 		}
-		results = append(results, row)
+		if !scan.Add(row) {
+			break
+		}
 	}
 	// rows.Next() stops on a mid-iteration error without failing the loop, so
 	// skipping rows.Err() would return a truncated result set as success.
 	if err := rows.Err(); err != nil {
-		return mcplib.NewToolResultError(fmt.Sprintf("reading rows: %v", err)), nil
+		return mcplib.NewToolResultError(mcpSQLQueryError(queryCtx, err)), nil
 	}
 	storeStatus, err := mcpStoreStatus(db)
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("reading store status: %v", err)), nil
 	}
 
-	return toolResultJSON(mcpSQLEnvelope(results, cols, storeStatus))
+	return toolResultJSON(mcpSQLEnvelope(scan.Rows, cols, storeStatus, scan.Truncated))
 }
 
-func mcpSQLEnvelope(rows []map[string]any, columns []string, storeStatus mcpStoreStatusKind) map[string]any {
+func mcpSQLEnvelope(rows []map[string]any, columns []string, storeStatus mcpStoreStatusKind, truncated bool) map[string]any {
 	if rows == nil {
 		rows = []map[string]any{}
 	}
@@ -817,8 +822,14 @@ func mcpSQLEnvelope(rows []map[string]any, columns []string, storeStatus mcpStor
 		"rows":         rows,
 		"store_status": storeStatus,
 		"resumable":    false,
+		"truncated":    truncated,
 	}
-	if len(rows) == 0 {
+	if truncated {
+		out["returned_count"] = len(rows)
+		out["max_bytes"] = bound.MaxBytes
+		out["note"] = bound.SQLResultBoundNote
+	}
+	if len(rows) == 0 && !truncated {
 		if storeStatus == mcpStoreStatusEmpty {
 			out["next_step"] = mcpEmptyStoreNextStep()
 		} else {
@@ -828,7 +839,10 @@ func mcpSQLEnvelope(rows []map[string]any, columns []string, storeStatus mcpStor
 	return out
 }
 
-func mcpSQLQueryError(err error) string {
+func mcpSQLQueryError(queryCtx context.Context, err error) string {
+	if queryCtx.Err() != nil {
+		return fmt.Sprintf("query cancelled: %v. MCP SQL queries are bounded to %s; narrow the query with WHERE, GROUP BY, or an aggregate.", err, bound.SQLQueryTimeout)
+	}
 	msg := err.Error()
 	if strings.Contains(strings.ToLower(msg), "no such table") {
 		return fmt.Sprintf("query failed: %v. Synced records live in resources(resource_type, id, data), not one SQL table per resource. Filter by resource_type, for example resource_type='health', and read JSON fields with json_extract(data,'$.field').", err)
