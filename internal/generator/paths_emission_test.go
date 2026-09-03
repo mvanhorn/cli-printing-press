@@ -39,8 +39,9 @@ func TestPathsResolverEmitsAndGeneratedCLIBuilds(t *testing.T) {
 	require.Contains(t, rootSrc, "var clientHooks []func(*client.Client) error")
 	require.Contains(t, rootSrc, "func registerClientHook(hook func(*client.Client) error)")
 	require.Contains(t, rootSrc, "clientHooks = append(clientHooks, hook)")
+	require.Contains(t, rootSrc, "func ApplyClientHooks(c *client.Client) error")
 	require.Contains(t, rootSrc, "for _, hook := range clientHooks {")
-	require.Contains(t, rootSrc, "if err := hook(c); err != nil {")
+	require.Contains(t, rootSrc, "if err := ApplyClientHooks(c); err != nil {")
 
 	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "./internal/cliutil", "-run", "TestHomeOverrideWinsForDefaultBaseAndTildeExpansion", "-count=1")

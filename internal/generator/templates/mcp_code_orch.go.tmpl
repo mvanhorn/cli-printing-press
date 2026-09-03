@@ -390,8 +390,7 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 	if err := cli.RequireRoleWith(nil, cfg, ep.ID, ep.RequiredRole); err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
-	c := newMCPClientFromConfig(cfg)
-	platformSession, err := cli.BindMCPClient(ctx, c)
+	c, platformSession, err := newMCPClientFromConfig(ctx, cfg)
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}

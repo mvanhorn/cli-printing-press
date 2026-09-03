@@ -216,10 +216,20 @@ func isPreferImplementedNovelCommandsASTStmt(stmt ast.Stmt) bool {
 	return ok && isIdent(call.Fun, "preferImplementedNovelCommands")
 }
 
-// isClientHooksASTStmt recognizes the generated client-extension loop. It is
-// template evolution, not authored value drift; otherwise a force regen would
-// retain an older root that has no way to run a preserved package extension.
+// isClientHooksASTStmt recognizes generated client-extension execution. Both
+// the legacy loop and ApplyClientHooks call are template evolution, not
+// authored value drift; otherwise a force regen would retain an older root
+// that has no way to run a preserved package extension on MCP.
 func isClientHooksASTStmt(stmt ast.Stmt) bool {
+	if ifStmt, ok := stmt.(*ast.IfStmt); ok && ifStmt.Init != nil && len(ifStmt.Body.List) == 1 {
+		assign, ok := ifStmt.Init.(*ast.AssignStmt)
+		if ok && len(assign.Lhs) == 1 && len(assign.Rhs) == 1 && isIdent(assign.Lhs[0], "err") {
+			if call, ok := assign.Rhs[0].(*ast.CallExpr); ok && isIdent(call.Fun, "ApplyClientHooks") {
+				return true
+			}
+		}
+	}
+
 	forStmt, ok := stmt.(*ast.RangeStmt)
 	if !ok || !isIdent(forStmt.X, "clientHooks") || len(forStmt.Body.List) != 1 {
 		return false

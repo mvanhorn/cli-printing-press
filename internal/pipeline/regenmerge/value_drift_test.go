@@ -417,6 +417,15 @@ func registerNovelCommand(hook func(root *Cmd, flags *rootFlags)) {
 
 func registerClientHook(hook func(*Client) error) { clientHooks = append(clientHooks, hook) }
 
+func ApplyClientHooks(c *Client) error {
+	for _, hook := range clientHooks {
+		if err := hook(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func newRootCmd(flags *rootFlags) *Cmd {
 	root := &Cmd{}
 	for _, hook := range novelCommandHooks { hook(root, flags) }
@@ -426,8 +435,8 @@ func newRootCmd(flags *rootFlags) *Cmd {
 
 func newClient() *Client {
 	c := &Client{}
-	for _, hook := range clientHooks {
-		if err := hook(c); err != nil { return nil }
+	if err := ApplyClientHooks(c); err != nil {
+		return nil
 	}
 	return c
 }

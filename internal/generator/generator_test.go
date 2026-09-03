@@ -18847,6 +18847,10 @@ func assertNewMCPClientUsesPoliteRateLimitAndSkipsCache(t *testing.T, specSource
 		"newMCPClient must not disable rate limiting for MCP-driven calls")
 	assert.Contains(t, toolsBody, "c.NoCache = true",
 		"newMCPClient must disable the response cache so MCP-driven reads see fresh state across mutations")
+	assert.Contains(t, toolsBody, "if err := cli.ApplyClientHooks(c); err != nil {",
+		"newMCPClientFromConfig must run the same preserved clientHooks registry as the CLI")
+	assert.Contains(t, toolsBody, "session.ZeroCredentials()",
+		"newMCPClientFromConfig must clear bound credentials when a hook fails")
 	requireGeneratedCompiles(t, outputDir)
 }
 
