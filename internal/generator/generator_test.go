@@ -19927,6 +19927,7 @@ func TestProjectManagementWorkflowsEmitSyncHints(t *testing.T) {
 		"func TestHintIfStale_BackdatedSyncStateWritesHintToStderr(t *testing.T)",
 		"func TestHintIfStale_MaxAgeZeroDisablesHint(t *testing.T)",
 		"func TestHintIfUnsynced_NullTimestampWritesHint(t *testing.T)",
+		"func TestHintIfUnsynced_ZeroTimestampWritesHint(t *testing.T)",
 		"func TestHintIfStale_AllResourcesIgnoresNullTimestampRows(t *testing.T)",
 		"func TestHintIfStale_ResourceFilterUsesRequestedResource(t *testing.T)",
 	} {

@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -954,6 +955,15 @@ func syncResource(ctx context.Context, c interface {
 		// unscoped in a tenant-scoped print) cannot be pruned safely. Emit the
 		// decision so --full never implies that unsupported rows were pruned.
 		fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","reason":"unsupported-resource-shape"}`+"\n", resource)
+	}
+
+	if outcome.reason == "non_json_200_body" {
+		return syncResult{
+			Resource: resource,
+			Count:    0,
+			Warn:     fmt.Errorf("%s returned a 200 response with a non-JSON body; no rows were stored", resource),
+			Duration: time.Since(started),
+		}
 	}
 
 	// Final sync state separates pagination progress from the incremental
@@ -1940,10 +1950,12 @@ func resolveDiscriminatedResource(resource string, obj map[string]any) string {
 
 // upsertSingleObject stores a non-array API response as a single record.
 func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) error {
+	if !json.Valid(bytes.TrimSpace(data)) || isJSONNull(data) {
+		return fmt.Errorf("%s response is not JSON; refusing to store a non-JSON body", resource)
+	}
 	obj, err := store.DecodeJSONObject(data)
 	if err != nil {
-		// Not a JSON object either - store raw under resource name
-		return db.Upsert(resource, resource, data)
+		return fmt.Errorf("%s response is not a JSON object: %w", resource, err)
 	}
 
 	resource = resolveDiscriminatedResource(resource, obj)
@@ -2321,6 +2333,7 @@ type parentReport struct {
 	firstDenial      *accessWarning
 	anomaly          *parentAnomaly // nil unless this parent hit an extraction anomaly
 	dryRun           bool           // true if a dry-run sentinel was seen — caller short-circuits
+	nonJSONBody      bool           // true if this parent got a 200 with a non-JSON body
 }
 
 // parentAnomaly carries the fields the two sync_anomaly event shapes need so
@@ -2670,6 +2683,7 @@ func syncOneParent(
 		fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"%s","reason":%q}`+"\n", dep.Name, outcome.scopeVal, outcome.reason)
 	}
 
+	rep.nonJSONBody = outcome.reason == "non_json_200_body"
 	return rep
 }
 
@@ -2819,6 +2833,7 @@ func syncDependentResource(ctx context.Context, c interface {
 	dryRunHit := false
 	failedParents := 0
 	integrityFailedParents := 0
+	nonJSONParents := 0
 	var firstFailure error
 	for rep := range reports {
 		if rep.dryRun {
@@ -2828,6 +2843,9 @@ func syncDependentResource(ctx context.Context, c interface {
 		totalCount += rep.stored
 		depConsumedTotal += rep.consumed
 		depExtractFailureTotal += rep.extractFailures
+		if rep.nonJSONBody {
+			nonJSONParents++
+		}
 		if rep.failure != nil {
 			failedParents++
 			if rep.integrityFailure {
@@ -2855,6 +2873,15 @@ func syncDependentResource(ctx context.Context, c interface {
 			fmt.Fprintf(syncEvents, `{"event":"sync_dryrun","resource":"%s"}`+"\n", dep.Name)
 		}
 		return syncResult{Resource: dep.Name, Count: 0, Duration: time.Since(started)}
+	}
+
+	if nonJSONParents > 0 && failedParents == 0 {
+		return syncResult{
+			Resource: dep.Name,
+			Count:    totalCount,
+			Warn:     fmt.Errorf("%s returned a 200 response with a non-JSON body; sync_state was not stamped", dep.Name),
+			Duration: time.Since(started),
+		}
 	}
 
 	if humanFriendly {
