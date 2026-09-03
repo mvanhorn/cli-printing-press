@@ -307,8 +307,21 @@ func TestSyncResourceNonJSONBodyEmitsAnomaly(t *testing.T) {
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
+	if res.Warn == nil {
+		t.Fatalf("syncResource returned success for a non-JSON body; events: %s", events.String())
+	}
 	if !strings.Contains(events.String(), "\"reason\":\"non_json_200_body\"") {
 		t.Fatalf("events did not contain non_json_200_body anomaly: %s", events.String())
+	}
+	if got := db.GetLastSyncedAt("things"); got != "" {
+		t.Fatalf("stamped last_synced_at = %q, want empty", got)
+	}
+	rows, err := db.List("things", 10)
+	if err != nil {
+		t.Fatalf("list things: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("stored %d rows for a non-JSON body, want 0", len(rows))
 	}
 }
 
@@ -437,8 +450,14 @@ func TestSyncDependentResourceNonJSONBodyEmitsAnomaly(t *testing.T) {
 	if res.Err != nil {
 		t.Fatalf("syncDependentResource error: %v", res.Err)
 	}
+	if res.Warn == nil {
+		t.Fatalf("syncDependentResource returned success for a non-JSON body; events: %s", events.String())
+	}
 	if !strings.Contains(events.String(), "\"reason\":\"non_json_200_body\"") {
 		t.Fatalf("events did not contain dependent non_json_200_body anomaly: %s", events.String())
+	}
+	if got := db.GetLastSyncedAt("children"); got != "" {
+		t.Fatalf("stamped last_synced_at = %q, want empty", got)
 	}
 }
 

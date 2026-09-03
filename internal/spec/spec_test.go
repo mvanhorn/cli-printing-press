@@ -4711,6 +4711,7 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	require.NoError(t, base.Validate())
 	assert.True(t, base.HasHTMLExtraction())
 	assert.True(t, base.Resources["posts"].Endpoints["list"].UsesHTMLResponse())
+	assert.True(t, base.Resources["posts"].Endpoints["list"].LacksJSONSyncEnumeration())
 
 	csvSpec := validHTMLSpec()
 	ep := csvSpec.Resources["posts"].Endpoints["list"]
@@ -4719,6 +4720,7 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	csvSpec.Resources["posts"].Endpoints["list"] = ep
 	require.NoError(t, csvSpec.Validate())
 	assert.True(t, csvSpec.Resources["posts"].Endpoints["list"].UsesCSVResponse())
+	assert.False(t, csvSpec.Resources["posts"].Endpoints["list"].LacksJSONSyncEnumeration())
 
 	xmlSpec := validHTMLSpec()
 	ep = xmlSpec.Resources["posts"].Endpoints["list"]
@@ -4728,6 +4730,7 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	require.NoError(t, xmlSpec.Validate())
 	assert.True(t, xmlSpec.Resources["posts"].Endpoints["list"].UsesXMLResponse())
 	assert.True(t, xmlSpec.HasXMLResponse())
+	assert.False(t, xmlSpec.Resources["posts"].Endpoints["list"].LacksJSONSyncEnumeration())
 
 	mixedSpec := validHTMLSpec()
 	ep = mixedSpec.Resources["posts"].Endpoints["list"]
@@ -4804,6 +4807,17 @@ func TestValidateDataSourceStrategy(t *testing.T) {
 	items.Endpoints["list"] = endpoint
 	bad.Resources["items"] = items
 	require.ErrorContains(t, bad.Validate(), "data_source_strategy")
+}
+
+func TestLacksJSONSyncEnumeration(t *testing.T) {
+	t.Parallel()
+	assert.True(t, LacksJSONSyncEnumeration(ResponseFormatHTML))
+	assert.True(t, LacksJSONSyncEnumeration(ResponseFormatBinary))
+	assert.True(t, LacksJSONSyncEnumeration(ResponseFormatText))
+	assert.False(t, LacksJSONSyncEnumeration(""))
+	assert.False(t, LacksJSONSyncEnumeration(ResponseFormatJSON))
+	assert.False(t, LacksJSONSyncEnumeration(ResponseFormatCSV))
+	assert.False(t, LacksJSONSyncEnumeration(ResponseFormatXML))
 }
 
 func TestHTMLExtract_EmbeddedJSONMode(t *testing.T) {

@@ -2642,6 +2642,22 @@ func (e Endpoint) UsesTextResponse() bool {
 	return e.EffectiveResponseFormat() == ResponseFormatText
 }
 
+// LacksJSONSyncEnumeration reports whether a response_format cannot populate
+// the JSON store via generated sync. csv and xml convert to JSON; html, binary,
+// and text do not.
+func LacksJSONSyncEnumeration(format string) bool {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case ResponseFormatHTML, ResponseFormatBinary, ResponseFormatText:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e Endpoint) LacksJSONSyncEnumeration() bool {
+	return LacksJSONSyncEnumeration(e.EffectiveResponseFormat())
+}
+
 func (e Endpoint) UsesRawRequestBody() bool {
 	contentType := strings.ToLower(strings.TrimSpace(e.RequestContentType))
 	if i := strings.Index(contentType, ";"); i >= 0 {

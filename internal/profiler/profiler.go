@@ -192,6 +192,9 @@ type SyncableResource struct {
 	// a capped watermark; another recognized timestamp is not an equivalent.
 	PaginationSortField string
 
+	// html, binary, and text cannot populate the JSON store, so they are
+	// excluded from default sync.
+	ResponseFormat string
 	// UsesHTMLResponse and HTMLExtract mirror the chosen list endpoint's
 	// response_format/html_extract contract so sync can normalize HTML into
 	// JSON before passing the body into the JSON page extractor.
@@ -297,6 +300,9 @@ type DependentResource struct {
 	PaginationLimitParam     string
 	PaginationPageSize       int
 
+	// ResponseFormat mirrors SyncableResource so dependent fan-out can skip
+	// html/binary/text children.
+	ResponseFormat string
 	// UsesHTMLResponse and HTMLExtract mirror SyncableResource for child sync
 	// paths.
 	UsesHTMLResponse bool
@@ -1930,6 +1936,10 @@ func dependentPathResourceName(dep DependentResource) string {
 	return spec.ToSnakeCase(strings.Join(segments, "_"))
 }
 
+func metaLacksJSONSyncEnumeration(meta syncableMeta) bool {
+	return spec.LacksJSONSyncEnumeration(meta.ResponseFormat) || meta.UsesHTMLResponse
+}
+
 func addUnresolvedPathTemplateCollections(syncable map[string]syncableMeta, parameterized map[string]parameterizedEntry, deps []DependentResource) {
 	dependentPaths := make(map[string]struct{}, len(deps))
 	for _, dep := range deps {
@@ -1986,6 +1996,9 @@ func sortDependentResources(deps []DependentResource, knownDepths map[string]int
 }
 
 func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[string]bool, syncable map[string]syncableMeta, shardedSubResources spec.SubResourceShards) (DependentResource, bool) {
+	if metaLacksJSONSyncEnumeration(entry.meta) {
+		return DependentResource{}, false
+	}
 	ctx, ok := dependentPathContext(entry, knownParents, shardedSubResources)
 	if !ok {
 		return DependentResource{}, false
@@ -2011,6 +2024,7 @@ func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[strin
 		PaginationNextCursorPath: entry.meta.PaginationNextCursorPath,
 		PaginationLimitParam:     entry.meta.PaginationLimitParam,
 		PaginationPageSize:       entry.meta.PaginationPageSize,
+		ResponseFormat:           entry.meta.ResponseFormat,
 		UsesHTMLResponse:         entry.meta.UsesHTMLResponse,
 		HTMLExtract:              entry.meta.HTMLExtract,
 		BodyFields:               entry.meta.BodyFields,
@@ -2252,6 +2266,9 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				continue
 			}
 			meta := metaFromEndpoint(s, resourceName, r, e, types, resourceNameIndex)
+			if metaLacksJSONSyncEnumeration(meta) {
+				continue
+			}
 			deps = append(deps, DependentResource{
 				Name:                     spec.ToSnakeCase(resourceName),
 				ParentResource:           parent,
@@ -2271,6 +2288,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				PaginationNextCursorPath: meta.PaginationNextCursorPath,
 				PaginationLimitParam:     meta.PaginationLimitParam,
 				PaginationPageSize:       meta.PaginationPageSize,
+				ResponseFormat:           meta.ResponseFormat,
 				UsesHTMLResponse:         meta.UsesHTMLResponse,
 				HTMLExtract:              meta.HTMLExtract,
 				BodyFields:               meta.BodyFields,
@@ -2595,6 +2613,7 @@ type syncableMeta struct {
 	PaginationSortParam      string
 	PaginationSortValue      string
 	PaginationSortField      string
+	ResponseFormat           string
 	UsesHTMLResponse         bool
 	HTMLExtract              *spec.HTMLExtract
 	BodyFields               []SyncBodyField
@@ -2647,7 +2666,7 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		Path:                     e.Path,
 		Method:                   strings.ToUpper(e.Method),
 		Tier:                     s.EffectiveTier(resource, e),
-		SkipDefaultSync:          isAuthTaggedEndpoint(e) || hasTypedResponseWithoutRuntimeID(resourceName, e, types),
+		SkipDefaultSync:          isAuthTaggedEndpoint(e) || hasTypedResponseWithoutRuntimeID(resourceName, e, types) || e.LacksJSONSyncEnumeration(),
 		IDField:                  e.IDField,
 		Critical:                 e.Critical,
 		SinceParam:               sinceParam,
@@ -2661,6 +2680,7 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		PaginationSortParam:      paginationSortParam,
 		PaginationSortValue:      paginationSortValue,
 		PaginationSortField:      paginationSortField,
+		ResponseFormat:           e.EffectiveResponseFormat(),
 		UsesHTMLResponse:         e.UsesHTMLResponse(),
 		HTMLExtract:              e.HTMLExtract,
 		BodyFields:               syncBodyFieldsFromEndpoint(e),
@@ -3881,6 +3901,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			PaginationSortParam:      meta.PaginationSortParam,
 			PaginationSortValue:      meta.PaginationSortValue,
 			PaginationSortField:      meta.PaginationSortField,
+			ResponseFormat:           meta.ResponseFormat,
 			UsesHTMLResponse:         meta.UsesHTMLResponse,
 			HTMLExtract:              meta.HTMLExtract,
 			BodyFields:               meta.BodyFields,
