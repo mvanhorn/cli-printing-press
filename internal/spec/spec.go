@@ -2513,7 +2513,14 @@ type Endpoint struct {
 	// OpenAPI emits it as `x-pp-sync-walker` on the operation. See
 	// docs/SPEC-EXTENSIONS.md for the canonical schema.
 	Walker *WalkerConfig `yaml:"walker,omitempty" json:"walker,omitempty"`
-	Alias  string        `yaml:"-" json:"-"` // computed, not from YAML
+	// SyncParams are query parameters applied only during generated sync.
+	// Internal YAML emits them as `sync_params:`; OpenAPI emits them as
+	// `x-sync-params` on the operation. They overlay spec `default:` values
+	// and the history-hiding widen (status/state=open -> all/any) so a list
+	// command can keep the API's documented filter while sync mirrors the
+	// complete resource. User --param flags still win at runtime.
+	SyncParams map[string]string `yaml:"sync_params,omitempty" json:"sync_params,omitempty"`
+	Alias      string            `yaml:"-" json:"-"` // computed, not from YAML
 	// BodySet reports whether the source spec declared a `body:` key on this
 	// endpoint, distinct from an absent key. Populated by the custom
 	// UnmarshalYAML / UnmarshalJSON below. The params→body promotion pass

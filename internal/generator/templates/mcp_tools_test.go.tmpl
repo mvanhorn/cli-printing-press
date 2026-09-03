@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-{{- if and (or .VisionSet.Search .VisionSet.Store) .APISpec.IsLocalSQLiteSource}}
+{{- if or .VisionSet.Store (and (or .VisionSet.Search .VisionSet.Store) .APISpec.IsLocalSQLiteSource)}}
 	"time"
 {{- end}}
 
@@ -317,6 +317,7 @@ func TestMCPSQLEmptyStoreReturnsActionableEnvelope(t *testing.T) {
 		Columns     []string           `json:"columns"`
 		StoreStatus string             `json:"store_status"`
 		Resumable   bool               `json:"resumable"`
+		Truncated   bool               `json:"truncated"`
 		NextStep    string             `json:"next_step"`
 {{- if .APISpec.IsLocalSQLiteSource}}
 		Meta        map[string]any     `json:"meta"`
@@ -336,6 +337,9 @@ func TestMCPSQLEmptyStoreReturnsActionableEnvelope(t *testing.T) {
 	}
 	if envelope.Resumable {
 		t.Fatalf("empty-store SQL envelope should not claim cursor support: %s", text)
+	}
+	if envelope.Truncated {
+		t.Fatalf("empty-store SQL envelope should not be truncated: %s", text)
 	}
 {{- if .APISpec.IsLocalSQLiteSource}}
 	if envelope.Meta["source"] != "local" {
@@ -381,6 +385,189 @@ func TestMCPSQLDomainTableMismatchIsActionable(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("domain-table mismatch error %q missing %q", text, want)
 		}
+	}
+}
+
+func setupEmptyMCPStore(t *testing.T) {
+	t.Helper()
+	resetMCPPathEnv(t)
+	path, err := mcpDBPath()
+	if err != nil {
+		t.Fatalf("mcpDBPath() error = %v", err)
+	}
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("creating store: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing store: %v", err)
+	}
+}
+
+func callMCPSQL(t *testing.T, ctx context.Context, query string) *mcplib.CallToolResult {
+	t.Helper()
+	result, err := handleSQL(ctx, mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"query": query},
+	}})
+	if err != nil {
+		t.Fatalf("handleSQL returned transport error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("handleSQL returned nil result")
+	}
+	return result
+}
+
+type mcpSQLResultEnvelope struct {
+	Count         int              `json:"count"`
+	Columns       []string         `json:"columns"`
+	Rows          []map[string]any `json:"rows"`
+	Truncated     bool             `json:"truncated"`
+	ReturnedCount int              `json:"returned_count"`
+	MaxBytes      int              `json:"max_bytes"`
+	Note          string           `json:"note"`
+}
+
+func decodeMCPSQLEnvelope(t *testing.T, result *mcplib.CallToolResult) (string, mcpSQLResultEnvelope) {
+	t.Helper()
+	text := mcpTextContent(t, result)
+	if len(text) > bound.MaxBytes {
+		t.Fatalf("SQL result length = %d, want <= %d", len(text), bound.MaxBytes)
+	}
+	var envelope mcpSQLResultEnvelope
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("SQL result must be valid JSON: %v\n%s", err, text)
+	}
+	return text, envelope
+}
+
+func TestMCPSQLHugeResultStopsMaterialisation(t *testing.T) {
+	setupEmptyMCPStore(t)
+	result := callMCPSQL(t, context.Background(), `WITH RECURSIVE t(x) AS (
+		SELECT 1
+		UNION ALL
+		SELECT x+1 FROM t WHERE x < 4000
+	) SELECT x, hex(randomblob(512)) AS blob FROM t`)
+	if result.IsError {
+		t.Fatalf("huge SQL query IsError = true, want bounded success: %s", mcpTextContent(t, result))
+	}
+	text, envelope := decodeMCPSQLEnvelope(t, result)
+	if !envelope.Truncated {
+		t.Fatalf("huge SQL result should be truncated: %s", text)
+	}
+	if envelope.Count == 0 || envelope.Count >= 4000 {
+		t.Fatalf("bounded row count = %d, want a sample well below 4000", envelope.Count)
+	}
+	if envelope.ReturnedCount != envelope.Count {
+		t.Fatalf("returned_count = %d, want %d", envelope.ReturnedCount, envelope.Count)
+	}
+	if len(envelope.Rows) != envelope.Count {
+		t.Fatalf("rows = %d, want count %d", len(envelope.Rows), envelope.Count)
+	}
+	if envelope.MaxBytes != bound.MaxBytes {
+		t.Fatalf("max_bytes = %d, want %d", envelope.MaxBytes, bound.MaxBytes)
+	}
+	if envelope.Note == "" {
+		t.Fatalf("truncated SQL envelope missing note: %s", text)
+	}
+}
+
+func TestMCPSQLLongColumnNamesStaySQLEnvelope(t *testing.T) {
+	setupEmptyMCPStore(t)
+	query := "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM t WHERE n < 20) SELECT "
+	for i := 0; i < 25; i++ {
+		if i > 0 {
+			query += ", "
+		}
+		name := strings.Repeat("col", 80) + strings.Repeat("x", i+1)
+		query += "'" + strings.Repeat("z", 400) + "' AS \"" + name + "\""
+	}
+	query += " FROM t"
+
+	result := callMCPSQL(t, context.Background(), query)
+	if result.IsError {
+		t.Fatalf("wide SQL query IsError = true: %s", mcpTextContent(t, result))
+	}
+	text, envelope := decodeMCPSQLEnvelope(t, result)
+	if len(text) > bound.MaxBytes {
+		t.Fatalf("wide SQL envelope length = %d, want <= %d", len(text), bound.MaxBytes)
+	}
+	if len(envelope.Columns) == 0 {
+		t.Fatalf("wide SQL result lost columns (preview fallback?): %s", text)
+	}
+	if envelope.Count == 0 && !envelope.Truncated {
+		t.Fatalf("wide SQL result returned no rows and did not truncate: %s", text)
+	}
+	if strings.Contains(text, `"preview"`) && !strings.Contains(text, `"columns"`) {
+		t.Fatalf("wide SQL result fell back to a generic preview: %s", text)
+	}
+}
+
+func TestMCPSQLCompleteResultNotTruncated(t *testing.T) {
+	setupEmptyMCPStore(t)
+	result := callMCPSQL(t, context.Background(), "SELECT 1 AS n")
+	if result.IsError {
+		t.Fatalf("complete SQL query IsError = true: %s", mcpTextContent(t, result))
+	}
+	text, envelope := decodeMCPSQLEnvelope(t, result)
+	if envelope.Truncated {
+		t.Fatalf("complete SQL result should not be truncated: %s", text)
+	}
+	if envelope.Count != 1 || len(envelope.Rows) != 1 {
+		t.Fatalf("complete SQL result = %s", text)
+	}
+	if envelope.ReturnedCount != 0 {
+		t.Fatalf("complete SQL result should omit returned_count, got %d in %s", envelope.ReturnedCount, text)
+	}
+}
+
+func TestMCPSQLAggregateKeepsOriginalSemantics(t *testing.T) {
+	setupEmptyMCPStore(t)
+	result := callMCPSQL(t, context.Background(), "SELECT COUNT(*) AS n FROM resources")
+	if result.IsError {
+		t.Fatalf("aggregate SQL query IsError = true: %s", mcpTextContent(t, result))
+	}
+	text, envelope := decodeMCPSQLEnvelope(t, result)
+	if envelope.Truncated {
+		t.Fatalf("aggregate SQL result should not be truncated: %s", text)
+	}
+	if envelope.Count != 1 || len(envelope.Rows) != 1 {
+		t.Fatalf("aggregate SQL should return one row: %s", text)
+	}
+	n, ok := envelope.Rows[0]["n"]
+	if !ok {
+		t.Fatalf("aggregate SQL missing n: %s", text)
+	}
+	switch v := n.(type) {
+	case float64:
+		if v != 0 {
+			t.Fatalf("COUNT(*) = %v, want 0", v)
+		}
+	default:
+		t.Fatalf("COUNT(*) type = %T value = %#v, want numeric 0", n, n)
+	}
+}
+
+func TestMCPSQLCallerDeadlineCancelsSlowQuery(t *testing.T) {
+	setupEmptyMCPStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	cancel()
+	start := time.Now()
+	result := callMCPSQL(t, ctx, `WITH RECURSIVE t(x) AS (
+		SELECT 1
+		UNION ALL
+		SELECT x+1 FROM t WHERE x < 8000000
+	) SELECT COUNT(*) AS n FROM t`)
+	elapsed := time.Since(start)
+	if elapsed > 2*time.Second {
+		t.Fatalf("cancelled SQL query was not bounded, elapsed %s", elapsed)
+	}
+	if !result.IsError {
+		t.Fatalf("slow SQL query IsError = false, want deadline error: %s", mcpTextContent(t, result))
+	}
+	text := mcpTextContent(t, result)
+	if !strings.Contains(strings.ToLower(text), "deadline") && !strings.Contains(strings.ToLower(text), "cancel") {
+		t.Fatalf("slow SQL error %q should mention deadline or cancel", text)
 	}
 }
 {{- end}}

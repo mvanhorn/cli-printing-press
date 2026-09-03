@@ -73,6 +73,7 @@ const (
 	extensionPPSyncable            = "x-pp-syncable"
 	extensionPPPagination          = "x-pp-pagination"
 	extensionSyncWalker            = "x-pp-sync-walker"
+	extensionSyncParams            = "x-sync-params"
 	extensionHappyArgs             = "x-happy-args"
 	extensionHappyStdin            = "x-happy-stdin"
 	extensionPPExample             = "x-pp-example"
@@ -3678,6 +3679,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			opSyncable, _ := boolExtension(op.Extensions, extensionPPSyncable)
 			endpoint.Syncable = pathSyncable || opSyncable
 			endpoint.Walker = readWalkerExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
+			endpoint.SyncParams = readSyncParamsExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
 
 			// Binary-only success responses (e.g. PDF/octet-stream downloads)
 			// would otherwise receive the default Accept: application/json and
@@ -6038,6 +6040,73 @@ func readWalkerExtension(extensions map[string]any, context string) *spec.Walker
 		return nil
 	}
 	return &cfg
+}
+
+// readSyncParamsExtension reads the `x-sync-params` operation extension.
+// Values are query parameters applied only during generated sync so a list
+// command can keep the API's documented default (status=open) while sync
+// mirrors the complete resource. Malformed values warn and return nil.
+func readSyncParamsExtension(extensions map[string]any, context string) map[string]string {
+	if extensions == nil {
+		return nil
+	}
+	raw, ok := extensions[extensionSyncParams]
+	if !ok || raw == nil {
+		return nil
+	}
+	values, ok := raw.(map[string]any)
+	if !ok {
+		warnf("%s: %s must be an object mapping parameter names to values; ignoring", context, extensionSyncParams)
+		return nil
+	}
+	var out map[string]string
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		paramName := strings.TrimSpace(name)
+		if paramName == "" {
+			warnf("%s: %s entries must have a non-empty parameter name; ignoring", context, extensionSyncParams)
+			continue
+		}
+		rendered := strings.TrimSpace(stringifyExtensionScalar(values[name]))
+		if rendered == "" {
+			warnf("%s: %s.%s must be a non-empty value; ignoring", context, extensionSyncParams, name)
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[paramName] = rendered
+	}
+	return out
+}
+
+func stringifyExtensionScalar(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case bool:
+		return strconv.FormatBool(v)
+	case json.Number:
+		return v.String()
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(v), 'f', -1, 64)
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case int32:
+		return strconv.FormatInt(int64(v), 10)
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
 }
 
 // Member paths can provide a stronger primary-key signal than generic response

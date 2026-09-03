@@ -4640,6 +4640,61 @@ func TestGenerateMCPSQLToolSurfacesRowErrors(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+func TestGenerateMCPSQLToolBoundsExecutionAndMaterialisation(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("sql-scan-bound")
+	apiSpec.Resources = map[string]spec.Resource{
+		"widgets": {
+			Description: "Manage widgets",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/widgets", Description: "List widgets"},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Search: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	mcpSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcpCode := stripGoComments(string(mcpSrc))
+
+	assert.Regexp(t, `(?s)func handleSQL\(.*bound\.WithSQLQueryDeadline\(`, mcpCode,
+		"handleSQL must apply the shared MCP SQL query deadline before QueryContext")
+	assert.Regexp(t, `(?s)func handleSQL\(.*QueryContext\(queryCtx, query\)`, mcpCode,
+		"handleSQL must execute SQL against the deadline-bounded context")
+	assert.NotRegexp(t, `(?s)func handleSQL\(.*QueryContext\(ctx, query\)`, mcpCode,
+		"handleSQL must not execute SQL against the unbounded caller context")
+	assert.Contains(t, mcpCode, "scan := bound.NewSQLScanState(cols)",
+		"handleSQL must accumulate rows through a scan budget that includes columns")
+	assert.Contains(t, mcpCode, "scan.Add(row)",
+		"handleSQL must stop materialising rows when the scan-time budget is exhausted")
+	assert.NotContains(t, mcpCode, `results = append(results, row)`,
+		"handleSQL must not append every scanned row before encoding")
+	assert.Regexp(t, `(?s)func handleSQL\(.*queryCtx, cancel := bound\.WithSQLQueryDeadline\(ctx\).*QueryContext\(queryCtx, query\)`, mcpCode,
+		"handleSQL must thread the deadline context into QueryContext")
+	assert.NotRegexp(t, `(?s)func handleSQL\(.*query \+= .*LIMIT`, mcpCode,
+		"handleSQL must not inject SQL LIMIT text; that would change aggregate semantics")
+	assert.Regexp(t, `if err := rows\.Err\(\); err != nil`, mcpCode,
+		"handleSQL must still check rows.Err() after a bounded scan")
+	assert.Contains(t, mcpCode, `"truncated":    truncated`,
+		"SQL envelope must report truncation so agents can distinguish a bounded sample")
+
+	mcpTestSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools_test.go"))
+	require.NoError(t, err)
+	mcpTestCode := string(mcpTestSrc)
+	assert.Contains(t, mcpTestCode, "TestMCPSQLHugeResultStopsMaterialisation")
+	assert.Contains(t, mcpTestCode, "TestMCPSQLCompleteResultNotTruncated")
+	assert.Contains(t, mcpTestCode, "TestMCPSQLAggregateKeepsOriginalSemantics")
+	assert.Contains(t, mcpTestCode, "TestMCPSQLCallerDeadlineCancelsSlowQuery")
+	assert.Contains(t, mcpTestCode, "TestMCPSQLLongColumnNamesStaySQLEnvelope")
+
+	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "TestMCPSQL(HugeResult|CompleteResult|Aggregate|CallerDeadline|LongColumnNames)")
+	runGoCommand(t, outputDir, "test", "./internal/mcp/bound", "-run", "Test(WithSQLQueryDeadline|SQLScanState)")
+}
+
 func TestGenerateMCPStoreGuidanceTestsPass(t *testing.T) {
 	t.Parallel()
 
@@ -18847,6 +18902,10 @@ func assertNewMCPClientUsesPoliteRateLimitAndSkipsCache(t *testing.T, specSource
 		"newMCPClient must not disable rate limiting for MCP-driven calls")
 	assert.Contains(t, toolsBody, "c.NoCache = true",
 		"newMCPClient must disable the response cache so MCP-driven reads see fresh state across mutations")
+	assert.Contains(t, toolsBody, "if err := cli.ApplyClientHooks(c); err != nil {",
+		"newMCPClientFromConfig must run the same preserved clientHooks registry as the CLI")
+	assert.Contains(t, toolsBody, "session.ZeroCredentials()",
+		"newMCPClientFromConfig must clear bound credentials when a hook fails")
 	requireGeneratedCompiles(t, outputDir)
 }
 

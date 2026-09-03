@@ -1,0 +1,98 @@
+openapi: "3.0.3"
+info:
+  title: Sync History Filter
+  version: "1.0.0"
+  description: |
+    Pins generated sync contracts for history-hiding list defaults.
+    tickets and issues widen status/state=open to the all-history enum value.
+    orders cannot widen (no all/any) and must emit the 0-row warning helper.
+    archived keeps status=open on the endpoint but overlays status=all via x-sync-params.
+servers:
+  - url: https://api.example.com
+paths:
+  /tickets:
+    get:
+      operationId: listTickets
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            default: open
+            enum: [open, closed, all]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string }
+  /orders:
+    get:
+      operationId: listOrders
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            default: open
+            enum: [open, closed]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string }
+  /issues:
+    get:
+      operationId: listIssues
+      parameters:
+        - name: state
+          in: query
+          schema:
+            type: string
+            default: open
+            enum: [open, closed, all]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string }
+  /archived:
+    get:
+      operationId: listArchived
+      x-sync-params:
+        status: all
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            default: open
+            enum: [open, closed]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string }

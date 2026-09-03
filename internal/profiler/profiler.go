@@ -209,10 +209,18 @@ type SyncableResource struct {
 
 	// QueryParamDefaults carries the list endpoint's spec-declared query-param
 	// defaults so sync seeds the same values the endpoint command's flags
-	// bind. Without it a sync page request omits a default the API treats as
-	// load-bearing (a workspace scope, a stable ordering) and silently
-	// mirrors a different slice of the corpus than the list command reads.
+	// bind, with one exception: a status/state filter whose default is `open`
+	// is replaced by the spec's all-history enum value (`all`, else `any`)
+	// when one exists, or by Endpoint.SyncParams. Without that, a naive sync
+	// stores a default-filtered slice and reports success as if the resource
+	// were complete.
 	QueryParamDefaults []SyncQueryParamDefault
+
+	// HiddenHistoryDefaults names status/state=open filters that still reach
+	// the wire as `open` because the spec has no all-history enum value and
+	// no SyncParams overlay. Generated sync warns when such a resource stores
+	// 0 rows instead of treating the empty slice as the whole corpus.
+	HiddenHistoryDefaults []SyncQueryParamDefault
 
 	// IDWalkFilterParam names the array body field that accepts filter
 	// predicates for id-walk POST query pagination.
@@ -315,6 +323,9 @@ type DependentResource struct {
 	// QueryParamDefaults mirrors SyncableResource.QueryParamDefaults for child
 	// sync paths.
 	QueryParamDefaults []SyncQueryParamDefault
+
+	// HiddenHistoryDefaults mirrors SyncableResource.HiddenHistoryDefaults.
+	HiddenHistoryDefaults []SyncQueryParamDefault
 
 	// IDWalkFilterParam mirrors SyncableResource.IDWalkFilterParam.
 	IDWalkFilterParam string
@@ -2031,6 +2042,7 @@ func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[strin
 		HTMLExtract:              entry.meta.HTMLExtract,
 		BodyFields:               entry.meta.BodyFields,
 		QueryParamDefaults:       entry.meta.QueryParamDefaults,
+		HiddenHistoryDefaults:    entry.meta.HiddenHistoryDefaults,
 		IDWalkFilterParam:        entry.meta.IDWalkFilterParam,
 		IDWalkLimitParam:         entry.meta.IDWalkLimitParam,
 		IDWalkPageSize:           entry.meta.IDWalkPageSize,
@@ -2295,6 +2307,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				HTMLExtract:              meta.HTMLExtract,
 				BodyFields:               meta.BodyFields,
 				QueryParamDefaults:       meta.QueryParamDefaults,
+				HiddenHistoryDefaults:    meta.HiddenHistoryDefaults,
 				IDWalkFilterParam:        meta.IDWalkFilterParam,
 				IDWalkLimitParam:         meta.IDWalkLimitParam,
 				IDWalkPageSize:           meta.IDWalkPageSize,
@@ -2620,6 +2633,7 @@ type syncableMeta struct {
 	HTMLExtract              *spec.HTMLExtract
 	BodyFields               []SyncBodyField
 	QueryParamDefaults       []SyncQueryParamDefault
+	HiddenHistoryDefaults    []SyncQueryParamDefault
 	IDWalkFilterParam        string
 	IDWalkLimitParam         string
 	IDWalkPageSize           int
@@ -2664,6 +2678,14 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		nextCursorPath = strings.TrimSpace(e.Pagination.NextCursorPath)
 	}
 	hydratePath, hydrateIDParam := scalarIDHydrationTarget(s, resourceName, e, types)
+	queryParamSeed := syncQueryParamSeedFromEndpoint(e, syncOwnedParams{
+		cursor:    paginationCursorParam,
+		limit:     paginationLimitParam,
+		idWalk:    idWalkLimitParam,
+		since:     sinceParam,
+		sort:      paginationSortParam,
+		dateRange: syncDateRangeParamNames,
+	})
 	return syncableMeta{
 		Path:                     e.Path,
 		Method:                   strings.ToUpper(e.Method),
@@ -2686,25 +2708,19 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		UsesHTMLResponse:         e.UsesHTMLResponse(),
 		HTMLExtract:              e.HTMLExtract,
 		BodyFields:               syncBodyFieldsFromEndpoint(e),
-		QueryParamDefaults: syncQueryParamDefaultsFromEndpoint(e, syncOwnedParams{
-			cursor:    paginationCursorParam,
-			limit:     paginationLimitParam,
-			idWalk:    idWalkLimitParam,
-			since:     sinceParam,
-			sort:      paginationSortParam,
-			dateRange: syncDateRangeParamNames,
-		}),
-		IDWalkFilterParam: idWalkFilterParam,
-		IDWalkLimitParam:  idWalkLimitParam,
-		IDWalkPageSize:    idWalkPageSize,
-		FieldSelector:     detectEndpointFieldSelector(e),
-		Discriminator:     discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
-		ResponseItem:      e.Response.Item,
-		QueryEntity:       queryEntityForEndpoint(s, e),
-		TenantScopeColumn: e.TenantScopeColumn,
-		HydratePath:       hydratePath,
-		HydrateIDParam:    hydrateIDParam,
-		MembershipField:   e.MembershipField,
+		QueryParamDefaults:       queryParamSeed.Defaults,
+		HiddenHistoryDefaults:    queryParamSeed.HiddenHistory,
+		IDWalkFilterParam:        idWalkFilterParam,
+		IDWalkLimitParam:         idWalkLimitParam,
+		IDWalkPageSize:           idWalkPageSize,
+		FieldSelector:            detectEndpointFieldSelector(e),
+		Discriminator:            discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
+		ResponseItem:             e.Response.Item,
+		QueryEntity:              queryEntityForEndpoint(s, e),
+		TenantScopeColumn:        e.TenantScopeColumn,
+		HydratePath:              hydratePath,
+		HydrateIDParam:           hydrateIDParam,
+		MembershipField:          e.MembershipField,
 	}
 }
 
@@ -3025,19 +3041,26 @@ func (o syncOwnedParams) keys() map[string]struct{} {
 // the two cannot drift.
 var syncDateRangeParamNames = []string{"dates", "date_range", "daterange"}
 
+type syncQueryParamSeed struct {
+	Defaults      []SyncQueryParamDefault
+	HiddenHistory []SyncQueryParamDefault
+}
+
 // syncQueryParamDefaultsFromEndpoint collects the query params this list
 // endpoint declares a `default:` for, rendered as the strings sync must put on
 // the wire. Header, path, and positional params are excluded because they are
 // not query keys, and every key in syncOwned is excluded because sync assigns
 // it itself: seeding one would fight the page loop, or worse, survive the
-// branch where sync deliberately withheld it. What remains is the scoping and
-// filtering the endpoint command already sends, which is the whole point --
-// list and sync should address the same slice of the API.
+// branch where sync deliberately withheld it. History-hiding status/state=open
+// defaults are replaced by the spec's all-history enum value when one exists;
+// Endpoint.SyncParams overlay last so a spec can opt into (or keep) a slice.
 func syncQueryParamDefaultsFromEndpoint(endpoint spec.Endpoint, syncOwned syncOwnedParams) []SyncQueryParamDefault {
-	if len(endpoint.Params) == 0 {
-		return nil
-	}
+	return syncQueryParamSeedFromEndpoint(endpoint, syncOwned).Defaults
+}
+
+func syncQueryParamSeedFromEndpoint(endpoint spec.Endpoint, syncOwned syncOwnedParams) syncQueryParamSeed {
 	reserved := syncOwned.keys()
+	paramsByKey := map[string]spec.Param{}
 	var out []SyncQueryParamDefault
 	seen := map[string]struct{}{}
 	for _, param := range endpoint.Params {
@@ -3061,6 +3084,7 @@ func syncQueryParamDefaultsFromEndpoint(endpoint spec.Endpoint, syncOwned syncOw
 		if _, dup := seen[key]; dup {
 			continue
 		}
+		paramsByKey[key] = param
 		value, ok := syncQueryParamDefaultValue(param)
 		if !ok {
 			continue
@@ -3068,7 +3092,98 @@ func syncQueryParamDefaultsFromEndpoint(endpoint spec.Endpoint, syncOwned syncOw
 		seen[key] = struct{}{}
 		out = append(out, SyncQueryParamDefault{Name: wireName, Value: value})
 	}
-	return out
+
+	explicit := map[string]struct{}{}
+	for name := range endpoint.SyncParams {
+		if key := strings.ToLower(strings.TrimSpace(name)); key != "" {
+			explicit[key] = struct{}{}
+		}
+	}
+
+	var hidden []SyncQueryParamDefault
+	for i := range out {
+		key := strings.ToLower(out[i].Name)
+		if _, ok := explicit[key]; ok {
+			continue
+		}
+		param := paramsByKey[key]
+		if !syncHistoryHidingFilter(param, out[i].Value) {
+			continue
+		}
+		if widened, ok := syncHistoryWidenValue(param.Enum); ok {
+			out[i].Value = widened
+			continue
+		}
+		hidden = append(hidden, out[i])
+	}
+
+	out = overlaySyncParams(out, endpoint.SyncParams, reserved)
+	return syncQueryParamSeed{Defaults: out, HiddenHistory: hidden}
+}
+
+func overlaySyncParams(defaults []SyncQueryParamDefault, syncParams map[string]string, reserved map[string]struct{}) []SyncQueryParamDefault {
+	if len(syncParams) == 0 {
+		return defaults
+	}
+	index := map[string]int{}
+	for i, item := range defaults {
+		index[strings.ToLower(item.Name)] = i
+	}
+	names := make([]string, 0, len(syncParams))
+	for name := range syncParams {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		wireName := strings.TrimSpace(name)
+		value := strings.TrimSpace(syncParams[name])
+		if wireName == "" || value == "" {
+			continue
+		}
+		key := strings.ToLower(wireName)
+		if _, owned := reserved[key]; owned {
+			continue
+		}
+		if i, ok := index[key]; ok {
+			defaults[i].Value = value
+			continue
+		}
+		index[key] = len(defaults)
+		defaults = append(defaults, SyncQueryParamDefault{Name: wireName, Value: value})
+	}
+	return defaults
+}
+
+func syncHistoryHidingFilter(param spec.Param, defaultValue string) bool {
+	if !syncHistoryHidingParamName(param.WireName()) && !syncHistoryHidingParamName(param.Name) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(defaultValue), "open")
+}
+
+func syncHistoryHidingParamName(name string) bool {
+	normalized := spec.ToSnakeCase(strings.TrimSpace(name))
+	return normalized == "status" || normalized == "state" ||
+		strings.HasSuffix(normalized, "_status") || strings.HasSuffix(normalized, "_state")
+}
+
+func syncHistoryWidenValue(enum []string) (string, bool) {
+	var anyValue string
+	for _, raw := range enum {
+		value := strings.TrimSpace(raw)
+		switch strings.ToLower(value) {
+		case "all":
+			return value, true
+		case "any":
+			if anyValue == "" {
+				anyValue = value
+			}
+		}
+	}
+	if anyValue != "" {
+		return anyValue, true
+	}
+	return "", false
 }
 
 // syncQueryParamDefaultValue renders a param default as the query-string value
@@ -3908,6 +4023,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			HTMLExtract:              meta.HTMLExtract,
 			BodyFields:               meta.BodyFields,
 			QueryParamDefaults:       meta.QueryParamDefaults,
+			HiddenHistoryDefaults:    meta.HiddenHistoryDefaults,
 			IDWalkFilterParam:        meta.IDWalkFilterParam,
 			IDWalkLimitParam:         meta.IDWalkLimitParam,
 			IDWalkPageSize:           meta.IDWalkPageSize,
