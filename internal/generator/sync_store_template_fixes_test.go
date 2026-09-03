@@ -224,6 +224,21 @@ func (c fixedBodyClient) RateLimit() float64 {
 	return 0
 }
 
+type pathBodyClient struct {
+	bodies map[string]json.RawMessage
+}
+
+func (c pathBodyClient) Get(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
+	if body, ok := c.bodies[path]; ok {
+		return body, nil
+	}
+	return json.RawMessage(` + "`" + `[]` + "`" + `), nil
+}
+
+func (c pathBodyClient) RateLimit() float64 {
+	return 0
+}
+
 func TestSyncExtractIDSuffixFallbackIsGuarded(t *testing.T) {
 	if got := extractID("currencies", map[string]any{"id": "id-wins", "currency_code": "USD"}); got != "id-wins" {
 		t.Fatalf("exact id fallback should win, got %q", got)
@@ -461,6 +476,52 @@ func TestSyncDependentResourceNonJSONBodyEmitsAnomaly(t *testing.T) {
 	}
 }
 
+func TestSyncDependentResourceMixedJSONAndNonJSONBodyWarnsWithoutStamp(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Upsert("parents", "p1", []byte(` + "`" + `{"id":"p1"}` + "`" + `)); err != nil {
+		t.Fatalf("insert parent p1: %v", err)
+	}
+	if err := db.Upsert("parents", "p2", []byte(` + "`" + `{"id":"p2"}` + "`" + `)); err != nil {
+		t.Fatalf("insert parent p2: %v", err)
+	}
+
+	var events bytes.Buffer
+	res := syncDependentResource(
+		context.Background(),
+		pathBodyClient{bodies: map[string]json.RawMessage{
+			"/parents/p1/children": json.RawMessage(` + "`" + `[{"id":"c1"}]` + "`" + `),
+			"/parents/p2/children": json.RawMessage(` + "`" + `<html><body>wrong app</body></html>` + "`" + `),
+		}},
+		db,
+		dependentResourceDef{Name: "children", ParentTable: "parents", ParentIDParam: "parentId", PathTemplate: "/parents/{parentId}/children"},
+		"", false, 1, false, false, nil, &events, 1,
+	)
+	if res.Err != nil {
+		t.Fatalf("syncDependentResource error: %v", res.Err)
+	}
+	if res.Warn == nil {
+		t.Fatalf("syncDependentResource returned success for mixed JSON/non-JSON parents; events: %s", events.String())
+	}
+	if !strings.Contains(events.String(), "\"reason\":\"non_json_200_body\"") {
+		t.Fatalf("events did not contain dependent non_json_200_body anomaly: %s", events.String())
+	}
+	if got := db.GetLastSyncedAt("children"); got != "" {
+		t.Fatalf("stamped last_synced_at = %q, want empty", got)
+	}
+	rows, err := db.List("children", 10)
+	if err != nil {
+		t.Fatalf("list children: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("stored rows = %d, want 1 from the JSON parent", len(rows))
+	}
+}
+
 func TestSyncDependentResourceDeclaredFailureWithItemsIsIntegrityFailure(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
@@ -669,5 +730,5 @@ func TestSyncDependentResourceOkFalseEnvelopeIsIntegrityFailure(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "batch4_sync_test.go"), []byte(cliTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "TestCurrencyCodeSuffixExtractsResourceID", "-count=1")
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(SyncExtractIDSuffixFallbackIsGuarded|ExtractPageItemsDRFTopLevelNextURL|ExtractPageItemsDRFTopLevelRelativeNextURL|ExtractPageItemsBareTokenCursorUnaffected|SyncResourceNonJSONBodyEmitsAnomaly|SyncResourceValidEmptyJSONDoesNotEmitNonJSONAnomaly|SyncResourceZeroStoredIsIntegrityFailure|SyncResourceDeclaredFailure|SyncDependentResourceNonJSONBodyEmitsAnomaly|SyncDependentResourceDeclaredFailure|SyncResourceOkFalseEnvelope|SyncResourcePascalOkFalse|SyncResourceOkTrueEnvelopeStoresItems|SyncResourceWithoutOkFieldStillStores|SyncDependentResourceOkFalseEnvelope)", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(SyncExtractIDSuffixFallbackIsGuarded|ExtractPageItemsDRFTopLevelNextURL|ExtractPageItemsDRFTopLevelRelativeNextURL|ExtractPageItemsBareTokenCursorUnaffected|SyncResourceNonJSONBodyEmitsAnomaly|SyncResourceValidEmptyJSONDoesNotEmitNonJSONAnomaly|SyncResourceZeroStoredIsIntegrityFailure|SyncResourceDeclaredFailure|SyncDependentResourceNonJSONBodyEmitsAnomaly|SyncDependentResourceMixedJSONAndNonJSONBodyWarnsWithoutStamp|SyncDependentResourceDeclaredFailure|SyncResourceOkFalseEnvelope|SyncResourcePascalOkFalse|SyncResourceOkTrueEnvelopeStoresItems|SyncResourceWithoutOkFieldStillStores|SyncDependentResourceOkFalseEnvelope)", "-count=1")
 }

@@ -4151,11 +4151,11 @@ func syncDependentResource(ctx context.Context, c interface {
 		return syncResult{Resource: dep.Name, Count: 0, Duration: time.Since(started)}
 	}
 
-	if nonJSONParents > 0 && totalCount == 0 && failedParents == 0 {
+	if nonJSONParents > 0 && failedParents == 0 {
 		return syncResult{
 			Resource: dep.Name,
-			Count:    0,
-			Warn:     fmt.Errorf("%s returned a 200 response with a non-JSON body; no rows were stored", dep.Name),
+			Count:    totalCount,
+			Warn:     fmt.Errorf("%s returned a 200 response with a non-JSON body; sync_state was not stamped", dep.Name),
 			Duration: time.Since(started),
 		}
 	}
