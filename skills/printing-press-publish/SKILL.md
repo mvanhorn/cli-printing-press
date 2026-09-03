@@ -1831,7 +1831,7 @@ to proceed. The user makes the final call on those non-mandatory findings.
 ### PII pattern scanning (mandatory)
 
 Beyond the secret scans above, run the **PII pattern scanning** step from
-[../printing-press/references/secret-protection.md](../printing-press/references/secret-protection.md#pii-pattern-scanning)
+[references/secret-protection.md](references/secret-protection.md#pii-pattern-scanning)
 (section "PII pattern scanning"). This catches PII captured during live dogfood
 that the prose guidance missed — emails, real attendee names, account
 identifiers — before they ship to the public library repo.
