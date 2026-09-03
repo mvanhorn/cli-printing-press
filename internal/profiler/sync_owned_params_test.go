@@ -72,3 +72,111 @@ func TestSyncQueryParamDefaultsFromEndpointHonorsDetectedSort(t *testing.T) {
 	})
 	assert.Empty(t, got, "the detected sort param must not be seeded under any spelling")
 }
+
+func TestSyncQueryParamDefaultsWidenOpenStatusFilter(t *testing.T) {
+	t.Parallel()
+
+	endpoint := spec.Endpoint{
+		Method:   "GET",
+		Path:     "/orders",
+		Response: spec.ResponseDef{Type: "array"},
+		Params: []spec.Param{
+			{Name: "status", In: "query", Type: "string", Default: "open", Enum: []string{"open", "closed", "all"}},
+			{Name: "workspace-id", In: "query", Type: "string", Default: "ws-42"},
+		},
+	}
+
+	got := syncQueryParamDefaultsFromEndpoint(endpoint, syncOwnedParams{})
+	assert.ElementsMatch(t, []SyncQueryParamDefault{
+		{Name: "status", Value: "all"},
+		{Name: "workspace-id", Value: "ws-42"},
+	}, got)
+}
+
+func TestSyncQueryParamDefaultsWidenOpenStateToAny(t *testing.T) {
+	t.Parallel()
+
+	endpoint := spec.Endpoint{
+		Method:   "GET",
+		Path:     "/orders",
+		Response: spec.ResponseDef{Type: "array"},
+		Params: []spec.Param{
+			{Name: "status", In: "query", Type: "string", Default: "open", Enum: []string{"open", "closed", "any"}},
+		},
+	}
+
+	got := syncQueryParamDefaultsFromEndpoint(endpoint, syncOwnedParams{})
+	assert.Equal(t, []SyncQueryParamDefault{{Name: "status", Value: "any"}}, got)
+}
+
+func TestSyncQueryParamDefaultsDoNotWidenActiveOrUnrelatedDefaults(t *testing.T) {
+	t.Parallel()
+
+	endpoint := spec.Endpoint{
+		Method:   "GET",
+		Path:     "/subscriptions",
+		Response: spec.ResponseDef{Type: "array"},
+		Params: []spec.Param{
+			{Name: "status", In: "query", Type: "string", Default: "active", Enum: []string{"active", "canceled", "all"}},
+			{Name: "sort", In: "query", Type: "string", Default: "new"},
+		},
+	}
+
+	got := syncQueryParamDefaultsFromEndpoint(endpoint, syncOwnedParams{})
+	assert.ElementsMatch(t, []SyncQueryParamDefault{
+		{Name: "status", Value: "active"},
+		{Name: "sort", Value: "new"},
+	}, got)
+}
+
+func TestSyncQueryParamSeedHiddenHistoryWhenEnumHasNoAll(t *testing.T) {
+	t.Parallel()
+
+	endpoint := spec.Endpoint{
+		Method:   "GET",
+		Path:     "/orders",
+		Response: spec.ResponseDef{Type: "array"},
+		Params: []spec.Param{
+			{Name: "status", In: "query", Type: "string", Default: "open", Enum: []string{"open", "closed"}},
+		},
+	}
+
+	seed := syncQueryParamSeedFromEndpoint(endpoint, syncOwnedParams{})
+	assert.Equal(t, []SyncQueryParamDefault{{Name: "status", Value: "open"}}, seed.Defaults)
+	assert.Equal(t, []SyncQueryParamDefault{{Name: "status", Value: "open"}}, seed.HiddenHistory)
+}
+
+func TestSyncParamsOverlayWinsAndSuppressesHiddenHistory(t *testing.T) {
+	t.Parallel()
+
+	endpoint := spec.Endpoint{
+		Method:   "GET",
+		Path:     "/orders",
+		Response: spec.ResponseDef{Type: "array"},
+		Params: []spec.Param{
+			{Name: "status", In: "query", Type: "string", Default: "open", Enum: []string{"open", "closed", "all"}},
+		},
+		SyncParams: map[string]string{"status": "open"},
+	}
+
+	seed := syncQueryParamSeedFromEndpoint(endpoint, syncOwnedParams{})
+	assert.Equal(t, []SyncQueryParamDefault{{Name: "status", Value: "open"}}, seed.Defaults)
+	assert.Empty(t, seed.HiddenHistory, "explicit sync_params status=open is the intended scope")
+}
+
+func TestSyncParamsAddsAllHistoryWithoutSpecDefault(t *testing.T) {
+	t.Parallel()
+
+	endpoint := spec.Endpoint{
+		Method:   "GET",
+		Path:     "/orders",
+		Response: spec.ResponseDef{Type: "array"},
+		Params: []spec.Param{
+			{Name: "status", In: "query", Type: "string", Enum: []string{"open", "closed", "all"}},
+		},
+		SyncParams: map[string]string{"status": "all"},
+	}
+
+	got := syncQueryParamDefaultsFromEndpoint(endpoint, syncOwnedParams{limit: "limit"})
+	assert.Equal(t, []SyncQueryParamDefault{{Name: "status", Value: "all"}}, got)
+}

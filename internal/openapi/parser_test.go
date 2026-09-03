@@ -11341,6 +11341,60 @@ paths:
 	assert.Nil(t, games.Walker, "endpoint without x-pp-sync-walker must have nil Walker")
 }
 
+func TestParseSyncParamsExtension(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Sync Params API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /v2/orders:
+    get:
+      summary: List orders
+      x-sync-params:
+        status: all
+        nested: true
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            default: open
+            enum: [open, closed, all]
+      responses:
+        "200":
+          description: ok
+  /issues:
+    get:
+      summary: List issues
+      responses:
+        "200":
+          description: ok
+  /bad:
+    get:
+      summary: Malformed x-sync-params is ignored
+      x-sync-params: not-an-object
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	orders := findParsedEndpointByPath(t, parsed, "GET", "/v2/orders")
+	require.Equal(t, map[string]string{"status": "all", "nested": "true"}, orders.SyncParams)
+
+	issues := findParsedEndpointByPath(t, parsed, "GET", "/issues")
+	assert.Empty(t, issues.SyncParams)
+
+	bad := findParsedEndpointByPath(t, parsed, "GET", "/bad")
+	assert.Empty(t, bad.SyncParams)
+}
+
 // TestParseMarksFallbackBaseURLAsPlaceholder pins the contract used by the
 // generate command to refuse shipping specs that omit `servers:` entirely.
 // The parser falls back to a placeholder URL so in-memory test fixtures keep

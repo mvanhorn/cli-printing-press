@@ -466,6 +466,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"globalScopeParams":         globalScopeParams,
 		"responsePathCases":         responsePathCases,
 		"syncParamDefaultCases":     syncParamDefaultCases,
+		"syncHiddenHistoryCases":    syncHiddenHistoryCases,
 		"envName":                   naming.EnvPrefix,
 		// endpointTemplateEnvName resolves the env-var name for a
 		// {placeholder} in EndpointTemplateVars. Returns the spec-declared
@@ -6725,6 +6726,33 @@ func syncParamDefaultCases(syncable []profiler.SyncableResource, dependents []pr
 	}
 	for _, dependent := range dependents {
 		add(dependent.Name, dependent.QueryParamDefaults)
+	}
+	return out
+}
+
+type syncHiddenHistoryCase struct {
+	Resource string
+	Defaults []profiler.SyncQueryParamDefault
+}
+
+func syncHiddenHistoryCases(syncable []profiler.SyncableResource, dependents []profiler.DependentResource) []syncHiddenHistoryCase {
+	seen := map[string]struct{}{}
+	var out []syncHiddenHistoryCase
+	add := func(name string, defaults []profiler.SyncQueryParamDefault) {
+		if len(defaults) == 0 {
+			return
+		}
+		if _, dup := seen[name]; dup {
+			return
+		}
+		seen[name] = struct{}{}
+		out = append(out, syncHiddenHistoryCase{Resource: name, Defaults: defaults})
+	}
+	for _, resource := range syncable {
+		add(resource.Name, resource.HiddenHistoryDefaults)
+	}
+	for _, dependent := range dependents {
+		add(dependent.Name, dependent.HiddenHistoryDefaults)
 	}
 	return out
 }
