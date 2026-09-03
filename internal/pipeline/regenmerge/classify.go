@@ -58,10 +58,11 @@ func extractDecls(filename string) (declSet, error) {
 	for _, d := range file.Decls {
 		switch decl := d.(type) {
 		case *ast.FuncDecl:
-			if decl.Recv == nil && decl.Name.Name == "registerClientHook" {
-				// Client hook registration is generated scaffolding. Ignore it so
-				// a force regen can upgrade an older root while retaining a
-				// markerless package-local client extension.
+			if decl.Recv == nil && (decl.Name.Name == "registerClientHook" || decl.Name.Name == "ApplyClientHooks") {
+				// Client hook registration and application are generated
+				// scaffolding. Ignore them so a force regen can upgrade an
+				// older root while retaining a markerless package-local
+				// client extension.
 				continue
 			}
 			decls.add(canonicalFuncName(decl))

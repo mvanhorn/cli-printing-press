@@ -84,8 +84,7 @@ func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*m
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
-	c := newMCPClientFromConfig(cfg)
-	platformSession, err := cli.BindMCPClient(ctx, c)
+	c, platformSession, err := newMCPClientFromConfig(ctx, cfg)
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
