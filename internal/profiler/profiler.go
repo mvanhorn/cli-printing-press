@@ -146,7 +146,8 @@ type SyncableResource struct {
 	Method string
 	Tier   string
 	// SkipDefaultSync keeps resources callable via --resources while excluding
-	// auth-flow endpoints from generated "sync all" defaults.
+	// them from generated "sync all" defaults (auth-flow, untyped IDs, and
+	// html/binary/text responses that cannot populate the JSON store).
 	SkipDefaultSync bool
 	// IDField is the resolved primary-key field name for items returned by the
 	// list endpoint, populated from the chosen endpoint's resolved value (in
@@ -1936,8 +1937,9 @@ func dependentPathResourceName(dep DependentResource) string {
 	return spec.ToSnakeCase(strings.Join(segments, "_"))
 }
 
-func metaLacksJSONSyncEnumeration(meta syncableMeta) bool {
-	return spec.LacksJSONSyncEnumeration(meta.ResponseFormat) || meta.UsesHTMLResponse
+func metaSkipDependentSyncFanout(meta syncableMeta) bool {
+	format := strings.ToLower(strings.TrimSpace(meta.ResponseFormat))
+	return format == spec.ResponseFormatBinary || format == spec.ResponseFormatText
 }
 
 func addUnresolvedPathTemplateCollections(syncable map[string]syncableMeta, parameterized map[string]parameterizedEntry, deps []DependentResource) {
@@ -1996,7 +1998,7 @@ func sortDependentResources(deps []DependentResource, knownDepths map[string]int
 }
 
 func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[string]bool, syncable map[string]syncableMeta, shardedSubResources spec.SubResourceShards) (DependentResource, bool) {
-	if metaLacksJSONSyncEnumeration(entry.meta) {
+	if metaSkipDependentSyncFanout(entry.meta) {
 		return DependentResource{}, false
 	}
 	ctx, ok := dependentPathContext(entry, knownParents, shardedSubResources)
@@ -2266,7 +2268,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				continue
 			}
 			meta := metaFromEndpoint(s, resourceName, r, e, types, resourceNameIndex)
-			if metaLacksJSONSyncEnumeration(meta) {
+			if metaSkipDependentSyncFanout(meta) {
 				continue
 			}
 			deps = append(deps, DependentResource{
