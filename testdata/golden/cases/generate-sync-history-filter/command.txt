@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/sync-history-filter.yaml --output "$CASE_ACTUAL_DIR/sync-history-filter" --force --spec-url file://testdata/golden/fixtures/sync-history-filter.yaml --validate=false

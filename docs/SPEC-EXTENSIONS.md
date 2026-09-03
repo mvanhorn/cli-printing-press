@@ -56,6 +56,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-pp-mutation` | operation | `Endpoint.Mutation` | No |
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
+| `x-sync-params` | operation | `Endpoint.SyncParams` | No |
 | `x-pp-dispatch-param` | parameter | `Param.DispatchParam` | No |
 | `x-pp-tenant-scope-column` | path item | `Endpoint.TenantScopeColumn` | No |
 | `x-pp-membership-field` | path item | `Endpoint.MembershipField` | No |
@@ -1901,6 +1902,59 @@ paths:
           in: query
           required: true
           schema: {type: string}
+      responses:
+        "200": {description: ok}
+```
+
+### `x-sync-params`
+
+Query parameters applied **only** during generated sync. List/get endpoint
+commands keep the API's documented defaults; sync uses these values so a
+naive sync does not treat a default-filtered slice (`status=open`,
+`state=open`) as the complete resource.
+
+Parsed field: `Endpoint.SyncParams`
+
+Rules:
+- Optional. Absent the field, generated sync still auto-widens a
+  `status`/`state` query param whose spec `default:` is `open` when the
+  param's enum includes `all` (preferred) or `any`. That is the GitHub
+  issues / Alpaca orders / Shopify orders idiom. Other defaults (tenant
+  scope, sort, `include_*`) are not widened.
+- Operation-level only.
+- Must be an object mapping parameter names to string values. Non-string
+  values are stringified. Empty names or values are skipped. Malformed
+  values warn and are ignored rather than failing the parse.
+- Overlay order: spec `default:` (with history-hiding widen) first, then
+  `x-sync-params`, then user `--param` / `--resource-param` at runtime.
+  Sync-owned paging/since/sort keys are skipped, same as spec defaults.
+- An explicit `x-sync-params` entry for a key suppresses auto-widen for
+  that key, including `status: open` when the intended sync scope really
+  is the open slice.
+- When a resource still has an unwidened `status`/`state=open` default
+  (no `all`/`any` in the enum and no overlay) and sync stores 0 rows,
+  generated sync emits `sync_warning` with reason
+  `default_filter_hides_history` instead of silent success-with-zero.
+
+Internal YAML emits this as `sync_params:` on the endpoint with the same
+map shape.
+
+Example:
+
+```yaml
+paths:
+  /v2/orders:
+    get:
+      summary: List orders
+      x-sync-params:
+        status: all
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            default: open
+            enum: [open, closed, all]
       responses:
         "200": {description: ok}
 ```
