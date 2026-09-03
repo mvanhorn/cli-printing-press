@@ -26,8 +26,6 @@ const (
 	// allocate before the byte budget is reached. Typical results hit
 	// MaxBytes first.
 	SQLMaxRows = 10000
-
-	sqlScanRowBudget = MaxBytes - 4096
 )
 
 const SQLResultBoundNote = "SQL result was bounded during row scanning to stay within the MCP tool result budget. Narrow the query with WHERE, GROUP BY, or an aggregate."
@@ -584,15 +582,52 @@ func WithSQLQueryDeadline(ctx context.Context) (context.Context, context.CancelF
 }
 
 // SQLScanState accumulates MCP SQL rows until the scan-time row or byte
-// budget is reached. It bounds materialisation before JSON encoding.
+// budget is reached. It bounds materialisation before JSON encoding and
+// reserves space for columns plus envelope metadata so the SQL envelope
+// still serializes under MaxBytes.
 type SQLScanState struct {
 	Rows      []map[string]any
 	Truncated bool
 	used      int
 }
 
-// Add appends row when it fits the remaining scan budget. It returns false
-// when the row is rejected and marks Truncated so callers stop scanning.
+// NewSQLScanState starts a scan budget that already includes column names
+// and worst-case SQL envelope metadata.
+func NewSQLScanState(columns []string) SQLScanState {
+	return SQLScanState{
+		Rows: []map[string]any{},
+		used: sqlEnvelopeBaseSize(columns),
+	}
+}
+
+func sqlEnvelopeBaseSize(columns []string) int {
+	if columns == nil {
+		columns = []string{}
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"count":          SQLMaxRows,
+		"columns":        columns,
+		"rows":           []map[string]any{},
+		"store_status":   "ready",
+		"resumable":      false,
+		"truncated":      true,
+		"returned_count": SQLMaxRows,
+		"max_bytes":      MaxBytes,
+		"note":           SQLResultBoundNote,
+		"meta": map[string]any{
+			"source":           "local",
+			"oldest_synced_at": "2006-01-02T15:04:05Z",
+		},
+	})
+	if err != nil {
+		return MaxBytes + 1
+	}
+	return len(encoded)
+}
+
+// Add appends row when the resulting SQL envelope still fits MaxBytes. It
+// returns false when the row is rejected and marks Truncated so callers
+// stop scanning.
 func (s *SQLScanState) Add(row map[string]any) bool {
 	if len(s.Rows) >= SQLMaxRows {
 		s.Truncated = true
@@ -603,12 +638,15 @@ func (s *SQLScanState) Add(row map[string]any) bool {
 		s.Truncated = true
 		return false
 	}
-	next := s.used + len(encoded)
-	if next > sqlScanRowBudget {
+	extra := len(encoded)
+	if len(s.Rows) > 0 {
+		extra++
+	}
+	if s.used+extra > MaxBytes {
 		s.Truncated = true
 		return false
 	}
 	s.Rows = append(s.Rows, row)
-	s.used = next
+	s.used += extra
 	return true
 }

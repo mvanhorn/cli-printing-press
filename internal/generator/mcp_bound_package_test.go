@@ -52,6 +52,7 @@ func TestGenerateMCPSharedBoundPackageAndConsumers(t *testing.T) {
 	assert.Contains(t, boundCode, "SQLMaxRows = 10000")
 	assert.Contains(t, boundCode, "func WithSQLQueryDeadline(")
 	assert.Contains(t, boundCode, "type SQLScanState struct")
+	assert.Contains(t, boundCode, "func NewSQLScanState(")
 	assert.Contains(t, boundCode, "func (s *SQLScanState) Add(")
 	assert.Contains(t, boundCode, "func EndpointResponse(")
 	assert.Contains(t, boundCode, "func JSON(")

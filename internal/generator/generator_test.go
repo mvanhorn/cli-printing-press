@@ -4667,8 +4667,8 @@ func TestGenerateMCPSQLToolBoundsExecutionAndMaterialisation(t *testing.T) {
 		"handleSQL must execute SQL against the deadline-bounded context")
 	assert.NotRegexp(t, `(?s)func handleSQL\(.*QueryContext\(ctx, query\)`, mcpCode,
 		"handleSQL must not execute SQL against the unbounded caller context")
-	assert.Contains(t, mcpCode, "var scan bound.SQLScanState",
-		"handleSQL must accumulate rows through the scan-time budget helper")
+	assert.Contains(t, mcpCode, "scan := bound.NewSQLScanState(cols)",
+		"handleSQL must accumulate rows through a scan budget that includes columns")
 	assert.Contains(t, mcpCode, "scan.Add(row)",
 		"handleSQL must stop materialising rows when the scan-time budget is exhausted")
 	assert.NotContains(t, mcpCode, `results = append(results, row)`,
@@ -4689,8 +4689,9 @@ func TestGenerateMCPSQLToolBoundsExecutionAndMaterialisation(t *testing.T) {
 	assert.Contains(t, mcpTestCode, "TestMCPSQLCompleteResultNotTruncated")
 	assert.Contains(t, mcpTestCode, "TestMCPSQLAggregateKeepsOriginalSemantics")
 	assert.Contains(t, mcpTestCode, "TestMCPSQLCallerDeadlineCancelsSlowQuery")
+	assert.Contains(t, mcpTestCode, "TestMCPSQLLongColumnNamesStaySQLEnvelope")
 
-	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "TestMCPSQL(HugeResult|CompleteResult|Aggregate|CallerDeadline)")
+	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "TestMCPSQL(HugeResult|CompleteResult|Aggregate|CallerDeadline|LongColumnNames)")
 	runGoCommand(t, outputDir, "test", "./internal/mcp/bound", "-run", "Test(WithSQLQueryDeadline|SQLScanState)")
 }
 

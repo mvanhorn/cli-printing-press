@@ -420,6 +420,7 @@ func callMCPSQL(t *testing.T, ctx context.Context, query string) *mcplib.CallToo
 
 type mcpSQLResultEnvelope struct {
 	Count         int              `json:"count"`
+	Columns       []string         `json:"columns"`
 	Rows          []map[string]any `json:"rows"`
 	Truncated     bool             `json:"truncated"`
 	ReturnedCount int              `json:"returned_count"`
@@ -468,6 +469,37 @@ func TestMCPSQLHugeResultStopsMaterialisation(t *testing.T) {
 	}
 	if envelope.Note == "" {
 		t.Fatalf("truncated SQL envelope missing note: %s", text)
+	}
+}
+
+func TestMCPSQLLongColumnNamesStaySQLEnvelope(t *testing.T) {
+	setupEmptyMCPStore(t)
+	query := "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM t WHERE n < 20) SELECT "
+	for i := 0; i < 25; i++ {
+		if i > 0 {
+			query += ", "
+		}
+		name := strings.Repeat("col", 80) + strings.Repeat("x", i+1)
+		query += "'" + strings.Repeat("z", 400) + "' AS \"" + name + "\""
+	}
+	query += " FROM t"
+
+	result := callMCPSQL(t, context.Background(), query)
+	if result.IsError {
+		t.Fatalf("wide SQL query IsError = true: %s", mcpTextContent(t, result))
+	}
+	text, envelope := decodeMCPSQLEnvelope(t, result)
+	if len(text) > bound.MaxBytes {
+		t.Fatalf("wide SQL envelope length = %d, want <= %d", len(text), bound.MaxBytes)
+	}
+	if len(envelope.Columns) == 0 {
+		t.Fatalf("wide SQL result lost columns (preview fallback?): %s", text)
+	}
+	if envelope.Count == 0 && !envelope.Truncated {
+		t.Fatalf("wide SQL result returned no rows and did not truncate: %s", text)
+	}
+	if strings.Contains(text, `"preview"`) && !strings.Contains(text, `"columns"`) {
+		t.Fatalf("wide SQL result fell back to a generic preview: %s", text)
 	}
 }
 
