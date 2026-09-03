@@ -42,6 +42,7 @@ default_cases=(
   generate-graphql-shared-endpoint
   generate-learn-loop-api
   generate-query-endpoint-api
+  generate-sync-history-filter
   generate-collection-item-collision
   generate-device-ble
   generate-device-ble-control
