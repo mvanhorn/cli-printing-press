@@ -178,7 +178,7 @@ func TestHTMLSyncStubFallbackUsesInclusiveThreshold(t *testing.T) {
 	assert.True(t, gen.shouldEmitHTMLSyncStub())
 }
 
-func TestGenerateEmbeddedJSONHTMLMajorityKeepsGenericSync(t *testing.T) {
+func TestGenerateEmbeddedJSONHTMLMajorityOmitsGenericSync(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("embedded-json-majority")
@@ -209,11 +209,7 @@ func TestGenerateEmbeddedJSONHTMLMajorityKeepsGenericSync(t *testing.T) {
 	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
-	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
-	helpersSrc := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
-
-	assert.Contains(t, syncSrc, "func syncResource(")
-	assert.Contains(t, helpersSrc, "func syncErrorJSON(")
+	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "sync.go"))
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
 }
