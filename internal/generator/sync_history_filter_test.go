@@ -178,6 +178,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -207,11 +210,67 @@ func TestSyncOrdersZeroRowsWarnsOnOpenDefault(t *testing.T) {
 	if res.Warn == nil {
 		t.Fatal("want a warning when 0 rows land under status=open")
 	}
+	if !strings.Contains(res.Warn.Error(), "hides closed/historical rows") {
+		t.Fatalf("warn = %%v, want hides-history detail for the outer result loop to print", res.Warn)
+	}
 	if !strings.Contains(events.String(), "default_filter_hides_history") {
 		t.Fatalf("events = %%s, want default_filter_hides_history", events.String())
 	}
 	if !strings.Contains(events.String(), "\"param\":\"status\"") {
 		t.Fatalf("events = %%s, want param status", events.String())
+	}
+}
+
+func TestSyncOrdersZeroRowsHumanWarningPrintsOnce(t *testing.T) {
+	prev := humanFriendly
+	humanFriendly = true
+	t.Cleanup(func() { humanFriendly = prev })
+
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %%v", err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = stderrW
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		os.Stderr = oldStderr
+		stderrW.Close()
+		t.Fatalf("open store: %%v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	var events bytes.Buffer
+	res := syncResource(context.Background(), &warnFilterClient{}, db, "orders", "", false, 1, false, false, nil, &events)
+	if res.Err != nil {
+		os.Stderr = oldStderr
+		stderrW.Close()
+		t.Fatalf("syncResource error: %%v", res.Err)
+	}
+	if res.Warn == nil {
+		os.Stderr = oldStderr
+		stderrW.Close()
+		t.Fatal("want Warn set so the outer result loop can print once")
+	}
+	fmt.Fprintf(os.Stderr, "  %%s: warning: %%v\\n", res.Resource, res.Warn)
+
+	stderrW.Close()
+	os.Stderr = oldStderr
+	var captured bytes.Buffer
+	if _, err := io.Copy(&captured, stderrR); err != nil {
+		t.Fatalf("read stderr: %%v", err)
+	}
+	stderrR.Close()
+
+	got := captured.String()
+	if n := strings.Count(got, "hides closed/historical rows"); n != 1 {
+		t.Fatalf("human warning printed %%d times, want 1: %%q", n, got)
+	}
+	if n := strings.Count(got, "warning"); n != 1 {
+		t.Fatalf("want one outer-loop warning line, got %%d: %%q", n, got)
+	}
+	if strings.Contains(events.String(), "default_filter_hides_history") {
+		t.Fatalf("events = %%s, want no JSON warning when humanFriendly", events.String())
 	}
 }
 
@@ -239,7 +298,7 @@ func TestSyncOrdersZeroRowsNoWarnWhenUserOverrides(t *testing.T) {
 }
 `, naming.CLI(apiSpec.Name)+"/internal/store")
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_history_warn_test.go"), []byte(inlineTest), 0o644))
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestSyncOrdersZeroRows(WarnsOnOpenDefault|NoWarnWhenUserOverrides)")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestSyncOrdersZeroRows(WarnsOnOpenDefault|HumanWarningPrintsOnce|NoWarnWhenUserOverrides)")
 }
 
 func TestGeneratedSyncParamsOverlayWithoutEnumAll(t *testing.T) {
