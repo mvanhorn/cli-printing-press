@@ -3049,10 +3049,12 @@ func printPlanDryRun(planSpec *generator.PlanSpec, absOut, planFile string, comm
 }
 
 // loadResearchSources populates the generator's Sources, DiscoveryPages, and
-// NovelFeatures from a pipeline research directory. It returns only dogfood-
-// verified novel features in manifest form so publish validation cannot be
-// satisfied by planned-but-unbuilt absorb ideas. Silently skips if researchDir
-// is empty or data is unavailable.
+// NovelFeatures from a pipeline research directory. Scaffolding always uses
+// novel_features: novel_features_built is a post-dogfood verification field,
+// not a generate input. The return value is the verified list in manifest
+// form (when present) so publish validation cannot be satisfied by
+// planned-but-unbuilt absorb ideas. Silently skips if researchDir is empty
+// or data is unavailable.
 func loadResearchSources(gen *generator.Generator, researchDir string) []pipeline.NovelFeatureManifest {
 	if researchDir == "" {
 		return nil
@@ -3068,18 +3070,9 @@ func loadResearchSources(gen *generator.Generator, researchDir string) []pipelin
 				Stars:    s.Stars,
 			})
 		}
-		// Prefer verified (built) novel features over the aspirational list.
-		// novel_features_built is written by dogfood after validating which
-		// planned features actually survived the build. A nil pointer means
-		// dogfood hasn't run yet (fall back to planned). A non-nil pointer
-		// to an empty slice means dogfood ran and nothing survived (show nothing).
-		var novelSrc []pipeline.NovelFeature
-		if research.NovelFeaturesBuilt != nil {
-			novelSrc = *research.NovelFeaturesBuilt
-		} else {
-			novelSrc = research.NovelFeatures
-		}
-		for _, nf := range novelSrc {
+		// Reused research.json still carries the prior run's novel_features_built.
+		// Scaffold the current planned set so a reprint can drop/add/rename.
+		for _, nf := range research.NovelFeatures {
 			gen.NovelFeatures = append(gen.NovelFeatures, generator.NovelFeature{
 				Name:         nf.Name,
 				Command:      nf.Command,

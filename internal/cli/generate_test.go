@@ -745,7 +745,70 @@ func TestLoadResearchSourcesReturnsExplicitEmptyManifestNovelFeatures(t *testing
 	got := loadResearchSources(gen, researchDir)
 	require.NotNil(t, got, "empty built list is an explicit fresh result, not unavailable metadata")
 	assert.Empty(t, got)
-	assert.Empty(t, gen.NovelFeatures)
+	require.Len(t, gen.NovelFeatures, 1)
+	assert.Equal(t, "planned scan", gen.NovelFeatures[0].Command)
+}
+
+func TestLoadResearchSourcesScaffoldsCurrentNovelFeaturesNotBuilt(t *testing.T) {
+	t.Parallel()
+
+	researchDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), []byte(`{
+  "api_name": "reprintapp",
+  "novel_features": [
+    {
+      "name": "New scanner",
+      "command": "markets scan",
+      "description": "Current planned set"
+    }
+  ],
+  "novel_features_built": [
+    {
+      "name": "Dropped dashboard",
+      "command": "health",
+      "description": "Prior run survivor"
+    }
+  ]
+}`), 0o644))
+
+	gen := generator.New(&spec.APISpec{
+		Name: "reprintapp",
+		Auth: spec.AuthConfig{Type: "none"},
+	}, t.TempDir())
+
+	got := loadResearchSources(gen, researchDir)
+	require.Len(t, gen.NovelFeatures, 1)
+	assert.Equal(t, "markets scan", gen.NovelFeatures[0].Command)
+	assert.Equal(t, "New scanner", gen.NovelFeatures[0].Name)
+	require.Len(t, got, 1)
+	assert.Equal(t, "health", got[0].Command,
+		"generate-time manifest still records the verified list when present")
+}
+
+func TestLoadResearchSourcesFirstPrintWithoutBuiltList(t *testing.T) {
+	t.Parallel()
+
+	researchDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), []byte(`{
+  "api_name": "firstprint",
+  "novel_features": [
+    {
+      "name": "Item insight",
+      "command": "items insight",
+      "description": "Planned feature"
+    }
+  ]
+}`), 0o644))
+
+	gen := generator.New(&spec.APISpec{
+		Name: "firstprint",
+		Auth: spec.AuthConfig{Type: "none"},
+	}, t.TempDir())
+
+	got := loadResearchSources(gen, researchDir)
+	require.Len(t, gen.NovelFeatures, 1)
+	assert.Equal(t, "items insight", gen.NovelFeatures[0].Command)
+	assert.Nil(t, got)
 }
 
 func TestGenerateCmdHelpDescribesForceAsGeneratedOverwrite(t *testing.T) {
@@ -1584,8 +1647,14 @@ resources:
 
 	which, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "which.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(which), `Command: "items insight"`)
-	assert.NotContains(t, string(which), "items planned")
+	assert.Contains(t, string(which), `Command: "items planned"`)
+	assert.NotContains(t, string(which), "items insight")
+
+	stub, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items_planned.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(stub), `Use:         "planned"`)
+	_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "items_insight.go"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func TestGenerateCmdForceRefreshesResearchSurfaces(t *testing.T) {
@@ -1627,16 +1696,16 @@ resources:
   "novel_features": [
     {
       "name": "Item insight",
-      "command": "items planned",
-      "description": "planned only",
+      "command": "`+command+`",
+      "description": "`+description+`",
       "rationale": "Requires local correlation"
     }
   ],
   "novel_features_built": [
     {
-      "name": "Item insight",
-      "command": "`+command+`",
-      "description": "`+description+`",
+      "name": "Stale insight",
+      "command": "items stale",
+      "description": "prior built set",
       "rationale": "Requires local correlation"
     }
   ]
