@@ -149,6 +149,17 @@ func registerClientHook(hook func(*client.Client) error) {
 	clientHooks = append(clientHooks, hook)
 }
 
+// Keeps preserved post-construction setup consistent across interactive CLI
+// and MCP clients.
+func ApplyClientHooks(c *client.Client) error {
+	for _, hook := range clientHooks {
+		if err := hook(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // RootCmd returns the Cobra command tree without executing it. The MCP server
 // uses this to mirror every user-facing command as an agent tool.
 func RootCmd() *cobra.Command {
@@ -697,10 +708,8 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	if err := bindPlatformClient(c, f); err != nil {
 		return nil, err
 	}
-	for _, hook := range clientHooks {
-		if err := hook(c); err != nil {
-			return nil, err
-		}
+	if err := ApplyClientHooks(c); err != nil {
+		return nil, err
 	}
 	return c, nil
 }
