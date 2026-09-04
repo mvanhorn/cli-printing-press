@@ -1935,9 +1935,9 @@ func reportedCollectionTotalAtDepth(obj map[string]json.RawMessage, depth int) i
 	return 0
 }
 
-// nextCursorFromLinks extracts pagination cursors from JSON:API
-// {"links":{"next":"https://example.com/items?page[cursor]=..."}} and HAL
-// {"_links":{"next":{"href":"https://example.com/items?cursor=..."}}}.
+// JSON:API links.next and HAL _links.next.href are reduced to the query
+// token the request param can carry; a raw URL is not written into
+// page/offset params.
 func nextCursorFromLinks(envelope map[string]json.RawMessage, cursorParam string) string {
 	for _, key := range []string{"links", "_links"} {
 		rawLinks, ok := envelope[key]
@@ -1980,7 +1980,8 @@ func paginationLinkURL(raw json.RawMessage) string {
 	return nextURL
 }
 
-// nextCursorFromTopLevelURL extracts a cursor from top-level absolute or relative next URLs.
+// Top-level next/next_url strings use the same URL-to-token reduction so
+// a followable URL is not written into page/offset params.
 func nextCursorFromTopLevelURL(envelope map[string]json.RawMessage, cursorParam string) string {
 	for _, key := range []string{"next", "next_url"} {
 		rawNext, ok := envelope[key]
@@ -1998,10 +1999,9 @@ func nextCursorFromTopLevelURL(envelope map[string]json.RawMessage, cursorParam 
 	return ""
 }
 
-// isFollowableNextURL reports whether a top-level "next" string is a URL we can
-// pull a cursor query param from: an absolute http(s) URL, a root-relative path,
-// or any value carrying a query string. Bare opaque cursor tokens (no query)
-// are rejected so they aren't mis-parsed.
+// Bare opaque cursor tokens must not be treated as URLs: only absolute
+// http(s), root-relative paths, and values with a query string are reduced
+// to a request-param token.
 func isFollowableNextURL(nextURL string) bool {
 	lower := strings.ToLower(nextURL)
 	return strings.HasPrefix(lower, "http") ||
@@ -3244,7 +3244,7 @@ func printCSV(w io.Writer, data json.RawMessage, documentedFields ...map[string]
 func writeCSVRow(w io.Writer, cells []string) {
 	escaped := make([]string, len(cells))
 	for i, cell := range cells {
-		if strings.ContainsAny(cell, ",\"\n") {
+		if strings.ContainsAny(cell, ",\"\r\n") {
 			escaped[i] = `"` + strings.ReplaceAll(cell, `"`, `""`) + `"`
 		} else {
 			escaped[i] = cell
