@@ -2078,7 +2078,7 @@ func handleBinaryResponseDelivery(cmd *cobra.Command, flags *rootFlags, data jso
 	if flags.quiet {
 		return true, nil
 	}
-	return true, writeBinaryDeliverReceipt(os.Stdout, flags.deliverSink, raw, contentType)
+	return true, writeBinaryDeliverReceipt(cmd.OutOrStdout(), flags.deliverSink, raw, contentType)
 }
 
 func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any, documentedFields ...map[string]bool) error {
