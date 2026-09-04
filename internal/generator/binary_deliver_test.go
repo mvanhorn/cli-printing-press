@@ -145,6 +145,10 @@ func TestBinaryResponseHonorsDeliverAndDryRun(t *testing.T) {
 	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
 	require.Contains(t, clientSrc, `func UnwrapBinaryResponse(`)
 
+	helpersSrc := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
+	require.Contains(t, helpersSrc, `writeBinaryDeliverReceipt(cmd.OutOrStdout()`)
+	require.Contains(t, helpersSrc, `if err := Deliver(flags.deliverSink, raw, flags.compact); err != nil {`)
+
 	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
 
