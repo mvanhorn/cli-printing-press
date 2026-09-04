@@ -1757,7 +1757,21 @@ func canonicalCompositeIDFromOverride(obj map[string]any, override string) strin
 		}
 		values = append(values, s)
 	}
-	return CanonicalResourceID(strings.Join(values, "+"))
+	return CanonicalResourceID(joinCompositeResourceID(values))
+}
+
+func encodeCompositeResourceIDPart(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `+`, `\+`)
+	return s
+}
+
+func joinCompositeResourceID(values []string) string {
+	encoded := make([]string, len(values))
+	for i, v := range values {
+		encoded[i] = encodeCompositeResourceIDPart(v)
+	}
+	return strings.Join(encoded, "+")
 }
 
 // ResourceIDString returns the stable text form used for resources.id.
