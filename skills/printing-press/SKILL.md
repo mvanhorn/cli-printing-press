@@ -3411,7 +3411,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
 }
 ```
 
-Why each branch exists: the `len(args) == 0 && cmd.Flags().NFlag() == 0` branch handles an interactive `<cli> mycommand` help-only invocation without treating help as an error. The `dryRunOK` branch handles verify's `<cli> mycommand <fixture> --dry-run` probes before network or filesystem IO; it must end in `writeDryRun(cmd.OutOrStdout(), flags, "<command name>")` so `--dry-run --json` still produces a parseable envelope. The required-input branch handles non-help invocations where a mode or output flag is present (`--no-input`, `--agent`, `--json`) but the required ID, query, path, or other command input is still missing. Missing required input must print usage and return `usageErr(...)` so callers get exit code 2 instead of a silent rc=0 skip.
+Why each branch exists: the `len(args) == 0 && cmd.Flags().NFlag() == 0` branch handles an interactive `<cli> mycommand` help-only invocation without treating help as an error. The `dryRunOK` branch handles verify's `<cli> mycommand --dry-run` probes before required-flag validation, required positionals, network, or filesystem IO; it must end in `writeDryRun(cmd.OutOrStdout(), flags, "<command name>")` so `--dry-run --json` still produces a parseable envelope. Never `return nil` from this branch: empty stdout under `--json` fails dogfood `json_fidelity`. Generated novel-feature TODO scaffolds (`novel_feature_command.go.tmpl`) already emit this same `writeDryRun` short-circuit before positional or required-flag gates; keep that branch when replacing the TODO body. The required-input branch handles non-help invocations where a mode or output flag is present (`--no-input`, `--agent`, `--json`) but the required ID, query, path, or other command input is still missing. Missing required input must print usage and return `usageErr(...)` so callers get exit code 2 instead of a silent rc=0 skip.
 
 For SQLite-backed novel commands only, add this missing-mirror guard after `dryRunOK(flags)`, after any required-input `usageErr(...)` check, and after `dbPath` is resolved, but before `store.OpenWithContext`, `store.OpenReadOnly`, `sql.Open`, or other SQLite access:
 
@@ -3433,13 +3433,16 @@ Multi-positional commands (N >= 2 required args) must use a two-check shape so o
 if len(args) == 0 && cmd.Flags().NFlag() == 0 {
 	return cmd.Help() // bare invocation help probe
 }
+if dryRunOK(flags) {
+	return writeDryRun(cmd.OutOrStdout(), flags, "<command name>")
+}
 if len(args) < N {
 	_ = cmd.Usage()
 	return usageErr(fmt.Errorf("missing required positional argument"))
 }
 ```
 
-This preserves verify-friendly help behavior for 0 args while making partial positional input (`1..N-1`) fail with exit 2 in dogfood `error_path`. Single-positional commands can keep the single required-input check. If a multi-positional command supports `--dry-run`, place its `dryRunOK(flags)` branch after the `len(args) < N` gate (once all N positionals are present), so the dry-run probe still short-circuits.
+This preserves verify-friendly help behavior for 0 args while making partial positional input (`1..N-1`) fail with exit 2 in dogfood `error_path`. Single-positional commands can keep the single required-input check. If a multi-positional command supports `--dry-run`, place its `dryRunOK(flags)` branch before the `len(args) < N` gate so `<cmd> --dry-run` short-circuits with a parseable envelope; a probe has neither the positionals nor any required file. Partial positionals without `--dry-run` still return `usageErr` and exit 2. Nothing that requires user input may run before the dry-run branch.
 
 Do not collapse the first and third branches into `if len(args) == 0 || <flag empty> { return cmd.Help() }`. `cmd.Help()` returns `nil`, so agents and scripts cannot distinguish "help was requested" from "the command skipped required work."
 

@@ -34,6 +34,9 @@ func newNovel{{.Ident}}Cmd(flags *rootFlags) *cobra.Command {
 		Annotations: map[string]string{"mcp:read-only": {{printf "%q" .ReadOnlyString}}{{if .Feature}}, "pp:novel-scaffold": "true"{{end}}},
 {{- if .Feature}}
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if dryRunOK(flags) {
+				return writeDryRun(cmd.OutOrStdout(), flags, {{printf "%q" .CommandPath}})
+			}
 {{- if .HasPositional}}
 			if len(args) == 0 {
 				return cmd.Help()
@@ -41,9 +44,6 @@ func newNovel{{.Ident}}Cmd(flags *rootFlags) *cobra.Command {
 {{- else}}
 			// validate required flags here
 {{- end}}
-			if dryRunOK(flags) {
-				return nil
-			}
 			return fmt.Errorf("TODO: implement novel feature %q", {{printf "%q" .CommandPath}})
 		},
 {{- else}}
