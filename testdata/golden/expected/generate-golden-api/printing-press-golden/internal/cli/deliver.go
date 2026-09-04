@@ -124,10 +124,8 @@ func deliverFile(path string, body []byte) error {
 }
 
 func deliverWebhook(url string, body []byte, compact bool) error {
+	_ = compact
 	contentType := "application/json"
-	if compact {
-		contentType = "application/x-ndjson"
-	}
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("building webhook request: %w", err)
