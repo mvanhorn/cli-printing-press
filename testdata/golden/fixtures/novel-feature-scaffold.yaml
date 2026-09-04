@@ -1,0 +1,23 @@
+name: novel-feature-scaffold
+description: |
+  Golden fixture pinning the generated novel-feature command scaffold
+  dry-run contract. Planned features from research.json emit inspect.go
+  (positional) and audit.go (flag-only). Both must call writeDryRun
+  before required-input gates; a silent return nil in the dry-run
+  branch is a regression.
+version: 1.0.0
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [NOVEL_FEATURE_SCAFFOLD_TOKEN]
+resources:
+  items:
+    description: Minimal syncable resource so generate still emits a CLI tree.
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+        id_field: item_id
+learn:
+  disabled: true
