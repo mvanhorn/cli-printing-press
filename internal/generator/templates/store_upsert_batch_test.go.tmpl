@@ -832,6 +832,92 @@ func TestExtractResourceID_RefusesUnusableValues(t *testing.T) {
 	}
 }
 
+func TestExtractResourceID_CompositeDateAndSlug(t *testing.T) {
+	prev, hadPrev := resourceIDFieldOverrides["rankings-daily"]
+	resourceIDFieldOverrides["rankings-daily"] = "date+model_permaslug"
+	defer func() {
+		if hadPrev {
+			resourceIDFieldOverrides["rankings-daily"] = prev
+		} else {
+			delete(resourceIDFieldOverrides, "rankings-daily")
+		}
+	}()
+
+	obj := map[string]any{
+		"date":             "2026-08-22",
+		"model_permaslug":  "openrouter/auto",
+		"total_tokens":     json.Number("1530"),
+	}
+	got := ExtractResourceID("rankings-daily", obj)
+	want := "2026-08-22+openrouter/auto"
+	if got != want {
+		t.Fatalf("composite ExtractResourceID = %q, want %q", got, want)
+	}
+	if CanonicalResourceID("2026-08-22") != "" {
+		t.Fatal("solo ISO date must still be unusable as an ID")
+	}
+
+	dateOnly := map[string]any{"date": "2026-08-22"}
+	if got := ExtractResourceID("rankings-daily", dateOnly); got != "" {
+		t.Fatalf("incomplete composite must not extract, got %q", got)
+	}
+
+	resourceIDFieldOverrides["rankings-daily"] = "date"
+	if got := ExtractResourceID("rankings-daily", obj); got != "" {
+		t.Fatalf("date-only override must still be refused, got %q", got)
+	}
+}
+
+func TestUpsertBatch_CompositeDateIDStoresDistinctRows(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	prev, hadPrev := resourceIDFieldOverrides["rankings-daily"]
+	resourceIDFieldOverrides["rankings-daily"] = "date+model_permaslug"
+	defer func() {
+		if hadPrev {
+			resourceIDFieldOverrides["rankings-daily"] = prev
+		} else {
+			delete(resourceIDFieldOverrides, "rankings-daily")
+		}
+	}()
+
+	items := []json.RawMessage{
+		json.RawMessage(`{"date":"2026-08-22","model_permaslug":"openrouter/auto","total_tokens":10}`),
+		json.RawMessage(`{"date":"2026-08-23","model_permaslug":"openrouter/auto","total_tokens":20}`),
+		json.RawMessage(`{"date":"2026-08-22","model_permaslug":"acme/model","total_tokens":30}`),
+		json.RawMessage(`{"date":"2026-08-22","model_permaslug":"openrouter/auto","total_tokens":11}`),
+	}
+	stored, extractFailures, err := s.UpsertBatch("rankings-daily", items)
+	if err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	}
+	if extractFailures != 0 {
+		t.Fatalf("extractFailures = %d, want 0", extractFailures)
+	}
+	if stored != 4 {
+		t.Fatalf("stored = %d, want 4 (3 distinct keys, last row upserts)", stored)
+	}
+	var count int
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM resources WHERE resource_type = ?`, "rankings-daily").Scan(&count); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("distinct rows = %d, want 3", count)
+	}
+	row, err := s.Get("rankings-daily", "2026-08-22+openrouter/auto")
+	if err != nil {
+		t.Fatalf("Get composite id: %v", err)
+	}
+	if !strings.Contains(string(row), `"total_tokens":11`) && !strings.Contains(string(row), `"total_tokens": 11`) {
+		t.Fatalf("upserted composite row missing updated tokens, got %s", row)
+	}
+}
+
 func TestUpsertBatch_NestedOverrideStoresRows(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	s, err := Open(dbPath)

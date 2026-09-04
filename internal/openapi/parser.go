@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -30,7 +31,14 @@ var (
 	endpointLimitExplicit        = false // true when user set --max-endpoints-per-resource
 	globalScopeParamNormalizerRE = regexp.MustCompile(`[^a-zA-Z0-9]+`)
 	authFormatPlaceholderRE      = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+	// Must stay aligned with generated store.unusableResourceID / isoDatePattern.
+	isoDatePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}(?:[T ][0-9:.+-Zz]+)?$`)
 )
+
+// resourceIDFieldCompositeSep joins composite identity fields in IDField and
+// x-resource-id (e.g. date+model_permaslug). Must stay aligned with the
+// generated store's splitResourceIDFieldOverride.
+const resourceIDFieldCompositeSep = "+"
 
 type additionalHeaderFallbackMode int
 
@@ -6160,7 +6168,7 @@ func responsePropertyForPathParam(schema *openapi3.Schema, paramName string) str
 	if schema == nil || paramName == "" {
 		return ""
 	}
-	if propRef, ok := schema.Properties[paramName]; ok && propRef != nil && isPlausibleIDFieldSchema(schemaRefValue(propRef)) {
+	if propRef, ok := schema.Properties[paramName]; ok && propRef != nil && isSoloUsableIDField(paramName, schemaRefValue(propRef)) {
 		return paramName
 	}
 	paramSnake := toSnakeCase(paramName)
@@ -6173,7 +6181,7 @@ func responsePropertyForPathParam(schema *openapi3.Schema, paramName string) str
 		if toSnakeCase(propName) != paramSnake {
 			continue
 		}
-		if propRef := schema.Properties[propName]; propRef != nil && isPlausibleIDFieldSchema(schemaRefValue(propRef)) {
+		if propRef := schema.Properties[propName]; propRef != nil && isSoloUsableIDField(propName, schemaRefValue(propRef)) {
 			return propName
 		}
 	}
@@ -6201,8 +6209,11 @@ func responseItemSchema(op *openapi3.Operation) *openapi3.Schema {
 // `uid` / `uuid` / `guid`), then a sole remaining `<own>_uid` field whose
 // stem is the resource's collection noun, then a URL-shaped identifier
 // (`uri` / `self` / `selfLink` / `href` / `url`), then "name", then the first
-// scalar field listed in the response schema's `required:` array (walking
-// properties in their schema order).
+// solo-usable required scalar. When the first required identity field is
+// date-shaped (format, name, or ISO-date example) and later required string
+// fields exist, those fields are joined with `+` so the store can key the
+// real composite row identity; a date-shaped field is never emitted as a
+// solo IDField because CanonicalResourceID rejects ISO-date values.
 // Returns "" when no field qualifies; templates fall through to runtime list
 // scanning. Tier 1 (`x-resource-id` extension) is handled separately by the
 // caller — it overrides every tier here.
@@ -6268,28 +6279,10 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation, resourceName strin
 		return "name"
 	}
 
-	// Tier 6: first plausible-PK scalar field appearing in the schema's
-	// required[] array, matched against properties in their schema-declared
-	// order. kin-openapi preserves YAML/JSON property order in MapKeys/Extensions
-	// but not via range over Properties (it's a Go map). Fall back to iterating
-	// the required[] slice itself: that order is stable and is what spec authors
-	// intend when they care about which field "wins."
-	//
-	// "Plausible-PK" excludes boolean, enum, and date/date-time fields even
-	// though they are scalar — they are structurally low-cardinality or
-	// non-identifier-shaped, so committing them as a runtime override
-	// collapses unrelated rows onto the same PK during upsert.
-	for _, fieldName := range itemSchema.Required {
-		propRef, ok := itemSchema.Properties[fieldName]
-		if !ok || propRef == nil || propRef.Value == nil {
-			continue
-		}
-		if isPlausibleIDFieldSchema(propRef.Value) {
-			return fieldName
-		}
-	}
-
-	return ""
+	// Tier 6: first solo-usable required scalar, or a composite when the
+	// first identity field is date-shaped. required[] order is stable;
+	// ranging Properties is not.
+	return resolveRequiredIDField(itemSchema)
 }
 
 type idSchemaFields struct {
@@ -6633,12 +6626,12 @@ func isScalarSchema(schema *openapi3.Schema) bool {
 	return false
 }
 
-// isPlausibleIDFieldSchema is the tier-5 PK predicate: a scalar that is also
-// not boolean, not enum-restricted, and not date/date-time formatted. Booleans
-// have cardinality 2 (true/false), enums have hand-picked low cardinality, and
-// date/date-time fields are timestamps — none can serve as a primary key
-// without collapsing distinct rows during upsert. See profiler.resourceIDFieldOverrides
-// and store.UpsertBatch.
+// isPlausibleIDFieldSchema is the schema-only PK predicate: a scalar that is
+// also not boolean, not enum-restricted, and not date/date-time formatted.
+// Name- and example-shaped dates are rejected separately by
+// isDateShapedIDField so a required `date` string without format cannot
+// become a solo IDField. See profiler.resourceIDFieldOverrides and
+// store.UpsertBatch.
 func isPlausibleIDFieldSchema(schema *openapi3.Schema) bool {
 	if !isScalarSchema(schema) {
 		return false
@@ -6654,6 +6647,104 @@ func isPlausibleIDFieldSchema(schema *openapi3.Schema) bool {
 		return false
 	}
 	return true
+}
+
+func isSoloUsableIDField(name string, schema *openapi3.Schema) bool {
+	return isPlausibleIDFieldSchema(schema) && !isDateShapedIDField(name, schema)
+}
+
+func resolveRequiredIDField(itemSchema *openapi3.Schema) string {
+	if itemSchema == nil {
+		return ""
+	}
+	var compositeParts []string
+	composing := false
+	for _, fieldName := range itemSchema.Required {
+		propRef, ok := itemSchema.Properties[fieldName]
+		if !ok || propRef == nil || propRef.Value == nil {
+			continue
+		}
+		schema := propRef.Value
+		if !isIdentityCapableScalar(schema) {
+			continue
+		}
+		if composing {
+			if isCompositeIDPartSchema(schema) {
+				compositeParts = append(compositeParts, fieldName)
+			}
+			continue
+		}
+		if isDateShapedIDField(fieldName, schema) {
+			composing = true
+			if isCompositeIDPartSchema(schema) {
+				compositeParts = append(compositeParts, fieldName)
+			}
+			continue
+		}
+		if isPlausibleIDFieldSchema(schema) {
+			return fieldName
+		}
+	}
+	if composing && len(compositeParts) >= 2 {
+		return strings.Join(compositeParts, resourceIDFieldCompositeSep)
+	}
+	return ""
+}
+
+func isIdentityCapableScalar(schema *openapi3.Schema) bool {
+	if !isScalarSchema(schema) {
+		return false
+	}
+	if schema.Type.Includes(openapi3.TypeBoolean) {
+		return false
+	}
+	return len(schema.Enum) == 0
+}
+
+func isCompositeIDPartSchema(schema *openapi3.Schema) bool {
+	if schema == nil || schema.Type == nil {
+		return false
+	}
+	if !schema.Type.Includes(openapi3.TypeString) {
+		return false
+	}
+	return len(schema.Enum) == 0
+}
+
+func isDateShapedIDField(name string, schema *openapi3.Schema) bool {
+	if schema != nil {
+		format := strings.ToLower(schema.Format)
+		if format == "date" || format == "date-time" {
+			return true
+		}
+		if exampleLooksLikeISODate(schema.Example) {
+			return true
+		}
+	}
+	return isDateShapedIDFieldName(name)
+}
+
+func isDateShapedIDFieldName(name string) bool {
+	n := strings.ToLower(toSnakeCase(name))
+	switch n {
+	case "date", "datetime", "date_time", "timestamp":
+		return true
+	}
+	return strings.HasSuffix(n, "_date") ||
+		strings.HasSuffix(n, "_at") ||
+		strings.HasSuffix(n, "_datetime") ||
+		strings.HasSuffix(n, "_timestamp")
+}
+
+func exampleLooksLikeISODate(example any) bool {
+	switch v := example.(type) {
+	case string:
+		return isoDatePattern.MatchString(strings.TrimSpace(v))
+	case time.Time:
+		return true
+	default:
+		return false
+	}
 }
 
 func mapTypes(doc *openapi3.T, out *spec.APISpec) {

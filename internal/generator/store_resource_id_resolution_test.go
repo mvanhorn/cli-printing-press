@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -83,7 +84,7 @@ func TestGeneratedStoreResolvesNestedAndUnusableRecordIDs(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/store",
-		"-run", "Test(LookupFieldValue_DottedPathAndTrailingUnderscore|ExtractResourceID_NestedOverrideAndIDUnderscore|ExtractResourceID_RefusesUnusableValues|UpsertBatch_NestedOverrideStoresRows|UpsertBatch_RefusesUnusableIDsInsteadOfWritingThem|UpsertBatch_GenericFallbackList|UpsertBatch_TemplatedIDFieldOverrideWins)",
+		"-run", "Test(LookupFieldValue_DottedPathAndTrailingUnderscore|ExtractResourceID_NestedOverrideAndIDUnderscore|ExtractResourceID_RefusesUnusableValues|ExtractResourceID_CompositeDateAndSlug|UpsertBatch_NestedOverrideStoresRows|UpsertBatch_RefusesUnusableIDsInsteadOfWritingThem|UpsertBatch_CompositeDateIDStoresDistinctRows|UpsertBatch_GenericFallbackList|UpsertBatch_TemplatedIDFieldOverrideWins)",
 		"-count=1")
 }
 
@@ -157,4 +158,87 @@ paths:
 	assert.Regexp(t, resolvedOverride, syncContent)
 
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratedStoreCompositeDateIDFieldSyncsRows(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := openapi.Parse([]byte(`openapi: "3.0.3"
+info:
+  title: Rankings Daily
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /rankings-daily:
+    get:
+      operationId: listRankingsDaily
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [date, model_permaslug, total_tokens]
+                  properties:
+                    date: {type: string}
+                    model_permaslug: {type: string}
+                    total_tokens: {type: integer}
+  /rankings-only-date:
+    get:
+      operationId: listRankingsOnlyDate
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [date]
+                  properties:
+                    date: {type: string}
+                    model_permaslug: {type: string}
+`))
+	require.NoError(t, err)
+	profile := profiler.Profile(apiSpec)
+	byName := make(map[string]string, len(profile.SyncableResources))
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource.IDField
+	}
+	require.Equal(t, "date+model_permaslug", byName["rankings-daily"],
+		"profiler must compose date with the remaining string identity")
+	require.Empty(t, byName["rankings-only-date"],
+		"a date-shaped field must not be selected as a solo IDField")
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	storeContent := string(storeGo)
+	syncContent := string(syncGo)
+	compositeOverride := regexp.MustCompile(`"rankings-daily":\s+"date\+model_permaslug"`)
+	assert.Regexp(t, compositeOverride, storeContent)
+	assert.Regexp(t, compositeOverride, syncContent)
+	overrideStart := strings.Index(storeContent, `var resourceIDFieldOverrides = map[string]string{`)
+	require.GreaterOrEqual(t, overrideStart, 0)
+	overrideEnd := strings.Index(storeContent[overrideStart:], "\n}")
+	require.GreaterOrEqual(t, overrideEnd, 0)
+	overrideBlock := storeContent[overrideStart : overrideStart+overrideEnd]
+	assert.NotContains(t, overrideBlock, `"rankings-only-date"`)
+	assert.Contains(t, storeContent, "func canonicalCompositeIDFromOverride(")
+	assert.Contains(t, storeContent, "func splitResourceIDFieldOverride(")
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommandRequired(t, outputDir, "test", "./internal/store",
+		"-run", "Test(ExtractResourceID_CompositeDateAndSlug|ExtractResourceID_RefusesUnusableValues|UpsertBatch_CompositeDateIDStoresDistinctRows)",
+		"-count=1")
 }

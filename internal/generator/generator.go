@@ -4573,11 +4573,36 @@ func identityFieldsForResource(idField string, common []string) []string {
 		seen[f] = struct{}{}
 		out = append(out, f)
 	}
-	add(idField)
+	for _, part := range splitResourceIDFieldOverride(idField) {
+		add(part)
+	}
 	for _, f := range common {
 		add(f)
 	}
 	return out
+}
+
+func splitResourceIDFieldOverride(idField string) []string {
+	idField = strings.TrimSpace(idField)
+	if idField == "" {
+		return nil
+	}
+	if !strings.Contains(idField, "+") {
+		return []string{idField}
+	}
+	raw := strings.Split(idField, "+")
+	parts := make([]string, 0, len(raw))
+	for _, part := range raw {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return []string{idField}
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) < 2 {
+		return []string{idField}
+	}
+	return parts
 }
 
 func firstEndpointIDField(r spec.Resource) string {
