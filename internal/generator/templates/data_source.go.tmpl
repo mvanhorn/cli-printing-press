@@ -755,6 +755,9 @@ func resolveLocal(ctx context.Context, flags *rootFlags, hintWriter io.Writer, r
 		if len(items) == 0 {
 			return nil, DataProvenance{}, fmt.Errorf("no local data for %q. {{if syncHintInvocation}}Run '{{goString (syncHintInvocation)}}' first{{else}}Populate the local store through a custom store-backed command first.{{end}}", resourceType)
 		}
+		if parentIDs := localReadPathParentIDs(resourceType, path); len(parentIDs) > 0 {
+			items = applyLocalParentScope(db, resourceType, items, parentIDs)
+		}
 		items, unsupported := applyLocalListFilters(items, params)
 		if len(unsupported) > 0 {
 			warnWriter := hintWriter
@@ -798,6 +801,133 @@ func localReadPathIsCollection(resourceType, path string, isList bool) bool {
 	return strings.EqualFold(parts[len(parts)-1], resourceType)
 }
 
+func localReadPathParentIDs(resourceType, path string) []string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 0 || (len(parts) == 1 && parts[0] == "") {
+		return nil
+	}
+	if strings.EqualFold(parts[len(parts)-1], resourceType) {
+		parts = parts[:len(parts)-1]
+	} else if len(parts) >= 2 && strings.EqualFold(parts[len(parts)-2], resourceType) {
+		parts = parts[:len(parts)-2]
+	} else {
+		return nil
+	}
+	stripped := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" || localReadPathPrefixSegment(part) {
+			continue
+		}
+		stripped = append(stripped, part)
+	}
+	var parents []string
+	for i := 1; i < len(stripped); i += 2 {
+		if stripped[i] != "" {
+			parents = append(parents, stripped[i])
+		}
+	}
+	return parents
+}
+
+func localReadPathPrefixSegment(seg string) bool {
+	s := strings.ToLower(seg)
+	switch s {
+	case "api", "rest", "graphql", "public", "private":
+		return true
+	}
+	if len(s) >= 2 && s[0] == 'v' {
+		for _, r := range s[1:] {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func applyLocalParentScope(db *store.Store, resourceType string, items []json.RawMessage, parentIDs []string) []json.RawMessage {
+	parentSet := make(map[string]bool, len(parentIDs))
+	for _, id := range parentIDs {
+		parentSet[id] = true
+	}
+	allowedBare := map[string]bool{}
+	if ids, err := db.ListIDs(resourceType); err == nil {
+		for _, id := range ids {
+			bare, parent, ok := splitLocalCompositeID(id)
+			if ok && parentSet[parent] {
+				allowedBare[bare] = true
+			}
+		}
+	}
+	out := make([]json.RawMessage, 0, len(items))
+	for _, raw := range items {
+		var obj map[string]any
+		if json.Unmarshal(raw, &obj) != nil {
+			continue
+		}
+		if localItemJSONMatchesParents(obj, parentSet) {
+			out = append(out, raw)
+			continue
+		}
+		if childID := localItemID(obj); childID != "" && allowedBare[childID] {
+			out = append(out, raw)
+		}
+	}
+	return out
+}
+
+func splitLocalCompositeID(id string) (bare, parent string, ok bool) {
+	i := strings.IndexByte(id, 0)
+	if i <= 0 || i == len(id)-1 {
+		return "", "", false
+	}
+	return id[:i], id[i+1:], true
+}
+
+func localItemID(obj map[string]any) string {
+	got, ok := localObjectField(obj, "id")
+	if !ok {
+		return ""
+	}
+	if s, ok := got.(string); ok {
+		return s
+	}
+	return strings.TrimSpace(fmt.Sprint(got))
+}
+
+func localItemJSONMatchesParents(obj map[string]any, parentSet map[string]bool) bool {
+	for key, val := range obj {
+		if !localFieldLooksLikeParentKey(key) {
+			continue
+		}
+		if localValueInParentSet(val, parentSet) {
+			return true
+		}
+	}
+	return false
+}
+
+func localFieldLooksLikeParentKey(key string) bool {
+	canon := localParamCanon(key)
+	switch canon {
+	case "id", "uuid", "gid", "sid", "uid", "guid", "api_id":
+		return false
+	case "parent", "parent_id":
+		return true
+	}
+	return strings.HasSuffix(canon, "_id") || (strings.HasSuffix(canon, "id") && len(canon) > 2)
+}
+
+func localValueInParentSet(val any, parentSet map[string]bool) bool {
+	for parent := range parentSet {
+		if localFieldEquals(val, parent) {
+			return true
+		}
+	}
+	return false
+}
+
 var localListLimitParams = map[string]bool{
 	"limit": true, "per_page": true, "perpage": true, "page_size": true, "pagesize": true,
 }
@@ -814,11 +944,25 @@ var localListCursorParams = map[string]bool{
 	"cursor": true, "after": true, "before": true,
 	"page_token": true, "pagetoken": true,
 	"starting_after": true, "ending_before": true,
-	"next_cursor": true, "start_cursor": true,
+	"next_cursor": true, "start_cursor": true, "next": true,
+}
+
+var localListControlParams = map[string]bool{
+	"sort": true, "order": true, "order_by": true, "orderby": true,
+	"fields": true, "field": true, "select": true,
+	"include": true, "expand": true,
+	"q": true, "query": true, "search": true,
 }
 
 func localParamCanon(key string) string {
 	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(key), "-", "_"))
+}
+
+func localListControlParam(canon string) bool {
+	if localListControlParams[canon] {
+		return true
+	}
+	return localListControlParams[strings.ReplaceAll(canon, "_", "")]
 }
 
 func applyLocalListFilters(items []json.RawMessage, params map[string]string) ([]json.RawMessage, []string) {
@@ -838,6 +982,8 @@ func applyLocalListFilters(items []json.RawMessage, params map[string]string) ([
 		canon := localParamCanon(key)
 		switch {
 		case localListCursorParams[canon]:
+			unsupported = append(unsupported, key)
+		case localListControlParam(canon):
 			unsupported = append(unsupported, key)
 		case localListLimitParams[canon]:
 			n, err := strconv.Atoi(val)
@@ -869,35 +1015,48 @@ func applyLocalListFilters(items []json.RawMessage, params map[string]string) ([
 		page = 0
 	}
 	if len(equality) > 0 {
-		filtered := make([]json.RawMessage, 0, len(items))
-		matchedKeys := map[string]bool{}
-		for _, raw := range items {
+		presentKeys := map[string]bool{}
+		parsed := make([]map[string]any, len(items))
+		valid := make([]bool, len(items))
+		for i, raw := range items {
 			var obj map[string]any
 			if json.Unmarshal(raw, &obj) != nil {
 				continue
 			}
-			keep := true
-			for key, want := range equality {
-				got, ok := localObjectField(obj, key)
-				if !ok {
-					keep = false
-					continue
+			parsed[i] = obj
+			valid[i] = true
+			for key := range equality {
+				if _, ok := localObjectField(obj, key); ok {
+					presentKeys[key] = true
 				}
-				matchedKeys[key] = true
-				if !localFieldEquals(got, want) {
-					keep = false
-				}
-			}
-			if keep {
-				filtered = append(filtered, raw)
 			}
 		}
 		for key := range equality {
-			if !matchedKeys[key] {
+			if !presentKeys[key] {
 				unsupported = append(unsupported, key)
+				delete(equality, key)
 			}
 		}
-		items = filtered
+		if len(equality) > 0 {
+			filtered := make([]json.RawMessage, 0, len(items))
+			for i, raw := range items {
+				if !valid[i] {
+					continue
+				}
+				keep := true
+				for key, want := range equality {
+					got, ok := localObjectField(parsed[i], key)
+					if !ok || !localFieldEquals(got, want) {
+						keep = false
+						break
+					}
+				}
+				if keep {
+					filtered = append(filtered, raw)
+				}
+			}
+			items = filtered
+		}
 	}
 	if page > 1 && limit >= 0 {
 		offset += (page - 1) * limit

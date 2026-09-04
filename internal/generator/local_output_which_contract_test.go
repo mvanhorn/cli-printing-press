@@ -78,6 +78,10 @@ func TestGeneratedLocalReadsAndWhichHonorSharedRuntimeContracts(t *testing.T) {
 		"resolveLocal must distinguish collection paths from object IDs")
 	assert.Contains(t, dataSrc, "func applyLocalListFilters(",
 		"local list reads must apply supported query filters")
+	assert.Contains(t, dataSrc, "func applyLocalParentScope(",
+		"nested collection paths must constrain List results to the parent segment")
+	assert.Contains(t, dataSrc, "localListControlParams",
+		"query controls such as sort/order/search must not become equality filters")
 	assert.NotContains(t, dataSrc, "local data is unfiltered")
 
 	whichSrc := readGeneratedFile(t, outputDir, "internal", "cli", "which.go")
@@ -194,6 +198,105 @@ func TestResolveLocalWarnsOnUnsupportedCursor(t *testing.T) {
 	}
 	if !strings.Contains(warn.String(), "cursor") {
 		t.Fatalf("expected unsupported-cursor warning, got %q", warn.String())
+	}
+}
+
+func seedNestedShopsStore(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("shopsapi-pp-cli"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	rows := []struct {
+		id   string
+		body string
+	}{
+		{"s1\x00t1", `+"`"+`{"id":"s1","name":"Team One","status":"active","parent_id":"t1"}`+"`"+`},
+		{"s2\x00t2", `+"`"+`{"id":"s2","name":"Team Two","status":"active","parent_id":"t2"}`+"`"+`},
+		{"s3\x00t1", `+"`"+`{"id":"s3","name":"Team One B","status":"paused","parent_id":"t1"}`+"`"+`},
+	}
+	for _, row := range rows {
+		if err := db.Upsert("shops", row.id, json.RawMessage(row.body)); err != nil {
+			t.Fatalf("upsert %s: %v", row.id, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+}
+
+func TestResolveLocalNestedCollectionStaysInParentScope(t *testing.T) {
+	seedNestedShopsStore(t)
+	data, _, err := resolveLocal(context.Background(), nil, ioDiscard(), "shops", true, "/teams/t1/shops", nil, "test")
+	if err != nil {
+		t.Fatalf("resolveLocal nested collection: %v", err)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("expected a JSON array, got %s: %v", data, err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("listed %d shops for team t1, want 2: %s", len(items), data)
+	}
+	for _, item := range items {
+		if item["parent_id"] != "t1" {
+			t.Fatalf("nested list leaked shop %#v", item)
+		}
+	}
+}
+
+func TestResolveLocalQueryControlsDoNotEmptyTheList(t *testing.T) {
+	seedShopsStore(t)
+	var warn bytes.Buffer
+	data, _, err := resolveLocal(context.Background(), nil, &warn, "shops", true, "/shops", map[string]string{
+		"sort":   "name",
+		"order":  "asc",
+		"fields": "id,name",
+		"search": "alpha",
+	}, "test")
+	if err != nil {
+		t.Fatalf("resolveLocal query controls: %v", err)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("expected a JSON array, got %s: %v", data, err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("query controls emptied the list: %s", data)
+	}
+	for _, key := range []string{"sort", "order", "fields", "search"} {
+		if !strings.Contains(warn.String(), key) {
+			t.Fatalf("expected unsupported %s warning, got %q", key, warn.String())
+		}
+	}
+}
+
+func TestResolveLocalUnmatchedEqualityKeyDoesNotEmptyTheList(t *testing.T) {
+	seedShopsStore(t)
+	var warn bytes.Buffer
+	data, _, err := resolveLocal(context.Background(), nil, &warn, "shops", true, "/shops", map[string]string{
+		"not_a_field": "x",
+	}, "test")
+	if err != nil {
+		t.Fatalf("resolveLocal unmatched key: %v", err)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("expected a JSON array, got %s: %v", data, err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("unmatched equality key emptied the list: %s", data)
+	}
+	if !strings.Contains(warn.String(), "not_a_field") {
+		t.Fatalf("expected unmatched-key warning, got %q", warn.String())
 	}
 }
 
