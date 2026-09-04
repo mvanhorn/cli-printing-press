@@ -1,0 +1,7 @@
+# Locks the novel-feature command scaffold dry-run contract. Planned
+# features from research.json emit inspect.go (positional) and audit.go
+# (flag-only). Both must call writeDryRun before required-input gates;
+# a silent `return nil` in the dry-run branch is a regression.
+
+novel-feature-scaffold/internal/cli/inspect.go
+novel-feature-scaffold/internal/cli/audit.go

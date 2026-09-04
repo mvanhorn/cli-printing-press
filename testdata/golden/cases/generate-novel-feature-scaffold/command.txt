@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/novel-feature-scaffold.yaml --research-dir testdata/golden/fixtures/novel-feature-scaffold --output "$CASE_ACTUAL_DIR/novel-feature-scaffold" --force --spec-url file://testdata/golden/fixtures/novel-feature-scaffold.yaml --validate=false

@@ -622,6 +622,8 @@ func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	assert.Contains(t, template, "if dryRunOK(flags) {")
 	assert.Regexp(t, regexp.MustCompile(`if dryRunOK\(flags\) \{\s+return writeDryRun\(cmd\.OutOrStdout\(\), flags, "<command name>"\)\s+\}`), template)
 	assert.NotRegexp(t, regexp.MustCompile(`if dryRunOK\(flags\) \{\s+return nil\s+\}`), template)
+	assert.Contains(t, template, "Never `return nil` from this branch")
+	assert.Contains(t, template, "novel_feature_command.go.tmpl")
 	assert.Contains(t, template, "_ = cmd.Usage()")
 	assert.Contains(t, template, `return usageErr(fmt.Errorf("<flag-or-arg> is required"))`)
 	assert.Contains(t, template, "Do not collapse the first and third branches")

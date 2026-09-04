@@ -1,0 +1,25 @@
+{
+  "api_name": "novel-feature-scaffold",
+  "novelty_score": 8,
+  "alternatives": [],
+  "gaps": [],
+  "patterns": [],
+  "recommendation": "proceed",
+  "researched_at": "2026-04-25T00:00:00Z",
+  "novel_features": [
+    {
+      "name": "Inspect item",
+      "command": "inspect <id>",
+      "description": "Inspect one item.",
+      "rationale": "Requires a live lookup.",
+      "example": "novel-feature-scaffold-pp-cli inspect item-123"
+    },
+    {
+      "name": "Audit cache",
+      "command": "audit",
+      "description": "Audit local cache state.",
+      "rationale": "Requires local correlation.",
+      "example": "novel-feature-scaffold-pp-cli audit"
+    }
+  ]
+}
