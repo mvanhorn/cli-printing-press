@@ -122,6 +122,25 @@ func TestHintIfUnsynced_NullTimestampWritesHint(t *testing.T) {
 	}
 }
 
+func TestHintIfUnsynced_ZeroTimestampWritesHint(t *testing.T) {
+	requireSyncHintCommand(t)
+	db := newSyncHintTestStore(t)
+	if _, err := db.DB().Exec(
+		`INSERT INTO sync_state(resource_type, last_synced_at, total_count) VALUES (?, ?, ?)`,
+		"issues", time.Time{}.UTC().Format(time.RFC3339), 1,
+	); err != nil {
+		t.Fatalf("seed sync_state: %v", err)
+	}
+	cmd, stderr := newSyncHintTestCmd()
+
+	if !hintIfUnsynced(cmd, db, "issues") {
+		t.Fatalf("hintIfUnsynced returned false for zero last_synced_at")
+	}
+	if got := stderr.String(); !strings.Contains(got, "has not been synced yet") {
+		t.Fatalf("stderr = %q, want unsynced hint", got)
+	}
+}
+
 func TestHintIfStale_AllResourcesIgnoresNullTimestampRows(t *testing.T) {
 	requireSyncHintCommand(t)
 	db := newSyncHintTestStore(t)

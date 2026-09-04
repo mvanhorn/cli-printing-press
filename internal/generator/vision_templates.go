@@ -228,7 +228,7 @@ func hasSyncCommandResources(profile *profiler.APIProfile) bool {
 }
 
 func isVestigialSyncResource(resource profiler.SyncableResource) bool {
-	if resource.UsesHTMLResponse && resource.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage {
+	if spec.LacksJSONSyncEnumeration(resource.ResponseFormat) || resource.UsesHTMLResponse {
 		return true
 	}
 	// Path-template resources that are excluded from default sync and look like
@@ -237,10 +237,7 @@ func isVestigialSyncResource(resource profiler.SyncableResource) bool {
 }
 
 func isVestigialDependentSyncResource(resource profiler.DependentResource) bool {
-	if resource.UsesHTMLResponse && resource.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage {
-		return true
-	}
-	return false
+	return spec.LacksJSONSyncEnumeration(resource.ResponseFormat) || resource.UsesHTMLResponse
 }
 
 func looksLikeLiveQueryPath(path string) bool {

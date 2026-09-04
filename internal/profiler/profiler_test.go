@@ -4120,6 +4120,84 @@ func TestProfileSyncableResourcesExcludeActionGetEndpoints(t *testing.T) {
 	assert.NotContains(t, byName, "orders_find")
 }
 
+func TestProfileNonJSONResourcesSkipDefaultSync(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "non-json-sync",
+		Resources: map[string]spec.Resource{
+			"records": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/records", Response: spec.ResponseDef{Type: "array"}},
+				},
+			},
+			"literature": {
+				Endpoints: map[string]spec.Endpoint{
+					"index": {
+						Method:         "GET",
+						Path:           "/literature.aspx",
+						ResponseFormat: spec.ResponseFormatHTML,
+						HTMLExtract:    &spec.HTMLExtract{Mode: spec.HTMLExtractModeLinks, LinkPrefixes: []string{"/download/files"}},
+						Response:       spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"sitemaps": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/sitemap.bin", ResponseFormat: spec.ResponseFormatBinary, Response: spec.ResponseDef{Type: "array"}},
+				},
+			},
+			"exports": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/export.txt", ResponseFormat: spec.ResponseFormatText, Response: spec.ResponseDef{Type: "array"}},
+				},
+			},
+			"spreadsheet": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/rows.csv", ResponseFormat: spec.ResponseFormatCSV, Response: spec.ResponseDef{Type: "array"}},
+				},
+			},
+			"feed": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/feed.xml", ResponseFormat: spec.ResponseFormatXML, Response: spec.ResponseDef{Type: "array"}},
+				},
+			},
+			"attachments": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:         "GET",
+						Path:           "/records/{id}/attachments",
+						ResponseFormat: spec.ResponseFormatBinary,
+						Response:       spec.ResponseDef{Type: "array"},
+						Params:         []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+
+	require.Contains(t, byName, "records")
+	assert.False(t, byName["records"].SkipDefaultSync)
+
+	for _, name := range []string{"literature", "sitemaps", "exports"} {
+		require.Contains(t, byName, name, "%s should remain callable via --resources", name)
+		assert.True(t, byName[name].SkipDefaultSync, "%s must not be in the default sync set", name)
+	}
+
+	require.Contains(t, byName, "spreadsheet")
+	assert.False(t, byName["spreadsheet"].SkipDefaultSync, "csv converts to JSON and stays in default sync")
+	require.Contains(t, byName, "feed")
+	assert.False(t, byName["feed"].SkipDefaultSync, "xml converts to JSON and stays in default sync")
+
+	for _, dep := range profile.DependentSyncResources {
+		assert.NotEqual(t, "attachments", dep.Name, "binary child collections must not fan out during bare sync")
+	}
+}
+
 // Specs with no recognizable pagination shape must keep the historical
 // after/limit defaults so existing golden output doesn't churn.
 func TestProfilePagination_NoPaginationParamsKeepsDefaults(t *testing.T) {

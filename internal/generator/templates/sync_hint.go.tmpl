@@ -96,7 +96,7 @@ func readSyncHintState(db *store.Store, resourceType string) (syncHintState, err
 	var lastSynced sql.NullTime
 	err := db.DB().QueryRow(query, args...).Scan(&lastSynced)
 	if err == nil {
-		if !lastSynced.Valid {
+		if !lastSynced.Valid || lastSynced.Time.IsZero() {
 			return syncHintState{}, nil
 		}
 		return syncHintState{
