@@ -134,6 +134,30 @@ func TestCaseVariantBinaryResponseHeadersAreDeterministic(t *testing.T) {
 	}
 }
 
+func TestUnwrapBinaryResponse(t *testing.T) {
+	raw := []byte{0x1f, 0x8b, 0x08, 0x00}
+	env, err := wrapBinaryResponse("application/octet-stream", raw)
+	if err != nil {
+		t.Fatalf("wrapBinaryResponse: %v", err)
+	}
+	got, ct, ok := UnwrapBinaryResponse(env)
+	if !ok {
+		t.Fatal("UnwrapBinaryResponse returned ok=false for a wrapped envelope")
+	}
+	if ct != "application/octet-stream" {
+		t.Fatalf("content type = %q, want application/octet-stream", ct)
+	}
+	if string(got) != string(raw) {
+		t.Fatalf("unwrapped bytes = %q, want %q", got, raw)
+	}
+	if _, _, ok := UnwrapBinaryResponse([]byte(` + "`" + `{"ok":true}` + "`" + `)); ok {
+		t.Fatal("UnwrapBinaryResponse returned ok=true for ordinary JSON")
+	}
+	if _, _, ok := UnwrapBinaryResponse(raw); ok {
+		t.Fatal("UnwrapBinaryResponse returned ok=true for raw bytes")
+	}
+}
+
 func TestJSONResponseStillUsesJSONCache(t *testing.T) {
 	var seen int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

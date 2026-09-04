@@ -5,12 +5,16 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"{{modulePath}}/internal/client"
 )
 
 // DeliverSink describes where command output should be routed when
@@ -55,18 +59,55 @@ func ParseDeliverSink(spec string) (DeliverSink, error) {
 
 // Deliver routes a captured output buffer to the configured sink. stdout
 // is a no-op because the buffer has already been streamed to stdout via
-// the MultiWriter set up in root.go.
+// the MultiWriter set up in root.go. file: sinks unwrap a binary-response
+// envelope so downloaded media is the original bytes, not base64 JSON.
 func Deliver(sink DeliverSink, body []byte, compact bool) error {
 	switch sink.Scheme {
 	case "", "stdout":
 		return nil
 	case "file":
+		if raw, _, ok := unwrapBinaryDeliverBody(body); ok {
+			body = raw
+		}
 		return deliverFile(sink.Target, body)
 	case "webhook":
 		return deliverWebhook(sink.Target, body, compact)
 	default:
 		return fmt.Errorf("unsupported deliver sink %q", sink.Scheme)
 	}
+}
+
+func unwrapBinaryDeliverBody(body []byte) (raw []byte, contentType string, ok bool) {
+	return client.UnwrapBinaryResponse(body)
+}
+
+func binaryDeliverPayload(body []byte) (raw []byte, contentType string) {
+	if raw, contentType, ok := unwrapBinaryDeliverBody(body); ok {
+		return raw, contentType
+	}
+	return body, ""
+}
+
+func deliverSinkIsNonStdout(flags *rootFlags) bool {
+	return flags != nil && flags.deliverSink.Scheme != "" && flags.deliverSink.Scheme != "stdout"
+}
+
+type binaryDeliverReceipt struct {
+	Delivered   bool   `json:"delivered"`
+	Sink        string `json:"sink"`
+	Target      string `json:"target"`
+	Bytes       int    `json:"bytes"`
+	ContentType string `json:"content_type,omitempty"`
+}
+
+func writeBinaryDeliverReceipt(w io.Writer, sink DeliverSink, raw []byte, contentType string) error {
+	return json.NewEncoder(w).Encode(binaryDeliverReceipt{
+		Delivered:   true,
+		Sink:        sink.Scheme,
+		Target:      sink.Target,
+		Bytes:       len(raw),
+		ContentType: contentType,
+	})
 }
 
 func deliverFile(path string, body []byte) error {
@@ -104,8 +145,8 @@ func deliverWebhook(url string, body []byte, compact bool) error {
 		req.Header.Set("User-Agent", "{{.Name}}-pp-cli/deliver")
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("posting to webhook: %w", err)
 	}
