@@ -194,7 +194,7 @@ func TestCompactFieldsProjectsHALEmbeddedArrays(t *testing.T) {
 
 func TestCompactFieldsPreservesDocumentedSparseFields(t *testing.T) {
 	input := json.RawMessage(`+"`"+`[
-		{"id":"row-1","name":"One","odds":1.5,"ranking":7,"lean":"up","segment":"rare","undocumented":"drop"},
+		{"id":"row-1","name":"One","event_name":"Open","shop_id":"s1","odds":1.5,"ranking":7,"undocumented":"drop"},
 		{"id":"row-2","name":"Two"},
 		{"id":"row-3","name":"Three"},
 		{"id":"row-4","name":"Four"},
@@ -207,20 +207,22 @@ func TestCompactFieldsPreservesDocumentedSparseFields(t *testing.T) {
 	]`+"`"+`)
 
 	got := compactFields(input, map[string]bool{
-		"odds": true, "ranking": true, "lean": true, "segment": true,
+		"event_name": true, "shop_id": true, "odds": true, "ranking": true,
 	})
 	var rows []map[string]any
 	if err := json.Unmarshal(got, &rows); err != nil {
 		t.Fatalf("compactFields returned invalid JSON: %v\n%s", err, got)
 	}
 	first := rows[0]
-	for _, key := range []string{"odds", "ranking", "lean", "segment"} {
+	for _, key := range []string{"event_name", "shop_id"} {
 		if _, ok := first[key]; !ok {
-			t.Fatalf("documented sparse field %q was dropped: %#v", key, first)
+			t.Fatalf("documented sparse gravity field %q was dropped: %#v", key, first)
 		}
 	}
-	if _, ok := first["undocumented"]; ok {
-		t.Fatalf("undocumented sparse field survived compact projection: %#v", first)
+	for _, key := range []string{"odds", "ranking", "undocumented"} {
+		if _, ok := first[key]; ok {
+			t.Fatalf("non-gravity or undocumented sparse field %q survived compact projection: %#v", key, first)
+		}
 	}
 }
 

@@ -137,15 +137,70 @@ func TestPrintOutputWithFlagsMachineEmptyArrayIsValidJSON(t *testing.T) {
 	}
 }
 
-func TestPrintOutputWithFlagsCSVSingleObjectKeepsJSONFallback(t *testing.T) {
+func TestPrintOutputWithFlagsCSVSingleObjectIsOneRow(t *testing.T) {
 	data := json.RawMessage("{\"id\":\"one\"}")
 	var out bytes.Buffer
 
 	if err := printOutputWithFlags(&out, data, &rootFlags{csv: true}); err != nil {
 		t.Fatalf("printOutputWithFlags returned error: %v", err)
 	}
-	if got, want := out.String(), "{\"id\":\"one\"}\n"; got != want {
-		t.Fatalf("--csv should keep the single-object JSON fallback, got %q want %q", got, want)
+	got := out.String()
+	if !strings.Contains(got, "id\n") || !strings.Contains(got, "one\n") {
+		t.Fatalf("--csv should render a single object as one CSV row, got %q", got)
+	}
+	if strings.Contains(got, "{") {
+		t.Fatalf("--csv should not fall back to JSON for a single object, got %q", got)
+	}
+}
+
+func TestPrintOutputWithFlagsCSVUnwrapsCollectionEnvelope(t *testing.T) {
+	data := json.RawMessage("{\"results\":[{\"id\":\"one\",\"name\":\"Alpha\"}],\"meta\":{\"total\":1}}")
+	var out bytes.Buffer
+	if err := printOutputWithFlags(&out, data, &rootFlags{csv: true}); err != nil {
+		t.Fatalf("printOutputWithFlags returned error: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "id,name\n") && !strings.Contains(got, "name,id\n") {
+		t.Fatalf("--csv should unwrap collection envelopes, got %q", got)
+	}
+	if strings.Contains(got, "results") || strings.Contains(got, "{") {
+		t.Fatalf("--csv should not emit the JSON envelope, got %q", got)
+	}
+}
+
+func TestPrintOutputWithFlagsQuietPrintsIdentityValues(t *testing.T) {
+	data := json.RawMessage("[{\"id\":\"one\",\"name\":\"Alpha\"},{\"id\":\"two\",\"name\":\"Beta\"}]")
+	var out bytes.Buffer
+	if err := printOutputWithFlags(&out, data, &rootFlags{quiet: true}); err != nil {
+		t.Fatalf("printOutputWithFlags returned error: %v", err)
+	}
+	got := out.String()
+	if got != "one\ntwo\n" {
+		t.Fatalf("--quiet should print one id per line, got %q", got)
+	}
+}
+
+func TestPrintOutputWithFlagsCompactReducesDocumentedLists(t *testing.T) {
+	data := json.RawMessage("[{\"id\":\"s1\",\"name\":\"Shop\",\"description\":\"verbose\",\"revenue\":99,\"listings\":[1,2,3]}]")
+	documented := map[string]bool{"id": true, "name": true, "description": true, "revenue": true, "listings": true}
+	var out bytes.Buffer
+	if err := printOutputWithFlagsMeta(&out, data, &rootFlags{asJSON: true, compact: true}, map[string]any{"source": "local"}, documented); err != nil {
+		t.Fatalf("printOutputWithFlagsMeta returned error: %v", err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatalf("compact output is not JSON: %v\n%s", err, out.String())
+	}
+	if len(rows) != 1 {
+		t.Fatalf("compact rows = %#v", rows)
+	}
+	if rows[0]["id"] != "s1" || rows[0]["name"] != "Shop" {
+		t.Fatalf("compact dropped identity fields: %#v", rows[0])
+	}
+	for _, key := range []string{"description", "revenue", "listings"} {
+		if _, ok := rows[0][key]; ok {
+			t.Fatalf("schema-aware --compact kept non-gravity %s: %#v", key, rows[0])
+		}
 	}
 }
 
@@ -246,7 +301,7 @@ func TestTerminalControlCharactersRemainInJSONOutput(t *testing.T) {
 }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintOutputWithFlagsPlainRendersTSV|TestPrintOutputWithFlagsPlainEmptyArrayIsEmpty|TestPrintOutputWithFlagsCSVEmptyArrayIsEmpty|TestPrintOutputWithFlagsCSVEmptyArrayWritesDeclaredHeader|TestPrintOutputWithFlagsCSVEmptyArrayEscapesDeclaredHeader|TestPrintOutputWithFlagsCSVNonEmptyArrayUsesCSV|TestPrintOutputWithFlagsCSVQuotesCarriageReturnInValues|TestPrintOutputWithFlagsMachineEmptyArrayIsValidJSON|TestPrintOutputWithFlagsCSVSingleObjectKeepsJSONFallback|TestHumanFriendlyForcesTableAndNoColorStripsANSI|TestTerminalControl", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintOutputWithFlagsPlainRendersTSV|TestPrintOutputWithFlagsPlainEmptyArrayIsEmpty|TestPrintOutputWithFlagsCSVEmptyArrayIsEmpty|TestPrintOutputWithFlagsCSVEmptyArrayWritesDeclaredHeader|TestPrintOutputWithFlagsCSVEmptyArrayEscapesDeclaredHeader|TestPrintOutputWithFlagsCSVNonEmptyArrayUsesCSV|TestPrintOutputWithFlagsCSVQuotesCarriageReturnInValues|TestPrintOutputWithFlagsMachineEmptyArrayIsValidJSON|TestPrintOutputWithFlagsCSVSingleObjectIsOneRow|TestPrintOutputWithFlagsCSVUnwrapsCollectionEnvelope|TestPrintOutputWithFlagsQuietPrintsIdentityValues|TestPrintOutputWithFlagsCompactReducesDocumentedLists|TestHumanFriendlyForcesTableAndNoColorStripsANSI|TestTerminalControl", "-count=1")
 	requireGeneratedCompiles(t, outputDir)
 }
 

@@ -10536,8 +10536,14 @@ func TestGeneratedOutput_WorkflowArchiveDelegatesToSyncResource(t *testing.T) {
 			"syncResource should expose an event writer parameter for wrapper callers")
 		assert.Contains(t, syncSrc, "syncEventWriter := cmd.OutOrStdout()",
 			"direct sync should honor Cobra's stdout writer")
+		assert.Contains(t, syncSrc, "machineFormat := wantsMachineOutput(flags)",
+			"direct sync --json must detect the shared machine-format contract")
+		assert.Contains(t, syncSrc, "syncEventWriter = cmd.ErrOrStderr()",
+			"direct sync --json should route NDJSON events off stdout")
+		assert.Contains(t, syncSrc, "printJSONFiltered(cmd.OutOrStdout()",
+			"direct sync --json should emit one JSON summary document on stdout")
 		assert.Contains(t, syncSrc, "userParams, syncEventWriter)",
-			"direct sync --json should keep emitting NDJSON events on stdout")
+			"direct sync must pass the wrapper-selected event writer into syncResource")
 		assert.Contains(t, syncSrc, `fmt.Fprintf(syncEvents, `+"`"+`{"event":"sync_start"`,
 			"syncResource events should write through the selected event writer")
 
@@ -10759,11 +10765,15 @@ func TestGeneratedOutput_WorkflowArchiveJSONKeepsSyncEventsOffStdout(t *testing.
 
 	syncJSONDB := filepath.Join(t.TempDir(), "sync-json.db")
 	stdout, stderr = runGeneratedBinary(t, binaryPath, "sync", "--json", "--db", syncJSONDB)
-	assert.Empty(t, stderr)
-	assert.Contains(t, stdout, `"event":"sync_start"`,
-		"direct sync --json should keep streaming sync events to stdout")
-	assert.Contains(t, stdout, `"event":"sync_complete"`)
-	assert.Contains(t, stdout, `"event":"sync_summary"`)
+	assert.NotContains(t, stdout, `"event":"sync_`,
+		"direct sync --json stdout must be a single JSON document, not sync NDJSON")
+	assert.Contains(t, stderr, `"event":"sync_start"`,
+		"direct sync --json should still surface sync progress on stderr")
+	var syncSummary map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &syncSummary),
+		"direct sync --json stdout should be exactly one JSON document")
+	_, hasRecords := syncSummary["total_records"]
+	assert.True(t, hasRecords, "sync --json summary must include total_records, got %v", syncSummary)
 
 	syncHumanDB := filepath.Join(t.TempDir(), "sync-human.db")
 	stdout, stderr = runGeneratedBinary(t, binaryPath, "sync", "--human-friendly", "--db", syncHumanDB)

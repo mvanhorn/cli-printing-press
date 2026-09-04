@@ -2248,9 +2248,9 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 		}
 		data = wrapped
 	}
-	// --quiet: suppress all output, exit code communicates result
+	// --quiet: one identity value per row (id, then name/slug/title).
 	if flags.quiet {
-		return nil
+		return printQuiet(w, data)
 	}
 	// --csv: render as CSV
 	if flags.csv {
@@ -2313,6 +2313,37 @@ func compactFields(data json.RawMessage, documentedFields ...map[string]bool) js
 	return data
 }
 
+// Endpoint-mirror commands pass documented fields into compactListFields;
+// keeping every schema key would make --compact a no-op on homogeneous API lists.
+func isCompactGravityField(name string) bool {
+	switch name {
+	case "id", "name", "title", "identifier", "code", "slug", "key",
+		"status", "state", "type", "kind", "priority",
+		"url", "email",
+		"price", "amount", "cost", "fare", "rate", "currency",
+		"rating", "score", "count",
+		"language", "locale", "country", "region", "city", "domain",
+		"created_at", "updated_at", "createdAt", "updatedAt", "date",
+		"version":
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "" {
+		return false
+	}
+	for _, suffix := range []string{"_id", "_name", "_at", "_status", "_state", "_slug", "_key", "_title", "_code", "_count", "_url"} {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	for _, suffix := range []string{"Id", "Name", "At", "Status", "State", "Slug", "Key", "Title", "Code", "Count", "URL", "Url"} {
+		if strings.HasSuffix(name, suffix) && len(name) > len(suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 // compactListFields keeps only high-gravity fields for array responses.
 //
 // Two-layer keep rule:
@@ -2357,10 +2388,19 @@ func compactListFields(items []map[string]any, documentedFields ...map[string]bo
 	}
 	for _, fields := range documentedFields {
 		for field := range fields {
-			keepFields[field] = true
+			if isCompactGravityField(field) {
+				keepFields[field] = true
+			}
 		}
 	}
-	if len(items) > 0 {
+	schemaAware := false
+	for _, fields := range documentedFields {
+		if len(fields) > 0 {
+			schemaAware = true
+			break
+		}
+	}
+	if !schemaAware && len(items) > 0 {
 		keyCounts := map[string]int{}
 		for _, item := range items {
 			for k := range item {
@@ -2499,30 +2539,27 @@ func compactObjectArrayValue(v any, documentedFields ...map[string]bool) (any, b
 	return compacted, true
 }
 
-// printCSV renders JSON arrays as CSV with header row.
 func printCSV(w io.Writer, data json.RawMessage, documentedFields ...map[string]bool) error {
-	var items []map[string]any
-	if err := json.Unmarshal(data, &items); err != nil {
-		// Single object or invalid JSON - just print as JSON
+	items, ok := tabularObjectRows(data)
+	if !ok {
 		fmt.Fprintln(w, string(data))
 		return nil
 	}
 	if len(items) == 0 {
-		// A valid empty array is a header-only CSV stream so consumers can
-		// distinguish success-with-no-rows from failure. Keys come from
-		// declared record fields; without those the stream stays empty.
-		if bytes.HasPrefix(bytes.TrimSpace(data), []byte("[")) {
-			keys := csvDeclaredHeader(documentedFields...)
-			if len(keys) == 0 {
-				return nil
-			}
-			writeCSVRow(w, keys)
+		keys := csvDeclaredHeader(documentedFields...)
+		if len(keys) == 0 {
 			return nil
 		}
-		fmt.Fprintln(w, string(data))
+		writeCSVRow(w, keys)
 		return nil
 	}
-	// Collect all keys for header
+	return writeCSVRows(w, items)
+}
+
+func writeCSVRows(w io.Writer, items []map[string]any) error {
+	if len(items) == 0 {
+		return nil
+	}
 	keySet := map[string]bool{}
 	for _, item := range items {
 		for k := range item {
@@ -2581,11 +2618,9 @@ func csvDeclaredHeader(documentedFields ...map[string]bool) []string {
 	return keys
 }
 
-// printPlain renders JSON arrays as tab-separated text with a header row.
 func printPlain(w io.Writer, data json.RawMessage) error {
-	var items []map[string]any
-	if err := json.Unmarshal(data, &items); err != nil {
-		// Single object - just print as JSON
+	items, ok := tabularObjectRows(data)
+	if !ok {
 		fmt.Fprintln(w, string(data))
 		return nil
 	}
@@ -2612,6 +2647,133 @@ func printPlain(w io.Writer, data json.RawMessage) error {
 		fmt.Fprintln(w, strings.Join(vals, "\t"))
 	}
 	return nil
+}
+
+func printQuiet(w io.Writer, data json.RawMessage) error {
+	items, ok := tabularObjectRows(data)
+	if ok {
+		for _, item := range items {
+			if v := quietRowValue(item); v != "" {
+				fmt.Fprintln(w, v)
+			}
+		}
+		return nil
+	}
+	var scalars []any
+	if err := json.Unmarshal(data, &scalars); err == nil {
+		for _, v := range scalars {
+			if m, ok := v.(map[string]any); ok {
+				if s := quietRowValue(m); s != "" {
+					fmt.Fprintln(w, s)
+				}
+				continue
+			}
+			if v == nil {
+				continue
+			}
+			fmt.Fprintln(w, fmt.Sprint(v))
+		}
+		return nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err == nil {
+		if v := quietRowValue(obj); v != "" {
+			fmt.Fprintln(w, v)
+		}
+		return nil
+	}
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	fmt.Fprintln(w, trimmed)
+	return nil
+}
+
+func quietRowValue(item map[string]any) string {
+	for _, key := range []string{"id", "ID", "Id", "identifier", "slug", "key", "name", "title", "code"} {
+		if v, ok := item[key]; ok {
+			if s := quietScalar(v); s != "" {
+				return s
+			}
+		}
+	}
+	for k, v := range item {
+		lower := strings.ToLower(k)
+		if strings.HasSuffix(lower, "_id") || strings.HasSuffix(k, "Id") {
+			if s := quietScalar(v); s != "" {
+				return s
+			}
+		}
+	}
+	for _, v := range item {
+		if s := quietScalar(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func quietScalar(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return t
+	case bool:
+		return strconv.FormatBool(t)
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	case json.Number:
+		return t.String()
+	default:
+		return ""
+	}
+}
+
+func tabularObjectRows(data json.RawMessage) ([]map[string]any, bool) {
+	projected := unwrapSingleKeyArray(collectionItemsForOutput(data, ""))
+	var items []map[string]any
+	if err := json.Unmarshal(projected, &items); err == nil && (len(items) > 0 || bytes.HasPrefix(bytes.TrimSpace(projected), []byte("["))) {
+		return items, true
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(projected, &obj); err != nil || len(obj) == 0 {
+		return nil, false
+	}
+	if rows, ok := objectEnvelopeRows(obj); ok {
+		return rows, true
+	}
+	return []map[string]any{obj}, true
+}
+
+func objectEnvelopeRows(obj map[string]any) ([]map[string]any, bool) {
+	found := 0
+	var rows []map[string]any
+	for k, v := range obj {
+		if envelopeMetadataKeys[k] || envelopeMetadataArrayKeys[k] {
+			continue
+		}
+		rawItems, ok := v.([]any)
+		if !ok {
+			continue
+		}
+		items := make([]map[string]any, 0, len(rawItems))
+		for _, raw := range rawItems {
+			item, ok := raw.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			items = append(items, item)
+		}
+		rows = items
+		found++
+	}
+	if found != 1 {
+		return nil, false
+	}
+	return rows, true
 }
 
 func plainCellValue(v any) string {

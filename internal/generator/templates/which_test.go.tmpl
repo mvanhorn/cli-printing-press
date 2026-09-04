@@ -4,6 +4,8 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -202,6 +204,62 @@ func TestRankWhich_WriteSynonymsAreNotPenalized(t *testing.T) {
 	got := rankWhich(index, "edit project", 1)
 	if len(got) != 1 || got[0].Entry.Command != "projects edit" {
 		t.Fatalf("explicit write intent should select the edit command, got %+v", got)
+	}
+}
+
+func TestWhichJSONNoMatchExits2(t *testing.T) {
+	old := whichIndex
+	whichIndex = whichTestIndex
+	t.Cleanup(func() { whichIndex = old })
+
+	var stdout, stderr bytes.Buffer
+	flags := &rootFlags{asJSON: true}
+	cmd := newWhichCmd(flags)
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"teleport a rhinoceros"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected no-match to return a typed error")
+	}
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("ExitCode = %d, want 2 (typed no-match)", got)
+	}
+	var envelope map[string]any
+	if json.Unmarshal(stdout.Bytes(), &envelope) != nil {
+		t.Fatalf("no-match --json stdout must be a JSON envelope, got %q", stdout.String())
+	}
+	matches, _ := envelope["matches"].([]any)
+	if len(matches) != 0 {
+		t.Fatalf("matches = %#v, want empty array", envelope["matches"])
+	}
+}
+
+func TestWhichPipedNoMatchExits2WithEmptyEnvelope(t *testing.T) {
+	old := whichIndex
+	whichIndex = whichTestIndex
+	t.Cleanup(func() { whichIndex = old })
+
+	var stdout bytes.Buffer
+	flags := &rootFlags{}
+	cmd := newWhichCmd(flags)
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"teleport a rhinoceros"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected no-match to return a typed error")
+	}
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("ExitCode = %d, want 2", got)
+	}
+	var envelope map[string]any
+	if json.Unmarshal(stdout.Bytes(), &envelope) != nil {
+		t.Fatalf("piped no-match must write {\"matches\":[]} so agents can inspect the miss, got %q", stdout.String())
+	}
+	matches, _ := envelope["matches"].([]any)
+	if len(matches) != 0 {
+		t.Fatalf("matches = %#v, want empty array", envelope["matches"])
 	}
 }
 

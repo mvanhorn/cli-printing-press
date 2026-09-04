@@ -543,6 +543,9 @@ The local store's schema version stamp is one-way: once this version of `{{$.Nam
 Every command supports these output flags:
 
 - `--json` — structured output for scripting and agents
+- `--compact` — keep identity, status, and timestamp fields
+- `--csv` / `--plain` — tabular rows (collection envelopes unwrap)
+- `--quiet` — one identity value per line
 - `--select <field>[,<field>...]` — filter to specific fields
 - `--dry-run` — preview the request without sending
 - `--agent` — JSON + compact + non-interactive in one flag

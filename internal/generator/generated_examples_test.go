@@ -98,7 +98,7 @@ func TestCompactFieldMapLiteralUsesDocumentedWireFields(t *testing.T) {
 		}},
 	}
 
-	assert.Equal(t, `map[string]bool{"id": true, "odds": true, "event_name": true}`, compactFieldMapLiteral("Event", types))
+	assert.Equal(t, `map[string]bool{"id": true, "event_name": true}`, compactFieldMapLiteral("Event", types))
 	assert.Equal(t, "nil", compactFieldMapLiteral("Missing", types))
 }
 
