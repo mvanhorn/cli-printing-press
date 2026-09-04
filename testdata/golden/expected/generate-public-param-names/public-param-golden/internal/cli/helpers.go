@@ -874,6 +874,7 @@ func paginatedGet(ctx context.Context, c interface {
 		seenCursorTokens[sentCursor] = struct{}{}
 	}
 	foundCursorField := false
+	reportedTotal := 0
 	page := 0
 	for {
 		page++
@@ -905,7 +906,7 @@ func paginatedGet(ctx context.Context, c interface {
 			previousPageItems = append([]json.RawMessage(nil), items...)
 			previousPageItemsSet = true
 			allItems = append(allItems, items...)
-			if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, len(items)); ok {
+			if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, len(items), false); ok {
 				if page >= paginatedGetMaxPages {
 					emitPaginatedGetMaxPagesWarning(ctx)
 					break
@@ -951,11 +952,14 @@ func paginatedGet(ctx context.Context, c interface {
 					allItems = append(allItems, nested...)
 					itemCount = len(nested)
 				}
+				if n := reportedCollectionTotal(obj); n > 0 {
+					reportedTotal = n
+				}
 
-				// Check for next cursor
-				if nextCursorToken != "" {
+				nextAdvance := resolvePaginatedNextCursor(obj, cursorLookupPath, cursorParam)
+				if nextAdvance != "" {
 					foundCursorField = true
-					if _, seen := seenCursorTokens[nextCursorToken]; seen {
+					if _, seen := seenCursorTokens[nextAdvance]; seen {
 						platform.MarkContextTruncated(ctx, platform.TruncationReason{Kind: "pagination_cursor_repeated", Configured: "unique_cursor", Observed: "repeated_cursor", MoreAvailable: true})
 						if humanFriendly {
 							fmt.Fprintf(os.Stderr, "warning: --all received the same pagination cursor twice; returning fetched pages only.\n")
@@ -964,12 +968,12 @@ func paginatedGet(ctx context.Context, c interface {
 						}
 						break
 					}
-					seenCursorTokens[nextCursorToken] = struct{}{}
+					seenCursorTokens[nextAdvance] = struct{}{}
 					if page >= paginatedGetMaxPages {
 						emitPaginatedGetMaxPagesWarning(ctx)
 						break
 					}
-					clean[cursorParam] = nextCursorToken
+					clean[cursorParam] = nextAdvance
 					continue
 				}
 
@@ -1006,14 +1010,18 @@ func paginatedGet(ctx context.Context, c interface {
 						}
 					}
 				}
-				if !hasExplicitNoMore && nextCursorPath == "" && hasMoreField == "" {
-					if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, itemCount); ok {
-						if page >= paginatedGetMaxPages {
-							emitPaginatedGetMaxPagesWarning(ctx)
-							break
+				if !hasExplicitNoMore {
+					moreByTotal := reportedTotal > 0 && len(allItems) < reportedTotal
+					usePageHeuristic := nextCursorPath == "" && hasMoreField == ""
+					if moreByTotal || usePageHeuristic {
+						if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, itemCount, moreByTotal); ok {
+							if page >= paginatedGetMaxPages {
+								emitPaginatedGetMaxPagesWarning(ctx)
+								break
+							}
+							clean[cursorParam] = next
+							continue
 						}
-						clean[cursorParam] = next
-						continue
 					}
 				}
 			}
@@ -1133,11 +1141,11 @@ func deleteRawPath(obj map[string]json.RawMessage, path string) {
 	deleteRawPath(child, strings.Join(parts[1:], "."))
 	obj[key], _ = json.Marshal(child)
 }
-func nextFullPageOffsetCursor(params map[string]string, cursorParam, paginationType string, pageSize, itemCount int) (string, bool) {
+func nextFullPageOffsetCursor(params map[string]string, cursorParam, paginationType string, pageSize, itemCount int, moreRemain bool) (string, bool) {
 	if (paginationType != "offset" && paginationType != "page") || itemCount == 0 {
 		return "", false
 	}
-	if pageSize > 0 && itemCount < pageSize {
+	if pageSize > 0 && itemCount < pageSize && !moreRemain {
 		return "", false
 	}
 	if pageSize <= 0 && paginationType == "offset" {
@@ -1283,6 +1291,178 @@ func paginationCursorToken(raw json.RawMessage) string {
 	if json.Unmarshal(raw, &number) == nil {
 		if n, err := number.Int64(); err == nil && n > 0 {
 			return number.String()
+		}
+	}
+	return paginationLinkURL(raw)
+}
+
+// resolvePaginatedNextCursor returns the next request cursor for --all.
+// Declared next-cursor paths win, then JSON:API/HAL links.next and top-level
+// next URLs. Followable URLs are reduced to the query token the request param
+// can carry; a raw URL is not written into page/offset params.
+func resolvePaginatedNextCursor(obj map[string]json.RawMessage, cursorLookupPath, cursorParam string) string {
+	token := ""
+	if cursorLookupPath != "" {
+		if tokenRaw, ok := rawAtPath(obj, cursorLookupPath); ok {
+			token = paginationCursorToken(tokenRaw)
+		}
+	}
+	if extracted := cursorTokenFromMaybeURL(token, cursorParam); extracted != "" {
+		return extracted
+	}
+	if fromLinks := nextCursorFromLinks(obj, cursorParam); fromLinks != "" {
+		return fromLinks
+	}
+	return nextCursorFromTopLevelURL(obj, cursorParam)
+}
+
+func cursorTokenFromMaybeURL(token, cursorParam string) string {
+	if token == "" {
+		return ""
+	}
+	if !isFollowableNextURL(token) {
+		return token
+	}
+	return cursorFromNextURL(token, cursorParam)
+}
+
+func reportedCollectionTotal(obj map[string]json.RawMessage) int {
+	return reportedCollectionTotalAtDepth(obj, 0)
+}
+
+func reportedCollectionTotalAtDepth(obj map[string]json.RawMessage, depth int) int {
+	if obj == nil || depth > 2 {
+		return 0
+	}
+	for _, key := range []string{"total", "total_count", "totalCount", "TotalCount", "totalResults", "Total"} {
+		raw, ok := obj[key]
+		if !ok {
+			continue
+		}
+		var n json.Number
+		if json.Unmarshal(raw, &n) != nil {
+			continue
+		}
+		if v, err := n.Int64(); err == nil && v > 0 {
+			return int(v)
+		}
+		if v, err := n.Float64(); err == nil && v > 0 {
+			return int(v)
+		}
+	}
+	for _, wrap := range []string{"meta", "pagination", "paging", "metadata"} {
+		raw, ok := obj[wrap]
+		if !ok {
+			continue
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(raw, &inner) != nil {
+			continue
+		}
+		if n := reportedCollectionTotalAtDepth(inner, depth+1); n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// nextCursorFromLinks extracts pagination cursors from JSON:API
+// {"links":{"next":"https://example.com/items?page[cursor]=..."}} and HAL
+// {"_links":{"next":{"href":"https://example.com/items?cursor=..."}}}.
+func nextCursorFromLinks(envelope map[string]json.RawMessage, cursorParam string) string {
+	for _, key := range []string{"links", "_links"} {
+		rawLinks, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		var links map[string]json.RawMessage
+		if json.Unmarshal(rawLinks, &links) != nil {
+			continue
+		}
+		rawNext, ok := links["next"]
+		if !ok {
+			continue
+		}
+		if nextURL := paginationLinkURL(rawNext); nextURL != "" {
+			if cursor := cursorFromNextURL(nextURL, cursorParam); cursor != "" {
+				return cursor
+			}
+		}
+	}
+	return ""
+}
+
+func paginationLinkURL(raw json.RawMessage) string {
+	var nextURL string
+	if json.Unmarshal(raw, &nextURL) == nil {
+		return nextURL
+	}
+	var link map[string]json.RawMessage
+	if json.Unmarshal(raw, &link) != nil {
+		return ""
+	}
+	rawHref, ok := link["href"]
+	if !ok {
+		return ""
+	}
+	if json.Unmarshal(rawHref, &nextURL) != nil {
+		return ""
+	}
+	return nextURL
+}
+
+// nextCursorFromTopLevelURL extracts a cursor from top-level absolute or relative next URLs.
+func nextCursorFromTopLevelURL(envelope map[string]json.RawMessage, cursorParam string) string {
+	for _, key := range []string{"next", "next_url"} {
+		rawNext, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		var nextURL string
+		if json.Unmarshal(rawNext, &nextURL) != nil || nextURL == "" {
+			continue
+		}
+		if isFollowableNextURL(nextURL) {
+			return cursorFromNextURL(nextURL, cursorParam)
+		}
+	}
+	return ""
+}
+
+// isFollowableNextURL reports whether a top-level "next" string is a URL we can
+// pull a cursor query param from: an absolute http(s) URL, a root-relative path,
+// or any value carrying a query string. Bare opaque cursor tokens (no query)
+// are rejected so they aren't mis-parsed.
+func isFollowableNextURL(nextURL string) bool {
+	lower := strings.ToLower(nextURL)
+	return strings.HasPrefix(lower, "http") ||
+		strings.HasPrefix(nextURL, "/") ||
+		strings.Contains(nextURL, "?")
+}
+
+func cursorFromNextURL(nextURL string, cursorParam string) string {
+	cursorKeys := []string{cursorParam}
+	if cursorParam != "page[cursor]" {
+		cursorKeys = append(cursorKeys, "page[cursor]")
+	}
+	if cursorParam != "cursor" {
+		cursorKeys = append(cursorKeys, "cursor")
+	}
+	if cursorParam != "after" {
+		cursorKeys = append(cursorKeys, "after")
+	}
+
+	parsed, err := url.Parse(nextURL)
+	if err != nil {
+		return ""
+	}
+	values := parsed.Query()
+	for _, key := range cursorKeys {
+		if key == "" {
+			continue
+		}
+		if cursor := values.Get(key); cursor != "" {
+			return cursor
 		}
 	}
 	return ""
@@ -2034,7 +2214,18 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 	}
 	// --csv: render as CSV
 	if flags.csv {
-		return printCSV(w, data)
+		headerFields := documentedFields
+		if flags.selectFields != "" {
+			selected := map[string]bool{}
+			for _, part := range strings.Split(flags.selectFields, ",") {
+				part = strings.TrimSpace(part)
+				if part != "" {
+					selected[part] = true
+				}
+			}
+			headerFields = []map[string]bool{selected}
+		}
+		return printCSV(w, data, headerFields...)
 	}
 	// --plain: render arrays as tab-separated rows
 	if flags.plain {
@@ -2269,7 +2460,7 @@ func compactObjectArrayValue(v any, documentedFields ...map[string]bool) (any, b
 }
 
 // printCSV renders JSON arrays as CSV with header row.
-func printCSV(w io.Writer, data json.RawMessage) error {
+func printCSV(w io.Writer, data json.RawMessage, documentedFields ...map[string]bool) error {
 	var items []map[string]any
 	if err := json.Unmarshal(data, &items); err != nil {
 		// Single object or invalid JSON - just print as JSON
@@ -2277,9 +2468,15 @@ func printCSV(w io.Writer, data json.RawMessage) error {
 		return nil
 	}
 	if len(items) == 0 {
-		// A valid empty array is an empty CSV stream, not a JSON document.
-		// Keep the single-object fallback above for non-array payloads.
+		// A valid empty array is a header-only CSV stream so consumers can
+		// distinguish success-with-no-rows from failure. Keys come from
+		// declared record fields; without those the stream stays empty.
 		if bytes.HasPrefix(bytes.TrimSpace(data), []byte("[")) {
+			keys := csvDeclaredHeader(documentedFields...)
+			if len(keys) == 0 {
+				return nil
+			}
+			fmt.Fprintln(w, strings.Join(keys, ","))
 			return nil
 		}
 		fmt.Fprintln(w, string(data))
@@ -2322,6 +2519,23 @@ func printCSV(w io.Writer, data json.RawMessage) error {
 		fmt.Fprintln(w, strings.Join(vals, ","))
 	}
 	return nil
+}
+
+func csvDeclaredHeader(documentedFields ...map[string]bool) []string {
+	keySet := map[string]bool{}
+	for _, fields := range documentedFields {
+		for k := range fields {
+			if k != "" {
+				keySet[k] = true
+			}
+		}
+	}
+	keys := make([]string, 0, len(keySet))
+	for k := range keySet {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // printPlain renders JSON arrays as tab-separated text with a header row.
