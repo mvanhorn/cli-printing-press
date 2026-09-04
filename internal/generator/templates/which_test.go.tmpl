@@ -235,7 +235,7 @@ func TestWhichJSONNoMatchExits2(t *testing.T) {
 	}
 }
 
-func TestWhichHumanNoMatchExits2WithoutJSON(t *testing.T) {
+func TestWhichPipedNoMatchExits2WithEmptyEnvelope(t *testing.T) {
 	old := whichIndex
 	whichIndex = whichTestIndex
 	t.Cleanup(func() { whichIndex = old })
@@ -253,8 +253,13 @@ func TestWhichHumanNoMatchExits2WithoutJSON(t *testing.T) {
 	if got := ExitCode(err); got != 2 {
 		t.Fatalf("ExitCode = %d, want 2", got)
 	}
-	if strings.Contains(stdout.String(), `"matches"`) {
-		t.Fatalf("human no-match must not write a JSON envelope, got %q", stdout.String())
+	var envelope map[string]any
+	if json.Unmarshal(stdout.Bytes(), &envelope) != nil {
+		t.Fatalf("piped no-match must write {\"matches\":[]} so agents can inspect the miss, got %q", stdout.String())
+	}
+	matches, _ := envelope["matches"].([]any)
+	if len(matches) != 0 {
+		t.Fatalf("matches = %#v, want empty array", envelope["matches"])
 	}
 }
 

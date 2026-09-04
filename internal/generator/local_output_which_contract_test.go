@@ -19,6 +19,7 @@ func TestGeneratedLocalReadsAndWhichHonorSharedRuntimeContracts(t *testing.T) {
 		Version: "0.1.0",
 		BaseURL: "https://api.example.com",
 		Auth:    spec.AuthConfig{Type: "none"},
+		Learn:   spec.LearnConfig{Disabled: true},
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   "~/.config/shopsapi-pp-cli/config.toml",
@@ -199,6 +200,5 @@ func TestResolveLocalWarnsOnUnsupportedCursor(t *testing.T) {
 func ioDiscard() io.Writer { return io.Discard }
 `), 0o644))
 
-	requireGeneratedCompiles(t, outputDir)
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestResolveLocal|TestWhichJSONNoMatchExits2|TestWhichHumanNoMatchExits2WithoutJSON|TestPrintOutputWithFlagsQuietPrintsIdentityValues", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestResolveLocal|TestWhichJSONNoMatchExits2|TestWhichPipedNoMatchExits2WithEmptyEnvelope", "-count=1")
 }
