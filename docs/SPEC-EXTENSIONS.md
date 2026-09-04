@@ -1359,7 +1359,11 @@ Rules:
 - Optional.
 - Must be a string. A dotted path (`entityInfo.entityId`) is stored verbatim
   and walked at runtime by `LookupFieldValue`; it is not limited to a
-  single top-level key.
+  single top-level key. A `+`-separated list (`date+model_permaslug`) is a
+  composite identity: generated `ExtractResourceID` joins the part values
+  with `+` at storage time. Date-shaped parts are allowed inside a
+  composite; a solo date field is not, because `CanonicalResourceID`
+  rejects ISO-date values.
 - Leading and trailing whitespace is trimmed.
 - Non-string values emit a warning and are ignored.
 - A non-empty `x-resource-id` wins over every automatic response-schema
@@ -1375,7 +1379,17 @@ Rules:
   on `/sites` falls through; two own-stem spellings stay ambiguous); then
   URL-shaped
   identifier keys `uri`, `self`, `selfLink`, `href`, and `url`; then `name`;
-  then the first plausible required scalar field. URL-shaped keys qualify only
+  then the first solo-usable required scalar. A date-shaped required field
+  (OpenAPI `format: date` / `date-time`, a date-like name such as `date` /
+  `created_at`, or an ISO-date example) is never selected as a solo IDField:
+  if later required identity fields exist (string or numeric, excluding
+  mutable/metric names such as `status` or `total_tokens`), they are joined
+  with `+` as a composite identity; otherwise IDField stays empty so runtime
+  fallbacks apply. Generated `ExtractResourceID` joins part *values* with `+`
+  after escaping `\` and `+` inside each part so distinct tuples cannot
+  collide. Date-shaped parts are allowed inside a
+  composite; a solo date field is not, because `CanonicalResourceID`
+  rejects ISO-date values. URL-shaped keys qualify only
   when the field schema is a plausible ID and either the field is required or
   its name, title, description, or format carries an identifier hint; an
   optional generic `url` therefore falls through to `name`.
@@ -1412,6 +1426,21 @@ paths:
     x-resource-id: entityInfo.entityId
     get:
       operationId: listEntities
+      responses:
+        "200":
+          description: OK
+```
+
+Composite identities use the same extension with `+`-separated field names.
+Generated extraction joins the part values with `+` so a date-shaped column
+can participate in the row key without becoming a solo ID:
+
+```yaml
+paths:
+  /datasets/rankings-daily:
+    x-resource-id: date+model_permaslug
+    get:
+      operationId: listRankingsDaily
       responses:
         "200":
           description: OK

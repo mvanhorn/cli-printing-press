@@ -60,3 +60,27 @@ func TestLearnResourceIdentityFieldEntries_DedupesIDField(t *testing.T) {
 	}
 	require.Equal(t, 1, count, "id must appear once even when it is both IDField and a common key")
 }
+
+func TestLearnResourceIdentityFieldEntries_SplitsCompositeIDField(t *testing.T) {
+	t.Parallel()
+
+	api := minimalSpec("identity-composite")
+	items := api.Resources["items"]
+	list := items.Endpoints["list"]
+	list.IDField = "date+model_permaslug"
+	items.Endpoints["list"] = list
+	api.Resources["items"] = items
+
+	entries := learnResourceIdentityFieldEntries(api, profiler.Profile(api))
+	var itemsEntry *learnIdentityFieldEntry
+	for i := range entries {
+		if entries[i].ResourceType == "items" {
+			itemsEntry = &entries[i]
+			break
+		}
+	}
+	require.NotNil(t, itemsEntry, "items must appear in the identity-field map")
+	require.Equal(t, "date", itemsEntry.Fields[0], "composite IDField must split so the first part leads")
+	require.Contains(t, itemsEntry.Fields, "model_permaslug")
+	require.NotContains(t, itemsEntry.Fields, "date+model_permaslug")
+}
