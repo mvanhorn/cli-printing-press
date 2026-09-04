@@ -1746,6 +1746,54 @@ func TestPaginatedGetStopsOffsetAfterShortPageWithoutHasMore(t *testing.T) {
 	}
 }
 
+func TestPaginatedGetFollowsCappedPagesWithNextLinkAndTotal(t *testing.T) {
+	pageItems := func(start, n int) json.RawMessage {
+		items := make([]map[string]string, n)
+		for i := 0; i < n; i++ {
+			items[i] = map[string]string{"id": fmt.Sprintf("%d", start+i)}
+		}
+		raw, err := json.Marshal(map[string]any{
+			"items": items,
+			"total": 45,
+			"links": map[string]string{"next": fmt.Sprintf("https://api.example.com/orders?limit=100&page=%d", start/20+2)},
+		})
+		if err != nil {
+			t.Fatalf("marshal page: %v", err)
+		}
+		return raw
+	}
+	lastPageItems := make([]map[string]string, 5)
+	for i := 0; i < 5; i++ {
+		lastPageItems[i] = map[string]string{"id": fmt.Sprintf("%d", 41+i)}
+	}
+	lastPage, err := json.Marshal(map[string]any{"items": lastPageItems, "total": 45})
+	if err != nil {
+		t.Fatalf("marshal last page: %v", err)
+	}
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		pageItems(1, 20),
+		pageItems(21, 20),
+		lastPage,
+	}}
+	data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit": "100", "page": "1"}, nil, true, "page", "page", "limit", 100, "", "")
+	if err != nil {
+		t.Fatalf("paginatedGet returned error: %v", err)
+	}
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if len(got) != 45 {
+		t.Fatalf("got %d items, want 45 after three capped pages; data=%s", len(got), data)
+	}
+	if len(client.params) != 3 {
+		t.Fatalf("got %d requests, want 3", len(client.params))
+	}
+	if client.params[0]["limit"] != "100" || client.params[1]["page"] != "2" || client.params[2]["page"] != "3" {
+		t.Fatalf("requests = %#v, want limit=100 then page 2 and 3", client.params)
+	}
+}
+
 func TestPaginatedGetWarnsWhenHasMorePageParamIsNonNumeric(t *testing.T) {
 	client := &paginatedTestClient{responses: []json.RawMessage{
 		json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"meta":{"has_more":true}}` + "`" + `),
