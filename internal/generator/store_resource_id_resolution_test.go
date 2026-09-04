@@ -236,9 +236,11 @@ paths:
 	assert.NotContains(t, overrideBlock, `"rankings-only-date"`)
 	assert.Contains(t, storeContent, "func canonicalCompositeIDFromOverride(")
 	assert.Contains(t, storeContent, "func splitResourceIDFieldOverride(")
+	assert.Contains(t, storeContent, "func encodeCompositeResourceIDPart(")
+	assert.Contains(t, storeContent, "func joinCompositeResourceID(")
 
 	requireGeneratedCompiles(t, outputDir)
 	runGoCommandRequired(t, outputDir, "test", "./internal/store",
-		"-run", "Test(ExtractResourceID_CompositeDateAndSlug|ExtractResourceID_RefusesUnusableValues|UpsertBatch_CompositeDateIDStoresDistinctRows)",
+		"-run", "Test(ExtractResourceID_CompositeDateAndSlug|ExtractResourceID_CompositePartsDoNotCollide|ExtractResourceID_CompositeNumericPart|ExtractResourceID_RefusesUnusableValues|UpsertBatch_CompositeDateIDStoresDistinctRows)",
 		"-count=1")
 }

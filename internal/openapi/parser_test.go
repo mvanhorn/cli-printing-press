@@ -8901,6 +8901,33 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
 			wantID: "date+model_permaslug",
 		},
 		{
+			// After a date-shaped field starts composing, a later numeric
+			// identifier must still join (stringified at storage time).
+			name: "tier 6: date-shaped field composes with a later numeric identity",
+			schemaYAML: `                  type: object
+                  required: [delivery_date, order_number]
+                  properties:
+                    delivery_date:
+                      type: string
+                      format: date
+                    order_number: {type: integer}
+`,
+			wantID: "delivery_date+order_number",
+		},
+		{
+			// Mutable/status strings must not enter the composite; a later
+			// status change would otherwise mint a new storage key.
+			name: "tier 6: composing skips mutable status after a stable identity",
+			schemaYAML: `                  type: object
+                  required: [date, model_permaslug, status]
+                  properties:
+                    date: {type: string}
+                    model_permaslug: {type: string}
+                    status: {type: string}
+`,
+			wantID: "date+model_permaslug",
+		},
+		{
 			name: "tier 6: ISO-date example marks a field unusable as a solo ID",
 			schemaYAML: `                  type: object
                   required: [day, model]

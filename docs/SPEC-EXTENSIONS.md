@@ -1382,9 +1382,14 @@ Rules:
   then the first solo-usable required scalar. A date-shaped required field
   (OpenAPI `format: date` / `date-time`, a date-like name such as `date` /
   `created_at`, or an ISO-date example) is never selected as a solo IDField:
-  if later required string fields exist, they are joined with `+` as a
-  composite identity; otherwise IDField stays empty so runtime fallbacks
-  apply. URL-shaped keys qualify only
+  if later required identity fields exist (string or numeric, excluding
+  mutable/metric names such as `status` or `total_tokens`), they are joined
+  with `+` as a composite identity; otherwise IDField stays empty so runtime
+  fallbacks apply. Generated `ExtractResourceID` joins part *values* with `+`
+  after escaping `\` and `+` inside each part so distinct tuples cannot
+  collide. Date-shaped parts are allowed inside a
+  composite; a solo date field is not, because `CanonicalResourceID`
+  rejects ISO-date values. URL-shaped keys qualify only
   when the field schema is a plausible ID and either the field is required or
   its name, title, description, or format carries an identifier hint; an
   optional generic `url` therefore falls through to `name`.

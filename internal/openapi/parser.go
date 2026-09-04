@@ -6669,7 +6669,10 @@ func resolveRequiredIDField(itemSchema *openapi3.Schema) string {
 			continue
 		}
 		if composing {
-			if isCompositeIDPartSchema(schema) {
+			if isDateShapedIDField(fieldName, schema) {
+				continue
+			}
+			if isPlausibleIDFieldSchema(schema) && !isVolatileCompositeFieldName(fieldName) {
 				compositeParts = append(compositeParts, fieldName)
 			}
 			continue
@@ -6705,10 +6708,35 @@ func isCompositeIDPartSchema(schema *openapi3.Schema) bool {
 	if schema == nil || schema.Type == nil {
 		return false
 	}
-	if !schema.Type.Includes(openapi3.TypeString) {
+	if len(schema.Enum) > 0 {
 		return false
 	}
-	return len(schema.Enum) == 0
+	if schema.Type.Includes(openapi3.TypeBoolean) {
+		return false
+	}
+	return schema.Type.Includes(openapi3.TypeString) ||
+		schema.Type.Includes(openapi3.TypeInteger) ||
+		schema.Type.Includes(openapi3.TypeNumber)
+}
+
+func isVolatileCompositeFieldName(name string) bool {
+	n := strings.ToLower(toSnakeCase(name))
+	switch n {
+	case "status", "state", "type", "kind", "mode", "phase", "stage",
+		"result", "outcome", "message", "description", "title", "label",
+		"note", "comment", "reason", "visibility", "severity", "priority",
+		"name", "display_name", "full_name", "short_name":
+		return true
+	}
+	for _, tok := range strings.Split(n, "_") {
+		switch tok {
+		case "token", "tokens", "count", "total", "amount", "price",
+			"quantity", "sum", "avg", "average", "score", "weight",
+			"volume", "size", "percent", "ratio", "balance", "qty":
+			return true
+		}
+	}
+	return false
 }
 
 func isDateShapedIDField(name string, schema *openapi3.Schema) bool {
