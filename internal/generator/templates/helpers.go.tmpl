@@ -3002,10 +3002,8 @@ func compactFields(data json.RawMessage, documentedFields ...map[string]bool) js
 	return data
 }
 
-// isCompactGravityField reports whether a schema field belongs on the
-// --compact allow-list. Endpoint-mirror commands pass documented fields
-// into compactListFields; keeping every schema key would make --compact a
-// no-op on homogeneous API lists.
+// Endpoint-mirror commands pass documented fields into compactListFields;
+// keeping every schema key would make --compact a no-op on homogeneous API lists.
 func isCompactGravityField(name string) bool {
 	switch name {
 	case "id", "name", "title", "identifier", "code", "slug", "key",
