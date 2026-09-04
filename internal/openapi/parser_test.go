@@ -8047,10 +8047,10 @@ func TestParseReadsXResourceIDCriticalAndSyncable(t *testing.T) {
 			wantSyncable: true,
 		},
 		{
-			name: "x-resource-id dotted path is preserved as a field path",
-			extraExt: `    x-resource-id: entityInfo.entityId
+			name: "x-resource-id composite identity is preserved",
+			extraExt: `    x-resource-id: date+model_permaslug
 `,
-			wantIDField: "entityInfo.entityId",
+			wantIDField: "date+model_permaslug",
 		},
 	}
 
@@ -8859,10 +8859,11 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
 			wantID: "ticker",
 		},
 		{
-			// A required date-time field must not be picked — timestamps are
-			// structurally non-identifier-shaped and often shared across
-			// batches of records.
-			name: "tier 5: date-time formatted field is skipped",
+			// A required date-time field is not a solo PK. When later
+			// required string fields exist, compose them so the store can
+			// key the real row identity instead of collapsing on the next
+			// scalar or rejecting ISO-date values.
+			name: "tier 6: date-time required field composes with the next string identity",
 			schemaYAML: `                  type: object
                   required: [created_at, order_number]
                   properties:
@@ -8871,12 +8872,10 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
                       format: date-time
                     order_number: {type: string}
 `,
-			wantID: "order_number",
+			wantID: "created_at+order_number",
 		},
 		{
-			// Date-only format must also be skipped — same uniqueness concern
-			// as date-time.
-			name: "tier 5: date-only formatted field is skipped",
+			name: "tier 6: date-only required field composes with the next string identity",
 			schemaYAML: `                  type: object
                   required: [delivery_date, tracking_code]
                   properties:
@@ -8885,7 +8884,82 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
                       format: date
                     tracking_code: {type: string}
 `,
-			wantID: "tracking_code",
+			wantID: "delivery_date+tracking_code",
+		},
+		{
+			// Rankings-style rows: `date` is a required string without
+			// format: date, so schema-format filtering alone would pick it
+			// and the store would then refuse every ISO-date value.
+			name: "tier 6: date-named string without format composes with remaining string identity",
+			schemaYAML: `                  type: object
+                  required: [date, model_permaslug, total_tokens]
+                  properties:
+                    date: {type: string}
+                    model_permaslug: {type: string}
+                    total_tokens: {type: integer}
+`,
+			wantID: "date+model_permaslug",
+		},
+		{
+			// After a date-shaped field starts composing, a later numeric
+			// identifier must still join (stringified at storage time).
+			name: "tier 6: date-shaped field composes with a later numeric identity",
+			schemaYAML: `                  type: object
+                  required: [delivery_date, order_number]
+                  properties:
+                    delivery_date:
+                      type: string
+                      format: date
+                    order_number: {type: integer}
+`,
+			wantID: "delivery_date+order_number",
+		},
+		{
+			// Mutable/status strings must not enter the composite; a later
+			// status change would otherwise mint a new storage key.
+			name: "tier 6: composing skips mutable status after a stable identity",
+			schemaYAML: `                  type: object
+                  required: [date, model_permaslug, status]
+                  properties:
+                    date: {type: string}
+                    model_permaslug: {type: string}
+                    status: {type: string}
+`,
+			wantID: "date+model_permaslug",
+		},
+		{
+			name: "tier 6: ISO-date example marks a field unusable as a solo ID",
+			schemaYAML: `                  type: object
+                  required: [day, model]
+                  properties:
+                    day:
+                      type: string
+                      example: "2024-01-15"
+                    model: {type: string}
+`,
+			wantID: "day+model",
+		},
+		{
+			name: "tier 6: date-named string without format is not a solo ID",
+			schemaYAML: `                  type: object
+                  required: [date]
+                  properties:
+                    date: {type: string}
+                    model_permaslug: {type: string}
+`,
+			wantID: "",
+		},
+		{
+			name: "tier 6: later date field does not displace an earlier solo-usable ID",
+			schemaYAML: `                  type: object
+                  required: [ticker, created_at]
+                  properties:
+                    ticker: {type: string}
+                    created_at:
+                      type: string
+                      format: date-time
+`,
+			wantID: "ticker",
 		},
 		{
 			// All required fields are non-plausible-PK — empty result so

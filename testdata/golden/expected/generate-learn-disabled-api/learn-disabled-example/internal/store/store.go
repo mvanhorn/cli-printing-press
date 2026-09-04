@@ -1516,6 +1516,88 @@ func canonicalIDFromKey(obj map[string]any, key string) string {
 	return CanonicalResourceID(v)
 }
 
+func canonicalIDFromOverride(obj map[string]any, override string) string {
+	if s := canonicalIDFromKey(obj, override); s != "" {
+		return s
+	}
+	return canonicalCompositeIDFromOverride(obj, override)
+}
+
+func overrideIdentityPresent(obj map[string]any, override string) bool {
+	if _, found := lookupRawFieldValue(obj, override); found {
+		return true
+	}
+	parts := splitResourceIDFieldOverride(override)
+	if len(parts) < 2 {
+		return false
+	}
+	for _, part := range parts {
+		if _, found := lookupRawFieldValue(obj, part); !found {
+			return false
+		}
+	}
+	return true
+}
+
+func splitResourceIDFieldOverride(override string) []string {
+	override = strings.TrimSpace(override)
+	if override == "" || !strings.Contains(override, "+") {
+		return nil
+	}
+	raw := strings.Split(override, "+")
+	parts := make([]string, 0, len(raw))
+	for _, part := range raw {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) < 2 {
+		return nil
+	}
+	return parts
+}
+
+func canonicalCompositeIDFromOverride(obj map[string]any, override string) string {
+	parts := splitResourceIDFieldOverride(override)
+	if len(parts) < 2 {
+		return ""
+	}
+	values := make([]string, 0, len(parts))
+	for _, key := range parts {
+		v, ok := lookupRawFieldValue(obj, key)
+		if !ok {
+			return ""
+		}
+		s := strings.TrimSpace(ResourceIDString(v))
+		if s == "" || s == "<nil>" {
+			return ""
+		}
+		// Date-shaped parts are allowed inside a composite; CanonicalResourceID
+		// still refuses a solo ISO date after the join.
+		if f, err := strconv.ParseFloat(s, 64); err == nil && f == 0 {
+			return ""
+		}
+		values = append(values, s)
+	}
+	return CanonicalResourceID(joinCompositeResourceID(values))
+}
+
+func encodeCompositeResourceIDPart(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `+`, `\+`)
+	return s
+}
+
+func joinCompositeResourceID(values []string) string {
+	encoded := make([]string, len(values))
+	for i, v := range values {
+		encoded[i] = encodeCompositeResourceIDPart(v)
+	}
+	return strings.Join(encoded, "+")
+}
+
 // ResourceIDString returns the stable text form used for resources.id.
 func ResourceIDString(v any) string {
 	switch t := v.(type) {
@@ -1614,7 +1696,7 @@ var resourceParentKeyColumns = map[string][]string{}
 // non-entity envelopes into the batch path.
 func ExtractResourceID(resourceType string, obj map[string]any) string {
 	if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
-		if s := canonicalIDFromKey(obj, override); s != "" {
+		if s := canonicalIDFromOverride(obj, override); s != "" {
 			return s
 		}
 	}
@@ -1660,7 +1742,7 @@ func identityKeyPresent(resourceType string, obj map[string]any) bool {
 		return false
 	}
 	if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
-		if _, found := lookupRawFieldValue(obj, override); found {
+		if overrideIdentityPresent(obj, override) {
 			return true
 		}
 	}
