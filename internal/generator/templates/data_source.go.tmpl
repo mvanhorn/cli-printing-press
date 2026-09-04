@@ -853,9 +853,9 @@ func localReadPathPrefixSegment(seg string) bool {
 }
 
 func applyLocalParentScope(db *store.Store, resourceType string, items []json.RawMessage, parents []localPathParent) []json.RawMessage {
-	parentSet := make(map[string]bool, len(parents))
-	for _, parent := range parents {
-		parentSet[parent.ID] = true
+	immediate, ok := localReadImmediateParent(parents)
+	if !ok {
+		return items
 	}
 	var scopedIDs []string
 	sawComposite := false
@@ -866,7 +866,7 @@ func applyLocalParentScope(db *store.Store, resourceType string, items []json.Ra
 				continue
 			}
 			sawComposite = true
-			if parentSet[parent] {
+			if parent == immediate.ID {
 				scopedIDs = append(scopedIDs, id)
 			}
 		}
@@ -892,11 +892,18 @@ func applyLocalParentScope(db *store.Store, resourceType string, items []json.Ra
 		if json.Unmarshal(raw, &obj) != nil {
 			continue
 		}
-		if localItemStoredParentMatches(obj, parents, parentSet) {
+		if localItemStoredParentMatches(obj, immediate) {
 			out = append(out, raw)
 		}
 	}
 	return out
+}
+
+func localReadImmediateParent(parents []localPathParent) (localPathParent, bool) {
+	if len(parents) == 0 {
+		return localPathParent{}, false
+	}
+	return parents[len(parents)-1], true
 }
 
 func splitLocalCompositeID(id string) (bare, parent string, ok bool) {
@@ -907,17 +914,17 @@ func splitLocalCompositeID(id string) (bare, parent string, ok bool) {
 	return id[:i], id[i+1:], true
 }
 
-func localItemStoredParentMatches(obj map[string]any, parents []localPathParent, parentSet map[string]bool) bool {
-	for _, key := range localStoredParentFieldKeys(parents) {
+func localItemStoredParentMatches(obj map[string]any, parent localPathParent) bool {
+	for _, key := range localStoredParentFieldKeys(parent) {
 		got, ok := localObjectField(obj, key)
-		if ok && localValueInParentSet(got, parentSet) {
+		if ok && localFieldEquals(got, parent.ID) {
 			return true
 		}
 	}
 	return false
 }
 
-func localStoredParentFieldKeys(parents []localPathParent) []string {
+func localStoredParentFieldKeys(parent localPathParent) []string {
 	keys := []string{"parent_id", "parent"}
 	seen := map[string]bool{"parent_id": true, "parent": true}
 	add := func(key string) {
@@ -928,25 +935,13 @@ func localStoredParentFieldKeys(parents []localPathParent) []string {
 		seen[canon] = true
 		keys = append(keys, key)
 	}
-	for _, parent := range parents {
-		if parent.Type == "" {
-			continue
-		}
+	if parent.Type != "" {
 		add(parent.Type + "_id")
 		if singular := strings.TrimSuffix(parent.Type, "s"); singular != parent.Type && singular != "" {
 			add(singular + "_id")
 		}
 	}
 	return keys
-}
-
-func localValueInParentSet(val any, parentSet map[string]bool) bool {
-	for parent := range parentSet {
-		if localFieldEquals(val, parent) {
-			return true
-		}
-	}
-	return false
 }
 
 var localListLimitParams = map[string]bool{

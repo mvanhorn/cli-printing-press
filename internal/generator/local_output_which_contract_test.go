@@ -82,6 +82,8 @@ func TestGeneratedLocalReadsAndWhichHonorSharedRuntimeContracts(t *testing.T) {
 		"nested collection paths must constrain List results to the parent segment")
 	assert.Contains(t, dataSrc, "func localItemStoredParentMatches(",
 		"parent scope must use stored parent_id / path parent FK, not every *_id field")
+	assert.Contains(t, dataSrc, "func localReadImmediateParent(",
+		"composite and JSON parent matches must use the immediate path parent, not any ancestor ID")
 	assert.NotContains(t, dataSrc, "localFieldLooksLikeParentKey")
 	assert.Contains(t, dataSrc, "localListControlParams",
 		"query controls such as sort/order/search must not become equality filters")
@@ -258,6 +260,53 @@ func TestResolveLocalNestedCollectionStaysInParentScope(t *testing.T) {
 		if item["id"] == "s2" {
 			t.Fatalf("owner_id t1 must not pull a t2-scoped shop into /teams/t1/shops: %#v", item)
 		}
+	}
+}
+
+func seedDeepNestedShopsStore(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("shopsapi-pp-cli"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	rows := []struct {
+		id   string
+		body string
+	}{
+		{"s1\x00m1", `+"`"+`{"id":"s1","name":"Message One","parent_id":"m1","channel_id":"c1"}`+"`"+`},
+		{"s2\x00c1", `+"`"+`{"id":"s2","name":"Channel Scoped","parent_id":"c1"}`+"`"+`},
+		{"s3\x00m2", `+"`"+`{"id":"s3","name":"Message Two","parent_id":"m2","channel_id":"c1"}`+"`"+`},
+	}
+	for _, row := range rows {
+		if err := db.Upsert("shops", row.id, json.RawMessage(row.body)); err != nil {
+			t.Fatalf("upsert %s: %v", row.id, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+}
+
+func TestResolveLocalNestedCollectionUsesImmediateParent(t *testing.T) {
+	seedDeepNestedShopsStore(t)
+	data, _, err := resolveLocal(context.Background(), nil, ioDiscard(), "shops", true, "/channels/c1/messages/m1/shops", nil, "test")
+	if err != nil {
+		t.Fatalf("resolveLocal deep nested collection: %v", err)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("expected a JSON array, got %s: %v", data, err)
+	}
+	if len(items) != 1 || items[0]["id"] != "s1" {
+		t.Fatalf("deep nested list = %#v, want only the m1-scoped row", items)
 	}
 }
 
