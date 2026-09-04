@@ -2052,6 +2052,35 @@ func isDryRunResponseForClient(c any, data json.RawMessage) bool {
 	return ok && isDryRunResponse(dryRunClient.IsDryRun(), data)
 }
 
+// handleBinaryResponseDelivery runs before the binary-response structured-output
+// refusal. Dry-run has no bytes to write; a file sink writes decoded bytes and
+// only then emits a receipt so stdout cannot claim success after a failed write.
+func handleBinaryResponseDelivery(cmd *cobra.Command, flags *rootFlags, data json.RawMessage) (bool, error) {
+	if flags != nil && isDryRunResponse(flags.dryRun, data) {
+		flags.deliverBuf = nil
+		if flags.quiet {
+			return true, nil
+		}
+		printDryRun := flags.asJSON || flags.agent || flags.csv || flags.compact || flags.plain || flags.selectFields != "" || !isTerminal(cmd.OutOrStdout())
+		if printDryRun {
+			return true, printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "dry-run"})
+		}
+		return true, nil
+	}
+	if flags == nil || flags.deliverSink.Scheme != "file" {
+		return false, nil
+	}
+	raw, contentType := binaryDeliverPayload(data)
+	if err := Deliver(flags.deliverSink, raw, flags.compact); err != nil {
+		return true, err
+	}
+	flags.deliverBuf = nil
+	if flags.quiet {
+		return true, nil
+	}
+	return true, writeBinaryDeliverReceipt(cmd.OutOrStdout(), flags.deliverSink, raw, contentType)
+}
+
 func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any, documentedFields ...map[string]bool) error {
 	if err := validatePlatformAnalytics(flags); err != nil {
 		return err

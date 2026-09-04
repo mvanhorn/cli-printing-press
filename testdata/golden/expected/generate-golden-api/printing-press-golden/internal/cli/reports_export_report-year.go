@@ -67,6 +67,9 @@ func newReportsExportReportYearCmd(flags *rootFlags) *cobra.Command {
 			_ = json.Valid
 			_ = os.Stderr
 			_ = prov
+			if handled, derr := handleBinaryResponseDelivery(cmd, flags, data); handled {
+				return derr
+			}
 			if flags.quiet {
 				return nil
 			}

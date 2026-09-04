@@ -484,6 +484,9 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- if .HasStore}}
 			_ = prov
 {{- end}}
+			if handled, derr := handleBinaryResponseDelivery(cmd, flags, data); handled {
+				return derr
+			}
 			if flags.quiet {
 				return nil
 			}

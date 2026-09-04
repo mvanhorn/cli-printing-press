@@ -1656,6 +1656,21 @@ func wrapBinaryResponse(ct string, body []byte) (json.RawMessage, error) {
 	return json.RawMessage(out), nil
 }
 
+// UnwrapBinaryResponse recovers original bytes from wrapBinaryResponse's JSON
+// envelope. Ordinary JSON is left intact so file delivery of API objects is
+// not treated as media.
+func UnwrapBinaryResponse(body []byte) (raw []byte, contentType string, ok bool) {
+	var env binaryResponseEnvelope
+	if err := json.Unmarshal(body, &env); err != nil || !env.PPBinary || env.Encoding != "base64" {
+		return nil, "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(env.Data)
+	if err != nil {
+		return nil, "", false
+	}
+	return raw, env.ContentType, true
+}
+
 // sanitizeJSONResponse strips known JSONP/XSSI prefixes and UTF-8 BOM from
 // response bodies so that downstream JSON parsing succeeds. For clean JSON
 // responses these checks are no-ops.
