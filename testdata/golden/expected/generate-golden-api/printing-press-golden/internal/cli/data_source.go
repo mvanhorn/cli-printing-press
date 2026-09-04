@@ -753,8 +753,8 @@ func resolveLocal(ctx context.Context, flags *rootFlags, hintWriter io.Writer, r
 		if len(items) == 0 {
 			return nil, DataProvenance{}, fmt.Errorf("no local data for %q. Run 'printing-press-golden-pp-cli sync' first", resourceType)
 		}
-		if parentIDs := localReadPathParentIDs(resourceType, path); len(parentIDs) > 0 {
-			items = applyLocalParentScope(db, resourceType, items, parentIDs)
+		if parents := localReadPathParents(resourceType, path); len(parents) > 0 {
+			items = applyLocalParentScope(db, resourceType, items, parents)
 		}
 		items, unsupported := applyLocalListFilters(items, params)
 		if len(unsupported) > 0 {
@@ -799,7 +799,12 @@ func localReadPathIsCollection(resourceType, path string, isList bool) bool {
 	return strings.EqualFold(parts[len(parts)-1], resourceType)
 }
 
-func localReadPathParentIDs(resourceType, path string) []string {
+type localPathParent struct {
+	Type string
+	ID   string
+}
+
+func localReadPathParents(resourceType, path string) []localPathParent {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) == 0 || (len(parts) == 1 && parts[0] == "") {
 		return nil
@@ -818,11 +823,12 @@ func localReadPathParentIDs(resourceType, path string) []string {
 		}
 		stripped = append(stripped, part)
 	}
-	var parents []string
+	var parents []localPathParent
 	for i := 1; i < len(stripped); i += 2 {
-		if stripped[i] != "" {
-			parents = append(parents, stripped[i])
+		if stripped[i] == "" {
+			continue
 		}
+		parents = append(parents, localPathParent{Type: stripped[i-1], ID: stripped[i]})
 	}
 	return parents
 }
@@ -844,19 +850,39 @@ func localReadPathPrefixSegment(seg string) bool {
 	return false
 }
 
-func applyLocalParentScope(db *store.Store, resourceType string, items []json.RawMessage, parentIDs []string) []json.RawMessage {
-	parentSet := make(map[string]bool, len(parentIDs))
-	for _, id := range parentIDs {
-		parentSet[id] = true
+func applyLocalParentScope(db *store.Store, resourceType string, items []json.RawMessage, parents []localPathParent) []json.RawMessage {
+	parentSet := make(map[string]bool, len(parents))
+	for _, parent := range parents {
+		parentSet[parent.ID] = true
 	}
-	allowedBare := map[string]bool{}
+	var scopedIDs []string
+	sawComposite := false
 	if ids, err := db.ListIDs(resourceType); err == nil {
 		for _, id := range ids {
-			bare, parent, ok := splitLocalCompositeID(id)
-			if ok && parentSet[parent] {
-				allowedBare[bare] = true
+			_, parent, ok := splitLocalCompositeID(id)
+			if !ok {
+				continue
+			}
+			sawComposite = true
+			if parentSet[parent] {
+				scopedIDs = append(scopedIDs, id)
 			}
 		}
+	}
+	if sawComposite {
+		out := make([]json.RawMessage, 0, len(scopedIDs))
+		for _, id := range scopedIDs {
+			item, err := db.Get(resourceType, id)
+			if err != nil {
+				continue
+			}
+			trimmed := strings.TrimSpace(string(item))
+			if trimmed == "" || trimmed == "null" || trimmed == "[]" || trimmed == "{}" {
+				continue
+			}
+			out = append(out, item)
+		}
+		return out
 	}
 	out := make([]json.RawMessage, 0, len(items))
 	for _, raw := range items {
@@ -864,11 +890,7 @@ func applyLocalParentScope(db *store.Store, resourceType string, items []json.Ra
 		if json.Unmarshal(raw, &obj) != nil {
 			continue
 		}
-		if localItemJSONMatchesParents(obj, parentSet) {
-			out = append(out, raw)
-			continue
-		}
-		if childID := localItemID(obj); childID != "" && allowedBare[childID] {
+		if localItemStoredParentMatches(obj, parents, parentSet) {
 			out = append(out, raw)
 		}
 	}
@@ -883,38 +905,37 @@ func splitLocalCompositeID(id string) (bare, parent string, ok bool) {
 	return id[:i], id[i+1:], true
 }
 
-func localItemID(obj map[string]any) string {
-	got, ok := localObjectField(obj, "id")
-	if !ok {
-		return ""
-	}
-	if s, ok := got.(string); ok {
-		return s
-	}
-	return strings.TrimSpace(fmt.Sprint(got))
-}
-
-func localItemJSONMatchesParents(obj map[string]any, parentSet map[string]bool) bool {
-	for key, val := range obj {
-		if !localFieldLooksLikeParentKey(key) {
-			continue
-		}
-		if localValueInParentSet(val, parentSet) {
+func localItemStoredParentMatches(obj map[string]any, parents []localPathParent, parentSet map[string]bool) bool {
+	for _, key := range localStoredParentFieldKeys(parents) {
+		got, ok := localObjectField(obj, key)
+		if ok && localValueInParentSet(got, parentSet) {
 			return true
 		}
 	}
 	return false
 }
 
-func localFieldLooksLikeParentKey(key string) bool {
-	canon := localParamCanon(key)
-	switch canon {
-	case "id", "uuid", "gid", "sid", "uid", "guid", "api_id":
-		return false
-	case "parent", "parent_id":
-		return true
+func localStoredParentFieldKeys(parents []localPathParent) []string {
+	keys := []string{"parent_id", "parent"}
+	seen := map[string]bool{"parent_id": true, "parent": true}
+	add := func(key string) {
+		canon := localParamCanon(key)
+		if canon == "" || seen[canon] {
+			return
+		}
+		seen[canon] = true
+		keys = append(keys, key)
 	}
-	return strings.HasSuffix(canon, "_id") || (strings.HasSuffix(canon, "id") && len(canon) > 2)
+	for _, parent := range parents {
+		if parent.Type == "" {
+			continue
+		}
+		add(parent.Type + "_id")
+		if singular := strings.TrimSuffix(parent.Type, "s"); singular != parent.Type && singular != "" {
+			add(singular + "_id")
+		}
+	}
+	return keys
 }
 
 func localValueInParentSet(val any, parentSet map[string]bool) bool {
@@ -942,7 +963,7 @@ var localListCursorParams = map[string]bool{
 	"cursor": true, "after": true, "before": true,
 	"page_token": true, "pagetoken": true,
 	"starting_after": true, "ending_before": true,
-	"next_cursor": true, "start_cursor": true,
+	"next_cursor": true, "start_cursor": true, "next": true,
 }
 
 var localListControlParams = map[string]bool{

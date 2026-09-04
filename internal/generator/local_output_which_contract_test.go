@@ -63,7 +63,7 @@ func TestGeneratedLocalReadsAndWhichHonorSharedRuntimeContracts(t *testing.T) {
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
 	gen.NovelFeatures = []NovelFeature{
 		{Name: "Search shops", Command: "search", Description: "Full-text search across synced shops", Group: "Local state"},
 	}
@@ -80,9 +80,14 @@ func TestGeneratedLocalReadsAndWhichHonorSharedRuntimeContracts(t *testing.T) {
 		"local list reads must apply supported query filters")
 	assert.Contains(t, dataSrc, "func applyLocalParentScope(",
 		"nested collection paths must constrain List results to the parent segment")
+	assert.Contains(t, dataSrc, "func localItemStoredParentMatches(",
+		"parent scope must use stored parent_id / path parent FK, not every *_id field")
+	assert.NotContains(t, dataSrc, "localFieldLooksLikeParentKey")
 	assert.Contains(t, dataSrc, "localListControlParams",
 		"query controls such as sort/order/search must not become equality filters")
 	assert.NotContains(t, dataSrc, "local data is unfiltered")
+
+	requireGeneratedCompiles(t, outputDir)
 
 	whichSrc := readGeneratedFile(t, outputDir, "internal", "cli", "which.go")
 	assert.Contains(t, whichSrc, `return usageErr(fmt.Errorf("no match for %q;`)
@@ -220,7 +225,7 @@ func seedNestedShopsStore(t *testing.T) {
 		body string
 	}{
 		{"s1\x00t1", `+"`"+`{"id":"s1","name":"Team One","status":"active","parent_id":"t1"}`+"`"+`},
-		{"s2\x00t2", `+"`"+`{"id":"s2","name":"Team Two","status":"active","parent_id":"t2"}`+"`"+`},
+		{"s2\x00t2", `+"`"+`{"id":"s2","name":"Team Two","status":"active","parent_id":"t2","owner_id":"t1"}`+"`"+`},
 		{"s3\x00t1", `+"`"+`{"id":"s3","name":"Team One B","status":"paused","parent_id":"t1"}`+"`"+`},
 	}
 	for _, row := range rows {
@@ -249,6 +254,9 @@ func TestResolveLocalNestedCollectionStaysInParentScope(t *testing.T) {
 	for _, item := range items {
 		if item["parent_id"] != "t1" {
 			t.Fatalf("nested list leaked shop %#v", item)
+		}
+		if item["id"] == "s2" {
+			t.Fatalf("owner_id t1 must not pull a t2-scoped shop into /teams/t1/shops: %#v", item)
 		}
 	}
 }
