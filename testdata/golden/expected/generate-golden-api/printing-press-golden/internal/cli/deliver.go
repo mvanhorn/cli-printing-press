@@ -60,16 +60,13 @@ func ParseDeliverSink(spec string) (DeliverSink, error) {
 
 // Deliver routes a captured output buffer to the configured sink. stdout
 // is a no-op because the buffer has already been streamed to stdout via
-// the MultiWriter set up in root.go. file: sinks unwrap a binary-response
-// envelope so downloaded media is the original bytes, not base64 JSON.
+// the MultiWriter set up in root.go. Binary-response commands unwrap the
+// envelope before calling Deliver so ordinary JSON is never decoded here.
 func Deliver(sink DeliverSink, body []byte, compact bool) error {
 	switch sink.Scheme {
 	case "", "stdout":
 		return nil
 	case "file":
-		if raw, _, ok := unwrapBinaryDeliverBody(body); ok {
-			body = raw
-		}
 		return deliverFile(sink.Target, body)
 	case "webhook":
 		return deliverWebhook(sink.Target, body, compact)
@@ -87,10 +84,6 @@ func binaryDeliverPayload(body []byte) (raw []byte, contentType string) {
 		return raw, contentType
 	}
 	return body, ""
-}
-
-func deliverSinkIsNonStdout(flags *rootFlags) bool {
-	return flags != nil && flags.deliverSink.Scheme != "" && flags.deliverSink.Scheme != "stdout"
 }
 
 type binaryDeliverReceipt struct {

@@ -2008,15 +2008,17 @@ func isDryRunResponseForClient(c any, data json.RawMessage) bool {
 	return ok && isDryRunResponse(dryRunClient.IsDryRun(), data)
 }
 
-// handleBinaryResponseDelivery short-circuits --dry-run and --deliver file:
-// so structured-output flags cannot refuse the named binary-delivery remedy.
+// handleBinaryResponseDelivery runs before the binary-response structured-output
+// refusal. Dry-run has no bytes to write; a file sink writes decoded bytes and
+// only then emits a receipt so stdout cannot claim success after a failed write.
 func handleBinaryResponseDelivery(cmd *cobra.Command, flags *rootFlags, data json.RawMessage) (bool, error) {
 	if flags != nil && isDryRunResponse(flags.dryRun, data) {
 		flags.deliverBuf = nil
 		if flags.quiet {
 			return true, nil
 		}
-		if flags.asJSON || flags.agent || flags.csv || flags.compact || flags.selectFields != "" || (!isTerminal(cmd.OutOrStdout()) && !flags.plain) {
+		printDryRun := flags.asJSON || flags.agent || flags.csv || flags.compact || flags.plain || flags.selectFields != "" || !isTerminal(cmd.OutOrStdout())
+		if printDryRun {
 			return true, printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "dry-run"})
 		}
 		return true, nil
@@ -2025,12 +2027,10 @@ func handleBinaryResponseDelivery(cmd *cobra.Command, flags *rootFlags, data jso
 		return false, nil
 	}
 	raw, contentType := binaryDeliverPayload(data)
-	if flags.deliverBuf != nil {
-		flags.deliverBuf.Reset()
-		if _, err := flags.deliverBuf.Write(raw); err != nil {
-			return true, err
-		}
+	if err := Deliver(flags.deliverSink, raw, flags.compact); err != nil {
+		return true, err
 	}
+	flags.deliverBuf = nil
 	if flags.quiet {
 		return true, nil
 	}
