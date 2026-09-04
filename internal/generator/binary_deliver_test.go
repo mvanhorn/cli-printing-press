@@ -156,8 +156,7 @@ func TestBinaryResponseHonorsDeliverAndDryRun(t *testing.T) {
 		require.NoError(t, readErr)
 		require.Equal(t, payload, got)
 		require.NotContains(t, string(got), `_pp_binary`)
-		var receipt map[string]any
-		require.NoError(t, json.Unmarshal([]byte(out), &receipt), out)
+		receipt := decodeLastJSONObject(t, out)
 		require.Equal(t, true, receipt["delivered"])
 		require.Equal(t, "file", receipt["sink"])
 		require.Equal(t, dest, receipt["target"])
@@ -219,4 +218,13 @@ func TestBinaryResponseHonorsDeliverAndDryRun(t *testing.T) {
 		require.Contains(t, string(got), `"id"`)
 		require.NotEqual(t, payload, got)
 	})
+}
+
+func decodeLastJSONObject(t *testing.T, out string) map[string]any {
+	t.Helper()
+	start := strings.LastIndex(out, "{")
+	require.NotEqual(t, -1, start, out)
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out[start:]), &receipt), out)
+	return receipt
 }
