@@ -30,6 +30,9 @@ func TestBinaryResponseHonorsDeliverAndDryRun(t *testing.T) {
 		case r.URL.Path == "/items" && r.Method == http.MethodGet:
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`[{"id":"1"}]`))
+		case r.URL.Path == "/lookalike" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"_pp_binary":true,"encoding":"base64","data":"QUJDRA==","content_type":"application/pdf"}`))
 		default:
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
@@ -103,6 +106,16 @@ func TestBinaryResponseHonorsDeliverAndDryRun(t *testing.T) {
 				},
 			},
 		},
+		"lookalike": {
+			Description: "JSON that resembles a binary envelope",
+			Endpoints: map[string]spec.Endpoint{
+				"get": {
+					Method:      http.MethodGet,
+					Path:        "/lookalike",
+					Description: "Return JSON with binary-envelope field names",
+				},
+			},
+		},
 	}
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
@@ -113,12 +126,12 @@ func TestBinaryResponseHonorsDeliverAndDryRun(t *testing.T) {
 
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "reports_export_report-year.go")
 	require.Contains(t, endpointSrc, `handleBinaryResponseDelivery(cmd, flags, data)`)
-	require.Contains(t, endpointSrc, `!deliverSinkIsNonStdout(flags)`)
+	require.NotContains(t, endpointSrc, `deliverSinkIsNonStdout`)
 	require.Contains(t, endpointSrc, `binary response cannot be rendered as structured output`)
 
 	audioSrc := readGeneratedFile(t, outputDir, "internal", "cli", "audio_create-speech.go")
 	require.Contains(t, audioSrc, `handleBinaryResponseDelivery(cmd, flags, data)`)
-	require.Contains(t, audioSrc, `!deliverSinkIsNonStdout(flags)`)
+	require.NotContains(t, audioSrc, `deliverSinkIsNonStdout`)
 
 	promotedSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_certificate.go")
 	require.Contains(t, promotedSrc, `handleBinaryResponseDelivery(cmd, flags, data)`)
@@ -126,6 +139,8 @@ func TestBinaryResponseHonorsDeliverAndDryRun(t *testing.T) {
 	deliverSrc := readGeneratedFile(t, outputDir, "internal", "cli", "deliver.go")
 	require.Contains(t, deliverSrc, `unwrapBinaryDeliverBody(body)`)
 	require.Contains(t, deliverSrc, `client.UnwrapBinaryResponse`)
+	require.NotContains(t, deliverSrc, `func deliverSinkIsNonStdout`)
+	require.NotContains(t, deliverSrc, `if raw, _, ok := unwrapBinaryDeliverBody(body); ok {`)
 
 	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
 	require.Contains(t, clientSrc, `func UnwrapBinaryResponse(`)
@@ -144,6 +159,13 @@ func TestBinaryResponseHonorsDeliverAndDryRun(t *testing.T) {
 		require.Error(t, err, out)
 		require.Contains(t, out, "binary response cannot be rendered as structured output")
 		require.Contains(t, out, "--deliver file:")
+		requireExitCode(t, err, 2)
+	})
+
+	t.Run("endpoint-csv-webhook-still-refuses", func(t *testing.T) {
+		out, err := runGeneratedCLI(t, binaryPath, baseEnv, "reports", "export", "report-year", "--csv", "--deliver", "webhook:http://127.0.0.1:1/x")
+		require.Error(t, err, out)
+		require.Contains(t, out, "binary response cannot be rendered as structured output")
 		requireExitCode(t, err, 2)
 	})
 
@@ -172,6 +194,16 @@ func TestBinaryResponseHonorsDeliverAndDryRun(t *testing.T) {
 		require.Equal(t, payload, got)
 	})
 
+	t.Run("endpoint-failed-file-deliver-does-not-claim-success", func(t *testing.T) {
+		parent := filepath.Join(t.TempDir(), "not-a-dir")
+		require.NoError(t, os.WriteFile(parent, []byte("x"), 0o644))
+		dest := filepath.Join(parent, "report.pdf")
+		out, err := runGeneratedCLI(t, binaryPath, baseEnv, "reports", "export", "report-year", "--deliver", "file:"+dest)
+		require.Error(t, err, out)
+		require.NotContains(t, out, `"delivered":true`)
+		require.NotContains(t, out, `"delivered": true`)
+	})
+
 	t.Run("endpoint-dry-run-json", func(t *testing.T) {
 		dest := filepath.Join(t.TempDir(), "should-not-exist.pdf")
 		out, err := runGeneratedCLI(t, binaryPath, baseEnv, "reports", "export", "report-year", "--dry-run", "--json", "--deliver", "file:"+dest)
@@ -180,6 +212,13 @@ func TestBinaryResponseHonorsDeliverAndDryRun(t *testing.T) {
 		require.Contains(t, out, `"dry_run"`)
 		_, statErr := os.Stat(dest)
 		require.Error(t, statErr)
+	})
+
+	t.Run("endpoint-dry-run-plain-prints", func(t *testing.T) {
+		out, err := runGeneratedCLI(t, binaryPath, baseEnv, "reports", "export", "report-year", "--dry-run", "--plain")
+		require.NoError(t, err, out)
+		require.NotEmpty(t, strings.TrimSpace(out))
+		require.Contains(t, out, "dry_run")
 	})
 
 	t.Run("post-json-deliver-writes-raw-bytes", func(t *testing.T) {
@@ -217,6 +256,16 @@ func TestBinaryResponseHonorsDeliverAndDryRun(t *testing.T) {
 		require.NoError(t, readErr)
 		require.Contains(t, string(got), `"id"`)
 		require.NotEqual(t, payload, got)
+	})
+
+	t.Run("json-lookalike-envelope-is-not-decoded", func(t *testing.T) {
+		dest := filepath.Join(t.TempDir(), "lookalike.json")
+		out, err := runGeneratedCLI(t, binaryPath, baseEnv, "lookalike", "--json", "--deliver", "file:"+dest)
+		require.NoError(t, err, out)
+		got, readErr := os.ReadFile(dest)
+		require.NoError(t, readErr)
+		require.Contains(t, string(got), `"_pp_binary"`)
+		require.NotEqual(t, []byte("ABCD"), got)
 	})
 }
 
