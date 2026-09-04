@@ -6728,7 +6728,7 @@ func isVolatileCompositeFieldName(name string) bool {
 		"name", "display_name", "full_name", "short_name":
 		return true
 	}
-	for _, tok := range strings.Split(n, "_") {
+	for tok := range strings.SplitSeq(n, "_") {
 		switch tok {
 		case "token", "tokens", "count", "total", "amount", "price",
 			"quantity", "sum", "avg", "average", "score", "weight",
