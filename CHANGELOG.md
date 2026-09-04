@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.31.7](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.6...v4.31.7) (2026-09-04)
+
+
+### Bug Fixes
+
+* **cli:** align local reads, output modes, and which exits ([#4550](https://github.com/mvanhorn/cli-printing-press/issues/4550)) ([bb29246](https://github.com/mvanhorn/cli-printing-press/commit/bb29246f325fc09cecabb6c66d349feed723d756))
+* **cli:** align profiler IDField with store date rejection ([#4549](https://github.com/mvanhorn/cli-printing-press/issues/4549)) ([28fae7a](https://github.com/mvanhorn/cli-printing-press/commit/28fae7a2e399edc65b612978a431ecc4163a4cf6))
+* **cli:** bound MCP SQL execution time and row materialisation ([#4522](https://github.com/mvanhorn/cli-printing-press/issues/4522)) ([f9c3e16](https://github.com/mvanhorn/cli-printing-press/commit/f9c3e16754cede12fd29cb54bbef1398870a7e5c))
+* **cli:** do not silently sync a default-filtered slice as the whole resource ([#4524](https://github.com/mvanhorn/cli-printing-press/issues/4524)) ([2f65ebf](https://github.com/mvanhorn/cli-printing-press/commit/2f65ebfb5b830bdafa30d5344c4ac1f4b91c57b5))
+* **cli:** honor --deliver for binary responses ([#4547](https://github.com/mvanhorn/cli-printing-press/issues/4547)) ([199ae28](https://github.com/mvanhorn/cli-printing-press/commit/199ae286f6c102984245b0bc912d1583d87ea389))
+* **cli:** keep --all and empty --csv results complete ([#4548](https://github.com/mvanhorn/cli-printing-press/issues/4548)) ([9f7e107](https://github.com/mvanhorn/cli-printing-press/commit/9f7e107f45a3d41659a002e84b78b6ed92eaa07c))
+* **cli:** keep non-JSON resources out of default sync ([#4525](https://github.com/mvanhorn/cli-printing-press/issues/4525)) ([17c349e](https://github.com/mvanhorn/cli-printing-press/commit/17c349ecfad4facf996e6e934c3a5620c389ef47))
+* **cli:** reprint from current novel_features, not the last built set ([#4521](https://github.com/mvanhorn/cli-printing-press/issues/4521)) ([32d0c5a](https://github.com/mvanhorn/cli-printing-press/commit/32d0c5acc12f3a2dcfbf5abc5149f8d2e3f00022)), closes [#3532](https://github.com/mvanhorn/cli-printing-press/issues/3532)
+* **cli:** run clientHooks on generated MCP clients ([#4523](https://github.com/mvanhorn/cli-printing-press/issues/4523)) ([eaf73df](https://github.com/mvanhorn/cli-printing-press/commit/eaf73dfd6b6a9bf3d5851c2655bd8bb722fa2747))
+* **cli:** skill dry-run templates match writeDryRun ([#4546](https://github.com/mvanhorn/cli-printing-press/issues/4546)) ([2fec32e](https://github.com/mvanhorn/cli-printing-press/commit/2fec32e34d9f7400722cd59ecb68836dfddb39a8))
+
 ## [4.31.6](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.5...v4.31.6) (2026-09-02)
 
 
