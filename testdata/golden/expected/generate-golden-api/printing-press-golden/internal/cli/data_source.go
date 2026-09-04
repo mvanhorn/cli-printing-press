@@ -14,6 +14,8 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -713,9 +715,10 @@ func mutationResponseHasID(resourceType string, data json.RawMessage) bool {
 }
 
 // resolveLocal reads data from the local SQLite store.
-// Note: local reads return ALL synced data for the resource type. Endpoint-specific
-// filters (query params, path scoping like /teams/{id}/users) are NOT applied locally.
-// The provenance metadata includes "unscoped":true when params were present but not applied.
+// Collection paths (isList, or a path whose last segment is the resource type)
+// list synced rows and apply supported query filters locally. Object paths
+// fetch by the trailing ID. Cursor-style params cannot be replayed locally
+// and are reported on stderr instead of silently ignored.
 func resolveLocal(ctx context.Context, flags *rootFlags, hintWriter io.Writer, resourceType string, isList bool, path string, params map[string]string, reason string) (json.RawMessage, DataProvenance, error) {
 	db, err := openStoreForRead(ctx, "printing-press-golden-pp-cli")
 	if err != nil {
@@ -732,12 +735,7 @@ func resolveLocal(ctx context.Context, flags *rootFlags, hintWriter io.Writer, r
 
 	prov := localProvenance(db, resourceType, reason)
 
-	// Warn if endpoint had filters that local reads can't reproduce
-	if len(params) > 0 {
-		fmt.Fprintf(os.Stderr, "warning: local data is unfiltered — endpoint filters are not applied to cached data\n")
-	}
-
-	if isList {
+	if localReadPathIsCollection(resourceType, path, isList) {
 		raw, err := db.List(resourceType, 0) // 0 = no limit, return all synced data
 		if err != nil {
 			return nil, DataProvenance{}, fmt.Errorf("querying local store: %w", err)
@@ -755,7 +753,17 @@ func resolveLocal(ctx context.Context, flags *rootFlags, hintWriter io.Writer, r
 		if len(items) == 0 {
 			return nil, DataProvenance{}, fmt.Errorf("no local data for %q. Run 'printing-press-golden-pp-cli sync' first", resourceType)
 		}
-		// Marshal []json.RawMessage into a single JSON array
+		items, unsupported := applyLocalListFilters(items, params)
+		if len(unsupported) > 0 {
+			warnWriter := hintWriter
+			if warnWriter == nil {
+				warnWriter = os.Stderr
+			}
+			fmt.Fprintf(warnWriter, "warning: local data could not apply filter(s) %s\n", strings.Join(unsupported, ", "))
+		}
+		if len(items) == 0 {
+			return json.RawMessage("[]"), prov, nil
+		}
 		data, err := json.Marshal(items)
 		if err != nil {
 			return nil, DataProvenance{}, fmt.Errorf("marshaling local data: %w", err)
@@ -763,8 +771,7 @@ func resolveLocal(ctx context.Context, flags *rootFlags, hintWriter io.Writer, r
 		return data, prov, nil
 	}
 
-	// Get by ID — extract the last path segment as the ID
-	parts := strings.Split(strings.TrimRight(path, "/"), "/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
 	id := parts[len(parts)-1]
 
 	item, err := db.Get(resourceType, id)
@@ -775,6 +782,176 @@ func resolveLocal(ctx context.Context, flags *rootFlags, hintWriter io.Writer, r
 		return nil, DataProvenance{}, fmt.Errorf("querying local store: %w", err)
 	}
 	return item, prov, nil
+}
+
+func localReadPathIsCollection(resourceType, path string, isList bool) bool {
+	if isList {
+		return true
+	}
+	trimmed := strings.Trim(path, "/")
+	if trimmed == "" {
+		return true
+	}
+	parts := strings.Split(trimmed, "/")
+	return strings.EqualFold(parts[len(parts)-1], resourceType)
+}
+
+var localListLimitParams = map[string]bool{
+	"limit": true, "per_page": true, "perpage": true, "page_size": true, "pagesize": true,
+}
+
+var localListOffsetParams = map[string]bool{
+	"offset": true, "skip": true,
+}
+
+var localListPageParams = map[string]bool{
+	"page": true, "page_number": true, "pagenumber": true,
+}
+
+var localListCursorParams = map[string]bool{
+	"cursor": true, "after": true, "before": true,
+	"page_token": true, "pagetoken": true,
+	"starting_after": true, "ending_before": true,
+	"next_cursor": true, "start_cursor": true,
+}
+
+func localParamCanon(key string) string {
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(key), "-", "_"))
+}
+
+func applyLocalListFilters(items []json.RawMessage, params map[string]string) ([]json.RawMessage, []string) {
+	if len(params) == 0 {
+		return items, nil
+	}
+	equality := map[string]string{}
+	unsupported := make([]string, 0)
+	limit := -1
+	offset := 0
+	page := 0
+	for key, val := range params {
+		val = strings.TrimSpace(val)
+		if val == "" {
+			continue
+		}
+		canon := localParamCanon(key)
+		switch {
+		case localListCursorParams[canon]:
+			unsupported = append(unsupported, key)
+		case localListLimitParams[canon]:
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 0 {
+				unsupported = append(unsupported, key)
+				continue
+			}
+			limit = n
+		case localListOffsetParams[canon]:
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 0 {
+				unsupported = append(unsupported, key)
+				continue
+			}
+			offset = n
+		case localListPageParams[canon]:
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 1 {
+				unsupported = append(unsupported, key)
+				continue
+			}
+			page = n
+		default:
+			equality[key] = val
+		}
+	}
+	if page > 1 && limit < 0 {
+		unsupported = append(unsupported, "page")
+		page = 0
+	}
+	if len(equality) > 0 {
+		filtered := make([]json.RawMessage, 0, len(items))
+		matchedKeys := map[string]bool{}
+		for _, raw := range items {
+			var obj map[string]any
+			if json.Unmarshal(raw, &obj) != nil {
+				continue
+			}
+			keep := true
+			for key, want := range equality {
+				got, ok := localObjectField(obj, key)
+				if !ok {
+					keep = false
+					continue
+				}
+				matchedKeys[key] = true
+				if !localFieldEquals(got, want) {
+					keep = false
+				}
+			}
+			if keep {
+				filtered = append(filtered, raw)
+			}
+		}
+		for key := range equality {
+			if !matchedKeys[key] {
+				unsupported = append(unsupported, key)
+			}
+		}
+		items = filtered
+	}
+	if page > 1 && limit >= 0 {
+		offset += (page - 1) * limit
+	}
+	if offset > 0 {
+		if offset >= len(items) {
+			items = items[:0]
+		} else {
+			items = items[offset:]
+		}
+	}
+	if limit >= 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	sort.Strings(unsupported)
+	return items, unsupported
+}
+
+func localObjectField(obj map[string]any, key string) (any, bool) {
+	if v, ok := obj[key]; ok {
+		return v, true
+	}
+	for k, v := range obj {
+		if strings.EqualFold(k, key) {
+			return v, true
+		}
+	}
+	canon := localParamCanon(key)
+	for k, v := range obj {
+		if localParamCanon(k) == canon {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+func localFieldEquals(got any, want string) bool {
+	if got == nil {
+		return want == "" || strings.EqualFold(want, "null")
+	}
+	switch v := got.(type) {
+	case bool:
+		return strings.EqualFold(want, strconv.FormatBool(v))
+	case float64:
+		return want == strconv.FormatFloat(v, 'f', -1, 64)
+	case json.Number:
+		return want == v.String()
+	case string:
+		return v == want
+	default:
+		encoded, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprint(v) == want
+		}
+		return string(encoded) == want
+	}
 }
 
 // Ensure time import is used (compilation guard).

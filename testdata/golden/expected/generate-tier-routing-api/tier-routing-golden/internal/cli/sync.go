@@ -132,6 +132,10 @@ Resource scoping:
 			defer db.Close()
 
 			syncEventWriter := cmd.OutOrStdout()
+			machineFormat := wantsMachineOutput(flags)
+			if machineFormat {
+				syncEventWriter = cmd.ErrOrStderr()
+			}
 
 			// If no specific resources, sync top-level resources
 			if len(resources) == 0 {
@@ -352,6 +356,18 @@ Resource scoping:
 						errCount, strings.ReplaceAll(msg, `"`, `\"`))
 				} else {
 					fmt.Fprintf(os.Stderr, "warning: %d resource(s) failed but exit code is 0 because the new default treats non-critical failures as warnings. Pass --strict to restore the old behavior, or annotate critical resources with x-critical: true.\n", errCount)
+				}
+			}
+			if machineFormat {
+				if err := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					"total_records": totalSynced,
+					"resources":     totalResources,
+					"success":       successCount,
+					"warned":        warnCount,
+					"errored":       errCount,
+					"duration_ms":   elapsed.Milliseconds(),
+				}, flags); err != nil {
+					return err
 				}
 			}
 			return nil

@@ -318,7 +318,8 @@ func newWhichCmd(flags *rootFlags) *cobra.Command {
 
 Exit codes:
   0  at least one match found
-  2  no confident match - the query did not score against any indexed capability; fall back to '--help' or 'search' if this CLI has one`,
+  2  no confident match - the query did not score against any indexed capability; fall back to '--help' or 'search' if this CLI has one. Machine output (--json/--csv/--plain/--quiet, or a pipe) still exits 2 and writes {"matches":[]} (or the equivalent empty table) to stdout.`,
+		SilenceUsage: true,
 		Example: `  printing-press-golden-pp-cli which "stale tickets"
   printing-press-golden-pp-cli which "bottleneck"
   printing-press-golden-pp-cli which --limit 1 "send message"
@@ -336,14 +337,22 @@ Exit codes:
 			}
 
 			if len(matches) == 0 {
-				// Under --json, return an empty matches envelope at exit 0
-				// so agents can branch on `matches.length == 0` instead of
-				// parsing a usage error message. Non-JSON keeps the typed
-				// exit-2 path so terminal users see the help hint.
-				if flags.asJSON {
-					return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+				// Machine output still uses the typed exit-2 no-match path.
+				// --json (and piped auto-JSON) emit {"matches":[]} on stdout
+				// so agents can branch on the envelope without treating exit 0
+				// as success. Human terminals keep the usage error only.
+				asJSON := flags.asJSON
+				if !asJSON && !isTerminal(cmd.OutOrStdout()) && !flags.csv && !flags.quiet && !flags.plain {
+					asJSON = true
+				}
+				if asJSON || flags.csv || flags.plain || flags.quiet {
+					outputFlags := *flags
+					outputFlags.asJSON = asJSON || flags.asJSON
+					if err := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 						"matches": []whichMatch{},
-					}, flags)
+					}, &outputFlags); err != nil {
+						return err
+					}
 				}
 				return usageErr(fmt.Errorf("no match for %q; try '%s --help' for the full command list", query, cmd.Root().Name()))
 			}

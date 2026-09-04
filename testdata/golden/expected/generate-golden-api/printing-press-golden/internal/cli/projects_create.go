@@ -201,7 +201,7 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 				if flags.selectFields != "" {
 					filtered = filterFields(filtered, flags.selectFields)
 				} else if flags.compact {
-					filtered = compactFields(filtered, map[string]bool{"id": true, "name": true, "status": true, "visibility": true})
+					filtered = compactFields(filtered, map[string]bool{"id": true, "name": true, "status": true})
 				}
 				if len(filtered) > 0 {
 					var parsed any
