@@ -67,10 +67,13 @@ func newReportsExportReportYearCmd(flags *rootFlags) *cobra.Command {
 			_ = json.Valid
 			_ = os.Stderr
 			_ = prov
+			if handled, derr := handleBinaryResponseDelivery(cmd, flags, data); handled {
+				return derr
+			}
 			if flags.quiet {
 				return nil
 			}
-			if flags.asJSON || flags.csv || flags.compact || flags.plain || flags.selectFields != "" {
+			if !deliverSinkIsNonStdout(flags) && (flags.asJSON || flags.csv || flags.compact || flags.plain || flags.selectFields != "") {
 				return usageErr(fmt.Errorf("binary response cannot be rendered as structured output; redirect stdout or use --deliver file:<path>"))
 			}
 			_, err = cmd.OutOrStdout().Write(data)

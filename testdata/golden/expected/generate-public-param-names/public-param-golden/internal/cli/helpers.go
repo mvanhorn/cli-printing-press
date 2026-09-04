@@ -1967,6 +1967,35 @@ func isDryRunResponseForClient(c any, data json.RawMessage) bool {
 	return ok && isDryRunResponse(dryRunClient.IsDryRun(), data)
 }
 
+// handleBinaryResponseDelivery short-circuits --dry-run and --deliver file:
+// so structured-output flags cannot refuse the named binary-delivery remedy.
+func handleBinaryResponseDelivery(cmd *cobra.Command, flags *rootFlags, data json.RawMessage) (bool, error) {
+	if flags != nil && isDryRunResponse(flags.dryRun, data) {
+		flags.deliverBuf = nil
+		if flags.quiet {
+			return true, nil
+		}
+		if flags.asJSON || flags.agent || flags.csv || flags.compact || flags.selectFields != "" || (!isTerminal(cmd.OutOrStdout()) && !flags.plain) {
+			return true, printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "dry-run"})
+		}
+		return true, nil
+	}
+	if flags == nil || flags.deliverSink.Scheme != "file" {
+		return false, nil
+	}
+	raw, contentType := binaryDeliverPayload(data)
+	if flags.deliverBuf != nil {
+		flags.deliverBuf.Reset()
+		if _, err := flags.deliverBuf.Write(raw); err != nil {
+			return true, err
+		}
+	}
+	if flags.quiet {
+		return true, nil
+	}
+	return true, writeBinaryDeliverReceipt(os.Stdout, flags.deliverSink, raw, contentType)
+}
+
 func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any, documentedFields ...map[string]bool) error {
 	if err := validatePlatformAnalytics(flags); err != nil {
 		return err
