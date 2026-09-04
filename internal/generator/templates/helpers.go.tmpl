@@ -1866,7 +1866,6 @@ func paginationCursorToken(raw json.RawMessage) string {
 	return paginationLinkURL(raw)
 }
 
-// resolvePaginatedNextCursor returns the next request cursor for --all.
 // Declared next-cursor paths win, then JSON:API/HAL links.next and top-level
 // next URLs. Followable URLs are reduced to the query token the request param
 // can carry; a raw URL is not written into page/offset params.
@@ -3206,7 +3205,7 @@ func printCSV(w io.Writer, data json.RawMessage, documentedFields ...map[string]
 			if len(keys) == 0 {
 				return nil
 			}
-			fmt.Fprintln(w, strings.Join(keys, ","))
+			writeCSVRow(w, keys)
 			return nil
 		}
 		fmt.Fprintln(w, string(data))
@@ -3224,31 +3223,34 @@ func printCSV(w io.Writer, data json.RawMessage, documentedFields ...map[string]
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	// Header
-	fmt.Fprintln(w, strings.Join(keys, ","))
-	// Rows
+	writeCSVRow(w, keys)
 	for _, item := range items {
 		var vals []string
 		for _, k := range keys {
 			v := item[k]
 			if v == nil {
 				vals = append(vals, "")
+			} else if f, ok := v.(float64); ok {
+				vals = append(vals, strconv.FormatFloat(f, 'f', -1, 64))
 			} else {
-				var s string
-				if f, ok := v.(float64); ok {
-					s = strconv.FormatFloat(f, 'f', -1, 64)
-				} else {
-					s = fmt.Sprintf("%v", v)
-				}
-				if strings.ContainsAny(s, ",\"\n") {
-					s = `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
-				}
-				vals = append(vals, s)
+				vals = append(vals, fmt.Sprintf("%v", v))
 			}
 		}
-		fmt.Fprintln(w, strings.Join(vals, ","))
+		writeCSVRow(w, vals)
 	}
 	return nil
+}
+
+func writeCSVRow(w io.Writer, cells []string) {
+	escaped := make([]string, len(cells))
+	for i, cell := range cells {
+		if strings.ContainsAny(cell, ",\"\n") {
+			escaped[i] = `"` + strings.ReplaceAll(cell, `"`, `""`) + `"`
+		} else {
+			escaped[i] = cell
+		}
+	}
+	fmt.Fprintln(w, strings.Join(escaped, ","))
 }
 
 func csvDeclaredHeader(documentedFields ...map[string]bool) []string {

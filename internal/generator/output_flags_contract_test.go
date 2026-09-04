@@ -81,6 +81,19 @@ func TestPrintOutputWithFlagsCSVEmptyArrayWritesDeclaredHeader(t *testing.T) {
 	}
 }
 
+func TestPrintOutputWithFlagsCSVEmptyArrayEscapesDeclaredHeader(t *testing.T) {
+	data := json.RawMessage("[]")
+	var out bytes.Buffer
+	fields := map[string]bool{"id": true, "weird,name": true, "quote\"field": true}
+
+	if err := printOutputWithFlagsMeta(&out, data, &rootFlags{csv: true}, nil, fields); err != nil {
+		t.Fatalf("printOutputWithFlagsMeta returned error: %v", err)
+	}
+	if got, want := out.String(), "id,\"quote\"\"field\",\"weird,name\"\n"; got != want {
+		t.Fatalf("empty --csv should CSV-escape declared header cells, got %q want %q", got, want)
+	}
+}
+
 func TestPrintOutputWithFlagsCSVNonEmptyArrayUsesCSV(t *testing.T) {
 	data := json.RawMessage("[{\"id\":\"one\",\"name\":\"Alpha\"}]")
 	var out bytes.Buffer
@@ -221,7 +234,7 @@ func TestTerminalControlCharactersRemainInJSONOutput(t *testing.T) {
 }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintOutputWithFlagsPlainRendersTSV|TestPrintOutputWithFlagsPlainEmptyArrayIsEmpty|TestPrintOutputWithFlagsCSVEmptyArrayIsEmpty|TestPrintOutputWithFlagsCSVEmptyArrayWritesDeclaredHeader|TestPrintOutputWithFlagsCSVNonEmptyArrayUsesCSV|TestPrintOutputWithFlagsMachineEmptyArrayIsValidJSON|TestPrintOutputWithFlagsCSVSingleObjectKeepsJSONFallback|TestHumanFriendlyForcesTableAndNoColorStripsANSI|TestTerminalControl", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintOutputWithFlagsPlainRendersTSV|TestPrintOutputWithFlagsPlainEmptyArrayIsEmpty|TestPrintOutputWithFlagsCSVEmptyArrayIsEmpty|TestPrintOutputWithFlagsCSVEmptyArrayWritesDeclaredHeader|TestPrintOutputWithFlagsCSVEmptyArrayEscapesDeclaredHeader|TestPrintOutputWithFlagsCSVNonEmptyArrayUsesCSV|TestPrintOutputWithFlagsMachineEmptyArrayIsValidJSON|TestPrintOutputWithFlagsCSVSingleObjectKeepsJSONFallback|TestHumanFriendlyForcesTableAndNoColorStripsANSI|TestTerminalControl", "-count=1")
 }
 
 func TestLocalAnalysisTemplatesRouteMachineFormatsThroughSharedGate(t *testing.T) {
