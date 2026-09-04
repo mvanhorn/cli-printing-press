@@ -64,7 +64,33 @@ func TestPrintOutputWithFlagsCSVEmptyArrayIsEmpty(t *testing.T) {
 		t.Fatalf("printOutputWithFlags returned error: %v", err)
 	}
 	if got := out.String(); got != "" {
-		t.Fatalf("--csv should render an empty array as an empty CSV stream, got %q", got)
+		t.Fatalf("--csv without declared fields should render an empty array as an empty CSV stream, got %q", got)
+	}
+}
+
+func TestPrintOutputWithFlagsCSVEmptyArrayWritesDeclaredHeader(t *testing.T) {
+	data := json.RawMessage("[]")
+	var out bytes.Buffer
+	fields := map[string]bool{"id": true, "name": true}
+
+	if err := printOutputWithFlagsMeta(&out, data, &rootFlags{csv: true}, nil, fields); err != nil {
+		t.Fatalf("printOutputWithFlagsMeta returned error: %v", err)
+	}
+	if got, want := out.String(), "id,name\n"; got != want {
+		t.Fatalf("empty --csv should write the declared header row, got %q want %q", got, want)
+	}
+}
+
+func TestPrintOutputWithFlagsCSVEmptyArrayEscapesDeclaredHeader(t *testing.T) {
+	data := json.RawMessage("[]")
+	var out bytes.Buffer
+	fields := map[string]bool{"id": true, "weird,name": true, "quote\"field": true, "cr\rfield": true}
+
+	if err := printOutputWithFlagsMeta(&out, data, &rootFlags{csv: true}, nil, fields); err != nil {
+		t.Fatalf("printOutputWithFlagsMeta returned error: %v", err)
+	}
+	if got, want := out.String(), "\"cr\rfield\",id,\"quote\"\"field\",\"weird,name\"\n"; got != want {
+		t.Fatalf("empty --csv should CSV-escape declared header cells, got %q want %q", got, want)
 	}
 }
 
@@ -81,6 +107,18 @@ func TestPrintOutputWithFlagsCSVNonEmptyArrayUsesCSV(t *testing.T) {
 	}
 	if strings.Contains(got, "[") || strings.Contains(got, "{") {
 		t.Fatalf("--csv should not fall back to JSON for non-empty arrays, got %q", got)
+	}
+}
+
+func TestPrintOutputWithFlagsCSVQuotesCarriageReturnInValues(t *testing.T) {
+	data := json.RawMessage("[{\"id\":\"a\\rb\"}]")
+	var out bytes.Buffer
+
+	if err := printOutputWithFlags(&out, data, &rootFlags{csv: true}); err != nil {
+		t.Fatalf("printOutputWithFlags returned error: %v", err)
+	}
+	if got, want := out.String(), "id\n\"a\rb\"\n"; got != want {
+		t.Fatalf("non-empty --csv should quote values containing carriage returns, got %q want %q", got, want)
 	}
 }
 
@@ -208,7 +246,8 @@ func TestTerminalControlCharactersRemainInJSONOutput(t *testing.T) {
 }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintOutputWithFlagsPlainRendersTSV|TestPrintOutputWithFlagsPlainEmptyArrayIsEmpty|TestPrintOutputWithFlagsCSVEmptyArrayIsEmpty|TestPrintOutputWithFlagsCSVNonEmptyArrayUsesCSV|TestPrintOutputWithFlagsMachineEmptyArrayIsValidJSON|TestPrintOutputWithFlagsCSVSingleObjectKeepsJSONFallback|TestHumanFriendlyForcesTableAndNoColorStripsANSI|TestTerminalControl", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintOutputWithFlagsPlainRendersTSV|TestPrintOutputWithFlagsPlainEmptyArrayIsEmpty|TestPrintOutputWithFlagsCSVEmptyArrayIsEmpty|TestPrintOutputWithFlagsCSVEmptyArrayWritesDeclaredHeader|TestPrintOutputWithFlagsCSVEmptyArrayEscapesDeclaredHeader|TestPrintOutputWithFlagsCSVNonEmptyArrayUsesCSV|TestPrintOutputWithFlagsCSVQuotesCarriageReturnInValues|TestPrintOutputWithFlagsMachineEmptyArrayIsValidJSON|TestPrintOutputWithFlagsCSVSingleObjectKeepsJSONFallback|TestHumanFriendlyForcesTableAndNoColorStripsANSI|TestTerminalControl", "-count=1")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestLocalAnalysisTemplatesRouteMachineFormatsThroughSharedGate(t *testing.T) {
