@@ -199,11 +199,13 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 	// Specificity: a command leaf carrying capability sub-tokens the request never
 	// used is a variant, not the canonical answer ("activity-list-repos-
 	// starred-by-authenticated" for a repositories ask). Parent resource tokens
-	// are excluded so a valid nested command is not erased by its path.
+	// are excluded so a valid nested command is not erased by its path. A
+	// single-token leaf has no variant to disambiguate; the penalty may still
+	// down-rank it but must not zero a description/path hit by itself.
 	if score > 0 && len(qTokens) > 1 {
-		unmatched := 0
 		commandParts := strings.Fields(cmd)
 		leafTokens := whichSubTokens(commandParts[len(commandParts)-1])
+		unmatched := 0
 		for _, ct := range leafTokens {
 			hit := false
 			for _, qt := range qTokens {
@@ -218,6 +220,9 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 		}
 		if unmatched > 3 {
 			unmatched = 3
+		}
+		if len(leafTokens) < 2 && unmatched >= score {
+			unmatched = score - 1
 		}
 		score -= unmatched
 	}
