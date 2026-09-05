@@ -92,7 +92,11 @@ const (
 	// path is /tenant/{tenant}/...). When set, the parser registers
 	// "tenant" as an EndpointTemplateVar with this env var as the override,
 	// so the profiler treats /tenant/{tenant}/<resource> paths as standalone
-	// sync resources rather than parent-context-dependent.
+	// sync resources rather than parent-context-dependent. Read via
+	// lookupOpenAPIExtension (document root or info), not the info-only
+	// helper: every real-world ServiceTitan spec in the fleet places this
+	// at the document root, matching root-or-info extensions elsewhere in
+	// this file rather than the info-only convention.
 	extensionTenantEnvVar = "x-tenant-env-var"
 	// extensionPathTemplateEnvVars is the generic, map-shaped successor to
 	// extensionTenantEnvVar. Each entry binds a path placeholder to an
@@ -104,6 +108,7 @@ const (
 	// suitable for canonical always-valid values like Gmail's userId='me'.
 	// When both are set, default wins and the env field is ignored — the
 	// placeholder is fully resolved before runtime substitution sees it.
+	// Same root-or-info lookup as extensionTenantEnvVar, for the same reason.
 	extensionPathTemplateEnvVars = "x-path-template-env-vars"
 )
 
@@ -773,7 +778,7 @@ func parseEndpointTemplateExtensions(doc *openapi3.T) ([]string, map[string]stri
 	envOverrides := map[string]string{}
 	defaults := map[string]string{}
 
-	if raw, ok := lookupOpenAPIInfoExtension(doc, extensionTenantEnvVar); ok {
+	if raw, ok := lookupOpenAPIExtension(doc, extensionTenantEnvVar); ok {
 		if envName, ok := raw.(string); ok {
 			if envName = strings.TrimSpace(envName); envName != "" {
 				vars = append(vars, tenantPlaceholderName)
@@ -782,7 +787,7 @@ func parseEndpointTemplateExtensions(doc *openapi3.T) ([]string, map[string]stri
 		}
 	}
 
-	if raw, ok := lookupOpenAPIInfoExtension(doc, extensionPathTemplateEnvVars); ok {
+	if raw, ok := lookupOpenAPIExtension(doc, extensionPathTemplateEnvVars); ok {
 		if entries, ok := raw.(map[string]any); ok {
 			keys := make([]string, 0, len(entries))
 			for k := range entries {

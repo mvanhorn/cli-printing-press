@@ -535,7 +535,14 @@ Parsed fields: `APISpec.EndpointTemplateVars` (`tenant` added),
 Rules:
 - Optional. Specs without `x-tenant-env-var` keep single-tenant behavior;
   no `{tenant}`-aware emission, no spurious env reads.
-- Declared under `info` only (path-positional templates are spec-wide).
+- Accepted at the document root or under `info` (path-positional templates
+  are spec-wide either way); the root value wins when both are set. Every
+  real-world ServiceTitan spec in the fleet places this at the document
+  root, so the parser must accept it there — an info-only reader silently
+  drops the extension for the entire ServiceTitan family, and every
+  affected print loses tenant-aware `sync`, `config.go`, and `url.go`
+  emission with no error, only a `sync` warning at runtime that reads like
+  a resource-specific problem.
 - Value must be a non-empty string after `TrimSpace`. Whitespace-only
   values are treated as absent.
 - The placeholder name is `tenant`. Specs that use a different
@@ -674,7 +681,9 @@ the same 80% common-path promotion rule.
 Rules:
 - Optional. Specs without this extension keep prior behavior; the new
   field stays empty and no generated output changes.
-- Declared under `info` only (path-positional templates are spec-wide).
+- Accepted at the document root or under `info` (path-positional templates
+  are spec-wide either way); the root value wins when both are set. Same
+  root-or-info lookup as `x-tenant-env-var`, for the same reason.
 - Coexists with `x-tenant-env-var`; both feed the same template-vars
   bucket. The `tenant` placeholder may be set by either extension.
 - `env` and `default` values must be non-empty after `TrimSpace`.

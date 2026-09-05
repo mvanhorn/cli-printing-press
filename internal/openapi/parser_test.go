@@ -11812,11 +11812,11 @@ paths:
 	assert.Equal(t, wantCarrier, parsed.Auth.JWTCarrierCookie)
 }
 
-// TestParseTenantEnvVarExtension: when info.x-tenant-env-var is set, the
-// parser registers "tenant" as an EndpointTemplateVar with the declared
-// env var as the override so the profiler can include
-// /tenant/{tenant}/<resource> paths in flat sync and downstream emitters
-// resolve the placeholder against the real env name.
+// TestParseTenantEnvVarExtension: when x-tenant-env-var is set, at the
+// document root or under info, the parser registers "tenant" as an
+// EndpointTemplateVar with the declared env var as the override so the
+// profiler can include /tenant/{tenant}/<resource> paths in flat sync and
+// downstream emitters resolve the placeholder against the real env name.
 func TestParseTenantEnvVarExtension(t *testing.T) {
 	t.Parallel()
 
@@ -11970,6 +11970,64 @@ paths:
 		require.NoError(t, err)
 		assert.Empty(t, parsed.EndpointTemplateVars, "whitespace-only extension must not register a template var")
 		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
+	})
+
+	t.Run("document-root x-tenant-env-var registers tenant template var + override", func(t *testing.T) {
+		// Every real-world ServiceTitan spec in the fleet places x-tenant-env-var
+		// at the document root rather than under info; an info-only reader
+		// silently drops it and every affected print loses tenant-aware sync.
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: ServiceTitan Pricebook
+  version: 1.0.0
+servers:
+  - url: https://api.servicetitan.io
+paths:
+  /tenant/{tenant}/materials:
+    get:
+      summary: List materials
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+x-tenant-env-var: ST_TENANT_ID
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"tenant"}, parsed.EndpointTemplateVars)
+		assert.Equal(t, map[string]string{"tenant": "ST_TENANT_ID"}, parsed.EndpointTemplateEnvOverrides)
+		assert.Equal(t, "ST_TENANT_ID", parsed.EndpointTemplateEnvName("tenant"))
+	})
+
+	t.Run("document-root value wins when both root and info declare x-tenant-env-var", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: ServiceTitan Pricebook
+  version: 1.0.0
+  x-tenant-env-var: INFO_TENANT_ID
+servers:
+  - url: https://api.servicetitan.io
+paths:
+  /tenant/{tenant}/materials:
+    get:
+      summary: List materials
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+x-tenant-env-var: ROOT_TENANT_ID
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "ROOT_TENANT_ID", parsed.EndpointTemplateEnvName("tenant"))
 	})
 }
 
