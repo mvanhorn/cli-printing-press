@@ -858,6 +858,26 @@ func TestFamilyHash_StableNonReversibleEmpty(t *testing.T) {
 	}
 }
 
+func TestQueryHash_StableNonReversibleEmpty(t *testing.T) {
+	t.Parallel()
+	raw := "orders placed by jane.doe@example.com last week"
+	a1 := QueryHash(raw)
+	a2 := QueryHash(raw)
+	b := QueryHash("orders placed by other@example.com last week")
+	if a1 == "" || a1 != a2 {
+		t.Errorf("QueryHash must be deterministic; got %q vs %q", a1, a2)
+	}
+	if a1 == b {
+		t.Errorf("distinct queries must hash apart; both %q", a1)
+	}
+	if strings.Contains(a1, "jane") || strings.Contains(a1, "example.com") {
+		t.Errorf("hash must not carry query text; got %q", a1)
+	}
+	if QueryHash("") != "" || QueryHash("   ") != "" {
+		t.Error("empty query must hash to \"\"")
+	}
+}
+
 // TestScanPII_EmailAndPhoneShapes pins the R18 insert-time guard's
 // vocabulary: obvious email/phone shapes match by rule name, and
 // bare numeric identifiers stay clean (the conservative side).
@@ -891,5 +911,20 @@ func TestScanPII_EmailAndPhoneShapes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRedactPII_ReplacesEmailAndPhone(t *testing.T) {
+	t.Parallel()
+	got := RedactPII("orders placed by jane.doe@example.com or call 555-123-4567")
+	if strings.Contains(got, "jane.doe@example.com") || strings.Contains(got, "555-123-4567") {
+		t.Errorf("RedactPII leaked identifiers: %q", got)
+	}
+	if !strings.Contains(got, "<email>") || !strings.Contains(got, "<phone>") {
+		t.Errorf("RedactPII should substitute placeholders; got %q", got)
+	}
+	clean := "list pending orders"
+	if RedactPII(clean) != clean {
+		t.Errorf("clean text must pass through; got %q", RedactPII(clean))
 	}
 }
