@@ -9848,6 +9848,8 @@ func TestGeneratedCommandExampleKebabCasesSnakeResource(t *testing.T) {
 	promoted := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_my-account.go")
 	assert.Contains(t, promoted, `Example:     "  snake-example-pp-cli my-account"`)
 	assert.NotContains(t, promoted, "snake-example-pp-cli my_account")
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGeneratedCommandExampleKeepsDispatchParamDefault(t *testing.T) {
