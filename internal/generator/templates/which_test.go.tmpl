@@ -197,6 +197,43 @@ func TestRankWhich_NestedResourceMatchSurvivesSpecificity(t *testing.T) {
 	}
 }
 
+func TestRankWhich_SingleTokenLeafSurvivesMultiWordQuery(t *testing.T) {
+	index := make([]whichEntry, 0, 1)
+	index = append(index, whichEntry{Command: "product", Description: "Look up items by ean and gtin"})
+	got := rankWhich(index, "ean gtin", 3)
+	if len(got) != 1 || got[0].Entry.Command != "product" || got[0].Score <= 0 {
+		t.Fatalf("single-token leaf matched via description must survive a multi-word query, got %+v", got)
+	}
+}
+
+func TestRankWhich_SingleTokenLeafDescriptionHitIsNotZeroed(t *testing.T) {
+	index := make([]whichEntry, 0, 1)
+	index = append(index, whichEntry{Command: "product", Description: "Look up items by ean"})
+	got := rankWhich(index, "ean gtin", 3)
+	if len(got) != 1 || got[0].Entry.Command != "product" || got[0].Score <= 0 {
+		t.Fatalf("specificity must not erase a single-token leaf on a one-point description hit, got %+v", got)
+	}
+}
+
+func TestRankWhich_CompositeLeafLosesWhenQueryOmitsCapabilityTokens(t *testing.T) {
+	index := make([]whichEntry, 0, 2)
+	index = append(index, whichEntry{
+		Command:     "activity list-repos-starred-by-authenticated",
+		Description: "List repositories starred by the authenticated user",
+	})
+	index = append(index, whichEntry{Command: "repos list", Description: "List repositories"})
+	got := rankWhich(index, "list repositories", 3)
+	if len(got) < 2 {
+		t.Fatalf("expected both the canonical command and the variant to remain matches, got %+v", got)
+	}
+	if got[0].Entry.Command != "repos list" {
+		t.Fatalf("canonical command should beat a long variant the query did not ask for, got %+v", got)
+	}
+	if got[0].Score <= got[1].Score {
+		t.Fatalf("specificity should down-rank the omitted-capability variant, got %+v", got)
+	}
+}
+
 func TestRankWhich_WriteSynonymsAreNotPenalized(t *testing.T) {
 	index := make([]whichEntry, 0, 2)
 	index = append(index, whichEntry{Command: "projects list", Description: "List projects"})

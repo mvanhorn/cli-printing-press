@@ -95,6 +95,8 @@ func TestGeneratedLocalReadsAndWhichHonorSharedRuntimeContracts(t *testing.T) {
 	assert.Contains(t, whichSrc, `return usageErr(fmt.Errorf("no match for %q;`)
 	assert.Contains(t, whichSrc, `"matches": []whichMatch{}`)
 	assert.NotContains(t, whichSrc, "Under --json, return an empty matches envelope at exit 0")
+	assert.Contains(t, whichSrc, "if len(leafTokens) < 2 {",
+		"single-token leaves must skip the specificity penalty so a description hit is not zeroed")
 
 	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
 	assert.Contains(t, syncSrc, "machineFormat := wantsMachineOutput(flags)")
@@ -360,5 +362,5 @@ func TestResolveLocalUnmatchedEqualityKeyDoesNotEmptyTheList(t *testing.T) {
 func ioDiscard() io.Writer { return io.Discard }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestResolveLocal|TestWhichJSONNoMatchExits2|TestWhichPipedNoMatchExits2WithEmptyEnvelope", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestResolveLocal|TestWhichJSONNoMatchExits2|TestWhichPipedNoMatchExits2WithEmptyEnvelope|TestRankWhich_SingleTokenLeaf|TestRankWhich_CompositeLeafLosesWhenQueryOmitsCapabilityTokens", "-count=1")
 }
