@@ -9736,6 +9736,122 @@ func TestExampleLineUsesRenderedCommandAndFlagNames(t *testing.T) {
 	assert.NotContains(t, got, "--idempotencyKey")
 }
 
+func TestExampleLineKebabCasesSnakeResourcePath(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("example-kebab")
+	g := New(apiSpec, t.TempDir())
+
+	got := g.exampleLine("time_entries", "list", spec.Endpoint{
+		Method:      "GET",
+		Path:        "/time_entries",
+		Description: "List time entries",
+	})
+	assert.Equal(t, "  example-kebab-pp-cli time-entries list", got)
+
+	got = g.exampleLine("items", "list", spec.Endpoint{
+		Method: "GET",
+		Path:   "/items",
+	})
+	assert.Equal(t, "  example-kebab-pp-cli items list", got)
+
+	got = g.exampleLine("issue_categories", "list", spec.Endpoint{
+		Method:  "GET",
+		Path:    "/issue_categories",
+		Example: "  example-kebab-pp-cli issue_categories list --from-spec",
+	})
+	assert.Equal(t, "  example-kebab-pp-cli issue_categories list --from-spec", got)
+}
+
+func TestGeneratedCommandExampleKebabCasesSnakeResource(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("snake-example")
+	apiSpec.Resources = map[string]spec.Resource{
+		"time_entries": {
+			Description: "Time entries",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/time_entries",
+					Description: "List time entries",
+				},
+				"get": {
+					Method:      "GET",
+					Path:        "/time_entries/{id}",
+					Description: "Get a time entry",
+					Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+				},
+			},
+		},
+		"items": {
+			Description: "Items",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/items",
+					Description: "List items",
+				},
+				"get": {
+					Method:      "GET",
+					Path:        "/items/{id}",
+					Description: "Get an item",
+					Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+				},
+			},
+		},
+		"issue_categories": {
+			Description: "Issue categories",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/issue_categories",
+					Description: "List issue categories",
+					Example:     "  snake-example-pp-cli issue_categories list --from-spec",
+				},
+				"get": {
+					Method:      "GET",
+					Path:        "/issue_categories/{id}",
+					Description: "Get an issue category",
+					Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+				},
+			},
+		},
+		"my_account": {
+			Description: "Current account",
+			Endpoints: map[string]spec.Endpoint{
+				"get": {
+					Method:      "GET",
+					Path:        "/my_account",
+					Description: "Get current account",
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	timeEntries := readGeneratedFile(t, outputDir, "internal", "cli", "time_entries_list.go")
+	assert.Contains(t, timeEntries, `Example:     "  snake-example-pp-cli time-entries list"`)
+	assert.NotContains(t, timeEntries, "time_entries list")
+
+	parent := readGeneratedFile(t, outputDir, "internal", "cli", "time_entries.go")
+	assert.Contains(t, parent, `Use:   "time-entries"`)
+
+	items := readGeneratedFile(t, outputDir, "internal", "cli", "items_list.go")
+	assert.Contains(t, items, `Example:     "  snake-example-pp-cli items list"`)
+
+	overridden := readGeneratedFile(t, outputDir, "internal", "cli", "issue_categories_list.go")
+	assert.Contains(t, overridden, `Example:     "  snake-example-pp-cli issue_categories list --from-spec"`)
+
+	promoted := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_my-account.go")
+	assert.Contains(t, promoted, `Example:     "  snake-example-pp-cli my-account"`)
+	assert.NotContains(t, promoted, "my_account")
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGeneratedCommandExampleKeepsDispatchParamDefault(t *testing.T) {
 	t.Parallel()
 
