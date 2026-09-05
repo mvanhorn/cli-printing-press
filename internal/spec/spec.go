@@ -4215,6 +4215,7 @@ var reservedRootFlagFieldNames = map[string]struct{}{
 	"rateLimit":               {},
 	"maxAge":                  {},
 	"dataSource":              {},
+	"agentSource":             {},
 	"freshnessMeta":           {},
 	"throttleMode":            {},
 	"deliverBuf":              {},
