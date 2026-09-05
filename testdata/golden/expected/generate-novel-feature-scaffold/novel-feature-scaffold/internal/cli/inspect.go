@@ -18,7 +18,7 @@ func newNovelInspectCmd(flags *rootFlags) *cobra.Command {
 		Use:         "inspect <id>",
 		Short:       "Inspect one item.",
 		Example:     "  novel-feature-scaffold-pp-cli inspect item-123",
-		Annotations: map[string]string{"mcp:read-only": "false", "pp:novel-scaffold": "true"},
+		Annotations: map[string]string{"mcp:read-only": "false", "pp:data-source": "auto", "pp:novel-scaffold": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
 				return writeDryRun(cmd.OutOrStdout(), flags, "inspect")

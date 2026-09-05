@@ -358,6 +358,7 @@ Explicit flags always win over profile values; profile values win over defaults.
 | 2 | Usage error (wrong arguments) |
 | 3 | Resource not found |
 | 5 | API error (upstream issue) |
+| 6 | Partial failure |
 | 7 | Rate limited (wait and retry) |
 | 10 | Config error |
 
