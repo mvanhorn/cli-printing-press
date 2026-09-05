@@ -84,7 +84,7 @@ func TestLiveDogfoodParsesGeneratedRunnableExamples(t *testing.T) {
 			file:        "teach.go",
 			use:         "teach",
 			commandPath: []string{"teach"},
-			want:        []string{"teach", "--query", "<question>", "--resource-type", "<type>", "--resource", "<id>", "--resource", "<id>", "&"},
+			want:        []string{"teach", "--query", "$QUERY", "--resource-type", "<type>", "--resource", "<id>", "--resource", "<id>", "&"},
 		},
 		{
 			name:        "teach pattern",
@@ -98,14 +98,14 @@ func TestLiveDogfoodParsesGeneratedRunnableExamples(t *testing.T) {
 			file:        "teach_playbook.go",
 			use:         "teach-playbook",
 			commandPath: []string{"teach-playbook"},
-			want:        []string{"teach-playbook", "--query", "<question that anchors the family>", "--playbook-file", "~/playbooks/recipe.json", "--notes-file", "~/playbooks/recipe-notes.md"},
+			want:        []string{"teach-playbook", "--query", "$QUERY", "--playbook-file", "~/playbooks/recipe.json", "--notes-file", "~/playbooks/recipe-notes.md"},
 		},
 		{
 			name:        "playbook amend",
 			file:        "teach_playbook.go",
 			use:         "amend",
 			commandPath: []string{"playbook", "amend"},
-			want:        []string{"playbook", "amend", "--query", "<exact recall query>", "--add-note", "summary endpoint envelope: data lives at .results.header, not .header"},
+			want:        []string{"playbook", "amend", "--query", "$QUERY", "--add-note", "$NOTE"},
 		},
 		{
 			name:        "quoted novel feature",

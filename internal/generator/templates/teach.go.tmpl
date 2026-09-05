@@ -292,8 +292,7 @@ emits the user-facing response: silent on success, errors only to
 the CLI state directory's teach.log, safe to fire-and-forget.
 
 Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
-		Example: `  QUERY=$(cat /path/to/question.txt)
-  {{.Name}}-pp-cli teach --query "$QUERY" --resource-type <type> --resource <id> --resource <id> &`,
+		Example: `  {{.Name}}-pp-cli teach --query "$QUERY" --resource-type <type> --resource <id> --resource <id> &`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
@@ -574,8 +573,7 @@ is an information query, not a not-found error.
 
 Disabling: ` + noLearnEnvVar + `=true returns the empty shape even
 when learnings exist.`,
-		Example: `  QUERY=$(cat /path/to/question.txt)
-  {{.Name}}-pp-cli recall "$QUERY" --agent
+		Example: `  {{.Name}}-pp-cli recall "$QUERY" --agent
   {{.Name}}-pp-cli recall "$QUERY" --agent --min-confidence 2`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -802,7 +800,6 @@ func newLearningsListCmd(flags *rootFlags) *cobra.Command {
 		Use:   "list",
 		Short: "List recorded learnings",
 		Example: `  {{.Name}}-pp-cli learnings list --agent
-  QUERY=$(cat /path/to/question.txt)
   {{.Name}}-pp-cli learnings list --query "$QUERY"
   {{.Name}}-pp-cli learnings list --warnings --agent`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
@@ -910,8 +907,7 @@ func newLearningsForgetCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.C
 undone without dropping the whole DB.
 
 Requires at least one of --resource, --action, or --all.`,
-		Example: `  QUERY=$(cat /path/to/question.txt)
-  {{.Name}}-pp-cli learnings forget "$QUERY" --resource <id>
+		Example: `  {{.Name}}-pp-cli learnings forget "$QUERY" --resource <id>
   {{.Name}}-pp-cli learnings forget "$QUERY" --all`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
