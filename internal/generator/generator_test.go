@@ -114,6 +114,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cliutil/testenv/testenv.go",
 		"internal/cliutil/testenv/sandbox_unix.go",
 		"internal/cliutil/testenv/sandbox_windows.go",
+		"internal/cliutil/filelock.go",
+		"internal/cliutil/filelock_unix.go",
+		"internal/cliutil/filelock_windows.go",
+		"internal/cliutil/filelock_test.go",
 	}
 
 	tests := []struct {
@@ -145,9 +149,11 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// routes its HOME/USERPROFILE isolation through.
 		// +2: platform-specific private-file permission helpers.
 		// +1: cmd/<cli>-pp-mcp/http_auth_test.go for the HTTP caller-auth contract.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 172},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 176},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 174},
+		// +4: cliutil.WithFileLock (filelock.go + unix/windows + test) so
+		// learn-loop audit/teach.log rotation is cross-process safe.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 176},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 180},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 178},
 	}
 
 	for _, tt := range tests {
@@ -346,7 +352,7 @@ func TestGenerateCliutilPackage(t *testing.T) {
 
 	// All cliutil files must be emitted.
 	cliutilDir := filepath.Join(outputDir, "internal", "cliutil")
-	for _, name := range []string{"fanout.go", "text.go", "extractnumber.go", "extractnumber_test.go", "cliutil_test.go"} {
+	for _, name := range []string{"fanout.go", "text.go", "extractnumber.go", "extractnumber_test.go", "cliutil_test.go", "filelock.go", "filelock_unix.go", "filelock_windows.go", "filelock_test.go"} {
 		_, err := os.Stat(filepath.Join(cliutilDir, name))
 		require.NoError(t, err, "expected %s to be emitted", name)
 	}
@@ -369,11 +375,19 @@ func TestGenerateCliutilPackage(t *testing.T) {
 		{"extractnumber.go", "func ExtractInt("},
 		{"jwtshape.go", "func LooksLikeJWT("},
 		{"jwtshape.go", "func FindJWTInCookieJar("},
+		{"filelock.go", "func WithFileLock("},
+		{"filelock_windows.go", "golang.org/x/sys/windows"},
+		{"filelock_windows.go", "windows.LockFileEx("},
 	} {
 		data, err := os.ReadFile(filepath.Join(cliutilDir, probe.file))
 		require.NoError(t, err)
 		assert.Contains(t, string(data), probe.snippet, "%s missing %q", probe.file, probe.snippet)
 	}
+
+	winLock, err := os.ReadFile(filepath.Join(cliutilDir, "filelock_windows.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(winLock), "syscall.LockFileEx",
+		"Windows file lock must use golang.org/x/sys/windows, not syscall.LockFileEx")
 
 	textSrc, err := os.ReadFile(filepath.Join(cliutilDir, "text.go"))
 	require.NoError(t, err)

@@ -199,10 +199,33 @@ func ArgsAfterBinary(example string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(tokens) < 2 {
+	i := 0
+	for i < len(tokens) && isShellEnvAssignment(tokens[i]) {
+		i++
+	}
+	if len(tokens)-i < 2 {
 		return nil, fmt.Errorf("example has no subcommand: %q", example)
 	}
-	return tokens[1:], nil
+	return tokens[i+1:], nil
+}
+
+func isShellEnvAssignment(tok string) bool {
+	eq := strings.IndexByte(tok, '=')
+	if eq <= 0 {
+		return false
+	}
+	name := tok[:eq]
+	if name[0] >= '0' && name[0] <= '9' {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // Join renders tokens as one POSIX-shell-safe command line that Split can

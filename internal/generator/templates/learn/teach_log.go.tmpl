@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"{{modulePath}}/internal/cliutil"
@@ -41,9 +40,7 @@ type TeachLogEntry struct {
 	Suggested  string `json:"suggested,omitempty"`
 }
 
-var teachLogMu sync.Mutex
-
-// teachLogMaxBytes is the rotation cap for teach.log. Overridable in tests.
+// Overridable in tests so rotation can be forced below the 1 MiB production cap.
 var teachLogMaxBytes int64 = 1 << 20
 
 // TeachLogPath returns the on-disk path to the structured teach log.
@@ -110,18 +107,18 @@ func appendTeachLogEntry(entry TeachLogEntry) error {
 	if err != nil {
 		return fmt.Errorf("teach log: marshal: %w", err)
 	}
-	teachLogMu.Lock()
-	defer teachLogMu.Unlock()
-	rotateTeachLogIfNeeded(p)
-	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("teach log: open %s: %w", p, err)
-	}
-	defer f.Close()
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		return fmt.Errorf("teach log: write: %w", err)
-	}
-	return nil
+	return cliutil.WithFileLock(p, func() error {
+		rotateTeachLogIfNeeded(p)
+		f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return fmt.Errorf("teach log: open %s: %w", p, err)
+		}
+		defer f.Close()
+		if _, err := f.Write(append(line, '\n')); err != nil {
+			return fmt.Errorf("teach log: write: %w", err)
+		}
+		return nil
+	})
 }
 
 // ReadTeachLogWarnings returns every structured warning recorded in

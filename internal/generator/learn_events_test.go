@@ -151,7 +151,7 @@ func TestGenerateLearnEvents_EmittedCLITestsPass(t *testing.T) {
 	outputDir := generateLearnEventsCLI(t, "levcli")
 	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "-race", "./internal/cli",
-		"-run", "TestLearnEvents_|TestLearningsStats_|TestTeachCommand_PII|TestTeachCommand_PlaybookJSON|TestTeachCommand_Audit|TestTeachCommand_TeachLog|TestLearningsForget_Scrubs|TestLearningsAudit_Rotates", "-count=1")
+		"-run", "TestLearnEvents_|TestLearningsStats_|TestTeachCommand_PII|TestTeachCommand_PlaybookJSON|TestTeachCommand_Audit|TestTeachCommand_TeachLog|TestLearningsForget_|TestLogLineMatchesQuery_|TestLearningsAudit_Rotates|TestLearningsAudit_Concurrent", "-count=1")
 	runGoCommand(t, outputDir, "test", "./internal/learn",
 		"-run", "TestRecall_HitCarriesLearningID|TestFamilyHash_|TestQueryHash_|TestScanPII_|TestRedactPII_", "-count=1")
 }

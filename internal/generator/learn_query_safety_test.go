@@ -35,11 +35,18 @@ func TestGenerateLearnQuerySafety_AuditOmitsRawQuery(t *testing.T) {
 		"delete(entry, \"query\")",
 		"learn.QueryHash(query)",
 		"learn.RedactPII(",
+		"cliutil.WithFileLock(",
+		"textLogHasQueryHash(",
+		"textLogHasLegacyQuery(",
 	} {
 		require.Contains(t, teach, want, "emitted cli/teach.go must contain %q", want)
 	}
 	require.NotContains(t, teach, "query=%q",
 		"teach.log lines must not format the raw query")
+	require.NotContains(t, teach, `strings.Contains(line, rawQuery)`,
+		"scrub must not match log lines by raw-query substring")
+	require.NotContains(t, teach, `strings.Contains(line, queryHash)`,
+		"scrub must not match log lines by hash substring")
 
 	playbook := readEmitted(t, outputDir, "internal", "cli", "teach_playbook.go")
 	require.Contains(t, playbook, "learn.QueryHash(query)")
@@ -56,7 +63,7 @@ func TestGenerateLearnQuerySafety_AuditOmitsRawQuery(t *testing.T) {
 	}
 	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "-race", "./internal/cli",
-		"-run", "TestTeachCommand_AuditOmitsRawQuery|TestTeachCommand_TeachLogOmitsRawQuery|TestLearningsForget_ScrubsAuditLogs|TestLearningsAudit_RotatesWhenOverCap|TestTeachCommand_PIIEmailWarnsAndSucceeds",
+		"-run", "TestTeachCommand_AuditOmitsRawQuery|TestTeachCommand_TeachLogOmitsRawQuery|TestLearningsForget_ScrubsAuditLogs|TestLearningsForget_DoesNotScrubUnrelatedHistory|TestLogLineMatchesQuery_ExactIdentityOnly|TestLearningsAudit_RotatesWhenOverCap|TestLearningsAudit_ConcurrentRotateKeepsRecords|TestLearningsAudit_ConcurrentAppendKeepsRecords|TestTeachCommand_PIIEmailWarnsAndSucceeds",
 		"-count=1")
 	runGoCommand(t, outputDir, "test", "./internal/learn",
 		"-run", "TestQueryHash_|TestRedactPII_|TestAppendTeachLogWarning_JSONShape",
@@ -88,6 +95,10 @@ func TestGenerateLearnQuerySafety_ShellSafeQueryGuidance(t *testing.T) {
 	for _, s := range unsafe {
 		require.NotContains(t, proto, s, "protocol must not instruct %q", s)
 	}
+
+	teach := readEmitted(t, outputDir, "internal", "cli", "teach.go")
+	require.Contains(t, teach, `QUERY="$(cat /path/to/question.txt)"`)
+	require.Contains(t, teach, `--query "$QUERY"`)
 
 	agents := readEmitted(t, outputDir, "AGENTS.md")
 	require.Contains(t, agents, "QUERY=$(cat /path/to/question.txt)")

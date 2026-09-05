@@ -59,7 +59,7 @@ notes verbatim.
 At least one of --playbook-json/--playbook-file and --notes/--notes-file
 must be set. --playbook-json takes the playbook body inline so MCP-only
 agents can record playbooks without a file on disk.`,
-		Example: `  {{.Name}}-pp-cli teach-playbook --query "$QUERY" --playbook-file ~/playbooks/recipe.json --notes-file ~/playbooks/recipe-notes.md`,
+		Example: `  QUERY="$(cat /path/to/question.txt)" {{.Name}}-pp-cli teach-playbook --query "$QUERY" --playbook-file ~/playbooks/recipe.json --notes-file ~/playbooks/recipe-notes.md`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
@@ -198,7 +198,7 @@ drift). Same fire-and-forget posture as teach: silent on success,
 errors to teach.log, safe to background with &.
 
 Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
-		Example: `  {{.Name}}-pp-cli playbook amend --query "$QUERY" --add-note "$NOTE"`,
+		Example: `  QUERY="$(cat /path/to/question.txt)" NOTE="$(cat /path/to/note.txt)" {{.Name}}-pp-cli playbook amend --query "$QUERY" --add-note "$NOTE"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true

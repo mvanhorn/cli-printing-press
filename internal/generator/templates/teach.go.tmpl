@@ -22,8 +22,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -94,16 +94,16 @@ func teachErrLogPath() (string, error) {
 	return filepath.Join(dir, teachErrLogFileName), nil
 }
 
-// learningsAuditMaxBytes is the rotation cap for learnings.jsonl and
-// the CLI-side teach.log. Overridable in tests.
+// Overridable in tests so rotation can be forced below the 1 MiB production cap.
 var learningsAuditMaxBytes int64 = 1 << 20
-
-var learningsLogMu sync.Mutex
 
 func queryHashRef(query string) string {
 	return "query_hash=" + learn.QueryHash(query)
 }
 
+// Caller must hold WithFileLock on path. Rename is exclusive with append/scrub
+// so a concurrent writer cannot delete a just-rotated file or append into the
+// wrong generation.
 func rotateLogIfNeeded(path string, maxBytes int64) {
 	if maxBytes <= 0 {
 		return
@@ -117,25 +117,24 @@ func rotateLogIfNeeded(path string, maxBytes int64) {
 	_ = os.Rename(path, rotated)
 }
 
-// writeTeachErrLog appends a single line to teach.log. Best-effort.
 func writeTeachErrLog(line string) {
 	p, err := teachErrLogPath()
 	if err != nil {
 		return
 	}
-	learningsLogMu.Lock()
-	defer learningsLogMu.Unlock()
-	rotateLogIfNeeded(p, learningsAuditMaxBytes)
-	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	ts := time.Now().UTC().Format(time.RFC3339)
-	fmt.Fprintf(f, "%s %s\n", ts, line)
+	_ = cliutil.WithFileLock(p, func() error {
+		rotateLogIfNeeded(p, learningsAuditMaxBytes)
+		f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		ts := time.Now().UTC().Format(time.RFC3339)
+		_, err = fmt.Fprintf(f, "%s %s\n", ts, line)
+		return err
+	})
 }
 
-// appendLearningsAudit records one event in the JSONL audit log.
 // The raw query is never persisted: callers pass query_hash and a
 // redacted normalized form. A leftover "query" key is stripped.
 func appendLearningsAudit(entry map[string]any) error {
@@ -146,16 +145,16 @@ func appendLearningsAudit(entry map[string]any) error {
 	if err != nil {
 		return err
 	}
-	learningsLogMu.Lock()
-	defer learningsLogMu.Unlock()
-	rotateLogIfNeeded(p, learningsAuditMaxBytes)
-	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	entry["ts"] = time.Now().UTC().Format(time.RFC3339)
-	return json.NewEncoder(f).Encode(entry)
+	return cliutil.WithFileLock(p, func() error {
+		rotateLogIfNeeded(p, learningsAuditMaxBytes)
+		f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		entry["ts"] = time.Now().UTC().Format(time.RFC3339)
+		return json.NewEncoder(f).Encode(entry)
+	})
 }
 
 func scrubLearningsLogs(query string) {
@@ -164,15 +163,19 @@ func scrubLearningsLogs(query string) {
 		return
 	}
 	hash := learn.QueryHash(query)
-	learningsLogMu.Lock()
-	defer learningsLogMu.Unlock()
 	if p, err := learningsAuditPath(); err == nil {
-		_ = scrubLogFile(p, query, hash)
-		_ = scrubLogFile(p+".1", query, hash)
+		_ = cliutil.WithFileLock(p, func() error {
+			_ = scrubLogFile(p, query, hash)
+			_ = scrubLogFile(p+".1", query, hash)
+			return nil
+		})
 	}
 	if p, err := teachErrLogPath(); err == nil {
-		_ = scrubLogFile(p, query, hash)
-		_ = scrubLogFile(p+".1", query, hash)
+		_ = cliutil.WithFileLock(p, func() error {
+			_ = scrubLogFile(p, query, hash)
+			_ = scrubLogFile(p+".1", query, hash)
+			return nil
+		})
 	}
 }
 
@@ -208,26 +211,71 @@ func scrubLogFile(path, rawQuery, queryHash string) error {
 }
 
 func logLineMatchesQuery(line, rawQuery, queryHash string) bool {
-	if rawQuery != "" && strings.Contains(line, rawQuery) {
-		return true
-	}
-	if queryHash != "" && strings.Contains(line, queryHash) {
-		return true
-	}
-	if len(line) == 0 || line[0] != '{' {
+	line = strings.TrimSpace(line)
+	if line == "" {
 		return false
 	}
-	var entry map[string]any
-	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+	if strings.HasPrefix(line, "{") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			return false
+		}
+		if queryHash != "" {
+			if h, _ := entry["query_hash"].(string); h == queryHash {
+				return true
+			}
+		}
+		if rawQuery != "" {
+			if q, _ := entry["query"].(string); q == rawQuery {
+				return true
+			}
+		}
 		return false
 	}
-	if q, _ := entry["query"].(string); q != "" && q == rawQuery {
+	if queryHash != "" && textLogHasQueryHash(line, queryHash) {
 		return true
 	}
-	if h, _ := entry["query_hash"].(string); h != "" && h == queryHash {
-		return true
+	return rawQuery != "" && textLogHasLegacyQuery(line, rawQuery)
+}
+
+func textLogHasQueryHash(line, queryHash string) bool {
+	const prefix = "query_hash="
+	for {
+		i := strings.Index(line, prefix)
+		if i < 0 {
+			return false
+		}
+		rest := line[i+len(prefix):]
+		end := len(rest)
+		if j := strings.IndexAny(rest, " \t,;)\""); j >= 0 {
+			end = j
+		}
+		if rest[:end] == queryHash {
+			return true
+		}
+		line = rest
 	}
-	return false
+}
+
+func textLogHasLegacyQuery(line, rawQuery string) bool {
+	const key = "query="
+	idx := strings.Index(line, key)
+	if idx < 0 {
+		return false
+	}
+	rest := strings.TrimSpace(line[idx+len(key):])
+	if rest == "" || rest[0] != '"' {
+		return false
+	}
+	quoted, err := strconv.QuotedPrefix(rest)
+	if err != nil {
+		return false
+	}
+	got, err := strconv.Unquote(quoted)
+	if err != nil {
+		return false
+	}
+	return got == rawQuery
 }
 
 // silentCodeErr returns an error that ExitCode honors but that carries
@@ -292,7 +340,7 @@ emits the user-facing response: silent on success, errors only to
 the CLI state directory's teach.log, safe to fire-and-forget.
 
 Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
-		Example: `  {{.Name}}-pp-cli teach --query "$QUERY" --resource-type <type> --resource <id> --resource <id> &`,
+		Example: `  QUERY="$(cat /path/to/question.txt)" {{.Name}}-pp-cli teach --query "$QUERY" --resource-type <type> --resource <id> --resource <id> &`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
@@ -573,8 +621,8 @@ is an information query, not a not-found error.
 
 Disabling: ` + noLearnEnvVar + `=true returns the empty shape even
 when learnings exist.`,
-		Example: `  {{.Name}}-pp-cli recall "$QUERY" --agent
-  {{.Name}}-pp-cli recall "$QUERY" --agent --min-confidence 2`,
+		Example: `  QUERY="$(cat /path/to/question.txt)" {{.Name}}-pp-cli recall "$QUERY" --agent
+  QUERY="$(cat /path/to/question.txt)" {{.Name}}-pp-cli recall "$QUERY" --agent --min-confidence 2`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -907,8 +955,8 @@ func newLearningsForgetCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.C
 undone without dropping the whole DB.
 
 Requires at least one of --resource, --action, or --all.`,
-		Example: `  {{.Name}}-pp-cli learnings forget "$QUERY" --resource <id>
-  {{.Name}}-pp-cli learnings forget "$QUERY" --all`,
+		Example: `  QUERY="$(cat /path/to/question.txt)" {{.Name}}-pp-cli learnings forget "$QUERY" --resource <id>
+  QUERY="$(cat /path/to/question.txt)" {{.Name}}-pp-cli learnings forget "$QUERY" --all`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
