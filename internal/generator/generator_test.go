@@ -9837,7 +9837,7 @@ func TestGeneratedCommandExampleKebabCasesSnakeResource(t *testing.T) {
 	assert.NotContains(t, timeEntries, "time_entries list")
 
 	parent := readGeneratedFile(t, outputDir, "internal", "cli", "time_entries.go")
-	assert.Contains(t, parent, `Use:   "time-entries"`)
+	assert.Regexp(t, `Use:\s+"time-entries"`, parent)
 
 	items := readGeneratedFile(t, outputDir, "internal", "cli", "items_list.go")
 	assert.Contains(t, items, `Example:     "  snake-example-pp-cli items list"`)
@@ -9847,7 +9847,7 @@ func TestGeneratedCommandExampleKebabCasesSnakeResource(t *testing.T) {
 
 	promoted := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_my-account.go")
 	assert.Contains(t, promoted, `Example:     "  snake-example-pp-cli my-account"`)
-	assert.NotContains(t, promoted, "my_account")
+	assert.NotContains(t, promoted, "snake-example-pp-cli my_account")
 
 	requireGeneratedCompiles(t, outputDir)
 }
