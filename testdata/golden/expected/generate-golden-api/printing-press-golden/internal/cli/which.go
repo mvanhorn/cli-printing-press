@@ -105,15 +105,22 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 	// matchable by the words a human asks with, or every command in a group
 	// ties on the group token alone and index order decides the answer.
 	cmdTokens := whichSubTokens(cmd)
+	commandParts := strings.Fields(cmd)
+	leaf := ""
+	if len(commandParts) > 0 {
+		leaf = commandParts[len(commandParts)-1]
+	}
 	desc := strings.ToLower(e.Description)
 	descTokens := whichSubTokens(desc)
 	why := strings.ToLower(e.WhyItMatters)
 	whyTokens := whichSubTokens(why)
 	group := strings.ToLower(e.Group)
 
-	// Exact token match on the command path (any token).
+	// Exact token match on the command path (any token). Filler words
+	// credit a command only when they are the whole unsplit leaf
+	// ("run a" → "a"), not a hyphenated sub-token ("in" vs "check-in").
 	for _, qt := range qTokens {
-		if whichIncidentalToken(qt) && !whichTokensContain(qt, cmdTokens) {
+		if whichIncidentalToken(qt) && !whichTokenMatch(qt, leaf) {
 			continue
 		}
 		for _, ct := range cmdTokens {
@@ -124,8 +131,12 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 		}
 	}
 	// Substring match on the full command (covers hyphenated leaves).
+	// An incidental-only query must still name the whole command or leaf
+	// so "in" does not admit "check-in" via the trailing fragment.
 	if strings.Contains(cmd, query) {
-		score += 2
+		if !whichAllIncidental(qTokens) || whichTokenMatch(query, leaf) || whichTokenMatch(query, cmd) {
+			score += 2
+		}
 	}
 	// Description and rationale are correlated prose fields. Share the existing
 	// per-token cap so repeating the same query in both fields cannot outweigh
@@ -147,10 +158,11 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 		score += descCredit
 	}
 	// Group tag match requires a whole token, not an arbitrary substring.
+	// Filler words credit a group only when they are the whole group name.
 	groupTokens := whichSubTokens(group)
 	groupMatched := false
 	for _, qt := range qTokens {
-		if whichIncidentalToken(qt) && !whichTokensContain(qt, groupTokens) {
+		if whichIncidentalToken(qt) && !whichTokenMatch(qt, group) {
 			continue
 		}
 		for _, gt := range groupTokens {
@@ -209,8 +221,7 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 	// single-token leaf has no variant to disambiguate; the penalty may still
 	// down-rank it but must not zero a description/path hit by itself.
 	if score > 0 && len(qTokens) > 1 {
-		commandParts := strings.Fields(cmd)
-		leafTokens := whichSubTokens(commandParts[len(commandParts)-1])
+		leafTokens := whichSubTokens(leaf)
 		unmatched := 0
 		for _, ct := range leafTokens {
 			hit := false
@@ -297,13 +308,16 @@ func whichIncidentalToken(token string) bool {
 	return whichIncidentalTokens[token]
 }
 
-func whichTokensContain(token string, tokens []string) bool {
-	for _, candidate := range tokens {
-		if whichTokenMatch(token, candidate) {
-			return true
+func whichAllIncidental(qTokens []string) bool {
+	if len(qTokens) == 0 {
+		return false
+	}
+	for _, qt := range qTokens {
+		if !whichIncidentalToken(qt) {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // The closed API-verb set for write-shaped commands. A request that never
