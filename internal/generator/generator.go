@@ -1086,6 +1086,7 @@ type readmeTemplateData struct {
 	// the auth surface, and docs must follow the emitted surface, not the
 	// spec's declared type.
 	HasAuthCommand       bool
+	HasPartialFailureErr bool
 	HasAutoRefresh       bool
 	SelectExample        string
 	SyncResourcesExample string
@@ -1145,6 +1146,8 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		syncable = g.profile.SyncableResources
 		dependent = g.profile.DependentSyncResources
 	}
+	helperFlags := computeHelperFlags(g.Spec)
+	applyPartialFailureFlags(&helperFlags, g.Spec, g.PromotedCommands, g.PromotedEndpointNames, g.hasDataLayer())
 	return &readmeTemplateData{
 		APISpec:               g.Spec,
 		Sources:               g.Sources,
@@ -1159,9 +1162,10 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		HasAsyncJobs:          len(g.AsyncJobs) > 0,
 		HasWriteCommands:      hasWriteCommands(g.Spec.Resources),
 		HasCreateCommands:     hasCreateCommands(g.Spec.Resources),
-		HasDelete:             computeHelperFlags(g.Spec).HasDelete,
+		HasDelete:             helperFlags.HasDelete,
 		HasAuth:               hasAuth(g.Spec.Auth),
 		HasAuthCommand:        g.shouldEmitAuth(),
+		HasPartialFailureErr:  helperFlags.HasPartialFailureErr,
 		HasAutoRefresh:        g.hasAutoRefresh(),
 		SelectExample:         selectExampleForCommand(g.Spec),
 		SyncResourcesExample:  syncResourcesExample(syncable, dependent),

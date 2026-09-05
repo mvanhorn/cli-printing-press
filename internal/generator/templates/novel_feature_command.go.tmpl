@@ -31,7 +31,7 @@ func newNovel{{.Ident}}Cmd(flags *rootFlags) *cobra.Command {
 {{- if .Example}}
 		Example: {{printf "%q" .Example}},
 {{- end}}
-		Annotations: map[string]string{"mcp:read-only": {{printf "%q" .ReadOnlyString}}{{if .Feature}}, "pp:novel-scaffold": "true"{{end}}},
+		Annotations: map[string]string{"mcp:read-only": {{printf "%q" .ReadOnlyString}}, "pp:data-source": "auto"{{if .Feature}}, "pp:novel-scaffold": "true"{{end}}},
 {{- if .Feature}}
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
