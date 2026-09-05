@@ -320,6 +320,12 @@ func TestLocalAnalysisTemplatesRouteMachineFormatsThroughSharedGate(t *testing.T
 
 		require.Contains(t, src, "wantsMachineOutput(flags)",
 			"%s must route --json/--csv/--quiet/--plain/--compact/--select through the shared output contract", path)
+		if filepath.Base(path) == "analytics.go.tmpl" {
+			require.NotContains(t, src, `counts["<nil>"]`,
+				"analytics must not bucket missing group-by values under Go's <nil> string")
+			require.Contains(t, src, `const missingGroupLabel = "(none)"`,
+				"analytics table output should use a documented missing-value label")
+		}
 		require.NotContains(t, src, "if flags.asJSON {",
 			"%s still branches only on --json, so other documented output flags can be bypassed", path)
 		require.NotContains(t, src, "flags.asJSON || !isTerminal",

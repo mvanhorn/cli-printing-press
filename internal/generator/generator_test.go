@@ -19925,6 +19925,12 @@ func TestProjectManagementWorkflowsEmitSyncHints(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(analyticsSrc), `maybeEmitSyncHints(cmd, db, resourceType, flags.maxAge)`,
 		"analytics should emit sync hints for local aggregate reads")
+	assert.NotContains(t, string(analyticsSrc), `counts["<nil>"]`,
+		"analytics must not bucket missing group-by values under Go's <nil> string")
+	assert.Contains(t, string(analyticsSrc), `const missingGroupLabel = "(none)"`,
+		"analytics table output should use a documented missing-value label")
+	assert.Contains(t, string(analyticsSrc), "Value any",
+		"analytics group-by JSON should encode missing values as null via any")
 	dataSourceSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "data_source.go"))
 	require.NoError(t, err)
 	assert.Contains(t, string(dataSourceSrc), `emitSyncHints(hintWriter, db, resourceType, flags.maxAge)`,
@@ -20035,6 +20041,8 @@ func TestAnalyticsCommandWritesToConfiguredOutput(t *testing.T) {
 	for _, raw := range []string{
 		` + "`" + `{"id":"issue-1","status":"open","stage_id":"qualified"}` + "`" + `,
 		` + "`" + `{"id":"issue-2","status":"open","stage_id":"qualified"}` + "`" + `,
+		` + "`" + `{"id":"issue-3","status":"closed","stage_id":null}` + "`" + `,
+		` + "`" + `{"id":"issue-4","status":"closed"}` + "`" + `,
 	} {
 		var payload json.RawMessage = []byte(raw)
 		var obj map[string]any
@@ -20051,14 +20059,14 @@ func TestAnalyticsCommandWritesToConfiguredOutput(t *testing.T) {
 	}
 
 	stdout, _ := runPMCommand(t, dbPath, false, "analytics")
-	for _, want := range []string{"Resource Type\tCount", "issues\t2"} {
+	for _, want := range []string{"Resource Type\tCount", "issues\t4"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("analytics text summary stdout = %q, want %q in configured output", stdout, want)
 		}
 	}
 
 	stdout, _ = runPMCommand(t, dbPath, false, "analytics", "--type", "issues")
-	if !strings.Contains(stdout, "issues: 2 records") {
+	if !strings.Contains(stdout, "issues: 4 records") {
 		t.Fatalf("analytics text count stdout = %q, want issues count in configured output", stdout)
 	}
 
@@ -20070,10 +20078,13 @@ func TestAnalyticsCommandWritesToConfiguredOutput(t *testing.T) {
 	}
 
 	stdout, _ = runPMCommand(t, dbPath, false, "analytics", "--type", "issues", "--group-by", "stage")
-	for _, want := range []string{"stage\tCount", "qualified\t2"} {
+	for _, want := range []string{"stage\tCount", "qualified\t2", "(none)\t2"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("analytics friendly group-by stdout = %q, want %q in configured output", stdout, want)
 		}
+	}
+	if strings.Contains(stdout, "<nil>") {
+		t.Fatalf("analytics friendly group-by stdout = %q, want no Go nil string", stdout)
 	}
 
 	stdout, stderr, err := runPMCommandErr(t, dbPath, false, "analytics", "--type", "issues", "--group-by", "bogus")
@@ -20090,7 +20101,7 @@ func TestAnalyticsCommandWritesToConfiguredOutput(t *testing.T) {
 	}
 
 	stdout, _ = runPMHintCommand(t, dbPath, "analytics")
-	if !strings.Contains(stdout, ` + "`" + `"issues": 2` + "`" + `) {
+	if !strings.Contains(stdout, ` + "`" + `"issues": 4` + "`" + `) {
 		t.Fatalf("analytics summary stdout = %q, want issues count in configured output", stdout)
 	}
 
@@ -20098,6 +20109,16 @@ func TestAnalyticsCommandWritesToConfiguredOutput(t *testing.T) {
 	for _, want := range []string{` + "`" + `"value": "open"` + "`" + `, ` + "`" + `"count": 2` + "`" + `} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("analytics group-by stdout = %q, want %q in configured output", stdout, want)
+		}
+	}
+
+	stdout, _ = runPMHintCommand(t, dbPath, "analytics", "--type", "issues", "--group-by", "stage")
+	if strings.Contains(stdout, "<nil>") || strings.Contains(stdout, ` + "`" + `\u003cnil\u003e` + "`" + `) {
+		t.Fatalf("analytics null group stdout = %q, want no Go nil string", stdout)
+	}
+	for _, want := range []string{` + "`" + `"value": null` + "`" + `, ` + "`" + `"count": 2` + "`" + `, ` + "`" + `"value": "qualified"` + "`" + `} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("analytics null group stdout = %q, want %q in configured output", stdout, want)
 		}
 	}
 }
