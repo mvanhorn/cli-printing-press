@@ -1171,9 +1171,8 @@ func FamilyHash(family string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// QueryHash is the non-reversible identifier persisted in the
-// learnings audit log and teach.log in place of the raw query.
-// Empty input hashes to "".
+// Audit and teach.log persist this instead of the raw query so a forget
+// can target the row without retaining PII. Empty input hashes to "".
 func QueryHash(query string) string {
 	if strings.TrimSpace(query) == "" {
 		return ""
@@ -1216,10 +1215,9 @@ func ScanPII(text string) []string {
 	return rules
 }
 
-// RedactPII replaces recognizable email and phone shapes with
-// placeholders so append-only logs can keep a normalized query form
-// without storing the original identifiers. It does not change the
-// in-store learning row; that path stays warn-only.
+// Logs keep a normalized form; identifiers matching ScanPII rules are
+// replaced so the original values never hit disk. The in-store learning
+// row stays warn-only.
 func RedactPII(text string) string {
 	text = piiEmailRE.ReplaceAllString(text, "<email>")
 	text = piiPhoneRE.ReplaceAllString(text, "<phone>")

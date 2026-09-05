@@ -273,6 +273,7 @@ printing-press-rich-pp-cli teach \
 # (append shell `&` to background it)
 
 # Alternate: playbook-only (no resource to record alongside).
+QUERY=$(cat /path/to/question.txt)
 printing-press-rich-pp-cli teach-playbook \
   --query "$QUERY" \
   --playbook-file ~/playbooks/<shape>.json \
