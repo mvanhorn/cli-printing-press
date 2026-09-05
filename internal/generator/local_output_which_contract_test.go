@@ -99,6 +99,8 @@ func TestGeneratedLocalReadsAndWhichHonorSharedRuntimeContracts(t *testing.T) {
 		"single-token leaves must keep a positive score when specificity is the only remaining penalty")
 	assert.Contains(t, whichSrc, "func whichIncidentalToken(token string) bool {",
 		"incidental query words must not create a which match")
+	assert.Contains(t, whichSrc, "whichIncidentalToken(qt) && !whichTokensContain(qt, cmdTokens)",
+		"one-character command leaves must still match when the query names them")
 
 	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
 	assert.Contains(t, syncSrc, "machineFormat := wantsMachineOutput(flags)")
@@ -364,5 +366,5 @@ func TestResolveLocalUnmatchedEqualityKeyDoesNotEmptyTheList(t *testing.T) {
 func ioDiscard() io.Writer { return io.Discard }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestResolveLocal|TestWhichJSONNoMatchExits2|TestWhichPipedNoMatchExits2WithEmptyEnvelope|TestRankWhich_SingleTokenLeaf|TestRankWhich_CompositeLeafLosesWhenQueryOmitsCapabilityTokens|TestRankWhich_ProseCreditDoesNotDoubleCount|TestRankWhich_IncidentalDescriptionWordDoesNotAdmitEntry", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestResolveLocal|TestWhichJSONNoMatchExits2|TestWhichPipedNoMatchExits2WithEmptyEnvelope|TestRankWhich_SingleTokenLeaf|TestRankWhich_CompositeLeafLosesWhenQueryOmitsCapabilityTokens|TestRankWhich_ProseCreditDoesNotDoubleCount|TestRankWhich_IncidentalDescriptionWordDoesNotAdmitEntry|TestRankWhich_OneCharacterCommandLeafMatches", "-count=1")
 }

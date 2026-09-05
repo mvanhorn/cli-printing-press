@@ -113,7 +113,7 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 
 	// Exact token match on the command path (any token).
 	for _, qt := range qTokens {
-		if whichIncidentalToken(qt) {
+		if whichIncidentalToken(qt) && !whichTokensContain(qt, cmdTokens) {
 			continue
 		}
 		for _, ct := range cmdTokens {
@@ -150,7 +150,7 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 	groupTokens := whichSubTokens(group)
 	groupMatched := false
 	for _, qt := range qTokens {
-		if whichIncidentalToken(qt) {
+		if whichIncidentalToken(qt) && !whichTokensContain(qt, groupTokens) {
 			continue
 		}
 		for _, gt := range groupTokens {
@@ -291,10 +291,19 @@ func whichSubTokens(cmd string) []string {
 
 func whichIncidentalToken(token string) bool {
 	token = strings.Trim(strings.ToLower(token), ".,:;!?()[]{}\"'")
-	if token == "" || len(token) < 2 {
+	if token == "" {
 		return true
 	}
 	return whichIncidentalTokens[token]
+}
+
+func whichTokensContain(token string, tokens []string) bool {
+	for _, candidate := range tokens {
+		if whichTokenMatch(token, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 // The closed API-verb set for write-shaped commands. A request that never
@@ -318,7 +327,7 @@ var whichTokenAliases = map[string]string{
 // aliases (my/mine/me/current) stay significant so authenticated-scoped
 // commands can still outrank generic listings.
 var whichIncidentalTokens = map[string]bool{
-	"a": true, "an": true, "the": true,
+	"a": true, "an": true, "the": true, "i": true,
 	"is": true, "are": true, "was": true, "were": true, "be": true, "been": true, "being": true,
 	"of": true, "to": true, "in": true, "on": true, "at": true, "for": true, "with": true, "from": true, "by": true, "about": true,
 	"what": true, "which": true, "who": true, "whom": true, "whose": true, "how": true, "when": true, "why": true, "where": true,
