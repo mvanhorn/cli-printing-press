@@ -120,6 +120,13 @@ func TestRankWhich_IncidentalWhyItMattersTokenDoesNotAdmitEntry(t *testing.T) {
 	}
 }
 
+func TestRankWhich_IncidentalDescriptionWordDoesNotAdmitEntry(t *testing.T) {
+	got := rankWhich(whichTestIndex, "teleport a rhinoceros", 3)
+	if len(got) != 0 {
+		t.Fatalf("incidental description word must not become a which match, got %+v", got)
+	}
+}
+
 func TestRankWhich_WhyItMattersCreditDeduplicatesEquivalentTokens(t *testing.T) {
 	index := []whichEntry{
 		{Command: "risk", WhyItMatters: "Use this to coordinate repositories"},
@@ -254,7 +261,7 @@ func TestWhichJSONNoMatchExits2(t *testing.T) {
 	cmd := newWhichCmd(flags)
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"teleport rhinoceros xyzzy"})
+	cmd.SetArgs([]string{"teleport a rhinoceros"})
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("expected no-match to return a typed error")
@@ -282,7 +289,7 @@ func TestWhichPipedNoMatchExits2WithEmptyEnvelope(t *testing.T) {
 	cmd := newWhichCmd(flags)
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"teleport rhinoceros xyzzy"})
+	cmd.SetArgs([]string{"teleport a rhinoceros"})
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("expected no-match to return a typed error")
