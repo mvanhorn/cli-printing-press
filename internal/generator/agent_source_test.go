@@ -30,6 +30,8 @@ func TestGeneratedAgentSourceFollowsDeclaredProvenance(t *testing.T) {
 		"printOutputWithFlags must derive provenance instead of hardcoding local")
 	require.NotContains(t, string(helpersSrc), `return printOutputWithFlagsMeta(w, data, flags, map[string]any{"source": "local"})`,
 		"shared helper must not force local provenance")
+	require.Contains(t, string(helpersSrc), "\t\treturn \"live\"\n\tdefault:",
+		"auto-annotated commands must default agent provenance to live")
 
 	createSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items_create.go"))
 	require.NoError(t, err)
@@ -135,12 +137,45 @@ func TestDeclaredAgentSourceLiveAnnotation(t *testing.T) {
 	if got := declaredAgentSource(autoLive, &rootFlags{dataSource: "live"}); got != "live" {
 		t.Fatalf("declaredAgentSource auto+live flag = %q, want live", got)
 	}
+	if got := declaredAgentSource(autoLive, &rootFlags{dataSource: "auto"}); got != "live" {
+		t.Fatalf("declaredAgentSource auto+auto flag = %q, want live", got)
+	}
+	if got := declaredAgentSource(autoLive, &rootFlags{}); got != "live" {
+		t.Fatalf("declaredAgentSource auto default = %q, want live", got)
+	}
+	if got := declaredAgentSource(autoLive, &rootFlags{dataSource: "local"}); got != "local" {
+		t.Fatalf("declaredAgentSource auto+local flag = %q, want local", got)
+	}
 	dry := &cobra.Command{Annotations: map[string]string{"pp:data-source": "live"}}
 	if got := declaredAgentSource(dry, &rootFlags{dryRun: true}); got != "dry-run" {
 		t.Fatalf("declaredAgentSource dry-run = %q, want dry-run", got)
 	}
 }
+
+func TestPrintJSONFilteredAgentAutoDefaultsLive(t *testing.T) {
+	cmd := &cobra.Command{Annotations: map[string]string{"pp:data-source": "auto"}}
+	flags := &rootFlags{agent: true, asJSON: true, compact: true, dataSource: "auto"}
+	flags.agentSource = declaredAgentSource(cmd, flags)
+	var out bytes.Buffer
+	if err := printJSONFiltered(&out, []map[string]any{{"id": "one"}}, flags); err != nil {
+		t.Fatalf("printJSONFiltered returned error: %v", err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("agent output must be valid JSON: %v\n%s", err, out.String())
+	}
+	var meta struct {
+		Source string `+"`json:\"source\"`"+`
+	}
+	if err := json.Unmarshal(payload["meta"], &meta); err != nil {
+		t.Fatalf("meta must be an object: %v\n%s", err, out.String())
+	}
+	if meta.Source != "live" {
+		t.Fatalf("auto-annotated typed output meta.source = %q, want live; output=%s", meta.Source, out.String())
+	}
+}
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintJSONFilteredAgentDefaultsLocal|TestPrintJSONFilteredAgentUsesDeclaredLiveSource|TestPrintOutputWithFlagsAgentPreservesProvenanceEnvelope|TestDeclaredAgentSourceLiveAnnotation", "-count=1")
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintJSONFilteredAgentDefaultsLocal|TestPrintJSONFilteredAgentUsesDeclaredLiveSource|TestPrintOutputWithFlagsAgentPreservesProvenanceEnvelope|TestDeclaredAgentSourceLiveAnnotation|TestPrintJSONFilteredAgentAutoDefaultsLive", "-count=1")
 }

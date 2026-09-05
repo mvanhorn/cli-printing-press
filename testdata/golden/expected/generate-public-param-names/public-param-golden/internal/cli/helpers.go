@@ -1878,15 +1878,10 @@ func declaredAgentSource(cmd *cobra.Command, flags *rootFlags) string {
 	case "local", "computed":
 		return "local"
 	case "auto":
-		if flags != nil {
-			switch flags.dataSource {
-			case "live":
-				return "live"
-			case "local":
-				return "local"
-			}
+		if flags != nil && flags.dataSource == "local" {
+			return "local"
 		}
-		return ""
+		return "live"
 	default:
 		return ""
 	}
