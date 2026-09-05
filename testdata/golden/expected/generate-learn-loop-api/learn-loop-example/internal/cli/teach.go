@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -93,12 +94,38 @@ func teachErrLogPath() (string, error) {
 	return filepath.Join(dir, teachErrLogFileName), nil
 }
 
+// learningsAuditMaxBytes is the rotation cap for learnings.jsonl and
+// the CLI-side teach.log. Overridable in tests.
+var learningsAuditMaxBytes int64 = 1 << 20
+
+var learningsLogMu sync.Mutex
+
+func queryHashRef(query string) string {
+	return "query_hash=" + learn.QueryHash(query)
+}
+
+func rotateLogIfNeeded(path string, maxBytes int64) {
+	if maxBytes <= 0 {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Size() < maxBytes {
+		return
+	}
+	rotated := path + ".1"
+	_ = os.Remove(rotated)
+	_ = os.Rename(path, rotated)
+}
+
 // writeTeachErrLog appends a single line to teach.log. Best-effort.
 func writeTeachErrLog(line string) {
 	p, err := teachErrLogPath()
 	if err != nil {
 		return
 	}
+	learningsLogMu.Lock()
+	defer learningsLogMu.Unlock()
+	rotateLogIfNeeded(p, learningsAuditMaxBytes)
 	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
@@ -109,11 +136,19 @@ func writeTeachErrLog(line string) {
 }
 
 // appendLearningsAudit records one event in the JSONL audit log.
+// The raw query is never persisted: callers pass query_hash and a
+// redacted normalized form. A leftover "query" key is stripped.
 func appendLearningsAudit(entry map[string]any) error {
+	if entry != nil {
+		delete(entry, "query")
+	}
 	p, err := learningsAuditPath()
 	if err != nil {
 		return err
 	}
+	learningsLogMu.Lock()
+	defer learningsLogMu.Unlock()
+	rotateLogIfNeeded(p, learningsAuditMaxBytes)
 	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -121,6 +156,78 @@ func appendLearningsAudit(entry map[string]any) error {
 	defer f.Close()
 	entry["ts"] = time.Now().UTC().Format(time.RFC3339)
 	return json.NewEncoder(f).Encode(entry)
+}
+
+func scrubLearningsLogs(query string) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return
+	}
+	hash := learn.QueryHash(query)
+	learningsLogMu.Lock()
+	defer learningsLogMu.Unlock()
+	if p, err := learningsAuditPath(); err == nil {
+		_ = scrubLogFile(p, query, hash)
+		_ = scrubLogFile(p+".1", query, hash)
+	}
+	if p, err := teachErrLogPath(); err == nil {
+		_ = scrubLogFile(p, query, hash)
+		_ = scrubLogFile(p+".1", query, hash)
+	}
+}
+
+func scrubLogFile(path, rawQuery, queryHash string) error {
+	data, err := os.ReadFile(path) // #nosec G304 -- CLI state-dir log path
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	trimmed := strings.TrimRight(string(data), "\n")
+	if trimmed == "" {
+		return nil
+	}
+	lines := strings.Split(trimmed, "\n")
+	kept := make([]string, 0, len(lines))
+	changed := false
+	for _, line := range lines {
+		if logLineMatchesQuery(line, rawQuery, queryHash) {
+			changed = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !changed {
+		return nil
+	}
+	if len(kept) == 0 {
+		return os.WriteFile(path, nil, 0o600)
+	}
+	return os.WriteFile(path, []byte(strings.Join(kept, "\n")+"\n"), 0o600)
+}
+
+func logLineMatchesQuery(line, rawQuery, queryHash string) bool {
+	if rawQuery != "" && strings.Contains(line, rawQuery) {
+		return true
+	}
+	if queryHash != "" && strings.Contains(line, queryHash) {
+		return true
+	}
+	if len(line) == 0 || line[0] != '{' {
+		return false
+	}
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		return false
+	}
+	if q, _ := entry["query"].(string); q != "" && q == rawQuery {
+		return true
+	}
+	if h, _ := entry["query_hash"].(string); h != "" && h == queryHash {
+		return true
+	}
+	return false
 }
 
 // silentCodeErr returns an error that ExitCode honors but that carries
@@ -185,7 +292,7 @@ emits the user-facing response: silent on success, errors only to
 the CLI state directory's teach.log, safe to fire-and-forget.
 
 Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
-		Example: `  learn-loop-example-pp-cli teach --query "<question>" --resource-type <type> --resource <id> --resource <id> &`,
+		Example: `  learn-loop-example-pp-cli teach --query "$QUERY" --resource-type <type> --resource <id> --resource <id> &`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
@@ -200,15 +307,15 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 				return silentCodeErr(2)
 			}
 			if len(resources) == 0 {
-				writeTeachErrLog(fmt.Sprintf("teach: missing --resource for query=%q", query))
+				writeTeachErrLog(fmt.Sprintf("teach: missing --resource (%s)", queryHashRef(query)))
 				return silentCodeErr(2)
 			}
 			if strings.TrimSpace(resourceType) == "" {
-				writeTeachErrLog(fmt.Sprintf("teach: missing --resource-type for query=%q", query))
+				writeTeachErrLog(fmt.Sprintf("teach: missing --resource-type (%s)", queryHashRef(query)))
 				return silentCodeErr(2)
 			}
 			if strings.TrimSpace(playbookFile) != "" && strings.TrimSpace(playbookJSONInline) != "" {
-				writeTeachErrLog(fmt.Sprintf("teach: --playbook-file and --playbook-json are mutually exclusive (query=%q)", query))
+				writeTeachErrLog(fmt.Sprintf("teach: --playbook-file and --playbook-json are mutually exclusive (%s)", queryHashRef(query)))
 				return silentCodeErr(2)
 			}
 			// PII guard (R18): scan the freeform query for obvious
@@ -254,7 +361,7 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 					Notes:         notes,
 				})
 				if uerr != nil {
-					writeTeachErrLog(fmt.Sprintf("teach: upsert %q for query=%q: %v", rid, query, uerr))
+					writeTeachErrLog(fmt.Sprintf("teach: upsert %q (%s): %v", rid, queryHashRef(query), uerr))
 					return silentCodeErr(1)
 				}
 				taughtRowIDs = append(taughtRowIDs, learningID)
@@ -324,8 +431,8 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 
 			if auditErr := appendLearningsAudit(map[string]any{
 				"action":     "teach",
-				"query":      query,
-				"normalized": normalized.NonEntityNormalized,
+				"query_hash": learn.QueryHash(query),
+				"normalized": learn.RedactPII(normalized.NonEntityNormalized),
 				"resources":  resources,
 				"venue":      venueArg,
 				"notes":      notes,
@@ -466,8 +573,8 @@ is an information query, not a not-found error.
 
 Disabling: ` + noLearnEnvVar + `=true returns the empty shape even
 when learnings exist.`,
-		Example: `  learn-loop-example-pp-cli recall "<question>" --agent
-  learn-loop-example-pp-cli recall "<question>" --agent --min-confidence 2`,
+		Example: `  learn-loop-example-pp-cli recall "$QUERY" --agent
+  learn-loop-example-pp-cli recall "$QUERY" --agent --min-confidence 2`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -693,7 +800,7 @@ func newLearningsListCmd(flags *rootFlags) *cobra.Command {
 		Use:   "list",
 		Short: "List recorded learnings",
 		Example: `  learn-loop-example-pp-cli learnings list --agent
-  learn-loop-example-pp-cli learnings list --query "<substring>"
+  learn-loop-example-pp-cli learnings list --query "$QUERY"
   learn-loop-example-pp-cli learnings list --warnings --agent`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -800,8 +907,8 @@ func newLearningsForgetCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.C
 undone without dropping the whole DB.
 
 Requires at least one of --resource, --action, or --all.`,
-		Example: `  learn-loop-example-pp-cli learnings forget "<question>" --resource <id>
-  learn-loop-example-pp-cli learnings forget "<question>" --all`,
+		Example: `  learn-loop-example-pp-cli learnings forget "$QUERY" --resource <id>
+  learn-loop-example-pp-cli learnings forget "$QUERY" --all`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
@@ -833,10 +940,10 @@ Requires at least one of --resource, --action, or --all.`,
 			// entity promotion, so the same query text keys the same
 			// family on both paths. Telemetry-class: failures log to
 			// teach.log and never fail the forget.
+			normalized := learn.PromoteEntities(
+				learn.Normalize(query, learnCfg),
+				learn.NewCanonicalResolver(cmd.Context(), s.DB()))
 			if n > 0 {
-				normalized := learn.PromoteEntities(
-					learn.Normalize(query, learnCfg),
-					learn.NewCanonicalResolver(cmd.Context(), s.DB()))
 				famHash := learn.FamilyHash(learn.QueryFamily(normalized))
 				if _, cascErr := s.DeleteLearnEventsByFamilyHash(famHash); cascErr != nil {
 					writeTeachErrLog(fmt.Sprintf("learnings forget: event cascade: %v", cascErr))
@@ -846,9 +953,11 @@ Requires at least one of --resource, --action, or --all.`,
 					writeTeachErrLog(fmt.Sprintf("learnings forget: event insert: %v", evErr))
 				}
 			}
+			scrubLearningsLogs(query)
 			_ = appendLearningsAudit(map[string]any{
 				"action":       "forget",
-				"query":        query,
+				"query_hash":   learn.QueryHash(query),
+				"normalized":   learn.RedactPII(normalized.NonEntityNormalized),
 				"filter":       map[string]any{"resource": resourceArg, "action": actionArg, "all": all},
 				"rows_deleted": n,
 			})

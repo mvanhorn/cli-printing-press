@@ -133,11 +133,19 @@ This CLI ships a self-capturing learning loop. The CLI does its own bookkeeping:
 
 ### Step 1: `recall` before any discovery
 
-Before list/search/drill commands on a new user question, run:
+Before list/search/drill commands on a new user question, pass the question as an argv or MCP tool argument to `recall --agent`. Do not interpolate user-controlled text into a shell command line.
+
+Quoted `recall "<question>"` breaks on an apostrophe, which is ordinary English. A quoted heredoc breaks when a body line equals the delimiter, and that delimiter is published in these docs. Write the question with a non-shell file-writing tool, then read it back as data:
 
 ```bash
-printing-press-oauth2-pp-cli recall "<user's question>" --agent
+# Write the question verbatim with your file-writing tool (no shell involved).
+# Command substitution on a file only ever yields data — the shell never
+# parses the file's bytes as syntax.
+QUERY=$(cat /path/to/question.txt)
+printing-press-oauth2-pp-cli recall "$QUERY" --agent
 ```
+
+Prefer MCP: pass the question as the tool's query argument. `"$QUERY"` after a file read is argv-safe; putting the question itself in the command text is not.
 
 The response envelope:
 
@@ -241,10 +249,11 @@ Graceful degradation: if `learnings confirm` is an unknown command, you are driv
 
 ### Step 4: `teach &` after finalizing your response - always
 
-Teaching is unconditional. After resolving a query the store could not answer, background-teach the final resource mapping - no call-count threshold, no judging whether it was "worth" learning. The teach is the anchor of the loop: it triggers playbook synthesis for a family without a playbook, and same-referent phrasings fold into one family so near-duplicate teaches do not fragment the store. Fire it after assembling your user-facing response but BEFORE emitting it, with a shell `&` so the call returns immediately:
+Teaching is unconditional. After resolving a query the store could not answer, background-teach the final resource mapping - no call-count threshold, no judging whether it was "worth" learning. The teach is the anchor of the loop: it triggers playbook synthesis for a family without a playbook, and same-referent phrasings fold into one family so near-duplicate teaches do not fragment the store. Fire it after assembling your user-facing response but BEFORE emitting it, with a shell `&` so the call returns immediately. Pass the query the same way as recall — argv/MCP, or file-then-`$QUERY`. Do not splice the question into the command text:
 
 ```bash
-printing-press-oauth2-pp-cli teach --query "<user's question>" --resource-type <type> --resource <id1> --resource <id2>
+QUERY=$(cat /path/to/question.txt)
+printing-press-oauth2-pp-cli teach --query "$QUERY" --resource-type <type> --resource <id1> --resource <id2>
 # (append shell `&` to background it)
 ```
 
@@ -258,8 +267,9 @@ You do not need to decide whether a session "deserves" a playbook: a teach on a 
 
 ```bash
 # Common case: record both the resource learning AND the playbook in one call.
+QUERY=$(cat /path/to/question.txt)
 printing-press-oauth2-pp-cli teach \
-  --query "<user's question>" \
+  --query "$QUERY" \
   --resource <id> \
   --playbook-file ~/playbooks/<shape>.json \
   --playbook-notes-file ~/playbooks/<shape>-notes.md
@@ -267,7 +277,7 @@ printing-press-oauth2-pp-cli teach \
 
 # Alternate: playbook-only (no resource to record alongside).
 printing-press-oauth2-pp-cli teach-playbook \
-  --query "<user's question>" \
+  --query "$QUERY" \
   --playbook-file ~/playbooks/<shape>.json \
   --notes-file ~/playbooks/<shape>-notes.md
 ```
@@ -278,12 +288,14 @@ When you DO find a playbook on a future recall, treat it as ground truth: replay
 
 ### Step 6: `playbook amend &` when your debug response identifies a correction
 
-If your debug-protocol response identifies a concrete correction the notes or playbook should know — a workaround, an undocumented endpoint shape, a stale field name, observed schema drift, an empty-payload fallback — fire `playbook amend` BEFORE emitting your user-facing response. Same fire-and-forget posture as `teach`.
+If your debug-protocol response identifies a concrete correction the notes or playbook should know — a workaround, an undocumented endpoint shape, a stale field name, observed schema drift, an empty-payload fallback — fire `playbook amend` BEFORE emitting your user-facing response. Same fire-and-forget posture as `teach`. Pass the query and note as argv/MCP arguments, or write each with a non-shell file tool and read them back (`QUERY=$(cat ...)`, `NOTE=$(cat ...)`). Do not interpolate either string into the command text:
 
 ```bash
+QUERY=$(cat /path/to/question.txt)
+NOTE=$(cat /path/to/note.txt)
 printing-press-oauth2-pp-cli playbook amend \
-  --query "<exact recall query string>" \
-  --add-note "<your concrete correction>"
+  --query "$QUERY" \
+  --add-note "$NOTE"
 # (append shell `&` to background it)
 ```
 

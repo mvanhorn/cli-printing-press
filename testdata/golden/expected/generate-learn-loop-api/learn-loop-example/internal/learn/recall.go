@@ -1171,6 +1171,17 @@ func FamilyHash(family string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
+// QueryHash is the non-reversible identifier persisted in the
+// learnings audit log and teach.log in place of the raw query.
+// Empty input hashes to "".
+func QueryHash(query string) string {
+	if strings.TrimSpace(query) == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(query))
+	return hex.EncodeToString(sum[:])
+}
+
 // PII rule names ScanPII returns. Stable vocabulary: the teach-path
 // warning names the rule verbatim, and generated SKILL/AGENTS prose
 // references the same names.
@@ -1203,4 +1214,14 @@ func ScanPII(text string) []string {
 		rules = append(rules, PIIRulePhone)
 	}
 	return rules
+}
+
+// RedactPII replaces recognizable email and phone shapes with
+// placeholders so append-only logs can keep a normalized query form
+// without storing the original identifiers. It does not change the
+// in-store learning row; that path stays warn-only.
+func RedactPII(text string) string {
+	text = piiEmailRE.ReplaceAllString(text, "<email>")
+	text = piiPhoneRE.ReplaceAllString(text, "<phone>")
+	return text
 }
