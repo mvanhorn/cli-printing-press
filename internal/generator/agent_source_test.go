@@ -21,8 +21,9 @@ func TestGeneratedAgentSourceFollowsDeclaredProvenance(t *testing.T) {
 	}
 	outputDir := filepath.Join(t.TempDir(), "agent-source-pp-cli")
 	gen := New(serverSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true, Search: true, Analytics: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, Search: true, Analytics: true, MCP: true}
 	require.NoError(t, gen.Generate())
+	requireGeneratedCompiles(t, outputDir)
 
 	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
 	require.NoError(t, err)
@@ -176,6 +177,5 @@ func TestPrintJSONFilteredAgentAutoDefaultsLive(t *testing.T) {
 }
 `), 0o644))
 
-	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintJSONFilteredAgentDefaultsLocal|TestPrintJSONFilteredAgentUsesDeclaredLiveSource|TestPrintOutputWithFlagsAgentPreservesProvenanceEnvelope|TestDeclaredAgentSourceLiveAnnotation|TestPrintJSONFilteredAgentAutoDefaultsLive", "-count=1")
 }
