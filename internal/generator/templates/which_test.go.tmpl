@@ -139,6 +139,32 @@ func TestRankWhich_OneCharacterCommandLeafMatches(t *testing.T) {
 	if len(got) != 0 {
 		t.Fatalf("incidental filler must not admit a match, got %+v", got)
 	}
+	fillerLeaf := make([]whichEntry, 0, 2)
+	fillerLeaf = append(fillerLeaf, whichEntry{Command: "a", Description: "Run the a capability"})
+	fillerLeaf = append(fillerLeaf, whichEntry{Command: "stale", Description: "Find tickets that have not moved in a while"})
+	got = rankWhich(fillerLeaf, "run a", 3)
+	if len(got) == 0 || got[0].Entry.Command != "a" || got[0].Score <= 0 {
+		t.Fatalf("one-character filler leaf must match when the query names it, got %+v", got)
+	}
+}
+
+func TestRankWhich_FillerSubtokenDoesNotAdmitHyphenatedLeaf(t *testing.T) {
+	index := []whichEntry{
+		{Command: "check-in", Description: "Mark who showed up today"},
+		{Command: "sort-by", Description: "Order result rows"},
+		{Command: "to-do", Description: "List leftover tasks"},
+	}
+	queries := []string{"stay in", "sorted by date", "go to", "in", "teleport a rhinoceros"}
+	for _, query := range queries {
+		got := rankWhich(index, query, 3)
+		if len(got) != 0 {
+			t.Fatalf("filler-as-subtoken query %q must not admit a hyphenated leaf, got %+v", query, got)
+		}
+	}
+	got := rankWhich(index, "check-in", 3)
+	if len(got) == 0 || got[0].Entry.Command != "check-in" || got[0].Score <= 0 {
+		t.Fatalf("naming the hyphenated leaf itself must still match, got %+v", got)
+	}
 }
 
 func TestRankWhich_WhyItMattersCreditDeduplicatesEquivalentTokens(t *testing.T) {

@@ -99,8 +99,12 @@ func TestGeneratedLocalReadsAndWhichHonorSharedRuntimeContracts(t *testing.T) {
 		"single-token leaves must keep a positive score when specificity is the only remaining penalty")
 	assert.Contains(t, whichSrc, "func whichIncidentalToken(token string) bool {",
 		"incidental query words must not create a which match")
-	assert.Contains(t, whichSrc, "whichIncidentalToken(qt) && !whichTokensContain(qt, cmdTokens)",
-		"one-character command leaves must still match when the query names them")
+	assert.Contains(t, whichSrc, "whichIncidentalToken(qt) && !whichTokenMatch(qt, leaf)",
+		"filler words credit a command only when they are the whole unsplit leaf")
+	assert.Contains(t, whichSrc, "whichIncidentalToken(qt) && !whichTokenMatch(qt, group)",
+		"filler words credit a group only when they are the whole group name")
+	assert.NotContains(t, whichSrc, "func whichTokensContain(",
+		"hyphen-split sub-tokens must not grant filler command credit")
 
 	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
 	assert.Contains(t, syncSrc, "machineFormat := wantsMachineOutput(flags)")
@@ -366,5 +370,5 @@ func TestResolveLocalUnmatchedEqualityKeyDoesNotEmptyTheList(t *testing.T) {
 func ioDiscard() io.Writer { return io.Discard }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestResolveLocal|TestWhichJSONNoMatchExits2|TestWhichPipedNoMatchExits2WithEmptyEnvelope|TestRankWhich_SingleTokenLeaf|TestRankWhich_CompositeLeafLosesWhenQueryOmitsCapabilityTokens|TestRankWhich_ProseCreditDoesNotDoubleCount|TestRankWhich_IncidentalDescriptionWordDoesNotAdmitEntry|TestRankWhich_OneCharacterCommandLeafMatches", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestResolveLocal|TestWhichJSONNoMatchExits2|TestWhichPipedNoMatchExits2WithEmptyEnvelope|TestRankWhich_SingleTokenLeaf|TestRankWhich_CompositeLeafLosesWhenQueryOmitsCapabilityTokens|TestRankWhich_ProseCreditDoesNotDoubleCount|TestRankWhich_IncidentalDescriptionWordDoesNotAdmitEntry|TestRankWhich_OneCharacterCommandLeafMatches|TestRankWhich_FillerSubtokenDoesNotAdmitHyphenatedLeaf", "-count=1")
 }
