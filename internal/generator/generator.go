@@ -3993,6 +3993,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 		resource := withoutOptionsEndpoints(originalResource)
 		// Skip parent file for promoted resources — the promoted command replaces it.
 		// Sub-resource parents and endpoint files are still needed (wired by the promoted command).
+		resourceCommand := toKebab(name)
 		if !promotedResourceNames[name] {
 			// Parent file: wires subcommands together
 			parentData := struct {
@@ -4008,10 +4009,10 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			}{
 				ResourceName:  name,
 				FuncPrefix:    name,
-				CommandPath:   name,
+				CommandPath:   resourceCommand,
 				Short:         parentCommandShort(name, "", resource, apiDescriptionShort),
 				Resource:      resource,
-				NovelChildren: novelChildrenByParent[toKebab(name)],
+				NovelChildren: novelChildrenByParent[resourceCommand],
 				APIResource:   true,
 				APISpec:       g.Spec,
 			}
@@ -4036,7 +4037,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				EffectivePath: effectiveEndpointPath(resource, endpoint),
 				EffectiveTier: g.Spec.EffectiveTier(resource, endpoint),
 				FuncPrefix:    name,
-				CommandPath:   name,
+				CommandPath:   resourceCommand,
 				EndpointName:  eName,
 				Endpoint:      endpoint,
 				Resource:      resource,
@@ -9146,17 +9147,26 @@ func exampleNeedsTODO(line string) bool {
 	return strings.Contains(line, "example-value")
 }
 
+func kebabCommandParts(commandPath string) []string {
+	fields := strings.Fields(commandPath)
+	for i, field := range fields {
+		fields[i] = toKebab(field)
+	}
+	return fields
+}
+
 func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.Endpoint) string {
 	if strings.TrimSpace(endpoint.Example) != "" {
 		return endpoint.Example
 	}
 
-	commandParts := append(strings.Fields(commandPath), toKebab(endpointName))
+	// Spec resource keys are snake_case; Cobra registers kebab Use: paths.
+	commandParts := append(kebabCommandParts(commandPath), toKebab(endpointName))
 	if line, ok := g.narrativeExampleLine(commandParts, endpoint); ok {
 		return line
 	}
 	if endpoint.Alias != "" {
-		aliasParts := append(strings.Fields(commandPath), endpoint.Alias)
+		aliasParts := append(kebabCommandParts(commandPath), endpoint.Alias)
 		if line, ok := g.narrativeExampleLine(aliasParts, endpoint); ok {
 			return line
 		}
@@ -9175,6 +9185,7 @@ func (g *Generator) promotedExampleLine(promotedName string, endpoint spec.Endpo
 		return endpoint.Example
 	}
 
+	promotedName = toKebab(promotedName)
 	if line, ok := g.narrativeExampleLine([]string{promotedName}, endpoint); ok {
 		return line
 	}
