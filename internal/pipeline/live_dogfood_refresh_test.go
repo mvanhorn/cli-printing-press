@@ -350,6 +350,57 @@ func TestRunLiveDogfoodSyncsOAuth2RefreshCredentialsTomlBack(t *testing.T) {
 	assert.NotContains(t, string(got), original)
 }
 
+func TestRunLiveDogfoodSyncsRotatedRefreshBeforeAcceptanceMarkerFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	const (
+		binaryName = "fixture-pp-cli"
+		original   = "old-refresh"
+		rotated    = "new-refresh"
+	)
+
+	operatorHome := t.TempDir()
+	isolateLiveDogfoodOperatorPaths(t, binaryName, operatorHome)
+	credsPath := filepath.Join(operatorHome, ".local", "share", binaryName, "credentials.toml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(credsPath), 0o700))
+	require.NoError(t, os.WriteFile(credsPath, []byte("refresh_token = \""+original+"\"\n"), 0o600))
+	t.Setenv("FIXTURE_REFRESH_TOKEN", original)
+
+	dir := t.TempDir()
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		CLIName:       binaryName,
+		RunID:         "run-live-dogfood",
+		AuthType:      spec.AuthTypeOAuth2Refresh,
+		AuthEnvVars:   []string{"FIXTURE_REFRESH_TOKEN"},
+		SpecFormat:    "openapi3",
+	}))
+	writeLiveDogfoodRotatingRefreshStub(t, dir, binaryName, original, rotated)
+
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
+	markerPath := filepath.Join(blocker, Phase5AcceptanceFilename)
+
+	_, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:              dir,
+		BinaryName:          binaryName,
+		Level:               "full",
+		Timeout:             2 * time.Second,
+		AuthEnv:             "FIXTURE_REFRESH_TOKEN",
+		WriteAcceptancePath: markerPath,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating phase5 marker directory")
+
+	got, readErr := os.ReadFile(credsPath)
+	require.NoError(t, readErr)
+	assert.Contains(t, string(got), rotated)
+	assert.NotContains(t, string(got), original)
+}
+
 func TestRunLiveDogfoodSyncsOAuth2RefreshCredentialsTomlBackFromXDGDataHome(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")

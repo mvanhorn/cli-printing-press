@@ -260,6 +260,13 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 
 	finalizeLiveDogfoodReport(report, authType)
 	finalizeLiveDogfoodCoverage(report, opts.ResearchDir)
+	// Persist rotated credentials before the acceptance marker: a marker-write
+	// failure must not discard the sandbox that holds the replacement token.
+	// Still write the marker when sync-back itself fails (operator conflict).
+	syncErr := homeScope.syncBack()
+	if syncErr == nil {
+		homeScope.warnSeededEnv()
+	}
 	// The Phase 5.6 acceptance gate's contract is "marker from the runner on
 	// every outcome": pass → promote, fail → hold-path, missing → "Phase 5
 	// was skipped or not recorded." Writing only on PASS forced operators to
@@ -268,13 +275,15 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	// to the hold path.
 	if opts.WriteAcceptancePath != "" {
 		if err := writeLiveDogfoodAcceptance(opts, report, source); err != nil {
+			if syncErr != nil {
+				return nil, errors.Join(syncErr, err)
+			}
 			return nil, err
 		}
 	}
-	if err := homeScope.syncBack(); err != nil {
-		return report, err
+	if syncErr != nil {
+		return report, syncErr
 	}
-	homeScope.warnSeededEnv()
 	return report, nil
 }
 
