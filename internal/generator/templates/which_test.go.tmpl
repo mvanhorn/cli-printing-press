@@ -4,6 +4,8 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -118,6 +120,53 @@ func TestRankWhich_IncidentalWhyItMattersTokenDoesNotAdmitEntry(t *testing.T) {
 	}
 }
 
+func TestRankWhich_IncidentalDescriptionWordDoesNotAdmitEntry(t *testing.T) {
+	got := rankWhich(whichTestIndex, "teleport a rhinoceros", 3)
+	if len(got) != 0 {
+		t.Fatalf("incidental description word must not become a which match, got %+v", got)
+	}
+}
+
+func TestRankWhich_OneCharacterCommandLeafMatches(t *testing.T) {
+	index := make([]whichEntry, 0, 2)
+	index = append(index, whichEntry{Command: "x", Description: "Run the x capability"})
+	index = append(index, whichEntry{Command: "stale", Description: "Find tickets that have not moved in a while"})
+	got := rankWhich(index, "run x", 3)
+	if len(got) == 0 || got[0].Entry.Command != "x" || got[0].Score <= 0 {
+		t.Fatalf("one-character command leaf must match when the query names it, got %+v", got)
+	}
+	got = rankWhich(index, "teleport a rhinoceros", 3)
+	if len(got) != 0 {
+		t.Fatalf("incidental filler must not admit a match, got %+v", got)
+	}
+	fillerLeaf := make([]whichEntry, 0, 2)
+	fillerLeaf = append(fillerLeaf, whichEntry{Command: "a", Description: "Run the a capability"})
+	fillerLeaf = append(fillerLeaf, whichEntry{Command: "stale", Description: "Find tickets that have not moved in a while"})
+	got = rankWhich(fillerLeaf, "run a", 3)
+	if len(got) == 0 || got[0].Entry.Command != "a" || got[0].Score <= 0 {
+		t.Fatalf("one-character filler leaf must match when the query names it, got %+v", got)
+	}
+}
+
+func TestRankWhich_FillerSubtokenDoesNotAdmitHyphenatedLeaf(t *testing.T) {
+	index := []whichEntry{
+		{Command: "check-in", Description: "Mark who showed up today"},
+		{Command: "sort-by", Description: "Order result rows"},
+		{Command: "to-do", Description: "List leftover tasks"},
+	}
+	queries := []string{"stay in", "sorted by date", "go to", "in", "teleport a rhinoceros"}
+	for _, query := range queries {
+		got := rankWhich(index, query, 3)
+		if len(got) != 0 {
+			t.Fatalf("filler-as-subtoken query %q must not admit a hyphenated leaf, got %+v", query, got)
+		}
+	}
+	got := rankWhich(index, "check-in", 3)
+	if len(got) == 0 || got[0].Entry.Command != "check-in" || got[0].Score <= 0 {
+		t.Fatalf("naming the hyphenated leaf itself must still match, got %+v", got)
+	}
+}
+
 func TestRankWhich_WhyItMattersCreditDeduplicatesEquivalentTokens(t *testing.T) {
 	index := []whichEntry{
 		{Command: "risk", WhyItMatters: "Use this to coordinate repositories"},
@@ -195,6 +244,43 @@ func TestRankWhich_NestedResourceMatchSurvivesSpecificity(t *testing.T) {
 	}
 }
 
+func TestRankWhich_SingleTokenLeafSurvivesMultiWordQuery(t *testing.T) {
+	index := make([]whichEntry, 0, 1)
+	index = append(index, whichEntry{Command: "product", Description: "Look up items by ean and gtin"})
+	got := rankWhich(index, "ean gtin", 3)
+	if len(got) != 1 || got[0].Entry.Command != "product" || got[0].Score <= 0 {
+		t.Fatalf("single-token leaf matched via description must survive a multi-word query, got %+v", got)
+	}
+}
+
+func TestRankWhich_SingleTokenLeafDescriptionHitIsNotZeroed(t *testing.T) {
+	index := make([]whichEntry, 0, 1)
+	index = append(index, whichEntry{Command: "product", Description: "Look up items by ean"})
+	got := rankWhich(index, "ean gtin", 3)
+	if len(got) != 1 || got[0].Entry.Command != "product" || got[0].Score <= 0 {
+		t.Fatalf("specificity must not erase a single-token leaf on a one-point description hit, got %+v", got)
+	}
+}
+
+func TestRankWhich_CompositeLeafLosesWhenQueryOmitsCapabilityTokens(t *testing.T) {
+	index := make([]whichEntry, 0, 2)
+	index = append(index, whichEntry{
+		Command:     "activity list-repos-starred-by-authenticated",
+		Description: "List repositories starred by the authenticated user",
+	})
+	index = append(index, whichEntry{Command: "repos list", Description: "List repositories"})
+	got := rankWhich(index, "list repositories", 3)
+	if len(got) < 2 {
+		t.Fatalf("expected both the canonical command and the variant to remain matches, got %+v", got)
+	}
+	if got[0].Entry.Command != "repos list" {
+		t.Fatalf("canonical command should beat a long variant the query did not ask for, got %+v", got)
+	}
+	if got[0].Score <= got[1].Score {
+		t.Fatalf("specificity should down-rank the omitted-capability variant, got %+v", got)
+	}
+}
+
 func TestRankWhich_WriteSynonymsAreNotPenalized(t *testing.T) {
 	index := make([]whichEntry, 0, 2)
 	index = append(index, whichEntry{Command: "projects list", Description: "List projects"})
@@ -202,6 +288,62 @@ func TestRankWhich_WriteSynonymsAreNotPenalized(t *testing.T) {
 	got := rankWhich(index, "edit project", 1)
 	if len(got) != 1 || got[0].Entry.Command != "projects edit" {
 		t.Fatalf("explicit write intent should select the edit command, got %+v", got)
+	}
+}
+
+func TestWhichJSONNoMatchExits2(t *testing.T) {
+	old := whichIndex
+	whichIndex = whichTestIndex
+	t.Cleanup(func() { whichIndex = old })
+
+	var stdout, stderr bytes.Buffer
+	flags := &rootFlags{asJSON: true}
+	cmd := newWhichCmd(flags)
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"teleport a rhinoceros"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected no-match to return a typed error")
+	}
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("ExitCode = %d, want 2 (typed no-match)", got)
+	}
+	var envelope map[string]any
+	if json.Unmarshal(stdout.Bytes(), &envelope) != nil {
+		t.Fatalf("no-match --json stdout must be a JSON envelope, got %q", stdout.String())
+	}
+	matches, _ := envelope["matches"].([]any)
+	if len(matches) != 0 {
+		t.Fatalf("matches = %#v, want empty array", envelope["matches"])
+	}
+}
+
+func TestWhichPipedNoMatchExits2WithEmptyEnvelope(t *testing.T) {
+	old := whichIndex
+	whichIndex = whichTestIndex
+	t.Cleanup(func() { whichIndex = old })
+
+	var stdout bytes.Buffer
+	flags := &rootFlags{}
+	cmd := newWhichCmd(flags)
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"teleport a rhinoceros"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected no-match to return a typed error")
+	}
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("ExitCode = %d, want 2", got)
+	}
+	var envelope map[string]any
+	if json.Unmarshal(stdout.Bytes(), &envelope) != nil {
+		t.Fatalf("piped no-match must write {\"matches\":[]} so agents can inspect the miss, got %q", stdout.String())
+	}
+	matches, _ := envelope["matches"].([]any)
+	if len(matches) != 0 {
+		t.Fatalf("matches = %#v, want empty array", envelope["matches"])
 	}
 }
 

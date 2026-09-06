@@ -709,6 +709,133 @@ func TestRecall_HitCarriesLearningID(t *testing.T) {
 	}
 }
 
+// TestRecall_IdentifierOnlyTickerFindsRow is the identifier-only
+// teach→recall contract: the stored pattern still carries leftover
+// write-side tokens (punctuation-split identifier), but recall scores
+// on identity overlap and returns the row with the ticker in
+// query_entities. entity_match is exact when the resource JSON
+// carries the same identifier on a configured identity field.
+func TestRecall_IdentifierOnlyTickerFindsRow(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+	seedRecallResource(t, db, "widgets", "TICKER-ABC", `{"title":"TICKER-ABC widget","id":"TICKER-ABC"}`)
+	identity, err := json.Marshal(QueryIdentityEntities(Normalize("where is TICKER-ABC", testConfig())))
+	if err != nil {
+		t.Fatalf("marshal identity: %v", err)
+	}
+	// Simulate the write-side split: punctuation becomes spaces and
+	// the ticker is no longer a single stored token.
+	seedLearning(t, db, "where ticker abc", string(identity), "TICKER-ABC", "widgets", "boost", 3)
+
+	got, err := Recall(context.Background(), db, "where is TICKER-ABC", Opts{
+		EntityConfig:       testConfig(),
+		ResourceTypeFields: map[string][]string{"widgets": {"title", "id"}},
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if !got.Found {
+		t.Fatalf("want Found=true, got %+v", got)
+	}
+	if got.Family != "" {
+		t.Errorf("identifier-only family must stay empty NonEntityNormalized; Family=%q", got.Family)
+	}
+	foundIdent := false
+	for _, e := range got.QueryEntities {
+		if e == "TICKER-ABC" {
+			foundIdent = true
+			break
+		}
+	}
+	if !foundIdent {
+		t.Errorf("QueryEntities = %v, want to include TICKER-ABC", got.QueryEntities)
+	}
+	if len(got.Results) != 1 {
+		t.Fatalf("want 1 hit, got %d (%+v)", len(got.Results), got.Results)
+	}
+	if got.Results[0].EntityMatch != EntityMatchExact {
+		t.Errorf("EntityMatch = %q, want %q", got.Results[0].EntityMatch, EntityMatchExact)
+	}
+}
+
+func TestLeftoverTokensAreIdentityFragments(t *testing.T) {
+	t.Parallel()
+	id := []string{"TICKER-ABC"}
+	if !leftoverTokensAreIdentityFragments(nil, id) {
+		t.Fatal("empty leftover must stay eligible")
+	}
+	if !leftoverTokensAreIdentityFragments([]string{"ticker", "abc"}, id) {
+		t.Fatal("punctuation-split identifier fragments must stay eligible")
+	}
+	if leftoverTokensAreIdentityFragments([]string{"owns"}, id) {
+		t.Fatal("distinct intent leftover must not boost")
+	}
+	if leftoverTokensAreIdentityFragments([]string{"owns", "ticker"}, id) {
+		t.Fatal("intent token plus fragments must not boost")
+	}
+}
+
+func TestIdentifierOnlyScore_IncludesLeftoverIntent(t *testing.T) {
+	t.Parallel()
+	id := []string{"TICKER-ABC"}
+	if got := identifierOnlyScore(id, id, nil); got != 1 {
+		t.Fatalf("empty leftover: got %v, want 1", got)
+	}
+	if got := identifierOnlyScore(id, id, []string{"ticker", "abc"}); got != 1 {
+		t.Fatalf("identifier fragments: got %v, want 1", got)
+	}
+	if got := identifierOnlyScore(id, id, []string{"owns"}); got >= 0.6 {
+		t.Fatalf("intent leftover must stay below jMin; got %v", got)
+	}
+}
+
+// TestRecall_SameIdentifierDifferentIntentDoesNotSkipDiscovery pins
+// that two teachings sharing an identifier but naming different
+// resources and actions cannot both become exact skip-discovery hits.
+// The leftover-token identity boost is only for identifier fragments.
+func TestRecall_SameIdentifierDifferentIntentDoesNotSkipDiscovery(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+	seedRecallResource(t, db, "widgets", "TICKER-ABC", `{"title":"TICKER-ABC widget","id":"TICKER-ABC"}`)
+	seedRecallResource(t, db, "owners", "TICKER-ABC", `{"title":"TICKER-ABC owner","id":"TICKER-ABC"}`)
+	identity, err := json.Marshal(QueryIdentityEntities(Normalize("where is TICKER-ABC", testConfig())))
+	if err != nil {
+		t.Fatalf("marshal identity: %v", err)
+	}
+	seedLearning(t, db, "where ticker abc", string(identity), "TICKER-ABC", "widgets", "boost", 3)
+	seedLearning(t, db, "owns ticker abc", string(identity), "TICKER-ABC", "owners", "hide", 3)
+
+	got, err := Recall(context.Background(), db, "where is TICKER-ABC", Opts{
+		EntityConfig: testConfig(),
+		ResourceTypeFields: map[string][]string{
+			"widgets": {"title", "id"},
+			"owners":  {"title", "id"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if !got.Found {
+		t.Fatalf("want Found=true for the identifier-only where row, got %+v", got)
+	}
+	exact := 0
+	for _, h := range got.Results {
+		if h.ResourceType == "owners" || h.Action == "hide" {
+			t.Errorf("owns/owners row leaked into Results: %+v", h)
+		}
+		if h.EntityMatch != EntityMatchExact {
+			continue
+		}
+		exact++
+		if h.ResourceType != "widgets" || h.Action != "boost" {
+			t.Errorf("exact hit = %+v, want widgets/boost", h)
+		}
+	}
+	if exact != 1 {
+		t.Fatalf("want exactly 1 exact skip-discovery hit, got %d in Results=%+v", exact, got.Results)
+	}
+}
+
 // TestFamilyHash_StableNonReversibleEmpty pins the event-key contract:
 // deterministic, distinct across families, no family text leaking
 // through, and "" for an empty family (stored as NULL).
@@ -728,6 +855,26 @@ func TestFamilyHash_StableNonReversibleEmpty(t *testing.T) {
 	}
 	if FamilyHash("") != "" || FamilyHash("   ") != "" {
 		t.Error("empty family must hash to \"\" (stored as NULL)")
+	}
+}
+
+func TestQueryHash_StableNonReversibleEmpty(t *testing.T) {
+	t.Parallel()
+	raw := "orders placed by jane.doe@example.com last week"
+	a1 := QueryHash(raw)
+	a2 := QueryHash(raw)
+	b := QueryHash("orders placed by other@example.com last week")
+	if a1 == "" || a1 != a2 {
+		t.Errorf("QueryHash must be deterministic; got %q vs %q", a1, a2)
+	}
+	if a1 == b {
+		t.Errorf("distinct queries must hash apart; both %q", a1)
+	}
+	if strings.Contains(a1, "jane") || strings.Contains(a1, "example.com") {
+		t.Errorf("hash must not carry query text; got %q", a1)
+	}
+	if QueryHash("") != "" || QueryHash("   ") != "" {
+		t.Error("empty query must hash to \"\"")
 	}
 }
 
@@ -764,5 +911,20 @@ func TestScanPII_EmailAndPhoneShapes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRedactPII_ReplacesEmailAndPhone(t *testing.T) {
+	t.Parallel()
+	got := RedactPII("orders placed by jane.doe@example.com or call 555-123-4567")
+	if strings.Contains(got, "jane.doe@example.com") || strings.Contains(got, "555-123-4567") {
+		t.Errorf("RedactPII leaked identifiers: %q", got)
+	}
+	if !strings.Contains(got, "<email>") || !strings.Contains(got, "<phone>") {
+		t.Errorf("RedactPII should substitute placeholders; got %q", got)
+	}
+	clean := "list pending orders"
+	if RedactPII(clean) != clean {
+		t.Errorf("clean text must pass through; got %q", RedactPII(clean))
 	}
 }

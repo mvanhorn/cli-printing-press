@@ -620,6 +620,10 @@ func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	assert.Contains(t, template, "if len(args) == 0 && cmd.Flags().NFlag() == 0 {")
 	assert.Regexp(t, regexp.MustCompile(`if len\(args\) == 0 && cmd\.Flags\(\)\.NFlag\(\) == 0 \{\s+return cmd\.Help\(\)\s+\}`), template)
 	assert.Contains(t, template, "if dryRunOK(flags) {")
+	assert.Regexp(t, regexp.MustCompile(`if dryRunOK\(flags\) \{\s+return writeDryRun\(cmd\.OutOrStdout\(\), flags, "<command name>"\)\s+\}`), template)
+	assert.NotRegexp(t, regexp.MustCompile(`if dryRunOK\(flags\) \{\s+return nil\s+\}`), template)
+	assert.Contains(t, template, "Never `return nil` from this branch")
+	assert.Contains(t, template, "novel_feature_command.go.tmpl")
 	assert.Contains(t, template, "_ = cmd.Usage()")
 	assert.Contains(t, template, `return usageErr(fmt.Errorf("<flag-or-arg> is required"))`)
 	assert.Contains(t, template, "Do not collapse the first and third branches")
@@ -632,9 +636,21 @@ func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	assert.Regexp(t, regexp.MustCompile(`if len\(args\) < N \{\s+_ = cmd\.Usage\(\)\s+return usageErr\(fmt\.Errorf\("missing required positional argument"\)\)`), template,
 		"multi-positional block must call cmd.Usage() before returning the usage error")
 
+	multi := substringBetween(t, template, "Multi-positional commands (N >= 2 required args)", "Do not collapse")
+	dryIdx := strings.Index(multi, "if dryRunOK(flags) {")
+	posIdx := strings.Index(multi, "if len(args) < N {")
+	require.GreaterOrEqual(t, dryIdx, 0, "multi-positional template must include a dryRunOK short-circuit")
+	require.GreaterOrEqual(t, posIdx, 0, "multi-positional template must include the positional gate")
+	assert.Less(t, dryIdx, posIdx, "dry-run short-circuit must precede the positional gate so <cmd> --dry-run works without positionals")
+	assert.Contains(t, multi, `return writeDryRun(cmd.OutOrStdout(), flags, "<command name>")`)
+	assert.Contains(t, multi, "before the `len(args) < N` gate")
+	assert.NotContains(t, multi, "after the `len(args) < N` gate")
+
 	assert.Equal(t, 3, strings.Count(starters, "if len(args) == 0 && cmd.Flags().NFlag() == 0 {"))
 	assert.Equal(t, 3, strings.Count(starters, "return cmd.Help()"))
 	assert.Equal(t, 3, strings.Count(starters, "if dryRunOK(flags) {"))
+	assert.Equal(t, 3, strings.Count(starters, `return writeDryRun(cmd.OutOrStdout(), flags, "<command name>")`))
+	assert.NotContains(t, starters, "if dryRunOK(flags) {\n\t\treturn nil\n")
 	assert.Equal(t, 3, strings.Count(starters, "ctx, cancel := boundCtx(cmd.Context(), flags)"))
 	assert.Equal(t, 3, strings.Count(starters, "defer cancel()"))
 	assert.Equal(t, 3, strings.Count(starters, "_ = cmd.Usage()"))
@@ -1041,6 +1057,9 @@ func TestPublishSkillDocumentsPatchesIndexContract(t *testing.T) {
 	assert.Contains(t, block, "manifest entry")
 	assert.Contains(t, block, "Inline `// PATCH(...)` source comments are optional navigation aids")
 	assert.Contains(t, block, "does not require a marker/comment pairing")
+	assert.Contains(t, block, "`publish validate` reads the records")
+	assert.Contains(t, block, "`files[]` is required for every `call_sites`")
+	assert.Contains(t, block, "Needles are checked only in those recorded files")
 }
 
 func TestAmendSkillRequiresUpstreamBreadcrumbsForTemporaryPatches(t *testing.T) {
@@ -1102,6 +1121,7 @@ func TestGeneratedAgentsTemplatePointsToPublicLibraryForPatchMechanics(t *testin
 	// drift to the legacy patch form; a stable pointer cannot rot.
 	assert.Contains(t, template, "## Local Customizations")
 	assert.Contains(t, template, ".printing-press-patches/")
+	assert.Contains(t, template, "fail closed")
 	assert.Contains(t, template, "public library's `AGENTS.md`")
 
 	// Mechanics must not be re-inlined into the per-CLI template.

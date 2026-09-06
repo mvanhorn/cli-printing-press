@@ -543,6 +543,9 @@ The local store's schema version stamp is one-way: once this version of `{{$.Nam
 Every command supports these output flags:
 
 - `--json` — structured output for scripting and agents
+- `--compact` — keep identity, status, and timestamp fields
+- `--csv` / `--plain` — tabular rows (collection envelopes unwrap)
+- `--quiet` — one identity value per line
 - `--select <field>[,<field>...]` — filter to specific fields
 - `--dry-run` — preview the request without sending
 - `--agent` — JSON + compact + non-interactive in one flag
@@ -570,7 +573,7 @@ This CLI is designed for AI agent consumption:
 {{- end}}
 - **Agent-safe by default** - no colors or formatting unless `--human-friendly` is set
 
-Exit codes: `0` success, `2` usage error, `3` not found{{if .HasAuth}}, `4` auth error{{end}}, `5` API error, `7` rate limited, `10` config error.
+Exit codes: `0` success, `2` usage error, `3` not found{{if .HasAuth}}, `4` auth error{{end}}, `5` API error{{if .HasPartialFailureErr}}, `6` partial failure{{end}}, `7` rate limited, `10` config error.
 {{- if and .HasDataLayer .HasAutoRefresh}}
 
 ## Freshness

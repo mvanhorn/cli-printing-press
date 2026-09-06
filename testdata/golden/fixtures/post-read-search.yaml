@@ -1,0 +1,45 @@
+name: post-read-golden
+description: |
+  POST search/list endpoints classified as reads must print the response body.
+  search uses the operation-name signal; items uses mutation: false; create
+  stays a mutation.
+version: 1.0.0
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  sets:
+    description: Sets with POST read and write endpoints.
+    endpoints:
+      list:
+        method: GET
+        path: /sets
+        description: List sets
+        response: {type: array, item: Set}
+      search:
+        method: POST
+        path: /sets/search
+        description: Search sets
+        body:
+          - {name: query, type: string, description: Free-text query}
+        response: {type: array, item: Set}
+      items:
+        method: POST
+        path: /sets/items
+        description: List set items via POST
+        mutation: false
+        body:
+          - {name: term, type: string, description: Match text}
+        response: {type: array, item: Set}
+      create:
+        method: POST
+        path: /sets
+        description: Create a set
+        body:
+          - {name: name, type: string, description: Set name}
+        response: {type: object, item: Set}
+types:
+  Set:
+    fields:
+      - {name: id, type: string, description: Set identifier}
+      - {name: name, type: string, description: Set display name}

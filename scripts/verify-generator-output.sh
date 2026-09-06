@@ -41,7 +41,10 @@ default_cases=(
   generate-mcp-api
   generate-graphql-shared-endpoint
   generate-learn-loop-api
+  generate-novel-feature-scaffold
   generate-query-endpoint-api
+  generate-sync-history-filter
+  generate-collection-item-collision
   generate-device-ble
   generate-device-ble-control
   generate-device-ble-session

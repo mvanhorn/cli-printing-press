@@ -65,7 +65,7 @@ func TestFirstCommandExampleUsesEndpointReadClassification(t *testing.T) {
 	resources := map[string]spec.Resource{
 		"res": {
 			Endpoints: map[string]spec.Endpoint{
-				"get-dangerous":  {Method: "GET", Path: "/dangerous", Mutation: true},
+				"get-dangerous":  {Method: "GET", Path: "/dangerous", Mutation: new(true)},
 				"run-rebuild":    {Method: "GET", Path: "/rebuild"},
 				"search-records": {Method: "POST", Path: "/search"},
 			},

@@ -9,7 +9,9 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -17,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -107,6 +110,17 @@ func Open(dbPath string) (*Store, error) {
 // delete mode (e.g. a pre-WAL database opened by an old binary before its
 // first read-write open) errors with "attempt to write a readonly database".
 //
+// immutable=1 is the WAL-index control. mmap_size(0) only bounds mmap of the
+// main database file; SQLite still memory-maps the -shm WAL-index for
+// multi-process WAL coordination, and concurrent read-only processes fault
+// inside that mapping. The URI flag tells SQLite this connection will not
+// observe writers, so it skips shared-memory and reads the main file with
+// pread. A WAL writer's last close already checkpoints, so a later
+// immutable reader sees the committed snapshot. Uncheckpointed frames from
+// a still-open writer are invisible; that is the trade for not mapping -shm.
+// nolock=1 and vfs=unix-none cannot open a WAL database; exclusive locking
+// mode serializes clients and fails a mode=ro open.
+//
 // OpenReadOnly uses context.Background(); callers holding a context should use
 // OpenReadOnlyContext so a cancelled command (SIGINT, deadline) interrupts the
 // SQLITE_BUSY retry during driver init instead of waiting out the full timeout.
@@ -117,7 +131,7 @@ func OpenReadOnly(dbPath string) (*Store, error) {
 // OpenReadOnlyContext is OpenReadOnly with a caller-supplied context honored by
 // the driver-init SQLITE_BUSY retry.
 func OpenReadOnlyContext(ctx context.Context, dbPath string) (*Store, error) {
-	dsn := "file:" + dbPath + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)"
+	dsn := "file:" + dbPath + "?mode=ro&immutable=1&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)"
 	if err := ensureSQLiteDriverInitialized(ctx, dsn); err != nil {
 		return nil, err
 	}
@@ -186,7 +200,7 @@ func rejectNewerSchemaBeforeJournalMode(ctx context.Context, dbPath string) erro
 	if err != nil {
 		return fmt.Errorf("stating database for schema preflight: %w", err)
 	}
-	probe, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath)+"?mode=ro&_pragma=busy_timeout(1000)")
+	probe, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath)+"?mode=ro&immutable=1&_pragma=busy_timeout(1000)&_pragma=mmap_size(0)")
 	if err != nil {
 		return nil
 	}
@@ -349,25 +363,19 @@ func (s *Store) ensureColumn(ctx context.Context, conn *sql.Conn, table, column,
 		return fmt.Errorf("checking table %s: %w", table, err)
 	}
 
-	rows, err := conn.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info("%s")`, table))
-	if err != nil {
-		return fmt.Errorf("table_info %s: %w", table, err)
+	// table_info omits generated columns (VIRTUAL/STORED). table_xinfo
+	// reports them so a later Open does not re-ADD a column CREATE TABLE
+	// already declared, and so upgrades can see a prior ADD of bare_id.
+	var existing string
+	err = conn.QueryRowContext(ctx,
+		`SELECT name FROM pragma_table_xinfo(?) WHERE name=?`,
+		table, column,
+	).Scan(&existing)
+	if err == nil {
+		return nil
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var n, typ string
-		var notnull, pk int
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &n, &typ, &notnull, &dflt, &pk); err != nil {
-			return fmt.Errorf("scan table_info %s: %w", table, err)
-		}
-		if n == column {
-			return nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterating table_info %s: %w", table, err)
+	if err != sql.ErrNoRows {
+		return fmt.Errorf("table_xinfo %s: %w", table, err)
 	}
 
 	if _, err := conn.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE "%s" ADD COLUMN "%s" %s`, table, column, decl)); err != nil {
@@ -400,6 +408,9 @@ func (s *Store) ensureColumn(ctx context.Context, conn *sql.Conn, table, column,
 func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 	for _, c := range []struct{ table, column, decl string }{
 		{table: "leagues", column: "parent_id", decl: "TEXT"},
+		{table: "leagues", column: "bare_id", decl: "TEXT GENERATED ALWAYS AS (substr(id, 1, coalesce(nullif(instr(id, char(0)), 0) - 1, length(id)))) VIRTUAL"},
+		{table: "standings", column: "parent_id", decl: "TEXT"},
+		{table: "standings", column: "bare_id", decl: "TEXT GENERATED ALWAYS AS (substr(id, 1, coalesce(nullif(instr(id, char(0)), 0) - 1, length(id)))) VIRTUAL"},
 		{table: "sync_state", column: "last_cursor", decl: "TEXT"},
 		{table: "sync_state", column: "last_synced_at", decl: "DATETIME"},
 		{table: "sync_state", column: "total_count", decl: "INTEGER DEFAULT 0"},
@@ -618,9 +629,20 @@ func (s *Store) migrate(ctx context.Context) error {
 			"id" TEXT PRIMARY KEY,
 			"data" JSON NOT NULL,
 			"synced_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
-			"parent_id" TEXT
+			"parent_id" TEXT,
+			"bare_id" TEXT GENERATED ALWAYS AS (substr(id, 1, coalesce(nullif(instr(id, char(0)), 0) - 1, length(id)))) VIRTUAL
 		)`,
 		`CREATE INDEX IF NOT EXISTS "idx_leagues_parent_id" ON "leagues"("parent_id")`,
+		`CREATE INDEX IF NOT EXISTS "idx_leagues_bare_id" ON "leagues"("bare_id")`,
+		`CREATE TABLE IF NOT EXISTS "standings" (
+			"id" TEXT PRIMARY KEY,
+			"data" JSON NOT NULL,
+			"synced_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
+			"parent_id" TEXT,
+			"bare_id" TEXT GENERATED ALWAYS AS (substr(id, 1, coalesce(nullif(instr(id, char(0)), 0) - 1, length(id)))) VIRTUAL
+		)`,
+		`CREATE INDEX IF NOT EXISTS "idx_standings_parent_id" ON "standings"("parent_id")`,
+		`CREATE INDEX IF NOT EXISTS "idx_standings_bare_id" ON "standings"("bare_id")`,
 	}
 
 	// Run every migration — including the column backfill and the
@@ -959,6 +981,25 @@ func isSQLiteBusy(err error) bool {
 		strings.Contains(msg, "database table is locked")
 }
 
+// A later list-shaped write must not shrink a richer cached blob. First
+// write is incoming as-is. Callers apply the result to both the generic
+// resources blob and the typed-table projection.
+func (s *Store) mergeIncomingResourceData(tx *sql.Tx, resourceType, id string, incoming json.RawMessage) json.RawMessage {
+	var existing string
+	err := tx.QueryRow(
+		`SELECT data FROM resources WHERE resource_type = ? AND id = ?`,
+		resourceType, id,
+	).Scan(&existing)
+	if err != nil || existing == "" {
+		return incoming
+	}
+	merged, ok := mergeKeepRicherJSON(resourceType, json.RawMessage(existing), incoming)
+	if !ok {
+		return incoming
+	}
+	return merged
+}
+
 func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, data json.RawMessage) error {
 	_, err := tx.Exec(
 		`INSERT INTO resources (id, resource_type, data, synced_at, updated_at)
@@ -998,7 +1039,7 @@ func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
 	}
 	defer tx.Rollback()
 
-	if err := s.upsertGenericResourceTx(tx, resourceType, id, data); err != nil {
+	if err := s.upsertGenericResourceTx(tx, resourceType, id, s.mergeIncomingResourceData(tx, resourceType, id, data)); err != nil {
 		return err
 	}
 
@@ -1182,15 +1223,281 @@ func FTSMatchQuery(query string) string {
 	return strings.Join(quoted, " ")
 }
 
-func extractObjectID(obj map[string]any) string {
-	for _, key := range []string{"id", "Id", "ID", "_id", "uuid", "slug", "name"} {
-		if v, ok := obj[key]; ok {
-			if id := ResourceIDString(v); id != "" && id != "<nil>" {
-				return id
-			}
+// A record filed under its own identifier often carries no id field inside the
+// object, and would be dropped for want of one. The flattener stamps the JSON
+// object key here and the id resolvers below fall back to it once every real id
+// field has missed. Flattener and resolvers stay in one file because a shape
+// one recognizes and the other cannot key loses rows with no error.
+//
+// The _pp_ prefix is reserved for fields this CLI synthesizes, so the stamp
+// always wins over a same-named member of the payload: the enclosing key is
+// the record's identity, and a payload copy of it is either stale or a name
+// collision inside a namespace no API owns.
+const MapKeyIDField = "_pp_map_key"
+
+// One level covers {"<id>": {...}}, two covers a bucketed
+// {"<bucket>": {"<id>": {...}}}. Descending further would start treating an
+// item's own nested sub-objects as sibling records.
+const mapKeyedMaxDepth = 2
+
+// A map-keyed collection files each record under its identifier instead of
+// listing records in an array, so the discriminator has to separate record
+// identifiers from ordinary field names. Field names are words; record
+// identifiers are not. These patterns admit only key shapes that no API uses
+// as a field name, which keeps an ordinary detail object carrying nested
+// sub-objects ({"user": {...}, "account": {...}}) out of the collection path.
+var (
+	mapKeyNumericRE  = regexp.MustCompile(`^[0-9]+$`)
+	mapKeyUUIDRE     = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	mapKeyDateRE     = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}([T ][0-9A-Za-z:.+-]*)?$`)
+	mapKeyOpaqueRE   = regexp.MustCompile(`^[A-Za-z0-9]{20,}$`)
+	mapKeyPrefixedRE = regexp.MustCompile(`^[-_][A-Za-z0-9_-]{15,}$`)
+	mapKeyHasDigitRE = regexp.MustCompile(`[0-9]`)
+)
+
+// A separator-free token must be long and carry a digit before it qualifies as
+// an identifier, because a short alphabetic token is indistinguishable from a
+// field name.
+func looksLikeRecordKey(key string) bool {
+	switch {
+	case key == "":
+		return false
+	case mapKeyNumericRE.MatchString(key):
+		return true
+	case mapKeyUUIDRE.MatchString(key):
+		return true
+	case mapKeyDateRE.MatchString(key):
+		return true
+	case mapKeyOpaqueRE.MatchString(key) && mapKeyHasDigitRE.MatchString(key):
+		return true
+	case mapKeyPrefixedRE.MatchString(key) && mapKeyHasDigitRE.MatchString(key):
+		return true
+	}
+	return false
+}
+
+type mapKeyedEntry struct {
+	key   string
+	value json.RawMessage
+}
+
+// Field-name scalar/array siblings are list metadata only. Treating every
+// non-object field-name member as skippable metadata made a detail object
+// with one numeric-keyed child look like a one-record page, so sync and
+// write-through cached the child and dropped the remaining fields.
+var mapKeyedListMetadataKeys = map[string]bool{
+	"next_cursor": true, "nextCursor": true, "NextCursor": true,
+	"next_token": true, "nextToken": true, "NextToken": true,
+	"next_page_token": true, "nextPageToken": true, "NextPageToken": true,
+	"page_token": true, "pageToken": true, "PageToken": true,
+	"end_cursor": true, "endCursor": true, "EndCursor": true,
+	"start_cursor": true, "startCursor": true, "StartCursor": true,
+	"cursor": true, "Cursor": true, "after": true, "After": true, "before": true, "Before": true,
+	"has_more": true, "hasMore": true, "HasMore": true,
+	"has_next": true, "hasNext": true, "HasNext": true,
+	"next_page": true, "nextPage": true, "NextPage": true,
+	"previous_page": true, "previousPage": true, "PreviousPage": true,
+	"page": true, "Page": true, "page_size": true, "pageSize": true, "PageSize": true,
+	"per_page": true, "perPage": true, "PerPage": true,
+	"total": true, "Total": true, "count": true, "Count": true, "size": true, "Size": true,
+	"total_count": true, "totalCount": true, "TotalCount": true,
+	"success": true, "status": true, "message": true, "error": true, "errors": true,
+	"warnings": true, "Warnings": true, "ok": true, "Ok": true,
+	"next": true, "prev": true, "previous": true, "first": true, "last": true,
+}
+
+// A lone record-shaped child plus only count/JSend fields is still a
+// detail object (status, message, total, count). A one-record page is
+// recognized only when a cursor, has-more flag, or page key is present.
+var mapKeyedPagingSignalKeys = map[string]bool{
+	"next_cursor": true, "nextCursor": true, "NextCursor": true,
+	"next_token": true, "nextToken": true, "NextToken": true,
+	"next_page_token": true, "nextPageToken": true, "NextPageToken": true,
+	"page_token": true, "pageToken": true, "PageToken": true,
+	"end_cursor": true, "endCursor": true, "EndCursor": true,
+	"start_cursor": true, "startCursor": true, "StartCursor": true,
+	"cursor": true, "Cursor": true, "after": true, "After": true, "before": true, "Before": true,
+	"has_more": true, "hasMore": true, "HasMore": true,
+	"has_next": true, "hasNext": true, "HasNext": true,
+	"next_page": true, "nextPage": true, "NextPage": true,
+	"previous_page": true, "previousPage": true, "PreviousPage": true,
+	"page": true, "Page": true, "page_size": true, "pageSize": true, "PageSize": true,
+	"per_page": true, "perPage": true, "PerPage": true,
+}
+
+// A record identifier keying a JSON object is the only member shape a
+// collection may contain; anything else keyed like a record, or any object
+// keyed like a field, means the payload is something other than a collection
+// and is rejected whole. Scalar and array members under field-name keys are
+// kept only when the key is list metadata, so a real collection can still
+// file a cursor or total beside its records. A detail field (id, title, tags)
+// beside a single record-shaped child is not metadata: that payload stays a
+// detail object. One record plus only count/JSend siblings is also a detail
+// object; a one-record page needs a cursor, has-more flag, or page key.
+// Sorting makes repeated syncs of one payload produce one row order.
+func mapKeyedEntries(raw json.RawMessage) ([]mapKeyedEntry, map[string]json.RawMessage, bool) {
+	if !isJSONObjectPayload(raw) {
+		return nil, nil, false
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil || len(obj) == 0 {
+		return nil, nil, false
+	}
+	keys := make([]string, 0, len(obj))
+	metadata := map[string]json.RawMessage{}
+	for key, value := range obj {
+		recordKeyed, objectValued := looksLikeRecordKey(key), isJSONObjectPayload(value)
+		switch {
+		case recordKeyed && objectValued:
+			keys = append(keys, key)
+		case !recordKeyed && !objectValued && mapKeyedListMetadataKeys[key]:
+			metadata[key] = value
+		default:
+			return nil, nil, false
 		}
 	}
+	if len(keys) == 0 {
+		return nil, nil, false
+	}
+	if len(keys) == 1 && len(metadata) > 0 && !hasMapKeyedPagingSignal(metadata) {
+		return nil, nil, false
+	}
+	sort.Strings(keys)
+	entries := make([]mapKeyedEntry, 0, len(keys))
+	for _, key := range keys {
+		entries = append(entries, mapKeyedEntry{key: key, value: obj[key]})
+	}
+	return entries, metadata, true
+}
+
+func hasMapKeyedPagingSignal(metadata map[string]json.RawMessage) bool {
+	for key := range metadata {
+		if mapKeyedPagingSignalKeys[key] {
+			return true
+		}
+	}
+	return false
+}
+
+func isJSONObjectPayload(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && trimmed[0] == '{'
+}
+
+func isEmptyJSONObject(raw json.RawMessage) bool {
+	var obj map[string]json.RawMessage
+	return json.Unmarshal(raw, &obj) == nil && len(obj) == 0
+}
+
+// Recognition and extraction are separate answers: the second return reports
+// only whether raw was a collection at all, so a recognized collection whose
+// members are all empty reads as an empty page rather than as a shape this
+// could not extract.
+func FlattenMapKeyedCollection(raw json.RawMessage) ([]json.RawMessage, bool) {
+	items, _, ok := FlattenMapKeyedCollectionWithMetadata(raw)
+	return items, ok
+}
+
+// The members skipped as metadata come back with the records because a
+// collection nested under a wrapper key or a declared response path can carry
+// its own continuation cursor. Dropping them left the pager reading only the
+// envelope above, which ends a paginated sync after its first page.
+func FlattenMapKeyedCollectionWithMetadata(raw json.RawMessage) ([]json.RawMessage, map[string]json.RawMessage, bool) {
+	return flattenMapKeyedCollection(raw, mapKeyedMaxDepth)
+}
+
+func flattenMapKeyedCollection(raw json.RawMessage, depth int) ([]json.RawMessage, map[string]json.RawMessage, bool) {
+	entries, metadata, ok := mapKeyedEntries(raw)
+	if !ok {
+		return nil, nil, false
+	}
+	items := make([]json.RawMessage, 0, len(entries))
+	for _, entry := range entries {
+		if depth > 1 {
+			if nested, nestedMetadata, ok := flattenMapKeyedCollection(entry.value, depth-1); ok {
+				items = append(items, nested...)
+				// A bucket's own metadata fills gaps only: the level closest to
+				// the caller describes the page it asked for.
+				for key, value := range nestedMetadata {
+					if _, taken := metadata[key]; !taken {
+						metadata[key] = value
+					}
+				}
+				continue
+			}
+		}
+		if isEmptyJSONObject(entry.value) {
+			continue
+		}
+		items = append(items, stampMapKeyID(entry.value, entry.key))
+	}
+	return items, metadata, true
+}
+
+// The enclosing key is the record's identity, so a same-named field already in
+// the payload is overwritten rather than trusted: keeping it would file the row
+// under a value the API never used as its key.
+func stampMapKeyID(value json.RawMessage, key string) json.RawMessage {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(value, &obj) != nil {
+		return value
+	}
+	encodedKey, err := json.Marshal(key)
+	if err != nil {
+		return value
+	}
+	obj[MapKeyIDField] = encodedKey
+	stamped, err := json.Marshal(obj)
+	if err != nil {
+		return value
+	}
+	return stamped
+}
+
+// Two flattenable members leave the envelope ambiguous, so nothing is
+// extracted rather than guessing which one holds the records. Callers pass
+// their own isMetadataKey because the sync and live paths carry different
+// metadata vocabularies; recognition of the collection itself must not differ
+// between them.
+func FlattenSoleMapKeyedSibling(envelope map[string]json.RawMessage, isMetadataKey func(string) bool) ([]json.RawMessage, map[string]json.RawMessage, bool) {
+	var collection []json.RawMessage
+	var collectionMetadata map[string]json.RawMessage
+	matches := 0
+	for key, raw := range envelope {
+		if isMetadataKey(key) {
+			continue
+		}
+		if items, metadata, ok := FlattenMapKeyedCollectionWithMetadata(raw); ok {
+			collection, collectionMetadata = items, metadata
+			matches++
+		}
+	}
+	if matches == 1 {
+		return collection, collectionMetadata, true
+	}
+	return nil, nil, false
+}
+
+// Callers must try every real id field first: the stamped key is only the right
+// answer when the record carries no identifier of its own.
+func mapKeyIDFallback(obj map[string]any) string {
+	v, ok := obj[MapKeyIDField]
+	if !ok {
+		return ""
+	}
+	if id := ResourceIDString(v); id != "" && id != "<nil>" {
+		return id
+	}
 	return ""
+}
+
+func extractObjectID(obj map[string]any) string {
+	for _, key := range []string{"id", "ID", "_id", "id_", "uuid", "slug", "name"} {
+		if s := canonicalIDFromKey(obj, key); s != "" {
+			return s
+		}
+	}
+	return mapKeyIDFallback(obj)
 }
 
 // ftsRowID derives a deterministic rowid from a string ID for use with FTS5.
@@ -1206,16 +1513,85 @@ func ftsRowID(scope, id string) int64 {
 	return int64(h.Sum64() & 0x7FFFFFFFFFFFFFFF) // ensure positive
 }
 
-// LookupFieldValue resolves a field value from a JSON object map, trying the
-// snake_case key first, then the camelCase rendering, then the PascalCase
-// rendering. Exported so the sync command's extractID and the upsert path
-// resolve fields the same way — a divergence here produces silent drops on
-// heterogeneous payloads. The PascalCase pass handles .NET-shaped responses
-// (`Id`, `Name`, `OrderId`) without forcing each spec to declare casing.
+// LookupFieldValue resolves a field value from a JSON object map. A dotted
+// key is walked as a path (`entityInfo.entityId`); each segment tries snake,
+// camel, and Pascal spellings, then the Python-style trailing-underscore
+// sibling (`id` → `id_`). Exported so the sync command's extractID and the
+// upsert path resolve fields the same way — a divergence here produces
+// silent drops on heterogeneous payloads. The PascalCase pass handles
+// .NET-shaped responses (`Id`, `Name`, `OrderId`) without forcing each spec
+// to declare casing.
 func LookupFieldValue(obj map[string]any, snakeKey string) any {
-	if v, ok := obj[snakeKey]; ok {
-		return sqliteFieldValue(v)
+	v, ok := lookupRawFieldValue(obj, snakeKey)
+	if !ok {
+		return nil
 	}
+	return sqliteFieldValue(v)
+}
+
+func lookupRawFieldValue(obj map[string]any, key string) (any, bool) {
+	if obj == nil || key == "" {
+		return nil, false
+	}
+	if strings.Contains(key, ".") {
+		return lookupRawDottedFieldValue(obj, key)
+	}
+	return lookupRawFlatFieldValue(obj, key)
+}
+
+func lookupRawDottedFieldValue(obj map[string]any, path string) (any, bool) {
+	if v, ok := lookupRawFlatFieldValue(obj, path); ok {
+		return v, true
+	}
+	segments := strings.Split(path, ".")
+	if len(segments) < 2 {
+		return nil, false
+	}
+	current := obj
+	for i, segment := range segments {
+		if segment == "" {
+			return nil, false
+		}
+		v, ok := lookupRawFlatFieldValue(current, segment)
+		if !ok {
+			return nil, false
+		}
+		if i == len(segments)-1 {
+			return v, true
+		}
+		next, ok := v.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current = next
+	}
+	return nil, false
+}
+
+func lookupRawFlatFieldValue(obj map[string]any, snakeKey string) (any, bool) {
+	for _, key := range fieldKeySpellings(snakeKey) {
+		if v, ok := obj[key]; ok {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+func fieldKeySpellings(snakeKey string) []string {
+	seen := make(map[string]struct{}, 8)
+	out := make([]string, 0, 8)
+	add := func(s string) {
+		if s == "" {
+			return
+		}
+		if _, ok := seen[s]; ok {
+			return
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+
+	add(snakeKey)
 	parts := strings.Split(snakeKey, "_")
 	for i := 1; i < len(parts); i++ {
 		if parts[i] == "" {
@@ -1223,17 +1599,17 @@ func LookupFieldValue(obj map[string]any, snakeKey string) any {
 		}
 		parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
 	}
-	camel := strings.Join(parts, "")
-	if v, ok := obj[camel]; ok {
-		return sqliteFieldValue(v)
-	}
+	add(strings.Join(parts, ""))
 	if parts[0] != "" {
-		pascal := strings.ToUpper(parts[0][:1]) + parts[0][1:] + strings.Join(parts[1:], "")
-		if v, ok := obj[pascal]; ok {
-			return sqliteFieldValue(v)
+		add(strings.ToUpper(parts[0][:1]) + parts[0][1:] + strings.Join(parts[1:], ""))
+	}
+	n := len(out)
+	for i := 0; i < n; i++ {
+		if !strings.HasSuffix(out[i], "_") {
+			add(out[i] + "_")
 		}
 	}
-	return nil
+	return out
 }
 
 func sqliteFieldValue(v any) any {
@@ -1269,6 +1645,133 @@ func DecodeJSONObject(data json.RawMessage) (map[string]any, error) {
 		return nil, err
 	}
 	return obj, nil
+}
+
+// CanonicalResourceID is the identity invariant for generated stores: a value
+// becomes resources.id only when it can stably distinguish a row. ResourceIDString
+// will stringify zeros, timestamps, and booleans, and writing those keys
+// silently collapses or duplicates records on the next sync.
+func CanonicalResourceID(v any) string {
+	switch v.(type) {
+	case nil, bool:
+		return ""
+	}
+	s := strings.TrimSpace(ResourceIDString(v))
+	if unusableResourceID(s) {
+		return ""
+	}
+	return s
+}
+
+func unusableResourceID(s string) bool {
+	if s == "" || s == "<nil>" {
+		return true
+	}
+	if isoDatePattern.MatchString(s) {
+		return true
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil && f == 0 {
+		return true
+	}
+	return false
+}
+
+func canonicalIDFromKey(obj map[string]any, key string) string {
+	if v, ok := lookupRawFieldValue(obj, key); ok {
+		if s := CanonicalResourceID(v); s != "" {
+			return s
+		}
+	}
+	if obj == nil || strings.HasSuffix(key, "_") {
+		return ""
+	}
+	v, ok := obj[key+"_"]
+	if !ok {
+		return ""
+	}
+	return CanonicalResourceID(v)
+}
+
+func canonicalIDFromOverride(obj map[string]any, override string) string {
+	if s := canonicalIDFromKey(obj, override); s != "" {
+		return s
+	}
+	return canonicalCompositeIDFromOverride(obj, override)
+}
+
+func overrideIdentityPresent(obj map[string]any, override string) bool {
+	if _, found := lookupRawFieldValue(obj, override); found {
+		return true
+	}
+	parts := splitResourceIDFieldOverride(override)
+	if len(parts) < 2 {
+		return false
+	}
+	for _, part := range parts {
+		if _, found := lookupRawFieldValue(obj, part); !found {
+			return false
+		}
+	}
+	return true
+}
+
+func splitResourceIDFieldOverride(override string) []string {
+	override = strings.TrimSpace(override)
+	if override == "" || !strings.Contains(override, "+") {
+		return nil
+	}
+	raw := strings.Split(override, "+")
+	parts := make([]string, 0, len(raw))
+	for _, part := range raw {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) < 2 {
+		return nil
+	}
+	return parts
+}
+
+func canonicalCompositeIDFromOverride(obj map[string]any, override string) string {
+	parts := splitResourceIDFieldOverride(override)
+	if len(parts) < 2 {
+		return ""
+	}
+	values := make([]string, 0, len(parts))
+	for _, key := range parts {
+		v, ok := lookupRawFieldValue(obj, key)
+		if !ok {
+			return ""
+		}
+		s := strings.TrimSpace(ResourceIDString(v))
+		if s == "" || s == "<nil>" {
+			return ""
+		}
+		// Date-shaped parts are allowed inside a composite; CanonicalResourceID
+		// still refuses a solo ISO date after the join.
+		if f, err := strconv.ParseFloat(s, 64); err == nil && f == 0 {
+			return ""
+		}
+		values = append(values, s)
+	}
+	return CanonicalResourceID(joinCompositeResourceID(values))
+}
+
+func encodeCompositeResourceIDPart(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `+`, `\+`)
+	return s
+}
+
+func joinCompositeResourceID(values []string) string {
+	encoded := make([]string, len(values))
+	for i, v := range values {
+		encoded[i] = encodeCompositeResourceIDPart(v)
+	}
+	return strings.Join(encoded, "+")
 }
 
 // ResourceIDString returns the stable text form used for resources.id.
@@ -1352,7 +1855,7 @@ func (s *Store) UpsertLeagues(data json.RawMessage) error {
 		return fmt.Errorf("unmarshaling leagues: %w", err)
 	}
 
-	id := extractObjectID(obj)
+	id := ResolveStorageID("leagues", obj)
 	if id == "" {
 		return fmt.Errorf("missing id for leagues")
 	}
@@ -1366,10 +1869,72 @@ func (s *Store) UpsertLeagues(data json.RawMessage) error {
 	}
 	defer tx.Rollback()
 
+	data = s.mergeIncomingResourceData(tx, "leagues", storageID, data)
+	if merged, err := DecodeJSONObject(data); err == nil {
+		obj = merged
+	}
+
 	if err := s.upsertGenericResourceTx(tx, "leagues", storageID, data); err != nil {
 		return err
 	}
 	if err := s.upsertLeaguesTx(tx, storageID, obj, data); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// upsertStandingsTx writes the per-resource domain-table portion of a
+// standings upsert inside an existing transaction. The caller is
+// responsible for the generic resources insert (via upsertGenericResourceTx)
+// and for committing the tx. Splitting this out lets UpsertBatch dispatch
+// domain inserts per item without opening a per-item transaction.
+func (s *Store) upsertStandingsTx(tx *sql.Tx, id string, obj map[string]any, data json.RawMessage) error {
+	if _, err := tx.Exec(
+		`INSERT INTO "standings" ("id", "data", "synced_at", "parent_id")
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT("id") DO UPDATE SET "data" = excluded."data", "synced_at" = excluded."synced_at", "parent_id" = excluded."parent_id"`,
+		id,
+		string(data),
+		time.Now().UTC().Format(time.RFC3339),
+		lookupFieldValue(obj, "parent_id"),
+	); err != nil {
+		return fmt.Errorf("insert into standings: %w", err)
+	}
+
+	return nil
+}
+
+// UpsertStandings inserts or updates a standings record with domain-specific columns.
+func (s *Store) UpsertStandings(data json.RawMessage) error {
+	obj, err := DecodeJSONObject(data)
+	if err != nil {
+		return fmt.Errorf("unmarshaling standings: %w", err)
+	}
+
+	id := ResolveStorageID("standings", obj)
+	if id == "" {
+		return fmt.Errorf("missing id for standings")
+	}
+	storageID := resourceStorageID("standings", id, obj)
+
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	data = s.mergeIncomingResourceData(tx, "standings", storageID, data)
+	if merged, err := DecodeJSONObject(data); err == nil {
+		obj = merged
+	}
+
+	if err := s.upsertGenericResourceTx(tx, "standings", storageID, data); err != nil {
+		return err
+	}
+	if err := s.upsertStandingsTx(tx, storageID, obj, data); err != nil {
 		return err
 	}
 
@@ -1389,17 +1954,25 @@ var resourceIDFieldOverrides = map[string]string{
 	"games": "game_key",
 }
 
+// Only typed resources with no identity field may be stored under a
+// parameter fingerprint. Unlisted resources still increment extractFailures
+// when an item has no usable id.
+var parameterKeyedResources = map[string]bool{}
+
 // Generic ID fields are split around the resource-specific suffix probe.
 // Stable vendor identifiers win first; then fields derived from the resource
 // name (accountId, workspaceId); descriptive fallbacks are last. Keeping name
 // ahead of the resource-specific probe silently keys rows by display labels.
-var genericIDFieldFallbacks = []string{"id", "ID", "_id", "gid", "sid", "uid", "uuid", "guid", "api_id"}
+// `id_` is the Python-style trailing-underscore sibling of `id`; LookupFieldValue
+// also probes that spelling for every other key in this list.
+var genericIDFieldFallbacks = []string{"id", "ID", "_id", "id_", "gid", "sid", "uid", "uuid", "guid", "api_id"}
 var genericDescriptiveIDFieldFallbacks = []string{"name", "slug", "key", "code"}
 
 // resourceIDBaseOverrides preserves the complete final collection name for
 // composed dependents whose child segment is itself multiword.
 var resourceIDBaseOverrides = map[string]string{
-	"leagues": "leagues",
+	"leagues":   "leagues",
+	"standings": "standings",
 }
 
 // resourceParentKeyColumns identifies generated dependent resources whose
@@ -1407,7 +1980,8 @@ var resourceIDBaseOverrides = map[string]string{
 // many-to-many sub-collections collapse every parent association onto the
 // child's bare id and silently keep only the last synced parent.
 var resourceParentKeyColumns = map[string][]string{
-	"leagues": {"parent_id"},
+	"leagues":   {"parent_id"},
+	"standings": {"parent_id"},
 }
 
 // ExtractResourceID resolves the bare resource id field that UpsertBatch
@@ -1418,60 +1992,544 @@ var resourceParentKeyColumns = map[string][]string{
 // non-entity envelopes into the batch path.
 func ExtractResourceID(resourceType string, obj map[string]any) string {
 	if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
-		if v := lookupFieldValue(obj, override); v != nil {
-			s := ResourceIDString(v)
-			if s != "" && s != "<nil>" {
-				return s
-			}
+		if s := canonicalIDFromOverride(obj, override); s != "" {
+			return s
 		}
 	}
 	for _, key := range genericIDFieldFallbacks {
-		if v := lookupFieldValue(obj, key); v != nil {
-			s := ResourceIDString(v)
-			if s != "" && s != "<nil>" {
-				return s
-			}
+		if s := canonicalIDFromKey(obj, key); s != "" {
+			return s
 		}
 	}
 	if s := suffixIDFieldFallback(resourceType, obj); s != "" {
 		return s
 	}
 	for _, key := range genericDescriptiveIDFieldFallbacks {
-		if v := lookupFieldValue(obj, key); v != nil {
-			s := ResourceIDString(v)
-			if s != "" && s != "<nil>" {
-				return s
+		if s := canonicalIDFromKey(obj, key); s != "" {
+			return s
+		}
+	}
+	return mapKeyIDFallback(obj)
+}
+
+// Writer identity prefers a real resource id. A parameter-shaped payload
+// with no identity-candidate keys is fingerprinted from top-level scalars
+// so the row can be stored without inventing a field. Unwrap and sync
+// extractID must keep using ExtractResourceID so a fingerprint is never
+// mistaken for an entity id.
+//
+// An identity-shaped key whose value was refused (timestamp, zero, empty)
+// still returns "" — fingerprinting those would hide a rejected entity id.
+func ResolveStorageID(resourceType string, obj map[string]any) string {
+	if id := ExtractResourceID(resourceType, obj); id != "" {
+		return id
+	}
+	if !parameterKeyedResources[resourceType] {
+		return ""
+	}
+	if identityKeyPresent(resourceType, obj) {
+		return ""
+	}
+	return parameterSnapshotID(obj)
+}
+
+func identityKeyPresent(resourceType string, obj map[string]any) bool {
+	if obj == nil {
+		return false
+	}
+	if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
+		if overrideIdentityPresent(obj, override) {
+			return true
+		}
+	}
+	for _, key := range genericIDFieldFallbacks {
+		if _, found := lookupRawFieldValue(obj, key); found {
+			return true
+		}
+	}
+	if suffixIdentityKeyPresent(resourceType, obj) {
+		return true
+	}
+	for _, key := range genericDescriptiveIDFieldFallbacks {
+		if _, found := lookupRawFieldValue(obj, key); found {
+			return true
+		}
+	}
+	if _, found := obj[MapKeyIDField]; found {
+		return true
+	}
+	return false
+}
+
+func suffixIdentityKeyPresent(resourceType string, obj map[string]any) bool {
+	for _, base := range resourceIDBaseNames(resourceType) {
+		for _, suffix := range []string{"_id", "_code", "_key", "_slug"} {
+			if _, found := lookupRawFieldValue(obj, base+suffix); found {
+				return true
+			}
+		}
+		camelBase := lowerCamelResourceIDBase(base)
+		for _, suffix := range []string{"Id", "Code", "Key", "Slug"} {
+			if _, found := lookupRawFieldValue(obj, camelBase+suffix); found {
+				return true
 			}
 		}
 	}
+	return false
+}
+
+// Id-less rows key on a hash of top-level scalars (lat/lon, timezone)
+// and omit nested blocks so a later fetch of the same parameters updates
+// the same row. Volatile telemetry keys (*_ms, *_at, timestamp,
+// generationtime*) stay out of the key. No stable scalars means the
+// whole payload is hashed so the row can still be stored.
+func parameterSnapshotID(obj map[string]any) string {
+	if len(obj) == 0 {
+		return ""
+	}
+	fields := parameterFingerprintFields(obj)
+	var payload any
+	if len(fields) > 0 {
+		payload = fields
+	} else {
+		payload = obj
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil || len(raw) == 0 || string(raw) == "null" || string(raw) == "{}" {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return "pp:params:" + hex.EncodeToString(sum[:16])
+}
+
+func parameterFingerprintFields(obj map[string]any) map[string]any {
+	out := make(map[string]any, len(obj))
+	for key, value := range obj {
+		if isVolatileParameterKey(key) {
+			continue
+		}
+		if scalar, ok := fingerprintScalar(value); ok {
+			out[key] = scalar
+		}
+	}
+	return out
+}
+
+func isVolatileParameterKey(key string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	switch {
+	case strings.HasSuffix(k, "_ms"), strings.HasSuffix(k, "_at"):
+		return true
+	case k == "timestamp", k == "generated", k == "generation_time", k == "generationtime":
+		return true
+	default:
+		return strings.HasPrefix(k, "generationtime")
+	}
+}
+
+func fingerprintScalar(value any) (any, bool) {
+	switch t := value.(type) {
+	case nil:
+		return nil, false
+	case string:
+		return t, t != ""
+	case bool:
+		return t, true
+	case json.Number:
+		return t, t.String() != ""
+	case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return t, true
+	default:
+		return nil, false
+	}
+}
+
+// A thinner list-shaped payload cannot destroy richer detail already
+// stored for the same id.
+//
+// Policy (do-not-shrink / keep-richer):
+//   - First write (no existing) stores incoming unchanged.
+//   - Object keys present only on existing are kept.
+//   - Objects merge recursively; incoming keys go through the same policy
+//     rather than wholesale replacement.
+//   - A container (object/array) is never replaced by a scalar or null.
+//   - An incoming empty array does not replace a non-empty existing array
+//     (list omitted the collection vs sent a new one).
+//   - Object arrays match by the same identity stack as ExtractResourceID
+//     (configured / dotted override, generic id, resource-scoped suffix)
+//     plus item-local suffix keys (currency_code, accountId) and sku.
+//     Own-identity suffixes (_code/_slug/_key) win over shared foreign
+//     keys so sibling rows that share account_id still pair on
+//     currency_code. A lone accountId remains identity when it is the
+//     only identity-shaped field. Identity map keys include the field
+//     that produced them so id:"USD" and currency_code:"USD" cannot
+//     share a slot. Display name is not an array identity. Result
+//     order and length follow incoming so a reorder or middle delete
+//     cannot join unrelated objects or keep leftover old entries.
+//   - Arrays without identity keys, and scalar arrays, take incoming
+//     wholesale. Index-wise merge would pair unrelated items.
+//   - Incoming scalars replace existing scalars.
+func mergeKeepRicherJSON(resourceType string, existing, incoming json.RawMessage) (json.RawMessage, bool) {
+	if len(existing) == 0 {
+		return incoming, len(incoming) > 0
+	}
+	if len(incoming) == 0 {
+		return existing, true
+	}
+	existingVal, err := decodeJSONValue(existing)
+	if err != nil {
+		return incoming, len(incoming) > 0
+	}
+	incomingVal, err := decodeJSONValue(incoming)
+	if err != nil {
+		return existing, true
+	}
+	merged, err := json.Marshal(mergeKeepRicherValue(resourceType, existingVal, incomingVal))
+	if err != nil {
+		return incoming, len(incoming) > 0
+	}
+	return merged, true
+}
+
+func decodeJSONValue(data json.RawMessage) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var value any
+	if err := dec.Decode(&value); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func mergeKeepRicherValue(resourceType string, existing, incoming any) any {
+	if incoming == nil {
+		if existing != nil {
+			return existing
+		}
+		return incoming
+	}
+	existingObj, existingIsObj := existing.(map[string]any)
+	incomingObj, incomingIsObj := incoming.(map[string]any)
+	if existingIsObj && incomingIsObj {
+		return mergeKeepRicherObject(resourceType, existingObj, incomingObj)
+	}
+	existingArr, existingIsArr := existing.([]any)
+	incomingArr, incomingIsArr := incoming.([]any)
+	if existingIsArr && incomingIsArr {
+		return mergeKeepRicherArray(resourceType, existingArr, incomingArr)
+	}
+	if isJSONContainer(existing) && !isJSONContainer(incoming) {
+		return existing
+	}
+	if isJSONEmpty(incoming) && !isJSONEmpty(existing) {
+		return existing
+	}
+	return incoming
+}
+
+func mergeKeepRicherObject(resourceType string, existing, incoming map[string]any) map[string]any {
+	out := make(map[string]any, len(existing)+len(incoming))
+	for key, value := range existing {
+		out[key] = value
+	}
+	for key, incomingVal := range incoming {
+		if existingVal, ok := out[key]; ok {
+			out[key] = mergeKeepRicherValue(resourceType, existingVal, incomingVal)
+			continue
+		}
+		out[key] = incomingVal
+	}
+	return out
+}
+
+func mergeKeepRicherArray(resourceType string, existing, incoming []any) []any {
+	if len(incoming) == 0 && len(existing) > 0 {
+		return existing
+	}
+	existingByID := indexObjectArrayByIdentity(resourceType, existing)
+	if len(existingByID) == 0 {
+		return incoming
+	}
+	out := make([]any, len(incoming))
+	for i, item := range incoming {
+		incomingObj, ok := item.(map[string]any)
+		if !ok {
+			out[i] = item
+			continue
+		}
+		id := arrayItemIdentity(resourceType, incomingObj)
+		existingObj, ok := existingByID[id]
+		if id == "" || !ok {
+			out[i] = item
+			continue
+		}
+		delete(existingByID, id)
+		out[i] = mergeKeepRicherObject(resourceType, existingObj, incomingObj)
+	}
+	return out
+}
+
+func indexObjectArrayByIdentity(resourceType string, items []any) map[string]map[string]any {
+	out := make(map[string]map[string]any)
+	for _, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := arrayItemIdentity(resourceType, obj)
+		if id == "" {
+			continue
+		}
+		if _, exists := out[id]; exists {
+			continue
+		}
+		out[id] = obj
+	}
+	return out
+}
+
+func arrayItemIdentity(resourceType string, obj map[string]any) string {
+	if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
+		if s := canonicalIDFromKey(obj, override); s != "" {
+			return qualifyArrayItemIdentity(override, s)
+		}
+	}
+	for _, key := range genericIDFieldFallbacks {
+		if s := canonicalIDFromKey(obj, key); s != "" {
+			return qualifyArrayItemIdentity(canonicalGenericIDField(key), s)
+		}
+	}
+	// Item-local own identity wins over the parent resource's suffix.
+	// mergeKeepRicherJSON threads the parent type through nested arrays,
+	// so suffixIDFieldFallback("accounts") would treat a copied
+	// account_id as every child's id and collide sibling rates.
+	if field, s := suffixIdentityFromItemKeys(obj); s != "" {
+		return qualifyArrayItemIdentity(field, s)
+	}
+	if field, s := suffixIDFieldAndName(resourceType, obj); s != "" {
+		return qualifyArrayItemIdentity(field, s)
+	}
+	if s := canonicalIDFromKey(obj, "sku"); s != "" {
+		return qualifyArrayItemIdentity("sku", s)
+	}
+	for _, key := range []string{"slug", "key", "code"} {
+		if s := canonicalIDFromKey(obj, key); s != "" {
+			return qualifyArrayItemIdentity(key, s)
+		}
+	}
 	return ""
+}
+
+const arrayItemIdentitySep = "\x1f"
+
+func qualifyArrayItemIdentity(field, value string) string {
+	if field == "" || value == "" {
+		return ""
+	}
+	return field + arrayItemIdentitySep + value
+}
+
+// lookupRawFieldValue("id") finds Id/id_ via fieldKeySpellings but not
+// _id or ID, so those probes would otherwise mint distinct map keys.
+func canonicalGenericIDField(probe string) string {
+	switch strings.TrimSpace(probe) {
+	case "id", "ID", "_id", "id_", "Id":
+		return "id"
+	default:
+		return probe
+	}
+}
+
+func suffixIdentityFromItemKeys(obj map[string]any) (string, string) {
+	if obj == nil {
+		return "", ""
+	}
+	keys := make([]string, 0, len(obj))
+	for key := range obj {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var ownField, own, localField, localID, sharedField, sharedID string
+	for _, key := range keys {
+		stem := identitySuffixStem(key)
+		if stem == "" || stem == "parent" {
+			continue
+		}
+		s := suffixIDFieldFallback(stem, obj)
+		if s == "" {
+			continue
+		}
+		field := canonicalArrayIdentityField(key)
+		switch itemKeyIdentityKind(key) {
+		case itemIdentOwn:
+			if own == "" {
+				ownField, own = field, s
+			}
+		case itemIdentLocalID:
+			if localID == "" {
+				localField, localID = field, s
+			}
+		case itemIdentSharedID:
+			if sharedID == "" {
+				sharedField, sharedID = field, s
+			}
+		}
+	}
+	if own != "" {
+		return ownField, own
+	}
+	if localID != "" {
+		return localField, localID
+	}
+	return sharedField, sharedID
+}
+
+func canonicalArrayIdentityField(key string) string {
+	k := strings.TrimSpace(key)
+	stem := identitySuffixStem(k)
+	if stem == "" {
+		return k
+	}
+	switch {
+	case strings.HasSuffix(k, "_id") || strings.HasSuffix(k, "Id") || strings.HasSuffix(k, "ID"):
+		return stem + "_id"
+	case strings.HasSuffix(k, "_code") || strings.HasSuffix(k, "Code"):
+		return stem + "_code"
+	case strings.HasSuffix(k, "_key") || strings.HasSuffix(k, "Key"):
+		return stem + "_key"
+	case strings.HasSuffix(k, "_slug") || strings.HasSuffix(k, "Slug"):
+		return stem + "_slug"
+	default:
+		return k
+	}
+}
+
+type itemIdentKind int
+
+const (
+	itemIdentNone itemIdentKind = iota
+	itemIdentOwn
+	itemIdentLocalID
+	itemIdentSharedID
+)
+
+func itemKeyIdentityKind(key string) itemIdentKind {
+	if itemKeyLooksLikeOwnIdentity(key) {
+		return itemIdentOwn
+	}
+	stem := identitySuffixStem(key)
+	if stem == "" {
+		return itemIdentNone
+	}
+	if sharedForeignKeyStem(stem) {
+		return itemIdentSharedID
+	}
+	return itemIdentLocalID
+}
+
+func itemKeyLooksLikeOwnIdentity(key string) bool {
+	k := strings.TrimSpace(key)
+	for _, suffix := range []string{"_code", "_key", "_slug"} {
+		if strings.HasSuffix(k, suffix) && len(k) > len(suffix) {
+			return true
+		}
+	}
+	for _, suffix := range []string{"Code", "Key", "Slug"} {
+		if strings.HasSuffix(k, suffix) && len(k) > len(suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func sharedForeignKeyStem(stem string) bool {
+	switch strings.ToLower(stem) {
+	case "parent", "account", "owner", "org", "organization", "user",
+		"customer", "workspace", "tenant", "team", "company", "member":
+		return true
+	default:
+		return false
+	}
+}
+
+func identitySuffixStem(key string) string {
+	k := strings.TrimSpace(key)
+	if k == "" {
+		return ""
+	}
+	for _, suffix := range []string{"_id", "_code", "_key", "_slug"} {
+		if strings.HasSuffix(k, suffix) && len(k) > len(suffix) {
+			return strings.TrimSuffix(k, suffix)
+		}
+	}
+	for _, suffix := range []string{"Id", "Code", "Key", "Slug"} {
+		if strings.HasSuffix(k, suffix) && len(k) > len(suffix) {
+			return strings.ToLower(k[:len(k)-len(suffix)])
+		}
+	}
+	return ""
+}
+
+func isJSONContainer(value any) bool {
+	switch value.(type) {
+	case map[string]any, []any:
+		return true
+	default:
+		return false
+	}
+}
+
+func isJSONEmpty(value any) bool {
+	switch t := value.(type) {
+	case nil:
+		return true
+	case string:
+		return t == ""
+	case map[string]any:
+		return len(t) == 0
+	case []any:
+		return len(t) == 0
+	default:
+		return false
+	}
 }
 
 // suffixIDFieldFallback resolves an id-less resource that keys on its own
 // "<name>_code" / "<name>_id" / "<name>_key" / "<name>_slug" field (e.g. the
 // "currencies" resource keying on "currency_code" — see #2327). It is scoped to
 // the resource's OWN name so a foreign key like account_id/parent_id is never
-// promoted to the primary key, and it uses direct map lookups in a fixed suffix
-// order so the chosen id is deterministic.
+// promoted to the primary key, and it walks the same key spellings as
+// LookupFieldValue in a fixed suffix order so the chosen id is deterministic.
 func suffixIDFieldFallback(resourceType string, obj map[string]any) string {
+	_, value := suffixIDFieldAndName(resourceType, obj)
+	return value
+}
+
+func suffixIDFieldAndName(resourceType string, obj map[string]any) (string, string) {
 	for _, base := range resourceIDBaseNames(resourceType) {
 		for _, suffix := range []string{"_id", "_code", "_key", "_slug"} {
-			if v, ok := obj[base+suffix]; ok {
-				if s := scalarIDString(v); s != "" && s != "<nil>" {
-					return s
-				}
+			key := base + suffix
+			if s := canonicalScalarIDFromKey(obj, key); s != "" {
+				return canonicalArrayIdentityField(key), s
 			}
 		}
 		camelBase := lowerCamelResourceIDBase(base)
 		for _, suffix := range []string{"Id", "Code", "Key", "Slug"} {
-			if v, ok := obj[camelBase+suffix]; ok {
-				if s := scalarIDString(v); s != "" && s != "<nil>" {
-					return s
-				}
+			key := camelBase + suffix
+			if s := canonicalScalarIDFromKey(obj, key); s != "" {
+				return canonicalArrayIdentityField(key), s
 			}
 		}
 	}
-	return ""
+	return "", ""
+}
+
+func canonicalScalarIDFromKey(obj map[string]any, key string) string {
+	v, ok := lookupRawFieldValue(obj, key)
+	if !ok || scalarIDString(v) == "" {
+		return ""
+	}
+	return CanonicalResourceID(v)
 }
 
 // resourceIDBaseNames returns lowercase candidate singular/plural stems of a
@@ -1599,6 +2657,11 @@ func resourceStorageID(resourceType, id string, obj map[string]any) string {
 // returns composite keys for parent-keyed resources, so callers comparing those
 // ids against bare API ids must run them through this first. For non-composite
 // ids it returns the input unchanged, so it is safe to apply to every id.
+//
+// Parent-keyed typed tables also project this value as a generated bare_id
+// column (indexed) so SQL/store queries can filter on the entity id without
+// matching the hidden parent suffix. WHERE id = ? against a bare API id
+// misses those rows; WHERE bare_id = ? finds them.
 func BareResourceID(storageID string) string {
 	if i := strings.IndexByte(storageID, 0); i >= 0 {
 		return storageID[:i]
@@ -1688,11 +2751,18 @@ func (s *Store) UpsertBatchDetailed(resourceType string, items []json.RawMessage
 			}
 		}
 		if id == "" {
+			id = ResolveStorageID(resourceType, obj)
+		}
+		if id == "" {
 			skippedCount++
 			extractFailures++
 			continue
 		}
 		storageID := resourceStorageID(resourceType, id, obj)
+		item = s.mergeIncomingResourceData(tx, resourceType, storageID, item)
+		if merged, err := DecodeJSONObject(item); err == nil {
+			obj = merged
+		}
 
 		if err := s.upsertGenericResourceTx(tx, resourceType, storageID, item); err != nil {
 			// Return the running stored count rather than zero so callers
@@ -1716,6 +2786,8 @@ func (s *Store) UpsertBatchDetailed(resourceType string, items []json.RawMessage
 		switch resourceType {
 		case "leagues":
 			typedErr = s.upsertLeaguesTx(tx, storageID, obj, item)
+		case "standings":
+			typedErr = s.upsertStandingsTx(tx, storageID, obj, item)
 		}
 
 		if typedErr != nil {
@@ -1861,7 +2933,8 @@ func (s *Store) GetSyncCursor(resourceType string) string {
 // ListIDs returns all IDs from a resource's domain table, or from the generic
 // resources table if no domain table exists. Used by dependent sync to iterate parents.
 // For parent-keyed resource types these are composite storage keys; run them
-// through BareResourceID before comparing against bare API ids.
+// through BareResourceID before comparing against bare API ids, or filter the
+// typed table's generated bare_id column from SQL.
 //
 // resourceType is never interpolated into SQL directly. We resolve it to a real
 // table name via a parameterized sqlite_master lookup; only that trusted name is

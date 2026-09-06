@@ -3,6 +3,8 @@
 {{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
 {{- $authSetupHint := authSetupHint .Auth .Name}}
 {{- $authCredentialConsolidationAction := authCredentialConsolidationAction .Auth}}
+{{- $authNone := or (eq .Auth.Type "") (eq .Auth.Type "none")}}
+{{- $checkAuthEnv := and (not $authNone) (or .Auth.EnvVarSpecs .Auth.EnvVars .Auth.AdditionalHeaders)}}
 
 package cli
 
@@ -119,11 +121,12 @@ func looksLikeDoctorInterstitial(body []byte) string {
 // an operator can run to confirm credentials work end-to-end. Picks the
 // first leaf that (a) carries the `pp:endpoint` annotation, so it actually
 // dials the API rather than reading a local file like `feedback list` or
-// `profile list`; (b) has a list/get verb; and (c) takes no positional
-// arguments, so the suggestion is copy-paste runnable. Returns the dotted
-// command path (e.g. "issues list") or "" when no such command exists —
-// common in mutation-only CLIs and in CLIs where every read command has
-// required positional arguments.
+// `profile list`; (b) has a list/get verb; (c) takes no positional
+// arguments; and (d) has no required flags (`pp:requires-input`), so a
+// bare invocation actually dials instead of printing help and exiting 0.
+// Returns the command path (e.g. "issues list") or "" when no such
+// command exists — common in mutation-only CLIs and in CLIs where every
+// read command has required input.
 func suggestReadCommand(root *cobra.Command) string {
 	if root == nil {
 		return ""
@@ -154,6 +157,8 @@ func suggestReadCommand(root *cobra.Command) string {
 	return found
 }
 
+const requiresInputAnnotation = "pp:requires-input"
+
 func isSuggestableReadLeaf(cmd *cobra.Command) bool {
 	if cmd == nil || cmd.Hidden || cmd.HasSubCommands() || !cmd.Runnable() {
 		return false
@@ -163,6 +168,11 @@ func isSuggestableReadLeaf(cmd *cobra.Command) bool {
 	// recreate the false-confidence failure mode the suggestion is
 	// supposed to avoid.
 	if cmd.Annotations["pp:endpoint"] == "" {
+		return false
+	}
+	// Required non-positional flags print help and exit 0 in default
+	// mode. Suggesting one would look like a successful token check.
+	if cmd.Annotations[requiresInputAnnotation] != "" {
 		return false
 	}
 	verb := strings.ToLower(strings.SplitN(cmd.Use, " ", 2)[0])
@@ -419,6 +429,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 
 			// Check auth environment variables
+{{- if $checkAuthEnv}}
 {{- if or .Auth.EnvVarSpecs .Auth.AdditionalHeaders}}
 			authEnvSet := []string{}
 			authEnvRequiredMissing := []string{}
@@ -427,20 +438,16 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// Validation rejects multi-OR-group specs upstream, so the single optional-satisfied state is sufficient at runtime.
 			authEnvOptionalSatisfied := false
 {{- if .Auth.AdditionalHeaders}}
-			recordAdditionalAuthEnv := func(name, configuredValue string) {
-				if os.Getenv(name) != "" {
+			recordAdditionalAuthEnv := func(name, configuredValue string, required bool) {
+				if os.Getenv(name) != "" || configuredValue != "" {
 					authEnvSet = append(authEnvSet, name)
-				} else if configuredValue != "" {
-					authEnvSet = append(authEnvSet, name)
-				} else if authConfigured {
-					authSource, _ := report["auth_source"].(string)
-					if authSource == "" {
-						authSource = "config"
-					}
-					authEnvInfo = append(authEnvInfo, "credentials available from "+authSource)
-				} else {
-					authEnvRequiredMissing = append(authEnvRequiredMissing, name)
+					return
 				}
+				if required {
+					authEnvRequiredMissing = append(authEnvRequiredMissing, name)
+					return
+				}
+				authEnvInfo = append(authEnvInfo, name+" optional")
 			}
 {{- end}}
 {{- if hasAuthEnvVarKind .Auth.EnvVarSpecs "harvested"}}
@@ -496,7 +503,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				if cfg != nil {
 					configuredValue = cfg.{{resolveEnvVarField .EnvVar.Name}}
 				}
-				recordAdditionalAuthEnv("{{.EnvVar.Name}}", configuredValue)
+				recordAdditionalAuthEnv("{{.EnvVar.Name}}", configuredValue, {{.EnvVar.Required}})
 			}
 {{- end}}
 			switch {
@@ -531,6 +538,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			} else {
 				report["env_vars"] = fmt.Sprintf("%d/%d set", authEnvSet, authEnvChecked)
 			}
+{{- end}}
 {{- end}}
 {{- if .HasTierRouting}}
 			tierEnvStatus := map[string]string{}
@@ -875,7 +883,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			return doctorExitForFailOn(failOn, report)
 		},
 	}
-	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit non-zero for selected health gates. stale: cache freshness plus errors; warn: credential/path warnings plus errors; error: errors only. Default is never.")
+	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit non-zero for selected health gates. stale: cache freshness plus errors; warn: {{if .HasAuthCommand}}credential/path warnings plus errors{{else}}path warnings plus errors{{end}}; error: errors only. Default is never.")
 {{- if .BearerRefresh.Enabled}}
 	cmd.Flags().BoolVar(&refreshBearer, "refresh-bearer", false, "Fetch and store the current public bearer token")
 	cmd.Flags().StringVar(&refreshBearerBundleURL, "bearer-bundle-url", {{printf "%q" .BearerRefresh.BundleURL}}, "Override the browser bundle URL used by --refresh-bearer")
@@ -1057,6 +1065,16 @@ func pathsWarning(report map[string]any) string {
 }
 
 func renderPathsReport(w io.Writer, rep map[string]any) {
+	if status, _ := rep["status"].(string); status == "error" {
+		fmt.Fprintf(w, "  %s Paths: %s\n", red("FAIL"), status)
+		if v, ok := rep["detail"]; ok {
+			fmt.Fprintf(w, "    detail: %v\n", v)
+		}
+		if v, ok := rep["error"]; ok {
+			fmt.Fprintf(w, "    error: %v\n", v)
+		}
+		return
+	}
 	fmt.Fprintf(w, "  Paths:\n")
 	for _, kind := range []string{"config", "data", "state", "cache"} {
 		entry, ok := rep[kind].(map[string]any)
@@ -1273,7 +1291,7 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 	if err != nil {
 		if os.IsNotExist(err) {
 			report["status"] = "unknown"
-			report["hint"] = "Database not created yet; run '{{.Name}}-pp-cli sync' to hydrate."
+			report["hint"] = "Database not created yet{{if syncHintInvocation}}; run '{{goString (syncHintInvocation)}}' to hydrate{{end}}."
 			return report
 		}
 		report["status"] = "error"
@@ -1306,7 +1324,7 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 		// sync_state may not exist on a fresh DB that has migrated but not
 		// yet had any sync runs — treat as unknown rather than error.
 		report["status"] = "unknown"
-		report["hint"] = "No sync state recorded; run '{{.Name}}-pp-cli sync' to populate."
+		report["hint"] = "No sync state recorded{{if syncHintInvocation}}; run '{{goString (syncHintInvocation)}}' to populate{{end}}."
 		return report
 	}
 	defer rows.Close()
@@ -1323,7 +1341,7 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 			continue
 		}
 		r := map[string]any{"type": rtype, "rows": count}
-		if lastSynced.Valid {
+		if lastSynced.Valid && !lastSynced.Time.IsZero() {
 			haveAny = true
 			r["last_synced_at"] = lastSynced.Time.UTC().Format(time.RFC3339)
 			age := time.Since(lastSynced.Time)
@@ -1344,18 +1362,18 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 	report["stale_after"] = staleAfter.String()
 
 	switch {
-	case !haveAny && len(resources) == 0:
+	case !haveAny:
 		report["status"] = "empty"
 		// Only sync-tracked resources are counted here. A store seeded by
 		// other paths (built-in reference data, local writes) can hold rows
 		// while sync_state stays empty, so say what was measured.
-		report["hint"] = "No sync recorded; run '{{.Name}}-pp-cli sync' to hydrate API-backed resources. Rows written by other paths are not tracked in sync_state."
+		report["hint"] = "No sync recorded{{if syncHintInvocation}}; run '{{goString (syncHintInvocation)}}' to hydrate API-backed resources{{end}}. Rows written by other paths are not tracked in sync_state."
 	case fresh:
 		report["status"] = "fresh"
 	default:
 		report["status"] = "stale"
 		report["oldest_age"] = oldest.Round(time.Minute).String()
-		report["hint"] = "Some resources are older than stale_after; run '{{.Name}}-pp-cli sync' to refresh."
+		report["hint"] = "Some resources are older than stale_after{{if syncHintInvocation}}; run '{{goString (syncHintInvocation)}}' to refresh{{end}}."
 	}
 	return report
 }
@@ -1374,6 +1392,9 @@ func renderCacheReport(w io.Writer, rep map[string]any) {
 		indicator = yellow("INFO")
 	}
 	fmt.Fprintf(w, "  %s Cache: %s\n", indicator, status)
+	if v, ok := rep["error"]; ok {
+		fmt.Fprintf(w, "    error: %v\n", v)
+	}
 	if v, ok := rep["db_path"]; ok {
 		fmt.Fprintf(w, "    db_path: %v\n", v)
 	}

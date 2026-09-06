@@ -2914,7 +2914,10 @@ paths:
 
 	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
 	require.NoError(t, err)
-	require.Contains(t, string(authSrc), `"set-token <token>"`)
+	require.Contains(t, string(authSrc), `"set-token"`)
+	require.Contains(t, string(authSrc), "cobra.NoArgs")
+	require.Contains(t, string(authSrc), "readSecretFromStdin")
+	require.NotContains(t, string(authSrc), `"set-token <token>"`)
 
 	runGo(t, outputDir, "mod", "tidy")
 	runGo(t, outputDir, "test", "./...")
@@ -4712,16 +4715,16 @@ paths:
 		assert.False(t, result.Inferred)
 	})
 
-	t.Run("api_key keyword produces api_key type", func(t *testing.T) {
+	t.Run("api_key keyword does not invent a credential", func(t *testing.T) {
 		doc := &openapi3.T{
 			Info: &openapi3.Info{
 				Description: "Authenticate with your API key in the Authorization header",
 			},
 		}
 		result := inferDescriptionAuth(doc, "example", spec.AuthConfig{Type: "none"})
-		assert.Equal(t, "api_key", result.Type)
-		assert.Equal(t, "EXAMPLE_API_KEY", result.EnvVars[0])
-		assert.True(t, result.Inferred)
+		assert.Equal(t, "none", result.Type)
+		assert.Empty(t, result.EnvVars)
+		assert.False(t, result.Inferred)
 	})
 
 	t.Run("scans past negated match to find positive mention", func(t *testing.T) {
@@ -4746,22 +4749,92 @@ paths:
 		assert.True(t, result.Inferred)
 	})
 
-	t.Run("custom header X-Api-Key extracted from description", func(t *testing.T) {
+	t.Run("custom header X-Api-Key in prose stays keyless", func(t *testing.T) {
 		doc := &openapi3.T{
 			Info: &openapi3.Info{
 				Description: "Send your API key in the X-Api-Key header",
 			},
 		}
 		result := inferDescriptionAuth(doc, "example", spec.AuthConfig{Type: "none"})
-		assert.Equal(t, "api_key", result.Type)
-		assert.Equal(t, "X-Api-Key", result.Header, "should extract X-Api-Key, not default to Authorization")
-		assert.True(t, result.Inferred)
+		assert.Equal(t, "none", result.Type)
+		assert.Empty(t, result.EnvVars)
+		assert.False(t, result.Inferred)
 	})
 
 	t.Run("nil doc returns fallback", func(t *testing.T) {
 		fb := spec.AuthConfig{Type: "none"}
 		assert.Equal(t, fb, inferDescriptionAuth(nil, "test", fb))
 	})
+}
+
+func TestParseKeylessSpecDoesNotInventAPIKey(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Open-Meteo Weather
+  version: "1.0.0"
+  description: "Free weather API. No API key required for the public forecast endpoints."
+servers:
+  - url: https://api.open-meteo.com
+paths:
+  /v1/forecast:
+    get:
+      summary: Forecast
+      parameters:
+        - name: latitude
+          in: query
+          required: true
+          schema: { type: number }
+        - name: longitude
+          in: query
+          required: true
+          schema: { type: number }
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "none", parsed.Auth.Type)
+	assert.False(t, parsed.Auth.Inferred)
+	assert.Empty(t, parsed.Auth.EnvVars)
+	assert.Empty(t, parsed.Auth.EnvVarSpecs)
+	assert.NotContains(t, parsed.Auth.EnvVars, "OPEN_METEO_WEATHER_API_KEY")
+}
+
+func TestParseDoesNotPromoteOrdinaryPathParamsToTemplateVars(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Unipile Posts
+  version: "1.0.0"
+servers:
+  - url: https://{shop}.example.com
+    variables:
+      shop:
+        default: api
+paths:
+  /api/v1/posts:
+    get:
+      responses:
+        "200": { description: OK }
+  /api/v1/posts/{post_id}:
+    get:
+      parameters:
+        - name: post_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"shop"}, parsed.EndpointTemplateVars)
+	assert.NotContains(t, parsed.EndpointTemplateVars, "post_id")
 }
 
 func TestInferredAuthEnvVarsAreASCIISafe(t *testing.T) {
@@ -4774,6 +4847,12 @@ info:
   description: Authenticate with your API key in the Authorization header.
 servers:
   - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
 paths:
   /pokemon:
     get:
@@ -7968,9 +8047,10 @@ func TestParseReadsXResourceIDCriticalAndSyncable(t *testing.T) {
 			wantSyncable: true,
 		},
 		{
-			name:        "no extensions: response-schema fallback picks id",
-			extraExt:    ``,
-			wantIDField: "id",
+			name: "x-resource-id composite identity is preserved",
+			extraExt: `    x-resource-id: date+model_permaslug
+`,
+			wantIDField: "date+model_permaslug",
 		},
 	}
 
@@ -8042,7 +8122,46 @@ paths:
 	require.NoError(t, err)
 
 	ep := findEndpoint(t, parsed, "/applications/{id}/restart")
-	assert.True(t, ep.Mutation)
+	value, set := ep.MutationOverride()
+	assert.True(t, set)
+	assert.True(t, value)
+}
+
+func TestParseReadsXPPMutationFalseExtension(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /sets/items:
+    post:
+      operationId: projectItems
+      x-pp-mutation: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+      responses:
+        "200":
+          description: OK
+`)
+
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	ep := findEndpoint(t, parsed, "/sets/items")
+	value, set := ep.MutationOverride()
+	assert.True(t, set)
+	assert.False(t, value)
 }
 
 func TestParseDataSourceStrategyExtension(t *testing.T) {
@@ -8740,10 +8859,11 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
 			wantID: "ticker",
 		},
 		{
-			// A required date-time field must not be picked — timestamps are
-			// structurally non-identifier-shaped and often shared across
-			// batches of records.
-			name: "tier 5: date-time formatted field is skipped",
+			// A required date-time field is not a solo PK. When later
+			// required string fields exist, compose them so the store can
+			// key the real row identity instead of collapsing on the next
+			// scalar or rejecting ISO-date values.
+			name: "tier 6: date-time required field composes with the next string identity",
 			schemaYAML: `                  type: object
                   required: [created_at, order_number]
                   properties:
@@ -8752,12 +8872,10 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
                       format: date-time
                     order_number: {type: string}
 `,
-			wantID: "order_number",
+			wantID: "created_at+order_number",
 		},
 		{
-			// Date-only format must also be skipped — same uniqueness concern
-			// as date-time.
-			name: "tier 5: date-only formatted field is skipped",
+			name: "tier 6: date-only required field composes with the next string identity",
 			schemaYAML: `                  type: object
                   required: [delivery_date, tracking_code]
                   properties:
@@ -8766,7 +8884,82 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
                       format: date
                     tracking_code: {type: string}
 `,
-			wantID: "tracking_code",
+			wantID: "delivery_date+tracking_code",
+		},
+		{
+			// Rankings-style rows: `date` is a required string without
+			// format: date, so schema-format filtering alone would pick it
+			// and the store would then refuse every ISO-date value.
+			name: "tier 6: date-named string without format composes with remaining string identity",
+			schemaYAML: `                  type: object
+                  required: [date, model_permaslug, total_tokens]
+                  properties:
+                    date: {type: string}
+                    model_permaslug: {type: string}
+                    total_tokens: {type: integer}
+`,
+			wantID: "date+model_permaslug",
+		},
+		{
+			// After a date-shaped field starts composing, a later numeric
+			// identifier must still join (stringified at storage time).
+			name: "tier 6: date-shaped field composes with a later numeric identity",
+			schemaYAML: `                  type: object
+                  required: [delivery_date, order_number]
+                  properties:
+                    delivery_date:
+                      type: string
+                      format: date
+                    order_number: {type: integer}
+`,
+			wantID: "delivery_date+order_number",
+		},
+		{
+			// Mutable/status strings must not enter the composite; a later
+			// status change would otherwise mint a new storage key.
+			name: "tier 6: composing skips mutable status after a stable identity",
+			schemaYAML: `                  type: object
+                  required: [date, model_permaslug, status]
+                  properties:
+                    date: {type: string}
+                    model_permaslug: {type: string}
+                    status: {type: string}
+`,
+			wantID: "date+model_permaslug",
+		},
+		{
+			name: "tier 6: ISO-date example marks a field unusable as a solo ID",
+			schemaYAML: `                  type: object
+                  required: [day, model]
+                  properties:
+                    day:
+                      type: string
+                      example: "2024-01-15"
+                    model: {type: string}
+`,
+			wantID: "day+model",
+		},
+		{
+			name: "tier 6: date-named string without format is not a solo ID",
+			schemaYAML: `                  type: object
+                  required: [date]
+                  properties:
+                    date: {type: string}
+                    model_permaslug: {type: string}
+`,
+			wantID: "",
+		},
+		{
+			name: "tier 6: later date field does not displace an earlier solo-usable ID",
+			schemaYAML: `                  type: object
+                  required: [ticker, created_at]
+                  properties:
+                    ticker: {type: string}
+                    created_at:
+                      type: string
+                      format: date-time
+`,
+			wantID: "ticker",
 		},
 		{
 			// All required fields are non-plausible-PK — empty result so
@@ -9026,10 +9219,10 @@ paths:
 }
 
 // TestParseIDFieldResourcePrefixedHeuristic covers list responses whose item
-// schemas key off `<singular_resource>_id` (or `_uuid`/`_guid`) instead of a
-// bare `id`. Without this heuristic, APIs like podscan whose Category items
-// only carry `category_id` would fall through every fallback tier and leave
-// IDField empty, causing sync to silently drop every row.
+// schemas key off `<singular_resource>_id` (or `_uuid`/`_guid`/`_uid`) instead
+// of a bare `id`. Without this heuristic, APIs like podscan whose Category
+// items only carry `category_id` would fall through every fallback tier and
+// leave IDField empty, causing sync to silently drop every row.
 func TestParseIDFieldResourcePrefixedHeuristic(t *testing.T) {
 	t.Parallel()
 
@@ -9099,6 +9292,100 @@ func TestParseIDFieldResourcePrefixedHeuristic(t *testing.T) {
                     last_seen: {type: string}
 `,
 			wantID: "device_guid",
+		},
+		{
+			name: "_uid suffix is recognized when _id/_uuid/_guid are absent",
+			path: "/alerts",
+			schemaYAML: `                  type: object
+                  properties:
+                    alert_uid: {type: string}
+                    severity: {type: string}
+`,
+			wantID: "alert_uid",
+		},
+		{
+			name: "camelCase stemUid when resource name does not yield that stem",
+			path: "/account-alerts-open",
+			schemaYAML: `                  type: object
+                  properties:
+                    alertUid: {type: string}
+                    alertContext: {type: string}
+                    severity: {type: string}
+`,
+			wantID: "alertUid",
+		},
+		{
+			name: "snake stem_uid when resource name does not yield that stem",
+			path: "/account-alerts-open",
+			schemaYAML: `                  type: object
+                  properties:
+                    alert_uid: {type: string}
+                    alert_context: {type: string}
+                    severity: {type: string}
+`,
+			wantID: "alert_uid",
+		},
+		{
+			name: "id still wins over a sole stemUid",
+			path: "/account-alerts-open",
+			schemaYAML: `                  type: object
+                  properties:
+                    id: {type: string}
+                    alertUid: {type: string}
+`,
+			wantID: "id",
+		},
+		{
+			name: "exact uid still wins over a prefixed stemUid",
+			path: "/account-alerts-open",
+			schemaYAML: `                  type: object
+                  properties:
+                    uid: {type: string}
+                    alertUid: {type: string}
+`,
+			wantID: "uid",
+		},
+		{
+			name: "own stemUid wins over a foreign stemUid",
+			path: "/account-alerts-open",
+			schemaYAML: `                  type: object
+                  properties:
+                    alertUid: {type: string}
+                    deviceUid: {type: string}
+                    name: {type: string}
+`,
+			wantID: "alertUid",
+		},
+		{
+			name: "foreign accountUid does not beat per-item name",
+			path: "/sites",
+			schemaYAML: `                  type: object
+                  properties:
+                    accountUid: {type: string}
+                    name: {type: string}
+`,
+			wantID: "name",
+		},
+		{
+			name: "foreign accountUid does not beat a required per-item URL",
+			path: "/sites",
+			schemaYAML: `                  type: object
+                  required: [uri]
+                  properties:
+                    accountUid: {type: string}
+                    uri: {type: string}
+`,
+			wantID: "uri",
+		},
+		{
+			name: "_id still preferred over _uid for the same resource stem",
+			path: "/alerts",
+			schemaYAML: `                  type: object
+                  properties:
+                    alert_id: {type: string}
+                    alert_uid: {type: string}
+`,
+			wantID: "alert_id",
 		},
 		{
 			name: "camelCase property name normalizes to snake match",
@@ -9202,6 +9489,28 @@ paths:
 
 			ep := findEndpoint(t, parsed, tt.path)
 			assert.Equal(t, tt.wantID, ep.IDField)
+		})
+	}
+}
+
+func TestResourceOwnIdentityStem(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		resource string
+		want     string
+	}{
+		{resource: "account-alerts-open", want: "alert"},
+		{resource: "account-alerts-resolved", want: "alert"},
+		{resource: "sites", want: "site"},
+		{resource: "alerts", want: "alert"},
+		{resource: "auth-tokens", want: "token"},
+		{resource: "user", want: "user"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.resource, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, resourceOwnIdentityStem(tt.resource))
 		})
 	}
 }
@@ -11104,6 +11413,60 @@ paths:
 	// Endpoint without the extension.
 	games := findParsedEndpointByPath(t, parsed, "GET", "/games")
 	assert.Nil(t, games.Walker, "endpoint without x-pp-sync-walker must have nil Walker")
+}
+
+func TestParseSyncParamsExtension(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Sync Params API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /v2/orders:
+    get:
+      summary: List orders
+      x-sync-params:
+        status: all
+        nested: true
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            default: open
+            enum: [open, closed, all]
+      responses:
+        "200":
+          description: ok
+  /issues:
+    get:
+      summary: List issues
+      responses:
+        "200":
+          description: ok
+  /bad:
+    get:
+      summary: Malformed x-sync-params is ignored
+      x-sync-params: not-an-object
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	orders := findParsedEndpointByPath(t, parsed, "GET", "/v2/orders")
+	require.Equal(t, map[string]string{"status": "all", "nested": "true"}, orders.SyncParams)
+
+	issues := findParsedEndpointByPath(t, parsed, "GET", "/issues")
+	assert.Empty(t, issues.SyncParams)
+
+	bad := findParsedEndpointByPath(t, parsed, "GET", "/bad")
+	assert.Empty(t, bad.SyncParams)
 }
 
 // TestParseMarksFallbackBaseURLAsPlaceholder pins the contract used by the

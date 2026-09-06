@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -95,6 +96,9 @@ var (
 	querySynonymMu    sync.RWMutex
 	querySynonyms     = copyQuerySynonymDefaults()
 	querySynonymRules = compileQuerySynonyms(querySynonyms)
+
+	queryTickerMu       sync.RWMutex
+	queryTickerPatterns []*regexp.Regexp
 )
 
 func copyQuerySynonymDefaults() map[string]string {
@@ -128,6 +132,76 @@ func RegisterQuerySynonyms(synonyms map[string]string) {
 	if changed {
 		querySynonymRules = compileQuerySynonyms(querySynonyms)
 	}
+}
+
+// RegisterTickerPatterns replaces the write-side identifier keep-list.
+// Called once at CLI startup by the generated learn-init shim with the
+// same compiled ticker patterns registered on the read-side
+// entities.Config, so NormalizeQuery keeps identifier tokens whole
+// instead of splitting them on punctuation. A nil or empty slice
+// clears the list.
+func RegisterTickerPatterns(patterns []*regexp.Regexp) {
+	queryTickerMu.Lock()
+	defer queryTickerMu.Unlock()
+
+	queryTickerPatterns = queryTickerPatterns[:0]
+	for _, re := range patterns {
+		if re != nil {
+			queryTickerPatterns = append(queryTickerPatterns, re)
+		}
+	}
+}
+
+func queryHasTickerPatterns() bool {
+	queryTickerMu.RLock()
+	defer queryTickerMu.RUnlock()
+	return len(queryTickerPatterns) > 0
+}
+
+func isRegisteredTicker(token string) bool {
+	queryTickerMu.RLock()
+	defer queryTickerMu.RUnlock()
+	for _, re := range queryTickerPatterns {
+		if re != nil && re.MatchString(token) {
+			return true
+		}
+	}
+	return false
+}
+
+// trimQueryTokenPunct mirrors the read-side extractor so a ticker
+// wrapped in sentence punctuation still matches the registered
+// pattern. The store package stays import-free of the learn tree.
+func trimQueryTokenPunct(s string) string {
+	return strings.TrimFunc(s, func(r rune) bool {
+		switch r {
+		case '.', ',', '?', '!', ':', ';', '\'', '"', '(', ')', '[', ']', '{', '}':
+			return true
+		}
+		return false
+	})
+}
+
+// queryTokensPreservingTickers tokenizes s the way NormalizeQuery
+// does, but keeps registered identifier tokens as a single lowercased
+// unit instead of splitting them on punctuation.
+func queryTokensPreservingTickers(s string) []string {
+	if !queryHasTickerPatterns() {
+		return queryCharTokens(s)
+	}
+	out := make([]string, 0, 8)
+	for _, raw := range strings.Fields(s) {
+		tok := trimQueryTokenPunct(raw)
+		if tok == "" {
+			continue
+		}
+		if isRegisteredTicker(tok) {
+			out = append(out, strings.ToLower(tok))
+			continue
+		}
+		out = append(out, queryCharTokens(tok)...)
+	}
+	return out
 }
 
 // compileQuerySynonyms tokenizes each pair through the normalization
@@ -242,7 +316,7 @@ func NormalizeQuery(s string) string {
 // and folding at the write path here plus the read path's
 // entities.Config fold is what keeps teach and recall keyed alike.
 func normalizeAndTokens(s string) (string, map[string]struct{}) {
-	rawTokens := foldQueryTokens(queryCharTokens(s))
+	rawTokens := foldQueryTokens(queryTokensPreservingTickers(s))
 	tokens := make(map[string]struct{}, len(rawTokens))
 	kept := make([]string, 0, len(rawTokens))
 	for _, t := range rawTokens {

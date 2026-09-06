@@ -123,7 +123,7 @@ Get your API key from your API provider's developer portal. The key typically lo
 ```bash
 export PRINTING_PRESS_GOLDEN_API_KEY="<paste-your-key>"
 ```
-To persist credentials, use `printing-press-golden-pp-cli auth set-token YOUR_TOKEN_HERE`. Stored secrets live in `credentials.toml` under the data directory, not in `config.toml`.
+To persist credentials, use `echo "$TOKEN" | printing-press-golden-pp-cli auth set-token`. Stored secrets live in `credentials.toml` under the data directory, not in `config.toml`.
 
 ### 3. Verify Setup
 
@@ -219,6 +219,12 @@ Manage public
 Manage reports
 
 
+### tickets
+
+Manage tickets
+
+- **`printing-press-golden-pp-cli tickets`** - Query tickets
+
 
 ### Self-learning loop
 
@@ -269,7 +275,7 @@ This CLI is designed for AI agent consumption:
 - **Offline-friendly** - sync/search commands can use the local SQLite store when available
 - **Agent-safe by default** - no colors or formatting unless `--human-friendly` is set
 
-Exit codes: `0` success, `2` usage error, `3` not found, `4` auth error, `5` API error, `7` rate limited, `10` config error.
+Exit codes: `0` success, `2` usage error, `3` not found, `4` auth error, `5` API error, `6` partial failure, `7` rate limited, `10` config error.
 
 ## Freshness
 
@@ -286,6 +292,10 @@ Covered command paths:
 - `printing-press-golden-pp-cli projects get`
 - `printing-press-golden-pp-cli projects list`
 - `printing-press-golden-pp-cli projects search`
+- `printing-press-golden-pp-cli tickets`
+- `printing-press-golden-pp-cli tickets get`
+- `printing-press-golden-pp-cli tickets list`
+- `printing-press-golden-pp-cli tickets search`
 
 JSON outputs that use the generated provenance envelope include freshness metadata at `meta.freshness`. This metadata describes the freshness decision for the covered command path; it does not claim full historical backfill or API-specific enrichment.
 

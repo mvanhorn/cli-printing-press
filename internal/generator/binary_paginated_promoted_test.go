@@ -68,6 +68,10 @@ func TestGenerateBinaryPaginatedPromotedThreadsHeader(t *testing.T) {
 		"paginated binary endpoint must pass headerOverrides, not nil")
 	assert.Contains(t, endpointSrc, `}, headerOverrides, flagAll && !flags.dryRun,`,
 		"paginated binary endpoint must thread headerOverrides into paginatedGetWithResponsePath")
+	assert.Contains(t, endpointSrc, `--all is not supported for live binary/text responses`,
+		"storeless paginated binary --all must reject before JSON aggregation")
+	assert.NotContains(t, endpointSrc, `--all is not supported for live HTML responses`,
+		"storeless paginated binary --all must not reuse the HTML rejection")
 }
 
 // Regression: store-backed binary GET previously passed nil to resolveRead,
@@ -103,8 +107,54 @@ func TestGenerateBinaryStoreBackedPromotedThreadsHeader(t *testing.T) {
 		"store-backed binary GET must declare headerOverrides")
 	assert.Contains(t, endpointSrc, `"X-Printing-Press-Binary-Response": "true",`,
 		"store-backed binary GET must include the binary sentinel")
-	assert.Contains(t, endpointSrc, `resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "auto", "voices", false, path, params, headerOverrides, "", cmd.ErrOrStderr())`,
-		"store-backed binary GET must thread headerOverrides through the strategy-aware resolver")
+	assert.Contains(t, endpointSrc, `resolveReadWithStrategyResponsePathAndJSONGuard(cmd.Context(), c, flags, "auto", "voices", false, path, params, headerOverrides, "", false, cmd.ErrOrStderr())`,
+		"store-backed binary GET must skip the live JSON guard and thread headerOverrides")
+}
+
+func TestGenerateBinaryStoreBackedPaginatedSkipsJSONGuard(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("audioapi")
+	apiSpec.Resources = map[string]spec.Resource{
+		"voices": {
+			Description: "Voices",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:         "GET",
+					Path:           "/voices",
+					Description:    "List voices",
+					ResponseFormat: spec.ResponseFormatBinary,
+					Pagination: &spec.Pagination{
+						Type:           "cursor",
+						LimitParam:     "limit",
+						CursorParam:    "after",
+						NextCursorPath: "next_cursor",
+						HasMoreField:   "has_more",
+					},
+					Params: []spec.Param{
+						{Name: "limit", Type: "integer", Description: "Page size"},
+						{Name: "after", Type: "string", Description: "Cursor"},
+					},
+				},
+			},
+		},
+	}
+	apiSpec.Learn.Disabled = true
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_voices.go")
+	assert.Contains(t, endpointSrc, `resolvePaginatedReadWithStrategyAndJSONGuard(`,
+		"store-backed paginated binary reads must use the JSON-guard variant")
+	assert.Contains(t, endpointSrc, `false, liveAllRejectNonJSON, cmd.ErrOrStderr())`,
+		"store-backed paginated binary reads must skip the JSON guard and reject --all as binary/text")
+	assert.NotContains(t, endpointSrc, `liveAllRejectHTML`,
+		"store-backed paginated binary reads must not reuse the HTML --all rejection")
+	assert.NotContains(t, endpointSrc, `resolvePaginatedReadWithStrategy(`,
+		"store-backed paginated binary reads must not use the wrapper that hardcodes guardLiveJSON=true")
 }
 
 func TestGenerateBinaryMCPToolsThreadHeaderOverrides(t *testing.T) {

@@ -43,7 +43,7 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "Then set:")
 			fmt.Fprintln(w, "  export RICH_AUTH_API_KEY=\"your-token-here\"")
-			fmt.Fprintln(w, "  printing-press-rich-pp-cli auth set-token <token>")
+			fmt.Fprintln(w, "  echo \"$TOKEN\" | printing-press-rich-pp-cli auth set-token")
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "Optional request credentials:")
 			fmt.Fprintln(w, "  export RICH_AUTH_OPTIONAL_TOKEN=\"your-token-here\"")
@@ -113,7 +113,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintln(w, "")
 				fmt.Fprintln(w, "Set your credentials:")
 				fmt.Fprintln(w, "  export RICH_AUTH_API_KEY=\"your-token-here\" # Rich Auth API key.")
-				fmt.Fprintf(w, "  printing-press-rich-pp-cli auth set-token <token>\n")
+				fmt.Fprintf(w, "  echo \"$TOKEN\" | printing-press-rich-pp-cli auth set-token\n")
 				fmt.Fprintln(w, "")
 				fmt.Fprintln(w, "Optional request credentials:")
 				fmt.Fprintln(w, "  export RICH_AUTH_OPTIONAL_TOKEN=\"your-token-here\" # Optional token for elevated read limits.")
@@ -132,11 +132,18 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 
 func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
-		Use:     "set-token <token>",
-		Short:   "Save an API token to the credentials file",
-		Example: "  printing-press-rich-pp-cli auth set-token YOUR_TOKEN_HERE",
-		Args:    cobra.ExactArgs(1),
+		Use:   "set-token",
+		Short: "Save an API token to the credentials file",
+		Long: "Save an API token to the credentials file.\n\n" +
+			"The token is read from stdin so it never appears in process arguments or shell history.",
+		Example: "  echo \"$TOKEN\" | printing-press-rich-pp-cli auth set-token\n  printing-press-rich-pp-cli auth set-token < token-file",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			token, err := readSecretFromStdin(cmd.InOrStdin())
+			if err != nil {
+				return authErr(err)
+			}
+
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
 				return configErr(err)
@@ -153,7 +160,7 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			// AccessToken. Writing the token to AccessToken via SaveTokens
 			// would persist the bytes but leave doctor reporting "not
 			// configured" — the slot the header builder consults stays empty.
-			if err := cfg.SaveCredential(args[0]); err != nil {
+			if err := cfg.SaveCredential(token); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
 

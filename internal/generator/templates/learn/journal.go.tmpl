@@ -5,6 +5,8 @@ package learn
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -150,14 +152,46 @@ func journalEnvTruthy(name string) bool {
 	return v == "true" || v == "1" || v == "yes"
 }
 
+// JournalHarnessSessionEnvVars is the first-match-wins list of
+// harness session identifiers. Exported so command-level tests can
+// clear the same set the production resolver reads. Raw values never
+// land in the journal; only a bounded hash of the first non-empty
+// value is persisted.
+var JournalHarnessSessionEnvVars = []string{
+	"CODEX_THREAD_ID",
+	"CODEX_SESSION_ID",
+	"CLAUDE_SESSION_ID",
+	"CLAUDE_CODE_SESSION",
+	"CURSOR_SESSION_ID",
+	"CURSOR_TRACE_ID",
+}
+
 // JournalSessionKey returns the session key for this invocation: the
-// session env var when set, else a parent-pid lineage string so all
-// commands spawned by the same agent shell share a key.
+// explicit LEARN_SESSION override when set, else a hashed harness
+// session identifier so sibling tool calls share a key even when each
+// has a different parent process, else a parent-pid lineage string.
 func JournalSessionKey() string {
 	if v := strings.TrimSpace(os.Getenv(journalSessionEnvVar)); v != "" {
 		return v
 	}
+	if hashed := journalHashedHarnessSession(); hashed != "" {
+		return hashed
+	}
 	return "ppid:" + strconv.Itoa(os.Getppid())
+}
+
+func journalHashedHarnessSession() string {
+	for _, name := range JournalHarnessSessionEnvVars {
+		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+			return "h:" + hashHarnessSession(v)
+		}
+	}
+	return ""
+}
+
+func hashHarnessSession(v string) string {
+	sum := sha256.Sum256([]byte(v))
+	return hex.EncodeToString(sum[:8])
 }
 
 // JournalDir returns the journal directory (a learn/ subdir of the

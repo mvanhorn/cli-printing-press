@@ -151,7 +151,6 @@ func TestPromotedBinaryResponseOutputModes(t *testing.T) {
 	}{
 		{name: "json", args: []string{"--json"}},
 		{name: "compact", args: []string{"--compact"}},
-		{name: "plain", args: []string{"--plain"}},
 		{name: "select", args: []string{"--select", "_pp_binary,encoding,data"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -167,6 +166,17 @@ func TestPromotedBinaryResponseOutputModes(t *testing.T) {
 		want := "_pp_binary,bytes,content_type,data,encoding\ntrue,23,application/pdf,JVBERi0xLjcKYmluYXJ5IGZpeHR1cmU=,base64\n"
 		if string(stdout) != want {
 			t.Fatalf("csv output changed:\n got: %s\nwant: %s", stdout, want)
+		}
+	})
+
+	t.Run("plain", func(t *testing.T) {
+		stdout, stderr, err := runBinaryCommand(t, "certificate", "--plain")
+		if err != nil {
+			t.Fatalf("certificate --plain failed: %v\nstdout=%s\nstderr=%s", err, stdout, stderr)
+		}
+		want := "_pp_binary\tbytes\tcontent_type\tdata\tencoding\ntrue\t23\tapplication/pdf\tJVBERi0xLjcKYmluYXJ5IGZpeHR1cmU=\tbase64\n"
+		if string(stdout) != want {
+			t.Fatalf("plain output changed:\n got: %s\nwant: %s", stdout, want)
 		}
 	})
 

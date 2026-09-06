@@ -248,6 +248,10 @@ type APISpec struct {
 	// enough across the API to resolve from root CLI flags / env-backed
 	// TemplateVars instead of per-command positional arguments.
 	GlobalPathTemplateVars []string `yaml:"-" json:"global_path_template_vars,omitempty"`
+	// SyncPathContextVars lists ordinary path placeholders that skip default
+	// sync until a caller supplies them via --path-context. They are not
+	// tenant/base-url template vars and must not be advertised as required env.
+	SyncPathContextVars []string `yaml:"-" json:"-"`
 	// EndpointTemplateEnvOverrides maps a placeholder in EndpointTemplateVars
 	// to an explicit env-var name, overriding the default
 	// <APINAME>_<UPPER_PLACEHOLDER> resolution. Used for per-tenant or
@@ -305,8 +309,8 @@ type APISpec struct {
 	// --rate-limit flag. "auto" selects the header-driven adaptive limiter
 	// (client.RateLimitAuto) so the CLI paces itself to the server's
 	// X-Ratelimit-* headers with no hardcoded ceiling; a numeric string
-	// (e.g. "2") pins a fixed requests-per-second ceiling. Empty keeps the
-	// legacy provenance default (2 for sniffed specs, else 0 = disabled).
+	// (e.g. "2") pins a fixed requests-per-second ceiling. Empty is the
+	// same as "auto" — sniffed and documented specs share that rule.
 	// Populated from the yaml field or the OpenAPI x-pp-default-rate-limit
 	// extension.
 	DefaultRateLimit string              `yaml:"default_rate_limit,omitempty" json:"default_rate_limit,omitempty"`
@@ -435,18 +439,48 @@ func (m StreamingMetadataConfig) EffectivePrimaryKey() string {
 // existing <APINAME>_<UPPER_PLACEHOLDER> convention so unannotated specs
 // (the common case) regenerate byte-for-byte.
 func (s *APISpec) EndpointTemplateEnvName(placeholder string) string {
-	if s != nil {
-		if override, ok := s.EndpointTemplateEnvOverrides[placeholder]; ok {
-			if trimmed := strings.TrimSpace(override); trimmed != "" {
-				return trimmed
-			}
-		}
-	}
 	apiName := ""
+	override := ""
+	var authNames []string
 	if s != nil {
 		apiName = s.Name
+		if v, ok := s.EndpointTemplateEnvOverrides[placeholder]; ok {
+			override = v
+		}
+		authNames = s.Auth.DeclaredEnvVarNames()
 	}
-	return DefaultEndpointTemplateEnvName(apiName, placeholder)
+	return ResolveEndpointTemplateEnvName(apiName, placeholder, override, authNames)
+}
+
+// ResolveEndpointTemplateEnvName is the shared override-vs-default rule
+// used by generate and the MCPB binder. A credential-shaped override that
+// is not this placeholder's own default (e.g. {shop} → ACCESS_TOKEN) is
+// rejected so the printed Getenv and the installer collect the same name.
+func ResolveEndpointTemplateEnvName(apiName, placeholder, override string, authNames []string) string {
+	defaultName := DefaultEndpointTemplateEnvName(apiName, placeholder)
+	trimmed := strings.TrimSpace(override)
+	if trimmed == "" {
+		return defaultName
+	}
+	if IsAuthOrCredentialEnvName(trimmed, authNames) && trimmed != defaultName {
+		return defaultName
+	}
+	return trimmed
+}
+
+// DropCollidingEndpointTemplateEnvOverrides removes stored overrides that
+// ResolveEndpointTemplateEnvName would ignore, so later manifest writes
+// and reprints do not re-apply a rejected {shop} → ACCESS_TOKEN mapping.
+func (s *APISpec) DropCollidingEndpointTemplateEnvOverrides() {
+	if s == nil || len(s.EndpointTemplateEnvOverrides) == 0 {
+		return
+	}
+	authNames := s.Auth.DeclaredEnvVarNames()
+	for placeholder, override := range s.EndpointTemplateEnvOverrides {
+		if ResolveEndpointTemplateEnvName(s.Name, placeholder, override, authNames) != strings.TrimSpace(override) {
+			delete(s.EndpointTemplateEnvOverrides, placeholder)
+		}
+	}
 }
 
 // DefaultEndpointTemplateEnvName builds the conventional env-var name for a
@@ -454,6 +488,86 @@ func (s *APISpec) EndpointTemplateEnvName(placeholder string) string {
 // manifest emitter can reuse the same rule without importing the generator.
 func DefaultEndpointTemplateEnvName(apiName, placeholder string) string {
 	return strings.ToUpper(strings.ReplaceAll(naming.Snake(apiName), "-", "_") + "_" + strings.ReplaceAll(naming.Snake(placeholder), "-", "_"))
+}
+
+const clientProfileEnvName = "PRINTING_PRESS_CLIENT_PROFILE"
+
+// credentialEnvSuffixes name secret-bearing env vars. Keep this list
+// secret-shaped; per-instance knobs such as *_TENANT_ID and *_SHOP are
+// valid endpoint bindings.
+var credentialEnvSuffixes = []string{
+	"_ACCESS_TOKEN",
+	"_REFRESH_TOKEN",
+	"_API_KEY",
+	"_API_SECRET",
+	"_API_TOKEN",
+	"_CLIENT_SECRET",
+	"_PASSWORD",
+	"_SECRET",
+	"_PRIVATE_KEY",
+	"_BEARER_TOKEN",
+	"_AUTH_TOKEN",
+	"_TOKEN",
+}
+
+var credentialEnvExactNames = map[string]struct{}{
+	"ACCESS_TOKEN":  {},
+	"API_KEY":       {},
+	"API_SECRET":    {},
+	"API_TOKEN":     {},
+	"AUTH_TOKEN":    {},
+	"BEARER_TOKEN":  {},
+	"CLIENT_SECRET": {},
+	"PASSWORD":      {},
+	"PRIVATE_KEY":   {},
+	"REFRESH_TOKEN": {},
+	"SECRET":        {},
+	"TOKEN":         {},
+}
+
+func IsCredentialShapedEnvVarName(name string) bool {
+	if _, ok := credentialEnvExactNames[name]; ok {
+		return true
+	}
+	for _, suffix := range credentialEnvSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func IsAuthOrCredentialEnvName(name string, authNames []string) bool {
+	if name == "" {
+		return false
+	}
+	if name == clientProfileEnvName {
+		return true
+	}
+	if slices.Contains(authNames, name) {
+		return true
+	}
+	return IsCredentialShapedEnvVarName(name)
+}
+
+func (c AuthConfig) DeclaredEnvVarNames() []string {
+	names := make([]string, 0, len(c.EnvVars)+len(c.EnvVarSpecs)+len(c.AdditionalHeaders))
+	for _, name := range c.EnvVars {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	for _, envVar := range c.EnvVarSpecs {
+		if envVar.Name != "" {
+			names = append(names, envVar.Name)
+		}
+	}
+	for _, header := range c.AdditionalHeaders {
+		if header.EnvVar.Name != "" {
+			names = append(names, header.EnvVar.Name)
+		}
+	}
+	return names
 }
 
 // EndpointTemplateDefault returns the spec-declared default value for the
@@ -1626,6 +1740,9 @@ func (c AuthConfig) HasCookies() bool {
 // callers do not add secrets-bus plumbing where browser cookies are the
 // credential source.
 func (c AuthConfig) HasNonCookieAuth() bool {
+	if strings.EqualFold(strings.TrimSpace(c.Type), "none") {
+		return false
+	}
 	return len(c.EnvVarSpecs) > 0 || len(c.EnvVars) > 0
 }
 
@@ -2095,6 +2212,11 @@ type LookupSeed struct {
 //
 // Opting http into Transport adds a --transport flag (stdio|http) and, for http,
 // an --addr flag so the same binary can also serve an HTTP streamable transport.
+// The HTTP listener requires a per-CLI bearer env var and refuses non-loopback
+// binds without --tls-cert/--tls-key; named hosts including localhost are
+// loopback only when every resolved address is loopback, and the listener
+// is then pinned to that IP. Loopback plaintext still requires the caller
+// Authorization header.
 //
 // Rationale: stdio-only servers can only reach clients that share a filesystem
 // and can spawn a subprocess. Cloud-hosted agents (hosted Claude Code sessions,
@@ -2110,7 +2232,7 @@ type LookupSeed struct {
 // prevents silent drift when new transports are introduced.
 type MCPConfig struct {
 	Transport              []string `yaml:"transport,omitempty" json:"transport,omitempty"`                             // allowed transports the generated binary compiles support for; empty resolves via APISpec.EffectiveMCPTransports for small APIs and via the large-surface generator default when code orchestration is auto-applied. Runtime transport is chosen via the --transport flag and PP_MCP_TRANSPORT env.
-	Addr                   string   `yaml:"addr,omitempty" json:"addr,omitempty"`                                       // default bind address for the http transport (e.g., ":7777"). Blank means runtime default (":7777"). Ignored unless http is in Transport.
+	Addr                   string   `yaml:"addr,omitempty" json:"addr,omitempty"`                                       // default bind address for the http transport (e.g., "127.0.0.1:7777"). Blank means runtime default ("127.0.0.1:7777"). Empty-host forms like ":7777" bind every interface and require TLS. Ignored unless http is in Transport.
 	Intents                []Intent `yaml:"intents,omitempty" json:"intents,omitempty"`                                 // higher-level MCP tools that compose multiple endpoint calls. The agent sees one intent tool; the generator emits a handler that fans out to the declared endpoints sequentially. Anti-pattern to fight: one-tool-per-endpoint mirrors that force agents to stitch primitives.
 	EndpointTools          string   `yaml:"endpoint_tools,omitempty" json:"endpoint_tools,omitempty"`                   // "visible" (default) keeps the per-endpoint MCP tools; "hidden" suppresses them so only intents + generator-emitted tools appear. Use "hidden" when intents fully cover the surface and raw endpoints would be noise.
 	Orchestration          string   `yaml:"orchestration,omitempty" json:"orchestration,omitempty"`                     // "endpoint-mirror" (default), "intent", or "code". Code-orchestration emits a thin <api>_search + <api>_execute pair covering the full surface in ~1K tokens; used for very large APIs where even intent-grouped tools would overflow context. Mutually exclusive with endpoint-mirror at emission time.
@@ -2258,10 +2380,11 @@ func absoluteRequestPathTemplateSource(path string) string {
 type Endpoint struct {
 	Method string `yaml:"method" json:"method"`
 	Path   string `yaml:"path" json:"path"`
-	// Mutation explicitly marks an endpoint as mutating when its transport
-	// method is not enough to convey the side effect, such as a GET action.
-	// The generator uses this signal for MCP safety classification.
-	Mutation    bool   `yaml:"mutation,omitempty" json:"mutation,omitempty"`
+	// Mutation is the optional explicit read/write override. nil means
+	// unset (classify from verb, operation name, and body shape). true
+	// marks a GET action as state-changing; false marks a POST (or other
+	// non-GET) endpoint as a read so generated commands print the body.
+	Mutation    *bool  `yaml:"mutation,omitempty" json:"mutation,omitempty"`
 	BaseURL     string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
 	Description string `yaml:"description" json:"description"`
 	// Example is an optional Cobra Example string for this endpoint command.
@@ -2347,9 +2470,10 @@ type Endpoint struct {
 	// IDField is the resolved primary-key field name for items returned by this
 	// endpoint, populated either by a path-item-level `x-resource-id` extension,
 	// a resource member path parameter that also appears in the response item,
-	// or, for OpenAPI specs, by walking the response schema. Empty when no key
-	// could be resolved; templates fall back to runtime list scanning. Internal
-	// YAML specs may set this directly.
+	// or, for OpenAPI specs, by walking the response schema. May be a dotted
+	// path (`entityInfo.entityId`); generated LookupFieldValue walks it.
+	// Empty when no key could be resolved; templates fall back to runtime list
+	// scanning. Internal YAML specs may set this directly.
 	IDField string `yaml:"id_field,omitempty" json:"id_field,omitempty"`
 	// TenantScopeColumn is the tenant discriminator column declared by the
 	// path-item-level `x-pp-tenant-scope-column` extension (e.g. "workspace").
@@ -2389,7 +2513,14 @@ type Endpoint struct {
 	// OpenAPI emits it as `x-pp-sync-walker` on the operation. See
 	// docs/SPEC-EXTENSIONS.md for the canonical schema.
 	Walker *WalkerConfig `yaml:"walker,omitempty" json:"walker,omitempty"`
-	Alias  string        `yaml:"-" json:"-"` // computed, not from YAML
+	// SyncParams are query parameters applied only during generated sync.
+	// Internal YAML emits them as `sync_params:`; OpenAPI emits them as
+	// `x-sync-params` on the operation. They overlay spec `default:` values
+	// and the history-hiding widen (status/state=open -> all/any) so a list
+	// command can keep the API's documented filter while sync mirrors the
+	// complete resource. User --param flags still win at runtime.
+	SyncParams map[string]string `yaml:"sync_params,omitempty" json:"sync_params,omitempty"`
+	Alias      string            `yaml:"-" json:"-"` // computed, not from YAML
 	// BodySet reports whether the source spec declared a `body:` key on this
 	// endpoint, distinct from an absent key. Populated by the custom
 	// UnmarshalYAML / UnmarshalJSON below. The params→body promotion pass
@@ -2410,11 +2541,11 @@ type WalkerConfig struct {
 	// (primary key) when empty. Use this when the child path needs a parent
 	// field that is not the parent's primary key.
 	KeyField string `yaml:"key_field,omitempty" json:"key_field,omitempty"`
-	// KeyParam is the placeholder name in the child path that receives the
-	// extracted key value. Defaults to the first {placeholder} found in the
-	// child's Path when empty. Set this explicitly when the child path has
-	// multiple placeholders or when the placeholder name does not match the
-	// auto-detection convention.
+	// KeyParam is the child request slot that receives the extracted key
+	// value: a {placeholder} in the path, or a query parameter name when
+	// the child path has no matching placeholder. Defaults to the first
+	// {placeholder} found in the child's Path when empty. Set this
+	// explicitly when the child path has zero or multiple placeholders.
 	KeyParam string `yaml:"key_param,omitempty" json:"key_param,omitempty"`
 }
 
@@ -2476,6 +2607,15 @@ func (e *Endpoint) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// MutationOverride reports the explicit mutation flag. set is false when
+// the spec omitted mutation, so callers can distinguish unset from false.
+func (e Endpoint) MutationOverride() (value, set bool) {
+	if e.Mutation == nil {
+		return false, false
+	}
+	return *e.Mutation, true
+}
+
 func (e Endpoint) EffectiveResponseFormat() string {
 	if strings.TrimSpace(e.ResponseFormat) == "" {
 		return ResponseFormatJSON
@@ -2507,6 +2647,22 @@ func (e Endpoint) UsesBinaryResponse() bool {
 
 func (e Endpoint) UsesTextResponse() bool {
 	return e.EffectiveResponseFormat() == ResponseFormatText
+}
+
+// LacksJSONSyncEnumeration reports whether a response_format cannot populate
+// the JSON store via generated sync. csv and xml convert to JSON; html, binary,
+// and text do not.
+func LacksJSONSyncEnumeration(format string) bool {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case ResponseFormatHTML, ResponseFormatBinary, ResponseFormatText:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e Endpoint) LacksJSONSyncEnumeration() bool {
+	return LacksJSONSyncEnumeration(e.EffectiveResponseFormat())
 }
 
 func (e Endpoint) UsesRawRequestBody() bool {
@@ -4055,9 +4211,11 @@ var reservedRootFlagFieldNames = map[string]struct{}{
 	"receiptWriter":           {},
 	"deliverSpec":             {},
 	"timeout":                 {},
+	"timeoutExplicit":         {},
 	"rateLimit":               {},
 	"maxAge":                  {},
 	"dataSource":              {},
+	"agentSource":             {},
 	"freshnessMeta":           {},
 	"throttleMode":            {},
 	"deliverBuf":              {},

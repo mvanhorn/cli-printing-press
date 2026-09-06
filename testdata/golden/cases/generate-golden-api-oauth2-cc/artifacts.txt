@@ -21,6 +21,10 @@ printing-press-oauth2-cc/internal/cli/auth.go
 # double-checked-lock pattern in this file is the load-bearing contract.
 printing-press-oauth2-cc/internal/client/client.go
 
+# Token-endpoint POSTs must use the same-origin redirect client so a
+# cross-host 307/308 cannot replay client_secret in the body.
+printing-press-oauth2-cc/internal/cliutil/oauth_token.go
+
 # config.go's AuthHeader must emit the AccessToken-first gated branch
 # (under client_credentials the env var is the Client ID, not a bearer).
 printing-press-oauth2-cc/internal/config/config.go

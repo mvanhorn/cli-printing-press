@@ -6,6 +6,9 @@ package cli
 import (
 	"context"
 	"path/filepath"
+{{- if .Learn.TickerPatterns}}
+	"strings"
+{{- end}}
 	"testing"
 
 	"{{modulePath}}/internal/learn"
@@ -114,6 +117,47 @@ func TestLearnNormalizers_SynonymFoldSymmetry(t *testing.T) {
 		t.Error("write side folded tonight into yesterday")
 	}
 }
+
+func TestLearnIdentityFields_CommonFallback(t *testing.T) {
+	if len(learnCommonIdentityFields) == 0 {
+		t.Fatal("learnCommonIdentityFields must not be empty")
+	}
+	got := learnIdentityFieldsFor("unknown-resource-type")
+	if len(got) == 0 {
+		t.Fatal("learnIdentityFieldsFor fallback must return the common list")
+	}
+	fields := learnResourceTypeFields()
+	if fields == nil {
+		t.Fatal("learnResourceTypeFields must return a non-nil map")
+	}
+}
+
+{{- if .Learn.TickerPatterns}}
+
+func TestLearnNormalizers_TickerKeepSymmetry(t *testing.T) {
+	cfg := newLearnConfig()
+	candidates := []string{"EXAMPLE-42", "TICKER-ABC", "WIDGET-1", "10.6.1.60"}
+	for _, ident := range candidates {
+		n := learn.Normalize("where is "+ident, cfg)
+		if len(n.Tickers) != 1 || n.Tickers[0] != ident {
+			continue
+		}
+		got := store.NormalizeQuery("where is " + ident)
+		wantToken := strings.ToLower(ident)
+		if !strings.Contains(got, wantToken) {
+			t.Errorf("write side dropped ticker %q: NormalizeQuery=%q", ident, got)
+		}
+		if strings.Contains(ident, ".") || strings.Contains(ident, "-") {
+			split := strings.NewReplacer(".", " ", "-", " ").Replace(wantToken)
+			if strings.Contains(got, split) && !strings.Contains(got, wantToken) {
+				t.Errorf("write side split ticker %q into %q", ident, got)
+			}
+		}
+		return
+	}
+	t.Skip("spec ticker patterns do not match the identifier-only fixtures")
+}
+{{- end}}
 {{- if .Learn.Synonyms}}
 
 // TestLearnConfig_SpecSynonymsRegisteredBothSides pins that every

@@ -2,8 +2,6 @@ package pipeline
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -165,6 +163,11 @@ type CLIManifest struct {
 	NovelFeatures              []NovelFeatureManifest      `json:"novel_features,omitempty"`
 	Scorecard                  *CLIManifestScorecard       `json:"scorecard,omitempty"`
 	Verify                     *CLIManifestVerify          `json:"verify,omitempty"`
+	// generatedEnvReads is a write-scoped scan of os.Getenv names already
+	// emitted into the printed CLI. It is not serialized; WriteMCPBManifest
+	// and reconcile attach it so a kept colliding override can bind the
+	// name the existing client still reads.
+	generatedEnvReads map[string]struct{} `json:"-"`
 }
 
 type CLIManifestScorecard struct {
@@ -339,15 +342,7 @@ func WriteCLIManifest(dir string, m CLIManifest) error {
 }
 
 func normalizeCLIManifestForWrite(dir string, m CLIManifest) CLIManifest {
-	if usesPlatformClientProfiles(dir) {
-		m.AuthEnvVars = []string{"PRINTING_PRESS_CLIENT_PROFILE"}
-		m.AuthEnvVarSpecs = []spec.AuthEnvVar{{
-			Name: "PRINTING_PRESS_CLIENT_PROFILE", Kind: spec.AuthEnvVarKindPerCall,
-			Required: true, Sensitive: false,
-		}}
-		m.AuthAdditionalHeaders = nil
-	}
-	return m
+	return dropCollidingEndpointTemplateOverrides(m, scanGeneratedEnvSet(dir))
 }
 
 func writeCLIManifestPreservingRaw(dir string, m CLIManifest, existingRaw map[string]json.RawMessage) error {
@@ -887,10 +882,10 @@ func archivedSpecNameForFormat(sourceBasename string) string {
 	}
 }
 
-// specChecksum computes a SHA-256 checksum of the file at path.
+// specChecksum computes the canonical SHA-256 checksum of the file at path.
 // Returns "sha256:<hex>" on success, or an empty string if the file
 // does not exist.
-func specChecksum(path string) (string, error) {
+func specChecksum(path string, specFormats ...string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -898,8 +893,11 @@ func specChecksum(path string) (string, error) {
 		}
 		return "", fmt.Errorf("reading spec for checksum: %w", err)
 	}
-	h := sha256.Sum256(data)
-	return "sha256:" + hex.EncodeToString(h[:]), nil
+	specFormat := detectSpecFormat(data)
+	if len(specFormats) > 0 {
+		specFormat = specFormats[0]
+	}
+	return ComputeSpecChecksum(data, specFormat), nil
 }
 
 // computeMCPReady determines the MCP readiness label for scorecard /
@@ -945,6 +943,7 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	}
 	m.AuthAdditionalHeaders = parsed.Auth.AdditionalHeaders
 	m.EndpointTemplateVars = parsed.EndpointTemplateVars
+	parsed.DropCollidingEndpointTemplateEnvOverrides()
 	m.EndpointTemplateEnvOverrides = parsed.EndpointTemplateEnvOverrides
 	m.EndpointTemplateVarDefaults = parsed.EndpointTemplateVarDefaults
 	if parsed.Auth.KeyURL != "" {
@@ -1186,6 +1185,7 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		m.Creator = &creator
 	}
 	m.Contributors = p.Contributors
+	var lineageSpecBytes []byte
 
 	// Populate spec_url / spec_path from the first spec source.
 	if p.DocsURL != "" {
@@ -1200,8 +1200,8 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 			// Compute checksum and format from the actual input spec file.
 			if data, err := os.ReadFile(src); err == nil {
 				m.SpecFormat = detectSpecFormat(data)
-				h := sha256.Sum256(data)
-				m.SpecChecksum = "sha256:" + hex.EncodeToString(h[:])
+				m.SpecChecksum = ComputeSpecChecksum(data, m.SpecFormat)
+				lineageSpecBytes = data
 			}
 		}
 	}
@@ -1214,14 +1214,15 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 
 	// Fallback: detect format and checksum from any spec file cached in the output dir.
 	if m.SpecFormat == "" || m.SpecChecksum == "" {
-		if specFile, data, err := findArchivedSpec(p.OutputDir); err == nil && specFile != "" {
+		if _, data, err := findArchivedSpec(p.OutputDir); err == nil && data != nil {
 			if m.SpecFormat == "" {
 				m.SpecFormat = detectSpecFormat(data)
 			}
 			if m.SpecChecksum == "" {
-				if cs, err := specChecksum(specFile); err == nil {
-					m.SpecChecksum = cs
-				}
+				m.SpecChecksum = ComputeSpecChecksum(data, m.SpecFormat)
+			}
+			if lineageSpecBytes == nil {
+				lineageSpecBytes = data
 			}
 		}
 	}
@@ -1268,7 +1269,7 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	if description := strings.TrimSpace(p.Description); description != "" {
 		m.Description = description
 	}
-	preserveExisting := hasExisting && sameGenerateManifestLineage(existing, m)
+	preserveExisting := hasExisting && sameGenerateManifestLineage(existing, m, lineageSpecBytes)
 	// A durable manifest description may be hand-edited after generation.
 	// Operators can delete or replace the field when they want changed spec
 	// prose to become canonical on a later generate run.
@@ -1409,12 +1410,13 @@ func writeCLIManifestForGenerate(dir string, m CLIManifest, existingRaw map[stri
 	return nil
 }
 
-func sameGenerateManifestLineage(existing, generated CLIManifest) bool {
+func sameGenerateManifestLineage(existing, generated CLIManifest, generatedSpecBytes []byte) bool {
 	if existing.APIName == "" || generated.APIName == "" || existing.APIName != generated.APIName {
 		return false
 	}
 	if existing.SpecChecksum != "" && generated.SpecChecksum != "" {
-		return existing.SpecChecksum == generated.SpecChecksum
+		return existing.SpecChecksum == generated.SpecChecksum ||
+			(len(generatedSpecBytes) > 0 && SpecChecksumMatches(existing.SpecChecksum, generatedSpecBytes, generated.SpecFormat))
 	}
 	if (existing.SpecURL != "" || existing.SpecPath != "") && (generated.SpecURL != "" || generated.SpecPath != "") {
 		if existing.SpecURL != "" || generated.SpecURL != "" {
@@ -1449,6 +1451,9 @@ func sanitizeManifestSpecPath(specPath string) string {
 func detectSpecFormat(data []byte) string {
 	if openapi.IsOpenAPI(data) {
 		return "openapi3"
+	}
+	if spec.LooksLikeInternalYAML(data) {
+		return "internal"
 	}
 	if openapi.IsGraphQLSDL(data) {
 		return "graphql"

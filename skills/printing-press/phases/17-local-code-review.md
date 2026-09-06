@@ -17,10 +17,14 @@ novel-feature description text in generated code surfaces such as
 in `$RESEARCH_DIR/research.json` (`novel_features[].description`,
 `novel_features[].narrative`, or the matching `novel_features_built` entry) and
 regenerate/sync so README "Unique Features", SKILL "Unique Capabilities",
-root help Highlights, which output, MCP tools, and `.printing-press.json` stay
-aligned. Non-description code findings keep the normal Phase 4.95 autofix path.
+root help Highlights, which output, and `.printing-press.json` stay
+aligned. `dogfood --research-dir` leaves a differing
+`command_mirror_capabilities` block in `internal/mcp/tools.go` unmodified and
+prints the path; pass `--overwrite-command-mirror` only when the operator
+intends to replace that block from `research.json`. Non-description code
+findings keep the normal Phase 4.95 autofix path.
 
-**Native timeout-boundary check.** Before reviewer dispatch, scan every hand-written file under `internal/cli/` that imports a sibling internal package (`internal/<api>/`, `internal/source/<name>/`, `internal/recipes/`, `internal/phgraphql/`, etc.) and makes live requests. Each such command file must call `boundCtx(cmd.Context(), flags)` and pass that context into the sibling client or store query path before the first request. Files that only use `flags.newClient()` / generated `internal/client` are already covered by `client.New(cfg, flags.timeout, ...)` and should not be flagged for missing `boundCtx`.
+**Native timeout-boundary check.** Before reviewer dispatch, scan every hand-written file under `internal/cli/` that imports a sibling internal package (`internal/<api>/`, `internal/source/<name>/`, `internal/recipes/`, `internal/phgraphql/`, etc.) and makes live requests. Each such command file must call `boundCtx(cmd.Context(), flags)` and pass that context into the sibling client or store query path before the first request. Files that only use `flags.newClient()` / generated `internal/client` are already covered by `client.New(cfg, flags.timeout, ...)` and should not be flagged for missing `boundCtx`. Binary/stream calls on that generated client skip the default whole-call Timeout unless `--timeout` was set explicitly (including a run profile that supplies `timeout`); do not add a `boundCtx` deadline around those downloads.
 
 **Tool selection — pick what's installed, do not name-match.** This phase needs *a* code review, not a specific named command. Survey the review-shaped capabilities the current harness has and pick the best fit. Plausible candidates (names drift across harnesses and plugin sets; treat this as an example list, not a closed set):
 

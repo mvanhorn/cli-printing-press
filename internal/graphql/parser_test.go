@@ -166,7 +166,49 @@ func TestIsGraphQLSDLDetectsCustomRootSchema(t *testing.T) {
 
 	// Conventional and clearly-non-GraphQL inputs are unchanged.
 	assert.True(t, IsGraphQLSDL([]byte("type Query {\n  me: User\n}\n")))
+	assert.True(t, IsGraphQLSDL([]byte("extend type Query {\n  extra: String\n}\n")))
+	assert.True(t, IsGraphQLSDL([]byte("type User {\n  name: String\n}\n\nscalar DateTime\n")))
 	assert.False(t, IsGraphQLSDL([]byte(`{"openapi":"3.0.0","paths":{"/x":{"get":{"responses":{}}}}}`)))
+}
+
+func TestIsGraphQLSDLIgnoresDescriptionProse(t *testing.T) {
+	t.Parallel()
+
+	internalWithTypeProse := []byte(`name: payments
+base_url: https://api.example.com
+resources:
+  payments:
+    endpoints:
+      list:
+        method: GET
+        path: /payments
+        params:
+          - name: payment_type
+            description: Free-text payment type label. The accepted type Query and scalar value set is undocumented.
+`)
+	assert.False(t, IsGraphQLSDL(internalWithTypeProse), "internal YAML must not be GraphQL just because descriptions mention type/scalar")
+
+	openapiWithTypeProse := []byte(`openapi: 3.0.0
+info:
+  title: Payments
+  description: Free-text payment type label mentioning type Query
+paths:
+  /payments:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	assert.False(t, IsGraphQLSDL(openapiWithTypeProse), "OpenAPI must not be GraphQL because descriptions mention type Query")
+
+	gqlWithNameAndResourcesFields := []byte("type Query {\nname: String\nresources: [Widget!]!\n}\n\ntype Widget {\n  id: ID!\n}\n")
+	assert.True(t, IsGraphQLSDL(gqlWithNameAndResourcesFields), "unindented GraphQL fields named name/resources are still SDL")
+
+	gqlWithIndentedCloser := []byte("type Query {\nname: String\nresources: [Widget!]!\n  }\n\ntype Widget {\n  id: ID!\n}\n")
+	assert.True(t, IsGraphQLSDL(gqlWithIndentedCloser), "indented closing brace after resources: [Type] is still SDL")
+
+	flowInternalWithSDLProse := []byte("name: payments\ndescription: |\n  type Query {\n    ignored: String\n  }\nbase_url: https://api.example.com\nresources: {payments: {}}\n")
+	assert.False(t, IsGraphQLSDL(flowInternalWithSDLProse), "flow-style internal YAML stays internal even when a description block contains type Query")
 }
 
 func TestParseSDLMissingRootOperations(t *testing.T) {
@@ -185,6 +227,13 @@ type Widget {
 	_, err := ParseSDLBytes("broken-schema.graphql", []byte(sdl))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no GraphQL root operation types found")
+}
+
+func TestParseSDLKeylessDefaultsToNone(t *testing.T) {
+	parsed, err := ParseSDLBytes("widgets.graphql", []byte(testSDL))
+	require.NoError(t, err)
+	assert.Equal(t, "none", parsed.Auth.Type)
+	assert.Empty(t, parsed.Auth.EnvVars)
 }
 
 func TestParseSDLContent(t *testing.T) {

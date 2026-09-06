@@ -54,6 +54,29 @@ func formatCLIParamValue(v any) string {
 	}
 }
 
+const maxSecretFromStdin = 64 << 10
+
+func readSecretFromStdin(r io.Reader) (string, error) {
+	if f, ok := r.(*os.File); ok {
+		info, err := f.Stat()
+		if err == nil && info.Mode()&os.ModeCharDevice != 0 {
+			return "", fmt.Errorf("read the secret from stdin (pipe or redirect); it cannot be passed as a command argument")
+		}
+	}
+	data, err := io.ReadAll(io.LimitReader(r, int64(maxSecretFromStdin)+1))
+	if err != nil {
+		return "", fmt.Errorf("reading token from stdin: %w", err)
+	}
+	if len(data) > maxSecretFromStdin {
+		return "", fmt.Errorf("token on stdin exceeds %d bytes", maxSecretFromStdin)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", fmt.Errorf("empty token on stdin")
+	}
+	return token, nil
+}
+
 // noColor is set by the --no-color flag
 var noColor bool
 
@@ -644,14 +667,16 @@ func classifyAPIError(w io.Writer, err error, flags *rootFlags) error {
 	return classified
 }
 
+// Byte slicing splits multi-byte runes and corrupts table/JSON display.
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
 	if max <= 3 {
-		return s[:max]
+		return string(runes[:max])
 	}
-	return s[:max-3] + "..."
+	return string(runes[:max-3]) + "..."
 }
 
 func newTabWriter(w io.Writer) *tabwriter.Writer {
@@ -807,6 +832,7 @@ func paginatedGet(ctx context.Context, c interface {
 		seenCursorTokens[sentCursor] = struct{}{}
 	}
 	foundCursorField := false
+	reportedTotal := 0
 	page := 0
 	for {
 		page++
@@ -838,7 +864,7 @@ func paginatedGet(ctx context.Context, c interface {
 			previousPageItems = append([]json.RawMessage(nil), items...)
 			previousPageItemsSet = true
 			allItems = append(allItems, items...)
-			if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, len(items)); ok {
+			if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, len(items), false); ok {
 				if page >= paginatedGetMaxPages {
 					emitPaginatedGetMaxPagesWarning(ctx)
 					break
@@ -884,11 +910,14 @@ func paginatedGet(ctx context.Context, c interface {
 					allItems = append(allItems, nested...)
 					itemCount = len(nested)
 				}
+				if n := reportedCollectionTotal(obj); n > 0 {
+					reportedTotal = n
+				}
 
-				// Check for next cursor
-				if nextCursorToken != "" {
+				nextAdvance := resolvePaginatedNextCursor(obj, cursorLookupPath, cursorParam)
+				if nextAdvance != "" {
 					foundCursorField = true
-					if _, seen := seenCursorTokens[nextCursorToken]; seen {
+					if _, seen := seenCursorTokens[nextAdvance]; seen {
 						platform.MarkContextTruncated(ctx, platform.TruncationReason{Kind: "pagination_cursor_repeated", Configured: "unique_cursor", Observed: "repeated_cursor", MoreAvailable: true})
 						if humanFriendly {
 							fmt.Fprintf(os.Stderr, "warning: --all received the same pagination cursor twice; returning fetched pages only.\n")
@@ -897,12 +926,12 @@ func paginatedGet(ctx context.Context, c interface {
 						}
 						break
 					}
-					seenCursorTokens[nextCursorToken] = struct{}{}
+					seenCursorTokens[nextAdvance] = struct{}{}
 					if page >= paginatedGetMaxPages {
 						emitPaginatedGetMaxPagesWarning(ctx)
 						break
 					}
-					clean[cursorParam] = nextCursorToken
+					clean[cursorParam] = nextAdvance
 					continue
 				}
 
@@ -939,14 +968,18 @@ func paginatedGet(ctx context.Context, c interface {
 						}
 					}
 				}
-				if !hasExplicitNoMore && nextCursorPath == "" && hasMoreField == "" {
-					if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, itemCount); ok {
-						if page >= paginatedGetMaxPages {
-							emitPaginatedGetMaxPagesWarning(ctx)
-							break
+				if !hasExplicitNoMore {
+					moreByTotal := reportedTotal > 0 && len(allItems) < reportedTotal
+					usePageHeuristic := nextCursorPath == "" && hasMoreField == ""
+					if moreByTotal || usePageHeuristic {
+						if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, itemCount, moreByTotal); ok {
+							if page >= paginatedGetMaxPages {
+								emitPaginatedGetMaxPagesWarning(ctx)
+								break
+							}
+							clean[cursorParam] = next
+							continue
 						}
-						clean[cursorParam] = next
-						continue
 					}
 				}
 			}
@@ -1066,11 +1099,11 @@ func deleteRawPath(obj map[string]json.RawMessage, path string) {
 	deleteRawPath(child, strings.Join(parts[1:], "."))
 	obj[key], _ = json.Marshal(child)
 }
-func nextFullPageOffsetCursor(params map[string]string, cursorParam, paginationType string, pageSize, itemCount int) (string, bool) {
+func nextFullPageOffsetCursor(params map[string]string, cursorParam, paginationType string, pageSize, itemCount int, moreRemain bool) (string, bool) {
 	if (paginationType != "offset" && paginationType != "page") || itemCount == 0 {
 		return "", false
 	}
-	if pageSize > 0 && itemCount < pageSize {
+	if pageSize > 0 && itemCount < pageSize && !moreRemain {
 		return "", false
 	}
 	if pageSize <= 0 && paginationType == "offset" {
@@ -1216,6 +1249,177 @@ func paginationCursorToken(raw json.RawMessage) string {
 	if json.Unmarshal(raw, &number) == nil {
 		if n, err := number.Int64(); err == nil && n > 0 {
 			return number.String()
+		}
+	}
+	return paginationLinkURL(raw)
+}
+
+// Declared next-cursor paths win, then JSON:API/HAL links.next and top-level
+// next URLs. Followable URLs are reduced to the query token the request param
+// can carry; a raw URL is not written into page/offset params.
+func resolvePaginatedNextCursor(obj map[string]json.RawMessage, cursorLookupPath, cursorParam string) string {
+	token := ""
+	if cursorLookupPath != "" {
+		if tokenRaw, ok := rawAtPath(obj, cursorLookupPath); ok {
+			token = paginationCursorToken(tokenRaw)
+		}
+	}
+	if extracted := cursorTokenFromMaybeURL(token, cursorParam); extracted != "" {
+		return extracted
+	}
+	if fromLinks := nextCursorFromLinks(obj, cursorParam); fromLinks != "" {
+		return fromLinks
+	}
+	return nextCursorFromTopLevelURL(obj, cursorParam)
+}
+
+func cursorTokenFromMaybeURL(token, cursorParam string) string {
+	if token == "" {
+		return ""
+	}
+	if !isFollowableNextURL(token) {
+		return token
+	}
+	return cursorFromNextURL(token, cursorParam)
+}
+
+func reportedCollectionTotal(obj map[string]json.RawMessage) int {
+	return reportedCollectionTotalAtDepth(obj, 0)
+}
+
+func reportedCollectionTotalAtDepth(obj map[string]json.RawMessage, depth int) int {
+	if obj == nil || depth > 2 {
+		return 0
+	}
+	for _, key := range []string{"total", "total_count", "totalCount", "TotalCount", "totalResults", "Total"} {
+		raw, ok := obj[key]
+		if !ok {
+			continue
+		}
+		var n json.Number
+		if json.Unmarshal(raw, &n) != nil {
+			continue
+		}
+		if v, err := n.Int64(); err == nil && v > 0 {
+			return int(v)
+		}
+		if v, err := n.Float64(); err == nil && v > 0 {
+			return int(v)
+		}
+	}
+	for _, wrap := range []string{"meta", "pagination", "paging", "metadata"} {
+		raw, ok := obj[wrap]
+		if !ok {
+			continue
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(raw, &inner) != nil {
+			continue
+		}
+		if n := reportedCollectionTotalAtDepth(inner, depth+1); n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// JSON:API links.next and HAL _links.next.href are reduced to the query
+// token the request param can carry; a raw URL is not written into
+// page/offset params.
+func nextCursorFromLinks(envelope map[string]json.RawMessage, cursorParam string) string {
+	for _, key := range []string{"links", "_links"} {
+		rawLinks, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		var links map[string]json.RawMessage
+		if json.Unmarshal(rawLinks, &links) != nil {
+			continue
+		}
+		rawNext, ok := links["next"]
+		if !ok {
+			continue
+		}
+		if nextURL := paginationLinkURL(rawNext); nextURL != "" {
+			if cursor := cursorFromNextURL(nextURL, cursorParam); cursor != "" {
+				return cursor
+			}
+		}
+	}
+	return ""
+}
+
+func paginationLinkURL(raw json.RawMessage) string {
+	var nextURL string
+	if json.Unmarshal(raw, &nextURL) == nil {
+		return nextURL
+	}
+	var link map[string]json.RawMessage
+	if json.Unmarshal(raw, &link) != nil {
+		return ""
+	}
+	rawHref, ok := link["href"]
+	if !ok {
+		return ""
+	}
+	if json.Unmarshal(rawHref, &nextURL) != nil {
+		return ""
+	}
+	return nextURL
+}
+
+// Top-level next/next_url strings use the same URL-to-token reduction so
+// a followable URL is not written into page/offset params.
+func nextCursorFromTopLevelURL(envelope map[string]json.RawMessage, cursorParam string) string {
+	for _, key := range []string{"next", "next_url"} {
+		rawNext, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		var nextURL string
+		if json.Unmarshal(rawNext, &nextURL) != nil || nextURL == "" {
+			continue
+		}
+		if isFollowableNextURL(nextURL) {
+			return cursorFromNextURL(nextURL, cursorParam)
+		}
+	}
+	return ""
+}
+
+// Bare opaque cursor tokens must not be treated as URLs: only absolute
+// http(s), root-relative paths, and values with a query string are reduced
+// to a request-param token.
+func isFollowableNextURL(nextURL string) bool {
+	lower := strings.ToLower(nextURL)
+	return strings.HasPrefix(lower, "http") ||
+		strings.HasPrefix(nextURL, "/") ||
+		strings.Contains(nextURL, "?")
+}
+
+func cursorFromNextURL(nextURL string, cursorParam string) string {
+	cursorKeys := []string{cursorParam}
+	if cursorParam != "page[cursor]" {
+		cursorKeys = append(cursorKeys, "page[cursor]")
+	}
+	if cursorParam != "cursor" {
+		cursorKeys = append(cursorKeys, "cursor")
+	}
+	if cursorParam != "after" {
+		cursorKeys = append(cursorKeys, "after")
+	}
+
+	parsed, err := url.Parse(nextURL)
+	if err != nil {
+		return ""
+	}
+	values := parsed.Query()
+	for _, key := range cursorKeys {
+		if key == "" {
+			continue
+		}
+		if cursor := values.Get(key); cursor != "" {
+			return cursor
 		}
 	}
 	return ""
@@ -1680,9 +1884,19 @@ func wrapPlatformStructuredOutput(data json.RawMessage, flags *rootFlags, result
 // generated command families that build typed Go values instead of endpoint
 // response bytes. The raw value is preserved under results so --json without
 // --agent can stay backward-compatible while shell agents get stable metadata.
+// A payload that is already a {meta, results} envelope is flattened so a
+// second wrap cannot overwrite live provenance with the local default.
 func wrapAgentOutput(data json.RawMessage, meta map[string]any) (json.RawMessage, error) {
 	if meta == nil {
 		meta = map[string]any{}
+	}
+	if results, existing, ok := splitResultsMetaEnvelope(data); ok {
+		for k, v := range existing {
+			if _, present := meta[k]; !present {
+				meta[k] = v
+			}
+		}
+		data = results
 	}
 	if _, ok := meta["source"]; !ok {
 		meta["source"] = "local"
@@ -1701,6 +1915,74 @@ func wrapAgentOutput(data json.RawMessage, meta map[string]any) (json.RawMessage
 		"results": results,
 	}
 	return json.Marshal(envelope)
+}
+
+func splitResultsMetaEnvelope(data json.RawMessage) (json.RawMessage, map[string]any, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return nil, nil, false
+	}
+	if len(obj) != 2 {
+		return nil, nil, false
+	}
+	rawMeta, hasMeta := obj["meta"]
+	rawResults, hasResults := obj["results"]
+	if !hasMeta || !hasResults {
+		return nil, nil, false
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(rawMeta, &meta); err != nil || meta == nil {
+		return nil, nil, false
+	}
+	return rawResults, meta, true
+}
+
+func envelopeSource(data json.RawMessage) string {
+	_, meta, ok := splitResultsMetaEnvelope(data)
+	if !ok {
+		return ""
+	}
+	source, _ := meta["source"].(string)
+	return source
+}
+
+func commandDataSourceAnnotation(cmd *cobra.Command) string {
+	if cmd == nil || cmd.Annotations == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(cmd.Annotations["pp:data-source"]))
+}
+
+func declaredAgentSource(cmd *cobra.Command, flags *rootFlags) string {
+	if flags != nil && flags.dryRun {
+		return "dry-run"
+	}
+	switch commandDataSourceAnnotation(cmd) {
+	case "live":
+		return "live"
+	case "local", "computed":
+		return "local"
+	case "auto":
+		if flags != nil && flags.dataSource == "local" {
+			return "local"
+		}
+		return "live"
+	default:
+		return ""
+	}
+}
+
+func resolveAgentOutputSource(flags *rootFlags, data json.RawMessage) string {
+	if flags != nil && flags.dryRun {
+		return "dry-run"
+	}
+	if source := envelopeSource(data); source != "" {
+		return source
+	}
+	if flags != nil && flags.agentSource != "" {
+		return flags.agentSource
+	}
+	return "local"
 }
 
 // unwrapSingleKeyArray flattens single-key collection envelopes
@@ -2002,7 +2284,7 @@ func camelToKebab(s string) string {
 
 // printOutputWithFlags routes output through the right format based on flags.
 func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) error {
-	return printOutputWithFlagsMeta(w, data, flags, map[string]any{"source": "local"})
+	return printOutputWithFlagsMeta(w, data, flags, map[string]any{"source": resolveAgentOutputSource(flags, data)})
 }
 
 // isDryRunResponse detects the exact sentinel returned by client.dryRun.
@@ -2025,6 +2307,35 @@ func isDryRunResponse(dryRun bool, data json.RawMessage) bool {
 func isDryRunResponseForClient(c any, data json.RawMessage) bool {
 	dryRunClient, ok := c.(interface{ IsDryRun() bool })
 	return ok && isDryRunResponse(dryRunClient.IsDryRun(), data)
+}
+
+// handleBinaryResponseDelivery runs before the binary-response structured-output
+// refusal. Dry-run has no bytes to write; a file sink writes decoded bytes and
+// only then emits a receipt so stdout cannot claim success after a failed write.
+func handleBinaryResponseDelivery(cmd *cobra.Command, flags *rootFlags, data json.RawMessage) (bool, error) {
+	if flags != nil && isDryRunResponse(flags.dryRun, data) {
+		flags.deliverBuf = nil
+		if flags.quiet {
+			return true, nil
+		}
+		printDryRun := flags.asJSON || flags.agent || flags.csv || flags.compact || flags.plain || flags.selectFields != "" || !isTerminal(cmd.OutOrStdout())
+		if printDryRun {
+			return true, printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "dry-run"})
+		}
+		return true, nil
+	}
+	if flags == nil || flags.deliverSink.Scheme != "file" {
+		return false, nil
+	}
+	raw, contentType := binaryDeliverPayload(data)
+	if err := Deliver(flags.deliverSink, raw, flags.compact); err != nil {
+		return true, err
+	}
+	flags.deliverBuf = nil
+	if flags.quiet {
+		return true, nil
+	}
+	return true, writeBinaryDeliverReceipt(cmd.OutOrStdout(), flags.deliverSink, raw, contentType)
 }
 
 func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any, documentedFields ...map[string]bool) error {
@@ -2059,13 +2370,24 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 		}
 		data = wrapped
 	}
-	// --quiet: suppress all output, exit code communicates result
+	// --quiet: one identity value per row (id, then name/slug/title).
 	if flags.quiet {
-		return nil
+		return printQuiet(w, data)
 	}
 	// --csv: render as CSV
 	if flags.csv {
-		return printCSV(w, data)
+		headerFields := documentedFields
+		if flags.selectFields != "" {
+			selected := map[string]bool{}
+			for _, part := range strings.Split(flags.selectFields, ",") {
+				part = strings.TrimSpace(part)
+				if part != "" {
+					selected[part] = true
+				}
+			}
+			headerFields = []map[string]bool{selected}
+		}
+		return printCSV(w, data, headerFields...)
 	}
 	// --plain: render arrays as tab-separated rows
 	if flags.plain {
@@ -2113,6 +2435,37 @@ func compactFields(data json.RawMessage, documentedFields ...map[string]bool) js
 	return data
 }
 
+// Endpoint-mirror commands pass documented fields into compactListFields;
+// keeping every schema key would make --compact a no-op on homogeneous API lists.
+func isCompactGravityField(name string) bool {
+	switch name {
+	case "id", "name", "title", "identifier", "code", "slug", "key",
+		"status", "state", "type", "kind", "priority",
+		"url", "email",
+		"price", "amount", "cost", "fare", "rate", "currency",
+		"rating", "score", "count",
+		"language", "locale", "country", "region", "city", "domain",
+		"created_at", "updated_at", "createdAt", "updatedAt", "date",
+		"version":
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "" {
+		return false
+	}
+	for _, suffix := range []string{"_id", "_name", "_at", "_status", "_state", "_slug", "_key", "_title", "_code", "_count", "_url"} {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	for _, suffix := range []string{"Id", "Name", "At", "Status", "State", "Slug", "Key", "Title", "Code", "Count", "URL", "Url"} {
+		if strings.HasSuffix(name, suffix) && len(name) > len(suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 // compactListFields keeps only high-gravity fields for array responses.
 //
 // Two-layer keep rule:
@@ -2157,10 +2510,19 @@ func compactListFields(items []map[string]any, documentedFields ...map[string]bo
 	}
 	for _, fields := range documentedFields {
 		for field := range fields {
-			keepFields[field] = true
+			if isCompactGravityField(field) {
+				keepFields[field] = true
+			}
 		}
 	}
-	if len(items) > 0 {
+	schemaAware := false
+	for _, fields := range documentedFields {
+		if len(fields) > 0 {
+			schemaAware = true
+			break
+		}
+	}
+	if !schemaAware && len(items) > 0 {
 		keyCounts := map[string]int{}
 		for _, item := range items {
 			for k := range item {
@@ -2299,24 +2661,27 @@ func compactObjectArrayValue(v any, documentedFields ...map[string]bool) (any, b
 	return compacted, true
 }
 
-// printCSV renders JSON arrays as CSV with header row.
-func printCSV(w io.Writer, data json.RawMessage) error {
-	var items []map[string]any
-	if err := json.Unmarshal(data, &items); err != nil {
-		// Single object or invalid JSON - just print as JSON
+func printCSV(w io.Writer, data json.RawMessage, documentedFields ...map[string]bool) error {
+	items, ok := tabularObjectRows(data)
+	if !ok {
 		fmt.Fprintln(w, string(data))
 		return nil
 	}
 	if len(items) == 0 {
-		// A valid empty array is an empty CSV stream, not a JSON document.
-		// Keep the single-object fallback above for non-array payloads.
-		if bytes.HasPrefix(bytes.TrimSpace(data), []byte("[")) {
+		keys := csvDeclaredHeader(documentedFields...)
+		if len(keys) == 0 {
 			return nil
 		}
-		fmt.Fprintln(w, string(data))
+		writeCSVRow(w, keys)
 		return nil
 	}
-	// Collect all keys for header
+	return writeCSVRows(w, items)
+}
+
+func writeCSVRows(w io.Writer, items []map[string]any) error {
+	if len(items) == 0 {
+		return nil
+	}
 	keySet := map[string]bool{}
 	for _, item := range items {
 		for k := range item {
@@ -2328,38 +2693,56 @@ func printCSV(w io.Writer, data json.RawMessage) error {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	// Header
-	fmt.Fprintln(w, strings.Join(keys, ","))
-	// Rows
+	writeCSVRow(w, keys)
 	for _, item := range items {
 		var vals []string
 		for _, k := range keys {
 			v := item[k]
 			if v == nil {
 				vals = append(vals, "")
+			} else if f, ok := v.(float64); ok {
+				vals = append(vals, strconv.FormatFloat(f, 'f', -1, 64))
 			} else {
-				var s string
-				if f, ok := v.(float64); ok {
-					s = strconv.FormatFloat(f, 'f', -1, 64)
-				} else {
-					s = fmt.Sprintf("%v", v)
-				}
-				if strings.ContainsAny(s, ",\"\n") {
-					s = `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
-				}
-				vals = append(vals, s)
+				vals = append(vals, fmt.Sprintf("%v", v))
 			}
 		}
-		fmt.Fprintln(w, strings.Join(vals, ","))
+		writeCSVRow(w, vals)
 	}
 	return nil
 }
 
-// printPlain renders JSON arrays as tab-separated text with a header row.
+func writeCSVRow(w io.Writer, cells []string) {
+	escaped := make([]string, len(cells))
+	for i, cell := range cells {
+		if strings.ContainsAny(cell, ",\"\r\n") {
+			escaped[i] = `"` + strings.ReplaceAll(cell, `"`, `""`) + `"`
+		} else {
+			escaped[i] = cell
+		}
+	}
+	fmt.Fprintln(w, strings.Join(escaped, ","))
+}
+
+func csvDeclaredHeader(documentedFields ...map[string]bool) []string {
+	keySet := map[string]bool{}
+	for _, fields := range documentedFields {
+		for k := range fields {
+			if k != "" {
+				keySet[k] = true
+			}
+		}
+	}
+	keys := make([]string, 0, len(keySet))
+	for k := range keySet {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func printPlain(w io.Writer, data json.RawMessage) error {
-	var items []map[string]any
-	if err := json.Unmarshal(data, &items); err != nil {
-		// Single object - just print as JSON
+	items, ok := tabularObjectRows(data)
+	if !ok {
 		fmt.Fprintln(w, string(data))
 		return nil
 	}
@@ -2386,6 +2769,133 @@ func printPlain(w io.Writer, data json.RawMessage) error {
 		fmt.Fprintln(w, strings.Join(vals, "\t"))
 	}
 	return nil
+}
+
+func printQuiet(w io.Writer, data json.RawMessage) error {
+	items, ok := tabularObjectRows(data)
+	if ok {
+		for _, item := range items {
+			if v := quietRowValue(item); v != "" {
+				fmt.Fprintln(w, v)
+			}
+		}
+		return nil
+	}
+	var scalars []any
+	if err := json.Unmarshal(data, &scalars); err == nil {
+		for _, v := range scalars {
+			if m, ok := v.(map[string]any); ok {
+				if s := quietRowValue(m); s != "" {
+					fmt.Fprintln(w, s)
+				}
+				continue
+			}
+			if v == nil {
+				continue
+			}
+			fmt.Fprintln(w, fmt.Sprint(v))
+		}
+		return nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err == nil {
+		if v := quietRowValue(obj); v != "" {
+			fmt.Fprintln(w, v)
+		}
+		return nil
+	}
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	fmt.Fprintln(w, trimmed)
+	return nil
+}
+
+func quietRowValue(item map[string]any) string {
+	for _, key := range []string{"id", "ID", "Id", "identifier", "slug", "key", "name", "title", "code"} {
+		if v, ok := item[key]; ok {
+			if s := quietScalar(v); s != "" {
+				return s
+			}
+		}
+	}
+	for k, v := range item {
+		lower := strings.ToLower(k)
+		if strings.HasSuffix(lower, "_id") || strings.HasSuffix(k, "Id") {
+			if s := quietScalar(v); s != "" {
+				return s
+			}
+		}
+	}
+	for _, v := range item {
+		if s := quietScalar(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func quietScalar(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return t
+	case bool:
+		return strconv.FormatBool(t)
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	case json.Number:
+		return t.String()
+	default:
+		return ""
+	}
+}
+
+func tabularObjectRows(data json.RawMessage) ([]map[string]any, bool) {
+	projected := unwrapSingleKeyArray(collectionItemsForOutput(data, ""))
+	var items []map[string]any
+	if err := json.Unmarshal(projected, &items); err == nil && (len(items) > 0 || bytes.HasPrefix(bytes.TrimSpace(projected), []byte("["))) {
+		return items, true
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(projected, &obj); err != nil || len(obj) == 0 {
+		return nil, false
+	}
+	if rows, ok := objectEnvelopeRows(obj); ok {
+		return rows, true
+	}
+	return []map[string]any{obj}, true
+}
+
+func objectEnvelopeRows(obj map[string]any) ([]map[string]any, bool) {
+	found := 0
+	var rows []map[string]any
+	for k, v := range obj {
+		if envelopeMetadataKeys[k] || envelopeMetadataArrayKeys[k] {
+			continue
+		}
+		rawItems, ok := v.([]any)
+		if !ok {
+			continue
+		}
+		items := make([]map[string]any, 0, len(rawItems))
+		for _, raw := range rawItems {
+			item, ok := raw.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			items = append(items, item)
+		}
+		rows = items
+		found++
+	}
+	if found != 1 {
+		return nil, false
+	}
+	return rows, true
 }
 
 func plainCellValue(v any) string {

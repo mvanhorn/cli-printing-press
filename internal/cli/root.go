@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,8 +24,6 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/docspec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/googlediscovery"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llm"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llmpolish"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -120,6 +116,7 @@ func newGenerateCmd() *cobra.Command {
 	var validate bool
 	var refresh bool
 	var force bool
+	var yes bool
 	var lenient bool
 	var strictRefs bool
 	var docsURL string
@@ -215,7 +212,7 @@ func newGenerateCmd() *cobra.Command {
 				}
 
 				if snapshotDir != "" {
-					if err := finalizeForceMerge(snapshotDir, absOut, docYAML, validate, generateResult.Validate); err != nil {
+					if err := finalizeForceMerge(snapshotDir, absOut, docYAML, validate, generateResult.Validate, yes); err != nil {
 						return err
 					}
 				}
@@ -304,7 +301,7 @@ func newGenerateCmd() *cobra.Command {
 					// manifest hash that does exist still gates merge mode.
 					// Plan mode has no non-force validation suite to mirror,
 					// so force merge should not invent a build-only subset.
-					if err := finalizeForceMerge(snapshotDir, absOut, nil, false, nil); err != nil {
+					if err := finalizeForceMerge(snapshotDir, absOut, nil, false, nil, yes); err != nil {
 						return err
 					}
 				}
@@ -360,7 +357,7 @@ func newGenerateCmd() *cobra.Command {
 						return err
 					}
 					if snapshotDir != "" {
-						if err := finalizeForceMerge(snapshotDir, absOut, archivedDeviceSpec, validate, generateResult.Validate); err != nil {
+						if err := finalizeForceMerge(snapshotDir, absOut, archivedDeviceSpec, validate, generateResult.Validate, yes); err != nil {
 							return err
 						}
 					}
@@ -423,19 +420,11 @@ func newGenerateCmd() *cobra.Command {
 				specRawBytes = append(specRawBytes, data)
 
 				var apiSpec *spec.APISpec
-				if openapi.IsOpenAPI(data) {
-					apiSpec, err = parseOpenAPISpec(specFile, data, openapi.ParseOptions{
-						Lenient:        lenient,
-						StrictRefs:     strictRefs,
-						AuthPreference: openAPIParseAuthPref,
-					})
-				} else if graphql.IsGraphQLSDL(data) {
-					apiSpec, err = graphql.ParseSDLBytes(specFile, data)
-				} else if googlediscovery.IsDiscovery(data) {
-					apiSpec, err = googlediscovery.Parse(specFile, data)
-				} else {
-					apiSpec, err = spec.ParseBytes(data)
-				}
+				apiSpec, err = parseSpecBytes(specFile, data, openapi.ParseOptions{
+					Lenient:        lenient,
+					StrictRefs:     strictRefs,
+					AuthPreference: openAPIParseAuthPref,
+				})
 				if err != nil {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing spec %s: %w", specFile, err)}
 				}
@@ -507,7 +496,7 @@ func newGenerateCmd() *cobra.Command {
 				if len(specRawBytes) > 0 {
 					primarySpec = specRawBytes[0]
 				}
-				if err := finalizeForceMerge(snapshotDir, absOut, primarySpec, validate, generateResult.Validate); err != nil {
+				if err := finalizeForceMerge(snapshotDir, absOut, primarySpec, validate, generateResult.Validate, yes); err != nil {
 					return err
 				}
 			}
@@ -588,6 +577,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
 	cmd.Flags().BoolVar(&force, "force", false, "Recreate the base output directory while preserving hand-edits to generated files via AST-based merge")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm deleting non-generator-owned files that --force would not preserve")
 	cmd.Flags().Bool("allow-novel-wipe", false, "Deprecated compatibility no-op; --force now preserves hand-authored files via regen-merge")
 	_ = cmd.Flags().MarkHidden("allow-novel-wipe")
 	cmd.Flags().BoolVar(&lenient, "lenient", false, "Skip validation errors from broken $refs in OpenAPI specs")
@@ -2155,7 +2145,7 @@ func endpointSignature(resource spec.Resource, endpoint spec.Endpoint) string {
 	method := strings.ToUpper(strings.TrimSpace(endpoint.Method))
 	path := strings.TrimRight(strings.TrimSpace(endpoint.Path), "/")
 	shape := struct {
-		Mutation           bool                  `json:"mutation,omitempty"`
+		Mutation           *bool                 `json:"mutation,omitempty"`
 		RequestContentType string                `json:"request_content_type,omitempty"`
 		BodyJSONFallback   bool                  `json:"body_json_fallback,omitempty"`
 		BodyRequired       bool                  `json:"body_required,omitempty"`
@@ -2515,24 +2505,33 @@ func claimOrForce(absOut string, force bool, explicitOutput bool) (resolvedAbsOu
 	return resolved, "", nil
 }
 
-// finalizeForceMerge runs the post-Generate merge for any --force codepath:
-// classifies snapshotDir against freshDir, merges preserved hand-edits back,
-// re-runs `go mod tidy` when go.mod was merged (so go.sum keeps up with
-// preserved requires), and removes the snapshot on success. On merge
-// failure the snapshot is left in place and the error surfaces a recovery
-// command.
-//
-// Wired from the three --force codepaths (--spec, --docs, --plan) so each
-// one preserves hand-edits consistently — discarding snapshotDir after
-// generation would silently lose user work and leave an orphan that blocks
-// future --force runs.
-func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, validate bool, validateMerged func() error) error {
-	gomodMerged, err := mergeForceSnapshot(snapshotDir, freshDir, currentSpecBytes)
+// finalizeForceMerge is the --force contract: the freshly generated tree
+// must not replace operator-owned files without confirmation, and a refused
+// confirmation must leave the pre-force tree in place. SnapshotDir stays on
+// merge failure so the operator can recover; success removes it so a later
+// --force is not blocked by an orphan.
+func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, validate bool, validateMerged func() error, yes bool) error {
+	freshBackup, cleanupFresh, err := backupFreshTree(freshDir)
 	if err != nil {
+		return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("backing up fresh tree before merge: %w; snapshot preserved at %s", err, snapshotDir)}
+	}
+	defer cleanupFresh()
+
+	gomodMerged, err := mergeForceSnapshot(snapshotDir, freshDir, currentSpecBytes, false, yes)
+	if err != nil {
+		if asExitError(err) != nil {
+			return err
+		}
 		return &ExitError{Code: ExitGenerationError, Err: err}
 	}
 	if gomodMerged {
 		retidyAfterMerge(freshDir)
+	}
+	if err := repairPreserveBuildBreak(snapshotDir, freshDir, freshBackup, currentSpecBytes, validate, yes); err != nil {
+		if asExitError(err) != nil {
+			return err
+		}
+		return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("%w; snapshot preserved at %s", err, snapshotDir)}
 	}
 	if validate {
 		if validateMerged == nil {
@@ -2553,7 +2552,9 @@ func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, v
 // snapshot's recorded spec checksum to a sha256 over the current spec
 // bytes. Same checksum (or no recorded checksum) → run the full AST-aware
 // merge; mismatch or unreadable manifest → fall back to NOVEL-only
-// preservation.
+// preservation and print every skipped TEMPLATED-* hand-edit. Same-spec
+// regen still carries those edits; the drop list is the cross-spec
+// honesty so the operator sees the loss instead of a mode suffix alone.
 //
 // When the merge updates go.mod (snapshot had hand-added requires), the
 // caller must re-run `go mod tidy` against freshDir to refresh go.sum —
@@ -2565,11 +2566,17 @@ func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, v
 // On failure the snapshot is intentionally left in place; the returned
 // error includes the snapshot path so the user can recover manually with
 // `rm -rf <freshDir> && mv <snapshotDir> <freshDir>`.
-func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte) (gomodMerged bool, err error) {
-	novelOnly := !forceRegenSpecHashMatches(snapshotDir, currentSpecBytes)
+func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte, forceNovelOnly, yes bool) (gomodMerged bool, err error) {
+	novelOnly := forceNovelOnly || !forceRegenSpecHashMatches(snapshotDir, currentSpecBytes)
 	baseDir, cleanupBase := synthesizeForceRegenBase(snapshotDir, currentSpecBytes, novelOnly)
 	if cleanupBase != nil {
 		defer cleanupBase()
+	}
+	if !novelOnly && baseDir == "" && snapshotPrintingPressVersionDiffers(snapshotDir) {
+		// Three-way base was unavailable, so keep novels and let fresh
+		// replace templated bodies instead of shipping the still-compiling
+		// older rewrite.
+		novelOnly = true
 	}
 
 	classifyOpts := regenmerge.Options{Force: true, BaseDir: baseDir}
@@ -2578,7 +2585,10 @@ func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte) (
 		return false, fmt.Errorf("classifying snapshot vs fresh: %w; snapshot preserved at %s", err, snapshotDir)
 	}
 
-	mergeOpts := regenmerge.Options{Force: true, NovelOnly: novelOnly}
+	mergeOpts := regenmerge.Options{Force: true, NovelOnly: novelOnly, BaseDir: baseDir}
+	if err := confirmOrRestoreForceDrops(snapshotDir, freshDir, report, mergeOpts, yes); err != nil {
+		return false, err
+	}
 	if err := regenmerge.MergeIntoFreshTree(snapshotDir, freshDir, report, mergeOpts); err != nil {
 		return false, fmt.Errorf("merging snapshot into fresh tree: %w; snapshot preserved at %s — recover with `rm -rf %s && mv %s %s`",
 			err, snapshotDir, freshDir, snapshotDir, freshDir)
@@ -2597,10 +2607,18 @@ func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte) (
 		}
 	}
 	mode := ""
-	if novelOnly {
+	switch {
+	case forceNovelOnly:
+		mode = " (dropped templated preserves that reintroduced a fresh-generation build break)"
+	case novelOnly:
 		mode = " (cross-spec: novel-only preservation)"
 	}
 	fmt.Fprintf(os.Stderr, "Force regen merged %d preserved files / %d AddCommand calls%s\n", preserved, injected, mode)
+	if novelOnly {
+		if warning := regenmerge.FormatSkippedTemplatedHandEdits(report); warning != "" {
+			fmt.Fprint(os.Stderr, warning)
+		}
+	}
 	return report.GoMod != nil && report.GoMod.Merged, nil
 }
 
@@ -2655,6 +2673,15 @@ func synthesizeForceRegenBase(snapshotDir string, currentSpecBytes []byte, novel
 	return baseDir, cleanup
 }
 
+func snapshotPrintingPressVersionDiffers(snapshotDir string) bool {
+	manifest, err := pipeline.ReadCLIManifest(snapshotDir)
+	if err != nil {
+		return false
+	}
+	prior := strings.TrimSpace(manifest.PrintingPressVersion)
+	return prior != "" && !sameSemver(prior, version.Version)
+}
+
 func sameSemver(a, b string) bool {
 	return strings.TrimPrefix(strings.TrimSpace(a), "v") == strings.TrimPrefix(strings.TrimSpace(b), "v")
 }
@@ -2700,12 +2727,14 @@ func retidyAfterMerge(dir string) {
 }
 
 // forceRegenSpecHashMatches reports whether the snapshot's recorded spec
-// checksum matches a sha256 over the current spec bytes. Returns true when:
+// checksum matches the canonical or legacy raw checksum for the current spec
+// bytes. Returns true when:
 //   - the snapshot manifest is missing (defensive — old binary or partial
 //     state from a CLI generated before SpecChecksum was populated),
 //   - the snapshot manifest has an empty SpecChecksum (plan-generated, old
 //     format, or docs source without a stored hash),
-//   - or the snapshot checksum equals the current spec hash.
+//   - or the snapshot checksum equals the current canonical hash or either
+//     line-ending form accepted during the transition window.
 //
 // Returns false when:
 //   - the manifest exists but cannot be decoded (corrupt JSON — treat as
@@ -2715,9 +2744,9 @@ func retidyAfterMerge(dir string) {
 //     lineage differs by construction so NOVEL-only is the safe fallback),
 //   - or both sides have a checksum and they differ.
 //
-// The hash matches climanifest.go's storage convention (sha256 over the
-// raw input spec bytes, "sha256:" + hex), so a same-spec regen produces a
-// byte-identical hash and the full-merge path runs.
+// The hash matches pipeline.ComputeSpecChecksum's storage convention. Legacy
+// all-LF and all-CRLF raw hashes remain accepted for known text spec formats so
+// a same-spec cross-platform regen still takes the full-merge path.
 func forceRegenSpecHashMatches(snapshotDir string, currentSpecBytes []byte) bool {
 	manifestPath := filepath.Join(snapshotDir, pipeline.CLIManifestFilename)
 	if _, err := os.Stat(manifestPath); errors.Is(err, os.ErrNotExist) {
@@ -2734,12 +2763,7 @@ func forceRegenSpecHashMatches(snapshotDir string, currentSpecBytes []byte) bool
 	if len(currentSpecBytes) == 0 {
 		return false
 	}
-	return manifest.SpecChecksum == currentSpecChecksum(currentSpecBytes)
-}
-
-func currentSpecChecksum(specBytes []byte) string {
-	sum := sha256.Sum256(specBytes)
-	return "sha256:" + hex.EncodeToString(sum[:])
+	return pipeline.SpecChecksumMatches(manifest.SpecChecksum, currentSpecBytes, manifest.SpecFormat)
 }
 
 // snapshotForceRegen renames absOut to a sibling tempdir for use as a regen
@@ -3026,10 +3050,12 @@ func printPlanDryRun(planSpec *generator.PlanSpec, absOut, planFile string, comm
 }
 
 // loadResearchSources populates the generator's Sources, DiscoveryPages, and
-// NovelFeatures from a pipeline research directory. It returns only dogfood-
-// verified novel features in manifest form so publish validation cannot be
-// satisfied by planned-but-unbuilt absorb ideas. Silently skips if researchDir
-// is empty or data is unavailable.
+// NovelFeatures from a pipeline research directory. Scaffolding always uses
+// novel_features: novel_features_built is a post-dogfood verification field,
+// not a generate input. The return value is the verified list in manifest
+// form (when present) so publish validation cannot be satisfied by
+// planned-but-unbuilt absorb ideas. Silently skips if researchDir is empty
+// or data is unavailable.
 func loadResearchSources(gen *generator.Generator, researchDir string) []pipeline.NovelFeatureManifest {
 	if researchDir == "" {
 		return nil
@@ -3045,18 +3071,9 @@ func loadResearchSources(gen *generator.Generator, researchDir string) []pipelin
 				Stars:    s.Stars,
 			})
 		}
-		// Prefer verified (built) novel features over the aspirational list.
-		// novel_features_built is written by dogfood after validating which
-		// planned features actually survived the build. A nil pointer means
-		// dogfood hasn't run yet (fall back to planned). A non-nil pointer
-		// to an empty slice means dogfood ran and nothing survived (show nothing).
-		var novelSrc []pipeline.NovelFeature
-		if research.NovelFeaturesBuilt != nil {
-			novelSrc = *research.NovelFeaturesBuilt
-		} else {
-			novelSrc = research.NovelFeatures
-		}
-		for _, nf := range novelSrc {
+		// Reused research.json still carries the prior run's novel_features_built.
+		// Scaffold the current planned set so a reprint can drop/add/rename.
+		for _, nf := range research.NovelFeatures {
 			gen.NovelFeatures = append(gen.NovelFeatures, generator.NovelFeature{
 				Name:         nf.Name,
 				Command:      nf.Command,

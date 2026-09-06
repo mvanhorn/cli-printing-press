@@ -507,6 +507,18 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 			},
 			want: "purchase-orders list",
 		},
+		{
+			name: "snake_case resource key is kebab-cased (non-promoted)",
+			resources: map[string]spec.Resource{
+				"time_entries": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/time_entries"},
+						"get":  {Method: "GET", Path: "/time_entries/{id}"},
+					},
+				},
+			},
+			want: "time-entries list",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

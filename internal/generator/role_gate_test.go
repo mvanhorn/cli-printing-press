@@ -47,8 +47,10 @@ func TestRequiresRoleEmitsEndpointGate(t *testing.T) {
 	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	require.Contains(t, mcpSrc, "requiredRole cli.Persona")
 	require.Contains(t, mcpSrc, "cli.RequireRoleWith(nil, cfg, pathTemplate, requiredRole)")
+	require.Contains(t, mcpSrc, "c, platformSession, err := newMCPClientFromConfig(ctx, cfg)")
 	require.Contains(t, mcpSrc, "cli.PersonaAdmin")
 
+	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "./internal/cli", "./internal/mcp", "./internal/config")
 }
 
@@ -103,13 +105,16 @@ func TestRequiresRoleEmitsMCPOrchestrationGates(t *testing.T) {
 	codeOrchSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "code_orch.go")
 	require.Contains(t, codeOrchSrc, "RequiredRole cli.Persona")
 	require.Contains(t, codeOrchSrc, "cli.RequireRoleWith(nil, cfg, ep.ID, ep.RequiredRole)")
+	require.Contains(t, codeOrchSrc, "c, platformSession, err := newMCPClientFromConfig(ctx, cfg)")
 	require.Regexp(t, regexp.MustCompile(`RequiredRole:\s+cli\.PersonaAdmin`), codeOrchSrc)
 
 	intentsSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "intents.go")
 	require.Contains(t, intentsSrc, "requiredRole cli.Persona")
 	require.Contains(t, intentsSrc, "cli.RequireRoleWith(nil, cfg, ref, ep.requiredRole)")
+	require.Contains(t, intentsSrc, "c, platformSession, err := newMCPClientFromConfig(ctx, cfg)")
 	require.Contains(t, intentsSrc, "requiredRole: cli.PersonaAdmin")
 
+	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "./internal/mcp", "./internal/cli", "./internal/config")
 }
 

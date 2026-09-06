@@ -165,8 +165,8 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- if and $endpoint.UsesRawRequestBody $isReadOnly}}
 		ReadOnly: true,
 {{- end}}
-{{- if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse}}
-		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}}{{if $endpoint.UsesTextResponse}}"X-Printing-Press-Text-Response": "true",{{end}} },
+{{- if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse}}
+		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}}{{if $endpoint.UsesTextResponse}}"X-Printing-Press-Text-Response": "true",{{end}}{{if $endpoint.UsesHTMLResponse}}"X-Printing-Press-HTML-Response": "true",{{end}} },
 {{- end}}
 		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" $path}}),
 	},
@@ -201,8 +201,8 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- if and $endpoint.UsesRawRequestBody $isReadOnly}}
 		ReadOnly: true,
 {{- end}}
-{{- if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse}}
-		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}}{{if $endpoint.UsesTextResponse}}"X-Printing-Press-Text-Response": "true",{{end}} },
+{{- if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse}}
+		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}}{{if $endpoint.UsesTextResponse}}"X-Printing-Press-Text-Response": "true",{{end}}{{if $endpoint.UsesHTMLResponse}}"X-Printing-Press-HTML-Response": "true",{{end}} },
 {{- end}}
 		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" $path}}),
 	},
@@ -390,8 +390,7 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 	if err := cli.RequireRoleWith(nil, cfg, ep.ID, ep.RequiredRole); err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
-	c := newMCPClientFromConfig(cfg)
-	platformSession, err := cli.BindMCPClient(ctx, c)
+	c, platformSession, err := newMCPClientFromConfig(ctx, cfg)
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}

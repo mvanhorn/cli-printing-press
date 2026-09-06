@@ -9,11 +9,15 @@ func isAllowedDeadHelper(name string) bool {
 	case "boundCtx", // used by hand-written novel commands; unused in endpoint-only CLIs
 		"writeHarnessRefusal": // structured side-effect refusal hook for hand-written novel commands
 		return true
+	case "redirectLeavesOrigin": // shared CheckRedirect origin gate; unused when no site strips or re-stamps
+		return true
 	case "declarePlatformAnalytics", // strict analytics declaration hook for hand-written novel commands
 		"resolvePlatformWindow": // resolved-window hook for hand-written novel commands
 		return true
 	case "applyResponsePath",
 		"cloneRawObject",
+		"cursorFromNextURL",
+		"cursorTokenFromMaybeURL",
 		"deleteRawPath",
 		"emitMissingPaginationCursorWarning",
 		"emitMissingPaginationSignalWarning",
@@ -23,17 +27,24 @@ func isAllowedDeadHelper(name string) bool {
 		"extractGraphQLConnection",
 		"extractGraphQLObject",
 		"formatCLIParamValue",
+		"isFollowableNextURL",
 		"isJSONArray",
 		"nextClientSidePaginationCursor",
+		"nextCursorFromLinks",
+		"nextCursorFromTopLevelURL",
 		"nextFullPageOffsetCursor",
 		"paginatedGet",
 		"paginatedCollectionEnvelopeField",
 		"paginatedItemsEqual",
 		"paginationCursorToken",
+		"paginationLinkURL",
 		"pathParamSegmentValue",
 		"replaceDependentPathParam",
 		"replacePathParam",
 		"replaceURLIDPathParam",
+		"reportedCollectionTotal",
+		"reportedCollectionTotalAtDepth",
+		"resolvePaginatedNextCursor",
 		"resourceURLIDPathParam",
 		"responsePayloadParentAtPath",
 		"urlIDFieldName",

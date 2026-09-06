@@ -1,18 +1,36 @@
 package profiler
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"math"
 	"os"
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/vision"
 )
+
+// Tests redirect diagnostics here instead of swapping process-wide stderr,
+// which races with other packages under `go test ./...`.
+var (
+	warnMu     sync.Mutex
+	warnWriter io.Writer = os.Stderr
+)
+
+func writeProfilerWarning(format string, args ...any) {
+	warnMu.Lock()
+	w := warnWriter
+	warnMu.Unlock()
+	fmt.Fprintf(w, format, args...)
+}
 
 type DomainArchetype string
 
@@ -32,6 +50,11 @@ const (
 	ReconcileModeFlat       = "flat"
 	ReconcileModeFlatGlobal = "flat_global"
 	ReconcileModePerParent  = "per_parent"
+)
+
+const (
+	generatorSyncPageSize           = 100
+	warningPaginationUndeterminable = "pagination_undeterminable"
 )
 
 type DomainSignals struct {
@@ -85,6 +108,16 @@ func (f SyncBodyField) BodyWireName() string {
 	return f.Name
 }
 
+// SyncQueryParamDefault pairs a spec-declared query-parameter default with the
+// wire key sync must send it under. Endpoint commands bind the same `default:`
+// to their cobra flag, so a printed CLI's list command puts it on the wire;
+// carrying the pair onto the sync path keeps both surfaces addressing the same
+// slice of the API instead of letting the server pick an implicit default.
+type SyncQueryParamDefault struct {
+	Name  string
+	Value string
+}
+
 // FieldSelector describes a query param that asks sparse-response APIs to
 // include a richer set of response fields during sync.
 type FieldSelector struct {
@@ -113,7 +146,8 @@ type SyncableResource struct {
 	Method string
 	Tier   string
 	// SkipDefaultSync keeps resources callable via --resources while excluding
-	// auth-flow endpoints from generated "sync all" defaults.
+	// them from generated "sync all" defaults (auth-flow, untyped IDs, and
+	// html/binary/text responses that cannot populate the JSON store).
 	SkipDefaultSync bool
 	// IDField is the resolved primary-key field name for items returned by the
 	// list endpoint, populated from the chosen endpoint's resolved value (in
@@ -159,6 +193,9 @@ type SyncableResource struct {
 	// a capped watermark; another recognized timestamp is not an equivalent.
 	PaginationSortField string
 
+	// html, binary, and text cannot populate the JSON store, so they are
+	// excluded from default sync.
+	ResponseFormat string
 	// UsesHTMLResponse and HTMLExtract mirror the chosen list endpoint's
 	// response_format/html_extract contract so sync can normalize HTML into
 	// JSON before passing the body into the JSON page extractor.
@@ -169,6 +206,21 @@ type SyncableResource struct {
 	// this to send pagination and user-supplied params in the body for
 	// RPC-style list calls.
 	BodyFields []SyncBodyField
+
+	// QueryParamDefaults carries the list endpoint's spec-declared query-param
+	// defaults so sync seeds the same values the endpoint command's flags
+	// bind, with one exception: a status/state filter whose default is `open`
+	// is replaced by the spec's all-history enum value (`all`, else `any`)
+	// when one exists, or by Endpoint.SyncParams. Without that, a naive sync
+	// stores a default-filtered slice and reports success as if the resource
+	// were complete.
+	QueryParamDefaults []SyncQueryParamDefault
+
+	// HiddenHistoryDefaults names status/state=open filters that still reach
+	// the wire as `open` because the spec has no all-history enum value and
+	// no SyncParams overlay. Generated sync warns when such a resource stores
+	// 0 rows instead of treating the empty slice as the whole corpus.
+	HiddenHistoryDefaults []SyncQueryParamDefault
 
 	// IDWalkFilterParam names the array body field that accepts filter
 	// predicates for id-walk POST query pagination.
@@ -218,7 +270,7 @@ type SyncableResource struct {
 type DependentResource struct {
 	Name           string // child resource name, e.g. "messages"
 	ParentResource string // parent resource name, e.g. "channels"
-	ParentIDParam  string // path param name, e.g. "channel_id"
+	ParentIDParam  string // path or query param name, e.g. "channel_id" or "roomId"
 	Path           string // full path template, e.g. "/channels/{channel_id}/messages"
 	Method         string
 	Tier           string
@@ -257,6 +309,9 @@ type DependentResource struct {
 	PaginationLimitParam     string
 	PaginationPageSize       int
 
+	// ResponseFormat mirrors SyncableResource so dependent fan-out can skip
+	// html/binary/text children.
+	ResponseFormat string
 	// UsesHTMLResponse and HTMLExtract mirror SyncableResource for child sync
 	// paths.
 	UsesHTMLResponse bool
@@ -264,6 +319,13 @@ type DependentResource struct {
 
 	// BodyFields mirrors SyncableResource.BodyFields for child sync paths.
 	BodyFields []SyncBodyField
+
+	// QueryParamDefaults mirrors SyncableResource.QueryParamDefaults for child
+	// sync paths.
+	QueryParamDefaults []SyncQueryParamDefault
+
+	// HiddenHistoryDefaults mirrors SyncableResource.HiddenHistoryDefaults.
+	HiddenHistoryDefaults []SyncQueryParamDefault
 
 	// IDWalkFilterParam mirrors SyncableResource.IDWalkFilterParam.
 	IDWalkFilterParam string
@@ -525,12 +587,26 @@ func Profile(s *spec.APISpec) *APIProfile {
 				pathCallable := !strings.Contains(endpoint.Path, "{") || resolvable || endpoint.Syncable
 				requiredScope := hasRequiredScopeParams(endpoint)
 				standaloneList := pathCallable && (!requiredScope || endpoint.Syncable)
+				queryKeyParams := requiredQueryParentKeyCandidates(endpoint)
+				queryDependentCandidate := len(queryKeyParams) == 1 && !endpoint.Syncable && (!strings.Contains(endpoint.Path, "{") || resolvable) && !hasUnsatisfiedDependentScopeParams(endpoint, queryKeyParams[0])
 				addStandaloneCandidate := func() {
 					meta := metaFromEndpoint(s, resourceName, r, endpoint, s.Types, resourceNameIndex)
 					if requiredScope && !endpoint.Syncable {
 						meta.SkipDefaultSync = true
 					}
 					addSyncCandidate(resourceName, endpointName, meta)
+				}
+				trackParameterized := func(queryKeys []string) {
+					key := strings.ToUpper(endpoint.Method) + " " + endpoint.Path
+					if _, ok := parameterized[key]; ok {
+						return
+					}
+					parameterized[key] = parameterizedEntry{
+						name:           name,
+						parentName:     parentName,
+						meta:           metaFromEndpoint(s, resourceName, r, endpoint, s.Types, resourceNameIndex),
+						queryKeyParams: queryKeys,
+					}
 				}
 
 				if endpoint.Pagination != nil {
@@ -560,19 +636,19 @@ func Profile(s *spec.APISpec) *APIProfile {
 						// annotations on a child path-item flow into the override
 						// and critical-resource maps. Store raw names so
 						// detectDependentResources can snake-case downstream.
-						key := strings.ToUpper(endpoint.Method) + " " + endpoint.Path
-						if _, ok := parameterized[key]; !ok {
-							parameterized[key] = parameterizedEntry{
-								name:       name,
-								parentName: parentName,
-								meta:       metaFromEndpoint(s, resourceName, r, endpoint, s.Types, resourceNameIndex),
-							}
-						}
+						trackParameterized(nil)
+					} else if queryDependentCandidate {
+						// Child collection keyed by a required query param
+						// (GET /files?organization_id=) — same parent-child
+						// inference as a path {placeholder}.
+						trackParameterized(queryKeyParams)
 					} else if standaloneList {
 						addStandaloneCandidate()
 					} else if pathCallable && requiredScope {
 						addStandaloneCandidate()
 					}
+				} else if queryDependentCandidate {
+					trackParameterized(queryKeyParams)
 				} else if standaloneList {
 					addStandaloneCandidate()
 				} else if pathCallable && requiredScope {
@@ -708,6 +784,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 	sortDependentResources(p.DependentSyncResources, nil)
 	addUnresolvedPathTemplateCollections(syncable, parameterized, p.DependentSyncResources)
 	p.SyncableResources = sortedSyncableResources(syncable)
+	warnUndeterminablePagination(p.SyncableResources, p.DependentSyncResources)
 	classifyFlatReconcileModes(p.SyncableResources, specHasTenantScopeColumn(s))
 	// Populate reconcile metadata for each dependent resource.
 	// per_parent is safe only for a single-path-param dependent with a PK.
@@ -737,7 +814,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 		SortValue:       sortValue,
 		DateRangeParam:  mostCommon(dateRangeParams, ""),
 		ItemsKey:        mostCommon(responsePaths, ""),
-		DefaultPageSize: 100,
+		DefaultPageSize: generatorSyncPageSize,
 	}
 
 	return p
@@ -1129,6 +1206,14 @@ func hasRequiredDependentScopeParams(endpoint spec.Endpoint) bool {
 }
 
 func hasRequiredScopeParamsForSync(endpoint spec.Endpoint, allowEnumExpansion bool) bool {
+	return hasRequiredScopeParamsForSyncExcluding(endpoint, allowEnumExpansion, "")
+}
+
+func hasUnsatisfiedDependentScopeParams(endpoint spec.Endpoint, satisfiedParam string) bool {
+	return hasRequiredScopeParamsForSyncExcluding(endpoint, false, satisfiedParam)
+}
+
+func hasRequiredScopeParamsForSyncExcluding(endpoint spec.Endpoint, allowEnumExpansion bool, satisfiedParam string) bool {
 	temporalOrFormatParams := map[string]bool{
 		"since": true, "updated_after": true, "modified_since": true, "since_id": true,
 		"from": true, "to": true, "start_date": true, "end_date": true,
@@ -1141,6 +1226,9 @@ func hasRequiredScopeParamsForSync(endpoint spec.Endpoint, allowEnumExpansion bo
 		// They were historically absent from parsed endpoint params; preserve
 		// that sync classification now that OpenAPI header params are retained.
 		if loc := strings.TrimSpace(param.In); loc != "" && !strings.EqualFold(loc, "query") {
+			continue
+		}
+		if satisfiedParam != "" && strings.EqualFold(param.Name, satisfiedParam) {
 			continue
 		}
 		if param.Required && !param.Positional && !param.PathParam {
@@ -1161,6 +1249,43 @@ func hasRequiredScopeParamsForSync(endpoint spec.Endpoint, allowEnumExpansion bo
 		}
 	}
 	return false
+}
+
+func requiredQueryParentKeyCandidates(endpoint spec.Endpoint) []string {
+	var out []string
+	for _, param := range endpoint.Params {
+		if loc := strings.TrimSpace(param.In); loc != "" && !strings.EqualFold(loc, "query") {
+			continue
+		}
+		if !param.Required || param.Positional || param.PathParam || param.GlobalScope {
+			continue
+		}
+		lower := strings.ToLower(param.Name)
+		if pageSizeParamCandidates[lower] || cursorParamCandidates[lower] {
+			continue
+		}
+		if !looksLikeParentKeyParam(param.Name) {
+			continue
+		}
+		out = append(out, param.Name)
+	}
+	return out
+}
+
+func looksLikeParentKeyParam(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if strings.HasSuffix(name, "_id") || strings.HasSuffix(name, "Id") || strings.HasSuffix(name, "ID") {
+		return true
+	}
+	switch strings.ToLower(name) {
+	case "tenant", "workspace", "organization", "organisation", "org", "account", "region":
+		return true
+	default:
+		return false
+	}
 }
 
 // samplerPathSegments mark endpoints that return a non-deterministic sample
@@ -1823,6 +1948,11 @@ func dependentPathResourceName(dep DependentResource) string {
 	return spec.ToSnakeCase(strings.Join(segments, "_"))
 }
 
+func metaSkipDependentSyncFanout(meta syncableMeta) bool {
+	format := strings.ToLower(strings.TrimSpace(meta.ResponseFormat))
+	return format == spec.ResponseFormatBinary || format == spec.ResponseFormatText
+}
+
 func addUnresolvedPathTemplateCollections(syncable map[string]syncableMeta, parameterized map[string]parameterizedEntry, deps []DependentResource) {
 	dependentPaths := make(map[string]struct{}, len(deps))
 	for _, dep := range deps {
@@ -1833,7 +1963,7 @@ func addUnresolvedPathTemplateCollections(syncable map[string]syncableMeta, para
 		if _, ok := dependentPaths[entry.meta.Path]; ok {
 			continue
 		}
-		if !isPathTemplateCollection(entry.meta.Path) {
+		if !isPathTemplateCollection(entry.meta.Path) && len(entry.queryKeyParams) == 0 {
 			continue
 		}
 		meta := entry.meta
@@ -1879,6 +2009,9 @@ func sortDependentResources(deps []DependentResource, knownDepths map[string]int
 }
 
 func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[string]bool, syncable map[string]syncableMeta, shardedSubResources spec.SubResourceShards) (DependentResource, bool) {
+	if metaSkipDependentSyncFanout(entry.meta) {
+		return DependentResource{}, false
+	}
 	ctx, ok := dependentPathContext(entry, knownParents, shardedSubResources)
 	if !ok {
 		return DependentResource{}, false
@@ -1904,9 +2037,12 @@ func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[strin
 		PaginationNextCursorPath: entry.meta.PaginationNextCursorPath,
 		PaginationLimitParam:     entry.meta.PaginationLimitParam,
 		PaginationPageSize:       entry.meta.PaginationPageSize,
+		ResponseFormat:           entry.meta.ResponseFormat,
 		UsesHTMLResponse:         entry.meta.UsesHTMLResponse,
 		HTMLExtract:              entry.meta.HTMLExtract,
 		BodyFields:               entry.meta.BodyFields,
+		QueryParamDefaults:       entry.meta.QueryParamDefaults,
+		HiddenHistoryDefaults:    entry.meta.HiddenHistoryDefaults,
 		IDWalkFilterParam:        entry.meta.IDWalkFilterParam,
 		IDWalkLimitParam:         entry.meta.IDWalkLimitParam,
 		IDWalkPageSize:           entry.meta.IDWalkPageSize,
@@ -1935,7 +2071,7 @@ type dependentContext struct {
 func dependentPathContext(entry parameterizedEntry, knownParents map[string]bool, shardedSubResources spec.SubResourceShards) (dependentContext, bool) {
 	firstParam, ok := firstPathParam(entry.meta.Path)
 	if !ok {
-		return dependentContext{}, false
+		return queryParamDependentContext(entry, knownParents)
 	}
 
 	segments := pathSegments(entry.meta.Path)
@@ -1981,6 +2117,29 @@ func dependentPathContext(entry parameterizedEntry, knownParents map[string]bool
 		parentResource:    parentResource,
 		parentPathSegment: parentSegment,
 		firstParam:        firstParam,
+	}, true
+}
+
+func queryParamDependentContext(entry parameterizedEntry, knownParents map[string]bool) (dependentContext, bool) {
+	if len(entry.queryKeyParams) != 1 {
+		return dependentContext{}, false
+	}
+	paramName := entry.queryKeyParams[0]
+	parentResource := resolveParentResourceName(entry.parentName, paramName, knownParents)
+	if parentResource == "" {
+		return dependentContext{}, false
+	}
+	parentSegment := parentResource
+	if entry.parentName != "" {
+		if candidate := spec.ToSnakeCase(entry.parentName); knownParents[candidate] {
+			parentSegment = candidate
+		}
+	}
+	return dependentContext{
+		name:              spec.ToSnakeCase(entry.name),
+		parentResource:    parentResource,
+		parentPathSegment: parentSegment,
+		firstParam:        paramName,
 	}, true
 }
 
@@ -2079,7 +2238,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 			}
 			parent := strings.ToLower(strings.TrimSpace(e.Walker.Parent))
 			if _, ok := syncable[parent]; !ok {
-				fmt.Fprintf(os.Stderr,
+				writeProfilerWarning(
 					"warning: walker on %s.%s: parent %q is not a syncable resource; ignoring\n",
 					resourceName, endpointName, e.Walker.Parent)
 				continue
@@ -2093,12 +2252,12 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 						keyParam = p
 					}
 				case 0:
-					fmt.Fprintf(os.Stderr,
+					writeProfilerWarning(
 						"warning: walker on %s.%s: path %q has no {placeholder}; declare key_param explicitly\n",
 						resourceName, endpointName, e.Path)
 					continue
 				default:
-					fmt.Fprintf(os.Stderr,
+					writeProfilerWarning(
 						"warning: walker on %s.%s: path %q has %d placeholders; declare key_param explicitly\n",
 						resourceName, endpointName, e.Path, placeholders)
 					continue
@@ -2121,6 +2280,9 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				continue
 			}
 			meta := metaFromEndpoint(s, resourceName, r, e, types, resourceNameIndex)
+			if metaSkipDependentSyncFanout(meta) {
+				continue
+			}
 			deps = append(deps, DependentResource{
 				Name:                     spec.ToSnakeCase(resourceName),
 				ParentResource:           parent,
@@ -2140,9 +2302,12 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				PaginationNextCursorPath: meta.PaginationNextCursorPath,
 				PaginationLimitParam:     meta.PaginationLimitParam,
 				PaginationPageSize:       meta.PaginationPageSize,
+				ResponseFormat:           meta.ResponseFormat,
 				UsesHTMLResponse:         meta.UsesHTMLResponse,
 				HTMLExtract:              meta.HTMLExtract,
 				BodyFields:               meta.BodyFields,
+				QueryParamDefaults:       meta.QueryParamDefaults,
+				HiddenHistoryDefaults:    meta.HiddenHistoryDefaults,
 				IDWalkFilterParam:        meta.IDWalkFilterParam,
 				IDWalkLimitParam:         meta.IDWalkLimitParam,
 				IDWalkPageSize:           meta.IDWalkPageSize,
@@ -2165,12 +2330,9 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 
 func dependentPathParams(path, parentResource, keyParam, keyField string) []DependentPathParam {
 	placeholders := orderedPathPlaceholders(path)
-	if len(placeholders) == 0 {
-		return nil
-	}
-
 	fields := dependentPathParamFields(path, parentResource)
-	params := make([]DependentPathParam, 0, len(placeholders))
+	params := make([]DependentPathParam, 0, len(placeholders)+1)
+	seen := make(map[string]bool, len(placeholders)+1)
 	for _, placeholder := range placeholders {
 		field := fields[placeholder]
 		if placeholder == keyParam && keyField != "" {
@@ -2181,6 +2343,20 @@ func dependentPathParams(path, parentResource, keyParam, keyField string) []Depe
 		}
 		params = append(params, DependentPathParam{
 			Param: placeholder,
+			Field: field,
+		})
+		seen[placeholder] = true
+	}
+	// key_param that is not a {placeholder} is a query (or matrix) parent
+	// key. Keep it on the dependent so generated sync can put the value
+	// into the request params map instead of dropping it.
+	if keyParam != "" && !seen[keyParam] {
+		field := "id"
+		if keyField != "" {
+			field = spec.ToSnakeCase(keyField)
+		}
+		params = append(params, DependentPathParam{
+			Param: keyParam,
 			Field: field,
 		})
 	}
@@ -2452,9 +2628,12 @@ type syncableMeta struct {
 	PaginationSortParam      string
 	PaginationSortValue      string
 	PaginationSortField      string
+	ResponseFormat           string
 	UsesHTMLResponse         bool
 	HTMLExtract              *spec.HTMLExtract
 	BodyFields               []SyncBodyField
+	QueryParamDefaults       []SyncQueryParamDefault
+	HiddenHistoryDefaults    []SyncQueryParamDefault
 	IDWalkFilterParam        string
 	IDWalkLimitParam         string
 	IDWalkPageSize           int
@@ -2478,9 +2657,10 @@ type syncableCandidate struct {
 // empty for top-level resources whose paths happen to be parameterized;
 // detectDependentResources then falls back to the path-param heuristic.
 type parameterizedEntry struct {
-	name       string
-	parentName string
-	meta       syncableMeta
+	name           string
+	parentName     string
+	meta           syncableMeta
+	queryKeyParams []string
 }
 
 // metaFromEndpoint extracts the IDField and Critical fields a parser populated
@@ -2498,11 +2678,19 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		nextCursorPath = strings.TrimSpace(e.Pagination.NextCursorPath)
 	}
 	hydratePath, hydrateIDParam := scalarIDHydrationTarget(s, resourceName, e, types)
+	queryParamSeed := syncQueryParamSeedFromEndpoint(e, syncOwnedParams{
+		cursor:    paginationCursorParam,
+		limit:     paginationLimitParam,
+		idWalk:    idWalkLimitParam,
+		since:     sinceParam,
+		sort:      paginationSortParam,
+		dateRange: syncDateRangeParamNames,
+	})
 	return syncableMeta{
 		Path:                     e.Path,
 		Method:                   strings.ToUpper(e.Method),
 		Tier:                     s.EffectiveTier(resource, e),
-		SkipDefaultSync:          isAuthTaggedEndpoint(e) || hasTypedResponseWithoutRuntimeID(resourceName, e, types),
+		SkipDefaultSync:          isAuthTaggedEndpoint(e) || hasTypedResponseWithoutRuntimeID(resourceName, e, types) || e.LacksJSONSyncEnumeration(),
 		IDField:                  e.IDField,
 		Critical:                 e.Critical,
 		SinceParam:               sinceParam,
@@ -2516,9 +2704,12 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		PaginationSortParam:      paginationSortParam,
 		PaginationSortValue:      paginationSortValue,
 		PaginationSortField:      paginationSortField,
+		ResponseFormat:           e.EffectiveResponseFormat(),
 		UsesHTMLResponse:         e.UsesHTMLResponse(),
 		HTMLExtract:              e.HTMLExtract,
 		BodyFields:               syncBodyFieldsFromEndpoint(e),
+		QueryParamDefaults:       queryParamSeed.Defaults,
+		HiddenHistoryDefaults:    queryParamSeed.HiddenHistory,
 		IDWalkFilterParam:        idWalkFilterParam,
 		IDWalkLimitParam:         idWalkLimitParam,
 		IDWalkPageSize:           idWalkPageSize,
@@ -2813,6 +3004,225 @@ func syncBodyFieldsFromEndpoint(endpoint spec.Endpoint) []SyncBodyField {
 	return fields
 }
 
+// syncOwnedParams names the query keys the generated syncer assigns itself.
+// Sync decides per run whether to send each one, and several are assigned only
+// inside a conditional: the since filter and its companion sort go on the wire
+// only when an incremental watermark applies, the date range only when the
+// operator passed one, and the paging keys only when the resource paginates.
+// A spec `default:` seeded into one of these keys would survive precisely when
+// sync deliberately chose not to send it, turning "full sync" into a filtered
+// or re-ordered walk. Seeding must therefore skip them and let sync stay the
+// sole author of its own request state.
+type syncOwnedParams struct {
+	cursor    string
+	limit     string
+	idWalk    string
+	since     string
+	sort      string
+	dateRange []string
+}
+
+// keys flattens the reserved names to the lowercased form the seeding filter
+// compares against.
+func (o syncOwnedParams) keys() map[string]struct{} {
+	names := []string{o.cursor, o.limit, o.idWalk, o.since, o.sort}
+	names = append(names, o.dateRange...)
+	out := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if key := strings.ToLower(strings.TrimSpace(name)); key != "" {
+			out[key] = struct{}{}
+		}
+	}
+	return out
+}
+
+// syncDateRangeParamNames lists the spellings the profiler recognizes as the
+// date-range filter, kept beside the detection that populates DateRangeParam so
+// the two cannot drift.
+var syncDateRangeParamNames = []string{"dates", "date_range", "daterange"}
+
+type syncQueryParamSeed struct {
+	Defaults      []SyncQueryParamDefault
+	HiddenHistory []SyncQueryParamDefault
+}
+
+// syncQueryParamDefaultsFromEndpoint collects the query params this list
+// endpoint declares a `default:` for, rendered as the strings sync must put on
+// the wire. Header, path, and positional params are excluded because they are
+// not query keys, and every key in syncOwned is excluded because sync assigns
+// it itself: seeding one would fight the page loop, or worse, survive the
+// branch where sync deliberately withheld it. History-hiding status/state=open
+// defaults are replaced by the spec's all-history enum value when one exists;
+// Endpoint.SyncParams overlay last so a spec can opt into (or keep) a slice.
+func syncQueryParamDefaultsFromEndpoint(endpoint spec.Endpoint, syncOwned syncOwnedParams) []SyncQueryParamDefault {
+	return syncQueryParamSeedFromEndpoint(endpoint, syncOwned).Defaults
+}
+
+func syncQueryParamSeedFromEndpoint(endpoint spec.Endpoint, syncOwned syncOwnedParams) syncQueryParamSeed {
+	reserved := syncOwned.keys()
+	paramsByKey := map[string]spec.Param{}
+	var out []SyncQueryParamDefault
+	seen := map[string]struct{}{}
+	for _, param := range endpoint.Params {
+		if param.Positional || param.PathParam {
+			continue
+		}
+		if location := strings.TrimSpace(param.In); location != "" && !strings.EqualFold(location, "query") {
+			continue
+		}
+		wireName := param.WireName()
+		if wireName == "" {
+			continue
+		}
+		key := strings.ToLower(wireName)
+		if _, owned := reserved[key]; owned {
+			continue
+		}
+		if _, owned := reserved[strings.ToLower(param.Name)]; owned {
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		paramsByKey[key] = param
+		value, ok := syncQueryParamDefaultValue(param)
+		if !ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, SyncQueryParamDefault{Name: wireName, Value: value})
+	}
+
+	explicit := map[string]struct{}{}
+	for name := range endpoint.SyncParams {
+		if key := strings.ToLower(strings.TrimSpace(name)); key != "" {
+			explicit[key] = struct{}{}
+		}
+	}
+
+	var hidden []SyncQueryParamDefault
+	for i := range out {
+		key := strings.ToLower(out[i].Name)
+		if _, ok := explicit[key]; ok {
+			continue
+		}
+		param := paramsByKey[key]
+		if !syncHistoryHidingFilter(param, out[i].Value) {
+			continue
+		}
+		if widened, ok := syncHistoryWidenValue(param.Enum); ok {
+			out[i].Value = widened
+			continue
+		}
+		hidden = append(hidden, out[i])
+	}
+
+	out = overlaySyncParams(out, endpoint.SyncParams, reserved)
+	return syncQueryParamSeed{Defaults: out, HiddenHistory: hidden}
+}
+
+func overlaySyncParams(defaults []SyncQueryParamDefault, syncParams map[string]string, reserved map[string]struct{}) []SyncQueryParamDefault {
+	if len(syncParams) == 0 {
+		return defaults
+	}
+	index := map[string]int{}
+	for i, item := range defaults {
+		index[strings.ToLower(item.Name)] = i
+	}
+	names := make([]string, 0, len(syncParams))
+	for name := range syncParams {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		wireName := strings.TrimSpace(name)
+		value := strings.TrimSpace(syncParams[name])
+		if wireName == "" || value == "" {
+			continue
+		}
+		key := strings.ToLower(wireName)
+		if _, owned := reserved[key]; owned {
+			continue
+		}
+		if i, ok := index[key]; ok {
+			defaults[i].Value = value
+			continue
+		}
+		index[key] = len(defaults)
+		defaults = append(defaults, SyncQueryParamDefault{Name: wireName, Value: value})
+	}
+	return defaults
+}
+
+func syncHistoryHidingFilter(param spec.Param, defaultValue string) bool {
+	if !syncHistoryHidingParamName(param.WireName()) && !syncHistoryHidingParamName(param.Name) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(defaultValue), "open")
+}
+
+func syncHistoryHidingParamName(name string) bool {
+	normalized := spec.ToSnakeCase(strings.TrimSpace(name))
+	return normalized == "status" || normalized == "state" ||
+		strings.HasSuffix(normalized, "_status") || strings.HasSuffix(normalized, "_state")
+}
+
+func syncHistoryWidenValue(enum []string) (string, bool) {
+	var anyValue string
+	for _, raw := range enum {
+		value := strings.TrimSpace(raw)
+		switch strings.ToLower(value) {
+		case "all":
+			return value, true
+		case "any":
+			if anyValue == "" {
+				anyValue = value
+			}
+		}
+	}
+	if anyValue != "" {
+		return anyValue, true
+	}
+	return "", false
+}
+
+// syncQueryParamDefaultValue renders a param default as the query-string value
+// a request should carry. Formatting mirrors the generated formatCLIParamValue
+// so the sync path and the endpoint command put identical bytes on the wire.
+func syncQueryParamDefaultValue(param spec.Param) (string, bool) {
+	switch value := param.Default.(type) {
+	case nil:
+		return "", false
+	case string:
+		if value == "" {
+			return "", false
+		}
+		return value, true
+	case bool:
+		return strconv.FormatBool(value), true
+	case float64:
+		return strconv.FormatFloat(value, 'f', -1, 64), true
+	case float32:
+		return strconv.FormatFloat(float64(value), 'f', -1, 64), true
+	case int:
+		return strconv.Itoa(value), true
+	case int64:
+		return strconv.FormatInt(value, 10), true
+	case map[string]any, []any:
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return "", false
+		}
+		return string(encoded), true
+	default:
+		rendered := fmt.Sprintf("%v", value)
+		if rendered == "" {
+			return "", false
+		}
+		return rendered, true
+	}
+}
+
 func syncBodyDefault(param spec.Param) (any, bool) {
 	if param.Default != nil {
 		return param.Default, true
@@ -2848,7 +3258,7 @@ func detectIDWalkParams(endpoint spec.Endpoint) (string, string, int) {
 	if !hasLimit || filterParam == "" {
 		return "", "", 0
 	}
-	pageSize := 100
+	pageSize := generatorSyncPageSize
 	if defaultSize, ok := paginationLimitDefault(endpoint, resolvedLimitParam); ok {
 		pageSize = defaultSize
 	}
@@ -2962,18 +3372,64 @@ func syncPaginationDefaultsFromEndpoint(endpoint spec.Endpoint) (string, string,
 		(cursorType == "page" || cursorType == "offset") {
 		cursorType = inferredType
 	}
-	pageSize := 100
-	if defaultSize, ok := paginationLimitDefault(endpoint, limitParam); ok {
+	return cursorParam, cursorType, limitParam, syncPageSizeFromEndpoint(endpoint, cursorParam, limitParam)
+}
+
+// A spec-declared page-size default is the server's no-param fallback, not a
+// client request size. Copying it onto a cursorless resource caps the first
+// (and only) page at that conservative number.
+func syncPageSizeFromEndpoint(endpoint spec.Endpoint, cursorParam, limitParam string) int {
+	maxSize, hasMax := paginationLimitMaximum(endpoint, limitParam)
+	defaultSize, hasDefault := paginationLimitDefault(endpoint, limitParam)
+
+	if strings.TrimSpace(cursorParam) == "" {
+		if hasMax {
+			return maxSize
+		}
+		if hasDefault && defaultSize > generatorSyncPageSize {
+			return defaultSize
+		}
+		return generatorSyncPageSize
+	}
+
+	pageSize := generatorSyncPageSize
+	if hasDefault {
 		pageSize = defaultSize
 	}
 	// Clamp to the limit param's declared maximum so sync never requests a
 	// page size the API rejects with a validation error. An API-declared cap
 	// always wins over the default (e.g. Granola's public API caps page_size
 	// at 30, and a spec may declare a maximum without any default).
-	if maxSize, ok := paginationLimitMaximum(endpoint, limitParam); ok && pageSize > maxSize {
+	if hasMax && pageSize > maxSize {
 		pageSize = maxSize
 	}
-	return cursorParam, cursorType, limitParam, pageSize
+	return pageSize
+}
+
+func isLimitWithoutCursor(cursorParam, limitParam string) bool {
+	return strings.TrimSpace(limitParam) != "" && strings.TrimSpace(cursorParam) == ""
+}
+
+func warnUndeterminablePagination(resources []SyncableResource, deps []DependentResource) {
+	for _, resource := range resources {
+		warnLimitWithoutCursor(resource.Name, resource.PaginationCursorParam, resource.PaginationLimitParam)
+	}
+	for _, dep := range deps {
+		name := dep.Name
+		if dep.ParentResource != "" {
+			name = dep.ParentResource + "/" + dep.Name
+		}
+		warnLimitWithoutCursor(name, dep.PaginationCursorParam, dep.PaginationLimitParam)
+	}
+}
+
+func warnLimitWithoutCursor(resourceName, cursorParam, limitParam string) {
+	if !isLimitWithoutCursor(cursorParam, limitParam) {
+		return
+	}
+	writeProfilerWarning(
+		"warning: %s: resource %q declares page-size parameter %q without a cursor, page, or offset parameter; sync cannot page beyond the first request\n",
+		warningPaginationUndeterminable, resourceName, limitParam)
 }
 
 func inferPaginationParamsFromEndpoint(endpoint spec.Endpoint) (string, string) {
@@ -3562,9 +4018,12 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			PaginationSortParam:      meta.PaginationSortParam,
 			PaginationSortValue:      meta.PaginationSortValue,
 			PaginationSortField:      meta.PaginationSortField,
+			ResponseFormat:           meta.ResponseFormat,
 			UsesHTMLResponse:         meta.UsesHTMLResponse,
 			HTMLExtract:              meta.HTMLExtract,
 			BodyFields:               meta.BodyFields,
+			QueryParamDefaults:       meta.QueryParamDefaults,
+			HiddenHistoryDefaults:    meta.HiddenHistoryDefaults,
 			IDWalkFilterParam:        meta.IDWalkFilterParam,
 			IDWalkLimitParam:         meta.IDWalkLimitParam,
 			IDWalkPageSize:           meta.IDWalkPageSize,

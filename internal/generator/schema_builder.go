@@ -27,6 +27,10 @@ type TableDef struct {
 
 	JSONOnlyFallback    bool
 	OriginalColumnCount int
+
+	// Fingerprint storage is only for typed responses with no identity
+	// field. Unflagged resources still fail ExtractResourceID as today.
+	ParameterKeyed bool
 }
 
 type ColumnDef struct {
@@ -34,7 +38,18 @@ type ColumnDef struct {
 	Type       string
 	PrimaryKey bool
 	NotNull    bool
+	// Generated marks a SQLite generated column. Writers must omit it from
+	// INSERT/UPDATE; the engine computes it from other columns on read.
+	Generated bool
 }
+
+const (
+	storeBareIDColumn = "bare_id"
+	// VIRTUAL so existing databases can ADD COLUMN on open. SQLite rejects
+	// ALTER TABLE ADD of a STORED generated column; the matching index
+	// materializes the value for lookups.
+	storeBareIDType = `TEXT GENERATED ALWAYS AS (substr(id, 1, coalesce(nullif(instr(id, char(0)), 0) - 1, length(id)))) VIRTUAL`
+)
 
 type IndexDef struct {
 	Name      string
@@ -121,9 +136,10 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 		tableName := toSnakeCase(name)
 
 		table := TableDef{
-			Name:     tableName,
-			Resource: name,
-			Columns:  append([]ColumnDef(nil), baseTableColumns...),
+			Name:           tableName,
+			Resource:       name,
+			Columns:        append([]ColumnDef(nil), baseTableColumns...),
+			ParameterKeyed: resourceIsParameterKeyed(name, resource, fields),
 		}
 
 		if gravity >= 2 {
@@ -201,6 +217,7 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 				effectiveName = spec.ShardedSubResourceTableName(name, subName)
 			}
 			subTable := buildSubResourceTable(effectiveName, subResource, tableName)
+			subTable.ParameterKeyed = resourceIsParameterKeyed(effectiveName, subResource, collectResponseFields(s, subResource))
 			tables = append(tables, subTable)
 		}
 	}
@@ -236,6 +253,46 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 	})
 
 	return tables
+}
+
+func resourceIsParameterKeyed(name string, resource spec.Resource, fields []spec.TypeField) bool {
+	for _, endpoint := range resource.Endpoints {
+		if strings.TrimSpace(endpoint.IDField) != "" {
+			return false
+		}
+	}
+	if len(fields) == 0 {
+		return false
+	}
+	return !responseFieldsHaveStoreIdentity(name, fields)
+}
+
+func responseFieldsHaveStoreIdentity(resourceName string, fields []spec.TypeField) bool {
+	names := make(map[string]struct{}, len(fields)*2)
+	for _, field := range fields {
+		names[strings.ToLower(strings.TrimSpace(field.Name))] = struct{}{}
+		names[strings.ToLower(toSnakeCase(field.Name))] = struct{}{}
+	}
+	for _, key := range []string{"id", "gid", "sid", "uid", "uuid", "guid", "api_id", "name", "slug", "key", "code"} {
+		if _, ok := names[key]; ok {
+			return true
+		}
+	}
+	base := strings.ToLower(toSnakeCase(strings.TrimSpace(resourceName)))
+	bases := []string{base}
+	if strings.HasSuffix(base, "ies") && len(base) > 3 {
+		bases = append(bases, base[:len(base)-3]+"y")
+	} else if strings.HasSuffix(base, "s") && len(base) > 1 {
+		bases = append(bases, strings.TrimSuffix(base, "s"))
+	}
+	for _, stem := range bases {
+		for _, suffix := range []string{"_id", "_code", "_key", "_slug"} {
+			if _, ok := names[stem+suffix]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func reservedStoreObjectNames(s *spec.APISpec) map[string]struct{} {
@@ -471,7 +528,7 @@ func hasTypeField(fields []spec.TypeField, name string) bool {
 // parent_id column between id and data.
 func buildSubResourceTable(name string, r spec.Resource, parentTable string) TableDef {
 	tableName := toSnakeCase(name)
-	parentCol := parentTable + "_id"
+	parentCol := parentFKColumnName(parentTable)
 
 	columns := make([]ColumnDef, 0, len(baseTableColumns)+1)
 	columns = append(columns, baseTableColumns[0]) // id
@@ -511,4 +568,10 @@ func sqlStringLiteral(s string) string {
 // toSnakeCase aliases spec.ToSnakeCase; shared so profiler/schema agree.
 func toSnakeCase(s string) string {
 	return spec.ToSnakeCase(s)
+}
+
+// Hyphenated parent resource names must produce the same typed FK column
+// that dependent sync injects; both sides call this.
+func parentFKColumnName(parentTable string) string {
+	return strings.ReplaceAll(parentTable, "-", "_") + "_id"
 }

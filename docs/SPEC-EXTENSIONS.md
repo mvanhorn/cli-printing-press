@@ -56,6 +56,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-pp-mutation` | operation | `Endpoint.Mutation` | No |
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
+| `x-sync-params` | operation | `Endpoint.SyncParams` | No |
 | `x-pp-dispatch-param` | parameter | `Param.DispatchParam` | No |
 | `x-pp-tenant-scope-column` | path item | `Endpoint.TenantScopeColumn` | No |
 | `x-pp-membership-field` | path item | `Endpoint.MembershipField` | No |
@@ -276,9 +277,10 @@ Rules:
 - `"auto"` selects the header-driven adaptive limiter so the CLI paces itself
   to the server's `X-Ratelimit-*` headers with no hardcoded ceiling. A numeric
   value (e.g. `2`) pins a fixed requests-per-second ceiling.
-- When absent, the legacy provenance default applies (2 for sniffed specs, else
-  0 = disabled). This only sets the default; the generated `--rate-limit` flag
-  still overrides it at runtime.
+- When absent, the generated `--rate-limit` default is `client.RateLimitAuto`
+  (the same as `"auto"`), for both sniffed and documented specs. This only
+  sets the default; the generated `--rate-limit` flag still overrides it at
+  runtime.
 
 Example:
 
@@ -1355,22 +1357,42 @@ Parsed field: `Endpoint.IDField`
 
 Rules:
 - Optional.
-- Must be a string.
+- Must be a string. A dotted path (`entityInfo.entityId`) is stored verbatim
+  and walked at runtime by `LookupFieldValue`; it is not limited to a
+  single top-level key. A `+`-separated list (`date+model_permaslug`) is a
+  composite identity: generated `ExtractResourceID` joins the part values
+  with `+` at storage time. Date-shaped parts are allowed inside a
+  composite; a solo date field is not, because `CanonicalResourceID`
+  rejects ISO-date values.
 - Leading and trailing whitespace is trimmed.
 - Non-string values emit a warning and are ignored.
 - A non-empty `x-resource-id` wins over every automatic response-schema
   fallback.
 - An empty or missing value falls through to the parser's automatic
   `resolveIDFieldFromResponseSchema` chain: bare `id`; then a resource-derived
-  singular key ending in `_id`, `_uuid`, or `_guid` (matched through
+  singular key ending in `_id`, `_uuid`, `_guid`, or `_uid` (matched through
   snake-case normalization, so camelCase and PascalCase spellings such as
   `widgetId` are preserved when emitted); then vendor identifier keys `gid`,
-  `sid`, `uid`, `uuid`, and `guid`; then URL-shaped identifier keys `uri`,
-  `self`, `selfLink`, `href`, and `url`; then `name`; then the first plausible
-  required scalar field. URL-shaped keys qualify only when the field schema is a
-  plausible ID and either the field is required or its name, title, description,
-  or format carries an identifier hint; an optional generic `url` therefore
-  falls through to `name`.
+  `sid`, `uid`, `uuid`, and `guid`; then a sole remaining `<stem>_uid` /
+  camelCase `stemUid` field whose stem is the resource's own collection noun
+  (so `alertUid` matches `account-alerts-open`, while a foreign `accountUid`
+  on `/sites` falls through; two own-stem spellings stay ambiguous); then
+  URL-shaped
+  identifier keys `uri`, `self`, `selfLink`, `href`, and `url`; then `name`;
+  then the first solo-usable required scalar. A date-shaped required field
+  (OpenAPI `format: date` / `date-time`, a date-like name such as `date` /
+  `created_at`, or an ISO-date example) is never selected as a solo IDField:
+  if later required identity fields exist (string or numeric, excluding
+  mutable/metric names such as `status` or `total_tokens`), they are joined
+  with `+` as a composite identity; otherwise IDField stays empty so runtime
+  fallbacks apply. Generated `ExtractResourceID` joins part *values* with `+`
+  after escaping `\` and `+` inside each part so distinct tuples cannot
+  collide. Date-shaped parts are allowed inside a
+  composite; a solo date field is not, because `CanonicalResourceID`
+  rejects ISO-date values. URL-shaped keys qualify only
+  when the field schema is a plausible ID and either the field is required or
+  its name, title, description, or format carries an identifier hint; an
+  optional generic `url` therefore falls through to `name`.
 - URL-shaped keys intentionally trail id-shaped keys, so APIs that expose both
   `id` and `self` keep the compact primary key.
 - Qualified URL-shaped keys intentionally win over display `name` when no
@@ -1387,6 +1409,38 @@ paths:
     x-resource-id: widget_uid
     get:
       operationId: listWidgets
+      responses:
+        "200":
+          description: OK
+```
+
+Nested identifiers use the same extension with a dotted path. Generated
+`LookupFieldValue` walks each segment with snake/camel/Pascal spellings and
+a trailing-underscore variant, so `entityInfo.entityId` reaches a payload
+shaped like `{"entityInfo":{"entityId":"..."}}` without a hand-written
+override:
+
+```yaml
+paths:
+  /entities:
+    x-resource-id: entityInfo.entityId
+    get:
+      operationId: listEntities
+      responses:
+        "200":
+          description: OK
+```
+
+Composite identities use the same extension with `+`-separated field names.
+Generated extraction joins the part values with `+` so a date-shaped column
+can participate in the row key without becoming a solo ID:
+
+```yaml
+paths:
+  /datasets/rankings-daily:
+    x-resource-id: date+model_permaslug
+    get:
+      operationId: listRankingsDaily
       responses:
         "200":
           description: OK
@@ -1475,19 +1529,24 @@ paths:
 
 ### `x-pp-mutation`
 
-Marks an operation as mutating even when its HTTP method is normally treated as
-read-only, such as a GET action that starts, stops, restarts, deploys, or
-otherwise changes remote state.
+Overrides the generator's read/write classification when the HTTP method is
+not enough. `true` marks a GET action as state-changing (start, stop, restart,
+deploy). `false` marks a POST (or other non-GET) endpoint as a read so the
+generated command prints the response body instead of the mutation
+acknowledgment envelope. Unset RPC-over-GET operations without a read token
+fail closed (not `mcp:read-only`).
 
 Parsed field: `Endpoint.Mutation`
 
 Rules:
 - Optional.
-- Defaults to `false`.
+- Unset means classify from the HTTP verb, operation name, path shape, and body shape. RPC-over-GET without a read signal is a write.
 - Must be a native boolean.
 - Applies only at the operation level.
-- When `true`, the generator classifies the endpoint as a mutation before
-  applying HTTP-verb and operation-name fallbacks.
+- When set, the generator uses this value before HTTP-verb and operation-name
+  fallbacks. Do not infer reads from filter-shaped parameter names alone;
+  use this flag or a read-shaped operation name (`search`, `list`, `query`).
+- Internal YAML uses the same boolean as `mutation:`.
 
 Example:
 
@@ -1500,6 +1559,13 @@ paths:
       responses:
         "204":
           description: Restarted
+  /sets/items:
+    post:
+      operationId: projectItems
+      x-pp-mutation: false
+      responses:
+        "200":
+          description: Matched rows
 ```
 
 ### `x-tier`
@@ -1812,11 +1878,14 @@ Rules:
 - `key_field` (string, optional): the field to extract from each parent
   record for substitution into the child path. Defaults to the parent's
   primary key. Set this when the child path needs a non-PK field.
-- `key_param` (string, optional): the placeholder name in the child path
-  that receives the extracted value. Defaults to the first (and only)
-  `{placeholder}` in the child path when there is exactly one. **Required
-  explicitly when the child path has 0 or 2+ placeholders** — the
-  single-placeholder default would otherwise pick the wrong slot (or no
+- `key_param` (string, optional): the child request slot that receives the
+  extracted value. When that name is a `{placeholder}` in the child path,
+  generated sync substitutes it into the URL. When it is not — a query
+  parameter such as `GET /messages?roomId=` — generated sync writes the
+  parent-row value into the request `params` map. Defaults to the first
+  (and only) `{placeholder}` in the child path when there is exactly one.
+  **Required explicitly when the child path has 0 or 2+ placeholders** —
+  the single-placeholder default would otherwise pick the wrong slot (or no
   slot at all). The generator warns and drops the walker when it's ambiguous
   and `key_param` is missing.
 - Walker-emitted dependents flow through the same `syncDependentResource`
@@ -1848,6 +1917,73 @@ paths:
           in: path
           required: true
           schema: {type: string}
+      responses:
+        "200": {description: ok}
+  /standings:
+    get:
+      summary: List standings for a game (query-param parent key)
+      x-pp-sync-walker:
+        parent: games
+        key_field: game_key
+        key_param: gameId
+      parameters:
+        - name: gameId
+          in: query
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+```
+
+### `x-sync-params`
+
+Query parameters applied **only** during generated sync. List/get endpoint
+commands keep the API's documented defaults; sync uses these values so a
+naive sync does not treat a default-filtered slice (`status=open`,
+`state=open`) as the complete resource.
+
+Parsed field: `Endpoint.SyncParams`
+
+Rules:
+- Optional. Absent the field, generated sync still auto-widens a
+  `status`/`state` query param whose spec `default:` is `open` when the
+  param's enum includes `all` (preferred) or `any`. That is the GitHub
+  issues / Alpaca orders / Shopify orders idiom. Other defaults (tenant
+  scope, sort, `include_*`) are not widened.
+- Operation-level only.
+- Must be an object mapping parameter names to string values. Non-string
+  values are stringified. Empty names or values are skipped. Malformed
+  values warn and are ignored rather than failing the parse.
+- Overlay order: spec `default:` (with history-hiding widen) first, then
+  `x-sync-params`, then user `--param` / `--resource-param` at runtime.
+  Sync-owned paging/since/sort keys are skipped, same as spec defaults.
+- An explicit `x-sync-params` entry for a key suppresses auto-widen for
+  that key, including `status: open` when the intended sync scope really
+  is the open slice.
+- When a resource still has an unwidened `status`/`state=open` default
+  (no `all`/`any` in the enum and no overlay) and sync stores 0 rows,
+  generated sync emits `sync_warning` with reason
+  `default_filter_hides_history` instead of silent success-with-zero.
+
+Internal YAML emits this as `sync_params:` on the endpoint with the same
+map shape.
+
+Example:
+
+```yaml
+paths:
+  /v2/orders:
+    get:
+      summary: List orders
+      x-sync-params:
+        status: all
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            default: open
+            enum: [open, closed, all]
       responses:
         "200": {description: ok}
 ```

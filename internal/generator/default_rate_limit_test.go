@@ -10,10 +10,10 @@ import (
 )
 
 // TestRootDefaultRateLimitEmission pins the --rate-limit default precedence in
-// root.go.tmpl: an explicit spec DefaultRateLimit ("auto" or a number) wins over
-// the legacy provenance rule (sniffed → 2, else → 0). "auto" wires the
-// header-driven adaptive limiter via client.RateLimitAuto and relabels the
-// flag's --help default to "auto".
+// root.go.tmpl: an explicit spec DefaultRateLimit ("auto" or a number) wins;
+// empty (sniffed or documented) uses client.RateLimitAuto so the emitted
+// default matches the documented sentinel. "auto" and the empty fallback
+// relabel the flag's --help default to "auto".
 func TestRootDefaultRateLimitEmission(t *testing.T) {
 	t.Parallel()
 
@@ -38,13 +38,13 @@ func TestRootDefaultRateLimitEmission(t *testing.T) {
 		{
 			name:        "empty_sniffed",
 			specSource:  "sniffed",
-			wantContain: []string{`"rate-limit", 2,`},
-			wantAbsent:  []string{"client.RateLimitAuto"},
+			wantContain: []string{`"rate-limit", client.RateLimitAuto,`, `f.DefValue = "auto"`},
+			wantAbsent:  []string{`"rate-limit", 2,`, `"rate-limit", 0,`},
 		},
 		{
 			name:        "empty_default",
-			wantContain: []string{`"rate-limit", 0,`},
-			wantAbsent:  []string{"client.RateLimitAuto"},
+			wantContain: []string{`"rate-limit", client.RateLimitAuto,`, `f.DefValue = "auto"`},
+			wantAbsent:  []string{`"rate-limit", 0,`, `"rate-limit", 2,`},
 		},
 	}
 

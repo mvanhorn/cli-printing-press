@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -30,7 +31,14 @@ var (
 	endpointLimitExplicit        = false // true when user set --max-endpoints-per-resource
 	globalScopeParamNormalizerRE = regexp.MustCompile(`[^a-zA-Z0-9]+`)
 	authFormatPlaceholderRE      = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+	// Must stay aligned with generated store.unusableResourceID / isoDatePattern.
+	isoDatePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}(?:[T ][0-9:.+-Zz]+)?$`)
 )
+
+// resourceIDFieldCompositeSep joins composite identity fields in IDField and
+// x-resource-id (e.g. date+model_permaslug). Must stay aligned with the
+// generated store's splitResourceIDFieldOverride.
+const resourceIDFieldCompositeSep = "+"
 
 type additionalHeaderFallbackMode int
 
@@ -73,6 +81,7 @@ const (
 	extensionPPSyncable            = "x-pp-syncable"
 	extensionPPPagination          = "x-pp-pagination"
 	extensionSyncWalker            = "x-pp-sync-walker"
+	extensionSyncParams            = "x-sync-params"
 	extensionHappyArgs             = "x-happy-args"
 	extensionHappyStdin            = "x-happy-stdin"
 	extensionPPExample             = "x-pp-example"
@@ -2857,25 +2866,15 @@ var bearerKeywords = []string{
 	"personal access token",
 }
 
-// apiKeyKeywords indicate API-key auth when found in info.description.
-// Produces Type="api_key" with EnvVars suffix "_API_KEY".
-// Only secret-key vendor prefixes (sk_*, cal_*), not publishable (pk_*).
-var apiKeyKeywords = []string{
-	"api key",
-	"api_key",
-	"authorization header",
-	"sk_live_",
-	"sk_test_",
-	"cal_live_",
-}
-
 // negationWords suppress a keyword match when they appear within 5 words
 // before the keyword, catching "does not require Bearer" patterns.
 var negationWords = []string{"not", "no", "without", "unnecessary", "optional"}
 
-// inferDescriptionAuth scans info.description for auth keywords when both
-// selectSecurityScheme and inferQueryParamAuth produce nothing. This is the
-// third and final tier of the auth detection pipeline.
+// inferDescriptionAuth scans info.description for bearer/token keywords when
+// selectSecurityScheme and query/header-param inference produce nothing.
+// Prose that mentions an API key is not enough to invent a credential: a
+// keyless spec with zero securitySchemes must stay keyless unless a
+// structural signal (scheme, required auth-like param) exists.
 func inferDescriptionAuth(doc *openapi3.T, name string, fallback spec.AuthConfig) spec.AuthConfig {
 	if doc == nil || doc.Info == nil {
 		return fallback
@@ -2897,19 +2896,6 @@ func inferDescriptionAuth(doc *openapi3.T, name string, fallback spec.AuthConfig
 				In:       "header",
 				Header:   "Authorization",
 				EnvVars:  []string{envPrefix + "_TOKEN"},
-				Inferred: true,
-			}
-		}
-	}
-
-	// Check API key keywords
-	for _, kw := range apiKeyKeywords {
-		if findUnnegated(desc, kw) {
-			return spec.AuthConfig{
-				Type:     "api_key",
-				In:       "header",
-				Header:   detectHeaderName(desc),
-				EnvVars:  []string{envPrefix + "_API_KEY"},
 				Inferred: true,
 			}
 		}
@@ -2991,27 +2977,6 @@ func authorizationParamMentionsBearer(p *openapi3.Parameter) bool {
 		return findUnnegated(strings.ToLower(p.Schema.Value.Description), "bearer")
 	}
 	return false
-}
-
-// commonCustomHeaders are header names that APIs use instead of Authorization.
-// Checked case-insensitively against the description text.
-var commonCustomHeaders = []string{
-	"X-Api-Key",
-	"X-API-Key",
-	"X-Auth-Token",
-	"X-Access-Token",
-}
-
-// detectHeaderName scans description text for a known custom auth header name.
-// Returns the canonical casing if found, "Authorization" otherwise.
-func detectHeaderName(desc string) string {
-	lower := strings.ToLower(desc)
-	for _, h := range commonCustomHeaders {
-		if strings.Contains(lower, strings.ToLower(h)) {
-			return h
-		}
-	}
-	return "Authorization"
 }
 
 // findUnnegated scans all occurrences of keyword in text and returns true if
@@ -3716,10 +3681,13 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			endpoint.TenantScopeColumn = pathTenantScopeColumn
 			endpoint.MembershipField = pathMembershipField
 			endpoint.Critical = pathCritical
-			endpoint.Mutation, _ = boolExtension(op.Extensions, extensionPPMutation)
+			if mutation, present := boolExtension(op.Extensions, extensionPPMutation); present {
+				endpoint.Mutation = new(mutation)
+			}
 			opSyncable, _ := boolExtension(op.Extensions, extensionPPSyncable)
 			endpoint.Syncable = pathSyncable || opSyncable
 			endpoint.Walker = readWalkerExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
+			endpoint.SyncParams = readSyncParamsExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
 
 			// Binary-only success responses (e.g. PDF/octet-stream downloads)
 			// would otherwise receive the default Accept: application/json and
@@ -6082,6 +6050,73 @@ func readWalkerExtension(extensions map[string]any, context string) *spec.Walker
 	return &cfg
 }
 
+// readSyncParamsExtension reads the `x-sync-params` operation extension.
+// Values are query parameters applied only during generated sync so a list
+// command can keep the API's documented default (status=open) while sync
+// mirrors the complete resource. Malformed values warn and return nil.
+func readSyncParamsExtension(extensions map[string]any, context string) map[string]string {
+	if extensions == nil {
+		return nil
+	}
+	raw, ok := extensions[extensionSyncParams]
+	if !ok || raw == nil {
+		return nil
+	}
+	values, ok := raw.(map[string]any)
+	if !ok {
+		warnf("%s: %s must be an object mapping parameter names to values; ignoring", context, extensionSyncParams)
+		return nil
+	}
+	var out map[string]string
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		paramName := strings.TrimSpace(name)
+		if paramName == "" {
+			warnf("%s: %s entries must have a non-empty parameter name; ignoring", context, extensionSyncParams)
+			continue
+		}
+		rendered := strings.TrimSpace(stringifyExtensionScalar(values[name]))
+		if rendered == "" {
+			warnf("%s: %s.%s must be a non-empty value; ignoring", context, extensionSyncParams, name)
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[paramName] = rendered
+	}
+	return out
+}
+
+func stringifyExtensionScalar(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case bool:
+		return strconv.FormatBool(v)
+	case json.Number:
+		return v.String()
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(v), 'f', -1, 64)
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case int32:
+		return strconv.FormatInt(int64(v), 10)
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
+}
+
 // Member paths can provide a stronger primary-key signal than generic response
 // fallbacks: /sites/{siteId} points at siteId even when the schema also has a
 // display name. Prefer placeholders after the endpoint's target resource
@@ -6133,7 +6168,7 @@ func responsePropertyForPathParam(schema *openapi3.Schema, paramName string) str
 	if schema == nil || paramName == "" {
 		return ""
 	}
-	if propRef, ok := schema.Properties[paramName]; ok && propRef != nil && isPlausibleIDFieldSchema(schemaRefValue(propRef)) {
+	if propRef, ok := schema.Properties[paramName]; ok && propRef != nil && isSoloUsableIDField(paramName, schemaRefValue(propRef)) {
 		return paramName
 	}
 	paramSnake := toSnakeCase(paramName)
@@ -6146,7 +6181,7 @@ func responsePropertyForPathParam(schema *openapi3.Schema, paramName string) str
 		if toSnakeCase(propName) != paramSnake {
 			continue
 		}
-		if propRef := schema.Properties[propName]; propRef != nil && isPlausibleIDFieldSchema(schemaRefValue(propRef)) {
+		if propRef := schema.Properties[propName]; propRef != nil && isSoloUsableIDField(propName, schemaRefValue(propRef)) {
 			return propName
 		}
 	}
@@ -6170,10 +6205,15 @@ func responseItemSchema(op *openapi3.Operation) *openapi3.Schema {
 
 // resolveIDFieldFromResponseSchema implements tiers 2-6 of the IDField fallback
 // chain: prefer "id", then a resource-prefixed key (`<singular>_id` /
-// `_uuid` / `_guid`), then a vendor identifier (`gid` / `sid` / `uid` /
-// `uuid` / `guid`), then a URL-shaped identifier (`uri` / `self` /
-// `selfLink` / `href` / `url`), then "name", then the first scalar field listed
-// in the response schema's `required:` array (walking properties in their schema order).
+// `_uuid` / `_guid` / `_uid`), then a vendor identifier (`gid` / `sid` /
+// `uid` / `uuid` / `guid`), then a sole remaining `<own>_uid` field whose
+// stem is the resource's collection noun, then a URL-shaped identifier
+// (`uri` / `self` / `selfLink` / `href` / `url`), then "name", then the first
+// solo-usable required scalar. When the first required identity field is
+// date-shaped (format, name, or ISO-date example) and later required string
+// fields exist, those fields are joined with `+` so the store can key the
+// real composite row identity; a date-shaped field is never emitted as a
+// solo IDField because CanonicalResourceID rejects ISO-date values.
 // Returns "" when no field qualifies; templates fall through to runtime list
 // scanning. Tier 1 (`x-resource-id` extension) is handled separately by the
 // caller — it overrides every tier here.
@@ -6218,6 +6258,16 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation, resourceName strin
 		}
 	}
 
+	// Tier 3.6: sole remaining `<stem>_uid` / camelCase `stemUid` whose
+	// stem is the resource's own collection noun. Resource names like
+	// `account-alerts-open` do not yield the mid-name stem `alert` in
+	// tier 3, so `alertUid` would otherwise be missed. A foreign
+	// reference such as `accountUid` on `/sites` must not win over
+	// `name` or a qualified URL. Exact `uid` stays in tier 3.5.
+	if id := soleStemUIDField(itemSchema, resourceName); id != "" {
+		return id
+	}
+
 	// Tier 4: URL-shaped identifiers. These trail id-shaped keys so APIs that
 	// expose both `id` and `self` keep keying on the compact primary key.
 	if id := urlShapedIDField(itemSchema, itemFields.required); id != "" {
@@ -6229,28 +6279,10 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation, resourceName strin
 		return "name"
 	}
 
-	// Tier 6: first plausible-PK scalar field appearing in the schema's
-	// required[] array, matched against properties in their schema-declared
-	// order. kin-openapi preserves YAML/JSON property order in MapKeys/Extensions
-	// but not via range over Properties (it's a Go map). Fall back to iterating
-	// the required[] slice itself: that order is stable and is what spec authors
-	// intend when they care about which field "wins."
-	//
-	// "Plausible-PK" excludes boolean, enum, and date/date-time fields even
-	// though they are scalar — they are structurally low-cardinality or
-	// non-identifier-shaped, so committing them as a runtime override
-	// collapses unrelated rows onto the same PK during upsert.
-	for _, fieldName := range itemSchema.Required {
-		propRef, ok := itemSchema.Properties[fieldName]
-		if !ok || propRef == nil || propRef.Value == nil {
-			continue
-		}
-		if isPlausibleIDFieldSchema(propRef.Value) {
-			return fieldName
-		}
-	}
-
-	return ""
+	// Tier 6: first solo-usable required scalar, or a composite when the
+	// first identity field is date-shaped. required[] order is stable;
+	// ranging Properties is not.
+	return resolveRequiredIDField(itemSchema)
 }
 
 type idSchemaFields struct {
@@ -6305,10 +6337,10 @@ func collectIDSchemaFieldsInto(schemaRef *openapi3.SchemaRef, fields *idSchemaFi
 }
 
 // resourcePrefixedIDField returns the first property whose snake-cased name
-// matches a resource-derived base plus `_id`, then `_uuid`, then `_guid`.
-// Composed resource names also probe their leaf segment so child collections
-// like `projects_tasks` can key on `taskId`. Property names are returned
-// verbatim so callers preserve the spec's original casing.
+// matches a resource-derived base plus `_id`, then `_uuid`, then `_guid`,
+// then `_uid`. Composed resource names also probe their leaf segment so
+// child collections like `projects_tasks` can key on `taskId`. Property
+// names are returned verbatim so callers preserve the spec's original casing.
 func resourcePrefixedIDField(schema *openapi3.Schema, resourceName string) string {
 	bases := resourceIDBaseCandidates(resourceName)
 	if len(bases) == 0 {
@@ -6322,7 +6354,7 @@ func resourcePrefixedIDField(schema *openapi3.Schema, resourceName string) strin
 		propNames = append(propNames, name)
 	}
 	sort.Strings(propNames)
-	for _, suffix := range []string{"_id", "_uuid", "_guid"} {
+	for _, suffix := range []string{"_id", "_uuid", "_guid", "_uid"} {
 		for _, base := range bases {
 			target := base + suffix
 			for _, propName := range propNames {
@@ -6333,6 +6365,71 @@ func resourcePrefixedIDField(schema *openapi3.Schema, resourceName string) strin
 		}
 	}
 	return ""
+}
+
+// soleStemUIDField returns the sole property whose snake-cased name is
+// `<own>_uid` for this resource's collection noun, with a plausible scalar
+// schema. Bare `uid` is left to the vendor-identifier tier. A foreign
+// `accountUid` on a non-account collection is ignored so later tiers can
+// keep `name` or a qualified URL. Two own-stem spellings are ambiguous
+// and return "".
+func soleStemUIDField(schema *openapi3.Schema, resourceName string) string {
+	if schema == nil {
+		return ""
+	}
+	own := resourceOwnIdentityStem(resourceName)
+	if own == "" {
+		return ""
+	}
+	var match string
+	for name, propRef := range schema.Properties {
+		if stemUIDFieldStem(name) != own {
+			continue
+		}
+		if !isPlausibleIDFieldSchema(schemaRefValue(propRef)) {
+			continue
+		}
+		if match != "" {
+			return ""
+		}
+		match = name
+	}
+	return match
+}
+
+func stemUIDFieldStem(propName string) string {
+	snake := toSnakeCase(propName)
+	if !strings.HasSuffix(snake, "_uid") || len(snake) <= len("_uid") {
+		return ""
+	}
+	return strings.TrimSuffix(snake, "_uid")
+}
+
+// resourceOwnIdentityStem is the collection noun a resource's own
+// `<stem>_uid` would use. Multi-segment names keep the last token that
+// actually singularizes (`account-alerts-open` → `alert`) so a parent
+// or status segment is not treated as the item identity.
+func resourceOwnIdentityStem(resourceName string) string {
+	snake := strings.Trim(toSnakeCase(resourceName), "_")
+	if snake == "" {
+		return ""
+	}
+	tokens := strings.Split(snake, "_")
+	own := ""
+	for _, tok := range tokens {
+		tok = strings.Trim(tok, "_")
+		if tok == "" {
+			continue
+		}
+		singular := singularizeIdentifier(tok)
+		if singular != tok {
+			own = singular
+		}
+	}
+	if own != "" {
+		return own
+	}
+	return singularizeIdentifier(tokens[len(tokens)-1])
 }
 
 func resourceIDBaseCandidates(resourceName string) []string {
@@ -6529,12 +6626,12 @@ func isScalarSchema(schema *openapi3.Schema) bool {
 	return false
 }
 
-// isPlausibleIDFieldSchema is the tier-5 PK predicate: a scalar that is also
-// not boolean, not enum-restricted, and not date/date-time formatted. Booleans
-// have cardinality 2 (true/false), enums have hand-picked low cardinality, and
-// date/date-time fields are timestamps — none can serve as a primary key
-// without collapsing distinct rows during upsert. See profiler.resourceIDFieldOverrides
-// and store.UpsertBatch.
+// isPlausibleIDFieldSchema is the schema-only PK predicate: a scalar that is
+// also not boolean, not enum-restricted, and not date/date-time formatted.
+// Name- and example-shaped dates are rejected separately by
+// isDateShapedIDField so a required `date` string without format cannot
+// become a solo IDField. See profiler.resourceIDFieldOverrides and
+// store.UpsertBatch.
 func isPlausibleIDFieldSchema(schema *openapi3.Schema) bool {
 	if !isScalarSchema(schema) {
 		return false
@@ -6550,6 +6647,132 @@ func isPlausibleIDFieldSchema(schema *openapi3.Schema) bool {
 		return false
 	}
 	return true
+}
+
+func isSoloUsableIDField(name string, schema *openapi3.Schema) bool {
+	return isPlausibleIDFieldSchema(schema) && !isDateShapedIDField(name, schema)
+}
+
+func resolveRequiredIDField(itemSchema *openapi3.Schema) string {
+	if itemSchema == nil {
+		return ""
+	}
+	var compositeParts []string
+	composing := false
+	for _, fieldName := range itemSchema.Required {
+		propRef, ok := itemSchema.Properties[fieldName]
+		if !ok || propRef == nil || propRef.Value == nil {
+			continue
+		}
+		schema := propRef.Value
+		if !isIdentityCapableScalar(schema) {
+			continue
+		}
+		if composing {
+			if isDateShapedIDField(fieldName, schema) {
+				continue
+			}
+			if isPlausibleIDFieldSchema(schema) && !isVolatileCompositeFieldName(fieldName) {
+				compositeParts = append(compositeParts, fieldName)
+			}
+			continue
+		}
+		if isDateShapedIDField(fieldName, schema) {
+			composing = true
+			if isCompositeIDPartSchema(schema) {
+				compositeParts = append(compositeParts, fieldName)
+			}
+			continue
+		}
+		if isPlausibleIDFieldSchema(schema) {
+			return fieldName
+		}
+	}
+	if composing && len(compositeParts) >= 2 {
+		return strings.Join(compositeParts, resourceIDFieldCompositeSep)
+	}
+	return ""
+}
+
+func isIdentityCapableScalar(schema *openapi3.Schema) bool {
+	if !isScalarSchema(schema) {
+		return false
+	}
+	if schema.Type.Includes(openapi3.TypeBoolean) {
+		return false
+	}
+	return len(schema.Enum) == 0
+}
+
+func isCompositeIDPartSchema(schema *openapi3.Schema) bool {
+	if schema == nil || schema.Type == nil {
+		return false
+	}
+	if len(schema.Enum) > 0 {
+		return false
+	}
+	if schema.Type.Includes(openapi3.TypeBoolean) {
+		return false
+	}
+	return schema.Type.Includes(openapi3.TypeString) ||
+		schema.Type.Includes(openapi3.TypeInteger) ||
+		schema.Type.Includes(openapi3.TypeNumber)
+}
+
+func isVolatileCompositeFieldName(name string) bool {
+	n := strings.ToLower(toSnakeCase(name))
+	switch n {
+	case "status", "state", "type", "kind", "mode", "phase", "stage",
+		"result", "outcome", "message", "description", "title", "label",
+		"note", "comment", "reason", "visibility", "severity", "priority",
+		"name", "display_name", "full_name", "short_name":
+		return true
+	}
+	for tok := range strings.SplitSeq(n, "_") {
+		switch tok {
+		case "token", "tokens", "count", "total", "amount", "price",
+			"quantity", "sum", "avg", "average", "score", "weight",
+			"volume", "size", "percent", "ratio", "balance", "qty":
+			return true
+		}
+	}
+	return false
+}
+
+func isDateShapedIDField(name string, schema *openapi3.Schema) bool {
+	if schema != nil {
+		format := strings.ToLower(schema.Format)
+		if format == "date" || format == "date-time" {
+			return true
+		}
+		if exampleLooksLikeISODate(schema.Example) {
+			return true
+		}
+	}
+	return isDateShapedIDFieldName(name)
+}
+
+func isDateShapedIDFieldName(name string) bool {
+	n := strings.ToLower(toSnakeCase(name))
+	switch n {
+	case "date", "datetime", "date_time", "timestamp":
+		return true
+	}
+	return strings.HasSuffix(n, "_date") ||
+		strings.HasSuffix(n, "_at") ||
+		strings.HasSuffix(n, "_datetime") ||
+		strings.HasSuffix(n, "_timestamp")
+}
+
+func exampleLooksLikeISODate(example any) bool {
+	switch v := example.(type) {
+	case string:
+		return isoDatePattern.MatchString(strings.TrimSpace(v))
+	case time.Time:
+		return true
+	default:
+		return false
+	}
 }
 
 func mapTypes(doc *openapi3.T, out *spec.APISpec) {

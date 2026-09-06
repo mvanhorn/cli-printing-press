@@ -627,7 +627,7 @@ func TestBodyRequiredChecks_OptionalNestedObject(t *testing.T) {
 		}},
 	}, "\t\t\t")
 	require.Contains(t, got, `if (cmd.Flags().Changed("start-date-time") || bodyStartDateTime != "") || (cmd.Flags().Changed("start-time-zone") || bodyStartTimeZone != "") {`)
-	require.Contains(t, got, `if !cmd.Flags().Changed("start-date-time") && !flags.dryRun {`)
+	require.Contains(t, got, `if !cmd.Flags().Changed("start-date-time") && bodyStartDateTime == "" && !flags.dryRun {`)
 	require.Contains(t, got, `"required flag \"%s\" not set", "start-date-time"`)
 }
 
@@ -644,7 +644,7 @@ func TestBodyRequiredChecks_OptionalNestedObjectDefaultActivatesParent(t *testin
 		}},
 	}, "\t\t\t")
 	require.Contains(t, got, `if (cmd.Flags().Changed("start-date-time") || bodyStartDateTime != "") || (cmd.Flags().Changed("start-time-zone") || bodyStartTimeZone != "") {`)
-	require.Contains(t, got, `if !cmd.Flags().Changed("start-date-time") && !flags.dryRun {`)
+	require.Contains(t, got, `if !cmd.Flags().Changed("start-date-time") && bodyStartDateTime == "" && !flags.dryRun {`)
 }
 
 func TestBodyRequiredChecks_RecursiveOptionalObjects(t *testing.T) {
@@ -668,7 +668,7 @@ func TestBodyRequiredChecks_RecursiveOptionalObjects(t *testing.T) {
 	}, "\t\t\t")
 	require.Contains(t, got, `if (cmd.Flags().Changed("outer-label") || bodyOuterLabel != "") || (cmd.Flags().Changed("outer-config-mode") || bodyOuterConfigMode != "") || (cmd.Flags().Changed("outer-config-note") || bodyOuterConfigNote != "") {`)
 	require.Contains(t, got, `if (cmd.Flags().Changed("outer-config-mode") || bodyOuterConfigMode != "") || (cmd.Flags().Changed("outer-config-note") || bodyOuterConfigNote != "") {`)
-	require.Contains(t, got, `if !cmd.Flags().Changed("outer-config-mode") && !flags.dryRun {`)
+	require.Contains(t, got, `if !cmd.Flags().Changed("outer-config-mode") && bodyOuterConfigMode == "" && !flags.dryRun {`)
 }
 
 func TestBodyRequiredChecks_RequiredNestedObjectRemainsUnconditional(t *testing.T) {
@@ -685,7 +685,7 @@ func TestBodyRequiredChecks_RequiredNestedObjectRemainsUnconditional(t *testing.
 		}},
 	}, "\t\t\t")
 	require.NotContains(t, got, `cmd.Flags().Changed("start-time-zone")`)
-	require.Contains(t, got, `if !cmd.Flags().Changed("start-date-time") && !flags.dryRun {`)
+	require.Contains(t, got, `if !cmd.Flags().Changed("start-date-time") && bodyStartDateTime == "" && !flags.dryRun {`)
 }
 
 func TestMCPBodyInputParams_NestedRequiredFollowsParent(t *testing.T) {
@@ -727,8 +727,8 @@ func TestBodyRequiredChecks_TopLevelKeepsAliasOR(t *testing.T) {
 			{Name: "name", Type: "string", Required: true, Aliases: []string{"n"}},
 		},
 	}, "\t\t\t")
-	if !strings.Contains(got, `(cmd.Flags().Changed("name") || cmd.Flags().Changed("n"))`) {
-		t.Errorf("expected alias-OR in required check, got:\n%s", got)
+	if !strings.Contains(got, `!(cmd.Flags().Changed("name") || cmd.Flags().Changed("n")) && bodyName == "" && !flags.dryRun`) {
+		t.Errorf("expected alias-OR plus resolved-value check, got:\n%s", got)
 	}
 }
 
@@ -1039,8 +1039,8 @@ func TestMCPParamBindings_BodyJSONFallback(t *testing.T) {
 func TestBodyJSONFallback_RequiredChecks_RequiredBody(t *testing.T) {
 	t.Parallel()
 	got := bodyRequiredChecks(spec.Endpoint{BodyJSONFallback: true, BodyRequired: true}, "\t\t\t")
-	if !strings.Contains(got, `cmd.Flags().Changed("body-json")`) {
-		t.Errorf("expected Changed check on body-json for required body, got:%q", got)
+	if !strings.Contains(got, `!cmd.Flags().Changed("body-json") && flagBodyJSON == "" && !flags.dryRun`) {
+		t.Errorf("expected value-aware body-json required check, got:%q", got)
 	}
 	if !strings.Contains(got, `"required flag \"%s\" not set", "body-json"`) {
 		t.Errorf("expected body-json in error message, got:%q", got)

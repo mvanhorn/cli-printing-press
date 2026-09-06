@@ -232,6 +232,8 @@ func TestConfigSaveTokensDoesNotPersistEnvSourcedCredentials(t *testing.T) {
 		AuthorizationURL: "https://example.com/oauth/authorize",
 		TokenURL:         "https://example.com/oauth/token",
 		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "OAUTHSAVE_CLIENT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: false, Sensitive: false},
+			{Name: "OAUTHSAVE_CLIENT_SECRET", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: false, Sensitive: true},
 			{Name: "GOOGLE_ADS_ACCESS_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true},
 		},
 	}
@@ -250,6 +252,8 @@ import (
 )
 
 func TestEnvSourcedCredentialsStayOutOfConfigSave(t *testing.T) {
+	t.Setenv("OAUTHSAVE_CLIENT_ID", "env-client-id")
+	t.Setenv("OAUTHSAVE_CLIENT_SECRET", "env-client-secret")
 	t.Setenv("GOOGLE_ADS_ACCESS_TOKEN", "env-access-token")
 
 	configPath := filepath.Join(t.TempDir(), "config.toml")
@@ -271,6 +275,12 @@ func TestEnvSourcedCredentialsStayOutOfConfigSave(t *testing.T) {
 	cfg, err := Load(configPath)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ClientID != "env-client-id" {
+		t.Fatalf("ClientID after Load() = %q, want env-client-id", cfg.ClientID)
+	}
+	if cfg.ClientSecret != "env-client-secret" {
+		t.Fatalf("ClientSecret after Load() = %q, want env-client-secret", cfg.ClientSecret)
 	}
 	if cfg.GoogleAdsAccessToken != "env-access-token" {
 		t.Fatalf("GoogleAdsAccessToken after Load() = %q, want env-access-token", cfg.GoogleAdsAccessToken)
@@ -347,6 +357,8 @@ func TestEnvSourcedCredentialsStayOutOfConfigSave(t *testing.T) {
 func TestConfigSaveRoundTripWithoutEnvIsStable(t *testing.T) {
 	t.Setenv("CLIENT_ID", "")
 	t.Setenv("CLIENT_SECRET", "")
+	t.Setenv("OAUTHSAVE_CLIENT_ID", "")
+	t.Setenv("OAUTHSAVE_CLIENT_SECRET", "")
 	t.Setenv("GOOGLE_ADS_ACCESS_TOKEN", "")
 
 	configPath := filepath.Join(t.TempDir(), "config.toml")
@@ -862,6 +874,28 @@ func TestConfigSaveTokensPersistsClientIDBuiltinEnvCollisionWrite(t *testing.T) 
 	outputDir := filepath.Join(t.TempDir(), "oauth-client-id-collision-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
+	configSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	configText := string(configSrc)
+	require.Contains(t, configText, "func (c *Config) MarkCredentialsExplicit(clientID, clientSecret bool)")
+	saveTokensIdx := strings.Index(configText, "func (c *Config) SaveTokens(")
+	require.NotEqual(t, -1, saveTokensIdx)
+	saveTokensBody := configText[saveTokensIdx:]
+	if next := strings.Index(saveTokensBody[1:], "\nfunc "); next != -1 {
+		saveTokensBody = saveTokensBody[:next+1]
+	}
+	require.NotContains(t, saveTokensBody, `delete(c.envOverrides, "ClientID")`)
+	require.NotContains(t, saveTokensBody, `delete(c.envOverrides, "ClientSecret")`)
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	authText := string(authSrc)
+	require.Contains(t, authText, "clientIDFromFlag := clientID != \"\"")
+	require.Contains(t, authText, "clientSecretFromFlag := clientSecret != \"\"")
+	require.Less(t, strings.Index(authText, "clientIDFromFlag := clientID != \"\""), strings.Index(authText, `os.Getenv("OAUTH_CLIENT_ID_COLLISION_CLIENT_ID")`))
+	require.Contains(t, authText, "cfg.MarkCredentialsExplicit(clientIDFromFlag, clientSecretFromFlag)")
+	requireGeneratedCompiles(t, outputDir)
+
 	const runtimeTest = `package config
 
 import (
@@ -872,13 +906,13 @@ import (
 	"time"
 )
 
-func TestSaveTokensPersistsClientIDOverBuiltinEnvOverride(t *testing.T) {
+func loadCollisionConfig(t *testing.T) *Config {
+	t.Helper()
 	t.Setenv("SAVE_CLIENT_ID", "env-client-id")
 
 	configPath := filepath.Join(t.TempDir(), "config.toml")
 	dataDir := filepath.Join(t.TempDir(), "data")
 	t.Setenv("OAUTH_CLIENT_ID_COLLISION_DATA_DIR", dataDir)
-	credentialsPath := filepath.Join(dataDir, "credentials.toml")
 	initial := strings.Join([]string{
 		"client_id = \"disk-client-id\"",
 		"client_secret = \"disk-client-secret\"",
@@ -897,16 +931,49 @@ func TestSaveTokensPersistsClientIDOverBuiltinEnvOverride(t *testing.T) {
 	if cfg.ClientID != "env-client-id" {
 		t.Fatalf("ClientID after Load() = %q, want env-client-id", cfg.ClientID)
 	}
+	return cfg
+}
 
+func credentialsText(t *testing.T) string {
+	t.Helper()
+	path, err := filepath.Abs(filepath.Join(os.Getenv("OAUTH_CLIENT_ID_COLLISION_DATA_DIR"), "credentials.toml"))
+	if err != nil {
+		t.Fatalf("Abs(credentials.toml) error = %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(credentials.toml) error = %v", err)
+	}
+	return string(after)
+}
+
+func TestSaveTokensKeepsEnvClientIDOutOfCredentials(t *testing.T) {
+	cfg := loadCollisionConfig(t)
 	expiry := time.Date(2033, 4, 5, 6, 7, 8, 0, time.UTC)
 	if err := cfg.SaveTokens("new-client-id", cfg.ClientSecret, "new-access-token", "new-refresh-token", expiry); err != nil {
 		t.Fatalf("SaveTokens() error = %v", err)
 	}
-	after, err := os.ReadFile(credentialsPath)
-	if err != nil {
-		t.Fatalf("ReadFile(credentials.toml) error = %v", err)
+	text := credentialsText(t)
+	for _, want := range []string{"disk-client-id", "disk-client-secret", "new-access-token", "new-refresh-token"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("credentials.toml missing %q:\n%s", want, text)
+		}
 	}
-	text := string(after)
+	for _, leaked := range []string{"new-client-id", "env-client-id", "disk-access-token", "disk-refresh-token"} {
+		if strings.Contains(text, leaked) {
+			t.Fatalf("credentials.toml leaked or kept stale credential %q:\n%s", leaked, text)
+		}
+	}
+}
+
+func TestSaveTokensPersistsClientIDOverBuiltinEnvOverride(t *testing.T) {
+	cfg := loadCollisionConfig(t)
+	cfg.MarkCredentialsExplicit(true, false)
+	expiry := time.Date(2033, 4, 5, 6, 7, 8, 0, time.UTC)
+	if err := cfg.SaveTokens("new-client-id", cfg.ClientSecret, "new-access-token", "new-refresh-token", expiry); err != nil {
+		t.Fatalf("SaveTokens() error = %v", err)
+	}
+	text := credentialsText(t)
 	for _, want := range []string{"new-client-id", "disk-client-secret", "new-access-token", "new-refresh-token"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("credentials.toml missing %q:\n%s", want, text)
@@ -918,7 +985,7 @@ func TestSaveTokensPersistsClientIDOverBuiltinEnvOverride(t *testing.T) {
 		}
 	}
 
-	configAfter, err := os.ReadFile(configPath)
+	configAfter, err := os.ReadFile(cfg.Path)
 	if err != nil {
 		t.Fatalf("ReadFile(config.toml) error = %v", err)
 	}
@@ -930,7 +997,7 @@ func TestSaveTokensPersistsClientIDOverBuiltinEnvOverride(t *testing.T) {
 }
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "save_tokens_client_id_collision_test.go"), []byte(runtimeTest), 0o644))
-	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestSaveTokensPersistsClientIDOverBuiltinEnvOverride")
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestSaveTokensKeepsEnvClientIDOutOfCredentials|TestSaveTokensPersistsClientIDOverBuiltinEnvOverride")
 }
 
 func TestClientCredentialsEnvVarsSkipTenantSetupInput(t *testing.T) {

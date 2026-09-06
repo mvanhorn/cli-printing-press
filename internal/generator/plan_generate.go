@@ -57,10 +57,9 @@ func (planGoModData) UsesBrowserHTTPTransport() bool {
 	return false
 }
 
-// HasAuthCommand mirrors the rootData field the go.mod template gates the
-// direct golang.org/x/sys require on. Plan scaffolds emit no auth surface (no
-// creds_perms_windows.go, which is what imports golang.org/x/sys/windows), so
-// x/sys stays a transitive-only // indirect floor for the plan path.
+// HasAuthCommand mirrors the rootData field the go.mod template uses for
+// auth-gated surfaces. Plan scaffolds emit no auth and no filelock_windows.go
+// import of golang.org/x/sys/windows, so they take the no-auth go.mod branch.
 func (planGoModData) HasAuthCommand() bool {
 	return false
 }
@@ -270,9 +269,13 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 		return fmt.Errorf("running go mod tidy: %w", err)
 	}
 
-	// Pin golang.org/x/net to a patched release when it resolved transitively
-	// below the safe version (see ensureSafeXNet).
+	// Pin golang.org/x/net and golang.org/x/text to patched releases when they
+	// resolved transitively below the safe versions (see ensureSafeXNet and
+	// ensureSafeXText).
 	if err := ensureSafeXNet(outputDir); err != nil {
+		return err
+	}
+	if err := ensureSafeXText(outputDir); err != nil {
 		return err
 	}
 

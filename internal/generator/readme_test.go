@@ -140,6 +140,7 @@ func TestReadOnlyNoAuthReadmeSuppressesCrudAuthBoilerplate(t *testing.T) {
 	assert.NotContains(t, content, "Authentication errors (exit code 4)")
 	assert.NotContains(t, content, "`4` auth error")
 	assert.Contains(t, content, "`7` rate limited")
+	assert.NotContains(t, content, "`6` partial failure")
 }
 
 // TestReadmeHandlesEmptyButPresentNarrative asserts that a non-nil but

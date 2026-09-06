@@ -1159,7 +1159,13 @@ Rules:
   of the git diff.
 - Include non-Go support files in `files` when they are part of the same
   code-level customization. README/SKILL.md-only polish does not need a patch
-  manifest entry.
+  manifest entry. `publish validate` reads the records and fails if a
+  recorded `files[]` path is missing, the per-patch record omits
+  `schema_version` or declares an unsupported one, or a declared
+  `call_sites` / `markers` / `marker` string is absent from the recorded
+  files. `files[]` is required for every `call_sites` / `markers` /
+  `marker` needle so a leftover substring elsewhere cannot mask a dropped
+  customization. Needles are checked only in those recorded files.
 - Inline `// PATCH(...)` source comments are optional navigation aids. The public
   library verifier requires a patches index (the directory or the legacy file)
   and well-formed entries; it does not require a marker/comment pairing.
@@ -1329,7 +1335,7 @@ If a suggestion collides, skip it or increment the numeric suffix.
 
 **4. Rename the CLI in the publish repo:**
 
-Since Step 6 copied the staged CLI into `$PUBLISH_REPO_DIR`, the rename operates on that directory. Note: `--old-name`/`--new-name` still use CLI-name format (e.g., `dub-pp-cli`) because `RenameCLI` does content replacement — bare slugs would cause collateral damage. The `--dir` path uses the slug-keyed directory.
+Since Step 6 copied the staged CLI into `$PUBLISH_REPO_DIR`, the rename operates on that directory. Note: `--old-name`/`--new-name` still use CLI-name format (e.g., `dub-pp-cli`) because `RenameCLI` does content replacement — bare slugs would cause collateral damage. The `--dir` path uses the slug-keyed directory. Rename also rewrites `go.mod`, leftover module-path slugs, installer slugs, env prefixes, and `research.json` `api_name` (including under `.manuscripts/`). Do not hand-fix those after a successful rename.
 
 ```bash
 cli-printing-press publish rename \

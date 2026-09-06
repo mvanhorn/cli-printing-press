@@ -58,10 +58,11 @@ func extractDecls(filename string) (declSet, error) {
 	for _, d := range file.Decls {
 		switch decl := d.(type) {
 		case *ast.FuncDecl:
-			if decl.Recv == nil && decl.Name.Name == "registerClientHook" {
-				// Client hook registration is generated scaffolding. Ignore it so
-				// a force regen can upgrade an older root while retaining a
-				// markerless package-local client extension.
+			if decl.Recv == nil && (decl.Name.Name == "registerClientHook" || decl.Name.Name == "ApplyClientHooks") {
+				// Client hook registration and application are generated
+				// scaffolding. Ignore them so a force regen can upgrade an
+				// older root while retaining a markerless package-local
+				// client extension.
 				continue
 			}
 			decls.add(canonicalFuncName(decl))
@@ -206,8 +207,10 @@ func classifyFiles(publishedDir, freshDir, baseDir string) ([]FileClassification
 				fc.Verdict = VerdictNovel
 			}
 		case inPub && inFresh:
+			basePath := ""
 			if _, inBase := baseSet[rel]; inBase {
-				sameAsBase, err := filesEqual(pubPath, filepath.Join(baseDir, rel))
+				basePath = filepath.Join(baseDir, rel)
+				sameAsBase, err := filesEqual(pubPath, basePath)
 				if err != nil {
 					return nil, fmt.Errorf("comparing published to base for %s: %w", rel, err)
 				}
@@ -236,7 +239,7 @@ func classifyFiles(publishedDir, freshDir, baseDir string) ([]FileClassification
 			freshPath := filepath.Join(freshDir, rel)
 			pubMarker := hasTemplatedMarker(pubPath)
 			freshMarker := hasTemplatedMarker(freshPath)
-			fc = decideBothPresent(rel, pubPath, freshPath, pubDecls, freshDecls, pubMarker, freshMarker, freshGlobalDecls)
+			fc = decideBothPresent(rel, pubPath, freshPath, basePath, pubDecls, freshDecls, pubMarker, freshMarker, freshGlobalDecls)
 		}
 		out = append(out, fc)
 	}
@@ -265,7 +268,7 @@ func stringSet(s []string) map[string]struct{} {
 
 // decideBothPresent runs the in-both branch of the classification decision
 // tree.
-func decideBothPresent(rel, pubPath, freshPath string, pub, fresh declSet, pubMarker, freshMarker bool, freshGlobal declSet) FileClassification {
+func decideBothPresent(rel, pubPath, freshPath, basePath string, pub, fresh declSet, pubMarker, freshMarker bool, freshGlobal declSet) FileClassification {
 	fc := FileClassification{Path: rel}
 
 	pubExtras := pub.minus(fresh)
@@ -288,12 +291,20 @@ func decideBothPresent(rel, pubPath, freshPath string, pub, fresh declSet, pubMa
 			cleanByDeclSet = allMoved
 		}
 		if cleanByDeclSet {
+			// Framework files that re-render from spec/research on every
+			// print. A still-compiling older copy is stale generated text,
+			// not a hand-edit worth preserving. Drop the marker and the
+			// file is treated as authored again.
+			if isGeneratedInputRefreshPath(rel) && (pubMarker || freshMarker) {
+				fc.Verdict = VerdictTemplatedClean
+				return fc
+			}
 			// Decl-set looks clean. One more check: do pub's function
 			// bodies call identifiers fresh's same-function bodies don't?
 			// Catches in-place body modifications that decl-set comparison
 			// misses (e.g., pub adds a call to a hand-written helper
 			// inside an existing templated function).
-			if drift := detectBodyDrift(pubPath, freshPath); drift != nil {
+			if drift := filterBodyDriftAgainstBase(detectBodyDrift(pubPath, freshPath), pubPath, basePath); drift != nil {
 				fc.Verdict = VerdictTemplatedBodyDrift
 				fc.BodyDrift = drift
 				return fc
@@ -301,7 +312,7 @@ func decideBothPresent(rel, pubPath, freshPath string, pub, fresh declSet, pubMa
 			// Body-drift's call-target walker misses literal-value changes
 			// and identifier renames in non-call positions. Per-decl
 			// go/printer text compare catches both.
-			if drift := detectValueDrift(pubPath, freshPath); drift != nil {
+			if drift := filterValueDriftAgainstBase(detectValueDrift(pubPath, freshPath), pubPath, basePath); drift != nil {
 				fc.Verdict = VerdictTemplatedValueDrift
 				fc.ValueDrift = drift
 				return fc

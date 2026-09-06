@@ -187,3 +187,33 @@ func TestNormalize_OriginalPreservedThroughFold(t *testing.T) {
 		t.Errorf("Original = %q, want %q", got.Original, in)
 	}
 }
+
+func TestQueryIdentityEntities_IncludesTickers(t *testing.T) {
+	t.Parallel()
+	got := QueryIdentityEntities(Normalize("where is TICKER-ABC", testConfig()))
+	want := []string{"TICKER-ABC"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("QueryIdentityEntities = %v, want %v", got, want)
+	}
+}
+
+func TestQueryIdentityEntities_EntitiesAndTickers(t *testing.T) {
+	t.Parallel()
+	got := QueryIdentityEntities(Normalize("rate Alpha TICKER-X1", testConfig()))
+	want := []string{"Alpha", "TICKER-X1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("QueryIdentityEntities = %v, want %v", got, want)
+	}
+}
+
+func TestQueryIdentityEntities_DoesNotChangeFamily(t *testing.T) {
+	t.Parallel()
+	n := Normalize("where is TICKER-ABC", testConfig())
+	_ = QueryIdentityEntities(n)
+	if QueryFamily(n) != n.NonEntityNormalized {
+		t.Errorf("QueryFamily = %q, want NonEntityNormalized %q", QueryFamily(n), n.NonEntityNormalized)
+	}
+	if n.NonEntityNormalized != "" {
+		t.Errorf("identifier-only NonEntityNormalized = %q, want empty", n.NonEntityNormalized)
+	}
+}

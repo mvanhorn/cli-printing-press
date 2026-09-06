@@ -164,10 +164,11 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		cfg = entities.NewConfig()
 	}
 	normalized := Normalize(query, cfg)
+	queryIdentity := QueryIdentityEntities(normalized)
 	result := Result{
 		Query:         query,
 		Normalized:    normalized.NonEntityNormalized,
-		QueryEntities: append([]string(nil), normalized.Entities...),
+		QueryEntities: append([]string(nil), queryIdentity...),
 		Results:       []Hit{},
 	}
 	if result.QueryEntities == nil {
@@ -221,7 +222,8 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 	normalized = PromoteEntities(normalized, resolver)
 	result.Family = QueryFamily(normalized)
 	queryTokens := strings.Fields(normalized.NonEntityNormalized)
-	result.QueryEntities = append([]string(nil), normalized.Entities...)
+	queryIdentity = QueryIdentityEntities(normalized)
+	result.QueryEntities = append([]string(nil), queryIdentity...)
 	if result.QueryEntities == nil {
 		result.QueryEntities = []string{}
 	}
@@ -300,7 +302,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		storedNorm := Normalize(queryPattern, cfg)
 		storedEntitySlice, _ := ParseStoredEntities(storedEntities)
 		if len(storedEntitySlice) == 0 {
-			storedEntitySlice = storedNorm.Entities
+			storedEntitySlice = QueryIdentityEntities(storedNorm)
 		}
 		// Opportunistic backfill for legacy null-entity rows. Rows
 		// written before symmetric teach-time promotion landed have
@@ -370,9 +372,17 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		//      happens to canonical-overlap a stored row still gets
 		//      caught at that layer.
 		if score < jMin {
-			if len(queryTokens) == 0 && len(storedNonEntityTokens) == 0 &&
-				len(normalized.Entities) > 0 && len(storedEntitySlice) > 0 {
-				score = Jaccard(normalized.Entities, storedEntitySlice)
+			// Identifier-only queries normalize to an empty non-entity
+			// bag on the read side. Score identity overlap together with
+			// leftover stored tokens: punctuation-split identifier
+			// fragments stay identity-equivalent, leftover intent tokens
+			// enter the bag so same-identifier / different-intent rows
+			// cannot all become exact skip-discovery hits.
+			if len(queryTokens) == 0 && entitySlicesIntersect(queryIdentity, storedEntitySlice) {
+				score = identifierOnlyScore(queryIdentity, storedEntitySlice, storedNonEntityTokens)
+			} else if len(queryTokens) == 0 && len(storedNonEntityTokens) == 0 &&
+				len(queryIdentity) > 0 && len(storedEntitySlice) > 0 {
+				score = Jaccard(queryIdentity, storedEntitySlice)
 			}
 			if score < jMin {
 				// Three fallback branches, gated by the lower
@@ -402,7 +412,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 					// only fire when literal entities genuinely differ.
 					// Same-entity rows that miss jMin are genuine
 					// structural noise and should drop.
-					if entitySlicesIntersect(normalized.Entities, storedEntitySlice) {
+					if entitySlicesIntersect(queryIdentity, storedEntitySlice) {
 						continue
 					}
 					canonScore := canonicalJaccard(queryCanonicals, storedCanonicals)
@@ -427,7 +437,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 					// such rows instead -- case 1 covers the matching-
 					// canonical path, case 2 is reserved for actually
 					// different entities.
-					if entitySlicesIntersect(normalized.Entities, storedEntitySlice) {
+					if entitySlicesIntersect(queryIdentity, storedEntitySlice) {
 						continue
 					}
 					if score < crossAliasMin {
@@ -454,7 +464,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 			t := lastObserved.Time
 			hit.LastObservedAt = &t
 		}
-		validateResource(ctx, db, cfg, &hit, normalized.Entities, storedEntitySlice, opts.ResourceTypeFields)
+		validateResource(ctx, db, cfg, &hit, queryIdentity, storedEntitySlice, opts.ResourceTypeFields)
 		// Cross-alias promotion: if canonicals overlap, the entities
 		// are equivalent even when their literal forms differ. Override
 		// a Mismatch verdict so the learning isn't filtered into the
@@ -491,7 +501,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 	// Generalization layer: ask the pattern engine whether any template
 	// applies to this query. Errors are swallowed; pattern hits are
 	// additive on top of direct hits.
-	patternHits, _ := patterns.Apply(ctx, db, query, normalized.NonEntityNormalized, normalized.Entities, patterns.Opts{
+	patternHits, _ := patterns.Apply(ctx, db, query, normalized.NonEntityNormalized, queryIdentity, patterns.Opts{
 		JaccardMin:      jMin,
 		Limit:           limit,
 		AdditionalKinds: opts.PatternKinds,
@@ -734,6 +744,78 @@ func entityMatchPriority(em string) int {
 	default:
 		return 4
 	}
+}
+
+// identifierOnlyScore is Jaccard of query identity against stored
+// identity plus leftover stored tokens that are not punctuation-split
+// identifier fragments. Fragment leftovers stay identity-equivalent;
+// leftover intent tokens stay in the bag.
+func identifierOnlyScore(queryIdentity, storedIdentity, leftover []string) float64 {
+	identity := append(append([]string{}, queryIdentity...), storedIdentity...)
+	storedBag := append([]string{}, storedIdentity...)
+	for _, tok := range leftover {
+		if leftoverTokensAreIdentityFragments([]string{tok}, identity) {
+			continue
+		}
+		storedBag = append(storedBag, tok)
+	}
+	return Jaccard(queryIdentity, storedBag)
+}
+
+// leftoverTokensAreIdentityFragments reports whether every leftover
+// stored token is an identity token or an alphanumeric fragment of
+// one. Write-side punctuation splits ("ticker" "abc" from TICKER-ABC)
+// stay identity-equivalent; leftover intent tokens do not.
+func leftoverTokensAreIdentityFragments(tokens, identity []string) bool {
+	if len(tokens) == 0 {
+		return true
+	}
+	allowed := make(map[string]struct{})
+	for _, id := range identity {
+		n := strings.ToLower(strings.TrimSpace(id))
+		if n == "" {
+			continue
+		}
+		allowed[n] = struct{}{}
+		for _, frag := range identityCharFragments(n) {
+			if frag != "" {
+				allowed[frag] = struct{}{}
+			}
+		}
+	}
+	if len(allowed) == 0 {
+		return false
+	}
+	for _, tok := range tokens {
+		t := strings.ToLower(strings.TrimSpace(tok))
+		if t == "" {
+			continue
+		}
+		if _, ok := allowed[t]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// identityCharFragments splits on non-alphanumeric runes the same way
+// the write-side query tokenizer does, so a leftover bag of identifier
+// pieces still counts as the same identity.
+func identityCharFragments(s string) []string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte(' ')
+		}
+	}
+	return strings.Fields(b.String())
 }
 
 // entitySlicesIntersect reports whether two literal entity slices
@@ -1089,6 +1171,16 @@ func FamilyHash(family string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
+// Audit and teach.log persist this instead of the raw query so a forget
+// can target the row without retaining PII. Empty input hashes to "".
+func QueryHash(query string) string {
+	if strings.TrimSpace(query) == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(query))
+	return hex.EncodeToString(sum[:])
+}
+
 // PII rule names ScanPII returns. Stable vocabulary: the teach-path
 // warning names the rule verbatim, and generated SKILL/AGENTS prose
 // references the same names.
@@ -1121,4 +1213,13 @@ func ScanPII(text string) []string {
 		rules = append(rules, PIIRulePhone)
 	}
 	return rules
+}
+
+// Logs keep a normalized form; identifiers matching ScanPII rules are
+// replaced so the original values never hit disk. The in-store learning
+// row stays warn-only.
+func RedactPII(text string) string {
+	text = piiEmailRE.ReplaceAllString(text, "<email>")
+	text = piiPhoneRE.ReplaceAllString(text, "<phone>")
+	return text
 }

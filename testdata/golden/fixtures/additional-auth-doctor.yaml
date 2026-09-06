@@ -1,0 +1,32 @@
+name: additional-auth-doctor
+description: Bearer plus required and optional additional auth headers.
+version: 1.0.0
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  header: Authorization
+  format: "Bearer {token}"
+  env_vars: [ADDITIONAL_AUTH_DOCTOR_TOKEN]
+  additional_headers:
+    - header: X-Organization-Id
+      in: header
+      env_var:
+        name: ADDITIONAL_AUTH_DOCTOR_ORGANIZATION_ID
+        kind: per_call
+        required: true
+        sensitive: false
+    - header: X-Account-Label
+      in: header
+      env_var:
+        name: ADDITIONAL_AUTH_DOCTOR_ACCOUNT_LABEL
+        kind: per_call
+        required: false
+        sensitive: false
+resources:
+  items:
+    description: Items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items

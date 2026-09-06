@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -253,4 +254,204 @@ func TestGeneratedSurfaceParityDetectsArtificialDrop(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	require.Error(t, err, string(output))
 	assert.Contains(t, string(output), "orders create")
+}
+
+func collectionItemCollisionSpec() *spec.APISpec {
+	apiSpec := minimalSpec("collection-item-collision")
+	apiSpec.Resources = map[string]spec.Resource{
+		"users": {
+			Description: "Manage users",
+			Endpoints: map[string]spec.Endpoint{
+				"email": {Method: "GET", Path: "/users/email", Description: "Check whether an email is in use"},
+				"list":  {Method: "GET", Path: "/users", Description: "List users"},
+			},
+			SubResources: map[string]spec.Resource{
+				"email": {
+					Description: "Manage a user's email",
+					Endpoints: map[string]spec.Endpoint{
+						"update": {
+							Method:      "PUT",
+							Path:        "/users/{userId}/email",
+							Description: "Update a user's email",
+							Params:      []spec.Param{{Name: "userId", In: "path", Type: "string", Required: true, Positional: true}},
+						},
+					},
+				},
+			},
+		},
+	}
+	return apiSpec
+}
+
+func TestGenerateAllowsCollectionEndpointAndItemSubResourceSameLeaf(t *testing.T) {
+	t.Parallel()
+
+	outputDir := filepath.Join(t.TempDir(), "collection-item-collision-pp-cli")
+	require.NoError(t, New(collectionItemCollisionSpec(), outputDir).Generate())
+
+	collectionPath := filepath.Join(outputDir, "internal", "cli", "users_email.go")
+	itemParentPath := filepath.Join(outputDir, "internal", "cli", "users_item_email.go")
+	itemEndpointPath := filepath.Join(outputDir, "internal", "cli", "users_item_email_update.go")
+	require.FileExists(t, collectionPath)
+	require.FileExists(t, itemParentPath)
+	require.FileExists(t, itemEndpointPath)
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "users_email_update.go"))
+
+	collectionSrc, err := os.ReadFile(collectionPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(collectionSrc), "func newUsersEmailCmd(")
+	assert.Regexp(t, `Use:\s+"email"`, string(collectionSrc))
+
+	itemParentSrc, err := os.ReadFile(itemParentPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(itemParentSrc), "func newUsersItemEmailCmd(")
+	assert.Regexp(t, `Use:\s+"item-email"`, string(itemParentSrc))
+	assert.Contains(t, string(itemParentSrc), "newUsersItemEmailUpdateCmd(flags)")
+
+	itemEndpointSrc, err := os.ReadFile(itemEndpointPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(itemEndpointSrc), "func newUsersItemEmailUpdateCmd(")
+
+	usersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "users.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(usersSrc), "newUsersEmailCmd(flags)")
+	assert.Contains(t, string(usersSrc), "newUsersItemEmailCmd(flags)")
+
+	surface := buildCommandSurface(collectionItemCollisionSpec(), nil)
+	assert.Equal(t, []string{"users", "users email", "users item-email", "users item-email update", "users list"}, expectedCommandPaths(surface))
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGenerateKeepsUniqueCollectionAndItemStems(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		resources map[string]spec.Resource
+		wantFiles []string
+		wantIdent string
+		wantUse   string
+	}{
+		{
+			name: "collection endpoint only",
+			resources: map[string]spec.Resource{
+				"users": {
+					Description: "Manage users",
+					Endpoints: map[string]spec.Endpoint{
+						"email": {Method: "GET", Path: "/users/email", Description: "Check whether an email is in use"},
+						"list":  {Method: "GET", Path: "/users", Description: "List users"},
+					},
+				},
+			},
+			wantFiles: []string{"users_email.go"},
+			wantIdent: "func newUsersEmailCmd(",
+			wantUse:   `Use:\s+"email"`,
+		},
+		{
+			name: "item sub-resource only",
+			resources: map[string]spec.Resource{
+				"users": {
+					Description: "Manage users",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/users", Description: "List users"},
+					},
+					SubResources: map[string]spec.Resource{
+						"email": {
+							Description: "Manage a user's email",
+							Endpoints: map[string]spec.Endpoint{
+								"update": {
+									Method:      "PUT",
+									Path:        "/users/{userId}/email",
+									Description: "Update a user's email",
+									Params:      []spec.Param{{Name: "userId", In: "path", Type: "string", Required: true, Positional: true}},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantFiles: []string{"users_email.go", "users_email_update.go"},
+			wantIdent: "func newUsersEmailCmd(",
+			wantUse:   `Use:\s+"email"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := minimalSpec("collection-item-unique")
+			apiSpec.Resources = tt.resources
+			outputDir := filepath.Join(t.TempDir(), "collection-item-unique-pp-cli")
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			for _, name := range tt.wantFiles {
+				require.FileExists(t, filepath.Join(outputDir, "internal", "cli", name))
+			}
+			require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "users_item_email.go"))
+			require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "users_item_email_update.go"))
+
+			parentSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "users_email.go"))
+			require.NoError(t, err)
+			assert.Contains(t, string(parentSrc), tt.wantIdent)
+			assert.Regexp(t, tt.wantUse, string(parentSrc))
+
+			requireGeneratedCompiles(t, outputDir)
+		})
+	}
+}
+
+func TestGenerateCollectionItemCollisionFromOpenAPI(t *testing.T) {
+	t.Parallel()
+
+	const doc = `openapi: "3.0.3"
+info:
+  title: Collection Item Collision API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /users:
+    get:
+      operationId: list
+      summary: List users
+      responses:
+        "200":
+          description: OK
+  /users/email:
+    get:
+      operationId: email
+      summary: Check whether an email is in use
+      responses:
+        "200":
+          description: OK
+  /users/{userId}/email:
+    put:
+      operationId: update
+      summary: Update a user's email
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+`
+	apiSpec, err := openapi.Parse([]byte(doc))
+	require.NoError(t, err)
+	require.Contains(t, apiSpec.Resources, "users")
+	require.Contains(t, apiSpec.Resources["users"].Endpoints, "email")
+	require.Contains(t, apiSpec.Resources["users"].SubResources, "email")
+
+	apiSpec.Owner = "test-owner"
+	apiSpec.OwnerName = "Test Author"
+	outputDir := filepath.Join(t.TempDir(), "collection-item-openapi-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	require.FileExists(t, filepath.Join(outputDir, "internal", "cli", "users_email.go"))
+	require.FileExists(t, filepath.Join(outputDir, "internal", "cli", "users_item_email.go"))
+	require.FileExists(t, filepath.Join(outputDir, "internal", "cli", "users_item_email_update.go"))
+	requireGeneratedCompiles(t, outputDir)
 }

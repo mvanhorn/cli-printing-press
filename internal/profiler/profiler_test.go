@@ -2,7 +2,6 @@ package profiler
 
 import (
 	"bytes"
-	"os"
 	"slices"
 	"testing"
 
@@ -11,21 +10,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// captureStderr swaps os.Stderr for a pipe, runs fn, and returns whatever
-// fn wrote to stderr. The swap is single-threaded — safe for go test's
-// per-package sequential execution; do not use across parallel subtests
-// that both touch stderr.
+// Redirects profiler diagnostics into a buffer. Not safe with t.Parallel in
+// this package: the writer is process-wide, so concurrent captures would
+// interleave. A mutex only makes the pointer swap race-free.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
-	orig := os.Stderr
-	r, w, err := os.Pipe()
-	require.NoError(t, err)
-	os.Stderr = w
-	t.Cleanup(func() { os.Stderr = orig })
-	fn()
-	require.NoError(t, w.Close())
 	var buf bytes.Buffer
-	_, _ = buf.ReadFrom(r)
+	warnMu.Lock()
+	orig := warnWriter
+	warnWriter = &buf
+	warnMu.Unlock()
+	t.Cleanup(func() {
+		warnMu.Lock()
+		warnWriter = orig
+		warnMu.Unlock()
+	})
+	fn()
 	return buf.String()
 }
 
@@ -1744,6 +1744,146 @@ func TestProfileDependentResources(t *testing.T) {
 	assert.Equal(t, "/channels/{channelId}/messages", dep.Path)
 }
 
+func TestProfileQueryParamDependentResources(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "orgs-api",
+		Resources: map[string]spec.Resource{
+			"organizations": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/organizations",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+			"application_files": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/application_files",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Params:     []spec.Param{{Name: "organization_id", In: "query", Type: "string", Required: true}},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	syncNames := make([]string, 0, len(profile.SyncableResources))
+	for _, sr := range profile.SyncableResources {
+		syncNames = append(syncNames, sr.Name)
+	}
+	assert.Contains(t, syncNames, "organizations")
+	assert.NotContains(t, syncNames, "application_files",
+		"a child keyed by a parent query param must not stay a flat sync resource")
+
+	require.Len(t, profile.DependentSyncResources, 1)
+	dep := profile.DependentSyncResources[0]
+	assert.Equal(t, "application_files", dep.Name)
+	assert.Equal(t, "organizations", dep.ParentResource)
+	assert.Equal(t, "organization_id", dep.ParentIDParam)
+	assert.Equal(t, "/application_files", dep.Path)
+	require.Len(t, dep.PathParams, 1)
+	assert.Equal(t, "organization_id", dep.PathParams[0].Param)
+}
+
+func TestProfileQueryParamDependentIgnoresNonParentFilters(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "filter-api",
+		Resources: map[string]spec.Resource{
+			"organizations": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/organizations",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"widgets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/widgets",
+						Response: spec.ResponseDef{Type: "array"},
+						Params:   []spec.Param{{Name: "status", In: "query", Type: "string", Required: true}},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	assert.Empty(t, profile.DependentSyncResources,
+		"a required filter that is not a parent key must not become a dependent")
+	names := make([]string, 0, len(profile.SyncableResources))
+	skip := map[string]bool{}
+	for _, sr := range profile.SyncableResources {
+		names = append(names, sr.Name)
+		skip[sr.Name] = sr.SkipDefaultSync
+	}
+	assert.Contains(t, names, "widgets")
+	assert.True(t, skip["widgets"],
+		"unmatched required query filters stay SkipDefaultSync flat resources")
+}
+
+func TestProfileQueryParamDependentIgnoresMultipleParentKeys(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "multi-key-api",
+		Resources: map[string]spec.Resource{
+			"organizations": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/organizations",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"projects": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/projects",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"files": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/files",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "organization_id", In: "query", Type: "string", Required: true},
+							{Name: "project_id", In: "query", Type: "string", Required: true},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	assert.Empty(t, profile.DependentSyncResources,
+		"a child with two required parent keys must not bind only the first")
+	names := make([]string, 0, len(profile.SyncableResources))
+	skip := map[string]bool{}
+	for _, sr := range profile.SyncableResources {
+		names = append(names, sr.Name)
+		skip[sr.Name] = sr.SkipDefaultSync
+	}
+	assert.Contains(t, names, "files")
+	assert.True(t, skip["files"],
+		"multi-key children stay SkipDefaultSync; x-pp-sync-walker remains the escape hatch")
+}
+
 func TestProfileSyncableResourceSupportsCursorOnlyPagination(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "cursor-only",
@@ -3126,6 +3266,49 @@ func TestProfileSpecWalker_SynthesizesMissingDependent(t *testing.T) {
 	assert.Equal(t, "/games/{game_key}/leagues", dep.Path)
 }
 
+// TestProfileSpecWalker_QueryParamKeyParam keeps a key_param that is not a
+// path placeholder on the dependent so generated sync can send it as a
+// query parameter (GET /messages?roomId=).
+func TestProfileSpecWalker_QueryParamKeyParam(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "rooms-api",
+		Resources: map[string]spec.Resource{
+			"rooms": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/rooms", Response: spec.ResponseDef{Type: "array"}},
+				},
+			},
+			"messages": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/messages",
+						Response: spec.ResponseDef{Type: "array"},
+						Params:   []spec.Param{{Name: "roomId", In: "query", Type: "string", Required: true}},
+						Walker: &spec.WalkerConfig{
+							Parent:   "rooms",
+							KeyField: "id",
+							KeyParam: "roomId",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.DependentSyncResources, 1)
+	dep := profile.DependentSyncResources[0]
+	assert.Equal(t, "messages", dep.Name)
+	assert.Equal(t, "rooms", dep.ParentResource)
+	assert.Equal(t, "roomId", dep.ParentIDParam)
+	assert.Equal(t, "id", dep.KeyField)
+	assert.Equal(t, "/messages", dep.Path)
+	require.Len(t, dep.PathParams, 1)
+	assert.Equal(t, "roomId", dep.PathParams[0].Param)
+	assert.Equal(t, "id", dep.PathParams[0].Field)
+}
+
 // TestProfileSpecWalker_SynthesizePropagatesSinceParam verifies that a
 // walker-synthesized DependentResource carries through endpoint-level
 // SinceParam — incremental sync stays available for walker-declared
@@ -3437,6 +3620,158 @@ func TestProfilePagination_ClampsToParamMaximum(t *testing.T) {
 		"an exclusive maximum must clamp to the largest value strictly below it")
 	assert.Equal(t, 30, byName["webhooks"].PaginationPageSize,
 		"the most restrictive of a co-declared inclusive and exclusive bound must win")
+}
+
+func TestSyncPageSizeFromEndpoint_LimitOnlyIgnoresDeclaredDefault(t *testing.T) {
+	max30 := 30.0
+	max500 := 500.0
+	for _, tc := range []struct {
+		name       string
+		endpoint   spec.Endpoint
+		wantCursor string
+		wantType   string
+		wantLimit  string
+		wantSize   int
+	}{
+		{
+			name: "limit-only default is not a client page size",
+			endpoint: spec.Endpoint{
+				Params: []spec.Param{{Name: "limit", Type: "integer", Default: 25}},
+			},
+			wantLimit: "limit",
+			wantSize:  100,
+		},
+		{
+			name: "limit-only default above generator size is a floor",
+			endpoint: spec.Endpoint{
+				Params: []spec.Param{{Name: "limit", Type: "integer", Default: 200}},
+			},
+			wantLimit: "limit",
+			wantSize:  200,
+		},
+		{
+			name: "limit-only prefers declared maximum",
+			endpoint: spec.Endpoint{
+				Params: []spec.Param{{Name: "limit", Type: "integer", Default: 25, Maximum: &max500}},
+			},
+			wantLimit: "limit",
+			wantSize:  500,
+		},
+		{
+			name: "limit-only clamps generator size to a smaller maximum",
+			endpoint: spec.Endpoint{
+				Params: []spec.Param{{Name: "limit", Type: "integer", Default: 25, Maximum: &max30}},
+			},
+			wantLimit: "limit",
+			wantSize:  30,
+		},
+		{
+			name: "cursor resources still honor a declared default",
+			endpoint: spec.Endpoint{
+				Params: []spec.Param{
+					{Name: "cursor", Type: "string"},
+					{Name: "limit", Type: "integer", Default: 25},
+				},
+			},
+			wantCursor: "cursor",
+			wantType:   "cursor",
+			wantLimit:  "limit",
+			wantSize:   25,
+		},
+		{
+			name: "offset resources still honor a declared default",
+			endpoint: spec.Endpoint{
+				Params: []spec.Param{
+					{Name: "offset", Type: "int"},
+					{Name: "count", Type: "int", Default: 25},
+				},
+			},
+			wantCursor: "offset",
+			wantType:   "offset",
+			wantLimit:  "count",
+			wantSize:   25,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cursor, cursorType, limit, pageSize := syncPaginationDefaultsFromEndpoint(tc.endpoint)
+			assert.Equal(t, tc.wantCursor, cursor)
+			assert.Equal(t, tc.wantType, cursorType)
+			assert.Equal(t, tc.wantLimit, limit)
+			assert.Equal(t, tc.wantSize, pageSize)
+		})
+	}
+}
+
+func TestProfilePagination_LimitOnlyDoesNotCopyDeclaredDefault(t *testing.T) {
+	max500 := 500.0
+	s := &spec.APISpec{
+		Name: "limit-only-pagination",
+		Resources: map[string]spec.Resource{
+			"computers": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/api/v1/computers",
+						Params:   []spec.Param{{Name: "limit", Type: "integer", Default: 25}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"devices": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/api/v1/devices",
+						Params: []spec.Param{
+							{Name: "limit", Type: "integer", Default: 25, Maximum: &max500},
+						},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"agents": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/api/v1/agents",
+						Params:   []spec.Param{{Name: "offset", Type: "int"}, {Name: "limit", Type: "integer", Default: 25}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	var profile *APIProfile
+	stderr := captureStderr(t, func() {
+		profile = Profile(s)
+	})
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+
+	require.Contains(t, byName, "computers")
+	assert.True(t, byName["computers"].SupportsPagination,
+		"limit-only resources stay pagination-capable; sync still reports cursor_unavailable")
+	assert.Equal(t, "limit", byName["computers"].PaginationLimitParam)
+	assert.Empty(t, byName["computers"].PaginationCursorParam)
+	assert.Equal(t, 100, byName["computers"].PaginationPageSize,
+		"a declared limit default must not cap a cursorless first page")
+	assert.Contains(t, stderr, warningPaginationUndeterminable)
+	assert.Contains(t, stderr, `resource "computers"`)
+	assert.Contains(t, stderr, `page-size parameter "limit"`)
+
+	require.Contains(t, byName, "devices")
+	assert.Equal(t, 500, byName["devices"].PaginationPageSize,
+		"limit-only sync should request the declared maximum on the only page")
+	assert.Contains(t, stderr, `resource "devices"`)
+
+	require.Contains(t, byName, "agents")
+	assert.Equal(t, "offset", byName["agents"].PaginationCursorParam)
+	assert.Equal(t, 25, byName["agents"].PaginationPageSize,
+		"resources that can advance must keep using a declared default")
+	assert.NotContains(t, stderr, `resource "agents"`)
 }
 
 // The ID-walk sync path (pagination.type: id_walk over a POST search endpoint)
@@ -3783,6 +4118,84 @@ func TestProfileSyncableResourcesExcludeActionGetEndpoints(t *testing.T) {
 	assert.NotContains(t, byName, "invoices_events")
 	assert.NotContains(t, byName, "products_search")
 	assert.NotContains(t, byName, "orders_find")
+}
+
+func TestProfileNonJSONResourcesSkipDefaultSync(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "non-json-sync",
+		Resources: map[string]spec.Resource{
+			"records": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/records", Response: spec.ResponseDef{Type: "array"}},
+				},
+			},
+			"literature": {
+				Endpoints: map[string]spec.Endpoint{
+					"index": {
+						Method:         "GET",
+						Path:           "/literature.aspx",
+						ResponseFormat: spec.ResponseFormatHTML,
+						HTMLExtract:    &spec.HTMLExtract{Mode: spec.HTMLExtractModeLinks, LinkPrefixes: []string{"/download/files"}},
+						Response:       spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"sitemaps": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/sitemap.bin", ResponseFormat: spec.ResponseFormatBinary, Response: spec.ResponseDef{Type: "array"}},
+				},
+			},
+			"exports": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/export.txt", ResponseFormat: spec.ResponseFormatText, Response: spec.ResponseDef{Type: "array"}},
+				},
+			},
+			"spreadsheet": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/rows.csv", ResponseFormat: spec.ResponseFormatCSV, Response: spec.ResponseDef{Type: "array"}},
+				},
+			},
+			"feed": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/feed.xml", ResponseFormat: spec.ResponseFormatXML, Response: spec.ResponseDef{Type: "array"}},
+				},
+			},
+			"attachments": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:         "GET",
+						Path:           "/records/{id}/attachments",
+						ResponseFormat: spec.ResponseFormatBinary,
+						Response:       spec.ResponseDef{Type: "array"},
+						Params:         []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+
+	require.Contains(t, byName, "records")
+	assert.False(t, byName["records"].SkipDefaultSync)
+
+	for _, name := range []string{"literature", "sitemaps", "exports"} {
+		require.Contains(t, byName, name, "%s should remain callable via --resources", name)
+		assert.True(t, byName[name].SkipDefaultSync, "%s must not be in the default sync set", name)
+	}
+
+	require.Contains(t, byName, "spreadsheet")
+	assert.False(t, byName["spreadsheet"].SkipDefaultSync, "csv converts to JSON and stays in default sync")
+	require.Contains(t, byName, "feed")
+	assert.False(t, byName["feed"].SkipDefaultSync, "xml converts to JSON and stays in default sync")
+
+	for _, dep := range profile.DependentSyncResources {
+		assert.NotEqual(t, "attachments", dep.Name, "binary child collections must not fan out during bare sync")
+	}
 }
 
 // Specs with no recognizable pagination shape must keep the historical

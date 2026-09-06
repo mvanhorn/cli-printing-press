@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -248,6 +249,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"join":                                strings.Join,
 		"camel":                               toCamel,
 		"cmdIdent":                            commandIdent,
+		"subResourceCmdIdent":                 subResourceCmdIdent,
 		"snake":                               naming.Snake,
 		"pascal":                              toPascal,
 		"goType":                              goType,
@@ -306,6 +308,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"clientCredentialsTokenURLHasTenant":  clientCredentialsTokenURLHasTenant,
 		"hasNonCookieAuth":                    hasNonCookieAuth,
 		"authAgentEnvVars":                    authAgentEnvVars,
+		"skillAuthNarrative":                  skillAuthNarrative,
 		"hasAuthEnvVarKind":                   hasAuthEnvVarKind,
 		"isRequestAuthEnvVar":                 isRequestAuthEnvVar,
 		"requiredRequestAuthEnvVars":          requiredRequestAuthEnvVars,
@@ -334,6 +337,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"composeMCPSubDesc":                   composeMCPSubDesc,
 		"mcpParamDesc":                        g.mcpParamDescription,
 		"hasDefaultSyncResources":             hasDefaultSyncResources,
+		"syncHintInvocation":                  g.syncHintInvocation,
+		"syncHintIsBare":                      g.syncHintIsBare,
 		"flagName":                            flagName,
 		"paramIdent":                          paramIdent,
 		"paramWireName":                       paramWireName,
@@ -397,31 +402,33 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			e, _ := lookupEndpointForTemplate(api, ref)
 			return e
 		},
-		"effectiveEndpointPath":        effectiveEndpointPath,
-		"effectiveSubEndpointPath":     effectiveSubEndpointPath,
-		"enumLiteral":                  enumLiteral,
-		"enumDescriptionHint":          enumDescriptionHint,
-		"jsonStringParam":              isJSONStringParam,
-		"jsonEnumSuggestion":           jsonEnumSuggestion,
-		"bodyMap":                      bodyMap,
-		"bodyMapForEndpoint":           bodyMapForEndpoint,
-		"bodyMapForEndpointVars":       bodyMapForEndpointVars,
-		"assignJSONBodyMap":            assignJSONBodyMap,
-		"declareJSONBodyMap":           declareJSONBodyMap,
-		"bodyVarDecls":                 bodyVarDecls,
-		"bodyFlagRegs":                 bodyFlagRegs,
-		"bodyRequiredChecks":           bodyRequiredChecks,
-		"bodyExceedsFlagDepth":         bodyExceedsFlagDepth,
-		"bodyHasStringBackedBool":      bodyHasStringBackedBool,
-		"multipartBodyMaps":            multipartBodyMaps,
-		"endpointUsesMultipart":        endpointUsesMultipart,
-		"endpointUsesRawRequest":       endpointUsesRawRequest,
-		"endpointUsesCSVArray":         endpointUsesCSVArray,
-		"endpointHasQueryFlags":        endpointHasQueryFlags,
-		"endpointHasRequestParams":     endpointHasRequestParams,
-		"endpointHasRequiredInput":     endpointHasRequiredInput,
-		"endpointSkipsErrorPathProbe":  endpointSkipsErrorPathProbe,
-		"endpointIsReadCommand":        endpointIsReadCommand,
+		"effectiveEndpointPath":       effectiveEndpointPath,
+		"effectiveSubEndpointPath":    effectiveSubEndpointPath,
+		"enumLiteral":                 enumLiteral,
+		"enumDescriptionHint":         enumDescriptionHint,
+		"jsonStringParam":             isJSONStringParam,
+		"jsonEnumSuggestion":          jsonEnumSuggestion,
+		"bodyMap":                     bodyMap,
+		"bodyMapForEndpoint":          bodyMapForEndpoint,
+		"bodyMapForEndpointVars":      bodyMapForEndpointVars,
+		"assignJSONBodyMap":           assignJSONBodyMap,
+		"declareJSONBodyMap":          declareJSONBodyMap,
+		"bodyVarDecls":                bodyVarDecls,
+		"bodyFlagRegs":                bodyFlagRegs,
+		"bodyRequiredChecks":          bodyRequiredChecks,
+		"bodyExceedsFlagDepth":        bodyExceedsFlagDepth,
+		"bodyHasStringBackedBool":     bodyHasStringBackedBool,
+		"multipartBodyMaps":           multipartBodyMaps,
+		"endpointUsesMultipart":       endpointUsesMultipart,
+		"endpointUsesRawRequest":      endpointUsesRawRequest,
+		"endpointUsesCSVArray":        endpointUsesCSVArray,
+		"endpointHasQueryFlags":       endpointHasQueryFlags,
+		"endpointHasRequestParams":    endpointHasRequestParams,
+		"endpointHasRequiredInput":    endpointHasRequiredInput,
+		"endpointSkipsErrorPathProbe": endpointSkipsErrorPathProbe,
+		"endpointIsReadCommand": func(endpoint spec.Endpoint, opName string) bool {
+			return endpointIsReadCommandShared(endpoint, opName, sharedGETRPCPaths(g.Spec.Resources))
+		},
 		"hasMultipartRequest":          hasMultipartRequest,
 		"hasRawRequest":                hasRawRequest,
 		"formBodyMaps":                 formBodyMaps,
@@ -434,6 +441,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"publicFlagName":               publicFlagName,
 		"publicFlagAliases":            publicFlagAliases,
 		"flagChangedExpr":              flagChangedExpr,
+		"flagRequiredUnsatisfiedExpr":  flagRequiredUnsatisfiedExpr,
 		"graphqlListParams":            graphqlListParams,
 		"graphqlLatestParams":          graphqlLatestParams,
 		"graphqlVariableType":          graphqlVariableType,
@@ -457,13 +465,15 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointClientSideFilters": endpointClientSideFilters,
 		"globalScopeParams":         globalScopeParams,
 		"responsePathCases":         responsePathCases,
+		"syncParamDefaultCases":     syncParamDefaultCases,
+		"syncHiddenHistoryCases":    syncHiddenHistoryCases,
 		"envName":                   naming.EnvPrefix,
 		// endpointTemplateEnvName resolves the env-var name for a
 		// {placeholder} in EndpointTemplateVars. Returns the spec-declared
-		// override (e.g. ST_TENANT_ID for {tenant}) when one exists, else
-		// the conventional <APINAME>_<UPPER_PLACEHOLDER>. Bound to the
-		// generator's current spec; callers in templates pass just the
-		// placeholder name.
+		// override (e.g. ST_TENANT_ID for {tenant}) when one exists and
+		// is not a colliding auth/credential name, else the conventional
+		// <APINAME>_<UPPER_PLACEHOLDER>. Bound to the generator's current
+		// spec; callers in templates pass just the placeholder name.
 		"endpointTemplateEnvName": func(placeholder string) string {
 			return s.EndpointTemplateEnvName(placeholder)
 		},
@@ -590,6 +600,10 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"goRawSafe": func(s string) string {
 			return strings.ReplaceAll(s, "`", "'")
 		},
+		// goString escapes a value so it is safe to interpolate inside a
+		// generated double-quoted Go string literal. Resource keys and
+		// other spec-derived tokens can carry ", \, or newlines.
+		"goString": goStringLiteralContent,
 		// truncate clips a string to max runes with an ellipsis. Used to
 		// enforce the root --help Long size budget: LLM-authored headlines
 		// and novel-feature descriptions have no inherent length ceiling,
@@ -860,7 +874,7 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 				if strings.EqualFold(e.Method, "DELETE") {
 					flags.HasDelete = true
 				}
-				if isMutationMethod(e.Method) {
+				if endpointIsWriteCommand(e, name) && isMutationMethod(e.Method) {
 					flags.HasMutationEndpoints = true
 				}
 				if e.UsesRawRequestBody() {
@@ -881,7 +895,7 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 				if len(e.EmbeddedPagedSubresources) > 0 {
 					flags.HasEmbeddedPaged = true
 				}
-				if strings.Contains(e.Path, "{") {
+				if strings.Contains(e.Path, "{") || e.Walker != nil {
 					flags.HasPathParams = true
 				}
 				positionalCount := 0
@@ -921,7 +935,7 @@ func partialFailureEmissionFlags(apiSpec *spec.APISpec, promotedCommands []Promo
 			if promotedEndpointName == endpointName {
 				continue
 			}
-			if isMutationMethod(endpoint.Method) {
+			if endpointIsWriteCommand(endpoint, endpointName) && isMutationMethod(endpoint.Method) {
 				hasSupport = true
 				hasTypedErr = true
 			}
@@ -954,13 +968,13 @@ func promotedCommandCanDetectPartialFailure(command PromotedCommand, hasStore bo
 	return method == "POST" || method == "PUT" || method == "PATCH"
 }
 
-// isMutationMethod reports whether method is a mutation verb that reaches the
-// partial-failure detection call sites in command_endpoint.go.tmpl. The
-// template emits those call sites for every non-GET/HEAD endpoint, so the
-// predicate must match the same shape — otherwise a DELETE-only CLI would
-// reference undefined detectPartialFailure / partialFailureReport symbols.
-// Detection itself is a no-op for DELETE bodies in practice; the cost is one
-// dead function on truly-DELETE-only CLIs.
+// isMutationMethod reports whether method is a mutating HTTP verb. Combined
+// with endpointIsWriteCommand it matches the $isMutationOutput gate in
+// command_endpoint.go.tmpl (write-classified non-GET/HEAD endpoints). The
+// helpers must stay in sync with that gate — otherwise a DELETE-only CLI
+// would reference undefined detectPartialFailure / partialFailureReport
+// symbols. Detection itself is a no-op for DELETE bodies in practice; the
+// cost is one dead function on truly-DELETE-only CLIs.
 func isMutationMethod(method string) bool {
 	if method == "" {
 		return false
@@ -1042,10 +1056,9 @@ type endpointTemplateData struct {
 	IsAsync       bool
 	Async         AsyncJobInfo
 	PageSize      int
-	// IsReadOnly mirrors !endpointIsWriteCommand(endpoint, name). The
-	// emitted command sets Annotations["mcp:read-only"] = "true" when
-	// it's true so the cobratree MCP walker marks the tool with
-	// readOnlyHint and hosts skip the per-call permission prompt.
+	// IsReadOnly drives mcp:read-only on the emitted command so hosts can
+	// skip the per-call prompt. GET RPCs without a read signal stay false
+	// so a mutation is never treated as unattended-safe.
 	IsReadOnly bool
 	*spec.APISpec
 }
@@ -1073,6 +1086,7 @@ type readmeTemplateData struct {
 	// the auth surface, and docs must follow the emitted surface, not the
 	// spec's declared type.
 	HasAuthCommand       bool
+	HasPartialFailureErr bool
 	HasAutoRefresh       bool
 	SelectExample        string
 	SyncResourcesExample string
@@ -1132,6 +1146,8 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		syncable = g.profile.SyncableResources
 		dependent = g.profile.DependentSyncResources
 	}
+	helperFlags := computeHelperFlags(g.Spec)
+	applyPartialFailureFlags(&helperFlags, g.Spec, g.PromotedCommands, g.PromotedEndpointNames, g.hasDataLayer())
 	return &readmeTemplateData{
 		APISpec:               g.Spec,
 		Sources:               g.Sources,
@@ -1146,9 +1162,10 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		HasAsyncJobs:          len(g.AsyncJobs) > 0,
 		HasWriteCommands:      hasWriteCommands(g.Spec.Resources),
 		HasCreateCommands:     hasCreateCommands(g.Spec.Resources),
-		HasDelete:             computeHelperFlags(g.Spec).HasDelete,
+		HasDelete:             helperFlags.HasDelete,
 		HasAuth:               hasAuth(g.Spec.Auth),
 		HasAuthCommand:        g.shouldEmitAuth(),
+		HasPartialFailureErr:  helperFlags.HasPartialFailureErr,
 		HasAutoRefresh:        g.hasAutoRefresh(),
 		SelectExample:         selectExampleForCommand(g.Spec),
 		SyncResourcesExample:  syncResourcesExample(syncable, dependent),
@@ -1586,6 +1603,41 @@ func isClientIDAuthEnvVar(name string) bool {
 	return placeholder == "client_id" || strings.HasSuffix(placeholder, "_client_id")
 }
 
+var skillAuthEnvVarToken = regexp.MustCompile(`\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b`)
+
+// Independently authored prose can name secrets the compiled binary
+// ignores; drop it so Auth Setup lists only credentials the CLI reads.
+func skillAuthNarrative(auth spec.AuthConfig, narrative string) string {
+	narrative = strings.TrimSpace(narrative)
+	if narrative == "" {
+		return ""
+	}
+	resolved := resolvedSkillAuthEnvVarNames(auth)
+	for _, name := range skillAuthEnvVarToken.FindAllString(narrative, -1) {
+		if _, ok := resolved[name]; !ok {
+			return ""
+		}
+	}
+	return narrative
+}
+
+func resolvedSkillAuthEnvVarNames(auth spec.AuthConfig) map[string]struct{} {
+	names := make(map[string]struct{})
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		names[name] = struct{}{}
+	}
+	for _, envVar := range authAgentEnvVars(auth) {
+		add(envVar.Name)
+	}
+	for _, envVar := range requestAuthEnvVars(auth) {
+		add(envVar.Name)
+	}
+	return names
+}
+
 func authAgentEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
 	var envVars []spec.AuthEnvVar
 	seen := map[string]struct{}{}
@@ -1776,9 +1828,13 @@ func authSetCredentialsAvailable(auth spec.AuthConfig) bool {
 	return len(basicAuthEnvVars(auth)) == 2
 }
 
+func authSetTokenStdinCommand(cliName string) string {
+	return fmt.Sprintf(`echo "$TOKEN" | %s-pp-cli auth set-token`, cliName)
+}
+
 func authCredentialPersistenceCommand(auth spec.AuthConfig, cliName string) string {
 	if authSetTokenAvailable(auth) {
-		return fmt.Sprintf("%s-pp-cli auth set-token YOUR_TOKEN_HERE", cliName)
+		return authSetTokenStdinCommand(cliName)
 	}
 	envVars := basicAuthEnvVars(auth)
 	if len(envVars) == 2 {
@@ -1813,9 +1869,9 @@ func authCredentialConsolidationAction(auth spec.AuthConfig) string {
 func authPlaceholderCredentialSetup(auth spec.AuthConfig, cliName string) string {
 	switch {
 	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && auth.TokenURL != "":
-		return fmt.Sprintf("%s-pp-cli auth login or %s-pp-cli auth set-token <token>", cliName, cliName)
+		return fmt.Sprintf("%s-pp-cli auth login or %s", cliName, authSetTokenStdinCommand(cliName))
 	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && auth.DeviceAuthorizationURL != "" && auth.TokenURL != "":
-		return fmt.Sprintf("%s-pp-cli auth login --device-code or %s-pp-cli auth set-token <token>", cliName, cliName)
+		return fmt.Sprintf("%s-pp-cli auth login --device-code or %s", cliName, authSetTokenStdinCommand(cliName))
 	case auth.Type == "oauth2" || authBrowserLoginAvailable(auth):
 		return fmt.Sprintf("%s-pp-cli auth login", cliName)
 	case auth.Type == "cookie" || auth.Type == "composed" || auth.Type == "session_handshake":
@@ -1929,7 +1985,7 @@ func authSetupHint(auth spec.AuthConfig, cliName string) string {
 		switch auth.Type {
 		case "bearer_token", "oauth2_refresh":
 			if authSetTokenAvailableForRequiredCount(auth, len(envVars)) {
-				return fmt.Sprintf("Set it with: %s-pp-cli auth set-token <token> or export %s", cliName, exports[0])
+				return fmt.Sprintf("Set it with: %s or export %s", authSetTokenStdinCommand(cliName), exports[0])
 			}
 			return fmt.Sprintf("Set it with: export %s", exports[0])
 		case "api_key":
@@ -1984,8 +2040,9 @@ func effectiveSubTier(api *spec.APISpec, parent spec.Resource, subResource spec.
 }
 
 func hasWriteCommands(resources map[string]spec.Resource) bool {
+	shared := sharedGETRPCPaths(resources)
 	for _, resource := range resources {
-		if resourceHasWriteCommand(resource) {
+		if resourceHasWriteCommandShared(resource, shared) {
 			return true
 		}
 	}
@@ -2001,14 +2058,14 @@ func hasCreateCommands(resources map[string]spec.Resource) bool {
 	return false
 }
 
-func resourceHasWriteCommand(resource spec.Resource) bool {
+func resourceHasWriteCommandShared(resource spec.Resource, sharedGETPaths map[string]bool) bool {
 	for name, endpoint := range resource.Endpoints {
-		if endpointIsWriteCommand(endpoint, name) {
+		if endpointIsWriteCommandShared(endpoint, name, sharedGETPaths) {
 			return true
 		}
 	}
 	for _, sub := range resource.SubResources {
-		if resourceHasWriteCommand(sub) {
+		if resourceHasWriteCommandShared(sub, sharedGETPaths) {
 			return true
 		}
 	}
@@ -2055,10 +2112,10 @@ var readOperationIDPrefixes = map[string]bool{
 	"fetch":    true,
 }
 
-// mutationOperationIDPrefixes are conservative action tokens for GET-based
-// RPC endpoints. HTTP method remains the default signal; these leading tokens
-// only opt a GET into the write path when an operation name clearly describes
-// a state-changing action.
+// Conservative action tokens for GET-based endpoints. A leading token
+// here opts a GET into the write path even on an ordinary REST path.
+// RPC-over-GET without a read signal fails closed independently of
+// these tokens.
 var mutationOperationIDPrefixes = map[string]bool{
 	"activate":   true,
 	"add":        true,
@@ -2138,33 +2195,155 @@ var readBodyParamNames = map[string]bool{
 // state. Read signals are checked in cost order: read-only annotation,
 // explicit mutation signal, verb, name token, body shape. The read-only
 // annotation remains the strongest override so an explicitly safe endpoint
-// cannot be made destructive by a broad fallback. Unknown GET shapes remain
-// read-only unless the spec or operation name supplies a mutation signal.
+// cannot be made destructive by a broad fallback. Unknown GET RPCs fail
+// closed (write) unless a read token, mutation:false, or mcp:read-only
+// supplies a positive read signal. Conventional REST GETs stay readable.
 //
 // opName is the map key from Resource.Endpoints (the operation id).
 func endpointIsWriteCommand(endpoint spec.Endpoint, opName string) bool {
+	return endpointIsWriteCommandShared(endpoint, opName, nil)
+}
+
+func endpointIsWriteCommandShared(endpoint spec.Endpoint, opName string, sharedGETPaths map[string]bool) bool {
 	if v, ok := endpoint.Meta["mcp:read-only"]; ok && strings.EqualFold(strings.TrimSpace(v), "true") {
 		return false
 	}
-	if endpoint.Mutation {
-		return true
+	if value, set := endpoint.MutationOverride(); set {
+		return value
 	}
 	tokens := camelCaseTokens(strings.TrimSpace(opName))
+	leading := ""
+	if len(tokens) > 0 {
+		leading = strings.ToLower(tokens[0])
+	}
 	if !methodIsWrite(endpoint.Method) {
 		if !strings.EqualFold(strings.TrimSpace(endpoint.Method), "GET") {
 			return false
 		}
-		return len(tokens) > 0 && mutationOperationIDPrefixes[strings.ToLower(tokens[0])]
+		if mutationOperationIDPrefixes[leading] {
+			return true
+		}
+		if readOperationIDPrefixes[leading] {
+			return leadingTokenHasWriteFragment(tokens)
+		}
+		return getLooksLikeRPC(endpoint, sharedGETPaths)
 	}
-	if len(tokens) > 0 && readOperationIDPrefixes[strings.ToLower(tokens[0])] {
-		for _, tok := range tokens[1:] {
-			if writeOperationIDFragments[strings.ToLower(tok)] {
+	if readOperationIDPrefixes[leading] {
+		return leadingTokenHasWriteFragment(tokens)
+	}
+	return !bodyIsAllFilterShape(endpoint.Body)
+}
+
+func leadingTokenHasWriteFragment(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if writeOperationIDFragments[strings.ToLower(tok)] {
+			return true
+		}
+	}
+	return false
+}
+
+func getLooksLikeRPC(endpoint spec.Endpoint, sharedGETPaths map[string]bool) bool {
+	if endpointLooksLikeRPC(endpoint) {
+		return true
+	}
+	return sharedGETPaths[canonicalRPCPath(endpoint.Path)]
+}
+
+func canonicalRPCPath(raw string) string {
+	path := strings.TrimSpace(raw)
+	if i := strings.Index(path, "?"); i >= 0 {
+		path = path[:i]
+	}
+	return path
+}
+
+var rpcQuerySelectorNames = map[string]bool{
+	"method":    true,
+	"action":    true,
+	"op":        true,
+	"operation": true,
+	"cmd":       true,
+	"command":   true,
+}
+
+func endpointLooksLikeRPC(endpoint spec.Endpoint) bool {
+	raw := strings.TrimSpace(endpoint.Path)
+	base := strings.ToLower(canonicalRPCPath(raw))
+	if strings.HasSuffix(base, ".cgi") {
+		return true
+	}
+	seg := base
+	if i := strings.LastIndex(seg, "/"); i >= 0 {
+		seg = seg[i+1:]
+	}
+	switch seg {
+	case "rpc", "jsonrpc", "xmlrpc", "json-rpc":
+		return true
+	}
+	if i := strings.Index(raw, "?"); i >= 0 && queryHasRPCSelector(raw[i+1:]) {
+		return true
+	}
+	return slices.ContainsFunc(endpoint.Params, paramLooksLikeRPCSelector)
+}
+
+func queryHasRPCSelector(rawQuery string) bool {
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		lower := strings.ToLower(rawQuery)
+		for name := range rpcQuerySelectorNames {
+			if strings.Contains(lower, name+"=") {
 				return true
 			}
 		}
 		return false
 	}
-	return !bodyIsAllFilterShape(endpoint.Body)
+	for name := range values {
+		if rpcQuerySelectorNames[strings.ToLower(name)] {
+			return true
+		}
+	}
+	return false
+}
+
+func paramLooksLikeRPCSelector(p spec.Param) bool {
+	in := strings.ToLower(strings.TrimSpace(p.In))
+	if p.PathParam || in == "path" || in == "header" {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(p.Name))
+	if alias := strings.ToLower(strings.TrimSpace(p.URLName)); alias != "" {
+		name = alias
+	}
+	return rpcQuerySelectorNames[name]
+}
+
+func sharedGETRPCPaths(resources map[string]spec.Resource) map[string]bool {
+	counts := map[string]int{}
+	var walk func(spec.Resource)
+	walk = func(resource spec.Resource) {
+		for _, endpoint := range resource.Endpoints {
+			if !strings.EqualFold(strings.TrimSpace(endpoint.Method), "GET") {
+				continue
+			}
+			if path := canonicalRPCPath(endpoint.Path); path != "" {
+				counts[path]++
+			}
+		}
+		for _, sub := range resource.SubResources {
+			walk(sub)
+		}
+	}
+	for _, resource := range resources {
+		walk(resource)
+	}
+	shared := map[string]bool{}
+	for path, n := range counts {
+		if n > 1 {
+			shared[path] = true
+		}
+	}
+	return shared
 }
 
 func endpointIsCreateCommand(endpoint spec.Endpoint, opName string) bool {
@@ -2188,6 +2367,10 @@ func endpointIsCreateCommand(endpoint spec.Endpoint, opName string) bool {
 // one update site.
 func endpointIsReadCommand(endpoint spec.Endpoint, opName string) bool {
 	return !endpointIsWriteCommand(endpoint, opName)
+}
+
+func endpointIsReadCommandShared(endpoint spec.Endpoint, opName string, sharedGETPaths map[string]bool) bool {
+	return !endpointIsWriteCommandShared(endpoint, opName, sharedGETPaths)
 }
 
 // camelCaseTokens splits "getOrCreate" → ["get", "Or", "Create"] and
@@ -2339,9 +2522,9 @@ func safeDisplayURL(value string) string {
 // evaluated independently, so this deliberately does NOT recurse into
 // r.SubResources — a read-only parent must not inherit a child's writability,
 // and vice versa.
-func resourceHasMutation(r spec.Resource) bool {
+func resourceHasMutationShared(r spec.Resource, sharedGETPaths map[string]bool) bool {
 	for name, endpoint := range r.Endpoints {
-		if endpointIsWriteCommand(endpoint, name) {
+		if endpointIsWriteCommandShared(endpoint, name, sharedGETPaths) {
 			return true
 		}
 	}
@@ -2366,6 +2549,7 @@ func (g *Generator) buildDomainContext() DomainContext {
 		for _, sr := range g.profile.SyncableResources {
 			syncSet[sr.Name] = true
 		}
+		sharedGETPaths := sharedGETRPCPaths(g.Spec.Resources)
 
 		// addResourceSummaries emits one ResourceSummary for the resource named
 		// `name` (dotted path for sub-resources, e.g. "projects.issues") and
@@ -2380,7 +2564,7 @@ func (g *Generator) buildDomainContext() DomainContext {
 				Description: naming.OneLine(r.Description),
 				Syncable:    syncSet[name],
 				Searchable:  len(g.profile.SearchableFields[name]) > 0,
-				Writable:    resourceHasMutation(r),
+				Writable:    resourceHasMutationShared(r, sharedGETPaths),
 			}
 			for eName := range r.Endpoints {
 				rs.Endpoints = append(rs.Endpoints, eName)
@@ -2547,7 +2731,7 @@ func (g *Generator) prepareOutput() error {
 		g.profile = profiler.Profile(g.Spec)
 		g.resetHTMLSyncStubCache()
 	}
-	promoteSyncPathTemplateVars(g.Spec, g.profile)
+	promoteSyncPathContextVars(g.Spec, g.profile)
 	if err := g.validateFreshnessCommandCoverage(); err != nil {
 		return err
 	}
@@ -2621,6 +2805,10 @@ func (g *Generator) renderSingleFiles() error {
 		"cliutil_verifyenv.go.tmpl":                filepath.Join("internal", "cliutil", "verifyenv.go"),
 		"cliutil_paths.go.tmpl":                    filepath.Join("internal", "cliutil", "paths.go"),
 		"cliutil_paths_test.go.tmpl":               filepath.Join("internal", "cliutil", "paths_test.go"),
+		"cliutil_filelock.go.tmpl":                 filepath.Join("internal", "cliutil", "filelock.go"),
+		"cliutil_filelock_unix.go.tmpl":            filepath.Join("internal", "cliutil", "filelock_unix.go"),
+		"cliutil_filelock_windows.go.tmpl":         filepath.Join("internal", "cliutil", "filelock_windows.go"),
+		"cliutil_filelock_test.go.tmpl":            filepath.Join("internal", "cliutil", "filelock_test.go"),
 		"cliutil_testenv.go.tmpl":                  filepath.Join("internal", "cliutil", "testenv", "testenv.go"),
 		"cliutil_testenv_sandbox_unix.go.tmpl":     filepath.Join("internal", "cliutil", "testenv", "sandbox_unix.go"),
 		"cliutil_testenv_sandbox_windows.go.tmpl":  filepath.Join("internal", "cliutil", "testenv", "sandbox_windows.go"),
@@ -2779,6 +2967,15 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		// the parse-error path never leaks the token (S3).
 		if err := g.renderTemplate("config_perms_test.go.tmpl", filepath.Join("internal", "config", "config_perms_test.go"), authData); err != nil {
 			return fmt.Errorf("rendering config perms test: %w", err)
+		}
+	}
+
+	if g.hasOAuthTokenExchange() {
+		if err := g.renderTemplate("cliutil_oauth_token.go.tmpl", filepath.Join("internal", "cliutil", "oauth_token.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cliutil oauth token client: %w", err)
+		}
+		if err := g.renderTemplate("cliutil_oauth_token_test.go.tmpl", filepath.Join("internal", "cliutil", "oauth_token_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cliutil oauth token client test: %w", err)
 		}
 	}
 
@@ -3032,7 +3229,10 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		// (which teach.go's command constructors call) and initLearn(),
 		// which root.go invokes from PersistentPreRunE under the same
 		// Learn.Enabled gate.
-		if err := g.renderTemplate("learn_init.go.tmpl", filepath.Join("internal", "cli", "learn_init.go"), g.Spec); err != nil {
+		if err := g.renderTemplate("learn_init.go.tmpl", filepath.Join("internal", "cli", "learn_init.go"), learnInitTemplateData{
+			APISpec:                g.Spec,
+			ResourceIdentityFields: learnResourceIdentityFieldEntries(g.Spec, g.profile),
+		}); err != nil {
 			return fmt.Errorf("rendering learn init: %w", err)
 		}
 		if err := g.renderTemplate("learn_init_test.go.tmpl", filepath.Join("internal", "cli", "learn_init_test.go"), g.Spec); err != nil {
@@ -3177,6 +3377,7 @@ func (g *Generator) renderLearnFiles() error {
 }
 
 func (g *Generator) Generate() error {
+	g.Spec.DropCollidingEndpointTemplateEnvOverrides()
 	applyLargeMCPSurfaceDefault(g.Spec, os.Stderr)
 	// Fresh prints default the self-learning loop on (opt out with
 	// learn.disabled: true). Deliberately absent from GenerateMCPSurface:
@@ -3336,6 +3537,16 @@ func (g *Generator) activeFrameworkCobraUseNames() map[string]struct{} {
 	if g.Spec.Share.Enabled {
 		names["share"] = struct{}{}
 	}
+	if g.Spec.Learn.Enabled {
+		// Same root verbs root.go.tmpl registers under Learn.Enabled.
+		names["learnings"] = struct{}{}
+		names["playbook"] = struct{}{}
+		names["recall"] = struct{}{}
+		names["teach"] = struct{}{}
+		names["teach-lookup"] = struct{}{}
+		names["teach-pattern"] = struct{}{}
+		names["teach-playbook"] = struct{}{}
+	}
 	if len(g.PromotedCommands) > 0 {
 		names["api"] = struct{}{}
 	}
@@ -3440,7 +3651,7 @@ func cobratreeWalkerTemplateFiles() map[string]string {
 // reserved (agents must not hand-edit it), so unconditional regen here
 // is intentionally asymmetric vs the marker-checked tools.go/handlers.go
 // paths in mcp-sync. Spec-conditional cliutil files (freshness,
-// autoRefresh) stay in renderOptionalSupportFiles so they don't get
+// autoRefresh, oauth token client) stay in renderOptionalSupportFiles so they don't get
 // emitted when the spec opts out.
 func (g *Generator) GenerateMCPSurface() error {
 	applyLargeMCPSurfaceDefault(g.Spec, os.Stderr)
@@ -3468,6 +3679,10 @@ func (g *Generator) GenerateMCPSurface() error {
 		"cliutil_verifyenv.go.tmpl":               filepath.Join("internal", "cliutil", "verifyenv.go"),
 		"cliutil_paths.go.tmpl":                   filepath.Join("internal", "cliutil", "paths.go"),
 		"cliutil_paths_test.go.tmpl":              filepath.Join("internal", "cliutil", "paths_test.go"),
+		"cliutil_filelock.go.tmpl":                filepath.Join("internal", "cliutil", "filelock.go"),
+		"cliutil_filelock_unix.go.tmpl":           filepath.Join("internal", "cliutil", "filelock_unix.go"),
+		"cliutil_filelock_windows.go.tmpl":        filepath.Join("internal", "cliutil", "filelock_windows.go"),
+		"cliutil_filelock_test.go.tmpl":           filepath.Join("internal", "cliutil", "filelock_test.go"),
 		"cliutil_testenv.go.tmpl":                 filepath.Join("internal", "cliutil", "testenv", "testenv.go"),
 		"cliutil_testenv_sandbox_unix.go.tmpl":    filepath.Join("internal", "cliutil", "testenv", "sandbox_unix.go"),
 		"cliutil_testenv_sandbox_windows.go.tmpl": filepath.Join("internal", "cliutil", "testenv", "sandbox_windows.go"),
@@ -3790,12 +4005,14 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 		resource := withoutOptionsEndpoints(originalResource)
 		// Skip parent file for promoted resources — the promoted command replaces it.
 		// Sub-resource parents and endpoint files are still needed (wired by the promoted command).
+		resourceCommand := toKebab(name)
 		if !promotedResourceNames[name] {
 			// Parent file: wires subcommands together
 			parentData := struct {
 				ResourceName  string
 				FuncPrefix    string
 				CommandPath   string
+				CommandUse    string
 				Short         string
 				Resource      spec.Resource
 				NovelChildren []novelFeatureChildRender
@@ -3804,10 +4021,10 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			}{
 				ResourceName:  name,
 				FuncPrefix:    name,
-				CommandPath:   name,
+				CommandPath:   resourceCommand,
 				Short:         parentCommandShort(name, "", resource, apiDescriptionShort),
 				Resource:      resource,
-				NovelChildren: novelChildrenByParent[toKebab(name)],
+				NovelChildren: novelChildrenByParent[resourceCommand],
 				APIResource:   true,
 				APISpec:       g.Spec,
 			}
@@ -3832,7 +4049,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				EffectivePath: effectiveEndpointPath(resource, endpoint),
 				EffectiveTier: g.Spec.EffectiveTier(resource, endpoint),
 				FuncPrefix:    name,
-				CommandPath:   name,
+				CommandPath:   resourceCommand,
 				EndpointName:  eName,
 				Endpoint:      endpoint,
 				Resource:      resource,
@@ -3840,7 +4057,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				IsAsync:       isAsync,
 				Async:         asyncInfo,
 				PageSize:      g.paginationPageSizeForEndpoint(endpoint),
-				IsReadOnly:    endpointIsReadCommand(endpoint, eName),
+				IsReadOnly:    endpointIsReadCommandShared(endpoint, eName, sharedGETRPCPaths(g.Spec.Resources)),
 				APISpec:       g.Spec,
 			}
 			epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+eName)+".go")
@@ -3850,14 +4067,21 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 		}
 
 		// Sub-resource parent + endpoint files
+		collidingLeaves := collectionItemCollisionLeaves(resource)
 		for subName, originalSubResource := range resource.SubResources {
 			// Same OPTIONS filter as the top-level resource, applied to
 			// the sub-resource view for the same consistency reason.
 			subResource := withoutOptionsEndpoints(originalSubResource)
+			naming := subResourceCommandNamesFor(name, subName, collidingLeaves[subName])
+			commandUse := ""
+			if collidingLeaves[subName] {
+				commandUse = naming.commandUse
+			}
 			subParentData := struct {
 				ResourceName  string
 				FuncPrefix    string
 				CommandPath   string
+				CommandUse    string
 				Short         string
 				Resource      spec.Resource
 				NovelChildren []novelFeatureChildRender
@@ -3865,15 +4089,16 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				*spec.APISpec
 			}{
 				ResourceName:  subName,
-				FuncPrefix:    name + "-" + subName,
-				CommandPath:   name + " " + subName,
+				FuncPrefix:    naming.funcPrefix,
+				CommandPath:   naming.commandPath,
+				CommandUse:    commandUse,
 				Short:         parentCommandShort(subName, name, subResource, ""),
 				Resource:      subResource,
-				NovelChildren: novelChildrenByParent[toKebab(name)+" "+toKebab(subName)],
+				NovelChildren: novelChildrenByParent[naming.commandPath],
 				APIResource:   false,
 				APISpec:       g.Spec,
 			}
-			subParentPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName)+".go")
+			subParentPath := filepath.Join("internal", "cli", naming.fileStem+".go")
 			if err := g.renderTemplate("command_parent.go.tmpl", subParentPath, subParentData); err != nil {
 				return fmt.Errorf("rendering sub-parent %s/%s: %w", name, subName, err)
 			}
@@ -3891,8 +4116,8 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 					ResourceName:  subName,
 					EffectivePath: effectiveSubEndpointPath(resource, subResource, endpoint),
 					EffectiveTier: g.Spec.EffectiveTier(effectiveResource, endpoint),
-					FuncPrefix:    name + "-" + subName,
-					CommandPath:   name + " " + subName,
+					FuncPrefix:    naming.funcPrefix,
+					CommandPath:   naming.commandPath,
 					EndpointName:  eName,
 					Endpoint:      endpoint,
 					Resource:      effectiveResource,
@@ -3900,10 +4125,10 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 					IsAsync:       isAsync,
 					Async:         asyncInfo,
 					PageSize:      g.paginationPageSizeForEndpoint(endpoint),
-					IsReadOnly:    endpointIsReadCommand(endpoint, eName),
+					IsReadOnly:    endpointIsReadCommandShared(endpoint, eName, sharedGETRPCPaths(g.Spec.Resources)),
 					APISpec:       g.Spec,
 				}
-				epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName+"_"+eName)+".go")
+				epPath := filepath.Join("internal", "cli", safeResourceFileStem(naming.rawStem+"_"+eName)+".go")
 				if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
 					return fmt.Errorf("rendering sub-endpoint %s/%s/%s: %w", name, subName, eName, err)
 				}
@@ -3986,9 +4211,24 @@ func (g *Generator) renderAuthFiles() error {
 // HasAuthCommand, and scoreAuth exempts them from the "no auth subcommand"
 // deduction. All three call sites must agree -- they call this method.
 func (g *Generator) shouldEmitAuth() bool {
-	return g.Spec.Auth.Type != "none" ||
+	typ := strings.ToLower(strings.TrimSpace(g.Spec.Auth.Type))
+	return (typ != "" && typ != "none") ||
 		g.Spec.Auth.AuthorizationURL != "" ||
 		g.hasTrafficAnalysisHint("graphql_persisted_query")
+}
+
+// client.go emits mintClientCredentials — and a compile-time reference to
+// OAuthTokenHTTPClient — for every client_credentials grant, including
+// specs with an empty TokenURL. TokenURL and AuthorizationURL cover the
+// other call sites (refresh, auth-code exchange, device poll).
+func (g *Generator) hasOAuthTokenExchange() bool {
+	if g == nil || g.Spec == nil {
+		return false
+	}
+	auth := g.Spec.Auth
+	return strings.TrimSpace(auth.TokenURL) != "" ||
+		strings.TrimSpace(auth.AuthorizationURL) != "" ||
+		auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials
 }
 
 func (g *Generator) emitsTopLevelOAuthLogin() bool {
@@ -4012,6 +4252,12 @@ func (g *Generator) renderMCPEntrypoint() error {
 		}
 		if err := g.renderTemplate("main_mcp.go.tmpl", filepath.Join("cmd", naming.MCP(g.Spec.Name), "main.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering MCP main: %w", err)
+		}
+		if g.Spec.HasMCPTransport("http") {
+			httpTestPath := filepath.Join("cmd", naming.MCP(g.Spec.Name), "http_auth_test.go")
+			if err := g.renderTemplate("main_mcp_http_test.go.tmpl", httpTestPath, g.Spec); err != nil {
+				return fmt.Errorf("rendering MCP HTTP auth tests: %w", err)
+			}
 		}
 	}
 
@@ -4115,7 +4361,68 @@ func (g *Generator) schemaWithDependentParents() []TableDef {
 	// domain table routed through generic storage by BuildSchema.
 	routeReservedStoreTablesToGenericOnly(domainSchema, reservedStoreObjectNames(g.Spec))
 
+	var dependent []profiler.DependentResource
+	if g.profile != nil {
+		dependent = g.profile.DependentSyncResources
+	}
+	attachBareIDColumns(schema, dependent)
+
 	return schema
+}
+
+// attachBareIDColumns adds a queryable generated bare_id to parent-keyed
+// typed tables. resourceStorageID writes id+NUL+parent as the primary key;
+// SQL that compares id to a bare API id therefore misses. The column
+// projects the same value BareResourceID returns so store queries can
+// filter without matching the hidden parent suffix.
+func attachBareIDColumns(tables []TableDef, dependent []profiler.DependentResource) {
+	parentKeyed := make(map[string]struct{})
+	for _, entry := range resourceParentKeyColumnEntries(tables, dependent) {
+		parentKeyed[entry.Name] = struct{}{}
+	}
+	for i := range tables {
+		table := &tables[i]
+		// JSON-only fallback keeps id/data/synced_at only; parent context
+		// for those rows lives in the generic resources table, so the
+		// parent-keyed bare_id projection must not come back after a
+		// wide-cap reset.
+		if table.JSONOnlyFallback || !emitsDomainTable(*table) || !isParentKeyedTypedTable(*table, parentKeyed) {
+			continue
+		}
+		if hasNamedColumn(*table, storeBareIDColumn) {
+			continue
+		}
+		table.Columns = append(table.Columns, ColumnDef{
+			Name:      storeBareIDColumn,
+			Type:      storeBareIDType,
+			Generated: true,
+		})
+		table.Indexes = append(table.Indexes, IndexDef{
+			Name:      "idx_" + table.Name + "_" + storeBareIDColumn,
+			TableName: table.Name,
+			Columns:   storeBareIDColumn,
+		})
+	}
+}
+
+func isParentKeyedTypedTable(table TableDef, parentKeyed map[string]struct{}) bool {
+	if table.ParentKeyColumn != "" {
+		return true
+	}
+	if _, ok := parentKeyed[table.Resource]; ok {
+		return true
+	}
+	_, ok := parentKeyed[table.Name]
+	return ok
+}
+
+func hasNamedColumn(table TableDef, name string) bool {
+	for _, col := range table.Columns {
+		if col.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *Generator) renderStoreFiles(schema []TableDef) error {
@@ -4197,6 +4504,134 @@ type resourceIDFieldOverrideEntry struct {
 	Value string
 }
 
+type learnInitTemplateData struct {
+	*spec.APISpec
+	ResourceIdentityFields []learnIdentityFieldEntry
+}
+
+type learnIdentityFieldEntry struct {
+	ResourceType string
+	Fields       []string
+}
+
+func learnCommonIdentityFields() []string {
+	return []string{
+		"name", "title", "display_name", "full_name", "short_name", "label",
+		"slug", "key", "code", "id", "address",
+	}
+}
+
+func learnResourceIdentityFieldEntries(api *spec.APISpec, profile *profiler.APIProfile) []learnIdentityFieldEntry {
+	idByType := map[string]string{}
+	add := func(name, idField string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if idField != "" {
+			idByType[name] = idField
+			return
+		}
+		if _, ok := idByType[name]; !ok {
+			idByType[name] = ""
+		}
+	}
+	if api != nil {
+		var walk func(map[string]spec.Resource)
+		walk = func(resources map[string]spec.Resource) {
+			for name, res := range resources {
+				add(name, firstEndpointIDField(res))
+				if len(res.SubResources) > 0 {
+					walk(res.SubResources)
+				}
+			}
+		}
+		walk(api.Resources)
+	}
+	if profile != nil {
+		for _, r := range profile.SyncableResources {
+			add(r.Name, r.IDField)
+		}
+		for _, r := range profile.DependentSyncResources {
+			add(r.Name, r.IDField)
+		}
+	}
+	names := make([]string, 0, len(idByType))
+	for name := range idByType {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	common := learnCommonIdentityFields()
+	entries := make([]learnIdentityFieldEntry, 0, len(names))
+	for _, name := range names {
+		entries = append(entries, learnIdentityFieldEntry{
+			ResourceType: name,
+			Fields:       identityFieldsForResource(idByType[name], common),
+		})
+	}
+	return entries
+}
+
+func identityFieldsForResource(idField string, common []string) []string {
+	out := make([]string, 0, len(common)+1)
+	seen := map[string]struct{}{}
+	add := func(f string) {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			return
+		}
+		if _, ok := seen[f]; ok {
+			return
+		}
+		seen[f] = struct{}{}
+		out = append(out, f)
+	}
+	for _, part := range splitResourceIDFieldOverride(idField) {
+		add(part)
+	}
+	for _, f := range common {
+		add(f)
+	}
+	return out
+}
+
+func splitResourceIDFieldOverride(idField string) []string {
+	idField = strings.TrimSpace(idField)
+	if idField == "" {
+		return nil
+	}
+	if !strings.Contains(idField, "+") {
+		return []string{idField}
+	}
+	raw := strings.Split(idField, "+")
+	parts := make([]string, 0, len(raw))
+	for _, part := range raw {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return []string{idField}
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) < 2 {
+		return []string{idField}
+	}
+	return parts
+}
+
+func firstEndpointIDField(r spec.Resource) string {
+	names := make([]string, 0, len(r.Endpoints))
+	for name := range r.Endpoints {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if id := strings.TrimSpace(r.Endpoints[name].IDField); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
 type resourceParentKeyColumnEntry struct {
 	Name   string
 	Values []string
@@ -4214,6 +4649,59 @@ type paginationDefaultEntry struct {
 	NextCursorPath string
 	LimitParam     string
 	Limit          int
+}
+
+func promoteSyncPathContextVars(api *spec.APISpec, profile *profiler.APIProfile) {
+	if api == nil || profile == nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(api.SyncPathContextVars)+len(api.EndpointTemplateVars))
+	for _, name := range api.SyncPathContextVars {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			seen[trimmed] = struct{}{}
+		}
+	}
+	for _, name := range api.EndpointTemplateVars {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			seen[trimmed] = struct{}{}
+		}
+	}
+	for _, resource := range profile.SyncableResources {
+		if !resource.SkipDefaultSync {
+			continue
+		}
+		for _, name := range pathTemplateVarNames(resource.Path) {
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			api.SyncPathContextVars = append(api.SyncPathContextVars, name)
+		}
+	}
+	slices.Sort(api.SyncPathContextVars)
+}
+
+func pathTemplateVarNames(path string) []string {
+	var names []string
+	seen := map[string]struct{}{}
+	for i := 0; i < len(path); i++ {
+		if path[i] != '{' {
+			continue
+		}
+		j := strings.IndexByte(path[i:], '}')
+		if j < 0 {
+			break
+		}
+		name := strings.TrimSpace(path[i+1 : i+j])
+		if name != "" {
+			if _, ok := seen[name]; !ok {
+				seen[name] = struct{}{}
+				names = append(names, name)
+			}
+		}
+		i += j
+	}
+	return names
 }
 
 func paginationDefaultEntries(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []paginationDefaultEntry {
@@ -4253,54 +4741,6 @@ func paginationDefaultEntries(syncable []profiler.SyncableResource, dependent []
 		entries[i] = defaults[key]
 	}
 	return entries
-}
-
-func promoteSyncPathTemplateVars(api *spec.APISpec, profile *profiler.APIProfile) {
-	if api == nil || profile == nil {
-		return
-	}
-	seen := make(map[string]struct{}, len(api.EndpointTemplateVars))
-	for _, name := range api.EndpointTemplateVars {
-		if trimmed := strings.TrimSpace(name); trimmed != "" {
-			seen[trimmed] = struct{}{}
-		}
-	}
-	for _, resource := range profile.SyncableResources {
-		if !resource.SkipDefaultSync {
-			continue
-		}
-		for _, name := range pathTemplateVarNames(resource.Path) {
-			if _, ok := seen[name]; ok {
-				continue
-			}
-			seen[name] = struct{}{}
-			api.EndpointTemplateVars = append(api.EndpointTemplateVars, name)
-		}
-	}
-	slices.Sort(api.EndpointTemplateVars)
-}
-
-func pathTemplateVarNames(path string) []string {
-	var names []string
-	seen := map[string]struct{}{}
-	for i := 0; i < len(path); i++ {
-		if path[i] != '{' {
-			continue
-		}
-		j := strings.IndexByte(path[i:], '}')
-		if j < 0 {
-			break
-		}
-		name := strings.TrimSpace(path[i+1 : i+j])
-		if name != "" {
-			if _, ok := seen[name]; !ok {
-				seen[name] = struct{}{}
-				names = append(names, name)
-			}
-		}
-		i += j
-	}
-	return names
 }
 
 func resourceIDFieldOverrideEntries(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []resourceIDFieldOverrideEntry {
@@ -4495,12 +4935,76 @@ func paginationSupportedResources(syncable []profiler.SyncableResource, dependen
 }
 
 func hasDefaultSyncResources(syncable []profiler.SyncableResource) bool {
+	return len(defaultSyncResourceNames(syncable)) > 0
+}
+
+func defaultSyncResourceNames(syncable []profiler.SyncableResource) []string {
+	names := make([]string, 0, len(syncable))
 	for _, resource := range syncable {
-		if !resource.SkipDefaultSync {
-			return true
+		if resource.SkipDefaultSync {
+			continue
+		}
+		if name := strings.TrimSpace(resource.Name); name != "" {
+			names = append(names, name)
 		}
 	}
-	return false
+	sort.Strings(names)
+	return names
+}
+
+func syncableHintResourceNames(syncable []profiler.SyncableResource) []string {
+	names := make([]string, 0, len(syncable))
+	for _, resource := range syncable {
+		if isVestigialSyncResource(resource) {
+			continue
+		}
+		if name := strings.TrimSpace(resource.Name); name != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Quote, backslash, or newline in spec-derived tokens break generated "..." literals.
+func goStringLiteralContent(s string) string {
+	quoted := strconv.Quote(s)
+	return quoted[1 : len(quoted)-1]
+}
+
+// syncHintInvocation is the working sync command for generated hints and
+// help. Bare `sync` when defaultSyncResources is populated; `sync --resources
+// a,b` when resources exist but none are default; empty when no hint should
+// name sync.
+func syncHintInvocation(cliName string, syncable []profiler.SyncableResource) string {
+	cliName = strings.TrimSpace(cliName)
+	if cliName == "" {
+		return ""
+	}
+	bin := cliName + "-pp-cli"
+	if len(defaultSyncResourceNames(syncable)) > 0 {
+		return shellargs.Join([]string{bin, "sync"})
+	}
+	if names := syncableHintResourceNames(syncable); len(names) > 0 {
+		return shellargs.Join([]string{bin, "sync", "--resources", strings.Join(names, ",")})
+	}
+	return ""
+}
+
+func (g *Generator) syncHintInvocation() string {
+	if g == nil || g.Spec == nil || !g.hasGeneratedSyncImplementation() {
+		return ""
+	}
+	var syncable []profiler.SyncableResource
+	if g.profile != nil {
+		syncable = g.profile.SyncableResources
+	}
+	return syncHintInvocation(g.Spec.Name, syncable)
+}
+
+func (g *Generator) syncHintIsBare() bool {
+	inv := g.syncHintInvocation()
+	return strings.HasSuffix(inv, " sync")
 }
 
 func specDateTimeFieldNames(api *spec.APISpec) []string {
@@ -4566,8 +5070,8 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		VisionSet:                    g.VisionSet,
 		CommandNames:                 maps.Clone(g.visionCommandNames),
 		HasSync:                      g.hasGeneratedSyncImplementation(),
-		SyncableResources:            g.profile.SyncableResources,
-		DependentSyncResources:       g.profile.DependentSyncResources,
+		SyncableResources:            withEffectiveSyncableRequestPaths(g.Spec, g.profile.SyncableResources),
+		DependentSyncResources:       withEffectiveDependentRequestPaths(g.Spec, g.profile.DependentSyncResources),
 		SyncResourcesExample:         syncResourcesExample(g.profile.SyncableResources, g.profile.DependentSyncResources),
 		TenantScopedParents:          g.profile.TenantScopedParents(),
 		MembershipScopedParents:      g.profile.MembershipScopedParents(),
@@ -4577,7 +5081,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		SearchableFields:             g.profile.SearchableFields,
 		Tables:                       schema,
 		Pagination:                   g.profile.Pagination,
-		SearchEndpointPath:           g.profile.SearchEndpointPath,
+		SearchEndpointPath:           effectiveRequestPath(g.Spec, "", g.profile.SearchEndpointPath, g.profile.SearchEndpointMethod),
 		SearchQueryParam:             g.profile.SearchQueryParam,
 		SearchEndpointMethod:         g.profile.SearchEndpointMethod,
 		SearchBodyFields:             g.profile.SearchBodyFields,
@@ -4882,11 +5386,13 @@ func detectAgentMoneyWorkflow(api *spec.APISpec, promotedEndpointNames map[strin
 				return workflow
 			}
 		}
+		collidingLeaves := collectionItemCollisionLeaves(resource)
 		for _, subName := range sortedResourceNames(resource.SubResources) {
 			sub := resource.SubResources[subName]
+			naming := subResourceCommandNamesFor(resourceName, subName, collidingLeaves[subName])
 			for _, endpointName := range sortedEndpointNames(sub.Endpoints) {
 				endpoint := sub.Endpoints[endpointName]
-				class, cmd := agentMoneyCommandForEndpoint(endpoint, []string{toKebab(resourceName), toKebab(subName), toKebab(endpointName)}, false)
+				class, cmd := agentMoneyCommandForEndpoint(endpoint, append(strings.Fields(naming.commandPath), toKebab(endpointName)), false)
 				assignAgentMoneyCommand(&workflow, class, cmd)
 				if workflow.complete() {
 					return workflow
@@ -5190,7 +5696,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			PageSize:          g.paginationPageSizeForEndpoint(pc.Endpoint),
 			Resource:          resource,
 			FuncPrefix:        pc.ResourceName,
-			IsReadOnly:        endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
+			IsReadOnly:        endpointIsReadCommandShared(pc.Endpoint, pc.EndpointName, sharedGETRPCPaths(g.Spec.Resources)),
 			NovelChildren:     novelChildrenByParent[toKebab(pc.PromotedName)],
 			APISpec:           g.Spec,
 		}
@@ -5839,7 +6345,19 @@ func camelToJSON(s string) string {
 	return strings.Join(parts, "")
 }
 
+func writableStoreColumns(cols []ColumnDef) []ColumnDef {
+	out := make([]ColumnDef, 0, len(cols))
+	for _, col := range cols {
+		if col.Generated {
+			continue
+		}
+		out = append(out, col)
+	}
+	return out
+}
+
 func columnNames(cols []ColumnDef) string {
+	cols = writableStoreColumns(cols)
 	names := make([]string, 0, len(cols))
 	for _, col := range cols {
 		names = append(names, safeSQLName(col.Name))
@@ -5848,6 +6366,7 @@ func columnNames(cols []ColumnDef) string {
 }
 
 func columnPlaceholders(cols []ColumnDef) string {
+	cols = writableStoreColumns(cols)
 	if len(cols) == 0 {
 		return ""
 	}
@@ -5860,7 +6379,7 @@ func columnPlaceholders(cols []ColumnDef) string {
 
 func updateSet(cols []ColumnDef) string {
 	var updates []string
-	for _, col := range cols {
+	for _, col := range writableStoreColumns(cols) {
 		if col.PrimaryKey {
 			continue
 		}
@@ -6095,8 +6614,10 @@ func globalScopeEnvName(apiName string, p spec.Param) string {
 }
 
 // responsePathCase is one deduplicated entry for the sync template's
-// responsePathForResource switch: the switch key (resource + NUL + path) and
-// the response envelope path to return for it.
+// responsePathForResource switch: the switch key is the resource name (the
+// syncable endpoint wins when several share a resource) and the response
+// envelope path to return for it. The live request path is not part of the
+// key, so absolute or rewritten URLs still unwrap.
 type responsePathCase struct {
 	Key          string
 	ResponsePath string
@@ -6113,6 +6634,7 @@ type resourcePathEntry struct {
 func resourceReadPathEntries(data visionRenderData) []resourcePathEntry {
 	entries := map[string]resourcePathEntry{}
 	pathCounts := map[string]int{}
+	rawPaths := map[string]string{}
 	for name, resource := range data.Resources {
 		endpoint, ok := resourceEndpointForMethod(resource, "GET")
 		if !ok {
@@ -6120,15 +6642,16 @@ func resourceReadPathEntries(data visionRenderData) []resourcePathEntry {
 		}
 		entries[name] = resourcePathEntry{
 			Name:         name,
-			Path:         endpoint.Path,
+			Path:         effectiveEndpointPath(resource, endpoint),
 			ResponsePath: endpoint.ResponsePath,
 			Pagination:   endpoint.Pagination,
 			PageSize:     resourcePathPageSize(data, endpoint),
 		}
+		rawPaths[name] = endpoint.Path
 		pathCounts[endpoint.Path]++
 	}
-	for name, entry := range entries {
-		if pathCounts[entry.Path] > 1 {
+	for name := range entries {
+		if pathCounts[rawPaths[name]] > 1 {
 			delete(entries, name)
 		}
 	}
@@ -6163,7 +6686,7 @@ func resourceWritePathEntries(data visionRenderData) []resourcePathEntry {
 		if !ok {
 			continue
 		}
-		entries[name] = resourcePathEntry{Name: name, Path: endpoint.Path}
+		entries[name] = resourcePathEntry{Name: name, Path: effectiveEndpointPath(resource, endpoint)}
 	}
 	return sortedResourcePathEntries(entries)
 }
@@ -6183,7 +6706,7 @@ func resourceDetailPathEntries(data visionRenderData) []resourcePathEntry {
 			if !strings.EqualFold(endpoint.Method, "GET") || endpoint.Response.Type == "array" || endpoint.Pagination != nil || strings.Count(endpoint.Path, "{") != 1 || strings.Count(endpoint.Path, "}") != 1 {
 				continue
 			}
-			entries[name] = resourcePathEntry{Name: name, Path: endpoint.Path}
+			entries[name] = resourcePathEntry{Name: name, Path: effectiveEndpointPath(resource, endpoint)}
 			break
 		}
 	}
@@ -6212,9 +6735,71 @@ func sortedResourcePathEntries(entries map[string]resourcePathEntry) []resourceP
 	return out
 }
 
+// syncParamDefaultCase is one deduplicated entry for the sync template's
+// syncResourceParamDefaults switch. Flat and dependent resource sets can carry
+// the same resource name, and a repeated case in a Go switch does not compile.
+type syncParamDefaultCase struct {
+	Resource string
+	Defaults []profiler.SyncQueryParamDefault
+}
+
+// syncParamDefaultCases returns the resources whose list endpoint declares a
+// query-param default, flat set first so a name present in both wins the same
+// way it does everywhere else sync resolves a resource.
+func syncParamDefaultCases(syncable []profiler.SyncableResource, dependents []profiler.DependentResource) []syncParamDefaultCase {
+	seen := map[string]struct{}{}
+	var out []syncParamDefaultCase
+	add := func(name string, defaults []profiler.SyncQueryParamDefault) {
+		if len(defaults) == 0 {
+			return
+		}
+		if _, dup := seen[name]; dup {
+			return
+		}
+		seen[name] = struct{}{}
+		out = append(out, syncParamDefaultCase{Resource: name, Defaults: defaults})
+	}
+	for _, resource := range syncable {
+		add(resource.Name, resource.QueryParamDefaults)
+	}
+	for _, dependent := range dependents {
+		add(dependent.Name, dependent.QueryParamDefaults)
+	}
+	return out
+}
+
+type syncHiddenHistoryCase struct {
+	Resource string
+	Defaults []profiler.SyncQueryParamDefault
+}
+
+func syncHiddenHistoryCases(syncable []profiler.SyncableResource, dependents []profiler.DependentResource) []syncHiddenHistoryCase {
+	seen := map[string]struct{}{}
+	var out []syncHiddenHistoryCase
+	add := func(name string, defaults []profiler.SyncQueryParamDefault) {
+		if len(defaults) == 0 {
+			return
+		}
+		if _, dup := seen[name]; dup {
+			return
+		}
+		seen[name] = struct{}{}
+		out = append(out, syncHiddenHistoryCase{Resource: name, Defaults: defaults})
+	}
+	for _, resource := range syncable {
+		add(resource.Name, resource.HiddenHistoryDefaults)
+	}
+	for _, dependent := range dependents {
+		add(dependent.Name, dependent.HiddenHistoryDefaults)
+	}
+	return out
+}
+
 // responsePathCases returns deterministic switch cases deduplicated by resource
-// and path. Syncable endpoints take precedence because the generated lookup is
-// used by sync; endpoint name breaks ties to keep output stable.
+// identity. Syncable endpoints take precedence because the generated lookup is
+// used by sync; endpoint name breaks ties to keep output stable. The request
+// path is not part of the key so unwrap still fires when the live URL differs
+// from the spec path.
 func responsePathCases(resources map[string]spec.Resource) []responsePathCase {
 	resourceNames := make([]string, 0, len(resources))
 	for name := range resources {
@@ -6243,12 +6828,11 @@ func responsePathCases(resources map[string]spec.Resource) []responsePathCase {
 			if endpoint.ResponsePath == "" {
 				continue
 			}
-			key := resourceName + "\x00" + endpoint.Path
-			if _, ok := seen[key]; ok {
+			if _, ok := seen[resourceName]; ok {
 				continue
 			}
-			seen[key] = struct{}{}
-			out = append(out, responsePathCase{Key: key, ResponsePath: endpoint.ResponsePath})
+			seen[resourceName] = struct{}{}
+			out = append(out, responsePathCase{Key: resourceName, ResponsePath: endpoint.ResponsePath})
 		}
 	}
 	return out
@@ -6352,6 +6936,15 @@ func flagChangedExpr(p spec.Param) string {
 		return parts[0]
 	}
 	return "(" + strings.Join(parts, " || ") + ")"
+}
+
+// flagRequiredUnsatisfiedExpr is the generated required-flag guard condition.
+// Changed alone is not enough: a PreRunE or other resolver can write the
+// bound value without flipping cobra's Changed bit.
+func flagRequiredUnsatisfiedExpr(p spec.Param) string {
+	zero := zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p))
+	return fmt.Sprintf("!%s && flag%s == %s && !flags.dryRun",
+		flagChangedExpr(p), toCamel(paramIdent(p)), zero)
 }
 
 func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBinding {
@@ -7324,7 +7917,7 @@ func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
 	var b strings.Builder
 	if endpoint.BodyJSONFallback {
 		if endpoint.BodyRequired {
-			fmt.Fprintf(&b, "\n%sif !cmd.Flags().Changed(\"body-json\") && !flags.dryRun {", indent)
+			fmt.Fprintf(&b, "\n%sif !cmd.Flags().Changed(\"body-json\") && flagBodyJSON == \"\" && !flags.dryRun {", indent)
 			fmt.Fprintf(&b, "\n%s\treturn fmt.Errorf(\"required flag \\\"%%s\\\" not set\", \"body-json\")", indent)
 			fmt.Fprintf(&b, "\n%s}", indent)
 		}
@@ -7332,7 +7925,7 @@ func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
 	}
 	if bodyUsesFlatEmission(endpoint) {
 		for _, p := range endpoint.Body {
-			renderFlatBodyRequiredCheck(&b, p, indent, "", true)
+			renderFlatBodyRequiredCheck(&b, p, indent, "", "", true)
 		}
 		return b.String()
 	}
@@ -7366,7 +7959,7 @@ func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, depth int, 
 			fmt.Fprintf(b, "\n%s}", indent)
 			continue
 		}
-		renderFlatBodyRequiredCheck(b, p, indent, flagPrefix, topLevel)
+		renderFlatBodyRequiredCheck(b, p, indent, flagPrefix, identPrefix, topLevel)
 	}
 }
 
@@ -7427,18 +8020,19 @@ func walkBodyExceedsDepth(body []spec.Param, depth int) bool {
 	return false
 }
 
-func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagPrefix string, topLevel bool) {
+func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagPrefix, identPrefix string, topLevel bool) {
 	if !p.Required || p.Default != nil {
 		return
 	}
 	flag := joinFlag(flagPrefix, publicFlagName(p))
+	ident := identPrefix + toCamel(paramIdent(p))
 	var changedExpr string
 	if topLevel {
 		changedExpr = flagChangedExpr(p)
 	} else {
-		changedExpr = fmt.Sprintf("cmd.Flags().Changed(\"%s\")", flag)
+		changedExpr = fmt.Sprintf("cmd.Flags().Changed(%q)", flag)
 	}
-	fmt.Fprintf(b, "\n%sif !%s && !flags.dryRun {", indent, changedExpr)
+	fmt.Fprintf(b, "\n%sif !%s && body%s == %s && !flags.dryRun {", indent, changedExpr, ident, zeroValForBodyParam(p))
 	fmt.Fprintf(b, "\n%s\treturn fmt.Errorf(\"required flag \\\"%%s\\\" not set\", \"%s\")", indent, flag)
 	fmt.Fprintf(b, "\n%s}", indent)
 }
@@ -8565,17 +9159,26 @@ func exampleNeedsTODO(line string) bool {
 	return strings.Contains(line, "example-value")
 }
 
+func kebabCommandParts(commandPath string) []string {
+	fields := strings.Fields(commandPath)
+	for i, field := range fields {
+		fields[i] = toKebab(field)
+	}
+	return fields
+}
+
 func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.Endpoint) string {
 	if strings.TrimSpace(endpoint.Example) != "" {
 		return endpoint.Example
 	}
 
-	commandParts := append(strings.Fields(commandPath), toKebab(endpointName))
+	// Spec resource keys are snake_case; Cobra registers kebab Use: paths.
+	commandParts := append(kebabCommandParts(commandPath), toKebab(endpointName))
 	if line, ok := g.narrativeExampleLine(commandParts, endpoint); ok {
 		return line
 	}
 	if endpoint.Alias != "" {
-		aliasParts := append(strings.Fields(commandPath), endpoint.Alias)
+		aliasParts := append(kebabCommandParts(commandPath), endpoint.Alias)
 		if line, ok := g.narrativeExampleLine(aliasParts, endpoint); ok {
 			return line
 		}
@@ -8594,6 +9197,7 @@ func (g *Generator) promotedExampleLine(promotedName string, endpoint spec.Endpo
 		return endpoint.Example
 	}
 
+	promotedName = toKebab(promotedName)
 	if line, ok := g.narrativeExampleLine([]string{promotedName}, endpoint); ok {
 		return line
 	}

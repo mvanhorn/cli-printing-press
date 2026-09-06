@@ -25,6 +25,7 @@ var configTokenScaffolding = []string{
 	"ClientSecret",
 	"SaveTokens",
 	"ClearTokens",
+	"MarkCredentialsExplicit",
 }
 
 // TestTokenScaffoldingFollowsAuthSurface pins all three branches of

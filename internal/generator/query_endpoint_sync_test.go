@@ -44,14 +44,16 @@ func TestGeneratedQueryEndpointSyncEmitsConstructs(t *testing.T) {
 	assert.Contains(t, syncContent, `queryPath     = "/query"`)
 
 	// Query injection: SELECT built from the hint template + injected version param.
-	assert.Contains(t, syncContent, `if entity, ok := queryEntity[resource]; ok && path == queryPath {`)
+	assert.Contains(t, syncContent, `if entity, ok := queryEntity[resource]; ok && isQuerySyncPath(resource, path) {`)
 	assert.Contains(t, syncContent, `strings.ReplaceAll("select * from {entity} startposition {start} maxresults {limit}", "{entity}", entity)`)
 	assert.Contains(t, syncContent, `params["minorversion"] = "75"`)
 
-	// Offset paging driven by page fill, and break-guard exemptions (the
-	// qbo-query-paging hand-fix asserts path != "/query" appears at least twice).
+	// Offset paging driven by page fill, and break-guard exemptions. Identity
+	// is per-resource so a shared /query path with distinct base_url overrides
+	// still injects and pages against the matching list/get host.
 	assert.Contains(t, syncContent, "nextCursor = strconv.Itoa(start + queryPageSize)")
-	assert.GreaterOrEqual(t, strings.Count(syncContent, "path != queryPath"), 2,
+	assert.Contains(t, syncContent, "func isQuerySyncPath(resource, path string) bool")
+	assert.GreaterOrEqual(t, strings.Count(syncContent, "!isQuerySyncPath(resource, path)"), 2,
 		"break guards must exempt the query path in both the pagination and short-page checks")
 
 	// Response-envelope unwrap: the entity-named envelope key is query-only,

@@ -5,23 +5,35 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 )
 
 // renameExtensions lists file extensions walked during CLI rename.
-// Makefile is handled separately by base-name check in shouldRenameFile.
+// Makefile, go.mod, NOTICE, and research.json are handled by basename
+// in shouldRenameFile / rewriteResearchJSON.
 var renameExtensions = []string{".go", ".yaml", ".yml", ".md"}
+
+var renameBasenames = map[string]struct{}{
+	"Makefile":   {},
+	".gitignore": {},
+	"go.mod":     {},
+	"NOTICE":     {},
+}
 
 // RenameCLI renames all user-visible CLI name references in a staged CLI
 // directory. It handles:
 //   - Filesystem: outer directory rename to the slug-keyed directory derived
 //     from newCLIName, and cmd/oldCLIName/ → cmd/newCLIName/
 //   - File content: replaces occurrences of oldCLIName with newCLIName in
-//     .go, .yaml, .yml, .md files and Makefiles (skips .manuscripts/)
-//   - Metadata: updates .printing-press.json, manifest.json, and
-//     tools-manifest.json to the final public slug/binary names
+//     .go, .yaml, .yml, .md files, Makefiles, go.mod, and NOTICE
+//     (skips .manuscripts/ prose; research.json is updated separately)
+//   - Name tokens: leftover module-path slug, installer slug, and env prefix
+//   - Metadata: updates .printing-press.json, manifest.json,
+//     tools-manifest.json, and research.json api_name to the final public
+//     slug/binary names
 //
 // This function does NOT call RewriteModulePath — that handles import
 // paths and is run separately during packaging. RenameCLI handles exactly
@@ -88,6 +100,9 @@ func RenameCLI(dir, oldCLIName, newCLIName, _ string) (int, error) {
 		}
 
 		result := renameCLIContent(string(content), oldCLIName, newCLIName, oldMCPName, newMCPName, oldSlug, newSlug)
+		if filepath.Base(path) == "go.mod" {
+			result = renameGoModModuleSegment(result, oldSlug, newSlug)
+		}
 		if filepath.Base(path) == ".gitignore" {
 			result = anchorRenamedGitignorePatterns(result, newCLIName, newMCPName)
 		}
@@ -115,6 +130,11 @@ func RenameCLI(dir, oldCLIName, newCLIName, _ string) (int, error) {
 			if m.MCPBinary != "" {
 				m.MCPBinary = newMCPName
 			}
+			// File content already rewrote os.Getenv names that began
+			// with the old CLI prefix. Stored endpoint overrides have
+			// to move with them or the MCPB installer collects a
+			// different variable than the generated client reads.
+			rewriteCLIManifestEnvPrefixes(&m, oldSlug, newSlug)
 			if writeErr := WriteCLIManifest(absDir, m); writeErr != nil {
 				return filesModified, fmt.Errorf("updating manifest: %w", writeErr)
 			}
@@ -129,6 +149,11 @@ func RenameCLI(dir, oldCLIName, newCLIName, _ string) (int, error) {
 	} else if modified {
 		filesModified++
 	}
+	researchModified, err := rewriteResearchJSON(absDir, oldCLIName, newCLIName, oldMCPName, newMCPName, oldSlug, newSlug)
+	if err != nil {
+		return filesModified, err
+	}
+	filesModified += researchModified
 
 	// 3. Rename cmd/ subdirectory if it exists.
 	oldCmdDir := filepath.Join(absDir, "cmd", oldCLIName)
@@ -184,7 +209,211 @@ func renameCLIContent(content, oldCLIName, newCLIName, oldMCPName, newMCPName, o
 	result = strings.ReplaceAll(result, oldMCPName, newMCPName)
 	result = strings.ReplaceAll(result, "pp-"+oldSlug, "pp-"+newSlug)
 	result = strings.ReplaceAll(result, "/"+oldSlug+"/cmd/", "/"+newSlug+"/cmd/")
+	result = strings.ReplaceAll(result, "/"+oldSlug+"/internal/", "/"+newSlug+"/internal/")
+	result = renameInstallSlug(result, oldSlug, newSlug)
+	result = renameEnvPrefix(result, oldSlug, newSlug)
 	return result
+}
+
+func renameInstallSlug(content, oldSlug, newSlug string) string {
+	if oldSlug == "" || oldSlug == newSlug {
+		return content
+	}
+	needle := "install " + oldSlug
+	var b strings.Builder
+	rest := content
+	for {
+		idx := strings.Index(rest, needle)
+		if idx == -1 {
+			b.WriteString(rest)
+			return b.String()
+		}
+		end := idx + len(needle)
+		if end < len(rest) && isRenameSlugContinue(rest[end]) {
+			b.WriteString(rest[:end])
+			rest = rest[end:]
+			continue
+		}
+		b.WriteString(rest[:idx])
+		b.WriteString("install " + newSlug)
+		rest = rest[end:]
+	}
+}
+
+func isRenameSlugContinue(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_'
+}
+
+func renameEnvPrefix(content, oldSlug, newSlug string) string {
+	oldPrefix := naming.EnvPrefix(oldSlug)
+	newPrefix := naming.EnvPrefix(newSlug)
+	if oldPrefix == "" || oldPrefix == newPrefix {
+		return content
+	}
+	// Prefix-extending renames (notion → notion-alt) must not rewrite
+	// names that already have the destination prefix. ReplaceAll of
+	// NOTION_ with NOTION_ALT_ would turn NOTION_ALT_SHOP into
+	// NOTION_ALT_ALT_SHOP, and a bare destination name NOTION_ALT
+	// into NOTION_ALT_ALT, so the generated client would ignore the
+	// operator's existing env.
+	result := replaceEnvPrefixToken(content, oldPrefix+"_", newPrefix+"_")
+	for _, q := range []string{`"`, "`", `'`} {
+		result = strings.ReplaceAll(result, q+oldPrefix+q, q+newPrefix+q)
+	}
+	return result
+}
+
+func replaceEnvPrefixToken(content, oldTok, newTok string) string {
+	if oldTok == "" || oldTok == newTok {
+		return content
+	}
+	if !strings.HasPrefix(newTok, oldTok) {
+		return strings.ReplaceAll(content, oldTok, newTok)
+	}
+	var b strings.Builder
+	rest := content
+	for {
+		idx := strings.Index(rest, oldTok)
+		if idx == -1 {
+			b.WriteString(rest)
+			return b.String()
+		}
+		if n := destinationEnvPrefixLen(rest[idx:], newTok); n > 0 {
+			b.WriteString(rest[:idx+n])
+			rest = rest[idx+n:]
+			continue
+		}
+		b.WriteString(rest[:idx])
+		b.WriteString(newTok)
+		rest = rest[idx+len(oldTok):]
+	}
+}
+
+// A prefix-extending destination token is already current as either the
+// underscore-terminated form (NOTION_ALT_SHOP) or the bare exact name
+// (NOTION_ALT). Skip both so they are not rewritten to NOTION_ALT_ALT*.
+func destinationEnvPrefixLen(rest, newTok string) int {
+	if strings.HasPrefix(rest, newTok) {
+		return len(newTok)
+	}
+	dest := strings.TrimSuffix(newTok, "_")
+	if dest == "" || dest == newTok || !strings.HasPrefix(rest, dest) {
+		return 0
+	}
+	if len(rest) > len(dest) && isEnvNameContinue(rest[len(dest)]) {
+		return 0
+	}
+	return len(dest)
+}
+
+func isEnvNameContinue(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+func rewriteCLIManifestEnvPrefixes(m *CLIManifest, oldSlug, newSlug string) {
+	if m == nil || len(m.EndpointTemplateEnvOverrides) == 0 {
+		return
+	}
+	for key, value := range m.EndpointTemplateEnvOverrides {
+		rewritten := rewriteEndpointOverrideEnvName(value, oldSlug, newSlug)
+		if rewritten != value {
+			m.EndpointTemplateEnvOverrides[key] = rewritten
+		}
+	}
+}
+
+// File-content rename only rewrites OLD_… tokens and quoted "OLD" Getenv
+// names. Override metadata is an unquoted env name, so a bare prefix
+// (NOTION_ALT with no _SHOP suffix) would otherwise stay stale when
+// shortening notion-alt → notion.
+func rewriteEndpointOverrideEnvName(value, oldSlug, newSlug string) string {
+	rewritten := renameEnvPrefix(value, oldSlug, newSlug)
+	oldPrefix := naming.EnvPrefix(oldSlug)
+	newPrefix := naming.EnvPrefix(newSlug)
+	if oldPrefix != "" && oldPrefix != newPrefix && value == oldPrefix {
+		return newPrefix
+	}
+	return rewritten
+}
+
+func renameGoModModuleSegment(content, oldSlug, newSlug string) string {
+	if oldSlug == "" || oldSlug == newSlug {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	changed := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "module ") {
+			continue
+		}
+		path := strings.TrimSpace(strings.TrimPrefix(trimmed, "module "))
+		path = strings.TrimSuffix(path, "\r")
+		newPath, ok := replaceFinalModuleSegment(path, oldSlug, newSlug)
+		if !ok {
+			continue
+		}
+		lines[i] = strings.Replace(line, path, newPath, 1)
+		changed = true
+	}
+	if !changed {
+		return content
+	}
+	return strings.Join(lines, "\n")
+}
+
+func replaceFinalModuleSegment(path, oldSlug, newSlug string) (string, bool) {
+	if path == oldSlug {
+		return newSlug, true
+	}
+	if strings.HasSuffix(path, "/"+oldSlug) {
+		return strings.TrimSuffix(path, oldSlug) + newSlug, true
+	}
+	return path, false
+}
+
+func rewriteResearchJSON(root, oldCLIName, newCLIName, oldMCPName, newMCPName, oldSlug, newSlug string) (int, error) {
+	modified := 0
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() || d.Name() != "research.json" {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", path, err)
+		}
+		result := renameCLIContent(string(content), oldCLIName, newCLIName, oldMCPName, newMCPName, oldSlug, newSlug)
+		result = renameResearchAPIName(result, oldSlug, newSlug)
+		if result == string(content) {
+			return nil
+		}
+		if err := os.WriteFile(path, []byte(result), 0o644); err != nil {
+			return fmt.Errorf("writing %s: %w", path, err)
+		}
+		modified++
+		return nil
+	})
+	if err != nil {
+		return modified, fmt.Errorf("updating research.json: %w", err)
+	}
+	return modified, nil
+}
+
+func renameResearchAPIName(content, oldSlug, newSlug string) string {
+	if oldSlug == "" || oldSlug == newSlug {
+		return content
+	}
+	re := regexp.MustCompile(`("api_name"\s*:\s*")` + regexp.QuoteMeta(oldSlug) + `(")`)
+	if re.MatchString(content) {
+		return re.ReplaceAllString(content, `${1}`+newSlug+`${2}`)
+	}
+	return content
 }
 
 func anchorRenamedGitignorePatterns(content, cliName, mcpName string) string {
@@ -225,11 +454,12 @@ func updateToolsManifestAPIName(dir, apiName string) (bool, error) {
 	return true, nil
 }
 
-// shouldRenameFile returns true if a file should be processed during rename.
-// Checks extension (.go, .yaml, .yml, .md) and base name (Makefile).
+// shouldRenameFile limits broad text replacement to generated text formats and
+// explicit identity files. research.json requires separate structured handling
+// so manuscript prose remains untouched.
 func shouldRenameFile(path string) bool {
 	base := filepath.Base(path)
-	if base == "Makefile" || base == ".gitignore" {
+	if _, ok := renameBasenames[base]; ok {
 		return true
 	}
 	for _, ext := range renameExtensions {

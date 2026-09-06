@@ -1,0 +1,29 @@
+{
+  "api_name": "keyless-leftover-env",
+  "api_version": "1.0.0",
+  "auth_env_vars": [
+    "KEYLESS_LEFTOVER_ENV_API_KEY"
+  ],
+  "auth_type": "none",
+  "cli_name": "keyless-leftover-env-pp-cli",
+  "creator": {
+    "handle": "printing-press-golden",
+    "name": "printing-press-golden"
+  },
+  "description": "Keyless spec that still lists a leftover invented API key env var.",
+  "display_name": "Keyless Leftover Env",
+  "generated_at": "<GENERATED_AT>",
+  "mcp_binary": "keyless-leftover-env-pp-mcp",
+  "mcp_public_tool_count": 1,
+  "mcp_ready": "full",
+  "mcp_tool_count": 1,
+  "owner": "printing-press-golden",
+  "printer": "printing-press-golden",
+  "printer_name": "printing-press-golden",
+  "printing_press_version": "<PRINTING_PRESS_VERSION>",
+  "run_id": "<RUN_ID>",
+  "schema_version": 2,
+  "spec_checksum": "sha256:97fb62e7a10824f28674b3b93d51c43d8e5cad531f25e630c916c7fb6c6aec18",
+  "spec_format": "internal",
+  "spec_path": "spec.yaml"
+}

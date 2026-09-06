@@ -31,6 +31,7 @@ var resourceDetailPaths = map[string]string{ // #nosec G101 -- endpoint paths, n
 
 var resourceWritePaths = map[string]string{ // #nosec G101 -- endpoint paths, not credentials.
 	"projects": "/projects",
+	"tickets":  "/tickets/query",
 }
 
 var resourceReadConfigs = map[string]resourceReadConfig{

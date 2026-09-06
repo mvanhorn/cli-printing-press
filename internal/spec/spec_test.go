@@ -4711,6 +4711,7 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	require.NoError(t, base.Validate())
 	assert.True(t, base.HasHTMLExtraction())
 	assert.True(t, base.Resources["posts"].Endpoints["list"].UsesHTMLResponse())
+	assert.True(t, base.Resources["posts"].Endpoints["list"].LacksJSONSyncEnumeration())
 
 	csvSpec := validHTMLSpec()
 	ep := csvSpec.Resources["posts"].Endpoints["list"]
@@ -4719,6 +4720,7 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	csvSpec.Resources["posts"].Endpoints["list"] = ep
 	require.NoError(t, csvSpec.Validate())
 	assert.True(t, csvSpec.Resources["posts"].Endpoints["list"].UsesCSVResponse())
+	assert.False(t, csvSpec.Resources["posts"].Endpoints["list"].LacksJSONSyncEnumeration())
 
 	xmlSpec := validHTMLSpec()
 	ep = xmlSpec.Resources["posts"].Endpoints["list"]
@@ -4728,6 +4730,7 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	require.NoError(t, xmlSpec.Validate())
 	assert.True(t, xmlSpec.Resources["posts"].Endpoints["list"].UsesXMLResponse())
 	assert.True(t, xmlSpec.HasXMLResponse())
+	assert.False(t, xmlSpec.Resources["posts"].Endpoints["list"].LacksJSONSyncEnumeration())
 
 	mixedSpec := validHTMLSpec()
 	ep = mixedSpec.Resources["posts"].Endpoints["list"]
@@ -4804,6 +4807,17 @@ func TestValidateDataSourceStrategy(t *testing.T) {
 	items.Endpoints["list"] = endpoint
 	bad.Resources["items"] = items
 	require.ErrorContains(t, bad.Validate(), "data_source_strategy")
+}
+
+func TestLacksJSONSyncEnumeration(t *testing.T) {
+	t.Parallel()
+	assert.True(t, LacksJSONSyncEnumeration(ResponseFormatHTML))
+	assert.True(t, LacksJSONSyncEnumeration(ResponseFormatBinary))
+	assert.True(t, LacksJSONSyncEnumeration(ResponseFormatText))
+	assert.False(t, LacksJSONSyncEnumeration(""))
+	assert.False(t, LacksJSONSyncEnumeration(ResponseFormatJSON))
+	assert.False(t, LacksJSONSyncEnumeration(ResponseFormatCSV))
+	assert.False(t, LacksJSONSyncEnumeration(ResponseFormatXML))
 }
 
 func TestHTMLExtract_EmbeddedJSONMode(t *testing.T) {
@@ -6334,6 +6348,27 @@ func TestNormalizeCookieDomain(t *testing.T) {
 	}
 }
 
+func TestResolveEndpointTemplateEnvNameRejectsAuthCollision(t *testing.T) {
+	t.Parallel()
+
+	s := &APISpec{
+		Name:                 "shopify",
+		EndpointTemplateVars: []string{"shop", "access_token"},
+		EndpointTemplateEnvOverrides: map[string]string{
+			"shop": "SHOPIFY_ACCESS_TOKEN",
+		},
+		Auth: AuthConfig{EnvVars: []string{"SHOPIFY_ACCESS_TOKEN"}},
+	}
+
+	assert.Equal(t, "SHOPIFY_SHOP", s.EndpointTemplateEnvName("shop"))
+	assert.Equal(t, "SHOPIFY_ACCESS_TOKEN", s.EndpointTemplateEnvName("access_token"))
+
+	s.DropCollidingEndpointTemplateEnvOverrides()
+	_, kept := s.EndpointTemplateEnvOverrides["shop"]
+	assert.False(t, kept)
+	assert.Equal(t, "SHOPIFY_SHOP", s.EndpointTemplateEnvName("shop"))
+}
+
 func TestInferEndpointTemplateVarsFromBaseURLs(t *testing.T) {
 	t.Parallel()
 
@@ -7192,6 +7227,7 @@ func TestAuthHasNonCookieAuth(t *testing.T) {
 		{name: "env var specs", auth: AuthConfig{EnvVarSpecs: []AuthEnvVar{{Name: "API_TOKEN"}}}, want: true},
 		{name: "legacy env vars", auth: AuthConfig{EnvVars: []string{"API_TOKEN"}}, want: true},
 		{name: "cookie-only", auth: AuthConfig{Type: "cookie", Cookies: []string{"session_id"}}, want: false},
+		{name: "none with leftover env vars", auth: AuthConfig{Type: "none", EnvVars: []string{"EXAMPLE_API_KEY"}}, want: false},
 		{name: "empty", auth: AuthConfig{}, want: false},
 	}
 	for _, tt := range tests {

@@ -25,6 +25,7 @@ func newDogfoodCmd() *cobra.Command {
 	var authEnv string
 	var authTier string
 	var allowDestructive bool
+	var overwriteCommandMirror bool
 
 	cmd := &cobra.Command{
 		Use:   "dogfood",
@@ -79,6 +80,9 @@ func newDogfoodCmd() *cobra.Command {
 			if trafficAnalysisPath != "" {
 				opts = append(opts, pipeline.WithTrafficAnalysis(trafficAnalysisPath))
 			}
+			if overwriteCommandMirror {
+				opts = append(opts, pipeline.WithOverwriteCommandMirror())
+			}
 			report, err := pipeline.RunDogfood(dir, specPath, opts...)
 			if err != nil {
 				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("running dogfood: %w", err)}
@@ -107,6 +111,7 @@ func newDogfoodCmd() *cobra.Command {
 	cmd.Flags().StringVar(&authEnv, "auth-env", "", "Environment variable that proves an API credential was available for the acceptance marker")
 	cmd.Flags().StringVar(&authTier, "auth-tier", "", "Credential tier for live dogfood; falls back to PP_AUTH_TIER and skips commands annotated pp:requires-tier on mismatch")
 	cmd.Flags().BoolVar(&allowDestructive, "allow-destructive", false, "Re-enable testing of endpoints classified as destructive-at-auth. Default skips them to prevent runner-credential rotation.")
+	cmd.Flags().BoolVar(&overwriteCommandMirror, "overwrite-command-mirror", false, "Overwrite a differing command_mirror_capabilities block in internal/mcp/tools.go from research.json")
 	_ = cmd.MarkFlagRequired("dir")
 	return cmd
 }

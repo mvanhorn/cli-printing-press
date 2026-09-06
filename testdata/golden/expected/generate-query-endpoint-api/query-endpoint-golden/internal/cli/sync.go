@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -11,7 +12,6 @@ import (
 	"fmt"
 	"github.com/spf13/cobra"
 	"io"
-	"net/url"
 	"os"
 	"query-endpoint-golden-pp-cli/internal/client"
 	"query-endpoint-golden-pp-cli/internal/cliutil"
@@ -132,6 +132,10 @@ Resource scoping:
 			defer db.Close()
 
 			syncEventWriter := cmd.OutOrStdout()
+			machineFormat := wantsMachineOutput(flags)
+			if machineFormat {
+				syncEventWriter = cmd.ErrOrStderr()
+			}
 
 			// If no specific resources, sync top-level resources
 			if len(resources) == 0 {
@@ -354,6 +358,18 @@ Resource scoping:
 					fmt.Fprintf(os.Stderr, "warning: %d resource(s) failed but exit code is 0 because the new default treats non-critical failures as warnings. Pass --strict to restore the old behavior, or annotate critical resources with x-critical: true.\n", errCount)
 				}
 			}
+			if machineFormat {
+				if err := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					"total_records": totalSynced,
+					"resources":     totalResources,
+					"success":       successCount,
+					"warned":        warnCount,
+					"errored":       errCount,
+					"duration_ms":   elapsed.Milliseconds(),
+				}, flags); err != nil {
+					return err
+				}
+			}
 			return nil
 		},
 	}
@@ -514,6 +530,11 @@ func syncResource(ctx context.Context, c interface {
 
 	for {
 		params := map[string]string{}
+		// Seed spec-declared param defaults before anything sync computes, so
+		// paging, the since filter, and user --param overrides all still win.
+		for defaultKey, defaultValue := range syncResourceParamDefaults(resource) {
+			params[defaultKey] = defaultValue
+		}
 
 		if resourceSupportsPagination(resource) {
 			params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
@@ -546,7 +567,7 @@ func syncResource(ctx context.Context, c interface {
 		// the generator. The query + version params are set on top of any
 		// user-supplied --param overrides applied above (which are preserved);
 		// sync owns the query string itself so paging stays correct.
-		if entity, ok := queryEntity[resource]; ok && path == queryPath {
+		if entity, ok := queryEntity[resource]; ok && isQuerySyncPath(resource, path) {
 			start := 1
 			if cursor != "" {
 				if n, convErr := strconv.Atoi(cursor); convErr == nil && n > 0 {
@@ -560,7 +581,7 @@ func syncResource(ctx context.Context, c interface {
 			params["minorversion"] = "75"
 		}
 
-		data, err := c.Get(ctx, path, params)
+		data, err := syncGet(ctx, c, resource, "", path, params)
 		if err != nil {
 			if w, ok := isSyncAccessWarning(err); ok {
 				if !humanFriendly {
@@ -640,7 +661,7 @@ func syncResource(ctx context.Context, c interface {
 		// surfaces no next page. A full page (== queryPageSize) means more rows
 		// may follow — advance the offset; a short page is the last. Without
 		// this the offline mirror silently truncates large books at one page.
-		if _, ok := queryEntity[resource]; ok && path == queryPath {
+		if _, ok := queryEntity[resource]; ok && isQuerySyncPath(resource, path) {
 			if len(items) >= queryPageSize {
 				start := 1
 				if cursor != "" {
@@ -809,7 +830,7 @@ func syncResource(ctx context.Context, c interface {
 		// sync_error output in the same stream.
 		if maxPages > 0 && pagesFetched >= maxPages {
 			truncatedByCap := resourceSupportsPagination(resource) && hasMore
-			if _, ok := queryEntity[resource]; ok && path == queryPath {
+			if _, ok := queryEntity[resource]; ok && isQuerySyncPath(resource, path) {
 				// Query resources page via STARTPOSITION, so resourceSupportsPagination
 				// is false for them; a full page (== queryPageSize) means rows remain,
 				// so the cap truncated and the STARTPOSITION resume cursor must persist.
@@ -831,7 +852,7 @@ func syncResource(ctx context.Context, c interface {
 			}
 			capResumed = truncatedByCap && capExitCursor != cursor
 			capPageLimit := pageSize.limit
-			if _, ok := queryEntity[resource]; ok && path == queryPath {
+			if _, ok := queryEntity[resource]; ok && isQuerySyncPath(resource, path) {
 				capPageLimit = queryPageSize
 			}
 			// A resume cursor alone does not prove that the page window was
@@ -857,7 +878,7 @@ func syncResource(ctx context.Context, c interface {
 			} else if paginationEndUnprovable(resourceSupportsPagination(resource), nextCursor, fetchedThisPage, capPageLimit, data, responsePathForResource(resource, path)...) {
 				outcome.reason = "cursor_unavailable"
 			} else if !hasMore ||
-				(path != queryPath && shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, capPageLimit)) {
+				(!isQuerySyncPath(resource, path) && shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, capPageLimit)) {
 				outcome.complete = true
 			} else {
 				outcome.reason = "max_pages_cap"
@@ -890,7 +911,7 @@ func syncResource(ctx context.Context, c interface {
 		// "resource declares no pagination" guard (resourceSupportsPagination is
 		// false for them) nor on the generic short-page check (their page size
 		// is the in-query page size, not pageSize.limit).
-		if !resourceSupportsPagination(resource) && path != queryPath {
+		if !resourceSupportsPagination(resource) && !isQuerySyncPath(resource, path) {
 			outcome.complete = true // resource declares no pagination: one page is the whole set
 			break
 		}
@@ -902,7 +923,7 @@ func syncResource(ctx context.Context, c interface {
 			outcome.complete = true
 			break
 		}
-		if path != queryPath && shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, pageSize.limit) {
+		if !isQuerySyncPath(resource, path) && shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, pageSize.limit) {
 			outcome.complete = true
 			break
 		}
@@ -977,6 +998,15 @@ func syncResource(ctx context.Context, c interface {
 		// unscoped in a tenant-scoped print) cannot be pruned safely. Emit the
 		// decision so --full never implies that unsupported rows were pruned.
 		fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","reason":"unsupported-resource-shape"}`+"\n", resource)
+	}
+
+	if outcome.reason == "non_json_200_body" {
+		return syncResult{
+			Resource: resource,
+			Count:    0,
+			Warn:     fmt.Errorf("%s returned a 200 response with a non-JSON body; no rows were stored", resource),
+			Duration: time.Since(started),
+		}
 	}
 
 	// Final sync state separates pagination progress from the incremental
@@ -1130,6 +1160,28 @@ func syncResourceSinceParam(resource string) string {
 	return ""
 }
 
+// syncResourceParamDefaults returns the query params this resource's list
+// endpoint declares a spec `default:` for. Endpoint commands bind the same
+// defaults to their cobra flags, so a list command already sends them; sync
+// seeds them at the top of each page request so both surfaces address the same
+// slice of the API. Everything sync assigns afterwards (paging, the since
+// filter, --param overrides) still wins on key conflict.
+func syncResourceParamDefaults(resource string) map[string]string {
+	switch resource {
+	case "gadgets":
+		return map[string]string{
+			"query":        "select * from Gadget maxresults 100",
+			"minorversion": "75",
+		}
+	case "widgets":
+		return map[string]string{
+			"query":        "select * from Widget maxresults 100",
+			"minorversion": "75",
+		}
+	}
+	return nil
+}
+
 // syncResourceSortParam and syncResourceSortValue describe a spec-declared
 // ascending last-modified ordering. Sync adds them only when it sends a since
 // filter, because applying a sort to a full sync can change API behavior and
@@ -1182,9 +1234,12 @@ func formatSyncSinceValue(value string, paramFormat string) string {
 
 // extractPageItems attempts to extract an array of items and pagination cursor from a response.
 // It tries multiple strategies:
-// 1. Direct JSON array
-// 2. Common wrapper keys: "data", "results", "items", "records", "nodes", "entries"
-// 3. JSend-style nested data envelopes: {"data":{"<resource>":[...]}}
+//  1. Direct JSON array
+//  2. Common wrapper keys: "data", "results", "items", "records", "nodes", "entries"
+//  3. JSend-style nested data envelopes: {"data":{"<resource>":[...]}}
+//  4. Map-keyed collections that file each record under its id instead of
+//     listing records in an array: {"<id>":{...}} and {"<bucket>":{"<id>":{...}}}
+//
 // It also extracts the next cursor from common response fields.
 func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ...string) ([]json.RawMessage, string, bool) {
 	return extractPageItemsWithPagination(data, cursorParam, "", responsePaths...)
@@ -1208,17 +1263,27 @@ func extractPageItemsWithPagination(data json.RawMessage, cursorParam, nextCurso
 		if !ok {
 			continue
 		}
-		if items, ok := extractJSONItemsArray(pathData); ok {
-			nextCursor, hasMore := "", false
-			if parentEnvelope, ok := responsePayloadParentAtPath(data, responsePath); ok {
-				nextCursor, hasMore = extractPaginationFromEnvelope(parentEnvelope, cursorParam, nextCursorPath)
+		pathItems, found := extractJSONItemsArray(pathData)
+		var pathMetadata map[string]json.RawMessage
+		if !found {
+			// A declared response path can resolve to a map-keyed collection
+			// rather than an array. No wrapper key is a record key, so this
+			// can never shadow an array-shaped or enveloped payload.
+			pathItems, pathMetadata, found = store.FlattenMapKeyedCollectionWithMetadata(pathData)
+		}
+		if found {
+			nextCursor, hasMore := mapKeyedPagination(pathMetadata, cursorParam)
+			if nextCursor == "" && !hasMore {
+				if parentEnvelope, ok := responsePayloadParentAtPath(data, responsePath); ok {
+					nextCursor, hasMore = extractPaginationFromEnvelope(parentEnvelope, cursorParam, nextCursorPath)
+				}
 			}
 			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
 			if nextCursor == "" {
 				nextCursor = outerCursor
 			}
 			hasMore = hasMore || outerHasMore
-			return items, nextCursor, hasMore
+			return pathItems, nextCursor, hasMore
 		}
 		var inner map[string]json.RawMessage
 		if json.Unmarshal(pathData, &inner) == nil {
@@ -1234,9 +1299,13 @@ func extractPageItemsWithPagination(data json.RawMessage, cursorParam, nextCurso
 		}
 	}
 
-	if items, ok := extractItemsByKnownKeys(envelope); ok {
-		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
-		return items, nextCursor, hasMore
+	if items, metadata, ok := extractItemsByKnownKeysWithMetadata(envelope); ok {
+		nextCursor, hasMore := mapKeyedPagination(metadata, cursorParam)
+		outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
+		if nextCursor == "" {
+			nextCursor = outerCursor
+		}
+		return items, nextCursor, hasMore || outerHasMore
 	}
 
 	for _, key := range dataEnvelopeKeys {
@@ -1274,18 +1343,69 @@ func extractPageItemsWithPagination(data json.RawMessage, cursorParam, nextCurso
 		return items, nextCursor, hasMore
 	}
 
+	// The response can be the collection itself, filing each record under its
+	// id rather than listing records in an array. Both map-keyed strategies
+	// run last so no array-shaped strategy is preempted.
+	if items, ok := store.FlattenMapKeyedCollection(data); ok {
+		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
+		return items, nextCursor, hasMore
+	}
+
+	if items, metadata, ok := extractSingleMapKeyedSibling(envelope); ok {
+		nextCursor, hasMore := mapKeyedPagination(metadata, cursorParam)
+		outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam, nextCursorPath)
+		if nextCursor == "" {
+			nextCursor = outerCursor
+		}
+		return items, nextCursor, hasMore || outerHasMore
+	}
+
 	return nil, "", false
+}
+
+// Metadata filed beside the records describes the page those records came from,
+// so it is consulted before the envelope above them. nextCursorPath is declared
+// against the response root, which this level is not, so only a plain field
+// match applies here.
+func mapKeyedPagination(metadata map[string]json.RawMessage, cursorParam string) (string, bool) {
+	if len(metadata) == 0 {
+		return "", false
+	}
+	return extractPaginationFromEnvelope(metadata, cursorParam, "")
 }
 
 func extractItemsFromEnvelope(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
 	if items, ok := extractItemsByKnownKeys(envelope); ok {
 		return items, true
 	}
-	return extractSingleObjectArraySibling(envelope)
+	if items, ok := extractSingleObjectArraySibling(envelope); ok {
+		return items, true
+	}
+	items, _, ok := extractSingleMapKeyedSibling(envelope)
+	return items, ok
+}
+
+// extractSingleMapKeyedSibling handles an envelope that carries a map-keyed
+// collection under a resource-named key alongside scalar metadata. Exactly one
+// non-metadata key may flatten: an envelope holding two candidate collections
+// is ambiguous and is left for the caller to reject.
+func extractSingleMapKeyedSibling(envelope map[string]json.RawMessage) ([]json.RawMessage, map[string]json.RawMessage, bool) {
+	return store.FlattenSoleMapKeyedSibling(envelope, func(key string) bool {
+		return pageEnvelopeMetadataKeys[key]
+	})
 }
 
 func extractItemsByKnownKeys(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	items, _, ok := extractItemsByKnownKeysWithMetadata(envelope)
+	return items, ok
+}
+
+// A wrapper key holding a map-keyed collection can carry that collection's own
+// paging metadata inside the wrapper. Callers that paginate take the metadata
+// return; the rest use the wrapper above and drop it.
+func extractItemsByKnownKeysWithMetadata(envelope map[string]json.RawMessage) ([]json.RawMessage, map[string]json.RawMessage, bool) {
 	var emptyItems []json.RawMessage
+	var emptyMetadata map[string]json.RawMessage
 	foundEmpty := false
 	for _, key := range pageItemKeys {
 		if raw, ok := envelope[key]; ok {
@@ -1295,17 +1415,35 @@ func extractItemsByKnownKeys(envelope map[string]json.RawMessage) ([]json.RawMes
 			}
 			if items, ok := extract(raw); ok {
 				if len(items) > 0 {
-					return items, true
+					return items, nil, true
 				}
 				emptyItems = items
 				foundEmpty = true
 			}
 		}
 	}
-	if foundEmpty {
-		return emptyItems, true
+	// A wrapper key can hold a map-keyed collection instead of an array. This
+	// runs only after every wrapper key has failed the array decode, so an
+	// array-shaped wrapper always wins.
+	for _, key := range pageItemKeys {
+		raw, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		items, metadata, ok := store.FlattenMapKeyedCollectionWithMetadata(raw)
+		if !ok {
+			continue
+		}
+		if len(items) > 0 {
+			return items, metadata, true
+		}
+		emptyItems, emptyMetadata = items, metadata
+		foundEmpty = true
 	}
-	return nil, false
+	if foundEmpty {
+		return emptyItems, emptyMetadata, true
+	}
+	return nil, nil, false
 }
 
 func extractSingleObjectArraySibling(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
@@ -1414,7 +1552,9 @@ func responseDeclaresFailure(data json.RawMessage) bool {
 }
 
 func envelopeReportsFailure(envelope map[string]json.RawMessage) bool {
-	for _, key := range []string{"success", "Success"} {
+	// JSend uses success; Slack-style RPC uses ok. Both declare failure
+	// in-band on HTTP 200, so a false value must not reach upsert.
+	for _, key := range []string{"success", "Success", "ok", "Ok"} {
 		if raw, ok := envelope[key]; ok {
 			var success bool
 			if json.Unmarshal(raw, &success) == nil {
@@ -1667,108 +1807,6 @@ func envelopeExplicitHasMore(envelope map[string]json.RawMessage) (bool, bool) {
 	return false, false
 }
 
-// nextCursorFromLinks extracts pagination cursors from JSON:API
-// {"links":{"next":"https://example.com/items?page[cursor]=..."}} and HAL
-// {"_links":{"next":{"href":"https://example.com/items?cursor=..."}}}.
-func nextCursorFromLinks(envelope map[string]json.RawMessage, cursorParam string) string {
-	for _, key := range []string{"links", "_links"} {
-		rawLinks, ok := envelope[key]
-		if !ok {
-			continue
-		}
-		var links map[string]json.RawMessage
-		if json.Unmarshal(rawLinks, &links) != nil {
-			continue
-		}
-		rawNext, ok := links["next"]
-		if !ok {
-			continue
-		}
-		if nextURL := paginationLinkURL(rawNext); nextURL != "" {
-			if cursor := cursorFromNextURL(nextURL, cursorParam); cursor != "" {
-				return cursor
-			}
-		}
-	}
-	return ""
-}
-
-func paginationLinkURL(raw json.RawMessage) string {
-	var nextURL string
-	if json.Unmarshal(raw, &nextURL) == nil {
-		return nextURL
-	}
-	var link map[string]json.RawMessage
-	if json.Unmarshal(raw, &link) != nil {
-		return ""
-	}
-	rawHref, ok := link["href"]
-	if !ok {
-		return ""
-	}
-	if json.Unmarshal(rawHref, &nextURL) != nil {
-		return ""
-	}
-	return nextURL
-}
-
-// nextCursorFromTopLevelURL extracts a cursor from top-level absolute or relative next URLs.
-func nextCursorFromTopLevelURL(envelope map[string]json.RawMessage, cursorParam string) string {
-	for _, key := range []string{"next", "next_url"} {
-		rawNext, ok := envelope[key]
-		if !ok {
-			continue
-		}
-		var nextURL string
-		if json.Unmarshal(rawNext, &nextURL) != nil || nextURL == "" {
-			continue
-		}
-		if isFollowableNextURL(nextURL) {
-			return cursorFromNextURL(nextURL, cursorParam)
-		}
-	}
-	return ""
-}
-
-// isFollowableNextURL reports whether a top-level "next" string is a URL we can
-// pull a cursor query param from: an absolute http(s) URL, a root-relative path,
-// or any value carrying a query string. Bare opaque cursor tokens (no query)
-// are rejected so they aren't mis-parsed.
-func isFollowableNextURL(nextURL string) bool {
-	lower := strings.ToLower(nextURL)
-	return strings.HasPrefix(lower, "http") ||
-		strings.HasPrefix(nextURL, "/") ||
-		strings.Contains(nextURL, "?")
-}
-
-func cursorFromNextURL(nextURL string, cursorParam string) string {
-	cursorKeys := []string{cursorParam}
-	if cursorParam != "page[cursor]" {
-		cursorKeys = append(cursorKeys, "page[cursor]")
-	}
-	if cursorParam != "cursor" {
-		cursorKeys = append(cursorKeys, "cursor")
-	}
-	if cursorParam != "after" {
-		cursorKeys = append(cursorKeys, "after")
-	}
-
-	parsed, err := url.Parse(nextURL)
-	if err != nil {
-		return ""
-	}
-	values := parsed.Query()
-	for _, key := range cursorKeys {
-		if key == "" {
-			continue
-		}
-		if cursor := values.Get(key); cursor != "" {
-			return cursor
-		}
-	}
-	return ""
-}
-
 // findCursorInMap returns the first non-empty scalar value in m
 // whose key matches one of cursorKeys. Used by extractPaginationFromEnvelope
 // to scan both the top-level envelope and well-known wrapper objects with
@@ -1875,10 +1913,12 @@ func resolveDiscriminatedResource(resource string, obj map[string]any) string {
 
 // upsertSingleObject stores a non-array API response as a single record.
 func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) error {
+	if !json.Valid(bytes.TrimSpace(data)) || isJSONNull(data) {
+		return fmt.Errorf("%s response is not JSON; refusing to store a non-JSON body", resource)
+	}
 	obj, err := store.DecodeJSONObject(data)
 	if err != nil {
-		// Not a JSON object either - store raw under resource name
-		return db.Upsert(resource, resource, data)
+		return fmt.Errorf("%s response is not a JSON object: %w", resource, err)
 	}
 
 	resource = resolveDiscriminatedResource(resource, obj)
@@ -2108,6 +2148,26 @@ func isNullOrEmptyJSON(data json.RawMessage) bool {
 	return trimmed == "" || trimmed == "null"
 }
 
+func syncGet(ctx context.Context, c interface {
+	Get(context.Context, string, map[string]string) (json.RawMessage, error)
+}, resource, parentResource, path string, params map[string]string) (json.RawMessage, error) {
+	headers := syncHTMLRequestHeaders(resource, parentResource)
+	if len(headers) == 0 {
+		return c.Get(ctx, path, params)
+	}
+	type headerGetter interface {
+		GetWithHeaders(context.Context, string, map[string]string, map[string]string) (json.RawMessage, error)
+	}
+	if hg, ok := c.(headerGetter); ok {
+		return hg.GetWithHeaders(ctx, path, params, headers)
+	}
+	return c.Get(ctx, path, params)
+}
+
+func syncHTMLRequestHeaders(resource, parentResource string) map[string]string {
+	return nil
+}
+
 // resourceIDFieldOverrides projects per-resource IDField (set by the profiler
 // from x-resource-id or the response-schema fallback chain) into a runtime
 // lookup map. extractID consults this first so the templated path wins over
@@ -2209,6 +2269,24 @@ const (
 	queryPageSize = 2
 )
 
+// querySyncRequestPath is the host+path this resource's list/get command
+// would call. Shared query endpoints can carry per-resource base_url
+// overrides, so identity cannot be a single resolved URL.
+func querySyncRequestPath(resource string) string {
+	if _, ok := queryEntity[resource]; !ok {
+		return queryPath
+	}
+	resolved, err := syncResourcePath(resource)
+	if err != nil || resolved == "" {
+		return queryPath
+	}
+	return resolved
+}
+
+func isQuerySyncPath(resource, path string) bool {
+	return path == querySyncRequestPath(resource)
+}
+
 // pageItemKeys is scanned in priority order; lowercase REST-convention keys
 // come first, PascalCase .NET variants second. Without the PascalCase row,
 // {"Items": [...]} envelopes fall through to the ambiguity scan and a
@@ -2221,13 +2299,16 @@ var pageItemKeys = []string{
 var dataEnvelopeKeys = []string{"data", "Data", "result", "Result"}
 
 func responsePathForResource(resource, path string) []string {
-	switch resource + "\x00" + path {
-	case "gadgets\x00/query":
+	// path is the live request URL and is not the unwrap key. Envelope
+	// lookup is keyed on resource identity so absolute, proxied, or
+	// otherwise rewritten paths still unwrap.
+	switch resource {
+	case "gadgets":
 		return []string{"QueryResponse.Gadget"}
-	case "widgets\x00/query":
+	case "widgets":
 		return []string{"QueryResponse.Widget"}
 	}
-	if _, ok := queryEntity[resource]; ok && path == queryPath {
+	if _, ok := queryEntity[resource]; ok {
 		return []string{"QueryResponse"}
 	}
 	return nil

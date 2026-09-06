@@ -50,7 +50,9 @@ var regenmergeGeneratorOwnedDirs = map[string]struct{}{
 //
 // Steps in order:
 //  1. Per-file verdict switch — copy preserve-worthy files from snapshot
-//     into fresh; no-op on TEMPLATED-CLEAN / NEW-TEMPLATE-EMISSION;
+//     into fresh; overlay TEMPLATED-* drift/additions onto fresh so
+//     rewritten templated bodies land while hand-authored decls stay;
+//     no-op on TEMPLATED-CLEAN / NEW-TEMPLATE-EMISSION;
 //     leave PUBLISHED-ONLY-TEMPLATED files alone (fresh didn't emit them).
 //  2. Re-inject lost AddCommand calls into fresh-derived host files.
 //  3. Merge go.mod requires/replaces from snapshot into fresh's go.mod via
@@ -68,7 +70,9 @@ var regenmergeGeneratorOwnedDirs = map[string]struct{}{
 // preserved; TEMPLATED-WITH-ADDITIONS, TEMPLATED-BODY-DRIFT, and
 // TEMPLATED-VALUE-DRIFT files are left as fresh emitted them unless the file
 // is a generated editable hook whose whole purpose is to carry agent-authored
-// additions. Lost AddCommand re-injection still runs when its constructor is
+// additions. Leaving Applied unset on those skips is what distinguishes a
+// dropped hand-edit from a same-spec preserve.
+// Lost AddCommand re-injection still runs when its constructor is
 // preserved in the merged novel files. The non-classified file
 // sweep and go.mod merge still run because both are spec-orthogonal — non-Go
 // files and go.mod require additions are valid preservation targets even when
@@ -87,24 +91,24 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 	for i := range report.Files {
 		fc := &report.Files[i]
 		switch fc.Verdict {
-		case VerdictTemplatedClean, VerdictNewTemplateEmission, VerdictPublishedOnlyTemplated:
-			// fresh's emission is authoritative; nothing to copy from snapshot.
-		case VerdictNovel, VerdictNovelCollision:
-			if err := copyPreserveFile(snapshotDir, freshDir, fc.Path); err != nil {
-				return err
-			}
-			fc.Applied = true
-		case VerdictTemplatedWithAdditions, VerdictTemplatedBodyDrift, VerdictTemplatedValueDrift:
-			if opts.NovelOnly && !preserveTemplatedDriftInNovelOnly(snapshotDir, freshDir, fc.Path) {
-				continue
-			}
-			if err := copyPreserveFile(snapshotDir, freshDir, fc.Path); err != nil {
-				return err
-			}
-			fc.Applied = true
+		case VerdictTemplatedClean, VerdictNewTemplateEmission, VerdictPublishedOnlyTemplated,
+			VerdictNovel, VerdictNovelCollision,
+			VerdictTemplatedWithAdditions, VerdictTemplatedBodyDrift, VerdictTemplatedValueDrift:
 		default:
 			return fmt.Errorf("unhandled verdict %q for %s", fc.Verdict, fc.Path)
 		}
+		if !shouldPreserveFromSnapshot(*fc, snapshotDir, freshDir, opts) {
+			continue
+		}
+		if (fc.Verdict == VerdictTemplatedWithAdditions || fc.Verdict == VerdictTemplatedBodyDrift || fc.Verdict == VerdictTemplatedValueDrift) &&
+			tryOverlayHandEditedDecls(snapshotDir, freshDir, opts.BaseDir, freshDir, fc.Path) {
+			fc.Applied = true
+			continue
+		}
+		if err := copyPreserveFile(snapshotDir, freshDir, fc.Path); err != nil {
+			return err
+		}
+		fc.Applied = true
 	}
 
 	var novelDecls declSet
@@ -161,6 +165,15 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 
 	if err := sweepNonClassifiedFiles(snapshotDir, freshDir); err != nil {
 		return fmt.Errorf("sweeping non-classified snapshot files: %w", err)
+	}
+
+	// Hidden-dir sweep skips .printing-press-patches; copy records back, then
+	// fail closed if a recorded file or call site did not survive the merge.
+	if err := pipeline.PreservePatchRecords(snapshotDir, freshDir); err != nil {
+		return fmt.Errorf("preserving patch records: %w", err)
+	}
+	if err := pipeline.ValidatePatchRecords(freshDir); err != nil {
+		return fmt.Errorf("recorded patches no longer match the merged tree: %w", err)
 	}
 
 	report.Applied = true
@@ -910,6 +923,60 @@ func pruneCollidingSpec(spec ast.Spec, collisions declSet) (ast.Spec, bool) {
 		return spec, true
 	}
 	return spec, false
+}
+
+// Applied=false on a TEMPLATED-* drift verdict is the only durable signal
+// that a hand-edit was classified and then left on the floor. Same-spec
+// merge flips Applied; NovelOnly does not. Clean templated files are
+// unapplied too, but they never carried a hand-edit.
+func SkippedTemplatedHandEdits(report *MergeReport) []FileClassification {
+	if report == nil {
+		return nil
+	}
+	var dropped []FileClassification
+	for _, fc := range report.Files {
+		if fc.Applied {
+			continue
+		}
+		switch fc.Verdict {
+		case VerdictTemplatedWithAdditions, VerdictTemplatedBodyDrift, VerdictTemplatedValueDrift:
+			dropped = append(dropped, fc)
+		}
+	}
+	slices.SortFunc(dropped, func(a, b FileClassification) int {
+		return strings.Compare(a.Path, b.Path)
+	})
+	return dropped
+}
+
+// A mode suffix does not identify which Applied=false templated hand-edits
+// were discarded; the operator needs the paths to recover them.
+func FormatSkippedTemplatedHandEdits(report *MergeReport) string {
+	dropped := SkippedTemplatedHandEdits(report)
+	if len(dropped) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("warning: cross-spec --force dropped hand-edits in generated files:\n")
+	for _, fc := range dropped {
+		b.WriteString("  ")
+		b.WriteString(fc.Path)
+		b.WriteString(" (")
+		b.WriteString(string(fc.Verdict))
+		b.WriteString(")\n")
+	}
+	return b.String()
+}
+
+func shouldPreserveFromSnapshot(fc FileClassification, snapshotDir, freshDir string, opts Options) bool {
+	switch fc.Verdict {
+	case VerdictNovel, VerdictNovelCollision:
+		return true
+	case VerdictTemplatedWithAdditions, VerdictTemplatedBodyDrift, VerdictTemplatedValueDrift:
+		return !opts.NovelOnly || preserveTemplatedDriftInNovelOnly(snapshotDir, freshDir, fc.Path)
+	default:
+		return false
+	}
 }
 
 func preserveTemplatedDriftInNovelOnly(snapshotDir, freshDir, rel string) bool {

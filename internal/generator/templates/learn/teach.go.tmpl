@@ -68,8 +68,7 @@ func ValidateResourceShape(ctx context.Context, db *sql.DB, cfg *entities.Config
 	if db == nil || resourceID == "" {
 		return nil
 	}
-	parsed := entities.Extract(query, cfg)
-	queryEntities := parsed.Entities
+	queryEntities := QueryIdentityEntities(Normalize(query, cfg))
 	if len(queryEntities) == 0 {
 		return nil
 	}

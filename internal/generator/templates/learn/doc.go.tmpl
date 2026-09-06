@@ -9,7 +9,7 @@
 // # Subsystem purpose
 //
 // The CLI ships with a SQLite store. After each successful agent
-// response, the agent calls `teach --query "<question>" --resource <id>`
+// response, the agent calls `teach --query "$QUERY" --resource <id>`
 // in the background; the next time the same (or structurally similar)
 // question arrives, `recall` returns the cached resource IDs and the
 // agent skips discovery. The whole subsystem is additive — every

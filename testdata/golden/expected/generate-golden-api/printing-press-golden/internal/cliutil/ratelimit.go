@@ -4,6 +4,7 @@
 package cliutil
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"net/http"
@@ -26,8 +27,9 @@ type AdaptiveLimiter struct {
 	budgetRate   float64 // inferred refill rate: high-water-mark of remaining/secondsUntilReset
 	successes    int
 	rampAfter    int
-	headerDriven bool      // true once ObserveHeaders has set the rate; suppresses blind ramp
-	lastRequest  time.Time // zero-value: first Wait() returns immediately
+	headerDriven bool        // true once ObserveHeaders has set the rate; suppresses blind ramp
+	lastRequest  time.Time   // zero-value: first Wait() returns immediately
+	pending      []time.Time // in-flight reservedAt values; cancel must not rewind past these
 }
 
 // NewAdaptiveLimiter returns a limiter whose pacing starts at ratePerSec AND is
@@ -127,9 +129,12 @@ func (l *AdaptiveLimiter) ObserveHeaders(remaining int, resetAt time.Time) {
 	l.successes = 0
 }
 
-func (l *AdaptiveLimiter) Wait() {
+func (l *AdaptiveLimiter) Wait(ctx context.Context) error {
 	if l == nil {
-		return
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	l.mu.Lock()
 	delay := time.Duration(float64(time.Second) / l.rate)
@@ -138,10 +143,72 @@ func (l *AdaptiveLimiter) Wait() {
 	if elapsed < delay {
 		sleep = delay - elapsed
 	}
-	l.lastRequest = time.Now().Add(sleep)
-	l.mu.Unlock()
+	reservedAt := time.Now().Add(sleep)
+	l.lastRequest = reservedAt
 	if sleep > 0 {
-		time.Sleep(sleep)
+		l.pending = append(l.pending, reservedAt)
+	}
+	l.mu.Unlock()
+	if sleep <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(sleep)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		l.completeReservation(reservedAt)
+		return nil
+	case <-ctx.Done():
+		l.releaseUnusedReservation(reservedAt)
+		return ctx.Err()
+	}
+}
+
+// Successful wait used its slot. Drop it from pending so a later cancel
+// cannot rewind onto a reservation that already fired. Repair lastRequest
+// if a later cancel rewound the tip past this used slot.
+func (l *AdaptiveLimiter) completeReservation(reservedAt time.Time) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.removePending(reservedAt)
+	if l.lastRequest.Before(reservedAt) {
+		l.lastRequest = reservedAt
+	}
+}
+
+// A canceled Wait never sent a request. Drop its reservation. If it still
+// owns the tip, rewind lastRequest to the latest still-pending reservedAt
+// that is in the future — or now if none remain. Do not restore a previous
+// lastRequest that may itself have been abandoned, and do not rewind to
+// now while an earlier waiter is still sleeping.
+func (l *AdaptiveLimiter) releaseUnusedReservation(reservedAt time.Time) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.removePending(reservedAt)
+	if !l.lastRequest.Equal(reservedAt) {
+		return
+	}
+	next := time.Now()
+	for _, pendingAt := range l.pending {
+		if pendingAt.After(next) {
+			next = pendingAt
+		}
+	}
+	l.lastRequest = next
+}
+
+func (l *AdaptiveLimiter) removePending(reservedAt time.Time) {
+	for i, pendingAt := range l.pending {
+		if pendingAt.Equal(reservedAt) {
+			l.pending = append(l.pending[:i], l.pending[i+1:]...)
+			return
+		}
 	}
 }
 

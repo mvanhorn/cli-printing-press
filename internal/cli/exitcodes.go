@@ -1,5 +1,10 @@
 package cli
 
+import (
+	"errors"
+	"fmt"
+)
+
 // Exit codes for structured error reporting.
 const (
 	ExitSuccess         = 0
@@ -22,3 +27,23 @@ type ExitError struct {
 
 func (e *ExitError) Error() string { return e.Err.Error() }
 func (e *ExitError) Unwrap() error { return e.Err }
+
+// Type assertion misses fmt.Errorf wraps from restore-after-cancel.
+func asExitError(err error) *ExitError {
+	var exitErr *ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr
+	}
+	return nil
+}
+
+func wrapKeepingExitClass(err, extra error) error {
+	if extra == nil {
+		return err
+	}
+	wrapped := fmt.Errorf("%w; %v", err, extra)
+	if exitErr := asExitError(err); exitErr != nil {
+		return &ExitError{Code: exitErr.Code, Silent: exitErr.Silent, Err: wrapped}
+	}
+	return wrapped
+}

@@ -941,7 +941,15 @@ func runValidation(dir string) ValidateResult {
 	}
 	result.Checks = append(result.Checks, skillCheck)
 
-	// 10. Manuscripts check (warn-only)
+	// 10. Patch records — fail closed when a recorded customization's file
+	// or declared call site is gone after regen.
+	patchesCheck := checkPatchRecords(dir)
+	if !patchesCheck.Passed {
+		allPassed = false
+	}
+	result.Checks = append(result.Checks, patchesCheck)
+
+	// 11. Manuscripts check (warn-only)
 	// Try CLI name first (new convention), then API name, then fuzzy resolve
 	apiName := result.APIName
 	if apiName == "" {
@@ -1364,6 +1372,13 @@ func phase5ProofsDir(dir string, manifest pipeline.CLIManifest) string {
 		}
 	}
 	return candidates[0]
+}
+
+func checkPatchRecords(dir string) CheckResult {
+	if err := pipeline.ValidatePatchRecords(dir); err != nil {
+		return CheckResult{Name: "patches", Passed: false, Error: err.Error()}
+	}
+	return CheckResult{Name: "patches", Passed: true}
 }
 
 func checkVerifySkill(dir string) CheckResult {

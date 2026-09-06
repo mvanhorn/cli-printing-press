@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,13 @@ var (
 	// mistaken for the schema definition.
 	schemaBlockRE = regexp.MustCompile(`(?s)\bschema\b[^{:}]*\{(.*?)\}`)
 	schemaOpRE    = regexp.MustCompile(`(?m)^\s*(query|mutation|subscription)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)`)
+	// Line-anchored SDL constructs. Substring matches like `type Query` or
+	// `type ` inside YAML/OpenAPI description prose must not count.
+	sdlQueryTypeRE    = regexp.MustCompile(`(?m)^\s*(?:extend\s+)?type\s+Query\b`)
+	sdlMutationTypeRE = regexp.MustCompile(`(?m)^\s*(?:extend\s+)?type\s+Mutation\b`)
+	sdlTypeDeclRE     = regexp.MustCompile(`(?m)^\s*(?:extend\s+)?type\s+[A-Za-z_]`)
+	sdlScalarDeclRE   = regexp.MustCompile(`(?m)^\s*scalar\s+[A-Za-z_]`)
+	sdlSchemaBlockRE  = regexp.MustCompile(`(?ms)^\s*schema\b[^{:}]*\{(.*?)\}`)
 )
 
 type gqlType struct {
@@ -63,19 +71,30 @@ func ParseSDLBytes(source string, data []byte) (*spec.APISpec, error) {
 
 // IsGraphQLSDL checks if the data looks like a GraphQL schema.
 func IsGraphQLSDL(data []byte) bool {
+	// Authored structured specs win even when description prose mentions
+	// `type Query`, `type <word>`, or `scalar`. Falling through would hide
+	// the real OpenAPI/internal-YAML parse error behind a GraphQL message.
+	if spec.LooksLikeInternalYAML(data) || looksLikeOpenAPIDocument(data) {
+		return false
+	}
 	s := string(data)
-	if strings.Contains(s, "type Query") || strings.Contains(s, "type Mutation") {
+	if sdlQueryTypeRE.MatchString(s) || sdlMutationTypeRE.MatchString(s) {
 		return true
 	}
-	// A `schema { query: ... }` block that maps a root operation is an
-	// unambiguous GraphQL schema definition even when the schema aliases its
-	// roots and defines no scalars. Requiring the operation mapping (not just
-	// the keyword) keeps a literal "schema {" inside an OpenAPI description
-	// from being misclassified.
-	if m := schemaBlockRE.FindStringSubmatch(s); m != nil && schemaOpRE.MatchString(m[1]) {
+	// A line-anchored `schema { query: ... }` block that maps a root
+	// operation is an unambiguous GraphQL schema definition even when the
+	// schema aliases its roots and defines no scalars.
+	if m := sdlSchemaBlockRE.FindStringSubmatch(s); m != nil && schemaOpRE.MatchString(m[1]) {
 		return true
 	}
-	return strings.Contains(s, "type ") && strings.Contains(s, "scalar ")
+	return sdlTypeDeclRE.MatchString(s) && sdlScalarDeclRE.MatchString(s)
+}
+
+func looksLikeOpenAPIDocument(data []byte) bool {
+	return bytes.Contains(data, []byte(`"openapi"`)) ||
+		bytes.Contains(data, []byte(`"swagger"`)) ||
+		bytes.Contains(data, []byte("openapi:")) ||
+		bytes.Contains(data, []byte("swagger:"))
 }
 
 func parseSDLContent(source, raw string) (*spec.APISpec, error) {
@@ -100,11 +119,7 @@ func parseSDLContent(source, raw string) (*spec.APISpec, error) {
 		endpointPath = "/graphql"
 	}
 	if auth.Type == "" {
-		auth = spec.AuthConfig{
-			Type:    "api_key",
-			Header:  "Authorization",
-			EnvVars: []string{strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_API_KEY"},
-		}
+		auth = spec.AuthConfig{Type: "none"}
 	}
 
 	apiSpec := &spec.APISpec{

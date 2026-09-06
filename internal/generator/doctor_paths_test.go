@@ -154,6 +154,152 @@ func TestCollectCacheReportEmptyStore(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestCollectCacheReportEmptyStore", "-count=1")
 }
 
+func TestGeneratedDoctorClassifiesSyncStateTimes(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := readOnlyCollectionSpec("doctor-sync-state-times")
+	apiSpec.Cache.Enabled = true
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	testSrc := strings.ReplaceAll(`package cli
+
+import (
+	"context"
+	"database/sql"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+type syncStateRow struct {
+	resourceType string
+	lastSyncedAt any
+}
+
+func TestCollectCacheReportSyncStateTimes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("XDG_CACHE_HOME", "")
+
+	dbPath := defaultDBPath("__CLI_NAME__")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir db dir: %v", err)
+	}
+	if err := os.WriteFile(dbPath, nil, 0o600); err != nil {
+		t.Fatalf("seed empty DB file: %v", err)
+	}
+	collectCacheReport(context.Background(), "")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open DB: %v", err)
+	}
+	defer db.Close()
+
+	zero := time.Time{}.UTC().Format(time.RFC3339)
+	old := time.Now().UTC().Add(-12 * time.Hour).Format(time.RFC3339)
+	tests := []struct {
+		name       string
+		rows       []syncStateRow
+		wantStatus string
+		wantOldest bool
+	}{
+		{
+			name:       "null",
+			rows:       []syncStateRow{{resourceType: "null-resource", lastSyncedAt: nil}},
+			wantStatus: "empty",
+		},
+		{
+			name:       "zero",
+			rows:       []syncStateRow{{resourceType: "zero-resource", lastSyncedAt: zero}},
+			wantStatus: "empty",
+		},
+		{
+			name:       "real old",
+			rows:       []syncStateRow{{resourceType: "old-resource", lastSyncedAt: old}},
+			wantStatus: "stale",
+			wantOldest: true,
+		},
+		{
+			name: "mixed zero and real",
+			rows: []syncStateRow{
+				{resourceType: "zero-resource", lastSyncedAt: zero},
+				{resourceType: "old-resource", lastSyncedAt: old},
+			},
+			wantStatus: "stale",
+			wantOldest: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := db.Exec("DELETE FROM sync_state"); err != nil {
+				t.Fatalf("clear sync_state: %v", err)
+			}
+			for _, row := range tt.rows {
+				if _, err := db.Exec(
+					"INSERT INTO sync_state(resource_type, last_synced_at, total_count) VALUES (?, ?, 0)",
+					row.resourceType,
+					row.lastSyncedAt,
+				); err != nil {
+					t.Fatalf("insert sync_state: %v", err)
+				}
+			}
+
+			report := collectCacheReport(context.Background(), "6h")
+			if got := report["status"]; got != tt.wantStatus {
+				t.Fatalf("status = %v, want %q; report=%v", got, tt.wantStatus, report)
+			}
+
+			resources, ok := report["resources"].([]map[string]any)
+			if !ok {
+				t.Fatalf("resources has type %T, want []map[string]any", report["resources"])
+			}
+			for _, resource := range resources {
+				if resource["type"] == "zero-resource" || resource["type"] == "null-resource" {
+					if got := resource["staleness"]; got != "never" {
+						t.Fatalf("%v staleness = %v, want never", resource["type"], got)
+					}
+					if _, ok := resource["last_synced_at"]; ok {
+						t.Fatalf("%v must not render last_synced_at: %v", resource["type"], resource)
+					}
+				}
+			}
+
+			oldest, hasOldest := report["oldest_age"]
+			if !tt.wantOldest {
+				if hasOldest {
+					t.Fatalf("oldest_age = %v, want omitted; report=%v", oldest, report)
+				}
+				return
+			}
+			if !hasOldest {
+				t.Fatalf("oldest_age omitted; report=%v", report)
+			}
+			age, err := time.ParseDuration(oldest.(string))
+			if err != nil {
+				t.Fatalf("parse oldest_age %q: %v", oldest, err)
+			}
+			if age < 11*time.Hour || age > 13*time.Hour {
+				t.Fatalf("oldest_age = %v, want age of the real timestamp only", age)
+			}
+		})
+	}
+}
+`, "__CLI_NAME__", naming.CLI(apiSpec.Name))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "cache_sync_state_test.go"), []byte(testSrc), 0o644))
+
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestCollectCacheReportSyncStateTimes", "-count=1")
+}
+
 func TestGeneratedDoctorAgentcookieSuppressesMultiLocationWarn(t *testing.T) {
 	t.Parallel()
 
@@ -297,4 +443,71 @@ func TestGeneratedDoctorCredentialLocationLabels(t *testing.T) {
 	payload, err = runDoctorJSON(t, binaryPath, env)
 	require.NoError(t, err)
 	require.Equal(t, "legacy config path", payload["credentials_location"])
+}
+
+func TestGeneratedDoctorHumanOutputShowsCollectedFailureReasons(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := readOnlyCollectionSpec("doctor-render-errors")
+	apiSpec.Cache.Enabled = true
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	doctorSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	doctor := string(doctorSrc)
+	require.Contains(t, doctor, `if v, ok := rep["error"]; ok {`,
+		"renderCacheReport must print the collected cache error")
+	require.Contains(t, doctor, `fmt.Fprintf(w, "    error: %v\n", v)`,
+		"cache human output must include the collected error string")
+	require.Contains(t, doctor, `if status, _ := rep["status"].(string); status == "error" {`,
+		"renderPathsReport must surface a path-resolution failure")
+	require.Contains(t, doctor, `fmt.Fprintf(w, "    detail: %v\n", v)`,
+		"paths human output must include the collected detail string")
+
+	testSrc := `package cli
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
+
+func TestRenderCacheReportPrintsError(t *testing.T) {
+	var buf bytes.Buffer
+	renderCacheReport(&buf, map[string]any{
+		"status":  "error",
+		"db_path": "/tmp/data.db",
+		"error":   "running migrations: database schema version 9 is newer than supported version 4; upgrade the CLI binary or open an older database",
+	})
+	out := buf.String()
+	if !strings.Contains(out, "FAIL") {
+		t.Fatalf("cache human output missing FAIL: %q", out)
+	}
+	if !strings.Contains(out, "running migrations: database schema version 9") {
+		t.Fatalf("cache human output discarded collected error: %q", out)
+	}
+}
+
+func TestRenderPathsReportPrintsDetail(t *testing.T) {
+	var buf bytes.Buffer
+	renderPathsReport(&buf, map[string]any{
+		"status": "error",
+		"detail": "HOME is unset and no platform default is available",
+	})
+	out := buf.String()
+	if !strings.Contains(out, "FAIL") {
+		t.Fatalf("paths human output missing FAIL: %q", out)
+	}
+	if !strings.Contains(out, "HOME is unset and no platform default is available") {
+		t.Fatalf("paths human output discarded collected detail: %q", out)
+	}
+	if strings.TrimSpace(out) == "Paths:" {
+		t.Fatalf("paths failure rendered as a bare header")
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "doctor_render_error_test.go"), []byte(testSrc), 0o644))
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestRender(Cache|Paths)Report", "-count=1")
 }

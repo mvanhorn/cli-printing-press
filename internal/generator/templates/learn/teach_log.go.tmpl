@@ -29,14 +29,19 @@ const teachLogFileName = "teach.log"
 // Added fields must keep `omitempty` so older readers parsing a
 // newer-shape entry still see a valid record.
 type TeachLogEntry struct {
-	TS        string `json:"ts"`
-	Action    string `json:"action"`
-	Query     string `json:"query,omitempty"`
-	Resource  string `json:"resource,omitempty"`
-	Warning   string `json:"warning"`
-	Detail    string `json:"detail,omitempty"`
-	Suggested string `json:"suggested,omitempty"`
+	TS         string `json:"ts"`
+	Action     string `json:"action"`
+	Query      string `json:"query,omitempty"`
+	QueryHash  string `json:"query_hash,omitempty"`
+	Normalized string `json:"normalized,omitempty"`
+	Resource   string `json:"resource,omitempty"`
+	Warning    string `json:"warning"`
+	Detail     string `json:"detail,omitempty"`
+	Suggested  string `json:"suggested,omitempty"`
 }
+
+// Overridable in tests so rotation can be forced below the 1 MiB production cap.
+var teachLogMaxBytes int64 = 1 << 20
 
 // TeachLogPath returns the on-disk path to the structured teach log.
 // Creates the parent directory on first call (mode 0o700).
@@ -71,13 +76,26 @@ func AppendTeachLogWarning(action, query string, w Warning) error {
 	entry := TeachLogEntry{
 		TS:        time.Now().UTC().Format(time.RFC3339),
 		Action:    action,
-		Query:     query,
+		QueryHash: QueryHash(query),
 		Resource:  w.Resource,
 		Warning:   w.Code,
 		Detail:    w.Detail,
 		Suggested: w.Suggested,
 	}
 	return appendTeachLogEntry(entry)
+}
+
+func rotateTeachLogIfNeeded(path string) {
+	if teachLogMaxBytes <= 0 {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Size() < teachLogMaxBytes {
+		return
+	}
+	rotated := path + ".1"
+	_ = os.Remove(rotated)
+	_ = os.Rename(path, rotated)
 }
 
 func appendTeachLogEntry(entry TeachLogEntry) error {
@@ -89,15 +107,18 @@ func appendTeachLogEntry(entry TeachLogEntry) error {
 	if err != nil {
 		return fmt.Errorf("teach log: marshal: %w", err)
 	}
-	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("teach log: open %s: %w", p, err)
-	}
-	defer f.Close()
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		return fmt.Errorf("teach log: write: %w", err)
-	}
-	return nil
+	return cliutil.WithFileLock(p, func() error {
+		rotateTeachLogIfNeeded(p)
+		f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return fmt.Errorf("teach log: open %s: %w", p, err)
+		}
+		defer f.Close()
+		if _, err := f.Write(append(line, '\n')); err != nil {
+			return fmt.Errorf("teach log: write: %w", err)
+		}
+		return nil
+	})
 }
 
 // ReadTeachLogWarnings returns every structured warning recorded in

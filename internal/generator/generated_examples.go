@@ -122,7 +122,7 @@ func compactFieldNames(typeName string, types map[string]spec.TypeDef) []string 
 	seen := make(map[string]struct{}, len(typeDef.Fields))
 	for _, field := range typeDef.Fields {
 		name := strings.TrimSpace(field.Name)
-		if name == "" {
+		if name == "" || !isCompactGravityField(name) {
 			continue
 		}
 		if _, ok := seen[name]; ok {
@@ -132,6 +132,35 @@ func compactFieldNames(typeName string, types map[string]spec.TypeDef) []string 
 		fields = append(fields, name)
 	}
 	return fields
+}
+
+func isCompactGravityField(name string) bool {
+	switch name {
+	case "id", "name", "title", "identifier", "code", "slug", "key",
+		"status", "state", "type", "kind", "priority",
+		"url", "email",
+		"price", "amount", "cost", "fare", "rate", "currency",
+		"rating", "score", "count",
+		"language", "locale", "country", "region", "city", "domain",
+		"created_at", "updated_at", "createdAt", "updatedAt", "date",
+		"version":
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "" {
+		return false
+	}
+	for _, suffix := range []string{"_id", "_name", "_at", "_status", "_state", "_slug", "_key", "_title", "_code", "_count", "_url"} {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	for _, suffix := range []string{"Id", "Name", "At", "Status", "State", "Slug", "Key", "Title", "Code", "Count", "URL", "Url"} {
+		if strings.HasSuffix(name, suffix) && len(name) > len(suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func compactFieldMapLiteral(typeName string, types map[string]spec.TypeDef) string {

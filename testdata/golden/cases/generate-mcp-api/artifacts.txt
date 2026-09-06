@@ -25,3 +25,4 @@ mcp-cloudflare/internal/mcp/code_orch.go
 # transport: [stdio, http] stops being honored, this file would revert to
 # stdio-only without the flag surface.
 mcp-cloudflare/cmd/mcp-cloudflare-pp-mcp/main.go
+mcp-cloudflare/cmd/mcp-cloudflare-pp-mcp/http_auth_test.go

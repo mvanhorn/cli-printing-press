@@ -62,9 +62,11 @@ type rootFlags struct {
 	platformMetadataEmitted bool
 	deliverSpec             string
 	timeout                 time.Duration
+	timeoutExplicit         bool
 	rateLimit               float64
 	maxAge                  time.Duration
 	dataSource              string
+	agentSource             string
 	freshnessMeta           any
 
 	// deliverBuf captures command output when --deliver is set to a
@@ -76,21 +78,67 @@ type rootFlags struct {
 // novelCommandHooks are optional hooks for hand-authored command extensions.
 // A markerless file in package cli may register one from init without editing
 // this generated root, so force regeneration preserves both the source and
-// wiring. Registration is additive: independent extensions never replace one
-// another.
+// wiring. Hooks run after generated novel parent groups are attached so a
+// hook can Find a novel parent and add children. Registration is additive:
+// independent extensions never replace one another, except that a real
+// command replaces a TODO scaffold with the same name.
 var novelCommandHooks []func(root *cobra.Command, flags *rootFlags)
 
 func registerNovelCommand(hook func(root *cobra.Command, flags *rootFlags)) {
 	novelCommandHooks = append(novelCommandHooks, hook)
 }
 
+const novelScaffoldAnnotation = "pp:novel-scaffold"
+
+func isNovelScaffoldCommand(cmd *cobra.Command) bool {
+	return cmd != nil && cmd.Annotations[novelScaffoldAnnotation] == "true"
+}
+
 func addNovelCommandIfAbsent(parent *cobra.Command, candidate *cobra.Command) {
+	if parent == nil || candidate == nil {
+		return
+	}
 	for _, existing := range parent.Commands() {
-		if existing.Name() == candidate.Name() {
-			return
+		if existing.Name() != candidate.Name() {
+			continue
 		}
+		if isNovelScaffoldCommand(existing) && !isNovelScaffoldCommand(candidate) {
+			parent.RemoveCommand(existing)
+			parent.AddCommand(candidate)
+		}
+		return
 	}
 	parent.AddCommand(candidate)
+}
+
+func preferImplementedNovelCommands(cmd *cobra.Command) {
+	if cmd == nil {
+		return
+	}
+	byName := map[string][]*cobra.Command{}
+	for _, child := range cmd.Commands() {
+		byName[child.Name()] = append(byName[child.Name()], child)
+	}
+	for _, group := range byName {
+		var keep *cobra.Command
+		for _, child := range group {
+			if !isNovelScaffoldCommand(child) {
+				keep = child
+				break
+			}
+		}
+		if keep == nil {
+			continue
+		}
+		for _, child := range group {
+			if child != keep && isNovelScaffoldCommand(child) {
+				cmd.RemoveCommand(child)
+			}
+		}
+	}
+	for _, child := range cmd.Commands() {
+		preferImplementedNovelCommands(child)
+	}
 }
 
 // clientHooks let preserved package-local extensions configure a newly-created
@@ -100,6 +148,17 @@ var clientHooks []func(*client.Client) error
 
 func registerClientHook(hook func(*client.Client) error) {
 	clientHooks = append(clientHooks, hook)
+}
+
+// Keeps preserved post-construction setup consistent across interactive CLI
+// and MCP clients.
+func ApplyClientHooks(c *client.Client) error {
+	for _, hook := range clientHooks {
+		if err := hook(c); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // RootCmd returns the Cobra command tree without executing it. The MCP server
@@ -285,9 +344,13 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 		}
 	}
 	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")
-	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", 0, "Max requests per second (0 to disable)")
+	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", client.RateLimitAuto, "Max requests per second (0 to disable; default auto — pace to server rate-limit headers)")
+	if f := rootCmd.PersistentFlags().Lookup("rate-limit"); f != nil {
+		f.DefValue = "auto"
+	}
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		var appliedProfile *Profile
 		if err := enforceMCPBoundProfile(cmd, flags); err != nil {
 			return err
 		}
@@ -321,6 +384,7 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 			if err := ApplyProfileToFlags(cmd, profile); err != nil {
 				return err
 			}
+			appliedProfile = profile
 		}
 		if platformCommandNeedsGate(cmd) {
 			if err := preparePlatformSession(flags); err != nil {
@@ -382,6 +446,8 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 			runLearnInitOnce(cmd.Context())
 			runPlaybookInitOnce(cmd.Context())
 		}
+		flags.timeoutExplicit = timeoutExplicitFrom(cmd, appliedProfile)
+		flags.agentSource = declaredAgentSource(cmd, flags)
 		return nil
 	}
 	rootCmd.AddCommand(newProjectsCmd(flags))
@@ -407,6 +473,7 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.AddCommand(newAPICmd(flags))
 	rootCmd.AddCommand(newCurrenciesPromotedCmd(flags))
 	rootCmd.AddCommand(newPublicPromotedCmd(flags))
+	rootCmd.AddCommand(newTicketsPromotedCmd(flags))
 	rootCmd.AddCommand(newVersionCmd())
 	// Self-learning loop commands. newLearnConfig (defined in
 	// learn_init.go) reads spec.Learn.TickerPatterns + Stopwords and
@@ -424,6 +491,7 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 	for _, hook := range novelCommandHooks {
 		hook(rootCmd, flags)
 	}
+	preferImplementedNovelCommands(rootCmd)
 	// Attach the conditional platform identity command last so ordinary,
 	// promoted, and novel API-owned `whoami` commands all win the name.
 	if registeredPlatformSource != nil {
@@ -648,6 +716,21 @@ func commandTreeHasFlag(cmd *cobra.Command, name string) bool {
 	return false
 }
 
+// ApplyProfileToFlags overlays values without setting Flag.Changed, so a
+// profile-supplied timeout must count here or binary transfers would drop
+// the whole-call bound.
+func timeoutExplicitFrom(cmd *cobra.Command, profile *Profile) bool {
+	if cmd != nil && cmd.Flags().Changed("timeout") {
+		return true
+	}
+	if profile != nil {
+		if _, ok := profile.Values["timeout"]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func ExitCode(err error) int {
 	var codeErr *cliError
 	if As(err, &codeErr) {
@@ -662,15 +745,16 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 		return nil, configErr(err)
 	}
 	c := client.New(cfg, f.timeout, f.rateLimit)
+	if f.timeoutExplicit {
+		c.SetTimeoutExplicit(true)
+	}
 	c.DryRun = f.dryRun
 	c.NoCache = f.noCache
 	if err := bindPlatformClient(c, f); err != nil {
 		return nil, err
 	}
-	for _, hook := range clientHooks {
-		if err := hook(c); err != nil {
-			return nil, err
-		}
+	if err := ApplyClientHooks(c); err != nil {
+		return nil, err
 	}
 	return c, nil
 }

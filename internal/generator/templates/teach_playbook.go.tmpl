@@ -59,7 +59,7 @@ notes verbatim.
 At least one of --playbook-json/--playbook-file and --notes/--notes-file
 must be set. --playbook-json takes the playbook body inline so MCP-only
 agents can record playbooks without a file on disk.`,
-		Example: `  {{.Name}}-pp-cli teach-playbook --query "<question that anchors the family>" --playbook-file ~/playbooks/recipe.json --notes-file ~/playbooks/recipe-notes.md`,
+		Example: `  QUERY="$(cat /path/to/question.txt)" {{.Name}}-pp-cli teach-playbook --query "$QUERY" --playbook-file ~/playbooks/recipe.json --notes-file ~/playbooks/recipe-notes.md`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
@@ -122,7 +122,8 @@ agents can record playbooks without a file on disk.`,
 
 			_ = appendLearningsAudit(map[string]any{
 				"action":         "teach-playbook",
-				"query":          query,
+				"query_hash":     learn.QueryHash(query),
+				"normalized":     learn.RedactPII(normalized.NonEntityNormalized),
 				"query_family":   family,
 				"playbook_id":    id,
 				"newly_inserted": inserted,
@@ -197,7 +198,7 @@ drift). Same fire-and-forget posture as teach: silent on success,
 errors to teach.log, safe to background with &.
 
 Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
-		Example: `  {{.Name}}-pp-cli playbook amend --query "<exact recall query>" --add-note "summary endpoint envelope: data lives at .results.header, not .header"`,
+		Example: `  QUERY="$(cat /path/to/question.txt)" NOTE="$(cat /path/to/note.txt)" {{.Name}}-pp-cli playbook amend --query "$QUERY" --add-note "$NOTE"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
@@ -212,7 +213,7 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 				return silentCodeErr(2)
 			}
 			if strings.TrimSpace(addNote) == "" {
-				writeTeachErrLog(fmt.Sprintf("playbook amend: missing --add-note for query=%q", query))
+				writeTeachErrLog(fmt.Sprintf("playbook amend: missing --add-note (%s)", queryHashRef(query)))
 				return silentCodeErr(2)
 			}
 
@@ -229,7 +230,7 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 			normalized = learn.PromoteEntities(normalized, resolver)
 			family := learn.QueryFamily(normalized)
 			if family == "" {
-				writeTeachErrLog(fmt.Sprintf("playbook amend: query normalized to empty family: %q", query))
+				writeTeachErrLog(fmt.Sprintf("playbook amend: query normalized to empty family (%s)", queryHashRef(query)))
 				return silentCodeErr(2)
 			}
 
@@ -254,7 +255,8 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 
 			if auditErr := appendLearningsAudit(map[string]any{
 				"action":       "playbook-amend",
-				"query":        query,
+				"query_hash":   learn.QueryHash(query),
+				"normalized":   learn.RedactPII(normalized.NonEntityNormalized),
 				"query_family": family,
 				"add_note":     addNote,
 			}); auditErr != nil {

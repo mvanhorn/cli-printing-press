@@ -84,11 +84,12 @@ func looksLikeDoctorInterstitial(body []byte) string {
 // an operator can run to confirm credentials work end-to-end. Picks the
 // first leaf that (a) carries the `pp:endpoint` annotation, so it actually
 // dials the API rather than reading a local file like `feedback list` or
-// `profile list`; (b) has a list/get verb; and (c) takes no positional
-// arguments, so the suggestion is copy-paste runnable. Returns the dotted
-// command path (e.g. "issues list") or "" when no such command exists —
-// common in mutation-only CLIs and in CLIs where every read command has
-// required positional arguments.
+// `profile list`; (b) has a list/get verb; (c) takes no positional
+// arguments; and (d) has no required flags (`pp:requires-input`), so a
+// bare invocation actually dials instead of printing help and exiting 0.
+// Returns the command path (e.g. "issues list") or "" when no such
+// command exists — common in mutation-only CLIs and in CLIs where every
+// read command has required input.
 func suggestReadCommand(root *cobra.Command) string {
 	if root == nil {
 		return ""
@@ -119,6 +120,8 @@ func suggestReadCommand(root *cobra.Command) string {
 	return found
 }
 
+const requiresInputAnnotation = "pp:requires-input"
+
 func isSuggestableReadLeaf(cmd *cobra.Command) bool {
 	if cmd == nil || cmd.Hidden || cmd.HasSubCommands() || !cmd.Runnable() {
 		return false
@@ -128,6 +131,11 @@ func isSuggestableReadLeaf(cmd *cobra.Command) bool {
 	// recreate the false-confidence failure mode the suggestion is
 	// supposed to avoid.
 	if cmd.Annotations["pp:endpoint"] == "" {
+		return false
+	}
+	// Required non-positional flags print help and exit 0 in default
+	// mode. Suggesting one would look like a successful token check.
+	if cmd.Annotations[requiresInputAnnotation] != "" {
 		return false
 	}
 	verb := strings.ToLower(strings.SplitN(cmd.Use, " ", 2)[0])
@@ -213,7 +221,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					configured, authSource := doctorAuthConfiguredState(cfg)
 					if !configured {
 						report["auth"] = "not configured"
-						report["auth_hint"] = "Set it with: tier-routing-golden-pp-cli auth set-token <token> or export TIER_GLOBAL_TOKEN=\"your-token-here\""
+						report["auth_hint"] = "Set it with: echo \"$TOKEN\" | tier-routing-golden-pp-cli auth set-token or export TIER_GLOBAL_TOKEN=\"your-token-here\""
 					} else {
 						authConfigured = true
 						report["auth"] = "configured"
@@ -510,6 +518,16 @@ func pathsWarning(report map[string]any) string {
 }
 
 func renderPathsReport(w io.Writer, rep map[string]any) {
+	if status, _ := rep["status"].(string); status == "error" {
+		fmt.Fprintf(w, "  %s Paths: %s\n", red("FAIL"), status)
+		if v, ok := rep["detail"]; ok {
+			fmt.Fprintf(w, "    detail: %v\n", v)
+		}
+		if v, ok := rep["error"]; ok {
+			fmt.Fprintf(w, "    error: %v\n", v)
+		}
+		return
+	}
 	fmt.Fprintf(w, "  Paths:\n")
 	for _, kind := range []string{"config", "data", "state", "cache"} {
 		entry, ok := rep[kind].(map[string]any)
@@ -710,7 +728,7 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 			continue
 		}
 		r := map[string]any{"type": rtype, "rows": count}
-		if lastSynced.Valid {
+		if lastSynced.Valid && !lastSynced.Time.IsZero() {
 			haveAny = true
 			r["last_synced_at"] = lastSynced.Time.UTC().Format(time.RFC3339)
 			age := time.Since(lastSynced.Time)
@@ -731,7 +749,7 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 	report["stale_after"] = staleAfter.String()
 
 	switch {
-	case !haveAny && len(resources) == 0:
+	case !haveAny:
 		report["status"] = "empty"
 		// Only sync-tracked resources are counted here. A store seeded by
 		// other paths (built-in reference data, local writes) can hold rows
@@ -761,6 +779,9 @@ func renderCacheReport(w io.Writer, rep map[string]any) {
 		indicator = yellow("INFO")
 	}
 	fmt.Fprintf(w, "  %s Cache: %s\n", indicator, status)
+	if v, ok := rep["error"]; ok {
+		fmt.Fprintf(w, "    error: %v\n", v)
+	}
 	if v, ok := rep["db_path"]; ok {
 		fmt.Fprintf(w, "    db_path: %v\n", v)
 	}

@@ -108,8 +108,8 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 
 Use --chrome to read cookies from Chrome for .cookie-auth.example.
 Use --browser as an alias for --chrome.
+--chrome and --browser require a cookie extraction tool (pycookiecheat, cookies, or cookie-scoop-cli).
 Use --cookies-file to import Playwright storage-state JSON or a raw Cookie header file.
-Requires a cookie extraction tool (pycookiecheat, cookies, or cookie-scoop-cli).
 
 If you have multiple Chrome profiles, pycookiecheat and cookie-scoop-cli can
 auto-detect which profile is logged in. Use --profile to select a specific
@@ -181,8 +181,8 @@ profile by name when the installed backend supports it.`,
 					fmt.Fprintln(w, red("No cookie extraction tool found."))
 					fmt.Fprintln(w, "")
 					if runtime.GOOS == "windows" {
-						fmt.Fprintln(w, "pycookiecheat does not support Windows. Read cookies from a live Chrome session instead:")
-						fmt.Fprintf(w, "\n  golden-api-cookie-auth-pp-cli auth login --browser\n\n")
+						fmt.Fprintln(w, "pycookiecheat does not support Windows. Import cookies from a file instead:")
+						fmt.Fprintf(w, "\n  golden-api-cookie-auth-pp-cli auth login --cookies-file <path>\n\n")
 						fmt.Fprintln(w, "Or install a cross-platform reader:")
 						fmt.Fprintln(w, "  cargo install cookie-scoop-cli     # Rust")
 					} else {
@@ -365,27 +365,32 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 // silently land as the access token.
 func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
-		Use:     "set-token <jwt>",
+		Use:     "set-token",
 		Short:   "Save a bearer JWT pasted from DevTools (escape hatch for in-memory tokens)",
-		Example: "  golden-api-cookie-auth-pp-cli auth set-token eyJhbGciOi...",
+		Example: "  echo \"$TOKEN\" | golden-api-cookie-auth-pp-cli auth set-token\n  golden-api-cookie-auth-pp-cli auth set-token < token-file",
 		Long: "Save a bearer JWT pasted from DevTools (escape hatch for in-memory tokens).\n\n" +
 			"Use this when `auth login --chrome` can't reach the access token — most\n" +
 			"commonly Auth0 SPA SDK deployments that keep the JWT in JS heap memory.\n" +
 			"Open DevTools → Network → any authenticated request → copy the\n" +
-			"`Authorization: Bearer ...` value and paste the JWT portion here.\n\n" +
-			"The token is validated for JWT shape (three base64url segments, length\n" +
-			"floor) so short tracking cookies don't get saved as credentials.",
-		Args: cobra.ExactArgs(1),
+			"`Authorization: Bearer ...` value and pipe the JWT portion on stdin.\n\n" +
+			"The token is read from stdin so it never appears in process arguments or\n" +
+			"shell history. It is validated for JWT shape (three base64url segments,\n" +
+			"length floor) so short tracking cookies don't get saved as credentials.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			token, err := readSecretFromStdin(cmd.InOrStdin())
+			if err != nil {
+				return authErr(err)
+			}
+
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
 				return configErr(err)
 			}
 
-			token := strings.TrimSpace(args[0])
 			token = strings.TrimPrefix(token, "Bearer ")
 			if !cliutil.LooksLikeJWT(token) {
-				return authErr(fmt.Errorf("argument is not JWT-shaped (three base64url segments, ≥150 chars total). " +
+				return authErr(fmt.Errorf("stdin is not JWT-shaped (three base64url segments, ≥150 chars total). " +
 					"This is the cookie-vs-JWT-shape gate — short tracking cookies like Cloudflare's __cf_bm " +
 					"share the segment shape but aren't credentials. Paste the `Authorization: Bearer ...` value " +
 					"from DevTools → Network, not a cookie jar"))
@@ -951,7 +956,7 @@ func detectCookieTool() (cookieTool, error) {
 		return cookieTool{name: "cookie-scoop"}, nil
 	}
 	if runtime.GOOS == "windows" {
-		return cookieTool{}, fmt.Errorf("no cookie extraction tool found; pycookiecheat does not support Windows. Use `auth login --browser` (live Chrome via CDP) or install cookie-scoop-cli")
+		return cookieTool{}, fmt.Errorf("no cookie extraction tool found; pycookiecheat does not support Windows. Use `auth login --cookies-file` or install cookie-scoop-cli")
 	}
 	return cookieTool{}, fmt.Errorf("no cookie extraction tool found; install one: pip install pycookiecheat")
 }
@@ -987,23 +992,16 @@ func extractViaPycookiecheat(tool cookieTool, domain string, profile chromeProfi
 		cookiePath = filepath.Join(profile.DataDir, profile.Dir, "Cookies")
 	}
 
-	var script string
+	// Static program: URL and optional cookie path arrive via argv so a
+	// hostile Chrome profile name cannot close a Python string literal.
+	script := `import json, sys; from pycookiecheat import chrome_cookies; url = sys.argv[1]; print(json.dumps(chrome_cookies(url, cookie_file=sys.argv[2]) if len(sys.argv) > 2 else chrome_cookies(url)))`
+	args := append(append([]string{}, tool.pyArgs...), "-c", script, "https://"+cleanDomain)
 	if cookiePath != "" {
-		// Use forward slashes so Python doesn't interpret backslashes as escapes on Windows
-		safePath := filepath.ToSlash(cookiePath)
-		script = fmt.Sprintf(
-			`import json; from pycookiecheat import chrome_cookies; print(json.dumps(chrome_cookies("https://%s", cookie_file="%s")))`,
-			cleanDomain, safePath,
-		)
-	} else {
-		script = fmt.Sprintf(
-			`import json; from pycookiecheat import chrome_cookies; print(json.dumps(chrome_cookies("https://%s")))`,
-			cleanDomain,
-		)
+		args = append(args, cookiePath)
 	}
 
 	var out bytes.Buffer
-	cmd := exec.Command(tool.pyBin, append(append([]string{}, tool.pyArgs...), "-c", script)...)
+	cmd := exec.Command(tool.pyBin, args...)
 	cmd.Stdout = &out
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
