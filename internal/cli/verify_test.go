@@ -73,6 +73,61 @@ func TestVerifyCmdJSONFailReturnsExitErrorAfterWritingReport(t *testing.T) {
 	assert.Equal(t, "FAIL", payload.Verify.Verdict)
 }
 
+func TestVerifyCmdJSONFixLoopKeepsStdoutPure(t *testing.T) {
+	cmd := newVerifyCmdWithOptions(verifyCmdOptions{
+		runVerify: func(cfg pipeline.VerifyConfig) (*pipeline.VerifyReport, error) {
+			return &pipeline.VerifyReport{
+				Mode:     "mock",
+				Total:    2,
+				Passed:   1,
+				Failed:   1,
+				PassRate: 50,
+				Verdict:  "FAIL",
+				Binary:   filepath.Join(cfg.Dir, "sample-cli"),
+			}, nil
+		},
+		runFixLoop: func(cfg pipeline.VerifyConfig, initial *pipeline.VerifyReport, maxIterations int) (*pipeline.FixLoopReport, error) {
+			assert.Equal(t, 3, maxIterations)
+			final := &pipeline.VerifyReport{
+				Mode:     "mock",
+				Total:    2,
+				Passed:   2,
+				Failed:   0,
+				PassRate: 100,
+				Verdict:  "PASS",
+				Binary:   filepath.Join(cfg.Dir, "sample-cli"),
+			}
+			return &pipeline.FixLoopReport{
+				Iterations: []pipeline.FixIteration{{
+					Number:     1,
+					BeforeRate: initial.PassRate,
+					AfterRate:  final.PassRate,
+					Delta:      final.PassRate - initial.PassRate,
+				}},
+				FinalReport: final,
+				Improved:    true,
+			}, nil
+		},
+	})
+	cmd.SetArgs([]string{"--dir", t.TempDir(), "--json", "--fix"})
+
+	stdout, stderr, err := runWithCapturedStdoutAndStderr(t, cmd.Execute)
+	require.NoError(t, err)
+
+	assert.Contains(t, stderr, "Running fix loop")
+	assert.NotContains(t, stdout, "Running fix loop")
+
+	var payload struct {
+		Verify  pipeline.VerifyReport   `json:"verify"`
+		FixLoop *pipeline.FixLoopReport `json:"fix_loop"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &payload))
+	assert.Equal(t, "PASS", payload.Verify.Verdict)
+	require.NotNil(t, payload.FixLoop)
+	assert.True(t, payload.FixLoop.Improved)
+	assert.Equal(t, 1, len(payload.FixLoop.Iterations))
+}
+
 func TestVerifyCmdJSONFailSilencesRootCobraError(t *testing.T) {
 	verifyCmd := newVerifyCmdWithOptions(verifyCmdOptions{
 		runVerify: func(cfg pipeline.VerifyConfig) (*pipeline.VerifyReport, error) {

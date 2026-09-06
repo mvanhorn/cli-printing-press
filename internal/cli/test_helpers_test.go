@@ -79,6 +79,48 @@ func runWithCapturedStderr(t *testing.T, fn func() error) (string, error) {
 	return out, execErr
 }
 
+// Drain both streams concurrently so writes to either pipe cannot block
+// while tests assert progress and structured output independently.
+func runWithCapturedStdoutAndStderr(t *testing.T, fn func() error) (string, string, error) {
+	t.Helper()
+	outR, outW, err := os.Pipe()
+	require.NoError(t, err)
+	errR, errW, err := os.Pipe()
+	require.NoError(t, err)
+
+	origStdout, origStderr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = outW, errW
+
+	outCh := make(chan string, 1)
+	errCh := make(chan string, 1)
+	go func() {
+		defer outR.Close()
+		b, _ := io.ReadAll(outR)
+		outCh <- string(b)
+	}()
+	go func() {
+		defer errR.Close()
+		b, _ := io.ReadAll(errR)
+		errCh <- string(b)
+	}()
+
+	restored := false
+	restore := func() {
+		if restored {
+			return
+		}
+		outW.Close()
+		errW.Close()
+		os.Stdout, os.Stderr = origStdout, origStderr
+		restored = true
+	}
+	defer restore()
+
+	execErr := fn()
+	restore()
+	return <-outCh, <-errCh, execErr
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	out, err := runWithCapturedStdout(t, func() error {
@@ -129,4 +171,25 @@ func TestRunWithCapturedStderrRestoresStderrAfterPanic(t *testing.T) {
 
 	require.True(t, didPanic)
 	assert.True(t, restored, "stderr should be restored while unwinding a panic")
+}
+
+func TestRunWithCapturedStdoutAndStderrRestoresAfterPanic(t *testing.T) {
+	origStdout, origStderr := os.Stdout, os.Stderr
+	var didPanic bool
+	var restored bool
+
+	func() {
+		defer func() {
+			didPanic = recover() != nil
+			restored = os.Stdout == origStdout && os.Stderr == origStderr
+			os.Stdout, os.Stderr = origStdout, origStderr
+		}()
+
+		_, _, _ = runWithCapturedStdoutAndStderr(t, func() error {
+			panic("boom")
+		})
+	}()
+
+	require.True(t, didPanic)
+	assert.True(t, restored, "stdout and stderr should be restored while unwinding a panic")
 }
