@@ -323,6 +323,8 @@ Phase 4     Shipcheck                 (3-8 min)    Dogfood + verify --fix + scor
 Phase 5     Live Smoke (optional)     (2-5 min)    Read-only API smoke + data-flow check
 ```
 
+That Phase 0..5 table is a compression map. The skill's live IDs are the `phases/NN-*.md` filename stems (`10-generate`, `12-shipcheck`, `18-dogfood-testing`). Receipts and resume pointers use those stems.
+
 Three entry paths. Got an OpenAPI spec? Use `--spec`. Got a URL to a website with no docs? The browser-sniff gate launches a browser, captures traffic, and generates the spec. Got a HAR file from DevTools? Pass `--har`. The press handles all three.
 
 Published CLIs live in the Printing Press Library. The repo no longer carries a source catalog; new and updated CLIs should be published through the public-library workflow so the listing, skills mirror, and release metadata stay in one place.

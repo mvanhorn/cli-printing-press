@@ -83,18 +83,21 @@ func TestInternalSkillMinimumBinaryVersionsTrackMajor(t *testing.T) {
 	// executable compatibility contract is `min-binary-version`; keep the
 	// frontmatter and the duplicated setup-contract comment in sync.
 	want := fmt.Sprintf("%d.0.0", majorVersion(t, version.Version))
-	paths := []string{
-		"../../skills/printing-press/SKILL.md",
-		"../../skills/printing-press-polish/SKILL.md",
-		"../../skills/printing-press-publish/SKILL.md",
-		"../../skills/printing-press-score/SKILL.md",
+	paths := []struct {
+		frontmatter string
+		setup       string
+	}{
+		{"../../skills/printing-press/SKILL.md", "../../skills/printing-press/phases/01-preflight.md"},
+		{"../../skills/printing-press-polish/SKILL.md", "../../skills/printing-press-polish/SKILL.md"},
+		{"../../skills/printing-press-publish/SKILL.md", "../../skills/printing-press-publish/SKILL.md"},
+		{"../../skills/printing-press-score/SKILL.md", "../../skills/printing-press-score/SKILL.md"},
 	}
 
 	frontmatterRe := regexp.MustCompile(`(?m)^min-binary-version:\s*"?([^"\n]+)"?\s*$`)
 	commentRe := regexp.MustCompile(`(?m)^# min-binary-version:\s*([^\s]+)\s*$`)
-	for _, path := range paths {
-		t.Run(path, func(t *testing.T) {
-			data, err := os.ReadFile(path)
+	for _, paths := range paths {
+		t.Run(paths.frontmatter, func(t *testing.T) {
+			data, err := os.ReadFile(paths.frontmatter)
 			require.NoError(t, err)
 			content := string(data)
 
@@ -102,7 +105,9 @@ func TestInternalSkillMinimumBinaryVersionsTrackMajor(t *testing.T) {
 			require.Len(t, frontmatter, 2, "skill must declare min-binary-version frontmatter")
 			assert.Equal(t, want, frontmatter[1])
 
-			comment := commentRe.FindStringSubmatch(content)
+			setupData, err := os.ReadFile(paths.setup)
+			require.NoError(t, err)
+			comment := commentRe.FindStringSubmatch(string(setupData))
 			require.Len(t, comment, 2, "setup contract must duplicate min-binary-version")
 			assert.Equal(t, frontmatter[1], comment[1])
 		})

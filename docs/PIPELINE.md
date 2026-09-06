@@ -264,7 +264,7 @@ Artifacts:
 Two other Printing Press entrypoints run flows that share structure with the managed pipeline:
 
 - `printing-press run` drives `MakeBestCLI` in `internal/pipeline/fullrun.go`. It compresses the full flow into one call and reports a single `FullRunResult`. Its internal step list (research, generate, polish, coverage, dogfood, verification, workflow-verify, scorecard, fix plans, publish) maps to the managed phases but does not use the phase state machine.
-- The `/printing-press` skill uses its own high-level Phase 0..5 layout documented in `README.md`. That layout is a compression of the same work, not a competing contract.
+- The `/printing-press` skill executes 21 files under `skills/printing-press/phases/` keyed by filename stems (`10-generate`, not "Phase 2"). Receipts start at `02-run-initialization`. The Phase 0..5 diagram in `README.md` is a compression map of that workflow, not the receipt IDs.
 
 Both flows should produce artifacts that match the shape described here for the phases they cover.
 

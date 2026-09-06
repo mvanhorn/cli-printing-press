@@ -62,6 +62,27 @@ func TestStateRoundTrip(t *testing.T) {
 	assert.Empty(t, loaded.Phases[PhaseEnrich].PlanStatus)
 }
 
+func TestStateRoundTripPreservesReceiptRecoveryFields(t *testing.T) {
+	setPressTestEnv(t)
+	s := NewState("receipt-fields", "/tmp/receipt-cli")
+	s.PhaseReceiptLog = filepath.Join(s.PipelineDir(), "phase-receipts.jsonl")
+	s.PrintingPressBin = "/opt/press/cli-printing-press"
+	require.NoError(t, s.Save())
+	defer os.RemoveAll(RunRoot(s.RunID))
+
+	loaded, err := LoadState("receipt-fields")
+	require.NoError(t, err)
+	assert.Equal(t, s.PhaseReceiptLog, loaded.PhaseReceiptLog)
+	assert.Equal(t, s.PrintingPressBin, loaded.PrintingPressBin)
+
+	loaded.WorkingDir = "/tmp/promoted-cli"
+	require.NoError(t, loaded.Save())
+	reloaded, err := LoadState("receipt-fields")
+	require.NoError(t, err)
+	assert.Equal(t, s.PhaseReceiptLog, reloaded.PhaseReceiptLog)
+	assert.Equal(t, s.PrintingPressBin, reloaded.PrintingPressBin)
+}
+
 func TestNextPhase(t *testing.T) {
 	setPressTestEnv(t)
 	s := NewState("next-test", "/tmp/test")
