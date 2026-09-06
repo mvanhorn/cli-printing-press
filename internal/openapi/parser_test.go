@@ -11940,11 +11940,11 @@ paths:
 	assert.Equal(t, wantCarrier, parsed.Auth.JWTCarrierCookie)
 }
 
-// TestParseTenantEnvVarExtension: when info.x-tenant-env-var is set, the
-// parser registers "tenant" as an EndpointTemplateVar with the declared
-// env var as the override so the profiler can include
-// /tenant/{tenant}/<resource> paths in flat sync and downstream emitters
-// resolve the placeholder against the real env name.
+// TestParseTenantEnvVarExtension: when x-tenant-env-var is set, at the
+// document root or under info, the parser registers "tenant" as an
+// EndpointTemplateVar with the declared env var as the override so the
+// profiler can include /tenant/{tenant}/<resource> paths in flat sync and
+// downstream emitters resolve the placeholder against the real env name.
 func TestParseTenantEnvVarExtension(t *testing.T) {
 	t.Parallel()
 
@@ -12098,6 +12098,64 @@ paths:
 		require.NoError(t, err)
 		assert.Empty(t, parsed.EndpointTemplateVars, "whitespace-only extension must not register a template var")
 		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
+	})
+
+	t.Run("document-root x-tenant-env-var registers tenant template var + override", func(t *testing.T) {
+		// Press operators commonly place x-tenant-env-var at the document
+		// root rather than under info; an info-only reader silently drops
+		// it and the print loses tenant-aware sync.
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: ServiceTitan Pricebook
+  version: 1.0.0
+servers:
+  - url: https://api.servicetitan.io
+paths:
+  /tenant/{tenant}/materials:
+    get:
+      summary: List materials
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+x-tenant-env-var: ST_TENANT_ID
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"tenant"}, parsed.EndpointTemplateVars)
+		assert.Equal(t, map[string]string{"tenant": "ST_TENANT_ID"}, parsed.EndpointTemplateEnvOverrides)
+		assert.Equal(t, "ST_TENANT_ID", parsed.EndpointTemplateEnvName("tenant"))
+	})
+
+	t.Run("document-root value wins when both root and info declare x-tenant-env-var", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: ServiceTitan Pricebook
+  version: 1.0.0
+  x-tenant-env-var: INFO_TENANT_ID
+servers:
+  - url: https://api.servicetitan.io
+paths:
+  /tenant/{tenant}/materials:
+    get:
+      summary: List materials
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+x-tenant-env-var: ROOT_TENANT_ID
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "ROOT_TENANT_ID", parsed.EndpointTemplateEnvName("tenant"))
 	})
 }
 
@@ -12484,6 +12542,58 @@ paths:
 		assert.Empty(t, parsed.EndpointTemplateVars, "whitespace-only env must not register a template var")
 		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
 		assert.Empty(t, parsed.EndpointPathParamDefaults, "whitespace-only default must not register a path-param default")
+	})
+
+	t.Run("document-root x-path-template-env-vars registers template var + override", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Workspace API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com/{workspace}
+paths:
+  /issues:
+    get:
+      operationId: listIssues
+      responses:
+        "200": {description: ok}
+x-path-template-env-vars:
+  workspace:
+    env: ROOT_WORKSPACE
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"workspace"}, parsed.EndpointTemplateVars)
+		assert.Equal(t, map[string]string{"workspace": "ROOT_WORKSPACE"}, parsed.EndpointTemplateEnvOverrides)
+		assert.Equal(t, "ROOT_WORKSPACE", parsed.EndpointTemplateEnvName("workspace"))
+	})
+
+	t.Run("document-root value wins when both root and info declare x-path-template-env-vars", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Workspace API
+  version: 1.0.0
+  x-path-template-env-vars:
+    workspace:
+      env: INFO_WORKSPACE
+servers:
+  - url: https://api.example.com/{workspace}
+paths:
+  /issues:
+    get:
+      operationId: listIssues
+      responses:
+        "200": {description: ok}
+x-path-template-env-vars:
+  workspace:
+    env: ROOT_WORKSPACE
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "ROOT_WORKSPACE", parsed.EndpointTemplateEnvName("workspace"))
+		assert.Equal(t, map[string]string{"workspace": "ROOT_WORKSPACE"}, parsed.EndpointTemplateEnvOverrides)
 	})
 }
 
