@@ -103,6 +103,7 @@ func NewRootCommand(commandName string) *cobra.Command {
 	rootCmd.AddCommand(newSchemaCmd())
 	rootCmd.AddCommand(newBundleCmd())
 	rootCmd.AddCommand(newMCPSyncCmd())
+	rootCmd.AddCommand(newPhaseReceiptCmd())
 
 	return rootCmd
 }

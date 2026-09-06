@@ -34,7 +34,7 @@ The recipe pointed operators at a switch that wasn't wired up. The warning was c
 
 ## Symptoms
 
-- Operator follows `skills/printing-press/SKILL.md` Phase 2 enrichment, adds `x-mcp:` to an OpenAPI spec, runs generate.
+- Operator follows [`skills/printing-press/phases/10-generate.md`](../../../skills/printing-press/phases/10-generate.md) Phase 2 enrichment, adds `x-mcp:` to an OpenAPI spec, runs generate.
 - Generated CLI still ships endpoint-mirror tools; the >50-tool warning persists; scorecard MCP dims regress.
 - No parser error, no warning, no diff — the extension is read by `kin-openapi` into the untyped extension map and then never consulted.
 - The polish skill cannot recover the situation post-generation: MCP transport / orchestration / tool-design are spec-level dims, not generator-code fixes (auto memory [claude]: `feedback_polish_mcp_misclassify.md`).
@@ -95,7 +95,7 @@ Coverage: 7 unit tests (root, info, absence, root-beats-info precedence with mut
 - Issue #696 — this bug
 - PR #702 — the fix
 - PR #522 — introduced the recipe and the YAML-side parser; missed the OpenAPI side
-- `skills/printing-press/SKILL.md:1734-1805` — pre-generation enrichment recipe
+- [`skills/printing-press/phases/10-generate.md`](../../../skills/printing-press/phases/10-generate.md) — pre-generation enrichment recipe
 - `internal/generator/mcp_warning.go` — the >50-tool warning that points at the recipe
 - `docs/SPEC-EXTENSIONS.md` — canonical reference for `x-*` extensions, now including `x-mcp`
 - `docs/solutions/logic-errors/inline-authorization-param-bearer-inference-2026-05-05.md` — sibling precedent for parser-extension gaps in `internal/openapi/parser.go`

@@ -1,6 +1,6 @@
 # Setup Checks
 
-Post-contract checks the skill must run after executing the bash setup contract block in `SKILL.md`. These handle the contract output signals: `[setup-error]`, optional `[local-binary-stale]` / `[local-binary-rebuilt]` repo-mode rebuild markers, `[go-toolchain-old]`, `[low-disk]`, `[repo-upgrade-available]`, the always-emitted `PRINTING_PRESS_BIN=<abs-path>` and `PRESS_REPO_MODE=<true|false>` markers, the global open-agent-skills freshness check, the `min-binary-version` compatibility check, `[upgrade-required]`, `[upgrade-available]`, `[browser-tools-missing]`, and optional `[binary-shadow]` advisory.
+Post-contract checks the skill must run after executing the bash setup contract block in [phases/01-preflight.md](../phases/01-preflight.md). These handle the contract output signals: `[setup-error]`, optional `[local-binary-stale]` / `[local-binary-rebuilt]` repo-mode rebuild markers, `[go-toolchain-old]`, `[low-disk]`, `[repo-upgrade-available]`, the always-emitted `PRINTING_PRESS_BIN=<abs-path>` and `PRESS_REPO_MODE=<true|false>` markers, the global open-agent-skills freshness check, the `min-binary-version` compatibility check, `[upgrade-required]`, `[upgrade-available]`, `[browser-tools-missing]`, and optional `[binary-shadow]` advisory.
 
 Apply these in order. The preamble below runs unconditionally; each numbered section after it is conditional — do nothing if its trigger isn't present.
 
@@ -16,7 +16,7 @@ This rule applies to *all* generator command references in the rest of this docu
 
 ## 1. Refusal: missing prerequisite
 
-If the setup contract output contains a line starting with `[setup-error]`, a required prerequisite or environment floor is missing (for example: the cli-printing-press binary, the Go toolchain, an old Go toolchain under `GOTOOLCHAIN=local`, an incomplete Go standard library, or critically low disk space) and the contract has already exited non-zero.
+If the setup contract output contains a line starting with `[setup-error]`, a required prerequisite or environment floor is missing (for example: the cli-printing-press binary, the phase-receipt helper required by this skill, the Go toolchain, an old Go toolchain under `GOTOOLCHAIN=local`, an incomplete Go standard library, or critically low disk space) and the contract has already exited non-zero.
 
 **Stop the skill immediately.** Do not proceed to research, generation, or any other work. Surface the message the contract printed (it includes the exact install command or download URL) verbatim to the user.
 

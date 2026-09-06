@@ -249,7 +249,7 @@ Ask via `AskUserQuestion`:
 
 1. **Reuse prior research** — keep the prior brief; the subagent re-scores
    prior novel features against current personas
-2. **Redo research** — re-run Phase 1 from scratch; the subagent still
+2. **Redo research** — re-run Phase 1 of `/printing-press` from scratch; the subagent still
    ingests prior novel features as Pass 2(d) input
 3. **Show me first** — display the prior brief's headline + novel-features
    list, then re-ask between options 1 and 2
@@ -294,7 +294,7 @@ pre-generation spec edit and skip dimensions that already score 10/10:
   - remote transport is below 10: offer `mcp.transport: [stdio, http]` or the
     OpenAPI `x-mcp.transport` equivalent before regeneration.
   - token efficiency, tool design, or surface strategy is below 10: offer the
-    Phase 2 MCP surface decision, including intents for clear multi-step
+    `/printing-press` Phase 2 MCP surface decision, including intents for clear multi-step
     workflows or the Cloudflare pattern for large surfaces.
 - `auth_protocol` below 10, or prior manifest evidence that the CLI used a
   slug-derived env var where the ecosystem has a canonical env var, can be
@@ -302,7 +302,7 @@ pre-generation spec edit and skip dimensions that already score 10/10:
   `auth.env_vars` or OpenAPI `x-auth-env-vars` guidance into the spec.
 - `data_pipeline_integrity` below 10 is only an enrichment opportunity when the
   prior CLI or research shows sync-eligible resources. In that case, point the
-  handoff at the relevant Phase 2 sync/cache enrichment decision rather than
+  handoff at the relevant `/printing-press` Phase 2 sync/cache enrichment decision rather than
   treating the score alone as proof that a local store should exist.
 
 Use `AskUserQuestion` for each concrete opportunity before the handoff. Phrase
@@ -331,9 +331,9 @@ section to execute. Do not duplicate the canonical enrichment text here.
 Invoke `/printing-press <api>` and bundle these into the prompt:
 
 1. **A header line** stating the user already chose to regenerate, so
-   Phase 0's library-check should select "Generate a fresh CLI" and not
+   `/printing-press` Phase 0's library-check should select "Generate a fresh CLI" and not
    re-prompt fresh-vs-improve.
-2. **Research mode** from Phase C (`reuse` or `redo`). Phase 0's existing
+2. **Research mode** from Phase C (`reuse` or `redo`). `/printing-press` Phase 0's existing
    reuse logic consumes this.
 3. **The user's freeform reprint reason**, verbatim, in a `User context`
    block. This propagates into the brief as `## User Vision` and becomes
@@ -387,8 +387,7 @@ Invoke `/printing-press <api>` and bundle these into the prompt:
 
 Do **not** pass a separate "this is a reprint" marker. The novel-features
 subagent runs unconditionally on every print and discovers prior research
-via its own discovery snippet (see
-`skills/printing-press/references/novel-features-subagent.md`). The paths
+via its own discovery snippet. The paths
 import populated in Phase A are exactly the paths it checks; Pass 2(d)
 fires whenever prior `research.json` exists.
 
@@ -404,7 +403,7 @@ promotion through `regen-merge --apply` so still-unique hand-authored novels
 survive the reprint and genuine `NOVEL-COLLISION` / missing-referent cases halt
 for review. This honors the prefer-`regen-merge` guidance under the
 **Hand-edits must be regen-mergeable.** section of
-`skills/printing-press/SKILL.md` (anchor `hand-edit-durability`). If a future
+`/printing-press` Phase 3. If a future
 edit to that phase changes the routing rule, update this paragraph in the same
 PR -- the reprint skill is the dominant entry point that fires it.
 

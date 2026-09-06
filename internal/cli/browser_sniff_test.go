@@ -259,7 +259,7 @@ func TestPrintingPressSkillDocumentsPreserveHostsForComboHAR(t *testing.T) {
 	t.Parallel()
 
 	for _, path := range []string{
-		filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"),
+		filepath.Join("..", "..", "skills", "printing-press", "phases", "03-resolve-and-reuse.md"),
 		filepath.Join("..", "..", "skills", "printing-press", "references", "browser-sniff-capture.md"),
 	} {
 		data, err := os.ReadFile(path)
@@ -274,9 +274,7 @@ func TestPrintingPressSkillDocumentsPreserveHostsForComboHAR(t *testing.T) {
 func TestPrintingPressSkillDocumentsHARQualityGates(t *testing.T) {
 	t.Parallel()
 
-	skillData, err := os.ReadFile(filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
-	require.NoError(t, err)
-	skillText := string(skillData)
+	skillText := readPrintingPressSkill(t)
 	assert.Contains(t, skillText, `.log.entries | length > 0`)
 	assert.Contains(t, skillText, "Capture again (Recommended)")
 	assert.Contains(t, skillText, "Proceed with docs-only")

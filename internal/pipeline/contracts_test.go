@@ -667,7 +667,7 @@ func TestPrintingPressSkillRequiresPerCommandTimeoutBoundary(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 	checklist := substringBetween(t, skill, "### Agent Build Checklist (per command)", "#### Verify-friendly RunE template")
 	helpers := substringBetween(t, skill, "**Helpers already emitted by the generator.**", "```go")
-	review := substringBetween(t, skill, "## Phase 4.95: Local Code Review", "**Tool selection")
+	review := substringBetween(t, skill, "## 17-local-code-review (Phase 4.95: Local Code Review)", "**Tool selection")
 
 	assert.Contains(t, checklist, "11. **Per-command timeout boundary**")
 	assert.Contains(t, checklist, "boundCtx(cmd.Context(), flags)")
@@ -679,9 +679,9 @@ func TestPrintingPressSkillRequiresPerCommandTimeoutBoundary(t *testing.T) {
 
 func TestPrintingPressSkillRoutesNovelFeatureDescriptionFixesThroughResearchJSON(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
-	skillReview := substringBetween(t, skill, "## Phase 4.8: Agentic SKILL Review", "## Phase 4.9: README/SKILL/AGENTS Correctness Audit")
-	docsReview := substringBetween(t, skill, "## Phase 4.9: README/SKILL/AGENTS Correctness Audit", "## Phase 4.85: Agentic Output Review")
-	codeReview := substringUntilNextHeader(t, skill, "## Phase 4.95: Local Code Review", "##")
+	skillReview := substringBetween(t, skill, "## 14-agentic-skill-review (Phase 4.8: Agentic SKILL Review)", "## 15-readme-skill-agents-correctness-audit (Phase 4.9: README/SKILL/AGENTS Correctness Audit)")
+	docsReview := substringBetween(t, skill, "## 15-readme-skill-agents-correctness-audit (Phase 4.9: README/SKILL/AGENTS Correctness Audit)", "## 16-agentic-output-review (Phase 4.85: Agentic Output Review)")
+	codeReview := substringUntilNextHeader(t, skill, "## 17-local-code-review (Phase 4.95: Local Code Review)", "##")
 
 	for name, block := range map[string]string{
 		"skill review": skillReview,
@@ -1429,9 +1429,9 @@ func readContractFile(t *testing.T, path string) string {
 	var content strings.Builder
 	content.Write(data)
 
-	// printing-press-retro is a thin router plus per-phase files; contract
-	// text may live in either, so read them as one bundle.
-	if filepath.ToSlash(path) == "../../skills/printing-press-retro/SKILL.md" {
+	// A skill router is a thin SKILL.md plus per-phase files; contract text may
+	// live in either, so read any SKILL.md together with its phases as one bundle.
+	if filepath.Base(path) == "SKILL.md" {
 		phasePaths, err := filepath.Glob(filepath.Join(filepath.Dir(path), "phases", "*.md"))
 		require.NoError(t, err)
 		for _, phasePath := range phasePaths {

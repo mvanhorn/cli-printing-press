@@ -10,7 +10,7 @@ The shipped Printing Press skills are installed through the `skills` CLI. Claude
 
 When a machine change alters what an agent should do, what a command now guarantees, or where source-of-truth data lives, update the relevant `SKILL.md` in the same change. Don't leave the skill as a stale manual workaround for behavior the machine now owns.
 
-Check `skills/printing-press/SKILL.md` especially when touching generator, dogfood, verify, scorecard, publish, lock/promote, manuscript/runstate, or README/SKILL rendering behavior. If a machine step becomes deterministic, the skill should say the command owns it and reserve agentic review for the remaining semantic judgment. If a command's output, gate, phase order, or failure mode changes, update the phase instructions, reviewer prompt contracts, and fix-order guidance that mention it.
+Check `skills/printing-press/SKILL.md` and the applicable file under `skills/printing-press/phases/` especially when touching generator, dogfood, verify, scorecard, publish, lock/promote, manuscript/runstate, or README/SKILL rendering behavior. If a machine step becomes deterministic, the skill should say the command owns it and reserve agentic review for the remaining semantic judgment. If a command's output, gate, phase order, or failure mode changes, update the phase instructions, reviewer prompt contracts, and fix-order guidance that mention it.
 
 Decide responsibility explicitly:
 
@@ -25,17 +25,17 @@ wire names with `public-param-audit`, preserves evidence-backed skip decisions
 in a ledger, and propagates authored fields through generated CLI, docs, MCP,
 and manifest surfaces without inferring names itself.
 
-For any SKILL.md update, search for the old concept across the skill file, not just the paragraph closest to the code change. Agentic review prompts often duplicate workflow assumptions from earlier phase instructions.
+For any SKILL.md or phase-file update, search for the old concept across the router and all phase files, not just the paragraph closest to the code change. Agentic review prompts often duplicate workflow assumptions from earlier phase instructions.
 
 ## Reference File Pattern
 
-Skills use a `references/` directory for content that is only needed during specific phases or conditions. The SKILL.md stays lean with inline pointers (`Read [references/foo.md](...) when X`), and the agent loads the reference file only when the condition is met. `printing-press-retro` also extracts per-step procedure into `phases/` and role-named late procedure into `references/` (run resolution, issue filing, artifact packaging, secret scrubbing); its `SKILL.md` is the always-loaded spine, not a restatement of those files.
+Skills use a `references/` directory for content that is only needed during specific phases or conditions. The SKILL.md stays lean with inline pointers (`Read [references/foo.md](...) when X`), and the agent loads the reference file only when the condition is met. `printing-press` and `printing-press-retro` extract per-step procedure into `phases/` and role-named late procedure into `references/`; `SKILL.md` is the always-loaded spine, not a restatement of those files.
 
 **Why this matters:** SKILL.md content is loaded into the context window for every tool call in the session. A 2,000-line skill burns tokens on every phase — even phases that don't need most of the content. Extracting conditional sections (e.g., browser capture flows only needed when browser-sniffing, codex templates only needed in codex mode) into reference files reduces baseline context by 30-40%.
 
-**What stays inline:** Cardinal rules, decision matrices, phase structure, user-facing prompts — anything the agent needs at all times or to decide whether to load more.
+**What stays inline:** Result, next consumer, done, intent, cardinal never-leak / never-ship rules, authority, and a bare step-to-file index. Decision matrices, phase procedure, gates, and user-facing prompts live in `phases/` or `references/`. The printing-press spine is locked under 100 lines and must not grow purpose or gate columns.
 
-**What gets extracted:** Implementation details for conditional paths: capture tool CLI commands, delegation templates, scoring frameworks, report templates. These are loaded on-demand when the agent reaches the relevant phase gate.
+**What gets extracted:** Implementation details for conditional paths: capture tool CLI commands, delegation templates, scoring frameworks, report templates, and the full body of each numbered phase. These are loaded on-demand when the agent reaches the relevant phase gate. Receipt sequencing for printing-press lives in `references/phase-receipts.md`; the binary graph in `internal/pipeline/phase_receipt.go` is the source of truth for order.
 
 ## Frontmatter: `context: fork` and `user-invocable`
 

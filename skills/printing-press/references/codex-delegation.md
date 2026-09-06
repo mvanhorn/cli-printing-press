@@ -3,6 +3,22 @@
 > **When to read:** This file is referenced by Phase 3 and Phase 4 of the printing-press skill.
 > Read it when `CODEX_MODE` is true to delegate code-writing and bug-fix tasks to Codex CLI.
 
+Codex mode is opt-in: [preflight](../phases/01-preflight.md) sets `CODEX_MODE` from
+the invocation arguments (`codex` or `--codex`, e.g. `/printing-press Discord codex`)
+and clears it when the Codex CLI is missing or the run is already inside a Codex
+sandbox. It moves pure code-writing off Claude and leaves judgment on it.
+
+Use Codex for:
+- writing store/data-layer code
+- writing workflow commands
+- fixing dead flags / dead code / path issues
+- README cookbook edits
+
+Keep on Claude:
+- research and product positioning
+- choosing which gaps matter
+- verification results and ship decisions
+
 **IMPORTANT:** Delegate via `echo $PROMPT | codex exec` in Bash. Do NOT use the Skill tool with `codex:codex-cli-runtime` - that skill is only for the rescue subagent, not general delegation.
 
 ## Phase 3: Codex Delegation

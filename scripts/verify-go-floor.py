@@ -34,6 +34,7 @@ PATHS = [
     "README.md",
     "scripts/install.sh",
     "skills/printing-press/SKILL.md",
+    "skills/printing-press/phases/01-preflight.md",
     "skills/printing-press-amend/SKILL.md",
     "skills/printing-press-import/SKILL.md",
     "skills/printing-press-polish/SKILL.md",
