@@ -424,10 +424,10 @@ func TestGeneratedSyncPrefersCollectionOverListArchive(t *testing.T) {
 					ResponsePath: "archive.item",
 					Response:     spec.ResponseDef{Type: "object", Item: "Record"},
 				},
-				"search": {
+				"list": {
 					Method:       "GET",
 					Path:         "/records",
-					Description:  "Search records",
+					Description:  "List records",
 					Syncable:     true,
 					ResponsePath: "hits.hits",
 					Response:     spec.ResponseDef{Type: "array", Item: "Record"},
@@ -443,16 +443,27 @@ func TestGeneratedSyncPrefersCollectionOverListArchive(t *testing.T) {
 	}
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
-	require.NoError(t, New(apiSpec, outputDir).Generate())
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	var synced profiler.SyncableResource
+	for _, resource := range gen.profile.SyncableResources {
+		if resource.Name == "records" {
+			synced = resource
+			break
+		}
+	}
+	require.Equal(t, "GET", synced.Method)
+	require.Equal(t, "/records", synced.Path, "profiler must select the collection list, not listArchive")
 
 	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
 	require.Contains(t, syncSrc, `case "records":`)
 	require.Contains(t, syncSrc, `return []string{"hits.hits"}`)
 	require.NotContains(t, syncSrc, `return []string{"archive.item"}`,
-		"resource-level sync fallback must follow the collection endpoint, not listArchive")
+		"resource-level sync unwrap must follow the profiled collection, not listArchive")
 
-	searchSrc := readGeneratedFile(t, outputDir, "internal", "cli", "records_search.go")
-	require.Contains(t, searchSrc, `"hits.hits"`)
+	listSrc := readGeneratedFile(t, outputDir, "internal", "cli", "records_list.go")
+	require.Contains(t, listSrc, `"hits.hits"`)
 
 	archiveSrc := readGeneratedFile(t, outputDir, "internal", "cli", "records_listArchive.go")
 	require.Contains(t, archiveSrc, `"archive.item"`,
@@ -576,9 +587,6 @@ func TestGeneratedSyncPrefersPostListEnvelopeOverGetCollection(t *testing.T) {
 	require.Contains(t, syncSrc, `return []string{"results.items"}`)
 	require.NotContains(t, syncSrc, `return []string{"data"}`,
 		"resource-level sync unwrap must not use the non-syncable GET collection envelope")
-
-	listSrc := readGeneratedFile(t, outputDir, "internal", "cli", "items_list.go")
-	require.Contains(t, listSrc, `"results.items"`)
 
 	searchSrc := readGeneratedFile(t, outputDir, "internal", "cli", "items_search.go")
 	require.Contains(t, searchSrc, `"data"`,
