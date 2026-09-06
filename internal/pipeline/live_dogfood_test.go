@@ -699,18 +699,22 @@ func TestRunLiveDogfoodMirrorsConfigAndCookieCredentialsIntoScopedHome(t *testin
 		binaryName         = "fixture-pp-cli"
 		configCredential   = "real-config-token"
 		cookieCredential   = "real-cookie-token"
+		refreshCredential  = "real-refresh-token"
 		configOriginalBody = "auth_header = \"" + configCredential + "\"\n"
 		cookieOriginalBody = `[{"name":"session","value":"` + cookieCredential + `","domain":".example.test","path":"/","secure":true}]`
+		credsOriginalBody  = "refresh_token = \"" + refreshCredential + "\"\n"
 	)
 
 	operatorHome := t.TempDir()
 	t.Setenv("HOME", operatorHome)
 	configPath := filepath.Join(operatorHome, ".config", binaryName, "config.toml")
 	cookiePath := filepath.Join(operatorHome, ".local", "share", binaryName, "cookies.json")
+	credsPath := filepath.Join(operatorHome, ".local", "share", binaryName, "credentials.toml")
 	require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Dir(cookiePath), 0o700))
 	require.NoError(t, os.WriteFile(configPath, []byte(configOriginalBody), 0o600))
 	require.NoError(t, os.WriteFile(cookiePath, []byte(cookieOriginalBody), 0o600))
+	require.NoError(t, os.WriteFile(credsPath, []byte(credsOriginalBody), 0o600))
 
 	dir := t.TempDir()
 	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
@@ -752,6 +756,7 @@ fi
 if [ "$1" = "account" ] && [ "$2" = "show" ]; then
   config_path="$HOME/.config/fixture-pp-cli/config.toml"
   cookie_path="$HOME/.local/share/fixture-pp-cli/cookies.json"
+  creds_path="$HOME/.local/share/fixture-pp-cli/credentials.toml"
   if ! grep -q 'real-config-token' "$config_path"; then
     echo "missing mirrored config credential" >&2
     exit 1
@@ -760,8 +765,13 @@ if [ "$1" = "account" ] && [ "$2" = "show" ]; then
     echo "missing mirrored cookie credential" >&2
     exit 1
   fi
+  if ! grep -q 'real-refresh-token' "$creds_path"; then
+    echo "missing mirrored credentials.toml refresh token" >&2
+    exit 1
+  fi
   printf 'auth_header = "real-config-token-mutated"\n' > "$config_path"
   printf '[{"name":"session","value":"real-cookie-token-mutated","domain":".example.test","path":"/","secure":true}]' > "$cookie_path"
+  printf 'refresh_token = "real-refresh-token-mutated"\n' > "$creds_path"
   if [ "${3:-}" = "--json" ]; then
     echo '{"ok":true}'
     exit 0
@@ -796,6 +806,9 @@ exit 99
 	gotCookies, err := os.ReadFile(cookiePath)
 	require.NoError(t, err)
 	assert.Equal(t, cookieOriginalBody, string(gotCookies), "live dogfood must not mutate the operator's real cookies")
+	gotCreds, err := os.ReadFile(credsPath)
+	require.NoError(t, err)
+	assert.Equal(t, credsOriginalBody, string(gotCreds), "composed auth must not sync credentials.toml back")
 }
 
 // TestRunLiveDogfoodCookieAuthNoSessionSkips covers issue #3104: a cookie-auth
