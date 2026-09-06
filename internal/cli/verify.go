@@ -55,12 +55,13 @@ func newVerifyCmdWithOptions(opts verifyCmdOptions) *cobra.Command {
 (read-only GETs) or a spec-derived mock server. Produces a PASS/WARN/FAIL
 verdict with per-command scores and a data pipeline integrity check.
 
-If --api-key is provided, tests run against the real API (read-only only).
+If --api-key is provided, or --env-var names a non-empty environment variable,
+tests run against the real API (read-only only).
 Otherwise, a mock server is started from the OpenAPI spec.
 
 Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 		Example: `  # Test against real API (read-only GETs only)
-  cli-printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --api-key $GITHUB_TOKEN
+  cli-printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --env-var GITHUB_TOKEN
 
   # Test against mock server (no API key needed)
   cli-printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json
@@ -187,6 +188,9 @@ func shouldRunFixLoop(report *pipeline.VerifyReport) bool {
 func printVerifyReport(report *pipeline.VerifyReport) {
 	fmt.Printf("Runtime Verification: %s\n", report.Binary)
 	fmt.Printf("Mode: %s\n\n", report.Mode)
+	if report.ModeDetail != "" {
+		fmt.Printf("%s\n\n", report.ModeDetail)
+	}
 
 	// Per-command results
 	fmt.Printf("%-30s %-12s %-6s %-8s %-8s %s\n", "COMMAND", "KIND", "HELP", "DRY-RUN", "EXEC", "SCORE")

@@ -33,6 +33,7 @@ type VerifyConfig struct {
 // VerifyReport is the output of a runtime verification run.
 type VerifyReport struct {
 	Mode                   string                 `json:"mode"` // "live" or "mock"
+	ModeDetail             string                 `json:"mode_detail,omitempty"`
 	Total                  int                    `json:"total"`
 	Passed                 int                    `json:"passed"`
 	Failed                 int                    `json:"failed"`
@@ -130,11 +131,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	}
 
 	// 2. Determine mode
-	if cfg.APIKey != "" {
-		report.Mode = "live"
-	} else {
-		report.Mode = "mock"
-	}
+	report.Mode, report.ModeDetail = verifyMode(cfg)
 	report.Results = append(report.Results, runResourcePathContractChecks(cfg.Dir)...)
 
 	// 3. Build the generated CLI binary
@@ -344,6 +341,18 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	finalizeVerifyReport(report, cfg.Threshold, true)
 
 	return report, nil
+}
+
+func verifyMode(cfg VerifyConfig) (string, string) {
+	if cfg.APIKey != "" || (cfg.EnvVar != "" && os.Getenv(cfg.EnvVar) != "") {
+		// Keep environment credentials separate: copying one into APIKey would
+		// broadcast it over every request credential in multi-key auth.
+		return "live", ""
+	}
+	if cfg.EnvVar != "" {
+		return "mock", fmt.Sprintf("--env-var %s is unset or empty; running in mock mode", cfg.EnvVar)
+	}
+	return "mock", ""
 }
 
 func authEnvVarSpecNames(envVarSpecs []apispec.AuthEnvVar) []string {
