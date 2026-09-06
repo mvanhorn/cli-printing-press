@@ -98,3 +98,30 @@ func testGenerateSyncResponsePathDedup(t *testing.T, syncableName, nonSyncableNa
 
 	requireGeneratedCompiles(t, outputDir)
 }
+
+func TestEndpointMatchingSyncRequestPrefersSyncableOnSharedPath(t *testing.T) {
+	t.Parallel()
+
+	resource := spec.Resource{
+		Endpoints: map[string]spec.Endpoint{
+			"alpha_privileges": {
+				Method:       "GET",
+				Path:         "/customer/{customer}/roles",
+				ResponsePath: "rolePrivileges",
+				Response:     spec.ResponseDef{Type: "array"},
+			},
+			"zzz_list": {
+				Method:       "GET",
+				Path:         "/customer/{customer}/roles",
+				Syncable:     true,
+				ResponsePath: "items",
+				Response:     spec.ResponseDef{Type: "array"},
+			},
+		},
+	}
+
+	got, ok := endpointMatchingSyncRequest(resource, "/customer/{customer}/roles", "GET")
+	require.True(t, ok)
+	assert.Equal(t, "items", strings.TrimSpace(got.ResponsePath),
+		"shared Path+Method must pick the Syncable envelope, not the alphabetically first name")
+}

@@ -2280,7 +2280,9 @@ var dataEnvelopeKeys = []string{"data", "Data", "result", "Result"}
 func responsePathForResource(resource, path string) []string {
 	// path is the live request URL and is not the unwrap key. Envelope
 	// lookup is keyed on resource identity so absolute, proxied, or
-	// otherwise rewritten paths still unwrap.
+	// otherwise rewritten paths still unwrap. Prefer the profiled sync
+	// endpoint's envelope so fetch and unwrap stay aligned;
+	// endpoint-mirror commands bake each endpoint's own path separately.
 	switch resource {
 	}
 	return nil

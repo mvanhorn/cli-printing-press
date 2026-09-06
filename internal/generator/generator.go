@@ -6613,14 +6613,18 @@ func globalScopeEnvName(apiName string, p spec.Param) string {
 	return naming.EnvPrefix(apiName) + "_" + placeholder
 }
 
-// responsePathCase is one deduplicated entry for the sync template's
-// responsePathForResource switch: the switch key is the resource name (the
-// syncable endpoint wins when several share a resource) and the response
-// envelope path to return for it. The live request path is not part of the
-// key, so absolute or rewritten URLs still unwrap.
+// Unwrap follows the profiled sync request so a sibling GET collection
+// cannot steal the envelope. Live URLs are ignored so rewritten hosts
+// still unwrap.
 type responsePathCase struct {
 	Key          string
 	ResponsePath string
+}
+
+type syncRequestRef struct {
+	Name   string
+	Path   string
+	Method string
 }
 
 type resourcePathEntry struct {
@@ -6795,47 +6799,172 @@ func syncHiddenHistoryCases(syncable []profiler.SyncableResource, dependents []p
 	return out
 }
 
-// responsePathCases returns deterministic switch cases deduplicated by resource
-// identity. Syncable endpoints take precedence because the generated lookup is
-// used by sync; endpoint name breaks ties to keep output stable. The request
-// path is not part of the key so unwrap still fires when the live URL differs
-// from the spec path.
-func responsePathCases(resources map[string]spec.Resource) []responsePathCase {
+// Profiled Path+Method wins so POST list unwraps its own envelope
+// instead of a sibling GET collection. Ranking is the no-profile
+// fallback. Live URLs are not the key so rewritten hosts still unwrap.
+func responsePathCases(resources map[string]spec.Resource, syncable []profiler.SyncableResource, dependents []profiler.DependentResource) []responsePathCase {
+	refs := syncRequestRefs(syncable, dependents)
 	resourceNames := make([]string, 0, len(resources))
 	for name := range resources {
 		resourceNames = append(resourceNames, name)
 	}
 	sort.Strings(resourceNames)
 
-	seen := map[string]struct{}{}
 	var out []responsePathCase
 	for _, resourceName := range resourceNames {
 		resource := resources[resourceName]
-		endpointNames := make([]string, 0, len(resource.Endpoints))
-		for endpointName := range resource.Endpoints {
-			endpointNames = append(endpointNames, endpointName)
+		responsePath := resourceSyncResponsePath(resource, resourceName, refs)
+		if responsePath == "" {
+			continue
 		}
-		sort.Slice(endpointNames, func(i, j int) bool {
-			left := resource.Endpoints[endpointNames[i]]
-			right := resource.Endpoints[endpointNames[j]]
-			if left.Syncable != right.Syncable {
-				return left.Syncable
-			}
-			return endpointNames[i] < endpointNames[j]
-		})
-		for _, endpointName := range endpointNames {
-			endpoint := resource.Endpoints[endpointName]
-			if endpoint.ResponsePath == "" {
-				continue
-			}
-			if _, ok := seen[resourceName]; ok {
-				continue
-			}
-			seen[resourceName] = struct{}{}
-			out = append(out, responsePathCase{Key: resourceName, ResponsePath: endpoint.ResponsePath})
-		}
+		out = append(out, responsePathCase{Key: resourceName, ResponsePath: responsePath})
 	}
 	return out
+}
+
+func resourceSyncResponsePath(resource spec.Resource, resourceName string, refs []syncRequestRef) string {
+	if endpoint, ok := matchSyncRequestEndpoint(resource, resourceName, refs); ok {
+		return strings.TrimSpace(endpoint.ResponsePath)
+	}
+
+	if !hasSyncRequest(resourceName, refs) {
+		if endpoint, ok := resourceEndpointForMethod(resource, "GET"); ok {
+			if path := strings.TrimSpace(endpoint.ResponsePath); path != "" {
+				return path
+			}
+		}
+	}
+
+	for _, endpointName := range rankedEndpointNames(resource) {
+		path := strings.TrimSpace(resource.Endpoints[endpointName].ResponsePath)
+		if path != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+func syncRequestRefs(syncable []profiler.SyncableResource, dependents []profiler.DependentResource) []syncRequestRef {
+	out := make([]syncRequestRef, 0, len(syncable)+len(dependents))
+	for _, resource := range syncable {
+		out = append(out, syncRequestRef{Name: resource.Name, Path: resource.Path, Method: resource.Method})
+	}
+	for _, resource := range dependents {
+		out = append(out, syncRequestRef{Name: resource.Name, Path: resource.Path, Method: resource.Method})
+	}
+	return out
+}
+
+func hasSyncRequest(resourceName string, refs []syncRequestRef) bool {
+	for _, ref := range refs {
+		if syncRequestNameEqual(ref.Name, resourceName) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchSyncRequestEndpoint(resource spec.Resource, resourceName string, refs []syncRequestRef) (spec.Endpoint, bool) {
+	for _, ref := range refs {
+		if !syncRequestNameEqual(ref.Name, resourceName) {
+			continue
+		}
+		if endpoint, ok := endpointMatchingSyncRequest(resource, ref.Path, ref.Method); ok {
+			return endpoint, true
+		}
+	}
+	return spec.Endpoint{}, false
+}
+
+func syncRequestNameEqual(left, right string) bool {
+	return strings.EqualFold(strings.TrimSpace(left), strings.TrimSpace(right))
+}
+
+func endpointMatchingSyncRequest(resource spec.Resource, path, method string) (spec.Endpoint, bool) {
+	path = strings.TrimSpace(path)
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if path == "" || method == "" {
+		return spec.Endpoint{}, false
+	}
+	for _, name := range rankedEndpointNames(resource) {
+		endpoint := resource.Endpoints[name]
+		if !strings.EqualFold(strings.TrimSpace(endpoint.Method), method) {
+			continue
+		}
+		if endpointMatchesSyncPath(resource, endpoint, path) {
+			return endpoint, true
+		}
+	}
+	return spec.Endpoint{}, false
+}
+
+func rankedEndpointNames(resource spec.Resource) []string {
+	names := make([]string, 0, len(resource.Endpoints))
+	for name := range resource.Endpoints {
+		names = append(names, name)
+	}
+	sort.SliceStable(names, func(i, j int) bool {
+		leftName, rightName := names[i], names[j]
+		leftRank := responsePathEndpointRank(leftName, resource.Endpoints[leftName])
+		rightRank := responsePathEndpointRank(rightName, resource.Endpoints[rightName])
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		return leftName < rightName
+	})
+	return names
+}
+
+func endpointMatchesSyncPath(resource spec.Resource, endpoint spec.Endpoint, path string) bool {
+	if strings.TrimSpace(endpoint.Path) == path {
+		return true
+	}
+	return effectiveEndpointPath(resource, endpoint) == path
+}
+
+// Lower wins. Syncable still outranks non-syncable; within a band,
+// collection-shaped endpoints beat create/update so alphabetical order
+// cannot pick create's envelope, and a list* object sibling cannot beat
+// the collection sync actually calls.
+func responsePathEndpointRank(name string, endpoint spec.Endpoint) int {
+	rank := 0
+	if !endpoint.Syncable {
+		rank += 1000
+	}
+	rank += responsePathListShapeRank(name, endpoint)
+	return rank
+}
+
+func responsePathListShapeRank(name string, endpoint spec.Endpoint) int {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	switch lower {
+	case "create", "add", "insert", "update", "patch", "replace", "delete", "remove", "destroy":
+		return 50
+	}
+	if !responsePathLooksLikeCollection(name, endpoint) {
+		return 10
+	}
+	switch lower {
+	case "list", "all", "index":
+		return 0
+	case "search", "query", "browse", "find":
+		return 2
+	}
+	return 3
+}
+
+func responsePathLooksLikeCollection(name string, endpoint spec.Endpoint) bool {
+	method := strings.ToUpper(strings.TrimSpace(endpoint.Method))
+	if method == "POST" {
+		return endpoint.Pagination != nil
+	}
+	if method != "GET" && method != "HEAD" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(name), "list") || endpoint.Syncable {
+		return true
+	}
+	return strings.EqualFold(endpoint.Response.Type, "array") || endpoint.Pagination != nil
 }
 
 func globalScopeParams(resources map[string]spec.Resource) []spec.Param {
