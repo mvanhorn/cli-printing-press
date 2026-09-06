@@ -255,6 +255,8 @@ jobs:
           STATE: ${{ steps.eval.outputs.state || 'error' }}
           DESCRIPTION: ${{ steps.eval.outputs.description || 'Workflow error — see run logs' }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
           set -euo pipefail
           # Use the canonical name as the status context so a single
@@ -262,8 +264,25 @@ jobs:
           # truth without requiring branch-protection/ruleset updates.
           # Reposting with the same (sha, context) overrides — that's what
           # fixes #1878.
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
+          if out="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
             -f state="${STATE}" \
             -f context="All conversations resolved" \
             -f description="${DESCRIPTION}" \
-            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" 2>&1)"; then
+            exit 0
+          fi
+          # Fork review events get a read-only token; statuses: write is
+          # ignored and this POST returns 403. Swallow only that permission
+          # miss so a rate-limit or network failure on a same-repo review
+          # still fails the job. pull_request_target owns the canonical status.
+          case "${EVENT_NAME}" in
+            pull_request_review|pull_request_review_comment)
+              if [ "${HEAD_REPO:-}" != "${GITHUB_REPOSITORY}" ] &&
+                printf '%s\n' "${out}" | grep -q 'Resource not accessible by integration'; then
+                echo "::warning::Skipping commit status on ${EVENT_NAME}: fork review token cannot write statuses. Canonical signal is pull_request_target."
+                exit 0
+              fi
+              ;;
+          esac
+          printf '%s\n' "${out}" >&2
+          exit 1
