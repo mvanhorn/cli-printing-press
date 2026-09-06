@@ -77,9 +77,6 @@ jobs:
     # prior runs of the workflow on the same SHA accumulate as separate
     # rollup entries (failure → cancelled → success), and consumers that
     # don't dedupe by completed_at can pick the stale failure (#1878).
-    # The post step must also exit 0 when a fork PR review token cannot
-    # write statuses (403); otherwise those events recreate the same
-    # phantom-FAILURE check_runs this split exists to avoid.
     name: Evaluate conversation threads
     # Skip drafts across every event source. The original guard only
     # covered pull_request_target, but pull_request_review and
@@ -259,6 +256,7 @@ jobs:
           DESCRIPTION: ${{ steps.eval.outputs.description || 'Workflow error — see run logs' }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
           set -euo pipefail
           # Use the canonical name as the status context so a single
@@ -266,23 +264,25 @@ jobs:
           # truth without requiring branch-protection/ruleset updates.
           # Reposting with the same (sha, context) overrides — that's what
           # fixes #1878.
-          if gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
+          if out="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
             -f state="${STATE}" \
             -f context="All conversations resolved" \
             -f description="${DESCRIPTION}" \
-            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"; then
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" 2>&1)"; then
             exit 0
           fi
-          # Fork PRs: pull_request_review and pull_request_review_comment
-          # get a read-only token, so statuses: write is ignored and this
-          # POST returns 403. Failing the job here turns the auto check_run
-          # red, which is the opposite of the split this workflow exists
-          # for (#1878). pull_request_target has a write token and owns
-          # the canonical status; exit 0 so the check_run stays success.
+          # Fork review events get a read-only token; statuses: write is
+          # ignored and this POST returns 403. Swallow only that permission
+          # miss so a rate-limit or network failure on a same-repo review
+          # still fails the job. pull_request_target owns the canonical status.
           case "${EVENT_NAME}" in
             pull_request_review|pull_request_review_comment)
-              echo "::warning::Skipping commit status on ${EVENT_NAME} (token cannot write statuses on fork PRs). Canonical signal is pull_request_target."
-              exit 0
+              if [ "${HEAD_REPO:-}" != "${GITHUB_REPOSITORY}" ] &&
+                printf '%s\n' "${out}" | grep -q 'Resource not accessible by integration'; then
+                echo "::warning::Skipping commit status on ${EVENT_NAME}: fork review token cannot write statuses. Canonical signal is pull_request_target."
+                exit 0
+              fi
               ;;
           esac
+          printf '%s\n' "${out}" >&2
           exit 1
