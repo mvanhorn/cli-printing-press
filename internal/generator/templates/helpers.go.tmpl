@@ -2499,9 +2499,19 @@ func wrapPlatformStructuredOutput(data json.RawMessage, flags *rootFlags, result
 // generated command families that build typed Go values instead of endpoint
 // response bytes. The raw value is preserved under results so --json without
 // --agent can stay backward-compatible while shell agents get stable metadata.
+// A payload that is already a {meta, results} envelope is flattened so a
+// second wrap cannot overwrite live provenance with the local default.
 func wrapAgentOutput(data json.RawMessage, meta map[string]any) (json.RawMessage, error) {
 	if meta == nil {
 		meta = map[string]any{}
+	}
+	if results, existing, ok := splitResultsMetaEnvelope(data); ok {
+		for k, v := range existing {
+			if _, present := meta[k]; !present {
+				meta[k] = v
+			}
+		}
+		data = results
 	}
 	if _, ok := meta["source"]; !ok {
 		meta["source"] = "local"
@@ -2520,6 +2530,74 @@ func wrapAgentOutput(data json.RawMessage, meta map[string]any) (json.RawMessage
 		"results": results,
 	}
 	return json.Marshal(envelope)
+}
+
+func splitResultsMetaEnvelope(data json.RawMessage) (json.RawMessage, map[string]any, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return nil, nil, false
+	}
+	if len(obj) != 2 {
+		return nil, nil, false
+	}
+	rawMeta, hasMeta := obj["meta"]
+	rawResults, hasResults := obj["results"]
+	if !hasMeta || !hasResults {
+		return nil, nil, false
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(rawMeta, &meta); err != nil || meta == nil {
+		return nil, nil, false
+	}
+	return rawResults, meta, true
+}
+
+func envelopeSource(data json.RawMessage) string {
+	_, meta, ok := splitResultsMetaEnvelope(data)
+	if !ok {
+		return ""
+	}
+	source, _ := meta["source"].(string)
+	return source
+}
+
+func commandDataSourceAnnotation(cmd *cobra.Command) string {
+	if cmd == nil || cmd.Annotations == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(cmd.Annotations["pp:data-source"]))
+}
+
+func declaredAgentSource(cmd *cobra.Command, flags *rootFlags) string {
+	if flags != nil && flags.dryRun {
+		return "dry-run"
+	}
+	switch commandDataSourceAnnotation(cmd) {
+	case "live":
+		return "live"
+	case "local", "computed":
+		return "local"
+	case "auto":
+		if flags != nil && flags.dataSource == "local" {
+			return "local"
+		}
+		return "live"
+	default:
+		return ""
+	}
+}
+
+func resolveAgentOutputSource(flags *rootFlags, data json.RawMessage) string {
+	if flags != nil && flags.dryRun {
+		return "dry-run"
+	}
+	if source := envelopeSource(data); source != "" {
+		return source
+	}
+	if flags != nil && flags.agentSource != "" {
+		return flags.agentSource
+	}
+	return "local"
 }
 
 // unwrapSingleKeyArray flattens single-key collection envelopes
@@ -2821,7 +2899,7 @@ func camelToKebab(s string) string {
 
 // printOutputWithFlags routes output through the right format based on flags.
 func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) error {
-	return printOutputWithFlagsMeta(w, data, flags, map[string]any{"source": "local"})
+	return printOutputWithFlagsMeta(w, data, flags, map[string]any{"source": resolveAgentOutputSource(flags, data)})
 }
 
 // isDryRunResponse detects the exact sentinel returned by client.dryRun.

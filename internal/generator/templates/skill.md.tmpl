@@ -689,6 +689,9 @@ Use async submission without `--wait` when you want to fire-and-forget; use `--w
 | 4 | Authentication required |
 {{- end}}
 | 5 | API error (upstream issue) |
+{{- if .HasPartialFailureErr}}
+| 6 | Partial failure |
+{{- end}}
 | 7 | Rate limited (wait and retry) |
 | 10 | Config error |
 

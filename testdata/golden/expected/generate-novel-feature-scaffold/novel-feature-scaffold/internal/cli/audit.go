@@ -17,7 +17,7 @@ func newNovelAuditCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "audit",
 		Short:       "Audit local cache state.",
-		Annotations: map[string]string{"mcp:read-only": "true", "pp:novel-scaffold": "true"},
+		Annotations: map[string]string{"mcp:read-only": "true", "pp:data-source": "auto", "pp:novel-scaffold": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
 				return writeDryRun(cmd.OutOrStdout(), flags, "audit")

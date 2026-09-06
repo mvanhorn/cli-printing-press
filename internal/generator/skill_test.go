@@ -125,6 +125,8 @@ func TestSkillRendersFrontmatterAndCapabilities(t *testing.T) {
 		"Prerequisites must appear before Command Reference so agents read install instructions before deciding to run a command")
 	assert.True(t, strings.Contains(content, "| 10 | Config error"),
 		"Exit codes table should render")
+	assert.False(t, strings.Contains(content, "| 6 | Partial failure"),
+		"read-only specs must not document unused exit code 6")
 }
 
 // TestSkillFallsBackWhenNarrativeAbsent asserts SKILL.md still renders a
@@ -181,7 +183,33 @@ func TestReadOnlyNoAuthSkillSuppressesInapplicableBoilerplate(t *testing.T) {
 	assert.NotContains(t, content, "--wait-timeout")
 	assert.NotContains(t, content, "| 4 | Authentication required |")
 	assert.Contains(t, content, "| 7 | Rate limited")
+	assert.NotContains(t, content, "| 6 | Partial failure")
 	assert.NotContains(t, content, "GET responses cached for 5 minutes")
+}
+
+func TestSkillAndReadmeDocumentPartialFailureExitCode(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("partial-exit")
+	apiSpec.Resources["items"].Endpoints["create"] = spec.Endpoint{
+		Method:      "POST",
+		Path:        "/items",
+		Description: "Create item",
+	}
+	outputDir := filepath.Join(t.TempDir(), "partial-exit-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(skill), "| 6 | Partial failure")
+	assert.Contains(t, string(skill), "| 5 | API error")
+	assert.Contains(t, string(skill), "| 7 | Rate limited")
+
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(readme), "`6` partial failure")
+	assert.Contains(t, string(readme), "`5` API error")
+	assert.Contains(t, string(readme), "`7` rate limited")
 }
 
 // TestSkillFrontmatterEscapesNarrativeQuotesAndNewlines asserts that

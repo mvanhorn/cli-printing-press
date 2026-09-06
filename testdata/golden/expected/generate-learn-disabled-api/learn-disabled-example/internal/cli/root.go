@@ -55,6 +55,7 @@ type rootFlags struct {
 	rateLimit               float64
 	maxAge                  time.Duration
 	dataSource              string
+	agentSource             string
 	freshnessMeta           any
 
 	// deliverBuf captures command output when --deliver is set to a
@@ -401,6 +402,7 @@ Run 'learn-disabled-example-pp-cli doctor' to verify auth and connectivity.`,
 			return fmt.Errorf("invalid --data-source value %q: must be auto, live, or local", flags.dataSource)
 		}
 		flags.timeoutExplicit = timeoutExplicitFrom(cmd, appliedProfile)
+		flags.agentSource = declaredAgentSource(cmd, flags)
 		return nil
 	}
 	rootCmd.AddCommand(newDoctorCmd(flags))

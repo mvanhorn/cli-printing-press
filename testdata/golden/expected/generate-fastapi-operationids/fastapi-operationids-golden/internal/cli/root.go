@@ -66,6 +66,7 @@ type rootFlags struct {
 	rateLimit               float64
 	maxAge                  time.Duration
 	dataSource              string
+	agentSource             string
 	freshnessMeta           any
 
 	// deliverBuf captures command output when --deliver is set to a
@@ -410,6 +411,7 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify connectivity.`,
 			runPlaybookInitOnce(cmd.Context())
 		}
 		flags.timeoutExplicit = timeoutExplicitFrom(cmd, appliedProfile)
+		flags.agentSource = declaredAgentSource(cmd, flags)
 		return nil
 	}
 	rootCmd.AddCommand(newQuotesCmd(flags))

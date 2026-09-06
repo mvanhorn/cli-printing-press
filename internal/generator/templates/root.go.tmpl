@@ -84,6 +84,7 @@ type rootFlags struct {
 	maxAge      time.Duration
 {{- end}}
 	dataSource   string
+	agentSource  string
 	freshnessMeta any
 {{- if .HasCostThrottling}}
 	throttleMode string
@@ -587,6 +588,7 @@ Run '{{.Name}}-pp-cli doctor' to {{if .HasAuthCommand}}verify auth and connectiv
 		}
 {{- end}}
 		flags.timeoutExplicit = timeoutExplicitFrom(cmd, appliedProfile)
+		flags.agentSource = declaredAgentSource(cmd, flags)
 		return nil
 	}
 
