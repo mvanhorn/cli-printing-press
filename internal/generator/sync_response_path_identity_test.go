@@ -8,15 +8,20 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+func rankingResponsePathCases(resources map[string]spec.Resource) []responsePathCase {
+	return responsePathCases(resources, nil, nil)
+}
+
 func TestResponsePathCasesKeyOnResourceIdentity(t *testing.T) {
 	t.Parallel()
 
-	cases := responsePathCases(map[string]spec.Resource{
+	cases := rankingResponsePathCases(map[string]spec.Resource{
 		"zenodo": {
 			Description: "Records",
 			Endpoints: map[string]spec.Endpoint{
@@ -177,7 +182,7 @@ func TestSyncResourceStoresNestedEnvelope(t *testing.T) {
 func TestResponsePathCasesPrefersSyncableAcrossDifferentPaths(t *testing.T) {
 	t.Parallel()
 
-	cases := responsePathCases(map[string]spec.Resource{
+	cases := rankingResponsePathCases(map[string]spec.Resource{
 		"photos": {
 			Endpoints: map[string]spec.Endpoint{
 				"list": {
@@ -204,7 +209,7 @@ func TestResponsePathCasesPrefersSyncableAcrossDifferentPaths(t *testing.T) {
 func TestResponsePathCasesPrefersListOverCreate(t *testing.T) {
 	t.Parallel()
 
-	cases := responsePathCases(map[string]spec.Resource{
+	cases := rankingResponsePathCases(map[string]spec.Resource{
 		"invoices": {
 			Endpoints: map[string]spec.Endpoint{
 				"create": {
@@ -232,7 +237,7 @@ func TestResponsePathCasesPrefersListOverCreate(t *testing.T) {
 func TestResponsePathCasesUniformPathUnchanged(t *testing.T) {
 	t.Parallel()
 
-	cases := responsePathCases(map[string]spec.Resource{
+	cases := rankingResponsePathCases(map[string]spec.Resource{
 		"notes": {
 			Endpoints: map[string]spec.Endpoint{
 				"list": {
@@ -263,7 +268,7 @@ func TestResponsePathCasesDoesNotPreferListArchiveOverCollection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			cases := responsePathCases(map[string]spec.Resource{
+			cases := rankingResponsePathCases(map[string]spec.Resource{
 				"records": {
 					Endpoints: map[string]spec.Endpoint{
 						"listArchive": {
@@ -474,4 +479,130 @@ func TestResponsePathForResourceUsesCollectionEnvelope(t *testing.T) {
 
 	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestResponsePathForResourceUsesCollectionEnvelope", "-count=1")
+}
+
+func postListVersusGetCollectionResource() spec.Resource {
+	return spec.Resource{
+		Description: "Items",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {
+				Method:       "POST",
+				Path:         "/items",
+				Description:  "List items",
+				Syncable:     true,
+				Pagination:   &spec.Pagination{Type: "cursor", LimitParam: "limit", CursorParam: "cursor"},
+				ResponsePath: "results.items",
+				Response:     spec.ResponseDef{Type: "array", Item: "Item"},
+			},
+			"search": {
+				Method:       "GET",
+				Path:         "/items/search",
+				Description:  "Search items",
+				ResponsePath: "data",
+				Response:     spec.ResponseDef{Type: "array", Item: "Item"},
+			},
+		},
+	}
+}
+
+func TestResponsePathCasesUsesProfiledPostListNotGetCollection(t *testing.T) {
+	t.Parallel()
+
+	resources := map[string]spec.Resource{"items": postListVersusGetCollectionResource()}
+
+	withoutProfile := rankingResponsePathCases(resources)
+	require.Equal(t, []responsePathCase{{
+		Key:          "items",
+		ResponsePath: "data",
+	}}, withoutProfile, "no-profile fallback still prefers the GET collection")
+
+	withProfile := responsePathCases(resources, []profiler.SyncableResource{{
+		Name:   "items",
+		Path:   "/items",
+		Method: "POST",
+	}}, nil)
+	require.Equal(t, []responsePathCase{{
+		Key:          "items",
+		ResponsePath: "results.items",
+	}}, withProfile, "unwrap must follow the profiled POST list, not the sibling GET collection")
+}
+
+func TestResponsePathCasesMatchesEffectiveSyncPath(t *testing.T) {
+	t.Parallel()
+
+	resource := postListVersusGetCollectionResource()
+	resource.BaseURL = "https://api.example.test"
+	cases := responsePathCases(map[string]spec.Resource{"items": resource}, []profiler.SyncableResource{{
+		Name:   "items",
+		Path:   "https://api.example.test/items",
+		Method: "post",
+	}}, nil)
+	require.Equal(t, []responsePathCase{{
+		Key:          "items",
+		ResponsePath: "results.items",
+	}}, cases, "rewritten generate-time request URL must still select the POST list envelope")
+}
+
+func TestGeneratedSyncPrefersPostListEnvelopeOverGetCollection(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("post-list-path")
+	apiSpec.Resources = map[string]spec.Resource{
+		"items": postListVersusGetCollectionResource(),
+	}
+	apiSpec.Types = map[string]spec.TypeDef{
+		"Item": {Fields: []spec.TypeField{
+			{Name: "id", Type: "string"},
+			{Name: "title", Type: "string"},
+		}},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	var synced profiler.SyncableResource
+	for _, resource := range gen.profile.SyncableResources {
+		if resource.Name == "items" {
+			synced = resource
+			break
+		}
+	}
+	require.Equal(t, "POST", synced.Method, "profiler must select the POST list as the sync request")
+	require.Equal(t, "/items", synced.Path)
+
+	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
+	require.Contains(t, syncSrc, `case "items":`)
+	require.Contains(t, syncSrc, `return []string{"results.items"}`)
+	require.NotContains(t, syncSrc, `return []string{"data"}`,
+		"resource-level sync unwrap must not use the non-syncable GET collection envelope")
+
+	listSrc := readGeneratedFile(t, outputDir, "internal", "cli", "items_list.go")
+	require.Contains(t, listSrc, `"results.items"`)
+
+	searchSrc := readGeneratedFile(t, outputDir, "internal", "cli", "items_search.go")
+	require.Contains(t, searchSrc, `"data"`,
+		"GET search must keep its endpoint-level response_path")
+	require.NotContains(t, searchSrc, `"results.items"`,
+		"GET search must not inherit the POST list response_path")
+
+	testPath := filepath.Join(outputDir, "internal", "cli", "sync_response_path_post_list_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(`package cli
+
+import "testing"
+
+func TestResponsePathForResourceUsesPostListEnvelope(t *testing.T) {
+	got := responsePathForResource("items", "/items")
+	if len(got) != 1 || got[0] != "results.items" {
+		t.Fatalf("responsePathForResource(items) = %#v, want [results.items]", got)
+	}
+	got = responsePathForResource("items", "/items/search")
+	if len(got) != 1 || got[0] != "results.items" {
+		t.Fatalf("responsePathForResource(items, GET url) = %#v, want [results.items]", got)
+	}
+}
+`), 0o644))
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestResponsePathForResourceUsesPostListEnvelope", "-count=1")
 }
