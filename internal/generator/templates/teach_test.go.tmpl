@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1170,6 +1171,345 @@ func TestTeachCommand_PIIEmailWarnsAndSucceeds(t *testing.T) {
 	rows, _ := listLearningsRows(context.Background(), s, store.ListLearningsFilter{})
 	if len(rows) != 1 {
 		t.Errorf("the learning must still land (warn-only); got %d rows", len(rows))
+	}
+}
+
+func readLearningsAuditFile(t *testing.T) string {
+	t.Helper()
+	stateDir, err := cliutil.StateDir()
+	if err != nil {
+		t.Fatalf("StateDir: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(stateDir, learningsAuditFileName))
+	if err != nil {
+		t.Fatalf("read learnings.jsonl: %v", err)
+	}
+	return string(data)
+}
+
+func readTeachErrLogFile(t *testing.T) string {
+	t.Helper()
+	stateDir, err := cliutil.StateDir()
+	if err != nil {
+		t.Fatalf("StateDir: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(stateDir, teachErrLogFileName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ""
+		}
+		t.Fatalf("read teach.log: %v", err)
+	}
+	return string(data)
+}
+
+// TestTeachCommand_AuditOmitsRawQuery pins that the append-only audit
+// log stores a hash + redacted normalized form, never the raw query.
+func TestTeachCommand_AuditOmitsRawQuery(t *testing.T) {
+	_ = withTempLearnHome(t)
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	raw := "orders placed by jane.doe@example.com last week"
+
+	_, stderr, err := runRootArgs(t,
+		"teach",
+		"--query", raw,
+		"--resource", "order-1", "--resource-type", "orders",
+		"--db", dbPath,
+	)
+	if err != nil {
+		t.Fatalf("teach: %v (stderr=%q)", err, stderr)
+	}
+
+	audit := readLearningsAuditFile(t)
+	if strings.Contains(audit, "jane.doe@example.com") {
+		t.Errorf("audit log must not store the raw email; got %q", audit)
+	}
+	wantHash := learn.QueryHash(raw)
+	if !strings.Contains(audit, wantHash) {
+		t.Errorf("audit log must store query_hash %s; got %q", wantHash, audit)
+	}
+	if strings.Contains(audit, `"query":`) {
+		t.Errorf("audit log must not include a query field; got %q", audit)
+	}
+}
+
+// TestTeachCommand_TeachLogOmitsRawQuery pins error lines to hash-only.
+func TestTeachCommand_TeachLogOmitsRawQuery(t *testing.T) {
+	_ = withTempLearnHome(t)
+	raw := "orders placed by jane.doe@example.com last week"
+
+	_, _, err := runRootArgs(t,
+		"teach",
+		"--query", raw,
+		"--resource", "order-1",
+		"--db", filepath.Join(t.TempDir(), "data.db"),
+	)
+	if err == nil {
+		t.Fatal("teach without --resource-type should fail")
+	}
+
+	logBody := readTeachErrLogFile(t)
+	if logBody == "" {
+		t.Fatal("teach.log should exist on error")
+	}
+	if strings.Contains(logBody, "jane.doe@example.com") || strings.Contains(logBody, raw) {
+		t.Errorf("teach.log must not store the raw query; got %q", logBody)
+	}
+	if !strings.Contains(logBody, learn.QueryHash(raw)) {
+		t.Errorf("teach.log should name query_hash; got %q", logBody)
+	}
+}
+
+// TestLearningsForget_ScrubsAuditLogs removes matching audit and teach.log
+// lines so a forgotten PII-bearing teach does not outlive the row.
+func TestLearningsForget_ScrubsAuditLogs(t *testing.T) {
+	home := withTempLearnHome(t)
+	dbPath := filepath.Join(home, "data.db")
+	raw := "orders placed by jane.doe@example.com last week"
+
+	if _, stderr, err := runRootArgs(t,
+		"teach",
+		"--query", raw,
+		"--resource", "order-1", "--resource-type", "orders",
+		"--db", dbPath,
+	); err != nil {
+		t.Fatalf("teach: %v (stderr=%q)", err, stderr)
+	}
+	if !strings.Contains(readLearningsAuditFile(t), learn.QueryHash(raw)) {
+		t.Fatal("precondition: teach audit should contain query_hash")
+	}
+
+	if _, _, err := runRootArgs(t,
+		"learnings", "forget", raw, "--all", "--db", dbPath, "--agent",
+	); err != nil {
+		t.Fatalf("forget: %v", err)
+	}
+
+	audit := readLearningsAuditFile(t)
+	if strings.Contains(audit, "jane.doe@example.com") {
+		t.Errorf("forget must scrub raw query from audit; got %q", audit)
+	}
+	var teachEntry map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(audit), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("audit JSON: %v (%q)", err, line)
+		}
+		if action, _ := entry["action"].(string); action == "teach" {
+			teachEntry = entry
+		}
+	}
+	if teachEntry != nil {
+		t.Errorf("forget must remove the matching teach audit entry; got %+v", teachEntry)
+	}
+	if strings.Contains(readTeachErrLogFile(t), "jane.doe@example.com") {
+		t.Errorf("forget must scrub raw query from teach.log")
+	}
+}
+
+func TestLogLineMatchesQuery_ExactIdentityOnly(t *testing.T) {
+	hashA := learn.QueryHash("alpha widget")
+	if logLineMatchesQuery(`{"action":"teach","query_hash":"`+hashA+`"}`, "a", learn.QueryHash("a")) {
+		t.Fatal("short forget query must not match an unrelated query_hash record")
+	}
+	if logLineMatchesQuery(`{"action":"teach","query_hash":"`+hashA+`"}`, "action", learn.QueryHash("action")) {
+		t.Fatal("forget query must not match via the action field")
+	}
+	legacy := `{"action":"teach","query":"alpha widget"}`
+	if !logLineMatchesQuery(legacy, "alpha widget", hashA) {
+		t.Fatal("legacy JSON query field must match exactly")
+	}
+	if logLineMatchesQuery(legacy, "alpha", learn.QueryHash("alpha")) {
+		t.Fatal("legacy JSON query field must not match a substring")
+	}
+	text := "teach: missing --resource (query_hash=" + hashA + ")"
+	if !logLineMatchesQuery(text, "alpha widget", hashA) {
+		t.Fatal("plain-text query_hash= token must match exactly")
+	}
+	if logLineMatchesQuery(text, "a", learn.QueryHash("a")) {
+		t.Fatal("plain-text line must not match a substring of the hash or words")
+	}
+	quoted := fmt.Sprintf("teach: failed query=%q", "alpha widget")
+	if !logLineMatchesQuery(quoted, "alpha widget", hashA) {
+		t.Fatal("legacy quoted query token must match the unquoted value")
+	}
+	if logLineMatchesQuery(quoted, "alpha", learn.QueryHash("alpha")) {
+		t.Fatal("legacy quoted query token must not match a substring")
+	}
+}
+
+func TestLearningsForget_DoesNotScrubUnrelatedHistory(t *testing.T) {
+	home := withTempLearnHome(t)
+	dbPath := filepath.Join(home, "data.db")
+	keep := "alpha widget"
+	drop := "alpha"
+
+	if _, stderr, err := runRootArgs(t,
+		"teach", "--query", keep, "--resource", "item-keep", "--resource-type", "items", "--db", dbPath,
+	); err != nil {
+		t.Fatalf("teach keep: %v (stderr=%q)", err, stderr)
+	}
+	if _, stderr, err := runRootArgs(t,
+		"teach", "--query", drop, "--resource", "item-drop", "--resource-type", "items", "--db", dbPath,
+	); err != nil {
+		t.Fatalf("teach drop: %v (stderr=%q)", err, stderr)
+	}
+
+	if _, _, err := runRootArgs(t,
+		"learnings", "forget", drop, "--all", "--db", dbPath, "--agent",
+	); err != nil {
+		t.Fatalf("forget: %v", err)
+	}
+
+	audit := readLearningsAuditFile(t)
+	dropHash := learn.QueryHash(drop)
+	keepHash := learn.QueryHash(keep)
+	foundKeep := false
+	for _, line := range strings.Split(strings.TrimSpace(audit), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("audit JSON: %v (%q)", err, line)
+		}
+		h, _ := entry["query_hash"].(string)
+		action, _ := entry["action"].(string)
+		if action == "teach" && h == dropHash {
+			t.Errorf("forgotten teach audit must be gone; got %q", line)
+		}
+		if action == "teach" && h == keepHash {
+			foundKeep = true
+		}
+	}
+	if !foundKeep {
+		t.Errorf("unrelated teach audit must survive a substring forget; got %q", audit)
+	}
+}
+
+func TestLearningsAudit_RotatesWhenOverCap(t *testing.T) {
+	home := withTempLearnHome(t)
+	dbPath := filepath.Join(home, "data.db")
+	old := learningsAuditMaxBytes
+	learningsAuditMaxBytes = 1
+	t.Cleanup(func() { learningsAuditMaxBytes = old })
+
+	for i, q := range []string{"first rotation query", "second rotation query"} {
+		rid := "item-a"
+		if i == 1 {
+			rid = "item-b"
+		}
+		if _, stderr, err := runRootArgs(t,
+			"teach",
+			"--query", q,
+			"--resource", rid,
+			"--resource-type", "items",
+			"--db", dbPath,
+		); err != nil {
+			t.Fatalf("teach %d: %v (stderr=%q)", i, err, stderr)
+		}
+	}
+	stateDir, err := cliutil.StateDir()
+	if err != nil {
+		t.Fatalf("StateDir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, learningsAuditFileName+".1")); err != nil {
+		t.Fatalf("expected rotated learnings.jsonl.1: %v", err)
+	}
+}
+
+func TestLearningsAudit_ConcurrentRotateKeepsRecords(t *testing.T) {
+	_ = withTempLearnHome(t)
+	old := learningsAuditMaxBytes
+	learningsAuditMaxBytes = 64
+	t.Cleanup(func() { learningsAuditMaxBytes = old })
+
+	const n = 20
+	var wg sync.WaitGroup
+	errCh := make(chan error, n)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			q := fmt.Sprintf("concurrent-query-%d", i)
+			errCh <- appendLearningsAudit(map[string]any{
+				"action":     "teach",
+				"query_hash": learn.QueryHash(q),
+			})
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("appendLearningsAudit: %v", err)
+		}
+	}
+
+	stateDir, err := cliutil.StateDir()
+	if err != nil {
+		t.Fatalf("StateDir: %v", err)
+	}
+	lines := 0
+	for _, name := range []string{learningsAuditFileName, learningsAuditFileName + ".1"} {
+		data, readErr := os.ReadFile(filepath.Join(stateDir, name))
+		if readErr != nil {
+			if os.IsNotExist(readErr) {
+				continue
+			}
+			t.Fatalf("read %s: %v", name, readErr)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			if line == "" {
+				continue
+			}
+			var entry map[string]any
+			if err := json.Unmarshal([]byte(line), &entry); err != nil {
+				t.Fatalf("torn audit JSON under concurrent rotate: %v (%q)", err, line)
+			}
+			lines++
+		}
+	}
+	if lines == 0 {
+		t.Fatal("expected audit records after concurrent rotate")
+	}
+}
+
+func TestLearningsAudit_ConcurrentAppendKeepsRecords(t *testing.T) {
+	_ = withTempLearnHome(t)
+
+	const n = 20
+	want := make(map[string]struct{}, n)
+	var wg sync.WaitGroup
+	errCh := make(chan error, n)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		q := fmt.Sprintf("concurrent-keep-%d", i)
+		want[learn.QueryHash(q)] = struct{}{}
+		go func(q string) {
+			defer wg.Done()
+			errCh <- appendLearningsAudit(map[string]any{
+				"action":     "teach",
+				"query_hash": learn.QueryHash(q),
+			})
+		}(q)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("appendLearningsAudit: %v", err)
+		}
+	}
+
+	audit := readLearningsAuditFile(t)
+	for h := range want {
+		if !strings.Contains(audit, h) {
+			t.Fatalf("missing query_hash %s in concurrent audit log", h)
+		}
 	}
 }
 
