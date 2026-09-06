@@ -9,6 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
@@ -48,9 +49,9 @@ func seedLiveDogfoodRotatingRefresh(scopedHome, cliName string, manifest CLIMani
 		return liveDogfoodRefreshSeed{}, fmt.Errorf("oauth2_refresh live dogfood needs a writable shared credential store: %w", err)
 	}
 	if created {
-		if operatorHome, homeErr := os.UserHomeDir(); homeErr == nil && operatorHome != "" {
+		if operatorPath := liveDogfoodOperatorCredentialsPath(cliName); operatorPath != "" {
 			seed.mirror = &liveDogfoodCredentialMirror{
-				src:         liveDogfoodCredentialsRelPath(operatorHome, cliName),
+				src:         operatorPath,
 				dst:         dst,
 				mode:        0o600,
 				allowCreate: true,
@@ -76,15 +77,72 @@ func liveDogfoodCredentialsRelPath(home, cliName string) string {
 	return filepath.Join(home, ".local", "share", cliName, "credentials.toml")
 }
 
+func liveDogfoodOperatorCredentialsPath(cliName string) string {
+	dir := liveDogfoodOperatorDataDir(cliName)
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "credentials.toml")
+}
+
+func liveDogfoodOperatorDataDir(cliName string) string {
+	cliName = strings.TrimSpace(cliName)
+	if cliName == "" {
+		return ""
+	}
+	prefix := naming.EnvPrefix(naming.TrimCLISuffix(cliName))
+	if prefix != "" {
+		if dir := liveDogfoodAbsoluteEnvDir(prefix + "_DATA_DIR"); dir != "" {
+			return dir
+		}
+		if home := liveDogfoodAbsoluteEnvDir(prefix + "_HOME"); home != "" {
+			return filepath.Join(home, "data")
+		}
+	}
+	if xdg := liveDogfoodAbsoluteEnvDir("XDG_DATA_HOME"); xdg != "" {
+		return filepath.Join(xdg, cliName)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".local", "share", cliName)
+}
+
+func liveDogfoodAbsoluteEnvDir(name string) string {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return ""
+	}
+	if raw == "~" || strings.HasPrefix(raw, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return ""
+		}
+		if raw == "~" {
+			raw = home
+		} else {
+			raw = filepath.Join(home, strings.TrimPrefix(raw, "~/"))
+		}
+	}
+	if !filepath.IsAbs(raw) {
+		return ""
+	}
+	return filepath.Clean(raw)
+}
+
 func liveDogfoodRotatingRefreshEnvVars(manifest CLIManifest, authEnv string) []string {
 	if !strings.EqualFold(strings.TrimSpace(manifest.AuthType), apispec.AuthTypeOAuth2Refresh) {
 		return nil
 	}
 	seen := map[string]bool{}
 	var names []string
-	add := func(name string) {
+	add := func(name string, requireRefreshShape bool) {
 		name = strings.TrimSpace(name)
-		if name == "" || seen[name] || !apispec.IsOAuthRefreshTokenEnvVar(name) {
+		if name == "" || seen[name] {
+			return
+		}
+		if requireRefreshShape && !apispec.IsOAuthRefreshTokenEnvVar(name) {
 			return
 		}
 		seen[name] = true
@@ -97,15 +155,15 @@ func liveDogfoodRotatingRefreshEnvVars(manifest CLIManifest, authEnv string) []s
 		EnvVarSpecs: append([]apispec.AuthEnvVar(nil), manifest.AuthEnvVarSpecs...),
 	}
 	if ev := auth.OAuth2RefreshTokenEnvVar(); ev != nil {
-		add(ev.Name)
+		add(ev.Name, false)
 	}
 	for _, name := range manifest.AuthEnvVars {
-		add(name)
+		add(name, true)
 	}
 	for _, ev := range manifest.AuthEnvVarSpecs {
-		add(ev.Name)
+		add(ev.Name, true)
 	}
-	add(authEnv)
+	add(authEnv, true)
 	return names
 }
 

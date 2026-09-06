@@ -239,6 +239,8 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	}
 	runLiveDogfoodPreSync(commands, ctx)
 
+	_, _, authType := resolveLiveDogfoodAcceptanceIdentity(opts.CLIDir)
+	trackRefreshCascade := strings.EqualFold(strings.TrimSpace(authType), apispec.AuthTypeOAuth2Refresh)
 	cascade := invalidGrantCascadeTracker{}
 	abortedCascade := false
 	for _, command := range commands {
@@ -250,13 +252,12 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		}
 		results := runLiveDogfoodCommand(command, ctx)
 		report.Tests = append(report.Tests, results...)
-		if cascade.observe(results) {
+		if trackRefreshCascade && cascade.observe(results) {
 			abortedCascade = true
 			report.Tests = append(report.Tests, failedLiveDogfoodResult("live-dogfood", LiveDogfoodTestHappy, nil, reasonRefreshTokenRotationCascade))
 		}
 	}
 
-	_, _, authType := resolveLiveDogfoodAcceptanceIdentity(opts.CLIDir)
 	finalizeLiveDogfoodReport(report, authType)
 	finalizeLiveDogfoodCoverage(report, opts.ResearchDir)
 	// The Phase 5.6 acceptance gate's contract is "marker from the runner on
@@ -367,24 +368,43 @@ func mirrorLiveDogfoodCredentialFiles(scopedHome, cliName string, syncConfigBack
 	if scopedHome == "" || cliName == "" {
 		return nil, nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return nil, nil
-	}
-	paths := []struct {
-		rel      string
+	type credPath struct {
+		src      string
+		dst      string
 		syncBack bool
-	}{
-		{rel: filepath.Join(".config", cliName, "config.toml"), syncBack: syncConfigBack},
-		{rel: filepath.Join(".config", cliName, "config.json"), syncBack: syncConfigBack},
-		{rel: filepath.Join(".local", "share", cliName, "credentials.toml"), syncBack: syncConfigBack},
-		{rel: filepath.Join(".local", "share", cliName, "cookies.json")},
+	}
+	var paths []credPath
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		paths = append(paths,
+			credPath{
+				src:      filepath.Join(home, ".config", cliName, "config.toml"),
+				dst:      filepath.Join(scopedHome, ".config", cliName, "config.toml"),
+				syncBack: syncConfigBack,
+			},
+			credPath{
+				src:      filepath.Join(home, ".config", cliName, "config.json"),
+				dst:      filepath.Join(scopedHome, ".config", cliName, "config.json"),
+				syncBack: syncConfigBack,
+			},
+		)
+	}
+	if operatorDataDir := liveDogfoodOperatorDataDir(cliName); operatorDataDir != "" {
+		sandboxDataDir := filepath.Join(scopedHome, ".local", "share", cliName)
+		paths = append(paths,
+			credPath{
+				src:      filepath.Join(operatorDataDir, "credentials.toml"),
+				dst:      filepath.Join(sandboxDataDir, "credentials.toml"),
+				syncBack: syncConfigBack,
+			},
+			credPath{
+				src: filepath.Join(operatorDataDir, "cookies.json"),
+				dst: filepath.Join(sandboxDataDir, "cookies.json"),
+			},
+		)
 	}
 	var mirrors []liveDogfoodCredentialMirror
 	for _, path := range paths {
-		src := filepath.Join(home, path.rel)
-		dst := filepath.Join(scopedHome, path.rel)
-		mirror, err := copyLiveDogfoodCredentialFile(src, dst)
+		mirror, err := copyLiveDogfoodCredentialFile(path.src, path.dst)
 		if err != nil {
 			return nil, err
 		}

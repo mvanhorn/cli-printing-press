@@ -706,7 +706,7 @@ func TestRunLiveDogfoodMirrorsConfigAndCookieCredentialsIntoScopedHome(t *testin
 	)
 
 	operatorHome := t.TempDir()
-	t.Setenv("HOME", operatorHome)
+	isolateLiveDogfoodOperatorPaths(t, binaryName, operatorHome)
 	configPath := filepath.Join(operatorHome, ".config", binaryName, "config.toml")
 	cookiePath := filepath.Join(operatorHome, ".local", "share", binaryName, "cookies.json")
 	credsPath := filepath.Join(operatorHome, ".local", "share", binaryName, "credentials.toml")
