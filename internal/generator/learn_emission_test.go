@@ -197,12 +197,15 @@ func TestGenerateLearnCommandExamplesAreRunnableOnFirstLine(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	teachSrc := readEmitted(t, outputDir, "internal", "cli", "teach.go")
-	require.Contains(t, teachSrc, "Example: `  learn-examples-pp-cli teach --query \"<question>\" --resource-type <type> --resource <id> --resource <id> &`,")
+	require.Contains(t, teachSrc, "Example: `  QUERY=\"$(cat /path/to/question.txt)\" learn-examples-pp-cli teach --query \"$QUERY\" --resource-type <type> --resource <id> --resource <id> &`,")
 	require.Contains(t, teachSrc, "Example: `  learn-examples-pp-cli teach-pattern --query-template \"items in {entity}\" --resource-template \"GROUP-{entity:category}\" --resource-type \"items\" --entity-kind \"category\" --strategy substitute`,")
+	require.NotContains(t, teachSrc, `teach --query "<question>"`)
 
 	playbookSrc := readEmitted(t, outputDir, "internal", "cli", "teach_playbook.go")
-	require.Contains(t, playbookSrc, "Example: `  learn-examples-pp-cli teach-playbook --query \"<question that anchors the family>\" --playbook-file ~/playbooks/recipe.json --notes-file ~/playbooks/recipe-notes.md`,")
-	require.Contains(t, playbookSrc, "Example: `  learn-examples-pp-cli playbook amend --query \"<exact recall query>\" --add-note \"summary endpoint envelope: data lives at .results.header, not .header\"`,")
+	require.Contains(t, playbookSrc, "Example: `  QUERY=\"$(cat /path/to/question.txt)\" learn-examples-pp-cli teach-playbook --query \"$QUERY\" --playbook-file ~/playbooks/recipe.json --notes-file ~/playbooks/recipe-notes.md`,")
+	require.Contains(t, playbookSrc, "Example: `  QUERY=\"$(cat /path/to/question.txt)\" NOTE=\"$(cat /path/to/note.txt)\" learn-examples-pp-cli playbook amend --query \"$QUERY\" --add-note \"$NOTE\"`,")
+	require.NotContains(t, playbookSrc, `teach-playbook --query "<question`)
+	require.NotContains(t, playbookSrc, `playbook amend --query "<exact recall query>"`)
 }
 
 // TestGenerateLearnInitWiresSpec verifies that the emitted learn_init.go

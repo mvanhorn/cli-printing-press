@@ -62,7 +62,9 @@ func TestGenerateLearnEvents_EmitsMeasurementSurface(t *testing.T) {
 		"LearningID",
 		// family hash + PII helpers exported for the command side
 		"func FamilyHash(",
+		"func QueryHash(",
 		"func ScanPII(",
+		"func RedactPII(",
 	} {
 		require.Contains(t, recall, want, "emitted learn/recall.go must contain %q", want)
 	}
@@ -77,6 +79,11 @@ func TestGenerateLearnEvents_EmitsMeasurementSurface(t *testing.T) {
 		"DeleteLearnEventsByFamilyHash",
 		// PII guard on the teach path warns to stderr, never blocks
 		"learn.ScanPII",
+		// audit/log redaction: hash + normalized, never the raw query
+		"learn.QueryHash",
+		"learn.RedactPII",
+		"scrubLearningsLogs",
+		`"query_hash": learn.QueryHash(query)`,
 		// inline playbook JSON, mutually exclusive with --playbook-file
 		`"playbook-json"`,
 	} {
@@ -144,9 +151,9 @@ func TestGenerateLearnEvents_EmittedCLITestsPass(t *testing.T) {
 	outputDir := generateLearnEventsCLI(t, "levcli")
 	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "-race", "./internal/cli",
-		"-run", "TestLearnEvents_|TestLearningsStats_|TestTeachCommand_PII|TestTeachCommand_PlaybookJSON", "-count=1")
+		"-run", "TestLearnEvents_|TestLearningsStats_|TestTeachCommand_PII|TestTeachCommand_PlaybookJSON|TestTeachCommand_Audit|TestTeachCommand_TeachLog|TestLearningsForget_|TestLogLineMatchesQuery_|TestLearningsAudit_Rotates|TestLearningsAudit_Concurrent", "-count=1")
 	runGoCommand(t, outputDir, "test", "./internal/learn",
-		"-run", "TestRecall_HitCarriesLearningID|TestFamilyHash_|TestScanPII_", "-count=1")
+		"-run", "TestRecall_HitCarriesLearningID|TestFamilyHash_|TestQueryHash_|TestScanPII_|TestRedactPII_", "-count=1")
 }
 
 // Locks the emitted alias-mediated recall fixture to a token that

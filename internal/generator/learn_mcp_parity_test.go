@@ -42,7 +42,9 @@ func TestGenerateLearnMCPParity_SharedProtocolSource(t *testing.T) {
 	for _, want := range []string{
 		// recall-first
 		"Recall first",
-		`recall "<question>" --agent`,
+		`recall "$QUERY" --agent`,
+		"QUERY=$(cat /path/to/question.txt)",
+		"never interpolate user-controlled text",
 		// empty-store short-circuit: cold CLIs must not tax every query
 		"Empty-store short-circuit",
 		"skip recall for the rest of this session",
@@ -58,6 +60,8 @@ func TestGenerateLearnMCPParity_SharedProtocolSource(t *testing.T) {
 	} {
 		require.Contains(t, protoSrc, want, "protocol content must contain %q", want)
 	}
+	require.NotContains(t, protoSrc, `recall "<question>"`,
+		"protocol must not interpolate the question into a shell command line")
 	require.NotContains(t, protoSrc, "recall --query",
 		"protocol must name recall's positional query shape, not a non-existent --query flag")
 	// `learnings stats` does not exist yet; the protocol must not name it.

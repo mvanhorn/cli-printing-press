@@ -1171,6 +1171,16 @@ func FamilyHash(family string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
+// Audit and teach.log persist this instead of the raw query so a forget
+// can target the row without retaining PII. Empty input hashes to "".
+func QueryHash(query string) string {
+	if strings.TrimSpace(query) == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(query))
+	return hex.EncodeToString(sum[:])
+}
+
 // PII rule names ScanPII returns. Stable vocabulary: the teach-path
 // warning names the rule verbatim, and generated SKILL/AGENTS prose
 // references the same names.
@@ -1203,4 +1213,13 @@ func ScanPII(text string) []string {
 		rules = append(rules, PIIRulePhone)
 	}
 	return rules
+}
+
+// Logs keep a normalized form; identifiers matching ScanPII rules are
+// replaced so the original values never hit disk. The in-store learning
+// row stays warn-only.
+func RedactPII(text string) string {
+	text = piiEmailRE.ReplaceAllString(text, "<email>")
+	text = piiPhoneRE.ReplaceAllString(text, "<phone>")
+	return text
 }
