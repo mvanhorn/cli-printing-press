@@ -1,4 +1,4 @@
-## Phase 4: Shipcheck
+## 12-shipcheck (Phase 4: Shipcheck)
 
 **Receipt entry (required):**
 

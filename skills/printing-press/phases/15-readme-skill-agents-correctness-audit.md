@@ -1,4 +1,4 @@
-## Phase 4.9: README/SKILL/AGENTS Correctness Audit
+## 15-readme-skill-agents-correctness-audit (Phase 4.9: README/SKILL/AGENTS Correctness Audit)
 
 **Receipt entry (required):**
 

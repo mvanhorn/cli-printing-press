@@ -459,6 +459,27 @@ func TestPhaseReceiptsAcceptEveryDocumentedAlternateHandoff(t *testing.T) {
 	}
 }
 
+func TestPhaseReceiptsRejectHoldBacktrackToDogfood(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
+	enterAfterCanonicalChain(t, path, "12-shipcheck")
+	hold := receiptOptions(t, path, "12-shipcheck")
+	hold.Next = "20-promote-and-archive"
+	hold.Note = "hold: verify red"
+	_, _, err := CompletePhase(hold, false)
+	require.NoError(t, err)
+
+	_, _, err = EnterPhase(receiptOptions(t, path, "20-promote-and-archive"))
+	require.NoError(t, err)
+
+	backtrack := receiptOptions(t, path, "20-promote-and-archive")
+	backtrack.Next = "18-dogfood-testing"
+	backtrack.Note = "acceptance marker missing"
+	_, _, err = CompletePhase(backtrack, false)
+	require.ErrorContains(t, err, `arrived via shipcheck hold and cannot backtrack to "18-dogfood-testing"`)
+}
+
 func TestPhaseReceiptsRejectAlternateHandoffWithoutNote(t *testing.T) {
 	t.Parallel()
 

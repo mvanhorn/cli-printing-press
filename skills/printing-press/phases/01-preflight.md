@@ -14,7 +14,7 @@ This version uses one lean loop:
 
 Artifacts are still written, but only the ones that materially help the next step.
 
-## Preflight
+## 01-preflight
 
 **This section MUST run before any user-facing prompt — including the orientation and briefing flow in [references/run-resolution.md](../references/run-resolution.md).** A missing binary or available upgrade is information the user needs *before* they commit to an API. Do not invoke `AskUserQuestion`, print the orientation prose, or otherwise engage the user until preflight has completed and any signals from `../references/setup-checks.md` have been handled.
 
@@ -545,7 +545,7 @@ CODEX_CONSECUTIVE_FAILURES=0
 
 Only after preflight completes successfully (no `[setup-error]`; no `[upgrade-required]` left unresolved — the user either upgraded or the run was aborted; no global skill update that requires restart; any `[repo-upgrade-available]`, `[upgrade-available]`, or `[browser-tools-missing]` was offered to the user; `PRINTING_PRESS_BIN` is captured) should you proceed to the orientation and briefing flow in [references/run-resolution.md](../references/run-resolution.md).
 
-Phase receipts begin only after Phase 2 allocates a run ID and pipeline
+Phase receipts begin only after `02-run-initialization` allocates a run ID and pipeline
 directory. Do not create a receipt during preflight.
 
 Next: phases/02-run-initialization.md

@@ -387,8 +387,7 @@ Invoke `/printing-press <api>` and bundle these into the prompt:
 
 Do **not** pass a separate "this is a reprint" marker. The novel-features
 subagent runs unconditionally on every print and discovers prior research
-via its own discovery snippet (see
-`skills/printing-press/references/novel-features-subagent.md`). The paths
+via its own discovery snippet. The paths
 import populated in Phase A are exactly the paths it checks; Pass 2(d)
 fires whenever prior `research.json` exists.
 

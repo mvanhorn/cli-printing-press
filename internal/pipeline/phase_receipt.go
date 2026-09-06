@@ -95,8 +95,10 @@ var printingPressAlternateNext = map[string][]string{
 //
 // The other alternate edges mean something else and stay unbound: 08 and 09 into
 // the sniff gates order rework, 11 and 17 into 08 jump back to replay forward,
-// and 12 into 20 is a forward jump. Binding those would demand, say, that the
-// absorb gate entered from the local code review complete back to that review.
+// 12 into 20 is a forward jump, and 20 into 18 is a missing-marker backtrack
+// that validateHoldBacktrack refuses after a 12→20 hold. Binding 11/17/12
+// would demand, say, that the absorb gate entered from the local code review
+// complete back to that review.
 var printingPressReturnBoundPhases = []string{"06-browser-sniff-gate"}
 
 // PrintingPressReceiptPhases returns the canonical phase order the state machine
@@ -259,6 +261,9 @@ func CompletePhase(opts PhaseReceiptOptions, skipped bool) (*PhaseReceipt, bool,
 		return nil, false, err
 	}
 	if err := validateReworkReturn(receipts, opts.Phase, next); err != nil {
+		return nil, false, err
+	}
+	if err := validateHoldBacktrack(receipts, opts.Phase, next); err != nil {
 		return nil, false, err
 	}
 
@@ -746,6 +751,33 @@ func validateReworkReturn(receipts []PhaseReceipt, phase, next string) error {
 		return nil
 	}
 	return fmt.Errorf("phase %q has no recorded rework order to return to; %q is a return edge, so hand off to %q", phase, next, expectedNextPhase(phase))
+}
+
+const (
+	phaseShipcheck         = "12-shipcheck"
+	phaseDogfoodTesting    = "18-dogfood-testing"
+	phasePromoteAndArchive = "20-promote-and-archive"
+)
+
+// validateHoldBacktrack refuses the promote→dogfood alternate when this visit
+// to promote-and-archive arrived on the shipcheck hold jump. Hold runs skip
+// dogfood by design; the missing acceptance marker is expected. A canonical
+// arrival (from polish) may still backtrack when the marker is actually missing.
+func validateHoldBacktrack(receipts []PhaseReceipt, phase, next string) error {
+	if phase != phasePromoteAndArchive || next != phaseDogfoodTesting {
+		return nil
+	}
+	for i := len(receipts) - 1; i >= 0; i-- {
+		receipt := receipts[i]
+		if receipt.Phase == phaseDogfoodTesting && (receipt.Event == PhaseReceiptCompleted || receipt.Event == PhaseReceiptSkipped) {
+			return nil
+		}
+		if receipt.Phase == phaseShipcheck && receipt.Next == phasePromoteAndArchive &&
+			(receipt.Event == PhaseReceiptCompleted || receipt.Event == PhaseReceiptSkipped) {
+			return fmt.Errorf("phase %q arrived via shipcheck hold and cannot backtrack to %q", phase, next)
+		}
+	}
+	return nil
 }
 
 // allowedNextPhases orders the canonical next phase first so a rejected handoff

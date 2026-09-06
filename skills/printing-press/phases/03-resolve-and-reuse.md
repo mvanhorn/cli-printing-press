@@ -1,4 +1,4 @@
-## Phase 0: Resolve And Reuse
+## 03-resolve-and-reuse (Phase 0: Resolve And Reuse)
 
 **Receipt entry (required):**
 

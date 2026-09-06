@@ -1,9 +1,9 @@
 # Browser-Sniff Capture Implementation
 
-> **When to read:** This file is referenced by Phase 1.7 of the printing-press skill.
+> **When to read:** This file is referenced by `06-browser-sniff-gate` of the printing-press skill.
 > Read it when the user approves temporary browser discovery (browser-use, agent-browser, or manual HAR capture of live site traffic).
 >
-> **Context:** This file documents what happens AFTER Phase 1.7 decides to browser-sniff. The decision itself — approve, decline, or silent-skip — is recorded in `$PRESS_RUNSTATE/runs/$RUN_ID/browser-browser-sniff-gate.json` by Phase 1.7 before this reference is loaded. Phase 1.5 refuses to proceed without that marker file. See SKILL.md Phase 1.7 "Enforcement: the browser-browser-sniff-gate.json marker file" for the contract.
+> **Context:** This file documents what happens AFTER `06-browser-sniff-gate` decides to browser-sniff. The decision itself — approve, decline, or silent-skip — is recorded in `$PRESS_RUNSTATE/runs/$RUN_ID/browser-browser-sniff-gate.json` by that phase before this reference is loaded. `08-ecosystem-absorb-gate` refuses to proceed without that marker file. See [06-browser-sniff-gate.md](../phases/06-browser-sniff-gate.md) "Enforcement: the browser-browser-sniff-gate.json marker file" for the contract.
 >
 > Browser discovery is a temporary generation-time aid. It exists to learn URLs, methods, request bodies, persisted GraphQL hashes, BFF envelopes, auth/header construction, response shapes, and replayability. It is not permission to generate a printed CLI that keeps a browser open for normal commands.
 
@@ -234,7 +234,7 @@ For option 1 (save-then-restore):
 
 ```bash
 # Grab cookies from running Chrome. $SESSION_STATE_FILE lives outside
-# $DISCOVERY_DIR (initialized in SKILL.md's "Run Initialization") so the
+# $DISCOVERY_DIR (initialized in 02-run-initialization) so the
 # Phase 5.5 `cp -r "$DISCOVERY_DIR"` cannot pick it up.
 agent-browser --auto-connect state save "$SESSION_STATE_FILE" 2>&1
 

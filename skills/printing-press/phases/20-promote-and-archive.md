@@ -1,4 +1,4 @@
-## Phase 5.6: Promote and Archive
+## 20-promote-and-archive (Phase 5.6: Promote and Archive)
 
 **Receipt entry (required):**
 
@@ -8,7 +8,7 @@
 
 ### Acceptance gate check
 
-This gate guards **promotion**, so it applies only when the shipcheck verdict is `ship` or `ship-with-gaps`. A `hold` run reaches this phase from [Phase 4](12-shipcheck.md) with no dogfood markers by design — it skips promotion entirely, archives manuscripts, and completes canonically to [Phase 6](21-next-steps.md). A hold must NOT take the backtrack to Phase 5 below; its missing markers are expected.
+This gate guards **promotion**, so it applies only when the shipcheck verdict is `ship` or `ship-with-gaps`. A `hold` run reaches this phase from [12-shipcheck](12-shipcheck.md) with no dogfood markers by design — it skips promotion entirely, archives manuscripts, and completes canonically to [21-next-steps](21-next-steps.md). A hold must NOT take the backtrack to [18-dogfood-testing](18-dogfood-testing.md) below; its missing markers are expected. The binary rejects `20→18` when this visit arrived on the `12→20` hold jump.
 
 For a ship-verdict run, verify the [Phase 5](18-dogfood-testing.md) JSON gate marker before promoting:
 

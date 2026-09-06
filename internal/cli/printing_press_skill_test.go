@@ -209,27 +209,11 @@ func TestPrintingPressSkillPhaseReceiptsEnforceEveryHandoff(t *testing.T) {
 	preflight, err := os.ReadFile("../../skills/printing-press/phases/01-preflight.md")
 	require.NoError(t, err)
 	require.NotContains(t, string(preflight), "phase-receipt enter")
-	require.Contains(t, string(preflight), "Phase receipts begin only after Phase 2")
+	require.Contains(t, string(preflight), "Phase receipts begin only after `02-run-initialization`")
 
-	// Six phases carry a documented alternate handoff recorded with --next in
-	// addition to their canonical completion: discovery rework from the absorb and
-	// reachability gates, the build-infeasible return to the absorb gate,
-	// shipcheck's hold jump, the local-code-review scope-change return, and the
-	// promote-gate backtrack to dogfood. The absorb gate records both rework
-	// targets (browser-sniff and crowd-sniff) as full commands, so it carries
-	// two extra blocks; every other phase carries one extra. All other phases
-	// stay strictly canonical. The block COUNT is on-disk truth asserted here;
-	// the --next TARGETS are read from the binary graph, so the files and the
-	// state machine cross-check.
-	completeBlocks := map[string]int{
-		"06-browser-sniff-gate":    3,
-		"08-ecosystem-absorb-gate": 3,
-		"09-api-reachability-gate": 2,
-		"11-build-the-goat":        2,
-		"12-shipcheck":             2,
-		"17-local-code-review":     2,
-		"20-promote-and-archive":   2,
-	}
+	// Completion-block count is 1 (canonical) plus one recorded `--next` command
+	// per documented alternate, derived from the binary graph rather than a
+	// third hand-maintained map.
 
 	// Every `phase-receipt complete` occurrence in a phase file must be a full,
 	// executable command, not a prose fragment: it names the ledger, the run, and
@@ -250,10 +234,7 @@ func TestPrintingPressSkillPhaseReceiptsEnforceEveryHandoff(t *testing.T) {
 
 		require.Equal(t, 1, strings.Count(content, "phase-receipt enter"), "%s must record entry exactly once", phase)
 
-		wantBlocks := completeBlocks[phase]
-		if wantBlocks == 0 {
-			wantBlocks = 1
-		}
+		wantBlocks := 1 + len(pipeline.PrintingPressAlternateNextPhases(phase))
 		require.Equal(t, wantBlocks, strings.Count(content, "phase-receipt complete"), "%s must record exactly %d completion block(s)", phase, wantBlocks)
 
 		occurrences := completeCommand.FindAllString(content, -1)
@@ -312,4 +293,20 @@ func TestPrintingPressSkillRouterStaysAThinSpine(t *testing.T) {
 	// columns are the phase files' job.
 	require.NotContains(t, router, "One-line purpose")
 	require.NotContains(t, router, "Gates")
+}
+
+func TestPrintingPressSkillAgenticSkillReviewGateDoesNotSkipToDogfood(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile("../../skills/printing-press/phases/14-agentic-skill-review.md")
+	require.NoError(t, err)
+	content := string(data)
+	gateStart := strings.Index(content, "### Gate")
+	require.Greater(t, gateStart, 0)
+	rest := content[gateStart:]
+	gateEnd := strings.Index(rest, "### Why agentic")
+	require.Greater(t, gateEnd, 0)
+	gate := rest[:gateEnd]
+	require.Contains(t, gate, "15-readme-skill-agents-correctness-audit.md")
+	require.NotContains(t, gate, "18-dogfood-testing.md")
 }

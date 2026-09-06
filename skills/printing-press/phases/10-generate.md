@@ -1,4 +1,4 @@
-## Phase 2: Generate
+## 10-generate (Phase 2: Generate)
 
 **Receipt entry (required):**
 

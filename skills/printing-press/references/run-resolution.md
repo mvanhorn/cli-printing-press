@@ -1,7 +1,7 @@
 # Run resolution
 
 Resolve what to build, from what source, and in what order before entering
-Phase 0. This file owns the orientation prompt, the briefing prompt, and the
+`03-resolve-and-reuse`. This file owns the orientation prompt, the briefing prompt, and the
 priority gate for combo runs. It sets `USER_BRIEFING_CONTEXT`, `AUTH_CONTEXT`,
 and `SOURCE_PRIORITY`. YAML, JSON, local paths, and URLs are all valid spec
 inputs for the generation and verification tools.
@@ -118,7 +118,10 @@ Options:
 2. **Different order** — User provides the correct ordering; capture it.
 3. **They're peers, no primary** — Rare; capture as equal weighting but warn the user that one will still lead the README.
 
-Write the confirmed ordering to `$API_RUN_DIR/source-priority.json`:
+Keep the confirmed ordering in session state as `SOURCE_PRIORITY`. Do **not**
+write `$API_RUN_DIR/source-priority.json` here: that directory is created in
+[02-run-initialization](../phases/02-run-initialization.md). After that phase
+allocates the run directory, persist:
 
 ```json
 {

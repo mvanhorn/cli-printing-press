@@ -1,4 +1,4 @@
-## Phase 4.8: Agentic SKILL Review
+## 14-agentic-skill-review (Phase 4.8: Agentic SKILL Review)
 
 **Receipt entry (required):**
 
@@ -6,7 +6,7 @@
 "$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "14-agentic-skill-review"
 ```
 
-**Runs after shipcheck, before [Phase 5](18-dogfood-testing.md).** `verify-skill` ([Phase 4](12-shipcheck.md)) is a mechanical check — it catches wrong flags on wrong commands, undeclared flags, and positional-arg count mismatches. It cannot catch **semantic** issues that only a reader notices:
+**Runs after shipcheck, before [15-readme-skill-agents-correctness-audit](15-readme-skill-agents-correctness-audit.md).** `verify-skill` ([12-shipcheck](12-shipcheck.md)) is a mechanical check — it catches wrong flags on wrong commands, undeclared flags, and positional-arg count mismatches. It cannot catch **semantic** issues that only a reader notices:
 
 - A trigger phrase promises behavior the CLI doesn't have ("plan dinners for the week" when there's no `meal-plan suggest`, only manual `meal-plan set`)
 - A novel-feature description says the feature does X; the actual command does Y
@@ -52,8 +52,8 @@ their current local fix path.
 
 ### Gate
 
-- If the reviewer returns PASS, proceed to [Phase 5](18-dogfood-testing.md).
-- If the reviewer returns findings of severity `error`, fix them before [Phase 5](18-dogfood-testing.md). Same fix-now contract as other shipcheck findings.
+- If the reviewer returns PASS, proceed to [15-readme-skill-agents-correctness-audit](15-readme-skill-agents-correctness-audit.md).
+- If the reviewer returns findings of severity `error`, fix them before [15-readme-skill-agents-correctness-audit](15-readme-skill-agents-correctness-audit.md). Same fix-now contract as other shipcheck findings.
 - If the reviewer returns only `warning` findings, surface them to the user and proceed if they approve.
 
 ### Why agentic vs template-only

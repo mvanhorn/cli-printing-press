@@ -1,4 +1,4 @@
-## Phase 1.5: Ecosystem Absorb Gate
+## 08-ecosystem-absorb-gate (Phase 1.5: Ecosystem Absorb Gate)
 
 **Receipt entry (required):**
 

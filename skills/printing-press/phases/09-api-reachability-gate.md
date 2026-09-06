@@ -1,4 +1,4 @@
-## Phase 1.9: API Reachability Gate
+## 09-api-reachability-gate (Phase 1.9: API Reachability Gate)
 
 **Receipt entry (required):**
 

@@ -1,4 +1,4 @@
-## Phase 5: Dogfood Testing
+## 18-dogfood-testing (Phase 5: Dogfood Testing)
 
 **Receipt entry (required):**
 

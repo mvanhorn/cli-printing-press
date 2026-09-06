@@ -1,4 +1,4 @@
-## Phase 1: Research Brief
+## 04-research-brief (Phase 1: Research Brief)
 
 **Receipt entry (required):**
 

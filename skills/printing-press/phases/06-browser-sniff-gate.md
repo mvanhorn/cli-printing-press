@@ -1,4 +1,4 @@
-## Phase 1.7: Browser-Sniff Gate
+## 06-browser-sniff-gate (Phase 1.7: Browser-Sniff Gate)
 
 **Receipt entry (required):**
 

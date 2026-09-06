@@ -87,6 +87,8 @@ type PipelineState struct {
 	SpecURL                      string                `json:"spec_url,omitempty"`
 	DogfoodTimeout               int                   `json:"dogfood_timeout_seconds,omitempty"` // default 600 (10 min)
 	DogfoodTier                  int                   `json:"dogfood_tier,omitempty"`            // max tier to run (1-3, default 1)
+	PhaseReceiptLog              string                `json:"phase_receipt_log,omitempty"`
+	PrintingPressBin             string                `json:"printing_press_bin,omitempty"`
 }
 
 const currentStateVersion = 3

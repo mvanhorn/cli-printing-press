@@ -1,4 +1,4 @@
-## Phase 5.5: Polish
+## 19-polish (Phase 5.5: Polish)
 
 **Receipt entry (required):**
 

@@ -1,4 +1,4 @@
-## Phase 4.7: Sync Param-Drop Gate
+## 13-sync-param-drop-gate (Phase 4.7: Sync Param-Drop Gate)
 
 **Receipt entry (required):**
 
@@ -11,7 +11,7 @@
 Skip the gate when there's no `traffic-analysis.json` for this CLI (vendor-spec CLIs without a browser-sniff phase). Otherwise:
 
 ```bash
-printing-press sync-param-drop \
+"$PRINTING_PRESS_BIN" sync-param-drop \
   --dir "$CLI_WORK_DIR" \
   --traffic-analysis "$API_RUN_DIR/<api>-traffic-analysis.json" \
   --strict

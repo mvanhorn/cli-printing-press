@@ -1,4 +1,4 @@
-## Run Initialization
+## 02-run-initialization
 
 After you know `<api>` (from the orientation and briefing flow in [references/run-resolution.md](../references/run-resolution.md); [preflight](01-preflight.md) already ran), initialize the run-scoped artifact paths:
 
@@ -65,11 +65,14 @@ Maintain a lightweight state file at `$STATE_FILE` so `/printing-press-score` ca
   "working_dir": "$CLI_WORK_DIR",
   "output_dir": "$CLI_WORK_DIR",
   "phase_receipt_log": "$PHASE_RECEIPT_LOG",
+  "printing_press_bin": "$PRINTING_PRESS_BIN",
   "spec_path": "<absolute spec path if known>"
 }
 ```
 
-`run_id` is the unique value allocated above from the wall-clock stamp plus a short random suffix. `mkdir "$CANDIDATE_RUN_DIR"` is the collision guard: if another run already owns a candidate directory, allocate another ID instead of reusing the directory. Persisting this value in `state.json` makes the state file the source of truth for generate, dogfood acceptance, promote, `/printing-press-score`, and future state-loading consumers. Without `run_id` in either state or legacy path fallback, `cli-printing-press dogfood --live --write-acceptance` refuses to write the gate marker.
+`run_id` is the unique value allocated above from the wall-clock stamp plus a short random suffix. `mkdir "$CANDIDATE_RUN_DIR"` is the collision guard: if another run already owns a candidate directory, allocate another ID instead of reusing the directory. Persisting this value in `state.json` makes the state file the source of truth for generate, dogfood acceptance, promote, `/printing-press-score`, and future state-loading consumers. Without `run_id` in either state or legacy path fallback, `cli-printing-press dogfood --live --write-acceptance` refuses to write the gate marker. `phase_receipt_log` and `printing_press_bin` are recovery fields: `lock promote` and other Go `Save()` paths round-trip them. After compaction, re-run [preflight](01-preflight.md) if `printing_press_bin` is missing or the path is gone, then use those fields for `phase-receipt status`.
+
+If `SOURCE_PRIORITY` was captured in [run-resolution](../references/run-resolution.md), persist it now that `$API_RUN_DIR` exists. Write `$API_RUN_DIR/source-priority.json` with the confirmed `sources` array, `confirmed_at`, `raw_user_phrasing`, and `auth_scoping` when that decision was recorded. [04-research-brief](04-research-brief.md) reads this file. Do not write it during run-resolution; this directory did not exist yet.
 
 Do not create a `go.work` file in `$CLI_WORK_DIR`. Generated modules must build and test as standalone modules; a mismatched workspace `go` directive can break Go 1.25+ toolchains and lefthook checks. Editor/gopls workspace noise is cosmetic and must not be traded for broken `go build` or `go test`. The generated test gate is `go test -count=1 ./...` so a warm Go test cache cannot satisfy a fresh proof.
 

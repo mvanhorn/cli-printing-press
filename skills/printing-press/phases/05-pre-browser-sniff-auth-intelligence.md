@@ -1,4 +1,4 @@
-## Phase 1.6: Pre-Browser-Sniff Auth Intelligence
+## 05-pre-browser-sniff-auth-intelligence (Phase 1.6: Pre-Browser-Sniff Auth Intelligence)
 
 **Receipt entry (required):**
 

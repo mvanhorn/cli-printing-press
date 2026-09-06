@@ -1,4 +1,4 @@
-## Phase 1.8: Crowd-Sniff Gate
+## 07-crowd-sniff-gate (Phase 1.8: Crowd-Sniff Gate)
 
 **Receipt entry (required):**
 
