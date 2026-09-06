@@ -152,7 +152,7 @@ PII_AUTO_REDACT=(
   'bearer-cal-test|Bearer cal_test_[A-Za-z0-9]{20,}|Bearer <REDACTED:cal-test-token>'
   'bearer-github-pat|Bearer ghp_[A-Za-z0-9]{36,}|Bearer <REDACTED:github-pat>'
   'bearer-github-oauth|Bearer gho_[A-Za-z0-9]{36,}|Bearer <REDACTED:github-oauth>'
-  'bearer-github-server|Bearer ghs_[A-Za-z0-9]{36,}|Bearer <REDACTED:github-server-token>'
+  'bearer-github-server|Bearer ghs_[A-Za-z0-9._-]{36,}|Bearer <REDACTED:github-server-token>'
   'bearer-github-fine|Bearer github_pat_[A-Za-z0-9_]{60,}|Bearer <REDACTED:github-fine-grained-pat>'
   'slack-user-token|xoxp-[A-Za-z0-9-]{40,}|<REDACTED:slack-user-token>'
   'slack-bot-token|xoxb-[A-Za-z0-9-]{40,}|<REDACTED:slack-bot-token>'
