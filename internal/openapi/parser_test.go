@@ -11973,9 +11973,9 @@ paths:
 	})
 
 	t.Run("document-root x-tenant-env-var registers tenant template var + override", func(t *testing.T) {
-		// Every real-world ServiceTitan spec in the fleet places x-tenant-env-var
-		// at the document root rather than under info; an info-only reader
-		// silently drops it and every affected print loses tenant-aware sync.
+		// Press operators commonly place x-tenant-env-var at the document
+		// root rather than under info; an info-only reader silently drops
+		// it and the print loses tenant-aware sync.
 		data := []byte(`
 openapi: 3.0.3
 info:
@@ -12414,6 +12414,58 @@ paths:
 		assert.Empty(t, parsed.EndpointTemplateVars, "whitespace-only env must not register a template var")
 		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
 		assert.Empty(t, parsed.EndpointPathParamDefaults, "whitespace-only default must not register a path-param default")
+	})
+
+	t.Run("document-root x-path-template-env-vars registers template var + override", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Workspace API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com/{workspace}
+paths:
+  /issues:
+    get:
+      operationId: listIssues
+      responses:
+        "200": {description: ok}
+x-path-template-env-vars:
+  workspace:
+    env: ROOT_WORKSPACE
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"workspace"}, parsed.EndpointTemplateVars)
+		assert.Equal(t, map[string]string{"workspace": "ROOT_WORKSPACE"}, parsed.EndpointTemplateEnvOverrides)
+		assert.Equal(t, "ROOT_WORKSPACE", parsed.EndpointTemplateEnvName("workspace"))
+	})
+
+	t.Run("document-root value wins when both root and info declare x-path-template-env-vars", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Workspace API
+  version: 1.0.0
+  x-path-template-env-vars:
+    workspace:
+      env: INFO_WORKSPACE
+servers:
+  - url: https://api.example.com/{workspace}
+paths:
+  /issues:
+    get:
+      operationId: listIssues
+      responses:
+        "200": {description: ok}
+x-path-template-env-vars:
+  workspace:
+    env: ROOT_WORKSPACE
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "ROOT_WORKSPACE", parsed.EndpointTemplateEnvName("workspace"))
+		assert.Equal(t, map[string]string{"workspace": "ROOT_WORKSPACE"}, parsed.EndpointTemplateEnvOverrides)
 	})
 }
 

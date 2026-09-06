@@ -94,9 +94,9 @@ const (
 	// so the profiler treats /tenant/{tenant}/<resource> paths as standalone
 	// sync resources rather than parent-context-dependent. Read via
 	// lookupOpenAPIExtension (document root or info), not the info-only
-	// helper: every real-world ServiceTitan spec in the fleet places this
-	// at the document root, matching root-or-info extensions elsewhere in
-	// this file rather than the info-only convention.
+	// helper: press operators commonly declare this at the document root,
+	// matching root-or-info extensions elsewhere in this file rather than
+	// the info-only convention.
 	extensionTenantEnvVar = "x-tenant-env-var"
 	// extensionPathTemplateEnvVars is the generic, map-shaped successor to
 	// extensionTenantEnvVar. Each entry binds a path placeholder to an
@@ -108,13 +108,13 @@ const (
 	// suitable for canonical always-valid values like Gmail's userId='me'.
 	// When both are set, default wins and the env field is ignored — the
 	// placeholder is fully resolved before runtime substitution sees it.
-	// Same root-or-info lookup as extensionTenantEnvVar, for the same reason.
+	// Same root-or-info lookup as extensionTenantEnvVar.
 	extensionPathTemplateEnvVars = "x-path-template-env-vars"
 )
 
 // tenantPlaceholderName is the canonical placeholder that x-tenant-env-var
-// maps to. Kept narrow on purpose — when this generalizes beyond ServiceTitan
-// (Atlassian {workspace}, GitHub {org}), promote to a list-shaped extension
+// maps to. Kept narrow on purpose — when this generalizes to other
+// placeholders ({workspace}, {org}), promote to a list-shaped extension
 // rather than overloading this constant.
 const tenantPlaceholderName = "tenant"
 

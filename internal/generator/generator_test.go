@@ -21213,6 +21213,89 @@ func TestGenerateEndpointTemplateEnvOverridesWireThrough(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+// TestGenerateRootDeclaredEndpointTemplateExtensions: parser fields that
+// drive config.go / sync.go / url.go must populate from document-root
+// x-tenant-env-var and x-path-template-env-vars (root winning over info)
+// and the generated CLI must compile with those overrides wired through.
+func TestGenerateRootDeclaredEndpointTemplateExtensions(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := openapi.Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Tenant Workspace API
+  version: 1.0.0
+  x-tenant-env-var: INFO_TENANT_ID
+  x-path-template-env-vars:
+    workspace:
+      env: INFO_WORKSPACE
+servers:
+  - url: https://api.example.com/{workspace}
+paths:
+  /tenant/{tenant}/items:
+    get:
+      operationId: listItems
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+x-tenant-env-var: ROOT_TENANT_ID
+x-path-template-env-vars:
+  workspace:
+    env: ROOT_WORKSPACE
+`))
+	require.NoError(t, err)
+	assert.Equal(t, "ROOT_TENANT_ID", apiSpec.EndpointTemplateEnvName("tenant"))
+	assert.Equal(t, "ROOT_WORKSPACE", apiSpec.EndpointTemplateEnvName("workspace"))
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	urlGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "url.go"))
+	require.NoError(t, err)
+	urlSrc := string(urlGo)
+	assert.Regexp(t, `"tenant":\s+"ROOT_TENANT_ID"`, urlSrc,
+		"url.go must wire {tenant} to the root-declared env override")
+	assert.Regexp(t, `"workspace":\s+"ROOT_WORKSPACE"`, urlSrc,
+		"url.go must wire {workspace} to the root-declared env override")
+	assert.NotContains(t, urlSrc, "INFO_TENANT_ID",
+		"info-level x-tenant-env-var must lose to the document-root value")
+	assert.NotContains(t, urlSrc, "INFO_WORKSPACE",
+		"info-level x-path-template-env-vars must lose to the document-root value")
+
+	configGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	configSrc := string(configGo)
+	assert.Contains(t, configSrc, `os.Getenv("ROOT_TENANT_ID")`,
+		"config Load() must read the root-declared tenant env var")
+	assert.Contains(t, configSrc, `os.Getenv("ROOT_WORKSPACE")`,
+		"config Load() must read the root-declared workspace env var")
+	assert.NotContains(t, configSrc, `os.Getenv("INFO_TENANT_ID")`)
+	assert.NotContains(t, configSrc, `os.Getenv("INFO_WORKSPACE")`)
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncSrc := string(syncGo)
+	assert.Contains(t, syncSrc, "/tenant/{tenant}/items",
+		"sync must keep the tenant-scoped path once the root-declared tenant override is parsed")
+	assert.Contains(t, syncSrc, `endpointTemplateVarSet = map[string]bool`,
+		"sync must declare the template-var set so the unresolved-key check ignores root-declared placeholders")
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGenerateSyncIncludesMultiLeafCollectionResources(t *testing.T) {
 	t.Parallel()
 
