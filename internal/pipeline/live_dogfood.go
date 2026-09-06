@@ -69,6 +69,7 @@ const reasonCookieAuthNoHarnessSession = "cookie-auth-no-harness-session"
 // shared credential file; this abort is the safety net when rotation
 // still leaked.
 const reasonRefreshTokenRotationCascade = "invalid_grant cascade: a refresh token was rotated by an earlier command and later commands reused the revoked value. oauth2_refresh live dogfood persists rotation in a shared sandbox credential file and strips the rotating env var; the operator's stored refresh token may now be revoked. Re-authenticate before retrying."
+const reasonCredentialSyncBackFailed = "credential sync-back failed: rotated refresh token was not persisted to the operator credential store"
 
 // liveDogfoodVerdictCookieAuthNoSession is the report Verdict for a clean
 // cookie-auth skip outcome. Distinct from PASS/FAIL so the CLI exits 0 (the
@@ -262,17 +263,20 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	finalizeLiveDogfoodCoverage(report, opts.ResearchDir)
 	// Persist rotated credentials before the acceptance marker: a marker-write
 	// failure must not discard the sandbox that holds the replacement token.
-	// Still write the marker when sync-back itself fails (operator conflict).
 	syncErr := homeScope.syncBack()
 	if syncErr == nil {
 		homeScope.warnSeededEnv()
+	} else {
+		report.Tests = append(report.Tests, failedLiveDogfoodResult("live-dogfood", LiveDogfoodTestHappy, nil, reasonCredentialSyncBackFailed))
+		refreshLiveDogfoodCoverageCounts(report)
+		report.Verdict = "FAIL"
 	}
 	// The Phase 5.6 acceptance gate's contract is "marker from the runner on
 	// every outcome": pass → promote, fail → hold-path, missing → "Phase 5
 	// was skipped or not recorded." Writing only on PASS forced operators to
 	// hand-author the FAIL marker, which the SKILL also forbids. Write on
 	// every terminal verdict; phase5_gate.go already routes status:"fail"
-	// to the hold path.
+	// to the hold path. A sync-back failure must write fail, not pass.
 	if opts.WriteAcceptancePath != "" {
 		if err := writeLiveDogfoodAcceptance(opts, report, source); err != nil {
 			if syncErr != nil {

@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -399,6 +400,129 @@ func TestRunLiveDogfoodSyncsRotatedRefreshBeforeAcceptanceMarkerFailure(t *testi
 	require.NoError(t, readErr)
 	assert.Contains(t, string(got), rotated)
 	assert.NotContains(t, string(got), original)
+}
+
+func TestRunLiveDogfoodRotatedRefreshSyncBackFailureWritesFailMarker(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	const (
+		binaryName   = "fixture-pp-cli"
+		original     = "old-refresh"
+		rotated      = "new-refresh"
+		operatorEdit = "operator-refresh"
+	)
+
+	operatorHome := t.TempDir()
+	isolateLiveDogfoodOperatorPaths(t, binaryName, operatorHome)
+	credsPath := filepath.Join(operatorHome, ".local", "share", binaryName, "credentials.toml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(credsPath), 0o700))
+	require.NoError(t, os.WriteFile(credsPath, []byte("refresh_token = \""+original+"\"\n"), 0o600))
+	t.Setenv("FIXTURE_REFRESH_TOKEN", original)
+	t.Setenv("OPERATOR_CREDS_PATH", credsPath)
+
+	dir := t.TempDir()
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		CLIName:       binaryName,
+		RunID:         "run-live-dogfood",
+		AuthType:      spec.AuthTypeOAuth2Refresh,
+		AuthEnvVars:   []string{"FIXTURE_REFRESH_TOKEN"},
+		SpecFormat:    "openapi3",
+	}))
+	writeStubBinary(t, dir, binaryName, `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"account","subcommands":[{"name":"show"}]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show the authenticated account.
+
+Usage:
+  fixture-pp-cli account show [flags]
+
+Examples:
+  fixture-pp-cli account show
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ]; then
+  if [ -n "${FIXTURE_REFRESH_TOKEN:-}" ]; then
+    echo "rotating refresh token leaked via env" >&2
+    exit 1
+  fi
+  creds="$HOME/.local/share/fixture-pp-cli/credentials.toml"
+  if [ ! -f "$creds" ]; then
+    echo "missing sandbox credentials.toml" >&2
+    exit 1
+  fi
+  printf 'refresh_token = "operator-refresh"\n' > "$OPERATOR_CREDS_PATH"
+  printf 'refresh_token = "new-refresh"\naccess_token = "fresh-access"\n' > "$creds"
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"ok":true}'
+    exit 0
+  fi
+  echo 'ok'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`)
+
+	markerPath := filepath.Join(t.TempDir(), Phase5AcceptanceFilename)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:              dir,
+		BinaryName:          binaryName,
+		Level:               "full",
+		Timeout:             2 * time.Second,
+		AuthEnv:             "FIXTURE_REFRESH_TOKEN",
+		WriteAcceptancePath: markerPath,
+	})
+	require.Error(t, err)
+	require.NotNil(t, report)
+	assert.Contains(t, err.Error(), "operator config changed during dogfood")
+	assert.Equal(t, "FAIL", report.Verdict, report.Tests)
+	syncFail := findResultByCommandKind(report, "live-dogfood", LiveDogfoodTestHappy)
+	require.NotNil(t, syncFail)
+	assert.Equal(t, LiveDogfoodStatusFail, syncFail.Status)
+	assert.Equal(t, reasonCredentialSyncBackFailed, syncFail.Reason)
+
+	got, readErr := os.ReadFile(credsPath)
+	require.NoError(t, readErr)
+	assert.Contains(t, string(got), operatorEdit)
+	assert.NotContains(t, string(got), rotated)
+
+	data, err := os.ReadFile(markerPath)
+	require.NoError(t, err)
+	var marker Phase5GateMarker
+	require.NoError(t, json.Unmarshal(data, &marker))
+	assert.Equal(t, "fail", marker.Status)
+	assert.NotEqual(t, "pass", marker.Status)
+	require.NotNil(t, marker.FailureSummary)
+
+	validation := ValidatePhase5Gate(filepath.Dir(markerPath), CLIManifest{
+		APIName:  marker.APIName,
+		RunID:    marker.RunID,
+		AuthType: spec.AuthTypeOAuth2Refresh,
+	}, dir)
+	assert.False(t, validation.Passed, "rotated refresh sync-back failure must not leave a promotable pass marker")
+	assert.Equal(t, "fail", validation.Status)
 }
 
 func TestRunLiveDogfoodSyncsOAuth2RefreshCredentialsTomlBackFromXDGDataHome(t *testing.T) {

@@ -1086,7 +1086,8 @@ exit 99
 	require.Error(t, err)
 	require.NotNil(t, report, "sync-back errors must not discard the completed live dogfood report")
 	assert.Contains(t, err.Error(), "operator config changed during dogfood")
-	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+	assert.Equal(t, "FAIL", report.Verdict, report.Tests)
+	assert.Greater(t, report.Failed, 0)
 
 	gotConfig, err := os.ReadFile(configPath)
 	require.NoError(t, err)
@@ -1096,9 +1097,20 @@ exit 99
 	require.NoError(t, err, "sync-back errors must not suppress the Phase 5 acceptance marker")
 	var marker Phase5GateMarker
 	require.NoError(t, json.Unmarshal(data, &marker))
-	assert.Equal(t, "pass", marker.Status)
+	assert.Equal(t, "fail", marker.Status)
 	assert.Equal(t, report.MatrixSize, marker.MatrixSize)
 	assert.Equal(t, report.Passed, marker.TestsPassed)
+	assert.Equal(t, report.Failed, marker.TestsFailed)
+	require.NotNil(t, marker.FailureSummary)
+	assert.Contains(t, marker.FailureSummary.Commands, "live-dogfood")
+
+	validation := ValidatePhase5Gate(filepath.Dir(markerPath), CLIManifest{
+		APIName:  marker.APIName,
+		RunID:    marker.RunID,
+		AuthType: "oauth2_refresh",
+	}, dir)
+	assert.False(t, validation.Passed, "sync-back failure must not leave a promotable pass marker")
+	assert.Equal(t, "fail", validation.Status)
 }
 
 func TestSyncLiveDogfoodCredentialMirrorsRejectsOperatorConfigConflict(t *testing.T) {
