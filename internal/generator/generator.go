@@ -6835,20 +6835,7 @@ func resourceSyncResponsePath(resource spec.Resource, resourceName string, refs 
 		}
 	}
 
-	endpointNames := make([]string, 0, len(resource.Endpoints))
-	for endpointName := range resource.Endpoints {
-		endpointNames = append(endpointNames, endpointName)
-	}
-	sort.SliceStable(endpointNames, func(i, j int) bool {
-		leftName, rightName := endpointNames[i], endpointNames[j]
-		leftRank := responsePathEndpointRank(leftName, resource.Endpoints[leftName])
-		rightRank := responsePathEndpointRank(rightName, resource.Endpoints[rightName])
-		if leftRank != rightRank {
-			return leftRank < rightRank
-		}
-		return leftName < rightName
-	})
-	for _, endpointName := range endpointNames {
+	for _, endpointName := range rankedEndpointNames(resource) {
 		path := strings.TrimSpace(resource.Endpoints[endpointName].ResponsePath)
 		if path != "" {
 			return path
@@ -6899,12 +6886,7 @@ func endpointMatchingSyncRequest(resource spec.Resource, path, method string) (s
 	if path == "" || method == "" {
 		return spec.Endpoint{}, false
 	}
-	names := make([]string, 0, len(resource.Endpoints))
-	for name := range resource.Endpoints {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
+	for _, name := range rankedEndpointNames(resource) {
 		endpoint := resource.Endpoints[name]
 		if !strings.EqualFold(strings.TrimSpace(endpoint.Method), method) {
 			continue
@@ -6914,6 +6896,23 @@ func endpointMatchingSyncRequest(resource spec.Resource, path, method string) (s
 		}
 	}
 	return spec.Endpoint{}, false
+}
+
+func rankedEndpointNames(resource spec.Resource) []string {
+	names := make([]string, 0, len(resource.Endpoints))
+	for name := range resource.Endpoints {
+		names = append(names, name)
+	}
+	sort.SliceStable(names, func(i, j int) bool {
+		leftName, rightName := names[i], names[j]
+		leftRank := responsePathEndpointRank(leftName, resource.Endpoints[leftName])
+		rightRank := responsePathEndpointRank(rightName, resource.Endpoints[rightName])
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		return leftName < rightName
+	})
+	return names
 }
 
 func endpointMatchesSyncPath(resource spec.Resource, endpoint spec.Endpoint, path string) bool {
