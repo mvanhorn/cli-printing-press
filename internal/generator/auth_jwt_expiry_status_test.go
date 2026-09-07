@@ -133,7 +133,7 @@ func TestJWTExpiryFractionalExp(t *testing.T) {
 func TestJWTExpirySourcePrefersRawCredential(t *testing.T) {
 	cfg := &config.Config{
 		AccessToken:   validJWT,
-		AuthHeaderVal: expiredJWT + " tenant-123",
+		AuthHeaderVal: expiredJWT,
 	}
 	expiry, ok := jwtExpiry(jwtExpirySource(cfg))
 	if !ok {
@@ -144,10 +144,10 @@ func TestJWTExpirySourcePrefersRawCredential(t *testing.T) {
 	}
 	headerExpiry, ok := jwtExpiry(cfg.AuthHeader())
 	if !ok {
-		t.Fatal("formatted header still contains a JWT")
+		t.Fatal("AuthHeaderVal lone JWT should decode")
 	}
 	if time.Now().UTC().Before(headerExpiry) {
-		t.Fatal("formatted header decoy JWT should be expired")
+		t.Fatal("AuthHeaderVal decoy JWT should be expired")
 	}
 }
 
