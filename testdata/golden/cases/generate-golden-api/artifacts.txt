@@ -40,6 +40,7 @@ printing-press-golden/AGENTS.md
 printing-press-golden/CLAUDE.md
 printing-press-golden/SKILL.md
 printing-press-golden/internal/cli/doctor.go
+printing-press-golden/internal/store/store.go
 printing-press-golden/internal/cliutil/verifyenv.go
 printing-press-golden/internal/cli/profile.go
 printing-press-golden/internal/cli/feedback.go

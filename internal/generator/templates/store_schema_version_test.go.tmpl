@@ -6,6 +6,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -163,9 +164,10 @@ func TestSchemaVersion_StampedOnFreshDB(t *testing.T) {
 
 // TestOpenAppliesPragmas pins the connection-string contract: the store
 // must use the profile-selected journal mode with a non-zero busy_timeout and
-// disabled mmap so the main database file stays pread-based. The read-only
-// handle reports delete journal mode because immutable=1 skips the WAL-index
-// mmap that mmap_size does not govern. It fails the instant the DSN
+// disabled mmap so the main database file stays pread-based. A mode=ro
+// handle reports delete journal mode (immutable=1 WAL skips the -shm map;
+// cache-profile RO omits immutable=1 so it takes SHARED — isolation is
+// TestOpenReadOnly_RollbackJournalNoTornRead). It fails the instant the DSN
 // regresses to the mattn-style pragma form, which modernc.org/sqlite
 // silently drops.
 func TestOpenAppliesPragmas(t *testing.T) {
@@ -186,9 +188,9 @@ func TestOpenAppliesPragmas(t *testing.T) {
 
 	// The read-only handle (MCP sql/search, analytics) must carry the
 	// busy_timeout so it waits on a concurrent writer rather than erroring,
-	// keep mmap disabled, and skip the WAL-index. immutable=1 makes even a
-	// WAL file report delete journal mode because the connection does not
-	// attach the -shm mapping.
+	// and keep mmap disabled. A mode=ro connection reports journal_mode=delete
+	// even when the file is truncate or WAL; cache-profile isolation is the
+	// torn-read test, not this pragma.
 	ro, err := OpenReadOnly(dbPath)
 	if err != nil {
 		t.Fatalf("open read-only: %v", err)
@@ -353,6 +355,141 @@ func TestOpenReadOnly_DeleteModeDBDoesNotWrite(t *testing.T) {
 	var n int
 	if err := ro.DB().QueryRow(`SELECT count(*) FROM resources`).Scan(&n); err != nil {
 		t.Fatalf("read-only query on delete-mode DB: %v", err)
+	}
+}
+
+// TestOpenReadOnly_RollbackJournalNoTornRead proves a cache-profile
+// (TRUNCATE) reader opened during a spilled uncommitted UPDATE sees the
+// pre-transaction snapshot or SQLITE_BUSY, never a mix of old and new
+// pages. immutable=1 on this journal mode is the torn-read DSN.
+func TestOpenReadOnly_RollbackJournalNoTornRead(t *testing.T) {
+	{{- if not .Cache.Enabled}}
+	t.Skip("WAL profile keeps immutable=1; torn-read isolation is the rollback-journal contract")
+	{{- end}}
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	const n = 400
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("row-%03d", i)
+		payload := fmt.Sprintf(`{"id":%q,"v":"old"}`, id)
+		if err := s.Upsert("items", id, json.RawMessage(payload)); err != nil {
+			s.Close()
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close seed: %v", err)
+	}
+
+	writer, err := sql.Open("sqlite", dbPath+"?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(TRUNCATE)&_pragma=cache_size(-64)")
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
+	}
+	defer writer.Close()
+	tx, err := writer.Begin()
+	if err != nil {
+		t.Fatalf("begin writer: %v", err)
+	}
+	if _, err := tx.Exec(`UPDATE resources SET data = json_replace(data, '$.v', 'new') WHERE resource_type = 'items'`); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("spill update: %v", err)
+	}
+
+	ro, err := OpenReadOnly(dbPath)
+	if err != nil {
+		_ = tx.Rollback()
+		if !strings.Contains(strings.ToLower(err.Error()), "busy") && !strings.Contains(strings.ToLower(err.Error()), "locked") {
+			t.Fatalf("open read-only during writer: %v", err)
+		}
+		return
+	}
+	rows, listErr := ro.List("items", 0)
+	_ = ro.Close()
+	if listErr != nil {
+		_ = tx.Rollback()
+		if !strings.Contains(strings.ToLower(listErr.Error()), "busy") && !strings.Contains(strings.ToLower(listErr.Error()), "locked") {
+			t.Fatalf("list during writer: %v", listErr)
+		}
+		return
+	}
+
+	old, neu := 0, 0
+	for _, raw := range rows {
+		body := string(raw)
+		if strings.Contains(body, `"v":"old"`) {
+			old++
+		}
+		if strings.Contains(body, `"v":"new"`) {
+			neu++
+		}
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("rollback writer: %v", err)
+	}
+	if old > 0 && neu > 0 {
+		t.Fatalf("torn read during uncommitted update: old=%d new=%d", old, neu)
+	}
+	if neu > 0 && old == 0 {
+		t.Fatalf("dirty read of uncommitted update: new=%d", neu)
+	}
+}
+
+// TestListScanStopsEarly pins that the local-list scan can stop without
+// consuming the rest of the partition.
+func TestListScanStopsEarly(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	for i := 0; i < 50; i++ {
+		id := fmt.Sprintf("item-%03d", i)
+		if err := s.Upsert("items", id, json.RawMessage(fmt.Sprintf(`{"id":%q}`, id))); err != nil {
+			t.Fatalf("upsert %s: %v", id, err)
+		}
+	}
+	seen := 0
+	if err := s.ListScan("items", func(string, json.RawMessage) bool {
+		seen++
+		return seen < 3
+	}); err != nil {
+		t.Fatalf("ListScan: %v", err)
+	}
+	if seen != 3 {
+		t.Fatalf("ListScan visited %d rows, want 3", seen)
+	}
+}
+
+func TestTypedNewestFirstOrder(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.DB().Exec(`CREATE TABLE typed_synced (id TEXT, data TEXT, synced_at DATETIME)`); err != nil {
+		t.Fatalf("create synced table: %v", err)
+	}
+	order, ok := s.typedNewestFirstOrder("typed_synced")
+	if !ok || order != " ORDER BY synced_at DESC" {
+		t.Fatalf("synced_at order = %q ok=%v, want ORDER BY synced_at DESC", order, ok)
+	}
+	if _, err := s.DB().Exec(`CREATE TABLE typed_updated (id TEXT, data TEXT, synced_at DATETIME, updated_at DATETIME)`); err != nil {
+		t.Fatalf("create updated table: %v", err)
+	}
+	order, ok = s.typedNewestFirstOrder("typed_updated")
+	if !ok || order != " ORDER BY updated_at DESC" {
+		t.Fatalf("updated_at order = %q ok=%v, want ORDER BY updated_at DESC", order, ok)
+	}
+	if _, err := s.DB().Exec(`CREATE TABLE typed_none (id TEXT, data TEXT)`); err != nil {
+		t.Fatalf("create unordered table: %v", err)
+	}
+	if order, ok = s.typedNewestFirstOrder("typed_none"); ok {
+		t.Fatalf("unordered typed table must not claim newest-first order, got %q", order)
 	}
 }
 

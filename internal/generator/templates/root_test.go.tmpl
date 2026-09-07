@@ -10,14 +10,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
 	{{ if .HasAuthCommand }}
 	"{{modulePath}}/internal/cliutil"
 	{{ end }}
+	"{{modulePath}}/internal/cliutil/testenv"
 	"github.com/spf13/cobra"
 )
+
+func TestMain(m *testing.M) {
+	os.Exit(testenv.RunSandboxed(m))
+}
 
 func TestDeclaredAPISurfaceReachable(t *testing.T) {
 	expected := []string{

@@ -459,6 +459,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			PRIMARY KEY (resource_type, id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_resources_type ON resources(resource_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_resources_type_updated ON resources(resource_type, updated_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_resources_synced ON resources(synced_at)`,
 		`CREATE TABLE IF NOT EXISTS sync_state (
 			resource_type TEXT PRIMARY KEY,
@@ -887,11 +888,25 @@ func (s *Store) Get(resourceType, id string) (json.RawMessage, error) {
 // List returns resources of the given type. A positive limit caps the result
 // count; zero or negative means no limit.
 func (s *Store) List(resourceType string, limit int) ([]json.RawMessage, error) {
+	return s.ListRange(resourceType, limit, 0)
+}
+
+// ListRange is List with an OFFSET. A negative offset is treated as zero.
+func (s *Store) ListRange(resourceType string, limit, offset int) ([]json.RawMessage, error) {
 	query := `SELECT data FROM resources WHERE resource_type = ? ORDER BY updated_at DESC`
 	args := []any{resourceType}
-	if limit > 0 {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit > 0 && offset > 0 {
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
+	} else if limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, limit)
+	} else if offset > 0 {
+		query += ` LIMIT -1 OFFSET ?`
+		args = append(args, offset)
 	}
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -908,6 +923,168 @@ func (s *Store) List(resourceType string, limit int) ([]json.RawMessage, error) 
 		results = append(results, json.RawMessage(data))
 	}
 	return results, rows.Err()
+}
+
+// ListScan walks resources of the given type newest-first. fn returns false
+// to stop. Callers that only need a bounded prefix should stop so the local
+// list path does not materialize the whole partition.
+func (s *Store) ListScan(resourceType string, fn func(id string, data json.RawMessage) bool) error {
+	if fn == nil {
+		return nil
+	}
+	rows, err := s.db.Query(
+		`SELECT id, data FROM resources WHERE resource_type = ? ORDER BY updated_at DESC`,
+		resourceType,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, data string
+		if err := rows.Scan(&id, &data); err != nil {
+			return err
+		}
+		if !fn(id, json.RawMessage(data)) {
+			return nil
+		}
+	}
+	return rows.Err()
+}
+
+// typedListTableByResource maps a resource type onto its domain table when
+// the generator emitted one. Completeness is checked live (typed count >=
+// generic count); do not cache that comparison.
+var typedListTableByResource = map[string]string{}
+
+const TypedListIncompleteHint = "typed table is incomplete; listing from generic resources"
+
+// TypedListTable reports the domain table for resourceType when one exists
+// and is a safe SQL identifier.
+func TypedListTable(resourceType string) (string, bool) {
+	table, ok := typedListTableByResource[resourceType]
+	if !ok || !validIdentifierRE.MatchString(table) {
+		return "", false
+	}
+	return table, true
+}
+
+// TypedPartitionComplete reports whether the typed table currently holds at
+// least as many rows as the generic partition. typed ⊆ generic is maintained
+// by every write path, so a live count comparison is sound; a cached count
+// is not (a failed typed projection plus a later deletion of a different
+// generic row can restore the counts while the typed set stays short).
+func (s *Store) TypedPartitionComplete(resourceType string) (complete bool, table string, err error) {
+	table, ok := TypedListTable(resourceType)
+	if !ok {
+		return false, "", nil
+	}
+	var typedCount, genericCount int
+	if err := s.db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, table)).Scan(&typedCount); err != nil {
+		return false, table, nil
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM resources WHERE resource_type = ?`, resourceType).Scan(&genericCount); err != nil {
+		return false, table, err
+	}
+	return typedCount >= genericCount && genericCount > 0, table, nil
+}
+
+// typedNewestFirstOrder returns a newest-first ORDER BY matching the generic
+// resources partition. Prefer updated_at; fall back to synced_at. Callers
+// must use the generic ordered path when neither column exists.
+func (s *Store) typedNewestFirstOrder(table string) (string, bool) {
+	if !validIdentifierRE.MatchString(table) {
+		return "", false
+	}
+	var dummy string
+	for _, col := range []string{"updated_at", "synced_at"} {
+		q := fmt.Sprintf(`SELECT name FROM pragma_table_info("%s") WHERE name = ?`, table)
+		if err := s.db.QueryRow(q, col).Scan(&dummy); err == nil {
+			return " ORDER BY " + col + " DESC", true
+		}
+	}
+	return "", false
+}
+
+// ListTypedRange reads JSON payloads from a complete typed table. ok is false
+// when the table is missing, incomplete, has no data column, or has no
+// timestamp that can match generic newest-first order.
+func (s *Store) ListTypedRange(resourceType string, limit, offset int) (rows []json.RawMessage, ok bool, err error) {
+	complete, table, err := s.TypedPartitionComplete(resourceType)
+	if err != nil || !complete {
+		return nil, false, err
+	}
+	var dummy string
+	if err := s.db.QueryRow(fmt.Sprintf(`SELECT name FROM pragma_table_info("%s") WHERE name = 'data'`, table)).Scan(&dummy); err != nil {
+		return nil, false, nil
+	}
+	order, hasOrder := s.typedNewestFirstOrder(table)
+	if !hasOrder {
+		return nil, false, nil
+	}
+	query := fmt.Sprintf(`SELECT data FROM "%s"%s`, table, order)
+	args := []any{}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit > 0 && offset > 0 {
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
+	} else if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	} else if offset > 0 {
+		query += ` LIMIT -1 OFFSET ?`
+		args = append(args, offset)
+	}
+	rs, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rs.Close()
+	var results []json.RawMessage
+	for rs.Next() {
+		var data string
+		if err := rs.Scan(&data); err != nil {
+			return nil, false, err
+		}
+		results = append(results, json.RawMessage(data))
+	}
+	return results, true, rs.Err()
+}
+
+func (s *Store) TypedListScan(resourceType string, fn func(id string, data json.RawMessage) bool) (ok bool, err error) {
+	if fn == nil {
+		return true, nil
+	}
+	complete, table, err := s.TypedPartitionComplete(resourceType)
+	if err != nil || !complete {
+		return false, err
+	}
+	var dummy string
+	if err := s.db.QueryRow(fmt.Sprintf(`SELECT name FROM pragma_table_info("%s") WHERE name = 'data'`, table)).Scan(&dummy); err != nil {
+		return false, nil
+	}
+	order, hasOrder := s.typedNewestFirstOrder(table)
+	if !hasOrder {
+		return false, nil
+	}
+	rs, err := s.db.Query(fmt.Sprintf(`SELECT id, data FROM "%s"%s`, table, order))
+	if err != nil {
+		return false, err
+	}
+	defer rs.Close()
+	for rs.Next() {
+		var id, data string
+		if err := rs.Scan(&id, &data); err != nil {
+			return false, err
+		}
+		if !fn(id, json.RawMessage(data)) {
+			return true, nil
+		}
+	}
+	return true, rs.Err()
 }
 
 func (s *Store) Search(query string, limit int, resourceTypes ...string) ([]json.RawMessage, error) {
