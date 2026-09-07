@@ -163,6 +163,62 @@ func TestProfileEnumExpansion(t *testing.T) {
 	assert.Equal(t, "/v1/api/networkentity?entityType=api", syncPaths["api"])
 	// Teams endpoint keeps its own resource
 	assert.Equal(t, "/v1/api/team", syncPaths["team"])
+
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	assert.Equal(t, []string{"entityType"}, byName["networkentity"].RequiredQueryParams,
+		"the unexpanded list still requires the enum on the wire")
+	assert.Empty(t, byName["collection"].RequiredQueryParams,
+		"enum-expanded paths already carry entityType in the request path")
+	assert.Empty(t, byName["team"].RequiredQueryParams)
+}
+
+func TestProfileRequiredEnumFilterSkipsDefaultSync(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "seats",
+		Resources: map[string]spec.Resource{
+			"availability": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/availability",
+						Params: []spec.Param{{
+							Name:     "source",
+							In:       "query",
+							Type:     "string",
+							Required: true,
+							Enum:     []string{"united", "delta", "aeroplan"},
+						}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/items",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "availability")
+	require.Contains(t, byName, "items")
+	assert.True(t, byName["availability"].SkipDefaultSync,
+		"a required enum that is not an entity-type selector cannot be default-synced")
+	assert.False(t, byName["items"].SkipDefaultSync)
+	assert.Equal(t, []string{"source"}, byName["availability"].RequiredQueryParams)
+	assert.Empty(t, byName["items"].RequiredQueryParams)
 }
 
 func TestProfileSiblingListEndpoints(t *testing.T) {

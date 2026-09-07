@@ -486,6 +486,33 @@ func syncResource(ctx context.Context, c interface {
 			Duration: time.Since(started),
 		}
 	}
+	if missing := unfilledRequiredSyncQueryParams(resource, userParams); len(missing) > 0 {
+		if !humanFriendly {
+			payload := struct {
+				Event    string   `json:"event"`
+				Resource string   `json:"resource"`
+				Reason   string   `json:"reason"`
+				Keys     []string `json:"keys"`
+				Message  string   `json:"message"`
+			}{
+				Event:    "sync_warning",
+				Resource: resource,
+				Reason:   "missing_required_params",
+				Keys:     missing,
+				Message:  fmt.Sprintf("required query params %s are unknown; resource skipped", strings.Join(missing, ", ")),
+			}
+			payloadJSON, _ := json.Marshal(payload)
+			fmt.Fprintf(syncEvents, "%s\n", payloadJSON)
+		} else {
+			fmt.Fprintf(os.Stderr, "  %s skipped (missing required query params: %s)\n",
+				resource, strings.Join(missing, ", "))
+		}
+		return syncResult{
+			Resource: resource,
+			Warn:     fmt.Errorf("%w for %s: %s", errMissingRequiredQueryParams, resource, strings.Join(missing, ", ")),
+			Duration: time.Since(started),
+		}
+	}
 
 	var totalCount int
 	requestedAt := started.UTC()
@@ -1130,6 +1157,34 @@ func syncResourceSinceParam(resource string) string {
 	switch resource {
 	}
 	return ""
+}
+
+var errMissingRequiredQueryParams = errors.New("missing required query params")
+
+func syncResourceRequiredQueryParams(resource string) []string {
+	switch resource {
+	case "standings":
+		return []string{
+			"gameId",
+		}
+	}
+	return nil
+}
+
+func unfilledRequiredSyncQueryParams(resource string, userParams *syncUserParams) []string {
+	required := syncResourceRequiredQueryParams(resource)
+	if len(required) == 0 {
+		return nil
+	}
+	params := map[string]string{}
+	userParams.applyTo(resource, params, false)
+	var missing []string
+	for _, name := range required {
+		if strings.TrimSpace(params[name]) == "" {
+			missing = append(missing, name)
+		}
+	}
+	return missing
 }
 
 // syncResourceSortParam and syncResourceSortValue describe a spec-declared
