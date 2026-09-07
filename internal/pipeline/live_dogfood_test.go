@@ -699,18 +699,22 @@ func TestRunLiveDogfoodMirrorsConfigAndCookieCredentialsIntoScopedHome(t *testin
 		binaryName         = "fixture-pp-cli"
 		configCredential   = "real-config-token"
 		cookieCredential   = "real-cookie-token"
+		refreshCredential  = "real-refresh-token"
 		configOriginalBody = "auth_header = \"" + configCredential + "\"\n"
 		cookieOriginalBody = `[{"name":"session","value":"` + cookieCredential + `","domain":".example.test","path":"/","secure":true}]`
+		credsOriginalBody  = "refresh_token = \"" + refreshCredential + "\"\n"
 	)
 
 	operatorHome := t.TempDir()
-	t.Setenv("HOME", operatorHome)
+	isolateLiveDogfoodOperatorPaths(t, binaryName, operatorHome)
 	configPath := filepath.Join(operatorHome, ".config", binaryName, "config.toml")
 	cookiePath := filepath.Join(operatorHome, ".local", "share", binaryName, "cookies.json")
+	credsPath := filepath.Join(operatorHome, ".local", "share", binaryName, "credentials.toml")
 	require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Dir(cookiePath), 0o700))
 	require.NoError(t, os.WriteFile(configPath, []byte(configOriginalBody), 0o600))
 	require.NoError(t, os.WriteFile(cookiePath, []byte(cookieOriginalBody), 0o600))
+	require.NoError(t, os.WriteFile(credsPath, []byte(credsOriginalBody), 0o600))
 
 	dir := t.TempDir()
 	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
@@ -752,6 +756,7 @@ fi
 if [ "$1" = "account" ] && [ "$2" = "show" ]; then
   config_path="$HOME/.config/fixture-pp-cli/config.toml"
   cookie_path="$HOME/.local/share/fixture-pp-cli/cookies.json"
+  creds_path="$HOME/.local/share/fixture-pp-cli/credentials.toml"
   if ! grep -q 'real-config-token' "$config_path"; then
     echo "missing mirrored config credential" >&2
     exit 1
@@ -760,8 +765,13 @@ if [ "$1" = "account" ] && [ "$2" = "show" ]; then
     echo "missing mirrored cookie credential" >&2
     exit 1
   fi
+  if ! grep -q 'real-refresh-token' "$creds_path"; then
+    echo "missing mirrored credentials.toml refresh token" >&2
+    exit 1
+  fi
   printf 'auth_header = "real-config-token-mutated"\n' > "$config_path"
   printf '[{"name":"session","value":"real-cookie-token-mutated","domain":".example.test","path":"/","secure":true}]' > "$cookie_path"
+  printf 'refresh_token = "real-refresh-token-mutated"\n' > "$creds_path"
   if [ "${3:-}" = "--json" ]; then
     echo '{"ok":true}'
     exit 0
@@ -796,6 +806,9 @@ exit 99
 	gotCookies, err := os.ReadFile(cookiePath)
 	require.NoError(t, err)
 	assert.Equal(t, cookieOriginalBody, string(gotCookies), "live dogfood must not mutate the operator's real cookies")
+	gotCreds, err := os.ReadFile(credsPath)
+	require.NoError(t, err)
+	assert.Equal(t, credsOriginalBody, string(gotCreds), "composed auth must not sync credentials.toml back")
 }
 
 // TestRunLiveDogfoodCookieAuthNoSessionSkips covers issue #3104: a cookie-auth
@@ -1073,7 +1086,8 @@ exit 99
 	require.Error(t, err)
 	require.NotNil(t, report, "sync-back errors must not discard the completed live dogfood report")
 	assert.Contains(t, err.Error(), "operator config changed during dogfood")
-	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+	assert.Equal(t, "FAIL", report.Verdict, report.Tests)
+	assert.Greater(t, report.Failed, 0)
 
 	gotConfig, err := os.ReadFile(configPath)
 	require.NoError(t, err)
@@ -1083,9 +1097,20 @@ exit 99
 	require.NoError(t, err, "sync-back errors must not suppress the Phase 5 acceptance marker")
 	var marker Phase5GateMarker
 	require.NoError(t, json.Unmarshal(data, &marker))
-	assert.Equal(t, "pass", marker.Status)
+	assert.Equal(t, "fail", marker.Status)
 	assert.Equal(t, report.MatrixSize, marker.MatrixSize)
 	assert.Equal(t, report.Passed, marker.TestsPassed)
+	assert.Equal(t, report.Failed, marker.TestsFailed)
+	require.NotNil(t, marker.FailureSummary)
+	assert.Contains(t, marker.FailureSummary.Commands, "live-dogfood")
+
+	validation := ValidatePhase5Gate(filepath.Dir(markerPath), CLIManifest{
+		APIName:  marker.APIName,
+		RunID:    marker.RunID,
+		AuthType: "oauth2_refresh",
+	}, dir)
+	assert.False(t, validation.Passed, "sync-back failure must not leave a promotable pass marker")
+	assert.Equal(t, "fail", validation.Status)
 }
 
 func TestSyncLiveDogfoodCredentialMirrorsRejectsOperatorConfigConflict(t *testing.T) {
