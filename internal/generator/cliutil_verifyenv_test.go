@@ -52,6 +52,10 @@ func TestCliutilVerifyEnvTemplateEmitsHarnessHelpers(t *testing.T) {
 		"helper should treat only the literal string \"1\" as truthy, matching IsVerifyEnv's contract")
 	assert.Contains(t, emitted, `return CurrentHarness() != HarnessNone`,
 		"IsAnyHarness should cover both verify and dogfood via CurrentHarness")
+	assert.Contains(t, emitted, "func EnvOverride(name string) string",
+		"EnvOverride must treat unresolved MCPB placeholders as unset")
+	assert.Contains(t, emitted, "func UnresolvedUserConfigPlaceholder(v string) bool",
+		"placeholder detector must be emitted for generated env reads")
 
 	// Docstring widening: the file-level comment block should mention the
 	// transport-layer use case so an external reader who hits this file

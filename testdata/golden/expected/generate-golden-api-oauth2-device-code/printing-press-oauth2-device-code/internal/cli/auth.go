@@ -103,7 +103,7 @@ for CLIs and agents: no localhost callback server and no client secret.
 				deviceAuthorizationURL = "https://login.device.example/oauth/device"
 			}
 			scopes := []string{"items.read"}
-			if scope := os.Getenv("PRINTING_PRESS_OAUTH2_OAUTH_SCOPE"); scope != "" {
+			if scope := cliutil.EnvOverride("PRINTING_PRESS_OAUTH2_OAUTH_SCOPE"); scope != "" {
 				scopes = strings.Fields(scope)
 			}
 

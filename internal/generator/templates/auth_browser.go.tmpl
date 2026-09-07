@@ -61,7 +61,7 @@ import (
 {{- if or .Auth.RequiresBrowserSession .Auth.HasCookies (and (eq .Auth.Type "composed") .UsesBrowserHTTPTransport)}}
 	"{{modulePath}}/internal/client"
 {{- end}}
-{{- if or (not (eq .Auth.Type "none")) $hasQueryRefresh}}
+{{- if or (not (eq .Auth.Type "none")) $hasQueryRefresh (not .UsesBrowserManagedUserAgent)}}
 	"{{modulePath}}/internal/cliutil"
 {{- end}}
 	"{{modulePath}}/internal/config"
@@ -2311,13 +2311,13 @@ func validateComposedAuthProbe(authHeader, cookieHeader string, probeOrigin bool
 		// Browser-shaped UA matches the main client default; WAF fingerprint
 		// checks on the auth-verify call have to clear the same bar as the
 		// per-resource calls or the user can't log in to begin with.
-		if ua := os.Getenv("{{envName .Name}}_USER_AGENT"); ua != "" {
+		if ua := cliutil.EnvOverride("{{envName .Name}}_USER_AGENT"); ua != "" {
 			req.Header.Set("User-Agent", ua)
 		} else {
 			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")
 		}
 {{- else}}
-		if ua := os.Getenv("{{envName .Name}}_USER_AGENT"); ua != "" {
+		if ua := cliutil.EnvOverride("{{envName .Name}}_USER_AGENT"); ua != "" {
 			req.Header.Set("User-Agent", ua)
 		} else {
 			req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")

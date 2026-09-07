@@ -168,43 +168,43 @@ func Load(configPath string) (*Config, error) {
 	cfg.snapshotFileConfig()
 
 	// Env var overrides
-	if v := os.Getenv("RICH_AUTH_API_KEY"); v != "" {
+	if v := cliutil.EnvOverride("RICH_AUTH_API_KEY"); v != "" {
 		cfg.RichAuthApiKey = v
 		cfg.markEnvOverride("RichAuthApiKey")
 		cfg.AuthSource = "env:RICH_AUTH_API_KEY"
 		cfg.CredentialSource = "env:RICH_AUTH_API_KEY"
 	}
-	if v := os.Getenv("RICH_AUTH_CLIENT_ID"); v != "" {
+	if v := cliutil.EnvOverride("RICH_AUTH_CLIENT_ID"); v != "" {
 		cfg.RichAuthClientId = v
 		cfg.markEnvOverride("RichAuthClientId")
 		cfg.AuthSource = "env:RICH_AUTH_CLIENT_ID"
 		cfg.CredentialSource = "env:RICH_AUTH_CLIENT_ID"
 	}
-	if v := os.Getenv("RICH_AUTH_CLIENT_SECRET"); v != "" {
+	if v := cliutil.EnvOverride("RICH_AUTH_CLIENT_SECRET"); v != "" {
 		cfg.RichAuthClientSecret = v
 		cfg.markEnvOverride("RichAuthClientSecret")
 		cfg.AuthSource = "env:RICH_AUTH_CLIENT_SECRET"
 		cfg.CredentialSource = "env:RICH_AUTH_CLIENT_SECRET"
 	}
-	if v := os.Getenv("RICH_AUTH_SESSION_COOKIE"); v != "" {
+	if v := cliutil.EnvOverride("RICH_AUTH_SESSION_COOKIE"); v != "" {
 		cfg.RichAuthSessionCookie = v
 		cfg.markEnvOverride("RichAuthSessionCookie")
 		cfg.AuthSource = "env:RICH_AUTH_SESSION_COOKIE"
 		cfg.CredentialSource = "env:RICH_AUTH_SESSION_COOKIE"
 	}
-	if v := os.Getenv("RICH_AUTH_OPTIONAL_TOKEN"); v != "" {
+	if v := cliutil.EnvOverride("RICH_AUTH_OPTIONAL_TOKEN"); v != "" {
 		cfg.RichAuthOptionalToken = v
 		cfg.markEnvOverride("RichAuthOptionalToken")
 		cfg.AuthSource = "env:RICH_AUTH_OPTIONAL_TOKEN"
 		cfg.CredentialSource = "env:RICH_AUTH_OPTIONAL_TOKEN"
 	}
-	if v := os.Getenv("RICH_AUTH_BOT_TOKEN"); v != "" {
+	if v := cliutil.EnvOverride("RICH_AUTH_BOT_TOKEN"); v != "" {
 		cfg.RichAuthBotToken = v
 		cfg.markEnvOverride("RichAuthBotToken")
 		cfg.AuthSource = "env:RICH_AUTH_BOT_TOKEN"
 		cfg.CredentialSource = "env:RICH_AUTH_BOT_TOKEN"
 	}
-	if v := os.Getenv("RICH_AUTH_USER_TOKEN"); v != "" {
+	if v := cliutil.EnvOverride("RICH_AUTH_USER_TOKEN"); v != "" {
 		cfg.RichAuthUserToken = v
 		cfg.markEnvOverride("RichAuthUserToken")
 		cfg.AuthSource = "env:RICH_AUTH_USER_TOKEN"
@@ -249,7 +249,7 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// Base URL override (used by printing-press verify to point at mock/test servers)
-	if v := os.Getenv("PRINTING_PRESS_RICH_BASE_URL"); v != "" {
+	if v := cliutil.EnvOverride("PRINTING_PRESS_RICH_BASE_URL"); v != "" {
 		cfg.BaseURL = v
 	}
 	return cfg, nil

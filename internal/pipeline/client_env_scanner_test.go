@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
@@ -143,6 +144,24 @@ func Load() {
 		require.NoError(t, err)
 		assert.Equal(t, []string{"HUDU_API_KEY", "HUDU_BASE_URL"}, got,
 			"config-package BASE_URL must be declared; config-file path and harness flags must not")
+	})
+
+	t.Run("includes cliutil.EnvOverride reads from internal/config", func(t *testing.T) {
+		dir := t.TempDir()
+		writeConfigFile(t, dir, "config.go", `package config
+
+import "github.com/example/cli/internal/cliutil"
+
+func Load() {
+	if v := cliutil.EnvOverride("TENANTAPI_BASE_URL"); v != "" {
+		_ = v
+	}
+	_ = cliutil.EnvOverride("TENANTAPI_API_KEY")
+}
+`)
+		got, err := scanClientEnvReads(dir)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"TENANTAPI_API_KEY", "TENANTAPI_BASE_URL"}, got)
 	})
 
 	t.Run("skips Getenv calls in _test.go files", func(t *testing.T) {
@@ -375,15 +394,13 @@ func read() string { return os.Getenv("ESPN_USER_AGENT") }
 		require.NoError(t, reconcileMCPBManifestFromClient(dir, cli))
 
 		got := readMCPBManifest(t, dir)
-		entry, ok := got.UserConfig["espn_user_agent"]
-		require.True(t, ok)
-		assert.False(t, entry.Required, "User-Agent override must stay optional even when base auth requires a credential")
-		assert.False(t, entry.Sensitive, "User-Agent override is not a secret")
-		assert.Contains(t, entry.Description, "not a credential")
-		assert.NotContains(t, entry.Description, "credential refresh")
+		_, hasUA := got.Server.MCPConfig.Env["ESPN_USER_AGENT"]
+		assert.False(t, hasUA, "USER_AGENT has a compile-time fallback and must not be declared")
+		_, ok := got.UserConfig["espn_user_agent"]
+		assert.False(t, ok, "USER_AGENT must be omitted from user_config when the binary already defaults it")
 	})
 
-	t.Run("adds optional non-sensitive user_config for config-package BASE_URL", func(t *testing.T) {
+	t.Run("undeclared BASE_URL without compile-time default stays required", func(t *testing.T) {
 		dir := t.TempDir()
 		cli := CLIManifest{
 			APIName:     "hudu",
@@ -426,11 +443,12 @@ func Load() {
 		require.True(t, ok)
 		assert.Equal(t, "HUDU_BASE_URL", entry.Title)
 		assert.Equal(t, "string", entry.Type)
-		assert.False(t, entry.Required)
+		assert.True(t, entry.Required, "BASE_URL without a compile-time default must stay required")
 		assert.False(t, entry.Sensitive)
 		assert.Contains(t, entry.Description, "HUDU_BASE_URL")
 		assert.Contains(t, entry.Description, "not a credential")
 		assert.NotContains(t, entry.Description, "credential refresh")
+		assert.NotContains(t, entry.Description, "Optional.")
 	})
 
 	t.Run("platform profile still promotes credentials the binary reads", func(t *testing.T) {
@@ -469,6 +487,7 @@ func Load() {
 		assert.False(t, hasProfile)
 		_, ok := got.UserConfig["hudu_base_url"]
 		assert.True(t, ok)
+		assert.True(t, got.UserConfig["hudu_base_url"].Required, "BASE_URL without a compile-time default stays required")
 	})
 
 	t.Run("platform profile still declares required endpoint template vars", func(t *testing.T) {
@@ -693,7 +712,7 @@ func Load() {
 	entry, ok := got.UserConfig["hudu_base_url"]
 	require.True(t, ok)
 	assert.False(t, entry.Sensitive)
-	assert.False(t, entry.Required)
+	assert.True(t, entry.Required, "BASE_URL without a compile-time default stays required")
 }
 
 // TestWriteMCPBManifest_DiskReadVariantReconciles guards the
@@ -881,8 +900,8 @@ func TestWriteManifestForGenerate_IncludesGeneratedConfigBaseURL(t *testing.T) {
 
 	configSrc, err := os.ReadFile(filepath.Join(dir, "internal", "config", "config.go"))
 	require.NoError(t, err)
-	require.Contains(t, string(configSrc), `os.Getenv("HUDU_BASE_URL")`,
-		"generated config.go must remain the BASE_URL Getenv source this test is proving")
+	require.Contains(t, string(configSrc), `cliutil.EnvOverride("HUDU_BASE_URL")`,
+		"generated config.go must remain the BASE_URL env source this test is proving")
 	require.Contains(t, string(configSrc), `os.Getenv("HUDU_CONFIG")`)
 
 	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
@@ -897,7 +916,10 @@ func TestWriteManifestForGenerate_IncludesGeneratedConfigBaseURL(t *testing.T) {
 	assert.NotContains(t, cli.AuthEnvVars, "PRINTING_PRESS_CLIENT_PROFILE")
 
 	got := readMCPBManifest(t, dir)
-	assert.Equal(t, "${user_config.hudu_base_url}", got.Server.MCPConfig.Env["HUDU_BASE_URL"])
+	_, hasBaseURL := got.Server.MCPConfig.Env["HUDU_BASE_URL"]
+	assert.False(t, hasBaseURL, "spec-defaulted BASE_URL must not be wired as ${user_config.*}")
+	_, hasUA := got.Server.MCPConfig.Env["HUDU_USER_AGENT"]
+	assert.False(t, hasUA, "USER_AGENT has a compile-time fallback and must not be declared")
 	assert.Equal(t, "${user_config.hudu_api_key}", got.Server.MCPConfig.Env["HUDU_API_KEY"])
 	_, hasProfile := got.Server.MCPConfig.Env["PRINTING_PRESS_CLIENT_PROFILE"]
 	assert.False(t, hasProfile, "tenant profile selector is not a credential the binary reads")
@@ -906,12 +928,52 @@ func TestWriteManifestForGenerate_IncludesGeneratedConfigBaseURL(t *testing.T) {
 	_, hasVerify := got.Server.MCPConfig.Env["PRINTING_PRESS_VERIFY"]
 	assert.False(t, hasVerify)
 
-	entry, ok := got.UserConfig["hudu_base_url"]
-	require.True(t, ok, "generated MCPB manifest must prompt for HUDU_BASE_URL")
-	assert.Equal(t, "HUDU_BASE_URL", entry.Title)
-	assert.False(t, entry.Required)
+	_, ok := got.UserConfig["hudu_base_url"]
+	assert.False(t, ok, "compile-time BaseURL default must omit the optional MCPB prompt")
+	assertNoOptionalUserConfigWithoutDefault(t, got)
+}
+
+func TestWriteManifestForGenerate_EmptyBaseURLStaysRequired(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Name:      "tenantapi",
+		Version:   "0.1.0",
+		Owner:     "test-owner",
+		OwnerName: "Test Author",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "x-api-key",
+			In:      "header",
+			EnvVars: []string{"TENANTAPI_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/tenantapi-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+				},
+			},
+		},
+	}
+
+	dir := filepath.Join(t.TempDir(), "tenantapi-pp-cli")
+	require.NoError(t, generator.New(apiSpec, dir).Generate())
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "tenantapi",
+		OutputDir: dir,
+		Spec:      apiSpec,
+	}))
+
+	got := readMCPBManifest(t, dir)
+	assert.Equal(t, "${user_config.tenantapi_base_url}", got.Server.MCPConfig.Env["TENANTAPI_BASE_URL"])
+	entry, ok := got.UserConfig["tenantapi_base_url"]
+	require.True(t, ok, "BASE_URL with no compile-time default must stay declared")
+	assert.True(t, entry.Required)
 	assert.False(t, entry.Sensitive)
-	assert.Contains(t, entry.Description, "not a credential")
+	assertNoOptionalUserConfigWithoutDefault(t, got)
 }
 
 // A suffix allowlist cannot name {shop}: SHOPIFY_SHOP has no
@@ -950,8 +1012,8 @@ func TestWriteManifestForGenerate_IncludesRequiredEndpointTemplateVar(t *testing
 
 	configSrc, err := os.ReadFile(filepath.Join(dir, "internal", "config", "config.go"))
 	require.NoError(t, err)
-	require.Contains(t, string(configSrc), `os.Getenv("SHOPIFY_SHOP")`,
-		"generated config.go must remain the {shop} Getenv source this test is proving")
+	require.Contains(t, string(configSrc), `cliutil.EnvOverride("SHOPIFY_SHOP")`,
+		"generated config.go must remain the {shop} env source this test is proving")
 
 	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
 		APIName:   "shopify",
@@ -1179,7 +1241,7 @@ func TestRenameCLI_PlatformProfileEndpointEnvMatchesRewrittenGetenv(t *testing.T
 
 	preConfig, err := os.ReadFile(filepath.Join(cliDir, "internal", "config", "config.go"))
 	require.NoError(t, err)
-	require.Contains(t, string(preConfig), `os.Getenv("SHOPIFY_SHOP")`)
+	require.Contains(t, string(preConfig), `cliutil.EnvOverride("SHOPIFY_SHOP")`)
 
 	preManifest := readMCPBManifest(t, cliDir)
 	require.Contains(t, preManifest.Server.MCPConfig.Env, "SHOPIFY_SHOP")
@@ -1191,9 +1253,9 @@ func TestRenameCLI_PlatformProfileEndpointEnvMatchesRewrittenGetenv(t *testing.T
 	configSrc, err := os.ReadFile(filepath.Join(newDir, "internal", "config", "config.go"))
 	require.NoError(t, err)
 	rewritten := extractEndpointGetenv(t, string(configSrc), "_SHOP")
-	require.NotEqual(t, "SHOPIFY_SHOP", rewritten, "rename must rewrite the generated {shop} Getenv")
-	require.Contains(t, string(configSrc), `os.Getenv("`+rewritten+`")`)
-	require.NotContains(t, string(configSrc), `os.Getenv("SHOPIFY_SHOP")`)
+	require.NotEqual(t, "SHOPIFY_SHOP", rewritten, "rename must rewrite the generated {shop} env read")
+	require.Contains(t, string(configSrc), `cliutil.EnvOverride("`+rewritten+`")`)
+	require.NotContains(t, string(configSrc), `cliutil.EnvOverride("SHOPIFY_SHOP")`)
 
 	got := readMCPBManifest(t, newDir)
 	assert.Equal(t, "${user_config."+userConfigKey(rewritten)+"}", got.Server.MCPConfig.Env[rewritten],
@@ -1250,10 +1312,30 @@ func Load() { _ = os.Getenv("SHOPIFY_SHOP") }
 
 func extractEndpointGetenv(t *testing.T, src, suffix string) string {
 	t.Helper()
-	matches := regexp.MustCompile(`os\.Getenv\("([^"]+`+regexp.QuoteMeta(suffix)+`)"\)`).FindAllStringSubmatch(src, -1)
-	require.NotEmpty(t, matches, "expected a Getenv ending in %s", suffix)
+	re := regexp.MustCompile(`(?:os\.Getenv|cliutil\.EnvOverride)\("([^"]+` + regexp.QuoteMeta(suffix) + `)"\)`)
+	matches := re.FindAllStringSubmatch(src, -1)
+	require.NotEmpty(t, matches, "expected a Getenv/EnvOverride ending in %s", suffix)
 	require.Len(t, matches[0], 2)
 	return matches[0][1]
+}
+
+func assertNoOptionalUserConfigWithoutDefault(t *testing.T, got MCPBManifest) {
+	t.Helper()
+	for key, entry := range got.UserConfig {
+		envName := ""
+		for name, binding := range got.Server.MCPConfig.Env {
+			if binding == "${user_config."+key+"}" {
+				envName = name
+				break
+			}
+		}
+		if envName == "" {
+			continue
+		}
+		if !entry.Required && strings.TrimSpace(entry.Default) == "" {
+			t.Fatalf("user_config[%s] is optional without default but mcp_config.env binds %s", key, envName)
+		}
+	}
 }
 
 // Sanity check that MCPBVar json round-trips the new Sensitive+Required flags.

@@ -52,9 +52,21 @@ func RegisterIntents(s *server.MCPServer) {
 {{- range .MCP.Intents}}
 	s.AddTool(
 		mcplib.NewTool({{printf "%q" .Name}},
-			mcplib.WithDescription({{printf "%q" .Description}}),
-{{- range .Params}}
+			mcplib.WithDescription({{printf "%q" (composeIntentToolDescription $.APISpec .)}}),
+{{- range intentParamsForEmit .}}
 			mcplib.{{mcpBindingFunc .Type}}({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})),
+{{- end}}
+{{- if intentIsReadOnly $.APISpec .}}
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithIdempotentHintAnnotation(true),
+			mcplib.WithOpenWorldHintAnnotation(true),
+{{- else if intentIsDestructive $.APISpec .}}
+			mcplib.WithDestructiveHintAnnotation(true),
+			mcplib.WithOpenWorldHintAnnotation(true),
+{{- else}}
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
 {{- end}}
 		),
 		handle{{pascal .Name}},
@@ -67,6 +79,7 @@ func RegisterIntents(s *server.MCPServer) {
 {{- range .Params}}
 			mcplib.{{mcpBindingFunc (recipeParamTypeString .Type)}}({{printf "%q" .InputName}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})),
 {{- end}}
+			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		handle{{pascal .Name}},
 	)
@@ -77,7 +90,7 @@ func RegisterIntents(s *server.MCPServer) {
 }
 
 {{range .MCP.Intents}}
-// handle{{pascal .Name}} runs the {{.Name}} intent: {{.Description}}
+// handle{{pascal .Name}} runs the {{.Name}} intent: {{composeIntentToolDescription $.APISpec .}}
 func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 {{- if $.HasRequiredRoles}}
 	cfg, err := newMCPConfig()
@@ -99,6 +112,16 @@ func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*m
 	}
 
 	input := req.GetArguments()
+	if input == nil {
+		input = map[string]any{}
+	}
+{{- range intentParamsForEmit .}}
+{{- if .Default}}
+	if v, ok := input[{{printf "%q" .Name}}]; !ok || v == nil || v == "" {
+		input[{{printf "%q" .Name}}] = {{intentParamDefaultGo .}}
+	}
+{{- end}}
+{{- end}}
 	if err := cli.AdoptMCPOutputSemantics(platformSession, input); err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}

@@ -170,7 +170,7 @@ func Load(configPath string) (*Config, error) {
 	cfg.snapshotFileConfig()
 
 	// Env var overrides
-	if v := os.Getenv("DEVICE_CODE_CLIENT_ID"); v != "" {
+	if v := cliutil.EnvOverride("DEVICE_CODE_CLIENT_ID"); v != "" {
 		cfg.DeviceCodeClientId = v
 		cfg.markEnvOverride("DeviceCodeClientId")
 		cfg.AuthSource = "env:DEVICE_CODE_CLIENT_ID"
@@ -215,13 +215,13 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// Base URL override (used by printing-press verify to point at mock/test servers)
-	if v := os.Getenv("PRINTING_PRESS_OAUTH2_BASE_URL"); v != "" {
+	if v := cliutil.EnvOverride("PRINTING_PRESS_OAUTH2_BASE_URL"); v != "" {
 		cfg.BaseURL = v
 	}
-	if v := os.Getenv("PRINTING_PRESS_OAUTH2_DEVICE_AUTHORIZATION_URL"); v != "" {
+	if v := cliutil.EnvOverride("PRINTING_PRESS_OAUTH2_DEVICE_AUTHORIZATION_URL"); v != "" {
 		cfg.DeviceAuthorizationURL = v
 	}
-	if v := os.Getenv("PRINTING_PRESS_OAUTH2_TOKEN_URL"); v != "" {
+	if v := cliutil.EnvOverride("PRINTING_PRESS_OAUTH2_TOKEN_URL"); v != "" {
 		cfg.TokenURL = v
 	}
 	return cfg, nil

@@ -1289,7 +1289,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			req.Header.Del(HTMLResponseHeader)
 		}
 		if req.Header.Get("User-Agent") == "" {
-			if ua := os.Getenv("PRINTING_PRESS_GOLDEN_USER_AGENT"); ua != "" {
+			if ua := cliutil.EnvOverride("PRINTING_PRESS_GOLDEN_USER_AGENT"); ua != "" {
 				req.Header.Set("User-Agent", ua)
 			} else {
 				req.Header.Set("User-Agent", "printing-press-golden-pp-cli/2026.04")

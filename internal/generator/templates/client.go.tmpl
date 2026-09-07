@@ -2295,13 +2295,13 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			// empty 5xx or a challenge. RequiredHeaders or per-endpoint
 			// headerOverrides still win, and any caller that wants the
 			// CLI-flavored UA can set it on the request explicitly.
-			if ua := os.Getenv("{{envName .Name}}_USER_AGENT"); ua != "" {
+			if ua := cliutil.EnvOverride("{{envName .Name}}_USER_AGENT"); ua != "" {
 				req.Header.Set("User-Agent", ua)
 			} else {
 				req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")
 			}
 {{- else}}
-			if ua := os.Getenv("{{envName .Name}}_USER_AGENT"); ua != "" {
+			if ua := cliutil.EnvOverride("{{envName .Name}}_USER_AGENT"); ua != "" {
 				req.Header.Set("User-Agent", ua)
 			} else {
 				req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
@@ -3111,7 +3111,7 @@ func resolveClientCredentials(cfg *config.Config) (string, string) {
 }
 
 func resolveClientCredentialsScope({{if $ccScopeUsesClientID}}clientID string{{end}}) string {
-	if scope := os.Getenv("{{envName .Name}}_OAUTH_SCOPE"); scope != "" {
+	if scope := cliutil.EnvOverride("{{envName .Name}}_OAUTH_SCOPE"); scope != "" {
 		return scope
 	}
 {{- if $ccScope}}
@@ -3126,7 +3126,7 @@ func resolveClientCredentialsScope({{if $ccScopeUsesClientID}}clientID string{{e
 }
 
 func resolveClientCredentialsUserAgent() string {
-	if ua := strings.TrimSpace(os.Getenv("{{envName .Name}}_USER_AGENT")); ua != "" {
+	if ua := strings.TrimSpace(cliutil.EnvOverride("{{envName .Name}}_USER_AGENT")); ua != "" {
 		return ua
 	}
 	return "{{.Name}}-pp-cli/{{.Version}}"

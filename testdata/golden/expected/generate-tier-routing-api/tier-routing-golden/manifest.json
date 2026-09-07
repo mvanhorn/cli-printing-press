@@ -23,9 +23,7 @@
       "env": {
         "TIER_ENTERPRISE_TOKEN": "${user_config.tier_enterprise_token}",
         "TIER_GLOBAL_TOKEN": "${user_config.tier_global_token}",
-        "TIER_PAID_KEY": "${user_config.tier_paid_key}",
-        "TIER_ROUTING_GOLDEN_BASE_URL": "${user_config.tier_routing_golden_base_url}",
-        "TIER_ROUTING_GOLDEN_USER_AGENT": "${user_config.tier_routing_golden_user_agent}"
+        "TIER_PAID_KEY": "${user_config.tier_paid_key}"
       }
     },
     "type": "binary"
@@ -50,16 +48,6 @@
       "required": true,
       "sensitive": true,
       "title": "TIER_PAID_KEY",
-      "type": "string"
-    },
-    "tier_routing_golden_base_url": {
-      "description": "Optional. Sets TIER_ROUTING_GOLDEN_BASE_URL for the Tier Routing Golden MCP server. Per-instance, non-secret setting; not a credential.",
-      "title": "TIER_ROUTING_GOLDEN_BASE_URL",
-      "type": "string"
-    },
-    "tier_routing_golden_user_agent": {
-      "description": "Optional. Sets TIER_ROUTING_GOLDEN_USER_AGENT for the Tier Routing Golden MCP server. Per-instance, non-secret setting; not a credential.",
-      "title": "TIER_ROUTING_GOLDEN_USER_AGENT",
       "type": "string"
     }
   },
