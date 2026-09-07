@@ -197,8 +197,17 @@ func jwtExpiry(token string) (time.Time, bool) {
 }
 
 func jwtExpiryFromCandidate(token string) (time.Time, bool) {
+	if strings.Count(token, ".") != 2 {
+		return time.Time{}, false
+	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return time.Time{}, false
+	}
+	if _, err := decodeJWTPayloadSegment(parts[0]); err != nil {
+		return time.Time{}, false
+	}
+	if _, err := decodeJWTPayloadSegment(parts[2]); err != nil {
 		return time.Time{}, false
 	}
 	payload, err := decodeJWTPayloadSegment(parts[1])
