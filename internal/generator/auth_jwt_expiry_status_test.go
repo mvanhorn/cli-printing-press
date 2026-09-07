@@ -104,14 +104,18 @@ func TestJWTExpiryValidToken(t *testing.T) {
 }
 
 func TestJWTExpiryNotLastWord(t *testing.T) {
-	if _, ok := jwtExpiry("Bearer " + expiredJWT + " tenant-123"); !ok {
-		t.Fatal("JWT followed by another formatted value must decode exp")
+	if _, ok := jwtExpiry("Bearer " + expiredJWT + " tenant-123"); ok {
+		t.Fatal("formatted header with trailing values must not be scanned for a JWT")
 	}
 }
 
 func TestJWTExpiryNonSpaceDelimiter(t *testing.T) {
-	if _, ok := jwtExpiry("token=" + validJWT + ";tenant=abc"); !ok {
-		t.Fatal("JWT with non-space delimiters must decode exp")
+	if _, ok := jwtExpiry("token=" + validJWT + ";tenant=abc"); ok {
+		t.Fatal("formatted header must not be scanned for an embedded JWT")
+	}
+	cfg := &config.Config{AccessToken: validJWT, AuthHeaderVal: "token=" + validJWT + ";tenant=abc"}
+	if _, ok := jwtExpiry(jwtExpirySource(cfg)); !ok {
+		t.Fatal("raw AccessToken must decode exp")
 	}
 }
 

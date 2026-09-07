@@ -477,18 +477,19 @@ func jwtExpirySource(cfg *config.Config) string {
 }
 
 func jwtExpiry(token string) (time.Time, bool) {
-	for _, candidate := range strings.FieldsFunc(strings.TrimSpace(token), func(r rune) bool {
-		isAlnum := (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-		return !isAlnum && r != '-' && r != '_' && r != '.'
-	}) {
-		if strings.Count(candidate, ".") != 2 {
-			continue
-		}
-		if expiry, ok := jwtExpiryFromCandidate(candidate); ok {
-			return expiry, true
-		}
+	token = strings.TrimSpace(token)
+	if expiry, ok := jwtExpiryFromCandidate(token); ok {
+		return expiry, true
 	}
-	return time.Time{}, false
+	scheme, rest, ok := strings.Cut(token, " ")
+	if !ok || scheme == "" {
+		return time.Time{}, false
+	}
+	rest = strings.TrimSpace(rest)
+	if rest == "" || strings.ContainsAny(rest, " \t") {
+		return time.Time{}, false
+	}
+	return jwtExpiryFromCandidate(rest)
 }
 
 func jwtExpiryFromCandidate(token string) (time.Time, bool) {
