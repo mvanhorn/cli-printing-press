@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -152,6 +153,133 @@ func authErr(err error) error      { return &cliError{code: 4, err: err} }
 func apiErr(err error) error       { return &cliError{code: 5, err: err} }
 func configErr(err error) error    { return &cliError{code: 10, err: err} }
 func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
+
+func novelAuthHeader(flags *rootFlags) (string, error) {
+	if flags == nil {
+		return "", configErr(fmt.Errorf("missing flags"))
+	}
+	cfg, err := config.Load(flags.configPath)
+	if err != nil {
+		return "", configErr(err)
+	}
+	return cfg.AuthHeader(), nil
+}
+
+var _ = novelAuthHeader
+
+func jwtExpirySource(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	if v := strings.TrimSpace(cfg.EmbeddedPagedApiKey); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(cfg.AccessToken); v != "" {
+		return v
+	}
+	return cfg.AuthHeader()
+}
+
+func jwtExpiry(token string) (time.Time, bool) {
+	token = strings.TrimSpace(token)
+	if expiry, ok := jwtExpiryFromCandidate(token); ok {
+		return expiry, true
+	}
+	scheme, rest, ok := strings.Cut(token, " ")
+	if !ok || scheme == "" {
+		return time.Time{}, false
+	}
+	rest = strings.TrimSpace(rest)
+	if rest == "" || strings.ContainsAny(rest, " \t") {
+		return time.Time{}, false
+	}
+	return jwtExpiryFromCandidate(rest)
+}
+
+func jwtExpiryFromCandidate(token string) (time.Time, bool) {
+	if strings.Count(token, ".") != 2 {
+		return time.Time{}, false
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return time.Time{}, false
+	}
+	if _, err := decodeJWTPayloadSegment(parts[0]); err != nil {
+		return time.Time{}, false
+	}
+	if _, err := decodeJWTPayloadSegment(parts[2]); err != nil {
+		return time.Time{}, false
+	}
+	payload, err := decodeJWTPayloadSegment(parts[1])
+	if err != nil {
+		return time.Time{}, false
+	}
+	var claims struct {
+		Exp json.Number `json:"exp"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.UseNumber()
+	if err := dec.Decode(&claims); err != nil || claims.Exp == "" {
+		return time.Time{}, false
+	}
+	expUnix, ok := jwtNumericDateUnix(claims.Exp)
+	if !ok {
+		return time.Time{}, false
+	}
+	return time.Unix(expUnix, 0).UTC(), true
+}
+
+func jwtNumericDateUnix(n json.Number) (int64, bool) {
+	if i, err := n.Int64(); err == nil {
+		return i, true
+	}
+	f, err := n.Float64()
+	if err != nil {
+		return 0, false
+	}
+	return int64(f), true
+}
+
+func decodeJWTPayloadSegment(segment string) ([]byte, error) {
+	if decoded, err := base64.RawURLEncoding.DecodeString(segment); err == nil {
+		return decoded, nil
+	}
+	return base64.URLEncoding.DecodeString(segment)
+}
+
+func formatJWTExpiryLine(expiry, now time.Time) (string, bool) {
+	expiry = expiry.UTC()
+	now = now.UTC()
+	expired := !now.Before(expiry)
+	if expired {
+		return fmt.Sprintf("expired at %s (%s ago)", expiry.Format(time.RFC3339), formatJWTExpiryHorizon(now.Sub(expiry))), true
+	}
+	return fmt.Sprintf("%s (in %s)", expiry.Format(time.RFC3339), formatJWTExpiryHorizon(expiry.Sub(now))), false
+}
+
+func formatJWTExpiryHorizon(d time.Duration) string {
+	if d < 0 {
+		d = -d
+	}
+	hours := int(d.Hours())
+	if hours >= 1 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	mins := int(d.Minutes())
+	if mins < 1 {
+		mins = 1
+	}
+	return fmt.Sprintf("%dm", mins)
+}
+
+func jwtCredentialExpiry(header string) (expiresAt, line string, expired, ok bool) {
+	expiry, ok := jwtExpiry(header)
+	if !ok {
+		return "", "", false, false
+	}
+	line, expired = formatJWTExpiryLine(expiry, time.Now())
+	return expiry.UTC().Format(time.RFC3339), line, expired, true
+}
 
 // dryRunOK reports whether the command should short-circuit without doing any
 // real work because --dry-run was set. The verify pipeline probes hand-written

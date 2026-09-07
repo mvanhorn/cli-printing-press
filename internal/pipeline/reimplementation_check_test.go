@@ -1860,3 +1860,234 @@ func newLookupCmd(flags *rootFlags) *cobra.Command {
 		t.Fatalf("Suspicious: want 0 (learn.Recall + client call should pass), got %d (%v)", len(got.Suspicious), got.Suspicious)
 	}
 }
+
+func writeAuthEnvManifest(t *testing.T, cliDir string, envVars []string) {
+	t.Helper()
+	data, err := json.Marshal(CLIManifest{AuthEnvVars: envVars})
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cliDir, CLIManifestFilename), data, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+}
+
+func TestCheckReimplementation_AuthGetenv_Flagged(t *testing.T) {
+	files := map[string]string{
+		"live.go": `package cli
+
+import (
+	"net/http"
+	"os"
+
+	"github.com/spf13/cobra"
+)
+
+func newLiveCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "live",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req, err := http.NewRequest("GET", "https://example.com/live", nil)
+			if err != nil { return err }
+			if token := os.Getenv("DAZN_TOKEN"); token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Live", Command: "live"},
+	})
+	writeAuthEnvManifest(t, cliDir, []string{"DAZN_TOKEN"})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Skipped {
+		t.Fatalf("expected non-skipped result, got Skipped=true")
+	}
+	if len(got.AuthGetenv) != 1 {
+		t.Fatalf("AuthGetenv: want 1, got %d (%v)", len(got.AuthGetenv), got.AuthGetenv)
+	}
+	if got.AuthGetenv[0].Command != "live" {
+		t.Fatalf("AuthGetenv command: want live, got %q", got.AuthGetenv[0].Command)
+	}
+	if !strings.Contains(got.AuthGetenv[0].Reason, "AuthHeader()") {
+		t.Fatalf("AuthGetenv reason should point at AuthHeader(): %s", got.AuthGetenv[0].Reason)
+	}
+}
+
+func TestCheckReimplementation_AuthGetenv_CallShapes(t *testing.T) {
+	tests := []struct {
+		name    string
+		src     string
+		wantHit bool
+	}{
+		{
+			name: "aliased-os",
+			src: `package cli
+
+import (
+	"net/http"
+	stdos "os"
+
+	"github.com/spf13/cobra"
+)
+
+func newLiveCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "live",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req, err := http.NewRequest("GET", "https://example.com/live", nil)
+			if err != nil { return err }
+			if token := stdos.Getenv("DAZN_TOKEN"); token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+			return nil
+		},
+	}
+}
+`,
+			wantHit: true,
+		},
+		{
+			name: "raw-string",
+			src: `package cli
+
+import (
+	"net/http"
+	"os"
+
+	"github.com/spf13/cobra"
+)
+
+func newLiveCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "live",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req, err := http.NewRequest("GET", "https://example.com/live", nil)
+			if err != nil { return err }
+			if token := os.Getenv(` + "`DAZN_TOKEN`" + `); token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+			return nil
+		},
+	}
+}
+`,
+			wantHit: true,
+		},
+		{
+			name: "const",
+			src: `package cli
+
+import (
+	"net/http"
+	"os"
+
+	"github.com/spf13/cobra"
+)
+
+const daznTokenEnv = "DAZN_TOKEN"
+
+func newLiveCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "live",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req, err := http.NewRequest("GET", "https://example.com/live", nil)
+			if err != nil { return err }
+			if token := os.Getenv(daznTokenEnv); token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+			return nil
+		},
+	}
+}
+`,
+			wantHit: true,
+		},
+		{
+			name: "comment-only",
+			src: `package cli
+
+import (
+	"net/http"
+
+	"github.com/spf13/cobra"
+)
+
+func newLiveCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "live",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req, err := http.NewRequest("GET", "https://example.com/live", nil)
+			if err != nil { return err }
+			// os.Getenv("DAZN_TOKEN") is the wrong source; AuthHeader owns creds.
+			_ = req
+			return nil
+		},
+	}
+}
+`,
+			wantHit: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{"live.go": tc.src}
+			cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+				{Name: "Live", Command: "live"},
+			})
+			writeAuthEnvManifest(t, cliDir, []string{"DAZN_TOKEN"})
+
+			got := checkReimplementation(cliDir, pipelineDir)
+			if got.Skipped {
+				t.Fatalf("expected non-skipped result, got Skipped=true")
+			}
+			if tc.wantHit {
+				if len(got.AuthGetenv) != 1 {
+					t.Fatalf("AuthGetenv: want 1, got %d (%v)", len(got.AuthGetenv), got.AuthGetenv)
+				}
+				return
+			}
+			if len(got.AuthGetenv) != 0 {
+				t.Fatalf("AuthGetenv: want 0, got %d (%v)", len(got.AuthGetenv), got.AuthGetenv)
+			}
+		})
+	}
+}
+
+func TestCheckReimplementation_AuthGetenv_PassesWithAuthHeader(t *testing.T) {
+	files := map[string]string{
+		"devices.go": `package cli
+
+import "github.com/spf13/cobra"
+
+func newDevicesCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "devices",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			header, err := novelAuthHeader(flags)
+			if err != nil { return err }
+			_ = header
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Devices", Command: "devices"},
+	})
+	writeAuthEnvManifest(t, cliDir, []string{"DAZN_TOKEN"})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Skipped {
+		t.Fatalf("expected non-skipped result, got Skipped=true")
+	}
+	if len(got.AuthGetenv) != 0 {
+		t.Fatalf("AuthGetenv: want 0, got %d (%v)", len(got.AuthGetenv), got.AuthGetenv)
+	}
+}

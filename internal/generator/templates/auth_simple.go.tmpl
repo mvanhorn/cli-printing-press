@@ -8,6 +8,8 @@ package cli
 {{- $authSetTokenAvailable := authSetTokenAvailable .Auth}}
 {{- $authSetCredentialsAvailable := authSetCredentialsAvailable .Auth}}
 {{- $basicAuthEnvVars := basicAuthEnvVars .Auth}}
+{{- $authSetupHint := authSetupHint .Auth .Name}}
+{{- $jwtExpiryAuth := or (eq .Auth.Type "bearer_token") (eq .Auth.Type "api_key")}}
 
 import (
 {{- if eq .Auth.Subtype "google_service_account"}}
@@ -463,6 +465,14 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 					out["credential_refused"] = true
 					out["credential_refusals"] = refusals
 				}
+{{- if $jwtExpiryAuth}}
+				if authed {
+					if expiresAt, _, expired, ok := jwtCredentialExpiry(jwtExpirySource(cfg)); ok {
+						out["token_expires"] = expiresAt
+						out["token_expired"] = expired
+					}
+				}
+{{- end}}
 				if printErr := printJSONFiltered(w, out, flags); printErr != nil {
 					return printErr
 				}
@@ -523,6 +533,18 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			fmt.Fprintln(w, green("Credentials present (not verified)"))
 			fmt.Fprintf(w, "  Source: %s\n", cfg.AuthSource)
 			fmt.Fprintf(w, "  Config: %s\n", cfg.Path)
+{{- if $jwtExpiryAuth}}
+			if _, line, expired, ok := jwtCredentialExpiry(jwtExpirySource(cfg)); ok {
+				fmt.Fprintf(w, "  Token expires: %s\n", line)
+				if expired {
+{{- if $authSetupHint}}
+					fmt.Fprintf(w, "  %s\n", {{printf "%q" $authSetupHint}})
+{{- else}}
+					fmt.Fprintln(w, "  Refresh the token with auth login or auth set-token.")
+{{- end}}
+				}
+			}
+{{- end}}
 			return nil
 		},
 	}

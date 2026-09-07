@@ -992,6 +992,7 @@ func isMutationMethod(method string) bool {
 type helpersTemplateData struct {
 	*spec.APISpec
 	HelperFlags
+	HasAuthCommand bool
 }
 
 // doctorTemplateData wraps APISpec with flags for store-aware credential
@@ -2856,8 +2857,9 @@ func (g *Generator) renderSingleFiles() error {
 			hFlags.HasSyncHelpers = g.hasGeneratedSyncImplementation()
 			hFlags.HasResponseUnwrap = g.hasDataLayer() && promotedCommandsCanUnwrapResponse(g.PromotedCommands, g.Spec.Types)
 			data = &helpersTemplateData{
-				APISpec:     g.Spec,
-				HelperFlags: hFlags,
+				APISpec:        g.Spec,
+				HelperFlags:    hFlags,
+				HasAuthCommand: g.shouldEmitAuth(),
 			}
 		case "root_test.go.tmpl":
 			data = &rootTestTemplateData{

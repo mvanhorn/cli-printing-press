@@ -230,6 +230,7 @@ func funcB() { funcA() }
 
 func boundCtx() {}
 func writeHarnessRefusal() {}
+func novelAuthHeader() {}
 func declarePlatformAnalytics() {}
 func resolvePlatformWindow() {}
 func pathParamSegmentValue() {}

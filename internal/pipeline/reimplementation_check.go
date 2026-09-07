@@ -69,6 +69,9 @@ type ReimplementationCheckResult struct {
 	// MissingDataSourceStrategy is the list of hand-written novel-feature
 	// commands that do not declare // pp:data-source <auto|local|live|computed>.
 	MissingDataSourceStrategy []ReimplementationFinding `json:"missing_data_source_strategy,omitempty"`
+	// Direct auth environment reads miss credentials saved by auth login
+	// or auth set-token; endpoint commands use config.Load + AuthHeader().
+	AuthGetenv []ReimplementationFinding `json:"auth_getenv,omitempty"`
 	// Skipped is true when the check could not run (no research dir, no
 	// novel features, no matchable files).
 	Skipped bool `json:"skipped,omitempty"`
@@ -220,6 +223,7 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 	}
 
 	result := ReimplementationCheckResult{}
+	authEnvVars := novelAuthEnvVars(cliDir)
 	storeHelpers := storeHelperNames(helperContent)
 	clientHelpers := clientHelperNames(helperContent)
 	for _, nf := range research.NovelFeatures {
@@ -240,6 +244,10 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 		if finding, ok := dataSourceStrategyFinding(files, fileContent); ok {
 			finding.Command = nf.Command
 			result.MissingDataSourceStrategy = append(result.MissingDataSourceStrategy, finding)
+		}
+		if finding, ok := authGetenvFinding(files, fileContent, authEnvVars); ok {
+			finding.Command = nf.Command
+			result.AuthGetenv = append(result.AuthGetenv, finding)
 		}
 		finding, kind, ok := classifyReimplementation(leaf, files, fileContent, storeHelpers, clientHelpers)
 		switch kind {
@@ -985,4 +993,157 @@ func lastPathSegment(path string) string {
 		return leaf
 	}
 	return path
+}
+
+func novelAuthEnvVars(cliDir string) []string {
+	manifest, err := ReadCLIManifest(cliDir)
+	if err != nil {
+		return nil
+	}
+	return manifest.AuthEnvVars
+}
+
+func authGetenvFinding(files []string, fileContent map[string]string, authEnvVars []string) (ReimplementationFinding, bool) {
+	if len(authEnvVars) == 0 {
+		return ReimplementationFinding{}, false
+	}
+	wanted := make(map[string]struct{}, len(authEnvVars))
+	for _, env := range authEnvVars {
+		if env != "" {
+			wanted[env] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return ReimplementationFinding{}, false
+	}
+	for _, file := range files {
+		env, ok := authGetenvCall(fileContent[file], wanted)
+		if !ok {
+			continue
+		}
+		return ReimplementationFinding{
+			File:   file,
+			Reason: `os.Getenv("` + env + `") bypasses credentials saved by auth login / set-token; use config.Load + AuthHeader() or novelAuthHeader(flags)`,
+		}, true
+	}
+	return ReimplementationFinding{}, false
+}
+
+func authGetenvCall(content string, wanted map[string]struct{}) (string, bool) {
+	file, err := parser.ParseFile(token.NewFileSet(), "", content, 0)
+	if err != nil {
+		return "", false
+	}
+	osNames, osDot := osPackageNames(file)
+	if len(osNames) == 0 && !osDot {
+		return "", false
+	}
+	consts := stringConstValues(file)
+	var found string
+	ast.Inspect(file, func(n ast.Node) bool {
+		if found != "" {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		if !isOsGetenvCall(call.Fun, osNames, osDot) {
+			return true
+		}
+		name, ok := getenvArgString(call.Args[0], consts)
+		if !ok {
+			return true
+		}
+		if _, want := wanted[name]; want {
+			found = name
+			return false
+		}
+		return true
+	})
+	return found, found != ""
+}
+
+func osPackageNames(file *ast.File) (map[string]bool, bool) {
+	names := map[string]bool{}
+	dot := false
+	for _, spec := range file.Imports {
+		path := strings.Trim(spec.Path.Value, "`\"")
+		if path != "os" {
+			continue
+		}
+		if spec.Name == nil {
+			names["os"] = true
+			continue
+		}
+		switch spec.Name.Name {
+		case "_":
+		case ".":
+			dot = true
+		default:
+			names[spec.Name.Name] = true
+		}
+	}
+	return names, dot
+}
+
+func isOsGetenvCall(fun ast.Expr, osNames map[string]bool, osDot bool) bool {
+	switch f := fun.(type) {
+	case *ast.SelectorExpr:
+		ident, ok := f.X.(*ast.Ident)
+		return ok && f.Sel != nil && f.Sel.Name == "Getenv" && osNames[ident.Name]
+	case *ast.Ident:
+		return osDot && f.Name == "Getenv"
+	default:
+		return false
+	}
+}
+
+func stringConstValues(file *ast.File) map[string]string {
+	out := map[string]string{}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range vs.Names {
+				if name == nil || name.Name == "_" || i >= len(vs.Values) {
+					continue
+				}
+				if s, ok := stringLiteral(vs.Values[i]); ok {
+					out[name.Name] = s
+				}
+			}
+		}
+	}
+	return out
+}
+
+func getenvArgString(arg ast.Expr, consts map[string]string) (string, bool) {
+	if s, ok := stringLiteral(arg); ok {
+		return s, true
+	}
+	ident, ok := arg.(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	s, ok := consts[ident.Name]
+	return s, ok
+}
+
+func stringLiteral(expr ast.Expr) (string, bool) {
+	lit, ok := expr.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return "", false
+	}
+	s, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return "", false
+	}
+	return s, true
 }

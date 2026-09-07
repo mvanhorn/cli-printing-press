@@ -226,6 +226,10 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 						authConfigured = true
 						report["auth"] = "configured"
 						report["auth_source"] = authSource
+						if expiresAt, _, expired, ok := jwtCredentialExpiry(jwtExpirySource(cfg)); ok && expired {
+							report["auth"] = "ERROR token expired at " + expiresAt
+							report["auth_hint"] = "Set your API key with: export RICH_AUTH_API_KEY=\"your-token-here\""
+						}
 					}
 				}
 			}
@@ -655,7 +659,7 @@ func doctorExitForFailOn(failOn string, report map[string]any) error {
 	for _, v := range report {
 		s, ok := v.(string)
 		if ok {
-			if strings.HasPrefix(s, "refused:") || strings.Contains(s, "error") || strings.Contains(s, "unreachable") || strings.Contains(s, "invalid") || strings.Contains(s, "missing") {
+			if strings.HasPrefix(s, "ERROR") || strings.HasPrefix(s, "refused:") || strings.Contains(s, "error") || strings.Contains(s, "unreachable") || strings.Contains(s, "invalid") || strings.Contains(s, "missing") {
 				worstError = true
 			}
 			if strings.HasPrefix(s, "WARN") {

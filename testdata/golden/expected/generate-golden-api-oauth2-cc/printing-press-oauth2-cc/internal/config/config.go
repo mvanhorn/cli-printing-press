@@ -365,19 +365,6 @@ func (c *Config) CredentialConfigured() bool {
 	return c.AuthHeader() != ""
 }
 
-func applyAuthFormat(format string, replacements map[string]string) string {
-	if format == "" {
-		return ""
-	}
-	for key, value := range replacements {
-		format = strings.ReplaceAll(format, "{"+key+"}", value)
-	}
-	if strings.Contains(format, "{") {
-		return ""
-	}
-	return format
-}
-
 func (c *Config) AgentcookieManagedByExternalStore() bool {
 	if c.AgentcookieManaged || c.AuthSource == "agentcookie" || c.CredentialSource == "agentcookie" {
 		return true
