@@ -482,7 +482,7 @@ func doctorExitForFailOn(failOn string, report map[string]any) error {
 	for _, v := range report {
 		s, ok := v.(string)
 		if ok {
-			if strings.HasPrefix(s, "refused:") || strings.Contains(s, "error") || strings.Contains(s, "unreachable") || strings.Contains(s, "invalid") || strings.Contains(s, "missing") {
+			if strings.HasPrefix(s, "ERROR") || strings.HasPrefix(s, "refused:") || strings.Contains(s, "error") || strings.Contains(s, "unreachable") || strings.Contains(s, "invalid") || strings.Contains(s, "missing") {
 				worstError = true
 			}
 			if strings.HasPrefix(s, "WARN") {

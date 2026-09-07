@@ -47,6 +47,7 @@ func usedHelper() {}
 func deadHelper() {}
 func boundCtx() {}
 func writeHarnessRefusal() {}
+func novelAuthHeader() {}
 func declarePlatformAnalytics() {}
 func resolvePlatformWindow() {}
 `)
@@ -964,6 +965,22 @@ func TestDeriveDogfoodVerdict_FailsOnMissingDataSourceStrategy(t *testing.T) {
 	}
 
 	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, false))
+}
+
+func TestDeriveDogfoodVerdict_FailsOnAuthGetenv(t *testing.T) {
+	report := passingDogfoodReport()
+	report.ReimplementationCheck = ReimplementationCheckResult{
+		Checked: 1,
+		AuthGetenv: []ReimplementationFinding{{
+			Command: "live",
+			File:    "live.go",
+			Reason:  `os.Getenv("DAZN_TOKEN") bypasses credentials saved by auth login / set-token; use config.Load + AuthHeader() or novelAuthHeader(flags)`,
+		}},
+	}
+
+	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, false))
+	issues := collectDogfoodIssues(report, false)
+	assert.Contains(t, issues, `1/1 novel features read auth via os.Getenv: live (live.go) — os.Getenv("DAZN_TOKEN") bypasses credentials saved by auth login / set-token; use config.Load + AuthHeader() or novelAuthHeader(flags)`)
 }
 
 func TestCheckDescriptionDriftFlagsManifestAndRootShort(t *testing.T) {

@@ -2686,6 +2686,9 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	{"FAIL", func(r *DogfoodReport, _ bool) bool {
 		return len(r.ReimplementationCheck.MissingDataSourceStrategy) > 0
 	}},
+	{"FAIL", func(r *DogfoodReport, _ bool) bool {
+		return len(r.ReimplementationCheck.AuthGetenv) > 0
+	}},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 1 && r.DeadFlags.Dead <= 2 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFuncs.Dead >= 1 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return !r.IsDeviceCLI && !r.PipelineCheck.SyncCallsDomain }},
@@ -2833,6 +2836,16 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 		}
 		issues = append(issues, fmt.Sprintf("%d/%d novel features missing data-source strategy: %s",
 			len(report.ReimplementationCheck.MissingDataSourceStrategy),
+			report.ReimplementationCheck.Checked,
+			strings.Join(parts, "; ")))
+	}
+	if len(report.ReimplementationCheck.AuthGetenv) > 0 {
+		parts := make([]string, 0, len(report.ReimplementationCheck.AuthGetenv))
+		for _, f := range report.ReimplementationCheck.AuthGetenv {
+			parts = append(parts, fmt.Sprintf("%s (%s) — %s", f.Command, f.File, f.Reason))
+		}
+		issues = append(issues, fmt.Sprintf("%d/%d novel features read auth via os.Getenv: %s",
+			len(report.ReimplementationCheck.AuthGetenv),
 			report.ReimplementationCheck.Checked,
 			strings.Join(parts, "; ")))
 	}

@@ -7,7 +7,8 @@ package pipeline
 func isAllowedDeadHelper(name string) bool {
 	switch name {
 	case "boundCtx", // used by hand-written novel commands; unused in endpoint-only CLIs
-		"writeHarnessRefusal": // structured side-effect refusal hook for hand-written novel commands
+		"writeHarnessRefusal", // structured side-effect refusal hook for hand-written novel commands
+		"novelAuthHeader":     // config.Load + AuthHeader seam for hand-written novel commands
 		return true
 	case "redirectLeavesOrigin": // shared CheckRedirect origin gate; unused when no site strips or re-stamps
 		return true

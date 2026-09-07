@@ -69,6 +69,10 @@ type ReimplementationCheckResult struct {
 	// MissingDataSourceStrategy is the list of hand-written novel-feature
 	// commands that do not declare // pp:data-source <auto|local|live|computed>.
 	MissingDataSourceStrategy []ReimplementationFinding `json:"missing_data_source_strategy,omitempty"`
+	// AuthGetenv is the list of novel-feature commands that read an auth
+	// env var with os.Getenv. That misses credentials saved by auth login
+	// / auth set-token; endpoint commands use config.Load + AuthHeader().
+	AuthGetenv []ReimplementationFinding `json:"auth_getenv,omitempty"`
 	// Skipped is true when the check could not run (no research dir, no
 	// novel features, no matchable files).
 	Skipped bool `json:"skipped,omitempty"`
@@ -220,6 +224,7 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 	}
 
 	result := ReimplementationCheckResult{}
+	authEnvVars := novelAuthEnvVars(cliDir)
 	storeHelpers := storeHelperNames(helperContent)
 	clientHelpers := clientHelperNames(helperContent)
 	for _, nf := range research.NovelFeatures {
@@ -240,6 +245,10 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 		if finding, ok := dataSourceStrategyFinding(files, fileContent); ok {
 			finding.Command = nf.Command
 			result.MissingDataSourceStrategy = append(result.MissingDataSourceStrategy, finding)
+		}
+		if finding, ok := authGetenvFinding(files, fileContent, authEnvVars); ok {
+			finding.Command = nf.Command
+			result.AuthGetenv = append(result.AuthGetenv, finding)
 		}
 		finding, kind, ok := classifyReimplementation(leaf, files, fileContent, storeHelpers, clientHelpers)
 		switch kind {
@@ -985,4 +994,35 @@ func lastPathSegment(path string) string {
 		return leaf
 	}
 	return path
+}
+
+func novelAuthEnvVars(cliDir string) []string {
+	manifest, err := ReadCLIManifest(cliDir)
+	if err != nil {
+		return nil
+	}
+	return manifest.AuthEnvVars
+}
+
+func authGetenvFinding(files []string, fileContent map[string]string, authEnvVars []string) (ReimplementationFinding, bool) {
+	if len(authEnvVars) == 0 {
+		return ReimplementationFinding{}, false
+	}
+	for _, file := range files {
+		content := fileContent[file]
+		for _, env := range authEnvVars {
+			if env == "" {
+				continue
+			}
+			needle := `os.Getenv("` + env + `")`
+			if !strings.Contains(content, needle) {
+				continue
+			}
+			return ReimplementationFinding{
+				File:   file,
+				Reason: needle + " bypasses credentials saved by auth login / set-token; use config.Load + AuthHeader() or novelAuthHeader(flags)",
+			}, true
+		}
+	}
+	return ReimplementationFinding{}, false
 }

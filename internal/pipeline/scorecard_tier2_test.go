@@ -280,6 +280,8 @@ func outputCSV() {}
 func boundCtx() {}
 
 func writeHarnessRefusal() {}
+
+func novelAuthHeader() {}
 `)
 
 		// 2 dead flags (csvOutput, stdinInput), 2 dead functions (filterFields, outputCSV)
