@@ -122,6 +122,58 @@ func TestIntentSafetyMetadata(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "TestIntentSafetyMetadata", "-count=1")
 }
 
+func TestGenerateMCPIntentInvalidTypedDefaultStillCompiles(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("typed-defaults")
+	apiSpec.Resources = map[string]spec.Resource{
+		"records": {
+			Description: "Records",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/records", Description: "List records"},
+			},
+		},
+	}
+	apiSpec.MCP = spec.MCPConfig{
+		Intents: []spec.Intent{
+			{
+				Name:        "search_records",
+				Description: "Search records",
+				Params: []spec.IntentParam{
+					{Name: "limit", Type: "integer", Default: "12x"},
+					{Name: "offset", Type: "integer", Default: "20"},
+					{Name: "include", Type: "boolean", Default: "maybe"},
+					{Name: "compact", Type: "boolean", Default: "false"},
+				},
+				Steps: []spec.IntentStep{
+					{
+						Endpoint: "records.list",
+						Bind: map[string]string{
+							"limit":   "${input.limit}",
+							"offset":  "${input.offset}",
+							"include": "${input.include}",
+							"compact": "${input.compact}",
+						},
+						Capture: "records",
+					},
+				},
+				Returns: "records",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	body := readGeneratedFile(t, outputDir, "internal", "mcp", "intents.go")
+	assert.NotContains(t, body, "= 12x")
+	assert.NotContains(t, body, `input["limit"]`)
+	assert.Contains(t, body, `input["offset"] = 20`)
+	assert.NotContains(t, body, `input["include"]`)
+	assert.Contains(t, body, `input["compact"] = false`)
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGenerateConfigLoadIgnoresUnresolvedMCPBPlaceholder(t *testing.T) {
 	t.Parallel()
 

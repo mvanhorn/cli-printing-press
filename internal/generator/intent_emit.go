@@ -107,7 +107,36 @@ func intentParamsForEmit(intent spec.Intent) []spec.IntentParam {
 			params[candidates[0]].Default = fallback
 		}
 	}
+	for i := range params {
+		params[i].Default = canonicalIntentParamDefault(params[i])
+	}
 	return params
+}
+
+func canonicalIntentParamDefault(p spec.IntentParam) string {
+	d := strings.TrimSpace(p.Default)
+	if d == "" {
+		return ""
+	}
+	switch p.Type {
+	case "integer":
+		n, err := strconv.ParseInt(d, 10, 64)
+		if err != nil {
+			return ""
+		}
+		return strconv.FormatInt(n, 10)
+	case "boolean":
+		switch strings.ToLower(d) {
+		case "true", "1", "yes":
+			return "true"
+		case "false", "0", "no":
+			return "false"
+		default:
+			return ""
+		}
+	default:
+		return d
+	}
 }
 
 func documentedDefault(text string) string {
@@ -157,21 +186,24 @@ func markerIndexAtWord(lower, marker string) int {
 }
 
 func intentParamDefaultGo(p spec.IntentParam) string {
-	d := strings.TrimSpace(p.Default)
-	switch p.Type {
-	case "integer":
-		if d == "" {
-			return "0"
-		}
-		return d
-	case "boolean":
-		switch strings.ToLower(d) {
-		case "true", "1", "yes":
-			return "true"
+	if d := canonicalIntentParamDefault(p); d != "" {
+		switch p.Type {
+		case "integer", "boolean":
+			return d
 		default:
-			return "false"
+			return strconv.Quote(d)
 		}
-	default:
-		return strconv.Quote(d)
 	}
+	raw := strings.TrimSpace(p.Default)
+	if raw == "" {
+		switch p.Type {
+		case "integer":
+			return "0"
+		case "boolean":
+			return "false"
+		default:
+			return `""`
+		}
+	}
+	return strconv.Quote(raw)
 }
