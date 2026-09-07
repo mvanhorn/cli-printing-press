@@ -310,6 +310,9 @@ func recipePositionalInputName(token string) (string, bool) {
 	if _, err := strconv.ParseFloat(token, 64); err == nil {
 		return "id", true
 	}
+	if strings.Contains(token, ":") {
+		return "ref", true
+	}
 	if strings.Contains(token, "/") {
 		return "path", true
 	}

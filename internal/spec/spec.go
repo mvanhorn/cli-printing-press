@@ -2273,6 +2273,7 @@ type IntentParam struct {
 	Name        string `yaml:"name" json:"name"`
 	Type        string `yaml:"type" json:"type"` // one of: string, integer, boolean
 	Required    bool   `yaml:"required,omitempty" json:"required,omitempty"`
+	Default     string `yaml:"default,omitempty" json:"default,omitempty"`
 	Description string `yaml:"description" json:"description"`
 }
 

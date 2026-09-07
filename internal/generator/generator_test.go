@@ -1390,7 +1390,7 @@ func TestGenerateComposedApiKeyPlusBearerEmitsAdditionalHeader(t *testing.T) {
 	configSrc := string(configBytes)
 	assert.Regexp(t, `StAppKey\s+string`, configSrc,
 		"Config struct must carry a field for the sibling apiKey env var")
-	assert.Contains(t, configSrc, `os.Getenv("ST_APP_KEY")`,
+	assert.Contains(t, configSrc, `cliutil.EnvOverride("ST_APP_KEY")`,
 		"Load() must read ST_APP_KEY from env")
 	assert.Contains(t, configSrc, `cfg.StAppKey = v`,
 		"Load() must assign ST_APP_KEY into the Config field")
@@ -1484,7 +1484,7 @@ paths:
 	require.NoError(t, err)
 	configSrc := string(configBytes)
 	assert.Regexp(t, `DispatchStAppKey\s+string`, configSrc)
-	assert.Contains(t, configSrc, `os.Getenv("DISPATCH_ST_APP_KEY")`)
+	assert.Contains(t, configSrc, `cliutil.EnvOverride("DISPATCH_ST_APP_KEY")`)
 	assert.Contains(t, configSrc, `cfg.DispatchStAppKey = v`)
 
 	clientBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
@@ -1543,7 +1543,7 @@ paths:
 	configSrc := string(configBytes)
 	assert.Regexp(t, `TrelloToken\s+string`, configSrc,
 		"Config struct must carry a field for the sibling query apiKey env var")
-	assert.Contains(t, configSrc, `os.Getenv("TRELLO_TOKEN")`,
+	assert.Contains(t, configSrc, `cliutil.EnvOverride("TRELLO_TOKEN")`,
 		"Load() must read TRELLO_TOKEN from env")
 	assert.Contains(t, configSrc, `cfg.TrelloToken = v`,
 		"Load() must assign TRELLO_TOKEN into the Config field")
@@ -12970,7 +12970,7 @@ func TestGenerateUserAgentEnvVarOverridesDefault(t *testing.T) {
 
 	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
 	assert.Contains(t, clientSrc, `if req.Header.Get("User-Agent") == "" {`)
-	assert.Contains(t, clientSrc, `if ua := os.Getenv("UAENV_USER_AGENT"); ua != "" {`)
+	assert.Contains(t, clientSrc, `if ua := cliutil.EnvOverride("UAENV_USER_AGENT"); ua != "" {`)
 	assert.Contains(t, clientSrc, `req.Header.Set("User-Agent", ua)`)
 	assert.Contains(t, clientSrc, `req.Header.Set("User-Agent", "uaenv-pp-cli/0.1.0")`)
 	requireGeneratedCompiles(t, outputDir)
@@ -17665,9 +17665,9 @@ func TestGenerateEndpointTemplateVarsRuntimeSubstitution(t *testing.T) {
 	configGo := string(configGoBytes)
 	assert.Contains(t, configGo, "TemplateVars map[string]string",
 		"config struct must carry the TemplateVars map")
-	assert.Contains(t, configGo, `os.Getenv("SHOPIFY_SHOP")`,
+	assert.Contains(t, configGo, `cliutil.EnvOverride("SHOPIFY_SHOP")`,
 		"config Load() must read SHOPIFY_SHOP from env")
-	assert.Contains(t, configGo, `os.Getenv("SHOPIFY_API_VERSION")`,
+	assert.Contains(t, configGo, `cliutil.EnvOverride("SHOPIFY_API_VERSION")`,
 		"config Load() must read SHOPIFY_API_VERSION from env (spec var name 'api_version')")
 
 	// client.go must route requests through buildURL, not the old c.BaseURL+path concat.
@@ -19703,6 +19703,10 @@ func TestGenerateMCPIntentsEmittedWhenDeclared(t *testing.T) {
 	}
 	assert.Contains(t, body, `path = strings.ReplaceAll(path, placeholder, mcpPathValue(v))`,
 		"intent path params must use the shared MCP path-value helper")
+	assert.Contains(t, body, `mcplib.WithReadOnlyHintAnnotation(true)`,
+		"GET-only intents must advertise read-only tool annotations")
+	assert.NotContains(t, body, "then do nothing",
+		"intent descriptions must not keep unimplemented trailing clauses")
 
 	toolsPath := filepath.Join(outputDir, "internal", "mcp", "tools.go")
 	toolsData, err := os.ReadFile(toolsPath)
@@ -21424,9 +21428,9 @@ func TestGenerateEndpointTemplateEnvOverridesWireThrough(t *testing.T) {
 
 	configGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(configGo), `os.Getenv("ST_TENANT_ID")`,
+	assert.Contains(t, string(configGo), `cliutil.EnvOverride("ST_TENANT_ID")`,
 		"config Load() must read the override env var name")
-	assert.NotContains(t, string(configGo), `os.Getenv("SERVICETITAN_CRM_TENANT")`,
+	assert.NotContains(t, string(configGo), `cliutil.EnvOverride("SERVICETITAN_CRM_TENANT")`,
 		"the default env var name must not appear when an override exists")
 
 	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
@@ -21527,12 +21531,12 @@ x-path-template-env-vars:
 	configGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
 	require.NoError(t, err)
 	configSrc := string(configGo)
-	assert.Contains(t, configSrc, `os.Getenv("ROOT_TENANT_ID")`,
+	assert.Contains(t, configSrc, `cliutil.EnvOverride("ROOT_TENANT_ID")`,
 		"config Load() must read the root-declared tenant env var")
-	assert.Contains(t, configSrc, `os.Getenv("ROOT_WORKSPACE")`,
+	assert.Contains(t, configSrc, `cliutil.EnvOverride("ROOT_WORKSPACE")`,
 		"config Load() must read the root-declared workspace env var")
-	assert.NotContains(t, configSrc, `os.Getenv("INFO_TENANT_ID")`)
-	assert.NotContains(t, configSrc, `os.Getenv("INFO_WORKSPACE")`)
+	assert.NotContains(t, configSrc, `cliutil.EnvOverride("INFO_TENANT_ID")`)
+	assert.NotContains(t, configSrc, `cliutil.EnvOverride("INFO_WORKSPACE")`)
 
 	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
 	require.NoError(t, err)

@@ -260,7 +260,7 @@ func Load(configPath string) (*Config, error) {
 
 	// Env var overrides
 {{- if .UsesBrowserHTTPTransport}}
-	if v := strings.ToLower(strings.TrimSpace(os.Getenv("{{envPrefix .Name}}_SKIP_TLS_VERIFY"))); v == "1" || v == "true" || v == "yes" || v == "on" {
+	if v := strings.ToLower(strings.TrimSpace(cliutil.EnvOverride("{{envPrefix .Name}}_SKIP_TLS_VERIFY"))); v == "1" || v == "true" || v == "yes" || v == "on" {
 		cfg.SetSkipTLSVerify(true)
 	}
 {{- end}}
@@ -269,7 +269,7 @@ func Load(configPath string) (*Config, error) {
 {{- end}}
 {{- if .Auth.EnvVarSpecs}}
 {{- range .Auth.EnvVarSpecs}}
-	if v := os.Getenv("{{.Name}}"); v != "" {
+	if v := cliutil.EnvOverride("{{.Name}}"); v != "" {
 		cfg.{{resolveEnvVarField .Name}} = v
 		cfg.markEnvOverride("{{resolveEnvVarField .Name}}")
 		cfg.AuthSource = "env:{{.Name}}"
@@ -284,7 +284,7 @@ func Load(configPath string) (*Config, error) {
 {{- else if .Auth.EnvVars}}
 	// fallback to legacy EnvVars when EnvVarSpecs is empty
 {{- range .Auth.EnvVars}}
-	if v := os.Getenv("{{.}}"); v != "" {
+	if v := cliutil.EnvOverride("{{.}}"); v != "" {
 		cfg.{{resolveEnvVarField .}} = v
 		cfg.markEnvOverride("{{resolveEnvVarField .}}")
 		cfg.AuthSource = "env:{{.}}"
@@ -301,7 +301,7 @@ func Load(configPath string) (*Config, error) {
 	// Sibling-scheme per-call credential sent on every request alongside the
 	// primary auth. AuthSource intentionally not stamped: the primary auth
 	// remains the canonical surface for doctor/auth-status reporting.
-	if v := os.Getenv("{{.EnvVar.Name}}"); v != "" {
+	if v := cliutil.EnvOverride("{{.EnvVar.Name}}"); v != "" {
 		cfg.{{resolveEnvVarField .EnvVar.Name}} = v
 		cfg.markEnvOverride("{{resolveEnvVarField .EnvVar.Name}}")
 	}
@@ -359,12 +359,12 @@ func Load(configPath string) (*Config, error) {
 {{- end}}
 
 	// Base URL override (used by printing-press verify to point at mock/test servers)
-	if v := os.Getenv("{{envName .Name}}_BASE_URL"); v != "" {
+	if v := cliutil.EnvOverride("{{envName .Name}}_BASE_URL"); v != "" {
 		cfg.BaseURL = v
 	}
 {{- if .HasRequiredRoles}}
 	roleFromEnv := false
-	if v := strings.TrimSpace(os.Getenv("{{envName .Name}}_AUTH_ROLE")); v != "" {
+	if v := strings.TrimSpace(cliutil.EnvOverride("{{envName .Name}}_AUTH_ROLE")); v != "" {
 		cfg.AuthRole = v
 		roleFromEnv = true
 	}
@@ -373,22 +373,22 @@ func Load(configPath string) (*Config, error) {
 	}
 {{- end}}
 {{- if .BasePath}}
-	if v := os.Getenv("{{envName .Name}}_BASE_PATH"); v != "" {
+	if v := cliutil.EnvOverride("{{envName .Name}}_BASE_PATH"); v != "" {
 		cfg.BasePath = v
 	}
 {{- end}}
 {{- if and .HasAuthCommand .Auth.AuthorizationURL}}
-	if v := os.Getenv("{{envName .Name}}_AUTHORIZATION_URL"); v != "" {
+	if v := cliutil.EnvOverride("{{envName .Name}}_AUTHORIZATION_URL"); v != "" {
 		cfg.AuthorizationURL = v
 	}
 {{- end}}
 {{- if and .HasAuthCommand .Auth.DeviceAuthorizationURL}}
-	if v := os.Getenv("{{envName .Name}}_DEVICE_AUTHORIZATION_URL"); v != "" {
+	if v := cliutil.EnvOverride("{{envName .Name}}_DEVICE_AUTHORIZATION_URL"); v != "" {
 		cfg.DeviceAuthorizationURL = v
 	}
 {{- end}}
 {{- if and .HasAuthCommand .Auth.TokenURL}}
-	if v := os.Getenv("{{envName .Name}}_TOKEN_URL"); v != "" {
+	if v := cliutil.EnvOverride("{{envName .Name}}_TOKEN_URL"); v != "" {
 		cfg.TokenURL = v
 	}
 {{- end}}
@@ -413,13 +413,13 @@ func Load(configPath string) (*Config, error) {
 {{- end}}
 {{- range .EndpointTemplateVars}}
 {{- if endpointTemplateDefault .}}
-	if v := strings.TrimSpace(os.Getenv("{{endpointTemplateEnvName .}}")); v != "" {
+	if v := strings.TrimSpace(cliutil.EnvOverride("{{endpointTemplateEnvName .}}")); v != "" {
 		cfg.TemplateVars["{{.}}"] = normalizeEndpointTemplateValue(v)
 	} else {
 		cfg.TemplateVars["{{.}}"] = {{printf "%q" (endpointTemplateDefault .)}}
 	}
 {{- else}}
-	if v := strings.TrimSpace(os.Getenv("{{endpointTemplateEnvName .}}")); v != "" {
+	if v := strings.TrimSpace(cliutil.EnvOverride("{{endpointTemplateEnvName .}}")); v != "" {
 		cfg.TemplateVars["{{.}}"] = v
 	} else if verifyMode {
 		cfg.TemplateVars["{{.}}"] = "{{.}}_placeholder"

@@ -35,9 +35,11 @@ var systemEnvVarDenylist = map[string]struct{}{
 const configFileEnvSuffix = "_CONFIG"
 
 // nonCredentialEnvSuffixes are per-instance, non-secret inputs that
-// internal/config (and occasionally internal/client) reads via os.Getenv.
-// Absence does not affect authentication, so discovered user_config
-// entries stay optional and non-sensitive.
+// internal/config (and occasionally internal/client) reads via os.Getenv
+// or cliutil.EnvOverride. Absence does not affect authentication, so
+// discovered entries stay non-sensitive. Vars with a compile-time
+// fallback are omitted from the MCPB manifest; vars without one stay
+// required.
 var nonCredentialEnvSuffixes = []string{
 	"_USER_AGENT",
 	"_BASE_URL",
@@ -105,15 +107,7 @@ func scanPackageEnvReads(pkgDir string, seen map[string]struct{}) error {
 		}
 		ast.Inspect(file, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
-			if !ok || len(call.Args) != 1 {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != "Getenv" {
-				return true
-			}
-			pkg, ok := sel.X.(*ast.Ident)
-			if !ok || pkg.Name != "os" {
+			if !ok || !isScannedEnvReadCall(call) {
 				return true
 			}
 			lit, ok := call.Args[0].(*ast.BasicLit)
@@ -134,6 +128,28 @@ func scanPackageEnvReads(pkgDir string, seen map[string]struct{}) error {
 	return nil
 }
 
+func isScannedEnvReadCall(call *ast.CallExpr) bool {
+	if call == nil || len(call.Args) != 1 {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	switch {
+	case pkg.Name == "os" && sel.Sel.Name == "Getenv":
+		return true
+	case pkg.Name == "cliutil" && sel.Sel.Name == "EnvOverride":
+		return true
+	default:
+		return false
+	}
+}
+
 func isDeniedDiscoveredEnvVar(name string) bool {
 	if _, deny := systemEnvVarDenylist[name]; deny {
 		return true
@@ -150,7 +166,7 @@ func isDeniedDiscoveredEnvVar(name string) bool {
 //   - APIs with neither scanned package produce no changes.
 //   - Env vars already declared in mcp_config.env are skipped.
 //   - Goldens for spec-driven APIs without hand-written client code are
-//     untouched for credential names because those os.Getenv calls all
+//     untouched for credential names because those env reads all
 //     resolve to names already in mcp_config.env.
 func reconcileMCPBManifestFromClient(dir string, cli CLIManifest) error {
 	manifestPath := filepath.Join(dir, MCPBManifestFilename)
@@ -203,8 +219,8 @@ func reconcileMCPBManifestFromClient(dir string, cli CLIManifest) error {
 	required := authRequiresCredential(cli.AuthType) && !cli.AuthOptional
 	for _, name := range missing {
 		key := userConfigKey(name)
-		manifest.Server.MCPConfig.Env[name] = "${user_config." + key + "}"
 		if templateVar, ok := endpointTemplateVarForEnv(cli, name); ok {
+			manifest.Server.MCPConfig.Env[name] = "${user_config." + key + "}"
 			_, entry := endpointTemplateUserConfigEntry(cli, templateVar)
 			manifest.UserConfig[key] = entry
 			continue
@@ -212,9 +228,17 @@ func reconcileMCPBManifestFromClient(dir string, cli CLIManifest) error {
 		entryRequired := required
 		sensitive := true
 		if isNonCredentialDiscoveredEnvVar(name) {
-			entryRequired = false
 			sensitive = false
+			if discoveredEnvHasWorkingDefault(dir, name) {
+				// Compile-time fallback already works when the host leaves
+				// the optional field blank. Declaring ${user_config.*}
+				// without a default makes Claude Desktop pass the
+				// placeholder text, which the binary then dials.
+				continue
+			}
+			entryRequired = true
 		}
+		manifest.Server.MCPConfig.Env[name] = "${user_config." + key + "}"
 		manifest.UserConfig[key] = MCPBVar{
 			Type:        mcpbVarTypeString,
 			Title:       name,
@@ -269,4 +293,72 @@ func isNonCredentialDiscoveredEnvVar(name string) bool {
 		}
 	}
 	return false
+}
+
+// discoveredEnvHasWorkingDefault reports whether the printed binary already
+// has a usable fallback when this env var is unset. Those vars must not be
+// declared as optional default-less MCPB user_config keys: hosts leave
+// `${user_config.*}` unresolved, and a non-empty placeholder overrides the
+// compile-time value.
+func discoveredEnvHasWorkingDefault(dir, name string) bool {
+	switch {
+	case strings.HasSuffix(name, "_USER_AGENT"),
+		strings.HasSuffix(name, "_SKIP_TLS_VERIFY"),
+		strings.HasSuffix(name, "_AUTH_ROLE"),
+		strings.HasSuffix(name, "_OAUTH_SCOPE"),
+		strings.HasSuffix(name, "_AUTHORIZATION_URL"),
+		strings.HasSuffix(name, "_DEVICE_AUTHORIZATION_URL"),
+		strings.HasSuffix(name, "_TOKEN_URL"):
+		return true
+	case strings.HasSuffix(name, "_BASE_URL"):
+		return configFieldHasNonEmptyStringLiteral(dir, "BaseURL")
+	case strings.HasSuffix(name, "_BASE_PATH"):
+		return configFieldHasNonEmptyStringLiteral(dir, "BasePath")
+	default:
+		return false
+	}
+}
+
+func configFieldHasNonEmptyStringLiteral(dir, field string) bool {
+	path := filepath.Join(dir, "internal", "config", "config.go")
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
+	if err != nil {
+		return false
+	}
+	found := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		cl, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		for _, elt := range cl.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			ident, ok := kv.Key.(*ast.Ident)
+			if !ok || ident.Name != field {
+				continue
+			}
+			lit, ok := kv.Value.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				continue
+			}
+			val, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				continue
+			}
+			if strings.TrimSpace(val) != "" {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
 }

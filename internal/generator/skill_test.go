@@ -471,7 +471,7 @@ func TestSkillAuthSetupNamesTheCredentialTheBinaryReads(t *testing.T) {
 
 	configSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
 	require.NoError(t, err)
-	require.Contains(t, string(configSrc), `os.Getenv("SKILLCRED_API_KEY")`)
+	require.Contains(t, string(configSrc), `cliutil.EnvOverride("SKILLCRED_API_KEY")`)
 
 	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
 	require.NoError(t, err)
@@ -548,9 +548,9 @@ func TestSkillAuthSetupUsesResolvedBasicPairOverForeignNarrative(t *testing.T) {
 
 	configSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(configSrc), `os.Getenv("MAXIOPAIR_USERNAME")`)
-	assert.Contains(t, string(configSrc), `os.Getenv("MAXIOPAIR_PASSWORD")`)
-	assert.NotContains(t, string(configSrc), `os.Getenv("MAXIOPAIR_API_KEY")`)
+	assert.Contains(t, string(configSrc), `cliutil.EnvOverride("MAXIOPAIR_USERNAME")`)
+	assert.Contains(t, string(configSrc), `cliutil.EnvOverride("MAXIOPAIR_PASSWORD")`)
+	assert.NotContains(t, string(configSrc), `cliutil.EnvOverride("MAXIOPAIR_API_KEY")`)
 }
 
 // TestSkillRendersExtraCommands asserts that hand-written commands declared

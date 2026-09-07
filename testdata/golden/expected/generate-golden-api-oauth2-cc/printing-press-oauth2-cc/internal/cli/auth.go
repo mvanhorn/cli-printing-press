@@ -128,14 +128,14 @@ type tokenResponse struct {
 }
 
 func resolveClientCredentialsScope() string {
-	if scope := os.Getenv("PRINTING_PRESS_OAUTH2_OAUTH_SCOPE"); scope != "" {
+	if scope := cliutil.EnvOverride("PRINTING_PRESS_OAUTH2_OAUTH_SCOPE"); scope != "" {
 		return scope
 	}
 	return "read write"
 }
 
 func resolveClientCredentialsUserAgent() string {
-	if ua := strings.TrimSpace(os.Getenv("PRINTING_PRESS_OAUTH2_USER_AGENT")); ua != "" {
+	if ua := strings.TrimSpace(cliutil.EnvOverride("PRINTING_PRESS_OAUTH2_USER_AGENT")); ua != "" {
 		return ua
 	}
 	return "printing-press-oauth2-pp-cli/1.0.0"
