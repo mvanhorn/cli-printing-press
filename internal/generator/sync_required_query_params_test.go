@@ -69,6 +69,22 @@ func requiredQueryParamsSpec(name string) *spec.APISpec {
 				},
 			},
 		},
+		"events": {
+			Description: "Events filtered by since",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:   "GET",
+					Path:     "/events",
+					Response: spec.ResponseDef{Type: "array"},
+					Params: []spec.Param{{
+						Name:     "since",
+						In:       "query",
+						Type:     "string",
+						Required: true,
+					}},
+				},
+			},
+		},
 	}
 	return apiSpec
 }
@@ -94,6 +110,9 @@ func TestGeneratedSyncSkipsUnfilledRequiredQueryParams(t *testing.T) {
 	assert.Contains(t, required, `case "exports":`)
 	assert.Contains(t, required, `"format"`,
 		"required format with no default must stay in the skip guard")
+	assert.Contains(t, required, `case "events":`)
+	assert.Contains(t, required, `"since"`,
+		"required since is conditional and must stay in the skip guard")
 
 	defaults := generatedFunctionBody(t, syncSrc, "func defaultSyncResources() []string")
 	assert.Contains(t, defaults, `"items"`)
@@ -181,6 +200,86 @@ func TestSyncSkipsWhenRequiredFormatUnfilled(t *testing.T) {
 	}
 	if len(client.got) != 0 {
 		t.Fatalf("issued %d request(s), want none when required format is unknown", len(client.got))
+	}
+}
+
+func TestSyncSkipsWhenRequiredSinceUnfilledOnFirstSync(t *testing.T) {
+	db := openRequiredParamStore(t)
+	client := &requiredParamClient{}
+
+	res := syncResource(context.Background(), client, db, "events", "", false, 1, false, false, nil, nil)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if !errors.Is(res.Warn, errMissingRequiredQueryParams) {
+		t.Fatalf("Warn = %v, want missing required since on first sync", res.Warn)
+	}
+	if len(client.got) != 0 {
+		t.Fatalf("issued %d request(s), want none when required since is unknown", len(client.got))
+	}
+}
+
+func TestSyncSkipsWhenRequiredSinceUnfilledOnFullSync(t *testing.T) {
+	db := openRequiredParamStore(t)
+	client := &requiredParamClient{}
+	if err := db.SaveSyncStateAt("events", "", 1, time.Now().UTC().Add(-time.Hour)); err != nil {
+		t.Fatalf("seed sync_state: %v", err)
+	}
+
+	res := syncResource(context.Background(), client, db, "events", "", true, 1, false, false, nil, nil)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if !errors.Is(res.Warn, errMissingRequiredQueryParams) {
+		t.Fatalf("Warn = %v, want missing required since on full sync", res.Warn)
+	}
+	if len(client.got) != 0 {
+		t.Fatalf("issued %d request(s), want none when full sync withholds since", len(client.got))
+	}
+}
+
+func TestSyncSendsWhenRequiredSinceFilledFromFlag(t *testing.T) {
+	db := openRequiredParamStore(t)
+	client := &requiredParamClient{}
+
+	res := syncResource(context.Background(), client, db, "events", "2020-01-02T03:04:05Z", false, 1, false, false, nil, nil)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if res.Warn != nil {
+		t.Fatalf("Warn = %v, want success when --since fills required since", res.Warn)
+	}
+	if len(client.got) == 0 {
+		t.Fatal("no request issued")
+	}
+	if got := client.got[0]["since"]; got == "" {
+		t.Fatal("since missing on --since request")
+	}
+}
+
+func TestSyncSendsWhenRequiredSinceFilledFromWatermark(t *testing.T) {
+	db := openRequiredParamStore(t)
+	client := &requiredParamClient{}
+	watermark := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	if err := db.Upsert("events", "existing", []byte(` + "`" + `{"id":"existing"}` + "`" + `)); err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+	if err := db.SaveSyncStateAt("events", "", 1, watermark); err != nil {
+		t.Fatalf("seed sync_state: %v", err)
+	}
+
+	res := syncResource(context.Background(), client, db, "events", "", false, 1, false, false, nil, nil)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if res.Warn != nil {
+		t.Fatalf("Warn = %v, want success when since comes from last_synced_at", res.Warn)
+	}
+	if len(client.got) == 0 {
+		t.Fatal("no request issued")
+	}
+	if got := client.got[0]["since"]; got == "" {
+		t.Fatal("since missing on incremental request")
 	}
 }
 
@@ -312,7 +411,7 @@ func TestAutoRefreshSkipsEntireSetWhenAnyResourceMissingParams(t *testing.T) {
 }
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_required_query_params_test.go"), []byte(inlineTest), 0o644))
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestSync(SkipsWhenRequiredQueryParamsUnfilled|SkipsWhenRequiredFormatUnfilled|SendsWhenRequiredQueryParamsFilled|WithoutRequiredParamsStillRequests)|TestAutoRefreshSkips(MissingRequiredParamsHonestly|EntireSetWhenAnyResourceMissingParams)")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestSync(SkipsWhenRequiredQueryParamsUnfilled|SkipsWhenRequiredFormatUnfilled|SkipsWhenRequiredSinceUnfilledOnFirstSync|SkipsWhenRequiredSinceUnfilledOnFullSync|SendsWhenRequiredSinceFilledFromFlag|SendsWhenRequiredSinceFilledFromWatermark|SendsWhenRequiredQueryParamsFilled|WithoutRequiredParamsStillRequests)|TestAutoRefreshSkips(MissingRequiredParamsHonestly|EntireSetWhenAnyResourceMissingParams)")
 }
 
 func TestGeneratedSyncOmitsRequiredQueryHelperWhenNone(t *testing.T) {

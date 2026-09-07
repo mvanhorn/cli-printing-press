@@ -3050,6 +3050,13 @@ func (o syncOwnedParams) keys() map[string]struct{} {
 	return out
 }
 
+// alwaysAssignedKeys are the paging keys the generated page loop puts on
+// every request. since, sort, and date-range stay off this set because
+// sync only sends them inside a conditional.
+func (o syncOwnedParams) alwaysAssignedKeys() map[string]struct{} {
+	return syncOwnedParams{cursor: o.cursor, limit: o.limit, idWalk: o.idWalk}.keys()
+}
+
 // syncDateRangeParamNames lists the spellings the profiler recognizes as the
 // date-range filter, kept beside the detection that populates DateRangeParam so
 // the two cannot drift.
@@ -3073,10 +3080,10 @@ func syncQueryParamDefaultsFromEndpoint(endpoint spec.Endpoint, syncOwned syncOw
 }
 
 func requiredSyncQueryParamsFromEndpoint(endpoint spec.Endpoint, syncOwned syncOwnedParams, path string) []string {
-	// Only drop keys the generated page loop actually assigns (syncOwned,
-	// paginator names). Reusing the SkipDefaultSync date/`key`/`format`
-	// denylist here would let a required `format` with no default 400.
-	reserved := syncOwned.keys()
+	// Drop only paging keys the page loop always assigns. since, sort, and
+	// date-range are sync-owned but conditional: a first or full sync leaves
+	// them off the wire, so a required one must stay in this guard.
+	reserved := syncOwned.alwaysAssignedKeys()
 	satisfied := queryNamesInPath(path)
 	var out []string
 	seen := map[string]struct{}{}

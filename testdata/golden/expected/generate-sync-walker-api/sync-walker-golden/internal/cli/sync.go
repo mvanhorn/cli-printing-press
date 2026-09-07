@@ -486,33 +486,6 @@ func syncResource(ctx context.Context, c interface {
 			Duration: time.Since(started),
 		}
 	}
-	if missing := unfilledRequiredSyncQueryParams(resource, userParams); len(missing) > 0 {
-		if !humanFriendly {
-			payload := struct {
-				Event    string   `json:"event"`
-				Resource string   `json:"resource"`
-				Reason   string   `json:"reason"`
-				Keys     []string `json:"keys"`
-				Message  string   `json:"message"`
-			}{
-				Event:    "sync_warning",
-				Resource: resource,
-				Reason:   "missing_required_params",
-				Keys:     missing,
-				Message:  fmt.Sprintf("required query params %s are unknown; resource skipped", strings.Join(missing, ", ")),
-			}
-			payloadJSON, _ := json.Marshal(payload)
-			fmt.Fprintf(syncEvents, "%s\n", payloadJSON)
-		} else {
-			fmt.Fprintf(os.Stderr, "  %s skipped (missing required query params: %s)\n",
-				resource, strings.Join(missing, ", "))
-		}
-		return syncResult{
-			Resource: resource,
-			Warn:     fmt.Errorf("%w for %s: %s", errMissingRequiredQueryParams, resource, strings.Join(missing, ", ")),
-			Duration: time.Since(started),
-		}
-	}
 
 	var totalCount int
 	requestedAt := started.UTC()
@@ -558,6 +531,33 @@ func syncResource(ctx context.Context, c interface {
 	sortValue := syncResourceSortValue(resource)
 	sortField := syncResourceSortField(resource)
 	sortEffective := false
+	if missing := unfilledRequiredSyncQueryParams(resource, userParams, syncConditionalQueryParams(resource, effectiveSince, sortValue)); len(missing) > 0 {
+		if !humanFriendly {
+			payload := struct {
+				Event    string   `json:"event"`
+				Resource string   `json:"resource"`
+				Reason   string   `json:"reason"`
+				Keys     []string `json:"keys"`
+				Message  string   `json:"message"`
+			}{
+				Event:    "sync_warning",
+				Resource: resource,
+				Reason:   "missing_required_params",
+				Keys:     missing,
+				Message:  fmt.Sprintf("required query params %s are unknown; resource skipped", strings.Join(missing, ", ")),
+			}
+			payloadJSON, _ := json.Marshal(payload)
+			fmt.Fprintf(syncEvents, "%s\n", payloadJSON)
+		} else {
+			fmt.Fprintf(os.Stderr, "  %s skipped (missing required query params: %s)\n",
+				resource, strings.Join(missing, ", "))
+		}
+		return syncResult{
+			Resource: resource,
+			Warn:     fmt.Errorf("%w for %s: %s", errMissingRequiredQueryParams, resource, strings.Join(missing, ", ")),
+			Duration: time.Since(started),
+		}
+	}
 	var progressCount int64
 	pagesFetched := 0
 	lastNextCursor := ""
@@ -1171,12 +1171,17 @@ func syncResourceRequiredQueryParams(resource string) []string {
 	return nil
 }
 
-func unfilledRequiredSyncQueryParams(resource string, userParams *syncUserParams) []string {
+func unfilledRequiredSyncQueryParams(resource string, userParams *syncUserParams, filled map[string]string) []string {
 	required := syncResourceRequiredQueryParams(resource)
 	if len(required) == 0 {
 		return nil
 	}
 	params := map[string]string{}
+	for name, value := range filled {
+		if strings.TrimSpace(value) != "" {
+			params[name] = value
+		}
+	}
 	userParams.applyTo(resource, params, false)
 	var missing []string
 	for _, name := range required {
@@ -1185,6 +1190,17 @@ func unfilledRequiredSyncQueryParams(resource string, userParams *syncUserParams
 		}
 	}
 	return missing
+}
+
+func syncConditionalQueryParams(resource, effectiveSince, sortValue string) map[string]string {
+	filled := map[string]string{}
+	if sinceParam := syncResourceSinceParam(resource); sinceParam != "" && strings.TrimSpace(effectiveSince) != "" {
+		filled[sinceParam] = effectiveSince
+		if sortParam := syncResourceSortParam(resource); sortParam != "" && strings.TrimSpace(sortValue) != "" {
+			filled[sortParam] = sortValue
+		}
+	}
+	return filled
 }
 
 // syncResourceSortParam and syncResourceSortValue describe a spec-declared

@@ -265,8 +265,31 @@ func TestProfileRequiredFormatAndUnownedDatesStayGuarded(t *testing.T) {
 	require.Contains(t, byName, "events")
 	assert.Equal(t, []string{"end_date", "format", "key"}, byName["exports"].RequiredQueryParams,
 		"required format/key/end_date are not sync-owned, so the skip guard must keep them")
-	assert.Empty(t, byName["events"].RequiredQueryParams,
-		"detected since and paginator limit are assigned later in the page loop")
+	assert.Equal(t, []string{"since"}, byName["events"].RequiredQueryParams,
+		"required since is only sent on incremental runs, so the skip guard must keep it")
+}
+
+func TestRequiredSyncQueryParamsKeepsConditionalSyncOwned(t *testing.T) {
+	endpoint := spec.Endpoint{
+		Method: "GET",
+		Path:   "/events",
+		Params: []spec.Param{
+			{Name: "since", In: "query", Type: "string", Required: true},
+			{Name: "sort", In: "query", Type: "string", Required: true},
+			{Name: "dates", In: "query", Type: "string", Required: true},
+			{Name: "limit", In: "query", Type: "integer", Required: true},
+			{Name: "cursor", In: "query", Type: "string", Required: true},
+		},
+	}
+	got := requiredSyncQueryParamsFromEndpoint(endpoint, syncOwnedParams{
+		cursor:    "cursor",
+		limit:     "limit",
+		since:     "since",
+		sort:      "sort",
+		dateRange: syncDateRangeParamNames,
+	}, "/events")
+	assert.Equal(t, []string{"dates", "since", "sort"}, got,
+		"conditional sync-owned keys stay guarded; paginator keys do not")
 }
 
 func TestProfileSiblingListEndpoints(t *testing.T) {
