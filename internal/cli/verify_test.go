@@ -14,6 +14,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestVerifyCmdHelpDescribesEnvVarLiveMode(t *testing.T) {
+	cmd := newVerifyCmd()
+	assert.Contains(t, cmd.Long, "--env-var names a non-empty environment variable")
+	assert.Contains(t, cmd.Example, "--env-var GITHUB_TOKEN")
+	assert.NotContains(t, cmd.Example, "--api-key $GITHUB_TOKEN")
+}
+
+func TestPrintVerifyReportIncludesModeDetail(t *testing.T) {
+	output, err := runWithCapturedStdout(t, func() error {
+		printVerifyReport(&pipeline.VerifyReport{
+			Binary:     "sample-cli",
+			Mode:       "mock",
+			ModeDetail: "--env-var FOO is unset or empty; running in mock mode",
+			Verdict:    "PASS",
+		})
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Contains(t, output, "Mode: mock")
+	assert.Contains(t, output, "--env-var FOO is unset or empty; running in mock mode")
+}
+
 func TestCleanupVerifyArtifacts(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "sample-cli")
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".cache", "go-build"), 0o755))
