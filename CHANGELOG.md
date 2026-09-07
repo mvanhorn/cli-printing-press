@@ -1,5 +1,28 @@
 # Changelog
 
+## [4.32.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.7...v4.32.0) (2026-09-07)
+
+
+### Features
+
+* **skills:** make Printing Press phases progressive and resumable ([#3723](https://github.com/mvanhorn/cli-printing-press/issues/3723)) ([5a429c1](https://github.com/mvanhorn/cli-printing-press/commit/5a429c1da1bdff9e0ec8978cbd093a7b2cfd4743))
+
+
+### Bug Fixes
+
+* **ci:** keep conversation check green on fork review events ([#4599](https://github.com/mvanhorn/cli-printing-press/issues/4599)) ([2b2d2fe](https://github.com/mvanhorn/cli-printing-press/commit/2b2d2fee61b94555189f6834020449b3673906cf))
+* **cli:** accept x-tenant-env-var/x-path-template-env-vars at doc root ([#4573](https://github.com/mvanhorn/cli-printing-press/issues/4573)) ([79b74f2](https://github.com/mvanhorn/cli-printing-press/commit/79b74f2e947a4da78cc10185ff932d67447fc009))
+* **cli:** enable verify live mode from explicit --env-var ([#4606](https://github.com/mvanhorn/cli-printing-press/issues/4606)) ([6b9914b](https://github.com/mvanhorn/cli-printing-press/commit/6b9914bc9c861b4daabdedd7c92191e6b054b6fd))
+* **cli:** kebab-case auto-synthesized command examples ([#4558](https://github.com/mvanhorn/cli-printing-press/issues/4558)) ([6f52212](https://github.com/mvanhorn/cli-printing-press/commit/6f52212b1a349b51882a7a67768a7dff5778b637))
+* **cli:** keep verify --json stdout pure with --fix ([#4593](https://github.com/mvanhorn/cli-printing-press/issues/4593)) ([2546928](https://github.com/mvanhorn/cli-printing-press/commit/254692886ee19f8ebdbbe8a27ad9cd88fe508062)), closes [#4352](https://github.com/mvanhorn/cli-printing-press/issues/4352)
+* **cli:** keep which specificity from zeroing single-token leaves ([#4557](https://github.com/mvanhorn/cli-printing-press/issues/4557)) ([4daed52](https://github.com/mvanhorn/cli-printing-press/commit/4daed52b7ebaf0b413c6cb4545214130e1f76ab8))
+* **cli:** persist rotating refresh tokens across live dogfood ([#4594](https://github.com/mvanhorn/cli-printing-press/issues/4594)) ([92b601d](https://github.com/mvanhorn/cli-printing-press/commit/92b601dcb2c9050d4cca5dd381d661b0eeb2e5ca))
+* **cli:** prefer list response_path for sync resource unwrap ([#4595](https://github.com/mvanhorn/cli-printing-press/issues/4595)) ([032c0a2](https://github.com/mvanhorn/cli-printing-press/commit/032c0a2e2cf2b7581522aadb188c91dd5ad6a4af))
+* **cli:** redact learn query logs and stop shell interpolation ([#4560](https://github.com/mvanhorn/cli-printing-press/issues/4560)) ([160accf](https://github.com/mvanhorn/cli-printing-press/commit/160accf8a2d62392ae7805c767dc2f772c8f2629))
+* **cli:** report live provenance and document exit code 6 ([#4561](https://github.com/mvanhorn/cli-printing-press/issues/4561)) ([2b505d9](https://github.com/mvanhorn/cli-printing-press/commit/2b505d9ccd23196cddadafdd384f77cb5919138b))
+* **cli:** scrub JWT-form GitHub installation tokens ([#4607](https://github.com/mvanhorn/cli-printing-press/issues/4607)) ([d63da1e](https://github.com/mvanhorn/cli-printing-press/commit/d63da1ef71b4271460178bc0ed38b9194befa9cc))
+* **cli:** stop analytics group-by emitting Go nil string ([#4559](https://github.com/mvanhorn/cli-printing-press/issues/4559)) ([36b8063](https://github.com/mvanhorn/cli-printing-press/commit/36b8063069d6d1a133e9ad6f9669894a7dc5fe51))
+
 ## [4.31.7](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.6...v4.31.7) (2026-09-04)
 
 
