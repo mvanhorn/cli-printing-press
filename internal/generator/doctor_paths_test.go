@@ -115,13 +115,13 @@ func TestGeneratedDoctorDistinguishesEmptyCacheFromFresh(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
-	testSrc := strings.ReplaceAll(`package cli
+	testSrc := strings.ReplaceAll(strings.ReplaceAll(`package cli
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
+
+	"__MODULE__/internal/store"
 )
 
 func TestCollectCacheReportEmptyStore(t *testing.T) {
@@ -133,12 +133,11 @@ func TestCollectCacheReportEmptyStore(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", "")
 
 	dbPath := defaultDBPath("__CLI_NAME__")
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		t.Fatalf("mkdir db dir: %v", err)
+	s, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("create empty store: %v", err)
 	}
-	if err := os.WriteFile(dbPath, nil, 0o600); err != nil {
-		t.Fatalf("seed empty DB file: %v", err)
-	}
+	s.Close()
 
 	report := collectCacheReport(context.Background(), "")
 	if got := report["status"]; got != "empty" {
@@ -148,7 +147,7 @@ func TestCollectCacheReportEmptyStore(t *testing.T) {
 		t.Fatalf("empty store must not report fresh resources: %v", report)
 	}
 }
-`, "__CLI_NAME__", naming.CLI(apiSpec.Name))
+`, "__CLI_NAME__", naming.CLI(apiSpec.Name)), "__MODULE__", naming.CLI(apiSpec.Name))
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "cache_empty_test.go"), []byte(testSrc), 0o644))
 
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestCollectCacheReportEmptyStore", "-count=1")
@@ -162,16 +161,15 @@ func TestGeneratedDoctorClassifiesSyncStateTimes(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
-	testSrc := strings.ReplaceAll(`package cli
+	testSrc := strings.ReplaceAll(strings.ReplaceAll(`package cli
 
 import (
 	"context"
 	"database/sql"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
+	"__MODULE__/internal/store"
 	_ "modernc.org/sqlite"
 )
 
@@ -190,13 +188,11 @@ func TestCollectCacheReportSyncStateTimes(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", "")
 
 	dbPath := defaultDBPath("__CLI_NAME__")
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		t.Fatalf("mkdir db dir: %v", err)
+	s, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
 	}
-	if err := os.WriteFile(dbPath, nil, 0o600); err != nil {
-		t.Fatalf("seed empty DB file: %v", err)
-	}
-	collectCacheReport(context.Background(), "")
+	s.Close()
 
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -294,7 +290,7 @@ func TestCollectCacheReportSyncStateTimes(t *testing.T) {
 		})
 	}
 }
-`, "__CLI_NAME__", naming.CLI(apiSpec.Name))
+`, "__CLI_NAME__", naming.CLI(apiSpec.Name)), "__MODULE__", naming.CLI(apiSpec.Name))
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "cache_sync_state_test.go"), []byte(testSrc), 0o644))
 
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestCollectCacheReportSyncStateTimes", "-count=1")

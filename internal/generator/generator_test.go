@@ -676,10 +676,13 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 		assert.Contains(t, src, snippet, "auto_refresh.go missing %q", snippet)
 	}
 	optOutIndex := strings.Index(src, "env_opt_out")
+	openROIndex := strings.Index(src, "store.OpenReadOnlyContext(ctx, dbPath)")
 	openStoreIndex := strings.Index(src, "store.OpenWithContext(ctx, dbPath)")
 	require.NotEqual(t, -1, optOutIndex, "auto_refresh.go must report env opt-out")
+	require.NotEqual(t, -1, openROIndex, "auto_refresh.go must probe the store read-only before migrating")
 	require.NotEqual(t, -1, openStoreIndex, "auto_refresh.go must open the store after opt-out checks")
-	assert.Less(t, optOutIndex, openStoreIndex, "env opt-out must be checked before opening/migrating the store")
+	assert.Less(t, optOutIndex, openROIndex, "env opt-out must be checked before opening/migrating the store")
+	assert.Less(t, openROIndex, openStoreIndex, "freshness check must use OpenReadOnly before a write-open for refresh")
 
 	// auto_refresh_test.go covers the structured cache_warning emitter so a
 	// Go syntax error in auto_refresh_test.go.tmpl is caught at generation
@@ -4413,10 +4416,20 @@ func TestGenerateStoreDSNUsesImmediateTransactionsAndProfileJournalMode(t *testi
 				"read-write DSN must acquire immediate transactions and select the profile journal mode")
 			assert.NotContains(t, codeOnly, "_pragma=journal_mode("+tc.otherMode+")&_pragma=synchronous",
 				"read-write DSN must not emit the other profile journal mode")
-			assert.Contains(t, codeOnly, `?mode=ro&immutable=1&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)`,
-				"read-only DSN must skip the WAL-index mmap while keeping mmap_size(0)")
+			if tc.cache {
+				assert.Contains(t, codeOnly, `?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)`,
+					"rollback-journal read-only DSN must take SHARED locks (no immutable=1)")
+				assert.NotContains(t, codeOnly, `?mode=ro&immutable=1&_pragma=busy_timeout(5000)`,
+					"rollback-journal read-only DSN must not set immutable=1")
+				assert.Contains(t, codeOnly, `?mode=ro&_pragma=busy_timeout(1000)&_pragma=mmap_size(0)`,
+					"schema preflight probe must take SHARED locks on a rollback journal")
+			} else {
+				assert.Contains(t, codeOnly, `?mode=ro&immutable=1&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)`,
+					"WAL read-only DSN must skip the WAL-index mmap while keeping mmap_size(0)")
+			}
 			requireGeneratedCompiles(t, outputDir)
-			runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "^Test(OpenHardensSQLiteFilePermissions|HardenSQLiteFilesSkipsSymlinkSidecars|OpenAppliesPragmas|OpenReadOnly_SkipsWALIndexSidecars|OpenReadOnly_ConcurrentProcesses)$", "-count=1")
+			runName := "^Test(OpenHardensSQLiteFilePermissions|HardenSQLiteFilesSkipsSymlinkSidecars|OpenAppliesPragmas|OpenReadOnly_SkipsWALIndexSidecars|OpenReadOnly_ConcurrentProcesses|OpenReadOnly_RollbackJournalNoTornRead|ListScanStopsEarly|TypedNewestFirstOrder)$"
+			runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", runName, "-count=1")
 		})
 	}
 }
