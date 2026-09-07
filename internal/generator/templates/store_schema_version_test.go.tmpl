@@ -464,6 +464,35 @@ func TestListScanStopsEarly(t *testing.T) {
 	}
 }
 
+func TestTypedNewestFirstOrder(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.DB().Exec(`CREATE TABLE typed_synced (id TEXT, data TEXT, synced_at DATETIME)`); err != nil {
+		t.Fatalf("create synced table: %v", err)
+	}
+	order, ok := s.typedNewestFirstOrder("typed_synced")
+	if !ok || order != " ORDER BY synced_at DESC" {
+		t.Fatalf("synced_at order = %q ok=%v, want ORDER BY synced_at DESC", order, ok)
+	}
+	if _, err := s.DB().Exec(`CREATE TABLE typed_updated (id TEXT, data TEXT, synced_at DATETIME, updated_at DATETIME)`); err != nil {
+		t.Fatalf("create updated table: %v", err)
+	}
+	order, ok = s.typedNewestFirstOrder("typed_updated")
+	if !ok || order != " ORDER BY updated_at DESC" {
+		t.Fatalf("updated_at order = %q ok=%v, want ORDER BY updated_at DESC", order, ok)
+	}
+	if _, err := s.DB().Exec(`CREATE TABLE typed_none (id TEXT, data TEXT)`); err != nil {
+		t.Fatalf("create unordered table: %v", err)
+	}
+	if order, ok = s.typedNewestFirstOrder("typed_none"); ok {
+		t.Fatalf("unordered typed table must not claim newest-first order, got %q", order)
+	}
+}
+
 // TestSchemaVersion_StampExistingZeroDB verifies the stamp-and-continue
 // rule for existing deployed databases. A DB that predates the gate has
 // user_version = 0; opening it with this binary should stamp the version

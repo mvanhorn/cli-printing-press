@@ -1054,48 +1054,6 @@ func loadLocalList(db *store.Store, resourceType, path string, params map[string
 		return ""
 	}
 
-	if len(parents) == 0 && len(q.equality) == 0 {
-		if q.limit == 0 {
-			raw, err := db.ListRange(resourceType, 1, 0)
-			if err != nil {
-				return nil, nil, "", false, err
-			}
-			saw := false
-			for _, r := range raw {
-				if !localRecordIsEmpty(r) {
-					saw = true
-					break
-				}
-			}
-			sort.Strings(q.unsupported)
-			return nil, q.unsupported, typedHintFor(saw), saw, nil
-		}
-		var raw []json.RawMessage
-		if complete {
-			if typed, ok, terr := db.ListTypedRange(resourceType, q.limit, q.offset); terr != nil {
-				return nil, nil, "", false, terr
-			} else if ok {
-				raw = typed
-			}
-		}
-		if raw == nil {
-			var lerr error
-			raw, lerr = db.ListRange(resourceType, q.limit, q.offset)
-			if lerr != nil {
-				return nil, nil, "", false, lerr
-			}
-		}
-		items := make([]json.RawMessage, 0, len(raw))
-		for _, r := range raw {
-			if localRecordIsEmpty(r) {
-				continue
-			}
-			items = append(items, r)
-		}
-		sort.Strings(q.unsupported)
-		return items, q.unsupported, typedHintFor(len(items) > 0), len(items) > 0, nil
-	}
-
 	items, sawValid, unmatched, err := scanLocalList(db, resourceType, parents, q, complete)
 	if err != nil {
 		return nil, nil, "", false, err

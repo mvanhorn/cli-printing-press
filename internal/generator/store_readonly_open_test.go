@@ -64,10 +64,21 @@ func TestGeneratedReadOnlyStoreOpensDoNotMigrate(t *testing.T) {
 	assert.Contains(t, storeSrc, "idx_resources_type_updated")
 	assert.Contains(t, storeSrc, "func (s *Store) ListScan(")
 	assert.Contains(t, storeSrc, "func (s *Store) ListRange(")
+	assert.Contains(t, storeSrc, "func (s *Store) typedNewestFirstOrder(")
+	assert.Contains(t, storeSrc, `"synced_at"`)
 
 	dataSrc := stripGoComments(readGeneratedFile(t, outputDir, "internal", "cli", "data_source.go"))
 	assert.Contains(t, dataSrc, "func loadLocalList(")
+	assert.Contains(t, dataSrc, "scanLocalList(")
 	assert.NotContains(t, dataSrc, "db.List(resourceType, 0)")
+	assert.NotContains(t, dataSrc, "ListTypedRange(",
+		"unfiltered local list must scan valid rows before take/offset, not SQL LIMIT")
+
+	refreshSrc = stripGoComments(refreshSrc)
+	assert.Contains(t, refreshSrc, "storeMissing")
+	assert.NotContains(t, refreshSrc, `meta.Reason = "no-store"`,
+		"absent store must enter hydration, not skip as no-store")
+	assert.NotContains(t, refreshSrc, "DecisionFresh || decision == cliutil.DecisionNoStore")
 
 	requireGeneratedCompiles(t, outputDir)
 
@@ -82,6 +93,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"ro-store-open-pp-cli/internal/store"
 	_ "modernc.org/sqlite"
@@ -189,8 +201,71 @@ func pragmaUserVersion(t *testing.T, dbPath string) int {
 	}
 	return v
 }
+
+func TestLoadLocalListSkipsEmptyBeforeTake(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	dbPath := defaultDBPath("ro-store-open-pp-cli")
+	s, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	if err := s.Upsert("items", "valid", json.RawMessage(`+"`"+`{"id":"valid"}`+"`"+`)); err != nil {
+		t.Fatalf("upsert valid: %v", err)
+	}
+	if err := s.Upsert("items", "empty", json.RawMessage("null")); err != nil {
+		t.Fatalf("upsert empty: %v", err)
+	}
+	if _, err := s.DB().Exec(`+"`"+`UPDATE resources SET updated_at = '2020-01-01T00:00:00Z' WHERE id = 'valid'`+"`"+`); err != nil {
+		t.Fatalf("age valid: %v", err)
+	}
+	if _, err := s.DB().Exec(`+"`"+`UPDATE resources SET updated_at = '2026-01-01T00:00:00Z' WHERE id = 'empty'`+"`"+`); err != nil {
+		t.Fatalf("age empty: %v", err)
+	}
+	items, _, _, _, err := loadLocalList(s, "items", "/items", map[string]string{"take": "1"})
+	if err != nil {
+		t.Fatalf("loadLocalList: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("take 1 returned %d items, want the older valid row", len(items))
+	}
+	if !bytes.Contains(items[0], []byte("valid")) {
+		t.Fatalf("take 1 returned %s, want the valid row", items[0])
+	}
+}
+
+func TestAutoRefreshHydratesMissingStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	dbPath := defaultDBPath("ro-store-open-pp-cli")
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Fatalf("store already exists at %s", dbPath)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	meta := autoRefreshIfStale(ctx, &rootFlags{dataSource: "auto"}, []string{"items"})
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		t.Fatalf("first-run refresh did not create the store; decision=%s reason=%s", meta.Decision, meta.Reason)
+	}
+	if !meta.Ran && meta.Reason == "no-store" {
+		t.Fatalf("first-run skipped hydration: decision=%s reason=%s", meta.Decision, meta.Reason)
+	}
+}
 `), 0o644))
 
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestDoctorAndReadCommandsDoNotMigrate$", "-count=1")
-	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "^Test(OpenAppliesPragmas|OpenReadOnly_RollbackJournalNoTornRead|ListScanStopsEarly)$", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^Test(DoctorAndReadCommandsDoNotMigrate|LoadLocalListSkipsEmptyBeforeTake|AutoRefreshHydratesMissingStore)$", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "^Test(OpenAppliesPragmas|OpenReadOnly_RollbackJournalNoTornRead|ListScanStopsEarly|TypedNewestFirstOrder)$", "-count=1")
 }
