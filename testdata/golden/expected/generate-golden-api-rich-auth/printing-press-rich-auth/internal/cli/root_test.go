@@ -9,13 +9,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
 	"printing-press-rich-pp-cli/internal/cliutil"
 
 	"github.com/spf13/cobra"
+	"printing-press-rich-pp-cli/internal/cliutil/testenv"
 )
+
+func TestMain(m *testing.M) {
+	os.Exit(testenv.RunSandboxed(m))
+}
 
 func TestDeclaredAPISurfaceReachable(t *testing.T) {
 	expected := []string{

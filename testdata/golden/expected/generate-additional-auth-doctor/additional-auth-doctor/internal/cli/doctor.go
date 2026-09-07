@@ -664,10 +664,12 @@ func doctorExitForFailOn(failOn string, report map[string]any) error {
 	return nil
 }
 
-// collectCacheReport opens the local store, reads per-resource sync state,
-// and returns a map summarising cache health. Never panics on missing DB
-// or open failure; returns a map with status=unknown or status=error so the
-// caller can render and agents can interpret.
+// collectCacheReport opens the local store read-only, reads per-resource sync
+// state, and returns a map summarising cache health. Never panics on missing
+// DB or open failure; returns a map with status=unknown or status=error so
+// the caller can render and agents can interpret. A read-only open does not
+// run schema migration; migration_pending reports whether user_version is
+// behind this binary.
 //
 // staleAfterSpec is the CLI's configured threshold (e.g. "6h"); empty means
 // use the runtime default. The default is deliberately conservative (6h)
@@ -690,7 +692,7 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 	}
 	report["db_bytes"] = fi.Size()
 
-	s, err := store.OpenWithContext(ctx, dbPath)
+	s, err := store.OpenReadOnlyContext(ctx, dbPath)
 	if err != nil {
 		report["status"] = "error"
 		report["error"] = err.Error()
@@ -698,8 +700,10 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 	}
 	defer s.Close()
 
+	report["store_schema_version"] = store.StoreSchemaVersion
 	if v, verr := s.SchemaVersion(); verr == nil {
 		report["schema_version"] = v
+		report["migration_pending"] = v < store.StoreSchemaVersion
 	}
 
 	staleAfter := 6 * time.Hour
@@ -790,6 +794,12 @@ func renderCacheReport(w io.Writer, rep map[string]any) {
 	}
 	if v, ok := rep["schema_version"]; ok {
 		fmt.Fprintf(w, "    schema_version: %v\n", v)
+	}
+	if v, ok := rep["store_schema_version"]; ok {
+		fmt.Fprintf(w, "    store_schema_version: %v\n", v)
+	}
+	if v, ok := rep["migration_pending"]; ok {
+		fmt.Fprintf(w, "    migration_pending: %v\n", v)
 	}
 	if v, ok := rep["db_bytes"]; ok {
 		fmt.Fprintf(w, "    db_bytes: %v\n", v)
