@@ -567,9 +567,6 @@ func discoverChromeProfiles(domain string, requiredCookies []string) ([]chromePr
 		return nil, fmt.Errorf("sqlite3 not found")
 	}
 
-	// Match domain for SQLite query — host_key uses leading dot (e.g. ".notion.so")
-	domainPattern := "%" + strings.TrimPrefix(domain, ".") + "%"
-
 	var profiles []chromeProfile
 	for _, ch := range channelDirs {
 		for _, name := range chromeProfileDirNames(ch.DataDir) {
@@ -584,7 +581,7 @@ func discoverChromeProfiles(domain string, requiredCookies []string) ([]chromePr
 				displayName = name
 			}
 
-			count, requiredCount, missing := inspectCookiesForDomain(cookiesDB, domainPattern, requiredCookies)
+			count, requiredCount, missing := inspectCookiesForDomain(cookiesDB, domain, requiredCookies)
 
 			profiles = append(profiles, chromeProfile{
 				Channel:             ch.Channel,
@@ -633,9 +630,10 @@ func readProfileDisplayName(prefsPath string) string {
 	return prefs.Profile.Name
 }
 
-// inspectCookiesForDomain copies the Cookies DB (plus WAL/SHM) to temp and counts matching rows.
-// Uses sqlite3 when available; host_key is plaintext so no decryption is needed.
-func inspectCookiesForDomain(cookiesDB, domainPattern string, requiredCookies []string) (count int, requiredCount int, missing []string) {
+// inspectCookiesForDomain copies the Cookies DB (plus WAL/SHM) to temp and
+// counts rows whose host_key matches domain via cookieDomainMatches. SQL LIKE
+// on the full host misses parent-domain cookies (".example.com" vs "www.example.com").
+func inspectCookiesForDomain(cookiesDB, domain string, requiredCookies []string) (count int, requiredCount int, missing []string) {
 	tmpFile, err := os.CreateTemp("", "cookies-probe-*.db")
 	if err != nil {
 		return 0, 0, append([]string{}, requiredCookies...)
@@ -654,48 +652,44 @@ func inspectCookiesForDomain(cookiesDB, domainPattern string, requiredCookies []
 	_ = copyFileIfExists(cookiesDB+"-wal", tmpPath+"-wal")
 	_ = copyFileIfExists(cookiesDB+"-shm", tmpPath+"-shm")
 
-	query := fmt.Sprintf("SELECT COUNT(*) FROM cookies WHERE host_key LIKE '%s'", sqlQuoteLiteral(domainPattern))
-	out, err := exec.Command("sqlite3", tmpPath, query).Output()
+	out, err := exec.Command("sqlite3", "-separator", "\t", tmpPath, "SELECT host_key, name FROM cookies").Output()
 	if err != nil {
 		return 0, 0, append([]string{}, requiredCookies...)
 	}
 
-	fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &count)
+	requiredSet := map[string]bool{}
+	for _, name := range requiredCookies {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			requiredSet[name] = true
+		}
+	}
+
+	present := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		hostKey, name, ok := strings.Cut(line, "\t")
+		if !ok {
+			continue
+		}
+		if !cookieDomainMatches(hostKey, domain) {
+			continue
+		}
+		count++
+		name = strings.TrimSpace(name)
+		if requiredSet[name] && !present[name] {
+			present[name] = true
+			requiredCount++
+		}
+	}
 
 	if len(requiredCookies) == 0 || count == 0 {
 		return count, 0, append([]string{}, requiredCookies...)
 	}
 
-	quotedNames := make([]string, 0, len(requiredCookies))
-	for _, name := range requiredCookies {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		quotedNames = append(quotedNames, "'"+sqlQuoteLiteral(name)+"'")
-	}
-	if len(quotedNames) == 0 {
-		return count, 0, nil
-	}
-
-	query = fmt.Sprintf(
-		"SELECT DISTINCT name FROM cookies WHERE host_key LIKE '%s' AND name IN (%s)",
-		sqlQuoteLiteral(domainPattern),
-		strings.Join(quotedNames, ","),
-	)
-	out, err = exec.Command("sqlite3", tmpPath, query).Output()
-	if err != nil {
-		return count, 0, append([]string{}, requiredCookies...)
-	}
-
-	present := map[string]bool{}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		name := strings.TrimSpace(line)
-		if name != "" && !present[name] {
-			present[name] = true
-			requiredCount++
-		}
-	}
 	for _, name := range requiredCookies {
 		name = strings.TrimSpace(name)
 		if name != "" && !present[name] {
@@ -703,10 +697,6 @@ func inspectCookiesForDomain(cookiesDB, domainPattern string, requiredCookies []
 		}
 	}
 	return count, requiredCount, missing
-}
-
-func sqlQuoteLiteral(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
 }
 
 // copyFileIfExists copies src to dst. Returns nil if src does not exist.

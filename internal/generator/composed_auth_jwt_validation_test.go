@@ -92,6 +92,35 @@ func TestComposeAuthFromCookiesReplacesTokenPlaceholder(t *testing.T) {
 	}
 }
 
+func TestComposeAuthFromCookiesDecodesPercentEncodedValue(t *testing.T) {
+	got := composeAuthFromCookies("Bearer {XSRF-TOKEN}", []string{"XSRF-TOKEN"}, map[string]string{"XSRF-TOKEN": "abc%%3D%%3D"})
+	if got != "Bearer abc==" {
+		t.Fatalf("composeAuthFromCookies() = %%q, want decoded padding", got)
+	}
+}
+
+func TestComposeAuthFromCookiesDoesNotDoubleDecode(t *testing.T) {
+	got := composeAuthFromCookies("Bearer {XSRF-TOKEN}", []string{"XSRF-TOKEN"}, map[string]string{"XSRF-TOKEN": "abc=="})
+	if got != "Bearer abc==" {
+		t.Fatalf("composeAuthFromCookies() = %%q, want already-decoded value unchanged", got)
+	}
+	got = composeAuthFromCookies("Bearer {XSRF-TOKEN}", []string{"XSRF-TOKEN"}, map[string]string{"XSRF-TOKEN": "%%253D"})
+	if got != "Bearer %%3D" {
+		t.Fatalf("composeAuthFromCookies() = %%q, want at-most-once decode", got)
+	}
+	got = composeAuthFromCookies("Bearer {XSRF-TOKEN}", []string{"XSRF-TOKEN"}, map[string]string{"XSRF-TOKEN": "abc+def%%3D"})
+	if got != "Bearer abc+def=" {
+		t.Fatalf("composeAuthFromCookies() = %%q, want plus preserved with decoded padding", got)
+	}
+}
+
+func TestComposeAuthFromCookiesLeavesOpaquePercentSequences(t *testing.T) {
+	got := composeAuthFromCookies("Bearer {token}", []string{"session"}, map[string]string{"session": "abc%%2Fdef"})
+	if got != "Bearer abc%%2Fdef" {
+		t.Fatalf("composeAuthFromCookies() = %%q, want opaque percent sequence intact", got)
+	}
+}
+
 func TestValidateComposedAuthRejectsExpiredJWTBeforeProbe(t *testing.T) {
 	err := validateComposedAuth("Bearer " + expiredJWT, "session=" + expiredJWT)
 	if err == nil {
@@ -117,9 +146,25 @@ func TestValidateComposedAuthFallsBackForOpaqueCredential(t *testing.T) {
 		t.Fatalf("validateComposedAuth() error = %%q, want HTTP 401", err)
 	}
 }
+
+func TestValidateComposedAuthProbeSkipStillRejectsExpiredJWT(t *testing.T) {
+	err := validateComposedAuthProbe("Bearer "+expiredJWT, "session="+expiredJWT, false)
+	if err == nil {
+		t.Fatal("validateComposedAuthProbe(skip origin) error = nil, want expired JWT error")
+	}
+	if !strings.Contains(err.Error(), "JWT expired") {
+		t.Fatalf("validateComposedAuthProbe(skip origin) error = %%q, want JWT expired", err)
+	}
+}
+
+func TestValidateComposedAuthProbeSkipDoesNotDialOrigin(t *testing.T) {
+	if err := validateComposedAuthProbe("Bearer opaque-session", "session=opaque-skip-probe", false); err != nil {
+		t.Fatalf("validateComposedAuthProbe(skip origin) error = %%v, want nil for opaque credentials", err)
+	}
+}
 `, expiredJWT, validJWT)
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "composed_auth_jwt_validation_test.go"), []byte(testSrc), 0o644))
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestValidateComposedAuth", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestComposeAuthFromCookies|TestValidateComposedAuth", "-count=1")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -129,6 +174,7 @@ func TestValidateComposedAuthFallsBackForOpaqueCredential(t *testing.T) {
 	require.Zero(t, calls["Authorization:|Cookie:session="+validJWT], "valid JWT with exp must not be rejected by a hostile cookie probe")
 	require.Positive(t, calls["Authorization:|Cookie:session=opaque-session"], "opaque composed credentials must still use the existing cookie probe")
 	require.Zero(t, calls["Authorization:Bearer opaque-session|Cookie:session=opaque-session"], "cookie-session validation must not send the bearer Authorization header")
+	require.Zero(t, calls["Authorization:|Cookie:session=opaque-skip-probe"], "skip-validation must not probe the origin for opaque credentials")
 }
 
 func composedAuthTestJWT(t *testing.T, expiry time.Time) string {

@@ -39,6 +39,9 @@ import (
 {{- if $hasCookieBrowserAuth}}
 	"net/http"
 {{- end}}
+{{- if eq .Auth.Type "composed"}}
+	"net/url"
+{{- end}}
 {{- if or $hasCookieBrowserAuth $hasBrowserCapture $canonicalEnvVar}}
 	"os"
 {{- end}}
@@ -55,7 +58,7 @@ import (
 	"strings"
 	"time"
 
-{{- if or .Auth.RequiresBrowserSession .Auth.HasCookies}}
+{{- if or .Auth.RequiresBrowserSession .Auth.HasCookies (and (eq .Auth.Type "composed") .UsesBrowserHTTPTransport)}}
 	"{{modulePath}}/internal/client"
 {{- end}}
 {{- if or (not (eq .Auth.Type "none")) $hasQueryRefresh}}
@@ -157,6 +160,9 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 	var browserFlag bool
 	var profileFlag string
 	var cookiesFile string
+{{- if and (eq .Auth.Type "composed") (not .Auth.RequiresBrowserSession)}}
+	var skipValidation bool
+{{- end}}
 
 	cmd := &cobra.Command{
 		Use:   "login",
@@ -167,6 +173,9 @@ Use --chrome to read cookies from Chrome for {{.Auth.CookieDomain}}.
 Use --browser as an alias for --chrome.
 --chrome and --browser require a cookie extraction tool (pycookiecheat, cookies, or cookie-scoop-cli).
 Use --cookies-file to import Playwright storage-state JSON or a raw Cookie header file.
+{{- if and (eq .Auth.Type "composed") (not .Auth.RequiresBrowserSession)}}
+Use --skip-validation to save cookies without probing the origin.
+{{- end}}
 
 If you have multiple Chrome profiles, pycookiecheat and cookie-scoop-cli can
 auto-detect which profile is logged in. Use --profile to select a specific
@@ -369,9 +378,8 @@ profile by name when the installed backend supports it.`,
 			validationCookies := composeCookieHeader(requiredCookies, cookieMap)
 
 {{- if not .Auth.RequiresBrowserSession}}
-			// Validate the composed auth before saving — catch stale/expired sessions
 			fmt.Fprintf(w, "Validating session...")
-			if err := validateComposedAuth(composed, validationCookies); err != nil {
+			if err := validateComposedAuthProbe(composed, validationCookies, !skipValidation); err != nil {
 				loginURL := "https://" + strings.TrimPrefix(domain, ".")
 				fmt.Fprintf(w, " %s\n", red("expired"))
 				fmt.Fprintln(w, "")
@@ -380,9 +388,17 @@ profile by name when the installed backend supports it.`,
 				fmt.Fprintf(w, "\n  %s\n\n", loginURL)
 				fmt.Fprintln(w, "Then run this command again:")
 				fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --chrome\n")
+				if !skipValidation && !strings.Contains(err.Error(), "JWT expired") {
+					fmt.Fprintln(w, "To save cookies without probing the origin:")
+					fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --chrome --skip-validation\n")
+				}
 				return authErr(fmt.Errorf("session expired for %s", domain))
 			}
-			fmt.Fprintf(w, " %s\n", green("valid"))
+			if skipValidation {
+				fmt.Fprintf(w, " %s (origin probe skipped)\n", green("ok"))
+			} else {
+				fmt.Fprintf(w, " %s\n", green("valid"))
+			}
 {{- end}}
 
 			cfg, err := config.Load(flags.configPath)
@@ -514,6 +530,9 @@ profile by name when the installed backend supports it.`,
 	cmd.Flags().BoolVar(&browserFlag, "browser", false, "Alias for --chrome")
 	cmd.Flags().StringVar(&profileFlag, "profile", "", "Chrome profile name, or channel-qualified (e.g. \"Work\", \"Chrome Beta/Default\")")
 	cmd.Flags().StringVar(&cookiesFile, "cookies-file", "", "Import cookies from a Playwright storage-state JSON file or raw Cookie header file")
+{{- if and (eq .Auth.Type "composed") (not .Auth.RequiresBrowserSession)}}
+	cmd.Flags().BoolVar(&skipValidation, "skip-validation", false, "Save cookies without probing the origin to confirm the session")
+{{- end}}
 	return cmd
 }
 {{- else if $hasAuth0SPA}}
@@ -1593,9 +1612,6 @@ func discoverChromeProfiles(domain string, requiredCookies []string) ([]chromePr
 		return nil, fmt.Errorf("sqlite3 not found")
 	}
 
-	// Match domain for SQLite query — host_key uses leading dot (e.g. ".notion.so")
-	domainPattern := "%" + strings.TrimPrefix(domain, ".") + "%"
-
 	var profiles []chromeProfile
 	for _, ch := range channelDirs {
 		for _, name := range chromeProfileDirNames(ch.DataDir) {
@@ -1610,7 +1626,7 @@ func discoverChromeProfiles(domain string, requiredCookies []string) ([]chromePr
 				displayName = name
 			}
 
-			count, requiredCount, missing := inspectCookiesForDomain(cookiesDB, domainPattern, requiredCookies)
+			count, requiredCount, missing := inspectCookiesForDomain(cookiesDB, domain, requiredCookies)
 
 			profiles = append(profiles, chromeProfile{
 				Channel:             ch.Channel,
@@ -1659,9 +1675,10 @@ func readProfileDisplayName(prefsPath string) string {
 	return prefs.Profile.Name
 }
 
-// inspectCookiesForDomain copies the Cookies DB (plus WAL/SHM) to temp and counts matching rows.
-// Uses sqlite3 when available; host_key is plaintext so no decryption is needed.
-func inspectCookiesForDomain(cookiesDB, domainPattern string, requiredCookies []string) (count int, requiredCount int, missing []string) {
+// inspectCookiesForDomain copies the Cookies DB (plus WAL/SHM) to temp and
+// counts rows whose host_key matches domain via cookieDomainMatches. SQL LIKE
+// on the full host misses parent-domain cookies (".example.com" vs "www.example.com").
+func inspectCookiesForDomain(cookiesDB, domain string, requiredCookies []string) (count int, requiredCount int, missing []string) {
 	tmpFile, err := os.CreateTemp("", "cookies-probe-*.db")
 	if err != nil {
 		return 0, 0, append([]string{}, requiredCookies...)
@@ -1680,48 +1697,44 @@ func inspectCookiesForDomain(cookiesDB, domainPattern string, requiredCookies []
 	_ = copyFileIfExists(cookiesDB+"-wal", tmpPath+"-wal")
 	_ = copyFileIfExists(cookiesDB+"-shm", tmpPath+"-shm")
 
-	query := fmt.Sprintf("SELECT COUNT(*) FROM cookies WHERE host_key LIKE '%s'", sqlQuoteLiteral(domainPattern))
-	out, err := exec.Command("sqlite3", tmpPath, query).Output()
+	out, err := exec.Command("sqlite3", "-separator", "\t", tmpPath, "SELECT host_key, name FROM cookies").Output()
 	if err != nil {
 		return 0, 0, append([]string{}, requiredCookies...)
 	}
 
-	fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &count)
+	requiredSet := map[string]bool{}
+	for _, name := range requiredCookies {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			requiredSet[name] = true
+		}
+	}
+
+	present := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		hostKey, name, ok := strings.Cut(line, "\t")
+		if !ok {
+			continue
+		}
+		if !cookieDomainMatches(hostKey, domain) {
+			continue
+		}
+		count++
+		name = strings.TrimSpace(name)
+		if requiredSet[name] && !present[name] {
+			present[name] = true
+			requiredCount++
+		}
+	}
 
 	if len(requiredCookies) == 0 || count == 0 {
 		return count, 0, append([]string{}, requiredCookies...)
 	}
 
-	quotedNames := make([]string, 0, len(requiredCookies))
-	for _, name := range requiredCookies {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		quotedNames = append(quotedNames, "'"+sqlQuoteLiteral(name)+"'")
-	}
-	if len(quotedNames) == 0 {
-		return count, 0, nil
-	}
-
-	query = fmt.Sprintf(
-		"SELECT DISTINCT name FROM cookies WHERE host_key LIKE '%s' AND name IN (%s)",
-		sqlQuoteLiteral(domainPattern),
-		strings.Join(quotedNames, ","),
-	)
-	out, err = exec.Command("sqlite3", tmpPath, query).Output()
-	if err != nil {
-		return count, 0, append([]string{}, requiredCookies...)
-	}
-
-	present := map[string]bool{}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		name := strings.TrimSpace(line)
-		if name != "" && !present[name] {
-			present[name] = true
-			requiredCount++
-		}
-	}
 	for _, name := range requiredCookies {
 		name = strings.TrimSpace(name)
 		if name != "" && !present[name] {
@@ -1729,10 +1742,6 @@ func inspectCookiesForDomain(cookiesDB, domainPattern string, requiredCookies []
 		}
 	}
 	return count, requiredCount, missing
-}
-
-func sqlQuoteLiteral(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
 }
 
 // copyFileIfExists copies src to dst. Returns nil if src does not exist.
@@ -2223,16 +2232,33 @@ func extractViaCookieScoop(domain, profileDir string) (string, error) {
 {{- end}}
 
 {{- if eq .Auth.Type "composed"}}
+func cookieNameLooksCSRF(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return strings.Contains(n, "csrf") || strings.Contains(n, "xsrf")
+}
+
+func decodeCookieValue(name, value string) string {
+	if !cookieNameLooksCSRF(name) {
+		return value
+	}
+	decoded, err := url.PathUnescape(value)
+	if err != nil || decoded == value {
+		return value
+	}
+	return decoded
+}
+
 func composeAuthFromCookies(format string, requiredCookies []string, cookieMap map[string]string) string {
 	composed := format
 	if len(requiredCookies) > 0 {
 		if value, ok := cookieMap[requiredCookies[0]]; ok {
-			composed = strings.ReplaceAll(composed, "{token}", value)
-			composed = strings.ReplaceAll(composed, "{access_token}", value)
+			decoded := decodeCookieValue(requiredCookies[0], value)
+			composed = strings.ReplaceAll(composed, "{token}", decoded)
+			composed = strings.ReplaceAll(composed, "{access_token}", decoded)
 		}
 	}
 	for _, name := range requiredCookies {
-		composed = strings.ReplaceAll(composed, "{"+name+"}", cookieMap[name])
+		composed = strings.ReplaceAll(composed, "{"+name+"}", decodeCookieValue(name, cookieMap[name]))
 	}
 	return composed
 }
@@ -2250,6 +2276,10 @@ func composeCookieHeader(requiredCookies []string, cookieMap map[string]string) 
 // validateComposedAuth rejects expired JWTs locally before falling back to a
 // lightweight probe for opaque composed credentials.
 func validateComposedAuth(authHeader, cookieHeader string) error {
+	return validateComposedAuthProbe(authHeader, cookieHeader, true)
+}
+
+func validateComposedAuthProbe(authHeader, cookieHeader string, probeOrigin bool) error {
 	for _, credential := range []string{authHeader, cookieHeader} {
 		if expiry, ok := composedAuthJWTExpiry(credential); ok {
 			if !time.Now().Before(expiry) {
@@ -2257,6 +2287,9 @@ func validateComposedAuth(authHeader, cookieHeader string) error {
 			}
 			return nil
 		}
+	}
+	if !probeOrigin {
+		return nil
 	}
 
 	testURL := "{{.BaseURL}}"
@@ -2293,8 +2326,12 @@ func validateComposedAuth(authHeader, cookieHeader string) error {
 	}
 {{- end}}
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+{{- if .UsesBrowserHTTPTransport}}
+	httpClient := client.NewProbeHTTPClient(5*time.Second, false)
+{{- else}}
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+{{- end}}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil // network error, assume OK — don't block auth on connectivity
 	}
