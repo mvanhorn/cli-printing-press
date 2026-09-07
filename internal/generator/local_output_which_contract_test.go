@@ -78,6 +78,10 @@ func TestGeneratedLocalReadsAndWhichHonorSharedRuntimeContracts(t *testing.T) {
 		"resolveLocal must distinguish collection paths from object IDs")
 	assert.Contains(t, dataSrc, "func applyLocalListFilters(",
 		"local list reads must apply supported query filters")
+	assert.Contains(t, dataSrc, "func loadLocalList(",
+		"local list reads must bound/stream instead of List(resourceType, 0)")
+	assert.NotContains(t, stripGoComments(dataSrc), "db.List(resourceType, 0)",
+		"local list must not load the entire generic partition before take/filters")
 	assert.Contains(t, dataSrc, "func applyLocalParentScope(",
 		"nested collection paths must constrain List results to the parent segment")
 	assert.Contains(t, dataSrc, "func localItemStoredParentMatches(",
