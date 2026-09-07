@@ -129,7 +129,7 @@ for CLIs and agents: no localhost callback server and no client secret.
 				deviceAuthorizationURL = "{{.Auth.DeviceAuthorizationURL}}"
 			}
 			scopes := []string{ {{- range .Auth.Scopes}}"{{.}}", {{end}} }
-			if scope := os.Getenv("{{envName .Name}}_OAUTH_SCOPE"); scope != "" {
+			if scope := cliutil.EnvOverride("{{envName .Name}}_OAUTH_SCOPE"); scope != "" {
 				scopes = strings.Fields(scope)
 			}
 

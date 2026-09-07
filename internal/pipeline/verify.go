@@ -504,7 +504,7 @@ func (v *Verifier) AuthProof() AuthProofResult {
 	result.GeneratedFormat, tokenPreserving, invalidDetail = detectGeneratedAuthFormat(clientSource, expectedPrefix)
 	result.GeneratedScheme = result.GeneratedFormat
 
-	envVarRe := regexp.MustCompile(`os\.Getenv\("([^"]+)"\)`)
+	envVarRe := regexp.MustCompile(`(?:os\.Getenv|cliutil\.EnvOverride)\("([^"]+)"\)`)
 	envMatches := envVarRe.FindAllStringSubmatch(clientSource, -1)
 	if len(envMatches) > 0 {
 		for _, m := range envMatches {

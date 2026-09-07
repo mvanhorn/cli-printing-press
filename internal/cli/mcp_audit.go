@@ -6,9 +6,16 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
+)
+
+const (
+	intentHintsNA    = "n/a"
+	intentHintsOK    = "ok"
+	intentHintsStale = "stale"
 )
 
 // newMCPAuditCmd reports the MCP surface strategy for every CLI in the
@@ -27,9 +34,9 @@ func newMCPAuditCmd() *cobra.Command {
 		Use:   "mcp-audit",
 		Short: "Report MCP surface shape for every installed printed CLI",
 		Long: `Walks each CLI under ~/printing-press/library/<api>/ and reports the
-current MCP surface strategy — transport, tool design, whether the shape
-matches the API's size. Useful after a machine change to see which CLIs
-would benefit from a regenerate.
+current MCP surface strategy — transport, tool design, intent safety
+annotations, and whether the shape matches the API's size. Useful after
+a machine change to see which CLIs would benefit from a regenerate.
 
 Diagnostic only. Exit 0 regardless of findings.`,
 		Example: `  cli-printing-press mcp-audit
@@ -69,13 +76,14 @@ Diagnostic only. Exit 0 regardless of findings.`,
 // so downstream tools (ci scripts, the future emboss-audit loop) can
 // consume this without depending on go struct ordering.
 type MCPAuditFinding struct {
-	API        string `json:"api"`         // library directory basename
-	HasMCP     bool   `json:"has_mcp"`     // the CLI emits an MCP server
-	Transport  string `json:"transport"`   // "stdio", "http", "both", "unknown", "n/a"
-	ToolDesign string `json:"tool_design"` // "endpoint-mirror", "intent", "code-orch", "n/a"
-	EndpointCt int    `json:"endpoint_count"`
-	IntentCt   int    `json:"intent_count"`
-	Recommend  string `json:"recommend"` // short, actionable suggestion
+	API         string `json:"api"`         // library directory basename
+	HasMCP      bool   `json:"has_mcp"`     // the CLI emits an MCP server
+	Transport   string `json:"transport"`   // "stdio", "http", "both", "unknown", "n/a"
+	ToolDesign  string `json:"tool_design"` // "endpoint-mirror", "intent", "code-orch", "n/a"
+	EndpointCt  int    `json:"endpoint_count"`
+	IntentCt    int    `json:"intent_count"`
+	IntentHints string `json:"intent_hints"` // "ok", "stale", "n/a"
+	Recommend   string `json:"recommend"`    // short, actionable suggestion
 }
 
 // runMCPAudit walks every immediate subdirectory of libraryPath and reports
@@ -118,6 +126,7 @@ func auditLibraryCLI(dir, api string) MCPAuditFinding {
 	if mainPath == "" {
 		f.Transport = "n/a"
 		f.ToolDesign = "n/a"
+		f.IntentHints = intentHintsNA
 		f.Recommend = "no MCP surface — consider adding mcp: block to enable an MCP server"
 		return f
 	}
@@ -145,9 +154,11 @@ func auditLibraryCLI(dir, api string) MCPAuditFinding {
 		f.EndpointCt = strings.Count(string(data), "mcplib.NewTool(")
 	}
 	intentsPresent := false
+	var intentsBody string
 	if data, err := os.ReadFile(filepath.Join(dir, "internal", "mcp", "intents.go")); err == nil {
 		intentsPresent = true
-		f.IntentCt = strings.Count(string(data), "mcplib.NewTool(")
+		intentsBody = string(data)
+		f.IntentCt = strings.Count(intentsBody, "mcplib.NewTool(")
 	}
 	codeOrch := false
 	if _, err := os.Stat(filepath.Join(dir, "internal", "mcp", "code_orch.go")); err == nil {
@@ -163,8 +174,67 @@ func auditLibraryCLI(dir, api string) MCPAuditFinding {
 		f.ToolDesign = "endpoint-mirror"
 	}
 
-	f.Recommend = recommendForFinding(f)
+	hints, recs := inspectIntentSurface(intentsBody, f.IntentCt)
+	f.IntentHints = hints
+	f.Recommend = mergeRecommendations(recommendForFinding(f), recs)
 	return f
+}
+
+func inspectIntentSurface(body string, intentCt int) (string, []string) {
+	if intentCt == 0 {
+		return intentHintsNA, nil
+	}
+	var recs []string
+	if strings.Count(body, "WithOpenWorldHintAnnotation") < intentCt {
+		recs = append(recs, "reprint: intent tools lack safety annotations")
+	}
+	if intentHasInvalidTypedDefault(body) {
+		recs = append(recs, "reprint: intent typed defaults are not valid Go literals")
+	}
+	if len(recs) == 0 {
+		return intentHintsOK, nil
+	}
+	return intentHintsStale, recs
+}
+
+func intentHasInvalidTypedDefault(body string) bool {
+	const assign = "] = "
+	for line := range strings.SplitSeq(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, `input["`) {
+			continue
+		}
+		_, rhs, ok := strings.Cut(trimmed, assign)
+		if !ok {
+			continue
+		}
+		rhs = strings.TrimSpace(strings.TrimSuffix(rhs, ";"))
+		if !validIntentDefaultGo(rhs) {
+			return true
+		}
+	}
+	return false
+}
+
+func validIntentDefaultGo(rhs string) bool {
+	if rhs == "true" || rhs == "false" {
+		return true
+	}
+	if strings.HasPrefix(rhs, `"`) {
+		return true
+	}
+	_, err := strconv.ParseInt(rhs, 10, 64)
+	return err == nil
+}
+
+func mergeRecommendations(base string, extra []string) string {
+	if len(extra) == 0 {
+		return base
+	}
+	if base == "" || base == "ok" {
+		return strings.Join(extra, "; ")
+	}
+	return base + "; " + strings.Join(extra, "; ")
 }
 
 // recommendForFinding produces a one-line action hint. The hints match the

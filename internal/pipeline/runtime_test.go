@@ -2273,10 +2273,10 @@ func Load() *Config {
 	if cfg.TemplateVars == nil {
 		cfg.TemplateVars = map[string]string{}
 	}
-	if v := os.Getenv("SHOPIFY_SHOP"); v != "" {
+	if v := cliutil.EnvOverride("SHOPIFY_SHOP"); v != "" {
 		cfg.TemplateVars["shop"] = v
 	}
-	if v := os.Getenv("SHOPIFY_API_VERSION"); v != "" {
+	if v := cliutil.EnvOverride("SHOPIFY_API_VERSION"); v != "" {
 		cfg.TemplateVars["api_version"] = v
 	}
 	return cfg

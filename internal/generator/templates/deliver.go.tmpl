@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"{{modulePath}}/internal/client"
+	"{{modulePath}}/internal/cliutil"
 )
 
 // DeliverSink describes where command output should be routed when
@@ -130,7 +131,7 @@ func deliverWebhook(url string, body []byte, compact bool) error {
 		return fmt.Errorf("building webhook request: %w", err)
 	}
 	req.Header.Set("Content-Type", contentType)
-	if ua := os.Getenv("{{envName .Name}}_USER_AGENT"); ua != "" {
+	if ua := cliutil.EnvOverride("{{envName .Name}}_USER_AGENT"); ua != "" {
 		req.Header.Set("User-Agent", ua)
 	} else {
 		req.Header.Set("User-Agent", "{{.Name}}-pp-cli/deliver")

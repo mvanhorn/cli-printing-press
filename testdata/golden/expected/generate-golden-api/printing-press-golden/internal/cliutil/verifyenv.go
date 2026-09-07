@@ -3,7 +3,10 @@
 
 package cliutil
 
-import "os"
+import (
+	"os"
+	"strings"
+)
 
 // VerifyEnvVar is the env var the printing-press verifier sets in every
 // mock-mode subprocess. Generated commands that perform visible side
@@ -131,4 +134,31 @@ func IsAnyHarness() bool {
 // to bound read work, never to substitute mock data for real calls.
 func IsDogfoodEnv() bool {
 	return os.Getenv(DogfoodEnvVar) == "1"
+}
+
+// EnvOverride returns the named environment variable, treating an
+// unresolved MCPB `${user_config.*}` placeholder as unset. Hosts that
+// skip optional user_config keys leave the template text in the
+// environment; generated config and client reads must not treat that
+// text as a real override.
+func EnvOverride(name string) string {
+	return EffectiveEnv(os.Getenv(name))
+}
+
+// EffectiveEnv returns v, or empty when v is an unresolved MCPB
+// placeholder (`${...}` with no nested `}`).
+func EffectiveEnv(v string) string {
+	if UnresolvedUserConfigPlaceholder(v) {
+		return ""
+	}
+	return v
+}
+
+// UnresolvedUserConfigPlaceholder reports whether v is a complete
+// `${...}` template left in place by an MCPB host.
+func UnresolvedUserConfigPlaceholder(v string) bool {
+	if len(v) < 3 || !strings.HasPrefix(v, "${") || !strings.HasSuffix(v, "}") {
+		return false
+	}
+	return !strings.Contains(v[2:len(v)-1], "}")
 }

@@ -1021,16 +1021,17 @@ func renderNestedDataEnvelopeFixture(fixture nestedDataEnvelopeFixture) string {
 }
 
 // templateVarReadRe matches the shape config.go.tmpl emits for each
-// EndpointTemplateVars entry: `os.Getenv("X")` immediately followed by a
+// EndpointTemplateVars entry: an env read immediately followed by a
 // `cfg.TemplateVars["..."] = v` assignment. Auth-bearing env reads land in
 // named cfg fields; template-var reads land in this map. Used by both
 // discoverCLIEnvVars (to exclude template names from the auth set) and
 // discoverCLITemplateVarEnvs (to recover them for mock-mode injection).
-var templateVarReadRe = regexp.MustCompile(`(?s)os\.Getenv\("([^"]+)"\)[^{]*\{\s*cfg\.TemplateVars\[`)
+var templateVarReadRe = regexp.MustCompile(`(?s)(?:os\.Getenv|cliutil\.EnvOverride)\("([^"]+)"\)[^{]*\{\s*cfg\.TemplateVars\[`)
 
 // discoverCLIEnvVars reads the CLI's config.go and extracts env var names
-// from os.Getenv() calls. This discovers what the CLI actually reads, which
-// may differ from what the spec declares or the API name implies.
+// from os.Getenv / cliutil.EnvOverride calls. This discovers what the CLI
+// actually reads, which may differ from what the spec declares or the API
+// name implies.
 func discoverCLIEnvVars(dir string) []string {
 	configPath := filepath.Join(dir, "internal", "config", "config.go")
 	data, err := os.ReadFile(configPath)
@@ -1052,7 +1053,7 @@ func discoverCLIEnvVars(dir string) []string {
 		templateVarNames[m[1]] = true
 	}
 
-	re := regexp.MustCompile(`os\.Getenv\("([^"]+)"\)`)
+	re := regexp.MustCompile(`(?:os\.Getenv|cliutil\.EnvOverride)\("([^"]+)"\)`)
 	matches := re.FindAllStringSubmatch(body, -1)
 	seen := map[string]bool{}
 	var envVars []string

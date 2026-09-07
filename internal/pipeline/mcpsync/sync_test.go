@@ -550,7 +550,8 @@ func TestSyncRefreshesProvenanceFromSpec(t *testing.T) {
 	manifestStr := string(manifestData)
 	assert.Contains(t, manifestStr, `"PROVREFRESH_TOKEN": "${user_config.provrefresh_token}"`)
 	assert.NotContains(t, manifestStr, `"PRINTING_PRESS_CLIENT_PROFILE"`)
-	assert.Contains(t, manifestStr, `"PROVREFRESH_BASE_URL": "${user_config.provrefresh_base_url}"`)
+	assert.NotContains(t, manifestStr, `"PROVREFRESH_BASE_URL"`,
+		"spec-defaulted BASE_URL must not be wired as ${user_config.*}")
 }
 
 // TestValidateSpecNameMatchesDirAccepts ensures matching name and dir

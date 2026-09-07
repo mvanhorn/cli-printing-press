@@ -1027,7 +1027,7 @@ func TestClientCredentialsEnvVarsSkipTenantSetupInput(t *testing.T) {
 	require.Contains(t, authContent, `clientSecret = strings.TrimSpace(os.Getenv("ENTRA_CC_CLIENT_SECRET"))`)
 	require.NotContains(t, authContent, `clientID = os.Getenv("ENTRA_CC_TENANT_ID")`)
 	require.Contains(t, authContent, `resolveClientCredentialsTokenURL(tokenURL, cfg.`+resolveEnvVarField("ENTRA_CC_TENANT_ID")+`)`)
-	require.Contains(t, authContent, `os.Getenv("ENTRA_CC_OAUTH_SCOPE")`)
+	require.Contains(t, authContent, `cliutil.EnvOverride("ENTRA_CC_OAUTH_SCOPE")`)
 	require.Contains(t, authContent, `strings.ReplaceAll("api://{client_id}/.default", "{client_id}", clientID)`)
 
 	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))

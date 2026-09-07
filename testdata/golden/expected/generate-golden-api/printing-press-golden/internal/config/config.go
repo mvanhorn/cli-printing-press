@@ -162,7 +162,7 @@ func Load(configPath string) (*Config, error) {
 	cfg.snapshotFileConfig()
 
 	// Env var overrides
-	if v := os.Getenv("PRINTING_PRESS_GOLDEN_API_KEY"); v != "" {
+	if v := cliutil.EnvOverride("PRINTING_PRESS_GOLDEN_API_KEY"); v != "" {
 		cfg.PrintingPressGoldenApiKey = v
 		cfg.markEnvOverride("PrintingPressGoldenApiKey")
 		cfg.AuthSource = "env:PRINTING_PRESS_GOLDEN_API_KEY"
@@ -207,7 +207,7 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// Base URL override (used by printing-press verify to point at mock/test servers)
-	if v := os.Getenv("PRINTING_PRESS_GOLDEN_BASE_URL"); v != "" {
+	if v := cliutil.EnvOverride("PRINTING_PRESS_GOLDEN_BASE_URL"); v != "" {
 		cfg.BaseURL = v
 	}
 	return cfg, nil

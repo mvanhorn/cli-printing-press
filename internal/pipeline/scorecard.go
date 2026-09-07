@@ -3090,8 +3090,8 @@ func inferredAuthHeaderAssignmentPresent(clientContent string) bool {
 }
 
 var (
-	genericAPIKeyEnvCallRe             = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*:=\s*os\.Getenv\("(?:[A-Z][A-Z0-9_]*_)?API_KEY"\)`)
-	directGenericAPIKeyEnvAssignmentRe = regexp.MustCompile(`\.\s*APIKey\s*=\s*os\.Getenv\("(?:[A-Z][A-Z0-9_]*_)?API_KEY"\)`)
+	genericAPIKeyEnvCallRe             = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*:=\s*(?:os\.Getenv|cliutil\.EnvOverride)\("(?:[A-Z][A-Z0-9_]*_)?API_KEY"\)`)
+	directGenericAPIKeyEnvAssignmentRe = regexp.MustCompile(`\.\s*APIKey\s*=\s*(?:os\.Getenv|cliutil\.EnvOverride)\("(?:[A-Z][A-Z0-9_]*_)?API_KEY"\)`)
 )
 
 func configReadsAPIKeyEnvForScheme(configContent string, scheme openAPISecurityScheme) bool {

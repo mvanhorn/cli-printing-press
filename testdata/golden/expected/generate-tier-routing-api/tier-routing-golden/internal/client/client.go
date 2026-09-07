@@ -1254,7 +1254,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			req.Header.Del(HTMLResponseHeader)
 		}
 		if req.Header.Get("User-Agent") == "" {
-			if ua := os.Getenv("TIER_ROUTING_GOLDEN_USER_AGENT"); ua != "" {
+			if ua := cliutil.EnvOverride("TIER_ROUTING_GOLDEN_USER_AGENT"); ua != "" {
 				req.Header.Set("User-Agent", ua)
 			} else {
 				req.Header.Set("User-Agent", "tier-routing-golden-pp-cli/1.0.0")

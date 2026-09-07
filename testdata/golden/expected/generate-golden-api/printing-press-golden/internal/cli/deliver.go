@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"printing-press-golden-pp-cli/internal/client"
+	"printing-press-golden-pp-cli/internal/cliutil"
 )
 
 // DeliverSink describes where command output should be routed when
@@ -131,7 +132,7 @@ func deliverWebhook(url string, body []byte, compact bool) error {
 		return fmt.Errorf("building webhook request: %w", err)
 	}
 	req.Header.Set("Content-Type", contentType)
-	if ua := os.Getenv("PRINTING_PRESS_GOLDEN_USER_AGENT"); ua != "" {
+	if ua := cliutil.EnvOverride("PRINTING_PRESS_GOLDEN_USER_AGENT"); ua != "" {
 		req.Header.Set("User-Agent", ua)
 	} else {
 		req.Header.Set("User-Agent", "printing-press-golden-pp-cli/deliver")

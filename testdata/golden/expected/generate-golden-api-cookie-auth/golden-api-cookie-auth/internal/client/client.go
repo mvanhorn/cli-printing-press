@@ -1180,7 +1180,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			// empty 5xx or a challenge. RequiredHeaders or per-endpoint
 			// headerOverrides still win, and any caller that wants the
 			// CLI-flavored UA can set it on the request explicitly.
-			if ua := os.Getenv("GOLDEN_API_COOKIE_AUTH_USER_AGENT"); ua != "" {
+			if ua := cliutil.EnvOverride("GOLDEN_API_COOKIE_AUTH_USER_AGENT"); ua != "" {
 				req.Header.Set("User-Agent", ua)
 			} else {
 				req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")

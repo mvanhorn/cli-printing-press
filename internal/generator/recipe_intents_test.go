@@ -131,11 +131,13 @@ func TestRecipeIntentDerivationBindsPositionals(t *testing.T) {
 			{Title: "Get thing", Command: "demo-pp-cli get 12345678 --json"},
 			{Title: "Upgrade release", Command: "demo-pp-cli upgrade v1.2.3 --json"},
 			{Title: "Lookup slug", Command: "demo-pp-cli recipes my-best-brownies --json"},
+			{Title: "Cite dataset", Command: "demo-pp-cli cite zenodo:1261813 --json"},
+			{Title: "Cite DOI", Command: "demo-pp-cli cite-doi doi:10.5281/zenodo.1261813 --json"},
 			{Title: "Unbindable word", Command: "demo-pp-cli team add engineering --role=owner --json"},
 		},
 	}, nil)
 
-	require.Len(t, intents, 4)
+	require.Len(t, intents, 6)
 	require.Equal(t, []string{"advice", "--json"}, intents[0].Command)
 	require.Len(t, intents[0].Params, 2)
 	require.True(t, intents[0].Params[0].Positional)
@@ -164,6 +166,44 @@ func TestRecipeIntentDerivationBindsPositionals(t *testing.T) {
 	require.Equal(t, []string{"recipes", "--json"}, intents[3].Command)
 	require.True(t, intents[3].Params[0].Positional)
 	require.Equal(t, "slug", intents[3].Params[0].InputName)
+
+	require.Equal(t, []string{"cite", "--json"}, intents[4].Command)
+	require.True(t, intents[4].Params[0].Positional)
+	require.Equal(t, "ref", intents[4].Params[0].InputName)
+	require.True(t, intents[4].Params[0].Required)
+	require.False(t, intents[4].Args[1].Static)
+	require.Equal(t, "ref", intents[4].Args[1].Param.InputName)
+
+	require.Equal(t, []string{"cite-doi", "--json"}, intents[5].Command)
+	require.True(t, intents[5].Params[0].Positional)
+	require.Equal(t, "ref", intents[5].Params[0].InputName)
+	require.False(t, intents[5].Args[1].Static)
+}
+
+func TestRecipeIntentGenerationBindsColonRefPositional(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("researchrecipes")
+	outputDir := filepath.Join(t.TempDir(), "researchrecipes-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{MCP: true}
+	gen.Narrative = &ReadmeNarrative{
+		Recipes: []Recipe{{
+			Title:       "Cite dataset",
+			Command:     "researchrecipes-pp-cli cite zenodo:1261813 --json",
+			Explanation: "Cite a dataset by ref.",
+		}},
+	}
+
+	require.NoError(t, gen.Generate())
+
+	intents := readGeneratedFile(t, outputDir, "internal", "mcp", "intents.go")
+	require.Contains(t, intents, `mcplib.WithString("ref"`)
+	require.Contains(t, intents, `appendRecipePositional(args, input["ref"], true)`)
+	require.NotContains(t, intents, "zenodo:1261813")
+	require.Contains(t, intents, `mcplib.WithOpenWorldHintAnnotation(true)`)
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp")
 }
 
 func TestRecipeIntentGenerationBindsPositionalHandlerArgs(t *testing.T) {

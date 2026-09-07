@@ -38,9 +38,9 @@ func TestOAuth2URLs_RuntimeOverrideEmittedForAuthCodeGrant(t *testing.T) {
 
 	require.Regexp(t, `\bAuthorizationURL\s+string\b`, cfg, "Config must expose AuthorizationURL override field")
 	require.Regexp(t, `\bTokenURL\s+string\b`, cfg, "Config must expose TokenURL override field")
-	require.Contains(t, cfg, `os.Getenv("OAUTH_URL_OVERRIDE_AUTHORIZATION_URL")`,
+	require.Contains(t, cfg, `cliutil.EnvOverride("OAUTH_URL_OVERRIDE_AUTHORIZATION_URL")`,
 		"Load() must read AuthorizationURL env override")
-	require.Contains(t, cfg, `os.Getenv("OAUTH_URL_OVERRIDE_TOKEN_URL")`,
+	require.Contains(t, cfg, `cliutil.EnvOverride("OAUTH_URL_OVERRIDE_TOKEN_URL")`,
 		"Load() must read TokenURL env override")
 
 	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
@@ -92,7 +92,7 @@ func TestOAuth2URLs_RuntimeOverrideEmittedForClientCredentialsGrant(t *testing.T
 	require.Regexp(t, `\bTokenURL\s+string\b`, cfg)
 	require.NotRegexp(t, `\bAuthorizationURL\s+string\b`, cfg,
 		"client_credentials grant has no authorization URL, so the field must not be emitted")
-	require.Contains(t, cfg, `os.Getenv("CC_URL_OVERRIDE_TOKEN_URL")`)
+	require.Contains(t, cfg, `cliutil.EnvOverride("CC_URL_OVERRIDE_TOKEN_URL")`)
 
 	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
 	require.NoError(t, err)

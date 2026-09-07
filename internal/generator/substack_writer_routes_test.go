@@ -22,7 +22,7 @@ func TestGenerateSubstackGlobalWriterRoutes(t *testing.T) {
 	assert.Contains(t, rootSrc, `"publication-id"`)
 
 	configSrc := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
-	assert.Contains(t, configSrc, `os.Getenv("SUBSTACK_PUBLICATION_ID")`)
+	assert.Contains(t, configSrc, `cliutil.EnvOverride("SUBSTACK_PUBLICATION_ID")`)
 	assert.Contains(t, configSrc, `cfg.TemplateVars["publication_id"] = v`)
 
 	draftsSrc := readGeneratedFile(t, outputDir, "internal", "cli", "drafts_create.go")

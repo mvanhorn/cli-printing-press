@@ -166,13 +166,13 @@ func Load(configPath string) (*Config, error) {
 	cfg.snapshotFileConfig()
 
 	// Env var overrides
-	if v := os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_ID"); v != "" {
+	if v := cliutil.EnvOverride("PRINTING_PRESS_OAUTH2_CLIENT_ID"); v != "" {
 		cfg.PrintingPressOauth2ClientId = v
 		cfg.markEnvOverride("PrintingPressOauth2ClientId")
 		cfg.AuthSource = "env:PRINTING_PRESS_OAUTH2_CLIENT_ID"
 		cfg.CredentialSource = "env:PRINTING_PRESS_OAUTH2_CLIENT_ID"
 	}
-	if v := os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_SECRET"); v != "" {
+	if v := cliutil.EnvOverride("PRINTING_PRESS_OAUTH2_CLIENT_SECRET"); v != "" {
 		cfg.PrintingPressOauth2ClientSecret = v
 		cfg.markEnvOverride("PrintingPressOauth2ClientSecret")
 		cfg.AuthSource = "env:PRINTING_PRESS_OAUTH2_CLIENT_SECRET"
@@ -217,10 +217,10 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// Base URL override (used by printing-press verify to point at mock/test servers)
-	if v := os.Getenv("PRINTING_PRESS_OAUTH2_BASE_URL"); v != "" {
+	if v := cliutil.EnvOverride("PRINTING_PRESS_OAUTH2_BASE_URL"); v != "" {
 		cfg.BaseURL = v
 	}
-	if v := os.Getenv("PRINTING_PRESS_OAUTH2_TOKEN_URL"); v != "" {
+	if v := cliutil.EnvOverride("PRINTING_PRESS_OAUTH2_TOKEN_URL"); v != "" {
 		cfg.TokenURL = v
 	}
 	return cfg, nil
