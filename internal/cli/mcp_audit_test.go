@@ -193,7 +193,24 @@ func TestRunMCPAuditIntentSurfaceStaleWithoutAnnotations(t *testing.T) {
 	assert.Equal(t, "intent", f.ToolDesign)
 	assert.Equal(t, intentHintsStale, f.IntentHints)
 	assert.Contains(t, f.Recommend, "safety annotations")
-	assert.Contains(t, f.Recommend, "overclaim unimplemented steps")
+	assert.NotContains(t, f.Recommend, "overclaim")
+}
+
+func TestRunMCPAuditIntentSurfaceAllowsExecutedStepThenClause(t *testing.T) {
+	lib := t.TempDir()
+	cli := filepath.Join(lib, "step-then-cli")
+	mustWrite(t, cli, "cmd/step-then-cli-pp-mcp/main.go",
+		"package main\nfunc main() { server.ServeStdio(s); server.NewStreamableHTTPServer(s) }\n")
+	mustWrite(t, cli, "internal/mcp/tools.go", makeMCPTools(1))
+	mustWrite(t, cli, "internal/mcp/intents.go", makeIntentTools(1, true, "Fetch the record, then normalize its fields"))
+
+	findings, err := runMCPAudit(lib)
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	f := findings[0]
+	assert.Equal(t, intentHintsOK, f.IntentHints)
+	assert.Equal(t, "ok", f.Recommend)
+	assert.NotContains(t, f.Recommend, "overclaim")
 }
 
 func TestRunMCPAuditIntentSurfaceCurrent(t *testing.T) {
@@ -247,7 +264,7 @@ func TestRunMCPAuditGeneratedIntentSurfaceIsCurrent(t *testing.T) {
 		Resources: map[string]spec.Resource{
 			"availability": {
 				Endpoints: map[string]spec.Endpoint{
-					"search": {Method: "GET", Path: "/search", Description: "Search award availability"},
+					"search": {Method: "GET", Path: "/search", Description: "Fetch the record, then normalize its fields"},
 					"book":   {Method: "POST", Path: "/book", Description: "Hold a trip"},
 				},
 			},
@@ -291,6 +308,11 @@ func TestRunMCPAuditGeneratedIntentSurfaceIsCurrent(t *testing.T) {
 
 	require.NoError(t, generator.New(apiSpec, cli).Generate())
 
+	intentsSrc, err := os.ReadFile(filepath.Join(cli, "internal", "mcp", "intents.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(intentsSrc), "Fetch the record, then normalize its fields",
+		"executed endpoint step text must remain in the generated intent surface")
+
 	findings, err := runMCPAudit(lib)
 	require.NoError(t, err)
 	require.Len(t, findings, 1)
@@ -299,6 +321,7 @@ func TestRunMCPAuditGeneratedIntentSurfaceIsCurrent(t *testing.T) {
 	assert.Equal(t, 2, f.IntentCt)
 	assert.Equal(t, intentHintsOK, f.IntentHints)
 	assert.NotContains(t, f.Recommend, "reprint:")
+	assert.NotContains(t, f.Recommend, "overclaim")
 }
 
 func TestRunMCPAuditMissingLibraryErrors(t *testing.T) {

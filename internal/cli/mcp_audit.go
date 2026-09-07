@@ -35,9 +35,8 @@ func newMCPAuditCmd() *cobra.Command {
 		Short: "Report MCP surface shape for every installed printed CLI",
 		Long: `Walks each CLI under ~/printing-press/library/<api>/ and reports the
 current MCP surface strategy — transport, tool design, intent safety
-annotations and description honesty, and whether the shape matches the
-API's size. Useful after a machine change to see which CLIs would
-benefit from a regenerate.
+annotations, and whether the shape matches the API's size. Useful after
+a machine change to see which CLIs would benefit from a regenerate.
 
 Diagnostic only. Exit 0 regardless of findings.`,
 		Example: `  cli-printing-press mcp-audit
@@ -189,9 +188,6 @@ func inspectIntentSurface(body string, intentCt int) (string, []string) {
 	if strings.Count(body, "WithOpenWorldHintAnnotation") < intentCt {
 		recs = append(recs, "reprint: intent tools lack safety annotations")
 	}
-	if intentDescriptionOverclaims(body) {
-		recs = append(recs, "reprint: intent descriptions overclaim unimplemented steps")
-	}
 	if intentHasInvalidTypedDefault(body) {
 		recs = append(recs, "reprint: intent typed defaults are not valid Go literals")
 	}
@@ -199,16 +195,6 @@ func inspectIntentSurface(body string, intentCt int) (string, []string) {
 		return intentHintsOK, nil
 	}
 	return intentHintsStale, recs
-}
-
-func intentDescriptionOverclaims(body string) bool {
-	lower := strings.ToLower(body)
-	for _, sep := range []string{", then ", "; then "} {
-		if strings.Contains(lower, sep) {
-			return true
-		}
-	}
-	return false
 }
 
 func intentHasInvalidTypedDefault(body string) bool {
