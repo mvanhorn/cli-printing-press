@@ -216,6 +216,10 @@ type SyncableResource struct {
 	// were complete.
 	QueryParamDefaults []SyncQueryParamDefault
 
+	// Empty after defaults and --param overlays used to 400 and still report
+	// refreshed; generated sync and auto-refresh skip instead.
+	RequiredQueryParams []string
+
 	// HiddenHistoryDefaults names status/state=open filters that still reach
 	// the wire as `open` because the spec has no all-history enum value and
 	// no SyncParams overlay. Generated sync warns when such a resource stores
@@ -323,6 +327,9 @@ type DependentResource struct {
 	// QueryParamDefaults mirrors SyncableResource.QueryParamDefaults for child
 	// sync paths.
 	QueryParamDefaults []SyncQueryParamDefault
+
+	// Same skip-when-unfilled contract as the parent list.
+	RequiredQueryParams []string
 
 	// HiddenHistoryDefaults mirrors SyncableResource.HiddenHistoryDefaults.
 	HiddenHistoryDefaults []SyncQueryParamDefault
@@ -1239,11 +1246,13 @@ func hasRequiredScopeParamsForSyncExcluding(endpoint spec.Endpoint, allowEnumExp
 			if pageSizeParamCandidates[lower] || cursorParamCandidates[lower] || temporalOrFormatParams[lower] {
 				continue
 			}
-			// Enum params with 2+ values are handled by enum expansion, not scope
-			// for flat resources. Dependent sync has no per-parent enum expansion
-			// path, so required enum filters are still unsatisfied there.
-			if allowEnumExpansion && len(param.Enum) >= 2 {
-				continue
+			// Only the entity-type enum findEntityTypeEnum would expand is
+			// satisfied by fan-out. Other required enums stay unscoped so
+			// default sync does not 400.
+			if allowEnumExpansion {
+				if enumParam := findEntityTypeEnum(endpoint); enumParam != nil && strings.EqualFold(param.Name, enumParam.Name) {
+					continue
+				}
 			}
 			return true
 		}
@@ -2042,6 +2051,7 @@ func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[strin
 		HTMLExtract:              entry.meta.HTMLExtract,
 		BodyFields:               entry.meta.BodyFields,
 		QueryParamDefaults:       entry.meta.QueryParamDefaults,
+		RequiredQueryParams:      dropPathSatisfiedRequiredParams(entry.meta.Path, entry.meta.RequiredQueryParams),
 		HiddenHistoryDefaults:    entry.meta.HiddenHistoryDefaults,
 		IDWalkFilterParam:        entry.meta.IDWalkFilterParam,
 		IDWalkLimitParam:         entry.meta.IDWalkLimitParam,
@@ -2307,6 +2317,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				HTMLExtract:              meta.HTMLExtract,
 				BodyFields:               meta.BodyFields,
 				QueryParamDefaults:       meta.QueryParamDefaults,
+				RequiredQueryParams:      dropPathSatisfiedRequiredParams(e.Path, meta.RequiredQueryParams),
 				HiddenHistoryDefaults:    meta.HiddenHistoryDefaults,
 				IDWalkFilterParam:        meta.IDWalkFilterParam,
 				IDWalkLimitParam:         meta.IDWalkLimitParam,
@@ -2633,6 +2644,7 @@ type syncableMeta struct {
 	HTMLExtract              *spec.HTMLExtract
 	BodyFields               []SyncBodyField
 	QueryParamDefaults       []SyncQueryParamDefault
+	RequiredQueryParams      []string
 	HiddenHistoryDefaults    []SyncQueryParamDefault
 	IDWalkFilterParam        string
 	IDWalkLimitParam         string
@@ -2678,14 +2690,15 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		nextCursorPath = strings.TrimSpace(e.Pagination.NextCursorPath)
 	}
 	hydratePath, hydrateIDParam := scalarIDHydrationTarget(s, resourceName, e, types)
-	queryParamSeed := syncQueryParamSeedFromEndpoint(e, syncOwnedParams{
+	syncOwned := syncOwnedParams{
 		cursor:    paginationCursorParam,
 		limit:     paginationLimitParam,
 		idWalk:    idWalkLimitParam,
 		since:     sinceParam,
 		sort:      paginationSortParam,
 		dateRange: syncDateRangeParamNames,
-	})
+	}
+	queryParamSeed := syncQueryParamSeedFromEndpoint(e, syncOwned)
 	return syncableMeta{
 		Path:                     e.Path,
 		Method:                   strings.ToUpper(e.Method),
@@ -2709,6 +2722,7 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		HTMLExtract:              e.HTMLExtract,
 		BodyFields:               syncBodyFieldsFromEndpoint(e),
 		QueryParamDefaults:       queryParamSeed.Defaults,
+		RequiredQueryParams:      requiredSyncQueryParamsFromEndpoint(e, syncOwned, e.Path),
 		HiddenHistoryDefaults:    queryParamSeed.HiddenHistory,
 		IDWalkFilterParam:        idWalkFilterParam,
 		IDWalkLimitParam:         idWalkLimitParam,
@@ -3036,6 +3050,13 @@ func (o syncOwnedParams) keys() map[string]struct{} {
 	return out
 }
 
+// alwaysAssignedKeys are the paging keys the generated page loop puts on
+// every request. since, sort, and date-range stay off this set because
+// sync only sends them inside a conditional.
+func (o syncOwnedParams) alwaysAssignedKeys() map[string]struct{} {
+	return syncOwnedParams{cursor: o.cursor, limit: o.limit, idWalk: o.idWalk}.keys()
+}
+
 // syncDateRangeParamNames lists the spellings the profiler recognizes as the
 // date-range filter, kept beside the detection that populates DateRangeParam so
 // the two cannot drift.
@@ -3056,6 +3077,82 @@ type syncQueryParamSeed struct {
 // Endpoint.SyncParams overlay last so a spec can opt into (or keep) a slice.
 func syncQueryParamDefaultsFromEndpoint(endpoint spec.Endpoint, syncOwned syncOwnedParams) []SyncQueryParamDefault {
 	return syncQueryParamSeedFromEndpoint(endpoint, syncOwned).Defaults
+}
+
+func requiredSyncQueryParamsFromEndpoint(endpoint spec.Endpoint, syncOwned syncOwnedParams, path string) []string {
+	// Drop only paging keys the page loop always assigns. since, sort, and
+	// date-range are sync-owned but conditional: a first or full sync leaves
+	// them off the wire, so a required one must stay in this guard.
+	reserved := syncOwned.alwaysAssignedKeys()
+	satisfied := queryNamesInPath(path)
+	var out []string
+	seen := map[string]struct{}{}
+	for _, param := range endpoint.Params {
+		if loc := strings.TrimSpace(param.In); loc != "" && !strings.EqualFold(loc, "query") {
+			continue
+		}
+		if !param.Required || param.Positional || param.PathParam {
+			continue
+		}
+		if param.GlobalScope {
+			continue
+		}
+		wireName := param.WireName()
+		if wireName == "" {
+			continue
+		}
+		key := strings.ToLower(wireName)
+		if _, owned := reserved[key]; owned {
+			continue
+		}
+		if _, owned := reserved[strings.ToLower(param.Name)]; owned {
+			continue
+		}
+		lower := strings.ToLower(param.Name)
+		if pageSizeParamCandidates[lower] || cursorParamCandidates[lower] || pageSizeParamCandidates[key] || cursorParamCandidates[key] {
+			continue
+		}
+		if _, ok := satisfied[key]; ok {
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, wireName)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func queryNamesInPath(path string) map[string]struct{} {
+	_, query, ok := strings.Cut(path, "?")
+	if !ok || query == "" {
+		return nil
+	}
+	out := map[string]struct{}{}
+	for part := range strings.SplitSeq(query, "&") {
+		name, _, _ := strings.Cut(part, "=")
+		if key := strings.ToLower(strings.TrimSpace(name)); key != "" {
+			out[key] = struct{}{}
+		}
+	}
+	return out
+}
+
+func dropPathSatisfiedRequiredParams(path string, params []string) []string {
+	satisfied := queryNamesInPath(path)
+	if len(satisfied) == 0 {
+		return params
+	}
+	out := make([]string, 0, len(params))
+	for _, name := range params {
+		if _, ok := satisfied[strings.ToLower(name)]; ok {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
 }
 
 func syncQueryParamSeedFromEndpoint(endpoint spec.Endpoint, syncOwned syncOwnedParams) syncQueryParamSeed {
@@ -4023,6 +4120,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			HTMLExtract:              meta.HTMLExtract,
 			BodyFields:               meta.BodyFields,
 			QueryParamDefaults:       meta.QueryParamDefaults,
+			RequiredQueryParams:      dropPathSatisfiedRequiredParams(meta.Path, meta.RequiredQueryParams),
 			HiddenHistoryDefaults:    meta.HiddenHistoryDefaults,
 			IDWalkFilterParam:        meta.IDWalkFilterParam,
 			IDWalkLimitParam:         meta.IDWalkLimitParam,
