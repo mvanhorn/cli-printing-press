@@ -163,6 +163,133 @@ func TestProfileEnumExpansion(t *testing.T) {
 	assert.Equal(t, "/v1/api/networkentity?entityType=api", syncPaths["api"])
 	// Teams endpoint keeps its own resource
 	assert.Equal(t, "/v1/api/team", syncPaths["team"])
+
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	assert.Equal(t, []string{"entityType"}, byName["networkentity"].RequiredQueryParams,
+		"the unexpanded list still requires the enum on the wire")
+	assert.Empty(t, byName["collection"].RequiredQueryParams,
+		"enum-expanded paths already carry entityType in the request path")
+	assert.Empty(t, byName["team"].RequiredQueryParams)
+}
+
+func TestProfileRequiredEnumFilterSkipsDefaultSync(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "seats",
+		Resources: map[string]spec.Resource{
+			"availability": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/availability",
+						Params: []spec.Param{{
+							Name:     "source",
+							In:       "query",
+							Type:     "string",
+							Required: true,
+							Enum:     []string{"united", "delta", "aeroplan"},
+						}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/items",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "availability")
+	require.Contains(t, byName, "items")
+	assert.True(t, byName["availability"].SkipDefaultSync,
+		"a required enum that is not an entity-type selector cannot be default-synced")
+	assert.False(t, byName["items"].SkipDefaultSync)
+	assert.Equal(t, []string{"source"}, byName["availability"].RequiredQueryParams)
+	assert.Empty(t, byName["items"].RequiredQueryParams)
+}
+
+func TestProfileRequiredFormatAndUnownedDatesStayGuarded(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "formats",
+		Resources: map[string]spec.Resource{
+			"exports": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/exports",
+						Params: []spec.Param{
+							{Name: "format", In: "query", Type: "string", Required: true},
+							{Name: "key", In: "query", Type: "string", Required: true},
+							{Name: "end_date", In: "query", Type: "string", Required: true},
+						},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"events": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/events",
+						Params: []spec.Param{
+							{Name: "since", In: "query", Type: "string", Required: true},
+							{Name: "limit", In: "query", Type: "integer", Required: true},
+						},
+						Pagination: &spec.Pagination{LimitParam: "limit"},
+						Response:   spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "exports")
+	require.Contains(t, byName, "events")
+	assert.Equal(t, []string{"end_date", "format", "key"}, byName["exports"].RequiredQueryParams,
+		"required format/key/end_date are not sync-owned, so the skip guard must keep them")
+	assert.Equal(t, []string{"since"}, byName["events"].RequiredQueryParams,
+		"required since is only sent on incremental runs, so the skip guard must keep it")
+}
+
+func TestRequiredSyncQueryParamsKeepsConditionalSyncOwned(t *testing.T) {
+	endpoint := spec.Endpoint{
+		Method: "GET",
+		Path:   "/events",
+		Params: []spec.Param{
+			{Name: "since", In: "query", Type: "string", Required: true},
+			{Name: "sort", In: "query", Type: "string", Required: true},
+			{Name: "dates", In: "query", Type: "string", Required: true},
+			{Name: "limit", In: "query", Type: "integer", Required: true},
+			{Name: "cursor", In: "query", Type: "string", Required: true},
+		},
+	}
+	got := requiredSyncQueryParamsFromEndpoint(endpoint, syncOwnedParams{
+		cursor:    "cursor",
+		limit:     "limit",
+		since:     "since",
+		sort:      "sort",
+		dateRange: syncDateRangeParamNames,
+	}, "/events")
+	assert.Equal(t, []string{"dates", "since", "sort"}, got,
+		"conditional sync-owned keys stay guarded; paginator keys do not")
 }
 
 func TestProfileSiblingListEndpoints(t *testing.T) {
