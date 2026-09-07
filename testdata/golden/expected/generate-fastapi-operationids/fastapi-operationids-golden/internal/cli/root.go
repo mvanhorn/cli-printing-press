@@ -403,10 +403,11 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify connectivity.`,
 		}
 		// Seed entity_lookups from spec.Learn.EntityLookupSeeds once per
 		// process. Skipped for framework commands that should never
-		// touch the local store (auth, doctor, help, etc.) and for
+		// touch the local store (auth, doctor, help, etc.), for
 		// --no-learn invocations so deterministic agent flows don't
-		// race a background seed.
-		if !noLearnActive(flags) && !shouldSkipLearnHook(cmd.CommandPath()) {
+		// race a background seed, and for read-only commands so a GET
+		// never runs the one-way schema migration.
+		if !noLearnActive(flags) && !shouldSkipLearnHook(cmd.CommandPath()) && commandMayWriteStore(cmd) {
 			runLearnInitOnce(cmd.Context())
 			runPlaybookInitOnce(cmd.Context())
 		}
@@ -490,6 +491,49 @@ func shouldSkipLearnHook(commandPath string) bool {
 		}
 	}
 	return false
+}
+
+// commandIsHelpInvocation reports --help / the help command so PreRun hooks
+// that open the operator store do not run as a side effect of help.
+func commandIsHelpInvocation(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	if cmd.Name() == "help" {
+		return true
+	}
+	if f := cmd.Flags().Lookup("help"); f != nil && f.Changed {
+		return true
+	}
+	return false
+}
+
+// commandMayWriteStore reports whether cmd is allowed to open the operator
+// store read-write from PersistentPreRunE. Read-only commands (mcp:read-only,
+// conventional GET/HEAD, doctor, help) must not run schema migration as a
+// side effect of learn/playbook init.
+func commandMayWriteStore(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	if commandIsHelpInvocation(cmd) {
+		return false
+	}
+	if cmd.Name() == "doctor" {
+		return false
+	}
+	ann := cmd.Annotations
+	if ann["mcp:read-only"] == "true" {
+		return false
+	}
+	if ann["pp:parent-group"] == "true" || ann["pp:api-resource"] == "true" {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(ann["pp:method"])) {
+	case "GET", "HEAD", "OPTIONS":
+		return false
+	}
+	return true
 }
 
 // journalInvocation records the invocation in the learn journal from

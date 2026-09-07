@@ -5,6 +5,8 @@
 package testenv
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -58,6 +60,27 @@ func Isolate(t *testing.T, resolvers ...func() (string, error)) string {
 		requireWithin(t, home, resolve)
 	}
 	return home
+}
+
+// RunSandboxed redirects user-directory lookups for the whole test binary
+// into a throwaway home so package tests that execute RootCmd never open
+// the operator's store. Prefer Isolate in individual tests that need a
+// fresh home; this is the default safety net.
+func RunSandboxed(m *testing.M) int {
+	home, err := os.MkdirTemp("", "pp-cli-test-home-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "testenv: mkdir sandbox: %v\n", err)
+		return 1
+	}
+	defer os.RemoveAll(home)
+	_ = os.Chmod(home, 0o700)
+	for _, name := range homeVars {
+		_ = os.Setenv(name, home)
+	}
+	for _, name := range clearedVars {
+		_ = os.Setenv(name, "")
+	}
+	return m.Run()
 }
 
 func requireWithin(t *testing.T, home string, resolve func() (string, error)) {

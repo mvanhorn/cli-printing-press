@@ -736,27 +736,20 @@ func resolveLocal(ctx context.Context, flags *rootFlags, hintWriter io.Writer, r
 	prov := localProvenance(db, resourceType, reason)
 
 	if localReadPathIsCollection(resourceType, path, isList) {
-		raw, err := db.List(resourceType, 0) // 0 = no limit, return all synced data
+		items, unsupported, typedHint, sawValid, err := loadLocalList(db, resourceType, path, params)
 		if err != nil {
 			return nil, DataProvenance{}, fmt.Errorf("querying local store: %w", err)
 		}
-		// Filter out empty/invalid records (empty arrays, null, whitespace-only)
-		// that can end up in the store from pagination boundary artifacts.
-		var items []json.RawMessage
-		for _, r := range raw {
-			trimmed := strings.TrimSpace(string(r))
-			if trimmed == "" || trimmed == "null" || trimmed == "[]" || trimmed == "{}" {
-				continue
+		if typedHint != "" {
+			warnWriter := hintWriter
+			if warnWriter == nil {
+				warnWriter = os.Stderr
 			}
-			items = append(items, r)
+			fmt.Fprintf(warnWriter, "warning: %s\n", typedHint)
 		}
-		if len(items) == 0 {
+		if !sawValid {
 			return nil, DataProvenance{}, fmt.Errorf("no local data for %q. Run 'printing-press-golden-pp-cli sync' first", resourceType)
 		}
-		if parents := localReadPathParents(resourceType, path); len(parents) > 0 {
-			items = applyLocalParentScope(db, resourceType, items, parents)
-		}
-		items, unsupported := applyLocalListFilters(items, params)
 		if len(unsupported) > 0 {
 			warnWriter := hintWriter
 			if warnWriter == nil {
@@ -944,6 +937,7 @@ func localStoredParentFieldKeys(parent localPathParent) []string {
 
 var localListLimitParams = map[string]bool{
 	"limit": true, "per_page": true, "perpage": true, "page_size": true, "pagesize": true,
+	"take": true, "first": true, "count": true, "max_results": true, "maxresults": true,
 }
 
 var localListOffsetParams = map[string]bool{
@@ -977,6 +971,192 @@ func localListControlParam(canon string) bool {
 		return true
 	}
 	return localListControlParams[strings.ReplaceAll(canon, "_", "")]
+}
+
+type localListQuery struct {
+	equality    map[string]string
+	unsupported []string
+	limit       int
+	offset      int
+}
+
+func parseLocalListQuery(params map[string]string) localListQuery {
+	q := localListQuery{equality: map[string]string{}, limit: -1}
+	if len(params) == 0 {
+		return q
+	}
+	page := 0
+	for key, val := range params {
+		val = strings.TrimSpace(val)
+		if val == "" {
+			continue
+		}
+		canon := localParamCanon(key)
+		switch {
+		case localListCursorParams[canon]:
+			q.unsupported = append(q.unsupported, key)
+		case localListControlParam(canon):
+			q.unsupported = append(q.unsupported, key)
+		case localListLimitParams[canon]:
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 0 {
+				q.unsupported = append(q.unsupported, key)
+				continue
+			}
+			q.limit = n
+		case localListOffsetParams[canon]:
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 0 {
+				q.unsupported = append(q.unsupported, key)
+				continue
+			}
+			q.offset = n
+		case localListPageParams[canon]:
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 1 {
+				q.unsupported = append(q.unsupported, key)
+				continue
+			}
+			page = n
+		default:
+			q.equality[key] = val
+		}
+	}
+	if page > 1 && q.limit < 0 {
+		q.unsupported = append(q.unsupported, "page")
+		page = 0
+	}
+	if page > 1 && q.limit >= 0 {
+		q.offset += (page - 1) * q.limit
+	}
+	return q
+}
+
+func localRecordIsEmpty(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed == "" || trimmed == "null" || trimmed == "[]" || trimmed == "{}"
+}
+
+func loadLocalList(db *store.Store, resourceType, path string, params map[string]string) ([]json.RawMessage, []string, string, bool, error) {
+	q := parseLocalListQuery(params)
+	parents := localReadPathParents(resourceType, path)
+	complete, _, err := db.TypedPartitionComplete(resourceType)
+	if err != nil {
+		return nil, nil, "", false, err
+	}
+	_, hasTyped := store.TypedListTable(resourceType)
+	typedHintFor := func(sawValid bool) string {
+		if sawValid && hasTyped && !complete {
+			return store.TypedListIncompleteHint
+		}
+		return ""
+	}
+
+	items, sawValid, unmatched, err := scanLocalList(db, resourceType, parents, q, complete)
+	if err != nil {
+		return nil, nil, "", false, err
+	}
+	if len(unmatched) > 0 {
+		for _, key := range unmatched {
+			q.unsupported = append(q.unsupported, key)
+			delete(q.equality, key)
+		}
+		items, sawValid, _, err = scanLocalList(db, resourceType, parents, q, complete)
+		if err != nil {
+			return nil, nil, "", false, err
+		}
+	}
+	sort.Strings(q.unsupported)
+	return items, q.unsupported, typedHintFor(sawValid), sawValid, nil
+}
+
+func scanLocalList(db *store.Store, resourceType string, parents []localPathParent, q localListQuery, preferTyped bool) ([]json.RawMessage, bool, []string, error) {
+	immediate, hasParent := localReadImmediateParent(parents)
+	present := map[string]bool{}
+	for key := range q.equality {
+		present[key] = false
+	}
+	var items []json.RawMessage
+	skipped := 0
+	sawValid := false
+
+	visit := func(id string, raw json.RawMessage) bool {
+		if localRecordIsEmpty(raw) {
+			return true
+		}
+		sawValid = true
+		var obj map[string]any
+		parsed := json.Unmarshal(raw, &obj) == nil
+		if parsed {
+			for key := range q.equality {
+				if _, ok := localObjectField(obj, key); ok {
+					present[key] = true
+				}
+			}
+		}
+		if hasParent {
+			if _, parent, ok := splitLocalCompositeID(id); ok {
+				if parent != immediate.ID {
+					return true
+				}
+			} else if !parsed || !localItemStoredParentMatches(obj, immediate) {
+				return true
+			}
+		}
+		if len(q.equality) > 0 {
+			if !parsed {
+				return true
+			}
+			for key, want := range q.equality {
+				got, ok := localObjectField(obj, key)
+				if !ok || !localFieldEquals(got, want) {
+					return true
+				}
+			}
+		}
+		if q.offset > 0 && skipped < q.offset {
+			skipped++
+			return true
+		}
+		unknown := false
+		for _, seen := range present {
+			if !seen {
+				unknown = true
+				break
+			}
+		}
+		if q.limit == 0 {
+			return unknown
+		}
+		items = append(items, raw)
+		if q.limit > 0 && len(items) >= q.limit && !unknown {
+			return false
+		}
+		return true
+	}
+
+	if preferTyped {
+		if ok, err := db.TypedListScan(resourceType, visit); err != nil {
+			return nil, false, nil, err
+		} else if ok {
+			return items, sawValid, unmatchedEqualityKeys(present), nil
+		}
+	}
+	if err := db.ListScan(resourceType, visit); err != nil {
+		return nil, false, nil, err
+	}
+	return items, sawValid, unmatchedEqualityKeys(present), nil
+}
+
+func unmatchedEqualityKeys(present map[string]bool) []string {
+	var out []string
+	for key, seen := range present {
+		if !seen {
+			out = append(out, key)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func applyLocalListFilters(items []json.RawMessage, params map[string]string) ([]json.RawMessage, []string) {
@@ -1131,3 +1311,5 @@ func localFieldEquals(got any, want string) bool {
 
 // Ensure time import is used (compilation guard).
 var _ = time.Now
+var _ = applyLocalParentScope
+var _ = applyLocalListFilters
