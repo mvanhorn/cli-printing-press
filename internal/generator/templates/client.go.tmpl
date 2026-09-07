@@ -570,6 +570,15 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar{{if .UsesBrowserHTT
 {{- end}}
 }
 
+{{- if and (eq .Auth.Type "composed") .UsesBrowserHTTPTransport}}
+// NewProbeHTTPClient returns the same impersonating transport the CLI uses
+// for API calls, with no cookie jar. Login validation has to clear the
+// same WAF as later requests; stdlib HTTP is blocked even with a valid jar.
+func NewProbeHTTPClient(timeout time.Duration, skipTLSVerify bool) *http.Client {
+	return newHTTPClient(timeout, nil, skipTLSVerify)
+}
+{{- end}}
+
 func (c *Client) SetTimeoutExplicit(explicit bool) {
 	if c == nil {
 		return
