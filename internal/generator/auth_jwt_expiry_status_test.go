@@ -42,6 +42,8 @@ func TestBearerAuthStatusAndDoctorReportJWTExpiry(t *testing.T) {
 
 	expiredJWT := testJWT(t, time.Now().Add(-2*time.Hour))
 	validJWT := testJWT(t, time.Now().Add(3*time.Hour))
+	fracUnix := time.Now().Add(90 * time.Minute).Unix()
+	fractionalJWT := testJWTWithExpJSON(t, fmt.Sprintf("%d.75", fracUnix))
 	testSrc := fmt.Sprintf(`package cli
 
 import (
@@ -52,6 +54,8 @@ import (
 
 const expiredJWT = %q
 const validJWT = %q
+const fractionalJWT = %q
+const fractionalExpUnix = %d
 
 func TestJWTExpiryOpaqueToken(t *testing.T) {
 	if _, ok := jwtExpiry("opaque-session-token"); ok {
@@ -93,6 +97,29 @@ func TestJWTExpiryValidToken(t *testing.T) {
 	}
 }
 
+func TestJWTExpiryNotLastWord(t *testing.T) {
+	if _, ok := jwtExpiry("Bearer " + expiredJWT + " tenant-123"); !ok {
+		t.Fatal("JWT followed by another formatted value must decode exp")
+	}
+}
+
+func TestJWTExpiryNonSpaceDelimiter(t *testing.T) {
+	if _, ok := jwtExpiry("token=" + validJWT + ";tenant=abc"); !ok {
+		t.Fatal("JWT with non-space delimiters must decode exp")
+	}
+}
+
+func TestJWTExpiryFractionalExp(t *testing.T) {
+	expiry, ok := jwtExpiry(fractionalJWT)
+	if !ok {
+		t.Fatal("fractional NumericDate exp must decode")
+	}
+	want := time.Unix(fractionalExpUnix, 0).UTC()
+	if !expiry.Equal(want) {
+		t.Fatalf("expiry = %%s, want %%s", expiry, want)
+	}
+}
+
 func TestJWTExpiryMissingExp(t *testing.T) {
 	header := %q
 	payload := %q
@@ -102,7 +129,7 @@ func TestJWTExpiryMissingExp(t *testing.T) {
 		t.Fatal("JWT without exp must not report expiry")
 	}
 }
-`, expiredJWT, validJWT,
+`, expiredJWT, validJWT, fractionalJWT, fracUnix,
 		base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`)),
 		base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"test"}`)),
 		base64.RawURLEncoding.EncodeToString([]byte("sig")),
@@ -113,8 +140,13 @@ func TestJWTExpiryMissingExp(t *testing.T) {
 
 func testJWT(t *testing.T, expiry time.Time) string {
 	t.Helper()
+	return testJWTWithExpJSON(t, fmt.Sprintf("%d", expiry.Unix()))
+}
+
+func testJWTWithExpJSON(t *testing.T, expJSON string) string {
+	t.Helper()
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
-	payload := base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"sub":"test","exp":%d}`, expiry.Unix()))
+	payload := base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"sub":"test","exp":%s}`, expJSON))
 	signature := base64.RawURLEncoding.EncodeToString([]byte("signature"))
 	return header + "." + payload + "." + signature
 }

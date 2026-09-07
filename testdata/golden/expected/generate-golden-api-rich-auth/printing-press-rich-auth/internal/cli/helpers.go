@@ -168,10 +168,23 @@ func novelAuthHeader(flags *rootFlags) (string, error) {
 var _ = novelAuthHeader
 
 func jwtExpiry(token string) (time.Time, bool) {
-	token = strings.TrimSpace(token)
-	if i := strings.LastIndexByte(token, ' '); i >= 0 {
-		token = token[i+1:]
+	for _, candidate := range strings.FieldsFunc(strings.TrimSpace(token), jwtAuthValueSplit) {
+		if strings.Count(candidate, ".") != 2 {
+			continue
+		}
+		if expiry, ok := jwtExpiryFromCandidate(candidate); ok {
+			return expiry, true
+		}
 	}
+	return time.Time{}, false
+}
+
+func jwtAuthValueSplit(r rune) bool {
+	isAlnum := (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+	return !isAlnum && r != '-' && r != '_' && r != '.'
+}
+
+func jwtExpiryFromCandidate(token string) (time.Time, bool) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return time.Time{}, false
@@ -188,11 +201,22 @@ func jwtExpiry(token string) (time.Time, bool) {
 	if err := dec.Decode(&claims); err != nil || claims.Exp == "" {
 		return time.Time{}, false
 	}
-	expUnix, err := claims.Exp.Int64()
-	if err != nil {
+	expUnix, ok := jwtNumericDateUnix(claims.Exp)
+	if !ok {
 		return time.Time{}, false
 	}
 	return time.Unix(expUnix, 0).UTC(), true
+}
+
+func jwtNumericDateUnix(n json.Number) (int64, bool) {
+	if i, err := n.Int64(); err == nil {
+		return i, true
+	}
+	f, err := n.Float64()
+	if err != nil {
+		return 0, false
+	}
+	return int64(f), true
 }
 
 func decodeJWTPayloadSegment(segment string) ([]byte, error) {
