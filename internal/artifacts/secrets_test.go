@@ -49,6 +49,24 @@ func TestRedactArchivedSpecSecretsKeepsPlaceholders(t *testing.T) {
 	require.Equal(t, string(input), got)
 }
 
+func TestRedactArchivedSpecSecretsRedactsJWTFormGitHubInstallationToken(t *testing.T) {
+	jwt := testGitHubInstallationJWT()
+	opaque := testSecret("ghs", "_", strings.Repeat("x", 40))
+	input := []byte(strings.Join([]string{
+		"Authorization: Bearer " + jwt + ". See the docs.",
+		"Authorization: Bearer " + opaque,
+		"Authorization: Bearer " + jwt + ".Next-step",
+	}, "\n"))
+
+	got := string(RedactArchivedSpecSecrets(input))
+
+	require.NotContains(t, got, jwt)
+	require.NotContains(t, got, opaque)
+	require.Contains(t, got, "Authorization: Bearer <REDACTED_GITHUB_TOKEN_EXAMPLE>. See the docs.")
+	require.Contains(t, got, "Authorization: Bearer <REDACTED_GITHUB_TOKEN_EXAMPLE>")
+	require.Contains(t, got, "Authorization: Bearer <REDACTED_GITHUB_TOKEN_EXAMPLE>.Next-step")
+}
+
 func TestRedactLiveOutputSecretsRedactsConfiguredAndVendorCredentials(t *testing.T) {
 	authSecret := "auth-secret-value-1234567890"
 	vendorSecret := "sk_live_" + strings.Repeat("a", 20)
@@ -107,6 +125,34 @@ func TestFindVendorPrefixSecretsReportsFileAndLine(t *testing.T) {
 	require.Equal(t, "openrouter-api-key", byPath["spec.json"].Kind)
 	require.Equal(t, 1, byPath[".manuscripts/run-1/research/openapi.json"].Line)
 	require.Equal(t, "stripe-secret-key", byPath[".manuscripts/run-1/research/openapi.json"].Kind)
+}
+
+func TestFindVendorPrefixSecretsDetectsJWTFormGitHubInstallationToken(t *testing.T) {
+	root := t.TempDir()
+	jwt := testGitHubInstallationJWT()
+	opaqueGhs := testSecret("ghs", "_", strings.Repeat("x", 40))
+	opaqueGhp := testSecret("ghp", "_", strings.Repeat("y", 40))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "jwt.txt"), []byte("token="+jwt+". See the docs.\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "opaque-ghs.txt"), []byte("token="+opaqueGhs+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "opaque-ghp.txt"), []byte("token="+opaqueGhp+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "jwt-hyphen.txt"), []byte("token="+jwt+".Next-step\n"), 0o644))
+
+	findings, err := FindVendorPrefixSecrets(root)
+	require.NoError(t, err)
+	require.Len(t, findings, 4)
+
+	byPath := map[string]VendorPrefixSecretFinding{}
+	for _, finding := range findings {
+		byPath[finding.Path] = finding
+	}
+	require.Equal(t, "github-token", byPath["jwt.txt"].Kind)
+	require.Equal(t, "github-token", byPath["opaque-ghs.txt"].Kind)
+	require.Equal(t, "github-token", byPath["opaque-ghp.txt"].Kind)
+	require.Equal(t, "github-token", byPath["jwt-hyphen.txt"].Kind)
+	require.Equal(t, secretFingerprint(jwt), byPath["jwt.txt"].Fingerprint)
+	require.Equal(t, secretFingerprint(jwt), byPath["jwt-hyphen.txt"].Fingerprint)
+	require.Equal(t, secretFingerprint(opaqueGhs), byPath["opaque-ghs.txt"].Fingerprint)
+	require.Equal(t, secretFingerprint(opaqueGhp), byPath["opaque-ghp.txt"].Fingerprint)
 }
 
 func TestFindVendorPrefixSecretsIgnoresPlaceholdersAndBinaryFiles(t *testing.T) {
@@ -272,4 +318,14 @@ func TestFindPackageSecretsCombinesVendorPrefixAndDeclaredCookies(t *testing.T) 
 
 func testSecret(parts ...string) string {
 	return strings.Join(parts, "")
+}
+
+// JWT-form GitHub App installation token: ghs_ + three base64url segments.
+// The header is deliberately shorter than 36 characters so the legacy
+// alphanumeric-only {36,} class cannot match across the first dot.
+func testGitHubInstallationJWT() string {
+	header := strings.Repeat("A", 20)
+	payload := testSecret(strings.Repeat("B", 40), "_", strings.Repeat("C", 39))
+	sig := testSecret(strings.Repeat("D", 40), "-", strings.Repeat("E", 39))
+	return testSecret("ghs", "_", header, ".", payload, ".", sig)
 }

@@ -21,6 +21,14 @@ type secretReplacement struct {
 	replacement string
 }
 
+const (
+	githubOpaqueTokenPatternArchived = `(?:ghp|gho|ghs)_[A-Za-z0-9]{20,}`
+	githubOpaqueTokenPatternPublish  = `(?:ghp|gho|ghs)_[A-Za-z0-9]{36,}`
+	// Three base64url segments after ghs_. Dots are separators only, so a
+	// following sentence period or extra hyphenated segment is not consumed.
+	githubInstallationJWTPattern = `ghs_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`
+)
+
 var archivedSpecSecretPatterns = []secretReplacement{
 	{
 		pattern:     regexp.MustCompile(`secret-token:[A-Za-z0-9][A-Za-z0-9:_-]{20,}`),
@@ -35,7 +43,7 @@ var archivedSpecSecretPatterns = []secretReplacement{
 		replacement: `<REDACTED_OPENROUTER_TOKEN_EXAMPLE>`,
 	},
 	{
-		pattern:     regexp.MustCompile(`Bearer (?:ghp|gho|ghs)_[A-Za-z0-9]{20,}`),
+		pattern:     regexp.MustCompile(`Bearer (?:` + githubInstallationJWTPattern + `|` + githubOpaqueTokenPatternArchived + `)`),
 		replacement: `Bearer <REDACTED_GITHUB_TOKEN_EXAMPLE>`,
 	},
 	{
@@ -151,7 +159,7 @@ var vendorPrefixSecretPatterns = []vendorPrefixSecretPattern{
 	vendorSecretPattern("openrouter-api-key", `sk-or-v1-[A-Za-z0-9_-]{24,}`),
 	vendorSecretPattern("stripe-secret-key", `sk_(?:live|test)_[A-Za-z0-9]{16,}`),
 	vendorSecretPattern("calcom-api-key", `cal_(?:live|test)_[A-Za-z0-9]{16,}`),
-	vendorSecretPattern("github-token", `(?:ghp|gho|ghs)_[A-Za-z0-9]{36,}`),
+	vendorSecretPattern("github-token", githubInstallationJWTPattern+`|`+githubOpaqueTokenPatternPublish),
 	vendorSecretPattern("github-fine-grained-token", `github_pat_[A-Za-z0-9_]{60,}`),
 	vendorSecretPattern("slack-token", `xox[abprs]-[A-Za-z0-9-]{32,}`),
 	vendorSecretPattern("slack-app-token", `xapp-[A-Za-z0-9-]{32,}`),

@@ -65,6 +65,9 @@ scrub_body() {
     'stripe-test-key|sk_test_[A-Za-z0-9]{20,}'
     'github-pat|ghp_[A-Za-z0-9]{36,}'
     'github-oauth|gho_[A-Za-z0-9]{36,}'
+    # Opaque ghs_ plus a three-segment JWT form. Do not fold into
+    # [A-Za-z0-9._-]{36,}: that class swallows a following period.
+    'github-server-jwt|ghs_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'
     'github-server|ghs_[A-Za-z0-9]{36,}'
     'slack-bot-token|xoxb-[A-Za-z0-9-]{20,}'
     'slack-user-token|xoxp-[A-Za-z0-9-]{20,}'
@@ -402,7 +405,7 @@ FINAL_CHECK=false
 # checking a credential shape the scrub loop still redacts. The JWT shape
 # intentionally matches Layer 2's two-segment form; that also catches the
 # first two segments of a conventional three-segment JWT.
-CRED_REGEX='(sk_live_[A-Za-z0-9]{20,}|sk_test_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|xoxb-[A-Za-z0-9-]{20,}|xoxp-[A-Za-z0-9-]{20,}|\bAKIA[0-9A-Z]{16}\b|sk-or-v1-[A-Za-z0-9_-]{24,}|sk-ant-api03-[A-Za-z0-9_-]{40,}|\blin_api_[A-Za-z0-9_-]{32,}|\b[a-f0-9]{32}-us[0-9]{1,2}\b|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|Bearer [A-Za-z0-9._~+/=-]{20,})'
+CRED_REGEX='(sk_live_[A-Za-z0-9]{20,}|sk_test_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|ghs_[A-Za-z0-9]{36,}|xoxb-[A-Za-z0-9-]{20,}|xoxp-[A-Za-z0-9-]{20,}|\bAKIA[0-9A-Z]{16}\b|sk-or-v1-[A-Za-z0-9_-]{24,}|sk-ant-api03-[A-Za-z0-9_-]{40,}|\blin_api_[A-Za-z0-9_-]{32,}|\b[a-f0-9]{32}-us[0-9]{1,2}\b|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|Bearer [A-Za-z0-9._~+/=-]{20,})'
 # PII_REGEX must mirror the shapes in PII_PATTERNS above; update both together
 # (e.g. when adding Partita IVA with an allowlist) so the verification step
 # does not silently stop checking a shape the scrub loop still redacts.
