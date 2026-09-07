@@ -168,7 +168,10 @@ func novelAuthHeader(flags *rootFlags) (string, error) {
 var _ = novelAuthHeader
 
 func jwtExpiry(token string) (time.Time, bool) {
-	for _, candidate := range strings.FieldsFunc(strings.TrimSpace(token), jwtAuthValueSplit) {
+	for _, candidate := range strings.FieldsFunc(strings.TrimSpace(token), func(r rune) bool {
+		isAlnum := (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		return !isAlnum && r != '-' && r != '_' && r != '.'
+	}) {
 		if strings.Count(candidate, ".") != 2 {
 			continue
 		}
@@ -177,11 +180,6 @@ func jwtExpiry(token string) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
-}
-
-func jwtAuthValueSplit(r rune) bool {
-	isAlnum := (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-	return !isAlnum && r != '-' && r != '_' && r != '.'
 }
 
 func jwtExpiryFromCandidate(token string) (time.Time, bool) {
