@@ -123,6 +123,10 @@ func TestGeneratedSyncSkipsUnfilledRequiredQueryParams(t *testing.T) {
 	autoSrc := readGeneratedFile(t, outputDir, "internal", "cli", "auto_refresh.go")
 	assert.Contains(t, autoSrc, "skipped_missing_required_params")
 	assert.Contains(t, autoSrc, "unfilledRequiredSyncQueryParams")
+	assert.Contains(t, autoSrc, "storedCount == 0",
+		"auto-refresh must discard an empty-store watermark before treating since as filled")
+	assert.Contains(t, autoSrc, "errors.Is(result.Warn, errMissingRequiredQueryParams)",
+		"auto-refresh must not ignore a missing-required-params skip as a successful refresh")
 
 	requireGeneratedCompiles(t, outputDir)
 
@@ -235,6 +239,32 @@ func TestSyncSkipsWhenRequiredSinceUnfilledOnFullSync(t *testing.T) {
 	}
 	if len(client.got) != 0 {
 		t.Fatalf("issued %d request(s), want none when full sync withholds since", len(client.got))
+	}
+}
+
+func TestSyncSkipsWhenRequiredSinceUnfilledOnEmptyCache(t *testing.T) {
+	db := openRequiredParamStore(t)
+	client := &requiredParamClient{}
+	if err := db.SaveSyncStateAt("events", "", 1, time.Now().UTC().Add(-time.Hour)); err != nil {
+		t.Fatalf("seed empty-cache watermark: %v", err)
+	}
+	count, err := db.Count("events")
+	if err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("events row count = %d, want 0", count)
+	}
+
+	res := syncResource(context.Background(), client, db, "events", "", false, 1, false, false, nil, nil)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if !errors.Is(res.Warn, errMissingRequiredQueryParams) {
+		t.Fatalf("Warn = %v, want missing required since when empty store clears the watermark", res.Warn)
+	}
+	if len(client.got) != 0 {
+		t.Fatalf("issued %d request(s), want none when empty cache discards last_synced_at", len(client.got))
 	}
 }
 
@@ -409,9 +439,60 @@ func TestAutoRefreshSkipsEntireSetWhenAnyResourceMissingParams(t *testing.T) {
 		t.Fatalf("items last_synced_at = %v, want %v (mixed skip must not refresh fillable siblings)", itemsLast, staleAt)
 	}
 }
+
+func TestAutoRefreshDoesNotClaimRefreshWhenEmptyCacheClearsWatermark(t *testing.T) {
+	home := t.TempDir()
+	restore, err := cliutil.SetHomeOverride(home)
+	if err != nil {
+		t.Fatalf("set home override: %v", err)
+	}
+	defer restore()
+
+	dbPath := defaultDBPath("refreshskip-pp-cli")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir data dir: %v", err)
+	}
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	staleAt := time.Now().UTC().Add(-200 * time.Hour)
+	if err := db.SaveSyncStateAt("events", "", 1, staleAt); err != nil {
+		t.Fatalf("seed empty-cache watermark: %v", err)
+	}
+	count, err := db.Count("events")
+	if err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("events row count = %d, want 0", count)
+	}
+	db.Close()
+
+	meta := autoRefreshIfStale(context.Background(), &rootFlags{dataSource: "auto"}, []string{"events"})
+	if meta.Ran {
+		t.Fatal("auto-refresh claimed Ran with an empty cache and no --since")
+	}
+	if meta.Reason != "skipped_missing_required_params" {
+		t.Fatalf("Reason = %q, want skipped_missing_required_params (must not claim refreshed)", meta.Reason)
+	}
+
+	db, err = store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer db.Close()
+	_, last, _, err := db.GetSyncState("events")
+	if err != nil {
+		t.Fatalf("GetSyncState: %v", err)
+	}
+	if last.UTC().Truncate(time.Second) != staleAt.Truncate(time.Second) {
+		t.Fatalf("last_synced_at = %v, want unchanged %v", last, staleAt)
+	}
+}
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_required_query_params_test.go"), []byte(inlineTest), 0o644))
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestSync(SkipsWhenRequiredQueryParamsUnfilled|SkipsWhenRequiredFormatUnfilled|SkipsWhenRequiredSinceUnfilledOnFirstSync|SkipsWhenRequiredSinceUnfilledOnFullSync|SendsWhenRequiredSinceFilledFromFlag|SendsWhenRequiredSinceFilledFromWatermark|SendsWhenRequiredQueryParamsFilled|WithoutRequiredParamsStillRequests)|TestAutoRefreshSkips(MissingRequiredParamsHonestly|EntireSetWhenAnyResourceMissingParams)")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestSync(SkipsWhenRequiredQueryParamsUnfilled|SkipsWhenRequiredFormatUnfilled|SkipsWhenRequiredSinceUnfilledOnFirstSync|SkipsWhenRequiredSinceUnfilledOnFullSync|SkipsWhenRequiredSinceUnfilledOnEmptyCache|SendsWhenRequiredSinceFilledFromFlag|SendsWhenRequiredSinceFilledFromWatermark|SendsWhenRequiredQueryParamsFilled|WithoutRequiredParamsStillRequests)|TestAutoRefresh(SkipsMissingRequiredParamsHonestly|SkipsEntireSetWhenAnyResourceMissingParams|DoesNotClaimRefreshWhenEmptyCacheClearsWatermark)")
 }
 
 func TestGeneratedSyncOmitsRequiredQueryHelperWhenNone(t *testing.T) {
