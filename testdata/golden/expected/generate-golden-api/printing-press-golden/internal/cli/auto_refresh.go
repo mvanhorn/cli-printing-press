@@ -95,32 +95,34 @@ func autoRefreshIfStale(ctx context.Context, flags *rootFlags, resources []strin
 		return meta
 	}
 	dbPath := defaultDBPath("printing-press-golden-pp-cli")
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		meta.Decision = "skipped"
-		meta.Reason = "no-store"
-		return meta
+	_, statErr := os.Stat(dbPath)
+	storeMissing := os.IsNotExist(statErr)
+	if storeMissing {
+		meta.Decision = cliutil.DecisionNoStore.String()
 	}
-	probe, err := store.OpenReadOnlyContext(ctx, dbPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: auto-refresh skipped (open: %v)\n", err)
-		meta.Decision = "error"
-		meta.Reason = "open_store"
-		meta.Error = err.Error()
-		return meta
-	}
-	decision, err := cliutil.EnsureFresh(ctx, probe.DB(), resources, policy)
-	_ = probe.Close()
-	meta.Decision = decision.String()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: auto-refresh decision failed: %v\n", err)
-		meta.Decision = "error"
-		meta.Reason = "decision_failed"
-		meta.Error = err.Error()
-		return meta
-	}
-	if decision == cliutil.DecisionFresh || decision == cliutil.DecisionNoStore {
-		meta.Reason = decision.String()
-		return meta
+	if !storeMissing {
+		probe, err := store.OpenReadOnlyContext(ctx, dbPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: auto-refresh skipped (open: %v)\n", err)
+			meta.Decision = "error"
+			meta.Reason = "open_store"
+			meta.Error = err.Error()
+			return meta
+		}
+		decision, err := cliutil.EnsureFresh(ctx, probe.DB(), resources, policy)
+		_ = probe.Close()
+		meta.Decision = decision.String()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: auto-refresh decision failed: %v\n", err)
+			meta.Decision = "error"
+			meta.Reason = "decision_failed"
+			meta.Error = err.Error()
+			return meta
+		}
+		if decision == cliutil.DecisionFresh {
+			meta.Reason = decision.String()
+			return meta
+		}
 	}
 
 	db, err := store.OpenWithContext(ctx, dbPath)

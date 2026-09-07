@@ -1161,8 +1161,26 @@ func (s *Store) TypedPartitionComplete(resourceType string) (complete bool, tabl
 	return typedCount >= genericCount && genericCount > 0, table, nil
 }
 
+// typedNewestFirstOrder returns a newest-first ORDER BY matching the generic
+// resources partition. Prefer updated_at; fall back to synced_at. Callers
+// must use the generic ordered path when neither column exists.
+func (s *Store) typedNewestFirstOrder(table string) (string, bool) {
+	if !validIdentifierRE.MatchString(table) {
+		return "", false
+	}
+	var dummy string
+	for _, col := range []string{"updated_at", "synced_at"} {
+		q := fmt.Sprintf(`SELECT name FROM pragma_table_info("%s") WHERE name = ?`, table)
+		if err := s.db.QueryRow(q, col).Scan(&dummy); err == nil {
+			return " ORDER BY " + col + " DESC", true
+		}
+	}
+	return "", false
+}
+
 // ListTypedRange reads JSON payloads from a complete typed table. ok is false
-// when the table is missing, incomplete, or has no data column.
+// when the table is missing, incomplete, has no data column, or has no
+// timestamp that can match generic newest-first order.
 func (s *Store) ListTypedRange(resourceType string, limit, offset int) (rows []json.RawMessage, ok bool, err error) {
 	complete, table, err := s.TypedPartitionComplete(resourceType)
 	if err != nil || !complete {
@@ -1172,9 +1190,9 @@ func (s *Store) ListTypedRange(resourceType string, limit, offset int) (rows []j
 	if err := s.db.QueryRow(fmt.Sprintf(`SELECT name FROM pragma_table_info("%s") WHERE name = 'data'`, table)).Scan(&dummy); err != nil {
 		return nil, false, nil
 	}
-	order := ""
-	if err := s.db.QueryRow(fmt.Sprintf(`SELECT name FROM pragma_table_info("%s") WHERE name = 'updated_at'`, table)).Scan(&dummy); err == nil {
-		order = ` ORDER BY updated_at DESC`
+	order, hasOrder := s.typedNewestFirstOrder(table)
+	if !hasOrder {
+		return nil, false, nil
 	}
 	query := fmt.Sprintf(`SELECT data FROM "%s"%s`, table, order)
 	args := []any{}
@@ -1219,9 +1237,9 @@ func (s *Store) TypedListScan(resourceType string, fn func(id string, data json.
 	if err := s.db.QueryRow(fmt.Sprintf(`SELECT name FROM pragma_table_info("%s") WHERE name = 'data'`, table)).Scan(&dummy); err != nil {
 		return false, nil
 	}
-	order := ""
-	if err := s.db.QueryRow(fmt.Sprintf(`SELECT name FROM pragma_table_info("%s") WHERE name = 'updated_at'`, table)).Scan(&dummy); err == nil {
-		order = ` ORDER BY updated_at DESC`
+	order, hasOrder := s.typedNewestFirstOrder(table)
+	if !hasOrder {
+		return false, nil
 	}
 	rs, err := s.db.Query(fmt.Sprintf(`SELECT id, data FROM "%s"%s`, table, order))
 	if err != nil {
