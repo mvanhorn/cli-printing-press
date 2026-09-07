@@ -378,23 +378,25 @@ profile by name when the installed backend supports it.`,
 			validationCookies := composeCookieHeader(requiredCookies, cookieMap)
 
 {{- if not .Auth.RequiresBrowserSession}}
-			if skipValidation {
-				fmt.Fprintln(w, "Skipping session validation (--skip-validation).")
-			} else {
-				fmt.Fprintf(w, "Validating session...")
-				if err := validateComposedAuth(composed, validationCookies); err != nil {
-					loginURL := "https://" + strings.TrimPrefix(domain, ".")
-					fmt.Fprintf(w, " %s\n", red("expired"))
-					fmt.Fprintln(w, "")
-					fmt.Fprintln(w, "Found cookies but the session has expired.")
-					fmt.Fprintln(w, "Log in again at:")
-					fmt.Fprintf(w, "\n  %s\n\n", loginURL)
-					fmt.Fprintln(w, "Then run this command again:")
-					fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --chrome\n")
+			fmt.Fprintf(w, "Validating session...")
+			if err := validateComposedAuthProbe(composed, validationCookies, !skipValidation); err != nil {
+				loginURL := "https://" + strings.TrimPrefix(domain, ".")
+				fmt.Fprintf(w, " %s\n", red("expired"))
+				fmt.Fprintln(w, "")
+				fmt.Fprintln(w, "Found cookies but the session has expired.")
+				fmt.Fprintln(w, "Log in again at:")
+				fmt.Fprintf(w, "\n  %s\n\n", loginURL)
+				fmt.Fprintln(w, "Then run this command again:")
+				fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --chrome\n")
+				if !skipValidation && !strings.Contains(err.Error(), "JWT expired") {
 					fmt.Fprintln(w, "To save cookies without probing the origin:")
 					fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --chrome --skip-validation\n")
-					return authErr(fmt.Errorf("session expired for %s", domain))
 				}
+				return authErr(fmt.Errorf("session expired for %s", domain))
+			}
+			if skipValidation {
+				fmt.Fprintf(w, " %s (origin probe skipped)\n", green("ok"))
+			} else {
 				fmt.Fprintf(w, " %s\n", green("valid"))
 			}
 {{- end}}
@@ -2230,7 +2232,15 @@ func extractViaCookieScoop(domain, profileDir string) (string, error) {
 {{- end}}
 
 {{- if eq .Auth.Type "composed"}}
-func decodeCookieValue(value string) string {
+func cookieNameLooksCSRF(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return strings.Contains(n, "csrf") || strings.Contains(n, "xsrf")
+}
+
+func decodeCookieValue(name, value string) string {
+	if !cookieNameLooksCSRF(name) {
+		return value
+	}
 	decoded, err := url.PathUnescape(value)
 	if err != nil || decoded == value {
 		return value
@@ -2242,13 +2252,13 @@ func composeAuthFromCookies(format string, requiredCookies []string, cookieMap m
 	composed := format
 	if len(requiredCookies) > 0 {
 		if value, ok := cookieMap[requiredCookies[0]]; ok {
-			decoded := decodeCookieValue(value)
+			decoded := decodeCookieValue(requiredCookies[0], value)
 			composed = strings.ReplaceAll(composed, "{token}", decoded)
 			composed = strings.ReplaceAll(composed, "{access_token}", decoded)
 		}
 	}
 	for _, name := range requiredCookies {
-		composed = strings.ReplaceAll(composed, "{"+name+"}", decodeCookieValue(cookieMap[name]))
+		composed = strings.ReplaceAll(composed, "{"+name+"}", decodeCookieValue(name, cookieMap[name]))
 	}
 	return composed
 }
@@ -2266,6 +2276,10 @@ func composeCookieHeader(requiredCookies []string, cookieMap map[string]string) 
 // validateComposedAuth rejects expired JWTs locally before falling back to a
 // lightweight probe for opaque composed credentials.
 func validateComposedAuth(authHeader, cookieHeader string) error {
+	return validateComposedAuthProbe(authHeader, cookieHeader, true)
+}
+
+func validateComposedAuthProbe(authHeader, cookieHeader string, probeOrigin bool) error {
 	for _, credential := range []string{authHeader, cookieHeader} {
 		if expiry, ok := composedAuthJWTExpiry(credential); ok {
 			if !time.Now().Before(expiry) {
@@ -2273,6 +2287,9 @@ func validateComposedAuth(authHeader, cookieHeader string) error {
 			}
 			return nil
 		}
+	}
+	if !probeOrigin {
+		return nil
 	}
 
 	testURL := "{{.BaseURL}}"

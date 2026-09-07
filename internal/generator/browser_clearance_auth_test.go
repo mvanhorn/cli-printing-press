@@ -47,6 +47,8 @@ func TestGeneratedBrowserClearanceAuthLoginSucceedsAsGenerated(t *testing.T) {
 	assert.Contains(t, authGo, "client.NewProbeHTTPClient(5*time.Second, false)")
 	assert.NotContains(t, authGo, "&http.Client{Timeout: 5 * time.Second}")
 	assert.Contains(t, authGo, `"skip-validation"`)
+	assert.Contains(t, authGo, "validateComposedAuthProbe(composed, validationCookies, !skipValidation)")
+	assert.Contains(t, authGo, "cookieNameLooksCSRF")
 	assert.Contains(t, authGo, "decodeCookieValue")
 	assert.Contains(t, authGo, "url.PathUnescape")
 	assert.Contains(t, authGo, `exec.Command("sqlite3", "-separator", "\t", tmpPath, "SELECT host_key, name FROM cookies")`)
