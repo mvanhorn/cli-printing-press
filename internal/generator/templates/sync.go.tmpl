@@ -10,6 +10,7 @@
 {{- range .SyncableResources}}{{if .UsesHTMLResponse}}{{- $hasHTMLSync = true -}}{{end}}{{end -}}
 {{- range .DependentSyncResources}}{{if .UsesHTMLResponse}}{{- $hasHTMLSync = true -}}{{end}}{{end }}
 {{- $syncParamDefaultCases := syncParamDefaultCases .SyncableResources .DependentSyncResources -}}
+{{- $syncRequiredQueryCases := syncRequiredQueryCases .SyncableResources .DependentSyncResources -}}
 {{- $syncHiddenHistoryCases := syncHiddenHistoryCases .SyncableResources .DependentSyncResources -}}
 {{- $hasHTMLPageModeSync := false -}}
 {{- range .HTMLPageModeResources}}{{- $hasHTMLPageModeSync = true -}}{{end }}
@@ -756,6 +757,35 @@ func syncResource(ctx context.Context, c interface {
 	sortValue := syncResourceSortValue(resource)
 	sortField := syncResourceSortField(resource)
 	sortEffective := false
+{{- if $syncRequiredQueryCases}}
+	if missing := unfilledRequiredSyncQueryParams(resource, userParams, syncConditionalQueryParams(resource, effectiveSince, sortValue{{if .Pagination.DateRangeParam}}, dates{{end}})); len(missing) > 0 {
+		if !humanFriendly {
+			payload := struct {
+				Event    string   `json:"event"`
+				Resource string   `json:"resource"`
+				Reason   string   `json:"reason"`
+				Keys     []string `json:"keys"`
+				Message  string   `json:"message"`
+			}{
+				Event:    "sync_warning",
+				Resource: resource,
+				Reason:   "missing_required_params",
+				Keys:     missing,
+				Message:  fmt.Sprintf("required query params %s are unknown; resource skipped", strings.Join(missing, ", ")),
+			}
+			payloadJSON, _ := json.Marshal(payload)
+			fmt.Fprintf(syncEvents, "%s\n", payloadJSON)
+		} else {
+			fmt.Fprintf(os.Stderr, "  %s skipped (missing required query params: %s)\n",
+				resource, strings.Join(missing, ", "))
+		}
+		return syncResult{
+			Resource: resource,
+			Warn:     fmt.Errorf("%w for %s: %s", errMissingRequiredQueryParams, resource, strings.Join(missing, ", ")),
+			Duration: time.Since(started),
+		}
+	}
+{{- end}}
 {{- if $hasIDWalk}}
 	idWalk, usesIDWalk := syncResourceIDWalkConfig(resource)
 	pageLimit := pageSize.limit
@@ -1883,6 +1913,67 @@ func syncResourceParamDefaults(resource string) map[string]string {
 {{- end}}
 	}
 	return nil
+}
+{{- end}}
+
+{{- if $syncRequiredQueryCases}}
+
+var errMissingRequiredQueryParams = errors.New("missing required query params")
+
+func syncResourceRequiredQueryParams(resource string) []string {
+	switch resource {
+{{- range $syncRequiredQueryCases}}
+	case {{printf "%q" .Resource}}:
+		return []string{
+{{- range .Params}}
+			{{printf "%q" .}},
+{{- end}}
+		}
+{{- end}}
+	}
+	return nil
+}
+
+func unfilledRequiredSyncQueryParams(resource string, userParams *syncUserParams, filled map[string]string) []string {
+	required := syncResourceRequiredQueryParams(resource)
+	if len(required) == 0 {
+		return nil
+	}
+	params := map[string]string{}
+{{- if $syncParamDefaultCases}}
+	for defaultKey, defaultValue := range syncResourceParamDefaults(resource) {
+		params[defaultKey] = defaultValue
+	}
+{{- end}}
+	for name, value := range filled {
+		if strings.TrimSpace(value) != "" {
+			params[name] = value
+		}
+	}
+	userParams.applyTo(resource, params, false)
+	var missing []string
+	for _, name := range required {
+		if strings.TrimSpace(params[name]) == "" {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
+func syncConditionalQueryParams(resource, effectiveSince, sortValue string{{if .Pagination.DateRangeParam}}, dates string{{end}}) map[string]string {
+	filled := map[string]string{}
+	if sinceParam := syncResourceSinceParam(resource); sinceParam != "" && strings.TrimSpace(effectiveSince) != "" {
+		filled[sinceParam] = effectiveSince
+		if sortParam := syncResourceSortParam(resource); sortParam != "" && strings.TrimSpace(sortValue) != "" {
+			filled[sortParam] = sortValue
+		}
+	}
+{{- if .Pagination.DateRangeParam}}
+	if strings.TrimSpace(dates) != "" {
+		filled[determineDateRangeParam()] = dates
+	}
+{{- end}}
+	return filled
 }
 {{- end}}
 
