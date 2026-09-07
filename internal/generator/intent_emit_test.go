@@ -159,4 +159,7 @@ func TestIntentIsReadOnlyRequiresEveryStep(t *testing.T) {
 	assert.False(t, intentIsDestructive(api, spec.Intent{
 		Steps: []spec.IntentStep{{Endpoint: "items.create"}},
 	}))
+	assert.False(t, intentIsDestructive(api, spec.Intent{
+		Steps: []spec.IntentStep{{Endpoint: "items.list"}, {Endpoint: "items.create"}},
+	}))
 }

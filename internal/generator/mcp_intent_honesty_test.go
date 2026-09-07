@@ -21,6 +21,7 @@ func TestGenerateMCPIntentAnnotationsAndHonestDescription(t *testing.T) {
 			Endpoints: map[string]spec.Endpoint{
 				"search": {Method: "GET", Path: "/search", Description: "Search award availability"},
 				"book":   {Method: "POST", Path: "/book", Description: "Hold a trip"},
+				"cancel": {Method: "DELETE", Path: "/book/{id}", Description: "Cancel a trip"},
 			},
 		},
 	}
@@ -56,6 +57,21 @@ func TestGenerateMCPIntentAnnotationsAndHonestDescription(t *testing.T) {
 					},
 				},
 				Returns: "hold",
+			},
+			{
+				Name:        "cancel_trip",
+				Description: "Cancel a trip",
+				Params: []spec.IntentParam{
+					{Name: "id", Type: "string", Required: true, Description: "Trip id"},
+				},
+				Steps: []spec.IntentStep{
+					{
+						Endpoint: "availability.cancel",
+						Bind:     map[string]string{"id": "${input.id}"},
+						Capture:  "cancelled",
+					},
+				},
+				Returns: "cancelled",
 			},
 		},
 	}
@@ -113,8 +129,22 @@ func TestIntentSafetyMetadata(t *testing.T) {
 	if hold.Tool.Annotations.ReadOnlyHint != nil && *hold.Tool.Annotations.ReadOnlyHint {
 		t.Fatalf("hold_trip must not be read-only")
 	}
-	if hold.Tool.Annotations.DestructiveHint == nil || !*hold.Tool.Annotations.DestructiveHint {
-		t.Fatalf("hold_trip destructiveHint = %v, want true", hold.Tool.Annotations.DestructiveHint)
+	if hold.Tool.Annotations.DestructiveHint == nil || *hold.Tool.Annotations.DestructiveHint {
+		t.Fatalf("hold_trip destructiveHint = %v, want false", hold.Tool.Annotations.DestructiveHint)
+	}
+	if hold.Tool.Annotations.OpenWorldHint == nil || !*hold.Tool.Annotations.OpenWorldHint {
+		t.Fatalf("hold_trip openWorldHint = %v, want true", hold.Tool.Annotations.OpenWorldHint)
+	}
+
+	cancel, ok := tools["cancel_trip"]
+	if !ok {
+		t.Fatalf("cancel_trip missing")
+	}
+	if cancel.Tool.Annotations.ReadOnlyHint != nil && *cancel.Tool.Annotations.ReadOnlyHint {
+		t.Fatalf("cancel_trip must not be read-only")
+	}
+	if cancel.Tool.Annotations.DestructiveHint == nil || !*cancel.Tool.Annotations.DestructiveHint {
+		t.Fatalf("cancel_trip destructiveHint = %v, want true", cancel.Tool.Annotations.DestructiveHint)
 	}
 }
 `

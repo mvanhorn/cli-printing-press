@@ -199,16 +199,16 @@ func inspectIntentSurface(body string, intentCt int) (string, []string) {
 
 func intentHasInvalidTypedDefault(body string) bool {
 	const assign = "] = "
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if !strings.HasPrefix(trimmed, `input["`) {
 			continue
 		}
-		idx := strings.Index(trimmed, assign)
-		if idx < 0 {
+		_, rhs, ok := strings.Cut(trimmed, assign)
+		if !ok {
 			continue
 		}
-		rhs := strings.TrimSpace(strings.TrimSuffix(trimmed[idx+len(assign):], ";"))
+		rhs = strings.TrimSpace(strings.TrimSuffix(rhs, ";"))
 		if !validIntentDefaultGo(rhs) {
 			return true
 		}
