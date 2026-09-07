@@ -53,6 +53,22 @@ func requiredQueryParamsSpec(name string) *spec.APISpec {
 				},
 			},
 		},
+		"exports": {
+			Description: "Exports scoped by format",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:   "GET",
+					Path:     "/exports",
+					Response: spec.ResponseDef{Type: "array"},
+					Params: []spec.Param{{
+						Name:     "format",
+						In:       "query",
+						Type:     "string",
+						Required: true,
+					}},
+				},
+			},
+		},
 	}
 	return apiSpec
 }
@@ -67,12 +83,17 @@ func TestGeneratedSyncSkipsUnfilledRequiredQueryParams(t *testing.T) {
 	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
 	assert.Contains(t, syncSrc, "func syncResourceRequiredQueryParams(resource string) []string {")
 	assert.Contains(t, syncSrc, "func unfilledRequiredSyncQueryParams(")
-	assert.Contains(t, syncSrc, `case "availability":`)
-	assert.Contains(t, syncSrc, `"source"`)
-	assert.Contains(t, syncSrc, `"origin_airport"`)
-	assert.Contains(t, syncSrc, `"destination_airport"`)
 	assert.Contains(t, syncSrc, "errMissingRequiredQueryParams")
 	assert.Contains(t, syncSrc, "missing_required_params")
+
+	required := generatedFunctionBody(t, syncSrc, "func syncResourceRequiredQueryParams(resource string) []string")
+	assert.Contains(t, required, `case "availability":`)
+	assert.Contains(t, required, `"source"`)
+	assert.Contains(t, required, `"origin_airport"`)
+	assert.Contains(t, required, `"destination_airport"`)
+	assert.Contains(t, required, `case "exports":`)
+	assert.Contains(t, required, `"format"`,
+		"required format with no default must stay in the skip guard")
 
 	defaults := generatedFunctionBody(t, syncSrc, "func defaultSyncResources() []string")
 	assert.Contains(t, defaults, `"items"`)
@@ -144,6 +165,22 @@ func TestSyncSkipsWhenRequiredQueryParamsUnfilled(t *testing.T) {
 		t.Fatalf("GetSyncState: %v", err)
 	} else if !last.IsZero() {
 		t.Fatalf("last_synced_at = %v, want unchanged zero after skip", last)
+	}
+}
+
+func TestSyncSkipsWhenRequiredFormatUnfilled(t *testing.T) {
+	db := openRequiredParamStore(t)
+	client := &requiredParamClient{}
+
+	res := syncResource(context.Background(), client, db, "exports", "", false, 1, false, false, nil, nil)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if !errors.Is(res.Warn, errMissingRequiredQueryParams) {
+		t.Fatalf("Warn = %v, want missing required query params for format", res.Warn)
+	}
+	if len(client.got) != 0 {
+		t.Fatalf("issued %d request(s), want none when required format is unknown", len(client.got))
 	}
 }
 
@@ -275,7 +312,7 @@ func TestAutoRefreshSkipsEntireSetWhenAnyResourceMissingParams(t *testing.T) {
 }
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_required_query_params_test.go"), []byte(inlineTest), 0o644))
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestSync(SkipsWhenRequiredQueryParamsUnfilled|SendsWhenRequiredQueryParamsFilled|WithoutRequiredParamsStillRequests)|TestAutoRefreshSkips(MissingRequiredParamsHonestly|EntireSetWhenAnyResourceMissingParams)")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestSync(SkipsWhenRequiredQueryParamsUnfilled|SkipsWhenRequiredFormatUnfilled|SendsWhenRequiredQueryParamsFilled|WithoutRequiredParamsStillRequests)|TestAutoRefreshSkips(MissingRequiredParamsHonestly|EntireSetWhenAnyResourceMissingParams)")
 }
 
 func TestGeneratedSyncOmitsRequiredQueryHelperWhenNone(t *testing.T) {

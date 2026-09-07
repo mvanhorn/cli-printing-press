@@ -221,6 +221,54 @@ func TestProfileRequiredEnumFilterSkipsDefaultSync(t *testing.T) {
 	assert.Empty(t, byName["items"].RequiredQueryParams)
 }
 
+func TestProfileRequiredFormatAndUnownedDatesStayGuarded(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "formats",
+		Resources: map[string]spec.Resource{
+			"exports": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/exports",
+						Params: []spec.Param{
+							{Name: "format", In: "query", Type: "string", Required: true},
+							{Name: "key", In: "query", Type: "string", Required: true},
+							{Name: "end_date", In: "query", Type: "string", Required: true},
+						},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"events": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/events",
+						Params: []spec.Param{
+							{Name: "since", In: "query", Type: "string", Required: true},
+							{Name: "limit", In: "query", Type: "integer", Required: true},
+						},
+						Pagination: &spec.Pagination{LimitParam: "limit"},
+						Response:   spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "exports")
+	require.Contains(t, byName, "events")
+	assert.Equal(t, []string{"end_date", "format", "key"}, byName["exports"].RequiredQueryParams,
+		"required format/key/end_date are not sync-owned, so the skip guard must keep them")
+	assert.Empty(t, byName["events"].RequiredQueryParams,
+		"detected since and paginator limit are assigned later in the page loop")
+}
+
 func TestProfileSiblingListEndpoints(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "trading",

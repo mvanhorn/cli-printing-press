@@ -216,9 +216,8 @@ type SyncableResource struct {
 	// were complete.
 	QueryParamDefaults []SyncQueryParamDefault
 
-	// RequiredQueryParams names spec-required query keys sync cannot fill
-	// itself. Auto-refresh and sync skip rather than send a doomed request
-	// when these are still empty after defaults and --param overlays.
+	// Empty after defaults and --param overlays used to 400 and still report
+	// refreshed; generated sync and auto-refresh skip instead.
 	RequiredQueryParams []string
 
 	// HiddenHistoryDefaults names status/state=open filters that still reach
@@ -329,7 +328,7 @@ type DependentResource struct {
 	// sync paths.
 	QueryParamDefaults []SyncQueryParamDefault
 
-	// RequiredQueryParams mirrors SyncableResource.RequiredQueryParams.
+	// Same skip-when-unfilled contract as the parent list.
 	RequiredQueryParams []string
 
 	// HiddenHistoryDefaults mirrors SyncableResource.HiddenHistoryDefaults.
@@ -3074,15 +3073,11 @@ func syncQueryParamDefaultsFromEndpoint(endpoint spec.Endpoint, syncOwned syncOw
 }
 
 func requiredSyncQueryParamsFromEndpoint(endpoint spec.Endpoint, syncOwned syncOwnedParams, path string) []string {
+	// Only drop keys the generated page loop actually assigns (syncOwned,
+	// paginator names). Reusing the SkipDefaultSync date/`key`/`format`
+	// denylist here would let a required `format` with no default 400.
 	reserved := syncOwned.keys()
 	satisfied := queryNamesInPath(path)
-	temporalOrFormatParams := map[string]bool{
-		"since": true, "updated_after": true, "modified_since": true, "since_id": true,
-		"from": true, "to": true, "start_date": true, "end_date": true,
-		"start_datetime": true, "end_datetime": true, "start_time": true, "end_time": true,
-		"from_date": true, "to_date": true, "from_datetime": true, "to_datetime": true,
-		"key": true, "format": true,
-	}
 	var out []string
 	seen := map[string]struct{}{}
 	for _, param := range endpoint.Params {
@@ -3107,7 +3102,7 @@ func requiredSyncQueryParamsFromEndpoint(endpoint spec.Endpoint, syncOwned syncO
 			continue
 		}
 		lower := strings.ToLower(param.Name)
-		if pageSizeParamCandidates[lower] || cursorParamCandidates[lower] || temporalOrFormatParams[lower] {
+		if pageSizeParamCandidates[lower] || cursorParamCandidates[lower] || pageSizeParamCandidates[key] || cursorParamCandidates[key] {
 			continue
 		}
 		if _, ok := satisfied[key]; ok {
