@@ -67,8 +67,8 @@ scrub_body() {
     'github-oauth|gho_[A-Za-z0-9]{36,}'
     # Opaque ghs_ plus a three-segment JWT form. Do not fold into
     # [A-Za-z0-9._-]{36,}: that class swallows a following period.
-    'github-server|ghs_[A-Za-z0-9]{36,}'
     'github-server-jwt|ghs_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'
+    'github-server|ghs_[A-Za-z0-9]{36,}'
     'slack-bot-token|xoxb-[A-Za-z0-9-]{20,}'
     'slack-user-token|xoxp-[A-Za-z0-9-]{20,}'
     'aws-access-key|\bAKIA[0-9A-Z]{16}\b'
