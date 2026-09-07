@@ -467,7 +467,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				}
 {{- if $jwtExpiryAuth}}
 				if authed {
-					if expiresAt, _, expired, ok := jwtCredentialExpiry(header); ok {
+					if expiresAt, _, expired, ok := jwtCredentialExpiry(jwtExpirySource(cfg)); ok {
 						out["token_expires"] = expiresAt
 						out["token_expired"] = expired
 					}
@@ -534,7 +534,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			fmt.Fprintf(w, "  Source: %s\n", cfg.AuthSource)
 			fmt.Fprintf(w, "  Config: %s\n", cfg.Path)
 {{- if $jwtExpiryAuth}}
-			if _, line, expired, ok := jwtCredentialExpiry(header); ok {
+			if _, line, expired, ok := jwtCredentialExpiry(jwtExpirySource(cfg)); ok {
 				fmt.Fprintf(w, "  Token expires: %s\n", line)
 				if expired {
 {{- if $authSetupHint}}

@@ -33,12 +33,16 @@ func TestBearerAuthStatusAndDoctorReportJWTExpiry(t *testing.T) {
 	require.Contains(t, auth, `out["token_expires"] = expiresAt`)
 	require.Contains(t, auth, `out["token_expired"] = expired`)
 	require.Contains(t, auth, "Token expires:")
+	require.Contains(t, auth, `jwtCredentialExpiry(jwtExpirySource(cfg))`)
 
 	doctorSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
 	require.NoError(t, err)
 	doctor := string(doctorSrc)
 	require.Contains(t, doctor, `report["auth"] = "ERROR token expired at " + expiresAt`)
 	require.Contains(t, doctor, `strings.HasPrefix(s, "ERROR")`)
+	require.Contains(t, doctor, `jwtCredentialExpiry(jwtExpirySource(cfg))`)
+
+	modulePath := generatedModulePath(t, outputDir)
 
 	expiredJWT := testJWT(t, time.Now().Add(-2*time.Hour))
 	validJWT := testJWT(t, time.Now().Add(3*time.Hour))
@@ -50,6 +54,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	%q
 )
 
 const expiredJWT = %q
@@ -120,6 +126,27 @@ func TestJWTExpiryFractionalExp(t *testing.T) {
 	}
 }
 
+func TestJWTExpirySourcePrefersRawCredential(t *testing.T) {
+	cfg := &config.Config{
+		AccessToken:   validJWT,
+		AuthHeaderVal: expiredJWT + " tenant-123",
+	}
+	expiry, ok := jwtExpiry(jwtExpirySource(cfg))
+	if !ok {
+		t.Fatal("raw AccessToken JWT must decode exp")
+	}
+	if !time.Now().UTC().Before(expiry) {
+		t.Fatal("must use the raw credential, not JWT-shaped metadata in the formatted header")
+	}
+	headerExpiry, ok := jwtExpiry(cfg.AuthHeader())
+	if !ok {
+		t.Fatal("formatted header still contains a JWT")
+	}
+	if time.Now().UTC().Before(headerExpiry) {
+		t.Fatal("formatted header decoy JWT should be expired")
+	}
+}
+
 func TestJWTExpiryMissingExp(t *testing.T) {
 	header := %q
 	payload := %q
@@ -129,7 +156,7 @@ func TestJWTExpiryMissingExp(t *testing.T) {
 		t.Fatal("JWT without exp must not report expiry")
 	}
 }
-`, expiredJWT, validJWT, fractionalJWT, fracUnix,
+`, modulePath+"/internal/config", expiredJWT, validJWT, fractionalJWT, fracUnix,
 		base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`)),
 		base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"test"}`)),
 		base64.RawURLEncoding.EncodeToString([]byte("sig")),

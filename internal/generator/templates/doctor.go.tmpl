@@ -420,7 +420,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					report["auth"] = "configured"
 					report["auth_source"] = authSource
 {{- if $jwtExpiryAuth}}
-					if expiresAt, _, expired, ok := jwtCredentialExpiry(cfg.AuthHeader()); ok && expired {
+					if expiresAt, _, expired, ok := jwtCredentialExpiry(jwtExpirySource(cfg)); ok && expired {
 						report["auth"] = "ERROR token expired at " + expiresAt
 {{- if $authSetupHint}}
 						report["auth_hint"] = {{printf "%q" $authSetupHint}}

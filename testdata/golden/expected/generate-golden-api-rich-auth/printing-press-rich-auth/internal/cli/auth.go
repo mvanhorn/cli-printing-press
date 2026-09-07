@@ -91,7 +91,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 					out["credential_refusals"] = refusals
 				}
 				if authed {
-					if expiresAt, _, expired, ok := jwtCredentialExpiry(header); ok {
+					if expiresAt, _, expired, ok := jwtCredentialExpiry(jwtExpirySource(cfg)); ok {
 						out["token_expires"] = expiresAt
 						out["token_expired"] = expired
 					}
@@ -131,7 +131,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			fmt.Fprintln(w, green("Credentials present (not verified)"))
 			fmt.Fprintf(w, "  Source: %s\n", cfg.AuthSource)
 			fmt.Fprintf(w, "  Config: %s\n", cfg.Path)
-			if _, line, expired, ok := jwtCredentialExpiry(header); ok {
+			if _, line, expired, ok := jwtCredentialExpiry(jwtExpirySource(cfg)); ok {
 				fmt.Fprintf(w, "  Token expires: %s\n", line)
 				if expired {
 					fmt.Fprintf(w, "  %s\n", "Set your API key with: export RICH_AUTH_API_KEY=\"your-token-here\"")

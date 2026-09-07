@@ -167,6 +167,19 @@ func novelAuthHeader(flags *rootFlags) (string, error) {
 
 var _ = novelAuthHeader
 
+func jwtExpirySource(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	if v := strings.TrimSpace(cfg.PrintingPressGoldenApiKey); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(cfg.AccessToken); v != "" {
+		return v
+	}
+	return cfg.AuthHeader()
+}
+
 func jwtExpiry(token string) (time.Time, bool) {
 	for _, candidate := range strings.FieldsFunc(strings.TrimSpace(token), func(r rune) bool {
 		isAlnum := (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')

@@ -226,7 +226,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 						authConfigured = true
 						report["auth"] = "configured"
 						report["auth_source"] = authSource
-						if expiresAt, _, expired, ok := jwtCredentialExpiry(cfg.AuthHeader()); ok && expired {
+						if expiresAt, _, expired, ok := jwtCredentialExpiry(jwtExpirySource(cfg)); ok && expired {
 							report["auth"] = "ERROR token expired at " + expiresAt
 							report["auth_hint"] = "Set it with: echo \"$TOKEN\" | additional-auth-doctor-pp-cli auth set-token or export ADDITIONAL_AUTH_DOCTOR_TOKEN=\"your-token-here\""
 						}

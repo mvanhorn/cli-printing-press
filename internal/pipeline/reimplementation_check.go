@@ -69,9 +69,8 @@ type ReimplementationCheckResult struct {
 	// MissingDataSourceStrategy is the list of hand-written novel-feature
 	// commands that do not declare // pp:data-source <auto|local|live|computed>.
 	MissingDataSourceStrategy []ReimplementationFinding `json:"missing_data_source_strategy,omitempty"`
-	// AuthGetenv is the list of novel-feature commands that read an auth
-	// env var with os.Getenv. That misses credentials saved by auth login
-	// / auth set-token; endpoint commands use config.Load + AuthHeader().
+	// Direct auth environment reads miss credentials saved by auth login
+	// or auth set-token; endpoint commands use config.Load + AuthHeader().
 	AuthGetenv []ReimplementationFinding `json:"auth_getenv,omitempty"`
 	// Skipped is true when the check could not run (no research dir, no
 	// novel features, no matchable files).
