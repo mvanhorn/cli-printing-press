@@ -2502,24 +2502,24 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 	if flags.quiet {
 		return printQuiet(w, data)
 	}
+	headerFields := documentedFields
+	if flags.selectFields != "" {
+		selected := map[string]bool{}
+		for _, part := range strings.Split(flags.selectFields, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				selected[part] = true
+			}
+		}
+		headerFields = []map[string]bool{selected}
+	}
 	// --csv: render as CSV
 	if flags.csv {
-		headerFields := documentedFields
-		if flags.selectFields != "" {
-			selected := map[string]bool{}
-			for _, part := range strings.Split(flags.selectFields, ",") {
-				part = strings.TrimSpace(part)
-				if part != "" {
-					selected[part] = true
-				}
-			}
-			headerFields = []map[string]bool{selected}
-		}
 		return printCSV(w, data, headerFields...)
 	}
 	// --plain: render arrays as tab-separated rows
 	if flags.plain {
-		return printPlain(w, data)
+		return printPlain(w, data, headerFields...)
 	}
 	return printOutput(w, data, flags.asJSON)
 }
@@ -2789,6 +2789,10 @@ func compactObjectArrayValue(v any, documentedFields ...map[string]bool) (any, b
 	return compacted, true
 }
 
+// Distinguishes an empty array from swallowed stdout when no header
+// columns are known. Exit 0 with zero bytes is indistinguishable from a crash.
+const emptyTabularResultMarker = "(no rows)"
+
 func printCSV(w io.Writer, data json.RawMessage, documentedFields ...map[string]bool) error {
 	items, ok := tabularObjectRows(data)
 	if !ok {
@@ -2798,6 +2802,7 @@ func printCSV(w io.Writer, data json.RawMessage, documentedFields ...map[string]
 	if len(items) == 0 {
 		keys := csvDeclaredHeader(documentedFields...)
 		if len(keys) == 0 {
+			fmt.Fprintln(w, emptyTabularResultMarker)
 			return nil
 		}
 		writeCSVRow(w, keys)
@@ -2868,13 +2873,19 @@ func csvDeclaredHeader(documentedFields ...map[string]bool) []string {
 	return keys
 }
 
-func printPlain(w io.Writer, data json.RawMessage) error {
+func printPlain(w io.Writer, data json.RawMessage, documentedFields ...map[string]bool) error {
 	items, ok := tabularObjectRows(data)
 	if !ok {
 		fmt.Fprintln(w, string(data))
 		return nil
 	}
 	if len(items) == 0 {
+		keys := csvDeclaredHeader(documentedFields...)
+		if len(keys) == 0 {
+			fmt.Fprintln(w, emptyTabularResultMarker)
+			return nil
+		}
+		fmt.Fprintln(w, strings.Join(keys, "\t"))
 		return nil
 	}
 	keySet := map[string]bool{}

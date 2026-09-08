@@ -712,7 +712,7 @@ func hasDoctorHTTPReachability(content string) bool {
 		strings.Contains(content, "http.NewRequest") {
 		return true
 	}
-	clientCallRe := regexp.MustCompile(`\b[A-Za-z_]\w*(?:Client|HTTPClient)?\.(?:Get|Head|Post|Put|Patch|Delete|Do)\s*\(`)
+	clientCallRe := regexp.MustCompile(`\b[A-Za-z_]\w*(?:Client|HTTPClient)?\.(?:Get(?:WithHeaders(?:NoCache)?(?:Values)?)?|Head|Post|Put|Patch|Delete|Do)\s*\(`)
 	inlineClientCallRe := regexp.MustCompile(`\(&http\.Client\s*\{[^}]*\}\)\.(?:Get|Head|Post|Put|Patch|Delete|Do)\s*\(`)
 	return clientCallRe.MatchString(content) || inlineClientCallRe.MatchString(content)
 }

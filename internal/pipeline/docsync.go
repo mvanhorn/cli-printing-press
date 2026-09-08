@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
@@ -513,27 +514,145 @@ func syncMarkdownFile(path string, rewrite func(string) string) (bool, error) {
 	return true, nil
 }
 
+const whichPromotedMarker = "pp:which-promoted"
+
 func syncWhichIndex(path string, features []NovelFeature) (bool, error) {
-	replacement := renderWhichIndex(features)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reading %s: %w", path, err)
+	}
+	promoted := parsePromotedWhichEntries(string(data))
+	novelCmds := map[string]bool{}
+	for _, feature := range features {
+		if cmd := strings.TrimSpace(feature.Command); cmd != "" {
+			novelCmds[cmd] = true
+		}
+	}
+	kept := promoted[:0]
+	for _, entry := range promoted {
+		if !novelCmds[strings.TrimSpace(entry.Command)] {
+			kept = append(kept, entry)
+		}
+	}
+	replacement := renderWhichIndex(features, kept)
 	return syncGoCompositeLiteral(path, "var whichIndex = []whichEntry{", replacement)
 }
 
-func renderWhichIndex(features []NovelFeature) string {
+func renderWhichIndex(features []NovelFeature, promoted []NovelFeature) string {
 	var b strings.Builder
 	b.WriteString("var whichIndex = []whichEntry{")
 	for _, feature := range features {
-		b.WriteString("\n\t{Command: ")
-		b.WriteString(goStringLiteral(feature.Command))
-		b.WriteString(", Description: ")
-		b.WriteString(goStringLiteral(feature.Description))
-		b.WriteString(", Group: ")
-		b.WriteString(goStringLiteral(feature.Group))
-		b.WriteString(", WhyItMatters: ")
-		b.WriteString(goStringLiteral(feature.WhyItMatters))
-		b.WriteString("},")
+		writeWhichIndexEntry(&b, feature, false)
+	}
+	for _, feature := range promoted {
+		writeWhichIndexEntry(&b, feature, true)
 	}
 	b.WriteString("\n}")
 	return b.String()
+}
+
+func writeWhichIndexEntry(b *strings.Builder, feature NovelFeature, promoted bool) {
+	b.WriteString("\n\t{Command: ")
+	b.WriteString(goStringLiteral(feature.Command))
+	b.WriteString(", Description: ")
+	b.WriteString(goStringLiteral(feature.Description))
+	b.WriteString(", Group: ")
+	b.WriteString(goStringLiteral(feature.Group))
+	b.WriteString(", WhyItMatters: ")
+	b.WriteString(goStringLiteral(feature.WhyItMatters))
+	b.WriteString("},")
+	if promoted {
+		b.WriteString(" // ")
+		b.WriteString(whichPromotedMarker)
+	}
+}
+
+func parsePromotedWhichEntries(content string) []NovelFeature {
+	var out []NovelFeature
+	for line := range strings.SplitSeq(content, "\n") {
+		if !strings.Contains(line, whichPromotedMarker) {
+			continue
+		}
+		entry, ok := parseWhichEntryLine(line)
+		if ok {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func parseWhichEntryLine(line string) (NovelFeature, bool) {
+	_, rest, ok := strings.Cut(line, "{")
+	if !ok {
+		return NovelFeature{}, false
+	}
+	fields, ok := parseWhichCompositeFields(rest)
+	if !ok {
+		return NovelFeature{}, false
+	}
+	cmd := strings.TrimSpace(fields["Command"])
+	if cmd == "" {
+		return NovelFeature{}, false
+	}
+	return NovelFeature{
+		Command:      cmd,
+		Description:  fields["Description"],
+		Group:        fields["Group"],
+		WhyItMatters: fields["WhyItMatters"],
+	}, true
+}
+
+func parseWhichCompositeFields(rest string) (map[string]string, bool) {
+	fields := map[string]string{}
+	for {
+		rest = strings.TrimSpace(rest)
+		if rest == "" || strings.HasPrefix(rest, "}") {
+			return fields, true
+		}
+		name, after, ok := strings.Cut(rest, ":")
+		if !ok {
+			return nil, false
+		}
+		name = strings.TrimSpace(name)
+		if name == "" || strings.ContainsAny(name, "\",{}") {
+			return nil, false
+		}
+		after = strings.TrimSpace(after)
+		val, n, ok := parseGoQuotedPrefix(after)
+		if !ok {
+			return nil, false
+		}
+		fields[name] = val
+		rest = strings.TrimPrefix(strings.TrimSpace(after[n:]), ",")
+	}
+}
+
+func parseGoQuotedPrefix(s string) (string, int, bool) {
+	if !strings.HasPrefix(s, `"`) {
+		return "", 0, false
+	}
+	escaped := false
+	for i := 1; i < len(s); i++ {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if s[i] == '\\' {
+			escaped = true
+			continue
+		}
+		if s[i] == '"' {
+			val, err := strconv.Unquote(s[:i+1])
+			if err != nil {
+				return "", 0, false
+			}
+			return val, i + 1, true
+		}
+	}
+	return "", 0, false
 }
 
 const mcpCommandMirrorKey = `"command_mirror_capabilities": []map[string]string{`

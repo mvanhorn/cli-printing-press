@@ -80,6 +80,19 @@ func looksLikeDoctorInterstitial(body []byte) string {
 	return ""
 }
 
+func doctorBodyLooksLikeHTML(body []byte) bool {
+	s := strings.TrimSpace(string(body))
+	if s == "" {
+		return false
+	}
+	lower := strings.ToLower(s)
+	if len(lower) > 2048 {
+		lower = lower[:2048]
+	}
+	return strings.HasPrefix(lower, "<!doctype html") || strings.HasPrefix(lower, "<html") ||
+		(strings.HasPrefix(lower, "<") && (strings.Contains(lower, "<html") || strings.Contains(lower, "<body") || strings.Contains(lower, "<head") || strings.Contains(lower, "<title")))
+}
+
 // suggestReadCommand walks the Cobra tree to find an endpoint-mirror command
 // an operator can run to confirm credentials work end-to-end. Picks the
 // first leaf that (a) carries the `pp:endpoint` annotation, so it actually
@@ -306,7 +319,10 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					report["api"] = fmt.Sprintf("client init error: %s", clientErr)
 				} else {
 					// Step 1: Basic reachability via the configured transport.
-					reachBody, reachErr := c.Get(cmd.Context(), "/", nil)
+					// Health paths have no response_format field, so opt this
+					// probe into HTML: a 200 HTML homepage is reachable, and
+					// a Cloudflare challenge page can still be classified.
+					reachBody, reachErr := c.GetWithHeaders(cmd.Context(), "/", nil, map[string]string{client.HTMLResponseHeader: "true"})
 					var reachAPIErr *client.APIError
 					switch {
 					case reachErr == nil:
@@ -315,6 +331,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 						// 200 with a JS challenge page.
 						if vendor := looksLikeDoctorInterstitial(reachBody); vendor != "" {
 							report["api"] = fmt.Sprintf("blocked by %s interstitial — the configured transport reached the wall. Try a different network, wait for the IP-level rate limit to clear, or check that the browser-chrome transport is bound correctly.", vendor)
+						} else if doctorBodyLooksLikeHTML(reachBody) {
+							report["api"] = "reachable (HTML body at /)"
 						} else {
 							report["api"] = "reachable"
 						}

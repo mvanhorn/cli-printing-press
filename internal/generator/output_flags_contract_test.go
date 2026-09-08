@@ -44,27 +44,27 @@ func TestPrintOutputWithFlagsPlainRendersTSV(t *testing.T) {
 	}
 }
 
-func TestPrintOutputWithFlagsPlainEmptyArrayIsEmpty(t *testing.T) {
+func TestPrintOutputWithFlagsPlainEmptyArrayWritesMarker(t *testing.T) {
 	data := json.RawMessage("[]")
 	var out bytes.Buffer
 
 	if err := printOutputWithFlags(&out, data, &rootFlags{plain: true}); err != nil {
 		t.Fatalf("printOutputWithFlags returned error: %v", err)
 	}
-	if got := out.String(); got != "" {
-		t.Fatalf("--plain should render empty arrays as an empty stream, got %q", got)
+	if got, want := out.String(), "(no rows)\n"; got != want {
+		t.Fatalf("--plain empty array without declared columns should write the empty-result marker, got %q want %q", got, want)
 	}
 }
 
-func TestPrintOutputWithFlagsCSVEmptyArrayIsEmpty(t *testing.T) {
+func TestPrintOutputWithFlagsCSVEmptyArrayWritesMarker(t *testing.T) {
 	data := json.RawMessage("[]")
 	var out bytes.Buffer
 
 	if err := printOutputWithFlags(&out, data, &rootFlags{csv: true}); err != nil {
 		t.Fatalf("printOutputWithFlags returned error: %v", err)
 	}
-	if got := out.String(); got != "" {
-		t.Fatalf("--csv without declared fields should render an empty array as an empty CSV stream, got %q", got)
+	if got, want := out.String(), "(no rows)\n"; got != want {
+		t.Fatalf("--csv without declared fields should write the empty-result marker, got %q want %q", got, want)
 	}
 }
 
@@ -78,6 +78,19 @@ func TestPrintOutputWithFlagsCSVEmptyArrayWritesDeclaredHeader(t *testing.T) {
 	}
 	if got, want := out.String(), "id,name\n"; got != want {
 		t.Fatalf("empty --csv should write the declared header row, got %q want %q", got, want)
+	}
+}
+
+func TestPrintOutputWithFlagsPlainEmptyArrayWritesDeclaredHeader(t *testing.T) {
+	data := json.RawMessage("[]")
+	var out bytes.Buffer
+	fields := map[string]bool{"id": true, "name": true}
+
+	if err := printOutputWithFlagsMeta(&out, data, &rootFlags{plain: true}, nil, fields); err != nil {
+		t.Fatalf("printOutputWithFlagsMeta returned error: %v", err)
+	}
+	if got, want := out.String(), "id\tname\n"; got != want {
+		t.Fatalf("empty --plain should write the declared tab-separated header, got %q want %q", got, want)
 	}
 }
 
@@ -301,7 +314,7 @@ func TestTerminalControlCharactersRemainInJSONOutput(t *testing.T) {
 }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintOutputWithFlagsPlainRendersTSV|TestPrintOutputWithFlagsPlainEmptyArrayIsEmpty|TestPrintOutputWithFlagsCSVEmptyArrayIsEmpty|TestPrintOutputWithFlagsCSVEmptyArrayWritesDeclaredHeader|TestPrintOutputWithFlagsCSVEmptyArrayEscapesDeclaredHeader|TestPrintOutputWithFlagsCSVNonEmptyArrayUsesCSV|TestPrintOutputWithFlagsCSVQuotesCarriageReturnInValues|TestPrintOutputWithFlagsMachineEmptyArrayIsValidJSON|TestPrintOutputWithFlagsCSVSingleObjectIsOneRow|TestPrintOutputWithFlagsCSVUnwrapsCollectionEnvelope|TestPrintOutputWithFlagsQuietPrintsIdentityValues|TestPrintOutputWithFlagsCompactReducesDocumentedLists|TestHumanFriendlyForcesTableAndNoColorStripsANSI|TestTerminalControl", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintOutputWithFlagsPlainRendersTSV|TestPrintOutputWithFlagsPlainEmptyArrayWritesMarker|TestPrintOutputWithFlagsCSVEmptyArrayWritesMarker|TestPrintOutputWithFlagsCSVEmptyArrayWritesDeclaredHeader|TestPrintOutputWithFlagsPlainEmptyArrayWritesDeclaredHeader|TestPrintOutputWithFlagsCSVEmptyArrayEscapesDeclaredHeader|TestPrintOutputWithFlagsCSVNonEmptyArrayUsesCSV|TestPrintOutputWithFlagsCSVQuotesCarriageReturnInValues|TestPrintOutputWithFlagsMachineEmptyArrayIsValidJSON|TestPrintOutputWithFlagsCSVSingleObjectIsOneRow|TestPrintOutputWithFlagsCSVUnwrapsCollectionEnvelope|TestPrintOutputWithFlagsQuietPrintsIdentityValues|TestPrintOutputWithFlagsCompactReducesDocumentedLists|TestHumanFriendlyForcesTableAndNoColorStripsANSI|TestTerminalControl", "-count=1")
 	requireGeneratedCompiles(t, outputDir)
 }
 
