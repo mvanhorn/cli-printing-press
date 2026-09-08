@@ -13,4 +13,5 @@ ble-session-appliance/CLAUDE.md
 ble-session-appliance/LICENSE
 ble-session-appliance/NOTICE
 ble-session-appliance/.goreleaser.yaml
+ble-session-appliance/.gitignore
 ble-session-appliance/device-spec.yaml

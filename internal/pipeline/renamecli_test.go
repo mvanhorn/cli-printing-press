@@ -386,6 +386,35 @@ func TestRenameCLI(t *testing.T) {
 		assert.NotContains(t, string(gitignore), "\n"+newMCPName+"\n")
 	})
 
+	t.Run("already anchored gitignore stays anchored", func(t *testing.T) {
+		root := t.TempDir()
+		oldName := "notion-pp-cli"
+		newName := "notion-alt-pp-cli"
+		apiName := "notion"
+		newMCPName := naming.MCP(naming.TrimCLISuffix(newName))
+
+		cliDir := filepath.Join(root, oldName)
+		require.NoError(t, os.MkdirAll(cliDir, 0o755))
+		writeTestCLITree(t, cliDir, oldName, apiName)
+		require.NoError(t, os.WriteFile(filepath.Join(cliDir, ".gitignore"), []byte(
+			"/notion-pp-cli\n/notion-pp-cli.exe\n/notion-pp-mcp\n/notion-pp-mcp.exe\n/bin/\n/build/\n/dist/\n",
+		), 0o644))
+
+		_, err := RenameCLI(cliDir, oldName, newName, apiName)
+		require.NoError(t, err)
+
+		newDir := filepath.Join(root, naming.LibraryDirName(newName))
+		gitignore, err := os.ReadFile(filepath.Join(newDir, ".gitignore"))
+		require.NoError(t, err)
+		got := string(gitignore)
+		assert.Contains(t, got, "/"+newName+"\n")
+		assert.Contains(t, got, "/"+newMCPName+"\n")
+		assert.NotContains(t, got, "\n"+newName+"\n")
+		assert.NotContains(t, got, "\n"+newMCPName+"\n")
+		assert.NotContains(t, got, "notion-pp-cli")
+		assert.NotContains(t, got, "notion-pp-mcp")
+	})
+
 	t.Run("numeric qualifier renames correctly", func(t *testing.T) {
 		root := t.TempDir()
 		oldName := "notion-pp-cli"
@@ -899,4 +928,18 @@ func TestRenameCLISkipsResearchJSONSymlink(t *testing.T) {
 	outsideData, err := os.ReadFile(outside)
 	require.NoError(t, err)
 	assert.Equal(t, `{"api_name": "subject"}`+"\n", string(outsideData), "symlink target outside the CLI tree must stay untouched")
+}
+
+func TestAnchorRenamedGitignorePatterns(t *testing.T) {
+	t.Parallel()
+
+	t.Run("anchors bare binary names", func(t *testing.T) {
+		got := anchorRenamedGitignorePatterns("new-pp-cli\nnew-pp-mcp\n/build/\n", "new-pp-cli", "new-pp-mcp")
+		assert.Equal(t, "/new-pp-cli\n/new-pp-mcp\n/build/\n", got)
+	})
+
+	t.Run("leaves already anchored names", func(t *testing.T) {
+		in := "/new-pp-cli\n/new-pp-cli.exe\n/new-pp-mcp\n/new-pp-mcp.exe\n/bin/\n/build/\n/dist/\n"
+		assert.Equal(t, in, anchorRenamedGitignorePatterns(in, "new-pp-cli", "new-pp-mcp"))
+	})
 }

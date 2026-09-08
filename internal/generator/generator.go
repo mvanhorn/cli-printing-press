@@ -377,6 +377,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return naming.CLI(s.Name)
 		},
+		"cliName":            naming.CLI,
+		"mcpName":            naming.MCP,
 		"goDirectiveVersion": resolveCurrentGoDirectiveVersion,
 		"goToolchainVersion": resolveCurrentGoToolchainVersion,
 		"graphqlQueryField":  graphqlQueryField,
@@ -5890,6 +5892,9 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 	}
 	if err := g.renderTemplate("goreleaser.yaml.tmpl", ".goreleaser.yaml", rootData); err != nil {
 		return fmt.Errorf("rendering goreleaser: %w", err)
+	}
+	if err := g.renderTemplate("gitignore.tmpl", ".gitignore", rootData); err != nil {
+		return fmt.Errorf("rendering gitignore: %w", err)
 	}
 
 	return nil

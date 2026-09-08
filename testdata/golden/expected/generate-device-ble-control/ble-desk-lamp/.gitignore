@@ -1,0 +1,8 @@
+# Root-anchored so cmd/<binary>/ source stays tracked.
+/ble-desk-lamp-pp-cli
+/ble-desk-lamp-pp-cli.exe
+/ble-desk-lamp-pp-mcp
+/ble-desk-lamp-pp-mcp.exe
+/bin/
+/build/
+/dist/

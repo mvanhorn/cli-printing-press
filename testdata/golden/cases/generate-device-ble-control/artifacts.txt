@@ -11,4 +11,5 @@ ble-desk-lamp/CLAUDE.md
 ble-desk-lamp/LICENSE
 ble-desk-lamp/NOTICE
 ble-desk-lamp/.goreleaser.yaml
+ble-desk-lamp/.gitignore
 ble-desk-lamp/device-spec.yaml

@@ -8,6 +8,8 @@ builds:
     binary: {{.Name}}-pp-cli
     env:
       - CGO_ENABLED=0
+    flags:
+      - -trimpath
     ldflags:
       - -s -w -X {{modulePath}}/internal/cli.version={{"{{"}} .Version {{"}}"}}
     targets:
@@ -23,6 +25,8 @@ builds:
     binary: {{.Name}}-pp-mcp
     env:
       - CGO_ENABLED=0
+    flags:
+      - -trimpath
     ldflags:
       - -s -w -X main.version={{"{{"}} .Version {{"}}"}}
     targets:

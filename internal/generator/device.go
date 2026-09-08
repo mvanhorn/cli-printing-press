@@ -117,11 +117,12 @@ func (g *DeviceGenerator) Generate() error {
 		"README.md": deviceReadmeTemplate,
 		"SKILL.md":  deviceSkillTemplate,
 		// Standard publish artifacts the public library's completeness verifier
-		// expects. LICENSE/NOTICE/.goreleaser.yaml are shared with the HTTP
-		// generator; AGENTS.md uses a device-aware variant (no auth/sync/SQL).
+		// expects. LICENSE/NOTICE/.goreleaser.yaml/.gitignore are shared with
+		// the HTTP generator; AGENTS.md uses a device-aware variant (no auth/sync/SQL).
 		"LICENSE":          "LICENSE.tmpl",
 		"NOTICE":           "NOTICE.tmpl",
 		".goreleaser.yaml": "goreleaser.yaml.tmpl",
+		".gitignore":       "gitignore.tmpl",
 		"AGENTS.md":        "agents_device.md.tmpl",
 		// Claude Code auto-loads CLAUDE.md, not AGENTS.md (codex/agy read AGENTS.md
 		// natively). Emit a CLAUDE.md that just imports it so a Claude session in the
@@ -319,6 +320,8 @@ func (g *DeviceGenerator) renderEmbedded(relPath, tmplName string, data deviceTe
 		"copyrightHolder":  func() string { return "contributors" },
 		"envPrefix":        naming.EnvPrefix,
 		"modulePath":       func() string { return naming.CLI(g.Spec.Name) },
+		"cliName":          naming.CLI,
+		"mcpName":          naming.MCP,
 		"yamlDoubleQuoted": yamlDoubleQuoted,
 	}).Parse(string(content))
 	if err != nil {
