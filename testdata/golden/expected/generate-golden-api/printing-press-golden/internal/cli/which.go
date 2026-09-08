@@ -12,9 +12,9 @@ import (
 )
 
 // whichEntry is one row of the curated capability index. The index is seeded
-// at generation time from the verified NovelFeature list that drives the
-// SKILL.md feature section, so the command a `which` query returns is
-// guaranteed to exist and to match what the skill advertises.
+// at generation time from novel hero features first, then promoted endpoint
+// commands, deduped by Command so a novel that replaced a promoted leaf keeps
+// the hero copy.
 type whichEntry struct {
 	Command      string `json:"command"`
 	Description  string `json:"description"`
@@ -22,11 +22,14 @@ type whichEntry struct {
 	WhyItMatters string `json:"why_it_matters,omitempty"`
 }
 
-// whichIndex is the curated list of capabilities this CLI advertises as
-// its hero features. Endpoint-level commands are discoverable via
-// `--help`; `which` exists to resolve a natural-language capability
-// query to one of the commands the skill says matter most.
-var whichIndex = []whichEntry{}
+// whichIndex is the curated list of capabilities this CLI advertises.
+// Novel hero features come first (declaration-order ties); promoted
+// endpoint commands follow so natural-language queries can find them.
+var whichIndex = []whichEntry{
+	{Command: "currencies", Description: "List supported currencies", Group: "currencies", WhyItMatters: "List supported currencies"}, // pp:which-promoted
+	{Command: "public", Description: "Get public service status", Group: "public", WhyItMatters: "Get public service status"},         // pp:which-promoted
+	{Command: "tickets", Description: "Query tickets", Group: "tickets", WhyItMatters: "Query tickets"},                               // pp:which-promoted
+}
 
 // whichMatch pairs an index entry with its ranking score for a query.
 // Higher score means stronger match. The ranker is naive (exact token
