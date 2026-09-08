@@ -11,7 +11,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -81,6 +80,7 @@ func NewRootCommand(commandName string) *cobra.Command {
 	rootCmd.AddCommand(newContributorsCmd())
 	rootCmd.AddCommand(newVisionCmd())
 	rootCmd.AddCommand(newVersionCmd())
+	rootCmd.AddCommand(newSkillCompatCmd())
 	rootCmd.AddCommand(newPrintCmd())
 	rootCmd.AddCommand(newBrowserSniffCmd())
 	rootCmd.AddCommand(newCrowdSniffCmd())
@@ -2899,10 +2899,15 @@ func newVersionCmd() *cobra.Command {
 		Example: `  cli-printing-press version`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if asJSON {
-				return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]string{
-					"version": version.Version,
-					"go":      runtime.Version(),
-				})
+				home := userHomeDir()
+				payload := versionJSONPayload(home)
+				if err := json.NewEncoder(cmd.OutOrStdout()).Encode(payload); err != nil {
+					return err
+				}
+				if payload.SkillStatus == skillStatusStale {
+					writeSkillStaleWarning(cmd.ErrOrStderr(), discoverInstalledSkillCompat(home))
+				}
+				return nil
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", cmd.Root().Use, version.Version)
 			return nil

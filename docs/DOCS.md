@@ -28,3 +28,4 @@ The extracted developer docs are:
 - `docs/CURSOR.md` — using printed CLIs and skills in Cursor
 - `docs/DOCS.md` — this doc-authoring guidance
 - `docs/PLUGIN-DEV.md` — persistent local plugin development setup
+- `docs/SKILLS.md` — skill authoring: install targets, workflow parity, `version:` / `MinSkillVersion`, `context: fork` / `user-invocable`

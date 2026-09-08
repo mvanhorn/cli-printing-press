@@ -249,6 +249,11 @@ See [`docs/RELEASE.md`](docs/RELEASE.md) for the merge-the-release-PR flow.
 - Distinct from `min-binary-version`: that is the release-managed, skill-frontmatter compatibility floor (the hard "skill cannot run below this" baseline, tracking the major and moving only on a major bump). The currency floor is a freely-tunable freshness gate. Do not conflate them.
 - `TestSkillsEnforceCurrencyFloor` in [`internal/pipeline/contracts_test.go`](internal/pipeline/contracts_test.go) locks the file shape and both contracts' enforce-every-run gate and clamp.
 
+## Skill-version floor
+The binary's `MinSkillVersion` (`internal/cli/skill_compat.go`) is the oldest printing-press skill frontmatter `version:` this binary will run with — the reverse of `min-binary-version`. When skill shape changes so a stale install would follow deleted commands, bump `MinSkillVersion`, the skill `version:` field, and the setup-contract `# skill-version:` / `_this_skill_version=` values together. Preflight hard-blocks with `[skill-stale]` (reinstall via `scripts/install.sh --skills-only`, then restart the session; no skip). `version --json` also warns on stderr when a well-known install path still has an older copy. `TestPrintingPressSkillVersionMatchesBinaryFloor` and `TestSkillsEnforceCurrencyFloor` lock the contract.
+
+See [`docs/SKILLS.md`](docs/SKILLS.md) for the frontmatter bump rule.
+
 ## Testing
 When you change code, check for a `_test.go` file in the same package. If one exists, read it; your change likely requires a test update. If tests fail after your change, investigate whether it is a bug in your code or a stale test; do not just delete the test.
 Add tests for new non-trivial logic. Match the package's existing style (typically table-driven with `testify/assert`). Skip tests for CLI glue, trivial wrappers, and code only meaningfully tested via integration (`FULL_RUN=1`).
@@ -292,7 +297,7 @@ This copies the skills to `~/.claude/skills/`.
 
 ## Skill Authoring
 When a machine change alters what an agent should do or what a command guarantees, update the relevant `SKILL.md` router and its phase files under `skills/printing-press/phases/` in the same change; do not leave the skill as a stale manual workaround for behavior the machine now owns.
-Detail in [`docs/SKILLS.md`](docs/SKILLS.md): install targets, workflow parity, the thin-spine plus `phases/` / `references/` pattern, and the `context: fork` / `user-invocable` frontmatter fields.
+Detail in [`docs/SKILLS.md`](docs/SKILLS.md): install targets, workflow parity, the thin-spine plus `phases/` / `references/` pattern, the skill `version:` / `MinSkillVersion` bump rule, and the `context: fork` / `user-invocable` frontmatter fields.
 
 ## Code & Comment Hygiene
 ### Write-time defaults
