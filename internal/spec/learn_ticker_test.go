@@ -68,6 +68,14 @@ func TestValidateLearnTickerPlaybookReachability(t *testing.T) {
 		require.NoError(t, s.Validate())
 	})
 
+	t.Run("legacy enabled false skips reachability even with a greedy pattern", func(t *testing.T) {
+		s := learnTickerSpec([]string{`^[a-z0-9]{2,12}$`})
+		s.Learn.Enabled = false
+		s.Learn.EnabledSet = true
+		s.Learn.Disabled = false
+		require.NoError(t, s.Validate())
+	})
+
 	t.Run("authored extra example is rejected when a specific pattern swallows it", func(t *testing.T) {
 		learn := LearnConfig{
 			Enabled:        true,

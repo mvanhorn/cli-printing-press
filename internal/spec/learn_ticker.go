@@ -63,10 +63,10 @@ var learnDefaultStopwords = map[string]struct{}{
 
 // CheckLearnQueryFamilyReachability reports whether learn.TickerPatterns
 // would make QueryFamily empty for any seeded generator example or any
-// extra authored playbook example. No-op when the loop is disabled or
-// no ticker patterns are declared.
+// extra authored playbook example. No-op when the loop will not be emitted
+// (disabled, or legacy enabled: false) or no ticker patterns are declared.
 func CheckLearnQueryFamilyReachability(learn *LearnConfig, extras []LearnQueryFamilyExample) error {
-	if learn == nil || learn.Disabled || len(learn.TickerPatterns) == 0 {
+	if !learnLoopEmits(learn) || len(learn.TickerPatterns) == 0 {
 		return nil
 	}
 	examples := make([]LearnQueryFamilyExample, 0, len(learnSeededQueryFamilyExamples)+len(extras))
@@ -75,8 +75,18 @@ func CheckLearnQueryFamilyReachability(learn *LearnConfig, extras []LearnQueryFa
 	return learn.queryFamilyReachabilityError(examples)
 }
 
+func learnLoopEmits(c *LearnConfig) bool {
+	if c == nil || c.Disabled {
+		return false
+	}
+	if c.EnabledSet {
+		return c.Enabled
+	}
+	return true
+}
+
 func (c *LearnConfig) queryFamilyReachabilityError(examples []LearnQueryFamilyExample) error {
-	if c == nil || c.Disabled || len(c.TickerPatterns) == 0 {
+	if !learnLoopEmits(c) || len(c.TickerPatterns) == 0 {
 		return nil
 	}
 	compiled := make([]*regexp.Regexp, len(c.TickerPatterns))
@@ -148,8 +158,7 @@ func claimedPatternIndex(claimed map[int][]string) int {
 // outcome recall will.
 func learnNonEntityTokens(query string, tickers []*regexp.Regexp, stopwords map[string]struct{}) []string {
 	var family []string
-	rawTokens := strings.Fields(query)
-	for i, raw := range rawTokens {
+	for _, raw := range strings.Fields(query) {
 		tok := learnTrimPunct(raw)
 		if tok == "" {
 			continue
@@ -158,21 +167,10 @@ func learnNonEntityTokens(query string, tickers []*regexp.Regexp, stopwords map[
 			continue
 		}
 		lower := strings.ToLower(tok)
-		if len(tok) >= 2 && learnIsAllCaps(tok) {
-			if _, sw := stopwords[lower]; sw {
-				continue
-			}
+		if (len(tok) >= 2 && learnIsAllCaps(tok)) || learnIsCapitalized(tok) {
 			continue
 		}
-		if learnIsCapitalized(tok) {
-			if i == 0 {
-				if _, sw := stopwords[lower]; sw {
-					continue
-				}
-			}
-			continue
-		}
-		if _, sw := stopwords[lower]; sw {
+		if _, isStopword := stopwords[lower]; isStopword {
 			continue
 		}
 		family = append(family, lower)

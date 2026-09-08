@@ -3,7 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -67,6 +67,24 @@ func TestGenerateRejectsAuthoredPlaybookSwallowedByTickerPattern(t *testing.T) {
 	require.Contains(t, err.Error(), "playbooks/nccpl.json")
 }
 
+func TestAuthoredLearnQueryFamilyExamplesTreatsOutputDirLiterally(t *testing.T) {
+	t.Parallel()
+
+	outputDir := filepath.Join(t.TempDir(), "out[put]")
+	playbookDir := filepath.Join(outputDir, "internal", "cli", "playbooks")
+	require.NoError(t, os.MkdirAll(playbookDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(playbookDir, "keep.json"), []byte(`{
+  "query_family_examples": ["keep these tokens"],
+  "steps": [{"cmd": "x"}]
+}`), 0o644))
+
+	got, err := authoredLearnQueryFamilyExamples(outputDir)
+	require.NoError(t, err)
+	require.Equal(t, []spec.LearnQueryFamilyExample{
+		{Source: "playbooks/keep.json", Query: "keep these tokens"},
+	}, got)
+}
+
 func TestLearnSeededQueryFamilyExamplesStayInTemplates(t *testing.T) {
 	t.Parallel()
 
@@ -76,16 +94,41 @@ func TestLearnSeededQueryFamilyExamplesStayInTemplates(t *testing.T) {
 		"templates/learn/playbooks_test.go.tmpl",
 		"templates/learn/recall_canonical_test.go.tmpl",
 	}
-	var combined strings.Builder
+	fromTemplates := map[string]struct{}{}
 	for _, rel := range files {
 		data, err := templateFS.ReadFile(rel)
 		require.NoError(t, err, "read %s", rel)
-		combined.Write(data)
-		combined.WriteByte('\n')
+		for _, query := range templateQueryFamilyExamples(string(data)) {
+			fromTemplates[query] = struct{}{}
+		}
 	}
-	src := combined.String()
-	for _, query := range spec.LearnSeededQueryFamilyQueries() {
-		require.Contains(t, src, query,
-			"seeded query_family_example %q must remain in generator templates", query)
+	fromSpec := spec.LearnSeededQueryFamilyQueries()
+	require.NotEmpty(t, fromSpec)
+	require.Len(t, fromTemplates, len(fromSpec),
+		"template query_family_examples %v must match seeded list %v", keys(fromTemplates), fromSpec)
+	for _, query := range fromSpec {
+		_, ok := fromTemplates[query]
+		require.True(t, ok, "seeded query_family_example %q missing from template query_family_examples arrays", query)
 	}
+}
+
+var queryFamilyExamplesArray = regexp.MustCompile(`"query_family_examples"\s*:\s*\[([^\]]*)\]`)
+var queryFamilyExampleString = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`)
+
+func templateQueryFamilyExamples(src string) []string {
+	var out []string
+	for _, match := range queryFamilyExamplesArray.FindAllStringSubmatch(src, -1) {
+		for _, inner := range queryFamilyExampleString.FindAllStringSubmatch(match[1], -1) {
+			out = append(out, inner[1])
+		}
+	}
+	return out
+}
+
+func keys(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

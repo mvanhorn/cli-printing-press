@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
@@ -20,12 +21,21 @@ func validateLearnTickerPlaybookReachability(learn spec.LearnConfig, outputDir s
 }
 
 func authoredLearnQueryFamilyExamples(outputDir string) ([]spec.LearnQueryFamilyExample, error) {
-	matches, err := filepath.Glob(filepath.Join(outputDir, "internal", "cli", "playbooks", "*.json"))
+	dir := filepath.Join(outputDir, "internal", "cli", "playbooks")
+	entries, err := os.ReadDir(dir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("listing authored playbooks: %w", err)
 	}
 	var extras []spec.LearnQueryFamilyExample
-	for _, path := range matches {
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		path := filepath.Join(dir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("reading authored playbook %s: %w", path, err)
@@ -34,7 +44,7 @@ func authoredLearnQueryFamilyExamples(outputDir string) ([]spec.LearnQueryFamily
 		if err != nil {
 			continue
 		}
-		rel := filepath.ToSlash(filepath.Join("playbooks", filepath.Base(path)))
+		rel := filepath.ToSlash(filepath.Join("playbooks", name))
 		for _, query := range examples {
 			extras = append(extras, spec.LearnQueryFamilyExample{Source: rel, Query: query})
 		}
