@@ -626,10 +626,7 @@ func parseWhichCompositeFields(rest string) (map[string]string, bool) {
 			return nil, false
 		}
 		fields[name] = val
-		rest = strings.TrimSpace(after[n:])
-		if strings.HasPrefix(rest, ",") {
-			rest = rest[1:]
-		}
+		rest = strings.TrimPrefix(strings.TrimSpace(after[n:]), ",")
 	}
 }
 
