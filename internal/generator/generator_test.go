@@ -12379,8 +12379,9 @@ func TestGeneratedDoctor_HealthCheckPathProbesEndpoint(t *testing.T) {
 	doctorSrc := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
 	assert.Contains(t, doctorSrc, `healthPath := "api/marketStatus"`)
 	assert.Contains(t, doctorSrc, `if !strings.HasPrefix(healthPath, "/") {`)
-	assert.Contains(t, doctorSrc, `reachBody, reachErr := c.Get(cmd.Context(), healthPath, nil)`)
+	assert.Contains(t, doctorSrc, `reachBody, reachErr := c.GetWithHeaders(cmd.Context(), healthPath, nil, map[string]string{client.HTMLResponseHeader: "true"})`)
 	assert.NotContains(t, doctorSrc, `reachBody, reachErr := c.Get(cmd.Context(), "/", nil)`)
+	assert.NotContains(t, doctorSrc, `reachBody, reachErr := c.Get(cmd.Context(), healthPath, nil)`)
 }
 
 func TestGeneratedDoctor_InterstitialMarkersAreTitleAnchored(t *testing.T) {
