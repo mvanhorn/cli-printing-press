@@ -348,8 +348,9 @@ func TestWhichPipedNoMatchExits2WithEmptyEnvelope(t *testing.T) {
 }
 
 // Sanity: whichIndex compiles and is well-formed. Generated CLIs with
-// zero NovelFeatures ship an empty index, and that is still a valid
-// state (which returns the "no curated index" error at runtime).
+// neither novel features nor promoted endpoint commands ship an empty
+// index, and that is still a valid state (which returns the "no curated
+// index" error at runtime).
 func TestWhichIndex_ExistsAndIsWellFormed(t *testing.T) {
 	root := newRootCmd(&rootFlags{})
 	for i, e := range whichIndex {

@@ -13168,7 +13168,8 @@ func TestGenerateWhichDoesNotFallbackToEndpointGuesses(t *testing.T) {
 	whichGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "which.go"))
 	require.NoError(t, err)
 	whichSrc := string(whichGo)
-	assert.Contains(t, whichSrc, `var whichIndex = []whichEntry{}`)
+	assert.Contains(t, whichSrc, `Command: "products"`)
+	assert.Contains(t, whichSrc, `pp:which-promoted`)
 	assert.NotContains(t, whichSrc, `Command: "products list"`)
 	assert.NotContains(t, whichSrc, `Command: "products reviews list"`)
 	assert.Contains(t, whichSrc, `"pp:typed-exit-codes": "0,2"`)
@@ -13178,7 +13179,8 @@ func TestGenerateWhichDoesNotFallbackToEndpointGuesses(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/whichfallback-pp-cli")
 	whichOut, err := exec.Command(binaryPath, "which", "reviews", "--json").CombinedOutput()
 	require.Error(t, err)
-	assert.Contains(t, string(whichOut), "no curated capability index")
+	assert.NotContains(t, string(whichOut), "no curated capability index")
+	assert.Contains(t, string(whichOut), `"matches"`)
 }
 
 func graphQLBFFCaptureEntry(operationName, variablesJSON, hash string) browsersniff.EnrichedEntry {

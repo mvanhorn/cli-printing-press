@@ -164,3 +164,35 @@ func TestMarkdownHeadingsRequiresMatchingFenceLength(t *testing.T) {
 	assert.Equal(t, -1, findMarkdownHeading(content, "## Still fenced"))
 	assert.GreaterOrEqual(t, findMarkdownHeading(content, "## Real"), 0)
 }
+
+func TestSyncWhichIndexPreservesPromotedEntries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "internal", "cli", "which.go")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(`package cli
+
+var whichIndex = []whichEntry{
+	{Command: "old-novel", Description: "stale novel", Group: "", WhyItMatters: ""},
+	{Command: "awards", Description: "Search award availability", Group: "awards", WhyItMatters: "Search award availability"}, // pp:which-promoted
+}
+`), 0o644))
+
+	changed, err := syncWhichIndex(path, []NovelFeature{{
+		Command:      "digest",
+		Description:  "Fresh novel",
+		Group:        "Analysis",
+		WhyItMatters: "Hero path",
+	}})
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	got := string(data)
+	assert.Contains(t, got, `Command: "digest"`)
+	assert.Contains(t, got, `Command: "awards"`)
+	assert.Contains(t, got, "pp:which-promoted")
+	assert.NotContains(t, got, "old-novel")
+	assert.NotContains(t, got, "stale novel")
+	requireBefore(t, got, `Command: "digest"`, `Command: "awards"`)
+}

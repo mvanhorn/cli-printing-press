@@ -1111,6 +1111,9 @@ type readmeTemplateData struct {
 	// that was promoted (e.g. "qr" → "get-qrcode"). Currently informational —
 	// templates that need to surface the underlying operation-id can read it.
 	PromotedEndpointNames map[string]string
+	// WhichIndex is the curated which command index: novel hero features
+	// first, then promoted endpoint commands, deduped by Command.
+	WhichIndex []whichIndexEntry
 }
 
 type generatorTemplateData struct {
@@ -1180,6 +1183,7 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		TrafficAnalysis:       g.trafficAnalysisData(),
 		PromotedResourceNames: g.PromotedResourceNames,
 		PromotedEndpointNames: g.PromotedEndpointNames,
+		WhichIndex:            g.whichIndexEntries(),
 	}
 }
 

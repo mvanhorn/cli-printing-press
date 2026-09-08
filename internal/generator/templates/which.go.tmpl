@@ -12,9 +12,9 @@ import (
 )
 
 // whichEntry is one row of the curated capability index. The index is seeded
-// at generation time from the verified NovelFeature list that drives the
-// SKILL.md feature section, so the command a `which` query returns is
-// guaranteed to exist and to match what the skill advertises.
+// at generation time from novel hero features first, then promoted endpoint
+// commands, deduped by Command so a novel that replaced a promoted leaf keeps
+// the hero copy.
 type whichEntry struct {
 	Command      string `json:"command"`
 	Description  string `json:"description"`
@@ -22,13 +22,12 @@ type whichEntry struct {
 	WhyItMatters string `json:"why_it_matters,omitempty"`
 }
 
-// whichIndex is the curated list of capabilities this CLI advertises as
-// its hero features. Endpoint-level commands are discoverable via
-// `--help`; `which` exists to resolve a natural-language capability
-// query to one of the commands the skill says matter most.
+// whichIndex is the curated list of capabilities this CLI advertises.
+// Novel hero features come first (declaration-order ties); promoted
+// endpoint commands follow so natural-language queries can find them.
 var whichIndex = []whichEntry{
-{{- range .NovelFeatures}}
-	{Command: {{printf "%q" .Command}}, Description: {{printf "%q" .Description}}, Group: {{printf "%q" .Group}}, WhyItMatters: {{printf "%q" .WhyItMatters}}},
+{{- range .WhichIndex}}
+	{Command: {{printf "%q" .Command}}, Description: {{printf "%q" .Description}}, Group: {{printf "%q" .Group}}, WhyItMatters: {{printf "%q" .WhyItMatters}}},{{- if .Promoted}} // pp:which-promoted{{end}}
 {{- end}}
 }
 
