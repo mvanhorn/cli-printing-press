@@ -297,6 +297,15 @@ func promoteWorkingCLI(cliName, workingDir string, state *PipelineState) (*Promo
 		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("preserving library-only patches: %w", err))
 	}
 
+	// Staging is the tree that enters the library: working copy plus any
+	// library-only records just unioned in. Validating workingDir alone would
+	// miss a generate --force that dropped recorded files while the library
+	// still held the ledger.
+	if err := ValidatePatchRecords(stagingDir); err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("recorded patches no longer match the tree being promoted: %w", err))
+	}
+
 	// Phase 5 writes acceptance markers to the runstate, but the published
 	// copy is the path downstream consumers see — embed them before the swap.
 	if err := stageRunstateManuscripts(stagingDir, state); err != nil {
