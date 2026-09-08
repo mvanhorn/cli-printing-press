@@ -52,7 +52,7 @@ For example:
 - Polymarket: `^will-[a-z0-9-]+$` (market slugs)
 - ESPN: `^[0-9]{9}$` (9-digit event IDs), see worked example below
 
-Anchor every regex with `^...$` — without anchors a stray "will" in a sports query would match an unrelated Polymarket pattern and corrupt classification.
+Anchor every regex with `^...$` — without anchors a stray "will" in a sports query would match an unrelated Polymarket pattern and corrupt classification. Do not use a character class that can match ordinary lowercase query words (`^[a-z0-9]{2,12}$`); spec validation rejects patterns that empty QueryFamily for seeded playbook examples.
 
 ### Stopwords
 
@@ -310,6 +310,7 @@ The sweep tool is byte-for-byte parity with the generator emission for the learn
 - **Whitespace-only aliases.** Silently dropped. Use real strings.
 - **Domain identifiers in the canonical or alias text.** The purity gate (`scripts/verify-learn-purity.sh`) doesn't scan spec.Learn — but downstream library tests may. Keep the data clean.
 - **Ticker patterns without anchors.** A pattern like `[A-Z]{3}` matches any uppercase trigram in any query, including in stopwords. Always anchor with `^...$`.
+- **Ticker patterns that match ordinary lowercase words.** `matchesTicker` runs on the raw token *before* the ALL-CAPS entity rule, so `^[a-z0-9]{2,12}$` (and similar) claims every dictionary word, QueryFamily becomes empty, and every seeded playbook is skipped as unreachable. Spec/generate validation rejects that shape; keep a distinctive prefix, separator, or uppercase class (`^EW-[A-Z0-9]+$`, `^[A-Z][A-Z0-9]{2,11}$`, `^will-[a-z0-9-]+$`).
 - **Treating seeds as canonical truth.** They're a starting point. Real teach traffic is what populates the long tail. Seed only the high-frequency cases; let learnings fill in the rest.
 
 ## Related references

@@ -661,7 +661,10 @@ the domain's entities; translate them, do not re-research:
   ones.
 - `ticker_patterns`: only when the domain has ticker-like identifiers, i.e.
   stable regex-matchable IDs, slugs, or codes an agent would paste into a
-  free-text query. Anchor every regex with `^...$`.
+  free-text query. Anchor every regex with `^...$`. Do not author a character
+  class that can match ordinary lowercase query words (`^[a-z0-9]{2,12}$`
+  and similar); spec/generate validation rejects patterns that empty
+  QueryFamily for the generator's seeded playbook `query_family_examples`.
 - `synonyms`: only for same-referent phrasing variants users will actually
   say (spelling variants, equivalent time phrasings). Never pairs that change
   meaning; keys and values are lowercase, single-hop.

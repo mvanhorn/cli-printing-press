@@ -390,10 +390,12 @@ Rules:
 - `disabled: true` is the generation-time opt-out. Combining it with an
   explicit `enabled: true` is rejected at parse time as contradictory.
 - Validated by the same learn validation as internal YAML specs: ticker
-  patterns must compile as Go regexps, seed kinds must be lowercase
-  identifiers, canonicals must be non-empty and unique within a kind, and
-  synonym pairs must be non-empty lowercase single-hop folds (no chains, no
-  self-references).
+  patterns must compile as Go regexps and must not classify every remaining
+  content token in seeded playbook `query_family_examples` as a ticker
+  (that empties QueryFamily and makes recall unreachable), seed kinds must
+  be lowercase identifiers, canonicals must be non-empty and unique within
+  a kind, and synonym pairs must be non-empty lowercase single-hop folds
+  (no chains, no self-references).
 
 Example:
 
