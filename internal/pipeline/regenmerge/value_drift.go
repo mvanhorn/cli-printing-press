@@ -163,12 +163,13 @@ func canonicalRender(fset *token.FileSet, node ast.Node) (string, error) {
 	return text, nil
 }
 
-// stripAddCommandStmts removes top-level AddCommand call statements from a
-// function body's statement list. AddCommand call additions are handled by
-// the LostRegistrations re-injection path, not by drift detection — leaving
-// them in the comparison would route every templated host file with a
-// hand-added subcommand through TEMPLATED-VALUE-DRIFT (preserve pub) and
-// silently disable the re-injection path.
+// stripAddCommandStmts removes top-level AddCommand and
+// addNovelCommandIfAbsent call statements from a function body's statement
+// list. Those call additions are handled by the LostRegistrations
+// re-injection path, not by drift detection — leaving them in the comparison
+// would route every templated host file with a novel registration through
+// TEMPLATED-VALUE-DRIFT (preserve pub) and silently disable the re-injection
+// path.
 func stripAddCommandStmts(stmts []ast.Stmt) []ast.Stmt {
 	out := make([]ast.Stmt, 0, len(stmts))
 	for _, stmt := range stmts {
@@ -303,8 +304,9 @@ func quoteLike(original, s string) string {
 }
 
 // isAddCommandASTStmt reports whether stmt is an `<recv>.AddCommand(...)`
-// call statement. Operates on go/ast (apply.go has a dave/dst counterpart
-// for the rewriter that lives there).
+// or `addNovelCommandIfAbsent(<recv>, ...)` call statement. Operates on
+// go/ast (apply.go has a dave/dst counterpart for the rewriter that lives
+// there).
 func isAddCommandASTStmt(stmt ast.Stmt) bool {
 	es, ok := stmt.(*ast.ExprStmt)
 	if !ok {
@@ -314,11 +316,7 @@ func isAddCommandASTStmt(stmt ast.Stmt) bool {
 	if !ok {
 		return false
 	}
-	sel, ok := ce.Fun.(*ast.SelectorExpr)
-	if !ok || sel.Sel == nil {
-		return false
-	}
-	return sel.Sel.Name == "AddCommand"
+	return isCommandRegistrationCall(ce)
 }
 
 // genDeclName returns a canonical key for a *ast.GenDecl. For single-spec

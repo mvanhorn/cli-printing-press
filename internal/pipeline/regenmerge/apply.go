@@ -476,6 +476,16 @@ func addCommandParentAndCtor(stmt dst.Stmt) (string, string) {
 	if !ok {
 		return "", ""
 	}
+	if ident, ok := ce.Fun.(*dst.Ident); ok && ident.Name == novelCommandIfAbsentHelper {
+		if len(ce.Args) != 2 {
+			return "", ""
+		}
+		parent := ""
+		if id, ok := ce.Args[0].(*dst.Ident); ok {
+			parent = id.Name
+		}
+		return parent, dstCtorNameFromArg(ce.Args[1])
+	}
 	sel, ok := ce.Fun.(*dst.SelectorExpr)
 	if !ok || sel.Sel == nil || sel.Sel.Name != "AddCommand" || len(ce.Args) == 0 {
 		return "", ""
@@ -484,20 +494,23 @@ func addCommandParentAndCtor(stmt dst.Stmt) (string, string) {
 	if id, ok := sel.X.(*dst.Ident); ok {
 		parent = id.Name
 	}
-	var ctor string
-	switch arg := ce.Args[0].(type) {
+	return parent, dstCtorNameFromArg(ce.Args[0])
+}
+
+func dstCtorNameFromArg(arg dst.Expr) string {
+	switch a := arg.(type) {
 	case *dst.CallExpr:
-		if id, ok := arg.Fun.(*dst.Ident); ok {
-			ctor = id.Name
+		if id, ok := a.Fun.(*dst.Ident); ok {
+			return id.Name
 		}
 	case *dst.Ident:
-		ctor = arg.Name
+		return a.Name
 	}
-	return parent, ctor
+	return ""
 }
 
 // isAddCommandStmt returns true if the statement is a call to
-// `<recv>.AddCommand(...)`.
+// `<recv>.AddCommand(...)` or `addNovelCommandIfAbsent(<recv>, ...)`.
 func isAddCommandStmt(stmt dst.Stmt) bool {
 	es, ok := stmt.(*dst.ExprStmt)
 	if !ok {
@@ -507,11 +520,14 @@ func isAddCommandStmt(stmt dst.Stmt) bool {
 	if !ok {
 		return false
 	}
-	sel, ok := ce.Fun.(*dst.SelectorExpr)
-	if !ok || sel.Sel == nil {
+	switch fun := ce.Fun.(type) {
+	case *dst.SelectorExpr:
+		return fun.Sel != nil && fun.Sel.Name == "AddCommand"
+	case *dst.Ident:
+		return fun.Name == novelCommandIfAbsentHelper && len(ce.Args) == 2
+	default:
 		return false
 	}
-	return sel.Sel.Name == "AddCommand"
 }
 
 // parseStmtViaDST parses a single Go statement into a dst.Stmt via the
