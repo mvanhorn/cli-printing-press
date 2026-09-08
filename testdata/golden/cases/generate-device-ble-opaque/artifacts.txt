@@ -11,4 +11,5 @@ ble-opaque-binary/CLAUDE.md
 ble-opaque-binary/LICENSE
 ble-opaque-binary/NOTICE
 ble-opaque-binary/.goreleaser.yaml
+ble-opaque-binary/.gitignore
 ble-opaque-binary/device-spec.yaml

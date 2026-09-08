@@ -19,4 +19,5 @@ ble-temperature-sensor/CLAUDE.md
 ble-temperature-sensor/LICENSE
 ble-temperature-sensor/NOTICE
 ble-temperature-sensor/.goreleaser.yaml
+ble-temperature-sensor/.gitignore
 ble-temperature-sensor/device-spec.yaml
