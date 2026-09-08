@@ -271,6 +271,7 @@ if [ -n "$PRINTING_PRESS_BIN" ]; then
     echo "PRESS_SKILL_REQUIRED=$_min_skill"
     echo "PRESS_SKILL_REINSTALL=curl -fsSL https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/scripts/install.sh | bash -s -- --skills-only"
     echo ""
+    return 1 2>/dev/null || exit 1
   fi
 fi
 

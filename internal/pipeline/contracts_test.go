@@ -126,7 +126,8 @@ func TestPrintingPressSetupContractLeavesFreshRepoLocalBinaryAlone(t *testing.T)
 func TestPrintingPressSetupContractEmitsSkillStaleWhenSkillBelowBinaryFloor(t *testing.T) {
 	t.Parallel()
 
-	output, _ := runPrintingPressSetupContractWithSkillFloor(t, "4.32.0", "4.32.0", "9.0.0")
+	output, _, err := runPrintingPressSetupContractWithSkillFloor(t, "4.32.0", "4.32.0", "9.0.0")
+	require.Error(t, err, "skill-stale must fail the setup contract")
 
 	assert.Contains(t, output, "[skill-stale] printing-press skill v")
 	assert.Contains(t, output, "PRESS_SKILL_INSTALLED=")
@@ -138,7 +139,8 @@ func TestPrintingPressSetupContractEmitsSkillStaleWhenSkillBelowBinaryFloor(t *t
 func TestPrintingPressSetupContractOmitsSkillStaleWhenSkillMeetsBinaryFloor(t *testing.T) {
 	t.Parallel()
 
-	output, _ := runPrintingPressSetupContractWithSkillFloor(t, "4.32.0", "4.32.0", "3.0.0")
+	output, _, err := runPrintingPressSetupContractWithSkillFloor(t, "4.32.0", "4.32.0", "3.0.0")
+	require.NoError(t, err, output)
 
 	assert.NotContains(t, output, "[skill-stale]")
 	assert.Contains(t, output, "PRINTING_PRESS_BIN=")
@@ -180,6 +182,14 @@ func TestSkillsEnforceCurrencyFloor(t *testing.T) {
 	assert.Contains(t, ppBlock, `PRESS_SKILL_REINSTALL=`)
 	assert.Contains(t, ppBlock, `min_skill_version`)
 	assert.Contains(t, ppBlock, `PP_SEMVER_A="$_this_skill_version" PP_SEMVER_B="$_min_skill" _semver_lt`)
+	staleIdx := strings.Index(ppBlock, `[skill-stale] printing-press`)
+	require.GreaterOrEqual(t, staleIdx, 0)
+	staleBranch := ppBlock[staleIdx:]
+	if end := strings.Index(staleBranch, "\n  fi"); end > 0 {
+		staleBranch = staleBranch[:end]
+	}
+	assert.Contains(t, staleBranch, `return 1 2>/dev/null || exit 1`,
+		"skill-stale must fail closed like other hard preflight gates")
 
 	// setup-checks.md documents the hard gate as reinstall-or-abort, distinct from
 	// the binary-too-old min-binary-version check.
@@ -1515,10 +1525,12 @@ func substringUntilNextHeader(t *testing.T, content, start, headerPrefix string)
 
 func runPrintingPressSetupContract(t *testing.T, localVersion, sourceVersion string) (output string, goLog string) {
 	t.Helper()
-	return runPrintingPressSetupContractWithSkillFloor(t, localVersion, sourceVersion, "")
+	output, goLog, err := runPrintingPressSetupContractWithSkillFloor(t, localVersion, sourceVersion, "")
+	require.NoError(t, err, output)
+	return output, goLog
 }
 
-func runPrintingPressSetupContractWithSkillFloor(t *testing.T, localVersion, sourceVersion, minSkillVersion string) (output string, goLog string) {
+func runPrintingPressSetupContractWithSkillFloor(t *testing.T, localVersion, sourceVersion, minSkillVersion string) (output string, goLog string, err error) {
 	t.Helper()
 
 	root := t.TempDir()
@@ -1587,10 +1599,9 @@ exit 0
 		"PRINTING_PRESS_HOME="+filepath.Join(home, "printing-press"),
 	)
 	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
-	logBytes, err := os.ReadFile(goLogPath)
-	require.NoError(t, err)
-	return string(out), string(logBytes)
+	logBytes, logErr := os.ReadFile(goLogPath)
+	require.NoError(t, logErr)
+	return string(out), string(logBytes), err
 }
 
 func versionScript(version string) string {

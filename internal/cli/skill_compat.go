@@ -129,14 +129,56 @@ func checkSkillFile(path string) (skillCompatReport, error) {
 }
 
 func discoverInstalledSkillCompat(home string) skillCompatReport {
+	var (
+		firstCurrent skillCompatReport
+		haveCurrent  bool
+		worstStale   skillCompatReport
+		haveStale    bool
+	)
 	for _, path := range installedPrintingPressSkillPaths(home) {
 		installed, err := readSkillFileVersion(path)
 		if err != nil {
 			continue
 		}
-		return evaluateSkillCompat(path, installed)
+		report := evaluateSkillCompat(path, installed)
+		if report.Status == skillStatusStale {
+			if !haveStale || installedSkillOlder(report.Installed, worstStale.Installed) {
+				worstStale = report
+				haveStale = true
+			}
+			continue
+		}
+		if !haveCurrent {
+			firstCurrent = report
+			haveCurrent = true
+		}
+	}
+	if haveStale {
+		return worstStale
+	}
+	if haveCurrent {
+		return firstCurrent
 	}
 	return evaluateSkillCompat("", "")
+}
+
+// installedSkillOlder reports whether a is older than b for drift ranking.
+// Missing or unparseable versions rank older than any valid semver.
+func installedSkillOlder(a, b string) bool {
+	aN := normalizeSemver(a)
+	bN := normalizeSemver(b)
+	aOK := semver.IsValid(aN)
+	bOK := semver.IsValid(bN)
+	switch {
+	case !aOK && !bOK:
+		return false
+	case !aOK:
+		return true
+	case !bOK:
+		return false
+	default:
+		return semver.Compare(aN, bN) < 0
+	}
 }
 
 func writeSkillStaleWarning(w io.Writer, report skillCompatReport) {

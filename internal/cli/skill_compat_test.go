@@ -109,6 +109,33 @@ func TestDiscoverInstalledSkillCompatMissingIsNotStale(t *testing.T) {
 	assert.NotContains(t, formatSkillCompatText(report), "[skill-stale]")
 }
 
+func TestDiscoverInstalledSkillCompatCurrentDoesNotMaskStaleSibling(t *testing.T) {
+	home := t.TempDir()
+	writePrintingPressSkill(t, filepath.Join(home, ".claude", "skills"), MinSkillVersion)
+	writePrintingPressSkill(t, filepath.Join(home, ".codex", "skills"), "2.0.0")
+
+	report := discoverInstalledSkillCompat(home)
+	assert.Equal(t, skillStatusStale, report.Status)
+	assert.Equal(t, "2.0.0", report.Installed)
+	assert.True(t, strings.HasSuffix(report.Path, filepath.Join(".codex", "skills", "printing-press", "SKILL.md")))
+
+	payload := versionJSONPayload(home)
+	assert.Equal(t, skillStatusStale, payload.SkillStatus)
+	assert.Equal(t, "2.0.0", payload.InstalledSkillVersion)
+	assert.Contains(t, payload.InstalledSkillPath, filepath.Join(".codex", "skills", "printing-press", "SKILL.md"))
+}
+
+func TestDiscoverInstalledSkillCompatReportsOldestAmongStaleSiblings(t *testing.T) {
+	home := t.TempDir()
+	writePrintingPressSkill(t, filepath.Join(home, ".claude", "skills"), "2.1.0")
+	writePrintingPressSkill(t, filepath.Join(home, ".agents", "skills"), "2.0.0")
+
+	report := discoverInstalledSkillCompat(home)
+	assert.Equal(t, skillStatusStale, report.Status)
+	assert.Equal(t, "2.0.0", report.Installed)
+	assert.True(t, strings.HasSuffix(report.Path, filepath.Join(".agents", "skills", "printing-press", "SKILL.md")))
+}
+
 func TestVersionJSONIncludesMinSkillVersionWithoutDriftFieldsWhenCurrent(t *testing.T) {
 	home := t.TempDir()
 	writePrintingPressSkill(t, filepath.Join(home, ".claude", "skills"), MinSkillVersion)
