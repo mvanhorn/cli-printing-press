@@ -17,6 +17,8 @@ type whichIndexEntry struct {
 	Promoted     bool
 }
 
+// Novels stay first so rankWhich declaration-order ties prefer hero
+// features; a promoted Command already claimed by a novel is skipped.
 func (g *Generator) whichIndexEntries() []whichIndexEntry {
 	if g == nil {
 		return nil
