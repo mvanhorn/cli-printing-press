@@ -64,7 +64,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 		Use:   "{{.PromotedName}}{{positionalArgs .Endpoint}}",
 		Short: "{{oneline .Endpoint.Description}}",
 		Long:  "{{oneline .Endpoint.Description}}",
-{{- $example := promotedExampleLine .PromotedName .Endpoint}}
+{{- $example := promotedExampleLine .PromotedName .EndpointName .Endpoint}}
 {{- if exampleNeedsTODO $example}}
 		// TODO: replace placeholder example values before relying on this for live dogfood.
 {{- end}}

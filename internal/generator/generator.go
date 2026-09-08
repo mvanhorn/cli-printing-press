@@ -3448,6 +3448,9 @@ func (g *Generator) Generate() error {
 	if err := validateCommandSurface(buildCommandSurface(g.Spec, g.PromotedCommands), g.activeFrameworkCobraUseNames()); err != nil {
 		return err
 	}
+	if err := g.validatePromotedExamples(); err != nil {
+		return err
+	}
 
 	if err := g.renderSingleFiles(); err != nil {
 		return err
@@ -9362,19 +9365,12 @@ func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.
 	return "  " + strings.Join(parts, " ")
 }
 
-func (g *Generator) promotedExampleLine(promotedName string, endpoint spec.Endpoint) string {
-	if strings.TrimSpace(endpoint.Example) != "" {
-		return endpoint.Example
+func (g *Generator) promotedExampleLine(promotedName, endpointName string, endpoint spec.Endpoint) string {
+	line, err := g.resolvePromotedExample(promotedName, endpointName, endpoint)
+	if err != nil {
+		return g.synthesizedPromotedExample(toKebab(promotedName), endpoint)
 	}
-
-	promotedName = toKebab(promotedName)
-	if line, ok := g.narrativeExampleLine([]string{promotedName}, endpoint); ok {
-		return line
-	}
-
-	parts := []string{naming.CLI(g.Spec.Name), promotedName}
-	parts = append(parts, commandExampleArgParts(endpoint)...)
-	return "  " + strings.Join(parts, " ")
+	return line
 }
 
 func (g *Generator) narrativeExampleLine(commandParts []string, endpoint spec.Endpoint) (string, bool) {
