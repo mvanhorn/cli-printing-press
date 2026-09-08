@@ -17,7 +17,9 @@ func TestGeneratedGitignoreAnchorsRootBinaries(t *testing.T) {
 
 	apiSpec := minimalSpec("seats-aero")
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
-	require.NoError(t, New(apiSpec, outputDir).Generate())
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{MCP: true}
+	require.NoError(t, gen.Generate())
 
 	cliName := naming.CLI(apiSpec.Name)
 	mcpName := naming.MCP(apiSpec.Name)
@@ -42,16 +44,6 @@ func TestGeneratedGitignoreAnchorsRootBinaries(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, cmdFile), []byte("package main\n"), 0o644))
 	ignored, output = gitCheckIgnore(t, outputDir, cmdFile)
 	require.False(t, ignored, "cmd/%s/ source must stay tracked: %s", cliName, output)
-}
-
-func TestGeneratedGoreleaserIncludesTrimpath(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := minimalSpec("flow")
-	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
-	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{MCP: true}
-	require.NoError(t, gen.Generate())
 
 	goreleaser := readGeneratedFile(t, outputDir, ".goreleaser.yaml")
 	assert.Contains(t, goreleaser, "flags:")
