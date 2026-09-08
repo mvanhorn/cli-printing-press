@@ -2882,6 +2882,22 @@ func doctorReport() {
 		assert.Equal(t, 10, scoreDoctor(dir))
 	})
 
+	t.Run("scores client GetWithHeaders health probe", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+func newDoctorCmd() {}
+
+func doctorCheck() {
+	reachBody, reachErr := c.GetWithHeaders(cmd.Context(), "/", nil, map[string]string{client.HTMLResponseHeader: "true"})
+	_, _ = reachBody, reachErr
+	_ = "auth token config version"
+}
+`)
+
+		assert.Equal(t, 10, scoreDoctor(dir))
+	})
+
 	t.Run("scores inline http client get", func(t *testing.T) {
 		dir := t.TempDir()
 		writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
