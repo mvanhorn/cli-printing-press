@@ -620,7 +620,6 @@ func TestPromoteWorkingCLI_PreservesPatchAndManifestUnion(t *testing.T) {
 		SchemaVersion: CurrentPatchesIndexSchemaVersion,
 		ID:            "shared",
 		Files:         []string{"main.go"},
-		Marker:        "staged-wins",
 	})
 	writePatchRecordFile(t, libPatches, "library-only.json", PatchRecord{
 		SchemaVersion: CurrentPatchesIndexSchemaVersion,
@@ -630,8 +629,7 @@ func TestPromoteWorkingCLI_PreservesPatchAndManifestUnion(t *testing.T) {
 	writePatchRecordFile(t, libPatches, "shared.json", PatchRecord{
 		SchemaVersion: CurrentPatchesIndexSchemaVersion,
 		ID:            "shared",
-		Files:         []string{"main.go"},
-		Marker:        "library-loses",
+		Files:         []string{"go.mod"},
 	})
 	require.NoError(t, WriteCLIManifest(libDir, CLIManifest{
 		SchemaVersion: CurrentCLIManifestSchemaVersion,
@@ -676,8 +674,8 @@ func TestPromoteWorkingCLI_PreservesPatchAndManifestUnion(t *testing.T) {
 	assert.Contains(t, string(data), `"id":"library-only"`)
 	data, err = os.ReadFile(filepath.Join(libPatches, "shared.json"))
 	require.NoError(t, err)
-	assert.Contains(t, string(data), `"marker":"staged-wins"`)
-	assert.NotContains(t, string(data), "library-loses")
+	assert.Contains(t, string(data), `"files":["main.go"]`)
+	assert.NotContains(t, string(data), `"files":["go.mod"]`)
 
 	// A second union over the promoted tree is a no-op: all library-only
 	// entries are now present in the staged round-trip copy.
