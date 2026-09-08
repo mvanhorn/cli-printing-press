@@ -388,3 +388,95 @@ func newHandAddedCmd() *cobra.Command { return nil }
 	require.NoError(t, err)
 	require.Len(t, regsClean, 1, "TEMPLATED-CLEAN host must still need injection so the lost call survives")
 }
+
+// TestExtractLostRegistrationsNovelHelperForm is the regression for generator
+// novel wiring: addNovelCommandIfAbsent(rootCmd, newNovelXCmd(...)) rather
+// than rootCmd.AddCommand(...). Collection that matches only the AddCommand
+// selector drops those registrations from the lost set, so --apply overwrites
+// root.go and the commands vanish from --help while the novel files survive.
+func TestExtractLostRegistrationsNovelHelperForm(t *testing.T) {
+	t.Parallel()
+
+	pubDir, freshDir := novelHelperFixture(t, false)
+
+	regs, err := extractLostRegistrations(pubDir, freshDir, nil)
+	require.NoError(t, err)
+	require.Len(t, regs, 1, "helper-form novel registrations must be collected as lost")
+	assert.Equal(t, "internal/cli/root.go", regs[0].HostFile)
+	assert.Equal(t, "Execute", regs[0].EnclosingFunc)
+	require.Len(t, regs[0].Calls, 2)
+	assert.True(t, containsConstructor(regs[0].Calls[0], "newNovelBackfillCmd") ||
+		containsConstructor(regs[0].Calls[1], "newNovelBackfillCmd"),
+		"lost calls should include newNovelBackfillCmd; got %v", regs[0].Calls)
+	assert.True(t, containsConstructor(regs[0].Calls[0], "newNovelCoverageCmd") ||
+		containsConstructor(regs[0].Calls[1], "newNovelCoverageCmd"),
+		"lost calls should include newNovelCoverageCmd; got %v", regs[0].Calls)
+	assert.Empty(t, regs[0].SkippedForMissingReferent,
+		"constructors live in a preserved novel file and must not be skipped")
+}
+
+// TestExtractLostRegistrationsNovelHelperDedupsAgainstAddCommand treats the
+// helper and the literal selector as the same registration identity so a
+// fresh tree that already wires the ctor via AddCommand is not re-injected.
+func TestExtractLostRegistrationsNovelHelperDedupsAgainstAddCommand(t *testing.T) {
+	t.Parallel()
+
+	pubDir, freshDir := novelHelperFixture(t, true)
+
+	regs, err := extractLostRegistrations(pubDir, freshDir, nil)
+	require.NoError(t, err)
+	assert.Empty(t, regs, "helper form and AddCommand form of the same parent+ctor must not produce a lost registration")
+}
+
+func novelHelperFixture(t *testing.T, freshUsesAddCommand bool) (string, string) {
+	t.Helper()
+	pubRoot := `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newGenericCmd())
+	addNovelCommandIfAbsent(rootCmd, newNovelBackfillCmd(nil))
+	addNovelCommandIfAbsent(rootCmd, newNovelCoverageCmd(nil))
+}
+
+func newGenericCmd() *cobra.Command { return nil }
+func addNovelCommandIfAbsent(parent *cobra.Command, candidate *cobra.Command) {}
+`
+	freshRegs := `	rootCmd.AddCommand(newGenericCmd())
+`
+	if freshUsesAddCommand {
+		freshRegs = `	rootCmd.AddCommand(newGenericCmd())
+	rootCmd.AddCommand(newNovelBackfillCmd(nil))
+	rootCmd.AddCommand(newNovelCoverageCmd(nil))
+`
+	}
+	freshRoot := `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "x"}
+` + freshRegs + `}
+
+func newGenericCmd() *cobra.Command { return nil }
+func addNovelCommandIfAbsent(parent *cobra.Command, candidate *cobra.Command) {}
+`
+	novels := `package cli
+
+import "github.com/spf13/cobra"
+
+func newNovelBackfillCmd(flags any) *cobra.Command { return &cobra.Command{Use: "backfill"} }
+func newNovelCoverageCmd(flags any) *cobra.Command { return &cobra.Command{Use: "coverage"} }
+`
+	return buildSyntheticFixture(t,
+		map[string]string{
+			"internal/cli/root.go":   pubRoot,
+			"internal/cli/novels.go": novels,
+		},
+		map[string]string{
+			"internal/cli/root.go":   freshRoot,
+			"internal/cli/novels.go": novels,
+		})
+}
