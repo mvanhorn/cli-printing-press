@@ -611,10 +611,26 @@ func TestPromoteWorkingCLI_PreservesPatchAndManifestUnion(t *testing.T) {
 	require.NoError(t, os.MkdirAll(libPatches, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(workPatches, "staged.json"), []byte("staged\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(workPatches, "shared.json"), []byte("staged wins\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(libPatches, "library-only.json"), []byte("library\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(libPatches, "shared.json"), []byte("library loses\n"), 0o644))
+	writePatchRecordFile(t, workPatches, "staged.json", PatchRecord{
+		SchemaVersion: CurrentPatchesIndexSchemaVersion,
+		ID:            "staged",
+		Files:         []string{"main.go"},
+	})
+	writePatchRecordFile(t, workPatches, "shared.json", PatchRecord{
+		SchemaVersion: CurrentPatchesIndexSchemaVersion,
+		ID:            "shared",
+		Files:         []string{"main.go"},
+	})
+	writePatchRecordFile(t, libPatches, "library-only.json", PatchRecord{
+		SchemaVersion: CurrentPatchesIndexSchemaVersion,
+		ID:            "library-only",
+		Files:         []string{"main.go"},
+	})
+	writePatchRecordFile(t, libPatches, "shared.json", PatchRecord{
+		SchemaVersion: CurrentPatchesIndexSchemaVersion,
+		ID:            "shared",
+		Files:         []string{"go.mod"},
+	})
 	require.NoError(t, WriteCLIManifest(libDir, CLIManifest{
 		SchemaVersion: CurrentCLIManifestSchemaVersion,
 		APIName:       "test",
@@ -655,10 +671,11 @@ func TestPromoteWorkingCLI_PreservesPatchAndManifestUnion(t *testing.T) {
 
 	data, err = os.ReadFile(filepath.Join(libPatches, "library-only.json"))
 	require.NoError(t, err)
-	assert.Equal(t, "library\n", string(data))
+	assert.Contains(t, string(data), `"id":"library-only"`)
 	data, err = os.ReadFile(filepath.Join(libPatches, "shared.json"))
 	require.NoError(t, err)
-	assert.Equal(t, "staged wins\n", string(data))
+	assert.Contains(t, string(data), `"files":["main.go"]`)
+	assert.NotContains(t, string(data), `"files":["go.mod"]`)
 
 	// A second union over the promoted tree is a no-op: all library-only
 	// entries are now present in the staged round-trip copy.
@@ -684,7 +701,11 @@ func TestPromoteWorkingCLI_CreatesMissingPatchDirectory(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(libPatches, PatchesGitKeepName), nil, 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(libPatches, PatchesMetadataFilename), []byte(`{"schema_version":2}\n`), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(libPatches, "library-only.json"), []byte("library\n"), 0o644))
+	writePatchRecordFile(t, libPatches, "library-only.json", PatchRecord{
+		SchemaVersion: CurrentPatchesIndexSchemaVersion,
+		ID:            "library-only",
+		Files:         []string{"main.go"},
+	})
 
 	result, err := PromoteWorkingCLIWithResult("test-pp-cli", workDir, NewMinimalState("test-pp-cli", workDir))
 	require.NoError(t, err)
@@ -705,7 +726,11 @@ func TestPromoteWorkingCLI_PreservesBackupPatchesOnRetry(t *testing.T) {
 	backupPatches := filepath.Join(backupDir, PatchesDirName)
 	require.NoError(t, os.MkdirAll(backupPatches, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(backupDir, "go.mod"), []byte("module old\n\ngo 1.21\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(backupPatches, "recovered.json"), []byte("recovered\n"), 0o644))
+	writePatchRecordFile(t, backupPatches, "recovered.json", PatchRecord{
+		SchemaVersion: CurrentPatchesIndexSchemaVersion,
+		ID:            "recovered",
+		Files:         []string{"main.go"},
+	})
 
 	workDir := filepath.Join(tmp, "working", "test-pp-cli")
 	require.NoError(t, os.MkdirAll(workDir, 0o755))
@@ -740,6 +765,75 @@ func TestPromoteWorkingCLI_PatchUnionFailureLeavesLibraryUntouched(t *testing.T)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "preserving library-only patches")
 	assert.FileExists(t, filepath.Join(libDir, "sentinel.txt"))
+	_, statErr := os.Stat(libDir + ".promoting")
+	assert.True(t, os.IsNotExist(statErr))
+}
+
+func TestPromoteWorkingCLI_RejectsMissingPatchRecordedFiles(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
+	require.NoError(t, os.MkdirAll(libDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(libDir, "sentinel.txt"), []byte("keep\n"), 0o644))
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+	writePatchRecordFile(t, filepath.Join(workDir, PatchesDirName), "report.json", PatchRecord{
+		SchemaVersion: CurrentPatchesIndexSchemaVersion,
+		ID:            "report",
+		Files:         []string{"internal/cli/report.go"},
+	})
+
+	_, err := AcquireLock("test-pp-cli", "test-scope", false)
+	require.NoError(t, err)
+
+	_, err = PromoteWorkingCLIWithResult("test-pp-cli", workDir, NewMinimalState("test-pp-cli", workDir))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "recorded patches no longer match the tree being promoted")
+	assert.Contains(t, err.Error(), `patch "report"`)
+	assert.Contains(t, err.Error(), "internal/cli/report.go")
+	assert.Contains(t, err.Error(), "missing")
+	assert.FileExists(t, filepath.Join(libDir, "sentinel.txt"))
+	assert.NoFileExists(t, filepath.Join(libDir, "main.go"))
+	_, statErr := os.Stat(libDir + ".promoting")
+	assert.True(t, os.IsNotExist(statErr))
+}
+
+func TestPromoteWorkingCLI_RejectsLibraryOnlyPatchForMissingFile(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
+	libPatches := filepath.Join(libDir, PatchesDirName)
+	require.NoError(t, os.MkdirAll(libPatches, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(libDir, "sentinel.txt"), []byte("keep\n"), 0o644))
+	writePatchRecordFile(t, libPatches, "report.json", PatchRecord{
+		SchemaVersion: CurrentPatchesIndexSchemaVersion,
+		ID:            "report",
+		Files:         []string{"internal/cli/report.go"},
+	})
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+
+	_, err := PromoteWorkingCLIWithResult("test-pp-cli", workDir, NewMinimalState("test-pp-cli", workDir))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "recorded patches no longer match the tree being promoted")
+	assert.Contains(t, err.Error(), `patch "report"`)
+	assert.Contains(t, err.Error(), "internal/cli/report.go")
+	assert.Contains(t, err.Error(), "missing")
+	assert.FileExists(t, filepath.Join(libDir, "sentinel.txt"))
+	assert.FileExists(t, filepath.Join(libPatches, "report.json"))
+	assert.NoFileExists(t, filepath.Join(libDir, "main.go"))
 	_, statErr := os.Stat(libDir + ".promoting")
 	assert.True(t, os.IsNotExist(statErr))
 }
@@ -1266,6 +1360,14 @@ func TestIsStale(t *testing.T) {
 
 	boundary := &LockState{UpdatedAt: time.Now().Add(-30*time.Minute - time.Second)}
 	assert.True(t, IsStale(boundary))
+}
+
+func writePatchRecordFile(t *testing.T, patchesDir, name string, rec PatchRecord) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(patchesDir, 0o755))
+	data, err := json.Marshal(rec)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(patchesDir, name), append(data, '\n'), 0o644))
 }
 
 func writePhase5PassForState(t *testing.T, state *PipelineState, authType string) {
