@@ -3,7 +3,6 @@ package generator
 import (
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
