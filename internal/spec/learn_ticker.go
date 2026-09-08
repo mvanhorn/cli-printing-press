@@ -8,21 +8,17 @@ import (
 	"unicode"
 )
 
-// LearnQueryFamilyExample is one query string the recall path will
-// normalize into a QueryFamily key, plus a source label for errors
-// (generated test fixture name or an authored playbook path).
+// Source labels errors so the operator can find the playbook or test
+// whose QueryFamily went empty.
 type LearnQueryFamilyExample struct {
 	Source string
 	Query  string
 }
 
-// learnSeededQueryFamilyExamples are the query_family_examples the
-// generator always emits into the printed CLI's learn/playbook tests.
-// A ticker_pattern that classifies every remaining content token in
-// these as a ticker makes QueryFamily empty, so playbook init skips
-// every seed as unreachable. Kept here so spec.Validate fails closed
-// before generate ships that dead surface. Must stay in lockstep with
-// the templates named in LearnSeededQueryFamilyQueries.
+// Hardcoded so spec.Validate fails closed before generate ships a dead
+// recall surface. A ticker_pattern that claims every remaining token
+// empties QueryFamily and playbook init skips every seed. Must stay in
+// lockstep with the templates named in LearnSeededQueryFamilyQueries.
 var learnSeededQueryFamilyExamples = []LearnQueryFamilyExample{
 	{Source: "playbook_init_test.go", Query: "alpha example query"},
 	{Source: "playbook_init_test.go", Query: "alpha second phrasing"},
@@ -34,10 +30,8 @@ var learnSeededQueryFamilyExamples = []LearnQueryFamilyExample{
 	{Source: "recall_canonical_test.go", Query: "report Alpha widget today"},
 }
 
-// LearnSeededQueryFamilyQueries returns the query strings the generator
-// embeds as query_family_examples / seeded recall examples. The generator
-// test suite greps templates for these so the spec-time check cannot
-// drift from what generate actually emits.
+// Exported so generator tests can lock this list to template
+// query_family_examples without importing the unexported seed slice.
 func LearnSeededQueryFamilyQueries() []string {
 	out := make([]string, 0, len(learnSeededQueryFamilyExamples))
 	for _, ex := range learnSeededQueryFamilyExamples {
@@ -61,10 +55,9 @@ var learnDefaultStopwords = map[string]struct{}{
 	"this": {}, "that": {}, "these": {}, "those": {}, "it": {}, "its": {},
 }
 
-// CheckLearnQueryFamilyReachability reports whether learn.TickerPatterns
-// would make QueryFamily empty for any seeded generator example or any
-// extra authored playbook example. No-op when the loop will not be emitted
-// (disabled, or legacy enabled: false) or no ticker patterns are declared.
+// Greedy ticker patterns empty QueryFamily and skip every playbook seed.
+// Skip when the loop will not emit (disabled, or legacy enabled: false)
+// so opted-out specs still parse.
 func CheckLearnQueryFamilyReachability(learn *LearnConfig, extras []LearnQueryFamilyExample) error {
 	if !learnLoopEmits(learn) || len(learn.TickerPatterns) == 0 {
 		return nil
@@ -150,12 +143,8 @@ func claimedPatternIndex(claimed map[int][]string) int {
 	return best
 }
 
-// learnNonEntityTokens mirrors entities.Extract's non-entity remainder:
-// ticker match (when patterns are provided) wins, then ALL-CAPS / capitalized
-// tokens become entities, stopwords drop, and leftover lowercase tokens are
-// the QueryFamily bag. Classification is duplicated from the learn extract
-// template so spec/generate-time validation sees the same empty-family
-// outcome recall will.
+// Duplicated from the printed-CLI extract template so this check sees the
+// same empty-family outcome recall will, not a looser local approximation.
 func learnNonEntityTokens(query string, tickers []*regexp.Regexp, stopwords map[string]struct{}) []string {
 	var family []string
 	for raw := range strings.FieldsSeq(query) {
@@ -228,9 +217,8 @@ func learnIsCapitalized(s string) bool {
 	return firstUpper && hasLower
 }
 
-// ParsePlaybookQueryFamilyExamples decodes query_family_examples from a
-// playbook JSON blob. Other fields are ignored so this can run against
-// authored embeds without importing the generated learn package.
+// Authored playbook JSON lives in the printed CLI; decode only the
+// examples field so generate need not import that package.
 func ParsePlaybookQueryFamilyExamples(data []byte) ([]string, error) {
 	data = []byte(strings.TrimSpace(string(data)))
 	if len(data) == 0 {

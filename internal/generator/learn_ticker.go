@@ -9,9 +9,8 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
-// validateLearnTickerPlaybookReachability fails generate when ticker
-// patterns would empty QueryFamily for seeded recall examples or for
-// authored playbook JSON already in the output tree (reprint).
+// Reprint can leave authored playbook JSON in --output that the generator
+// seed list does not cover; fail closed before emitting learn files.
 func validateLearnTickerPlaybookReachability(learn spec.LearnConfig, outputDir string) error {
 	extras, err := authoredLearnQueryFamilyExamples(outputDir)
 	if err != nil {
@@ -20,6 +19,8 @@ func validateLearnTickerPlaybookReachability(learn spec.LearnConfig, outputDir s
 	return spec.CheckLearnQueryFamilyReachability(&learn, extras)
 }
 
+// ReadDir, not Glob: --output is a user path and may contain '[' or other
+// glob metacharacters.
 func authoredLearnQueryFamilyExamples(outputDir string) ([]spec.LearnQueryFamilyExample, error) {
 	dir := filepath.Join(outputDir, "internal", "cli", "playbooks")
 	entries, err := os.ReadDir(dir)
