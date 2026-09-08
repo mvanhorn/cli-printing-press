@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.32.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.32.0...v4.32.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* **cli:** honest bearer auth format, novel creds, and JWT exp on status/doctor ([#4618](https://github.com/mvanhorn/cli-printing-press/issues/4618)) ([495350f](https://github.com/mvanhorn/cli-printing-press/commit/495350fef7bb05d32e26cc566cc95bd11af979d5))
+* **cli:** make browser-clearance auth login succeed as generated ([#4615](https://github.com/mvanhorn/cli-printing-press/issues/4615)) ([3215c1e](https://github.com/mvanhorn/cli-printing-press/commit/3215c1e7533bc3dc2da861f3cabb16dc3cc63a95))
+* **cli:** mcpb optional env defaults and honest MCP intent positionals ([#4617](https://github.com/mvanhorn/cli-printing-press/issues/4617)) ([7d05e40](https://github.com/mvanhorn/cli-printing-press/commit/7d05e401daeb4e5096d317e282aad3d287b5b890))
+* **cli:** read-only store opens and stop PreRun RW migration ([#4619](https://github.com/mvanhorn/cli-printing-press/issues/4619)) ([df7d298](https://github.com/mvanhorn/cli-printing-press/commit/df7d298369264f960b5b310a76ed440b37dfaa4b))
+* **cli:** skip sync/auto-refresh when required params unknown ([#4616](https://github.com/mvanhorn/cli-printing-press/issues/4616)) ([c134298](https://github.com/mvanhorn/cli-printing-press/commit/c134298dc1514e4558994ee35d28c635cdf3228d))
+* **skill:** detect installed skill drift after binary upgrades ([#4628](https://github.com/mvanhorn/cli-printing-press/issues/4628)) ([0260d68](https://github.com/mvanhorn/cli-printing-press/commit/0260d68603edcb7b5d5253c497fcfc67ae47ac43))
+
 ## [4.32.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.31.7...v4.32.0) (2026-09-07)
 
 
