@@ -158,7 +158,7 @@ func claimedPatternIndex(claimed map[int][]string) int {
 // outcome recall will.
 func learnNonEntityTokens(query string, tickers []*regexp.Regexp, stopwords map[string]struct{}) []string {
 	var family []string
-	for _, raw := range strings.Fields(query) {
+	for raw := range strings.FieldsSeq(query) {
 		tok := learnTrimPunct(raw)
 		if tok == "" {
 			continue
