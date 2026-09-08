@@ -32,7 +32,7 @@ func (g *Generator) resolvePromotedExample(promotedName, endpointName string, en
 		return g.synthesizedPromotedExample(promotedName, endpoint), nil
 	}
 	if g.promotedExampleMatchesRegistered(promotedName, endpoint, raw) {
-		return raw, nil
+		return endpoint.Example, nil
 	}
 	rewritten, ok := g.rewritePromotedExampleToRegistered(promotedName, endpointName, endpoint, raw)
 	if ok && g.promotedExampleMatchesRegistered(promotedName, endpoint, rewritten) {
