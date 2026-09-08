@@ -6,7 +6,9 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 )
 
-// whichIndexEntry is one row written into the generated whichIndex.
+// Novels occupy earlier slots so rankWhich declaration-order ties keep
+// hero features ahead of promoted endpoint leaves. Command is the dedupe
+// key; Promoted tags rows so dogfood sync can merge without wiping them.
 type whichIndexEntry struct {
 	Command      string
 	Description  string

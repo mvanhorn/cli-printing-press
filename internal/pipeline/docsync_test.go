@@ -196,3 +196,41 @@ var whichIndex = []whichEntry{
 	assert.NotContains(t, got, "stale novel")
 	requireBefore(t, got, `Command: "digest"`, `Command: "awards"`)
 }
+
+func TestSyncWhichIndexIgnoresLabelsInsideDescriptionProse(t *testing.T) {
+	line := `	{Command: "awards", Description: "See Group: awards in WhyItMatters: docs", Group: "real-group", WhyItMatters: "real-why"}, // pp:which-promoted`
+	entry, ok := parseWhichEntryLine(line)
+	require.True(t, ok)
+	assert.Equal(t, "awards", entry.Command)
+	assert.Equal(t, "See Group: awards in WhyItMatters: docs", entry.Description)
+	assert.Equal(t, "real-group", entry.Group)
+	assert.Equal(t, "real-why", entry.WhyItMatters)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "internal", "cli", "which.go")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(`package cli
+
+var whichIndex = []whichEntry{
+`+line+`
+}
+`), 0o644))
+
+	changed, err := syncWhichIndex(path, []NovelFeature{{
+		Command:      "digest",
+		Description:  "Fresh novel",
+		Group:        "Analysis",
+		WhyItMatters: "Hero path",
+	}})
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	got := string(data)
+	assert.Contains(t, got, `Group: "real-group"`)
+	assert.Contains(t, got, `WhyItMatters: "real-why"`)
+	assert.Contains(t, got, `Description: "See Group: awards in WhyItMatters: docs"`)
+	assert.NotContains(t, got, `Group: "awards"`)
+	assert.NotContains(t, got, `WhyItMatters: "docs"`)
+}

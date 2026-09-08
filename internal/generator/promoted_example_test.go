@@ -39,6 +39,34 @@ func TestPromotedExampleRewritesCollapsedEndpointToken(t *testing.T) {
 	assert.NotContains(t, src, `allocation get --form-code`)
 }
 
+func TestPromotedExampleRewritePreservesQuotedMultiwordValues(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("promoted-ex-quote")
+	apiSpec.Resources = map[string]spec.Resource{
+		"allocation": {
+			Description: "Allocation",
+			Endpoints: map[string]spec.Endpoint{
+				"get": {
+					Method:      "GET",
+					Path:        "/allocation",
+					Description: "Get allocation",
+					Example:     `  promoted-ex-quote-pp-cli allocation get --name "Jane Doe"`,
+					Params:      []spec.Param{{Name: "name", Type: "string", Required: true}},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "promoted-ex-quote-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	src := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_allocation.go")
+	assert.Contains(t, src, `--name 'Jane Doe'`)
+	assert.NotContains(t, src, `--name Jane Doe`)
+	assert.NotContains(t, src, `allocation get --name`)
+}
+
 func TestPromotedExampleRewritesRenamedFlags(t *testing.T) {
 	t.Parallel()
 

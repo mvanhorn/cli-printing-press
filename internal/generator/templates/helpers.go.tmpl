@@ -3456,8 +3456,8 @@ func compactObjectArrayValue(v any, documentedFields ...map[string]bool) (any, b
 	return compacted, true
 }
 
-// emptyTabularResultMarker is written for an empty array when no header
-// columns are known, so exit 0 is distinguishable from swallowed output.
+// Distinguishes an empty array from swallowed stdout when no header
+// columns are known. Exit 0 with zero bytes is indistinguishable from a crash.
 const emptyTabularResultMarker = "(no rows)"
 
 func printCSV(w io.Writer, data json.RawMessage, documentedFields ...map[string]bool) error {

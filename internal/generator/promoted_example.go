@@ -115,7 +115,7 @@ func (g *Generator) rewritePromotedExampleToRegistered(promotedName, endpointNam
 			}
 		}
 	}
-	return "  " + strings.Join(rewritten, " "), true
+	return "  " + shellargs.Join(rewritten), true
 }
 
 func promotedExampleCommandTail(cliName, example string) (path []string, tail []string, ok bool) {

@@ -572,7 +572,7 @@ func writeWhichIndexEntry(b *strings.Builder, feature NovelFeature, promoted boo
 
 func parsePromotedWhichEntries(content string) []NovelFeature {
 	var out []NovelFeature
-	for _, line := range strings.Split(content, "\n") {
+	for line := range strings.SplitSeq(content, "\n") {
 		if !strings.Contains(line, whichPromotedMarker) {
 			continue
 		}
@@ -585,24 +585,52 @@ func parsePromotedWhichEntries(content string) []NovelFeature {
 }
 
 func parseWhichEntryLine(line string) (NovelFeature, bool) {
-	cmd, ok := parseWhichField(line, "Command:")
-	if !ok || cmd == "" {
+	_, rest, ok := strings.Cut(line, "{")
+	if !ok {
 		return NovelFeature{}, false
 	}
-	desc, _ := parseWhichField(line, "Description:")
-	group, _ := parseWhichField(line, "Group:")
-	why, _ := parseWhichField(line, "WhyItMatters:")
-	return NovelFeature{Command: cmd, Description: desc, Group: group, WhyItMatters: why}, true
+	fields, ok := parseWhichCompositeFields(rest)
+	if !ok {
+		return NovelFeature{}, false
+	}
+	cmd := strings.TrimSpace(fields["Command"])
+	if cmd == "" {
+		return NovelFeature{}, false
+	}
+	return NovelFeature{
+		Command:      cmd,
+		Description:  fields["Description"],
+		Group:        fields["Group"],
+		WhyItMatters: fields["WhyItMatters"],
+	}, true
 }
 
-func parseWhichField(line, key string) (string, bool) {
-	idx := strings.Index(line, key)
-	if idx < 0 {
-		return "", false
+func parseWhichCompositeFields(rest string) (map[string]string, bool) {
+	fields := map[string]string{}
+	for {
+		rest = strings.TrimSpace(rest)
+		if rest == "" || strings.HasPrefix(rest, "}") {
+			return fields, true
+		}
+		name, after, ok := strings.Cut(rest, ":")
+		if !ok {
+			return nil, false
+		}
+		name = strings.TrimSpace(name)
+		if name == "" || strings.ContainsAny(name, "\",{}") {
+			return nil, false
+		}
+		after = strings.TrimSpace(after)
+		val, n, ok := parseGoQuotedPrefix(after)
+		if !ok {
+			return nil, false
+		}
+		fields[name] = val
+		rest = strings.TrimSpace(after[n:])
+		if strings.HasPrefix(rest, ",") {
+			rest = rest[1:]
+		}
 	}
-	rest := strings.TrimSpace(line[idx+len(key):])
-	val, _, ok := parseGoQuotedPrefix(rest)
-	return val, ok
 }
 
 func parseGoQuotedPrefix(s string) (string, int, bool) {
