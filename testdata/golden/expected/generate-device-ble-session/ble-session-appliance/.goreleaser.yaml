@@ -8,6 +8,8 @@ builds:
     binary: ble-session-appliance-pp-cli
     env:
       - CGO_ENABLED=0
+    flags:
+      - -trimpath
     ldflags:
       - -s -w -X ble-session-appliance-pp-cli/internal/cli.version={{ .Version }}
     targets:
@@ -22,6 +24,8 @@ builds:
     binary: ble-session-appliance-pp-mcp
     env:
       - CGO_ENABLED=0
+    flags:
+      - -trimpath
     ldflags:
       - -s -w -X main.version={{ .Version }}
     targets:

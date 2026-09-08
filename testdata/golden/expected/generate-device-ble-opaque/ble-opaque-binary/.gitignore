@@ -1,0 +1,8 @@
+# Root-anchored so cmd/<binary>/ source stays tracked.
+/ble-opaque-binary-pp-cli
+/ble-opaque-binary-pp-cli.exe
+/ble-opaque-binary-pp-mcp
+/ble-opaque-binary-pp-mcp.exe
+/bin/
+/build/
+/dist/

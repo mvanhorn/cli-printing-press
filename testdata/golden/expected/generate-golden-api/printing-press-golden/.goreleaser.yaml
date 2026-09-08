@@ -1,17 +1,17 @@
 version: 2
-project_name: ble-temperature-sensor-pp-cli
+project_name: printing-press-golden-pp-cli
 changelog:
   disable: true
 builds:
-  - id: ble-temperature-sensor-pp-cli
-    main: ./cmd/ble-temperature-sensor-pp-cli
-    binary: ble-temperature-sensor-pp-cli
+  - id: printing-press-golden-pp-cli
+    main: ./cmd/printing-press-golden-pp-cli
+    binary: printing-press-golden-pp-cli
     env:
       - CGO_ENABLED=0
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X ble-temperature-sensor-pp-cli/internal/cli.version={{ .Version }}
+      - -s -w -X printing-press-golden-pp-cli/internal/cli.version={{ .Version }}
     targets:
       - darwin_amd64
       - darwin_arm64
@@ -19,9 +19,9 @@ builds:
       - linux_arm64
       - windows_amd64
       - windows_arm64
-  - id: ble-temperature-sensor-pp-mcp
-    main: ./cmd/ble-temperature-sensor-pp-mcp
-    binary: ble-temperature-sensor-pp-mcp
+  - id: printing-press-golden-pp-mcp
+    main: ./cmd/printing-press-golden-pp-mcp
+    binary: printing-press-golden-pp-mcp
     env:
       - CGO_ENABLED=0
     flags:
@@ -44,12 +44,12 @@ archives:
 checksum:
   name_template: checksums.txt
 brews:
-  - name: ble-temperature-sensor-pp-cli
+  - name: printing-press-golden-pp-cli
     repository:
-      owner: contributors
+      owner: printing-press-golden
       name: homebrew-tap
-    homepage: "https://github.com/contributors/ble-temperature-sensor-pp-cli"
-    description: "BLE Temperature Sensor device CLI"
+    homepage: "https://github.com/printing-press-golden/printing-press-golden-pp-cli"
+    description: "Purpose-built fixture for golden generation coverage."
     install: |
-      bin.install "ble-temperature-sensor-pp-cli"
-      bin.install "ble-temperature-sensor-pp-mcp"
+      bin.install "printing-press-golden-pp-cli"
+      bin.install "printing-press-golden-pp-mcp"

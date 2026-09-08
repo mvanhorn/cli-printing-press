@@ -1,0 +1,8 @@
+# Root-anchored so cmd/<binary>/ source stays tracked.
+/ble-session-appliance-pp-cli
+/ble-session-appliance-pp-cli.exe
+/ble-session-appliance-pp-mcp
+/ble-session-appliance-pp-mcp.exe
+/bin/
+/build/
+/dist/

@@ -1,0 +1,8 @@
+# Root-anchored so cmd/<binary>/ source stays tracked.
+/printing-press-golden-pp-cli
+/printing-press-golden-pp-cli.exe
+/printing-press-golden-pp-mcp
+/printing-press-golden-pp-mcp.exe
+/bin/
+/build/
+/dist/
