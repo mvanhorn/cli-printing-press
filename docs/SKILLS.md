@@ -37,6 +37,16 @@ Skills use a `references/` directory for content that is only needed during spec
 
 **What gets extracted:** Implementation details for conditional paths: capture tool CLI commands, delegation templates, scoring frameworks, report templates, and the full body of each numbered phase. These are loaded on-demand when the agent reaches the relevant phase gate. Receipt sequencing for printing-press lives in `references/phase-receipts.md`; the binary graph in `internal/pipeline/phase_receipt.go` is the source of truth for order.
 
+## Frontmatter: `version`
+
+`version:` on `skills/printing-press/SKILL.md` is a **content-shape version**, not the plugin/binary release. `min-binary-version` only guards binary-too-old-for-skill. When the skill's on-disk instructions change so a stale install would follow deleted or renamed commands, bump:
+
+1. the skill `version:` field
+2. `MinSkillVersion` in `internal/cli/skill_compat.go`
+3. the setup-contract `# skill-version:` comment and `_this_skill_version=` assignment in `phases/01-preflight.md`
+
+Keep those three equal. Preflight hard-blocks with `[skill-stale]` when the running skill is below the binary floor. Other skills under `skills/` may keep their own independent `version:` values; do not freeze `printing-press` at a constant across shape rewrites.
+
 ## Frontmatter: `context: fork` and `user-invocable`
 
 Two skill frontmatter fields shape how a skill participates in larger workflows. Both default to permissive behavior (shared context, user-invocable). Set them explicitly when the skill plays a non-default role.

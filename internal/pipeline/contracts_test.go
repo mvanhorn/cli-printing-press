@@ -62,8 +62,13 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 
 			// Binary on PATH check
 			assert.Contains(t, block, `command -v cli-printing-press`)
-			// Version comment for frontmatter parity
+			// Version comments for frontmatter parity
 			assert.Contains(t, block, `# min-binary-version:`)
+			if filepath.Base(filepath.Dir(tt.path)) == "printing-press" {
+				assert.Contains(t, block, `# skill-version:`)
+				assert.Contains(t, block, `[skill-stale]`)
+				assert.Contains(t, block, `min_skill_version`)
+			}
 			// Symlink-safe canonicalization
 			assert.Contains(t, block, `pwd -P`)
 
@@ -118,6 +123,27 @@ func TestPrintingPressSetupContractLeavesFreshRepoLocalBinaryAlone(t *testing.T)
 	assert.NotContains(t, goLog, "build -o ./cli-printing-press ./cmd/cli-printing-press")
 }
 
+func TestPrintingPressSetupContractEmitsSkillStaleWhenSkillBelowBinaryFloor(t *testing.T) {
+	t.Parallel()
+
+	output, _ := runPrintingPressSetupContractWithSkillFloor(t, "4.32.0", "4.32.0", "9.0.0")
+
+	assert.Contains(t, output, "[skill-stale] printing-press skill v")
+	assert.Contains(t, output, "PRESS_SKILL_INSTALLED=")
+	assert.Contains(t, output, "PRESS_SKILL_REQUIRED=9.0.0")
+	assert.Contains(t, output, "PRESS_SKILL_REINSTALL=")
+	assert.Contains(t, output, "--skills-only")
+}
+
+func TestPrintingPressSetupContractOmitsSkillStaleWhenSkillMeetsBinaryFloor(t *testing.T) {
+	t.Parallel()
+
+	output, _ := runPrintingPressSetupContractWithSkillFloor(t, "4.32.0", "4.32.0", "3.0.0")
+
+	assert.NotContains(t, output, "[skill-stale]")
+	assert.Contains(t, output, "PRINTING_PRESS_BIN=")
+}
+
 func TestSkillsEnforceCurrencyFloor(t *testing.T) {
 	const floorURL = "https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/supported-versions.txt"
 
@@ -144,13 +170,27 @@ func TestSkillsEnforceCurrencyFloor(t *testing.T) {
 	assert.Contains(t, ppBlock, `PP_SEMVER_A="$_floor_installed" PP_SEMVER_B="$_floor_min" _semver_lt`)
 	assert.Contains(t, ppBlock, `! PP_SEMVER_A="$_floor_latest" PP_SEMVER_B="$_floor_min" _semver_lt`)
 
-	// setup-checks.md documents the hard gate as upgrade-or-abort, distinct from
-	// the soft [upgrade-available] advisory.
+	// Skill-too-old-for-binary: the contract duplicates frontmatter version and
+	// compares it to the binary's min_skill_version every run.
+	assert.Contains(t, ppBlock, `# skill-version:`)
+	assert.Contains(t, ppBlock, `_this_skill_version=`)
+	assert.Contains(t, ppBlock, `[skill-stale] printing-press`)
+	assert.Contains(t, ppBlock, `PRESS_SKILL_INSTALLED=`)
+	assert.Contains(t, ppBlock, `PRESS_SKILL_REQUIRED=`)
+	assert.Contains(t, ppBlock, `PRESS_SKILL_REINSTALL=`)
+	assert.Contains(t, ppBlock, `min_skill_version`)
+	assert.Contains(t, ppBlock, `PP_SEMVER_A="$_this_skill_version" PP_SEMVER_B="$_min_skill" _semver_lt`)
+
+	// setup-checks.md documents the hard gate as reinstall-or-abort, distinct from
+	// the binary-too-old min-binary-version check.
 	checks := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "setup-checks.md"))
 	assert.Contains(t, checks, "[upgrade-required]")
 	assert.Contains(t, checks, "PRESS_REQUIRED_MIN")
 	assert.Contains(t, checks, "Update required")
 	assert.Contains(t, checks, "no skip-and-continue")
+	assert.Contains(t, checks, "[skill-stale]")
+	assert.Contains(t, checks, "PRESS_SKILL_REQUIRED")
+	assert.Contains(t, checks, "Skill-too-old-for-binary")
 
 	// amend regenerates too, so it carries the same hard floor. Assert the full
 	// signal set inside the contract block (parity with printing-press) so the
@@ -1475,6 +1515,11 @@ func substringUntilNextHeader(t *testing.T, content, start, headerPrefix string)
 
 func runPrintingPressSetupContract(t *testing.T, localVersion, sourceVersion string) (output string, goLog string) {
 	t.Helper()
+	return runPrintingPressSetupContractWithSkillFloor(t, localVersion, sourceVersion, "")
+}
+
+func runPrintingPressSetupContractWithSkillFloor(t *testing.T, localVersion, sourceVersion, minSkillVersion string) (output string, goLog string) {
+	t.Helper()
 
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
@@ -1489,7 +1534,7 @@ func runPrintingPressSetupContract(t *testing.T, localVersion, sourceVersion str
 
 var Version = "`+sourceVersion+`" // x-release-please-version
 `), 0o644))
-	writeExecutable(t, filepath.Join(repo, "cli-printing-press"), versionScript(localVersion))
+	writeExecutable(t, filepath.Join(repo, "cli-printing-press"), versionJSONScript(localVersion, minSkillVersion))
 
 	goLogPath := filepath.Join(root, "go.log")
 	require.NoError(t, os.WriteFile(goLogPath, nil, 0o644))
@@ -1513,7 +1558,7 @@ if [ "$1" = "build" ]; then
     exit 1
   fi
   cat > "$out" <<'__PP_FAKE_BINARY__'
-`+versionScript(sourceVersion)+`__PP_FAKE_BINARY__
+`+versionJSONScript(sourceVersion, minSkillVersion)+`__PP_FAKE_BINARY__
   chmod +x "$out"
   exit 0
 fi
@@ -1549,9 +1594,17 @@ exit 0
 }
 
 func versionScript(version string) string {
+	return versionJSONScript(version, "")
+}
+
+func versionJSONScript(version, minSkill string) string {
+	payload := `{"version":"` + version + `"}`
+	if minSkill != "" {
+		payload = `{"version":"` + version + `","min_skill_version":"` + minSkill + `"}`
+	}
 	return `#!/bin/sh
 if [ "$1" = "version" ] && [ "$2" = "--json" ]; then
-  echo '{"version":"` + version + `"}'
+  echo '` + payload + `'
   exit 0
 fi
 echo "cli-printing-press ` + version + `"
