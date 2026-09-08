@@ -198,8 +198,8 @@ func TestLockPromote_ReportsPreservedPatches(t *testing.T) {
 	require.NoError(t, os.MkdirAll(libPatches, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(workPatches, "staged.json"), []byte("staged\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(libPatches, "library-only.json"), []byte("library\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workPatches, "staged.json"), []byte(`{"schema_version":2,"id":"staged","files":["main.go"]}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(libPatches, "library-only.json"), []byte(`{"schema_version":2,"id":"library-only","files":["main.go"]}`+"\n"), 0o644))
 
 	stdout, code := runLockCmd("promote", "--cli", "test-pp-cli", "--dir", workDir)
 	assert.Equal(t, 0, code)
