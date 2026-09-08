@@ -1,8 +1,8 @@
 # Root-anchored so cmd/<binary>/ source stays tracked.
-/{{.Name}}-pp-cli
-/{{.Name}}-pp-cli.exe
-/{{.Name}}-pp-mcp
-/{{.Name}}-pp-mcp.exe
+/{{cliName .Name}}
+/{{cliName .Name}}.exe
+/{{mcpName .Name}}
+/{{mcpName .Name}}.exe
 /bin/
 /build/
 /dist/

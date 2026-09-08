@@ -51,6 +51,25 @@ func TestGeneratedGitignoreAnchorsRootBinaries(t *testing.T) {
 		"CLI and MCP goreleaser builds must both set -trimpath")
 }
 
+func TestGeneratedGitignoreUsesCanonicalBinaryNames(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("widget-pp")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	cliName := naming.CLI(apiSpec.Name)
+	mcpName := naming.MCP(apiSpec.Name)
+	require.Equal(t, "widget-pp-cli", cliName)
+	require.Equal(t, "widget-pp-mcp", mcpName)
+
+	gitignore := readGeneratedFile(t, outputDir, ".gitignore")
+	assert.Contains(t, gitignore, "/"+cliName+"\n")
+	assert.Contains(t, gitignore, "/"+mcpName+"\n")
+	assert.NotContains(t, gitignore, "widget-pp-pp-cli")
+	assert.NotContains(t, gitignore, "widget-pp-pp-mcp")
+}
+
 func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
 	runGit(t, dir, "init", "-q")

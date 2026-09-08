@@ -377,6 +377,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return naming.CLI(s.Name)
 		},
+		"cliName":            naming.CLI,
+		"mcpName":            naming.MCP,
 		"goDirectiveVersion": resolveCurrentGoDirectiveVersion,
 		"goToolchainVersion": resolveCurrentGoToolchainVersion,
 		"graphqlQueryField":  graphqlQueryField,

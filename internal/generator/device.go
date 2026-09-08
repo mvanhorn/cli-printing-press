@@ -320,6 +320,8 @@ func (g *DeviceGenerator) renderEmbedded(relPath, tmplName string, data deviceTe
 		"copyrightHolder":  func() string { return "contributors" },
 		"envPrefix":        naming.EnvPrefix,
 		"modulePath":       func() string { return naming.CLI(g.Spec.Name) },
+		"cliName":          naming.CLI,
+		"mcpName":          naming.MCP,
 		"yamlDoubleQuoted": yamlDoubleQuoted,
 	}).Parse(string(content))
 	if err != nil {
