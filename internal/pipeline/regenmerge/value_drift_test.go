@@ -254,6 +254,34 @@ func newCmd() *Cmd {
 		"AddCommand-only diff should defer to LostRegistrations re-injection, not trigger value drift")
 }
 
+func TestDetectValueDriftIgnoresNovelHelperStmts(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub := filepath.Join(dir, "pub.go")
+	fresh := filepath.Join(dir, "fresh.go")
+	require.NoError(t, os.WriteFile(pub, []byte(`package x
+
+func newCmd() *Cmd {
+	cmd := &Cmd{}
+	cmd.AddCommand(newA())
+	addNovelCommandIfAbsent(cmd, newHandAddedCmd())
+	return cmd
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(fresh, []byte(`package x
+
+func newCmd() *Cmd {
+	cmd := &Cmd{}
+	cmd.AddCommand(newA())
+	return cmd
+}
+`), 0o644))
+
+	assert.Nil(t, detectValueDrift(pub, fresh),
+		"addNovelCommandIfAbsent-only diff should defer to LostRegistrations, not trigger value drift")
+}
+
 func TestDetectValueDriftCatchesReorderedSliceLiterals(t *testing.T) {
 	t.Parallel()
 
