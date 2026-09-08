@@ -10941,6 +10941,23 @@ x-learn:
 	assert.Contains(t, err.Error(), "not a valid Go regexp")
 }
 
+func TestParseLearnExtensionRejectsGreedyLowercaseTickerPattern(t *testing.T) {
+	t.Parallel()
+	data := cacheExtensionSpec("Greedy Ticker API", `
+x-learn:
+  enabled: true
+  ticker_patterns:
+    - "^[a-z0-9]{2,12}$"
+`, "", false)
+
+	_, err := Parse(data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ticker_patterns[0]")
+	assert.Contains(t, err.Error(), `^[a-z0-9]{2,12}$`)
+	assert.Contains(t, err.Error(), "alpha example query")
+	assert.Contains(t, err.Error(), "QueryFamily would be empty")
+}
+
 func cacheExtensionSpec(title, rootExtension, infoExtension string, typedItems bool) []byte {
 	var b strings.Builder
 	fmt.Fprintf(&b, `openapi: 3.0.3

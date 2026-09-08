@@ -3328,6 +3328,9 @@ func (g *Generator) renderOptionalSupportFiles() error {
 // LearnConfig values, which the per-CLI startup wires via NewConfig
 // and SeedFromConfig at first run.
 func (g *Generator) renderLearnFiles() error {
+	if err := validateLearnTickerPlaybookReachability(g.Spec.Learn, g.OutputDir); err != nil {
+		return err
+	}
 	learnData := struct {
 		*spec.APISpec
 		HasSync bool
