@@ -2150,7 +2150,10 @@ type ShareConfig struct {
 // recognize resource identifiers in free-text queries (e.g., Kalshi
 // `KXTICKER-...` codes). Each pattern is validated at spec load via
 // regexp.Compile so authoring typos surface at parse time rather than at
-// end-user runtime.
+// end-user runtime. Patterns are also checked against the generator's
+// seeded playbook query_family_examples: a pattern that classifies every
+// remaining content token as a ticker makes QueryFamily empty and skips
+// every seeded playbook as unreachable, so validation fails closed.
 //
 // Stopwords are domain-specific tokens stripped from queries before the
 // recall path matches against learned templates. The generated CLI merges
@@ -2165,7 +2168,7 @@ type LearnConfig struct {
 	Enabled           bool                    `yaml:"enabled" json:"enabled,omitempty"`                                   // master switch; when false, the loop's commands and pre-seeding hook are not emitted
 	Disabled          bool                    `yaml:"disabled,omitempty" json:"disabled,omitempty"`                       // generation-time opt-out. A plain Enabled bool cannot distinguish "explicitly off" from "absent" once the generator defaults the loop on, so this is the authoritative off switch. Contradicts an explicit enabled: true and is rejected at parse time.
 	EnabledSet        bool                    `yaml:"-" json:"-"`                                                         // internal presence bit: legacy specs with learn.enabled: false remain opted out when the default-on pass runs.
-	TickerPatterns    []string                `yaml:"ticker_patterns,omitempty" json:"ticker_patterns,omitempty"`         // Go regexp patterns the recall path uses to recognize resource identifiers in free-text. Each value must compile via regexp.Compile.
+	TickerPatterns    []string                `yaml:"ticker_patterns,omitempty" json:"ticker_patterns,omitempty"`         // Go regexp patterns the recall path uses to recognize resource identifiers in free-text. Each value must compile via regexp.Compile and must not empty QueryFamily for seeded playbook examples.
 	Stopwords         []string                `yaml:"stopwords,omitempty" json:"stopwords,omitempty"`                     // domain-specific stopwords stripped from queries before recall match; merged with a built-in default set. Whitespace-only entries are dropped at parse time.
 	Synonyms          map[string]string       `yaml:"synonyms,omitempty" json:"synonyms,omitempty"`                       // per-CLI variant -> canonical query-phrasing folds (e.g., "last night" -> "yesterday") applied symmetrically at write and read so same-referent phrasings share one query family. Keys and values must be lowercase; chains are rejected so folding is a single hop.
 	EntityLookupSeeds map[string][]LookupSeed `yaml:"entity_lookup_seeds,omitempty" json:"entity_lookup_seeds,omitempty"` // canonical-name + aliases table keyed by seed kind (e.g., "country"). Used by the recall path to substitute one entity for another and generalize learned templates.
@@ -5569,12 +5572,12 @@ var learnSeedKindRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 // validateLearn enforces the LearnConfig shape contract: the enabled and
 // disabled switches must not contradict, synonym pairs must be single-hop
-// lowercase folds, ticker patterns must compile as Go regexps, seed kinds
-// must be SQLite-safe identifiers, each seed must carry a non-empty
-// Canonical, and canonical values must be unique within a kind. Stopword
-// sanitization (dropping whitespace-only entries) happens here too so the
-// spec's parsed view matches what the generated CLI will actually load at
-// runtime.
+// lowercase folds, ticker patterns must compile as Go regexps and must not
+// empty QueryFamily for seeded playbook examples, seed kinds must be
+// SQLite-safe identifiers, each seed must carry a non-empty Canonical, and
+// canonical values must be unique within a kind. Stopword sanitization
+// (dropping whitespace-only entries) happens here too so the spec's parsed
+// view matches what the generated CLI will actually load at runtime.
 func validateLearn(learn *LearnConfig) error {
 	if learn == nil {
 		return nil
@@ -5605,6 +5608,9 @@ func validateLearn(learn *LearnConfig) error {
 			filtered = append(filtered, sw)
 		}
 		learn.Stopwords = filtered
+	}
+	if err := learn.queryFamilyReachabilityError(learnSeededQueryFamilyExamples); err != nil {
+		return err
 	}
 	if err := validateLearnSeeds(learn.EntityLookupSeeds); err != nil {
 		return err

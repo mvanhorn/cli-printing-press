@@ -38,7 +38,7 @@ config:                           # object (ConfigSpec)
 
 learn:                            # object (LearnConfig) per-CLI vocabulary for the default-on learn loop
   disabled: false                 # bool generation-time opt-out; the authoritative off switch (enabled: false is a no-op once the loop is default-on; disabled: true with an explicit enabled: true is rejected at parse time)
-  ticker_patterns:                # []string Go regexes recognizing ID-shaped tokens in free-text queries; each must compile; anchor with ^...$
+	ticker_patterns:                # []string Go regexes recognizing ID-shaped tokens in free-text queries; each must compile; must not match ordinary query-family words in seeded playbook examples (greedy ^[a-z0-9]{2,12}$ is rejected); anchor with ^...$
     - "^ew-[a-z0-9]+$"
   stopwords:                      # []string domain filler words merged with the built-in English set; whitespace-only entries dropped at parse time
     - widget

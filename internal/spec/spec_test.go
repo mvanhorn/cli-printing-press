@@ -3741,6 +3741,22 @@ resources:
 		assert.Contains(t, err.Error(), "not a valid Go regexp")
 	})
 
+	t.Run("greedy lowercase ticker pattern rejected against seeded playbook examples", func(t *testing.T) {
+		s := APISpec{
+			Name:      "demo",
+			BaseURL:   "http://x",
+			Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+			Learn: LearnConfig{
+				Enabled:        true,
+				TickerPatterns: []string{`^[a-z0-9]{2,12}$`},
+			},
+		}
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "ticker_patterns[0]")
+		assert.Contains(t, err.Error(), "alpha example query")
+	})
+
 	t.Run("bad seed kind with whitespace rejected", func(t *testing.T) {
 		s := APISpec{
 			Name:      "demo",
