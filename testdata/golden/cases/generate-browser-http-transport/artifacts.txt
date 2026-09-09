@@ -1,0 +1,5 @@
+# Locks the browser-transport go.mod contract: surf plus the enetx/http
+# pin (and the x/crypto / quic-go floors). Standard-HTTP generate cases
+# never emit this block.
+
+browser-http-transport/go.mod

@@ -289,7 +289,7 @@ jobs:
         include:
           - shard: h3
             packages: ./internal/generator
-            pattern: ^(TestGenerateBrowserChromeH3Transport)$
+            pattern: ^(TestGenerateBrowserChromeH3Transport|TestGenerateBrowserChromeTransport|TestGenerateCookieHTMLDefaultsBrowserChromeTransport)$
           - shard: generator
             packages: ./internal/generator
             pattern: ^(TestGenerateProjectsCompile|TestGenerateCliutilPackage|TestGenerateFreshnessHelperEmitted|TestGenerateShareEmittedWhenEnabled|TestGenerateAgentContextCommand|TestGenerateHTMLExtractionEndpoint|TestGenerateHTMLExtractionEmbeddedJSONMode|TestGenerateHTMLExtractionPerModeGating|TestGenerateStoreWithBatchResourceDoesNotDuplicateUpsertBatch|TestGenerateStoreUpsertBatchDispatchesToTypedTable|TestGenerateStoreBackfillsIndexedColumnsOnUpgrade|TestGenerateStoreQuotesNumericTableAndDerivedIdentifiers|TestGeneratedOutput_PromotedCommandCompiles|TestGeneratedHelpers_AuthWithKeyURL_Compiles|TestGenerate_CookieAuthUsesBrowserTemplate|TestGenerate_ComposedAuthUsesBrowserTemplate|TestJSONStringParamRejectsInvalidValueBeforeClient|TestGenerateGraphQLBFFUsesSemanticCommandSurface|TestGenerateWhichFallsBackToCommandTree|TestGenerateDependentSyncCompiles|TestGenerateDependentSyncReservedWordCompiles|TestGeneratedSyncTreatsAccessDeniedAsWarning|TestGenerateGraphQLCompiles|TestGenerateMCPCodeOrchestrationEmitsSearchExecute|TestGenerateMCPIntentsEmittedWhenDeclared|TestGenerateMCPEndpointToolsHiddenSuppressesEndpointTools|TestGenerateMCPMainRemoteRuntime|TestGenerateMCPMainRemoteCompiles)$
