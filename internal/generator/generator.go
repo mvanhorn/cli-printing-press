@@ -364,7 +364,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		},
 		"exampleLine":         g.exampleLine,
 		"promotedExampleLine": g.promotedExampleLine,
-		"exampleNeedsTODO":    exampleNeedsTODO,
+		"endpointHappyArgs":   endpointHappyArgs,
 		"commandExampleArgs":  commandExampleArgs,
 		"currentYear":         func() string { return strconv.Itoa(time.Now().Year()) },
 		"copyrightHolder": func() string {
@@ -9190,10 +9190,8 @@ func exampleValue(p spec.Param) string {
 		}
 	}
 
-	if p.Default != nil {
-		if s, ok := defaultSliceExampleValue(p.Default); ok && shellSafeSchemaExampleValue(s) {
-			return s
-		}
+	if s, ok := schemaDefaultExampleValue(p); ok {
+		return s
 	}
 
 	if value, ok := descriptionExampleValue(p.Description); ok {
@@ -9286,6 +9284,23 @@ func descriptionExampleMarkerIndex(lower, marker string) int {
 	}
 }
 
+func schemaDefaultExampleValue(p spec.Param) (string, bool) {
+	if p.DispatchParamSet && !p.DispatchParam {
+		return "", false
+	}
+	if p.Default == nil {
+		return "", false
+	}
+	if s, ok := defaultSliceExampleValue(p.Default); ok && shellSafeSchemaExampleValue(s) {
+		return s, true
+	}
+	s := stringifyDefault(p.Default)
+	if shellSafeSchemaExampleValue(s) {
+		return s, true
+	}
+	return "", false
+}
+
 func defaultSliceExampleValue(v any) (string, bool) {
 	switch t := v.(type) {
 	case []string:
@@ -9340,6 +9355,13 @@ func exampleNeedsTODO(line string) bool {
 	return strings.Contains(line, "example-value")
 }
 
+func runnableExampleLine(line string) string {
+	if exampleNeedsTODO(line) {
+		return ""
+	}
+	return line
+}
+
 func kebabCommandParts(commandPath string) []string {
 	fields := strings.Fields(commandPath)
 	for i, field := range fields {
@@ -9350,19 +9372,23 @@ func kebabCommandParts(commandPath string) []string {
 
 func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.Endpoint) string {
 	if strings.TrimSpace(endpoint.Example) != "" {
-		return endpoint.Example
+		return runnableExampleLine(endpoint.Example)
 	}
 
 	// Spec resource keys are snake_case; Cobra registers kebab Use: paths.
 	commandParts := append(kebabCommandParts(commandPath), toKebab(endpointName))
 	if line, ok := g.narrativeExampleLine(commandParts, endpoint); ok {
-		return line
+		return runnableExampleLine(line)
 	}
 	if endpoint.Alias != "" {
 		aliasParts := append(kebabCommandParts(commandPath), endpoint.Alias)
 		if line, ok := g.narrativeExampleLine(aliasParts, endpoint); ok {
-			return line
+			return runnableExampleLine(line)
 		}
+	}
+
+	if !requiredInputsAreDerivable(endpoint) {
+		return ""
 	}
 
 	var parts []string
@@ -9370,15 +9396,17 @@ func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.
 	parts = append(parts, commandParts...)
 	parts = append(parts, commandExampleArgParts(endpoint)...)
 
-	return "  " + strings.Join(parts, " ")
+	return runnableExampleLine("  " + strings.Join(parts, " "))
 }
 
 func (g *Generator) promotedExampleLine(promotedName, endpointName string, endpoint spec.Endpoint) string {
-	line, err := g.resolvePromotedExample(promotedName, endpointName, endpoint)
-	if err != nil {
-		return g.synthesizedPromotedExample(toKebab(promotedName), endpoint)
+	if strings.TrimSpace(endpoint.Example) != "" {
+		line, err := g.resolvePromotedExample(promotedName, endpointName, endpoint)
+		if err == nil {
+			return runnableExampleLine(line)
+		}
 	}
-	return line
+	return g.synthesizedRunnablePromotedExample(toKebab(promotedName), endpoint)
 }
 
 func (g *Generator) narrativeExampleLine(commandParts []string, endpoint spec.Endpoint) (string, bool) {

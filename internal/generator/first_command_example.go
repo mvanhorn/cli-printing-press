@@ -100,11 +100,19 @@ func commandExampleArgs(ep spec.Endpoint) string {
 func commandExampleArgParts(ep spec.Endpoint) []string {
 	var parts []string
 	for _, p := range orderedPositionalParams(ep) {
-		val := exampleValue(p)
-		if val == "" {
-			val = "<" + p.Name + ">"
+		if value, ok := derivableHappyArgValue(ep, p); ok {
+			parts = append(parts, value)
+			continue
 		}
-		parts = append(parts, val)
+		if p.Required {
+			val := exampleValue(p)
+			if val == "" {
+				val = "<" + p.Name + ">"
+			}
+			parts = append(parts, val)
+			continue
+		}
+		break
 	}
 	return append(parts, requiredFlagExampleParts(ep)...)
 }

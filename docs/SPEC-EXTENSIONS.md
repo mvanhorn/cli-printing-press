@@ -1798,9 +1798,11 @@ paths:
 ### `x-happy-args`
 
 Declares live-dogfood happy-path fixture arguments for one operation. Use it
-when generic synthesized inputs cannot satisfy the endpoint contract, such as a
-search endpoint that requires `q` or a lookup endpoint that requires one of
-several conditional query flags.
+when generate-time synthesis cannot satisfy the endpoint contract: the generator
+already emits `pp:happy-args` from parameter `example`, `enum`, `default`, and
+`format` when every required input is derivable. Keep the extension for opaque
+IDs, coordinates with no schema hint, or conditional query flags that generic
+values cannot satisfy.
 
 Parsed field: `Endpoint.HappyArgs`
 

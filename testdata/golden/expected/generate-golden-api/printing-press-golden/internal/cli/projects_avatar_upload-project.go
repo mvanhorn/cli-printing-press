@@ -18,11 +18,9 @@ func newProjectsAvatarUploadProjectCmd(flags *rootFlags) *cobra.Command {
 	var bodyFile string
 
 	cmd := &cobra.Command{
-		Use:     "upload-project <projectId>",
-		Aliases: []string{"update"},
-		Short:   "Upload project avatar",
-		// TODO: replace placeholder example values before relying on this for live dogfood.
-		Example:     "  printing-press-golden-pp-cli projects avatar upload-project 550e8400-e29b-41d4-a716-446655440000 --x-api-version example-value",
+		Use:         "upload-project <projectId>",
+		Aliases:     []string{"update"},
+		Short:       "Upload project avatar",
 		Annotations: map[string]string{"pp:endpoint": "avatar.upload-project", "pp:method": "PUT", "pp:path": "/projects/{projectId}/avatar"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

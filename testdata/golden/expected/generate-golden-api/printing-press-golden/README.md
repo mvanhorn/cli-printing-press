@@ -136,7 +136,7 @@ This checks your configuration and credentials.
 ### 4. Try Your First Command
 
 ```bash
-printing-press-golden-pp-cli currencies --x-api-version example-value
+printing-press-golden-pp-cli currencies --x-api-version 2026-04-01
 ```
 
 ## Usage
@@ -247,18 +247,18 @@ The local store's schema version stamp is one-way: once this version of `printin
 
 ```bash
 # Human-readable table (default in terminal, JSON when piped)
-printing-press-golden-pp-cli currencies --x-api-version example-value
+printing-press-golden-pp-cli currencies --x-api-version 2026-04-01
 
 # JSON for scripting and agents
-printing-press-golden-pp-cli currencies --x-api-version example-value --json
+printing-press-golden-pp-cli currencies --x-api-version 2026-04-01 --json
 # Filter to specific fields
-printing-press-golden-pp-cli currencies --x-api-version example-value --json --select code,decimals,symbol
+printing-press-golden-pp-cli currencies --x-api-version 2026-04-01 --json --select code,decimals,symbol
 
 # Dry run — show the request without sending
-printing-press-golden-pp-cli currencies --x-api-version example-value --dry-run
+printing-press-golden-pp-cli currencies --x-api-version 2026-04-01 --dry-run
 
 # Agent mode — JSON + compact + no prompts in one flag
-printing-press-golden-pp-cli currencies --x-api-version example-value --agent
+printing-press-golden-pp-cli currencies --x-api-version 2026-04-01 --agent
 ```
 
 ## Agent Usage

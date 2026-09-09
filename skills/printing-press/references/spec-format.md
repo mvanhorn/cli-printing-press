@@ -151,14 +151,18 @@ Next.js `__NEXT_DATA__` or schema.org JSON-LD; prefer `html_extract` modes
 `cliutil.ParseCSV`, and `binary` for opaque byte payloads.
 
 **`example` and `happy_args` are endpoint-command fixtures.** Set `example`
-when the synthesized Cobra example would use placeholder values or omit
-domain-specific context. Use the exact command string that should appear in
-`--help`; lead with two spaces for Cobra help indentation and include the
-generated binary name and command path. When an endpoint is also promoted as a
-top-level command, the same `example` value is used verbatim for both forms, so
-write it as the promoted invocation if that is the command users should run. Set
-`happy_args` when live dogfood needs realistic arguments that cannot be inferred
-from names or schema hints. The value is copied into the generated `pp:happy-args`
+when the synthesized Cobra example would omit domain-specific context. Use the
+exact command string that should appear in `--help`; lead with two spaces for
+Cobra help indentation and include the generated binary name and command path.
+When an endpoint is also promoted as a top-level command, the same `example`
+value is used verbatim for both forms, so write it as the promoted invocation
+if that is the command users should run. The generator synthesizes runnable
+`Example:` strings and `pp:happy-args` from parameter `example`, `enum`,
+`default`, and `format` when every required input is derivable, and omits
+placeholder `example-value` Example lines rather than shipping copy-paste 400s.
+Set `happy_args` only when live dogfood needs realistic arguments that cannot
+be inferred from those schema hints (opaque IDs, coordinates with no example,
+and similar). The value is copied into the generated `pp:happy-args`
 annotation and follows the runtime grammar. Tokens are separated by unescaped
 semicolons, so a literal semicolon uses `\;` (or `\\;` inside a YAML
 double-quoted string). Positional tokens may use `<label>=value` or

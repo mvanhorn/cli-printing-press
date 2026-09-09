@@ -111,7 +111,7 @@ Global format flags share one contract on promoted, novel, sync, and `--deliver`
 - **Filterable** — `--select` keeps a subset of fields. Dotted paths descend into nested structures; arrays traverse element-wise. Critical for keeping context small on verbose APIs:
 
   ```bash
-  printing-press-golden-pp-cli currencies --x-api-version example-value --agent --select code,decimals,symbol
+  printing-press-golden-pp-cli currencies --x-api-version 2026-04-01 --agent --select code,decimals,symbol
   ```
 - **Previewable** — `--dry-run` shows the request without sending
 - **Offline-friendly** — sync/search commands can use the local SQLite store when available
@@ -396,7 +396,7 @@ A profile is a saved set of flag values, reused across invocations. Use it when 
 
 ```
 printing-press-golden-pp-cli profile save briefing --json
-printing-press-golden-pp-cli --profile briefing currencies --x-api-version example-value
+printing-press-golden-pp-cli --profile briefing currencies --x-api-version 2026-04-01
 printing-press-golden-pp-cli profile list --json
 printing-press-golden-pp-cli profile show briefing
 printing-press-golden-pp-cli profile delete briefing --yes

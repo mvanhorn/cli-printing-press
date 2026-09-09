@@ -16,7 +16,6 @@ func newQuotesGetCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "get <quote_id>",
 		Short:       "Get quote",
-		Example:     "  fastapi-operationids-golden-pp-cli quotes get 550e8400-e29b-41d4-a716-446655440000",
 		Annotations: map[string]string{"pp:endpoint": "quotes.get", "pp:method": "GET", "pp:path": "/api/quotes/{quote_id}", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
