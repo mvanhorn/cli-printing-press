@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/browser-http-transport.yaml --output "$CASE_ACTUAL_DIR/browser-http-transport" --force --spec-url file://testdata/golden/fixtures/browser-http-transport.yaml --validate=false

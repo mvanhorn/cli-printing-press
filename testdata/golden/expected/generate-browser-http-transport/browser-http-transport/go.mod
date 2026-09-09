@@ -1,52 +1,17 @@
-module {{modulePath}}
+module browser-http-transport-pp-cli
 
-go {{goDirectiveVersion}}
+go 1.26.6
 
-toolchain {{goToolchainVersion}}
+toolchain go1.26.6
 
 require (
-{{- if .UsesBrowserHTTPTransport}}
 	github.com/enetx/surf v1.0.199
-{{- end}}
-{{- if eq .Auth.Subtype "auth0_spa_in_memory"}}
-	github.com/chromedp/cdproto v0.0.0-20260321001828-e3e3800016bc
-	github.com/chromedp/chromedp v0.15.1
-{{- end}}
-{{- if eq .Auth.Subtype "google_service_account"}}
-	golang.org/x/oauth2 v0.36.0
-{{- end}}
-{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed") .Streaming.Enabled}}
-	github.com/gorilla/websocket v1.5.3
-{{- end}}
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/pflag v1.0.6
 	github.com/pelletier/go-toml/v2 v2.2.4
-{{- if .HasHTMLExtraction}}
-	golang.org/x/net v0.55.0
-{{- end}}
 )
-
-{{- if .VisionSet.Store}}
 require modernc.org/sqlite v1.37.0
-{{- end}}
-
-{{- if .VisionSet.MCP}}
 require github.com/mark3labs/mcp-go v0.57.0
-{{- end}}
-
-{{- if .HasAuthCommand}}
-
-// x/sys is a DIRECT dependency for token-bearing bundles: the read-time
-// credentials-perms guard's Windows surface (internal/cliutil/creds_perms_windows.go)
-// imports golang.org/x/sys/windows. Emitted as a direct require (no // indirect)
-// so a freshly generated bundle's go.mod is correct out of the box, WITHOUT a
-// manual `go mod tidy`. The version matches the transitive floor below so a
-// single x/sys version is pinned. NOTE (go mod tidy GOOS caveat): the import is
-// behind `//go:build windows`, so running `go mod tidy` under GOOS=linux/darwin
-// re-marks this // indirect (that GOOS compiles no file that imports it); under
-// GOOS=windows it stays direct. That is tolerated churn, NOT a bug to "fix".
-require golang.org/x/sys v0.46.0
-{{- else}}
 
 // x/sys is a DIRECT dependency even without auth: filelock_windows.go
 // imports golang.org/x/sys/windows. Emitted as a direct require (no
@@ -56,8 +21,6 @@ require golang.org/x/sys v0.46.0
 // `//go:build windows`, so tidy under GOOS=linux/darwin re-marks this
 // // indirect; under GOOS=windows it stays direct.
 require golang.org/x/sys v0.46.0
-{{- end}}
-{{- if .UsesBrowserHTTPTransport}}
 
 // Floor the HTTP/3 transitive deps pulled in only via github.com/enetx/surf
 // above their vulnerable versions (osv flags module presence; govulncheck
@@ -71,4 +34,3 @@ require github.com/quic-go/quic-go v0.60.0 // indirect
 // sync with safeEnetxHTTPVersion. regen-merge: fresh wins on this path,
 // so a published v1.0.28 cannot re-enter.
 require github.com/enetx/http v1.0.29 // indirect
-{{- end}}
