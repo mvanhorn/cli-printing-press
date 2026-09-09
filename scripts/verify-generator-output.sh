@@ -12,8 +12,8 @@ source-level tests and byte-level goldens can miss.
 
 When no case is supplied, a focused default set covers endpoint templates,
 MCP/code-orchestration, rich auth, GraphQL shared endpoints, learn-loop
-emission, and generated BLE device variants. Pass extra case names when a fix
-touches another generated variant.
+emission, generated BLE device variants, and browser-transport go.mod.
+Pass extra case names when a fix touches another generated variant.
 USAGE
 }
 
@@ -49,6 +49,7 @@ default_cases=(
   generate-device-ble-control
   generate-device-ble-session
   generate-device-ble-opaque
+  generate-browser-http-transport
 )
 
 cases=()

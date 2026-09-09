@@ -1,0 +1,3 @@
+warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it
+agentcookie: skipping browser-http-transport (cookie-only or no env-var auth)
+Generated browser-http-transport at <ARTIFACT_DIR>/generate-browser-http-transport/browser-http-transport
