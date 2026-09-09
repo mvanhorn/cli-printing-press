@@ -62,6 +62,9 @@ var regenmergeGeneratorOwnedDirs = map[string]struct{}{
 //     in fresh. Markerless files under generator-owned internal directories
 //     are preserved too: they are hand-authored standalone files, not stale
 //     template emissions.
+//  5. Copy `.git` and `.gitmodules` from snapshot into fresh. Walks skip
+//     `.git`, and CopyDir drops git plumbing, so force-regen would otherwise
+//     emit a tree with no history. Symlinked git metadata is refused.
 //
 // Symlinks at any preserve path or sweep path are refused — the caller is
 // expected to have validated the snapshot/fresh directory shape upstream.
@@ -74,9 +77,10 @@ var regenmergeGeneratorOwnedDirs = map[string]struct{}{
 // dropped hand-edit from a same-spec preserve.
 // Lost AddCommand re-injection still runs when its constructor is
 // preserved in the merged novel files. The non-classified file
-// sweep and go.mod merge still run because both are spec-orthogonal — non-Go
-// files and go.mod require additions are valid preservation targets even when
-// the fresh spec differs from the snapshot's.
+// sweep, go.mod merge, and git-metadata copy still run because they are
+// spec-orthogonal — non-Go files, go.mod require additions, and history
+// are valid preservation targets even when the fresh spec differs from
+// the snapshot's.
 func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts Options) error {
 	if report == nil {
 		return errors.New("nil report")
@@ -174,6 +178,10 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 	}
 	if err := pipeline.ValidatePatchRecords(freshDir); err != nil {
 		return fmt.Errorf("recorded patches no longer match the merged tree: %w", err)
+	}
+
+	if err := preserveGitMetadata(snapshotDir, freshDir); err != nil {
+		return fmt.Errorf("preserving git metadata: %w", err)
 	}
 
 	report.Applied = true
