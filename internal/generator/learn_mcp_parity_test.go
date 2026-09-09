@@ -163,6 +163,15 @@ func TestGenerateLearnMCPParity_LocalWriteAnnotations(t *testing.T) {
 	require.NotContains(t, forgetBlock, "mcp:local-write",
 		"learnings forget must not carry local-write hints")
 
+	// Bare `learnings` exits 2 via parentNoSubcommandRunE. Declare the typed
+	// codes so verify scores the generated parent group 10, matching the
+	// hand-written parents.
+	learningsBlock := commandBlock(t, teachSrc, `Use:   "learnings"`)
+	require.Contains(t, learningsBlock, `"pp:parent-group": "true"`,
+		"learnings parent must stay a grouping parent")
+	require.Regexp(t, `"pp:typed-exit-codes":\s+"0,2"`, learningsBlock,
+		"learnings parent must declare typed exit codes 0,2")
+
 	// teach-pattern exits 2 via usageErr on missing required flags, just like
 	// its teach/teach-playbook siblings, and writes to the local store. It must
 	// declare both annotations so verify and the live-dogfood matrix score its
