@@ -17,12 +17,24 @@ func endpointHappyArgs(ep spec.Endpoint) string {
 	if ep.BodyJSONFallback && ep.BodyRequired && strings.TrimSpace(ep.HappyStdin) == "" {
 		return ""
 	}
+	tokens, ok := synthesizeHappyArgTokens(ep)
+	if !ok {
+		return ""
+	}
+	return strings.Join(tokens, ";")
+}
 
+func requiredInputsAreDerivable(ep spec.Endpoint) bool {
+	_, ok := synthesizeHappyArgTokens(ep)
+	return ok
+}
+
+func synthesizeHappyArgTokens(ep spec.Endpoint) ([]string, bool) {
 	var tokens []string
 	for _, p := range orderedPositionalParams(ep) {
 		value, ok := derivableHappyArgValue(ep, p)
 		if !ok {
-			return ""
+			return nil, false
 		}
 		tokens = append(tokens, encodeHappyArgPositional(p, value))
 	}
@@ -32,7 +44,7 @@ func endpointHappyArgs(ep spec.Endpoint) string {
 		}
 		value, ok := derivableHappyArgValue(ep, p)
 		if !ok {
-			return ""
+			return nil, false
 		}
 		tokens = append(tokens, encodeHappyArgFlag(p, value))
 	}
@@ -42,14 +54,22 @@ func endpointHappyArgs(ep spec.Endpoint) string {
 		}
 		value, ok := derivableHappyArgValue(ep, p)
 		if !ok {
-			return ""
+			return nil, false
 		}
 		tokens = append(tokens, encodeHappyArgFlag(p, value))
 	}
-	return strings.Join(tokens, ";")
+	return tokens, true
 }
 
 func derivableHappyArgValue(ep spec.Endpoint, p spec.Param) (string, bool) {
+	value, ok := lookupDerivableHappyArgValue(ep, p)
+	if !ok || !happyArgValueEncodable(value) {
+		return "", false
+	}
+	return value, true
+}
+
+func lookupDerivableHappyArgValue(ep spec.Endpoint, p spec.Param) (string, bool) {
 	if p.Example != nil {
 		if s := stringifyDefault(p.Example); shellSafeSchemaExampleValue(s) {
 			return s, true
@@ -101,4 +121,10 @@ func encodeHappyArgPositional(p spec.Param, value string) string {
 
 func escapeHappyArgValue(value string) string {
 	return strings.ReplaceAll(value, ";", `\;`)
+}
+
+func happyArgValueEncodable(value string) bool {
+	// splitHappyArgs treats \; as an escaped semicolon and does not unescape \\,
+	// so a literal backslash cannot round-trip through the annotation.
+	return !strings.Contains(value, `\`)
 }

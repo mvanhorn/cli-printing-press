@@ -8309,8 +8309,10 @@ func TestEndpointFixturesEmittedFromSpec(t *testing.T) {
 		"non-promoted endpoint commands should carry spec-declared live dogfood tier requirements")
 
 	withoutHappyArgs := readGeneratedFile(t, outputDir, "internal", "cli", "items_get.go")
-	assert.Contains(t, withoutHappyArgs, `Example:     "  endpoint-fixtures-pp-cli items get 550e8400-e29b-41d4-a716-446655440000"`,
-		"endpoints without example must keep the existing synthesized example")
+	assert.NotContains(t, withoutHappyArgs, "550e8400-e29b-41d4-a716-446655440000",
+		"endpoints without a derivable id must not invent a synthetic UUID Example")
+	assert.NotContains(t, withoutHappyArgs, "Example:",
+		"endpoints without a derivable id must omit the synthesized Cobra Example")
 	assert.NotContains(t, withoutHappyArgs, "pp:happy-args",
 		"endpoints without happy_args must keep the existing annotation shape")
 	assert.NotContains(t, withoutHappyArgs, "pp:requires-tier",
@@ -9737,7 +9739,8 @@ func TestGeneratedOutput_PromotedCommandKeepsSubresourceParents(t *testing.T) {
 
 	cardsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "account_cards_get-account.go"))
 	require.NoError(t, err)
-	assert.Regexp(t, `Example:\s+"  promsub-pp-cli account cards get-account `, string(cardsSrc))
+	assert.Contains(t, string(cardsSrc), `"get-account <accountId>"`)
+	assert.NotContains(t, string(cardsSrc), "550e8400-e29b-41d4-a716-446655440000")
 	assert.NotRegexp(t, `Example:\s+"  promsub-pp-cli account get-account `, string(cardsSrc))
 }
 
@@ -9751,17 +9754,18 @@ func TestExampleLineUsesRenderedCommandAndFlagNames(t *testing.T) {
 		Method: "POST",
 		Path:   "/account/{accountId}/request-send-money",
 		Params: []spec.Param{
-			{Name: "accountId", Type: "string", Required: true, Positional: true},
+			{Name: "accountId", Type: "string", Required: true, Positional: true, Example: "acct_123"},
 		},
 		Body: []spec.Param{
-			{Name: "idempotencyKey", Type: "string", Required: true},
+			{Name: "idempotencyKey", Type: "string", Required: true, Example: "idem-1"},
 		},
 	}
 
 	got := g.exampleLine("account request-send-money", "request_send_money", endpoint)
 
 	assert.Contains(t, got, "example-render-pp-cli account request-send-money request-send-money")
-	assert.Contains(t, got, "--idempotency-key your-token-here")
+	assert.Contains(t, got, "acct_123")
+	assert.Contains(t, got, "--idempotency-key idem-1")
 	assert.NotContains(t, got, "request_send_money")
 	assert.NotContains(t, got, "--idempotencyKey")
 }
@@ -10348,8 +10352,9 @@ func TestGeneratedPromotedCommandExampleRejectsNarrativeChildCommand(t *testing.
 	require.NoError(t, gen.Generate())
 
 	source := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_account.go")
-	assert.Contains(t, source, `"  narrative-promoted-child-pp-cli account 550e8400-e29b-41d4-a716-446655440000"`)
+	assert.NotContains(t, source, "550e8400-e29b-41d4-a716-446655440000")
 	assert.NotContains(t, source, "account cards get-account")
+	assert.NotContains(t, source, "Example:")
 }
 
 func TestGeneratedPromotedCommandExampleRejectsUnpromotedNarrativePath(t *testing.T) {

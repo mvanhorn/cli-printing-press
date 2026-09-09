@@ -19,7 +19,6 @@ func newReportsExportReportYearCmd(flags *rootFlags) *cobra.Command {
 		Use:         "report-year",
 		Aliases:     []string{"get"},
 		Short:       "Download the annual report as a binary file",
-		Example:     "  printing-press-golden-pp-cli reports export report-year --x-api-version 2026-04-01 --year 42",
 		Annotations: map[string]string{"pp:endpoint": "export.report-year", "pp:method": "GET", "pp:path": "/reports/{year}/export", "mcp:read-only": "true", "pp:requires-input": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Bare invocation of a command with required input prints help

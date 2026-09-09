@@ -18,7 +18,6 @@ func newUsersItemEmailUpdateCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "update <userId>",
 		Short:       "Update a user's email",
-		Example:     "  collection-item-collision-pp-cli users item-email update 550e8400-e29b-41d4-a716-446655440000",
 		Annotations: map[string]string{"pp:endpoint": "email.update", "pp:method": "PUT", "pp:path": "/users/{userId}/email"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

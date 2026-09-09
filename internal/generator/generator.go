@@ -9387,6 +9387,10 @@ func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.
 		}
 	}
 
+	if !requiredInputsAreDerivable(endpoint) {
+		return ""
+	}
+
 	var parts []string
 	parts = append(parts, naming.CLI(g.Spec.Name))
 	parts = append(parts, commandParts...)
@@ -9396,11 +9400,13 @@ func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.
 }
 
 func (g *Generator) promotedExampleLine(promotedName, endpointName string, endpoint spec.Endpoint) string {
-	line, err := g.resolvePromotedExample(promotedName, endpointName, endpoint)
-	if err != nil {
-		return runnableExampleLine(g.synthesizedPromotedExample(toKebab(promotedName), endpoint))
+	if strings.TrimSpace(endpoint.Example) != "" {
+		line, err := g.resolvePromotedExample(promotedName, endpointName, endpoint)
+		if err == nil {
+			return runnableExampleLine(line)
+		}
 	}
-	return runnableExampleLine(line)
+	return g.synthesizedRunnablePromotedExample(toKebab(promotedName), endpoint)
 }
 
 func (g *Generator) narrativeExampleLine(commandParts []string, endpoint spec.Endpoint) (string, bool) {

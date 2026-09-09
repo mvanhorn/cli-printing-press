@@ -113,6 +113,67 @@ func TestEscapeHappyArgValueEscapesSemicolons(t *testing.T) {
 	assert.Equal(t, `a\;b`, escapeHappyArgValue("a;b"))
 }
 
+func TestEndpointHappyArgsEncodesSemicolonsWithoutBackslash(t *testing.T) {
+	t.Parallel()
+
+	ep := spec.Endpoint{
+		Method: "GET",
+		Path:   "/search",
+		Params: []spec.Param{{Name: "q", Type: "string", Required: true, Enum: []string{"a;b"}}},
+	}
+	assert.Equal(t, `--q=a\;b`, endpointHappyArgs(ep))
+}
+
+func TestEndpointHappyArgsRejectsLiteralBackslash(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		endpoint spec.Endpoint
+	}{
+		{
+			name: "enum backslash before semicolon",
+			endpoint: spec.Endpoint{
+				Method: "GET",
+				Path:   "/search",
+				Params: []spec.Param{{Name: "q", Type: "string", Required: true, Enum: []string{`a\;b`}}},
+			},
+		},
+		{
+			name: "dispatch default backslash before semicolon",
+			endpoint: spec.Endpoint{
+				Method: "GET",
+				Path:   "/",
+				Params: []spec.Param{{Name: "type", Type: "string", Required: true, Default: `a\;b`, DispatchParam: true}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := endpointHappyArgs(tt.endpoint)
+			assert.Empty(t, got)
+			assert.NotContains(t, got, `a;b`)
+		})
+	}
+}
+
+func TestRequiredInputsAreDerivableVacuousAndOpaque(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, requiredInputsAreDerivable(spec.Endpoint{
+		Method: "GET",
+		Path:   "/items",
+	}))
+	assert.False(t, requiredInputsAreDerivable(spec.Endpoint{
+		Method: "GET",
+		Path:   "/videos/{video_id}",
+		Params: []spec.Param{
+			{Name: "video_id", Type: "string", Required: true, Positional: true, PathParam: true},
+		},
+	}))
+}
+
 func TestGeneratedCommandSynthesizesHappyArgsFromExamples(t *testing.T) {
 	t.Parallel()
 
@@ -197,7 +258,8 @@ func TestGeneratedCommandDoesNotInventHappyArgsForUnderivableParams(t *testing.T
 	assert.NotContains(t, videoSrc, "pp:happy-args")
 	assert.NotContains(t, videoSrc, "example-value")
 	assert.NotContains(t, videoSrc, "TODO: replace placeholder example values")
-	assert.Contains(t, videoSrc, "550e8400-e29b-41d4-a716-446655440000")
+	assert.NotContains(t, videoSrc, "550e8400-e29b-41d4-a716-446655440000")
+	assert.NotContains(t, videoSrc, "Example:")
 
 	searchSrc := readGeneratedFile(t, outputDir, "internal", "cli", "videos_search.go")
 	assert.NotContains(t, searchSrc, "pp:happy-args")
@@ -212,5 +274,77 @@ func TestGeneratedCommandDoesNotInventHappyArgsForUnderivableParams(t *testing.T
 	assert.NotContains(t, forecastSrc, "13.41")
 	assert.NotContains(t, forecastSrc, "TODO: replace placeholder example values")
 	assert.NotContains(t, forecastSrc, "Example:")
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestExampleLineOmitsInventedOpaqueIDs(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("opaque-ex")
+	g := New(apiSpec, t.TempDir())
+	got := g.exampleLine("videos", "get", spec.Endpoint{
+		Method: "GET",
+		Path:   "/videos/{video_id}",
+		Params: []spec.Param{
+			{Name: "video_id", Type: "string", Required: true, Positional: true, PathParam: true},
+		},
+	})
+	assert.Empty(t, got)
+}
+
+func TestExampleLineKeepsSpecDeclaredOpaqueExample(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("opaque-spec-ex")
+	g := New(apiSpec, t.TempDir())
+	got := g.exampleLine("videos", "get", spec.Endpoint{
+		Example: "  opaque-spec-ex-pp-cli videos get real-id",
+		Params: []spec.Param{
+			{Name: "video_id", Type: "string", Required: true, Positional: true, PathParam: true},
+		},
+	})
+	assert.Equal(t, "  opaque-spec-ex-pp-cli videos get real-id", got)
+}
+
+func TestExampleLineKeepsVacuousList(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("vacuous-ex")
+	g := New(apiSpec, t.TempDir())
+	got := g.exampleLine("items", "list", spec.Endpoint{Method: "GET", Path: "/items"})
+	assert.Equal(t, "  vacuous-ex-pp-cli items list", got)
+}
+
+func TestGeneratedCommandOmitsInventedExampleWhenHappyArgsDeclared(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("declared-happy-opaque")
+	apiSpec.Resources["videos"] = spec.Resource{
+		Description: "Videos",
+		Endpoints: map[string]spec.Endpoint{
+			"get": {
+				Method:      "GET",
+				Path:        "/videos/{video_id}",
+				Description: "Get a video",
+				HappyArgs:   "video_id=real-from-spec",
+				Params: []spec.Param{
+					{Name: "video_id", Type: "string", Required: true, Positional: true, PathParam: true},
+				},
+			},
+			"list": {
+				Method:      "GET",
+				Path:        "/videos",
+				Description: "List videos",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	source := readGeneratedFile(t, outputDir, "internal", "cli", "videos_get.go")
+	assert.Contains(t, source, `"pp:happy-args": "video_id=real-from-spec"`)
+	assert.NotContains(t, source, "550e8400-e29b-41d4-a716-446655440000")
+	assert.NotContains(t, source, "Example:")
 	requireGeneratedCompiles(t, outputDir)
 }
