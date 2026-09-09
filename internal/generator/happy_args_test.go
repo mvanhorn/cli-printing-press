@@ -112,6 +112,32 @@ func TestEndpointHappyArgsOmitsUnderivableOptionalPositionals(t *testing.T) {
 	assert.True(t, requiredInputsAreDerivable(ep))
 }
 
+func TestEndpointHappyArgsDoesNotShiftLaterPositionals(t *testing.T) {
+	t.Parallel()
+
+	ep := spec.Endpoint{
+		Method: "GET",
+		Path:   "/export/{format}/{start}",
+		Params: []spec.Param{
+			{Name: "format", Type: "string", Required: false, Positional: true, PathParam: true},
+			{Name: "start", Type: "string", Required: true, Positional: true, PathParam: true, Format: "date"},
+		},
+	}
+
+	got := endpointHappyArgs(ep)
+	assert.Empty(t, got)
+	assert.NotContains(t, got, "2026-01-15")
+	assert.False(t, requiredInputsAreDerivable(ep))
+
+	apiSpec := minimalSpec("shift-pos")
+	g := New(apiSpec, t.TempDir())
+	example := g.exampleLine("export", "get", ep)
+	assert.Empty(t, example)
+	assert.NotContains(t, example, "2026-01-15")
+	parts := commandExampleArgParts(ep)
+	assert.NotContains(t, parts, "2026-01-15")
+}
+
 func TestEndpointHappyArgsEncodesNegativeNumbers(t *testing.T) {
 	t.Parallel()
 

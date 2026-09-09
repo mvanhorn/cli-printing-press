@@ -104,14 +104,15 @@ func commandExampleArgParts(ep spec.Endpoint) []string {
 			parts = append(parts, value)
 			continue
 		}
-		if !p.Required {
+		if p.Required {
+			val := exampleValue(p)
+			if val == "" {
+				val = "<" + p.Name + ">"
+			}
+			parts = append(parts, val)
 			continue
 		}
-		val := exampleValue(p)
-		if val == "" {
-			val = "<" + p.Name + ">"
-		}
-		parts = append(parts, val)
+		break
 	}
 	return append(parts, requiredFlagExampleParts(ep)...)
 }

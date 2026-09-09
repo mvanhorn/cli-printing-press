@@ -30,14 +30,15 @@ func requiredInputsAreDerivable(ep spec.Endpoint) bool {
 }
 
 func synthesizeHappyArgTokens(ep spec.Endpoint) ([]string, bool) {
+	positionals := orderedPositionalParams(ep)
 	var tokens []string
-	for _, p := range orderedPositionalParams(ep) {
+	for i, p := range positionals {
 		value, ok := derivableHappyArgValue(ep, p)
 		if !ok {
-			if !p.Required {
-				continue
+			if p.Required || !remainingPositionalsAreOmittable(ep, positionals[i+1:]) {
+				return nil, false
 			}
-			return nil, false
+			break
 		}
 		tokens = append(tokens, encodeHappyArgPositional(p, value))
 	}
@@ -108,6 +109,20 @@ func formatHappyArgValue(p spec.Param) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func remainingPositionalsAreOmittable(ep spec.Endpoint, rest []spec.Param) bool {
+	// parseHappyArgsAnnotation discards labels and mergeHappyPositionals overlays
+	// by index, so omitting a non-trailing slot would rebind later values.
+	for _, p := range rest {
+		if _, ok := derivableHappyArgValue(ep, p); ok {
+			return false
+		}
+		if p.Required {
+			return false
+		}
+	}
+	return true
 }
 
 func encodeHappyArgFlag(p spec.Param, value string) string {
