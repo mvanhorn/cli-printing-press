@@ -232,3 +232,54 @@ require github.com/spf13/cobra v1.9.1
 	assert.Equal(t, "v1.9.1", gotPaths["github.com/spf13/cobra"],
 		"shared deps stay at fresh's version")
 }
+
+// TestRenderMergedGoModFreshWinsEnetxHTTP pins that regen-merge cannot
+// reintroduce github.com/enetx/http v1.0.28 (the Go 1.27 http2 compile
+// break) when the fresh tree floors v1.0.29. Fresh already wins on shared
+// require paths; this case locks that rule to the pin that makes `go install`
+// work on Go 1.27.
+func TestRenderMergedGoModFreshWinsEnetxHTTP(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	pubDir := filepath.Join(tmp, "pub")
+	freshDir := filepath.Join(tmp, "fresh")
+	require.NoError(t, os.MkdirAll(pubDir, 0o755))
+	require.NoError(t, os.MkdirAll(freshDir, 0o755))
+
+	pubGoMod := []byte(`module github.com/example/monorepo/library/foo
+
+go 1.26.6
+
+require (
+	github.com/enetx/http v1.0.28
+	github.com/enetx/http2 v1.0.26
+	github.com/enetx/surf v1.0.199
+)
+`)
+	freshGoMod := []byte(`module foo-pp-cli
+
+go 1.26.6
+
+require (
+	github.com/enetx/http v1.0.29
+	github.com/enetx/http2 v1.0.26
+	github.com/enetx/surf v1.0.199
+)
+`)
+	require.NoError(t, writeFileAtomic(filepath.Join(pubDir, "go.mod"), pubGoMod))
+	require.NoError(t, writeFileAtomic(filepath.Join(freshDir, "go.mod"), freshGoMod))
+
+	bytes, err := renderMergedGoMod(pubDir, freshDir)
+	require.NoError(t, err)
+	parsed, err := modfile.Parse("merged-go.mod", bytes, nil)
+	require.NoError(t, err)
+
+	gotPaths := map[string]string{}
+	for _, req := range parsed.Require {
+		gotPaths[req.Mod.Path] = req.Mod.Version
+	}
+	assert.Equal(t, "v1.0.29", gotPaths["github.com/enetx/http"],
+		"fresh's Go 1.27-compatible enetx/http pin must win over published v1.0.28")
+	assert.Equal(t, "v1.0.26", gotPaths["github.com/enetx/http2"])
+}
