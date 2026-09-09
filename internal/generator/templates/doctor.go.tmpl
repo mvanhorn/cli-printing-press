@@ -1134,9 +1134,9 @@ func collectCredentialsLocationReport(report map[string]any, cfg *config.Config)
 		return
 	}
 {{- if $authCredentialConsolidationAction}}
-	credentialRemediation := "run {{ $authCredentialConsolidationAction }} or auth logout"
+	remediationHint := "run {{ $authCredentialConsolidationAction }} or auth logout"
 {{- else}}
-	credentialRemediation := "run auth logout"
+	remediationHint := "run auth logout"
 {{- end}}
 	if cfg.CredentialSource != "" {
 		report["credentials_location"] = cfg.CredentialSource
@@ -1167,9 +1167,9 @@ func collectCredentialsLocationReport(report map[string]any, cfg *config.Config)
 	}
 	if credsPresent && len(locations) > 1 {
 		if legacySecretsElsewhere != "" {
-			report["credentials_location_warning"] = "WARN credentials stored in more than one location; legacy secrets remain at " + legacySecretsElsewhere + "; " + credentialRemediation + " to consolidate and remove legacy secrets"
+			report["credentials_location_warning"] = "WARN credentials stored in more than one location; legacy secrets remain at " + legacySecretsElsewhere + "; " + remediationHint + " to consolidate and remove legacy secrets"
 		} else {
-			report["credentials_location_warning"] = "WARN credentials stored in more than one location; current reads use credentials file; " + credentialRemediation + " to consolidate"
+			report["credentials_location_warning"] = "WARN credentials stored in more than one location; current reads use credentials file; " + remediationHint + " to consolidate"
 		}
 	}
 }

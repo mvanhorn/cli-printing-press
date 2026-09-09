@@ -108,9 +108,9 @@ POSTed as JSON after the local write.
 Write what surprised you or tripped you up, not a bug report. The
 loop is: agent notices friction -> one invocation -> captured -> the
 maintainer sees it.`,
-		Example: `  {{.Name}}-pp-cli feedback "the --since flag is inclusive but docs say exclusive"
+		Example: `  {{.Name}}-pp-cli feedback "docs said exclusive but the boundary is inclusive"
   {{.Name}}-pp-cli feedback --stdin < notes.txt
-  {{.Name}}-pp-cli feedback list --limit 10`,
+  {{.Name}}-pp-cli feedback list`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var text string
 			if useStdin {
