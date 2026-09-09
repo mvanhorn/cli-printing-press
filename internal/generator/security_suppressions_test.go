@@ -60,6 +60,11 @@ func TestGeneratedInfraSecuritySuppressionsAreExplicit(t *testing.T) {
 	syncGo := readGenerated(t, outputDir, "internal", "cli", "sync.go")
 	assert.Contains(t, syncGo, `paths := map[string]string{ // #nosec G101 -- endpoint paths, not credentials.`)
 
+	doctorGo := readGenerated(t, outputDir, "internal", "cli", "doctor.go")
+	assert.NotContains(t, doctorGo, "credentialRemediation",
+		"gosec G101 matches identifiers containing credential; do not use that name")
+	assert.Contains(t, doctorGo, "remediationHint")
+
 	importGo := readGenerated(t, outputDir, "internal", "cli", "import.go")
 	assert.Contains(t, importGo, `os.Open(filepath.Clean(inputFile)) // #nosec G304 -- user-specified input file is this flag's documented purpose.`)
 
