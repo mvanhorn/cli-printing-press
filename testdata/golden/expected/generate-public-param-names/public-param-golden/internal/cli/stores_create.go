@@ -18,10 +18,8 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 	var stdinBody bool
 
 	cmd := &cobra.Command{
-		Use:   "create",
-		Short: "Create a store record",
-		// TODO: replace placeholder example values before relying on this for live dogfood.
-		Example:     "  public-param-golden-pp-cli stores create --store-code example-value",
+		Use:         "create",
+		Short:       "Create a store record",
 		Annotations: map[string]string{"pp:endpoint": "stores.create", "pp:method": "POST", "pp:path": "/stores", "pp:requires-input": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Bare invocation of a command with required input prints help
