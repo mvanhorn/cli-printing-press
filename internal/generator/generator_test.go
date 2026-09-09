@@ -2850,6 +2850,7 @@ func TestGenerateBrowserChromeTransport(t *testing.T) {
 	assert.Contains(t, string(gomod), "go "+currentGoDirectiveVersion()+"\n")
 	assert.Contains(t, string(gomod), "toolchain "+currentGoToolchainVersion())
 	assert.Contains(t, string(gomod), "github.com/enetx/surf")
+	assert.Contains(t, string(gomod), "github.com/enetx/http "+safeEnetxHTTPVersion)
 
 	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
@@ -3280,6 +3281,7 @@ func TestGenerateCookieHTMLDefaultsBrowserChromeTransport(t *testing.T) {
 
 	gomod := readGeneratedFile(t, outputDir, "go.mod")
 	assert.Contains(t, gomod, "github.com/enetx/surf")
+	assert.Contains(t, gomod, "github.com/enetx/http "+safeEnetxHTTPVersion)
 
 	clientGo := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
 	assert.Contains(t, clientGo, `"github.com/enetx/surf"`)

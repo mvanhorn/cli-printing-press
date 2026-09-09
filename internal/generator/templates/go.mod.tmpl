@@ -65,4 +65,10 @@ require golang.org/x/sys v0.46.0
 // is present, so MVS keeps the floor; tidy drops it for CLIs without surf.
 require golang.org/x/crypto v0.53.0 // indirect
 require github.com/quic-go/quic-go v0.60.0 // indirect
+// enetx/http2 v1.0.25+ reads http.Server.DisableClientPriority under
+// //go:build go1.27. Surf still floors http at v1.0.28, which lacks that
+// field; pin v1.0.29 so printed CLIs `go install` on Go 1.27. Keep in
+// sync with safeEnetxHTTPVersion. regen-merge: fresh wins on this path,
+// so a published v1.0.28 cannot re-enter.
+require github.com/enetx/http v1.0.29 // indirect
 {{- end}}

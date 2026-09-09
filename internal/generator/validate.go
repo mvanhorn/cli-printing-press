@@ -62,6 +62,12 @@ func (g *Generator) Validate() error {
 			},
 		},
 		{
+			name: "ensure safe github.com/enetx/http",
+			run: func() error {
+				return ensureSafeEnetxHTTP(g.OutputDir)
+			},
+		},
+		{
 			name: "go test ./...",
 			run: func() error {
 				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "test", "-count=1", "./...")
