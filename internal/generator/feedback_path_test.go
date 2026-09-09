@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,4 +37,23 @@ func TestFeedbackPath_UsesLocalShareDir(t *testing.T) {
 	require.Contains(t, string(skillContent),
 		"Entries are stored locally as `feedback.jsonl` under the resolved data dir.",
 		"generated SKILL.md should reference the resolved data directory")
+}
+
+func TestFeedbackParentEmitsDurableExample(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("feedback-example")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	feedbackSrc := readGeneratedFile(t, outputDir, "internal", "cli", "feedback.go")
+	parent := generatedFunctionBody(t, feedbackSrc, "func newFeedbackCmd(flags *rootFlags) *cobra.Command")
+	require.Contains(t, parent, "Example:",
+		"feedback parent must emit an Example so live dogfood's help check does not fail")
+	require.NotContains(t, parent, "--since",
+		"parent Example must not mention undeclared flags; --since is not a feedback flag")
+	require.Contains(t, parent, "--stdin",
+		"parent Example should demonstrate a flag the command actually declares")
+	require.Contains(t, parent, "feedback list",
+		"parent Example should still show the list subcommand")
 }
