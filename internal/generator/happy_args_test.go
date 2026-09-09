@@ -93,6 +93,25 @@ func TestEndpointHappyArgsDoesNotInventOpaqueIDs(t *testing.T) {
 	}
 }
 
+func TestEndpointHappyArgsOmitsUnderivableOptionalPositionals(t *testing.T) {
+	t.Parallel()
+
+	ep := spec.Endpoint{
+		Method: "GET",
+		Path:   "/search",
+		Params: []spec.Param{
+			{Name: "q", Type: "string", Required: true, Example: "cats"},
+			{Name: "video_id", Type: "string", Required: false, Positional: true},
+		},
+	}
+
+	got := endpointHappyArgs(ep)
+	assert.Equal(t, "--q=cats", got)
+	assert.NotContains(t, got, "video_id")
+	assert.NotContains(t, got, "550e8400-e29b-41d4-a716-446655440000")
+	assert.True(t, requiredInputsAreDerivable(ep))
+}
+
 func TestEndpointHappyArgsEncodesNegativeNumbers(t *testing.T) {
 	t.Parallel()
 

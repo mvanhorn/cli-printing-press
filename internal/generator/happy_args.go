@@ -34,6 +34,9 @@ func synthesizeHappyArgTokens(ep spec.Endpoint) ([]string, bool) {
 	for _, p := range orderedPositionalParams(ep) {
 		value, ok := derivableHappyArgValue(ep, p)
 		if !ok {
+			if !p.Required {
+				continue
+			}
 			return nil, false
 		}
 		tokens = append(tokens, encodeHappyArgPositional(p, value))
