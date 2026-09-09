@@ -51,6 +51,18 @@ func (g *Generator) synthesizedPromotedExample(promotedName string, endpoint spe
 	return "  " + strings.Join(parts, " ")
 }
 
+func (g *Generator) synthesizedRunnablePromotedExample(promotedName string, endpoint spec.Endpoint) string {
+	if line, ok := g.narrativeExampleLine([]string{promotedName}, endpoint); ok {
+		return runnableExampleLine(line)
+	}
+	if !requiredInputsAreDerivable(endpoint) {
+		return ""
+	}
+	parts := []string{naming.CLI(g.Spec.Name), promotedName}
+	parts = append(parts, commandExampleArgParts(endpoint)...)
+	return runnableExampleLine("  " + strings.Join(parts, " "))
+}
+
 func (g *Generator) promotedExampleMatchesRegistered(promotedName string, endpoint spec.Endpoint, example string) bool {
 	cliName := ""
 	if g != nil && g.Spec != nil {

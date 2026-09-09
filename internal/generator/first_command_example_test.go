@@ -301,7 +301,7 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 			want: "jobs list --action example-value",
 		},
 		{
-			name: "path placeholder sharing query param name does not keep default",
+			name: "path placeholder sharing query param name still uses declared default",
 			resources: map[string]spec.Resource{
 				"reports": {
 					Endpoints: map[string]spec.Endpoint{
@@ -316,7 +316,7 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 					},
 				},
 			},
-			want: "reports list --mode example-value",
+			want: "reports list --mode summary",
 		},
 		{
 			name: "path query default keeps required param default",
@@ -337,7 +337,7 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 			want: "reports list --mode summary",
 		},
 		{
-			name: "non-dispatch string default still uses synthetic value",
+			name: "non-dispatch string default uses the declared default",
 			resources: map[string]spec.Resource{
 				"search": {
 					Endpoints: map[string]spec.Endpoint{
@@ -352,10 +352,10 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 					},
 				},
 			},
-			want: "search list --query example-value",
+			want: "search list --query cats",
 		},
 		{
-			name: "numeric default still uses synthetic value",
+			name: "numeric default uses the declared default",
 			resources: map[string]spec.Resource{
 				"items": {
 					Endpoints: map[string]spec.Endpoint{
@@ -370,7 +370,7 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 					},
 				},
 			},
-			want: "items list --limit 50",
+			want: "items list --limit 100",
 		},
 		{
 			name: "required body field uses public flag name",

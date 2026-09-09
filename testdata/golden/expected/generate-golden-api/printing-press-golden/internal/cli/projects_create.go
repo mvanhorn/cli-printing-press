@@ -21,10 +21,8 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 	var stdinBody bool
 
 	cmd := &cobra.Command{
-		Use:   "create",
-		Short: "Create project",
-		// TODO: replace placeholder example values before relying on this for live dogfood.
-		Example:     "  printing-press-golden-pp-cli projects create --x-api-version example-value --name example-resource",
+		Use:         "create",
+		Short:       "Create project",
 		Annotations: map[string]string{"pp:endpoint": "projects.create", "pp:method": "POST", "pp:path": "/projects", "pp:requires-input": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Bare invocation of a command with required input prints help

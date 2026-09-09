@@ -16,7 +16,7 @@ Use the Agent tool or review directly with this prompt contract:
 > - Every command, subcommand, flag, exit code, config path, and example resolves to the printed CLI.
 > - README `## Unique Features` and SKILL `## Unique Capabilities` match `novel_features_built`; planned-only features from `novel_features` are not claimed after dogfood sync.
 > - Surrounding prose, recipes, trigger phrases, and examples do not indirectly promise planned features that dogfood dropped.
-> - No placeholder literals remain in executable examples (`<cli>`, `<command>`, `<resource>`, `<CLI>`).
+> - No placeholder literals remain in executable examples (`<cli>`, `<command>`, `<resource>`, `<CLI>`, `example-value`).
 > - Boilerplate matches the CLI shape: no CRUD/retry/create-stdin/delete/cache/auth/async-job claims unless the CLI actually implements them.
 > - Read-only CLIs say they are read-only and do not imply create/update/delete support.
 > - No-auth CLIs omit auth troubleshooting and auth exit-code claims unless the binary can raise them.

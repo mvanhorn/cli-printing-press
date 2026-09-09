@@ -21,11 +21,9 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 	var stdinBody bool
 
 	cmd := &cobra.Command{
-		Use:     "update-project <projectId> <taskId>",
-		Aliases: []string{"update"},
-		Short:   "Update project task",
-		// TODO: replace placeholder example values before relying on this for live dogfood.
-		Example:     "  printing-press-golden-pp-cli projects tasks update-project 550e8400-e29b-41d4-a716-446655440000 550e8400-e29b-41d4-a716-446655440000 --x-api-version example-value",
+		Use:         "update-project <projectId> <taskId>",
+		Aliases:     []string{"update"},
+		Short:       "Update project task",
 		Annotations: map[string]string{"pp:endpoint": "tasks.update-project", "pp:method": "PATCH", "pp:path": "/projects/{projectId}/tasks/{taskId}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

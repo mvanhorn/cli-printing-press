@@ -19,11 +19,9 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 	var flagAll bool
 
 	cmd := &cobra.Command{
-		Use:     "list-project <projectId>",
-		Aliases: []string{"get"},
-		Short:   "List project tasks",
-		// TODO: replace placeholder example values before relying on this for live dogfood.
-		Example:     "  printing-press-golden-pp-cli projects tasks list-project 550e8400-e29b-41d4-a716-446655440000 --x-api-version example-value",
+		Use:         "list-project <projectId>",
+		Aliases:     []string{"get"},
+		Short:       "List project tasks",
 		Annotations: map[string]string{"pp:endpoint": "tasks.list-project", "pp:method": "GET", "pp:path": "/projects/{projectId}/tasks", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
