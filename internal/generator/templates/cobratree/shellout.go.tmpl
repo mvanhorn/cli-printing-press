@@ -151,7 +151,9 @@ func positionalArgsFromRawArgsField(raw string, positionals []positionalArg, str
 	if text == "" {
 		return nil
 	}
-	if len(positionals) == 1 && structuredCount == 0 {
+	// One descriptor is not necessarily scalar: [id...] is a single
+	// positional but still needs shell-word splitting.
+	if len(positionals) == 1 && structuredCount == 0 && !positionals[0].Variadic {
 		return []string{text}
 	}
 	return SplitShellArgs(raw)
@@ -235,16 +237,18 @@ func cliArgsFromMCP(args map[string]any, blocked map[string]bool) []string {
 	var out []string
 	for _, k := range keys {
 		v := args[k]
+		// Join values onto the flag so a value starting with -- cannot be
+		// re-parsed as its own flag (bool flags do not consume the next token).
 		switch tv := v.(type) {
 		case bool:
 			if tv {
 				out = append(out, "--"+k)
 			}
 		case float64:
-			out = append(out, "--"+k, strconv.FormatFloat(tv, 'f', -1, 64))
+			out = append(out, "--"+k+"="+strconv.FormatFloat(tv, 'f', -1, 64))
 		case string:
 			if tv != "" {
-				out = append(out, "--"+k, tv)
+				out = append(out, "--"+k+"="+tv)
 			}
 		case []any:
 			if len(tv) > 0 {
@@ -252,11 +256,11 @@ func cliArgsFromMCP(args map[string]any, blocked map[string]bool) []string {
 				for _, item := range tv {
 					parts = append(parts, fmt.Sprintf("%v", item))
 				}
-				out = append(out, "--"+k, strings.Join(parts, ","))
+				out = append(out, "--"+k+"="+strings.Join(parts, ","))
 			}
 		default:
 			if v != nil {
-				out = append(out, "--"+k, fmt.Sprintf("%v", v))
+				out = append(out, "--"+k+"="+fmt.Sprintf("%v", v))
 			}
 		}
 	}

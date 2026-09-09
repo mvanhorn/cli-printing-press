@@ -19,6 +19,7 @@ type positionalArg struct {
 	InputName string
 	Display   string
 	Required  bool
+	Variadic  bool
 }
 
 func toolOptionsForFlags(cmd *cobra.Command, blocked map[string]bool, positionals []positionalArg) []mcplib.ToolOption {
@@ -160,6 +161,7 @@ func positionalArgsForCommand(cmd *cobra.Command, blocked map[string]bool) []pos
 			continue
 		}
 		required := strings.HasPrefix(raw, "<")
+		variadic := strings.Contains(raw, "...")
 		// Strip positional decorations outright. A nested variadic like
 		// "[<slug>...]" leaves an inner ">" that end-trimming cannot reach
 		// (the "..." shields it), which would emit an invalid schema key.
@@ -176,6 +178,14 @@ func positionalArgsForCommand(cmd *cobra.Command, blocked map[string]bool) []pos
 		// Collapse repeats of the same name (e.g. "<slug> [<slug>...]") into a
 		// single positional slot; distinct-index dedup happens downstream.
 		if seenPositional[inputName] {
+			if variadic {
+				for i := range out {
+					if out[i].InputName == inputName {
+						out[i].Variadic = true
+						break
+					}
+				}
+			}
 			continue
 		}
 		seenPositional[inputName] = true
@@ -183,6 +193,7 @@ func positionalArgsForCommand(cmd *cobra.Command, blocked map[string]bool) []pos
 			InputName: inputName,
 			Display:   raw,
 			Required:  required,
+			Variadic:  variadic,
 		})
 	}
 	return out
