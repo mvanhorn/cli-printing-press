@@ -15,6 +15,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNovelFeatureCommandPartsRejectsShellComposition(t *testing.T) {
+	t.Parallel()
+	for _, command := range []string{"snapshot && compare", "snapshot | summarize", "snapshot; compare", "snapshot || compare"} {
+		if got := novelFeatureCommandParts(command); got != nil {
+			t.Fatalf("novelFeatureCommandParts(%q) = %#v, want nil", command, got)
+		}
+	}
+}
+
 func TestGeneratorSkipsReservedNovelFeatureRootCommands(t *testing.T) {
 	t.Parallel()
 

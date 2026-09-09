@@ -79,6 +79,7 @@ var frameworkCommands = map[string]bool{
 	"api":           true,
 	"auth":          true,
 	"completion":    true,
+	"context":       true,
 	"doctor":        true,
 	"feedback":      true,
 	"help":          true,

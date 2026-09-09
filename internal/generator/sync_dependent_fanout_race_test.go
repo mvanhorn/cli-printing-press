@@ -57,7 +57,7 @@ func TestDependentFanoutWorkerPoolNoRace(t *testing.T) {
 				"list": {
 					Method:     "GET",
 					Path:       "/projects/{projectId}/modules",
-					Response:   spec.ResponseDef{Type: "array"},
+					Response:   spec.ResponseDef{Type: "array", Item: "Module"},
 					Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
 					IDField:    "id",
 				},
@@ -69,6 +69,12 @@ func TestDependentFanoutWorkerPoolNoRace(t *testing.T) {
 			Fields: []spec.TypeField{
 				{Name: "id", Type: "string"},
 				{Name: "workspace", Type: "string"},
+				{Name: "name", Type: "string"},
+			},
+		},
+		"Module": {
+			Fields: []spec.TypeField{
+				{Name: "id", Type: "string"},
 				{Name: "name", Type: "string"},
 			},
 		},
@@ -217,6 +223,9 @@ func TestSyncDependentResource_ConcurrentProcessesEachParentOnce(t *testing.T) {
 	if res.Count != k {
 		t.Errorf("Count = %d, want %d (aggregated across workers)", res.Count, k)
 	}
+	if state := readModuleSyncState(t, db); !state.complete {
+		t.Fatalf("completed fan-out left partial sync state: %+v", state)
+	}
 }
 
 // TestSyncDependentResource_DryRunShortCircuitsUnderConcurrency verifies the
@@ -274,6 +283,7 @@ type moduleSyncState struct {
 	cursor   string
 	syncedAt time.Time
 	count    int
+	complete bool
 }
 
 func seedModuleSyncState(t *testing.T, db *store.Store) moduleSyncState {
@@ -290,14 +300,21 @@ func readModuleSyncState(t *testing.T, db *store.Store) moduleSyncState {
 	if err != nil {
 		t.Fatalf("read sync state: %v", err)
 	}
-	return moduleSyncState{cursor: cursor, syncedAt: syncedAt, count: count}
+	var complete bool
+	if err := db.DB().QueryRow(` + "`" + `SELECT last_attempt_complete FROM sync_state WHERE resource_type = ?` + "`" + `, "modules").Scan(&complete); err != nil {
+		t.Fatalf("read completion marker: %v", err)
+	}
+	return moduleSyncState{cursor: cursor, syncedAt: syncedAt, count: count, complete: complete}
 }
 
-func assertModuleSyncStateUnchanged(t *testing.T, db *store.Store, before moduleSyncState) {
+func assertModuleSyncStateIncomplete(t *testing.T, db *store.Store, before moduleSyncState, wantCount int) {
 	t.Helper()
 	after := readModuleSyncState(t, db)
-	if after.cursor != before.cursor || !after.syncedAt.Equal(before.syncedAt) || after.count != before.count {
-		t.Fatalf("sync state changed after failed persistence: before=%+v after=%+v", before, after)
+	if !after.syncedAt.Equal(before.syncedAt) {
+		t.Fatalf("completion watermark advanced after partial persistence: before=%+v after=%+v", before, after)
+	}
+	if after.count != wantCount || after.complete {
+		t.Fatalf("partial attempt state = %+v, want count=%d complete=false", after, wantCount)
 	}
 }
 
@@ -321,7 +338,7 @@ func TestSyncDependentResource_AllUpsertsFailReturnsError(t *testing.T) {
 	if n := strings.Count(events.String(), ` + "`" + `"event":"sync_error"` + "`" + `); n != 2 {
 		t.Fatalf("sync_error events = %d, want 2; events:\n%s", n, events.String())
 	}
-	assertModuleSyncStateUnchanged(t, db, before)
+	assertModuleSyncStateIncomplete(t, db, before, 0)
 }
 
 func TestSyncDependentResource_PartialUpsertFailureReturnsWarning(t *testing.T) {
@@ -347,8 +364,9 @@ func TestSyncDependentResource_PartialUpsertFailureReturnsWarning(t *testing.T) 
 	if n := strings.Count(events.String(), ` + "`" + `"event":"sync_error"` + "`" + `); n != 1 {
 		t.Fatalf("sync_error events = %d, want 1; events:\n%s", n, events.String())
 	}
-	assertModuleSyncStateUnchanged(t, db, before)
+	assertModuleSyncStateIncomplete(t, db, before, 1)
 }
+
 `
 	testPath := filepath.Join(outputDir, "internal", "cli", "fanout_race_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))

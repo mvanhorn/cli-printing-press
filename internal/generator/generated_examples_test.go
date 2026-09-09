@@ -142,6 +142,13 @@ func TestGeneratedGraphQLSyncExampleUsesAPIModel(t *testing.T) {
 	require.NotEmpty(t, want, "GraphQL fixture should expose at least one sync resource")
 	assert.Contains(t, sync, "--resources "+want)
 	assert.NotContains(t, sync, "--resources channels,messages")
+	assert.Contains(t, sync, "db.SaveSyncProgress(resource, progressCursor, totalCount)",
+		"GraphQL pages must record resumable progress without claiming completion")
+	assert.NotContains(t, sync, "db.SaveSyncState(resource, conn.PageInfo.EndCursor, totalCount)",
+		"GraphQL pages must not advance the completion watermark before a natural end")
+	assert.Contains(t, sync, "IntegrityFailure: true",
+		"GraphQL primary-key loss must fail the attempt instead of stamping partial data complete")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGeneratedDocsOmitUnverifiableSelectExample(t *testing.T) {

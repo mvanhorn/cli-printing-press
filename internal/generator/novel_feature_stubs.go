@@ -399,6 +399,13 @@ func sortedNovelChildren(node *novelFeatureStubNode) []*novelFeatureStubNode {
 }
 
 func novelFeatureCommandParts(command string) []string {
+	// Shell composition describes a workflow, not one runnable Cobra command.
+	for token := range strings.FieldsSeq(command) {
+		token = strings.Trim(token, `"'`)
+		if token == "&&" || token == "||" || token == "|" || strings.Contains(token, ";") {
+			return nil
+		}
+	}
 	parts := make([]string, 0)
 	for token := range strings.FieldsSeq(strings.ToLower(command)) {
 		token = strings.Trim(token, `"'`)

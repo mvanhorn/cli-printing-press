@@ -31,17 +31,17 @@ func generateLearnStore(t *testing.T, name string, learnEnabled bool) (string, s
 	return string(storeGo), outputDir
 }
 
-// TestLearnSchemaV9_EnabledEmitsV9WithCandidateAndEventTables pins the v9
-// schema bump: a learn-enabled store advances StoreSchemaVersion to 9 and
+// TestLearnSchemaV10_EnabledRetainsCandidateAndEventTables pins the v10
+// schema bump: a learn-enabled store advances StoreSchemaVersion to 10 and
 // carries the learn_candidates and learn_events tables (with their CHECK
 // constraints and indexes) as additive CREATE IF NOT EXISTS migrations.
-func TestLearnSchemaV9_EnabledEmitsV9WithCandidateAndEventTables(t *testing.T) {
+func TestLearnSchemaV10_EnabledRetainsCandidateAndEventTables(t *testing.T) {
 	t.Parallel()
 
-	src, _ := generateLearnStore(t, "learn-v9-enabled", true)
+	src, _ := generateLearnStore(t, "learn-v10-enabled", true)
 
-	require.Contains(t, src, "const StoreSchemaVersion = 9")
-	require.NotContains(t, src, "const StoreSchemaVersion = 8")
+	require.Contains(t, src, "const StoreSchemaVersion = 10")
+	require.Contains(t, src, `column: "last_attempt_complete"`)
 	for _, want := range []string{
 		"CREATE TABLE IF NOT EXISTS learn_candidates",
 		"class TEXT NOT NULL CHECK(class IN ('flag_alias','playbook_candidate'))",
@@ -58,34 +58,34 @@ func TestLearnSchemaV9_EnabledEmitsV9WithCandidateAndEventTables(t *testing.T) {
 	}
 }
 
-// TestLearnSchemaV9_FTSContentPinIsUnconditional pins the decouple:
+// TestLearnSchemaV10_FTSContentPinIsUnconditional pins the decouple:
 // resourcesFTSContentSchemaVersion stays 4 in BOTH learn shapes. The old
 // conditional 8 rode the learn bump by accident and forced a full FTS
 // content rewrite on every v4-v7 learn store open; with the pin, v4 and v8
-// stores opened by a v9 binary take the additive-only migration path.
-func TestLearnSchemaV9_FTSContentPinIsUnconditional(t *testing.T) {
+// stores opened by a v10 binary take the additive-only migration path.
+func TestLearnSchemaV10_FTSContentPinIsUnconditional(t *testing.T) {
 	t.Parallel()
 
-	enabled, _ := generateLearnStore(t, "learn-v9-fts-enabled", true)
+	enabled, _ := generateLearnStore(t, "learn-v10-fts-enabled", true)
 	require.Contains(t, enabled, "const resourcesFTSContentSchemaVersion = 4")
 	require.NotContains(t, enabled, "const resourcesFTSContentSchemaVersion = 8")
 
-	disabled, _ := generateLearnStore(t, "learn-v9-fts-disabled", false)
+	disabled, _ := generateLearnStore(t, "learn-v10-fts-disabled", false)
 	require.Contains(t, disabled, "const resourcesFTSContentSchemaVersion = 4")
-	require.Contains(t, disabled, "const StoreSchemaVersion = 4")
+	require.Contains(t, disabled, "const StoreSchemaVersion = 5")
 	for _, gone := range []string{"learn_candidates", "learn_events"} {
 		require.NotContains(t, disabled, gone,
 			"learn-disabled spec must not emit the %s migration", gone)
 	}
 }
 
-// TestLearnSchemaV9_ReadmeDocumentsOneWayStamp verifies the generated README
+// TestLearnSchemaV10_ReadmeDocumentsOneWayStamp verifies the generated README
 // tells users the version stamp is one-way: an older binary refuses a store
 // already stamped at the newer version.
-func TestLearnSchemaV9_ReadmeDocumentsOneWayStamp(t *testing.T) {
+func TestLearnSchemaV10_ReadmeDocumentsOneWayStamp(t *testing.T) {
 	t.Parallel()
 
-	_, outputDir := generateLearnStore(t, "learn-v9-readme", true)
+	_, outputDir := generateLearnStore(t, "learn-v10-readme", true)
 	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
 	require.NoError(t, err)
 	require.Contains(t, string(readme), "schema version stamp is one-way",
@@ -93,14 +93,14 @@ func TestLearnSchemaV9_ReadmeDocumentsOneWayStamp(t *testing.T) {
 	require.Contains(t, string(readme), "older", "README learn section must warn that older binaries refuse the upgraded store")
 }
 
-// TestLearnSchemaV9_EmittedStoreTestsPass runs the emitted store package
+// TestLearnSchemaV10_EmittedStoreTestsPass runs the emitted store package
 // tests under -race. This executes the emitted migration scenarios for real:
-// fresh v9 open with both new tables, the v4->v9 additive open with the FTS
-// content preserved (no rewrite), the v8->v9 additive upgrade with learn
+// fresh v10 open with both new tables, the v4->v10 additive open with the FTS
+// content preserved (no rewrite), the v8->v10 additive upgrade with learn
 // data intact, and the newer-store refusal.
-func TestLearnSchemaV9_EmittedStoreTestsPass(t *testing.T) {
+func TestLearnSchemaV10_EmittedStoreTestsPass(t *testing.T) {
 	t.Parallel()
 
-	_, outputDir := generateLearnStore(t, "learn-v9-emitted", true)
+	_, outputDir := generateLearnStore(t, "learn-v10-emitted", true)
 	runGoCommand(t, outputDir, "test", "-race", "-short", "./internal/store/...")
 }

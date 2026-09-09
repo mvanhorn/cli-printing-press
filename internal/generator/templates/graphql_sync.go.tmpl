@@ -300,6 +300,7 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 	// Resume cursor from sync_state (unless --full cleared it)
 	existingCursor, _, _, _ := db.GetSyncState(resource)
 	cursor := existingCursor
+	progressCursor := existingCursor
 
 	var totalCount int
 	pagesFetched := 0
@@ -310,8 +311,9 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 	consumedTotal := 0
 	extractFailureTotal := 0
 	anomalyEmitted := false
-	capExitHit := false
 	capExitCursor := ""
+	attemptComplete := false
+	incompleteReason := "pagination_end_unproven"
 	pageSize := def.PageSize
 	if pageSize <= 0 {
 		pageSize = 50
@@ -361,6 +363,7 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 				break
 			}
 			if connRaw == nil {
+				incompleteReason = "missing_connection"
 				break
 			}
 		}
@@ -377,6 +380,12 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 		}
 
 		if len(conn.Nodes) == 0 {
+			if !conn.PageInfo.HasNextPage {
+				attemptComplete = true
+				incompleteReason = ""
+			} else {
+				incompleteReason = "empty_page_with_continuation"
+			}
 			break
 		}
 
@@ -413,6 +422,16 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 		consumedTotal += len(conn.Nodes)
 		extractFailureTotal += extractFailures
 		totalCount += stored
+		if conn.PageInfo.EndCursor != "" {
+			progressCursor = conn.PageInfo.EndCursor
+		}
+		if extractFailures > 0 {
+			if err := db.SaveSyncProgress(resource, progressCursor, totalCount); err != nil {
+				return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync progress for %s: %w", resource, err), Duration: time.Since(started)}
+			}
+			err := fmt.Errorf("%s dropped %d of %d item(s) without an extractable primary key", resource, extractFailures, len(conn.Nodes))
+			return syncResult{Resource: resource, Count: totalCount, Err: err, IntegrityFailure: true, Duration: time.Since(started)}
+		}
 
 		// Progress reporting
 		if humanFriendly {
@@ -421,9 +440,9 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 			fmt.Fprintf(os.Stderr, `{"event":"sync_progress","resource":"%s","fetched":%d}`+"\n", resource, totalCount)
 		}
 
-		// Save cursor after each page for resumability
-		if err := db.SaveSyncState(resource, conn.PageInfo.EndCursor, totalCount); err != nil {
-			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, err), Duration: time.Since(started)}
+		// Save resumable progress without advancing the completion watermark.
+		if err := db.SaveSyncProgress(resource, progressCursor, totalCount); err != nil {
+			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync progress for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
 		pagesFetched++
@@ -431,9 +450,13 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 		// Enforce page ceiling
 		if maxPages > 0 && pagesFetched >= maxPages {
 			capExitHasMore := conn.PageInfo.HasNextPage && conn.PageInfo.EndCursor != "" && conn.PageInfo.EndCursor != cursor
+			if !conn.PageInfo.HasNextPage {
+				attemptComplete = true
+				incompleteReason = ""
+			}
 			if capExitHasMore && !latestOnly {
-				capExitHit = true
 				capExitCursor = conn.PageInfo.EndCursor
+				incompleteReason = "max_pages_cap"
 			}
 			if capExitHasMore && !latestOnly && humanFriendly {
 				fmt.Fprintf(os.Stderr, "\n  %s: reached --max-pages limit (%d pages, %d items)\n", resource, maxPages, totalCount)
@@ -442,21 +465,17 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 		}
 
 		// Check pagination
-		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
+		if !conn.PageInfo.HasNextPage {
+			attemptComplete = true
+			incompleteReason = ""
+			break
+		}
+		if conn.PageInfo.EndCursor == "" || conn.PageInfo.EndCursor == cursor {
+			incompleteReason = "cursor_unavailable"
 			break
 		}
 
 		cursor = conn.PageInfo.EndCursor
-	}
-
-	// Final sync state: clear cursor on natural completion, but preserve the
-	// resume cursor when an operator intentionally capped the page budget.
-	finalCursor := ""
-	if capExitHit {
-		finalCursor = capExitCursor
-	}
-	if err := db.SaveSyncState(resource, finalCursor, totalCount); err != nil {
-		return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, err), Duration: time.Since(started)}
 	}
 
 	// F4b symptom probe: rows extracted successfully but none landed.
@@ -470,6 +489,23 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 		} else {
 			fmt.Fprintf(os.Stderr, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"extract_failures":%d,"reason":"stored_count_zero_after_extraction"}`+"\n", resource, consumedTotal, extractFailureTotal)
 		}
+		return syncResult{Resource: resource, Count: 0, Err: fmt.Errorf("%s consumed %d item(s) but stored 0 after primary-key extraction", resource, consumedTotal), IntegrityFailure: true, Duration: time.Since(started)}
+	}
+
+	// Only a proven natural end advances readiness. A capped or otherwise
+	// unprovable walk retains a resume cursor and marks the latest attempt partial.
+	if attemptComplete {
+		if err := db.SaveSyncState(resource, "", totalCount); err != nil {
+			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, err), Duration: time.Since(started)}
+		}
+	} else {
+		if capExitCursor != "" {
+			progressCursor = capExitCursor
+		}
+		if err := db.SaveSyncProgress(resource, progressCursor, totalCount); err != nil {
+			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync progress for %s: %w", resource, err), Duration: time.Since(started)}
+		}
+		return syncResult{Resource: resource, Count: totalCount, Warn: fmt.Errorf("%s sync incomplete (%s); completion watermark was not advanced", resource, incompleteReason), Duration: time.Since(started)}
 	}
 
 	if !humanFriendly {

@@ -6093,6 +6093,67 @@ func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/store")
 }
 
+func TestGeneratedUpsertBatchReportsCommittedCountAfterRollback(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := adsCampaignSpec()
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	storeTest := `package store
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"testing"
+)
+
+func TestUpsertBatchDetailed_RollbackReportsZeroStored(t *testing.T) {
+	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "store.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if _, err := s.DB().Exec(` + "`" + `CREATE TRIGGER abort_campaign_insert
+		BEFORE INSERT ON campaigns
+		WHEN NEW.id = 'fatal'
+		BEGIN
+			SELECT RAISE(ROLLBACK, 'forced transaction rollback');
+		END` + "`" + `); err != nil {
+		t.Fatal(err)
+	}
+
+	items := []json.RawMessage{
+		json.RawMessage(` + "`" + `{"id":"ok","name":"first"}` + "`" + `),
+		json.RawMessage(` + "`" + `{"id":"fatal","name":"second"}` + "`" + `),
+	}
+	stored, _, _, err := s.UpsertBatchDetailed("campaigns", items)
+	if err == nil {
+		t.Fatal("UpsertBatchDetailed returned nil error after forced rollback")
+	}
+	if stored != 0 {
+		t.Fatalf("stored = %d, want 0 after transaction rollback", stored)
+	}
+	for _, table := range []string{"resources", "campaigns"} {
+		var count int
+		if err := s.DB().QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s count = %d, want 0 after transaction rollback", table, count)
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "store", "rollback_count_test.go"), []byte(storeTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "TestUpsertBatchDetailed_RollbackReportsZeroStored")
+	requireGeneratedCompiles(t, outputDir)
+}
+
 // TestUpsertDispatchPreservesMultiWordResourceCasing is the regression test
 // for issue #1064: dispatch case strings must use the spec resource key,
 // not the snake-cased table name, or kebab multi-word resources silently
@@ -14905,10 +14966,10 @@ func TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
 		"GraphQL sync.go dogfood cap must bound generated syncs to one page")
 	assert.NotContains(t, string(syncGo), `cmd.Flags().IntVar(&maxPages, "max-pages", 10,`,
 		"GraphQL sync.go must not retain the old 10-page default")
-	assert.Contains(t, string(syncGo), "capExitHit := false",
-		"GraphQL sync.go must track whether --max-pages stopped the loop")
-	assert.Contains(t, string(syncGo), "finalCursor = capExitCursor",
-		"GraphQL sync.go must preserve the resume cursor on --max-pages cap exit")
+	assert.Contains(t, string(syncGo), "attemptComplete := false",
+		"GraphQL sync.go must distinguish a proven natural end from a capped walk")
+	assert.Contains(t, string(syncGo), "db.SaveSyncProgress(resource, progressCursor, totalCount)",
+		"GraphQL sync.go must preserve resumable progress without advancing the completion watermark")
 	assert.Contains(t, string(syncGo), "conn.PageInfo.HasNextPage && conn.PageInfo.EndCursor != \"\" && conn.PageInfo.EndCursor != cursor",
 		"GraphQL sync.go must only preserve a cap-exit cursor when another page exists")
 
