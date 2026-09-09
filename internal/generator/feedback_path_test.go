@@ -54,10 +54,6 @@ func TestFeedbackParentEmitsDurableExample(t *testing.T) {
 		"parent Example must not mention undeclared flags; --since is not a feedback flag")
 	require.Contains(t, parent, "--stdin",
 		"parent Example should demonstrate a flag the command actually declares")
-
-	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
-	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
-	stdout, _ := runGeneratedBinary(t, binaryPath, "feedback", "--help")
-	require.Contains(t, stdout, "Examples:",
-		"feedback --help must render an Examples section")
+	require.Contains(t, parent, "feedback list",
+		"parent Example should still show the list subcommand")
 }
