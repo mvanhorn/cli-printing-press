@@ -242,6 +242,7 @@ exit 99
 }
 
 func TestDogfoodFailureExitAfterReport(t *testing.T) {
+	assert.Equal(t, "0,3", newDogfoodCmd().Annotations["pp:typed-exit-codes"])
 	for _, asJSON := range []bool{false, true} {
 		t.Run(fmt.Sprint(asJSON), func(t *testing.T) {
 			dir := t.TempDir()

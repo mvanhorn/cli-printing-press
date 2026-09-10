@@ -13,6 +13,7 @@ import (
 )
 
 func TestWorkflowVerifyExitAfterReport(t *testing.T) {
+	assert.Equal(t, "0,3", newWorkflowVerifyCmd().Annotations["pp:typed-exit-codes"])
 	for _, fail := range []bool{false, true} {
 		for _, asJSON := range []bool{false, true} {
 			t.Run(fmt.Sprintf("fail=%t/json=%t", fail, asJSON), func(t *testing.T) {
