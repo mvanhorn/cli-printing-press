@@ -54,3 +54,10 @@ func TestEnsureSafeXNet(t *testing.T) {
 		require.NoError(t, ensureSafeXNet(dir))
 	})
 }
+
+func TestSafeXNetVersionMatchesGoModTemplate(t *testing.T) {
+	tmpl, err := os.ReadFile(filepath.Join("templates", "go.mod.tmpl"))
+	require.NoError(t, err)
+	assert.Contains(t, string(tmpl), "golang.org/x/net "+safeXNetVersion,
+		"templates/go.mod.tmpl pin must stay in sync with safeXNetVersion")
+}

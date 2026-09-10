@@ -7,10 +7,10 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-// safeXNetVersion is the lowest golang.org/x/net release without the 2026
-// advisories (GO-2026-5025..5030). Keep in sync with the explicit pin in
-// templates/go.mod.tmpl.
-const safeXNetVersion = "v0.55.0"
+// safeXNetVersion is the lowest golang.org/x/net release without GO-2026-5942
+// (CVE-2026-46600; also covers GO-2026-5025..5030). Keep in sync with the
+// explicit pin in templates/go.mod.tmpl.
+const safeXNetVersion = "v0.56.0"
 
 // ensureSafeXNet bumps golang.org/x/net to safeXNetVersion when the generated
 // module resolves it below that version. x/net is dragged in transitively by

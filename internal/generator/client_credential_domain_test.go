@@ -77,7 +77,7 @@ func TestGeneratedBrowserCredentialBindsToCapturedDomain(t *testing.T) {
 		"credential matching must not authorize eTLD+1 siblings of the canonical host")
 	assert.NotContains(t, clientSrc, "golang.org/x/net/publicsuffix",
 		"credential binding must not import publicsuffix")
-	assert.NotContains(t, goMod, "golang.org/x/net v0.55.0",
+	assert.NotContains(t, goMod, "golang.org/x/net "+safeXNetVersion,
 		"cookie binding must not pull x/net just for host matching")
 
 	// The negative path must remain unchanged for ordinary token auth: it has
@@ -96,7 +96,7 @@ func TestGeneratedBrowserCredentialBindsToCapturedDomain(t *testing.T) {
 		"ordinary token auth config must not emit browser credential binding")
 	assert.NotContains(t, bearerAuth, "CredentialDomain",
 		"ordinary token auth commands must not reference browser credential binding")
-	assert.NotContains(t, bearerMod, "golang.org/x/net v0.55.0",
+	assert.NotContains(t, bearerMod, "golang.org/x/net "+safeXNetVersion,
 		"ordinary token auth must not gain the browser-only dependency")
 	assert.Equal(t, 1, strings.Count(authSrc, `cfg.CredentialDomain = ".auth.example.com"`),
 		"browser login should record the capture domain")
