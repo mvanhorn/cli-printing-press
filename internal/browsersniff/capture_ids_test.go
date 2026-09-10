@@ -137,3 +137,30 @@ func TestSanitizeSpecCapturedResourceIDs_KeepsDispatchAndSecrets(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", persisted["sha256Hash"])
 }
+
+func TestSanitizeSpecCapturedResourceIDs_KeepsSnakeResourceNames(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"issue_categories": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:  "GET",
+						Path:    "/issue_categories",
+						Example: "  snake-example-pp-cli issue_categories list --from-spec",
+						Params: []spec.Param{
+							{Name: "slug", Type: "string", Default: "issue_categories"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	SanitizeSpecCapturedResourceIDs(apiSpec)
+
+	list := apiSpec.Resources["issue_categories"].Endpoints["list"]
+	assert.Equal(t, "  snake-example-pp-cli issue_categories list --from-spec", list.Example)
+	assert.Equal(t, "issue_categories", list.Params[0].Default)
+}

@@ -16,10 +16,10 @@ var (
 	prefixedIDInTextPattern = regexp.MustCompile(`\b[a-z]{1,5}_[A-Za-z0-9]{8,}\b`)
 )
 
-// SanitizeSpecCapturedResourceIDs replaces capture-session resource ids in
-// spec defaults and examples with same-shape synthetics, and omits scalar
-// defaults that are only a captured id. Persisted-query hashes, dispatch
-// discriminators, and vendor-prefix token shapes are left alone.
+// Live HAR captures copy session resource ids into spec defaults. Those
+// values must not ship in public prints; hashes, dispatch discriminators,
+// and vendor-prefix tokens stay so secret detection and GraphQL persisted
+// queries keep working.
 func SanitizeSpecCapturedResourceIDs(apiSpec *spec.APISpec) {
 	if apiSpec == nil {
 		return
@@ -151,7 +151,7 @@ func isCapturedResourceID(value string) bool {
 	if uuidSegmentPattern.MatchString(value) {
 		return true
 	}
-	if prefixedIDPattern.MatchString(value) && !capturedResourceIDSecretPrefix(value) {
+	if prefixedIDPattern.MatchString(value) && !capturedResourceIDSecretPrefix(value) && looksOpaqueID(value) {
 		return true
 	}
 	return longAlnumIDPattern.MatchString(value) && looksOpaqueID(value)
