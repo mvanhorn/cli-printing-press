@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/spf13/cobra"
 )
@@ -456,7 +457,7 @@ func runLocalInstallCheck(dir string) (canonicalFinding, bool, error) {
 	}
 	name := manifest.CLIName
 	if name == "" && manifest.APIName != "" {
-		name = manifest.APIName + "-pp-cli"
+		name = naming.CLI(manifest.APIName)
 	}
 	if !localInstallName.MatchString(name) {
 		return finding, false, fmt.Errorf("local install requires a safe cli_name in .printing-press.json")

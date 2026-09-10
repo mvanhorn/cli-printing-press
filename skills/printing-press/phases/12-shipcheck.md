@@ -13,9 +13,13 @@ Before running shipcheck, update the lock heartbeat:
 cli-printing-press lock update --cli <api>-pp-cli --phase shipcheck
 ```
 
+Choose `INSTALL_SOURCE=local` explicitly for a source checkout; otherwise use `library`. Retain this value through polish and subsequent rechecks.
+
 ```bash
+INSTALL_SOURCE="${INSTALL_SOURCE:-library}"
 cli-printing-press shipcheck \
   --dir "$CLI_WORK_DIR" \
+  --install-source "$INSTALL_SOURCE" \
   --spec <same-spec> \
   --research-dir "$API_RUN_DIR"
 ```
@@ -47,7 +51,7 @@ Run those build and version commands from the checkout to prove installation.
 The validator does not execute documentation. Local mode keeps command, flag,
 argument, and shell-quoting checks enabled; it does not make the CLI publishable.
 
-If a leg fails, re-run that one leg standalone (e.g., `cli-printing-press verify-skill --dir <CLI_WORK_DIR>`) for focused iteration; once it passes, re-run the full `shipcheck` umbrella to confirm no regression in the others.
+If a leg fails, re-run that one leg standalone (e.g., `cli-printing-press verify-skill --dir <CLI_WORK_DIR> --install-source "$INSTALL_SOURCE"`) for focused iteration; once it passes, re-run the full `shipcheck` umbrella to confirm no regression in the others.
 
 Interpretation:
 - `dogfood` exits nonzero for a static FAIL verdict after rendering text or JSON; WARN retains exit 0. It catches dead flags, dead helpers, invalid paths, example drift, broken data wiring, command tree/config field wiring bugs, stale static MCP surfaces, and novel features that were planned but not built

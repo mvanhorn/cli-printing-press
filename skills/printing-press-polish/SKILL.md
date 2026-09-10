@@ -95,6 +95,15 @@ _pp_check_disk_space() {
 }
 _pp_check_disk_space || { return 1 2>/dev/null || exit 1; }
 
+# Install source policy.
+INSTALL_SOURCE="$(printf '%s\n' "${ARGUMENTS:-}" | sed -nE 's/^[[:space:]]*install_source:[[:space:]]*(.*)$/\1/p' | head -1)"
+INSTALL_SOURCE="${INSTALL_SOURCE:-library}"
+case "$INSTALL_SOURCE" in
+  library|local) ;;
+  *) echo "[setup-error] install_source must be library or local." >&2; return 1 2>/dev/null || exit 1 ;;
+esac
+# End install source policy.
+
 # Mid-pipeline callers may pass printing_press_bin: <abs-path> in the args
 # bundle. Prefer it so forked polish runs keep using the parent skill's
 # preflight-selected binary instead of re-resolving through PATH.
@@ -201,14 +210,14 @@ That trailing natural-language text is the user's own trusted user scope. Carry
 it forward into the polish plan and result block; do not classify it as
 injection or tampering.
 
-It can also contain a Phase 3 gate bundle and a `printing_press_bin:
-<abs-path>` line on following lines when invoked by the main printing-press
-skill. The flag may appear before or after the positional value; it is the only
+It can also contain a Phase 3 gate bundle, a `printing_press_bin:
+<abs-path>` line, and an `install_source: library|local` line. Preserve the
+caller's install policy; omit the field to use the default `library`. The flag may appear before or after the positional value; it is the only
 flag this skill consumes from `args`. Strip it before path resolution.
 
 When `args` is multi-line, treat the first non-empty line as the positional
 value/scope line and parse the remaining lines as the optional Phase 3 gate
-bundle. Do not include the bundle text in path resolution.
+bundle and setup fields. Do not include this text in path resolution.
 
 Parse caller modes differently:
 
@@ -445,7 +454,7 @@ go build -o "$CLI_NAME" ./cmd/"$CLI_NAME" 2>&1
 "$PRINTING_PRESS_BIN" dogfood --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" 2>&1
 "$PRINTING_PRESS_BIN" verify --dir "$CLI_DIR" $SPEC_FLAG --json 2>&1
 "$PRINTING_PRESS_BIN" workflow-verify --dir "$CLI_DIR" --json > /tmp/polish-workflow-verify.json 2>&1 || true
-"$PRINTING_PRESS_BIN" verify-skill --dir "$CLI_DIR" --json > /tmp/polish-verify-skill.json 2>&1 || true
+"$PRINTING_PRESS_BIN" verify-skill --dir "$CLI_DIR" --install-source "$INSTALL_SOURCE" --json > /tmp/polish-verify-skill.json 2>&1 || true
 # publish-validate is a publish-readiness gate, not a CLI-readiness gate.
 # Mid-pipeline polish runs before the main SKILL's promote step and before
 # the publish skill packages tools-manifest.json, so its prerequisites
@@ -765,11 +774,12 @@ Read `/tmp/polish-verify-skill.json` for the full finding list. Each finding has
 - **`positional-args`** — `got N positional args; Use: "<cmd> <arg>" expects M-M`. The SKILL recipe passed N positional args but the command's `Use:` declares M required. Two fixes:
   1. If the command also accepts the value via a `--flag`, change `Use: "cmd <arg>"` to `Use: "cmd [arg]"` (square brackets = optional). Verify-skill correctly accepts `--flag`-only invocations against an optional positional.
   2. If the SKILL example is missing a required positional, fix the example.
-- **`canonical-sections`** — `install section drift: hand-edit detected in a generator-owned section`. The `## Prerequisites: Install the CLI` block has been edited away from what the generator would emit for this CLI today. **Do not hand-edit the install section.** It's templated from `internal/generator/templates/skill.md.tmpl` parameterized on `(api_name, category, uses_browser_http_transport)`; any drift means an automation step or person modified text the machine owns. Resolve by regenerating the printed CLI (run `printing-press regen` against this directory, or for a published CLI, regenerate from the spec and re-publish). If the canonical text itself is wrong (e.g., a real change to the install instructions is needed), fix the template, not the printed CLI.
+- **`canonical-sections` in local mode** — Keep the source-checkout install block defined in [Phase 4](../printing-press/phases/12-shipcheck.md). Fix its CLI name or Go main target using the diagnostic; do not replace it with public-library instructions. Retain `INSTALL_SOURCE=local` for every recheck.
+- **`canonical-sections` in library mode** — `install section drift: hand-edit detected in a generator-owned section`. The `## Prerequisites: Install the CLI` block has been edited away from what the generator would emit for this CLI today. **Do not hand-edit the install section.** It's templated from `internal/generator/templates/skill.md.tmpl` parameterized on `(api_name, category, uses_browser_http_transport)`; any drift means an automation step or person modified text the machine owns. Resolve by regenerating the printed CLI (run `printing-press regen` against this directory, or for a published CLI, regenerate from the spec and re-publish). If the canonical text itself is wrong (e.g., a real change to the install instructions is needed), fix the template, not the printed CLI.
 
 When editing other parts of SKILL.md, Read the affected section first and Read it again after the Edit. `Edit` replaces a literal string; if the surrounding context has drifted, a single Edit can graft a second copy of a block onto the first instead of replacing it.
 
-After fixing, re-run `"$PRINTING_PRESS_BIN" verify-skill --dir "$CLI_DIR"` and confirm exit 0 before moving on.
+After fixing, re-run `"$PRINTING_PRESS_BIN" verify-skill --dir "$CLI_DIR" --install-source "$INSTALL_SOURCE"` and confirm exit 0 before moving on.
 
 ### Priority 6: Remaining dogfood issues
 
@@ -821,7 +831,7 @@ Re-run the diagnostic sweep on the fixed CLI:
 "$PRINTING_PRESS_BIN" dogfood --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" 2>&1
 "$PRINTING_PRESS_BIN" verify --dir "$CLI_DIR" $SPEC_FLAG --json 2>&1
 "$PRINTING_PRESS_BIN" workflow-verify --dir "$CLI_DIR" --json 2>&1
-"$PRINTING_PRESS_BIN" verify-skill --dir "$CLI_DIR" --json 2>&1
+"$PRINTING_PRESS_BIN" verify-skill --dir "$CLI_DIR" --install-source "$INSTALL_SOURCE" --json 2>&1
 if [ "$STANDALONE_MODE" = "true" ]; then
   "$PRINTING_PRESS_BIN" publish validate --dir "$CLI_DIR" --json 2>&1
 fi

@@ -1847,3 +1847,38 @@ func runContractScript(t *testing.T, path string, env []string, args ...string) 
 	require.NoError(t, err, string(output))
 	return string(output)
 }
+
+func TestPolishInstallSourcePolicy(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
+	start := strings.Index(skill, "# Install source policy.")
+	end := strings.Index(skill, "# End install source policy.")
+	require.GreaterOrEqual(t, start, 0)
+	require.Greater(t, end, start)
+	block := skill[start:end]
+	for _, tc := range []struct {
+		args, want string
+		bad        bool
+	}{
+		{"", "library", false}, {"widget\ninstall_source: local", "local", false},
+		{"widget\ninstall_source: library", "library", false}, {"widget\ninstall_source: typo", "", true},
+	} {
+		cmd := exec.Command("bash", "-c", block+"\nprintf '%s' \"$INSTALL_SOURCE\"")
+		cmd.Env = append(os.Environ(), "ARGUMENTS="+tc.args)
+		out, err := cmd.CombinedOutput()
+		if tc.bad {
+			require.Error(t, err)
+		} else {
+			require.NoError(t, err, string(out))
+			assert.Equal(t, tc.want, string(out))
+		}
+	}
+	for line := range strings.SplitSeq(skill, "\n") {
+		if strings.Contains(line, `"$PRINTING_PRESS_BIN" verify-skill --dir "$CLI_DIR"`) {
+			assert.Contains(t, line, `--install-source "$INSTALL_SOURCE"`)
+		}
+	}
+	for _, phase := range []string{"19-polish.md", "21-next-steps.md"} {
+		body := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "phases", phase))
+		assert.Contains(t, body, "install_source: <captured INSTALL_SOURCE>")
+	}
+}

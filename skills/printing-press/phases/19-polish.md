@@ -15,6 +15,7 @@ resolving a potentially stale global binary from PATH:
 
 ```yaml
 printing_press_bin: <captured PRINTING_PRESS_BIN>
+install_source: <captured INSTALL_SOURCE>
 phase3_transcendence_rows_planned: <planned>
 phase3_transcendence_rows_built: <built>
 phase3_transcendence_rows_missing:
@@ -31,6 +32,7 @@ Skill(
   skill: "cli-printing-press:printing-press-polish",
   args: "$CLI_WORK_DIR
 printing_press_bin: <captured PRINTING_PRESS_BIN>
+install_source: <captured INSTALL_SOURCE>
 phase3_transcendence_rows_planned: <planned>
 phase3_transcendence_rows_built: <built>
 phase3_transcendence_rows_missing:

@@ -131,7 +131,18 @@ If the user picks yes, invoke `/printing-press-retro`. The retro skill analyzes 
 
 ### If "Polish again"
 
-Invoke `/printing-press-polish <api>`. The polish skill runs another diagnostic-fix-rediagnose pass, reports the delta, and offers its own publish at the end with the same data-driven shape used here.
+Invoke the polish skill with the retained install policy:
+
+```text
+Skill(
+  skill: "cli-printing-press:printing-press-polish",
+  args: "--standalone $PRESS_LIBRARY/<api>
+printing_press_bin: <captured PRINTING_PRESS_BIN>
+install_source: <captured INSTALL_SOURCE>"
+)
+```
+
+The polish skill runs another diagnostic-fix-rediagnose pass, reports the delta, and offers its own publish at the end with the same data-driven shape used here.
 
 ### If "Done for now"
 
@@ -168,7 +179,8 @@ Invoke `/printing-press-retro`. The retro skill analyzes the session for generat
 Skill(
   skill: "cli-printing-press:printing-press-polish",
   args: "$CLI_WORK_DIR
-printing_press_bin: <captured PRINTING_PRESS_BIN>"
+printing_press_bin: <captured PRINTING_PRESS_BIN>
+install_source: <captured INSTALL_SOURCE>"
 )
 ```
 

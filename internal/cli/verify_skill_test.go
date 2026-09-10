@@ -983,6 +983,7 @@ func TestVerifySkillLocalInstall(t *testing.T) {
 		name, mode, body, manifest, main string
 		wantError                        bool
 	}{
+		{name: "canonical suffix fallback", mode: "local", manifest: `{"api_name":"widget-pp"}`, main: "package main\nfunc main() {}"},
 		{name: "valid", mode: "local", main: "package main\nfunc main() {}"},
 		{name: "missing section", mode: "local", body: "# No install", main: "package main\nfunc main() {}", wantError: true},
 		{name: "wrong instructions", mode: "local", body: "tampered", main: "package main\nfunc main() {}", wantError: true},
