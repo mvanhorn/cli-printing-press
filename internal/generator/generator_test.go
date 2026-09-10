@@ -400,7 +400,7 @@ func TestGenerateCliutilPackage(t *testing.T) {
 
 	cliutilTestSrc, err := os.ReadFile(filepath.Join(cliutilDir, "cliutil_test.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(cliutilTestSrc), "token=abc.def-ghi",
+	assert.Contains(t, string(cliutilTestSrc), "token=your-token-here",
 		"emitted cliutil tests must cover token=<value> credential redaction")
 
 	// The generated cliutil package must compile and its tests must pass.
