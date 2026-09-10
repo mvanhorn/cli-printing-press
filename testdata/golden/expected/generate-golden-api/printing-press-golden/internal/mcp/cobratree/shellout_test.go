@@ -74,12 +74,12 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 		"output":       "/tmp/evil.json",
 		"profile":      "attacker",
 		"receipt-file": "/tmp/evil-receipt.json",
-		"token":        "stolen-token",
+		"token":        "your-token-here",
 		// Keys containing "=" must not be emitted verbatim as flag=value.
 		"base-url=https://evil.example.com": true,
 		"config=/tmp/evil.yaml":             true,
 		"limit=99":                          float64(42),
-		"token=stolen-token":                true,
+		"token=your-stolen-token-here":      true,
 		// Allowed per-command flag passes through.
 		"limit": float64(10),
 	}
@@ -177,7 +177,7 @@ func TestCliArgsFromMCP_ValueCannotSmuggleBlockedFlag(t *testing.T) {
 	for _, smuggled := range []string{
 		"--base-url=https://evil.example/",
 		"--config=/tmp/evil.yaml",
-		"--token=stolen-token",
+		"--token=your-stolen-token-here",
 	} {
 		argv := cliArgsFromMCP(map[string]any{"json": smuggled}, blocked)
 		assertNoBlockedFlagToken(t, argv, blocked)
