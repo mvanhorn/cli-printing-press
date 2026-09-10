@@ -127,7 +127,7 @@ func TestPrintingPressSetupContractEmitsSkillStaleWhenSkillBelowBinaryFloor(t *t
 	t.Parallel()
 
 	output, _, err := runPrintingPressSetupContractWithSkillFloor(t, "4.32.0", "4.32.0", "9.0.0")
-	require.Error(t, err, "skill-stale must fail the setup contract")
+	require.Error(t, err, "skill-stale must fail the setup contract; err=%v output=%q", err, output)
 
 	assert.Contains(t, output, "[skill-stale] printing-press skill v")
 	assert.Contains(t, output, "PRESS_SKILL_INSTALLED=")
@@ -1589,7 +1589,7 @@ exit 0
 	scriptPath := filepath.Join(root, "setup-contract.sh")
 	writeExecutable(t, scriptPath, "#!/bin/sh\n"+contract)
 
-	cmd := exec.Command(scriptPath)
+	cmd := exec.Command("/bin/sh", scriptPath)
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(),
 		"ARGUMENTS=",
@@ -1624,8 +1624,9 @@ echo "cli-printing-press ` + version + `"
 
 func writeExecutable(t *testing.T, path, content string) {
 	t.Helper()
-
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o755))
+	tmp := path + ".tmp"
+	require.NoError(t, os.WriteFile(tmp, []byte(content), 0o755))
+	require.NoError(t, os.Rename(tmp, path))
 }
 
 func linkHostToolIfNeeded(t *testing.T, dir, name string) {

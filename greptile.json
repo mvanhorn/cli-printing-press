@@ -32,7 +32,7 @@
           "internal/generator/*_guard.go",
           "docs/solutions/conventions/pin-transitive-security-deps-after-go-mod-tidy.md"
         ],
-        "rule": "Do not file a P1 or P2 asking to remove GO-YYYY-NNNN advisory IDs or CVE IDs from dependency-pin / floor comments. Those identifiers keep the version floor tied to a named advisory (precedent: internal/generator/xnet_guard.go citing GO-2026-5025..5030). Dates, GitHub issue/PR numbers, and incident tickets remain prohibited."
+        "rule": "Do not file a P1 or P2 asking to remove GO-YYYY-NNNN advisory IDs or CVE IDs from dependency-pin / floor comments. Those identifiers keep the version floor tied to a named advisory (precedent: internal/generator/xnet_guard.go citing GO-2026-5942). Dates, GitHub issue/PR numbers, and incident tickets remain prohibited."
       }
     ]
   }
