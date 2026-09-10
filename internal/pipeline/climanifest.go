@@ -246,7 +246,7 @@ func (m CLIManifest) IsSyntheticSpec() bool {
 type NovelFeatureManifest struct {
 	Name        string `json:"name"`
 	Command     string `json:"command"`
-	Description string `json:"description"`
+	Description string `json:"description,omitempty"`
 }
 
 // ReadCLIBinaryName reads .printing-press.json from dir and returns the

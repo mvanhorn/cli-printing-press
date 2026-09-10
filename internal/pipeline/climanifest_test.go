@@ -2262,6 +2262,32 @@ func TestRefreshCLIManifestFromSpecPreservesNovelFeaturesBuilt(t *testing.T) {
 	require.Len(t, got.NovelFeatures, 1)
 }
 
+func TestRefreshCLIManifestFromSpecPreservesCompactNovelFeaturesBuilt(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "api_name": "example",
+  "cli_name": "example-pp-cli",
+  "novel_features_built": [{"name":"Health","command":"health"}]
+}
+`), 0o644))
+
+	require.NoError(t, RefreshCLIManifestFromSpec(dir, &spec.APISpec{Name: "example"}))
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.JSONEq(t, `[{"name":"Health","command":"health"}]`, string(raw["novel_features_built"]))
+
+	got, err := ReadCLIManifest(dir)
+	require.NoError(t, err)
+	require.Len(t, got.NovelFeaturesBuilt, 1)
+	assert.Equal(t, "Health", got.NovelFeaturesBuilt[0].Name)
+	assert.Equal(t, "health", got.NovelFeaturesBuilt[0].Command)
+	assert.Empty(t, got.NovelFeaturesBuilt[0].Description)
+}
+
 func writeManifest(t *testing.T, dir string, m CLIManifest) {
 	t.Helper()
 	data, err := json.Marshal(m)
