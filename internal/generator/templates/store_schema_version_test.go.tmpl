@@ -178,6 +178,9 @@ func TestMigrateAddsSyncAttemptCompletion(t *testing.T) {
 		)`,
 		`INSERT INTO sync_state(resource_type, last_cursor, last_synced_at, total_count)
 		 VALUES ('items', '', '` + completedAt + `', 7)`,
+		`INSERT INTO sync_state VALUES ('capped', 'page-2', '` + completedAt + `', 7)`,
+		`INSERT INTO sync_state VALUES ('unstamped', 'page-2', NULL, 7)`,
+		`INSERT INTO sync_state VALUES ('ambiguous', NULL, NULL, 0)`,
 		`PRAGMA user_version = 4`,
 	} {
 		if _, err := raw.Exec(stmt); err != nil {
@@ -199,8 +202,16 @@ func TestMigrateAddsSyncAttemptCompletion(t *testing.T) {
 	if err := s.DB().QueryRow(`SELECT last_attempt_complete FROM sync_state WHERE resource_type = 'items'`).Scan(&complete); err != nil {
 		t.Fatalf("read migrated completion marker: %v", err)
 	}
-	if complete != 1 {
-		t.Fatalf("legacy completed marker = %d, want 1", complete)
+	if complete != 0 {
+		t.Fatalf("legacy ambiguous marker = %d, want 0", complete)
+	}
+	for _, resource := range []string{"capped", "unstamped", "ambiguous"} {
+		if err := s.DB().QueryRow(`SELECT last_attempt_complete FROM sync_state WHERE resource_type = ?`, resource).Scan(&complete); err != nil || complete != 0 {
+			t.Fatalf("legacy %s marker = %d, err %v; want incomplete", resource, complete, err)
+		}
+		if _, _, _, err := s.GetSyncState(resource); err != nil {
+			t.Fatalf("read nullable legacy checkpoint %s: %v", resource, err)
+		}
 	}
 	if err := s.SaveSyncProgress("items", "page-2", 8); err != nil {
 		t.Fatalf("save partial progress: %v", err)
@@ -230,6 +241,17 @@ func TestMigrateAddsSyncAttemptCompletion(t *testing.T) {
 	}
 	if complete != 1 {
 		t.Fatalf("completed marker = %d, want 1", complete)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if err := reopened.DB().QueryRow(`SELECT last_attempt_complete FROM sync_state WHERE resource_type = 'items'`).Scan(&complete); err != nil || complete != 1 {
+		t.Fatalf("reopening reset proven completion: marker %d, err %v", complete, err)
 	}
 }
 

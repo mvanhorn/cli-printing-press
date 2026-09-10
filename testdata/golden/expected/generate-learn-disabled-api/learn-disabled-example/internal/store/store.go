@@ -404,9 +404,9 @@ func (s *Store) ensureColumn(ctx context.Context, conn *sql.Conn, table, column,
 // word.
 func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 	for _, c := range []struct{ table, column, decl string }{
-		// Existing checkpoints predate attempt tracking and represent completed
-		// syncs. New progress writes set the marker explicitly to false.
-		{table: "sync_state", column: "last_attempt_complete", decl: "INTEGER NOT NULL DEFAULT 1"},
+		// Legacy checkpoints cannot prove lossless completion: even an empty
+		// cursor may have come from a capped or partially stored page.
+		{table: "sync_state", column: "last_attempt_complete", decl: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "sync_state", column: "last_cursor", decl: "TEXT"},
 		{table: "sync_state", column: "last_synced_at", decl: "DATETIME"},
 		{table: "sync_state", column: "total_count", decl: "INTEGER DEFAULT 0"},
@@ -470,7 +470,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			last_cursor TEXT,
 			last_synced_at DATETIME,
 			total_count INTEGER DEFAULT 0,
-			last_attempt_complete INTEGER NOT NULL DEFAULT 1
+			last_attempt_complete INTEGER NOT NULL DEFAULT 0
 		)`,
 		resourcesFTSCreateSQL,
 	}
@@ -2732,22 +2732,25 @@ func (s *Store) SaveSyncProgress(resourceType, cursor string, count int) error {
 	defer s.unlockAfterWrite()
 	_, err := s.db.Exec(
 		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count, last_attempt_complete)
-		 VALUES (?, ?, ?, ?, 0)
+		 VALUES (?, ?, NULL, ?, 0)
 		 ON CONFLICT(resource_type) DO UPDATE SET last_cursor = excluded.last_cursor,
 		 total_count = excluded.total_count, last_attempt_complete = 0`,
-		resourceType, cursor, time.Time{}.UTC().Format(time.RFC3339), count,
+		resourceType, cursor, count,
 	)
 	return err
 }
 
 func (s *Store) GetSyncState(resourceType string) (cursor string, lastSynced time.Time, count int, err error) {
+	var savedCursor sql.NullString
+	var savedTime sql.NullTime
 	err = s.db.QueryRow(
 		`SELECT last_cursor, last_synced_at, total_count FROM sync_state WHERE resource_type = ?`,
 		resourceType,
-	).Scan(&cursor, &lastSynced, &count)
+	).Scan(&savedCursor, &savedTime, &count)
 	if err == sql.ErrNoRows {
 		return "", time.Time{}, 0, nil
 	}
+	cursor, lastSynced = savedCursor.String, savedTime.Time
 	return
 }
 

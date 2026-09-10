@@ -159,6 +159,26 @@ func TestGenerateStoreCompilesUnderLearnEnabled(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "-c", "-o", filepath.Join(t.TempDir(), "store.test"), "./internal/store/...")
 }
 
+func TestGeneratedLegacySyncCompletionMigration(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		name := "legacy-sync-no-learn"
+		if enabled {
+			name = "legacy-sync-learn"
+		}
+		t.Run(name, func(t *testing.T) {
+			apiSpec := minimalSpec(name)
+			apiSpec.Learn.Enabled = enabled
+			apiSpec.Learn.Disabled = !enabled
+			outputDir := filepath.Join(t.TempDir(), name+"-pp-cli")
+			gen := New(apiSpec, outputDir)
+			gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+			require.NoError(t, gen.Generate())
+			runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "^TestMigrateAddsSyncAttemptCompletion$", "-count=1")
+			requireGeneratedCompiles(t, outputDir)
+		})
+	}
+}
+
 // TestGenerateLearnEnabledWithoutStoreVisionPromotes replaces the old
 // hard-error contract: learn.enabled with a VisionSet that skipped Store no
 // longer fails Generate; constrainVisionTemplates promotes Store so the learn

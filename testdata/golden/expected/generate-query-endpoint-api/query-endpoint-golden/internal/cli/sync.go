@@ -452,7 +452,17 @@ func syncResource(ctx context.Context, c interface {
 	requestedAt := started.UTC()
 
 	// Resume cursor from sync_state (unless --full cleared it)
-	existingCursor, lastSynced, _, _ := db.GetSyncState(resource)
+	existingCursor, lastSynced, existingCount, stateErr := db.GetSyncState(resource)
+	if stateErr != nil {
+		return syncResult{Resource: resource, Err: stateErr, Duration: time.Since(started)}
+	}
+	// Mark the attempt incomplete before requests or projections can fail.
+	// Only a losslessly stored page may move this resumable boundary.
+	if preview, ok := c.(interface{ IsDryRun() bool }); !ok || !preview.IsDryRun() {
+		if err := db.SaveSyncProgress(resource, existingCursor, existingCount); err != nil {
+			return syncResult{Resource: resource, Err: fmt.Errorf("saving sync progress for %s: starting attempt: %w", resource, err), Duration: time.Since(started)}
+		}
+	}
 	if !full {
 		if storedCount, err := db.Count(resource); err == nil && storedCount == 0 {
 			existingCursor = ""
@@ -1071,7 +1081,7 @@ func syncResource(ctx context.Context, c interface {
 		// result windows on the next run.
 		finalCursor = ""
 	}
-	var stateErr error
+	stateErr = nil
 	if watermark.IsZero() {
 		stateErr = db.SaveSyncProgress(resource, finalCursor, cachedCount)
 	} else {

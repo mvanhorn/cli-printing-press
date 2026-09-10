@@ -55,9 +55,16 @@ func TestGenerate_EmitsDeriveScope(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := deriveScopeSpec()
+	projects := apiSpec.Resources["projects"]
+	list := projects.Endpoints["list"]
+	list.Response.Item = "Project"
+	projects.Endpoints["list"] = list
+	projects.Endpoints["get"] = spec.Endpoint{Method: "GET", Path: "/projects/{id}", Response: spec.ResponseDef{Type: "object", Item: "Project"}}
+	apiSpec.Resources["projects"] = projects
+	apiSpec.Types = map[string]spec.TypeDef{"Project": {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "name", Type: "string"}}}}
 	outputDir := filepath.Join(t.TempDir(), "derive-scope-pp-cli")
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
 	// Verify the generated store.go contains deriveScopeColumns wiring.
@@ -141,12 +148,38 @@ func TestUpsertBatch_NoFabricatedScopeWhenSourceAbsent(t *testing.T) {
 	cliTestSrc := `package cli
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"derive-scope-pp-cli/internal/store"
 )
+
+type projectionFailureClient struct{}
+func (projectionFailureClient) Get(context.Context, string, map[string]string) (json.RawMessage, error) {
+	return json.RawMessage(` + "`" + `[{"id":"new-project"}]` + "`" + `), nil
+}
+func (projectionFailureClient) RateLimit() float64 { return 0 }
+
+func TestSyncTypedProjectionFailureInvalidatesCompletion(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil { t.Fatal(err) }
+	defer s.Close()
+	if _, _, err := s.UpsertBatch("projects", []json.RawMessage{json.RawMessage(` + "`" + `{"id":"old-project"}` + "`" + `)}); err != nil { t.Fatal(err) }
+	watermark := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := s.SaveSyncStateAt("projects", "page-2", 1, watermark); err != nil { t.Fatal(err) }
+	if _, err := s.DB().Exec("CREATE TRIGGER reject_project BEFORE INSERT ON projects BEGIN SELECT RAISE(FAIL, 'projection rejected'); END"); err != nil { t.Fatal(err) }
+	var events bytes.Buffer
+	res := syncResource(context.Background(), projectionFailureClient{}, s, "projects", "", false, 1, false, false, nil, &events)
+	if res.Err == nil || !res.IntegrityFailure { t.Fatalf("result = %+v", res) }
+	cursor, gotTime, _, err := s.GetSyncState("projects")
+	if err != nil || cursor != "page-2" || !gotTime.Equal(watermark) { t.Fatalf("checkpoint = %q %s %v", cursor, gotTime, err) }
+	var complete int
+	if err := s.DB().QueryRow("SELECT last_attempt_complete FROM sync_state WHERE resource_type = 'projects'").Scan(&complete); err != nil || complete != 0 { t.Fatalf("completion = %d, %v", complete, err) }
+}
 
 func TestUpsertResourceBatchReportsTypedProjectionFailure(t *testing.T) {
 	s, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
@@ -175,6 +208,7 @@ func TestUpsertResourceBatchReportsTypedProjectionFailure(t *testing.T) {
 		"-run", "TestUpsertBatch_DerivesChildScopeFromProjectField|TestUpsertBatch_NoFabricatedScopeWhenSourceAbsent",
 		"-count=1", "-v")
 	runGoCommandRequired(t, outputDir, "test", "./internal/cli",
-		"-run", "TestUpsertResourceBatchReportsTypedProjectionFailure",
+		"-run", "TestUpsertResourceBatchReportsTypedProjectionFailure|TestSyncTypedProjectionFailureInvalidatesCompletion",
 		"-count=1")
+	requireGeneratedCompiles(t, outputDir)
 }

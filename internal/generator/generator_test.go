@@ -14994,6 +14994,7 @@ import (
 type gqlResumeHandler struct {
 	cursors []string
 	stuck   bool
+	failPage bool
 }
 
 func (h *gqlResumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -15031,6 +15032,9 @@ func (h *gqlResumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"id":    page + "-" + strconv.Itoa(i),
 			"title": page + " issue " + strconv.Itoa(i),
 		}
+	}
+	if h.failPage && cursor == "page-2" {
+		delete(nodes[0], "id")
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"data": map[string]any{
@@ -15096,6 +15100,33 @@ func TestGraphQLSyncResourcePreservesCursorOnMaxPagesCap(t *testing.T) {
 	}
 }
 
+func TestGraphQLSyncResourceRetriesLossyPageBeforeCompletion(t *testing.T) {
+	handler := &gqlResumeHandler{failPage: true}
+	c, db, cleanup := newGraphQLSyncClient(t, handler)
+	defer cleanup()
+	watermark := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := db.SaveSyncStateAt("issues", "", 0, watermark); err != nil { t.Fatal(err) }
+	res := syncResource(context.Background(), c, db, "issues", "", false, 0, false)
+	if res.Err == nil || !res.IntegrityFailure { t.Fatalf("lossy page result = %+v", res) }
+	cursor, gotTime, _, err := db.GetSyncState("issues")
+	if err != nil || cursor != "page-2" || !gotTime.Equal(watermark) {
+		t.Fatalf("failed checkpoint = %q, %s, %v", cursor, gotTime, err)
+	}
+	var complete int
+	if err := db.DB().QueryRow("SELECT last_attempt_complete FROM sync_state WHERE resource_type = 'issues'").Scan(&complete); err != nil || complete != 0 {
+		t.Fatalf("failed completion marker = %d, %v", complete, err)
+	}
+	handler.failPage = false
+	handler.cursors = nil
+	res = syncResource(context.Background(), c, db, "issues", "", false, 0, false)
+	if res.Err != nil || res.Warn != nil { t.Fatalf("retry result = %+v", res) }
+	if strings.Join(handler.cursors, ",") != "page-2,page-3,page-4,page-5" { t.Fatalf("retry skipped lost page: %v", handler.cursors) }
+	if count, err := db.Count("issues"); err != nil || count != 250 { t.Fatalf("final count = %d, %v; want 250", count, err) }
+	if err := db.DB().QueryRow("SELECT last_attempt_complete FROM sync_state WHERE resource_type = 'issues'").Scan(&complete); err != nil || complete != 1 {
+		t.Fatalf("final completion marker = %d, %v", complete, err)
+	}
+}
+
 func TestGraphQLSyncResourceClearsCursorWhenCapEqualsFinalPage(t *testing.T) {
 	handler := &gqlResumeHandler{}
 	c, db, cleanup := newGraphQLSyncClient(t, handler)
@@ -15120,7 +15151,7 @@ func TestGraphQLSyncResourceClearsCursorWhenCapEqualsFinalPage(t *testing.T) {
 	}
 }
 
-func TestGraphQLSyncResourceClearsSelfReferentialCursorOnMaxPagesCap(t *testing.T) {
+func TestGraphQLSyncResourcePreservesSelfReferentialCursorOnMaxPagesCap(t *testing.T) {
 	handler := &gqlResumeHandler{stuck: true}
 	c, db, cleanup := newGraphQLSyncClient(t, handler)
 	defer cleanup()
@@ -15139,13 +15170,17 @@ func TestGraphQLSyncResourceClearsSelfReferentialCursorOnMaxPagesCap(t *testing.
 	if err != nil {
 		t.Fatalf("get sync state after self-referential capped run: %v", err)
 	}
-	if cursor != "" {
-		t.Fatalf("cursor after self-referential capped run = %q, want empty", cursor)
+	if cursor != "stuck" {
+		t.Fatalf("cursor after self-referential capped run = %q, want stuck", cursor)
+	}
+	if res.Warn == nil {
+		t.Fatal("self-referential continuation must not claim completion")
 	}
 }
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "graphql_sync_resume_cursor_test.go"), []byte(behaviorTest), 0o644))
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^TestGraphQLSyncResource(PreservesCursorOnMaxPagesCap|ClearsCursorWhenCapEqualsFinalPage|ClearsSelfReferentialCursorOnMaxPagesCap)$")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestGraphQLSyncResource(PreservesCursorOnMaxPagesCap|RetriesLossyPageBeforeCompletion|ClearsCursorWhenCapEqualsFinalPage|PreservesSelfReferentialCursorOnMaxPagesCap)$")
+	requireGeneratedCompiles(t, outputDir)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")

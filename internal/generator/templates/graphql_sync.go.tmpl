@@ -298,7 +298,15 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 	}
 
 	// Resume cursor from sync_state (unless --full cleared it)
-	existingCursor, _, _, _ := db.GetSyncState(resource)
+	existingCursor, _, existingCount, stateErr := db.GetSyncState(resource)
+	if stateErr != nil {
+		return syncResult{Resource: resource, Err: stateErr, Duration: time.Since(started)}
+	}
+	// Invalidate readiness before any request, including requests that fail
+	// before storing their first page. Keep the last lossless boundary.
+	if err := db.SaveSyncProgress(resource, existingCursor, existingCount); err != nil {
+		return syncResult{Resource: resource, Err: fmt.Errorf("saving sync progress for %s: starting attempt: %w", resource, err), Duration: time.Since(started)}
+	}
 	cursor := existingCursor
 	progressCursor := existingCursor
 
@@ -422,15 +430,15 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 		consumedTotal += len(conn.Nodes)
 		extractFailureTotal += extractFailures
 		totalCount += stored
-		if conn.PageInfo.EndCursor != "" {
-			progressCursor = conn.PageInfo.EndCursor
-		}
 		if extractFailures > 0 {
 			if err := db.SaveSyncProgress(resource, progressCursor, totalCount); err != nil {
 				return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync progress for %s: %w", resource, err), Duration: time.Since(started)}
 			}
 			err := fmt.Errorf("%s dropped %d of %d item(s) without an extractable primary key", resource, extractFailures, len(conn.Nodes))
 			return syncResult{Resource: resource, Count: totalCount, Err: err, IntegrityFailure: true, Duration: time.Since(started)}
+		}
+		if conn.PageInfo.EndCursor != "" {
+			progressCursor = conn.PageInfo.EndCursor
 		}
 
 		// Progress reporting
