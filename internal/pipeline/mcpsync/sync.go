@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
@@ -264,6 +265,7 @@ func Sync(cliDir string, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	features := loadNovelFeatures(cliDir)
+	preserveExistingLearnLoop(cliDir, parsed)
 	// Migration-only steps run when the surface is on the legacy
 	// template. Already-migrated CLIs skip these.
 	if !alreadyMigrated {
@@ -596,15 +598,78 @@ func loadNovelFeatures(cliDir string) []generator.NovelFeature {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return nil
 	}
-	features := make([]generator.NovelFeature, 0, len(manifest.NovelFeatures))
-	for _, nf := range manifest.NovelFeatures {
+	recorded := manifest.NovelFeatures
+	if len(manifest.NovelFeaturesBuilt) > 0 {
+		recorded = manifest.NovelFeaturesBuilt
+	}
+	features := make([]generator.NovelFeature, 0, len(recorded))
+	for _, nf := range recorded {
 		features = append(features, generator.NovelFeature{
 			Name:        nf.Name,
 			Command:     nf.Command,
 			Description: nf.Description,
 		})
 	}
+	return mergeNovelFeatureRationalesFromTools(cliDir, features)
+}
+
+// commandMirrorCapabilityRE matches the generated command_mirror_capabilities
+// entries in tools.go. Key order is the mcp_tools.go.tmpl contract.
+var commandMirrorCapabilityRE = regexp.MustCompile(`\{"name": ("(?:\\.|[^"\\])*"), "command": ("(?:\\.|[^"\\])*"), "description": ("(?:\\.|[^"\\])*"), "rationale": ("(?:\\.|[^"\\])*"), "via": "mcp-command-mirror"\}`)
+
+// mergeNovelFeatureRationalesFromTools fills empty Rationale values from the
+// existing tools.go surface. mcp-sync has no --research-dir, so the
+// previously generated MCP context is the recorded source; this does not
+// invent features that are not already in the manifest.
+func mergeNovelFeatureRationalesFromTools(cliDir string, features []generator.NovelFeature) []generator.NovelFeature {
+	if len(features) == 0 {
+		return features
+	}
+	data, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"))
+	if err != nil {
+		return features
+	}
+	byCommand := map[string]string{}
+	for _, match := range commandMirrorCapabilityRE.FindAllStringSubmatch(string(data), -1) {
+		if len(match) != 5 {
+			continue
+		}
+		command, err := strconv.Unquote(match[2])
+		if err != nil || command == "" {
+			continue
+		}
+		rationale, err := strconv.Unquote(match[4])
+		if err != nil || rationale == "" {
+			continue
+		}
+		byCommand[command] = rationale
+	}
+	for i := range features {
+		if features[i].Rationale != "" {
+			continue
+		}
+		if rationale := byCommand[features[i].Command]; rationale != "" {
+			features[i].Rationale = rationale
+		}
+	}
 	return features
+}
+
+// preserveExistingLearnLoop keeps learn.enabled on when mcp-sync reloads a
+// spec that never recorded the generate-time default. GenerateMCPSurface
+// deliberately does not apply ApplyLearnLoopDefault, because published CLIs
+// may lack the learn package; flipping the default there would emit a broken
+// import. When the package is already in the tree, dropping learn_protocol
+// from tools.go is a silent surface regression.
+func preserveExistingLearnLoop(cliDir string, parsed *spec.APISpec) {
+	if parsed == nil || parsed.Learn.Disabled || parsed.Learn.Enabled || parsed.Learn.EnabledSet {
+		return
+	}
+	info, err := os.Stat(filepath.Join(cliDir, "internal", "learn"))
+	if err != nil || !info.IsDir() {
+		return
+	}
+	parsed.Learn.Enabled = true
 }
 
 func ensureEndpointAnnotations(cliDir string, parsed *spec.APISpec, features []generator.NovelFeature) error {

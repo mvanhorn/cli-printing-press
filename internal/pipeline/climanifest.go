@@ -161,8 +161,12 @@ type CLIManifest struct {
 	AuthOptional               bool                        `json:"auth_optional,omitempty"`
 	ReviewedSecretSuppressions []ReviewedSecretSuppression `json:"reviewed_secret_suppressions,omitempty"`
 	NovelFeatures              []NovelFeatureManifest      `json:"novel_features,omitempty"`
-	Scorecard                  *CLIManifestScorecard       `json:"scorecard,omitempty"`
-	Verify                     *CLIManifestVerify          `json:"verify,omitempty"`
+	// NovelFeaturesBuilt is the dogfood-verified subset persisted by
+	// scorecard. It is research-originated and is not spec-derived, so
+	// regen paths that lack a research dir must leave it in place.
+	NovelFeaturesBuilt []NovelFeatureManifest `json:"novel_features_built,omitempty"`
+	Scorecard          *CLIManifestScorecard  `json:"scorecard,omitempty"`
+	Verify             *CLIManifestVerify     `json:"verify,omitempty"`
 	// generatedEnvReads is a write-scoped scan of os.Getenv names already
 	// emitted into the printed CLI. It is not serialized; WriteMCPBManifest
 	// and reconcile attach it so a kept colliding override can bind the
@@ -242,7 +246,7 @@ func (m CLIManifest) IsSyntheticSpec() bool {
 type NovelFeatureManifest struct {
 	Name        string `json:"name"`
 	Command     string `json:"command"`
-	Description string `json:"description"`
+	Description string `json:"description,omitempty"`
 }
 
 // ReadCLIBinaryName reads .printing-press.json from dir and returns the
@@ -294,9 +298,11 @@ func readCLIManifestFile(path string) (CLIManifest, error) {
 //
 // Generate-time fields (spec_url, spec_path, spec_checksum,
 // generated_at, printing_press_version, schema_version, novel_features,
-// category, cli_name, api_name, api_version, description)
-// are preserved as-is. Only the spec-driven MCP/auth/display fields
-// are refreshed.
+// novel_features_built, category, cli_name, api_name, api_version,
+// description) are preserved as-is. Research-originated keys that the
+// typed struct does not model are kept via the raw merge so a refresh
+// without --research-dir cannot zero the publish transcendence gate.
+// Only the spec-driven MCP/auth/display fields are refreshed.
 //
 // Returns nil silently when .printing-press.json is missing — callers
 // generating from scratch don't need a provenance-refresh step.
@@ -311,6 +317,10 @@ func RefreshCLIManifestFromSpec(dir string, parsed *spec.APISpec) error {
 		}
 		return fmt.Errorf("reading CLI manifest for refresh: %w", err)
 	}
+	var existingRaw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &existingRaw); err != nil {
+		return fmt.Errorf("parsing CLI manifest for refresh: %w", err)
+	}
 	var m CLIManifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return fmt.Errorf("parsing CLI manifest for refresh: %w", err)
@@ -320,7 +330,7 @@ func RefreshCLIManifestFromSpec(dir string, parsed *spec.APISpec) error {
 	if preserveExistingDescription(existingDescription) {
 		m.Description = existingDescription
 	}
-	return WriteCLIManifest(dir, m)
+	return writeCLIManifestPreservingRaw(dir, m, existingRaw)
 }
 
 // WriteCLIManifest marshals m as indented JSON and writes it to
