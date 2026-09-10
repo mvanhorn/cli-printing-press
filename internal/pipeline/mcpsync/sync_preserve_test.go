@@ -448,7 +448,8 @@ func TestMergeNovelFeatureRationalesFromTools(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "mcp"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"), []byte(`
 		"command_mirror_capabilities": []map[string]string{
-			{"name": "Health dashboard", "command": "health", "description": "Summarize health.", "rationale": "Requires local joins.", "via": "mcp-command-mirror"},
+			{"name": "Health dashboard", "command": "health", "cli_command": "health", "description": "Summarize health.", "rationale": "Requires local joins.", "via": "mcp-command-mirror"},
+			{"name": "Legacy dashboard", "command": "legacy", "description": "Legacy health.", "rationale": "Legacy rationale.", "via": "mcp-command-mirror"},
 			{"name": "Stale triage", "command": "stale", "description": "Find stale items.", "rationale": "Requires workflow analysis.", "via": "mcp-command-mirror"},
 		},
 `), 0o644))
@@ -457,11 +458,13 @@ func TestMergeNovelFeatureRationalesFromTools(t *testing.T) {
 		{Name: "Health dashboard", Command: "health", Description: "Summarize health."},
 		{Name: "Stale triage", Command: "stale", Description: "Find stale items.", Rationale: "keep existing"},
 		{Name: "Unrecorded", Command: "ghost", Description: "Not in tools.go."},
+		{Name: "Legacy dashboard", Command: "legacy", Description: "Legacy health."},
 	})
-	require.Len(t, got, 3)
+	require.Len(t, got, 4)
 	assert.Equal(t, "Requires local joins.", got[0].Rationale)
 	assert.Equal(t, "keep existing", got[1].Rationale)
 	assert.Empty(t, got[2].Rationale)
+	assert.Equal(t, "Legacy rationale.", got[3].Rationale)
 }
 
 func TestPreserveExistingLearnLoop(t *testing.T) {

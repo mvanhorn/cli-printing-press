@@ -1319,7 +1319,7 @@ func mcpEmptyStoreNextStep() string {
 }
 
 func mcpPartialStoreNextStep() string {
-	return "The latest sync attempt is incomplete. Resume or rerun {{.Name}}-pp-cli sync before treating local search/sql results as a complete snapshot."
+	return "The latest sync attempt is incomplete. {{if syncHintInvocation}}Resume or rerun {{goString (syncHintInvocation)}}{{else}}Populate the store through a store-backed command{{end}} before treating local search/sql results as a complete snapshot."
 }
 {{- end}}
 
