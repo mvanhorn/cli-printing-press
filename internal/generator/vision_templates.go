@@ -140,10 +140,6 @@ func SelectVisionTemplates(plan *vision.VisionaryPlan) VisionTemplateSet {
 			"workflows/pm_orphans.go.tmpl",
 			"workflows/pm_load.go.tmpl",
 		}
-	case "communication":
-		set.Workflows = []string{
-			"workflows/comm_health.go.tmpl",
-		}
 	}
 
 	// Invariant: a store without sync is useless — sync populates the store.
