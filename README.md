@@ -377,7 +377,7 @@ Table stakes features (from the absorb gate). Every feature the top competitor h
 
 Data layer (high-gravity entities). Domain-specific SQLite tables with proper columns (not JSON blobs), FTS5 full-text search, incremental sync with cursor tracking, `sql` command for raw queries, domain-specific `UpsertX()` and `SearchX()` methods.
 
-Workflow commands (from archetype): `stale`, `orphans`, `load`, `channel-health`, `reconcile`, etc.
+Workflow commands (from archetype): `stale`, `orphans`, `load`, etc.
 
 Insight commands (Rung 5): `health` (composite score), `similar` (duplicate detection), `trends`, `bottleneck`, `forecast`, `patterns`.
 
@@ -390,7 +390,7 @@ The profiler classifies every API into a domain archetype and auto-generates the
 | Archetype | Detected by | Auto-generated commands |
 |-----------|------------|------------------------|
 | Project Management | issue/task/ticket resources, assignee fields, priority levels | `stale`, `orphans`, `load`, `health`, `similar` |
-| Communication | message/channel/thread resources, threading fields | `channel-health`, `message-stats`, `health`, `similar` |
+| Communication | message/channel/thread resources, threading fields | `health`, `similar` |
 | Payments | charge/payment/invoice resources, amount/currency fields | `reconcile`, `revenue`, `health`, `similar` |
 | Infrastructure | server/deploy/instance resources | `health`, `similar` |
 | Content | document/page/block resources | `health`, `similar` |
