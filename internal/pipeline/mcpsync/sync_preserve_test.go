@@ -1,6 +1,7 @@
 package mcpsync
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -358,3 +359,150 @@ type plantError string
 func (e plantError) Error() string { return "plant hand-authored MCP behavior: " + string(e) }
 
 func errPlant(what string) error { return plantError(what) }
+
+func TestSyncPreservesNovelFeatureMetadata(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "novelfeatures",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Learn:   spec.LearnConfig{Enabled: true, EnabledSet: true},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/novelfeatures-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+				},
+			},
+		},
+	}
+	cliDir := filepath.Join(t.TempDir(), "novelfeatures")
+	gen := generator.New(apiSpec, cliDir)
+	gen.VisionSet = generator.VisionTemplateSet{MCP: true, Store: true}
+	gen.NovelFeatures = []generator.NovelFeature{
+		{Name: "Health dashboard", Command: "health", Description: "Summarize health.", Rationale: "Requires local joins."},
+		{Name: "Stale triage", Command: "stale", Description: "Find stale items.", Rationale: "Requires workflow analysis."},
+	}
+	require.NoError(t, gen.Generate())
+	require.NoError(t, pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
+		APIName:   apiSpec.Name,
+		OutputDir: cliDir,
+		Spec:      apiSpec,
+		NovelFeatures: []pipeline.NovelFeatureManifest{
+			{Name: "Health dashboard", Command: "health", Description: "Summarize health."},
+			{Name: "Stale triage", Command: "stale", Description: "Find stale items."},
+		},
+	}))
+
+	manifest, err := pipeline.ReadCLIManifest(cliDir)
+	require.NoError(t, err)
+	manifest.NovelFeaturesBuilt = append([]pipeline.NovelFeatureManifest(nil), manifest.NovelFeatures...)
+	require.NoError(t, pipeline.WriteCLIManifest(cliDir, manifest))
+
+	archived := *apiSpec
+	archived.Learn = spec.LearnConfig{}
+	specData, err := yaml.Marshal(&archived)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "spec.yaml"), specData, 0o644))
+
+	toolsBefore, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(toolsBefore), `"rationale": "Requires local joins."`)
+	require.Contains(t, string(toolsBefore), `"learn_protocol": learn.RecallFirstProtocol`)
+
+	_, err = Sync(cliDir, Options{})
+	require.NoError(t, err)
+
+	after, err := pipeline.ReadCLIManifest(cliDir)
+	require.NoError(t, err)
+	require.Len(t, after.NovelFeaturesBuilt, 2, "mcp-sync must not zero novel_features_built")
+	assert.Equal(t, "health", after.NovelFeaturesBuilt[0].Command)
+	assert.Equal(t, "stale", after.NovelFeaturesBuilt[1].Command)
+	require.Len(t, after.NovelFeatures, 2, "mcp-sync must keep recorded novel_features")
+
+	raw, err := os.ReadFile(filepath.Join(cliDir, pipeline.CLIManifestFilename))
+	require.NoError(t, err)
+	var rawManifest map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw, &rawManifest))
+	assert.JSONEq(t, `[{"name":"Health dashboard","command":"health","description":"Summarize health."},{"name":"Stale triage","command":"stale","description":"Find stale items."}]`, string(rawManifest["novel_features_built"]))
+
+	toolsAfter, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	toolsSrc := string(toolsAfter)
+	assert.Contains(t, toolsSrc, `"rationale": "Requires local joins."`)
+	assert.Contains(t, toolsSrc, `"rationale": "Requires workflow analysis."`)
+	assert.Contains(t, toolsSrc, `"learn_protocol": learn.RecallFirstProtocol`)
+	assert.Contains(t, toolsSrc, `internal/learn"`)
+}
+
+func TestMergeNovelFeatureRationalesFromTools(t *testing.T) {
+	t.Parallel()
+
+	cliDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "mcp"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"), []byte(`
+		"command_mirror_capabilities": []map[string]string{
+			{"name": "Health dashboard", "command": "health", "description": "Summarize health.", "rationale": "Requires local joins.", "via": "mcp-command-mirror"},
+			{"name": "Stale triage", "command": "stale", "description": "Find stale items.", "rationale": "Requires workflow analysis.", "via": "mcp-command-mirror"},
+		},
+`), 0o644))
+
+	got := mergeNovelFeatureRationalesFromTools(cliDir, []generator.NovelFeature{
+		{Name: "Health dashboard", Command: "health", Description: "Summarize health."},
+		{Name: "Stale triage", Command: "stale", Description: "Find stale items.", Rationale: "keep existing"},
+		{Name: "Unrecorded", Command: "ghost", Description: "Not in tools.go."},
+	})
+	require.Len(t, got, 3)
+	assert.Equal(t, "Requires local joins.", got[0].Rationale)
+	assert.Equal(t, "keep existing", got[1].Rationale)
+	assert.Empty(t, got[2].Rationale)
+}
+
+func TestPreserveExistingLearnLoop(t *testing.T) {
+	t.Parallel()
+
+	cliDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "learn"), 0o755))
+
+	parsed := &spec.APISpec{}
+	preserveExistingLearnLoop(cliDir, parsed)
+	assert.True(t, parsed.Learn.Enabled)
+
+	explicitOff := &spec.APISpec{Learn: spec.LearnConfig{EnabledSet: true}}
+	preserveExistingLearnLoop(cliDir, explicitOff)
+	assert.False(t, explicitOff.Learn.Enabled)
+
+	disabled := &spec.APISpec{Learn: spec.LearnConfig{Disabled: true}}
+	preserveExistingLearnLoop(cliDir, disabled)
+	assert.False(t, disabled.Learn.Enabled)
+
+	missing := &spec.APISpec{}
+	preserveExistingLearnLoop(t.TempDir(), missing)
+	assert.False(t, missing.Learn.Enabled)
+}
+
+func TestLoadNovelFeaturesPrefersBuiltList(t *testing.T) {
+	t.Parallel()
+
+	cliDir := t.TempDir()
+	require.NoError(t, pipeline.WriteCLIManifest(cliDir, pipeline.CLIManifest{
+		APIName: "example",
+		CLIName: "example-pp-cli",
+		NovelFeatures: []pipeline.NovelFeatureManifest{
+			{Name: "Planned", Command: "planned", Description: "Not verified."},
+		},
+		NovelFeaturesBuilt: []pipeline.NovelFeatureManifest{
+			{Name: "Health dashboard", Command: "health", Description: "Summarize health."},
+		},
+	}))
+
+	got := loadNovelFeatures(cliDir)
+	require.Len(t, got, 1)
+	assert.Equal(t, "health", got[0].Command)
+}
