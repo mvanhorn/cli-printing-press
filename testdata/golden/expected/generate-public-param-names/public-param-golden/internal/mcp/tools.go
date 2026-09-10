@@ -645,7 +645,7 @@ func mcpEmptyStoreNextStep() string {
 }
 
 func mcpPartialStoreNextStep() string {
-	return "The latest sync attempt is incomplete. Resume or rerun public-param-golden-pp-cli sync before treating local search/sql results as a complete snapshot."
+	return "The latest sync attempt is incomplete. Resume or rerun public-param-golden-pp-cli sync --resources stores before treating local search/sql results as a complete snapshot."
 }
 
 func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
