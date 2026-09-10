@@ -182,6 +182,29 @@ func TestMCPStoreStatusDistinguishesCompletedEmptyAndPartialSync(t *testing.T) {
 		t.Fatalf("status after partial retry = %q, err=%v, want partial", status, err)
 	}
 }
+
+func TestMCPUnmigratedCheckpointsCannotProveCompletion(t *testing.T) {
+	for _, cursor := range []string{"", "resume-here"} {
+		name := "no-cursor"
+		if cursor != "" { name = "resumable" }
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "data.db")
+			db, err := store.Open(path)
+			if err != nil { t.Fatal(err) }
+			if err := db.SaveSyncStateAt("{{firstResource .Resources}}", cursor, 0, time.Now().UTC()); err != nil { t.Fatal(err) }
+			if _, err := db.DB().Exec("ALTER TABLE sync_state DROP COLUMN last_attempt_complete"); err != nil { t.Fatal(err) }
+			if _, err := db.DB().Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil { t.Fatal(err) }
+			if err := db.Close(); err != nil { t.Fatal(err) }
+			readOnly, err := store.OpenReadOnly(path)
+			if err != nil { t.Fatal(err) }
+			defer readOnly.Close()
+			status, err := mcpStoreStatus(readOnly)
+			if err != nil || status != mcpStoreStatusPartial {
+				t.Fatalf("unmigrated checkpoint status = %q, err=%v; want partial", status, err)
+			}
+		})
+	}
+}
 {{- end}}
 
 {{- if .VisionSet.Search}}

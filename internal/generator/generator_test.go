@@ -4803,7 +4803,8 @@ func TestGenerateMCPStoreGuidanceTestsPass(t *testing.T) {
 	gen.VisionSet = VisionTemplateSet{Store: true, Search: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
-	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "TestMCP(Search|SQL)(MissingStore|EmptyStore|DomainTable)|TestMCPLocalStoreMetaIncludesOldestSyncedAt")
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "TestMCP(Search|SQL)(MissingStore|EmptyStore|DomainTable)|TestMCPLocalStoreMetaIncludesOldestSyncedAt|TestMCPStoreStatusDistinguishesCompletedEmptyAndPartialSync|TestMCPUnmigratedCheckpointsCannotProveCompletion")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGenerateMCPToolResultTextBudgetTestsPass(t *testing.T) {

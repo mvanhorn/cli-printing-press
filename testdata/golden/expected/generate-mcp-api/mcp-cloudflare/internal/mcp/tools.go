@@ -476,9 +476,9 @@ func mcpStoreStatus(db *store.Store) (mcpStoreStatusKind, error) {
 	var checkpoints, completed int
 	err = db.DB().QueryRow(`SELECT COUNT(*), COALESCE(SUM(CASE WHEN last_attempt_complete = 1 THEN 1 ELSE 0 END), 0) FROM sync_state`).Scan(&checkpoints, &completed)
 	if err != nil && strings.Contains(strings.ToLower(err.Error()), "no such column: last_attempt_complete") {
-		err = db.DB().QueryRow(`SELECT COUNT(*), COALESCE(SUM(CASE
-			WHEN last_synced_at IS NOT NULL AND last_synced_at <> '' AND last_synced_at <> ? THEN 1 ELSE 0 END), 0)
-			FROM sync_state`, time.Time{}.UTC().Format(time.RFC3339)).Scan(&checkpoints, &completed)
+		// Read-only stores have not run the conservative completion migration.
+		// Legacy timestamps were also written by partial walks, so prove nothing.
+		err = db.DB().QueryRow(`SELECT COUNT(*), 0 FROM sync_state`).Scan(&checkpoints, &completed)
 	}
 	if err != nil {
 		msg := strings.ToLower(err.Error())
