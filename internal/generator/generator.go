@@ -3395,7 +3395,28 @@ func (g *Generator) renderLearnFiles() error {
 	return nil
 }
 
+func sanitizeCapturedResourceIDsForGenerate(apiSpec *spec.APISpec) {
+	if !shouldSanitizeCapturedResourceIDs(apiSpec) {
+		return
+	}
+	browsersniff.SanitizeSpecCapturedResourceIDs(apiSpec)
+}
+
+func shouldSanitizeCapturedResourceIDs(apiSpec *spec.APISpec) bool {
+	if apiSpec == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(apiSpec.SpecSource)) {
+	case "official", "community", "docs":
+		return false
+	default:
+		// Empty provenance is the pre-spec_source capture YAML shape.
+		return true
+	}
+}
+
 func (g *Generator) Generate() error {
+	sanitizeCapturedResourceIDsForGenerate(g.Spec)
 	g.Spec.DropCollidingEndpointTemplateEnvOverrides()
 	applyLargeMCPSurfaceDefault(g.Spec, os.Stderr)
 	// Fresh prints default the self-learning loop on (opt out with
@@ -3676,6 +3697,7 @@ func cobratreeWalkerTemplateFiles() map[string]string {
 // autoRefresh, oauth token client) stay in renderOptionalSupportFiles so they don't get
 // emitted when the spec opts out.
 func (g *Generator) GenerateMCPSurface() error {
+	sanitizeCapturedResourceIDsForGenerate(g.Spec)
 	applyLargeMCPSurfaceDefault(g.Spec, os.Stderr)
 	if err := g.prepareOutput(); err != nil {
 		return err

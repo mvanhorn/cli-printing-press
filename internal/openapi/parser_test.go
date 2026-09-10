@@ -30,6 +30,7 @@ func TestParsePetstore(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "petstore", parsed.Name)
+	assert.Equal(t, "official", parsed.SpecSource)
 	assert.Equal(t, "", parsed.BaseURL)
 	assert.Equal(t, "/api/v3", parsed.BasePath)
 	// REST specs must leave the GraphQL-only fields unset; the generated
