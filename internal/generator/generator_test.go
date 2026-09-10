@@ -15160,22 +15160,26 @@ func TestGraphQLSyncResourcePreservesSelfReferentialCursorOnMaxPagesCap(t *testi
 	if err := db.SaveSyncState("issues", "stuck", 100); err != nil {
 		t.Fatalf("seed sync state: %v", err)
 	}
+	_, watermark, _, err := db.GetSyncState("issues")
+	if err != nil { t.Fatal(err) }
 	res := syncResource(context.Background(), c, db, "issues", "", false, 1, false)
-	if res.Err != nil {
-		t.Fatalf("syncResource error: %v", res.Err)
+	if res.Err == nil || res.Warn != nil || res.Bounded || strings.Contains(res.Err.Error(), "insufficient access") {
+		t.Fatalf("self-referential continuation must fail as unproven pagination: %+v", res)
 	}
 	if got := strings.Join(handler.cursors, ","); got != "stuck" {
 		t.Fatalf("run cursors = %q, want %q", got, "stuck")
 	}
-	cursor, _, _, err := db.GetSyncState("issues")
+	cursor, stamp, _, err := db.GetSyncState("issues")
 	if err != nil {
 		t.Fatalf("get sync state after self-referential capped run: %v", err)
 	}
 	if cursor != "stuck" {
 		t.Fatalf("cursor after self-referential capped run = %q, want stuck", cursor)
 	}
-	if res.Warn == nil {
-		t.Fatal("self-referential continuation must not claim completion")
+	var complete int
+	if err := db.DB().QueryRow("SELECT last_attempt_complete FROM sync_state WHERE resource_type='issues'").Scan(&complete); err != nil { t.Fatal(err) }
+	if complete != 0 || !stamp.Equal(watermark) {
+		t.Fatalf("self-referential continuation changed readiness: complete=%d stamp=%s watermark=%s", complete, stamp, watermark)
 	}
 }
 `
