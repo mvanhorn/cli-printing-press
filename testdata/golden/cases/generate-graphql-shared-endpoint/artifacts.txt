@@ -1,2 +1,3 @@
 graphql-shared-golden/internal/cli/things_list.go
 graphql-shared-golden/internal/cli/promoted_things.go
+graphql-sync-golden/internal/cli/sync.go
