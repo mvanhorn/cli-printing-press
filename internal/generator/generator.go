@@ -2655,7 +2655,7 @@ func archetypePlaybook(arch profiler.DomainArchetype) []PlaybookEntry {
 	case profiler.ArchetypeCommunication:
 		return []PlaybookEntry{
 			{Topic: "Message search", Insight: "Use the search tool on synced data rather than paginating through message history. Message APIs often have aggressive rate limits."},
-			{Topic: "Channel health", Insight: "When analyzing channel activity, use the channel-health command or sql aggregation on synced messages. Don't iterate individual messages via API."},
+			{Topic: "Channel health", Insight: "When analyzing channel activity, use sql aggregation on synced messages. Don't iterate individual messages via API."},
 		}
 	case profiler.ArchetypePayments:
 		return []PlaybookEntry{
