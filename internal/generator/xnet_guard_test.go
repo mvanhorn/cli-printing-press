@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/mod/semver"
 )
 
 // TestEnsureSafeXNet exercises the post-tidy x/net pin against real modules.
@@ -60,4 +61,9 @@ func TestSafeXNetVersionMatchesGoModTemplate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(tmpl), "golang.org/x/net "+safeXNetVersion,
 		"templates/go.mod.tmpl pin must stay in sync with safeXNetVersion")
+	require.True(t, semver.IsValid(safeXNetVersion))
+	// Independent of the production constant so a coordinated
+	// constant+template downgrade below GO-2026-5942 cannot stay green.
+	assert.GreaterOrEqual(t, semver.Compare(safeXNetVersion, "v0.56.0"), 0,
+		"safeXNetVersion must stay at or above the GO-2026-5942 floor")
 }
