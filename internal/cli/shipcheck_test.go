@@ -1015,3 +1015,24 @@ func findInvocation(invocations [][]string, leg string) []string {
 func argvHas(argv []string, needle string) bool {
 	return slices.Contains(argv, needle)
 }
+
+func TestShipcheckInstallSourceForwarding(t *testing.T) {
+	for _, mode := range []string{"library", "local"} {
+		opts := &shipcheckOpts{dir: "fixture", installPolicy: mode}
+		for _, leg := range shipcheckLegs {
+			if leg.name != "verify-skill" {
+				continue
+			}
+			got := leg.args(opts)
+			if !slices.Equal(got, []string{"verify-skill", "--dir", "fixture", "--install-source", mode}) {
+				t.Fatalf("unexpected args: %v", got)
+			}
+		}
+	}
+	cmd := newShipcheckCmd()
+	cmd.SetArgs([]string{"--dir", fakeCLIDir(t), "--install-source", "unknown"})
+	_, err := runWithCapturedStdout(t, cmd.Execute)
+	if err == nil {
+		t.Fatal("invalid install source accepted")
+	}
+}

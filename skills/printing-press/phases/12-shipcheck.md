@@ -6,7 +6,7 @@
 "$PRINTING_PRESS_BIN" phase-receipt enter --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "12-shipcheck"
 ```
 
-Run one combined verification block via the `shipcheck` umbrella, which runs all six legs (dogfood, verify, workflow-verify, verify-skill, validate-narrative, scorecard) in canonical order, propagates exit codes, and prints a per-leg verdict summary. The umbrella is the canonical Phase 4 invocation; running the legs individually is supported but not recommended (operators have skipped legs that way and shipped broken CLIs).
+Run one combined verification block via the `shipcheck` umbrella, which runs its verification legs in canonical order, propagates exit codes, and prints a per-leg verdict summary. The umbrella is the canonical Phase 4 invocation; running the legs individually is supported but not recommended (operators have skipped legs that way and shipped broken CLIs).
 
 Before running shipcheck, update the lock heartbeat:
 ```bash
@@ -24,12 +24,35 @@ The umbrella defaults to `verify --fix` (auto-repair common failures), `validate
 
 During shipcheck, the verify and scorecard legs persist their summaries back into `$CLI_WORK_DIR/.printing-press.json`: `verify.pass_rate`, `verify.verdict`, `scorecard.steinberger.percentage`, `scorecard.steinberger.grade`, and `novel_features_built` from the run's `research.json`. Do not hand-edit those fields; rerun shipcheck (or the standalone leg with `--write-manifest`) when they are stale. [Phase 0](03-resolve-and-reuse.md)'s sub-60 reprint gate relies on this persisted score on the next run.
 
+For a CLI distributed as a source checkout, pass `--install-source local` to
+`shipcheck` and standalone `verify-skill` runs. The default `library` retains the
+public-library canonical install block. Local mode checks the manifest's CLI name,
+an existing Go main target inside the checkout, and this install block (replace
+`<cli-name>` with the manifest's `cli_name`):
+
+````markdown
+## Prerequisites: Install the CLI
+
+Build from the checked-out CLI repository root (requires the Go version in go.mod):
+
+```bash
+go build -o ./<cli-name> ./cmd/<cli-name>
+./<cli-name> --version
+```
+
+Use `./<cli-name>` from this directory, or put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.
+````
+
+Run those build and version commands from the checkout to prove installation.
+The validator does not execute documentation. Local mode keeps command, flag,
+argument, and shell-quoting checks enabled; it does not make the CLI publishable.
+
 If a leg fails, re-run that one leg standalone (e.g., `cli-printing-press verify-skill --dir <CLI_WORK_DIR>`) for focused iteration; once it passes, re-run the full `shipcheck` umbrella to confirm no regression in the others.
 
 Interpretation:
-- `dogfood` catches dead flags, dead helpers, invalid paths, example drift, broken data wiring, command tree/config field wiring bugs, stale static MCP surfaces, and novel features that were planned but not built
+- `dogfood` exits nonzero for a static FAIL verdict after rendering text or JSON; WARN retains exit 0. It catches dead flags, dead helpers, invalid paths, example drift, broken data wiring, command tree/config field wiring bugs, stale static MCP surfaces, and novel features that were planned but not built
 - `verify` catches runtime breakage and runs the auto-fix loop for common failures
-- `workflow-verify` tests the primary workflow end-to-end using the verification manifest (workflow_verify.yaml). Three verdicts: workflow-pass, workflow-fail, unverified-needs-auth
+- `workflow-verify` tests the primary workflow end-to-end using the verification manifest (workflow_verify.yaml). Three verdicts: workflow-pass, workflow-fail, unverified-needs-auth. A workflow-fail report exits nonzero after rendering; unverified-needs-auth retains exit 0 and the auth hold rule below.
 - `verify-skill` checks that every `--flag` and command path in SKILL.md actually exists in the shipped CLI source. Catches bogus examples invented by the absorb LLM (e.g., `search --max-time` when `--max-time` is a `tonight` flag). Exit 1 = findings to fix; exit 0 = SKILL is honest.
 - `validate-narrative` checks that every README/SKILL narrative command path, flag, and argument shape in research.json resolves against the built CLI under `PRINTING_PRESS_VERIFY=1`
 - `scorecard` is the structural quality snapshot, not the source of truth by itself

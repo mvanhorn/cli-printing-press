@@ -56,8 +56,9 @@ type shipcheckOpts struct {
 	noLiveCheck      bool   // when true, omit --live-check from scorecard argv
 	apiKey           string // when set, pass --api-key to verify
 	envVar           string // when set, pass --env-var to verify
-	strict           bool   // when set, pass --strict to verify-skill
-	allowDestructive bool   // when set, allow non-dogfood legs to execute live mutations
+	installPolicy    string
+	strict           bool // when set, pass --strict to verify-skill
+	allowDestructive bool // when set, allow non-dogfood legs to execute live mutations
 }
 
 // shipcheckLeg names one verification leg and how to invoke it.
@@ -142,6 +143,9 @@ var shipcheckLegs = []shipcheckLeg{
 		name: "verify-skill",
 		args: func(o *shipcheckOpts) []string {
 			a := []string{"verify-skill", "--dir", o.dir}
+			if o.installPolicy != "" {
+				a = append(a, "--install-source", o.installPolicy)
+			}
 			if o.strict {
 				a = append(a, "--strict")
 			}
@@ -570,6 +574,9 @@ Each leg remains callable standalone — this command is additive orchestration.
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateInstallSource(opts.installPolicy); err != nil {
+				return err
+			}
 			if err := validateShipcheckDir(opts.dir); err != nil {
 				return &ExitError{Code: ExitInputError, Err: err}
 			}
@@ -646,6 +653,7 @@ Each leg remains callable standalone — this command is additive orchestration.
 	cmd.Flags().BoolVar(&opts.noLiveCheck, "no-live-check", false, "Disable scorecard's --live-check sampled output probe")
 	cmd.Flags().StringVar(&opts.apiKey, "api-key", "", "API key for verify's live testing (read-only GETs only)")
 	cmd.Flags().StringVar(&opts.envVar, "env-var", "", "Environment variable name verify should read for the API key (e.g., GITHUB_TOKEN)")
+	cmd.Flags().StringVar(&opts.installPolicy, "install-source", string(installSourceLibrary), "Pass install instruction policy to verify-skill: library or local")
 	cmd.Flags().BoolVar(&opts.strict, "strict", false, "Pass --strict to verify-skill (treat likely-false-positive findings as failures)")
 	cmd.Flags().BoolVar(&opts.allowDestructive, "allow-destructive", false, "Allow verify and scorecard live-check to execute mutating endpoint commands")
 

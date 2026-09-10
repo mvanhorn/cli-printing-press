@@ -32,10 +32,15 @@ func newWorkflowVerifyCmd() *cobra.Command {
 			if asJSON {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
-				return enc.Encode(report)
+				if err := enc.Encode(report); err != nil {
+					return err
+				}
+			} else {
+				printWorkflowVerifyReport(report)
 			}
-
-			printWorkflowVerifyReport(report)
+			if report.Verdict == pipeline.WorkflowVerdictFail {
+				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("workflow verification failed")}
+			}
 			return nil
 		},
 	}

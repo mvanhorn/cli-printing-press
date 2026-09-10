@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -238,4 +239,42 @@ exit 99
 `
 	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
 	return dir
+}
+
+func TestDogfoodFailureExitAfterReport(t *testing.T) {
+	for _, asJSON := range []bool{false, true} {
+		t.Run(fmt.Sprint(asJSON), func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0755))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "root.go"), []byte(`package cli
+func unused() { cmd.Flags().StringVar(&flags.first, "first", "", ""); cmd.Flags().StringVar(&flags.second, "second", "", ""); cmd.Flags().StringVar(&flags.third, "third", "", "") }
+`), 0644))
+			cmd := newDogfoodCmd()
+			args := []string{"--dir", dir}
+			if asJSON {
+				args = append(args, "--json")
+			}
+			cmd.SetArgs(args)
+			out, err := runWithCapturedStdout(t, cmd.Execute)
+			var exit *ExitError
+			require.ErrorAs(t, err, &exit, out)
+			assert.Equal(t, ExitGenerationError, exit.Code)
+			assert.Contains(t, out, "FAIL")
+			if asJSON {
+				var report pipeline.DogfoodReport
+				require.NoError(t, json.Unmarshal([]byte(out), &report))
+				assert.Equal(t, "FAIL", report.Verdict)
+			}
+		})
+	}
+}
+
+func TestDogfoodWarningRemainsSuccessful(t *testing.T) {
+	cmd := newDogfoodCmd()
+	cmd.SetArgs([]string{"--dir", t.TempDir(), "--json"})
+	out, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+	var report pipeline.DogfoodReport
+	require.NoError(t, json.Unmarshal([]byte(out), &report))
+	assert.Equal(t, "WARN", report.Verdict)
 }

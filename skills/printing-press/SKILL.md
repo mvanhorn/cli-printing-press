@@ -28,7 +28,8 @@ take it from here: `printing-press-polish` for a second pass, `printing-press-pu
 for the public library, `printing-press-retro` for findings against the Press itself.
 
 **Done:** Every feature approved at the absorb gate is implemented, shipcheck reached
-ship, the live dogfood matrix ran against real targets, the CLI is promoted, and the
+ship using the chosen install source (library by default, local checkout when explicit),
+the live dogfood matrix ran against real targets, the CLI is promoted, and the
 receipt ledger closes on the last phase.
 
 **Intent:** The best useful CLI for an API without an hour of phase theater. Optimize

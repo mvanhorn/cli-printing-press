@@ -91,10 +91,15 @@ func newDogfoodCmd() *cobra.Command {
 			if asJSON {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
-				return enc.Encode(report)
+				if err := enc.Encode(report); err != nil {
+					return err
+				}
+			} else {
+				printDogfoodReport(report)
 			}
-
-			printDogfoodReport(report)
+			if report.Verdict == "FAIL" {
+				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("dogfood failed")}
+			}
 			return nil
 		},
 	}

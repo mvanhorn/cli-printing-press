@@ -977,3 +977,64 @@ func buildPrintingPressBinary(t *testing.T) string {
 	require.NoError(t, printingPressBinaryErr)
 	return printingPressBinaryPath
 }
+
+func TestVerifySkillLocalInstall(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode, body, manifest, main string
+		wantError                        bool
+	}{
+		{name: "valid", mode: "local", main: "package main\nfunc main() {}"},
+		{name: "missing section", mode: "local", body: "# No install", main: "package main\nfunc main() {}", wantError: true},
+		{name: "wrong instructions", mode: "local", body: "tampered", main: "package main\nfunc main() {}", wantError: true},
+		{name: "missing target", mode: "local", wantError: true},
+		{name: "not main", mode: "local", main: "package widget\nfunc Run() {}", wantError: true},
+		{name: "missing entrypoint", mode: "local", main: "package main\nfunc Run() {}", wantError: true},
+		{name: "bad manifest", mode: "local", manifest: "{", wantError: true},
+		{name: "empty manifest", mode: "local", manifest: "{}", wantError: true},
+		{name: "escaped target", mode: "local", manifest: `{"api_name":"widget","cli_name":"../escape"}`, wantError: true},
+		{name: "shell name", mode: "local", manifest: `{"api_name":"widget","cli_name":"$(touch escaped)"}`, wantError: true},
+		{name: "unknown mode", mode: "private", wantError: true},
+		{name: "local block rejected by default", mode: "", main: "package main\nfunc main() {}", wantError: true},
+		{name: "local block rejected by library", mode: "library", main: "package main\nfunc main() {}", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := tc.body
+			if body == "" {
+				body = localInstallFixtureSection
+			}
+			dir := writeCanonicalFixture(t, "widget", "", body)
+			if tc.manifest != "" {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(tc.manifest), 0644))
+			}
+			if tc.main != "" {
+				target := filepath.Join(dir, "cmd", "widget-pp-cli")
+				require.NoError(t, os.MkdirAll(target, 0755))
+				require.NoError(t, os.WriteFile(filepath.Join(target, "main.go"), []byte(tc.main), 0644))
+			}
+			args := []string{"verify-skill", "--dir", dir, "--only", "canonical-sections", "--json"}
+			if tc.mode != "" {
+				args = append(args, "--install-source", tc.mode)
+			}
+			out, err := exec.Command(buildPrintingPressBinary(t), args...).CombinedOutput()
+			if tc.wantError {
+				require.Error(t, err, out)
+			} else {
+				require.NoError(t, err, out)
+				require.Contains(t, string(out), "canonical-sections")
+			}
+		})
+	}
+}
+
+func TestVerifySkillLocalStillChecksCommands(t *testing.T) {
+	dir := writeCanonicalFixture(t, "widget", "", localInstallFixtureSection+"\n```bash\nwidget-pp-cli nonexistent --fake-flag\n```\n")
+	target := filepath.Join(dir, "cmd", "widget-pp-cli")
+	require.NoError(t, os.MkdirAll(target, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "main.go"), []byte("package main\nfunc main() {}"), 0644))
+	out, err := exec.Command(buildPrintingPressBinary(t), "verify-skill", "--dir", dir, "--install-source", "local", "--json").CombinedOutput()
+	require.Error(t, err, out)
+	require.Contains(t, string(out), "unknown-command")
+	require.NotContains(t, string(out), "install section drift")
+}
+
+const localInstallFixtureSection = "## Prerequisites: Install the CLI\n\nBuild from the checked-out CLI repository root (requires the Go version in go.mod):\n\n```bash\ngo build -o ./widget-pp-cli ./cmd/widget-pp-cli\n./widget-pp-cli --version\n```\n\nUse `./widget-pp-cli` from this directory, or put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.\n"

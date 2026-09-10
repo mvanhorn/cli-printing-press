@@ -5,9 +5,14 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/build"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
@@ -23,6 +28,20 @@ import (
 //
 //go:embed verify_skill_bundled.py
 var verifySkillScript string
+
+type installSource string
+
+const (
+	installSourceLibrary installSource = "library"
+	installSourceLocal   installSource = "local"
+)
+
+func validateInstallSource(source string) error {
+	if installSource(source) != installSourceLibrary && installSource(source) != installSourceLocal {
+		return &ExitError{Code: ExitInputError, Err: fmt.Errorf("invalid --install-source %q: expected library or local", source)}
+	}
+	return nil
+}
 
 const canonicalSectionsCheckName = "canonical-sections"
 
@@ -208,10 +227,11 @@ func planVerifyChecks(only []string) (runCanonical bool, pyOnly []string) {
 
 func newVerifySkillCmd() *cobra.Command {
 	var (
-		dir    string
-		only   []string
-		asJSON bool
-		strict bool
+		dir           string
+		only          []string
+		asJSON        bool
+		strict        bool
+		installPolicy string
 	)
 
 	cmd := &cobra.Command{
@@ -237,7 +257,11 @@ mangled fallback blocks during polish loops.
 
 Checks 1-5 run via the bundled scripts/verify-skill/verify_skill.py; check 6
 runs in Go using the CLI manifest (.printing-press.json) and go.mod.
-Requires python3 on PATH for checks 1-5.`,
+Requires python3 on PATH for checks 1-5.
+Use --install-source local for a CLI distributed as a source checkout. The
+canonical-sections check then requires local build and verification instructions
+and an existing Go main target. Other checks remain enabled. The default,
+library, keeps the public-library install section unchanged.`,
 		Example: `  # Run all checks against a generated CLI
   cli-printing-press verify-skill --dir ./my-api-pp-cli
 
@@ -249,6 +273,9 @@ Requires python3 on PATH for checks 1-5.`,
   cli-printing-press verify-skill --dir ./my-api-pp-cli --only shell-var-quotes
   cli-printing-press verify-skill --dir ./my-api-pp-cli --only canonical-sections`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateInstallSource(installPolicy); err != nil {
+				return err
+			}
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
 			}
@@ -264,7 +291,11 @@ Requires python3 on PATH for checks 1-5.`,
 			)
 			if runCanonical {
 				var cErr error
-				canonicalFind, canonicalHasFind, canonicalSkipped, cErr = runCanonicalSectionsCheck(dir)
+				if installSource(installPolicy) == installSourceLocal {
+					canonicalFind, canonicalHasFind, cErr = runLocalInstallCheck(dir)
+				} else {
+					canonicalFind, canonicalHasFind, canonicalSkipped, cErr = runCanonicalSectionsCheck(dir)
+				}
 				if cErr != nil {
 					return &ExitError{Code: ExitInputError, Err: cErr}
 				}
@@ -320,6 +351,7 @@ Requires python3 on PATH for checks 1-5.`,
 	cmd.Flags().StringVar(&dir, "dir", "", "Path to the printed CLI directory (contains SKILL.md + internal/cli/)")
 	cmd.Flags().StringSliceVar(&only, "only", nil, "Run only the named check(s): flag-names, flag-commands, positional-args, shell-var-quotes, unknown-command, canonical-sections (repeatable)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	cmd.Flags().StringVar(&installPolicy, "install-source", string(installSourceLibrary), "Install instructions to validate: library or local (build from checkout)")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Treat likely-false-positive findings as failures")
 
 	return cmd
@@ -408,4 +440,80 @@ func indentLines(s, prefix string) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+var localInstallName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+
+func localSkillInstallSection(name string) string {
+	return fmt.Sprintf("## Prerequisites: Install the CLI\n\nBuild from the checked-out CLI repository root (requires the Go version in go.mod):\n\n```bash\ngo build -o ./%[1]s ./cmd/%[1]s\n./%[1]s --version\n```\n\nUse `./%[1]s` from this directory, or put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.\n", name)
+}
+
+func runLocalInstallCheck(dir string) (canonicalFinding, bool, error) {
+	finding := canonicalFinding{Check: canonicalSectionsCheckName, Severity: "error", Command: "(file: SKILL.md)"}
+	manifest, err := pipeline.ReadCLIManifest(dir)
+	if err != nil {
+		return finding, false, fmt.Errorf("local install requires a valid CLI manifest: %w", err)
+	}
+	name := manifest.CLIName
+	if name == "" && manifest.APIName != "" {
+		name = manifest.APIName + "-pp-cli"
+	}
+	if !localInstallName.MatchString(name) {
+		return finding, false, fmt.Errorf("local install requires a safe cli_name in .printing-press.json")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
+		return finding, false, fmt.Errorf("local install requires go.mod: %w", err)
+	}
+	target := filepath.Join(dir, "cmd", name)
+	if err := checkLocalMainTarget(dir, target); err != nil {
+		finding.Detail = fmt.Sprintf("local install target ./cmd/%s is invalid: %v", name, err)
+		return finding, true, nil
+	}
+	skill, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil {
+		return finding, false, err
+	}
+	expected := localSkillInstallSection(name)
+	got, ok := generator.ExtractSkillInstallSection(string(skill))
+	if !ok || normalizeLineEndings(got) != normalizeLineEndings(expected) {
+		finding.Detail = "local install section is missing or differs from the required checkout build instructions"
+		finding.Evidence = "expected local block:\n" + expected
+		return finding, true, nil
+	}
+	return canonicalFinding{}, false, nil
+}
+
+func checkLocalMainTarget(dir, target string) error {
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("target escapes the CLI directory")
+	}
+	pkg, err := build.Default.ImportDir(target, 0)
+	if err != nil {
+		return err
+	}
+	if pkg.Name != "main" {
+		return fmt.Errorf("expected package main")
+	}
+	for _, file := range pkg.GoFiles {
+		tree, err := parser.ParseFile(token.NewFileSet(), filepath.Join(target, file), nil, 0)
+		if err != nil {
+			return err
+		}
+		for _, decl := range tree.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if ok && fn.Name.Name == "main" && fn.Recv == nil && fn.Type.Params.NumFields() == 0 && fn.Type.Results.NumFields() == 0 {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("missing func main()")
 }
