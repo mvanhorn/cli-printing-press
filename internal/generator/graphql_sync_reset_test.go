@@ -42,6 +42,7 @@ import (
  "io"
  "net/http"
  "net/http/httptest"
+ "os"
  "path/filepath"
  "strings"
  "testing"
@@ -56,6 +57,8 @@ func TestSyncResetCommand(t *testing.T) {
   args []string
   fail bool
   invalid bool
+  bounded bool
+  malformed bool
  }{
   {name:"invalid-since-full", args:[]string{"--full","--since","invalid"}, invalid:true},
   {name:"invalid-since-latest", args:[]string{"--latest-only","--since","invalid"}, invalid:true},
@@ -65,6 +68,9 @@ func TestSyncResetCommand(t *testing.T) {
   {name:"failed-latest", args:[]string{"--latest-only"}, fail:true},
   {name:"completed-full", args:[]string{"--full"}},
   {name:"completed-latest", args:[]string{"--latest-only"}},
+  {name:"bounded-max-pages", args:[]string{"--full","--max-pages","1"}, bounded:true},
+  {name:"bounded-latest", args:[]string{"--latest-only"}, bounded:true},
+  {name:"unproven-page-limit", args:[]string{"--full","--max-pages","1"}, malformed:true},
  } {
   t.Run(tc.name,func(t *testing.T) {
    path := filepath.Join(t.TempDir(),"data.db")
@@ -91,6 +97,12 @@ func TestSyncResetCommand(t *testing.T) {
     if after,_:=req.Variables["after"].(string);after!="" {t.Errorf("reset resumed cursor %q",after)}
     if tc.fail { http.Error(w,"request refused",http.StatusBadRequest);return }
     w.Header().Set("Content-Type","application/json")
+    if tc.bounded || tc.malformed {
+     cursor:="next-page"
+     if tc.malformed {cursor=""}
+     json.NewEncoder(w).Encode(map[string]any{"data":map[string]any{"issues":map[string]any{"nodes":[]any{map[string]any{"id":"one","title":"One"}},"pageInfo":map[string]any{"hasNextPage":true,"endCursor":cursor}}}})
+     return
+    }
     io.WriteString(w,"{\"data\":{\"issues\":{\"nodes\":[{\"id\":\"one\",\"title\":\"One\"}],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":\"end\"}}}}")
    }))
    defer server.Close()
@@ -99,8 +111,15 @@ func TestSyncResetCommand(t *testing.T) {
    cmd.SetOut(io.Discard)
    cmd.SetErr(io.Discard)
    cmd.SetArgs(append([]string{"--db",path,"--resources","issues"},tc.args...))
-   err=cmd.Execute()
-   if (tc.fail || tc.invalid) != (err!=nil) {t.Fatalf("command error=%v",err)}
+   events,openErr:=os.CreateTemp(t.TempDir(),"events")
+   if openErr!=nil {t.Fatal(openErr)}
+   defer events.Close()
+   oldStderr,oldHuman:=os.Stderr,humanFriendly
+   os.Stderr,humanFriendly=events,false
+   func(){defer func(){os.Stderr,humanFriendly=oldStderr,oldHuman}();err=cmd.Execute()}()
+   output,readErr:=os.ReadFile(events.Name())
+   if readErr!=nil {t.Fatal(readErr)}
+   if (tc.fail || tc.invalid || tc.malformed) != (err!=nil) {t.Fatalf("command error=%v output=%s",err,output)}
    cursor,stamp,count,stateErr:=db.GetSyncState("issues")
    if stateErr!=nil {t.Fatal(stateErr)}
    var complete int
@@ -113,7 +132,16 @@ func TestSyncResetCommand(t *testing.T) {
     return
    }
    if calls!=1 {t.Fatalf("calls=%d, want1",calls)}
-   if tc.fail {
+   if tc.bounded {
+    expectedCursor:="next-page"
+    if cursor!=expectedCursor || !stamp.Equal(watermark) || count!=1 || complete!=0 {
+     t.Fatalf("bounded checkpoint=%q %s count=%d complete=%d",cursor,stamp,count,complete)
+    }
+    text:=string(output)
+    if !strings.Contains(text,"\"event\":\"sync_partial\"") || !strings.Contains(text,"\"total_records\":1") || !strings.Contains(text,"\"success\":1,\"warned\":0,\"errored\":0") || strings.Contains(text,"\"event\":\"sync_complete\"") || strings.Contains(text,"insufficient access") {t.Fatalf("bounded output=%s",output)}
+   } else if tc.malformed {
+    if !stamp.Equal(watermark) || complete!=0 || strings.Contains(err.Error(),"insufficient access") {t.Fatalf("unproven pagination checkpoint=%s complete=%d error=%v",stamp,complete,err)}
+   } else if tc.fail {
     if cursor!="" || !stamp.Equal(watermark) || count!=7 || complete!=0 {
      t.Fatalf("failed reset checkpoint=%q %s count=%d complete=%d",cursor,stamp,count,complete)
     }

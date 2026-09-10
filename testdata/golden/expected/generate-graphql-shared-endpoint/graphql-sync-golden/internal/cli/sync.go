@@ -27,6 +27,7 @@ type syncResult struct {
 	Count            int
 	Err              error
 	Warn             error
+	Bounded          bool
 	IntegrityFailure bool
 	Duration         time.Duration
 }
@@ -202,7 +203,11 @@ Exit codes & warnings:
 					warnCount++
 				} else {
 					if humanFriendly {
-						fmt.Fprintf(os.Stderr, "  %s: %d synced (done)\n", res.Resource, res.Count)
+						if res.Bounded {
+							fmt.Fprintf(os.Stderr, "  %s: %d synced (requested limit reached; more pages remain)\n", res.Resource, res.Count)
+						} else {
+							fmt.Fprintf(os.Stderr, "  %s: %d synced (done)\n", res.Resource, res.Count)
+						}
 					}
 					totalSynced += res.Count
 					successCount++
@@ -305,6 +310,7 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 	anomalyEmitted := false
 	capExitCursor := ""
 	attemptComplete := false
+	bounded := false
 	incompleteReason := "pagination_end_unproven"
 	pageSize := def.PageSize
 	if pageSize <= 0 {
@@ -442,6 +448,10 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 		// Enforce page ceiling
 		if maxPages > 0 && pagesFetched >= maxPages {
 			capExitHasMore := conn.PageInfo.HasNextPage && conn.PageInfo.EndCursor != "" && conn.PageInfo.EndCursor != cursor
+			bounded = capExitHasMore
+			if bounded {
+				incompleteReason = "max_pages_cap"
+			}
 			if !conn.PageInfo.HasNextPage {
 				attemptComplete = true
 				incompleteReason = ""
@@ -497,7 +507,13 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 		if err := db.SaveSyncProgress(resource, progressCursor, totalCount); err != nil {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync progress for %s: %w", resource, err), Duration: time.Since(started)}
 		}
-		return syncResult{Resource: resource, Count: totalCount, Warn: fmt.Errorf("%s sync incomplete (%s); completion watermark was not advanced", resource, incompleteReason), Duration: time.Since(started)}
+		if bounded {
+			if !humanFriendly {
+				fmt.Fprintf(os.Stderr, `{"event":"sync_partial","resource":"%s","total":%d,"reason":"%s"}`+"\n", resource, totalCount, incompleteReason)
+			}
+			return syncResult{Resource: resource, Count: totalCount, Bounded: true, Duration: time.Since(started)}
+		}
+		return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("%s sync incomplete (%s); completion watermark was not advanced", resource, incompleteReason), Duration: time.Since(started)}
 	}
 
 	if !humanFriendly {

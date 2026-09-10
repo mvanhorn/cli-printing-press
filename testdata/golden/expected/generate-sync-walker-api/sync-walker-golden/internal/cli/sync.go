@@ -491,17 +491,11 @@ func syncResource(ctx context.Context, c interface {
 	requestedAt := started.UTC()
 
 	// Resume cursor from sync_state (unless --full cleared it)
-	existingCursor, lastSynced, existingCount, stateErr := db.GetSyncState(resource)
+	persistedCursor, lastSynced, existingCount, stateErr := db.GetSyncState(resource)
 	if stateErr != nil {
 		return syncResult{Resource: resource, Err: stateErr, Duration: time.Since(started)}
 	}
-	// Mark the attempt incomplete before requests or projections can fail.
-	// Only a losslessly stored page may move this resumable boundary.
-	if preview, ok := c.(interface{ IsDryRun() bool }); !ok || !preview.IsDryRun() {
-		if err := db.SaveSyncProgress(resource, existingCursor, existingCount); err != nil {
-			return syncResult{Resource: resource, Err: fmt.Errorf("saving sync progress for %s: starting attempt: %w", resource, err), Duration: time.Since(started)}
-		}
-	}
+	existingCursor := persistedCursor
 	if !full {
 		if storedCount, err := db.Count(resource); err == nil && storedCount == 0 {
 			existingCursor = ""
@@ -566,6 +560,13 @@ func syncResource(ctx context.Context, c interface {
 			Resource: resource,
 			Warn:     fmt.Errorf("%w for %s: %s", errMissingRequiredQueryParams, resource, strings.Join(missing, ", ")),
 			Duration: time.Since(started),
+		}
+	}
+	// Preflight skips must preserve readiness. Once requests can run, mark
+	// the attempt incomplete without moving the persisted resume boundary.
+	if preview, ok := c.(interface{ IsDryRun() bool }); !ok || !preview.IsDryRun() {
+		if err := db.SaveSyncProgress(resource, persistedCursor, existingCount); err != nil {
+			return syncResult{Resource: resource, Err: fmt.Errorf("saving sync progress for %s: starting attempt: %w", resource, err), Duration: time.Since(started)}
 		}
 	}
 	var progressCount int64

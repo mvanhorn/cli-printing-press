@@ -14,8 +14,8 @@ import (
 
 const mirrorCLICommandMetaKey = "pp:cli-command"
 
-// CommandPathForInvocation resolves a documented invocation to one runnable
-// command path that the Cobra mirror can expose.
+// Capability discovery must advertise only runnable commands that survive
+// the mirror's visibility and ownership filters, not every documented example.
 func CommandPathForInvocation(root *cobra.Command, command string) string {
 	if root == nil {
 		return ""
@@ -54,8 +54,8 @@ func CommandPathForInvocation(root *cobra.Command, command string) string {
 	return commandPath
 }
 
-// ToolNameForCommand returns the registered mirror tool for a documented CLI
-// invocation. Metadata links the command path to collision-suffixed names.
+// Collision suffixes make guessed tool names unreliable. Registration metadata
+// binds each advertised capability to exactly one actual mirror tool.
 func ToolNameForCommand(s *server.MCPServer, root *cobra.Command, command string) string {
 	if s == nil {
 		return ""
