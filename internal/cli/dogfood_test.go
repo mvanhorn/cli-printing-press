@@ -1,17 +1,45 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var (
+	cliBinaryOnce sync.Once
+	cliBinaryPath string
+	cliBinaryErr  error
+)
+
+func buildCLIPrintingPressBinary(t *testing.T) string {
+	t.Helper()
+	cliBinaryOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "cli-printing-press-test-bin-*")
+		if err != nil {
+			cliBinaryErr = err
+			return
+		}
+		cliBinaryPath = filepath.Join(dir, "cli-printing-press")
+		cmd := exec.Command("go", "build", "-o", cliBinaryPath, "./cmd/cli-printing-press")
+		cmd.Dir = "../.."
+		if output, err := cmd.CombinedOutput(); err != nil {
+			cliBinaryErr = fmt.Errorf("building cli-printing-press: %w\n%s", err, output)
+		}
+	})
+	require.NoError(t, cliBinaryErr)
+	return cliBinaryPath
+}
 
 func TestPrintDogfoodReportRespectsSkippedPathCheck(t *testing.T) {
 	report := &pipeline.DogfoodReport{
@@ -264,7 +292,7 @@ func unused() { cmd.Flags().StringVar(&flags.first, "first", "", ""); cmd.Flags(
 			if asJSON {
 				var report pipeline.DogfoodReport
 				require.NoError(t, json.Unmarshal([]byte(out), &report))
-				assert.Equal(t, "FAIL", report.Verdict)
+				assert.Equal(t, pipeline.DogfoodVerdictFail, report.Verdict)
 			}
 		})
 	}
@@ -277,5 +305,24 @@ func TestDogfoodWarningRemainsSuccessful(t *testing.T) {
 	require.NoError(t, err)
 	var report pipeline.DogfoodReport
 	require.NoError(t, json.Unmarshal([]byte(out), &report))
-	assert.Equal(t, "WARN", report.Verdict)
+	assert.Equal(t, pipeline.DogfoodVerdictWarn, report.Verdict)
+}
+
+func TestDogfoodBinaryFailurePrintsDiagnosticOnce(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "root.go"), []byte(`package cli
+func unused() { cmd.Flags().StringVar(&flags.first, "first", "", ""); cmd.Flags().StringVar(&flags.second, "second", "", ""); cmd.Flags().StringVar(&flags.third, "third", "", "") }
+`), 0o644))
+
+	cmd := exec.Command(buildCLIPrintingPressBinary(t), "dogfood", "--dir", dir)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, err, &exitErr)
+	assert.Equal(t, ExitGenerationError, exitErr.ExitCode())
+	assert.Contains(t, stdout.String(), "Verdict: FAIL")
+	assert.Equal(t, "Error: dogfood failed\n", stderr.String())
 }

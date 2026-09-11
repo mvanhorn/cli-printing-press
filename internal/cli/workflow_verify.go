@@ -42,7 +42,7 @@ func newWorkflowVerifyCmd() *cobra.Command {
 				printWorkflowVerifyReport(report)
 			}
 			if report.Verdict == pipeline.WorkflowVerdictFail {
-				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("workflow verification failed")}
+				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("workflow verification failed"), Silent: true}
 			}
 			return nil
 		},

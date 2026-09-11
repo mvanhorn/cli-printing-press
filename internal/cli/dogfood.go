@@ -100,8 +100,8 @@ func newDogfoodCmd() *cobra.Command {
 			} else {
 				printDogfoodReport(report)
 			}
-			if report.Verdict == "FAIL" {
-				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("dogfood failed")}
+			if report.Verdict == pipeline.DogfoodVerdictFail {
+				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("dogfood failed"), Silent: true}
 			}
 			return nil
 		},
