@@ -832,6 +832,24 @@ func TestShipcheck_HoldsOnUnverifiedScorecard(t *testing.T) {
 	}
 }
 
+func TestShipcheck_AllowsUnscoredLiveAPIVerification(t *testing.T) {
+	h := newShipcheckHarness(t)
+	if err := os.WriteFile(filepath.Join(h.dir, pipeline.CLIManifestFilename), []byte(`{
+  "api_name": "example",
+  "scorecard": {
+    "unscored_dimensions": ["live_api_verification"],
+    "unverified_dimensions": []
+  }
+}
+`), 0o644); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+
+	if err := runShipcheckCmd(t, "--dir", h.dir); err != nil {
+		t.Fatalf("unscored live API verification should not hold shipping: %v", err)
+	}
+}
+
 func TestShipcheck_HoldsWithoutScorecardManifestEvidence(t *testing.T) {
 	h := newShipcheckHarness(t)
 	if err := os.Remove(filepath.Join(h.dir, pipeline.CLIManifestFilename)); err != nil {
