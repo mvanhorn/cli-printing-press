@@ -36,6 +36,9 @@ func newDogfoodCmd() *cobra.Command {
 
   # Output as JSON for programmatic use
   cli-printing-press dogfood --dir ./generated/stripe-pp-cli --json`,
+		Annotations: map[string]string{
+			"pp:typed-exit-codes": "0,3",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			canonicalDir, err := pipeline.ResolveTargetDir(dir)
 			if err != nil {
@@ -91,10 +94,15 @@ func newDogfoodCmd() *cobra.Command {
 			if asJSON {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
-				return enc.Encode(report)
+				if err := enc.Encode(report); err != nil {
+					return err
+				}
+			} else {
+				printDogfoodReport(report)
 			}
-
-			printDogfoodReport(report)
+			if report.Verdict == "FAIL" {
+				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("dogfood failed")}
+			}
 			return nil
 		},
 	}
