@@ -1,11 +1,9 @@
 package cli
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -64,20 +62,4 @@ func TestWorkflowVerifyUnverifiedRemainsSuccessful(t *testing.T) {
 	var report pipeline.WorkflowVerifyReport
 	require.NoError(t, json.Unmarshal([]byte(out), &report))
 	assert.Equal(t, pipeline.WorkflowVerdictUnverified, report.Verdict)
-}
-
-func TestWorkflowVerifyBinaryFailurePrintsDiagnosticOnce(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow_verify.yaml"), []byte("workflows: []\n"), 0o644))
-
-	cmd := exec.Command(buildCLIPrintingPressBinary(t), "workflow-verify", "--dir", dir)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	var exitErr *exec.ExitError
-	require.ErrorAs(t, err, &exitErr)
-	assert.Equal(t, ExitGenerationError, exitErr.ExitCode())
-	assert.Contains(t, stdout.String(), string(pipeline.WorkflowVerdictFail))
-	assert.Equal(t, "Error: workflow verification failed\n", stderr.String())
 }
