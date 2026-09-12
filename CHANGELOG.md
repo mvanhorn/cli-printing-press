@@ -1,5 +1,27 @@
 # Changelog
 
+## [4.32.2](https://github.com/mvanhorn/cli-printing-press/compare/v4.32.1...v4.32.2) (2026-09-12)
+
+
+### Bug Fixes
+
+* **cli:** bump golang.org/x/net safe floor for GO-2026-5942 ([#4663](https://github.com/mvanhorn/cli-printing-press/issues/4663)) ([f20fcff](https://github.com/mvanhorn/cli-printing-press/commit/f20fcff173c7921c861fe282d82aca0fc41acf32))
+* **cli:** emit anchored .gitignore and -trimpath builds ([#4631](https://github.com/mvanhorn/cli-printing-press/issues/4631)) ([c124faf](https://github.com/mvanhorn/cli-printing-press/commit/c124faf8d481a86ed674eb8fc76fa826eca8ce64))
+* **cli:** fix feedback/teach annotations and doctor gosec name ([#4648](https://github.com/mvanhorn/cli-printing-press/issues/4648)) ([2dde45a](https://github.com/mvanhorn/cli-printing-press/commit/2dde45afa3c08f4409760b74764eacb98723b3ce))
+* **cli:** honest empty csv/plain, which index, doctor HTML, promoted examples ([#4634](https://github.com/mvanhorn/cli-printing-press/issues/4634)) ([4b3847a](https://github.com/mvanhorn/cli-printing-press/commit/4b3847af4d4db02489ac32680c2ee2b0fc87bedf))
+* **cli:** lock promote runs ValidatePatchRecords ([#4630](https://github.com/mvanhorn/cli-printing-press/issues/4630)) ([8e8b276](https://github.com/mvanhorn/cli-printing-press/commit/8e8b276400d89c0299f0e706c426719accee70cc))
+* **cli:** make go install work on Go 1.27 ([#4649](https://github.com/mvanhorn/cli-printing-press/issues/4649)) ([102578c](https://github.com/mvanhorn/cli-printing-press/commit/102578c08cf1e99b0edf3f6426f37dc57f5f590d))
+* **cli:** preserve .git across generate --force ([#4646](https://github.com/mvanhorn/cli-printing-press/issues/4646)) ([c5cee5e](https://github.com/mvanhorn/cli-printing-press/commit/c5cee5ea3a46620b2d52926c0657d896ac545d05))
+* **cli:** preserve novel features across mcp-sync ([#4666](https://github.com/mvanhorn/cli-printing-press/issues/4666)) ([0878fb0](https://github.com/mvanhorn/cli-printing-press/commit/0878fb0d9e825abdb9f52d206fa3bd94b4a1cc8f))
+* **cli:** regen-merge keep addNovelCommandIfAbsent registrations ([#4632](https://github.com/mvanhorn/cli-printing-press/issues/4632)) ([8a341f4](https://github.com/mvanhorn/cli-printing-press/commit/8a341f4ec4ca88d235bdfa6c6b93473fb10a41bd))
+* **cli:** stop baking HAR resource ids into generated defaults ([#4667](https://github.com/mvanhorn/cli-printing-press/issues/4667)) ([075d098](https://github.com/mvanhorn/cli-printing-press/commit/075d0986642791db5ff490164fbefe7d112d14a6))
+* **cli:** stop generated test fixtures tripping publish secret scan ([#4664](https://github.com/mvanhorn/cli-printing-press/issues/4664)) ([a475090](https://github.com/mvanhorn/cli-printing-press/commit/a475090e1599f2d06f94ffb8624abbc70606d4f0))
+* **cli:** stop MCP flag smuggling and variadic argv collapse ([#4647](https://github.com/mvanhorn/cli-printing-press/issues/4647)) ([be378ad](https://github.com/mvanhorn/cli-printing-press/commit/be378adf964937cda1310006c44ea265a28003ff))
+* **cli:** stop selecting missing comm_health workflow template ([#4665](https://github.com/mvanhorn/cli-printing-press/issues/4665)) ([ffbde99](https://github.com/mvanhorn/cli-printing-press/commit/ffbde9923f539a8c013cf637d455236dc8a2fa0d))
+* **cli:** synthesize happy-args instead of TODO examples ([#4650](https://github.com/mvanhorn/cli-printing-press/issues/4650)) ([48082db](https://github.com/mvanhorn/cli-printing-press/commit/48082dbd14401cded04f6f8c0a5518e8168b65f4))
+* **cli:** validate learn ticker_patterns against playbook examples ([#4633](https://github.com/mvanhorn/cli-printing-press/issues/4633)) ([536e156](https://github.com/mvanhorn/cli-printing-press/commit/536e15657c68d19a4bc1359567a901bb58f1e980))
+* **generator:** harden resumable pagination checkpoints ([#4675](https://github.com/mvanhorn/cli-printing-press/issues/4675)) ([9372b50](https://github.com/mvanhorn/cli-printing-press/commit/9372b50b7c8f9c624d7afcba2a9f0361673072c0))
+
 ## [4.32.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.32.0...v4.32.1) (2026-09-08)
 
 
