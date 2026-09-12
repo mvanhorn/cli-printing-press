@@ -23,6 +23,9 @@ func newWorkflowVerifyCmd() *cobra.Command {
 
   # Output as JSON for programmatic use
   cli-printing-press workflow-verify --dir ./generated/dominos-pp-cli --json`,
+		Annotations: map[string]string{
+			"pp:typed-exit-codes": "0,3",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := pipeline.RunWorkflowVerification(dir)
 			if err != nil {
@@ -32,10 +35,15 @@ func newWorkflowVerifyCmd() *cobra.Command {
 			if asJSON {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
-				return enc.Encode(report)
+				if err := enc.Encode(report); err != nil {
+					return err
+				}
+			} else {
+				printWorkflowVerifyReport(report)
 			}
-
-			printWorkflowVerifyReport(report)
+			if report.Verdict == pipeline.WorkflowVerdictFail {
+				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("workflow verification failed"), Silent: true}
+			}
 			return nil
 		},
 	}

@@ -120,7 +120,7 @@ func authHeader(token string) string {
 	report, err := RunDogfood(dir, specPath)
 	require.NoError(t, err)
 
-	assert.Equal(t, "FAIL", report.Verdict)
+	assert.Equal(t, DogfoodVerdictFail, report.Verdict)
 	assert.Equal(t, 2, report.PathCheck.Tested)
 	assert.Equal(t, 1, report.PathCheck.Valid)
 	assert.Equal(t, 50, report.PathCheck.Pct)
@@ -293,7 +293,7 @@ components:
 	report, err := RunDogfood(dir, specPath)
 	require.NoError(t, err)
 
-	assert.Equal(t, "FAIL", report.Verdict)
+	assert.Equal(t, DogfoodVerdictFail, report.Verdict)
 	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
 	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
 	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
@@ -343,7 +343,7 @@ func authLogin() {
 		report, err := RunDogfood(dir, specPath)
 		require.NoError(t, err)
 
-		assert.Equal(t, "FAIL", report.Verdict)
+		assert.Equal(t, DogfoodVerdictFail, report.Verdict)
 		assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
 		assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
 		require.Len(t, report.OAuthScopeCoverage.Violations, 1)
@@ -499,7 +499,7 @@ components:
 	report, err := RunDogfood(dir, specPath)
 	require.NoError(t, err)
 
-	assert.Equal(t, "FAIL", report.Verdict)
+	assert.Equal(t, DogfoodVerdictFail, report.Verdict)
 	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
 	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
 	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
@@ -542,7 +542,7 @@ components:
 	report, err := RunDogfood(dir, specPath)
 	require.NoError(t, err)
 
-	assert.Equal(t, "FAIL", report.Verdict)
+	assert.Equal(t, DogfoodVerdictFail, report.Verdict)
 	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
 	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
 	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
@@ -587,7 +587,7 @@ components:
 	report, err := RunDogfood(dir, specPath)
 	require.NoError(t, err)
 
-	assert.Equal(t, "FAIL", report.Verdict)
+	assert.Equal(t, DogfoodVerdictFail, report.Verdict)
 	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
 	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
 	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
@@ -656,7 +656,7 @@ func (header) Set(string, string) {}
 	report, err := RunDogfood(dir, specPath)
 	require.NoError(t, err)
 
-	assert.NotEqual(t, "FAIL", report.Verdict, report.Issues)
+	assert.NotEqual(t, DogfoodVerdictFail, report.Verdict, report.Issues)
 	assert.True(t, report.OAuthScopeCoverage.Skipped)
 	assert.Empty(t, report.OAuthScopeCoverage.Violations)
 	assert.Contains(t, report.OAuthScopeCoverage.Detail, "resolved auth type api_key")
@@ -914,42 +914,42 @@ func TestDeriveDogfoodVerdict(t *testing.T) {
 		DeadFuncs:     DeadCodeResult{Dead: 0},
 		PipelineCheck: PipelineResult{SyncCallsDomain: true, SyncResourcesPresent: true},
 	}
-	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictWarn, deriveDogfoodVerdict(report, true))
 
 	report.DeadFlags.Dead = 0
 	report.DeadFuncs.Dead = 1
-	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictWarn, deriveDogfoodVerdict(report, true))
 
 	report.DeadFuncs.Dead = 0
 	report.PipelineCheck.SyncCallsDomain = false
-	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictWarn, deriveDogfoodVerdict(report, true))
 
 	report.PipelineCheck.SyncCallsDomain = true
-	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictPass, deriveDogfoodVerdict(report, true))
 
 	// Issue #1156: when sync.go is emitted but defaultSyncResources is empty,
 	// the sync command is a runtime no-op. Dogfood must flag this as WARN so
 	// the gap surfaces at shipcheck time.
 	report.PipelineCheck.SyncFileEmitted = true
 	report.PipelineCheck.SyncResourcesPresent = false
-	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictWarn, deriveDogfoodVerdict(report, true))
 	report.PipelineCheck.SyncResourcesPresent = true
-	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictPass, deriveDogfoodVerdict(report, true))
 
 	report.ExampleCheck = ExampleCheckResult{Tested: 10, WithExamples: 4}
-	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictFail, deriveDogfoodVerdict(report, true))
 
 	report.ExampleCheck = ExampleCheckResult{Tested: 10, WithExamples: 5}
-	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictPass, deriveDogfoodVerdict(report, true))
 
 	report.ExampleCheck = ExampleCheckResult{Tested: 10, WithExamples: 10, InvalidFlags: []string{"--bogus"}}
-	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictWarn, deriveDogfoodVerdict(report, true))
 
 	report.ExampleCheck = ExampleCheckResult{Skipped: true, Detail: "could not build CLI binary"}
-	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictWarn, deriveDogfoodVerdict(report, true))
 
 	report.ExampleCheck = ExampleCheckResult{Tested: 10, WithExamples: 10, ValidExamples: 10}
-	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictPass, deriveDogfoodVerdict(report, true))
 }
 
 func TestDeriveDogfoodVerdict_FailsOnMissingDataSourceStrategy(t *testing.T) {
@@ -964,7 +964,7 @@ func TestDeriveDogfoodVerdict_FailsOnMissingDataSourceStrategy(t *testing.T) {
 		}},
 	}
 
-	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, false))
+	assert.Equal(t, DogfoodVerdictFail, deriveDogfoodVerdict(report, false))
 }
 
 func TestDeriveDogfoodVerdict_FailsOnAuthGetenv(t *testing.T) {
@@ -978,7 +978,7 @@ func TestDeriveDogfoodVerdict_FailsOnAuthGetenv(t *testing.T) {
 		}},
 	}
 
-	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, false))
+	assert.Equal(t, DogfoodVerdictFail, deriveDogfoodVerdict(report, false))
 	issues := collectDogfoodIssues(report, false)
 	assert.Contains(t, issues, `1/1 novel features read auth via os.Getenv: live (live.go) — os.Getenv("DAZN_TOKEN") bypasses credentials saved by auth login / set-token; use config.Load + AuthHeader() or novelAuthHeader(flags)`)
 }
@@ -1014,7 +1014,7 @@ func newRootCmd() *cobra.Command {
 	require.Len(t, got.Findings, 2)
 	assert.Equal(t, "Fresh headline from research", got.Expected)
 	assert.Contains(t, got.Findings[0].Actual, "Old stale headline")
-	assert.Equal(t, "FAIL", deriveDogfoodVerdict(&DogfoodReport{
+	assert.Equal(t, DogfoodVerdictFail, deriveDogfoodVerdict(&DogfoodReport{
 		PipelineCheck:         PipelineResult{SyncCallsDomain: true, SyncResourcesPresent: true},
 		DescriptionDriftCheck: &got,
 	}, false))
@@ -1797,13 +1797,13 @@ func TestDeriveDogfoodVerdict_WiringChecks(t *testing.T) {
 			WorkflowComplete: WorkflowCompleteResult{Skipped: true},
 		},
 	}
-	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictFail, deriveDogfoodVerdict(report, true))
 
 	// Test that config inconsistency causes FAIL
 	report.WiringCheck.CommandTree.Unregistered = nil
 	report.WiringCheck.ConfigConsist.Consistent = false
 	report.WiringCheck.ConfigConsist.Mismatched = []string{"AccessToken", "DominosToken"}
-	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictFail, deriveDogfoodVerdict(report, true))
 
 	// Test that unmapped workflow steps cause WARN
 	report.WiringCheck.ConfigConsist.Consistent = true
@@ -1812,11 +1812,11 @@ func TestDeriveDogfoodVerdict_WiringChecks(t *testing.T) {
 		MappedSteps:   1,
 		UnmappedSteps: []string{"cart checkout"},
 	}
-	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictWarn, deriveDogfoodVerdict(report, true))
 
 	// Test that clean wiring passes
 	report.WiringCheck.WorkflowComplete = WorkflowCompleteResult{Skipped: true}
-	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictPass, deriveDogfoodVerdict(report, true))
 }
 
 func TestDeriveDogfoodVerdict_PreservesPriority(t *testing.T) {
@@ -1824,13 +1824,13 @@ func TestDeriveDogfoodVerdict_PreservesPriority(t *testing.T) {
 	report.AuthCheck.Match = true
 	report.DeadFlags.Dead = 1
 	report.ExampleCheck = ExampleCheckResult{Tested: 10, WithExamples: 4}
-	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictFail, deriveDogfoodVerdict(report, true))
 
 	report = passingDogfoodReport()
 	report.AuthCheck.Match = true
 	report.DeadFuncs.Dead = 1
 	report.WiringCheck.CommandTree.Unregistered = []string{"orphaned"}
-	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictWarn, deriveDogfoodVerdict(report, true))
 }
 
 func TestCheckNovelFeatures(t *testing.T) {
@@ -3200,7 +3200,7 @@ func TestDeriveDogfoodVerdict_NovelFeatures(t *testing.T) {
 
 	// Missing novel features → WARN
 	base.NovelFeaturesCheck = NovelFeaturesCheckResult{Planned: 3, Found: 1, Missing: []string{"triage", "utilization"}}
-	assert.Equal(t, "WARN", deriveDogfoodVerdict(base, true))
+	assert.Equal(t, DogfoodVerdictWarn, deriveDogfoodVerdict(base, true))
 
 	// Depth mismatches → WARN
 	base.NovelFeaturesCheck = NovelFeaturesCheckResult{
@@ -3212,19 +3212,19 @@ func TestDeriveDogfoodVerdict_NovelFeatures(t *testing.T) {
 			Actual:     "assets grab",
 		}},
 	}
-	assert.Equal(t, "WARN", deriveDogfoodVerdict(base, true))
+	assert.Equal(t, DogfoodVerdictWarn, deriveDogfoodVerdict(base, true))
 
 	// TODO stubs → WARN
 	base.NovelFeaturesCheck = NovelFeaturesCheckResult{Planned: 2, Found: 2, Stubbed: []string{"call"}}
-	assert.Equal(t, "WARN", deriveDogfoodVerdict(base, true))
+	assert.Equal(t, DogfoodVerdictWarn, deriveDogfoodVerdict(base, true))
 
 	// All found → PASS
 	base.NovelFeaturesCheck = NovelFeaturesCheckResult{Planned: 2, Found: 2}
-	assert.Equal(t, "PASS", deriveDogfoodVerdict(base, true))
+	assert.Equal(t, DogfoodVerdictPass, deriveDogfoodVerdict(base, true))
 
 	// Skipped → PASS (no penalty)
 	base.NovelFeaturesCheck = NovelFeaturesCheckResult{Skipped: true}
-	assert.Equal(t, "PASS", deriveDogfoodVerdict(base, true))
+	assert.Equal(t, DogfoodVerdictPass, deriveDogfoodVerdict(base, true))
 }
 
 func TestDeadFunctions_TransitiveReachability(t *testing.T) {
@@ -3584,7 +3584,7 @@ func TestDeriveDogfoodVerdict_NamingViolationFails(t *testing.T) {
 			},
 		},
 	}
-	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, true))
+	assert.Equal(t, DogfoodVerdictFail, deriveDogfoodVerdict(report, true))
 }
 
 func writeTestFile(t *testing.T, path string, content string) {
@@ -3953,7 +3953,7 @@ func TestDeriveDogfoodVerdict_FailsOnMissingTests(t *testing.T) {
 		Checked:      1,
 		MissingTests: []string{"recipes"},
 	}
-	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, false))
+	assert.Equal(t, DogfoodVerdictFail, deriveDogfoodVerdict(report, false))
 }
 
 func TestDeriveDogfoodVerdict_PassesWithOnlyThinTests(t *testing.T) {
@@ -3964,7 +3964,7 @@ func TestDeriveDogfoodVerdict_PassesWithOnlyThinTests(t *testing.T) {
 		Checked:   1,
 		ThinTests: []string{"recipes (1 test funcs)"},
 	}
-	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, false))
+	assert.Equal(t, DogfoodVerdictPass, deriveDogfoodVerdict(report, false))
 }
 
 func TestDogfoodExampleCommandPathsFromAgentContext(t *testing.T) {
