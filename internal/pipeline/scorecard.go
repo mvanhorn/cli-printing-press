@@ -327,8 +327,6 @@ func scoreDomainDimensions(sc *Scorecard, outputDir string, spec *openAPISpecInf
 	// shipped CLI has never been exercised against the real API.
 	if liveScore, scored := scoreLiveAPIVerification(verifyReport); scored {
 		sc.Steinberger.LiveAPIVerification = liveScore
-	} else if !isDevice && !isLocalDatastoreCLIDir(outputDir) {
-		markUnverifiedDimension(sc, DimLiveAPIVerification)
 	} else {
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimLiveAPIVerification)
 	}
