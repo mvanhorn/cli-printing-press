@@ -189,6 +189,20 @@ func TestSyncSkipsWhenRequiredQueryParamsUnfilled(t *testing.T) {
 	} else if !last.IsZero() {
 		t.Fatalf("last_synced_at = %v, want unchanged zero after skip", last)
 	}
+	var checkpoints int
+	if err := db.DB().QueryRow("SELECT COUNT(*) FROM sync_state WHERE resource_type='availability'").Scan(&checkpoints); err != nil || checkpoints != 0 {
+		t.Fatalf("preflight created checkpoint: count=%d error=%v", checkpoints, err)
+	}
+	watermark := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := db.SaveSyncStateAt("availability", "saved-cursor", 7, watermark); err != nil { t.Fatal(err) }
+	res = syncResource(context.Background(), client, db, "availability", "", false, 1, false, false, nil, nil)
+	if res.Err != nil || !errors.Is(res.Warn, errMissingRequiredQueryParams) || len(client.got) != 0 { t.Fatalf("skip result=%+v calls=%d", res, len(client.got)) }
+	cursor, stamp, count, err := db.GetSyncState("availability")
+	var complete int
+	markerErr := db.DB().QueryRow("SELECT last_attempt_complete FROM sync_state WHERE resource_type='availability'").Scan(&complete)
+	if err != nil || markerErr != nil || cursor != "saved-cursor" || !stamp.Equal(watermark) || count != 7 || complete != 1 {
+		t.Fatalf("preflight changed checkpoint: %q %s count=%d complete=%d errors=%v/%v", cursor, stamp, count, complete, err, markerErr)
+	}
 }
 
 func TestSyncSkipsWhenRequiredFormatUnfilled(t *testing.T) {

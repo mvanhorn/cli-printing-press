@@ -4803,7 +4803,8 @@ func TestGenerateMCPStoreGuidanceTestsPass(t *testing.T) {
 	gen.VisionSet = VisionTemplateSet{Store: true, Search: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
-	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "TestMCP(Search|SQL)(MissingStore|EmptyStore|DomainTable)|TestMCPLocalStoreMetaIncludesOldestSyncedAt")
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "TestMCP(Search|SQL)(MissingStore|EmptyStore|DomainTable)|TestMCPLocalStoreMetaIncludesOldestSyncedAt|TestMCPStoreStatusDistinguishesCompletedEmptyAndPartialSync|TestMCPUnmigratedCheckpointsCannotProveCompletion")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGenerateMCPToolResultTextBudgetTestsPass(t *testing.T) {
@@ -6091,6 +6092,67 @@ func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/store")
+}
+
+func TestGeneratedUpsertBatchReportsCommittedCountAfterRollback(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := adsCampaignSpec()
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	storeTest := `package store
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"testing"
+)
+
+func TestUpsertBatchDetailed_RollbackReportsZeroStored(t *testing.T) {
+	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "store.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if _, err := s.DB().Exec(` + "`" + `CREATE TRIGGER abort_campaign_insert
+		BEFORE INSERT ON campaigns
+		WHEN NEW.id = 'fatal'
+		BEGIN
+			SELECT RAISE(ROLLBACK, 'forced transaction rollback');
+		END` + "`" + `); err != nil {
+		t.Fatal(err)
+	}
+
+	items := []json.RawMessage{
+		json.RawMessage(` + "`" + `{"id":"ok","name":"first"}` + "`" + `),
+		json.RawMessage(` + "`" + `{"id":"fatal","name":"second"}` + "`" + `),
+	}
+	stored, _, _, err := s.UpsertBatchDetailed("campaigns", items)
+	if err == nil {
+		t.Fatal("UpsertBatchDetailed returned nil error after forced rollback")
+	}
+	if stored != 0 {
+		t.Fatalf("stored = %d, want 0 after transaction rollback", stored)
+	}
+	for _, table := range []string{"resources", "campaigns"} {
+		var count int
+		if err := s.DB().QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s count = %d, want 0 after transaction rollback", table, count)
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "store", "rollback_count_test.go"), []byte(storeTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "TestUpsertBatchDetailed_RollbackReportsZeroStored")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // TestUpsertDispatchPreservesMultiWordResourceCasing is the regression test
@@ -14905,10 +14967,10 @@ func TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
 		"GraphQL sync.go dogfood cap must bound generated syncs to one page")
 	assert.NotContains(t, string(syncGo), `cmd.Flags().IntVar(&maxPages, "max-pages", 10,`,
 		"GraphQL sync.go must not retain the old 10-page default")
-	assert.Contains(t, string(syncGo), "capExitHit := false",
-		"GraphQL sync.go must track whether --max-pages stopped the loop")
-	assert.Contains(t, string(syncGo), "finalCursor = capExitCursor",
-		"GraphQL sync.go must preserve the resume cursor on --max-pages cap exit")
+	assert.Contains(t, string(syncGo), "attemptComplete := false",
+		"GraphQL sync.go must distinguish a proven natural end from a capped walk")
+	assert.Contains(t, string(syncGo), "db.SaveSyncProgress(resource, progressCursor, totalCount)",
+		"GraphQL sync.go must preserve resumable progress without advancing the completion watermark")
 	assert.Contains(t, string(syncGo), "conn.PageInfo.HasNextPage && conn.PageInfo.EndCursor != \"\" && conn.PageInfo.EndCursor != cursor",
 		"GraphQL sync.go must only preserve a cap-exit cursor when another page exists")
 
@@ -14933,6 +14995,7 @@ import (
 type gqlResumeHandler struct {
 	cursors []string
 	stuck   bool
+	failPage bool
 }
 
 func (h *gqlResumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -14970,6 +15033,9 @@ func (h *gqlResumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"id":    page + "-" + strconv.Itoa(i),
 			"title": page + " issue " + strconv.Itoa(i),
 		}
+	}
+	if h.failPage && cursor == "page-2" {
+		delete(nodes[0], "id")
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"data": map[string]any{
@@ -15035,6 +15101,33 @@ func TestGraphQLSyncResourcePreservesCursorOnMaxPagesCap(t *testing.T) {
 	}
 }
 
+func TestGraphQLSyncResourceRetriesLossyPageBeforeCompletion(t *testing.T) {
+	handler := &gqlResumeHandler{failPage: true}
+	c, db, cleanup := newGraphQLSyncClient(t, handler)
+	defer cleanup()
+	watermark := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := db.SaveSyncStateAt("issues", "", 0, watermark); err != nil { t.Fatal(err) }
+	res := syncResource(context.Background(), c, db, "issues", "", false, 0, false)
+	if res.Err == nil || !res.IntegrityFailure { t.Fatalf("lossy page result = %+v", res) }
+	cursor, gotTime, _, err := db.GetSyncState("issues")
+	if err != nil || cursor != "page-2" || !gotTime.Equal(watermark) {
+		t.Fatalf("failed checkpoint = %q, %s, %v", cursor, gotTime, err)
+	}
+	var complete int
+	if err := db.DB().QueryRow("SELECT last_attempt_complete FROM sync_state WHERE resource_type = 'issues'").Scan(&complete); err != nil || complete != 0 {
+		t.Fatalf("failed completion marker = %d, %v", complete, err)
+	}
+	handler.failPage = false
+	handler.cursors = nil
+	res = syncResource(context.Background(), c, db, "issues", "", false, 0, false)
+	if res.Err != nil || res.Warn != nil { t.Fatalf("retry result = %+v", res) }
+	if strings.Join(handler.cursors, ",") != "page-2,page-3,page-4,page-5" { t.Fatalf("retry skipped lost page: %v", handler.cursors) }
+	if count, err := db.Count("issues"); err != nil || count != 250 { t.Fatalf("final count = %d, %v; want 250", count, err) }
+	if err := db.DB().QueryRow("SELECT last_attempt_complete FROM sync_state WHERE resource_type = 'issues'").Scan(&complete); err != nil || complete != 1 {
+		t.Fatalf("final completion marker = %d, %v", complete, err)
+	}
+}
+
 func TestGraphQLSyncResourceClearsCursorWhenCapEqualsFinalPage(t *testing.T) {
 	handler := &gqlResumeHandler{}
 	c, db, cleanup := newGraphQLSyncClient(t, handler)
@@ -15059,7 +15152,7 @@ func TestGraphQLSyncResourceClearsCursorWhenCapEqualsFinalPage(t *testing.T) {
 	}
 }
 
-func TestGraphQLSyncResourceClearsSelfReferentialCursorOnMaxPagesCap(t *testing.T) {
+func TestGraphQLSyncResourcePreservesSelfReferentialCursorOnMaxPagesCap(t *testing.T) {
 	handler := &gqlResumeHandler{stuck: true}
 	c, db, cleanup := newGraphQLSyncClient(t, handler)
 	defer cleanup()
@@ -15067,24 +15160,32 @@ func TestGraphQLSyncResourceClearsSelfReferentialCursorOnMaxPagesCap(t *testing.
 	if err := db.SaveSyncState("issues", "stuck", 100); err != nil {
 		t.Fatalf("seed sync state: %v", err)
 	}
+	_, watermark, _, err := db.GetSyncState("issues")
+	if err != nil { t.Fatal(err) }
 	res := syncResource(context.Background(), c, db, "issues", "", false, 1, false)
-	if res.Err != nil {
-		t.Fatalf("syncResource error: %v", res.Err)
+	if res.Err == nil || res.Warn != nil || res.Bounded || strings.Contains(res.Err.Error(), "insufficient access") {
+		t.Fatalf("self-referential continuation must fail as unproven pagination: %+v", res)
 	}
 	if got := strings.Join(handler.cursors, ","); got != "stuck" {
 		t.Fatalf("run cursors = %q, want %q", got, "stuck")
 	}
-	cursor, _, _, err := db.GetSyncState("issues")
+	cursor, stamp, _, err := db.GetSyncState("issues")
 	if err != nil {
 		t.Fatalf("get sync state after self-referential capped run: %v", err)
 	}
-	if cursor != "" {
-		t.Fatalf("cursor after self-referential capped run = %q, want empty", cursor)
+	if cursor != "stuck" {
+		t.Fatalf("cursor after self-referential capped run = %q, want stuck", cursor)
+	}
+	var complete int
+	if err := db.DB().QueryRow("SELECT last_attempt_complete FROM sync_state WHERE resource_type='issues'").Scan(&complete); err != nil { t.Fatal(err) }
+	if complete != 0 || !stamp.Equal(watermark) {
+		t.Fatalf("self-referential continuation changed readiness: complete=%d stamp=%s watermark=%s", complete, stamp, watermark)
 	}
 }
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "graphql_sync_resume_cursor_test.go"), []byte(behaviorTest), 0o644))
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^TestGraphQLSyncResource(PreservesCursorOnMaxPagesCap|ClearsCursorWhenCapEqualsFinalPage|ClearsSelfReferentialCursorOnMaxPagesCap)$")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestGraphQLSyncResource(PreservesCursorOnMaxPagesCap|RetriesLossyPageBeforeCompletion|ClearsCursorWhenCapEqualsFinalPage|PreservesSelfReferentialCursorOnMaxPagesCap)$")
+	requireGeneratedCompiles(t, outputDir)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")

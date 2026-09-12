@@ -4,14 +4,12 @@
 package mcp
 
 import (
-{{- if or .VisionSet.Search .VisionSet.Store}}
 	"context"
-{{- end}}
 	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
-{{- if or .VisionSet.Store (and (or .VisionSet.Search .VisionSet.Store) .APISpec.IsLocalSQLiteSource)}}
+{{- if or .VisionSet.Search .VisionSet.Store}}
 	"time"
 {{- end}}
 
@@ -119,6 +117,95 @@ func TestMCPRegisterToolsPreservesTypedSpecialTools(t *testing.T) {
 	}
 {{- end}}
 }
+
+func TestMCPContextMatchesRegisteredToolSurface(t *testing.T) {
+	s := server.NewMCPServer("{{.Name}}", "test")
+	RegisterTools(s)
+
+	result, err := handleContext(s)(context.Background(), mcplib.CallToolRequest{})
+	if err != nil {
+		t.Fatalf("handleContext() error = %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("handleContext() IsError = %v, want false", result != nil && result.IsError)
+	}
+	var payload struct {
+		ToolCount int `json:"tool_count"`
+		CommandMirrorCapabilities []struct {
+			CLICommand string `json:"cli_command"`
+			MCPTool string `json:"mcp_tool"`
+		} `json:"command_mirror_capabilities"`
+	}
+	if err := json.Unmarshal([]byte(mcpTextContent(t, result)), &payload); err != nil {
+		t.Fatalf("context result must be valid JSON: %v", err)
+	}
+	if want := len(s.ListTools()); payload.ToolCount != want {
+		t.Fatalf("context tool_count = %d, want registered count %d", payload.ToolCount, want)
+	}
+	for _, capability := range payload.CommandMirrorCapabilities {
+		if capability.CLICommand == "" || capability.MCPTool == "" {
+			t.Fatalf("context capability lacks explicit CLI/MCP names: %#v", capability)
+		}
+		registered := s.GetTool(capability.MCPTool)
+		if registered == nil || registered.Tool.Meta == nil || registered.Tool.Meta.AdditionalFields["pp:tenant-gate"] != "child-cli" {
+			t.Fatalf("context capability %q does not resolve to a registered command mirror", capability.CLICommand)
+		}
+	}
+}
+
+{{- if or .VisionSet.Search .VisionSet.Store}}
+func TestMCPStoreStatusDistinguishesCompletedEmptyAndPartialSync(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("creating store: %v", err)
+	}
+	defer db.Close()
+
+	status, err := mcpStoreStatus(db)
+	if err != nil || status != mcpStoreStatusEmpty {
+		t.Fatalf("status before sync = %q, err=%v, want empty", status, err)
+	}
+	resourceType := "{{firstResource .Resources}}"
+	if err := db.SaveSyncStateAt(resourceType, "", 0, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	status, err = mcpStoreStatus(db)
+	if err != nil || status != mcpStoreStatusReady {
+		t.Fatalf("status after completed empty sync = %q, err=%v, want ready", status, err)
+	}
+	if err := db.SaveSyncProgress(resourceType, "resume-here", 0); err != nil {
+		t.Fatal(err)
+	}
+	status, err = mcpStoreStatus(db)
+	if err != nil || status != mcpStoreStatusPartial {
+		t.Fatalf("status after partial retry = %q, err=%v, want partial", status, err)
+	}
+}
+
+func TestMCPUnmigratedCheckpointsCannotProveCompletion(t *testing.T) {
+	for _, cursor := range []string{"", "resume-here"} {
+		name := "no-cursor"
+		if cursor != "" { name = "resumable" }
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "data.db")
+			db, err := store.Open(path)
+			if err != nil { t.Fatal(err) }
+			if err := db.SaveSyncStateAt("{{firstResource .Resources}}", cursor, 0, time.Now().UTC()); err != nil { t.Fatal(err) }
+			if _, err := db.DB().Exec("ALTER TABLE sync_state DROP COLUMN last_attempt_complete"); err != nil { t.Fatal(err) }
+			if _, err := db.DB().Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil { t.Fatal(err) }
+			if err := db.Close(); err != nil { t.Fatal(err) }
+			readOnly, err := store.OpenReadOnly(path)
+			if err != nil { t.Fatal(err) }
+			defer readOnly.Close()
+			status, err := mcpStoreStatus(readOnly)
+			if err != nil || status != mcpStoreStatusPartial {
+				t.Fatalf("unmigrated checkpoint status = %q, err=%v; want partial", status, err)
+			}
+		})
+	}
+}
+{{- end}}
 
 {{- if .VisionSet.Search}}
 

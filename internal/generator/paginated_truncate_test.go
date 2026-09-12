@@ -866,12 +866,12 @@ func TestCappedPageWithUnstoredItemRetainsWatermark(t *testing.T) {
 		json.RawMessage("{\"items\":[{\"id\":\"stored\",\"updated_at\":\"2026-01-02T00:00:00Z\"},{\"updated_at\":\"2026-01-03T00:00:00Z\"}],\"next_cursor\":\"page-2\",\"has_more\":true}"),
 	}}
 	result := syncResource(context.Background(), client, db, "items", old.Format(time.RFC3339), false, 1, false, false, &syncUserParams{}, io.Discard)
-	if result.Err != nil || result.Warn != nil {
-		t.Fatalf("sync result error=%v warning=%v", result.Err, result.Warn)
+	if result.Err == nil || !result.IntegrityFailure {
+		t.Fatalf("lossy page must report an integrity failure: %+v", result)
 	}
 	cursor, synced, count := readWatermark(t, db)
-	if cursor != "page-2" || !synced.Equal(old) || count != 2 {
-		t.Fatalf("sync state = cursor %q, synced %s, count %d; want page-2, %s, 2", cursor, synced, count, old)
+	if cursor != "" || !synced.Equal(old) || count != 1 {
+		t.Fatalf("sync state = cursor %q, synced %s, count %d; want unchanged boundary, %s, 1", cursor, synced, count, old)
 	}
 }
 

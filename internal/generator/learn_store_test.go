@@ -11,7 +11,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
-func TestGenerateStoreSchemaVersion_DisabledAdvancesToV4(t *testing.T) {
+func TestGenerateStoreSchemaVersion_DisabledAdvancesToV5(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("learn-version-disabled")
@@ -25,14 +25,14 @@ func TestGenerateStoreSchemaVersion_DisabledAdvancesToV4(t *testing.T) {
 	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
 	require.NoError(t, err)
 	src := string(storeGo)
-	require.Contains(t, src, "const StoreSchemaVersion = 4")
-	require.NotContains(t, src, "const StoreSchemaVersion = 9")
+	require.Contains(t, src, "const StoreSchemaVersion = 5")
+	require.NotContains(t, src, "const StoreSchemaVersion = 10")
 	for _, table := range []string{"search_learnings", "search_patterns", "entity_lookups", "learning_playbooks"} {
 		require.NotContains(t, src, table, "learn-disabled spec must not emit %s migration", table)
 	}
 }
 
-func TestGenerateStoreSchemaVersion_EnabledAdvancesToV9WithLearnTables(t *testing.T) {
+func TestGenerateStoreSchemaVersion_EnabledAdvancesToV10WithLearnTables(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("learn-version-enabled")
@@ -45,8 +45,8 @@ func TestGenerateStoreSchemaVersion_EnabledAdvancesToV9WithLearnTables(t *testin
 	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
 	require.NoError(t, err)
 	src := string(storeGo)
-	require.Contains(t, src, "const StoreSchemaVersion = 9")
-	require.NotContains(t, src, "const StoreSchemaVersion = 4")
+	require.Contains(t, src, "const StoreSchemaVersion = 10")
+	require.NotContains(t, src, "const StoreSchemaVersion = 5")
 	for _, want := range []string{
 		"CREATE TABLE IF NOT EXISTS search_learnings",
 		"CREATE TABLE IF NOT EXISTS search_patterns",
@@ -157,6 +157,26 @@ func TestGenerateStoreCompilesUnderLearnEnabled(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	runGoCommand(t, outputDir, "test", "-c", "-o", filepath.Join(t.TempDir(), "store.test"), "./internal/store/...")
+}
+
+func TestGeneratedLegacySyncCompletionMigration(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		name := "legacy-sync-no-learn"
+		if enabled {
+			name = "legacy-sync-learn"
+		}
+		t.Run(name, func(t *testing.T) {
+			apiSpec := minimalSpec(name)
+			apiSpec.Learn.Enabled = enabled
+			apiSpec.Learn.Disabled = !enabled
+			outputDir := filepath.Join(t.TempDir(), name+"-pp-cli")
+			gen := New(apiSpec, outputDir)
+			gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+			require.NoError(t, gen.Generate())
+			runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "^TestMigrateAddsSyncAttemptCompletion$", "-count=1")
+			requireGeneratedCompiles(t, outputDir)
+		})
+	}
 }
 
 // TestGenerateLearnEnabledWithoutStoreVisionPromotes replaces the old

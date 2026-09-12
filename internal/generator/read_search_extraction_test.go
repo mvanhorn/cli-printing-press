@@ -271,7 +271,7 @@ func TestHydrateScalarItemsCountsFailedHydration(t *testing.T) {
 	}
 }
 
-func TestSyncResourceWarnsOnPartialHydrationFailure(t *testing.T) {
+func TestSyncResourceRejectsPartialHydrationFailure(t *testing.T) {
 	db := openHydrationTestStore(t)
 	client := &fakeHydrateClient{
 		responses: map[string]json.RawMessage{
@@ -283,8 +283,8 @@ func TestSyncResourceWarnsOnPartialHydrationFailure(t *testing.T) {
 	var events bytes.Buffer
 
 	res := syncResource(context.Background(), client, db, "stories", "", true, 0, false, false, nil, &events)
-	if res.Err != nil {
-		t.Fatalf("syncResource error: %v", res.Err)
+	if res.Err == nil || !res.IntegrityFailure {
+		t.Fatalf("partial hydration must be an integrity failure: %+v", res)
 	}
 	if res.Count != 1 {
 		t.Fatalf("syncResource count = %d, want 1", res.Count)

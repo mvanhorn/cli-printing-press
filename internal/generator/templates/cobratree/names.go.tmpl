@@ -4,9 +4,103 @@
 package cobratree
 
 import (
+	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/mark3labs/mcp-go/server"
+	"github.com/spf13/cobra"
 )
+
+const mirrorCLICommandMetaKey = "pp:cli-command"
+
+// Capability discovery must advertise only runnable commands that survive
+// the mirror's visibility and ownership filters, not every documented example.
+func CommandPathForInvocation(root *cobra.Command, command string) string {
+	if root == nil {
+		return ""
+	}
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return ""
+	}
+	for _, field := range fields {
+		if field == "&&" || field == "||" || field == "|" || strings.Contains(field, ";") {
+			return ""
+		}
+	}
+	if fields[0] == root.Name() {
+		fields = fields[1:]
+	}
+	if len(fields) == 0 {
+		return ""
+	}
+	target, _, err := root.Find(fields)
+	if err != nil || target == nil || target == root {
+		return ""
+	}
+
+	var commandPath string
+	walk(root, nil, func(cmd *cobra.Command, path []string) {
+		if cmd != target || !cmd.Runnable() {
+			return
+		}
+		switch classify(cmd) {
+		case commandHidden, commandEndpoint, commandGroup, commandFramework:
+			return
+		}
+		commandPath = strings.Join(path, " ")
+	})
+	return commandPath
+}
+
+// Collision suffixes make guessed tool names unreliable. Registration metadata
+// binds each advertised capability to exactly one actual mirror tool.
+func ToolNameForCommand(s *server.MCPServer, root *cobra.Command, command string) string {
+	if s == nil {
+		return ""
+	}
+	commandPath := CommandPathForInvocation(root, command)
+	if commandPath == "" {
+		return ""
+	}
+	var name string
+	for toolName, registered := range s.ListTools() {
+		if registered == nil || registered.Tool.Meta == nil ||
+			registered.Tool.Meta.AdditionalFields[mirrorCLICommandMetaKey] != commandPath {
+			continue
+		}
+		if name != "" {
+			return ""
+		}
+		name = toolName
+	}
+	return name
+}
+
+func availableToolName(s *server.MCPServer, base string) string {
+	if base == "" {
+		return ""
+	}
+	existing := s.GetTool(base)
+	if existing == nil {
+		return base
+	}
+	// Typed, intent, orchestration, and framework tools own their names. Only
+	// another Cobra mirror can be safely disambiguated with a numeric suffix.
+	if existing.Tool.Meta == nil || existing.Tool.Meta.AdditionalFields == nil {
+		return ""
+	}
+	if commandPath, ok := existing.Tool.Meta.AdditionalFields[mirrorCLICommandMetaKey].(string); !ok || strings.TrimSpace(commandPath) == "" {
+		return ""
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := base + "_" + strconv.Itoa(suffix)
+		if s.GetTool(candidate) == nil {
+			return candidate
+		}
+	}
+}
 
 func toolNameForPath(parts []string) string {
 	var out []rune

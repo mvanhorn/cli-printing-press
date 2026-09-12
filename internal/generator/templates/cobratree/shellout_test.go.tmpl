@@ -597,6 +597,9 @@ func TestRegisterAllPreservesTypedToolsAndExposesHandBuiltSearchWithoutTypedEqui
 	RegisterAll(s, root, func() (string, error) { return "missing-binary", nil })
 
 	tools := s.ListTools()
+	if len(tools) != 2 {
+		t.Fatalf("registered tools = %#v, want typed context plus mirrored search", tools)
+	}
 	if tools["context"].Tool.Description != "typed context" {
 		t.Fatalf("typed context tool was overwritten: %#v", tools["context"].Tool)
 	}
@@ -614,8 +617,34 @@ func TestRegisterAllPreservesTypedToolsAndExposesHandBuiltSearchWithoutTypedEqui
 		return mcplib.NewToolResultText("typed"), nil
 	})
 	RegisterAll(sWithTypedSearch, root, func() (string, error) { return "missing-binary", nil })
-	if got := sWithTypedSearch.ListTools()["search"].Tool.Description; got != "typed search" {
+	typedSearchTools := sWithTypedSearch.ListTools()
+	if len(typedSearchTools) != 1 {
+		t.Fatalf("registered tools = %#v, want only typed search", typedSearchTools)
+	}
+	if got := typedSearchTools["search"].Tool.Description; got != "typed search" {
 		t.Fatalf("typed search tool was overwritten: %q", got)
+	}
+}
+
+func TestRegisterAllDisambiguatesOnlyMirrorOwnedNameCollisions(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	root.AddCommand(&cobra.Command{Use: "foo-bar", RunE: func(*cobra.Command, []string) error { return nil }})
+	foo := &cobra.Command{Use: "foo"}
+	foo.AddCommand(&cobra.Command{Use: "bar", RunE: func(*cobra.Command, []string) error { return nil }})
+	root.AddCommand(foo)
+
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, root, func() (string, error) { return "missing-binary", nil })
+	top := ToolNameForCommand(s, root, "foo-bar")
+	nested := ToolNameForCommand(s, root, "foo bar")
+	if top == "" || nested == "" || top == nested {
+		t.Fatalf("collision tools = top %q nested %q, want distinct names", top, nested)
+	}
+	for toolName, commandPath := range map[string]string{top: "foo-bar", nested: "foo bar"} {
+		registered := s.GetTool(toolName)
+		if registered == nil || registered.Tool.Meta == nil || registered.Tool.Meta.AdditionalFields[mirrorCLICommandMetaKey] != commandPath {
+			t.Fatalf("tool %q metadata = %#v, want command path %q", toolName, registered, commandPath)
+		}
 	}
 }
 

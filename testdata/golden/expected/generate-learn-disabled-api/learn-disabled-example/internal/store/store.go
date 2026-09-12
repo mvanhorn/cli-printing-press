@@ -51,9 +51,10 @@ func IsUUID(s string) bool {
 
 // StoreSchemaVersion is the on-disk schema version this binary understands.
 // It is stamped into SQLite's PRAGMA user_version on fresh databases and
-// checked on every open. Non-learn CLIs advance to v4 for the
+// checked on every open. Non-learn CLIs advance to v5 for the
+// explicit latest-sync-attempt completion marker, on top of v4's
 // resources_fts content extraction.
-const StoreSchemaVersion = 4
+const StoreSchemaVersion = 5
 
 // resourcesFTSContentSchemaVersion pins the schema bump that rewrote
 // resources_fts content from raw JSON to searchable leaf values. Keep this
@@ -403,6 +404,9 @@ func (s *Store) ensureColumn(ctx context.Context, conn *sql.Conn, table, column,
 // word.
 func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 	for _, c := range []struct{ table, column, decl string }{
+		// Legacy checkpoints cannot prove lossless completion: even an empty
+		// cursor may have come from a capped or partially stored page.
+		{table: "sync_state", column: "last_attempt_complete", decl: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "sync_state", column: "last_cursor", decl: "TEXT"},
 		{table: "sync_state", column: "last_synced_at", decl: "DATETIME"},
 		{table: "sync_state", column: "total_count", decl: "INTEGER DEFAULT 0"},
@@ -465,7 +469,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			resource_type TEXT PRIMARY KEY,
 			last_cursor TEXT,
 			last_synced_at DATETIME,
-			total_count INTEGER DEFAULT 0
+			total_count INTEGER DEFAULT 0,
+			last_attempt_complete INTEGER NOT NULL DEFAULT 0
 		)`,
 		resourcesFTSCreateSQL,
 	}
@@ -2644,10 +2649,9 @@ func (s *Store) UpsertBatchDetailed(resourceType string, items []json.RawMessage
 		}
 
 		if err := s.upsertGenericResourceTx(tx, resourceType, storageID, item); err != nil {
-			// Return the running stored count rather than zero so callers
-			// inspecting partial progress on failure see what already
-			// landed in earlier loop iterations.
-			return stored, extractFailures, typedFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, storageID, err)
+			// A non-nil error aborts this transaction through the deferred
+			// rollback, so no earlier in-memory progress was committed.
+			return 0, extractFailures, typedFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, storageID, err)
 		}
 		stored++
 	}
@@ -2660,7 +2664,6 @@ func (s *Store) UpsertBatchDetailed(resourceType string, items []json.RawMessage
 	if extractFailures > 0 && stored == 0 && len(items) > 0 {
 		fmt.Fprintf(os.Stderr, "warning: %d/%d %s items returned but not cached locally (no extractable ID field; offline lookup against these rows will be incomplete; live queries unaffected)\n", skippedCount, len(items), resourceType)
 	}
-
 	if err := tx.Commit(); err != nil {
 		return 0, extractFailures, typedFailures, err
 	}
@@ -2712,39 +2715,42 @@ func (s *Store) SaveSyncStateAt(resourceType, cursor string, count int, at time.
 	s.lockForWrite()
 	defer s.unlockAfterWrite()
 	_, err := s.db.Exec(
-		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count)
-		 VALUES (?, ?, ?, ?)
+		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count, last_attempt_complete)
+		 VALUES (?, ?, ?, ?, 1)
 		 ON CONFLICT(resource_type) DO UPDATE SET last_cursor = excluded.last_cursor,
-		 last_synced_at = excluded.last_synced_at, total_count = excluded.total_count`,
+		 last_synced_at = excluded.last_synced_at, total_count = excluded.total_count,
+		 last_attempt_complete = 1`,
 		resourceType, cursor, at.UTC().Format(time.RFC3339), count,
 	)
 	return err
 }
 
-// SaveSyncProgress stores pagination progress without changing the
-// incremental watermark. A new row gets a parseable zero timestamp so
-// GetSyncState can scan it into time.Time without a NULL conversion error.
+// SaveSyncProgress stores pagination progress, marks the latest attempt
+// incomplete, and preserves the last completed incremental watermark.
 func (s *Store) SaveSyncProgress(resourceType, cursor string, count int) error {
 	s.lockForWrite()
 	defer s.unlockAfterWrite()
 	_, err := s.db.Exec(
-		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count)
-		 VALUES (?, ?, ?, ?)
+		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count, last_attempt_complete)
+		 VALUES (?, ?, NULL, ?, 0)
 		 ON CONFLICT(resource_type) DO UPDATE SET last_cursor = excluded.last_cursor,
-		 total_count = excluded.total_count`,
-		resourceType, cursor, time.Time{}.UTC().Format(time.RFC3339), count,
+		 total_count = excluded.total_count, last_attempt_complete = 0`,
+		resourceType, cursor, count,
 	)
 	return err
 }
 
 func (s *Store) GetSyncState(resourceType string) (cursor string, lastSynced time.Time, count int, err error) {
+	var savedCursor sql.NullString
+	var savedTime sql.NullTime
 	err = s.db.QueryRow(
 		`SELECT last_cursor, last_synced_at, total_count FROM sync_state WHERE resource_type = ?`,
 		resourceType,
-	).Scan(&cursor, &lastSynced, &count)
+	).Scan(&savedCursor, &savedTime, &count)
 	if err == sql.ErrNoRows {
 		return "", time.Time{}, 0, nil
 	}
+	cursor, lastSynced = savedCursor.String, savedTime.Time
 	return
 }
 
@@ -2752,12 +2758,12 @@ func (s *Store) GetSyncState(resourceType string) (cursor string, lastSynced tim
 func (s *Store) SaveSyncCursor(resourceType, cursor string) error {
 	s.lockForWrite()
 	defer s.unlockAfterWrite()
-	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.Exec(
-		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count)
-		 VALUES (?, ?, ?, 0)
-		 ON CONFLICT(resource_type) DO UPDATE SET last_cursor = ?, last_synced_at = ?`,
-		resourceType, cursor, now, cursor, now,
+		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count, last_attempt_complete)
+		 VALUES (?, ?, ?, 0, 0)
+		 ON CONFLICT(resource_type) DO UPDATE SET last_cursor = excluded.last_cursor,
+		 last_attempt_complete = 0`,
+		resourceType, cursor, time.Time{}.UTC().Format(time.RFC3339),
 	)
 	return err
 }

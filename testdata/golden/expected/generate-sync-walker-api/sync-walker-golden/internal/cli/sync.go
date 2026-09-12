@@ -491,7 +491,11 @@ func syncResource(ctx context.Context, c interface {
 	requestedAt := started.UTC()
 
 	// Resume cursor from sync_state (unless --full cleared it)
-	existingCursor, lastSynced, _, _ := db.GetSyncState(resource)
+	persistedCursor, lastSynced, existingCount, stateErr := db.GetSyncState(resource)
+	if stateErr != nil {
+		return syncResult{Resource: resource, Err: stateErr, Duration: time.Since(started)}
+	}
+	existingCursor := persistedCursor
 	if !full {
 		if storedCount, err := db.Count(resource); err == nil && storedCount == 0 {
 			existingCursor = ""
@@ -556,6 +560,13 @@ func syncResource(ctx context.Context, c interface {
 			Resource: resource,
 			Warn:     fmt.Errorf("%w for %s: %s", errMissingRequiredQueryParams, resource, strings.Join(missing, ", ")),
 			Duration: time.Since(started),
+		}
+	}
+	// Preflight skips must preserve readiness. Once requests can run, mark
+	// the attempt incomplete without moving the persisted resume boundary.
+	if preview, ok := c.(interface{ IsDryRun() bool }); !ok || !preview.IsDryRun() {
+		if err := db.SaveSyncProgress(resource, persistedCursor, existingCount); err != nil {
+			return syncResult{Resource: resource, Err: fmt.Errorf("saving sync progress for %s: starting attempt: %w", resource, err), Duration: time.Since(started)}
 		}
 	}
 	var progressCount int64
@@ -803,6 +814,13 @@ func syncResource(ctx context.Context, c interface {
 			}
 			anomalyEmitted = true
 		}
+		if pageFailureCount > 0 {
+			err := fmt.Errorf("%s consumed %d item(s), stored %d, and lost %d during hydration or primary-key extraction", resource, fetchedThisPage, stored, pageFailureCount)
+			if !humanFriendly {
+				fmt.Fprintln(syncEvents, syncErrorJSON(resource, "", err))
+			}
+			return syncResult{Resource: resource, Count: totalCount + stored, Err: err, IntegrityFailure: true, Duration: time.Since(started)}
+		}
 
 		totalCount += stored
 		atomic.AddInt64(&progressCount, int64(stored))
@@ -948,6 +966,8 @@ func syncResource(ctx context.Context, c interface {
 		cursor = nextCursor
 	}
 
+	var reconcileErr error
+
 	// Flat reconcile: prune local rows the API no longer returns, gated on a
 	// proven-complete sync.
 	//   - flat_global (single-tenant): the table is the partition. No tenant
@@ -966,6 +986,9 @@ func syncResource(ctx context.Context, c interface {
 					resource, seenIDs, reconcileTypedTable(resource), store.CascadeJunctionsFor(resource),
 				)
 				if rerr != nil {
+					outcome.complete = false
+					outcome.reason = "reconcile_error"
+					reconcileErr = fmt.Errorf("reconciling %s: %w", resource, rerr)
 					fmt.Fprintf(syncEvents, `{"event":"reconcile_error","resource":"%s","scope":"*","error":%q}`+"\n", resource, rerr.Error())
 				} else {
 					fmt.Fprintf(syncEvents, `{"event":"reconcile","resource":"%s","scope":"*","deleted":%d}`+"\n", resource, deleted)
@@ -984,6 +1007,9 @@ func syncResource(ctx context.Context, c interface {
 					seenIDs, reconcileTypedTable(resource), store.CascadeJunctionsFor(resource),
 				)
 				if rerr != nil {
+					outcome.complete = false
+					outcome.reason = "reconcile_error"
+					reconcileErr = fmt.Errorf("reconciling %s for tenant %s: %w", resource, tenantUUID, rerr)
 					fmt.Fprintf(syncEvents, `{"event":"reconcile_error","resource":"%s","scope":"%s","error":%q}`+"\n", resource, tenantUUID, rerr.Error())
 				} else {
 					fmt.Fprintf(syncEvents, `{"event":"reconcile","resource":"%s","scope":"%s","deleted":%d}`+"\n", resource, tenantUUID, deleted)
@@ -1019,6 +1045,30 @@ func syncResource(ctx context.Context, c interface {
 	if countErr != nil {
 		return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("counting stored %s rows: %w", resource, countErr), Duration: time.Since(started)}
 	}
+	// Integrity verdicts must precede completion persistence. Otherwise a
+	// run can advance its watermark and only then report that no rows landed.
+	if consumedTotal > 0 && totalCount == 0 {
+		if err := db.SaveSyncProgress(resource, finalCursor, cachedCount); err != nil {
+			return syncResult{Resource: resource, Count: 0, Err: fmt.Errorf("saving incomplete sync progress for %s: %w", resource, err), Duration: time.Since(started)}
+		}
+		if extractFailureTotal < consumedTotal {
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr, "\nwarning: %s consumed %d items, extracted %d primary keys, but stored 0 rows — extraction succeeded yet nothing landed. Investigate FTS triggers / transaction rollback / encoding.\n", resource, consumedTotal, consumedTotal-extractFailureTotal)
+			} else {
+				fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"extract_failures":%d,"reason":"stored_count_zero_after_extraction"}`+"\n", resource, consumedTotal, extractFailureTotal)
+			}
+			err := fmt.Errorf("%s consumed %d item(s) but stored 0 after primary-key extraction", resource, consumedTotal)
+			if !humanFriendly {
+				fmt.Fprintln(syncEvents, syncErrorJSON(resource, "", err))
+			}
+			return syncResult{Resource: resource, Count: 0, Err: err, IntegrityFailure: true, Duration: time.Since(started)}
+		}
+		err := fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal)
+		if hydrateFailureTotal > 0 {
+			err = fmt.Errorf("%s consumed %d items but stored 0 because scalar item hydration failed", resource, consumedTotal)
+		}
+		return syncResult{Resource: resource, Count: 0, Err: err, IntegrityFailure: true, Duration: time.Since(started)}
+	}
 	watermark := time.Time{}
 	if outcome.complete {
 		watermark = requestedAt.Add(-syncWatermarkOverlap)
@@ -1031,7 +1081,7 @@ func syncResource(ctx context.Context, c interface {
 		// result windows on the next run.
 		finalCursor = ""
 	}
-	var stateErr error
+	stateErr = nil
 	if watermark.IsZero() {
 		stateErr = db.SaveSyncProgress(resource, finalCursor, cachedCount)
 	} else {
@@ -1041,44 +1091,13 @@ func syncResource(ctx context.Context, c interface {
 		return syncResult{Resource: resource, Count: cachedCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, stateErr), Duration: time.Since(started)}
 	}
 
-	// F4b symptom probe: if items were consumed and successfully
-	// extracted (extractFailures < consumed) but nothing landed in
-	// the store, something downstream of extraction silently dropped
-	// rows — FTS5 trigger error, transaction rollback, character
-	// encoding. Emit a sync_anomaly so the symptom is visible the
-	// next time it recurs; the underlying root cause is held out for
-	// controlled repro.
-	if consumedTotal > 0 && totalCount == 0 && extractFailureTotal < consumedTotal {
-		if humanFriendly {
-			fmt.Fprintf(os.Stderr, "\nwarning: %s consumed %d items, extracted %d primary keys, but stored 0 rows — extraction succeeded yet nothing landed. Investigate FTS triggers / transaction rollback / encoding.\n", resource, consumedTotal, consumedTotal-extractFailureTotal)
-		} else {
-			fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"extract_failures":%d,"reason":"stored_count_zero_after_extraction"}`+"\n", resource, consumedTotal, extractFailureTotal)
-		}
-		err := fmt.Errorf("%s consumed %d item(s) but stored 0 after primary-key extraction", resource, consumedTotal)
-		if !humanFriendly {
-			fmt.Fprintln(syncEvents, syncErrorJSON(resource, "", err))
-		}
-		return syncResult{Resource: resource, Count: 0, Err: err, IntegrityFailure: true, Duration: time.Since(started)}
-	}
-
-	if !humanFriendly {
+	if !humanFriendly && reconcileErr == nil {
 		fmt.Fprintf(syncEvents, `{"event":"sync_complete","resource":"%s","total":%d,"duration_ms":%d}`+"\n", resource, cachedCount, time.Since(started).Milliseconds())
 	}
 
-	if consumedTotal > 0 && totalCount == 0 && extractFailureTotal >= consumedTotal {
-		err := fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal)
-		if hydrateFailureTotal > 0 {
-			err = fmt.Errorf("%s consumed %d items but stored 0 because scalar item hydration failed", resource, consumedTotal)
-		}
-		return syncResult{
-			Resource:         resource,
-			Count:            0,
-			Err:              err,
-			IntegrityFailure: true,
-			Duration:         time.Since(started),
-		}
+	if reconcileErr != nil {
+		return syncResult{Resource: resource, Count: cachedCount, Warn: reconcileErr, Duration: time.Since(started)}
 	}
-
 	return syncResult{Resource: resource, Count: cachedCount, Duration: time.Since(started)}
 }
 
@@ -2311,7 +2330,9 @@ type parentReport struct {
 	stored           int
 	consumed         int
 	extractFailures  int
-	failure          error // non-nil when this parent's batch upsert failed
+	complete         bool   // true only when this parent reached a proven natural end
+	reason           string // why the parent did not complete
+	failure          error  // non-nil when this parent's batch upsert failed
 	integrityFailure bool
 	denied           bool
 	firstDenial      *accessWarning
@@ -2558,6 +2579,9 @@ func syncOneParent(
 
 		rep.consumed += len(items)
 		rep.extractFailures += extractFailures
+		// Generic rows commit before typed projection failures are reported, so
+		// include them in achieved progress even when this page is incomplete.
+		rep.stored += stored
 		if typedFailures > 0 {
 			outcome.reason = "typed_projection_failed"
 			rep.integrityFailure = true
@@ -2580,9 +2604,13 @@ func syncOneParent(
 			break
 		} else if extractFailures > 0 && stored > 0 && rep.anomaly == nil {
 			rep.anomaly = &parentAnomaly{parent: parentID, consumed: len(items), stored: stored, count: extractFailures, reason: "primary_key_unresolved"}
+			rep.integrityFailure = true
+			rep.failure = fmt.Errorf("%s parent %s dropped %d item(s) without an extractable primary key", dep.Name, parentID, extractFailures)
+			if !humanFriendly {
+				fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, parentID, rep.failure))
+			}
+			break
 		}
-
-		rep.stored += stored
 		// seenIDs carries BARE entity ids; extractID resolves the PK the same
 		// way UpsertBatch does. ReconcilePartition compares these against the
 		// stored keys via BareResourceID, so parent-keyed (NUL-composite)
@@ -2658,6 +2686,9 @@ func syncOneParent(
 		)
 		if rerr != nil {
 			fmt.Fprintf(syncEvents, `{"event":"reconcile_error","resource":"%s","scope":"%s","error":%q}`+"\n", dep.Name, outcome.scopeVal, rerr.Error())
+			outcome.complete = false
+			outcome.reason = "reconcile_error"
+			rep.failure = fmt.Errorf("reconciling %s parent %s: %w", dep.Name, parentID, rerr)
 		} else {
 			// Always emit on a proven-complete sweep, even when deleted==0, so a
 			// clean run is observable (distinguishable from "reconcile never ran").
@@ -2668,6 +2699,8 @@ func syncOneParent(
 	}
 
 	rep.nonJSONBody = outcome.reason == "non_json_200_body"
+	rep.complete = outcome.complete && rep.failure == nil && !rep.denied && rep.anomaly == nil
+	rep.reason = outcome.reason
 	return rep
 }
 
@@ -2693,6 +2726,15 @@ func syncDependentResource(ctx context.Context, c interface {
 	RateLimit() float64
 }, db *store.Store, dep dependentResourceDef, sinceTS string, full bool, maxPages int, latestOnly bool, prune bool, userParams *syncUserParams, syncEvents io.Writer, concurrency int) syncResult {
 	started := time.Now()
+	if preview, ok := c.(interface{ IsDryRun() bool }); !ok || !preview.IsDryRun() {
+		cursor, _, count, err := db.GetSyncState(dep.Name)
+		if err != nil {
+			return syncResult{Resource: dep.Name, Err: err, Duration: time.Since(started)}
+		}
+		if err := db.SaveSyncProgress(dep.Name, cursor, count); err != nil {
+			return syncResult{Resource: dep.Name, Err: fmt.Errorf("saving sync progress for %s: starting attempt: %w", dep.Name, err), Duration: time.Since(started)}
+		}
+	}
 	if syncEvents == nil {
 		syncEvents = io.Discard
 	}
@@ -2720,9 +2762,13 @@ func syncDependentResource(ctx context.Context, c interface {
 		}
 		return syncResult{Resource: dep.Name, Err: fmt.Errorf("querying parent table %s: %w", dep.ParentTable, err), Duration: time.Since(started)}
 	}
+	parentCoverageComplete := true
+	coverageReason := ""
 	if cliutil.IsDogfoodEnv() && len(parentRows) > dogfoodMaxParentRows {
 		originalParentRows := len(parentRows)
 		parentRows = parentRows[:dogfoodMaxParentRows]
+		parentCoverageComplete = false
+		coverageReason = "dogfood_parent_rows_cap_hit"
 		if humanFriendly {
 			fmt.Fprintf(os.Stderr, "  %s: dogfood capped parent sync to %d of %d %s parents\n", dep.Name, len(parentRows), originalParentRows, dep.ParentTable)
 		} else {
@@ -2818,8 +2864,11 @@ func syncDependentResource(ctx context.Context, c interface {
 	failedParents := 0
 	integrityFailedParents := 0
 	nonJSONParents := 0
+	reportedParents := 0
+	completeParents := 0
 	var firstFailure error
 	for rep := range reports {
+		reportedParents++
 		if rep.dryRun {
 			dryRunHit = true
 			continue // keep draining so workers/goroutines don't leak
@@ -2829,6 +2878,11 @@ func syncDependentResource(ctx context.Context, c interface {
 		depExtractFailureTotal += rep.extractFailures
 		if rep.nonJSONBody {
 			nonJSONParents++
+		}
+		if rep.complete {
+			completeParents++
+		} else if coverageReason == "" && rep.reason != "" {
+			coverageReason = rep.reason
 		}
 		if rep.failure != nil {
 			failedParents++
@@ -2867,11 +2921,10 @@ func syncDependentResource(ctx context.Context, c interface {
 			Duration: time.Since(started),
 		}
 	}
-
-	if humanFriendly {
-		fmt.Fprintf(os.Stderr, "\n")
-	}
 	if failedParents > 0 {
+		if err := db.SaveSyncProgress(dep.Name, "", totalCount); err != nil {
+			return syncResult{Resource: dep.Name, Count: totalCount, Err: fmt.Errorf("saving incomplete sync progress for %s: %w", dep.Name, err), Duration: time.Since(started)}
+		}
 		failure := fmt.Errorf("%s failed to store data for %d of %d parents: %w", dep.Name, failedParents, len(parentRows), firstFailure)
 		if integrityFailedParents > 0 {
 			return syncResult{Resource: dep.Name, Count: totalCount, Err: failure, IntegrityFailure: true, Duration: time.Since(started)}
@@ -2881,26 +2934,22 @@ func syncDependentResource(ctx context.Context, c interface {
 		}
 		return syncResult{Resource: dep.Name, Count: totalCount, Warn: failure, Duration: time.Since(started)}
 	}
-
-	if err := db.SaveSyncState(dep.Name, "", totalCount); err != nil {
-		return syncResult{Resource: dep.Name, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", dep.Name, err), Duration: time.Since(started)}
-	}
-
-	// F4b symptom probe: items consumed and extracted but nothing landed.
-	// See syncResource for rationale.
-	if depConsumedTotal > 0 && totalCount == 0 && depExtractFailureTotal < depConsumedTotal {
-		if humanFriendly {
-			fmt.Fprintf(os.Stderr, "\nwarning: %s consumed %d items, extracted %d primary keys, but stored 0 rows — extraction succeeded yet nothing landed. Investigate FTS triggers / transaction rollback / encoding.\n", dep.Name, depConsumedTotal, depConsumedTotal-depExtractFailureTotal)
-		} else {
-			fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"extract_failures":%d,"reason":"stored_count_zero_after_extraction"}`+"\n", dep.Name, depConsumedTotal, depExtractFailureTotal)
+	if depConsumedTotal > 0 && totalCount == 0 {
+		if err := db.SaveSyncProgress(dep.Name, "", 0); err != nil {
+			return syncResult{Resource: dep.Name, Err: fmt.Errorf("saving incomplete sync progress for %s: %w", dep.Name, err), Duration: time.Since(started)}
 		}
-		err := fmt.Errorf("%s consumed %d item(s) but stored 0 after primary-key extraction", dep.Name, depConsumedTotal)
-		if !humanFriendly {
-			fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, "", err))
+		if depExtractFailureTotal < depConsumedTotal {
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr, "\nwarning: %s consumed %d items, extracted %d primary keys, but stored 0 rows — extraction succeeded yet nothing landed. Investigate FTS triggers / transaction rollback / encoding.\n", dep.Name, depConsumedTotal, depConsumedTotal-depExtractFailureTotal)
+			} else {
+				fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"extract_failures":%d,"reason":"stored_count_zero_after_extraction"}`+"\n", dep.Name, depConsumedTotal, depExtractFailureTotal)
+			}
+			err := fmt.Errorf("%s consumed %d item(s) but stored 0 after primary-key extraction", dep.Name, depConsumedTotal)
+			if !humanFriendly {
+				fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, "", err))
+			}
+			return syncResult{Resource: dep.Name, Count: 0, Err: err, IntegrityFailure: true, Duration: time.Since(started)}
 		}
-		return syncResult{Resource: dep.Name, Count: 0, Err: err, IntegrityFailure: true, Duration: time.Since(started)}
-	}
-	if depConsumedTotal > 0 && totalCount == 0 && depExtractFailureTotal >= depConsumedTotal {
 		return syncResult{
 			Resource:         dep.Name,
 			Count:            0,
@@ -2910,6 +2959,22 @@ func syncDependentResource(ctx context.Context, c interface {
 		}
 	}
 
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "\n")
+	}
+	attemptComplete := parentCoverageComplete && reportedParents == len(parentRows) && completeParents == len(parentRows)
+	if !attemptComplete && coverageReason == "" {
+		coverageReason = "parent_partitions_incomplete"
+	}
+	var stateErr error
+	if attemptComplete {
+		stateErr = db.SaveSyncState(dep.Name, "", totalCount)
+	} else {
+		stateErr = db.SaveSyncProgress(dep.Name, "", totalCount)
+	}
+	if stateErr != nil {
+		return syncResult{Resource: dep.Name, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", dep.Name, stateErr), Duration: time.Since(started)}
+	}
 	// If every parent was access-denied and nothing was synced, surface as a
 	// warning so the run-level summary and exit code reflect insufficient access.
 	if deniedParents == len(parentRows) && totalCount == 0 && firstDenial != nil {
@@ -2917,6 +2982,14 @@ func syncDependentResource(ctx context.Context, c interface {
 			Resource: dep.Name,
 			Count:    0,
 			Warn:     fmt.Errorf("skipped due to insufficient access: %s (%s on all %d parents)", dep.Name, firstDenial.Reason, len(parentRows)),
+			Duration: time.Since(started),
+		}
+	}
+	if !attemptComplete {
+		return syncResult{
+			Resource: dep.Name,
+			Count:    totalCount,
+			Warn:     fmt.Errorf("%s sync incomplete (%s); completion watermark was not advanced", dep.Name, coverageReason),
 			Duration: time.Since(started),
 		}
 	}

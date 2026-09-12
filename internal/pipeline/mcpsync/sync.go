@@ -615,7 +615,7 @@ func loadNovelFeatures(cliDir string) []generator.NovelFeature {
 
 // commandMirrorCapabilityRE matches the generated command_mirror_capabilities
 // entries in tools.go. Key order is the mcp_tools.go.tmpl contract.
-var commandMirrorCapabilityRE = regexp.MustCompile(`\{"name": ("(?:\\.|[^"\\])*"), "command": ("(?:\\.|[^"\\])*"), "description": ("(?:\\.|[^"\\])*"), "rationale": ("(?:\\.|[^"\\])*"), "via": "mcp-command-mirror"\}`)
+var commandMirrorCapabilityRE = regexp.MustCompile(`\{"name": ("(?:\\.|[^"\\])*"), "command": ("(?:\\.|[^"\\])*")(?:, "cli_command": "(?:\\.|[^"\\])*")?, "description": ("(?:\\.|[^"\\])*"), "rationale": ("(?:\\.|[^"\\])*"), "via": "mcp-command-mirror"\}`)
 
 // mergeNovelFeatureRationalesFromTools fills empty Rationale values from the
 // existing tools.go surface. mcp-sync has no --research-dir, so the

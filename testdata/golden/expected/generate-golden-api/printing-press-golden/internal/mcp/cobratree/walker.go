@@ -4,6 +4,8 @@
 package cobratree
 
 import (
+	"strings"
+
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
@@ -26,11 +28,8 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 			return
 		}
 
-		toolName := toolNameForPath(path)
+		toolName := availableToolName(s, toolNameForPath(path))
 		if toolName == "" {
-			return
-		}
-		if s.GetTool(toolName) != nil {
 			return
 		}
 		blockedStructuredArgs := blockedStructuredArgsForCommand(cmd)
@@ -62,6 +61,8 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 		// The companion CLI owns the one live tenant gate for mirrored
 		// commands. The parent MCP middleware must not probe a second time.
 		tool.Meta.AdditionalFields["pp:tenant-gate"] = "child-cli"
+		// Preserve the canonical Cobra identity when normalized names collide.
+		tool.Meta.AdditionalFields[mirrorCLICommandMetaKey] = strings.Join(path, " ")
 		s.AddTool(tool, shellOutToCLI(cliPath, path, blockedCLIArgs, allowedStructuredArgs, positionals, readOnly, positionalWriteSinkIndexes(cmd)))
 	})
 }

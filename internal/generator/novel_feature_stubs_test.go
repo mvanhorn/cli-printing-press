@@ -15,6 +15,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNovelFeatureCommandPartsRejectsShellComposition(t *testing.T) {
+	t.Parallel()
+	for _, command := range []string{"snapshot && compare", "snapshot | summarize", "snapshot; compare", "snapshot || compare", "snapshot|summarize", "snapshot&&compare", "snapshot||compare", "snapshot;compare", "snapshot;", "snapshot&", "snapshot>file"} {
+		if got := novelFeatureCommandParts(command); got != nil {
+			t.Fatalf("novelFeatureCommandParts(%q) = %#v, want nil", command, got)
+		}
+	}
+	assert.Equal(t, []string{"snapshot"}, novelFeatureCommandParts(`snapshot --filter "a|b"`))
+	assert.Equal(t, []string{"filter"}, novelFeatureCommandParts(`filter --state [active|inactive]`))
+	assert.Equal(t, []string{"snapshot"}, novelFeatureCommandParts(`snapshot <before|after>`))
+}
+
+func TestGeneratorOmitsComposedNovelFeatureCommands(t *testing.T) {
+	t.Parallel()
+	apiSpec := minimalSpec("composednovel")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	for _, command := range []string{"snapshot|summarize", "snapshot&&compare", "snapshot||compare", "snapshot;compare"} {
+		gen.NovelFeatures = append(gen.NovelFeatures, NovelFeature{Name: command, Command: command, Description: "Compare local snapshots."})
+	}
+	require.NoError(t, gen.Generate())
+	entries, err := os.ReadDir(filepath.Join(outputDir, "internal", "cli"))
+	require.NoError(t, err)
+	for _, entry := range entries {
+		assert.NotContains(t, entry.Name(), "snapshot")
+		assert.False(t, strings.ContainsAny(entry.Name(), "|&;"), entry.Name())
+	}
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGeneratorSkipsReservedNovelFeatureRootCommands(t *testing.T) {
 	t.Parallel()
 

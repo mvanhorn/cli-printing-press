@@ -1,0 +1,19 @@
+# The recognized fixture name supplies an offline base URL for SDL generation.
+type Query {
+  issues(first: Int, after: String): IssueConnection
+}
+
+type IssueConnection {
+  nodes: [Issue]
+  pageInfo: PageInfo
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  endCursor: String
+}
+
+type Issue {
+  id: ID!
+  title: String!
+}

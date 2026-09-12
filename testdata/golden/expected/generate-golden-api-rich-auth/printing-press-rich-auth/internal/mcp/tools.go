@@ -77,7 +77,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 		),
-		handleContext,
+		handleContext(s),
 	)
 
 	// Runtime Cobra-tree mirror — exposes every user-facing command that is
@@ -451,8 +451,9 @@ func mcpDBPath() (string, error) {
 type mcpStoreStatusKind string
 
 const (
-	mcpStoreStatusEmpty mcpStoreStatusKind = "empty"
-	mcpStoreStatusReady mcpStoreStatusKind = "ready"
+	mcpStoreStatusEmpty   mcpStoreStatusKind = "empty"
+	mcpStoreStatusPartial mcpStoreStatusKind = "partial"
+	mcpStoreStatusReady   mcpStoreStatusKind = "ready"
 )
 
 func openMCPReadOnlyStore(path string) (*store.Store, *mcplib.CallToolResult) {
@@ -478,14 +479,41 @@ func mcpStoreStatus(db *store.Store) (mcpStoreStatusKind, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(status) == 0 {
-		return mcpStoreStatusEmpty, nil
+	var checkpoints, completed int
+	err = db.DB().QueryRow(`SELECT COUNT(*), COALESCE(SUM(CASE WHEN last_attempt_complete = 1 THEN 1 ELSE 0 END), 0) FROM sync_state`).Scan(&checkpoints, &completed)
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "no such column: last_attempt_complete") {
+		// Read-only stores have not run the conservative completion migration.
+		// Legacy timestamps were also written by partial walks, so prove nothing.
+		err = db.DB().QueryRow(`SELECT COUNT(*), 0 FROM sync_state`).Scan(&checkpoints, &completed)
 	}
-	return mcpStoreStatusReady, nil
+	if err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "no such table") || strings.Contains(msg, "no such column") {
+			if len(status) > 0 {
+				return mcpStoreStatusReady, nil
+			}
+			return mcpStoreStatusEmpty, nil
+		}
+		return "", err
+	}
+	if checkpoints > 0 {
+		if completed == checkpoints {
+			return mcpStoreStatusReady, nil
+		}
+		return mcpStoreStatusPartial, nil
+	}
+	if len(status) > 0 {
+		return mcpStoreStatusReady, nil
+	}
+	return mcpStoreStatusEmpty, nil
 }
 
 func mcpEmptyStoreNextStep() string {
 	return "Run printing-press-rich-pp-cli sync to populate the local SQLite store before using MCP search/sql."
+}
+
+func mcpPartialStoreNextStep() string {
+	return "The latest sync attempt is incomplete. Resume or rerun printing-press-rich-pp-cli sync before treating local search/sql results as a complete snapshot."
 }
 
 func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
@@ -532,7 +560,10 @@ func mcpSearchEnvelope(results []json.RawMessage, storeStatus mcpStoreStatusKind
 		"store_status": storeStatus,
 		"resumable":    false,
 	}
-	if len(results) == 0 {
+	if storeStatus == mcpStoreStatusPartial {
+		out["warning"] = "Local data may be incomplete because the latest sync attempt did not finish."
+		out["next_step"] = mcpPartialStoreNextStep()
+	} else if len(results) == 0 {
 		if storeStatus == mcpStoreStatusEmpty {
 			out["next_step"] = mcpEmptyStoreNextStep()
 		} else {
@@ -774,7 +805,10 @@ func mcpSQLEnvelope(rows []map[string]any, columns []string, storeStatus mcpStor
 		out["max_bytes"] = bound.MaxBytes
 		out["note"] = bound.SQLResultBoundNote
 	}
-	if len(rows) == 0 && !truncated {
+	if storeStatus == mcpStoreStatusPartial {
+		out["warning"] = "Local data may be incomplete because the latest sync attempt did not finish."
+		out["next_step"] = mcpPartialStoreNextStep()
+	} else if len(rows) == 0 && !truncated {
 		if storeStatus == mcpStoreStatusEmpty {
 			out["next_step"] = mcpEmptyStoreNextStep()
 		} else {
@@ -805,7 +839,13 @@ func toolResultJSON(v any) (*mcplib.CallToolResult, error) {
 	return mcplib.NewToolResultText(text), nil
 }
 
-func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+func handleContext(s *server.MCPServer) func(context.Context, mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+		return handleContextResult(s, ctx, req)
+	}
+}
+
+func handleContextResult(s *server.MCPServer, _ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	paths := map[string]string{}
 	if dir, err := cliutil.ConfigDir(); err == nil {
 		paths["config_dir"] = dir
@@ -823,7 +863,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 		"api":         "printing-press-rich",
 		"description": "Purpose-built fixture for rich auth env-var model coverage.",
 		"archetype":   "generic",
-		"tool_count":  1,
+		"tool_count":  len(s.ListTools()),
 		"paths":       paths,
 		// tool_surface tells agents which surface a capability lives on.
 		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion printing-press-rich-pp-cli binary.",

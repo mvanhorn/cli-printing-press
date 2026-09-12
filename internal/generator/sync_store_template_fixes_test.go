@@ -74,7 +74,7 @@ func TestGeneratedSyncStoreBatch4TemplateFixes(t *testing.T) {
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
 	gen.profile = &profiler.APIProfile{
 		SyncableResources: []profiler.SyncableResource{
 			{Name: "currencies", Path: "/currencies", Method: "GET"},
@@ -205,19 +205,22 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"` + naming.CLI(apiSpec.Name) + `/internal/store"
 )
 
 type fixedBodyClient struct {
 	body json.RawMessage
+	err error
 }
 
 func (c fixedBodyClient) Get(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
-	return c.body, nil
+	return c.body, c.err
 }
 
 func (c fixedBodyClient) RateLimit() float64 {
@@ -374,6 +377,33 @@ func TestSyncResourceZeroStoredIsIntegrityFailure(t *testing.T) {
 	}
 	if !strings.Contains(events.String(), "\"reason\":\"all_items_failed_id_extraction\"") {
 		t.Fatalf("events did not contain all_items_failed_id_extraction anomaly: %s", events.String())
+	}
+}
+
+func TestSyncResourceFailuresInvalidateCompletionWithoutSkippingPage(t *testing.T) {
+	for _, tc := range []struct { name, body string; transport bool }{
+		{name: "all IDs missing", body: ` + "`" + `[{"metadata":true}]` + "`" + `},
+		{name: "partial IDs missing", body: ` + "`" + `[{"id":"good"},{"metadata":true}]` + "`" + `},
+		{name: "declared failure", body: ` + "`" + `{"ok":false,"error":"failed"}` + "`" + `},
+		{name: "transport", transport: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+			if err != nil { t.Fatal(err) }
+			defer db.Close()
+			if _, _, err := db.UpsertBatch("things", []json.RawMessage{json.RawMessage(` + "`" + `{"id":"old"}` + "`" + `)}); err != nil { t.Fatal(err) }
+			watermark := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+			if err := db.SaveSyncStateAt("things", "page-2", 1, watermark); err != nil { t.Fatal(err) }
+			c := fixedBodyClient{body: json.RawMessage(tc.body)}
+			if tc.transport { c.err = errors.New("transport unavailable") }
+			var events bytes.Buffer
+			res := syncResource(context.Background(), c, db, "things", "", false, 1, false, false, nil, &events)
+			if res.Err == nil { t.Fatalf("failure returned success: %+v", res) }
+			cursor, gotTime, _, err := db.GetSyncState("things")
+			if err != nil || cursor != "page-2" || !gotTime.Equal(watermark) { t.Fatalf("checkpoint = %q %s %v", cursor, gotTime, err) }
+			var complete int
+			if err := db.DB().QueryRow("SELECT last_attempt_complete FROM sync_state WHERE resource_type = 'things'").Scan(&complete); err != nil || complete != 0 { t.Fatalf("completion = %d, %v", complete, err) }
+		})
 	}
 }
 
@@ -730,5 +760,6 @@ func TestSyncDependentResourceOkFalseEnvelopeIsIntegrityFailure(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "batch4_sync_test.go"), []byte(cliTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "TestCurrencyCodeSuffixExtractsResourceID", "-count=1")
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(SyncExtractIDSuffixFallbackIsGuarded|ExtractPageItemsDRFTopLevelNextURL|ExtractPageItemsDRFTopLevelRelativeNextURL|ExtractPageItemsBareTokenCursorUnaffected|SyncResourceNonJSONBodyEmitsAnomaly|SyncResourceValidEmptyJSONDoesNotEmitNonJSONAnomaly|SyncResourceZeroStoredIsIntegrityFailure|SyncResourceDeclaredFailure|SyncDependentResourceNonJSONBodyEmitsAnomaly|SyncDependentResourceMixedJSONAndNonJSONBodyWarnsWithoutStamp|SyncDependentResourceDeclaredFailure|SyncResourceOkFalseEnvelope|SyncResourcePascalOkFalse|SyncResourceOkTrueEnvelopeStoresItems|SyncResourceWithoutOkFieldStillStores|SyncDependentResourceOkFalseEnvelope)", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(SyncExtractIDSuffixFallbackIsGuarded|ExtractPageItemsDRFTopLevelNextURL|ExtractPageItemsDRFTopLevelRelativeNextURL|ExtractPageItemsBareTokenCursorUnaffected|SyncResourceNonJSONBodyEmitsAnomaly|SyncResourceValidEmptyJSONDoesNotEmitNonJSONAnomaly|SyncResourceZeroStoredIsIntegrityFailure|SyncResourceFailuresInvalidateCompletionWithoutSkippingPage|SyncResourceDeclaredFailure|SyncDependentResourceNonJSONBodyEmitsAnomaly|SyncDependentResourceMixedJSONAndNonJSONBodyWarnsWithoutStamp|SyncDependentResourceDeclaredFailure|SyncResourceOkFalseEnvelope|SyncResourcePascalOkFalse|SyncResourceOkTrueEnvelopeStoresItems|SyncResourceWithoutOkFieldStillStores|SyncDependentResourceOkFalseEnvelope)", "-count=1")
+	requireGeneratedCompiles(t, outputDir)
 }
