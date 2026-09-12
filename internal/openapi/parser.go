@@ -705,6 +705,7 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 		RateClass:                    rateClass,
 		DefaultRateLimit:             defaultRateLimit,
 		ResponseEnvelopeKey:          responseEnvelopeKey,
+		SpecSource:                   "official",
 		Auth:                         auth,
 		Roles:                        roles,
 		TierRouting:                  tierRouting,

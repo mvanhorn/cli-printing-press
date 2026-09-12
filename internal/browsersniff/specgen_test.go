@@ -163,6 +163,44 @@ func TestAnalyzeCapture_PromotesPostFormHTMLTableFragment(t *testing.T) {
 	require.NoError(t, apiSpec.Validate())
 }
 
+func TestAnalyzeCapture_OmitsCapturedResourceIDFormDefaults(t *testing.T) {
+	t.Parallel()
+
+	const cliID = "cli_a1b2c3d4e5f6g7h8i9j0"
+	apiSpec, err := AnalyzeCapture(&EnrichedCapture{
+		TargetURL: "https://www.example.com/contracts",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "POST",
+				URL:                 "https://www.example.com/nba/contracts/_/position/g",
+				RequestHeaders:      map[string]string{"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "X-Requested-With": "XMLHttpRequest"},
+				RequestBody:         "ajax=table&clientId=" + cliID,
+				ResponseStatus:      200,
+				ResponseContentType: "text/html; charset=utf-8",
+				ResponseBody:        `<table><thead><tr><th>Player</th></tr></thead><tbody><tr><td>Ada</td></tr></tbody></table>`,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	endpoint, found := findEndpointByPath(apiSpec, "/nba/contracts/_/position/g")
+	require.True(t, found)
+	byName := map[string]spec.Param{}
+	for _, param := range endpoint.Body {
+		byName[param.Name] = param
+	}
+	require.Contains(t, byName, "ajax")
+	assert.Equal(t, "table", byName["ajax"].Default)
+	require.Contains(t, byName, "clientId")
+	assert.Nil(t, byName["clientId"].Default)
+
+	specPath := filepath.Join(t.TempDir(), "form-spec.yaml")
+	require.NoError(t, WriteSpec(apiSpec, specPath))
+	specYAML, err := os.ReadFile(specPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(specYAML), cliID)
+}
+
 func TestAnalyzeCapture_GetHTMLWithTableStillPrefersLinks(t *testing.T) {
 	t.Parallel()
 
@@ -419,6 +457,67 @@ func TestAnalyzeCapture_ExpandsGraphQLBFFOperations(t *testing.T) {
 	launches := products.Endpoints["launches"]
 	assert.Equal(t, "POST", launches.Method)
 	assert.Equal(t, "/frontend/graphql", launches.Path)
+}
+
+func TestAnalyzeCapture_StripsCapturedResourceIDsFromDefaults(t *testing.T) {
+	t.Parallel()
+
+	const (
+		cliID  = "cli_a1b2c3d4e5f6g7h8i9j0"
+		propID = "prop_k9m2n3p4q5r6s7t8u9v0"
+		hash   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+	capture := &EnrichedCapture{
+		TargetURL: "https://www.example.com",
+		Entries: []EnrichedEntry{
+			graphqlBFFEntry("GetClient", `{"id":"`+cliID+`","clientId":"`+cliID+`"}`, hash),
+			graphqlBFFEntry("GetProperty", `{"id":"`+propID+`"}`, hash),
+		},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	require.NoError(t, err)
+	require.NotNil(t, apiSpec)
+
+	specPath := filepath.Join(t.TempDir(), "example-spec.yaml")
+	require.NoError(t, WriteSpec(apiSpec, specPath))
+	specYAML, err := os.ReadFile(specPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(specYAML), cliID)
+	assert.NotContains(t, string(specYAML), propID)
+
+	var foundClientVars, foundPropertyVars, foundHash bool
+	for _, resource := range apiSpec.Resources {
+		for _, endpoint := range resource.Endpoints {
+			for _, param := range append(append([]spec.Param{}, endpoint.Params...), endpoint.Body...) {
+				switch param.Name {
+				case "variables":
+					vars, ok := param.Default.(map[string]any)
+					require.True(t, ok)
+					switch {
+					case vars["clientId"] != nil:
+						foundClientVars = true
+						assert.Equal(t, "cli_example0000000000000", vars["id"])
+						assert.Equal(t, "cli_example0000000000000", vars["clientId"])
+					case vars["id"] == "prop_example0000000000000":
+						foundPropertyVars = true
+					}
+				case "operationName":
+					assert.Contains(t, []string{"GetClient", "GetProperty"}, param.Default)
+				case "extensions":
+					extensions, ok := param.Default.(map[string]any)
+					require.True(t, ok)
+					persisted, ok := extensions["persistedQuery"].(map[string]any)
+					require.True(t, ok)
+					assert.Equal(t, hash, persisted["sha256Hash"])
+					foundHash = true
+				}
+			}
+		}
+	}
+	assert.True(t, foundClientVars, "expected GetClient variables")
+	assert.True(t, foundPropertyVars, "expected GetProperty variables")
+	assert.True(t, foundHash, "expected persisted query hash to be preserved")
 }
 
 func TestAnalyzeCapture_ExpandsURLOnlyGraphQLBFFOperations(t *testing.T) {

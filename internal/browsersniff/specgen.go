@@ -133,6 +133,8 @@ func AnalyzeCaptureWithOptions(capture *EnrichedCapture, options AnalyzeOptions)
 		Types:     inferredTypes.types,
 	}
 
+	SanitizeSpecCapturedResourceIDs(apiSpec)
+
 	if err := apiSpec.Validate(); err != nil {
 		if len(apiSpec.Resources) == 0 && len(groups) > 0 {
 			apiSpec.Resources["default"] = spec.Resource{
