@@ -205,8 +205,7 @@ func TestGeneratedHTMLTableCommandMatchesIssueRepros(t *testing.T) {
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
-	var bannerRows []map[string]any
-	require.NoError(t, json.Unmarshal(out, &bannerRows), string(out))
+	bannerRows := decodeHTMLTableRows(t, out)
 	require.Len(t, bannerRows, 3)
 	assert.Equal(t, "North", bannerRows[0]["Region"])
 	assert.Equal(t, "120", bannerRows[0]["Units"])
@@ -265,8 +264,7 @@ func TestGeneratedHTMLTableLimitSurfacesTruncation(t *testing.T) {
 	cmd.Env = append(os.Environ(), "TABLEUNCAPPED_BASE_URL="+server.URL, "HOME="+t.TempDir())
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
-	var allRows []map[string]any
-	require.NoError(t, json.Unmarshal(out, &allRows), string(out))
+	allRows := decodeHTMLTableRows(t, out)
 	require.Len(t, allRows, 60, "Limit 0 must not silently cap table rows at 50")
 
 	capped := htmlTableExtractSpec("tablecapped", 50)
@@ -283,14 +281,38 @@ func TestGeneratedHTMLTableLimitSurfacesTruncation(t *testing.T) {
 	require.NoError(t, err, string(out))
 	assert.Contains(t, string(out), `"event":"truncated"`, "capped extract must emit a truncation signal")
 	assert.Contains(t, string(out), `"reason":"html_table_limit"`)
-	trimmed := strings.TrimSpace(string(out))
-	arrayStart := strings.LastIndex(trimmed, "\n[")
-	if arrayStart >= 0 {
-		trimmed = strings.TrimSpace(trimmed[arrayStart+1:])
-	} else if i := strings.Index(trimmed, "["); i >= 0 {
-		trimmed = trimmed[i:]
-	}
-	var cappedRows []map[string]any
-	require.NoError(t, json.Unmarshal([]byte(trimmed), &cappedRows), string(out))
+	cappedRows := decodeHTMLTableRows(t, out)
 	require.Len(t, cappedRows, 50)
+}
+
+func decodeHTMLTableRows(t *testing.T, raw []byte) []map[string]any {
+	t.Helper()
+	payload := lastJSONValue(raw)
+	var rows []map[string]any
+	if err := json.Unmarshal(payload, &rows); err == nil {
+		return rows
+	}
+	var envelope struct {
+		Results []map[string]any `json:"results"`
+		Data    []map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(payload, &envelope), string(raw))
+	if envelope.Results != nil {
+		return envelope.Results
+	}
+	return envelope.Data
+}
+
+func lastJSONValue(raw []byte) []byte {
+	trimmed := strings.TrimSpace(string(raw))
+	if i := strings.LastIndex(trimmed, "\n{"); i >= 0 {
+		return []byte(strings.TrimSpace(trimmed[i+1:]))
+	}
+	if i := strings.LastIndex(trimmed, "\n["); i >= 0 {
+		return []byte(strings.TrimSpace(trimmed[i+1:]))
+	}
+	if i := strings.IndexAny(trimmed, "{["); i >= 0 {
+		return []byte(trimmed[i:])
+	}
+	return []byte(trimmed)
 }
