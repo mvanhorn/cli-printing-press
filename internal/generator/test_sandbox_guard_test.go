@@ -19,6 +19,7 @@ var emittedTestHelperFiles = []string{
 	filepath.Join("internal", "cliutil", "paths_test.go"),
 	filepath.Join("internal", "cliutil", "credentials_test.go"),
 	filepath.Join("internal", "cliutil", "credentials_perms_test.go"),
+	filepath.Join("internal", "config", "config_perms_test.go"),
 	filepath.Join("internal", "mcp", "tools_test.go"),
 	filepath.Join("internal", "cli", "teach_test.go"),
 	filepath.Join("internal", "learn", "teach_log_test.go"),
