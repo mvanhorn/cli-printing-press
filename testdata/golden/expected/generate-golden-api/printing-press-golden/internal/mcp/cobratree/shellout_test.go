@@ -51,6 +51,31 @@ func TestSplitShellArgs(t *testing.T) {
 	}
 }
 
+func TestDescriptionForPrefersShort(t *testing.T) {
+	short := "Record a query -> resource mapping for future recall."
+	long := strings.Repeat("Operator help that must not enter the MCP catalog. ", 80)
+	cmd := &cobra.Command{
+		Use:   "teach",
+		Short: short,
+		Long:  long,
+	}
+	got := descriptionFor(cmd)
+	if got != short {
+		t.Fatalf("descriptionFor() = %q, want Short %q", got, short)
+	}
+	if strings.Contains(got, "Operator help") {
+		t.Fatal("descriptionFor() leaked Long help into the MCP catalog")
+	}
+
+	longOnly := &cobra.Command{
+		Use:  "sync",
+		Long: "Sync API data to local SQLite.\n\nExit codes and resource scoping belong in --help.",
+	}
+	if got := descriptionFor(longOnly); got != "Sync API data to local SQLite." {
+		t.Fatalf("descriptionFor() long-only = %q, want first paragraph", got)
+	}
+}
+
 // TestCliArgsFromMCP_BlocksRootFlags pins the structured-parameter half of
 // the control-plane-injection guard: even when an MCP client wraps the
 // flag in the structured args map (instead of the free-form "args"

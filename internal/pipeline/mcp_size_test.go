@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -151,6 +153,7 @@ func RootCmd() *cobra.Command {
 	rootCmd.AddCommand(newItemsCmd())
 	rootCmd.AddCommand(newEndpointCmd())
 	rootCmd.AddCommand(newAuthCmd())
+	rootCmd.AddCommand(newProfileGroupCmd())
 	rootCmd.AddCommand(newHiddenCmd())
 	rootCmd.AddCommand(newCobraHiddenGroupCmd())
 	rootCmd.AddCommand(newMCPHiddenGroupCmd())
@@ -205,6 +208,25 @@ func newAuthCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "auth",
 		Short: "Framework command skipped by cobratree.",
+		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+
+func newProfileGroupCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:         "profile",
+		Short:       "Named sets of flags saved for reuse",
+		Annotations: map[string]string{"pp:parent-group": "true"},
+	}
+	cmd.AddCommand(newProfileSaveCmd())
+	return cmd
+}
+
+func newProfileSaveCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "save",
+		Short: "Save the current invocation's non-default flags as a named profile",
+		Long:  "Operator profile help that the runtime walker never catalogs.",
 		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
 	}
 }
@@ -294,6 +316,8 @@ func newAPIResourceChildCmd() *cobra.Command {
 	assert.Contains(t, names, "cobratree:orders_triage")
 	assert.Contains(t, names, "cobratree:catalog_summary")
 	assert.NotContains(t, names, "cobratree:auth")
+	assert.NotContains(t, names, "cobratree:profile")
+	assert.NotContains(t, names, "cobratree:profile_save")
 	assert.NotContains(t, names, "cobratree:orders")
 	assert.NotContains(t, names, "cobratree:secrets_inspect")
 	assert.NotContains(t, names, "cobratree:auth_status")
@@ -430,6 +454,127 @@ func newBetaCmd() *cobra.Command {
 
 	est := estimateMCPTokens(dir)
 	require.Equal(t, 0, est.ToolCount)
+}
+
+func TestCobratreeToolDescription_PrefersShortOverLong(t *testing.T) {
+	short := "Record a query -> resource mapping for future recall."
+	long := strings.Repeat("Operator-only help that would blow the MCP budget. ", 80)
+	assert.Equal(t, short, cobratreeToolDescription(short, long, "teach"))
+	assert.Equal(t, "Sync API data to local SQLite.", cobratreeToolDescription("", "Sync API data to local SQLite.\n\nExit codes stay in --help.", "sync"))
+	assert.Equal(t, "Run `digest` through the companion CLI binary.", cobratreeToolDescription("", "", "digest"))
+}
+
+func TestEstimateMCPTokens_CobratreeUsesShortNotLong(t *testing.T) {
+	dir := writeMCPTools(t, `
+	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
+`)
+	writeMCPCLISource(t, dir, "root.go", `package cli
+
+import "github.com/spf13/cobra"
+
+func RootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "demo-pp-cli"}
+	rootCmd.AddCommand(newTeachCmd())
+	return rootCmd
+}
+
+func newTeachCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "teach",
+		Short: "Record a query -> resource mapping for future recall.",
+		Long:  "`+strings.Repeat("x", 2900)+`",
+		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+`)
+
+	est := estimateMCPTokens(dir)
+	require.Equal(t, 1, est.ToolCount)
+	require.Equal(t, "cobratree:teach", est.PerTool[0].Name)
+	assert.Less(t, est.PerTool[0].Chars, 200, "Short catalog text must be scored, not the 2.9k Long help")
+	assert.Less(t, est.PerTool[0].Tokens, 80)
+}
+
+func TestEstimateMCPTokens_IgnoresHandlerLiterals(t *testing.T) {
+	dir := t.TempDir()
+	mcpDir := filepath.Join(dir, "internal", "mcp")
+	require.NoError(t, os.MkdirAll(mcpDir, 0o755))
+	content := `package mcp
+
+import mcplib "github.com/mark3labs/mcp-go/mcp"
+
+func RegisterTools(s *server.MCPServer) {
+	s.AddTool(mcplib.NewTool("get", mcplib.WithDescription("get item")), nil)
+}
+
+func handleContext() string { return "` + strings.Repeat("x", 4000) + `" }
+`
+	require.NoError(t, os.WriteFile(filepath.Join(mcpDir, "tools.go"), []byte(content), 0o644))
+
+	est := estimateMCPTokens(dir)
+	require.Equal(t, 1, est.ToolCount)
+	assert.Less(t, est.TotalChars, 80, "handler string literals must not count as catalog text")
+	score, scored := scoreMCPTokenEfficiency(dir)
+	require.True(t, scored)
+	assert.Equal(t, 10, score)
+}
+
+func TestScoreMCPTokenEfficiency_FreshPrintFrameworkHelpFits(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Name:      "tokeneff",
+		Version:   "0.1.0",
+		BaseURL:   "https://api.example.com",
+		Owner:     "test-owner",
+		OwnerName: "Test Author",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"TOKENEFF_TOKEN"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/tokeneff-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+					"get":  {Method: "GET", Path: "/items/{id}", Description: "Get an item"},
+				},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), "tokeneff-pp-cli")
+	gen := generator.New(apiSpec, outputDir)
+	gen.VisionSet = generator.VisionTemplateSet{
+		Store:     true,
+		Sync:      true,
+		Search:    true,
+		Export:    true,
+		Import:    true,
+		Analytics: true,
+		MCP:       true,
+	}
+	require.NoError(t, gen.Generate())
+
+	est := estimateMCPTokens(outputDir)
+	require.Greater(t, est.ToolCount, 0)
+	var frameworkHeavy []string
+	for _, tool := range est.PerTool {
+		if !strings.HasPrefix(tool.Name, "cobratree:") {
+			continue
+		}
+		if tool.Tokens > 80 {
+			frameworkHeavy = append(frameworkHeavy, tool.Name)
+		}
+	}
+	assert.Empty(t, frameworkHeavy, "framework/novel cobratree tools must stay in the full-marks per-tool band")
+
+	score, scored := scoreMCPTokenEfficiency(outputDir)
+	require.True(t, scored, "a fresh MCP print must score token-efficiency")
+	assert.Equal(t, 10, score, "a fresh MCP print must score full marks with zero hand edits to framework help")
 }
 
 func TestScoreMCPTokenEfficiency_FullMarksForLeanSurface(t *testing.T) {

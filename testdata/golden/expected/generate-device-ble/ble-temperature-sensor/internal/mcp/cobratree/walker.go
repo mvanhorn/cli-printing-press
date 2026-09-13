@@ -83,11 +83,27 @@ func walk(cmd *cobra.Command, path []string, visit func(*cobra.Command, []string
 }
 
 func descriptionFor(cmd *cobra.Command) string {
-	if cmd.Long != "" {
-		return cmd.Long
+	return cobratreeToolDescription(cmd.Short, cmd.Long, cmd.CommandPath())
+}
+
+// Operator Long/--help manuals blow the MCP per-tool token budget on
+// every print. The scorer estimates this same catalog text.
+func cobratreeToolDescription(short, long, commandPath string) string {
+	if desc := strings.TrimSpace(short); desc != "" {
+		return desc
 	}
-	if cmd.Short != "" {
-		return cmd.Short
+	if desc := firstHelpParagraph(long); desc != "" {
+		return desc
 	}
-	return "Run `" + cmd.CommandPath() + "` through the companion CLI binary."
+	return "Run `" + commandPath + "` through the companion CLI binary."
+}
+
+func firstHelpParagraph(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	before, _, _ := strings.Cut(s, "\n\n")
+	return strings.TrimSpace(before)
 }

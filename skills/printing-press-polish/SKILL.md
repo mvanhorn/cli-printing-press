@@ -873,7 +873,7 @@ The ship gates are a floor, not a ceiling. After they pass, look at scorecard di
 
 #### MCP scorecard dims map to spec fields, not generator code
 
-When `mcp_token_efficiency`, `mcp_tool_design`, `mcp_remote_transport`, or `mcp_surface_strategy` are below max, the fix is almost always a spec edit + regenerate (or `regen-merge` from a freshly-generated tree), **not** a generator-template change. Polish CAN address these — do not classify them as "feature add to a generator-owned file, retro candidate."
+When `mcp_token_efficiency`, `mcp_tool_design`, `mcp_remote_transport`, or `mcp_surface_strategy` are below max, the fix is almost always a spec edit + regenerate (or `regen-merge` from a freshly-generated tree), **not** a generator-template change. Polish CAN address these — do not classify them as "feature add to a generator-owned file, retro candidate." Cobratree shell-out tools already catalog from Short (not operator Long help), so leftover `mcp_token_efficiency` pressure is typed-endpoint descriptions, not framework `--help`.
 
 | Weak dim | Spec field that fixes it | What to add to `spec.yaml`'s `mcp:` block |
 |---|---|---|
