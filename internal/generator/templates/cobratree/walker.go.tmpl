@@ -86,10 +86,8 @@ func descriptionFor(cmd *cobra.Command) string {
 	return cobratreeToolDescription(cmd.Short, cmd.Long, cmd.CommandPath())
 }
 
-// cobratreeToolDescription prefers Short over Long. Long is operator
-// --help; dumping it into the MCP catalog blows the per-tool token
-// budget on every print. The token-efficiency scorer uses the same
-// preference when estimating cobratree tool weight.
+// Operator Long/--help manuals blow the MCP per-tool token budget on
+// every print. The scorer estimates this same catalog text.
 func cobratreeToolDescription(short, long, commandPath string) string {
 	if desc := strings.TrimSpace(short); desc != "" {
 		return desc

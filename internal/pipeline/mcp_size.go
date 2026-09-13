@@ -183,9 +183,7 @@ func countStringLiteralChars(src string, literalRe *regexp.Regexp) int {
 	return total
 }
 
-// mcpNewToolCallEnd returns the index just past the matching close
-// paren of mcplib.NewTool( at start, so handler bodies after the
-// registration are not counted as catalog text.
+// Handler bodies after NewTool must not inflate catalog token estimates.
 func mcpNewToolCallEnd(src string, start int) int {
 	open := strings.Index(src[start:], "(")
 	if open < 0 {
@@ -477,9 +475,8 @@ func annotationIsTrueValue(v string) bool {
 	return v == "true" || v == "1" || v == "yes"
 }
 
-// cobratreeToolDescription prefers Short over Long so operator --help
-// manuals are not scored as MCP catalog text. Keep in lockstep with
-// the generated cobratree descriptionFor helper.
+// Operator Long/--help manuals blow the MCP per-tool budget. Stay
+// aligned with the generated cobratree helper.
 func cobratreeToolDescription(short, long, commandPath string) string {
 	if desc := strings.TrimSpace(short); desc != "" {
 		return desc
