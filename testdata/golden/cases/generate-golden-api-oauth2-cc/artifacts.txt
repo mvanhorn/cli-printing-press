@@ -28,3 +28,7 @@ printing-press-oauth2-cc/internal/cliutil/oauth_token.go
 # config.go's AuthHeader must emit the AccessToken-first gated branch
 # (under client_credentials the env var is the Client ID, not a bearer).
 printing-press-oauth2-cc/internal/config/config.go
+
+# config_perms_test.go must isolate the credentials store, not only env
+# vars, so go test on a machine with a real credentials file stays green.
+printing-press-oauth2-cc/internal/config/config_perms_test.go
