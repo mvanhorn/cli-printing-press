@@ -7135,11 +7135,7 @@ func TestLiveDogfoodSuccessExitCodes(t *testing.T) {
 	})
 }
 
-// TestRunLiveDogfoodHonorsTypedExitCodes is WU-1's integration check: a command
-// that declares pp:typed-exit-codes and exits with a declared non-zero code on
-// its happy_path/json_fidelity probes scores PASS, while an otherwise-identical
-// command with no declaration still scores FAIL.
-func TestRunLiveDogfoodHonorsTypedExitCodes(t *testing.T) {
+func TestRunLiveDogfoodSkipsDeclaredNonzeroSuccessExits(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
@@ -7153,19 +7149,28 @@ func TestRunLiveDogfoodHonorsTypedExitCodes(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Declared: `records verify` exits 2 and carries pp:typed-exit-codes "0,2".
 	declaredHappy := findResultByCommandKind(report, "records verify", LiveDogfoodTestHappy)
 	require.NotNil(t, declaredHappy, "expected records verify happy_path result")
-	assert.Equal(t, LiveDogfoodStatusPass, declaredHappy.Status, declaredHappy.Reason)
+	assert.Equal(t, LiveDogfoodStatusSkip, declaredHappy.Status)
+	assert.Equal(t, "declared non-zero exit 2", declaredHappy.Reason)
 	declaredJSON := findResultByCommandKind(report, "records verify", LiveDogfoodTestJSON)
 	require.NotNil(t, declaredJSON, "expected records verify json_fidelity result")
-	assert.Equal(t, LiveDogfoodStatusPass, declaredJSON.Status, declaredJSON.Reason)
+	assert.Equal(t, LiveDogfoodStatusSkip, declaredJSON.Status)
+	assert.Equal(t, "declared non-zero exit 2", declaredJSON.Reason)
 
-	// Undeclared: `items verify` exits 2 with no annotation and must still fail.
+	declaredError := findResultByCommandKind(report, "records verify", LiveDogfoodTestError)
+	require.NotNil(t, declaredError, "expected records verify error_path result")
+	assert.Equal(t, LiveDogfoodStatusPass, declaredError.Status, declaredError.Reason)
+
 	undeclaredHappy := findResultByCommandKind(report, "items verify", LiveDogfoodTestHappy)
 	require.NotNil(t, undeclaredHappy, "expected items verify happy_path result")
 	assert.Equal(t, LiveDogfoodStatusFail, undeclaredHappy.Status)
 	assert.Equal(t, "exit 2", undeclaredHappy.Reason)
+
+	assert.Equal(t, 3, report.Passed)
+	assert.Equal(t, 2, report.Failed)
+	assert.Equal(t, 3, report.Skipped)
+	assert.Equal(t, 5, report.MatrixSize)
 }
 
 func writeLiveDogfoodTypedExitFixture(t *testing.T) (dir string, binaryName string) {
@@ -7184,7 +7189,7 @@ if [ "$1" = "agent-context" ]; then
 {
   "commands": [
     {"name":"records","subcommands":[
-      {"name":"verify","annotations":{"pp:method":"GET","pp:typed-exit-codes":"0,2"}}
+      {"name":"verify","annotations":{"pp:method":"GET","pp:typed-exit-codes":"0,2","pp:happy-args":"<dataset>=current"}}
     ]},
     {"name":"items","subcommands":[
       {"name":"verify","annotations":{"pp:method":"GET"}}
@@ -7200,10 +7205,10 @@ if [ "$1" = "records" ] && [ "$2" = "verify" ] && [ "${3:-}" = "--help" ]; then
 Verify records.
 
 Usage:
-  fixture-pp-cli records verify [flags]
+  fixture-pp-cli records verify <dataset> [flags]
 
 Examples:
-  fixture-pp-cli records verify
+  fixture-pp-cli records verify current
 
 Flags:
       --json    Output JSON
