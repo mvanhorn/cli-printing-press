@@ -118,6 +118,15 @@ func TestInferRequestSchema(t *testing.T) {
 			},
 		},
 		{
+			name:        "raw json under form content type is modeled as json fields",
+			body:        `{"email":"ada@example.com","remember":true}`,
+			contentType: "application/x-www-form-urlencoded; charset=UTF-8",
+			want: []spec.Param{
+				{Name: "email", Type: "string", Required: true, Description: "", Format: "email"},
+				{Name: "remember", Type: "boolean", Required: true, Description: ""},
+			},
+		},
+		{
 			name:        "returns empty for unsupported content type",
 			body:        "a=b",
 			contentType: "text/plain",
