@@ -476,7 +476,7 @@ func PrintComparisonTable(results []*FullRunResult) string {
 			if r.Dogfood.PathCheck.Tested > 0 {
 				return fmt.Sprintf("%s %d%%", r.Dogfood.Verdict, r.Dogfood.PathCheck.Pct)
 			}
-			return r.Dogfood.Verdict
+			return string(r.Dogfood.Verdict)
 		}},
 		{"Verification", func(r *FullRunResult) string {
 			if r.Verification == nil {

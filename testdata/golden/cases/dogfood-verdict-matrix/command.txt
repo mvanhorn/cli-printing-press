@@ -1,5 +1,5 @@
 set -euo pipefail
 cp -R testdata/golden/fixtures/dogfood-verdict-matrix "$CASE_ACTUAL_DIR/fixtures"
 "$BINARY" dogfood --dir "$CASE_ACTUAL_DIR/fixtures/pass" --json > "$CASE_ACTUAL_DIR/pass.json"
-"$BINARY" dogfood --dir "$CASE_ACTUAL_DIR/fixtures/fail-path-auth-dead" --spec "$CASE_ACTUAL_DIR/fixtures/fail-path-auth-dead/spec.yaml" --json > "$CASE_ACTUAL_DIR/fail-path-auth-dead.json"
+"$BINARY" dogfood --dir "$CASE_ACTUAL_DIR/fixtures/fail-path-auth-dead" --spec "$CASE_ACTUAL_DIR/fixtures/fail-path-auth-dead/spec.yaml" --json > "$CASE_ACTUAL_DIR/fail-path-auth-dead.json" || test "$?" -eq 3
 "$BINARY" dogfood --dir "$CASE_ACTUAL_DIR/fixtures/warn-priority" --json > "$CASE_ACTUAL_DIR/warn-priority.json"
