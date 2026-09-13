@@ -412,13 +412,7 @@ func estimateCobratreeCommandTool(cmd cobraCommandLiteral, path []string) (MCPTo
 	if toolName == "" {
 		return MCPToolSize{}, false
 	}
-	description := cmd.long
-	if description == "" {
-		description = cmd.short
-	}
-	if description == "" {
-		description = "Run `" + name + "` through the companion CLI binary."
-	}
+	description := cobratreeToolDescription(cmd.short, cmd.long, name)
 	chars := len(toolName) + len(description)
 	return MCPToolSize{
 		Name:   "cobratree:" + toolName,
@@ -447,6 +441,31 @@ func cobratreeCommandKind(cmd cobraCommandLiteral, depth int) mcpCobraCommandKin
 func annotationIsTrueValue(v string) bool {
 	v = strings.ToLower(strings.TrimSpace(v))
 	return v == "true" || v == "1" || v == "yes"
+}
+
+// cobratreeToolDescription prefers Short over Long so operator --help
+// manuals are not scored as MCP catalog text. Keep in lockstep with
+// the generated cobratree descriptionFor helper.
+func cobratreeToolDescription(short, long, commandPath string) string {
+	if desc := strings.TrimSpace(short); desc != "" {
+		return desc
+	}
+	if desc := firstHelpParagraph(long); desc != "" {
+		return desc
+	}
+	return "Run `" + commandPath + "` through the companion CLI binary."
+}
+
+func firstHelpParagraph(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if i := strings.Index(s, "\n\n"); i >= 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return s
 }
 
 func mcpCobraUseName(use string) string {
