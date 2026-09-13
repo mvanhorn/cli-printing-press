@@ -495,6 +495,30 @@ func newTeachCmd() *cobra.Command {
 	assert.Less(t, est.PerTool[0].Tokens, 80)
 }
 
+func TestEstimateMCPTokens_IgnoresHandlerLiterals(t *testing.T) {
+	dir := t.TempDir()
+	mcpDir := filepath.Join(dir, "internal", "mcp")
+	require.NoError(t, os.MkdirAll(mcpDir, 0o755))
+	content := `package mcp
+
+import mcplib "github.com/mark3labs/mcp-go/mcp"
+
+func RegisterTools(s *server.MCPServer) {
+	s.AddTool(mcplib.NewTool("get", mcplib.WithDescription("get item")), nil)
+}
+
+func handleContext() string { return "` + strings.Repeat("x", 4000) + `" }
+`
+	require.NoError(t, os.WriteFile(filepath.Join(mcpDir, "tools.go"), []byte(content), 0o644))
+
+	est := estimateMCPTokens(dir)
+	require.Equal(t, 1, est.ToolCount)
+	assert.Less(t, est.TotalChars, 80, "handler string literals must not count as catalog text")
+	score, scored := scoreMCPTokenEfficiency(dir)
+	require.True(t, scored)
+	assert.Equal(t, 10, score)
+}
+
 func TestScoreMCPTokenEfficiency_FreshPrintFrameworkHelpFits(t *testing.T) {
 	apiSpec := &spec.APISpec{
 		Name:      "tokeneff",
@@ -550,7 +574,7 @@ func TestScoreMCPTokenEfficiency_FreshPrintFrameworkHelpFits(t *testing.T) {
 
 	score, scored := scoreMCPTokenEfficiency(outputDir)
 	require.True(t, scored, "a fresh MCP print must score token-efficiency")
-	assert.GreaterOrEqual(t, score, 7, "framework help alone must not drop token-efficiency to the 4/0 band")
+	assert.Equal(t, 10, score, "a fresh MCP print must score full marks with zero hand edits to framework help")
 }
 
 func TestScoreMCPTokenEfficiency_FullMarksForLeanSurface(t *testing.T) {

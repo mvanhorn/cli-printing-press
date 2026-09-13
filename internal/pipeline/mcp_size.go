@@ -123,38 +123,22 @@ func estimateMCPTokens(dir string) MCPTokenEstimate {
 	}
 
 	// The agent-facing weight of an MCP tool is the name plus description
-	// plus every parameter name and description. Rather than parsing
-	// mcp-go's builder API perfectly, we approximate by extracting all
-	// string literals in the file — the vast majority of bytes an agent
-	// sees come from those literals.
+	// plus every parameter name and description. Count string literals
+	// inside each NewTool(...) registration only — handler implementations
+	// after RegisterTools are not in the catalog.
 	literalRe := regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
 	toolRe := regexp.MustCompile(`mcplib\.NewTool\(\s*"([^"]+)"`)
 
-	literals := literalRe.FindAllString(src, -1)
-	totalChars := 0
-	for _, lit := range literals {
-		totalChars += len(lit) - 2 // strip surrounding quotes
-	}
-
-	// Per-tool sizes: slice the source between consecutive NewTool() calls
-	// and count literal chars within each slice.
 	toolStarts := toolRe.FindAllStringSubmatchIndex(src, -1)
 	toolNames := toolRe.FindAllStringSubmatch(src, -1)
 	perTool := make([]MCPToolSize, 0, len(toolNames))
+	totalChars := 0
 	for i, match := range toolNames {
 		name := match[1]
 		start := toolStarts[i][0]
-		var end int
-		if i+1 < len(toolStarts) {
-			end = toolStarts[i+1][0]
-		} else {
-			end = len(src)
-		}
-		chunk := src[start:end]
-		chunkChars := 0
-		for _, lit := range literalRe.FindAllString(chunk, -1) {
-			chunkChars += len(lit) - 2
-		}
+		end := mcpNewToolCallEnd(src, start)
+		chunkChars := countStringLiteralChars(src[start:end], literalRe)
+		totalChars += chunkChars
 		perTool = append(perTool, MCPToolSize{
 			Name:   name,
 			Chars:  chunkChars,
@@ -189,6 +173,56 @@ func estimateMCPTokens(dir string) MCPTokenEstimate {
 	}
 
 	return est
+}
+
+func countStringLiteralChars(src string, literalRe *regexp.Regexp) int {
+	total := 0
+	for _, lit := range literalRe.FindAllString(src, -1) {
+		total += len(lit) - 2
+	}
+	return total
+}
+
+// mcpNewToolCallEnd returns the index just past the matching close
+// paren of mcplib.NewTool( at start, so handler bodies after the
+// registration are not counted as catalog text.
+func mcpNewToolCallEnd(src string, start int) int {
+	open := strings.Index(src[start:], "(")
+	if open < 0 {
+		return len(src)
+	}
+	depth := 0
+	inStr := false
+	esc := false
+	for i := start + open; i < len(src); i++ {
+		c := src[i]
+		if inStr {
+			if esc {
+				esc = false
+				continue
+			}
+			if c == '\\' {
+				esc = true
+				continue
+			}
+			if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return len(src)
 }
 
 // cobratreeFrameworkCommands mirrors the generated cobratree classify
@@ -462,10 +496,8 @@ func firstHelpParagraph(s string) string {
 	if s == "" {
 		return ""
 	}
-	if i := strings.Index(s, "\n\n"); i >= 0 {
-		return strings.TrimSpace(s[:i])
-	}
-	return s
+	before, _, _ := strings.Cut(s, "\n\n")
+	return strings.TrimSpace(before)
 }
 
 func mcpCobraUseName(use string) string {

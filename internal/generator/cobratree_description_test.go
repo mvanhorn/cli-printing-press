@@ -26,6 +26,8 @@ func TestGenerateCobratreePrefersShortMCPDescription(t *testing.T) {
 		"catalog text must prefer Short over Long")
 	require.Contains(t, walker, "func firstHelpParagraph(",
 		"Long fallback must take the lead paragraph, not the full manual")
+	require.Contains(t, walker, `strings.Cut(s, "\n\n")`,
+		"first paragraph split must use strings.Cut")
 	require.NotContains(t, walker, "if cmd.Long != \"\" {\n\t\treturn cmd.Long",
 		"walker must not dump Long --help into the MCP catalog")
 

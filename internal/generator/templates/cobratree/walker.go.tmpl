@@ -106,8 +106,6 @@ func firstHelpParagraph(s string) string {
 	if s == "" {
 		return ""
 	}
-	if i := strings.Index(s, "\n\n"); i >= 0 {
-		return strings.TrimSpace(s[:i])
-	}
-	return s
+	before, _, _ := strings.Cut(s, "\n\n")
+	return strings.TrimSpace(before)
 }
