@@ -1,7 +1,6 @@
 package browsersniff
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -121,7 +120,7 @@ func SanitizeForFixture(entry EnrichedEntry) TestFixture {
 		fixture.ParamSamples = sortedFixtureValues(querySamples)
 	}
 
-	contentType := strings.ToLower(getHeaderValue(entry.RequestHeaders, "Content-Type"))
+	contentType := effectiveRequestContentType(entry.RequestBody, getHeaderValue(entry.RequestHeaders, "Content-Type"))
 	bodyFields, bodySamples := extractBodyFieldSamples(entry.RequestBody, contentType)
 	fixture.BodyFields = bodyFields
 	fixture.BodySamples = sortedFixtureValues(bodySamples)
@@ -141,18 +140,7 @@ func extractBodyFieldSamples(body string, contentType string) ([]string, map[str
 		return nil, nil
 	}
 
-	switch {
-	case strings.Contains(contentType, "json"):
-		var value any
-		if err := json.Unmarshal([]byte(body), &value); err != nil {
-			return nil, nil
-		}
-
-		root := topLevelObject(value)
-		if root == nil {
-			return nil, nil
-		}
-
+	if root, ok := parseJSONRequestObject(body); ok {
 		fields := make([]string, 0, len(root))
 		samples := make(map[string]string, len(root))
 		for key := range root {
@@ -161,16 +149,18 @@ func extractBodyFieldSamples(body string, contentType string) ([]string, map[str
 		}
 		sort.Strings(fields)
 		return fields, samples
-	case strings.Contains(contentType, "form-urlencoded"):
+	}
+
+	if strings.Contains(strings.ToLower(contentType), "form-urlencoded") {
 		values := ParseFormBody(body)
 		samples := make(map[string]string, len(values))
 		for key, value := range values {
 			samples[key] = syntheticFixtureValue(key, value)
 		}
 		return sortedKeysFromMap(values), samples
-	default:
-		return nil, nil
 	}
+
+	return nil, nil
 }
 
 var (

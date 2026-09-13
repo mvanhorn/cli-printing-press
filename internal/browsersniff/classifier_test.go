@@ -315,6 +315,18 @@ func TestDeduplicateEndpoints(t *testing.T) {
 			wantGroupSizes:      []int{1, 1},
 		},
 		{
+			// read_progresses matches the prefixed-ID length/prefix shape
+			// (read_ + 8+ alnum) but the tail is an ordinary lowercase
+			// route word, not an opaque application ID.
+			name: "literal snake_case route segment is not a prefixed id",
+			entries: []EnrichedEntry{
+				{Method: "GET", URL: "https://example.com/api/v1/users/35854/read_progresses"},
+			},
+			wantMethods:         []string{"GET"},
+			wantNormalizedPaths: []string{"/api/v1/users/{user_id}/read_progresses"},
+			wantGroupSizes:      []int{1},
+		},
+		{
 			// Short opaque IDs (`abc123`, `xyz456`) fail every per-segment ID
 			// regex in isolation — they're too short for the long-alnum or
 			// hash patterns and have no type prefix. The cross-entry variance
