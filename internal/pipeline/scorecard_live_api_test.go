@@ -181,7 +181,7 @@ func TestRunScorecard_LiveAPIVerificationWiring(t *testing.T) {
 	})
 }
 
-func TestRunScorecardCarriesUnverifiedDimensionsIntoGrade(t *testing.T) {
+func TestRunScorecardCarriesApplicableUnverifiedDimensionsIntoGrade(t *testing.T) {
 	dir := t.TempDir()
 	pipelineDir := t.TempDir()
 
@@ -190,13 +190,41 @@ func TestRunScorecardCarriesUnverifiedDimensionsIntoGrade(t *testing.T) {
 
 	assert.Contains(t, sc.UnverifiedDimensions, DimPathValidity)
 	assert.Contains(t, sc.UnverifiedDimensions, DimAuthProtocol)
-	assert.Contains(t, sc.UnverifiedDimensions, DimLiveAPIVerification)
+	assert.NotContains(t, sc.UnverifiedDimensions, DimLiveAPIVerification)
 	assert.Contains(t, sc.OverallGrade, "unverified")
-	assert.Contains(t, sc.OverallGrade, DimLiveAPIVerification)
+	assert.NotContains(t, sc.OverallGrade, DimLiveAPIVerification)
 
 	data, err := json.Marshal(sc)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), `"unverified_dimensions"`)
+}
+
+func TestRunScorecardOmitsUnscoredLiveVerificationFromGradeCaveat(t *testing.T) {
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, "internal/cli/widgets.go", `
+package cli
+
+func widgetsPath() string { return "/widgets" }
+`)
+	specPath := filepath.Join(dir, "spec.yaml")
+	writeScorecardFixture(t, dir, "spec.yaml", `
+name: widgets
+version: "1.0.0"
+base_url: https://api.example.com
+resources:
+  widgets:
+    endpoints:
+      list:
+        method: GET
+        path: /widgets
+`)
+
+	sc, err := RunScorecard(dir, t.TempDir(), specPath, nil)
+	require.NoError(t, err)
+
+	assert.Contains(t, sc.UnscoredDimensions, DimLiveAPIVerification)
+	assert.Empty(t, sc.UnverifiedDimensions)
+	assert.NotContains(t, sc.OverallGrade, "unverified")
 }
 
 func TestScorecardGradeLeavesFullyVerifiedGradeUnqualified(t *testing.T) {

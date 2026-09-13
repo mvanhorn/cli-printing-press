@@ -832,6 +832,47 @@ func TestShipcheck_HoldsOnUnverifiedScorecard(t *testing.T) {
 	}
 }
 
+func TestShipcheck_AllowsUnscoredLiveAPIVerification(t *testing.T) {
+	h := newShipcheckHarness(t)
+	cliDir := filepath.Join(h.dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatalf("creating CLI fixture: %v", err)
+	}
+	const cliSource = `package cli
+
+func widgetsPath() string { return "/widgets" }
+`
+	if err := os.WriteFile(filepath.Join(cliDir, "widgets.go"), []byte(cliSource), 0o644); err != nil {
+		t.Fatalf("writing CLI fixture: %v", err)
+	}
+	specPath := filepath.Join(h.dir, "spec.yaml")
+	const spec = `name: widgets
+version: "1.0.0"
+base_url: https://api.example.com
+resources:
+  widgets:
+    endpoints:
+      list:
+        method: GET
+        path: /widgets
+`
+	if err := os.WriteFile(specPath, []byte(spec), 0o644); err != nil {
+		t.Fatalf("writing spec fixture: %v", err)
+	}
+
+	sc, err := pipeline.RunScorecard(h.dir, t.TempDir(), specPath, nil)
+	if err != nil {
+		t.Fatalf("running scorecard: %v", err)
+	}
+	if _, err := pipeline.PersistScorecardToManifest(filepath.Join(h.dir, pipeline.CLIManifestFilename), sc, ""); err != nil {
+		t.Fatalf("persisting scorecard: %v", err)
+	}
+
+	if err := runShipcheckCmd(t, "--dir", h.dir); err != nil {
+		t.Fatalf("unscored live API verification should not hold shipping: %v", err)
+	}
+}
+
 func TestShipcheck_HoldsWithoutScorecardManifestEvidence(t *testing.T) {
 	h := newShipcheckHarness(t)
 	if err := os.Remove(filepath.Join(h.dir, pipeline.CLIManifestFilename)); err != nil {
