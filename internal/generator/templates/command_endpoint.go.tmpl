@@ -885,6 +885,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if .Endpoint.UsesHTMLResponse}}
 			if !flags.dryRun {
 				data, err = extractHTMLResponse(data, htmlExtractionOptions{
+					Context: cmd.Context(),
 					Mode: "{{with .Endpoint.HTMLExtract}}{{.EffectiveMode}}{{else}}page{{end}}",
 					BaseURL: htmlExtractionRequestURL(c.BaseURL, path, htmlRequestParams),
 					LinkPrefixes: []string{
@@ -894,7 +895,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- end}}
 					},
-					Limit: {{with .Endpoint.HTMLExtract}}{{.Limit}}{{else}}0{{end}},
+					Limit: {{if endpointNeedsClientLimit .Endpoint}}flagLimit{{else}}{{with .Endpoint.HTMLExtract}}{{.Limit}}{{else}}0{{end}}{{end}},
 					ScriptSelector: {{with .Endpoint.HTMLExtract}}{{printf "%q" .EffectiveScriptSelector}}{{else}}""{{end}},
 					JSONPath: {{with .Endpoint.HTMLExtract}}{{printf "%q" .JSONPath}}{{else}}""{{end}},
 				})
