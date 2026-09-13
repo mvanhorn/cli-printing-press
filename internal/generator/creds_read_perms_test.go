@@ -60,7 +60,11 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 	require.NoError(t, err, "config.Load read-time perms behavioral test must be emitted")
 	configPermsSrc := readGeneratedFile(t, outputDir, "internal", "config", "config_perms_test.go")
 	require.Contains(t, configPermsSrc, "internal/cliutil/testenv", "config permission tests must use the shared path sandbox")
-	require.Contains(t, configPermsSrc, "testenv.Isolate(t, cliutil.DataDir)", "config permission tests must isolate the credentials store")
+	require.Contains(t, configPermsSrc, "func isolateCredentials", "config permission tests must isolate every credential source, not only env vars")
+	require.NotContains(t, configPermsSrc, "func clearCredEnv", "the env-only helper name invited skipping the credentials store")
+	require.Contains(t, configPermsSrc, "cliutil.SetHomeOverride(\"\")", "config permission tests must reset --home before isolating")
+	require.Contains(t, configPermsSrc, "testenv.Isolate(t, cliutil.ConfigDir, cliutil.DataDir, cliutil.StateDir, cliutil.CacheDir)", "config permission tests must isolate every user-directory lookup Load can use")
+	require.Contains(t, configPermsSrc, "t.Setenv(\""+naming.EnvPrefix(apiSpec.Name)+"_HOME\", home)", "config permission tests must point LoadCredentials at the sandbox via PREFIX_HOME")
 	require.Contains(t, configPermsSrc, "TestLoad_DoesNotRecordRefusalForCredentialFreeLooseConfig", "config permission tests must prove loose credential-free configs are not recorded as refused")
 	require.Contains(t, configPermsSrc, "CredentialRefusalSummaries", "config permission tests must assert refused state survives the soft miss")
 
@@ -125,24 +129,69 @@ func TestGeneratedConfigPermissionTestsIgnoreSeededCredentialsStore(t *testing.T
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
+	t.Run("defaultHome", func(t *testing.T) {
+		runGeneratedConfigPermsAgainstDecoy(t, apiSpec, outputDir, false)
+	})
+	t.Run("explicitDataDirOverride", func(t *testing.T) {
+		runGeneratedConfigPermsAgainstDecoy(t, apiSpec, outputDir, true)
+	})
+}
+
+func TestGeneratedConfigPermissionTestsFailWhenIsolationRemoved(t *testing.T) {
+	if testing.Short() {
+		t.Skip("generated CLI compile tests run in the full generated-test CI lane")
+	}
+	t.Parallel()
+
+	apiSpec, err := openapi.ParseFile(filepath.Join("..", "..", "testdata", "golden", "fixtures", "golden-api-oauth2-cc.yaml"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	permsPath := filepath.Join(outputDir, "internal", "config", "config_perms_test.go")
+	src := readGeneratedFile(t, outputDir, "internal", "config", "config_perms_test.go")
+	envPrefix := naming.EnvPrefix(apiSpec.Name)
+	stripped := strings.Replace(src,
+		"restore, err := cliutil.SetHomeOverride(\"\")\n\tif err != nil {\n\t\tt.Fatalf(\"reset home override: %v\", err)\n\t}\n\tt.Cleanup(restore)\n\thome := testenv.Isolate(t, cliutil.ConfigDir, cliutil.DataDir, cliutil.StateDir, cliutil.CacheDir)\n\tt.Setenv(\""+envPrefix+"_HOME\", home)\n",
+		"",
+		1)
+	require.NotEqual(t, src, stripped, "expected to remove credentials-store isolation from the generated helper")
+	stripped = dropGeneratedImportLines(stripped, "/internal/cliutil")
+	require.NoError(t, os.WriteFile(permsPath, []byte(stripped), 0o644))
+
+	output, err := runGeneratedConfigPermsAgainstDecoyErr(t, apiSpec, outputDir, false)
+	require.Error(t, err, "stripping PREFIX_HOME isolation must let the decoy credentials file fail the suite:\n%s", output)
+}
+
+const generatedConfigPermsDecoy = "access_token = \"AMBIENT-CREDENTIAL\"\nrefresh_token = \"AMBIENT-REFRESH\"\n"
+
+func runGeneratedConfigPermsAgainstDecoy(t *testing.T, apiSpec *spec.APISpec, outputDir string, setDataDirOverride bool) {
+	t.Helper()
+	output, err := runGeneratedConfigPermsAgainstDecoyErr(t, apiSpec, outputDir, setDataDirOverride)
+	require.NoError(t, err, "generated config permission tests must ignore ambient credentials:\n%s", output)
+}
+
+func runGeneratedConfigPermsAgainstDecoyErr(t *testing.T, apiSpec *spec.APISpec, outputDir string, setDataDirOverride bool) ([]byte, error) {
+	t.Helper()
+
 	envPrefix := naming.EnvPrefix(apiSpec.Name)
 	operatorHome := t.TempDir()
 	credentialsPath := filepath.Join(operatorHome, ".local", "share", naming.CLI(apiSpec.Name), "credentials.toml")
 	ambientDataDir := filepath.Dir(credentialsPath)
 	ambientXDGDataHome := filepath.Dir(ambientDataDir)
 	require.NoError(t, os.MkdirAll(filepath.Dir(credentialsPath), 0o700))
-	require.NoError(t, os.WriteFile(credentialsPath, []byte("access_token = \"AMBIENT-CREDENTIAL\"\n"), 0o600))
+	require.NoError(t, os.WriteFile(credentialsPath, []byte(generatedConfigPermsDecoy), 0o600))
 
 	cacheDir, err := goBuildCacheDir(outputDir)
 	require.NoError(t, err)
-	cmd := exec.Command("go", "test", "-mod=mod", "./internal/config", "-run", "TestLoad_RefusesOverPermissiveConfigOnRead|TestLoad_ReseedsFromEnvAfterOverPermissiveRefusal|TestLoad_RefusesSymlinkToLoosePermsTarget|TestLoad_DanglingSymlinkIsMiss", "-count=1")
+	cmd := exec.Command("go", "test", "-mod=mod", "./internal/config", "-run", "TestLoad_", "-count=1")
 	cmd.Dir = outputDir
 	cmd.Env = append(os.Environ(),
 		"HOME="+operatorHome,
 		"USERPROFILE="+operatorHome,
 		envPrefix+"_HOME=",
 		envPrefix+"_CONFIG=",
-		envPrefix+"_DATA_DIR="+ambientDataDir,
 		envPrefix+"_CONFIG_DIR="+filepath.Join(operatorHome, ".config"),
 		envPrefix+"_STATE_DIR="+filepath.Join(operatorHome, ".local", "state"),
 		envPrefix+"_CACHE_DIR="+filepath.Join(operatorHome, ".cache"),
@@ -152,6 +201,11 @@ func TestGeneratedConfigPermissionTestsIgnoreSeededCredentialsStore(t *testing.T
 		"XDG_CACHE_HOME="+filepath.Join(operatorHome, ".cache"),
 		"GOCACHE="+cacheDir,
 	)
+	if setDataDirOverride {
+		cmd.Env = append(cmd.Env, envPrefix+"_DATA_DIR="+ambientDataDir)
+	} else {
+		cmd.Env = append(cmd.Env, envPrefix+"_DATA_DIR=")
+	}
 	for _, name := range []string{"GOPATH", "GOMODCACHE"} {
 		if value := goEnvValue(t, name); value != "" {
 			cmd.Env = append(cmd.Env, name+"="+value)
@@ -159,7 +213,22 @@ func TestGeneratedConfigPermissionTestsIgnoreSeededCredentialsStore(t *testing.T
 	}
 
 	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, "generated config permission tests must ignore ambient credentials:\n%s", output)
+	after, readErr := os.ReadFile(credentialsPath)
+	require.NoError(t, readErr)
+	require.Equal(t, generatedConfigPermsDecoy, string(after), "generated tests must not read or rewrite the decoy credentials file")
+	return output, err
+}
+
+func dropGeneratedImportLines(src, needle string) string {
+	lines := strings.Split(src, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.Contains(line, needle) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 // TestGenerate_NoCredsPermsForNonAuthSpec proves the guard is gated on
