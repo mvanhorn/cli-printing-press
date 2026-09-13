@@ -4192,6 +4192,23 @@ func TestGenerateHTMLExtractionPerModeGating(t *testing.T) {
 		runGoCommand(t, dir, "mod", "tidy")
 		runGoCommand(t, dir, "build", "./...")
 	})
+
+	t.Run("table-only emits span-aware helpers and omits embedded-json", func(t *testing.T) {
+		t.Parallel()
+
+		dir := filepath.Join(t.TempDir(), "tableonly-pp-cli")
+		require.NoError(t, New(specWithMode("tableonly", spec.HTMLExtractModeTable), dir).Generate())
+		body := read(t, dir)
+		assert.True(t, hasFunc(body, "extractHTMLTable"))
+		assert.True(t, hasFunc(body, "expandHTMLTableHeaderKeys"))
+		assert.True(t, hasFunc(body, "htmlSpanAttr"))
+		assert.Contains(t, body, "colspan")
+		assert.Contains(t, body, "rowspan")
+		assert.False(t, hasFunc(body, "extractEmbeddedJSON"))
+		assert.False(t, hasFunc(body, "extractHTMLPageOrLinks"))
+		runGoCommand(t, dir, "mod", "tidy")
+		runGoCommand(t, dir, "build", "./...")
+	})
 }
 
 func TestGenerateStandardTransportForOfficialAPI(t *testing.T) {

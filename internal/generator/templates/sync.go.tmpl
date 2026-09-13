@@ -955,6 +955,7 @@ func syncResource(ctx context.Context, c interface {
 
 {{ if $hasHTMLSync}}
 	if opts, ok := syncHTMLExtractionOptions(resource, "", c.RequestBaseURL(), c.LastContentType(), path, params); ok {
+		opts.Context = ctx
 		data, err = extractHTMLResponse(data, opts)
 		if err != nil {
 			if !humanFriendly {
@@ -3801,6 +3802,7 @@ func syncOneParent(
 
 {{ if $hasHTMLSync}}
 		if opts, ok := syncHTMLExtractionOptions(dep.Name, dep.ParentTable, c.RequestBaseURL(), c.LastContentType(), path, params); ok {
+			opts.Context = ctx
 			data, err = extractHTMLResponse(data, opts)
 			if err != nil {
 				outcome.reason = "html_extract_error"
