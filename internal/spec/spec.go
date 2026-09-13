@@ -2698,7 +2698,7 @@ func (e Endpoint) UsesXMLResponse() bool {
 type HTMLExtract struct {
 	Mode         string   `yaml:"mode,omitempty" json:"mode,omitempty"`                   // page (default), links, or embedded-json
 	LinkPrefixes []string `yaml:"link_prefixes,omitempty" json:"link_prefixes,omitempty"` // path-segment prefixes to keep when extracting links (mode: links)
-	Limit        int      `yaml:"limit,omitempty" json:"limit,omitempty"`                 // max links to return; defaults at runtime (mode: links)
+	Limit        int      `yaml:"limit,omitempty" json:"limit,omitempty"`                 // max links or table rows to return; 0 disables the table-row cap and uses the runtime default for links
 	// ScriptSelector identifies the <script> tag containing serialized
 	// page state when mode is embedded-json. Defaults to
 	// DefaultEmbeddedJSONScriptSelector ("script#__NEXT_DATA__") when

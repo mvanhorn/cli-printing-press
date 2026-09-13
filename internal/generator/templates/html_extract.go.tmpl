@@ -5,12 +5,16 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 {{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") (.HasHTMLExtractMode "table") }}
 	stdhtml "html"
 {{- end }}
 	"net/url"
+{{- if .HasHTMLExtractMode "table" }}
+	"os"
+{{- end }}
 {{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") (.HasHTMLExtractMode "table") }}
 	"regexp"
 	"strconv"
@@ -19,9 +23,13 @@ import (
 
 	"golang.org/x/net/html/charset"
 	xhtml "golang.org/x/net/html"
+{{- if .HasHTMLExtractMode "table" }}
+	"{{modulePath}}/internal/platform"
+{{- end }}
 )
 
 type htmlExtractionOptions struct {
+	Context        context.Context
 	Mode           string
 	BaseURL        string
 	ContentType    string
@@ -52,9 +60,17 @@ type htmlLink struct {
 
 type htmlTableRow map[string]string
 
+type htmlTableCell struct {
+	text    string
+	header  bool
+	colspan int
+	rowspan int
+}
+
 type htmlTableRawRow struct {
-	cells     []string
-	hasHeader bool
+	cells      []htmlTableCell
+	headerOnly bool
+	hasData    bool
 }
 
 // htmlRawTextTags lists the four HTML5 elements whose content is parsed as
@@ -164,10 +180,16 @@ func extractHTMLTable(raw []byte, opts htmlExtractionOptions) (json.RawMessage, 
 
 	rows := firstHTMLTableRows(doc)
 	limit := opts.Limit
-	if limit <= 0 {
-		limit = 50
-	}
-	if len(rows) > limit {
+	if limit > 0 && len(rows) > limit {
+		if opts.Context != nil {
+			platform.MarkContextTruncated(opts.Context, platform.TruncationReason{
+				Kind:          "html_table_limit",
+				Configured:    limit,
+				Observed:      len(rows),
+				MoreAvailable: true,
+			})
+		}
+		fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"html_table_limit","limit":%d,"total":%d}`+"\n", limit, len(rows))
 		rows = rows[:limit]
 	}
 	data, err := json.Marshal(rows)
@@ -190,21 +212,35 @@ func firstHTMLTableRows(root *xhtml.Node) []htmlTableRow {
 		return nil
 	}
 
-	headers := rawRows[0].cells
-	start := 1
-	if !rawRows[0].hasHeader {
-		headers = syntheticTableHeaders(len(headers))
-		start = 0
+	headerEnd := -1
+	for i, rawRow := range rawRows {
+		if rawRow.headerOnly {
+			headerEnd = i
+			continue
+		}
+		if rawRow.hasData {
+			break
+		}
+	}
+
+	var headers []string
+	start := 0
+	if headerEnd >= 0 {
+		headers = expandHTMLTableHeaderKeys(rawRows[:headerEnd+1])
+		start = headerEnd + 1
+	} else {
+		headers = syntheticTableHeaders(htmlTableRowWidth(rawRows[0]))
 	}
 
 	rows := make([]htmlTableRow, 0, len(rawRows)-start)
 	for _, rawRow := range rawRows[start:] {
+		values := htmlTableDataValues(rawRow)
 		row := htmlTableRow{}
-		for i, value := range rawRow.cells {
-			if i >= len(headers) {
-				break
+		for i, value := range values {
+			key := ""
+			if i < len(headers) {
+				key = headers[i]
 			}
-			key := headers[i]
 			if key == "" {
 				key = fmt.Sprintf("column_%d", i+1)
 			}
@@ -226,25 +262,217 @@ func htmlTableRows(table *xhtml.Node) []htmlTableRawRow {
 		if htmlRowBelongsToNestedTable(n, table) {
 			return
 		}
-		var cells []string
-		hasHeader := false
+		var cells []htmlTableCell
+		hasData := false
+		sawHeader := false
 		for child := n.FirstChild; child != nil; child = child.NextSibling {
 			if child.Type != xhtml.ElementNode {
 				continue
 			}
-			if !strings.EqualFold(child.Data, "th") && !strings.EqualFold(child.Data, "td") {
+			isHeader := strings.EqualFold(child.Data, "th")
+			isData := strings.EqualFold(child.Data, "td")
+			if !isHeader && !isData {
 				continue
 			}
-			if strings.EqualFold(child.Data, "th") {
-				hasHeader = true
+			if isHeader {
+				sawHeader = true
 			}
-			cells = append(cells, cleanHTMLText(nodeTextSuppressing(child)))
+			if isData {
+				hasData = true
+			}
+			cells = append(cells, htmlTableCell{
+				text:    cleanHTMLText(nodeTextSuppressing(child)),
+				header:  isHeader,
+				colspan: htmlSpanAttr(child, "colspan"),
+				rowspan: htmlSpanAttr(child, "rowspan"),
+			})
 		}
 		if len(cells) > 0 {
-			rows = append(rows, htmlTableRawRow{cells: cells, hasHeader: hasHeader})
+			rows = append(rows, htmlTableRawRow{cells: cells, headerOnly: sawHeader && !hasData, hasData: hasData})
 		}
 	})
 	return rows
+}
+
+func htmlSpanAttr(n *xhtml.Node, name string) int {
+	raw := strings.TrimSpace(attrValue(n, name))
+	if raw == "" {
+		return 1
+	}
+	nspan, err := strconv.Atoi(raw)
+	if err != nil || nspan < 1 {
+		return 1
+	}
+	if nspan > 64 {
+		return 64
+	}
+	return nspan
+}
+
+func htmlTableRowWidth(row htmlTableRawRow) int {
+	width := 0
+	for _, cell := range row.cells {
+		cs := cell.colspan
+		if cs < 1 {
+			cs = 1
+		}
+		width += cs
+	}
+	return width
+}
+
+func htmlTableDataValues(row htmlTableRawRow) []string {
+	values := make([]string, 0, len(row.cells))
+	for _, cell := range row.cells {
+		cs := cell.colspan
+		if cs < 1 {
+			cs = 1
+		}
+		values = append(values, cell.text)
+		for i := 1; i < cs; i++ {
+			values = append(values, "")
+		}
+	}
+	return values
+}
+
+func expandHTMLTableHeaderKeys(headerRows []htmlTableRawRow) []string {
+	if len(headerRows) == 0 {
+		return nil
+	}
+	grid := make([]map[int]string, len(headerRows))
+	occupied := make([]map[int]bool, len(headerRows))
+	for r := range headerRows {
+		grid[r] = map[int]string{}
+		occupied[r] = map[int]bool{}
+	}
+	for r, row := range headerRows {
+		col := 0
+		for _, cell := range row.cells {
+			if !cell.header {
+				continue
+			}
+			for occupied[r][col] {
+				col++
+			}
+			cs := cell.colspan
+			rs := cell.rowspan
+			if cs < 1 {
+				cs = 1
+			}
+			if rs < 1 {
+				rs = 1
+			}
+			label := cell.text
+			for dc := 0; dc < cs; dc++ {
+				for dr := 0; dr < rs; dr++ {
+					rr := r + dr
+					if rr >= len(grid) {
+						continue
+					}
+					if existing := grid[rr][col+dc]; existing != "" && existing != label {
+						grid[rr][col+dc] = existing + " " + label
+					} else {
+						grid[rr][col+dc] = label
+					}
+					occupied[rr][col+dc] = true
+				}
+			}
+			col += cs
+		}
+	}
+
+	width := 0
+	for _, cols := range grid {
+		for c := range cols {
+			if c+1 > width {
+				width = c + 1
+			}
+		}
+	}
+
+	banner := make([]bool, len(headerRows))
+	for r := range headerRows {
+		if width <= 1 {
+			continue
+		}
+		label := strings.TrimSpace(grid[r][0])
+		if label == "" {
+			continue
+		}
+		same := true
+		for c := 1; c < width; c++ {
+			if strings.TrimSpace(grid[r][c]) != label {
+				same = false
+				break
+			}
+		}
+		if same {
+			banner[r] = true
+		}
+	}
+
+	out := make([]string, 0, width)
+	seen := map[string]int{}
+	for c := 0; c < width; c++ {
+		parts := make([]string, 0, len(headerRows))
+		for r := range headerRows {
+			if banner[r] {
+				continue
+			}
+			v := strings.TrimSpace(grid[r][c])
+			if v == "" {
+				continue
+			}
+			if len(parts) == 0 || parts[len(parts)-1] != v {
+				parts = append(parts, v)
+			}
+		}
+		key := htmlTableHeaderKey(parts)
+		if key == "" {
+			key = fmt.Sprintf("column_%d", c+1)
+		}
+		if n, ok := seen[key]; ok {
+			n++
+			seen[key] = n
+			key = fmt.Sprintf("%s_%d", key, n)
+		} else {
+			seen[key] = 1
+		}
+		out = append(out, key)
+	}
+	return out
+}
+
+func htmlTableHeaderKey(parts []string) string {
+	switch len(parts) {
+	case 0:
+		return ""
+	case 1:
+		return parts[0]
+	default:
+		return normalizeHTMLTableHeader(strings.Join(parts, " "))
+	}
+}
+
+func normalizeHTMLTableHeader(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	s = strings.ReplaceAll(s, "%", " pct ")
+	var b strings.Builder
+	prevUnderscore := false
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevUnderscore = false
+		default:
+			if !prevUnderscore && b.Len() > 0 {
+				b.WriteByte('_')
+				prevUnderscore = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "_")
 }
 
 func htmlRowBelongsToNestedTable(row, outerTable *xhtml.Node) bool {

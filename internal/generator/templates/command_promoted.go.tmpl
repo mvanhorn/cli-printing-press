@@ -514,6 +514,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- if .Endpoint.UsesHTMLResponse}}
 			if !flags.dryRun {
 				data, err = extractHTMLResponse(data, htmlExtractionOptions{
+					Context: cmd.Context(),
 					Mode: "{{with .Endpoint.HTMLExtract}}{{.EffectiveMode}}{{else}}page{{end}}",
 					BaseURL: htmlExtractionRequestURL(c.BaseURL, path, htmlRequestParams),
 					ContentType: c.LastContentType(),
@@ -524,7 +525,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 					},
-					Limit: {{with .Endpoint.HTMLExtract}}{{.Limit}}{{else}}0{{end}},
+					Limit: {{if endpointNeedsClientLimit .Endpoint}}flagLimit{{else}}{{with .Endpoint.HTMLExtract}}{{.Limit}}{{else}}0{{end}}{{end}},
 					ScriptSelector: {{with .Endpoint.HTMLExtract}}{{printf "%q" .EffectiveScriptSelector}}{{else}}""{{end}},
 					JSONPath: {{with .Endpoint.HTMLExtract}}{{printf "%q" .JSONPath}}{{else}}""{{end}},
 				})
