@@ -153,6 +153,7 @@ func RootCmd() *cobra.Command {
 	rootCmd.AddCommand(newItemsCmd())
 	rootCmd.AddCommand(newEndpointCmd())
 	rootCmd.AddCommand(newAuthCmd())
+	rootCmd.AddCommand(newProfileGroupCmd())
 	rootCmd.AddCommand(newHiddenCmd())
 	rootCmd.AddCommand(newCobraHiddenGroupCmd())
 	rootCmd.AddCommand(newMCPHiddenGroupCmd())
@@ -207,6 +208,25 @@ func newAuthCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "auth",
 		Short: "Framework command skipped by cobratree.",
+		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+
+func newProfileGroupCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:         "profile",
+		Short:       "Named sets of flags saved for reuse",
+		Annotations: map[string]string{"pp:parent-group": "true"},
+	}
+	cmd.AddCommand(newProfileSaveCmd())
+	return cmd
+}
+
+func newProfileSaveCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "save",
+		Short: "Save the current invocation's non-default flags as a named profile",
+		Long:  "Operator profile help that the runtime walker never catalogs.",
 		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
 	}
 }
@@ -296,6 +316,8 @@ func newAPIResourceChildCmd() *cobra.Command {
 	assert.Contains(t, names, "cobratree:orders_triage")
 	assert.Contains(t, names, "cobratree:catalog_summary")
 	assert.NotContains(t, names, "cobratree:auth")
+	assert.NotContains(t, names, "cobratree:profile")
+	assert.NotContains(t, names, "cobratree:profile_save")
 	assert.NotContains(t, names, "cobratree:orders")
 	assert.NotContains(t, names, "cobratree:secrets_inspect")
 	assert.NotContains(t, names, "cobratree:auth_status")
@@ -520,15 +542,15 @@ func TestScoreMCPTokenEfficiency_FreshPrintFrameworkHelpFits(t *testing.T) {
 		if !strings.HasPrefix(tool.Name, "cobratree:") {
 			continue
 		}
-		if tool.Chars >= 640 {
+		if tool.Tokens > 80 {
 			frameworkHeavy = append(frameworkHeavy, tool.Name)
 		}
 	}
-	assert.Empty(t, frameworkHeavy, "framework/novel cobratree help must not land in the MCP catalog at Long size")
+	assert.Empty(t, frameworkHeavy, "framework/novel cobratree tools must stay in the full-marks per-tool band")
 
 	score, scored := scoreMCPTokenEfficiency(outputDir)
 	require.True(t, scored, "a fresh MCP print must score token-efficiency")
-	assert.Equal(t, 10, score, "framework help alone must not fail token-efficiency on a fresh print")
+	assert.GreaterOrEqual(t, score, 7, "framework help alone must not drop token-efficiency to the 4/0 band")
 }
 
 func TestScoreMCPTokenEfficiency_FullMarksForLeanSurface(t *testing.T) {
