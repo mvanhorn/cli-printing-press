@@ -152,6 +152,23 @@ func TestSanitizeForFixture(t *testing.T) {
 			},
 		},
 		{
+			name: "raw json advertised as form uses json field names",
+			entry: EnrichedEntry{
+				Method: "POST",
+				URL:    "https://api.example.com/session",
+				RequestHeaders: map[string]string{
+					"Content-Type": "application/x-www-form-urlencoded",
+				},
+				RequestBody: `{"email":"ada@example.com","remember":true}`,
+			},
+			want: TestFixture{
+				Method:     "POST",
+				Path:       "/session",
+				ParamNames: []string{"email", "remember"},
+				BodyFields: []string{"email", "remember"},
+			},
+		},
+		{
 			name: "captured value shapes become synthetic samples",
 			entry: EnrichedEntry{
 				Method: "POST",

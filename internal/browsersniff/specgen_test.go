@@ -1525,6 +1525,54 @@ func TestWriteSamples_OmitsResponseBodyKnownWhenAbsent(t *testing.T) {
 	assert.Nil(t, sample.ResponseBody)
 }
 
+func TestWriteSamples_RedactsNestedAuthorizationAndKeepsURLPaths(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	const basicBlob = "QWxpY2U6c2VjcmV0MTIz"
+	const pathSeg = "YWJjZGVmZ2hpamtsbW5vcA"
+	rawURL := "https://api.example.com/objects/" + pathSeg + "/meta"
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method: "POST",
+				URL:    rawURL,
+				RequestHeaders: map[string]string{
+					"Content-Type": "application/json",
+				},
+				RequestBody:         `{"name":"headers","formulaMap":{"Authorization":"\"Basic ` + basicBlob + `\""},"url":"` + rawURL + `"}`,
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"ok":true}`,
+			},
+		},
+	}
+
+	written, err := WriteSamples(capture, dir)
+	require.NoError(t, err)
+	require.Equal(t, 1, written)
+
+	files, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	data, err := os.ReadFile(filepath.Join(dir, files[0].Name()))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), basicBlob)
+	assert.Contains(t, string(data), rawURL)
+
+	var sample SampleFile
+	require.NoError(t, json.Unmarshal(data, &sample))
+	assert.Equal(t, rawURL, sample.RawURL)
+	body, ok := sample.RequestBody.(map[string]any)
+	require.True(t, ok)
+	formula, ok := body["formulaMap"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, RedactedSentinel, formula["Authorization"])
+	assert.Equal(t, rawURL, body["url"])
+}
+
 func TestWriteSamples_TruncatesOversizedBodies(t *testing.T) {
 	t.Parallel()
 
@@ -1605,4 +1653,128 @@ func findBodyParam(params []spec.Param, name string) *spec.Param {
 		}
 	}
 	return nil
+}
+
+func TestAnalyzeCapture_KeepsRequestRouteOriginSemanticsFromMultiHostHAR(t *testing.T) {
+	t.Parallel()
+
+	htmlHome := `<html><head><title>Library</title><meta name="description" content="home"></head>` +
+		`<body><a href="/products/one">One</a><a href="/products/two">Two</a></body></html>`
+	capture := &EnrichedCapture{
+		TargetURL: "https://www.example.com/",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "POST",
+				URL:                 "https://browser-intake-datadoghq.com/api/v2/rum?dd-api-key=wrong-service",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				RequestBody:         `[{"type":"view"}]`,
+				ResponseStatus:      202,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"status":"ok"}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://auth.thirdparty.example/oauth/authorize?key=pk_live_should_not_become_auth",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"ok":true}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/api/ms-1/skills",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"skills":[{"id":"sk_1","name":"focus"}]}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/api/v1/xp",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"1":10,"2":20}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/api/v1/users/35854/read_progresses",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"progress":1}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/api/v1/tables/t_0t3vswhpKogASf2XZpW",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":"t_0t3vswhpKogASf2XZpW"}`,
+			},
+			{
+				Method:              "POST",
+				URL:                 "https://api.example.com/api/v1/session",
+				RequestHeaders:      map[string]string{"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"},
+				RequestBody:         `{"email":"ada@example.com","remember":true}`,
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"ok":true}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://www.example.com/",
+				ResponseStatus:      200,
+				ResponseContentType: "text/html; charset=utf-8",
+				ResponseBody:        htmlHome,
+			},
+		},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	require.NoError(t, err)
+	require.NoError(t, apiSpec.Validate())
+
+	assert.Equal(t, "https://api.example.com", apiSpec.BaseURL)
+	assert.Equal(t, spec.TierAuthTypeNone, apiSpec.Auth.Type)
+
+	skills, found := findEndpointByPath(apiSpec, "/api/ms-1/skills")
+	require.True(t, found, "expected GET /api/ms-1/skills")
+	assert.Empty(t, skills.Params, "GET with no observed request params must not inherit response fields")
+	assert.Empty(t, skills.Body)
+	assert.Empty(t, skills.BaseURL)
+
+	xp, found := findEndpointByPath(apiSpec, "/api/v1/xp")
+	require.True(t, found, "expected GET /api/v1/xp")
+	assert.Empty(t, xp.Params, "map-shaped response keys must not become request params")
+
+	progress, found := findEndpointByPath(apiSpec, "/api/v1/users/{user_id}/read_progresses")
+	require.True(t, found, "expected literal read_progresses segment")
+	assert.ElementsMatch(t, []string{"user_id"}, paramNames(progress.Params))
+	_, invented := findEndpointByPath(apiSpec, "/api/v1/users/{user_id}/{user_id_2}")
+	assert.False(t, invented, "snake_case route word must not become a second path param")
+
+	table, found := findEndpointByPath(apiSpec, "/api/v1/tables/{table_id}")
+	require.True(t, found, "opaque prefixed IDs must still parameterize")
+	assert.ElementsMatch(t, []string{"table_id"}, paramNames(table.Params))
+
+	session, found := findEndpointByPath(apiSpec, "/api/v1/session")
+	require.True(t, found, "expected POST /api/v1/session")
+	assert.Equal(t, "application/json", session.RequestContentType)
+	assert.ElementsMatch(t, []string{"email", "remember"}, paramNames(session.Body))
+	assert.NotContains(t, paramNames(session.Body), `{"email":"ada@example.com","remember":true}`)
+
+	home, found := findEndpointByPath(apiSpec, "/")
+	require.True(t, found, "expected first-party HTML home")
+	assert.Equal(t, "https://www.example.com", home.BaseURL)
+	assert.Equal(t, spec.ResponseFormatHTML, home.ResponseFormat)
+
+	for _, resource := range apiSpec.Resources {
+		for _, endpoint := range resource.Endpoints {
+			assert.NotContains(t, endpoint.Path, "oauth")
+			assert.NotEqual(t, "https://auth.thirdparty.example", endpoint.BaseURL)
+		}
+	}
+
+	preserved, err := AnalyzeCaptureWithOptions(capture, AnalyzeOptions{PreserveHosts: true})
+	require.NoError(t, err)
+	homePreserved, found := findEndpointByPath(preserved, "/")
+	require.True(t, found)
+	assert.Equal(t, "https://www.example.com", homePreserved.BaseURL,
+		"--preserve-hosts must not be required to keep a first-party HTML origin")
 }
