@@ -2,6 +2,7 @@ package browsersniff
 
 import (
 	"encoding/json"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -193,6 +194,89 @@ func TestRedactJSONBody_EmptyBodyReturnsEmpty(t *testing.T) {
 	got2, paths2 := RedactJSONBody("   ")
 	assert.Equal(t, "   ", got2)
 	assert.Nil(t, paths2)
+}
+
+func TestRedactJSONBody_NestedAuthorizationHeaderValue(t *testing.T) {
+	t.Parallel()
+
+	const basicBlob = "QWxpY2U6c2VjcmV0MTIz"
+	body := `{"name":"headers","formulaMap":{"Content-Type":"\"application/json\"","Authorization":"\"Basic ` + basicBlob + `\""}}`
+	redacted, paths := RedactJSONBody(body)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(redacted), &parsed))
+	formula, ok := parsed["formulaMap"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, RedactedSentinel, formula["Authorization"])
+	assert.Equal(t, `"application/json"`, formula["Content-Type"])
+	assert.NotContains(t, redacted, basicBlob)
+	assert.Contains(t, paths, "formulaMap.Authorization")
+}
+
+func TestRedactJSONBody_AuthSchemeValueWithoutHeaderKey(t *testing.T) {
+	t.Parallel()
+
+	body := `{"note":"Bearer sk_live_abcdefghijklmnop"}`
+	redacted, paths := RedactJSONBody(body)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(redacted), &parsed))
+	assert.Equal(t, RedactedSentinel, parsed["note"])
+	assert.Contains(t, paths, "note.pattern:auth-scheme")
+}
+
+func TestRedactJSONBody_UserPassBase64Value(t *testing.T) {
+	t.Parallel()
+
+	const blob = "QWxpY2U6c2VjcmV0MTIz"
+	body := `{"value":"` + blob + `","keep":"ok"}`
+	redacted, paths := RedactJSONBody(body)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(redacted), &parsed))
+	assert.Equal(t, RedactedSentinel, parsed["value"])
+	assert.Equal(t, "ok", parsed["keep"])
+	assert.Contains(t, paths, "value.pattern:basic-credential")
+}
+
+func TestRedactJSONBody_PreservesURLPathBase64Segments(t *testing.T) {
+	t.Parallel()
+
+	const pathSeg = "QWxpY2U6c2VjcmV0MTIz"
+	body := `{"url":"https://cdn.example.com/objects/` + pathSeg + `/meta","host":"cdn.example.com","path":"/objects/` + pathSeg + `/meta"}`
+	redacted, paths := RedactJSONBody(body)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(redacted), &parsed))
+	assert.Equal(t, "https://cdn.example.com/objects/"+pathSeg+"/meta", parsed["url"])
+	assert.Equal(t, "cdn.example.com", parsed["host"])
+	assert.Equal(t, "/objects/"+pathSeg+"/meta", parsed["path"])
+	assert.Empty(t, paths)
+}
+
+func TestRedactJSONBody_RedactsURLQueryAndUserinfoCredentials(t *testing.T) {
+	t.Parallel()
+
+	const jwt = "eyJhbGc.eyJzdWI.signaturevalue"
+	const pathSeg = "YWJjZGVmZ2hpamtsbW5vcA"
+	const pass = "s3cret-pass"
+	body := `{"url":"https://alice:` + pass + `@cdn.example.com/objects/` + pathSeg + `/meta?access_token=` + jwt + `&ok=1","href":"/callback?access_token=` + jwt + `&page=2"}`
+	redacted, paths := RedactJSONBody(body)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(redacted), &parsed))
+	urlVal, _ := parsed["url"].(string)
+	hrefVal, _ := parsed["href"].(string)
+	assert.NotContains(t, urlVal, jwt)
+	assert.NotContains(t, urlVal, pass)
+	assert.NotContains(t, hrefVal, jwt)
+	assert.Contains(t, urlVal, "/objects/"+pathSeg+"/meta")
+	assert.Contains(t, urlVal, "ok=1")
+	assert.Contains(t, hrefVal, "page=2")
+	assert.Contains(t, urlVal, url.QueryEscape(RedactedSentinel))
+	assert.Contains(t, hrefVal, url.QueryEscape(RedactedSentinel))
+	assert.Contains(t, paths, "url.pattern:url-credential")
+	assert.Contains(t, paths, "href.pattern:url-credential")
 }
 
 func TestRedactJSONBody_PhoneRequiresPlusPrefix(t *testing.T) {
