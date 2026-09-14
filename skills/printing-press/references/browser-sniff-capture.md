@@ -860,10 +860,12 @@ This is the same shape `agent-browser`'s enriched-capture JSON uses (Step 2b lin
 
 **Write-time credential strip (mandatory — not optional).**
 
-Before writing the entry to `$DISCOVERY_DIR/browser-sniff-capture.json`, scrub credentials from `request_headers` and `response_headers`:
+Before writing the entry to `$DISCOVERY_DIR/browser-sniff-capture.json`, scrub credentials from `request_headers`, `response_headers`, and request/response **bodies**. Matching on JSON field names such as `apiKey` is not enough: products that let users store outbound HTTP credentials embed those values under nested header maps (`formulaMap.Authorization`, `headers.Authorization`, `headers["X-API-Key"]`).
 
 - Remove headers with names matching (case-insensitive): `Authorization`, `Cookie`, `Set-Cookie`, `Proxy-Authorization`, `X-Api-Key`, `X-Auth-Token`, `X-Session-Id`, and any header matching the regex `/^x-.*-(token|key|auth|session|secret)$/i`.
+- In request/response bodies, redact the same header names when they appear as nested map keys, and redact values that are `Basic` / `Bearer` / `Token` credential blobs regardless of the surrounding key name. The durable machine scrub is `browsersniff.RedactJSONBody` (used for `<spec-stem>-samples/`); apply the same rules when writing the capture yourself.
 - For URLs containing query parameters that look like tokens (`access_token=`, `api_key=`, `token=`, `key=`, `signature=`, `auth=`, `password=`), redact the value to `REDACTED` in the stored URL.
+- **Scope guard:** scrub header maps and request/response bodies only. Do not run a blind base64 sweep over `url`, `host`, or `path` fields — long base64-shaped path segments are endpoint evidence, not credentials.
 
 Cross-reference `secret-protection.md` for the canonical scrub list — when the canonical list updates, this section must update too. The strip happens at write time so the artifact never sits on disk with live credentials, even briefly. Phase 5.5 archive-time strip is a defense-in-depth backstop, not the primary control for chrome-MCP captures.
 

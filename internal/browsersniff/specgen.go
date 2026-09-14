@@ -89,12 +89,7 @@ func AnalyzeCaptureWithOptions(capture *EnrichedCapture, options AnalyzeOptions)
 	for _, group := range groups {
 		endpoint, responseFields := buildEndpoint(group, auth)
 		inferredTypes.addEndpointTypes(group.NormalizedPath, &endpoint, responseFields)
-		if options.PreserveHosts {
-			groupBaseURL := mostCommonBaseURL(group.Entries)
-			if groupBaseURL != "" && groupBaseURL != baseURL {
-				endpoint.BaseURL = groupBaseURL
-			}
-		}
+		applyEndpointOrigin(&endpoint, group, baseURL)
 		resourceKey, resourceName := discovery.ResourceKey(group.NormalizedPath)
 		if resourceKey == "" {
 			resourceKey = "default"
@@ -617,9 +612,6 @@ func buildEndpoint(group EndpointGroup, auth spec.AuthConfig) (spec.Endpoint, []
 	}
 
 	responseType := inferResponseType(responseBodies)
-	if len(params) == 0 && len(responseFields) > 0 {
-		params = responseFields
-	}
 	requestContentType := inferRequestContentType(group.Entries)
 
 	endpoint := spec.Endpoint{
@@ -1038,10 +1030,11 @@ func looksLikeHTMLTableFragment(lowerBody string) bool {
 func inferRequestContentType(entries []EnrichedEntry) string {
 	var chosen string
 	for _, entry := range entries {
-		if strings.TrimSpace(entry.RequestBody) == "" {
+		body := strings.TrimSpace(entry.RequestBody)
+		if body == "" {
 			continue
 		}
-		contentType := normalizeRequestContentType(getHeaderValue(entry.RequestHeaders, "Content-Type"))
+		contentType := effectiveRequestContentType(body, getHeaderValue(entry.RequestHeaders, "Content-Type"))
 		if contentType == "" {
 			continue
 		}
@@ -1054,6 +1047,17 @@ func inferRequestContentType(entries []EnrichedEntry) string {
 		}
 	}
 	return chosen
+}
+
+// effectiveRequestContentType prefers the payload that actually parsed over
+// the advertised media type. A raw JSON object sent under a form Content-Type
+// is modeled and replayed as JSON so the generated CLI does not treat the
+// entire document as one form-field name.
+func effectiveRequestContentType(body string, advertised string) string {
+	if _, ok := parseJSONRequestObject(body); ok {
+		return "application/json"
+	}
+	return normalizeRequestContentType(advertised)
 }
 
 func normalizeRequestContentType(contentType string) string {
@@ -1720,7 +1724,7 @@ func FilterEndpointsByMinSamplesWithOptions(apiSpec *spec.APISpec, capture *Enri
 	qualifying := map[string]bool{}
 	for _, g := range groups {
 		if len(g.Entries) >= minSamples {
-			qualifying[endpointFilterKey(g.Method, g.NormalizedPath, groupBaseURLOverride(g, options, apiSpec.BaseURL))] = true
+			qualifying[endpointFilterKey(g.Method, g.NormalizedPath, groupBaseURLOverride(g, apiSpec.BaseURL))] = true
 		}
 	}
 
@@ -1742,10 +1746,16 @@ func FilterEndpointsByMinSamplesWithOptions(apiSpec *spec.APISpec, capture *Enri
 	return dropped
 }
 
-func groupBaseURLOverride(group EndpointGroup, options AnalyzeOptions, specBaseURL string) string {
-	if !options.PreserveHosts {
-		return ""
+func applyEndpointOrigin(endpoint *spec.Endpoint, group EndpointGroup, specBaseURL string) {
+	if endpoint == nil {
+		return
 	}
+	if override := groupBaseURLOverride(group, specBaseURL); override != "" {
+		endpoint.BaseURL = override
+	}
+}
+
+func groupBaseURLOverride(group EndpointGroup, specBaseURL string) string {
 	groupBaseURL := mostCommonBaseURL(group.Entries)
 	if groupBaseURL == "" || groupBaseURL == specBaseURL {
 		return ""
