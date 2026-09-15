@@ -93,9 +93,10 @@ merge_queue:
   # Parallel speculation across queued PRs. Mergify creates up to N
   # `mergify/merge-queue/*` draft PRs concurrently and runs CI on each.
   # Free on the OSS plan; the paid feature is `batch_size > 1`, which
-  # groups multiple PRs into one queue position. 5 is the OSS-plan
-  # default/ceiling for parallel speculation.
-  max_parallel_checks: 5
+  # groups multiple PRs into one queue position. 5 is the OSS default
+  # ceiling; 2 cuts speculative Main CI fan-out so generator shards
+  # compete less for runners.
+  max_parallel_checks: 2
   queued_label: queued
   dequeued_label: dequeued
   status_comments: outcomes

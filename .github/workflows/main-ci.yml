@@ -155,7 +155,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: classify
     if: needs.classify.outputs.needs_tests == 'true'
-    timeout-minutes: 20
+    # Must outlast the 25m go-test timeout plus setup-go.
+    timeout-minutes: 30
     # Shard the full (non-short) suite across package partitions, then split
     # the slow single-package generator shard by top-level test name. The
     # aggregate result feeds `build-and-test` via needs.full-test.result, so
@@ -218,7 +219,13 @@ jobs:
           printf '  %s\n' "${packages[@]}"
 
           # No -short: main-ci is the full-coverage gate, unlike lint.yml's
-          # fast -short shards.
+          # fast -short shards. Generator shards need 25m: idle generator-0
+          # heads already take ~13–15m; speculative drafts tip over 15m.
+          # pipeline/cli/rest stay at 15m so a stall fails fast.
+          go_test_timeout=15m
+          if [[ "${{ matrix.shard }}" == generator-* ]]; then
+            go_test_timeout=25m
+          fi
           if [[ "$run_partition" == "true" ]]; then
             test_list=/tmp/go-test-list.txt
             selected_list=/tmp/go-test-selected.txt
@@ -234,12 +241,12 @@ jobs:
             )"
             echo "Selected $selected_count top-level tests for shard ${{ matrix.shard }}."
             set +e
-            go test -json -timeout 15m -run "$pattern" "${packages[@]}" 2>&1 | tee /tmp/go-test.json
+            go test -json -timeout "$go_test_timeout" -run "$pattern" "${packages[@]}" 2>&1 | tee /tmp/go-test.json
             status=${PIPESTATUS[0]}
             set -e
           else
             set +e
-            go test -json -timeout 15m "${packages[@]}" 2>&1 | tee /tmp/go-test.json
+            go test -json -timeout "$go_test_timeout" "${packages[@]}" 2>&1 | tee /tmp/go-test.json
             status=${PIPESTATUS[0]}
             set -e
           fi
