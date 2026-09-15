@@ -8253,6 +8253,23 @@ func TestPaginatedGetScopesCursorZeroExemptionToOffsetPagination(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+// Generator-owned rate-limit errors must be classified before the
+// message-based fallback. Otherwise every printed CLI reports client-side
+// budget exhaustion as a generic API failure and exits with the wrong code.
+func TestClassifyAPIErrorRecognizesGeneratedRateLimitError(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.Join("templates", "helpers.go.tmpl"))
+	require.NoError(t, err, "helpers template must exist")
+
+	expected := "var generatedRateLimited *platform.RateLimitedError\n" +
+		"	if errors.As(err, &generatedRateLimited) {\n" +
+		"		return rateLimitErr(err)\n" +
+		"	}"
+	assert.Equal(t, 2, strings.Count(string(data), expected),
+		"both classifyAPIErrorOnly and classifyAPIError must map the generator's typed rate-limit error to exit 7")
+}
+
 // TestPipedJsonGateRespectsExplicitFormatFlags pins the contract: the
 // piped-output auto-JSON gate must defer to explicit --csv / --quiet /
 // --plain flags so piped consumers that asked for a non-JSON format
