@@ -1165,9 +1165,9 @@ func TestMigrate_ResourcesFTSContentSchemaVersionNoRebuild(t *testing.T) {
 		raw.Close()
 		t.Fatalf("seed resources_fts row: %v", err)
 	}
-	if _, err := raw.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, resourcesFTSContentSchemaVersion)); err != nil {
+	if _, err := raw.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, resourcesFTSTokenizerSchemaVersion)); err != nil {
 		raw.Close()
-		t.Fatalf("stamp resources fts content schema version: %v", err)
+		t.Fatalf("stamp resources fts tokenizer schema version: %v", err)
 	}
 	raw.Close()
 
@@ -1183,6 +1183,106 @@ func TestMigrate_ResourcesFTSContentSchemaVersionNoRebuild(t *testing.T) {
 	}
 	if content != "sentinel fts" {
 		t.Fatalf("resources_fts content = %s, want sentinel row preserved", content)
+	}
+}
+
+func TestMigrate_TokenizerRebuildsCJKSearch(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	stmts := []string{
+		`CREATE TABLE resources (
+			id TEXT NOT NULL,
+			resource_type TEXT NOT NULL,
+			data JSON NOT NULL,
+			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (resource_type, id)
+		)`,
+		`CREATE VIRTUAL TABLE resources_fts USING fts5(
+			id, resource_type, content, tokenize='porter unicode61'
+		)`,
+		`INSERT INTO resources (id, resource_type, data) VALUES (
+			'C01636',
+			'eix',
+			'{"id":"C01636","name":"統全公寓大廈管理維護有限公司","trade":"營造工程行"}'
+		)`,
+		`INSERT INTO resources (id, resource_type, data) VALUES (
+			'ascii-1',
+			'eix',
+			'{"id":"ascii-1","name":"Pinky restaurant"}'
+		)`,
+		fmt.Sprintf(`PRAGMA user_version = %d`, resourcesFTSTokenizerSchemaVersion-1),
+	}
+	for _, stmt := range stmts {
+		if _, err := raw.Exec(stmt); err != nil {
+			raw.Close()
+			t.Fatalf("seed porter db (%s): %v", stmt, err)
+		}
+	}
+	if _, err := raw.Exec(
+		`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, 'C01636', 'eix', '統全公寓大廈管理維護有限公司 營造工程行')`,
+		ftsRowID("eix", "C01636"),
+	); err != nil {
+		raw.Close()
+		t.Fatalf("seed porter fts row: %v", err)
+	}
+	if _, err := raw.Exec(
+		`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, 'ascii-1', 'eix', 'Pinky restaurant')`,
+		ftsRowID("eix", "ascii-1"),
+	); err != nil {
+		raw.Close()
+		t.Fatalf("seed ascii fts row: %v", err)
+	}
+	raw.Close()
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open upgraded db: %v", err)
+	}
+	defer s.Close()
+
+	v, err := s.SchemaVersion()
+	if err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if v != StoreSchemaVersion {
+		t.Fatalf("upgraded version = %d, want %d", v, StoreSchemaVersion)
+	}
+
+	cjkHits, err := s.Search("營造", 10)
+	if err != nil {
+		t.Fatalf("search CJK substring: %v", err)
+	}
+	if len(cjkHits) != 1 || !strings.Contains(string(cjkHits[0]), "C01636") {
+		t.Fatalf("CJK substring search = %q, want the Traditional Chinese row", cjkHits)
+	}
+
+	phraseHits, err := s.Search("營造工程", 10)
+	if err != nil {
+		t.Fatalf("search CJK phrase: %v", err)
+	}
+	if len(phraseHits) != 1 || !strings.Contains(string(phraseHits[0]), "C01636") {
+		t.Fatalf("CJK phrase search = %q, want the Traditional Chinese row", phraseHits)
+	}
+
+	idHits, err := s.Search("C01636", 10)
+	if err != nil {
+		t.Fatalf("search ASCII id: %v", err)
+	}
+	if len(idHits) != 1 || !strings.Contains(string(idHits[0]), "C01636") {
+		t.Fatalf("ASCII id search = %q, want the Traditional Chinese row", idHits)
+	}
+
+	asciiHits, err := s.Search("restaurant", 10)
+	if err != nil {
+		t.Fatalf("search ASCII token: %v", err)
+	}
+	if len(asciiHits) != 1 || !strings.Contains(string(asciiHits[0]), "ascii-1") {
+		t.Fatalf("ASCII token search = %q, want the restaurant row", asciiHits)
 	}
 }
 
@@ -1481,12 +1581,10 @@ func TestSchemaVersion_FreshDBHasCandidateAndEventTables(t *testing.T) {
 	}
 }
 
-// TestMigrate_V4ToV9AdditiveNoFTSContentRewrite verifies the FTS decouple:
-// a v4-stamped store opened by the current binary takes the additive-only path.
-// The learn tables are created, the version advances, and the FTS content
-// rewrite does NOT run — resourcesFTSContentSchemaVersion is pinned at 4,
-// so a store stamped at 4 already carries extracted-leaf content and a
-// sentinel FTS row must survive the open byte-for-byte at its rowid.
+// TestMigrate_V4ToV9AdditiveNoFTSContentRewrite verifies the learn-table
+// upgrade from a v4-stamped store: learn tables are created, the version
+// advances, and resources rows stay put. The tokenizer pin (current schema)
+// does rebuild resources_fts so porter indexes are not left behind.
 func TestMigrate_V4ToV9AdditiveNoFTSContentRewrite(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 
@@ -1540,15 +1638,16 @@ func TestMigrate_V4ToV9AdditiveNoFTSContentRewrite(t *testing.T) {
 	requireTableExists(t, s, "learn_candidates")
 	requireTableExists(t, s, "learn_events")
 
-	// The rewrite gate must not have fired: the sentinel content is still
-	// exactly what the v4 binary wrote, at the same content-addressed rowid.
+	// Tokenizer pin is at the current schema version, so a v4 store must
+	// rebuild resources_fts. Content becomes extracted leaves; rowid stays
+	// content-addressed.
 	var content string
 	var rowid int64
 	if err := s.DB().QueryRow(`SELECT rowid, content FROM resources_fts WHERE id = 'user-1' AND resource_type = 'user'`).Scan(&rowid, &content); err != nil {
 		t.Fatalf("read resources_fts after v4 open: %v", err)
 	}
-	if content != "sentinel fts" {
-		t.Fatalf("resources_fts content = %q; the v4->current open must not rewrite FTS content", content)
+	if content != "alice" {
+		t.Fatalf("resources_fts content = %q; the v4->current open must rebuild FTS from extracted leaves", content)
 	}
 	if want := ftsRowID("user", "user-1"); rowid != want {
 		t.Fatalf("resources_fts rowid = %d, want preserved %d", rowid, want)
@@ -1671,13 +1770,14 @@ func TestMigrate_V8ToV9AddsCandidatesAndEvents(t *testing.T) {
 		t.Fatalf("preserved playbook notes = %q, want original", notes)
 	}
 
-	// v8 is past the FTS content pin (4), so the rewrite must not run.
+	// v8 is past the FTS content pin (4) but before the tokenizer pin, so
+	// the trigram rebuild must replace the porter sentinel with leaves.
 	var content string
 	if err := s.DB().QueryRow(`SELECT content FROM resources_fts WHERE id = 'user-1' AND resource_type = 'user'`).Scan(&content); err != nil {
 		t.Fatalf("read resources_fts after v8 open: %v", err)
 	}
-	if content != "sentinel fts" {
-		t.Fatalf("resources_fts content = %q; the v8->current open must not rewrite FTS content", content)
+	if content != "alice" {
+		t.Fatalf("resources_fts content = %q; the v8->current open must rebuild FTS from extracted leaves", content)
 	}
 }
 {{- end}}

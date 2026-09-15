@@ -23,7 +23,7 @@ func generateLearnStore(t *testing.T, name string, learnEnabled bool) (string, s
 	}
 	outputDir := filepath.Join(t.TempDir(), name+"-pp-cli")
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
 	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
@@ -31,16 +31,16 @@ func generateLearnStore(t *testing.T, name string, learnEnabled bool) (string, s
 	return string(storeGo), outputDir
 }
 
-// TestLearnSchemaV10_EnabledRetainsCandidateAndEventTables pins the v10
-// schema bump: a learn-enabled store advances StoreSchemaVersion to 10 and
-// carries the learn_candidates and learn_events tables (with their CHECK
+// TestLearnSchemaV10_EnabledRetainsCandidateAndEventTables pins the current
+// learn-enabled schema: StoreSchemaVersion stays at the tokenizer pin and
+// still carries the learn_candidates and learn_events tables (with their CHECK
 // constraints and indexes) as additive CREATE IF NOT EXISTS migrations.
 func TestLearnSchemaV10_EnabledRetainsCandidateAndEventTables(t *testing.T) {
 	t.Parallel()
 
 	src, _ := generateLearnStore(t, "learn-v10-enabled", true)
 
-	require.Contains(t, src, "const StoreSchemaVersion = 10")
+	require.Contains(t, src, "const StoreSchemaVersion = 11")
 	require.Contains(t, src, `column: "last_attempt_complete"`)
 	for _, want := range []string{
 		"CREATE TABLE IF NOT EXISTS learn_candidates",
@@ -61,8 +61,8 @@ func TestLearnSchemaV10_EnabledRetainsCandidateAndEventTables(t *testing.T) {
 // TestLearnSchemaV10_FTSContentPinIsUnconditional pins the decouple:
 // resourcesFTSContentSchemaVersion stays 4 in BOTH learn shapes. The old
 // conditional 8 rode the learn bump by accident and forced a full FTS
-// content rewrite on every v4-v7 learn store open; with the pin, v4 and v8
-// stores opened by a v10 binary take the additive-only migration path.
+// content rewrite on every v4-v7 learn store open. Tokenizer rebuilds use
+// the separate current-version pin, not this content pin.
 func TestLearnSchemaV10_FTSContentPinIsUnconditional(t *testing.T) {
 	t.Parallel()
 
@@ -72,7 +72,9 @@ func TestLearnSchemaV10_FTSContentPinIsUnconditional(t *testing.T) {
 
 	disabled, _ := generateLearnStore(t, "learn-v10-fts-disabled", false)
 	require.Contains(t, disabled, "const resourcesFTSContentSchemaVersion = 4")
-	require.Contains(t, disabled, "const StoreSchemaVersion = 5")
+	require.Contains(t, disabled, "const StoreSchemaVersion = 6")
+	require.Contains(t, enabled, "const resourcesFTSTokenizerSchemaVersion = 11")
+	require.Contains(t, disabled, "const resourcesFTSTokenizerSchemaVersion = 6")
 	for _, gone := range []string{"learn_candidates", "learn_events"} {
 		require.NotContains(t, disabled, gone,
 			"learn-disabled spec must not emit the %s migration", gone)

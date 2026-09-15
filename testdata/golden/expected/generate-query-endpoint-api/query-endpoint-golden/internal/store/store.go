@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
 )
@@ -51,26 +52,31 @@ func IsUUID(s string) bool {
 
 // StoreSchemaVersion is the on-disk schema version this binary understands.
 // It is stamped into SQLite's PRAGMA user_version on fresh databases and
-// checked on every open. Learn-enabled CLIs advance to v10 for the
+// checked on every open. Learn-enabled CLIs advance to v11 for the
+// trigram resources_fts rebuild (CJK substring search), on top of v10's
 // learn_candidates and learn_events tables (CLI-side capture and
-// measurement), on top of the v8 learning_playbooks table for
+// measurement), the v8 learning_playbooks table for
 // hand-authored choreography keyed by query family and the v6 canonical
 // learn-loop tables ported from prediction-goat (including the v3
 // resources_fts rowid rehash and v4 resources_fts content extraction), plus
 // v10's explicit latest-sync-attempt completion marker.
-const StoreSchemaVersion = 10
+const StoreSchemaVersion = 11
 
 // resourcesFTSContentSchemaVersion pins the schema bump that rewrote
 // resources_fts content from raw JSON to searchable leaf values. Keep this
 // separate from StoreSchemaVersion — and pinned at 4 regardless of the
 // learn shape — so schema bumps that only add tables (the learn
-// migrations) never trigger an expensive full FTS content rewrite. A
-// store stamped at v4 or later already carries the extracted-leaf FTS
-// content; opening it with a newer binary must stay additive-only.
+// migrations) never trigger an expensive full FTS content rewrite.
 const resourcesFTSContentSchemaVersion = 4
 
+// resourcesFTSTokenizerSchemaVersion pins the schema bump that rebuilt
+// resources_fts with the trigram tokenizer. Learn-enabled stores are
+// already past v4, so this pin must sit at the current StoreSchemaVersion
+// or those stores would skip the rebuild and keep porter tokens.
+const resourcesFTSTokenizerSchemaVersion = 11
+
 const resourcesFTSCreateSQL = `CREATE VIRTUAL TABLE IF NOT EXISTS resources_fts USING fts5(
-	id, resource_type, content, tokenize='porter unicode61'
+	id, resource_type, content, tokenize='trigram'
 )`
 
 type Store struct {
@@ -694,6 +700,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			if err := s.migrateResourcesFTSContent(ctx, conn); err != nil {
 				return fmt.Errorf("migrating resources FTS content: %w", err)
 			}
+		} else if current < resourcesFTSTokenizerSchemaVersion {
+			if err := s.migrateResourcesFTSContent(ctx, conn); err != nil {
+				return fmt.Errorf("migrating resources FTS tokenizer: %w", err)
+			}
 		}
 		// Stamp the schema version. On a fresh DB this writes the current
 		// StoreSchemaVersion; on an already-stamped DB this is a no-op
@@ -1267,52 +1277,65 @@ func (s *Store) Search(query string, limit int, resourceTypes ...string) ([]json
 	if limit <= 0 {
 		limit = 50
 	}
-	matchQuery := FTSMatchQuery(query)
-	if matchQuery == "" {
+	tokens := ftsQueryTokenRE.FindAllString(query, -1)
+	if len(tokens) == 0 {
 		return nil, nil
 	}
 	resourceType := ""
 	if len(resourceTypes) > 0 {
 		resourceType = strings.TrimSpace(resourceTypes[0])
 	}
-	if resourceType != "" {
-		rows, err := s.db.Query(
-			`SELECT r.data FROM resources r
+
+	var (
+		q    string
+		args []any
+	)
+	if ftsNeedsLikeFallback(tokens) {
+		clause, likeArgs := ftsLikeClause("f", tokens)
+		if clause == "" {
+			return nil, nil
+		}
+		q = `SELECT r.data FROM resources r
+			 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
+			 WHERE ` + clause
+		args = likeArgs
+		if resourceType != "" {
+			q += ` AND r.resource_type = ?`
+			args = append(args, resourceType)
+		}
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	} else {
+		matchQuery := FTSMatchQuery(query)
+		if matchQuery == "" {
+			return nil, nil
+		}
+		if resourceType != "" {
+			q = `SELECT r.data FROM resources r
 			 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
 			 WHERE resources_fts MATCH ?
 			 AND r.resource_type = ?
 			 ORDER BY f.rank
-			 LIMIT ?`,
-			matchQuery, resourceType, limit,
-		)
-		if err != nil {
-			return nil, err
+			 LIMIT ?`
+			args = []any{matchQuery, resourceType, limit}
+		} else {
+			q = `SELECT r.data FROM resources r
+			 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
+			 WHERE resources_fts MATCH ?
+			 ORDER BY f.rank
+			 LIMIT ?`
+			args = []any{matchQuery, limit}
 		}
-		defer rows.Close()
-
-		var results []json.RawMessage
-		for rows.Next() {
-			var data string
-			if err := rows.Scan(&data); err != nil {
-				return nil, err
-			}
-			results = append(results, json.RawMessage(data))
-		}
-		return results, rows.Err()
 	}
-	rows, err := s.db.Query(
-		`SELECT r.data FROM resources r
-		 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
-		 WHERE resources_fts MATCH ?
-		 ORDER BY f.rank
-		 LIMIT ?`,
-		matchQuery, limit,
-	)
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanSearchData(rows)
+}
 
+func scanSearchData(rows *sql.Rows) ([]json.RawMessage, error) {
 	var results []json.RawMessage
 	for rows.Next() {
 		var data string
@@ -1398,6 +1421,42 @@ func FTSMatchQuery(query string) string {
 		quoted = append(quoted, `"`+token+`"`)
 	}
 	return strings.Join(quoted, " ")
+}
+
+const ftsTrigramMinRunes = 3
+
+func ftsNeedsLikeFallback(tokens []string) bool {
+	for _, token := range tokens {
+		if utf8.RuneCountInString(token) < ftsTrigramMinRunes {
+			return true
+		}
+	}
+	return false
+}
+
+func escapeLikePattern(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
+}
+
+// ftsLikeClause AND-s LIKE predicates for the already-parsed FTS tokens.
+// Trigram MATCH cannot hit queries shorter than 3 runes (營造, phase-2).
+func ftsLikeClause(alias string, tokens []string) (string, []any) {
+	if len(tokens) == 0 {
+		return "", nil
+	}
+	parts := make([]string, 0, len(tokens))
+	args := make([]any, 0, len(tokens)*2)
+	contentCol := alias + ".content"
+	idCol := alias + ".id"
+	for _, token := range tokens {
+		pattern := "%" + escapeLikePattern(token) + "%"
+		parts = append(parts, "("+contentCol+" LIKE ? ESCAPE '\\' OR "+idCol+" LIKE ? ESCAPE '\\')")
+		args = append(args, pattern, pattern)
+	}
+	return strings.Join(parts, " AND "), args
 }
 
 // A record filed under its own identifier often carries no id field inside the

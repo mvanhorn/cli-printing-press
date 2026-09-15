@@ -25,8 +25,10 @@ func TestGenerateStoreSchemaVersion_DisabledAdvancesToV5(t *testing.T) {
 	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
 	require.NoError(t, err)
 	src := string(storeGo)
-	require.Contains(t, src, "const StoreSchemaVersion = 5")
-	require.NotContains(t, src, "const StoreSchemaVersion = 10")
+	require.Contains(t, src, "const StoreSchemaVersion = 6")
+	require.NotContains(t, src, "const StoreSchemaVersion = 11")
+	require.Contains(t, src, "tokenize='trigram'")
+	require.NotContains(t, src, "tokenize='porter unicode61'")
 	for _, table := range []string{"search_learnings", "search_patterns", "entity_lookups", "learning_playbooks"} {
 		require.NotContains(t, src, table, "learn-disabled spec must not emit %s migration", table)
 	}
@@ -45,8 +47,10 @@ func TestGenerateStoreSchemaVersion_EnabledAdvancesToV10WithLearnTables(t *testi
 	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
 	require.NoError(t, err)
 	src := string(storeGo)
-	require.Contains(t, src, "const StoreSchemaVersion = 10")
-	require.NotContains(t, src, "const StoreSchemaVersion = 5")
+	require.Contains(t, src, "const StoreSchemaVersion = 11")
+	require.NotContains(t, src, "const StoreSchemaVersion = 6")
+	require.Contains(t, src, "tokenize='trigram'")
+	require.NotContains(t, src, "tokenize='porter unicode61'")
 	for _, want := range []string{
 		"CREATE TABLE IF NOT EXISTS search_learnings",
 		"CREATE TABLE IF NOT EXISTS search_patterns",

@@ -1088,6 +1088,98 @@ func TestSearchQuotesFTSQuerySyntax(t *testing.T) {
 	}
 }
 
+func TestSearch_CJKSubstringAndASCII(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	items := []json.RawMessage{
+		json.RawMessage(`{"id":"C01636","name":"統全公寓大廈管理維護有限公司","trade":"營造工程行"}`),
+		json.RawMessage(`{"id":"ascii-1","name":"Pinky restaurant"}`),
+	}
+	if stored, failed, err := s.UpsertBatch("eix", items); err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	} else if failed != 0 || stored != len(items) {
+		t.Fatalf("UpsertBatch stored=%d failed=%d, want stored=%d failed=0", stored, failed, len(items))
+	}
+
+	for _, tc := range []struct {
+		query string
+		want  string
+	}{
+		{query: "營造", want: "C01636"},
+		{query: "營造工程", want: "C01636"},
+		{query: "統全公寓大廈管理維護有限公司", want: "C01636"},
+		{query: "C01636", want: "C01636"},
+		{query: "restaurant", want: "ascii-1"},
+	} {
+		results, err := s.Search(tc.query, 10)
+		if err != nil {
+			t.Fatalf("Search(%q): %v", tc.query, err)
+		}
+		if len(results) != 1 || !strings.Contains(string(results[0]), tc.want) {
+			t.Fatalf("Search(%q) = %q, want one hit containing %q", tc.query, results, tc.want)
+		}
+	}
+}
+
+func TestSearch_LikeFallbackPreservesTokenBoundaries(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	items := []json.RawMessage{
+		json.RawMessage(`{"id":"spaced","value":"Phase 2 residential"}`),
+		json.RawMessage(`{"id":"other","value":"Phase 1 residential"}`),
+	}
+	if stored, failed, err := s.UpsertBatch("notes", items); err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	} else if failed != 0 || stored != len(items) {
+		t.Fatalf("UpsertBatch stored=%d failed=%d, want stored=%d failed=0", stored, failed, len(items))
+	}
+
+	results, err := s.Search("phase-2", 10)
+	if err != nil {
+		t.Fatalf("Search(phase-2): %v", err)
+	}
+	if len(results) != 1 || !strings.Contains(string(results[0]), `"spaced"`) {
+		t.Fatalf("Search(phase-2) = %q, want the Phase 2 row", results)
+	}
+}
+
+func TestSearch_LikeEscapesWildcards(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	items := []json.RawMessage{
+		json.RawMessage(`{"id":"under","note":"xa_y"}`),
+		json.RawMessage(`{"id":"other","note":"xaby"}`),
+	}
+	if stored, failed, err := s.UpsertBatch("notes", items); err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	} else if failed != 0 || stored != len(items) {
+		t.Fatalf("UpsertBatch stored=%d failed=%d, want stored=%d failed=0", stored, failed, len(items))
+	}
+
+	results, err := s.Search("a_", 10)
+	if err != nil {
+		t.Fatalf("Search(a_): %v", err)
+	}
+	if len(results) != 1 || !strings.Contains(string(results[0]), `"under"`) {
+		t.Fatalf("Search(a_) = %q, want only the underscore row", results)
+	}
+}
+
 func TestFTSMatchQuerySanitizesPunctuation(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	s, err := Open(dbPath)
