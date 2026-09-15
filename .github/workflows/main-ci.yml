@@ -219,9 +219,13 @@ jobs:
           printf '  %s\n' "${packages[@]}"
 
           # No -short: main-ci is the full-coverage gate, unlike lint.yml's
-          # fast -short shards. 25m: idle generator-0 heads already take
-          # ~13–15m; speculative drafts tip over 15m. Same budget on every shard.
-          go_test_timeout=25m
+          # fast -short shards. Generator shards need 25m: idle generator-0
+          # heads already take ~13–15m; speculative drafts tip over 15m.
+          # pipeline/cli/rest stay at 15m so a stall fails fast.
+          go_test_timeout=15m
+          if [[ "${{ matrix.shard }}" == generator-* ]]; then
+            go_test_timeout=25m
+          fi
           if [[ "$run_partition" == "true" ]]; then
             test_list=/tmp/go-test-list.txt
             selected_list=/tmp/go-test-selected.txt
