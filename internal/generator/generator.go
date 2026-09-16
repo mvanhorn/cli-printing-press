@@ -277,6 +277,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"paramIsHeader":                       paramIsHeader,
 		"paramPresenceExpr":                   paramPresenceExpr,
 		"readParamPresenceExpr":               readParamPresenceExpr,
+		"queryParamFlagNamesLiteral":          queryParamFlagNamesLiteral,
 		"endpointHasHeaderParams":             endpointHasHeaderParams,
 		"positionalArgs":                      positionalArgs,
 		"configTag":                           configTag,
@@ -8287,6 +8288,31 @@ func paramPresenceExpr(p spec.Param) string {
 		return "true"
 	}
 	return fmt.Sprintf("(%s || flag%s != %s)", flagChangedExpr(p), toCamel(paramIdent(p)), zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
+}
+
+func paramFlagNames(p spec.Param) []string {
+	names := []string{publicFlagName(p)}
+	return append(names, publicFlagAliases(p)...)
+}
+
+func queryParamFlagNamesLiteral(endpoint spec.Endpoint) string {
+	var b strings.Builder
+	b.WriteString("map[string][]string{")
+	for _, p := range endpoint.Params {
+		if p.Positional || p.PathParam || paramIsHeader(p) || isArrayQueryParam(p) || isDeepObjectQueryParam(p) {
+			continue
+		}
+		fmt.Fprintf(&b, "%q:{", paramWireName(p))
+		for i, name := range paramFlagNames(p) {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			fmt.Fprintf(&b, "%q", name)
+		}
+		b.WriteString("},")
+	}
+	b.WriteByte('}')
+	return b.String()
 }
 
 func readParamPresenceExpr(p spec.Param) string {
