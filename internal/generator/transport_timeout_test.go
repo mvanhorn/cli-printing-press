@@ -1,7 +1,6 @@
 package generator
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -11,20 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestBrowserTransport_OverridesResponseHeaderTimeout asserts the generator
-// emits the surf transport's ResponseHeaderTimeout override in every CLI
-// that uses the browser-impersonate transport (SpecSource="sniffed" triggers
-// it). Without the override, the user-facing --timeout flag flows into
-// httpClient.Timeout but never reaches the underlying *http.Transport's
-// per-stage ResponseHeaderTimeout, which surf sets to its 10s package
-// default. Slow-streaming endpoints (RAG queries, LLM completions) fail
-// with "net/http: timeout awaiting response headers" at the surf default
-// regardless of how --timeout is set.
-//
-// This canary asserts the structural fix: surfClient.GetTransport() is
-// type-asserted to *http.Transport and ResponseHeaderTimeout is set to
-// the requested timeout, before the wrapping Std() client is built.
-func TestBrowserTransport_OverridesResponseHeaderTimeout(t *testing.T) {
+func TestBrowserTransport_TimeoutReachesTransport(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := &spec.APISpec{
@@ -51,20 +37,24 @@ func TestBrowserTransport_OverridesResponseHeaderTimeout(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
-	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
-	require.NoError(t, err)
-	src := string(clientSrc)
+	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	require.Contains(t, clientSrc, "return chromeClient(timeout, jar, skipTLSVerify)",
+		"test fixture must trigger UsesBrowserHTTPTransport")
+	require.NotContains(t, clientSrc, "github.com/enetx/")
 
-	// Sanity: the test fixture must actually exercise the browser path.
-	require.Contains(t, src, "Impersonate()",
-		"test fixture must trigger UsesBrowserHTTPTransport — Impersonate() should be in the emitted client")
+	chromeSrc := readGeneratedFile(t, outputDir, "internal", "client", "chrome.go")
+	require.Contains(t, chromeSrc, "&http.Client{Timeout: timeout, Jar: jar, Transport: rt}",
+		"--timeout must bound the whole request on the chrome client")
+	require.NotContains(t, chromeSrc, "github.com/enetx/")
 
-	require.Contains(t, src, `enetxhttp "github.com/enetx/http"`,
-		"client.go must import enetx/http aliased so the transport type assertion has a name")
-	require.Contains(t, src, "surfClient.GetTransport().(*enetxhttp.Transport)",
-		"surfClient.GetTransport() must be type-asserted to *enetxhttp.Transport — surf returns the enetx HTTP fork's RoundTripper, not stdlib's, so a stdlib type-assertion is impossible")
-	require.Contains(t, src, "t.ResponseHeaderTimeout = timeout",
-		"ResponseHeaderTimeout must be set to the user-supplied timeout so --timeout reaches the transport layer")
+	bare := *apiSpec
+	bare.Name = "transport-timeout-bare"
+	bare.HTTPTransport = spec.HTTPTransportBrowserChrome
+	bareDir := filepath.Join(t.TempDir(), naming.CLI(bare.Name))
+	require.NoError(t, New(&bare, bareDir).Generate())
+	bareChrome := readGeneratedFile(t, bareDir, "internal", "client", "chrome.go")
+	require.Contains(t, bareChrome, "h1.ResponseHeaderTimeout = timeout",
+		"the HTTP/1.1 fallback transport must inherit --timeout as its header timeout")
 }
 
 func TestBrowserTransport_DropsChromeImpersonationWhenTrafficAnalysisMarksUnsafe(t *testing.T) {
@@ -103,29 +93,26 @@ func TestBrowserTransport_DropsChromeImpersonationWhenTrafficAnalysisMarksUnsafe
 	}
 	require.NoError(t, gen.Generate())
 
-	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
-	require.NoError(t, err)
-	src := string(clientSrc)
+	src := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	require.Contains(t, src, "return chromeClient(timeout, jar, skipTLSVerify)",
+		"sniffed CLIs keep the Chrome TLS transport when impersonation is unsafe")
+	require.NotContains(t, src, "github.com/enetx/")
+	require.Contains(t, src, `req.Header.Set("User-Agent", "transport-content-negotiation-canary-pp-cli/0.1.0")`,
+		"with the header overlay off, the request path must own the User-Agent default")
+	require.Contains(t, src, `req.Header.Set("Accept", "application/json")`,
+		"with the header overlay off, the request path must own the Accept default")
 
-	require.Contains(t, src, `"github.com/enetx/surf"`,
-		"sniffed CLIs still use surf transport when the spec defaults to browser transport")
-	require.NotContains(t, src, "Impersonate()",
-		"content-type flip evidence must suppress Chrome impersonation")
-	require.NotContains(t, src, "Chrome()",
-		"content-type flip evidence must suppress Chrome Accept-header impersonation")
-	require.Contains(t, src, "ForceHTTP2()",
-		"the existing sniffed browser transport default should still force HTTP/2")
+	chromeSrc := readGeneratedFile(t, outputDir, "internal", "client", "chrome.go")
+	require.NotContains(t, chromeSrc, "chromeHeaderTripper",
+		"content-type flip evidence must suppress the Chrome header overlay")
+	require.Contains(t, chromeSrc, `chromeALPN = []string{"h2"}`,
+		"the sniffed browser transport default should still force HTTP/2")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/client")
 }
 
-// TestNonBrowserTransport_DoesNotEmitSurfOverride asserts the surf
-// GetTransport override only fires inside the browser-transport branch.
-// Vanilla *http.Client CLIs honor --timeout via http.Client.Timeout and
-// have no surf middleware, so the enetx type-assert override would be
-// dead code (and would fail compilation since surf isn't imported).
-// StreamingHTTPClient still sets ResponseHeaderTimeout on a cloned
-// *http.Transport so binary transfers can drop the whole-call Timeout
-// without leaving header stalls unbounded.
-func TestNonBrowserTransport_DoesNotEmitSurfOverride(t *testing.T) {
+func TestNonBrowserTransport_DoesNotEmitChromeClient(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("plain-transport-canary")
@@ -133,14 +120,13 @@ func TestNonBrowserTransport_DoesNotEmitSurfOverride(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
-	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
-	require.NoError(t, err)
-	src := string(clientSrc)
-
-	require.NotContains(t, src, "Impersonate()",
-		"sanity: plain transport CLIs must not emit Impersonate()")
+	src := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	require.NotContains(t, src, "chromeClient(")
 	require.NotContains(t, src, "t.ResponseHeaderTimeout = timeout",
-		"plain transport CLIs must not emit the surf GetTransport ResponseHeaderTimeout override")
+		"plain transport CLIs must not emit the chrome-family timeout assignment")
 	require.Contains(t, src, "tr.ResponseHeaderTimeout = headerTimeout",
 		"plain transport streaming clients must set ResponseHeaderTimeout so header stalls still die")
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "client", "chrome.go"))
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "client", "chrome_profile.go"))
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "client", "chrome_test.go"))
 }

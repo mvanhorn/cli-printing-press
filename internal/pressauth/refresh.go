@@ -1,17 +1,7 @@
 // refresh.go: Cobra wrapper + library function for forcing/refreshing the
 // stored session against the API's refresh endpoint.
 //
-// Transport choice: this file uses net/http with a Chrome User-Agent rather
-// than the surf-based Chrome TLS fingerprint client. The generated CLIs
-// (internal/generator/templates/client.go.tmpl) embed surf directly, but
-// surf is not imported by any internal/* package today, only by templates.
-// Adding it here would either pull the dependency permanently into the
-// non-generator side of the binary or require a thin wrapper, neither of
-// which buys much for press-auth — refresh endpoints accept normal HTTPS
-// clients with a plausible UA. If a target site starts requiring a Chrome
-// TLS fingerprint at the refresh layer, swap this transport for surf
-// behind the Refresh signature with no test-visible change.
-//
+// Refresh endpoints accept a stdlib HTTPS client with a Chrome User-Agent.
 // HTTP method is GET-only in v1. POST-with-body refresh shapes are a future
 // extension; the plan calls them out as deferred and the catalog hasn't yet
 // captured any vendor that needs them.

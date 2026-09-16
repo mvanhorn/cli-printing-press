@@ -71,10 +71,10 @@ type SessionManager struct {
 // its HTTP client. Any cached session on disk is loaded immediately.
 //
 // The bootstrap and token-fetch calls go through the same newHTTPClient as the
-// data path so a browser-impersonated transport (Surf, when configured) is
-// applied to the handshake itself — otherwise the very calls that establish
-// the session run as a vanilla net/http client and get rate-limited away
-// even when the data client would have cleared the bot wall.
+// data path so the Chrome-compatible transport (when configured) is applied to
+// the handshake itself — otherwise the very calls that establish the session
+// run as a vanilla net/http client and get rate-limited away even when the
+// data client would have cleared the bot wall.
 func newSessionManager(timeout time.Duration, configPath string{{if .UsesBrowserHTTPTransport}}, skipTLSVerify bool{{end}}) *SessionManager {
 	jar, _ := cookiejar.New(nil)
 	m := &SessionManager{
@@ -124,7 +124,7 @@ func (m *SessionManager) EnsureToken() (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("session bootstrap: %w", err)
 		}
-{{- if not .UsesBrowserManagedUserAgent}}
+{{- if not .ChromeOverlayOwnsUserAgent}}
 		req.Header.Set("User-Agent", sessionUserAgent)
 {{- end}}
 		resp, err := m.client.Do(req)
@@ -140,7 +140,7 @@ func (m *SessionManager) EnsureToken() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("session token fetch: %w", err)
 	}
-{{- if not .UsesBrowserManagedUserAgent}}
+{{- if not .ChromeOverlayOwnsUserAgent}}
 	req.Header.Set("User-Agent", sessionUserAgent)
 {{- end}}
 	if sessionTokenFormat == "json" {

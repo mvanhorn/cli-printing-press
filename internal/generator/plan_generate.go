@@ -57,6 +57,10 @@ func (planGoModData) UsesBrowserHTTPTransport() bool {
 	return false
 }
 
+func (planGoModData) UsesBrowserHTTP3Transport() bool {
+	return false
+}
+
 // HasAuthCommand mirrors the rootData field the go.mod template uses for
 // auth-gated surfaces. Plan scaffolds emit no auth and no filelock_windows.go
 // import of golang.org/x/sys/windows, so they take the no-auth go.mod branch.

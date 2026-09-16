@@ -154,15 +154,24 @@ func TestSessionHandshakeBrowserTransportSharesJar(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		`"github.com/enetx/surf"`,
 		"func newHTTPClient(timeout time.Duration, jar http.CookieJar, skipTLSVerify bool) *http.Client",
-		"if jar == nil",
-		"builder = builder.Session()",
-		"httpClient.Jar = jar",
+		"return chromeClient(timeout, jar, skipTLSVerify)",
 		"newHTTPClient(timeout, sess.CookieJar(), cfg.SkipTLSVerify)",
 	} {
 		if !strings.Contains(string(clientContent), want) {
 			t.Errorf("client.go missing expected substring %q", want)
+		}
+	}
+	if strings.Contains(string(clientContent), "github.com/enetx/") {
+		t.Error("client.go must not import a Surf-family module")
+	}
+	chromeContent, err := os.ReadFile(filepath.Join(dir, "internal", "client", "chrome.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"if jar == nil", "jar, _ = cookiejar.New(nil)"} {
+		if !strings.Contains(string(chromeContent), want) {
+			t.Errorf("chrome.go missing expected substring %q (a nil jar would drop handshake cookies)", want)
 		}
 	}
 	if !strings.Contains(string(sessionContent), "func (m *SessionManager) CookieJar() http.CookieJar") {
@@ -178,7 +187,10 @@ func TestSessionHandshakeBrowserTransportSharesJar(t *testing.T) {
 		t.Error("session.go's newSessionManager must use newHTTPClient so the handshake inherits the browser-impersonated transport, not a vanilla &http.Client{}")
 	}
 	if strings.Contains(string(sessionContent), "&http.Client{Timeout: timeout, Jar: jar}") {
-		t.Error("session.go still constructs a vanilla &http.Client{} — the handshake will bypass Surf impersonation")
+		t.Error("session.go still constructs a vanilla &http.Client{} — the handshake will bypass the Chrome transport")
+	}
+	if strings.Contains(string(sessionContent), "Surf") {
+		t.Error("session.go must not describe Surf as the printed runtime")
 	}
 	requireGeneratedCompiles(t, dir)
 }

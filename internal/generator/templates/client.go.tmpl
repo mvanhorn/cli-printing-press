@@ -52,10 +52,6 @@ import (
 {{- if eq .Auth.Subtype "google_service_account"}}
 	"golang.org/x/oauth2/google"
 {{- end}}
-{{- if .UsesBrowserHTTPTransport}}
-	enetxhttp "github.com/enetx/http"
-	"github.com/enetx/surf"
-{{ end}}
 	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/config"
 	"{{modulePath}}/internal/platform"
@@ -538,47 +534,7 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar{{if .UsesBrowserHTT
 	transport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
 	return &http.Client{Timeout: timeout, Jar: jar, Transport: transport}
 {{- else if .UsesBrowserHTTPTransport}}
-	builder := surf.NewClient().
-		Builder().
-{{- if .UseChromeImpersonation}}
-		Impersonate().
-		Chrome().
-{{- end}}
-		Timeout(timeout)
-	if !skipTLSVerify {
-		builder = builder.SecureTLS()
-	}
-{{- if .UsesBrowserHTTP3Transport}}
-	builder = builder.ForceHTTP3()
-{{- else if .UsesBrowserHTTP2Transport}}
-	builder = builder.ForceHTTP2()
-{{- end}}
-	if jar == nil {
-		builder = builder.Session()
-	}
-	surfClient := builder.Build().Unwrap()
-	// Surf's underlying *http.Transport sets ResponseHeaderTimeout to
-	// its package default (10s in surf v1.x), which caps how long we
-	// wait for the FIRST response byte independent of the overall
-	// client Timeout. Slow-streaming endpoints (RAG queries, LLM
-	// completions, server-side rendering) routinely take longer than
-	// that to emit headers; without this override the user-facing
-	// --timeout flag has no effect on transport-layer cutoffs and
-	// requests fail with "net/http: timeout awaiting response headers"
-	// at the package default regardless of --timeout. Override so the
-	// transport-layer ceiling tracks the user's intent.
-	// surf's GetTransport returns *enetxhttp.Transport (surf's HTTP fork
-	// used for browser-impersonate features), NOT *net/http.Transport,
-	// so the assertion targets the enetx package's Transport type.
-	if t, ok := surfClient.GetTransport().(*enetxhttp.Transport); ok {
-		t.ResponseHeaderTimeout = timeout
-	}
-	httpClient := surfClient.Std()
-	httpClient.Timeout = timeout
-	if jar != nil {
-		httpClient.Jar = jar
-	}
-	return httpClient
+	return chromeClient(timeout, jar, skipTLSVerify)
 {{- else}}
 	// Clone (do NOT build a bare &http.Transport{}) so Proxy=ProxyFromEnvironment,
 	// IdleConnTimeout, and dialer keep-alive survive — a bare struct would break
@@ -2306,7 +2262,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		if htmlResponse {
 			req.Header.Del(HTMLResponseHeader)
 		}
-{{- if not .UsesBrowserManagedUserAgent}}
+{{- if not .ChromeOverlayOwnsUserAgent}}
 		if req.Header.Get("User-Agent") == "" {
 {{- if .UsesBrowserLikeUserAgent}}
 			// Browser-shaped UA: synthetic specs and cookie/composed/

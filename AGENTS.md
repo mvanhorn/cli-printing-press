@@ -19,6 +19,9 @@ A printed CLI wraps an API; it does not replace one. Novel-feature commands must
 - Carve-outs: commands that read from `internal/store`; commands that operate on the local SQLite file via `database/sql`; commands that call the API and then cache to the store; commands whose data is curated static content via `// pp:novel-static-reference`; commands that make a real hidden client call via `// pp:client-call`, but only when the hidden helper performs a real external API call. Do not use `// pp:client-call` for hardcoded payloads, local-only transforms, or fake endpoint stubs.
 Enforced by the absorb manifest's Kill Check (`skills/printing-press/references/absorb-scoring.md`) and dogfood's `reimplementation_check`, which flags handler files showing neither a client call nor a store access without an opt-out.
 
+### Printed chrome fingerprint
+When changing printed chrome-family identity (`chromeMajor`, `sec-ch-ua` GREASE brand, User-Agent in `chrome_profile.go.tmpl`, or `HelloChrome_*`): bump those literals together, and do not raise the advertised Chrome major above the `HelloChrome_Auto` alias in the printed `utls` version in `go.mod.tmpl`. Do not match live Chrome. Leave the existing Surf-era snapshot unless you are doing that coordinated bump. The impersonation-off browser-shaped UA in `client.go.tmpl` / `auth_browser.go.tmpl` is a separate frozen string; do not "align" it to `chromeMajor` or to current Chrome. See [`docs/solutions/conventions/printed-chrome-fingerprint-tracks-utls-parrot.md`](docs/solutions/conventions/printed-chrome-fingerprint-tracks-utls-parrot.md).
+
 ## Agent-Native Surface
 Every printed CLI exposes two surfaces: a CLI surface for humans and an MCP surface for agents. Any action a user can take should be reachable by an agent, but operator ergonomics belong on the human-facing CLI, not in an agent's tool catalog.
 
