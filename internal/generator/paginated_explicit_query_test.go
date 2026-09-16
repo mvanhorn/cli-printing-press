@@ -123,7 +123,7 @@ func TestGeneratedPaginatedCommandsRetainExplicitFalseAndZero(t *testing.T) {
 	apiSpec := explicitQuerySpec("explicitq")
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Export: true}
+	gen.VisionSet = VisionTemplateSet{Export: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "items_list.go")
@@ -134,6 +134,7 @@ func TestGeneratedPaginatedCommandsRetainExplicitFalseAndZero(t *testing.T) {
 	promotedSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_widgets.go")
 	assert.Contains(t, promotedSrc, "retainCLIQueryParams(cmd,",
 		"paginated promoted commands must filter unset 0/false before paginatedGet")
+	requireGeneratedCompiles(t, outputDir)
 
 	storeDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name)+"-store")
 	storeGen := New(explicitQuerySpec("explicitq-store"), storeDir)
