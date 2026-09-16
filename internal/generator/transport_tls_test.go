@@ -37,8 +37,6 @@ import (
 )
 
 func TestGeneratedTLSVerificationDefaultsSecureWithExplicitOptOut(t *testing.T) {
-	// The sniffed default transport speaks HTTP/2 only, so the origin under
-	// test must offer it; the TLS verification behavior is what this pins.
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))

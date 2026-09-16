@@ -10,12 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestBrowserTransport_TimeoutReachesTransport asserts the chrome-family
-// client binds the user-facing --timeout to every transport stage it owns:
-// http.Client.Timeout on the returned client and ResponseHeaderTimeout on
-// the HTTP/1.1 transport. A transport-private default (the historical 10s
-// header timeout) would otherwise cap slow-streaming endpoints regardless
-// of --timeout.
 func TestBrowserTransport_TimeoutReachesTransport(t *testing.T) {
 	t.Parallel()
 
@@ -118,11 +112,6 @@ func TestBrowserTransport_DropsChromeImpersonationWhenTrafficAnalysisMarksUnsafe
 	runGoCommand(t, outputDir, "test", "./internal/client")
 }
 
-// TestNonBrowserTransport_DoesNotEmitChromeClient asserts the chrome files
-// and the chrome dispatch are absent from standard-transport prints.
-// StreamingHTTPClient still sets ResponseHeaderTimeout on a cloned
-// *http.Transport so binary transfers can drop the whole-call Timeout
-// without leaving header stalls unbounded.
 func TestNonBrowserTransport_DoesNotEmitChromeClient(t *testing.T) {
 	t.Parallel()
 

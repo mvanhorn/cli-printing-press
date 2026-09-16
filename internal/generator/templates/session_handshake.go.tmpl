@@ -124,7 +124,7 @@ func (m *SessionManager) EnsureToken() (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("session bootstrap: %w", err)
 		}
-{{- if not (and .UsesBrowserManagedUserAgent .UseChromeImpersonation)}}
+{{- if not .ChromeOverlayOwnsUserAgent}}
 		req.Header.Set("User-Agent", sessionUserAgent)
 {{- end}}
 		resp, err := m.client.Do(req)
@@ -140,7 +140,7 @@ func (m *SessionManager) EnsureToken() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("session token fetch: %w", err)
 	}
-{{- if not (and .UsesBrowserManagedUserAgent .UseChromeImpersonation)}}
+{{- if not .ChromeOverlayOwnsUserAgent}}
 	req.Header.Set("User-Agent", sessionUserAgent)
 {{- end}}
 	if sessionTokenFormat == "json" {

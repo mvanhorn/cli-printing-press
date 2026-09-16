@@ -2262,9 +2262,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		if htmlResponse {
 			req.Header.Del(HTMLResponseHeader)
 		}
-{{- /* The Chrome header overlay owns User-Agent only when impersonation is on;
-       with it off the chrome-family transport still needs these defaults. */}}
-{{- if not (and .UsesBrowserManagedUserAgent .UseChromeImpersonation)}}
+{{- if not .ChromeOverlayOwnsUserAgent}}
 		if req.Header.Get("User-Agent") == "" {
 {{- if .UsesBrowserLikeUserAgent}}
 			// Browser-shaped UA: synthetic specs and cookie/composed/

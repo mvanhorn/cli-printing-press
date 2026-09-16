@@ -10,9 +10,6 @@ import (
 	"github.com/quic-go/quic-go/http3"
 )
 
-// chromeH3RoundTripper speaks HTTP/3 only. There is no TCP fallback: an
-// origin that stops answering QUIC fails loudly rather than silently moving
-// to a fingerprint the spec was never verified against.
 func chromeH3RoundTripper(skipTLSVerify bool) http.RoundTripper {
 	return &http3.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: skipTLSVerify},

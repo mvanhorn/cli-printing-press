@@ -2920,7 +2920,8 @@ func TestGenerateBrowserChromeTransport(t *testing.T) {
 
 	profileGo := readGeneratedFile(t, outputDir, "internal", "client", "chrome_profile.go")
 	assert.Contains(t, profileGo, "utls.HelloChrome_Auto")
-	assert.Contains(t, profileGo, "Chrome/145.0.0.0")
+	assert.Contains(t, profileGo, `chromeMajor = "145"`)
+	assert.Contains(t, profileGo, `Chrome/" + chromeMajor + ".0.0.0`)
 
 	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
 	require.NoError(t, err)
@@ -2931,14 +2932,8 @@ func TestGenerateBrowserChromeTransport(t *testing.T) {
 	requireGeneratedCompilesGo127(t, outputDir)
 }
 
-// chromeUTLSVersion pins the tagged uTLS release printed chrome-family CLIs
-// require. HelloChrome_Auto there matches the pseudo-version the Printing
-// Press binary itself resolves, so the tag is preferred.
 const chromeUTLSVersion = "v1.8.2"
 
-// TestPrintedChromeModulesBanEnetx proves the chrome-family prints carry no
-// Surf-family module anywhere in their emitted source, go.mod, or resolved
-// dependency graph, and that quic-go enters the graph only for HTTP/3.
 func TestPrintedChromeModulesBanEnetx(t *testing.T) {
 	t.Parallel()
 
@@ -3028,9 +3023,8 @@ func TestGenerateBrowserChromeH3Transport(t *testing.T) {
 	clientGo := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
 	assert.NotContains(t, clientGo, "github.com/enetx/")
 	assert.Contains(t, clientGo, "return chromeClient(timeout, jar, skipTLSVerify)")
-	// The Chrome header overlay owns User-Agent and friends on the H3 path
-	// too; the generator must not emit a competing request-path default.
-	assert.NotContains(t, clientGo, `req.Header.Set("Accept",`)
+	assert.NotContains(t, clientGo, `req.Header.Set("Accept",`,
+		"chrome header overlay owns Accept on the H3 path")
 
 	chromeH3 := readGeneratedFile(t, outputDir, "internal", "client", "chrome_h3.go")
 	assert.Contains(t, chromeH3, "http3.Transport{")
@@ -3043,10 +3037,6 @@ func TestGenerateBrowserChromeH3Transport(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/client")
 }
 
-// TestGenerateBrowserChromeH2Transport pins the explicit
-// browser-chrome-h2 enum: the ClientHello offers only h2 and no HTTP/3
-// file is emitted. Separate from the bare browser-chrome case so a
-// future refactor cannot collapse the two without a failing test.
 func TestGenerateBrowserChromeH2Transport(t *testing.T) {
 	t.Parallel()
 
@@ -3080,10 +3070,6 @@ func TestGenerateBrowserChromeH2Transport(t *testing.T) {
 	assert.NotContains(t, readGeneratedFile(t, outputDir, "go.mod"), "github.com/quic-go/quic-go")
 }
 
-// TestGenerateBrowserChromeNoVersionForce pins the bare browser-chrome
-// enum (no -h2 / -h3 suffix): the ClientHello offers h2 and http/1.1 so
-// the server's negotiated version wins. Operators who want an explicit
-// H/2 force must set browser-chrome-h2.
 func TestGenerateBrowserChromeNoVersionForce(t *testing.T) {
 	t.Parallel()
 
@@ -3116,6 +3102,15 @@ func TestGenerateBrowserChromeNoVersionForce(t *testing.T) {
 	assert.NotContains(t, readGeneratedFile(t, outputDir, "go.mod"), "github.com/quic-go/quic-go")
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/client")
+}
+
+func TestChromeOverlayOwnsUserAgent(t *testing.T) {
+	t.Parallel()
+
+	chrome := &spec.APISpec{HTTPTransport: spec.HTTPTransportBrowserChrome}
+	assert.True(t, (&clientTemplateData{APISpec: chrome, UseChromeImpersonation: true}).ChromeOverlayOwnsUserAgent())
+	assert.False(t, (&clientTemplateData{APISpec: chrome, UseChromeImpersonation: false}).ChromeOverlayOwnsUserAgent())
+	assert.False(t, (&clientTemplateData{APISpec: &spec.APISpec{}, UseChromeImpersonation: true}).ChromeOverlayOwnsUserAgent())
 }
 
 func TestGenerateBrowserHTTPTransportDisablesHTTP2(t *testing.T) {

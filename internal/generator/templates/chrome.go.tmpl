@@ -29,9 +29,6 @@ import (
 {{- end}}
 )
 
-// chromeClient is the chrome-family transport behind newHTTPClient: a Chrome
-// TLS ClientHello over the Go HTTP stacks, with the frozen Chrome header
-// profile layered on when impersonation is enabled.
 func chromeClient(timeout time.Duration, jar http.CookieJar, skipTLSVerify bool) *http.Client {
 	if jar == nil {
 		jar, _ = cookiejar.New(nil)
@@ -48,8 +45,7 @@ func chromeClient(timeout time.Duration, jar http.CookieJar, skipTLSVerify bool)
 }
 {{- if .UseChromeImpersonation}}
 
-// chromeHeaderTripper fills the Chrome header profile into headers the caller
-// left empty. It clones the request because RoundTrippers must not mutate
+// chromeHeaderTripper clones the request because RoundTrippers must not mutate
 // their input.
 type chromeHeaderTripper struct {
 	next http.RoundTripper
@@ -92,18 +88,11 @@ func newChromeH2Transport(skipTLSVerify bool) *http2.Transport {
 }
 {{- if .UsesBrowserHTTP2Transport}}
 
-// newChromeTransport speaks HTTP/2 only. The dial fails closed when the
-// origin negotiates anything else, so a downgraded fingerprint never reaches
-// the origin silently.
 func newChromeTransport(_ time.Duration, skipTLSVerify bool) http.RoundTripper {
 	return newChromeH2Transport(skipTLSVerify)
 }
 {{- else}}
 
-// chromeTransport lets the origin pick HTTP/2 or HTTP/1.1. A host that
-// declines h2 pays one extra handshake, then stays on the HTTP/1.1 transport,
-// whose own dial offers only http/1.1 so the negotiated protocol and the
-// stack speaking it always agree.
 type chromeTransport struct {
 	h2 *http2.Transport
 	h1 *http.Transport
@@ -165,8 +154,6 @@ func chromeDialH2(ctx context.Context, addr string, skipTLSVerify bool) (net.Con
 	return conn, nil
 }
 
-// chromeDialTLS completes a TLS handshake presenting the frozen Chrome
-// ClientHello with alpn substituted for the profile's protocol list.
 func chromeDialTLS(ctx context.Context, addr string, alpn []string, skipTLSVerify bool) (*utls.UConn, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -198,9 +185,6 @@ func chromeDialTLS(ctx context.Context, addr string, alpn []string, skipTLSVerif
 	return conn, nil
 }
 
-// chromeDialTCP honors the same proxy environment as http.Transport,
-// tunnelling through an HTTP proxy with CONNECT so the TLS handshake above
-// still terminates at the origin.
 func chromeDialTCP(ctx context.Context, addr string) (net.Conn, error) {
 	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	proxyURL, err := http.ProxyFromEnvironment(&http.Request{URL: &url.URL{Scheme: "https", Host: addr}})

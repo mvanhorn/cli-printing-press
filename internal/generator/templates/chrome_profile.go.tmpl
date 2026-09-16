@@ -7,18 +7,17 @@ import (
 	utls "github.com/refraction-networking/utls"
 )
 
-// Frozen desktop Chrome profile. Every value below describes the same
-// browser release; bump them together when moving to a newer Chrome.
 const (
-	chromeUserAgent       = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+	chromeMajor = "145"
+
+	chromeUserAgent       = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chromeMajor + ".0.0.0 Safari/537.36"
 	chromeAcceptLanguage  = "en-US,en;q=0.9"
-	chromeSecCHUA         = `"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"`
+	chromeSecCHUA         = `"Not:A-Brand";v="99", "Google Chrome";v="` + chromeMajor + `", "Chromium";v="` + chromeMajor + `"`
 	chromeSecCHUAMobile   = "?0"
 	chromeSecCHUAPlatform = `"Windows"`
 
-	// chromeHeaderTableSize is Chrome's SETTINGS_HEADER_TABLE_SIZE. Chrome's
-	// flow-control windows exceed the 4 MiB the Go HTTP/2 stack accepts, so
-	// they are deliberately left at stack defaults.
+	// Chrome's flow-control windows exceed the 4 MiB the Go HTTP/2 stack
+	// accepts, so they are deliberately left at stack defaults.
 	chromeHeaderTableSize = 65536
 )
 
@@ -29,8 +28,6 @@ type chromeHeader struct {
 	value string
 }
 
-// chromeHeaders are filled in only when the caller left them empty, so
-// RequiredHeaders and per-endpoint overrides keep precedence.
 var chromeHeaders = []chromeHeader{
 	{name: "User-Agent", value: chromeUserAgent},
 	{name: "Accept-Language", value: chromeAcceptLanguage},

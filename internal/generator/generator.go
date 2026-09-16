@@ -1038,6 +1038,10 @@ type clientTemplateData struct {
 	HasAuthCommand bool
 }
 
+func (d *clientTemplateData) ChromeOverlayOwnsUserAgent() bool {
+	return d != nil && d.APISpec != nil && d.UsesBrowserManagedUserAgent() && d.UseChromeImpersonation
+}
+
 // configTemplateData wraps APISpec with a precomputed auth-surface flag so
 // config.go.tmpl can gate token-management fields and helpers on the same
 // predicate the auth-command emission and root.go registration use.
@@ -2915,9 +2919,6 @@ func (g *Generator) renderSingleFiles() error {
 	return nil
 }
 
-// clientTemplateData feeds client.go, the chrome transport files, and the
-// session-handshake manager so every template that decides whether the
-// request path owns User-Agent reads one impersonation verdict.
 func (g *Generator) clientTemplateData() *clientTemplateData {
 	return &clientTemplateData{
 		APISpec:                    g.Spec,
