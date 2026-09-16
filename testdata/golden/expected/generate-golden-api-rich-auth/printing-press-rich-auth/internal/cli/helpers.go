@@ -921,10 +921,10 @@ func paginatedGetWithResponsePath(ctx context.Context, c interface {
 	return applyResponsePath(data, responsePath), nil
 }
 
-// retainCLIQueryParams drops stringified unset flags ("0"/"false") so they
-// do not spam the query string, while keeping values the operator set
-// (cobra Flag.Changed) and offset=0 (a legitimate first page). Keys with
-// no flag mapping are positional/caller-provided and stay explicit.
+// Generated commands stringify every flag, so an unset default and an
+// operator-set --flag=false or --n=0 are the same "false"/"0" bytes.
+// Explicit false/0 must stay on the wire; otherwise a boolean that
+// defaults to true is accepted and never reaches the API.
 func retainCLIQueryParams(cmd *cobra.Command, params map[string]string, flagNamesByWire map[string][]string, cursorParam, paginationType string) map[string]string {
 	explicit := map[string]struct{}{}
 	for wire := range params {
