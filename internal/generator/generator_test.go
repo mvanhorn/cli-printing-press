@@ -7866,7 +7866,7 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	// envelope; collection envelopes are unwrapped first so rows nest once.
 	assert.Contains(t, content, "filtered := unwrapSingleKeyArray(data)")
 	assert.Contains(t, content, "compactFields(filtered,")
-	assert.Contains(t, content, "filterFieldsChecked(filtered, flags.selectFields)")
+	assert.Contains(t, content, "filterFields(filtered, flags.selectFields)")
 	assert.Contains(t, content, `json.Unmarshal(filtered, &parsed)`)
 
 	// Envelope bypasses printOutputWithFlags to avoid double-filtering, then

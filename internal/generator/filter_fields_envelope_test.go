@@ -104,7 +104,7 @@ func TestFilterFieldsEnvelopeDescent(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got := filterFields(json.RawMessage(tc.input), tc.fields)
+			got, _ := filterFields(json.RawMessage(tc.input), tc.fields)
 			var gotV, wantV interface{}
 			if err := json.Unmarshal(got, &gotV); err != nil {
 				t.Fatalf("invalid json output: %v (raw=%s)", err, string(got))
@@ -165,7 +165,7 @@ func TestFilterFieldsEnvelopeDescent_StopsAtDepthBound(t *testing.T) {
 		input.WriteByte('}')
 	}
 
-	got := filterFields(json.RawMessage(input.String()), "id")
+	got, _ := filterFields(json.RawMessage(input.String()), "id")
 	if string(got) != input.String() {
 		t.Fatalf("overly deep envelope was unexpectedly traversed: got %s", got)
 	}
@@ -260,7 +260,7 @@ func TestFilterFieldsEnvelopeDescent_EmptyEnvelopeSelectorWarnings(t *testing.T)
 	}
 }
 
-func TestFilterFieldsChecked_AllMissNamesEveryPath(t *testing.T) {
+func TestFilterFields_AllMissNamesEveryPath(t *testing.T) {
 	input := `+"`"+`{"id":"a","name":"Alpha"}`+"`"+`
 	got, warning, err := filterFieldsWithWarning(t, input, "all,bogus,names")
 	assertJSONEqual(t, got, input)
@@ -280,7 +280,7 @@ func TestFilterFieldsChecked_AllMissNamesEveryPath(t *testing.T) {
 	}
 }
 
-func TestFilterFieldsChecked_HeterogeneousSupersetStaysOK(t *testing.T) {
+func TestFilterFields_HeterogeneousSupersetStaysOK(t *testing.T) {
 	input := `+"`"+`[{"id":"a"},{"id":"b","company":"Acme"}]`+"`"+`
 	got, warning, err := filterFieldsWithWarning(t, input, "id,name,company")
 	if err != nil {
@@ -339,7 +339,7 @@ func filterFieldsWithWarning(t *testing.T, input, fields string) (json.RawMessag
 		t.Fatalf("os.Pipe() error: %v", err)
 	}
 	os.Stderr = write
-	got, ferr := filterFieldsChecked(json.RawMessage(input), fields)
+	got, ferr := filterFields(json.RawMessage(input), fields)
 	_ = write.Close()
 	os.Stderr = oldStderr
 	warning, _ := io.ReadAll(read)
@@ -381,5 +381,5 @@ func assertJSONEqual(t *testing.T, got json.RawMessage, want string) {
 }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^(TestFilterFieldsEnvelopeDescent|TestFilterFieldsEnvelopeDescent_UnknownSelector|TestFilterFieldsEnvelopeDescent_EmptyCollectionsDoNotWarn|TestFilterFieldsEnvelopeDescent_PartiallyInvalidSelectorWarns|TestFilterFieldsEnvelopeDescent_EmptyEnvelopeSelectorWarnings|TestFilterFieldsChecked_AllMissNamesEveryPath|TestFilterFieldsChecked_HeterogeneousSupersetStaysOK|TestPrintOutputWithFlags_SelectAllMissKeepsJSON|TestPrintOutputWithFlags_SelectMixedMatchOK)$", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^(TestFilterFieldsEnvelopeDescent|TestFilterFieldsEnvelopeDescent_UnknownSelector|TestFilterFieldsEnvelopeDescent_EmptyCollectionsDoNotWarn|TestFilterFieldsEnvelopeDescent_PartiallyInvalidSelectorWarns|TestFilterFieldsEnvelopeDescent_EmptyEnvelopeSelectorWarnings|TestFilterFields_AllMissNamesEveryPath|TestFilterFields_HeterogeneousSupersetStaysOK|TestPrintOutputWithFlags_SelectAllMissKeepsJSON|TestPrintOutputWithFlags_SelectMixedMatchOK)$", "-count=1")
 }

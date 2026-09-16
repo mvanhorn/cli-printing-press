@@ -2798,13 +2798,9 @@ func unwrapSingleKeyArray(data json.RawMessage) json.RawMessage {
 // filterFields keeps only the specified fields (comma-separated) from JSON objects/arrays.
 // Supports dotted paths like "events.shortName" to descend into nested structures.
 // Arrays are traversed element-wise: "events.shortName" keeps shortName on each event.
-// Prefer filterFieldsChecked at command output sites so a total miss can exit non-zero.
-func filterFields(data json.RawMessage, fields string) json.RawMessage {
-	filtered, _ := filterFieldsChecked(data, fields)
-	return filtered
-}
-
-func filterFieldsChecked(data json.RawMessage, fields string) (json.RawMessage, error) {
+// A total miss returns a usage error after the caller writes JSON so agents can
+// distinguish typos from empty results; partial misses only warn.
+func filterFields(data json.RawMessage, fields string) (json.RawMessage, error) {
 	var paths [][]string
 	var requestedPaths []string
 	for _, f := range strings.Split(fields, ",") {
@@ -3126,7 +3122,7 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 	// still runs.
 	var selectErr error
 	if flags.selectFields != "" {
-		data, selectErr = filterFieldsChecked(data, flags.selectFields)
+		data, selectErr = filterFields(data, flags.selectFields)
 	} else if flags.compact {
 		data = compactFields(data, documentedFields...)
 	}

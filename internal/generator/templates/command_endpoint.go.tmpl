@@ -1067,7 +1067,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				var selectErr error
 				filtered := unwrapSingleKeyArray(data)
 				if flags.selectFields != "" {
-					filtered, selectErr = filterFieldsChecked(filtered, flags.selectFields)
+					filtered, selectErr = filterFields(filtered, flags.selectFields)
 				} else if flags.compact {
 					filtered = compactFields(filtered, {{$documentedFields}})
 				}
@@ -1131,7 +1131,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				var selectErr error
 				filtered := data
 				if flags.selectFields != "" {
-					filtered, selectErr = filterFieldsChecked(filtered, flags.selectFields)
+					filtered, selectErr = filterFields(filtered, flags.selectFields)
 				} else if flags.compact {
 					filtered = compactFields(filtered, {{$documentedFields}})
 				}

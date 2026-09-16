@@ -152,9 +152,10 @@ func newSetsCreateCmd(flags *rootFlags) *cobra.Command {
 				// --select wins when both are set: explicit field choice trumps the
 				// generic high-gravity allow-list. Otherwise --compact still applies
 				// when --agent is on but the user did not name fields.
+				var selectErr error
 				filtered := unwrapSingleKeyArray(data)
 				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
+					filtered, selectErr = filterFields(filtered, flags.selectFields)
 				} else if flags.compact {
 					filtered = compactFields(filtered, map[string]bool{"id": true, "name": true})
 				}
@@ -182,6 +183,9 @@ func newSetsCreateCmd(flags *rootFlags) *cobra.Command {
 				}
 				if perr := printOutput(cmd.OutOrStdout(), structured, true); perr != nil {
 					return perr
+				}
+				if selectErr != nil {
+					return selectErr
 				}
 				if partialFailure != nil && !flags.allowPartialFailure {
 					return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", "sets", partialFailure.Message))

@@ -287,7 +287,7 @@ func TestFilterFields(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := filterFields(json.RawMessage(tc.input), tc.fields)
+			got, _ := filterFields(json.RawMessage(tc.input), tc.fields)
 			// Normalize both sides through json.Unmarshal+Marshal so
 			// map-iteration order does not produce false negatives.
 			var gotV, wantV interface{}
