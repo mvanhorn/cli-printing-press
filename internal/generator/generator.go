@@ -8302,12 +8302,12 @@ func queryParamFlagNamesLiteral(endpoint spec.Endpoint) string {
 		if p.Positional || p.PathParam || paramIsHeader(p) || isArrayQueryParam(p) || isDeepObjectQueryParam(p) {
 			continue
 		}
-		b.WriteString(fmt.Sprintf("%q:{", paramWireName(p)))
+		fmt.Fprintf(&b, "%q:{", paramWireName(p))
 		for i, name := range paramFlagNames(p) {
 			if i > 0 {
 				b.WriteByte(',')
 			}
-			b.WriteString(fmt.Sprintf("%q", name))
+			fmt.Fprintf(&b, "%q", name)
 		}
 		b.WriteString("},")
 	}

@@ -137,11 +137,12 @@ func TestGeneratedPaginatedCommandsRetainExplicitFalseAndZero(t *testing.T) {
 
 	storeDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name)+"-store")
 	storeGen := New(explicitQuerySpec("explicitq-store"), storeDir)
-	storeGen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	storeGen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
 	require.NoError(t, storeGen.Generate())
 	storeSrc := readGeneratedFile(t, storeDir, "internal", "cli", "items_list.go")
 	assert.Contains(t, storeSrc, "retainCLIQueryParams(cmd,",
 		"store-backed paginated commands must filter unset 0/false before resolvePaginatedRead")
+	requireGeneratedCompiles(t, storeDir)
 }
 
 func TestGeneratedPaginatedQueryParamsOnTheWire(t *testing.T) {
