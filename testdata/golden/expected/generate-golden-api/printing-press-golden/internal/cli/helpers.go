@@ -3558,15 +3558,52 @@ func printProvenance(cmd *cobra.Command, count int, prov DataProvenance) {
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s%d results (cached, synced %s)\n", prefix, count, age)
 }
 
+// classifyHTMLPayload optionally overrides generic HTML classification.
+// Printed CLIs may set this to recognise a known console or landing page
+// (wrong base URL) without forcing every HTML body through the auth exit.
+var classifyHTMLPayload func(trimmed []byte) error
+
 func nonJSONPayloadError(data json.RawMessage) error {
 	trimmed := bytes.TrimSpace(data)
+	if classifyHTMLPayload != nil {
+		if err := classifyHTMLPayload(trimmed); err != nil {
+			return err
+		}
+	}
 	if len(trimmed) > 0 && trimmed[0] == '<' {
-		return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. " + "Set your API key with: export PRINTING_PRESS_GOLDEN_API_KEY=\"your-token-here\""))
+		if htmlLooksLikeAuthFailure(trimmed) {
+			return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. " + "Set your API key with: export PRINTING_PRESS_GOLDEN_API_KEY=\"your-token-here\""))
+		}
+		return apiErr(fmt.Errorf("API returned HTML instead of JSON; the request may have reached a web page or the wrong endpoint"))
 	}
 	if len(trimmed) == 0 {
 		return apiErr(fmt.Errorf("API returned an empty response body; expected JSON"))
 	}
 	return apiErr(fmt.Errorf("API returned a non-JSON response; expected JSON"))
+}
+
+func htmlLooksLikeAuthFailure(trimmed []byte) bool {
+	if len(trimmed) == 0 {
+		return false
+	}
+	lower := strings.ToLower(string(trimmed))
+	for _, marker := range []string{
+		"unauthorized",
+		"forbidden",
+		"session expired",
+		"not authenticated",
+		"authentication required",
+		"authentication failed",
+		"invalid api key",
+		"invalid token",
+		"invalid credential",
+		"www-authenticate",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func assertLiveJSONBody(data json.RawMessage) error {

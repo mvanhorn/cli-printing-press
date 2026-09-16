@@ -25,6 +25,7 @@ func TestGeneratedWrapWithProvenanceRejectsNonJSON(t *testing.T) {
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -34,8 +35,15 @@ func TestWrapWithProvenanceRejectsNonJSON(t *testing.T) {
 	if err == nil {
 		t.Fatalf("wrapWithProvenance accepted non-JSON live data")
 	}
-	if !strings.Contains(err.Error(), "not authenticated") {
-		t.Fatalf("HTML live body should be classified as an auth/session problem, got: %v", err)
+	var ce *cliError
+	if !errors.As(err, &ce) || ce.code != 5 {
+		t.Fatalf("bare HTML live body should be an API/non-JSON error (exit 5), got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "HTML instead of JSON") {
+		t.Fatalf("HTML live body should name the non-JSON payload, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "not authenticated") || strings.Contains(err.Error(), "Set your API key") {
+		t.Fatalf("bare HTML must not be reported as an auth failure, got: %v", err)
 	}
 }
 `), 0o644))
