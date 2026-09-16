@@ -353,7 +353,7 @@ func TestLocalAnalysisTemplatesRouteMachineFormatsThroughSharedGate(t *testing.T
 		"search.go.tmpl must route explicit machine formats and default piped output through the shared output contract")
 	require.Contains(t, src, "outputFlags := *flags",
 		"search.go.tmpl must clear row-shaping flags after applying them before provenance wrapping")
-	selectIdx := strings.Index(src, "data = filterFields(data, flags.selectFields)")
+	selectIdx := strings.Index(src, "data, selectErr = filterFieldsChecked(data, flags.selectFields)")
 	wrapIdx := strings.Index(src, "wrapped, err := wrapWithProvenance(data, prov)")
 	require.GreaterOrEqual(t, selectIdx, 0)
 	require.GreaterOrEqual(t, wrapIdx, 0)

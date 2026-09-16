@@ -7866,13 +7866,34 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	// envelope; collection envelopes are unwrapped first so rows nest once.
 	assert.Contains(t, content, "filtered := unwrapSingleKeyArray(data)")
 	assert.Contains(t, content, "compactFields(filtered,")
-	assert.Contains(t, content, "filterFields(filtered, flags.selectFields)")
+	assert.Contains(t, content, "filterFieldsChecked(filtered, flags.selectFields)")
 	assert.Contains(t, content, `json.Unmarshal(filtered, &parsed)`)
 
 	// Envelope bypasses printOutputWithFlags to avoid double-filtering, then
 	// adopts the platform metadata wrapper before the final structured write.
 	assert.Contains(t, content, `wrapPlatformStructuredOutput(json.RawMessage(envelopeJSON), flags, resultKey, true)`)
 	assert.Contains(t, content, `printOutput(cmd.OutOrStdout(), structured, true)`)
+
+	// After a successful print, disallowed partial failure (exit 6) must
+	// beat --select all-miss (exit 2). Mutations that partially fail keep
+	// exit 6 even when every --select path misses.
+	printIdx := strings.Index(content, `if perr := printOutput(cmd.OutOrStdout(), structured, true); perr != nil`)
+	require.GreaterOrEqual(t, printIdx, 0, "envelope path must print structured output")
+	afterPrint := content[printIdx:]
+	partialIdx := strings.Index(afterPrint, `return partialFailureErr(`)
+	selectIdx := strings.Index(afterPrint, `return selectErr`)
+	require.GreaterOrEqual(t, partialIdx, 0, "envelope path must return partialFailureErr")
+	require.GreaterOrEqual(t, selectIdx, 0, "envelope path must return selectErr")
+	assert.Less(t, partialIdx, selectIdx, "partialFailure (exit 6) must precede selectErr (exit 2)")
+
+	fallthroughPrint := strings.Index(content, `printErr := printOutputWithFlagsMeta(`)
+	require.GreaterOrEqual(t, fallthroughPrint, 0, "mutate fall-through must print via printOutputWithFlagsMeta")
+	afterFallthrough := content[fallthroughPrint:]
+	fallPartial := strings.Index(afterFallthrough, `return partialFailureErr(`)
+	fallPrintErr := strings.Index(afterFallthrough, `return printErr`)
+	require.GreaterOrEqual(t, fallPartial, 0, "mutate fall-through must return partialFailureErr")
+	require.GreaterOrEqual(t, fallPrintErr, 0, "mutate fall-through must return printErr")
+	assert.Less(t, fallPartial, fallPrintErr, "partialFailure (exit 6) must precede printErr/selectErr on fall-through")
 
 	// Dry-run is flagged honestly in the envelope
 	assert.Contains(t, content, `flags.dryRun`)
@@ -12719,7 +12740,8 @@ func TestGeneratedHelpers_DeadCodeRemoved(t *testing.T) {
 
 	// Verify useful functions are still present
 	assert.Contains(t, content, "printOutputWithFlags")
-	assert.Contains(t, content, "filterFields")
+	assert.Contains(t, content, "func filterFields(data json.RawMessage, fields string) json.RawMessage")
+	assert.Contains(t, content, "func filterFieldsChecked(data json.RawMessage, fields string) (json.RawMessage, error)")
 	assert.Contains(t, content, "classifyAPIError")
 }
 

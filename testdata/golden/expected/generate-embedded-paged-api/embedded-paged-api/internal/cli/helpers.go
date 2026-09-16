@@ -2219,7 +2219,14 @@ func unwrapSingleKeyArray(data json.RawMessage) json.RawMessage {
 // filterFields keeps only the specified fields (comma-separated) from JSON objects/arrays.
 // Supports dotted paths like "events.shortName" to descend into nested structures.
 // Arrays are traversed element-wise: "events.shortName" keeps shortName on each event.
+// This one-value wrapper stays so preserved novel commands keep compiling.
+// Generated output sites use filterFieldsChecked so a total miss can exit non-zero.
 func filterFields(data json.RawMessage, fields string) json.RawMessage {
+	filtered, _ := filterFieldsChecked(data, fields)
+	return filtered
+}
+
+func filterFieldsChecked(data json.RawMessage, fields string) (json.RawMessage, error) {
 	var paths [][]string
 	var requestedPaths []string
 	for _, f := range strings.Split(fields, ",") {
@@ -2235,13 +2242,14 @@ func filterFields(data json.RawMessage, fields string) json.RawMessage {
 		paths = append(paths, parts)
 	}
 	if len(paths) == 0 {
-		return data
+		return data, nil
 	}
 	filtered, state := filterFieldsRec(data, paths, true)
 	valid := ""
+	var unmatched []string
 	for i, path := range paths {
 		_, pathState := filterFieldsRec(data, [][]string{path}, true)
-		pathIndeterminate := pathState.anchoredIndeterminate || (len(paths) == 1 && pathState.fallbackIndeterminate)
+		pathIndeterminate := pathState.anchoredIndeterminate || pathState.fallbackIndeterminate
 		if pathState.matched || pathIndeterminate {
 			continue
 		}
@@ -2252,11 +2260,16 @@ func filterFields(data json.RawMessage, fields string) json.RawMessage {
 			}
 		}
 		fmt.Fprintf(os.Stderr, "warning: --select %q matched no fields; valid fields: %s\n", requestedPaths[i], valid)
+		unmatched = append(unmatched, requestedPaths[i])
 	}
+	out := filtered
 	if !state.matched && !state.anchoredIndeterminate && !state.fallbackIndeterminate {
-		return data
+		out = data
 	}
-	return filtered
+	if len(unmatched) > 0 && len(unmatched) == len(requestedPaths) && !state.anchoredIndeterminate && !state.fallbackIndeterminate {
+		return out, usageErr(fmt.Errorf("--select matched no fields: %s", strings.Join(unmatched, ", ")))
+	}
+	return out, nil
 }
 
 func selectFieldKeys(data json.RawMessage) []string {
@@ -2533,8 +2546,9 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 	// must not strip those fields out before --select can pick them. When
 	// only --compact is set (e.g., --agent without --select), the allow-list
 	// still runs.
+	var selectErr error
 	if flags.selectFields != "" {
-		data = filterFields(data, flags.selectFields)
+		data, selectErr = filterFieldsChecked(data, flags.selectFields)
 	} else if flags.compact {
 		data = compactFields(data, documentedFields...)
 	}
@@ -2558,7 +2572,10 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 	}
 	// --quiet: one identity value per row (id, then name/slug/title).
 	if flags.quiet {
-		return printQuiet(w, data)
+		if err := printQuiet(w, data); err != nil {
+			return err
+		}
+		return selectErr
 	}
 	headerFields := documentedFields
 	if flags.selectFields != "" {
@@ -2571,15 +2588,19 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 		}
 		headerFields = []map[string]bool{selected}
 	}
-	// --csv: render as CSV
-	if flags.csv {
-		return printCSV(w, data, headerFields...)
+	var printErr error
+	switch {
+	case flags.csv:
+		printErr = printCSV(w, data, headerFields...)
+	case flags.plain:
+		printErr = printPlain(w, data, headerFields...)
+	default:
+		printErr = printOutput(w, data, flags.asJSON)
 	}
-	// --plain: render arrays as tab-separated rows
-	if flags.plain {
-		return printPlain(w, data, headerFields...)
+	if printErr != nil {
+		return printErr
 	}
-	return printOutput(w, data, flags.asJSON)
+	return selectErr
 }
 
 // compactVerboseListFields are prose-shaped fields stripped from list-item
