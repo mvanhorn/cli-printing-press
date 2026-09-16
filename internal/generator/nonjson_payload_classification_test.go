@@ -15,7 +15,7 @@ func TestGeneratedNonJSONPayloadClassification(t *testing.T) {
 	apiSpec := minimalSpec("html-payload-class")
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, Search: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, Search: true, MCP: true}
 	require.NoError(t, gen.Generate())
 	requireGeneratedCompiles(t, outputDir)
 
