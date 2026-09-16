@@ -25,6 +25,7 @@ import (
 {{- if not .UsesBrowserHTTP3Transport}}
 
 	utls "github.com/refraction-networking/utls"
+	"golang.org/x/net/http/httpproxy"
 	"golang.org/x/net/http2"
 {{- end}}
 )
@@ -159,7 +160,7 @@ func chromeDialTLS(ctx context.Context, addr string, alpn []string, skipTLSVerif
 	if err != nil {
 		return nil, err
 	}
-	raw, err := chromeDialTCP(ctx, addr)
+	raw, err := chromeDialTCP(ctx, addr, skipTLSVerify)
 	if err != nil {
 		return nil, err
 	}
@@ -185,25 +186,63 @@ func chromeDialTLS(ctx context.Context, addr string, alpn []string, skipTLSVerif
 	return conn, nil
 }
 
-func chromeDialTCP(ctx context.Context, addr string) (net.Conn, error) {
+func chromeDialTCP(ctx context.Context, addr string, skipTLSVerify bool) (net.Conn, error) {
 	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
-	proxyURL, err := http.ProxyFromEnvironment(&http.Request{URL: &url.URL{Scheme: "https", Host: addr}})
+	proxyURL, err := httpproxy.FromEnvironment().ProxyFunc()(&url.URL{Scheme: "https", Host: addr})
 	if err != nil {
 		return nil, err
 	}
 	if proxyURL == nil {
 		return dialer.DialContext(ctx, "tcp", addr)
 	}
-	if proxyURL.Scheme != "http" {
+	switch proxyURL.Scheme {
+	case "http", "https":
+	default:
 		return nil, fmt.Errorf("chrome transport: unsupported proxy scheme %q", proxyURL.Scheme)
 	}
 	proxyAddr := proxyURL.Host
 	if _, _, err := net.SplitHostPort(proxyAddr); err != nil {
-		proxyAddr = net.JoinHostPort(proxyAddr, "80")
+		port := "80"
+		if proxyURL.Scheme == "https" {
+			port = "443"
+		}
+		proxyAddr = net.JoinHostPort(proxyAddr, port)
 	}
 	conn, err := dialer.DialContext(ctx, "tcp", proxyAddr)
 	if err != nil {
 		return nil, err
+	}
+	if proxyURL.Scheme == "https" {
+		host, _, splitErr := net.SplitHostPort(proxyAddr)
+		if splitErr != nil {
+			conn.Close()
+			return nil, splitErr
+		}
+		tlsConn := tls.Client(conn, &tls.Config{ServerName: host, InsecureSkipVerify: skipTLSVerify})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		conn = tlsConn
+	}
+	br, err := chromeProxyCONNECT(ctx, conn, addr, proxyURL)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return &chromePrefixedConn{Conn: conn, r: br}, nil
+}
+
+func chromeProxyCONNECT(ctx context.Context, conn net.Conn, addr string, proxyURL *url.URL) (*bufio.Reader, error) {
+	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
+	defer func() {
+		stop()
+		_ = conn.SetDeadline(time.Time{})
+	}()
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(deadline); err != nil {
+			return nil, err
+		}
 	}
 	connect := &http.Request{
 		Method: http.MethodConnect,
@@ -216,21 +255,18 @@ func chromeDialTCP(ctx context.Context, addr string) (net.Conn, error) {
 		connect.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(user.Username()+":"+password)))
 	}
 	if err := connect.Write(conn); err != nil {
-		conn.Close()
 		return nil, err
 	}
 	br := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(br, connect)
 	if err != nil {
-		conn.Close()
 		return nil, err
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		conn.Close()
 		return nil, fmt.Errorf("chrome transport: proxy CONNECT returned %s", resp.Status)
 	}
-	return &chromePrefixedConn{Conn: conn, r: br}, nil
+	return br, nil
 }
 
 // chromePrefixedConn keeps bytes the CONNECT response reader already buffered,

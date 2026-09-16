@@ -5,11 +5,14 @@ package client
 
 import (
 {{- if not .UsesBrowserHTTP3Transport}}
+	"context"
 	"io"
+	"net"
 {{- end}}
 	"net/http"
 {{- if not .UsesBrowserHTTP3Transport}}
 	"net/http/httptest"
+	"net/url"
 {{- end}}
 	"testing"
 	"time"
@@ -86,6 +89,9 @@ func TestChromeHeaderTripperFillsOnlyMissingHeaders(t *testing.T) {
 	if got := rec.got.Get("User-Agent"); got != chromeUserAgent {
 		t.Fatalf("User-Agent = %q, want %q", got, chromeUserAgent)
 	}
+	if got := rec.got.Get("Accept"); got != chromeAccept {
+		t.Fatalf("Accept = %q, want %q", got, chromeAccept)
+	}
 }
 {{- end}}
 {{- if not .UsesBrowserHTTP3Transport}}
@@ -146,4 +152,137 @@ func TestChromeClientFallsBackToHTTP1(t *testing.T) {
 	}
 }
 {{- end}}
+
+func chromeCONNECTProxy(t *testing.T, tlsProxy bool) *httptest.Server {
+	t.Helper()
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "want CONNECT", http.StatusMethodNotAllowed)
+			return
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "no hijack", http.StatusInternalServerError)
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+		_ = conn.Close()
+	})
+	if tlsProxy {
+		srv := httptest.NewTLSServer(h)
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func chromeProxyEnv(t *testing.T, proxyURL string) {
+	t.Helper()
+	t.Setenv("HTTPS_PROXY", proxyURL)
+	t.Setenv("HTTP_PROXY", proxyURL)
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("ALL_PROXY", "")
+}
+
+func TestChromeDialTCPHTTPProxyCONNECT(t *testing.T) {
+	proxy := chromeCONNECTProxy(t, false)
+	chromeProxyEnv(t, proxy.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := chromeDialTCP(ctx, "example.com:443", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+}
+
+func TestChromeDialTCPHTTPSProxyCONNECT(t *testing.T) {
+	proxy := chromeCONNECTProxy(t, true)
+	chromeProxyEnv(t, proxy.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := chromeDialTCP(ctx, "example.com:443", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+}
+
+func TestChromeProxyCONNECTHonorsDeadline(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 64)
+		_, _ = conn.Read(buf)
+		time.Sleep(time.Minute)
+	}()
+	chromeProxyEnv(t, "http://"+ln.Addr().String())
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err = chromeDialTCP(ctx, "example.com:443", true)
+	if err == nil {
+		t.Fatal("expected a stalled CONNECT to fail")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("CONNECT hang lasted %s", elapsed)
+	}
+}
+
+func TestChromeProxyCONNECTHTTP(t *testing.T) {
+	sawHost := make(chan string, 1)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "want CONNECT", http.StatusMethodNotAllowed)
+			return
+		}
+		sawHost <- r.Host
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "no hijack", http.StatusInternalServerError)
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+		_ = conn.Close()
+	}))
+	t.Cleanup(proxy.Close)
+	conn, err := net.Dial("tcp", proxy.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	proxyURL, err := url.Parse(proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := chromeProxyCONNECT(context.Background(), conn, "example.com:443", proxyURL); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case host := <-sawHost:
+		if host != "example.com:443" {
+			t.Fatalf("CONNECT host = %q", host)
+		}
+	default:
+		t.Fatal("proxy did not see CONNECT")
+	}
+}
 {{- end}}

@@ -2916,12 +2916,16 @@ func TestGenerateBrowserChromeTransport(t *testing.T) {
 	assert.Contains(t, chromeGo, `chromeALPN = []string{"h2"}`)
 	assert.NotContains(t, chromeGo, `"http/1.1"`)
 	assert.Contains(t, chromeGo, "chromeHeaderTripper{")
+	assert.Contains(t, chromeGo, "context.AfterFunc")
+	assert.Contains(t, chromeGo, "httpproxy.FromEnvironment()")
+	assert.Contains(t, chromeGo, `case "http", "https":`)
 	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "client", "chrome_h3.go"))
 
 	profileGo := readGeneratedFile(t, outputDir, "internal", "client", "chrome_profile.go")
 	assert.Contains(t, profileGo, "utls.HelloChrome_Auto")
 	assert.Contains(t, profileGo, `chromeMajor = "145"`)
 	assert.Contains(t, profileGo, `Chrome/" + chromeMajor + ".0.0.0`)
+	assert.Contains(t, profileGo, `{name: "Accept", value: chromeAccept}`)
 
 	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
 	require.NoError(t, err)
@@ -3068,6 +3072,9 @@ func TestGenerateBrowserChromeH2Transport(t *testing.T) {
 	assert.NotContains(t, chromeGo, `"http/1.1"`)
 	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "client", "chrome_h3.go"))
 	assert.NotContains(t, readGeneratedFile(t, outputDir, "go.mod"), "github.com/quic-go/quic-go")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/client")
 }
 
 func TestGenerateBrowserChromeNoVersionForce(t *testing.T) {
