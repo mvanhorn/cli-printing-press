@@ -130,6 +130,189 @@ func TestHardenSQLiteFilesSkipsSymlinkSidecars(t *testing.T) {
 	assertPrivateMode(t, journalPath, 0o600)
 }
 
+func TestHardenSQLiteFilesChmodsPermissiveRegularFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "data.db")
+	for _, suffix := range []string{"", "-journal", "-wal", "-shm"} {
+		if err := os.WriteFile(dbPath+suffix, nil, 0o644); err != nil {
+			t.Fatalf("create %s: %v", suffix, err)
+		}
+	}
+
+	hardenSQLiteFiles(dbPath)
+
+	for _, suffix := range []string{"", "-journal", "-wal", "-shm"} {
+		assertPrivateMode(t, dbPath+suffix, 0o600)
+	}
+}
+
+func TestHardenSQLiteFilesKeepsLivePOSIXLocks(t *testing.T) {
+	if os.Getenv("PP_STORE_HARDEN_LOCK_PROBE") == "1" {
+		runHardenLockProbe()
+		return
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin holder tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`INSERT INTO resources (id, resource_type, data) VALUES (?, ?, ?)`, "lock-holder", "harden", `{"id":"lock-holder"}`); err != nil {
+		t.Fatalf("holder write: %v", err)
+	}
+
+	hardenSQLiteFiles(dbPath)
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHardenSQLiteFilesKeepsLivePOSIXLocks$", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		"PP_STORE_HARDEN_LOCK_PROBE=1",
+		"PP_STORE_HARDEN_DB="+dbPath,
+	)
+	err = cmd.Run()
+	if err == nil {
+		t.Fatal("probe wrote while the parent still held an uncommitted write lock; hardenSQLiteFiles dropped POSIX locks")
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 5 {
+		t.Fatalf("probe exit = %v, want busy/locked exit 5", err)
+	}
+}
+
+func runHardenLockProbe() {
+	dbPath := os.Getenv("PP_STORE_HARDEN_DB")
+	if dbPath == "" {
+		fmt.Fprintln(os.Stderr, "PP_STORE_HARDEN_DB is required")
+		os.Exit(2)
+	}
+	db, err := sql.Open("sqlite", dbPath+"?_txlock=immediate&_pragma=busy_timeout(250)&_pragma=mmap_size(0)")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open probe: %v\n", err)
+		os.Exit(3)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	_, err = db.Exec(`INSERT INTO resources (id, resource_type, data) VALUES ('probe', 'lock-probe', '{}')`)
+	if err == nil {
+		fmt.Fprintln(os.Stderr, "probe wrote under a live parent lock")
+		os.Exit(0)
+	}
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "busy") || strings.Contains(lower, "locked") {
+		os.Exit(5)
+	}
+	fmt.Fprintf(os.Stderr, "probe write: %v\n", err)
+	os.Exit(4)
+}
+
+func TestHardenSQLiteFilesConcurrentWritersKeepIntegrity(t *testing.T) {
+	if os.Getenv("PP_STORE_HARDEN_WRITER") == "1" {
+		runHardenWriterHelper()
+		return
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open seed: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close seed: %v", err)
+	}
+
+	const helpers = 8
+	const rounds = 15
+	cmds := make([]*exec.Cmd, helpers)
+	for i := 0; i < helpers; i++ {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestHardenSQLiteFilesConcurrentWritersKeepIntegrity$", "-test.count=1")
+		cmd.Env = append(os.Environ(),
+			"PP_STORE_HARDEN_WRITER=1",
+			"PP_STORE_HARDEN_DB="+dbPath,
+			fmt.Sprintf("PP_STORE_HARDEN_ID=%d", i),
+			fmt.Sprintf("PP_STORE_HARDEN_ROUNDS=%d", rounds),
+		)
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start writer %d: %v", i, err)
+		}
+		cmds[i] = cmd
+	}
+	for i, cmd := range cmds {
+		if err := cmd.Wait(); err != nil {
+			t.Fatalf("writer %d: %v", i, err)
+		}
+	}
+
+	reopened, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer reopened.Close()
+
+	var integrity string
+	if err := reopened.DB().QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil {
+		t.Fatalf("integrity_check: %v", err)
+	}
+	if integrity != "ok" {
+		t.Fatalf("integrity_check = %q, want ok", integrity)
+	}
+	var n int
+	if err := reopened.DB().QueryRow(`SELECT COUNT(*) FROM resources WHERE resource_type = 'concurrent'`).Scan(&n); err != nil {
+		t.Fatalf("count writers: %v", err)
+	}
+	if n != helpers*rounds {
+		t.Fatalf("concurrent rows = %d, want %d", n, helpers*rounds)
+	}
+	if runtime.GOOS != "windows" {
+		assertPrivateMode(t, dbPath, 0o600)
+		{{- if .Cache.Enabled}}
+		if _, err := os.Stat(dbPath + "-journal"); err == nil {
+			assertPrivateMode(t, dbPath+"-journal", 0o600)
+		}
+		{{- else}}
+		assertPrivateMode(t, dbPath+"-wal", 0o600)
+		assertPrivateMode(t, dbPath+"-shm", 0o600)
+		{{- end}}
+	}
+}
+
+func runHardenWriterHelper() {
+	dbPath := os.Getenv("PP_STORE_HARDEN_DB")
+	if dbPath == "" {
+		fmt.Fprintln(os.Stderr, "PP_STORE_HARDEN_DB is required")
+		os.Exit(2)
+	}
+	id := os.Getenv("PP_STORE_HARDEN_ID")
+	rounds := 15
+	if v := os.Getenv("PP_STORE_HARDEN_ROUNDS"); v != "" {
+		if n, scanErr := fmt.Sscanf(v, "%d", &rounds); n != 1 || scanErr != nil || rounds <= 0 {
+			rounds = 15
+		}
+	}
+	s, err := Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open: %v\n", err)
+		os.Exit(3)
+	}
+	defer s.Close()
+	for i := 0; i < rounds; i++ {
+		rowID := fmt.Sprintf("w%s-%d", id, i)
+		if err := s.Upsert("concurrent", rowID, json.RawMessage(fmt.Sprintf(`{"id":%q}`, rowID))); err != nil {
+			fmt.Fprintf(os.Stderr, "upsert %s: %v\n", rowID, err)
+			os.Exit(4)
+		}
+	}
+}
+
 func assertPrivateMode(t *testing.T, path string, want os.FileMode) {
 	t.Helper()
 	info, err := os.Stat(path)

@@ -225,23 +225,19 @@ func rejectNewerSchemaBeforeJournalMode(ctx context.Context, dbPath string) erro
 
 // hardenSQLiteFiles is best-effort so stores on filesystems without Unix modes
 // remain usable. The deferred call catches files the SQLite driver creates.
+// Chmod by path only: opening these files to fchmod, then closing that
+// descriptor, drops every POSIX fcntl lock this process holds on them,
+// including SQLite's own connection locks.
 func hardenSQLiteFiles(dbPath string) {
 	for _, path := range []string{dbPath, dbPath + "-journal", dbPath + "-wal", dbPath + "-shm"} {
 		info, err := os.Lstat(path)
 		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
-
-		file, err := os.Open(path)
-		if err != nil {
+		if info.Mode().Perm() == 0o600 {
 			continue
 		}
-		openInfo, statErr := file.Stat()
-		pathInfo, lstatErr := os.Lstat(path)
-		if statErr == nil && lstatErr == nil && pathInfo.Mode().IsRegular() && os.SameFile(openInfo, pathInfo) {
-			_ = file.Chmod(0o600)
-		}
-		_ = file.Close()
+		_ = os.Chmod(path, 0o600)
 	}
 }
 
