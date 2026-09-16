@@ -64,6 +64,50 @@ func TestGeneratedFleetHardening(t *testing.T) {
 	require.NotContains(t, deliverGo, "os.MkdirAll(dir, 0o755)")
 
 	requireGeneratedCompiles(t, outputDir)
+	runGeneratedStoreHardeningTests(t, outputDir)
+}
+
+func TestGeneratedCacheStoreHardening(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "cachehardening",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Cache:   spec.CacheConfig{Enabled: true},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/cachehardening-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"widgets": {
+				Description: "Widgets",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/widgets",
+						Description: "List widgets",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := generateForHardeningTest(t, apiSpec)
+	storeGo := stripGoComments(readGeneratedFile(t, outputDir, "internal", "store", "store.go"))
+	requireLockSafeSQLiteHardening(t, storeGo)
+	require.Contains(t, storeGo, "ensureSQLiteJournalPrivate",
+		"cache-enabled stores must pre-create the rollback journal before writes")
+	require.Contains(t, storeGo, "journal_mode(TRUNCATE)",
+		"cache-enabled stores must emit the TRUNCATE journal DSN")
+	requireGeneratedCompiles(t, outputDir)
+	runGeneratedStoreHardeningTests(t, outputDir)
+}
+
+func runGeneratedStoreHardeningTests(t *testing.T, outputDir string) {
+	t.Helper()
 	runGoCommand(t, outputDir, "test", "./internal/store", "-run", "^(TestOpen(HardensSQLiteFilePermissions|WithRelativePathDoesNotChmodWorkingDirectory)|TestHardenSQLiteFiles)", "-count", "1")
 }
 
