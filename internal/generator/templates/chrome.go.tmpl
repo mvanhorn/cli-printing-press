@@ -17,9 +17,7 @@ import (
 	"net/http/cookiejar"
 {{- if not .UsesBrowserHTTP3Transport}}
 	"net/url"
-{{- if not .UsesBrowserHTTP2Transport}}
 	"sync"
-{{- end}}
 {{- end}}
 	"time"
 {{- if not .UsesBrowserHTTP3Transport}}
@@ -234,10 +232,21 @@ func chromeDialTCP(ctx context.Context, addr string, skipTLSVerify bool) (net.Co
 }
 
 func chromeProxyCONNECT(ctx context.Context, conn net.Conn, addr string, proxyURL *url.URL) (*bufio.Reader, error) {
-	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
+	var mu sync.Mutex
+	armed := true
+	stop := context.AfterFunc(ctx, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if armed {
+			_ = conn.SetDeadline(time.Now())
+		}
+	})
 	defer func() {
 		stop()
+		mu.Lock()
+		armed = false
 		_ = conn.SetDeadline(time.Time{})
+		mu.Unlock()
 	}()
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := conn.SetDeadline(deadline); err != nil {
