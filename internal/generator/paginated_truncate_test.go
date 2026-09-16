@@ -142,10 +142,7 @@ func TestPaginatedEnvelopeSelection(t *testing.T) {
 		t.Fatalf("fully consumed nextPageToken remained in envelope: %s", data)
 	}
 
-	selected, err := filterFields(data, "services.name")
-	if err != nil {
-		t.Fatalf("filterFields: %v", err)
-	}
+	selected := filterFields(data, "services.name")
 	var selectedEnvelope map[string][]map[string]any
 	if err := json.Unmarshal(selected, &selectedEnvelope); err != nil || len(selectedEnvelope["services"]) != 2 {
 		t.Fatalf("selected envelope = %s, err=%v", selected, err)

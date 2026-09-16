@@ -104,7 +104,7 @@ func TestFilterFieldsEnvelopeDescent(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got, _ := filterFields(json.RawMessage(tc.input), tc.fields)
+			got := filterFields(json.RawMessage(tc.input), tc.fields)
 			var gotV, wantV interface{}
 			if err := json.Unmarshal(got, &gotV); err != nil {
 				t.Fatalf("invalid json output: %v (raw=%s)", err, string(got))
@@ -165,7 +165,7 @@ func TestFilterFieldsEnvelopeDescent_StopsAtDepthBound(t *testing.T) {
 		input.WriteByte('}')
 	}
 
-	got, _ := filterFields(json.RawMessage(input.String()), "id")
+	got := filterFields(json.RawMessage(input.String()), "id")
 	if string(got) != input.String() {
 		t.Fatalf("overly deep envelope was unexpectedly traversed: got %s", got)
 	}
@@ -181,6 +181,7 @@ func TestFilterFieldsEnvelopeDescent_EmptyCollectionsDoNotWarn(t *testing.T) {
 		{"top-level array", `+"`"+`[]`+"`"+`, "id", `+"`"+`[]`+"`"+`},
 		{"list envelope", `+"`"+`{"items":[]}`+"`"+`, "id", `+"`"+`{"items":[]}`+"`"+`},
 		{"known dotted head", `+"`"+`{"events":[],"other":1}`+"`"+`, "events.name", `+"`"+`{"events":[]}`+"`"+`},
+		{"multi-selector empty envelope", `+"`"+`{"items":[],"total_count":0}`+"`"+`, "id,name", `+"`"+`{"items":[],"total_count":0}`+"`"+`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -223,27 +224,20 @@ func TestFilterFieldsEnvelopeDescent_EmptyEnvelopeSelectorWarnings(t *testing.T)
 		{
 			name:           "known prefix and unrelated typo",
 			fields:         "items.id,naem",
-			wantWarnings:   []string{"naem"},
-			forbidWarnings: []string{"items.id"},
+			wantWarnings:   []string{},
+			forbidWarnings: []string{"items.id", "naem"},
 		},
 		{
 			name:         "multiple unrelated selectors",
 			fields:       "naem,missing",
-			wantWarnings: []string{"naem", "missing"},
+			wantWarnings: []string{},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got, warning, err := filterFieldsWithWarning(t, input, tc.fields)
-			if tc.name == "multiple unrelated selectors" {
-				if err == nil {
-					t.Fatal("every requested path missing should return a usage error")
-				}
-				if ExitCode(err) != 2 {
-					t.Fatalf("ExitCode = %d, want 2", ExitCode(err))
-				}
-			} else if err != nil {
-				t.Fatalf("known empty-collection prefix should stay non-fatal: %v", err)
+			if err != nil {
+				t.Fatalf("empty envelope should stay non-fatal: %v", err)
 			}
 			assertJSONEqual(t, got, input)
 			for _, field := range tc.wantWarnings {
@@ -258,6 +252,23 @@ func TestFilterFieldsEnvelopeDescent_EmptyEnvelopeSelectorWarnings(t *testing.T)
 			}
 		})
 	}
+}
+
+func TestFilterFields_EmptyEnvelopeMultiSelectStaysOK(t *testing.T) {
+	input := `+"`"+`{"items":[],"total_count":0}`+"`"+`
+	got, warning, err := filterFieldsWithWarning(t, input, "id,name")
+	if err != nil {
+		t.Fatalf("multi-selector on an empty envelope must stay exit 0: %v", err)
+	}
+	assertJSONEqual(t, got, input)
+	if string(warning) != "" {
+		t.Fatalf("warning = %q, want no warning when matching cannot be determined", warning)
+	}
+}
+
+func TestFilterFields_CompatibilityWrapper(t *testing.T) {
+	got := filterFields(json.RawMessage(`+"`"+`{"id":"a","name":"x"}`+"`"+`), "id")
+	assertJSONEqual(t, got, `+"`"+`{"id":"a"}`+"`"+`)
 }
 
 func TestFilterFields_AllMissNamesEveryPath(t *testing.T) {
@@ -339,7 +350,7 @@ func filterFieldsWithWarning(t *testing.T, input, fields string) (json.RawMessag
 		t.Fatalf("os.Pipe() error: %v", err)
 	}
 	os.Stderr = write
-	got, ferr := filterFields(json.RawMessage(input), fields)
+	got, ferr := filterFieldsChecked(json.RawMessage(input), fields)
 	_ = write.Close()
 	os.Stderr = oldStderr
 	warning, _ := io.ReadAll(read)
@@ -381,5 +392,22 @@ func assertJSONEqual(t *testing.T, got json.RawMessage, want string) {
 }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^(TestFilterFieldsEnvelopeDescent|TestFilterFieldsEnvelopeDescent_UnknownSelector|TestFilterFieldsEnvelopeDescent_EmptyCollectionsDoNotWarn|TestFilterFieldsEnvelopeDescent_PartiallyInvalidSelectorWarns|TestFilterFieldsEnvelopeDescent_EmptyEnvelopeSelectorWarnings|TestFilterFields_AllMissNamesEveryPath|TestFilterFields_HeterogeneousSupersetStaysOK|TestPrintOutputWithFlags_SelectAllMissKeepsJSON|TestPrintOutputWithFlags_SelectMixedMatchOK)$", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^(TestFilterFieldsEnvelopeDescent|TestFilterFieldsEnvelopeDescent_UnknownSelector|TestFilterFieldsEnvelopeDescent_EmptyCollectionsDoNotWarn|TestFilterFieldsEnvelopeDescent_PartiallyInvalidSelectorWarns|TestFilterFieldsEnvelopeDescent_EmptyEnvelopeSelectorWarnings|TestFilterFields_EmptyEnvelopeMultiSelectStaysOK|TestFilterFields_CompatibilityWrapper|TestFilterFields_AllMissNamesEveryPath|TestFilterFields_HeterogeneousSupersetStaysOK|TestPrintOutputWithFlags_SelectAllMissKeepsJSON|TestPrintOutputWithFlags_SelectMixedMatchOK)$", "-count=1")
+}
+
+func TestFilterFieldsCompatibilityWrapper_NovelCallerCompiles(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("select-compat")
+	outputDir := filepath.Join(t.TempDir(), "select-compat-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "novel_select.go"), []byte(`package cli
+
+import "encoding/json"
+
+func projectSelected(data json.RawMessage, fields string) json.RawMessage {
+	return filterFields(data, fields)
+}
+`), 0o644))
+	requireGeneratedCompiles(t, outputDir)
 }

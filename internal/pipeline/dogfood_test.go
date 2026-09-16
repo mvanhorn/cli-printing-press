@@ -50,6 +50,7 @@ func writeHarnessRefusal() {}
 func novelAuthHeader() {}
 func declarePlatformAnalytics() {}
 func resolvePlatformWindow() {}
+func filterFields() {}
 `)
 	writeTestFile(t, filepath.Join(dir, "internal", "cli", "users_list.go"), `package cli
 func usersList() {

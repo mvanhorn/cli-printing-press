@@ -2798,9 +2798,14 @@ func unwrapSingleKeyArray(data json.RawMessage) json.RawMessage {
 // filterFields keeps only the specified fields (comma-separated) from JSON objects/arrays.
 // Supports dotted paths like "events.shortName" to descend into nested structures.
 // Arrays are traversed element-wise: "events.shortName" keeps shortName on each event.
-// A total miss returns a usage error after the caller writes JSON so agents can
-// distinguish typos from empty results; partial misses only warn.
-func filterFields(data json.RawMessage, fields string) (json.RawMessage, error) {
+// This one-value wrapper stays so preserved novel commands keep compiling.
+// Generated output sites use filterFieldsChecked so a total miss can exit non-zero.
+func filterFields(data json.RawMessage, fields string) json.RawMessage {
+	filtered, _ := filterFieldsChecked(data, fields)
+	return filtered
+}
+
+func filterFieldsChecked(data json.RawMessage, fields string) (json.RawMessage, error) {
 	var paths [][]string
 	var requestedPaths []string
 	for _, f := range strings.Split(fields, ",") {
@@ -2823,7 +2828,7 @@ func filterFields(data json.RawMessage, fields string) (json.RawMessage, error) 
 	var unmatched []string
 	for i, path := range paths {
 		_, pathState := filterFieldsRec(data, [][]string{path}, true)
-		pathIndeterminate := pathState.anchoredIndeterminate || (len(paths) == 1 && pathState.fallbackIndeterminate)
+		pathIndeterminate := pathState.anchoredIndeterminate || pathState.fallbackIndeterminate
 		if pathState.matched || pathIndeterminate {
 			continue
 		}
@@ -2840,7 +2845,7 @@ func filterFields(data json.RawMessage, fields string) (json.RawMessage, error) 
 	if !state.matched && !state.anchoredIndeterminate && !state.fallbackIndeterminate {
 		out = data
 	}
-	if len(unmatched) > 0 && len(unmatched) == len(requestedPaths) {
+	if len(unmatched) > 0 && len(unmatched) == len(requestedPaths) && !state.anchoredIndeterminate && !state.fallbackIndeterminate {
 		return out, usageErr(fmt.Errorf("--select matched no fields: %s", strings.Join(unmatched, ", ")))
 	}
 	return out, nil
@@ -3122,7 +3127,7 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 	// still runs.
 	var selectErr error
 	if flags.selectFields != "" {
-		data, selectErr = filterFields(data, flags.selectFields)
+		data, selectErr = filterFieldsChecked(data, flags.selectFields)
 	} else if flags.compact {
 		data = compactFields(data, documentedFields...)
 	}

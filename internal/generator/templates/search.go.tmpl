@@ -308,7 +308,7 @@ func outputSearchResults(cmd *cobra.Command, flags *rootFlags, results []json.Ra
 		var selectErr error
 		outputFlags := *flags
 		if flags.selectFields != "" {
-			data, selectErr = filterFields(data, flags.selectFields)
+			data, selectErr = filterFieldsChecked(data, flags.selectFields)
 			outputFlags.selectFields = ""
 			outputFlags.compact = false
 		} else if flags.compact {
