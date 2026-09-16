@@ -119,7 +119,10 @@ func TestGeneratedHTMLExtractionStillSucceedsOnHTMLDocument(t *testing.T) {
 
 	itemsOut, err := runGeneratedCLI(t, binaryPath, baseEnv, "items", "--json", "--data-source", "live")
 	require.Error(t, err, itemsOut)
+	requireExitCode(t, err, 5)
 	require.Contains(t, itemsOut, "returned HTML instead of JSON")
+	require.NotContains(t, itemsOut, "not authenticated")
+	require.NotContains(t, itemsOut, "Set your API key")
 	require.NotContains(t, itemsOut, `"source": "live"`)
 }
 
