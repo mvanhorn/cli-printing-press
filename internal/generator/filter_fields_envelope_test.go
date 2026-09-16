@@ -27,9 +27,12 @@ func TestFilterFieldsEnvelopeDescent_EmittedHelper(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	testPath := filepath.Join(outputDir, "internal", "cli", "filter_fields_envelope_test.go")
+	requireGeneratedCompiles(t, outputDir)
+
 	require.NoError(t, os.WriteFile(testPath, []byte(`package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -121,7 +124,16 @@ func TestFilterFieldsEnvelopeDescent(t *testing.T) {
 
 func TestFilterFieldsEnvelopeDescent_UnknownSelector(t *testing.T) {
 	input := "{\"items\":[{\"id\":\"a\",\"name\":\"Alpha\"},{\"id\":\"b\",\"name\":\"Beta\"}]}"
-	got, warning := filterFieldsWithWarning(t, input, "missing")
+	got, warning, err := filterFieldsWithWarning(t, input, "missing")
+	if err == nil {
+		t.Fatal("unknown selector should return a usage error")
+	}
+	if ExitCode(err) != 2 {
+		t.Fatalf("ExitCode = %d, want 2", ExitCode(err))
+	}
+	if !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("error = %q, want unmatched path named", err)
+	}
 
 	var gotV, wantV interface{}
 	if err := json.Unmarshal(got, &gotV); err != nil {
@@ -172,7 +184,10 @@ func TestFilterFieldsEnvelopeDescent_EmptyCollectionsDoNotWarn(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, warning := filterFieldsWithWarning(t, tc.input, tc.fields)
+			got, warning, err := filterFieldsWithWarning(t, tc.input, tc.fields)
+			if err != nil {
+				t.Fatalf("empty collection should stay non-fatal: %v", err)
+			}
 			if string(warning) != "" {
 				t.Fatalf("warning = %q, want no warning for an empty collection", warning)
 			}
@@ -183,8 +198,11 @@ func TestFilterFieldsEnvelopeDescent_EmptyCollectionsDoNotWarn(t *testing.T) {
 
 func TestFilterFieldsEnvelopeDescent_PartiallyInvalidSelectorWarns(t *testing.T) {
 	input := `+"`"+`[{"id":"a","name":"Alpha"}]`+"`"+`
-	got, warning := filterFieldsWithWarning(t, input, "id,naem")
+	got, warning, err := filterFieldsWithWarning(t, input, "id,naem")
 
+	if err != nil {
+		t.Fatalf("mixed match should stay non-fatal: %v", err)
+	}
 	assertJSONEqual(t, got, `+"`"+`[{"id":"a"}]`+"`"+`)
 	if !strings.Contains(string(warning), "--select \"naem\" matched no fields") {
 		t.Fatalf("warning = %q, want warning naming the unmatched selector", warning)
@@ -216,7 +234,17 @@ func TestFilterFieldsEnvelopeDescent_EmptyEnvelopeSelectorWarnings(t *testing.T)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, warning := filterFieldsWithWarning(t, input, tc.fields)
+			got, warning, err := filterFieldsWithWarning(t, input, tc.fields)
+			if tc.name == "multiple unrelated selectors" {
+				if err == nil {
+					t.Fatal("every requested path missing should return a usage error")
+				}
+				if ExitCode(err) != 2 {
+					t.Fatalf("ExitCode = %d, want 2", ExitCode(err))
+				}
+			} else if err != nil {
+				t.Fatalf("known empty-collection prefix should stay non-fatal: %v", err)
+			}
 			assertJSONEqual(t, got, input)
 			for _, field := range tc.wantWarnings {
 				if !strings.Contains(string(warning), "--select \""+field+"\" matched no fields") {
@@ -232,7 +260,78 @@ func TestFilterFieldsEnvelopeDescent_EmptyEnvelopeSelectorWarnings(t *testing.T)
 	}
 }
 
-func filterFieldsWithWarning(t *testing.T, input, fields string) (json.RawMessage, []byte) {
+func TestFilterFieldsChecked_AllMissNamesEveryPath(t *testing.T) {
+	input := `+"`"+`{"id":"a","name":"Alpha"}`+"`"+`
+	got, warning, err := filterFieldsWithWarning(t, input, "all,bogus,names")
+	assertJSONEqual(t, got, input)
+	if err == nil {
+		t.Fatal("expected usage error when every --select path misses")
+	}
+	if ExitCode(err) != 2 {
+		t.Fatalf("ExitCode = %d, want 2", ExitCode(err))
+	}
+	for _, field := range []string{"all", "bogus", "names"} {
+		if !strings.Contains(err.Error(), field) {
+			t.Fatalf("error = %q, want it to name %q", err, field)
+		}
+		if !strings.Contains(string(warning), "--select \""+field+"\" matched no fields") {
+			t.Fatalf("warning = %q, want warning naming %q", warning, field)
+		}
+	}
+}
+
+func TestFilterFieldsChecked_HeterogeneousSupersetStaysOK(t *testing.T) {
+	input := `+"`"+`[{"id":"a"},{"id":"b","company":"Acme"}]`+"`"+`
+	got, warning, err := filterFieldsWithWarning(t, input, "id,name,company")
+	if err != nil {
+		t.Fatalf("superset select across heterogeneous rows should stay non-fatal: %v", err)
+	}
+	assertJSONEqual(t, got, `+"`"+`[{"id":"a"},{"company":"Acme","id":"b"}]`+"`"+`)
+	if !strings.Contains(string(warning), "--select \"name\" matched no fields") {
+		t.Fatalf("warning = %q, want unmatched name path", warning)
+	}
+	if strings.Contains(string(warning), "--select \"company\" matched no fields") {
+		t.Fatalf("warning = %q, company present on some rows must not be treated as a miss", warning)
+	}
+}
+
+func TestPrintOutputWithFlags_SelectAllMissKeepsJSON(t *testing.T) {
+	input := json.RawMessage(`+"`"+`{"id":"a","name":"Alpha"}`+"`"+`)
+	stdout, warning, err := printSelected(t, input, "zzz_nonexistent")
+	if err == nil {
+		t.Fatal("expected non-zero-class error for an all-miss --select")
+	}
+	if ExitCode(err) == 0 {
+		t.Fatal("ExitCode = 0, want non-zero")
+	}
+	if !json.Valid(bytes.TrimSpace(stdout)) {
+		t.Fatalf("stdout is not JSON: %q", stdout)
+	}
+	assertJSONEqual(t, json.RawMessage(bytes.TrimSpace(stdout)), string(input))
+	if !strings.Contains(string(warning), "--select \"zzz_nonexistent\" matched no fields") {
+		t.Fatalf("warning = %q, want unmatched path named", warning)
+	}
+	if !strings.Contains(err.Error(), "zzz_nonexistent") {
+		t.Fatalf("error = %q, want unmatched path named", err)
+	}
+}
+
+func TestPrintOutputWithFlags_SelectMixedMatchOK(t *testing.T) {
+	input := json.RawMessage(`+"`"+`{"id":"a","name":"Alpha"}`+"`"+`)
+	stdout, warning, err := printSelected(t, input, "id,nonexistent")
+	if err != nil {
+		t.Fatalf("mixed match should stay exit 0: %v", err)
+	}
+	if !json.Valid(bytes.TrimSpace(stdout)) {
+		t.Fatalf("stdout is not JSON: %q", stdout)
+	}
+	assertJSONEqual(t, json.RawMessage(bytes.TrimSpace(stdout)), `+"`"+`{"id":"a"}`+"`"+`)
+	if !strings.Contains(string(warning), "--select \"nonexistent\" matched no fields") {
+		t.Fatalf("warning = %q, want unmatched path named", warning)
+	}
+}
+
+func filterFieldsWithWarning(t *testing.T, input, fields string) (json.RawMessage, []byte, error) {
 	t.Helper()
 	oldStderr := os.Stderr
 	read, write, err := os.Pipe()
@@ -240,12 +339,29 @@ func filterFieldsWithWarning(t *testing.T, input, fields string) (json.RawMessag
 		t.Fatalf("os.Pipe() error: %v", err)
 	}
 	os.Stderr = write
-	got := filterFields(json.RawMessage(input), fields)
+	got, ferr := filterFieldsChecked(json.RawMessage(input), fields)
 	_ = write.Close()
 	os.Stderr = oldStderr
 	warning, _ := io.ReadAll(read)
 	_ = read.Close()
-	return got, warning
+	return got, warning, ferr
+}
+
+func printSelected(t *testing.T, input json.RawMessage, fields string) ([]byte, []byte, error) {
+	t.Helper()
+	var stdout bytes.Buffer
+	oldStderr := os.Stderr
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() error: %v", err)
+	}
+	os.Stderr = write
+	printErr := printOutputWithFlags(&stdout, input, &rootFlags{asJSON: true, selectFields: fields})
+	_ = write.Close()
+	os.Stderr = oldStderr
+	warning, _ := io.ReadAll(read)
+	_ = read.Close()
+	return stdout.Bytes(), warning, printErr
 }
 
 func assertJSONEqual(t *testing.T, got json.RawMessage, want string) {
@@ -265,5 +381,5 @@ func assertJSONEqual(t *testing.T, got json.RawMessage, want string) {
 }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^(TestFilterFieldsEnvelopeDescent|TestFilterFieldsEnvelopeDescent_UnknownSelector|TestFilterFieldsEnvelopeDescent_EmptyCollectionsDoNotWarn|TestFilterFieldsEnvelopeDescent_PartiallyInvalidSelectorWarns|TestFilterFieldsEnvelopeDescent_EmptyEnvelopeSelectorWarnings)$", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^(TestFilterFieldsEnvelopeDescent|TestFilterFieldsEnvelopeDescent_UnknownSelector|TestFilterFieldsEnvelopeDescent_EmptyCollectionsDoNotWarn|TestFilterFieldsEnvelopeDescent_PartiallyInvalidSelectorWarns|TestFilterFieldsEnvelopeDescent_EmptyEnvelopeSelectorWarnings|TestFilterFieldsChecked_AllMissNamesEveryPath|TestFilterFieldsChecked_HeterogeneousSupersetStaysOK|TestPrintOutputWithFlags_SelectAllMissKeepsJSON|TestPrintOutputWithFlags_SelectMixedMatchOK)$", "-count=1")
 }
