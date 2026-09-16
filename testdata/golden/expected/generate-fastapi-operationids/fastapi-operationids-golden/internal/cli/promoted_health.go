@@ -54,7 +54,7 @@ func newHealthPromotedCmd(flags *rootFlags) *cobra.Command {
 				var selectErr error
 				filtered := data
 				if flags.selectFields != "" {
-					filtered, selectErr = filterFields(filtered, flags.selectFields)
+					filtered, selectErr = filterFieldsChecked(filtered, flags.selectFields)
 				} else if flags.compact {
 					filtered = compactFields(filtered, nil)
 				}
