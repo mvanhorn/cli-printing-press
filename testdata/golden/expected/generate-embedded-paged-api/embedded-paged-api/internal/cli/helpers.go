@@ -953,6 +953,48 @@ func paginatedGetWithResponsePath(ctx context.Context, c interface {
 	return applyResponsePath(data, responsePath), nil
 }
 
+// retainCLIQueryParams drops stringified unset flags ("0"/"false") so they
+// do not spam the query string, while keeping values the operator set
+// (cobra Flag.Changed) and offset=0 (a legitimate first page). Keys with
+// no flag mapping are positional/caller-provided and stay explicit.
+func retainCLIQueryParams(cmd *cobra.Command, params map[string]string, flagNamesByWire map[string][]string, cursorParam, paginationType string) map[string]string {
+	explicit := map[string]struct{}{}
+	for wire := range params {
+		names, tracked := flagNamesByWire[wire]
+		if !tracked {
+			explicit[wire] = struct{}{}
+			continue
+		}
+		if cmd == nil {
+			continue
+		}
+		for _, name := range names {
+			if cmd.Flags().Changed(name) {
+				explicit[wire] = struct{}{}
+				break
+			}
+		}
+	}
+	return retainExplicitQueryParams(params, explicit, cursorParam, paginationType)
+}
+
+func retainExplicitQueryParams(params map[string]string, explicit map[string]struct{}, cursorParam, paginationType string) map[string]string {
+	clean := map[string]string{}
+	for k, v := range params {
+		if v == "" {
+			continue
+		}
+		if _, ok := explicit[k]; ok {
+			clean[k] = v
+			continue
+		}
+		if (k == cursorParam && paginationType == "offset") || (v != "0" && v != "false") {
+			clean[k] = v
+		}
+	}
+	return clean
+}
+
 // paginatedGet fetches pages and concatenates array results. The headers
 // argument carries per-endpoint required headers (e.g. cal-api-version) that
 // must be sent on every page request, including the first; pass nil when the
@@ -960,16 +1002,21 @@ func paginatedGetWithResponsePath(ctx context.Context, c interface {
 func paginatedGet(ctx context.Context, c interface {
 	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
 }, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam string, defaultPageSize int, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
-	// The cursor param is exempt from the "0"/"false" strip only for offset
-	// pagination, where offset=0 is a legitimate first page. Under id-cursor
-	// pagination 0 is not a real record id: APIs answer it with an empty page,
-	// so an unset cursor flag would silently empty every list command.
+	// Generated commands run retainCLIQueryParams first so unset "0"/"false"
+	// never reach this loop. Values that remain — including operator-set
+	// false/0 — go on the wire. Empty strings are still dropped. The offset
+	// cursor is exempt so offset=0 is a legitimate first page. Under
+	// id-cursor pagination 0 is not a real record id: APIs answer it with
+	// an empty page, so cursor=0 must not survive as an unset flag.
 	clean := map[string]string{}
 	for k, v := range params {
 		if v == "" {
 			continue
 		}
-		if (k == cursorParam && paginationType == "offset") || (v != "0" && v != "false") {
+		if k == cursorParam && paginationType != "offset" && v == "0" {
+			continue
+		}
+		if (k == cursorParam && paginationType == "offset") || v != "" {
 			clean[k] = v
 		}
 	}

@@ -62,11 +62,11 @@ func TestGenerateBinaryPaginatedPromotedThreadsHeader(t *testing.T) {
 		"binary paginated promoted must declare headerOverrides")
 	assert.Contains(t, endpointSrc, `"X-Printing-Press-Binary-Response": "true",`,
 		"binary paginated promoted must include the binary sentinel")
-	assert.Contains(t, endpointSrc, `paginatedGetWithResponsePath(cmd.Context(), c, path, map[string]string{`,
+	assert.Contains(t, endpointSrc, `paginatedGetWithResponsePath(cmd.Context(), c, path, retainCLIQueryParams(cmd, map[string]string{`,
 		"non-HasStore pagination must use paginatedGetWithResponsePath")
 	assert.NotContains(t, endpointSrc, `}, nil, flagAll,`,
 		"paginated binary endpoint must pass headerOverrides, not nil")
-	assert.Contains(t, endpointSrc, `}, headerOverrides, flagAll && !flags.dryRun,`,
+	assert.Contains(t, endpointSrc, `), headerOverrides, flagAll && !flags.dryRun,`,
 		"paginated binary endpoint must thread headerOverrides into paginatedGetWithResponsePath")
 	assert.Contains(t, endpointSrc, `--all is not supported for live binary/text responses`,
 		"storeless paginated binary --all must reject before JSON aggregation")

@@ -8197,8 +8197,11 @@ func TestPaginatedGetExemptsCursorParamFromZeroStripping(t *testing.T) {
 	require.NoError(t, err, "template must exist: %s", path)
 	body := string(data)
 
-	cleanStart := strings.Index(body, "clean := map[string]string{}")
-	require.GreaterOrEqual(t, cleanStart, 0, "paginatedGet must declare a clean map")
+	fnStart := strings.Index(body, "func paginatedGet(")
+	require.GreaterOrEqual(t, fnStart, 0, "paginatedGet must exist")
+	cleanRel := strings.Index(body[fnStart:], "clean := map[string]string{}")
+	require.GreaterOrEqual(t, cleanRel, 0, "paginatedGet must declare a clean map")
+	cleanStart := fnStart + cleanRel
 	loopEnd := strings.Index(body[cleanStart:], "if !fetchAll")
 	require.GreaterOrEqual(t, loopEnd, 0, "expected fetchAll branch after clean loop")
 	cleanBlock := body[cleanStart : cleanStart+loopEnd]
@@ -8207,6 +8210,8 @@ func TestPaginatedGetExemptsCursorParamFromZeroStripping(t *testing.T) {
 		"paginatedGet's clean loop must reference cursorParam so the cursor key is exempt from zero-stripping")
 	assert.NotContains(t, cleanBlock, `if v != "" && v != "0" && v != "false"`,
 		`the unconditional v != "" && v != "0" && v != "false" filter incorrectly drops cursor="0" for offset-paginated APIs`)
+	assert.NotContains(t, cleanBlock, `v != "0" && v != "false"`,
+		"paginatedGet must not drop operator-set false/0 by inspecting the stringified value alone")
 }
 
 // The exemption above must stay scoped to offset pagination. Under id-cursor
@@ -8242,8 +8247,11 @@ func TestPaginatedGetScopesCursorZeroExemptionToOffsetPagination(t *testing.T) {
 	require.NoError(t, err, "generated helper must exist: %s", path)
 	body := string(data)
 
-	cleanStart := strings.Index(body, "clean := map[string]string{}")
-	require.GreaterOrEqual(t, cleanStart, 0, "paginatedGet must declare a clean map")
+	fnStart := strings.Index(body, "func paginatedGet(")
+	require.GreaterOrEqual(t, fnStart, 0, "paginatedGet must exist")
+	cleanRel := strings.Index(body[fnStart:], "clean := map[string]string{}")
+	require.GreaterOrEqual(t, cleanRel, 0, "paginatedGet must declare a clean map")
+	cleanStart := fnStart + cleanRel
 	loopEnd := strings.Index(body[cleanStart:], "if !fetchAll")
 	require.GreaterOrEqual(t, loopEnd, 0, "expected fetchAll branch after clean loop")
 	cleanBlock := body[cleanStart : cleanStart+loopEnd]

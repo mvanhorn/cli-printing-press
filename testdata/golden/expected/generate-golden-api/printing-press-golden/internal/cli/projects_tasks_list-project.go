@@ -67,11 +67,11 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 				headerOverrides["X-Api-Version"] = formatCLIParamValue(flagXApiVersion)
 			}
 
-			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "live", "tasks", path, map[string]string{
+			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "live", "tasks", path, retainCLIQueryParams(cmd, map[string]string{
 				"priority": formatCLIParamValue(flagPriority),
 				"limit":    formatCLIParamValue(flagLimit),
 				"cursor":   formatCLIParamValue(flagCursor),
-			}, headerOverrides, flagAll, "cursor", "cursor", "limit", 50, "", "", "", cmd.ErrOrStderr())
+			}, map[string][]string{"priority": {"priority"}, "limit": {"limit"}, "cursor": {"cursor"}}, "cursor", "cursor"), headerOverrides, flagAll, "cursor", "cursor", "limit", 50, "", "", "", cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(cmd.OutOrStdout(), err, flags)
 			}
