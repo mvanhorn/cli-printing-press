@@ -310,7 +310,8 @@ func TestSelectFieldsProjectsWrappedSidecarArrays(t *testing.T) {
 		"results": [{"id":"evt-1","name":"Launch","description":"verbose"}]
 	}`+"`"+`)
 
-	got := decodeObject(t, filterFields(input, "id"))
+	selected := filterFields(input, "id")
+	got := decodeObject(t, selected)
 	warnings := got["warnings"].([]any)
 	warning := warnings[0].(map[string]any)
 	if warning["code"] != "W1" || warning["message"] != "rate limited" {
@@ -338,7 +339,8 @@ func TestSelectFieldsProjectsHALEmbeddedArrays(t *testing.T) {
 		"_links": {"next": {"href": "/events?cursor=next"}}
 	}`+"`"+`)
 
-	got := decodeObject(t, filterFields(input, "id,name"))
+	selected := filterFields(input, "id,name")
+	got := decodeObject(t, selected)
 	embedded := got["_embedded"].(map[string]any)
 	events := embedded["events"].([]any)
 	first := events[0].(map[string]any)

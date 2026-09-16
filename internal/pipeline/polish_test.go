@@ -233,6 +233,7 @@ func writeHarnessRefusal() {}
 func novelAuthHeader() {}
 func declarePlatformAnalytics() {}
 func resolvePlatformWindow() {}
+func filterFields() {}
 func pathParamSegmentValue() {}
 func replaceDependentPathParam() {}
 func replaceURLIDPathParam() {}

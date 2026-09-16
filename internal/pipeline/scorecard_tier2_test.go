@@ -273,7 +273,7 @@ func runMessages() {
 		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
 package cli
 
-func filterFields() {}
+func unusedSelectHelper() {}
 
 func outputCSV() {}
 
@@ -282,9 +282,11 @@ func boundCtx() {}
 func writeHarnessRefusal() {}
 
 func novelAuthHeader() {}
+
+func filterFields() {}
 `)
 
-		// 2 dead flags (csvOutput, stdinInput), 2 dead functions (filterFields, outputCSV)
+		// 2 dead flags (csvOutput, stdinInput), 2 dead functions (unusedSelectHelper, outputCSV)
 		assert.Equal(t, 1, scoreDeadCode(dir))
 	})
 
