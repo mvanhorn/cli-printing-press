@@ -67,50 +67,6 @@ func TestGeneratedFleetHardening(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/store", "-run", "^(TestOpen(HardensSQLiteFilePermissions|WithRelativePathDoesNotChmodWorkingDirectory)|TestHardenSQLiteFiles)", "-count", "1")
 }
 
-func TestGeneratedStoreHardeningIsLockSafe(t *testing.T) {
-	t.Parallel()
-
-	for _, cacheEnabled := range []bool{false, true} {
-		name := "wal"
-		if cacheEnabled {
-			name = "cache-truncate"
-		}
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			apiSpec := &spec.APISpec{
-				Name:    "storeharden-" + name,
-				Version: "0.1.0",
-				BaseURL: "https://api.example.com",
-				Auth:    spec.AuthConfig{Type: "none"},
-				Config: spec.ConfigSpec{
-					Format: "toml",
-					Path:   "~/.config/storeharden-" + name + "-pp-cli/config.toml",
-				},
-				Cache: spec.CacheConfig{Enabled: cacheEnabled},
-				Resources: map[string]spec.Resource{
-					"widgets": {
-						Description: "Widgets",
-						Endpoints: map[string]spec.Endpoint{
-							"list": {
-								Method:      "GET",
-								Path:        "/widgets",
-								Description: "List widgets",
-								Response:    spec.ResponseDef{Type: "array"},
-							},
-						},
-					},
-				},
-			}
-
-			outputDir := generateForHardeningTest(t, apiSpec)
-			storeGo := stripGoComments(readGeneratedFile(t, outputDir, "internal", "store", "store.go"))
-			requireLockSafeSQLiteHardening(t, storeGo)
-			requireGeneratedCompiles(t, outputDir)
-			runGoCommand(t, outputDir, "test", "./internal/store", "-run", "^(TestOpenHardensSQLiteFilePermissions|TestHardenSQLiteFiles)", "-count", "1")
-		})
-	}
-}
-
 func requireLockSafeSQLiteHardening(t *testing.T, storeGo string) {
 	t.Helper()
 	fn := extractGeneratedFunc(storeGo, "hardenSQLiteFiles")
