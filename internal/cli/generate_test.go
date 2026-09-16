@@ -1898,7 +1898,8 @@ resources:
 
 	gomod, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))
 	require.NoError(t, err)
-	assert.Contains(t, string(gomod), "github.com/enetx/surf")
+	assert.Contains(t, string(gomod), "github.com/refraction-networking/utls")
+	assert.NotContains(t, string(gomod), "github.com/enetx/")
 
 	authGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
 	require.NoError(t, err)
@@ -1913,12 +1914,16 @@ resources:
 	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
 	assert.NotContains(t, string(clientGo), `req.Header.Set("User-Agent"`)
-	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
-	// HAR distribution declares H/2 majority -> ForceHTTP2 is emitted and
-	// ForceHTTP3 is not. With an empty distribution the bare browser-chrome
-	// enum would emit neither; the fixture above pins the HAR-driven path.
-	assert.Contains(t, string(clientGo), "ForceHTTP2()")
-	assert.NotContains(t, string(clientGo), "ForceHTTP3()")
+	assert.Contains(t, string(clientGo), "return chromeClient(timeout, jar, skipTLSVerify)")
+	assert.NotContains(t, string(clientGo), "github.com/enetx/")
+	// HAR distribution declares H/2 majority -> the ClientHello offers only
+	// h2 and no HTTP/3 transport is emitted. With an empty distribution the
+	// bare browser-chrome enum would also offer http/1.1; the fixture above
+	// pins the HAR-driven path.
+	chromeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "chrome.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(chromeGo), `chromeALPN = []string{"h2"}`)
+	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "client", "chrome_h3.go"))
 	assert.NotContains(t, string(clientGo), "runBrowserUseFetch")
 	assert.NotContains(t, string(clientGo), "runAgentBrowserFetch")
 	assert.NotContains(t, string(clientGo), "browser runtime required")
@@ -1995,10 +2000,13 @@ resources:
 
 	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
-	// HAR distribution declares H/2 majority -> ForceHTTP2 emits.
-	assert.Contains(t, string(clientGo), "ForceHTTP2()")
-	assert.NotContains(t, string(clientGo), "ForceHTTP3()")
+	assert.Contains(t, string(clientGo), "return chromeClient(timeout, jar, skipTLSVerify)")
+	assert.NotContains(t, string(clientGo), "github.com/enetx/")
+	// HAR distribution declares H/2 majority -> the ClientHello offers only h2.
+	chromeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "chrome.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(chromeGo), `chromeALPN = []string{"h2"}`)
+	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "client", "chrome_h3.go"))
 	assert.NotContains(t, string(clientGo), "runBrowserUseFetch")
 	assert.NotContains(t, string(clientGo), "runAgentBrowserFetch")
 
@@ -4434,7 +4442,8 @@ resources:
 
 	gomod, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))
 	require.NoError(t, err)
-	assert.Contains(t, string(gomod), "github.com/enetx/surf")
+	assert.Contains(t, string(gomod), "github.com/refraction-networking/utls")
+	assert.NotContains(t, string(gomod), "github.com/enetx/")
 }
 
 func TestGenerateCmdAllowsSniffedSpecWithoutTrafficAnalysis(t *testing.T) {
@@ -4516,7 +4525,8 @@ resources:
 
 	gomod, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))
 	require.NoError(t, err)
-	assert.NotContains(t, string(gomod), "github.com/enetx/surf")
+	assert.NotContains(t, string(gomod), "github.com/enetx/")
+	assert.NotContains(t, string(gomod), "github.com/refraction-networking/utls")
 }
 
 func TestGenerateCmdRejectsPageContextTrafficAnalysisEvenWithTransportOverride(t *testing.T) {
@@ -4614,7 +4624,8 @@ resources:
 	assert.FileExists(t, filepath.Join(outputDir, "README.md"))
 	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
+	assert.Contains(t, string(clientGo), "return chromeClient(timeout, jar, skipTLSVerify)")
+	assert.NotContains(t, string(clientGo), "github.com/enetx/")
 }
 
 func TestGenerateCmdRejectsConflictingReachabilityOverrideTransport(t *testing.T) {

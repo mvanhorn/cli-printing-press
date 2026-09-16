@@ -2904,23 +2904,94 @@ func TestGenerateBrowserChromeTransport(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(gomod), "go "+currentGoDirectiveVersion()+"\n")
 	assert.Contains(t, string(gomod), "toolchain "+currentGoToolchainVersion())
-	assert.Contains(t, string(gomod), "github.com/enetx/surf")
-	assert.Contains(t, string(gomod), "github.com/enetx/http "+safeEnetxHTTPVersion)
+	assert.Contains(t, string(gomod), "github.com/refraction-networking/utls "+chromeUTLSVersion)
+	assert.NotContains(t, string(gomod), "github.com/enetx/")
+	assert.NotContains(t, string(gomod), "github.com/quic-go/quic-go")
 
-	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
-	require.NoError(t, err)
-	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
-	assert.Contains(t, string(clientGo), "Impersonate()")
-	assert.Contains(t, string(clientGo), "Chrome()")
-	assert.Contains(t, string(clientGo), "ForceHTTP2()")
-	assert.NotContains(t, string(clientGo), "ForceHTTP3()")
+	clientGo := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	assert.NotContains(t, clientGo, "github.com/enetx/")
+	assert.Contains(t, clientGo, "return chromeClient(timeout, jar, skipTLSVerify)")
+
+	chromeGo := readGeneratedFile(t, outputDir, "internal", "client", "chrome.go")
+	assert.Contains(t, chromeGo, `chromeALPN = []string{"h2"}`)
+	assert.NotContains(t, chromeGo, `"http/1.1"`)
+	assert.Contains(t, chromeGo, "chromeHeaderTripper{")
+	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "client", "chrome_h3.go"))
+
+	profileGo := readGeneratedFile(t, outputDir, "internal", "client", "chrome_profile.go")
+	assert.Contains(t, profileGo, "utls.HelloChrome_Auto")
+	assert.Contains(t, profileGo, "Chrome/145.0.0.0")
 
 	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
 	require.NoError(t, err)
 	assert.Contains(t, string(readme), "Chrome-compatible HTTP transport")
+	assert.NotContains(t, string(readme), "Surf")
 
 	requireGeneratedCompiles(t, outputDir)
 	requireGeneratedCompilesGo127(t, outputDir)
+}
+
+// chromeUTLSVersion pins the tagged uTLS release printed chrome-family CLIs
+// require. HelloChrome_Auto there matches the pseudo-version the Printing
+// Press binary itself resolves, so the tag is preferred.
+const chromeUTLSVersion = "v1.8.2"
+
+// TestPrintedChromeModulesBanEnetx proves the chrome-family prints carry no
+// Surf-family module anywhere in their emitted source, go.mod, or resolved
+// dependency graph, and that quic-go enters the graph only for HTTP/3.
+func TestPrintedChromeModulesBanEnetx(t *testing.T) {
+	t.Parallel()
+
+	banned := []string{"github.com/enetx/surf", "github.com/enetx/g", "github.com/enetx/http", "github.com/enetx/http2", "github.com/enetx/http3"}
+	for _, tc := range []struct {
+		name      string
+		transport string
+		wantQUIC  bool
+	}{
+		{name: "h2", transport: spec.HTTPTransportBrowserChromeH2},
+		{name: "h3", transport: spec.HTTPTransportBrowserChromeH3, wantQUIC: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			apiSpec := minimalSpec("banenetx" + tc.name)
+			apiSpec.BaseURL = "https://www.example.com"
+			apiSpec.Auth = spec.AuthConfig{Type: "none"}
+			apiSpec.HTTPTransport = tc.transport
+			outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			require.NoError(t, filepath.WalkDir(outputDir, func(path string, d os.DirEntry, err error) error {
+				if err != nil || d.IsDir() {
+					return err
+				}
+				if filepath.Ext(path) != ".go" && filepath.Base(path) != "go.mod" {
+					return nil
+				}
+				content, readErr := os.ReadFile(path)
+				if readErr != nil {
+					return readErr
+				}
+				for _, mod := range banned {
+					assert.NotContains(t, string(content), mod, path)
+				}
+				return nil
+			}))
+
+			gomod := readGeneratedFile(t, outputDir, "go.mod")
+			assert.Equal(t, tc.wantQUIC, strings.Contains(gomod, "github.com/quic-go/quic-go v0.60.0\n"), gomod)
+
+			if testing.Short() {
+				t.Skip("dependency graph resolution runs in the full generated-test CI lane")
+			}
+			deps, err := runGoCommandOutput(t, outputDir, "list", "-mod=mod", "-deps", "./...")
+			require.NoError(t, err, deps)
+			for _, mod := range banned {
+				assert.NotContains(t, deps, mod)
+			}
+			assert.Equal(t, tc.wantQUIC, strings.Contains(deps, "github.com/quic-go/quic-go"))
+			assert.Contains(t, deps, "github.com/refraction-networking/utls")
+		})
+	}
 }
 
 func TestGenerateBrowserChromeH3Transport(t *testing.T) {
@@ -2954,36 +3025,28 @@ func TestGenerateBrowserChromeH3Transport(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
 
-	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
-	require.NoError(t, err)
-	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
-	assert.Contains(t, string(clientGo), "ForceHTTP3()")
-	// surf's Chrome impersonation manages the Accept header alongside
-	// User-Agent on the H3 transport too; the generator must not emit a
-	// competing default.
-	assert.NotContains(t, string(clientGo), `req.Header.Set("Accept",`)
+	clientGo := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	assert.NotContains(t, clientGo, "github.com/enetx/")
+	assert.Contains(t, clientGo, "return chromeClient(timeout, jar, skipTLSVerify)")
+	// The Chrome header overlay owns User-Agent and friends on the H3 path
+	// too; the generator must not emit a competing request-path default.
+	assert.NotContains(t, clientGo, `req.Header.Set("Accept",`)
 
-	// ResponseHeaderTimeout override must emit on the H3 path too —
-	// surf's per-stage timeout (10s default) caps any browser-impersonate
-	// transport regardless of the H2/H3 variant. Without these asserts a
-	// future refactor could silently strip the override from the H3
-	// branch and slow-streaming H3 endpoints would fail at surf's default
-	// with no test catching it. Mirrors the assertions in
-	// TestBrowserTransport_OverridesResponseHeaderTimeout (which exercises
-	// the H2 default).
-	assert.Contains(t, string(clientGo), `enetxhttp "github.com/enetx/http"`)
-	assert.Contains(t, string(clientGo), "surfClient.GetTransport().(*enetxhttp.Transport)")
-	assert.Contains(t, string(clientGo), "t.ResponseHeaderTimeout = timeout")
+	chromeH3 := readGeneratedFile(t, outputDir, "internal", "client", "chrome_h3.go")
+	assert.Contains(t, chromeH3, "http3.Transport{")
+
+	gomod := readGeneratedFile(t, outputDir, "go.mod")
+	assert.Contains(t, gomod, "github.com/quic-go/quic-go v0.60.0\n")
+	assert.NotContains(t, gomod, "github.com/enetx/")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/client")
 }
 
 // TestGenerateBrowserChromeH2Transport pins the explicit
-// browser-chrome-h2 enum: the client emits ForceHTTP2() and no
-// ForceHTTP3(). Separate from the bare browser-chrome case (no version
-// force) so a future refactor cannot collapse the two without a failing
-// test.
+// browser-chrome-h2 enum: the ClientHello offers only h2 and no HTTP/3
+// file is emitted. Separate from the bare browser-chrome case so a
+// future refactor cannot collapse the two without a failing test.
 func TestGenerateBrowserChromeH2Transport(t *testing.T) {
 	t.Parallel()
 
@@ -3010,17 +3073,17 @@ func TestGenerateBrowserChromeH2Transport(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "websurfaceh2-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
-	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
-	require.NoError(t, err)
-	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
-	assert.Contains(t, string(clientGo), "ForceHTTP2()")
-	assert.NotContains(t, string(clientGo), "ForceHTTP3()")
+	chromeGo := readGeneratedFile(t, outputDir, "internal", "client", "chrome.go")
+	assert.Contains(t, chromeGo, `chromeALPN = []string{"h2"}`)
+	assert.NotContains(t, chromeGo, `"http/1.1"`)
+	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "client", "chrome_h3.go"))
+	assert.NotContains(t, readGeneratedFile(t, outputDir, "go.mod"), "github.com/quic-go/quic-go")
 }
 
 // TestGenerateBrowserChromeNoVersionForce pins the bare browser-chrome
-// enum (no -h2 / -h3 suffix): the surf client is used but no
-// ForceHTTPN() call is emitted, so Chrome's negotiated version wins.
-// Operators who want an explicit H/2 force must set browser-chrome-h2.
+// enum (no -h2 / -h3 suffix): the ClientHello offers h2 and http/1.1 so
+// the server's negotiated version wins. Operators who want an explicit
+// H/2 force must set browser-chrome-h2.
 func TestGenerateBrowserChromeNoVersionForce(t *testing.T) {
 	t.Parallel()
 
@@ -3047,11 +3110,12 @@ func TestGenerateBrowserChromeNoVersionForce(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "websurfacenoforce-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
-	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
-	require.NoError(t, err)
-	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
-	assert.NotContains(t, string(clientGo), "ForceHTTP2()")
-	assert.NotContains(t, string(clientGo), "ForceHTTP3()")
+	chromeGo := readGeneratedFile(t, outputDir, "internal", "client", "chrome.go")
+	assert.Contains(t, chromeGo, `chromeALPN = []string{"h2", "http/1.1"}`)
+	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "client", "chrome_h3.go"))
+	assert.NotContains(t, readGeneratedFile(t, outputDir, "go.mod"), "github.com/quic-go/quic-go")
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/client")
 }
 
 func TestGenerateBrowserHTTPTransportDisablesHTTP2(t *testing.T) {
@@ -3089,11 +3153,13 @@ func TestGenerateBrowserHTTPTransportDisablesHTTP2(t *testing.T) {
 	assert.Contains(t, clientGo, `transport := http.DefaultTransport.(*http.Transport).Clone()`)
 	assert.Contains(t, clientGo, `transport.TLSClientConfig.NextProtos = []string{"http/1.1"}`)
 	assert.Contains(t, clientGo, `transport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)`)
-	assert.NotContains(t, clientGo, `"github.com/enetx/surf"`)
-	assert.NotContains(t, clientGo, `Impersonate()`)
+	assert.NotContains(t, clientGo, "github.com/enetx/")
+	assert.NotContains(t, clientGo, "chromeClient(")
+	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "client", "chrome.go"))
 
 	gomod := readGeneratedFile(t, outputDir, "go.mod")
-	assert.NotContains(t, gomod, "github.com/enetx/surf")
+	assert.NotContains(t, gomod, "github.com/enetx/")
+	assert.NotContains(t, gomod, "github.com/refraction-networking/utls")
 	requireGeneratedCompiles(t, outputDir)
 
 	runtimeTest := `package client
@@ -3336,13 +3402,12 @@ func TestGenerateCookieHTMLDefaultsBrowserChromeTransport(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	gomod := readGeneratedFile(t, outputDir, "go.mod")
-	assert.Contains(t, gomod, "github.com/enetx/surf")
-	assert.Contains(t, gomod, "github.com/enetx/http "+safeEnetxHTTPVersion)
+	assert.Contains(t, gomod, "github.com/refraction-networking/utls")
+	assert.NotContains(t, gomod, "github.com/enetx/")
 
+	chromeGo := readGeneratedFile(t, outputDir, "internal", "client", "chrome.go")
+	assert.Contains(t, chromeGo, "chromeHeaderTripper{")
 	clientGo := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
-	assert.Contains(t, clientGo, `"github.com/enetx/surf"`)
-	assert.Contains(t, clientGo, "Impersonate()")
-	assert.Contains(t, clientGo, "Chrome()")
 	assert.NotContains(t, clientGo, `req.Header.Set("User-Agent", "cookiehtml-pp-cli/0.1.0")`)
 
 	requireGeneratedCompiles(t, outputDir)
@@ -4246,11 +4311,13 @@ func TestGenerateStandardTransportForOfficialAPI(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(gomod), "go "+currentGoDirectiveVersion()+"\n")
 	assert.Contains(t, string(gomod), "toolchain "+currentGoToolchainVersion())
-	assert.NotContains(t, string(gomod), "github.com/enetx/surf")
+	assert.NotContains(t, string(gomod), "github.com/enetx/")
+	assert.NotContains(t, string(gomod), "github.com/refraction-networking/utls")
 
-	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
-	require.NoError(t, err)
-	assert.NotContains(t, string(clientGo), `"github.com/enetx/surf"`)
+	clientGo := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	assert.NotContains(t, clientGo, "github.com/enetx/")
+	assert.NotContains(t, clientGo, "chromeClient(")
+	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "client", "chrome.go"))
 }
 
 func TestGenerateWithOwnerField(t *testing.T) {

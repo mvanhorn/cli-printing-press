@@ -53,10 +53,9 @@ const (
 //
 // Use this from any doctor or health-check command that does
 // per-source reachability fan-out, with the same client that the real
-// fetch path uses (typically a Surf-Chrome client built via
-// surf.NewClient().Builder().Impersonate().Chrome().Build()). Probe
-// drift between the doctor probe and the fetch path is the bug class
-// this helper exists to prevent.
+// fetch path uses (typically the Chrome-compatible client that
+// client.New builds). Probe drift between the doctor probe and the
+// fetch path is the bug class this helper exists to prevent.
 //
 // Returned values:
 //   - status is one of ReachabilityReachable, ReachabilityBlocked, or

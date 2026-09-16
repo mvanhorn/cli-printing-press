@@ -304,11 +304,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			//
 			// The doctor uses the same client every other command uses --
 			// flags.newClient() returns a *client.Client wrapping whatever
-			// transport the spec declared (Surf for browser-chrome, stdlib
-			// for standard). A separate stdlib http.Client would silently
-			// bypass that choice and report false negatives against
-			// Cloudflare-fronted, Akamai-fronted, or otherwise bot-detected
-			// sites. By going through flags.newClient(), the doctor's
+			// transport the spec declared (the Chrome-compatible transport
+			// for browser-chrome, stdlib for standard). A separate stdlib
+			// http.Client would silently bypass that choice and report
+			// false negatives against Cloudflare-fronted, Akamai-fronted,
+			// or otherwise bot-detected sites. By going through
+			// flags.newClient(), the doctor's
 			// reachability verdict matches what real commands experience.
 			if cfg != nil && cfg.BaseURL != "" {
 				c, clientErr := flags.newClient()

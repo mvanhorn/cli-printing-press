@@ -57,9 +57,9 @@ func TestEnsureSafeEnetxHTTP(t *testing.T) {
 	})
 }
 
-func TestSafeEnetxHTTPVersionMatchesGoModTemplate(t *testing.T) {
+func TestGoModTemplateDoesNotPinEnetxHTTP(t *testing.T) {
 	tmpl, err := os.ReadFile(filepath.Join("templates", "go.mod.tmpl"))
 	require.NoError(t, err)
-	assert.Contains(t, string(tmpl), "github.com/enetx/http "+safeEnetxHTTPVersion,
-		"templates/go.mod.tmpl pin must stay in sync with safeEnetxHTTPVersion")
+	assert.NotContains(t, string(tmpl), "github.com/enetx/",
+		"printed modules must not require the enetx family; ensureSafeEnetxHTTP remains a no-op bump if a reprint still carries it")
 }

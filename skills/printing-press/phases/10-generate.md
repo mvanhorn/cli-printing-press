@@ -483,7 +483,7 @@ resources:
 
 For specs with `auth.type: cookie` or `auth.type: composed` and any
 `response_format: html` endpoint, treat browser fingerprint compatibility as
-the safe default. The generator emits Surf-backed Chrome transport for that
+the safe default. The generator emits Chrome-compatible transport for that
 shape unless the spec explicitly says `http_transport: standard`.
 
 Before setting an explicit standard opt-out, run

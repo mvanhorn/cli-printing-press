@@ -2846,6 +2846,14 @@ func (g *Generator) renderSingleFiles() error {
 		"NOTICE.tmpl":                              "NOTICE",
 	}
 	maps.Copy(singleFiles, cobratreeWalkerTemplateFiles())
+	if g.Spec.UsesBrowserHTTPTransport() {
+		singleFiles["chrome.go.tmpl"] = filepath.Join("internal", "client", "chrome.go")
+		singleFiles["chrome_profile.go.tmpl"] = filepath.Join("internal", "client", "chrome_profile.go")
+		singleFiles["chrome_test.go.tmpl"] = filepath.Join("internal", "client", "chrome_test.go")
+		if g.Spec.UsesBrowserHTTP3Transport() {
+			singleFiles["chrome_h3.go.tmpl"] = filepath.Join("internal", "client", "chrome_h3.go")
+		}
+	}
 
 	for tmplName, outPath := range singleFiles {
 		if tmplName == "types.go.tmpl" && g.shouldPreserveExistingTypesFile(outPath) {
@@ -2885,17 +2893,8 @@ func (g *Generator) renderSingleFiles() error {
 				APISpec:             g.Spec,
 				PathKindEnvSuffixes: naming.PathKindEnvSuffixes(),
 			}
-		case "client.go.tmpl":
-			data = &clientTemplateData{
-				APISpec:                    g.Spec,
-				IsGraphQL:                  isGraphQLSpec(g.Spec),
-				HasGraphQLPersistedQueries: g.hasTrafficAnalysisHint("graphql_persisted_query"),
-				HasMultipartRequest:        hasMultipartRequest(g.Spec),
-				HasFormRequest:             hasFormRequest(g.Spec),
-				HasRawRequest:              hasRawRequest(g.Spec),
-				UseChromeImpersonation:     g.shouldUseChromeImpersonation(),
-				HasAuthCommand:             g.shouldEmitAuth(),
-			}
+		case "client.go.tmpl", "chrome.go.tmpl", "chrome_profile.go.tmpl", "chrome_h3.go.tmpl", "chrome_test.go.tmpl":
+			data = g.clientTemplateData()
 		case "config.go.tmpl":
 			data = &configTemplateData{
 				APISpec:                     g.Spec,
@@ -2914,6 +2913,22 @@ func (g *Generator) renderSingleFiles() error {
 	}
 
 	return nil
+}
+
+// clientTemplateData feeds client.go, the chrome transport files, and the
+// session-handshake manager so every template that decides whether the
+// request path owns User-Agent reads one impersonation verdict.
+func (g *Generator) clientTemplateData() *clientTemplateData {
+	return &clientTemplateData{
+		APISpec:                    g.Spec,
+		IsGraphQL:                  isGraphQLSpec(g.Spec),
+		HasGraphQLPersistedQueries: g.hasTrafficAnalysisHint("graphql_persisted_query"),
+		HasMultipartRequest:        hasMultipartRequest(g.Spec),
+		HasFormRequest:             hasFormRequest(g.Spec),
+		HasRawRequest:              hasRawRequest(g.Spec),
+		UseChromeImpersonation:     g.shouldUseChromeImpersonation(),
+		HasAuthCommand:             g.shouldEmitAuth(),
+	}
 }
 
 func (g *Generator) shouldPreserveExistingTypesFile(outPath string) bool {
@@ -4236,7 +4251,7 @@ func (g *Generator) renderAuthFiles() error {
 	// API with anti-CSRF on JSON endpoints). See retro issue #174 WU-2.
 	if g.Spec.Auth.Type == "session_handshake" {
 		sessionPath := filepath.Join("internal", "client", "session.go")
-		if err := g.renderTemplate("session_handshake.go.tmpl", sessionPath, g.Spec); err != nil {
+		if err := g.renderTemplate("session_handshake.go.tmpl", sessionPath, g.clientTemplateData()); err != nil {
 			return fmt.Errorf("rendering session manager: %w", err)
 		}
 	}
