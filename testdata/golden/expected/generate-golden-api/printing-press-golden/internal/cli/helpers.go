@@ -849,12 +849,21 @@ func htmlLooksLikeAuthFailure(trimmed []byte) bool {
 	return false
 }
 
+func htmlEvidenceFromTransportError(err error) []byte {
+	msg := err.Error()
+	const marker = "returned HTML instead of JSON"
+	if idx := strings.Index(msg, marker); idx >= 0 {
+		return []byte(msg[idx+len(marker):])
+	}
+	return []byte(msg)
+}
+
 func classifyHTMLTransportError(err error) error {
-	msg := []byte(err.Error())
-	if classified := applyHTMLPayloadClassifier(msg); classified != nil {
+	evidence := htmlEvidenceFromTransportError(err)
+	if classified := applyHTMLPayloadClassifier(evidence); classified != nil {
 		return classified
 	}
-	if htmlLooksLikeAuthFailure(msg) {
+	if htmlLooksLikeAuthFailure(evidence) {
 		return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. " + "Set your API key with: export PRINTING_PRESS_GOLDEN_API_KEY=\"your-token-here\""))
 	}
 	return apiErr(fmt.Errorf("%w\nhint: the request may have reached a web page or the wrong endpoint", err))

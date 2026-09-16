@@ -133,6 +133,16 @@ func TestClassifyAPIErrorOnlyHTTP401StillWinsOverHTML(t *testing.T) {
 	requireCLIError(t, err, 4)
 }
 
+func TestClassifyAPIErrorOnlyIgnoresAuthWordsInURL(t *testing.T) {
+	err := classifyAPIErrorOnly(fmt.Errorf("GET https://example.test/unauthorized: expected JSON, API returned HTML instead of JSON: HTML document (120 bytes): Console"))
+	if !requireCLIError(t, err, 5) {
+		return
+	}
+	if strings.Contains(err.Error(), "not authenticated") {
+		t.Errorf("auth markers in the request URL must not classify bare HTML as auth, got: %s", err)
+	}
+}
+
 func requireCLIError(t *testing.T, err error, wantCode int) bool {
 	t.Helper()
 	var ce *cliError
