@@ -34,11 +34,12 @@ const (
 type LiveDogfoodTestKind string
 
 const (
-	LiveDogfoodTestHelp      LiveDogfoodTestKind = "help"
-	LiveDogfoodTestHappy     LiveDogfoodTestKind = "happy_path"
-	LiveDogfoodTestJSON      LiveDogfoodTestKind = "json_fidelity"
-	LiveDogfoodTestError     LiveDogfoodTestKind = "error_path"
-	LiveDogfoodTestErrorReal LiveDogfoodTestKind = "error_path_real"
+	LiveDogfoodTestHelp       LiveDogfoodTestKind = "help"
+	LiveDogfoodTestHappy      LiveDogfoodTestKind = "happy_path"
+	LiveDogfoodTestJSON       LiveDogfoodTestKind = "json_fidelity"
+	LiveDogfoodTestDryRunJSON LiveDogfoodTestKind = "dry_run_json"
+	LiveDogfoodTestError      LiveDogfoodTestKind = "error_path"
+	LiveDogfoodTestErrorReal  LiveDogfoodTestKind = "error_path_real"
 )
 
 // reasonDestructiveAtAuth is the Skip reason emitted for endpoints that
@@ -47,6 +48,7 @@ const (
 const reasonDestructiveAtAuth = "destructive-at-auth"
 const reasonMutatingDryRunOnly = "mutating command dry-run only"
 const reasonMutatingErrorPath = "mutating command; error_path would call live API without --dry-run"
+const reasonMutatingRequiresAllowDestructive = "mutating command requires --allow-destructive"
 const reasonMutatingRunnableFixture = "blocked-fixture: mutating command requires runnable example"
 const reasonSyncDryRunRequired = "sync command requires --dry-run"
 const reasonUnclassifiedNoMethod = "unclassified: no pp:method"
@@ -104,8 +106,9 @@ type LiveDogfoodOptions struct {
 	AuthEnv             string
 	AuthTier            string
 	// AllowDestructive re-enables testing of endpoints classified as
-	// destructive-at-auth. Default skips them to prevent runner-credential
-	// rotation.
+	// destructive-at-auth, and live execution of mutating Example probes
+	// that do not advertise --dry-run. Default skips both so the matrix
+	// cannot rotate runner credentials or create leftover resources.
 	AllowDestructive bool
 }
 
@@ -659,7 +662,8 @@ var mutatingVerbs = map[string]bool{
 	"set": true, "modify": true, "replace": true,
 	"post": true, "put": true, "send": true, "submit": true,
 	"transfer": true, "cancel": true, "freeze": true, "unfreeze": true,
-	"sync": true,
+	"sync": true, "rename": true, "move": true, "copy": true,
+	"mkdir": true, "rmdir": true, "upload": true,
 }
 
 var readVerbs = map[string]bool{
@@ -1600,6 +1604,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHelp, reasonDestructiveAtAuth),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonDestructiveAtAuth),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonDestructiveAtAuth),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestDryRunJSON, reasonDestructiveAtAuth),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonDestructiveAtAuth),
 		}
 	}
@@ -1630,6 +1635,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	}
 
 	command.Help = help
+	if dryRunJSON := probeLiveDogfoodDryRunJSON(command, ctx); dryRunJSON != nil {
+		results = append(results, *dryRunJSON)
+	}
 	// Success is exit 0 plus any code the command declares via
 	// pp:typed-exit-codes (or a command-level "Exit codes:" help block) — the
 	// same contract `verify` honors. Commands with no declaration keep the
@@ -1669,6 +1677,15 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonSyncDryRunRequired),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonSyncDryRunRequired),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonSyncDryRunRequired),
+		)
+		return results
+	}
+
+	if mutating && !useDryRun && !ctx.allowDestructive && !mutation.unclassified {
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonMutatingRequiresAllowDestructive),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonMutatingRequiresAllowDestructive),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonMutatingRequiresAllowDestructive),
 		)
 		return results
 	}
@@ -1814,7 +1831,11 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun, ctx.authEnvValue)
 			jsonResult.FixtureSource = fixtureSource
 			if jsonRun.exitCode == 0 {
-				if !liveDogfoodJSONValid(jsonRun) {
+				if slices.Contains(jsonArgs, "--dry-run") {
+					status, reason := liveDogfoodDryRunJSONContract(jsonRun, true)
+					jsonResult.Status = status
+					jsonResult.Reason = reason
+				} else if !liveDogfoodJSONValid(jsonRun) {
 					jsonResult.Status = LiveDogfoodStatusFail
 					jsonResult.Reason = "invalid JSON"
 				} else {
@@ -2201,6 +2222,7 @@ func skippedLiveDogfoodCommandResults(command, reason string) []LiveDogfoodTestR
 		skippedLiveDogfoodResult(command, LiveDogfoodTestHelp, reason),
 		skippedLiveDogfoodResult(command, LiveDogfoodTestHappy, reason),
 		skippedLiveDogfoodResult(command, LiveDogfoodTestJSON, reason),
+		skippedLiveDogfoodResult(command, LiveDogfoodTestDryRunJSON, reason),
 		skippedLiveDogfoodResult(command, LiveDogfoodTestError, reason),
 	}
 }
@@ -3042,6 +3064,69 @@ var liveDogfoodAuth401Phrases = []string{
 
 func commandSupportsDryRun(help string) bool {
 	return slices.Contains(extractFlagNames(help), "dry-run")
+}
+
+func probeLiveDogfoodDryRunJSON(command liveDogfoodCommand, ctx resolveCtx) *LiveDogfoodTestResult {
+	if !commandSupportsDryRun(command.Help) {
+		return nil
+	}
+	commandName := strings.Join(command.Path, " ")
+	args := appendDryRunArg(appendJSONArg(append([]string{}, command.Path...)))
+	run := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, args, ctx.timeout)
+	result := liveDogfoodResult(commandName, LiveDogfoodTestDryRunJSON, args, run, ctx.authEnvValue)
+	status, reason := liveDogfoodDryRunJSONContract(run, false)
+	result.Status = status
+	result.Reason = reason
+	return &result
+}
+
+func liveDogfoodDryRunJSONContract(run liveDogfoodRun, requireHonour bool) (LiveDogfoodStatus, string) {
+	if run.exitCode != 0 {
+		return LiveDogfoodStatusSkip, "no --dry-run short-circuit"
+	}
+	payload, ok := parseLiveDogfoodJSONObject(run.stdout)
+	if !ok {
+		return LiveDogfoodStatusFail, "invalid JSON"
+	}
+	dryRun, hasDryRun := liveDogfoodJSONBool(payload["dry_run"])
+	if !hasDryRun || !dryRun {
+		if requireHonour {
+			return LiveDogfoodStatusFail, "missing dry_run:true"
+		}
+		return LiveDogfoodStatusSkip, "command does not honour --dry-run"
+	}
+	action, _ := payload["action"].(string)
+	if strings.TrimSpace(action) == "" {
+		return LiveDogfoodStatusFail, "empty dry-run action"
+	}
+	return LiveDogfoodStatusPass, ""
+}
+
+func parseLiveDogfoodJSONObject(stdout string) (map[string]any, bool) {
+	trimmed := strings.TrimSpace(stdout)
+	if trimmed == "" {
+		return nil, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err == nil {
+		return payload, true
+	}
+	for line := range strings.SplitSeq(trimmed, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if err := json.Unmarshal([]byte(line), &payload); err == nil {
+			return payload, true
+		}
+		return nil, false
+	}
+	return nil, false
+}
+
+func liveDogfoodJSONBool(v any) (bool, bool) {
+	b, ok := v.(bool)
+	return b, ok
 }
 
 func appendJSONArg(args []string) []string {

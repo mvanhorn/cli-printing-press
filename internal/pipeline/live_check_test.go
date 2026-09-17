@@ -287,6 +287,90 @@ esac
 	assert.Contains(t, string(data), "create")
 }
 
+func TestLiveCheckSkipsResearchMutatingExamplesUnlessAllowed(t *testing.T) {
+	dir := t.TempDir()
+	mutationLog := filepath.Join(t.TempDir(), "mutations.log")
+	t.Setenv("PP_MUTATION_LOG", mutationLog)
+	writeStubBinary(t, dir, "stub", `
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{"commands":[
+  {"name":"files","subcommands":[
+    {"name":"create-folder","annotations":{"pp:method":"POST"}},
+    {"name":"rename","annotations":{"pp:method":"PATCH"}},
+    {"name":"list","annotations":{"pp:method":"GET","mcp:read-only":"true"}}
+  ]}
+]}
+JSON
+  exit 0
+fi
+case "$1 $2" in
+  "files create-folder") echo create-folder >> "$PP_MUTATION_LOG"; echo '{"id":"created"}' ;;
+  "files rename") echo rename >> "$PP_MUTATION_LOG"; echo '{"id":"renamed"}' ;;
+  "files list") echo '{"data":[{"id":"f1"}]}' ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Create folder", Command: "files create-folder", Example: `stub files create-folder --folder-path /docker --name example-folder`},
+		{Name: "Rename folder", Command: "files rename", Example: `stub files rename --path /docker/example-folder --name renamed-folder`},
+		{Name: "List files", Command: "files list", Example: `stub files list --json`},
+	})
+
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: liveCheckIntegrationTimeout})
+	require.False(t, result.Unable, "result was Unable: %s", result.Reason)
+	require.Equal(t, 3, result.Checked())
+	require.Equal(t, 1, result.Passed)
+	require.Equal(t, 2, result.Skipped)
+	create := findLiveFeatureResult(t, result.Features, "files create-folder")
+	assert.Equal(t, StatusSkip, create.Status)
+	assert.Contains(t, create.Reason, "--allow-destructive")
+	rename := findLiveFeatureResult(t, result.Features, "files rename")
+	assert.Equal(t, StatusSkip, rename.Status)
+	assert.Contains(t, rename.Reason, "--allow-destructive")
+	if _, err := os.Stat(mutationLog); !os.IsNotExist(err) {
+		t.Fatalf("mutating research example ran without opt-in; stat err=%v", err)
+	}
+
+	allowed := RunLiveCheck(LiveCheckOptions{
+		CLIDir:           dir,
+		BinaryName:       "stub",
+		Timeout:          liveCheckIntegrationTimeout,
+		AllowDestructive: true,
+	})
+	require.False(t, allowed.Unable, "result was Unable: %s", allowed.Reason)
+	require.Equal(t, 3, allowed.Passed)
+	data, err := os.ReadFile(mutationLog)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "create-folder")
+	assert.Contains(t, string(data), "rename")
+}
+
+func TestLiveCheckSkipsResearchMutatingVerbWithoutAgentContext(t *testing.T) {
+	dir := t.TempDir()
+	mutationLog := filepath.Join(t.TempDir(), "mutations.log")
+	t.Setenv("PP_MUTATION_LOG", mutationLog)
+	writeStubBinary(t, dir, "stub", `
+if [ "$1" = "agent-context" ]; then
+  echo '{"commands":[]}'
+  exit 0
+fi
+echo create >> "$PP_MUTATION_LOG"
+echo '{"id":"created"}'
+`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Create folder", Command: "files create-folder", Example: `stub files create-folder --name example-folder`},
+	})
+
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: liveCheckIntegrationTimeout})
+	require.False(t, result.Unable, "result was Unable: %s", result.Reason)
+	require.Equal(t, 1, result.Skipped)
+	require.Zero(t, result.Passed)
+	if _, err := os.Stat(mutationLog); !os.IsNotExist(err) {
+		t.Fatalf("mutating research example ran without agent-context annotations; stat err=%v", err)
+	}
+}
+
 func findLiveFeatureResult(t *testing.T, features []LiveFeatureResult, command string) LiveFeatureResult {
 	t.Helper()
 	for _, feature := range features {
@@ -924,7 +1008,7 @@ func TestLiveCheckBinaryCandidatesPreferBuildStageBin(t *testing.T) {
 		"staged build/stage/bin path must be tried before bin/ and cliDir fallback paths, got order %v", cands)
 }
 
-func TestLiveCheckResolveBinaryPathPicksNewestCandidate(t *testing.T) {
+func TestLiveCheckResolveBinaryPathPrefersStagedOverFresherRoot(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script stub not supported on Windows")
 	}
@@ -944,6 +1028,29 @@ func TestLiveCheckResolveBinaryPathPicksNewestCandidate(t *testing.T) {
 	staleTime := time.Now().Add(-time.Hour)
 	freshTime := time.Now()
 	require.NoError(t, os.Chtimes(stagedPath, staleTime, staleTime))
+	require.NoError(t, os.Chtimes(makefilePath, staleTime, staleTime))
+	require.NoError(t, os.Chtimes(rootPath, freshTime, freshTime))
+
+	got, err := resolveBinaryPath(dir, "stub")
+	require.NoError(t, err)
+	require.Equal(t, filepath.Clean(stagedPath), got, "fresher-mtime root binary must not beat staged")
+}
+
+func TestLiveCheckResolveBinaryPathPicksNewestNonStagedWhenNoStage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+
+	dir := t.TempDir()
+	makefileBinDir := filepath.Join(dir, "bin")
+	require.NoError(t, os.MkdirAll(makefileBinDir, 0o755))
+
+	makefilePath := filepath.Join(makefileBinDir, "stub")
+	require.NoError(t, os.WriteFile(makefilePath, []byte("#!/bin/sh\necho makefile\n"), 0o755))
+	rootPath := writeStubBinary(t, dir, "stub", `echo root`)
+
+	staleTime := time.Now().Add(-time.Hour)
+	freshTime := time.Now()
 	require.NoError(t, os.Chtimes(makefilePath, staleTime, staleTime))
 	require.NoError(t, os.Chtimes(rootPath, freshTime, freshTime))
 
@@ -1144,7 +1251,7 @@ func TestLiveCheck_SkipsStageRebuildWhenBinaryIsFresh(t *testing.T) {
 	require.Equal(t, "fresh", result.BinaryRefresh.Action)
 }
 
-func TestLiveCheck_SkipsStageRebuildWhenFreshFallbackBinaryExists(t *testing.T) {
+func TestLiveCheck_RebuildsStaleStageDespiteFresherRootBinary(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script stub not supported on Windows")
 	}
@@ -1161,7 +1268,8 @@ func TestLiveCheck_SkipsStageRebuildWhenFreshFallbackBinaryExists(t *testing.T) 
 	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\necho 'unknown command \"foo\"' >&2\nexit 2\n"), 0o755))
 	oldTime := time.Now().Add(-2 * time.Hour)
 	require.NoError(t, os.Chtimes(stub, oldTime, oldTime))
-	writeStubBinary(t, dir, binaryName, `echo '{"data":[{"source":"fresh-root"}]}'`)
+	rootPath := writeStubBinary(t, dir, binaryName, `echo '{"data":[{"source":"fresh-root"}]}'`)
+	require.NoError(t, os.Chtimes(rootPath, time.Now(), time.Now()))
 	writeTestResearchJSON(t, dir, []NovelFeature{
 		{Name: "Foo", Command: "foo", Example: binaryName + " foo --json"},
 	})
@@ -1169,10 +1277,13 @@ func TestLiveCheck_SkipsStageRebuildWhenFreshFallbackBinaryExists(t *testing.T) 
 	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: binaryName, Timeout: liveCheckIntegrationTimeout})
 	require.False(t, result.Unable, "check was Unable: %s", result.Reason)
 	require.Equal(t, 1, result.Passed)
-	require.Contains(t, result.Features[0].OutputSample, "fresh-root")
-	require.NotContains(t, result.Features[0].OutputSample, "rebuilt")
+	require.Contains(t, result.Features[0].OutputSample, "rebuilt")
+	require.NotContains(t, result.Features[0].OutputSample, "fresh-root")
 	require.NotNil(t, result.BinaryRefresh)
-	require.Equal(t, "fresh_fallback", result.BinaryRefresh.Action)
+	require.Equal(t, "rebuilt", result.BinaryRefresh.Action)
+	got, err := resolveBinaryPath(dir, binaryName)
+	require.NoError(t, err)
+	require.Equal(t, filepath.Clean(stub), got)
 }
 
 func TestLiveCheck_RebuildsPreferredStageBinaryDespiteFreshLowerPriorityFallback(t *testing.T) {
