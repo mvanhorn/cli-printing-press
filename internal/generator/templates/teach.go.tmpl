@@ -295,7 +295,7 @@ func teachEmitsJSON(flags *rootFlags, localQuiet bool, cmd *cobra.Command) bool 
 	if localQuiet && cmd.Flags().Changed("quiet") {
 		return false
 	}
-	if quietFlag := cmd.Root().PersistentFlags().Lookup("quiet"); quietFlag != nil && quietFlag.Changed {
+	if quietFlag := cmd.Root().PersistentFlags().Lookup("quiet"); quietFlag != nil && quietFlag.Changed && flags.quiet {
 		return false
 	}
 	return true

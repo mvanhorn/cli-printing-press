@@ -207,6 +207,8 @@ func TestGenerateLearnCommandExamplesAreRunnableOnFirstLine(t *testing.T) {
 		`--kind=country;--canonical=United States;--value=USA`,
 		`learn-examples-pp-cli teach-lookup --kind country --canonical "United States" --value USA`)
 	require.Contains(t, teachSrc, "func teachEmitsJSON(")
+	require.Contains(t, teachSrc, "quietFlag.Changed && flags.quiet",
+		"root --quiet=false must not suppress JSON merely because the flag changed")
 	require.NotContains(t, teachSrc, `flags.asJSON && !flags.quiet`)
 	require.NotContains(t, teachSrc, `teach --query "<question>"`)
 	require.NotContains(t, teachSrc, `--resource-type <type>`)

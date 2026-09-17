@@ -103,15 +103,16 @@ func TestTeachCommand_SilentOnSuccess(t *testing.T) {
 
 func TestTeachCommand_JSONOutputRespectsExplicitQuiet(t *testing.T) {
 	tests := []struct {
-		name       string
-		quietArg   string
-		rootQuiet  bool
-		wantOutput bool
+		name         string
+		quietArg     string
+		rootQuietArg string
+		wantOutput   bool
 	}{
 		{name: "default quiet", wantOutput: true},
 		{name: "explicit quiet", quietArg: "--quiet", wantOutput: false},
 		{name: "explicit quiet false", quietArg: "--quiet=false", wantOutput: true},
-		{name: "root explicit quiet", rootQuiet: true, wantOutput: false},
+		{name: "root explicit quiet", rootQuietArg: "--quiet", wantOutput: false},
+		{name: "root explicit quiet false", rootQuietArg: "--quiet=false", wantOutput: true},
 	}
 
 	for _, tt := range tests {
@@ -129,8 +130,8 @@ func TestTeachCommand_JSONOutputRespectsExplicitQuiet(t *testing.T) {
 			if tt.quietArg != "" {
 				args = append(args, tt.quietArg)
 			}
-			if tt.rootQuiet {
-				args = append([]string{"--quiet"}, args...)
+			if tt.rootQuietArg != "" {
+				args = append([]string{tt.rootQuietArg}, args...)
 			}
 
 			stdout, stderr, err := runRootArgs(t, args...)

@@ -69,6 +69,7 @@ func TestGeneratedTeachFamilyPassesLiveDogfoodContracts(t *testing.T) {
 		`--query-template=items in {entity};--resource-template=GROUP-{entity:category};--resource-type=items;--entity-kind=category;--strategy=substitute`,
 		bin+` teach-pattern --query-template "items in {entity}" --resource-template "GROUP-{entity:category}" --resource-type items --entity-kind category --strategy substitute`)
 	require.Contains(t, teachSrc, "func teachEmitsJSON(")
+	require.Contains(t, teachSrc, "quietFlag.Changed && flags.quiet")
 
 	playbookSrc := readEmitted(t, outputDir, "internal", "cli", "teach_playbook.go")
 	assertTeachFamilyProbeSurface(t, playbookSrc, `Use:   "teach-playbook"`,
@@ -127,6 +128,17 @@ func TestGeneratedTeachFamilyPassesLiveDogfoodContracts(t *testing.T) {
 		})
 		require.NotEqual(t, "", stdout)
 		require.True(t, json.Valid([]byte(stdout)), "stdout: %q", stdout)
+	})
+
+	t.Run("root --quiet=false teach --json emits JSON", func(t *testing.T) {
+		stdout := requireTeachFamilyJSON(t, binaryPath, []string{
+			"--quiet=false", "teach", "--query", "find items in category",
+			"--resource-type", "items", "--resource", "GROUP-category", "--json",
+		})
+		require.True(t, json.Valid([]byte(stdout)), "stdout: %q", stdout)
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal([]byte(stdout), &payload), "stdout: %q", stdout)
+		require.Contains(t, payload, "recorded", "stdout: %q", stdout)
 	})
 }
 
