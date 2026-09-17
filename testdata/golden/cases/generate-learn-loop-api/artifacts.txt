@@ -22,6 +22,7 @@ learn-loop-example/internal/cli/learn_init.go
 # stats surfaces. Locks the command surface so a template regression
 # (skip emission, rename a subcommand) is caught.
 learn-loop-example/internal/cli/teach.go
+learn-loop-example/internal/cli/teach_playbook.go
 learn-loop-example/internal/cli/learnings_candidates.go
 learn-loop-example/internal/cli/learnings_stats.go
 

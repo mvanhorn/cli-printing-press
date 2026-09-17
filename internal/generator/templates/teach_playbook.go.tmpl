@@ -49,6 +49,7 @@ func newTeachPlaybookCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Com
 		Annotations: map[string]string{
 			"pp:typed-exit-codes": "0,2",
 			"mcp:local-write":     "true",
+			"pp:happy-args":       "--query=find items in category;--notes=example playbook note",
 		},
 		Long: `Stores a structured CLI command sequence (with entity slots) and/or
 free-form gotchas/workarounds, keyed on the structural query family.
@@ -59,7 +60,7 @@ notes verbatim.
 At least one of --playbook-json/--playbook-file and --notes/--notes-file
 must be set. --playbook-json takes the playbook body inline so MCP-only
 agents can record playbooks without a file on disk.`,
-		Example: `  QUERY="$(cat /path/to/question.txt)" {{.Name}}-pp-cli teach-playbook --query "$QUERY" --playbook-file ~/playbooks/recipe.json --notes-file ~/playbooks/recipe-notes.md`,
+		Example: `  {{.Name}}-pp-cli teach-playbook --query "find items in category" --notes "example playbook note"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
@@ -187,6 +188,7 @@ func newPlaybookAmendCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Com
 		Annotations: map[string]string{
 			"pp:typed-exit-codes": "0,2",
 			"mcp:local-write":     "true",
+			"pp:happy-args":       "--query=find items in category;--add-note=example correction",
 		},
 		Long: `Appends a timestamped note to the matching family's playbook notes_text.
 If no playbook exists for the family yet, creates a notes-only one.
@@ -198,7 +200,7 @@ drift). Same fire-and-forget posture as teach: silent on success,
 errors to teach.log, safe to background with &.
 
 Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
-		Example: `  QUERY="$(cat /path/to/question.txt)" NOTE="$(cat /path/to/note.txt)" {{.Name}}-pp-cli playbook amend --query "$QUERY" --add-note "$NOTE"`,
+		Example: `  {{.Name}}-pp-cli playbook amend --query "find items in category" --add-note "example correction"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
