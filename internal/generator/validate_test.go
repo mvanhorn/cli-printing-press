@@ -142,6 +142,9 @@ func TestScanRequiresTrimOnWalkError(t *testing.T) {
 }
 
 func TestBuildCacheExceedsUnreadableDirReturnsError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits do not lock directories on Windows")
+	}
 	dir := t.TempDir()
 	locked := filepath.Join(dir, "locked")
 	require.NoError(t, os.Mkdir(locked, 0o000))
@@ -154,6 +157,9 @@ func TestBuildCacheExceedsUnreadableDirReturnsError(t *testing.T) {
 }
 
 func TestBoundBuildCacheReportsRemoveErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits do not lock directories on Windows")
+	}
 	dir := t.TempDir()
 	locked := filepath.Join(dir, "locked")
 	require.NoError(t, os.Mkdir(locked, 0o755))
@@ -165,6 +171,9 @@ func TestBoundBuildCacheReportsRemoveErrors(t *testing.T) {
 }
 
 func TestWithGoBuildCacheLimitedSurfacesWipeError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits do not lock directories on Windows")
+	}
 	home := isolateBuildCacheHome(t)
 	cacheDir := filepath.Join(home, ".cache", "printing-press", "go-build")
 	locked := filepath.Join(cacheDir, "locked")
