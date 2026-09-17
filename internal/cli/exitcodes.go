@@ -37,6 +37,13 @@ func asExitError(err error) *ExitError {
 	return nil
 }
 
+// failClosedAfterReport returns the typed verification exit after a command
+// has already printed or encoded its report. Silent avoids a second stderr
+// copy from main; Cobra still prints the error once.
+func failClosedAfterReport(msg string) error {
+	return &ExitError{Code: ExitGenerationError, Err: errors.New(msg), Silent: true}
+}
+
 func wrapKeepingExitClass(err, extra error) error {
 	if extra == nil {
 		return err
