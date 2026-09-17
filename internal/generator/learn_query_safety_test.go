@@ -97,8 +97,11 @@ func TestGenerateLearnQuerySafety_ShellSafeQueryGuidance(t *testing.T) {
 	}
 
 	teach := readEmitted(t, outputDir, "internal", "cli", "teach.go")
-	require.Contains(t, teach, `QUERY="$(cat /path/to/question.txt)"`)
-	require.Contains(t, teach, `--query "$QUERY"`)
+	require.Contains(t, teach, `teach --query "find items in category"`)
+	require.NotContains(t, teach, `teach --query "$QUERY"`)
+	require.NotContains(t, teach, `--query "<question>"`)
+	require.Contains(t, teach, `QUERY="$(cat /path/to/question.txt)"`,
+		"recall/forget examples keep file-mediated query passing")
 
 	agents := readEmitted(t, outputDir, "AGENTS.md")
 	require.Contains(t, agents, "QUERY=$(cat /path/to/question.txt)")

@@ -286,6 +286,21 @@ func silentCodeErr(code int) error {
 	return &cliError{code: code, err: silentSentinel{}}
 }
 
+// teachEmitsJSON honors --json/--agent over the silent-on-success default.
+// Only an explicit --quiet keeps stdout empty; the local default must not.
+func teachEmitsJSON(flags *rootFlags, localQuiet bool, cmd *cobra.Command) bool {
+	if flags == nil || !(flags.asJSON || flags.agent) {
+		return false
+	}
+	if localQuiet && cmd.Flags().Changed("quiet") {
+		return false
+	}
+	if quietFlag := cmd.Root().PersistentFlags().Lookup("quiet"); quietFlag != nil && quietFlag.Changed && flags.quiet {
+		return false
+	}
+	return true
+}
+
 type silentSentinel struct{}
 
 func (silentSentinel) Error() string { return "" }
@@ -331,7 +346,11 @@ func newTeachCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Command {
 		// Execute cell honestly instead of masking a FAIL. Writes land only
 		// in the CLI's own local store, so MCP hosts get non-destructive
 		// local-write hints instead of a "could mutate anything" prompt.
-		Annotations: map[string]string{"pp:typed-exit-codes": "0,2", "mcp:local-write": "true"},
+		Annotations: map[string]string{
+			"pp:typed-exit-codes": "0,2",
+			"mcp:local-write":     "true",
+			"pp:happy-args":       "--query=find items in category;--resource-type=items;--resource=GROUP-category",
+		},
 		Long: `Record one or more "this query -> this resource" mappings so the next
 query that matches surfaces the right resources without re-running discovery.
 
@@ -340,7 +359,7 @@ emits the user-facing response: silent on success, errors only to
 the CLI state directory's teach.log, safe to fire-and-forget.
 
 Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
-		Example: `  QUERY="$(cat /path/to/question.txt)" {{.Name}}-pp-cli teach --query "$QUERY" --resource-type <type> --resource <id> --resource <id> &`,
+		Example: `  {{.Name}}-pp-cli teach --query "find items in category" --resource-type items --resource GROUP-category`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
@@ -488,13 +507,15 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 				writeTeachErrLog(fmt.Sprintf("teach: audit append: %v", auditErr))
 			}
 
-			if flags.asJSON && !flags.quiet && !(quiet && cmd.Flags().Changed("quiet")) {
+			if teachEmitsJSON(flags, quiet, cmd) {
+				outFlags := *flags
+				outFlags.quiet = false
 				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 					"recorded":   true,
 					"query":      query,
 					"normalized": normalized.NonEntityNormalized,
 					"resources":  resources,
-				}, flags)
+				}, &outFlags)
 			}
 			return nil
 		},
@@ -1046,13 +1067,17 @@ func newTeachPatternCmd(flags *rootFlags) *cobra.Command {
 		// sibling teach/teach-playbook commands; declare it so both `verify` and
 		// the live-dogfood matrix score the Execute cell honestly instead of
 		// masking a FAIL. Writes land only in the CLI's own local store.
-		Annotations: map[string]string{"pp:typed-exit-codes": "0,2", "mcp:local-write": "true"},
+		Annotations: map[string]string{
+			"pp:typed-exit-codes": "0,2",
+			"mcp:local-write":     "true",
+			"pp:happy-args":       "--query-template=items in {entity};--resource-template=GROUP-{entity:category};--resource-type=items;--entity-kind=category;--strategy=substitute",
+		},
 		Long: `Adds one row to search_patterns. The recall path uses patterns to
 substitute live query entities into a resource template, so a pattern
 with query_template="items in {entity}" and
 resource_template="GROUP-{entity:category}" generalizes one teach into
 a whole family.`,
-		Example: `  {{.Name}}-pp-cli teach-pattern --query-template "items in {entity}" --resource-template "GROUP-{entity:category}" --resource-type "items" --entity-kind "category" --strategy substitute`,
+		Example: `  {{.Name}}-pp-cli teach-pattern --query-template "items in {entity}" --resource-template "GROUP-{entity:category}" --resource-type items --entity-kind category --strategy substitute`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
 				return writeDryRun(cmd.OutOrStdout(), flags, "teach-pattern")
@@ -1131,7 +1156,11 @@ func newTeachLookupCmd(flags *rootFlags) *cobra.Command {
 		// sibling teach/teach-playbook commands; declare it so both `verify` and
 		// the live-dogfood matrix score the Execute cell honestly instead of
 		// masking a FAIL. Writes land only in the CLI's own local store.
-		Annotations: map[string]string{"pp:typed-exit-codes": "0,2", "mcp:local-write": "true"},
+		Annotations: map[string]string{
+			"pp:typed-exit-codes": "0,2",
+			"mcp:local-write":     "true",
+			"pp:happy-args":       "--kind=country;--canonical=United States;--value=USA",
+		},
 		Long: `Adds one row to entity_lookups. Used by the recall path's pattern
 engine to substitute values for canonical names at substitution time.
 Computed kinds (lowercase, uppercase, kebab-case, capitalize-first, slug)
