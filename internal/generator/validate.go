@@ -225,7 +225,10 @@ func withGoBuildCacheLimited(dir string, maxBytes int64, fn func(cacheDir string
 
 	cacheGateMu.Lock()
 	if isolated {
-		waitAndMaybeWipeLocked(cacheDir, maxBytes)
+		if err := waitAndMaybeWipeLocked(cacheDir, maxBytes); err != nil {
+			cacheGateMu.Unlock()
+			return fmt.Errorf("bounding isolated GOCACHE: %w", err)
+		}
 	}
 	cacheGateActive++
 	cacheGateMu.Unlock()
@@ -269,31 +272,39 @@ func resolveGoBuildCacheDir(dir string) (string, bool, error) {
 	return cacheDir, true, nil
 }
 
-func waitAndMaybeWipeLocked(cacheDir string, maxBytes int64) {
+func waitAndMaybeWipeLocked(cacheDir string, maxBytes int64) error {
 	if maxBytes <= 0 || !shouldCheckBuildCache(cacheDir) {
-		return
+		return nil
 	}
 	cacheGateMu.Unlock()
 	over, err := buildCacheExceeds(cacheDir, maxBytes)
 	cacheGateMu.Lock()
 	if !scanRequiresTrim(over, err) {
-		return
+		markBuildCacheChecked(cacheDir)
+		return nil
 	}
 	for cacheGateActive > 0 {
 		cacheGateCond.Wait()
 	}
-	_ = boundBuildCache(cacheDir, maxBytes)
+	if wipeErr := boundBuildCache(cacheDir, maxBytes); wipeErr != nil {
+		return fmt.Errorf("wiping oversized build cache: %w", wipeErr)
+	}
+	markBuildCacheChecked(cacheDir)
+	return nil
 }
 
 func shouldCheckBuildCache(cacheDir string) bool {
 	key := filepath.Clean(cacheDir)
 	cacheCheckMu.Lock()
 	defer cacheCheckMu.Unlock()
-	if time.Since(cacheLastCheck[key]) < isolatedBuildCacheCheckInterval {
-		return false
-	}
+	return time.Since(cacheLastCheck[key]) >= isolatedBuildCacheCheckInterval
+}
+
+func markBuildCacheChecked(cacheDir string) {
+	key := filepath.Clean(cacheDir)
+	cacheCheckMu.Lock()
+	defer cacheCheckMu.Unlock()
 	cacheLastCheck[key] = time.Now()
-	return true
 }
 
 func boundBuildCache(dir string, maxBytes int64) error {
@@ -311,10 +322,16 @@ func boundBuildCache(dir string, maxBytes int64) error {
 		}
 		return err
 	}
+	var removeErr error
 	for _, e := range entries {
-		_ = os.RemoveAll(filepath.Join(dir, e.Name()))
+		if rmErr := os.RemoveAll(filepath.Join(dir, e.Name())); rmErr != nil && !os.IsNotExist(rmErr) {
+			removeErr = rmErr
+		}
 	}
-	return os.MkdirAll(dir, 0o755)
+	if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
+		return mkErr
+	}
+	return removeErr
 }
 
 func scanRequiresTrim(over bool, err error) bool {
@@ -346,7 +363,7 @@ func buildCacheExceeds(dir string, maxBytes int64) (bool, error) {
 		}
 		size, statErr := cacheEntrySize(d)
 		if statErr != nil {
-			return errCacheOverLimit
+			return statErr
 		}
 		total += size
 		if total > maxBytes {

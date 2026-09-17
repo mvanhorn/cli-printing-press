@@ -141,6 +141,48 @@ func TestScanRequiresTrimOnWalkError(t *testing.T) {
 	assert.True(t, scanRequiresTrim(false, os.ErrPermission))
 }
 
+func TestBuildCacheExceedsUnreadableDirReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	require.NoError(t, os.Mkdir(locked, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	over, err := buildCacheExceeds(dir, 1<<30)
+	require.Error(t, err)
+	assert.False(t, over)
+	assert.True(t, scanRequiresTrim(over, err))
+}
+
+func TestBoundBuildCacheReportsRemoveErrors(t *testing.T) {
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	require.NoError(t, os.Mkdir(locked, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(locked, "x"), bytes.Repeat([]byte("x"), 2000), 0o644))
+	require.NoError(t, os.Chmod(locked, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	require.Error(t, boundBuildCache(dir, 1000))
+}
+
+func TestWithGoBuildCacheLimitedSurfacesWipeError(t *testing.T) {
+	home := isolateBuildCacheHome(t)
+	cacheDir := filepath.Join(home, ".cache", "printing-press", "go-build")
+	locked := filepath.Join(cacheDir, "locked")
+	require.NoError(t, os.MkdirAll(locked, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(locked, "x"), bytes.Repeat([]byte("x"), 2000), 0o644))
+	require.NoError(t, os.Chmod(locked, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	called := false
+	err := withGoBuildCacheLimited("/tmp/any-project", 1000, func(string) error {
+		called = true
+		return nil
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bounding isolated GOCACHE")
+	assert.False(t, called)
+}
+
 func TestGoBuildCacheDirWipesManagedCacheOverMax(t *testing.T) {
 	home := isolateBuildCacheHome(t)
 	cacheDir := filepath.Join(home, ".cache", "printing-press", "go-build")
