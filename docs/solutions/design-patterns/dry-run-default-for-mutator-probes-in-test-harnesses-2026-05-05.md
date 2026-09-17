@@ -44,10 +44,10 @@ Split mutator probing into two dedicated tests, gated on a cheap shape-detector:
 The detection gate is two-pronged:
 
 ```go
-useDryRun := isMutatingLeaf(leaf) && commandSupportsDryRun(command.Help)
+useDryRun := mutating && commandSupportsDryRun(command.Help)
 ```
 
-The second leg matters: hand-written novel commands sharing a mutator-shaped name (`delete`, `create`) but lacking the preview flag fall through to today's behavior rather than getting silently downgraded to a probe that cannot run. The cost of being too aggressive (injecting `--dry-run` on a command that does not support it and getting an unknown-flag error) is higher than the cost of being too conservative (leaving a hand-written novel command on its old path).
+The second leg matters: hand-written novel commands sharing a mutator-shaped name (`delete`, `create`) but lacking the preview flag are skipped unless `--allow-destructive` is set. Injecting `--dry-run` on a command that does not support it produces an unknown-flag error; running the Example live creates leftover resources. Skip with an explicit reason is the safe default. That skip fires only at live invocation, after more specific gates (`no-stdin-fixture`, missing runnable example, positional resolution, mutating `error_path`). Curated `pp:happy-stdin` fixtures still run: they are ground-truth bodies, not research Example strings.
 
 Per-shape decision table:
 
@@ -55,8 +55,10 @@ Per-shape decision table:
 |---|---|---|
 | Read (`get`, `list`) | example as-is | not emitted |
 | Mutator with preview flag | example + `--dry-run` | example as-is, expect != 0 |
-| Mutator without preview flag | example as-is (legacy) | not emitted |
+| Mutator without preview flag | skip unless `--allow-destructive` or a stdin fixture | not emitted |
 | Positional resolution skipped | skip | skip with same reason |
+
+Commands that advertise `--dry-run` also get a `dry_run_json` probe (`--dry-run --json`) when they are read-only, so hand-authored novels cannot ship prose under `--json`. Mutating commands skip that probe unless `--allow-destructive` is set — advertising the flag is not proof the command honours it. The probe uses the same happy-args / fixture argv as other matrix legs so required positionals are actually exercised.
 
 The non-emission rows are load-bearing: matrix size grows by exactly one entry per mutator-with-preview, not one per command, and shapes that cannot honestly run the new test are skipped rather than faked.
 

@@ -647,7 +647,7 @@ Each leg remains callable standalone — this command is additive orchestration.
 	cmd.Flags().StringVar(&opts.apiKey, "api-key", "", "API key for verify's live testing (read-only GETs only)")
 	cmd.Flags().StringVar(&opts.envVar, "env-var", "", "Environment variable name verify should read for the API key (e.g., GITHUB_TOKEN)")
 	cmd.Flags().BoolVar(&opts.strict, "strict", false, "Pass --strict to verify-skill (treat likely-false-positive findings as failures)")
-	cmd.Flags().BoolVar(&opts.allowDestructive, "allow-destructive", false, "Allow verify and scorecard live-check to execute mutating endpoint commands")
+	cmd.Flags().BoolVar(&opts.allowDestructive, "allow-destructive", false, "Allow verify and scorecard live-check to execute mutating endpoint and research-authored examples")
 
 	return cmd
 }

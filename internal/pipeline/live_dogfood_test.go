@@ -1486,6 +1486,45 @@ func TestLiveDogfoodBinaryPathKeepsFreshRootBinary(t *testing.T) {
 	assert.Contains(t, string(contents), `echo "fresh root"`)
 }
 
+func TestLiveDogfoodBinaryPathIgnoresFresherStaleRootWhenStageExists(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the stale root binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	modulePath := filepath.Join(dir, "go.mod")
+	require.NoError(t, os.WriteFile(modulePath, []byte("module example.com/live-dogfood-stage-priority-test\n\ngo 1.23\n"), 0o644))
+	cmdDir := filepath.Join(dir, "cmd", binaryName)
+	require.NoError(t, os.MkdirAll(cmdDir, 0o755))
+	mainPath := filepath.Join(cmdDir, "main.go")
+	require.NoError(t, os.WriteFile(mainPath, []byte("package main\n\nfunc main() {}\n"), 0o644))
+	oldTime := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(modulePath, oldTime, oldTime))
+	require.NoError(t, os.Chtimes(mainPath, oldTime, oldTime))
+
+	stagedDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedDir, 0o755))
+	stagedPath := filepath.Join(stagedDir, binaryName)
+	require.NoError(t, os.WriteFile(stagedPath, []byte("#!/bin/sh\necho staged\n"), 0o755))
+	stageTime := time.Now().Add(-time.Hour)
+	require.NoError(t, os.Chtimes(stagedPath, stageTime, stageTime))
+
+	rootPath := writeStubBinary(t, dir, binaryName, `echo stale-root`)
+	require.NoError(t, os.Chtimes(rootPath, time.Now(), time.Now()))
+
+	path, cleanup, err := liveDogfoodBinaryPath(dir, binaryName)
+	require.NoError(t, err)
+	t.Cleanup(cleanup)
+	want, err := filepath.Abs(stagedPath)
+	require.NoError(t, err)
+	require.Equal(t, want, path)
+
+	out, err := exec.Command(path).CombinedOutput()
+	require.NoError(t, err, string(out))
+	assert.Equal(t, "staged\n", string(out))
+}
+
 func TestLiveDogfoodBinaryPathReportsCommandDirectoryErrors(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the root binary; skip on Windows")
@@ -1867,6 +1906,8 @@ func TestLiveDogfoodMutatingLeafDetectionTokenizesCommandNames(t *testing.T) {
 		"transfer",
 		"set-token",
 		"sync",
+		"rename",
+		"create-folder",
 	} {
 		assert.True(t, isMutatingLeaf(name), "%s should be treated as mutating", name)
 	}
@@ -3092,7 +3133,7 @@ func TestRunLiveDogfoodSkipsDestructiveByDefault(t *testing.T) {
 			destructiveSkips++
 		}
 	}
-	assert.Equal(t, 4, destructiveSkips)
+	assert.Equal(t, 5, destructiveSkips)
 
 	widgetsHelp := findResultByCommandKind(report, "widgets list", LiveDogfoodTestHelp)
 	require.NotNil(t, widgetsHelp)
@@ -4826,6 +4867,7 @@ fi
 
 if [ "$1" = "widgets" ] && [ "$2" = "create" ]; then
   case " $* " in
+    *" --dry-run "*) echo '{"action":"post","status":0,"success":false,"dry_run":true}' ;;
     *" --json "*) echo '{"ok":true}' ;;
     *) echo 'dry-run' ;;
   esac
@@ -5397,7 +5439,8 @@ Examples:
   fixture-pp-cli projects tasks update P1 T7
 
 Flags:
-      --json    Output JSON
+      --json      Output JSON
+      --dry-run   Show request without sending
 HELP
   exit 0
 fi
@@ -5408,6 +5451,16 @@ if [ "$1" = "projects" ] && [ "$2" = "tasks" ] && [ "${3:-}" = "update" ]; then
   if [ "${4:-}" = "__printing_press_invalid__" ]; then
     echo 'invalid project' >&2
     exit 2
+  fi
+  has_dry_run=0
+  for a in "$@"; do
+    case "$a" in
+      --dry-run|--dry-run=*) has_dry_run=1 ;;
+    esac
+  done
+  if [ "$has_dry_run" = "1" ]; then
+    echo '{"action":"update","resource":"tasks","status":0,"success":false,"dry_run":true}'
+    exit 0
   fi
   if [ "${6:-}" = "--json" ]; then
     echo '{"id":"T7","status":"updated"}'
@@ -5904,18 +5957,20 @@ func TestRunLiveDogfoodResolveSuccessChainedMultiPositional(t *testing.T) {
 
 	// The chain walks projects list → projects tasks list P1, threading the
 	// resolved P1 into the second list call. The final probe is
-	// `projects tasks update P1 T7`.
+	// `projects tasks update P1 T7 --dry-run` (update advertises --dry-run so
+	// the mutator stays preview-only).
 	got := findResultByCommandKind(report, "projects tasks update", LiveDogfoodTestHappy)
 	require.NotNil(t, got, "expected projects tasks update happy_path in report")
 	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
+	assert.Contains(t, got.Args, "--dry-run")
 
 	lines := readArgvLog(t, argvLog)
 	assert.GreaterOrEqual(t, countArgvLines(lines, "projects list", "--json"), 1,
 		"expected projects list --json (depth-0 companion) in argv log")
 	assert.GreaterOrEqual(t, countArgvLines(lines, "projects tasks list", "P1", "--json"), 1,
 		"expected projects tasks list P1 --json (depth-1 companion threading P1) in argv log")
-	assert.GreaterOrEqual(t, countArgvLines(lines, "projects tasks update P1 T7"), 1,
-		"expected projects tasks update P1 T7 (post-chain probe) in argv log")
+	assert.GreaterOrEqual(t, countArgvLines(lines, "projects tasks update P1 T7", "--dry-run"), 1,
+		"expected projects tasks update P1 T7 --dry-run (post-chain preview probe) in argv log")
 }
 
 func TestRunLiveDogfoodResolveSuccessCacheHit(t *testing.T) {
@@ -6172,14 +6227,14 @@ func TestRunLiveDogfoodSearchErrorPathMutationFallthrough(t *testing.T) {
 //     --dry-run, modeling a broken dry-run preview (R3).
 //   - widgets destroy - mutator (leaf in mutatingVerbs) that does NOT
 //     advertise --dry-run (hand-written novel command shape). The matrix
-//     should fail the gate's second leg and keep today behavior: no
-//     --dry-run injection and no error_path_real entry.
+//     must skip live execution unless --allow-destructive is set.
 //   - widgets get - annotated GET read. Advertises --dry-run via the
-//     persistent root flag, but the matrix must not inject because the
-//     endpoint method marks it as read-only.
+//     persistent root flag, but happy_path must not inject because the
+//     endpoint method marks it as read-only. dry_run_json still probes
+//     `--dry-run --json`.
 //   - widgets lookup - annotated read-only command. Advertises --dry-run via
-//     the persistent root flag, but the matrix must not inject because the
-//     MCP annotation marks it as read-only.
+//     the persistent root flag, but happy_path must not inject because the
+//     MCP annotation marks it as read-only. dry_run_json still probes.
 //   - widgets publish - unclassified no-method command that advertises
 //     --dry-run. The matrix must inject --dry-run instead of executing live.
 //   - widgets activate - unclassified no-method command without --dry-run.
@@ -6351,9 +6406,8 @@ fi
 
 if [ "$1" = "widgets" ] && [ "$2" = "get" ]; then
   if [ "$has_dry_run" = "1" ]; then
-    # Read commands must never receive --dry-run from the matrix; surface as fail.
-    echo 'unexpected --dry-run on read command' >&2
-    exit 99
+    echo '{"action":"get","status":0,"success":false,"dry_run":true}'
+    exit 0
   fi
   echo '{"id":"42"}'
   exit 0
@@ -6381,8 +6435,8 @@ fi
 
 if [ "$1" = "widgets" ] && [ "$2" = "lookup" ]; then
   if [ "$has_dry_run" = "1" ]; then
-    echo 'unexpected --dry-run on read-only command' >&2
-    exit 99
+    echo '{"action":"lookup","status":0,"success":false,"dry_run":true}'
+    exit 0
   fi
   echo '{"id":"42"}'
   exit 0
@@ -6589,21 +6643,31 @@ func TestRunLiveDogfoodHappyPathFailsOnBrokenDryRun(t *testing.T) {
 		"broken --dry-run preview must surface as happy_path failure (R3)")
 }
 
-func TestRunLiveDogfoodSkipsDryRunInjectionForMutatorWithoutFlag(t *testing.T) {
+func TestRunLiveDogfoodSkipsLiveMutatorWithoutDryRunUnlessAllowed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
 	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
 	report := runDryRunFixtureMatrix(t, dir, binaryName)
 
-	// widgets destroy has a leaf in mutatingVerbs but its help does NOT
-	// advertise --dry-run. The gate's second leg falsifies, so the matrix
-	// must keep today-behavior. The fixture surfaces a regression as exit 99.
 	got := findResultByCommandKind(report, "widgets destroy", LiveDogfoodTestHappy)
 	require.NotNil(t, got)
-	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
-	assert.NotContains(t, got.Args, "--dry-run",
-		"expected matrix to skip --dry-run injection for mutators without the flag advertised")
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status)
+	assert.Equal(t, reasonMutatingRequiresAllowDestructive, got.Reason)
+	assert.NotContains(t, got.Args, "--dry-run")
+
+	allowed, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:           dir,
+		BinaryName:       binaryName,
+		Level:            "full",
+		Timeout:          2 * time.Second,
+		AllowDestructive: true,
+	})
+	require.NoError(t, err)
+	live := findResultByCommandKind(allowed, "widgets destroy", LiveDogfoodTestHappy)
+	require.NotNil(t, live)
+	assert.Equal(t, LiveDogfoodStatusPass, live.Status, live.Reason)
+	assert.NotContains(t, live.Args, "--dry-run")
 }
 
 func TestRunLiveDogfoodSkipsDryRunInjectionForReadCommand(t *testing.T) {
@@ -6621,6 +6685,12 @@ func TestRunLiveDogfoodSkipsDryRunInjectionForReadCommand(t *testing.T) {
 	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
 	assert.NotContains(t, got.Args, "--dry-run",
 		"expected matrix to skip --dry-run injection on GET endpoint commands")
+
+	dryRunJSON := findResultByCommandKind(report, "widgets get", LiveDogfoodTestDryRunJSON)
+	require.NotNil(t, dryRunJSON, "read commands that advertise --dry-run must still get a dry_run_json probe")
+	assert.Equal(t, LiveDogfoodStatusPass, dryRunJSON.Status, dryRunJSON.Reason)
+	assert.Contains(t, dryRunJSON.Args, "--dry-run")
+	assert.Contains(t, dryRunJSON.Args, "--json")
 }
 
 func TestRunLiveDogfoodSkipsDryRunInjectionForReadOnlyAnnotatedCommand(t *testing.T) {
@@ -6635,6 +6705,212 @@ func TestRunLiveDogfoodSkipsDryRunInjectionForReadOnlyAnnotatedCommand(t *testin
 	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
 	assert.NotContains(t, got.Args, "--dry-run",
 		"expected matrix to skip --dry-run injection on read-only annotated commands")
+
+	dryRunJSON := findResultByCommandKind(report, "widgets lookup", LiveDogfoodTestDryRunJSON)
+	require.NotNil(t, dryRunJSON)
+	assert.Equal(t, LiveDogfoodStatusPass, dryRunJSON.Status, dryRunJSON.Reason)
+}
+
+func TestRunLiveDogfoodDryRunJSONFailsReadOnlyNovelWithProse(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+	writeStubBinary(t, dir, binaryName, `#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{"commands":[{"name":"digest","annotations":{"mcp:read-only":"true"}}]}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "digest" ] && [ "${2:-}" = "--help" ]; then
+  cat <<'HELP'
+Summarize recent items.
+
+Usage:
+  fixture-pp-cli digest [flags]
+
+Examples:
+  fixture-pp-cli digest
+
+Flags:
+      --json   Output JSON
+
+Global Flags:
+      --dry-run   Show request without sending
+HELP
+  exit 0
+fi
+
+if [ "$1" = "digest" ]; then
+  echo 'would summarize recent items'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`)
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	got := findResultByCommandKind(report, "digest", LiveDogfoodTestDryRunJSON)
+	require.NotNil(t, got)
+	assert.Equal(t, LiveDogfoodStatusFail, got.Status)
+	assert.Equal(t, "invalid JSON", got.Reason)
+	assert.Contains(t, got.Args, "--dry-run")
+	assert.Contains(t, got.Args, "--json")
+}
+
+func TestRunLiveDogfoodDryRunJSONSkipsMutatingUnlessAllowed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "widgets create", LiveDogfoodTestDryRunJSON)
+	require.NotNil(t, got)
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status)
+	assert.Equal(t, reasonMutatingRequiresAllowDestructive, got.Reason)
+	assert.Empty(t, got.Args, "mutating dry_run_json must not invoke the binary without --allow-destructive")
+
+	allowed, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:           dir,
+		BinaryName:       binaryName,
+		Level:            "full",
+		Timeout:          2 * time.Second,
+		AllowDestructive: true,
+	})
+	require.NoError(t, err)
+	live := findResultByCommandKind(allowed, "widgets create", LiveDogfoodTestDryRunJSON)
+	require.NotNil(t, live)
+	assert.Equal(t, LiveDogfoodStatusPass, live.Status, live.Reason)
+	assert.Contains(t, live.Args, "--name=demo")
+	assert.Contains(t, live.Args, "--dry-run")
+	assert.Contains(t, live.Args, "--json")
+}
+
+func TestRunLiveDogfoodDryRunJSONUsesHappyArgsForRequiredPositionals(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+	writeStubBinary(t, dir, binaryName, `#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{"commands":[{"name":"widgets","subcommands":[{"name":"get","annotations":{"pp:method":"GET"}}]}]}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "get" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Get a widget.
+
+Usage:
+  fixture-pp-cli widgets get <id> [flags]
+
+Examples:
+  fixture-pp-cli widgets get 42
+
+Flags:
+      --json   Output JSON
+
+Global Flags:
+      --dry-run   Show request without sending
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "get" ]; then
+  has_dry_run=0
+  for a in "$@"; do
+    case "$a" in
+      --dry-run|--dry-run=*) has_dry_run=1 ;;
+    esac
+  done
+  if [ -z "${3:-}" ] || [ "${3:-}" = "--dry-run" ] || [ "${3:-}" = "--json" ]; then
+    echo 'accepts 1 arg(s), received 0' >&2
+    exit 1
+  fi
+  if [ "$has_dry_run" = "1" ]; then
+    echo '{"action":"get","status":0,"success":false,"dry_run":true}'
+    exit 0
+  fi
+  echo '{"id":"42"}'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`)
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	got := findResultByCommandKind(report, "widgets get", LiveDogfoodTestDryRunJSON)
+	require.NotNil(t, got)
+	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
+	assert.Equal(t, []string{"widgets", "get", "42", "--json", "--dry-run"}, got.Args)
+}
+
+func TestLiveDogfoodDryRunJSONContract(t *testing.T) {
+	t.Parallel()
+
+	pass, reason := liveDogfoodDryRunJSONContract(liveDogfoodRun{
+		exitCode: 0,
+		stdout:   `{"dry_run":true,"action":"digest","would":"run digest; no changes made"}`,
+	}, false)
+	assert.Equal(t, LiveDogfoodStatusPass, pass)
+	assert.Empty(t, reason)
+
+	failJSON, reason := liveDogfoodDryRunJSONContract(liveDogfoodRun{
+		exitCode: 0,
+		stdout:   "would do the thing",
+	}, false)
+	assert.Equal(t, LiveDogfoodStatusFail, failJSON)
+	assert.Equal(t, "invalid JSON", reason)
+
+	failAction, reason := liveDogfoodDryRunJSONContract(liveDogfoodRun{
+		exitCode: 0,
+		stdout:   `{"dry_run":true,"action":""}`,
+	}, true)
+	assert.Equal(t, LiveDogfoodStatusFail, failAction)
+	assert.Equal(t, "empty dry-run action", reason)
+
+	skipHonour, reason := liveDogfoodDryRunJSONContract(liveDogfoodRun{
+		exitCode: 0,
+		stdout:   `{"id":"42"}`,
+	}, false)
+	assert.Equal(t, LiveDogfoodStatusSkip, skipHonour)
+	assert.Equal(t, "command does not honour --dry-run", reason)
+
+	failHonour, reason := liveDogfoodDryRunJSONContract(liveDogfoodRun{
+		exitCode: 0,
+		stdout:   `{"id":"42"}`,
+	}, true)
+	assert.Equal(t, LiveDogfoodStatusFail, failHonour)
+	assert.Equal(t, "missing dry_run:true", reason)
 }
 
 func TestRunLiveDogfoodInjectsDryRunForUnclassifiedCommand(t *testing.T) {

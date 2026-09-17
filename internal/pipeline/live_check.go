@@ -157,8 +157,10 @@ type LiveCheckOptions struct {
 	// Concurrency sets the parallel-feature worker count. Zero uses
 	// DefaultLiveCheckConcurrency. Set to 1 to force serial execution.
 	Concurrency int
-	// AllowDestructive permits generated-command fallback samples that mutate
-	// external state. Research-authored novel-feature examples are unchanged.
+	// AllowDestructive permits live samples that mutate external state,
+	// including generated-command fallbacks and research-authored novel
+	// examples. Default skips those probes so Example strings cannot create
+	// leftover resources.
 	AllowDestructive bool
 }
 
@@ -239,6 +241,8 @@ func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 			out.Reason = "no novel features with Example commands and no generated command leaves to sample"
 			return out
 		}
+	} else {
+		checkFeatures = enrichLiveCheckFeaturesFromAgentContext(binaryPath, checkFeatures)
 	}
 	probeBinaryPath, cleanupProbeBinary, snapshotErr := snapshotLiveCheckBinary(binaryPath)
 	if snapshotErr != nil {
@@ -279,7 +283,7 @@ func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 }
 
 func refreshLiveCheckStageBinary(cliDir, name string) (LiveCheckBinaryRefresh, error) {
-	stagePath, stageCandidate := liveCheckExistingStageBinaryPath(cliDir, name)
+	stagePath, _ := liveCheckExistingStageBinaryPath(cliDir, name)
 	if stagePath == "" {
 		return LiveCheckBinaryRefresh{Action: "no_stage", Reason: "no staged binary found"}, nil
 	}
@@ -313,12 +317,6 @@ func refreshLiveCheckStageBinary(cliDir, name string) (LiveCheckBinaryRefresh, e
 	if !stageInfo.ModTime().Before(newestSource) {
 		refresh.Action = "fresh"
 		refresh.Reason = "staged binary is newer than Go sources"
-		return refresh, nil
-	}
-	if freshPath := liveCheckFreshRunnableBinaryPath(cliDir, stageCandidate, newestSource); freshPath != "" {
-		refresh.Action = "fresh_fallback"
-		refresh.BinaryPath = freshPath
-		refresh.Reason = "same-name runnable binary is newer than Go sources"
 		return refresh, nil
 	}
 
@@ -413,21 +411,6 @@ func replaceLiveCheckBinary(src, dst string) error {
 	}
 	_ = os.Remove(backupPath)
 	return nil
-}
-
-func liveCheckFreshRunnableBinaryPath(cliDir, name string, newestSource time.Time) string {
-	for _, candidate := range liveCheckBinaryNames(cliDir, name) {
-		for _, path := range liveCheckBinaryCandidatePathsForName(cliDir, candidate, runtime.GOOS) {
-			info, err := os.Stat(path)
-			if err != nil || !isLiveCheckExecutableForGOOS(path, info.Mode(), runtime.GOOS) {
-				continue
-			}
-			if !info.ModTime().Before(newestSource) {
-				return path
-			}
-		}
-	}
-	return ""
 }
 
 func liveCheckExistingStageBinaryPath(cliDir, name string) (string, string) {
@@ -624,9 +607,11 @@ func resolveBinaryPath(cliDir, name string) (string, error) {
 	return resolveBinaryPathForGOOS(cliDir, name, runtime.GOOS)
 }
 
-// ResolveScorerBinaryPath returns the freshest runnable CLI binary found in
-// the layouts used by scorer and shipcheck. An explicit name wins; otherwise
-// the manifest name is tried before worktree-derived legacy names.
+// ResolveScorerBinaryPath returns the runnable CLI binary used by scorer and
+// shipcheck. A staged binary wins over a newer-mtime root or makefile
+// candidate so a stale tree-root binary cannot hijack the live gate. An
+// explicit name wins; otherwise the manifest name is tried before
+// worktree-derived legacy names.
 func ResolveScorerBinaryPath(cliDir, name string) (string, error) {
 	return resolveBinaryPath(cliDir, name)
 }
@@ -642,8 +627,9 @@ func resolveBinaryPathForGOOS(cliDir, name, goos string) (string, error) {
 	candidates := liveCheckBinaryCandidatesForGOOS(cliDir, name, goos)
 	var nonExecutablePath string
 	for _, candidate := range liveCheckBinaryNames(cliDir, name) {
-		var bestPath string
-		var bestModTime time.Time
+		var stagedPath string
+		var fallbackPath string
+		var fallbackModTime time.Time
 		for _, path := range liveCheckBinaryCandidatePathsForName(cliDir, candidate, goos) {
 			info, err := os.Stat(path)
 			if err != nil {
@@ -655,15 +641,25 @@ func resolveBinaryPathForGOOS(cliDir, name, goos string) (string, error) {
 				}
 				continue
 			}
-			if bestPath == "" || info.ModTime().After(bestModTime) {
-				bestPath = path
-				bestModTime = info.ModTime()
+			if liveCheckPathIsStaged(cliDir, path) {
+				if stagedPath == "" {
+					stagedPath = path
+				}
+				continue
+			}
+			if fallbackPath == "" || info.ModTime().After(fallbackModTime) {
+				fallbackPath = path
+				fallbackModTime = info.ModTime()
 			}
 		}
-		if bestPath != "" {
-			absPath, err := filepath.Abs(bestPath)
+		chosen := stagedPath
+		if chosen == "" {
+			chosen = fallbackPath
+		}
+		if chosen != "" {
+			absPath, err := filepath.Abs(chosen)
 			if err != nil {
-				return "", fmt.Errorf("resolving binary path %q: %w", bestPath, err)
+				return "", fmt.Errorf("resolving binary path %q: %w", chosen, err)
 			}
 			return absPath, nil
 		}
@@ -672,6 +668,11 @@ func resolveBinaryPathForGOOS(cliDir, name, goos string) (string, error) {
 		return "", fmt.Errorf("binary %q is not executable", nonExecutablePath)
 	}
 	return "", fmt.Errorf("no runnable binary found in %q (tried %v)", cliDir, candidates)
+}
+
+func liveCheckPathIsStaged(cliDir, path string) bool {
+	stagedDir := filepath.Join(cliDir, "build", "stage", "bin")
+	return filepath.Dir(filepath.Clean(path)) == filepath.Clean(stagedDir)
 }
 
 func isLiveCheckExecutableForGOOS(path string, mode os.FileMode, goos string) bool {
@@ -725,7 +726,7 @@ func liveCheckBinaryNames(cliDir, name string) []string {
 }
 
 func liveCheckBinaryCandidatePathsForName(cliDir, candidate, goos string) []string {
-	// Candidate order breaks ties between equally fresh binaries:
+	// Layout priority, not mtime, chooses among existing binaries:
 	//   1. <cliDir>/build/stage/bin/<name>           validate-stage Unix
 	//   2. <cliDir>/build/stage/bin/<name>.exe       validate-stage Windows
 	//   3. <cliDir>/bin/<name>                       Makefile Unix
@@ -734,7 +735,8 @@ func liveCheckBinaryCandidatePathsForName(cliDir, candidate, goos string) []stri
 	//   6. <cliDir>/<name>.exe                       direct go-build Windows
 	// The generator's --validate "build runnable binary" gate emits the
 	// binary under build/stage/bin/. The generated Makefile writes bin/.
-	// Manual fix loops often rebuild directly into cliDir.
+	// Manual fix loops often rebuild directly into cliDir; a fresher mtime
+	// on that root copy must not beat a staged binary.
 	stagedDir := filepath.Join(cliDir, "build", "stage", "bin")
 	makefileBinDir := filepath.Join(cliDir, "bin")
 	if candidate == "" {
@@ -771,13 +773,62 @@ func annotateLiveCheckFeatures(cliDir string, features []NovelFeature) []liveChe
 	strategies := novelCommandDataSourceStrategies(cliDir)
 	out := make([]liveCheckFeature, 0, len(features))
 	for _, f := range features {
-		leaf := lastPathSegment(commandPath(f.Command))
+		path := liveCheckFeaturePathFromNovel(f)
+		leaf := ""
+		if len(path) > 0 {
+			leaf = path[len(path)-1]
+		}
 		out = append(out, liveCheckFeature{
 			NovelFeature:       f,
 			DataSourceStrategy: strategies[leaf],
+			Path:               path,
 		})
 	}
 	return out
+}
+
+func liveCheckFeaturePathFromNovel(f NovelFeature) []string {
+	path := strings.Fields(commandPath(f.Command))
+	if len(path) > 0 {
+		return path
+	}
+	args, err := parseExampleArgs(f.Example)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			break
+		}
+		out = append(out, strings.ToLower(arg))
+	}
+	return out
+}
+
+func enrichLiveCheckFeaturesFromAgentContext(binaryPath string, features []liveCheckFeature) []liveCheckFeature {
+	out, err := runStdoutOnly(binaryPath, 15*time.Second, "agent-context")
+	if err != nil {
+		return features
+	}
+	paths, err := dogfoodExampleCommandPathsWithAnnotationsFromAgentContext(out)
+	if err != nil {
+		return features
+	}
+	index := make(map[string]dogfoodAgentCommandPath, len(paths))
+	for _, item := range paths {
+		index[strings.Join(item.Path, " ")] = item
+	}
+	for i, f := range features {
+		key := strings.Join(f.Path, " ")
+		item, ok := index[key]
+		if !ok {
+			continue
+		}
+		features[i].Path = item.Path
+		features[i].Annotations = item.Annotations
+	}
+	return features
 }
 
 func novelCommandDataSourceStrategies(cliDir string) map[string]string {
@@ -908,7 +959,7 @@ func runOneFeatureCheckWithDataSource(cliDir, binaryPath string, f liveCheckFeat
 	}
 	if !allowDestructive && liveCheckFeatureMutates(f) {
 		result.Status = StatusSkip
-		result.Reason = "mutating generated command requires --allow-destructive"
+		result.Reason = "mutating example requires --allow-destructive"
 		return result
 	}
 
@@ -983,10 +1034,27 @@ func runOneFeatureCheckWithDataSource(cliDir, binaryPath string, f liveCheckFeat
 }
 
 func liveCheckFeatureMutates(f liveCheckFeature) bool {
-	if len(f.Path) == 0 && len(f.Annotations) == 0 {
+	path := f.Path
+	if len(path) == 0 {
+		path = liveCheckFeaturePathFromNovel(f.NovelFeature)
+	}
+	if len(f.Annotations) > 0 {
+		if annotationIsTrueValue(f.Annotations[mcpReadOnlyAnnotation]) {
+			return false
+		}
+		if annotationIsTrueValue(f.Annotations[mcpLocalWriteAnnotation]) {
+			return true
+		}
+		if method := strings.ToUpper(strings.TrimSpace(f.Annotations[endpointMethodAnnotation])); method != "" {
+			return commandMutates(f.Annotations, path)
+		}
+	}
+	if len(path) == 0 {
 		return false
 	}
-	return commandMutates(f.Annotations, f.Path)
+	// Unclassified leaves (no method annotation, absent from both verb lists)
+	// stay mutating so unknown research commands cannot run live by default.
+	return commandMutation(f.Annotations, path).mutating
 }
 
 func isUnsyncedLocalStoreFailure(stderr string) bool {

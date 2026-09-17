@@ -154,7 +154,7 @@ func newScorecardCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&liveCheck, "live-check", false, "Sample novel-feature examples against real targets and cap Insight when flagships return broken output")
 	cmd.Flags().DurationVar(&liveCheckTimeout, "live-check-timeout", 10*time.Second, "Per-feature timeout for live check invocations")
 	cmd.Flags().StringVar(&writeManifest, "write-manifest", "", "Path to .printing-press.json to update with scorecard summary and built novel features")
-	cmd.Flags().BoolVar(&allowDestructive, "allow-destructive", false, "Allow live-check to execute mutating generated command samples (default skips them)")
+	cmd.Flags().BoolVar(&allowDestructive, "allow-destructive", false, "Allow live-check to execute mutating generated and research-authored examples (default skips them)")
 
 	return cmd
 }
