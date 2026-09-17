@@ -798,6 +798,48 @@ func TestShipcheck_JSONEnvelope_OneFailure(t *testing.T) {
 	}
 }
 
+func TestShipcheck_JSONEnvelope_DogfoodAndWorkflowVerifyFailure(t *testing.T) {
+	h := newShipcheckHarness(t)
+	t.Setenv("STUB_EXIT_DOGFOOD", "3")
+	t.Setenv("STUB_EXIT_WORKFLOW_VERIFY", "3")
+
+	out := captureStdout(t, func() {
+		err := runShipcheckCmd(t, "--dir", h.dir, "--json")
+		if err == nil {
+			t.Fatal("expected non-nil error when dogfood and workflow-verify fail")
+		}
+		exitErr, ok := err.(*ExitError)
+		if !ok {
+			t.Fatalf("expected *ExitError; got %T: %v", err, err)
+		}
+		if exitErr.Code != ExitGenerationError {
+			t.Fatalf("umbrella exit code = %d, want %d", exitErr.Code, ExitGenerationError)
+		}
+	})
+
+	var env shipcheckJSONEnvelope
+	if err := json.Unmarshal([]byte(extractFinalJSONObject(t, out)), &env); err != nil {
+		t.Fatalf("envelope is not valid JSON: %v", err)
+	}
+	if env.Passed || env.Verdict != "FAIL" || env.ExitCode != ExitGenerationError {
+		t.Fatalf("envelope = passed=%v verdict=%s exit=%d, want FAIL exit %d", env.Passed, env.Verdict, env.ExitCode, ExitGenerationError)
+	}
+
+	saw := map[string]bool{}
+	for _, leg := range env.Legs {
+		if leg.Name == "dogfood" || leg.Name == "workflow-verify" {
+			saw[leg.Name] = true
+			if leg.Passed || leg.Verdict != "FAIL" || leg.ExitCode != ExitGenerationError {
+				t.Errorf("%s leg = passed=%v verdict=%s exit=%d, want FAIL exit %d",
+					leg.Name, leg.Passed, leg.Verdict, leg.ExitCode, ExitGenerationError)
+			}
+		}
+	}
+	if !saw["dogfood"] || !saw["workflow-verify"] {
+		t.Fatalf("envelope missing dogfood or workflow-verify legs: %v", saw)
+	}
+}
+
 func TestShipcheck_HoldsOnUnverifiedScorecard(t *testing.T) {
 	h := newShipcheckHarness(t)
 	if err := os.WriteFile(filepath.Join(h.dir, pipeline.CLIManifestFilename), []byte(`{
