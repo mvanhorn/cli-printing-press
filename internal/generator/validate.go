@@ -276,7 +276,7 @@ func waitAndMaybeWipeLocked(cacheDir string, maxBytes int64) {
 	cacheGateMu.Unlock()
 	over, err := buildCacheExceeds(cacheDir, maxBytes)
 	cacheGateMu.Lock()
-	if err != nil || !over {
+	if !scanRequiresTrim(over, err) {
 		return
 	}
 	for cacheGateActive > 0 {
@@ -301,10 +301,7 @@ func boundBuildCache(dir string, maxBytes int64) error {
 		return nil
 	}
 	over, err := buildCacheExceeds(dir, maxBytes)
-	if err != nil {
-		return err
-	}
-	if !over {
+	if !scanRequiresTrim(over, err) {
 		return nil
 	}
 	entries, err := os.ReadDir(dir)
@@ -320,6 +317,21 @@ func boundBuildCache(dir string, maxBytes int64) error {
 	return os.MkdirAll(dir, 0o755)
 }
 
+func scanRequiresTrim(over bool, err error) bool {
+	return over || err != nil
+}
+
+func cacheEntrySize(d os.DirEntry) (int64, error) {
+	info, err := d.Info()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return info.Size(), nil
+}
+
 func buildCacheExceeds(dir string, maxBytes int64) (bool, error) {
 	var total int64
 	err := filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
@@ -332,11 +344,11 @@ func buildCacheExceeds(dir string, maxBytes int64) (bool, error) {
 		if d.IsDir() {
 			return nil
 		}
-		info, infoErr := d.Info()
-		if infoErr != nil {
-			return nil
+		size, statErr := cacheEntrySize(d)
+		if statErr != nil {
+			return errCacheOverLimit
 		}
-		total += info.Size()
+		total += size
 		if total > maxBytes {
 			return errCacheOverLimit
 		}

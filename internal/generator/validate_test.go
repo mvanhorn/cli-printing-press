@@ -113,6 +113,34 @@ func TestBoundBuildCacheMissingDirIsNoop(t *testing.T) {
 	require.NoError(t, boundBuildCache(filepath.Join(t.TempDir(), "missing"), 1000))
 }
 
+type dirEntryStatError struct {
+	err error
+}
+
+func (e dirEntryStatError) Name() string               { return "x" }
+func (e dirEntryStatError) IsDir() bool                { return false }
+func (e dirEntryStatError) Type() os.FileMode          { return 0 }
+func (e dirEntryStatError) Info() (os.FileInfo, error) { return nil, e.err }
+
+func TestCacheEntrySizeIgnoresMissingFiles(t *testing.T) {
+	size, err := cacheEntrySize(dirEntryStatError{err: os.ErrNotExist})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), size)
+}
+
+func TestCacheEntrySizeOtherStatErrorsAreVisible(t *testing.T) {
+	size, err := cacheEntrySize(dirEntryStatError{err: os.ErrPermission})
+	require.Error(t, err)
+	assert.Equal(t, int64(0), size)
+	assert.True(t, scanRequiresTrim(false, err))
+}
+
+func TestScanRequiresTrimOnWalkError(t *testing.T) {
+	assert.False(t, scanRequiresTrim(false, nil))
+	assert.True(t, scanRequiresTrim(true, nil))
+	assert.True(t, scanRequiresTrim(false, os.ErrPermission))
+}
+
 func TestGoBuildCacheDirWipesManagedCacheOverMax(t *testing.T) {
 	home := isolateBuildCacheHome(t)
 	cacheDir := filepath.Join(home, ".cache", "printing-press", "go-build")
