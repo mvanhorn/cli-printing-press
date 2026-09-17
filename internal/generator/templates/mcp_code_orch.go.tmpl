@@ -139,6 +139,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- range $eName, $endpoint := $resource.Endpoints}}
 {{- $path := effectiveEndpointPath $resource $endpoint}}
 {{- $isReadOnly := endpointIsReadCommand $endpoint $eName}}
+{{- $summary := codeOrchSummary $endpoint}}
 	{
 		ID:      "{{$name}}.{{$eName}}",
 		Method:  "{{upper $endpoint.Method}}",
@@ -149,7 +150,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- if $.HasTierRouting}}
 		Tier:    {{printf "%q" (effectiveTier $.APISpec $resource $endpoint)}},
 {{- end}}
-		Summary: {{printf "%q" (oneline $endpoint.Description)}},
+		Summary: {{printf "%q" $summary}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
 		TemplateParams: []codeOrchParamBinding{ {{- range mcpGlobalTemplateBindings $endpoint $path $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}} },
 		QueryParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}{{if .QueryArray}}, QueryArray: true, QueryStyle: {{printf "%q" .QueryStyle}}, QueryExplode: {{.QueryExplode}}{{end}}{{if .DeepObjectQuery}}, DeepObjectQuery: true{{end}}},{{end}}{{end}} },
@@ -168,13 +169,14 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse}}
 		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}}{{if $endpoint.UsesTextResponse}}"X-Printing-Press-Text-Response": "true",{{end}}{{if $endpoint.UsesHTMLResponse}}"X-Printing-Press-HTML-Response": "true",{{end}} },
 {{- end}}
-		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" $path}}),
+		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" $summary}}, {{printf "%q" $path}}),
 	},
 {{- end}}
 {{- range $subName, $subResource := $resource.SubResources}}
 {{- range $eName, $endpoint := $subResource.Endpoints}}
 {{- $path := effectiveSubEndpointPath $resource $subResource $endpoint}}
 {{- $isReadOnly := endpointIsReadCommand $endpoint $eName}}
+{{- $summary := codeOrchSummary $endpoint}}
 	{
 		ID:      "{{$name}}.{{$subName}}.{{$eName}}",
 		Method:  "{{upper $endpoint.Method}}",
@@ -185,7 +187,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- if $.HasTierRouting}}
 		Tier:    {{printf "%q" (effectiveSubTier $.APISpec $resource $subResource $endpoint)}},
 {{- end}}
-		Summary: {{printf "%q" (oneline $endpoint.Description)}},
+		Summary: {{printf "%q" $summary}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
 		TemplateParams: []codeOrchParamBinding{ {{- range mcpGlobalTemplateBindings $endpoint $path $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}} },
 		QueryParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}{{if .QueryArray}}, QueryArray: true, QueryStyle: {{printf "%q" .QueryStyle}}, QueryExplode: {{.QueryExplode}}{{end}}{{if .DeepObjectQuery}}, DeepObjectQuery: true{{end}}},{{end}}{{end}} },
@@ -204,7 +206,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse}}
 		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}}{{if $endpoint.UsesTextResponse}}"X-Printing-Press-Text-Response": "true",{{end}}{{if $endpoint.UsesHTMLResponse}}"X-Printing-Press-HTML-Response": "true",{{end}} },
 {{- end}}
-		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" $path}}),
+		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" $summary}}, {{printf "%q" $path}}),
 	},
 {{- end}}
 {{- end}}

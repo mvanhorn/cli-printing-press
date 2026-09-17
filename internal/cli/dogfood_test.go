@@ -13,6 +13,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestPrintDogfoodReportQualifiesPassWhenNoSpec(t *testing.T) {
+	report := &pipeline.DogfoodReport{
+		Dir:        t.TempDir(),
+		SpecSource: pipeline.DogfoodSpecSourceNone,
+		Verdict:    "PASS",
+		PathCheck: pipeline.PathCheckResult{
+			Skipped: true,
+			Detail:  "no resolvable spec; 3 command(s) unvalidated",
+		},
+		AuthCheck: pipeline.AuthCheckResult{
+			Match:   false,
+			Skipped: true,
+			Detail:  "spec not provided; auth protocol check skipped",
+		},
+	}
+
+	out := captureStdout(t, func() {
+		printDogfoodReport(report)
+	})
+
+	assert.Contains(t, out, "Path Validity:     0/0 valid (SKIP)")
+	assert.Contains(t, out, "no resolvable spec; 3 command(s) unvalidated")
+	assert.Contains(t, out, "Auth Protocol:     SKIP")
+	assert.Contains(t, out, "Verdict: PASS (path/auth checks skipped — no spec)")
+	assert.NotContains(t, out, "Verdict: PASS\n")
+}
+
 func TestPrintDogfoodReportRespectsSkippedPathCheck(t *testing.T) {
 	report := &pipeline.DogfoodReport{
 		Dir:      t.TempDir(),

@@ -14,15 +14,14 @@ import (
 func newAPICmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "api [interface]",
-		Short:       "Browse all API endpoints by interface name",
+		Short:       "Browse API resource interfaces by raw name",
 		Annotations: map[string]string{"mcp:read-only": "true"},
-		Long: `Browse and call any API endpoint using the raw interface names.
+		Long: `Browse API resource interfaces using their raw command names.
 
-The friendly top-level commands cover the most common operations.
-This command provides access to ALL endpoints for power users and
-agents that need full API coverage.
+Promoted top-level commands cover single-endpoint shortcuts. This
+command lists resource parents that group multiple endpoints.
 
-Run 'api' with no arguments to list all interfaces.
+Run 'api' with no arguments to list those interfaces.
 Run 'api <interface>' to see that interface's methods.`,
 		Example: `  # List all available interfaces
   printing-press-golden-pp-cli api

@@ -87,6 +87,55 @@ func TestCompose_PatchUPDATEWithPathParams(t *testing.T) {
 	assert.Equal(t, "Update project task. Required: projectId, taskId. Optional: title, priority, completed. Partial update.", got)
 }
 
+func TestCompose_DeprecatedAddsMarker(t *testing.T) {
+	in := Input{
+		Endpoint: spec.Endpoint{
+			Method:      "POST",
+			Path:        "/audiences",
+			Description: "Create an audience",
+			Deprecated:  true,
+			Response:    spec.ResponseDef{Type: "object", Item: "Audience"},
+		},
+		AuthType: "none",
+	}
+	got := Compose(in)
+	assert.Contains(t, got, "Deprecated.")
+	assert.Contains(t, got, "Create an audience.")
+}
+
+func TestAppendDeprecatedMarker(t *testing.T) {
+	tests := []struct {
+		name string
+		desc string
+		ep   spec.Endpoint
+		want string
+	}{
+		{name: "live unchanged", desc: "List audiences", ep: spec.Endpoint{}, want: "List audiences"},
+		{name: "deprecated appends", desc: "Create an audience", ep: spec.Endpoint{Deprecated: true}, want: "Create an audience Deprecated."},
+		{name: "existing word kept once", desc: "Deprecated concepts listing", ep: spec.Endpoint{Deprecated: true}, want: "Deprecated concepts listing"},
+		{name: "empty deprecated still marks", desc: "", ep: spec.Endpoint{Deprecated: true}, want: "Deprecated."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, AppendDeprecatedMarker(tt.desc, tt.ep))
+		})
+	}
+}
+
+func TestCompose_DeprecatedDoesNotDuplicateExistingWord(t *testing.T) {
+	in := Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/concepts",
+			Description: "Deprecated concepts listing",
+			Deprecated:  true,
+		},
+		AuthType: "none",
+	}
+	got := Compose(in)
+	assert.Equal(t, 1, strings.Count(strings.ToLower(got), "deprecated"))
+}
+
 func TestCompose_DeleteAddsDestructive(t *testing.T) {
 	in := Input{
 		Endpoint: spec.Endpoint{

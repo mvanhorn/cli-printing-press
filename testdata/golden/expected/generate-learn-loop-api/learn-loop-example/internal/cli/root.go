@@ -448,7 +448,6 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.AddCommand(newSearchCmd(flags))
 	rootCmd.AddCommand(newSyncCmd(flags))
 	rootCmd.AddCommand(newWorkflowCmd(flags))
-	rootCmd.AddCommand(newAPICmd(flags))
 	rootCmd.AddCommand(newGamesPromotedCmd(flags))
 	rootCmd.AddCommand(newLeaguesPromotedCmd(flags))
 	rootCmd.AddCommand(newVersionCmd())

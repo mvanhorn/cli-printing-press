@@ -2395,6 +2395,9 @@ type Endpoint struct {
 	Mutation    *bool  `yaml:"mutation,omitempty" json:"mutation,omitempty"`
 	BaseURL     string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
 	Description string `yaml:"description" json:"description"`
+	// Deprecated is OpenAPI `deprecated: true`. Keep the command visible;
+	// cobra.Command.Deprecated would hide it from help.
+	Deprecated bool `yaml:"deprecated,omitempty" json:"deprecated,omitempty"`
 	// Example is an optional Cobra Example string for this endpoint command.
 	// When empty, the generator synthesizes an example from command path and
 	// required inputs.

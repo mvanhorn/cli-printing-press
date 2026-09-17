@@ -3598,6 +3598,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 				BaseURL:                operationServerBaseURL(out.BaseURL, pathItem, op),
 				Description:            description,
 				DescriptionSynthesized: descriptionSynthesized,
+				Deprecated:             op.Deprecated,
 				Params:                 params,
 				Body:                   body,
 				BodyJSONFallback:       bodyJSONFallback,

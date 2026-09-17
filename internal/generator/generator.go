@@ -334,6 +334,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"chomp":                               func(s string) string { return strings.TrimRight(s, "\r\n") },
 		"staleAfterExpr":                      staleAfterExpr,
 		"oneline":                             naming.OneLine,
+		"endpointDeprecatedLong":              endpointDeprecatedLong,
+		"codeOrchSummary":                     codeOrchSummary,
 		"composeMCPDesc":                      composeMCPDesc,
 		"composeMCPSubDesc":                   composeMCPSubDesc,
 		"mcpParamDesc":                        g.mcpParamDescription,
@@ -3607,7 +3609,7 @@ func (g *Generator) activeFrameworkCobraUseNames() map[string]struct{} {
 		names["teach-pattern"] = struct{}{}
 		names["teach-playbook"] = struct{}{}
 	}
-	if len(g.PromotedCommands) > 0 {
+	if g.hasAPIBrowser() {
 		names["api"] = struct{}{}
 	}
 	for _, tmpl := range g.VisionSet.Workflows {
@@ -5710,9 +5712,27 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 	return nil
 }
 
+func (g *Generator) hasAPIBrowser() bool {
+	return hasAPIResourceParents(g.Spec, g.PromotedResourceNames)
+}
+
+func hasAPIResourceParents(s *spec.APISpec, promotedResourceNames map[string]bool) bool {
+	if s == nil {
+		return false
+	}
+	for name := range s.Resources {
+		if !promotedResourceNames[name] {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedCommand) error {
-	// Generate api discovery command when promoted commands exist (lets users browse the raw generated surface)
-	if len(promotedCommands) > 0 {
+	// Emit api discovery only when resource parents exist to list. Promoted
+	// leaves alone would ship a hollow `api` that claims coverage and prints
+	// "No API interfaces found."
+	if g.hasAPIBrowser() {
 		if err := g.renderTemplate("api_discovery.go.tmpl", filepath.Join("internal", "cli", "api_discovery.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering api discovery: %w", err)
 		}
@@ -5893,6 +5913,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		SelectExample          string
 		HasWorkflow            bool
 		CompactDescription     string
+		HasAPIBrowser          bool
 	}{
 		APISpec:                g.Spec,
 		VisionSet:              g.dataSurfaceVisionSet(),
@@ -5917,6 +5938,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		SelectExample:          selectExampleForCommand(g.Spec),
 		HasWorkflow:            g.hasWorkflowSurface(),
 		CompactDescription:     g.compactDescription(),
+		HasAPIBrowser:          g.hasAPIBrowser(),
 	}
 	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {
 		return fmt.Errorf("rendering root: %w", err)
@@ -9196,6 +9218,19 @@ func resolveEnvVarField(envVar string) string {
 		return name
 	}
 	return envVarField(envVar)
+}
+
+func endpointDeprecatedLong(ep spec.Endpoint) string {
+	desc := strings.TrimSpace(ep.Description)
+	notice := "Deprecated: this operation is marked deprecated in the API spec."
+	if desc == "" {
+		return notice
+	}
+	return desc + "\n\n" + notice
+}
+
+func codeOrchSummary(ep spec.Endpoint) string {
+	return mcpdesc.AppendDeprecatedMarker(naming.OneLine(ep.Description), ep)
 }
 
 // composeMCPDesc is the template helper that wraps mcpdesc.Compose so
