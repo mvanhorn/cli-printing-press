@@ -3,12 +3,14 @@ package generator
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
@@ -23,6 +25,20 @@ type validationGate struct {
 }
 
 const qualityGateTimeout = 5 * time.Minute
+
+// Isolated GOCACHE is shared across generated modules so parallel tests
+// reuse the stdlib compile. Go's own trim is age-based (days), so unique
+// generated packages accumulate until the disk fills. Bound it by size.
+const isolatedBuildCacheMaxBytes int64 = 2 << 30
+
+const isolatedBuildCacheCheckInterval = 15 * time.Second
+
+var errCacheOverLimit = errors.New("build cache over size limit")
+
+var (
+	buildCacheBoundMu   sync.Mutex
+	buildCacheLastCheck = map[string]time.Time{}
+)
 
 func (g *Generator) Validate() error {
 	binPath := platform.ExecutablePath(filepath.Join(g.OutputDir, naming.ValidationBinary(g.Spec.Name)))
@@ -194,23 +210,40 @@ func runCommandWithEnv(dir string, timeout time.Duration, extraEnv []string, nam
 }
 
 func goBuildCacheDir(dir string) (string, error) {
+	return goBuildCacheDirLimited(dir, isolatedBuildCacheMaxBytes)
+}
+
+func goBuildCacheDirLimited(dir string, maxBytes int64) (string, error) {
+	cacheDir, isolated, err := resolveGoBuildCacheDir(dir)
+	if err != nil {
+		return "", err
+	}
+	if isolated {
+		if err := maybeBoundIsolatedBuildCache(cacheDir, maxBytes); err != nil {
+			return "", fmt.Errorf("bounding isolated GOCACHE: %w", err)
+		}
+	}
+	return cacheDir, nil
+}
+
+func resolveGoBuildCacheDir(dir string) (string, bool, error) {
 	if cacheDir := os.Getenv("GOCACHE"); cacheDir != "" {
 		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-			return "", fmt.Errorf("creating GOCACHE dir: %w", err)
+			return "", false, fmt.Errorf("creating GOCACHE dir: %w", err)
 		}
-		return cacheDir, nil
+		return cacheDir, false, nil
 	}
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		absDir, absErr := filepath.Abs(dir)
 		if absErr != nil {
-			return "", fmt.Errorf("resolving build cache path: %w", absErr)
+			return "", false, fmt.Errorf("resolving build cache path: %w", absErr)
 		}
 		fallback := filepath.Join(absDir, ".cache", "go-build")
 		if mkErr := os.MkdirAll(fallback, 0o755); mkErr != nil {
-			return "", fmt.Errorf("creating fallback build cache dir: %w", mkErr)
+			return "", false, fmt.Errorf("creating fallback build cache dir: %w", mkErr)
 		}
-		return fallback, nil
+		return fallback, true, nil
 	}
 
 	// Use a single shared cache for all generated CLIs.
@@ -218,7 +251,73 @@ func goBuildCacheDir(dir string) (string, error) {
 	// standard library from scratch, causing CI timeouts.
 	cacheDir := filepath.Join(homeDir, ".cache", "printing-press", "go-build")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return "", fmt.Errorf("creating build cache dir: %w", err)
+		return "", false, fmt.Errorf("creating build cache dir: %w", err)
 	}
-	return cacheDir, nil
+	return cacheDir, true, nil
+}
+
+func maybeBoundIsolatedBuildCache(cacheDir string, maxBytes int64) error {
+	if maxBytes <= 0 {
+		return nil
+	}
+	key := filepath.Clean(cacheDir)
+
+	buildCacheBoundMu.Lock()
+	defer buildCacheBoundMu.Unlock()
+	if time.Since(buildCacheLastCheck[key]) < isolatedBuildCacheCheckInterval {
+		return nil
+	}
+	if err := boundBuildCache(cacheDir, maxBytes); err != nil {
+		return err
+	}
+	buildCacheLastCheck[key] = time.Now()
+	return nil
+}
+
+func boundBuildCache(dir string, maxBytes int64) error {
+	if maxBytes <= 0 {
+		return nil
+	}
+	over, err := buildCacheExceeds(dir, maxBytes)
+	if err != nil {
+		return err
+	}
+	if !over {
+		return nil
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("wiping oversized build cache: %w", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("recreating build cache dir: %w", err)
+	}
+	return nil
+}
+
+func buildCacheExceeds(dir string, maxBytes int64) (bool, error) {
+	var total int64
+	err := filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			return nil
+		}
+		total += info.Size()
+		if total > maxBytes {
+			return errCacheOverLimit
+		}
+		return nil
+	})
+	if errors.Is(err, errCacheOverLimit) {
+		return true, nil
+	}
+	return false, err
 }
