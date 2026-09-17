@@ -2,7 +2,8 @@
   "auth_check": {
     "detail": "spec not provided; auth protocol check skipped",
     "generated_format": "",
-    "match": true,
+    "match": false,
+    "skipped": true,
     "spec_scheme": ""
   },
   "browser_session_check": {
@@ -53,6 +54,8 @@
     "skipped": true
   },
   "path_check": {
+    "detail": "no resolvable spec; 2 command(s) unvalidated",
+    "skipped": true,
     "tested": 0,
     "valid": 0,
     "valid_pct": 0
@@ -77,6 +80,7 @@
     "checked": 0,
     "skipped": true
   },
+  "spec_source": "none",
   "sync_param_drop_check": {
     "checked": 0,
     "skipped": true
