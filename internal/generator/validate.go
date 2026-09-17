@@ -36,7 +36,10 @@ const isolatedBuildCacheCheckInterval = 15 * time.Second
 var errCacheOverLimit = errors.New("build cache over size limit")
 
 var (
-	buildCacheBoundMu   sync.Mutex
+	// Readers are in-flight generated-module go commands. A wipe takes the
+	// write lock so it cannot delete files another compile is reading.
+	buildCacheMu        sync.RWMutex
+	buildCacheCheckMu   sync.Mutex
 	buildCacheLastCheck = map[string]time.Time{}
 )
 
@@ -180,21 +183,17 @@ func runCommandWithEnv(dir string, timeout time.Duration, extraEnv []string, nam
 		defer cancel()
 	}
 
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = dir
-	cacheDir, err := goBuildCacheDir(dir)
-	if err != nil {
-		return "", err
-	}
-	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
-	cmd.Env = append(cmd.Env, extraEnv...)
-
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err = cmd.Run()
+	err := withGoBuildCache(dir, func(cacheDir string) error {
+		cmd := exec.CommandContext(ctx, name, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+		cmd.Env = append(cmd.Env, extraEnv...)
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		return cmd.Run()
+	})
 	output := strings.TrimSpace(strings.Join([]string{stdout.String(), stderr.String()}, "\n"))
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -210,20 +209,27 @@ func runCommandWithEnv(dir string, timeout time.Duration, extraEnv []string, nam
 }
 
 func goBuildCacheDir(dir string) (string, error) {
-	return goBuildCacheDirLimited(dir, isolatedBuildCacheMaxBytes)
+	cacheDir, _, err := resolveGoBuildCacheDir(dir)
+	return cacheDir, err
 }
 
-func goBuildCacheDirLimited(dir string, maxBytes int64) (string, error) {
+func withGoBuildCache(dir string, fn func(cacheDir string) error) error {
+	return withGoBuildCacheLimited(dir, isolatedBuildCacheMaxBytes, fn)
+}
+
+func withGoBuildCacheLimited(dir string, maxBytes int64, fn func(cacheDir string) error) error {
 	cacheDir, isolated, err := resolveGoBuildCacheDir(dir)
 	if err != nil {
-		return "", err
+		return err
 	}
 	if isolated {
 		if err := maybeBoundIsolatedBuildCache(cacheDir, maxBytes); err != nil {
-			return "", fmt.Errorf("bounding isolated GOCACHE: %w", err)
+			return fmt.Errorf("bounding isolated GOCACHE: %w", err)
 		}
 	}
-	return cacheDir, nil
+	buildCacheMu.RLock()
+	defer buildCacheMu.RUnlock()
+	return fn(cacheDir)
 }
 
 func resolveGoBuildCacheDir(dir string) (string, bool, error) {
@@ -260,18 +266,30 @@ func maybeBoundIsolatedBuildCache(cacheDir string, maxBytes int64) error {
 	if maxBytes <= 0 {
 		return nil
 	}
-	key := filepath.Clean(cacheDir)
-
-	buildCacheBoundMu.Lock()
-	defer buildCacheBoundMu.Unlock()
-	if time.Since(buildCacheLastCheck[key]) < isolatedBuildCacheCheckInterval {
+	if !shouldCheckBuildCache(cacheDir) {
 		return nil
 	}
-	if err := boundBuildCache(cacheDir, maxBytes); err != nil {
+	over, err := buildCacheExceeds(cacheDir, maxBytes)
+	if err != nil {
 		return err
 	}
+	if !over {
+		return nil
+	}
+	buildCacheMu.Lock()
+	defer buildCacheMu.Unlock()
+	return boundBuildCache(cacheDir, maxBytes)
+}
+
+func shouldCheckBuildCache(cacheDir string) bool {
+	key := filepath.Clean(cacheDir)
+	buildCacheCheckMu.Lock()
+	defer buildCacheCheckMu.Unlock()
+	if time.Since(buildCacheLastCheck[key]) < isolatedBuildCacheCheckInterval {
+		return false
+	}
 	buildCacheLastCheck[key] = time.Now()
-	return nil
+	return true
 }
 
 func boundBuildCache(dir string, maxBytes int64) error {

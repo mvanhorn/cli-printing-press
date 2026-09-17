@@ -153,26 +153,23 @@ func yamlUnmarshalForTest(body string, out any) error {
 
 func runGoVet(t *testing.T, dir string) error {
 	t.Helper()
-	cacheDir, err := goBuildCacheDir(dir)
-	if err != nil {
+	return withGoBuildCache(dir, func(cacheDir string) error {
+		cmd := exec.Command("go", "vet", "./internal/cli/...")
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir, "GOFLAGS=-mod=mod")
+		tidy := exec.Command("go", "mod", "tidy")
+		tidy.Dir = dir
+		tidy.Env = cmd.Env
+		if out, err := tidy.CombinedOutput(); err != nil {
+			t.Logf("mod tidy output: %s", string(out))
+			return err
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Logf("go vet output: %s", string(out))
+		}
 		return err
-	}
-	cmd := exec.Command("go", "vet", "./internal/cli/...")
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir, "GOFLAGS=-mod=mod")
-	// go vet requires a valid module — run mod tidy first.
-	tidy := exec.Command("go", "mod", "tidy")
-	tidy.Dir = dir
-	tidy.Env = cmd.Env
-	if out, err := tidy.CombinedOutput(); err != nil {
-		t.Logf("mod tidy output: %s", string(out))
-		return err
-	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Logf("go vet output: %s", string(out))
-	}
-	return err
+	})
 }
 
 // TestRootLongStaysUnderSizeBudget asserts that an absorb output with

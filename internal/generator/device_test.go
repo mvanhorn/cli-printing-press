@@ -793,8 +793,6 @@ func runGeneratedJSONCommand(t *testing.T, outputDir, homeDir string, args ...st
 	cmdArgs := append([]string{"run", "-mod=mod", "./cmd/ble-session-appliance-pp-cli", "--json"}, args...)
 	cmd := exec.Command("go", cmdArgs...)
 	cmd.Dir = outputDir
-	cacheDir, err := goBuildCacheDir(outputDir)
-	require.NoError(t, err)
 	modCacheDir := os.Getenv("GOMODCACHE")
 	if modCacheDir == "" {
 		output, err := exec.Command("go", "env", "GOMODCACHE").Output()
@@ -802,14 +800,19 @@ func runGeneratedJSONCommand(t *testing.T, outputDir, homeDir string, args ...st
 		modCacheDir = strings.TrimSpace(string(output))
 	}
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	cmd.Env = append(os.Environ(),
-		"GOCACHE="+cacheDir,
-		"GOMODCACHE="+modCacheDir,
-		"HOME="+homeDir,
-		"XDG_CACHE_HOME="+filepath.Join(homeDir, ".cache"),
-	)
-	output, err := cmd.Output()
+	var output []byte
+	err := withGoBuildCache(outputDir, func(cacheDir string) error {
+		cmd.Stderr = &stderr
+		cmd.Env = append(os.Environ(),
+			"GOCACHE="+cacheDir,
+			"GOMODCACHE="+modCacheDir,
+			"HOME="+homeDir,
+			"XDG_CACHE_HOME="+filepath.Join(homeDir, ".cache"),
+		)
+		var runErr error
+		output, runErr = cmd.Output()
+		return runErr
+	})
 	require.NoError(t, err, stderr.String())
 	var result any
 	require.NoError(t, json.Unmarshal(output, &result))

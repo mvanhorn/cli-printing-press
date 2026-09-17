@@ -248,10 +248,13 @@ func TestGeneratedSurfaceParityDetectsArtificialDrop(t *testing.T) {
 
 	cmd := exec.Command("go", "test", "-mod=mod", "./internal/cli", "-run", "^TestDeclaredAPISurfaceReachable$", "-count=1")
 	cmd.Dir = outputDir
-	cacheDir, err := goBuildCacheDir(outputDir)
-	require.NoError(t, err)
-	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
-	output, err := cmd.CombinedOutput()
+	var output []byte
+	err = withGoBuildCache(outputDir, func(cacheDir string) error {
+		cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+		var runErr error
+		output, runErr = cmd.CombinedOutput()
+		return runErr
+	})
 	require.Error(t, err, string(output))
 	assert.Contains(t, string(output), "orders create")
 }

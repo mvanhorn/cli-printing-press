@@ -121,10 +121,12 @@ func TestGoBuildCacheDirWipesManagedCacheOverMax(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o755))
 	require.NoError(t, os.WriteFile(stale, bytes.Repeat([]byte("x"), 2000), 0o644))
 
-	got, err := goBuildCacheDirLimited("/tmp/any-project", 1000)
+	err := withGoBuildCacheLimited("/tmp/any-project", 1000, func(got string) error {
+		assert.Equal(t, cacheDir, got)
+		assert.NoFileExists(t, stale)
+		return nil
+	})
 	require.NoError(t, err)
-	assert.Equal(t, cacheDir, got)
-	assert.NoFileExists(t, stale)
 	assert.DirExists(t, cacheDir)
 }
 
@@ -135,9 +137,12 @@ func TestGoBuildCacheDirDoesNotWipeExplicitGOCACHE(t *testing.T) {
 	keep := filepath.Join(cacheDir, "keep.bin")
 	require.NoError(t, os.WriteFile(keep, bytes.Repeat([]byte("x"), 2000), 0o644))
 
-	got, err := goBuildCacheDirLimited("/tmp/any-project", 1000)
+	err := withGoBuildCacheLimited("/tmp/any-project", 1000, func(got string) error {
+		assert.Equal(t, cacheDir, got)
+		assert.FileExists(t, keep)
+		return nil
+	})
 	require.NoError(t, err)
-	assert.Equal(t, cacheDir, got)
 	assert.FileExists(t, keep)
 }
 

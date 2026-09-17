@@ -234,10 +234,13 @@ func TestGeneratedTLSPersistedOptOutSurvivesAuthReducedSave(t *testing.T) {
 
 	listCmd := exec.Command("go", "test", "-mod=mod", "-list", "^TestGeneratedTLSPersistedOptOutSurvivesAuthReducedSave$", "./internal/config")
 	listCmd.Dir = outputDir
-	cacheDir, err := goBuildCacheDir(outputDir)
-	require.NoError(t, err)
-	listCmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
-	listOut, err := listCmd.CombinedOutput()
+	var listOut []byte
+	err := withGoBuildCache(outputDir, func(cacheDir string) error {
+		listCmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+		var runErr error
+		listOut, runErr = listCmd.CombinedOutput()
+		return runErr
+	})
 	require.NoError(t, err, string(listOut))
 	require.Contains(t, string(listOut), "TestGeneratedTLSPersistedOptOutSurvivesAuthReducedSave")
 
