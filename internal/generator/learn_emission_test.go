@@ -197,15 +197,31 @@ func TestGenerateLearnCommandExamplesAreRunnableOnFirstLine(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	teachSrc := readEmitted(t, outputDir, "internal", "cli", "teach.go")
-	require.Contains(t, teachSrc, "Example: `  QUERY=\"$(cat /path/to/question.txt)\" learn-examples-pp-cli teach --query \"$QUERY\" --resource-type <type> --resource <id> --resource <id> &`,")
-	require.Contains(t, teachSrc, "Example: `  learn-examples-pp-cli teach-pattern --query-template \"items in {entity}\" --resource-template \"GROUP-{entity:category}\" --resource-type \"items\" --entity-kind \"category\" --strategy substitute`,")
+	assertTeachFamilyProbeSurface(t, teachSrc, `Use:   "teach"`,
+		`--query=find items in category;--resource-type=items;--resource=GROUP-category`,
+		`learn-examples-pp-cli teach --query "find items in category" --resource-type items --resource GROUP-category`)
+	assertTeachFamilyProbeSurface(t, teachSrc, `Use:   "teach-pattern"`,
+		`--query-template=items in {entity};--resource-template=GROUP-{entity:category};--resource-type=items;--entity-kind=category;--strategy=substitute`,
+		`learn-examples-pp-cli teach-pattern --query-template "items in {entity}" --resource-template "GROUP-{entity:category}" --resource-type items --entity-kind category --strategy substitute`)
+	assertTeachFamilyProbeSurface(t, teachSrc, `Use:   "teach-lookup"`,
+		`--kind=country;--canonical=United States;--value=USA`,
+		`learn-examples-pp-cli teach-lookup --kind country --canonical "United States" --value USA`)
+	require.Contains(t, teachSrc, "func teachEmitsJSON(")
+	require.Contains(t, teachSrc, "quietFlag.Changed && flags.quiet",
+		"root --quiet=false must not suppress JSON merely because the flag changed")
+	require.NotContains(t, teachSrc, `flags.asJSON && !flags.quiet`)
 	require.NotContains(t, teachSrc, `teach --query "<question>"`)
+	require.NotContains(t, teachSrc, `--resource-type <type>`)
 
 	playbookSrc := readEmitted(t, outputDir, "internal", "cli", "teach_playbook.go")
-	require.Contains(t, playbookSrc, "Example: `  QUERY=\"$(cat /path/to/question.txt)\" learn-examples-pp-cli teach-playbook --query \"$QUERY\" --playbook-file ~/playbooks/recipe.json --notes-file ~/playbooks/recipe-notes.md`,")
-	require.Contains(t, playbookSrc, "Example: `  QUERY=\"$(cat /path/to/question.txt)\" NOTE=\"$(cat /path/to/note.txt)\" learn-examples-pp-cli playbook amend --query \"$QUERY\" --add-note \"$NOTE\"`,")
-	require.NotContains(t, playbookSrc, `teach-playbook --query "<question`)
-	require.NotContains(t, playbookSrc, `playbook amend --query "<exact recall query>"`)
+	assertTeachFamilyProbeSurface(t, playbookSrc, `Use:   "teach-playbook"`,
+		`--query=find items in category;--notes=example playbook note`,
+		`learn-examples-pp-cli teach-playbook --query "find items in category" --notes "example playbook note"`)
+	assertTeachFamilyProbeSurface(t, playbookSrc, `Use:   "amend"`,
+		`--query=find items in category;--add-note=example correction`,
+		`learn-examples-pp-cli playbook amend --query "find items in category" --add-note "example correction"`)
+	require.NotContains(t, playbookSrc, `QUERY="$(cat /path/to/question.txt)"`)
+	require.NotContains(t, playbookSrc, `--playbook-file ~/playbooks/`)
 }
 
 // TestGenerateLearnInitWiresSpec verifies that the emitted learn_init.go
