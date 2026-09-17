@@ -24,7 +24,7 @@ func newWorkflowVerifyCmd() *cobra.Command {
   # Output as JSON for programmatic use
   cli-printing-press workflow-verify --dir ./generated/dominos-pp-cli --json`,
 		Annotations: map[string]string{
-			"pp:typed-exit-codes": "0,3",
+			"pp:typed-exit-codes": "0",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := pipeline.RunWorkflowVerification(dir)
