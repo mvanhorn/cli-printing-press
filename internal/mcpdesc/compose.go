@@ -115,7 +115,7 @@ func ComposeWithSource(in Input) Result {
 	}
 
 	composed = appendMethodMarker(composed, in.Endpoint.Method)
-	composed = appendDeprecatedMarker(composed, in.Endpoint)
+	composed = AppendDeprecatedMarker(composed, in.Endpoint)
 	source := SourceSpec
 	if synthesizeAction && !structuralOverride {
 		source = SourceGenerated
@@ -454,12 +454,18 @@ func appendMethodMarker(desc, method string) string {
 	return desc
 }
 
-func appendDeprecatedMarker(desc string, ep spec.Endpoint) string {
-	if !ep.Deprecated || desc == "" {
+// AppendDeprecatedMarker adds a trailing " Deprecated." when the endpoint is
+// marked deprecated and the text does not already say so. Empty input becomes
+// "Deprecated." so code-orchestration summaries/keywords still surface the flag.
+func AppendDeprecatedMarker(desc string, ep spec.Endpoint) string {
+	if !ep.Deprecated {
 		return desc
 	}
 	if strings.Contains(strings.ToLower(desc), "deprecated") {
 		return desc
+	}
+	if strings.TrimSpace(desc) == "" {
+		return "Deprecated."
 	}
 	return desc + " Deprecated."
 }

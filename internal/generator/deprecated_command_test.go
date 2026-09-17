@@ -93,6 +93,69 @@ func TestGeneratedOutput_DeprecatedEndpointSurfacesInHelpAndMCP(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+func TestGeneratedOutput_CodeOrchDeprecatedSummaryMarksEndpoint(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "orchdeprecate",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"OD_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/orchdeprecate-pp-cli/config.toml"},
+		MCP:     spec.MCPConfig{Orchestration: "code"},
+		Resources: map[string]spec.Resource{
+			"audiences": {
+				Description: "Audiences",
+				Endpoints: map[string]spec.Endpoint{
+					"create": {
+						Method:      "POST",
+						Path:        "/audiences",
+						Description: "Create an audience",
+						Deprecated:  true,
+					},
+					"list": {
+						Method:      "GET",
+						Path:        "/audiences",
+						Description: "List audiences",
+					},
+				},
+			},
+			"projects": {
+				Description: "Projects",
+				SubResources: map[string]spec.Resource{
+					"keys": {
+						Description: "Keys",
+						Endpoints: map[string]spec.Endpoint{
+							"delete": {
+								Method:      "DELETE",
+								Path:        "/projects/{id}/keys/{key}",
+								Description: "Delete a project key",
+								Deprecated:  true,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "orchdeprecate-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	codeOrchSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "code_orch.go"))
+	require.NoError(t, err)
+	body := string(codeOrchSrc)
+
+	assert.Regexp(t, `ID:\s+"audiences.create"[\s\S]{0,400}Summary:\s+"Create an audience Deprecated\."`, body)
+	assert.Regexp(t, `ID:\s+"audiences.create"[\s\S]{0,800}codeOrchKeywords\("audiences", "create", "Create an audience Deprecated\."`, body)
+	assert.Regexp(t, `ID:\s+"audiences.list"[\s\S]{0,400}Summary:\s+"List audiences"`, body)
+	assert.NotRegexp(t, `ID:\s+"audiences.list"[\s\S]{0,400}Deprecated\.`, body)
+	assert.Regexp(t, `ID:\s+"projects.keys.delete"[\s\S]{0,400}Summary:\s+"Delete a project key Deprecated\."`, body)
+	assert.Regexp(t, `ID:\s+"projects.keys.delete"[\s\S]{0,800}codeOrchKeywords\("projects", "delete", "Delete a project key Deprecated\."`, body)
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGeneratedOutput_NoDeprecatedMarkersWhenSpecHasNone(t *testing.T) {
 	t.Parallel()
 

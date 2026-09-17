@@ -335,6 +335,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"staleAfterExpr":                      staleAfterExpr,
 		"oneline":                             naming.OneLine,
 		"endpointDeprecatedLong":              endpointDeprecatedLong,
+		"codeOrchSummary":                     codeOrchSummary,
 		"composeMCPDesc":                      composeMCPDesc,
 		"composeMCPSubDesc":                   composeMCPSubDesc,
 		"mcpParamDesc":                        g.mcpParamDescription,
@@ -9226,6 +9227,10 @@ func endpointDeprecatedLong(ep spec.Endpoint) string {
 		return notice
 	}
 	return desc + "\n\n" + notice
+}
+
+func codeOrchSummary(ep spec.Endpoint) string {
+	return mcpdesc.AppendDeprecatedMarker(naming.OneLine(ep.Description), ep)
 }
 
 // composeMCPDesc is the template helper that wraps mcpdesc.Compose so
