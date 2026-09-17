@@ -36,11 +36,11 @@ const isolatedBuildCacheCheckInterval = 15 * time.Second
 var errCacheOverLimit = errors.New("build cache over size limit")
 
 var (
-	// Readers are in-flight generated-module go commands. A wipe takes the
-	// write lock so it cannot delete files another compile is reading.
-	buildCacheMu        sync.RWMutex
-	buildCacheCheckMu   sync.Mutex
-	buildCacheLastCheck = map[string]time.Time{}
+	cacheGateMu     sync.Mutex
+	cacheGateCond   = sync.NewCond(&cacheGateMu)
+	cacheGateActive int
+	cacheCheckMu    sync.Mutex
+	cacheLastCheck  = map[string]time.Time{}
 )
 
 func (g *Generator) Validate() error {
@@ -222,13 +222,20 @@ func withGoBuildCacheLimited(dir string, maxBytes int64, fn func(cacheDir string
 	if err != nil {
 		return err
 	}
+
+	cacheGateMu.Lock()
 	if isolated {
-		if err := maybeBoundIsolatedBuildCache(cacheDir, maxBytes); err != nil {
-			return fmt.Errorf("bounding isolated GOCACHE: %w", err)
-		}
+		waitAndMaybeWipeLocked(cacheDir, maxBytes)
 	}
-	buildCacheMu.RLock()
-	defer buildCacheMu.RUnlock()
+	cacheGateActive++
+	cacheGateMu.Unlock()
+	defer func() {
+		cacheGateMu.Lock()
+		cacheGateActive--
+		cacheGateCond.Broadcast()
+		cacheGateMu.Unlock()
+	}()
+
 	return fn(cacheDir)
 }
 
@@ -262,33 +269,30 @@ func resolveGoBuildCacheDir(dir string) (string, bool, error) {
 	return cacheDir, true, nil
 }
 
-func maybeBoundIsolatedBuildCache(cacheDir string, maxBytes int64) error {
-	if maxBytes <= 0 {
-		return nil
+func waitAndMaybeWipeLocked(cacheDir string, maxBytes int64) {
+	if maxBytes <= 0 || !shouldCheckBuildCache(cacheDir) {
+		return
 	}
-	if !shouldCheckBuildCache(cacheDir) {
-		return nil
-	}
+	cacheGateMu.Unlock()
 	over, err := buildCacheExceeds(cacheDir, maxBytes)
-	if err != nil {
-		return err
+	cacheGateMu.Lock()
+	if err != nil || !over {
+		return
 	}
-	if !over {
-		return nil
+	for cacheGateActive > 0 {
+		cacheGateCond.Wait()
 	}
-	buildCacheMu.Lock()
-	defer buildCacheMu.Unlock()
-	return boundBuildCache(cacheDir, maxBytes)
+	_ = boundBuildCache(cacheDir, maxBytes)
 }
 
 func shouldCheckBuildCache(cacheDir string) bool {
 	key := filepath.Clean(cacheDir)
-	buildCacheCheckMu.Lock()
-	defer buildCacheCheckMu.Unlock()
-	if time.Since(buildCacheLastCheck[key]) < isolatedBuildCacheCheckInterval {
+	cacheCheckMu.Lock()
+	defer cacheCheckMu.Unlock()
+	if time.Since(cacheLastCheck[key]) < isolatedBuildCacheCheckInterval {
 		return false
 	}
-	buildCacheLastCheck[key] = time.Now()
+	cacheLastCheck[key] = time.Now()
 	return true
 }
 
@@ -303,13 +307,17 @@ func boundBuildCache(dir string, maxBytes int64) error {
 	if !over {
 		return nil
 	}
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("wiping oversized build cache: %w", err)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return os.MkdirAll(dir, 0o755)
+		}
+		return err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("recreating build cache dir: %w", err)
+	for _, e := range entries {
+		_ = os.RemoveAll(filepath.Join(dir, e.Name()))
 	}
-	return nil
+	return os.MkdirAll(dir, 0o755)
 }
 
 func buildCacheExceeds(dir string, maxBytes int64) (bool, error) {
