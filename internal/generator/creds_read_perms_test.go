@@ -183,36 +183,38 @@ func runGeneratedConfigPermsAgainstDecoyErr(t *testing.T, apiSpec *spec.APISpec,
 	require.NoError(t, os.MkdirAll(filepath.Dir(credentialsPath), 0o700))
 	require.NoError(t, os.WriteFile(credentialsPath, []byte(generatedConfigPermsDecoy), 0o600))
 
-	cacheDir, err := goBuildCacheDir(outputDir)
-	require.NoError(t, err)
 	cmd := exec.Command("go", "test", "-mod=mod", "./internal/config", "-run", "TestLoad_", "-count=1")
 	cmd.Dir = outputDir
-	cmd.Env = append(os.Environ(),
-		"HOME="+operatorHome,
-		"USERPROFILE="+operatorHome,
-		envPrefix+"_HOME=",
-		envPrefix+"_CONFIG=",
-		envPrefix+"_CONFIG_DIR="+filepath.Join(operatorHome, ".config"),
-		envPrefix+"_STATE_DIR="+filepath.Join(operatorHome, ".local", "state"),
-		envPrefix+"_CACHE_DIR="+filepath.Join(operatorHome, ".cache"),
-		"XDG_CONFIG_HOME="+filepath.Join(operatorHome, ".config"),
-		"XDG_DATA_HOME="+ambientXDGDataHome,
-		"XDG_STATE_HOME="+filepath.Join(operatorHome, ".local", "state"),
-		"XDG_CACHE_HOME="+filepath.Join(operatorHome, ".cache"),
-		"GOCACHE="+cacheDir,
-	)
-	if setDataDirOverride {
-		cmd.Env = append(cmd.Env, envPrefix+"_DATA_DIR="+ambientDataDir)
-	} else {
-		cmd.Env = append(cmd.Env, envPrefix+"_DATA_DIR=")
-	}
-	for _, name := range []string{"GOPATH", "GOMODCACHE"} {
-		if value := goEnvValue(t, name); value != "" {
-			cmd.Env = append(cmd.Env, name+"="+value)
+	var output []byte
+	err := withGoBuildCache(outputDir, func(cacheDir string) error {
+		cmd.Env = append(os.Environ(),
+			"HOME="+operatorHome,
+			"USERPROFILE="+operatorHome,
+			envPrefix+"_HOME=",
+			envPrefix+"_CONFIG=",
+			envPrefix+"_CONFIG_DIR="+filepath.Join(operatorHome, ".config"),
+			envPrefix+"_STATE_DIR="+filepath.Join(operatorHome, ".local", "state"),
+			envPrefix+"_CACHE_DIR="+filepath.Join(operatorHome, ".cache"),
+			"XDG_CONFIG_HOME="+filepath.Join(operatorHome, ".config"),
+			"XDG_DATA_HOME="+ambientXDGDataHome,
+			"XDG_STATE_HOME="+filepath.Join(operatorHome, ".local", "state"),
+			"XDG_CACHE_HOME="+filepath.Join(operatorHome, ".cache"),
+			"GOCACHE="+cacheDir,
+		)
+		if setDataDirOverride {
+			cmd.Env = append(cmd.Env, envPrefix+"_DATA_DIR="+ambientDataDir)
+		} else {
+			cmd.Env = append(cmd.Env, envPrefix+"_DATA_DIR=")
 		}
-	}
-
-	output, err := cmd.CombinedOutput()
+		for _, name := range []string{"GOPATH", "GOMODCACHE"} {
+			if value := goEnvValue(t, name); value != "" {
+				cmd.Env = append(cmd.Env, name+"="+value)
+			}
+		}
+		var runErr error
+		output, runErr = cmd.CombinedOutput()
+		return runErr
+	})
 	after, readErr := os.ReadFile(credentialsPath)
 	require.NoError(t, readErr)
 	require.Equal(t, generatedConfigPermsDecoy, string(after), "generated tests must not read or rewrite the decoy credentials file")
@@ -256,10 +258,13 @@ func TestGenerate_NoCredsPermsForNonAuthSpec(t *testing.T) {
 
 	cmd := exec.Command("go", "build", "-mod=mod", "./...")
 	cmd.Dir = outputDir
-	cacheDir, err := goBuildCacheDir(outputDir)
-	require.NoError(t, err)
-	cmd.Env = append(os.Environ(), "GOOS=windows", "GOCACHE="+cacheDir)
-	cmd.Env = append(cmd.Env, sandboxHomeEnv(t)...)
-	output, err := cmd.CombinedOutput()
+	var output []byte
+	err = withGoBuildCache(outputDir, func(cacheDir string) error {
+		cmd.Env = append(os.Environ(), "GOOS=windows", "GOCACHE="+cacheDir)
+		cmd.Env = append(cmd.Env, sandboxHomeEnv(t)...)
+		var runErr error
+		output, runErr = cmd.CombinedOutput()
+		return runErr
+	})
 	require.NoError(t, err, "generated no-auth CLI must build for Windows:\n%s", output)
 }

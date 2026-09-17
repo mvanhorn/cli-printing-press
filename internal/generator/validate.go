@@ -3,12 +3,14 @@ package generator
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
@@ -23,6 +25,23 @@ type validationGate struct {
 }
 
 const qualityGateTimeout = 5 * time.Minute
+
+// Isolated GOCACHE is shared across generated modules so parallel tests
+// reuse the stdlib compile. Go's own trim is age-based (days), so unique
+// generated packages accumulate until the disk fills. Bound it by size.
+const isolatedBuildCacheMaxBytes int64 = 2 << 30
+
+const isolatedBuildCacheCheckInterval = 15 * time.Second
+
+var errCacheOverLimit = errors.New("build cache over size limit")
+
+var (
+	cacheGateMu     sync.Mutex
+	cacheGateCond   = sync.NewCond(&cacheGateMu)
+	cacheGateActive int
+	cacheCheckMu    sync.Mutex
+	cacheLastCheck  = map[string]time.Time{}
+)
 
 func (g *Generator) Validate() error {
 	binPath := platform.ExecutablePath(filepath.Join(g.OutputDir, naming.ValidationBinary(g.Spec.Name)))
@@ -164,21 +183,17 @@ func runCommandWithEnv(dir string, timeout time.Duration, extraEnv []string, nam
 		defer cancel()
 	}
 
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = dir
-	cacheDir, err := goBuildCacheDir(dir)
-	if err != nil {
-		return "", err
-	}
-	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
-	cmd.Env = append(cmd.Env, extraEnv...)
-
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err = cmd.Run()
+	err := withGoBuildCache(dir, func(cacheDir string) error {
+		cmd := exec.CommandContext(ctx, name, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+		cmd.Env = append(cmd.Env, extraEnv...)
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		return cmd.Run()
+	})
 	output := strings.TrimSpace(strings.Join([]string{stdout.String(), stderr.String()}, "\n"))
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -194,23 +209,57 @@ func runCommandWithEnv(dir string, timeout time.Duration, extraEnv []string, nam
 }
 
 func goBuildCacheDir(dir string) (string, error) {
+	cacheDir, _, err := resolveGoBuildCacheDir(dir)
+	return cacheDir, err
+}
+
+func withGoBuildCache(dir string, fn func(cacheDir string) error) error {
+	return withGoBuildCacheLimited(dir, isolatedBuildCacheMaxBytes, fn)
+}
+
+func withGoBuildCacheLimited(dir string, maxBytes int64, fn func(cacheDir string) error) error {
+	cacheDir, isolated, err := resolveGoBuildCacheDir(dir)
+	if err != nil {
+		return err
+	}
+
+	cacheGateMu.Lock()
+	if isolated {
+		if err := waitAndMaybeWipeLocked(cacheDir, maxBytes); err != nil {
+			cacheGateMu.Unlock()
+			return fmt.Errorf("bounding isolated GOCACHE: %w", err)
+		}
+	}
+	cacheGateActive++
+	cacheGateMu.Unlock()
+	defer func() {
+		cacheGateMu.Lock()
+		cacheGateActive--
+		cacheGateCond.Broadcast()
+		cacheGateMu.Unlock()
+	}()
+
+	return fn(cacheDir)
+}
+
+func resolveGoBuildCacheDir(dir string) (string, bool, error) {
 	if cacheDir := os.Getenv("GOCACHE"); cacheDir != "" {
 		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-			return "", fmt.Errorf("creating GOCACHE dir: %w", err)
+			return "", false, fmt.Errorf("creating GOCACHE dir: %w", err)
 		}
-		return cacheDir, nil
+		return cacheDir, false, nil
 	}
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		absDir, absErr := filepath.Abs(dir)
 		if absErr != nil {
-			return "", fmt.Errorf("resolving build cache path: %w", absErr)
+			return "", false, fmt.Errorf("resolving build cache path: %w", absErr)
 		}
 		fallback := filepath.Join(absDir, ".cache", "go-build")
 		if mkErr := os.MkdirAll(fallback, 0o755); mkErr != nil {
-			return "", fmt.Errorf("creating fallback build cache dir: %w", mkErr)
+			return "", false, fmt.Errorf("creating fallback build cache dir: %w", mkErr)
 		}
-		return fallback, nil
+		return fallback, true, nil
 	}
 
 	// Use a single shared cache for all generated CLIs.
@@ -218,7 +267,112 @@ func goBuildCacheDir(dir string) (string, error) {
 	// standard library from scratch, causing CI timeouts.
 	cacheDir := filepath.Join(homeDir, ".cache", "printing-press", "go-build")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return "", fmt.Errorf("creating build cache dir: %w", err)
+		return "", false, fmt.Errorf("creating build cache dir: %w", err)
 	}
-	return cacheDir, nil
+	return cacheDir, true, nil
+}
+
+func waitAndMaybeWipeLocked(cacheDir string, maxBytes int64) error {
+	if maxBytes <= 0 || !shouldCheckBuildCache(cacheDir) {
+		return nil
+	}
+	cacheGateMu.Unlock()
+	over, err := buildCacheExceeds(cacheDir, maxBytes)
+	cacheGateMu.Lock()
+	if !scanRequiresTrim(over, err) {
+		markBuildCacheChecked(cacheDir)
+		return nil
+	}
+	for cacheGateActive > 0 {
+		cacheGateCond.Wait()
+	}
+	if wipeErr := boundBuildCache(cacheDir, maxBytes); wipeErr != nil {
+		return fmt.Errorf("wiping oversized build cache: %w", wipeErr)
+	}
+	markBuildCacheChecked(cacheDir)
+	return nil
+}
+
+func shouldCheckBuildCache(cacheDir string) bool {
+	key := filepath.Clean(cacheDir)
+	cacheCheckMu.Lock()
+	defer cacheCheckMu.Unlock()
+	return time.Since(cacheLastCheck[key]) >= isolatedBuildCacheCheckInterval
+}
+
+func markBuildCacheChecked(cacheDir string) {
+	key := filepath.Clean(cacheDir)
+	cacheCheckMu.Lock()
+	defer cacheCheckMu.Unlock()
+	cacheLastCheck[key] = time.Now()
+}
+
+func boundBuildCache(dir string, maxBytes int64) error {
+	if maxBytes <= 0 {
+		return nil
+	}
+	over, err := buildCacheExceeds(dir, maxBytes)
+	if !scanRequiresTrim(over, err) {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return os.MkdirAll(dir, 0o755)
+		}
+		return err
+	}
+	var removeErr error
+	for _, e := range entries {
+		if rmErr := os.RemoveAll(filepath.Join(dir, e.Name())); rmErr != nil && !os.IsNotExist(rmErr) {
+			removeErr = rmErr
+		}
+	}
+	if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
+		return mkErr
+	}
+	return removeErr
+}
+
+func scanRequiresTrim(over bool, err error) bool {
+	return over || err != nil
+}
+
+func cacheEntrySize(d os.DirEntry) (int64, error) {
+	info, err := d.Info()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return info.Size(), nil
+}
+
+func buildCacheExceeds(dir string, maxBytes int64) (bool, error) {
+	var total int64
+	err := filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		size, statErr := cacheEntrySize(d)
+		if statErr != nil {
+			return statErr
+		}
+		total += size
+		if total > maxBytes {
+			return errCacheOverLimit
+		}
+		return nil
+	})
+	if errors.Is(err, errCacheOverLimit) {
+		return true, nil
+	}
+	return false, err
 }

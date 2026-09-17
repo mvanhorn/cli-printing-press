@@ -2677,12 +2677,15 @@ func runGoCommandOutputWithEnv(t *testing.T, dir string, extraEnv []string, args
 
 	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
-	cacheDir, err := goBuildCacheDir(dir)
-	require.NoError(t, err)
-	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
-	cmd.Env = append(cmd.Env, sandboxHomeEnv(t)...)
-	cmd.Env = append(cmd.Env, extraEnv...)
-	output, err := cmd.CombinedOutput()
+	var output []byte
+	err := withGoBuildCache(dir, func(cacheDir string) error {
+		cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+		cmd.Env = append(cmd.Env, sandboxHomeEnv(t)...)
+		cmd.Env = append(cmd.Env, extraEnv...)
+		var runErr error
+		output, runErr = cmd.CombinedOutput()
+		return runErr
+	})
 	return string(output), err
 }
 
@@ -15578,10 +15581,13 @@ func TestGraphQLLatestOnlyCanContinueAfterBackwardPageWins(t *testing.T) {
 	selector := "^TestGraphQLLatestOnly(ChoosesBackwardPageForOldestFirst|KeepsForwardPageForNewestFirst|KeepsForwardPageWithoutTimestampEvidence|IgnoresDateLikeNonTimestampFields|ReadsNestedTimestampFields|CanContinueAfterBackwardPageWins)$"
 	listCmd := exec.Command("go", "test", "-mod=mod", "./internal/cli", "-list", selector)
 	listCmd.Dir = outputDir
-	cacheDir, err := goBuildCacheDir(outputDir)
-	require.NoError(t, err)
-	listCmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
-	listOut, err := listCmd.CombinedOutput()
+	var listOut []byte
+	err = withGoBuildCache(outputDir, func(cacheDir string) error {
+		listCmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+		var runErr error
+		listOut, runErr = listCmd.CombinedOutput()
+		return runErr
+	})
 	require.NoError(t, err, string(listOut))
 	for _, name := range []string{
 		"TestGraphQLLatestOnlyChoosesBackwardPageForOldestFirst",

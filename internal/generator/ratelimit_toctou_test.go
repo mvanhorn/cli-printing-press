@@ -114,13 +114,13 @@ func requireGeneratedTestsPass(t *testing.T, dir, pattern string, want []string)
 
 	cmd := exec.Command("go", "test", "-mod=mod", "-json", "./internal/cliutil", "-run", pattern)
 	cmd.Dir = dir
-	cacheDir, err := goBuildCacheDir(dir)
-	require.NoError(t, err)
-	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err = cmd.Run()
+	err := withGoBuildCache(dir, func(cacheDir string) error {
+		cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		return cmd.Run()
+	})
 	require.NoError(t, err, stderr.String())
 
 	var event struct {

@@ -216,13 +216,16 @@ func TestRegisterQuerySynonymsConcurrentNormalize(t *testing.T) {
 		0o644,
 	))
 
-	cacheDir, err := goBuildCacheDir(outputDir)
-	require.NoError(t, err)
 	cmd := exec.Command("go", "test", "-mod=mod", "-race", "-count=5", "-v", "-run",
 		"^TestRegisterQuerySynonymsConcurrentNormalize$", "./internal/store")
 	cmd.Dir = outputDir
-	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
-	output, err := cmd.CombinedOutput()
+	var output []byte
+	err := withGoBuildCache(outputDir, func(cacheDir string) error {
+		cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+		var runErr error
+		output, runErr = cmd.CombinedOutput()
+		return runErr
+	})
 	require.NoError(t, err, string(output))
 	require.Contains(t, string(output), "=== RUN   TestRegisterQuerySynonymsConcurrentNormalize")
 	require.Contains(t, string(output), "--- PASS: TestRegisterQuerySynonymsConcurrentNormalize")

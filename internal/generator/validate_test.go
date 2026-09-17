@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -42,8 +43,17 @@ func TestHelpGateTimeout(t *testing.T) {
 	}
 }
 
-func TestGoBuildCacheDirIsShared(t *testing.T) {
+func isolateBuildCacheHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("GOCACHE", "")
+	return home
+}
+
+func TestGoBuildCacheDirIsShared(t *testing.T) {
+	isolateBuildCacheHome(t)
 
 	// Two different project directories should get the same cache dir.
 	// This is critical for CI performance because the shared cache avoids each
@@ -58,12 +68,9 @@ func TestGoBuildCacheDirIsShared(t *testing.T) {
 }
 
 func TestGoBuildCacheDirPath(t *testing.T) {
-	t.Setenv("GOCACHE", "")
+	home := isolateBuildCacheHome(t)
 
 	dir, err := goBuildCacheDir("/tmp/any-project")
-	require.NoError(t, err)
-
-	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 
 	expected := filepath.Join(home, ".cache", "printing-press", "go-build")
@@ -79,6 +86,143 @@ func TestGoBuildCacheDirHonorsExplicitGOCACHE(t *testing.T) {
 
 	assert.Equal(t, cacheDir, dir)
 	assert.DirExists(t, cacheDir)
+}
+
+func TestBoundBuildCacheWipesWhenOverMax(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, "stale.bin")
+	require.NoError(t, os.WriteFile(stale, bytes.Repeat([]byte("x"), 2000), 0o644))
+
+	require.NoError(t, boundBuildCache(dir, 1000))
+
+	assert.NoFileExists(t, stale)
+	assert.DirExists(t, dir)
+}
+
+func TestBoundBuildCacheKeepsFilesUnderMax(t *testing.T) {
+	dir := t.TempDir()
+	keep := filepath.Join(dir, "keep.bin")
+	require.NoError(t, os.WriteFile(keep, []byte("hello"), 0o644))
+
+	require.NoError(t, boundBuildCache(dir, 1000))
+
+	assert.FileExists(t, keep)
+}
+
+func TestBoundBuildCacheMissingDirIsNoop(t *testing.T) {
+	require.NoError(t, boundBuildCache(filepath.Join(t.TempDir(), "missing"), 1000))
+}
+
+type dirEntryStatError struct {
+	err error
+}
+
+func (e dirEntryStatError) Name() string               { return "x" }
+func (e dirEntryStatError) IsDir() bool                { return false }
+func (e dirEntryStatError) Type() os.FileMode          { return 0 }
+func (e dirEntryStatError) Info() (os.FileInfo, error) { return nil, e.err }
+
+func TestCacheEntrySizeIgnoresMissingFiles(t *testing.T) {
+	size, err := cacheEntrySize(dirEntryStatError{err: os.ErrNotExist})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), size)
+}
+
+func TestCacheEntrySizeOtherStatErrorsAreVisible(t *testing.T) {
+	size, err := cacheEntrySize(dirEntryStatError{err: os.ErrPermission})
+	require.Error(t, err)
+	assert.Equal(t, int64(0), size)
+	assert.True(t, scanRequiresTrim(false, err))
+}
+
+func TestScanRequiresTrimOnWalkError(t *testing.T) {
+	assert.False(t, scanRequiresTrim(false, nil))
+	assert.True(t, scanRequiresTrim(true, nil))
+	assert.True(t, scanRequiresTrim(false, os.ErrPermission))
+}
+
+func TestBuildCacheExceedsUnreadableDirReturnsError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits do not lock directories on Windows")
+	}
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	require.NoError(t, os.Mkdir(locked, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	over, err := buildCacheExceeds(dir, 1<<30)
+	require.Error(t, err)
+	assert.False(t, over)
+	assert.True(t, scanRequiresTrim(over, err))
+}
+
+func TestBoundBuildCacheReportsRemoveErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits do not lock directories on Windows")
+	}
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	require.NoError(t, os.Mkdir(locked, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(locked, "x"), bytes.Repeat([]byte("x"), 2000), 0o644))
+	require.NoError(t, os.Chmod(locked, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	require.Error(t, boundBuildCache(dir, 1000))
+}
+
+func TestWithGoBuildCacheLimitedSurfacesWipeError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits do not lock directories on Windows")
+	}
+	home := isolateBuildCacheHome(t)
+	cacheDir := filepath.Join(home, ".cache", "printing-press", "go-build")
+	locked := filepath.Join(cacheDir, "locked")
+	require.NoError(t, os.MkdirAll(locked, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(locked, "x"), bytes.Repeat([]byte("x"), 2000), 0o644))
+	require.NoError(t, os.Chmod(locked, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	called := false
+	err := withGoBuildCacheLimited("/tmp/any-project", 1000, func(string) error {
+		called = true
+		return nil
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bounding isolated GOCACHE")
+	assert.False(t, called)
+}
+
+func TestGoBuildCacheDirWipesManagedCacheOverMax(t *testing.T) {
+	home := isolateBuildCacheHome(t)
+	cacheDir := filepath.Join(home, ".cache", "printing-press", "go-build")
+	require.NoError(t, os.MkdirAll(cacheDir, 0o755))
+	stale := filepath.Join(cacheDir, "aa", "stale.bin")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o755))
+	require.NoError(t, os.WriteFile(stale, bytes.Repeat([]byte("x"), 2000), 0o644))
+
+	err := withGoBuildCacheLimited("/tmp/any-project", 1000, func(got string) error {
+		assert.Equal(t, cacheDir, got)
+		assert.NoFileExists(t, stale)
+		return nil
+	})
+	require.NoError(t, err)
+	assert.DirExists(t, cacheDir)
+}
+
+func TestGoBuildCacheDirDoesNotWipeExplicitGOCACHE(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "go-build")
+	t.Setenv("GOCACHE", cacheDir)
+	require.NoError(t, os.MkdirAll(cacheDir, 0o755))
+	keep := filepath.Join(cacheDir, "keep.bin")
+	require.NoError(t, os.WriteFile(keep, bytes.Repeat([]byte("x"), 2000), 0o644))
+
+	err := withGoBuildCacheLimited("/tmp/any-project", 1000, func(got string) error {
+		assert.Equal(t, cacheDir, got)
+		assert.FileExists(t, keep)
+		return nil
+	})
+	require.NoError(t, err)
+	assert.FileExists(t, keep)
 }
 
 func TestValidateRunsPinnedDefaultGovulncheckGate(t *testing.T) {
