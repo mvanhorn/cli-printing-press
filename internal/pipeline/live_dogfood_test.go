@@ -6772,6 +6772,108 @@ exit 99
 	assert.Contains(t, got.Args, "--json")
 }
 
+func TestRunLiveDogfoodDryRunJSONSkipsMutatingUnlessAllowed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "widgets create", LiveDogfoodTestDryRunJSON)
+	require.NotNil(t, got)
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status)
+	assert.Equal(t, reasonMutatingRequiresAllowDestructive, got.Reason)
+	assert.Empty(t, got.Args, "mutating dry_run_json must not invoke the binary without --allow-destructive")
+
+	allowed, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:           dir,
+		BinaryName:       binaryName,
+		Level:            "full",
+		Timeout:          2 * time.Second,
+		AllowDestructive: true,
+	})
+	require.NoError(t, err)
+	live := findResultByCommandKind(allowed, "widgets create", LiveDogfoodTestDryRunJSON)
+	require.NotNil(t, live)
+	assert.Equal(t, LiveDogfoodStatusPass, live.Status, live.Reason)
+	assert.Contains(t, live.Args, "--name=demo")
+	assert.Contains(t, live.Args, "--dry-run")
+	assert.Contains(t, live.Args, "--json")
+}
+
+func TestRunLiveDogfoodDryRunJSONUsesHappyArgsForRequiredPositionals(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+	writeStubBinary(t, dir, binaryName, `#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{"commands":[{"name":"widgets","subcommands":[{"name":"get","annotations":{"pp:method":"GET"}}]}]}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "get" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Get a widget.
+
+Usage:
+  fixture-pp-cli widgets get <id> [flags]
+
+Examples:
+  fixture-pp-cli widgets get 42
+
+Flags:
+      --json   Output JSON
+
+Global Flags:
+      --dry-run   Show request without sending
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "get" ]; then
+  has_dry_run=0
+  for a in "$@"; do
+    case "$a" in
+      --dry-run|--dry-run=*) has_dry_run=1 ;;
+    esac
+  done
+  if [ -z "${3:-}" ] || [ "${3:-}" = "--dry-run" ] || [ "${3:-}" = "--json" ]; then
+    echo 'accepts 1 arg(s), received 0' >&2
+    exit 1
+  fi
+  if [ "$has_dry_run" = "1" ]; then
+    echo '{"action":"get","status":0,"success":false,"dry_run":true}'
+    exit 0
+  fi
+  echo '{"id":"42"}'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`)
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	got := findResultByCommandKind(report, "widgets get", LiveDogfoodTestDryRunJSON)
+	require.NotNil(t, got)
+	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
+	assert.Equal(t, []string{"widgets", "get", "42", "--json", "--dry-run"}, got.Args)
+}
+
 func TestLiveDogfoodDryRunJSONContract(t *testing.T) {
 	t.Parallel()
 

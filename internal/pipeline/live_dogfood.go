@@ -1635,9 +1635,6 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	}
 
 	command.Help = help
-	if dryRunJSON := probeLiveDogfoodDryRunJSON(command, ctx); dryRunJSON != nil {
-		results = append(results, *dryRunJSON)
-	}
 	// Success is exit 0 plus any code the command declares via
 	// pp:typed-exit-codes (or a command-level "Exit codes:" help block) — the
 	// same contract `verify` honors. Commands with no declaration keep the
@@ -1646,6 +1643,11 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	mutation := liveDogfoodCommandMutation(command)
 	mutating := mutation.mutating
 	useDryRun := mutating && commandSupportsDryRun(command.Help)
+	appendDryRunJSON := func(args []string, argsOK bool, stdin []byte, skipReason string) {
+		if dryRunJSON := probeLiveDogfoodDryRunJSON(command, ctx, mutation, args, stdin, argsOK, skipReason); dryRunJSON != nil {
+			results = append(results, *dryRunJSON)
+		}
+	}
 
 	if annotationIsTrueValue(command.Annotations[interactiveAnnotation]) {
 		results = append(results,
@@ -1656,6 +1658,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		if useDryRun {
 			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestErrorReal, reasonInteractiveCommand))
 		}
+		appendDryRunJSON(nil, false, nil, reasonInteractiveCommand)
 		return results
 	}
 
@@ -1669,6 +1672,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		if useDryRun {
 			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestErrorReal, tierSkip))
 		}
+		appendDryRunJSON(nil, false, nil, tierSkip)
 		return results
 	}
 
@@ -1678,6 +1682,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonSyncDryRunRequired),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonSyncDryRunRequired),
 		)
+		appendDryRunJSON(nil, false, nil, reasonSyncDryRunRequired)
 		return results
 	}
 
@@ -1690,6 +1695,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonNoStdinFixture),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonNoStdinFixture),
 		)
+		appendDryRunJSON(nil, false, nil, reasonNoStdinFixture)
 		return results
 	}
 	var stdinPayload []byte
@@ -1700,6 +1706,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 				failedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, nil, "invalid pp:happy-stdin fixture"),
 				failedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, nil, "invalid pp:happy-stdin fixture"),
 			)
+			appendDryRunJSON(nil, false, nil, "invalid pp:happy-stdin fixture")
 			return results
 		}
 	}
@@ -1715,6 +1722,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 				skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, bodyFixtureSkip),
 				skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, bodyFixtureSkip),
 			)
+			appendDryRunJSON(nil, false, stdinPayload, bodyFixtureSkip)
 			return results
 		}
 		if mutating {
@@ -1723,6 +1731,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 				skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonMutatingRunnableFixture),
 				skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonMutatingRunnableFixture),
 			)
+			appendDryRunJSON(nil, false, stdinPayload, reasonMutatingRunnableFixture)
 			return results
 		}
 		results = append(results,
@@ -1730,6 +1739,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, "missing runnable example"),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, "missing runnable example"),
 		)
+		appendDryRunJSON(nil, false, stdinPayload, "missing runnable example")
 		return results
 	}
 
@@ -1766,6 +1776,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonUnclassifiedNoMethod),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonUnclassifiedNoMethod),
 		)
+		appendDryRunJSON(happyArgs, true, stdinPayload, reasonUnclassifiedNoMethod)
 		return results
 	default:
 		happyArgs = resolvedArgs
@@ -1943,6 +1954,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		}
 	}
 
+	appendDryRunJSON(happyArgs, true, stdinPayload, "")
 	return results
 }
 
@@ -3069,13 +3081,30 @@ func commandSupportsDryRun(help string) bool {
 	return slices.Contains(extractFlagNames(help), "dry-run")
 }
 
-func probeLiveDogfoodDryRunJSON(command liveDogfoodCommand, ctx resolveCtx) *LiveDogfoodTestResult {
+func probeLiveDogfoodDryRunJSON(command liveDogfoodCommand, ctx resolveCtx, mutation commandMutationClassification, happyArgs []string, stdinPayload []byte, argsOK bool, skipReason string) *LiveDogfoodTestResult {
 	if !commandSupportsDryRun(command.Help) {
 		return nil
 	}
 	commandName := strings.Join(command.Path, " ")
-	args := appendDryRunArg(appendJSONArg(append([]string{}, command.Path...)))
-	run := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, args, ctx.timeout)
+	if mutation.mutating && !ctx.allowDestructive {
+		result := skippedLiveDogfoodResult(commandName, LiveDogfoodTestDryRunJSON, reasonMutatingRequiresAllowDestructive)
+		return &result
+	}
+	if skipReason != "" {
+		result := skippedLiveDogfoodResult(commandName, LiveDogfoodTestDryRunJSON, skipReason)
+		return &result
+	}
+	args := append([]string{}, command.Path...)
+	if argsOK && len(happyArgs) >= len(command.Path) {
+		args = append([]string{}, happyArgs...)
+	} else if liveDogfoodCommandTakesArg(command.Help) {
+		result := skippedLiveDogfoodResult(commandName, LiveDogfoodTestDryRunJSON, "missing runnable example")
+		return &result
+	}
+	args = protectLiveDogfoodNegativeNumericPositionals(args, command.Path,
+		len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))), liveDogfoodFlagValueNames(command.Help), liveDogfoodFlagNames(command.Help))
+	args = appendDryRunArg(appendJSONArg(args))
+	run := runLiveDogfoodProcessWithStdin(ctx.binaryPath, ctx.cliDir, args, ctx.timeout, stdinPayload)
 	result := liveDogfoodResult(commandName, LiveDogfoodTestDryRunJSON, args, run, ctx.authEnvValue)
 	status, reason := liveDogfoodDryRunJSONContract(run, false)
 	result.Status = status

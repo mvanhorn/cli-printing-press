@@ -58,7 +58,7 @@ Per-shape decision table:
 | Mutator without preview flag | skip unless `--allow-destructive` or a stdin fixture | not emitted |
 | Positional resolution skipped | skip | skip with same reason |
 
-Commands that advertise `--dry-run` also get a `dry_run_json` probe (`--dry-run --json`) even when they are read-only, so hand-authored novels cannot ship prose under `--json`.
+Commands that advertise `--dry-run` also get a `dry_run_json` probe (`--dry-run --json`) when they are read-only, so hand-authored novels cannot ship prose under `--json`. Mutating commands skip that probe unless `--allow-destructive` is set — advertising the flag is not proof the command honours it. The probe uses the same happy-args / fixture argv as other matrix legs so required positionals are actually exercised.
 
 The non-emission rows are load-bearing: matrix size grows by exactly one entry per mutator-with-preview, not one per command, and shapes that cannot honestly run the new test are skipped rather than faked.
 

@@ -1052,11 +1052,9 @@ func liveCheckFeatureMutates(f liveCheckFeature) bool {
 	if len(path) == 0 {
 		return false
 	}
-	class := commandMutation(f.Annotations, path)
-	if class.unclassified {
-		return false
-	}
-	return class.mutating
+	// Unclassified leaves (no method annotation, absent from both verb lists)
+	// stay mutating so unknown research commands cannot run live by default.
+	return commandMutation(f.Annotations, path).mutating
 }
 
 func isUnsyncedLocalStoreFailure(stderr string) bool {
