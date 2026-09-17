@@ -155,8 +155,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +4: cliutil.WithFileLock (filelock.go + unix/windows + test) so
 		// learn-loop audit/teach.log rotation is cross-process safe.
 		// +1: root .gitignore so local binaries are ignored without hiding cmd/<name>/.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 177},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 181},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 178},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 182},
 		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 179},
 	}
 

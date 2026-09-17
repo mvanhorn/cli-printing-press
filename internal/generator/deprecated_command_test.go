@@ -88,7 +88,7 @@ func TestGeneratedOutput_DeprecatedEndpointSurfacesInHelpAndMCP(t *testing.T) {
 	createHelp, err := exec.Command(binaryPath, "audiences", "create", "--help").Output()
 	require.NoError(t, err)
 	assert.Contains(t, string(createHelp), "Deprecated:")
-	assert.Contains(t, string(createHelp), "(deprecated)")
+	assert.NotContains(t, string(createHelp), `Command "create" is deprecated`)
 
 	requireGeneratedCompiles(t, outputDir)
 }

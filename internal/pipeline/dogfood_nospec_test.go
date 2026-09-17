@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -45,6 +46,19 @@ func widgetsList() {
 	assert.False(t, report.AuthCheck.Match)
 	assert.Contains(t, report.AuthCheck.Detail, "spec not provided")
 	assert.NotEqual(t, "FAIL", report.Verdict)
+
+	raw, err := json.Marshal(report)
+	require.NoError(t, err)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(raw, &payload))
+	assert.Equal(t, "none", payload["spec_source"])
+	pathCheck, ok := payload["path_check"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, pathCheck["skipped"])
+	authCheck, ok := payload["auth_check"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, authCheck["skipped"])
+	assert.Equal(t, false, authCheck["match"])
 }
 
 func TestRunDogfood_AllInvalidPathsStayUnskipped(t *testing.T) {
@@ -102,16 +116,9 @@ func authHeader(token string) string { return "Bearer " + token }
 func TestDeriveDogfoodVerdict_NoSpecDoesNotFail(t *testing.T) {
 	t.Parallel()
 
-	report := &DogfoodReport{
-		SpecSource:    DogfoodSpecSourceNone,
-		PathCheck:     PathCheckResult{Skipped: true, Detail: "no resolvable spec; 2 command(s) unvalidated"},
-		AuthCheck:     AuthCheckResult{Match: false, Skipped: true, Detail: "spec not provided; auth protocol check skipped"},
-		PipelineCheck: PipelineResult{SyncCallsDomain: true},
-		WiringCheck: WiringCheckResult{
-			ConfigConsist:    ConfigConsistResult{Consistent: true},
-			WorkflowComplete: WorkflowCompleteResult{Skipped: true},
-		},
-		ExampleCheck: ExampleCheckResult{Skipped: true},
-	}
+	report := passingDogfoodReport()
+	report.SpecSource = DogfoodSpecSourceNone
+	report.PathCheck = PathCheckResult{Skipped: true, Detail: "no resolvable spec; 2 command(s) unvalidated"}
+	report.AuthCheck = AuthCheckResult{Match: false, Skipped: true, Detail: "spec not provided; auth protocol check skipped"}
 	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, false))
 }
