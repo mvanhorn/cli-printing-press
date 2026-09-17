@@ -35,6 +35,12 @@ const (
 	DogfoodSpecSourceCaller  DogfoodSpecSource = "caller"
 )
 
+const (
+	DogfoodVerdictPass = "PASS"
+	DogfoodVerdictWarn = "WARN"
+	DogfoodVerdictFail = "FAIL"
+)
+
 type DogfoodReport struct {
 	Dir                    string                       `json:"dir"`
 	SpecPath               string                       `json:"spec_path,omitempty"`
@@ -309,7 +315,7 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 		SpecPath:    specPath,
 		SpecSource:  specSource,
 		IsDeviceCLI: isDeviceCLIDir(dir),
-		Verdict:     "PASS",
+		Verdict:     DogfoodVerdictPass,
 	}
 
 	var spec *openAPISpec
@@ -2669,65 +2675,65 @@ type dogfoodVerdictRule struct {
 }
 
 var dogfoodVerdictRules = []dogfoodVerdictRule{
-	{"FAIL", func(r *DogfoodReport, hasSpec bool) bool {
+	{DogfoodVerdictFail, func(r *DogfoodReport, hasSpec bool) bool {
 		return hasSpec && r.PathCheck.Tested > 0 && r.PathCheck.Pct < 70
 	}},
-	{"FAIL", func(r *DogfoodReport, hasSpec bool) bool { return hasSpec && !r.IsDeviceCLI && !r.AuthCheck.Match }},
-	{"FAIL", func(r *DogfoodReport, hasSpec bool) bool {
+	{DogfoodVerdictFail, func(r *DogfoodReport, hasSpec bool) bool { return hasSpec && !r.IsDeviceCLI && !r.AuthCheck.Match }},
+	{DogfoodVerdictFail, func(r *DogfoodReport, hasSpec bool) bool {
 		return hasSpec && r.BrowserSessionCheck.Required && !r.BrowserSessionCheck.Pass
 	}},
-	{"FAIL", func(r *DogfoodReport, hasSpec bool) bool {
+	{DogfoodVerdictFail, func(r *DogfoodReport, hasSpec bool) bool {
 		return hasSpec && len(r.OAuthScopeCoverage.Violations) > 0
 	}},
-	{"FAIL", func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 3 }},
-	{"FAIL", func(r *DogfoodReport, _ bool) bool {
+	{DogfoodVerdictFail, func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 3 }},
+	{DogfoodVerdictFail, func(r *DogfoodReport, _ bool) bool {
 		return r.ExampleCheck.Tested > 0 && (r.ExampleCheck.WithExamples*100/r.ExampleCheck.Tested) < 50
 	}},
-	{"FAIL", func(r *DogfoodReport, _ bool) bool {
+	{DogfoodVerdictFail, func(r *DogfoodReport, _ bool) bool {
 		return len(r.ReimplementationCheck.MissingDataSourceStrategy) > 0
 	}},
-	{"FAIL", func(r *DogfoodReport, _ bool) bool {
+	{DogfoodVerdictFail, func(r *DogfoodReport, _ bool) bool {
 		return len(r.ReimplementationCheck.AuthGetenv) > 0
 	}},
-	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 1 && r.DeadFlags.Dead <= 2 }},
-	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFuncs.Dead >= 1 }},
-	{"WARN", func(r *DogfoodReport, _ bool) bool { return !r.IsDeviceCLI && !r.PipelineCheck.SyncCallsDomain }},
-	{"WARN", func(r *DogfoodReport, _ bool) bool {
+	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 1 && r.DeadFlags.Dead <= 2 }},
+	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return r.DeadFuncs.Dead >= 1 }},
+	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return !r.IsDeviceCLI && !r.PipelineCheck.SyncCallsDomain }},
+	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool {
 		// Issue #1156: when defaultSyncResources is emitted empty, the sync
 		// command is a runtime no-op and store-dependent novel commands have
 		// no advertised path to populate the store. Promote to WARN so the
 		// gap surfaces at shipcheck time rather than after publish.
 		return !r.IsDeviceCLI && r.PipelineCheck.SyncFileEmitted && !r.PipelineCheck.SyncResourcesPresent
 	}},
-	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.ExampleCheck.InvalidFlags) > 0 }},
-	{"WARN", func(r *DogfoodReport, _ bool) bool { return !r.IsDeviceCLI && r.ExampleCheck.Skipped }},
-	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.WiringCheck.CommandTree.Unregistered) > 0 }},
-	{"FAIL", func(r *DogfoodReport, _ bool) bool {
+	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return len(r.ExampleCheck.InvalidFlags) > 0 }},
+	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return !r.IsDeviceCLI && r.ExampleCheck.Skipped }},
+	{DogfoodVerdictFail, func(r *DogfoodReport, _ bool) bool { return len(r.WiringCheck.CommandTree.Unregistered) > 0 }},
+	{DogfoodVerdictFail, func(r *DogfoodReport, _ bool) bool {
 		return !r.WiringCheck.ConfigConsist.Consistent && len(r.WiringCheck.ConfigConsist.Mismatched) > 0
 	}},
 	// Pure-logic packages with zero tests fail shipcheck; prompts alone have not kept this invariant reliable.
-	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.TestPresence.MissingTests) > 0 }},
-	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.NamingCheck.Violations) > 0 }},
-	{"FAIL", func(r *DogfoodReport, _ bool) bool {
+	{DogfoodVerdictFail, func(r *DogfoodReport, _ bool) bool { return len(r.TestPresence.MissingTests) > 0 }},
+	{DogfoodVerdictFail, func(r *DogfoodReport, _ bool) bool { return len(r.NamingCheck.Violations) > 0 }},
+	{DogfoodVerdictFail, func(r *DogfoodReport, _ bool) bool {
 		return r.DescriptionDriftCheck != nil && len(r.DescriptionDriftCheck.Findings) > 0
 	}},
-	{"FAIL", func(r *DogfoodReport, _ bool) bool {
+	{DogfoodVerdictFail, func(r *DogfoodReport, _ bool) bool {
 		return mcpSurfaceCheckActive(r.MCPSurfaceParityCheck) && !r.MCPSurfaceParityCheck.HandEdited && !r.MCPSurfaceParityCheck.Pass
 	}},
-	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.WiringCheck.WorkflowComplete.UnmappedSteps) > 0 }},
-	{"WARN", func(r *DogfoodReport, _ bool) bool {
+	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return len(r.WiringCheck.WorkflowComplete.UnmappedSteps) > 0 }},
+	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool {
 		return len(r.NovelFeaturesCheck.Missing) > 0 ||
 			len(r.NovelFeaturesCheck.DepthMismatches) > 0 ||
 			len(r.NovelFeaturesCheck.Stubbed) > 0
 	}},
-	{"WARN", func(r *DogfoodReport, _ bool) bool {
+	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool {
 		return mcpSurfaceCheckActive(r.MCPSurfaceParityCheck) && r.MCPSurfaceParityCheck.HandEdited
 	}},
 	// Surface hand-rolled responses without hard-blocking early iteration.
-	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.ReimplementationCheck.Suspicious) > 0 }},
-	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.SyncParamDropCheck.Findings) > 0 }},
-	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.SourceClientCheck.Findings) > 0 }},
-	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.PrintJSONFilteredCheck.Findings) > 0 }},
+	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return len(r.ReimplementationCheck.Suspicious) > 0 }},
+	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return len(r.SyncParamDropCheck.Findings) > 0 }},
+	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return len(r.SourceClientCheck.Findings) > 0 }},
+	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return len(r.PrintJSONFilteredCheck.Findings) > 0 }},
 }
 
 func deriveDogfoodVerdict(report *DogfoodReport, hasSpec bool) string {
@@ -2736,7 +2742,7 @@ func deriveDogfoodVerdict(report *DogfoodReport, hasSpec bool) string {
 			return rule.verdict
 		}
 	}
-	return "PASS"
+	return DogfoodVerdictPass
 }
 
 func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
