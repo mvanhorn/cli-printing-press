@@ -84,7 +84,7 @@ func TestLiveDogfoodParsesGeneratedRunnableExamples(t *testing.T) {
 			file:        "teach.go",
 			use:         "teach",
 			commandPath: []string{"teach"},
-			want:        []string{"teach", "--query", "$QUERY", "--resource-type", "<type>", "--resource", "<id>", "--resource", "<id>", "&"},
+			want:        []string{"teach", "--query", "find items in category", "--resource-type", "items", "--resource", "GROUP-category"},
 		},
 		{
 			name:        "teach pattern",
@@ -98,14 +98,14 @@ func TestLiveDogfoodParsesGeneratedRunnableExamples(t *testing.T) {
 			file:        "teach_playbook.go",
 			use:         "teach-playbook",
 			commandPath: []string{"teach-playbook"},
-			want:        []string{"teach-playbook", "--query", "$QUERY", "--playbook-file", "~/playbooks/recipe.json", "--notes-file", "~/playbooks/recipe-notes.md"},
+			want:        []string{"teach-playbook", "--query", "find items in category", "--notes", "example playbook note"},
 		},
 		{
 			name:        "playbook amend",
 			file:        "teach_playbook.go",
 			use:         "amend",
 			commandPath: []string{"playbook", "amend"},
-			want:        []string{"playbook", "amend", "--query", "$QUERY", "--add-note", "$NOTE"},
+			want:        []string{"playbook", "amend", "--query", "find items in category", "--add-note", "example correction"},
 		},
 		{
 			name:        "quoted novel feature",
