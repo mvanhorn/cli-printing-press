@@ -33,6 +33,7 @@ type DogfoodSpecSource string
 const (
 	DogfoodSpecSourceBundled DogfoodSpecSource = "bundled"
 	DogfoodSpecSourceCaller  DogfoodSpecSource = "caller"
+	DogfoodSpecSourceNone    DogfoodSpecSource = "none"
 )
 
 type DogfoodReport struct {
@@ -146,6 +147,7 @@ type AuthCheckResult struct {
 	SpecScheme   string `json:"spec_scheme"`
 	GeneratedFmt string `json:"generated_format"`
 	Match        bool   `json:"match"`
+	Skipped      bool   `json:"skipped,omitempty"`
 	Detail       string `json:"detail"`
 }
 
@@ -352,9 +354,15 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 		report.BrowserSessionCheck = checkBrowserSessionAuth(dir, spec.Auth)
 		report.OAuthScopeCoverage = checkOAuthScopeCoverage(dir, spec.OAuthScopeRequirements, spec.Auth)
 	} else {
+		report.SpecSource = DogfoodSpecSourceNone
+		report.PathCheck = PathCheckResult{
+			Skipped: true,
+			Detail:  "no resolvable spec; path validity not checked",
+		}
 		report.AuthCheck = AuthCheckResult{
-			Match:  true,
-			Detail: "spec not provided; auth protocol check skipped",
+			Match:   false,
+			Skipped: true,
+			Detail:  "spec not provided; auth protocol check skipped",
 		}
 		report.BrowserSessionCheck = BrowserSessionCheckResult{
 			Pass:   true,
@@ -382,6 +390,9 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	report.TestPresence = checkTestPresence(dir)
 	report.NamingCheck = checkNamingConsistency(dir)
 	report.SyncParamDropCheck = CheckSyncParamDrop(dir, resolveTrafficAnalysisPath(cfg, specPath))
+	if report.SpecSource == DogfoodSpecSourceNone {
+		report.PathCheck.Detail = fmt.Sprintf("no resolvable spec; %d command(s) unvalidated", report.WiringCheck.CommandTree.Defined)
+	}
 	report.Issues = collectDogfoodIssues(report, spec != nil)
 	report.Verdict = deriveDogfoodVerdict(report, spec != nil)
 

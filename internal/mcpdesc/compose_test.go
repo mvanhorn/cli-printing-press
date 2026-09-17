@@ -87,6 +87,36 @@ func TestCompose_PatchUPDATEWithPathParams(t *testing.T) {
 	assert.Equal(t, "Update project task. Required: projectId, taskId. Optional: title, priority, completed. Partial update.", got)
 }
 
+func TestCompose_DeprecatedAddsMarker(t *testing.T) {
+	in := Input{
+		Endpoint: spec.Endpoint{
+			Method:      "POST",
+			Path:        "/audiences",
+			Description: "Create an audience",
+			Deprecated:  true,
+			Response:    spec.ResponseDef{Type: "object", Item: "Audience"},
+		},
+		AuthType: "none",
+	}
+	got := Compose(in)
+	assert.Contains(t, got, "Deprecated.")
+	assert.Contains(t, got, "Create an audience.")
+}
+
+func TestCompose_DeprecatedDoesNotDuplicateExistingWord(t *testing.T) {
+	in := Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/concepts",
+			Description: "Deprecated concepts listing",
+			Deprecated:  true,
+		},
+		AuthType: "none",
+	}
+	got := Compose(in)
+	assert.Equal(t, 1, strings.Count(strings.ToLower(got), "deprecated"))
+}
+
 func TestCompose_DeleteAddsDestructive(t *testing.T) {
 	in := Input{
 		Endpoint: spec.Endpoint{

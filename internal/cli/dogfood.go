@@ -320,10 +320,20 @@ func printDogfoodReport(report *pipeline.DogfoodReport) {
 	}
 	fmt.Println()
 
-	fmt.Printf("Verdict: %s\n", report.Verdict)
+	fmt.Printf("Verdict: %s%s\n", report.Verdict, dogfoodVerdictQualifier(report))
 	for _, issue := range report.Issues {
 		fmt.Printf("  - %s\n", issue)
 	}
+}
+
+func dogfoodVerdictQualifier(report *pipeline.DogfoodReport) string {
+	if report == nil || report.Verdict != "PASS" {
+		return ""
+	}
+	if report.SpecSource == pipeline.DogfoodSpecSourceNone || (report.PathCheck.Skipped && report.SpecPath == "") {
+		return " (path/auth checks skipped — no spec)"
+	}
+	return ""
 }
 
 func describeOAuthScopeRequirement(violation pipeline.OAuthScopeCoverageViolation) string {

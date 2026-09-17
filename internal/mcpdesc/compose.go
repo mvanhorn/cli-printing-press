@@ -115,6 +115,7 @@ func ComposeWithSource(in Input) Result {
 	}
 
 	composed = appendMethodMarker(composed, in.Endpoint.Method)
+	composed = appendDeprecatedMarker(composed, in.Endpoint)
 	source := SourceSpec
 	if synthesizeAction && !structuralOverride {
 		source = SourceGenerated
@@ -451,6 +452,16 @@ func appendMethodMarker(desc, method string) string {
 		}
 	}
 	return desc
+}
+
+func appendDeprecatedMarker(desc string, ep spec.Endpoint) string {
+	if !ep.Deprecated || desc == "" {
+		return desc
+	}
+	if strings.Contains(strings.ToLower(desc), "deprecated") {
+		return desc
+	}
+	return desc + " Deprecated."
 }
 
 func formatParam(p spec.Param) string {
