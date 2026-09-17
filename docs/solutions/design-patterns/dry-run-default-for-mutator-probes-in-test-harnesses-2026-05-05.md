@@ -47,7 +47,7 @@ The detection gate is two-pronged:
 useDryRun := mutating && commandSupportsDryRun(command.Help)
 ```
 
-The second leg matters: hand-written novel commands sharing a mutator-shaped name (`delete`, `create`) but lacking the preview flag are skipped unless `--allow-destructive` is set. Injecting `--dry-run` on a command that does not support it produces an unknown-flag error; running the Example live creates leftover resources. Skip with an explicit reason is the safe default.
+The second leg matters: hand-written novel commands sharing a mutator-shaped name (`delete`, `create`) but lacking the preview flag are skipped unless `--allow-destructive` is set. Injecting `--dry-run` on a command that does not support it produces an unknown-flag error; running the Example live creates leftover resources. Skip with an explicit reason is the safe default. That skip fires only at live invocation, after more specific gates (`no-stdin-fixture`, missing runnable example, positional resolution, mutating `error_path`). Curated `pp:happy-stdin` fixtures still run: they are ground-truth bodies, not research Example strings.
 
 Per-shape decision table:
 
@@ -55,7 +55,7 @@ Per-shape decision table:
 |---|---|---|
 | Read (`get`, `list`) | example as-is | not emitted |
 | Mutator with preview flag | example + `--dry-run` | example as-is, expect != 0 |
-| Mutator without preview flag | skip unless `--allow-destructive` | not emitted |
+| Mutator without preview flag | skip unless `--allow-destructive` or a stdin fixture | not emitted |
 | Positional resolution skipped | skip | skip with same reason |
 
 Commands that advertise `--dry-run` also get a `dry_run_json` probe (`--dry-run --json`) even when they are read-only, so hand-authored novels cannot ship prose under `--json`.

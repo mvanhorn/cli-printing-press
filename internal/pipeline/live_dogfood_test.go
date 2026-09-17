@@ -5439,7 +5439,8 @@ Examples:
   fixture-pp-cli projects tasks update P1 T7
 
 Flags:
-      --json    Output JSON
+      --json      Output JSON
+      --dry-run   Show request without sending
 HELP
   exit 0
 fi
@@ -5450,6 +5451,16 @@ if [ "$1" = "projects" ] && [ "$2" = "tasks" ] && [ "${3:-}" = "update" ]; then
   if [ "${4:-}" = "__printing_press_invalid__" ]; then
     echo 'invalid project' >&2
     exit 2
+  fi
+  has_dry_run=0
+  for a in "$@"; do
+    case "$a" in
+      --dry-run|--dry-run=*) has_dry_run=1 ;;
+    esac
+  done
+  if [ "$has_dry_run" = "1" ]; then
+    echo '{"action":"update","resource":"tasks","status":0,"success":false,"dry_run":true}'
+    exit 0
   fi
   if [ "${6:-}" = "--json" ]; then
     echo '{"id":"T7","status":"updated"}'
@@ -5946,18 +5957,20 @@ func TestRunLiveDogfoodResolveSuccessChainedMultiPositional(t *testing.T) {
 
 	// The chain walks projects list → projects tasks list P1, threading the
 	// resolved P1 into the second list call. The final probe is
-	// `projects tasks update P1 T7`.
+	// `projects tasks update P1 T7 --dry-run` (update advertises --dry-run so
+	// the mutator stays preview-only).
 	got := findResultByCommandKind(report, "projects tasks update", LiveDogfoodTestHappy)
 	require.NotNil(t, got, "expected projects tasks update happy_path in report")
 	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
+	assert.Contains(t, got.Args, "--dry-run")
 
 	lines := readArgvLog(t, argvLog)
 	assert.GreaterOrEqual(t, countArgvLines(lines, "projects list", "--json"), 1,
 		"expected projects list --json (depth-0 companion) in argv log")
 	assert.GreaterOrEqual(t, countArgvLines(lines, "projects tasks list", "P1", "--json"), 1,
 		"expected projects tasks list P1 --json (depth-1 companion threading P1) in argv log")
-	assert.GreaterOrEqual(t, countArgvLines(lines, "projects tasks update P1 T7"), 1,
-		"expected projects tasks update P1 T7 (post-chain probe) in argv log")
+	assert.GreaterOrEqual(t, countArgvLines(lines, "projects tasks update P1 T7", "--dry-run"), 1,
+		"expected projects tasks update P1 T7 --dry-run (post-chain preview probe) in argv log")
 }
 
 func TestRunLiveDogfoodResolveSuccessCacheHit(t *testing.T) {

@@ -1681,15 +1681,6 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		return results
 	}
 
-	if mutating && !useDryRun && !ctx.allowDestructive && !mutation.unclassified {
-		results = append(results,
-			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonMutatingRequiresAllowDestructive),
-			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonMutatingRequiresAllowDestructive),
-			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonMutatingRequiresAllowDestructive),
-		)
-		return results
-	}
-
 	bodyFixtureSkip := liveDogfoodUnsynthesizableBodyFixtureSkip(command, ctx.bodyFixtures)
 	stdinFixture := strings.TrimSpace(command.Annotations[happyStdinAnnotation])
 	stdinOnly := liveDogfoodCommandStdinOnly(command)
@@ -1778,6 +1769,18 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		return results
 	default:
 		happyArgs = resolvedArgs
+
+		// Skip live Example execution for classified mutators that cannot
+		// preview. Stdin fixtures are curated request bodies, so they still
+		// run; missing-example / no-stdin / resolve skips above stay more
+		// specific. error_path keeps its own mutating skip after the switch.
+		if mutating && !useDryRun && !ctx.allowDestructive && !mutation.unclassified && len(stdinPayload) == 0 {
+			results = append(results,
+				skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonMutatingRequiresAllowDestructive),
+				skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonMutatingRequiresAllowDestructive),
+			)
+			break
+		}
 
 		runArgs := happyArgs
 		if useDryRun {
