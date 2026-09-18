@@ -1746,10 +1746,16 @@ func compatibleOAuthScopeAuth(base, incoming spec.AuthConfig) bool {
 		}
 		return normalizeAuthURL(base.TokenURL) == normalizeAuthURL(incoming.TokenURL)
 	}
-	if strings.TrimSpace(base.AuthorizationURL) == "" {
+	if base.Type != incoming.Type || base.EffectiveOAuth2Grant() != incoming.EffectiveOAuth2Grant() {
 		return false
 	}
-	if base.Type != incoming.Type || base.EffectiveOAuth2Grant() != incoming.EffectiveOAuth2Grant() {
+	// Two-legged grants never carry an authorization URL, so the token
+	// endpoint is the only authority the consent request can belong to.
+	if base.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials {
+		return normalizeAuthURL(base.TokenURL) == normalizeAuthURL(incoming.TokenURL) &&
+			strings.TrimSpace(base.RefreshTokenMechanism) == strings.TrimSpace(incoming.RefreshTokenMechanism)
+	}
+	if strings.TrimSpace(base.AuthorizationURL) == "" {
 		return false
 	}
 	if normalizeAuthURL(base.AuthorizationURL) != normalizeAuthURL(incoming.AuthorizationURL) {

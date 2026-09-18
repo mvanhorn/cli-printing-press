@@ -3299,6 +3299,109 @@ func TestMergeSpecsPreservesSingleSpecAuthScopeOrder(t *testing.T) {
 	assert.Equal(t, []string{"scope.z", "scope.a"}, merged.Auth.Scopes)
 }
 
+func TestMergeSpecsUnionsScopesForGrantsWithoutAuthorizationURL(t *testing.T) {
+	t.Parallel()
+
+	newSpec := func(name string, auth spec.AuthConfig) *spec.APISpec {
+		return &spec.APISpec{
+			Name:    name,
+			Version: "0.1.0",
+			BaseURL: "https://api.example.com",
+			Auth:    auth,
+			Resources: map[string]spec.Resource{
+				name: {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/" + name}}},
+			},
+			Types: map[string]spec.TypeDef{},
+		}
+	}
+
+	tests := []struct {
+		name       string
+		primary    spec.AuthConfig
+		secondary  spec.AuthConfig
+		wantScopes []string
+	}{
+		{
+			name: "client credentials specs sharing a token URL union scopes",
+			primary: spec.AuthConfig{
+				Type:        "oauth2",
+				OAuth2Grant: spec.OAuth2GrantClientCredentials,
+				TokenURL:    "https://accounts.example.com/token",
+				Scopes:      []string{"a:r"},
+			},
+			secondary: spec.AuthConfig{
+				Type:        "oauth2",
+				OAuth2Grant: spec.OAuth2GrantClientCredentials,
+				TokenURL:    "https://accounts.example.com/token",
+				Scopes:      []string{"b:r"},
+			},
+			wantScopes: []string{"a:r", "b:r"},
+		},
+		{
+			name: "client credentials specs with different token URLs keep primary scopes",
+			primary: spec.AuthConfig{
+				Type:        "oauth2",
+				OAuth2Grant: spec.OAuth2GrantClientCredentials,
+				TokenURL:    "https://accounts.example.com/token",
+				Scopes:      []string{"a:r"},
+			},
+			secondary: spec.AuthConfig{
+				Type:        "oauth2",
+				OAuth2Grant: spec.OAuth2GrantClientCredentials,
+				TokenURL:    "https://other.example.net/token",
+				Scopes:      []string{"b:r"},
+			},
+			wantScopes: []string{"a:r"},
+		},
+		{
+			name: "client credentials specs with mismatched refresh mechanisms keep primary scopes",
+			primary: spec.AuthConfig{
+				Type:        "oauth2",
+				OAuth2Grant: spec.OAuth2GrantClientCredentials,
+				TokenURL:    "https://accounts.example.com/token",
+				Scopes:      []string{"a:r"},
+			},
+			secondary: spec.AuthConfig{
+				Type:                  "oauth2",
+				OAuth2Grant:           spec.OAuth2GrantClientCredentials,
+				TokenURL:              "https://accounts.example.com/token",
+				RefreshTokenMechanism: "rotating",
+				Scopes:                []string{"b:r"},
+			},
+			wantScopes: []string{"a:r"},
+		},
+		{
+			name: "authorization code specs without an authorization URL keep primary scopes",
+			primary: spec.AuthConfig{
+				Type:        "oauth2",
+				OAuth2Grant: spec.OAuth2GrantAuthorizationCode,
+				TokenURL:    "https://accounts.example.com/token",
+				Scopes:      []string{"a:r"},
+			},
+			secondary: spec.AuthConfig{
+				Type:        "oauth2",
+				OAuth2Grant: spec.OAuth2GrantAuthorizationCode,
+				TokenURL:    "https://accounts.example.com/token",
+				Scopes:      []string{"b:r"},
+			},
+			wantScopes: []string{"a:r"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			merged := mergeSpecs([]*spec.APISpec{
+				newSpec("primary", tt.primary),
+				newSpec("secondary", tt.secondary),
+			}, "combo")
+
+			assert.Equal(t, tt.wantScopes, merged.Auth.Scopes)
+		})
+	}
+}
+
 func assertAdditionalAuthHeader(t *testing.T, headers []spec.AdditionalAuthHeader, wantHeader, wantEnvVar string) {
 	t.Helper()
 	for _, header := range headers {
@@ -3412,6 +3515,85 @@ paths:
 	singleAuthFile, err := os.ReadFile(filepath.Join(singleOutputDir, "internal", "cli", "auth.go"))
 	require.NoError(t, err)
 	assert.NotContains(t, string(singleAuthFile), "yt-analytics.readonly")
+}
+
+func TestGenerateMultiSpecUnionsClientCredentialsScopes(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	primarySpecPath := filepath.Join(dir, "billing.yaml")
+	reportingSpecPath := filepath.Join(dir, "reporting.yaml")
+	outputDir := filepath.Join(dir, "ledger")
+	require.NoError(t, os.WriteFile(primarySpecPath, []byte(`openapi: 3.0.3
+info:
+  title: Ledger Billing
+  version: 1.0.0
+servers:
+  - url: https://billing.example.com/v1
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.example.com/oauth/token
+          scopes:
+            billing:read: Read billing records
+security:
+  - OAuth2: []
+paths:
+  /invoices:
+    get:
+      operationId: listInvoices
+      responses:
+        "200":
+          description: OK
+`), 0o644))
+	require.NoError(t, os.WriteFile(reportingSpecPath, []byte(`openapi: 3.0.3
+info:
+  title: Ledger Reporting
+  version: 1.0.0
+servers:
+  - url: https://reporting.example.com/v1
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.example.com/oauth/token
+          scopes:
+            reporting:read: Read reports
+security:
+  - OAuth2: []
+paths:
+  /reports:
+    get:
+      operationId: listReports
+      responses:
+        "200":
+          description: OK
+`), 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", primarySpecPath,
+		"--spec", reportingSpecPath,
+		"--name", "ledger",
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+	})
+	require.NoError(t, cmd.Execute())
+
+	authFile, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	authSource := string(authFile)
+	require.Contains(t, authSource, "func resolveClientCredentialsScope(")
+	assert.Contains(t, authSource, `return "billing:read reporting:read"`)
+
+	runGoCommandForCLITest(t, outputDir, "mod", "tidy")
+	runGoCommandForCLITest(t, outputDir, "build", "./...")
 }
 
 func TestGenerateMultiSpecEmitsNestedResourceBaseURLPrefix(t *testing.T) {
