@@ -8947,6 +8947,112 @@ func TestClassifyDeleteError404RequiresIgnoreMissing(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "-run", "Test(Classify|WriteNoop)", "./internal/cli")
 }
 
+func TestGeneratedHelpers_ClassifiesTypedRateLimitError(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "testratelimitclass",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "testratelimitclass-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
+	typedMatch := "var rateLimited *platform.RateLimitedError"
+	require.Equal(t, 2, strings.Count(helpers, typedMatch),
+		"both emitted classifiers must errors.As *platform.RateLimitedError before the HTTP-status switch")
+
+	modulePath := generatedModulePath(t, outputDir)
+	testPath := filepath.Join(outputDir, "internal", "cli", "rate_limit_classify_test.go")
+	inlineTest := fmt.Sprintf(`package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+
+	%q
+)
+
+func TestClassifyTypedRateLimit(t *testing.T) {
+	limited := &platform.RateLimitedError{EndpointClass: "read", Attempts: 3}
+	wrapped := fmt.Errorf("get items: %%w", limited)
+
+	only := classifyAPIErrorOnly(limited)
+	if got := ExitCode(only); got != 7 {
+		t.Fatalf("classifyAPIErrorOnly(RateLimitedError) exit = %%d, want 7", got)
+	}
+	if got := ExitCode(classifyAPIErrorOnly(wrapped)); got != 7 {
+		t.Fatalf("classifyAPIErrorOnly(wrapped RateLimitedError) exit = %%d, want 7", got)
+	}
+
+	var out bytes.Buffer
+	classified := classifyAPIError(&out, limited, &rootFlags{asJSON: true})
+	if got := ExitCode(classified); got != 7 {
+		t.Fatalf("classifyAPIError(RateLimitedError) exit = %%d, want 7", got)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(out.Bytes(), &envelope); err != nil {
+		t.Fatalf("typed rate-limit JSON envelope: %%v; body=%%q", err, out.String())
+	}
+	if envelope["code"] != float64(7) {
+		t.Fatalf("typed rate-limit envelope code = %%v, want 7", envelope["code"])
+	}
+	errText, _ := envelope["error"].(string)
+	if !strings.Contains(errText, "rate limited") {
+		t.Fatalf("typed rate-limit envelope error = %%q, want rate limited", errText)
+	}
+
+	out.Reset()
+	wrappedClassified := classifyAPIError(&out, wrapped, &rootFlags{asJSON: true})
+	if got := ExitCode(wrappedClassified); got != 7 {
+		t.Fatalf("classifyAPIError(wrapped RateLimitedError) exit = %%d, want 7", got)
+	}
+
+	out.Reset()
+	http429 := classifyAPIError(&out, errors.New("HTTP 429: slow down"), &rootFlags{asJSON: true})
+	if got := ExitCode(http429); got != 7 {
+		t.Fatalf("HTTP 429 exit = %%d, want 7", got)
+	}
+	if err := json.Unmarshal(out.Bytes(), &envelope); err != nil {
+		t.Fatalf("HTTP 429 JSON envelope: %%v; body=%%q", err, out.String())
+	}
+	if envelope["code"] != float64(7) {
+		t.Fatalf("HTTP 429 envelope code = %%v, want 7", envelope["code"])
+	}
+
+	if got := ExitCode(classifyAPIErrorOnly(errors.New("HTTP 500: boom"))); got != 5 {
+		t.Fatalf("HTTP 500 exit = %%d, want 5", got)
+	}
+
+	typed := usageErr(errors.New("semantic API envelope rejected input"))
+	if got := classifyAPIErrorOnly(typed); got != typed {
+		t.Fatalf("typed cliError pass-through changed: %%#v", got)
+	}
+	if got := ExitCode(typed); got != 2 {
+		t.Fatalf("typed cliError exit = %%d, want 2", got)
+	}
+}
+`, modulePath+"/internal/platform")
+
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestClassifyTypedRateLimit", "./internal/cli")
+}
+
 func TestGeneratedExport_ValidatesResourceArgument(t *testing.T) {
 	t.Parallel()
 

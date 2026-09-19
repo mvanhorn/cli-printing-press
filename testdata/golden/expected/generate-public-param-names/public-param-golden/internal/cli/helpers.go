@@ -752,6 +752,10 @@ func classifyAPIErrorOnly(err error) error {
 	if errors.As(err, &typed) {
 		return err
 	}
+	var rateLimited *platform.RateLimitedError
+	if errors.As(err, &rateLimited) {
+		return rateLimitErr(err)
+	}
 
 	msg := err.Error()
 	switch {
@@ -782,6 +786,12 @@ func classifyAPIError(w io.Writer, err error, flags *rootFlags) error {
 	var typed *cliError
 	if errors.As(err, &typed) {
 		return err
+	}
+	var rateLimited *platform.RateLimitedError
+	if errors.As(err, &rateLimited) {
+		classified := rateLimitErr(err)
+		writeAPIErrorEnvelope(w, flags, classified, ExitCode(classified))
+		return classified
 	}
 	msg := err.Error()
 	if strings.Contains(msg, "HTTP 409") {
