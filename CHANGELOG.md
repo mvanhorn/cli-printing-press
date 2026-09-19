@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.32.3](https://github.com/mvanhorn/cli-printing-press/compare/v4.32.2...v4.32.3) (2026-09-19)
+
+
+### Bug Fixes
+
+* **cli:** bound the isolated printing-press GOCACHE so validate cannot ENOSPC ([#4731](https://github.com/mvanhorn/cli-printing-press/issues/4731)) ([0cae737](https://github.com/mvanhorn/cli-printing-press/commit/0cae737ff507b927c4d2e913252e676b487e8b97))
+* **cli:** classify typed rate-limit errors as exit 7 ([#4744](https://github.com/mvanhorn/cli-printing-press/issues/4744)) ([baecf6a](https://github.com/mvanhorn/cli-printing-press/commit/baecf6a0975216ae69fb985fea8c5f9d4b32402e))
+* **cli:** fail closed when dogfood/workflow-verify reports FAIL ([#4732](https://github.com/mvanhorn/cli-printing-press/issues/4732)) ([ebb9840](https://github.com/mvanhorn/cli-printing-press/commit/ebb984080f8a00bd15d412cc548684885c0e57d6))
+* **cli:** harden live-dogfood probing (examples, binary, dry-run JSON) ([#4735](https://github.com/mvanhorn/cli-printing-press/issues/4735)) ([6265a46](https://github.com/mvanhorn/cli-printing-press/commit/6265a467e6ec479685dc19a9df67ec8bf2244592))
+* **cli:** honest zero-coverage dogfood, emit deprecated, drop hollow api ([#4734](https://github.com/mvanhorn/cli-printing-press/issues/4734)) ([4bb9157](https://github.com/mvanhorn/cli-printing-press/commit/4bb91572a6bb446d4c97ed0aff0c9e2901d3e6b7))
+* **cli:** keep endpoint template vars across multi-spec merge ([#4727](https://github.com/mvanhorn/cli-printing-press/issues/4727)) ([df94e99](https://github.com/mvanhorn/cli-printing-press/commit/df94e99af2b2987ffe64b229cd75361539b1950e))
+* **cli:** make teach-family commands pass live dogfood as emitted ([#4733](https://github.com/mvanhorn/cli-printing-press/issues/4733)) ([e04f743](https://github.com/mvanhorn/cli-printing-press/commit/e04f7433fd6ab30ae9a6a6f427e0832262dda671))
+* **cli:** union client-credentials scopes across multi-spec merge ([#4729](https://github.com/mvanhorn/cli-printing-press/issues/4729)) ([a5a8083](https://github.com/mvanhorn/cli-printing-press/commit/a5a8083d468f14efb8b8f50af2fe3203ffb0cbc6)), closes [#4728](https://github.com/mvanhorn/cli-printing-press/issues/4728)
+
 ## [4.32.2](https://github.com/mvanhorn/cli-printing-press/compare/v4.32.1...v4.32.2) (2026-09-16)
 
 
