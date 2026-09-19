@@ -547,6 +547,10 @@ Rules:
   a resource-specific problem.
 - Value must be a non-empty string after `TrimSpace`. Whitespace-only
   values are treated as absent.
+- In a multi-spec print the binding merges across every contributing spec,
+  so the `{tenant}` wiring survives the merge; when two specs bind
+  `{tenant}` to different env-var names the merge warns on stderr naming
+  both specs and keeps the first spec's name.
 - The placeholder name is `tenant`. Specs that use a different
   placeholder (`{workspace}`, `{org}`) should set
   `EndpointTemplateVars` + `EndpointTemplateEnvOverrides` directly in

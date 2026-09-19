@@ -1386,7 +1386,87 @@ func mergeSpecsWithOptions(specs []*spec.APISpec, name string, opts mergeSpecOpt
 		}
 	}
 
+	applyMultiSpecTemplateVars(merged, specs)
+
 	return merged
+}
+
+// applyMultiSpecTemplateVars preserves template-variable bindings when the
+// merge reconstructs the spec. Without this the merged spec loses each
+// source's {placeholder} wiring, so a per-tenant path segment degrades into
+// a positional argument on every command instead of a root flag backed by
+// the declared env var.
+func applyMultiSpecTemplateVars(merged *spec.APISpec, specs []*spec.APISpec) {
+	seenVars := map[string]struct{}{}
+	overrideSource := map[string]*spec.APISpec{}
+	for _, s := range specs {
+		for _, name := range s.EndpointTemplateVars {
+			if strings.TrimSpace(name) == "" {
+				continue
+			}
+			if _, dup := seenVars[name]; dup {
+				continue
+			}
+			seenVars[name] = struct{}{}
+			merged.EndpointTemplateVars = append(merged.EndpointTemplateVars, name)
+		}
+		for _, placeholder := range sortedStringMapKeys(s.EndpointTemplateEnvOverrides) {
+			override := s.EndpointTemplateEnvOverrides[placeholder]
+			if strings.TrimSpace(placeholder) == "" || strings.TrimSpace(override) == "" {
+				continue
+			}
+			if existing, taken := merged.EndpointTemplateEnvOverrides[placeholder]; taken {
+				if existing != override {
+					fmt.Fprintf(os.Stderr, "warning: spec %q binds template var {%s} to %s but spec %q already bound it to %s; keeping %s\n",
+						s.Name, placeholder, override, overrideSource[placeholder].Name, existing, existing)
+				}
+				continue
+			}
+			if merged.EndpointTemplateEnvOverrides == nil {
+				merged.EndpointTemplateEnvOverrides = map[string]string{}
+			}
+			merged.EndpointTemplateEnvOverrides[placeholder] = override
+			overrideSource[placeholder] = s
+		}
+		mergeFirstWins(&merged.EndpointTemplateVarDefaults, s.EndpointTemplateVarDefaults)
+		mergeFirstWins(&merged.EndpointPathParamDefaults, s.EndpointPathParamDefaults)
+	}
+	// The merged spec has its own name and auth model, so an override that was
+	// benign per-spec can now collide with a credential env var.
+	merged.DropCollidingEndpointTemplateEnvOverrides()
+	// Global promotion keeps whatever is already listed without re-checking the
+	// coverage threshold, so a placeholder that is global in one source spec
+	// would force a root flag on every merged command. Leave the list empty and
+	// let PromoteGlobalPathTemplateVars recompute it from the merged endpoints.
+	merged.GlobalPathTemplateVars = nil
+}
+
+// mergeFirstWins keeps the first spec's binding when two specs declare the
+// same key. A later overwrite would make defaults depend on merge order.
+func mergeFirstWins(dst *map[string]string, src map[string]string) {
+	for _, key := range sortedStringMapKeys(src) {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		if _, taken := (*dst)[key]; taken {
+			continue
+		}
+		if *dst == nil {
+			*dst = map[string]string{}
+		}
+		(*dst)[key] = src[key]
+	}
+}
+
+// sortedStringMapKeys keeps merge results and conflict warnings in a
+// deterministic order.
+func sortedStringMapKeys(in map[string]string) []string {
+	keys := make([]string, 0, len(in))
+	for key := range in {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func prefixedMultiSpecResourceName(s *spec.APISpec, resourceName string) string {

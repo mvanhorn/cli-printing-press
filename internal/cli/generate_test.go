@@ -2501,6 +2501,112 @@ func TestMergeSpecsPreservesRequiredHeadersAndLearnFromLaterSpecs(t *testing.T) 
 	}, merged.Learn)
 }
 
+func tenantTemplateSpec(name, override string) *spec.APISpec {
+	s := &spec.APISpec{
+		Name:                 name,
+		Version:              "0.1.0",
+		BaseURL:              "https://api.example.com",
+		EndpointTemplateVars: []string{"tenant"},
+		Resources: map[string]spec.Resource{
+			name: {Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/tenant/{tenant}/" + name},
+			}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	if override != "" {
+		s.EndpointTemplateEnvOverrides = map[string]string{"tenant": override}
+		s.GlobalPathTemplateVars = []string{"tenant"}
+	}
+	return s
+}
+
+func TestMergeSpecsUnionsEndpointTemplateVarsAndEnvOverrides(t *testing.T) {
+	t.Parallel()
+
+	primary := tenantTemplateSpec("jobs", "ST_TENANT_ID")
+	primary.EndpointPathParamDefaults = map[string]string{"userId": "me"}
+	primary.EndpointTemplateVarDefaults = map[string]string{"version": "v1"}
+	secondary := tenantTemplateSpec("crm", "ST_TENANT_ID")
+	secondary.EndpointTemplateVars = []string{"tenant", "version"}
+	secondary.EndpointTemplateEnvOverrides["version"] = "ST_API_VERSION"
+	secondary.EndpointPathParamDefaults = map[string]string{"userId": "self", "orgId": "default"}
+	secondary.EndpointTemplateVarDefaults = map[string]string{"version": "v2", "region": "us"}
+
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary}, "combo")
+
+	assert.Equal(t, []string{"tenant", "version"}, merged.EndpointTemplateVars)
+	assert.Equal(t, map[string]string{"tenant": "ST_TENANT_ID", "version": "ST_API_VERSION"}, merged.EndpointTemplateEnvOverrides)
+	assert.Equal(t, map[string]string{"userId": "me", "orgId": "default"}, merged.EndpointPathParamDefaults, "first spec's path-param default wins; new keys still merge")
+	assert.Equal(t, map[string]string{"version": "v1", "region": "us"}, merged.EndpointTemplateVarDefaults, "first spec's template-var default wins; new keys still merge")
+	assert.Empty(t, merged.GlobalPathTemplateVars)
+	assert.Equal(t, "ST_TENANT_ID", merged.EndpointTemplateEnvName("tenant"))
+}
+
+func TestMergeSpecsWarnsAndKeepsFirstConflictingTemplateEnvOverride(t *testing.T) {
+	// Captures os.Stderr for the collision warning; not parallel with other
+	// tests that write the process stderr.
+
+	primary := tenantTemplateSpec("jobs", "ST_TENANT_ID")
+	secondary := tenantTemplateSpec("crm", "OTHER_TENANT_ID")
+
+	var merged *spec.APISpec
+	stderr, err := runWithCapturedStderr(t, func() error {
+		merged = mergeSpecs([]*spec.APISpec{primary, secondary}, "combo")
+		return nil
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]string{"tenant": "ST_TENANT_ID"}, merged.EndpointTemplateEnvOverrides)
+	assert.Contains(t, stderr, "tenant")
+	assert.Contains(t, stderr, "jobs")
+	assert.Contains(t, stderr, "crm")
+	assert.Contains(t, stderr, "ST_TENANT_ID")
+	assert.Contains(t, stderr, "OTHER_TENANT_ID")
+}
+
+func TestMergeSpecsKeepsTemplateBindingWhenLaterSpecOmitsIt(t *testing.T) {
+	t.Parallel()
+
+	primary := tenantTemplateSpec("jobs", "ST_TENANT_ID")
+	secondary := tenantTemplateSpec("crm", "")
+
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary}, "combo")
+
+	assert.Equal(t, []string{"tenant"}, merged.EndpointTemplateVars)
+	assert.Equal(t, map[string]string{"tenant": "ST_TENANT_ID"}, merged.EndpointTemplateEnvOverrides)
+	assert.Empty(t, merged.GlobalPathTemplateVars)
+}
+
+func TestMergeSpecsRederivesGlobalPathTemplateVarsFromMergedEndpoints(t *testing.T) {
+	t.Parallel()
+
+	tenantScoped := tenantTemplateSpec("jobs", "ST_TENANT_ID")
+	untemplated := &spec.APISpec{
+		Name:    "settings",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"settings": {Endpoints: map[string]spec.Endpoint{
+				"a": {Method: "GET", Path: "/settings/a"},
+				"b": {Method: "GET", Path: "/settings/b"},
+				"c": {Method: "GET", Path: "/settings/c"},
+				"d": {Method: "GET", Path: "/settings/d"},
+			}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{tenantScoped, untemplated}, "combo")
+	require.Empty(t, merged.GlobalPathTemplateVars)
+	merged.PromoteGlobalPathTemplateVars()
+	assert.Empty(t, merged.GlobalPathTemplateVars, "{tenant} covers 1 of 5 merged endpoints and must not become a root flag")
+
+	covered := mergeSpecs([]*spec.APISpec{tenantScoped, tenantTemplateSpec("crm", "ST_TENANT_ID")}, "combo")
+	covered.PromoteGlobalPathTemplateVars()
+	assert.Equal(t, []string{"tenant"}, covered.GlobalPathTemplateVars)
+}
+
 func TestMergeSpecsScopesConflictingRequiredHeadersToTheirSourceEndpoints(t *testing.T) {
 	t.Parallel()
 
@@ -5407,4 +5513,86 @@ paths:
 	assert.Contains(t, err.Error(), specPath, "error must name the offending spec file")
 	assert.Contains(t, err.Error(), "no `servers:`", "error must explain that the spec declares no servers")
 	assert.NoDirExists(t, outputDir, "refusal must fire before any output is written")
+}
+
+// TestGenerateMultiSpecKeepsTenantTemplateBinding proves the merged spec
+// carries each source's tenant binding all the way into emitted code: a root
+// --tenant flag plus the declared env-var override, instead of a positional
+// path argument on every command.
+func TestGenerateMultiSpecKeepsTenantTemplateBinding(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	outputDir := filepath.Join(dir, "tenantcombo")
+	specAPath := filepath.Join(dir, "jobs.yaml")
+	specBPath := filepath.Join(dir, "crm.yaml")
+
+	tenantSpec := func(title, resource string) string {
+		return `openapi: 3.0.0
+info:
+  title: ` + title + `
+  version: 1.0.0
+  x-tenant-env-var: ST_TENANT_ID
+servers:
+  - url: https://api.example.com
+paths:
+  /tenant/{tenant}/` + resource + `:
+    get:
+      operationId: list` + resource + `
+      summary: List ` + resource + `
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  /tenant/{tenant}/` + resource + `/{id}:
+    get:
+      operationId: get` + resource + `
+      summary: Get one ` + resource + `
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+`
+	}
+	require.NoError(t, os.WriteFile(specAPath, []byte(tenantSpec("Jobs API", "jobs")), 0o644))
+	require.NoError(t, os.WriteFile(specBPath, []byte(tenantSpec("CRM API", "customers")), 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", specAPath,
+		"--spec", specBPath,
+		"--name", "tenantcombo",
+		"--name-prefix",
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+	})
+	require.NoError(t, cmd.Execute())
+
+	root, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(root), `"tenant", "", "Set {tenant} path template value (env: ST_TENANT_ID)"`)
+	assert.Contains(t, string(root), `cfg.TemplateVars["tenant"] = f.templateVarTenant`)
+
+	config, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(config), "ST_TENANT_ID")
+
+	runGoCommandForCLITest(t, outputDir, "mod", "tidy")
+	runGoCommandForCLITest(t, outputDir, "build", "./...")
 }
