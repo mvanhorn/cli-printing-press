@@ -22,6 +22,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	openapiparser "github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
 	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"gopkg.in/yaml.v3"
 )
@@ -247,6 +248,7 @@ type WorkflowCompleteResult struct {
 
 type openAPISpec struct {
 	Paths                  []string
+	GETPaths               []string
 	Auth                   apispec.AuthConfig
 	Kind                   string // see apispec.KindREST / apispec.KindSynthetic
 	HTTPTransport          string
@@ -1243,6 +1245,7 @@ func loadDogfoodOpenAPISpec(specPath string, authPreference string) (*openAPISpe
 		}
 		return &openAPISpec{
 			Paths:                  collectDogfoodSpecPaths(parsed.Resources),
+			GETPaths:               collectDogfoodSpecGETPaths(parsed.Resources),
 			Auth:                   parsed.Auth,
 			OAuthScopeRequirements: scopeRequirements,
 			NestedDataEnvelopes:    nestedDataEnvelopes,
@@ -1255,6 +1258,7 @@ func loadDogfoodOpenAPISpec(specPath string, authPreference string) (*openAPISpe
 
 	return &openAPISpec{
 		Paths:                  summary.Paths,
+		GETPaths:               summary.GETPaths,
 		Auth:                   deriveDogfoodAuth(summary, authPreference),
 		OAuthScopeRequirements: summary.OAuthScopeRequirements,
 		NestedDataEnvelopes:    nestedDataEnvelopes,
@@ -1267,6 +1271,32 @@ func collectDogfoodSpecPaths(resources map[string]apispec.Resource) []string {
 		collectDogfoodResourcePaths(resource, &paths)
 	}
 	return uniqueSorted(paths)
+}
+
+// The store under-detection guard needs method data: a POST /items + DELETE
+// /items/{id} pair is not a readable collection and must not look like one.
+func collectDogfoodSpecGETPaths(resources map[string]apispec.Resource) []string {
+	var paths []string
+	for _, resource := range resources {
+		collectDogfoodResourcePathsForMethod(resource, "GET", &paths)
+	}
+	return uniqueSorted(paths)
+}
+
+func collectDogfoodResourcePathsForMethod(resource apispec.Resource, method string, paths *[]string) {
+	for _, endpoint := range resource.Endpoints {
+		// A scalar-item array response (e.g. a bare list of string IDs) has no
+		// extractable primary key, so the generator's profiler never selects it
+		// as a syncable list either (profiler.IsScalarItemArray); the guard must
+		// agree or a legitimately store-less spec reads as a generator bug.
+		if strings.TrimSpace(endpoint.Path) != "" && strings.EqualFold(endpoint.Method, method) &&
+			!profiler.IsScalarItemArray(endpoint.Response) {
+			*paths = append(*paths, endpoint.Path)
+		}
+	}
+	for _, subresource := range resource.SubResources {
+		collectDogfoodResourcePathsForMethod(subresource, method, paths)
+	}
 }
 
 func collectDogfoodResourcePaths(resource apispec.Resource, paths *[]string) {

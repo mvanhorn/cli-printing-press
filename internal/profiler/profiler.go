@@ -1414,6 +1414,13 @@ func isScalarItemArray(response spec.ResponseDef) bool {
 	return response.Type == "array" && scalarItemTypes[response.Item]
 }
 
+// IsScalarItemArray exports the same check for internal/pipeline's store
+// under-detection guard, so both packages agree on what "no extractable
+// primary key" means instead of drifting apart under two definitions.
+func IsScalarItemArray(response spec.ResponseDef) bool {
+	return isScalarItemArray(response)
+}
+
 func hasListShapedResponse(name string, endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
 	if endpoint.Response.Type == "array" {
 		// Scalar-element arrays are rejected upstream in isListEndpoint; a

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
 	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
@@ -43,6 +44,7 @@ func isInternalYAMLSpec(data []byte) bool {
 func internalSpecToDogfoodSpec(s *apispec.APISpec) *openAPISpec {
 	return &openAPISpec{
 		Paths:          collectInternalSpecPaths(s),
+		GETPaths:       collectInternalSpecGETPaths(s),
 		Auth:           s.Auth,
 		Kind:           s.Kind,
 		HTTPTransport:  s.EffectiveHTTPTransport(),
@@ -118,6 +120,7 @@ func stringifyParamDefault(v any) string {
 func internalSpecToOpenAPISpecInfo(s *apispec.APISpec) *openAPISpecInfo {
 	info := &openAPISpecInfo{
 		Paths:                collectInternalSpecPaths(s),
+		GETPaths:             collectInternalSpecGETPaths(s),
 		SecuritySchemes:      make(map[string]openAPISecurityScheme),
 		PositionalParamCount: countInternalSpecPositionals(s),
 		Kind:                 s.Kind,
@@ -192,6 +195,34 @@ func collectInternalSpecPaths(s *apispec.APISpec) []string {
 	}
 	slices.Sort(paths)
 	return slices.Compact(paths)
+}
+
+// Mirrors collectInternalSpecPaths, but method-filtered: the store
+// under-detection guard needs GET-only paths so a write-only collection
+// doesn't look readable.
+func collectInternalSpecGETPaths(s *apispec.APISpec) []string {
+	var paths []string
+	for _, resource := range s.Resources {
+		collectInternalResourcePathsForMethod(resource, "GET", &paths)
+	}
+	slices.Sort(paths)
+	return slices.Compact(paths)
+}
+
+func collectInternalResourcePathsForMethod(r apispec.Resource, method string, paths *[]string) {
+	for _, endpoint := range r.Endpoints {
+		// A scalar-item array response (e.g. a bare list of string IDs) has no
+		// extractable primary key, so the generator's profiler never selects it
+		// as a syncable list either (profiler.IsScalarItemArray); the guard must
+		// agree or a legitimately store-less spec reads as a generator bug.
+		if endpoint.Path != "" && strings.EqualFold(endpoint.Method, method) &&
+			!profiler.IsScalarItemArray(endpoint.Response) {
+			*paths = append(*paths, endpoint.Path)
+		}
+	}
+	for _, sub := range r.SubResources {
+		collectInternalResourcePathsForMethod(sub, method, paths)
+	}
 }
 
 func collectInternalResourcePaths(r apispec.Resource, paths *[]string) {

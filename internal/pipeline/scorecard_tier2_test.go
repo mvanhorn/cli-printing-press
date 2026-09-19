@@ -1552,6 +1552,43 @@ func newSnapshotCmd() *cobra.Command { return &cobra.Command{Use: "snapshot"} }
 		assert.NotContains(t, sc.GapReport, "type_fidelity scored 0/5 - needs improvement")
 	})
 
+	t.Run("collection spec with no store scores pipeline dimensions as under-detection", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli`)
+		writeScorecardFixture(t, dir, "spec.json", `{
+  "openapi": "3.0.3",
+  "info": {"title": "Items API", "version": "1.0.0"},
+  "paths": {
+    "/items": {
+      "get": {
+        "operationId": "listItems",
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/items/{id}": {
+      "get": {
+        "operationId": "getItem",
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}`)
+
+		sc, err := RunScorecard(dir, t.TempDir(), "", nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, DimDataPipelineIntegrity,
+			"a collection spec with no store is a profiler under-detection, not an N/A")
+		assert.NotContains(t, sc.UnscoredDimensions, DimSyncCorrectness)
+		assert.Zero(t, sc.Steinberger.DataPipelineIntegrity)
+		assert.Zero(t, sc.Steinberger.SyncCorrectness)
+		assert.Contains(t, sc.GapReport, "data_pipeline_integrity scored 0/10 - needs improvement")
+		assert.Contains(t, sc.GapReport, "sync_correctness scored 0/10 - needs improvement")
+		assert.Contains(t, strings.Join(sc.GapReport, "\n"), "generator profiler under-detection; fix the generator, not this CLI")
+		assert.Contains(t, sc.UnscoredDimensions, DimTypeFidelity,
+			"type fidelity stays on the store-gated N/A model")
+	})
+
 	t.Run("hidden endpoint mirrors omit mcp description quality from scoring", func(t *testing.T) {
 		dir := t.TempDir()
 		writeScorecardFixture(t, dir, ToolsManifestFilename, `{
