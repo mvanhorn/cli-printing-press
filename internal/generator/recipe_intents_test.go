@@ -110,6 +110,51 @@ func TestRecipeIntentDerivationSkipsTrivialAndUnsafeRecipes(t *testing.T) {
 	require.Equal(t, "DryRun2", intents[0].Params[4].GoName)
 }
 
+func TestRecipeIntentDerivationDropsDestinationFlags(t *testing.T) {
+	t.Parallel()
+
+	intents := buildRecipeIntents("demo", &ReadmeNarrative{
+		Recipes: []Recipe{
+			{Title: "Analytics over custom store", Command: "demo-pp-cli analytics --db=<path> --agent"},
+			{Title: "Analytics with output file", Command: "demo-pp-cli analytics --output=report.json --window=7d --agent"},
+			{Title: "Analytics space-separated db", Command: "demo-pp-cli analytics --db /tmp/evil.db --window=30d --json"},
+			{Title: "Export destinations", Command: "demo-pp-cli export --audit-dir=/tmp/audit --receipt-file=/tmp/r.json --o=out.json --limit=5 --json"},
+		},
+	}, nil)
+
+	require.Len(t, intents, 3)
+
+	require.Equal(t, "analytics_with_output_file", intents[0].Name)
+	require.Equal(t, []string{"analytics", "--agent"}, intents[0].Command)
+	require.Len(t, intents[0].Params, 1)
+	require.Equal(t, "window", intents[0].Params[0].FlagName)
+	require.Equal(t, "7d", intents[0].Params[0].Default)
+	for _, arg := range intents[0].Args {
+		require.NotEqual(t, "output", arg.Param.FlagName)
+		require.NotEqual(t, "db", arg.Param.FlagName)
+		require.NotEqual(t, "--output", arg.Token)
+		require.NotEqual(t, "report.json", arg.Token)
+	}
+
+	require.Equal(t, "analytics_space_separated_db", intents[1].Name)
+	require.Equal(t, []string{"analytics", "--json"}, intents[1].Command)
+	require.Len(t, intents[1].Params, 1)
+	require.Equal(t, "window", intents[1].Params[0].FlagName)
+	require.Equal(t, "30d", intents[1].Params[0].Default)
+	for _, arg := range intents[1].Args {
+		require.NotEqual(t, "db", arg.Param.FlagName)
+		require.NotEqual(t, "/tmp/evil.db", arg.Token)
+	}
+
+	require.Equal(t, "export_destinations", intents[2].Name)
+	require.Equal(t, []string{"export", "--json"}, intents[2].Command)
+	require.Len(t, intents[2].Params, 1)
+	require.Equal(t, "limit", intents[2].Params[0].FlagName)
+	for _, arg := range intents[2].Args {
+		require.NotContains(t, []string{"audit-dir", "receipt-file", "o", "output", "db"}, arg.Param.FlagName)
+	}
+}
+
 func TestRecipeIntentDerivationSkipsAmbiguousSeparatedFlagValue(t *testing.T) {
 	t.Parallel()
 
@@ -178,6 +223,58 @@ func TestRecipeIntentDerivationBindsPositionals(t *testing.T) {
 	require.True(t, intents[5].Params[0].Positional)
 	require.Equal(t, "ref", intents[5].Params[0].InputName)
 	require.False(t, intents[5].Args[1].Static)
+}
+
+func TestRecipePositionalInputNameWhitespaceBeforeShape(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		token string
+		name  string
+		ok    bool
+	}{
+		{`SELECT count(*)/2 FROM t`, "value", true},
+		{`SELECT time('now')`, "value", true},
+		{`SELECT CAST(x AS INT)`, "value", true},
+		{"12345", "id", true},
+		{"https://example.com", "url", true},
+		{"https://example.com/path", "url", true},
+		{"zenodo:1261813", "ref", true},
+		{"my-best-brownies", "slug", true},
+		{"v1.2.3", "version", true},
+		{"engineering", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.token, func(t *testing.T) {
+			got, ok := recipePositionalInputName(tc.token)
+			require.Equal(t, tc.ok, ok)
+			require.Equal(t, tc.name, got)
+		})
+	}
+}
+
+func TestRecipeIntentDerivationBindsWhitespacePositionalAsValue(t *testing.T) {
+	t.Parallel()
+
+	intents := buildRecipeIntents("demo", &ReadmeNarrative{
+		Recipes: []Recipe{
+			{Title: "SQL hours", Command: `demo-pp-cli sql "SELECT count(*)/2 FROM t" --agent`},
+			{Title: "Get thing", Command: "demo-pp-cli get 12345 --json"},
+			{Title: "Fetch url", Command: "demo-pp-cli fetch https://example.com --json"},
+		},
+	}, nil)
+
+	require.Len(t, intents, 3)
+	require.Equal(t, []string{"sql", "--agent"}, intents[0].Command)
+	require.True(t, intents[0].Params[0].Positional)
+	require.True(t, intents[0].Params[0].Required)
+	require.Equal(t, "value", intents[0].Params[0].InputName)
+	require.False(t, intents[0].Args[1].Static)
+	require.Equal(t, "value", intents[0].Args[1].Param.InputName)
+	require.NotContains(t, intents[0].Command, "SELECT count(*)/2 FROM t")
+
+	require.Equal(t, "id", intents[1].Params[0].InputName)
+	require.Equal(t, "url", intents[2].Params[0].InputName)
 }
 
 func TestRecipeIntentGenerationBindsColonRefPositional(t *testing.T) {

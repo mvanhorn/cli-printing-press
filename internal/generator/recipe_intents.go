@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
@@ -135,6 +136,12 @@ func recipeIntentFromRecipe(apiName string, recipe Recipe) (RecipeIntent, bool) 
 			continue
 		}
 		useEquals := hasValue
+		if recipeFlagIsBlockedDestination(name) {
+			if !hasValue && i+1 < len(tokens) && !strings.HasPrefix(tokens[i+1], "-") {
+				i++
+			}
+			continue
+		}
 		if recipeFlagIsStatic(name) {
 			intent.Command = append(intent.Command, "--"+name)
 			intent.Args = append(intent.Args, RecipeIntentArg{Static: true, Token: "--" + name})
@@ -188,6 +195,19 @@ func recipeIntentFromRecipe(apiName string, recipe Recipe) (RecipeIntent, bool) 
 
 func recipeFlagIsStatic(name string) bool {
 	return name == "json" || name == "agent"
+}
+
+// recipeFlagIsBlockedDestination matches cobratree blockedDestinationFlags.
+// Recipe tools do not go through cliArgsFromMCP, so destination flags must
+// be omitted here too: do not expose them as MCP inputs and do not forward
+// them to the companion CLI.
+func recipeFlagIsBlockedDestination(name string) bool {
+	switch name {
+	case "audit-dir", "db", "o", "output", "receipt-file":
+		return true
+	default:
+		return false
+	}
 }
 
 func recipeParamType(value string) RecipeIntentParamType {
@@ -293,6 +313,9 @@ func recipePositionalInputName(token string) (string, bool) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return "", false
+	}
+	if strings.ContainsFunc(token, unicode.IsSpace) {
+		return "value", true
 	}
 	if isRecipePlaceholder(token) {
 		name := strings.Trim(token, "<>[]")

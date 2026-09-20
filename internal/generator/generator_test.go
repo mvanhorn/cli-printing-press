@@ -4854,6 +4854,12 @@ func TestGenerateMCPSQLToolBoundsExecutionAndMaterialisation(t *testing.T) {
 		"handleSQL must not append every scanned row before encoding")
 	assert.Regexp(t, `(?s)func handleSQL\(.*queryCtx, cancel := bound\.WithSQLQueryDeadline\(ctx\).*QueryContext\(queryCtx, query\)`, mcpCode,
 		"handleSQL must thread the deadline context into QueryContext")
+	assert.Regexp(t, `(?s)func handleSQL\(.*db\.DB\(\)\.Conn\(queryCtx\).*sqlite\.Limit\(conn, sqlite3\.SQLITE_LIMIT_LENGTH, mcpSQLMaxValueBytes\).*QueryContext\(queryCtx, query\)`, mcpCode,
+		"handleSQL must set SQLITE_LIMIT_LENGTH on the same connection used for QueryContext")
+	assert.Contains(t, mcpCode, "const mcpSQLMaxValueBytes = 4 << 20",
+		"handleSQL must cap SQL values at 4 MiB before the row/byte budgets apply")
+	assert.Contains(t, mcpCode, "mcpSQLValueTooBig(err)",
+		"handleSQL must map SQLITE_TOOBIG to a cap-named error")
 	assert.NotRegexp(t, `(?s)func handleSQL\(.*query \+= .*LIMIT`, mcpCode,
 		"handleSQL must not inject SQL LIMIT text; that would change aggregate semantics")
 	assert.Regexp(t, `if err := rows\.Err\(\); err != nil`, mcpCode,
@@ -4869,8 +4875,12 @@ func TestGenerateMCPSQLToolBoundsExecutionAndMaterialisation(t *testing.T) {
 	assert.Contains(t, mcpTestCode, "TestMCPSQLAggregateKeepsOriginalSemantics")
 	assert.Contains(t, mcpTestCode, "TestMCPSQLCallerDeadlineCancelsSlowQuery")
 	assert.Contains(t, mcpTestCode, "TestMCPSQLLongColumnNamesStaySQLEnvelope")
+	assert.Contains(t, mcpTestCode, "TestMCPSQLOversizedValueIsRefused")
+	assert.Contains(t, mcpTestCode, "TestMCPSQLValueOneByteUnderCapReturns")
+	assert.Contains(t, mcpTestCode, "TestMCPSQLLaterRowOversizedValueIsRefused")
 
-	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "TestMCPSQL(HugeResult|CompleteResult|Aggregate|CallerDeadline|LongColumnNames)")
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "TestMCPSQL(HugeResult|CompleteResult|Aggregate|CallerDeadline|LongColumnNames|OversizedValue|ValueOneByteUnderCap|LaterRowOversized)")
 	runGoCommand(t, outputDir, "test", "./internal/mcp/bound", "-run", "Test(WithSQLQueryDeadline|SQLScanState)")
 }
 
