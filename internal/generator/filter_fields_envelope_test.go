@@ -348,9 +348,6 @@ func TestPrintOutputWithFlags_SelectDryRunPlanWarnsWithoutEscalating(t *testing.
 	if err != nil {
 		t.Fatalf("dry-run --select should stay exit 0: %v", err)
 	}
-	if ExitCode(err) != 0 {
-		t.Fatalf("ExitCode = %d, want 0", ExitCode(err))
-	}
 	if !json.Valid(bytes.TrimSpace(stdout)) {
 		t.Fatalf("stdout is not JSON: %q", stdout)
 	}
