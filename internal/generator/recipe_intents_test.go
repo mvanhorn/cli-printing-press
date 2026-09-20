@@ -245,7 +245,6 @@ func TestRecipePositionalInputNameWhitespaceBeforeShape(t *testing.T) {
 		{"engineering", "", false},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.token, func(t *testing.T) {
 			got, ok := recipePositionalInputName(tc.token)
 			require.Equal(t, tc.ok, ok)
