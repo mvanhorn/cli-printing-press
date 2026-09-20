@@ -2641,6 +2641,9 @@ func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, v
 // preservation and print every skipped TEMPLATED-* hand-edit. Same-spec
 // regen still carries those edits; the drop list is the cross-spec
 // honesty so the operator sees the loss instead of a mode suffix alone.
+// When the snapshot records the running press version, the fresh tree is
+// the three-way base so a hand-edited generated function overlays instead
+// of being replaced by the identical re-emission.
 //
 // When the merge updates go.mod (snapshot had hand-added requires), the
 // caller must re-run `go mod tidy` against freshDir to refresh go.sum —
@@ -2663,6 +2666,11 @@ func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte, f
 		// replace templated bodies instead of shipping the still-compiling
 		// older rewrite.
 		novelOnly = true
+	}
+	if !novelOnly && baseDir == "" && snapshotRecordsRunningVersion(snapshotDir) {
+		// Same-version force has no older emission to synthesize. Fresh is
+		// that original, so a differing shared body is a hand-edit.
+		baseDir = freshDir
 	}
 
 	classifyOpts := regenmerge.Options{Force: true, BaseDir: baseDir}
@@ -2766,6 +2774,15 @@ func snapshotPrintingPressVersionDiffers(snapshotDir string) bool {
 	}
 	prior := strings.TrimSpace(manifest.PrintingPressVersion)
 	return prior != "" && !sameSemver(prior, version.Version)
+}
+
+func snapshotRecordsRunningVersion(snapshotDir string) bool {
+	manifest, err := pipeline.ReadCLIManifest(snapshotDir)
+	if err != nil {
+		return false
+	}
+	prior := strings.TrimSpace(manifest.PrintingPressVersion)
+	return prior != "" && sameSemver(prior, version.Version)
 }
 
 func sameSemver(a, b string) bool {
