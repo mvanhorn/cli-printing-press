@@ -2451,6 +2451,28 @@ func TestPublishPackageDestPreservesMirrorOnlyShipcheckReports(t *testing.T) {
 	}
 }
 
+func TestRestoreStashedShipcheckReportsSkipsNonRegularFiles(t *testing.T) {
+	outDir := t.TempDir()
+	stashed := t.TempDir()
+	secret := filepath.Join(t.TempDir(), "secret.txt")
+	require.NoError(t, os.WriteFile(secret, []byte("operator-local-secret\n"), 0o600))
+
+	names := stagedShipcheckReportNames()
+	require.GreaterOrEqual(t, len(names), 2)
+
+	if err := os.Symlink(secret, filepath.Join(stashed, names[0])); err != nil {
+		t.Skipf("cannot create symlink in this environment: %v", err)
+	}
+	require.NoError(t, os.Mkdir(filepath.Join(stashed, names[1]), 0o755))
+
+	require.NoError(t, restoreStashedShipcheckReports(outDir, []stashedDir{{stashed: stashed}}))
+
+	for _, name := range names {
+		_, err := os.Lstat(filepath.Join(outDir, name))
+		assert.ErrorIs(t, err, os.ErrNotExist, "must not restore non-regular shipcheck report %s", name)
+	}
+}
+
 func TestPublishPackageDestIgnoresManuscriptsDivergence(t *testing.T) {
 	home := setLibraryTestEnv(t)
 	cliDir := filepath.Join(home, "library", "test-pp-cli")

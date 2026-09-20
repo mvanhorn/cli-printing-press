@@ -1684,7 +1684,7 @@ func restoreStashedShipcheckReports(outCLIDir string, stashed []stashedDir) erro
 		for _, d := range stashed {
 			src := filepath.Join(d.stashed, name)
 			info, err := os.Lstat(src)
-			if err != nil || info.IsDir() {
+			if err != nil || !info.Mode().IsRegular() {
 				continue
 			}
 			data, err := os.ReadFile(src)
