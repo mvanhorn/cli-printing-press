@@ -4879,6 +4879,7 @@ func TestGenerateMCPSQLToolBoundsExecutionAndMaterialisation(t *testing.T) {
 	assert.Contains(t, mcpTestCode, "TestMCPSQLValueOneByteUnderCapReturns")
 	assert.Contains(t, mcpTestCode, "TestMCPSQLLaterRowOversizedValueIsRefused")
 
+	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "TestMCPSQL(HugeResult|CompleteResult|Aggregate|CallerDeadline|LongColumnNames|OversizedValue|ValueOneByteUnderCap|LaterRowOversized)")
 	runGoCommand(t, outputDir, "test", "./internal/mcp/bound", "-run", "Test(WithSQLQueryDeadline|SQLScanState)")
 }
