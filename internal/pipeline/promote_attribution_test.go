@@ -47,3 +47,19 @@ func TestBackfillPromoteManifestAttributionReplacesPrinterSentinel(t *testing.T)
 	require.NotNil(t, m.Creator)
 	assert.Equal(t, "qazmataz", m.Creator.Handle)
 }
+
+func TestBackfillPromoteManifestAttributionSkipsSentinelCreator(t *testing.T) {
+	stubPromoteGitAttribution(t, "", "")
+	m := CLIManifest{Printer: "USER", PrinterName: "USER"}
+	backfillPromoteManifestAttribution(&m)
+	assert.Nil(t, m.Creator)
+}
+
+func TestBackfillPromoteManifestAttributionSkipsSentinelCreatorName(t *testing.T) {
+	stubPromoteGitAttribution(t, "alice", "")
+	m := CLIManifest{Printer: "USER", PrinterName: "USER"}
+	backfillPromoteManifestAttribution(&m)
+	require.NotNil(t, m.Creator)
+	assert.Equal(t, "alice", m.Creator.Handle)
+	assert.Empty(t, m.Creator.Name)
+}

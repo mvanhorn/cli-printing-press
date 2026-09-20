@@ -1164,47 +1164,55 @@ func loadGenerateResearchState(researchDir string) (generateResearchState, bool)
 	return state, state.APIName != "" || state.RunID != ""
 }
 
-// PersistGenerateCategory records --category on the research-dir state.json
-// (when that file already exists) and on pipeline runstate when the output
-// directory is a known working dir. Promote reads both so a generate+promote
-// cycle keeps the public-library category without a hand edit.
-func PersistGenerateCategory(researchDir, outputDir, category string) {
+// PersistGenerateCategory keeps generate --category reachable at promote:
+// archived OpenAPI specs omit the public-library slug, so the working-tree
+// manifest cannot be rebuilt from the spec alone.
+func PersistGenerateCategory(researchDir, outputDir, category string) error {
 	category = strings.TrimSpace(category)
 	if category == "" {
-		return
+		return nil
 	}
-	persistCategoryInResearchState(researchDir, category)
+	var errs []error
+	if err := persistCategoryInResearchState(researchDir, category); err != nil {
+		errs = append(errs, err)
+	}
 	if strings.TrimSpace(outputDir) == "" {
-		return
+		return errors.Join(errs...)
 	}
 	state, err := FindStateByWorkingDir(outputDir)
 	if err != nil || state == nil {
-		return
+		return errors.Join(errs...)
 	}
 	if strings.TrimSpace(state.Category) == category {
-		return
+		return errors.Join(errs...)
 	}
 	state.Category = category
-	_ = state.Save()
+	if err := state.Save(); err != nil {
+		errs = append(errs, fmt.Errorf("saving pipeline category: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
-func persistCategoryInResearchState(researchDir, category string) {
+func persistCategoryInResearchState(researchDir, category string) error {
 	if strings.TrimSpace(researchDir) == "" {
-		return
+		return nil
 	}
 	path := filepath.Join(researchDir, "state.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading research state: %w", err)
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return
+		return fmt.Errorf("parsing research state: %w", err)
 	}
 	raw["category"] = category
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
-		return
+		return fmt.Errorf("encoding research state: %w", err)
 	}
 	out = append(out, '\n')
 	info, err := os.Stat(path)
@@ -1212,7 +1220,10 @@ func persistCategoryInResearchState(researchDir, category string) {
 	if err == nil {
 		mode = info.Mode()
 	}
-	_ = os.WriteFile(path, out, mode)
+	if err := writeFileAtomic(path, out, mode); err != nil {
+		return fmt.Errorf("writing research state: %w", err)
+	}
+	return nil
 }
 
 // ResolveRunIDFromResearchDir reads the run_id recorded by Run Initialization

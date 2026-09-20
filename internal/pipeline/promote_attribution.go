@@ -62,6 +62,9 @@ func backfillPromoteManifestAttribution(m *CLIManifest) {
 		if isMissingPromotePrinter(handle) {
 			handle = ""
 		}
+		if isMissingPromotePrinter(name) {
+			name = ""
+		}
 		if handle != "" || name != "" {
 			m.Creator = &spec.Person{Handle: handle, Name: name}
 		}

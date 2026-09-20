@@ -3090,7 +3090,7 @@ func TestPersistGenerateCategoryWritesResearchStateAndPipelineState(t *testing.T
 	researchDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "state.json"), []byte(`{"api_name":"test","run_id":"run-persist-cat"}`+"\n"), 0o644))
 
-	PersistGenerateCategory(researchDir, workDir, "ai")
+	require.NoError(t, PersistGenerateCategory(researchDir, workDir, "ai"))
 
 	loaded, err := FindStateByWorkingDir(workDir)
 	require.NoError(t, err)
@@ -3099,6 +3099,14 @@ func TestPersistGenerateCategoryWritesResearchStateAndPipelineState(t *testing.T
 	rs, ok := loadGenerateResearchState(researchDir)
 	require.True(t, ok)
 	assert.Equal(t, "ai", rs.Category)
+}
+
+func TestPersistGenerateCategoryReturnsParseError(t *testing.T) {
+	researchDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "state.json"), []byte("not json"), 0o644))
+	err := PersistGenerateCategory(researchDir, "", "ai")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing research state")
 }
 
 func TestWriteManifestForGenerateRepointsSpecPathToArchivedSpec(t *testing.T) {

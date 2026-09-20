@@ -28,6 +28,8 @@ Every managed run gets three sibling directories under the run root:
 
 The working CLI tree lives separately under the API's output directory until `ship` promotes it.
 
+`pipeline/state.json` records run identity (`api_name`, `run_id`, working-directory pointers) and optional operator inputs that later phases cannot recover from the archived spec. `category` is the public-library slug from `generate --category`. Ship/promote copies it into `.printing-press.json`. A missing category still promotes, with a warning. The research-directory `state.json` may carry the same `category` so generate can persist it before a runstate working dir exists.
+
 ## Phase status model
 
 Every phase has two orthogonal status fields:
