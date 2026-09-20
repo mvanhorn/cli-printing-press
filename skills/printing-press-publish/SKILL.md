@@ -887,11 +887,12 @@ always pass `--module-path "$MODULE_PATH"`. Omitting it silently skips the
 go.mod/import rewrite (`RewriteModulePath` is gated on the flag), so the
 packaged CLI keeps `module <cli-name>` and the library CI rejects the PR with a
 module-path mismatch. `publish package` verifies the staged tree's module path
-after the rewrite and fails packaging when it is not library-canonical (whether
-`--module-path` was omitted or set to a non-canonical value). Standalone
-`publish validate` on a source tree surfaces the check as a warning — the bare
-module name is expected there pre-rewrite; the authoritative failure is in the
-package step.
+after the rewrite: with `--module-path`, the staged `go.mod` must declare
+exactly that path (bare CLI-name modules still fail); without `--module-path`,
+the canonical `github.com/mvanhorn/printing-press-library/library/` prefix is
+required. Standalone `publish validate` on a source tree surfaces the check as
+a warning — the bare module name is expected there pre-rewrite; the
+authoritative failure is in the package step.
 
 Run `publish package` with `--target` to stage the CLI into a unique temporary
 directory, then copy it into the publish repo:
@@ -929,14 +930,17 @@ if [ ! -d "$STAGED_CLI_DIR" ]; then
 fi
 mkdir -p "$DEST_CATEGORY_DIR"
 
-# Preserve release-ledger files from the current public-library entry before
-# removing it. New CLIs omit .printing-press-release.json until the library's
+# Preserve release-ledger files and existing shipcheck reports from the
+# current public-library entry before removing it. New CLIs omit .printing-press-release.json until the library's
 # post-merge workflow stamps a real release; reprints keep existing changelog
 # history and release metadata until that workflow stamps the next release.
+# Fresh prints strip dogfood-results.json and workflow-verify-report.json from
+# the staged tree; reprints must copy those catalog files back so the overlay
+# does not delete them.
 RELEASE_LEDGER_TMP="$(mktemp -d)"
 PUBLISH_SWAP_DIR="$(mktemp -d "$DEST_CATEGORY_DIR/.<api-slug>.XXXXXX")"
 trap 'rm -rf "$RELEASE_LEDGER_TMP" "$PUBLISH_SWAP_DIR"' EXIT
-for LEDGER_FILE in CHANGELOG.md .printing-press-release.json; do
+for LEDGER_FILE in CHANGELOG.md .printing-press-release.json dogfood-results.json workflow-verify-report.json; do
   EXISTING_LEDGER="$(find "$PUBLISH_REPO_DIR/library" -mindepth 3 -maxdepth 3 -path "*/<api-slug>/$LEDGER_FILE" -print -quit)"
   if [ -n "$EXISTING_LEDGER" ]; then
     cp "$EXISTING_LEDGER" "$RELEASE_LEDGER_TMP/$LEDGER_FILE"
@@ -948,7 +952,7 @@ done
 # with the old CLI removed.
 cp -R "$STAGED_CLI_DIR/." "$PUBLISH_SWAP_DIR/"
 
-for LEDGER_FILE in CHANGELOG.md .printing-press-release.json; do
+for LEDGER_FILE in CHANGELOG.md .printing-press-release.json dogfood-results.json workflow-verify-report.json; do
   if [ -f "$RELEASE_LEDGER_TMP/$LEDGER_FILE" ]; then
     cp "$RELEASE_LEDGER_TMP/$LEDGER_FILE" "$PUBLISH_SWAP_DIR/$LEDGER_FILE"
   fi

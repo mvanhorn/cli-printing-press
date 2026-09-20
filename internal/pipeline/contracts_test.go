@@ -947,6 +947,9 @@ func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
 	assert.Contains(t, skill, `trap 'rm -rf "$RELEASE_LEDGER_TMP" "$PUBLISH_SWAP_DIR"' EXIT`)
 	assert.Contains(t, skill, `mv "$PUBLISH_SWAP_DIR" "$DEST_CLI_DIR"`)
 	assert.Contains(t, skill, "New CLIs omit .printing-press-release.json")
+	assert.Contains(t, skill, "dogfood-results.json")
+	assert.Contains(t, skill, "workflow-verify-report.json")
+	assert.Contains(t, skill, `for LEDGER_FILE in CHANGELOG.md .printing-press-release.json dogfood-results.json workflow-verify-report.json; do`)
 	assert.NotContains(t, skill, "New CLIs keep the blank skeletons")
 }
 
