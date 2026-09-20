@@ -180,6 +180,59 @@ func TestRecipeIntentDerivationBindsPositionals(t *testing.T) {
 	require.False(t, intents[5].Args[1].Static)
 }
 
+func TestRecipePositionalInputNameWhitespaceBeforeShape(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		token string
+		name  string
+		ok    bool
+	}{
+		{`SELECT count(*)/2 FROM t`, "value", true},
+		{`SELECT time('now')`, "value", true},
+		{`SELECT CAST(x AS INT)`, "value", true},
+		{"12345", "id", true},
+		{"https://example.com", "url", true},
+		{"https://example.com/path", "url", true},
+		{"zenodo:1261813", "ref", true},
+		{"my-best-brownies", "slug", true},
+		{"v1.2.3", "version", true},
+		{"engineering", "", false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.token, func(t *testing.T) {
+			got, ok := recipePositionalInputName(tc.token)
+			require.Equal(t, tc.ok, ok)
+			require.Equal(t, tc.name, got)
+		})
+	}
+}
+
+func TestRecipeIntentDerivationBindsWhitespacePositionalAsValue(t *testing.T) {
+	t.Parallel()
+
+	intents := buildRecipeIntents("demo", &ReadmeNarrative{
+		Recipes: []Recipe{
+			{Title: "SQL hours", Command: `demo-pp-cli sql "SELECT count(*)/2 FROM t" --agent`},
+			{Title: "Get thing", Command: "demo-pp-cli get 12345 --json"},
+			{Title: "Fetch url", Command: "demo-pp-cli fetch https://example.com --json"},
+		},
+	}, nil)
+
+	require.Len(t, intents, 3)
+	require.Equal(t, []string{"sql", "--agent"}, intents[0].Command)
+	require.True(t, intents[0].Params[0].Positional)
+	require.True(t, intents[0].Params[0].Required)
+	require.Equal(t, "value", intents[0].Params[0].InputName)
+	require.False(t, intents[0].Args[1].Static)
+	require.Equal(t, "value", intents[0].Args[1].Param.InputName)
+	require.NotContains(t, intents[0].Command, "SELECT count(*)/2 FROM t")
+
+	require.Equal(t, "id", intents[1].Params[0].InputName)
+	require.Equal(t, "url", intents[2].Params[0].InputName)
+}
+
 func TestRecipeIntentGenerationBindsColonRefPositional(t *testing.T) {
 	t.Parallel()
 

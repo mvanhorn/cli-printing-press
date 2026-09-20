@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
@@ -293,6 +294,9 @@ func recipePositionalInputName(token string) (string, bool) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return "", false
+	}
+	if strings.ContainsFunc(token, unicode.IsSpace) {
+		return "value", true
 	}
 	if isRecipePlaceholder(token) {
 		name := strings.Trim(token, "<>[]")

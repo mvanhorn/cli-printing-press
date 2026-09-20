@@ -635,6 +635,46 @@ func TestMCPSQLAggregateKeepsOriginalSemantics(t *testing.T) {
 	}
 }
 
+func TestMCPSQLOversizedValueIsRefused(t *testing.T) {
+	setupEmptyMCPStore(t)
+	result := callMCPSQL(t, context.Background(), "SELECT hex(zeroblob(100000000)) AS blob")
+	if result == nil || !result.IsError {
+		t.Fatalf("oversized SQL value IsError = %v, want true: %s", result != nil && result.IsError, mcpTextContent(t, result))
+	}
+	text := mcpTextContent(t, result)
+	if !strings.Contains(text, "4194304") && !strings.Contains(text, "4 MiB") {
+		t.Fatalf("oversized SQL error %q must name the 4 MiB value cap", text)
+	}
+}
+
+func TestMCPSQLValueOneByteUnderCapReturns(t *testing.T) {
+	setupEmptyMCPStore(t)
+	if want := 4<<20 - 1; mcpSQLMaxValueBytes-1 != want {
+		t.Fatalf("mcpSQLMaxValueBytes-1 = %d, boundary query assumes %d", mcpSQLMaxValueBytes-1, want)
+	}
+	result := callMCPSQL(t, context.Background(), "SELECT zeroblob(4194303) AS blob")
+	if result.IsError {
+		t.Fatalf("one-byte-under-cap SQL query IsError = true: %s", mcpTextContent(t, result))
+	}
+	text, envelope := decodeMCPSQLEnvelope(t, result)
+	if envelope.Count == 0 && !envelope.Truncated {
+		t.Fatalf("one-byte-under-cap SQL result returned no rows: %s", text)
+	}
+}
+
+func TestMCPSQLLaterRowOversizedValueIsRefused(t *testing.T) {
+	setupEmptyMCPStore(t)
+	result := callMCPSQL(t, context.Background(), `WITH t(n) AS (SELECT 1 UNION ALL SELECT 2)
+SELECT CASE WHEN n = 1 THEN hex(zeroblob(1)) ELSE hex(zeroblob(100000000)) END AS blob FROM t`)
+	if result == nil || !result.IsError {
+		t.Fatalf("later-row oversized SQL value IsError = %v, want true: %s", result != nil && result.IsError, mcpTextContent(t, result))
+	}
+	text := mcpTextContent(t, result)
+	if !strings.Contains(text, "4194304") && !strings.Contains(text, "4 MiB") {
+		t.Fatalf("later-row oversized SQL error %q must name the 4 MiB value cap", text)
+	}
+}
+
 func TestMCPSQLCallerDeadlineCancelsSlowQuery(t *testing.T) {
 	setupEmptyMCPStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
