@@ -3,6 +3,7 @@ package pipeline
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -763,6 +764,98 @@ resources:
 
 	m := readPublishedManifest(t, state.WorkingDir)
 	assert.Equal(t, "travel", m.Category)
+}
+
+func TestWriteCLIManifestForPublishUsesPipelineStateCategory(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+	stubPromoteGitAttribution(t, "", "")
+
+	state := NewStateWithRun("test-api", filepath.Join(tmp, "working", "test-api-pp-cli"), "20260508-state-cat", "test-scope")
+	state.Category = "ai"
+	require.NoError(t, os.MkdirAll(state.WorkingDir, 0o755))
+
+	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
+
+	m := readPublishedManifest(t, state.WorkingDir)
+	assert.Equal(t, "ai", m.Category)
+}
+
+func TestWriteCLIManifestForPublishBackfillsCreatorFromPrinter(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+	stubPromoteGitAttribution(t, "ignored", "Ignored")
+
+	state := NewStateWithRun("test-api", filepath.Join(tmp, "working", "test-api-pp-cli"), "20260508-creator", "test-scope")
+	require.NoError(t, os.MkdirAll(state.WorkingDir, 0o755))
+	require.NoError(t, WriteCLIManifest(state.WorkingDir, CLIManifest{
+		SchemaVersion: CurrentCLIManifestSchemaVersion,
+		APIName:       "test-api",
+		CLIName:       "test-api-pp-cli",
+		RunID:         state.RunID,
+		Printer:       "qazmataz",
+		PrinterName:   "qazmataz",
+	}))
+
+	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
+
+	m := readPublishedManifest(t, state.WorkingDir)
+	require.NotNil(t, m.Creator)
+	assert.Equal(t, "qazmataz", m.Creator.Handle)
+	assert.Equal(t, "qazmataz", m.Creator.Name)
+}
+
+func TestWriteCLIManifestForPublishKeepsExistingCreator(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+	stubPromoteGitAttribution(t, "tmchow", "Trevin Chow")
+
+	state := NewStateWithRun("test-api", filepath.Join(tmp, "working", "test-api-pp-cli"), "20260508-keep-creator", "test-scope")
+	require.NoError(t, os.MkdirAll(state.WorkingDir, 0o755))
+	require.NoError(t, WriteCLIManifest(state.WorkingDir, CLIManifest{
+		SchemaVersion: CurrentCLIManifestSchemaVersion,
+		APIName:       "test-api",
+		CLIName:       "test-api-pp-cli",
+		RunID:         state.RunID,
+		Creator:       &spec.Person{Handle: "jane-doe", Name: "Jane Doe"},
+		Printer:       "jane-doe",
+		PrinterName:   "Jane Doe",
+	}))
+
+	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
+
+	m := readPublishedManifest(t, state.WorkingDir)
+	require.NotNil(t, m.Creator)
+	assert.Equal(t, "jane-doe", m.Creator.Handle)
+}
+
+func TestWriteCLIManifestForPublishWarnsWithoutCategory(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+	stubPromoteGitAttribution(t, "", "")
+
+	state := NewStateWithRun("test-api", filepath.Join(tmp, "working", "test-api-pp-cli"), "20260508-no-cat", "test-scope")
+	require.NoError(t, os.MkdirAll(state.WorkingDir, 0o755))
+
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	old := os.Stderr
+	os.Stderr = w
+	writeErr := writeCLIManifestForPublish(state, state.WorkingDir)
+	require.NoError(t, w.Close())
+	os.Stderr = old
+	require.NoError(t, writeErr)
+	buf, err := io.ReadAll(r)
+	require.NoError(t, err)
+	assert.Contains(t, string(buf), "without a public-library category")
 }
 
 // TestWriteCLIManifestForPublish_NovelFeaturesFromPrintFlowResearch covers the

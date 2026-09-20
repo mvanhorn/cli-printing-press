@@ -588,9 +588,33 @@ func validatePhase5GateForPromote(workingDir string, state *PipelineState) error
 		manifest.SpecKind = existing.SpecKind
 	}
 
-	result := ValidatePhase5Gate(state.ProofsDir(), manifest, workingDir)
-	if result.Passed {
-		return nil
+	candidates := Phase5ProofsDirCandidates(workingDir, manifest, state.ProofsDir())
+	var firstFailure Phase5GateValidation
+	foundDir := false
+	for _, proofsDir := range candidates {
+		info, err := os.Stat(proofsDir)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		foundDir = true
+		result := ValidatePhase5Gate(proofsDir, manifest, workingDir)
+		if result.Passed {
+			return nil
+		}
+		if firstFailure.Detail == "" {
+			firstFailure = result
+		}
+	}
+	if !foundDir {
+		preferred := FirstExistingPhase5ProofsDir(candidates)
+		return phase5PromoteGateError(ValidatePhase5Gate(preferred, manifest, workingDir))
+	}
+	return phase5PromoteGateError(firstFailure)
+}
+
+func phase5PromoteGateError(result Phase5GateValidation) error {
+	if result.MarkerPath != "" {
+		return fmt.Errorf("phase5 gate failed: %s (marker: %s)", result.Detail, result.MarkerPath)
 	}
 	return fmt.Errorf("phase5 gate failed: %s", result.Detail)
 }

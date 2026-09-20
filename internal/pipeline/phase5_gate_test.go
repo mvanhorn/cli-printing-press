@@ -717,3 +717,50 @@ func TestValidatePhase5Gate_MissingMarkerFails(t *testing.T) {
 	require.False(t, result.Passed)
 	assert.Contains(t, result.Detail, "missing")
 }
+
+func TestPhase5ProofsDirCandidatesPrefersCLIManuscripts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", home)
+	cliDir := filepath.Join(home, "library", "test")
+	runID := "run-prefer"
+	cliProofs := filepath.Join(cliDir, ".manuscripts", runID, "proofs")
+	runstateProofs := filepath.Join(home, ".runstate", "scope", "runs", runID, "proofs")
+	require.NoError(t, os.MkdirAll(cliProofs, 0o755))
+	require.NoError(t, os.MkdirAll(runstateProofs, 0o755))
+
+	candidates := Phase5ProofsDirCandidates(cliDir, CLIManifest{
+		APIName: "test",
+		CLIName: "test-pp-cli",
+		RunID:   runID,
+	}, runstateProofs)
+	require.NotEmpty(t, candidates)
+	assert.Equal(t, cliProofs, candidates[0])
+	assert.Equal(t, cliProofs, FirstExistingPhase5ProofsDir(candidates))
+}
+
+func TestMirrorLiveDogfoodAcceptanceToRunstate(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	state := NewStateWithRun("test", workDir, "run-mirror", "test-scope")
+	require.NoError(t, state.Save())
+
+	srcDir := filepath.Join(workDir, ".manuscripts", state.RunID, "proofs")
+	marker := Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         state.RunID,
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+	}
+	src := filepath.Join(srcDir, Phase5AcceptanceFilename)
+	require.NoError(t, writeLiveDogfoodMarkerFile(src, marker))
+	require.NoError(t, mirrorLiveDogfoodAcceptanceToRunstate(LiveDogfoodOptions{CLIDir: workDir}, src, marker))
+	assert.FileExists(t, filepath.Join(state.ProofsDir(), Phase5AcceptanceFilename))
+}

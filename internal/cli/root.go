@@ -238,6 +238,9 @@ func newGenerateCmd() *cobra.Command {
 				}); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 				}
+				if err := pipeline.PersistGenerateCategory(researchDir, absOut, parsed.Category); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not persist generate category: %v\n", err)
+				}
 
 				fmt.Fprintf(os.Stderr, "Generated %s at %s (from docs)\n", parsed.Name, absOut)
 				autoBundleForHost(absOut, os.Stderr)
@@ -542,6 +545,9 @@ func newGenerateCmd() *cobra.Command {
 				NovelFeatures:   generateResult.NovelFeatures,
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
+			}
+			if err := pipeline.PersistGenerateCategory(researchDir, absOut, apiSpec.Category); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not persist generate category: %v\n", err)
 			}
 
 			// Archive a snapshot of the spec alongside the CLI; multi-spec

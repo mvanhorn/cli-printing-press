@@ -3076,6 +3076,39 @@ func TestWriteManifestForGenerateNoCategoryAnywhere(t *testing.T) {
 	assert.Empty(t, got.Category, "manifest.Category should stay empty when no source provides one")
 }
 
+func TestPersistGenerateCategoryWritesResearchStateAndPipelineState(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	state := NewStateWithRun("test", workDir, "run-persist-cat", "test-scope")
+	require.NoError(t, state.Save())
+
+	researchDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "state.json"), []byte(`{"api_name":"test","run_id":"run-persist-cat"}`+"\n"), 0o644))
+
+	require.NoError(t, PersistGenerateCategory(researchDir, workDir, "ai"))
+
+	loaded, err := FindStateByWorkingDir(workDir)
+	require.NoError(t, err)
+	assert.Equal(t, "ai", loaded.Category)
+
+	rs, ok := loadGenerateResearchState(researchDir)
+	require.True(t, ok)
+	assert.Equal(t, "ai", rs.Category)
+}
+
+func TestPersistGenerateCategoryReturnsParseError(t *testing.T) {
+	researchDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "state.json"), []byte("not json"), 0o644))
+	err := PersistGenerateCategory(researchDir, "", "ai")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing research state")
+}
+
 func TestWriteManifestForGenerateRepointsSpecPathToArchivedSpec(t *testing.T) {
 	dir := t.TempDir()
 	specContent := []byte(`{"openapi": "3.0.0", "info": {"title": "Test"}}`)

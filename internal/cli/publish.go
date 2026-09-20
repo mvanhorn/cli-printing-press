@@ -1204,6 +1204,7 @@ func backfillPackagedManifestAttribution(dir string) error {
 			return err
 		}
 		raw["printer"] = encoded
+		manifest.Printer = fallback.Printer
 		changed = true
 	}
 	if needsPrinterName && fallback.PrinterName != "" {
@@ -1212,7 +1213,26 @@ func backfillPackagedManifestAttribution(dir string) error {
 			return err
 		}
 		raw["printer_name"] = encoded
+		manifest.PrinterName = fallback.PrinterName
 		changed = true
+	}
+	if manifest.Creator == nil || manifest.Creator.IsZero() {
+		handle := strings.TrimSpace(manifest.Printer)
+		name := strings.TrimSpace(manifest.PrinterName)
+		if isMissingPublishPrinterField(handle) {
+			handle = ""
+		}
+		if isMissingPublishPrinterNameField(name) {
+			name = ""
+		}
+		if handle != "" || name != "" {
+			encoded, err := json.Marshal(spec.Person{Handle: handle, Name: name})
+			if err != nil {
+				return err
+			}
+			raw["creator"] = encoded
+			changed = true
+		}
 	}
 	if !changed {
 		return nil
@@ -1355,23 +1375,7 @@ func checkPhase5GateAt(proofsDir string, manifest pipeline.CLIManifest, sourceDi
 }
 
 func phase5ProofsDir(dir string, manifest pipeline.CLIManifest) string {
-	runID := manifest.RunID
-	candidates := []string{
-		filepath.Join(dir, ".manuscripts", runID, "proofs"),
-	}
-	msRoot := pipeline.PublishedManuscriptsRoot()
-	if manifest.APIName != "" {
-		candidates = append(candidates, filepath.Join(msRoot, manifest.APIName, runID, "proofs"))
-	}
-	if manifest.CLIName != "" {
-		candidates = append(candidates, filepath.Join(msRoot, manifest.CLIName, runID, "proofs"))
-	}
-	for _, candidate := range candidates {
-		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-			return candidate
-		}
-	}
-	return candidates[0]
+	return pipeline.FirstExistingPhase5ProofsDir(pipeline.Phase5ProofsDirCandidates(dir, manifest, ""))
 }
 
 func checkPatchRecords(dir string) CheckResult {

@@ -4,12 +4,72 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
+
+var lookupPromoteGitAttribution = resolvePromoteGitAttribution
+
+func isMissingPromotePrinter(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	return trimmed == "" || trimmed == "USER" || trimmed == "user"
+}
+
+func resolvePromoteGitAttribution() (handle, name string) {
+	handle = firstNonEmptyCommandOutput("git", "config", "github.user")
+	name = firstNonEmptyCommandOutput("git", "config", "user.name")
+	return handle, name
+}
+
+func firstNonEmptyCommandOutput(name string, args ...string) string {
+	out, err := exec.Command(name, args...).Output()
+	if err != nil {
+		return ""
+	}
+	value := strings.TrimSpace(string(out))
+	if value == "" || value == "null" {
+		return ""
+	}
+	return value
+}
+
+// backfillPromoteManifestAttribution fills printer/printer_name from git when
+// they are missing, then derives creator from those fields. An existing
+// creator is left untouched — it is permanent across reprints.
+func backfillPromoteManifestAttribution(m *CLIManifest) {
+	if m == nil {
+		return
+	}
+	if isMissingPromotePrinter(m.Printer) || isMissingPromotePrinter(m.PrinterName) {
+		handle, name := lookupPromoteGitAttribution()
+		if isMissingPromotePrinter(m.Printer) && handle != "" {
+			m.Printer = handle
+		}
+		if isMissingPromotePrinter(m.PrinterName) && name != "" {
+			m.PrinterName = name
+		}
+	}
+	if strings.TrimSpace(m.Owner) == "" && !isMissingPromotePrinter(m.Printer) {
+		m.Owner = strings.TrimSpace(m.Printer)
+	}
+	if m.Creator == nil || m.Creator.IsZero() {
+		handle := strings.TrimSpace(m.Printer)
+		name := strings.TrimSpace(m.PrinterName)
+		if isMissingPromotePrinter(handle) {
+			handle = ""
+		}
+		if isMissingPromotePrinter(name) {
+			name = ""
+		}
+		if handle != "" || name != "" {
+			m.Creator = &spec.Person{Handle: handle, Name: name}
+		}
+	}
+}
 
 func restorePermanentCreatorForPromote(stagingDir, libraryDir, apiName string) error {
 	existing, err := ReadCLIManifest(libraryDir)

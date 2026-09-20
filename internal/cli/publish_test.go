@@ -14,6 +14,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/govulncheck"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -330,6 +331,10 @@ exit 1
 	assert.JSONEq(t, `"amitav13"`, string(got["printer"]))
 	assert.JSONEq(t, `"Amitav Khandelwal"`, string(got["printer_name"]))
 	assert.JSONEq(t, `{"keep": true}`, string(got["custom_field"]))
+	var creator spec.Person
+	require.NoError(t, json.Unmarshal(got["creator"], &creator))
+	assert.Equal(t, "amitav13", creator.Handle)
+	assert.Equal(t, "Amitav Khandelwal", creator.Name)
 }
 
 func TestBackfillPackagedManifestAttributionPreservesManifestMode(t *testing.T) {
@@ -394,6 +399,48 @@ exit 1
 	require.NoError(t, json.Unmarshal(data, &got))
 	assert.JSONEq(t, `"tmchow"`, string(got["printer"]))
 	assert.JSONEq(t, `"Trevin Chow"`, string(got["printer_name"]))
+	var creator spec.Person
+	require.NoError(t, json.Unmarshal(got["creator"], &creator))
+	assert.Equal(t, "tmchow", creator.Handle)
+	assert.Equal(t, "Trevin Chow", creator.Name)
+}
+
+func TestBackfillPackagedManifestAttributionPreservesExistingCreator(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		`#!/bin/sh
+if [ "$1" = "config" ] && [ "$2" = "github.user" ]; then
+  echo tmchow
+  exit 0
+fi
+if [ "$1" = "config" ] && [ "$2" = "user.name" ]; then
+  echo "Trevin Chow"
+  exit 0
+fi
+exit 1
+`,
+		"#!/bin/sh\nexit 1\n",
+	)
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, pipeline.CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "printing_press_version": "4.2.1",
+  "api_name": "test",
+  "cli_name": "test-pp-cli",
+  "run_id": "20260509-000000",
+  "printer": "jane-doe",
+  "printer_name": "Jane Doe",
+  "creator": {"handle":"jane-doe","name":"Jane Doe"}
+}`+"\n"), 0o644))
+
+	require.NoError(t, backfillPackagedManifestAttribution(dir))
+
+	data, err := os.ReadFile(filepath.Join(dir, pipeline.CLIManifestFilename))
+	require.NoError(t, err)
+	var got pipeline.CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	require.NotNil(t, got.Creator)
+	assert.Equal(t, "jane-doe", got.Creator.Handle)
+	assert.Equal(t, "Jane Doe", got.Creator.Name)
 }
 
 func TestBackfillPackagedManifestAttributionFailsWithoutFallback(t *testing.T) {
@@ -1462,6 +1509,24 @@ func TestPhase5ProofsDirPrefersCanonicalAPIArchive(t *testing.T) {
 	})
 
 	assert.Equal(t, apiProofs, got)
+}
+
+func TestPhase5ProofsDirPrefersCLIManuscripts(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	runID := "20260711-203553-cli-first"
+	cliDir := t.TempDir()
+	cliProofs := filepath.Join(cliDir, ".manuscripts", runID, "proofs")
+	apiProofs := filepath.Join(home, "manuscripts", "test", runID, "proofs")
+	require.NoError(t, os.MkdirAll(cliProofs, 0o755))
+	require.NoError(t, os.MkdirAll(apiProofs, 0o755))
+
+	got := phase5ProofsDir(cliDir, pipeline.CLIManifest{
+		APIName: "test",
+		CLIName: "test-pp-cli",
+		RunID:   runID,
+	})
+
+	assert.Equal(t, cliProofs, got)
 }
 
 func TestPublishPackageCanIncludeRawCaptures(t *testing.T) {

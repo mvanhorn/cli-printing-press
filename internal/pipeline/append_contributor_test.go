@@ -40,6 +40,20 @@ func TestAppendContributor(t *testing.T) {
 		assert.Empty(t, readManifest(t, dir).Contributors)
 	})
 
+	t.Run("missing creator matching printer becomes creator", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifestJSON(t, dir, `{"cli_name":"acme-pp-cli","printer":"qazmataz","printer_name":"qazmataz"}`)
+
+		added, err := AppendContributor(dir, spec.Person{Handle: "qazmataz", Name: "qazmataz"}, false)
+		require.NoError(t, err)
+		assert.False(t, added, "publisher matching printer must become creator, not a contributor")
+
+		m := readManifest(t, dir)
+		require.NotNil(t, m.Creator)
+		assert.Equal(t, "qazmataz", m.Creator.Handle)
+		assert.Empty(t, m.Contributors)
+	})
+
 	t.Run("idempotent on an existing contributor", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifestJSON(t, dir, `{"cli_name":"acme-pp-cli","creator":{"handle":"trevin-chow","name":"Trevin Chow"},"contributors":[{"handle":"jane-doe","name":"Jane Doe"}]}`)
