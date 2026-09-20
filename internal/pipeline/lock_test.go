@@ -1083,6 +1083,130 @@ func TestPromoteWorkingCLI_RequiresPhase5GateForRunstatePromote(t *testing.T) {
 	assert.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
+func TestPromoteWorkingCLI_AcceptsPhase5MarkerFromCLIManuscripts(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+	stubPromoteGitAttribution(t, "", "")
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+
+	state := NewStateWithRun("test", workDir, "run-cli-manuscripts", "test-scope")
+	source, err := CaptureSourceFingerprint(workDir)
+	require.NoError(t, err)
+	writePhase5GateMarker(t, filepath.Join(workDir, ".manuscripts", state.RunID, "proofs"), Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion:     1,
+		APIName:           state.APIName,
+		RunID:             state.RunID,
+		Status:            "pass",
+		Level:             "full",
+		MatrixSize:        1,
+		TestsPassed:       1,
+		SourceFingerprint: source.Digest,
+		SourceFiles:       source.Files,
+		AuthContext:       Phase5AuthContext{Type: "none"},
+	})
+	writePhase5GateMarker(t, state.ProofsDir(), Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       state.APIName,
+		RunID:         state.RunID,
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	err = PromoteWorkingCLI("test-pp-cli", workDir, state)
+	require.NoError(t, err)
+}
+
+func TestPromoteWorkingCLI_NamesStalePhase5MarkerPath(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+
+	state := NewStateWithRun("test", workDir, "run-stale-marker", "test-scope")
+	writePhase5GateMarker(t, state.ProofsDir(), Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       state.APIName,
+		RunID:         state.RunID,
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	err := PromoteWorkingCLI("test-pp-cli", workDir, state)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "source_fingerprint")
+	assert.Contains(t, err.Error(), filepath.Join(state.ProofsDir(), Phase5AcceptanceFilename))
+}
+
+func TestPromoteWorkingCLI_PersistsCategoryAndCreator(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+	stubPromoteGitAttribution(t, "tmchow", "Trevin Chow")
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+	require.NoError(t, WriteCLIManifest(workDir, CLIManifest{
+		SchemaVersion: CurrentCLIManifestSchemaVersion,
+		APIName:       "test",
+		CLIName:       "test-pp-cli",
+		RunID:         "run-category",
+		Category:      "ai",
+	}))
+
+	state := NewStateWithRun("test", workDir, "run-category", "test-scope")
+	writePhase5PassForState(t, state, "none")
+
+	require.NoError(t, PromoteWorkingCLI("test-pp-cli", workDir, state))
+
+	got := readManifest(t, filepath.Join(PublishedLibraryRoot(), "test"))
+	assert.Equal(t, "ai", got.Category)
+	require.NotNil(t, got.Creator)
+	assert.Equal(t, "tmchow", got.Creator.Handle)
+	assert.Equal(t, "Trevin Chow", got.Creator.Name)
+}
+
+func TestPromoteWorkingCLI_UsesCategoryFromPipelineState(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+	stubPromoteGitAttribution(t, "", "")
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+
+	state := NewStateWithRun("test", workDir, "run-state-category", "test-scope")
+	state.Category = "travel"
+	writePhase5PassForState(t, state, "none")
+
+	require.NoError(t, PromoteWorkingCLI("test-pp-cli", workDir, state))
+
+	got := readManifest(t, filepath.Join(PublishedLibraryRoot(), "test"))
+	assert.Equal(t, "travel", got.Category)
+}
+
 func TestPromoteWorkingCLI_RejectsManualPhase5Marker(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", tmp)

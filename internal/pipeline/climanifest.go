@@ -467,6 +467,24 @@ func AppendContributor(dir string, p spec.Person, front bool) (bool, error) {
 	if spec.SamePerson(p, creator) {
 		return false, nil
 	}
+	if creator.IsZero() {
+		printer := personFromPrinterFields(raw)
+		if !printer.IsZero() && spec.SamePerson(p, printer) {
+			enc, err := json.Marshal(p)
+			if err != nil {
+				return false, fmt.Errorf("encoding creator: %w", err)
+			}
+			raw["creator"] = enc
+			out, err := marshalCLIManifestObject(raw)
+			if err != nil {
+				return false, err
+			}
+			if err := writeFileAtomic(path, out, 0o644); err != nil {
+				return false, fmt.Errorf("writing CLI manifest: %w", err)
+			}
+			return false, nil
+		}
+	}
 
 	var contributors []spec.Person
 	if rc, ok := raw["contributors"]; ok {
@@ -499,6 +517,17 @@ func AppendContributor(dir string, p spec.Person, front bool) (bool, error) {
 		return false, fmt.Errorf("writing CLI manifest: %w", err)
 	}
 	return true, nil
+}
+
+func personFromPrinterFields(raw map[string]json.RawMessage) spec.Person {
+	var handle, name string
+	if b, ok := raw["printer"]; ok {
+		_ = json.Unmarshal(b, &handle)
+	}
+	if b, ok := raw["printer_name"]; ok {
+		_ = json.Unmarshal(b, &name)
+	}
+	return spec.Person{Handle: strings.TrimSpace(handle), Name: strings.TrimSpace(name)}.Clean()
 }
 
 // writeFileAtomic writes data to a sibling temp file and renames it over path,
@@ -1111,8 +1140,9 @@ func DeriveRunIDFromResearchDir(researchDir string) string {
 }
 
 type generateResearchState struct {
-	APIName string `json:"api_name"`
-	RunID   string `json:"run_id"`
+	APIName  string `json:"api_name"`
+	RunID    string `json:"run_id"`
+	Category string `json:"category,omitempty"`
 }
 
 func loadGenerateResearchState(researchDir string) (generateResearchState, bool) {
@@ -1130,7 +1160,70 @@ func loadGenerateResearchState(researchDir string) (generateResearchState, bool)
 	}
 	state.APIName = strings.TrimSpace(state.APIName)
 	state.RunID = strings.TrimSpace(state.RunID)
+	state.Category = strings.TrimSpace(state.Category)
 	return state, state.APIName != "" || state.RunID != ""
+}
+
+// PersistGenerateCategory keeps generate --category reachable at promote:
+// archived OpenAPI specs omit the public-library slug, so the working-tree
+// manifest cannot be rebuilt from the spec alone.
+func PersistGenerateCategory(researchDir, outputDir, category string) error {
+	category = strings.TrimSpace(category)
+	if category == "" {
+		return nil
+	}
+	var errs []error
+	if err := persistCategoryInResearchState(researchDir, category); err != nil {
+		errs = append(errs, err)
+	}
+	if strings.TrimSpace(outputDir) == "" {
+		return errors.Join(errs...)
+	}
+	state, err := FindStateByWorkingDir(outputDir)
+	if err != nil || state == nil {
+		return errors.Join(errs...)
+	}
+	if strings.TrimSpace(state.Category) == category {
+		return errors.Join(errs...)
+	}
+	state.Category = category
+	if err := state.Save(); err != nil {
+		errs = append(errs, fmt.Errorf("saving pipeline category: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+func persistCategoryInResearchState(researchDir, category string) error {
+	if strings.TrimSpace(researchDir) == "" {
+		return nil
+	}
+	path := filepath.Join(researchDir, "state.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading research state: %w", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("parsing research state: %w", err)
+	}
+	raw["category"] = category
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding research state: %w", err)
+	}
+	out = append(out, '\n')
+	info, err := os.Stat(path)
+	mode := os.FileMode(0o644)
+	if err == nil {
+		mode = info.Mode()
+	}
+	if err := writeFileAtomic(path, out, mode); err != nil {
+		return fmt.Errorf("writing research state: %w", err)
+	}
+	return nil
 }
 
 // ResolveRunIDFromResearchDir reads the run_id recorded by Run Initialization

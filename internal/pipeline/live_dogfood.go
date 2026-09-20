@@ -3424,7 +3424,7 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 			},
 		}
 		skipPath := filepath.Join(filepath.Dir(opts.WriteAcceptancePath), Phase5SkipFilename)
-		return writeLiveDogfoodMarkerFile(skipPath, skipMarker)
+		return writeLiveDogfoodAcceptanceAndMirror(opts, skipPath, skipMarker)
 	}
 
 	status := "pass"
@@ -3455,7 +3455,41 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 		},
 		FailureSummary: failureSummary,
 	}
-	return writeLiveDogfoodMarkerFile(opts.WriteAcceptancePath, marker)
+	return writeLiveDogfoodAcceptanceAndMirror(opts, opts.WriteAcceptancePath, marker)
+}
+
+func writeLiveDogfoodAcceptanceAndMirror(opts LiveDogfoodOptions, path string, marker Phase5GateMarker) error {
+	if err := writeLiveDogfoodMarkerFile(path, marker); err != nil {
+		return err
+	}
+	if err := mirrorLiveDogfoodAcceptanceToRunstate(opts, path, marker); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not mirror phase5 marker into runstate proofs: %v\n", err)
+	}
+	return nil
+}
+
+func mirrorLiveDogfoodAcceptanceToRunstate(opts LiveDogfoodOptions, path string, marker Phase5GateMarker) error {
+	if strings.TrimSpace(opts.CLIDir) == "" || strings.TrimSpace(path) == "" {
+		return nil
+	}
+	state, err := FindStateByWorkingDir(opts.CLIDir)
+	if err != nil || state == nil || strings.TrimSpace(state.RunID) == "" {
+		return nil
+	}
+	dest := filepath.Join(state.ProofsDir(), filepath.Base(path))
+	if sameResolvedPath(path, dest) {
+		return nil
+	}
+	return writeLiveDogfoodMarkerFile(dest, marker)
+}
+
+func sameResolvedPath(a, b string) bool {
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return absA == absB
 }
 
 func writeLiveDogfoodMarkerFile(path string, marker Phase5GateMarker) error {
