@@ -481,6 +481,53 @@ func (c *Config) saveCredentialsFirst() error {
 	return nil
 }
 
+// Credentials and config are separate files. Publishing tokens first would
+// otherwise leave a new credentials.toml if the config write fails.
+func (c *Config) saveCredentialsThenConfig() error {
+	prior, credsPath, snapErr := snapshotCredentialsFile()
+	if err := c.saveCredentialsFirst(); err != nil {
+		return err
+	}
+	if err := c.save(); err != nil {
+		if restoreErr := restoreCredentialsFile(credsPath, prior, snapErr); restoreErr != nil {
+			if credsPath == "" {
+				return fmt.Errorf("%w (credentials file was replaced; restore failed: %v)", err, restoreErr)
+			}
+			return fmt.Errorf("%w (credentials file %s was replaced; restore failed: %v)", err, credsPath, restoreErr)
+		}
+		return err
+	}
+	return nil
+}
+
+func snapshotCredentialsFile() ([]byte, string, error) {
+	path, err := cliutil.CredentialsFilePath()
+	if err != nil {
+		return nil, "", err
+	}
+	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- app-owned credentials path from cliutil.DataDir.
+	return data, path, err
+}
+
+func restoreCredentialsFile(path string, prior []byte, snapErr error) error {
+	if path == "" {
+		if snapErr != nil {
+			return snapErr
+		}
+		return fmt.Errorf("credentials path unknown")
+	}
+	if snapErr != nil {
+		if os.IsNotExist(snapErr) {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			return nil
+		}
+		return fmt.Errorf("no pre-write snapshot of %s: %w", path, snapErr)
+	}
+	return cliutil.AtomicWritePrivateFile(path, prior, 0o600, 0o700)
+}
+
 // Explicit login flags intentionally opt these fields out of environment-value
 // filtering; capture their provenance before applying any fallback.
 func (c *Config) MarkCredentialsExplicit(clientID, clientSecret bool) {
@@ -506,10 +553,7 @@ func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken st
 	c.updateFileConfigField("AccessToken")
 	c.updateFileConfigField("RefreshToken")
 	c.updateFileConfigField("TokenExpiry")
-	if err := c.saveCredentialsFirst(); err != nil {
-		return err
-	}
-	return c.save()
+	return c.saveCredentialsThenConfig()
 }
 
 func (c *Config) ClearTokens() error {
