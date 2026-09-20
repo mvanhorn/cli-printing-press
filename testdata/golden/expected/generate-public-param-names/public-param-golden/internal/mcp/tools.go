@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -18,6 +19,8 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 	"public-param-golden-pp-cli/internal/cli"
 	"public-param-golden-pp-cli/internal/client"
 	"public-param-golden-pp-cli/internal/cliutil"
@@ -855,6 +858,8 @@ func hasTrailingSQLStatement(query string) bool {
 	return false
 }
 
+const mcpSQLMaxValueBytes = 4 << 20
+
 func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	args := req.GetArguments()
 	query, ok := args["query"].(string)
@@ -879,7 +884,17 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 	queryCtx, cancel := bound.WithSQLQueryDeadline(ctx)
 	defer cancel()
 
-	rows, err := db.DB().QueryContext(queryCtx, query)
+	conn, err := db.DB().Conn(queryCtx)
+	if err != nil {
+		return mcplib.NewToolResultError(mcpSQLQueryError(queryCtx, err)), nil
+	}
+	defer conn.Close()
+
+	if _, err := sqlite.Limit(conn, sqlite3.SQLITE_LIMIT_LENGTH, mcpSQLMaxValueBytes); err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("setting SQL value length cap: %v", err)), nil
+	}
+
+	rows, err := conn.QueryContext(queryCtx, query)
 	if err != nil {
 		return mcplib.NewToolResultError(mcpSQLQueryError(queryCtx, err)), nil
 	}
@@ -897,6 +912,9 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 			ptrs[i] = &values[i]
 		}
 		if err := rows.Scan(ptrs...); err != nil {
+			if mcpSQLValueTooBig(err) {
+				return mcplib.NewToolResultError(mcpSQLQueryError(queryCtx, err)), nil
+			}
 			return mcplib.NewToolResultError(fmt.Sprintf("scanning row: %v", err)), nil
 		}
 		row := make(map[string]any)
@@ -954,11 +972,19 @@ func mcpSQLQueryError(queryCtx context.Context, err error) string {
 	if queryCtx.Err() != nil {
 		return fmt.Sprintf("query cancelled: %v. MCP SQL queries are bounded to %s; narrow the query with WHERE, GROUP BY, or an aggregate.", err, bound.SQLQueryTimeout)
 	}
+	if mcpSQLValueTooBig(err) {
+		return fmt.Sprintf("query failed: a string or blob exceeds the MCP SQL value cap of %d bytes (4 MiB). Narrow the selected columns or use substr, json_extract, or length instead of returning oversized values.", mcpSQLMaxValueBytes)
+	}
 	msg := err.Error()
 	if strings.Contains(strings.ToLower(msg), "no such table") {
 		return fmt.Sprintf("query failed: %v. Synced records live in resources(resource_type, id, data), not one SQL table per resource. Filter by resource_type, for example resource_type='stores', and read JSON fields with json_extract(data,'$.field').", err)
 	}
 	return fmt.Sprintf("query failed: %v", err)
+}
+
+func mcpSQLValueTooBig(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlite3.SQLITE_TOOBIG
 }
 
 // toolResultJSON renders v as the indented JSON body of an MCP text result,
