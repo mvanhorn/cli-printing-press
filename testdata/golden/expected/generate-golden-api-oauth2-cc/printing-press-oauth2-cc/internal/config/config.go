@@ -478,6 +478,113 @@ func (c *Config) saveCredentialsFirst() error {
 	return nil
 }
 
+type credentialsSnapshot struct {
+	path          string
+	data          []byte
+	perm          os.FileMode
+	symlinkTarget string
+	missing       bool
+}
+
+// Credentials and config are separate files. Publishing tokens first would
+// otherwise leave a new credentials.toml if the config write fails.
+func (c *Config) saveCredentialsThenConfig() error {
+	credsPath, err := cliutil.CredentialsFilePath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(credsPath), 0o700); err != nil {
+		return err
+	}
+	return cliutil.WithFileLock(credsPath, func() error {
+		return c.saveCredentialsThenConfigLocked(credsPath)
+	})
+}
+
+func (c *Config) saveCredentialsThenConfigLocked(credsPath string) error {
+	snap, err := snapshotCredentialsFile(credsPath)
+	if err != nil {
+		return err
+	}
+	if err := c.saveCredentialsFirst(); err != nil {
+		return err
+	}
+	if err := c.save(); err != nil {
+		if restoreErr := restoreCredentialsFile(snap); restoreErr != nil {
+			return fmt.Errorf("%w (credentials file %s was replaced; restore failed: %v)", err, credsPath, restoreErr)
+		}
+		return err
+	}
+	return nil
+}
+
+func snapshotCredentialsFile(path string) (credentialsSnapshot, error) {
+	snap := credentialsSnapshot{path: path}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			snap.missing = true
+			return snap, nil
+		}
+		return credentialsSnapshot{}, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return credentialsSnapshot{}, err
+		}
+		snap.symlinkTarget = target
+	}
+	targetInfo, err := os.Stat(path)
+	if err != nil {
+		return credentialsSnapshot{}, err
+	}
+	snap.perm = targetInfo.Mode().Perm()
+	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- app-owned credentials path from cliutil.DataDir.
+	if err != nil {
+		return credentialsSnapshot{}, err
+	}
+	snap.data = data
+	return snap, nil
+}
+
+func restoreCredentialsFile(snap credentialsSnapshot) error {
+	if snap.path == "" {
+		return fmt.Errorf("credentials path unknown")
+	}
+	if snap.missing {
+		if err := os.Remove(snap.path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if snap.symlinkTarget != "" {
+		if err := os.Remove(snap.path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.Symlink(snap.symlinkTarget, snap.path); err != nil {
+			return err
+		}
+		if err := os.WriteFile(snap.path, snap.data, 0o600); err != nil {
+			return err
+		}
+		if resolved, err := filepath.EvalSymlinks(snap.path); err == nil && snap.perm != 0 {
+			if err := os.Chmod(resolved, snap.perm); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	mode := snap.perm
+	if mode == 0 {
+		mode = 0o600
+	}
+	if err := cliutil.AtomicWritePrivateFile(snap.path, snap.data, mode, 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(snap.path, mode)
+}
+
 // Explicit login flags intentionally opt these fields out of environment-value
 // filtering; capture their provenance before applying any fallback.
 func (c *Config) MarkCredentialsExplicit(clientID, clientSecret bool) {
@@ -503,10 +610,7 @@ func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken st
 	c.updateFileConfigField("AccessToken")
 	c.updateFileConfigField("RefreshToken")
 	c.updateFileConfigField("TokenExpiry")
-	if err := c.saveCredentialsFirst(); err != nil {
-		return err
-	}
-	return c.save()
+	return c.saveCredentialsThenConfig()
 }
 
 func (c *Config) ClearTokens() error {
