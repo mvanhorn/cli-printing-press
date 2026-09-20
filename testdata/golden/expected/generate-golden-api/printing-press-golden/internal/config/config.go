@@ -453,18 +453,39 @@ func (c *Config) saveCredentialsFirst() error {
 	return nil
 }
 
+type credentialsSnapshot struct {
+	path          string
+	data          []byte
+	perm          os.FileMode
+	symlinkTarget string
+	missing       bool
+}
+
 // Credentials and config are separate files. Publishing tokens first would
 // otherwise leave a new credentials.toml if the config write fails.
 func (c *Config) saveCredentialsThenConfig() error {
-	prior, credsPath, snapErr := snapshotCredentialsFile()
+	credsPath, err := cliutil.CredentialsFilePath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(credsPath), 0o700); err != nil {
+		return err
+	}
+	return cliutil.WithFileLock(credsPath, func() error {
+		return c.saveCredentialsThenConfigLocked(credsPath)
+	})
+}
+
+func (c *Config) saveCredentialsThenConfigLocked(credsPath string) error {
+	snap, err := snapshotCredentialsFile(credsPath)
+	if err != nil {
+		return err
+	}
 	if err := c.saveCredentialsFirst(); err != nil {
 		return err
 	}
 	if err := c.save(); err != nil {
-		if restoreErr := restoreCredentialsFile(credsPath, prior, snapErr); restoreErr != nil {
-			if credsPath == "" {
-				return fmt.Errorf("%w (credentials file was replaced; restore failed: %v)", err, restoreErr)
-			}
+		if restoreErr := restoreCredentialsFile(snap); restoreErr != nil {
 			return fmt.Errorf("%w (credentials file %s was replaced; restore failed: %v)", err, credsPath, restoreErr)
 		}
 		return err
@@ -472,32 +493,71 @@ func (c *Config) saveCredentialsThenConfig() error {
 	return nil
 }
 
-func snapshotCredentialsFile() ([]byte, string, error) {
-	path, err := cliutil.CredentialsFilePath()
+func snapshotCredentialsFile(path string) (credentialsSnapshot, error) {
+	snap := credentialsSnapshot{path: path}
+	info, err := os.Lstat(path)
 	if err != nil {
-		return nil, "", err
+		if os.IsNotExist(err) {
+			snap.missing = true
+			return snap, nil
+		}
+		return credentialsSnapshot{}, err
 	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return credentialsSnapshot{}, err
+		}
+		snap.symlinkTarget = target
+	}
+	targetInfo, err := os.Stat(path)
+	if err != nil {
+		return credentialsSnapshot{}, err
+	}
+	snap.perm = targetInfo.Mode().Perm()
 	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- app-owned credentials path from cliutil.DataDir.
-	return data, path, err
+	if err != nil {
+		return credentialsSnapshot{}, err
+	}
+	snap.data = data
+	return snap, nil
 }
 
-func restoreCredentialsFile(path string, prior []byte, snapErr error) error {
-	if path == "" {
-		if snapErr != nil {
-			return snapErr
-		}
+func restoreCredentialsFile(snap credentialsSnapshot) error {
+	if snap.path == "" {
 		return fmt.Errorf("credentials path unknown")
 	}
-	if snapErr != nil {
-		if os.IsNotExist(snapErr) {
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	if snap.missing {
+		if err := os.Remove(snap.path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if snap.symlinkTarget != "" {
+		if err := os.Remove(snap.path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.Symlink(snap.symlinkTarget, snap.path); err != nil {
+			return err
+		}
+		if err := os.WriteFile(snap.path, snap.data, 0o600); err != nil {
+			return err
+		}
+		if resolved, err := filepath.EvalSymlinks(snap.path); err == nil && snap.perm != 0 {
+			if err := os.Chmod(resolved, snap.perm); err != nil {
 				return err
 			}
-			return nil
 		}
-		return fmt.Errorf("no pre-write snapshot of %s: %w", path, snapErr)
+		return nil
 	}
-	return cliutil.AtomicWritePrivateFile(path, prior, 0o600, 0o700)
+	mode := snap.perm
+	if mode == 0 {
+		mode = 0o600
+	}
+	if err := cliutil.AtomicWritePrivateFile(snap.path, snap.data, mode, 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(snap.path, mode)
 }
 
 // Explicit login flags intentionally opt these fields out of environment-value
