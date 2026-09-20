@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.32.4](https://github.com/mvanhorn/cli-printing-press/compare/v4.32.3...v4.32.4) (2026-09-20)
+
+
+### Bug Fixes
+
+* **cli:** honor module_path_base; preserve shipcheck reports on republish ([#4765](https://github.com/mvanhorn/cli-printing-press/issues/4765)) ([6d10f81](https://github.com/mvanhorn/cli-printing-press/commit/6d10f81bca3a7a664c21c66574e64569a3fde866))
+* **cli:** MCP --db block, SQL value cap, recipe positional names ([#4767](https://github.com/mvanhorn/cli-printing-press/issues/4767)) ([86fa89b](https://github.com/mvanhorn/cli-printing-press/commit/86fa89b9ac7d4934fee69925b93225030755d040))
+* **cli:** phase5 marker path; backfill creator/category on publish ([#4769](https://github.com/mvanhorn/cli-printing-press/issues/4769)) ([9bfad36](https://github.com/mvanhorn/cli-printing-press/commit/9bfad3659d976bb0b1e474174c9540f42a35bbd9))
+* **cli:** roll back credentials when SaveTokens config write fails ([#4766](https://github.com/mvanhorn/cli-printing-press/issues/4766)) ([1857664](https://github.com/mvanhorn/cli-printing-press/commit/1857664372b6fba0f8bd9ecd844bb7e83e663bec))
+
 ## [4.32.3](https://github.com/mvanhorn/cli-printing-press/compare/v4.32.2...v4.32.3) (2026-09-19)
 
 
