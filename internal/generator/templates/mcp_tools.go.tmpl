@@ -15,8 +15,10 @@ package mcp
 
 import (
 	"context"
-{{- if or .VisionSet.Store (and .VisionSet.Search .APISpec.IsLocalSQLiteSource)}}
+{{- if and (or .VisionSet.Search .VisionSet.Store) .APISpec.IsLocalSQLiteSource}}
 	"database/sql"
+{{- end}}
+{{- if or .VisionSet.Store (and .VisionSet.Search .APISpec.IsLocalSQLiteSource)}}
 	"errors"
 {{- end}}
 	"encoding/base64"
