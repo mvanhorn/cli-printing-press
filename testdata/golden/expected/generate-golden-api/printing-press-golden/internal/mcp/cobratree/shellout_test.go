@@ -92,6 +92,7 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 		"base-url":     "https://evil.example.com",
 		"client":       "attacker-client",
 		"config":       "/tmp/evil.yaml",
+		"db":           "/tmp/evil.db",
 		"deliver":      "fd:3",
 		"home":         "/tmp/evil-home",
 		"insecure":     true,
@@ -114,6 +115,7 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 		"base-url":     true,
 		"client":       true,
 		"config":       true,
+		"db":           true,
 		"deliver":      true,
 		"home":         true,
 		"insecure":     true,
@@ -127,7 +129,7 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP dropped/kept wrong keys: got %v, want %v", got, want)
 	}
-	for _, blocked := range []string{"--audit-dir", "--base-url", "--client", "--config", "--deliver", "--home", "--insecure", "--o", "--output", "--profile", "--receipt-file", "--token", "--args"} {
+	for _, blocked := range []string{"--audit-dir", "--base-url", "--client", "--config", "--db", "--deliver", "--home", "--insecure", "--o", "--output", "--profile", "--receipt-file", "--token", "--args"} {
 		for _, tok := range got {
 			if tok == blocked {
 				t.Errorf("blocked flag %q leaked through cliArgsFromMCP", blocked)
@@ -243,6 +245,7 @@ func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 	child := &cobra.Command{Use: "child"}
 	child.Flags().StringP("output", "o", "", "local output")
 	child.Flags().String("profile", "", "command profile")
+	child.Flags().String("db", "", "local sqlite path")
 	root.AddCommand(child)
 
 	blocked := blockedStructuredArgsForCommand(child)
@@ -252,7 +255,7 @@ func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 	if !blocked["config"] {
 		t.Fatalf("inherited root --config was not blocked: %#v", blocked)
 	}
-	for _, destination := range []string{"audit-dir", "o", "output", "receipt-file"} {
+	for _, destination := range []string{"audit-dir", "db", "o", "output", "receipt-file"} {
 		if !blocked[destination] {
 			t.Fatalf("destination flag %q was not blocked: %#v", destination, blocked)
 		}
@@ -265,6 +268,7 @@ func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 		"args":    "ignored",
 		"profile": "local-profile",
 		"config":  "/tmp/evil.yaml",
+		"db":      "/tmp/evil.db",
 		"json":    "true",
 		"output":  "/tmp/evil.json",
 	}, blocked)
@@ -501,6 +505,7 @@ func TestToolOptionsHideBlockedRootFlagsButKeepLocalCollisions(t *testing.T) {
 
 	child := &cobra.Command{Use: "child <query>"}
 	child.Flags().String("config", "", "local config")
+	child.Flags().String("db", "", "local sqlite path")
 	child.Flags().StringP("output", "o", "", "local output")
 	child.Flags().String("args", "", "reserved local args")
 	root.AddCommand(child)
@@ -518,13 +523,13 @@ func TestToolOptionsHideBlockedRootFlagsButKeepLocalCollisions(t *testing.T) {
 	if _, ok := props["query"]; !ok {
 		t.Fatalf("positional <query> missing from schema: %#v", props)
 	}
-	for _, hidden := range []string{"args", "audit-dir", "o", "output", "receipt-file"} {
+	for _, hidden := range []string{"args", "audit-dir", "db", "o", "output", "receipt-file"} {
 		if _, ok := props[hidden]; ok {
 			t.Fatalf("blocked parameter %q should not be exposed as a flag schema: %#v", hidden, props)
 		}
 	}
 	allowed := allowedStructuredArgsForCommand(child, blocked, positionals, true)
-	for _, hidden := range []string{"audit-dir", "o", "output", "receipt-file"} {
+	for _, hidden := range []string{"audit-dir", "db", "o", "output", "receipt-file"} {
 		if allowed[hidden] {
 			t.Fatalf("blocked parameter %q should not be accepted by structured args: %#v", hidden, allowed)
 		}
