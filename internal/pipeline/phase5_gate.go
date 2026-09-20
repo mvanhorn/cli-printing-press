@@ -84,6 +84,60 @@ type Phase5GateValidation struct {
 	Detail     string
 }
 
+// Phase5ProofsDirCandidates returns proofs directories to consult, preferred
+// first. The CLI tree's `.manuscripts/<run-id>/proofs` is the documented
+// publish write location; runstate is last because republish often leaves a
+// stale copy there while the fresh marker lands only in the CLI tree.
+func Phase5ProofsDirCandidates(cliDir string, manifest CLIManifest, runstateProofsDir string) []string {
+	runID := strings.TrimSpace(manifest.RunID)
+	var candidates []string
+	if runID != "" && strings.TrimSpace(cliDir) != "" {
+		candidates = append(candidates, filepath.Join(cliDir, ".manuscripts", runID, "proofs"))
+	}
+	msRoot := PublishedManuscriptsRoot()
+	if runID != "" && strings.TrimSpace(manifest.APIName) != "" {
+		candidates = append(candidates, filepath.Join(msRoot, manifest.APIName, runID, "proofs"))
+	}
+	if runID != "" && strings.TrimSpace(manifest.CLIName) != "" {
+		candidates = append(candidates, filepath.Join(msRoot, manifest.CLIName, runID, "proofs"))
+	}
+	if strings.TrimSpace(runstateProofsDir) != "" {
+		candidates = append(candidates, runstateProofsDir)
+	}
+	return uniqueStrings(candidates)
+}
+
+// FirstExistingPhase5ProofsDir returns the first candidate that exists as a
+// directory, or the first candidate when none exist (so callers can still
+// produce a missing-file error at the preferred path).
+func FirstExistingPhase5ProofsDir(candidates []string) string {
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+	}
+	if len(candidates) > 0 {
+		return candidates[0]
+	}
+	return ""
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
 func ValidatePhase5Gate(proofsDir string, manifest CLIManifest, sourceDirs ...string) Phase5GateValidation {
 	if strings.TrimSpace(proofsDir) == "" {
 		return Phase5GateValidation{Detail: "phase5 proofs directory is empty"}

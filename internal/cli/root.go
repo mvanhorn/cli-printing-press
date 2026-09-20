@@ -238,6 +238,7 @@ func newGenerateCmd() *cobra.Command {
 				}); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 				}
+				pipeline.PersistGenerateCategory(researchDir, absOut, parsed.Category)
 
 				fmt.Fprintf(os.Stderr, "Generated %s at %s (from docs)\n", parsed.Name, absOut)
 				autoBundleForHost(absOut, os.Stderr)
@@ -543,6 +544,7 @@ func newGenerateCmd() *cobra.Command {
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 			}
+			pipeline.PersistGenerateCategory(researchDir, absOut, apiSpec.Category)
 
 			// Archive a snapshot of the spec alongside the CLI; multi-spec
 			// runs use the merged form (see archiveSpecBytes for why).

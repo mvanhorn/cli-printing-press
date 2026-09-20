@@ -239,13 +239,6 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			if existing.PrinterName != "" {
 				m.PrinterName = existing.PrinterName
 			}
-			// Backfill the creator from the carried-forward legacy fields so a
-			// CLI generated before the creator model persists a creator on
-			// republish (the public registry reads the written manifest, not
-			// publish-time transient state).
-			if (m.Creator == nil || m.Creator.IsZero()) && (strings.TrimSpace(m.Printer) != "" || strings.TrimSpace(m.PrinterName) != "") {
-				m.Creator = &spec.Person{Handle: strings.TrimSpace(m.Printer), Name: strings.TrimSpace(m.PrinterName)}
-			}
 			if existing.Category != "" {
 				m.Category = existing.Category
 			}
@@ -404,6 +397,24 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 				state.RunID)
 		}
 	}
+
+	if m.Category == "" && state != nil && strings.TrimSpace(state.Category) != "" {
+		m.Category = strings.TrimSpace(state.Category)
+	}
+	if m.Category == "" && state != nil {
+		if rs, ok := loadGenerateResearchState(state.ResearchDir()); ok && strings.TrimSpace(rs.Category) != "" {
+			m.Category = strings.TrimSpace(rs.Category)
+		}
+	}
+	if strings.TrimSpace(m.Category) == "" {
+		cliName := m.CLIName
+		if cliName == "" && state != nil {
+			cliName = naming.CLI(state.APIName)
+		}
+		fmt.Fprintf(os.Stderr, "warning: promoting %s without a public-library category; pass generate --category <slug> so publish and verify-skill use the category-specific install path\n", cliName)
+	}
+
+	backfillPromoteManifestAttribution(&m)
 
 	clearFields := map[string]struct{}{}
 	if m.SpecURL != "" && m.SpecPath == "" {
