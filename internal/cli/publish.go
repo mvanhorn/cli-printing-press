@@ -464,6 +464,13 @@ func newPublishPackageCmd() *cobra.Command {
 					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping staged shipcheck report %s: %w", name, err)}
 				}
 			}
+			// Fresh prints drop these reports, but dest overlay replaces a
+			// published entry wholesale. Restore catalog copies so republish
+			// does not silently delete them.
+			if err := restoreStashedShipcheckReports(outCLIDir, stashedDirs); err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: err}
+			}
 
 			// Rewrite go.mod module path if --module-path is set
 			if modulePath != "" {
@@ -473,11 +480,12 @@ func newPublishPackageCmd() *cobra.Command {
 					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("rewriting module path: %w", err)}
 				}
 			}
-			// Verify the staged tree's module path is library-canonical. Runs
-			// after the rewrite in both branches: without --module-path the
-			// bare module name fails here; with a wrong --module-path value
-			// the mismatch is caught before it reaches the library CI.
-			modulePathCheck := checkModulePath(outCLIDir)
+			// Verify the staged tree's module path. Runs after the rewrite in
+			// both branches: without --module-path the bare module name fails
+			// the canonical-prefix requirement here; with --module-path the
+			// staged go.mod must declare exactly the requested path, so a
+			// failed or partial rewrite is caught before it reaches CI.
+			modulePathCheck := checkModulePath(outCLIDir, modulePath)
 			if !modulePathCheck.Passed {
 				if asJSON {
 					enc := json.NewEncoder(os.Stdout)
@@ -664,6 +672,7 @@ func checkMirrorDivergence(mirrorCLIDir, sourceCLIDir string) error {
 // repopulated per run, and build/ is stripped after the source copy. A
 // non-existent mirrorCLIDir is treated as no divergence.
 func listMirrorOnlyFiles(mirrorCLIDir, sourceCLIDir string) ([]string, error) {
+	preservedReports := stagedShipcheckReportNameSet()
 	var mirrorOnly []string
 	err := filepath.WalkDir(mirrorCLIDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -686,6 +695,12 @@ func listMirrorOnlyFiles(mirrorCLIDir, sourceCLIDir string) ([]string, error) {
 			case ".manuscripts", "build":
 				return fs.SkipDir
 			}
+			return nil
+		}
+
+		// Dest overlay restores these from the replaced entry after the
+		// staged-tree strip, so they are not a silent-deletion risk.
+		if _, ok := preservedReports[rel]; ok {
 			return nil
 		}
 
@@ -856,8 +871,9 @@ func runValidation(dir string) ValidateResult {
 	// legitimately declares the bare CLI module path; the check is
 	// authoritative in the package flow, which validates the staged tree after
 	// --module-path rewrite. Surface it as a warning so a library-shaped tree
-	// with a wrong module path is still flagged before packaging.
-	modulePathCheck := checkModulePath(dir)
+	// with a wrong module path is still flagged before packaging. Standalone
+	// validate has no --module-path context, so the canonical prefix applies.
+	modulePathCheck := checkModulePath(dir, "")
 	if !modulePathCheck.Passed {
 		modulePathCheck.Warning = modulePathCheck.Error
 		modulePathCheck.Error = ""
@@ -1521,9 +1537,19 @@ func checkGoModTidy(dir string) CheckResult {
 	return CheckResult{Name: "go mod tidy", Passed: true}
 }
 
+// canonicalLibraryModulePrefix is the module path prefix the upstream library
+// CI requires when no module path was requested explicitly.
+const canonicalLibraryModulePrefix = "github.com/mvanhorn/printing-press-library/library/"
+
 // checkModulePath catches the bare CLI-name module declaration the library CI
 // rejects, before the PR opens.
-func checkModulePath(dir string) CheckResult {
+//
+// requested is the explicit `publish package --module-path` value, or "" when
+// none was given. With an explicit request the check is internal consistency:
+// go.mod must declare exactly the path that was asked for, which honors the
+// documented $PUBLISH_CONFIG module_path_base override while still rejecting a
+// bare CLI name. With no request the canonical library prefix is required.
+func checkModulePath(dir, requested string) CheckResult {
 	modPath := filepath.Join(dir, "go.mod")
 	modBytes, err := os.ReadFile(modPath)
 	if err != nil {
@@ -1540,11 +1566,31 @@ func checkModulePath(dir string) CheckResult {
 	if declared == "" {
 		return CheckResult{Name: "module path", Passed: false, Error: "go.mod declares no module line"}
 	}
-	if strings.HasPrefix(declared, "github.com/mvanhorn/printing-press-library/library/") {
+	if requested != "" {
+		if declared != requested {
+			return CheckResult{Name: "module path", Passed: false,
+				Error: fmt.Sprintf("go.mod module path %q does not match the requested --module-path %q", declared, requested)}
+		}
+		if isBareModuleName(declared) {
+			return CheckResult{Name: "module path", Passed: false,
+				Error: fmt.Sprintf("go.mod module path %q is a bare CLI name; use a domain-qualified module path like github.com/<org>/<repo>/library/<category>/<slug>", declared)}
+		}
+		return CheckResult{Name: "module path", Passed: true}
+	}
+	if strings.HasPrefix(declared, canonicalLibraryModulePrefix) {
 		return CheckResult{Name: "module path", Passed: true}
 	}
 	return CheckResult{Name: "module path", Passed: false,
 		Error: fmt.Sprintf("go.mod module path %q does not start with the canonical library prefix github.com/mvanhorn/printing-press-library/library/<category>/<slug>", declared)}
+}
+
+// isBareModuleName reports whether a declared module path is a bare name like
+// "exa-pp-cli" rather than a fetchable, domain-qualified path. Go treats the
+// first path element as the host, so a first element with no dot is never
+// resolvable by the library CI.
+func isBareModuleName(declared string) bool {
+	host, _, _ := strings.Cut(declared, "/")
+	return !strings.Contains(host, ".")
 }
 
 func buildValidationBinary(dir, cliName string) (path string, cleanup func(), err error) {
@@ -1619,6 +1665,43 @@ func stagedBinaryNames(cliName, apiSlug string) []string {
 
 func stagedShipcheckReportNames() []string {
 	return []string{"dogfood-results.json", "workflow-verify-report.json"}
+}
+
+func stagedShipcheckReportNameSet() map[string]struct{} {
+	names := stagedShipcheckReportNames()
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		set[name] = struct{}{}
+	}
+	return set
+}
+
+func restoreStashedShipcheckReports(outCLIDir string, stashed []stashedDir) error {
+	if len(stashed) == 0 {
+		return nil
+	}
+	for _, name := range stagedShipcheckReportNames() {
+		dst := filepath.Join(outCLIDir, name)
+		if _, err := os.Lstat(dst); err == nil {
+			continue
+		}
+		for _, d := range stashed {
+			src := filepath.Join(d.stashed, name)
+			info, err := os.Lstat(src)
+			if err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			data, err := os.ReadFile(src)
+			if err != nil {
+				return fmt.Errorf("reading preserved shipcheck report %s: %w", name, err)
+			}
+			if err := os.WriteFile(dst, data, info.Mode().Perm()); err != nil {
+				return fmt.Errorf("restoring preserved shipcheck report %s: %w", name, err)
+			}
+			break
+		}
+	}
+	return nil
 }
 
 type fileSnapshot struct {
