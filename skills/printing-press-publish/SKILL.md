@@ -931,13 +931,12 @@ fi
 mkdir -p "$DEST_CATEGORY_DIR"
 
 # Preserve release-ledger files and existing shipcheck reports from the
-# current public-library entry before removing it. New CLIs omit
-# .printing-press-release.json until the library's post-merge workflow stamps
-# a real release; reprints keep existing changelog history and release
-# metadata until that workflow stamps the next release. Fresh prints strip
-# dogfood-results.json and workflow-verify-report.json from the staged tree;
-# reprints must copy those catalog files back so the overlay does not delete
-# them.
+# current public-library entry before removing it. New CLIs omit .printing-press-release.json until the library's
+# post-merge workflow stamps a real release; reprints keep existing changelog
+# history and release metadata until that workflow stamps the next release.
+# Fresh prints strip dogfood-results.json and workflow-verify-report.json from
+# the staged tree; reprints must copy those catalog files back so the overlay
+# does not delete them.
 RELEASE_LEDGER_TMP="$(mktemp -d)"
 PUBLISH_SWAP_DIR="$(mktemp -d "$DEST_CATEGORY_DIR/.<api-slug>.XXXXXX")"
 trap 'rm -rf "$RELEASE_LEDGER_TMP" "$PUBLISH_SWAP_DIR"' EXIT
