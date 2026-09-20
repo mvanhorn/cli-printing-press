@@ -2641,9 +2641,13 @@ func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, v
 // preservation and print every skipped TEMPLATED-* hand-edit. Same-spec
 // regen still carries those edits; the drop list is the cross-spec
 // honesty so the operator sees the loss instead of a mode suffix alone.
-// When the snapshot records the running press version, the fresh tree is
-// the three-way base so a hand-edited generated function overlays instead
-// of being replaced by the identical re-emission.
+// Same-version force synthesizes a clean generate (current press, current
+// spec, no research/traffic/generation extras) as the three-way original.
+// Shared bodies that still match that original are regenerations and take
+// fresh; bodies that differ from it are hand-edits and overlay. Raw fresh
+// is never that original: extras not in the spec checksum can legitimately
+// rewrite shared functions, and treating every difference as a hand-edit
+// would overlay the stale snapshot body.
 //
 // When the merge updates go.mod (snapshot had hand-added requires), the
 // caller must re-run `go mod tidy` against freshDir to refresh go.sum —
@@ -2666,11 +2670,6 @@ func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte, f
 		// replace templated bodies instead of shipping the still-compiling
 		// older rewrite.
 		novelOnly = true
-	}
-	if !novelOnly && baseDir == "" && snapshotRecordsRunningVersion(snapshotDir) {
-		// Same-version force has no older emission to synthesize. Fresh is
-		// that original, so a differing shared body is a hand-edit.
-		baseDir = freshDir
 	}
 
 	classifyOpts := regenmerge.Options{Force: true, BaseDir: baseDir}
@@ -2725,8 +2724,11 @@ func synthesizeForceRegenBase(snapshotDir string, currentSpecBytes []byte, novel
 		return "", nil
 	}
 	priorVersion := strings.TrimSpace(manifest.PrintingPressVersion)
-	if priorVersion == "" || sameSemver(priorVersion, version.Version) {
+	if priorVersion == "" {
 		return "", nil
+	}
+	if sameSemver(priorVersion, version.Version) {
+		return synthesizeSameVersionForceRegenBase(currentSpecBytes)
 	}
 	if !validPrintingPressVersion(priorVersion) {
 		fmt.Fprintf(os.Stderr, "warning: cannot synthesize force-regen base from invalid printing_press_version %q\n", priorVersion)
@@ -2761,6 +2763,36 @@ func synthesizeForceRegenBase(snapshotDir string, currentSpecBytes []byte, novel
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: force-regen base synthesis with cli-printing-press %s failed: %v\n%s", moduleVersion, err, out)
+		cleanup()
+		return "", nil
+	}
+	return baseDir, cleanup
+}
+
+// synthesizeSameVersionForceRegenBase emits the current press against the
+// current spec with no research, traffic analysis, or extra generation
+// flags. That tree is "what a clean prior generate would have produced",
+// so overlay can keep real hand-edits without classifying an intentional
+// shared-body rewrite as one.
+func synthesizeSameVersionForceRegenBase(currentSpecBytes []byte) (string, func()) {
+	if len(currentSpecBytes) == 0 {
+		return "", nil
+	}
+	apiSpec, err := parseSpecBytes("spec.yaml", currentSpecBytes, openapi.ParseOptions{Lenient: true})
+	if err != nil || apiSpec == nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot synthesize same-version force-regen base: %v\n", err)
+		return "", nil
+	}
+	tmp, err := os.MkdirTemp("", "printing-press-force-base-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot create same-version force-regen base tempdir: %v\n", err)
+		return "", nil
+	}
+	cleanup := func() { _ = os.RemoveAll(tmp) }
+	baseDir := filepath.Join(tmp, "base")
+	fmt.Fprintln(os.Stderr, "Synthesizing same-version force-regen base from spec (this may take a moment)...")
+	if err := generator.New(apiSpec, baseDir).Generate(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: same-version force-regen base generation failed: %v\n", err)
 		cleanup()
 		return "", nil
 	}

@@ -7939,6 +7939,7 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	assert.Contains(t, content, "filtered := unwrapSingleKeyArray(data)")
 	assert.Contains(t, content, "compactFields(filtered,")
 	assert.Contains(t, content, "filterFieldsChecked(filtered, flags.selectFields)")
+	assert.Contains(t, content, "selectErrorForDryRun(selectErr, flags)")
 	assert.Contains(t, content, `json.Unmarshal(filtered, &parsed)`)
 
 	// Envelope bypasses printOutputWithFlags to avoid double-filtering, then
@@ -12951,6 +12952,8 @@ func TestGeneratedHelpers_DeadCodeRemoved(t *testing.T) {
 	assert.Contains(t, content, "printOutputWithFlags")
 	assert.Contains(t, content, "func filterFields(data json.RawMessage, fields string) json.RawMessage")
 	assert.Contains(t, content, "func filterFieldsChecked(data json.RawMessage, fields string) (json.RawMessage, error)")
+	assert.Contains(t, content, "func selectErrorForDryRun(err error, flags *rootFlags) error")
+	assert.NotContains(t, content, "payloadHasDryRunTrue")
 	assert.Contains(t, content, "classifyAPIError")
 }
 

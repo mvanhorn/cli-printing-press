@@ -308,7 +308,7 @@ func TestFilterFields_HeterogeneousSupersetStaysOK(t *testing.T) {
 
 func TestPrintOutputWithFlags_SelectAllMissKeepsJSON(t *testing.T) {
 	input := json.RawMessage(`+"`"+`{"id":"a","name":"Alpha"}`+"`"+`)
-	stdout, warning, err := printSelected(t, input, "zzz_nonexistent")
+	stdout, warning, err := printSelected(t, input, "zzz_nonexistent", false)
 	if err == nil {
 		t.Fatal("expected non-zero-class error for an all-miss --select")
 	}
@@ -329,7 +329,7 @@ func TestPrintOutputWithFlags_SelectAllMissKeepsJSON(t *testing.T) {
 
 func TestPrintOutputWithFlags_SelectMixedMatchOK(t *testing.T) {
 	input := json.RawMessage(`+"`"+`{"id":"a","name":"Alpha"}`+"`"+`)
-	stdout, warning, err := printSelected(t, input, "id,nonexistent")
+	stdout, warning, err := printSelected(t, input, "id,nonexistent", false)
 	if err != nil {
 		t.Fatalf("mixed match should stay exit 0: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestPrintOutputWithFlags_SelectMixedMatchOK(t *testing.T) {
 
 func TestPrintOutputWithFlags_SelectDryRunPlanWarnsWithoutEscalating(t *testing.T) {
 	input := json.RawMessage(`+"`"+`{"action":"list","dry_run":true,"id":"in"}`+"`"+`)
-	stdout, warning, err := printSelected(t, input, "name")
+	stdout, warning, err := printSelected(t, input, "name", true)
 	if err != nil {
 		t.Fatalf("dry-run --select should stay exit 0: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestPrintOutputWithFlags_SelectDryRunPlanWarnsWithoutEscalating(t *testing.
 
 func TestPrintOutputWithFlags_SelectClientDryRunSentinelWarnsWithoutEscalating(t *testing.T) {
 	input := json.RawMessage(`+"`"+`{"dry_run":true}`+"`"+`)
-	stdout, warning, err := printSelected(t, input, "name")
+	stdout, warning, err := printSelected(t, input, "name", true)
 	if err != nil {
 		t.Fatalf("client dry-run sentinel --select should stay exit 0: %v", err)
 	}
@@ -371,9 +371,24 @@ func TestPrintOutputWithFlags_SelectClientDryRunSentinelWarnsWithoutEscalating(t
 
 func TestPrintOutputWithFlags_SelectDryRunFalseTypoStillExits2(t *testing.T) {
 	input := json.RawMessage(`+"`"+`{"dry_run":false,"id":"a"}`+"`"+`)
-	stdout, warning, err := printSelected(t, input, "name")
+	stdout, warning, err := printSelected(t, input, "name", false)
 	if err == nil {
 		t.Fatal("expected non-zero-class error for an all-miss --select against determinate output")
+	}
+	if ExitCode(err) == 0 {
+		t.Fatal("ExitCode = 0, want non-zero")
+	}
+	assertJSONEqual(t, json.RawMessage(bytes.TrimSpace(stdout)), string(input))
+	if !strings.Contains(string(warning), "--select \"name\" matched no fields") {
+		t.Fatalf("warning = %q, want unmatched path named", warning)
+	}
+}
+
+func TestPrintOutputWithFlags_SelectResponseDryRunFieldDoesNotMaskTypo(t *testing.T) {
+	input := json.RawMessage(`+"`"+`{"dry_run":true,"id":"a"}`+"`"+`)
+	stdout, warning, err := printSelected(t, input, "name", false)
+	if err == nil {
+		t.Fatal("expected non-zero-class error when --dry-run was not set")
 	}
 	if ExitCode(err) == 0 {
 		t.Fatal("ExitCode = 0, want non-zero")
@@ -400,7 +415,7 @@ func filterFieldsWithWarning(t *testing.T, input, fields string) (json.RawMessag
 	return got, warning, ferr
 }
 
-func printSelected(t *testing.T, input json.RawMessage, fields string) ([]byte, []byte, error) {
+func printSelected(t *testing.T, input json.RawMessage, fields string, dryRun bool) ([]byte, []byte, error) {
 	t.Helper()
 	var stdout bytes.Buffer
 	oldStderr := os.Stderr
@@ -409,7 +424,7 @@ func printSelected(t *testing.T, input json.RawMessage, fields string) ([]byte, 
 		t.Fatalf("os.Pipe() error: %v", err)
 	}
 	os.Stderr = write
-	printErr := printOutputWithFlags(&stdout, input, &rootFlags{asJSON: true, selectFields: fields})
+	printErr := printOutputWithFlags(&stdout, input, &rootFlags{asJSON: true, selectFields: fields, dryRun: dryRun})
 	_ = write.Close()
 	os.Stderr = oldStderr
 	warning, _ := io.ReadAll(read)

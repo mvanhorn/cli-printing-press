@@ -2280,25 +2280,20 @@ func filterFieldsChecked(data json.RawMessage, fields string) (json.RawMessage, 
 		out = data
 	}
 	if len(unmatched) > 0 && len(unmatched) == len(requestedPaths) && !state.anchoredIndeterminate && !state.fallbackIndeterminate {
-		if payloadHasDryRunTrue(data) {
-			return out, nil
-		}
 		return out, usageErr(fmt.Errorf("--select matched no fields: %s", strings.Join(unmatched, ", ")))
 	}
 	return out, nil
 }
 
-func payloadHasDryRunTrue(data json.RawMessage) bool {
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return false
+// selectErrorForDryRun keeps --select warnings but drops the usage exit when
+// the command itself ran with --dry-run. Dry-run plans cannot match live
+// result fields; an API payload that happens to contain `"dry_run": true` is
+// not that signal.
+func selectErrorForDryRun(err error, flags *rootFlags) error {
+	if err == nil || flags == nil || !flags.dryRun {
+		return err
 	}
-	raw, ok := envelope["dry_run"]
-	if !ok {
-		return false
-	}
-	var v bool
-	return json.Unmarshal(raw, &v) == nil && v
+	return nil
 }
 
 func selectFieldKeys(data json.RawMessage) []string {
@@ -2578,6 +2573,7 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 	var selectErr error
 	if flags.selectFields != "" {
 		data, selectErr = filterFieldsChecked(data, flags.selectFields)
+		selectErr = selectErrorForDryRun(selectErr, flags)
 	} else if flags.compact {
 		data = compactFields(data, documentedFields...)
 	}

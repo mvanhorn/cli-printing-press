@@ -93,6 +93,20 @@ func TestSnapshotRecordsRunningVersion(t *testing.T) {
 	assert.False(t, snapshotRecordsRunningVersion(t.TempDir()))
 }
 
+func TestSynthesizeSameVersionForceRegenBaseEmitsGeneratedTree(t *testing.T) {
+	t.Parallel()
+
+	specBytes := forceRegenMatrixSpec("sameverbase")
+	baseDir, cleanup := synthesizeSameVersionForceRegenBase(specBytes)
+	require.NotNil(t, cleanup)
+	t.Cleanup(cleanup)
+	require.NotEmpty(t, baseDir)
+
+	helpers, err := os.ReadFile(filepath.Join(baseDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(helpers), "func filterFieldsChecked")
+}
+
 func TestEnsureMCPVersionCompatibleWithCLIManifest(t *testing.T) {
 	t.Parallel()
 

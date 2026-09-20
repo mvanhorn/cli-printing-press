@@ -93,7 +93,7 @@ func TestFinalizeForceMergePreservesCompilingHandEdits(t *testing.T) {
 	require.NoError(t, compileGeneratedTree(freshDir))
 }
 
-func TestFinalizeForceMergeKeepsSameVersionHandEditedFuncBody(t *testing.T) {
+func TestFinalizeForceMergeSameVersionWithoutOriginalTakesFreshSharedBody(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -102,7 +102,7 @@ func TestFinalizeForceMergeKeepsSameVersionHandEditedFuncBody(t *testing.T) {
 
 	writeMiniModule(t, snapshotDir, map[string]string{
 		".printing-press.json":      `{"schema_version":2,"printing_press_version":"` + version.Version + `","api_name":"mini","cli_name":"mini-pp-cli"}`,
-		"internal/client/client.go": generatedClientFile("func Shared() string { return \"kept\" }\n"),
+		"internal/client/client.go": generatedClientFile("func Shared() string { return \"stale\" }\n"),
 		"internal/cli/novel.go":     "package cli\n\nfunc NovelKeep() string { return \"kept\" }\n",
 	})
 	writeMiniModule(t, freshDir, map[string]string{
@@ -113,9 +113,9 @@ func TestFinalizeForceMergeKeepsSameVersionHandEditedFuncBody(t *testing.T) {
 
 	got, err := os.ReadFile(filepath.Join(freshDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(got), `return "kept"`,
-		"same-version generate --force must keep a hand-edited generated function body")
-	assert.NotContains(t, string(got), `return "fresh"`)
+	assert.Contains(t, string(got), `return "fresh"`,
+		"without a synthesizable original, same-version force must not overlay a stale shared body")
+	assert.NotContains(t, string(got), `return "stale"`)
 
 	novel, err := os.ReadFile(filepath.Join(freshDir, "internal", "cli", "novel.go"))
 	require.NoError(t, err)
