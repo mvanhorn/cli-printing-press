@@ -343,13 +343,43 @@ func TestPrintOutputWithFlags_SelectMixedMatchOK(t *testing.T) {
 }
 
 func TestPrintOutputWithFlags_SelectDryRunPlanWarnsWithoutEscalating(t *testing.T) {
-	input := json.RawMessage(`+"`"+`{"action":"list","dry_run":true,"id":"in"}`+"`"+`)
+	input := json.RawMessage(`+"`"+`{"dry_run":true}`+"`"+`)
 	stdout, warning, err := printSelected(t, input, "name", true)
 	if err != nil {
 		t.Fatalf("dry-run --select should stay exit 0: %v", err)
 	}
 	if !json.Valid(bytes.TrimSpace(stdout)) {
 		t.Fatalf("stdout is not JSON: %q", stdout)
+	}
+	assertJSONEqual(t, json.RawMessage(bytes.TrimSpace(stdout)), string(input))
+	if !strings.Contains(string(warning), "--select \"name\" matched no fields") {
+		t.Fatalf("warning = %q, want unmatched path named", warning)
+	}
+}
+
+func TestPrintOutputWithFlags_SelectDryRunFlagOnRealRowsStillExits2(t *testing.T) {
+	input := json.RawMessage(`+"`"+`[{"id":"a","name":"Alpha","score":1}]`+"`"+`)
+	stdout, warning, err := printSelected(t, input, "nmae", true)
+	if err == nil {
+		t.Fatal("expected non-zero-class error; --dry-run on real rows is not a dry-run plan")
+	}
+	if ExitCode(err) == 0 {
+		t.Fatal("ExitCode = 0, want non-zero")
+	}
+	assertJSONEqual(t, json.RawMessage(bytes.TrimSpace(stdout)), string(input))
+	if !strings.Contains(string(warning), "--select \"nmae\" matched no fields") {
+		t.Fatalf("warning = %q, want unmatched path named", warning)
+	}
+}
+
+func TestPrintOutputWithFlags_SelectDryRunFlagOnNonPlanStillExits2(t *testing.T) {
+	input := json.RawMessage(`+"`"+`{"action":"list","dry_run":true,"id":"in"}`+"`"+`)
+	stdout, warning, err := printSelected(t, input, "name", true)
+	if err == nil {
+		t.Fatal("expected non-zero-class error; extra fields mean this is not the client dry-run sentinel")
+	}
+	if ExitCode(err) == 0 {
+		t.Fatal("ExitCode = 0, want non-zero")
 	}
 	assertJSONEqual(t, json.RawMessage(bytes.TrimSpace(stdout)), string(input))
 	if !strings.Contains(string(warning), "--select \"name\" matched no fields") {
