@@ -188,6 +188,23 @@ func useClient(){ fmt.Sprint(client.Client{}) }
 	assert.NotEqual(t, after.Files["internal/cli/root.go"], drifted.Files["internal/cli/root.go"])
 }
 
+func TestNormalizeGoImportFingerprintsKeepsLegacyEncodingWithoutComments(t *testing.T) {
+	source := []byte(`package main
+
+import (
+	"fmt"
+	_ "example.com/source/internal/client"
+)
+
+func main() {}
+`)
+	want := []byte("package main\n\n\n<printing-press-imports>\n\x00fmt\n_\x00printing.press/source/internal/client\n<printing-press-import-comments>\n\n</printing-press-imports>\n\nfunc main() {}\n")
+
+	got, err := normalizeGoImportFingerprints("main.go", source, "example.com/source", "printing.press/source")
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+}
+
 func TestNormalizeGoImportFingerprintsPreservesImportCommentAttachment(t *testing.T) {
 	withPreamble := []byte(`package main
 

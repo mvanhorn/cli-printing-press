@@ -212,7 +212,11 @@ func canonicalImportFingerprint(file *ast.File, fset *token.FileSet, declaration
 			comments = append(comments, "line\x00"+spec.Comment.Text())
 			attachedComments[spec.Comment] = struct{}{}
 		}
-		entries = append(entries, alias+"\x00"+importPath+"\x00"+strings.Join(comments, "\x00"))
+		entry := alias + "\x00" + importPath
+		if len(comments) > 0 {
+			entry += "\x00" + strings.Join(comments, "\x00")
+		}
+		entries = append(entries, entry)
 	}
 	sort.Strings(entries)
 
