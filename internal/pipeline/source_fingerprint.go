@@ -104,10 +104,9 @@ func CaptureSourceFingerprint(root string) (SourceFingerprint, error) {
 
 const publishedLibraryModulePrefix = "github.com/mvanhorn/printing-press-library/library/"
 
-// normalizeSourceFingerprintModulePath makes the live-tested source tree and
-// its publish-packaged copy hash identically across the trusted module-path
-// rewrite. Only the module declaration and self-imports are normalized; all
-// other source, dependencies, specs, and checksums remain fingerprinted.
+// The publish copy changes its module name and self-imports after acceptance.
+// Canonicalizing only that trusted rewrite lets one proof bind both trees while
+// all other source, dependencies, specs, and checksums remain fingerprinted.
 func normalizeSourceFingerprintModulePath(rel string, data []byte, modulePath, placeholder string) ([]byte, error) {
 	if modulePath == "" || placeholder == "" {
 		return data, nil
@@ -153,9 +152,8 @@ func isSafeSourceFingerprintIdentity(value string) bool {
 	return value != "" && value != "." && value != ".." && !strings.ContainsAny(value, `/\\`)
 }
 
-// normalizeGoImportFingerprints canonicalizes only import declarations. The
-// publish rewrite may reorder imports after replacing the self-module prefix,
-// but every byte outside import declarations remains proof-bound.
+// Rewriting self-imports can reorder an import block, so that region needs a
+// stable representation while every byte outside it remains proof-bound.
 func normalizeGoImportFingerprints(rel string, data []byte, modulePath, placeholder string) ([]byte, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, rel, data, parser.ParseComments)
@@ -188,6 +186,7 @@ func normalizeGoImportFingerprints(rel string, data []byte, modulePath, placehol
 
 func canonicalImportFingerprint(file *ast.File, fset *token.FileSet, declaration *ast.GenDecl, modulePath, placeholder string) string {
 	entries := make([]string, 0, len(declaration.Specs))
+	attachedComments := make(map[*ast.CommentGroup]struct{})
 	for _, item := range declaration.Specs {
 		spec, ok := item.(*ast.ImportSpec)
 		if !ok {
@@ -204,13 +203,25 @@ func canonicalImportFingerprint(file *ast.File, fset *token.FileSet, declaration
 		if spec.Name != nil {
 			alias = spec.Name.Name
 		}
-		entries = append(entries, alias+"\x00"+importPath)
+		comments := make([]string, 0, 2)
+		if spec.Doc != nil {
+			comments = append(comments, "doc\x00"+spec.Doc.Text())
+			attachedComments[spec.Doc] = struct{}{}
+		}
+		if spec.Comment != nil {
+			comments = append(comments, "line\x00"+spec.Comment.Text())
+			attachedComments[spec.Comment] = struct{}{}
+		}
+		entries = append(entries, alias+"\x00"+importPath+"\x00"+strings.Join(comments, "\x00"))
 	}
 	sort.Strings(entries)
 
 	comments := make([]string, 0)
 	for _, group := range file.Comments {
-		if group.Pos() >= declaration.Pos() && group.End() <= declaration.End() {
+		if group.Pos() < declaration.Pos() || group.End() > declaration.End() {
+			continue
+		}
+		if _, attached := attachedComments[group]; !attached {
 			comments = append(comments, group.Text())
 		}
 	}

@@ -188,6 +188,43 @@ func useClient(){ fmt.Sprint(client.Client{}) }
 	assert.NotEqual(t, after.Files["internal/cli/root.go"], drifted.Files["internal/cli/root.go"])
 }
 
+func TestNormalizeGoImportFingerprintsPreservesImportCommentAttachment(t *testing.T) {
+	withPreamble := []byte(`package main
+
+import (
+	// #cgo CFLAGS: -DPRINTING_PRESS
+	"C"
+	"fmt"
+)
+`)
+	reorderedWithPreamble := []byte(`package main
+
+import (
+	"fmt"
+	// #cgo CFLAGS: -DPRINTING_PRESS
+	"C"
+)
+`)
+	preambleMovedToFmt := []byte(`package main
+
+import (
+	"C"
+	// #cgo CFLAGS: -DPRINTING_PRESS
+	"fmt"
+)
+`)
+
+	normalized, err := normalizeGoImportFingerprints("main.go", withPreamble, "example.com/source", "printing.press/source")
+	require.NoError(t, err)
+	reordered, err := normalizeGoImportFingerprints("main.go", reorderedWithPreamble, "example.com/source", "printing.press/source")
+	require.NoError(t, err)
+	moved, err := normalizeGoImportFingerprints("main.go", preambleMovedToFmt, "example.com/source", "printing.press/source")
+	require.NoError(t, err)
+
+	assert.Equal(t, normalized, reordered)
+	assert.NotEqual(t, normalized, moved)
+}
+
 func TestCaptureSourceFingerprintRejectsArbitraryModuleRename(t *testing.T) {
 	cliDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "cli"), 0o755))
