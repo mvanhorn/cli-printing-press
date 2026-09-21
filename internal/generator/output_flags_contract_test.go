@@ -363,4 +363,6 @@ func TestLocalAnalysisTemplatesRouteMachineFormatsThroughSharedGate(t *testing.T
 		"search.go.tmpl still branches only on --json, so other documented output flags can be bypassed")
 	require.NotContains(t, src, "flags.asJSON || !isTerminal",
 		"search.go.tmpl still lets piped auto-JSON override explicit machine format flags")
+	require.NotContains(t, src, "selectErrorForDryRun",
+		"search is not a dry-run plan path; all-miss --select must still exit 2 even when the persistent --dry-run flag is set")
 }

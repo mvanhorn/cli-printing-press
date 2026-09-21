@@ -170,6 +170,7 @@ func newUsersItemEmailUpdateCmd(flags *rootFlags) *cobra.Command {
 				filtered := unwrapSingleKeyArray(data)
 				if flags.selectFields != "" {
 					filtered, selectErr = filterFieldsChecked(filtered, flags.selectFields)
+					selectErr = selectErrorForDryRun(selectErr, flags, data)
 				} else if flags.compact {
 					filtered = compactFields(filtered, map[string]bool{"id": true, "email": true})
 				}

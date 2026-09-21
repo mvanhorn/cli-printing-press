@@ -2170,6 +2170,16 @@ func filterFieldsChecked(data json.RawMessage, fields string) (json.RawMessage, 
 	return out, nil
 }
 
+// The persistent --dry-run flag must not weaken all-miss --select typo
+// detection on local search or on determinate API payloads that merely
+// contain `"dry_run": true`; only the exact client sentinel is a plan.
+func selectErrorForDryRun(err error, flags *rootFlags, data json.RawMessage) error {
+	if err == nil || !isDryRunResponse(flags != nil && flags.dryRun, data) {
+		return err
+	}
+	return nil
+}
+
 func selectFieldKeys(data json.RawMessage) []string {
 	keys := map[string]bool{}
 	var collect func(json.RawMessage)
@@ -2446,7 +2456,9 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 	// still runs.
 	var selectErr error
 	if flags.selectFields != "" {
-		data, selectErr = filterFieldsChecked(data, flags.selectFields)
+		selectPayload := data
+		data, selectErr = filterFieldsChecked(selectPayload, flags.selectFields)
+		selectErr = selectErrorForDryRun(selectErr, flags, selectPayload)
 	} else if flags.compact {
 		data = compactFields(data, documentedFields...)
 	}

@@ -96,6 +96,7 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 				filtered := data
 				if flags.selectFields != "" {
 					filtered, selectErr = filterFieldsChecked(filtered, flags.selectFields)
+					selectErr = selectErrorForDryRun(selectErr, flags, data)
 				} else if flags.compact {
 					filtered = compactFields(filtered, map[string]bool{"due_at": true, "id": true, "priority": true, "project_id": true, "title": true})
 				}

@@ -308,6 +308,9 @@ func outputSearchResults(cmd *cobra.Command, flags *rootFlags, results []json.Ra
 		var selectErr error
 		outputFlags := *flags
 		if flags.selectFields != "" {
+			// Search returns determinate SQLite or live-search rows even when
+			// the persistent --dry-run flag is set; it is not a dry-run plan
+			// path, so an all-miss --select must still exit 2.
 			data, selectErr = filterFieldsChecked(data, flags.selectFields)
 			outputFlags.selectFields = ""
 			outputFlags.compact = false

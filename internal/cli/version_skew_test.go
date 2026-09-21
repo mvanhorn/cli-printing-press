@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -75,6 +76,35 @@ func TestEnsureVersionNotOlderThanCLIManifestSkipsMissingOrLegacyManifest(t *tes
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, pipeline.CLIManifestFilename), []byte(`{"schema_version":1}`), 0o644))
 	require.NoError(t, ensureVersionNotOlderThanCLIManifest(dir, "mcp-sync", "4.22.1"))
+}
+
+func TestSnapshotRecordsRunningVersion(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeManifestVersion(t, dir, version.Get())
+	assert.True(t, snapshotRecordsRunningVersion(dir))
+	assert.False(t, snapshotPrintingPressVersionDiffers(dir))
+
+	writeManifestVersion(t, dir, "0.0.1")
+	assert.False(t, snapshotRecordsRunningVersion(dir))
+	assert.True(t, snapshotPrintingPressVersionDiffers(dir))
+
+	assert.False(t, snapshotRecordsRunningVersion(t.TempDir()))
+}
+
+func TestSynthesizeSameVersionForceRegenBaseEmitsGeneratedTree(t *testing.T) {
+	t.Parallel()
+
+	specBytes := forceRegenMatrixSpec("sameverbase")
+	baseDir, cleanup := synthesizeSameVersionForceRegenBase(specBytes)
+	require.NotNil(t, cleanup)
+	t.Cleanup(cleanup)
+	require.NotEmpty(t, baseDir)
+
+	helpers, err := os.ReadFile(filepath.Join(baseDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(helpers), "func filterFieldsChecked")
 }
 
 func TestEnsureMCPVersionCompatibleWithCLIManifest(t *testing.T) {

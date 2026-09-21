@@ -585,6 +585,36 @@ func TestGenerateCmdForceStillPreservesCompilingHandEdits(t *testing.T) {
 	runGoCommandForCLITest(t, outputDir, "build", "./cmd/handedit-pp-cli")
 }
 
+func TestGenerateCmdForcePreservesHandEditedGeneratedFuncBody(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	outputDir := filepath.Join(dir, "bodyedit")
+	require.NoError(t, os.WriteFile(specPath, forceRegenMatrixSpec("bodyedit"), 0o644))
+
+	runForceRegenMatrixGenerate(t, specPath, outputDir, false, false)
+
+	clientPath := filepath.Join(outputDir, "internal", "client", "client.go")
+	client, err := os.ReadFile(clientPath)
+	require.NoError(t, err)
+	const original = "return c != nil && c.DryRun"
+	require.Contains(t, string(client), original)
+	edited := bytes.Replace(client, []byte(original), []byte("if c == nil {\n\t\treturn false\n\t}\n\treturn c.DryRun"), 1)
+	require.NoError(t, os.WriteFile(clientPath, edited, 0o644))
+
+	runForceRegenMatrixGenerate(t, specPath, outputDir, true, true)
+
+	got, err := os.ReadFile(clientPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(got), "if c == nil",
+		"same-version generate --force must keep a hand-edited generated function body")
+	assert.NotContains(t, string(got), original)
+
+	runGoCommandForCLITest(t, outputDir, "mod", "tidy")
+	runGoCommandForCLITest(t, outputDir, "build", "./cmd/bodyedit-pp-cli")
+}
+
 func TestForceRegenCommandModulePathMatchesVersionMajor(t *testing.T) {
 	t.Parallel()
 
