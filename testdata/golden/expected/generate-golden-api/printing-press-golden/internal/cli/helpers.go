@@ -2286,11 +2286,14 @@ func filterFieldsChecked(data json.RawMessage, fields string) (json.RawMessage, 
 }
 
 // selectErrorForDryRun keeps --select warnings but drops the usage exit when
-// the command itself ran with --dry-run. Dry-run plans cannot match live
-// result fields; an API payload that happens to contain `"dry_run": true` is
-// not that signal.
-func selectErrorForDryRun(err error, flags *rootFlags) error {
-	if err == nil || flags == nil || !flags.dryRun {
+// this invocation produced the client dry-run sentinel. --dry-run is a
+// persistent flag, so commands that ignore it for execution (local search,
+// local store reads) still return determinate rows; those must keep the
+// all-miss usage exit. An API payload that happens to contain
+// `"dry_run": true` is not that signal either — only isDryRunResponse
+// (the flag plus the exact client sentinel) counts.
+func selectErrorForDryRun(err error, flags *rootFlags, data json.RawMessage) error {
+	if err == nil || !isDryRunResponse(flags != nil && flags.dryRun, data) {
 		return err
 	}
 	return nil
@@ -2572,8 +2575,9 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 	// still runs.
 	var selectErr error
 	if flags.selectFields != "" {
-		data, selectErr = filterFieldsChecked(data, flags.selectFields)
-		selectErr = selectErrorForDryRun(selectErr, flags)
+		selectPayload := data
+		data, selectErr = filterFieldsChecked(selectPayload, flags.selectFields)
+		selectErr = selectErrorForDryRun(selectErr, flags, selectPayload)
 	} else if flags.compact {
 		data = compactFields(data, documentedFields...)
 	}

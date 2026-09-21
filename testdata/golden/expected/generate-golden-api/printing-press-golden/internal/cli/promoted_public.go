@@ -55,7 +55,7 @@ func newPublicPromotedCmd(flags *rootFlags) *cobra.Command {
 				filtered := data
 				if flags.selectFields != "" {
 					filtered, selectErr = filterFieldsChecked(filtered, flags.selectFields)
-					selectErr = selectErrorForDryRun(selectErr, flags)
+					selectErr = selectErrorForDryRun(selectErr, flags, data)
 				} else if flags.compact {
 					filtered = compactFields(filtered, nil)
 				}
