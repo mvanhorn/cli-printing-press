@@ -7973,6 +7973,8 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	assert.Contains(t, content, `envelope["dry_run"] = true`)
 	assert.Contains(t, content, `envelope["status"] = 0`)
 	assert.Contains(t, content, `envelope["success"] = false`)
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // TestGeneratedOutput_PartialFailureDetectionRuntime drops a runtime
@@ -12955,6 +12957,8 @@ func TestGeneratedHelpers_DeadCodeRemoved(t *testing.T) {
 	assert.Contains(t, content, "func selectErrorForDryRun(err error, flags *rootFlags, data json.RawMessage) error")
 	assert.NotContains(t, content, "payloadHasDryRunTrue")
 	assert.Contains(t, content, "classifyAPIError")
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGenerate_CookieAuthUsesBrowserTemplate(t *testing.T) {
