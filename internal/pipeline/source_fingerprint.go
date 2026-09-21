@@ -140,8 +140,8 @@ func sourceFingerprintModuleIdentity(root string) (string, string) {
 	if modulePath == cliName {
 		return modulePath, placeholder
 	}
-	if strings.HasPrefix(modulePath, publishedLibraryModulePrefix) {
-		parts := strings.Split(strings.TrimPrefix(modulePath, publishedLibraryModulePrefix), "/")
+	if moduleSuffix, ok := strings.CutPrefix(modulePath, publishedLibraryModulePrefix); ok {
+		parts := strings.Split(moduleSuffix, "/")
 		if len(parts) == 2 && isSafeSourceFingerprintIdentity(parts[0]) && parts[1] == apiName {
 			return modulePath, placeholder
 		}
