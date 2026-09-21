@@ -586,7 +586,21 @@ func isRFCReservedEmail(matched string) bool {
 }
 
 func isBenignEmailContext(line string, matchStart int, matchedSpan string) bool {
-	return isGitHubNoreplyEmail(matchedSpan) || isURLUserinfoPlaceholderEmail(line, matchStart, matchedSpan)
+	return isGitHubNoreplyEmail(matchedSpan) ||
+		isGoToolchainModuleIdentifier(line, matchStart, matchedSpan) ||
+		isURLUserinfoPlaceholderEmail(line, matchStart, matchedSpan)
+}
+
+var goToolchainModuleIdentifierRE = regexp.MustCompile(`(?i)^toolchain@v0\.0\.1-go\d+\.\d+(?:\.\d+)?\.(?:aix|android|darwin|dragonfly|freebsd|illumos|ios|js|linux|netbsd|openbsd|plan9|solaris|wasip1|windows)$`)
+var goToolchainArchSuffixRE = regexp.MustCompile(`(?i)^-(?:386|amd64|arm|arm64|loong64|mips|mips64|mips64le|mipsle|ppc64|ppc64le|riscv64|s390x|wasm)\b`)
+
+func isGoToolchainModuleIdentifier(line string, matchStart int, matched string) bool {
+	if !goToolchainModuleIdentifierRE.MatchString(matched) || matchStart < len("golang.org/") || matchStart+len(matched) > len(line) {
+		return false
+	}
+	before := line[:matchStart]
+	after := line[matchStart+len(matched):]
+	return strings.HasSuffix(before, "golang.org/") && goToolchainArchSuffixRE.MatchString(after)
 }
 
 func isGitHubNoreplyEmail(matched string) bool {

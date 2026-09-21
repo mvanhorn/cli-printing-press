@@ -144,6 +144,66 @@ func TestCaptureSourceFingerprintIncludesModuleAndSpecInputs(t *testing.T) {
 	assert.NotContains(t, source.Files, ".printing-press/cache/spec.yaml")
 }
 
+func TestCaptureSourceFingerprintStableAcrossPublishModuleRewrite(t *testing.T) {
+	cliDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "client"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, ".printing-press.json"), []byte(`{"api_name":"sendfox","cli_name":"sendfox-pp-cli"}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "go.mod"), []byte("module sendfox-pp-cli\n\ngo 1.26\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "client", "client.go"), []byte("package client\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "cli", "root.go"), []byte(`package cli
+
+import (
+	"fmt"
+
+	"sendfox-pp-cli/internal/client"
+)
+
+func useClient() { fmt.Sprint(client.Client{}) }
+`), 0o644))
+
+	before, err := CaptureSourceFingerprint(cliDir)
+	require.NoError(t, err)
+	require.NoError(t, RewriteModulePath(cliDir, "sendfox-pp-cli", "github.com/mvanhorn/printing-press-library/library/marketing/sendfox"))
+	after, err := CaptureSourceFingerprint(cliDir)
+	require.NoError(t, err)
+
+	assert.Equal(t, before.Digest, after.Digest)
+	assert.Equal(t, before.Files, after.Files)
+
+	rootPath := filepath.Join(cliDir, "internal", "cli", "root.go")
+	require.NoError(t, os.WriteFile(rootPath, []byte(`package cli
+
+import (
+	"fmt"
+
+	"github.com/mvanhorn/printing-press-library/library/marketing/sendfox/internal/client"
+)
+
+func useClient(){ fmt.Sprint(client.Client{}) }
+`), 0o644))
+	drifted, err := CaptureSourceFingerprint(cliDir)
+	require.NoError(t, err)
+	assert.NotEqual(t, after.Digest, drifted.Digest)
+	assert.NotEqual(t, after.Files["internal/cli/root.go"], drifted.Files["internal/cli/root.go"])
+}
+
+func TestCaptureSourceFingerprintRejectsArbitraryModuleRename(t *testing.T) {
+	cliDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, ".printing-press.json"), []byte(`{"api_name":"sendfox","cli_name":"sendfox-pp-cli"}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "go.mod"), []byte("module sendfox-pp-cli\n\ngo 1.26\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "cli", "root.go"), []byte("package cli\n\nimport _ \"sendfox-pp-cli/internal/client\"\n"), 0o644))
+
+	before, err := CaptureSourceFingerprint(cliDir)
+	require.NoError(t, err)
+	require.NoError(t, RewriteModulePath(cliDir, "sendfox-pp-cli", "github.com/example/renamed-sendfox"))
+	after, err := CaptureSourceFingerprint(cliDir)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, before.Digest, after.Digest)
+}
+
 func TestCaptureSourceFingerprintRejectsSymlinkedRoot(t *testing.T) {
 	target := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(target, "main.go"), []byte("package main\n"), 0o644))
