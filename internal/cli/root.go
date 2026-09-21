@@ -2769,11 +2769,9 @@ func synthesizeForceRegenBase(snapshotDir string, currentSpecBytes []byte, novel
 	return baseDir, cleanup
 }
 
-// synthesizeSameVersionForceRegenBase emits the current press against the
-// current spec with no research, traffic analysis, or extra generation
-// flags. That tree is "what a clean prior generate would have produced",
-// so overlay can keep real hand-edits without classifying an intentional
-// shared-body rewrite as one.
+// Overlay needs a clean same-version original so it can keep real
+// hand-edits without treating intentional shared-body rewrites or stale
+// emissions as edits to restore.
 func synthesizeSameVersionForceRegenBase(currentSpecBytes []byte) (string, func()) {
 	if len(currentSpecBytes) == 0 {
 		return "", nil
