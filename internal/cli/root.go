@@ -2647,6 +2647,13 @@ func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, v
 // preservation and print every skipped TEMPLATED-* hand-edit. Same-spec
 // regen still carries those edits; the drop list is the cross-spec
 // honesty so the operator sees the loss instead of a mode suffix alone.
+// Same-version force synthesizes a clean generate (current press, current
+// spec, no research/traffic/generation extras) as the three-way original.
+// Shared bodies that still match that original are regenerations and take
+// fresh; bodies that differ from it are hand-edits and overlay. Raw fresh
+// is never that original: extras not in the spec checksum can legitimately
+// rewrite shared functions, and treating every difference as a hand-edit
+// would overlay the stale snapshot body.
 //
 // When the merge updates go.mod (snapshot had hand-added requires), the
 // caller must re-run `go mod tidy` against freshDir to refresh go.sum —
@@ -2723,8 +2730,11 @@ func synthesizeForceRegenBase(snapshotDir string, currentSpecBytes []byte, novel
 		return "", nil
 	}
 	priorVersion := strings.TrimSpace(manifest.PrintingPressVersion)
-	if priorVersion == "" || sameSemver(priorVersion, version.Version) {
+	if priorVersion == "" {
 		return "", nil
+	}
+	if sameSemver(priorVersion, version.Version) {
+		return synthesizeSameVersionForceRegenBase(currentSpecBytes)
 	}
 	if !validPrintingPressVersion(priorVersion) {
 		fmt.Fprintf(os.Stderr, "warning: cannot synthesize force-regen base from invalid printing_press_version %q\n", priorVersion)
@@ -2765,6 +2775,34 @@ func synthesizeForceRegenBase(snapshotDir string, currentSpecBytes []byte, novel
 	return baseDir, cleanup
 }
 
+// Overlay needs a clean same-version original so it can keep real
+// hand-edits without treating intentional shared-body rewrites or stale
+// emissions as edits to restore.
+func synthesizeSameVersionForceRegenBase(currentSpecBytes []byte) (string, func()) {
+	if len(currentSpecBytes) == 0 {
+		return "", nil
+	}
+	apiSpec, err := parseSpecBytes("spec.yaml", currentSpecBytes, openapi.ParseOptions{Lenient: true})
+	if err != nil || apiSpec == nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot synthesize same-version force-regen base: %v\n", err)
+		return "", nil
+	}
+	tmp, err := os.MkdirTemp("", "printing-press-force-base-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot create same-version force-regen base tempdir: %v\n", err)
+		return "", nil
+	}
+	cleanup := func() { _ = os.RemoveAll(tmp) }
+	baseDir := filepath.Join(tmp, "base")
+	fmt.Fprintln(os.Stderr, "Synthesizing same-version force-regen base from spec (this may take a moment)...")
+	if err := generator.New(apiSpec, baseDir).Generate(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: same-version force-regen base generation failed: %v\n", err)
+		cleanup()
+		return "", nil
+	}
+	return baseDir, cleanup
+}
+
 func snapshotPrintingPressVersionDiffers(snapshotDir string) bool {
 	manifest, err := pipeline.ReadCLIManifest(snapshotDir)
 	if err != nil {
@@ -2772,6 +2810,15 @@ func snapshotPrintingPressVersionDiffers(snapshotDir string) bool {
 	}
 	prior := strings.TrimSpace(manifest.PrintingPressVersion)
 	return prior != "" && !sameSemver(prior, version.Version)
+}
+
+func snapshotRecordsRunningVersion(snapshotDir string) bool {
+	manifest, err := pipeline.ReadCLIManifest(snapshotDir)
+	if err != nil {
+		return false
+	}
+	prior := strings.TrimSpace(manifest.PrintingPressVersion)
+	return prior != "" && sameSemver(prior, version.Version)
 }
 
 func sameSemver(a, b string) bool {

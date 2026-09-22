@@ -7949,6 +7949,7 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	assert.Contains(t, content, "filtered := unwrapSingleKeyArray(data)")
 	assert.Contains(t, content, "compactFields(filtered,")
 	assert.Contains(t, content, "filterFieldsChecked(filtered, flags.selectFields)")
+	assert.Contains(t, content, "selectErrorForDryRun(selectErr, flags, data)")
 	assert.Contains(t, content, `json.Unmarshal(filtered, &parsed)`)
 
 	// Envelope bypasses printOutputWithFlags to avoid double-filtering, then
@@ -7982,6 +7983,8 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	assert.Contains(t, content, `envelope["dry_run"] = true`)
 	assert.Contains(t, content, `envelope["status"] = 0`)
 	assert.Contains(t, content, `envelope["success"] = false`)
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // TestGeneratedOutput_PartialFailureDetectionRuntime drops a runtime
@@ -12961,7 +12964,11 @@ func TestGeneratedHelpers_DeadCodeRemoved(t *testing.T) {
 	assert.Contains(t, content, "printOutputWithFlags")
 	assert.Contains(t, content, "func filterFields(data json.RawMessage, fields string) json.RawMessage")
 	assert.Contains(t, content, "func filterFieldsChecked(data json.RawMessage, fields string) (json.RawMessage, error)")
+	assert.Contains(t, content, "func selectErrorForDryRun(err error, flags *rootFlags, data json.RawMessage) error")
+	assert.NotContains(t, content, "payloadHasDryRunTrue")
 	assert.Contains(t, content, "classifyAPIError")
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGenerate_CookieAuthUsesBrowserTemplate(t *testing.T) {
@@ -21508,6 +21515,8 @@ func TestSearchTemplateEmitsEmptyJSONEnvelope(t *testing.T) {
 
 	assert.Contains(t, body, `!wantsHumanTable(cmd.OutOrStdout(), flags)`,
 		"search.go.tmpl must route explicit machine formats and default piped output through the envelope path even on no matches")
+	assert.NotContains(t, body, "selectErrorForDryRun",
+		"search is not a dry-run plan path; all-miss --select must still exit 2 even when the persistent --dry-run flag is set")
 
 	// Ordering pin: the machine/piped block must come before the human-mode
 	// "No results" stderr line. Reversing the order would skip the JSON
