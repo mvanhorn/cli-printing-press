@@ -2757,10 +2757,10 @@ func wrapPlatformStructuredOutput(data json.RawMessage, flags *rootFlags, result
 	return data, nil
 }
 
-// mergeCommandMeta keeps keys the command already set. A wrapper source on
-// the other provenance axis is kept beside it: transport is live, local, or
-// dry-run, and data-origin is catalogue or computed. Those axes are not
-// collapsed into one source string.
+// Command-owned metadata must remain authoritative when output wrappers add
+// provenance. A wrapper source on the other axis is kept beside it: transport
+// is live, local, or dry-run, and data-origin is catalogue or computed. Those
+// axes are not collapsed into one source string.
 func mergeCommandMeta(commandMeta, wrapperMeta map[string]any) map[string]any {
 	merged := make(map[string]any, len(commandMeta)+len(wrapperMeta))
 	for key, value := range commandMeta {
