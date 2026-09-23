@@ -10,6 +10,8 @@ import (
 // generate-time synthesis from derivable parameter values. Required inputs
 // that would need invented IDs, placeholder literals, or other underivable
 // values stay unset so the first live matrix does not send known-broken args.
+// Request-body media examples are not fixtures: Cobra Example synthesis reads
+// them separately and must not land here.
 func endpointHappyArgs(ep spec.Endpoint) string {
 	if declared := strings.TrimSpace(ep.HappyArgs); declared != "" {
 		return declared

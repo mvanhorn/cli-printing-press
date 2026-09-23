@@ -8398,6 +8398,149 @@ paths:
 	require.Empty(t, channel.Example)
 }
 
+func TestParseRequestBodyMediaExample(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(requestBodyMediaExampleSpec))
+	require.NoError(t, err)
+
+	open := findEndpoint(t, parsed, "/accounts")
+	require.Equal(t, map[string]any{"holder": "Acme Ltd", "currency": "GBP"}, open.RequestBodyExample)
+	holder, ok := bodyParamByName(open.Body, "holder")
+	require.True(t, ok)
+	assert.Equal(t, "Acme Ltd", holder.Example)
+	currency, ok := bodyParamByName(open.Body, "currency")
+	require.True(t, ok)
+	assert.Equal(t, "GBP", currency.Example)
+
+	named := findEndpoint(t, parsed, "/aliases")
+	require.Equal(t, map[string]any{"holder": "Acme Ltd", "currency": "GBP"}, named.RequestBodyExample)
+
+	singular := findEndpoint(t, parsed, "/singular")
+	require.Equal(t, map[string]any{"holder": "From Singular", "currency": "EUR"}, singular.RequestBodyExample)
+
+	entry := findEndpoint(t, parsed, "/accounts/{account_id}/entries")
+	assert.Nil(t, entry.RequestBodyExample)
+	require.NotEmpty(t, entry.Params)
+	assert.Equal(t, "acct_7f3", entry.Params[0].Example)
+	amount, ok := bodyParamByName(entry.Body, "amount")
+	require.True(t, ok)
+	assert.Equal(t, float64(2500), amount.Example)
+}
+
+func bodyParamByName(body []spec.Param, name string) (spec.Param, bool) {
+	for _, p := range body {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return spec.Param{}, false
+}
+
+const requestBodyMediaExampleSpec = `{
+  "openapi": "3.0.3",
+  "info": {"title": "Body Example", "version": "1.0.0"},
+  "paths": {
+    "/accounts": {
+      "post": {
+        "operationId": "open_account",
+        "summary": "Open an account",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/AccountIn"},
+              "example": {"holder": "Acme Ltd", "currency": "GBP"}
+            }
+          }
+        },
+        "responses": {"201": {"description": "created"}}
+      }
+    },
+    "/aliases": {
+      "post": {
+        "operationId": "create_alias",
+        "summary": "Create an alias",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/AccountIn"},
+              "examples": {
+                "usd": {"value": {"holder": "Beta Inc", "currency": "USD"}},
+                "gbp": {"value": {"holder": "Acme Ltd", "currency": "GBP"}}
+              }
+            }
+          }
+        },
+        "responses": {"201": {"description": "created"}}
+      }
+    },
+    "/singular": {
+      "post": {
+        "operationId": "create_singular",
+        "summary": "Singular wins",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/AccountIn"},
+              "example": {"holder": "From Singular", "currency": "EUR"},
+              "examples": {
+                "gbp": {"value": {"holder": "Acme Ltd", "currency": "GBP"}}
+              }
+            }
+          }
+        },
+        "responses": {"201": {"description": "created"}}
+      }
+    },
+    "/accounts/{account_id}/entries": {
+      "post": {
+        "operationId": "post_entry",
+        "summary": "Post a ledger entry",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "example": "acct_7f3"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["amount"],
+                "properties": {
+                  "amount": {"type": "integer", "example": 2500},
+                  "memo": {"type": "string", "example": "invoice 41"}
+                }
+              }
+            }
+          }
+        },
+        "responses": {"201": {"description": "created"}}
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AccountIn": {
+        "type": "object",
+        "required": ["holder"],
+        "properties": {
+          "holder": {"type": "string", "example": "Acme Ltd"},
+          "currency": {"type": "string", "example": "GBP"}
+        }
+      }
+    }
+  }
+}`
+
 func TestParseHappyArgsExtensionWhitespaceOnly(t *testing.T) {
 	t.Parallel()
 
