@@ -426,7 +426,6 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"bodyVarDecls":                 bodyVarDecls,
 		"bodyFlagRegs":                 bodyFlagRegs,
 		"bodyRequiredChecks":           bodyRequiredChecks,
-		"bodyExceedsFlagDepth":         bodyExceedsFlagDepth,
 		"bodyHasStringBackedBool":      bodyHasStringBackedBool,
 		"multipartBodyMaps":            multipartBodyMaps,
 		"endpointUsesMultipart":        endpointUsesMultipart,
@@ -7363,11 +7362,10 @@ func mcpBodyInputParams(endpoint spec.Endpoint) []spec.Param {
 func collectMCPBodyInputParams(params *[]spec.Param, body []spec.Param, depth int, flagPrefix string, ancestorsRequired bool) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
-			if depth+1 >= maxBodyFlagDepth {
+			if depth+1 < maxBodyFlagDepth {
+				collectMCPBodyInputParams(params, p.Fields, depth+1, joinFlag(flagPrefix, publicFlagName(p)), ancestorsRequired && p.Required)
 				continue
 			}
-			collectMCPBodyInputParams(params, p.Fields, depth+1, joinFlag(flagPrefix, publicFlagName(p)), ancestorsRequired && p.Required)
-			continue
 		}
 		p.Required = p.Required && ancestorsRequired
 		if flagPrefix != "" {
@@ -7397,12 +7395,11 @@ func appendMCPBodyBindings(bindings *[]mcpParamBinding, endpoint spec.Endpoint, 
 func collectMCPBodyBindings(bindings *[]mcpParamBinding, body []spec.Param, depth int, flagPrefix string, bodyPath []string, requestContentType string) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
-			if depth+1 >= maxBodyFlagDepth {
+			if depth+1 < maxBodyFlagDepth {
+				nextPath := append(slices.Clone(bodyPath), p.BodyWireName())
+				collectMCPBodyBindings(bindings, p.Fields, depth+1, joinFlag(flagPrefix, publicFlagName(p)), nextPath, requestContentType)
 				continue
 			}
-			nextPath := append(slices.Clone(bodyPath), p.BodyWireName())
-			collectMCPBodyBindings(bindings, p.Fields, depth+1, joinFlag(flagPrefix, publicFlagName(p)), nextPath, requestContentType)
-			continue
 		}
 		publicName := p.PublicInputName()
 		if flagPrefix != "" {
@@ -7463,7 +7460,7 @@ func bodyHasReachableNestedLeaf(body []spec.Param, depth int) bool {
 			continue
 		}
 		if depth+1 >= maxBodyFlagDepth {
-			continue
+			return true
 		}
 		for _, field := range p.Fields {
 			if field.Type == "object" && len(field.Fields) > 0 {
@@ -7739,14 +7736,13 @@ func normalizeClientSideFilterKey(name string) string {
 	return b.String()
 }
 
-// maxBodyFlagDepth caps how many levels of nested-object recursion the
-// body-flag emitters expand into per-field Cobra flags. A Param at
-// depth 0 is a top-level body field; its object children are at depth 1
-// and recurse with depth+1. When the next depth would meet or exceed
-// the cap, the object's subtree is skipped uniformly across renderBodyMap,
-// renderBodyVarDecls, renderBodyFlagRegs, and renderBodyRequiredChecks.
-// The user reaches truncated fields via the existing `--stdin` flag on
-// POST/PUT/PATCH commands, which reads the full JSON body from stdin.
+// maxBodyFlagDepth caps how many nested-object levels the body emitters
+// expand into individual Cobra flags. A Param at depth 0 is a top-level
+// body field; its object children are at depth 1 and recurse with depth+1.
+// When the next depth would meet or exceed the cap, the object itself is
+// emitted as one validated JSON-object flag. This keeps every subtree
+// reachable without allowing recursive enterprise schemas to explode the
+// generated source size.
 //
 // Default 3 covers typical CRUD schemas (resource.object.field) without
 // the recursive explosion seen on enterprise/ERP specs that self-reference
@@ -7766,9 +7762,9 @@ const maxBodyFlagDepth = 3
 // When a body Param has Type "object" with non-empty Fields, the block
 // recurses: each leaf field becomes its own flag (parent-prefixed in
 // the generated identifier so `start.dateTime` and `end.dateTime` do
-// not collide), and the parent's wire-side key receives a built-up
-// map[string]any rather than a single JSON-string flag. Recursion stops
-// at maxBodyFlagDepth; deeper subtrees are only reachable via `--stdin`.
+// not collide), and the parent's wire-side key receives a built-up map.
+// At maxBodyFlagDepth the object is emitted as a single validated JSON
+// flag instead of being silently dropped.
 func bodyMap(body []spec.Param, indent string) string {
 	return bodyMapForVar(body, indent, "body")
 }
@@ -7883,18 +7879,17 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 		ident := identPrefix + toCamel(id)
 		flag := joinFlag(flagPrefix, publicFlagName(p))
 		if p.Type == "object" && len(p.Fields) > 0 {
-			if depth+1 >= maxBodyFlagDepth {
+			if depth+1 < maxBodyFlagDepth {
+				nestedMap := "nested" + ident
+				fmt.Fprintf(b, "%s{\n", indent)
+				fmt.Fprintf(b, "%s\t%s := map[string]any{}\n", indent, nestedMap)
+				renderBodyMap(b, p.Fields, depth+1, indent+"\t", nestedMap, ident, flag)
+				fmt.Fprintf(b, "%s\tif len(%s) > 0 {\n", indent, nestedMap)
+				fmt.Fprintf(b, "%s\t\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), nestedMap)
+				fmt.Fprintf(b, "%s\t}\n", indent)
+				fmt.Fprintf(b, "%s}\n", indent)
 				continue
 			}
-			nestedMap := "nested" + ident
-			fmt.Fprintf(b, "%s{\n", indent)
-			fmt.Fprintf(b, "%s\t%s := map[string]any{}\n", indent, nestedMap)
-			renderBodyMap(b, p.Fields, depth+1, indent+"\t", nestedMap, ident, flag)
-			fmt.Fprintf(b, "%s\tif len(%s) > 0 {\n", indent, nestedMap)
-			fmt.Fprintf(b, "%s\t\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), nestedMap)
-			fmt.Fprintf(b, "%s\t}\n", indent)
-			fmt.Fprintf(b, "%s}\n", indent)
-			continue
 		}
 		if isStringCSVArrayParam(p) {
 			fmt.Fprintf(b, "%sif cmd.Flags().Changed(%q) {\n", indent, flag)
@@ -8009,13 +8004,12 @@ func bodyHasStringBackedBool(endpoint spec.Endpoint) bool {
 	walk = func(params []spec.Param, depth int) bool {
 		for _, p := range params {
 			if p.Type == "object" && len(p.Fields) > 0 {
-				if depth+1 >= maxBodyFlagDepth {
+				if depth+1 < maxBodyFlagDepth {
+					if walk(p.Fields, depth+1) {
+						return true
+					}
 					continue
 				}
-				if walk(p.Fields, depth+1) {
-					return true
-				}
-				continue
 			}
 			if isStringBackedBoolParam(p) {
 				return true
@@ -8071,11 +8065,10 @@ func renderBodyVarDecls(b *strings.Builder, body []spec.Param, depth int, identP
 	for _, p := range body {
 		ident := identPrefix + toCamel(paramIdent(p))
 		if p.Type == "object" && len(p.Fields) > 0 {
-			if depth+1 >= maxBodyFlagDepth {
+			if depth+1 < maxBodyFlagDepth {
+				renderBodyVarDecls(b, p.Fields, depth+1, ident)
 				continue
 			}
-			renderBodyVarDecls(b, p.Fields, depth+1, ident)
-			continue
 		}
 		fmt.Fprintf(b, "\n\tvar body%s %s", ident, goTypeForBodyParam(p))
 	}
@@ -8110,13 +8103,12 @@ func bodyFlagRegs(endpoint spec.Endpoint) string {
 func renderBodyFlagRegs(b *strings.Builder, body []spec.Param, depth int, identPrefix, flagPrefix string, topLevel bool) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
-			if depth+1 >= maxBodyFlagDepth {
+			if depth+1 < maxBodyFlagDepth {
+				ident := identPrefix + toCamel(paramIdent(p))
+				flag := joinFlag(flagPrefix, publicFlagName(p))
+				renderBodyFlagRegs(b, p.Fields, depth+1, ident, flag, false)
 				continue
 			}
-			ident := identPrefix + toCamel(paramIdent(p))
-			flag := joinFlag(flagPrefix, publicFlagName(p))
-			renderBodyFlagRegs(b, p.Fields, depth+1, ident, flag, false)
-			continue
 		}
 		renderFlatBodyFlagReg(b, p, identPrefix, flagPrefix, topLevel)
 	}
@@ -8178,11 +8170,12 @@ func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
 func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, depth int, indent, flagPrefix, identPrefix string, topLevel bool) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
-			if depth+1 >= maxBodyFlagDepth {
-				continue
-			}
 			flag := joinFlag(flagPrefix, publicFlagName(p))
 			ident := identPrefix + toCamel(paramIdent(p))
+			if depth+1 >= maxBodyFlagDepth {
+				renderFlatBodyRequiredCheck(b, p, indent, flagPrefix, identPrefix, topLevel)
+				continue
+			}
 			if p.Required {
 				renderBodyRequiredChecks(b, p.Fields, depth+1, indent, flag, ident, false)
 				continue
@@ -8211,13 +8204,12 @@ func bodyFieldsChangedExpr(body []spec.Param, depth int, flagPrefix, identPrefix
 		flag := joinFlag(flagPrefix, publicFlagName(p))
 		ident := identPrefix + toCamel(paramIdent(p))
 		if p.Type == "object" && len(p.Fields) > 0 {
-			if depth+1 >= maxBodyFlagDepth {
+			if depth+1 < maxBodyFlagDepth {
+				if nested := bodyFieldsChangedExpr(p.Fields, depth+1, flag, ident); nested != "" {
+					expressions = append(expressions, nested)
+				}
 				continue
 			}
-			if nested := bodyFieldsChangedExpr(p.Fields, depth+1, flag, ident); nested != "" {
-				expressions = append(expressions, nested)
-			}
-			continue
 		}
 		expressions = append(expressions, bodyLeafPresenceExpr(p, ident, flag))
 	}
@@ -9852,14 +9844,6 @@ func buildPromotedCommands(s *spec.APISpec) []PromotedCommand {
 		if !found {
 			continue
 		}
-		// A body that recurses past maxBodyFlagDepth must NOT be promoted: the
-		// promoted template emits no --stdin fallback, so the truncated subtree
-		// would silently drop fields. Skipping promotion keeps the canonical
-		// command (which has --stdin) as the reachable surface.
-		if bodyExceedsFlagDepth(bestEndpoint) {
-			continue
-		}
-
 		promotedName := toKebab(name)
 		if builtinCommands[promotedName] {
 			continue

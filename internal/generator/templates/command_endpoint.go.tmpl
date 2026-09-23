@@ -1223,11 +1223,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if $isRaw}}
 	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read the raw request body from stdin")
 {{- else}}
-{{- if bodyExceedsFlagDepth .Endpoint}}
-	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin (use this for deeply nested fields not exposed as flags)")
-{{- else}}
 	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin")
-{{- end}}
 {{- end}}
 {{- end}}
 {{- if .IsAsync}}
