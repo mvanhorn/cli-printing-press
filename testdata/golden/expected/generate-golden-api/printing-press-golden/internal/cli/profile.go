@@ -298,6 +298,9 @@ func newProfileListCmd(flags *rootFlags) *cobra.Command {
 		Example: `  printing-press-golden-pp-cli profile list
   printing-press-golden-pp-cli profile list --json`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if dryRunOK(flags) {
+				return writeDryRun(cmd.OutOrStdout(), flags, "profile list")
+			}
 			s, err := loadProfileStore()
 			if err != nil {
 				return err

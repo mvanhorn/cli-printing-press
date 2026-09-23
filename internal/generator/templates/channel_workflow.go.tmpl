@@ -275,6 +275,11 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
   # Archive without a wall-clock timeout
   {{.Name}}-pp-cli workflow archive --timeout 0`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// --full clears sync state before any client preview, so a marker
+			// on the summary would still archive. Stop before the store opens.
+			if dryRunOK(flags) {
+				return writeDryRun(cmd.OutOrStdout(), flags, "workflow archive")
+			}
 			if maxPages < 0 {
 				return fmt.Errorf("--max-pages must be greater than or equal to 0 (0 = unlimited)")
 			}
