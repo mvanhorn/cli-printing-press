@@ -296,6 +296,14 @@ func promoteWorkingCLI(cliName, workingDir string, state *PipelineState) (*Promo
 		_ = os.RemoveAll(stagingDir)
 		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("preserving library-only patches: %w", err))
 	}
+	if err := preserveLibraryReleaseLedger(libraryDir, stagingDir); err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("preserving library release ledger: %w", err))
+	}
+	if err := PreserveStampedRuntimeVersion(libraryDir, stagingDir); err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("preserving runtime version layout: %w", err))
+	}
 
 	// Staging is the tree that enters the library: working copy plus any
 	// library-only records just unioned in. Validating workingDir alone would
@@ -333,7 +341,7 @@ func promoteWorkingCLI(cliName, workingDir string, state *PipelineState) (*Promo
 	// Errors abort the promote rather than warn-and-continue — a reconcile
 	// failure here means the published bundle would ship missing user_config
 	// fields, which is the exact bug class this writer chain exists to prevent.
-	if err := WriteMCPBManifest(stagingDir); err != nil {
+	if err := EnsureMCPBManifest(stagingDir); err != nil {
 		_ = os.RemoveAll(stagingDir)
 		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("writing MCPB manifest to staging: %w", err))
 	}
@@ -506,6 +514,45 @@ func preserveLibraryOnlyPatches(libraryDir, stagingDir string) ([]string, error)
 		return nil, err
 	}
 	return preserved, nil
+}
+
+// preserveLibraryReleaseLedger copies the public-library release ledger from
+// the tree being replaced onto the staged tree. Promote swaps the working
+// copy in wholesale; these two files are owned by the library's post-merge
+// release workflow and must survive that swap byte-identical.
+func preserveLibraryReleaseLedger(libraryDir, stagingDir string) error {
+	info, err := os.Stat(libraryDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	for _, name := range []string{CLIChangelogFilename, CLIReleaseManifestFilename} {
+		src := filepath.Join(libraryDir, name)
+		srcInfo, err := os.Lstat(src)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("reading library %s: %w", name, err)
+		}
+		if !srcInfo.Mode().IsRegular() {
+			return fmt.Errorf("library %s is not a regular file", name)
+		}
+		data, err := os.ReadFile(src)
+		if err != nil {
+			return fmt.Errorf("reading library %s: %w", name, err)
+		}
+		dst := filepath.Join(stagingDir, name)
+		if err := os.WriteFile(dst, data, srcInfo.Mode().Perm()); err != nil {
+			return fmt.Errorf("preserving library %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // A pre-existing subtree in the staging copy wins so artifacts that generate

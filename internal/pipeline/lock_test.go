@@ -686,6 +686,63 @@ func TestPromoteWorkingCLI_PreservesPatchAndManifestUnion(t *testing.T) {
 	assert.Empty(t, preserved)
 }
 
+func TestPromoteWorkingCLI_PreservesReleaseLedger(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.MkdirAll(libDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, CLIChangelogFilename), []byte("# Changelog\n\n## working\n"), 0o644))
+
+	changelog := []byte("# Changelog\n\n## 2026.8.1 - library\n")
+	release := []byte("{\"schema_version\":1,\"version\":\"2026.8.1\"}\n")
+	require.NoError(t, os.WriteFile(filepath.Join(libDir, CLIChangelogFilename), changelog, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(libDir, CLIReleaseManifestFilename), release, 0o644))
+
+	_, err := PromoteWorkingCLIWithResult("test-pp-cli", workDir, NewMinimalState("test-pp-cli", workDir))
+	require.NoError(t, err)
+
+	gotChangelog, err := os.ReadFile(filepath.Join(libDir, CLIChangelogFilename))
+	require.NoError(t, err)
+	assert.Equal(t, changelog, gotChangelog)
+	gotRelease, err := os.ReadFile(filepath.Join(libDir, CLIReleaseManifestFilename))
+	require.NoError(t, err)
+	assert.Equal(t, release, gotRelease)
+}
+
+func TestPromoteWorkingCLI_PreservesStampedRuntimeVersionLayout(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
+	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(libDir, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "internal", "cli", "root.go"), []byte("package cli\n\nfunc newRootCmd() {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "internal", "cli", "version.go"), []byte("package cli\n\n// version is the printed CLI's version, overridable at build time via ldflags.\nvar version = \"0.0.0-dev\"\n\nfunc newVersionCmd() {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(libDir, "internal", "cli", "root.go"), []byte("package cli\n\nvar version = \"2026.8.1\"\n"), 0o644))
+
+	_, err := PromoteWorkingCLIWithResult("test-pp-cli", workDir, NewMinimalState("test-pp-cli", workDir))
+	require.NoError(t, err)
+
+	root, err := os.ReadFile(filepath.Join(libDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(root), "var version = \"2026.8.1\"")
+	version, err := os.ReadFile(filepath.Join(libDir, "internal", "cli", "version.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(version), "var version")
+	assert.Contains(t, string(version), "func newVersionCmd()")
+}
+
 func TestPromoteWorkingCLI_CreatesMissingPatchDirectory(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", tmp)

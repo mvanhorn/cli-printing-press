@@ -108,20 +108,32 @@ func PublishWorkingCLI(state *PipelineState, targetDir string) (string, error) {
 	}
 
 	if err := CopyDir(workingDir, finalDir); err != nil {
+		// CopyDir may have created the destination before failing. It did not
+		// exist before this call, and a leftover tree makes the retry fail
+		// with "already exists".
+		_ = os.RemoveAll(finalDir)
 		return "", fmt.Errorf("publishing CLI: %w", err)
 	}
 
+	prevPublished := state.PublishedDir
 	state.PublishedDir = finalDir
+	// The destination did not exist before this call. Drop it if a later step
+	// fails so the next attempt is not rejected because the path already exists.
+	abandonPublish := func(err error) (string, error) {
+		state.PublishedDir = prevPublished
+		_ = os.RemoveAll(finalDir)
+		return "", err
+	}
 
 	if err := writeCLIManifestForPublish(state, finalDir); err != nil {
-		return "", err
+		return abandonPublish(err)
 	}
 
 	// Refresh the MCPB manifest.json for the final published location.
 	// Generate already wrote one alongside .printing-press.json; rewriting
 	// here picks up any provenance fields the publish step added.
-	if err := WriteMCPBManifest(finalDir); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not write MCPB manifest.json: %v\n", err)
+	if err := EnsureMCPBManifest(finalDir); err != nil {
+		return abandonPublish(fmt.Errorf("writing MCPB manifest: %w", err))
 	}
 
 	if err := state.Save(); err != nil {
