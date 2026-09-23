@@ -434,7 +434,7 @@ func newPublishPackageCmd() *cobra.Command {
 					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("preserving runtime version layout: %w", err)}
 				}
 			}
-			if err := pipeline.WriteMCPBManifest(outCLIDir); err != nil {
+			if err := pipeline.EnsureMCPBManifest(outCLIDir); err != nil {
 				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("writing MCPB manifest: %w", err)}
 			}

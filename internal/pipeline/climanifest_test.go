@@ -1404,11 +1404,12 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.Equal(t, "demo-pp-mcp", got.Name)
 	})
 
-	t.Run("MCP surface without CLI manifest is an error", func(t *testing.T) {
+	t.Run("MCP surface without CLI manifest is an error at package time", func(t *testing.T) {
 		dir := t.TempDir()
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "cmd", "demo-pp-mcp"), 0o755))
 
-		err := WriteMCPBManifest(dir)
+		require.NoError(t, WriteMCPBManifest(dir))
+		err := EnsureMCPBManifest(dir)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), CLIManifestFilename)
 		_, statErr := os.Stat(filepath.Join(dir, MCPBManifestFilename))

@@ -341,7 +341,7 @@ func promoteWorkingCLI(cliName, workingDir string, state *PipelineState) (*Promo
 	// Errors abort the promote rather than warn-and-continue — a reconcile
 	// failure here means the published bundle would ship missing user_config
 	// fields, which is the exact bug class this writer chain exists to prevent.
-	if err := WriteMCPBManifest(stagingDir); err != nil {
+	if err := EnsureMCPBManifest(stagingDir); err != nil {
 		_ = os.RemoveAll(stagingDir)
 		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("writing MCPB manifest to staging: %w", err))
 	}

@@ -135,24 +135,20 @@ type MCPBCompat struct {
 // WriteMCPBManifest emits manifest.json for a CLI directory by reading
 // .printing-press.json. When mcp_binary is empty but the tree ships an MCP
 // surface (a cmd/*-pp-mcp directory or internal/mcp), the binary name is
-// inferred and the manifest is still written. A missing CLI manifest is
-// ignored only when that surface is absent. An MCP surface without a CLI
-// manifest, or any other read or write failure, is returned so package and
-// promote do not ship a tree that cannot be bundled.
+// inferred and the manifest is still written. A missing CLI manifest returns
+// nil so mcp-sync can refresh MCP packages before provenance exists; package
+// and promote call EnsureMCPBManifest, which fails in that case. Any other
+// read or write failure is returned.
 //
 // Callers that already have the CLIManifest in memory should use
 // WriteMCPBManifestFromStruct to avoid the re-read.
 func WriteMCPBManifest(dir string) error {
-	surface, err := mcpSurfacePresent(dir)
-	if err != nil {
-		return err
-	}
 	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
 	if err != nil {
 		if os.IsNotExist(err) {
-			if surface {
-				return fmt.Errorf("MCP surface present but %s is missing", CLIManifestFilename)
-			}
+			// mcp-sync refreshes partial trees before a CLI manifest exists.
+			// Package and promote use EnsureMCPBManifest, which still fails
+			// when that surface cannot produce manifest.json.
 			return nil
 		}
 		return fmt.Errorf("reading %s for MCPB: %w", CLIManifestFilename, err)
@@ -162,6 +158,10 @@ func WriteMCPBManifest(dir string) error {
 		return fmt.Errorf("parsing manifest for MCPB: %w", err)
 	}
 	if strings.TrimSpace(m.MCPBinary) == "" {
+		surface, err := mcpSurfacePresent(dir)
+		if err != nil {
+			return err
+		}
 		if !surface {
 			return nil
 		}
@@ -174,11 +174,45 @@ func WriteMCPBManifest(dir string) error {
 	if err := WriteMCPBManifestFromStruct(dir, m); err != nil {
 		return err
 	}
-	if surface {
-		info, statErr := os.Stat(filepath.Join(dir, MCPBManifestFilename))
-		if statErr != nil || !info.Mode().IsRegular() {
-			return fmt.Errorf("MCP surface present but %s was not written", MCPBManifestFilename)
-		}
+	return requireMCPBManifestFile(dir)
+}
+
+// EnsureMCPBManifest writes manifest.json and fails when an MCP surface is
+// present but the bundle manifest was not produced. WriteMCPBManifest still
+// returns nil when .printing-press.json is absent so in-progress syncs can
+// refresh the MCP packages before provenance exists.
+func EnsureMCPBManifest(dir string) error {
+	if err := WriteMCPBManifest(dir); err != nil {
+		return err
+	}
+	surface, err := mcpSurfacePresent(dir)
+	if err != nil {
+		return err
+	}
+	if !surface {
+		return nil
+	}
+	info, err := os.Stat(filepath.Join(dir, MCPBManifestFilename))
+	if err == nil && info.Mode().IsRegular() {
+		return nil
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, CLIManifestFilename)); os.IsNotExist(statErr) {
+		return fmt.Errorf("MCP surface present but %s is missing", CLIManifestFilename)
+	}
+	return fmt.Errorf("MCP surface present but %s was not written", MCPBManifestFilename)
+}
+
+func requireMCPBManifestFile(dir string) error {
+	surface, err := mcpSurfacePresent(dir)
+	if err != nil {
+		return err
+	}
+	if !surface {
+		return nil
+	}
+	info, err := os.Stat(filepath.Join(dir, MCPBManifestFilename))
+	if err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("MCP surface present but %s was not written", MCPBManifestFilename)
 	}
 	return nil
 }
