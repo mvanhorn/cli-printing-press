@@ -40,7 +40,7 @@ Keep both store shapes. Do not drop domain tables to make the error sentence lit
 
 The clause "not one SQL table per resource" is steering copy toward that uniform contract. It is not a schema invariant. Rewording it, or teaching agents to prefer domain tables, is a separate change from keeping the store.
 
-Generated tests that need a missing table must not use a resource-shaped name. `widgets` is a legal domain table. The reserved sentinel is `__pp_missing_table__`.
+Generated tests that need a missing table must not use a name the store can create. `widgets` is a legal domain table, and so is any identifier `ToSnakeCase` can emit, including `__pp_missing_table__`. Domain tables rewrite `-` and `.` to `_` and lowercase the rest, so the table name never keeps a hyphen. The sentinel is the quoted identifier `pp-missing-table` (`SELECT * FROM "pp-missing-table"`). Unquoted, the hyphen is subtraction and the failure is not the unknown-table error. Do not append a stream or rebase suffix (`_stream_frames`, `_stream_metadata`, `_rebase_log`): those tables keep the API slug's hyphens.
 
 ## Why This Matters
 
