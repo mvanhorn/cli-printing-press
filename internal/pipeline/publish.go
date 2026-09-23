@@ -121,7 +121,7 @@ func PublishWorkingCLI(state *PipelineState, targetDir string) (string, error) {
 	// Generate already wrote one alongside .printing-press.json; rewriting
 	// here picks up any provenance fields the publish step added.
 	if err := WriteMCPBManifest(finalDir); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not write MCPB manifest.json: %v\n", err)
+		return "", fmt.Errorf("writing MCPB manifest: %w", err)
 	}
 
 	if err := state.Save(); err != nil {

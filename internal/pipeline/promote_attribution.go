@@ -194,24 +194,34 @@ func renderReadmeAttribution(creator spec.Person, contributors []spec.Person) st
 		fmt.Fprintf(&b, " (%s)", creator.Name)
 	}
 	b.WriteString(".")
-	if len(contributors) > 0 {
-		b.WriteString("\nContributors: ")
-		for i, c := range contributors {
-			c = c.Clean()
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			if c.Handle != "" {
-				fmt.Fprintf(&b, "[@%s](https://github.com/%s)", c.Handle, c.Handle)
-				if c.Name != "" {
-					fmt.Fprintf(&b, " (%s)", c.Name)
-				}
-			} else {
-				b.WriteString(c.Name)
-			}
-		}
-		b.WriteString(".")
+	if line := renderReadmeContributorsLine(contributors); line != "" {
+		b.WriteString("\n")
+		b.WriteString(line)
 	}
+	return b.String()
+}
+
+func renderReadmeContributorsLine(contributors []spec.Person) string {
+	if len(contributors) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Contributors: ")
+	for i, c := range contributors {
+		c = c.Clean()
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		if c.Handle != "" {
+			fmt.Fprintf(&b, "[@%s](https://github.com/%s)", c.Handle, c.Handle)
+			if c.Name != "" {
+				fmt.Fprintf(&b, " (%s)", c.Name)
+			}
+		} else {
+			b.WriteString(c.Name)
+		}
+	}
+	b.WriteString(".")
 	return b.String()
 }
 
@@ -227,23 +237,220 @@ func renderNoticeAttribution(creator spec.Person, contributors []spec.Person) st
 		b.WriteString(" ")
 	}
 	fmt.Fprintf(&b, "(@%s).", creator.Handle)
-	if len(contributors) > 0 {
-		b.WriteString("\nContributors:")
-		for _, c := range contributors {
-			c = c.Clean()
-			b.WriteString("\n  - ")
+	if block := renderNoticeContributorsBlock(contributors); block != "" {
+		b.WriteString("\n")
+		b.WriteString(block)
+	}
+	return b.String()
+}
+
+func renderNoticeContributorsBlock(contributors []spec.Person) string {
+	if len(contributors) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Contributors:")
+	for _, c := range contributors {
+		c = c.Clean()
+		b.WriteString("\n  - ")
+		if c.Name != "" {
+			b.WriteString(c.Name)
+		}
+		if c.Handle != "" {
 			if c.Name != "" {
-				b.WriteString(c.Name)
+				b.WriteString(" ")
 			}
-			if c.Handle != "" {
-				if c.Name != "" {
-					b.WriteString(" ")
-				}
-				fmt.Fprintf(&b, "(@%s)", c.Handle)
-			}
+			fmt.Fprintf(&b, "(@%s)", c.Handle)
 		}
 	}
 	return b.String()
+}
+
+var noticeContributorItemRE = regexp.MustCompile(`^\s+- `)
+
+// SyncContributorSurfaces rewrites README.md and NOTICE so their contributor
+// sections match the manifest. The creator line and SKILL author are left
+// alone. A second call with the same manifest is a no-op.
+func SyncContributorSurfaces(dir string) (bool, error) {
+	manifest, err := ReadCLIManifest(dir)
+	if err != nil {
+		return false, err
+	}
+	readmeChanged, err := syncContributorSurfaceFile(filepath.Join(dir, "README.md"), manifest.Contributors, applyReadmeContributors, "README.md")
+	if err != nil {
+		return false, err
+	}
+	noticeChanged, err := syncContributorSurfaceFile(filepath.Join(dir, "NOTICE"), manifest.Contributors, applyNoticeContributors, "NOTICE")
+	if err != nil {
+		return false, err
+	}
+	return readmeChanged || noticeChanged, nil
+}
+
+func syncContributorSurfaceFile(path string, contributors []spec.Person, apply func(string, []spec.Person) string, label string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if len(contributors) > 0 {
+				return false, fmt.Errorf("%s is missing; cannot record contributors", label)
+			}
+			return false, nil
+		}
+		return false, err
+	}
+	next := apply(string(data), contributors)
+	if next == string(data) {
+		return false, nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(path, []byte(next), info.Mode().Perm()); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func applyReadmeContributors(content string, contributors []spec.Person) string {
+	want := renderReadmeContributorsLine(contributors)
+	lines, nl, trailing := splitSourceLines([]byte(content))
+	idx := -1
+	created := -1
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		if idx < 0 && strings.HasPrefix(trim, "Contributors:") {
+			idx = i
+		}
+		if created < 0 && strings.HasPrefix(trim, "Created by ") {
+			created = i
+		}
+	}
+	switch {
+	case want == "" && idx >= 0:
+		lines = append(lines[:idx], lines[idx+1:]...)
+	case want != "" && idx >= 0:
+		lines[idx] = want
+	case want != "" && idx < 0:
+		at := len(lines)
+		if created >= 0 {
+			at = created + 1
+		} else {
+			for i, line := range lines {
+				if strings.HasPrefix(line, "## ") {
+					at = i
+					break
+				}
+			}
+		}
+		lines = insertStrings(lines, at, want)
+	}
+	return string(joinSourceLines(lines, nl, trailing))
+}
+
+func applyNoticeContributors(content string, contributors []spec.Person) string {
+	want := renderNoticeContributorsBlock(contributors)
+	lines, nl, trailing := splitSourceLines([]byte(content))
+	start := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "Contributors:" {
+			start = i
+			break
+		}
+	}
+	var wantLines []string
+	if want != "" {
+		wantLines = strings.Split(want, "\n")
+	}
+	if start < 0 {
+		if len(wantLines) == 0 {
+			return content
+		}
+		at := len(lines)
+		for i, line := range lines {
+			if strings.HasPrefix(strings.TrimSpace(line), "Created by ") {
+				at = i + 1
+				break
+			}
+		}
+		lines = insertStrings(lines, at, wantLines...)
+		return string(joinSourceLines(lines, nl, trailing))
+	}
+	end := start + 1
+	for end < len(lines) && noticeContributorItemRE.MatchString(lines[end]) {
+		end++
+	}
+	kept := append([]string{}, lines[:start]...)
+	kept = append(kept, wantLines...)
+	kept = append(kept, lines[end:]...)
+	return string(joinSourceLines(kept, nl, trailing))
+}
+
+// ContributorSurfaceIssues reports README and NOTICE contributor text that
+// disagrees with the manifest. Missing files are an issue only when the
+// manifest lists contributors.
+func ContributorSurfaceIssues(dir string, contributors []spec.Person) []string {
+	var issues []string
+	wantReadme := renderReadmeContributorsLine(contributors)
+	readme, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	switch {
+	case os.IsNotExist(err):
+		if len(contributors) > 0 {
+			issues = append(issues, "README.md is missing contributor byline")
+		}
+	case err != nil:
+		issues = append(issues, fmt.Sprintf("reading README.md: %v", err))
+	default:
+		got, found := readmeContributorsLine(string(readme))
+		if (wantReadme == "" && found) || (wantReadme != "" && got != wantReadme) {
+			issues = append(issues, "README contributor byline does not match manifest contributors")
+		}
+	}
+
+	wantNotice := renderNoticeContributorsBlock(contributors)
+	notice, err := os.ReadFile(filepath.Join(dir, "NOTICE"))
+	switch {
+	case os.IsNotExist(err):
+		if len(contributors) > 0 {
+			issues = append(issues, "NOTICE is missing contributor block")
+		}
+	case err != nil:
+		issues = append(issues, fmt.Sprintf("reading NOTICE: %v", err))
+	default:
+		got, found := noticeContributorsBlock(string(notice))
+		if (wantNotice == "" && found) || (wantNotice != "" && got != wantNotice) {
+			issues = append(issues, "NOTICE contributor block does not match manifest contributors")
+		}
+	}
+	return issues
+}
+
+func readmeContributorsLine(content string) (string, bool) {
+	lines, _, _ := splitSourceLines([]byte(content))
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "Contributors:") {
+			return line, true
+		}
+	}
+	return "", false
+}
+
+func noticeContributorsBlock(content string) (string, bool) {
+	lines, _, _ := splitSourceLines([]byte(content))
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "Contributors:" {
+			continue
+		}
+		block := []string{line}
+		for _, next := range lines[i+1:] {
+			if !noticeContributorItemRE.MatchString(next) {
+				break
+			}
+			block = append(block, next)
+		}
+		return strings.Join(block, "\n"), true
+	}
+	return "", false
 }
 
 func yamlDoubleQuotedForManifest(s string) string {

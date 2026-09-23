@@ -1378,6 +1378,43 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.True(t, os.IsNotExist(statErr))
 	})
 
+	t.Run("infers MCP binary from command directory", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{APIName: "demo", CLIName: "demo-pp-cli"})
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "cmd", "demo-pp-mcp"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "cmd", "demo-pp-mcp", "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+		assert.Equal(t, "demo-pp-mcp", got.Name)
+		assert.Equal(t, "bin/demo-pp-mcp", got.Server.EntryPoint)
+
+		manifest, err := ReadCLIManifest(dir)
+		require.NoError(t, err)
+		assert.Empty(t, manifest.MCPBinary)
+	})
+
+	t.Run("infers MCP binary from internal mcp package", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{APIName: "demo", CLIName: "demo-pp-cli"})
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "mcp"), 0o755))
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+		assert.Equal(t, "demo-pp-mcp", got.Name)
+	})
+
+	t.Run("MCP surface without CLI manifest is an error", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "cmd", "demo-pp-mcp"), 0o755))
+
+		err := WriteMCPBManifest(dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), CLIManifestFilename)
+		_, statErr := os.Stat(filepath.Join(dir, MCPBManifestFilename))
+		assert.True(t, os.IsNotExist(statErr))
+	})
+
 	t.Run("uses API version before printing press version", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, CLIManifest{

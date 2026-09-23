@@ -15,9 +15,10 @@ func newContributorsCmd() *cobra.Command {
 		Short: "Manage the contributors recorded in a printed CLI's manifest",
 		Long: `Contributor attribution for a printed CLI.
 
-The 'add' subcommand records a contributor in the CLI's .printing-press.json so
-they are credited in the README byline, NOTICE, and the public registry. It is
-the deliberate-contribution action invoked by the publish, amend, and reprint
+The 'add' subcommand records a contributor in the CLI's .printing-press.json and
+rewrites the README byline and NOTICE to match. The public registry is
+regenerated from that manifest by the library workflow. It is the
+deliberate-contribution action invoked by the publish, amend, and reprint
 flows — a plain regen or sync never adds a contributor.`,
 	}
 	cmd.AddCommand(newContributorsAddCmd())
@@ -50,9 +51,16 @@ the current git identity (github.user / user.name) is used.`,
 			if err != nil {
 				return &ExitError{Code: ExitPublishError, Err: err}
 			}
-			if added {
+			synced, err := pipeline.SyncContributorSurfaces(dir)
+			if err != nil {
+				return &ExitError{Code: ExitPublishError, Err: err}
+			}
+			switch {
+			case added:
 				fmt.Fprintf(cmd.OutOrStdout(), "Recorded contributor %s\n", contributorLabel(p))
-			} else {
+			case synced:
+				fmt.Fprintf(cmd.OutOrStdout(), "Synced contributor surfaces for %s\n", contributorLabel(p))
+			default:
 				fmt.Fprintf(cmd.OutOrStdout(), "No change: %s is the creator or already a contributor\n", contributorLabel(p))
 			}
 			return nil

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -131,25 +132,129 @@ type MCPBCompat struct {
 	Platforms     []string `json:"platforms,omitempty"`
 }
 
-// WriteMCPBManifest emits manifest.json for a published CLI directory by
-// reading .printing-press.json. Skips silently only when the CLI dir has
-// no .printing-press.json or no MCP binary — every other CLI ships a
-// manifest, including composed/cookie-auth ones with a "partial" MCPReady
-// label. The user_config block conveys auth-required-or-optional via
-// authRequiresCredential, which is enough for the host to prompt or skip.
+// WriteMCPBManifest emits manifest.json for a CLI directory by reading
+// .printing-press.json. When mcp_binary is empty but the tree ships an MCP
+// surface (a cmd/*-pp-mcp directory or internal/mcp), the binary name is
+// inferred and the manifest is still written. A missing CLI manifest is
+// ignored only when that surface is absent. An MCP surface without a CLI
+// manifest, or any other read or write failure, is returned so package and
+// promote do not ship a tree that cannot be bundled.
 //
 // Callers that already have the CLIManifest in memory should use
 // WriteMCPBManifestFromStruct to avoid the re-read.
 func WriteMCPBManifest(dir string) error {
+	surface, err := mcpSurfacePresent(dir)
+	if err != nil {
+		return err
+	}
 	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
 	if err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			if surface {
+				return fmt.Errorf("MCP surface present but %s is missing", CLIManifestFilename)
+			}
+			return nil
+		}
+		return fmt.Errorf("reading %s for MCPB: %w", CLIManifestFilename, err)
 	}
 	var m CLIManifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return fmt.Errorf("parsing manifest for MCPB: %w", err)
 	}
-	return WriteMCPBManifestFromStruct(dir, m)
+	if strings.TrimSpace(m.MCPBinary) == "" {
+		if !surface {
+			return nil
+		}
+		name, err := inferMCPBinaryName(dir, m)
+		if err != nil {
+			return err
+		}
+		m.MCPBinary = name
+	}
+	if err := WriteMCPBManifestFromStruct(dir, m); err != nil {
+		return err
+	}
+	if surface {
+		info, statErr := os.Stat(filepath.Join(dir, MCPBManifestFilename))
+		if statErr != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("MCP surface present but %s was not written", MCPBManifestFilename)
+		}
+	}
+	return nil
+}
+
+func mcpSurfacePresent(dir string) (bool, error) {
+	names, err := mcpCommandNames(dir)
+	if err != nil {
+		return false, err
+	}
+	if len(names) > 0 {
+		return true, nil
+	}
+	info, err := os.Stat(filepath.Join(dir, "internal", "mcp"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return info.IsDir(), nil
+}
+
+func mcpCommandNames(dir string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(dir, "cmd"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var names []string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasSuffix(entry.Name(), naming.MCPSuffix) {
+			names = append(names, entry.Name())
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func inferMCPBinaryName(dir string, m CLIManifest) (string, error) {
+	names, err := mcpCommandNames(dir)
+	if err != nil {
+		return "", err
+	}
+	switch len(names) {
+	case 1:
+		return names[0], nil
+	case 0:
+		base := strings.TrimSpace(m.APIName)
+		if base == "" {
+			base = naming.TrimCLISuffix(strings.TrimSpace(m.CLIName))
+		}
+		if base == "" {
+			return "", fmt.Errorf("MCP surface present but the MCP binary name cannot be inferred")
+		}
+		return naming.MCP(base), nil
+	default:
+		want := map[string]struct{}{}
+		if api := strings.TrimSpace(m.APIName); api != "" {
+			want[naming.MCP(api)] = struct{}{}
+		}
+		if cli := strings.TrimSpace(m.CLIName); cli != "" {
+			want[naming.MCP(naming.TrimCLISuffix(cli))] = struct{}{}
+		}
+		var matched []string
+		for _, name := range names {
+			if _, ok := want[name]; ok {
+				matched = append(matched, name)
+			}
+		}
+		if len(matched) == 1 {
+			return matched[0], nil
+		}
+		return "", fmt.Errorf("ambiguous MCP command directories: %s", strings.Join(names, ", "))
+	}
 }
 
 // WriteMCPBManifestFromStruct is the in-memory variant of WriteMCPBManifest.

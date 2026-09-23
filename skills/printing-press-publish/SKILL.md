@@ -903,11 +903,20 @@ mkdir -p "$PUBLISH_STAGING_ROOT"
 STAGING_PARENT="$(mktemp -d "$PUBLISH_STAGING_ROOT/<api-slug>-XXXXXX")"
 STAGING_DIR="$STAGING_PARENT/package"
 
+# Reprints pass the existing public-library entry so package stamps its
+# runtime version declaration layout instead of leaving 0.0.0-dev.
+BASE_CLI_DIR="$(find "$PUBLISH_REPO_DIR/library" -mindepth 2 -maxdepth 2 -type d -name "<api-slug>" -print -quit)"
+PACKAGE_BASE_ARGS=()
+if [ -n "$BASE_CLI_DIR" ]; then
+  PACKAGE_BASE_ARGS=(--base-dir "$BASE_CLI_DIR")
+fi
+
 cli-printing-press publish package \
   --dir <cli-dir> \
   --category <category> \
   --target "$STAGING_DIR" \
   --module-path "$MODULE_PATH" \
+  "${PACKAGE_BASE_ARGS[@]}" \
   --json
 ```
 
@@ -984,7 +993,9 @@ VERSION_DECL_DIFF="$(git diff --unified=0 "$VERSION_DECL_BASE_REF" -- \
 printf '%s\n' "$VERSION_DECL_DIFF" \
   | grep -E '^[+-][[:space:]]*var version[[:space:]]*=' || true
 
-# If the command prints a change, reconcile the replacement to the base tree:
+# If the command prints a change, stop. Do not hand-edit version declarations.
+# publish package --base-dir should already have reconciled the replacement to
+# the base tree:
 # - A root.go declaration stays in root.go with the exact stamped value; remove
 #   only the duplicate declaration from version.go and keep its command code.
 # - A version.go declaration stays in version.go with the exact stamped value;
@@ -994,7 +1005,8 @@ printf '%s\n' "$VERSION_DECL_DIFF" \
 # - If the base has no declaration in one of these runtime surfaces, preserve
 #   that no declaration layout and its existing literal/reference form. Do not
 #   introduce the fresh print's 0.0.0-dev declaration.
-# Re-run the diff command after editing. Do not continue until the command prints no matching lines.
+# Re-run publish package with --base-dir pointing at the existing library entry,
+# then repeat this diff. Do not continue until the command prints no matching lines.
 
 # Remove root-level binaries (should not be committed). publish package
 # already strips these before the copy; this rm -f is belt-and-suspenders
