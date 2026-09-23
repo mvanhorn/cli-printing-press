@@ -55,12 +55,7 @@ func (g *Generator) synthesizedRunnablePromotedExample(promotedName string, endp
 	if line, ok := g.narrativeExampleLine([]string{promotedName}, endpoint); ok {
 		return runnableExampleLine(line)
 	}
-	if !requiredInputsAreDerivable(endpoint) {
-		return ""
-	}
-	parts := []string{naming.CLI(g.Spec.Name), promotedName}
-	parts = append(parts, commandExampleArgParts(endpoint)...)
-	return runnableExampleLine("  " + strings.Join(parts, " "))
+	return g.synthesizedRunnableExample([]string{promotedName}, endpoint)
 }
 
 func (g *Generator) promotedExampleMatchesRegistered(promotedName string, endpoint spec.Endpoint, example string) bool {

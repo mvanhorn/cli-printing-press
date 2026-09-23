@@ -416,18 +416,23 @@ x-learn:
 ### `x-pp-example`
 
 Overrides the generated command's `--help` Example with a verbatim, authored
-invocation. The synthesized example only includes **required** params, so an
-endpoint whose params are all optional — the common "pass one of `channelId` /
-`handle` / `url`" shape — otherwise advertises a bare command the API rejects
-with a 4xx. That broken example also fails the live-dogfood happy-path and
-json-fidelity probes, which run the Example verbatim.
+invocation. The synthesized example includes required parameters. An operation
+with no parameter examples is synthesized from the request body instead: the
+media-type `example` (or the first `examples` entry), otherwise the required
+body properties' own `example` values. An endpoint whose params are all
+optional — the common "pass one of `channelId` / `handle` / `url`" shape —
+otherwise advertises a bare command the API rejects with a 4xx. That broken
+example also fails the live-dogfood happy-path and json-fidelity probes, which
+run the Example verbatim. `pp:happy-args` is a separate surface and is not
+filled from the request-body example.
 
 Parsed field: `Endpoint.Example` (the same field the internal YAML spec sets via
 `example:`).
 
 Rules:
-- Optional. Endpoints without `x-pp-example` keep today's synthesized example
-  byte-for-byte.
+- Optional. Endpoints without `x-pp-example` keep a synthesized Example.
+  Operations that already have parameter examples keep that synthesis.
+  Body-only operations use the request-body example described above.
 - Operation-level only. The value is the full invocation including the binary
   name (`<api-slug>-pp-cli <command> <args>`); the parser normalizes it to the
   canonical two-space indent on each line, so authors may omit the leading

@@ -9486,16 +9486,7 @@ func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.
 		}
 	}
 
-	if !requiredInputsAreDerivable(endpoint) {
-		return ""
-	}
-
-	var parts []string
-	parts = append(parts, naming.CLI(g.Spec.Name))
-	parts = append(parts, commandParts...)
-	parts = append(parts, commandExampleArgParts(endpoint)...)
-
-	return runnableExampleLine("  " + strings.Join(parts, " "))
+	return g.synthesizedRunnableExample(commandParts, endpoint)
 }
 
 func (g *Generator) promotedExampleLine(promotedName, endpointName string, endpoint spec.Endpoint) string {

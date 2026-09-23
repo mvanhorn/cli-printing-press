@@ -3605,6 +3605,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 				BodyRequired:           bodyRequired,
 				BodyIsArray:            bodyIsArray,
 				RequestContentType:     requestContentType,
+				RequestBodyExample:     requestBodyMediaExample(op.RequestBody),
 				Tags:                   append([]string{}, op.Tags...),
 			}
 			endpoint.Tier = readTierExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
@@ -7085,20 +7086,47 @@ func parameterExample(parameter *openapi3.Parameter, schema *openapi3.Schema) an
 	if parameter.Example != nil {
 		return parameter.Example
 	}
-	if len(parameter.Examples) > 0 {
-		names := make([]string, 0, len(parameter.Examples))
-		for name := range parameter.Examples {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			ref := parameter.Examples[name]
-			if ref != nil && ref.Value != nil && ref.Value.Value != nil {
-				return ref.Value.Value
-			}
-		}
+	if value := firstNamedExampleValue(parameter.Examples); value != nil {
+		return value
 	}
 	return schemaExample(schema)
+}
+
+// Same media type mapRequestBody turns into flags, so example fields match
+// the generated command. A singular example wins; named examples follow
+// sorted-name order because map iteration is not stable.
+func requestBodyMediaExample(requestBodyRef *openapi3.RequestBodyRef) any {
+	requestBody := requestBodyValue(requestBodyRef)
+	if requestBody == nil {
+		return nil
+	}
+	_, media := requestBodyMediaType(requestBody.Content)
+	if media == nil {
+		return nil
+	}
+	if media.Example != nil {
+		return media.Example
+	}
+	return firstNamedExampleValue(media.Examples)
+}
+
+func firstNamedExampleValue(examples openapi3.Examples) any {
+	if len(examples) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(examples))
+	for name := range examples {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		ref := examples[name]
+		if ref == nil || ref.Value == nil || ref.Value.Value == nil {
+			continue
+		}
+		return ref.Value.Value
+	}
+	return nil
 }
 
 func schemaDescription(schema *openapi3.Schema) string {
