@@ -297,9 +297,9 @@ var ErrRedirectPrivateDestination = errors.New("refusing redirect: loopback, pri
 
 // redirectDestinationRefused rejects a hop the client must not follow.
 // Allowed schemes are http and https. An https-to-http downgrade on any
-// earlier hop is refused. A host change is refused when the target host is
-// a loopback, private, link-local, or unspecified IP literal. Same-origin
-// hops, including a local base URL, still proceed.
+// earlier hop is refused. An off-origin hop is refused when the target host
+// is a loopback, private, link-local, or unspecified IP literal. Same-origin
+// hops, including a local base URL and an omitted default port, still proceed.
 //
 // The address check parses the URL host with net.ParseIP and does not resolve DNS.
 // A hostname that later points at a local address is not caught. Resolving
@@ -329,13 +329,53 @@ func redirectDestinationRefused(next *url.URL, via []*http.Request) error {
 	return nil
 }
 
-// redirectTargetLeavesOrigin reports a host change from the first hop.
+// redirectTargetLeavesOrigin reports whether next is a different effective
+// origin than the first hop. Raw Host strings treat an omitted default port
+// as a different host (http://127.0.0.1 vs http://127.0.0.1:80), which makes
+// a local redirect look off-origin and then fail the private-address check.
 // An empty chain fails closed so a local literal is not followed blindly.
 func redirectTargetLeavesOrigin(next *url.URL, via []*http.Request) bool {
 	if len(via) == 0 || via[0] == nil || via[0].URL == nil {
 		return true
 	}
-	return next.Host != via[0].URL.Host
+	return !redirectSameEffectiveOrigin(next, via[0].URL)
+}
+
+func redirectSameEffectiveOrigin(a, b *url.URL) bool {
+	as, ah, ap, aok := redirectEffectiveOrigin(a)
+	bs, bh, bp, bok := redirectEffectiveOrigin(b)
+	if !aok || !bok {
+		return false
+	}
+	return as == bs && strings.EqualFold(ah, bh) && ap == bp
+}
+
+func redirectEffectiveOrigin(u *url.URL) (scheme, host, port string, ok bool) {
+	if u == nil {
+		return "", "", "", false
+	}
+	scheme = strings.ToLower(u.Scheme)
+	host = u.Hostname()
+	if host == "" {
+		return "", "", "", false
+	}
+	if raw := u.Port(); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 65535 {
+			return "", "", "", false
+		}
+		port = strconv.Itoa(n)
+	} else {
+		switch scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return "", "", "", false
+		}
+	}
+	return scheme, host, port, true
 }
 
 func redirectHostIsBlockedLiteral(host string) bool {
@@ -1787,22 +1827,43 @@ func contentEncodingTokens(header string) []string {
 	return out
 }
 
+// maxDecodedBodyBytes caps inflated Content-Encoding output. A small gzip or
+// deflate body can expand without bound; past this the request fails instead
+// of materializing the rest.
+const maxDecodedBodyBytes = 32 << 20
+
+var ErrDecodedBodyTooLarge = errors.New("decoded response exceeds size limit")
+
+func readDecodedBody(r io.Reader) ([]byte, error) {
+	buf, err := io.ReadAll(io.LimitReader(r, int64(maxDecodedBodyBytes)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(buf) > maxDecodedBodyBytes {
+		return nil, ErrDecodedBodyTooLarge
+	}
+	return buf, nil
+}
+
 func gunzipBody(body []byte) ([]byte, error) {
 	zr, err := gzip.NewReader(bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	defer zr.Close()
-	return io.ReadAll(zr)
+	return readDecodedBody(zr)
 }
 
 func inflateDeflateBody(body []byte) ([]byte, error) {
-	if decoded, err := inflateZlibBody(body); err == nil {
-		return decoded, nil
+	decoded, err := inflateZlibBody(body)
+	// A zlib wrapper that only fails the size cap is still deflate. Falling
+	// through would decode the same bytes as raw flate.
+	if err == nil || errors.Is(err, ErrDecodedBodyTooLarge) {
+		return decoded, err
 	}
 	reader := flate.NewReader(bytes.NewReader(body))
 	defer reader.Close()
-	return io.ReadAll(reader)
+	return readDecodedBody(reader)
 }
 
 func inflateZlibBody(body []byte) ([]byte, error) {
@@ -1811,7 +1872,7 @@ func inflateZlibBody(body []byte) ([]byte, error) {
 		return nil, err
 	}
 	defer zr.Close()
-	return io.ReadAll(zr)
+	return readDecodedBody(zr)
 }
 
 // sanitizeJSONResponse strips known JSONP/XSSI prefixes and UTF-8 BOM from
