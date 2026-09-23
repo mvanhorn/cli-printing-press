@@ -179,6 +179,7 @@ func TestClientCheckRedirectKeepsAuthOnHTTPUpgrade(t *testing.T) {
 	runtimeTest := `package client
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"testing"
@@ -214,84 +215,44 @@ func TestRedirectSchemeUpgradeKeepsCustomAuth(t *testing.T) {
 		}
 	}
 
+	expectChainDowngrade := func(t *testing.T, prior []string, to string) {
+		t.Helper()
+		via := make([]*http.Request, 0, len(prior))
+		for _, raw := range prior {
+			parsed, err := url.Parse(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			via = append(via, &http.Request{URL: parsed})
+		}
+		targetURL, err := url.Parse(to)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := &http.Request{URL: targetURL, Header: http.Header{"X-Api-Key": {"secret-key"}}}
+		err = c.HTTPClient.CheckRedirect(req, via)
+		if !errors.Is(err, ErrRedirectProtocolDowngrade) {
+			t.Fatalf("CheckRedirect(%v -> %s) = %v, want ErrRedirectProtocolDowngrade", prior, to, err)
+		}
+	}
+
 	t.Run("same-origin keeps header", func(t *testing.T) {
 		check(t, "https://api.example.com/start", "https://api.example.com/done", "secret-key")
 	})
-	t.Run("https to http drops header", func(t *testing.T) {
-		check(t, "https://api.example.com/start", "http://api.example.com/done", "")
+	t.Run("https to http is refused", func(t *testing.T) {
+		expectChainDowngrade(t, []string{"https://api.example.com/start"}, "http://api.example.com/done")
 	})
 	t.Run("http to https keeps header", func(t *testing.T) {
 		check(t, "http://api.example.com/start", "https://api.example.com/done", "secret-key")
 	})
-	t.Run("https to http to http drops header", func(t *testing.T) {
-		httpsStart, err := url.Parse("https://api.example.com/start")
-		if err != nil {
-			t.Fatal(err)
-		}
-		httpMid, err := url.Parse("http://api.example.com/mid")
-		if err != nil {
-			t.Fatal(err)
-		}
-		httpEnd, err := url.Parse("http://api.example.com/done")
-		if err != nil {
-			t.Fatal(err)
-		}
-		via := []*http.Request{{URL: httpsStart}, {URL: httpMid}}
-		req := &http.Request{URL: httpEnd, Header: http.Header{"X-Api-Key": {"secret-key"}}}
-		if err := c.HTTPClient.CheckRedirect(req, via); err != nil {
-			t.Fatalf("CheckRedirect returned error: %v", err)
-		}
-		if got := req.Header.Get("X-API-Key"); got != "" {
-			t.Fatalf("https -> http -> http: X-API-Key = %q, want empty", got)
-		}
+	t.Run("https to http to http is refused", func(t *testing.T) {
+		expectChainDowngrade(t, []string{"https://api.example.com/start", "http://api.example.com/mid"}, "http://api.example.com/done")
 	})
-	t.Run("http to https to http drops header", func(t *testing.T) {
-		httpStart, err := url.Parse("http://api.example.com/start")
-		if err != nil {
-			t.Fatal(err)
-		}
-		httpsMid, err := url.Parse("https://api.example.com/mid")
-		if err != nil {
-			t.Fatal(err)
-		}
-		httpEnd, err := url.Parse("http://api.example.com/done")
-		if err != nil {
-			t.Fatal(err)
-		}
-		via := []*http.Request{{URL: httpStart}, {URL: httpsMid}}
-		req := &http.Request{URL: httpEnd, Header: http.Header{"X-Api-Key": {"secret-key"}}}
-		if err := c.HTTPClient.CheckRedirect(req, via); err != nil {
-			t.Fatalf("CheckRedirect returned error: %v", err)
-		}
-		if got := req.Header.Get("X-API-Key"); got != "" {
-			t.Fatalf("http -> https -> http: X-API-Key = %q, want empty", got)
-		}
+	t.Run("http to https to http is refused", func(t *testing.T) {
+		expectChainDowngrade(t, []string{"http://api.example.com/start", "https://api.example.com/mid"}, "http://api.example.com/done")
 	})
-	t.Run("http to https to http to http drops header", func(t *testing.T) {
-		httpStart, err := url.Parse("http://api.example.com/start")
-		if err != nil {
-			t.Fatal(err)
-		}
-		httpsMid, err := url.Parse("https://api.example.com/mid")
-		if err != nil {
-			t.Fatal(err)
-		}
-		httpThird, err := url.Parse("http://api.example.com/third")
-		if err != nil {
-			t.Fatal(err)
-		}
-		httpEnd, err := url.Parse("http://api.example.com/done")
-		if err != nil {
-			t.Fatal(err)
-		}
-		via := []*http.Request{{URL: httpStart}, {URL: httpsMid}, {URL: httpThird}}
-		req := &http.Request{URL: httpEnd, Header: http.Header{"X-Api-Key": {"secret-key"}}}
-		if err := c.HTTPClient.CheckRedirect(req, via); err != nil {
-			t.Fatalf("CheckRedirect returned error: %v", err)
-		}
-		if got := req.Header.Get("X-API-Key"); got != "" {
-			t.Fatalf("http -> https -> http -> http: X-API-Key = %q, want empty", got)
-		}
+	t.Run("http to https to http to http is refused", func(t *testing.T) {
+		expectChainDowngrade(t, []string{"http://api.example.com/start", "https://api.example.com/mid", "http://api.example.com/third"}, "http://api.example.com/done")
 	})
 	t.Run("foreign host then same-host hop drops header", func(t *testing.T) {
 		start, err := url.Parse("https://a.example/start")
