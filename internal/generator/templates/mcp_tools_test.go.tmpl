@@ -445,6 +445,10 @@ func TestMCPSQLEmptyStoreReturnsActionableEnvelope(t *testing.T) {
 }
 
 func TestMCPSQLDomainTableMismatchIsActionable(t *testing.T) {
+	// Domain tables are snake_case resource names, so '-' is rewritten to '_'.
+	// This quoted name is not a framework, stream, or rebase table either.
+	const missingTable = "pp-missing-table"
+
 	resetMCPPathEnv(t)
 	path, err := mcpDBPath()
 	if err != nil {
@@ -459,7 +463,7 @@ func TestMCPSQLDomainTableMismatchIsActionable(t *testing.T) {
 	}
 
 	result, err := handleSQL(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
-		Arguments: map[string]any{"query": "SELECT * FROM widgets"},
+		Arguments: map[string]any{"query": `SELECT * FROM "` + missingTable + `"`},
 	}})
 	if err != nil {
 		t.Fatalf("handleSQL returned transport error: %v", err)
@@ -468,7 +472,7 @@ func TestMCPSQLDomainTableMismatchIsActionable(t *testing.T) {
 		t.Fatalf("handleSQL domain-table mismatch IsError = %v, want true", result != nil && result.IsError)
 	}
 	text := mcpTextContent(t, result)
-	for _, want := range []string{"resources(resource_type, id, data)", "resource_type", "json_extract", "widgets"} {
+	for _, want := range []string{"resources(resource_type, id, data)", "resource_type", "json_extract", missingTable} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("domain-table mismatch error %q missing %q", text, want)
 		}
