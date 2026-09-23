@@ -191,6 +191,7 @@ func TestTierRoutingRedirectsStripCustomHeaderCrossHost(t *testing.T) {
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -200,6 +201,7 @@ import (
 )
 
 func TestTierRedirectCustomHeaderStripping(t *testing.T) {
+	t.Setenv("PRINTING_PRESS_VERIFY", "1")
 	t.Setenv("TIER_REDIRECT_PAID_KEY", "paid-secret")
 
 	sameHostFinalHeader := ""
@@ -243,11 +245,12 @@ func TestTierRedirectCustomHeaderStripping(t *testing.T) {
 	cfg = &config.Config{BaseURL: crossHostStart.URL}
 	c = New(cfg, time.Second, 0).WithTier("paid")
 	c.NoCache = true
-	if _, err := c.Get(context.Background(), "/cross-start", nil); err != nil {
-		t.Fatalf("cross-host redirect request failed: %v", err)
+	_, err := c.Get(context.Background(), "/cross-start", nil)
+	if !errors.Is(err, ErrRedirectPrivateDestination) {
+		t.Fatalf("off-origin loopback redirect = %v, want ErrRedirectPrivateDestination", err)
 	}
-	if crossHostFinalHeader != "" {
-		t.Fatalf("cross-host redirect leaked X-Tier-Key = %q", crossHostFinalHeader)
+	if crossHostFinalHeader != "not-called" {
+		t.Fatalf("off-origin loopback target was reached with X-Tier-Key = %q", crossHostFinalHeader)
 	}
 }
 `
