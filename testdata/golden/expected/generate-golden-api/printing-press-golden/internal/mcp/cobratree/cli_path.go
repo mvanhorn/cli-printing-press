@@ -14,7 +14,7 @@ import (
 // PRINTING_PRESS_GOLDEN_CLI_PATH env var, then PATH.
 func SiblingCLIPath() (string, error) {
 	if exe, err := os.Executable(); err == nil {
-		for _, candidate := range siblingCLICandidates(runtime.GOOS, exe) {
+		for _, candidate := range siblingCLICandidates(runtime.GOOS, runtime.GOARCH, exe) {
 			if _, err := os.Stat(candidate); err == nil {
 				return candidate, nil
 			}
@@ -26,13 +26,25 @@ func SiblingCLIPath() (string, error) {
 	return exec.LookPath(cliExecutableName(runtime.GOOS))
 }
 
-func siblingCLICandidates(goos, exePath string) []string {
+// Suffixed names follow the bare name so a multi-platform bundle can ship
+// thin <name>-<GOOS>-<GOARCH> binaries and an arch-free <name>-<GOOS> build.
+// GOOS is the runtime spelling: darwin, linux, or windows.
+func siblingCLICandidates(goos, goarch, exePath string) []string {
 	dir := filepath.Dir(exePath)
-	name := "printing-press-golden-pp-cli"
-	if goos == "windows" {
-		return []string{filepath.Join(dir, name+".exe"), filepath.Join(dir, name)}
+	bare := "printing-press-golden-pp-cli"
+	names := []string{
+		bare,
+		bare + "-" + goos + "-" + goarch,
+		bare + "-" + goos,
 	}
-	return []string{filepath.Join(dir, name)}
+	candidates := make([]string, 0, len(names)*2)
+	for _, name := range names {
+		if goos == "windows" {
+			candidates = append(candidates, filepath.Join(dir, name+".exe"))
+		}
+		candidates = append(candidates, filepath.Join(dir, name))
+	}
+	return candidates
 }
 
 func cliExecutableName(goos string) string {
