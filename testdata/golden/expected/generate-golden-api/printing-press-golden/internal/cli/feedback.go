@@ -194,6 +194,9 @@ func newFeedbackListCmd(flags *rootFlags) *cobra.Command {
   printing-press-golden-pp-cli feedback list --limit 5
   printing-press-golden-pp-cli feedback list --json`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if dryRunOK(flags) {
+				return writeDryRun(cmd.OutOrStdout(), flags, "feedback list")
+			}
 			p, err := feedbackFilePath()
 			if err != nil {
 				return err

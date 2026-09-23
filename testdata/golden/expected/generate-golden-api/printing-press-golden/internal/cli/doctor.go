@@ -182,6 +182,9 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
   printing-press-golden-pp-cli doctor --fail-on warn
   printing-press-golden-pp-cli doctor --fail-on stale`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if dryRunOK(flags) {
+				return writeDryRun(cmd.OutOrStdout(), flags, "doctor")
+			}
 			if registeredPlatformSource != nil {
 				if flags.platformSession == nil {
 					return errors.New("verified client profile session is required")

@@ -399,14 +399,21 @@ Resource scoping:
 				}
 			}
 			if machineFormat {
-				if err := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+				summary := map[string]any{
 					"total_records": totalSynced,
 					"resources":     totalResources,
 					"success":       successCount,
 					"warned":        warnCount,
 					"errored":       errCount,
 					"duration_ms":   elapsed.Milliseconds(),
-				}, flags); err != nil {
+				}
+				// The dry-run walk already produced this preview. Stamp the
+				// envelope marker on it instead of replacing the summary.
+				if c.DryRun {
+					summary["dry_run"] = true
+					summary["action"] = "sync"
+				}
+				if err := printJSONFiltered(cmd.OutOrStdout(), summary, flags); err != nil {
 					return err
 				}
 			}
