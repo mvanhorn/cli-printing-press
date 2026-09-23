@@ -134,6 +134,10 @@ func TestDeclaredAgentSourceLiveAnnotation(t *testing.T) {
 	if got := declaredAgentSource(local, &rootFlags{}); got != "local" {
 		t.Fatalf("declaredAgentSource local = %q, want local", got)
 	}
+	computed := &cobra.Command{Annotations: map[string]string{"pp:data-source": "computed"}}
+	if got := declaredAgentSource(computed, &rootFlags{}); got != "computed" {
+		t.Fatalf("declaredAgentSource computed = %q, want computed", got)
+	}
 	autoLive := &cobra.Command{Annotations: map[string]string{"pp:data-source": "auto"}}
 	if got := declaredAgentSource(autoLive, &rootFlags{dataSource: "live"}); got != "live" {
 		t.Fatalf("declaredAgentSource auto+live flag = %q, want live", got)
@@ -175,7 +179,36 @@ func TestPrintJSONFilteredAgentAutoDefaultsLive(t *testing.T) {
 		t.Fatalf("auto-annotated typed output meta.source = %q, want live; output=%s", meta.Source, out.String())
 	}
 }
+
+func TestPrintOutputWithFlagsKeepsMeasuredOrigin(t *testing.T) {
+	data := json.RawMessage(`+"`"+`{"meta":{"source":"catalogue","rows":104},"results":[{"id":"cov"}]}`+"`"+`)
+	var out bytes.Buffer
+	flags := &rootFlags{agent: true, asJSON: true}
+	if err := printOutputWithFlagsMeta(&out, data, flags, map[string]any{"source": "local"}); err != nil {
+		t.Fatalf("printOutputWithFlagsMeta: %v", err)
+	}
+	var payload struct {
+		Meta struct {
+			Source    string `+"`json:\"source\"`"+`
+			Transport string `+"`json:\"transport\"`"+`
+			Rows      float64 `+"`json:\"rows\"`"+`
+		} `+"`json:\"meta\"`"+`
+		Results []map[string]any `+"`json:\"results\"`"+`
+	}
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("agent output must stay one envelope: %v\n%s", err, out.String())
+	}
+	if payload.Meta.Source != "catalogue" {
+		t.Fatalf("meta.source = %q, want catalogue; output=%s", payload.Meta.Source, out.String())
+	}
+	if payload.Meta.Transport != "local" {
+		t.Fatalf("meta.transport = %q, want local; output=%s", payload.Meta.Transport, out.String())
+	}
+	if payload.Meta.Rows != 104 || len(payload.Results) != 1 || payload.Results[0]["id"] != "cov" {
+		t.Fatalf("envelope lost command payload: %+v", payload)
+	}
+}
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintJSONFilteredAgentDefaultsLocal|TestPrintJSONFilteredAgentUsesDeclaredLiveSource|TestPrintOutputWithFlagsAgentPreservesProvenanceEnvelope|TestDeclaredAgentSourceLiveAnnotation|TestPrintJSONFilteredAgentAutoDefaultsLive", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintJSONFilteredAgentDefaultsLocal|TestPrintJSONFilteredAgentUsesDeclaredLiveSource|TestPrintOutputWithFlagsAgentPreservesProvenanceEnvelope|TestDeclaredAgentSourceLiveAnnotation|TestPrintJSONFilteredAgentAutoDefaultsLive|TestPrintOutputWithFlagsKeepsMeasuredOrigin", "-count=1")
 }

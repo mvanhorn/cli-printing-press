@@ -2057,10 +2057,7 @@ func wrapPlatformStructuredOutput(data json.RawMessage, flags *rootFlags, result
 		if err := json.Unmarshal(envelope["meta"], &meta); err != nil {
 			return nil, err
 		}
-		for key, value := range platformMeta {
-			meta[key] = value
-		}
-		mergedMeta, err := json.Marshal(meta)
+		mergedMeta, err := json.Marshal(mergeCommandMeta(meta, platformMeta))
 		if err != nil {
 			return nil, err
 		}
@@ -2079,30 +2076,104 @@ func wrapPlatformStructuredOutput(data json.RawMessage, flags *rootFlags, result
 	return data, nil
 }
 
+// Command-owned metadata must remain authoritative when output wrappers add
+// provenance. A wrapper source on the other axis is kept beside it: transport
+// is live, local, or dry-run, and data-origin is catalogue or computed. Those
+// axes are not collapsed into one source string.
+func mergeCommandMeta(commandMeta, wrapperMeta map[string]any) map[string]any {
+	merged := make(map[string]any, len(commandMeta)+len(wrapperMeta))
+	for key, value := range commandMeta {
+		merged[key] = value
+	}
+	for key, value := range wrapperMeta {
+		if key == "source" {
+			preserveWrapperSource(merged, value)
+			continue
+		}
+		if _, present := merged[key]; present {
+			continue
+		}
+		merged[key] = value
+	}
+	return merged
+}
+
+func preserveWrapperSource(dst map[string]any, wrapperSource any) {
+	_, present := dst["source"]
+	wrapperText, wrapperOK := metaSourceString(wrapperSource)
+	if !present {
+		if wrapperOK {
+			dst["source"] = wrapperText
+		} else if wrapperSource != nil {
+			dst["source"] = wrapperSource
+		}
+		return
+	}
+	if !wrapperOK {
+		return
+	}
+	commandText, commandOK := metaSourceString(dst["source"])
+	if !commandOK || strings.EqualFold(commandText, wrapperText) {
+		return
+	}
+	commandAxis := metaSourceAxis(commandText)
+	wrapperAxis := metaSourceAxis(wrapperText)
+	if commandAxis == "" || wrapperAxis == "" || commandAxis == wrapperAxis {
+		return
+	}
+	if _, exists := dst[wrapperAxis]; exists {
+		return
+	}
+	dst[wrapperAxis] = wrapperText
+}
+
+func metaSourceString(value any) (string, bool) {
+	text, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", false
+	}
+	return text, true
+}
+
+func metaSourceAxis(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "live", "local", "dry-run":
+		return "transport"
+	case "catalogue", "computed":
+		return "data_origin"
+	default:
+		return ""
+	}
+}
+
 // wrapAgentOutput gives --agent callers one parseable top-level envelope for
 // generated command families that build typed Go values instead of endpoint
 // response bytes. The raw value is preserved under results so --json without
 // --agent can stay backward-compatible while shell agents get stable metadata.
-// A payload that is already a {meta, results} envelope is flattened so a
-// second wrap cannot overwrite live provenance with the local default.
+// A payload that is already a {meta, results} envelope is flattened. The
+// command's meta wins; a wrapper source on the other provenance axis is kept.
 func wrapAgentOutput(data json.RawMessage, meta map[string]any) (json.RawMessage, error) {
-	if meta == nil {
-		meta = map[string]any{}
+	merged := map[string]any{}
+	for key, value := range meta {
+		merged[key] = value
 	}
 	if results, existing, ok := splitResultsMetaEnvelope(data); ok {
-		for k, v := range existing {
-			if _, present := meta[k]; !present {
-				meta[k] = v
-			}
-		}
+		merged = mergeCommandMeta(existing, merged)
 		data = results
 	}
-	if _, ok := meta["source"]; !ok {
-		meta["source"] = "local"
+	source, hasSource := metaSourceString(merged["source"])
+	if !hasSource {
+		source = "local"
+		merged["source"] = source
 	}
-	if source, _ := meta["source"].(string); source == "live" {
+	if source == "live" {
 		data = unwrapSingleKeyArray(data)
 	}
+	meta = merged
 	var results any
 	if json.Valid(data) {
 		results = data
@@ -2159,8 +2230,10 @@ func declaredAgentSource(cmd *cobra.Command, flags *rootFlags) string {
 	switch commandDataSourceAnnotation(cmd) {
 	case "live":
 		return "live"
-	case "local", "computed":
+	case "local":
 		return "local"
+	case "computed":
+		return "computed"
 	case "auto":
 		if flags != nil && flags.dataSource == "local" {
 			return "local"
@@ -3734,6 +3807,8 @@ func assertLiveJSONBody(data json.RawMessage) error {
 // {"results": ..., "meta": {...}}. Single-key array envelopes from the API
 // (e.g. {"results": [...]}, {"data": [...]}) are unwrapped first so the
 // output shape is the same regardless of the API's wrapper key.
+// A payload that already has both meta and results stays one envelope;
+// the command's meta wins and provenance fills only missing keys.
 func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMessage, error) {
 	meta := map[string]any{"source": prov.Source}
 	if prov.SyncedAt != nil {
@@ -3747,6 +3822,16 @@ func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMess
 	}
 	if prov.Freshness != nil {
 		meta["freshness"] = prov.Freshness
+	}
+	if results, existing, ok := splitResultsMetaEnvelope(data); ok {
+		if !json.Valid(results) {
+			return nil, nonJSONPayloadError(results)
+		}
+		envelope := map[string]any{
+			"results": json.RawMessage(results),
+			"meta":    mergeCommandMeta(existing, meta),
+		}
+		return json.Marshal(envelope)
 	}
 	var results any
 	if json.Valid(data) {

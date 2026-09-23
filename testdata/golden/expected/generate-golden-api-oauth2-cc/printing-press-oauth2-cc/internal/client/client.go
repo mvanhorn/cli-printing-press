@@ -5,6 +5,9 @@ package client
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -291,6 +294,108 @@ func newRateLimiter(rateLimit float64) *cliutil.AdaptiveLimiter {
 	return cliutil.NewAdaptiveLimiter(rateLimit) // 0 -> nil (disabled); >0 -> explicit ceiling
 }
 
+// ErrRedirectUnsupportedScheme is returned when a redirect target is not http or https.
+var ErrRedirectUnsupportedScheme = errors.New("refusing redirect: unsupported scheme")
+
+// ErrRedirectProtocolDowngrade is returned when any hop in the chain moves from https to http.
+var ErrRedirectProtocolDowngrade = errors.New("refusing redirect: https to http downgrade")
+
+// ErrRedirectPrivateDestination is returned when a redirect leaves the origin for a local IP literal.
+var ErrRedirectPrivateDestination = errors.New("refusing redirect: loopback, private, link-local, or unspecified address")
+
+// A followed redirect can change scheme or land on a local address the caller
+// never asked to reach. Only http and https are allowed. An https-to-http
+// downgrade on any earlier hop is refused. An off-origin hop is refused when
+// the target host is a loopback, private, link-local, or unspecified IP
+// literal. Same-origin hops, including a local base URL and an omitted
+// default port, still proceed.
+//
+// The address check parses the URL host with net.ParseIP and does not resolve DNS.
+// A hostname that later points at a local address is not caught.
+// Resolving before dial invites DNS rebinding; closing that gap needs a
+// dialer Control hook, which this client does not install.
+func redirectDestinationRefused(next *url.URL, via []*http.Request) error {
+	if next == nil {
+		return ErrRedirectUnsupportedScheme
+	}
+	scheme := strings.ToLower(next.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return ErrRedirectUnsupportedScheme
+	}
+	if scheme == "http" {
+		for _, hop := range via {
+			if hop == nil || hop.URL == nil {
+				continue
+			}
+			if strings.EqualFold(hop.URL.Scheme, "https") {
+				return ErrRedirectProtocolDowngrade
+			}
+		}
+	}
+	if redirectTargetLeavesOrigin(next, via) && redirectHostIsBlockedLiteral(next.Hostname()) {
+		return ErrRedirectPrivateDestination
+	}
+	return nil
+}
+
+// The private-address refusal applies only when a hop leaves the first
+// request's origin. Raw Host strings treat an omitted default port as a
+// different host (http://127.0.0.1 vs http://127.0.0.1:80), so a local
+// redirect looks off-origin and then fails that check. Compare scheme,
+// hostname, and effective port instead. An empty chain fails closed so a
+// local literal is not followed blindly.
+func redirectTargetLeavesOrigin(next *url.URL, via []*http.Request) bool {
+	if len(via) == 0 || via[0] == nil || via[0].URL == nil {
+		return true
+	}
+	return !redirectSameEffectiveOrigin(next, via[0].URL)
+}
+
+func redirectSameEffectiveOrigin(a, b *url.URL) bool {
+	as, ah, ap, aok := redirectEffectiveOrigin(a)
+	bs, bh, bp, bok := redirectEffectiveOrigin(b)
+	if !aok || !bok {
+		return false
+	}
+	return as == bs && strings.EqualFold(ah, bh) && ap == bp
+}
+
+func redirectEffectiveOrigin(u *url.URL) (scheme, host, port string, ok bool) {
+	if u == nil {
+		return "", "", "", false
+	}
+	scheme = strings.ToLower(u.Scheme)
+	host = u.Hostname()
+	if host == "" {
+		return "", "", "", false
+	}
+	if raw := u.Port(); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 65535 {
+			return "", "", "", false
+		}
+		port = strconv.Itoa(n)
+	} else {
+		switch scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return "", "", "", false
+		}
+	}
+	return scheme, host, port, true
+}
+
+func redirectHostIsBlockedLiteral(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+}
+
 // redirectLeavesOrigin reports whether a redirect hop should drop custom
 // credentials. Host is compared against the original request so a foreign
 // hop (A -> B -> B) cannot re-stamp A's credential onto B. Same-host
@@ -344,16 +449,18 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			// "Moved Permanently" body back to the caller.
 			return errors.New("stopped after 10 redirects")
 		}
+		if err := redirectDestinationRefused(req.URL, via); err != nil {
+			return err
+		}
 		// Never carry credential material across a host change or protocol
 		// downgrade. Go strips Authorization and Cookie in common cases, but
 		// custom headers and URL query values need explicit removal here.
-		// Block protocol downgrade.
 		if redirectLeavesOrigin(req.URL, via) {
 			req.Header.Del("Authorization")
 		}
 		// Re-stamp only when the hop stays on the origin. Custom headers
 		// are never in the set Go removes automatically, so this gate
-		// has to do the work itself. Block protocol downgrade.
+		// has to do the work itself.
 		if !redirectLeavesOrigin(req.URL, via) {
 			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
 				req.Header.Set("Authorization", h)
@@ -1217,6 +1324,13 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		if err != nil {
 			return nil, 0, fmt.Errorf("reading response: %w", err)
 		}
+		// Decode after the read. A spec-set Accept-Encoding disables net/http's
+		// transparent gzip, but some hosts truncate the body unless that
+		// header is present, so the header stays and the bytes are inflated here.
+		respBody, err = decodeContentEncoding(resp.Header.Get("Content-Encoding"), respBody)
+		if err != nil {
+			return nil, 0, fmt.Errorf("decoding response: %w", err)
+		}
 
 		// Pace to the server-advertised budget when it ships rate-limit
 		// headers (every response, success or 429). This takes priority over
@@ -1776,6 +1890,99 @@ func UnwrapBinaryResponse(body []byte) (raw []byte, contentType string, ok bool)
 		return nil, "", false
 	}
 	return raw, env.ContentType, true
+}
+
+// net/http only auto-decompresses encodings it selected itself. A caller-set
+// Accept-Encoding disables that and leaves the compressed bytes, which have
+// to be inflated before they can be parsed. Output is capped so a small gzip
+// or deflate body cannot expand without bound.
+func decodeContentEncoding(encoding string, body []byte) ([]byte, error) {
+	encodings := contentEncodingTokens(encoding)
+	if len(encodings) == 0 || len(body) == 0 {
+		return body, nil
+	}
+	for i := len(encodings) - 1; i >= 0; i-- {
+		var err error
+		switch encodings[i] {
+		case "gzip", "x-gzip":
+			body, err = gunzipBody(body)
+		case "deflate":
+			body, err = inflateDeflateBody(body)
+		default:
+			return nil, fmt.Errorf("unsupported Content-Encoding %q", encodings[i])
+		}
+		if err != nil {
+			return nil, fmt.Errorf("decoding Content-Encoding %q: %w", encodings[i], err)
+		}
+	}
+	return body, nil
+}
+
+func contentEncodingTokens(header string) []string {
+	if strings.TrimSpace(header) == "" {
+		return nil
+	}
+	parts := strings.Split(header, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		token := strings.ToLower(strings.TrimSpace(part))
+		if i := strings.IndexByte(token, ';'); i >= 0 {
+			token = strings.TrimSpace(token[:i])
+		}
+		if token == "" || token == "identity" {
+			continue
+		}
+		out = append(out, token)
+	}
+	return out
+}
+
+// maxDecodedBodyBytes caps inflated Content-Encoding output. A small gzip or
+// deflate body can expand without bound; past this the request fails instead
+// of materializing the rest.
+const maxDecodedBodyBytes = 32 << 20
+
+var ErrDecodedBodyTooLarge = errors.New("decoded response exceeds size limit")
+
+func readDecodedBody(r io.Reader) ([]byte, error) {
+	buf, err := io.ReadAll(io.LimitReader(r, int64(maxDecodedBodyBytes)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(buf) > maxDecodedBodyBytes {
+		return nil, ErrDecodedBodyTooLarge
+	}
+	return buf, nil
+}
+
+func gunzipBody(body []byte) ([]byte, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	return readDecodedBody(zr)
+}
+
+func inflateDeflateBody(body []byte) ([]byte, error) {
+	decoded, err := inflateZlibBody(body)
+	// A zlib wrapper that only fails the size cap is still deflate. Falling
+	// through would decode the same bytes as raw flate.
+	if err == nil || errors.Is(err, ErrDecodedBodyTooLarge) {
+		return decoded, err
+	}
+	reader := flate.NewReader(bytes.NewReader(body))
+	defer reader.Close()
+	return readDecodedBody(reader)
+}
+
+func inflateZlibBody(body []byte) ([]byte, error) {
+	zr, err := zlib.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	return readDecodedBody(zr)
 }
 
 // sanitizeJSONResponse strips known JSONP/XSSI prefixes and UTF-8 BOM from

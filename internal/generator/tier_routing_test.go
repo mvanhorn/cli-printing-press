@@ -191,6 +191,8 @@ func TestTierRoutingRedirectsStripCustomHeaderCrossHost(t *testing.T) {
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -200,6 +202,7 @@ import (
 )
 
 func TestTierRedirectCustomHeaderStripping(t *testing.T) {
+	t.Setenv("PRINTING_PRESS_VERIFY", "1")
 	t.Setenv("TIER_REDIRECT_PAID_KEY", "paid-secret")
 
 	sameHostFinalHeader := ""
@@ -243,11 +246,74 @@ func TestTierRedirectCustomHeaderStripping(t *testing.T) {
 	cfg = &config.Config{BaseURL: crossHostStart.URL}
 	c = New(cfg, time.Second, 0).WithTier("paid")
 	c.NoCache = true
-	if _, err := c.Get(context.Background(), "/cross-start", nil); err != nil {
-		t.Fatalf("cross-host redirect request failed: %v", err)
+	_, err := c.Get(context.Background(), "/cross-start", nil)
+	if !errors.Is(err, ErrRedirectPrivateDestination) {
+		t.Fatalf("off-origin loopback redirect = %v, want ErrRedirectPrivateDestination", err)
 	}
-	if crossHostFinalHeader != "" {
-		t.Fatalf("cross-host redirect leaked X-Tier-Key = %q", crossHostFinalHeader)
+	if crossHostFinalHeader != "not-called" {
+		t.Fatalf("off-origin loopback target was reached with X-Tier-Key = %q", crossHostFinalHeader)
+	}
+
+	// 192.0.2.1 is TEST-NET-1, a public literal CheckRedirect follows.
+	// Dial it back to the local server to observe the header on the wire.
+	const publicHost = "192.0.2.1"
+	publicHeader := "not-called"
+	publicReqHost := ""
+	publicTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		publicHeader = r.Header.Get("X-Tier-Key")
+		publicReqHost = r.Host
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer publicTarget.Close()
+
+	_, publicPort, err := net.SplitHostPort(publicTarget.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicURL := "http://" + publicHost + ":" + publicPort + "/cross-final"
+
+	publicStartHeader := ""
+	publicStart := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		publicStartHeader = r.Header.Get("X-Tier-Key")
+		http.Redirect(w, r, publicURL, http.StatusFound)
+	}))
+	defer publicStart.Close()
+
+	cfg = &config.Config{BaseURL: publicStart.URL}
+	c = New(cfg, time.Second, 0).WithTier("paid")
+	c.NoCache = true
+	base, ok := c.HTTPClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport %T, want *http.Transport", c.HTTPClient.Transport)
+	}
+	tr := base.Clone()
+	tr.Proxy = nil
+	publicAddr := publicTarget.Listener.Addr().String()
+	dialer := &net.Dialer{}
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, _, splitErr := net.SplitHostPort(addr)
+		if splitErr == nil && host == publicHost {
+			addr = publicAddr
+		}
+		return dialer.DialContext(ctx, network, addr)
+	}
+	c.HTTPClient.Transport = tr
+
+	if _, err = c.Get(context.Background(), "/cross-start", nil); err != nil {
+		t.Fatalf("public cross-origin redirect request failed: %v", err)
+	}
+	if publicStartHeader != "paid-secret" {
+		t.Fatalf("public redirect first hop X-Tier-Key = %q, want paid-secret", publicStartHeader)
+	}
+	if publicReqHost != publicHost+":"+publicPort {
+		t.Fatalf("public redirect Host = %q, want %s:%s", publicReqHost, publicHost, publicPort)
+	}
+	if publicHeader == "not-called" {
+		t.Fatal("public cross-origin redirect was not followed")
+	}
+	if publicHeader != "" {
+		t.Fatalf("public cross-origin redirect leaked X-Tier-Key = %q", publicHeader)
 	}
 }
 `
