@@ -78,6 +78,260 @@ func TestExampleLineComposesNestedRequiredBodyExamples(t *testing.T) {
 	assert.Equal(t, "  body-ex-pp-cli places create --address-city Paris", got)
 }
 
+func TestRequestBodyExampleSynthesisEdges(t *testing.T) {
+	t.Parallel()
+
+	g := New(minimalSpec("body-ex"), t.TempDir())
+	deepLeaf := spec.Param{Name: "leaf", Type: "string", Required: true, Example: "shown"}
+	deepObject := spec.Param{
+		Name: "object", Type: "object", Required: true,
+		Example: map[string]any{"deep": "hidden"},
+		Fields: []spec.Param{
+			{Name: "deep", Type: "string", Required: true, Example: "hidden"},
+		},
+	}
+	deepBody := []spec.Param{{
+		Name: "parent", Type: "object", Required: true,
+		Fields: []spec.Param{{
+			Name: "child", Type: "object", Required: true,
+			Fields: []spec.Param{deepLeaf, deepObject},
+		}},
+	}}
+	truncatedOnly := []spec.Param{{
+		Name: "parent", Type: "object", Required: true,
+		Fields: []spec.Param{{
+			Name: "child", Type: "object", Required: true,
+			Fields: []spec.Param{deepObject},
+		}},
+	}}
+
+	tests := []struct {
+		name     string
+		command  string
+		endpoint string
+		ep       spec.Endpoint
+		want     string
+	}{
+		{
+			name:     "partial media example falls back to required properties",
+			command:  "places",
+			endpoint: "create",
+			ep: spec.Endpoint{
+				Method: "POST",
+				Path:   "/places",
+				Body: []spec.Param{
+					{Name: "holder", Type: "string", Example: "Acme"},
+					{Name: "address", Type: "object", Required: true, Fields: []spec.Param{
+						{Name: "city", Type: "string", Required: true, Example: "London"},
+					}},
+				},
+				RequestBodyExample: map[string]any{"holder": "Beta"},
+			},
+			want: "  body-ex-pp-cli places create --address-city London",
+		},
+		{
+			name:     "partial media example does not replace complete property examples",
+			command:  "accounts",
+			endpoint: "open",
+			ep: spec.Endpoint{
+				Method: "POST",
+				Path:   "/accounts",
+				Body: []spec.Param{
+					{Name: "holder", Type: "string", Required: true, Example: "Acme"},
+					{Name: "currency", Type: "string", Required: true, Example: "USD"},
+				},
+				RequestBodyExample: map[string]any{"holder": "Beta Inc"},
+			},
+			want: "  body-ex-pp-cli accounts open --holder Acme --currency USD",
+		},
+		{
+			name:     "partial media example without property examples is omitted",
+			command:  "places",
+			endpoint: "create",
+			ep: spec.Endpoint{
+				Method: "POST",
+				Path:   "/places",
+				Body: []spec.Param{
+					{Name: "holder", Type: "string"},
+					{Name: "address", Type: "object", Required: true, Fields: []spec.Param{
+						{Name: "city", Type: "string", Required: true},
+					}},
+				},
+				RequestBodyExample: map[string]any{"holder": "Beta"},
+			},
+		},
+		{
+			name:     "partial optional object falls back to required properties",
+			command:  "places",
+			endpoint: "create",
+			ep: spec.Endpoint{
+				Method: "POST",
+				Path:   "/places",
+				Body: []spec.Param{
+					{Name: "holder", Type: "string", Required: true, Example: "Acme"},
+					{Name: "address", Type: "object", Fields: []spec.Param{
+						{Name: "city", Type: "string", Required: true, Example: "London"},
+						{Name: "zip", Type: "string", Example: "E1"},
+					}},
+				},
+				RequestBodyExample: map[string]any{
+					"holder":  "Beta",
+					"address": map[string]any{"zip": "SW1"},
+				},
+			},
+			want: "  body-ex-pp-cli places create --holder Acme",
+		},
+		{
+			name:     "complete optional object keeps the media example",
+			command:  "places",
+			endpoint: "create",
+			ep: spec.Endpoint{
+				Method: "POST",
+				Path:   "/places",
+				Body: []spec.Param{
+					{Name: "holder", Type: "string", Required: true, Example: "Acme"},
+					{Name: "address", Type: "object", Fields: []spec.Param{
+						{Name: "city", Type: "string", Required: true, Example: "London"},
+						{Name: "zip", Type: "string", Example: "E1"},
+					}},
+				},
+				RequestBodyExample: map[string]any{
+					"holder":  "Beta",
+					"address": map[string]any{"city": "Paris", "zip": "SW1"},
+				},
+			},
+			want: "  body-ex-pp-cli places create --holder Beta --address-city Paris --address-zip SW1",
+		},
+		{
+			name:     "required field with a default does not block the media example",
+			command:  "accounts",
+			endpoint: "open",
+			ep: spec.Endpoint{
+				Method: "POST",
+				Path:   "/accounts",
+				Body: []spec.Param{
+					{Name: "holder", Type: "string", Required: true, Example: "Acme"},
+					{Name: "currency", Type: "string", Required: true, Default: "USD", Example: "GBP"},
+				},
+				RequestBodyExample: map[string]any{"holder": "Beta"},
+			},
+			want: "  body-ex-pp-cli accounts open --holder Beta",
+		},
+		{
+			name:     "media example omits object past flag depth",
+			command:  "nodes",
+			endpoint: "create",
+			ep: spec.Endpoint{
+				Method: "POST",
+				Path:   "/nodes",
+				Body:   deepBody,
+				RequestBodyExample: map[string]any{
+					"parent": map[string]any{
+						"child": map[string]any{
+							"leaf":   "shown",
+							"object": map[string]any{"deep": "hidden"},
+						},
+					},
+				},
+			},
+			want: "  body-ex-pp-cli nodes create --parent-child-leaf shown",
+		},
+		{
+			name:     "property examples omit object past flag depth",
+			command:  "nodes",
+			endpoint: "create",
+			ep: spec.Endpoint{
+				Method: "POST",
+				Path:   "/nodes",
+				Body:   deepBody,
+			},
+			want: "  body-ex-pp-cli nodes create --parent-child-leaf shown",
+		},
+		{
+			name:     "truncated object alone synthesizes no example",
+			command:  "nodes",
+			endpoint: "create",
+			ep: spec.Endpoint{
+				Method: "POST",
+				Path:   "/nodes",
+				Body:   truncatedOnly,
+				RequestBodyExample: map[string]any{
+					"parent": map[string]any{
+						"child": map[string]any{
+							"object": map[string]any{"deep": "hidden"},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:     "partial object property example falls back to child examples",
+			command:  "places",
+			endpoint: "create",
+			ep: spec.Endpoint{
+				Method: "POST",
+				Path:   "/places",
+				Body: []spec.Param{{
+					Name: "address", Type: "object", Required: true,
+					Example: map[string]any{"zip": "SW1"},
+					Fields: []spec.Param{
+						{Name: "city", Type: "string", Required: true, Example: "London"},
+						{Name: "zip", Type: "string", Example: "E1"},
+					},
+				}},
+			},
+			want: "  body-ex-pp-cli places create --address-city London",
+		},
+		{
+			name:     "complete object property example is used",
+			command:  "places",
+			endpoint: "create",
+			ep: spec.Endpoint{
+				Method: "POST",
+				Path:   "/places",
+				Body: []spec.Param{{
+					Name: "address", Type: "object", Required: true,
+					Example: map[string]any{"city": "Paris", "zip": "SW1"},
+					Fields: []spec.Param{
+						{Name: "city", Type: "string", Required: true, Example: "London"},
+						{Name: "zip", Type: "string", Example: "E1"},
+					},
+				}},
+			},
+			want: "  body-ex-pp-cli places create --address-city Paris --address-zip SW1",
+		},
+		{
+			name:     "flat partial media example falls back to the object flag",
+			command:  "uploads",
+			endpoint: "create",
+			ep: spec.Endpoint{
+				Method:             "POST",
+				Path:               "/uploads",
+				RequestContentType: "multipart/form-data",
+				Body: []spec.Param{
+					{
+						Name: "meta", Type: "object", Required: true,
+						Example: map[string]any{"city": "London"},
+						Fields: []spec.Param{
+							{Name: "city", Type: "string", Required: true, Example: "London"},
+						},
+					},
+					{Name: "note", Type: "string", Example: "hi"},
+				},
+				RequestBodyExample: map[string]any{"note": "skip-me"},
+			},
+			want: `  body-ex-pp-cli uploads create --meta '{"city":"London"}'`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := g.exampleLine(tt.command, tt.endpoint, tt.ep)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestExampleLineKeepsParameterExamplesOverRequestBody(t *testing.T) {
 	t.Parallel()
 
@@ -224,6 +478,7 @@ func TestGeneratedRequestBodyExamples(t *testing.T) {
 		if testing.Short() {
 			t.Skip("generated CLI help check runs in the full test lane")
 		}
+		requireGeneratedCompiles(t, dir)
 		runGoCommand(t, dir, "build", "-o", "ledger-ops-pp-cli", "./cmd/ledger-ops-pp-cli")
 		binary := filepath.Join(dir, "ledger-ops-pp-cli")
 		for _, example := range []string{openExample, transferExample, pingExample} {
@@ -303,7 +558,7 @@ func exampleContaining(t *testing.T, sources map[string]string, needle string) s
 
 func cobraExampleFromSource(t *testing.T, src string) (string, bool) {
 	t.Helper()
-	for _, line := range strings.Split(src, "\n") {
+	for line := range strings.SplitSeq(src, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if !strings.HasPrefix(trimmed, "Example:") {
 			continue

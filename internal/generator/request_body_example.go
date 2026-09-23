@@ -53,7 +53,10 @@ func requestBodyExampleArgParts(ep spec.Endpoint) ([]string, bool) {
 		}
 		return []string{"--body-json", text}, true
 	}
-	if obj, ok := exampleObject(ep.RequestBodyExample); ok {
+	// A media example is runnable only when it supplies every flag the
+	// command would reject as missing. Otherwise fall through to property
+	// examples so a partial document does not hide required fields.
+	if obj, ok := exampleObject(ep.RequestBodyExample); ok && mediaExampleCoversRequired(ep.Body, obj, 0, flat) {
 		if parts := mediaBodyExampleFlags(ep.Body, obj, "", 0, flat); len(parts) > 0 {
 			return parts, true
 		}
@@ -83,11 +86,16 @@ func requiredBodyExampleFlags(body []spec.Param, prefix string, depth int, flat 
 		if !p.Required {
 			continue
 		}
-		if !flat && p.Type == "object" && len(p.Fields) > 0 && depth+1 < maxBodyFlagDepth {
-			flag := joinFlag(prefix, publicFlagName(p))
-			if child, ok := exampleObject(p.Example); ok {
-				parts = append(parts, mediaBodyExampleFlags(p.Fields, child, flag, depth+1, flat)...)
+		if nestedBodyObject(p, flat) {
+			if depth+1 >= maxBodyFlagDepth {
 				continue
+			}
+			flag := joinFlag(prefix, publicFlagName(p))
+			if child, ok := exampleObject(p.Example); ok && mediaExampleCoversRequired(p.Fields, child, depth+1, flat) {
+				if emitted := mediaBodyExampleFlags(p.Fields, child, flag, depth+1, flat); len(emitted) > 0 {
+					parts = append(parts, emitted...)
+					continue
+				}
 			}
 			parts = append(parts, requiredBodyExampleFlags(p.Fields, flag, depth+1, flat)...)
 			continue
@@ -103,7 +111,12 @@ func requiredBodyExampleFlags(body []spec.Param, prefix string, depth int, flat 
 
 func emitBodyExampleValue(p spec.Param, val any, prefix string, depth int, flat bool) []string {
 	flag := joinFlag(prefix, publicFlagName(p))
-	if !flat && p.Type == "object" && len(p.Fields) > 0 && depth+1 < maxBodyFlagDepth {
+	if nestedBodyObject(p, flat) {
+		// renderBodyFlagRegs skips this subtree at the same boundary.
+		// Serializing it would advertise a flag the command does not register.
+		if depth+1 >= maxBodyFlagDepth {
+			return nil
+		}
 		child, ok := exampleObject(val)
 		if !ok {
 			return nil
@@ -115,6 +128,53 @@ func emitBodyExampleValue(p spec.Param, val any, prefix string, depth int, flat 
 		return nil
 	}
 	return appendExampleFlag(nil, flag, text)
+}
+
+// Multipart and form bodies stay one flag per top-level field, so only
+// JSON-object bodies expand into child flags.
+func nestedBodyObject(p spec.Param, flat bool) bool {
+	return !flat && p.Type == "object" && len(p.Fields) > 0
+}
+
+// A default already satisfies the generated required-flag check.
+func exampleFlagRequired(p spec.Param) bool {
+	return p.Required && p.Default == nil
+}
+
+// Every flag the command would reject as missing must be present.
+// Required fields under an optional object count only once that object
+// is populated, matching the conditional checks the command emits.
+func mediaExampleCoversRequired(body []spec.Param, obj map[string]any, depth int, flat bool) bool {
+	for _, p := range body {
+		if nestedBodyObject(p, flat) {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
+			childVal, present := exampleField(obj, p)
+			child, childOK := exampleObject(childVal)
+			if !present || !childOK {
+				if p.Required && !mediaExampleCoversRequired(p.Fields, nil, depth+1, flat) {
+					return false
+				}
+				continue
+			}
+			if !mediaExampleCoversRequired(p.Fields, child, depth+1, flat) {
+				return false
+			}
+			continue
+		}
+		if !exampleFlagRequired(p) {
+			continue
+		}
+		val, ok := exampleField(obj, p)
+		if !ok {
+			return false
+		}
+		if _, ok := exampleArgString(val); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func exampleField(obj map[string]any, p spec.Param) (any, bool) {
