@@ -173,6 +173,27 @@ func TestDecodeContentEncoding(t *testing.T) {
 	}
 }
 
+func TestDecodeContentEncodingRejectsExpansionPastLimit(t *testing.T) {
+	over := bytes.Repeat([]byte("A"), maxDecodedBodyBytes+1)
+	if _, err := decodeContentEncoding("gzip", mustGzip(t, over)); !errors.Is(err, ErrDecodedBodyTooLarge) {
+		t.Fatalf("gzip over limit: %v", err)
+	}
+	if _, err := decodeContentEncoding("deflate", mustZlib(t, over)); !errors.Is(err, ErrDecodedBodyTooLarge) {
+		t.Fatalf("zlib deflate over limit: %v", err)
+	}
+	if _, err := decodeContentEncoding("deflate", mustFlate(t, over)); !errors.Is(err, ErrDecodedBodyTooLarge) {
+		t.Fatalf("raw deflate over limit: %v", err)
+	}
+	exact := bytes.Repeat([]byte("B"), maxDecodedBodyBytes)
+	got, err := decodeContentEncoding("gzip", mustGzip(t, exact))
+	if err != nil {
+		t.Fatalf("gzip at limit: %v", err)
+	}
+	if len(got) != maxDecodedBodyBytes {
+		t.Fatalf("gzip at limit len=%d, want %d", len(got), maxDecodedBodyBytes)
+	}
+}
+
 func TestRedirectDestinationRefused(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -190,6 +211,15 @@ func TestRedirectDestinationRefused(t *testing.T) {
 		{name: "mapped loopback", prior: []string{"http://example.com/a"}, next: "http://[::ffff:127.0.0.1]/b", wantErr: ErrRedirectPrivateDestination},
 		{name: "different loopback port", prior: []string{"http://127.0.0.1:9/a"}, next: "http://127.0.0.1:10/b", wantErr: ErrRedirectPrivateDestination},
 		{name: "same loopback origin", prior: []string{"http://127.0.0.1:9/a"}, next: "http://127.0.0.1:9/b"},
+		{name: "implicit http port is same loopback origin", prior: []string{"http://127.0.0.1/a"}, next: "http://127.0.0.1:80/b"},
+		{name: "explicit http port is same loopback origin", prior: []string{"http://127.0.0.1:80/a"}, next: "http://127.0.0.1/b"},
+		{name: "leading zero port is same loopback origin", prior: []string{"http://127.0.0.1/a"}, next: "http://127.0.0.1:080/b"},
+		{name: "implicit https port is same loopback origin", prior: []string{"https://127.0.0.1/a"}, next: "https://127.0.0.1:443/b"},
+		{name: "ipv6 implicit port is same origin", prior: []string{"http://[::1]/a"}, next: "http://[::1]:80/b"},
+		{name: "host case and default port are same origin", prior: []string{"https://API.Example.COM/a"}, next: "https://api.example.com:443/b"},
+		{name: "scheme case is same origin", prior: []string{"HTTP://127.0.0.1/a"}, next: "http://127.0.0.1:80/b"},
+		{name: "scheme change on loopback is off origin", prior: []string{"http://127.0.0.1/a"}, next: "https://127.0.0.1/b", wantErr: ErrRedirectPrivateDestination},
+		{name: "http port 443 is not https origin", prior: []string{"http://127.0.0.1:443/a"}, next: "https://127.0.0.1/b", wantErr: ErrRedirectPrivateDestination},
 		{name: "private", prior: []string{"http://example.com/a"}, next: "http://10.1.2.3/b", wantErr: ErrRedirectPrivateDestination},
 		{name: "private 172", prior: []string{"http://example.com/a"}, next: "http://172.16.0.1/b", wantErr: ErrRedirectPrivateDestination},
 		{name: "private 192", prior: []string{"http://example.com/a"}, next: "http://192.168.1.1/b", wantErr: ErrRedirectPrivateDestination},
