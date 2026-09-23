@@ -270,9 +270,9 @@ var noticeContributorItemRE = regexp.MustCompile(`^\s+- `)
 
 // SyncContributorSurfaces rewrites README.md and NOTICE so their contributor
 // sections match the manifest. The creator line and SKILL author are left
-// alone. A second call with the same manifest is a no-op. README and NOTICE
-// are planned before either is written, and a write failure restores any
-// surface this call already changed.
+// alone. A second call with the same manifest is a no-op. Both surfaces are
+// planned first and replaced via a sibling temp file. A failed write restores
+// every surface this call changed, including the one that failed.
 func SyncContributorSurfaces(dir string) (bool, error) {
 	manifest, err := ReadCLIManifest(dir)
 	if err != nil {
@@ -282,7 +282,7 @@ func SyncContributorSurfaces(dir string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := commitContributorFiles(os.WriteFile, "", nil, nil, false, readme, notice); err != nil {
+	if err := commitContributorFiles(writeFileAtomic, "", nil, nil, false, readme, notice); err != nil {
 		return false, err
 	}
 	return readme.changed || notice.changed, nil
@@ -290,8 +290,8 @@ func SyncContributorSurfaces(dir string) (bool, error) {
 
 // RecordContributor appends p to the manifest contributors and rewrites the
 // README and NOTICE contributor sections to match. All three files are
-// planned before any write. A failure leaves the manifest and both surfaces
-// unchanged.
+// planned before any write. README and NOTICE are replaced atomically. A
+// failure restores the manifest and both surfaces.
 func RecordContributor(dir string, p spec.Person, front bool) (added, synced bool, err error) {
 	p = p.Clean()
 	if p.IsZero() {
@@ -318,7 +318,7 @@ func RecordContributor(dir string, p spec.Person, front bool) (added, synced boo
 	if err != nil {
 		return false, false, err
 	}
-	if err := commitContributorFiles(os.WriteFile, path, original, planned, manifestChanged, readme, notice); err != nil {
+	if err := commitContributorFiles(writeFileAtomic, path, original, planned, manifestChanged, readme, notice); err != nil {
 		return false, false, err
 	}
 	return added, readme.changed || notice.changed, nil
@@ -383,7 +383,9 @@ func commitContributorFiles(write contributorSurfaceWriter, manifestPath string,
 			continue
 		}
 		if err := write(surface.path, surface.next, surface.mode); err != nil {
-			if restoreErr := restoreContributorFiles(write, manifestPath, manifestOriginal, manifestChanged, written); restoreErr != nil {
+			// written holds only successful writes. Restore this surface too:
+			// a truncating writer may have replaced it before returning.
+			if restoreErr := restoreContributorFiles(write, manifestPath, manifestOriginal, manifestChanged, append(written, surface)); restoreErr != nil {
 				return fmt.Errorf("%w (also failed to restore attribution files: %v)", err, restoreErr)
 			}
 			return err
