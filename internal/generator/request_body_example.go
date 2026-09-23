@@ -11,10 +11,9 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
-// synthesizedRunnableExample builds a help Example. Operations that already
-// have parameter examples, or required parameters the example must include,
-// keep the parameter synthesis path. Body-only operations use the request
-// body instead. pp:happy-args is not derived here.
+// Parameter flags win when any parameter is required or already has an
+// example; a body-only line would omit flags the command rejects as
+// missing. This is help text; pp:happy-args stays a live-dogfood fixture.
 func (g *Generator) synthesizedRunnableExample(commandParts []string, endpoint spec.Endpoint) string {
 	if !endpointExampleFollowsParameters(endpoint) {
 		if parts, ok := requestBodyExampleArgParts(endpoint); ok {

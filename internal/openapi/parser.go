@@ -7092,9 +7092,9 @@ func parameterExample(parameter *openapi3.Parameter, schema *openapi3.Schema) an
 	return schemaExample(schema)
 }
 
-// requestBodyMediaExample returns the example on the same media type
-// mapRequestBody selects. A singular example wins; otherwise the first
-// named examples entry in sorted-name order, so the choice is stable.
+// Same media type mapRequestBody turns into flags, so example fields match
+// the generated command. A singular example wins; named examples follow
+// sorted-name order because map iteration is not stable.
 func requestBodyMediaExample(requestBodyRef *openapi3.RequestBodyRef) any {
 	requestBody := requestBodyValue(requestBodyRef)
 	if requestBody == nil {
