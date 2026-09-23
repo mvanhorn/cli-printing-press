@@ -396,5 +396,6 @@ func TestSiblingCLICandidatesUseWindowsSuffixThenFallback(t *testing.T) {
 `)
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "cli_path_extra_test.go"), []byte(testSrc.String()), 0o644))
 
+	requireGeneratedCompiles(t, outputDir)
 	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree")
 }
