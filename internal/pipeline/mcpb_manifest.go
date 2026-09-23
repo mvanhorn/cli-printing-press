@@ -133,9 +133,10 @@ type MCPBCompat struct {
 }
 
 // WriteMCPBManifest emits manifest.json for a CLI directory by reading
-// .printing-press.json. When mcp_binary is empty but the tree ships an MCP
-// surface (a cmd/*-pp-mcp directory or internal/mcp), the binary name is
-// inferred and the manifest is still written. A missing CLI manifest returns
+// .printing-press.json. When mcp_binary is empty and cmd contains exactly
+// one *-pp-mcp directory, that directory name is used. An internal/mcp tree
+// with no cmd/*-pp-mcp entry point is an error: the bundle manifest must
+// not name a binary the tree cannot build. A missing CLI manifest returns
 // nil so mcp-sync can refresh MCP packages before provenance exists; package
 // and promote call EnsureMCPBManifest, which fails in that case. Any other
 // read or write failure is returned.
@@ -262,14 +263,7 @@ func inferMCPBinaryName(dir string, m CLIManifest) (string, error) {
 	case 1:
 		return names[0], nil
 	case 0:
-		base := strings.TrimSpace(m.APIName)
-		if base == "" {
-			base = naming.TrimCLISuffix(strings.TrimSpace(m.CLIName))
-		}
-		if base == "" {
-			return "", fmt.Errorf("MCP surface present but the MCP binary name cannot be inferred")
-		}
-		return naming.MCP(base), nil
+		return "", fmt.Errorf("MCP surface present but no cmd/*%s entry point", naming.MCPSuffix)
 	default:
 		want := map[string]struct{}{}
 		if api := strings.TrimSpace(m.APIName); api != "" {

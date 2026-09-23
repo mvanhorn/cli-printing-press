@@ -47,11 +47,7 @@ the current git identity (github.user / user.name) is used.`,
 			if p.IsZero() {
 				return fmt.Errorf("no contributor identity: pass --handle/--name or set git config github.user / user.name")
 			}
-			added, err := pipeline.AppendContributor(dir, p, front)
-			if err != nil {
-				return &ExitError{Code: ExitPublishError, Err: err}
-			}
-			synced, err := pipeline.SyncContributorSurfaces(dir)
+			added, synced, err := pipeline.RecordContributor(dir, p, front)
 			if err != nil {
 				return &ExitError{Code: ExitPublishError, Err: err}
 			}

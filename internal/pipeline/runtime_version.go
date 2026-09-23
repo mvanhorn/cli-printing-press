@@ -283,13 +283,7 @@ func insertionLineAfterImports(filename string, data []byte) (int, error) {
 }
 
 func insertVersionLine(lines []string, after int, exact string) []string {
-	idx := after
-	if idx < 0 {
-		idx = 0
-	}
-	if idx > len(lines) {
-		idx = len(lines)
-	}
+	idx := min(max(after, 0), len(lines))
 	var extra []string
 	if idx > 0 && strings.TrimSpace(lines[idx-1]) != "" {
 		extra = append(extra, "")

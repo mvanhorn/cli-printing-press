@@ -72,6 +72,31 @@ func TestContributorsAddRepairsSurfacesWhenAlreadyRecorded(t *testing.T) {
 	assert.Contains(t, string(readme), "Created by [@creator](https://github.com/creator) (Creator Name).")
 }
 
+func TestContributorsAddLeavesAttributionUnchangedWhenNoticeMissing(t *testing.T) {
+	dir := t.TempDir()
+	writeContributorFixture(t, dir)
+	require.NoError(t, os.Remove(filepath.Join(dir, "NOTICE")))
+	beforeManifest, err := os.ReadFile(filepath.Join(dir, pipeline.CLIManifestFilename))
+	require.NoError(t, err)
+	beforeReadme, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	require.NoError(t, err)
+
+	cmd := newContributorsCmd()
+	cmd.SetArgs([]string{"add", "--dir", dir, "--handle", "h", "--name", "n"})
+	err = cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "NOTICE is missing")
+
+	manifest, err := os.ReadFile(filepath.Join(dir, pipeline.CLIManifestFilename))
+	require.NoError(t, err)
+	assert.Equal(t, string(beforeManifest), string(manifest))
+	readme, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	require.NoError(t, err)
+	assert.Equal(t, string(beforeReadme), string(readme))
+	_, statErr := os.Stat(filepath.Join(dir, "NOTICE"))
+	assert.True(t, os.IsNotExist(statErr))
+}
+
 func TestPublishManifestContractChecksContributorSurfaces(t *testing.T) {
 	stubPublishIdentityCommands(t,
 		"",

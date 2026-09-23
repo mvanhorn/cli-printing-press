@@ -270,46 +270,143 @@ var noticeContributorItemRE = regexp.MustCompile(`^\s+- `)
 
 // SyncContributorSurfaces rewrites README.md and NOTICE so their contributor
 // sections match the manifest. The creator line and SKILL author are left
-// alone. A second call with the same manifest is a no-op.
+// alone. A second call with the same manifest is a no-op. README and NOTICE
+// are planned before either is written, and a write failure restores any
+// surface this call already changed.
 func SyncContributorSurfaces(dir string) (bool, error) {
 	manifest, err := ReadCLIManifest(dir)
 	if err != nil {
 		return false, err
 	}
-	readmeChanged, err := syncContributorSurfaceFile(filepath.Join(dir, "README.md"), manifest.Contributors, applyReadmeContributors, "README.md")
+	readme, notice, err := planContributorSurfacePair(dir, manifest.Contributors)
 	if err != nil {
 		return false, err
 	}
-	noticeChanged, err := syncContributorSurfaceFile(filepath.Join(dir, "NOTICE"), manifest.Contributors, applyNoticeContributors, "NOTICE")
-	if err != nil {
+	if err := commitContributorFiles(os.WriteFile, "", nil, nil, false, readme, notice); err != nil {
 		return false, err
 	}
-	return readmeChanged || noticeChanged, nil
+	return readme.changed || notice.changed, nil
 }
 
-func syncContributorSurfaceFile(path string, contributors []spec.Person, apply func(string, []spec.Person) string, label string) (bool, error) {
+// RecordContributor appends p to the manifest contributors and rewrites the
+// README and NOTICE contributor sections to match. All three files are
+// planned before any write. A failure leaves the manifest and both surfaces
+// unchanged.
+func RecordContributor(dir string, p spec.Person, front bool) (added, synced bool, err error) {
+	p = p.Clean()
+	if p.IsZero() {
+		return false, false, nil
+	}
+	path := filepath.Join(dir, CLIManifestFilename)
+	original, err := os.ReadFile(path)
+	if err != nil {
+		return false, false, fmt.Errorf("reading CLI manifest: %w", err)
+	}
+	planned, added, manifestChanged, err := planAppendContributor(original, p, front)
+	if err != nil {
+		return false, false, err
+	}
+	manifestBytes := original
+	if manifestChanged {
+		manifestBytes = planned
+	}
+	var manifest CLIManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return false, false, fmt.Errorf("parsing CLI manifest: %w", err)
+	}
+	readme, notice, err := planContributorSurfacePair(dir, manifest.Contributors)
+	if err != nil {
+		return false, false, err
+	}
+	if err := commitContributorFiles(os.WriteFile, path, original, planned, manifestChanged, readme, notice); err != nil {
+		return false, false, err
+	}
+	return added, readme.changed || notice.changed, nil
+}
+
+type contributorSurfaceWriter func(path string, data []byte, perm os.FileMode) error
+
+type plannedSurface struct {
+	path     string
+	original []byte
+	next     []byte
+	mode     os.FileMode
+	changed  bool
+}
+
+func planContributorSurfacePair(dir string, contributors []spec.Person) (readme, notice plannedSurface, err error) {
+	readme, err = planContributorSurface(filepath.Join(dir, "README.md"), contributors, applyReadmeContributors, "README.md")
+	if err != nil {
+		return plannedSurface{}, plannedSurface{}, err
+	}
+	notice, err = planContributorSurface(filepath.Join(dir, "NOTICE"), contributors, applyNoticeContributors, "NOTICE")
+	if err != nil {
+		return plannedSurface{}, plannedSurface{}, err
+	}
+	return readme, notice, nil
+}
+
+func planContributorSurface(path string, contributors []spec.Person, apply func(string, []spec.Person) string, label string) (plannedSurface, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			if len(contributors) > 0 {
-				return false, fmt.Errorf("%s is missing; cannot record contributors", label)
+				return plannedSurface{}, fmt.Errorf("%s is missing; cannot record contributors", label)
 			}
-			return false, nil
+			return plannedSurface{}, nil
 		}
-		return false, err
-	}
-	next := apply(string(data), contributors)
-	if next == string(data) {
-		return false, nil
+		return plannedSurface{}, err
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return false, err
+		return plannedSurface{}, err
 	}
-	if err := os.WriteFile(path, []byte(next), info.Mode().Perm()); err != nil {
-		return false, err
+	next := apply(string(data), contributors)
+	return plannedSurface{
+		path:     path,
+		original: data,
+		next:     []byte(next),
+		mode:     info.Mode().Perm(),
+		changed:  next != string(data),
+	}, nil
+}
+
+func commitContributorFiles(write contributorSurfaceWriter, manifestPath string, manifestOriginal, manifestNext []byte, manifestChanged bool, surfaces ...plannedSurface) error {
+	if manifestChanged {
+		if err := writeFileAtomic(manifestPath, manifestNext, 0o644); err != nil {
+			return fmt.Errorf("writing CLI manifest: %w", err)
+		}
 	}
-	return true, nil
+	var written []plannedSurface
+	for _, surface := range surfaces {
+		if !surface.changed {
+			continue
+		}
+		if err := write(surface.path, surface.next, surface.mode); err != nil {
+			if restoreErr := restoreContributorFiles(write, manifestPath, manifestOriginal, manifestChanged, written); restoreErr != nil {
+				return fmt.Errorf("%w (also failed to restore attribution files: %v)", err, restoreErr)
+			}
+			return err
+		}
+		written = append(written, surface)
+	}
+	return nil
+}
+
+func restoreContributorFiles(write contributorSurfaceWriter, manifestPath string, manifestOriginal []byte, manifestChanged bool, written []plannedSurface) error {
+	var restoreErr error
+	for i := len(written) - 1; i >= 0; i-- {
+		surface := written[i]
+		if err := write(surface.path, surface.original, surface.mode); err != nil && restoreErr == nil {
+			restoreErr = fmt.Errorf("restoring %s: %w", filepath.Base(surface.path), err)
+		}
+	}
+	if manifestChanged {
+		if err := writeFileAtomic(manifestPath, manifestOriginal, 0o644); err != nil && restoreErr == nil {
+			restoreErr = fmt.Errorf("restoring %s: %w", CLIManifestFilename, err)
+		}
+	}
+	return restoreErr
 }
 
 func applyReadmeContributors(content string, contributors []spec.Person) string {

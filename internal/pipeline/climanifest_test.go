@@ -720,6 +720,26 @@ func TestPublishWorkingCLIWritesManifestForYAMLSpec(t *testing.T) {
 	assert.Equal(t, expectedChecksum, got.SpecChecksum, "publish must checksum YAML-archived specs")
 }
 
+func TestPublishWorkingCLIRemovesOutputWhenMCPBManifestFails(t *testing.T) {
+	home := setPressTestEnv(t)
+
+	workingDir := filepath.Join(home, "working", "mcpb-fail-pp-cli")
+	require.NoError(t, os.MkdirAll(filepath.Join(workingDir, "internal", "mcp"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workingDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+
+	state := NewState("mcpb-fail", workingDir)
+	require.NoError(t, os.MkdirAll(filepath.Dir(state.StatePath()), 0o755))
+	require.NoError(t, state.Save())
+
+	publishDir := filepath.Join(home, "library", "mcpb-fail-pp-cli")
+	_, err := PublishWorkingCLI(state, publishDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no cmd/*-pp-mcp entry point")
+	_, statErr := os.Stat(publishDir)
+	assert.True(t, os.IsNotExist(statErr))
+	assert.Empty(t, state.PublishedDir)
+}
+
 func TestPublishWorkingCLIManifestWithoutSpec(t *testing.T) {
 	home := setPressTestEnv(t)
 
@@ -1394,14 +1414,22 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.Empty(t, manifest.MCPBinary)
 	})
 
-	t.Run("infers MCP binary from internal mcp package", func(t *testing.T) {
+	t.Run("internal mcp package without a command entry point is an error", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, CLIManifest{APIName: "demo", CLIName: "demo-pp-cli"})
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "mcp"), 0o755))
 
-		require.NoError(t, WriteMCPBManifest(dir))
-		got := readMCPBManifest(t, dir)
-		assert.Equal(t, "demo-pp-mcp", got.Name)
+		err := WriteMCPBManifest(dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no cmd/*-pp-mcp entry point")
+		_, statErr := os.Stat(filepath.Join(dir, MCPBManifestFilename))
+		assert.True(t, os.IsNotExist(statErr))
+
+		err = EnsureMCPBManifest(dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no cmd/*-pp-mcp entry point")
+		_, statErr = os.Stat(filepath.Join(dir, MCPBManifestFilename))
+		assert.True(t, os.IsNotExist(statErr))
 	})
 
 	t.Run("MCP surface without CLI manifest is an error at package time", func(t *testing.T) {

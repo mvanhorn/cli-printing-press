@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -96,6 +97,74 @@ func TestAppendContributor(t *testing.T) {
 
 // A contributor recorded with only a display name (no handle) must still
 // dedupe by name, instead of re-appending on every call.
+func TestRecordContributorLeavesFilesUnchangedWhenNoticeMissing(t *testing.T) {
+	dir := t.TempDir()
+	body := `{"cli_name":"acme-pp-cli","creator":{"handle":"trevin-chow","name":"Trevin Chow"}}`
+	writeManifestJSON(t, dir, body)
+	readme := []byte("Created by [@trevin-chow](https://github.com/trevin-chow) (Trevin Chow).\n")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), readme, 0o644))
+
+	added, synced, err := RecordContributor(dir, spec.Person{Handle: "jane-doe", Name: "Jane Doe"}, false)
+	require.Error(t, err)
+	assert.False(t, added)
+	assert.False(t, synced)
+	assert.Contains(t, err.Error(), "NOTICE is missing")
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	assert.JSONEq(t, body, string(data))
+	got, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	require.NoError(t, err)
+	assert.Equal(t, string(readme), string(got))
+}
+
+func TestCommitContributorFilesRestoresManifestAndReadmeWhenNoticeWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, CLIManifestFilename)
+	originalManifest := []byte("{\"cli_name\":\"acme\"}\n")
+	plannedManifest := []byte("{\"cli_name\":\"acme\",\"contributors\":[{\"handle\":\"h\"}]}\n")
+	require.NoError(t, os.WriteFile(manifestPath, originalManifest, 0o644))
+	readmePath := filepath.Join(dir, "README.md")
+	noticePath := filepath.Join(dir, "NOTICE")
+	require.NoError(t, os.WriteFile(readmePath, []byte("old readme\n"), 0o644))
+	require.NoError(t, os.WriteFile(noticePath, []byte("old notice\n"), 0o644))
+
+	write := func(path string, data []byte, perm os.FileMode) error {
+		if filepath.Base(path) == "NOTICE" {
+			return errors.New("notice write failed")
+		}
+		return os.WriteFile(path, data, perm)
+	}
+	err := commitContributorFiles(write, manifestPath, originalManifest, plannedManifest, true,
+		plannedSurface{
+			path:     readmePath,
+			original: []byte("old readme\n"),
+			next:     []byte("new readme\n"),
+			mode:     0o644,
+			changed:  true,
+		},
+		plannedSurface{
+			path:     noticePath,
+			original: []byte("old notice\n"),
+			next:     []byte("new notice\n"),
+			mode:     0o644,
+			changed:  true,
+		},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "notice write failed")
+
+	gotManifest, err := os.ReadFile(manifestPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(originalManifest), string(gotManifest))
+	gotReadme, err := os.ReadFile(readmePath)
+	require.NoError(t, err)
+	assert.Equal(t, "old readme\n", string(gotReadme))
+	gotNotice, err := os.ReadFile(noticePath)
+	require.NoError(t, err)
+	assert.Equal(t, "old notice\n", string(gotNotice))
+}
+
 func TestAppendContributorNameOnlyDedupes(t *testing.T) {
 	t.Run("repeat name-only add is a no-op", func(t *testing.T) {
 		dir := t.TempDir()
