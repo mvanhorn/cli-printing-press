@@ -1113,6 +1113,25 @@ func TestBodyMap_DepthCap_EmitsBoundaryObject(t *testing.T) {
 	}
 }
 
+func TestBodyMap_DepthCap_ValidatesRequiredBoundaryFields(t *testing.T) {
+	t.Parallel()
+	body := deepBodyFixture(5)
+	boundary := &body[0].Fields[1].Fields[1]
+	boundary.Fields[0].Required = true
+	boundary.Fields[1].Fields[0].Required = true
+
+	got := bodyMap(body, "\t")
+	for _, want := range []string{
+		`missing required field \"sibling2\"`,
+		`asMap["level3Obj"]`,
+		`missing required field \"level3Obj.sibling3\"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("required boundary JSON validation must contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
 // TestBodyVarDecls_DepthCap pins the var-declaration set for a deep body.
 // Expanded leaves and the depth-boundary object each get a variable.
 func TestBodyVarDecls_DepthCap(t *testing.T) {

@@ -218,6 +218,22 @@ func TestKlaviyoStableCampaignBodiesOnWire(t *testing.T) {
 	}
 }
 
+func TestKlaviyoBoundaryObjectRequiresNestedData(t *testing.T) {
+	err := executeKlaviyoCommand(t,
+		"campaigns",
+		"--data-type", "campaign",
+		"--data-attributes-name", "Launch",
+		"--data-attributes-audiences", "{\"included\":[\"list-1\"]}",
+		"--data-attributes-campaign-messages", "{}",
+	)
+	if err == nil {
+		t.Fatal("expected missing nested data error")
+	}
+	if !strings.Contains(err.Error(), "missing required field") || !strings.Contains(err.Error(), "data") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestKlaviyoAssignmentDryRunPrintsExactBody(t *testing.T) {
 	previous := os.Stderr
 	reader, writer, err := os.Pipe()

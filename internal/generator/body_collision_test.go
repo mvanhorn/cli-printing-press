@@ -548,6 +548,33 @@ func TestGenerateBodyDepthCapPreventsCompilerExplosion(t *testing.T) {
 		"cap=3 must produce 9 expanded leaves and one JSON boundary object")
 }
 
+func TestDepthBoundaryObjectParticipatesInCollisionFlattening(t *testing.T) {
+	t.Parallel()
+	body := []spec.Param{
+		{Name: "outerInnerTarget", Type: "string"},
+		{
+			Name: "outer",
+			Type: "object",
+			Fields: []spec.Param{{
+				Name: "inner",
+				Type: "object",
+				Fields: []spec.Param{{
+					Name:   "target",
+					Type:   "object",
+					Fields: []spec.Param{{Name: "requiredValue", Type: "string", Required: true}},
+				}},
+			}},
+		},
+	}
+
+	flattened := flattenCollidingBodyFields(body)
+	require.Empty(t, flattened[1].Fields, "the colliding ancestor must collapse to one JSON flag")
+
+	vars := bodyVarDecls(spec.Endpoint{Body: body})
+	require.Equal(t, 1, strings.Count(vars, "bodyOuterInnerTarget"), "the generated identifier must be unique")
+	require.Contains(t, vars, "bodyOuter string", "the collapsed object must remain reachable")
+}
+
 // TestFlattenCollidingBodyFields_NestedPrefixShape covers the Atlassian
 // ProjectComponent shape: a top-level scalar `leadAccountId` plus a
 // sibling `lead` object whose nested `accountId` would expand to the

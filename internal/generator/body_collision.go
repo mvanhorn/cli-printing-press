@@ -23,5 +23,5 @@ import (
 // and renderBodyVarDecls (`toCamel(paramIdent(p))` joined to the
 // parent prefix) so detection and emission cannot drift.
 func flattenCollidingBodyFields(body []spec.Param) []spec.Param {
-	return paramnames.FlattenCollidingBodyFields(body)
+	return paramnames.FlattenCollidingBodyFieldsAtDepth(body, maxBodyFlagDepth)
 }

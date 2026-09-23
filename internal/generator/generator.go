@@ -7951,6 +7951,9 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 				fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"--%s must be a JSON %s, got JSON %%T\", parsed%s)\n", indent, flag, shape, ident)
 				fmt.Fprintf(b, "%s\t}\n", indent)
 				rhs = valueVar
+				if p.Type == "object" && len(p.Fields) > 0 {
+					renderRequiredJSONObjectChecks(b, p.Fields, indent+"\t", valueVar, flag, ident, "")
+				}
 			}
 			fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), rhs)
 			fmt.Fprintf(b, "%s}\n", indent)
@@ -7983,6 +7986,66 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 		}
 		fmt.Fprintf(b, "%s}\n", indent)
 	}
+}
+
+func renderRequiredJSONObjectChecks(b *strings.Builder, fields []spec.Param, indent, mapVar, flag, identPrefix, pathPrefix string) {
+	for _, field := range fields {
+		required := field.Required && !paramHasDefault(field)
+		nestedRequired := field.Type == "object" && len(field.Fields) > 0 && bodyHasRequiredJSONFields(field.Fields)
+		if !required && !nestedRequired {
+			continue
+		}
+
+		ident := identPrefix + toCamel(paramIdent(field))
+		fieldPath := field.BodyWireName()
+		if pathPrefix != "" {
+			fieldPath = pathPrefix + "." + fieldPath
+		}
+
+		if required && !nestedRequired {
+			fmt.Fprintf(b, "%sif _, required%sPresent := %s[%q]; !required%sPresent {\n", indent, ident, mapVar, field.BodyWireName(), ident)
+			fmt.Fprintf(b, "%s\treturn fmt.Errorf(%q)\n", indent, fmt.Sprintf("--%s JSON object missing required field %q", flag, fieldPath))
+			fmt.Fprintf(b, "%s}\n", indent)
+			continue
+		}
+
+		valueVar := "required" + ident + "Value"
+		presentVar := "required" + ident + "Present"
+		objectVar := "required" + ident + "Object"
+		mapValueVar := "required" + ident + "Map"
+		if required {
+			fmt.Fprintf(b, "%s%s, %s := %s[%q]\n", indent, valueVar, presentVar, mapVar, field.BodyWireName())
+			fmt.Fprintf(b, "%sif !%s {\n", indent, presentVar)
+			fmt.Fprintf(b, "%s\treturn fmt.Errorf(%q)\n", indent, fmt.Sprintf("--%s JSON object missing required field %q", flag, fieldPath))
+			fmt.Fprintf(b, "%s}\n", indent)
+			fmt.Fprintf(b, "%s%s, %s := %s.(map[string]any)\n", indent, mapValueVar, objectVar, valueVar)
+			fmt.Fprintf(b, "%sif !%s {\n", indent, objectVar)
+			fmt.Fprintf(b, "%s\treturn fmt.Errorf(%q)\n", indent, fmt.Sprintf("--%s JSON field %q must be an object", flag, fieldPath))
+			fmt.Fprintf(b, "%s}\n", indent)
+			renderRequiredJSONObjectChecks(b, field.Fields, indent, mapValueVar, flag, ident, fieldPath)
+			continue
+		}
+
+		fmt.Fprintf(b, "%sif %s, %s := %s[%q]; %s {\n", indent, valueVar, presentVar, mapVar, field.BodyWireName(), presentVar)
+		fmt.Fprintf(b, "%s\t%s, %s := %s.(map[string]any)\n", indent, mapValueVar, objectVar, valueVar)
+		fmt.Fprintf(b, "%s\tif !%s {\n", indent, objectVar)
+		fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(%q)\n", indent, fmt.Sprintf("--%s JSON field %q must be an object", flag, fieldPath))
+		fmt.Fprintf(b, "%s\t}\n", indent)
+		renderRequiredJSONObjectChecks(b, field.Fields, indent+"\t", mapValueVar, flag, ident, fieldPath)
+		fmt.Fprintf(b, "%s}\n", indent)
+	}
+}
+
+func bodyHasRequiredJSONFields(fields []spec.Param) bool {
+	for _, field := range fields {
+		if field.Required && !paramHasDefault(field) {
+			return true
+		}
+		if field.Type == "object" && len(field.Fields) > 0 && bodyHasRequiredJSONFields(field.Fields) {
+			return true
+		}
+	}
+	return false
 }
 
 func bodyLeafPresenceExpr(p spec.Param, ident, flag string) string {
@@ -8214,44 +8277,6 @@ func bodyFieldsChangedExpr(body []spec.Param, depth int, flagPrefix, identPrefix
 		expressions = append(expressions, bodyLeafPresenceExpr(p, ident, flag))
 	}
 	return strings.Join(expressions, " || ")
-}
-
-// bodyExceedsFlagDepth reports whether emitting per-field body flags for
-// the endpoint would have truncated any nested-object subtree under
-// maxBodyFlagDepth. Multipart/form endpoints stay flat and never
-// truncate; BodyJSONFallback endpoints route through a single
-// --body-json flag and never reach the per-field path.
-//
-// The walk uses flattenCollidingBodyFields because that is what the
-// emitters render. Collision-flattening clears `Fields` on an object
-// whose dot-flattened subtree would clash with a sibling identifier,
-// turning it into a JSON-string leaf the user passes as a single flag.
-// Walking the raw body would falsely report truncation in that case
-// and rewrite the --stdin help text even when every field is exposed.
-func bodyExceedsFlagDepth(endpoint spec.Endpoint) bool {
-	if endpoint.BodyJSONFallback || bodyUsesFlatEmission(endpoint) {
-		return false
-	}
-	return walkBodyExceedsDepth(flattenCollidingBodyFields(endpoint.Body), 0)
-}
-
-// walkBodyExceedsDepth returns true as soon as any nested-object subtree
-// at depth >= maxBodyFlagDepth-1 is found. The walk is bounded by the
-// same depth check the emitters use, so a Param graph that
-// intentionally self-references (cyclic spec) does not loop here.
-func walkBodyExceedsDepth(body []spec.Param, depth int) bool {
-	for _, p := range body {
-		if p.Type != "object" || len(p.Fields) == 0 {
-			continue
-		}
-		if depth+1 >= maxBodyFlagDepth {
-			return true
-		}
-		if walkBodyExceedsDepth(p.Fields, depth+1) {
-			return true
-		}
-	}
-	return false
 }
 
 func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagPrefix, identPrefix string, topLevel bool) {
