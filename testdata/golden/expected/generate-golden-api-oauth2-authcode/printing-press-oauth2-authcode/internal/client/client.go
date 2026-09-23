@@ -292,16 +292,17 @@ var ErrRedirectProtocolDowngrade = errors.New("refusing redirect: https to http 
 // ErrRedirectPrivateDestination is returned when a redirect leaves the origin for a local IP literal.
 var ErrRedirectPrivateDestination = errors.New("refusing redirect: loopback, private, link-local, or unspecified address")
 
-// redirectDestinationRefused rejects a hop the client must not follow.
-// Allowed schemes are http and https. An https-to-http downgrade on any
-// earlier hop is refused. An off-origin hop is refused when the target host
-// is a loopback, private, link-local, or unspecified IP literal. Same-origin
-// hops, including a local base URL and an omitted default port, still proceed.
+// A followed redirect can change scheme or land on a local address the caller
+// never asked to reach. Only http and https are allowed. An https-to-http
+// downgrade on any earlier hop is refused. An off-origin hop is refused when
+// the target host is a loopback, private, link-local, or unspecified IP
+// literal. Same-origin hops, including a local base URL and an omitted
+// default port, still proceed.
 //
 // The address check parses the URL host with net.ParseIP and does not resolve DNS.
-// A hostname that later points at a local address is not caught. Resolving
-// before dial invites DNS rebinding; closing that gap needs a dialer Control
-// hook, which this client does not install.
+// A hostname that later points at a local address is not caught.
+// Resolving before dial invites DNS rebinding; closing that gap needs a
+// dialer Control hook, which this client does not install.
 func redirectDestinationRefused(next *url.URL, via []*http.Request) error {
 	if next == nil {
 		return ErrRedirectUnsupportedScheme
@@ -326,11 +327,12 @@ func redirectDestinationRefused(next *url.URL, via []*http.Request) error {
 	return nil
 }
 
-// redirectTargetLeavesOrigin reports whether next is a different effective
-// origin than the first hop. Raw Host strings treat an omitted default port
-// as a different host (http://127.0.0.1 vs http://127.0.0.1:80), which makes
-// a local redirect look off-origin and then fail the private-address check.
-// An empty chain fails closed so a local literal is not followed blindly.
+// The private-address refusal applies only when a hop leaves the first
+// request's origin. Raw Host strings treat an omitted default port as a
+// different host (http://127.0.0.1 vs http://127.0.0.1:80), so a local
+// redirect looks off-origin and then fails that check. Compare scheme,
+// hostname, and effective port instead. An empty chain fails closed so a
+// local literal is not followed blindly.
 func redirectTargetLeavesOrigin(next *url.URL, via []*http.Request) bool {
 	if len(via) == 0 || via[0] == nil || via[0].URL == nil {
 		return true
@@ -1729,9 +1731,10 @@ func UnwrapBinaryResponse(body []byte) (raw []byte, contentType string, ok bool)
 	return raw, env.ContentType, true
 }
 
-// decodeContentEncoding inflates a body whose Content-Encoding the transport
-// left intact. net/http only auto-decompresses encodings it selected itself;
-// a caller-set Accept-Encoding disables that and returns the compressed bytes.
+// net/http only auto-decompresses encodings it selected itself. A caller-set
+// Accept-Encoding disables that and leaves the compressed bytes, which have
+// to be inflated before they can be parsed. Output is capped so a small gzip
+// or deflate body cannot expand without bound.
 func decodeContentEncoding(encoding string, body []byte) ([]byte, error) {
 	encodings := contentEncodingTokens(encoding)
 	if len(encodings) == 0 || len(body) == 0 {
