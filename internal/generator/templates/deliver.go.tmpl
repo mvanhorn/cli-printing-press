@@ -118,7 +118,6 @@ func deliverFile(path string, body []byte) error {
 // safeJoinUnder joins a single untrusted name (a response id or title) under
 // dir. Separators and ".." are rejected so the result cannot leave dir.
 func safeJoinUnder(dir, name string) (string, error) {
-	name = strings.TrimSpace(name)
 	if name == "" || name == "." || name == ".." || filepath.IsAbs(name) || strings.ContainsAny(name, `/\`) {
 		return "", fmt.Errorf("download name %q is not a single path segment", name)
 	}

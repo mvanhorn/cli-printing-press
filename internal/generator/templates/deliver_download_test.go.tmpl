@@ -24,6 +24,20 @@ func TestWriteDownloadUnderRejectsEscapeAndUsesPrivateMode(t *testing.T) {
 	if err := writeDownloadUnder(dir, "clip-1.mp3", []byte("audio")); err != nil {
 		t.Fatal(err)
 	}
+	spaced := "report.txt "
+	if err := writeDownloadUnder(dir, spaced, []byte("exact")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "report.txt")); !os.IsNotExist(err) {
+		t.Fatalf("trimmed basename was written: %v", err)
+	}
+	spacedBody, err := os.ReadFile(filepath.Join(dir, spaced))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(spacedBody) != "exact" {
+		t.Fatalf("spaced body = %q", spacedBody)
+	}
 	path := filepath.Join(dir, "clip-1.mp3")
 	got, err := os.ReadFile(path)
 	if err != nil {
