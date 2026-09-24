@@ -1,0 +1,33 @@
+openapi: "3.0.3"
+info:
+  title: Templated Auth Token
+  version: "1.0.0"
+  x-tenant-env-var: TENANT_ID
+servers:
+  - url: https://api.example.net
+security:
+  - OAuth2CC: []
+components:
+  securitySchemes:
+    OAuth2CC:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://api.example.net/tenants/{tenant}/token
+          scopes:
+            read: Read access
+paths:
+  /tenants/{tenant}/items:
+    get:
+      tags: [items]
+      operationId: listItems
+      summary: List items
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK

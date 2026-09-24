@@ -3083,6 +3083,13 @@ func (c *Client) googleServiceAccountAuthHeader(ctx context.Context) (string, er
 	} else {
 		jwtConfig.TokenURL = {{printf "%q" .Auth.TokenURL}}
 	}
+{{- if authURLNeedsTemplateSubstitution .Auth.TokenURL}}
+	resolvedTokenURL, resolveErr := ResolveTemplateURL(jwtConfig.TokenURL, c.Config.TemplateVars)
+	if resolveErr != nil {
+		return "", resolveErr
+	}
+	jwtConfig.TokenURL = resolvedTokenURL
+{{- end}}
 {{- end}}
 	exchangeCtx, cancel := context.WithTimeout(ctx, c.ConfiguredTimeout())
 	defer cancel()
@@ -3250,6 +3257,17 @@ func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecr
 	if tokenURL == "" {
 		return nil
 	}
+{{- if authURLNeedsTemplateSubstitution .Auth.TokenURL}}
+	templateVars := map[string]string(nil)
+	if c.Config != nil {
+		templateVars = c.Config.TemplateVars
+	}
+	resolved, resolveErr := ResolveTemplateURL(tokenURL, templateVars)
+	if resolveErr != nil {
+		return resolveErr
+	}
+	tokenURL = resolved
+{{- end}}
 {{- if clientCredentialsTokenURLHasTenant .Auth}}
 	tenant := ""
 	if c.Config != nil {
@@ -3328,6 +3346,13 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 	if tokenURL == "" {
 		tokenURL = {{printf "%q" .Auth.TokenURL}}
 	}
+{{- if authURLNeedsTemplateSubstitution .Auth.TokenURL}}
+	resolved, resolveErr := ResolveTemplateURL(tokenURL, c.Config.TemplateVars)
+	if resolveErr != nil {
+		return resolveErr
+	}
+	tokenURL = resolved
+{{- end}}
 
 	params := url.Values{
 		"grant_type":    {"refresh_token"},

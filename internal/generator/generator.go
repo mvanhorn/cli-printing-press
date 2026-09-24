@@ -488,6 +488,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointTemplateEnvName": func(placeholder string) string {
 			return s.EndpointTemplateEnvName(placeholder)
 		},
+		"authURLNeedsTemplateSubstitution": func(raw string) bool {
+			return s.AuthURLUsesEndpointTemplateVar(raw)
+		},
 		"globalScopeEnvName": func(param spec.Param) string {
 			return globalScopeEnvName(s.Name, param)
 		},

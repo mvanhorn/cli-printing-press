@@ -14,6 +14,9 @@ import (
 
 	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/config"
+{{- if or (authURLNeedsTemplateSubstitution .Auth.TokenURL) (authURLNeedsTemplateSubstitution .Auth.DeviceAuthorizationURL)}}
+	"{{modulePath}}/internal/client"
+{{- end}}
 	"{{modulePath}}/internal/oauth"
 	"github.com/spf13/cobra"
 )
@@ -124,10 +127,24 @@ for CLIs and agents: no localhost callback server and no client secret.
 			if tokenURL == "" {
 			tokenURL = {{printf "%q" .Auth.TokenURL}}
 			}
+{{- if authURLNeedsTemplateSubstitution .Auth.TokenURL}}
+			resolved, resolveErr := client.ResolveTemplateURL(tokenURL, cfg.TemplateVars)
+			if resolveErr != nil {
+				return authErr(resolveErr)
+			}
+			tokenURL = resolved
+{{- end}}
 			deviceAuthorizationURL := cfg.DeviceAuthorizationURL
 			if deviceAuthorizationURL == "" {
 				deviceAuthorizationURL = "{{.Auth.DeviceAuthorizationURL}}"
 			}
+{{- if authURLNeedsTemplateSubstitution .Auth.DeviceAuthorizationURL}}
+			resolvedDeviceURL, deviceResolveErr := client.ResolveTemplateURL(deviceAuthorizationURL, cfg.TemplateVars)
+			if deviceResolveErr != nil {
+				return authErr(deviceResolveErr)
+			}
+			deviceAuthorizationURL = resolvedDeviceURL
+{{- end}}
 			scopes := []string{ {{- range .Auth.Scopes}}"{{.}}", {{end}} }
 			if scope := cliutil.EnvOverride("{{envName .Name}}_OAUTH_SCOPE"); scope != "" {
 				scopes = strings.Fields(scope)
@@ -240,6 +257,13 @@ func newAuthPollCmd(flags *rootFlags) *cobra.Command {
 			if tokenURL == "" {
 			tokenURL = {{printf "%q" .Auth.TokenURL}}
 			}
+{{- if authURLNeedsTemplateSubstitution .Auth.TokenURL}}
+			resolved, resolveErr := client.ResolveTemplateURL(tokenURL, cfg.TemplateVars)
+			if resolveErr != nil {
+				return authErr(resolveErr)
+			}
+			tokenURL = resolved
+{{- end}}
 			ctx := cmd.Context()
 			if timeout > 0 {
 				var cancel context.CancelFunc
@@ -289,6 +313,13 @@ func newAuthRefreshCmd(flags *rootFlags) *cobra.Command {
 			if tokenURL == "" {
 			tokenURL = {{printf "%q" .Auth.TokenURL}}
 			}
+{{- if authURLNeedsTemplateSubstitution .Auth.TokenURL}}
+			resolved, resolveErr := client.ResolveTemplateURL(tokenURL, cfg.TemplateVars)
+			if resolveErr != nil {
+				return authErr(resolveErr)
+			}
+			tokenURL = resolved
+{{- end}}
 			tok, err := oauth.RefreshToken(cmd.Context(), nil, tokenURL, cfg.ClientID, cfg.ClientSecret, cfg.RefreshToken)
 			if err != nil {
 				return authErr(err)

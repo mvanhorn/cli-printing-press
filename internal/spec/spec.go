@@ -1809,14 +1809,66 @@ func validateHTTPSURL(label, raw string) error {
 	}
 }
 
-func validateAuthURL(label, raw string) error {
-	if strings.ContainsAny(raw, "{}<>") {
+func validateAuthURL(label, raw string, registered []string) error {
+	concrete := substituteRegisteredAuthPlaceholders(raw, registered)
+	if strings.ContainsAny(concrete, "{}<>") {
 		return fmt.Errorf("%s contains an unresolved placeholder; supply a concrete URL before generation", label)
 	}
-	if err := validateHTTPSURL(label, raw); err != nil {
+	if err := validateHTTPSURL(label, concrete); err != nil {
 		return err
 	}
 	return nil
+}
+
+// Token, device, and authorization URLs may keep a {name} that is a
+// registered runtime template var. Unregistered braces still fail
+// validation. Substitution happens at request time on the same path as
+// server URLs, so the placeholder is not dialed as a literal host.
+func (s *APISpec) AuthURLUsesEndpointTemplateVar(raw string) bool {
+	if s == nil {
+		return false
+	}
+	return authURLUsesRegisteredPlaceholder(raw, s.EndpointTemplateVars)
+}
+
+func authURLUsesRegisteredPlaceholder(raw string, registered []string) bool {
+	if !strings.Contains(raw, "{") || len(registered) == 0 {
+		return false
+	}
+	allowed := registeredAuthPlaceholderSet(registered)
+	for _, match := range pathParamRe.FindAllStringSubmatch(raw, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		if _, ok := allowed[match[1]]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func substituteRegisteredAuthPlaceholders(raw string, registered []string) string {
+	if !strings.Contains(raw, "{") || len(registered) == 0 {
+		return raw
+	}
+	allowed := registeredAuthPlaceholderSet(registered)
+	return pathParamRe.ReplaceAllStringFunc(raw, func(match string) string {
+		name := match[1 : len(match)-1]
+		if _, ok := allowed[name]; ok {
+			return "x"
+		}
+		return match
+	})
+}
+
+func registeredAuthPlaceholderSet(registered []string) map[string]struct{} {
+	allowed := make(map[string]struct{}, len(registered))
+	for _, name := range registered {
+		if name != "" {
+			allowed[name] = struct{}{}
+		}
+	}
+	return allowed
 }
 
 // validateOAuth2Grant ensures OAuth2Grant is empty or one of the supported
@@ -2026,16 +2078,16 @@ func authFormatPlaceholderSet(auth AuthConfig) map[string]struct{} {
 
 // AuthConfig.Type is intentionally skipped: the field is ignored for
 // non-oauth2 types, matching how SessionTTLHours and similar fields behave.
-func validateOAuth2Grant(c AuthConfig) error {
+func validateOAuth2Grant(c AuthConfig, registered []string) error {
 	switch c.OAuth2Grant {
 	case "", OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials, OAuth2GrantDeviceCode:
 		if (c.OAuth2Grant == "" || c.OAuth2Grant == OAuth2GrantAuthorizationCode) && strings.TrimSpace(c.TokenURL) != "" {
-			if err := validateAuthURL("auth.token_url", c.TokenURL); err != nil {
+			if err := validateAuthURL("auth.token_url", c.TokenURL, registered); err != nil {
 				return err
 			}
 		}
 		if c.OAuth2Grant == OAuth2GrantClientCredentials && strings.TrimSpace(c.TokenURL) != "" {
-			if err := validateAuthURL("auth.token_url", c.TokenURL); err != nil {
+			if err := validateAuthURL("auth.token_url", c.TokenURL, registered); err != nil {
 				return err
 			}
 		}
@@ -2046,10 +2098,10 @@ func validateOAuth2Grant(c AuthConfig) error {
 			if strings.TrimSpace(c.TokenURL) == "" {
 				return fmt.Errorf("auth.token_url is required when auth.oauth2_grant is %q", OAuth2GrantDeviceCode)
 			}
-			if err := validateAuthURL("auth.device_authorization_url", c.DeviceAuthorizationURL); err != nil {
+			if err := validateAuthURL("auth.device_authorization_url", c.DeviceAuthorizationURL, registered); err != nil {
 				return err
 			}
-			if err := validateAuthURL("auth.token_url", c.TokenURL); err != nil {
+			if err := validateAuthURL("auth.token_url", c.TokenURL, registered); err != nil {
 				return err
 			}
 		}
@@ -2060,14 +2112,14 @@ func validateOAuth2Grant(c AuthConfig) error {
 	}
 }
 
-func validateOAuth2Refresh(c AuthConfig) error {
+func validateOAuth2Refresh(c AuthConfig, registered []string) error {
 	if c.Type != AuthTypeOAuth2Refresh {
 		return nil
 	}
 	if strings.TrimSpace(c.TokenURL) == "" {
 		return fmt.Errorf("auth.token_url is required when auth.type is %q", AuthTypeOAuth2Refresh)
 	}
-	if err := validateAuthURL("auth.token_url", c.TokenURL); err != nil {
+	if err := validateAuthURL("auth.token_url", c.TokenURL, registered); err != nil {
 		return err
 	}
 	return nil
@@ -4555,10 +4607,10 @@ func (s *APISpec) Validate() error {
 	if err := validateBearerRefresh(s); err != nil {
 		return err
 	}
-	if err := validateOAuth2Grant(s.Auth); err != nil {
+	if err := validateOAuth2Grant(s.Auth, s.EndpointTemplateVars); err != nil {
 		return err
 	}
-	if err := validateOAuth2Refresh(s.Auth); err != nil {
+	if err := validateOAuth2Refresh(s.Auth, s.EndpointTemplateVars); err != nil {
 		return err
 	}
 	if err := validateAuthPrefix(s.Auth); err != nil {

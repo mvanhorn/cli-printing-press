@@ -43,7 +43,7 @@ import (
 {{- if eq .Auth.Subtype "google_service_account"}}
 	"golang.org/x/oauth2/google"
 {{- end}}
-{{- if eq .Auth.Type "session_handshake"}}
+{{- if or (eq .Auth.Type "session_handshake") (and (eq .Auth.Subtype "google_service_account") (authURLNeedsTemplateSubstitution .Auth.TokenURL))}}
 	"{{modulePath}}/internal/client"
 {{- end}}
 	"{{modulePath}}/internal/cliutil"
@@ -132,6 +132,13 @@ func newAuthServiceAccountCmd(flags *rootFlags) *cobra.Command {
 			if tokenURL == "" {
 				tokenURL = {{printf "%q" .Auth.TokenURL}}
 			}
+{{- if authURLNeedsTemplateSubstitution .Auth.TokenURL}}
+			resolved, resolveErr := client.ResolveTemplateURL(tokenURL, cfg.TemplateVars)
+			if resolveErr != nil {
+				return authErr(resolveErr)
+			}
+			tokenURL = resolved
+{{- end}}
 {{- end}}
 			accessToken, expiry, err := mintGoogleServiceAccountToken(cmd.Context(), keyPath, tokenURL, impersonate, scopes)
 			if err != nil {

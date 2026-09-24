@@ -1,0 +1,3 @@
+# Pins the emitted auth URL resolver, including the single path-escape
+# for a placeholder that is also a promoted global path var.
+templated-auth-token/internal/client/url.go
