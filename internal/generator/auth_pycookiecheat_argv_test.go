@@ -30,10 +30,11 @@ func buildPycookiecheatArgvStub(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	src := filepath.Join(dir, "stub.go")
-	bin := filepath.Join(dir, "py-stub")
+	binName := "python3"
 	if runtime.GOOS == "windows" {
-		bin += ".exe"
+		binName += ".exe"
 	}
+	bin := filepath.Join(dir, binName)
 	const content = `package main
 import (
 	"encoding/json"
@@ -41,7 +42,19 @@ import (
 )
 func main() {
 	path := os.Getenv("PP_ARGV_LOG")
-	data, _ := json.Marshal(os.Args[1:])
+	args := os.Args[1:]
+	rec := map[string]any{"args": args}
+	// runPythonFile deletes the helper after the process exits, so capture
+	// the program text and mode while the file still exists.
+	if len(args) > 0 {
+		if info, err := os.Stat(args[0]); err == nil && !info.IsDir() {
+			rec["mode"] = int(info.Mode().Perm())
+			if b, err := os.ReadFile(args[0]); err == nil {
+				rec["script"] = string(b)
+			}
+		}
+	}
+	data, _ := json.Marshal(rec)
 	_ = os.WriteFile(path, data, 0o600)
 	_, _ = os.Stdout.Write([]byte("{\"session_id\":\"ok\"}\n"))
 }
@@ -51,7 +64,7 @@ func main() {
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
-	return bin
+	return dir
 }
 
 // Generated cookie-auth CLIs must pass the Chrome cookie DB path to
@@ -73,13 +86,14 @@ func TestGeneratedPycookiecheatPassesCookiePathViaArgv(t *testing.T) {
 	assert.NotContains(t, fn, "fmt.Sprintf")
 	assert.NotContains(t, fn, "safePath")
 	assert.NotContains(t, fn, "filepath.ToSlash")
-	assert.Contains(t, fn, `"-c", script`)
-	assert.Contains(t, fn, `"https://"+cleanDomain`)
+	assert.NotContains(t, fn, `"-c"`)
+	assert.Contains(t, fn, "runPythonFile")
+	assert.Contains(t, fn, `"https://" + cleanDomain`)
 	assert.Contains(t, fn, "cookiePath")
 
 	requireGeneratedCompiles(t, outputDir)
 
-	stub := buildPycookiecheatArgvStub(t)
+	stubDir := buildPycookiecheatArgvStub(t)
 	runtimeTest := fmt.Sprintf(`package cli
 
 import (
@@ -87,32 +101,54 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
-const argvStub = %q
+const argvStubDir = %q
 
-func readArgvLog(t *testing.T, path string) []string {
+func usePythonStub(t *testing.T) {
+	t.Helper()
+	t.Setenv("PATH", argvStubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+type argvCapture struct {
+	Args   []string
+	Script string
+	Mode   int
+}
+
+func readArgvCapture(t *testing.T, path string) argvCapture {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var args []string
-	if err := json.Unmarshal(data, &args); err != nil {
+	var cap argvCapture
+	if err := json.Unmarshal(data, &cap); err != nil {
 		t.Fatalf("argv log: %%v\n%%s", err, data)
 	}
-	return args
+	return cap
+}
+
+func argvHasFlag(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag {
+			return true
+		}
+	}
+	return false
 }
 
 func TestExtractViaPycookiecheatProfile1ExtractsViaArgv(t *testing.T) {
+	usePythonStub(t)
 	dir := t.TempDir()
 	argvLog := filepath.Join(dir, "argv.json")
 	t.Setenv("PP_ARGV_LOG", argvLog)
 
 	dataDir := filepath.Join(dir, "Chrome")
-	got, err := extractViaPycookiecheat(cookieTool{name: "pycookiecheat", pyBin: argvStub}, ".example.com", chromeProfile{Dir: "Profile 1", DataDir: dataDir})
+	got, err := extractViaPycookiecheat(cookieTool{name: "pycookiecheat", pyBin: "python3"}, ".example.com", chromeProfile{Dir: "Profile 1", DataDir: dataDir})
 	if err != nil {
 		t.Fatalf("extract Profile 1: %%v", err)
 	}
@@ -120,23 +156,27 @@ func TestExtractViaPycookiecheatProfile1ExtractsViaArgv(t *testing.T) {
 		t.Fatalf("extract Profile 1 = %%q, want session_id=ok", got)
 	}
 
-	args := readArgvLog(t, argvLog)
-	if len(args) < 4 || args[0] != "-c" {
-		t.Fatalf("argv = %%#v, want [-c script url path]", args)
+	cap := readArgvCapture(t, argvLog)
+	args := cap.Args
+	if len(args) < 3 || argvHasFlag(args, "-c") || !strings.HasSuffix(args[0], "helper.py") {
+		t.Fatalf("argv = %%#v, want [script url path]", args)
 	}
-	script, url, cookiePath := args[1], args[2], args[3]
+	url, cookiePath := args[len(args)-2], args[len(args)-1]
 	wantPath := filepath.Join(dataDir, "Profile 1", "Cookies")
 	if cookiePath != wantPath {
-		t.Fatalf("cookie path argv = %%q, want %%q", cookiePath, wantPath)
+		t.Fatalf("cookie path argv = %%q, want %%q\nargv=%%#v", cookiePath, wantPath, args)
 	}
 	if url != "https://example.com" {
 		t.Fatalf("url argv = %%q, want https://example.com", url)
 	}
-	if strings.Contains(script, wantPath) || strings.Contains(script, "Profile 1") {
-		t.Fatalf("python -c program embedded the cookie path:\n%%s", script)
+	if strings.Contains(cap.Script, wantPath) || strings.Contains(cap.Script, "Profile 1") {
+		t.Fatalf("python program embedded the cookie path:\n%%s", cap.Script)
 	}
-	if !strings.Contains(script, "sys.argv") {
-		t.Fatalf("python -c program does not read argv:\n%%s", script)
+	if !strings.Contains(cap.Script, "sys.argv") {
+		t.Fatalf("python program does not read argv:\n%%s", cap.Script)
+	}
+	if runtime.GOOS != "windows" && cap.Mode&0o077 != 0 {
+		t.Fatalf("helper script mode = %%o, want 0600", cap.Mode)
 	}
 }
 
@@ -149,32 +189,45 @@ func TestExtractViaPycookiecheatHostileProfileHasNoSideEffect(t *testing.T) {
 
 	argvLog := filepath.Join(dir, "argv.json")
 	t.Setenv("PP_ARGV_LOG", argvLog)
+	usePythonStub(t)
 
 	dataDir := filepath.Join(dir, "Chrome")
-	if _, err := extractViaPycookiecheat(cookieTool{name: "pycookiecheat", pyBin: argvStub}, ".example.com", chromeProfile{Dir: hostile, DataDir: dataDir}); err != nil {
+	if _, err := extractViaPycookiecheat(cookieTool{name: "pycookiecheat", pyBin: "python3"}, ".example.com", chromeProfile{Dir: hostile, DataDir: dataDir}); err != nil {
 		t.Fatalf("hostile extract (stub): %%v", err)
 	}
 	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
 		t.Fatalf("hostile profile created sentinel via stub: %%v", err)
 	}
-	args := readArgvLog(t, argvLog)
-	if len(args) < 2 {
-		t.Fatalf("argv = %%#v", args)
+	cap := readArgvCapture(t, argvLog)
+	if strings.Contains(cap.Script, hostile) || strings.Contains(cap.Script, sentinel) {
+		t.Fatalf("python program embedded hostile profile:\n%%s", cap.Script)
 	}
-	if strings.Contains(args[1], hostile) || strings.Contains(args[1], sentinel) {
-		t.Fatalf("python -c program embedded hostile profile:\n%%s", args[1])
+	joined := strings.Join(cap.Args, "\n")
+	if !strings.Contains(joined, hostile) {
+		t.Fatalf("hostile path missing from argv: %%#v", cap.Args)
 	}
-	if len(args) < 4 || !strings.Contains(args[3], hostile) {
-		t.Fatalf("hostile path missing from argv: %%#v", args)
+	if argvHasFlag(cap.Args, "-c") {
+		t.Fatalf("argv still uses -c: %%#v", cap.Args)
 	}
 
-	py, err := exec.LookPath("python3")
-	if err != nil {
-		if py, err = exec.LookPath("python"); err != nil {
+	t.Setenv("PATH", os.Getenv("PATH"))
+	// Drop the stub directory so a real interpreter runs the helper file.
+	parts := strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))
+	kept := parts[:0]
+	for _, p := range parts {
+		if p != argvStubDir {
+			kept = append(kept, p)
+		}
+	}
+	t.Setenv("PATH", strings.Join(kept, string(os.PathListSeparator)))
+	pyName := "python3"
+	if _, err := exec.LookPath(pyName); err != nil {
+		pyName = "python"
+		if _, err := exec.LookPath(pyName); err != nil {
 			return
 		}
 	}
-	if _, err := extractViaPycookiecheat(cookieTool{name: "pycookiecheat", pyBin: py}, ".example.com", chromeProfile{Dir: hostile, DataDir: dataDir}); err == nil {
+	if _, err := extractViaPycookiecheat(cookieTool{name: "pycookiecheat", pyBin: pyName}, ".example.com", chromeProfile{Dir: hostile, DataDir: dataDir}); err == nil {
 		t.Fatal("real python extract unexpectedly succeeded")
 	}
 	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
@@ -183,23 +236,25 @@ func TestExtractViaPycookiecheatHostileProfileHasNoSideEffect(t *testing.T) {
 }
 
 func TestExtractViaPycookiecheatOmitsPathArgWhenNoProfile(t *testing.T) {
+	usePythonStub(t)
 	dir := t.TempDir()
 	argvLog := filepath.Join(dir, "argv.json")
 	t.Setenv("PP_ARGV_LOG", argvLog)
 
-	got, err := extractViaPycookiecheat(cookieTool{name: "pycookiecheat", pyBin: argvStub}, ".example.com", chromeProfile{})
+	got, err := extractViaPycookiecheat(cookieTool{name: "pycookiecheat", pyBin: "python3"}, ".example.com", chromeProfile{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != "session_id=ok" {
 		t.Fatalf("got %%q", got)
 	}
-	args := readArgvLog(t, argvLog)
-	if len(args) != 3 || args[0] != "-c" || args[2] != "https://example.com" {
-		t.Fatalf("argv = %%#v, want [-c script url]", args)
+	cap := readArgvCapture(t, argvLog)
+	args := cap.Args
+	if len(args) < 2 || args[len(args)-1] != "https://example.com" || argvHasFlag(args, "-c") || !strings.HasSuffix(args[0], "helper.py") {
+		t.Fatalf("argv = %%#v, want [script url]", args)
 	}
 }
-`, stub)
+`, stubDir)
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "pycookiecheat_argv_test.go"), []byte(runtimeTest), 0o600))
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestExtractViaPycookiecheat")
 }

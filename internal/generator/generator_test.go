@@ -13143,7 +13143,9 @@ func TestGenerate_CookieAuthWindowsCompatibility(t *testing.T) {
 	assert.Contains(t, content, "pyBin")
 	assert.Contains(t, content, "pyArgs")
 	assert.NotContains(t, content, `exec.Command("python3", "-c", script)`)
-	assert.Contains(t, content, `exec.Command(tool.pyBin,`)
+	assert.NotContains(t, content, `exec.Command(tool.pyBin,`)
+	assert.Contains(t, content, "runPythonFile(tool.pyBin, tool.pyArgs, script, scriptArgs...)")
+	assert.Contains(t, content, `return exec.Command("python3", args...), nil`)
 
 	// Windows no-extractor remedy must name file import, not --browser
 	// (an alias of the --chrome path that just failed).
