@@ -104,6 +104,14 @@ type TemplateVarError struct {
 	Names []string
 }
 
+{{- if or (authURLNeedsTemplateSubstitution .Auth.TokenURL) (authURLNeedsTemplateSubstitution .Auth.DeviceAuthorizationURL)}}
+// ResolveTemplateURL runs an auth endpoint through buildURL so a registered
+// {placeholder} is not dialed as a literal host.
+func ResolveTemplateURL(raw string, vars map[string]string) (string, error) {
+	return buildURL(raw, "", vars)
+}
+
+{{- end}}
 func (e *TemplateVarError) Error() string {
 	parts := make([]string, 0, len(e.Names))
 	for _, name := range e.Names {

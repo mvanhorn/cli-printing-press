@@ -2312,6 +2312,44 @@ paths:
 		"clientCredentials scopes win, not authorizationCode's")
 }
 
+func TestParseOAuth2ClientCredentialsKeepsRegisteredTokenURLTemplate(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Tenant OAuth
+  version: "1.0"
+servers:
+  - url: https://{tenant}.{domain}/api
+    variables:
+      tenant:
+        default: demo
+      domain:
+        default: example.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://{tenant}.{domain}/auth/token
+          scopes: {}
+paths:
+  /v1/things:
+    get:
+      operationId: list things
+      security:
+        - OAuth2: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+	assert.Equal(t, "https://{tenant}.{domain}/api", parsed.BaseURL)
+	assert.Equal(t, "https://{tenant}.{domain}/auth/token", parsed.Auth.TokenURL)
+	assert.Equal(t, []string{"tenant", "domain"}, parsed.EndpointTemplateVars)
+}
+
 func TestParseOAuth2ClientCredentialsMissingTokenURLSkipsBranch(t *testing.T) {
 	t.Parallel()
 
