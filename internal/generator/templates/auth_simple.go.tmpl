@@ -43,7 +43,7 @@ import (
 {{- if eq .Auth.Subtype "google_service_account"}}
 	"golang.org/x/oauth2/google"
 {{- end}}
-{{- if or (eq .Auth.Type "session_handshake") (authURLNeedsTemplateSubstitution .Auth.TokenURL)}}
+{{- if or (eq .Auth.Type "session_handshake") (and (eq .Auth.Subtype "google_service_account") (authURLNeedsTemplateSubstitution .Auth.TokenURL))}}
 	"{{modulePath}}/internal/client"
 {{- end}}
 	"{{modulePath}}/internal/cliutil"

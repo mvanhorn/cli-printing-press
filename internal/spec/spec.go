@@ -1820,10 +1820,10 @@ func validateAuthURL(label, raw string, registered []string) error {
 	return nil
 }
 
-// AuthURLUsesEndpointTemplateVar reports whether raw contains a {name}
-// placeholder registered in EndpointTemplateVars. Auth token and device
-// URLs may keep those placeholders; buildURL substitutes them at request
-// time the same way it does for server URLs.
+// Token, device, and authorization URLs may keep a {name} that is a
+// registered runtime template var. Unregistered braces still fail
+// validation. Substitution happens at request time on the same path as
+// server URLs, so the placeholder is not dialed as a literal host.
 func (s *APISpec) AuthURLUsesEndpointTemplateVar(raw string) bool {
 	if s == nil {
 		return false

@@ -3,9 +3,10 @@
 
 package client
 
+{{- $resolveAuthURL := or (authURLNeedsTemplateSubstitution .Auth.TokenURL) (authURLNeedsTemplateSubstitution .Auth.DeviceAuthorizationURL) (authURLNeedsTemplateSubstitution .Auth.AuthorizationURL) }}
 import (
 	"fmt"
-{{- if .GlobalPathTemplateVars}}
+{{- if or .GlobalPathTemplateVars $resolveAuthURL}}
 	"net/url"
 {{- end}}
 	"regexp"
@@ -104,11 +105,72 @@ type TemplateVarError struct {
 	Names []string
 }
 
-{{- if or (authURLNeedsTemplateSubstitution .Auth.TokenURL) (authURLNeedsTemplateSubstitution .Auth.DeviceAuthorizationURL)}}
-// ResolveTemplateURL runs an auth endpoint through buildURL so a registered
-// {placeholder} is not dialed as a literal host.
+{{- if $resolveAuthURL}}
+// Registered {placeholder}s in an auth endpoint are substituted before the
+// request is dialed, so a brace is never treated as a hostname. Values that
+// fill a path segment are percent-encoded so a slash in the value cannot
+// add another path segment. Host labels stay unescaped.
 func ResolveTemplateURL(raw string, vars map[string]string) (string, error) {
-	return buildURL(raw, "", vars)
+	if !templateVarPattern.MatchString(raw) {
+		return raw, nil
+	}
+	suffix := ""
+	base := raw
+	if i := strings.IndexAny(raw, "?#"); i >= 0 {
+		suffix = raw[i:]
+		base = raw[:i]
+	}
+	authority, path := splitAuthURLAuthority(base)
+	resolvedAuthority, err := buildURL(authority, "", vars)
+	if err != nil {
+		return "", err
+	}
+	pathVars := vars
+	if templateVarPattern.MatchString(path) {
+		pathVars = pathEscapedAuthVars(path, vars)
+	}
+	resolvedPath, err := buildURL("", path, pathVars)
+	if err != nil {
+		return "", err
+	}
+	resolvedSuffix := suffix
+	if templateVarPattern.MatchString(suffix) {
+		resolvedSuffix, err = buildURL(suffix, "", vars)
+		if err != nil {
+			return "", err
+		}
+	}
+	return resolvedAuthority + resolvedPath + resolvedSuffix, nil
+}
+
+func splitAuthURLAuthority(raw string) (string, string) {
+	prefix := ""
+	rest := raw
+	if i := strings.Index(raw, "://"); i >= 0 {
+		prefix = raw[:i+3]
+		rest = raw[i+3:]
+	}
+	if j := strings.Index(rest, "/"); j >= 0 {
+		return prefix + rest[:j], rest[j:]
+	}
+	return prefix + rest, ""
+}
+
+func pathEscapedAuthVars(path string, vars map[string]string) map[string]string {
+	escaped := make(map[string]string, len(vars))
+	for key, value := range vars {
+		escaped[key] = value
+	}
+	for _, match := range templateVarPattern.FindAllStringSubmatch(path, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		key := match[1]
+		if value, ok := escaped[key]; ok && value != "" {
+			escaped[key] = url.PathEscape(value)
+		}
+	}
+	return escaped
 }
 
 {{- end}}
