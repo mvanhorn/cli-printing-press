@@ -5336,6 +5336,11 @@ func (g *Generator) renderVisionCommands(visionData visionRenderData) error {
 		if err := g.renderTemplate(actualTmpl, outPath, tmplData); err != nil {
 			return fmt.Errorf("rendering vision %s: %w", tmplName, err)
 		}
+		if tmplName == "export.go.tmpl" {
+			if err := g.renderTemplate("export_perms_test.go.tmpl", filepath.Join("internal", "cli", "export_perms_test.go"), tmplData); err != nil {
+				return fmt.Errorf("rendering export permission test: %w", err)
+			}
+		}
 		if tmplName == "sync.go.tmpl" && actualTmpl == "sync.go.tmpl" {
 			if err := g.renderTemplate("sync_numeric_id_test.go.tmpl", filepath.Join("internal", "cli", "sync_numeric_id_test.go"), tmplData); err != nil {
 				return fmt.Errorf("rendering sync numeric ID test: %w", err)

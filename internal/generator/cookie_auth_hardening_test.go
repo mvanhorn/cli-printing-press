@@ -46,9 +46,11 @@ func TestGeneratedCookieAuthHardening(t *testing.T) {
 
 	if exportGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "export.go")); err == nil {
 		require.NotContains(t, string(exportGo), "os.Create(outputFile)")
-		require.Contains(t, string(exportGo), "os.OpenFile(outputFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)")
+		require.Contains(t, string(exportGo), "func openExportOutput(")
+		require.Contains(t, string(exportGo), "f.Chmod(0o600)")
 		require.Contains(t, string(exportGo), "os.MkdirAll(dir, 0o700)")
 	}
+	require.Contains(t, deliverGo, "return writeDownloadUnder(dir, filepath.Base(path), body)")
 
 	requireGeneratedCompiles(t, outputDir)
 
@@ -71,6 +73,22 @@ func TestDoctorFailOnCaseAndInfoKeys(t *testing.T) {
 	}
 	if err := doctorExitForFailOn("error", map[string]any{"paths_warning": "WARN paths: relative override skipped"}); err != nil {
 		t.Fatalf("WARN text tripped --fail-on=error: %v", err)
+	}
+	graphqlWarn := "WARN not verified (HTTP 404 from GraphQL probe) — auth was neither accepted nor rejected; set auth.verify_query to a known-good viewer query"
+	if err := doctorExitForFailOn("error", map[string]any{"credentials": graphqlWarn}); err != nil {
+		t.Fatalf("graphql non-auth WARN tripped --fail-on=error: %v", err)
+	}
+	if err := doctorExitForFailOn("stale", map[string]any{"credentials": graphqlWarn}); err != nil {
+		t.Fatalf("graphql non-auth WARN tripped --fail-on=stale: %v", err)
+	}
+	if err := doctorExitForFailOn("warn", map[string]any{"credentials": graphqlWarn}); err == nil {
+		t.Fatal("graphql non-auth WARN did not trip --fail-on=warn")
+	}
+	if err := doctorExitForFailOn("error", map[string]any{"credentials": "rejected — GraphQL response contained top-level errors"}); err == nil {
+		t.Fatal("graphql rejected payload did not trip --fail-on=error")
+	}
+	if err := doctorExitForFailOn("stale", map[string]any{"credentials": "rejected — GraphQL response contained top-level errors"}); err == nil {
+		t.Fatal("graphql rejected payload did not trip --fail-on=stale")
 	}
 }
 `

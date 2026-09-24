@@ -1290,11 +1290,12 @@ func doctorExitForFailOn(failOn string, report map[string]any) error {
 		s, ok := v.(string)
 		if ok && !doctorIsInfoKey(k) {
 			low := strings.ToLower(s)
-			if strings.HasPrefix(low, "error") || strings.HasPrefix(low, "refused:") || strings.Contains(low, "error") || strings.Contains(low, "unreachable") || strings.Contains(low, "invalid") || strings.Contains(low, "missing") || strings.Contains(low, "rejected") {
-				worstError = true
-			}
+			// A WARN prefix is the verdict. Explanatory text such as
+			// "neither accepted nor rejected" must not promote it to an error.
 			if strings.HasPrefix(low, "warn") {
 				worstWarn = true
+			} else if strings.HasPrefix(low, "error") || strings.HasPrefix(low, "refused:") || strings.HasPrefix(low, "rejected") || strings.Contains(low, "error") || strings.Contains(low, "unreachable") || strings.Contains(low, "invalid") || strings.Contains(low, "missing") {
+				worstError = true
 			}
 		}
 		if m, ok := v.(map[string]any); ok {

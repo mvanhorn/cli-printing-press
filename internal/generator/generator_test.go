@@ -157,9 +157,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// learn-loop audit/teach.log rotation is cross-process safe.
 		// +1: root .gitignore so local binaries are ignored without hiding cmd/<name>/.
 		// +1: internal/cli/deliver_download_test.go, private download-path coverage.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 179},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 183},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 180},
+		// +1: internal/cli/export_perms_test.go when export is emitted.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 180},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 184},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 181},
 	}
 
 	for _, tt := range tests {

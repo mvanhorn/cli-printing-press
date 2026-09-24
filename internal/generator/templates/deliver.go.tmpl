@@ -105,22 +105,14 @@ func writeBinaryDeliverReceipt(w io.Writer, sink DeliverSink, raw []byte, conten
 }
 
 func deliverFile(path string, body []byte) error {
-	// Atomic write: tmp + rename. Protects agents from seeing a partial
-	// file if the process is interrupted mid-write.
+	// The directory is the operator's --deliver target. The final segment is
+	// checked by writeDownloadUnder so a name of ".." or with a separator
+	// cannot leave that directory.
 	dir := filepath.Dir(path)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return fmt.Errorf("creating deliver dir: %w", err)
-		}
+	if dir == "" {
+		dir = "."
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, body, 0o600); err != nil {
-		return fmt.Errorf("writing deliver tmp: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("replacing deliver file: %w", err)
-	}
-	return nil
+	return writeDownloadUnder(dir, filepath.Base(path), body)
 }
 
 // safeJoinUnder joins a single untrusted name (a response id or title) under
@@ -159,6 +151,9 @@ func writeDownloadUnder(dir, name string, body []byte) error {
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("replacing download: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("setting download permissions: %w", err)
 	}
 	return nil
 }
