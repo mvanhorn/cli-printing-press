@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/templated-auth-token-url.yaml --output "$CASE_ACTUAL_DIR/templated-auth-token" --force --validate=false

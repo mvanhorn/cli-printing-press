@@ -257,6 +257,87 @@ func TestMintEscapesPathSegmentTemplateValue(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestMintEscapesPathSegmentTemplateValue")
 }
 
+func TestTemplatedAuthTokenURLEscapesGlobalPathSegmentOnce(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("global-path-oauth")
+	apiSpec.BaseURL = "https://api.example.net/tenants/{tenant}/api"
+	apiSpec.GlobalPathTemplateVars = []string{"tenant"}
+	apiSpec.Resources["items"] = spec.Resource{
+		Description: "Manage items",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {Method: "GET", Path: "/tenants/{tenant}/items", Description: "List items"},
+		},
+	}
+	apiSpec.Auth = spec.AuthConfig{
+		Type:        "oauth2",
+		Header:      "Authorization",
+		Format:      "Bearer {token}",
+		OAuth2Grant: spec.OAuth2GrantClientCredentials,
+		TokenURL:    "https://api.example.net/tenants/{tenant}/token",
+		EnvVars:     []string{"GLOBAL_PATH_OAUTH_CLIENT_ID", "GLOBAL_PATH_OAUTH_CLIENT_SECRET"},
+	}
+	require.NoError(t, apiSpec.Validate())
+	outputDir := filepath.Join(t.TempDir(), "global-path-oauth-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	urlSrc := readGeneratedFile(t, outputDir, "internal", "client", "url.go")
+	require.Contains(t, urlSrc, "globalPathTemplateVars[key]")
+
+	const clientTest = `package client
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"global-path-oauth-pp-cli/internal/config"
+)
+
+type captureRoundTripper struct {
+	got *http.Request
+}
+
+func (c *captureRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.got = r.Clone(r.Context())
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(` + "`" + `{"access_token":"minted","expires_in":3600}` + "`" + `)),
+		Request:    r,
+	}, nil
+}
+
+func TestMintEscapesGlobalPathSegmentOnce(t *testing.T) {
+	rt := &captureRoundTripper{}
+	cfg := &config.Config{
+		Path: filepath.Join(t.TempDir(), "config.toml"),
+		TemplateVars: map[string]string{
+			"tenant": "acme/evil",
+		},
+	}
+	c := &Client{Config: cfg, HTTPClient: &http.Client{Transport: rt}}
+	if err := c.mintClientCredentials(context.Background(), "client-id", "client-secret"); err != nil {
+		t.Fatalf("mintClientCredentials() error = %v", err)
+	}
+	if rt.got == nil {
+		t.Fatal("token endpoint was not called")
+	}
+	if strings.Contains(rt.got.URL.EscapedPath(), "%252F") {
+		t.Fatalf("token path was escaped twice: %s", rt.got.URL.EscapedPath())
+	}
+	if rt.got.URL.Host != "api.example.net" || rt.got.URL.EscapedPath() != "/tenants/acme%2Fevil/token" {
+		t.Fatalf("token URL = %s escaped path %s, want host api.example.net path /tenants/acme%%2Fevil/token", rt.got.URL.String(), rt.got.URL.EscapedPath())
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "templated_global_path_escape_test.go"), []byte(clientTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestMintEscapesGlobalPathSegmentOnce")
+}
+
 func TestTemplatedOAuth2RefreshAuthCompiles(t *testing.T) {
 	t.Parallel()
 
