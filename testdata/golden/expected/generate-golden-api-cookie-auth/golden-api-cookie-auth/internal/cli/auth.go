@@ -159,8 +159,8 @@ profile by name when the installed backend supports it.`,
 				fmt.Fprintf(w, "Loaded cookies from %s for %s.\n", cookiesFile, domain)
 			}
 			if !fromCookiesFile {
-				if pressAuthPath, err := exec.LookPath("press-auth"); err == nil {
-					paCookies, paErr := tryPressAuth(pressAuthPath, domain)
+				if _, err := exec.LookPath("press-auth"); err == nil {
+					paCookies, paErr := tryPressAuth(domain)
 					if paErr == nil && paCookies != "" {
 						fmt.Fprintf(w, "Loaded cookies via press-auth for %s.\n", domain)
 						cookies = paCookies
@@ -634,15 +634,14 @@ func readProfileDisplayName(prefsPath string) string {
 // counts rows whose host_key matches domain via cookieDomainMatches. SQL LIKE
 // on the full host misses parent-domain cookies (".example.com" vs "www.example.com").
 func inspectCookiesForDomain(cookiesDB, domain string, requiredCookies []string) (count int, requiredCount int, missing []string) {
-	tmpFile, err := os.CreateTemp("", "cookies-probe-*.db")
+	// MkdirTemp is 0700. The copy is a verbatim cookie store, including WAL
+	// writes Chrome has not checkpointed, so it must not land in a shared /tmp file.
+	tmpDir, err := os.MkdirTemp("", "pp-cookie-probe-")
 	if err != nil {
 		return 0, 0, append([]string{}, requiredCookies...)
 	}
-	tmpPath := tmpFile.Name()
-	tmpFile.Close()
-	defer os.Remove(tmpPath)
-	defer os.Remove(tmpPath + "-wal")
-	defer os.Remove(tmpPath + "-shm")
+	defer os.RemoveAll(tmpDir)
+	tmpPath := filepath.Join(tmpDir, "cookies.db")
 
 	// Copy the database file plus WAL/SHM to avoid Chrome's WAL lock
 	// and to include uncommitted cookie writes that are still in the WAL.
@@ -709,7 +708,7 @@ func copyFileIfExists(src, dst string) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.Create(dst)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
@@ -906,8 +905,11 @@ func validateExtractedCookieHeader(header string) error {
 // tryPressAuth shells out to `press-auth cookies <domain>` and returns the
 // resulting Cookie header value. Stderr from press-auth (if any) is surfaced
 // as the error message so callers can include the recovery hint.
-func tryPressAuth(pressAuthPath, domain string) (string, error) {
-	cmd := exec.Command(pressAuthPath, "cookies", domain)
+func tryPressAuth(domain string) (string, error) {
+	cmd, err := execNamed("press-auth", "cookies", domain)
+	if err != nil {
+		return "", err
+	}
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
@@ -928,14 +930,14 @@ func tryPressAuth(pressAuthPath, domain string) (string, error) {
 func detectCookieTool() (cookieTool, error) {
 	if runtime.GOOS != "windows" {
 		if bin, args, ok := resolvePythonBinary(); ok {
-			probeArgs := append(append([]string{}, args...), "-c", "import pycookiecheat")
-			if err := exec.Command(bin, probeArgs...).Run(); err == nil {
+			if _, err := runPythonFile(bin, args, "import pycookiecheat"); err == nil {
 				return cookieTool{name: "pycookiecheat", pyBin: bin, pyArgs: args}, nil
 			}
 		}
-		if path, err := exec.LookPath("pycookiecheat"); err == nil {
-			if err := exec.Command(path, "--help").Run(); err == nil {
-				return cookieTool{name: "pycookiecheat-cli", pyBin: path}, nil
+		if _, err := exec.LookPath("pycookiecheat"); err == nil {
+			cmd, cmdErr := execNamed("pycookiecheat", "--help")
+			if cmdErr == nil && cmd.Run() == nil {
+				return cookieTool{name: "pycookiecheat-cli", pyBin: "pycookiecheat"}, nil
 			}
 		}
 	}
@@ -982,24 +984,21 @@ func extractViaPycookiecheat(tool cookieTool, domain string, profile chromeProfi
 		cookiePath = filepath.Join(profile.DataDir, profile.Dir, "Cookies")
 	}
 
-	// Static program: URL and optional cookie path arrive via argv so a
-	// hostile Chrome profile name cannot close a Python string literal.
+	// Static program on disk: URL and optional cookie path arrive via argv so a
+	// hostile Chrome profile name cannot close a Python string literal, and the
+	// program text is not a python -c process-table payload.
 	script := `import json, sys; from pycookiecheat import chrome_cookies; url = sys.argv[1]; print(json.dumps(chrome_cookies(url, cookie_file=sys.argv[2]) if len(sys.argv) > 2 else chrome_cookies(url)))`
-	args := append(append([]string{}, tool.pyArgs...), "-c", script, "https://"+cleanDomain)
+	scriptArgs := []string{"https://" + cleanDomain}
 	if cookiePath != "" {
-		args = append(args, cookiePath)
+		scriptArgs = append(scriptArgs, cookiePath)
 	}
-
-	var out bytes.Buffer
-	cmd := exec.Command(tool.pyBin, args...)
-	cmd.Stdout = &out
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	out, err := runPythonFile(tool.pyBin, tool.pyArgs, script, scriptArgs...)
+	if err != nil {
 		return "", fmt.Errorf("pycookiecheat failed: %w", err)
 	}
 
 	var cookies map[string]string
-	if err := json.Unmarshal(out.Bytes(), &cookies); err != nil {
+	if err := json.Unmarshal(out, &cookies); err != nil {
 		return "", fmt.Errorf("parsing pycookiecheat output: %w", err)
 	}
 
@@ -1018,8 +1017,11 @@ func extractViaPycookiecheatCLI(tool cookieTool, domain string, profile chromePr
 	}
 	args = append(args, "https://"+cleanDomain)
 
+	cmd, err := execNamed(tool.pyBin, args...)
+	if err != nil {
+		return "", err
+	}
 	var out bytes.Buffer
-	cmd := exec.Command(tool.pyBin, args...)
 	cmd.Stdout = &out
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -1385,4 +1387,72 @@ func evalDocumentCookieViaCDP(wsURL, domain string) (string, error) {
 		}
 		return result.Result.Value, nil
 	}
+}
+
+// execNamed runs an allowlisted program. The command name is a compile-time
+// literal in every branch; callers pass only arguments.
+func execNamed(name string, args ...string) (*exec.Cmd, error) {
+	switch name {
+	case "python3":
+		return exec.Command("python3", args...), nil
+	case "python":
+		return exec.Command("python", args...), nil
+	case "py":
+		return exec.Command("py", args...), nil
+	case "pycookiecheat":
+		return exec.Command("pycookiecheat", args...), nil
+	case "cookies":
+		return exec.Command("cookies", args...), nil
+	case "cookie-scoop":
+		return exec.Command("cookie-scoop", args...), nil
+	case "press-auth":
+		return exec.Command("press-auth", args...), nil
+	case "browser-use":
+		return exec.Command("browser-use", args...), nil
+	case "agent-browser":
+		return exec.Command("agent-browser", args...), nil
+	case "chrome.exe":
+		return exec.Command("chrome.exe", args...), nil
+	case "msedge.exe":
+		return exec.Command("msedge.exe", args...), nil
+	case "google-chrome":
+		return exec.Command("google-chrome", args...), nil
+	case "google-chrome-stable":
+		return exec.Command("google-chrome-stable", args...), nil
+	case "chromium":
+		return exec.Command("chromium", args...), nil
+	case "chromium-browser":
+		return exec.Command("chromium-browser", args...), nil
+	case "microsoft-edge":
+		return exec.Command("microsoft-edge", args...), nil
+	default:
+		return nil, fmt.Errorf("refusing to execute %q", name)
+	}
+}
+
+// runPythonFile writes script to a 0600 file in a 0700 temp dir and runs it.
+// The interpreter name stays on the allowlist. scriptArgs are data, never source.
+func runPythonFile(bin string, leading []string, script string, scriptArgs ...string) ([]byte, error) {
+	dir, err := os.MkdirTemp("", "pp-cookie-py-")
+	if err != nil {
+		return nil, fmt.Errorf("creating python helper dir: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	scriptPath := filepath.Join(dir, "helper.py")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+		return nil, fmt.Errorf("writing python helper: %w", err)
+	}
+	args := append(append([]string{}, leading...), scriptPath)
+	args = append(args, scriptArgs...)
+	cmd, err := execNamed(bin, args...)
+	if err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
 }

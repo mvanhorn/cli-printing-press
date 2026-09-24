@@ -64,6 +64,7 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cli/platform_window.go",
 		"internal/cli/platform_window_test.go",
 		"internal/cli/feedback.go",
+		"internal/cli/deliver_download_test.go",
 		"internal/cli/agent_context.go",
 		"internal/cli/root_test.go",
 		"internal/cli/sync_hint.go",
@@ -155,9 +156,11 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +4: cliutil.WithFileLock (filelock.go + unix/windows + test) so
 		// learn-loop audit/teach.log rotation is cross-process safe.
 		// +1: root .gitignore so local binaries are ignored without hiding cmd/<name>/.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 178},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 182},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 179},
+		// +1: internal/cli/deliver_download_test.go, private download-path coverage.
+		// +1: internal/cli/export_perms_test.go when export is emitted.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 180},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 184},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 181},
 	}
 
 	for _, tt := range tests {
@@ -13143,7 +13146,9 @@ func TestGenerate_CookieAuthWindowsCompatibility(t *testing.T) {
 	assert.Contains(t, content, "pyBin")
 	assert.Contains(t, content, "pyArgs")
 	assert.NotContains(t, content, `exec.Command("python3", "-c", script)`)
-	assert.Contains(t, content, `exec.Command(tool.pyBin,`)
+	assert.NotContains(t, content, `exec.Command(tool.pyBin,`)
+	assert.Contains(t, content, "runPythonFile(tool.pyBin, tool.pyArgs, script, scriptArgs...)")
+	assert.Contains(t, content, `return exec.Command("python3", args...), nil`)
 
 	// Windows no-extractor remedy must name file import, not --browser
 	// (an alias of the --chrome path that just failed).
