@@ -1254,9 +1254,14 @@ var doctorInfoKeys = map[string]bool{
 	"auth_source":                  true,
 	"auth_domain":                  true,
 	"auth_hint":                    true,
+{{- if .Auth.KeyURL}}
 	"auth_key_url":                 true,
+{{- else if .WebsiteURL}}
 	"auth_docs_url":                true,
+{{- end}}
+{{- if .Auth.Instructions}}
 	"auth_instructions":            true,
+{{- end}}
 	"auth_refusals":                true,
 	"version":                      true,
 	"cookie_tool":                  true,
