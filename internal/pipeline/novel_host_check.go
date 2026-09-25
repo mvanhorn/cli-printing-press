@@ -244,6 +244,8 @@ func hostsInNovelCommandSources(cliDir string, features []NovelFeature) []novelH
 		leaves[leaf] = label
 	}
 	var declared []novelHostDecl
+	contents := make(map[string]string, len(entries))
+	var sources []novelSourceFile
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -254,12 +256,15 @@ func hostsInNovelCommandSources(cliDir string, features []NovelFeature) []novelH
 			continue
 		}
 		content := string(data)
+		contents[name] = content
 		if !novelCommandSource(content, name, leaves) {
 			continue
 		}
 		label := novelSourceFeature(content, leaves)
 		declared = append(declared, hostsInGoSource(name, content, label)...)
+		sources = append(sources, novelSourceFile{name: name, content: content, label: label})
 	}
+	declared = append(declared, hostsFromNovelHelpers(cliDir, cliFilesDir, contents, sources, leaves)...)
 	return declared
 }
 
@@ -299,8 +304,15 @@ func hostsInGoSource(filename, content, feature string) []novelHostDecl {
 	if err != nil {
 		return nil
 	}
+	return hostsInAST(fset, filename, file, feature)
+}
+
+func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature string) []novelHostDecl {
+	if node == nil {
+		return nil
+	}
 	var declared []novelHostDecl
-	ast.Inspect(file, func(n ast.Node) bool {
+	ast.Inspect(node, func(n ast.Node) bool {
 		lit, ok := n.(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
 			return true

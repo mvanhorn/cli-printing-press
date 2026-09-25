@@ -165,6 +165,163 @@ func TestSampleResponseBodyURLIsNotObserved(t *testing.T) {
 	assert.Equal(t, "cdn.example.test", got.UnverifiedHosts[0].Host)
 }
 
+func TestNovelHelperHostIsChecked(t *testing.T) {
+	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+		"play.go": `package cli
+
+func newPlayCmd() {
+	_ = manifestURL()
+}
+
+// Use: "play"
+`,
+		"manifest.go": `package cli
+
+func manifestURL() string {
+	return playbackHost
+}
+
+func docs() string {
+	return "https://unrelated.example.test/help"
+}
+`,
+		"hosts.go": `package cli
+
+const playbackHost = "https://playback.indazn.com/v5/live.mpd"
+`,
+		"helpers.go": `package cli
+
+const docs = "https://unrelated.example.test/help"
+`,
+	}, []NovelFeature{{
+		Name:    "Play",
+		Command: "play",
+	}})
+
+	got := checkReimplementation(cliDir, researchDir)
+	require.NotEmpty(t, got.UnverifiedHosts)
+	var playback ReimplementationFinding
+	for _, finding := range got.UnverifiedHosts {
+		assert.NotEqual(t, "unrelated.example.test", finding.Host)
+		if finding.Host == "playback.indazn.com" {
+			playback = finding
+		}
+	}
+	assert.Equal(t, "hosts.go", playback.File)
+	assert.NotZero(t, playback.Line)
+	assert.Equal(t, "play", playback.Command)
+	assert.Contains(t, playback.Reason, "not in research artifacts")
+}
+
+func TestImportedNovelHelperHostIsChecked(t *testing.T) {
+	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+		"play.go": `package cli
+
+import "example.com/demo/internal/playback"
+
+func newPlayCmd() {
+	_ = playback.Manifest()
+}
+
+// Use: "play"
+`,
+		"helpers.go": `package cli
+
+const docs = "https://unrelated.example.test/help"
+`,
+	}, []NovelFeature{{
+		Name:    "Play",
+		Command: "play",
+	}})
+	playbackDir := filepath.Join(cliDir, "internal", "playback")
+	require.NoError(t, os.MkdirAll(playbackDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(playbackDir, "manifest.go"), []byte(`package playback
+
+func Manifest() string {
+	return "https://edge.indazn.com/v5/live.mpd"
+}
+
+func Docs() string {
+	return "https://unrelated.example.test/help"
+}
+`), 0o644))
+	otherDir := filepath.Join(cliDir, "internal", "catalog")
+	require.NoError(t, os.MkdirAll(otherDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(otherDir, "urls.go"), []byte(`package catalog
+
+const docs = "https://catalog.example.test/help"
+`), 0o644))
+
+	got := checkReimplementation(cliDir, researchDir)
+	require.Len(t, got.UnverifiedHosts, 1)
+	assert.Equal(t, "edge.indazn.com", got.UnverifiedHosts[0].Host)
+	assert.Equal(t, "internal/playback/manifest.go", got.UnverifiedHosts[0].File)
+	assert.NotZero(t, got.UnverifiedHosts[0].Line)
+	assert.Equal(t, "play", got.UnverifiedHosts[0].Command)
+}
+
+func TestFeatureNamedHelperFileIsChecked(t *testing.T) {
+	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+		"play.go": `package cli
+
+func newPlayCmd() {}
+
+// Use: "play"
+`,
+		"play_urls.go": `package cli
+
+const manifestURL = "https://playback.indazn.com/v5/live.mpd"
+`,
+		"helpers.go": `package cli
+
+const docs = "https://unrelated.example.test/help"
+`,
+	}, []NovelFeature{{
+		Name:    "Play",
+		Command: "play",
+	}})
+
+	got := checkReimplementation(cliDir, researchDir)
+	require.Len(t, got.UnverifiedHosts, 1)
+	assert.Equal(t, "playback.indazn.com", got.UnverifiedHosts[0].Host)
+	assert.Equal(t, "play_urls.go", got.UnverifiedHosts[0].File)
+	assert.Equal(t, "play", got.UnverifiedHosts[0].Command)
+}
+
+func TestNovelMethodHelperHostIsChecked(t *testing.T) {
+	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+		"play.go": `package cli
+
+func newPlayCmd() {
+	var client streamClient
+	_ = client.Manifest()
+}
+
+// Use: "play"
+`,
+		"stream.go": `package cli
+
+type streamClient struct{}
+
+func (streamClient) Manifest() string {
+	return "https://edge.indazn.com/v5/live.mpd"
+}
+
+func (streamClient) Docs() string {
+	return "https://unrelated.example.test/help"
+}
+`,
+	}, []NovelFeature{{
+		Name:    "Play",
+		Command: "play",
+	}})
+
+	got := checkReimplementation(cliDir, researchDir)
+	require.Len(t, got.UnverifiedHosts, 1)
+	assert.Equal(t, "edge.indazn.com", got.UnverifiedHosts[0].Host)
+	assert.Equal(t, "stream.go", got.UnverifiedHosts[0].File)
+}
+
 func TestUnrelatedGoFileDoesNotFailNovelHostGate(t *testing.T) {
 	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
 		"play.go":    "package cli\n\nfunc newPlayCmd() {}\n\n// Use: \"play\"\n",
