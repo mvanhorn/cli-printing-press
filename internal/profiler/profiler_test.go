@@ -5209,8 +5209,6 @@ func TestProfiler_DependentTenantScopeKeepsUnscopedNone(t *testing.T) {
 	}
 }
 
-func boolPtr(v bool) *bool { return &v }
-
 func TestProfileResourceLevelIDFieldAndSyncable(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "home",
@@ -5233,7 +5231,7 @@ func TestProfileResourceLevelIDFieldAndSyncable(t *testing.T) {
 			},
 			"overridden": {
 				IDField:  "entity_id",
-				Syncable: boolPtr(false),
+				Syncable: new(false),
 				Endpoints: map[string]spec.Endpoint{
 					"list": {
 						Method:      "GET",
@@ -5246,7 +5244,7 @@ func TestProfileResourceLevelIDFieldAndSyncable(t *testing.T) {
 				},
 			},
 			"live": {
-				Syncable: boolPtr(false),
+				Syncable: new(false),
 				Endpoints: map[string]spec.Endpoint{
 					"list": {
 						Method:   "GET",
@@ -5256,7 +5254,7 @@ func TestProfileResourceLevelIDFieldAndSyncable(t *testing.T) {
 				},
 			},
 			"forced": {
-				Syncable: boolPtr(true),
+				Syncable: new(true),
 				Endpoints: map[string]spec.Endpoint{
 					"list": {
 						Method:   "GET",
@@ -5277,6 +5275,7 @@ func TestProfileResourceLevelIDFieldAndSyncable(t *testing.T) {
 
 	require.Contains(t, byName, "states")
 	assert.Equal(t, "entity_id", byName["states"].IDField)
+	assert.Equal(t, "entity_id", s.Resources["states"].Endpoints["list"].IDField, "resource id_field must be visible to store classification")
 	assert.False(t, byName["states"].SkipDefaultSync, "resource id_field supplies the runtime id the default set requires")
 	assert.False(t, byName["states"].SkipAutoRefresh)
 

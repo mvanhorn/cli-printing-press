@@ -2680,6 +2680,21 @@ func (e *Endpoint) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+// MarshalYAML keeps an explicit syncable: false. The bool field is omitempty,
+// and SyncableSet is not serialized, so a plain struct marshal would drop the
+// key and let a resource-level syncable win after the spec is parsed again.
+func (e Endpoint) MarshalYAML() (any, error) {
+	type endpointAlias Endpoint
+	var node yaml.Node
+	if err := node.Encode(endpointAlias(e)); err != nil {
+		return nil, err
+	}
+	if e.SyncableSet && !e.Syncable {
+		appendYAMLBool(&node, "syncable", false)
+	}
+	return &node, nil
+}
+
 func (e *Endpoint) UnmarshalJSON(data []byte) error {
 	type endpointAlias Endpoint
 	var out endpointAlias
@@ -2715,6 +2730,24 @@ func (e *Endpoint) UnmarshalJSON(data []byte) error {
 	e.BodySet = bodySet
 	_, e.SyncableSet = raw["syncable"]
 	return nil
+}
+
+// MarshalJSON keeps an explicit syncable: false. See MarshalYAML.
+func (e Endpoint) MarshalJSON() ([]byte, error) {
+	type endpointAlias Endpoint
+	data, err := json.Marshal(endpointAlias(e))
+	if err != nil {
+		return nil, err
+	}
+	if !e.SyncableSet || e.Syncable {
+		return data, nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	raw["syncable"] = []byte("false")
+	return json.Marshal(raw)
 }
 
 // MutationOverride reports the explicit mutation flag. set is false when
@@ -3641,15 +3674,77 @@ func yamlDocumentRoot(doc *yaml.Node) *yaml.Node {
 }
 
 func mappingValue(node *yaml.Node, key string) *yaml.Node {
-	if node == nil || node.Kind != yaml.MappingNode {
+	return mappingValueVisited(node, key, map[*yaml.Node]bool{})
+}
+
+// mappingValueVisited returns key from a mapping, following YAML merge keys
+// (<<) and aliases. An explicit key wins. For a merge sequence, earlier
+// mappings win over later ones, matching YAML 1.1 merge precedence.
+func mappingValueVisited(node *yaml.Node, key string, seen map[*yaml.Node]bool) *yaml.Node {
+	node = resolveYAMLAlias(node)
+	if node == nil || node.Kind != yaml.MappingNode || seen[node] {
 		return nil
 	}
+	seen[node] = true
+	var merges []*yaml.Node
 	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
-			return node.Content[i+1]
+		name := node.Content[i].Value
+		child := node.Content[i+1]
+		if name == "<<" {
+			merges = append(merges, child)
+			continue
+		}
+		if name == key {
+			return resolveYAMLAlias(child)
+		}
+	}
+	for _, merge := range merges {
+		if found := mappingValueFromMerge(merge, key, seen); found != nil {
+			return found
 		}
 	}
 	return nil
+}
+
+func mappingValueFromMerge(node *yaml.Node, key string, seen map[*yaml.Node]bool) *yaml.Node {
+	node = resolveYAMLAlias(node)
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.SequenceNode {
+		for _, item := range node.Content {
+			if found := mappingValueVisited(item, key, seen); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+	return mappingValueVisited(node, key, seen)
+}
+
+func resolveYAMLAlias(node *yaml.Node) *yaml.Node {
+	for node != nil && node.Kind == yaml.AliasNode {
+		node = node.Alias
+	}
+	return node
+}
+
+func appendYAMLBool(node *yaml.Node, key string, value bool) {
+	mapping := node
+	if node != nil && node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		mapping = node.Content[0]
+	}
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return
+	}
+	text := "false"
+	if value {
+		text = "true"
+	}
+	mapping.Content = append(mapping.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: text},
+	)
 }
 
 func pluralSuffix(count int, singular, plural string) string {

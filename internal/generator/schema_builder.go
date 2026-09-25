@@ -256,8 +256,11 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 }
 
 func resourceIsParameterKeyed(name string, resource spec.Resource, fields []spec.TypeField) bool {
+	if strings.TrimSpace(resource.IDField) != "" {
+		return false
+	}
 	for _, endpoint := range resource.Endpoints {
-		if strings.TrimSpace(endpoint.IDField) != "" {
+		if spec.EffectiveIDField(resource, endpoint) != "" {
 			return false
 		}
 	}

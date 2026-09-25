@@ -486,6 +486,14 @@ func Profile(s *spec.APISpec) *APIProfile {
 			if optIn, _ := spec.EffectiveSyncMembership(r, endpoint); optIn {
 				endpoint.Syncable = true
 			}
+			// The store schema is built from the original spec, not this
+			// profiled copy. Persist an inherited resource id so classification
+			// does not treat the resource as parameter-keyed.
+			if id := strings.TrimSpace(endpoint.IDField); id != "" && strings.TrimSpace(r.Endpoints[endpointName].IDField) == "" {
+				stored := r.Endpoints[endpointName]
+				stored.IDField = id
+				r.Endpoints[endpointName] = stored
+			}
 
 			method := strings.ToUpper(endpoint.Method)
 			switch method {

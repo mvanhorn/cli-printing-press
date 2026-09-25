@@ -75,6 +75,7 @@ types:
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
+	requireGeneratedCompiles(t, outputDir)
 
 	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
 	require.NoError(t, err)
@@ -96,6 +97,13 @@ types:
 	assert.NotContains(t, overrideBlock, `"live"`)
 	assert.Regexp(t, `"states":\s+"entity_id"`, storeContent)
 	assert.Regexp(t, `"overridden":\s+"canonical_id"`, storeContent)
+	paramStart := strings.Index(storeContent, "var parameterKeyedResources = map[string]bool{")
+	require.GreaterOrEqual(t, paramStart, 0)
+	paramEnd := strings.Index(storeContent[paramStart:], "\n}")
+	require.Greater(t, paramEnd, 0)
+	paramBlock := storeContent[paramStart : paramStart+paramEnd]
+	assert.NotContains(t, paramBlock, `"states"`)
+	assert.NotContains(t, paramBlock, `"overridden"`)
 
 	defaultStart := strings.Index(syncContent, "func defaultSyncResources() []string {")
 	require.GreaterOrEqual(t, defaultStart, 0)

@@ -3025,6 +3025,94 @@ resources:
 		assert.True(t, fromYAML.Resources["states"].Endpoints["list"].SyncableSet)
 	})
 
+	t.Run("explicit endpoint syncable false survives marshal", func(t *testing.T) {
+		t.Parallel()
+		input := `name: home
+base_url: https://api.example.com
+resources:
+  opted:
+    description: Resource opts in
+    syncable: true
+    endpoints:
+      list:
+        method: GET
+        path: /opted
+        description: List opted
+        syncable: false
+  kept:
+    description: Resource opts out
+    syncable: false
+    endpoints:
+      list:
+        method: GET
+        path: /kept
+        description: List kept
+        syncable: false
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		check := func(parsed *APISpec) {
+			t.Helper()
+			opted := parsed.Resources["opted"]
+			optedList := opted.Endpoints["list"]
+			assert.True(t, optedList.SyncableSet)
+			assert.False(t, optedList.Syncable)
+			optIn, optOut := EffectiveSyncMembership(opted, optedList)
+			assert.False(t, optIn, "endpoint syncable false must not inherit resource true")
+			assert.False(t, optOut)
+
+			kept := parsed.Resources["kept"]
+			keptList := kept.Endpoints["list"]
+			assert.True(t, keptList.SyncableSet)
+			assert.False(t, keptList.Syncable)
+			optIn, optOut = EffectiveSyncMembership(kept, keptList)
+			assert.False(t, optIn)
+			assert.False(t, optOut, "endpoint syncable false must not inherit resource false")
+		}
+		check(s)
+
+		encoded, err := json.Marshal(s)
+		require.NoError(t, err)
+		var fromJSON APISpec
+		require.NoError(t, json.Unmarshal(encoded, &fromJSON))
+		check(&fromJSON)
+
+		yamlBytes, err := yaml.Marshal(s)
+		require.NoError(t, err)
+		fromYAML, err := ParseBytes(yamlBytes)
+		require.NoError(t, err)
+		check(fromYAML)
+	})
+
+	t.Run("merged sub-resources are validated", func(t *testing.T) {
+		t.Parallel()
+		input := `name: home
+base_url: https://api.example.com
+device_defaults: &device_defaults
+  sub_resources:
+    sensors:
+      description: Sensors
+      id_feild: sensor_id
+      endpoints:
+        list:
+          method: GET
+          path: /devices/{id}/sensors
+          description: List sensors
+resources:
+  devices:
+    <<: *device_defaults
+    description: Devices
+    endpoints:
+      list:
+        method: GET
+        path: /devices
+        description: List devices
+`
+		_, err := ParseBytes([]byte(input))
+		require.ErrorContains(t, err, `resource "devices.sensors" contains unknown field "id_feild"`)
+	})
+
 	t.Run("unknown resource key is surfaced by name", func(t *testing.T) {
 		t.Parallel()
 		input := `name: home

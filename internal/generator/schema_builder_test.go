@@ -756,6 +756,32 @@ func TestBuildSchemaMarksParameterKeyedResources(t *testing.T) {
 	assert.False(t, currencies.ParameterKeyed, "currency_code is a store identity suffix")
 }
 
+func TestBuildSchemaResourceIDFieldIsNotParameterKeyed(t *testing.T) {
+	t.Parallel()
+
+	s := &spec.APISpec{
+		Name: "home",
+		Resources: map[string]spec.Resource{
+			"states": {
+				IDField: "entity_id",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/states", Response: spec.ResponseDef{Type: "array", Item: "State"}},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"State": {Fields: []spec.TypeField{
+				{Name: "entity_id", Type: "string"},
+				{Name: "state", Type: "string"},
+			}},
+		},
+	}
+
+	states := findTable(BuildSchema(s), "states")
+	require.NotNil(t, states)
+	assert.False(t, states.ParameterKeyed, "resource-level id_field is a declared entity id")
+}
+
 // findTable returns nil when no match exists so callers can render
 // a clearer assertion failure than `tables[0]` panicking.
 func findTable(tables []TableDef, name string) *TableDef {
