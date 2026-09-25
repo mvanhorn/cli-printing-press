@@ -26,10 +26,12 @@ import (
 // command-path coverage declared in spec.Cache.Commands.
 var readCommandResources = map[string][]string{
 {{- range .SyncableResources}}
+{{- if not .SkipAutoRefresh}}
 	"{{$.Name}}-pp-cli {{.Name}}":        {"{{.Name}}"},
 	"{{$.Name}}-pp-cli {{.Name}} list":   {"{{.Name}}"},
 	"{{$.Name}}-pp-cli {{.Name}} get":    {"{{.Name}}"},
 	"{{$.Name}}-pp-cli {{.Name}} search": {"{{.Name}}"},
+{{- end}}
 {{- end}}
 {{- range .Cache.Commands}}
 	"{{$.Name}}-pp-cli {{.Name}}": {

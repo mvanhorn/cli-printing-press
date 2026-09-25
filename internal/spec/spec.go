@@ -2376,10 +2376,40 @@ type Resource struct {
 	// endpoints. Fixed at generation time. Incompatible with the
 	// proxy-envelope client pattern, which POSTs every request to a
 	// single URL.
-	BaseURL      string              `yaml:"base_url,omitempty" json:"base_url,omitempty"`
-	Tier         string              `yaml:"tier,omitempty" json:"tier,omitempty"`
+	BaseURL string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
+	Tier    string `yaml:"tier,omitempty" json:"tier,omitempty"`
+	// List endpoints on one resource share a primary key authors declare once.
+	// Endpoint-only id_field left that key unknown, so the store never learned it.
+	IDField string `yaml:"id_field,omitempty" json:"id_field,omitempty"`
+	// Authors drop a whole resource from default sync and auto-refresh while
+	// leaving it callable by name. False must stay distinct from an omitted key.
+	Syncable     *bool               `yaml:"syncable,omitempty" json:"syncable,omitempty"`
 	Endpoints    map[string]Endpoint `yaml:"endpoints" json:"endpoints"`
 	SubResources map[string]Resource `yaml:"sub_resources,omitempty" json:"sub_resources,omitempty"`
+}
+
+// Profiler and store classification must agree on one identity; inlined
+// precedence let the store treat a declared key as parameter-keyed.
+func EffectiveIDField(resource Resource, endpoint Endpoint) string {
+	if id := strings.TrimSpace(endpoint.IDField); id != "" {
+		return id
+	}
+	return strings.TrimSpace(resource.IDField)
+}
+
+// Default-sync membership and auto-refresh opt-out must stay one decision.
+// Endpoint syncable only opts in; opt-out is an inherited resource-level false.
+func EffectiveSyncMembership(resource Resource, endpoint Endpoint) (optIn, optOut bool) {
+	if endpoint.SyncableSet || endpoint.Syncable {
+		return endpoint.Syncable, false
+	}
+	if resource.Syncable == nil {
+		return false, false
+	}
+	if *resource.Syncable {
+		return true, false
+	}
+	return false, true
 }
 
 // DefaultResourceDescription returns the parser fallback description for a
@@ -2570,7 +2600,10 @@ type Endpoint struct {
 	// the profiler's safety heuristic would otherwise exclude it for required
 	// path/query params. Use only when the spec supplies those inputs through
 	// defaults, template vars, or another generated runtime mechanism.
-	Syncable bool `yaml:"syncable,omitempty" json:"syncable,omitempty"`
+	// When set, it overrides Resource.Syncable. SyncableSet distinguishes an
+	// explicit false from an omitted key; the bool alone cannot.
+	Syncable    bool `yaml:"syncable,omitempty" json:"syncable,omitempty"`
+	SyncableSet bool `yaml:"-" json:"-"`
 	// Walker, when present, declares this endpoint as a hierarchical child
 	// resource fetched by iterating a named parent. Used when the generator's
 	// path-param dependent-resource auto-detection would miss the link — for
@@ -2635,7 +2668,23 @@ func (e *Endpoint) UnmarshalYAML(value *yaml.Node) error {
 	}
 	*e = Endpoint(out)
 	e.BodySet = bodyNode != nil
+	e.SyncableSet = yamlMappingValue(value, "syncable") != nil
 	return nil
+}
+
+// MarshalYAML keeps an explicit syncable: false. The bool field is omitempty,
+// and SyncableSet is not serialized, so a plain struct marshal would drop the
+// key and let a resource-level syncable win after the spec is parsed again.
+func (e Endpoint) MarshalYAML() (any, error) {
+	type endpointAlias Endpoint
+	var node yaml.Node
+	if err := node.Encode(endpointAlias(e)); err != nil {
+		return nil, err
+	}
+	if e.SyncableSet && !e.Syncable {
+		appendYAMLBool(&node, "syncable", false)
+	}
+	return &node, nil
 }
 
 func (e *Endpoint) UnmarshalJSON(data []byte) error {
@@ -2671,7 +2720,26 @@ func (e *Endpoint) UnmarshalJSON(data []byte) error {
 	}
 	*e = Endpoint(out)
 	e.BodySet = bodySet
+	_, e.SyncableSet = raw["syncable"]
 	return nil
+}
+
+// MarshalJSON keeps an explicit syncable: false. See MarshalYAML.
+func (e Endpoint) MarshalJSON() ([]byte, error) {
+	type endpointAlias Endpoint
+	data, err := json.Marshal(endpointAlias(e))
+	if err != nil {
+		return nil, err
+	}
+	if !e.SyncableSet || e.Syncable {
+		return data, nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	raw["syncable"] = []byte("false")
+	return json.Marshal(raw)
 }
 
 // MutationOverride reports the explicit mutation flag. set is false when
@@ -3486,6 +3554,18 @@ func validateRawSpecStructure(data []byte) error {
 		}
 	}
 
+	if resources := mappingValue(root, "resources"); resources != nil {
+		var problems []string
+		unknownResourceMappingFields(resources, "", &problems)
+		if len(problems) == 1 {
+			return fmt.Errorf("spec structural error: %s", problems[0])
+		}
+		if len(problems) > 1 {
+			slices.Sort(problems)
+			return fmt.Errorf("spec structural error: %s", strings.Join(problems, "; "))
+		}
+	}
+
 	types := mappingValue(root, "types")
 	if types == nil || types.Kind != yaml.MappingNode {
 		return nil
@@ -3503,6 +3583,35 @@ func validateRawSpecStructure(data []byte) error {
 		return fmt.Errorf("spec structural error: found resource-shaped entr%s under 'types:' (%s) - resources were likely appended at the wrong indentation level; move them under top-level 'resources:'", pluralSuffix(len(misplaced), "y", "ies"), strings.Join(misplaced, ", "))
 	}
 	return nil
+}
+
+func unknownResourceMappingFields(node *yaml.Node, prefix string, problems *[]string) {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		name := node.Content[i].Value
+		if name == "<<" {
+			continue
+		}
+		value := node.Content[i+1]
+		if value.Kind == yaml.AliasNode {
+			value = value.Alias
+		}
+		if value == nil || value.Kind != yaml.MappingNode {
+			continue
+		}
+		path := name
+		if prefix != "" {
+			path = prefix + "." + name
+		}
+		for _, field := range unknownYAMLFields(value, reflect.TypeFor[Resource]()) {
+			*problems = append(*problems, fmt.Sprintf("resource %q contains unknown field %q", path, field))
+		}
+		if subs := mappingValue(value, "sub_resources"); subs != nil {
+			unknownResourceMappingFields(subs, path, problems)
+		}
+	}
 }
 
 func unknownYAMLFields(node *yaml.Node, structType reflect.Type) []string {
@@ -3557,15 +3666,77 @@ func yamlDocumentRoot(doc *yaml.Node) *yaml.Node {
 }
 
 func mappingValue(node *yaml.Node, key string) *yaml.Node {
-	if node == nil || node.Kind != yaml.MappingNode {
+	return mappingValueVisited(node, key, map[*yaml.Node]bool{})
+}
+
+// mappingValueVisited returns key from a mapping, following YAML merge keys
+// (<<) and aliases. An explicit key wins. For a merge sequence, earlier
+// mappings win over later ones, matching YAML 1.1 merge precedence.
+func mappingValueVisited(node *yaml.Node, key string, seen map[*yaml.Node]bool) *yaml.Node {
+	node = resolveYAMLAlias(node)
+	if node == nil || node.Kind != yaml.MappingNode || seen[node] {
 		return nil
 	}
+	seen[node] = true
+	var merges []*yaml.Node
 	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
-			return node.Content[i+1]
+		name := node.Content[i].Value
+		child := node.Content[i+1]
+		if name == "<<" {
+			merges = append(merges, child)
+			continue
+		}
+		if name == key {
+			return resolveYAMLAlias(child)
+		}
+	}
+	for _, merge := range merges {
+		if found := mappingValueFromMerge(merge, key, seen); found != nil {
+			return found
 		}
 	}
 	return nil
+}
+
+func mappingValueFromMerge(node *yaml.Node, key string, seen map[*yaml.Node]bool) *yaml.Node {
+	node = resolveYAMLAlias(node)
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.SequenceNode {
+		for _, item := range node.Content {
+			if found := mappingValueVisited(item, key, seen); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+	return mappingValueVisited(node, key, seen)
+}
+
+func resolveYAMLAlias(node *yaml.Node) *yaml.Node {
+	for node != nil && node.Kind == yaml.AliasNode {
+		node = node.Alias
+	}
+	return node
+}
+
+func appendYAMLBool(node *yaml.Node, key string, value bool) {
+	mapping := node
+	if node != nil && node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		mapping = node.Content[0]
+	}
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return
+	}
+	text := "false"
+	if value {
+		text = "true"
+	}
+	mapping.Content = append(mapping.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: text},
+	)
 }
 
 func pluralSuffix(count int, singular, plural string) string {

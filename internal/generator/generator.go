@@ -1302,6 +1302,9 @@ func (g *Generator) freshnessCommandPaths() []string {
 	}
 	cliName := naming.CLI(g.Spec.Name)
 	for _, resource := range g.profile.SyncableResources {
+		if resource.SkipAutoRefresh {
+			continue
+		}
 		prefix := cliName + " " + resource.Name
 		add(prefix)
 		for _, subcommand := range []string{"list", "get", "search"} {
@@ -4695,7 +4698,7 @@ func firstEndpointIDField(r spec.Resource) string {
 			return id
 		}
 	}
-	return ""
+	return strings.TrimSpace(r.IDField)
 }
 
 type resourceParentKeyColumnEntry struct {

@@ -2957,6 +2957,206 @@ resources:
 		require.ErrorContains(t, err, `auth.type is "cookie" but auth.cookies is empty`)
 	})
 
+	t.Run("resource id_field and syncable round-trip and endpoint wins", func(t *testing.T) {
+		t.Parallel()
+		input := `name: home
+base_url: https://api.example.com
+resources:
+  states:
+    description: Entity states
+    id_field: entity_id
+    syncable: false
+    endpoints:
+      list:
+        method: GET
+        path: /states
+        description: List states
+        id_field: canonical_id
+        syncable: true
+  live:
+    description: Live host
+    syncable: false
+    endpoints:
+      list:
+        method: GET
+        path: /live
+        description: List live
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		states := s.Resources["states"]
+		require.NotNil(t, states.Syncable)
+		assert.False(t, *states.Syncable)
+		assert.Equal(t, "entity_id", states.IDField)
+		list := states.Endpoints["list"]
+		assert.Equal(t, "canonical_id", list.IDField)
+		assert.True(t, list.Syncable)
+		assert.True(t, list.SyncableSet)
+		assert.Equal(t, "canonical_id", EffectiveIDField(states, list))
+		optIn, optOut := EffectiveSyncMembership(states, list)
+		assert.True(t, optIn)
+		assert.False(t, optOut)
+
+		live := s.Resources["live"]
+		require.NotNil(t, live.Syncable)
+		assert.False(t, *live.Syncable)
+		liveList := live.Endpoints["list"]
+		assert.False(t, liveList.SyncableSet)
+		assert.Equal(t, "entity_id", EffectiveIDField(states, Endpoint{}))
+		optIn, optOut = EffectiveSyncMembership(live, liveList)
+		assert.False(t, optIn)
+		assert.True(t, optOut)
+
+		encoded, err := json.Marshal(s)
+		require.NoError(t, err)
+		var fromJSON APISpec
+		require.NoError(t, json.Unmarshal(encoded, &fromJSON))
+		assert.Equal(t, "entity_id", fromJSON.Resources["states"].IDField)
+		require.NotNil(t, fromJSON.Resources["live"].Syncable)
+		assert.False(t, *fromJSON.Resources["live"].Syncable)
+
+		yamlBytes, err := yaml.Marshal(s)
+		require.NoError(t, err)
+		fromYAML, err := ParseBytes(yamlBytes)
+		require.NoError(t, err)
+		assert.Equal(t, "entity_id", fromYAML.Resources["states"].IDField)
+		require.NotNil(t, fromYAML.Resources["live"].Syncable)
+		assert.False(t, *fromYAML.Resources["live"].Syncable)
+		assert.True(t, fromYAML.Resources["states"].Endpoints["list"].SyncableSet)
+	})
+
+	t.Run("explicit endpoint syncable false survives marshal", func(t *testing.T) {
+		t.Parallel()
+		input := `name: home
+base_url: https://api.example.com
+resources:
+  opted:
+    description: Resource opts in
+    syncable: true
+    endpoints:
+      list:
+        method: GET
+        path: /opted
+        description: List opted
+        syncable: false
+  kept:
+    description: Resource opts out
+    syncable: false
+    endpoints:
+      list:
+        method: GET
+        path: /kept
+        description: List kept
+        syncable: false
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		check := func(parsed *APISpec) {
+			t.Helper()
+			opted := parsed.Resources["opted"]
+			optedList := opted.Endpoints["list"]
+			assert.True(t, optedList.SyncableSet)
+			assert.False(t, optedList.Syncable)
+			optIn, optOut := EffectiveSyncMembership(opted, optedList)
+			assert.False(t, optIn, "endpoint syncable false must not inherit resource true")
+			assert.False(t, optOut)
+
+			kept := parsed.Resources["kept"]
+			keptList := kept.Endpoints["list"]
+			assert.True(t, keptList.SyncableSet)
+			assert.False(t, keptList.Syncable)
+			optIn, optOut = EffectiveSyncMembership(kept, keptList)
+			assert.False(t, optIn)
+			assert.False(t, optOut, "endpoint syncable false must not inherit resource false")
+		}
+		check(s)
+
+		encoded, err := json.Marshal(s)
+		require.NoError(t, err)
+		var fromJSON APISpec
+		require.NoError(t, json.Unmarshal(encoded, &fromJSON))
+		check(&fromJSON)
+
+		yamlBytes, err := yaml.Marshal(s)
+		require.NoError(t, err)
+		fromYAML, err := ParseBytes(yamlBytes)
+		require.NoError(t, err)
+		check(fromYAML)
+	})
+
+	t.Run("merged sub-resources are validated", func(t *testing.T) {
+		t.Parallel()
+		input := `name: home
+base_url: https://api.example.com
+device_defaults: &device_defaults
+  sub_resources:
+    sensors:
+      description: Sensors
+      id_feild: sensor_id
+      endpoints:
+        list:
+          method: GET
+          path: /devices/{id}/sensors
+          description: List sensors
+resources:
+  devices:
+    <<: *device_defaults
+    description: Devices
+    endpoints:
+      list:
+        method: GET
+        path: /devices
+        description: List devices
+`
+		_, err := ParseBytes([]byte(input))
+		require.ErrorContains(t, err, `resource "devices.sensors" contains unknown field "id_feild"`)
+	})
+
+	t.Run("unknown resource key is surfaced by name", func(t *testing.T) {
+		t.Parallel()
+		input := `name: home
+base_url: https://api.example.com
+resources:
+  states:
+    description: Entity states
+    cacheable: false
+    endpoints:
+      list:
+        method: GET
+        path: /states
+        description: List states
+`
+		_, err := ParseBytes([]byte(input))
+		require.ErrorContains(t, err, `resource "states" contains unknown field "cacheable"`)
+	})
+
+	t.Run("unknown sub-resource key is surfaced by name", func(t *testing.T) {
+		t.Parallel()
+		input := `name: home
+base_url: https://api.example.com
+resources:
+  devices:
+    description: Devices
+    endpoints:
+      list:
+        method: GET
+        path: /devices
+        description: List devices
+    sub_resources:
+      sensors:
+        description: Sensors
+        id_feild: sensor_id
+        endpoints:
+          list:
+            method: GET
+            path: /devices/{id}/sensors
+            description: List sensors
+`
+		_, err := ParseBytes([]byte(input))
+		require.ErrorContains(t, err, `resource "devices.sensors" contains unknown field "id_feild"`)
+	})
+
 	t.Run("unknown auth key is surfaced by name", func(t *testing.T) {
 		t.Parallel()
 		input := `name: notionapi

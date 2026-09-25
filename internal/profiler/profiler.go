@@ -149,6 +149,9 @@ type SyncableResource struct {
 	// them from generated "sync all" defaults (auth-flow, untyped IDs, and
 	// html/binary/text responses that cannot populate the JSON store).
 	SkipDefaultSync bool
+	// Heuristic default-sync exclusions still belong in the freshness map.
+	// Only a resource-level syncable false opts out of both sync and auto-refresh.
+	SkipAutoRefresh bool
 	// IDField is the resolved primary-key field name for items returned by the
 	// list endpoint, populated from the chosen endpoint's resolved value (in
 	// turn populated by the OpenAPI parser's `x-resource-id` extension or the
@@ -476,6 +479,20 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 		for endpointName, endpoint := range r.Endpoints {
 			p.TotalEndpoints++
+			if id := spec.EffectiveIDField(r, endpoint); id != "" {
+				endpoint.IDField = id
+			}
+			if optIn, _ := spec.EffectiveSyncMembership(r, endpoint); optIn {
+				endpoint.Syncable = true
+			}
+			// The store schema is built from the original spec, not this
+			// profiled copy. Persist an inherited resource id so classification
+			// does not treat the resource as parameter-keyed.
+			if id := strings.TrimSpace(endpoint.IDField); id != "" && strings.TrimSpace(r.Endpoints[endpointName].IDField) == "" {
+				stored := r.Endpoints[endpointName]
+				stored.IDField = id
+				r.Endpoints[endpointName] = stored
+			}
 
 			method := strings.ToUpper(endpoint.Method)
 			switch method {
@@ -2626,6 +2643,7 @@ type syncableMeta struct {
 	Method                   string
 	Tier                     string
 	SkipDefaultSync          bool
+	SkipAutoRefresh          bool
 	IDField                  string
 	Critical                 bool
 	SinceParam               string
@@ -2699,11 +2717,17 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		dateRange: syncDateRangeParamNames,
 	}
 	queryParamSeed := syncQueryParamSeedFromEndpoint(e, syncOwned)
+	_, optOut := spec.EffectiveSyncMembership(resource, e)
+	skipDefault := isAuthTaggedEndpoint(e) || hasTypedResponseWithoutRuntimeID(resourceName, e, types) || e.LacksJSONSyncEnumeration()
+	if optOut {
+		skipDefault = true
+	}
 	return syncableMeta{
 		Path:                     e.Path,
 		Method:                   strings.ToUpper(e.Method),
 		Tier:                     s.EffectiveTier(resource, e),
-		SkipDefaultSync:          isAuthTaggedEndpoint(e) || hasTypedResponseWithoutRuntimeID(resourceName, e, types) || e.LacksJSONSyncEnumeration(),
+		SkipDefaultSync:          skipDefault,
+		SkipAutoRefresh:          optOut,
 		IDField:                  e.IDField,
 		Critical:                 e.Critical,
 		SinceParam:               sinceParam,
@@ -4102,6 +4126,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			Method:                   meta.Method,
 			Tier:                     meta.Tier,
 			SkipDefaultSync:          meta.SkipDefaultSync,
+			SkipAutoRefresh:          meta.SkipAutoRefresh,
 			IDField:                  meta.IDField,
 			Critical:                 meta.Critical,
 			SinceParam:               meta.SinceParam,
