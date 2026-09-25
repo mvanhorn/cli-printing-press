@@ -1,5 +1,22 @@
 # Changelog
 
+## [4.32.5](https://github.com/mvanhorn/cli-printing-press/compare/v4.32.4...v4.32.5) (2026-09-25)
+
+
+### Bug Fixes
+
+* **cli:** accept templated auth token_url vars ([#4798](https://github.com/mvanhorn/cli-printing-press/issues/4798)) ([c52df32](https://github.com/mvanhorn/cli-printing-press/commit/c52df324644f83cea4007f43f192514ab51439e6))
+* **cli:** decode Accept-Encoding; guard redirects; merge envelopes ([#4789](https://github.com/mvanhorn/cli-printing-press/issues/4789)) ([1227f2a](https://github.com/mvanhorn/cli-printing-press/commit/1227f2aaf9db30013a3b1d69997eb9fc0fe0b978))
+* **cli:** framework commands honor --dry-run ([#4786](https://github.com/mvanhorn/cli-printing-press/issues/4786)) ([817a138](https://github.com/mvanhorn/cli-printing-press/commit/817a1385198b6c8af787bb74d9679790da2b1c07))
+* **cli:** harden cookie-auth doctor and download paths ([#4799](https://github.com/mvanhorn/cli-printing-press/issues/4799)) ([52fa706](https://github.com/mvanhorn/cli-printing-press/commit/52fa706dad50509b3b02b7e3df068397b2322cd2))
+* **cli:** honor resource-level id_field and syncable ([#4803](https://github.com/mvanhorn/cli-printing-press/issues/4803)) ([9268baa](https://github.com/mvanhorn/cli-printing-press/commit/9268baa7c0e30074ebcd5feaa46a81b5b52601e7))
+* **cli:** MCP widgets test sentinel + GOOS/GOARCH CLI lookup ([#4787](https://github.com/mvanhorn/cli-printing-press/issues/4787)) ([f2cb78f](https://github.com/mvanhorn/cli-printing-press/commit/f2cb78f1ac5f99ab796f81020d33f893386ee75b))
+* **cli:** preserve force hand-edits; --select tolerates dry-run ([#4768](https://github.com/mvanhorn/cli-printing-press/issues/4768)) ([737914c](https://github.com/mvanhorn/cli-printing-press/commit/737914c032c27fc94d2ac47c6e5430f9ae82d2ee))
+* **cli:** preserve nested request bodies at depth limit ([#4796](https://github.com/mvanhorn/cli-printing-press/issues/4796)) ([3d0f8e9](https://github.com/mvanhorn/cli-printing-press/commit/3d0f8e92fad15115a91cc9a3f030c334f3a96ff2))
+* **cli:** preserve publish/promote version, MCPB, attribution, and ledger ([#4790](https://github.com/mvanhorn/cli-printing-press/issues/4790)) ([f63d7c6](https://github.com/mvanhorn/cli-printing-press/commit/f63d7c6cc0bf6fe5b3bc8e94b9455961fc37e99b))
+* **cli:** synthesize Examples from requestBody ([#4788](https://github.com/mvanhorn/cli-printing-press/issues/4788)) ([a6fcee4](https://github.com/mvanhorn/cli-printing-press/commit/a6fcee4a80d57fb856e2ae2c5f85e6a30a0951e2))
+* **publish:** preserve packaged proof validation ([#4778](https://github.com/mvanhorn/cli-printing-press/issues/4778)) ([9239548](https://github.com/mvanhorn/cli-printing-press/commit/92395483d295dd06fb5bdc92658c5e1b08e82b97))
+
 ## [4.32.4](https://github.com/mvanhorn/cli-printing-press/compare/v4.32.3...v4.32.4) (2026-09-20)
 
 
