@@ -9726,7 +9726,7 @@ func TestBuildPromotedCommands(t *testing.T) {
 		assert.True(t, names["password-forgot"], "POST-only password-forgot resource should promote")
 	})
 
-	t.Run("single-endpoint POST with body beyond max flag depth is not promoted", func(t *testing.T) {
+	t.Run("single-endpoint POST with a depth-boundary JSON object is promoted", func(t *testing.T) {
 		t.Parallel()
 		s := &spec.APISpec{
 			Name:    "test",
@@ -9770,7 +9770,8 @@ func TestBuildPromotedCommands(t *testing.T) {
 		}
 
 		promoted := buildPromotedCommands(s)
-		assert.Empty(t, promoted, "deep-body single-endpoint POST must remain non-promoted so canonical endpoint command with --stdin stays reachable")
+		require.Len(t, promoted, 1, "the depth-boundary object flag keeps the complete body reachable in promoted commands")
+		assert.Equal(t, "orders", promoted[0].PromotedName)
 	})
 
 	t.Run("multi-endpoint resource still requires GET for promotion (write-only resources stay nested)", func(t *testing.T) {

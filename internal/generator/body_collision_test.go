@@ -305,12 +305,8 @@ func TestGenerateDeduplicatesNestedTreesCollapsedToSameIdent(t *testing.T) {
 // bodyProjectPostalAddressCustomerName) without falling back on the _N
 // suffix.
 //
-// maxBodyFlagDepth truncates the deeper
-// Project.PostalAddress.Customer.name leaf (depth 3); only the shallower
-// Project.Customer.name (depth 2) emits. The dedup behavior is still
-// exercised: were the cap raised, the parent-prefix walker would
-// uniquify both leaves without collision. Truncation is verified via
-// the deeper identifier's absence and the --stdin help text rewrite.
+// maxBodyFlagDepth emits the deeper Project.PostalAddress.Customer object
+// as one JSON flag while Project.Customer.name remains an expanded leaf.
 func TestGenerateDeduplicatesConvergentNestedBodyPaths(t *testing.T) {
 	t.Parallel()
 
@@ -353,12 +349,14 @@ func TestGenerateDeduplicatesConvergentNestedBodyPaths(t *testing.T) {
 		"convergent nested paths must produce distinct Go identifiers")
 	assertNoDuplicates(t, flagBindings,
 		"convergent nested paths must register distinct cobra flag names")
-	require.Len(t, bodyVars, 1,
-		"only the shallower project.customer.name survives the depth cap")
+	require.Len(t, bodyVars, 2,
+		"the shallow name and deeper boundary object must both remain reachable")
 	assert.Contains(t, bodyVars, "bodyProjectCustomerName",
 		"the depth-2 project.customer.name leaf still emits its identifier")
+	assert.Contains(t, bodyVars, "bodyProjectPostalAddressCustomer",
+		"the depth-boundary customer object emits as one JSON flag")
 	assert.NotContains(t, bodyVars, "bodyProjectPostalAddressCustomerName",
-		"the depth-3 project.postalAddress.customer.name leaf is truncated by the cap")
+		"children of the depth-boundary customer object do not expand")
 }
 
 // TestGenerateDeduplicatesCyclicRefBodyShape drives the full OpenAPI
@@ -469,31 +467,22 @@ components:
 	assertNoDuplicates(t, flagBindings,
 		"cyclic-ref body shape must register distinct cobra flag names")
 
-	// maxBodyFlagDepth truncates the cycle-cut leaves at depth 3+; only
-	// the direct project.customer.name leaf at depth 2 survives as a
-	// per-field flag. The dedup pass remains the line of defense for any
-	// identifier collisions inside the surviving depth window. Deeper
-	// leaves are reachable via --stdin (the template's help text is
-	// rewritten to advertise the fallback when truncation fires; see
-	// bodyExceedsFlagDepth).
-	require.Len(t, bodyVars, 1,
-		"only the shallow project.customer.name survives the depth cap")
+	// maxBodyFlagDepth collapses deeper cycle-cut subtrees into JSON object
+	// flags. The dedup pass remains the line of defense for identifiers in
+	// the expanded depth window.
+	require.Len(t, bodyVars, 3,
+		"the shallow name and two boundary objects remain reachable")
 	assert.Contains(t, bodyVars, "bodyProjectCustomerName",
 		"the direct depth-2 project.customer.name leaf still emits bodyProjectCustomerName")
-	assert.NotContains(t, bodyVars, "bodyProjectCustomerLedgerAccountVatTypeCustomer",
-		"the depth-5 ledgerAccount.vatType.customer cycle-cut leaf is truncated by the cap")
-	assert.NotContains(t, bodyVars, "bodyProjectCustomerPostalAddressCustomer",
-		"the depth-4 postalAddress.customer cycle-cut leaf is truncated by the cap")
+	assert.Contains(t, bodyVars, "bodyProjectCustomerLedgerAccount",
+		"the ledgerAccount boundary object remains reachable")
+	assert.Contains(t, bodyVars, "bodyProjectCustomerPostalAddress",
+		"the postalAddress boundary object remains reachable")
 
-	// The template's --stdin help text must be rewritten to advertise
-	// the fallback when truncation fires, so an operator inspecting
-	// `--help` sees the affordance without needing to read the issue
-	// tracker.
 	src, err := os.ReadFile(postFile)
 	require.NoError(t, err)
-	assert.Contains(t, string(src),
-		`"Read request body as JSON from stdin (use this for deeply nested fields not exposed as flags)"`,
-		"--stdin help text must reflect truncation when bodyExceedsFlagDepth is true")
+	assert.Contains(t, string(src), `"Read request body as JSON from stdin"`)
+	assert.NotContains(t, string(src), "deeply nested fields not exposed as flags")
 }
 
 // TestGenerateBodyDepthCapPreventsCompilerExplosion guards the
@@ -550,13 +539,40 @@ func TestGenerateBodyDepthCapPreventsCompilerExplosion(t *testing.T) {
 
 	// Exact-count assertion catches off-by-one cap regressions that a
 	// file-size threshold would miss. Fixture has 3 scalar siblings at
-	// each of depths 0, 1, 2 = 9 body-var declarations under cap=3.
-	// Cap=2 would drop to 6; cap=4 would jump to 12; no cap at all
+	// each of depths 0, 1, 2 plus one boundary object = 10 declarations.
+	// Cap=2 would differ; cap=4 would jump to 13; no cap at all
 	// produces 4 + (3 leaves * 5 inner levels) + 4 = 23 leaves down the
 	// single deep chain, and far more in the general fan-out shape.
 	bodyVars, _ := parseBodyDeclarations(t, postFile)
-	require.Len(t, bodyVars, 9,
-		"cap=3 must produce exactly 9 body-var declarations (3 leaves at each of depths 0, 1, 2)")
+	require.Len(t, bodyVars, 10,
+		"cap=3 must produce 9 expanded leaves and one JSON boundary object")
+}
+
+func TestDepthBoundaryObjectParticipatesInCollisionFlattening(t *testing.T) {
+	t.Parallel()
+	body := []spec.Param{
+		{Name: "outerInnerTarget", Type: "string"},
+		{
+			Name: "outer",
+			Type: "object",
+			Fields: []spec.Param{{
+				Name: "inner",
+				Type: "object",
+				Fields: []spec.Param{{
+					Name:   "target",
+					Type:   "object",
+					Fields: []spec.Param{{Name: "requiredValue", Type: "string", Required: true}},
+				}},
+			}},
+		},
+	}
+
+	flattened := flattenCollidingBodyFields(body)
+	require.Empty(t, flattened[1].Fields, "the colliding ancestor must collapse to one JSON flag")
+
+	vars := bodyVarDecls(spec.Endpoint{Body: body})
+	require.Equal(t, 1, strings.Count(vars, "bodyOuterInnerTarget"), "the generated identifier must be unique")
+	require.Contains(t, vars, "bodyOuter string", "the collapsed object must remain reachable")
 }
 
 // TestFlattenCollidingBodyFields_NestedPrefixShape covers the Atlassian

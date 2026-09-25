@@ -496,7 +496,7 @@ func manifestBodyParams(ep spec.Endpoint) []manifestBodyParam {
 		}
 		return params
 	}
-	body := paramnames.FlattenCollidingBodyFields(ep.Body)
+	body := paramnames.FlattenCollidingBodyFieldsAtDepth(ep.Body, manifestMaxBodyFlagDepth)
 	params := make([]manifestBodyParam, 0, len(body))
 	collectManifestBodyParams(&params, body, 0, "", nil)
 	return params
@@ -510,12 +510,11 @@ func manifestBodyUsesFlatEmission(ep spec.Endpoint) bool {
 func collectManifestBodyParams(params *[]manifestBodyParam, body []spec.Param, depth int, flagPrefix string, bodyPath []string) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
-			if depth+1 >= manifestMaxBodyFlagDepth {
+			if depth+1 < manifestMaxBodyFlagDepth {
+				nextPath := append(append([]string(nil), bodyPath...), p.BodyWireName())
+				collectManifestBodyParams(params, p.Fields, depth+1, naming.JoinFlag(flagPrefix, paramnames.PublicFlagName(p)), nextPath)
 				continue
 			}
-			nextPath := append(append([]string(nil), bodyPath...), p.BodyWireName())
-			collectManifestBodyParams(params, p.Fields, depth+1, naming.JoinFlag(flagPrefix, paramnames.PublicFlagName(p)), nextPath)
-			continue
 		}
 		if flagPrefix != "" {
 			p.FlagName = naming.JoinFlag(flagPrefix, paramnames.PublicFlagName(p))

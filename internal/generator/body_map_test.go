@@ -1049,16 +1049,16 @@ func TestBodyJSONFallback_RequiredChecks_RequiredBody(t *testing.T) {
 
 // deepBodyFixture builds a body with one root object whose Fields chain
 // `levels` deep, ending in a string leaf. Each interior object has a
-// scalar sibling so the truncation test can verify which depths emit and
-// which are dropped.
+// scalar sibling so the depth-boundary tests can verify which levels
+// expand and where the generator switches to one JSON-object flag.
 //
 //	body[level0Obj] (depth 0) ->
 //	  level0Obj.sibling0 (string, depth 1 leaf)
 //	  level0Obj.level1Obj (depth 1 object) ->
 //	    level1Obj.sibling1 (string, depth 2 leaf)
 //	    level1Obj.level2Obj (depth 2 object) ->
-//	      level2Obj.sibling2 (string, depth 3 leaf, truncated at cap=3)
-//	      level2Obj.level3Obj (depth 3 object, truncated at cap=3) -> ...
+//	      level2Obj.sibling2 (inside the depth-boundary JSON object)
+//	      level2Obj.level3Obj (inside the depth-boundary JSON object) -> ...
 func deepBodyFixture(levels int) []spec.Param {
 	if levels < 1 {
 		return nil
@@ -1080,12 +1080,10 @@ func deepBodyFixture(levels int) []spec.Param {
 	return current
 }
 
-// TestBodyMap_DepthCap_TruncatesBelowMax verifies that body-map
-// emission stops recursing into nested objects at maxBodyFlagDepth. A
-// fixture nested 6 levels deep must produce per-field assignments only
-// for depths 0..maxBodyFlagDepth-1; deeper subtrees are silently
-// omitted (the user reaches them via --stdin).
-func TestBodyMap_DepthCap_TruncatesBelowMax(t *testing.T) {
+// TestBodyMap_DepthCap_EmitsBoundaryObject verifies that body-map emission
+// stops expanding nested objects at maxBodyFlagDepth without dropping the
+// remaining subtree. The boundary object is accepted as validated JSON.
+func TestBodyMap_DepthCap_EmitsBoundaryObject(t *testing.T) {
 	t.Parallel()
 	got := bodyMap(deepBodyFixture(6), "\t")
 
@@ -1097,27 +1095,52 @@ func TestBodyMap_DepthCap_TruncatesBelowMax(t *testing.T) {
 	if !strings.Contains(got, "nestedLevel0ObjLevel1Obj") {
 		t.Errorf("expected depth-2 nested map block, got:\n%s", got)
 	}
-	// The depth-3 sibling, depth-3 object block, and any deeper identifiers
-	// must be absent.
+	// The depth-3 object is one JSON flag. Its children must not expand.
+	if !strings.Contains(got, "bodyLevel0ObjLevel1ObjLevel2Obj") {
+		t.Errorf("depth-boundary object flag must emit, got:\n%s", got)
+	}
+	if !strings.Contains(got, `nestedLevel0ObjLevel1Obj["level2Obj"] = asMap`) {
+		t.Errorf("depth-boundary object must be assigned as parsed JSON, got:\n%s", got)
+	}
 	if strings.Contains(got, "Sibling2") {
-		t.Errorf("depth-3 sibling must be truncated by the cap, got:\n%s", got)
+		t.Errorf("children of the depth-boundary object must not expand, got:\n%s", got)
 	}
 	if strings.Contains(got, "nestedLevel0ObjLevel1ObjLevel2Obj") {
-		t.Errorf("depth-3 nested map block must be truncated, got:\n%s", got)
+		t.Errorf("depth-boundary object must not create another nested map, got:\n%s", got)
 	}
 	if strings.Contains(got, "Level3Obj") || strings.Contains(got, "Leaf") {
 		t.Errorf("anything below depth-2 must be omitted, got:\n%s", got)
 	}
 }
 
+func TestBodyMap_DepthCap_ValidatesRequiredBoundaryFields(t *testing.T) {
+	t.Parallel()
+	body := deepBodyFixture(5)
+	boundary := &body[0].Fields[1].Fields[1]
+	boundary.Fields[0].Required = true
+	boundary.Fields[1].Fields[0].Required = true
+
+	got := bodyMap(body, "\t")
+	for _, want := range []string{
+		`missing required field \"sibling2\"`,
+		`asMap["level3Obj"]`,
+		`missing required field \"level3Obj.sibling3\"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("required boundary JSON validation must contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
 // TestBodyVarDecls_DepthCap pins the var-declaration set for a deep body.
-// Only fields reachable within the cap should produce `var bodyX` lines.
+// Expanded leaves and the depth-boundary object each get a variable.
 func TestBodyVarDecls_DepthCap(t *testing.T) {
 	t.Parallel()
 	got := bodyVarDecls(spec.Endpoint{Body: deepBodyFixture(6)})
 	for _, want := range []string{
 		"\n\tvar bodyLevel0ObjSibling0 string",
 		"\n\tvar bodyLevel0ObjLevel1ObjSibling1 string",
+		"\n\tvar bodyLevel0ObjLevel1ObjLevel2Obj string",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("expected within-cap var decl %q, got:\n%s", want, got)
@@ -1133,13 +1156,15 @@ func TestBodyVarDecls_DepthCap(t *testing.T) {
 	}
 }
 
-// TestBodyFlagRegs_DepthCap pins cobra flag registrations for a deep
-// body: only flags reachable within the cap are registered.
+// TestBodyFlagRegs_DepthCap pins the JSON-object registration at the cap.
 func TestBodyFlagRegs_DepthCap(t *testing.T) {
 	t.Parallel()
 	got := bodyFlagRegs(spec.Endpoint{Body: deepBodyFixture(6)})
 	if !strings.Contains(got, `"level0-obj-level1-obj-sibling1"`) {
 		t.Errorf("expected depth-2 flag registration, got:\n%s", got)
+	}
+	if !strings.Contains(got, `"level0-obj-level1-obj-level2-obj"`) {
+		t.Errorf("expected depth-boundary object flag registration, got:\n%s", got)
 	}
 	if strings.Contains(got, "sibling2") {
 		t.Errorf("depth-3 flag must be truncated, got:\n%s", got)
@@ -1163,88 +1188,9 @@ func TestBodyMap_DepthCap_ShallowUnchanged(t *testing.T) {
 	}
 }
 
-// TestBodyExceedsFlagDepth_True reports truncation when the body nests
-// past the cap. A 4-level fixture exceeds maxBodyFlagDepth=3.
-func TestBodyExceedsFlagDepth_True(t *testing.T) {
-	t.Parallel()
-	if !bodyExceedsFlagDepth(spec.Endpoint{Body: deepBodyFixture(4)}) {
-		t.Error("4-level body must report truncation under cap=3")
-	}
-}
-
-// TestBodyExceedsFlagDepth_False reports no truncation when the body
-// fits inside the cap.
-func TestBodyExceedsFlagDepth_False(t *testing.T) {
-	t.Parallel()
-	if bodyExceedsFlagDepth(spec.Endpoint{Body: deepBodyFixture(2)}) {
-		t.Error("2-level body must not report truncation under cap=3")
-	}
-	if bodyExceedsFlagDepth(spec.Endpoint{Body: []spec.Param{{Name: "n", Type: "string"}}}) {
-		t.Error("flat body must not report truncation")
-	}
-}
-
-// TestBodyExceedsFlagDepth_BodyJSONFallback never reports truncation
-// for oneOf/anyOf bodies; those route through a single --body-json flag
-// and never reach the per-field emitter.
-func TestBodyExceedsFlagDepth_BodyJSONFallback(t *testing.T) {
-	t.Parallel()
-	if bodyExceedsFlagDepth(spec.Endpoint{BodyJSONFallback: true, Body: deepBodyFixture(6)}) {
-		t.Error("BodyJSONFallback bypasses per-field emission and must not report truncation")
-	}
-}
-
-// TestBodyExceedsFlagDepth_CollisionFlattenedSubtree pins the
-// interaction with flattenCollidingBodyFields. When dot-flattened
-// identifier collision clears an object's Fields, the emitters treat
-// that subtree as a JSON-string leaf and never recurse past it -- no
-// depth-cap truncation occurs. The predicate must read the same
-// flattened tree the emitters render, or the --stdin help text reverts
-// to the truncation-warning variant when every field is in fact a
-// per-field flag.
-func TestBodyExceedsFlagDepth_CollisionFlattenedSubtree(t *testing.T) {
-	t.Parallel()
-	// Top-level scalar 'outerInnerLeaf' collides with the dot-flattened
-	// nested leaf outer.inner.leaf (both camelize to bodyOuterInnerLeaf
-	// at depth 3). flattenCollidingBodyFields clears outer.Fields so the
-	// emitters render outer as a JSON-string leaf at depth 0; no part of
-	// the rendered tree exceeds the cap.
-	body := []spec.Param{
-		{Name: "outerInnerLeaf", Type: "string"},
-		{Name: "outer", Type: "object", Fields: []spec.Param{
-			{Name: "inner", Type: "object", Fields: []spec.Param{
-				{Name: "leaf", Type: "string"},
-			}},
-		}},
-	}
-	if bodyExceedsFlagDepth(spec.Endpoint{Body: body}) {
-		t.Error("collision-flattened subtree must not report truncation; emitters see a flat tree")
-	}
-}
-
-// TestBodyExceedsFlagDepth_Multipart returns false for multipart
-// endpoints regardless of nested-object depth: bodyUsesFlatEmission
-// keeps multipart and form-encoded bodies one-flag-per-top-level-param,
-// so deep nesting never triggers the per-field recursion the cap guards.
-func TestBodyExceedsFlagDepth_Multipart(t *testing.T) {
-	t.Parallel()
-	endpoint := spec.Endpoint{
-		Method:             "POST",
-		RequestContentType: "multipart/form-data",
-		Body:               deepBodyFixture(6),
-	}
-	if bodyExceedsFlagDepth(endpoint) {
-		t.Error("multipart endpoint must not report truncation; flat emission never recurses")
-	}
-}
-
 // TestBodyMap_DepthCap_Boundary pins the exact depth at which the cap
-// fires. A fixture nested exactly maxBodyFlagDepth levels is the
-// minimal spec that triggers truncation: the depth-2 object's children
-// are at depth 3 and the recursion check (depth+1 >= maxBodyFlagDepth)
-// stops the walk. The depth-1 sibling must still emit; the depth-2
-// sibling and deeper leaves must be absent. A regression that toggled
-// the check to `>` vs `>=` would flip this assertion.
+// fires. The depth-2 object must be emitted as JSON, while its children
+// remain unexpanded. A regression that toggled `>` vs `>=` flips this.
 func TestBodyMap_DepthCap_Boundary(t *testing.T) {
 	t.Parallel()
 	got := bodyMap(deepBodyFixture(maxBodyFlagDepth), "\t")
@@ -1254,31 +1200,27 @@ func TestBodyMap_DepthCap_Boundary(t *testing.T) {
 	if !strings.Contains(got, "bodyLevel0ObjLevel1ObjSibling1") {
 		t.Errorf("depth-2 sibling must emit at the boundary fixture, got:\n%s", got)
 	}
+	if !strings.Contains(got, "bodyLevel0ObjLevel1ObjLevel2Obj") {
+		t.Errorf("depth-boundary object must emit, got:\n%s", got)
+	}
 	if strings.Contains(got, "Sibling2") || strings.Contains(got, "Leaf") {
 		t.Errorf("boundary fixture must not emit depth-3 leaves, got:\n%s", got)
 	}
 }
 
-// TestBodyRequiredChecks_DepthCap omits required-flag checks for fields
-// truncated by the cap. The --stdin path bypasses required checks
-// wholesale, so deep required fields are reachable via stdin only.
+// TestBodyRequiredChecks_DepthCap requires an object at the depth boundary
+// as one unit instead of losing requirements inside an omitted subtree.
 func TestBodyRequiredChecks_DepthCap(t *testing.T) {
 	t.Parallel()
-	// Build a deep fixture where the deepest sibling is required.
 	body := deepBodyFixture(6)
-	// Walk to the depth-3 sibling and mark it required.
-	cursor := &body[0]
-	for range 3 {
-		// cursor.Fields[0] is "siblingN" (string leaf), cursor.Fields[1] is
-		// "level<N+1>Obj" (the nested object). Descend the object branch.
-		cursor = &cursor.Fields[1]
-	}
-	// cursor now points at level3Obj; mark its sibling (depth 4 leaf)
-	// required.
-	cursor.Fields[0].Required = true
+	boundary := &body[0].Fields[1].Fields[1]
+	boundary.Required = true
 
 	got := bodyRequiredChecks(spec.Endpoint{Body: body}, "\t\t\t")
-	if strings.Contains(got, "sibling3") {
-		t.Errorf("required check on a truncated deep leaf must not emit, got:\n%s", got)
+	if !strings.Contains(got, `cmd.Flags().Changed("level0-obj-level1-obj-level2-obj")`) {
+		t.Errorf("required boundary object check must emit, got:\n%s", got)
+	}
+	if strings.Contains(got, "sibling2") {
+		t.Errorf("children inside the boundary JSON object must not emit checks, got:\n%s", got)
 	}
 }

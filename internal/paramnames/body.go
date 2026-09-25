@@ -29,33 +29,40 @@ func PublicFlagName(p spec.Param) string {
 // body leaf. Those parents then fall back to JSON-string flags in generated
 // CLIs and manifest surfaces instead of producing divergent names.
 func FlattenCollidingBodyFields(body []spec.Param) []spec.Param {
-	counts := countBodyLeaves(body, "")
+	return FlattenCollidingBodyFieldsAtDepth(body, 0)
+}
+
+// FlattenCollidingBodyFieldsAtDepth applies the collision pass to the same
+// leaf set that a depth-capped emitter exposes. maxDepth <= 0 preserves the
+// historical unlimited traversal.
+func FlattenCollidingBodyFieldsAtDepth(body []spec.Param, maxDepth int) []spec.Param {
+	counts := countBodyLeaves(body, "", 0, maxDepth)
 	for _, n := range counts {
 		if n > 1 {
-			return clearCollidingParents(body, "", counts)
+			return clearCollidingParents(body, "", 0, maxDepth, counts)
 		}
 	}
 	return body
 }
 
-func countBodyLeaves(params []spec.Param, prefix string) map[string]int {
+func countBodyLeaves(params []spec.Param, prefix string, depth, maxDepth int) map[string]int {
 	counts := map[string]int{}
-	var walk func([]spec.Param, string)
-	walk = func(ps []spec.Param, pfx string) {
+	var walk func([]spec.Param, string, int)
+	walk = func(ps []spec.Param, pfx string, currentDepth int) {
 		for _, p := range ps {
 			ident := pfx + naming.CamelIdentifier(Ident(p))
-			if p.Type == "object" && len(p.Fields) > 0 {
-				walk(p.Fields, ident)
+			if bodyObjectExpandsAtDepth(p, currentDepth, maxDepth) {
+				walk(p.Fields, ident, currentDepth+1)
 				continue
 			}
 			counts[ident]++
 		}
 	}
-	walk(params, prefix)
+	walk(params, prefix, depth)
 	return counts
 }
 
-func clearCollidingParents(params []spec.Param, prefix string, counts map[string]int) []spec.Param {
+func clearCollidingParents(params []spec.Param, prefix string, depth, maxDepth int, counts map[string]int) []spec.Param {
 	out := make([]spec.Param, len(params))
 	copy(out, params)
 	for i := range out {
@@ -64,20 +71,22 @@ func clearCollidingParents(params []spec.Param, prefix string, counts map[string
 			continue
 		}
 		ident := prefix + naming.CamelIdentifier(Ident(*p))
-		if subtreeHasCollidingLeaf(p.Fields, ident, counts) {
+		if subtreeHasCollidingLeaf(p.Fields, ident, depth+1, maxDepth, counts) {
 			p.Fields = nil
 			continue
 		}
-		p.Fields = clearCollidingParents(p.Fields, ident, counts)
+		if bodyObjectExpandsAtDepth(*p, depth, maxDepth) {
+			p.Fields = clearCollidingParents(p.Fields, ident, depth+1, maxDepth, counts)
+		}
 	}
 	return out
 }
 
-func subtreeHasCollidingLeaf(params []spec.Param, prefix string, counts map[string]int) bool {
+func subtreeHasCollidingLeaf(params []spec.Param, prefix string, depth, maxDepth int, counts map[string]int) bool {
 	for _, p := range params {
 		ident := prefix + naming.CamelIdentifier(Ident(p))
-		if p.Type == "object" && len(p.Fields) > 0 {
-			if subtreeHasCollidingLeaf(p.Fields, ident, counts) {
+		if bodyObjectExpandsAtDepth(p, depth, maxDepth) {
+			if subtreeHasCollidingLeaf(p.Fields, ident, depth+1, maxDepth, counts) {
 				return true
 			}
 			continue
@@ -87,4 +96,11 @@ func subtreeHasCollidingLeaf(params []spec.Param, prefix string, counts map[stri
 		}
 	}
 	return false
+}
+
+func bodyObjectExpandsAtDepth(p spec.Param, depth, maxDepth int) bool {
+	if p.Type != "object" || len(p.Fields) == 0 {
+		return false
+	}
+	return maxDepth <= 0 || depth+1 < maxDepth
 }
