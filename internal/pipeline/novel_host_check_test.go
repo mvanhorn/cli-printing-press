@@ -422,6 +422,257 @@ func newPlayCmd(flags *rootFlags) {
 	}
 }
 
+func TestFieldReceiverHelperHostIsChecked(t *testing.T) {
+	const streamSrc = `package cli
+
+type streamClient struct{}
+
+func (streamClient) Manifest() string {
+	return "https://edge.indazn.com/v5/live.mpd"
+}
+
+func (streamClient) Docs() string {
+	return "https://unrelated.example.test/help"
+}
+`
+	const playbackSrc = `package playback
+
+type Client struct{}
+
+type Options struct {
+	Client *Client
+}
+
+func New() *Client { return &Client{} }
+
+func (Client) Manifest() string {
+	return "https://edge.indazn.com/v5/live.mpd"
+}
+
+func (Client) Docs() string {
+	return "https://docs.example.test/help"
+}
+`
+	const unrelatedSrc = `package cli
+
+type Client struct{}
+
+func (Client) Manifest() string {
+	return "https://unrelated.example.test/help"
+}
+`
+	tests := []struct {
+		name     string
+		files    map[string]string
+		playback bool
+		wantFile string
+	}{
+		{
+			name: "param field",
+			files: map[string]string{
+				"play.go": `package cli
+
+type playFlags struct {
+	client *streamClient
+}
+
+func newPlayCmd(flags *playFlags) {
+	_ = flags.client.Manifest()
+}
+
+// Use: "play"
+`,
+				"stream.go":  streamSrc,
+				"helpers.go": "package cli\n\nconst docs = \"https://unrelated.example.test/help\"\n",
+			},
+			wantFile: "stream.go",
+		},
+		{
+			name: "nested field",
+			files: map[string]string{
+				"play.go": `package cli
+
+type playFlags struct {
+	opts playOpts
+}
+
+type playOpts struct {
+	client *streamClient
+}
+
+func newPlayCmd(flags *playFlags) {
+	_ = flags.opts.client.Manifest()
+}
+
+// Use: "play"
+`,
+				"stream.go": streamSrc,
+			},
+			wantFile: "stream.go",
+		},
+		{
+			name: "anonymous struct field",
+			files: map[string]string{
+				"play.go": `package cli
+
+func newPlayCmd() {
+	var flags struct {
+		client *streamClient
+	}
+	_ = flags.client.Manifest()
+}
+
+// Use: "play"
+`,
+				"stream.go": streamSrc,
+			},
+			wantFile: "stream.go",
+		},
+		{
+			name: "imported client field",
+			files: map[string]string{
+				"play.go": `package cli
+
+import "example.com/demo/internal/playback"
+
+type playFlags struct {
+	client *playback.Client
+}
+
+func newPlayCmd(flags *playFlags) {
+	_ = flags.client.Manifest()
+}
+
+// Use: "play"
+`,
+				"catalog.go": unrelatedSrc,
+			},
+			playback: true,
+			wantFile: "internal/playback/client.go",
+		},
+		{
+			name: "imported struct field",
+			files: map[string]string{
+				"play.go": `package cli
+
+import "example.com/demo/internal/playback"
+
+func newPlayCmd() {
+	var opts playback.Options
+	_ = opts.Client.Manifest()
+}
+
+// Use: "play"
+`,
+				"catalog.go": unrelatedSrc,
+			},
+			playback: true,
+			wantFile: "internal/playback/client.go",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cliDir, researchDir := seedReimplementationFixture(t, tt.files, []NovelFeature{{
+				Name:    "Play",
+				Command: "play",
+			}})
+			if tt.playback {
+				playbackDir := filepath.Join(cliDir, "internal", "playback")
+				require.NoError(t, os.MkdirAll(playbackDir, 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(playbackDir, "client.go"), []byte(playbackSrc), 0o644))
+			}
+
+			got := checkReimplementation(cliDir, researchDir)
+			require.Len(t, got.UnverifiedHosts, 1, "hosts: %#v", got.UnverifiedHosts)
+			assert.Equal(t, "edge.indazn.com", got.UnverifiedHosts[0].Host)
+			assert.Equal(t, tt.wantFile, got.UnverifiedHosts[0].File)
+			assert.NotZero(t, got.UnverifiedHosts[0].Line)
+			assert.Equal(t, "play", got.UnverifiedHosts[0].Command)
+		})
+	}
+}
+
+func TestLaterShadowDoesNotRedirectEarlierCall(t *testing.T) {
+	const playbackSrc = `package playback
+
+type Client struct{}
+
+func New() *Client { return &Client{} }
+
+func (Client) Manifest() string {
+	return "https://edge.indazn.com/v5/live.mpd"
+}
+`
+	const localSrc = `package cli
+
+type localClient struct{}
+
+func (localClient) Manifest() string {
+	return "https://unrelated.example.test/help"
+}
+`
+	tests := []struct {
+		name      string
+		body      string
+		wantHosts map[string]string
+	}{
+		{
+			name: "earlier call",
+			body: `
+	client := playback.New()
+	_ = client.Manifest()
+	if true {
+		var client localClient
+		_ = client
+	}
+`,
+			wantHosts: map[string]string{
+				"edge.indazn.com": "internal/playback/client.go",
+			},
+		},
+		{
+			name: "call after inner scope",
+			body: `
+	client := playback.New()
+	if true {
+		client := localClient{}
+		_ = client.Manifest()
+	}
+	_ = client.Manifest()
+`,
+			wantHosts: map[string]string{
+				"edge.indazn.com":        "internal/playback/client.go",
+				"unrelated.example.test": "catalog.go",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			play := "package cli\n\nimport \"example.com/demo/internal/playback\"\n\nfunc newPlayCmd() {" + tt.body + "}\n\n// Use: \"play\"\n"
+			cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+				"play.go":    play,
+				"catalog.go": localSrc,
+			}, []NovelFeature{{
+				Name:    "Play",
+				Command: "play",
+			}})
+			playbackDir := filepath.Join(cliDir, "internal", "playback")
+			require.NoError(t, os.MkdirAll(playbackDir, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(playbackDir, "client.go"), []byte(playbackSrc), 0o644))
+
+			got := checkReimplementation(cliDir, researchDir)
+			require.Len(t, got.UnverifiedHosts, len(tt.wantHosts), "hosts: %#v", got.UnverifiedHosts)
+			gotHosts := map[string]string{}
+			for _, finding := range got.UnverifiedHosts {
+				gotHosts[finding.Host] = finding.File
+				assert.Equal(t, "play", finding.Command)
+				assert.NotZero(t, finding.Line)
+			}
+			assert.Equal(t, tt.wantHosts, gotHosts)
+		})
+	}
+}
+
 func TestUnrelatedGoFileDoesNotFailNovelHostGate(t *testing.T) {
 	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
 		"play.go":    "package cli\n\nfunc newPlayCmd() {}\n\n// Use: \"play\"\n",

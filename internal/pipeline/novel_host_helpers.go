@@ -14,8 +14,10 @@ import (
 
 // Hosts often live in a helper the novel command calls, or in a same-package
 // file named for that command. Method calls match the receiver type and, for
-// an imported type, that package, not the method name alone. Unreferenced
-// files stay out of the gate.
+// an imported type, that package, not the method name alone. A call through
+// a struct field uses that field's type. The name bindings used for a call
+// are the ones in scope at that call, so a later inner declaration cannot
+// retarget an earlier call. Unreferenced files stay out of the gate.
 
 type novelSourceFile struct {
 	name    string
@@ -51,6 +53,16 @@ type goSourcePkg struct {
 	funcs   map[string]*goSymbol
 	values  map[string]*goSymbol
 	methods map[string][]*goSymbol
+	structs map[string]map[string]goTypeRef
+}
+
+// resolveEnv is the package currently being walked, plus enough context to
+// load the package that defines a struct when a field type is imported.
+type resolveEnv struct {
+	cliDir string
+	module string
+	pkg    *goSourcePkg
+	cache  map[string]*goSourcePkg
 }
 
 type srcRef struct {
@@ -68,6 +80,7 @@ type goTypeRef struct {
 	callName   string
 	callImport string
 	callRecv   string
+	fields     map[string]goTypeRef
 }
 
 type helperReach struct {
@@ -122,8 +135,10 @@ func reachNovelHelpers(cliDir, module string, pkg *goSourcePkg, origin *goSource
 		queue = append(queue, helperReach{file: sym.file, sym: sym})
 	}
 
+	env := &resolveEnv{cliDir: cliDir, module: module, cache: cache}
 	follow := func(current *goSourcePkg, file *goSourceFile, node ast.Node, locals map[string]bool) {
-		for _, ref := range followNode(node, locals, importAliases(file.file)) {
+		env.pkg = current
+		for _, ref := range followNode(node, locals, importAliases(file.file), env) {
 			for _, sym := range resolveRef(cliDir, module, current, ref, cache) {
 				enqueueSym(sym)
 			}
@@ -219,7 +234,7 @@ func resolveMethods(cliDir, module string, pkg *goSourcePkg, ref srcRef, cache m
 	return matched
 }
 
-func nodeRefs(node ast.Node, locals map[string]bool, aliases map[string]string) []srcRef {
+func nodeRefs(node ast.Node, locals map[string]bool, aliases map[string]string, env *resolveEnv) []srcRef {
 	if node == nil {
 		return nil
 	}
@@ -234,28 +249,30 @@ func nodeRefs(node ast.Node, locals map[string]bool, aliases map[string]string) 
 	if fn, ok := node.(*ast.FuncDecl); ok && locals == nil {
 		locals = localsInFunc(fn)
 	}
+	b := &binder{env: env, aliases: aliases}
+	b.collect(node)
 	var refs []srcRef
-	appendRefs(node, locals, aliases, bindingsFor(node, aliases), sel, &refs)
+	appendRefs(node, locals, aliases, b, sel, &refs)
 	return refs
 }
 
-func appendRefs(node ast.Node, locals map[string]bool, aliases map[string]string, bindings map[string]goTypeRef, sel map[*ast.Ident]bool, refs *[]srcRef) {
+func appendRefs(node ast.Node, locals map[string]bool, aliases map[string]string, b *binder, sel map[*ast.Ident]bool, refs *[]srcRef) {
 	ast.Inspect(node, func(n ast.Node) bool {
 		lit, ok := n.(*ast.FuncLit)
 		if ok {
-			appendLitRefs(lit, locals, aliases, bindings, sel, refs)
+			appendLitRefs(lit, locals, aliases, b, sel, refs)
 			return false
 		}
 		switch e := n.(type) {
 		case *ast.SelectorExpr:
-			if id, ok := e.X.(*ast.Ident); ok && aliases[id.Name] != "" && !locals[id.Name] {
+			if id, ok := e.X.(*ast.Ident); ok && aliases[id.Name] != "" && !b.has(id.Pos(), id.Name) {
 				*refs = append(*refs, srcRef{kind: "pkg", name: e.Sel.Name, importPath: aliases[id.Name]})
 				return true
 			}
 			if locals[e.Sel.Name] || goPredeclared[e.Sel.Name] {
 				return true
 			}
-			recv := valueType(e.X, bindings, aliases)
+			recv := valueType(e.X, b)
 			if !recv.known() {
 				return true
 			}
@@ -270,32 +287,30 @@ func appendRefs(node ast.Node, locals map[string]bool, aliases map[string]string
 	})
 }
 
-func appendLitRefs(lit *ast.FuncLit, locals map[string]bool, aliases map[string]string, outer map[string]goTypeRef, sel map[*ast.Ident]bool, refs *[]srcRef) {
-	if lit == nil || lit.Type == nil || lit.Body == nil {
+func appendLitRefs(lit *ast.FuncLit, locals map[string]bool, aliases map[string]string, b *binder, sel map[*ast.Ident]bool, refs *[]srcRef) {
+	if lit == nil || lit.Body == nil {
 		return
 	}
 	innerLocals := copyBools(locals)
-	addFieldNames(innerLocals, lit.Type.Params)
-	addFieldNames(innerLocals, lit.Type.Results)
+	if lit.Type != nil {
+		addFieldNames(innerLocals, lit.Type.Params)
+		addFieldNames(innerLocals, lit.Type.Results)
+	}
 	markAssigned(lit.Body, innerLocals)
-	bindings := copyTypes(outer)
-	addFieldTypes(bindings, lit.Type.Params, aliases)
-	addFieldTypes(bindings, lit.Type.Results, aliases)
-	collectBindings(lit.Body, bindings, aliases)
-	appendRefs(lit.Body, innerLocals, aliases, bindings, sel, refs)
+	appendRefs(lit.Body, innerLocals, aliases, b, sel, refs)
 }
 
-func followNode(node ast.Node, locals map[string]bool, aliases map[string]string) []srcRef {
+func followNode(node ast.Node, locals map[string]bool, aliases map[string]string, env *resolveEnv) []srcRef {
 	fn, ok := node.(*ast.FuncDecl)
 	if ok && locals == nil {
-		return nodeRefs(fn, localsInFunc(fn), aliases)
+		return nodeRefs(fn, localsInFunc(fn), aliases, env)
 	}
 	if file, ok := node.(*ast.File); ok {
 		var refs []srcRef
 		for _, decl := range file.Decls {
 			switch d := decl.(type) {
 			case *ast.FuncDecl:
-				refs = append(refs, nodeRefs(d, localsInFunc(d), aliases)...)
+				refs = append(refs, nodeRefs(d, localsInFunc(d), aliases, env)...)
 			case *ast.GenDecl:
 				for _, spec := range d.Specs {
 					vs, ok := spec.(*ast.ValueSpec)
@@ -303,14 +318,14 @@ func followNode(node ast.Node, locals map[string]bool, aliases map[string]string
 						continue
 					}
 					for _, val := range vs.Values {
-						refs = append(refs, nodeRefs(val, nil, aliases)...)
+						refs = append(refs, nodeRefs(val, nil, aliases, env)...)
 					}
 				}
 			}
 		}
 		return refs
 	}
-	return nodeRefs(node, locals, aliases)
+	return nodeRefs(node, locals, aliases, env)
 }
 
 func localsInFunc(fn *ast.FuncDecl) map[string]bool {
@@ -413,6 +428,7 @@ func parseSourcePkg(cliDir, dir string, preset map[string]string) *goSourcePkg {
 		funcs:   map[string]*goSymbol{},
 		values:  map[string]*goSymbol{},
 		methods: map[string][]*goSymbol{},
+		structs: map[string]map[string]goTypeRef{},
 	}
 	if preset != nil {
 		names := make([]string, 0, len(preset))
@@ -459,6 +475,7 @@ func addParsedFile(pkg *goSourcePkg, cliDir, path, name, content string) {
 		generated: isGeneratedPrintingPressFile(content),
 	}
 	pkg.files = append(pkg.files, parsed)
+	indexStructs(pkg, file)
 	for _, decl := range file.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
@@ -525,6 +542,10 @@ func (t goTypeRef) known() bool {
 	return t.name != "" || t.callName != ""
 }
 
+func (t goTypeRef) usable() bool {
+	return t.known() || len(t.fields) > 0
+}
+
 func concreteType(cliDir, module string, pkg *goSourcePkg, t goTypeRef, cache map[string]*goSourcePkg) goTypeRef {
 	if t.callName == "" {
 		return t
@@ -576,143 +597,354 @@ func funcResultType(fn *ast.FuncDecl, aliases map[string]string) goTypeRef {
 	if fn == nil || fn.Type == nil || fn.Type.Results == nil || len(fn.Type.Results.List) == 0 {
 		return goTypeRef{}
 	}
-	t, ok := typeExpr(fn.Type.Results.List[0].Type, aliases)
+	t, ok := typeOf(fn.Type.Results.List[0].Type, aliases)
 	if !ok {
 		return goTypeRef{}
 	}
 	return t
 }
 
-func bindingsFor(node ast.Node, aliases map[string]string) map[string]goTypeRef {
-	fn, ok := node.(*ast.FuncDecl)
-	if !ok || fn.Type == nil {
-		return nil
-	}
-	bindings := map[string]goTypeRef{}
-	addFieldTypes(bindings, fn.Recv, aliases)
-	addFieldTypes(bindings, fn.Type.Params, aliases)
-	addFieldTypes(bindings, fn.Type.Results, aliases)
-	if fn.Body != nil {
-		collectBindings(fn.Body, bindings, aliases)
-	}
-	return bindings
+// A binding covers positions from the end of its declaration through the end
+// of its scope. Lookup picks the innermost one that contains the use, so a
+// later inner name cannot retarget an earlier call.
+type bindSite struct {
+	name  string
+	typ   goTypeRef
+	from  token.Pos
+	to    token.Pos
+	depth int
 }
 
-func collectBindings(node ast.Node, bindings map[string]goTypeRef, aliases map[string]string) {
-	if node == nil || bindings == nil {
+type binder struct {
+	env     *resolveEnv
+	aliases map[string]string
+	sites   []bindSite
+}
+
+func (b *binder) collect(node ast.Node) {
+	if b == nil || node == nil {
 		return
 	}
-	ast.Inspect(node, func(n ast.Node) bool {
-		switch e := n.(type) {
-		case *ast.FuncLit:
-			return false
-		case *ast.ValueSpec:
-			bindValueSpec(bindings, e, aliases)
-		case *ast.AssignStmt:
-			bindAssign(bindings, e, aliases)
-		}
-		return true
-	})
+	b.walk(node, node.End(), 0)
 }
 
-func bindValueSpec(bindings map[string]goTypeRef, vs *ast.ValueSpec, aliases map[string]string) {
+func (b *binder) walk(node ast.Node, scopeEnd token.Pos, depth int) {
+	if b == nil || node == nil {
+		return
+	}
+	ast.Walk(&scopeVisitor{b: b, scopeEnd: scopeEnd, depth: depth}, node)
+}
+
+func (b *binder) add(name string, typ goTypeRef, from, to token.Pos, depth int) {
+	if b == nil || name == "" || name == "_" || !from.IsValid() || !to.IsValid() || from >= to {
+		return
+	}
+	b.sites = append(b.sites, bindSite{name: name, typ: typ, from: from, to: to, depth: depth})
+}
+
+func (b *binder) best(pos token.Pos, name string) (bindSite, bool) {
+	var best bindSite
+	found := false
+	if b == nil || name == "" || !pos.IsValid() {
+		return best, false
+	}
+	for _, site := range b.sites {
+		if site.name != name || pos < site.from || pos >= site.to {
+			continue
+		}
+		if !found || site.depth > best.depth || (site.depth == best.depth && site.from >= best.from) {
+			best = site
+			found = true
+		}
+	}
+	return best, found
+}
+
+func (b *binder) has(pos token.Pos, name string) bool {
+	_, ok := b.best(pos, name)
+	return ok
+}
+
+func (b *binder) lookup(pos token.Pos, name string) (goTypeRef, bool) {
+	site, ok := b.best(pos, name)
+	if !ok || !site.typ.usable() {
+		return goTypeRef{}, false
+	}
+	return site.typ, true
+}
+
+func (b *binder) addFields(fields *ast.FieldList, from, to token.Pos, depth int) {
+	if fields == nil {
+		return
+	}
+	for _, field := range fields.List {
+		t, _ := typeOf(field.Type, b.aliases)
+		for _, name := range field.Names {
+			if name == nil {
+				continue
+			}
+			b.add(name.Name, t, from, to, depth)
+		}
+	}
+}
+
+func (b *binder) collectFunc(recv *ast.FieldList, typ *ast.FuncType, body *ast.BlockStmt, depth int) {
+	if body == nil {
+		return
+	}
+	end := body.End()
+	d := depth + 1
+	from := body.Pos()
+	b.addFields(recv, from, end, d)
+	if typ != nil {
+		b.addFields(typ.Params, from, end, d)
+		b.addFields(typ.Results, from, end, d)
+	}
+	for _, stmt := range body.List {
+		b.walk(stmt, end, d)
+	}
+}
+
+func (b *binder) bindValueSpec(vs *ast.ValueSpec, from, scopeEnd token.Pos, depth int) {
 	if vs == nil {
 		return
 	}
 	if vs.Type != nil {
-		t, ok := typeExpr(vs.Type, aliases)
-		if !ok {
-			return
-		}
+		t, _ := typeOf(vs.Type, b.aliases)
 		for _, name := range vs.Names {
-			if name != nil && name.Name != "_" {
-				bindings[name.Name] = t
+			if name != nil {
+				b.add(name.Name, t, from, scopeEnd, depth)
 			}
 		}
 		return
 	}
-	if len(vs.Values) == 1 && len(vs.Names) > 0 {
-		t := valueType(vs.Values[0], bindings, aliases)
-		if t.known() && vs.Names[0] != nil && vs.Names[0].Name != "_" {
-			bindings[vs.Names[0].Name] = t
+	types := make([]goTypeRef, len(vs.Names))
+	switch {
+	case len(vs.Values) == 1 && len(vs.Names) > 0:
+		types[0] = valueType(vs.Values[0], b)
+	case len(vs.Values) == len(vs.Names):
+		for i := range vs.Values {
+			types[i] = valueType(vs.Values[i], b)
 		}
-		return
 	}
-	if len(vs.Values) != len(vs.Names) {
-		return
-	}
-	for i := range vs.Names {
-		if vs.Names[i] == nil || vs.Names[i].Name == "_" {
+	for i, name := range vs.Names {
+		if name == nil {
 			continue
 		}
-		t := valueType(vs.Values[i], bindings, aliases)
-		if t.known() {
-			bindings[vs.Names[i].Name] = t
+		typ := goTypeRef{}
+		if i < len(types) {
+			typ = types[i]
 		}
+		b.add(name.Name, typ, from, scopeEnd, depth)
 	}
 }
 
-func bindAssign(bindings map[string]goTypeRef, stmt *ast.AssignStmt, aliases map[string]string) {
+func (b *binder) bindAssign(stmt *ast.AssignStmt, from, scopeEnd token.Pos, depth int) {
 	if stmt == nil || len(stmt.Lhs) == 0 || len(stmt.Rhs) == 0 {
 		return
 	}
-	if len(stmt.Rhs) == 1 {
-		t := valueType(stmt.Rhs[0], bindings, aliases)
-		if !t.known() {
-			return
-		}
-		id, ok := stmt.Lhs[0].(*ast.Ident)
-		if ok && id.Name != "_" {
-			bindings[id.Name] = t
-		}
-		return
-	}
-	if len(stmt.Lhs) != len(stmt.Rhs) {
-		return
-	}
-	for i := range stmt.Lhs {
-		id, ok := stmt.Lhs[i].(*ast.Ident)
-		if !ok || id.Name == "_" {
+	define := stmt.Tok == token.DEFINE
+	types := assignTypes(b, stmt)
+	for i, lhs := range stmt.Lhs {
+		id, ok := lhs.(*ast.Ident)
+		if !ok {
 			continue
 		}
-		t := valueType(stmt.Rhs[i], bindings, aliases)
-		if t.known() {
-			bindings[id.Name] = t
+		typ := goTypeRef{}
+		if i < len(types) {
+			typ = types[i]
 		}
+		if define {
+			b.add(id.Name, typ, from, scopeEnd, depth)
+			continue
+		}
+		if !typ.usable() {
+			continue
+		}
+		site, ok := b.best(id.Pos(), id.Name)
+		if !ok {
+			continue
+		}
+		b.add(id.Name, typ, from, site.to, site.depth)
 	}
 }
 
-func valueType(expr ast.Expr, bindings map[string]goTypeRef, aliases map[string]string) goTypeRef {
+func assignTypes(b *binder, stmt *ast.AssignStmt) []goTypeRef {
+	out := make([]goTypeRef, len(stmt.Lhs))
+	if len(stmt.Rhs) == 1 {
+		out[0] = valueType(stmt.Rhs[0], b)
+		return out
+	}
+	if len(stmt.Rhs) != len(stmt.Lhs) {
+		return out
+	}
+	for i := range stmt.Rhs {
+		out[i] = valueType(stmt.Rhs[i], b)
+	}
+	return out
+}
+
+type scopeVisitor struct {
+	b        *binder
+	scopeEnd token.Pos
+	depth    int
+}
+
+func (v *scopeVisitor) Visit(node ast.Node) ast.Visitor {
+	if v == nil || node == nil {
+		return nil
+	}
+	switch n := node.(type) {
+	case *ast.FuncDecl:
+		v.b.collectFunc(n.Recv, n.Type, n.Body, v.depth)
+		return nil
+	case *ast.FuncLit:
+		v.b.collectFunc(nil, n.Type, n.Body, v.depth)
+		return nil
+	case *ast.BlockStmt:
+		for _, stmt := range n.List {
+			v.b.walk(stmt, n.End(), v.depth+1)
+		}
+		return nil
+	case *ast.IfStmt:
+		end := n.End()
+		d := v.depth + 1
+		v.b.walk(n.Init, end, d)
+		v.b.walk(n.Cond, end, d)
+		v.b.walk(n.Body, end, d)
+		v.b.walk(n.Else, end, d)
+		return nil
+	case *ast.ForStmt:
+		end := n.End()
+		d := v.depth + 1
+		v.b.walk(n.Init, end, d)
+		v.b.walk(n.Cond, end, d)
+		v.b.walk(n.Post, end, d)
+		v.b.walk(n.Body, end, d)
+		return nil
+	case *ast.RangeStmt:
+		v.b.walk(n.X, v.scopeEnd, v.depth)
+		if n.Body == nil {
+			return nil
+		}
+		d := v.depth + 1
+		if n.Tok == token.DEFINE {
+			v.b.add(identName(n.Key), goTypeRef{}, n.Body.Pos(), n.Body.End(), d)
+			v.b.add(identName(n.Value), goTypeRef{}, n.Body.Pos(), n.Body.End(), d)
+		}
+		for _, stmt := range n.Body.List {
+			v.b.walk(stmt, n.Body.End(), d)
+		}
+		return nil
+	case *ast.SwitchStmt:
+		end := n.End()
+		d := v.depth + 1
+		v.b.walk(n.Init, end, d)
+		v.b.walk(n.Tag, end, d)
+		v.b.walk(n.Body, end, d)
+		return nil
+	case *ast.TypeSwitchStmt:
+		end := n.End()
+		d := v.depth + 1
+		v.b.walk(n.Init, end, d)
+		v.b.walk(n.Assign, end, d)
+		v.b.walk(n.Body, end, d)
+		return nil
+	case *ast.CaseClause:
+		for _, expr := range n.List {
+			v.b.walk(expr, v.scopeEnd, v.depth)
+		}
+		d := v.depth + 1
+		for _, stmt := range n.Body {
+			v.b.walk(stmt, n.End(), d)
+		}
+		return nil
+	case *ast.CommClause:
+		if n.Comm != nil {
+			v.b.walk(n.Comm, v.scopeEnd, v.depth)
+		}
+		d := v.depth + 1
+		for _, stmt := range n.Body {
+			v.b.walk(stmt, n.End(), d)
+		}
+		return nil
+	case *ast.AssignStmt:
+		for _, rhs := range n.Rhs {
+			v.b.walk(rhs, v.scopeEnd, v.depth)
+		}
+		for _, lhs := range n.Lhs {
+			v.b.walk(lhs, v.scopeEnd, v.depth)
+		}
+		v.b.bindAssign(n, n.End(), v.scopeEnd, v.depth)
+		return nil
+	case *ast.ValueSpec:
+		for _, val := range n.Values {
+			v.b.walk(val, v.scopeEnd, v.depth)
+		}
+		if n.Type != nil {
+			v.b.walk(n.Type, v.scopeEnd, v.depth)
+		}
+		v.b.bindValueSpec(n, n.End(), v.scopeEnd, v.depth)
+		return nil
+	default:
+		return v
+	}
+}
+
+func identName(expr ast.Expr) string {
+	id, ok := expr.(*ast.Ident)
+	if !ok || id == nil {
+		return ""
+	}
+	return id.Name
+}
+
+func valueType(expr ast.Expr, b *binder) goTypeRef {
 	switch e := expr.(type) {
 	case *ast.Ident:
-		if bindings == nil {
+		if b == nil {
 			return goTypeRef{}
 		}
-		return bindings[e.Name]
+		t, _ := b.lookup(e.Pos(), e.Name)
+		return t
 	case *ast.StarExpr:
-		return valueType(e.X, bindings, aliases)
+		return valueType(e.X, b)
 	case *ast.ParenExpr:
-		return valueType(e.X, bindings, aliases)
+		return valueType(e.X, b)
 	case *ast.UnaryExpr:
 		if e.Op == token.AND {
-			return valueType(e.X, bindings, aliases)
+			return valueType(e.X, b)
 		}
 	case *ast.CompositeLit:
-		t, ok := typeExpr(e.Type, aliases)
+		if b == nil {
+			return goTypeRef{}
+		}
+		t, ok := typeOf(e.Type, b.aliases)
 		if ok {
 			return t
 		}
 	case *ast.CallExpr:
-		return callValueType(e, bindings, aliases)
+		return callValueType(e, b)
+	case *ast.SelectorExpr:
+		base := valueType(e.X, b)
+		var env *resolveEnv
+		if b != nil {
+			env = b.env
+		}
+		return fieldType(env, base, e.Sel.Name)
 	}
 	return goTypeRef{}
 }
 
-func callValueType(call *ast.CallExpr, bindings map[string]goTypeRef, aliases map[string]string) goTypeRef {
+func callValueType(call *ast.CallExpr, b *binder) goTypeRef {
+	var aliases map[string]string
+	if b != nil {
+		aliases = b.aliases
+	}
 	switch fun := call.Fun.(type) {
 	case *ast.Ident:
 		if fun.Name == "new" && len(call.Args) == 1 {
-			t, ok := typeExpr(call.Args[0], aliases)
+			t, ok := typeOf(call.Args[0], aliases)
 			if ok {
 				return t
 			}
@@ -724,10 +956,10 @@ func callValueType(call *ast.CallExpr, bindings map[string]goTypeRef, aliases ma
 		return goTypeRef{callName: fun.Name}
 	case *ast.SelectorExpr:
 		id, ok := fun.X.(*ast.Ident)
-		if ok && aliases[id.Name] != "" && !bindingHas(bindings, id.Name) {
+		if ok && aliases[id.Name] != "" && !b.has(id.Pos(), id.Name) {
 			return goTypeRef{callName: fun.Sel.Name, callImport: aliases[id.Name]}
 		}
-		recv := valueType(fun.X, bindings, aliases)
+		recv := valueType(fun.X, b)
 		if recv.name == "" || recv.callName != "" {
 			return goTypeRef{}
 		}
@@ -737,12 +969,117 @@ func callValueType(call *ast.CallExpr, bindings map[string]goTypeRef, aliases ma
 	}
 }
 
-func bindingHas(bindings map[string]goTypeRef, name string) bool {
-	if bindings == nil {
-		return false
+func typeOf(expr ast.Expr, aliases map[string]string) (goTypeRef, bool) {
+	st, ok := structType(expr)
+	if ok {
+		return goTypeRef{fields: structFieldMap(st, aliases)}, true
 	}
-	_, ok := bindings[name]
-	return ok
+	return typeExpr(expr, aliases)
+}
+
+func structType(expr ast.Expr) (*ast.StructType, bool) {
+	switch e := expr.(type) {
+	case *ast.StructType:
+		return e, true
+	case *ast.ParenExpr:
+		return structType(e.X)
+	case *ast.StarExpr:
+		return structType(e.X)
+	default:
+		return nil, false
+	}
+}
+
+func structFieldMap(st *ast.StructType, aliases map[string]string) map[string]goTypeRef {
+	fields := map[string]goTypeRef{}
+	if st == nil || st.Fields == nil {
+		return fields
+	}
+	for _, field := range st.Fields.List {
+		t, ok := typeOf(field.Type, aliases)
+		if !ok {
+			continue
+		}
+		for _, name := range field.Names {
+			if name == nil || name.Name == "_" {
+				continue
+			}
+			fields[name.Name] = t
+		}
+	}
+	return fields
+}
+
+func indexStructs(pkg *goSourcePkg, file *ast.File) {
+	if pkg == nil || file == nil {
+		return
+	}
+	if pkg.structs == nil {
+		pkg.structs = map[string]map[string]goTypeRef{}
+	}
+	aliases := importAliases(file)
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok || ts.Name == nil || ts.Name.Name == "" || ts.Name.Name == "_" {
+				continue
+			}
+			st, ok := structType(ts.Type)
+			if !ok {
+				continue
+			}
+			if _, exists := pkg.structs[ts.Name.Name]; exists {
+				continue
+			}
+			pkg.structs[ts.Name.Name] = structFieldMap(st, aliases)
+		}
+	}
+}
+
+func fieldType(env *resolveEnv, recv goTypeRef, name string) goTypeRef {
+	if name == "" {
+		return goTypeRef{}
+	}
+	if t, ok := recv.fields[name]; ok {
+		return t
+	}
+	if env == nil || recv.name == "" || recv.callName != "" {
+		return goTypeRef{}
+	}
+	owner := env.pkg
+	if recv.importPath != "" {
+		if env.cache == nil {
+			return goTypeRef{}
+		}
+		owner = loadImportedPkg(env.cliDir, env.module, recv.importPath, env.cache)
+	}
+	if owner == nil || owner.structs == nil {
+		return goTypeRef{}
+	}
+	return qualifyFieldType(owner.structs[recv.name][name], recv.importPath)
+}
+
+// A field written as Client inside an imported struct is that package's Client.
+func qualifyFieldType(t goTypeRef, importPath string) goTypeRef {
+	if importPath == "" {
+		return t
+	}
+	if t.name != "" && t.importPath == "" && t.callName == "" {
+		t.importPath = importPath
+	}
+	if len(t.fields) == 0 {
+		return t
+	}
+	fields := make(map[string]goTypeRef, len(t.fields))
+	for name, ft := range t.fields {
+		fields[name] = qualifyFieldType(ft, importPath)
+	}
+	t.fields = fields
+	return t
 }
 
 func typeExpr(expr ast.Expr, aliases map[string]string) (goTypeRef, bool) {
@@ -772,30 +1109,6 @@ func typeExpr(expr ast.Expr, aliases map[string]string) (goTypeRef, bool) {
 	default:
 		return goTypeRef{}, false
 	}
-}
-
-func addFieldTypes(bindings map[string]goTypeRef, fields *ast.FieldList, aliases map[string]string) {
-	if bindings == nil || fields == nil {
-		return
-	}
-	for _, field := range fields.List {
-		t, ok := typeExpr(field.Type, aliases)
-		if !ok {
-			continue
-		}
-		for _, name := range field.Names {
-			if name.Name == "_" {
-				continue
-			}
-			bindings[name.Name] = t
-		}
-	}
-}
-
-func copyTypes(in map[string]goTypeRef) map[string]goTypeRef {
-	out := make(map[string]goTypeRef, len(in))
-	maps.Copy(out, in)
-	return out
 }
 
 func copyBools(in map[string]bool) map[string]bool {
