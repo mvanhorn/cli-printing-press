@@ -684,6 +684,16 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	browsersniff.ApplyReachabilityDefaults(apiSpec, trafficAnalysis)
 	applyHTTPTransportDefault(apiSpec, trafficAnalysis)
 	gen.TrafficAnalysis = trafficAnalysis
+	if err := pipeline.RejectUnverifiedNovelHosts(pipeline.NovelHostInput{
+		CLIDir:         absOut,
+		ResearchDir:    opts.researchDir,
+		Spec:           apiSpec,
+		SpecPaths:      opts.specFiles,
+		Traffic:        trafficAnalysis,
+		DiscoveryPages: gen.DiscoveryPages,
+	}); err != nil {
+		return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: err}
+	}
 	if err := gen.Generate(); err != nil {
 		return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
 	}
