@@ -177,6 +177,14 @@ var (
 // check returns Skipped. This mirrors the behavior of checkNovelFeatures:
 // if there is nothing planned, there is nothing to validate.
 func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResult {
+	return checkReimplementationWithHostGate(cliDir, researchDir, nil, nil)
+}
+
+// checkReimplementationWithHostGate runs the reimplementation scan and
+// attaches novel-host findings once, using the caller's spec paths and
+// resolver. Dogfood passes the resolved spec and DNS lookup here so the
+// gate is not scanned a second time.
+func checkReimplementationWithHostGate(cliDir, researchDir string, specPaths []string, resolve NovelHostResolver) ReimplementationCheckResult {
 	if researchDir == "" {
 		return ReimplementationCheckResult{Skipped: true}
 	}
@@ -188,7 +196,7 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 	cliFilesDir := filepath.Join(cliDir, "internal", "cli")
 	entries, err := os.ReadDir(cliFilesDir)
 	if err != nil {
-		return attachNovelHostFindings(ReimplementationCheckResult{Skipped: true}, cliDir, researchDir, nil, nil)
+		return attachNovelHostFindings(ReimplementationCheckResult{Skipped: true}, cliDir, researchDir, specPaths, resolve)
 	}
 
 	// Build a quick index: leaf command name -> candidate file paths.
@@ -283,7 +291,7 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 		result.Skipped = true
 	}
 
-	return attachNovelHostFindings(result, cliDir, researchDir, nil, nil)
+	return attachNovelHostFindings(result, cliDir, researchDir, specPaths, resolve)
 }
 
 func attachNovelHostFindings(result ReimplementationCheckResult, cliDir, researchDir string, specPaths []string, resolve NovelHostResolver) ReimplementationCheckResult {

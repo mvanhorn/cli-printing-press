@@ -1,7 +1,9 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -13,10 +15,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/net/publicsuffix"
+	"gopkg.in/yaml.v3"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	openapiparser "github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
@@ -191,6 +197,8 @@ func declaredNovelHosts(in NovelHostInput, features []NovelFeature) []novelHostD
 		researchPath = filepath.Join(in.ResearchDir, "research.json")
 		researchRaw, _ = os.ReadFile(researchPath)
 	}
+	spans := novelFeatureSpans(researchRaw)
+	usedSpans := map[int]bool{}
 	for _, feature := range features {
 		text := strings.Join([]string{
 			feature.Name, feature.Command, feature.Description, feature.Rationale,
@@ -200,11 +208,12 @@ func declaredNovelHosts(in NovelHostInput, features []NovelFeature) []novelHostD
 		if label == "" {
 			label = feature.Name
 		}
+		span := takeFeatureSpan(spans, usedSpans, feature)
 		for _, host := range hostsInProse(text) {
 			declared = append(declared, novelHostDecl{
 				feature: label,
 				file:    "research.json",
-				line:    hostLine(researchRaw, host),
+				line:    hostLineInSpan(researchRaw, span, host),
 				host:    host,
 			})
 		}
@@ -255,32 +264,31 @@ func hostsInNovelCommandSources(cliDir string, features []NovelFeature) []novelH
 }
 
 func novelCommandSource(content, name string, leaves map[string]string) bool {
-	if strings.Contains(content, "pp:novel-scaffold") || strings.Contains(content, "pp:novel") {
-		return true
-	}
-	if isGeneratedPrintingPressFile(content) {
+	// root.go defines the scaffold marker constant and is not a novel command.
+	if name == "root.go" {
 		return false
 	}
-	for leaf := range leaves {
-		if strings.Contains(content, `Use: "`+leaf+`"`) || strings.Contains(content, "Use: `"+leaf+"`") {
+	if commandMatchesNovelLeaf(content, leaves) {
+		return true
+	}
+	// Hand-written commands and generated scaffolds carry this marker.
+	return strings.Contains(content, "pp:novel-scaffold") || strings.Contains(content, "pp:novel")
+}
+
+func commandMatchesNovelLeaf(content string, leaves map[string]string) bool {
+	for _, match := range cobraUseLeafRe.FindAllStringSubmatch(content, -1) {
+		if _, ok := leaves[match[1]]; ok {
 			return true
 		}
-	}
-	// Hand-written helpers next to novel commands are part of the feature source.
-	if len(leaves) > 0 && !isGeneratedPrintingPressFile(content) && name != "root.go" {
-		return true
 	}
 	return false
 }
 
 func novelSourceFeature(content string, leaves map[string]string) string {
-	for leaf, label := range leaves {
-		if strings.Contains(content, `Use: "`+leaf+`"`) || strings.Contains(content, "Use: `"+leaf+"`") {
+	for _, match := range cobraUseLeafRe.FindAllStringSubmatch(content, -1) {
+		if label, ok := leaves[match[1]]; ok {
 			return label
 		}
-	}
-	for _, label := range leaves {
-		return label
 	}
 	return "novel feature"
 }
@@ -325,6 +333,8 @@ func hostsInLiteral(val string) []string {
 }
 
 func hostsInProse(text string) []string {
+	// Absolute URLs are host context. Bare dotted identifiers count only when
+	// they are real ICANN hostnames, so prose like settings.production does not.
 	return uniqueHosts(append(urlHosts(text), proseHosts(text)...))
 }
 
@@ -342,11 +352,23 @@ func urlHosts(text string) []string {
 func proseHosts(text string) []string {
 	var hosts []string
 	for _, match := range proseHostRe.FindAllString(text, -1) {
+		if !icannHostname(match) {
+			continue
+		}
 		if host := bareHostname(match); host != "" {
 			hosts = append(hosts, host)
 		}
 	}
 	return hosts
+}
+
+func icannHostname(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" {
+		return false
+	}
+	suffix, icann := publicsuffix.PublicSuffix(host)
+	return icann && suffix != "" && suffix != host
 }
 
 func hostFromURL(raw string) string {
@@ -401,15 +423,74 @@ func uniqueHosts(hosts []string) []string {
 	return out
 }
 
-func hostLine(raw []byte, host string) int {
-	if len(raw) == 0 || host == "" {
+type novelFeatureSpan struct {
+	start int
+	body  []byte
+}
+
+func novelFeatureSpans(raw []byte) []novelFeatureSpan {
+	key := []byte(`"novel_features"`)
+	keyAt := bytes.Index(raw, key)
+	if keyAt < 0 {
+		return nil
+	}
+	rel := bytes.IndexByte(raw[keyAt+len(key):], '[')
+	if rel < 0 {
+		return nil
+	}
+	start := keyAt + len(key) + rel
+	dec := json.NewDecoder(bytes.NewReader(raw[start:]))
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('[') {
+		return nil
+	}
+	var spans []novelFeatureSpan
+	for dec.More() {
+		off := int(dec.InputOffset())
+		var msg json.RawMessage
+		if err := dec.Decode(&msg); err != nil {
+			break
+		}
+		abs := start + off
+		for abs < len(raw) && (raw[abs] == ' ' || raw[abs] == '\n' || raw[abs] == '\r' || raw[abs] == '\t') {
+			abs++
+		}
+		spans = append(spans, novelFeatureSpan{start: abs, body: append([]byte(nil), msg...)})
+	}
+	return spans
+}
+
+func takeFeatureSpan(spans []novelFeatureSpan, used map[int]bool, feature NovelFeature) novelFeatureSpan {
+	for i, span := range spans {
+		if used[i] {
+			continue
+		}
+		var got NovelFeature
+		if err := json.Unmarshal(span.body, &got); err != nil {
+			continue
+		}
+		if got.Name != feature.Name || got.Command != feature.Command {
+			continue
+		}
+		used[i] = true
+		return span
+	}
+	return novelFeatureSpan{}
+}
+
+func hostLineInSpan(raw []byte, span novelFeatureSpan, host string) int {
+	if len(span.body) == 0 || host == "" {
 		return 0
 	}
-	idx := strings.Index(strings.ToLower(string(raw)), host)
+	idx := strings.Index(strings.ToLower(string(span.body)), strings.ToLower(host))
 	if idx < 0 {
 		return 0
 	}
-	return 1 + strings.Count(string(raw[:idx]), "\n")
+	abs := span.start + idx
+	if abs < 0 || abs > len(raw) {
+		return 0
+	}
+	return 1 + bytes.Count(raw[:abs], []byte("\n"))
 }
 
 func observedNovelHosts(in NovelHostInput) map[string]struct{} {
@@ -419,43 +500,52 @@ func observedNovelHosts(in NovelHostInput) map[string]struct{} {
 			observed[host] = struct{}{}
 		}
 	}
-	addText := func(text string) {
-		for _, host := range urlHosts(text) {
-			addHost(host)
-		}
-	}
 	addSpec := func(spec *apispec.APISpec) {
 		if spec == nil {
 			return
 		}
-		addText(spec.BaseURL)
+		for _, host := range urlHosts(spec.BaseURL) {
+			addHost(host)
+		}
 		for _, host := range specBaseHosts(spec) {
 			addHost(host)
 		}
 	}
 	addSpec(in.Spec)
 	for _, specPath := range in.SpecPaths {
-		collectSpecNeighborhood(specPath, addHost, addText)
+		collectSpecNeighborhood(specPath, addHost)
 	}
-	if in.Traffic != nil {
-		addText(in.Traffic.Summary.TargetURL)
-		for host := range in.Traffic.Summary.HostDistribution {
+	addTrafficHosts(in.Traffic, addHost)
+	for _, page := range in.DiscoveryPages {
+		for _, host := range urlHosts(page) {
 			addHost(host)
 		}
-		for _, secondary := range in.Traffic.SecondaryHosts {
-			addHost(secondary.Host)
-		}
-		for _, cluster := range in.Traffic.EndpointClusters {
-			addHost(cluster.Host)
-		}
-	}
-	for _, page := range in.DiscoveryPages {
-		addText(page)
 	}
 	for _, root := range novelHostArtifactRoots(in) {
-		collectObservedHostFiles(root, addHost, addText)
+		collectObservedHostFiles(root, addHost)
 	}
 	return observed
+}
+
+func addTrafficHosts(analysis *browsersniff.TrafficAnalysis, addHost func(string)) {
+	if analysis == nil {
+		return
+	}
+	for _, host := range urlHosts(analysis.Summary.TargetURL) {
+		addHost(host)
+	}
+	for host := range analysis.Summary.HostDistribution {
+		addHost(host)
+	}
+	for _, secondary := range analysis.SecondaryHosts {
+		addHost(secondary.Host)
+	}
+	for _, cluster := range analysis.EndpointClusters {
+		addHost(cluster.Host)
+		for _, evidence := range cluster.Evidence {
+			addHost(evidence.Host)
+		}
+	}
 }
 
 func specBaseHosts(spec *apispec.APISpec) []string {
@@ -494,10 +584,8 @@ func novelHostArtifactRoots(in NovelHostInput) []string {
 		if !info.IsDir() {
 			path = filepath.Dir(path)
 		}
-		for _, existing := range roots {
-			if existing == path {
-				return
-			}
+		if slices.Contains(roots, path) {
+			return
 		}
 		roots = append(roots, path)
 	}
@@ -515,17 +603,14 @@ func novelHostArtifactRoots(in NovelHostInput) []string {
 	return roots
 }
 
-func collectSpecNeighborhood(specPath string, addHost func(string), addText func(string)) {
+func collectSpecNeighborhood(specPath string, addHost func(string)) {
 	data, err := os.ReadFile(specPath)
 	if err != nil {
 		return
 	}
-	addText(string(data))
-	for _, host := range hostsFromSpecBytes(data, specPath) {
-		addHost(host)
-	}
+	collectHostArtifact(filepath.Base(specPath), specPath, data, addHost)
 	if samples := samplesDirForSpec(specPath); samples != "" {
-		collectObservedHostFiles(samples, addHost, addText)
+		collectObservedHostFiles(samples, addHost)
 	}
 	dir := filepath.Dir(specPath)
 	base := filepath.Base(specPath)
@@ -544,11 +629,12 @@ func collectSpecNeighborhood(specPath string, addHost func(string), addText func
 		"browser-sniff-report.md",
 		"crowd-browser-sniff-report.md",
 	} {
-		sidecar, readErr := os.ReadFile(filepath.Join(dir, name))
+		sidecarPath := filepath.Join(dir, name)
+		sidecar, readErr := os.ReadFile(sidecarPath)
 		if readErr != nil {
 			continue
 		}
-		addText(string(sidecar))
+		collectHostArtifact(name, sidecarPath, sidecar, addHost)
 	}
 }
 
@@ -563,7 +649,7 @@ func samplesDirForSpec(specPath string) string {
 	return filepath.Join(dir, stem+"-samples")
 }
 
-func collectObservedHostFiles(root string, addHost func(string), addText func(string)) {
+func collectObservedHostFiles(root string, addHost func(string)) {
 	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -583,15 +669,49 @@ func collectObservedHostFiles(root string, addHost func(string), addText func(st
 		if readErr != nil {
 			return nil
 		}
-		text := string(data)
-		addText(text)
-		if strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".json") {
-			for _, host := range hostsFromSpecBytes(data, path) {
-				addHost(host)
-			}
-		}
+		collectHostArtifact(name, path, data, addHost)
 		return nil
 	})
+}
+
+func collectHostArtifact(name, path string, data []byte, addHost func(string)) {
+	slash := filepath.ToSlash(path)
+	if strings.Contains(slash, "-samples/") {
+		for _, host := range hostsFromSampleRawURL(data) {
+			addHost(host)
+		}
+		return
+	}
+	if documentedURLListNames[name] {
+		for _, host := range urlHosts(string(data)) {
+			addHost(host)
+		}
+		return
+	}
+	if strings.HasSuffix(name, "-traffic-analysis.json") || name == "traffic-analysis.json" {
+		var analysis browsersniff.TrafficAnalysis
+		if err := json.Unmarshal(data, &analysis); err != nil {
+			return
+		}
+		addTrafficHosts(&analysis, addHost)
+		return
+	}
+	for _, host := range hostsFromSpecBytes(data, path) {
+		addHost(host)
+	}
+	for _, host := range hostsFromStructuredFields(data) {
+		addHost(host)
+	}
+}
+
+func hostsFromSampleRawURL(data []byte) []string {
+	var sample struct {
+		RawURL string `json:"raw_url"`
+	}
+	if err := json.Unmarshal(data, &sample); err != nil {
+		return nil
+	}
+	return urlHosts(sample.RawURL)
 }
 
 func observedHostArtifact(name, path string) bool {
@@ -608,10 +728,7 @@ func observedHostArtifact(name, path string) bool {
 	case "spec.yaml", "spec.yml", "spec.json":
 		return true
 	}
-	if strings.Contains(name, "browser-sniff-spec") {
-		return true
-	}
-	return false
+	return strings.Contains(name, "browser-sniff-spec")
 }
 
 func hostsFromSpecBytes(data []byte, path string) []string {
@@ -632,4 +749,150 @@ func hostsFromSpecBytes(data []byte, path string) []string {
 func looksLikeOpenAPI(data []byte) bool {
 	text := string(data)
 	return strings.Contains(text, "openapi:") || strings.Contains(text, `"openapi"`) || strings.Contains(text, "swagger:") || strings.Contains(text, `"swagger"`)
+}
+
+// structuredHostSkipKeys are prose and payload containers. URLs inside them
+// are not servers, base URLs, or captured request URLs.
+var structuredHostSkipKeys = map[string]bool{
+	"contact": true, "default": true, "description": true, "enum": true,
+	"example": true, "examples": true, "externalDocs": true, "external_docs": true,
+	"license": true, "pattern": true, "request_body": true, "request_headers": true,
+	"response_body": true, "response_headers": true, "summary": true,
+	"termsOfService": true, "title": true,
+}
+
+func hostsFromStructuredFields(data []byte) []string {
+	node, err := decodeLooseDocument(data)
+	if err != nil || node == nil {
+		return nil
+	}
+	var hosts []string
+	walkStructuredHosts(node, func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		if host := hostFromURL(raw); host != "" {
+			hosts = append(hosts, host)
+			return
+		}
+		if host := bareHostname(raw); host != "" {
+			hosts = append(hosts, host)
+		}
+	})
+	return uniqueHosts(hosts)
+}
+
+func decodeLooseDocument(data []byte) (any, error) {
+	var node any
+	if json.Valid(data) {
+		if err := json.Unmarshal(data, &node); err != nil {
+			return nil, err
+		}
+		return node, nil
+	}
+	if err := yaml.Unmarshal(data, &node); err != nil {
+		return nil, err
+	}
+	return node, nil
+}
+
+func walkStructuredHosts(node any, add func(string)) {
+	switch n := node.(type) {
+	case map[string]any:
+		walkStringMapHosts(n, add)
+	case map[any]any:
+		converted := make(map[string]any, len(n))
+		for key, child := range n {
+			name, ok := key.(string)
+			if !ok {
+				continue
+			}
+			converted[name] = child
+		}
+		walkStringMapHosts(converted, add)
+	case []any:
+		for _, child := range n {
+			walkStructuredHosts(child, add)
+		}
+	}
+}
+
+func walkStringMapHosts(node map[string]any, add func(string)) {
+	if servers, ok := node["servers"]; ok {
+		addServerURLs(servers, add)
+	}
+	if base, ok := novelHostString(node["base_url"]); ok {
+		add(base)
+	}
+	if _, swagger := node["swagger"]; swagger {
+		if host, ok := novelHostString(node["host"]); ok {
+			addSwaggerHost(host, node, add)
+		}
+	}
+	for key, child := range node {
+		if key == "servers" || structuredHostSkipKeys[key] {
+			continue
+		}
+		walkStructuredHosts(child, add)
+	}
+}
+
+func addServerURLs(servers any, add func(string)) {
+	list, ok := servers.([]any)
+	if !ok {
+		return
+	}
+	for _, item := range list {
+		fields, ok := novelHostStringMap(item)
+		if !ok {
+			continue
+		}
+		if raw, ok := novelHostString(fields["url"]); ok {
+			add(raw)
+		}
+	}
+}
+
+func addSwaggerHost(host string, node map[string]any, add func(string)) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return
+	}
+	schemes, _ := node["schemes"].([]any)
+	if len(schemes) == 0 {
+		add("https://" + host)
+		return
+	}
+	for _, scheme := range schemes {
+		name, ok := novelHostString(scheme)
+		if !ok || (name != "http" && name != "https") {
+			continue
+		}
+		add(name + "://" + host)
+	}
+}
+
+func novelHostStringMap(node any) (map[string]any, bool) {
+	switch n := node.(type) {
+	case map[string]any:
+		return n, true
+	case map[any]any:
+		converted := make(map[string]any, len(n))
+		for key, child := range n {
+			name, ok := key.(string)
+			if !ok {
+				return nil, false
+			}
+			converted[name] = child
+		}
+		return converted, true
+	default:
+		return nil, false
+	}
+}
+
+func novelHostString(node any) (string, bool) {
+	text, ok := node.(string)
+	return text, ok
 }

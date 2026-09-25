@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,6 +25,8 @@ func newPlayCmd() {
 	_ = "Use: \"play\""
 	fmt.Println(manifestURL())
 }
+
+// Use: "play"
 `,
 	}, []NovelFeature{{
 		Name:        "Scheduled Headless Stream DVR",
@@ -114,11 +117,131 @@ func TestNovelHostDNSNXDOMAINFailsWhenObserved(t *testing.T) {
 func seedNovelHostFixture(t *testing.T, manifestURL string) (string, string) {
 	t.Helper()
 	return seedReimplementationFixture(t, map[string]string{
-		"play.go": "package cli\n\nconst manifestURL = \"" + manifestURL + "\"\n\nfunc newPlayCmd() { _ = \"Use: \\\"play\\\"\" }\n",
+		"play.go": "package cli\n\nconst manifestURL = \"" + manifestURL + "\"\n\nfunc newPlayCmd() { _ = \"Use: \\\"play\\\"\" }\n\n// Use: \"play\"\n",
 	}, []NovelFeature{{
 		Name:    "Play",
 		Command: "play",
 	}})
+}
+
+func TestOpenAPIExampleURLIsNotObserved(t *testing.T) {
+	cliDir, researchDir := seedNovelHostFixture(t, "https://cdn.example.test/asset")
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "spec.yaml"), []byte(`
+openapi: 3.0.0
+info:
+  title: DAZN
+  version: "1"
+  description: See https://docs.example.test/guide
+servers:
+  - url: https://rail-router.discovery.indazn.com
+paths:
+  /rails:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              example:
+                href: https://cdn.example.test/asset
+`), 0o644))
+
+	got := checkReimplementation(cliDir, researchDir)
+	require.NotEmpty(t, got.UnverifiedHosts)
+	assert.Equal(t, "cdn.example.test", got.UnverifiedHosts[0].Host)
+}
+
+func TestSampleResponseBodyURLIsNotObserved(t *testing.T) {
+	cliDir, researchDir := seedNovelHostFixture(t, "https://cdn.example.test/asset")
+	sampleDir := filepath.Join(researchDir, "dazn-samples")
+	require.NoError(t, os.MkdirAll(sampleDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sampleDir, "get__events.json"), []byte(`{
+  "raw_url": "https://event.discovery.indazn.com/v1/events",
+  "response_body": {"download": "https://cdn.example.test/asset"}
+}`), 0o644))
+
+	got := checkReimplementation(cliDir, researchDir)
+	require.NotEmpty(t, got.UnverifiedHosts)
+	assert.Equal(t, "cdn.example.test", got.UnverifiedHosts[0].Host)
+}
+
+func TestUnrelatedGoFileDoesNotFailNovelHostGate(t *testing.T) {
+	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+		"play.go":    "package cli\n\nfunc newPlayCmd() {}\n\n// Use: \"play\"\n",
+		"helpers.go": "package cli\n\nconst docs = \"https://unrelated.example.test/help\"\n",
+	}, []NovelFeature{{
+		Name:    "Play",
+		Command: "play",
+	}})
+
+	got := checkReimplementation(cliDir, researchDir)
+	assert.Empty(t, got.UnverifiedHosts)
+}
+
+func TestDottedProseIdentifierIsNotAHost(t *testing.T) {
+	findings := unverifiedNovelHosts(NovelHostInput{
+		FeatureOverride: []NovelFeature{{
+			Command:     "play",
+			Description: "Reads the settings.production flag and does not call a URL",
+		}},
+	})
+	assert.Empty(t, findings)
+}
+
+func TestRepeatedUnverifiedHostUsesFeatureLine(t *testing.T) {
+	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+		"root.go": "package cli\n",
+	}, []NovelFeature{
+		{Name: "One", Command: "one", Description: "Calls https://ghost.example.test/a"},
+		{Name: "Two", Command: "two", Description: "Calls https://ghost.example.test/b"},
+	})
+	raw, err := os.ReadFile(filepath.Join(researchDir, "research.json"))
+	require.NoError(t, err)
+
+	got := checkReimplementation(cliDir, researchDir)
+	require.Len(t, got.UnverifiedHosts, 2)
+	byCommand := map[string]ReimplementationFinding{}
+	for _, finding := range got.UnverifiedHosts {
+		byCommand[finding.Command] = finding
+	}
+	one := byCommand["one"]
+	two := byCommand["two"]
+	assert.NotEqual(t, one.Line, two.Line)
+	assert.Equal(t, "research.json", one.File)
+	assert.Contains(t, lineText(raw, one.Line), "ghost.example.test/a")
+	assert.Contains(t, lineText(raw, two.Line), "ghost.example.test/b")
+}
+
+func TestDogfoodHostGateUsesResolvedSpecOnce(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "root.go"), []byte("package cli\nfunc newRootCmd() {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "play.go"), []byte("package cli\n\nconst manifestURL = \"https://example.com/v1\"\n\n// Use: \"play\"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "client", "client.go"), []byte("package client\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "store", "store.go"), []byte("package store\n"), 0o644))
+
+	researchDir := filepath.Join(dir, "pipeline")
+	require.NoError(t, os.MkdirAll(researchDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), []byte(`{"novel_features":[{"name":"Play","command":"play"}]}`), 0o644))
+	specPath := filepath.Join(dir, "spec.yaml")
+	require.NoError(t, os.WriteFile(specPath, []byte("openapi: 3.0.0\ninfo: {title: Example, version: \"1\"}\nservers:\n  - url: https://example.com\npaths: {}\n"), 0o644))
+
+	report, err := RunDogfood(dir, specPath, WithResearchDir(researchDir))
+	require.NoError(t, err)
+	assert.Empty(t, report.ReimplementationCheck.UnverifiedHosts)
+}
+
+func lineText(raw []byte, line int) string {
+	if line <= 0 {
+		return ""
+	}
+	lines := strings.Split(string(raw), "\n")
+	if line > len(lines) {
+		return ""
+	}
+	return lines[line-1]
 }
 
 func writeSpecRoot(t *testing.T, serverURL string) string {

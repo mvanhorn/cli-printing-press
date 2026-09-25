@@ -387,12 +387,11 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	report.WiringCheck = checkWiring(dir)
 	report.NovelFeaturesCheck = checkNovelFeaturesOpts(dir, cfg.researchDir, cfg.overwriteCommandMirror)
 	report.MCPSurfaceParityCheck = checkMCPSurfaceParity(dir)
-	report.ReimplementationCheck = checkReimplementation(dir, cfg.researchDir)
 	specPaths := []string{}
 	if specPath != "" {
 		specPaths = []string{specPath}
 	}
-	report.ReimplementationCheck = attachNovelHostFindings(report.ReimplementationCheck, dir, cfg.researchDir, specPaths, dnsNovelHostResolver)
+	report.ReimplementationCheck = checkReimplementationWithHostGate(dir, cfg.researchDir, specPaths, dnsNovelHostResolver)
 	if drift := checkDescriptionDrift(dir, cfg.researchDir); shouldReportDescriptionDrift(drift) {
 		report.DescriptionDriftCheck = &drift
 	}
