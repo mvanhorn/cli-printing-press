@@ -322,6 +322,106 @@ func (streamClient) Docs() string {
 	assert.Equal(t, "stream.go", got.UnverifiedHosts[0].File)
 }
 
+func TestImportedClientMethodIgnoresUnrelatedManifest(t *testing.T) {
+	const playbackSrc = `package playback
+
+type Client struct{}
+
+func New() *Client { return &Client{} }
+
+func (Client) Manifest() string {
+	return "https://edge.indazn.com/v5/live.mpd"
+}
+
+func (Client) Docs() string {
+	return "https://docs.example.test/help"
+}
+`
+	const unrelatedSrc = `package cli
+
+type Client struct{}
+
+func (Client) Manifest() string {
+	return "https://unrelated.example.test/help"
+}
+`
+	tests := []struct {
+		name string
+		play string
+	}{
+		{
+			name: "receiver type",
+			play: `package cli
+
+import "example.com/demo/internal/playback"
+
+func newPlayCmd() {
+	var client playback.Client
+	_ = client.Manifest()
+}
+
+// Use: "play"
+`,
+		},
+		{
+			name: "constructor",
+			play: `package cli
+
+import "example.com/demo/internal/playback"
+
+func newPlayCmd() {
+	client := playback.New()
+	_ = client.Manifest()
+}
+
+// Use: "play"
+`,
+		},
+		{
+			name: "factory method",
+			play: `package cli
+
+import "example.com/demo/internal/playback"
+
+type rootFlags struct{}
+
+func (f *rootFlags) newClient() (*playback.Client, error) {
+	return nil, nil
+}
+
+func newPlayCmd(flags *rootFlags) {
+	client, err := flags.newClient()
+	_ = err
+	_ = client.Manifest()
+}
+
+// Use: "play"
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+				"play.go":    tt.play,
+				"catalog.go": unrelatedSrc,
+			}, []NovelFeature{{
+				Name:    "Play",
+				Command: "play",
+			}})
+			playbackDir := filepath.Join(cliDir, "internal", "playback")
+			require.NoError(t, os.MkdirAll(playbackDir, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(playbackDir, "client.go"), []byte(playbackSrc), 0o644))
+
+			got := checkReimplementation(cliDir, researchDir)
+			require.Len(t, got.UnverifiedHosts, 1, "hosts: %#v", got.UnverifiedHosts)
+			assert.Equal(t, "edge.indazn.com", got.UnverifiedHosts[0].Host)
+			assert.Equal(t, "internal/playback/client.go", got.UnverifiedHosts[0].File)
+			assert.NotZero(t, got.UnverifiedHosts[0].Line)
+			assert.Equal(t, "play", got.UnverifiedHosts[0].Command)
+		})
+	}
+}
+
 func TestUnrelatedGoFileDoesNotFailNovelHostGate(t *testing.T) {
 	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
 		"play.go":    "package cli\n\nfunc newPlayCmd() {}\n\n// Use: \"play\"\n",

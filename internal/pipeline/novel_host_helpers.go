@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,7 +13,9 @@ import (
 )
 
 // Hosts often live in a helper the novel command calls, or in a same-package
-// file named for that command. Unreferenced files stay out of the gate.
+// file named for that command. Method calls match the receiver type and, for
+// an imported type, that package, not the method name alone. Unreferenced
+// files stay out of the gate.
 
 type novelSourceFile struct {
 	name    string
@@ -54,6 +57,17 @@ type srcRef struct {
 	kind       string
 	name       string
 	importPath string
+	recv       goTypeRef
+}
+
+// goTypeRef is a named type, or a call whose result type is resolved later.
+// An empty importPath means the type is in the package being resolved.
+type goTypeRef struct {
+	name       string
+	importPath string
+	callName   string
+	callImport string
+	callRecv   string
 }
 
 type helperReach struct {
@@ -110,7 +124,7 @@ func reachNovelHelpers(cliDir, module string, pkg *goSourcePkg, origin *goSource
 
 	follow := func(current *goSourcePkg, file *goSourceFile, node ast.Node, locals map[string]bool) {
 		for _, ref := range followNode(node, locals, importAliases(file.file)) {
-			for _, sym := range resolveRef(cliDir, module, current, ref, node, cache) {
+			for _, sym := range resolveRef(cliDir, module, current, ref, cache) {
 				enqueueSym(sym)
 			}
 		}
@@ -151,7 +165,7 @@ func packageOf(cache map[string]*goSourcePkg, file *goSourceFile, fallback *goSo
 	return fallback
 }
 
-func resolveRef(cliDir, module string, pkg *goSourcePkg, ref srcRef, node ast.Node, cache map[string]*goSourcePkg) []*goSymbol {
+func resolveRef(cliDir, module string, pkg *goSourcePkg, ref srcRef, cache map[string]*goSourcePkg) []*goSymbol {
 	switch ref.kind {
 	case "pkg":
 		other := loadImportedPkg(cliDir, module, ref.importPath, cache)
@@ -166,7 +180,7 @@ func resolveRef(cliDir, module string, pkg *goSourcePkg, ref srcRef, node ast.No
 		}
 		return nil
 	case "method":
-		return resolveMethods(pkg, ref.name, node)
+		return resolveMethods(cliDir, module, pkg, ref, cache)
 	default:
 		if sym := pkg.funcs[ref.name]; sym != nil {
 			return []*goSymbol{sym}
@@ -178,28 +192,27 @@ func resolveRef(cliDir, module string, pkg *goSourcePkg, ref srcRef, node ast.No
 	}
 }
 
-func resolveMethods(pkg *goSourcePkg, name string, node ast.Node) []*goSymbol {
-	if skipMethodNames[name] {
+// resolveMethods returns methods whose name and receiver match the call.
+// A same-package method is not selected just because it is the only one
+// with that name; the receiver type (or its import path) has to match.
+func resolveMethods(cliDir, module string, pkg *goSourcePkg, ref srcRef, cache map[string]*goSourcePkg) []*goSymbol {
+	if skipMethodNames[ref.name] || !ref.recv.known() {
 		return nil
 	}
-	methods := pkg.methods[name]
-	if len(methods) == 0 {
+	recv := concreteType(cliDir, module, pkg, ref.recv, cache)
+	if recv.name == "" {
 		return nil
 	}
-	if len(methods) == 1 {
-		return methods
+	owner := pkg
+	if recv.importPath != "" {
+		owner = loadImportedPkg(cliDir, module, recv.importPath, cache)
 	}
-	mentioned := map[string]bool{}
-	ast.Inspect(node, func(n ast.Node) bool {
-		id, ok := n.(*ast.Ident)
-		if ok {
-			mentioned[id.Name] = true
-		}
-		return true
-	})
+	if owner == nil {
+		return nil
+	}
 	var matched []*goSymbol
-	for _, method := range methods {
-		if mentioned[method.recv] {
+	for _, method := range owner.methods[ref.name] {
+		if method.recv == recv.name {
 			matched = append(matched, method)
 		}
 	}
@@ -218,26 +231,58 @@ func nodeRefs(node ast.Node, locals map[string]bool, aliases map[string]string) 
 		}
 		return true
 	})
+	if fn, ok := node.(*ast.FuncDecl); ok && locals == nil {
+		locals = localsInFunc(fn)
+	}
 	var refs []srcRef
+	appendRefs(node, locals, aliases, bindingsFor(node, aliases), sel, &refs)
+	return refs
+}
+
+func appendRefs(node ast.Node, locals map[string]bool, aliases map[string]string, bindings map[string]goTypeRef, sel map[*ast.Ident]bool, refs *[]srcRef) {
 	ast.Inspect(node, func(n ast.Node) bool {
+		lit, ok := n.(*ast.FuncLit)
+		if ok {
+			appendLitRefs(lit, locals, aliases, bindings, sel, refs)
+			return false
+		}
 		switch e := n.(type) {
 		case *ast.SelectorExpr:
 			if id, ok := e.X.(*ast.Ident); ok && aliases[id.Name] != "" && !locals[id.Name] {
-				refs = append(refs, srcRef{kind: "pkg", name: e.Sel.Name, importPath: aliases[id.Name]})
+				*refs = append(*refs, srcRef{kind: "pkg", name: e.Sel.Name, importPath: aliases[id.Name]})
 				return true
 			}
-			if !locals[e.Sel.Name] && !goPredeclared[e.Sel.Name] {
-				refs = append(refs, srcRef{kind: "method", name: e.Sel.Name})
+			if locals[e.Sel.Name] || goPredeclared[e.Sel.Name] {
+				return true
 			}
+			recv := valueType(e.X, bindings, aliases)
+			if !recv.known() {
+				return true
+			}
+			*refs = append(*refs, srcRef{kind: "method", name: e.Sel.Name, recv: recv})
 		case *ast.Ident:
 			if sel[e] || locals[e.Name] || goPredeclared[e.Name] || e.Name == "_" {
 				return true
 			}
-			refs = append(refs, srcRef{kind: "ident", name: e.Name})
+			*refs = append(*refs, srcRef{kind: "ident", name: e.Name})
 		}
 		return true
 	})
-	return refs
+}
+
+func appendLitRefs(lit *ast.FuncLit, locals map[string]bool, aliases map[string]string, outer map[string]goTypeRef, sel map[*ast.Ident]bool, refs *[]srcRef) {
+	if lit == nil || lit.Type == nil || lit.Body == nil {
+		return
+	}
+	innerLocals := copyBools(locals)
+	addFieldNames(innerLocals, lit.Type.Params)
+	addFieldNames(innerLocals, lit.Type.Results)
+	markAssigned(lit.Body, innerLocals)
+	bindings := copyTypes(outer)
+	addFieldTypes(bindings, lit.Type.Params, aliases)
+	addFieldTypes(bindings, lit.Type.Results, aliases)
+	collectBindings(lit.Body, bindings, aliases)
+	appendRefs(lit.Body, innerLocals, aliases, bindings, sel, refs)
 }
 
 func followNode(node ast.Node, locals map[string]bool, aliases map[string]string) []srcRef {
@@ -474,6 +519,327 @@ func typeIdentName(expr ast.Expr) string {
 	default:
 		return ""
 	}
+}
+
+func (t goTypeRef) known() bool {
+	return t.name != "" || t.callName != ""
+}
+
+func concreteType(cliDir, module string, pkg *goSourcePkg, t goTypeRef, cache map[string]*goSourcePkg) goTypeRef {
+	if t.callName == "" {
+		return t
+	}
+	owner := pkg
+	if t.callImport != "" {
+		owner = loadImportedPkg(cliDir, module, t.callImport, cache)
+	}
+	fn, aliases := callFunc(owner, t)
+	if fn == nil {
+		return goTypeRef{}
+	}
+	rt := funcResultType(fn, aliases)
+	if rt.name != "" && rt.importPath == "" {
+		rt.importPath = t.callImport
+	}
+	return rt
+}
+
+func callFunc(pkg *goSourcePkg, t goTypeRef) (*ast.FuncDecl, map[string]string) {
+	if pkg == nil || t.callName == "" {
+		return nil, nil
+	}
+	if t.callRecv != "" {
+		for _, method := range pkg.methods[t.callName] {
+			if method.recv != t.callRecv || method.file == nil {
+				continue
+			}
+			fn, ok := method.node.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			return fn, importAliases(method.file.file)
+		}
+		return nil, nil
+	}
+	sym := pkg.funcs[t.callName]
+	if sym == nil || sym.file == nil {
+		return nil, nil
+	}
+	fn, ok := sym.node.(*ast.FuncDecl)
+	if !ok {
+		return nil, nil
+	}
+	return fn, importAliases(sym.file.file)
+}
+
+func funcResultType(fn *ast.FuncDecl, aliases map[string]string) goTypeRef {
+	if fn == nil || fn.Type == nil || fn.Type.Results == nil || len(fn.Type.Results.List) == 0 {
+		return goTypeRef{}
+	}
+	t, ok := typeExpr(fn.Type.Results.List[0].Type, aliases)
+	if !ok {
+		return goTypeRef{}
+	}
+	return t
+}
+
+func bindingsFor(node ast.Node, aliases map[string]string) map[string]goTypeRef {
+	fn, ok := node.(*ast.FuncDecl)
+	if !ok || fn.Type == nil {
+		return nil
+	}
+	bindings := map[string]goTypeRef{}
+	addFieldTypes(bindings, fn.Recv, aliases)
+	addFieldTypes(bindings, fn.Type.Params, aliases)
+	addFieldTypes(bindings, fn.Type.Results, aliases)
+	if fn.Body != nil {
+		collectBindings(fn.Body, bindings, aliases)
+	}
+	return bindings
+}
+
+func collectBindings(node ast.Node, bindings map[string]goTypeRef, aliases map[string]string) {
+	if node == nil || bindings == nil {
+		return
+	}
+	ast.Inspect(node, func(n ast.Node) bool {
+		switch e := n.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.ValueSpec:
+			bindValueSpec(bindings, e, aliases)
+		case *ast.AssignStmt:
+			bindAssign(bindings, e, aliases)
+		}
+		return true
+	})
+}
+
+func bindValueSpec(bindings map[string]goTypeRef, vs *ast.ValueSpec, aliases map[string]string) {
+	if vs == nil {
+		return
+	}
+	if vs.Type != nil {
+		t, ok := typeExpr(vs.Type, aliases)
+		if !ok {
+			return
+		}
+		for _, name := range vs.Names {
+			if name != nil && name.Name != "_" {
+				bindings[name.Name] = t
+			}
+		}
+		return
+	}
+	if len(vs.Values) == 1 && len(vs.Names) > 0 {
+		t := valueType(vs.Values[0], bindings, aliases)
+		if t.known() && vs.Names[0] != nil && vs.Names[0].Name != "_" {
+			bindings[vs.Names[0].Name] = t
+		}
+		return
+	}
+	if len(vs.Values) != len(vs.Names) {
+		return
+	}
+	for i := range vs.Names {
+		if vs.Names[i] == nil || vs.Names[i].Name == "_" {
+			continue
+		}
+		t := valueType(vs.Values[i], bindings, aliases)
+		if t.known() {
+			bindings[vs.Names[i].Name] = t
+		}
+	}
+}
+
+func bindAssign(bindings map[string]goTypeRef, stmt *ast.AssignStmt, aliases map[string]string) {
+	if stmt == nil || len(stmt.Lhs) == 0 || len(stmt.Rhs) == 0 {
+		return
+	}
+	if len(stmt.Rhs) == 1 {
+		t := valueType(stmt.Rhs[0], bindings, aliases)
+		if !t.known() {
+			return
+		}
+		id, ok := stmt.Lhs[0].(*ast.Ident)
+		if ok && id.Name != "_" {
+			bindings[id.Name] = t
+		}
+		return
+	}
+	if len(stmt.Lhs) != len(stmt.Rhs) {
+		return
+	}
+	for i := range stmt.Lhs {
+		id, ok := stmt.Lhs[i].(*ast.Ident)
+		if !ok || id.Name == "_" {
+			continue
+		}
+		t := valueType(stmt.Rhs[i], bindings, aliases)
+		if t.known() {
+			bindings[id.Name] = t
+		}
+	}
+}
+
+func valueType(expr ast.Expr, bindings map[string]goTypeRef, aliases map[string]string) goTypeRef {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		if bindings == nil {
+			return goTypeRef{}
+		}
+		return bindings[e.Name]
+	case *ast.StarExpr:
+		return valueType(e.X, bindings, aliases)
+	case *ast.ParenExpr:
+		return valueType(e.X, bindings, aliases)
+	case *ast.UnaryExpr:
+		if e.Op == token.AND {
+			return valueType(e.X, bindings, aliases)
+		}
+	case *ast.CompositeLit:
+		t, ok := typeExpr(e.Type, aliases)
+		if ok {
+			return t
+		}
+	case *ast.CallExpr:
+		return callValueType(e, bindings, aliases)
+	}
+	return goTypeRef{}
+}
+
+func callValueType(call *ast.CallExpr, bindings map[string]goTypeRef, aliases map[string]string) goTypeRef {
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		if fun.Name == "new" && len(call.Args) == 1 {
+			t, ok := typeExpr(call.Args[0], aliases)
+			if ok {
+				return t
+			}
+			return goTypeRef{}
+		}
+		if fun.Name == "_" || goPredeclared[fun.Name] {
+			return goTypeRef{}
+		}
+		return goTypeRef{callName: fun.Name}
+	case *ast.SelectorExpr:
+		id, ok := fun.X.(*ast.Ident)
+		if ok && aliases[id.Name] != "" && !bindingHas(bindings, id.Name) {
+			return goTypeRef{callName: fun.Sel.Name, callImport: aliases[id.Name]}
+		}
+		recv := valueType(fun.X, bindings, aliases)
+		if recv.name == "" || recv.callName != "" {
+			return goTypeRef{}
+		}
+		return goTypeRef{callName: fun.Sel.Name, callImport: recv.importPath, callRecv: recv.name}
+	default:
+		return goTypeRef{}
+	}
+}
+
+func bindingHas(bindings map[string]goTypeRef, name string) bool {
+	if bindings == nil {
+		return false
+	}
+	_, ok := bindings[name]
+	return ok
+}
+
+func typeExpr(expr ast.Expr, aliases map[string]string) (goTypeRef, bool) {
+	if expr == nil {
+		return goTypeRef{}, false
+	}
+	switch e := expr.(type) {
+	case *ast.Ident:
+		if e.Name == "" || e.Name == "_" || goPredeclared[e.Name] {
+			return goTypeRef{}, false
+		}
+		return goTypeRef{name: e.Name}, true
+	case *ast.StarExpr:
+		return typeExpr(e.X, aliases)
+	case *ast.ParenExpr:
+		return typeExpr(e.X, aliases)
+	case *ast.SelectorExpr:
+		id, ok := e.X.(*ast.Ident)
+		if !ok || aliases[id.Name] == "" {
+			return goTypeRef{}, false
+		}
+		return goTypeRef{name: e.Sel.Name, importPath: aliases[id.Name]}, true
+	case *ast.IndexExpr:
+		return typeExpr(e.X, aliases)
+	case *ast.IndexListExpr:
+		return typeExpr(e.X, aliases)
+	default:
+		return goTypeRef{}, false
+	}
+}
+
+func addFieldTypes(bindings map[string]goTypeRef, fields *ast.FieldList, aliases map[string]string) {
+	if bindings == nil || fields == nil {
+		return
+	}
+	for _, field := range fields.List {
+		t, ok := typeExpr(field.Type, aliases)
+		if !ok {
+			continue
+		}
+		for _, name := range field.Names {
+			if name.Name == "_" {
+				continue
+			}
+			bindings[name.Name] = t
+		}
+	}
+}
+
+func copyTypes(in map[string]goTypeRef) map[string]goTypeRef {
+	out := make(map[string]goTypeRef, len(in))
+	maps.Copy(out, in)
+	return out
+}
+
+func copyBools(in map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(in))
+	maps.Copy(out, in)
+	return out
+}
+
+func markAssigned(node ast.Node, locals map[string]bool) {
+	if node == nil || locals == nil {
+		return
+	}
+	ast.Inspect(node, func(n ast.Node) bool {
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		switch e := n.(type) {
+		case *ast.AssignStmt:
+			if e.Tok != token.DEFINE {
+				return true
+			}
+			for _, lhs := range e.Lhs {
+				id, ok := lhs.(*ast.Ident)
+				if ok {
+					locals[id.Name] = true
+				}
+			}
+		case *ast.ValueSpec:
+			for _, name := range e.Names {
+				locals[name.Name] = true
+			}
+		case *ast.RangeStmt:
+			if e.Tok != token.DEFINE {
+				return true
+			}
+			if id, ok := e.Key.(*ast.Ident); ok {
+				locals[id.Name] = true
+			}
+			if id, ok := e.Value.(*ast.Ident); ok {
+				locals[id.Name] = true
+			}
+		}
+		return true
+	})
 }
 
 func loadImportedPkg(cliDir, module, importPath string, cache map[string]*goSourcePkg) *goSourcePkg {
