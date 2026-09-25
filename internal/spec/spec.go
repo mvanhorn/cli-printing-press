@@ -2378,23 +2378,18 @@ type Resource struct {
 	// single URL.
 	BaseURL string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
 	Tier    string `yaml:"tier,omitempty" json:"tier,omitempty"`
-	// IDField is the default primary-key field for this resource's list
-	// endpoints. Endpoint.IDField wins when that endpoint sets id_field.
+	// List endpoints on one resource share a primary key authors declare once.
+	// Endpoint-only id_field left that key unknown, so the store never learned it.
 	IDField string `yaml:"id_field,omitempty" json:"id_field,omitempty"`
-	// Syncable is the default sync membership for this resource's endpoints.
-	// Nil means unset. An endpoint that sets syncable wins: true opts into
-	// the default sync set the same way Endpoint.Syncable does, and an
-	// explicit false leaves the profiler heuristic unchanged. Resource-level
-	// false, applied only when the endpoint omits the key, opts the resource
-	// out of the default sync set and the auto-refresh coverage map.
+	// Authors drop a whole resource from default sync and auto-refresh while
+	// leaving it callable by name. False must stay distinct from an omitted key.
 	Syncable     *bool               `yaml:"syncable,omitempty" json:"syncable,omitempty"`
 	Endpoints    map[string]Endpoint `yaml:"endpoints" json:"endpoints"`
 	SubResources map[string]Resource `yaml:"sub_resources,omitempty" json:"sub_resources,omitempty"`
 }
 
-// EffectiveIDField returns the primary-key field for items this endpoint
-// returns. Endpoint id_field wins when set; otherwise the resource-level
-// id_field is the default.
+// Profiler and store classification must agree on one identity; inlined
+// precedence let the store treat a declared key as parameter-keyed.
 func EffectiveIDField(resource Resource, endpoint Endpoint) string {
 	if id := strings.TrimSpace(endpoint.IDField); id != "" {
 		return id
@@ -2402,11 +2397,8 @@ func EffectiveIDField(resource Resource, endpoint Endpoint) string {
 	return strings.TrimSpace(resource.IDField)
 }
 
-// EffectiveSyncMembership resolves whether syncable opts an endpoint into or
-// out of the default sync set. An endpoint that sets the key wins and keeps
-// today's meaning: true opts in, explicit false does not force an opt-out.
-// Resource-level syncable applies only when the endpoint omits the key.
-// Resource-level false opts out of the default set and auto-refresh coverage.
+// Default-sync membership and auto-refresh opt-out must stay one decision.
+// Endpoint syncable only opts in; opt-out is an inherited resource-level false.
 func EffectiveSyncMembership(resource Resource, endpoint Endpoint) (optIn, optOut bool) {
 	if endpoint.SyncableSet || endpoint.Syncable {
 		return endpoint.Syncable, false

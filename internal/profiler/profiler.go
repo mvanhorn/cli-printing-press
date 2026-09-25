@@ -149,9 +149,8 @@ type SyncableResource struct {
 	// them from generated "sync all" defaults (auth-flow, untyped IDs, and
 	// html/binary/text responses that cannot populate the JSON store).
 	SkipDefaultSync bool
-	// SkipAutoRefresh keeps the resource out of the generated read-command
-	// freshness map. Set when a resource-level syncable: false applies and
-	// the chosen endpoint did not override it.
+	// Heuristic default-sync exclusions still belong in the freshness map.
+	// Only a resource-level syncable false opts out of both sync and auto-refresh.
 	SkipAutoRefresh bool
 	// IDField is the resolved primary-key field name for items returned by the
 	// list endpoint, populated from the chosen endpoint's resolved value (in
