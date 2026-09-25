@@ -234,6 +234,7 @@ func newPublishPackageCmd() *cobra.Command {
 	var category string
 	var target string
 	var dest string
+	var baseDir string
 	var modulePath string
 	var allowMirrorDeletions bool
 	var includeRawCaptures bool
@@ -271,6 +272,12 @@ func newPublishPackageCmd() *cobra.Command {
 			}
 			if allowMirrorDeletions && dest == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--allow-mirror-deletions requires --dest (the divergence guard runs only in --dest mode)")}
+			}
+			if strings.TrimSpace(baseDir) != "" {
+				info, err := os.Stat(baseDir)
+				if err != nil || !info.IsDir() {
+					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--base-dir must be an existing directory: %s", baseDir)}
+				}
 			}
 
 			// Cheap existence checks before expensive validation
@@ -415,6 +422,21 @@ func newPublishPackageCmd() *cobra.Command {
 					cleanupOnFailure()
 					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("updating packaged manifest run_id: %w", err)}
 				}
+			}
+			resolvedBase, err := resolvePublishPackageBaseDir(baseDir, outCLIDir, stashedDirs)
+			if err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitInputError, Err: err}
+			}
+			if resolvedBase != "" {
+				if err := pipeline.PreserveStampedRuntimeVersion(resolvedBase, outCLIDir); err != nil {
+					cleanupOnFailure()
+					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("preserving runtime version layout: %w", err)}
+				}
+			}
+			if err := pipeline.EnsureMCPBManifest(outCLIDir); err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("writing MCPB manifest: %w", err)}
 			}
 
 			// Strip build/ from the staged tree. autoBundleForHost writes
@@ -572,12 +594,34 @@ func newPublishPackageCmd() *cobra.Command {
 	cmd.Flags().StringVar(&category, "category", "", "Category for the CLI (required)")
 	cmd.Flags().StringVar(&target, "target", "", "Staging directory to create (mutually exclusive with --dest)")
 	cmd.Flags().StringVar(&dest, "dest", "", "Publish repo to write into directly (mutually exclusive with --target)")
+	cmd.Flags().StringVar(&baseDir, "base-dir", "", "Existing library entry whose runtime version declaration layout is preserved into the package")
 	cmd.Flags().StringVar(&modulePath, "module-path", "", "Go module path to set (e.g., github.com/org/repo/library/category/cli-name)")
 	cmd.Flags().BoolVar(&allowMirrorDeletions, "allow-mirror-deletions", false, "Allow the overlay to delete mirror files that have no source counterpart (use only after manual reconciliation)")
 	cmd.Flags().BoolVar(&includeRawCaptures, "include-raw-captures", false, "Include raw browser-sniff captures in bundled manuscripts (private use only)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
+}
+
+func resolvePublishPackageBaseDir(explicit, outCLIDir string, stashed []stashedDir) (string, error) {
+	explicit = strings.TrimSpace(explicit)
+	if explicit != "" {
+		info, err := os.Stat(explicit)
+		if err != nil || !info.IsDir() {
+			return "", fmt.Errorf("--base-dir must be an existing directory: %s", explicit)
+		}
+		return explicit, nil
+	}
+	var fallback string
+	for _, entry := range stashed {
+		if entry.original == outCLIDir {
+			return entry.stashed, nil
+		}
+		if fallback == "" {
+			fallback = entry.stashed
+		}
+	}
+	return fallback, nil
 }
 
 // stashedDir records an old CLI directory that was moved aside during --dest mode.
@@ -1047,6 +1091,7 @@ func validatePublishManifestContract(dir string, manifest pipeline.CLIManifest) 
 			}
 		}
 	}
+	issues = append(issues, pipeline.ContributorSurfaceIssues(dir, manifest.Contributors)...)
 
 	return issues
 }

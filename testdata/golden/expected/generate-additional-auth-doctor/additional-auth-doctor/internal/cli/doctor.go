@@ -640,33 +640,59 @@ func legacyCredentialProbePaths(cfg *config.Config) []string {
 	return paths
 }
 
+// doctorInfoKeys are report entries rendered as information, not health
+// checks. Their free text (hints, paths, tool names) can contain "missing"
+// or "error" without meaning the CLI is unhealthy.
+var doctorInfoKeys = map[string]bool{
+	"config_path":                  true,
+	"base_url":                     true,
+	"auth_source":                  true,
+	"auth_domain":                  true,
+	"auth_hint":                    true,
+	"auth_refusals":                true,
+	"version":                      true,
+	"cookie_tool":                  true,
+	"browser_session_proof_detail": true,
+	"credentials_location":         true,
+	"credentials_locations":        true,
+	"agentcookie":                  true,
+}
+
+func doctorIsInfoKey(key string) bool { return doctorInfoKeys[key] }
+
 // doctorExitForFailOn returns a non-nil error when the report's worst
 // status meets the --fail-on gate. "error" trips on failing sections, "warn"
 // trips on deliberate WARN sections plus errors, and "stale" trips on cache
 // freshness plus errors. The default empty string means never fail on status.
+// The gate value is matched case-insensitively.
 func doctorExitForFailOn(failOn string, report map[string]any) error {
+	failOn = strings.ToLower(strings.TrimSpace(failOn))
 	if failOn == "" {
 		return nil
 	}
 	worstError := false
 	worstWarn := false
 	worstStale := false
-	for _, v := range report {
+	for k, v := range report {
 		s, ok := v.(string)
-		if ok {
-			if strings.HasPrefix(s, "ERROR") || strings.HasPrefix(s, "refused:") || strings.Contains(s, "error") || strings.Contains(s, "unreachable") || strings.Contains(s, "invalid") || strings.Contains(s, "missing") {
-				worstError = true
-			}
-			if strings.HasPrefix(s, "WARN") {
+		if ok && !doctorIsInfoKey(k) {
+			low := strings.ToLower(s)
+			// A WARN prefix is the verdict. Explanatory text such as
+			// "neither accepted nor rejected" must not promote it to an error.
+			if strings.HasPrefix(low, "warn") {
 				worstWarn = true
+			} else if strings.HasPrefix(low, "error") || strings.HasPrefix(low, "refused:") || strings.HasPrefix(low, "rejected") || strings.Contains(low, "error") || strings.Contains(low, "unreachable") || strings.Contains(low, "invalid") || strings.Contains(low, "missing") {
+				worstError = true
 			}
 		}
 		if m, ok := v.(map[string]any); ok {
-			if st, _ := m["status"].(string); st == "error" {
+			st, _ := m["status"].(string)
+			switch strings.ToLower(st) {
+			case "error":
 				worstError = true
-			} else if st == "warn" {
+			case "warn":
 				worstWarn = true
-			} else if st == "stale" {
+			case "stale":
 				worstStale = true
 			}
 		}

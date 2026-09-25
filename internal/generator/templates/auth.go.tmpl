@@ -24,6 +24,9 @@ import (
 
 	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/config"
+{{- if or (authURLNeedsTemplateSubstitution .Auth.TokenURL) (authURLNeedsTemplateSubstitution .Auth.AuthorizationURL)}}
+	"{{modulePath}}/internal/client"
+{{- end}}
 	"github.com/spf13/cobra"
 )
 
@@ -189,6 +192,13 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	if authURL == "" {
 		authURL = {{printf "%q" .Auth.AuthorizationURL}}
 	}
+{{- if authURLNeedsTemplateSubstitution .Auth.AuthorizationURL}}
+	resolvedAuthURL, authResolveErr := client.ResolveTemplateURL(authURL, cfg.TemplateVars)
+	if authResolveErr != nil {
+		return authResolveErr
+	}
+	authURL = resolvedAuthURL
+{{- end}}
 {{- end}}
 {{- $refreshMech := .Auth.ParseRefreshTokenMechanism}}
 	params := url.Values{
@@ -288,6 +298,13 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	if tokenURL == "" {
 		tokenURL = {{printf "%q" .Auth.TokenURL}}
 	}
+{{- if authURLNeedsTemplateSubstitution .Auth.TokenURL}}
+	resolved, resolveErr := client.ResolveTemplateURL(tokenURL, cfg.TemplateVars)
+	if resolveErr != nil {
+		return resolveErr
+	}
+	tokenURL = resolved
+{{- end}}
 {{- end}}
 	tokenParams := url.Values{
 		"grant_type":   {"authorization_code"},

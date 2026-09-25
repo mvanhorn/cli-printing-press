@@ -105,20 +105,54 @@ func writeBinaryDeliverReceipt(w io.Writer, sink DeliverSink, raw []byte, conten
 }
 
 func deliverFile(path string, body []byte) error {
-	// Atomic write: tmp + rename. Protects agents from seeing a partial
-	// file if the process is interrupted mid-write.
+	// The directory is the operator's --deliver target. The final segment is
+	// checked by writeDownloadUnder so a name of ".." or with a separator
+	// cannot leave that directory.
 	dir := filepath.Dir(path)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return fmt.Errorf("creating deliver dir: %w", err)
-		}
+	if dir == "" {
+		dir = "."
+	}
+	return writeDownloadUnder(dir, filepath.Base(path), body)
+}
+
+// safeJoinUnder joins a single untrusted name (a response id or title) under
+// dir. Separators and ".." are rejected so the result cannot leave dir.
+func safeJoinUnder(dir, name string) (string, error) {
+	if name == "" || name == "." || name == ".." || filepath.IsAbs(name) || strings.ContainsAny(name, `/\`) {
+		return "", fmt.Errorf("download name %q is not a single path segment", name)
+	}
+	if strings.ContainsRune(name, 0) {
+		return "", fmt.Errorf("download name %q is not a single path segment", name)
+	}
+	root := filepath.Clean(dir)
+	joined := filepath.Join(root, name)
+	rel, err := filepath.Rel(root, joined)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("download name %q escapes %s", name, dir)
+	}
+	return joined, nil
+}
+
+// writeDownloadUnder writes body as a 0600 file under a 0700 directory.
+// name is a response id or other API-supplied filename component.
+func writeDownloadUnder(dir, name string, body []byte) error {
+	path, err := safeJoinUnder(dir, name)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("creating download dir: %w", err)
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, body, 0o600); err != nil {
-		return fmt.Errorf("writing deliver tmp: %w", err)
+		return fmt.Errorf("writing download: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("replacing deliver file: %w", err)
+		_ = os.Remove(tmp)
+		return fmt.Errorf("replacing download: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("setting download permissions: %w", err)
 	}
 	return nil
 }

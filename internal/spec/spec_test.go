@@ -2163,7 +2163,7 @@ func TestOAuth2GrantValidate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateOAuth2Grant(tt.cfg)
+			err := validateOAuth2Grant(tt.cfg, nil)
 			if tt.wantErr == "" {
 				require.NoError(t, err)
 				return
@@ -2172,6 +2172,83 @@ func TestOAuth2GrantValidate(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
+}
+
+func TestOAuth2GrantValidateRegisteredTemplateVars(t *testing.T) {
+	registered := []string{"tenant", "domain"}
+	tokenURL := "https://{tenant}.{domain}/auth/token"
+
+	t.Run("registered vars are accepted", func(t *testing.T) {
+		err := validateOAuth2Grant(AuthConfig{
+			OAuth2Grant: OAuth2GrantClientCredentials,
+			TokenURL:    tokenURL,
+		}, registered)
+		require.NoError(t, err)
+	})
+
+	t.Run("device urls with registered vars are accepted", func(t *testing.T) {
+		err := validateOAuth2Grant(AuthConfig{
+			OAuth2Grant:            OAuth2GrantDeviceCode,
+			DeviceAuthorizationURL: "https://{tenant}.{domain}/auth/device",
+			TokenURL:               tokenURL,
+		}, registered)
+		require.NoError(t, err)
+	})
+
+	t.Run("refresh token url with registered vars is accepted", func(t *testing.T) {
+		err := validateOAuth2Refresh(AuthConfig{
+			Type:     AuthTypeOAuth2Refresh,
+			TokenURL: tokenURL,
+		}, registered)
+		require.NoError(t, err)
+	})
+
+	t.Run("unregistered placeholder is still rejected", func(t *testing.T) {
+		err := validateOAuth2Grant(AuthConfig{
+			OAuth2Grant: OAuth2GrantClientCredentials,
+			TokenURL:    "https://{tenant}.{unknown}/auth/token",
+		}, registered)
+		require.ErrorContains(t, err, "unresolved placeholder")
+	})
+
+	t.Run("angle brackets are still rejected", func(t *testing.T) {
+		err := validateOAuth2Grant(AuthConfig{
+			OAuth2Grant: OAuth2GrantClientCredentials,
+			TokenURL:    "https://{tenant}.<domain>/auth/token",
+		}, registered)
+		require.ErrorContains(t, err, "unresolved placeholder")
+	})
+}
+
+func TestValidateAcceptsTemplatedAuthTokenURLFromBaseURL(t *testing.T) {
+	s := APISpec{
+		Name:    "tenant-oauth",
+		Version: "1.0.0",
+		BaseURL: "https://{tenant}.{domain}/api",
+		EndpointTemplateVarDefaults: map[string]string{
+			"tenant": "demo",
+			"domain": "example.com",
+		},
+		Auth: AuthConfig{
+			Type:        "oauth2",
+			Header:      "Authorization",
+			Format:      "Bearer {token}",
+			OAuth2Grant: OAuth2GrantClientCredentials,
+			TokenURL:    "https://{tenant}.{domain}/auth/token",
+			EnvVars:     []string{"TENANT_OAUTH_CLIENT_ID", "TENANT_OAUTH_CLIENT_SECRET"},
+		},
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{
+				"list": {Method: "GET", Path: "/items"},
+			}},
+		},
+	}
+	require.NoError(t, s.Validate())
+	assert.Equal(t, []string{"tenant", "domain"}, s.EndpointTemplateVars)
+
+	s.Auth.TokenURL = "https://{tenant}.{other}/auth/token"
+	err := s.Validate()
+	require.ErrorContains(t, err, "unresolved placeholder")
 }
 
 func TestSessionHandshakeValidate(t *testing.T) {

@@ -453,48 +453,63 @@ func AppendContributor(dir string, p spec.Person, front bool) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("reading CLI manifest: %w", err)
 	}
+	out, added, changed, err := planAppendContributor(data, p, front)
+	if err != nil || !changed {
+		return added, err
+	}
+	if err := writeFileAtomic(path, out, 0o644); err != nil {
+		return false, fmt.Errorf("writing CLI manifest: %w", err)
+	}
+	return added, nil
+}
+
+// planAppendContributor returns the manifest bytes to persist. changed is
+// false when those bytes must stay as they are, so a caller can reject a
+// later README or NOTICE update before anything is written.
+func planAppendContributor(data []byte, p spec.Person, front bool) (out []byte, added, changed bool, err error) {
+	p = p.Clean()
+	if p.IsZero() {
+		return data, false, false, nil
+	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return false, fmt.Errorf("parsing CLI manifest: %w", err)
+		return nil, false, false, fmt.Errorf("parsing CLI manifest: %w", err)
 	}
 
 	var creator spec.Person
 	if rc, ok := raw["creator"]; ok {
 		if err := json.Unmarshal(rc, &creator); err != nil {
-			return false, fmt.Errorf("parsing creator: %w", err)
+			return nil, false, false, fmt.Errorf("parsing creator: %w", err)
 		}
 	}
 	if spec.SamePerson(p, creator) {
-		return false, nil
+		return data, false, false, nil
 	}
 	if creator.IsZero() {
 		printer := personFromPrinterFields(raw)
 		if !printer.IsZero() && spec.SamePerson(p, printer) {
 			enc, err := json.Marshal(p)
 			if err != nil {
-				return false, fmt.Errorf("encoding creator: %w", err)
+				return nil, false, false, fmt.Errorf("encoding creator: %w", err)
 			}
 			raw["creator"] = enc
 			out, err := marshalCLIManifestObject(raw)
 			if err != nil {
-				return false, err
+				return nil, false, false, err
 			}
-			if err := writeFileAtomic(path, out, 0o644); err != nil {
-				return false, fmt.Errorf("writing CLI manifest: %w", err)
-			}
-			return false, nil
+			return out, false, true, nil
 		}
 	}
 
 	var contributors []spec.Person
 	if rc, ok := raw["contributors"]; ok {
 		if err := json.Unmarshal(rc, &contributors); err != nil {
-			return false, fmt.Errorf("parsing contributors: %w", err)
+			return nil, false, false, fmt.Errorf("parsing contributors: %w", err)
 		}
 	}
 	for _, c := range contributors {
 		if spec.SamePerson(p, c) {
-			return false, nil
+			return data, false, false, nil
 		}
 	}
 
@@ -505,18 +520,15 @@ func AppendContributor(dir string, p spec.Person, front bool) (bool, error) {
 	}
 	enc, err := json.Marshal(contributors)
 	if err != nil {
-		return false, fmt.Errorf("encoding contributors: %w", err)
+		return nil, false, false, fmt.Errorf("encoding contributors: %w", err)
 	}
 	raw["contributors"] = enc
 
-	out, err := marshalCLIManifestObject(raw)
+	out, err = marshalCLIManifestObject(raw)
 	if err != nil {
-		return false, err
+		return nil, false, false, err
 	}
-	if err := writeFileAtomic(path, out, 0o644); err != nil {
-		return false, fmt.Errorf("writing CLI manifest: %w", err)
-	}
-	return true, nil
+	return out, true, true, nil
 }
 
 func personFromPrinterFields(raw map[string]json.RawMessage) spec.Person {

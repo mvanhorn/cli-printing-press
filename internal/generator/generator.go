@@ -487,6 +487,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointTemplateEnvName": func(placeholder string) string {
 			return s.EndpointTemplateEnvName(placeholder)
 		},
+		"authURLNeedsTemplateSubstitution": func(raw string) bool {
+			return s.AuthURLUsesEndpointTemplateVar(raw)
+		},
 		"globalScopeEnvName": func(param spec.Param) string {
 			return globalScopeEnvName(s.Name, param)
 		},
@@ -2792,6 +2795,7 @@ func (g *Generator) renderSingleFiles() error {
 		"agent_context.go.tmpl":                    filepath.Join("internal", "cli", "agent_context.go"),
 		"profile.go.tmpl":                          filepath.Join("internal", "cli", "profile.go"),
 		"deliver.go.tmpl":                          filepath.Join("internal", "cli", "deliver.go"),
+		"deliver_download_test.go.tmpl":            filepath.Join("internal", "cli", "deliver_download_test.go"),
 		"feedback.go.tmpl":                         filepath.Join("internal", "cli", "feedback.go"),
 		"which.go.tmpl":                            filepath.Join("internal", "cli", "which.go"),
 		"which_test.go.tmpl":                       filepath.Join("internal", "cli", "which_test.go"),
@@ -5333,6 +5337,11 @@ func (g *Generator) renderVisionCommands(visionData visionRenderData) error {
 		}
 		if err := g.renderTemplate(actualTmpl, outPath, tmplData); err != nil {
 			return fmt.Errorf("rendering vision %s: %w", tmplName, err)
+		}
+		if tmplName == "export.go.tmpl" {
+			if err := g.renderTemplate("export_perms_test.go.tmpl", filepath.Join("internal", "cli", "export_perms_test.go"), tmplData); err != nil {
+				return fmt.Errorf("rendering export permission test: %w", err)
+			}
 		}
 		if tmplName == "sync.go.tmpl" && actualTmpl == "sync.go.tmpl" {
 			if err := g.renderTemplate("sync_numeric_id_test.go.tmpl", filepath.Join("internal", "cli", "sync_numeric_id_test.go"), tmplData); err != nil {

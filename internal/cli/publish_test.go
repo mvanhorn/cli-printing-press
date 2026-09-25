@@ -1147,6 +1147,120 @@ func TestPublishPackageStripsRootBinaries(t *testing.T) {
 	require.FileExists(t, filepath.Join(result.StagedDir, "cmd", "test-pp-cli", "main.go"), "staged dir should keep CLI command source")
 	require.FileExists(t, filepath.Join(result.StagedDir, "cmd", "test-pp-mcp", "main.go"), "staged dir should keep MCP command source")
 	require.FileExists(t, filepath.Join(result.StagedDir, "root_test.go"), "staged dir should keep Go test source files")
+	require.FileExists(t, filepath.Join(result.StagedDir, pipeline.MCPBManifestFilename), "MCP command directory should emit an MCPB manifest")
+}
+
+func TestPublishPackageStampsRuntimeVersionFromBaseDir(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	stubPublishPackageValidation(t)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "cli", "version.go"), []byte("package cli\n\n// version is the printed CLI's version, overridable at build time via ldflags.\nvar version = \"0.0.0-dev\"\n\nfunc newVersionCmd() {}\n"), 0o644))
+
+	base := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(base, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(base, "internal", "cli", "root.go"), []byte("package cli\n\nvar version = \"2026.8.1\"\n"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--base-dir", base, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	root, err := os.ReadFile(filepath.Join(result.StagedDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(root), "var version = \"2026.8.1\"")
+	version, err := os.ReadFile(filepath.Join(result.StagedDir, "internal", "cli", "version.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(version), "var version")
+	assert.Contains(t, string(version), "func newVersionCmd()")
+}
+
+func TestPublishPackageStampsRuntimeVersionFromDestStash(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	stubPublishPackageValidation(t)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "cli", "version.go"), []byte("package cli\n\nvar version = \"0.0.0-dev\"\n\nfunc newVersionCmd() {}\n"), 0o644))
+
+	destDir := filepath.Join(t.TempDir(), "publish-repo")
+	existing := filepath.Join(destDir, "library", "other", "test", "internal", "cli")
+	require.NoError(t, os.MkdirAll(existing, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(existing, "root.go"), []byte("package cli\n\nvar version = \"2026.8.1\"\n"), 0o644))
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	root, err := os.ReadFile(filepath.Join(result.StagedDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(root), "var version = \"2026.8.1\"")
+	version, err := os.ReadFile(filepath.Join(result.StagedDir, "internal", "cli", "version.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(version), "var version")
+}
+
+func TestPublishPackageWritesMCPBManifestForMCPSurface(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	stubPublishPackageValidation(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "cmd", "test-pp-mcp"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "cmd", "test-pp-mcp", "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	data, err := os.ReadFile(filepath.Join(result.StagedDir, pipeline.MCPBManifestFilename))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"name": "test-pp-mcp"`)
+}
+
+func TestPublishPackageFailsWhenMCPBManifestCannotBeWritten(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	stubPublishPackageValidation(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "cmd", "test-pp-mcp"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, pipeline.MCPBManifestFilename), 0o755))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
+
+	_, err := runWithCapturedStdout(t, cmd.Execute)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "writing MCPB manifest")
+	_, statErr := os.Stat(target)
+	assert.ErrorIs(t, statErr, os.ErrNotExist)
+	info, err := os.Stat(filepath.Join(cliDir, pipeline.MCPBManifestFilename))
+	require.NoError(t, err)
+	assert.True(t, info.IsDir(), "package must not rewrite the source tree when MCPB emission fails")
+}
+
+func TestPublishPackageRejectsMissingBaseDir(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", t.TempDir(), "--category", "other", "--target", target, "--base-dir", filepath.Join(t.TempDir(), "missing")})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--base-dir")
+	_, statErr := os.Stat(target)
+	assert.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
 func TestPublishPackageStripsRootShipcheckReports(t *testing.T) {
