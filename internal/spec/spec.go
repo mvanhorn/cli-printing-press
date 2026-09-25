@@ -2376,10 +2376,48 @@ type Resource struct {
 	// endpoints. Fixed at generation time. Incompatible with the
 	// proxy-envelope client pattern, which POSTs every request to a
 	// single URL.
-	BaseURL      string              `yaml:"base_url,omitempty" json:"base_url,omitempty"`
-	Tier         string              `yaml:"tier,omitempty" json:"tier,omitempty"`
+	BaseURL string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
+	Tier    string `yaml:"tier,omitempty" json:"tier,omitempty"`
+	// IDField is the default primary-key field for this resource's list
+	// endpoints. Endpoint.IDField wins when that endpoint sets id_field.
+	IDField string `yaml:"id_field,omitempty" json:"id_field,omitempty"`
+	// Syncable is the default sync membership for this resource's endpoints.
+	// Nil means unset. An endpoint that sets syncable wins: true opts into
+	// the default sync set the same way Endpoint.Syncable does, and an
+	// explicit false leaves the profiler heuristic unchanged. Resource-level
+	// false, applied only when the endpoint omits the key, opts the resource
+	// out of the default sync set and the auto-refresh coverage map.
+	Syncable     *bool               `yaml:"syncable,omitempty" json:"syncable,omitempty"`
 	Endpoints    map[string]Endpoint `yaml:"endpoints" json:"endpoints"`
 	SubResources map[string]Resource `yaml:"sub_resources,omitempty" json:"sub_resources,omitempty"`
+}
+
+// EffectiveIDField returns the primary-key field for items this endpoint
+// returns. Endpoint id_field wins when set; otherwise the resource-level
+// id_field is the default.
+func EffectiveIDField(resource Resource, endpoint Endpoint) string {
+	if id := strings.TrimSpace(endpoint.IDField); id != "" {
+		return id
+	}
+	return strings.TrimSpace(resource.IDField)
+}
+
+// EffectiveSyncMembership resolves whether syncable opts an endpoint into or
+// out of the default sync set. An endpoint that sets the key wins and keeps
+// today's meaning: true opts in, explicit false does not force an opt-out.
+// Resource-level syncable applies only when the endpoint omits the key.
+// Resource-level false opts out of the default set and auto-refresh coverage.
+func EffectiveSyncMembership(resource Resource, endpoint Endpoint) (optIn, optOut bool) {
+	if endpoint.SyncableSet || endpoint.Syncable {
+		return endpoint.Syncable, false
+	}
+	if resource.Syncable == nil {
+		return false, false
+	}
+	if *resource.Syncable {
+		return true, false
+	}
+	return false, true
 }
 
 // DefaultResourceDescription returns the parser fallback description for a
@@ -2570,7 +2608,10 @@ type Endpoint struct {
 	// the profiler's safety heuristic would otherwise exclude it for required
 	// path/query params. Use only when the spec supplies those inputs through
 	// defaults, template vars, or another generated runtime mechanism.
-	Syncable bool `yaml:"syncable,omitempty" json:"syncable,omitempty"`
+	// When set, it overrides Resource.Syncable. SyncableSet distinguishes an
+	// explicit false from an omitted key; the bool alone cannot.
+	Syncable    bool `yaml:"syncable,omitempty" json:"syncable,omitempty"`
+	SyncableSet bool `yaml:"-" json:"-"`
 	// Walker, when present, declares this endpoint as a hierarchical child
 	// resource fetched by iterating a named parent. Used when the generator's
 	// path-param dependent-resource auto-detection would miss the link — for
@@ -2635,6 +2676,7 @@ func (e *Endpoint) UnmarshalYAML(value *yaml.Node) error {
 	}
 	*e = Endpoint(out)
 	e.BodySet = bodyNode != nil
+	e.SyncableSet = yamlMappingValue(value, "syncable") != nil
 	return nil
 }
 
@@ -2671,6 +2713,7 @@ func (e *Endpoint) UnmarshalJSON(data []byte) error {
 	}
 	*e = Endpoint(out)
 	e.BodySet = bodySet
+	_, e.SyncableSet = raw["syncable"]
 	return nil
 }
 
@@ -3486,6 +3529,18 @@ func validateRawSpecStructure(data []byte) error {
 		}
 	}
 
+	if resources := mappingValue(root, "resources"); resources != nil {
+		var problems []string
+		unknownResourceMappingFields(resources, "", &problems)
+		if len(problems) == 1 {
+			return fmt.Errorf("spec structural error: %s", problems[0])
+		}
+		if len(problems) > 1 {
+			slices.Sort(problems)
+			return fmt.Errorf("spec structural error: %s", strings.Join(problems, "; "))
+		}
+	}
+
 	types := mappingValue(root, "types")
 	if types == nil || types.Kind != yaml.MappingNode {
 		return nil
@@ -3503,6 +3558,35 @@ func validateRawSpecStructure(data []byte) error {
 		return fmt.Errorf("spec structural error: found resource-shaped entr%s under 'types:' (%s) - resources were likely appended at the wrong indentation level; move them under top-level 'resources:'", pluralSuffix(len(misplaced), "y", "ies"), strings.Join(misplaced, ", "))
 	}
 	return nil
+}
+
+func unknownResourceMappingFields(node *yaml.Node, prefix string, problems *[]string) {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		name := node.Content[i].Value
+		if name == "<<" {
+			continue
+		}
+		value := node.Content[i+1]
+		if value.Kind == yaml.AliasNode {
+			value = value.Alias
+		}
+		if value == nil || value.Kind != yaml.MappingNode {
+			continue
+		}
+		path := name
+		if prefix != "" {
+			path = prefix + "." + name
+		}
+		for _, field := range unknownYAMLFields(value, reflect.TypeFor[Resource]()) {
+			*problems = append(*problems, fmt.Sprintf("resource %q contains unknown field %q", path, field))
+		}
+		if subs := mappingValue(value, "sub_resources"); subs != nil {
+			unknownResourceMappingFields(subs, path, problems)
+		}
+	}
 }
 
 func unknownYAMLFields(node *yaml.Node, structType reflect.Type) []string {

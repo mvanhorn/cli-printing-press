@@ -5208,3 +5208,88 @@ func TestProfiler_DependentTenantScopeKeepsUnscopedNone(t *testing.T) {
 		t.Fatalf("projects.ReconcileMode = %q, want none (unscoped flat sibling when the only TenantScopeColumn is on a dependent)", projects.ReconcileMode)
 	}
 }
+
+func boolPtr(v bool) *bool { return &v }
+
+func TestProfileResourceLevelIDFieldAndSyncable(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "home",
+		Types: map[string]spec.TypeDef{
+			"State": {Fields: []spec.TypeField{
+				{Name: "entity_id", Type: "string"},
+				{Name: "state", Type: "string"},
+			}},
+		},
+		Resources: map[string]spec.Resource{
+			"states": {
+				IDField: "entity_id",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/states",
+						Response: spec.ResponseDef{Type: "array", Item: "State"},
+					},
+				},
+			},
+			"overridden": {
+				IDField:  "entity_id",
+				Syncable: boolPtr(false),
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/overridden",
+						Response:    spec.ResponseDef{Type: "array", Item: "State"},
+						IDField:     "canonical_id",
+						Syncable:    true,
+						SyncableSet: true,
+					},
+				},
+			},
+			"live": {
+				Syncable: boolPtr(false),
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/live",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"forced": {
+				Syncable: boolPtr(true),
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/forced",
+						Response: spec.ResponseDef{Type: "array"},
+						Params:   []spec.Param{{Name: "ids", Type: "array", Required: true}},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+
+	require.Contains(t, byName, "states")
+	assert.Equal(t, "entity_id", byName["states"].IDField)
+	assert.False(t, byName["states"].SkipDefaultSync, "resource id_field supplies the runtime id the default set requires")
+	assert.False(t, byName["states"].SkipAutoRefresh)
+
+	require.Contains(t, byName, "overridden")
+	assert.Equal(t, "canonical_id", byName["overridden"].IDField)
+	assert.False(t, byName["overridden"].SkipDefaultSync, "endpoint syncable true wins over resource syncable false")
+	assert.False(t, byName["overridden"].SkipAutoRefresh)
+
+	require.Contains(t, byName, "live")
+	assert.True(t, byName["live"].SkipDefaultSync)
+	assert.True(t, byName["live"].SkipAutoRefresh)
+
+	require.Contains(t, byName, "forced")
+	assert.False(t, byName["forced"].SkipDefaultSync, "resource syncable true opts into the default set")
+	assert.False(t, byName["forced"].SkipAutoRefresh)
+}
