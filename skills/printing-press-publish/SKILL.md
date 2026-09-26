@@ -549,10 +549,18 @@ marker has them. README-only edits are outside this fingerprint and do not
 invalidate the gate.
 
 If `SKIP_LIVE_TEST_REASON` is unset, run full live dogfood and write a fresh
-acceptance marker into that proofs directory:
+acceptance marker into that proofs directory. Send the raw `--json` transcript
+outside every manuscript tree. It contains API response bodies and absolute
+host paths. `publish package` enforces the same boundary: it omits
+`publish-live-gate*.json`, dogfood result dumps (`dogfood-results*.json`,
+`*-dogfood-results.json`), and `pipeline/` trees, including copies already
+saved under proofs by an earlier dogfood run. It still copies
+`phase5-acceptance.json` and `phase5-skip.json`.
 
 ```bash
-LIVE_GATE_JSON="$PROOFS_DIR/publish-live-gate.json"
+LIVE_GATE_DIR="${TMPDIR:-/tmp}/printing-press-publish"
+mkdir -p "$LIVE_GATE_DIR"
+LIVE_GATE_JSON="$LIVE_GATE_DIR/${API_SLUG}-${RUN_ID}-publish-live-gate.json"
 LIVE_GATE_ARGS=(
   dogfood
   --dir "$CLI_DIR"
