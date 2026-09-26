@@ -32,15 +32,18 @@ func generateLearnStore(t *testing.T, name string, learnEnabled bool) (string, s
 }
 
 // TestLearnSchemaV10_EnabledRetainsCandidateAndEventTables pins the current
-// learn-enabled schema: StoreSchemaVersion stays at the tokenizer pin and
-// still carries the learn_candidates and learn_events tables (with their CHECK
-// constraints and indexes) as additive CREATE IF NOT EXISTS migrations.
+// learn-enabled schema: StoreSchemaVersion advances for the parent-key
+// migration while the tokenizer pin stays put, and the store still carries
+// the learn_candidates and learn_events tables (with their CHECK constraints
+// and indexes) as additive CREATE IF NOT EXISTS migrations.
 func TestLearnSchemaV10_EnabledRetainsCandidateAndEventTables(t *testing.T) {
 	t.Parallel()
 
 	src, _ := generateLearnStore(t, "learn-v10-enabled", true)
 
-	require.Contains(t, src, "const StoreSchemaVersion = 11")
+	require.Contains(t, src, "const StoreSchemaVersion = 12")
+	require.Contains(t, src, "const resourcesFTSTokenizerSchemaVersion = 11")
+	require.Contains(t, src, "migrateParentKeyStorageIDs")
 	require.Contains(t, src, `column: "last_attempt_complete"`)
 	for _, want := range []string{
 		"CREATE TABLE IF NOT EXISTS learn_candidates",
@@ -62,7 +65,8 @@ func TestLearnSchemaV10_EnabledRetainsCandidateAndEventTables(t *testing.T) {
 // resourcesFTSContentSchemaVersion stays 4 in BOTH learn shapes. The old
 // conditional 8 rode the learn bump by accident and forced a full FTS
 // content rewrite on every v4-v7 learn store open. Tokenizer rebuilds use
-// the separate current-version pin, not this content pin.
+// the separate tokenizer pin, not this content pin and not the latest
+// StoreSchemaVersion.
 func TestLearnSchemaV10_FTSContentPinIsUnconditional(t *testing.T) {
 	t.Parallel()
 
@@ -72,9 +76,11 @@ func TestLearnSchemaV10_FTSContentPinIsUnconditional(t *testing.T) {
 
 	disabled, _ := generateLearnStore(t, "learn-v10-fts-disabled", false)
 	require.Contains(t, disabled, "const resourcesFTSContentSchemaVersion = 4")
-	require.Contains(t, disabled, "const StoreSchemaVersion = 6")
+	require.Contains(t, disabled, "const StoreSchemaVersion = 7")
 	require.Contains(t, enabled, "const resourcesFTSTokenizerSchemaVersion = 11")
 	require.Contains(t, disabled, "const resourcesFTSTokenizerSchemaVersion = 6")
+	require.Contains(t, enabled, "migrateParentKeyStorageIDs")
+	require.Contains(t, disabled, "migrateParentKeyStorageIDs")
 	for _, gone := range []string{"learn_candidates", "learn_events"} {
 		require.NotContains(t, disabled, gone,
 			"learn-disabled spec must not emit the %s migration", gone)

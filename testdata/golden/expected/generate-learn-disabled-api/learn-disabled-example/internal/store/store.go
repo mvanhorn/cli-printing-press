@@ -52,11 +52,17 @@ func IsUUID(s string) bool {
 
 // StoreSchemaVersion is the on-disk schema version this binary understands.
 // It is stamped into SQLite's PRAGMA user_version on fresh databases and
-// checked on every open. Non-learn CLIs advance to v6 for the
-// trigram resources_fts rebuild (CJK substring search), on top of v5's
-// explicit latest-sync-attempt completion marker and v4's
-// resources_fts content extraction.
-const StoreSchemaVersion = 6
+// checked on every open. Non-learn CLIs advance to v7 for the parent-key
+// storage-id migration, on top of v6's trigram resources_fts rebuild, v5's
+// latest-sync-attempt completion marker, and v4's resources_fts content
+// extraction.
+const StoreSchemaVersion = 7
+
+// parentKeyStorageIDSchemaVersion tracks StoreSchemaVersion. Re-keying is
+// idempotent, so a later additive bump also sweeps bare rows for resource
+// types added to resourceParentKeyColumns after this migration first
+// shipped. A store with no bare rows is left unchanged.
+const parentKeyStorageIDSchemaVersion = StoreSchemaVersion
 
 // resourcesFTSContentSchemaVersion pins the schema bump that rewrote
 // resources_fts content from raw JSON to searchable leaf values. Keep this
@@ -65,10 +71,12 @@ const StoreSchemaVersion = 6
 // migrations) never trigger an expensive full FTS content rewrite.
 const resourcesFTSContentSchemaVersion = 4
 
-// resourcesFTSTokenizerSchemaVersion pins the schema bump that rebuilt
-// resources_fts with the trigram tokenizer. Learn-enabled stores are
-// already past v4, so this pin must sit at the current StoreSchemaVersion
-// or those stores would skip the rebuild and keep porter tokens.
+// resourcesFTSTokenizerSchemaVersion pins the trigram resources_fts rebuild.
+// It stays at the bump that introduced the tokenizer (v11 learn-enabled, v6
+// otherwise) so later additive migrations do not rebuild FTS. The pin cannot
+// sit at the v4 content-extraction version: learn-enabled stores were already
+// past v4 when the tokenizer landed, and a v4 pin would skip the rebuild and
+// leave porter tokens in place.
 const resourcesFTSTokenizerSchemaVersion = 6
 
 const resourcesFTSCreateSQL = `CREATE VIRTUAL TABLE IF NOT EXISTS resources_fts USING fts5(
@@ -533,6 +541,14 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("migrating resources FTS tokenizer: %w", err)
 			}
 		}
+		// After any FTS rebuild. Those rebuilds index whatever ids are on
+		// disk, including legacy bare keys; this pass then replaces the
+		// rowids that were derived from those keys.
+		if current < parentKeyStorageIDSchemaVersion {
+			if err := s.migrateParentKeyStorageIDs(ctx, conn); err != nil {
+				return fmt.Errorf("migrating parent-key storage ids: %w", err)
+			}
+		}
 		// Stamp the schema version. On a fresh DB this writes the current
 		// StoreSchemaVersion; on an already-stamped DB this is a no-op
 		// write of the same value.
@@ -706,6 +722,213 @@ func rebuildResourcesFTS(ctx context.Context, conn *sql.Conn) error {
 		); err != nil {
 			return fmt.Errorf("indexing resource %s/%s: %w", r.resourceType, r.id, err)
 		}
+	}
+	return nil
+}
+
+// migrateParentKeyStorageIDs re-keys dependent rows written before their
+// resource type entered resourceParentKeyColumns. Those rows use the bare
+// API id; current upserts use "<id>\x00<parent>". When both shapes exist for
+// the same computed storage id, the composite row wins because it is the
+// row current upserts maintain. A bare row whose parent differs from an
+// existing composite row is a different association and is re-keyed, not
+// dropped. Generic resources_fts rowids are ftsRowID(resource, id), so the
+// bare entry is removed and the composite payload is indexed under the new id.
+func (s *Store) migrateParentKeyStorageIDs(ctx context.Context, conn *sql.Conn) error {
+	if len(resourceParentKeyColumns) == 0 {
+		return nil
+	}
+	exists, err := tableExists(ctx, conn, "resources")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	legacy, err := loadParentKeyLegacyRows(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if len(legacy) == 0 {
+		return nil
+	}
+	ftsExists, err := tableExists(ctx, conn, "resources_fts")
+	if err != nil {
+		return err
+	}
+	for _, row := range legacy {
+		if err := applyParentKeyLegacyRow(ctx, conn, row, ftsExists); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type parentKeyLegacyRow struct {
+	id           string
+	resourceType string
+	data         string
+	storageID    string
+}
+
+func loadParentKeyLegacyRows(ctx context.Context, conn *sql.Conn) ([]parentKeyLegacyRow, error) {
+	resourceTypes := make([]string, 0, len(resourceParentKeyColumns))
+	for resourceType := range resourceParentKeyColumns {
+		resourceTypes = append(resourceTypes, resourceType)
+	}
+	sort.Strings(resourceTypes)
+
+	args := make([]any, len(resourceTypes))
+	placeholders := make([]string, len(resourceTypes))
+	for i, resourceType := range resourceTypes {
+		placeholders[i] = "?"
+		args[i] = resourceType
+	}
+	// char(0) is the composite-key separator. Rows that already carry it
+	// are current and must not be rewritten.
+	query := `SELECT id, resource_type, data FROM resources WHERE instr(id, char(0)) = 0 AND resource_type IN (` + strings.Join(placeholders, ", ") + `) ORDER BY resource_type, id`
+	rows, err := conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying parent-key resources: %w", err)
+	}
+
+	var legacy []parentKeyLegacyRow
+	for rows.Next() {
+		var row parentKeyLegacyRow
+		if err := rows.Scan(&row.id, &row.resourceType, &row.data); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scanning parent-key resource: %w", err)
+		}
+		if strings.IndexByte(row.id, 0) >= 0 || len(resourceParentKeyColumns[row.resourceType]) == 0 {
+			continue
+		}
+		obj, err := DecodeJSONObject(json.RawMessage(row.data))
+		if err != nil {
+			continue // malformed legacy JSON cannot be re-keyed safely
+		}
+		row.storageID = resourceStorageID(row.resourceType, row.id, obj)
+		if row.storageID == row.id {
+			continue // no usable parent value in this legacy payload
+		}
+		legacy = append(legacy, row)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("reading parent-key resources: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("closing parent-key resources: %w", err)
+	}
+	return legacy, nil
+}
+
+func applyParentKeyLegacyRow(ctx context.Context, conn *sql.Conn, row parentKeyLegacyRow, ftsExists bool) error {
+	canonicalData := row.data
+	err := conn.QueryRowContext(ctx,
+		`SELECT data FROM resources WHERE resource_type = ? AND id = ?`,
+		row.resourceType, row.storageID,
+	).Scan(&canonicalData)
+	keepComposite := false
+	switch {
+	case err == nil:
+		keepComposite = true
+	case err == sql.ErrNoRows:
+		res, err := conn.ExecContext(ctx,
+			`UPDATE resources SET id = ? WHERE resource_type = ? AND id = ?`,
+			row.storageID, row.resourceType, row.id,
+		)
+		if err != nil {
+			return fmt.Errorf("re-keying resource %s/%s: %w", row.resourceType, row.id, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("re-keying resource %s/%s: %w", row.resourceType, row.id, err)
+		}
+		if n != 1 {
+			return fmt.Errorf("re-keying resource %s/%s changed %d rows", row.resourceType, row.id, n)
+		}
+	default:
+		return fmt.Errorf("checking composite resource %s/%s: %w", row.resourceType, row.id, err)
+	}
+
+	if err := migrateParentKeyTypedID(ctx, conn, row.resourceType, row.id, row.storageID); err != nil {
+		return err
+	}
+	if keepComposite {
+		res, err := conn.ExecContext(ctx,
+			`DELETE FROM resources WHERE resource_type = ? AND id = ?`,
+			row.resourceType, row.id,
+		)
+		if err != nil {
+			return fmt.Errorf("deleting bare resource %s/%s: %w", row.resourceType, row.id, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("deleting bare resource %s/%s: %w", row.resourceType, row.id, err)
+		}
+		if n != 1 {
+			return fmt.Errorf("deleting bare resource %s/%s removed %d rows", row.resourceType, row.id, n)
+		}
+	}
+	if !ftsExists {
+		return nil
+	}
+	return replaceParentKeyResourceFTS(ctx, conn, row.resourceType, row.id, row.storageID, canonicalData)
+}
+
+func replaceParentKeyResourceFTS(ctx context.Context, conn *sql.Conn, resourceType, bareID, storageID, data string) error {
+	if _, err := conn.ExecContext(ctx, `DELETE FROM resources_fts WHERE rowid = ?`, ftsRowID(resourceType, bareID)); err != nil {
+		return fmt.Errorf("deleting bare resource FTS row %s/%s: %w", resourceType, bareID, err)
+	}
+	if _, err := conn.ExecContext(ctx, `DELETE FROM resources_fts WHERE rowid = ?`, ftsRowID(resourceType, storageID)); err != nil {
+		return fmt.Errorf("replacing composite resource FTS row %s/%s: %w", resourceType, storageID, err)
+	}
+	if _, err := conn.ExecContext(ctx,
+		`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, ?, ?, ?)`,
+		ftsRowID(resourceType, storageID), storageID, resourceType,
+		searchableResourceContent(json.RawMessage(data)),
+	); err != nil {
+		return fmt.Errorf("indexing composite resource %s/%s: %w", resourceType, storageID, err)
+	}
+	return nil
+}
+
+// migrateParentKeyTypedID mirrors a generic storage-id transition into the
+// typed projection named by typedListTableByResource. Content-sync FTS
+// triggers on that table follow the content rowid, not ftsRowID, and fire
+// for the UPDATE or DELETE below.
+func migrateParentKeyTypedID(ctx context.Context, conn *sql.Conn, resourceType, bareID, storageID string) error {
+	table, ok := typedListTableByResource[resourceType]
+	if !ok {
+		return nil
+	}
+	if !validIdentifierRE.MatchString(table) {
+		return fmt.Errorf("refusing parent-key migration for unsafe table name %q", table)
+	}
+	return migrateParentKeyTypedTableID(ctx, conn, table, bareID, storageID)
+}
+
+func migrateParentKeyTypedTableID(ctx context.Context, conn *sql.Conn, table, bareID, storageID string) error {
+	quoted := `"` + table + `"`
+	var compositeCount int
+	if err := conn.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE id = ?`, quoted), storageID,
+	).Scan(&compositeCount); err != nil {
+		return fmt.Errorf("checking typed composite row %s/%s: %w", table, storageID, err)
+	}
+	if compositeCount > 0 {
+		if _, err := conn.ExecContext(ctx,
+			fmt.Sprintf(`DELETE FROM %s WHERE id = ?`, quoted), bareID,
+		); err != nil {
+			return fmt.Errorf("deleting typed bare row %s/%s: %w", table, bareID, err)
+		}
+		return nil
+	}
+	if _, err := conn.ExecContext(ctx,
+		fmt.Sprintf(`UPDATE %s SET id = ? WHERE id = ?`, quoted), storageID, bareID,
+	); err != nil {
+		return fmt.Errorf("re-keying typed row %s/%s: %w", table, bareID, err)
 	}
 	return nil
 }
