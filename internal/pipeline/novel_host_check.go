@@ -99,8 +99,8 @@ func dnsNovelHostResolver(ctx context.Context, host string) error {
 	return nil
 }
 
-// RejectUnverifiedNovelHosts fails generation when a novel-feature payload
-// or hand-written novel command declares a host research never observed.
+// Dry-run dogfood prints novel-feature URLs and never contacts them, so an
+// invented host must fail generation or it ships in the printed CLI.
 func RejectUnverifiedNovelHosts(in NovelHostInput) error {
 	findings := unverifiedNovelHosts(in)
 	if len(findings) == 0 {

@@ -796,8 +796,9 @@ func (b *binder) bindDefine(name string, typ goTypeRef, at, from, scopeEnd token
 	b.add(name, typ, from, scopeEnd, depth)
 }
 
-// knownResult reports whether typ can be followed to a method. A call counts
-// only when the selected result resolves to a usable type.
+// A call's recorded type is only a placeholder until the selected result
+// resolves. Treating an unresolved result as a binding would replace the
+// in-scope type, and a later method walk would miss the hosts on that value.
 func (b *binder) knownResult(typ goTypeRef) bool {
 	if !typ.usable() {
 		return false
