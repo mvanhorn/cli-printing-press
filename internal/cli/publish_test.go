@@ -1402,6 +1402,83 @@ func TestPublishPackageIncludesManuscripts(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(result.StagedDir, ".manuscripts", "stale-run", "discovery", "stale-capture.har"))
 }
 
+func TestPublishPackageOmitsLiveDogfoodTranscripts(t *testing.T) {
+	const leak = "/Users/operator/printing-press/library/example"
+	transcript := []byte(`{"dir":"` + leak + `","output_sample":"account balance"}` + "\n")
+
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	stubPublishPackageValidation(t)
+
+	runID := "20260329-100000"
+	setPublishableTestRunID(t, cliDir, runID)
+	runDir := filepath.Join(home, "manuscripts", "test", runID)
+	proofsDir := filepath.Join(runDir, "proofs")
+	require.NoError(t, os.MkdirAll(filepath.Join(runDir, "research"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(runDir, "pipeline"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(runDir, "research", "brief.md"), []byte("# Research Brief\n"), 0o644))
+	writeTestPhase5GateMarker(t, proofsDir, pipeline.Phase5AcceptanceFilename, pipeline.Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         runID,
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		AuthContext:   pipeline.Phase5AuthContext{Type: "none"},
+	})
+	writeTestPhase5GateMarker(t, proofsDir, pipeline.Phase5SkipFilename, pipeline.Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         runID,
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    "auth_required_no_credential",
+		AuthContext:   pipeline.Phase5AuthContext{Type: "none"},
+	})
+	require.NoError(t, os.WriteFile(filepath.Join(proofsDir, "publish-live-gate.json"), transcript, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(proofsDir, "test-20260329-100000-publish-live-gate.json"), transcript, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(proofsDir, "20260829T160251Z-dogfood-results.json"), transcript, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(runDir, "pipeline", "state.json"), []byte(`{"binary":"`+leak+`/bin"}`+"\n"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.True(t, result.ManuscriptsIncluded)
+	staged := filepath.Join(result.StagedDir, ".manuscripts", runID)
+	assert.FileExists(t, filepath.Join(staged, "research", "brief.md"))
+	assert.FileExists(t, filepath.Join(staged, "proofs", pipeline.Phase5AcceptanceFilename))
+	assert.FileExists(t, filepath.Join(staged, "proofs", pipeline.Phase5SkipFilename))
+	assert.NoFileExists(t, filepath.Join(staged, "proofs", "publish-live-gate.json"))
+	assert.NoFileExists(t, filepath.Join(staged, "proofs", "test-20260329-100000-publish-live-gate.json"))
+	assert.NoFileExists(t, filepath.Join(staged, "proofs", "20260829T160251Z-dogfood-results.json"))
+	assert.NoDirExists(t, filepath.Join(staged, "pipeline"))
+
+	var leaked []string
+	walkErr := filepath.WalkDir(result.StagedDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(data), leak) {
+			leaked = append(leaked, path)
+		}
+		return nil
+	})
+	require.NoError(t, walkErr)
+	assert.Empty(t, leaked)
+}
+
 func TestPublishPackageUsesManifestRunInsteadOfNewerArchive(t *testing.T) {
 	home := setLibraryTestEnv(t)
 	cliDir := filepath.Join(home, "library", "test-pp-cli")

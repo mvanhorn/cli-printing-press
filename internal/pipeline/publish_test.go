@@ -508,6 +508,80 @@ func TestCopyPublishableManuscriptDirCanIncludeRawBrowserSniffCaptures(t *testin
 	assert.NoFileExists(t, filepath.Join(dst, "large-authored-artifact.bin"))
 }
 
+func TestCopyPublishableManuscriptDirOmitsLiveDogfoodTranscripts(t *testing.T) {
+	const leak = "/Users/operator/printing-press/library/example"
+	transcript := []byte(`{"dir":"` + leak + `","output_sample":"balance 12.00"}` + "\n")
+
+	src := filepath.Join(t.TempDir(), "src")
+	proofs := filepath.Join(src, "proofs")
+	pipelineDir := filepath.Join(src, "pipeline", "nested")
+	require.NoError(t, os.MkdirAll(proofs, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "research"), 0o755))
+	require.NoError(t, os.MkdirAll(pipelineDir, 0o755))
+
+	require.NoError(t, os.WriteFile(filepath.Join(src, "research", "brief.md"), []byte("# brief\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(proofs, "shipcheck.md"), []byte("# shipcheck\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(proofs, Phase5AcceptanceFilename), []byte(`{"status":"pass"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(proofs, Phase5SkipFilename), []byte(`{"status":"skip"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(proofs, "publish-live-gate.json"), transcript, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(proofs, "publish-live-gate-rerun.json"), transcript, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(proofs, "acme-20260329-100000-publish-live-gate.json"), transcript, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(proofs, "dogfood-results.json"), transcript, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(proofs, "dogfood-results-v2.json"), transcript, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(proofs, "20260829T160251Z-dogfood-results.json"), transcript, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(proofs, "Dogfood-Results.JSON"), transcript, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(pipelineDir, "dogfood-results.json"), transcript, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "pipeline", "state.json"), []byte(`{"dir":"`+leak+`"}`+"\n"), 0o644))
+	require.NoError(t, os.Symlink("publish-live-gate.json", filepath.Join(proofs, "gate-alias.txt")))
+	require.NoError(t, os.Symlink("pipeline", filepath.Join(src, "pipeline-link")))
+
+	assertCopied := func(t *testing.T, dst string) {
+		t.Helper()
+		assert.FileExists(t, filepath.Join(dst, "research", "brief.md"))
+		assert.FileExists(t, filepath.Join(dst, "proofs", "shipcheck.md"))
+		assert.FileExists(t, filepath.Join(dst, "proofs", Phase5AcceptanceFilename))
+		assert.FileExists(t, filepath.Join(dst, "proofs", Phase5SkipFilename))
+		assert.NoFileExists(t, filepath.Join(dst, "proofs", "publish-live-gate.json"))
+		assert.NoFileExists(t, filepath.Join(dst, "proofs", "publish-live-gate-rerun.json"))
+		assert.NoFileExists(t, filepath.Join(dst, "proofs", "acme-20260329-100000-publish-live-gate.json"))
+		assert.NoFileExists(t, filepath.Join(dst, "proofs", "dogfood-results.json"))
+		assert.NoFileExists(t, filepath.Join(dst, "proofs", "dogfood-results-v2.json"))
+		assert.NoFileExists(t, filepath.Join(dst, "proofs", "20260829T160251Z-dogfood-results.json"))
+		assert.NoFileExists(t, filepath.Join(dst, "proofs", "Dogfood-Results.JSON"))
+		assert.NoFileExists(t, filepath.Join(dst, "proofs", "gate-alias.txt"))
+		assert.NoDirExists(t, filepath.Join(dst, "pipeline"))
+		assert.NoFileExists(t, filepath.Join(dst, "pipeline", "state.json"))
+		assert.NoFileExists(t, filepath.Join(dst, "pipeline", "nested", "dogfood-results.json"))
+		_, err := os.Lstat(filepath.Join(dst, "pipeline-link"))
+		assert.ErrorIs(t, err, os.ErrNotExist)
+
+		var leaked []string
+		walkErr := filepath.WalkDir(dst, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			if strings.Contains(string(data), leak) {
+				leaked = append(leaked, path)
+			}
+			return nil
+		})
+		require.NoError(t, walkErr)
+		assert.Empty(t, leaked)
+	}
+
+	dst := filepath.Join(t.TempDir(), "dst")
+	require.NoError(t, CopyPublishableManuscriptDir(src, dst))
+	assertCopied(t, dst)
+
+	included := filepath.Join(t.TempDir(), "included")
+	require.NoError(t, CopyPublishableManuscriptDirWithOptions(src, included, PublishableManuscriptCopyOptions{IncludeRawCaptures: true}))
+	assertCopied(t, included)
+}
+
 // publishManifestEnvSetup wires PRINTING_PRESS_HOME/SCOPE/REPO_ROOT to a temp dir
 // so RunRoot()/PipelineDir()/PublishedLibraryRoot() resolve under the test sandbox.
 // Returns the temp root and a state seeded with the given run ID.

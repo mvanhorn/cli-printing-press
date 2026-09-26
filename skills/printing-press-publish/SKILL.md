@@ -549,10 +549,21 @@ marker has them. README-only edits are outside this fingerprint and do not
 invalidate the gate.
 
 If `SKIP_LIVE_TEST_REASON` is unset, run full live dogfood and write a fresh
-acceptance marker into that proofs directory:
+acceptance marker into that proofs directory. Send the raw `--json` transcript
+to a private temporary directory outside every manuscript tree. It contains
+API response bodies and absolute host paths. `mktemp -d` creates that directory
+mode `0700`; the transcript file is mode `0600`. After the gate, delete the
+directory: on failure, print the failing commands first, then delete it; on
+success, delete it before continuing. `publish package` enforces the same
+boundary: it omits `publish-live-gate*.json`, `*-publish-live-gate.json`,
+dogfood result dumps (`dogfood-results*.json`, `*-dogfood-results.json`), and
+`pipeline/` trees, including copies already saved under proofs by an earlier
+dogfood run. It still copies `phase5-acceptance.json` and `phase5-skip.json`.
 
 ```bash
-LIVE_GATE_JSON="$PROOFS_DIR/publish-live-gate.json"
+LIVE_GATE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/printing-press-publish.XXXXXX")
+chmod 700 "$LIVE_GATE_DIR"
+LIVE_GATE_JSON="$LIVE_GATE_DIR/${API_SLUG}-${RUN_ID}-publish-live-gate.json"
 LIVE_GATE_ARGS=(
   dogfood
   --dir "$CLI_DIR"
@@ -568,11 +579,20 @@ if [ -n "$AUTH_ENV" ]; then
 fi
 
 rm -f "$PROOFS_DIR/phase5-skip.json"
-if ! "$PRINTING_PRESS_BIN" "${LIVE_GATE_ARGS[@]}" >"$LIVE_GATE_JSON"; then
-  echo "Publish live gate failed. See $LIVE_GATE_JSON and $PROOFS_DIR/phase5-acceptance.json."
+if ! (
+  umask 077
+  set +e
+  "$PRINTING_PRESS_BIN" "${LIVE_GATE_ARGS[@]}" >"$LIVE_GATE_JSON"
+  live_gate_status=$?
+  chmod 600 "$LIVE_GATE_JSON" 2>/dev/null || true
+  exit "$live_gate_status"
+); then
+  echo "Publish live gate failed. See $PROOFS_DIR/phase5-acceptance.json."
   jq -r '.tests[]? | select(.status == "fail") | "- \(.command) [\(.kind)]: \(.reason // "failed")"' "$LIVE_GATE_JSON" 2>/dev/null || true
+  rm -rf "$LIVE_GATE_DIR"
   exit 1
 fi
+rm -rf "$LIVE_GATE_DIR"
 ```
 
 On failure, stop exactly like Step 4's `passed: false`: no managed clone, no

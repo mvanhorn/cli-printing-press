@@ -662,6 +662,9 @@ type PublishableManuscriptCopyOptions struct {
 // CopyPublishableManuscriptDir copies manuscript artifacts that may be bundled
 // into published CLIs. Raw browser-sniff captures stay in local runstate by
 // default because they can carry cookies, session identifiers, and PII.
+// Live-dogfood transcripts and pipeline runstate are always omitted: they
+// carry API response bodies and absolute host paths, and IncludeRawCaptures
+// does not opt them back in. Phase 5 acceptance and skip markers stay.
 func CopyPublishableManuscriptDir(src, dst string) error {
 	return CopyPublishableManuscriptDirWithOptions(src, dst, PublishableManuscriptCopyOptions{})
 }
@@ -689,6 +692,12 @@ func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo, opts Pub
 	if strings.HasSuffix(strings.ToLower(filepath.Base(path)), ".pre-pii-scrub") {
 		return true
 	}
+	// Live transcripts and pipeline runstate carry response bodies and host
+	// paths. This check stays ahead of IncludeRawCaptures so that flag remains
+	// limited to browser-sniff evidence. Phase 5 marker filenames stay copyable.
+	if isManuscriptPipelineRunstate(path, info) || isRawLiveDogfoodTranscript(filepath.Base(path)) {
+		return true
+	}
 	if opts.IncludeRawCaptures {
 		return false
 	}
@@ -697,6 +706,31 @@ func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo, opts Pub
 	}
 	if strings.EqualFold(filepath.Ext(path), ".har") {
 		return true
+	}
+	return false
+}
+
+func isManuscriptPipelineRunstate(path string, info fs.FileInfo) bool {
+	if !strings.EqualFold(filepath.Base(path), "pipeline") {
+		return false
+	}
+	// A symlink named pipeline is not a directory until followed. Skipping
+	// the link avoids copying a pointer at the runstate tree.
+	return info.IsDir() || info.Mode()&fs.ModeSymlink != 0
+}
+
+func isRawLiveDogfoodTranscript(name string) bool {
+	name = strings.ToLower(name)
+	for _, pattern := range []string{
+		"publish-live-gate*.json",
+		"*-publish-live-gate.json",
+		"dogfood-results*.json",
+		"*-dogfood-results.json",
+	} {
+		matched, err := filepath.Match(pattern, name)
+		if err == nil && matched {
+			return true
+		}
 	}
 	return false
 }
