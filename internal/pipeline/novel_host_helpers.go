@@ -74,13 +74,15 @@ type srcRef struct {
 
 // goTypeRef is a named type, or a call whose result type is resolved later.
 // An empty importPath means the type is in the package being resolved.
+// A zero resultIndex keeps a call on its first result.
 type goTypeRef struct {
-	name       string
-	importPath string
-	callName   string
-	callImport string
-	callRecv   string
-	fields     map[string]goTypeRef
+	name        string
+	importPath  string
+	callName    string
+	callImport  string
+	callRecv    string
+	resultIndex int
+	fields      map[string]goTypeRef
 }
 
 type helperReach struct {
@@ -558,7 +560,7 @@ func concreteType(cliDir, module string, pkg *goSourcePkg, t goTypeRef, cache ma
 	if fn == nil {
 		return goTypeRef{}
 	}
-	rt := funcResultType(fn, aliases)
+	rt := funcResultAt(fn, aliases, t.resultIndex)
 	if rt.name != "" && rt.importPath == "" {
 		rt.importPath = t.callImport
 	}
@@ -593,15 +595,26 @@ func callFunc(pkg *goSourcePkg, t goTypeRef) (*ast.FuncDecl, map[string]string) 
 	return fn, importAliases(sym.file.file)
 }
 
-func funcResultType(fn *ast.FuncDecl, aliases map[string]string) goTypeRef {
-	if fn == nil || fn.Type == nil || fn.Type.Results == nil || len(fn.Type.Results.List) == 0 {
+func funcResultAt(fn *ast.FuncDecl, aliases map[string]string, index int) goTypeRef {
+	if fn == nil || fn.Type == nil || fn.Type.Results == nil || index < 0 {
 		return goTypeRef{}
 	}
-	t, ok := typeOf(fn.Type.Results.List[0].Type, aliases)
-	if !ok {
-		return goTypeRef{}
+	at := 0
+	for _, field := range fn.Type.Results.List {
+		n := len(field.Names)
+		if n == 0 {
+			n = 1
+		}
+		if index < at+n {
+			t, ok := typeOf(field.Type, aliases)
+			if !ok {
+				return goTypeRef{}
+			}
+			return t
+		}
+		at += n
 	}
-	return t
+	return goTypeRef{}
 }
 
 // A binding covers positions from the end of its declaration through the end
@@ -755,10 +768,12 @@ func (b *binder) bindAssign(stmt *ast.AssignStmt, from, scopeEnd token.Pos, dept
 			typ = types[i]
 		}
 		if define {
-			b.add(id.Name, typ, from, scopeEnd, depth)
+			b.bindDefine(id.Name, typ, id.Pos(), from, scopeEnd, depth)
 			continue
 		}
-		if !typ.usable() {
+		// An unresolved call is not a type. Replacing the binding with it
+		// would hide the name already in scope.
+		if !b.knownResult(typ) {
 			continue
 		}
 		site, ok := b.best(id.Pos(), id.Name)
@@ -769,10 +784,48 @@ func (b *binder) bindAssign(stmt *ast.AssignStmt, from, scopeEnd token.Pos, dept
 	}
 }
 
+// Go redeclaration does not change a name's type, so an unusable result must
+// not replace a same-block binding. A new name with no usable type is still
+// recorded so an outer name is not used in an inner scope.
+func (b *binder) bindDefine(name string, typ goTypeRef, at, from, scopeEnd token.Pos, depth int) {
+	if !b.knownResult(typ) {
+		if site, ok := b.best(at, name); ok && site.depth == depth && site.typ.usable() {
+			return
+		}
+	}
+	b.add(name, typ, from, scopeEnd, depth)
+}
+
+// knownResult reports whether typ can be followed to a method. A call counts
+// only when the selected result resolves to a usable type.
+func (b *binder) knownResult(typ goTypeRef) bool {
+	if !typ.usable() {
+		return false
+	}
+	if typ.callName == "" {
+		return true
+	}
+	if b == nil || b.env == nil || b.env.pkg == nil {
+		return false
+	}
+	if typ.callImport != "" && b.env.cache == nil {
+		return false
+	}
+	return concreteType(b.env.cliDir, b.env.module, b.env.pkg, typ, b.env.cache).usable()
+}
+
 func assignTypes(b *binder, stmt *ast.AssignStmt) []goTypeRef {
 	out := make([]goTypeRef, len(stmt.Lhs))
 	if len(stmt.Rhs) == 1 {
-		out[0] = valueType(stmt.Rhs[0], b)
+		base := valueType(stmt.Rhs[0], b)
+		if base.callName != "" && len(out) > 1 {
+			for i := range out {
+				out[i] = base
+				out[i].resultIndex = i
+			}
+			return out
+		}
+		out[0] = base
 		return out
 	}
 	if len(stmt.Rhs) != len(stmt.Lhs) {

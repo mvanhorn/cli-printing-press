@@ -673,6 +673,143 @@ func (localClient) Manifest() string {
 	}
 }
 
+func TestShortDeclMultiResultKeepsClientType(t *testing.T) {
+	const playbackSrc = `package playback
+
+type Client struct{}
+
+func New() *Client { return &Client{} }
+
+func (Client) Manifest() string {
+	return "https://edge.indazn.com/v5/live.mpd"
+}
+`
+	const unrelatedSrc = `package cli
+
+type localClient struct{}
+
+func (localClient) Manifest() string {
+	return "https://unrelated.example.test/help"
+}
+`
+	tests := []struct {
+		name      string
+		body      string
+		wantHosts map[string]string
+	}{
+		{
+			name: "second result",
+			body: `
+func acquire() (error, *playback.Client) {
+	return nil, nil
+}
+
+func newPlayCmd() {
+	err, client := acquire()
+	_ = err
+	_ = client.Manifest()
+}
+`,
+			wantHosts: map[string]string{
+				"edge.indazn.com": "internal/playback/client.go",
+			},
+		},
+		{
+			name: "method second result",
+			body: `
+type rootFlags struct{}
+
+func (f *rootFlags) acquire() (error, *playback.Client) {
+	return nil, nil
+}
+
+func newPlayCmd(flags *rootFlags) {
+	err, client := flags.acquire()
+	_ = err
+	_ = client.Manifest()
+}
+`,
+			wantHosts: map[string]string{
+				"edge.indazn.com": "internal/playback/client.go",
+			},
+		},
+		{
+			name: "redeclared second result",
+			body: `
+func newPlayCmd() {
+	client := playback.New()
+	err, client := missing()
+	_ = err
+	_ = client.Manifest()
+}
+`,
+			wantHosts: map[string]string{
+				"edge.indazn.com": "internal/playback/client.go",
+			},
+		},
+		{
+			name: "reassigned second result",
+			body: `
+func newPlayCmd() {
+	client := playback.New()
+	var err error
+	err, client = missing()
+	_ = err
+	_ = client.Manifest()
+}
+`,
+			wantHosts: map[string]string{
+				"edge.indazn.com": "internal/playback/client.go",
+			},
+		},
+		{
+			name: "inner second result",
+			body: `
+func acquireLocal() (error, *localClient) {
+	return nil, nil
+}
+
+func newPlayCmd() {
+	client := playback.New()
+	if true {
+		err, client := acquireLocal()
+		_ = err
+		_ = client.Manifest()
+	}
+}
+`,
+			wantHosts: map[string]string{
+				"unrelated.example.test": "catalog.go",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			play := "package cli\n\nimport \"example.com/demo/internal/playback\"\n" + tt.body + "\n// Use: \"play\"\n"
+			cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+				"play.go":    play,
+				"catalog.go": unrelatedSrc,
+			}, []NovelFeature{{
+				Name:    "Play",
+				Command: "play",
+			}})
+			playbackDir := filepath.Join(cliDir, "internal", "playback")
+			require.NoError(t, os.MkdirAll(playbackDir, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(playbackDir, "client.go"), []byte(playbackSrc), 0o644))
+
+			got := checkReimplementation(cliDir, researchDir)
+			require.Len(t, got.UnverifiedHosts, len(tt.wantHosts), "hosts: %#v", got.UnverifiedHosts)
+			gotHosts := map[string]string{}
+			for _, finding := range got.UnverifiedHosts {
+				gotHosts[finding.Host] = finding.File
+				assert.Equal(t, "play", finding.Command)
+				assert.NotZero(t, finding.Line)
+			}
+			assert.Equal(t, tt.wantHosts, gotHosts)
+		})
+	}
+}
+
 func TestUnrelatedGoFileDoesNotFailNovelHostGate(t *testing.T) {
 	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
 		"play.go":    "package cli\n\nfunc newPlayCmd() {}\n\n// Use: \"play\"\n",
