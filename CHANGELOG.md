@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.32.6](https://github.com/mvanhorn/cli-printing-press/compare/v4.32.5...v4.32.6) (2026-09-26)
+
+
+### Bug Fixes
+
+* **cli:** reject novel features with unverified hosts ([#4804](https://github.com/mvanhorn/cli-printing-press/issues/4804)) ([68979a6](https://github.com/mvanhorn/cli-printing-press/commit/68979a6d8f9ea4f161aa1f3a9f6897154dd8e83f))
+
 ## [4.32.5](https://github.com/mvanhorn/cli-printing-press/compare/v4.32.4...v4.32.5) (2026-09-25)
 
 
