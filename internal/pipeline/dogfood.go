@@ -387,7 +387,11 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	report.WiringCheck = checkWiring(dir)
 	report.NovelFeaturesCheck = checkNovelFeaturesOpts(dir, cfg.researchDir, cfg.overwriteCommandMirror)
 	report.MCPSurfaceParityCheck = checkMCPSurfaceParity(dir)
-	report.ReimplementationCheck = checkReimplementation(dir, cfg.researchDir)
+	specPaths := []string{}
+	if specPath != "" {
+		specPaths = []string{specPath}
+	}
+	report.ReimplementationCheck = checkReimplementationWithHostGate(dir, cfg.researchDir, specPaths, dnsNovelHostResolver)
 	if drift := checkDescriptionDrift(dir, cfg.researchDir); shouldReportDescriptionDrift(drift) {
 		report.DescriptionDriftCheck = &drift
 	}
@@ -2706,6 +2710,9 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	{DogfoodVerdictFail, func(r *DogfoodReport, _ bool) bool {
 		return len(r.ReimplementationCheck.AuthGetenv) > 0
 	}},
+	{DogfoodVerdictFail, func(r *DogfoodReport, _ bool) bool {
+		return len(r.ReimplementationCheck.UnverifiedHosts) > 0
+	}},
 	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 1 && r.DeadFlags.Dead <= 2 }},
 	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return r.DeadFuncs.Dead >= 1 }},
 	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return !r.IsDeviceCLI && !r.PipelineCheck.SyncCallsDomain }},
@@ -2854,6 +2861,19 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 		issues = append(issues, fmt.Sprintf("%d/%d novel features missing data-source strategy: %s",
 			len(report.ReimplementationCheck.MissingDataSourceStrategy),
 			report.ReimplementationCheck.Checked,
+			strings.Join(parts, "; ")))
+	}
+	if len(report.ReimplementationCheck.UnverifiedHosts) > 0 {
+		parts := make([]string, 0, len(report.ReimplementationCheck.UnverifiedHosts))
+		for _, f := range report.ReimplementationCheck.UnverifiedHosts {
+			where := f.File
+			if f.Line > 0 {
+				where = fmt.Sprintf("%s:%d", f.File, f.Line)
+			}
+			parts = append(parts, fmt.Sprintf("%s (%s) — %s", f.Command, where, f.Reason))
+		}
+		issues = append(issues, fmt.Sprintf("%d novel feature host(s) are not in research artifacts: %s",
+			len(report.ReimplementationCheck.UnverifiedHosts),
 			strings.Join(parts, "; ")))
 	}
 	if len(report.ReimplementationCheck.AuthGetenv) > 0 {

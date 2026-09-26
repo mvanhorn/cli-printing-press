@@ -72,6 +72,10 @@ type ReimplementationCheckResult struct {
 	// Direct auth environment reads miss credentials saved by auth login
 	// or auth set-token; endpoint commands use config.Load + AuthHeader().
 	AuthGetenv []ReimplementationFinding `json:"auth_getenv,omitempty"`
+	// UnverifiedHosts are absolute hosts declared by a novel feature that
+	// never appear in research artifacts (OpenAPI servers, sniff samples,
+	// or a documented URL list). Dry-run success does not clear them.
+	UnverifiedHosts []ReimplementationFinding `json:"unverified_hosts,omitempty"`
 	// Skipped is true when the check could not run (no research dir, no
 	// novel features, no matchable files).
 	Skipped bool `json:"skipped,omitempty"`
@@ -84,6 +88,8 @@ type ReimplementationFinding struct {
 	Command string `json:"command"`
 	File    string `json:"file"`
 	Reason  string `json:"reason"`
+	Line    int    `json:"line,omitempty"`
+	Host    string `json:"host,omitempty"`
 }
 
 // The primitive store/client signals stay regex-based because they are broad
@@ -171,6 +177,14 @@ var (
 // check returns Skipped. This mirrors the behavior of checkNovelFeatures:
 // if there is nothing planned, there is nothing to validate.
 func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResult {
+	return checkReimplementationWithHostGate(cliDir, researchDir, nil, nil)
+}
+
+// checkReimplementationWithHostGate runs the reimplementation scan and
+// attaches novel-host findings once, using the caller's spec paths and
+// resolver. Dogfood passes the resolved spec and DNS lookup here so the
+// gate is not scanned a second time.
+func checkReimplementationWithHostGate(cliDir, researchDir string, specPaths []string, resolve NovelHostResolver) ReimplementationCheckResult {
 	if researchDir == "" {
 		return ReimplementationCheckResult{Skipped: true}
 	}
@@ -182,7 +196,7 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 	cliFilesDir := filepath.Join(cliDir, "internal", "cli")
 	entries, err := os.ReadDir(cliFilesDir)
 	if err != nil {
-		return ReimplementationCheckResult{Skipped: true}
+		return attachNovelHostFindings(ReimplementationCheckResult{Skipped: true}, cliDir, researchDir, specPaths, resolve)
 	}
 
 	// Build a quick index: leaf command name -> candidate file paths.
@@ -277,6 +291,19 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 		result.Skipped = true
 	}
 
+	return attachNovelHostFindings(result, cliDir, researchDir, specPaths, resolve)
+}
+
+func attachNovelHostFindings(result ReimplementationCheckResult, cliDir, researchDir string, specPaths []string, resolve NovelHostResolver) ReimplementationCheckResult {
+	result.UnverifiedHosts = unverifiedNovelHosts(NovelHostInput{
+		CLIDir:      cliDir,
+		ResearchDir: researchDir,
+		SpecPaths:   specPaths,
+		Resolve:     resolve,
+	})
+	if len(result.UnverifiedHosts) > 0 {
+		result.Skipped = false
+	}
 	return result
 }
 
