@@ -723,6 +723,7 @@ func isRawLiveDogfoodTranscript(name string) bool {
 	name = strings.ToLower(name)
 	for _, pattern := range []string{
 		"publish-live-gate*.json",
+		"*-publish-live-gate.json",
 		"dogfood-results*.json",
 		"*-dogfood-results.json",
 	} {

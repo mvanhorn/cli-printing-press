@@ -1438,6 +1438,7 @@ func TestPublishPackageOmitsLiveDogfoodTranscripts(t *testing.T) {
 		AuthContext:   pipeline.Phase5AuthContext{Type: "none"},
 	})
 	require.NoError(t, os.WriteFile(filepath.Join(proofsDir, "publish-live-gate.json"), transcript, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(proofsDir, "test-20260329-100000-publish-live-gate.json"), transcript, 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(proofsDir, "20260829T160251Z-dogfood-results.json"), transcript, 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(runDir, "pipeline", "state.json"), []byte(`{"binary":"`+leak+`/bin"}`+"\n"), 0o644))
 
@@ -1456,6 +1457,7 @@ func TestPublishPackageOmitsLiveDogfoodTranscripts(t *testing.T) {
 	assert.FileExists(t, filepath.Join(staged, "proofs", pipeline.Phase5AcceptanceFilename))
 	assert.FileExists(t, filepath.Join(staged, "proofs", pipeline.Phase5SkipFilename))
 	assert.NoFileExists(t, filepath.Join(staged, "proofs", "publish-live-gate.json"))
+	assert.NoFileExists(t, filepath.Join(staged, "proofs", "test-20260329-100000-publish-live-gate.json"))
 	assert.NoFileExists(t, filepath.Join(staged, "proofs", "20260829T160251Z-dogfood-results.json"))
 	assert.NoDirExists(t, filepath.Join(staged, "pipeline"))
 
