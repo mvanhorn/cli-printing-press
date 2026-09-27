@@ -190,9 +190,11 @@ type DeadCodeResult struct {
 
 type PipelineResult struct {
 	SyncCallsDomain      bool   `json:"sync_calls_domain"`
+	SyncCallsGeneric     bool   `json:"sync_calls_generic,omitempty"`
 	SearchCallsDomain    bool   `json:"search_calls_domain"`
 	DomainTables         int    `json:"domain_tables"`
 	SyncFileEmitted      bool   `json:"sync_file_emitted"`
+	SyncFileReadError    bool   `json:"sync_file_read_error,omitempty"`
 	SyncResourcesPresent bool   `json:"sync_resources_present"`
 	Detail               string `json:"detail"`
 }
@@ -2512,7 +2514,7 @@ func checkPipelineIntegrity(dir string) PipelineResult {
 		Detail: "sync/search/store files not found",
 	}
 
-	syncData, _ := os.ReadFile(filepath.Join(dir, "internal", "cli", "sync.go"))
+	syncData, syncReadErr := os.ReadFile(filepath.Join(dir, "internal", "cli", "sync.go"))
 	searchData, _ := os.ReadFile(filepath.Join(dir, "internal", "cli", "search.go"))
 	storeData, _ := os.ReadFile(filepath.Join(dir, "internal", "store", "store.go"))
 
@@ -2524,19 +2526,25 @@ func checkPipelineIntegrity(dir string) PipelineResult {
 	domainSearchRe := regexp.MustCompile(`\.Search[A-Z]\w*\s*\(`)
 
 	result.SyncCallsDomain = domainUpsertRe.MatchString(syncSource)
+	result.SyncCallsGeneric = !result.SyncCallsDomain && strings.Contains(syncSource, ".Upsert(")
 	result.SearchCallsDomain = domainSearchRe.MatchString(searchSource)
 	result.DomainTables = countDomainTables(storeSource)
-	result.SyncFileEmitted = syncSource != ""
-	result.SyncResourcesPresent = hasPopulatedSyncResources(syncSource)
+	result.SyncFileReadError = syncReadErr != nil && !errors.Is(syncReadErr, os.ErrNotExist)
+	result.SyncFileEmitted = syncReadErr == nil || result.SyncFileReadError
+	result.SyncResourcesPresent = !result.SyncFileReadError && hasPopulatedSyncResources(syncSource)
 
 	var parts []string
-	switch {
-	case result.SyncCallsDomain:
-		parts = append(parts, "sync uses domain-specific Upsert methods")
-	case strings.Contains(syncSource, ".Upsert("):
-		parts = append(parts, "sync uses generic Upsert only")
-	default:
-		parts = append(parts, "sync Upsert calls not found")
+	if result.SyncFileEmitted {
+		switch {
+		case result.SyncFileReadError:
+			parts = append(parts, "sync.go could not be read")
+		case result.SyncCallsDomain:
+			parts = append(parts, "sync uses domain-specific Upsert methods")
+		case result.SyncCallsGeneric:
+			parts = append(parts, "sync uses generic Upsert only")
+		default:
+			parts = append(parts, "sync Upsert calls not found")
+		}
 	}
 
 	switch {
@@ -2556,7 +2564,7 @@ func checkPipelineIntegrity(dir string) PipelineResult {
 	// the sync command is a no-op at runtime. Store-dependent novel commands
 	// (cookbook, pantry, top-rated, …) then ship with no advertised path to
 	// populate the store. Flag so the absence surfaces at shipcheck time.
-	if syncSource != "" && !result.SyncResourcesPresent {
+	if result.SyncFileEmitted && !result.SyncFileReadError && !result.SyncResourcesPresent {
 		parts = append(parts, "defaultSyncResources empty (sync command is a no-op)")
 	}
 
@@ -2715,7 +2723,9 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	}},
 	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 1 && r.DeadFlags.Dead <= 2 }},
 	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return r.DeadFuncs.Dead >= 1 }},
-	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return !r.IsDeviceCLI && !r.PipelineCheck.SyncCallsDomain }},
+	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool {
+		return !r.IsDeviceCLI && r.PipelineCheck.SyncFileEmitted && !r.PipelineCheck.SyncCallsDomain
+	}},
 	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool {
 		// Issue #1156: when defaultSyncResources is emitted empty, the sync
 		// command is a runtime no-op and store-dependent novel commands have
@@ -2785,10 +2795,17 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 	if report.DeadFuncs.Dead > 0 {
 		issues = append(issues, fmt.Sprintf("%d dead helper functions found", report.DeadFuncs.Dead))
 	}
-	if !report.IsDeviceCLI && !report.PipelineCheck.SyncCallsDomain {
-		issues = append(issues, "sync uses generic Upsert only")
+	if !report.IsDeviceCLI && report.PipelineCheck.SyncFileEmitted && !report.PipelineCheck.SyncCallsDomain {
+		switch {
+		case report.PipelineCheck.SyncFileReadError:
+			issues = append(issues, "sync.go could not be read")
+		case report.PipelineCheck.SyncCallsGeneric:
+			issues = append(issues, "sync uses generic Upsert only")
+		default:
+			issues = append(issues, "sync Upsert calls not found")
+		}
 	}
-	if !report.IsDeviceCLI && report.PipelineCheck.SyncFileEmitted && !report.PipelineCheck.SyncResourcesPresent {
+	if !report.IsDeviceCLI && report.PipelineCheck.SyncFileEmitted && !report.PipelineCheck.SyncFileReadError && !report.PipelineCheck.SyncResourcesPresent {
 		issues = append(issues, "defaultSyncResources empty: sync command is a runtime no-op; store-dependent novel commands have no advertised population path")
 	}
 	if report.ExampleCheck.Tested > 0 && (report.ExampleCheck.WithExamples*100/report.ExampleCheck.Tested) < 50 {

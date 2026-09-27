@@ -255,14 +255,23 @@ func printDogfoodReport(report *pipeline.DogfoodReport) {
 	fmt.Println()
 
 	pipelineStatus := "GOOD"
-	if !report.PipelineCheck.SyncCallsDomain || !report.PipelineCheck.SearchCallsDomain || report.PipelineCheck.DomainTables == 0 {
+	if (report.PipelineCheck.SyncFileEmitted && !report.PipelineCheck.SyncCallsDomain) || !report.PipelineCheck.SearchCallsDomain || report.PipelineCheck.DomainTables == 0 {
 		pipelineStatus = "PARTIAL"
 	}
 	fmt.Printf("Data Pipeline:     %s\n", pipelineStatus)
-	if report.PipelineCheck.SyncCallsDomain {
-		fmt.Println("  Sync: calls domain-specific Upsert methods (GOOD)")
+	if report.PipelineCheck.SyncFileEmitted {
+		switch {
+		case report.PipelineCheck.SyncFileReadError:
+			fmt.Println("  Sync: could not read sync.go")
+		case report.PipelineCheck.SyncCallsDomain:
+			fmt.Println("  Sync: calls domain-specific Upsert methods (GOOD)")
+		case report.PipelineCheck.SyncCallsGeneric:
+			fmt.Println("  Sync: uses generic Upsert only")
+		default:
+			fmt.Println("  Sync: Upsert calls not found")
+		}
 	} else {
-		fmt.Println("  Sync: uses generic Upsert only")
+		fmt.Println("  Sync: SKIP (no sync command)")
 	}
 	if report.PipelineCheck.SearchCallsDomain {
 		fmt.Println("  Search: calls domain-specific Search methods (GOOD)")

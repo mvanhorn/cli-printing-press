@@ -818,6 +818,7 @@ func defaultSyncResources() []string {
 
 	result := checkPipelineIntegrity(dir)
 	assert.True(t, result.SyncFileEmitted, "sync.go was written")
+	assert.True(t, result.SyncCallsDomain)
 	assert.False(t, result.SyncResourcesPresent, "defaultSyncResources is empty")
 	assert.Contains(t, result.Detail, "defaultSyncResources empty")
 }
@@ -846,8 +847,79 @@ func defaultSyncResources() []string {
 
 	result := checkPipelineIntegrity(dir)
 	assert.True(t, result.SyncFileEmitted)
+	assert.True(t, result.SyncCallsDomain)
 	assert.True(t, result.SyncResourcesPresent)
 	assert.NotContains(t, result.Detail, "defaultSyncResources empty")
+}
+
+func TestCheckPipelineIntegrityClassifiesGenericAndMissingUpsert(t *testing.T) {
+	tests := []struct {
+		name        string
+		syncSource  string
+		wantGeneric bool
+		wantDetail  string
+	}{
+		{
+			name:        "generic Upsert",
+			syncSource:  "package cli\nfunc sync(db DB) { db.Upsert(\"users\") }\n",
+			wantGeneric: true,
+			wantDetail:  "sync uses generic Upsert only",
+		},
+		{
+			name:       "no Upsert",
+			syncSource: "package cli\nfunc sync() {}\n",
+			wantDetail: "sync Upsert calls not found",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cliDir := filepath.Join(dir, "internal", "cli")
+			require.NoError(t, os.MkdirAll(cliDir, 0o755))
+			writeTestFile(t, filepath.Join(cliDir, "sync.go"), tc.syncSource)
+
+			result := checkPipelineIntegrity(dir)
+			assert.True(t, result.SyncFileEmitted)
+			assert.False(t, result.SyncFileReadError)
+			assert.False(t, result.SyncCallsDomain)
+			assert.Equal(t, tc.wantGeneric, result.SyncCallsGeneric)
+			assert.Contains(t, result.Detail, tc.wantDetail)
+		})
+	}
+}
+
+func TestCheckPipelineIntegrityWithoutSyncFileOmitsSyncDetail(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+
+	result := checkPipelineIntegrity(dir)
+	assert.False(t, result.SyncFileEmitted)
+	assert.False(t, result.SyncFileReadError)
+	assert.NotContains(t, result.Detail, "sync Upsert calls not found")
+}
+
+func TestCheckPipelineIntegrityReportsUnreadableSyncFile(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	// A directory at the generated sync.go path is reliably unreadable via
+	// os.ReadFile across platforms, including when tests run as root.
+	require.NoError(t, os.Mkdir(filepath.Join(cliDir, "sync.go"), 0o755))
+
+	result := checkPipelineIntegrity(dir)
+	assert.True(t, result.SyncFileEmitted)
+	assert.True(t, result.SyncFileReadError)
+	assert.Contains(t, result.Detail, "sync.go could not be read")
+	encoded, err := json.Marshal(result)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"sync_file_read_error":true`)
+	assert.Contains(t, collectDogfoodIssues(&DogfoodReport{PipelineCheck: result}, true), "sync.go could not be read")
+	assert.NotContains(t, collectDogfoodIssues(&DogfoodReport{PipelineCheck: result}, true), "sync Upsert calls not found")
+	assert.NotContains(t, collectDogfoodIssues(&DogfoodReport{PipelineCheck: result}, true), "defaultSyncResources empty")
+	passingReport := passingDogfoodReport()
+	passingReport.PipelineCheck = result
+	assert.Equal(t, DogfoodVerdictWarn, deriveDogfoodVerdict(passingReport, false))
 }
 
 func TestHasPopulatedSyncResources(t *testing.T) {
@@ -923,7 +995,16 @@ func TestDeriveDogfoodVerdict(t *testing.T) {
 
 	report.DeadFuncs.Dead = 0
 	report.PipelineCheck.SyncCallsDomain = false
+	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true), "a CLI without a sync command should not get a sync warning")
+	assert.NotContains(t, collectDogfoodIssues(report, true), "sync uses generic Upsert only")
+
+	report.PipelineCheck.SyncFileEmitted = true
+	report.PipelineCheck.SyncCallsGeneric = true
 	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
+	assert.Contains(t, collectDogfoodIssues(report, true), "sync uses generic Upsert only")
+
+	report.PipelineCheck.SyncCallsGeneric = false
+	assert.Contains(t, collectDogfoodIssues(report, true), "sync Upsert calls not found")
 
 	report.PipelineCheck.SyncCallsDomain = true
 	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
@@ -3897,6 +3978,12 @@ func TestCollectDogfoodIssues_IncludesMissingTests(t *testing.T) {
 	assert.Contains(t, issues, "pure-logic packages with no tests: recipes, goat")
 }
 
+func TestCollectDogfoodIssues_DoesNotFlagMissingSyncCommand(t *testing.T) {
+	report := &DogfoodReport{PipelineCheck: PipelineResult{SyncCallsDomain: false, SyncFileEmitted: false}}
+
+	assert.NotContains(t, collectDogfoodIssues(report, true), "sync uses generic Upsert only")
+}
+
 func TestCollectDogfoodIssues_IncludesNovelFeatureDepthMismatch(t *testing.T) {
 	report := &DogfoodReport{
 		NovelFeaturesCheck: NovelFeaturesCheckResult{
@@ -4036,8 +4123,7 @@ func TestDogfoodExampleCommandPathsRejectsDuplicateRootNames(t *testing.T) {
 // passingDogfoodReport returns a DogfoodReport populated with the minimum
 // set of passing sub-check values so deriveDogfoodVerdict returns PASS by
 // default. Tests compose on top of this to isolate the one field they're
-// exercising without tripping an unrelated default-WARN branch (e.g.,
-// PipelineCheck.SyncCallsDomain zero-value triggers WARN).
+// exercising without tripping an unrelated default-WARN branch.
 func passingDogfoodReport() *DogfoodReport {
 	return &DogfoodReport{
 		PipelineCheck: PipelineResult{SyncCallsDomain: true},

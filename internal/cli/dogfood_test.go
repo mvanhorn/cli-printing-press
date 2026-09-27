@@ -40,6 +40,64 @@ func TestPrintDogfoodReportQualifiesPassWhenNoSpec(t *testing.T) {
 	assert.NotContains(t, out, "Verdict: PASS\n")
 }
 
+func TestPrintDogfoodReportDoesNotWarnWhenSyncCommandIsAbsent(t *testing.T) {
+	report := &pipeline.DogfoodReport{
+		Dir:     t.TempDir(),
+		Verdict: pipeline.DogfoodVerdictPass,
+		PipelineCheck: pipeline.PipelineResult{
+			SyncFileEmitted:   false,
+			SyncCallsDomain:   false,
+			SearchCallsDomain: true,
+			DomainTables:      1,
+		},
+	}
+
+	out := captureStdout(t, func() {
+		printDogfoodReport(report)
+	})
+
+	assert.Contains(t, out, "Data Pipeline:     GOOD")
+	assert.NotContains(t, out, "PARTIAL")
+	assert.Contains(t, out, "Sync: SKIP (no sync command)")
+	assert.NotContains(t, out, "Sync: uses generic Upsert only")
+}
+
+func TestPrintDogfoodReportDescribesSyncWithoutUpsertAccurately(t *testing.T) {
+	report := &pipeline.DogfoodReport{
+		Dir:     t.TempDir(),
+		Verdict: pipeline.DogfoodVerdictWarn,
+		PipelineCheck: pipeline.PipelineResult{
+			SyncFileEmitted: true,
+		},
+	}
+
+	out := captureStdout(t, func() {
+		printDogfoodReport(report)
+	})
+
+	assert.Contains(t, out, "Sync: Upsert calls not found")
+	assert.NotContains(t, out, "Sync: uses generic Upsert only")
+}
+
+func TestPrintDogfoodReportShowsUnreadableSyncFile(t *testing.T) {
+	report := &pipeline.DogfoodReport{
+		Dir:     t.TempDir(),
+		Verdict: pipeline.DogfoodVerdictWarn,
+		PipelineCheck: pipeline.PipelineResult{
+			SyncFileEmitted:   true,
+			SyncFileReadError: true,
+		},
+	}
+
+	out := captureStdout(t, func() {
+		printDogfoodReport(report)
+	})
+
+	assert.Contains(t, out, "Sync: could not read sync.go")
+	assert.NotContains(t, out, "Sync: SKIP (no sync command)")
+	assert.NotContains(t, out, "Sync: Upsert calls not found")
+}
+
 func TestPrintDogfoodReportRespectsSkippedPathCheck(t *testing.T) {
 	report := &pipeline.DogfoodReport{
 		Dir:      t.TempDir(),
