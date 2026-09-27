@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -1859,11 +1860,21 @@ func responsePayloadParentAtPath(data json.RawMessage, responsePath string) (map
 // build a typed slice/struct call this so --select, --compact, --csv, and
 // --quiet all behave the same way as on generator-emitted commands.
 func printJSONFiltered(w io.Writer, v any, flags *rootFlags) error {
+	return printJSONFilteredKeep(w, v, flags)
+}
+
+// Caller-supplied row keys that --agent/--compact must retain cannot be
+// passed as documented fields: that switches on schema-aware compaction,
+// which keeps only gravity names and drops the keys the caller asked for.
+func printJSONFilteredKeep(w io.Writer, v any, flags *rootFlags, keep ...string) error {
 	raw, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	return printOutputWithFlags(w, json.RawMessage(raw), flags)
+	if len(keep) == 0 || flags == nil {
+		return printOutputWithFlags(w, json.RawMessage(raw), flags)
+	}
+	return printOutputWithFlagsMetaAndKeep(w, json.RawMessage(raw), flags, map[string]any{"source": resolveAgentOutputSource(flags, json.RawMessage(raw))}, keep)
 }
 
 func platformStructuredOutputSelected(w io.Writer, flags *rootFlags) bool {
@@ -2519,6 +2530,10 @@ func handleBinaryResponseDelivery(cmd *cobra.Command, flags *rootFlags, data jso
 }
 
 func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any, documentedFields ...map[string]bool) error {
+	return printOutputWithFlagsMetaAndKeep(w, data, flags, agentMeta, nil, documentedFields...)
+}
+
+func printOutputWithFlagsMetaAndKeep(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any, keep []string, documentedFields ...map[string]bool) error {
 	if err := validatePlatformAnalytics(flags); err != nil {
 		return err
 	}
@@ -2533,7 +2548,7 @@ func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlag
 		data, selectErr = filterFieldsChecked(selectPayload, flags.selectFields)
 		selectErr = selectErrorForDryRun(selectErr, flags, selectPayload)
 	} else if flags.compact {
-		data = compactFields(data, documentedFields...)
+		data = compactFieldsKeep(data, keep, documentedFields...)
 	}
 	if flags.agent && flags.asJSON && !flags.csv && !flags.plain && !flags.quiet {
 		wrapped, err := wrapAgentOutput(data, agentMeta)
@@ -2610,16 +2625,23 @@ var compactVerboseObjectFields = map[string]bool{
 // For arrays: allowlist of high-gravity fields (no descriptions).
 // For single objects: blocklist that strips known-verbose fields (descriptions, comments, etc.).
 func compactFields(data json.RawMessage, documentedFields ...map[string]bool) json.RawMessage {
+	return compactFieldsKeep(data, nil, documentedFields...)
+}
+
+// keep stays a floor rather than a documented-field set. Schema-aware
+// compaction keeps only gravity names and would drop the keys the caller
+// asked --agent/--compact to retain.
+func compactFieldsKeep(data json.RawMessage, keep []string, documentedFields ...map[string]bool) json.RawMessage {
 	// Try array first
 	var items []map[string]any
 	if err := json.Unmarshal(data, &items); err == nil {
-		return compactListFields(items, documentedFields...)
+		return compactListFields(items, keep, documentedFields...)
 	}
 
 	// Single object — use blocklist
 	var obj map[string]any
 	if err := json.Unmarshal(data, &obj); err == nil {
-		return compactObjectFields(obj, documentedFields...)
+		return compactObjectFields(obj, keep, documentedFields...)
 	}
 
 	return data
@@ -2675,7 +2697,14 @@ func isCompactGravityField(name string) bool {
 // When an item still carries none of the keep keys, the original is
 // preserved so `--agent` does not silently emit {} for shapes whose key
 // names are entirely off-canonical.
-func compactListFields(items []map[string]any, documentedFields ...map[string]bool) json.RawMessage {
+//
+// keep is a floor of additional row keys. It does not switch on
+// schema-aware compaction. Envelope sidecar names (warnings, errors,
+// fetch_failures) are also a floor, but only in the frequency path:
+// hypothesis — object-level projection already copies those arrays
+// through, and the frequency rule then treats the same names inside
+// payload rows as ordinary keys, so a minority of rows lose them.
+func compactListFields(items []map[string]any, keep []string, documentedFields ...map[string]bool) json.RawMessage {
 	keepFields := map[string]bool{
 		// Identity
 		"id": true, "name": true, "title": true, "identifier": true,
@@ -2705,11 +2734,21 @@ func compactListFields(items []map[string]any, documentedFields ...map[string]bo
 			}
 		}
 	}
+	for _, field := range keep {
+		if field != "" {
+			keepFields[field] = true
+		}
+	}
 	schemaAware := false
 	for _, fields := range documentedFields {
 		if len(fields) > 0 {
 			schemaAware = true
 			break
+		}
+	}
+	if !schemaAware {
+		for field := range envelopeMetadataArrayKeys {
+			keepFields[field] = true
 		}
 	}
 	if !schemaAware && len(items) > 0 {
@@ -2773,8 +2812,8 @@ func isCompactScalar(v any) bool {
 // "markdown" — those fields are payload on `get` commands and stripping them
 // under `--agent`/`--compact` is a silent loss; agents who want to omit them
 // can pass `--select` to specify only the fields they need.
-func compactObjectFields(obj map[string]any, documentedFields ...map[string]bool) json.RawMessage {
-	if compacted, ok := compactListEnvelopeObjectAtDepth(obj, 0, documentedFields...); ok {
+func compactObjectFields(obj map[string]any, keep []string, documentedFields ...map[string]bool) json.RawMessage {
+	if compacted, ok := compactListEnvelopeObjectAtDepth(obj, 0, keep, documentedFields...); ok {
 		result, _ := json.Marshal(compacted)
 		return result
 	}
@@ -2788,7 +2827,7 @@ func compactObjectFields(obj map[string]any, documentedFields ...map[string]bool
 	return result
 }
 
-func compactListEnvelopeObjectAtDepth(obj map[string]any, envelopeDepth int, documentedFields ...map[string]bool) (map[string]any, bool) {
+func compactListEnvelopeObjectAtDepth(obj map[string]any, envelopeDepth int, keep []string, documentedFields ...map[string]bool) (map[string]any, bool) {
 	out := map[string]any{}
 	foundArray := false
 	payloadArrays := map[string]bool{}
@@ -2796,7 +2835,7 @@ func compactListEnvelopeObjectAtDepth(obj map[string]any, envelopeDepth int, doc
 		if envelopeMetadataArrayKeys[k] || envelopeMetadataKeys[k] {
 			continue
 		}
-		if _, ok := compactObjectArrayValue(v, documentedFields...); ok {
+		if _, ok := compactObjectArrayValue(v, keep, documentedFields...); ok {
 			payloadArrays[k] = true
 		}
 	}
@@ -2808,14 +2847,14 @@ func compactListEnvelopeObjectAtDepth(obj map[string]any, envelopeDepth int, doc
 			out[k] = v
 			continue
 		}
-		if compacted, ok := compactObjectArrayValue(v, documentedFields...); ok {
+		if compacted, ok := compactObjectArrayValue(v, keep, documentedFields...); ok {
 			foundArray = true
 			out[k] = compacted
 			continue
 		}
 		if nested, ok := v.(map[string]any); ok {
 			if envelopeDepth < maxListEnvelopeDepth {
-				if compacted, ok := compactListEnvelopeObjectAtDepth(nested, envelopeDepth+1, documentedFields...); ok {
+				if compacted, ok := compactListEnvelopeObjectAtDepth(nested, envelopeDepth+1, keep, documentedFields...); ok {
 					foundArray = true
 					out[k] = compacted
 					continue
@@ -2830,7 +2869,7 @@ func compactListEnvelopeObjectAtDepth(obj map[string]any, envelopeDepth int, doc
 	return out, true
 }
 
-func compactObjectArrayValue(v any, documentedFields ...map[string]bool) (any, bool) {
+func compactObjectArrayValue(v any, keep []string, documentedFields ...map[string]bool) (any, bool) {
 	rawItems, ok := v.([]any)
 	if !ok || len(rawItems) == 0 {
 		return nil, false
@@ -2843,7 +2882,7 @@ func compactObjectArrayValue(v any, documentedFields ...map[string]bool) (any, b
 		}
 		items = append(items, item)
 	}
-	compactedRaw := compactListFields(items, documentedFields...)
+	compactedRaw := compactListFields(items, keep, documentedFields...)
 	var compacted any
 	if err := json.Unmarshal(compactedRaw, &compacted); err != nil {
 		return nil, false
@@ -2892,14 +2931,7 @@ func writeCSVRows(w io.Writer, items []map[string]any) error {
 	for _, item := range items {
 		var vals []string
 		for _, k := range keys {
-			v := item[k]
-			if v == nil {
-				vals = append(vals, "")
-			} else if f, ok := v.(float64); ok {
-				vals = append(vals, strconv.FormatFloat(f, 'f', -1, 64))
-			} else {
-				vals = append(vals, fmt.Sprintf("%v", v))
-			}
+			vals = append(vals, formatTabularCell(item[k]))
 		}
 		writeCSVRow(w, vals)
 	}
@@ -3021,16 +3053,21 @@ func quietRowValue(item map[string]any) string {
 			}
 		}
 	}
-	for k, v := range item {
+	keys := make([]string, 0, len(item))
+	for k := range item {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
 		lower := strings.ToLower(k)
 		if strings.HasSuffix(lower, "_id") || strings.HasSuffix(k, "Id") {
-			if s := quietScalar(v); s != "" {
+			if s := quietScalar(item[k]); s != "" {
 				return s
 			}
 		}
 	}
-	for _, v := range item {
-		if s := quietScalar(v); s != "" {
+	for _, k := range keys {
+		if s := quietScalar(item[k]); s != "" {
 			return s
 		}
 	}
@@ -3100,20 +3137,77 @@ func objectEnvelopeRows(obj map[string]any) ([]map[string]any, bool) {
 }
 
 func plainCellValue(v any) string {
-	if v == nil {
-		return ""
-	}
-	var s string
-	if f, ok := v.(float64); ok {
-		s = strconv.FormatFloat(f, 'f', -1, 64)
-	} else {
-		s = fmt.Sprintf("%v", v)
-	}
+	s := formatTabularCell(v)
 	s = strings.ReplaceAll(s, "\t", " ")
 	s = strings.ReplaceAll(s, "\r\n", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
 	return s
+}
+
+// --csv/--plain cells must round-trip. fmt's %v of map[string]any and []any
+// is Go syntax, so nested values are compact JSON. Nested numbers stay
+// fixed-point so a magnitude that encoding/json would print with an exponent
+// remains a plain decimal, matching top-level float64 cells.
+func formatTabularCell(v any) string {
+	if v == nil {
+		return ""
+	}
+	if f, ok := v.(float64); ok {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	if text, ok := compactJSONCell(v); ok {
+		return text
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+func compactJSONCell(v any) (string, bool) {
+	switch v.(type) {
+	case map[string]any, []any:
+	default:
+		return "", false
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(jsonFixedNumbers(v)); err != nil {
+		return "", false
+	}
+	return strings.TrimRight(buf.String(), "\n"), true
+}
+
+func jsonFixedNumbers(v any) any {
+	switch t := v.(type) {
+	case float64:
+		return jsonFixedFloat(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[k] = jsonFixedNumbers(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = jsonFixedNumbers(val)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// jsonFixedFloat forces decimal text. JSON has no NaN or Inf, so those
+// become null and the rest of the cell still encodes.
+type jsonFixedFloat float64
+
+func (f jsonFixedFloat) MarshalJSON() ([]byte, error) {
+	v := float64(f)
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return []byte("null"), nil
+	}
+	return []byte(strconv.FormatFloat(v, 'f', -1, 64)), nil
 }
 
 // printOutput auto-detects arrays and renders as tables, or prints raw JSON for objects.

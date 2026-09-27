@@ -23,6 +23,7 @@ func TestGeneratedHelpersHonorPlainAndHumanFriendlyFlags(t *testing.T) {
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -217,6 +218,224 @@ func TestPrintOutputWithFlagsCompactReducesDocumentedLists(t *testing.T) {
 	}
 }
 
+func TestPrintOutputWithFlagsQuietFallbackIsDeterministic(t *testing.T) {
+	monthRows := json.RawMessage("[{\"Month\":4,\"MonthName\":\"April\",\"Year\":2026},{\"Month\":1,\"MonthName\":\"January\",\"Year\":2026}]")
+	idRows := json.RawMessage("[{\"user_id\":\"u1\",\"org_id\":\"o1\"}]")
+	oneID := json.RawMessage("[{\"count\":2,\"user_id\":\"u1\"}]")
+	named := json.RawMessage("[{\"name\":\"Alpha\",\"user_id\":\"u1\"}]")
+
+	var wantMonths, wantIDs, wantOne, wantNamed string
+	for i := 0; i < 100; i++ {
+		gotMonths := quietStdout(t, monthRows)
+		gotIDs := quietStdout(t, idRows)
+		gotOne := quietStdout(t, oneID)
+		gotNamed := quietStdout(t, named)
+		if i == 0 {
+			wantMonths, wantIDs, wantOne, wantNamed = gotMonths, gotIDs, gotOne, gotNamed
+			if wantMonths != "4\n1\n" {
+				t.Fatalf("sorted fallback should print Month, got %q", wantMonths)
+			}
+			if wantIDs != "o1\n" {
+				t.Fatalf("sorted _id fallback should print org_id, got %q", wantIDs)
+			}
+			if wantOne != "u1\n" {
+				t.Fatalf("single _id key should print that value, got %q", wantOne)
+			}
+			if wantNamed != "Alpha\n" {
+				t.Fatalf("name should still win over _id, got %q", wantNamed)
+			}
+			continue
+		}
+		if gotMonths != wantMonths || gotIDs != wantIDs || gotOne != wantOne || gotNamed != wantNamed {
+			t.Fatalf("quiet fallback changed across runs: months %q ids %q one %q named %q", gotMonths, gotIDs, gotOne, gotNamed)
+		}
+	}
+}
+
+func quietStdout(t *testing.T, data json.RawMessage) string {
+	t.Helper()
+	var out bytes.Buffer
+	if err := printOutputWithFlags(&out, data, &rootFlags{quiet: true}); err != nil {
+		t.Fatalf("printOutputWithFlags returned error: %v", err)
+	}
+	return out.String()
+}
+
+func TestPrintOutputWithFlagsCompactPreservesSparseEnvelopeMetadata(t *testing.T) {
+	rows := make([]map[string]any, 10)
+	for i := range rows {
+		rows[i] = map[string]any{"id": fmt.Sprintf("r%d", i), "yield": 1.5}
+	}
+	rows[0]["note"] = "fallback"
+	rows[0]["warnings"] = []any{"low_confidence"}
+	rows[0]["errors"] = []any{"bad"}
+	rows[1]["fetch_failures"] = []any{"timeout"}
+	rows[2]["hint"] = "rare"
+	rows[3]["Warnings"] = []any{"pascal"}
+
+	flags := &rootFlags{asJSON: true, compact: true}
+	compacted := compactRows(t, rows, flags, nil)
+	if _, ok := compacted["r0"]["note"]; ok {
+		t.Fatalf("undeclared sparse note survived plain compaction: %#v", compacted["r0"])
+	}
+	if _, ok := compacted["r2"]["hint"]; ok {
+		t.Fatalf("undeclared sparse hint survived plain compaction: %#v", compacted["r2"])
+	}
+	if compacted["r0"]["yield"] != 1.5 || compacted["r9"]["id"] != "r9" {
+		t.Fatalf("frequent fields dropped: %#v", compacted)
+	}
+	assertJSONArrayField(t, compacted["r0"]["warnings"], "low_confidence")
+	assertJSONArrayField(t, compacted["r0"]["errors"], "bad")
+	assertJSONArrayField(t, compacted["r1"]["fetch_failures"], "timeout")
+	assertJSONArrayField(t, compacted["r3"]["Warnings"], "pascal")
+
+	kept := compactRowsKept(t, rows, flags, "note")
+	if kept["r0"]["note"] != "fallback" {
+		t.Fatalf("keep floor dropped note: %#v", kept["r0"])
+	}
+	if _, ok := kept["r2"]["hint"]; ok {
+		t.Fatalf("keep floor retained an unlisted sparse field: %#v", kept["r2"])
+	}
+	assertJSONArrayField(t, kept["r0"]["warnings"], "low_confidence")
+
+	env := map[string]any{
+		"found":    true,
+		"query":    "q",
+		"warnings": []any{"candidates_present"},
+		"results": []any{
+			map[string]any{"resource_id": "r1", "action": "get", "confidence": 80, "match_score": 0.9, "source": "teach"},
+			map[string]any{"resource_id": "r2", "action": "get", "confidence": 80, "match_score": 0.9, "source": "teach"},
+			map[string]any{"resource_id": "r3", "action": "get", "confidence": 80, "match_score": 0.9, "source": "teach", "warnings": []any{"low_confidence"}},
+			map[string]any{"resource_id": "r4", "action": "get", "confidence": 80, "match_score": 0.9, "source": "teach", "warnings": []any{"resource_not_in_store", "low_confidence"}},
+			map[string]any{"resource_id": "r5", "action": "get", "confidence": 80, "match_score": 0.9, "source": "teach"},
+		},
+	}
+	var out bytes.Buffer
+	if err := printJSONFiltered(&out, env, flags); err != nil {
+		t.Fatalf("printJSONFiltered envelope: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("envelope json: %v\n%s", err, out.String())
+	}
+	top, _ := got["warnings"].([]any)
+	if len(top) != 1 || top[0] != "candidates_present" {
+		t.Fatalf("top-level warnings = %#v", got["warnings"])
+	}
+	results, _ := got["results"].([]any)
+	if len(results) != 5 {
+		t.Fatalf("results = %#v", got["results"])
+	}
+	hits := map[string]map[string]any{}
+	for _, raw := range results {
+		hit, _ := raw.(map[string]any)
+		id, _ := hit["resource_id"].(string)
+		hits[id] = hit
+	}
+	if _, ok := hits["r1"]["warnings"]; ok {
+		t.Fatalf("r1 gained warnings: %#v", hits["r1"])
+	}
+	assertJSONArrayField(t, hits["r3"]["warnings"], "low_confidence")
+	warns, _ := hits["r4"]["warnings"].([]any)
+	if len(warns) != 2 {
+		t.Fatalf("r4 warnings = %#v", hits["r4"]["warnings"])
+	}
+}
+
+func TestPrintOutputWithFlagsSchemaAwareCompactIgnoresEnvelopeFloor(t *testing.T) {
+	rows := make([]map[string]any, 5)
+	for i := range rows {
+		rows[i] = map[string]any{
+			"id":       fmt.Sprintf("r%d", i),
+			"warnings": []any{"x"},
+			"note":     "always",
+		}
+	}
+	raw, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	documented := map[string]bool{"id": true, "warnings": true, "note": true}
+	var out bytes.Buffer
+	if err := printOutputWithFlagsMeta(&out, raw, &rootFlags{asJSON: true, compact: true}, nil, documented); err != nil {
+		t.Fatalf("printOutputWithFlagsMeta: %v", err)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("json: %v\n%s", err, out.String())
+	}
+	if len(got) != 5 {
+		t.Fatalf("rows = %#v", got)
+	}
+	for _, row := range got {
+		if row["id"] == nil {
+			t.Fatalf("dropped id: %#v", row)
+		}
+		if _, ok := row["warnings"]; ok {
+			t.Fatalf("schema-aware compact kept warnings: %#v", row)
+		}
+		if _, ok := row["note"]; ok {
+			t.Fatalf("schema-aware compact kept note: %#v", row)
+		}
+	}
+}
+
+func TestPrintOutputWithFlagsSelectWinsOverCompact(t *testing.T) {
+	rows := make([]map[string]any, 10)
+	for i := range rows {
+		rows[i] = map[string]any{"id": fmt.Sprintf("r%d", i), "yield": 1.5}
+	}
+	rows[0]["note"] = "fallback"
+	flags := &rootFlags{asJSON: true, compact: true, selectFields: "id,note"}
+	got := compactRows(t, rows, flags, nil)
+	if got["r0"]["note"] != "fallback" || got["r0"]["id"] != "r0" {
+		t.Fatalf("select lost note: %#v", got["r0"])
+	}
+	if _, ok := got["r0"]["yield"]; ok {
+		t.Fatalf("select kept an unselected field: %#v", got["r0"])
+	}
+	if _, ok := got["r1"]["note"]; ok {
+		t.Fatalf("select invented note: %#v", got["r1"])
+	}
+}
+
+func compactRows(t *testing.T, rows []map[string]any, flags *rootFlags, keep []string) map[string]map[string]any {
+	t.Helper()
+	return compactRowsKept(t, rows, flags, keep...)
+}
+
+func compactRowsKept(t *testing.T, rows []map[string]any, flags *rootFlags, keep ...string) map[string]map[string]any {
+	t.Helper()
+	var out bytes.Buffer
+	var err error
+	if len(keep) == 0 {
+		err = printJSONFiltered(&out, rows, flags)
+	} else {
+		err = printJSONFilteredKeep(&out, rows, flags, keep...)
+	}
+	if err != nil {
+		t.Fatalf("printJSONFiltered: %v", err)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("compact json: %v\n%s", err, out.String())
+	}
+	byID := map[string]map[string]any{}
+	for _, row := range got {
+		id, _ := row["id"].(string)
+		byID[id] = row
+	}
+	return byID
+}
+
+func assertJSONArrayField(t *testing.T, v any, want string) {
+	t.Helper()
+	items, ok := v.([]any)
+	if !ok || len(items) == 0 || items[0] != want {
+		t.Fatalf("field = %#v, want [%s]", v, want)
+	}
+}
+
 func TestHumanFriendlyForcesTableAndNoColorStripsANSI(t *testing.T) {
 	oldHumanFriendly, oldNoColor := humanFriendly, noColor
 	humanFriendly, noColor = true, false
@@ -314,7 +533,7 @@ func TestTerminalControlCharactersRemainInJSONOutput(t *testing.T) {
 }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintOutputWithFlagsPlainRendersTSV|TestPrintOutputWithFlagsPlainEmptyArrayWritesMarker|TestPrintOutputWithFlagsCSVEmptyArrayWritesMarker|TestPrintOutputWithFlagsCSVEmptyArrayWritesDeclaredHeader|TestPrintOutputWithFlagsPlainEmptyArrayWritesDeclaredHeader|TestPrintOutputWithFlagsCSVEmptyArrayEscapesDeclaredHeader|TestPrintOutputWithFlagsCSVNonEmptyArrayUsesCSV|TestPrintOutputWithFlagsCSVQuotesCarriageReturnInValues|TestPrintOutputWithFlagsMachineEmptyArrayIsValidJSON|TestPrintOutputWithFlagsCSVSingleObjectIsOneRow|TestPrintOutputWithFlagsCSVUnwrapsCollectionEnvelope|TestPrintOutputWithFlagsQuietPrintsIdentityValues|TestPrintOutputWithFlagsCompactReducesDocumentedLists|TestHumanFriendlyForcesTableAndNoColorStripsANSI|TestTerminalControl", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintOutputWithFlagsPlainRendersTSV|TestPrintOutputWithFlagsPlainEmptyArrayWritesMarker|TestPrintOutputWithFlagsCSVEmptyArrayWritesMarker|TestPrintOutputWithFlagsCSVEmptyArrayWritesDeclaredHeader|TestPrintOutputWithFlagsPlainEmptyArrayWritesDeclaredHeader|TestPrintOutputWithFlagsCSVEmptyArrayEscapesDeclaredHeader|TestPrintOutputWithFlagsCSVNonEmptyArrayUsesCSV|TestPrintOutputWithFlagsCSVQuotesCarriageReturnInValues|TestPrintOutputWithFlagsMachineEmptyArrayIsValidJSON|TestPrintOutputWithFlagsCSVSingleObjectIsOneRow|TestPrintOutputWithFlagsCSVUnwrapsCollectionEnvelope|TestPrintOutputWithFlagsQuietPrintsIdentityValues|TestPrintOutputWithFlagsCompactReducesDocumentedLists|TestPrintOutputWithFlagsQuietFallbackIsDeterministic|TestPrintOutputWithFlagsCompactPreservesSparseEnvelopeMetadata|TestPrintOutputWithFlagsSchemaAwareCompactIgnoresEnvelopeFloor|TestPrintOutputWithFlagsSelectWinsOverCompact|TestHumanFriendlyForcesTableAndNoColorStripsANSI|TestTerminalControl", "-count=1")
 	requireGeneratedCompiles(t, outputDir)
 }
 
