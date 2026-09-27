@@ -438,14 +438,14 @@ func extractMCPRecipeIntentSource(source, modulePath string) ([]byte, error) {
 				recipeHandlers[node.Name.Name] = true
 				recipeDecls = append(recipeDecls, node)
 			}
-			if node.Name.Name == "init" || strings.HasPrefix(node.Name.Name, "appendRecipe") || node.Name.Name == "recipeValueString" {
+			if node.Name.Name == "init" || strings.HasPrefix(node.Name.Name, "appendRecipe") || node.Name.Name == "recipeValueString" || node.Name.Name == "recipeDestinationBlocked" || node.Name.Name == "recipeCommandPath" {
 				recipeDecls = append(recipeDecls, node)
 			}
 		case *ast.GenDecl:
 			if node.Tok != token.VAR {
 				continue
 			}
-			if containsMCPIntentIdentifier(node, "recipeCLIPath") || containsMCPIntentIdentifier(node, "recipeCLIPathErr") {
+			if containsMCPIntentIdentifier(node, "recipeCLIPath") || containsMCPIntentIdentifier(node, "recipeCLIPathErr") || containsMCPIntentIdentifier(node, "recipeCommandRoot") {
 				recipeDecls = append(recipeDecls, node)
 			}
 		}
@@ -477,6 +477,9 @@ func extractMCPRecipeIntentSource(source, modulePath string) ([]byte, error) {
 	fmt.Fprintf(&out, "%spackage mcp\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\t\"strings\"\n\n\tmcplib \"github.com/mark3labs/mcp-go/mcp\"\n\t\"github.com/mark3labs/mcp-go/server\"\n", header)
 	if declsContainIdentifier(recipeDecls, "bound") {
 		fmt.Fprintf(&out, "\t%q\n", modulePath+"/internal/mcp/bound")
+	}
+	if declsContainIdentifier(recipeDecls, "cli") {
+		fmt.Fprintf(&out, "\t%q\n", modulePath+"/internal/cli")
 	}
 	fmt.Fprintf(&out, "\t%q\n)\n\nfunc RegisterRecipeIntents(s *server.MCPServer) {\n", modulePath+"/internal/mcp/cobratree")
 	out.Write(registration.Bytes())
@@ -517,11 +520,34 @@ func containsMCPIntentIdentifier(node ast.Node, name string) bool {
 }
 
 func mcpIntentRegistrationHandler(stmt ast.Stmt) (string, bool) {
-	exprStmt, ok := stmt.(*ast.ExprStmt)
-	if !ok {
-		return "", false
+	switch node := stmt.(type) {
+	case *ast.ExprStmt:
+		return addToolHandlerName(node.X)
+	case *ast.BlockStmt:
+		var handler string
+		found := false
+		for _, inner := range node.List {
+			name, ok := mcpIntentRegistrationHandler(inner)
+			if !ok {
+				continue
+			}
+			handler = name
+			found = true
+		}
+		return handler, found
+	case *ast.IfStmt:
+		if name, ok := mcpIntentRegistrationHandler(node.Body); ok {
+			return name, true
+		}
+		if node.Else != nil {
+			return mcpIntentRegistrationHandler(node.Else)
+		}
 	}
-	call, ok := exprStmt.X.(*ast.CallExpr)
+	return "", false
+}
+
+func addToolHandlerName(expr ast.Expr) (string, bool) {
+	call, ok := expr.(*ast.CallExpr)
 	if !ok || len(call.Args) == 0 {
 		return "", false
 	}
