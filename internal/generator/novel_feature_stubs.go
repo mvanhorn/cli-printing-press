@@ -471,42 +471,10 @@ func novelFeatureUse(segment, command string) string {
 	return strings.Join(append([]string{segment}, positional...), " ")
 }
 
+// Group is a README and SKILL theme heading shared by unrelated parents, so it
+// is not a command description.
 func novelFeatureParentShort(node *novelFeatureStubNode) string {
-	if group := commonNovelFeatureGroup(node); group != "" {
-		return group
-	}
 	return "Work with " + strings.ReplaceAll(node.segment, "-", " ")
-}
-
-func commonNovelFeatureGroup(node *novelFeatureStubNode) string {
-	var first string
-	allGrouped := true
-	var walk func(*novelFeatureStubNode)
-	walk = func(cur *novelFeatureStubNode) {
-		if cur == nil || !allGrouped {
-			return
-		}
-		if cur.feature != nil {
-			group := naming.OneLine(cur.feature.Group)
-			if group == "" {
-				allGrouped = false
-				return
-			}
-			if first == "" {
-				first = group
-			} else if !strings.EqualFold(first, group) {
-				allGrouped = false
-			}
-		}
-		for _, child := range sortedNovelChildren(cur) {
-			walk(child)
-		}
-	}
-	walk(node)
-	if !allGrouped {
-		return ""
-	}
-	return first
 }
 
 func novelFeatureStubIdent(parts []string) string {
