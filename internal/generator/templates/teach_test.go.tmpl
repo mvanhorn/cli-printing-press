@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/cliutil/testenv"
 	"{{modulePath}}/internal/learn"
@@ -294,6 +296,53 @@ func TestRecallEnvelopeResultsCarryAliasTarget(t *testing.T) {
 	}
 	if got[0].AliasTarget != "new-id" {
 		t.Fatalf("AliasTarget = %q, want new-id", got[0].AliasTarget)
+	}
+}
+
+func TestRecallAgentKeepsSparseHitWarnings(t *testing.T) {
+	env := recallEnvelope{
+		Found:         true,
+		Query:         "q",
+		Normalized:    "q",
+		QueryEntities: []string{},
+		Results: []recallEnvelopeResult{
+			{ResourceID: "r1", Action: "get", Confidence: 80, MatchScore: 0.9, Source: "teach"},
+			{ResourceID: "r2", Action: "get", Confidence: 80, MatchScore: 0.9, Source: "teach"},
+			{ResourceID: "r3", Action: "get", Confidence: 80, MatchScore: 0.9, Source: "teach", Warnings: []string{"low_confidence"}},
+			{ResourceID: "r4", Action: "get", Confidence: 80, MatchScore: 0.9, Source: "teach", Warnings: []string{"resource_not_in_store", "low_confidence"}},
+			{ResourceID: "r5", Action: "get", Confidence: 80, MatchScore: 0.9, Source: "teach"},
+		},
+		Warnings: []string{"candidates_present"},
+	}
+	var stdout bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&stdout)
+	flags := &rootFlags{asJSON: true, agent: true, compact: true}
+	if err := emitRecall(cmd, flags, env); err != nil {
+		t.Fatalf("emitRecall: %v", err)
+	}
+	var got recallEnvelope
+	unmarshalAgentResults(t, stdout.String(), &got)
+	if len(got.Warnings) != 1 || got.Warnings[0] != "candidates_present" {
+		t.Fatalf("top-level warnings = %#v\nstdout=%s", got.Warnings, stdout.String())
+	}
+	if len(got.Results) != 5 {
+		t.Fatalf("results = %d\nstdout=%s", len(got.Results), stdout.String())
+	}
+	byID := map[string]recallEnvelopeResult{}
+	for _, result := range got.Results {
+		byID[result.ResourceID] = result
+	}
+	for _, id := range []string{"r1", "r2", "r5"} {
+		if len(byID[id].Warnings) != 0 {
+			t.Fatalf("%s warnings = %#v", id, byID[id].Warnings)
+		}
+	}
+	if len(byID["r3"].Warnings) != 1 || byID["r3"].Warnings[0] != "low_confidence" {
+		t.Fatalf("r3 warnings = %#v", byID["r3"].Warnings)
+	}
+	if len(byID["r4"].Warnings) != 2 || byID["r4"].Warnings[0] != "resource_not_in_store" || byID["r4"].Warnings[1] != "low_confidence" {
+		t.Fatalf("r4 warnings = %#v", byID["r4"].Warnings)
 	}
 }
 
