@@ -190,6 +190,7 @@ type DeadCodeResult struct {
 
 type PipelineResult struct {
 	SyncCallsDomain      bool   `json:"sync_calls_domain"`
+	SyncCallsGeneric     bool   `json:"sync_calls_generic,omitempty"`
 	SearchCallsDomain    bool   `json:"search_calls_domain"`
 	DomainTables         int    `json:"domain_tables"`
 	SyncFileEmitted      bool   `json:"sync_file_emitted"`
@@ -2524,19 +2525,22 @@ func checkPipelineIntegrity(dir string) PipelineResult {
 	domainSearchRe := regexp.MustCompile(`\.Search[A-Z]\w*\s*\(`)
 
 	result.SyncCallsDomain = domainUpsertRe.MatchString(syncSource)
+	result.SyncCallsGeneric = !result.SyncCallsDomain && strings.Contains(syncSource, ".Upsert(")
 	result.SearchCallsDomain = domainSearchRe.MatchString(searchSource)
 	result.DomainTables = countDomainTables(storeSource)
 	result.SyncFileEmitted = syncSource != ""
 	result.SyncResourcesPresent = hasPopulatedSyncResources(syncSource)
 
 	var parts []string
-	switch {
-	case result.SyncCallsDomain:
-		parts = append(parts, "sync uses domain-specific Upsert methods")
-	case strings.Contains(syncSource, ".Upsert("):
-		parts = append(parts, "sync uses generic Upsert only")
-	default:
-		parts = append(parts, "sync Upsert calls not found")
+	if result.SyncFileEmitted {
+		switch {
+		case result.SyncCallsDomain:
+			parts = append(parts, "sync uses domain-specific Upsert methods")
+		case result.SyncCallsGeneric:
+			parts = append(parts, "sync uses generic Upsert only")
+		default:
+			parts = append(parts, "sync Upsert calls not found")
+		}
 	}
 
 	switch {
@@ -2715,7 +2719,9 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	}},
 	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 1 && r.DeadFlags.Dead <= 2 }},
 	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return r.DeadFuncs.Dead >= 1 }},
-	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool { return !r.IsDeviceCLI && !r.PipelineCheck.SyncCallsDomain }},
+	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool {
+		return !r.IsDeviceCLI && r.PipelineCheck.SyncFileEmitted && !r.PipelineCheck.SyncCallsDomain
+	}},
 	{DogfoodVerdictWarn, func(r *DogfoodReport, _ bool) bool {
 		// Issue #1156: when defaultSyncResources is emitted empty, the sync
 		// command is a runtime no-op and store-dependent novel commands have
@@ -2785,8 +2791,12 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 	if report.DeadFuncs.Dead > 0 {
 		issues = append(issues, fmt.Sprintf("%d dead helper functions found", report.DeadFuncs.Dead))
 	}
-	if !report.IsDeviceCLI && !report.PipelineCheck.SyncCallsDomain {
-		issues = append(issues, "sync uses generic Upsert only")
+	if !report.IsDeviceCLI && report.PipelineCheck.SyncFileEmitted && !report.PipelineCheck.SyncCallsDomain {
+		if report.PipelineCheck.SyncCallsGeneric {
+			issues = append(issues, "sync uses generic Upsert only")
+		} else {
+			issues = append(issues, "sync Upsert calls not found")
+		}
 	}
 	if !report.IsDeviceCLI && report.PipelineCheck.SyncFileEmitted && !report.PipelineCheck.SyncResourcesPresent {
 		issues = append(issues, "defaultSyncResources empty: sync command is a runtime no-op; store-dependent novel commands have no advertised population path")
