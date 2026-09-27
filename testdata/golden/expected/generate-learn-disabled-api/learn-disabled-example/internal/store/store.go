@@ -58,12 +58,6 @@ func IsUUID(s string) bool {
 // extraction.
 const StoreSchemaVersion = 7
 
-// parentKeyStorageIDSchemaVersion tracks StoreSchemaVersion. Re-keying is
-// idempotent, so a later additive bump also sweeps bare rows for resource
-// types added to resourceParentKeyColumns after this migration first
-// shipped. A store with no bare rows is left unchanged.
-const parentKeyStorageIDSchemaVersion = StoreSchemaVersion
-
 // resourcesFTSContentSchemaVersion pins the schema bump that rewrote
 // resources_fts content from raw JSON to searchable leaf values. Keep this
 // separate from StoreSchemaVersion — and pinned at 4 regardless of the
@@ -544,10 +538,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		// After any FTS rebuild. Those rebuilds index whatever ids are on
 		// disk, including legacy bare keys; this pass then replaces the
 		// rowids that were derived from those keys.
-		if current < parentKeyStorageIDSchemaVersion {
-			if err := s.migrateParentKeyStorageIDs(ctx, conn); err != nil {
-				return fmt.Errorf("migrating parent-key storage ids: %w", err)
-			}
+		//
+		// Not gated on user_version. A reprint can add a type to
+		// resourceParentKeyColumns after this store is already at
+		// StoreSchemaVersion; the next open still has to re-key that
+		// type. An empty map, or a store with no bare ids for the mapped
+		// types, returns without rewriting.
+		if err := s.migrateParentKeyStorageIDs(ctx, conn); err != nil {
+			return fmt.Errorf("migrating parent-key storage ids: %w", err)
 		}
 		// Stamp the schema version. On a fresh DB this writes the current
 		// StoreSchemaVersion; on an already-stamped DB this is a no-op
@@ -726,6 +724,11 @@ func rebuildResourcesFTS(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
+// parentKeyLegacyBatchSize bounds how many bare resource payloads are held
+// while their storage ids are rewritten. The sweep runs on every open, so
+// the batch also keeps that work from retaining an entire partition.
+const parentKeyLegacyBatchSize = 64
+
 // migrateParentKeyStorageIDs re-keys dependent rows written before their
 // resource type entered resourceParentKeyColumns. Those rows use the bare
 // API id; current upserts use "<id>\x00<parent>". When both shapes exist for
@@ -746,23 +749,56 @@ func (s *Store) migrateParentKeyStorageIDs(ctx context.Context, conn *sql.Conn) 
 		return nil
 	}
 
-	legacy, err := loadParentKeyLegacyRows(ctx, conn)
-	if err != nil {
-		return err
+	resourceTypes := make([]string, 0, len(resourceParentKeyColumns))
+	for resourceType := range resourceParentKeyColumns {
+		resourceTypes = append(resourceTypes, resourceType)
 	}
-	if len(legacy) == 0 {
-		return nil
+	sort.Strings(resourceTypes)
+	typeArgs := make([]any, len(resourceTypes))
+	placeholders := make([]string, len(resourceTypes))
+	for i, resourceType := range resourceTypes {
+		placeholders[i] = "?"
+		typeArgs[i] = resourceType
 	}
-	ftsExists, err := tableExists(ctx, conn, "resources_fts")
-	if err != nil {
-		return err
-	}
-	for _, row := range legacy {
-		if err := applyParentKeyLegacyRow(ctx, conn, row, ftsExists); err != nil {
+	placeholderSQL := strings.Join(placeholders, ", ")
+
+	var (
+		afterType string
+		afterID   string
+		hasCursor bool
+		ftsKnown  bool
+		ftsExists bool
+	)
+	for {
+		batch, err := loadParentKeyLegacyBatch(ctx, conn, placeholderSQL, typeArgs, afterType, afterID, hasCursor)
+		if err != nil {
 			return err
 		}
+		if len(batch) == 0 {
+			return nil
+		}
+		for _, row := range batch {
+			if row.storageID == "" {
+				continue
+			}
+			if !ftsKnown {
+				ftsExists, err = tableExists(ctx, conn, "resources_fts")
+				if err != nil {
+					return err
+				}
+				ftsKnown = true
+			}
+			if err := applyParentKeyLegacyRow(ctx, conn, row, ftsExists); err != nil {
+				return err
+			}
+		}
+		last := batch[len(batch)-1]
+		afterType, afterID = last.resourceType, last.id
+		hasCursor = true
+		if len(batch) < parentKeyLegacyBatchSize {
+			return nil
+		}
 	}
-	return nil
 }
 
 type parentKeyLegacyRow struct {
@@ -772,46 +808,41 @@ type parentKeyLegacyRow struct {
 	storageID    string
 }
 
-func loadParentKeyLegacyRows(ctx context.Context, conn *sql.Conn) ([]parentKeyLegacyRow, error) {
-	resourceTypes := make([]string, 0, len(resourceParentKeyColumns))
-	for resourceType := range resourceParentKeyColumns {
-		resourceTypes = append(resourceTypes, resourceType)
-	}
-	sort.Strings(resourceTypes)
-
-	args := make([]any, len(resourceTypes))
-	placeholders := make([]string, len(resourceTypes))
-	for i, resourceType := range resourceTypes {
-		placeholders[i] = "?"
-		args[i] = resourceType
-	}
+func loadParentKeyLegacyBatch(ctx context.Context, conn *sql.Conn, placeholderSQL string, typeArgs []any, afterType, afterID string, hasCursor bool) ([]parentKeyLegacyRow, error) {
+	args := make([]any, 0, len(typeArgs)+4)
+	args = append(args, typeArgs...)
 	// char(0) is the composite-key separator. Rows that already carry it
-	// are current and must not be rewritten.
-	query := `SELECT id, resource_type, data FROM resources WHERE instr(id, char(0)) = 0 AND resource_type IN (` + strings.Join(placeholders, ", ") + `) ORDER BY resource_type, id`
+	// are current and must not be rewritten. The cursor walks every bare
+	// row, including ones that cannot be re-keyed, so a later batch does
+	// not read them again in this open.
+	query := `SELECT id, resource_type, data FROM resources WHERE instr(id, char(0)) = 0 AND resource_type IN (` + placeholderSQL + `)`
+	if hasCursor {
+		query += ` AND (resource_type > ? OR (resource_type = ? AND id > ?))`
+		args = append(args, afterType, afterType, afterID)
+	}
+	query += ` ORDER BY resource_type, id LIMIT ?`
+	args = append(args, parentKeyLegacyBatchSize)
 	rows, err := conn.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying parent-key resources: %w", err)
 	}
 
-	var legacy []parentKeyLegacyRow
+	batch := make([]parentKeyLegacyRow, 0, parentKeyLegacyBatchSize)
 	for rows.Next() {
 		var row parentKeyLegacyRow
 		if err := rows.Scan(&row.id, &row.resourceType, &row.data); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("scanning parent-key resource: %w", err)
 		}
-		if strings.IndexByte(row.id, 0) >= 0 || len(resourceParentKeyColumns[row.resourceType]) == 0 {
-			continue
+		if strings.IndexByte(row.id, 0) < 0 && len(resourceParentKeyColumns[row.resourceType]) > 0 {
+			obj, err := DecodeJSONObject(json.RawMessage(row.data))
+			if err == nil {
+				if storageID := resourceStorageID(row.resourceType, row.id, obj); storageID != row.id {
+					row.storageID = storageID
+				}
+			}
 		}
-		obj, err := DecodeJSONObject(json.RawMessage(row.data))
-		if err != nil {
-			continue // malformed legacy JSON cannot be re-keyed safely
-		}
-		row.storageID = resourceStorageID(row.resourceType, row.id, obj)
-		if row.storageID == row.id {
-			continue // no usable parent value in this legacy payload
-		}
-		legacy = append(legacy, row)
+		batch = append(batch, row)
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -820,7 +851,7 @@ func loadParentKeyLegacyRows(ctx context.Context, conn *sql.Conn) ([]parentKeyLe
 	if err := rows.Close(); err != nil {
 		return nil, fmt.Errorf("closing parent-key resources: %w", err)
 	}
-	return legacy, nil
+	return batch, nil
 }
 
 func applyParentKeyLegacyRow(ctx context.Context, conn *sql.Conn, row parentKeyLegacyRow, ftsExists bool) error {

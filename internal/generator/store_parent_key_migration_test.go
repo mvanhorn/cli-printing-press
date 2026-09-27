@@ -72,7 +72,9 @@ func TestGeneratedStoreMigratesLegacyParentKeyRows(t *testing.T) {
 	source := string(storeSource)
 	require.Contains(t, source, `"children": {"parent_id"}`)
 	require.Contains(t, source, "migrateParentKeyStorageIDs")
-	require.Contains(t, source, "current < parentKeyStorageIDSchemaVersion")
+	require.Contains(t, source, "s.migrateParentKeyStorageIDs(ctx, conn)")
+	require.NotContains(t, source, "parentKeyStorageIDSchemaVersion")
+	require.Contains(t, source, "parentKeyLegacyBatchSize")
 	require.Contains(t, source, "const StoreSchemaVersion = 7")
 	require.Contains(t, source, "const resourcesFTSTokenizerSchemaVersion = 6")
 
@@ -330,5 +332,91 @@ func TestMigrateParentKeyStorageIDs(t *testing.T) {
 	if reopenedSentinel != "notesentinel3691" {
 		t.Fatalf("sentinel after reopen = %q", reopenedSentinel)
 	}
+}
+
+func TestMigrateParentKeyStorageIDsAtCurrentVersion(t *testing.T) {
+	if StoreSchemaVersion != 7 {
+		t.Fatalf("StoreSchemaVersion = %d, want 7 for the v7 migration fixture", StoreSchemaVersion)
+	}
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("create current store: %v", err)
+	}
+	version, err := s.SchemaVersion()
+	if err != nil {
+		t.Fatalf("read fresh version: %v", err)
+	}
+	if version != StoreSchemaVersion {
+		t.Fatalf("fresh version = %d, want %d", version, StoreSchemaVersion)
+	}
+
+	duplicateCurrent := json.RawMessage("{\"id\":\"child-duplicate\",\"parent_id\":\"parent-A\",\"name\":\"currenttoken3691\",\"description\":\"current description\",\"summary\":\"current summary\"}")
+	duplicateStale := json.RawMessage("{\"id\":\"child-duplicate\",\"parent_id\":\"parent-A\",\"name\":\"staletoken3691\",\"description\":\"stale description\",\"summary\":\"stale summary\"}")
+	noParent := json.RawMessage("{\"id\":\"child-noparent\",\"name\":\"noparenttoken3691\",\"description\":\"noparent description\",\"summary\":\"noparent summary\"}")
+	if err := s.UpsertChildren(duplicateCurrent); err != nil {
+		t.Fatalf("seed maintained duplicate row: %v", err)
+	}
+	seedLegacyParentKeyRow(t, s, "child-duplicate", duplicateStale)
+	seedLegacyParentKeyRow(t, s, "child-noparent", noParent)
+
+	batchN := parentKeyLegacyBatchSize + 1
+	batchPayloads := make([]json.RawMessage, batchN)
+	for i := 0; i < batchN; i++ {
+		id := fmt.Sprintf("child-b-%03d", i)
+		batchPayloads[i] = json.RawMessage(fmt.Sprintf("{\"id\":%q,\"parent_id\":\"parent-batch\",\"name\":\"batchtoken3691%03d\",\"description\":\"batch description\",\"summary\":\"batch summary\"}", id, i))
+		seedLegacyParentKeyRow(t, s, id, batchPayloads[i])
+	}
+	requireParentKeyCount(t, s.DB(), ` + "`" + `SELECT COUNT(*) FROM resources WHERE resource_type = 'children'` + "`" + `, batchN+3)
+	if err := s.Close(); err != nil {
+		t.Fatalf("close seeded store: %v", err)
+	}
+
+	upgraded, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open current-version store: %v", err)
+	}
+	db := upgraded.DB()
+	if version, err := upgraded.SchemaVersion(); err != nil {
+		t.Fatalf("read version: %v", err)
+	} else if version != StoreSchemaVersion {
+		t.Fatalf("version = %d, want %d", version, StoreSchemaVersion)
+	}
+
+	const duplicateComposite = "child-duplicate\x00parent-A"
+	requireParentKeyCount(t, db, ` + "`" + `SELECT COUNT(*) FROM resources WHERE resource_type = 'children'` + "`" + `, batchN+2)
+	requireParentKeyCount(t, db, ` + "`" + `SELECT COUNT(*) FROM children` + "`" + `, batchN+2)
+	requireParentKeyCount(t, db, ` + "`" + `SELECT COUNT(*) FROM resources WHERE resource_type = 'children' AND instr(id, char(0)) = 0` + "`" + `, 1)
+	requireParentKeyRowData(t, db, "resources", duplicateComposite, duplicateCurrent)
+	requireParentKeyRowData(t, db, "children", duplicateComposite, duplicateCurrent)
+	requireParentKeyRowData(t, db, "resources", "child-noparent", noParent)
+	for _, i := range []int{0, parentKeyLegacyBatchSize - 1, parentKeyLegacyBatchSize} {
+		id := fmt.Sprintf("child-b-%03d", i)
+		storageID := id + "\x00parent-batch"
+		requireParentKeyCount(t, db, ` + "`" + `SELECT COUNT(*) FROM resources WHERE resource_type = 'children' AND id = ?` + "`" + `, 0, id)
+		requireParentKeyRowData(t, db, "resources", storageID, batchPayloads[i])
+		requireParentKeyRowData(t, db, "children", storageID, batchPayloads[i])
+		requireParentKeyCount(t, db, ` + "`" + `SELECT COUNT(*) FROM resources_fts WHERE rowid = ?` + "`" + `, 0, ftsRowID("children", id))
+		requireParentKeyCount(t, db, ` + "`" + `SELECT COUNT(*) FROM resources_fts WHERE rowid = ? AND id = ?` + "`" + `, 1, ftsRowID("children", storageID), storageID)
+	}
+	requireParentKeyCount(t, db, ` + "`" + `SELECT COUNT(*) FROM resources_fts WHERE resources_fts MATCH ?` + "`" + `, 0, FTSMatchQuery("staletoken3691"))
+	requireParentKeyCount(t, db, ` + "`" + `SELECT COUNT(*) FROM resources_fts WHERE resources_fts MATCH ?` + "`" + `, 1, FTSMatchQuery("currenttoken3691"))
+	requireParentKeyCount(t, db, ` + "`" + `SELECT COUNT(*) FROM children_fts WHERE rowid NOT IN (SELECT rowid FROM children)` + "`" + `, 0)
+	requireParentKeyCount(t, db, ` + "`" + `SELECT COUNT(*) FROM resources_fts AS f LEFT JOIN resources AS r ON r.resource_type = f.resource_type AND r.id = f.id WHERE r.id IS NULL` + "`" + `, 0)
+	requireParentKeySearch(t, upgraded, "currenttoken3691", 1)
+	requireParentKeySearch(t, upgraded, "staletoken3691", 0)
+	requireParentKeySearch(t, upgraded, fmt.Sprintf("batchtoken3691%03d", parentKeyLegacyBatchSize), 1)
+	if err := upgraded.Close(); err != nil {
+		t.Fatalf("close upgraded store: %v", err)
+	}
+
+	reopened, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen current store: %v", err)
+	}
+	defer reopened.Close()
+	requireParentKeyCount(t, reopened.DB(), ` + "`" + `SELECT COUNT(*) FROM resources WHERE resource_type = 'children'` + "`" + `, batchN+2)
+	requireParentKeyCount(t, reopened.DB(), ` + "`" + `SELECT COUNT(*) FROM children` + "`" + `, batchN+2)
+	requireParentKeyRowData(t, reopened.DB(), "resources", duplicateComposite, duplicateCurrent)
 }
 `
