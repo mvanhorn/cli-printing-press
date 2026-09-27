@@ -75,6 +75,9 @@ func TestGeneratedStoreMigratesLegacyParentKeyRows(t *testing.T) {
 	require.Contains(t, source, "s.migrateParentKeyStorageIDs(ctx, conn)")
 	require.NotContains(t, source, "parentKeyStorageIDSchemaVersion")
 	require.Contains(t, source, "parentKeyLegacyBatchSize")
+	require.Contains(t, source, "idx_resources_legacy_parent_key")
+	require.Contains(t, source, "SELECT 1 FROM resources INDEXED BY ")
+	require.Contains(t, source, "if !bare {")
 	require.Contains(t, source, "const StoreSchemaVersion = 7")
 	require.Contains(t, source, "const resourcesFTSTokenizerSchemaVersion = 6")
 
@@ -139,6 +142,51 @@ func requireParentKeyCount(t *testing.T, db *sql.DB, query string, want int, arg
 	}
 	if got != want {
 		t.Fatalf("count %q = %d, want %d", query, got, want)
+	}
+}
+
+func requireParentKeyProbeUsesIndex(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var indexSQL string
+	if err := db.QueryRow(` + "`" + `SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_resources_legacy_parent_key'` + "`" + `).Scan(&indexSQL); err != nil {
+		t.Fatalf("read parent-key legacy index: %v", err)
+	}
+	const wantPrefix = "CREATE INDEX idx_resources_legacy_parent_key ON resources(resource_type, id) WHERE "
+	if !strings.HasPrefix(indexSQL, wantPrefix) || !strings.Contains(indexSQL, "instr(id, char(0)) = 0") || !strings.Contains(indexSQL, "'children'") {
+		t.Fatalf("index sql = %q", indexSQL)
+	}
+	where := strings.TrimPrefix(indexSQL, wantPrefix)
+	rows, err := db.Query(` + "`" + `EXPLAIN QUERY PLAN SELECT 1 FROM resources INDEXED BY idx_resources_legacy_parent_key WHERE ` + "`" + ` + where + ` + "`" + ` LIMIT 1` + "`" + `)
+	if err != nil {
+		t.Fatalf("explain probe: %v", err)
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("explain columns: %v", err)
+	}
+	vals := make([]sql.NullString, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	var plan strings.Builder
+	for rows.Next() {
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatalf("explain scan: %v", err)
+		}
+		for _, v := range vals {
+			plan.WriteString(v.String)
+			plan.WriteByte(' ')
+		}
+		plan.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("explain rows: %v", err)
+	}
+	got := plan.String()
+	if !strings.Contains(got, "idx_resources_legacy_parent_key") || strings.Contains(strings.ToUpper(got), "SCAN") {
+		t.Fatalf("probe plan = %q, want a seek of idx_resources_legacy_parent_key", got)
 	}
 }
 
@@ -332,6 +380,7 @@ func TestMigrateParentKeyStorageIDs(t *testing.T) {
 	if reopenedSentinel != "notesentinel3691" {
 		t.Fatalf("sentinel after reopen = %q", reopenedSentinel)
 	}
+	requireParentKeyProbeUsesIndex(t, reopened.DB())
 }
 
 func TestMigrateParentKeyStorageIDsAtCurrentVersion(t *testing.T) {
@@ -418,5 +467,52 @@ func TestMigrateParentKeyStorageIDsAtCurrentVersion(t *testing.T) {
 	requireParentKeyCount(t, reopened.DB(), ` + "`" + `SELECT COUNT(*) FROM resources WHERE resource_type = 'children'` + "`" + `, batchN+2)
 	requireParentKeyCount(t, reopened.DB(), ` + "`" + `SELECT COUNT(*) FROM children` + "`" + `, batchN+2)
 	requireParentKeyRowData(t, reopened.DB(), "resources", duplicateComposite, duplicateCurrent)
+	requireParentKeyProbeUsesIndex(t, reopened.DB())
+}
+
+func TestMigrateParentKeyStorageIDsRebuildsStaleIndex(t *testing.T) {
+	if StoreSchemaVersion != 7 {
+		t.Fatalf("StoreSchemaVersion = %d, want 7 for the v7 migration fixture", StoreSchemaVersion)
+	}
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("create current store: %v", err)
+	}
+	legacyOnly := json.RawMessage("{\"id\":\"child-legacy\",\"parent_id\":\"parent-B\",\"name\":\"legacyonlytoken3691\",\"description\":\"legacy description\",\"summary\":\"legacy summary\"}")
+	seedLegacyParentKeyRow(t, s, "child-legacy", legacyOnly)
+	// A predicate that omits children is what a reprint leaves behind when
+	// the type list grows. The next open has to rebuild it and still re-key.
+	if _, err := s.DB().Exec(` + "`" + `DROP INDEX idx_resources_legacy_parent_key` + "`" + `); err != nil {
+		t.Fatalf("drop index: %v", err)
+	}
+	if _, err := s.DB().Exec(` + "`" + `CREATE INDEX idx_resources_legacy_parent_key ON resources(resource_type, id) WHERE instr(id, char(0)) = 0 AND resource_type IN ('not_children')` + "`" + `); err != nil {
+		t.Fatalf("create stale index: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close seeded store: %v", err)
+	}
+
+	upgraded, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store with stale index: %v", err)
+	}
+	defer upgraded.Close()
+	const legacyComposite = "child-legacy\x00parent-B"
+	requireParentKeyRowData(t, upgraded.DB(), "resources", legacyComposite, legacyOnly)
+	requireParentKeyCount(t, upgraded.DB(), ` + "`" + `SELECT COUNT(*) FROM resources WHERE resource_type = 'children' AND id = ?` + "`" + `, 0, "child-legacy")
+	var indexSQL string
+	if err := upgraded.DB().QueryRow(` + "`" + `SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_resources_legacy_parent_key'` + "`" + `).Scan(&indexSQL); err != nil {
+		t.Fatalf("read rebuilt index: %v", err)
+	}
+	if !strings.Contains(indexSQL, "'children'") || strings.Contains(indexSQL, "not_children") {
+		t.Fatalf("index sql = %q", indexSQL)
+	}
+	if version, err := upgraded.SchemaVersion(); err != nil {
+		t.Fatalf("read version: %v", err)
+	} else if version != StoreSchemaVersion {
+		t.Fatalf("version = %d, want %d", version, StoreSchemaVersion)
+	}
+	requireParentKeyProbeUsesIndex(t, upgraded.DB())
 }
 `

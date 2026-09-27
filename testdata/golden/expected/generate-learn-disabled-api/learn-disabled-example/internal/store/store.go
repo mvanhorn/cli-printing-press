@@ -729,14 +729,19 @@ func rebuildResourcesFTS(ctx context.Context, conn *sql.Conn) error {
 // the batch also keeps that work from retaining an entire partition.
 const parentKeyLegacyBatchSize = 64
 
-// migrateParentKeyStorageIDs re-keys dependent rows written before their
-// resource type entered resourceParentKeyColumns. Those rows use the bare
-// API id; current upserts use "<id>\x00<parent>". When both shapes exist for
-// the same computed storage id, the composite row wins because it is the
-// row current upserts maintain. A bare row whose parent differs from an
-// existing composite row is a different association and is re-keyed, not
-// dropped. Generic resources_fts rowids are ftsRowID(resource, id), so the
-// bare entry is removed and the composite payload is indexed under the new id.
+// Fixed name so a reprint can find the previous predicate and replace it.
+// CREATE INDEX IF NOT EXISTS would keep the old type list and hide bare
+// rows of a type added after the schema stamp.
+const parentKeyLegacyIndexName = "idx_resources_legacy_parent_key"
+
+// A reprint can add a parent-keyed type without bumping the schema stamp,
+// so bare ids are re-checked on every open. instr(id, char(0)) cannot use
+// the resources primary key; the partial index makes the empty check a
+// seek instead of a table scan under the migration write lock, and its
+// predicate is rebuilt when the type list drifts so the new type is not
+// skipped. Composite wins on a shared storage id because current upserts
+// maintain that row; a different parent is a separate association. FTS
+// rowids follow the stored id, so the bare entry has to be replaced.
 func (s *Store) migrateParentKeyStorageIDs(ctx context.Context, conn *sql.Conn) error {
 	if len(resourceParentKeyColumns) == 0 {
 		return nil
@@ -753,14 +758,20 @@ func (s *Store) migrateParentKeyStorageIDs(ctx context.Context, conn *sql.Conn) 
 	for resourceType := range resourceParentKeyColumns {
 		resourceTypes = append(resourceTypes, resourceType)
 	}
+	// Map iteration order is random. The index predicate is compared as
+	// text, so an unsorted list would miss and rebuild on every open.
 	sort.Strings(resourceTypes)
-	typeArgs := make([]any, len(resourceTypes))
-	placeholders := make([]string, len(resourceTypes))
-	for i, resourceType := range resourceTypes {
-		placeholders[i] = "?"
-		typeArgs[i] = resourceType
+	bareWhere := parentKeyLegacyBareWhere(resourceTypes)
+	if err := ensureParentKeyLegacyIndex(ctx, conn, bareWhere); err != nil {
+		return err
 	}
-	placeholderSQL := strings.Join(placeholders, ", ")
+	bare, err := parentKeyBareIDsExist(ctx, conn, bareWhere)
+	if err != nil {
+		return err
+	}
+	if !bare {
+		return nil
+	}
 
 	var (
 		afterType string
@@ -770,7 +781,7 @@ func (s *Store) migrateParentKeyStorageIDs(ctx context.Context, conn *sql.Conn) 
 		ftsExists bool
 	)
 	for {
-		batch, err := loadParentKeyLegacyBatch(ctx, conn, placeholderSQL, typeArgs, afterType, afterID, hasCursor)
+		batch, err := loadParentKeyLegacyBatch(ctx, conn, bareWhere, afterType, afterID, hasCursor)
 		if err != nil {
 			return err
 		}
@@ -808,14 +819,63 @@ type parentKeyLegacyRow struct {
 	storageID    string
 }
 
-func loadParentKeyLegacyBatch(ctx context.Context, conn *sql.Conn, placeholderSQL string, typeArgs []any, afterType, afterID string, hasCursor bool) ([]parentKeyLegacyRow, error) {
-	args := make([]any, 0, len(typeArgs)+4)
-	args = append(args, typeArgs...)
+// Literals, not placeholders: a bound IN list does not prove the
+// partial-index predicate, and the empty check would scan.
+func parentKeyLegacyBareWhere(resourceTypes []string) string {
+	quoted := make([]string, len(resourceTypes))
+	for i, resourceType := range resourceTypes {
+		quoted[i] = "'" + strings.ReplaceAll(resourceType, "'", "''") + "'"
+	}
+	return `instr(id, char(0)) = 0 AND resource_type IN (` + strings.Join(quoted, ", ") + `)`
+}
+
+func parentKeyLegacyIndexSQL(bareWhere string) string {
+	return `CREATE INDEX ` + parentKeyLegacyIndexName + ` ON resources(resource_type, id) WHERE ` + bareWhere
+}
+
+func ensureParentKeyLegacyIndex(ctx context.Context, conn *sql.Conn, bareWhere string) error {
+	indexSQL := parentKeyLegacyIndexSQL(bareWhere)
+	var got sql.NullString
+	err := conn.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`, parentKeyLegacyIndexName).Scan(&got)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("reading parent-key legacy index: %w", err)
+	}
+	if err == nil && got.Valid && got.String == indexSQL {
+		return nil
+	}
+	if _, err := conn.ExecContext(ctx, `DROP INDEX IF EXISTS `+parentKeyLegacyIndexName); err != nil {
+		return fmt.Errorf("dropping parent-key legacy index: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, indexSQL); err != nil {
+		return fmt.Errorf("creating parent-key legacy index: %w", err)
+	}
+	return nil
+}
+
+func parentKeyBareIDsExist(ctx context.Context, conn *sql.Conn, bareWhere string) (bool, error) {
+	// INDEXED BY refuses a table-scan fallback while the migration write
+	// lock is held. LIMIT 1 returns before any batch rewrite when no bare
+	// id is left.
+	var one int
+	err := conn.QueryRowContext(ctx,
+		`SELECT 1 FROM resources INDEXED BY `+parentKeyLegacyIndexName+` WHERE `+bareWhere+` LIMIT 1`,
+	).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("probing bare parent-key ids: %w", err)
+	}
+	return true, nil
+}
+
+func loadParentKeyLegacyBatch(ctx context.Context, conn *sql.Conn, bareWhere, afterType, afterID string, hasCursor bool) ([]parentKeyLegacyRow, error) {
+	args := make([]any, 0, 4)
 	// char(0) is the composite-key separator. Rows that already carry it
 	// are current and must not be rewritten. The cursor walks every bare
 	// row, including ones that cannot be re-keyed, so a later batch does
 	// not read them again in this open.
-	query := `SELECT id, resource_type, data FROM resources WHERE instr(id, char(0)) = 0 AND resource_type IN (` + placeholderSQL + `)`
+	query := `SELECT id, resource_type, data FROM resources WHERE ` + bareWhere
 	if hasCursor {
 		query += ` AND (resource_type > ? OR (resource_type = ? AND id > ?))`
 		args = append(args, afterType, afterType, afterID)
@@ -925,10 +985,10 @@ func replaceParentKeyResourceFTS(ctx context.Context, conn *sql.Conn, resourceTy
 	return nil
 }
 
-// migrateParentKeyTypedID mirrors a generic storage-id transition into the
-// typed projection named by typedListTableByResource. Content-sync FTS
-// triggers on that table follow the content rowid, not ftsRowID, and fire
-// for the UPDATE or DELETE below.
+// Content-synced FTS follows the typed table's rowid, not ftsRowID, and
+// its triggers run only when that content row is updated or deleted. An
+// existing composite id wins, so the bare row is removed instead of
+// renamed onto it.
 func migrateParentKeyTypedID(ctx context.Context, conn *sql.Conn, resourceType, bareID, storageID string) error {
 	table, ok := typedListTableByResource[resourceType]
 	if !ok {
