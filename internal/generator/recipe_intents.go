@@ -200,9 +200,10 @@ func recipeFlagIsStatic(name string) bool {
 // recipeFlagIsBlockedDestination drops unambiguous destination names while
 // the recipe text is parsed. Annotated sinks are not known from the README:
 // the emitted recipe tool calls cobratree.DestinationFlagBlocked against the
-// live Cobra tree at registration and call time, which also sees write sinks
-// inherited from a parent persistent flag. Those names are neither advertised
-// nor forwarded, and a client-supplied value is rejected.
+// live Cobra tree at registration and call time. That lookup follows command
+// aliases and write sinks inherited from the ancestor that supplies the
+// persistent flag. Those names are neither advertised nor forwarded, and a
+// client-supplied value is rejected.
 func recipeFlagIsBlockedDestination(name string) bool {
 	return mcpBlockedDestinationFlagSet[name]
 }

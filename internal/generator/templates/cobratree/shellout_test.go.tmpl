@@ -438,7 +438,8 @@ func TestWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
 func TestInheritedWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
 	root := &cobra.Command{Use: "root"}
 	parent := &cobra.Command{
-		Use: "archive",
+		Use:     "archive",
+		Aliases: []string{"arc"},
 		Annotations: map[string]string{
 			FlagWriteSinksAnnotation: "save-to, report-path",
 		},
@@ -465,7 +466,13 @@ func TestInheritedWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
 	if got := CommandAtPath(root, []string{"archive", "bundle"}); got != child {
 		t.Fatalf("CommandAtPath = %v, want bundle", got)
 	}
-	if CommandAtPath(root, []string{"archive", "missing"}) != nil {
+	if got := CommandAtPath(root, []string{"arc", "bundle"}); got != child {
+		t.Fatalf("CommandAtPath alias = %v, want bundle", got)
+	}
+	if !DestinationFlagBlocked(CommandAtPath(root, []string{"arc", "bundle"}), "save-to") {
+		t.Fatal("alias path dropped the inherited destination block")
+	}
+	if CommandAtPath(root, []string{"archive", "missing"}) != nil || CommandAtPath(root, []string{"nope", "bundle"}) != nil {
 		t.Fatal("CommandAtPath returned a command for a missing path")
 	}
 	if !DestinationFlagBlocked(child, "save-to") || !DestinationFlagBlocked(leaf, "save-to") {
@@ -517,6 +524,84 @@ func TestInheritedWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
 	}
 	argv := decodeArgvResult(t, result)
 	want := []string{"archive", "bundle", "--format=json", "--report-path=rpt-1", "--window=14d"}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("child argv = %#v, want %#v", argv, want)
+	}
+}
+
+func TestShadowedPersistentWriteFlagStaysAvailable(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	distant := &cobra.Command{
+		Use: "archive",
+		Annotations: map[string]string{
+			FlagWriteSinksAnnotation: "save-to",
+		},
+	}
+	distant.PersistentFlags().String("save-to", "", "write destination")
+
+	near := &cobra.Command{Use: "bundle"}
+	near.PersistentFlags().String("save-to", "", "label")
+	leaf := &cobra.Command{
+		Use:   "leaf",
+		Short: "Leaf bundle",
+		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	leaf.Flags().String("format", "json", "output format")
+	near.AddCommand(leaf)
+
+	plain := &cobra.Command{
+		Use:  "plain",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	marked := &cobra.Command{
+		Use: "marked",
+		Annotations: map[string]string{
+			FlagWriteSinksAnnotation: "save-to",
+		},
+	}
+	marked.PersistentFlags().String("save-to", "", "destination")
+	markedLeaf := &cobra.Command{
+		Use:  "inner",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	marked.AddCommand(markedLeaf)
+
+	distant.AddCommand(near)
+	distant.AddCommand(plain)
+	distant.AddCommand(marked)
+	root.AddCommand(distant)
+
+	if DestinationFlagBlocked(near, "save-to") || DestinationFlagBlocked(leaf, "save-to") {
+		t.Fatal("a nearer persistent redeclaration was blocked by a distant annotation")
+	}
+	if !DestinationFlagBlocked(plain, "save-to") {
+		t.Fatal("inherited persistent save-to was not blocked when no nearer command redeclared it")
+	}
+	if !DestinationFlagBlocked(markedLeaf, "save-to") {
+		t.Fatal("the nearer command's own annotation did not block its persistent flag")
+	}
+
+	bin := writeArgvHelper(t)
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, root, func() (string, error) { return bin, nil })
+	entry := s.ListTools()["archive_bundle_leaf"]
+	if entry == nil {
+		t.Fatalf("archive_bundle_leaf tool missing: %#v", s.ListTools())
+	}
+	if _, ok := entry.Tool.InputSchema.Properties["save-to"]; !ok {
+		t.Fatalf("shadowed save-to missing from schema: %#v", entry.Tool.InputSchema.Properties)
+	}
+	result, err := entry.Handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"save-to": "label-1", "format": "json"},
+	}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("shadowed save-to was rejected: %s", toolResultText(result))
+	}
+	argv := decodeArgvResult(t, result)
+	want := []string{"archive", "bundle", "leaf", "--format=json", "--save-to=label-1"}
 	if !reflect.DeepEqual(argv, want) {
 		t.Fatalf("child argv = %#v, want %#v", argv, want)
 	}

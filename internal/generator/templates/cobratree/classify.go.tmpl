@@ -40,9 +40,10 @@ const (
 	// FlagWriteSinksAnnotation lists Cobra flag names whose values choose a
 	// filesystem write destination. The walker drops them from the MCP schema
 	// and rejects them as arguments, including on read-only tools. An
-	// ancestor annotation covers persistent flags that this command inherits.
-	// Separate names with commas, semicolons, or whitespace. A leading "--"
-	// is ignored.
+	// ancestor annotation covers a persistent flag that ancestor supplies and
+	// this command inherits. A nearer redeclaration of that persistent name
+	// is a different flag. Separate names with commas, semicolons, or
+	// whitespace. A leading "--" is ignored.
 	FlagWriteSinksAnnotation = "mcp:write-flags"
 )
 
@@ -158,10 +159,12 @@ func flagWriteSinkNames(cmd *cobra.Command) map[string]bool {
 	}
 	// Persistent flags show up on the child, but the annotation stays on the
 	// command that declared them. A child-local flag of the same name is a
-	// different flag and keeps its own annotation.
+	// different flag and keeps its own annotation. A nearer ancestor that
+	// redeclares the persistent name supplies the flag the child inherits,
+	// so a more distant annotation does not apply.
 	for parent := cmd.Parent(); parent != nil; parent = parent.Parent() {
 		for name := range annotationFlagNames(parent.Annotations) {
-			if inheritedWriteSink(cmd, name) {
+			if inheritedWriteSink(cmd, name) && persistentFlagSupplier(cmd, name) == parent {
 				out[name] = true
 			}
 		}
@@ -204,8 +207,23 @@ func inheritedWriteSink(cmd *cobra.Command, name string) bool {
 	return cmd.InheritedFlags().Lookup(name) != nil
 }
 
+// persistentFlagSupplier is the nearest ancestor whose persistent flag set
+// defines name. Cobra keeps that flag and ignores a more distant one.
+func persistentFlagSupplier(cmd *cobra.Command, name string) *cobra.Command {
+	if cmd == nil || name == "" {
+		return nil
+	}
+	for parent := cmd.Parent(); parent != nil; parent = parent.Parent() {
+		if parent.PersistentFlags().Lookup(name) != nil {
+			return parent
+		}
+	}
+	return nil
+}
+
 // CommandAtPath returns the command reached by walking path from root.
-// Recipe tools use it to apply the same write-sink rules as the walker.
+// Each segment matches the command name or a Cobra alias. Recipe tools use
+// it to apply the same write-sink rules as the walker.
 func CommandAtPath(root *cobra.Command, path []string) *cobra.Command {
 	if root == nil || len(path) == 0 {
 		return nil
@@ -226,7 +244,7 @@ func commandChild(cmd *cobra.Command, name string) *cobra.Command {
 		return nil
 	}
 	for _, child := range cmd.Commands() {
-		if child != nil && child.Name() == name {
+		if child != nil && (child.Name() == name || child.HasAlias(name)) {
 			return child
 		}
 	}

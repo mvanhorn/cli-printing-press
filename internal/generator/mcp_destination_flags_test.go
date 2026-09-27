@@ -191,7 +191,7 @@ func TestMCPToolsHideDBParameter(t *testing.T) {
 
 	requireGeneratedCompiles(t, outputDir)
 	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "^TestMCPToolsHideDBParameter$", "-count=1")
-	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree", "-run", "^Test(BlockedStructuredArgsOnlyDropsInheritedRootFlags|ToolOptionsHideBlockedRootFlagsButKeepLocalCollisions|WriteSinkFlagsStayOutOfMCPSchemaAndArgv|InheritedWriteSinkFlagsStayOutOfMCPSchemaAndArgv|FlagWriteSinkNamesParsesAnnotation)$", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree", "-run", "^Test(BlockedStructuredArgsOnlyDropsInheritedRootFlags|ToolOptionsHideBlockedRootFlagsButKeepLocalCollisions|WriteSinkFlagsStayOutOfMCPSchemaAndArgv|InheritedWriteSinkFlagsStayOutOfMCPSchemaAndArgv|ShadowedPersistentWriteFlagStaysAvailable|FlagWriteSinkNamesParsesAnnotation)$", "-count=1")
 }
 
 func TestGeneratedRecipeToolsBlockAnnotatedWriteFlags(t *testing.T) {
@@ -204,7 +204,7 @@ func TestGeneratedRecipeToolsBlockAnnotatedWriteFlags(t *testing.T) {
 	gen.Narrative = &ReadmeNarrative{
 		Recipes: []Recipe{{
 			Title:       "Archive bundle",
-			Command:     "mcprecipe-pp-cli archive bundle --save-to=/tmp/out --window=7d --file=in.csv --json",
+			Command:     "mcprecipe-pp-cli arc bundle --save-to=/tmp/out --window=7d --file=in.csv --json",
 			Explanation: "Bundle an archive to a caller-chosen path.",
 		}},
 	}
@@ -231,7 +231,8 @@ import (
 func TestRecipeToolBlocksInheritedWriteFlag(t *testing.T) {
 	root := &cobra.Command{Use: "mcprecipe"}
 	archive := &cobra.Command{
-		Use: "archive",
+		Use:     "archive",
+		Aliases: []string{"arc"},
 		Annotations: map[string]string{
 			"mcp:write-flags": "save-to",
 		},
@@ -299,7 +300,7 @@ func TestRecipeToolBlocksInheritedWriteFlag(t *testing.T) {
 	if strings.Contains(argv, "--save-to") || strings.Contains(argv, "/tmp/out") || strings.Contains(argv, "/tmp/victim.txt") {
 		t.Fatalf("recipe handler forwarded a destination: %q", argv)
 	}
-	if !strings.Contains(argv, "archive bundle") || !strings.Contains(argv, "--window=14d") || !strings.Contains(argv, "--file=in.csv") {
+	if !strings.Contains(argv, "arc bundle") || !strings.Contains(argv, "--window=14d") || !strings.Contains(argv, "--file=in.csv") {
 		t.Fatalf("recipe handler dropped a non-sink flag: %q", argv)
 	}
 }
