@@ -155,6 +155,45 @@ func TestRecipeIntentDerivationDropsDestinationFlags(t *testing.T) {
 	}
 }
 
+func TestRecipeIntentDerivationDropsExtendedDestinationFlags(t *testing.T) {
+	t.Parallel()
+
+	intents := buildRecipeIntents("demo", &ReadmeNarrative{
+		Recipes: []Recipe{
+			{Title: "Export table", Command: "demo-pp-cli export --out=/tmp/x --output-dir /tmp/d --out-file=out.json --output-file=also.json --format=json --file=in.csv --to=2024-01-01 --json"},
+			{Title: "Write out only", Command: "demo-pp-cli export --out=/tmp/only --json"},
+		},
+	}, nil)
+
+	require.Len(t, intents, 1)
+	require.Equal(t, "export_table", intents[0].Name)
+	require.Equal(t, []string{"export", "--json"}, intents[0].Command)
+
+	names := map[string]bool{}
+	for _, param := range intents[0].Params {
+		names[param.FlagName] = true
+	}
+	require.Equal(t, map[string]bool{"format": true, "file": true, "to": true}, names)
+	for _, arg := range intents[0].Args {
+		require.NotContains(t, []string{"/tmp/x", "/tmp/d", "out.json", "also.json", "--out", "--output-dir", "--out-file", "--output-file"}, arg.Token)
+		require.NotContains(t, []string{"out", "output-dir", "out-file", "output-file", "output", "db"}, arg.Param.FlagName)
+	}
+}
+
+func TestRecipeFlagIsBlockedDestinationMatchesWalkerList(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range mcpBlockedDestinationFlagNames() {
+		require.Truef(t, recipeFlagIsBlockedDestination(name), "recipe block list missing %q", name)
+	}
+	for _, name := range []string{"audit-dir", "db", "o", "out", "out-dir", "out-file", "output", "output-dir", "output-file", "receipt-file"} {
+		require.Truef(t, recipeFlagIsBlockedDestination(name), "%q should stay blocked", name)
+	}
+	for _, name := range []string{"file", "path", "to", "dest", "target", "format", "save-to"} {
+		require.Falsef(t, recipeFlagIsBlockedDestination(name), "%q should stay available", name)
+	}
+}
+
 func TestRecipeIntentDerivationSkipsAmbiguousSeparatedFlagValue(t *testing.T) {
 	t.Parallel()
 
