@@ -435,6 +435,93 @@ func TestWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
 	})
 }
 
+func TestInheritedWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	parent := &cobra.Command{
+		Use: "archive",
+		Annotations: map[string]string{
+			FlagWriteSinksAnnotation: "save-to, report-path",
+		},
+	}
+	parent.PersistentFlags().String("save-to", "", "destination")
+	parent.Flags().String("report-path", "", "parent-only destination")
+
+	child := &cobra.Command{
+		Use:   "bundle",
+		Short: "Bundle an archive",
+		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
+		Annotations: map[string]string{
+			ReadOnlyAnnotation: "true",
+		},
+	}
+	child.Flags().String("window", "7d", "window")
+	child.Flags().String("report-path", "", "input id")
+	child.Flags().String("format", "json", "output format")
+	leaf := &cobra.Command{Use: "leaf"}
+	child.AddCommand(leaf)
+	parent.AddCommand(child)
+	root.AddCommand(parent)
+
+	if got := CommandAtPath(root, []string{"archive", "bundle"}); got != child {
+		t.Fatalf("CommandAtPath = %v, want bundle", got)
+	}
+	if CommandAtPath(root, []string{"archive", "missing"}) != nil {
+		t.Fatal("CommandAtPath returned a command for a missing path")
+	}
+	if !DestinationFlagBlocked(child, "save-to") || !DestinationFlagBlocked(leaf, "save-to") {
+		t.Fatal("inherited persistent save-to was not a destination")
+	}
+	if DestinationFlagBlocked(child, "report-path") || DestinationFlagBlocked(child, "window") || DestinationFlagBlocked(child, "format") {
+		t.Fatal("child-local or non-sink flags were treated as destinations")
+	}
+	if !DestinationFlagBlocked(nil, "out") || DestinationFlagBlocked(nil, "save-to") {
+		t.Fatal("nil command did not keep the unambiguous destination set")
+	}
+
+	names := flagWriteSinkNames(child)
+	if !names["save-to"] {
+		t.Fatalf("flagWriteSinkNames missed inherited save-to: %#v", names)
+	}
+	if names["report-path"] {
+		t.Fatalf("flagWriteSinkNames applied a parent annotation to a child-local flag: %#v", names)
+	}
+
+	bin := writeArgvHelper(t)
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, root, func() (string, error) { return bin, nil })
+	entry := s.ListTools()["archive_bundle"]
+	if entry == nil {
+		t.Fatalf("archive_bundle tool missing: %#v", s.ListTools())
+	}
+	if entry.Tool.Annotations.ReadOnlyHint == nil || !*entry.Tool.Annotations.ReadOnlyHint {
+		t.Fatal("read-only hint was not set on the child tool")
+	}
+	props := entry.Tool.InputSchema.Properties
+	if _, ok := props["save-to"]; ok {
+		t.Fatalf("inherited save-to is in the schema: %#v", props)
+	}
+	for _, kept := range []string{"window", "report-path", "format"} {
+		if _, ok := props[kept]; !ok {
+			t.Fatalf("flag %q missing from schema: %#v", kept, props)
+		}
+	}
+	rejectMCPFlag(t, entry.Handler, map[string]any{"save-to": "/tmp/victim.txt", "format": "json"}, "save-to")
+	result, err := entry.Handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"format": "json", "window": "14d", "report-path": "rpt-1"},
+	}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("non-sink flags were rejected: %s", toolResultText(result))
+	}
+	argv := decodeArgvResult(t, result)
+	want := []string{"archive", "bundle", "--format=json", "--report-path=rpt-1", "--window=14d"}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("child argv = %#v, want %#v", argv, want)
+	}
+}
+
 func assertAnnotatedWriteFlagsBlocked(t *testing.T, entry *server.ServerTool, cmd *cobra.Command, commandName string) {
 	t.Helper()
 	props := entry.Tool.InputSchema.Properties
