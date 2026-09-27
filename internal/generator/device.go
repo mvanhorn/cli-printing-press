@@ -316,13 +316,14 @@ func (g *DeviceGenerator) renderEmbedded(relPath, tmplName string, data deviceTe
 		return fmt.Errorf("read %s template: %w", tmplName, err)
 	}
 	tmpl, err := template.New(tmplName).Funcs(template.FuncMap{
-		"currentYear":      func() string { return strconv.Itoa(time.Now().Year()) },
-		"copyrightHolder":  func() string { return "contributors" },
-		"envPrefix":        naming.EnvPrefix,
-		"modulePath":       func() string { return naming.CLI(g.Spec.Name) },
-		"cliName":          naming.CLI,
-		"mcpName":          naming.MCP,
-		"yamlDoubleQuoted": yamlDoubleQuoted,
+		"currentYear":                    func() string { return strconv.Itoa(time.Now().Year()) },
+		"copyrightHolder":                func() string { return "contributors" },
+		"envPrefix":                      naming.EnvPrefix,
+		"mcpBlockedDestinationFlagNames": mcpBlockedDestinationFlagNames,
+		"modulePath":                     func() string { return naming.CLI(g.Spec.Name) },
+		"cliName":                        naming.CLI,
+		"mcpName":                        naming.MCP,
+		"yamlDoubleQuoted":               yamlDoubleQuoted,
 	}).Parse(string(content))
 	if err != nil {
 		return fmt.Errorf("parse %s template: %w", tmplName, err)

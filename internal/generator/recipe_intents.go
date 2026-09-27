@@ -197,17 +197,15 @@ func recipeFlagIsStatic(name string) bool {
 	return name == "json" || name == "agent"
 }
 
-// recipeFlagIsBlockedDestination matches cobratree blockedDestinationFlags.
-// Recipe tools do not go through cliArgsFromMCP, so destination flags must
-// be omitted here too: do not expose them as MCP inputs and do not forward
-// them to the companion CLI.
+// recipeFlagIsBlockedDestination drops unambiguous destination names while
+// the recipe text is parsed. Annotated sinks are not known from the README:
+// the emitted recipe tool calls cobratree.DestinationFlagBlocked against the
+// live Cobra tree at registration and call time. That lookup follows command
+// aliases and write sinks inherited from the ancestor that supplies the
+// persistent flag. Those names are neither advertised nor forwarded, and a
+// client-supplied value is rejected.
 func recipeFlagIsBlockedDestination(name string) bool {
-	switch name {
-	case "audit-dir", "db", "o", "output", "receipt-file":
-		return true
-	default:
-		return false
-	}
+	return mcpBlockedDestinationFlagSet[name]
 }
 
 func recipeParamType(value string) RecipeIntentParamType {

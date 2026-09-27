@@ -193,12 +193,18 @@ var reservedStructuredArgs = map[string]bool{
 
 // MCP runs commands as the server account. Letting clients choose filesystem
 // destinations would let a tool write or truncate anything that account can
-// reach.
+// reach. Unambiguous destination names are listed here; a command declares
+// any other write-sink flag with mcp:write-flags.
 var blockedDestinationFlags = map[string]bool{
 	"audit-dir":    true,
 	"db":           true,
 	"o":            true,
+	"out":          true,
+	"out-dir":      true,
+	"out-file":     true,
 	"output":       true,
+	"output-dir":   true,
+	"output-file":  true,
 	"receipt-file": true,
 }
 

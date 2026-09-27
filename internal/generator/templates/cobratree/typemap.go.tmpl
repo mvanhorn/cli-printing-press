@@ -207,6 +207,9 @@ func blockedStructuredArgsForCommand(cmd *cobra.Command) map[string]bool {
 	for name := range blockedDestinationFlags {
 		blocked[name] = true
 	}
+	for name := range flagWriteSinkNames(cmd) {
+		blocked[name] = true
+	}
 	if cmd == nil {
 		return blocked
 	}

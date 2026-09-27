@@ -15,6 +15,15 @@
 
 package mcp
 
+{{- $anyRecipeFlag := false}}
+{{- range .RecipeIntents}}
+{{- range .Params}}
+{{- if .FlagName}}
+{{- $anyRecipeFlag = true}}
+{{- end}}
+{{- end}}
+{{- end}}
+
 import (
 	{{- if or .MCP.Intents .RecipeIntents}}
 	"context"
@@ -35,7 +44,7 @@ import (
 {{- if .MCP.Intents}}
 	"{{modulePath}}/internal/client"
 {{- end}}
-{{- if .MCP.Intents}}
+{{- if or .MCP.Intents $anyRecipeFlag}}
 	"{{modulePath}}/internal/cli"
 {{- end}}
 {{- if and .MCP.Intents .HasRequiredRoles}}
@@ -73,16 +82,35 @@ func RegisterIntents(s *server.MCPServer) {
 	)
 {{- end}}
 {{- range .RecipeIntents}}
-	s.AddTool(
-		mcplib.NewTool({{printf "%q" .Name}},
-			mcplib.WithDescription({{printf "%q" .Description}}),
+	{
+{{- $needsCommandPath := false}}
 {{- range .Params}}
-			mcplib.{{mcpBindingFunc (recipeParamTypeString .Type)}}({{printf "%q" .InputName}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})),
+{{- if .FlagName}}
+{{- $needsCommandPath = true}}
 {{- end}}
+{{- end}}
+{{- if $needsCommandPath}}
+		recipePath := []string{
+{{- range .Command}}
+			{{printf "%q" .}},
+{{- end}}
+		}
+{{- end}}
+		opts := []mcplib.ToolOption{
+			mcplib.WithDescription({{printf "%q" .Description}}),
 			mcplib.WithOpenWorldHintAnnotation(true),
-		),
-		handle{{pascal .Name}},
-	)
+		}
+{{- range .Params}}
+{{- if .FlagName}}
+		if !recipeDestinationBlocked(recipePath, {{printf "%q" .FlagName}}) {
+			opts = append(opts, mcplib.{{mcpBindingFunc (recipeParamTypeString .Type)}}({{printf "%q" .InputName}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})))
+		}
+{{- else}}
+		opts = append(opts, mcplib.{{mcpBindingFunc (recipeParamTypeString .Type)}}({{printf "%q" .InputName}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})))
+{{- end}}
+{{- end}}
+		s.AddTool(mcplib.NewTool({{printf "%q" .Name}}, opts...), handle{{pascal .Name}})
+	}
 {{- end}}
 {{- if and .PreserveMCPIntentRegistration (not .PreserveMCPIntentFile)}}
 	RegisterRecipeIntents(s)
@@ -183,6 +211,19 @@ func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*m
 	}
 
 	input := req.GetArguments()
+{{- $needsCommandPath := false}}
+{{- range .Params}}
+{{- if .FlagName}}
+{{- $needsCommandPath = true}}
+{{- end}}
+{{- end}}
+{{- if $needsCommandPath}}
+	recipePath := []string{
+{{- range .Command}}
+		{{printf "%q" .}},
+{{- end}}
+	}
+{{- end}}
 	args := []string{
 	}
 {{- range .Args}}
@@ -194,13 +235,23 @@ func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*m
 	if missing{{.Param.GoName}} {
 		return mcplib.NewToolResultError({{printf "%q" (printf "%s is required" .Param.InputName)}}), nil
 	}
-{{- else if eq (recipeParamTypeString .Param.Type) "boolean"}}
-	args = appendRecipeBoolFlag(args, {{printf "%q" .Param.FlagName}}, input[{{printf "%q" .Param.InputName}}], {{.Param.BoolDefault}})
 {{- else}}
-	var missing{{.Param.GoName}} bool
-	args, missing{{.Param.GoName}} = appendRecipeStringFlag(args, {{printf "%q" .Param.FlagName}}, input[{{printf "%q" .Param.InputName}}], {{printf "%q" .Param.Default}}, {{.Param.Required}}, {{.Param.UseEquals}})
-	if missing{{.Param.GoName}} {
-		return mcplib.NewToolResultError({{printf "%q" (printf "--%s is required" .Param.FlagName)}}), nil
+	if recipeDestinationBlocked(recipePath, {{printf "%q" .Param.FlagName}}) {
+		if input != nil {
+			if _, ok := input[{{printf "%q" .Param.InputName}}]; ok {
+				return mcplib.NewToolResultError({{printf "%q" (printf "unknown MCP parameter %q" .Param.InputName)}}), nil
+			}
+		}
+	} else {
+{{- if eq (recipeParamTypeString .Param.Type) "boolean"}}
+		args = appendRecipeBoolFlag(args, {{printf "%q" .Param.FlagName}}, input[{{printf "%q" .Param.InputName}}], {{.Param.BoolDefault}})
+{{- else}}
+		var missing{{.Param.GoName}} bool
+		args, missing{{.Param.GoName}} = appendRecipeStringFlag(args, {{printf "%q" .Param.FlagName}}, input[{{printf "%q" .Param.InputName}}], {{printf "%q" .Param.Default}}, {{.Param.Required}}, {{.Param.UseEquals}})
+		if missing{{.Param.GoName}} {
+			return mcplib.NewToolResultError({{printf "%q" (printf "--%s is required" .Param.FlagName)}}), nil
+		}
+{{- end}}
 	}
 {{- end}}
 {{- end}}
@@ -382,6 +433,32 @@ var (
 func init() {
 	recipeCLIPath, recipeCLIPathErr = cobratree.SiblingCLIPath()
 }
+
+{{- if $anyRecipeFlag}}
+// recipeCommandRoot is the Cobra tree consulted for write-sink annotations.
+// Recipe text does not carry mcp:write-flags; the live command does.
+var recipeCommandRoot = cli.RootCmd
+
+func recipeDestinationBlocked(path []string, flagName string) bool {
+	if flagName == "" || recipeCommandRoot == nil {
+		return cobratree.DestinationFlagBlocked(nil, flagName)
+	}
+	return cobratree.DestinationFlagBlocked(cobratree.CommandAtPath(recipeCommandRoot(), recipeCommandPath(path)), flagName)
+}
+
+// recipeCommandPath keeps the Cobra command words. Static flags such as
+// --json are stored on the same slice and are not part of the command path.
+func recipeCommandPath(path []string) []string {
+	out := make([]string, 0, len(path))
+	for _, token := range path {
+		if token == "" || strings.HasPrefix(token, "-") {
+			break
+		}
+		out = append(out, token)
+	}
+	return out
+}
+{{- end}}
 
 func appendRecipePositional(args []string, value any, required bool) ([]string, bool) {
 	selected := recipeValueString(value)
