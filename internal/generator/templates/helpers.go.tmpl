@@ -2659,10 +2659,9 @@ func printJSONFiltered(w io.Writer, v any, flags *rootFlags) error {
 	return printJSONFilteredKeep(w, v, flags)
 }
 
-// printJSONFilteredKeep is printJSONFiltered plus a floor of row keys that
-// --agent/--compact must retain even when they appear on few rows. Passing
-// those keys as documented fields would switch on schema-aware compaction
-// and keep only gravity names, dropping the keys the caller asked to retain.
+// Caller-supplied row keys that --agent/--compact must retain cannot be
+// passed as documented fields: that switches on schema-aware compaction,
+// which keeps only gravity names and drops the keys the caller asked for.
 func printJSONFilteredKeep(w io.Writer, v any, flags *rootFlags, keep ...string) error {
 	raw, err := json.Marshal(v)
 	if err != nil {
@@ -3455,9 +3454,9 @@ func compactFields(data json.RawMessage, documentedFields ...map[string]bool) js
 	return compactFieldsKeep(data, nil, documentedFields...)
 }
 
-// compactFieldsKeep is compactFields with an extra floor of row keys. The
-// floor is not a documented-field set: schema-aware compaction keeps only
-// gravity names, which would drop the keys the caller asked to retain.
+// keep stays a floor rather than a documented-field set. Schema-aware
+// compaction keeps only gravity names and would drop the keys the caller
+// asked --agent/--compact to retain.
 func compactFieldsKeep(data json.RawMessage, keep []string, documentedFields ...map[string]bool) json.RawMessage {
 	// Try array first
 	var items []map[string]any
@@ -3972,11 +3971,10 @@ func plainCellValue(v any) string {
 	return s
 }
 
-// formatTabularCell renders one --csv/--plain cell. Nested objects and arrays
-// are compact JSON so the cell can be parsed back; fmt's %v rendering of
-// map[string]any / []any is Go syntax. Nested numbers use fixed-point text
-// so a magnitude that encoding/json would print with an exponent stays a
-// plain decimal, matching top-level float64 cells.
+// --csv/--plain cells must round-trip. fmt's %v of map[string]any and []any
+// is Go syntax, so nested values are compact JSON. Nested numbers stay
+// fixed-point so a magnitude that encoding/json would print with an exponent
+// remains a plain decimal, matching top-level float64 cells.
 func formatTabularCell(v any) string {
 	if v == nil {
 		return ""
