@@ -79,6 +79,25 @@ func TestPrintDogfoodReportDescribesSyncWithoutUpsertAccurately(t *testing.T) {
 	assert.NotContains(t, out, "Sync: uses generic Upsert only")
 }
 
+func TestPrintDogfoodReportShowsUnreadableSyncFile(t *testing.T) {
+	report := &pipeline.DogfoodReport{
+		Dir:     t.TempDir(),
+		Verdict: pipeline.DogfoodVerdictWarn,
+		PipelineCheck: pipeline.PipelineResult{
+			SyncFileEmitted:   true,
+			SyncFileReadError: true,
+		},
+	}
+
+	out := captureStdout(t, func() {
+		printDogfoodReport(report)
+	})
+
+	assert.Contains(t, out, "Sync: could not read sync.go")
+	assert.NotContains(t, out, "Sync: SKIP (no sync command)")
+	assert.NotContains(t, out, "Sync: Upsert calls not found")
+}
+
 func TestPrintDogfoodReportRespectsSkippedPathCheck(t *testing.T) {
 	report := &pipeline.DogfoodReport{
 		Dir:      t.TempDir(),

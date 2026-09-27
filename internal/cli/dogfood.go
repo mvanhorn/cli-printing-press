@@ -261,6 +261,8 @@ func printDogfoodReport(report *pipeline.DogfoodReport) {
 	fmt.Printf("Data Pipeline:     %s\n", pipelineStatus)
 	if report.PipelineCheck.SyncFileEmitted {
 		switch {
+		case report.PipelineCheck.SyncFileReadError:
+			fmt.Println("  Sync: could not read sync.go")
 		case report.PipelineCheck.SyncCallsDomain:
 			fmt.Println("  Sync: calls domain-specific Upsert methods (GOOD)")
 		case report.PipelineCheck.SyncCallsGeneric:

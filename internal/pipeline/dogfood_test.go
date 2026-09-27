@@ -880,6 +880,7 @@ func TestCheckPipelineIntegrityClassifiesGenericAndMissingUpsert(t *testing.T) {
 
 			result := checkPipelineIntegrity(dir)
 			assert.True(t, result.SyncFileEmitted)
+			assert.False(t, result.SyncFileReadError)
 			assert.False(t, result.SyncCallsDomain)
 			assert.Equal(t, tc.wantGeneric, result.SyncCallsGeneric)
 			assert.Contains(t, result.Detail, tc.wantDetail)
@@ -894,7 +895,31 @@ func TestCheckPipelineIntegrityWithoutSyncFileOmitsSyncDetail(t *testing.T) {
 
 	result := checkPipelineIntegrity(dir)
 	assert.False(t, result.SyncFileEmitted)
+	assert.False(t, result.SyncFileReadError)
 	assert.NotContains(t, result.Detail, "sync Upsert calls not found")
+}
+
+func TestCheckPipelineIntegrityReportsUnreadableSyncFile(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	// A directory at the generated sync.go path is reliably unreadable via
+	// os.ReadFile across platforms, including when tests run as root.
+	require.NoError(t, os.Mkdir(filepath.Join(cliDir, "sync.go"), 0o755))
+
+	result := checkPipelineIntegrity(dir)
+	assert.True(t, result.SyncFileEmitted)
+	assert.True(t, result.SyncFileReadError)
+	assert.Contains(t, result.Detail, "sync.go could not be read")
+	encoded, err := json.Marshal(result)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"sync_file_read_error":true`)
+	assert.Contains(t, collectDogfoodIssues(&DogfoodReport{PipelineCheck: result}, true), "sync.go could not be read")
+	assert.NotContains(t, collectDogfoodIssues(&DogfoodReport{PipelineCheck: result}, true), "sync Upsert calls not found")
+	assert.NotContains(t, collectDogfoodIssues(&DogfoodReport{PipelineCheck: result}, true), "defaultSyncResources empty")
+	passingReport := passingDogfoodReport()
+	passingReport.PipelineCheck = result
+	assert.Equal(t, DogfoodVerdictWarn, deriveDogfoodVerdict(passingReport, false))
 }
 
 func TestHasPopulatedSyncResources(t *testing.T) {
