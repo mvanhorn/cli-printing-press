@@ -37,6 +37,11 @@ const (
 	// indexes that write to user-visible files when populated. It is enforced
 	// only on commands that also carry ReadOnlyAnnotation.
 	PositionalWriteSinksAnnotation = "mcp:write-positionals"
+	// FlagWriteSinksAnnotation lists Cobra flag names whose values choose a
+	// filesystem write destination. The walker drops them from the MCP schema
+	// and rejects them as arguments, including on read-only tools. Separate
+	// names with commas, semicolons, or whitespace. A leading "--" is ignored.
+	FlagWriteSinksAnnotation = "mcp:write-flags"
 )
 
 type commandKind int
@@ -135,6 +140,34 @@ func isMCPLocalWrite(cmd *cobra.Command) bool {
 	return annotationIsTrue(cmd, LocalWriteAnnotation)
 }
 
+func annotationListParts(raw string) []string {
+	return strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n'
+	})
+}
+
+func flagWriteSinkNames(cmd *cobra.Command) map[string]bool {
+	if cmd == nil || cmd.Annotations == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(cmd.Annotations[FlagWriteSinksAnnotation])
+	if raw == "" {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, part := range annotationListParts(raw) {
+		name := strings.TrimLeft(strings.TrimSpace(part), "-")
+		if name == "" {
+			continue
+		}
+		out[name] = true
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func positionalWriteSinkIndexes(cmd *cobra.Command) map[int]bool {
 	if cmd == nil || cmd.Annotations == nil {
 		return nil
@@ -144,9 +177,7 @@ func positionalWriteSinkIndexes(cmd *cobra.Command) map[int]bool {
 		return nil
 	}
 	out := map[int]bool{}
-	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
-		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n'
-	}) {
+	for _, part := range annotationListParts(raw) {
 		idx, err := strconv.Atoi(strings.TrimSpace(part))
 		if err != nil || idx < 0 {
 			continue

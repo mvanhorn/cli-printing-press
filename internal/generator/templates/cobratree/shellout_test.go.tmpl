@@ -255,7 +255,7 @@ func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 	if !blocked["config"] {
 		t.Fatalf("inherited root --config was not blocked: %#v", blocked)
 	}
-	for _, destination := range []string{"audit-dir", "db", "o", "output", "receipt-file"} {
+	for _, destination := range []string{"audit-dir", "db", "o", "out", "out-dir", "out-file", "output", "output-dir", "output-file", "receipt-file"} {
 		if !blocked[destination] {
 			t.Fatalf("destination flag %q was not blocked: %#v", destination, blocked)
 		}
@@ -275,6 +275,234 @@ func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 	want := []string{"--json=true", "--profile=local-profile"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP command-aware blocklist: got %v, want %v", got, want)
+	}
+}
+
+func TestWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	noop := func(cmd *cobra.Command, args []string) error { return nil }
+
+	exportCmd := &cobra.Command{
+		Use:   "export",
+		RunE:  noop,
+		Short: "Export rows",
+		Annotations: map[string]string{
+			ReadOnlyAnnotation: "true",
+		},
+	}
+	exportCmd.Flags().String("out", "", "write the table to this path")
+	exportCmd.Flags().String("output-dir", "", "directory for exported files")
+	exportCmd.Flags().String("out-dir", "", "output directory")
+	exportCmd.Flags().String("out-file", "", "single output file")
+	exportCmd.Flags().String("output-file", "", "single output file")
+	exportCmd.Flags().String("format", "json", "output format")
+	exportCmd.Flags().String("to", "", "end date")
+	exportCmd.Flags().String("file", "", "input file")
+	exportCmd.Flags().String("dest", "", "airport code")
+	exportCmd.Flags().String("target", "", "comparison target")
+	exportCmd.Flags().String("path", "", "resource path")
+	exportCmd.Flags().String("save-to", "", "custom destination")
+
+	archiveCmd := &cobra.Command{
+		Use:  "archive",
+		RunE: noop,
+		Annotations: map[string]string{
+			FlagWriteSinksAnnotation: "save-to, report-path; --bundle",
+		},
+	}
+	archiveCmd.Flags().String("save-to", "", "destination")
+	archiveCmd.Flags().String("report-path", "", "destination")
+	archiveCmd.Flags().String("bundle", "", "destination")
+	archiveCmd.Flags().String("format", "json", "output format")
+	archiveCmd.Flags().String("file", "", "input file")
+
+	previewCmd := &cobra.Command{
+		Use:  "preview",
+		RunE: noop,
+		Annotations: map[string]string{
+			ReadOnlyAnnotation:       "true",
+			FlagWriteSinksAnnotation: "save-to",
+		},
+	}
+	previewCmd.Flags().String("save-to", "", "destination")
+	previewCmd.Flags().String("format", "json", "output format")
+	root.AddCommand(exportCmd, archiveCmd, previewCmd)
+
+	bin := writeArgvHelper(t)
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, root, func() (string, error) { return bin, nil })
+	tools := s.ListTools()
+
+	t.Run("default destination names", func(t *testing.T) {
+		entry := tools["export"]
+		if entry == nil {
+			t.Fatalf("export tool missing: %#v", tools)
+		}
+		if entry.Tool.Annotations.ReadOnlyHint == nil || !*entry.Tool.Annotations.ReadOnlyHint {
+			t.Fatal("export readOnlyHint was not set")
+		}
+		props := entry.Tool.InputSchema.Properties
+		for _, hidden := range []string{"out", "output-dir", "out-dir", "out-file", "output-file", "output", "o", "db", "audit-dir", "receipt-file"} {
+			if _, ok := props[hidden]; ok {
+				t.Fatalf("destination flag %q is in the export schema: %#v", hidden, props)
+			}
+		}
+		for _, kept := range []string{"format", "to", "file", "dest", "target", "path", "save-to"} {
+			if _, ok := props[kept]; !ok {
+				t.Fatalf("non-destination flag %q missing from export schema: %#v", kept, props)
+			}
+		}
+
+		blocked := blockedStructuredArgsForCommand(exportCmd)
+		got := cliArgsFromMCP(map[string]any{
+			"out":        "/tmp/victim.txt",
+			"output-dir": "/tmp/outdir",
+			"format":     "json",
+			"to":         "2024-01-01",
+			"file":       "in.csv",
+			"save-to":    "/tmp/custom",
+		}, blocked)
+		want := []string{"--file=in.csv", "--format=json", "--save-to=/tmp/custom", "--to=2024-01-01"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("cliArgsFromMCP forwarded a destination flag: got %v, want %v", got, want)
+		}
+
+		rejectMCPFlag(t, entry.Handler, map[string]any{"out": "/tmp/victim.txt", "format": "json"}, "out")
+		rejectMCPFlag(t, entry.Handler, map[string]any{"output-dir": "/tmp/outdir", "format": "json"}, "output-dir")
+
+		result, err := entry.Handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+			Arguments: map[string]any{
+				"format":  "json",
+				"to":      "2024-01-01",
+				"file":    "in.csv",
+				"save-to": "/tmp/custom",
+			},
+		}})
+		if err != nil {
+			t.Fatalf("handler returned transport error: %v", err)
+		}
+		if result == nil || result.IsError {
+			t.Fatalf("non-destination flags were rejected: %s", toolResultText(result))
+		}
+		argv := decodeArgvResult(t, result)
+		wantArgv := []string{"export", "--file=in.csv", "--format=json", "--save-to=/tmp/custom", "--to=2024-01-01"}
+		if !reflect.DeepEqual(argv, wantArgv) {
+			t.Fatalf("child argv = %#v, want %#v", argv, wantArgv)
+		}
+	})
+
+	t.Run("annotated write flags", func(t *testing.T) {
+		entry := tools["archive"]
+		if entry == nil {
+			t.Fatalf("archive tool missing: %#v", tools)
+		}
+		if entry.Tool.Annotations.ReadOnlyHint != nil && *entry.Tool.Annotations.ReadOnlyHint {
+			t.Fatal("archive readOnlyHint was set")
+		}
+		assertAnnotatedWriteFlagsBlocked(t, entry, archiveCmd, "archive")
+	})
+
+	t.Run("annotated write flags stay blocked when read-only", func(t *testing.T) {
+		entry := tools["preview"]
+		if entry == nil {
+			t.Fatalf("preview tool missing: %#v", tools)
+		}
+		if entry.Tool.Annotations.ReadOnlyHint == nil || !*entry.Tool.Annotations.ReadOnlyHint {
+			t.Fatal("preview readOnlyHint was not set")
+		}
+		props := entry.Tool.InputSchema.Properties
+		if _, ok := props["save-to"]; ok {
+			t.Fatalf("read-only hint exposed save-to: %#v", props)
+		}
+		if _, ok := props["format"]; !ok {
+			t.Fatalf("format missing from preview schema: %#v", props)
+		}
+		rejectMCPFlag(t, entry.Handler, map[string]any{"save-to": "/tmp/victim.txt", "format": "json"}, "save-to")
+		result, err := entry.Handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+			Arguments: map[string]any{"format": "json"},
+		}})
+		if err != nil {
+			t.Fatalf("handler returned transport error: %v", err)
+		}
+		if result == nil || result.IsError {
+			t.Fatalf("format was rejected on a read-only tool: %s", toolResultText(result))
+		}
+		argv := decodeArgvResult(t, result)
+		want := []string{"preview", "--format=json"}
+		if !reflect.DeepEqual(argv, want) {
+			t.Fatalf("child argv = %#v, want %#v", argv, want)
+		}
+	})
+}
+
+func assertAnnotatedWriteFlagsBlocked(t *testing.T, entry *server.ServerTool, cmd *cobra.Command, commandName string) {
+	t.Helper()
+	props := entry.Tool.InputSchema.Properties
+	for _, hidden := range []string{"save-to", "report-path", "bundle"} {
+		if _, ok := props[hidden]; ok {
+			t.Fatalf("annotated flag %q is in the schema: %#v", hidden, props)
+		}
+	}
+	for _, kept := range []string{"format", "file"} {
+		if _, ok := props[kept]; !ok {
+			t.Fatalf("flag %q missing from schema: %#v", kept, props)
+		}
+	}
+	blocked := blockedStructuredArgsForCommand(cmd)
+	for _, name := range []string{"save-to", "report-path", "bundle"} {
+		if !blocked[name] {
+			t.Fatalf("annotated flag %q was not blocked: %#v", name, blocked)
+		}
+	}
+	if blocked["format"] || blocked["file"] {
+		t.Fatalf("non-sink flags were blocked: %#v", blocked)
+	}
+	got := cliArgsFromMCP(map[string]any{
+		"save-to":     "/tmp/victim.txt",
+		"report-path": "/tmp/report",
+		"bundle":      "/tmp/bundle",
+		"format":      "json",
+		"file":        "in.csv",
+	}, blocked)
+	want := []string{"--file=in.csv", "--format=json"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("cliArgsFromMCP forwarded an annotated sink: got %v, want %v", got, want)
+	}
+	rejectMCPFlag(t, entry.Handler, map[string]any{"save-to": "/tmp/victim.txt", "format": "json"}, "save-to")
+	result, err := entry.Handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"format": "json", "file": "in.csv"},
+	}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("non-sink flags were rejected: %s", toolResultText(result))
+	}
+	argv := decodeArgvResult(t, result)
+	wantArgv := []string{commandName, "--file=in.csv", "--format=json"}
+	if !reflect.DeepEqual(argv, wantArgv) {
+		t.Fatalf("child argv = %#v, want %#v", argv, wantArgv)
+	}
+}
+
+func rejectMCPFlag(t *testing.T, handler server.ToolHandlerFunc, args map[string]any, flag string) {
+	t.Helper()
+	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: args,
+	}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("handler accepted %q: %s", flag, toolResultText(result))
+	}
+	got := toolResultText(result)
+	want := `unknown MCP parameter "` + flag + `"`
+	if !strings.Contains(got, want) {
+		t.Fatalf("tool error = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "cli ") {
+		t.Fatalf("destination flag %q reached the child CLI: %q", flag, got)
 	}
 }
 
@@ -375,6 +603,27 @@ func TestPositionalWriteSinkIndexesParsesAnnotation(t *testing.T) {
 	}
 	if got[1] {
 		t.Fatalf("positionalWriteSinkIndexes unexpectedly included index 1: %#v", got)
+	}
+}
+
+func TestFlagWriteSinkNamesParsesAnnotation(t *testing.T) {
+	cmd := &cobra.Command{
+		Use: "export",
+		Annotations: map[string]string{
+			FlagWriteSinksAnnotation: "save-to, report-path; --bundle\narchive-to",
+		},
+	}
+	got := flagWriteSinkNames(cmd)
+	for _, name := range []string{"save-to", "report-path", "bundle", "archive-to"} {
+		if !got[name] {
+			t.Fatalf("flagWriteSinkNames missing %q from %#v", name, got)
+		}
+	}
+	if got["--bundle"] || got["bundle\narchive-to"] {
+		t.Fatalf("flagWriteSinkNames kept a decorated name: %#v", got)
+	}
+	if flagWriteSinkNames(&cobra.Command{Use: "plain"}) != nil {
+		t.Fatal("flagWriteSinkNames returned names for a command without the annotation")
 	}
 }
 

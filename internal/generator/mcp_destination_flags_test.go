@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -96,6 +97,14 @@ func TestGeneratedMCPBlocksCommandLocalDBFlag(t *testing.T) {
 
 	shellout := readGeneratedFile(t, outputDir, "internal", "mcp", "cobratree", "shellout.go")
 	require.Contains(t, shellout, `"db":           true`)
+	for _, name := range mcpBlockedDestinationFlagNames() {
+		require.Containsf(t, shellout, strconv.Quote(name)+":", "emitted blockedDestinationFlags missing %q", name)
+	}
+	classify := readGeneratedFile(t, outputDir, "internal", "mcp", "cobratree", "classify.go")
+	require.Contains(t, classify, `FlagWriteSinksAnnotation = "mcp:write-flags"`)
+	require.Contains(t, classify, "func flagWriteSinkNames(")
+	typemap := readGeneratedFile(t, outputDir, "internal", "mcp", "cobratree", "typemap.go")
+	require.Contains(t, typemap, "flagWriteSinkNames(cmd)")
 
 	intents := readGeneratedFile(t, outputDir, "internal", "mcp", "intents.go")
 	require.NotContains(t, intents, `mcplib.WithString("db"`)
@@ -182,5 +191,5 @@ func TestMCPToolsHideDBParameter(t *testing.T) {
 
 	requireGeneratedCompiles(t, outputDir)
 	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "^TestMCPToolsHideDBParameter$", "-count=1")
-	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree", "-run", "^Test(BlockedStructuredArgsOnlyDropsInheritedRootFlags|ToolOptionsHideBlockedRootFlagsButKeepLocalCollisions)$", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree", "-run", "^Test(BlockedStructuredArgsOnlyDropsInheritedRootFlags|ToolOptionsHideBlockedRootFlagsButKeepLocalCollisions|WriteSinkFlagsStayOutOfMCPSchemaAndArgv|FlagWriteSinkNamesParsesAnnotation)$", "-count=1")
 }

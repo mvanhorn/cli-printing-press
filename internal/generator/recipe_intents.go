@@ -197,17 +197,12 @@ func recipeFlagIsStatic(name string) bool {
 	return name == "json" || name == "agent"
 }
 
-// recipeFlagIsBlockedDestination matches cobratree blockedDestinationFlags.
-// Recipe tools do not go through cliArgsFromMCP, so destination flags must
-// be omitted here too: do not expose them as MCP inputs and do not forward
-// them to the companion CLI.
+// recipeFlagIsBlockedDestination matches the names emitted as cobratree
+// blockedDestinationFlags. Recipe tools do not go through cliArgsFromMCP,
+// so destination flags must be omitted here too: do not expose them as MCP
+// inputs and do not forward them to the companion CLI.
 func recipeFlagIsBlockedDestination(name string) bool {
-	switch name {
-	case "audit-dir", "db", "o", "output", "receipt-file":
-		return true
-	default:
-		return false
-	}
+	return mcpBlockedDestinationFlagSet[name]
 }
 
 func recipeParamType(value string) RecipeIntentParamType {
