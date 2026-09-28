@@ -867,7 +867,7 @@ func newLearningsListCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List recorded learnings",
+		Short: "List recorded learnings from the local learn-loop-example-pp-cli search_learnings table",
 		Example: `  learn-loop-example-pp-cli learnings list --agent
   learn-loop-example-pp-cli learnings list --query "$QUERY"
   learn-loop-example-pp-cli learnings list --warnings --agent`,
