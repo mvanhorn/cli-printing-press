@@ -192,6 +192,8 @@ func TestGeneratorEmitsNovelFeatureCommandStubs(t *testing.T) {
 	assert.Contains(t, call, `"mcp:read-only": "false"`)
 	assert.Contains(t, call, `"pp:data-source": "auto"`)
 	assert.Contains(t, call, `"pp:novel-scaffold": "true"`)
+	assert.NotContains(t, call, `"pp:typed-exit-codes"`,
+		"novel feature leaves keep their own RunE and must not declare the parent exit codes")
 	assert.Contains(t, call, `StringSliceVar(&flagTag, "tag", nil`)
 	assert.Contains(t, call, `StringVar(&flagDedupeKey, "dedupe-key", ""`)
 	assert.Contains(t, call, `StringVar(&flagTtl, "ttl", ""`)
@@ -206,6 +208,7 @@ func TestGeneratorEmitsNovelFeatureCommandStubs(t *testing.T) {
 	assert.Contains(t, parent, `Short:       "Work with runs"`)
 	assert.Contains(t, parent, `Example:     "  apify-pp-cli runs classify run-123 --limit 10"`)
 	assert.Contains(t, parent, "RunE:        parentNoSubcommandRunE(flags)")
+	assert.Contains(t, parent, `"pp:typed-exit-codes": "0,2"`)
 	assert.Contains(t, parent, "addNovelCommandIfAbsent(cmd, newNovelRunsClassifyCmd(flags))")
 	assert.NotContains(t, parent, `"pp:novel-scaffold"`)
 
@@ -216,6 +219,8 @@ func TestGeneratorEmitsNovelFeatureCommandStubs(t *testing.T) {
 	assert.Contains(t, classify, `"mcp:read-only": "false"`)
 	assert.Contains(t, classify, `"pp:data-source": "auto"`)
 	assert.Contains(t, classify, `"pp:novel-scaffold": "true"`)
+	assert.NotContains(t, classify, `"pp:typed-exit-codes"`,
+		"novel feature leaves keep their own RunE and must not declare the parent exit codes")
 	assert.Contains(t, classify, `StringVar(&flagLimit, "limit", ""`)
 	assert.Contains(t, classify, `TODO: implement novel feature %q", "runs classify"`)
 	assert.Contains(t, classify, `return writeDryRun(cmd.OutOrStdout(), flags, "runs classify")`)
