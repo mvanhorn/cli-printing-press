@@ -514,7 +514,7 @@ func newPlatformClientSourceSetCmd(flags *rootFlags) *cobra.Command {
 }
 
 func newPlatformClientListCmd(flags *rootFlags) *cobra.Command {
-	return &cobra.Command{Use: "list", Short: "List client profiles", Args: cobra.NoArgs, Annotations: map[string]string{"mcp:read-only": "true"}, RunE: func(cmd *cobra.Command, args []string) error {
+	return &cobra.Command{Use: "list", Short: {{printf "%q" (printf "List client profile names from the shared printing-press clients store for %s-pp-cli" .Name)}}, Args: cobra.NoArgs, Annotations: map[string]string{"mcp:read-only": "true"}, RunE: func(cmd *cobra.Command, args []string) error {
 		names, err := platform.ListProfiles()
 		if err != nil {
 			return err
