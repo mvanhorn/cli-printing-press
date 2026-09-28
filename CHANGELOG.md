@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.32.6](https://github.com/mvanhorn/cli-printing-press/compare/v4.32.5...v4.32.6) (2026-09-28)
+
+
+### Bug Fixes
+
+* **cli:** block MCP write-sink flags outside the fixed name list ([#4821](https://github.com/mvanhorn/cli-printing-press/issues/4821)) ([0fc5409](https://github.com/mvanhorn/cli-printing-press/commit/0fc5409d8a6b78aa193ac3ed455305eb0e328180))
+* **cli:** declare typed-exit-codes on framework parents ([#4832](https://github.com/mvanhorn/cli-printing-press/issues/4832)) ([622e5f5](https://github.com/mvanhorn/cli-printing-press/commit/622e5f51b9486b997d83251db8619dcd9797d951)), closes [#4812](https://github.com/mvanhorn/cli-printing-press/issues/4812)
+* **cli:** migrate legacy parent-key store rows ([#4818](https://github.com/mvanhorn/cli-printing-press/issues/4818)) ([8e36366](https://github.com/mvanhorn/cli-printing-press/commit/8e3636699940d0e8aa2c4d75c0246100415bad65))
+* **cli:** omit live dogfood transcripts from published manuscripts ([#4808](https://github.com/mvanhorn/cli-printing-press/issues/4808)) ([bf63ec1](https://github.com/mvanhorn/cli-printing-press/commit/bf63ec12f97ff0976906c055db7052b1cf381bd4))
+* **cli:** reject novel features with unverified hosts ([#4804](https://github.com/mvanhorn/cli-printing-press/issues/4804)) ([68979a6](https://github.com/mvanhorn/cli-printing-press/commit/68979a6d8f9ea4f161aa1f3a9f6897154dd8e83f))
+* **cli:** stabilize csv, plain, agent, and quiet row output ([#4819](https://github.com/mvanhorn/cli-printing-press/issues/4819)) ([30fd819](https://github.com/mvanhorn/cli-printing-press/commit/30fd8194740f6dd3b8b09fc7139d1f60c71a3de0))
+* **cli:** stop false dogfood warnings for absent sync ([#4829](https://github.com/mvanhorn/cli-printing-press/issues/4829)) ([6fb9820](https://github.com/mvanhorn/cli-printing-press/commit/6fb9820ff556fc20e95ae52fed7b172ac45432f3))
+* **cli:** stop using novel-feature group headings as parent help ([#4820](https://github.com/mvanhorn/cli-printing-press/issues/4820)) ([39f25c3](https://github.com/mvanhorn/cli-printing-press/commit/39f25c31437731c55dd4ed5f452b7b0a19f0ffcc))
+* **cli:** thicken thin platform and teach list Shorts ([#4831](https://github.com/mvanhorn/cli-printing-press/issues/4831)) ([640438a](https://github.com/mvanhorn/cli-printing-press/commit/640438ad27edafebfd78162318190a51c3e73773))
+
 ## [4.32.5](https://github.com/mvanhorn/cli-printing-press/compare/v4.32.4...v4.32.5) (2026-09-25)
 
 
