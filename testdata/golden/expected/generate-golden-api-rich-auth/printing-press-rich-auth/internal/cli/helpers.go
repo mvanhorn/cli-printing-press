@@ -1011,7 +1011,7 @@ func paginatedGet(ctx context.Context, c interface {
 		if isDryRunResponseForClient(c, data) {
 			return data, nil
 		}
-		emitTruncationWarning(ctx, data, cursorLookupPath, hasMoreField, paginationType)
+		emitTruncationWarning(ctx, data, cursorLookupPath, hasMoreField, paginationType, cursorParam)
 		return data, nil
 	}
 
@@ -1046,6 +1046,7 @@ func paginatedGet(ctx context.Context, c interface {
 	foundCursorField := false
 	reportedTotal := 0
 	page := 0
+	omitCompleteEvent := false
 	for {
 		page++
 		if humanFriendly {
@@ -1127,6 +1128,32 @@ func paginatedGet(ctx context.Context, c interface {
 				}
 
 				nextAdvance := resolvePaginatedNextCursor(obj, cursorLookupPath, cursorParam)
+				// Boolean has_more stays on the bool path below so a false value
+				// still loses to a declared cursor. A string is presence, and a
+				// missing next-link field ends the walk even if a sibling cursor remains.
+				hasExplicitNoMore := false
+				missingHasMoreCursor := false
+				if hasMoreField != "" {
+					moreRaw, present := rawAtPath(obj, hasMoreField)
+					reading := readHasMoreField(moreRaw, present, cursorParam)
+					switch {
+					case reading.nonBool && reading.nextCursor != "":
+						nextAdvance = reading.nextCursor
+					case reading.nonBool && reading.more && (reading.followable || nextAdvance == ""):
+						emitMissingPaginationCursorWarning(ctx, hasMoreField)
+						omitCompleteEvent = true
+						missingHasMoreCursor = true
+					case reading.nonBool && !reading.more:
+						nextAdvance = ""
+						hasExplicitNoMore = true
+					case hasMoreFieldIsNextLink(hasMoreField) && (!present || rawJSONNull(moreRaw)):
+						nextAdvance = ""
+						hasExplicitNoMore = true
+					}
+				}
+				if missingHasMoreCursor {
+					break
+				}
 				if nextAdvance != "" {
 					foundCursorField = true
 					if _, seen := seenCursorTokens[nextAdvance]; seen {
@@ -1149,7 +1176,6 @@ func paginatedGet(ctx context.Context, c interface {
 
 				// Check has_more. Page and offset paginators can advance
 				// client-side; cursor-based APIs still need a body cursor.
-				hasExplicitNoMore := false
 				if hasMoreField != "" {
 					if moreRaw, ok := rawAtPath(obj, hasMoreField); ok {
 						var more bool
@@ -1206,10 +1232,12 @@ func paginatedGet(ctx context.Context, c interface {
 	if fetchAll && page == 1 && nextCursorPath == "" && !foundCursorField && hasMoreField == "" && paginationType != "offset" && paginationType != "page" {
 		emitMissingPaginationSignalWarning(ctx)
 	}
-	if humanFriendly {
-		fmt.Fprintf(os.Stderr, "fetched %d items across %d pages\n", len(allItems), page)
-	} else {
-		fmt.Fprintf(os.Stderr, `{"event":"complete","total":%d,"pages":%d}`+"\n", len(allItems), page)
+	if !omitCompleteEvent {
+		if humanFriendly {
+			fmt.Fprintf(os.Stderr, "fetched %d items across %d pages\n", len(allItems), page)
+		} else {
+			fmt.Fprintf(os.Stderr, `{"event":"complete","total":%d,"pages":%d}`+"\n", len(allItems), page)
+		}
 	}
 	var result []byte
 	if collectionField != "" {
@@ -1360,7 +1388,7 @@ func nextClientSidePaginationCursor(params map[string]string, cursorParam, pagin
 // Silent page-1 truncation is the worst-possible mode for agents,
 // who otherwise compute totals against an incomplete set without
 // passing --all.
-func emitTruncationWarning(ctx context.Context, data json.RawMessage, nextCursorPath, hasMoreField, paginationType string) {
+func emitTruncationWarning(ctx context.Context, data json.RawMessage, nextCursorPath, hasMoreField, paginationType, cursorParam string) {
 	if nextCursorPath == "" && hasMoreField == "" {
 		return
 	}
@@ -1377,7 +1405,15 @@ func emitTruncationWarning(ctx context.Context, data json.RawMessage, nextCursor
 	var hasMore bool
 	if hasMoreField != "" {
 		if moreRaw, ok := rawAtPath(obj, hasMoreField); ok {
-			_ = json.Unmarshal(moreRaw, &hasMore)
+			reading := readHasMoreField(moreRaw, true, cursorParam)
+			if reading.nonBool {
+				hasMore = reading.more
+				if nextCursor == "" {
+					nextCursor = reading.nextCursor
+				}
+			} else {
+				_ = json.Unmarshal(moreRaw, &hasMore)
+			}
 		}
 	}
 	if nextCursor == "" && !hasMore {
@@ -1466,9 +1502,10 @@ func paginationCursorToken(raw json.RawMessage) string {
 	return paginationLinkURL(raw)
 }
 
-// Declared next-cursor paths win, then JSON:API/HAL links.next and top-level
-// next URLs. Followable URLs are reduced to the query token the request param
-// can carry; a raw URL is not written into page/offset params.
+// Declared next-cursor paths win, then JSON:API/HAL links.next, nested
+// paging.next, and top-level next URLs. Followable URLs are reduced to the
+// query token the request param can carry; a raw URL is not written into
+// page/offset params.
 func resolvePaginatedNextCursor(obj map[string]json.RawMessage, cursorLookupPath, cursorParam string) string {
 	token := ""
 	if cursorLookupPath != "" {
@@ -1482,7 +1519,55 @@ func resolvePaginatedNextCursor(obj map[string]json.RawMessage, cursorLookupPath
 	if fromLinks := nextCursorFromLinks(obj, cursorParam); fromLinks != "" {
 		return fromLinks
 	}
+	if fromPaging := nextCursorFromPaging(obj, cursorParam); fromPaging != "" {
+		return fromPaging
+	}
 	return nextCursorFromTopLevelURL(obj, cursorParam)
+}
+
+// Boolean JSON leaves nonBool false so the existing bool path is unchanged.
+type hasMoreReading struct {
+	nonBool    bool
+	more       bool
+	followable bool
+	nextCursor string
+}
+
+func readHasMoreField(raw json.RawMessage, present bool, cursorParam string) hasMoreReading {
+	if !present || rawJSONNull(raw) {
+		return hasMoreReading{}
+	}
+	var more bool
+	if json.Unmarshal(raw, &more) == nil {
+		return hasMoreReading{}
+	}
+	var text string
+	if json.Unmarshal(raw, &text) != nil {
+		return hasMoreReading{}
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return hasMoreReading{nonBool: true}
+	}
+	reading := hasMoreReading{nonBool: true, more: true}
+	if isFollowableNextURL(text) {
+		reading.followable = true
+		reading.nextCursor = cursorFromNextURL(text, cursorParam)
+	}
+	return reading
+}
+
+func hasMoreFieldIsNextLink(path string) bool {
+	leaf := path
+	if i := strings.LastIndex(path, "."); i >= 0 {
+		leaf = path[i+1:]
+	}
+	leaf = strings.ToLower(leaf)
+	return leaf == "next" || leaf == "next_url"
+}
+
+func rawJSONNull(raw json.RawMessage) bool {
+	return string(bytes.TrimSpace(raw)) == "null"
 }
 
 func cursorTokenFromMaybeURL(token, cursorParam string) string {
@@ -1559,6 +1644,28 @@ func nextCursorFromLinks(envelope map[string]json.RawMessage, cursorParam string
 		}
 	}
 	return ""
+}
+
+// Nested paging.next is a followable URL, reduced the same way as links.next.
+// An opaque paging.next is left for the declared cursor path.
+func nextCursorFromPaging(envelope map[string]json.RawMessage, cursorParam string) string {
+	rawPaging, ok := envelope["paging"]
+	if !ok {
+		return ""
+	}
+	var paging map[string]json.RawMessage
+	if json.Unmarshal(rawPaging, &paging) != nil {
+		return ""
+	}
+	rawNext, ok := paging["next"]
+	if !ok {
+		return ""
+	}
+	nextURL := paginationLinkURL(rawNext)
+	if nextURL == "" || !isFollowableNextURL(nextURL) {
+		return ""
+	}
+	return cursorFromNextURL(nextURL, cursorParam)
 }
 
 func paginationLinkURL(raw json.RawMessage) string {
