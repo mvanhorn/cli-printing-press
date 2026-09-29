@@ -252,7 +252,7 @@ func TestIsMCPExecutionReadOnly(t *testing.T) {
 		return err
 	}
 	mainSrc := strings.Replace(string(mainData),
-		"\t\thttpSrv := &http.Server{\n\t\t\tAddr:    bindAddr,\n\t\t\tHandler: requireBearerAuth(token, inner),\n\t\t}",
+		"\t\thttpSrv := &http.Server{\n\t\t\tAddr:              bindAddr,\n\t\t\tHandler:           requireBearerAuth(token, inner),\n\t\t\tReadHeaderTimeout: 10 * time.Second,\n\t\t}",
 		"\t\thttpSrv := &http.Server{\n\t\t\tAddr:              bindAddr,\n\t\t\tHandler:           requireBearerAuth(token, inner),\n\t\t\tReadHeaderTimeout: 10 * time.Second,\n\t\t\tReadTimeout:       30 * time.Second,\n\t\t\tWriteTimeout:      30 * time.Second,\n\t\t\tIdleTimeout:       120 * time.Second,\n\t\t}",
 		1)
 	if mainSrc == string(mainData) {

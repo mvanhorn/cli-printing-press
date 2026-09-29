@@ -3503,7 +3503,7 @@ func scoreDeadCode(dir string) int {
 	otherHelpers := readOtherGoFiles(cliDir, map[string]bool{"helpers.go": true})
 	// Check both other files AND helpers.go itself for intra-file calls.
 	// Use Count >= 2 because the definition itself contributes 1 occurrence of name+"(".
-	allContent := helpersContent + "\n" + otherHelpers
+	allContent := helpersContent + "\n" + otherHelpers + "\n" + readPackageSources(filepath.Join(dir, "internal", "mcp"))
 	for _, name := range funcNames {
 		if isAllowedDeadHelper(name) {
 			continue

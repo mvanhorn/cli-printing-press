@@ -1034,6 +1034,9 @@ func (c *Client) GetNoCache(ctx context.Context, path string, params map[string]
 // writes cacheable fresh responses on success. See GetNoCache for when to
 // prefer this over Get/GetWithHeaders.
 func (c *Client) GetWithHeadersNoCache(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+	if err := c.validateCachedRequestAuth(ctx); err != nil {
+		return nil, err
+	}
 	binaryResponse := c.wantsBinaryResponse(headers)
 	result, _, err := c.do(ctx, "GET", path, params, nil, headers)
 	if err == nil && c.responseCacheEnabled(binaryResponse) {

@@ -22,6 +22,7 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 		Use:         "list",
 		Short:       "List projects",
 		Example:     "  printing-press-golden-pp-cli projects list --x-api-version 2026-04-01",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "projects.list", "pp:method": "GET", "pp:path": "/projects", "mcp:read-only": "true", "pp:happy-args": "--x-api-version=2026-04-01"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cmd.Flags().Changed("status") {

@@ -172,6 +172,44 @@ func isSuggestableReadLeaf(cmd *cobra.Command) bool {
 	return cmd.Args(cmd, []string{}) == nil
 }
 
+// doctorBaseURLIsPlaceholder reports literal unset base URLs: an empty value
+// is handled by the caller, an unresolved {var} template, and RFC 2606
+// example hosts including the generator placeholder https://api.example.com.
+// A real default API root is not a placeholder.
+func doctorBaseURLIsPlaceholder(base string) bool {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return false
+	}
+	if strings.Contains(base, "{") && strings.Contains(base, "}") {
+		return true
+	}
+	host := base
+	if i := strings.Index(host, "://"); i >= 0 {
+		host = host[i+3:]
+	}
+	if i := strings.IndexAny(host, "/?#"); i >= 0 {
+		host = host[:i]
+	}
+	if i := strings.LastIndex(host, "@"); i >= 0 {
+		host = host[i+1:]
+	}
+	if strings.HasPrefix(host, "[") {
+		if j := strings.Index(host, "]"); j >= 0 {
+			host = host[1:j]
+		}
+	} else if i := strings.LastIndex(host, ":"); i >= 0 {
+		host = host[:i]
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	for _, reserved := range []string{"example.com", "example.net", "example.org", "example.edu"} {
+		if host == reserved || strings.HasSuffix(host, "."+reserved) {
+			return true
+		}
+	}
+	return false
+}
+
 func newDoctorCmd(flags *rootFlags) *cobra.Command {
 	var failOn string
 	cmd := &cobra.Command{
@@ -317,7 +355,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// or otherwise bot-detected sites. By going through
 			// flags.newClient(), the doctor's
 			// reachability verdict matches what real commands experience.
-			if cfg != nil && cfg.BaseURL != "" {
+			if cfg != nil && doctorBaseURLIsPlaceholder(cfg.BaseURL) {
+				report["api"] = "not configured (base_url is a placeholder)"
+				if _, set := report["credentials"]; !set {
+					report["credentials"] = "skipped (base_url is a placeholder)"
+				}
+			} else if cfg != nil && cfg.BaseURL != "" {
 				c, clientErr := flags.newClient()
 				if clientErr != nil {
 					report["api"] = fmt.Sprintf("client init error: %s", clientErr)

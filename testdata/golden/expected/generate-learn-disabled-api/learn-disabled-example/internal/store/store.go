@@ -115,16 +115,13 @@ func Open(dbPath string) (*Store, error) {
 // delete mode (e.g. a pre-WAL database opened by an old binary before its
 // first read-write open) errors with "attempt to write a readonly database".
 //
-// immutable=1 is the WAL-index control. mmap_size(0) only bounds mmap of the
-// main database file; SQLite still memory-maps the -shm WAL-index for
-// multi-process WAL coordination, and concurrent read-only processes fault
-// inside that mapping. The URI flag tells SQLite this connection will not
-// observe writers, so it skips shared-memory and reads the main file with
-// pread. A WAL writer's last close already checkpoints, so a later
-// immutable reader sees the committed snapshot. Uncheckpointed frames from
-// a still-open writer are invisible; that is the trade for not mapping -shm.
-// nolock=1 and vfs=unix-none cannot open a WAL database; exclusive locking
-// mode serializes clients and fails a mode=ro open.
+// mode=ro without immutable=1 follows the WAL. A reader therefore sees
+// commits that are in the WAL but not yet checkpointed into the main file.
+// Uncommitted transactions stay invisible, and busy_timeout waits on SHARED.
+// mmap_size(0) still bounds mmap of the main database file. Readers
+// coordinate through the -shm WAL index; immutable=1 skipped that index and
+// hid those committed rows. nolock=1 and vfs=unix-none cannot open a WAL
+// database; exclusive locking mode serializes clients and fails a mode=ro open.
 //
 // OpenReadOnly uses context.Background(); callers holding a context should use
 // OpenReadOnlyContext so a cancelled command (SIGINT, deadline) interrupts the
@@ -136,7 +133,7 @@ func OpenReadOnly(dbPath string) (*Store, error) {
 // OpenReadOnlyContext is OpenReadOnly with a caller-supplied context honored by
 // the driver-init SQLITE_BUSY retry.
 func OpenReadOnlyContext(ctx context.Context, dbPath string) (*Store, error) {
-	dsn := "file:" + dbPath + "?mode=ro&immutable=1&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)"
+	dsn := "file:" + dbPath + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)"
 	if err := ensureSQLiteDriverInitialized(ctx, dsn); err != nil {
 		return nil, err
 	}
@@ -205,7 +202,7 @@ func rejectNewerSchemaBeforeJournalMode(ctx context.Context, dbPath string) erro
 	if err != nil {
 		return fmt.Errorf("stating database for schema preflight: %w", err)
 	}
-	probe, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath)+"?mode=ro&immutable=1&_pragma=busy_timeout(1000)&_pragma=mmap_size(0)")
+	probe, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath)+"?mode=ro&_pragma=busy_timeout(1000)&_pragma=mmap_size(0)")
 	if err != nil {
 		return nil
 	}

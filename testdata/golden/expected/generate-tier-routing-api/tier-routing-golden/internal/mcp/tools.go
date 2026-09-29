@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -464,11 +463,7 @@ func newMCPClientFromConfig(ctx context.Context, cfg *config.Config) (*client.Cl
 }
 
 func mcpDBPath() (string, error) {
-	dir, err := cliutil.DataDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "data.db"), nil
+	return cli.MCPStorePath()
 }
 
 type mcpStoreStatusKind string

@@ -20,6 +20,7 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "create",
 		Short:       "Create a store record",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "stores.create", "pp:method": "POST", "pp:path": "/stores", "pp:requires-input": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Bare invocation of a command with required input prints help
