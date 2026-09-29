@@ -20,6 +20,7 @@ func newSetsItemsCmd(flags *rootFlags) *cobra.Command {
 		Use:         "items",
 		Short:       "List set items via POST",
 		Example:     "  post-read-golden-pp-cli sets items",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "sets.items", "pp:method": "POST", "pp:path": "/sets/items", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {

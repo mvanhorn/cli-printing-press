@@ -19,6 +19,7 @@ func newQuotesCreateCmd(flags *rootFlags) *cobra.Command {
 		Use:         "create",
 		Short:       "Generate quote",
 		Example:     "  fastapi-operationids-golden-pp-cli quotes create",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "quotes.create", "pp:method": "POST", "pp:path": "/api/quotes/generate"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {

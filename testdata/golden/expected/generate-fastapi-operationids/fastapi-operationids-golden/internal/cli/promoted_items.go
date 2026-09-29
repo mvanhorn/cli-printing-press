@@ -18,6 +18,7 @@ func newItemsPromotedCmd(flags *rootFlags) *cobra.Command {
 		Short:       "Search items",
 		Long:        "Search items",
 		Example:     "  fastapi-operationids-golden-pp-cli items",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "items.list", "pp:method": "POST", "pp:path": "/api/items/search", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()

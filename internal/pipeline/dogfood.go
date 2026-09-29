@@ -2202,6 +2202,11 @@ func checkDeadFunctions(dir string) DeadCodeResult {
 		}
 		externalSources = append(externalSources, string(content))
 	}
+	// MCP search/sql call CLI helpers such as MCPStorePath. The CLI-only
+	// scan would mark that export dead and drop the dead-code score.
+	if mcpSrc := readPackageSources(filepath.Join(dir, "internal", "mcp")); mcpSrc != "" {
+		externalSources = append(externalSources, mcpSrc)
+	}
 
 	// Seed live set: functions called from external (non-helpers) files.
 	liveSet := make(map[string]bool)
@@ -3397,6 +3402,22 @@ func pathMatchesSpec(path string, patterns []*regexp.Regexp) bool {
 		}
 	}
 	return false
+}
+
+// readPackageSources concatenates Go sources under dir, including tests, so a
+// helper whose only caller lives in another generated package still counts.
+func readPackageSources(dir string) string {
+	files := append(listGoFiles(dir), listGoTestFiles(dir)...)
+	var b strings.Builder
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		b.Write(data)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func listGoFiles(dir string) []string {

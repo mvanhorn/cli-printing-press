@@ -18,6 +18,7 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 		Use:         "list",
 		Short:       "List free items",
 		Example:     "  tier-routing-golden-pp-cli items list",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "items.list", "pp:method": "GET", "pp:path": "/items", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "/items"

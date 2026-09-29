@@ -20,6 +20,7 @@ func newSetsSearchCmd(flags *rootFlags) *cobra.Command {
 		Use:         "search",
 		Short:       "Search sets",
 		Example:     "  post-read-golden-pp-cli sets search",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "sets.search", "pp:method": "POST", "pp:path": "/sets/search", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {

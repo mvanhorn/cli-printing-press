@@ -135,7 +135,9 @@ func hasHandAuthoredMCPBehavior(src []byte) bool {
 	if bytes.Contains(src, []byte("localWrite := isMCPLocalWrite")) {
 		return true
 	}
-	if bytes.Contains(src, []byte("ReadHeaderTimeout")) {
+	// ReadHeaderTimeout is emitted by the MCP HTTP template. Extra server
+	// timeouts are still hand-authored and must survive a reprint.
+	if bytes.Contains(src, []byte("ReadTimeout")) || bytes.Contains(src, []byte("WriteTimeout")) || bytes.Contains(src, []byte("IdleTimeout")) {
 		return true
 	}
 	return handAuthoredDBFlag.Match(src)
