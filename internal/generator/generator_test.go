@@ -3571,7 +3571,7 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	binaryPath := filepath.Join(outputDir, "webhtml-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/webhtml-pp-cli")
 
-	cmd := exec.Command(binaryPath, "posts", "list", "--json")
+	cmd := exec.Command(binaryPath, "posts", "--json")
 	cmd.Env = append(os.Environ(), "WEBHTML_BASE_URL="+server.URL)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -3598,7 +3598,7 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	// Anchor without noscript still produces a clean image URL.
 	assert.Contains(t, links[1]["image"], "instant-db.jpg")
 
-	cmd = exec.Command(binaryPath, "posts", "list", "--dry-run", "--json")
+	cmd = exec.Command(binaryPath, "posts", "--dry-run", "--json")
 	cmd.Env = append(os.Environ(), "WEBHTML_BASE_URL="+server.URL)
 	out, err = cmd.Output()
 	require.NoError(t, err, string(out))
@@ -3609,7 +3609,7 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 		assert.Equal(t, true, results["dry_run"])
 	}
 
-	cmd = exec.Command(binaryPath, "docs", "page", "--json")
+	cmd = exec.Command(binaryPath, "docs", "--json")
 	cmd.Env = append(os.Environ(), "WEBHTML_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -3617,7 +3617,7 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	require.Len(t, envelope.Results, 1)
 	assert.Equal(t, server.URL+"/docs/child", envelope.Results[0]["url"])
 
-	cmd = exec.Command(binaryPath, "makers", "list", "--json")
+	cmd = exec.Command(binaryPath, "makers", "--json")
 	cmd.Env = append(os.Environ(), "WEBHTML_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -3639,7 +3639,7 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	assert.Contains(t, envelope.Results[1]["image"], "bob-1x.jpg",
 		"first srcset URL should be selected when src is absent; got %v", envelope.Results[1]["image"])
 
-	cmd = exec.Command(binaryPath, "latin", "list", "--json")
+	cmd = exec.Command(binaryPath, "latin", "--json")
 	cmd.Env = append(os.Environ(), "WEBHTML_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -3648,7 +3648,7 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	assert.Equal(t, "Caf\u00e9", envelope.Results[0]["name"])
 
 	shiftJISEnv := append(os.Environ(), "WEBHTML_BASE_URL="+server.URL, "HOME="+t.TempDir())
-	cmd = exec.Command(binaryPath, "shiftjis", "list", "--json")
+	cmd = exec.Command(binaryPath, "shiftjis", "--json")
 	cmd.Env = shiftJISEnv
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -3657,7 +3657,7 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	assert.Equal(t, "東京", envelope.Results[0]["name"])
 
 	server.Close()
-	cmd = exec.Command(binaryPath, "shiftjis", "list", "--json")
+	cmd = exec.Command(binaryPath, "shiftjis", "--json")
 	cmd.Env = shiftJISEnv
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -4039,7 +4039,7 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/embeddedjson-pp-cli")
 
 	// Default selector + dot-notation path: returns the recipes array.
-	cmd := exec.Command(binaryPath, "recipes", "list", "--json")
+	cmd := exec.Command(binaryPath, "recipes", "--json")
 	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -4055,7 +4055,7 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 	// The extracted shape `{"items":[...]}` is a single-key wrapper that
 	// wrapWithProvenance unwraps, so the envelope's `results` is the
 	// inner array — consistent .results[] shape across APIs.
-	cmd = exec.Command(binaryPath, "articles", "list", "--json")
+	cmd = exec.Command(binaryPath, "articles", "--json")
 	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -4069,7 +4069,7 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 
 	// Attribute selector: returns schema.org JSON-LD blocks such as restaurants,
 	// products, and recipes.
-	cmd = exec.Command(binaryPath, "jsonld", "show", "--json")
+	cmd = exec.Command(binaryPath, "jsonld", "--json")
 	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -4081,7 +4081,7 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 	assert.Equal(t, "El Farolito", jsonLDEnv.Results["name"])
 
 	// Class selector: returns state blobs emitted as classed script tags.
-	cmd = exec.Command(binaryPath, "stateview", "show", "--json")
+	cmd = exec.Command(binaryPath, "stateview", "--json")
 	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -4094,7 +4094,7 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 
 	// Unsupported attribute-existence selectors should fail explicitly instead
 	// of silently degrading to a broad tag-only match.
-	cmd = exec.Command(binaryPath, "badattr", "show", "--json")
+	cmd = exec.Command(binaryPath, "badattr", "--json")
 	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.Error(t, err, string(out))
@@ -4103,7 +4103,7 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 
 	// Missing script tag: extractor reports an actionable error rather
 	// than silently returning empty data.
-	cmd = exec.Command(binaryPath, "missing", "list", "--json")
+	cmd = exec.Command(binaryPath, "missing", "--json")
 	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.Error(t, err, string(out))
@@ -12767,7 +12767,7 @@ func TestGeneratedDoctor_AuthVerifyPathProbesEndpoint(t *testing.T) {
 	// not bare baseURL. The doctor uses flags.newClient() now (Surf-aware)
 	// instead of stdlib http.Client.
 	assert.Contains(t, content, `verifyPath := "/me?fields=id"`)
-	assert.Contains(t, content, `c.GetWithHeaders(cmd.Context(), verifyPath`)
+	assert.Contains(t, content, `c.GetWithHeadersNoCache(cmd.Context(), verifyPath`)
 	assert.NotContains(t, content, `authHeaders["Authorization"] = authHeader`, "doctor must let the client inject refresh-capable auth instead of replaying a stale header")
 	assert.NotContains(t, content, `authParams["api_key"] = authHeader`, "doctor must let the client inject refresh-capable query auth instead of replaying a stale parameter")
 	assert.NotContains(t, content, `&http.Client{`)

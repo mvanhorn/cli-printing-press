@@ -175,7 +175,7 @@ func TestGenerateReadOnlyFormHTMLTableEndpoint(t *testing.T) {
 	binaryPath := filepath.Join(outputDir, "formhtml-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/formhtml-pp-cli")
 
-	cmd := exec.Command(binaryPath, "contracts", "list", "--json")
+	cmd := exec.Command(binaryPath, "contracts", "--json")
 	cmd.Env = append(os.Environ(), "PRINTING_PRESS_VERIFY=1", "FORMHTML_BASE_URL="+httpServer.URL)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))

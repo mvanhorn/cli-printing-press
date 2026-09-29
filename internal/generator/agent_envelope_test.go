@@ -291,7 +291,7 @@ func TestNoStoreEndpointAgentWrapsBareArray(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
-	root.SetArgs([]string{"items", "list", "--agent"})
+	root.SetArgs([]string{"items", "--agent"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("items list --agent failed: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
@@ -332,7 +332,7 @@ func TestNoStoreEndpointJSONRemainsBareArray(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
-	root.SetArgs([]string{"items", "list", "--json"})
+	root.SetArgs([]string{"items", "--json"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("items list --json failed: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
@@ -354,7 +354,7 @@ func TestNoStoreEndpointAgentWrapsNaturalMetaResultsObject(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
-	root.SetArgs([]string{"widgets", "list", "--agent"})
+	root.SetArgs([]string{"widgets", "--agent"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("widgets list --agent failed: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
@@ -393,7 +393,7 @@ func TestNoStoreEndpointAgentFlattensSingleKeyCollectionWrapper(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
-	root.SetArgs([]string{"gadgets", "list", "--agent"})
+	root.SetArgs([]string{"gadgets", "--agent"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("gadgets list --agent failed: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}

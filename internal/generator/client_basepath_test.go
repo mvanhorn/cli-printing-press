@@ -144,7 +144,7 @@ func TestClientBasePathLiveRequest(t *testing.T) {
 	binaryPath := filepath.Join(outputDir, "bplive-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/bplive-pp-cli")
 
-	cmd := exec.Command(binaryPath, "things", "list", "--json")
+	cmd := exec.Command(binaryPath, "things", "--json")
 	cmd.Env = append(os.Environ(), "BPLIVE_BASE_URL="+server.URL)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))

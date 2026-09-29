@@ -135,7 +135,7 @@ func TestBracketParamWireNameIsPreserved(t *testing.T) {
 
 	binaryPath := filepath.Join(outputDir, "bracket-wire-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/bracket-wire-pp-cli")
-	runGeneratedBinary(t, binaryPath, "meetings", "get", "--recorded-by", "a@x.com,b@x.com")
+	runGeneratedBinary(t, binaryPath, "meetings", "--recorded-by", "a@x.com,b@x.com")
 	require.Equal(t, []string{"a@x.com", "b@x.com"}, <-requests)
 
 	// Registered-handler wire proof: write a Go test into the generated

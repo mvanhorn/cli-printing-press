@@ -78,7 +78,7 @@ func TestBodyFlagsRejectWrongJSONShapesBeforeTransport(t *testing.T) {
 			t.Setenv("BODYSHAPEFLAG_BASE_URL", server.URL)
 			flags := &rootFlags{asJSON: true}
 			cmd := newRootCmd(flags)
-			cmd.SetArgs(append([]string{"items", "create"}, tc.args...))
+			cmd.SetArgs(append([]string{"items"}, tc.args...))
 			cmd.SetOut(&bytes.Buffer{})
 			cmd.SetErr(&bytes.Buffer{})
 
@@ -110,7 +110,7 @@ func TestBodyFlagsAcceptMatchingJSONShapes(t *testing.T) {
 	flags := &rootFlags{asJSON: true}
 	cmd := newRootCmd(flags)
 	cmd.SetArgs([]string{
-		"items", "create",
+		"items",
 		"--metadata", "{\"source\":\"test\"}",
 		"--tags", "[\"blue\"]",
 	})

@@ -66,7 +66,7 @@ func TestGeneratedClientDecodesDeclaredAcceptEncoding(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
 
 	home := t.TempDir()
-	cmd := exec.Command(binaryPath, "report", "sheet", "--json")
+	cmd := exec.Command(binaryPath, "report", "--json")
 	cmd.Env = append(os.Environ(),
 		"GZIPHTML_BASE_URL="+server.URL,
 		"HOME="+home,
