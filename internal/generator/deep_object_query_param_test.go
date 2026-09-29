@@ -137,7 +137,7 @@ func TestGeneratedDeepObjectQueryParamCLIWire(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/deep-object-wire-pp-cli")
 
 	// Case 1 + 2: indexed keys, percent-encoded, on the raw RequestURI.
-	runGeneratedBinary(t, binaryPath, "records", "get",
+	runGeneratedBinary(t, binaryPath, "records",
 		"--sort", `[{"field":"Name","direction":"desc"},{"field":"Price","direction":"asc"}]`,
 		"--filter", `{"status":"active"}`)
 	captured := <-requests
@@ -159,7 +159,7 @@ func TestGeneratedDeepObjectQueryParamCLIWire(t *testing.T) {
 	require.Contains(t, captured.uri, "sort%5B0%5D%5Bfield%5D=Name")
 
 	// Case 4a: hostile VALUE stays one percent-encoded value.
-	runGeneratedBinary(t, binaryPath, "records", "get",
+	runGeneratedBinary(t, binaryPath, "records",
 		"--sort", `[{"field":"a&b=c#d"}]`)
 	captured = <-requests
 	require.Contains(t, captured.uri, "sort%5B0%5D%5Bfield%5D=a%26b%3Dc%23d")
@@ -168,7 +168,7 @@ func TestGeneratedDeepObjectQueryParamCLIWire(t *testing.T) {
 
 	// Case 4b: hostile FIELD NAME — the emitted KEY is percent-encoded; the
 	// server sees exactly one literal key, nothing split into extra params.
-	runGeneratedBinary(t, binaryPath, "records", "get",
+	runGeneratedBinary(t, binaryPath, "records",
 		"--sort", `[{"a&b=c#d":"v"}]`)
 	captured = <-requests
 	require.Contains(t, captured.uri, "sort%5B0%5D%5Ba%26b%3Dc%23d%5D=v")
@@ -178,7 +178,7 @@ func TestGeneratedDeepObjectQueryParamCLIWire(t *testing.T) {
 	// Case 5: malformed JSON is a usage error naming the flag and showing
 	// the concrete example (no HTTP request is made). Short mode never gets
 	// here: the build runGoCommand above already skips.
-	cmd := exec.Command(binaryPath, "records", "get", "--sort", `[{broken`)
+	cmd := exec.Command(binaryPath, "records", "--sort", `[{broken`)
 	output, err := cmd.CombinedOutput()
 	require.Error(t, err, "malformed --sort JSON must exit non-zero; output:\n%s", output)
 	require.Contains(t, string(output), "--sort")
