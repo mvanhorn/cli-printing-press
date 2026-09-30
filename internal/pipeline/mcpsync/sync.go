@@ -189,7 +189,11 @@ func Sync(cliDir string, opts Options) (Result, error) {
 		}
 	}
 
-	parsed, err := loadArchivedSpec(cliDir)
+	authPreference := ""
+	if manifest, err := pipeline.ReadCLIManifest(cliDir); err == nil {
+		authPreference = strings.TrimSpace(manifest.AuthPreference)
+	}
+	parsed, err := loadArchivedSpec(cliDir, authPreference)
 	if err != nil {
 		return Result{}, err
 	}
@@ -591,7 +595,7 @@ func mcpIntentFileHasExplicitRegistration(source string) (bool, error) {
 	return false, nil
 }
 
-func loadArchivedSpec(cliDir string) (*spec.APISpec, error) {
+func loadArchivedSpec(cliDir, authPreference string) (*spec.APISpec, error) {
 	for _, name := range []string{"spec.yaml", "spec.yml", "spec.json", "schema.graphql", "schema.gql"} {
 		path := filepath.Join(cliDir, name)
 		data, err := os.ReadFile(path)
@@ -602,7 +606,11 @@ func loadArchivedSpec(cliDir string) (*spec.APISpec, error) {
 			return nil, fmt.Errorf("reading %s: %w", path, err)
 		}
 		if openapi.IsOpenAPI(data) {
-			return openapi.ParseWithPathLenient(data, path)
+			return openapi.ParseWithOptions(data, openapi.ParseOptions{
+				Path:           path,
+				Lenient:        true,
+				AuthPreference: authPreference,
+			})
 		}
 		if spec.LooksLikeInternalYAML(data) {
 			return spec.ParseBytes(data)

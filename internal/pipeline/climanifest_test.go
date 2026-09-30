@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
 	"github.com/stretchr/testify/assert"
@@ -718,6 +719,82 @@ func TestPublishWorkingCLIWritesManifestForYAMLSpec(t *testing.T) {
 	h := sha256.Sum256(specContent)
 	expectedChecksum := "sha256:" + hex.EncodeToString(h[:])
 	assert.Equal(t, expectedChecksum, got.SpecChecksum, "publish must checksum YAML-archived specs")
+}
+
+func TestPublishWorkingCLIPreservesManifestAuthPreference(t *testing.T) {
+	const openAPISpec = `openapi: 3.0.3
+info:
+  title: Dual Auth
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+security:
+  - accountToken: []
+  - serverToken: []
+components:
+  securitySchemes:
+    accountToken:
+      type: apiKey
+      in: header
+      name: X-Account-Token
+    serverToken:
+      type: apiKey
+      in: header
+      name: X-Server-Token
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          description: ok
+`
+
+	cases := []struct {
+		name       string
+		preference string
+		wantScheme string
+	}{
+		{name: "non-default preference", preference: "serverToken", wantScheme: "serverToken"},
+		{name: "default preference", wantScheme: "accountToken"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := setPressTestEnv(t)
+			workingDir := filepath.Join(home, "working", "dual-auth-pp-cli")
+			researchSpec := filepath.Join(home, "research", "dual-auth.yaml")
+			require.NoError(t, os.MkdirAll(filepath.Dir(researchSpec), 0o755))
+			require.NoError(t, os.WriteFile(researchSpec, []byte(openAPISpec), 0o644))
+			require.NoError(t, os.MkdirAll(workingDir, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(workingDir, "main.go"), []byte("package main\nfunc main() {}"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(workingDir, "spec.yaml"), []byte(openAPISpec), 0o644))
+
+			parsed, err := openapi.ParseWithOptions([]byte(openAPISpec), openapi.ParseOptions{AuthPreference: tc.preference})
+			require.NoError(t, err)
+			require.Equal(t, tc.wantScheme, parsed.Auth.Scheme)
+			require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+				APIName:         parsed.Name,
+				SpecSrcs:        []string{researchSpec},
+				SpecArchiveName: "spec.yaml",
+				OutputDir:       workingDir,
+				Spec:            parsed,
+				AuthPreference:  tc.preference,
+			}))
+
+			state := NewState(parsed.Name, workingDir)
+			state.SpecPath = researchSpec
+			require.NoError(t, os.MkdirAll(filepath.Dir(state.StatePath()), 0o755))
+			require.NoError(t, state.Save())
+
+			finalDir, err := PublishWorkingCLI(state, filepath.Join(home, "library", "dual-auth-pp-cli"))
+			require.NoError(t, err)
+			got := readPublishedManifest(t, finalDir)
+			assert.Equal(t, parsed.Auth.Scheme, got.AuthPreference)
+			assert.Equal(t, parsed.Auth.Type, got.AuthType)
+			assert.Equal(t, parsed.Auth.EnvVars, got.AuthEnvVars)
+			assert.Equal(t, "spec.yaml", got.SpecPath)
+		})
+	}
 }
 
 func TestPublishWorkingCLIRemovesOutputWhenMCPBManifestFails(t *testing.T) {
