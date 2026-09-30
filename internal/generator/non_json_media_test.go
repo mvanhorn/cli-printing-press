@@ -192,6 +192,7 @@ func TestCodeOrchestrationRawRequestRuntime(t *testing.T) {
 	for _, endpointID := range []string{"uploads.create", "uploads.purge"} {
 		result, err := handleCodeOrchExecute(context.Background(), codeOrchRequest(map[string]any{
 			"endpoint_id": endpointID,
+			"confirm":     true,
 			"params": map[string]any{
 				"body_base64": encoded,
 				"content_type": "audio/wav",
@@ -212,6 +213,7 @@ func TestCodeOrchestrationRawRequestRuntime(t *testing.T) {
 	} {
 		result, err := handleCodeOrchExecute(context.Background(), codeOrchRequest(map[string]any{
 			"endpoint_id": "uploads.create",
+			"confirm":     true,
 			"params": params,
 		}))
 		if err != nil || !result.IsError {

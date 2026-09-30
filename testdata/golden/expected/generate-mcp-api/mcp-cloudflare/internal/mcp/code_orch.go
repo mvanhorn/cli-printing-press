@@ -58,9 +58,10 @@ func RegisterCodeOrchestrationTools(s *server.MCPServer) {
 
 	s.AddTool(
 		mcplib.NewTool("mcp-cloudflare_execute",
-			mcplib.WithDescription("Execute one mcp-cloudflare API endpoint by its endpoint_id (from mcp-cloudflare_search). Params are passed as a JSON object; path placeholders and query strings are resolved automatically."),
+			mcplib.WithDescription("Execute one mcp-cloudflare API endpoint by its endpoint_id (from mcp-cloudflare_search). Params are passed as a JSON object; path placeholders and query strings are resolved automatically. Endpoints that are not read-only return a preview until confirm is true."),
 			mcplib.WithString("endpoint_id", mcplib.Required(), mcplib.Description("Endpoint identifier returned by mcp-cloudflare_search (e.g., \"users.list\").")),
 			mcplib.WithObject("params", mcplib.Description("Parameters for the endpoint. Path placeholders match by name; remaining entries become query string on GET/DELETE or JSON body on POST/PUT/PATCH.")),
+			mcplib.WithBoolean("confirm", mcplib.Description("Set true to dispatch an endpoint that is not read-only after reviewing its preview.")),
 		),
 		handleCodeOrchExecute,
 	)
@@ -100,8 +101,13 @@ type codeOrchEndpoint struct {
 	// params object; a strict-mapping API rejects an object at the body
 	// root with HTTP 422 "Invalid json".
 	BodyIsArray bool
-	Mutating    bool
-	keywords    []string
+	// NeedsConfirm is true for every endpoint the read-only classifier
+	// behind the MCP safety annotations does not mark read-only. It is
+	// deliberately separate from Mutating: GET RPCs need the mutating
+	// transport but are not all conventional write methods.
+	NeedsConfirm bool
+	Mutating     bool
+	keywords     []string
 }
 
 type codeOrchParamBinding struct {
@@ -123,6 +129,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		TemplateParams: []codeOrchParamBinding{},
 		QueryParams:    []codeOrchParamBinding{},
 		HeaderParams:   []codeOrchParamBinding{},
+		NeedsConfirm:   false,
 		Mutating:       false,
 		keywords:       codeOrchKeywords("items", "list", "List items", "/items"),
 	},
@@ -284,6 +291,9 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 	if params == nil {
 		params = map[string]any{}
 	}
+	if err := codeOrchRejectFixedQueryOverrides(ep.Path, ep.QueryParams, params); err != nil {
+		return mcplib.NewToolResultError(err.Error()), nil
+	}
 
 	c, platformSession, err := newMCPClient(ctx)
 	if err != nil {
@@ -354,8 +364,36 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		}
 		return codeOrchWriteBody(params)
 	}
+	// Confirmation is intentionally checked after path and query resolution.
+	// That makes the preview describe the exact target that would be sent, and
+	// keeps a path value from disguising a destructive dispatch as another
+	// endpoint. Only a top-level boolean confirm is accepted; putting it in
+	// params leaves this as a preview rather than authorizing dispatch.
+	method := strings.ToUpper(strings.TrimSpace(ep.Method))
+	path = strings.TrimSpace(path)
+	confirmed, _ := args["confirm"].(bool)
+	if (method == "DELETE" || ep.NeedsConfirm) && !confirmed {
+		previewBody := any(nil)
+		if method != "GET" && method != "DELETE" {
+			previewBody = writeBody()
+		}
+		preview := map[string]any{
+			"preview":               true,
+			"confirmation_required": true,
+			"endpoint_id":           ep.ID,
+			"method":                method,
+			"path":                  path,
+			"query":                 query,
+			"body":                  previewBody,
+		}
+		text, previewErr := bound.JSON(preview)
+		if previewErr != nil {
+			return mcplib.NewToolResultError(fmt.Sprintf("encoding confirmation preview: %v", previewErr)), nil
+		}
+		return mcplib.NewToolResultText(text), nil
+	}
 	var data json.RawMessage
-	switch ep.Method {
+	switch method {
 	case "GET":
 		if len(hdrs) > 0 {
 			if ep.Mutating {
@@ -403,7 +441,7 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
-	text := bound.EndpointResponse(ep.Method, data)
+	text := bound.EndpointResponse(method, data)
 	if platformSession != nil {
 		text = bound.WithMetadata(text, platformSession.OutputMetadata())
 	}
@@ -470,4 +508,19 @@ func codeOrchWireQueryName(queryParams []codeOrchParamBinding, name string) stri
 		}
 	}
 	return name
+}
+
+func codeOrchRejectFixedQueryOverrides(path string, queryParams []codeOrchParamBinding, params map[string]any) error {
+	_, rawQuery, ok := strings.Cut(path, "?")
+	if !ok || rawQuery == "" {
+		return nil
+	}
+	fixed, _ := neturl.ParseQuery(rawQuery)
+	for name := range params {
+		wireName := codeOrchWireQueryName(queryParams, name)
+		if _, ok := fixed[wireName]; ok {
+			return fmt.Errorf("parameter %q cannot override fixed query parameter %q", name, wireName)
+		}
+	}
+	return nil
 }
