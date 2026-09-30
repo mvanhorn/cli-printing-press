@@ -271,6 +271,18 @@ func stringifyDefault(v any) string {
 		return ""
 	case string:
 		return t
+	case float32:
+		value, ok := formatExampleFloat(float64(t))
+		if !ok {
+			return ""
+		}
+		return value
+	case float64:
+		value, ok := formatExampleFloat(t)
+		if !ok {
+			return ""
+		}
+		return value
 	case []string:
 		if len(t) == 0 {
 			return ""
