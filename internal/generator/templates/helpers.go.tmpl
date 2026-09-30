@@ -1795,17 +1795,22 @@ func paginatedGet(ctx context.Context, c interface {
 
 				nextAdvance := resolvePaginatedNextCursor(obj, cursorLookupPath, cursorParam)
 				// Boolean has_more stays on the bool path below so a false value
-				// still loses to a declared cursor. A string is presence, and a
-				// missing next-link field ends the walk even if a sibling cursor remains.
+				// still loses to a declared cursor. A string means more, but it
+				// must not replace a usable declared cursor or stop page/offset
+				// advancement. A missing next-link field ends the walk even if
+				// a sibling cursor remains.
 				hasExplicitNoMore := false
 				missingHasMoreCursor := false
+				stringMeansMore := false
 				if hasMoreField != "" {
 					moreRaw, present := rawAtPath(obj, hasMoreField)
 					reading := readHasMoreField(moreRaw, present, cursorParam)
 					switch {
-					case reading.nonBool && reading.nextCursor != "":
+					case reading.nonBool && reading.nextCursor != "" && nextAdvance == "":
 						nextAdvance = reading.nextCursor
-					case reading.nonBool && reading.more && (reading.followable || nextAdvance == ""):
+					case reading.nonBool && reading.more && nextAdvance == "" && (paginationType == "page" || paginationType == "offset"):
+						stringMeansMore = true
+					case reading.nonBool && reading.more && nextAdvance == "":
 						emitMissingPaginationCursorWarning(ctx, hasMoreField)
 						omitCompleteEvent = true
 						missingHasMoreCursor = true
@@ -1842,34 +1847,42 @@ func paginatedGet(ctx context.Context, c interface {
 
 				// Check has_more. Page and offset paginators can advance
 				// client-side; cursor-based APIs still need a body cursor.
-				if hasMoreField != "" {
-					if moreRaw, ok := rawAtPath(obj, hasMoreField); ok {
-						var more bool
-						if json.Unmarshal(moreRaw, &more) == nil {
-							if more {
-								nextPageSize := pageSize
-								if nextPageSize <= 0 && paginationType == "offset" {
-									nextPageSize = itemCount
-									if nextPageSize <= 0 {
-										// A server can truthfully report more data after an
-										// empty page. Advance by one so --all does not stall
-										// forever when no page size has been observed yet.
-										nextPageSize = 1
-									}
-								}
-								if next, ok := nextClientSidePaginationCursor(clean, cursorParam, paginationType, nextPageSize); ok {
-									if page >= paginatedGetMaxPages {
-										emitPaginatedGetMaxPagesWarning(ctx)
-										break
-									}
-									clean[cursorParam] = next
-									continue
-								}
-								emitMissingPaginationCursorWarning(ctx, cursorLookupPath)
+				// A non-empty string does not unmarshal as bool, so page/offset
+				// treats that string as the same "more" signal as boolean true.
+				if stringMeansMore || (hasMoreField != "" && !hasExplicitNoMore) {
+					more := stringMeansMore
+					parsedBool := false
+					if !more {
+						if moreRaw, ok := rawAtPath(obj, hasMoreField); ok {
+							if json.Unmarshal(moreRaw, &more) == nil {
+								parsedBool = true
+							}
+						}
+					}
+					if more {
+						nextPageSize := pageSize
+						if nextPageSize <= 0 && paginationType == "offset" {
+							nextPageSize = itemCount
+							if nextPageSize <= 0 {
+								// A server can truthfully report more data after an
+								// empty page. Advance by one so --all does not stall
+								// forever when no page size has been observed yet.
+								nextPageSize = 1
+							}
+						}
+						if next, ok := nextClientSidePaginationCursor(clean, cursorParam, paginationType, nextPageSize); ok {
+							if page >= paginatedGetMaxPages {
+								emitPaginatedGetMaxPagesWarning(ctx)
 								break
 							}
-							hasExplicitNoMore = true
+							clean[cursorParam] = next
+							continue
 						}
+						emitMissingPaginationCursorWarning(ctx, cursorLookupPath)
+						break
+					}
+					if parsedBool {
+						hasExplicitNoMore = true
 					}
 				}
 				if !hasExplicitNoMore {

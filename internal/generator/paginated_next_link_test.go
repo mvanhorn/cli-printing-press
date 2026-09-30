@@ -283,6 +283,155 @@ func TestHasMorePagingNextProbeWithoutDeclaration(t *testing.T) {
 		t.Fatalf("probe stderr = %s", stderr)
 	}
 }
+
+func TestHasMoreDeclaredCursorKeptWhenNextURLHasNoToken(t *testing.T) {
+	page1 := json.RawMessage("{\"data\":[{\"id\":\"m1\"}],\"paging\":{\"cursors\":{\"after\":\"DECLARED\"},\"next\":\"https://graph.facebook.com/v22.0/123/media?access_token=SECRET_TOKEN&limit=25\"}}")
+	page2 := json.RawMessage("{\"data\":[{\"id\":\"m2\"}],\"paging\":{\"cursors\":{\"after\":\"STILL_THERE\"}}}")
+	client := &nextLinkClient{responses: []json.RawMessage{page1, page2, json.RawMessage("{\"data\":[{\"id\":\"unexpected\"}]}")}}
+	var data json.RawMessage
+	stderr := captureNextLinkStderr(t, func() {
+		var err error
+		data, err = paginatedGet(context.Background(), client, "/123/media", map[string]string{"limit": "25"}, nil, true, "after", "cursor", "limit", 25, "paging.cursors.after", "paging.next")
+		if err != nil {
+			t.Fatalf("paginatedGet: %v", err)
+		}
+	})
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v; data=%s", err, data)
+	}
+	if len(got) != 2 || got[0]["id"] != "m1" || got[1]["id"] != "m2" {
+		t.Fatalf("items = %#v, want m1 then m2", got)
+	}
+	if len(client.params) != 2 || client.params[1]["after"] != "DECLARED" {
+		t.Fatalf("requests = %#v, want second after=DECLARED", client.params)
+	}
+	assertNoReplayToken(t, client.params[1])
+	if strings.Contains(stderr, "\"event\":\"truncated\"") || !strings.Contains(stderr, "\"pages\":2") {
+		t.Fatalf("declared cursor with tokenless next stderr = %s", stderr)
+	}
+}
+
+func TestHasMoreDeclaredCursorNotReplacedByURLToken(t *testing.T) {
+	page1 := json.RawMessage("{\"data\":[{\"id\":\"m1\"}],\"paging\":{\"cursors\":{\"after\":\"DECLARED\"},\"next\":\"https://graph.facebook.com/v22.0/123/media?access_token=SECRET_TOKEN&limit=25&after=FROM_URL\"}}")
+	page2 := json.RawMessage("{\"data\":[{\"id\":\"m2\"}],\"paging\":{\"cursors\":{\"after\":\"OTHER\"}}}")
+	client := &nextLinkClient{responses: []json.RawMessage{page1, page2}}
+	stderr := captureNextLinkStderr(t, func() {
+		_, err := paginatedGet(context.Background(), client, "/123/media", map[string]string{"limit": "25"}, nil, true, "after", "cursor", "limit", 25, "paging.cursors.after", "paging.next")
+		if err != nil {
+			t.Fatalf("paginatedGet: %v", err)
+		}
+	})
+	if len(client.params) != 2 || client.params[1]["after"] != "DECLARED" {
+		t.Fatalf("requests = %#v, want second after=DECLARED not FROM_URL", client.params)
+	}
+	if strings.Contains(stderr, "\"event\":\"truncated\"") || !strings.Contains(stderr, "\"pages\":2") {
+		t.Fatalf("declared cursor replaced or walk stopped: %s", stderr)
+	}
+}
+
+func TestHasMoreNextURLCursorWhenDeclaredEmpty(t *testing.T) {
+	page1 := json.RawMessage("{\"data\":[{\"id\":\"m1\"}],\"meta\":{\"next_url\":\"https://graph.facebook.com/v22.0/123/media?access_token=SECRET_TOKEN&limit=25&after=CURSOR1\"}}")
+	page2 := json.RawMessage("{\"data\":[{\"id\":\"m2\"}],\"meta\":{}}")
+	client := &nextLinkClient{responses: []json.RawMessage{page1, page2, json.RawMessage("{\"data\":[{\"id\":\"unexpected\"}]}")}}
+	var data json.RawMessage
+	stderr := captureNextLinkStderr(t, func() {
+		var err error
+		data, err = paginatedGet(context.Background(), client, "/123/media", map[string]string{"limit": "25"}, nil, true, "after", "cursor", "limit", 25, "", "meta.next_url")
+		if err != nil {
+			t.Fatalf("paginatedGet: %v", err)
+		}
+	})
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v; data=%s", err, data)
+	}
+	if len(got) != 2 {
+		t.Fatalf("items = %#v, want two", got)
+	}
+	if len(client.params) != 2 || client.params[1]["after"] != "CURSOR1" {
+		t.Fatalf("requests = %#v, want second after=CURSOR1", client.params)
+	}
+	assertNoReplayToken(t, client.params[1])
+	if strings.Contains(stderr, "\"event\":\"truncated\"") || !strings.Contains(stderr, "\"pages\":2") {
+		t.Fatalf("next_url cursor stderr = %s", stderr)
+	}
+}
+
+func TestHasMoreStringPageStillAdvances(t *testing.T) {
+	client := &nextLinkClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[{\"id\":\"one\"}],\"has_more\":\"yes\"}"),
+		json.RawMessage("{\"items\":[{\"id\":\"two\"}],\"has_more\":false}"),
+	}}
+	var data json.RawMessage
+	stderr := captureNextLinkStderr(t, func() {
+		var err error
+		data, err = paginatedGet(context.Background(), client, "/orders", map[string]string{"page": "1"}, nil, true, "page", "page", "", 100, "", "has_more")
+		if err != nil {
+			t.Fatalf("paginatedGet: %v", err)
+		}
+	})
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v; data=%s", err, data)
+	}
+	if len(got) != 2 {
+		t.Fatalf("items = %#v, want two", got)
+	}
+	if len(client.params) != 2 || client.params[0]["page"] != "1" || client.params[1]["page"] != "2" {
+		t.Fatalf("requests = %#v, want page 1 then 2", client.params)
+	}
+	if strings.Contains(stderr, "\"event\":\"truncated\"") || !strings.Contains(stderr, "\"event\":\"complete\"") {
+		t.Fatalf("string page walk stderr = %s", stderr)
+	}
+}
+
+func TestHasMoreStringOffsetStillAdvances(t *testing.T) {
+	client := &nextLinkClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[{\"id\":\"one\"},{\"id\":\"two\"}],\"has_more\":\"yes\"}"),
+		json.RawMessage("{\"items\":[{\"id\":\"three\"}],\"has_more\":false}"),
+	}}
+	var data json.RawMessage
+	stderr := captureNextLinkStderr(t, func() {
+		var err error
+		data, err = paginatedGet(context.Background(), client, "/orders", map[string]string{"limit": "2", "offset": "0"}, nil, true, "offset", "offset", "limit", 2, "", "has_more")
+		if err != nil {
+			t.Fatalf("paginatedGet: %v", err)
+		}
+	})
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v; data=%s", err, data)
+	}
+	if len(got) != 3 {
+		t.Fatalf("items = %#v, want three", got)
+	}
+	if len(client.params) != 2 || client.params[0]["offset"] != "0" || client.params[1]["offset"] != "2" {
+		t.Fatalf("requests = %#v, want offset 0 then 2", client.params)
+	}
+	if strings.Contains(stderr, "\"event\":\"truncated\"") || !strings.Contains(stderr, "\"event\":\"complete\"") {
+		t.Fatalf("string offset walk stderr = %s", stderr)
+	}
+}
+
+func TestHasMoreFollowableURLWithoutTokenStillAdvancesPage(t *testing.T) {
+	client := &nextLinkClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[{\"id\":\"one\"}],\"has_more\":\"https://api.example/orders?limit=25\"}"),
+		json.RawMessage("{\"items\":[{\"id\":\"two\"}],\"has_more\":false}"),
+	}}
+	stderr := captureNextLinkStderr(t, func() {
+		_, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"page": "1"}, nil, true, "page", "page", "", 100, "", "has_more")
+		if err != nil {
+			t.Fatalf("paginatedGet: %v", err)
+		}
+	})
+	if len(client.params) != 2 || client.params[1]["page"] != "2" {
+		t.Fatalf("requests = %#v, want page 1 then 2", client.params)
+	}
+	if strings.Contains(stderr, "\"event\":\"truncated\"") || !strings.Contains(stderr, "\"event\":\"complete\"") {
+		t.Fatalf("tokenless next URL on page stderr = %s", stderr)
+	}
+}
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "paginated_next_link_test.go"), []byte(behaviorTest), 0o644))
 	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestHasMore", "-count=1")
