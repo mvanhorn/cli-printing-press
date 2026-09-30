@@ -12,7 +12,7 @@ import (
 
 // syncOwnedParamDefaultsSpec declares one list endpoint whose spec puts a
 // `default:` on both kinds of param at once: keys the syncer assigns itself
-// (the since filter, its companion ascending sort, the date range, and paging)
+// (the since filter, its companion ascending sort, the date range, and page size)
 // and a genuinely load-bearing tenant scope. Only the scope may be seeded. Sync
 // sends the others conditionally, so a seeded default would survive exactly the
 // branch where sync chose to withhold it and quietly turn a full sync into a

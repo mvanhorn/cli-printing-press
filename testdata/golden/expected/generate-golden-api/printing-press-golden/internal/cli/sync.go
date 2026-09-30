@@ -604,6 +604,9 @@ func syncResource(ctx context.Context, c interface {
 				if pageSize.cursorParam != "" {
 					params[pageSize.cursorParam] = cursor
 				}
+			} else if pageSize.cursorParam != "" && pageSize.initialCursor != "" {
+				cursor = pageSize.initialCursor
+				params[pageSize.cursorParam] = cursor
 			}
 		}
 
@@ -689,8 +692,8 @@ func syncResource(ctx context.Context, c interface {
 		// spellings (page / page_number / pageNumber / page[number]) work.
 		// A declared strategy without a request parameter cannot advance safely.
 		if pageSize.cursorParam != "" && pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
-			currentPage, _ := strconv.Atoi(cursor)
-			if currentPage < 1 {
+			currentPage, err := strconv.Atoi(cursor)
+			if err != nil {
 				currentPage = 1
 			}
 			nextCursor = strconv.Itoa(currentPage + 1)
@@ -1107,6 +1110,7 @@ func syncResource(ctx context.Context, c interface {
 type paginationDefaults struct {
 	cursorParam    string
 	cursorType     string // paginator class: "", "cursor", "page_token", "offset", "page"
+	initialCursor  string // first numeric page/offset position when the API requires it
 	nextCursorPath string
 	limitParam     string
 	limit          int
@@ -1158,6 +1162,7 @@ func determinePaginationDefaults(resource string) paginationDefaults {
 		return paginationDefaults{
 			cursorParam:    "cursor",
 			cursorType:     "cursor",
+			initialCursor:  "",
 			nextCursorPath: "",
 			limitParam:     "limit",
 			limit:          25,
@@ -1166,6 +1171,7 @@ func determinePaginationDefaults(resource string) paginationDefaults {
 		return paginationDefaults{
 			cursorParam:    "cursor",
 			cursorType:     "cursor",
+			initialCursor:  "",
 			nextCursorPath: "",
 			limitParam:     "limit",
 			limit:          50,
@@ -1174,6 +1180,7 @@ func determinePaginationDefaults(resource string) paginationDefaults {
 		return paginationDefaults{
 			cursorParam:    "",
 			cursorType:     "",
+			initialCursor:  "",
 			nextCursorPath: "",
 			limitParam:     "",
 			limit:          100,
@@ -1182,6 +1189,7 @@ func determinePaginationDefaults(resource string) paginationDefaults {
 	return paginationDefaults{
 		cursorParam:    "cursor",
 		cursorType:     "cursor",
+		initialCursor:  "",
 		nextCursorPath: "",
 		limitParam:     "limit",
 		limit:          100,
@@ -2743,6 +2751,9 @@ func syncOneParent(
 				if pageSize.cursorParam != "" {
 					params[pageSize.cursorParam] = cursor
 				}
+			} else if pageSize.cursorParam != "" && pageSize.initialCursor != "" {
+				cursor = pageSize.initialCursor
+				params[pageSize.cursorParam] = cursor
 			}
 		}
 		if depSinceTS != "" {
@@ -2821,8 +2832,8 @@ func syncOneParent(
 		// Guard on cursorType to cover every canonical spelling. A declared
 		// strategy without a request parameter cannot advance safely.
 		if pageSize.cursorParam != "" && pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
-			currentPage, _ := strconv.Atoi(cursor)
-			if currentPage < 1 {
+			currentPage, err := strconv.Atoi(cursor)
+			if err != nil {
 				currentPage = 1
 			}
 			nextCursor = strconv.Itoa(currentPage + 1)

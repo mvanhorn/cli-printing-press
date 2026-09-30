@@ -4684,6 +4684,7 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) ([]spec.
 			param.Default = schema.Default
 		}
 		setParamMaximum(&param, schema)
+		setParamMinimum(&param, schema)
 		if param.Positional {
 			param.Required = true
 		}
@@ -4740,6 +4741,27 @@ func setParamMaximum(param *spec.Param, schema *openapi3.Schema) {
 	if schema.ExclusiveMax.Value != nil {
 		param.ExclusiveMaximum = schema.ExclusiveMax.Value
 	}
+}
+
+// setParamMinimum records the first valid numeric lower-bound constraint from
+// the schema. The sync profiler uses it to seed a required numeric page or
+// offset parameter when the API omits an explicit default.
+func setParamMinimum(param *spec.Param, schema *openapi3.Schema) {
+	if param == nil || schema == nil {
+		return
+	}
+	minimum := schema.Min
+	if param.Type == "integer" {
+		exclusiveMinimum := schema.ExclusiveMin.Value
+		if schema.ExclusiveMin.IsTrue() {
+			exclusiveMinimum = schema.Min
+		}
+		if exclusiveMinimum != nil && (minimum == nil || *exclusiveMinimum >= *minimum) {
+			value := math.Floor(*exclusiveMinimum) + 1
+			minimum = &value
+		}
+	}
+	param.Minimum = minimum
 }
 
 func readParamURLNameOverrides(pathItem *openapi3.PathItem, op *openapi3.Operation) map[string]string {
