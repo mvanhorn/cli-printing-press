@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
 
-func detectNestedDataEnvelopeFixtures(data []byte) map[string]nestedDataEnvelopeFixture {
+func detectNestedDataEnvelopeFixtures(data []byte) map[nestedDataEnvelopeFixtureKey]nestedDataEnvelopeFixture {
 	raw, err := decodeOpenAPIRaw(data)
 	if err != nil {
 		return nil
@@ -37,13 +38,13 @@ func decodeOpenAPIRaw(data []byte) (map[string]any, error) {
 	return raw, nil
 }
 
-func detectNestedDataEnvelopeFixturesFromRaw(raw map[string]any) map[string]nestedDataEnvelopeFixture {
+func detectNestedDataEnvelopeFixturesFromRaw(raw map[string]any) map[nestedDataEnvelopeFixtureKey]nestedDataEnvelopeFixture {
 	paths, ok := raw["paths"].(map[string]any)
 	if !ok {
 		return nil
 	}
 
-	fixtures := map[string]nestedDataEnvelopeFixture{}
+	fixtures := map[nestedDataEnvelopeFixtureKey]nestedDataEnvelopeFixture{}
 	pathNames := make([]string, 0, len(paths))
 	for path := range paths {
 		pathNames = append(pathNames, path)
@@ -72,9 +73,8 @@ func detectNestedDataEnvelopeFixturesFromRaw(raw map[string]any) map[string]nest
 				continue
 			}
 			schema := selectedResponseSchemaFromRaw(operation, raw)
-			if key := nestedDataArrayKey(schema, raw); key != "" {
-				fixtures[path] = nestedDataEnvelopeFixture{ArrayKey: key}
-				break
+			if fixture, ok := nestedDataEnvelopeFixtureForSchema(schema, raw); ok {
+				fixtures[nestedDataEnvelopeFixtureKey{Method: strings.ToUpper(method), Path: path}] = fixture
 			}
 		}
 	}
@@ -147,26 +147,32 @@ func sortedSuccessStatuses(responses map[string]any) []string {
 	return statuses
 }
 
-func nestedDataArrayKey(schema map[string]any, root map[string]any) string {
+func nestedDataEnvelopeFixtureForSchema(schema map[string]any, root map[string]any) (nestedDataEnvelopeFixture, bool) {
 	schema = resolveRawSchemaRef(schema, root)
 	if schemaType(schema) != "object" {
-		return ""
+		return nestedDataEnvelopeFixture{}, false
 	}
+	if fixture, ok := topLevelArrayEnvelopeFixture(schema, root); ok {
+		return fixture, true
+	}
+
+	// Preserve the previously supported {data: {items: [...]}} shape. It is
+	// less strict because its sibling metadata can itself be an object.
 	dataSchema := schemaProperty(schema, "data")
 	if len(dataSchema) == 0 {
-		return ""
+		return nestedDataEnvelopeFixture{}, false
 	}
 	dataSchema = resolveRawSchemaRef(dataSchema, root)
 	if schemaType(dataSchema) != "object" {
-		return ""
+		return nestedDataEnvelopeFixture{}, false
 	}
 	properties, ok := dataSchema["properties"].(map[string]any)
 	if !ok {
-		return ""
+		return nestedDataEnvelopeFixture{}, false
 	}
 	for _, key := range []string{"items", "results", "records", "nodes", "entries", "values"} {
 		if prop := schemaProperty(dataSchema, key); isRawArraySchema(prop, root) {
-			return key
+			return nestedDataEnvelopeFixture{ArrayKey: key}, true
 		}
 	}
 	keys := make([]string, 0, len(properties))
@@ -176,10 +182,40 @@ func nestedDataArrayKey(schema map[string]any, root map[string]any) string {
 	slices.Sort(keys)
 	for _, key := range keys {
 		if isRawArraySchema(schemaProperty(dataSchema, key), root) {
-			return key
+			return nestedDataEnvelopeFixture{ArrayKey: key}, true
 		}
 	}
-	return ""
+	return nestedDataEnvelopeFixture{}, false
+}
+
+func topLevelArrayEnvelopeFixture(schema map[string]any, root map[string]any) (nestedDataEnvelopeFixture, bool) {
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok || len(properties) < 2 {
+		return nestedDataEnvelopeFixture{}, false
+	}
+
+	fixture := nestedDataEnvelopeFixture{Scalars: make(map[string]any, len(properties)-1)}
+	for key, value := range properties {
+		property, ok := value.(map[string]any)
+		if !ok {
+			return nestedDataEnvelopeFixture{}, false
+		}
+		if isRawObjectArraySchema(property, root) {
+			if fixture.ArrayKey != "" {
+				return nestedDataEnvelopeFixture{}, false
+			}
+			fixture.ArrayKey = key
+			continue
+		}
+		if !isRawScalarSchema(property, root) {
+			return nestedDataEnvelopeFixture{}, false
+		}
+		fixture.Scalars[key] = mockScalarValue(key, property, root)
+	}
+	if fixture.ArrayKey == "" || len(fixture.Scalars) == 0 {
+		return nestedDataEnvelopeFixture{}, false
+	}
+	return fixture, true
 }
 
 func schemaProperty(schema map[string]any, key string) map[string]any {
@@ -194,6 +230,91 @@ func schemaProperty(schema map[string]any, key string) map[string]any {
 func isRawArraySchema(schema map[string]any, root map[string]any) bool {
 	schema = resolveRawSchemaRef(schema, root)
 	return schemaType(schema) == "array"
+}
+
+func isRawObjectArraySchema(schema map[string]any, root map[string]any) bool {
+	schema = resolveRawSchemaRef(schema, root)
+	if schemaType(schema) != "array" {
+		return false
+	}
+	items, _ := schema["items"].(map[string]any)
+	items = resolveRawSchemaRef(items, root)
+	return schemaType(items) == "object"
+}
+
+func isRawScalarSchema(schema map[string]any, root map[string]any) bool {
+	schema = resolveRawSchemaRef(schema, root)
+	switch schemaType(schema) {
+	case "boolean", "integer", "number", "string":
+		return true
+	default:
+		return false
+	}
+}
+
+func mockScalarValue(key string, schema map[string]any, root map[string]any) any {
+	schema = resolveRawSchemaRef(schema, root)
+	if isContinuationScalarKey(key) {
+		// A mock must terminate pagination even when the schema's default would
+		// advertise another page. The verifier's sync probe follows these values.
+		switch schemaType(schema) {
+		case "boolean":
+			return false
+		case "integer", "number":
+			return nil
+		case "string":
+			return ""
+		}
+	}
+	if value, ok := schema["default"]; ok {
+		return value
+	}
+	switch schemaType(schema) {
+	case "boolean":
+		return true
+	case "integer", "number":
+		return 2
+	case "string":
+		return "mock"
+	default:
+		return nil
+	}
+}
+
+func isContinuationScalarKey(key string) bool {
+	key = snakeCaseKey(key)
+	if strings.Contains(key, "cursor") || strings.Contains(key, "token") || strings.Contains(key, "continuation") {
+		return true
+	}
+	switch key {
+	case "more", "has_more", "has_next", "has_next_page", "next", "next_page", "after", "starting_after", "truncated", "is_truncated":
+		return true
+	default:
+		return strings.HasPrefix(key, "next_")
+	}
+}
+
+// snakeCaseKey folds camelCase, PascalCase, kebab-case, and dotted keys to
+// lower snake_case so hasMore, HasMore, and has-more compare equal.
+func snakeCaseKey(key string) string {
+	var b strings.Builder
+	runes := []rune(key)
+	for i, r := range runes {
+		switch {
+		case r == '-' || r == ' ' || r == '.':
+			b.WriteByte('_')
+		case unicode.IsUpper(r):
+			prevLower := i > 0 && (unicode.IsLower(runes[i-1]) || unicode.IsDigit(runes[i-1]))
+			nextLower := i > 0 && i+1 < len(runes) && unicode.IsUpper(runes[i-1]) && unicode.IsLower(runes[i+1])
+			if prevLower || nextLower {
+				b.WriteByte('_')
+			}
+			b.WriteRune(unicode.ToLower(r))
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.Trim(b.String(), "_")
 }
 
 func schemaType(schema map[string]any) string {
