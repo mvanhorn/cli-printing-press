@@ -16,6 +16,8 @@ func TestHasHandAuthoredMCPBehavior(t *testing.T) {
 	assert.True(t, hasHandAuthoredMCPBehavior([]byte("localWrite := isMCPLocalWrite(cmd)")))
 	assert.True(t, hasHandAuthoredMCPBehavior([]byte("\t\"db\":           true,\n")))
 	assert.False(t, hasHandAuthoredMCPBehavior([]byte("ReadHeaderTimeout: 10 * time.Second,")))
+	assert.True(t, hasHandAuthoredMCPBehavior([]byte("ReadHeaderTimeout: 30 * time.Second,")))
+	assert.True(t, hasHandAuthoredMCPBehavior([]byte("ReadHeaderTimeout: headerTimeout,")))
 	assert.True(t, hasHandAuthoredMCPBehavior([]byte("ReadTimeout: 30 * time.Second,")))
 	assert.True(t, hasHandAuthoredMCPBehavior([]byte("func isMCPExecutionReadOnly(cmd *cobra.Command) bool { return false }")))
 	assert.False(t, hasHandAuthoredMCPBehavior([]byte("if !readOnly && isMCPLocalWrite(cmd) {")))

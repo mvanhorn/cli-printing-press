@@ -73,6 +73,17 @@ func buildURL(baseURL, path string, vars map[string]string) (string, error) {
 	return "", &TemplateVarError{Names: unresolved}
 }
 
+// ResolvedBaseURL applies configured template variables to a base URL.
+// Unresolved placeholders return the original string so a caller can still
+// treat leftover {var} tokens as unset.
+func ResolvedBaseURL(base string, vars map[string]string) string {
+	resolved, err := buildURL(base, "", vars)
+	if err != nil || resolved == "" {
+		return base
+	}
+	return resolved
+}
+
 // TemplateVarError reports unresolved {var} placeholders detected at request
 // time. The message names the env var(s) the user needs to export — not just
 // the placeholder — because the placeholder ("shop") is implementation
