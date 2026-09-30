@@ -474,6 +474,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointNeedsClientLimit":  endpointNeedsClientLimit,
 		"endpointClientSideFilters": endpointClientSideFilters,
 		"globalScopeParams":         globalScopeParams,
+		"tenantScopeParams":         tenantScopeParams,
 		"responsePathCases":         responsePathCases,
 		"syncParamDefaultCases":     syncParamDefaultCases,
 		"syncRequiredQueryCases":    syncRequiredQueryCases,
@@ -7093,6 +7094,20 @@ func responsePathLooksLikeCollection(name string, endpoint spec.Endpoint) bool {
 }
 
 func globalScopeParams(resources map[string]spec.Resource) []spec.Param {
+	return scopeParams(resources, paramHasEnvDefault)
+}
+
+// tenantScopeParams returns every parameter declared as selecting a global
+// scope. Unlike globalScopeParams, it retains non-string selectors because a
+// sync checkpoint needs the effective selector value even when it cannot be
+// supplied from an environment-variable default.
+func tenantScopeParams(resources map[string]spec.Resource) []spec.Param {
+	return scopeParams(resources, func(param spec.Param) bool {
+		return param.GlobalScope
+	})
+}
+
+func scopeParams(resources map[string]spec.Resource, include func(spec.Param) bool) []spec.Param {
 	resourceNames := make([]string, 0, len(resources))
 	for name := range resources {
 		resourceNames = append(resourceNames, name)
@@ -7111,7 +7126,7 @@ func globalScopeParams(resources map[string]spec.Resource) []spec.Param {
 		for _, endpointName := range endpointNames {
 			endpoint := resource.Endpoints[endpointName]
 			for _, param := range endpoint.Params {
-				if !paramHasEnvDefault(param) {
+				if !include(param) {
 					continue
 				}
 				key := param.WireName()

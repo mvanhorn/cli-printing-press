@@ -259,6 +259,21 @@ Resource scoping:
 {{- end}}
 {{- end}}
 
+{{- if or .EndpointTemplateVars .GlobalPathTemplateVars .SyncPathContextVars (tenantScopeParams .Resources)}}
+			syncScope := ""
+			syncScopeVars := map[string]string{}
+{{- if or .EndpointTemplateVars .GlobalPathTemplateVars}}
+			if c.Config != nil {
+				syncScopeVars = c.Config.TemplateVars
+			}
+{{- end}}
+{{- if or .EndpointTemplateVars .SyncPathContextVars}}
+			syncScope = syncScopeKey(syncScopeVars, pathContext, userParams)
+{{- else}}
+			syncScope = syncScopeKey(syncScopeVars, nil, userParams)
+{{- end}}
+{{- end}}
+
 			if dbPath == "" {
 				dbPath = defaultDBPath("{{.Name}}-pp-cli")
 			}
@@ -268,6 +283,9 @@ Resource scoping:
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			defer db.Close()
+			{{- if or .EndpointTemplateVars .GlobalPathTemplateVars .SyncPathContextVars (tenantScopeParams .Resources)}}
+			db.SetSyncScope(syncScope)
+			{{- end}}
 
 			syncEventWriter := cmd.OutOrStdout()
 			machineFormat := wantsMachineOutput(flags)
@@ -1406,7 +1424,19 @@ func syncResource(ctx context.Context, c interface {
 	//     enumerated.
 	if prune && flatReconcilable {
 		if reconcileMode == "flat_global" {
+			{{- if or .EndpointTemplateVars .GlobalPathTemplateVars .SyncPathContextVars (tenantScopeParams .Resources)}}
+			if db.SyncScope() != "" {
+				fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"tenant","reason":"tenant_scoped_walk"}`+"\n", resource)
+			} else if outcome.complete {
+				hasScopedState, stateErr := db.HasScopedSyncState()
+				if stateErr != nil {
+					fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"*","reason":"scoped_checkpoint_check_failed"}`+"\n", resource)
+				} else if hasScopedState {
+					fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"*","reason":"tenant_scoped_checkpoint_exists"}`+"\n", resource)
+				} else {
+			{{- else}}
 			if outcome.complete {
+			{{- end}}
 				deleted, rerr := db.ReconcileAll(
 					resource, seenIDs, reconcileTypedTable(resource), store.CascadeJunctionsFor(resource),
 				)
@@ -1418,6 +1448,9 @@ func syncResource(ctx context.Context, c interface {
 				} else {
 					fmt.Fprintf(syncEvents, `{"event":"reconcile","resource":"%s","scope":"*","deleted":%d}`+"\n", resource, deleted)
 				}
+			{{- if or .EndpointTemplateVars .GlobalPathTemplateVars .SyncPathContextVars (tenantScopeParams .Resources)}}
+				}
+			{{- end}}
 			} else {
 				fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"*","reason":%q}`+"\n", resource, outcome.reason)
 			}

@@ -1036,6 +1036,72 @@ func (p *syncUserParams) setGlobalDefault(key, value string) {
 }
 {{- end}}
 
+{{- if or .EndpointTemplateVars .GlobalPathTemplateVars .SyncPathContextVars (tenantScopeParams .Resources)}}
+// syncScopeKey identifies the tenant selection that narrows a sync walk. It
+// deliberately includes only spec-declared selectors, so arbitrary --param
+// filters do not fragment resumable checkpoints.
+func syncScopeKey(templateVars, pathContext map[string]string, userParams *syncUserParams) string {
+	parts := map[string]string{}
+{{- range .EndpointTemplateVars}}
+	if v := strings.TrimSpace(templateVars[{{printf "%q" .}}]); v != "" {
+		parts["template:{{.}}"] = v
+	}
+{{- end}}
+{{- range .GlobalPathTemplateVars}}
+	if v := strings.TrimSpace(templateVars[{{printf "%q" .}}]); v != "" {
+		parts["template:{{.}}"] = v
+	}
+{{- end}}
+{{- range .SyncPathContextVars}}
+	if v := strings.TrimSpace(pathContext[{{printf "%q" .}}]); v != "" {
+		parts["path:{{.}}"] = v
+	}
+{{- end}}
+{{- range tenantScopeParams .Resources}}
+	if v := syncGlobalScopeValue(userParams, {{printf "%q" (paramWireName .)}}); strings.TrimSpace(v) != "" {
+		parts["param:{{paramWireName .}}"] = v
+	}
+{{- end}}
+{{- if tenantScopeParams .Resources}}
+	if userParams != nil {
+		for resource, values := range userParams.perResource {
+{{- range tenantScopeParams .Resources}}
+			if v := values[{{printf "%q" (paramWireName .)}}]; strings.TrimSpace(v) != "" {
+				parts["param:"+resource+":{{paramWireName .}}"] = v
+			}
+{{- end}}
+		}
+	}
+{{- end}}
+	if len(parts) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(parts))
+	for key := range parts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var out strings.Builder
+	for _, key := range keys {
+		out.WriteString(strconv.Quote(key))
+		out.WriteByte('=')
+		out.WriteString(strconv.Quote(parts[key]))
+		out.WriteByte('\n')
+	}
+	return out.String()
+}
+
+func syncGlobalScopeValue(userParams *syncUserParams, key string) string {
+	if userParams == nil {
+		return ""
+	}
+	if value, ok := userParams.trueGlobal[key]; ok {
+		return value
+	}
+	return userParams.flatGlobal[key]
+}
+{{- end}}
+
 // validateResourceNames returns a usage-shaped error when any --resource-param
 // key targets a resource not in known. Without this check a typo
 // (e.g. --resource-param chanels:mine=true) is a silent no-op: the param
