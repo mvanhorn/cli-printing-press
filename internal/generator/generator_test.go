@@ -4589,7 +4589,7 @@ func TestGenerateStoreDSNUsesImmediateTransactionsAndProfileJournalMode(t *testi
 					"WAL read-only retry must be limited to open failures that immutable=1 can recover")
 			}
 			requireGeneratedCompiles(t, outputDir)
-			runName := "^Test(OpenHardensSQLiteFilePermissions|HardenSQLiteFilesSkipsSymlinkSidecars|OpenAppliesPragmas|OpenReadOnly_SeesCommittedWALFrames|OpenReadOnly_ReadOnlyDirReadsCheckpointedDB|OpenReadOnly_ConcurrentProcesses|OpenReadOnly_RollbackJournalNoTornRead|ListScanStopsEarly|TypedNewestFirstOrder)$"
+			runName := "^Test(OpenHardensSQLiteFilePermissions|HardenSQLiteFilesSkipsSymlinkSidecars|OpenAppliesPragmas|OpenReadOnly_SeesCommittedWALFrames|OpenReadOnly_ReadOnlyDirReadsCheckpointedDB|OpenReadOnly_BlockedWALReadsCheckpointedDB|OpenReadOnly_ConcurrentProcesses|OpenReadOnly_RollbackJournalNoTornRead|ListScanStopsEarly|TypedNewestFirstOrder)$"
 			runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", runName, "-count=1")
 		})
 	}
@@ -4628,8 +4628,13 @@ func TestGenerateStoreReadOnlyDSNFollowsWAL(t *testing.T) {
 	assert.NotContains(t, codeOnly, "vfs=unix-none",
 		"read-only DSN must not use unix-none; WAL databases refuse that VFS")
 
+	storeTestSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "schema_version_test.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(storeTestSrc), "func TestOpenReadOnly_BlockedWALReadsCheckpointedDB(",
+		"checkpointed immutable fallback must be exercised without chmod")
+
 	requireGeneratedCompiles(t, outputDir)
-	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "^Test(OpenAppliesPragmas|OpenReadOnly_SeesCommittedWALFrames|OpenReadOnly_ReadOnlyDirReadsCheckpointedDB|OpenReadOnly_ConcurrentProcesses|OpenReadOnly_DeleteModeDBDoesNotWrite)$", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "^Test(OpenAppliesPragmas|OpenReadOnly_SeesCommittedWALFrames|OpenReadOnly_ReadOnlyDirReadsCheckpointedDB|OpenReadOnly_BlockedWALReadsCheckpointedDB|OpenReadOnly_ConcurrentProcesses|OpenReadOnly_DeleteModeDBDoesNotWrite)$", "-count=1")
 }
 
 // Callers gating on existence rely on errors.Is(err, sql.ErrNoRows); the
