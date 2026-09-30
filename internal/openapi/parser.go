@@ -6591,10 +6591,9 @@ func unwrapItemSchema(schema *openapi3.Schema) *openapi3.Schema {
 }
 
 // singleArrayPropertyRef returns the items schema ref and property name of an
-// object's sole array-typed property, or nil if zero or multiple array
-// properties exist.
-// Non-array siblings (scalars, objects) are ignored — they're typically
-// pagination metadata.
+// object's sole array-typed property when it has no identity-like sibling.
+// Identity fields distinguish detail objects with array-valued attributes from
+// list envelopes, whose metadata names are otherwise API-specific.
 func singleArrayPropertyRef(schema *openapi3.Schema) (*openapi3.SchemaRef, string) {
 	var items *openapi3.SchemaRef
 	var name string
@@ -6611,10 +6610,41 @@ func singleArrayPropertyRef(schema *openapi3.Schema) (*openapi3.SchemaRef, strin
 		name = propName
 		items = prop.Items
 	}
-	if count == 1 {
-		return items, name
+	if count != 1 {
+		return nil, ""
 	}
-	return nil, ""
+	if hasEnvelopeIdentityProperty(schema, name, map[*openapi3.Schema]struct{}{}) {
+		return nil, ""
+	}
+	return items, name
+}
+
+// hasEnvelopeIdentityProperty follows allOf so inherited identifiers keep a
+// detail response intact just like identifiers declared beside the array.
+func hasEnvelopeIdentityProperty(schema *openapi3.Schema, arrayProperty string, visited map[*openapi3.Schema]struct{}) bool {
+	if schema == nil {
+		return false
+	}
+	if _, ok := visited[schema]; ok {
+		return false
+	}
+	visited[schema] = struct{}{}
+
+	for name := range schema.Properties {
+		if name == arrayProperty {
+			continue
+		}
+		switch toSnakeCase(name) {
+		case "id", "uuid", "guid":
+			return true
+		}
+	}
+	for _, sub := range schema.AllOf {
+		if hasEnvelopeIdentityProperty(schemaRefValue(sub), "", visited) {
+			return true
+		}
+	}
+	return false
 }
 
 // isScalarSchema reports whether the schema's type is a scalar — string,
