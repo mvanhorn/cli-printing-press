@@ -135,12 +135,25 @@ func hasHandAuthoredMCPBehavior(src []byte) bool {
 	if bytes.Contains(src, []byte("localWrite := isMCPLocalWrite")) {
 		return true
 	}
-	// ReadHeaderTimeout is emitted by the MCP HTTP template. Extra server
-	// timeouts are still hand-authored and must survive a reprint.
+	// The MCP HTTP template emits exactly one server timeout. Any other
+	// timeout, including a ReadHeaderTimeout other than that literal, is
+	// hand-authored and must survive a reprint.
 	if bytes.Contains(src, []byte("ReadTimeout")) || bytes.Contains(src, []byte("WriteTimeout")) || bytes.Contains(src, []byte("IdleTimeout")) {
 		return true
 	}
+	if hasNonGeneratedReadHeaderTimeout(src) {
+		return true
+	}
 	return handAuthoredDBFlag.Match(src)
+}
+
+const generatedMCPReadHeaderTimeout = "ReadHeaderTimeout: 10 * time.Second"
+
+func hasNonGeneratedReadHeaderTimeout(src []byte) bool {
+	if !bytes.Contains(src, []byte("ReadHeaderTimeout")) {
+		return false
+	}
+	return !bytes.Contains(src, []byte(generatedMCPReadHeaderTimeout))
 }
 
 func mergeHandAuthoredIntentFile(before, after []byte) ([]byte, error) {

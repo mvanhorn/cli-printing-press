@@ -4574,18 +4574,22 @@ func TestGenerateStoreDSNUsesImmediateTransactionsAndProfileJournalMode(t *testi
 			if tc.cache {
 				assert.Contains(t, codeOnly, `?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)`,
 					"rollback-journal read-only DSN must take SHARED locks (no immutable=1)")
-				assert.NotContains(t, codeOnly, `?mode=ro&immutable=1&_pragma=busy_timeout(5000)`,
-					"rollback-journal read-only DSN must not set immutable=1")
+				assert.NotContains(t, codeOnly, `immutable=1`,
+					"rollback-journal read-only DSN must not fall back to immutable=1")
 				assert.Contains(t, codeOnly, `?mode=ro&_pragma=busy_timeout(1000)&_pragma=mmap_size(0)`,
 					"schema preflight probe must take SHARED locks on a rollback journal")
 			} else {
 				assert.Contains(t, codeOnly, `?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)`,
 					"WAL read-only DSN must follow the WAL (mode=ro, no immutable=1) and keep mmap_size(0)")
-				assert.NotContains(t, codeOnly, `immutable=1`,
-					"WAL read-only DSN must not set immutable=1; that hides committed-but-uncheckpointed rows")
+				assert.NotContains(t, codeOnly, `?mode=ro&immutable=1`,
+					"primary WAL read-only DSN must not set immutable=1; that hides committed-but-uncheckpointed rows")
+				assert.Contains(t, codeOnly, `dsn+"&immutable=1"`,
+					"WAL read-only open must retry with immutable=1 when the directory cannot create -shm")
+				assert.Contains(t, codeOnly, "readOnlyOpenNeedsImmutableFallback",
+					"WAL read-only retry must be limited to open failures that immutable=1 can recover")
 			}
 			requireGeneratedCompiles(t, outputDir)
-			runName := "^Test(OpenHardensSQLiteFilePermissions|HardenSQLiteFilesSkipsSymlinkSidecars|OpenAppliesPragmas|OpenReadOnly_SeesCommittedWALFrames|OpenReadOnly_ConcurrentProcesses|OpenReadOnly_RollbackJournalNoTornRead|ListScanStopsEarly|TypedNewestFirstOrder)$"
+			runName := "^Test(OpenHardensSQLiteFilePermissions|HardenSQLiteFilesSkipsSymlinkSidecars|OpenAppliesPragmas|OpenReadOnly_SeesCommittedWALFrames|OpenReadOnly_ReadOnlyDirReadsCheckpointedDB|OpenReadOnly_ConcurrentProcesses|OpenReadOnly_RollbackJournalNoTornRead|ListScanStopsEarly|TypedNewestFirstOrder)$"
 			runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", runName, "-count=1")
 		})
 	}
@@ -4611,8 +4615,10 @@ func TestGenerateStoreReadOnlyDSNFollowsWAL(t *testing.T) {
 
 	assert.Contains(t, codeOnly, `?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)`,
 		"read-only DSN must use mode=ro without immutable=1 so WAL commits stay visible")
-	assert.NotContains(t, codeOnly, `immutable=1`,
-		"read-only DSN must not set immutable=1")
+	assert.NotContains(t, codeOnly, `?mode=ro&immutable=1`,
+		"primary read-only DSN must not set immutable=1")
+	assert.Contains(t, codeOnly, `dsn+"&immutable=1"`,
+		"read-only open must retry with immutable=1 when the WAL index cannot be created")
 	assert.Contains(t, codeOnly, `?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)`,
 		"read-write DSN must keep WAL, immediate transactions, and mmap_size(0)")
 	assert.Contains(t, codeOnly, `?mode=ro&_pragma=busy_timeout(1000)&_pragma=mmap_size(0)`,
@@ -4623,7 +4629,7 @@ func TestGenerateStoreReadOnlyDSNFollowsWAL(t *testing.T) {
 		"read-only DSN must not use unix-none; WAL databases refuse that VFS")
 
 	requireGeneratedCompiles(t, outputDir)
-	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "^Test(OpenAppliesPragmas|OpenReadOnly_SeesCommittedWALFrames|OpenReadOnly_ConcurrentProcesses|OpenReadOnly_DeleteModeDBDoesNotWrite)$", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "^Test(OpenAppliesPragmas|OpenReadOnly_SeesCommittedWALFrames|OpenReadOnly_ReadOnlyDirReadsCheckpointedDB|OpenReadOnly_ConcurrentProcesses|OpenReadOnly_DeleteModeDBDoesNotWrite)$", "-count=1")
 }
 
 // Callers gating on existence rely on errors.Is(err, sql.ErrNoRows); the
@@ -4699,8 +4705,10 @@ func TestGenerateMCPSQLToolUsesReadOnlyStore(t *testing.T) {
 		"OpenReadOnly DSN must use the file: URI prefix with mode=ro")
 	assert.Contains(t, storeCode, `?mode=ro`,
 		"OpenReadOnly DSN must request SQLite read-only mode")
-	assert.NotContains(t, storeCode, `immutable=1`,
-		"OpenReadOnly DSN must not set immutable=1; that hides committed WAL rows")
+	assert.NotContains(t, storeCode, `?mode=ro&immutable=1`,
+		"primary OpenReadOnly DSN must not set immutable=1; that hides committed WAL rows")
+	assert.Contains(t, storeCode, `dsn+"&immutable=1"`,
+		"OpenReadOnly must fall back to immutable=1 only after the WAL-following open fails")
 	assert.Contains(t, storeCode, `_pragma=mmap_size(0)`,
 		"OpenReadOnly DSN must keep mmap_size(0) so the main database file stays pread-based")
 

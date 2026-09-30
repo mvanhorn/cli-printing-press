@@ -535,6 +535,54 @@ func TestOpenReadOnly_SeesCommittedWALFrames(t *testing.T) {
 	}
 }
 
+// TestOpenReadOnly_ReadOnlyDirReadsCheckpointedDB proves a directory that
+// cannot create the WAL index still opens the checkpointed main file.
+// The writable-directory case is TestOpenReadOnly_SeesCommittedWALFrames.
+func TestOpenReadOnly_ReadOnlyDirReadsCheckpointedDB(t *testing.T) {
+	{{- if .Cache.Enabled}}
+	t.Skip("checkpointed fallback is the WAL-profile contract")
+	{{- end}}
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := s.DB().Exec(`INSERT INTO resources (id, resource_type, data) VALUES (?, ?, ?)`, "ro-ckpt", "ckpt", `{"id":"ro-ckpt"}`); err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close seed: %v", err)
+	}
+	for _, suffix := range []string{"-shm", "-wal"} {
+		if err := os.Remove(dbPath + suffix); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove %s: %v", suffix, err)
+		}
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	probe, err := os.Create(filepath.Join(dir, "probe-write"))
+	if err == nil {
+		probe.Close()
+		t.Fatal("directory is still writable; read-only fallback was not exercised")
+	}
+
+	ro, err := OpenReadOnly(dbPath)
+	if err != nil {
+		t.Fatalf("open read-only on read-only directory: %v", err)
+	}
+	defer ro.Close()
+	var id string
+	if err := ro.DB().QueryRow(`SELECT id FROM resources WHERE id = ?`, "ro-ckpt").Scan(&id); err != nil {
+		t.Fatalf("checkpointed row: %v", err)
+	}
+	if id != "ro-ckpt" {
+		t.Fatalf("read-only id = %q", id)
+	}
+}
+
 // TestOpenReadOnly_ConcurrentProcesses runs two sibling read-only processes
 // against one store. The readers must both succeed. They may map -shm; that
 // coordination is what makes uncheckpointed WAL commits visible.

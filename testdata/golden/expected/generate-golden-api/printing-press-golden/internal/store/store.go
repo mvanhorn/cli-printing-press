@@ -134,16 +134,29 @@ func OpenReadOnly(dbPath string) (*Store, error) {
 // the driver-init SQLITE_BUSY retry.
 func OpenReadOnlyContext(ctx context.Context, dbPath string) (*Store, error) {
 	dsn := "file:" + dbPath + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)"
-	if err := ensureSQLiteDriverInitialized(ctx, dsn); err != nil {
-		return nil, err
-	}
-
-	db, err := sql.Open("sqlite", dsn)
+	db, err := openReadOnlySQLite(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening database (read-only): %w", err)
 	}
 	db.SetMaxOpenConns(2)
 	return &Store{db: db, path: dbPath}, nil
+}
+
+// sql.Open is lazy, and driver init is a no-op once any connection has
+// succeeded. Ping forces this DSN's open so a missing -shm fails here.
+func openReadOnlySQLite(ctx context.Context, dsn string) (*sql.DB, error) {
+	if err := ensureSQLiteDriverInitialized(ctx, dsn); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
 }
 
 // OpenWithContext opens or creates the SQLite store at dbPath. The

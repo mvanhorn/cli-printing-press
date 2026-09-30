@@ -719,10 +719,16 @@ func doctorExitForFailOn(failOn string, report map[string]any) error {
 			low := strings.ToLower(s)
 			// A WARN prefix is the verdict. Explanatory text such as
 			// "neither accepted nor rejected" must not promote it to an error.
+			// Placeholder base URLs are FAIL/WARN in the human report; the
+			// phrases below put those sections on the same gates. An empty
+			// base_url ("not configured (set base_url in config file)") stays
+			// off the gate so an unconfigured first run is not a CI failure.
 			if strings.HasPrefix(low, "warn") {
 				worstWarn = true
-			} else if strings.HasPrefix(low, "error") || strings.HasPrefix(low, "refused:") || strings.HasPrefix(low, "rejected") || strings.Contains(low, "error") || strings.Contains(low, "unreachable") || strings.Contains(low, "invalid") || strings.Contains(low, "missing") {
+			} else if strings.HasPrefix(low, "error") || strings.HasPrefix(low, "refused:") || strings.HasPrefix(low, "rejected") || strings.Contains(low, "error") || strings.Contains(low, "unreachable") || strings.Contains(low, "invalid") || strings.Contains(low, "missing") || strings.Contains(low, "not configured (base_url is a placeholder)") {
 				worstError = true
+			} else if strings.Contains(low, "skipped (base_url is a placeholder)") {
+				worstWarn = true
 			}
 		}
 		if m, ok := v.(map[string]any); ok {
