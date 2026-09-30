@@ -16095,7 +16095,7 @@ func TestGeneratedSyncGatesSinceParamPerResource(t *testing.T) {
 
 	// Pin the full warning JSON shape so future template churn can't silently
 	// drop a key, rename the event, or break the agent-facing contract.
-	const fullWarning = `{"event":"sync_warning","resource":"%s","reason":"resource_not_incremental","message":"endpoint does not declare a temporal filter parameter; incremental sync has no effect for this resource"}`
+	const fullWarning = `{"event":"sync_warning","resource":"%s","reason":"resource_not_incremental","message":"endpoint has no usable incremental temporal filter; incremental sync has no effect for this resource"}`
 	assert.Contains(t, syncContent, fullWarning,
 		"warning event must preserve the full agent-facing JSON shape")
 	// Both syncResource (flat) and syncDependentResource (parameterized child
@@ -16106,7 +16106,7 @@ func TestGeneratedSyncGatesSinceParamPerResource(t *testing.T) {
 
 	// Human-mode warning to stderr — silent-fallback guard for TTY users.
 	assert.Contains(t, syncContent,
-		`"  %s: incremental sync ignored (endpoint declares no temporal filter; falling back to full pagination)\n"`,
+		`"  %s: incremental sync ignored (endpoint has no usable incremental temporal filter; falling back to full pagination)\n"`,
 		"human-mode users must see a stderr warning when --since is dropped")
 
 	// Zeroing the temporal-filter timestamp is what actually prevents the
@@ -22054,6 +22054,9 @@ paths:
         - name: start_date
           in: query
           schema: {type: string, format: date}
+        - name: end_date
+          in: query
+          schema: {type: string, format: date}
         - name: next_token
           in: query
           schema: {type: string}
@@ -22069,6 +22072,9 @@ paths:
       operationId: get_heartrate
       parameters:
         - name: start_datetime
+          in: query
+          schema: {type: string, format: date-time}
+        - name: end_datetime
           in: query
           schema: {type: string, format: date-time}
         - name: next_token
