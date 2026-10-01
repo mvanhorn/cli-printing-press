@@ -430,6 +430,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"bodyHasStringBackedBool":      bodyHasStringBackedBool,
 		"multipartBodyMaps":            multipartBodyMaps,
 		"endpointUsesMultipart":        endpointUsesMultipart,
+		"endpointReplaySafe":           endpointReplaySafe,
 		"endpointUsesRawRequest":       endpointUsesRawRequest,
 		"endpointUsesCSVArray":         endpointUsesCSVArray,
 		"endpointHasQueryFlags":        endpointHasQueryFlags,
@@ -8493,6 +8494,55 @@ func endpointHasRequestParams(endpoint spec.Endpoint) bool {
 	for _, p := range endpoint.Params {
 		if !p.PathParam && !paramIsHeader(p) {
 			return true
+		}
+	}
+	return false
+}
+
+// endpointReplaySafe returns the ReplaySafeHeader marker value the
+// generated command sends for a mutating endpoint: "true" when the client
+// may replay it after a transport error or 5xx, "false" when it must not,
+// and "" to keep the client's verb-based default (POST/PATCH never replay
+// without an idempotency key). An explicit x-pp-replay-safe wins. Without
+// one, only file uploads to an upload-named endpoint opt in: they are free
+// to repeat and each attempt yields an independent object. A file-carrying
+// POST that starts billable work (transcription, generation) is not
+// upload-named and keeps the no-replay default.
+func endpointReplaySafe(endpoint spec.Endpoint) string {
+	switch strings.ToUpper(strings.TrimSpace(endpoint.Method)) {
+	case "POST", "PUT", "PATCH", "DELETE":
+	default:
+		return ""
+	}
+	if value, set := endpoint.ReplaySafeOverride(); set {
+		return strconv.FormatBool(value)
+	}
+	if endpointCarriesFile(endpoint) && endpointLooksLikeUpload(endpoint) {
+		return "true"
+	}
+	return ""
+}
+
+// endpointCarriesFile reports whether the request body is a file: a
+// multipart body with a binary part, or an opaque raw (non-JSON) body.
+func endpointCarriesFile(endpoint spec.Endpoint) bool {
+	if endpoint.UsesRawRequestBody() {
+		return true
+	}
+	return endpointUsesMultipart(endpoint) && slices.ContainsFunc(endpoint.Body, isBinaryParam)
+}
+
+// endpointLooksLikeUpload matches an "upload"/"uploads" path segment token.
+// Matching whole tokens keeps "uploader-stats" style reads and unrelated
+// words from qualifying.
+func endpointLooksLikeUpload(endpoint spec.Endpoint) bool {
+	for segment := range strings.SplitSeq(strings.ToLower(endpoint.Path), "/") {
+		for _, token := range strings.FieldsFunc(segment, func(r rune) bool {
+			return r == '-' || r == '_' || r == '.'
+		}) {
+			if token == "upload" || token == "uploads" {
+				return true
+			}
 		}
 	}
 	return false

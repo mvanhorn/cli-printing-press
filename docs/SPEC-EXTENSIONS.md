@@ -54,6 +54,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-pp-resource` | operation | resource name override | No |
 | `x-pp-pagination` | operation | `Endpoint.Pagination` | No |
 | `x-pp-mutation` | operation | `Endpoint.Mutation` | No |
+| `x-pp-replay-safe` | operation | `Endpoint.ReplaySafe` | No |
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 | `x-sync-params` | operation | `Endpoint.SyncParams` | No |
@@ -1585,6 +1586,48 @@ paths:
       responses:
         "200":
           description: Matched rows
+```
+
+### `x-pp-replay-safe`
+
+Declares whether the generated client may replay a mutating request after an
+ambiguous failure (a transport error or a 5xx, where the server may already
+have accepted the request). `true` lets the client retry it with backoff.
+`false` forbids replay, even for verbs that are normally retried.
+
+Without this extension, POST and PATCH never replay unless the request
+carries an `Idempotency-Key`. One default is inferred: an endpoint whose body
+is a file (a multipart binary part or an opaque raw body) and whose path has
+an `upload`/`uploads` segment is treated as replay-safe, because a free
+upload can be repeated and each attempt yields an independent object. File
+uploads also get a per-attempt deadline of `--timeout` plus
+size / 128 KiB/s.
+
+Parsed field: `Endpoint.ReplaySafe`
+
+Rules:
+- Optional.
+- Must be a native boolean.
+- Applies only at the operation level.
+- Set `false` on any endpoint that starts billable work (a generation or
+  transcription submit), even when it is upload-shaped. A replayed paid
+  submit can start and bill the same job more than once.
+- Set `true` only when the API is idempotent for the request or the
+  request is free to repeat.
+- Internal YAML uses the same boolean as `replay_safe:`.
+
+Example:
+
+```yaml
+paths:
+  /media/upload:
+    post:
+      operationId: uploadMedia
+      x-pp-replay-safe: true
+  /media/transcode:
+    post:
+      operationId: transcodeUpload
+      x-pp-replay-safe: false
 ```
 
 ### `x-tier`

@@ -152,33 +152,50 @@ func WaitForJob(ctx context.Context, c *client.Client, statusPath string, jobID 
 	path := strings.ReplaceAll(statusPath, "{id}", jobID)
 	path = strings.ReplaceAll(path, "{job_id}", jobID)
 
+	// Poll errors (network blips, 429, 5xx) are transient: the job is
+	// already running server-side, so keep polling until the wait budget
+	// runs out instead of abandoning it. Each poll is bounded by the same
+	// budget so client retries cannot overrun --wait-timeout. The last
+	// poll error is reported when the deadline passes.
+	pollCtx := ctx
+	if !deadline.IsZero() {
+		var cancel context.CancelFunc
+		pollCtx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
+	}
+	var lastPollErr error
 	for {
-		if !deadline.IsZero() && time.Now().After(deadline) {
-			return nil, fmt.Errorf("wait timed out after %s (job %s)", opts.Timeout, jobID)
-		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
+			if lastPollErr != nil {
+				return nil, fmt.Errorf("wait timed out after %s (job %s); last poll error: %w", opts.Timeout, jobID, lastPollErr)
+			}
+			return nil, fmt.Errorf("wait timed out after %s (job %s)", opts.Timeout, jobID)
 		}
 
 		// GetNoCache: the cache is keyed by (path, params), so a cached
 		// non-terminal status would lock the poll on the initial response
 		// for the cache TTL.
-		resp, err := c.GetNoCache(ctx, path, nil)
+		resp, err := c.GetNoCache(pollCtx, path, nil)
 		if err == nil {
+			lastPollErr = nil
 			var body map[string]any
 			if uerr := json.Unmarshal(resp, &body); uerr == nil {
 				if isJobTerminal(body) {
 					return body, nil
 				}
 			}
+		} else {
+			lastPollErr = err
 		}
 
 		// Jittered sleep: interval + random up to 25%.
 		jitter := time.Duration(rand.Int63n(int64(interval)/4 + 1))
 		select {
 		case <-time.After(interval + jitter):
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		case <-pollCtx.Done():
 		}
 
 		// Exponential-ish growth with cap.
@@ -187,6 +204,46 @@ func WaitForJob(ctx context.Context, c *client.Client, statusPath string, jobID 
 			interval = maxInterval
 		}
 	}
+}
+
+// ExitJobPending is the exit code for a job that was submitted but whose
+// --wait did not reach a terminal status (timeout, poll failure, Ctrl-C).
+// The work may still be running and may already be billed, so the command
+// must not look like a plain failure that invites a resubmit: it reports
+// the job ID and the command that fetches the result later.
+const ExitJobPending = 8
+
+// AsyncJobPendingError carries the job ID and recovery command for a
+// submitted job whose wait failed. ExitCode maps it to ExitJobPending.
+type AsyncJobPendingError struct {
+	JobID           string
+	RecoveryCommand string
+	Err             error
+}
+
+func (e *AsyncJobPendingError) Error() string {
+	return fmt.Sprintf("job %s was submitted but waiting for it failed: %v\nThe job may still be running. Do not resubmit; fetch the result with: %s", e.JobID, e.Err, e.RecoveryCommand)
+}
+
+func (e *AsyncJobPendingError) Unwrap() error { return e.Err }
+
+// asyncJobPendingErr reports a submitted job whose wait failed. It writes
+// the job ID and recovery command to stderr (and a JSON envelope on
+// stdout under --json) so the result is never lost, then returns an error
+// that exits with ExitJobPending.
+func asyncJobPendingErr(cmd *cobra.Command, flags *rootFlags, jobID, recoveryCommand string, err error) error {
+	pending := &AsyncJobPendingError{JobID: jobID, RecoveryCommand: recoveryCommand, Err: err}
+	fmt.Fprintf(cmd.ErrOrStderr(), "job_id: %s\nrecover: %s\n", jobID, recoveryCommand)
+	if flags != nil && flags.asJSON {
+		_ = json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+			"job_id":           jobID,
+			"status":           "pending",
+			"recovery_command": recoveryCommand,
+			"error":            err.Error(),
+			"code":             ExitJobPending,
+		})
+	}
+	return &cliError{code: ExitJobPending, err: pending}
 }
 
 // ExtractJobID parses response bytes and returns the string value of the

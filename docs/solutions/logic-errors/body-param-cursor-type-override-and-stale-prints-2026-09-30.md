@@ -69,9 +69,13 @@ string token, and those must stay strings.
 
 ## Prevention
 
-- Add an emitted-code test that compiles a print whose POST body declares
-  `page: integer` and asserts the marshalled body contains a JSON number.
-  Source-level assertions on the template are not enough.
+- `TestGeneratedPaidSubmitUploadRetryAndRecovery` compiles a print whose
+  POST body declares integer `page`, `page_size`, `offset`, `cursor`,
+  number `min_time`, and booleans, runs the binary against httptest, and
+  asserts the body carries JSON numbers and booleans (`"page":1`, not
+  `"page":"1"`). Required booleans still use a string flag and are parsed
+  before marshalling. Cursor-named URL query params stay string-typed by
+  design; non-cursor numeric and boolean query params keep their types.
 - When the reprint/currency tooling compares a published CLI's
   `printing_press_version` against the latest release, list known fixed
   defect classes (like this one) so the operator knows a reprint or a

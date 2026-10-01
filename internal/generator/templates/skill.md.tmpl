@@ -676,6 +676,8 @@ For endpoints that submit long-running work, the generator detects the submit-th
 | `--wait-interval` | Initial poll interval (default 2s; grows with exponential backoff up to 30s) |
 
 Use async submission without `--wait` when you want to fire-and-forget; use `--wait` when you want one command to return the finished artifact.
+
+If `--wait` times out or polling fails after the job was accepted, the command exits `8` and prints the job ID plus a recovery command that fetches the result. The job may still be running and may already be billed, so run the recovery command instead of resubmitting.
 {{- end}}
 
 ## Exit Codes
@@ -693,6 +695,9 @@ Use async submission without `--wait` when you want to fire-and-forget; use `--w
 | 6 | Partial failure |
 {{- end}}
 | 7 | Rate limited (wait and retry) |
+{{- if .HasAsyncJobs}}
+| 8 | Async job submitted but not finished (run the printed recovery command; do not resubmit) |
+{{- end}}
 | 10 | Config error |
 
 ## Argument Parsing

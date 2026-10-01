@@ -4,4 +4,10 @@
 # Without async detection, none of these files are emitted; without
 # the cache-bypass fix from #1136, the WaitForJob body would call
 # c.Get instead of c.GetNoCache, locking polling on the initial response.
+# renders_submit.go locks the post-submission recovery contract: a failed
+# --wait prints the job ID plus the status recovery command and exits 8
+# instead of losing the (possibly billed) job. promoted_media.go locks the
+# free-upload replay marker; the paid submit carries none.
 async-job-api/internal/cli/jobs.go
+async-job-api/internal/cli/renders_submit.go
+async-job-api/internal/cli/promoted_media.go

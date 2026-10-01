@@ -54,3 +54,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RenderJob"
+  # /media/upload exercises the free-upload replay default: a file-carrying
+  # POST with an upload path segment is marked replay-safe, so the client
+  # retries it (with a size-scaled deadline) while the paid /renders submit
+  # above never replays after an ambiguous failure.
+  /media/upload:
+    post:
+      tags: [media]
+      operationId: uploadMedia
+      summary: Upload an input file
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: OK

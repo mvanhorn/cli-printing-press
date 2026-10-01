@@ -14,7 +14,8 @@
 {{- $dataSourceStrategy := dataSourceStrategy .Resource .Endpoint}}
 {{- $documentedFields := compactFieldMapLiteral .Endpoint.Response.Item .Types}}
 {{- $skipLiveJSONGuard := or .Endpoint.UsesHTMLResponse .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse}}
-{{- $hasHeaderOverrides := or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse .Endpoint.UsesHTMLResponse (endpointHasHeaderParams .Endpoint)}}
+{{- $replaySafe := endpointReplaySafe .Endpoint}}
+{{- $hasHeaderOverrides := or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse .Endpoint.UsesHTMLResponse (endpointHasHeaderParams .Endpoint) $replaySafe}}
 
 package cli
 
@@ -235,6 +236,9 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- if .Endpoint.UsesHTMLResponse}}
 				"X-Printing-Press-HTML-Response": "true",
+{{- end}}
+{{- if $replaySafe}}
+				"X-Printing-Press-Replay-Safe": "{{$replaySafe}}",
 {{- end}}
 			}
 			{{ range .Endpoint.Params}}{{if and (paramIsHeader .) (not .Positional)}}

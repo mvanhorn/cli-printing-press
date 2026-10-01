@@ -56,15 +56,27 @@ URLs are dropped.
 5. Download after completion is a warning. Return it as data
    (`DownloadErr`) so every caller can report the output URLs.
 
-## Generator follow-up
+## Generator fix
 
-- Classify multipart file uploads as replay-safe only when the spec or a
-  `x-pp-idempotent-upload: true` extension says so. A general "multipart is
-  safe" rule is wrong for APIs where upload creates a billed resource.
-- Scale the per-request deadline for requests that carry a file body by
-  payload size, as `StreamingHTTPClient` already does for binary responses.
-- Keep the submit/poll/download split in novel-command scaffolding so
-  post-billing failures never discard the result.
+The generator now emits the same split for every printed CLI:
+
+- `client.go.tmpl` reads an internal `X-Printing-Press-Replay-Safe` marker
+  (stripped before the request is sent). Endpoint commands and MCP tools
+  set it from `endpointReplaySafe`: an explicit `x-pp-replay-safe` wins;
+  otherwise only file-carrying endpoints with an `upload`/`uploads` path
+  segment opt in. Every other POST/PATCH keeps the no-replay default unless
+  an `Idempotency-Key` is present. A general "multipart is safe" rule would
+  be wrong: a file-carrying transcription or generation POST is billed.
+- Requests that carry a file get `--timeout + size / 128 KiB/s` per attempt
+  on a copied `http.Client`, and the shared wait/retry budget grows to match.
+- `WaitForJob` keeps polling through transient poll errors until
+  `--wait-timeout`, and each poll is bounded by that deadline.
+- When `--wait` fails after the job was accepted, the command prints the
+  job ID and `<cli> <status command> <id>`, emits a JSON envelope under
+  `--json`, keeps the ledger row `submitted`, and exits `8`
+  (`ExitJobPending`) so callers do not mistake it for a failed submit.
+- Hand-written novel commands still own their submit/poll/download split;
+  keep download failures as data, not as the command's error.
 
 ## Diagnostic note
 

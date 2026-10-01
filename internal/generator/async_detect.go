@@ -32,6 +32,12 @@ type AsyncJobInfo struct {
 	// {id} or {job_id} with the actual job ID.
 	StatusPath string
 
+	// StatusCommand is the printed CLI command path (without the binary
+	// name) that reads the status endpoint, e.g. "renders get". The
+	// generated --wait path prints "<cli> <StatusCommand> <job-id>" as the
+	// recovery command when waiting fails after the job was submitted.
+	StatusCommand string
+
 	// TerminalField and TerminalValues describe how the polling loop
 	// decides the job is done. Defaults to "status" with a common
 	// done/complete/completed/failed/errored set when the spec does not
@@ -113,9 +119,23 @@ func detectOne(s *spec.APISpec, rName, eName string, ep spec.Endpoint) (AsyncJob
 		StatusResource: statusRes,
 		StatusEndpoint: statusEP,
 		StatusPath:     statusPath,
+		StatusCommand:  asyncStatusCommandPath(s, statusRes, statusEP),
 		TerminalField:  "status",
 		TerminalValues: terminalValueDefaults,
 	}, true
+}
+
+// asyncStatusCommandPath mirrors the command tree the generator emits for
+// the status endpoint: a promoted single-endpoint resource (or a promoted
+// GraphQL get) is invoked as "<resource>", every other endpoint as
+// "<resource> <endpoint>".
+func asyncStatusCommandPath(s *spec.APISpec, statusRes, statusEP string) string {
+	for _, pc := range buildPromotedCommands(s) {
+		if pc.ResourceName == statusRes && pc.EndpointName == statusEP {
+			return pc.PromotedName
+		}
+	}
+	return toKebab(statusRes) + " " + toKebab(statusEP)
 }
 
 // responseJobIDField returns the matching job-id-shaped field name in the
