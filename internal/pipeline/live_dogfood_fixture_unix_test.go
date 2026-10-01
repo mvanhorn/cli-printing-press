@@ -110,3 +110,17 @@ func TestCopyCLIDirFixturesSharesBudgetAcrossArgs(t *testing.T) {
 	require.Error(t, err, "two fixture args together exceed the one shared budget")
 	assert.Contains(t, err.Error(), "exceeds")
 }
+
+func TestCopyCLIDirFixturesChargesRepeatedFixtureOnce(t *testing.T) {
+	cliDir := t.TempDir()
+	scratch := t.TempDir()
+	set := filepath.Join(cliDir, "set")
+	require.NoError(t, os.MkdirAll(set, 0o755))
+	for i := range liveDogfoodFixtureMaxFiles/2 + 1 {
+		require.NoError(t, os.WriteFile(filepath.Join(set, fmt.Sprintf("f%05d", i)), nil, 0o644))
+	}
+	// Named twice, the set is still under the cap once.
+	require.NoError(t, copyCLIDirFixtures([]string{"cmd", "./set", "--images=@set"}, 1, cliDir, scratch))
+	_, err := os.Stat(filepath.Join(scratch, "set", "f00000"))
+	require.NoError(t, err)
+}

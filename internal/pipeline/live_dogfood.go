@@ -2313,12 +2313,9 @@ const (
 	noErrorPathProbeAnnotation = "pp:no-error-path-probe"
 	requiresTierAnnotation     = "pp:requires-tier"
 	interactiveAnnotation      = "pp:interactive"
-	// liveHappyPathAnnotation opts a mutating command into a real (not
-	// --dry-run) happy_path when the operator also passes
-	// --allow-destructive. It exists for commands whose whole value is a
-	// side effect the operator can approve for one run (a paid generation,
-	// a local file write): without it the matrix can only dry-run them, so
-	// they read as hollow coverage forever.
+	// Paid generations and local writes deliver value only as a side effect,
+	// so dry-run alone leaves them as hollow coverage forever; this lets the
+	// operator approve one real run (together with --allow-destructive).
 	liveHappyPathAnnotation   = "pp:live-happy-path"
 	liveDogfoodMaxOutputBytes = 10 << 20
 )
@@ -3328,8 +3325,9 @@ const (
 )
 
 type liveDogfoodFixtureBudget struct {
-	files int
-	bytes int64
+	files  int
+	bytes  int64
+	copied map[string]struct{}
 }
 
 // copy walks src into dst. ancestors holds the resolved directories already
@@ -3385,6 +3383,15 @@ func (b *liveDogfoodFixtureBudget) copyFile(src, dst string, info os.FileInfo) e
 	if !info.Mode().IsRegular() {
 		return nil
 	}
+	// The same fixture can be named twice (./in.png and --image=@in.png);
+	// it lands on one scratch file, so it is copied and charged once.
+	if _, done := b.copied[dst]; done {
+		return nil
+	}
+	if b.copied == nil {
+		b.copied = map[string]struct{}{}
+	}
+	b.copied[dst] = struct{}{}
 	b.files++
 	b.bytes += info.Size()
 	if b.files > liveDogfoodFixtureMaxFiles || b.bytes > liveDogfoodFixtureMaxBytes {
