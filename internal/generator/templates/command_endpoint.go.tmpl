@@ -928,11 +928,13 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- if .IsAsync}}
 			if asyncJobID := ExtractJobID(data, "{{.Async.JobIDField}}"); asyncJobID != "" {
+				asyncSubmittedAt := time.Now().UTC()
 				_ = RecordJob(JobRow{
 					JobID:          asyncJobID,
 					Resource:       "{{.ResourceName}}",
 					Endpoint:       "{{.EndpointName}}",
 					Status:         "submitted",
+					SubmittedAt:    asyncSubmittedAt,
 					StatusResource: "{{.Async.StatusResource}}",
 					StatusEndpoint: "{{.Async.StatusEndpoint}}",
 				})
@@ -955,11 +957,12 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 							Resource:       "{{.ResourceName}}",
 							Endpoint:       "{{.EndpointName}}",
 							Status:         "submitted",
+							SubmittedAt:    asyncSubmittedAt,
 							StatusResource: "{{.Async.StatusResource}}",
 							StatusEndpoint: "{{.Async.StatusEndpoint}}",
 							Error:          werr.Error(),
 						})
-						return asyncJobPendingErr(cmd, flags, asyncJobID, "{{.Name}}-pp-cli {{.Async.StatusCommand}} "+asyncJobID, werr)
+						return asyncJobPendingErr(cmd, flags, asyncJobID, {{printf "%q" (printf "%s-pp-cli %s" .Name .Async.StatusRecoveryPrefix)}}+asyncJobID, werr)
 					}
 					if b, merr := json.Marshal(final); merr == nil {
 						data = b

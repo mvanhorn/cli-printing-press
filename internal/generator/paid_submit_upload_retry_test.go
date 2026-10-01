@@ -190,6 +190,28 @@ func TestEndpointReplaySafeClassification(t *testing.T) {
 	}
 }
 
+func TestAsyncStatusRecoveryPrefixFollowsIDBinding(t *testing.T) {
+	t.Parallel()
+
+	build := func(idParam spec.Param, extra ...spec.Param) *spec.APISpec {
+		return &spec.APISpec{Resources: map[string]spec.Resource{
+			"renders": {Endpoints: map[string]spec.Endpoint{
+				"submit": {Method: "POST", Path: "/renders"},
+				"get":    {Method: "GET", Path: "/renders/{id}", Params: append([]spec.Param{idParam}, extra...)},
+			}},
+		}}
+	}
+	positional := spec.Param{Name: "id", Type: "string", Positional: true, PathParam: true, Required: true}
+	flagged := spec.Param{Name: "id", Type: "string", PathParam: true, Default: "latest"}
+
+	require.Equal(t, "renders get ", asyncStatusRecoveryPrefix(build(positional), "renders", "get"))
+	require.Equal(t, "renders get --id ", asyncStatusRecoveryPrefix(build(flagged), "renders", "get"),
+		"a defaulted ID is a flag; appending a positional would fetch the default job")
+	require.Equal(t, "jobs get ", asyncStatusRecoveryPrefix(build(flagged, spec.Param{Name: "region", Type: "string", Positional: true, Required: true}), "renders", "get"),
+		"an extra required positional cannot be filled from the job ID alone")
+	require.Equal(t, "jobs get ", asyncStatusRecoveryPrefix(build(spec.Param{Name: "task", Type: "string", Positional: true}), "renders", "get"))
+}
+
 func TestParserReadsReplaySafeExtension(t *testing.T) {
 	t.Parallel()
 
@@ -338,6 +360,18 @@ func TestPaid_ReplaySafeFalseBlocksVerbDefault(t *testing.T) {
 	_, _, err := c.PutWithHeaders(context.Background(), "/jobs/1", map[string]string{"a": "b"}, map[string]string{ReplaySafeHeader: "false"})
 	if err == nil || calls != 1 {
 		t.Fatalf("PUT with replay-safe=false = calls %d err %v; want one failed attempt", calls, err)
+	}
+}
+
+func TestPaid_ReplaySafeFalseWinsOverReadIntent(t *testing.T) {
+	calls := 0
+	c := newPaidClient(t, paidRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return nil, errors.New("connection reset by peer")
+	}))
+	_, _, err := c.PostQueryWithParamsAndHeaders(context.Background(), "/search", nil, map[string]string{"q": "x"}, map[string]string{ReplaySafeHeader: "false"})
+	if err == nil || calls != 1 {
+		t.Fatalf("read-intent POST with replay-safe=false = calls %d err %v; want one attempt", calls, err)
 	}
 }
 

@@ -8523,8 +8523,9 @@ func endpointReplaySafe(endpoint spec.Endpoint) string {
 	return ""
 }
 
-// endpointCarriesFile reports whether the request body is a file: a
-// multipart body with a binary part, or an opaque raw (non-JSON) body.
+// Only a file body earns the upload default: a JSON or form POST to an
+// upload-named path is usually a "create upload session" call, and replaying
+// it can mint duplicate server-side objects.
 func endpointCarriesFile(endpoint spec.Endpoint) bool {
 	if endpoint.UsesRawRequestBody() {
 		return true

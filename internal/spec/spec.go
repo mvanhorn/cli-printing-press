@@ -2758,8 +2758,9 @@ func (e Endpoint) MutationOverride() (value, set bool) {
 	return *e.Mutation, true
 }
 
-// ReplaySafeOverride reports the explicit replay-safe flag. set is false
-// when the spec omitted it, so callers can distinguish unset from false.
+// An omitted flag must stay distinguishable from false: unset lets the
+// generator infer replay safety for free uploads, while an explicit false
+// is the spec author's guarantee that a file-carrying request is billed.
 func (e Endpoint) ReplaySafeOverride() (value, set bool) {
 	if e.ReplaySafe == nil {
 		return false, false

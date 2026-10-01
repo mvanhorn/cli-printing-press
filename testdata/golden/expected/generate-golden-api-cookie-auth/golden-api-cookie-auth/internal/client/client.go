@@ -578,8 +578,9 @@ func (c *Client) wantsBinaryResponse(headers map[string]string) bool {
 	return binaryResponse
 }
 
-// replaySafeHeaderValue reads the ReplaySafeHeader marker. declared is
-// false when no override was supplied.
+// declared separates "no marker" from an explicit "false": without a
+// marker the verb/idempotency-key default applies, while "false" must win
+// even over read intent because the spec says the request can be billed.
 func replaySafeHeaderValue(headers map[string]string) (value bool, declared bool) {
 	for k, v := range headers {
 		if strings.EqualFold(k, ReplaySafeHeader) {
@@ -1250,9 +1251,14 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	// The spec can declare replay safety per endpoint. Free uploads opt in
 	// so a stalled socket does not lose the file; requests that start
 	// billable work opt out so an ambiguous failure is never resubmitted.
-	// An idempotency key still makes an opted-out request safe to replay.
-	if replaySafe, declared := replaySafeHeaderValue(headerOverrides); declared && !readOnlyIntent {
-		canRetryAmbiguousFailure = replaySafe || requestIdempotencyKey(c.Config, headerOverrides) != ""
+	// An explicit opt-out wins over read intent; an idempotency key still
+	// makes an opted-out request safe to replay.
+	if replaySafe, declared := replaySafeHeaderValue(headerOverrides); declared {
+		if replaySafe {
+			canRetryAmbiguousFailure = true
+		} else {
+			canRetryAmbiguousFailure = requestIdempotencyKey(c.Config, headerOverrides) != ""
+		}
 	}
 	endpointClass := safeEndpointClass(method, path)
 	retryPolicy, err := c.platformRetryPolicy(endpointClass)

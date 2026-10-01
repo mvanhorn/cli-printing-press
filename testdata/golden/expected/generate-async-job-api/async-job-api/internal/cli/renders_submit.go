@@ -55,11 +55,13 @@ func newRendersSubmitCmd(flags *rootFlags) *cobra.Command {
 				return classifyAPIError(cmd.OutOrStdout(), err, flags)
 			}
 			if asyncJobID := ExtractJobID(data, "job_id"); asyncJobID != "" {
+				asyncSubmittedAt := time.Now().UTC()
 				_ = RecordJob(JobRow{
 					JobID:          asyncJobID,
 					Resource:       "renders",
 					Endpoint:       "submit",
 					Status:         "submitted",
+					SubmittedAt:    asyncSubmittedAt,
 					StatusResource: "renders",
 					StatusEndpoint: "get",
 				})
@@ -82,6 +84,7 @@ func newRendersSubmitCmd(flags *rootFlags) *cobra.Command {
 							Resource:       "renders",
 							Endpoint:       "submit",
 							Status:         "submitted",
+							SubmittedAt:    asyncSubmittedAt,
 							StatusResource: "renders",
 							StatusEndpoint: "get",
 							Error:          werr.Error(),
