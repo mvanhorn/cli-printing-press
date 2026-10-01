@@ -1643,6 +1643,13 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	mutation := liveDogfoodCommandMutation(command)
 	mutating := mutation.mutating
 	useDryRun := mutating && commandSupportsDryRun(command.Help)
+	// Live happy path needs two keys: the command opts in by annotation and
+	// the operator opts in per run with --allow-destructive. Either alone
+	// keeps the default dry-run behavior.
+	liveHappy := mutating && ctx.allowDestructive && annotationIsTrueValue(command.Annotations[liveHappyPathAnnotation])
+	if liveHappy {
+		useDryRun = false
+	}
 	appendDryRunJSON := func(args []string, argsOK bool, stdin []byte, skipReason string) {
 		if dryRunJSON := probeLiveDogfoodDryRunJSON(command, ctx, mutation, args, stdin, argsOK, skipReason); dryRunJSON != nil {
 			results = append(results, *dryRunJSON)
@@ -1770,7 +1777,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, syntheticParamSkip),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, syntheticParamSkip),
 		)
-	case mutation.unclassified && !useDryRun:
+	case mutation.unclassified && !useDryRun && !liveHappy:
 		results = append(results,
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonUnclassifiedNoMethod),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonUnclassifiedNoMethod),
@@ -1794,13 +1801,42 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		}
 
 		runArgs := happyArgs
+		realOptIn := annotationIsTrueValue(command.Annotations[liveHappyPathAnnotation]) && !useDryRun
 		if useDryRun {
 			runArgs = appendDryRunArg(happyArgs)
+		} else if realOptIn {
+			// Examples on paid or side-effecting commands usually show
+			// --dry-run; the approved live run must not inherit it.
+			runArgs = removeDryRunArgs(happyArgs)
+			if commandSupportsJSON(command.Help) && !hasExplicitNonJSONOutputMode(runArgs) {
+				// Ask for JSON on the one live run so json_fidelity can be
+				// judged from it instead of from a second paid run.
+				runArgs = appendJSONArg(runArgs)
+			}
 		}
 		runArgs = protectLiveDogfoodNegativeNumericPositionals(runArgs, command.Path,
 			len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))), liveDogfoodFlagValueNames(command.Help), liveDogfoodFlagNames(command.Help))
 
-		happyRun := runLiveDogfoodProcessWithStdin(ctx.binaryPath, ctx.cliDir, runArgs, ctx.timeout, stdinPayload)
+		happyDir := ctx.cliDir
+		if realOptIn {
+			// Run opted-in real happy paths from a throwaway working
+			// directory so files they write (downloads, starter configs)
+			// never land in the CLI source tree. Fixture paths that exist
+			// under the CLI directory are made absolute first so they
+			// still resolve.
+			scratch, err := os.MkdirTemp("", "printing-press-live-happy-*")
+			if err != nil {
+				results = append(results,
+					failedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, fmt.Sprintf("create live happy-path scratch dir: %v", err)),
+					skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, "live happy-path scratch dir unavailable"),
+				)
+				break
+			}
+			defer os.RemoveAll(scratch)
+			happyDir = scratch
+			runArgs = absolutizeCLIDirFixtureArgs(runArgs, len(command.Path), ctx.cliDir)
+		}
+		happyRun := runLiveDogfoodProcessWithStdin(ctx.binaryPath, happyDir, runArgs, ctx.timeout, stdinPayload)
 		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, happyRun, ctx.authEnvValue)
 		happyResult.FixtureSource = fixtureSource
 		if happyRun.exitCode == 0 {
@@ -1841,7 +1877,17 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 				jsonArgs = removeNonJSONOutputModes(jsonArgs)
 			}
 			jsonArgs = appendJSONArg(jsonArgs)
-			jsonRun := runLiveDogfoodProcessWithStdin(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout, stdinPayload)
+			var jsonRun liveDogfoodRun
+			if realOptIn {
+				// Never repeat an opted-in real run (a second paid generation
+				// would bill twice, and a rerun outside the scratch dir would
+				// write into the CLI tree): judge JSON fidelity from the
+				// happy run, which already requested --json when supported.
+				jsonArgs = runArgs
+				jsonRun = happyRun
+			} else {
+				jsonRun = runLiveDogfoodProcessWithStdin(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout, stdinPayload)
+			}
 			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun, ctx.authEnvValue)
 			jsonResult.FixtureSource = fixtureSource
 			if jsonRun.exitCode == 0 {
@@ -2252,7 +2298,14 @@ const (
 	noErrorPathProbeAnnotation = "pp:no-error-path-probe"
 	requiresTierAnnotation     = "pp:requires-tier"
 	interactiveAnnotation      = "pp:interactive"
-	liveDogfoodMaxOutputBytes  = 10 << 20
+	// liveHappyPathAnnotation opts a mutating command into a real (not
+	// --dry-run) happy_path when the operator also passes
+	// --allow-destructive. It exists for commands whose whole value is a
+	// side effect the operator can approve for one run (a paid generation,
+	// a local file write): without it the matrix can only dry-run them, so
+	// they read as hollow coverage forever.
+	liveHappyPathAnnotation   = "pp:live-happy-path"
+	liveDogfoodMaxOutputBytes = 10 << 20
 )
 
 var liveDogfoodRequiredParamFixturePhrases = []string{
@@ -3187,6 +3240,61 @@ func appendJSONArg(args []string) []string {
 		return out
 	}
 	return append(out, "--json")
+}
+
+// absolutizeCLIDirFixtureArgs rewrites relative argument values that name an
+// existing file under cliDir (fixtures such as ./input.png) to absolute
+// paths, so a command run from another working directory still finds them.
+// The command path and anything after a "--" terminator are left alone.
+func absolutizeCLIDirFixtureArgs(args []string, pathLen int, cliDir string) []string {
+	out := append([]string{}, args...)
+	if strings.TrimSpace(cliDir) == "" {
+		return out
+	}
+	for i := min(pathLen, len(out)); i < len(out); i++ {
+		arg := out[i]
+		if arg == "--" {
+			break
+		}
+		prefix, value := "", arg
+		if strings.HasPrefix(arg, "-") {
+			name, v, ok := strings.Cut(arg, "=")
+			if !ok {
+				continue
+			}
+			prefix, value = name+"=", v
+		}
+		value = strings.TrimPrefix(value, "@")
+		if value == "" || filepath.IsAbs(value) || strings.Contains(value, "://") {
+			continue
+		}
+		candidate := filepath.Join(cliDir, value)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			if strings.HasPrefix(strings.TrimPrefix(arg, prefix), "@") {
+				candidate = "@" + candidate
+			}
+			out[i] = prefix + candidate
+		}
+	}
+	return out
+}
+
+// removeDryRunArgs drops --dry-run / --dry-run=<v> tokens before any "--"
+// terminator, leaving positional values after the terminator untouched.
+func removeDryRunArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	terminated := false
+	for _, arg := range args {
+		if !terminated {
+			if arg == "--" {
+				terminated = true
+			} else if arg == "--dry-run" || strings.HasPrefix(arg, "--dry-run=") {
+				continue
+			}
+		}
+		out = append(out, arg)
+	}
+	return out
 }
 
 func appendDryRunArg(args []string) []string {
