@@ -3317,6 +3317,14 @@ func liveDogfoodFixtureSource(root, path string) (string, bool) {
 }
 
 func copyLiveDogfoodFixture(root, src, dst string) error {
+	return copyLiveDogfoodFixtureDepth(root, src, dst, 0)
+}
+
+// liveDogfoodFixtureMaxLinkDepth bounds directory-symlink descent so a link
+// cycle inside the CLI tree cannot recurse forever.
+const liveDogfoodFixtureMaxLinkDepth = 8
+
+func copyLiveDogfoodFixtureDepth(root, src, dst string, depth int) error {
 	info, err := os.Stat(src)
 	if err != nil {
 		return err
@@ -3341,8 +3349,16 @@ func copyLiveDogfoodFixture(root, src, dst string) error {
 			return nil
 		}
 		fi, err := os.Stat(real)
-		if err != nil || fi.IsDir() {
+		if err != nil {
 			return nil
+		}
+		if fi.IsDir() {
+			// WalkDir does not follow directory symlinks; copy the in-tree
+			// target explicitly so inputs read through the link exist.
+			if depth >= liveDogfoodFixtureMaxLinkDepth {
+				return nil
+			}
+			return copyLiveDogfoodFixtureDepth(root, real, target, depth+1)
 		}
 		return copyLiveDogfoodFile(real, target, fi)
 	})
