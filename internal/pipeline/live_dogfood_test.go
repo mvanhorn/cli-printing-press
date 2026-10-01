@@ -7581,3 +7581,261 @@ Examples:
 	require.True(t, ok)
 	assert.Equal(t, []string{"widgets", "list", "--verbose"}, args)
 }
+
+func writeLiveHappyPathFixture(t *testing.T) (dir, binaryName, argvLog string) {
+	t.Helper()
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+	argvLog = filepath.Join(t.TempDir(), "argv.log")
+	script := `#!/bin/sh
+set -u
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{"commands":[
+  {"name":"render","annotations":{"pp:method":"POST","pp:live-happy-path":"true"}},
+  {"name":"publish","annotations":{"pp:method":"POST"}},
+  {"name":"bake","annotations":{"pp:live-happy-path":"true"}},
+  {"name":"fetch","annotations":{"mcp:read-only":"true","pp:live-happy-path":"true"}}
+]}
+JSON
+  exit 0
+fi
+if [ "${2:-}" = "--help" ]; then
+  cat <<HELP
+Do the thing.
+
+Usage:
+  fixture-pp-cli $1 [flags]
+
+Examples:
+  fixture-pp-cli $1 --prompt=demo --dry-run
+
+Flags:
+      --prompt string   Prompt
+
+Global Flags:
+      --dry-run   Show request without sending
+      --json      Output as JSON
+HELP
+  exit 0
+fi
+printf '%s\n' "$*" >> "$PRINTING_PRESS_TEST_ARGV_LOG"
+for a in "$@"; do
+  case "$a" in
+    --dry-run) echo '{"dry_run":true,"action":"preview"}'; exit 0 ;;
+  esac
+done
+pwd >> "$PRINTING_PRESS_TEST_ARGV_LOG.pwd"
+echo '{"id":"live-1"}' > side-effect.json
+echo '{"id":"live-1"}'
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, binaryName), []byte(script), 0o755))
+	return dir, binaryName, argvLog
+}
+
+func liveHappyArgvLines(t *testing.T, path string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	require.NoError(t, err)
+	return strings.Split(strings.TrimSpace(string(raw)), "\n")
+}
+
+func TestRunLiveDogfoodLiveHappyPathRequiresAnnotationAndAllowDestructive(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName, argvLog := writeLiveHappyPathFixture(t)
+	t.Setenv("PRINTING_PRESS_TEST_ARGV_LOG", argvLog)
+
+	// Annotation alone: still dry-run only.
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+	// A read-only opted-in command runs for real either way, but from a
+	// scratch directory so its writes stay out of the CLI tree.
+	fetch := findResultByCommandKind(report, "fetch", LiveDogfoodTestHappy)
+	require.NotNil(t, fetch)
+	assert.Equal(t, LiveDogfoodStatusPass, fetch.Status, fetch.Reason)
+	_, fetchStat := os.Stat(filepath.Join(dir, "side-effect.json"))
+	assert.True(t, os.IsNotExist(fetchStat), "opted-in read-only happy path must not write into the CLI directory")
+	got := findResultByCommandKind(report, "render", LiveDogfoodTestHappy)
+	require.NotNil(t, got)
+	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
+	assert.Contains(t, got.Args, "--dry-run")
+	for _, line := range liveHappyArgvLines(t, argvLog) {
+		if strings.HasPrefix(line, "fetch") {
+			continue
+		}
+		assert.Contains(t, line, "--dry-run", "no live mutator invocation without --allow-destructive")
+	}
+	require.NoError(t, os.Remove(argvLog))
+
+	// Annotation plus --allow-destructive: exactly one live run.
+	allowed, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:           dir,
+		BinaryName:       binaryName,
+		Level:            "full",
+		Timeout:          2 * time.Second,
+		AllowDestructive: true,
+	})
+	require.NoError(t, err)
+	live := findResultByCommandKind(allowed, "render", LiveDogfoodTestHappy)
+	require.NotNil(t, live)
+	assert.Equal(t, LiveDogfoodStatusPass, live.Status, live.Reason)
+	assert.NotContains(t, live.Args, "--dry-run")
+	assert.Contains(t, live.Args, "--json")
+	jsonResult := findResultByCommandKind(allowed, "render", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusPass, jsonResult.Status, jsonResult.Reason)
+
+	liveRenders := 0
+	livePublishes := 0
+	for _, line := range liveHappyArgvLines(t, argvLog) {
+		if strings.Contains(line, "--dry-run") {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "render"):
+			liveRenders++
+		case strings.HasPrefix(line, "publish"):
+			livePublishes++
+		}
+	}
+	assert.Equal(t, 1, liveRenders, "the approved live side effect must run exactly once")
+	_, statErr := os.Stat(filepath.Join(dir, "side-effect.json"))
+	assert.True(t, os.IsNotExist(statErr), "live happy-path writes must not land in the CLI directory")
+
+	// A mutator without the annotation keeps its dry-run happy path even
+	// under --allow-destructive.
+	other := findResultByCommandKind(allowed, "publish", LiveDogfoodTestHappy)
+	require.NotNil(t, other)
+	assert.Contains(t, other.Args, "--dry-run")
+	assert.Equal(t, 0, livePublishes)
+
+	// An unclassified command (no method, no verb) that opts in is treated
+	// as classified for the approved live run instead of being skipped.
+	bake := findResultByCommandKind(allowed, "bake", LiveDogfoodTestHappy)
+	require.NotNil(t, bake)
+	assert.Equal(t, LiveDogfoodStatusPass, bake.Status, bake.Reason)
+	assert.NotContains(t, bake.Args, "--dry-run")
+}
+
+func TestFinalizeLiveDogfoodCoverageCountsLiveHappyPathRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName, argvLog := writeLiveHappyPathFixture(t)
+	t.Setenv("PRINTING_PRESS_TEST_ARGV_LOG", argvLog)
+	researchDir := t.TempDir()
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		NovelFeatures: []NovelFeature{{Name: "Render", Command: "render"}},
+	}, researchDir))
+
+	dry, err := RunLiveDogfood(LiveDogfoodOptions{CLIDir: dir, BinaryName: binaryName, Level: "full", Timeout: 2 * time.Second, ResearchDir: researchDir})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"render"}, dry.HollowFeatures)
+
+	live, err := RunLiveDogfood(LiveDogfoodOptions{CLIDir: dir, BinaryName: binaryName, Level: "full", Timeout: 2 * time.Second, ResearchDir: researchDir, AllowDestructive: true})
+	require.NoError(t, err)
+	assert.False(t, live.CoverageHollow)
+	assert.Empty(t, live.HollowFeatures)
+}
+
+func TestRemoveDryRunArgsStopsAtTerminator(t *testing.T) {
+	got := removeDryRunArgs([]string{"render", "--dry-run", "--prompt", "x", "--dry-run=true", "--", "--dry-run"})
+	assert.Equal(t, []string{"render", "--prompt", "x", "--", "--dry-run"}, got)
+}
+
+func TestCopyCLIDirFixturesCopiesInputsWithoutRewritingArgs(t *testing.T) {
+	cliDir := t.TempDir()
+	scratch := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "input.png"), []byte("img"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "fixtures", "set"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "fixtures", "set", "a.txt"), []byte("a"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "report.json"), []byte("keep"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "after.txt"), []byte("after"), 0o644))
+
+	args := []string{"upload", "./input.png", "--image=@input.png", "--dir", "fixtures", "--output-file=report.json", "missing.png", "../escape", "--", "after.txt"}
+	before := append([]string{}, args...)
+	require.NoError(t, copyCLIDirFixtures(args, 1, cliDir, scratch))
+	assert.Equal(t, before, args, "args must not be rewritten")
+
+	for rel, want := range map[string]string{
+		"input.png":          "img",
+		"fixtures/set/a.txt": "a",
+		"report.json":        "keep",
+		"after.txt":          "after",
+	} {
+		got, err := os.ReadFile(filepath.Join(scratch, rel))
+		require.NoError(t, err, rel)
+		assert.Equal(t, want, string(got), rel)
+	}
+	// A write to the scratch copy never reaches the CLI tree.
+	require.NoError(t, os.WriteFile(filepath.Join(scratch, "report.json"), []byte("overwritten"), 0o644))
+	got, err := os.ReadFile(filepath.Join(cliDir, "report.json"))
+	require.NoError(t, err)
+	assert.Equal(t, "keep", string(got))
+	_, err = os.Stat(filepath.Join(scratch, "missing.png"))
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestRunLiveDogfoodLiveHappyPathKeepsExplicitOutputArgs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+	argvLog := filepath.Join(t.TempDir(), "argv.log")
+	t.Setenv("PRINTING_PRESS_TEST_ARGV_LOG", argvLog)
+	script := `#!/bin/sh
+set -u
+if [ "$1" = "agent-context" ]; then
+  echo '{"commands":[{"name":"render","annotations":{"pp:method":"POST","pp:live-happy-path":"true","pp:happy-args":"--output=out.png"}}]}'
+  exit 0
+fi
+if [ "${2:-}" = "--help" ]; then
+  cat <<HELP
+Render.
+
+Usage:
+  fixture-pp-cli render [flags]
+
+Examples:
+  fixture-pp-cli render --output=out.png --dry-run
+
+Flags:
+      --output string   Output file
+
+Global Flags:
+      --dry-run   Show request without sending
+      --json      Output as JSON
+HELP
+  exit 0
+fi
+printf '%s\n' "$*" >> "$PRINTING_PRESS_TEST_ARGV_LOG"
+echo ok
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, binaryName), []byte(script), 0o755))
+	report, err := RunLiveDogfood(LiveDogfoodOptions{CLIDir: dir, BinaryName: binaryName, Level: "full", Timeout: 2 * time.Second, AllowDestructive: true})
+	require.NoError(t, err)
+	happy := findResultByCommandKind(report, "render", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status, happy.Reason)
+	assert.Contains(t, happy.Args, "--output=out.png", "the approved output destination must be kept")
+	jsonResult := findResultByCommandKind(report, "render", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
+	assert.Equal(t, reasonLiveHappyExplicitOutputMode, jsonResult.Reason)
+	live := 0
+	for _, line := range liveHappyArgvLines(t, argvLog) {
+		if strings.HasPrefix(line, "render") && !strings.Contains(line, "--dry-run") {
+			live++
+		}
+	}
+	assert.Equal(t, 1, live)
+}

@@ -80,6 +80,8 @@ const reasonCredentialSyncBackFailed = "credential sync-back failed: rotated ref
 const liveDogfoodVerdictCookieAuthNoSession = "skip-cookie-auth-no-session"
 const reasonUnavailableRunnerCredentials = "unavailable for runner credentials"
 const reasonFileFixtureRequired = "file fixture required"
+
+const reasonLiveHappyExplicitOutputMode = "live happy path uses an explicit non-JSON output mode"
 const reasonRequiredParamFixture = "blocked-fixture: required API parameter"
 const reasonFeatureAbsentFixture = "blocked-fixture: feature absent for runner credentials"
 const reasonNoErrorPathProbeAnnotation = "no-error-path-probe annotation"
@@ -1643,6 +1645,13 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	mutation := liveDogfoodCommandMutation(command)
 	mutating := mutation.mutating
 	useDryRun := mutating && commandSupportsDryRun(command.Help)
+	// Live happy path needs two keys: the command opts in by annotation and
+	// the operator opts in per run with --allow-destructive. Either alone
+	// keeps the default dry-run behavior.
+	liveHappy := mutating && ctx.allowDestructive && annotationIsTrueValue(command.Annotations[liveHappyPathAnnotation])
+	if liveHappy {
+		useDryRun = false
+	}
 	appendDryRunJSON := func(args []string, argsOK bool, stdin []byte, skipReason string) {
 		if dryRunJSON := probeLiveDogfoodDryRunJSON(command, ctx, mutation, args, stdin, argsOK, skipReason); dryRunJSON != nil {
 			results = append(results, *dryRunJSON)
@@ -1770,7 +1779,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, syntheticParamSkip),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, syntheticParamSkip),
 		)
-	case mutation.unclassified && !useDryRun:
+	case mutation.unclassified && !useDryRun && !liveHappy:
 		results = append(results,
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonUnclassifiedNoMethod),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonUnclassifiedNoMethod),
@@ -1794,13 +1803,50 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		}
 
 		runArgs := happyArgs
+		realOptIn := annotationIsTrueValue(command.Annotations[liveHappyPathAnnotation]) && !useDryRun
 		if useDryRun {
 			runArgs = appendDryRunArg(happyArgs)
+		} else if realOptIn {
+			// Examples on paid or side-effecting commands usually show
+			// --dry-run; the approved live run must not inherit it.
+			runArgs = removeDryRunArgs(happyArgs)
+			// Ask for JSON on the one live run so json_fidelity can be judged
+			// from it instead of from a second paid run. The approved args
+			// are never stripped: --output can be a file destination, so an
+			// explicit output mode leaves json_fidelity skipped instead.
+			if commandSupportsJSON(command.Help) && !hasExplicitNonJSONOutputMode(runArgs) {
+				runArgs = appendJSONArg(runArgs)
+			}
 		}
 		runArgs = protectLiveDogfoodNegativeNumericPositionals(runArgs, command.Path,
 			len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))), liveDogfoodFlagValueNames(command.Help), liveDogfoodFlagNames(command.Help))
 
-		happyRun := runLiveDogfoodProcessWithStdin(ctx.binaryPath, ctx.cliDir, runArgs, ctx.timeout, stdinPayload)
+		happyDir := ctx.cliDir
+		if realOptIn {
+			// Run opted-in real happy paths from a throwaway working
+			// directory so files they write (downloads, starter configs)
+			// never land in the CLI source tree. Fixture paths that exist
+			// under the CLI directory are made absolute first so they
+			// still resolve.
+			scratch, err := os.MkdirTemp("", "printing-press-live-happy-*")
+			if err != nil {
+				results = append(results,
+					failedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, fmt.Sprintf("create live happy-path scratch dir: %v", err)),
+					skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, "live happy-path scratch dir unavailable"),
+				)
+				break
+			}
+			defer func() { _ = os.RemoveAll(scratch) }()
+			happyDir = scratch
+			if err := copyCLIDirFixtures(runArgs, len(command.Path), ctx.cliDir, scratch); err != nil {
+				results = append(results,
+					failedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, err.Error()),
+					skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, "live happy-path fixture copy failed"),
+				)
+				break
+			}
+		}
+		happyRun := runLiveDogfoodProcessWithStdin(ctx.binaryPath, happyDir, runArgs, ctx.timeout, stdinPayload)
 		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, happyRun, ctx.authEnvValue)
 		happyResult.FixtureSource = fixtureSource
 		if happyRun.exitCode == 0 {
@@ -1835,13 +1881,28 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			}
 			jsonResult.FixtureSource = fixtureSource
 			results = append(results, jsonResult)
+		} else if realOptIn && commandSupportsJSON(command.Help) && hasExplicitNonJSONOutputMode(runArgs) {
+			// The approved args chose a non-JSON output mode and are never
+			// rewritten, and the side effect never runs twice, so there is no
+			// JSON run to judge.
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonLiveHappyExplicitOutputMode))
 		} else if commandSupportsJSON(command.Help) {
 			jsonArgs := runArgs
 			if hasExplicitNonJSONOutputMode(jsonArgs) {
 				jsonArgs = removeNonJSONOutputModes(jsonArgs)
 			}
 			jsonArgs = appendJSONArg(jsonArgs)
-			jsonRun := runLiveDogfoodProcessWithStdin(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout, stdinPayload)
+			var jsonRun liveDogfoodRun
+			if realOptIn {
+				// Never repeat an opted-in real run (a second paid generation
+				// would bill twice, and a rerun outside the scratch dir would
+				// write into the CLI tree): judge JSON fidelity from the
+				// happy run, which already requested --json when supported.
+				jsonArgs = runArgs
+				jsonRun = happyRun
+			} else {
+				jsonRun = runLiveDogfoodProcessWithStdin(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout, stdinPayload)
+			}
 			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun, ctx.authEnvValue)
 			jsonResult.FixtureSource = fixtureSource
 			if jsonRun.exitCode == 0 {
@@ -2252,7 +2313,11 @@ const (
 	noErrorPathProbeAnnotation = "pp:no-error-path-probe"
 	requiresTierAnnotation     = "pp:requires-tier"
 	interactiveAnnotation      = "pp:interactive"
-	liveDogfoodMaxOutputBytes  = 10 << 20
+	// Paid generations and local writes deliver value only as a side effect,
+	// so dry-run alone leaves them as hollow coverage forever; this lets the
+	// operator approve one real run (together with --allow-destructive).
+	liveHappyPathAnnotation   = "pp:live-happy-path"
+	liveDogfoodMaxOutputBytes = 10 << 20
 )
 
 var liveDogfoodRequiredParamFixturePhrases = []string{
@@ -3187,6 +3252,188 @@ func appendJSONArg(args []string) []string {
 		return out
 	}
 	return append(out, "--json")
+}
+
+// copyCLIDirFixtures copies relative argument paths that exist under cliDir
+// (input fixtures such as ./input.png or a fixture directory) into the same
+// relative location under scratch, so a command run from scratch still finds
+// its inputs while anything it writes, including over a same-named fixture,
+// lands in the scratch copy instead of the CLI tree. Args are not rewritten.
+// Paths that are absolute, URLs, or escape cliDir are ignored.
+func copyCLIDirFixtures(args []string, pathLen int, cliDir, scratch string) error {
+	if strings.TrimSpace(cliDir) == "" {
+		return nil
+	}
+	root, err := filepath.EvalSymlinks(cliDir)
+	if err != nil {
+		return nil
+	}
+	// One budget covers every fixture argument of the run.
+	budget := &liveDogfoodFixtureBudget{}
+	for i := min(pathLen, len(args)); i < len(args); i++ {
+		value := args[i]
+		if value == "--" {
+			continue
+		}
+		if strings.HasPrefix(value, "-") {
+			_, v, ok := strings.Cut(value, "=")
+			if !ok {
+				continue
+			}
+			value = v
+		}
+		value = strings.TrimPrefix(value, "@")
+		if value == "" || filepath.IsAbs(value) || strings.Contains(value, "://") {
+			continue
+		}
+		rel := filepath.Clean(value)
+		if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		src, ok := liveDogfoodFixtureSource(root, filepath.Join(cliDir, rel))
+		if !ok {
+			continue
+		}
+		if err := budget.copy(root, src, filepath.Join(scratch, rel), nil); err != nil {
+			return fmt.Errorf("copy fixture %s: %w", rel, err)
+		}
+	}
+	return nil
+}
+
+// liveDogfoodFixtureSource resolves symlinks so a linked fixture is copied
+// as its target, but only when the target stays inside the CLI directory;
+// a link pointing elsewhere on the host is never followed.
+func liveDogfoodFixtureSource(root, path string) (string, bool) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false
+	}
+	if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+		return "", false
+	}
+	return resolved, true
+}
+
+// Fixture copies run before the subprocess timeout is armed, so total work
+// is capped: a tree whose links fan back into each other would otherwise be
+// copied once per link path.
+const (
+	liveDogfoodFixtureMaxLinkDepth = 8
+	liveDogfoodFixtureMaxFiles     = 2000
+	liveDogfoodFixtureMaxBytes     = 256 << 20
+)
+
+type liveDogfoodFixtureBudget struct {
+	files  int
+	bytes  int64
+	copied map[string]struct{}
+}
+
+// copy walks src into dst. ancestors holds the resolved directories already
+// being copied on this link chain; a directory link back into one of them is
+// a cycle and is skipped rather than copied again.
+func (b *liveDogfoodFixtureBudget) copy(root, src, dst string, ancestors []string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return b.copyFile(src, dst, info)
+	}
+	if len(ancestors) > liveDogfoodFixtureMaxLinkDepth {
+		return nil
+	}
+	chain := append(append([]string{}, ancestors...), src)
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		real, ok := liveDogfoodFixtureSource(root, path)
+		if !ok {
+			return nil
+		}
+		fi, err := os.Stat(real)
+		if err != nil {
+			return nil
+		}
+		if fi.IsDir() {
+			// WalkDir does not follow directory symlinks; copy the in-tree
+			// target explicitly so inputs read through the link exist.
+			for _, a := range chain {
+				if real == a || strings.HasPrefix(a, real+string(filepath.Separator)) {
+					return nil
+				}
+			}
+			return b.copy(root, real, target, chain)
+		}
+		return b.copyFile(real, target, fi)
+	})
+}
+
+func (b *liveDogfoodFixtureBudget) copyFile(src, dst string, info os.FileInfo) error {
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	// The same fixture can be named twice (./in.png and --image=@in.png);
+	// it lands on one scratch file, so it is copied and charged once.
+	if _, done := b.copied[dst]; done {
+		return nil
+	}
+	if b.copied == nil {
+		b.copied = map[string]struct{}{}
+	}
+	b.copied[dst] = struct{}{}
+	b.files++
+	b.bytes += info.Size()
+	if b.files > liveDogfoodFixtureMaxFiles || b.bytes > liveDogfoodFixtureMaxBytes {
+		return fmt.Errorf("fixture copy exceeds %d files or %d MiB", liveDogfoodFixtureMaxFiles, liveDogfoodFixtureMaxBytes>>20)
+	}
+	return copyLiveDogfoodFile(src, dst, info)
+}
+
+// copyLiveDogfoodFile copies regular files only. FIFOs, sockets and devices
+// are skipped because reading them can block before the subprocess timeout
+// is armed.
+func copyLiveDogfoodFile(src, dst string, info os.FileInfo) error {
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, info.Mode().Perm())
+}
+
+// Example strings on paid commands usually show --dry-run so copying them is
+// safe; an approved live run must not inherit it. Values after "--" are
+// positional data, not flags, so they are left alone.
+func removeDryRunArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	terminated := false
+	for _, arg := range args {
+		if !terminated {
+			if arg == "--" {
+				terminated = true
+			} else if arg == "--dry-run" || strings.HasPrefix(arg, "--dry-run=") {
+				continue
+			}
+		}
+		out = append(out, arg)
+	}
+	return out
 }
 
 func appendDryRunArg(args []string) []string {
