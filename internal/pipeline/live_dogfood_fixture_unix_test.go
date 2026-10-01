@@ -62,7 +62,7 @@ func TestCopyCLIDirFixturesSkipsLinkCyclesAndCapsFanout(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(set, "a.txt"), []byte("a"), 0o644))
 	// Ten links back to the same directory would copy 10^8 trees without a
 	// cycle check.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		require.NoError(t, os.Symlink(".", filepath.Join(set, "loop"+string(rune('0'+i)))))
 	}
 	done := make(chan error, 1)
@@ -87,7 +87,7 @@ func TestCopyCLIDirFixturesFailsOverBudget(t *testing.T) {
 	scratch := t.TempDir()
 	set := filepath.Join(cliDir, "set")
 	require.NoError(t, os.MkdirAll(set, 0o755))
-	for i := 0; i <= liveDogfoodFixtureMaxFiles; i++ {
+	for i := range liveDogfoodFixtureMaxFiles + 1 {
 		require.NoError(t, os.WriteFile(filepath.Join(set, fmt.Sprintf("f%05d", i)), nil, 0o644))
 	}
 	err := copyCLIDirFixtures([]string{"cmd", "set"}, 1, cliDir, scratch)
