@@ -8517,7 +8517,9 @@ func endpointReplaySafe(endpoint spec.Endpoint) string {
 	if value, set := endpoint.ReplaySafeOverride(); set {
 		return strconv.FormatBool(value)
 	}
-	if endpointCarriesFile(endpoint) && endpointLooksLikeUpload(endpoint) {
+	// PUT and DELETE already replay by verb; only POST/PATCH need the opt-in.
+	method := strings.ToUpper(strings.TrimSpace(endpoint.Method))
+	if (method == "POST" || method == "PATCH") && endpointCarriesFile(endpoint) && endpointLooksLikeUpload(endpoint) {
 		return "true"
 	}
 	return ""

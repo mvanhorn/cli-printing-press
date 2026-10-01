@@ -88,7 +88,10 @@ func TestGeneratedCommandsHonorNonJSONRequestAndResponseMediaTypes(t *testing.T)
 	uploadSource := readGeneratedFile(t, outputDir, "internal", "cli", "uploads_create.go")
 	assert.Contains(t, uploadSource, `cmd.Flags().StringVar(&rawBodyFile, "file"`)
 	assert.Contains(t, uploadSource, `cmd.Flags().BoolVar(&stdinBody, "stdin"`)
-	assert.Contains(t, uploadSource, `c.SendRaw(cmd.Context(), "POST", path, params, rawBody, rawContentType, nil)`)
+	// POST /uploads with a raw file body is a free upload: it carries the
+	// replay-safe marker through headerOverrides.
+	assert.Contains(t, uploadSource, `c.SendRaw(cmd.Context(), "POST", path, params, rawBody, rawContentType, headerOverrides)`)
+	assert.Contains(t, uploadSource, `"X-Printing-Press-Replay-Safe": "true"`)
 	assert.NotContains(t, uploadSource, "parsing stdin JSON")
 
 	purgeSource := readGeneratedFile(t, outputDir, "internal", "cli", "uploads_purge.go")
