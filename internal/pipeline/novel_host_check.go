@@ -391,8 +391,37 @@ func displayedStringLiteralSpans(expr ast.Expr) []tokenSpan {
 		if expr.Op == token.ADD {
 			return append(displayedStringLiteralSpans(expr.X), displayedStringLiteralSpans(expr.Y)...)
 		}
+	case *ast.CallExpr:
+		// fmt's Sprint family only formats text, so its literal arguments are
+		// displayed help. Any other call may do runtime work, so its literals
+		// stay subject to the host gate.
+		if !isFmtSprintCall(expr) {
+			return nil
+		}
+		var spans []tokenSpan
+		for _, arg := range expr.Args {
+			spans = append(spans, displayedStringLiteralSpans(arg)...)
+		}
+		return spans
 	}
 	return nil
+}
+
+func isFmtSprintCall(call *ast.CallExpr) bool {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := selector.X.(*ast.Ident)
+	if !ok || pkg.Name != "fmt" {
+		return false
+	}
+	switch selector.Sel.Name {
+	case "Sprintf", "Sprint", "Sprintln":
+		return true
+	default:
+		return false
+	}
 }
 
 func isCobraHelpSelector(expr ast.Expr) bool {

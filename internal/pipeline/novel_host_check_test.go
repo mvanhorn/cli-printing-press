@@ -1111,3 +1111,31 @@ func writeSpecRoot(t *testing.T, serverURL string) string {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "spec.yaml"), []byte("servers:\n  - url: "+serverURL+"\n"), 0o644))
 	return dir
 }
+
+func TestRFCReservedHostInFormattedNovelHelpPasses(t *testing.T) {
+	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+		"play.go": `package cli
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+)
+
+func newPlayCmd(path string) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:  "play",
+		Long: fmt.Sprintf("Send events to https://hooks.example.com/%s.", path),
+	}
+	cmd.Flags().String("target", "", fmt.Sprintf("Target URL, e.g. %s", "https://hooks.example.com/events"))
+	return cmd
+}
+`,
+	}, []NovelFeature{{
+		Name:    "Play",
+		Command: "play",
+	}})
+
+	got := checkReimplementation(cliDir, researchDir)
+	assert.Empty(t, got.UnverifiedHosts)
+}
