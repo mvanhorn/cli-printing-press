@@ -24,6 +24,7 @@ import (
 	"golang.org/x/net/publicsuffix"
 	"gopkg.in/yaml.v3"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	openapiparser "github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -311,6 +312,7 @@ func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature str
 	if node == nil {
 		return nil
 	}
+	helpSpans := cobraHelpStringSpans(node)
 	var declared []novelHostDecl
 	ast.Inspect(node, func(n ast.Node) bool {
 		lit, ok := n.(*ast.BasicLit)
@@ -323,6 +325,9 @@ func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature str
 		}
 		line := fset.Position(lit.Pos()).Line
 		for _, host := range hostsInLiteral(val) {
+			if tokenPosInSpans(lit.Pos(), helpSpans) && artifacts.IsRFCReservedDomain(host) {
+				continue
+			}
 			declared = append(declared, novelHostDecl{
 				feature: feature,
 				file:    filename,
@@ -333,6 +338,153 @@ func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature str
 		return true
 	})
 	return declared
+}
+
+type tokenSpan struct {
+	start token.Pos
+	end   token.Pos
+}
+
+func cobraHelpStringSpans(node ast.Node) []tokenSpan {
+	var spans []tokenSpan
+	ast.Inspect(node, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.CompositeLit:
+			if !isCobraCommandLiteral(node) {
+				return true
+			}
+			for _, elt := range node.Elts {
+				field, ok := elt.(*ast.KeyValueExpr)
+				if !ok || !isCobraHelpField(field.Key) {
+					continue
+				}
+				spans = append(spans, displayedStringLiteralSpans(field.Value)...)
+			}
+		case *ast.AssignStmt:
+			for i, lhs := range node.Lhs {
+				if i >= len(node.Rhs) || !isCobraHelpSelector(lhs) {
+					continue
+				}
+				spans = append(spans, displayedStringLiteralSpans(node.Rhs[i])...)
+			}
+		case *ast.CallExpr:
+			if !isCobraFlagDefinition(node) || len(node.Args) == 0 {
+				return true
+			}
+			usage := node.Args[len(node.Args)-1]
+			spans = append(spans, displayedStringLiteralSpans(usage)...)
+		}
+		return true
+	})
+	return spans
+}
+
+func displayedStringLiteralSpans(expr ast.Expr) []tokenSpan {
+	switch expr := expr.(type) {
+	case *ast.BasicLit:
+		if expr.Kind == token.STRING {
+			return []tokenSpan{{start: expr.Pos(), end: expr.End()}}
+		}
+	case *ast.ParenExpr:
+		return displayedStringLiteralSpans(expr.X)
+	case *ast.BinaryExpr:
+		if expr.Op == token.ADD {
+			return append(displayedStringLiteralSpans(expr.X), displayedStringLiteralSpans(expr.Y)...)
+		}
+	case *ast.CallExpr:
+		// fmt's Sprint family only formats text, so its literal arguments are
+		// displayed help. Any other call may do runtime work, so its literals
+		// stay subject to the host gate.
+		if !isFmtSprintCall(expr) {
+			return nil
+		}
+		var spans []tokenSpan
+		for _, arg := range expr.Args {
+			spans = append(spans, displayedStringLiteralSpans(arg)...)
+		}
+		return spans
+	}
+	return nil
+}
+
+func isFmtSprintCall(call *ast.CallExpr) bool {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := selector.X.(*ast.Ident)
+	if !ok || pkg.Name != "fmt" {
+		return false
+	}
+	switch selector.Sel.Name {
+	case "Sprintf", "Sprint", "Sprintln":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCobraHelpSelector(expr ast.Expr) bool {
+	selector, ok := expr.(*ast.SelectorExpr)
+	return ok && isCobraHelpField(selector.Sel)
+}
+
+func isCobraFlagDefinition(call *ast.CallExpr) bool {
+	method, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || !isCobraFlagDefinitionMethod(method.Sel.Name) {
+		return false
+	}
+	flags, ok := method.X.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	selector, ok := flags.Fun.(*ast.SelectorExpr)
+	if !ok || len(flags.Args) != 0 {
+		return false
+	}
+	return selector.Sel.Name == "Flags" || selector.Sel.Name == "PersistentFlags"
+}
+
+var cobraFlagDefinitionTypes = map[string]bool{
+	"Bool": true, "BoolSlice": true, "BytesBase64": true, "BytesHex": true,
+	"Count": true, "Duration": true, "DurationSlice": true,
+	"Float32": true, "Float32Slice": true, "Float64": true, "Float64Slice": true,
+	"IP": true, "IPMask": true, "IPNet": true, "IPNetSlice": true, "IPSlice": true,
+	"Int": true, "Int8": true, "Int16": true, "Int32": true, "Int32Slice": true,
+	"Int64": true, "Int64Slice": true, "IntSlice": true,
+	"String": true, "StringArray": true, "StringSlice": true, "StringToInt": true,
+	"StringToInt64": true, "StringToString": true, "Text": true, "Time": true,
+	"Uint": true, "Uint8": true, "Uint16": true, "Uint32": true, "Uint64": true,
+	"UintSlice": true,
+}
+
+func isCobraFlagDefinitionMethod(name string) bool {
+	name = strings.TrimSuffix(name, "PF")
+	name = strings.TrimSuffix(name, "P")
+	name = strings.TrimSuffix(name, "Var")
+	return name == "" || cobraFlagDefinitionTypes[name]
+}
+
+func isCobraHelpField(expr ast.Expr) bool {
+	field, ok := expr.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	switch field.Name {
+	case "Use", "Short", "Long", "Example", "UsageTemplate":
+		return true
+	default:
+		return false
+	}
+}
+
+func tokenPosInSpans(pos token.Pos, spans []tokenSpan) bool {
+	for _, span := range spans {
+		if pos >= span.start && pos <= span.end {
+			return true
+		}
+	}
+	return false
 }
 
 func hostsInLiteral(val string) []string {
@@ -347,7 +499,17 @@ func hostsInLiteral(val string) []string {
 func hostsInProse(text string) []string {
 	// Absolute URLs are host context. Bare dotted identifiers count only when
 	// they are real ICANN hostnames, so prose like settings.production does not.
-	return uniqueHosts(append(urlHosts(text), proseHosts(text)...))
+	return withoutRFCReservedHosts(uniqueHosts(append(urlHosts(text), proseHosts(text)...)))
+}
+
+func withoutRFCReservedHosts(hosts []string) []string {
+	filtered := hosts[:0]
+	for _, host := range hosts {
+		if !artifacts.IsRFCReservedDomain(host) {
+			filtered = append(filtered, host)
+		}
+	}
+	return filtered
 }
 
 func urlHosts(text string) []string {

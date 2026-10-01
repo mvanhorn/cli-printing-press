@@ -572,7 +572,13 @@ func isRFCReservedEmail(matched string) bool {
 	if at == -1 || at == len(matched)-1 {
 		return false
 	}
-	domain := strings.ToLower(strings.Trim(matched[at+1:], "."))
+	return IsRFCReservedDomain(matched[at+1:])
+}
+
+// IsRFCReservedDomain keeps the PII email scanner and novel-host gate aligned
+// on documentation placeholders.
+func IsRFCReservedDomain(domain string) bool {
+	domain = strings.ToLower(strings.Trim(strings.TrimSpace(domain), "."))
 	if domain == "example.com" || domain == "example.org" || domain == "example.net" {
 		return true
 	}
