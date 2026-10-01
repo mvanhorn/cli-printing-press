@@ -2474,7 +2474,14 @@ type Endpoint struct {
 	// unset (classify from verb, operation name, and body shape). true
 	// marks a GET action as state-changing; false marks a POST (or other
 	// non-GET) endpoint as a read so generated commands print the body.
-	Mutation    *bool  `yaml:"mutation,omitempty" json:"mutation,omitempty"`
+	Mutation *bool `yaml:"mutation,omitempty" json:"mutation,omitempty"`
+	// ReplaySafe is the optional explicit replay override for a mutating
+	// request. nil means unset (the generator treats file-upload endpoints
+	// as replay-safe and every other POST/PATCH as unsafe). true lets the
+	// generated client retry the request after a transport error or 5xx;
+	// false forbids it even for an upload. Set false for any endpoint that
+	// starts billable work, even when it carries a file.
+	ReplaySafe  *bool  `yaml:"replay_safe,omitempty" json:"replay_safe,omitempty"`
 	BaseURL     string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
 	Description string `yaml:"description" json:"description"`
 	// Deprecated is OpenAPI `deprecated: true`. Keep the command visible;
@@ -2749,6 +2756,16 @@ func (e Endpoint) MutationOverride() (value, set bool) {
 		return false, false
 	}
 	return *e.Mutation, true
+}
+
+// An omitted flag must stay distinguishable from false: unset lets the
+// generator infer replay safety for free uploads, while an explicit false
+// is the spec author's guarantee that a file-carrying request is billed.
+func (e Endpoint) ReplaySafeOverride() (value, set bool) {
+	if e.ReplaySafe == nil {
+		return false, false
+	}
+	return *e.ReplaySafe, true
 }
 
 func (e Endpoint) EffectiveResponseFormat() string {

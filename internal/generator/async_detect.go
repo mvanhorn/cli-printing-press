@@ -32,6 +32,18 @@ type AsyncJobInfo struct {
 	// {id} or {job_id} with the actual job ID.
 	StatusPath string
 
+	// StatusCommand is the printed command path (without the binary name)
+	// that reads the status endpoint, e.g. "renders get".
+	StatusCommand string
+
+	// StatusRecoveryPrefix is printed before the job ID as the recovery
+	// command when --wait fails after submission. It follows the status
+	// command's real binding for the ID ("renders get " for a positional,
+	// "renders get --id " for a flag) so the user fetches the submitted job,
+	// not a default one. When the binding cannot be expressed with the job
+	// ID alone it falls back to the local ledger ("jobs get ").
+	StatusRecoveryPrefix string
+
 	// TerminalField and TerminalValues describe how the polling loop
 	// decides the job is done. Defaults to "status" with a common
 	// done/complete/completed/failed/errored set when the spec does not
@@ -107,15 +119,68 @@ func detectOne(s *spec.APISpec, rName, eName string, ep spec.Endpoint) (AsyncJob
 	}
 
 	return AsyncJobInfo{
-		ResourceName:   rName,
-		EndpointName:   eName,
-		JobIDField:     jobField,
-		StatusResource: statusRes,
-		StatusEndpoint: statusEP,
-		StatusPath:     statusPath,
-		TerminalField:  "status",
-		TerminalValues: terminalValueDefaults,
+		ResourceName:         rName,
+		EndpointName:         eName,
+		JobIDField:           jobField,
+		StatusResource:       statusRes,
+		StatusEndpoint:       statusEP,
+		StatusPath:           statusPath,
+		StatusCommand:        asyncStatusCommandPath(s, statusRes, statusEP),
+		StatusRecoveryPrefix: asyncStatusRecoveryPrefix(s, statusRes, statusEP),
+		TerminalField:        "status",
+		TerminalValues:       terminalValueDefaults,
 	}, true
+}
+
+// asyncStatusCommandPath mirrors the command tree the generator emits for
+// the status endpoint: a promoted single-endpoint resource (or a promoted
+// GraphQL get) is invoked as "<resource>", every other endpoint as
+// "<resource> <endpoint>".
+func asyncStatusCommandPath(s *spec.APISpec, statusRes, statusEP string) string {
+	for _, pc := range buildPromotedCommands(s) {
+		if pc.ResourceName == statusRes && pc.EndpointName == statusEP {
+			return pc.PromotedName
+		}
+	}
+	return toKebab(statusRes) + " " + toKebab(statusEP)
+}
+
+func asyncStatusRecoveryPrefix(s *spec.APISpec, statusRes, statusEP string) string {
+	const ledgerFallback = "jobs get "
+	r, ok := s.Resources[statusRes]
+	if !ok {
+		return ledgerFallback
+	}
+	ep, ok := r.Endpoints[statusEP]
+	if !ok {
+		return ledgerFallback
+	}
+	// WaitForJob substitutes the job ID into {id} or {job_id}; the recovery
+	// command must feed the same parameter.
+	var idParam *spec.Param
+	for i := range ep.Params {
+		name := ep.Params[i].Name
+		if (name == "id" || name == "job_id") && strings.Contains(ep.Path, "{"+name+"}") {
+			idParam = &ep.Params[i]
+			break
+		}
+	}
+	if idParam == nil {
+		return ledgerFallback
+	}
+	// Any other positional (even a defaulted one shifts which argument the
+	// job ID binds to) or required input without a default cannot be filled
+	// from the job ID alone; point at the local ledger instead.
+	for _, p := range ep.Params {
+		if p.Name != idParam.Name && (p.Positional || (p.Required && p.Default == nil)) {
+			return ledgerFallback
+		}
+	}
+	command := asyncStatusCommandPath(s, statusRes, statusEP)
+	if idParam.Positional {
+		return command + " "
+	}
+	return command + " --" + publicFlagName(*idParam) + " "
 }
 
 // responseJobIDField returns the matching job-id-shaped field name in the

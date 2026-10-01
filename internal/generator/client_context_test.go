@@ -52,7 +52,7 @@ func TestClientThreadsCallContextThroughHTTPRequestsAndRetryWaits(t *testing.T) 
 	require.NotEqual(t, -1, nextFunc, "client.go should have at least one func after doInternal")
 	doBody := doRest[:nextFunc+1]
 
-	assert.Contains(t, doBody, "opCtx, cancel := c.bindOperationDeadline(ctx)",
+	assert.Contains(t, doBody, "opCtx, cancel := c.bindUploadOperationDeadline(ctx, uploadAllowance, maxRetries)",
 		"doInternal should pin --timeout once for waits and retries")
 	assert.Contains(t, doBody, "if err := c.limiter.Wait(opCtx); err != nil {\n\t\t\treturn nil, 0, err\n\t\t}",
 		"proactive limiter wait should honor the operation deadline")

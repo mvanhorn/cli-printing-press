@@ -10,7 +10,8 @@
 {{- $dataSourceStrategy := dataSourceStrategy .Resource .Endpoint}}
 {{- $documentedFields := compactFieldMapLiteral .Endpoint.Response.Item .Types}}
 {{- $skipLiveJSONGuard := or .Endpoint.UsesHTMLResponse .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse}}
-{{- $hasHeaderOverrides := or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse .Endpoint.UsesHTMLResponse (endpointHasHeaderParams .Endpoint)}}
+{{- $replaySafe := endpointReplaySafe .Endpoint}}
+{{- $hasHeaderOverrides := or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse .Endpoint.UsesHTMLResponse (endpointHasHeaderParams .Endpoint) $replaySafe}}
 
 package cli
 
@@ -267,6 +268,9 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- if .Endpoint.UsesHTMLResponse}}
 				"X-Printing-Press-HTML-Response": "true",
+{{- end}}
+{{- if $replaySafe}}
+				"X-Printing-Press-Replay-Safe": "{{$replaySafe}}",
 {{- end}}
 			}
 			{{ range .Endpoint.Params}}{{if and (paramIsHeader .) (not .Positional)}}
@@ -924,11 +928,13 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- if .IsAsync}}
 			if asyncJobID := ExtractJobID(data, "{{.Async.JobIDField}}"); asyncJobID != "" {
+				asyncSubmittedAt := time.Now().UTC()
 				_ = RecordJob(JobRow{
 					JobID:          asyncJobID,
 					Resource:       "{{.ResourceName}}",
 					Endpoint:       "{{.EndpointName}}",
 					Status:         "submitted",
+					SubmittedAt:    asyncSubmittedAt,
 					StatusResource: "{{.Async.StatusResource}}",
 					StatusEndpoint: "{{.Async.StatusEndpoint}}",
 				})
@@ -942,14 +948,21 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 						Timeout:  flagWaitTimeout,
 					})
 					if werr != nil {
+						// The job was accepted; only the wait failed. Keep the
+						// row "submitted" so `jobs get` still points at it, and
+						// hand back the ID plus the command that fetches the
+						// result instead of an error that invites a resubmit.
 						_ = RecordJob(JobRow{
-							JobID:    asyncJobID,
-							Resource: "{{.ResourceName}}",
-							Endpoint: "{{.EndpointName}}",
-							Status:   "errored",
-							Error:    werr.Error(),
+							JobID:          asyncJobID,
+							Resource:       "{{.ResourceName}}",
+							Endpoint:       "{{.EndpointName}}",
+							Status:         "submitted",
+							SubmittedAt:    asyncSubmittedAt,
+							StatusResource: "{{.Async.StatusResource}}",
+							StatusEndpoint: "{{.Async.StatusEndpoint}}",
+							Error:          werr.Error(),
 						})
-						return werr
+						return asyncJobPendingErr(cmd, flags, asyncJobID, {{printf "%q" (printf "%s-pp-cli %s" .Name .Async.StatusRecoveryPrefix)}}+asyncJobID, werr)
 					}
 					if b, merr := json.Marshal(final); merr == nil {
 						data = b

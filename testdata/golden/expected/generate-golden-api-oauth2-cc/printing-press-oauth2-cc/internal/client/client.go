@@ -36,6 +36,18 @@ import (
 )
 
 const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
+
+// ReplaySafeHeader is an internal per-request marker, never sent on the
+// wire. "true" lets doInternal replay a mutating request (a free media
+// upload) after a transport error or 5xx; "false" forbids replay even for
+// verbs that are normally safe. Requests that start billable work must
+// never carry "true": an ambiguous failure may already have been accepted.
+const ReplaySafeHeader = "X-Printing-Press-Replay-Safe"
+
+// uploadBytesPerSecond is the conservative throughput floor used to scale
+// the per-attempt deadline for file uploads, so a multi-megabyte body on a
+// slow uplink is not cut off by the JSON-sized --timeout default.
+const uploadBytesPerSecond = 128 * 1024
 const HTMLResponseHeader = "X-Printing-Press-HTML-Response"
 const maxErrorBodyBytes = 4096
 
@@ -561,6 +573,30 @@ func (c *Client) wantsBinaryResponse(headers map[string]string) bool {
 		binaryResponse = value
 	}
 	return binaryResponse
+}
+
+// declared separates "no marker" from an explicit "false": without a
+// marker the verb/idempotency-key default applies, while "false" must win
+// even over read intent because the spec says the request can be billed.
+func replaySafeHeaderValue(headers map[string]string) (value bool, declared bool) {
+	for k, v := range headers {
+		if strings.EqualFold(k, ReplaySafeHeader) {
+			declared = true
+			value = strings.EqualFold(strings.TrimSpace(v), "true")
+		}
+	}
+	return value, declared
+}
+
+// uploadTransferAllowance is the extra per-attempt time a file-carrying
+// request gets on top of --timeout: size / uploadBytesPerSecond, rounded
+// up to the next second. JSON bodies get no allowance.
+func uploadTransferAllowance(isFileUpload bool, size int) time.Duration {
+	if !isFileUpload || size <= 0 {
+		return 0
+	}
+	seconds := (size + uploadBytesPerSecond - 1) / uploadBytesPerSecond
+	return time.Duration(seconds) * time.Second
 }
 
 func binaryResponseHeaderValue(headers map[string]string) (bool, bool) {
@@ -1106,6 +1142,26 @@ func (c *Client) bindOperationDeadline(ctx context.Context) (context.Context, co
 	return ctx, func() {}
 }
 
+// The plain operation deadline is one --timeout for every wait and retry,
+// sized for JSON. A file body can legitimately spend longer than that on
+// the wire per attempt, so a single --timeout would cancel the retries that
+// recover a stalled upload before they start.
+func (c *Client) bindUploadOperationDeadline(ctx context.Context, allowance time.Duration, maxRetries int) (context.Context, context.CancelFunc) {
+	if allowance <= 0 {
+		return c.bindOperationDeadline(ctx)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	return context.WithTimeout(ctx, (c.ConfiguredTimeout()+allowance)*time.Duration(maxRetries+1))
+}
+
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
@@ -1157,14 +1213,12 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	if err := rejectUnresolvedPathParams(path, nil); err != nil {
 		return nil, 0, err
 	}
-	// Bound waits and retries once. Do not attach this deadline to the
-	// HTTP request: unmarked binary transfers drop the whole-call
-	// Timeout and must keep streaming after --timeout's default budget.
-	opCtx, cancel := c.bindOperationDeadline(ctx)
-	defer cancel()
 	targetURL := c.BaseURL + path
 
 	var bodyBytes []byte
+	// isFileUpload marks bodies that carry a file (multipart file parts or
+	// an opaque raw body). Their per-attempt deadline scales with size.
+	isFileUpload := false
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
@@ -1192,6 +1246,18 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	// transport failure or server error; a write may already have committed
 	// remotely even when its wire method is GET.
 	canRetryAmbiguousFailure := readOnlyIntent || (!mutationIntent && platform.CanRetryRequest(method, requestIdempotencyKey(c.Config, headerOverrides)))
+	// The spec can declare replay safety per endpoint. Free uploads opt in
+	// so a stalled socket does not lose the file; requests that start
+	// billable work opt out so an ambiguous failure is never resubmitted.
+	// An explicit opt-out wins over read intent; an idempotency key still
+	// makes an opted-out request safe to replay.
+	if replaySafe, declared := replaySafeHeaderValue(headerOverrides); declared {
+		if replaySafe {
+			canRetryAmbiguousFailure = true
+		} else {
+			canRetryAmbiguousFailure = requestIdempotencyKey(c.Config, headerOverrides) != ""
+		}
+	}
 	endpointClass := safeEndpointClass(method, path)
 	retryPolicy, err := c.platformRetryPolicy(endpointClass)
 	if err != nil {
@@ -1200,9 +1266,17 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	if retryPolicy.MaxAttempts > 0 && maxRetries > retryPolicy.MaxAttempts-1 {
 		maxRetries = retryPolicy.MaxAttempts - 1
 	}
+	uploadAllowance := uploadTransferAllowance(isFileUpload, len(bodyBytes))
+	// Bound waits and retries once. Do not attach this deadline to the
+	// HTTP request: unmarked binary transfers drop the whole-call
+	// Timeout and must keep streaming after --timeout's default budget.
+	// File uploads may spend --timeout plus the transfer allowance on the
+	// wire per attempt, so their shared budget grows to match.
+	opCtx, cancel := c.bindUploadOperationDeadline(ctx, uploadAllowance, maxRetries)
+	defer cancel()
 	retryStarted := time.Now()
 	retryWithinBudget := func(wait time.Duration) bool {
-		return retryPolicy.RetryBudget > 0 && time.Since(retryStarted)+wait <= retryPolicy.RetryBudget
+		return retryPolicy.RetryBudget > 0 && time.Since(retryStarted)+wait <= retryPolicy.RetryBudget+uploadAllowance*time.Duration(maxRetries+1)
 	}
 	var lastErr error
 	refreshedAfterUnauthorized := false
@@ -1254,6 +1328,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		for k, v := range headerOverrides {
 			req.Header.Set(k, v)
 		}
+		req.Header.Del(ReplaySafeHeader)
 		binaryResponse := strings.EqualFold(req.Header.Get(BinaryResponseHeader), "true")
 		if binaryResponse {
 			req.Header.Del(BinaryResponseHeader)
@@ -1294,6 +1369,12 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		httpClient := c.HTTPClient
 		if binaryResponse && !c.timeoutExplicit {
 			httpClient = StreamingHTTPClient(c.HTTPClient, c.ConfiguredTimeout())
+		}
+		if uploadAllowance > 0 && httpClient != nil && httpClient.Timeout > 0 {
+			// Copy so the shared client's timeout is never mutated.
+			uploadClient := *httpClient
+			uploadClient.Timeout += uploadAllowance
+			httpClient = &uploadClient
 		}
 		resp, err := httpClient.Do(req)
 		if err != nil {

@@ -78,6 +78,7 @@ const (
 	extensionPPQuery               = "x-pp-query"
 	extensionPPResponseEnvelope    = "x-pp-response-envelope"
 	extensionPPMutation            = "x-pp-mutation"
+	extensionPPReplaySafe          = "x-pp-replay-safe"
 	extensionPPSyncable            = "x-pp-syncable"
 	extensionPPPagination          = "x-pp-pagination"
 	extensionSyncWalker            = "x-pp-sync-walker"
@@ -3691,6 +3692,9 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			endpoint.Critical = pathCritical
 			if mutation, present := boolExtension(op.Extensions, extensionPPMutation); present {
 				endpoint.Mutation = new(mutation)
+			}
+			if replaySafe, present := boolExtension(op.Extensions, extensionPPReplaySafe); present {
+				endpoint.ReplaySafe = new(replaySafe)
 			}
 			opSyncable, _ := boolExtension(op.Extensions, extensionPPSyncable)
 			endpoint.Syncable = pathSyncable || opSyncable
