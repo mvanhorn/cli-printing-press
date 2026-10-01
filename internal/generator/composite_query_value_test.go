@@ -156,7 +156,7 @@ func TestGeneratedFormArrayOfObjectsCLIMCPWireParity(t *testing.T) {
 
 	// CLI half: each decoded object element must reach the wire as valid
 	// JSON, percent-encoded — never fmt's map[field:Name] rendering.
-	runGeneratedBinary(t, binaryPath, "records", "get",
+	runGeneratedBinary(t, binaryPath, "records",
 		"--sort", `[{"field":"Name"},{"field":"Price"}]`)
 	captured := <-requests
 	require.Equal(t, wantSortWire, captured.query["sort"],

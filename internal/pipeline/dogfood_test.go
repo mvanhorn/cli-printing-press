@@ -3371,6 +3371,35 @@ func runCmd() {
 	assert.Empty(t, result.Items)
 }
 
+func TestDeadFunctions_CalledFromMCPPackage(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "mcp"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "helpers.go"), `package cli
+
+func MCPStorePath() (string, error) {
+	return "data.db", nil
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "cmd.go"), `package cli
+
+func runCmd() {
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "mcp", "tools.go"), `package mcp
+
+func mcpDBPath() (string, error) {
+	return cli.MCPStorePath()
+}
+`)
+
+	result := checkDeadFunctions(dir)
+	assert.Equal(t, 1, result.Total)
+	assert.Equal(t, 0, result.Dead)
+	assert.Empty(t, result.Items)
+}
+
 func TestDeadFunctions_GenuinelyDead(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))

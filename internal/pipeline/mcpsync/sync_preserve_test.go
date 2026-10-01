@@ -99,6 +99,43 @@ func TestSyncPreservesHandAuthoredMCPBehavior(t *testing.T) {
 	require.NoError(t, err, "post-sync MCP surface must go vet cleanly: %s", output)
 }
 
+func TestSyncPreservesCustomReadHeaderTimeout(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := handAuthoredMCPSpec()
+	cliDir := filepath.Join(t.TempDir(), "handmcp")
+	gen := generator.New(apiSpec, cliDir)
+	gen.VisionSet = generator.VisionTemplateSet{MCP: true, Store: true}
+	require.NoError(t, gen.Generate())
+	require.NoError(t, pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
+		APIName:   apiSpec.Name,
+		OutputDir: cliDir,
+		Spec:      apiSpec,
+	}))
+
+	specData, err := yaml.Marshal(apiSpec)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "spec.yaml"), specData, 0o644))
+
+	mainPath := filepath.Join(cliDir, "cmd", "handmcp-pp-mcp", "main.go")
+	mainData, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	const generated = "ReadHeaderTimeout: 10 * time.Second"
+	const custom = "ReadHeaderTimeout: 45 * time.Second"
+	require.Contains(t, string(mainData), generated)
+	planted := strings.Replace(string(mainData), generated, custom, 1)
+	require.NotEqual(t, string(mainData), planted)
+	require.NoError(t, os.WriteFile(mainPath, []byte(planted), 0o644))
+
+	_, err = Sync(cliDir, Options{})
+	require.NoError(t, err)
+
+	mainAfter, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(mainAfter), custom, "a non-generated ReadHeaderTimeout must survive reprint")
+	assert.NotContains(t, string(mainAfter), generated, "reprint must not restore the generated 10s header timeout")
+}
+
 func TestSyncDropsRemovedGeneratedIntentHandler(t *testing.T) {
 	t.Parallel()
 
@@ -252,7 +289,7 @@ func TestIsMCPExecutionReadOnly(t *testing.T) {
 		return err
 	}
 	mainSrc := strings.Replace(string(mainData),
-		"\t\thttpSrv := &http.Server{\n\t\t\tAddr:    bindAddr,\n\t\t\tHandler: requireBearerAuth(token, inner),\n\t\t}",
+		"\t\thttpSrv := &http.Server{\n\t\t\tAddr:              bindAddr,\n\t\t\tHandler:           requireBearerAuth(token, inner),\n\t\t\tReadHeaderTimeout: 10 * time.Second,\n\t\t}",
 		"\t\thttpSrv := &http.Server{\n\t\t\tAddr:              bindAddr,\n\t\t\tHandler:           requireBearerAuth(token, inner),\n\t\t\tReadHeaderTimeout: 10 * time.Second,\n\t\t\tReadTimeout:       30 * time.Second,\n\t\t\tWriteTimeout:      30 * time.Second,\n\t\t\tIdleTimeout:       120 * time.Second,\n\t\t}",
 		1)
 	if mainSrc == string(mainData) {

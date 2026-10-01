@@ -528,7 +528,7 @@ func TestGeneratedDoctor_DerivesAuthVerifyPathFromMeEndpoint(t *testing.T) {
 
 	assert.Contains(t, content, `verifyPath := "/users/me"`,
 		"doctor should probe the derived me-shaped path for credential validity")
-	assert.Contains(t, content, `c.GetWithHeaders(cmd.Context(), verifyPath`,
+	assert.Contains(t, content, `c.GetWithHeadersNoCache(cmd.Context(), verifyPath`,
 		"doctor should issue the authenticated probe through the configured client")
 	assert.NotContains(t, content, `"present (not verified — set auth.verify_path in spec for an API acceptance check)"`,
 		"the no-verify-path placeholder branch must not be rendered once a path is derived")

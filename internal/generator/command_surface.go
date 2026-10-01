@@ -73,6 +73,38 @@ func subResourceCommandNamesFor(resourceName, subResourceName string, itemScoped
 	}
 }
 
+// renamedPathAlias is a hidden child of a collection endpoint whose leaf
+// name collided with an item sub-resource. The old spelling refuses instead
+// of being swallowed as a positional on the collection command.
+type renamedPathAlias struct {
+	Use     string
+	NewPath string
+}
+
+func renamedPathAliases(resourceName, endpointName string, resource spec.Resource) []renamedPathAlias {
+	leaf := toKebab(endpointName)
+	var subNames []string
+	for name, hit := range collectionItemCollisionLeaves(resource) {
+		if hit && toKebab(name) == leaf {
+			subNames = append(subNames, name)
+		}
+	}
+	sort.Strings(subNames)
+	var aliases []renamedPathAlias
+	for _, subName := range subNames {
+		naming := subResourceCommandNamesFor(resourceName, subName, true)
+		subResource := withoutOptionsEndpoints(resource.SubResources[subName])
+		for _, endpoint := range sortedEndpointNames(subResource.Endpoints) {
+			use := toKebab(endpoint)
+			aliases = append(aliases, renamedPathAlias{
+				Use:     use,
+				NewPath: strings.Join([]string{naming.commandPath, use}, " "),
+			})
+		}
+	}
+	return aliases
+}
+
 func subResourceCmdIdent(parentPrefix, subName string, resource spec.Resource) string {
 	if collectionItemCollisionLeaves(resource)[subName] {
 		return commandIdent(parentPrefix, collectionItemRole, subName)

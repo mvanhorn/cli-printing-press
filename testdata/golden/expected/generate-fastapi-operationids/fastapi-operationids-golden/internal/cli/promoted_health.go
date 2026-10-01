@@ -18,6 +18,7 @@ func newHealthPromotedCmd(flags *rootFlags) *cobra.Command {
 		Short:       "Health check",
 		Long:        "Health check",
 		Example:     "  fastapi-operationids-golden-pp-cli health",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "health.check", "pp:method": "GET", "pp:path": "/health", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()

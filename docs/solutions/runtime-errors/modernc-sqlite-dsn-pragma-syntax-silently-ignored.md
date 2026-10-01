@@ -50,8 +50,8 @@ The store template (`internal/generator/templates/store.go.tmpl`, emitted as `in
 Switch both opens to the `_pragma=` form (verify with the pinned driver version, here `modernc.org/sqlite v1.37.0`):
 
 ```go
-// read-only
-sql.Open("sqlite", "file:"+dbPath+"?mode=ro&immutable=1&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)")
+// read-only (no immutable=1: a reader must see WAL commits that are not checkpointed yet)
+sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)")
 
 // read-write (adds synchronous)
 sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)")
@@ -65,7 +65,7 @@ Empirical proof with the pinned driver — the mattn-style DSN is byte-for-byte 
 | no params | `delete` | `0` | `0` |
 | `?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&…` | `wal` | `5000` | `1` |
 
-A `mode=ro` open of a WAL file is fine; `journal_mode(WAL)` on a read-only handle is a write and is omitted. `immutable=1` is required on that read-only URI so the connection skips the `-shm` WAL-index mmap, which `mmap_size(0)` does not govern. The read-write open performs the one-time `delete`→`wal` conversion, and published CLIs convert automatically on their next read-write open.
+A `mode=ro` open of a WAL file is fine; `journal_mode(WAL)` on a read-only handle is a write and is omitted. The primary read-only URI does not set `immutable=1`. That flag skips the `-shm` WAL index and hides commits that are in the WAL but not yet checkpointed into the main file, so a writable directory must stay on the first open. If that open fails because the directory cannot create the WAL index (`SQLITE_CANTOPEN` or `SQLITE_READONLY`, including a read-only mount with a settled WAL and no `-shm`), the WAL profile retries the same DSN with `&immutable=1` and reads the checkpointed main file. Cache-profile rollback journals do not retry: `immutable=1` would skip the shared lock and can return a torn page. `mmap_size(0)` still bounds mmap of the main database file. Readers that can create `-shm` coordinate through it so they see committed WAL rows; uncommitted transactions stay invisible. The read-write open performs the one-time `delete`→`wal` conversion, and published CLIs convert automatically on their next read-write open.
 
 ### Second bug, exposed by the first fix
 

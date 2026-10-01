@@ -653,7 +653,7 @@ func TestPromotedArrayResponseEmitsResults(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
-	root.SetArgs([]string{"geo", "geocode", "--json"})
+	root.SetArgs([]string{"geo", "--json"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("execute command: %v; stderr=%s", err, stderr.String())
 	}

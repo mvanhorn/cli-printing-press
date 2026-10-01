@@ -75,7 +75,7 @@ func TestReadCommandAppliesResponsePathToOutputAndWriteThrough(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
-	root.SetArgs([]string{"jobs", "recommended", "--json", "--select", "jobResult.jobTitle"})
+	root.SetArgs([]string{"jobs", "--json", "--select", "jobResult.jobTitle"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("execute command: %v; stderr=%s", err, stderr.String())
 	}

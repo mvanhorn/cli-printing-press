@@ -341,7 +341,7 @@ The generator ships three opt-in knobs on the spec's `mcp:` block, aligned with 
 ```yaml
 mcp:
   transport: [stdio, http]        # remote-capable for cloud-hosted agents; default [stdio]
-  addr: ":7777"                   # default bind for the http transport
+  addr: "127.0.0.1:7777"          # loopback bind; ":7777" listens on every interface and requires TLS
   orchestration: code             # "endpoint-mirror" (default), "intent", or "code"
   endpoint_tools: hidden          # suppress raw endpoint tools when intents cover the surface
   intents:                        # compose multi-step tools declaratively

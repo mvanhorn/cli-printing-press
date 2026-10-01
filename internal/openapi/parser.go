@@ -60,6 +60,7 @@ const (
 	extensionAuthSubtype           = "x-auth-subtype"
 	extensionAuthBasicUsername     = "x-auth-basic-username"
 	extensionAuthBasicPassword     = "x-auth-basic-password"
+	extensionAuthValuePrefix       = "x-auth-value-prefix"
 	extensionOAuthDeviceFlow       = "x-oauth-device-flow"
 	extensionOAuthRefreshTokenMech = "x-oauth-refresh-token-mechanism"
 	extensionSpeakeasyExample      = "x-speakeasy-example"
@@ -1885,6 +1886,11 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 	}
 	if description := stringExtension(extensions, extensionAuthDescription); description != "" {
 		auth.Description = description
+	}
+	if auth.Type == "api_key" && strings.EqualFold(auth.In, "header") && auth.Format == "" && auth.Prefix == "" {
+		if prefix := strings.TrimSpace(stringExtension(extensions, extensionAuthValuePrefix)); prefix != "" {
+			auth.Prefix = prefix
+		}
 	}
 	if subtype := stringExtension(extensions, extensionAuthSubtype); subtype != "" {
 		// Only known subtype values are accepted. Unknown values would round-trip

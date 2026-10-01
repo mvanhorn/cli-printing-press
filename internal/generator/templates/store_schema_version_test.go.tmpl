@@ -441,11 +441,10 @@ func TestMigrateAddsSyncAttemptCompletion(t *testing.T) {
 // TestOpenAppliesPragmas pins the connection-string contract: the store
 // must use the profile-selected journal mode with a non-zero busy_timeout and
 // disabled mmap so the main database file stays pread-based. A mode=ro
-// handle reports delete journal mode (immutable=1 WAL skips the -shm map;
-// cache-profile RO omits immutable=1 so it takes SHARED — isolation is
-// TestOpenReadOnly_RollbackJournalNoTornRead). It fails the instant the DSN
-// regresses to the mattn-style pragma form, which modernc.org/sqlite
-// silently drops.
+// handle on a rollback journal reports delete. A WAL file reports wal,
+// because the read-only DSN omits immutable=1 and follows the WAL. It fails
+// the instant the DSN regresses to the mattn-style pragma form, which
+// modernc.org/sqlite silently drops.
 func TestOpenAppliesPragmas(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	s, err := Open(dbPath)
@@ -464,16 +463,19 @@ func TestOpenAppliesPragmas(t *testing.T) {
 
 	// The read-only handle (MCP sql/search, analytics) must carry the
 	// busy_timeout so it waits on a concurrent writer rather than erroring,
-	// and keep mmap disabled. A mode=ro connection reports journal_mode=delete
-	// even when the file is truncate or WAL; cache-profile isolation is the
-	// torn-read test, not this pragma.
+	// and keep mmap disabled. Cache-profile isolation is the torn-read test,
+	// not this pragma.
 	ro, err := OpenReadOnly(dbPath)
 	if err != nil {
 		t.Fatalf("open read-only: %v", err)
 	}
 	defer ro.Close()
 
+	{{- if .Cache.Enabled}}
 	requirePragma(t, ro.DB(), "journal_mode", "delete")
+	{{- else}}
+	requirePragma(t, ro.DB(), "journal_mode", "wal")
+	{{- end}}
 	requirePragma(t, ro.DB(), "busy_timeout", "5000")
 	requirePragma(t, ro.DB(), "mmap_size", "0")
 }
@@ -492,32 +494,31 @@ func requirePragma(t *testing.T, db *sql.DB, name, want string) {
 	}
 }
 
-// assertNoWALIndexSidecars fails if a read-only open recreated the WAL-index
-// mapping SQLite would otherwise place in -shm. mmap_size(0) does not govern
-// that mapping; the read-only DSN must skip it.
-func assertNoWALIndexSidecars(t *testing.T, dbPath string) {
-	t.Helper()
-	for _, sidecar := range []string{dbPath + "-shm", dbPath + "-wal"} {
-		if _, err := os.Stat(sidecar); err == nil {
-			t.Fatalf("read-only open created WAL sidecar %s", sidecar)
-		} else if !os.IsNotExist(err) {
-			t.Fatalf("stat %s: %v", sidecar, err)
-		}
-	}
-}
-
-// TestOpenReadOnly_SkipsWALIndexSidecars proves a settled WAL store can be
-// opened read-only without recreating -shm. The current-ro DSN (mmap_size 0
-// without immutable=1) remaps the WAL-index on the next open; that mapping
-// is the concurrent-reader fault surface.
-func TestOpenReadOnly_SkipsWALIndexSidecars(t *testing.T) {
+// TestOpenReadOnly_SeesCommittedWALFrames proves a reader sees a commit that
+// is still in the WAL. wal_autocheckpoint=0 keeps the writer from folding
+// that commit into the main file before the reader opens.
+func TestOpenReadOnly_SeesCommittedWALFrames(t *testing.T) {
+	{{- if .Cache.Enabled}}
+	t.Skip("WAL frame visibility is the WAL-profile contract")
+	{{- end}}
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	s, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := s.Close(); err != nil {
-		t.Fatalf("close writer: %v", err)
+	defer s.Close()
+	if _, err := s.DB().Exec(`PRAGMA wal_autocheckpoint = 0`); err != nil {
+		t.Fatalf("disable autocheckpoint: %v", err)
+	}
+	if _, err := s.DB().Exec(`INSERT INTO resources (id, resource_type, data) VALUES (?, ?, ?)`, "ro-wal", "wal-visible", `{"id":"ro-wal"}`); err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+	info, err := os.Stat(dbPath + "-wal")
+	if err != nil {
+		t.Fatalf("stat wal: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Fatal("expected an uncheckpointed WAL frame")
 	}
 
 	ro, err := OpenReadOnly(dbPath)
@@ -525,20 +526,122 @@ func TestOpenReadOnly_SkipsWALIndexSidecars(t *testing.T) {
 		t.Fatalf("open read-only: %v", err)
 	}
 	defer ro.Close()
+	var id string
+	if err := ro.DB().QueryRow(`SELECT id FROM resources WHERE id = ?`, "ro-wal").Scan(&id); err != nil {
+		t.Fatalf("read-only missed committed WAL row: %v", err)
+	}
+	if id != "ro-wal" {
+		t.Fatalf("read-only id = %q", id)
+	}
+}
 
-	var n int
-	if err := ro.DB().QueryRow(`SELECT count(*) FROM sqlite_master`).Scan(&n); err != nil {
-		t.Fatalf("read-only query: %v", err)
+// TestOpenReadOnly_ReadOnlyDirReadsCheckpointedDB proves a directory that
+// cannot create the WAL index still opens the checkpointed main file.
+// The writable-directory case is TestOpenReadOnly_SeesCommittedWALFrames.
+func TestOpenReadOnly_ReadOnlyDirReadsCheckpointedDB(t *testing.T) {
+	{{- if .Cache.Enabled}}
+	t.Skip("checkpointed fallback is the WAL-profile contract")
+	{{- end}}
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
 	}
-	if n < 1 {
-		t.Fatalf("read-only query returned empty catalog")
+	if _, err := s.DB().Exec(`INSERT INTO resources (id, resource_type, data) VALUES (?, ?, ?)`, "ro-ckpt", "ckpt", `{"id":"ro-ckpt"}`); err != nil {
+		t.Fatalf("seed row: %v", err)
 	}
-	assertNoWALIndexSidecars(t, dbPath)
+	if err := s.Close(); err != nil {
+		t.Fatalf("close seed: %v", err)
+	}
+	for _, suffix := range []string{"-shm", "-wal"} {
+		if err := os.Remove(dbPath + suffix); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove %s: %v", suffix, err)
+		}
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	probe, err := os.Create(filepath.Join(dir, "probe-write"))
+	if err == nil {
+		probe.Close()
+		// Root and Windows can still create files in a 0555 directory.
+		// Skip this case instead of failing. The checkpointed fallback still
+		// runs in TestOpenReadOnly_BlockedWALReadsCheckpointedDB.
+		t.Skip("directory stayed writable after chmod; checkpointed fallback is not exercised here")
+	}
+
+	ro, err := OpenReadOnly(dbPath)
+	if err != nil {
+		t.Fatalf("open read-only on read-only directory: %v", err)
+	}
+	defer ro.Close()
+	var id string
+	if err := ro.DB().QueryRow(`SELECT id FROM resources WHERE id = ?`, "ro-ckpt").Scan(&id); err != nil {
+		t.Fatalf("checkpointed row: %v", err)
+	}
+	if id != "ro-ckpt" {
+		t.Fatalf("read-only id = %q", id)
+	}
+}
+
+// TestOpenReadOnly_BlockedWALReadsCheckpointedDB proves the immutable retry
+// reads a checkpointed database when the WAL path cannot be opened as a file.
+// A directory at that path fails the first open without depending on directory
+// mode bits, which root and Windows can ignore after chmod 0555.
+func TestOpenReadOnly_BlockedWALReadsCheckpointedDB(t *testing.T) {
+	{{- if .Cache.Enabled}}
+	t.Skip("checkpointed fallback is the WAL-profile contract")
+	{{- end}}
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := s.DB().Exec(`INSERT INTO resources (id, resource_type, data) VALUES (?, ?, ?)`, "ro-ckpt-wal", "ckpt", `{"id":"ro-ckpt-wal"}`); err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close seed: %v", err)
+	}
+	for _, suffix := range []string{"-shm", "-wal"} {
+		if err := os.Remove(dbPath + suffix); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove %s: %v", suffix, err)
+		}
+	}
+	if err := os.Mkdir(dbPath+"-wal", 0o755); err != nil {
+		t.Fatalf("block wal path: %v", err)
+	}
+
+	dsn := "file:" + dbPath + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)"
+	blocked, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open blocked probe: %v", err)
+	}
+	probeErr := blocked.Ping()
+	_ = blocked.Close()
+	if probeErr == nil{{if not .Cache.Enabled}} || !readOnlyOpenNeedsImmutableFallback(probeErr){{end}} {
+		t.Fatalf("mode=ro open = %v, want an error the immutable retry handles", probeErr)
+	}
+
+	ro, err := OpenReadOnly(dbPath)
+	if err != nil {
+		t.Fatalf("open read-only with blocked wal: %v", err)
+	}
+	defer ro.Close()
+	var id string
+	if err := ro.DB().QueryRow(`SELECT id FROM resources WHERE id = ?`, "ro-ckpt-wal").Scan(&id); err != nil {
+		t.Fatalf("checkpointed row: %v", err)
+	}
+	if id != "ro-ckpt-wal" {
+		t.Fatalf("read-only id = %q", id)
+	}
 }
 
 // TestOpenReadOnly_ConcurrentProcesses runs two sibling read-only processes
-// against one store. Serial access never hits the WAL-index fault; two
-// concurrent OpenReadOnly processes is the smallest reproduction.
+// against one store. The readers must both succeed. They may map -shm; that
+// coordination is what makes uncheckpointed WAL commits visible.
 func TestOpenReadOnly_ConcurrentProcesses(t *testing.T) {
 	if os.Getenv("PP_STORE_RO_HELPER") == "1" {
 		runOpenReadOnlyHelper()
@@ -575,7 +678,6 @@ func TestOpenReadOnly_ConcurrentProcesses(t *testing.T) {
 			t.Fatalf("helper %d: %v", i, err)
 		}
 	}
-	assertNoWALIndexSidecars(t, dbPath)
 }
 
 func runOpenReadOnlyHelper() {
@@ -640,7 +742,7 @@ func TestOpenReadOnly_DeleteModeDBDoesNotWrite(t *testing.T) {
 // pages. immutable=1 on this journal mode is the torn-read DSN.
 func TestOpenReadOnly_RollbackJournalNoTornRead(t *testing.T) {
 	{{- if not .Cache.Enabled}}
-	t.Skip("WAL profile keeps immutable=1; torn-read isolation is the rollback-journal contract")
+	t.Skip("torn-read isolation is the rollback-journal contract")
 	{{- end}}
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	s, err := Open(dbPath)
