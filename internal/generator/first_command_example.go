@@ -2,7 +2,9 @@ package generator
 
 import (
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/canonicalargs"
@@ -271,6 +273,23 @@ func stringifyDefault(v any) string {
 		return ""
 	case string:
 		return t
+	case float32:
+		// Widening a fractional float32 exposes binary noise (0.1 becomes
+		// 0.10000000149011612), so format fractions at 32-bit precision.
+		if f := float64(t); f != math.Trunc(f) && !math.IsInf(f, 0) && !math.IsNaN(f) {
+			return strconv.FormatFloat(f, 'f', -1, 32)
+		}
+		value, ok := formatExampleFloat(float64(t))
+		if !ok {
+			return ""
+		}
+		return value
+	case float64:
+		value, ok := formatExampleFloat(t)
+		if !ok {
+			return ""
+		}
+		return value
 	case []string:
 		if len(t) == 0 {
 			return ""

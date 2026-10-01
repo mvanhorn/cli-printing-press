@@ -256,6 +256,36 @@ func TestGeneratedCommandSynthesizesHappyArgsFromExamples(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+func TestGeneratedCommandFormatsNumericExamplesWithoutExponents(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("numeric-examples")
+	apiSpec.Resources["transactions"] = spec.Resource{
+		Description: "Transactions",
+		Endpoints: map[string]spec.Endpoint{
+			"get": {
+				Method:      "GET",
+				Path:        "/transactions/{id}",
+				Description: "Get a transaction",
+				Params: []spec.Param{
+					{Name: "id", Type: "integer", Required: true, Positional: true, PathParam: true, Example: float64(2112150654)},
+					{Name: "confidence", Type: "number", Required: true, Example: float64(42.125)},
+				},
+			},
+			"list": {Method: "GET", Path: "/transactions", Description: "List transactions"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	source := readGeneratedFile(t, outputDir, "internal", "cli", "transactions_get.go")
+	assert.Contains(t, source, "numeric-examples-pp-cli transactions get 2112150654 --confidence 42.125")
+	assert.Contains(t, source, `"pp:happy-args": "id=2112150654;--confidence=42.125"`)
+	assert.NotContains(t, source, "2.112150654e+09")
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGeneratedCommandDoesNotInventHappyArgsForUnderivableParams(t *testing.T) {
 	t.Parallel()
 

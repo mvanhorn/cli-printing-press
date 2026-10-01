@@ -244,8 +244,14 @@ func formatExampleFloat(v float64) (string, bool) {
 	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return "", false
 	}
-	if v == math.Trunc(v) && v >= math.MinInt64 && v <= math.MaxInt64 {
-		return strconv.FormatInt(int64(v), 10), true
+	if v == math.Trunc(v) {
+		// float64(math.MaxInt64) rounds up to 2^63, which int64 cannot hold, so
+		// the upper bound is strict. Larger whole numbers keep their exact
+		// digits; the shortest round-trip form would print trailing zeros.
+		if v >= math.MinInt64 && v < math.MaxInt64 {
+			return strconv.FormatInt(int64(v), 10), true
+		}
+		return strconv.FormatFloat(v, 'f', 0, 64), true
 	}
 	return strconv.FormatFloat(v, 'f', -1, 64), true
 }
