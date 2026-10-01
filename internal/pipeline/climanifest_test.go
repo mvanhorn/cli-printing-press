@@ -722,15 +722,14 @@ func TestPublishWorkingCLIWritesManifestForYAMLSpec(t *testing.T) {
 }
 
 func TestPublishWorkingCLIPreservesManifestAuthPreference(t *testing.T) {
-	const openAPISpec = `openapi: 3.0.3
+	const openAPISpecTemplate = `openapi: 3.0.3
 info:
   title: Dual Auth
   version: 1.0.0
 servers:
   - url: https://api.example.com
 security:
-  - accountToken: []
-  - serverToken: []
+%s
 components:
   securitySchemes:
     accountToken:
@@ -751,15 +750,39 @@ paths:
 `
 
 	cases := []struct {
-		name       string
-		preference string
-		wantScheme string
+		name                 string
+		securityRequirements string
+		preference           string
+		wantScheme           string
+		wantAdditionalScheme string
+		wantAdditionalHeader string
 	}{
-		{name: "non-default preference", preference: "serverToken", wantScheme: "serverToken"},
-		{name: "default preference", wantScheme: "accountToken"},
+		{
+			name: "non-default preference",
+			securityRequirements: "  - accountToken: []\n" +
+				"  - serverToken: []",
+			preference: "serverToken",
+			wantScheme: "serverToken",
+		},
+		{
+			name: "default preference",
+			securityRequirements: "  - accountToken: []\n" +
+				"  - serverToken: []",
+			wantScheme: "accountToken",
+		},
+		{
+			name: "preference with required companion credential",
+			securityRequirements: "  - accountToken: []\n" +
+				"    serverToken: []",
+			preference:           "serverToken",
+			wantScheme:           "serverToken",
+			wantAdditionalScheme: "accountToken",
+			wantAdditionalHeader: "X-Account-Token",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			openAPISpec := fmt.Sprintf(openAPISpecTemplate, tc.securityRequirements)
 			home := setPressTestEnv(t)
 			workingDir := filepath.Join(home, "working", "dual-auth-pp-cli")
 			researchSpec := filepath.Join(home, "research", "dual-auth.yaml")
@@ -793,6 +816,11 @@ paths:
 			assert.Equal(t, parsed.Auth.Type, got.AuthType)
 			assert.Equal(t, parsed.Auth.EnvVars, got.AuthEnvVars)
 			assert.Equal(t, "spec.yaml", got.SpecPath)
+			if tc.wantAdditionalScheme != "" {
+				require.Len(t, got.AuthAdditionalHeaders, 1)
+				assert.Equal(t, tc.wantAdditionalScheme, got.AuthAdditionalHeaders[0].Scheme)
+				assert.Equal(t, tc.wantAdditionalHeader, got.AuthAdditionalHeaders[0].Header)
+			}
 		})
 	}
 }
