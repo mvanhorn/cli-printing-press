@@ -2606,3 +2606,58 @@ func Load() *Config {
 	assert.ElementsMatch(t, []string{"SHOPIFY_SHOP", "SHOPIFY_API_VERSION"}, gotTemplate,
 		"discoverCLITemplateVarEnvs must return the template-var env names so mock mode can inject placeholder values")
 }
+
+func TestStartMockServerForcesSuccessFlagTrue(t *testing.T) {
+	body := topLevelEnvelopeMockBody(t, `
+                  success:
+                    type: boolean
+                    default: false
+                  data:
+                    type: array
+                    items:
+                      type: object`)
+
+	assert.Equal(t, true, body["success"])
+	assert.Len(t, body["data"], 2)
+}
+
+func TestNestedDataEnvelopeDeclinesIdentityDetail(t *testing.T) {
+	detail := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":    map[string]any{"type": "integer"},
+			"name":  map[string]any{"type": "string"},
+			"roles": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+		},
+	}
+	_, ok := nestedDataEnvelopeFixtureForSchema(detail, map[string]any{})
+	assert.False(t, ok, "an object with an id is a detail response, not a list envelope")
+}
+
+func TestNestedDataEnvelopeFlattensAllOf(t *testing.T) {
+	root := map[string]any{
+		"components": map[string]any{
+			"schemas": map[string]any{
+				"Page": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"total_count": map[string]any{"type": "integer"}},
+				},
+			},
+		},
+	}
+	composed := map[string]any{
+		"allOf": []any{
+			map[string]any{"$ref": "#/components/schemas/Page"},
+			map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"items": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+				},
+			},
+		},
+	}
+	fixture, ok := nestedDataEnvelopeFixtureForSchema(composed, root)
+	require.True(t, ok)
+	assert.Equal(t, "items", fixture.ArrayKey)
+	assert.Contains(t, fixture.Scalars, "total_count")
+}

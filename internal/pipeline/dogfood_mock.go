@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"unicode"
@@ -148,7 +149,7 @@ func sortedSuccessStatuses(responses map[string]any) []string {
 }
 
 func nestedDataEnvelopeFixtureForSchema(schema map[string]any, root map[string]any) (nestedDataEnvelopeFixture, bool) {
-	schema = resolveRawSchemaRef(schema, root)
+	schema = mergedRawObjectSchema(resolveRawSchemaRef(schema, root), root, 0)
 	if schemaType(schema) != "object" {
 		return nestedDataEnvelopeFixture{}, false
 	}
@@ -207,7 +208,7 @@ func topLevelArrayEnvelopeFixture(schema map[string]any, root map[string]any) (n
 			fixture.ArrayKey = key
 			continue
 		}
-		if !isRawScalarSchema(property, root) {
+		if !isRawScalarSchema(property, root) || isIdentityScalarKey(key) {
 			return nestedDataEnvelopeFixture{}, false
 		}
 		fixture.Scalars[key] = mockScalarValue(key, property, root)
@@ -216,6 +217,42 @@ func topLevelArrayEnvelopeFixture(schema map[string]any, root map[string]any) (n
 		return nestedDataEnvelopeFixture{}, false
 	}
 	return fixture, true
+}
+
+// mergedRawObjectSchema flattens a multi-entry allOf into one object schema so
+// a list envelope composed from shared pagination and item parts exposes its
+// combined properties.
+func mergedRawObjectSchema(schema map[string]any, root map[string]any, depth int) map[string]any {
+	parts, ok := schema["allOf"].([]any)
+	if !ok || len(parts) < 2 || depth > 8 {
+		return schema
+	}
+	properties := map[string]any{}
+	if own, ok := schema["properties"].(map[string]any); ok {
+		maps.Copy(properties, own)
+	}
+	for _, part := range parts {
+		sub, ok := part.(map[string]any)
+		if !ok {
+			continue
+		}
+		sub = mergedRawObjectSchema(resolveRawSchemaRef(sub, root), root, depth+1)
+		if subProperties, ok := sub["properties"].(map[string]any); ok {
+			maps.Copy(properties, subProperties)
+		}
+	}
+	return map[string]any{"type": "object", "properties": properties}
+}
+
+// isIdentityScalarKey marks detail objects: a list envelope has no identity of
+// its own, so an id beside the array means the array is an attribute.
+func isIdentityScalarKey(key string) bool {
+	switch snakeCaseKey(key) {
+	case "id", "uuid", "guid":
+		return true
+	default:
+		return false
+	}
 }
 
 func schemaProperty(schema map[string]any, key string) map[string]any {
@@ -254,6 +291,11 @@ func isRawScalarSchema(schema map[string]any, root map[string]any) bool {
 
 func mockScalarValue(key string, schema map[string]any, root map[string]any) any {
 	schema = resolveRawSchemaRef(schema, root)
+	if schemaType(schema) == "boolean" && isSuccessScalarKey(key) {
+		// The mock answers with HTTP 200; a success flag defaulting to false
+		// would make generated commands treat that response as a failure.
+		return true
+	}
 	if isContinuationScalarKey(key) {
 		// A mock must terminate pagination even when the schema's default would
 		// advertise another page. The verifier's sync probe follows these values.
@@ -278,6 +320,15 @@ func mockScalarValue(key string, schema map[string]any, root map[string]any) any
 		return "mock"
 	default:
 		return nil
+	}
+}
+
+func isSuccessScalarKey(key string) bool {
+	switch snakeCaseKey(key) {
+	case "success", "ok", "succeeded", "is_success":
+		return true
+	default:
+		return false
 	}
 }
 
