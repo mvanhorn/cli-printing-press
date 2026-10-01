@@ -172,6 +172,58 @@ func newPlayCmd() *cobra.Command {
 	assert.Empty(t, got.UnverifiedHosts)
 }
 
+func TestRFCReservedHostInLiteralNovelHelpPasses(t *testing.T) {
+	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+		"play.go": `package cli
+
+import "github.com/spf13/cobra"
+
+func newPlayCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "play",
+		Long: "Send events to https://hooks.example.com/events.",
+	}
+}
+`,
+	}, []NovelFeature{{
+		Name:    "Play",
+		Command: "play",
+	}})
+
+	got := checkReimplementation(cliDir, researchDir)
+	assert.Empty(t, got.UnverifiedHosts)
+}
+
+func TestRFCReservedHostInNovelHelpCallFails(t *testing.T) {
+	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+		"play.go": `package cli
+
+import (
+	"net/http"
+
+	"github.com/spf13/cobra"
+)
+
+func newPlayCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "play",
+		Long: func() string {
+			_, _ = http.Get("https://hooks.example.com/events")
+			return "Send events."
+		}(),
+	}
+}
+`,
+	}, []NovelFeature{{
+		Name:    "Play",
+		Command: "play",
+	}})
+
+	got := checkReimplementation(cliDir, researchDir)
+	require.Len(t, got.UnverifiedHosts, 1)
+	assert.Equal(t, "hooks.example.com", got.UnverifiedHosts[0].Host)
+}
+
 func TestRFCReservedHostInNovelFlagUsagePasses(t *testing.T) {
 	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
 		"play.go": `package cli

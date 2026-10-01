@@ -575,9 +575,8 @@ func isRFCReservedEmail(matched string) bool {
 	return IsRFCReservedDomain(matched[at+1:])
 }
 
-// IsRFCReservedDomain reports whether domain is reserved for documentation,
-// testing, invalid names, or loopback names by RFC 2606 and RFC 6761, so it
-// can never identify a real person or a real service.
+// IsRFCReservedDomain keeps the PII email scanner and novel-host gate aligned
+// on documentation placeholders.
 func IsRFCReservedDomain(domain string) bool {
 	domain = strings.ToLower(strings.Trim(strings.TrimSpace(domain), "."))
 	if domain == "example.com" || domain == "example.org" || domain == "example.net" {

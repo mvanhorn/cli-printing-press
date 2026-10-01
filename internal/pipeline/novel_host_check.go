@@ -358,25 +358,41 @@ func cobraHelpStringSpans(node ast.Node) []tokenSpan {
 				if !ok || !isCobraHelpField(field.Key) {
 					continue
 				}
-				spans = append(spans, tokenSpan{start: field.Value.Pos(), end: field.Value.End()})
+				spans = append(spans, displayedStringLiteralSpans(field.Value)...)
 			}
 		case *ast.AssignStmt:
 			for i, lhs := range node.Lhs {
 				if i >= len(node.Rhs) || !isCobraHelpSelector(lhs) {
 					continue
 				}
-				spans = append(spans, tokenSpan{start: node.Rhs[i].Pos(), end: node.Rhs[i].End()})
+				spans = append(spans, displayedStringLiteralSpans(node.Rhs[i])...)
 			}
 		case *ast.CallExpr:
 			if !isCobraFlagDefinition(node) || len(node.Args) == 0 {
 				return true
 			}
 			usage := node.Args[len(node.Args)-1]
-			spans = append(spans, tokenSpan{start: usage.Pos(), end: usage.End()})
+			spans = append(spans, displayedStringLiteralSpans(usage)...)
 		}
 		return true
 	})
 	return spans
+}
+
+func displayedStringLiteralSpans(expr ast.Expr) []tokenSpan {
+	switch expr := expr.(type) {
+	case *ast.BasicLit:
+		if expr.Kind == token.STRING {
+			return []tokenSpan{{start: expr.Pos(), end: expr.End()}}
+		}
+	case *ast.ParenExpr:
+		return displayedStringLiteralSpans(expr.X)
+	case *ast.BinaryExpr:
+		if expr.Op == token.ADD {
+			return append(displayedStringLiteralSpans(expr.X), displayedStringLiteralSpans(expr.Y)...)
+		}
+	}
+	return nil
 }
 
 func isCobraHelpSelector(expr ast.Expr) bool {
