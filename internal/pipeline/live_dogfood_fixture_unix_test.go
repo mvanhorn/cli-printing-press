@@ -3,6 +3,7 @@
 package pipeline
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -51,4 +52,45 @@ func TestCopyCLIDirFixturesFollowsInTreeSymlinksAndSkipsSpecialFiles(t *testing.
 	got, err = os.ReadFile(filepath.Join(scratch, "set", "linked", "inner", "b.txt"))
 	require.NoError(t, err, "an in-tree directory symlink inside a fixture dir must be copied")
 	assert.Equal(t, "b", string(got))
+}
+
+func TestCopyCLIDirFixturesSkipsLinkCyclesAndCapsFanout(t *testing.T) {
+	cliDir := t.TempDir()
+	scratch := t.TempDir()
+	set := filepath.Join(cliDir, "set")
+	require.NoError(t, os.MkdirAll(set, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(set, "a.txt"), []byte("a"), 0o644))
+	// Ten links back to the same directory would copy 10^8 trees without a
+	// cycle check.
+	for i := 0; i < 10; i++ {
+		require.NoError(t, os.Symlink(".", filepath.Join(set, "loop"+string(rune('0'+i)))))
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- copyCLIDirFixtures([]string{"cmd", "set"}, 1, cliDir, scratch)
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("fixture copy did not bound linked fan-out")
+	}
+	got, err := os.ReadFile(filepath.Join(scratch, "set", "a.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "a", string(got))
+	_, err = os.Stat(filepath.Join(scratch, "set", "loop0", "a.txt"))
+	assert.True(t, os.IsNotExist(err), "a link back to an ancestor directory must not be copied again")
+}
+
+func TestCopyCLIDirFixturesFailsOverBudget(t *testing.T) {
+	cliDir := t.TempDir()
+	scratch := t.TempDir()
+	set := filepath.Join(cliDir, "set")
+	require.NoError(t, os.MkdirAll(set, 0o755))
+	for i := 0; i <= liveDogfoodFixtureMaxFiles; i++ {
+		require.NoError(t, os.WriteFile(filepath.Join(set, fmt.Sprintf("f%05d", i)), nil, 0o644))
+	}
+	err := copyCLIDirFixtures([]string{"cmd", "set"}, 1, cliDir, scratch)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds")
 }

@@ -3317,21 +3317,39 @@ func liveDogfoodFixtureSource(root, path string) (string, bool) {
 }
 
 func copyLiveDogfoodFixture(root, src, dst string) error {
-	return copyLiveDogfoodFixtureDepth(root, src, dst, 0)
+	budget := &liveDogfoodFixtureBudget{}
+	return budget.copy(root, src, dst, nil)
 }
 
-// liveDogfoodFixtureMaxLinkDepth bounds directory-symlink descent so a link
-// cycle inside the CLI tree cannot recurse forever.
-const liveDogfoodFixtureMaxLinkDepth = 8
+// Fixture copies run before the subprocess timeout is armed, so total work
+// is capped: a tree whose links fan back into each other would otherwise be
+// copied once per link path.
+const (
+	liveDogfoodFixtureMaxLinkDepth = 8
+	liveDogfoodFixtureMaxFiles     = 2000
+	liveDogfoodFixtureMaxBytes     = 256 << 20
+)
 
-func copyLiveDogfoodFixtureDepth(root, src, dst string, depth int) error {
+type liveDogfoodFixtureBudget struct {
+	files int
+	bytes int64
+}
+
+// copy walks src into dst. ancestors holds the resolved directories already
+// being copied on this link chain; a directory link back into one of them is
+// a cycle and is skipped rather than copied again.
+func (b *liveDogfoodFixtureBudget) copy(root, src, dst string, ancestors []string) error {
 	info, err := os.Stat(src)
 	if err != nil {
 		return err
 	}
 	if !info.IsDir() {
-		return copyLiveDogfoodFile(src, dst, info)
+		return b.copyFile(src, dst, info)
 	}
+	if len(ancestors) > liveDogfoodFixtureMaxLinkDepth {
+		return nil
+	}
+	chain := append(append([]string{}, ancestors...), src)
 	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -3355,13 +3373,27 @@ func copyLiveDogfoodFixtureDepth(root, src, dst string, depth int) error {
 		if fi.IsDir() {
 			// WalkDir does not follow directory symlinks; copy the in-tree
 			// target explicitly so inputs read through the link exist.
-			if depth >= liveDogfoodFixtureMaxLinkDepth {
-				return nil
+			for _, a := range chain {
+				if real == a || strings.HasPrefix(a, real+string(filepath.Separator)) {
+					return nil
+				}
 			}
-			return copyLiveDogfoodFixtureDepth(root, real, target, depth+1)
+			return b.copy(root, real, target, chain)
 		}
-		return copyLiveDogfoodFile(real, target, fi)
+		return b.copyFile(real, target, fi)
 	})
+}
+
+func (b *liveDogfoodFixtureBudget) copyFile(src, dst string, info os.FileInfo) error {
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	b.files++
+	b.bytes += info.Size()
+	if b.files > liveDogfoodFixtureMaxFiles || b.bytes > liveDogfoodFixtureMaxBytes {
+		return fmt.Errorf("fixture copy exceeds %d files or %d MiB", liveDogfoodFixtureMaxFiles, liveDogfoodFixtureMaxBytes>>20)
+	}
+	return copyLiveDogfoodFile(src, dst, info)
 }
 
 // copyLiveDogfoodFile copies regular files only. FIFOs, sockets and devices
