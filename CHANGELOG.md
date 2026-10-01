@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.33.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.32.6...v4.33.0) (2026-10-01)
+
+
+### Features
+
+* **cli:** let operators approve one live happy path for paid novel commands ([#4872](https://github.com/mvanhorn/cli-printing-press/issues/4872)) ([4e93d3e](https://github.com/mvanhorn/cli-printing-press/commit/4e93d3e3f71034a95f56d1fee555dec4a38e8529))
+
+
+### Bug Fixes
+
+* **cli:** allow reserved hosts in novel examples ([#4865](https://github.com/mvanhorn/cli-printing-press/issues/4865)) ([bace063](https://github.com/mvanhorn/cli-printing-press/commit/bace063c289702500dc22a8736141d787f57f736))
+* **cli:** format numeric path examples without exponents ([#4861](https://github.com/mvanhorn/cli-printing-press/issues/4861)) ([8e36bba](https://github.com/mvanhorn/cli-printing-press/commit/8e36bbabf359ce256c1a9e0bcaae8b3130a3de0c))
+* **cli:** never replay paid submits, retry uploads, keep async job IDs on wait failure ([#4853](https://github.com/mvanhorn/cli-printing-press/issues/4853)) ([b8c3837](https://github.com/mvanhorn/cli-printing-press/commit/b8c38372abff2d772f062ba1ea98acaa26fe7d59))
+* **cli:** preserve auth preference through publish ([#4860](https://github.com/mvanhorn/cli-printing-press/issues/4860)) ([ba10777](https://github.com/mvanhorn/cli-printing-press/commit/ba10777b23ce775f0a143656e417d832bbf3e604))
+* **cli:** read URL-valued has_more fields as next links ([#4838](https://github.com/mvanhorn/cli-printing-press/issues/4838)) ([f07a6ba](https://github.com/mvanhorn/cli-printing-press/commit/f07a6babaf11b18cd9a6f9c9b8c28a2ad87f0c10))
+
 ## [4.32.6](https://github.com/mvanhorn/cli-printing-press/compare/v4.32.5...v4.32.6) (2026-09-28)
 
 
