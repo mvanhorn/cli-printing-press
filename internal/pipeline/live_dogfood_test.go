@@ -7749,16 +7749,35 @@ func TestRemoveDryRunArgsStopsAtTerminator(t *testing.T) {
 	assert.Equal(t, []string{"render", "--prompt", "x", "--", "--dry-run"}, got)
 }
 
-func TestAbsolutizeCLIDirFixtureArgs(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "input.png"), []byte("x"), 0o644))
-	got := absolutizeCLIDirFixtureArgs([]string{"upload", "./input.png", "--image=@input.png", "missing.png", "--", "input.png"}, 1, dir)
-	assert.Equal(t, []string{
-		"upload",
-		filepath.Join(dir, "input.png"),
-		"--image=@" + filepath.Join(dir, "input.png"),
-		"missing.png",
-		"--",
-		"input.png",
-	}, got)
+func TestCopyCLIDirFixturesCopiesInputsWithoutRewritingArgs(t *testing.T) {
+	cliDir := t.TempDir()
+	scratch := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "input.png"), []byte("img"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "fixtures", "set"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "fixtures", "set", "a.txt"), []byte("a"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "report.json"), []byte("keep"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "after.txt"), []byte("after"), 0o644))
+
+	args := []string{"upload", "./input.png", "--image=@input.png", "--dir", "fixtures", "--output-file=report.json", "missing.png", "../escape", "--", "after.txt"}
+	before := append([]string{}, args...)
+	require.NoError(t, copyCLIDirFixtures(args, 1, cliDir, scratch))
+	assert.Equal(t, before, args, "args must not be rewritten")
+
+	for rel, want := range map[string]string{
+		"input.png":          "img",
+		"fixtures/set/a.txt": "a",
+		"report.json":        "keep",
+		"after.txt":          "after",
+	} {
+		got, err := os.ReadFile(filepath.Join(scratch, rel))
+		require.NoError(t, err, rel)
+		assert.Equal(t, want, string(got), rel)
+	}
+	// A write to the scratch copy never reaches the CLI tree.
+	require.NoError(t, os.WriteFile(filepath.Join(scratch, "report.json"), []byte("overwritten"), 0o644))
+	got, err := os.ReadFile(filepath.Join(cliDir, "report.json"))
+	require.NoError(t, err)
+	assert.Equal(t, "keep", string(got))
+	_, err = os.Stat(filepath.Join(scratch, "missing.png"))
+	assert.True(t, os.IsNotExist(err))
 }

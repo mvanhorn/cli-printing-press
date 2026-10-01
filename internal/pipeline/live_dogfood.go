@@ -1808,9 +1808,13 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			// Examples on paid or side-effecting commands usually show
 			// --dry-run; the approved live run must not inherit it.
 			runArgs = removeDryRunArgs(happyArgs)
-			if commandSupportsJSON(command.Help) && !hasExplicitNonJSONOutputMode(runArgs) {
+			if commandSupportsJSON(command.Help) {
 				// Ask for JSON on the one live run so json_fidelity can be
-				// judged from it instead of from a second paid run.
+				// judged from it instead of from a second paid run. Drop any
+				// --plain/--csv first, exactly as the json_fidelity probe does.
+				if hasExplicitNonJSONOutputMode(runArgs) {
+					runArgs = removeNonJSONOutputModes(runArgs)
+				}
 				runArgs = appendJSONArg(runArgs)
 			}
 		}
@@ -1832,9 +1836,15 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 				)
 				break
 			}
-			defer os.RemoveAll(scratch)
+			defer func() { _ = os.RemoveAll(scratch) }()
 			happyDir = scratch
-			runArgs = absolutizeCLIDirFixtureArgs(runArgs, len(command.Path), ctx.cliDir)
+			if err := copyCLIDirFixtures(runArgs, len(command.Path), ctx.cliDir, scratch); err != nil {
+				results = append(results,
+					failedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, err.Error()),
+					skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, "live happy-path fixture copy failed"),
+				)
+				break
+			}
 		}
 		happyRun := runLiveDogfoodProcessWithStdin(ctx.binaryPath, happyDir, runArgs, ctx.timeout, stdinPayload)
 		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, happyRun, ctx.authEnvValue)
@@ -3242,41 +3252,84 @@ func appendJSONArg(args []string) []string {
 	return append(out, "--json")
 }
 
-// absolutizeCLIDirFixtureArgs rewrites relative argument values that name an
-// existing file under cliDir (fixtures such as ./input.png) to absolute
-// paths, so a command run from another working directory still finds them.
-// The command path and anything after a "--" terminator are left alone.
-func absolutizeCLIDirFixtureArgs(args []string, pathLen int, cliDir string) []string {
-	out := append([]string{}, args...)
+// copyCLIDirFixtures copies relative argument paths that exist under cliDir
+// (input fixtures such as ./input.png or a fixture directory) into the same
+// relative location under scratch, so a command run from scratch still finds
+// its inputs while anything it writes, including over a same-named fixture,
+// lands in the scratch copy instead of the CLI tree. Args are not rewritten.
+// Paths that are absolute, URLs, or escape cliDir are ignored.
+func copyCLIDirFixtures(args []string, pathLen int, cliDir, scratch string) error {
 	if strings.TrimSpace(cliDir) == "" {
-		return out
+		return nil
 	}
-	for i := min(pathLen, len(out)); i < len(out); i++ {
-		arg := out[i]
-		if arg == "--" {
-			break
+	for i := min(pathLen, len(args)); i < len(args); i++ {
+		value := args[i]
+		if value == "--" {
+			continue
 		}
-		prefix, value := "", arg
-		if strings.HasPrefix(arg, "-") {
-			name, v, ok := strings.Cut(arg, "=")
+		if strings.HasPrefix(value, "-") {
+			_, v, ok := strings.Cut(value, "=")
 			if !ok {
 				continue
 			}
-			prefix, value = name+"=", v
+			value = v
 		}
 		value = strings.TrimPrefix(value, "@")
 		if value == "" || filepath.IsAbs(value) || strings.Contains(value, "://") {
 			continue
 		}
-		candidate := filepath.Join(cliDir, value)
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			if strings.HasPrefix(strings.TrimPrefix(arg, prefix), "@") {
-				candidate = "@" + candidate
-			}
-			out[i] = prefix + candidate
+		rel := filepath.Clean(value)
+		if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		src := filepath.Join(cliDir, rel)
+		info, err := os.Lstat(src)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		if err := copyLiveDogfoodFixture(src, filepath.Join(scratch, rel), info); err != nil {
+			return fmt.Errorf("copy fixture %s: %w", rel, err)
 		}
 	}
-	return out
+	return nil
+}
+
+func copyLiveDogfoodFixture(src, dst string, info os.FileInfo) error {
+	if info.IsDir() {
+		return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.Type()&os.ModeSymlink != 0 {
+				return nil
+			}
+			rel, err := filepath.Rel(src, path)
+			if err != nil {
+				return err
+			}
+			target := filepath.Join(dst, rel)
+			if d.IsDir() {
+				return os.MkdirAll(target, 0o755)
+			}
+			fi, err := d.Info()
+			if err != nil {
+				return err
+			}
+			return copyLiveDogfoodFile(path, target, fi.Mode().Perm())
+		})
+	}
+	return copyLiveDogfoodFile(src, dst, info.Mode().Perm())
+}
+
+func copyLiveDogfoodFile(src, dst string, perm os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, perm)
 }
 
 // removeDryRunArgs drops --dry-run / --dry-run=<v> tokens before any "--"
