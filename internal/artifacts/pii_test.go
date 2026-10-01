@@ -1306,3 +1306,16 @@ func uniqueFiles(findings []PIIFinding) []string {
 	}
 	return out
 }
+
+func TestIsRFCReservedDomain(t *testing.T) {
+	for _, host := range []string{
+		"example.com", "hooks.example.com", "example.net", "hooks.example.org",
+		"service.example", "preview.test", "preview.invalid", "preview.localhost",
+		"Example.COM.", " example.org ",
+	} {
+		assert.True(t, IsRFCReservedDomain(host), host)
+	}
+	for _, host := range []string{"hooks.unverified.example-api.com", "example.co", "notexample.com", "postmarkapp.com"} {
+		assert.False(t, IsRFCReservedDomain(host), host)
+	}
+}
