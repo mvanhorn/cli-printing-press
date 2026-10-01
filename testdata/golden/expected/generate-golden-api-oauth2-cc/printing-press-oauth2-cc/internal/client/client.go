@@ -1142,9 +1142,10 @@ func (c *Client) bindOperationDeadline(ctx context.Context) (context.Context, co
 	return ctx, func() {}
 }
 
-// bindUploadOperationDeadline is bindOperationDeadline for requests that
-// carry a file: each of the maxRetries+1 attempts may use --timeout plus
-// the size-scaled transfer allowance.
+// The plain operation deadline is one --timeout for every wait and retry,
+// sized for JSON. A file body can legitimately spend longer than that on
+// the wire per attempt, so a single --timeout would cancel the retries that
+// recover a stalled upload before they start.
 func (c *Client) bindUploadOperationDeadline(ctx context.Context, allowance time.Duration, maxRetries int) (context.Context, context.CancelFunc) {
 	if allowance <= 0 {
 		return c.bindOperationDeadline(ctx)

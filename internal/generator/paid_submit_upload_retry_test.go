@@ -210,6 +210,10 @@ func TestAsyncStatusRecoveryPrefixFollowsIDBinding(t *testing.T) {
 	require.Equal(t, "jobs get ", asyncStatusRecoveryPrefix(build(flagged, spec.Param{Name: "region", Type: "string", Positional: true, Required: true}), "renders", "get"),
 		"an extra required positional cannot be filled from the job ID alone")
 	require.Equal(t, "jobs get ", asyncStatusRecoveryPrefix(build(spec.Param{Name: "task", Type: "string", Positional: true}), "renders", "get"))
+	require.Equal(t, "jobs get ", asyncStatusRecoveryPrefix(build(positional, spec.Param{Name: "workspace", Type: "string", Required: true}), "renders", "get"),
+		"a required non-ID flag cannot be filled from the job ID alone")
+	require.Equal(t, "renders get ", asyncStatusRecoveryPrefix(build(positional, spec.Param{Name: "workspace", Type: "string", Required: true, Default: "main"}), "renders", "get"),
+		"a required flag with a default is filled by the generated command")
 }
 
 func TestParserReadsReplaySafeExtension(t *testing.T) {

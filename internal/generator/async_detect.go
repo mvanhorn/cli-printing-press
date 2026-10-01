@@ -168,18 +168,17 @@ func asyncStatusRecoveryPrefix(s *spec.APISpec, statusRes, statusEP string) stri
 	if idParam == nil {
 		return ledgerFallback
 	}
-	command := asyncStatusCommandPath(s, statusRes, statusEP)
-	positionals := orderedPositionalParams(ep)
-	if idParam.Positional {
-		if len(positionals) != 1 {
+	// Any other required input (positional, flag, or header) cannot be
+	// filled from the job ID alone, so the printed command would be
+	// rejected; point at the local ledger instead.
+	for _, p := range ep.Params {
+		if p.Name != idParam.Name && p.Required && p.Default == nil {
 			return ledgerFallback
 		}
-		return command + " "
 	}
-	for _, p := range positionals {
-		if p.Required {
-			return ledgerFallback
-		}
+	command := asyncStatusCommandPath(s, statusRes, statusEP)
+	if idParam.Positional {
+		return command + " "
 	}
 	return command + " --" + publicFlagName(*idParam) + " "
 }
