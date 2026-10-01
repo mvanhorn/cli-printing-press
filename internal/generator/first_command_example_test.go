@@ -7,6 +7,29 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestStringifyDefaultFormatsFloatsLikeExamples(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{name: "large whole number", value: float64(2112150654), want: "2112150654"},
+		{name: "fraction", value: float64(42.125), want: "42.125"},
+		{name: "two to the 63rd stays exact", value: float64(9223372036854775808), want: "9223372036854775808"},
+		{name: "float32 whole number", value: float32(1024), want: "1024"},
+		{name: "float32 fraction keeps its precision", value: float32(0.1), want: "0.1"},
+		{name: "string remains unchanged", value: "2112150654", want: "2112150654"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, stringifyDefault(tt.value))
+		})
+	}
+}
+
 // TestFirstCommandExampleHonorsPromotion covers issue #290. The Wikipedia
 // CLI's spec has a single-endpoint `feed` resource (`feed.get-on-this-day`),
 // which the generator promotes to a top-level `feed` command. The example
