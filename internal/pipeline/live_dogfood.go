@@ -80,6 +80,8 @@ const reasonCredentialSyncBackFailed = "credential sync-back failed: rotated ref
 const liveDogfoodVerdictCookieAuthNoSession = "skip-cookie-auth-no-session"
 const reasonUnavailableRunnerCredentials = "unavailable for runner credentials"
 const reasonFileFixtureRequired = "file fixture required"
+
+const reasonLiveHappyExplicitOutputMode = "live happy path uses an explicit non-JSON output mode"
 const reasonRequiredParamFixture = "blocked-fixture: required API parameter"
 const reasonFeatureAbsentFixture = "blocked-fixture: feature absent for runner credentials"
 const reasonNoErrorPathProbeAnnotation = "no-error-path-probe annotation"
@@ -1808,13 +1810,11 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			// Examples on paid or side-effecting commands usually show
 			// --dry-run; the approved live run must not inherit it.
 			runArgs = removeDryRunArgs(happyArgs)
-			if commandSupportsJSON(command.Help) {
-				// Ask for JSON on the one live run so json_fidelity can be
-				// judged from it instead of from a second paid run. Drop any
-				// --plain/--csv first, exactly as the json_fidelity probe does.
-				if hasExplicitNonJSONOutputMode(runArgs) {
-					runArgs = removeNonJSONOutputModes(runArgs)
-				}
+			// Ask for JSON on the one live run so json_fidelity can be judged
+			// from it instead of from a second paid run. The approved args
+			// are never stripped: --output can be a file destination, so an
+			// explicit output mode leaves json_fidelity skipped instead.
+			if commandSupportsJSON(command.Help) && !hasExplicitNonJSONOutputMode(runArgs) {
 				runArgs = appendJSONArg(runArgs)
 			}
 		}
@@ -1881,6 +1881,11 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			}
 			jsonResult.FixtureSource = fixtureSource
 			results = append(results, jsonResult)
+		} else if realOptIn && commandSupportsJSON(command.Help) && hasExplicitNonJSONOutputMode(runArgs) {
+			// The approved args chose a non-JSON output mode and are never
+			// rewritten, and the side effect never runs twice, so there is no
+			// JSON run to judge.
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonLiveHappyExplicitOutputMode))
 		} else if commandSupportsJSON(command.Help) {
 			jsonArgs := runArgs
 			if hasExplicitNonJSONOutputMode(jsonArgs) {
@@ -3262,6 +3267,10 @@ func copyCLIDirFixtures(args []string, pathLen int, cliDir, scratch string) erro
 	if strings.TrimSpace(cliDir) == "" {
 		return nil
 	}
+	root, err := filepath.EvalSymlinks(cliDir)
+	if err != nil {
+		return nil
+	}
 	for i := min(pathLen, len(args)); i < len(args); i++ {
 		value := args[i]
 		if value == "--" {
@@ -3282,46 +3291,70 @@ func copyCLIDirFixtures(args []string, pathLen int, cliDir, scratch string) erro
 		if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			continue
 		}
-		src := filepath.Join(cliDir, rel)
-		info, err := os.Lstat(src)
-		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		src, ok := liveDogfoodFixtureSource(root, filepath.Join(cliDir, rel))
+		if !ok {
 			continue
 		}
-		if err := copyLiveDogfoodFixture(src, filepath.Join(scratch, rel), info); err != nil {
+		if err := copyLiveDogfoodFixture(root, src, filepath.Join(scratch, rel)); err != nil {
 			return fmt.Errorf("copy fixture %s: %w", rel, err)
 		}
 	}
 	return nil
 }
 
-func copyLiveDogfoodFixture(src, dst string, info os.FileInfo) error {
-	if info.IsDir() {
-		return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.Type()&os.ModeSymlink != 0 {
-				return nil
-			}
-			rel, err := filepath.Rel(src, path)
-			if err != nil {
-				return err
-			}
-			target := filepath.Join(dst, rel)
-			if d.IsDir() {
-				return os.MkdirAll(target, 0o755)
-			}
-			fi, err := d.Info()
-			if err != nil {
-				return err
-			}
-			return copyLiveDogfoodFile(path, target, fi.Mode().Perm())
-		})
+// liveDogfoodFixtureSource resolves symlinks so a linked fixture is copied
+// as its target, but only when the target stays inside the CLI directory;
+// a link pointing elsewhere on the host is never followed.
+func liveDogfoodFixtureSource(root, path string) (string, bool) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false
 	}
-	return copyLiveDogfoodFile(src, dst, info.Mode().Perm())
+	if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+		return "", false
+	}
+	return resolved, true
 }
 
-func copyLiveDogfoodFile(src, dst string, perm os.FileMode) error {
+func copyLiveDogfoodFixture(root, src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return copyLiveDogfoodFile(src, dst, info)
+	}
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		real, ok := liveDogfoodFixtureSource(root, path)
+		if !ok {
+			return nil
+		}
+		fi, err := os.Stat(real)
+		if err != nil || fi.IsDir() {
+			return nil
+		}
+		return copyLiveDogfoodFile(real, target, fi)
+	})
+}
+
+// copyLiveDogfoodFile copies regular files only. FIFOs, sockets and devices
+// are skipped because reading them can block before the subprocess timeout
+// is armed.
+func copyLiveDogfoodFile(src, dst string, info os.FileInfo) error {
+	if !info.Mode().IsRegular() {
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
@@ -3329,11 +3362,12 @@ func copyLiveDogfoodFile(src, dst string, perm os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, perm)
+	return os.WriteFile(dst, data, info.Mode().Perm())
 }
 
-// removeDryRunArgs drops --dry-run / --dry-run=<v> tokens before any "--"
-// terminator, leaving positional values after the terminator untouched.
+// Example strings on paid commands usually show --dry-run so copying them is
+// safe; an approved live run must not inherit it. Values after "--" are
+// positional data, not flags, so they are left alone.
 func removeDryRunArgs(args []string) []string {
 	out := make([]string, 0, len(args))
 	terminated := false

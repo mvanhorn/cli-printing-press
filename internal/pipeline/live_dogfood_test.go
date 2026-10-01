@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -7780,4 +7781,99 @@ func TestCopyCLIDirFixturesCopiesInputsWithoutRewritingArgs(t *testing.T) {
 	assert.Equal(t, "keep", string(got))
 	_, err = os.Stat(filepath.Join(scratch, "missing.png"))
 	assert.True(t, os.IsNotExist(err))
+}
+
+func TestCopyCLIDirFixturesFollowsInTreeSymlinksAndSkipsSpecialFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks and FIFOs need a Unix host")
+	}
+	cliDir := t.TempDir()
+	scratch := t.TempDir()
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "real.png"), []byte("img"), 0o644))
+	require.NoError(t, os.Symlink("real.png", filepath.Join(cliDir, "link.png")))
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret"), []byte("s"), 0o600))
+	require.NoError(t, os.Symlink(filepath.Join(outside, "secret"), filepath.Join(cliDir, "escape.txt")))
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "set"), 0o755))
+	require.NoError(t, syscall.Mkfifo(filepath.Join(cliDir, "set", "pipe"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "set", "a.txt"), []byte("a"), 0o644))
+
+	done := make(chan error, 1)
+	go func() {
+		done <- copyCLIDirFixtures([]string{"cmd", "link.png", "escape.txt", "set"}, 1, cliDir, scratch)
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("fixture copy blocked on a special file")
+	}
+	got, err := os.ReadFile(filepath.Join(scratch, "link.png"))
+	require.NoError(t, err)
+	assert.Equal(t, "img", string(got))
+	_, err = os.Stat(filepath.Join(scratch, "escape.txt"))
+	assert.True(t, os.IsNotExist(err), "symlink leaving the CLI dir must not be followed")
+	_, err = os.Stat(filepath.Join(scratch, "set", "pipe"))
+	assert.True(t, os.IsNotExist(err), "FIFOs must not be copied")
+	got, err = os.ReadFile(filepath.Join(scratch, "set", "a.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "a", string(got))
+}
+
+func TestRunLiveDogfoodLiveHappyPathKeepsExplicitOutputArgs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+	argvLog := filepath.Join(t.TempDir(), "argv.log")
+	t.Setenv("PRINTING_PRESS_TEST_ARGV_LOG", argvLog)
+	script := `#!/bin/sh
+set -u
+if [ "$1" = "agent-context" ]; then
+  echo '{"commands":[{"name":"render","annotations":{"pp:method":"POST","pp:live-happy-path":"true","pp:happy-args":"--output=out.png"}}]}'
+  exit 0
+fi
+if [ "${2:-}" = "--help" ]; then
+  cat <<HELP
+Render.
+
+Usage:
+  fixture-pp-cli render [flags]
+
+Examples:
+  fixture-pp-cli render --output=out.png --dry-run
+
+Flags:
+      --output string   Output file
+
+Global Flags:
+      --dry-run   Show request without sending
+      --json      Output as JSON
+HELP
+  exit 0
+fi
+printf '%s\n' "$*" >> "$PRINTING_PRESS_TEST_ARGV_LOG"
+echo ok
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, binaryName), []byte(script), 0o755))
+	report, err := RunLiveDogfood(LiveDogfoodOptions{CLIDir: dir, BinaryName: binaryName, Level: "full", Timeout: 2 * time.Second, AllowDestructive: true})
+	require.NoError(t, err)
+	happy := findResultByCommandKind(report, "render", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status, happy.Reason)
+	assert.Contains(t, happy.Args, "--output=out.png", "the approved output destination must be kept")
+	jsonResult := findResultByCommandKind(report, "render", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
+	assert.Equal(t, reasonLiveHappyExplicitOutputMode, jsonResult.Reason)
+	live := 0
+	for _, line := range liveHappyArgvLines(t, argvLog) {
+		if strings.HasPrefix(line, "render") && !strings.Contains(line, "--dry-run") {
+			live++
+		}
+	}
+	assert.Equal(t, 1, live)
 }
