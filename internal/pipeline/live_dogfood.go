@@ -3271,6 +3271,8 @@ func copyCLIDirFixtures(args []string, pathLen int, cliDir, scratch string) erro
 	if err != nil {
 		return nil
 	}
+	// One budget covers every fixture argument of the run.
+	budget := &liveDogfoodFixtureBudget{}
 	for i := min(pathLen, len(args)); i < len(args); i++ {
 		value := args[i]
 		if value == "--" {
@@ -3295,7 +3297,7 @@ func copyCLIDirFixtures(args []string, pathLen int, cliDir, scratch string) erro
 		if !ok {
 			continue
 		}
-		if err := copyLiveDogfoodFixture(root, src, filepath.Join(scratch, rel)); err != nil {
+		if err := budget.copy(root, src, filepath.Join(scratch, rel), nil); err != nil {
 			return fmt.Errorf("copy fixture %s: %w", rel, err)
 		}
 	}
@@ -3314,11 +3316,6 @@ func liveDogfoodFixtureSource(root, path string) (string, bool) {
 		return "", false
 	}
 	return resolved, true
-}
-
-func copyLiveDogfoodFixture(root, src, dst string) error {
-	budget := &liveDogfoodFixtureBudget{}
-	return budget.copy(root, src, dst, nil)
 }
 
 // Fixture copies run before the subprocess timeout is armed, so total work

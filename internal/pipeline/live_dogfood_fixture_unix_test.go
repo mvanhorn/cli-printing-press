@@ -94,3 +94,19 @@ func TestCopyCLIDirFixturesFailsOverBudget(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds")
 }
+
+func TestCopyCLIDirFixturesSharesBudgetAcrossArgs(t *testing.T) {
+	cliDir := t.TempDir()
+	scratch := t.TempDir()
+	half := liveDogfoodFixtureMaxFiles/2 + 1
+	for _, dir := range []string{"one", "two"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(cliDir, dir), 0o755))
+		for i := range half {
+			require.NoError(t, os.WriteFile(filepath.Join(cliDir, dir, fmt.Sprintf("f%05d", i)), nil, 0o644))
+		}
+	}
+	require.NoError(t, copyCLIDirFixtures([]string{"cmd", "one"}, 1, cliDir, scratch))
+	err := copyCLIDirFixtures([]string{"cmd", "one", "two"}, 1, cliDir, t.TempDir())
+	require.Error(t, err, "two fixture args together exceed the one shared budget")
+	assert.Contains(t, err.Error(), "exceeds")
+}
