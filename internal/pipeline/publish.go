@@ -218,6 +218,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		RunID:                state.RunID,
 	}
 	var existingDescription string
+	var existingAuthPreference string
 	toolsManifestExpected := false
 
 	// Carry forward metadata from the generated manifest when publish-time
@@ -229,6 +230,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		_ = json.Unmarshal(existingData, &existingRaw)
 		var existing CLIManifest
 		if json.Unmarshal(existingData, &existing) == nil {
+			existingAuthPreference = strings.TrimSpace(existing.AuthPreference)
 			if state.RunID == "" && existing.RunID != "" {
 				state.RunID = existing.RunID
 				m.RunID = existing.RunID
@@ -275,8 +277,10 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			m.MCPPublicToolCount = existing.MCPPublicToolCount
 			m.MCPReady = existing.MCPReady
 			m.AuthType = existing.AuthType
+			m.AuthPreference = existingAuthPreference
 			m.AuthEnvVars = existing.AuthEnvVars
 			m.AuthEnvVarSpecs = existing.AuthEnvVarSpecs
+			m.AuthAdditionalHeaders = existing.AuthAdditionalHeaders
 			m.EndpointTemplateVars = existing.EndpointTemplateVars
 			m.EndpointTemplateEnvOverrides = existing.EndpointTemplateEnvOverrides
 			m.EndpointTemplateVarDefaults = existing.EndpointTemplateVarDefaults
@@ -293,6 +297,11 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 	// spec.yaml for YAML inputs; --docs / --plan runs leave no archive and
 	// these fields stay empty.
 	if specFile, data, err := findArchivedSpec(state.EffectiveWorkingDir()); err == nil && specFile != "" {
+		// The archive is the spec shipped with this CLI. Keep the provenance
+		// path pointed at it instead of the original research/download path.
+		if m.SpecPath != "" && m.SpecURL == "" {
+			m.SpecPath = filepath.Base(specFile)
+		}
 		m.SpecFormat = detectSpecFormat(data)
 		if checksum, err := specChecksum(specFile, m.SpecFormat); err == nil {
 			m.SpecChecksum = checksum
@@ -307,7 +316,10 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		)
 		switch m.SpecFormat {
 		case "openapi3":
-			parsed, parseErr = openapi.ParseWithPath(data, specFile)
+			parsed, parseErr = openapi.ParseWithOptions(data, openapi.ParseOptions{
+				Path:           specFile,
+				AuthPreference: existingAuthPreference,
+			})
 		case "graphql":
 			parsed, parseErr = graphql.ParseSDLBytes(specFile, data)
 		case "internal":
