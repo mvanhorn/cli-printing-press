@@ -19,6 +19,7 @@ func TestStringifyDefaultFormatsFloatsLikeExamples(t *testing.T) {
 		{name: "fraction", value: float64(42.125), want: "42.125"},
 		{name: "two to the 63rd stays exact", value: float64(9223372036854775808), want: "9223372036854775808"},
 		{name: "float32 whole number", value: float32(1024), want: "1024"},
+		{name: "float32 fraction keeps its precision", value: float32(0.1), want: "0.1"},
 		{name: "string remains unchanged", value: "2112150654", want: "2112150654"},
 	}
 
