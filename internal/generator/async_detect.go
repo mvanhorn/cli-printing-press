@@ -168,11 +168,11 @@ func asyncStatusRecoveryPrefix(s *spec.APISpec, statusRes, statusEP string) stri
 	if idParam == nil {
 		return ledgerFallback
 	}
-	// Any other required input (positional, flag, or header) cannot be
-	// filled from the job ID alone, so the printed command would be
-	// rejected; point at the local ledger instead.
+	// Any other positional (even a defaulted one shifts which argument the
+	// job ID binds to) or required input without a default cannot be filled
+	// from the job ID alone; point at the local ledger instead.
 	for _, p := range ep.Params {
-		if p.Name != idParam.Name && p.Required && p.Default == nil {
+		if p.Name != idParam.Name && (p.Positional || (p.Required && p.Default == nil)) {
 			return ledgerFallback
 		}
 	}

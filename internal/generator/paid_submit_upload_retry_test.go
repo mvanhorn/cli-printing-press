@@ -214,6 +214,8 @@ func TestAsyncStatusRecoveryPrefixFollowsIDBinding(t *testing.T) {
 		"a required non-ID flag cannot be filled from the job ID alone")
 	require.Equal(t, "renders get ", asyncStatusRecoveryPrefix(build(positional, spec.Param{Name: "workspace", Type: "string", Required: true, Default: "main"}), "renders", "get"),
 		"a required flag with a default is filled by the generated command")
+	require.Equal(t, "jobs get ", asyncStatusRecoveryPrefix(build(positional, spec.Param{Name: "region", Type: "string", Positional: true, Default: "us"}), "renders", "get"),
+		"another positional, even defaulted, would shift which argument the job ID binds to")
 }
 
 func TestParserReadsReplaySafeExtension(t *testing.T) {
