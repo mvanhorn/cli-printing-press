@@ -66,13 +66,13 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 				}
 			}
 			params := map[string]string{}
-			if flagS != "" {
+			if (cmd.Flags().Changed("address") || cmd.Flags().Changed("s")) || flagS != "" {
 				params["s"] = formatCLIParamValue(flagS)
 			}
-			if flagC != "" {
+			if (cmd.Flags().Changed("city") || cmd.Flags().Changed("c")) || flagC != "" {
 				params["c"] = formatCLIParamValue(flagC)
 			}
-			if flagLocationId != "" {
+			if cmd.Flags().Changed("location-id") || flagLocationId != "" {
 				params["location_id"] = formatCLIParamValue(flagLocationId)
 			}
 			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "auto", "stores", true, path, params, nil, "", cmd.ErrOrStderr())

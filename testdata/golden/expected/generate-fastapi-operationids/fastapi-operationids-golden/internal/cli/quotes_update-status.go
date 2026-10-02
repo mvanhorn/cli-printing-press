@@ -16,8 +16,14 @@ func newQuotesUpdateStatusCmd(flags *rootFlags) *cobra.Command {
 	var stdinBody bool
 
 	cmd := &cobra.Command{
-		Use:         "update-status <quote_id>",
-		Short:       "Update quote status",
+		Use:   "update-status <quote_id>",
+		Short: "Update quote status",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if err := cobra.MaximumNArgs(1)(cmd, args); err != nil {
+				return usageErr(fmt.Errorf("%s\nhint: boolean flags take a value with '=', for example --flag=false", err.Error()))
+			}
+			return nil
+		},
 		Annotations: map[string]string{"pp:endpoint": "quotes.update-status", "pp:method": "POST", "pp:path": "/api/quotes/{quote_id}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

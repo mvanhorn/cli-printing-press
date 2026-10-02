@@ -19,9 +19,15 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 	var flagAll bool
 
 	cmd := &cobra.Command{
-		Use:         "list-project <projectId>",
-		Aliases:     []string{"get"},
-		Short:       "List project tasks",
+		Use:     "list-project <projectId>",
+		Aliases: []string{"get"},
+		Short:   "List project tasks",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if err := cobra.MaximumNArgs(1)(cmd, args); err != nil {
+				return usageErr(fmt.Errorf("%s\nhint: boolean flags take a value with '=', for example --flag=false", err.Error()))
+			}
+			return nil
+		},
 		Annotations: map[string]string{"pp:endpoint": "tasks.list-project", "pp:method": "GET", "pp:path": "/projects/{projectId}/tasks", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

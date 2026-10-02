@@ -14,9 +14,15 @@ import (
 func newLeaguesPromotedCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
-		Use:         "leagues <game_key>",
-		Short:       "List leagues for a game",
-		Long:        "List leagues for a game",
+		Use:   "leagues <game_key>",
+		Short: "List leagues for a game",
+		Long:  "List leagues for a game",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if err := cobra.MaximumNArgs(1)(cmd, args); err != nil {
+				return usageErr(fmt.Errorf("%s\nhint: boolean flags take a value with '=', for example --flag=false", err.Error()))
+			}
+			return nil
+		},
 		Annotations: map[string]string{"pp:endpoint": "leagues.list", "pp:method": "GET", "pp:path": "/games/{game_key}/leagues", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()

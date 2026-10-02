@@ -21,9 +21,15 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 	var stdinBody bool
 
 	cmd := &cobra.Command{
-		Use:         "update-project <projectId> <taskId>",
-		Aliases:     []string{"update"},
-		Short:       "Update project task",
+		Use:     "update-project <projectId> <taskId>",
+		Aliases: []string{"update"},
+		Short:   "Update project task",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if err := cobra.MaximumNArgs(2)(cmd, args); err != nil {
+				return usageErr(fmt.Errorf("%s\nhint: boolean flags take a value with '=', for example --flag=false", err.Error()))
+			}
+			return nil
+		},
 		Annotations: map[string]string{"pp:endpoint": "tasks.update-project", "pp:method": "PATCH", "pp:path": "/projects/{projectId}/tasks/{taskId}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

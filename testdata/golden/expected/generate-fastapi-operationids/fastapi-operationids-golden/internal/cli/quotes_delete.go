@@ -14,8 +14,14 @@ import (
 func newQuotesDeleteCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
-		Use:         "delete <quote_id>",
-		Short:       "Delete quote",
+		Use:   "delete <quote_id>",
+		Short: "Delete quote",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if err := cobra.MaximumNArgs(1)(cmd, args); err != nil {
+				return usageErr(fmt.Errorf("%s\nhint: boolean flags take a value with '=', for example --flag=false", err.Error()))
+			}
+			return nil
+		},
 		Annotations: map[string]string{"pp:endpoint": "quotes.delete", "pp:method": "DELETE", "pp:path": "/api/quotes/{quote_id}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
