@@ -8366,8 +8366,8 @@ func paramPresenceExpr(p spec.Param) string {
 	return fmt.Sprintf("(%s || flag%s != %s)", flagChangedExpr(p), toCamel(paramIdent(p)), zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
 }
 
-// ExactArgs would surface a missing ID as plain text before RunE can write
-// the JSON usage envelope. NoOptDefVal can still fill that slot from `--flag false`.
+// A missing ID has to reach RunE, which writes the JSON usage envelope.
+// The token after a bool flag must not count as that ID.
 func endpointArgsExpr(e spec.Endpoint) string {
 	n := len(orderedPositionalParams(e))
 	if n == 0 {
