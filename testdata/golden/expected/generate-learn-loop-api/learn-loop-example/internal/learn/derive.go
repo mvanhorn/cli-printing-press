@@ -110,13 +110,15 @@ func DeriveFlagCorrections(openStore func() (CandidateStore, error), flagExists 
 	if err != nil {
 		return err
 	}
-	// The file cursor is not the source of truth, but two passes can
-	// still each write it. Holding the lock across the read, the
-	// commit, and the file write keeps a slower pass from moving the
-	// file cursor backward after a peer has already advanced it.
-	return cliutil.WithFileLock(filepath.Join(dir, journalOffsetFileName), func() error {
+	// Do not wait. This hook runs after every command, and a peer holds
+	// the lock through its journal scan and SQLite commit. Skipping
+	// leaves the file cursor where it is; a later pass retries. When
+	// the lock is free, the idempotent cursor commit still runs inside
+	// it so a slower pass cannot rewind the file cursor.
+	_, err = cliutil.TryWithFileLock(filepath.Join(dir, journalOffsetFileName), func() error {
 		return deriveFlagCorrectionsLocked(openStore, flagExists, false)
 	})
+	return err
 }
 
 func deriveFlagCorrectionsLocked(openStore func() (CandidateStore, error), flagExists func(name string) bool, resumed bool) error {

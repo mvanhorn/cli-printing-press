@@ -383,8 +383,11 @@ func TestGenerateCliutilPackage(t *testing.T) {
 		{"jwtshape.go", "func LooksLikeJWT("},
 		{"jwtshape.go", "func FindJWTInCookieJar("},
 		{"filelock.go", "func WithFileLock("},
+		{"filelock.go", "func TryWithFileLock("},
+		{"filelock_unix.go", "syscall.LOCK_NB"},
 		{"filelock_windows.go", "golang.org/x/sys/windows"},
 		{"filelock_windows.go", "windows.LockFileEx("},
+		{"filelock_windows.go", "windows.LOCKFILE_FAIL_IMMEDIATELY"},
 	} {
 		data, err := os.ReadFile(filepath.Join(cliutilDir, probe.file))
 		require.NoError(t, err)
