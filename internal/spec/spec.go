@@ -2896,6 +2896,8 @@ type Param struct {
 	Format       string   `yaml:"format,omitempty" json:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
 	QueryStyle   string   `yaml:"query_style,omitempty" json:"query_style,omitempty"`
 	QueryExplode *bool    `yaml:"query_explode,omitempty" json:"query_explode,omitempty"`
+	// Leaving Enum empty would skip the generated allowed-value check and accept every flag value.
+	EnumUnsatisfiable bool `yaml:"-" json:"-"`
 	// Maximum captures an inclusive numeric `maximum` schema constraint on the
 	// parameter. Sync uses it to clamp the page size it requests so a generated
 	// CLI never sends a page size the API rejects (e.g. a page_size param with

@@ -1822,6 +1822,81 @@ paths:
 	assert.Equal(t, []string{"a", "b"}, byName["branch_only"].Enum)
 	assert.Equal(t, []string{"a", "c"}, byName["wrapper_only"].Enum)
 	assert.Empty(t, byName["disjoint"].Enum)
+	assert.True(t, byName["disjoint"].EnumUnsatisfiable)
+	assert.False(t, byName["mode"].EnumUnsatisfiable)
+}
+
+func TestGenerateDisjointEnumBodyFlagRejectsValues(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("OpenAPI generated CLI compile coverage runs in the generated-test CI lane")
+	}
+
+	parsed, err := Parse([]byte(`
+openapi: 3.1.0
+info:
+  title: Nullable Enum
+  version: 1.0.0
+servers:
+  - url: https://api.example.test
+paths:
+  /voices:
+    get:
+      operationId: listVoices
+      responses:
+        "200":
+          description: ok
+    post:
+      operationId: createVoice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  enum: ["a"]
+                  anyOf:
+                    - type: string
+                      enum: ["a", "b"]
+                    - type: "null"
+                disjoint:
+                  enum: ["a"]
+                  anyOf:
+                    - type: string
+                      enum: ["b"]
+                    - type: "null"
+      responses:
+        "200":
+          description: ok
+`))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(parsed.Name))
+	require.NoError(t, generator.New(parsed, outputDir).Generate())
+
+	commandSrc := generatedSourceContaining(t, outputDir, "schema permits no value")
+	assert.Contains(t, commandSrc, `cmd.Flags().Changed("disjoint")`)
+	assert.Contains(t, commandSrc, "bodyDisjoint")
+	assert.NotContains(t, commandSrc, "allowedDisjoint")
+
+	binaryPath := filepath.Join(outputDir, naming.CLI(parsed.Name))
+	runGo(t, outputDir, "mod", "tidy")
+	runGo(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(parsed.Name))
+
+	for _, value := range []string{"a", "b", "hello"} {
+		cmd := exec.Command(binaryPath, "voices", "create", "--disjoint", value, "--dry-run")
+		out, err := cmd.CombinedOutput()
+		require.Error(t, err, "disjoint %q should be rejected: %s", value, out)
+		assert.Contains(t, string(out), fmt.Sprintf("invalid value %q for --disjoint: schema permits no value", value))
+	}
+
+	okCmd := exec.Command(binaryPath, "voices", "create", "--mode", "a", "--dry-run")
+	okOut, err := okCmd.CombinedOutput()
+	require.NoError(t, err, string(okOut))
+	body := unmarshalDryRunBody(t, string(okOut))
+	assert.Equal(t, "a", jsonAny(t, body, "mode"))
 }
 
 func TestGenerateNullableAnyOfBodyScalarsMarshalDeclaredJSONTypes(t *testing.T) {

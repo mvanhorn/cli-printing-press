@@ -8244,11 +8244,43 @@ func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
 	if bodyUsesFlatEmission(endpoint) {
 		for _, p := range endpoint.Body {
 			renderFlatBodyRequiredCheck(&b, p, indent, "", "", true)
+			renderFlatBodyEnumCheck(&b, p, indent, "", "", true)
 		}
 		return b.String()
 	}
-	renderBodyRequiredChecks(&b, flattenCollidingBodyFields(endpoint.Body), 0, indent, "", "", true)
+	body := flattenCollidingBodyFields(endpoint.Body)
+	renderBodyRequiredChecks(&b, body, 0, indent, "", "", true)
+	renderBodyEnumChecks(&b, body, 0, indent, "", "", true)
 	return b.String()
+}
+
+// An empty enum skips the allowed-value check, so a disjoint wrapper/branch
+// pair has to reject every supplied value instead of accepting any string.
+func renderBodyEnumChecks(b *strings.Builder, body []spec.Param, depth int, indent, flagPrefix, identPrefix string, topLevel bool) {
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 && depth+1 < maxBodyFlagDepth {
+			flag := joinFlag(flagPrefix, publicFlagName(p))
+			ident := identPrefix + toCamel(paramIdent(p))
+			renderBodyEnumChecks(b, p.Fields, depth+1, indent, flag, ident, false)
+			continue
+		}
+		renderFlatBodyEnumCheck(b, p, indent, flagPrefix, identPrefix, topLevel)
+	}
+}
+
+func renderFlatBodyEnumCheck(b *strings.Builder, p spec.Param, indent, flagPrefix, identPrefix string, topLevel bool) {
+	if !p.EnumUnsatisfiable {
+		return
+	}
+	flag := joinFlag(flagPrefix, publicFlagName(p))
+	ident := identPrefix + toCamel(paramIdent(p))
+	changedExpr := fmt.Sprintf("cmd.Flags().Changed(%q)", flag)
+	if topLevel {
+		changedExpr = flagChangedExpr(p)
+	}
+	fmt.Fprintf(b, "\n%sif %s {", indent, changedExpr)
+	fmt.Fprintf(b, "\n%s\treturn fmt.Errorf(\"invalid value %%q for --%%s: schema permits no value\", body%s, %q)", indent, ident, flag)
+	fmt.Fprintf(b, "\n%s}", indent)
 }
 
 func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, depth int, indent, flagPrefix, identPrefix string, topLevel bool) {

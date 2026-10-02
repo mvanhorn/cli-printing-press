@@ -5178,14 +5178,15 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 			description = humanizeFieldName(name)
 		}
 		param := spec.Param{
-			Name:        name,
-			Type:        mapBodyParamType(paramSchema, inferCSVArrays),
-			Required:    isRequired(required, name),
-			Description: description,
-			Fields:      mapBodyFields(paramSchema, inferCSVArrays),
-			Enum:        schemaEnum(paramSchema),
-			Format:      schemaFormat(paramSchema),
-			Example:     schemaExample(paramSchema),
+			Name:              name,
+			Type:              mapBodyParamType(paramSchema, inferCSVArrays),
+			Required:          isRequired(required, name),
+			Description:       description,
+			Fields:            mapBodyFields(paramSchema, inferCSVArrays),
+			Enum:              schemaEnum(paramSchema),
+			EnumUnsatisfiable: schemaEnumUnsatisfiable(paramSchema),
+			Format:            schemaFormat(paramSchema),
+			Example:           schemaExample(paramSchema),
 		}
 		if schemaHasCompositeUnionAlternative(paramSchema, map[*openapi3.Schema]struct{}{}) {
 			param.Type = "string"
@@ -5509,8 +5510,8 @@ func overlayUnionScalar(wrapper, scalar *openapi3.Schema) *openapi3.Schema {
 }
 
 // Both lists apply together. Wrapper order is kept so the first allowed
-// value stays the one declared beside the union. An empty overlap means no
-// listed value is valid, which must not fall back to the wider branch set.
+// value stays the one declared beside the union. An empty overlap must not
+// fall back to the wider branch set or to "no enum".
 func intersectSchemaEnums(wrapper, branch []any) []any {
 	branchKeys := make(map[string]struct{}, len(branch))
 	for _, value := range branch {
@@ -5530,9 +5531,24 @@ func intersectSchemaEnums(wrapper, branch []any) []any {
 		out = append(out, value)
 	}
 	if len(out) == 0 {
-		return nil
+		// An empty Enum is "no constraint" in the generated flag check, so a
+		// disjoint pair would accept every string. Keep a marker the flag
+		// rejects instead of dropping the constraint.
+		return []any{unsatisfiableEnumToken}
 	}
 	return out
+}
+
+// A listed enum value would be accepted by the flag. This marker is stripped
+// before emission and only means the flag must reject every supplied value.
+const unsatisfiableEnumToken = "\x00pp-unsatisfiable-enum"
+
+func schemaEnumUnsatisfiable(schema *openapi3.Schema) bool {
+	if schema == nil || len(schema.Enum) != 1 {
+		return false
+	}
+	text, ok := schema.Enum[0].(string)
+	return ok && text == unsatisfiableEnumToken
 }
 
 func enumValueKey(value any) string {
@@ -5583,13 +5599,14 @@ func mapBodyFieldsDepth(schema *openapi3.Schema, inferCSVArrays bool, visited ma
 			description = humanizeFieldName(name)
 		}
 		fields = append(fields, spec.Param{
-			Name:        name,
-			Type:        mapBodyParamType(fieldSchema, inferCSVArrays),
-			Required:    isRequired(required, name),
-			Description: description,
-			Fields:      mapBodyFieldsDepth(fieldSchema, inferCSVArrays, visited, depth+1),
-			Enum:        schemaEnum(fieldSchema),
-			Format:      schemaFormat(fieldSchema),
+			Name:              name,
+			Type:              mapBodyParamType(fieldSchema, inferCSVArrays),
+			Required:          isRequired(required, name),
+			Description:       description,
+			Fields:            mapBodyFieldsDepth(fieldSchema, inferCSVArrays, visited, depth+1),
+			Enum:              schemaEnum(fieldSchema),
+			EnumUnsatisfiable: schemaEnumUnsatisfiable(fieldSchema),
+			Format:            schemaFormat(fieldSchema),
 		})
 		if schemaHasCompositeUnionAlternative(fieldSchema, map[*openapi3.Schema]struct{}{}) {
 			fields[len(fields)-1].Type = "string"
@@ -7237,11 +7254,14 @@ func isStringArraySchema(schema *openapi3.Schema) bool {
 }
 
 func schemaEnum(schema *openapi3.Schema) []string {
-	if schema == nil || len(schema.Enum) == 0 {
+	if schema == nil || len(schema.Enum) == 0 || schemaEnumUnsatisfiable(schema) {
 		return nil
 	}
 	enum := make([]string, 0, len(schema.Enum))
 	for _, value := range schema.Enum {
+		if text, ok := value.(string); ok && text == unsatisfiableEnumToken {
+			continue
+		}
 		switch v := value.(type) {
 		case string:
 			enum = append(enum, v)
