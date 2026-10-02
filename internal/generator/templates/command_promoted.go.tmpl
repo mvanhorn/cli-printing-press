@@ -9,6 +9,8 @@
 {{- $deleteBodyWithoutParams := and (eq $method "DELETE") $hasJSONBody (not (endpointHasRequestParams .Endpoint))}}
 {{- $isReadVerb := or (eq $method "GET") (eq $method "HEAD") (eq $method "OPTIONS")}}
 {{- $isWriteVerb := or (eq $method "POST") (eq $method "PUT") (eq $method "PATCH")}}
+{{- /* Same gate as command_endpoint.go.tmpl $isMutationOutput. */}}
+{{- $isMutationOutput := and (not .IsReadOnly) (not (or (eq $method "GET") (eq $method "HEAD")))}}
 {{- $canWriteBack := and .HasStore $isWriteVerb (not .IsReadOnly) (not .Endpoint.UsesBinaryResponse) (not .Endpoint.UsesTextResponse)}}
 {{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk") (eq $method "GET") .IsReadOnly}}
 {{- $dataSourceStrategy := dataSourceStrategy .Resource .Endpoint}}
@@ -607,6 +609,17 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				if wrapErr != nil {
 					return wrapErr
 				}
+{{- if $isMutationOutput}}
+				// Stamp after provenance and platform wrapping so those wrappers
+				// cannot hide dry_run and action under results.
+				if flags.dryRun {
+					stamped, stampErr := stampDryRunEnvelope(wrapped, "{{lower .Endpoint.Method}}")
+					if stampErr != nil {
+						return stampErr
+					}
+					wrapped = stamped
+				}
+{{- end}}
 				if err := printOutput(cmd.OutOrStdout(), wrapped, true); err != nil {
 					return err
 				}
@@ -625,6 +638,20 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
+{{- if and $isMutationOutput (not .HasStore)}}
+			// Wrap first, then stamp, so a platform envelope cannot hide the keys.
+			if flags.dryRun && (flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !flags.csv && !flags.quiet && !flags.plain)) {
+				structured, err := wrapPlatformStructuredOutput(data, flags, "results", true)
+				if err != nil {
+					return err
+				}
+				stamped, stampErr := stampDryRunEnvelope(structured, "{{lower .Endpoint.Method}}")
+				if stampErr != nil {
+					return stampErr
+				}
+				return printOutput(cmd.OutOrStdout(), stamped, true)
+			}
+{{- end}}
 			formatData := data
 			if flags.csv || flags.plain {
 				formatData = outputData

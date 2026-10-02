@@ -56,6 +56,18 @@ func newMediaPromotedCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
+			// Wrap first, then stamp, so a platform envelope cannot hide the keys.
+			if flags.dryRun && (flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !flags.csv && !flags.quiet && !flags.plain)) {
+				structured, err := wrapPlatformStructuredOutput(data, flags, "results", true)
+				if err != nil {
+					return err
+				}
+				stamped, stampErr := stampDryRunEnvelope(structured, "post")
+				if stampErr != nil {
+					return stampErr
+				}
+				return printOutput(cmd.OutOrStdout(), stamped, true)
+			}
 			formatData := data
 			if flags.csv || flags.plain {
 				formatData = outputData

@@ -3394,6 +3394,31 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 	return printOutputWithFlagsMeta(w, data, flags, map[string]any{"source": resolveAgentOutputSource(flags, data)})
 }
 
+{{- if .HasPromotedMutations}}
+
+// stampDryRunEnvelope lifts dry_run and action onto the top-level object.
+// Provenance and platform wrappers nest the client sentinel under results,
+// and the dry-run JSON contract reads only top-level keys.
+func stampDryRunEnvelope(data json.RawMessage, action string) (json.RawMessage, error) {
+	var envelope map[string]any
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			return nil, err
+		}
+	}
+	if envelope == nil {
+		envelope = map[string]any{}
+	}
+	envelope["dry_run"] = true
+	envelope["action"] = action
+	stamped, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(stamped), nil
+}
+{{- end}}
+
 // isDryRunResponse detects the exact sentinel returned by client.dryRun.
 func isDryRunResponse(dryRun bool, data json.RawMessage) bool {
 	if !dryRun {
