@@ -8220,38 +8220,56 @@ func renderFlatBodyFlagReg(b *strings.Builder, p spec.Param, identPrefix, flagPr
 	}
 }
 
-// bodyRequiredChecks renders required-flag validation for body params.
-// indent is the indent prefix applied to each emitted `if` line so the
-// helper can serve both command_endpoint.go.tmpl (4-tab indent inside
-// `if !stdinBody`, 3-tab indent for multipart) and command_promoted.go.tmpl
-// (3-tab indent at RunE-body level). Multipart endpoints keep flat
-// behavior. For non-multipart, top-level params use flagChangedExpr
-// (lifts aliases); nested fields use a single Changed() check on the
-// parent-prefixed flag because aliases are not propagated to children.
-// Required fields below an optional object are checked only when any flag
-// in that object was supplied, matching JSON Schema's conditional presence
-// semantics for nested required lists.
+// bodyRequiredChecks renders required-flag validation for body params,
+// plus unsatisfiable-enum rejection. indent is the indent prefix applied
+// to each emitted `if` line so the helper can serve both
+// command_endpoint.go.tmpl (4-tab indent inside `if !stdinBody`, 3-tab
+// indent for multipart) and command_promoted.go.tmpl (3-tab indent at
+// RunE-body level). Multipart endpoints keep flat behavior. For
+// non-multipart, top-level params use flagChangedExpr (lifts aliases);
+// nested fields use a single Changed() check on the parent-prefixed flag
+// because aliases are not propagated to children. Required fields below
+// an optional object are checked only when any flag in that object was
+// supplied, matching JSON Schema's conditional presence semantics for
+// nested required lists.
 func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
 	var b strings.Builder
+	writeBodyRequiredChecks(&b, endpoint, indent, true)
+	return b.String()
+}
+
+// bodyRequiredPresenceChecks is the required-input half of bodyRequiredChecks.
+// Unsatisfiable-enum rejection runs only when that flag is supplied, so it
+// must not make an otherwise optional command look like it requires input.
+func bodyRequiredPresenceChecks(endpoint spec.Endpoint, indent string) string {
+	var b strings.Builder
+	writeBodyRequiredChecks(&b, endpoint, indent, false)
+	return b.String()
+}
+
+func writeBodyRequiredChecks(b *strings.Builder, endpoint spec.Endpoint, indent string, includeEnum bool) {
 	if endpoint.BodyJSONFallback {
 		if endpoint.BodyRequired {
-			fmt.Fprintf(&b, "\n%sif !cmd.Flags().Changed(\"body-json\") && flagBodyJSON == \"\" && !flags.dryRun {", indent)
-			fmt.Fprintf(&b, "\n%s\treturn fmt.Errorf(\"required flag \\\"%%s\\\" not set\", \"body-json\")", indent)
-			fmt.Fprintf(&b, "\n%s}", indent)
+			fmt.Fprintf(b, "\n%sif !cmd.Flags().Changed(\"body-json\") && flagBodyJSON == \"\" && !flags.dryRun {", indent)
+			fmt.Fprintf(b, "\n%s\treturn fmt.Errorf(\"required flag \\\"%%s\\\" not set\", \"body-json\")", indent)
+			fmt.Fprintf(b, "\n%s}", indent)
 		}
-		return b.String()
+		return
 	}
 	if bodyUsesFlatEmission(endpoint) {
 		for _, p := range endpoint.Body {
-			renderFlatBodyRequiredCheck(&b, p, indent, "", "", true)
-			renderFlatBodyEnumCheck(&b, p, indent, "", "", true)
+			renderFlatBodyRequiredCheck(b, p, indent, "", "", true)
+			if includeEnum {
+				renderFlatBodyEnumCheck(b, p, indent, "", "", true)
+			}
 		}
-		return b.String()
+		return
 	}
 	body := flattenCollidingBodyFields(endpoint.Body)
-	renderBodyRequiredChecks(&b, body, 0, indent, "", "", true)
-	renderBodyEnumChecks(&b, body, 0, indent, "", "", true)
-	return b.String()
+	renderBodyRequiredChecks(b, body, 0, indent, "", "", true)
+	if includeEnum {
+		renderBodyEnumChecks(b, body, 0, indent, "", "", true)
+	}
 }
 
 // An empty enum skips the allowed-value check, so a disjoint wrapper/branch
@@ -8458,10 +8476,11 @@ func endpointHasQueryFlags(endpoint spec.Endpoint) bool {
 // the flag half uses template.IsTrue to match the template's `(not .Default)`
 // gate (so a required flag carrying a non-empty default — which the template
 // lets satisfy itself — does not trigger the guard, just as it emits no
-// required-flag error), and the body half reuses bodyRequiredChecks, gated on
-// the body-bearing verbs the command template actually emits the body check
-// for (POST/PUT/PATCH/DELETE) so a GET that happens to declare a required body
-// param does not falsely trip the guard.
+// required-flag error), and the body half reuses bodyRequiredPresenceChecks,
+// gated on the body-bearing verbs the command template actually emits the
+// body check for (POST/PUT/PATCH/DELETE) so a GET that happens to declare a
+// required body param does not falsely trip the guard. Unsatisfiable-enum
+// checks are excluded: they run only after the flag is supplied.
 func endpointHasRequiredInput(endpoint spec.Endpoint) bool {
 	for _, p := range endpoint.Params {
 		if paramHasEnvDefault(p) {
@@ -8475,7 +8494,7 @@ func endpointHasRequiredInput(endpoint spec.Endpoint) bool {
 	}
 	switch strings.ToUpper(endpoint.Method) {
 	case "POST", "PUT", "PATCH", "DELETE":
-		return strings.TrimSpace(bodyRequiredChecks(endpoint, "")) != ""
+		return strings.TrimSpace(bodyRequiredPresenceChecks(endpoint, "")) != ""
 	}
 	return false
 }

@@ -1208,6 +1208,32 @@ func TestBodyMap_DepthCap_Boundary(t *testing.T) {
 	}
 }
 
+func TestBodyRequiredChecks_UnsatisfiableEnumIsNotRequiredInput(t *testing.T) {
+	t.Parallel()
+
+	ep := spec.Endpoint{
+		Method: "POST",
+		Body: []spec.Param{
+			{Name: "note", Type: "string"},
+			{Name: "disjoint", Type: "string", EnumUnsatisfiable: true},
+			{
+				Name: "options",
+				Type: "object",
+				Fields: []spec.Param{
+					{Name: "tone", Type: "string", EnumUnsatisfiable: true},
+				},
+			},
+		},
+	}
+	got := bodyRequiredChecks(ep, "\t")
+	require.Contains(t, got, `cmd.Flags().Changed("disjoint")`)
+	require.Contains(t, got, `cmd.Flags().Changed("options-tone")`)
+	require.Contains(t, got, "schema permits no value")
+	require.NotContains(t, got, "required flag")
+	require.Empty(t, strings.TrimSpace(bodyRequiredPresenceChecks(ep, "\t")))
+	require.False(t, endpointHasRequiredInput(ep))
+}
+
 // TestBodyRequiredChecks_DepthCap requires an object at the depth boundary
 // as one unit instead of losing requirements inside an omitted subtree.
 func TestBodyRequiredChecks_DepthCap(t *testing.T) {

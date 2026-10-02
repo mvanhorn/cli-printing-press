@@ -2,6 +2,7 @@ package openapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -1873,17 +1874,44 @@ paths:
 `))
 	require.NoError(t, err)
 
-	outputDir := filepath.Join(t.TempDir(), naming.CLI(parsed.Name))
-	require.NoError(t, generator.New(parsed, outputDir).Generate())
+	archived, err := json.Marshal(parsed)
+	require.NoError(t, err)
+	assert.Contains(t, string(archived), `"enum_unsatisfiable":true`)
+	reloaded, err := spec.ParseBytes(archived)
+	require.NoError(t, err)
+	reloadedEndpoint := findParsedEndpointByPath(t, reloaded, "POST", "/voices")
+	var disjoint spec.Param
+	for _, param := range reloadedEndpoint.Body {
+		if param.Name == "disjoint" {
+			disjoint = param
+		}
+	}
+	require.True(t, disjoint.EnumUnsatisfiable, "merged-spec JSON archive must keep disjoint-enum rejection")
+	require.Empty(t, disjoint.Enum)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(reloaded.Name))
+	require.NoError(t, generator.New(reloaded, outputDir).Generate())
 
 	commandSrc := generatedSourceContaining(t, outputDir, "schema permits no value")
 	assert.Contains(t, commandSrc, `cmd.Flags().Changed("disjoint")`)
 	assert.Contains(t, commandSrc, "bodyDisjoint")
 	assert.NotContains(t, commandSrc, "allowedDisjoint")
+	assert.NotContains(t, commandSrc, `"pp:requires-input"`,
+		"an optional disjoint-enum flag must not mark the command as requiring input")
+	assert.NotContains(t, commandSrc, "hasChangedLocalFlags",
+		"bare invocation of an optional-only command must execute instead of printing help")
 
-	binaryPath := filepath.Join(outputDir, naming.CLI(parsed.Name))
+	binaryPath := filepath.Join(outputDir, naming.CLI(reloaded.Name))
 	runGo(t, outputDir, "mod", "tidy")
-	runGo(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(parsed.Name))
+	runGo(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(reloaded.Name))
+
+	bareCtx, bareCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer bareCancel()
+	bare := exec.CommandContext(bareCtx, binaryPath, "voices", "create", "--json", "--timeout", "1ms")
+	bareOut, bareErr := bare.CombinedOutput()
+	require.Error(t, bareErr, "optional-only create should attempt the call: %s", bareOut)
+	assert.NotContains(t, string(bareOut), "requires input")
+	assert.NotContains(t, string(bareOut), "Usage:")
 
 	for _, value := range []string{"a", "b", "hello"} {
 		cmd := exec.Command(binaryPath, "voices", "create", "--disjoint", value, "--dry-run")
