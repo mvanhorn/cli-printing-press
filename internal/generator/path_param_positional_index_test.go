@@ -436,7 +436,7 @@ paths:
 	src, err := os.ReadFile(matches[0])
 	require.NoError(t, err)
 	body := string(src)
-	assert.Contains(t, body, `Use:         "invites <organizationId>"`,
+	assert.Contains(t, body, `Use:   "invites <organizationId>"`,
 		"positional must appear in cobra Use so --help is honest")
 	assert.Contains(t, body, `replacePathParam(path, "organizationId", args[0])`,
 		"undeclared path placeholder must still drive URL substitution")
