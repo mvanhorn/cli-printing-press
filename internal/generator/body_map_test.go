@@ -1251,6 +1251,54 @@ func TestBodyRequiredChecks_DepthCap(t *testing.T) {
 	}
 }
 
+func TestBodyMap_SuppliedOptionalObjectDecodesJSONStringDefault(t *testing.T) {
+	t.Parallel()
+	got := bodyMap([]spec.Param{{
+		Name: "settings",
+		Type: "object",
+		Fields: []spec.Param{
+			{Name: "mode", Type: "string"},
+			{Name: "layout", Type: "string", Format: "json", Required: true, Default: `{"kind":"box"}`},
+		},
+	}}, "\t")
+	require.Contains(t, got, "var parsedSettingsLayout any\n")
+	require.Contains(t, got, `json.Unmarshal([]byte(bodySettingsLayout), &parsedSettingsLayout)`)
+	require.Contains(t, got, `nestedSettings["layout"] = parsedSettingsLayout`)
+	require.NotContains(t, got, `nestedSettings["layout"] = bodySettingsLayout`)
+	require.Contains(t, got, `cmd.Flags().Changed("settings-layout")`)
+	require.NotContains(t, got, `bodySettingsLayout != ""`)
+}
+
+func TestBodyMap_SuppliedOptionalObjectDecodesJSONOrScalarDefault(t *testing.T) {
+	t.Parallel()
+	got := bodyMap([]spec.Param{{
+		Name: "settings",
+		Type: "object",
+		Fields: []spec.Param{
+			{Name: "mode", Type: "string"},
+			{Name: "layout", Type: "string", Format: "json_or_scalar", Required: true, Default: `{"kind":"box"}`},
+		},
+	}}, "\t")
+	require.Contains(t, got, "if looksLikeJSONComposite(bodySettingsLayout) {")
+	require.Contains(t, got, `nestedSettings["layout"] = parsedSettingsLayout`)
+	require.Contains(t, got, `nestedSettings["layout"] = bodySettingsLayout`)
+	require.NotRegexp(t, `(?m)^[ \t]*if \(cmd\.Flags\(\)\.Changed\("settings-layout"\) \|\| bodySettingsLayout != ""\) \{`, got)
+}
+
+func TestBodyMap_SuppliedOptionalObjectKeepsEncodedJSONString(t *testing.T) {
+	t.Parallel()
+	got := bodyMap([]spec.Param{{
+		Name: "settings",
+		Type: "object",
+		Fields: []spec.Param{
+			{Name: "mode", Type: "string"},
+			{Name: "payload", Type: "string", Format: "json-string", Required: true, Default: `{"kind":"box"}`},
+		},
+	}}, "\t")
+	require.Contains(t, got, `nestedSettings["payload"] = bodySettingsPayload`)
+	require.NotContains(t, got, "parsedSettingsPayload")
+}
+
 func TestBodyMap_OptionalObjectOmitsRequiredChildDefaultUntilSupplied(t *testing.T) {
 	t.Parallel()
 	got := bodyMap([]spec.Param{{
@@ -1325,6 +1373,29 @@ func TestBodyRequiredChecks_RequiredDefaultDoesNotForceOptionalObject(t *testing
 	require.Contains(t, got, `if (cmd.Flags().Changed("settings-name") || bodySettingsName != "") || cmd.Flags().Changed("settings-kind") {`)
 	require.NotContains(t, got, `bodySettingsKind != ""`)
 	require.Contains(t, got, `bodySettingsName == ""`)
+}
+
+func TestMCPBodyBindings_JSONStringDefaultStaysDecodedObject(t *testing.T) {
+	t.Parallel()
+	bindings := mcpParamBindings(spec.Endpoint{Body: []spec.Param{{
+		Name: "settings",
+		Type: "object",
+		Fields: []spec.Param{
+			{Name: "mode", Type: "string"},
+			{Name: "layout", Type: "string", Format: "json", Required: true, Default: `{"kind":"box"}`},
+			{Name: "engine", Type: "string", Format: "json_or_scalar", Required: true, Default: `{"kind":"box"}`},
+			{Name: "label", Type: "string", Format: "json_or_scalar", Required: true, Default: "box"},
+			{Name: "payload", Type: "string", Format: "json-string", Required: true, Default: `{"kind":"box"}`},
+		},
+	}}}, "/items")
+	byName := map[string]mcpParamBinding{}
+	for _, binding := range bindings {
+		byName[binding.PublicName] = binding
+	}
+	require.Equal(t, `{"kind":"box"}`, byName["settings-layout"].Default)
+	require.Equal(t, `{"kind":"box"}`, byName["settings-engine"].Default)
+	require.Equal(t, `"box"`, byName["settings-label"].Default)
+	require.Equal(t, `"{\"kind\":\"box\"}"`, byName["settings-payload"].Default)
 }
 
 func TestMCPBodyBindings_RequiredChildDefaultFollowsOptionalParent(t *testing.T) {

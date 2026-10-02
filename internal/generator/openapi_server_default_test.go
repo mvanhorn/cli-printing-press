@@ -146,8 +146,11 @@ func TestGeneratedOpenAPIOptionalDefaultsStayOffTheWire(t *testing.T) {
 	assert.Contains(t, createSrc, `Changed("settings-mode")`)
 	assert.Contains(t, createSrc, `"settings-kind", "box"`)
 	assert.NotContains(t, createSrc, `"settings-mode", "compact"`)
-	assert.Contains(t, createSrc, `cmd.Flags().Changed("settings-kind") || (cmd.Flags().Changed("settings-mode") || bodySettingsMode != "")`)
+	assert.Contains(t, createSrc, `cmd.Flags().Changed("settings-kind") || cmd.Flags().Changed("settings-layout") || (cmd.Flags().Changed("settings-mode") || bodySettingsMode != "")`)
 	assert.Contains(t, createSrc, `nestedSettings["kind"] = bodySettingsKind`)
+	assert.Contains(t, createSrc, `json.Unmarshal([]byte(bodySettingsLayout), &parsedSettingsLayout)`)
+	assert.Contains(t, createSrc, `nestedSettings["layout"] = parsedSettingsLayout`)
+	assert.NotContains(t, createSrc, `nestedSettings["layout"] = bodySettingsLayout`)
 	assert.NotContains(t, createSrc, `bodySettingsKind != ""`)
 
 	assert.NotContains(t, tools, `Default: "milestone"`)
@@ -163,6 +166,8 @@ func TestGeneratedOpenAPIOptionalDefaultsStayOffTheWire(t *testing.T) {
 	assert.NotContains(t, tools, `Default: "compact"`)
 	assert.NotContains(t, tools, `Default: "say`)
 	assert.Contains(t, tools, `Default: "\"box\""`)
+	assert.Contains(t, tools, `Default: "{\"kind\":\"box\"}"`)
+	assert.NotContains(t, tools, `Default: "\"{\\\"kind\\\":\\\"box\\\"}\""`)
 	assert.Contains(t, tools, `DefaultScope: []string{"settings"}`)
 
 	var mu sync.Mutex
@@ -259,6 +264,7 @@ func TestGeneratedOpenAPIOptionalDefaultsStayOffTheWire(t *testing.T) {
 	body = decodeObjectBody(t, kindOnly.Body)
 	settings, _ := body["settings"].(map[string]any)
 	assert.Equal(t, "crate", scalarString(settings["kind"]))
+	assert.Equal(t, map[string]any{"kind": "box"}, settings["layout"])
 	assert.NotContains(t, settings, "mode")
 
 	runGeneratedBinary(t, binaryPath, "items", "create", "--json", "--name", "widget", "--resource-subtype", "approval", "--count", "0", "--settings-mode", "compact")
@@ -270,6 +276,7 @@ func TestGeneratedOpenAPIOptionalDefaultsStayOffTheWire(t *testing.T) {
 	settings, _ = body["settings"].(map[string]any)
 	assert.Equal(t, "compact", scalarString(settings["mode"]))
 	assert.Equal(t, "box", scalarString(settings["kind"]))
+	assert.Equal(t, map[string]any{"kind": "box"}, settings["layout"])
 
 	mcpRuntime := `package mcp
 
@@ -414,11 +421,19 @@ func TestOpenAPIOptionalDefaultsStayOffMCPWire(t *testing.T) {
 	if !ok || settings["mode"] != "compact" || settings["kind"] != "box" {
 		t.Fatalf("settings = %#v", body["settings"])
 	}
+	layout, _ := settings["layout"].(map[string]any)
+	if layout["kind"] != "box" {
+		t.Fatalf("layout = %#v", settings["layout"])
+	}
 	call(t, create.Handler, map[string]any{"settings-kind": "crate"})
 	body = decodeBody(t, gotBody)
 	settings, ok = body["settings"].(map[string]any)
 	if !ok || settings["kind"] != "crate" {
 		t.Fatalf("explicit kind settings = %#v", body["settings"])
+	}
+	layout, _ = settings["layout"].(map[string]any)
+	if layout["kind"] != "box" {
+		t.Fatalf("explicit kind layout = %#v", settings["layout"])
 	}
 	if _, hasMode := settings["mode"]; hasMode {
 		t.Fatalf("explicit kind included mode = %#v", settings)
@@ -668,7 +683,12 @@ paths:
                       type: string
                       description: Kind
                       default: box
-                  required: [kind]
+                    layout:
+                      type: string
+                      format: json
+                      description: Layout
+                      default: '{"kind":"box"}'
+                  required: [kind, layout]
       responses:
         "201":
           description: Created

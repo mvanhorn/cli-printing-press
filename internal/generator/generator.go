@@ -7630,18 +7630,43 @@ func bodyHasNestedRequiredDefault(body []spec.Param, depth int, underOptional bo
 	return false
 }
 
-// mcpJSONDefaultLiteral is the JSON text of a client-sent body default.
-// The MCP handler decodes it so a string default is not sent with extra quotes
-// and a numeric default stays a JSON number.
+// The handler json.Unmarshals this text into the body. A %v rendering or an
+// extra pair of quotes would change the JSON type the API receives.
 func mcpJSONDefaultLiteral(p spec.Param) (string, bool) {
 	if p.Default == nil {
 		return "", false
+	}
+	// A schema default that is already JSON text lives in a Go string.
+	// Marshaling that string quotes it, so the handler would send a string
+	// where the CLI sends the decoded object or array.
+	if text, ok := rawJSONDefaultText(p); ok {
+		return text, true
 	}
 	raw, err := json.Marshal(p.Default)
 	if err != nil || len(raw) == 0 || string(raw) == "null" {
 		return "", false
 	}
 	return string(raw), true
+}
+
+func rawJSONDefaultText(p spec.Param) (string, bool) {
+	if !bodyLeafDecodesJSON(p) {
+		return "", false
+	}
+	text, ok := p.Default.(string)
+	if !ok {
+		return "", false
+	}
+	text = strings.TrimSpace(text)
+	if text == "" || !json.Valid([]byte(text)) {
+		return "", false
+	}
+	// The CLI leaves a json_or_scalar scalar as a string. Decoding "true" or
+	// "1" here would send a bool or number the CLI does not.
+	if isJSONOrScalarParam(p) && !strings.HasPrefix(text, "{") && !strings.HasPrefix(text, "[") {
+		return "", false
+	}
+	return text, true
 }
 
 func hasMCPParamDefault(apiSpec *spec.APISpec) bool {
@@ -8020,7 +8045,10 @@ func renderBodyMapMode(b *strings.Builder, body []spec.Param, depth int, indent,
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
-		if parentSupplied && bodyScalarRequiredDefault(p) {
+		// The flag is a string even when the wire value is a JSON object or
+		// array. Copying that text would send a string the API rejects.
+		forceDefault := parentSupplied && bodyScalarRequiredDefault(p)
+		if forceDefault && !bodyLeafDecodesJSON(p) {
 			fmt.Fprintf(b, "%s%s[%q] = body%s\n", indent, mapVar, p.BodyWireName(), ident)
 			continue
 		}
@@ -8039,17 +8067,17 @@ func renderBodyMapMode(b *strings.Builder, body []spec.Param, depth int, indent,
 			continue
 		}
 		if isJSONOrScalarParam(p) {
-			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
-			fmt.Fprintf(b, "%s\tif looksLikeJSONComposite(body%s) {\n", indent, ident)
-			fmt.Fprintf(b, "%s\t\tvar parsed%s any\n", indent, ident)
-			fmt.Fprintf(b, "%s\t\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
-			fmt.Fprintf(b, "%s\t\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
-			fmt.Fprintf(b, "%s\t\t}\n", indent)
-			fmt.Fprintf(b, "%s\t\t%s[%q] = parsed%s\n", indent, mapVar, p.BodyWireName(), ident)
-			fmt.Fprintf(b, "%s\t} else {\n", indent)
-			fmt.Fprintf(b, "%s\t\t%s[%q] = body%s\n", indent, mapVar, p.BodyWireName(), ident)
-			fmt.Fprintf(b, "%s\t}\n", indent)
-			fmt.Fprintf(b, "%s}\n", indent)
+			renderBodyLeafBlock(b, indent, bodyLeafPresenceExpr(p, ident, flag), !forceDefault, func(in string) {
+				fmt.Fprintf(b, "%sif looksLikeJSONComposite(body%s) {\n", in, ident)
+				fmt.Fprintf(b, "%s\tvar parsed%s any\n", in, ident)
+				fmt.Fprintf(b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", in, ident, ident)
+				fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", in, flag)
+				fmt.Fprintf(b, "%s\t}\n", in)
+				fmt.Fprintf(b, "%s\t%s[%q] = parsed%s\n", in, mapVar, p.BodyWireName(), ident)
+				fmt.Fprintf(b, "%s} else {\n", in)
+				fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", in, mapVar, p.BodyWireName(), ident)
+				fmt.Fprintf(b, "%s}\n", in)
+			})
 			continue
 		}
 		isComplex := p.Type == "object" || p.Type == "array"
@@ -8069,27 +8097,28 @@ func renderBodyMapMode(b *strings.Builder, body []spec.Param, depth int, indent,
 			if isEncodedJSONStringParam(p) {
 				rhs = "body" + ident
 			}
-			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
-			fmt.Fprintf(b, "%s\tvar parsed%s any\n", indent, ident)
-			fmt.Fprintf(b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
-			fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
-			fmt.Fprintf(b, "%s\t}\n", indent)
-			if isComplex {
-				shape, valueVar, valueType := "object", "asMap", "map[string]any"
-				if p.Type == "array" {
-					shape, valueVar, valueType = "array", "asArray", "[]any"
+			renderBodyLeafBlock(b, indent, bodyLeafPresenceExpr(p, ident, flag), !forceDefault, func(in string) {
+				fmt.Fprintf(b, "%svar parsed%s any\n", in, ident)
+				fmt.Fprintf(b, "%sif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", in, ident, ident)
+				fmt.Fprintf(b, "%s\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", in, flag)
+				fmt.Fprintf(b, "%s}\n", in)
+				emitted := rhs
+				if isComplex {
+					shape, valueVar, valueType := "object", "asMap", "map[string]any"
+					if p.Type == "array" {
+						shape, valueVar, valueType = "array", "asArray", "[]any"
+					}
+					fmt.Fprintf(b, "%s%s, ok := parsed%s.(%s)\n", in, valueVar, ident, valueType)
+					fmt.Fprintf(b, "%sif !ok {\n", in)
+					fmt.Fprintf(b, "%s\treturn fmt.Errorf(\"--%s must be a JSON %s, got JSON %%T\", parsed%s)\n", in, flag, shape, ident)
+					fmt.Fprintf(b, "%s}\n", in)
+					emitted = valueVar
+					if p.Type == "object" && len(p.Fields) > 0 {
+						renderRequiredJSONObjectChecks(b, p.Fields, in, valueVar, flag, ident, "")
+					}
 				}
-				fmt.Fprintf(b, "%s\t%s, ok := parsed%s.(%s)\n", indent, valueVar, ident, valueType)
-				fmt.Fprintf(b, "%s\tif !ok {\n", indent)
-				fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"--%s must be a JSON %s, got JSON %%T\", parsed%s)\n", indent, flag, shape, ident)
-				fmt.Fprintf(b, "%s\t}\n", indent)
-				rhs = valueVar
-				if p.Type == "object" && len(p.Fields) > 0 {
-					renderRequiredJSONObjectChecks(b, p.Fields, indent+"\t", valueVar, flag, ident, "")
-				}
-			}
-			fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), rhs)
-			fmt.Fprintf(b, "%s}\n", indent)
+				fmt.Fprintf(b, "%s%s[%q] = %s\n", in, mapVar, p.BodyWireName(), emitted)
+			})
 			continue
 		}
 		if (p.Type == "boolean" || p.Type == "bool") && (!p.Required || p.Default != nil) {
@@ -8194,6 +8223,18 @@ func bodyLeafPresenceExpr(p spec.Param, ident, flag string) string {
 		return changed
 	}
 	return fmt.Sprintf("(%s || body%s != %s)", changed, ident, zeroValForBodyParam(p))
+}
+
+// The zero check would drop a prefilled required default after the caller
+// has already supplied the parent, and the API would reject the object.
+func renderBodyLeafBlock(b *strings.Builder, indent, presence string, guarded bool, emit func(indent string)) {
+	if !guarded {
+		emit(indent)
+		return
+	}
+	fmt.Fprintf(b, "%sif %s {\n", indent, presence)
+	emit(indent + "\t")
+	fmt.Fprintf(b, "%s}\n", indent)
 }
 
 func bodyHasStringBackedBool(endpoint spec.Endpoint) bool {
@@ -8469,10 +8510,9 @@ func bodyFieldsChangedExpr(body []spec.Param, depth int, flagPrefix, identPrefix
 	return strings.Join(expressions, " || ")
 }
 
-// renderSuppliedOptionalObject emits an optional object only after the
-// caller sets some field. Required children with schema defaults are then
-// copied in, so a partial object keeps the fields the API requires and an
-// omitted object stays off the wire.
+// JSON Schema required lists apply only once the parent object is present.
+// Filling defaults before the caller opts in would change fields they left
+// alone; leaving those defaults out afterwards sends an object the API rejects.
 func renderSuppliedOptionalObject(b *strings.Builder, p spec.Param, depth int, indent, mapVar, identPrefix, flagPrefix string) {
 	ident := identPrefix + toCamel(paramIdent(p))
 	flag := joinFlag(flagPrefix, publicFlagName(p))
@@ -8517,9 +8557,17 @@ func bodyScalarRequiredDefault(p spec.Param) bool {
 	}
 }
 
-// bodyDefaultForcesPresence reports a required schema default that the
-// cobra flag prefills to a non-zero value. The body presence check
-// `value != zero` is then true even when the caller never set the flag.
+// Decoding an encoded-string field would replace the JSON text the API stores.
+func bodyLeafDecodesJSON(p spec.Param) bool {
+	if isEncodedJSONStringParam(p) {
+		return false
+	}
+	return isJSONOrScalarParam(p) || isJSONStringParam(p)
+}
+
+// A cobra flag prefilled with a non-zero schema default satisfies
+// `value != zero` even though the caller never set the flag. Treating
+// that as presence would send an optional object the caller left alone.
 func bodyDefaultForcesPresence(p spec.Param) bool {
 	if !bodyScalarRequiredDefault(p) {
 		return false
@@ -9109,11 +9157,10 @@ func enumLiteral(values []string) string {
 	return strings.Join(parts, ", ")
 }
 
-// serverDefaultHint documents an OpenAPI server assumption. Cobra hides a
-// zero flag default, so the value has to live in the help text. The result
-// is display text: quotes and backslashes are kept, and a long value keeps
-// a prefix. Callers that embed it in a Go string literal quote the whole
-// description.
+// Cobra omits a zero flag default from help, so a server-assumed value is
+// invisible unless the description carries it. Callers quote the whole
+// description; escaping or dropping quotes, backslashes, or a long value
+// here would hide the assumption.
 func serverDefaultHint(p spec.Param) string {
 	if !paramOmitsServerDefault(p) || p.Default == nil {
 		return ""
