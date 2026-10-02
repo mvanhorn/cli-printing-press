@@ -101,32 +101,19 @@ type ListCandidatesFilter struct {
 // The write is a single upsert statement so two processes racing the
 // same signature resolve to exactly one insert plus one bump.
 // Returns the row as stored and whether this call inserted it.
+//
+// Each call counts. Flag-correction derivation replays a journal batch
+// when the file cursor does not advance; that path uses
+// CommitFlagCorrections so the same batch does not bump twice.
 func (s *Store) DeriveCandidate(class, payload, signature, queryFamily, commandPath string) (CandidateRow, bool, error) {
-	if class != CandidateClassFlagAlias && class != CandidateClassPlaybookCandidate {
-		return CandidateRow{}, false, fmt.Errorf("derive candidate: unknown class %q", class)
-	}
-	if strings.TrimSpace(payload) == "" {
-		return CandidateRow{}, false, fmt.Errorf("derive candidate: payload is required")
-	}
-	if strings.TrimSpace(signature) == "" {
-		return CandidateRow{}, false, fmt.Errorf("derive candidate: derivation signature is required")
+	if err := validateDerivedCandidate(class, payload, signature); err != nil {
+		return CandidateRow{}, false, err
 	}
 
 	s.lockForWrite()
 	defer s.unlockAfterWrite()
 
-	now := time.Now().UTC().Format(candidateTimeFormat)
-	res, err := s.db.Exec(`INSERT INTO learn_candidates
-		(class, payload, derivation_signature, sightings, status, query_family, command_path, created_at, updated_at, last_seen_at)
-		VALUES (?, ?, ?, 1, 'open', ?, ?, ?, ?, ?)
-		ON CONFLICT(derivation_signature) DO UPDATE SET
-			sightings = sightings + 1,
-			status = CASE WHEN learn_candidates.status = 'expired' THEN 'open' ELSE learn_candidates.status END,
-			updated_at = excluded.updated_at,
-			last_seen_at = excluded.last_seen_at
-		WHERE learn_candidates.status != 'rejected'`,
-		class, payload, signature, queryFamily, commandPath, now, now, now,
-	)
+	res, err := execDerivedCandidate(s.db, class, payload, signature, queryFamily, commandPath)
 	if err != nil {
 		return CandidateRow{}, false, fmt.Errorf("derive candidate: %w", err)
 	}
@@ -144,6 +131,161 @@ func (s *Store) DeriveCandidate(class, payload, signature, queryFamily, commandP
 	// statement changed one row that now carries a single sighting.
 	inserted := affected == 1 && row.Sightings == 1
 	return row, inserted, nil
+}
+
+// JournalCursor is the derivation batch boundary stored with candidate
+// upserts. Segment names are journal-YYYYMMDD.jsonl, so byte order
+// matters only within one segment. The zero cursor is the start of the
+// journal.
+type JournalCursor struct {
+	Segment string
+	Byte    int64
+}
+
+// Before is the replay check. An equal cursor is not before, so a batch
+// whose end is already stored is not applied again. Segment names sort
+// chronologically; the byte orders two positions only inside one segment.
+func (c JournalCursor) Before(other JournalCursor) bool {
+	if c.Segment == other.Segment {
+		return c.Byte < other.Byte
+	}
+	return c.Segment < other.Segment
+}
+
+// FlagCorrectionSighting travels in the same transaction as the journal
+// cursor. A bump committed before that cursor let a replay increment
+// sightings for a correction that was already stored.
+type FlagCorrectionSighting struct {
+	Class       string
+	Payload     string
+	Signature   string
+	QueryFamily string
+	CommandPath string
+}
+
+// FlagCorrectionCommit is the outcome of CommitFlagCorrections.
+// Applied is false when this batch was not counted. Resume is the
+// cursor already stored: at or past batchEnd the batch was fully
+// counted, and strictly inside the batch the caller resumes after it.
+type FlagCorrectionCommit struct {
+	Applied bool
+	Resume  JournalCursor
+}
+
+// learnDeriveOffsetTable holds the one derivation cursor. It is created
+// on first commit rather than by a schema migration: a missing table
+// means nothing has been counted, which is the start of the journal.
+const learnDeriveOffsetTable = "learn_derive_offset"
+
+const createLearnDeriveOffsetSQL = `CREATE TABLE IF NOT EXISTS ` + learnDeriveOffsetTable + ` (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	segment TEXT NOT NULL,
+	byte_offset INTEGER NOT NULL
+)`
+
+// CommitFlagCorrections records sightings and the consumed journal
+// cursor in one transaction. The store opens transactions as immediate,
+// so a peer blocks on begin until this commit is visible and then sees
+// the cursor. A batch whose end is at or behind the stored cursor is
+// not counted again. A stored cursor strictly inside the batch is not
+// counted either: the caller resumes after that cursor so the
+// already-written prefix is not applied a second time.
+func (s *Store) CommitFlagCorrections(items []FlagCorrectionSighting, batchStart, batchEnd JournalCursor) (FlagCorrectionCommit, error) {
+	if len(items) == 0 {
+		return FlagCorrectionCommit{}, fmt.Errorf("commit flag corrections: no sightings")
+	}
+	for _, item := range items {
+		if err := validateDerivedCandidate(item.Class, item.Payload, item.Signature); err != nil {
+			return FlagCorrectionCommit{}, fmt.Errorf("commit flag corrections: %w", err)
+		}
+	}
+
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
+
+	if _, err := s.db.Exec(createLearnDeriveOffsetSQL); err != nil {
+		return FlagCorrectionCommit{}, fmt.Errorf("commit flag corrections: %w", err)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return FlagCorrectionCommit{}, fmt.Errorf("commit flag corrections: %w", err)
+	}
+	defer tx.Rollback()
+
+	stored, err := readDeriveOffset(tx)
+	if err != nil {
+		return FlagCorrectionCommit{}, fmt.Errorf("commit flag corrections: %w", err)
+	}
+	// Already consumed, or the stored cursor sits inside this read
+	// window. Either way the prefix must not bump again.
+	if !stored.Before(batchEnd) || batchStart.Before(stored) {
+		return FlagCorrectionCommit{Applied: false, Resume: stored}, nil
+	}
+
+	for _, item := range items {
+		if _, err := execDerivedCandidate(tx, item.Class, item.Payload, item.Signature, item.QueryFamily, item.CommandPath); err != nil {
+			return FlagCorrectionCommit{}, fmt.Errorf("commit flag corrections: %w", err)
+		}
+	}
+	if err := writeDeriveOffset(tx, batchEnd); err != nil {
+		return FlagCorrectionCommit{}, fmt.Errorf("commit flag corrections: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return FlagCorrectionCommit{}, fmt.Errorf("commit flag corrections: %w", err)
+	}
+	return FlagCorrectionCommit{Applied: true, Resume: batchEnd}, nil
+}
+
+func validateDerivedCandidate(class, payload, signature string) error {
+	if class != CandidateClassFlagAlias && class != CandidateClassPlaybookCandidate {
+		return fmt.Errorf("derive candidate: unknown class %q", class)
+	}
+	if strings.TrimSpace(payload) == "" {
+		return fmt.Errorf("derive candidate: payload is required")
+	}
+	if strings.TrimSpace(signature) == "" {
+		return fmt.Errorf("derive candidate: derivation signature is required")
+	}
+	return nil
+}
+
+type sqlExec interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func execDerivedCandidate(db sqlExec, class, payload, signature, queryFamily, commandPath string) (sql.Result, error) {
+	now := time.Now().UTC().Format(candidateTimeFormat)
+	return db.Exec(`INSERT INTO learn_candidates
+		(class, payload, derivation_signature, sightings, status, query_family, command_path, created_at, updated_at, last_seen_at)
+		VALUES (?, ?, ?, 1, 'open', ?, ?, ?, ?, ?)
+		ON CONFLICT(derivation_signature) DO UPDATE SET
+			sightings = sightings + 1,
+			status = CASE WHEN learn_candidates.status = 'expired' THEN 'open' ELSE learn_candidates.status END,
+			updated_at = excluded.updated_at,
+			last_seen_at = excluded.last_seen_at
+		WHERE learn_candidates.status != 'rejected'`,
+		class, payload, signature, queryFamily, commandPath, now, now, now,
+	)
+}
+
+func readDeriveOffset(tx *sql.Tx) (JournalCursor, error) {
+	var c JournalCursor
+	err := tx.QueryRow(`SELECT segment, byte_offset FROM `+learnDeriveOffsetTable+` WHERE id = 1`).Scan(&c.Segment, &c.Byte)
+	if err == sql.ErrNoRows {
+		return JournalCursor{}, nil
+	}
+	if err != nil {
+		return JournalCursor{}, err
+	}
+	return c, nil
+}
+
+func writeDeriveOffset(tx *sql.Tx, c JournalCursor) error {
+	_, err := tx.Exec(`INSERT INTO `+learnDeriveOffsetTable+` (id, segment, byte_offset) VALUES (1, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET segment = excluded.segment, byte_offset = excluded.byte_offset`,
+		c.Segment, c.Byte)
+	return err
 }
 
 // GetCandidate returns the row with the given id, or

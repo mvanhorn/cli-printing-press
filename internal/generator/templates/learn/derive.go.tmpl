@@ -7,12 +7,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/store"
 )
 
@@ -32,12 +34,26 @@ import (
 // failure stops being "pending" (see DeriveFlagCorrections).
 const flagCorrectionWindow = 15 * time.Minute
 
+// Polls cover a peer that is already near the end of its pass. The
+// blocking acquire runs only after that, and only when complete journal
+// lines are still unread: this command may have appended the correction
+// that the peer's scan missed, and no later command is guaranteed.
+const (
+	deriveLockPolls   = 5
+	deriveLockPollGap = 20 * time.Millisecond
+	// A peer can append while this process holds the lock. Drain those
+	// lines before unlocking so the peer's failed try-lock does not
+	// orphan them. The cap keeps a tight append loop from holding the
+	// post-run hook open.
+	deriveDrainLimit = 8
+)
+
 // CandidateStore is the narrow slice of the candidate store the
 // derivation pass needs. *store.Store satisfies it; the indirection
 // keeps derivation testable against the real SQLite store without the
 // pass owning open/close policy beyond its own lazy handle.
 type CandidateStore interface {
-	DeriveCandidate(class, payload, signature, queryFamily, commandPath string) (store.CandidateRow, bool, error)
+	CommitFlagCorrections(items []store.FlagCorrectionSighting, batchStart, batchEnd store.JournalCursor) (store.FlagCorrectionCommit, error)
 	Close() error
 }
 
@@ -64,9 +80,10 @@ type flagAliasDerivedPayload struct {
 // DeriveFlagCorrections runs one bounded tail scan of the invocation
 // journal from the persisted (segment, byte) offset and records every
 // paired flag correction as a flag_alias candidate observation. The
-// whole journal is never rescanned: the offset marks the consumed
-// prefix and only advances after a fully successful pass, so a failed
-// pass can never skip unprocessed entries.
+// file offset marks how far a pass has read and advances only after
+// that pass finishes, so a failed pass cannot skip entries it did not
+// commit. Re-reading a batch that was already committed does not bump
+// sightings; the cursor stored with those sightings decides.
 //
 // Pairing rule — ALL required:
 //   - same session key;
@@ -86,10 +103,16 @@ type flagAliasDerivedPayload struct {
 // Batches are consumed atomically. When the tail still holds an
 // unpaired failure fresh enough to pair (its correction may not be
 // journaled yet), the pass derives nothing and keeps the offset, so
-// the batch is reprocessed whole on the next post-run pass — every
-// observation is counted exactly once instead of a partial pass
-// re-bumping sightings later. Once the failure ages past the window it
-// is decided (no pair) and the offset moves on.
+// the batch is reprocessed whole on the next post-run pass. Once the
+// failure ages past the window it is decided (no pair) and the offset
+// moves on.
+//
+// Sightings and the consumed cursor commit together. The file cursor
+// is only a read position: if it lags the stored cursor (a crash after
+// the commit, or a second process that read the same offset), the
+// stored cursor is authoritative and the overlapping prefix is not
+// counted again. A stored cursor strictly inside a re-read window
+// resumes the pass after that cursor.
 //
 // The store opener is lazy: SQLite is touched only when the pass
 // actually paired something, so framework-only invocations never
@@ -98,52 +121,303 @@ func DeriveFlagCorrections(openStore func() (CandidateStore, error), flagExists 
 	if JournalCaptureDisabled() {
 		return nil
 	}
-	offset, err := LoadJournalOffset()
+	dir, err := JournalDir()
 	if err != nil {
 		return err
+	}
+	// Uncontended, and any pass whose tail a peer has already consumed,
+	// returns without waiting. Waiting on every exit stalled commands
+	// that had nothing left to derive. A still-unread tail cannot take
+	// that fast path: the line may be the correction this command just
+	// appended, and skipping it would leave the pair unprocessed.
+	path := filepath.Join(dir, journalOffsetFileName)
+	for poll := 0; ; poll++ {
+		acquired, lockErr := cliutil.TryWithFileLock(path, func() error {
+			return deriveFlagCorrectionsUntilStable(openStore, flagExists)
+		})
+		if lockErr != nil {
+			return lockErr
+		}
+		if acquired {
+			return nil
+		}
+		unread, unreadErr := journalHasUnreadTail()
+		if unreadErr != nil {
+			return unreadErr
+		}
+		if !unread {
+			return nil
+		}
+		if poll == deriveLockPolls-1 {
+			return cliutil.WithFileLock(path, func() error {
+				return deriveFlagCorrectionsUntilStable(openStore, flagExists)
+			})
+		}
+		time.Sleep(deriveLockPollGap)
+	}
+}
+
+// deriveFlagCorrectionsUntilStable drains journal lines that land while
+// this process holds the offset lock. A peer that loses the try-lock
+// will not scan them; leaving them until the next command drops a
+// correction when that peer was the last invocation. The locked pass
+// reports whether a complete line arrived after the cursor it consumed,
+// so the segment is not loaded again on the way in and on the way out.
+func deriveFlagCorrectionsUntilStable(openStore func() (CandidateStore, error), flagExists func(name string) bool) error {
+	for i := 0; i < deriveDrainLimit; i++ {
+		again, err := deriveFlagCorrectionsLocked(openStore, flagExists, false)
+		if err != nil {
+			return err
+		}
+		if !again {
+			return nil
+		}
+	}
+	return nil
+}
+
+// journalHasUnreadTail is the skip predicate. Complete lines past the
+// file cursor still need a pass; a caught-up cursor means a peer
+// already consumed this command's append and waiting would only stall.
+func journalHasUnreadTail() (bool, error) {
+	offset, err := LoadJournalOffset()
+	if err != nil {
+		return false, err
 	}
 	entries, next, err := ReadJournalFrom(offset)
 	if err != nil {
-		return err
+		return false, err
+	}
+	return len(entries) > 0 || next != offset, nil
+}
+
+// deriveFlagCorrectionsLocked reports whether the caller should scan
+// once more. A complete line past the cursor this pass consumed means
+// an append landed while the lock was held and must be derived before
+// unlock. A fresh unpaired failure reports false when its window did
+// not grow, so the hook does not spin.
+func deriveFlagCorrectionsLocked(openStore func() (CandidateStore, error), flagExists func(name string) bool, resumed bool) (bool, error) {
+	offset, err := LoadJournalOffset()
+	if err != nil {
+		return false, err
+	}
+	// A cursor already at the segment tail has nothing to parse.
+	// ReadJournalFrom would still load the whole segment.
+	atTail, err := journalCursorAtTail(offset)
+	if err != nil {
+		return false, err
+	}
+	if atTail {
+		return journalNewlinePast(offset)
+	}
+	entries, next, err := ReadJournalFrom(offset)
+	if err != nil {
+		return false, err
 	}
 	if len(entries) == 0 && next == offset {
-		return nil
+		// Caught up, or only a torn tail. A complete line appended
+		// after this read still has to be drained.
+		return journalNewlinePast(offset)
 	}
 	recallSeed := sessionRecallFamiliesBeforeBatch(entries, offset)
 	pairs, pending := pairFlagCorrections(entries, recallSeed, time.Now().UTC(), flagExists)
 	if pending {
-		return nil
+		// The unpaired failure stays unread on purpose. Loop only when
+		// a complete line arrived after the window just read.
+		return journalNewlinePast(next)
 	}
-	if len(pairs) > 0 {
-		if openStore == nil {
-			return fmt.Errorf("derive flag corrections: no candidate store opener")
+	if len(pairs) == 0 {
+		if err := StoreJournalOffset(next); err != nil {
+			return false, err
 		}
-		cs, err := openStore()
+		return journalNewlinePast(next)
+	}
+	if openStore == nil {
+		return false, fmt.Errorf("derive flag corrections: no candidate store opener")
+	}
+	items, err := flagCorrectionSightings(pairs)
+	if err != nil {
+		return false, err
+	}
+	cs, err := openStore()
+	if err != nil {
+		return false, fmt.Errorf("derive flag corrections: open store: %w", err)
+	}
+	result, err := cs.CommitFlagCorrections(items, journalCursor(offset), journalCursor(next))
+	closeErr := cs.Close()
+	if err != nil {
+		// The cursor is not advanced: the batch replays next pass
+		// rather than losing the observation. The commit is atomic, so
+		// a failed pass leaves no partial sightings behind.
+		return false, fmt.Errorf("derive flag corrections: %w", err)
+	}
+	if closeErr != nil {
+		return false, fmt.Errorf("derive flag corrections: close store: %w", closeErr)
+	}
+	start := journalCursor(offset)
+	end := journalCursor(next)
+	if !result.Applied && start.Before(result.Resume) && result.Resume.Before(end) {
+		// One resume consumes a cursor that landed inside this window.
+		// A second one means the file cursor did not move; another
+		// pass would spin the post-run hook.
+		if resumed {
+			return false, fmt.Errorf("derive flag corrections: journal cursor did not advance")
+		}
+		if err := StoreJournalOffset(journalOffset(result.Resume)); err != nil {
+			return false, err
+		}
+		return deriveFlagCorrectionsLocked(openStore, flagExists, true)
+	}
+	if err := StoreJournalOffset(next); err != nil {
+		return false, err
+	}
+	return journalNewlinePast(next)
+}
+
+// journalCursorAtTail reports whether reading offset would observe no
+// further bytes and leave the cursor where it is. Older segments are
+// ignored, matching ReadJournalFrom.
+func journalCursorAtTail(offset JournalOffset) (bool, error) {
+	if offset.Segment == "" {
+		return false, nil
+	}
+	dir, err := JournalDir()
+	if err != nil {
+		return false, err
+	}
+	segs, err := listJournalSegments(dir)
+	if err != nil {
+		return false, err
+	}
+	found := false
+	for _, s := range segs {
+		if s.name > offset.Segment {
+			return false, nil
+		}
+		if s.name == offset.Segment {
+			found = true
+			if s.size != offset.Byte {
+				return false, nil
+			}
+		}
+	}
+	return found, nil
+}
+
+// journalNewlinePast reports whether a complete line exists past offset.
+// The check reads only the unread suffix (and any newer segment), not
+// the segment prefix the cursor has already consumed.
+func journalNewlinePast(offset JournalOffset) (bool, error) {
+	dir, err := JournalDir()
+	if err != nil {
+		return false, err
+	}
+	segs, err := listJournalSegments(dir)
+	if err != nil {
+		return false, err
+	}
+	startName, startByte := journalScanStart(segs, offset)
+	for _, s := range segs {
+		if startName != "" && s.name < startName {
+			continue
+		}
+		from := int64(0)
+		if s.name == startName {
+			from = startByte
+		}
+		if from < 0 {
+			from = 0
+		}
+		if from > s.size {
+			from = s.size
+		}
+		if s.size <= from {
+			continue
+		}
+		ok, err := fileHasByteFrom(filepath.Join(dir, s.name), from, '\n')
 		if err != nil {
-			return fmt.Errorf("derive flag corrections: open store: %w", err)
+			return false, err
 		}
-		defer cs.Close()
-		for _, p := range pairs {
-			payload, err := json.Marshal(flagAliasDerivedPayload{
-				CommandPath:   p.CommandPath,
-				FailedFlag:    p.FailedFlag,
-				CorrectedFlag: p.CorrectedFlag,
-				Example:       p.Example,
-			})
-			if err != nil {
-				return fmt.Errorf("derive flag corrections: marshal payload: %w", err)
-			}
-			signature := flagCorrectionSignature(p.CommandPath, p.FailedFlag, p.CorrectedFlag)
-			if _, _, err := cs.DeriveCandidate(
-				store.CandidateClassFlagAlias, string(payload), signature, p.QueryFamily, p.CommandPath,
-			); err != nil {
-				// The offset is not advanced: the batch replays next
-				// pass rather than losing the observation.
-				return fmt.Errorf("derive flag corrections: %w", err)
-			}
+		if ok {
+			return true, nil
 		}
 	}
-	return StoreJournalOffset(next)
+	return false, nil
+}
+
+// journalScanStart is the first byte a drain check should inspect.
+// A missing offset segment keeps that name so older survivors stay
+// skipped, matching ReadJournalFrom.
+func journalScanStart(segs []journalSegment, offset JournalOffset) (string, int64) {
+	if offset.Segment == "" {
+		return "", 0
+	}
+	for _, s := range segs {
+		if s.name == offset.Segment {
+			return offset.Segment, offset.Byte
+		}
+	}
+	return offset.Segment, 0
+}
+
+func fileHasByteFrom(path string, from int64, needle byte) (bool, error) {
+	f, err := os.Open(path) // #nosec G304 -- path derived from state dir
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("journal: open %s: %w", filepath.Base(path), err)
+	}
+	defer f.Close()
+	if from > 0 {
+		if _, err := f.Seek(from, io.SeekStart); err != nil {
+			return false, fmt.Errorf("journal: seek %s: %w", filepath.Base(path), err)
+		}
+	}
+	buf := make([]byte, 4096)
+	for {
+		n, err := f.Read(buf)
+		if n > 0 && bytes.IndexByte(buf[:n], needle) >= 0 {
+			return true, nil
+		}
+		if err == io.EOF || (err == nil && n == 0) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("journal: read %s: %w", filepath.Base(path), err)
+		}
+	}
+}
+
+func journalCursor(offset JournalOffset) store.JournalCursor {
+	return store.JournalCursor{Segment: offset.Segment, Byte: offset.Byte}
+}
+
+func journalOffset(cursor store.JournalCursor) JournalOffset {
+	return JournalOffset{Segment: cursor.Segment, Byte: cursor.Byte}
+}
+
+func flagCorrectionSightings(pairs []flagCorrection) ([]store.FlagCorrectionSighting, error) {
+	items := make([]store.FlagCorrectionSighting, 0, len(pairs))
+	for _, p := range pairs {
+		payload, err := json.Marshal(flagAliasDerivedPayload{
+			CommandPath:   p.CommandPath,
+			FailedFlag:    p.FailedFlag,
+			CorrectedFlag: p.CorrectedFlag,
+			Example:       p.Example,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("derive flag corrections: marshal payload: %w", err)
+		}
+		items = append(items, store.FlagCorrectionSighting{
+			Class:       store.CandidateClassFlagAlias,
+			Payload:     string(payload),
+			Signature:   flagCorrectionSignature(p.CommandPath, p.FailedFlag, p.CorrectedFlag),
+			QueryFamily: p.QueryFamily,
+			CommandPath: p.CommandPath,
+		})
+	}
+	return items, nil
 }
 
 // flagCorrectionSignature is the stable derivation signature for a

@@ -4,6 +4,7 @@
 package cliutil
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,6 +27,8 @@ func fileLockFor(path string) *sync.Mutex {
 	return mu
 }
 
+var errFileLockBusy = errors.New("file lock busy")
+
 // WithFileLock serializes fn against every other caller on path, including
 // other processes. Background teach/forget share teach.log and
 // learnings.jsonl; a process-local mutex alone cannot keep rotate/append
@@ -37,20 +40,60 @@ func WithFileLock(path string, fn func() error) error {
 	mu := fileLockFor(path)
 	mu.Lock()
 	defer mu.Unlock()
+	_, err := withOSFileLock(path, false, fn)
+	return err
+}
 
+// TryWithFileLock tries once so a post-run hook can tell a busy lock
+// from a pass it still needs to run. Waiting inside this helper would
+// stall every command that exits beside a peer, including one whose
+// journal line that peer has already consumed. A false return leaves
+// the lock untouched; the caller waits only when unread lines remain.
+func TryWithFileLock(path string, fn func() error) (bool, error) {
+	if path == "" {
+		return true, fn()
+	}
+	mu := fileLockFor(path)
+	if !mu.TryLock() {
+		return false, nil
+	}
+	defer mu.Unlock()
+	return withOSFileLock(path, true, fn)
+}
+
+func openLockFile(path string) (*os.File, error) {
 	lockPath := path + ".lock"
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- lock beside a CLI state-dir log
 	if err != nil {
-		return fmt.Errorf("lock %s: %w", lockPath, err)
+		return nil, fmt.Errorf("lock %s: %w", lockPath, err)
 	}
-	defer f.Close()
-	if st, err := f.Stat(); err == nil && st.Size() == 0 {
+	if st, statErr := f.Stat(); statErr == nil && st.Size() == 0 {
 		_, _ = f.Write([]byte{0})
 		_, _ = f.Seek(0, io.SeekStart)
 	}
-	if err := lockFile(f); err != nil {
-		return fmt.Errorf("lock %s: %w", lockPath, err)
+	return f, nil
+}
+
+func withOSFileLock(path string, nonblocking bool, fn func() error) (bool, error) {
+	f, err := openLockFile(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	if nonblocking {
+		err = tryLockFile(f)
+	} else {
+		err = lockFile(f)
+	}
+	if err != nil {
+		if nonblocking && errors.Is(err, errFileLockBusy) {
+			return false, nil
+		}
+		return false, fmt.Errorf("lock %s: %w", path+".lock", err)
 	}
 	defer func() { _ = unlockFile(f) }()
-	return fn()
+	if err := fn(); err != nil {
+		return true, err
+	}
+	return true, nil
 }

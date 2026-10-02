@@ -4,6 +4,11 @@
 package cliutil
 
 import (
+	"bytes"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -36,5 +41,91 @@ func TestWithFileLock_SerializesCallers(t *testing.T) {
 	wg.Wait()
 	if value != n {
 		t.Fatalf("lost updates under lock: got %d want %d", value, n)
+	}
+}
+
+func TestTryWithFileLock_SkipsWhenOtherProcessHolds(t *testing.T) {
+	if os.Getenv("PP_FILELOCK_HOLDER") == "1" {
+		holdFileLockForChild()
+		return
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "journal.offset")
+	ready := filepath.Join(dir, "ready")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestTryWithFileLock_SkipsWhenOtherProcessHolds$", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		"PP_FILELOCK_HOLDER=1",
+		"PP_FILELOCK_PATH="+path,
+		"PP_FILELOCK_READY="+ready,
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start holder: %v", err)
+	}
+	defer func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(ready); err != nil {
+		t.Fatalf("holder did not acquire: %s", stderr.String())
+	}
+
+	start := time.Now()
+	ran := false
+	acquired, err := TryWithFileLock(path, func() error {
+		ran = true
+		return nil
+	})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("TryWithFileLock: %v", err)
+	}
+	if acquired {
+		t.Fatal("acquired a lock another process already held")
+	}
+	if ran {
+		t.Fatal("fn ran while another process held the lock")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("try-lock waited %s", elapsed)
+	}
+}
+
+func holdFileLockForChild() {
+	path := os.Getenv("PP_FILELOCK_PATH")
+	ready := os.Getenv("PP_FILELOCK_READY")
+	err := WithFileLock(path, func() error {
+		if werr := os.WriteFile(ready, []byte("1"), 0o600); werr != nil {
+			return werr
+		}
+		time.Sleep(30 * time.Second)
+		return nil
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+func TestTryWithFileLock_ReturnsFnError(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "journal.offset")
+	want := errors.New("boom")
+	acquired, err := TryWithFileLock(path, func() error { return want })
+	if !acquired || !errors.Is(err, want) {
+		t.Fatalf("acquired=%v err=%v", acquired, err)
 	}
 }
