@@ -14,9 +14,12 @@ import (
 func newThingsPromotedCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
-		Use:         "things <thing_id>",
-		Short:       "Get a thing via GraphQL",
-		Long:        "Get a thing via GraphQL",
+		Use:   "things <thing_id>",
+		Short: "Get a thing via GraphQL",
+		Long:  "Get a thing via GraphQL",
+		Args: func(cmd *cobra.Command, args []string) error {
+			return endpointPositionalArgs(cmd, flags, args, cobra.MaximumNArgs(1))
+		},
 		Annotations: map[string]string{"pp:endpoint": "things.get", "pp:method": "POST", "pp:path": "/graphql", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()

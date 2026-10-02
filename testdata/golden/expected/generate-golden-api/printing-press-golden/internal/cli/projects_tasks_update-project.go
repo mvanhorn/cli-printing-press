@@ -21,9 +21,12 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 	var stdinBody bool
 
 	cmd := &cobra.Command{
-		Use:         "update-project <projectId> <taskId>",
-		Aliases:     []string{"update"},
-		Short:       "Update project task",
+		Use:     "update-project <projectId> <taskId>",
+		Aliases: []string{"update"},
+		Short:   "Update project task",
+		Args: func(cmd *cobra.Command, args []string) error {
+			return endpointPositionalArgs(cmd, flags, args, cobra.MaximumNArgs(2))
+		},
 		Annotations: map[string]string{"pp:endpoint": "tasks.update-project", "pp:method": "PATCH", "pp:path": "/projects/{projectId}/tasks/{taskId}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

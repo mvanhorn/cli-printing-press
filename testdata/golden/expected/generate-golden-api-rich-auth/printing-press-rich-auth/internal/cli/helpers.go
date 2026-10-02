@@ -365,6 +365,112 @@ func boundCtx(parent context.Context, flags *rootFlags) (context.Context, contex
 	return context.WithTimeout(parent, flags.timeout)
 }
 
+// Bool flags set NoOptDefVal, so `--flag false` becomes `--flag=true`
+// plus a positional. Args runs before RunE, so the JSON usage envelope
+// has to be written here. The equals hint is only for that space form.
+func endpointPositionalArgs(cmd *cobra.Command, flags *rootFlags, args []string, arity func(*cobra.Command, []string) error) error {
+	var argErr error
+	if arity != nil {
+		argErr = arity(cmd, args)
+	}
+	spaceErr := booleanSpaceFormPositionalErr(cmd, args)
+	if argErr == nil && spaceErr == nil {
+		return nil
+	}
+	err := argErr
+	if spaceErr != nil {
+		if argErr != nil {
+			err = fmt.Errorf("%s\n%s", argErr.Error(), spaceErr.Error())
+		} else {
+			err = spaceErr
+		}
+		err = fmt.Errorf("%s\nhint: boolean flags take a value with '=', for example --flag=false", err.Error())
+	}
+	return endpointArgsUsageErr(cmd, flags, err)
+}
+
+func endpointArgsUsageErr(cmd *cobra.Command, flags *rootFlags, err error) error {
+	// Args runs before PersistentPreRun. That hook turns --agent into asJSON
+	// only when --json was not set, so --agent --json=false stays plain text.
+	jsonChanged := cmd != nil && cmd.Flags().Changed("json")
+	if flags != nil && cmd != nil && (flags.asJSON || (flags.agent && !jsonChanged)) {
+		printFlags := flags
+		if flags.agent && !flags.asJSON {
+			copied := *flags
+			copied.asJSON = true
+			printFlags = &copied
+		}
+		if printErr := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+			"error": err.Error(),
+			"usage": endpointUsageLine(cmd),
+		}, printFlags); printErr != nil {
+			return printErr
+		}
+	}
+	return usageErr(err)
+}
+
+func endpointUsageLine(cmd *cobra.Command) string {
+	if cmd == nil {
+		return ""
+	}
+	use := strings.TrimSpace(cmd.Use)
+	name := cmd.Name()
+	suffix := ""
+	if strings.HasPrefix(use, name+" ") {
+		suffix = use[len(name):]
+	}
+	return cmd.CommandPath() + suffix
+}
+
+func booleanSpaceFormPositionalErr(cmd *cobra.Command, args []string) error {
+	if cmd == nil || len(args) == 0 {
+		return nil
+	}
+	positional := make(map[string]struct{}, len(args))
+	for _, arg := range args {
+		positional[arg] = struct{}{}
+	}
+	boolFlags := booleanNoValueFlags(cmd)
+	if len(boolFlags) == 0 {
+		return nil
+	}
+	argv := os.Args
+	for i := 1; i+1 < len(argv); i++ {
+		token := argv[i]
+		if token == "--" {
+			break
+		}
+		name, ok := boolFlags[token]
+		if !ok {
+			continue
+		}
+		word := argv[i+1]
+		if _, err := strconv.ParseBool(word); err != nil {
+			continue
+		}
+		if _, isPositional := positional[word]; !isPositional {
+			continue
+		}
+		return fmt.Errorf("boolean flag --%s cannot take a space-separated value; %q was used as a positional argument", name, word)
+	}
+	return nil
+}
+
+func booleanNoValueFlags(cmd *cobra.Command) map[string]string {
+	out := map[string]string{}
+	cmd.Flags().VisitAll(func(flag *pflag.Flag) {
+		if flag.Value == nil || flag.Value.Type() != "bool" || flag.NoOptDefVal == "" {
+			return
+		}
+		out["--"+flag.Name] = flag.Name
+		if flag.Shorthand != "" {
+			out["-"+flag.Shorthand] = flag.Name
+		}
+	})
+	return out
+}
+
 // hasChangedLocalFlags checks Flag.Changed because Cobra's derived local flag
 // set does not populate the internal bookkeeping used by FlagSet.NFlag.
 func hasChangedLocalFlags(cmd *cobra.Command) bool {

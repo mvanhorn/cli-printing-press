@@ -276,7 +276,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"zeroValForBodyParam":                 zeroValForBodyParam,
 		"paramIsHeader":                       paramIsHeader,
 		"paramPresenceExpr":                   paramPresenceExpr,
-		"readParamPresenceExpr":               readParamPresenceExpr,
+		"endpointArgsExpr":                    endpointArgsExpr,
 		"queryParamFlagNamesLiteral":          queryParamFlagNamesLiteral,
 		"endpointHasHeaderParams":             endpointHasHeaderParams,
 		"positionalArgs":                      positionalArgs,
@@ -8388,6 +8388,18 @@ func paramPresenceExpr(p spec.Param) string {
 	return fmt.Sprintf("(%s || flag%s != %s)", flagChangedExpr(p), toCamel(paramIdent(p)), zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
 }
 
+// A missing ID has to reach RunE, which writes the JSON usage envelope.
+// The token after a bool flag must not count as that ID.
+func endpointArgsExpr(e spec.Endpoint) string {
+	n := len(orderedPositionalParams(e))
+	if n == 0 {
+		return "cobra.NoArgs"
+	}
+	return fmt.Sprintf(`func(cmd *cobra.Command, args []string) error {
+	return endpointPositionalArgs(cmd, flags, args, cobra.MaximumNArgs(%d))
+}`, n)
+}
+
 func paramFlagNames(p spec.Param) []string {
 	names := []string{publicFlagName(p)}
 	return append(names, publicFlagAliases(p)...)
@@ -8411,13 +8423,6 @@ func queryParamFlagNamesLiteral(endpoint spec.Endpoint) string {
 	}
 	b.WriteByte('}')
 	return b.String()
-}
-
-func readParamPresenceExpr(p spec.Param) string {
-	if primitiveKind(p.Type) == "int" && (p.Required || paramHasDefault(p)) {
-		return "true"
-	}
-	return fmt.Sprintf("flag%s != %s", toCamel(paramIdent(p)), zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
 }
 
 func endpointHasHeaderParams(endpoint spec.Endpoint) bool {

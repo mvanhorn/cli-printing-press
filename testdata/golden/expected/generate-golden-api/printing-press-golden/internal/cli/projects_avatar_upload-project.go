@@ -18,9 +18,12 @@ func newProjectsAvatarUploadProjectCmd(flags *rootFlags) *cobra.Command {
 	var bodyFile string
 
 	cmd := &cobra.Command{
-		Use:         "upload-project <projectId>",
-		Aliases:     []string{"update"},
-		Short:       "Upload project avatar",
+		Use:     "upload-project <projectId>",
+		Aliases: []string{"update"},
+		Short:   "Upload project avatar",
+		Args: func(cmd *cobra.Command, args []string) error {
+			return endpointPositionalArgs(cmd, flags, args, cobra.MaximumNArgs(1))
+		},
 		Annotations: map[string]string{"pp:endpoint": "avatar.upload-project", "pp:method": "PUT", "pp:path": "/projects/{projectId}/avatar"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

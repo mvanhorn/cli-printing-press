@@ -16,8 +16,11 @@ import (
 func newCustomersGetCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
-		Use:         "get <id>",
-		Short:       "Get",
+		Use:   "get <id>",
+		Short: "Get",
+		Args: func(cmd *cobra.Command, args []string) error {
+			return endpointPositionalArgs(cmd, flags, args, cobra.MaximumNArgs(1))
+		},
 		Annotations: map[string]string{"pp:endpoint": "customers.get", "pp:method": "GET", "pp:path": "/customers/{id}", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
