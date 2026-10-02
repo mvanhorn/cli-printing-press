@@ -1748,6 +1748,82 @@ func TestParseNullableAnyOfBodyScalarsKeepDeclaredTypes(t *testing.T) {
 	assert.Empty(t, blocks.Body)
 }
 
+func TestNullableStringUnionIntersectsWrapperEnum(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.1.0
+info:
+  title: Nullable Enum
+  version: 1.0.0
+servers:
+  - url: https://api.example.test
+paths:
+  /voices:
+    post:
+      operationId: createVoice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  enum: ["a"]
+                  anyOf:
+                    - type: string
+                      enum: ["a", "b"]
+                    - type: "null"
+                ordered:
+                  enum: ["b", "a"]
+                  anyOf:
+                    - type: string
+                      enum: ["a", "c", "b"]
+                    - type: "null"
+                tone:
+                  enum: ["soft"]
+                  oneOf:
+                    - type: string
+                      enum: ["soft", "loud"]
+                    - type: "null"
+                branch_only:
+                  anyOf:
+                    - type: string
+                      enum: ["a", "b"]
+                    - type: "null"
+                wrapper_only:
+                  enum: ["a", "c"]
+                  anyOf:
+                    - type: string
+                    - type: "null"
+                disjoint:
+                  enum: ["a"]
+                  anyOf:
+                    - type: string
+                      enum: ["b"]
+                    - type: "null"
+      responses:
+        "200":
+          description: ok
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/voices")
+	byName := map[string]spec.Param{}
+	for _, param := range endpoint.Body {
+		byName[param.Name] = param
+	}
+
+	assert.Equal(t, "string", byName["mode"].Type)
+	assert.Equal(t, []string{"a"}, byName["mode"].Enum)
+	assert.Equal(t, []string{"b", "a"}, byName["ordered"].Enum)
+	assert.Equal(t, []string{"soft"}, byName["tone"].Enum)
+	assert.Equal(t, []string{"a", "b"}, byName["branch_only"].Enum)
+	assert.Equal(t, []string{"a", "c"}, byName["wrapper_only"].Enum)
+	assert.Empty(t, byName["disjoint"].Enum)
+}
+
 func TestGenerateNullableAnyOfBodyScalarsMarshalDeclaredJSONTypes(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {

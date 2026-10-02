@@ -5369,9 +5369,8 @@ func hasDirectObjectShape(schema *openapi3.Schema) bool {
 	return len(schema.Properties) > 0
 }
 
-// singleScalarUnionBranch returns the only non-null scalar alternative of an
-// anyOf/oneOf. A second non-null branch, or an object/array alternative,
-// stays a real union so polymorphic bodies keep --body-json / json_or_scalar.
+// Keep multiple non-null branches and object/array alternatives as unions so
+// polymorphic bodies retain --body-json / json_or_scalar.
 func singleScalarUnionBranch(schema *openapi3.Schema) *openapi3.Schema {
 	return singleScalarUnionBranchVisited(schema, map[*openapi3.Schema]struct{}{})
 }
@@ -5465,9 +5464,10 @@ func isNonNullScalarSchema(schema *openapi3.Schema) bool {
 	return sawScalar
 }
 
-// overlayUnionScalar keeps constraints written beside the union. Flag
-// encoding reads format, enum, default, and numeric bounds from the schema
-// bodyParamSchema returns, which is the scalar branch.
+// Flag encoding reads format, default, bounds, and enum from the schema
+// bodyParamSchema returns. Sibling constraints fill what the scalar branch
+// left empty. Enums are combined because a value must satisfy both lists:
+// a wrapper that allows only "a" must not keep a branch value "b".
 func overlayUnionScalar(wrapper, scalar *openapi3.Schema) *openapi3.Schema {
 	if wrapper == nil || scalar == nil || wrapper == scalar {
 		return scalar
@@ -5490,6 +5490,8 @@ func overlayUnionScalar(wrapper, scalar *openapi3.Schema) *openapi3.Schema {
 	}
 	if len(out.Enum) == 0 {
 		out.Enum = wrapper.Enum
+	} else if len(wrapper.Enum) > 0 {
+		out.Enum = intersectSchemaEnums(wrapper.Enum, out.Enum)
 	}
 	if out.Min == nil {
 		out.Min = wrapper.Min
@@ -5504,6 +5506,40 @@ func overlayUnionScalar(wrapper, scalar *openapi3.Schema) *openapi3.Schema {
 		out.ExclusiveMax = wrapper.ExclusiveMax
 	}
 	return &out
+}
+
+// Both lists apply together. Wrapper order is kept so the first allowed
+// value stays the one declared beside the union. An empty overlap means no
+// listed value is valid, which must not fall back to the wider branch set.
+func intersectSchemaEnums(wrapper, branch []any) []any {
+	branchKeys := make(map[string]struct{}, len(branch))
+	for _, value := range branch {
+		branchKeys[enumValueKey(value)] = struct{}{}
+	}
+	out := make([]any, 0, len(wrapper))
+	seen := make(map[string]struct{}, len(wrapper))
+	for _, value := range wrapper {
+		key := enumValueKey(value)
+		if _, ok := branchKeys[key]; !ok {
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func enumValueKey(value any) string {
+	if text, ok := value.(string); ok {
+		return "s:" + text
+	}
+	return "o:" + fmt.Sprint(value)
 }
 
 func mapBodyFields(schema *openapi3.Schema, inferCSVArrays bool) []spec.Param {
