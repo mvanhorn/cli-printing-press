@@ -465,8 +465,10 @@ func endpointPositionalArgs(cmd *cobra.Command, flags *rootFlags, args []string,
 }
 
 func endpointArgsUsageErr(cmd *cobra.Command, flags *rootFlags, err error) error {
-	// Args runs before PersistentPreRun, which is what turns --agent into asJSON.
-	if flags != nil && cmd != nil && (flags.asJSON || flags.agent) {
+	// Args runs before PersistentPreRun. That hook turns --agent into asJSON
+	// only when --json was not set, so --agent --json=false stays plain text.
+	jsonChanged := cmd != nil && cmd.Flags().Changed("json")
+	if flags != nil && cmd != nil && (flags.asJSON || (flags.agent && !jsonChanged)) {
 		printFlags := flags
 		if flags.agent && !flags.asJSON {
 			copied := *flags

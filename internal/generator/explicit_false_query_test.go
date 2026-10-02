@@ -45,6 +45,7 @@ func TestNonPaginatedGetSendsExplicitFalseAndRejectsStrayPositionals(t *testing.
 	assert.Contains(t, helpersSrc, `--flag=false`)
 	assert.Contains(t, helpersSrc, `"error": err.Error()`)
 	assert.Contains(t, helpersSrc, `"usage": endpointUsageLine(cmd)`)
+	assert.Contains(t, helpersSrc, `flags.asJSON || (flags.agent && !jsonChanged)`)
 
 	searchSrc := readGeneratedFile(t, outputDir, "internal", "cli", "tasks_search.go")
 	assert.Contains(t, searchSrc, `cmd.Flags().Changed("completed") || flagCompleted != false`)
@@ -148,6 +149,17 @@ func TestNonPaginatedGetSendsExplicitFalseAndRejectsStrayPositionals(t *testing.
 		assert.Equal(t, 2, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
 		assert.NotContains(t, stdout+stderr, "--flag=false")
 		assertJSONUsageError(t, stdout, "accepts at most 1 arg(s), received 2")
+		assert.Empty(t, snapshotHits())
+	})
+
+	t.Run("agent with explicit json false keeps a plain surplus error", func(t *testing.T) {
+		resetHits()
+		code, stdout, stderr := runGeneratedBinaryExitEnv(t, binaryPath, env, "--home", home, "--agent", "--json=false", "tasks", "search", "ws", "extra")
+		assert.Equal(t, 2, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		assert.Contains(t, stderr, "accepts at most 1 arg(s), received 2")
+		assert.NotContains(t, stdout+stderr, `"error"`)
+		assert.NotContains(t, stdout+stderr, `"usage"`)
+		assert.NotContains(t, stdout+stderr, "--flag=false")
 		assert.Empty(t, snapshotHits())
 	})
 
