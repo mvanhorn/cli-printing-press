@@ -19,6 +19,7 @@ func newMediaPromotedCmd(flags *rootFlags) *cobra.Command {
 		Short:       "Upload an input file",
 		Long:        "Upload an input file",
 		Example:     "  async-job-pp-cli media",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "media.upload", "pp:method": "POST", "pp:path": "/media/upload"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()

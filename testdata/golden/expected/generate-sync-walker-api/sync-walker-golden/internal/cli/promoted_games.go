@@ -18,6 +18,7 @@ func newGamesPromotedCmd(flags *rootFlags) *cobra.Command {
 		Short:       "List games",
 		Long:        "List games",
 		Example:     "  sync-walker-golden-pp-cli games",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "games.list", "pp:method": "GET", "pp:path": "/games", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()

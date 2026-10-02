@@ -20,6 +20,7 @@ func newSetsCreateCmd(flags *rootFlags) *cobra.Command {
 		Use:         "create",
 		Short:       "Create a set",
 		Example:     "  post-read-golden-pp-cli sets create",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "sets.create", "pp:method": "POST", "pp:path": "/sets"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {

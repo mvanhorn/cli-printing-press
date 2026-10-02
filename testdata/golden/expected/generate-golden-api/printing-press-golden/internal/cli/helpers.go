@@ -4123,3 +4123,16 @@ func defaultDBPathInDir(dir string) string {
 	}
 	return unscoped
 }
+
+// MCPStorePath is the SQLite file CLI sync writes, including the
+// credential-scoped data-<hash>.db name when one is active. MCP search and
+// sql must open this path; a hard-coded data.db is empty on a fresh install
+// that never wrote the unscoped file.
+func MCPStorePath() (string, error) {
+	configureDefaultDBScope("")
+	dir, err := cliutil.DataDir()
+	if err != nil {
+		return "", err
+	}
+	return defaultDBPathInDir(dir), nil
+}

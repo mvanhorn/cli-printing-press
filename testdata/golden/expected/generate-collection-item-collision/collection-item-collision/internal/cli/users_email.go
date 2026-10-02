@@ -17,6 +17,7 @@ func newUsersEmailCmd(flags *rootFlags) *cobra.Command {
 		Use:         "email",
 		Short:       "Check whether an email is in use",
 		Example:     "  collection-item-collision-pp-cli users email",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "users.email", "pp:method": "GET", "pp:path": "/users/email", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "/users/email"
@@ -87,6 +88,17 @@ func newUsersEmailCmd(flags *rootFlags) *cobra.Command {
 			return printOutputWithFlagsMeta(cmd.OutOrStdout(), formatData, flags, map[string]any{"source": "live"}, nil)
 		},
 	}
+	cmd.AddCommand(&cobra.Command{
+		Use:    "update",
+		Hidden: true,
+		Short:  "Refused alias for a renamed command path",
+		Annotations: map[string]string{
+			"mcp:hidden": "true",
+		},
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return usageErr(fmt.Errorf("%q was renamed to %q; refusing the old path so it cannot call a different endpoint", cmd.CommandPath(), "users item-email update"))
+		},
+	})
 
 	return cmd
 }

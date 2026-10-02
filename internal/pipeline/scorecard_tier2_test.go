@@ -316,6 +316,25 @@ func runMessages() {
 
 		assert.Equal(t, 5, scoreDeadCode(dir))
 	})
+
+	t.Run("counts a helper called only from the MCP package", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+func MCPStorePath() (string, error) {
+	return "data.db", nil
+}
+`)
+		writeScorecardFixture(t, dir, "internal/mcp/tools.go", `
+package mcp
+
+func mcpDBPath() (string, error) {
+	return cli.MCPStorePath()
+}
+`)
+		assert.Equal(t, 5, scoreDeadCode(dir))
+	})
 }
 
 func TestScoreDataPipelineIntegrity(t *testing.T) {

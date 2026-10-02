@@ -304,6 +304,14 @@ func TestGenerateAllowsCollectionEndpointAndItemSubResourceSameLeaf(t *testing.T
 	require.NoError(t, err)
 	assert.Contains(t, string(collectionSrc), "func newUsersEmailCmd(")
 	assert.Regexp(t, `Use:\s+"email"`, string(collectionSrc))
+	assert.Regexp(t, `Args:\s+cobra\.NoArgs`, string(collectionSrc))
+	assert.Regexp(t, `Use:\s+"update"`, string(collectionSrc))
+	assert.Contains(t, string(collectionSrc), "item-email update")
+	assert.Contains(t, string(collectionSrc), `"mcp:hidden": "true"`)
+
+	listSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "users_list.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `Args:\s+cobra\.NoArgs`, string(listSrc))
 
 	itemParentSrc, err := os.ReadFile(itemParentPath)
 	require.NoError(t, err)
@@ -314,6 +322,7 @@ func TestGenerateAllowsCollectionEndpointAndItemSubResourceSameLeaf(t *testing.T
 	itemEndpointSrc, err := os.ReadFile(itemEndpointPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(itemEndpointSrc), "func newUsersItemEmailUpdateCmd(")
+	assert.NotContains(t, string(itemEndpointSrc), "cobra.NoArgs")
 
 	usersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "users.go"))
 	require.NoError(t, err)
@@ -322,6 +331,44 @@ func TestGenerateAllowsCollectionEndpointAndItemSubResourceSameLeaf(t *testing.T
 
 	surface := buildCommandSurface(collectionItemCollisionSpec(), nil)
 	assert.Equal(t, []string{"users", "users email", "users item-email", "users item-email update", "users list"}, expectedCommandPaths(surface))
+
+	const aliasTest = `package cli
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/spf13/cobra"
+)
+
+func TestRenamedEmailUpdateRefuses(t *testing.T) {
+	parent := newUsersEmailCmd(&rootFlags{})
+	var alias *cobra.Command
+	for _, child := range parent.Commands() {
+		if child.Name() == "update" {
+			alias = child
+		}
+	}
+	if alias == nil {
+		t.Fatal("missing refused alias for the renamed path")
+	}
+	if !alias.Hidden {
+		t.Fatal("renamed-path alias must be hidden")
+	}
+	err := alias.RunE(alias, []string{"user-1"})
+	if err == nil || !strings.Contains(err.Error(), "item-email update") {
+		t.Fatalf("alias error = %v", err)
+	}
+	if parent.Args == nil {
+		t.Fatal("no-positional endpoint must set Args")
+	}
+	if err := parent.Args(parent, []string{"stray"}); err == nil {
+		t.Fatal("stray positional was accepted")
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "renamed_path_alias_test.go"), []byte(aliasTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestRenamedEmailUpdateRefuses", "-count=1")
 
 	requireGeneratedCompiles(t, outputDir)
 }

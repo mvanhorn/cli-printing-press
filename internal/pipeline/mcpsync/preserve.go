@@ -135,10 +135,87 @@ func hasHandAuthoredMCPBehavior(src []byte) bool {
 	if bytes.Contains(src, []byte("localWrite := isMCPLocalWrite")) {
 		return true
 	}
-	if bytes.Contains(src, []byte("ReadHeaderTimeout")) {
+	// The MCP HTTP template emits exactly one server timeout. Any other
+	// timeout, including a ReadHeaderTimeout other than the generated
+	// field value, is hand-authored and must survive a reprint.
+	if bytes.Contains(src, []byte("ReadTimeout")) || bytes.Contains(src, []byte("WriteTimeout")) || bytes.Contains(src, []byte("IdleTimeout")) {
+		return true
+	}
+	if hasNonGeneratedReadHeaderTimeout(src) {
 		return true
 	}
 	return handAuthoredDBFlag.Match(src)
+}
+
+const generatedMCPReadHeaderTimeoutValue = "10 * time.Second"
+
+var readHeaderTimeoutField = regexp.MustCompile(`\bReadHeaderTimeout\s*:\s*([^,\n}]+)`)
+
+func hasNonGeneratedReadHeaderTimeout(src []byte) bool {
+	code := mcpCodeWithoutComments(src)
+	for _, match := range readHeaderTimeoutField.FindAllSubmatch(code, -1) {
+		if strings.TrimSpace(string(match[1])) != generatedMCPReadHeaderTimeoutValue {
+			return true
+		}
+	}
+	return false
+}
+
+// mcpCodeWithoutComments drops comments and string contents so a note that
+// quotes the generated timeout cannot hide a different field value.
+func mcpCodeWithoutComments(src []byte) []byte {
+	var b bytes.Buffer
+	b.Grow(len(src))
+	i := 0
+	for i < len(src) {
+		if src[i] == '"' || src[i] == '\'' || src[i] == '`' {
+			quote := src[i]
+			b.WriteByte(quote)
+			i++
+			if quote == '`' {
+				for i < len(src) && src[i] != '`' {
+					i++
+				}
+			} else {
+				for i < len(src) {
+					if src[i] == '\\' && i+1 < len(src) {
+						i += 2
+						continue
+					}
+					if src[i] == quote || src[i] == '\n' {
+						break
+					}
+					i++
+				}
+			}
+			if i < len(src) && src[i] == quote {
+				b.WriteByte(quote)
+				i++
+			}
+			continue
+		}
+		if i+1 < len(src) && src[i] == '/' && src[i+1] == '/' {
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		if i+1 < len(src) && src[i] == '/' && src[i+1] == '*' {
+			i += 2
+			for i+1 < len(src) && (src[i] != '*' || src[i+1] != '/') {
+				i++
+			}
+			if i+1 < len(src) {
+				i += 2
+			} else {
+				i = len(src)
+			}
+			continue
+		}
+		b.WriteByte(src[i])
+		i++
+	}
+	return b.Bytes()
 }
 
 func mergeHandAuthoredIntentFile(before, after []byte) ([]byte, error) {

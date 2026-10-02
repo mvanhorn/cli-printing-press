@@ -21,6 +21,7 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "find",
 		Short:       "Find nearby stores by address",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "stores.find", "pp:method": "GET", "pp:path": "/power/store-locator", "mcp:read-only": "true", "pp:requires-input": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Bare invocation of a command with required input prints help

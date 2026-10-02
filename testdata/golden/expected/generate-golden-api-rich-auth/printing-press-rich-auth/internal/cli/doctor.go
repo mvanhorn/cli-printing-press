@@ -172,6 +172,44 @@ func isSuggestableReadLeaf(cmd *cobra.Command) bool {
 	return cmd.Args(cmd, []string{}) == nil
 }
 
+// doctorBaseURLIsPlaceholder reports literal unset base URLs: an empty value
+// is handled by the caller, an unresolved {var} template, and RFC 2606
+// example hosts including the generator placeholder https://api.example.com.
+// A real default API root is not a placeholder.
+func doctorBaseURLIsPlaceholder(base string) bool {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return false
+	}
+	if strings.Contains(base, "{") && strings.Contains(base, "}") {
+		return true
+	}
+	host := base
+	if i := strings.Index(host, "://"); i >= 0 {
+		host = host[i+3:]
+	}
+	if i := strings.IndexAny(host, "/?#"); i >= 0 {
+		host = host[:i]
+	}
+	if i := strings.LastIndex(host, "@"); i >= 0 {
+		host = host[i+1:]
+	}
+	if strings.HasPrefix(host, "[") {
+		if j := strings.Index(host, "]"); j >= 0 {
+			host = host[1:j]
+		}
+	} else if i := strings.LastIndex(host, ":"); i >= 0 {
+		host = host[:i]
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	for _, reserved := range []string{"example.com", "example.net", "example.org", "example.edu"} {
+		if host == reserved || strings.HasSuffix(host, "."+reserved) {
+			return true
+		}
+	}
+	return false
+}
+
 func newDoctorCmd(flags *rootFlags) *cobra.Command {
 	var failOn string
 	cmd := &cobra.Command{
@@ -344,7 +382,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// or otherwise bot-detected sites. By going through
 			// flags.newClient(), the doctor's
 			// reachability verdict matches what real commands experience.
-			if cfg != nil && cfg.BaseURL != "" {
+			if cfg != nil && doctorBaseURLIsPlaceholder(cfg.BaseURL) {
+				report["api"] = "not configured (base_url is a placeholder)"
+				if _, set := report["credentials"]; !set {
+					report["credentials"] = "skipped (base_url is a placeholder)"
+				}
+			} else if cfg != nil && cfg.BaseURL != "" {
 				c, clientErr := flags.newClient()
 				if clientErr != nil {
 					report["api"] = fmt.Sprintf("client init error: %s", clientErr)
@@ -706,10 +749,16 @@ func doctorExitForFailOn(failOn string, report map[string]any) error {
 			low := strings.ToLower(s)
 			// A WARN prefix is the verdict. Explanatory text such as
 			// "neither accepted nor rejected" must not promote it to an error.
+			// Placeholder base URLs are FAIL/WARN in the human report; the
+			// phrases below put those sections on the same gates. An empty
+			// base_url ("not configured (set base_url in config file)") stays
+			// off the gate so an unconfigured first run is not a CI failure.
 			if strings.HasPrefix(low, "warn") {
 				worstWarn = true
-			} else if strings.HasPrefix(low, "error") || strings.HasPrefix(low, "refused:") || strings.HasPrefix(low, "rejected") || strings.Contains(low, "error") || strings.Contains(low, "unreachable") || strings.Contains(low, "invalid") || strings.Contains(low, "missing") {
+			} else if strings.HasPrefix(low, "error") || strings.HasPrefix(low, "refused:") || strings.HasPrefix(low, "rejected") || strings.Contains(low, "error") || strings.Contains(low, "unreachable") || strings.Contains(low, "invalid") || strings.Contains(low, "missing") || strings.Contains(low, "not configured (base_url is a placeholder)") {
 				worstError = true
+			} else if strings.Contains(low, "skipped (base_url is a placeholder)") {
+				worstWarn = true
 			}
 		}
 		if m, ok := v.(map[string]any); ok {

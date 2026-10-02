@@ -31,7 +31,9 @@ import (
 {{- if or .VisionSet.Search .VisionSet.Store}}
 	"os"
 {{- end}}
+{{- if not .SharesCLIStorePath}}
 	"path/filepath"
+{{- end}}
 	"strconv"
 	"strings"
 	"time"
@@ -1196,11 +1198,15 @@ func newMCPClientFromConfig(ctx context.Context, cfg *config.Config) (*client.Cl
 }
 
 func mcpDBPath() (string, error) {
+{{- if .SharesCLIStorePath}}
+	return cli.MCPStorePath()
+{{- else}}
 	dir, err := cliutil.DataDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "data.db"), nil
+{{- end}}
 }
 
 {{- if or .VisionSet.Search .VisionSet.Store}}

@@ -1080,6 +1080,10 @@ type endpointTemplateData struct {
 	// skip the per-call prompt. GET RPCs without a read signal stay false
 	// so a mutation is never treated as unattended-safe.
 	IsReadOnly bool
+	// Operators still type the pre-collision leaf. The template refuses
+	// that spelling (mcp:hidden, no client call, naming the new path) so
+	// Cobra does not swallow it as a positional on the collection command.
+	RenamedPathAliases []renamedPathAlias
 	*spec.APISpec
 }
 
@@ -4116,20 +4120,21 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			}
 			asyncInfo, isAsync := g.AsyncJobs[name+"/"+eName]
 			epData := endpointTemplateData{
-				ResourceName:  name,
-				EffectivePath: effectiveEndpointPath(resource, endpoint),
-				EffectiveTier: g.Spec.EffectiveTier(resource, endpoint),
-				FuncPrefix:    name,
-				CommandPath:   resourceCommand,
-				EndpointName:  eName,
-				Endpoint:      endpoint,
-				Resource:      resource,
-				HasStore:      g.hasDataLayer(),
-				IsAsync:       isAsync,
-				Async:         asyncInfo,
-				PageSize:      g.paginationPageSizeForEndpoint(endpoint),
-				IsReadOnly:    endpointIsReadCommandShared(endpoint, eName, sharedGETRPCPaths(g.Spec.Resources)),
-				APISpec:       g.Spec,
+				ResourceName:       name,
+				EffectivePath:      effectiveEndpointPath(resource, endpoint),
+				EffectiveTier:      g.Spec.EffectiveTier(resource, endpoint),
+				FuncPrefix:         name,
+				CommandPath:        resourceCommand,
+				EndpointName:       eName,
+				Endpoint:           endpoint,
+				Resource:           resource,
+				HasStore:           g.hasDataLayer(),
+				IsAsync:            isAsync,
+				Async:              asyncInfo,
+				PageSize:           g.paginationPageSizeForEndpoint(endpoint),
+				IsReadOnly:         endpointIsReadCommandShared(endpoint, eName, sharedGETRPCPaths(g.Spec.Resources)),
+				RenamedPathAliases: renamedPathAliases(name, eName, resource),
+				APISpec:            g.Spec,
 			}
 			epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+eName)+".go")
 			if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
@@ -5669,6 +5674,7 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 			HasMCPIntents                 bool
 			PreserveMCPIntentRegistration bool
 			PreserveMCPIntentFile         bool
+			SharesCLIStorePath            bool
 		}{
 			APISpec:                       g.Spec,
 			SyncableResources:             g.profile.SyncableResources,
@@ -5683,6 +5689,7 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 			HasMCPIntents:                 len(g.Spec.MCP.Intents) > 0 || len(recipeIntents) > 0 || g.PreserveMCPIntentRegistration,
 			PreserveMCPIntentRegistration: g.PreserveMCPIntentRegistration,
 			PreserveMCPIntentFile:         g.PreserveMCPIntentFile,
+			SharesCLIStorePath:            g.hasDataLayer() || g.VisionSet.Store,
 		}
 		if err := g.renderTemplate("mcp_platform_gate.go.tmpl", filepath.Join("internal", "mcp", "platform_gate.go"), mcpData); err != nil {
 			return fmt.Errorf("rendering MCP tenant gate: %w", err)

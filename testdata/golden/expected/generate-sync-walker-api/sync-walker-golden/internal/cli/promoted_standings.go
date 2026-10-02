@@ -18,6 +18,7 @@ func newStandingsPromotedCmd(flags *rootFlags) *cobra.Command {
 		Use:         "standings",
 		Short:       "List standings for a game",
 		Long:        "List standings for a game",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "standings.list", "pp:method": "GET", "pp:path": "/standings", "mcp:read-only": "true", "pp:requires-input": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Bare invocation of a command with a required flag/body prints help

@@ -17,6 +17,7 @@ func newQuotesListCmd(flags *rootFlags) *cobra.Command {
 		Use:         "list",
 		Short:       "List quotes",
 		Example:     "  fastapi-operationids-golden-pp-cli quotes list",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "quotes.list", "pp:method": "GET", "pp:path": "/api/quotes", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "/api/quotes"

@@ -260,7 +260,7 @@ func TestGeneratedHTMLTableLimitSurfacesTruncation(t *testing.T) {
 	uncappedBin := filepath.Join(uncappedDir, naming.CLI(uncapped.Name))
 	runGoCommand(t, uncappedDir, "build", "-o", uncappedBin, "./cmd/"+naming.CLI(uncapped.Name))
 
-	cmd := exec.Command(uncappedBin, "report", "table-mode", "--json")
+	cmd := exec.Command(uncappedBin, "report", "--json")
 	cmd.Env = append(os.Environ(), "TABLEUNCAPPED_BASE_URL="+server.URL, "HOME="+t.TempDir())
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -275,7 +275,7 @@ func TestGeneratedHTMLTableLimitSurfacesTruncation(t *testing.T) {
 	cappedBin := filepath.Join(cappedDir, naming.CLI(capped.Name))
 	runGoCommand(t, cappedDir, "build", "-o", cappedBin, "./cmd/"+naming.CLI(capped.Name))
 
-	cmd = exec.Command(cappedBin, "report", "table-mode", "--json")
+	cmd = exec.Command(cappedBin, "report", "--json")
 	cmd.Env = append(os.Environ(), "TABLECAPPED_BASE_URL="+server.URL, "HOME="+t.TempDir())
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))

@@ -29,6 +29,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-auth-type` | `components.securitySchemes.<name>` | `APISpec.Auth.Type` | No |
 | `x-auth-format` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
 | `x-prefix` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
+| `x-auth-value-prefix` | `components.securitySchemes.<name>` | `APISpec.Auth.Prefix` | No |
 | `x-auth-env-vars` | `components.securitySchemes.<name>` | `APISpec.Auth.EnvVars` | No |
 | `x-auth-vars` | `components.securitySchemes.<name>` | `APISpec.Auth.EnvVarSpecs` | No |
 | `x-speakeasy-example` | `components.securitySchemes.<name>` | `APISpec.Auth.EnvVars` | No |
@@ -812,6 +813,32 @@ components:
       in: header
       name: Authorization
       x-prefix: Klaviyo-API-Key
+```
+
+### `x-auth-value-prefix`
+
+Declares the Authorization scheme word for a header API key, such as `ApiToken`.
+
+Parsed field: `APISpec.Auth.Prefix`
+
+Rules:
+- Optional.
+- Only read for OpenAPI `apiKey` security schemes with `in: header`.
+- Must be a string.
+- Leading and trailing whitespace is trimmed, so a value of `ApiToken ` is stored as `ApiToken`.
+- Ignored when `Auth.Format` is already set (`x-prefix` and `x-auth-format` win).
+- The generated client emits `<prefix> <token>` and does not add the prefix again when the token already starts with it.
+
+Example:
+
+```yaml
+components:
+  securitySchemes:
+    ApiTokenAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-auth-value-prefix: "ApiToken "
 ```
 
 ### `x-auth-basic-username` / `x-auth-basic-password`

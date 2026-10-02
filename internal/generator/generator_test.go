@@ -3571,7 +3571,7 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	binaryPath := filepath.Join(outputDir, "webhtml-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/webhtml-pp-cli")
 
-	cmd := exec.Command(binaryPath, "posts", "list", "--json")
+	cmd := exec.Command(binaryPath, "posts", "--json")
 	cmd.Env = append(os.Environ(), "WEBHTML_BASE_URL="+server.URL)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -3598,7 +3598,7 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	// Anchor without noscript still produces a clean image URL.
 	assert.Contains(t, links[1]["image"], "instant-db.jpg")
 
-	cmd = exec.Command(binaryPath, "posts", "list", "--dry-run", "--json")
+	cmd = exec.Command(binaryPath, "posts", "--dry-run", "--json")
 	cmd.Env = append(os.Environ(), "WEBHTML_BASE_URL="+server.URL)
 	out, err = cmd.Output()
 	require.NoError(t, err, string(out))
@@ -3609,7 +3609,7 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 		assert.Equal(t, true, results["dry_run"])
 	}
 
-	cmd = exec.Command(binaryPath, "docs", "page", "--json")
+	cmd = exec.Command(binaryPath, "docs", "--json")
 	cmd.Env = append(os.Environ(), "WEBHTML_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -3617,7 +3617,7 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	require.Len(t, envelope.Results, 1)
 	assert.Equal(t, server.URL+"/docs/child", envelope.Results[0]["url"])
 
-	cmd = exec.Command(binaryPath, "makers", "list", "--json")
+	cmd = exec.Command(binaryPath, "makers", "--json")
 	cmd.Env = append(os.Environ(), "WEBHTML_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -3639,7 +3639,7 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	assert.Contains(t, envelope.Results[1]["image"], "bob-1x.jpg",
 		"first srcset URL should be selected when src is absent; got %v", envelope.Results[1]["image"])
 
-	cmd = exec.Command(binaryPath, "latin", "list", "--json")
+	cmd = exec.Command(binaryPath, "latin", "--json")
 	cmd.Env = append(os.Environ(), "WEBHTML_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -3648,7 +3648,7 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	assert.Equal(t, "Caf\u00e9", envelope.Results[0]["name"])
 
 	shiftJISEnv := append(os.Environ(), "WEBHTML_BASE_URL="+server.URL, "HOME="+t.TempDir())
-	cmd = exec.Command(binaryPath, "shiftjis", "list", "--json")
+	cmd = exec.Command(binaryPath, "shiftjis", "--json")
 	cmd.Env = shiftJISEnv
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -3657,7 +3657,7 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	assert.Equal(t, "東京", envelope.Results[0]["name"])
 
 	server.Close()
-	cmd = exec.Command(binaryPath, "shiftjis", "list", "--json")
+	cmd = exec.Command(binaryPath, "shiftjis", "--json")
 	cmd.Env = shiftJISEnv
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -4039,7 +4039,7 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/embeddedjson-pp-cli")
 
 	// Default selector + dot-notation path: returns the recipes array.
-	cmd := exec.Command(binaryPath, "recipes", "list", "--json")
+	cmd := exec.Command(binaryPath, "recipes", "--json")
 	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -4055,7 +4055,7 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 	// The extracted shape `{"items":[...]}` is a single-key wrapper that
 	// wrapWithProvenance unwraps, so the envelope's `results` is the
 	// inner array — consistent .results[] shape across APIs.
-	cmd = exec.Command(binaryPath, "articles", "list", "--json")
+	cmd = exec.Command(binaryPath, "articles", "--json")
 	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -4069,7 +4069,7 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 
 	// Attribute selector: returns schema.org JSON-LD blocks such as restaurants,
 	// products, and recipes.
-	cmd = exec.Command(binaryPath, "jsonld", "show", "--json")
+	cmd = exec.Command(binaryPath, "jsonld", "--json")
 	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -4081,7 +4081,7 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 	assert.Equal(t, "El Farolito", jsonLDEnv.Results["name"])
 
 	// Class selector: returns state blobs emitted as classed script tags.
-	cmd = exec.Command(binaryPath, "stateview", "show", "--json")
+	cmd = exec.Command(binaryPath, "stateview", "--json")
 	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -4094,7 +4094,7 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 
 	// Unsupported attribute-existence selectors should fail explicitly instead
 	// of silently degrading to a broad tag-only match.
-	cmd = exec.Command(binaryPath, "badattr", "show", "--json")
+	cmd = exec.Command(binaryPath, "badattr", "--json")
 	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.Error(t, err, string(out))
@@ -4103,7 +4103,7 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 
 	// Missing script tag: extractor reports an actionable error rather
 	// than silently returning empty data.
-	cmd = exec.Command(binaryPath, "missing", "list", "--json")
+	cmd = exec.Command(binaryPath, "missing", "--json")
 	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.Error(t, err, string(out))
@@ -4574,27 +4574,33 @@ func TestGenerateStoreDSNUsesImmediateTransactionsAndProfileJournalMode(t *testi
 			if tc.cache {
 				assert.Contains(t, codeOnly, `?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)`,
 					"rollback-journal read-only DSN must take SHARED locks (no immutable=1)")
-				assert.NotContains(t, codeOnly, `?mode=ro&immutable=1&_pragma=busy_timeout(5000)`,
-					"rollback-journal read-only DSN must not set immutable=1")
+				assert.NotContains(t, codeOnly, `immutable=1`,
+					"rollback-journal read-only DSN must not fall back to immutable=1")
 				assert.Contains(t, codeOnly, `?mode=ro&_pragma=busy_timeout(1000)&_pragma=mmap_size(0)`,
 					"schema preflight probe must take SHARED locks on a rollback journal")
 			} else {
-				assert.Contains(t, codeOnly, `?mode=ro&immutable=1&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)`,
-					"WAL read-only DSN must skip the WAL-index mmap while keeping mmap_size(0)")
+				assert.Contains(t, codeOnly, `?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)`,
+					"WAL read-only DSN must follow the WAL (mode=ro, no immutable=1) and keep mmap_size(0)")
+				assert.NotContains(t, codeOnly, `?mode=ro&immutable=1`,
+					"primary WAL read-only DSN must not set immutable=1; that hides committed-but-uncheckpointed rows")
+				assert.Contains(t, codeOnly, `dsn+"&immutable=1"`,
+					"WAL read-only open must retry with immutable=1 when the directory cannot create -shm")
+				assert.Contains(t, codeOnly, "readOnlyOpenNeedsImmutableFallback",
+					"WAL read-only retry must be limited to open failures that immutable=1 can recover")
 			}
 			requireGeneratedCompiles(t, outputDir)
-			runName := "^Test(OpenHardensSQLiteFilePermissions|HardenSQLiteFilesSkipsSymlinkSidecars|OpenAppliesPragmas|OpenReadOnly_SkipsWALIndexSidecars|OpenReadOnly_ConcurrentProcesses|OpenReadOnly_RollbackJournalNoTornRead|ListScanStopsEarly|TypedNewestFirstOrder)$"
+			runName := "^Test(OpenHardensSQLiteFilePermissions|HardenSQLiteFilesSkipsSymlinkSidecars|OpenAppliesPragmas|OpenReadOnly_SeesCommittedWALFrames|OpenReadOnly_ReadOnlyDirReadsCheckpointedDB|OpenReadOnly_BlockedWALReadsCheckpointedDB|OpenReadOnly_ConcurrentProcesses|OpenReadOnly_RollbackJournalNoTornRead|ListScanStopsEarly|TypedNewestFirstOrder)$"
 			runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", runName, "-count=1")
 		})
 	}
 }
 
-// TestGenerateStoreReadOnlyDSNSkipsWALIndex pins the read-only DSN control
-// that stops concurrent OpenReadOnly processes from mapping the WAL-index.
-// mmap_size(0) is kept; it does not govern -shm. The generated module must
-// compile and the emitted store tests must prove two reader processes can
-// share one database without recreating -shm.
-func TestGenerateStoreReadOnlyDSNSkipsWALIndex(t *testing.T) {
+// TestGenerateStoreReadOnlyDSNFollowsWAL pins the read-only DSN that sees
+// committed WAL frames. immutable=1 would skip the WAL index and hide rows a
+// writer has committed but not checkpointed. mmap_size(0) stays. The generated
+// module must compile, and the emitted store tests must prove a reader sees
+// an uncheckpointed commit and two reader processes can share one database.
+func TestGenerateStoreReadOnlyDSNFollowsWAL(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("wal-index-ro")
@@ -4607,19 +4613,28 @@ func TestGenerateStoreReadOnlyDSNSkipsWALIndex(t *testing.T) {
 	require.NoError(t, err)
 	codeOnly := stripGoComments(string(storeSrc))
 
-	assert.Contains(t, codeOnly, `?mode=ro&immutable=1&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)`,
-		"read-only DSN must set immutable=1 so SQLite skips the WAL-index mmap")
+	assert.Contains(t, codeOnly, `?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)`,
+		"read-only DSN must use mode=ro without immutable=1 so WAL commits stay visible")
+	assert.NotContains(t, codeOnly, `?mode=ro&immutable=1`,
+		"primary read-only DSN must not set immutable=1")
+	assert.Contains(t, codeOnly, `dsn+"&immutable=1"`,
+		"read-only open must retry with immutable=1 when the WAL index cannot be created")
 	assert.Contains(t, codeOnly, `?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)`,
 		"read-write DSN must keep WAL, immediate transactions, and mmap_size(0)")
-	assert.Contains(t, codeOnly, `?mode=ro&immutable=1&_pragma=busy_timeout(1000)&_pragma=mmap_size(0)`,
-		"schema preflight probe must skip the WAL-index mmap")
+	assert.Contains(t, codeOnly, `?mode=ro&_pragma=busy_timeout(1000)&_pragma=mmap_size(0)`,
+		"schema preflight probe must follow the WAL")
 	assert.NotContains(t, codeOnly, "nolock=1",
 		"read-only DSN must not use nolock; WAL databases refuse that URI flag")
 	assert.NotContains(t, codeOnly, "vfs=unix-none",
 		"read-only DSN must not use unix-none; WAL databases refuse that VFS")
 
+	storeTestSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "schema_version_test.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(storeTestSrc), "func TestOpenReadOnly_BlockedWALReadsCheckpointedDB(",
+		"checkpointed immutable fallback must be exercised without chmod")
+
 	requireGeneratedCompiles(t, outputDir)
-	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "^Test(OpenAppliesPragmas|OpenReadOnly_SkipsWALIndexSidecars|OpenReadOnly_ConcurrentProcesses|OpenReadOnly_DeleteModeDBDoesNotWrite)$", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "^Test(OpenAppliesPragmas|OpenReadOnly_SeesCommittedWALFrames|OpenReadOnly_ReadOnlyDirReadsCheckpointedDB|OpenReadOnly_BlockedWALReadsCheckpointedDB|OpenReadOnly_ConcurrentProcesses|OpenReadOnly_DeleteModeDBDoesNotWrite)$", "-count=1")
 }
 
 // Callers gating on existence rely on errors.Is(err, sql.ErrNoRows); the
@@ -4693,8 +4708,12 @@ func TestGenerateMCPSQLToolUsesReadOnlyStore(t *testing.T) {
 	// read-only handle.
 	assert.Contains(t, storeCode, `dsn := "file:" + dbPath`,
 		"OpenReadOnly DSN must use the file: URI prefix with mode=ro")
-	assert.Contains(t, storeCode, `?mode=ro&immutable=1`,
-		"OpenReadOnly DSN must request SQLite read-only mode and skip the WAL-index mmap")
+	assert.Contains(t, storeCode, `?mode=ro`,
+		"OpenReadOnly DSN must request SQLite read-only mode")
+	assert.NotContains(t, storeCode, `?mode=ro&immutable=1`,
+		"primary OpenReadOnly DSN must not set immutable=1; that hides committed WAL rows")
+	assert.Contains(t, storeCode, `dsn+"&immutable=1"`,
+		"OpenReadOnly must fall back to immutable=1 only after the WAL-following open fails")
 	assert.Contains(t, storeCode, `_pragma=mmap_size(0)`,
 		"OpenReadOnly DSN must keep mmap_size(0) so the main database file stays pread-based")
 
@@ -12761,7 +12780,7 @@ func TestGeneratedDoctor_AuthVerifyPathProbesEndpoint(t *testing.T) {
 	// not bare baseURL. The doctor uses flags.newClient() now (Surf-aware)
 	// instead of stdlib http.Client.
 	assert.Contains(t, content, `verifyPath := "/me?fields=id"`)
-	assert.Contains(t, content, `c.GetWithHeaders(cmd.Context(), verifyPath`)
+	assert.Contains(t, content, `c.GetWithHeadersNoCache(cmd.Context(), verifyPath`)
 	assert.NotContains(t, content, `authHeaders["Authorization"] = authHeader`, "doctor must let the client inject refresh-capable auth instead of replaying a stale header")
 	assert.NotContains(t, content, `authParams["api_key"] = authHeader`, "doctor must let the client inject refresh-capable query auth instead of replaying a stale parameter")
 	assert.NotContains(t, content, `&http.Client{`)

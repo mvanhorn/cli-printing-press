@@ -6,6 +6,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+{{- if and .Auth.Type (ne .Auth.Type "none") .Auth.CanonicalEnvVar}}
+	"os"
+{{- end}}
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +18,7 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"{{modulePath}}/internal/cli"
 	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/cliutil/testenv"
 	"{{modulePath}}/internal/mcp/bound"
@@ -51,6 +55,13 @@ func TestMCPPathResolutionMatchesCLIResolverWithHomeEnv(t *testing.T) {
 	if want := filepath.Join(cliDataDir, "data.db"); gotDB != want {
 		t.Fatalf("MCP db path = %q, want CLI resolver path %q", gotDB, want)
 	}
+	wantCLI, err := cli.MCPStorePath()
+	if err != nil {
+		t.Fatalf("cli.MCPStorePath() error = %v", err)
+	}
+	if gotDB != wantCLI {
+		t.Fatalf("MCP db path = %q, want cli.MCPStorePath() %q", gotDB, wantCLI)
+	}
 }
 
 func TestMCPPathResolutionMatchesCLIResolverWithPlatformDefaults(t *testing.T) {
@@ -71,7 +82,52 @@ func TestMCPPathResolutionMatchesCLIResolverWithPlatformDefaults(t *testing.T) {
 	if want := filepath.Join(home, ".local", "share", "{{.Name}}-pp-cli", "data.db"); gotDB != want {
 		t.Fatalf("MCP db path = %q, want %q", gotDB, want)
 	}
+	wantCLI, err := cli.MCPStorePath()
+	if err != nil {
+		t.Fatalf("cli.MCPStorePath() error = %v", err)
+	}
+	if gotDB != wantCLI {
+		t.Fatalf("MCP db path = %q, want cli.MCPStorePath() %q", gotDB, wantCLI)
+	}
 }
+
+{{- if and .Auth.Type (ne .Auth.Type "none") .Auth.CanonicalEnvVar}}
+func TestMCPDBPathUsesCredentialScopedStore(t *testing.T) {
+	resetMCPPathEnv(t)
+	t.Setenv("{{.Auth.CanonicalEnvVar.Name}}", "scope-secret")
+
+	got, err := mcpDBPath()
+	if err != nil {
+		t.Fatalf("mcpDBPath() error = %v", err)
+	}
+	wantCLI, err := cli.MCPStorePath()
+	if err != nil {
+		t.Fatalf("cli.MCPStorePath() error = %v", err)
+	}
+	if got != wantCLI {
+		t.Fatalf("MCP db path = %q, want cli.MCPStorePath() %q", got, wantCLI)
+	}
+	base := filepath.Base(got)
+	if !strings.HasPrefix(base, "data-") || !strings.HasSuffix(base, ".db") || base == "data.db" {
+		t.Fatalf("MCP db path = %q, want data-<hash>.db", got)
+	}
+
+	legacy := filepath.Join(filepath.Dir(got), "data.db")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatalf("create data dir: %v", err)
+	}
+	if err := os.WriteFile(legacy, []byte{}, 0o600); err != nil {
+		t.Fatalf("write legacy data.db: %v", err)
+	}
+	got, err = mcpDBPath()
+	if err != nil {
+		t.Fatalf("mcpDBPath() after legacy file error = %v", err)
+	}
+	if got != legacy {
+		t.Fatalf("MCP db path = %q, want existing unscoped %q", got, legacy)
+	}
+}
+{{- end}}
 
 func resetMCPPathEnv(t *testing.T) string {
 	t.Helper()

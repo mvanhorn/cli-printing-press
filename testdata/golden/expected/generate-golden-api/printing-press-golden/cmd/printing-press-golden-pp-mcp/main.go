@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/server"
 	"printing-press-golden-pp-cli/internal/cli"
@@ -84,8 +85,9 @@ func main() {
 		}
 		inner := server.NewStreamableHTTPServer(s)
 		httpSrv := &http.Server{
-			Addr:    bindAddr,
-			Handler: requireBearerAuth(token, inner),
+			Addr:              bindAddr,
+			Handler:           requireBearerAuth(token, inner),
+			ReadHeaderTimeout: 10 * time.Second,
 		}
 		fmt.Fprintf(os.Stderr, "printing-press-golden-pp-mcp serving MCP over streamable HTTP at %s (Authorization: Bearer $%s)\n", bindAddr, httpTokenEnvVar)
 		if *tlsCert != "" {

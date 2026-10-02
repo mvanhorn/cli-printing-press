@@ -19,6 +19,7 @@ func newThingsListCmd(flags *rootFlags) *cobra.Command {
 		Use:         "list",
 		Short:       "List things via GraphQL",
 		Example:     "  graphql-shared-golden-pp-cli things list",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "things.list", "pp:method": "POST", "pp:path": "/graphql", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {

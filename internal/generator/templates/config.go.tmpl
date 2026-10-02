@@ -624,7 +624,7 @@ func (c *Config) AuthHeader() string {
 		})
 		{{- else}}
 		{{- if $.Auth.Prefix}}
-		return {{printf "%q" (printf "%s " $.Auth.Prefix)}} + c.{{resolveEnvVarField .Name}}
+		return ensureAuthScheme({{printf "%q" $.Auth.Prefix}}, c.{{resolveEnvVarField .Name}})
 		{{- else}}
 		return c.{{resolveEnvVarField .Name}}
 		{{- end}}
@@ -684,7 +684,7 @@ func (c *Config) AuthHeader() string {
 	return applyAuthFormat({{printf "%q" .Auth.Format}}, replacements)
 	{{- else if $canonicalEnvVar}}
 	{{- if .Auth.Prefix}}
-	return {{printf "%q" (printf "%s " .Auth.Prefix)}} + token
+	return ensureAuthScheme({{printf "%q" .Auth.Prefix}}, token)
 	{{- else}}
 	return token
 	{{- end}}
@@ -1128,7 +1128,7 @@ func basicAuthPayload(format string, replacements map[string]string, appendColon
 }
 {{- end}}
 
-{{- if or (eq .Auth.Type "composed") (eq .Auth.Type "cookie")}}
+{{- if or (or (eq .Auth.Type "composed") (eq .Auth.Type "cookie")) (and (and (eq .Auth.Type "api_key") .Auth.Prefix) (not .Auth.Format))}}
 
 // ensureAuthScheme returns "<scheme> <token>" but skips the prefix when the
 // token already carries it case-insensitively, so a user who exports the

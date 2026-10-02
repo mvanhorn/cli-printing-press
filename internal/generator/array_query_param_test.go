@@ -55,7 +55,7 @@ func TestGeneratedArrayQueryParamUsesRepeatedKeysByDefault(t *testing.T) {
 
 	binaryPath := filepath.Join(outputDir, "array-query-param-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/array-query-param-pp-cli")
-	runGeneratedBinary(t, binaryPath, "foods", "get", "--fdc-ids", "534358,373052")
+	runGeneratedBinary(t, binaryPath, "foods", "--fdc-ids", "534358,373052")
 	require.Equal(t, []string{"534358", "373052"}, <-requests)
 }
 
@@ -139,7 +139,7 @@ func TestArrayQuerySerialization(t *testing.T) {
 
 	binaryPath := filepath.Join(outputDir, "array-query-mcp-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/array-query-mcp-pp-cli")
-	runGeneratedBinary(t, binaryPath, "foods", "get")
+	runGeneratedBinary(t, binaryPath, "foods")
 	require.Equal(t, []string{"534358", "373052"}, <-requests)
 }
 
@@ -184,7 +184,7 @@ func TestGeneratedArrayQueryParamHonorsFormExplodeFalse(t *testing.T) {
 
 	binaryPath := filepath.Join(outputDir, "compact-array-query-param-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/compact-array-query-param-pp-cli")
-	runGeneratedBinary(t, binaryPath, "foods", "get", "--fdc-ids", "534358,373052")
+	runGeneratedBinary(t, binaryPath, "foods", "--fdc-ids", "534358,373052")
 
 	require.Contains(t, <-requestURIs, "fdcIds=534358%2C373052")
 }
