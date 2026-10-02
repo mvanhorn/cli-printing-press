@@ -25,6 +25,7 @@ func newRendersSubmitCmd(flags *rootFlags) *cobra.Command {
 		Aliases:     []string{"create"},
 		Short:       "Submit a render job",
 		Example:     "  async-job-pp-cli renders submit",
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "renders.submit", "pp:method": "POST", "pp:path": "/renders"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {
