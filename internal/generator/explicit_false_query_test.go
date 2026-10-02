@@ -69,6 +69,8 @@ func TestNonPaginatedGetSendsExplicitFalseAndRejectsStrayPositionals(t *testing.
 	assert.Contains(t, promotedSrc, `cmd.Flags().Changed("threshold") || flagThreshold != 0`)
 	assert.Contains(t, promotedSrc, "cobra.MaximumNArgs(1)")
 
+	requireGeneratedCompiles(t, outputDir)
+
 	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
 	home := t.TempDir()
