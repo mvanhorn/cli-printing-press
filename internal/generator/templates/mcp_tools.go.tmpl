@@ -803,10 +803,10 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				params[k] = formatMCPParamValue(v)
 			}
 		}
-
-{{- if $hasNestedRequiredDefault}}
+{{if $hasNestedRequiredDefault}}
 		applyMCPNestedRequiredDefaults(bodyArgs, args, bindings)
-{{- end}}
+{{end}}
+
 		var data json.RawMessage
 		switch method {
 		case "GET":
