@@ -32,7 +32,7 @@ Resolution prefers the manifest over re-derivation so regens by others don't ove
 
 ## Transition window: legacy fields are dual-written
 
-`owner` / `owner_name` / `printer` / `printer_name` are still emitted (derived from `creator`) so older skills and library tooling that read them keep working — this change is additive (`feat`, not breaking). `min-binary-version` stays at the major baseline (`4.0.0`); the additive `contributors add` step degrades gracefully on a binary that predates it. A future major removes the legacy write — that removal is the breaking change.
+`owner` / `owner_name` / `printer` / `printer_name` are still emitted (derived from `creator`) so older skills and library tooling that read them keep working — this change is additive (`feat`, not breaking). `contributors add` degrades gracefully on a binary that predates it, so that command did not by itself raise `min-binary-version`. A future major removes the legacy write — that removal is the breaking change.
 
 ## Never hand-edit attribution
 

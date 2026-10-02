@@ -2,7 +2,7 @@
 name: printing-press
 description: Set up a new integration, connector, or CLI binding for any API. Wrap or generate a ship-ready Go CLI from an OpenAPI, HAR, or Postman spec via the lean research -> generate -> build -> shipcheck loop. Use when the user says build a CLI, wrap this API, set up a new integration, add a connector, integrate with a service, or names an API by domain.
 version: 3.0.0
-min-binary-version: "4.0.0"
+min-binary-version: "4.33.0"
 allowed-tools:
   - Bash
   - Read

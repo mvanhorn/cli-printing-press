@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/semver"
 	"gopkg.in/yaml.v3"
 )
 
@@ -78,11 +79,15 @@ func TestVersionConsistencyAcrossFiles(t *testing.T) {
 		"plugin.json and version.go hardcoded version must match")
 }
 
-func TestInternalSkillMinimumBinaryVersionsTrackMajor(t *testing.T) {
-	// min-binary-version is the skill-requires-binary floor and tracks the
-	// major. Skill frontmatter `version` is the reverse contract (see
+func TestInternalSkillMinimumBinaryVersions(t *testing.T) {
+	// min-binary-version is the skill-requires-binary floor. Sibling skills
+	// that do not document newer binary capabilities stay on the major
+	// baseline. printing-press moves when its phase text depends on a newer
+	// release; frontmatter, the setup comment, and _min_binary_version= must
+	// match. Skill frontmatter `version` is the reverse contract (see
 	// TestPrintingPressSkillVersionMatchesBinaryFloor).
-	want := fmt.Sprintf("%d.0.0", majorVersion(t, version.Version))
+	majorFloor := fmt.Sprintf("%d.0.0", majorVersion(t, version.Version))
+	const liveHappyPathFloor = "4.33.0"
 	paths := []struct {
 		frontmatter string
 		setup       string
@@ -95,6 +100,7 @@ func TestInternalSkillMinimumBinaryVersionsTrackMajor(t *testing.T) {
 
 	frontmatterRe := regexp.MustCompile(`(?m)^min-binary-version:\s*"?([^"\n]+)"?\s*$`)
 	commentRe := regexp.MustCompile(`(?m)^# min-binary-version:\s*([^\s]+)\s*$`)
+	assignRe := regexp.MustCompile(`(?m)^_min_binary_version=([^\s]+)\s*$`)
 	for _, paths := range paths {
 		t.Run(paths.frontmatter, func(t *testing.T) {
 			data, err := os.ReadFile(paths.frontmatter)
@@ -103,13 +109,23 @@ func TestInternalSkillMinimumBinaryVersionsTrackMajor(t *testing.T) {
 
 			frontmatter := frontmatterRe.FindStringSubmatch(content)
 			require.Len(t, frontmatter, 2, "skill must declare min-binary-version frontmatter")
-			assert.Equal(t, want, frontmatter[1])
+			require.True(t, semver.IsValid("v"+frontmatter[1]), "min-binary-version must be major.minor.patch")
 
 			setupData, err := os.ReadFile(paths.setup)
 			require.NoError(t, err)
 			comment := commentRe.FindStringSubmatch(string(setupData))
 			require.Len(t, comment, 2, "setup contract must duplicate min-binary-version")
 			assert.Equal(t, frontmatter[1], comment[1])
+
+			if paths.frontmatter == "../../skills/printing-press/SKILL.md" {
+				assert.False(t, semver.Compare("v"+frontmatter[1], "v"+liveHappyPathFloor) < 0,
+					"printing-press min-binary-version must cover pp:live-happy-path (%s)", liveHappyPathFloor)
+				assign := assignRe.FindStringSubmatch(string(setupData))
+				require.Len(t, assign, 2, "setup contract must assign _min_binary_version")
+				assert.Equal(t, frontmatter[1], assign[1])
+				return
+			}
+			assert.Equal(t, majorFloor, frontmatter[1])
 		})
 	}
 }
