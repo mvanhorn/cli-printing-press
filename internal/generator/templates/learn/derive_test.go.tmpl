@@ -494,6 +494,64 @@ func TestDeriveFlagCorrections_RejectedSignatureTombstoneBlocksReplay(t *testing
 	}
 }
 
+func TestDeriveFlagCorrections_ReplayedBatchDoesNotDoubleCount(t *testing.T) {
+	withJournalHome(t)
+	dbPath := deriveDBPath(t)
+	flagExists := flagExistsInTree(newDeriveCommandTree(false))
+
+	appendDeriveEntry(t, failedDateEntry("sess-a", deriveTS(10*time.Minute)))
+	appendDeriveEntry(t, correctedDatesEntry("sess-a", deriveTS(9*time.Minute)))
+	if err := learn.DeriveFlagCorrections(deriveOpener(dbPath), flagExists); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	rows := listCandidateRows(t, dbPath)
+	if len(rows) != 1 || rows[0].Sightings != 1 {
+		t.Fatalf("after first pass rows=%+v, want one row with 1 sighting", rows)
+	}
+
+	// The file cursor is only the read position. Rewinding it is the
+	// crash window where sightings committed and the offset file did not.
+	if err := learn.StoreJournalOffset(learn.JournalOffset{}); err != nil {
+		t.Fatalf("rewind offset: %v", err)
+	}
+	if err := learn.DeriveFlagCorrections(deriveOpener(dbPath), flagExists); err != nil {
+		t.Fatalf("replay pass: %v", err)
+	}
+	rows = listCandidateRows(t, dbPath)
+	if len(rows) != 1 {
+		t.Fatalf("candidate rows = %d, want 1 after replay", len(rows))
+	}
+	if rows[0].Sightings != 1 {
+		t.Errorf("sightings = %d, want 1 after replaying the same batch", rows[0].Sightings)
+	}
+
+	// A new journal tail appended while the file cursor is still behind
+	// the stored cursor must count once, without applying the prefix again.
+	if err := learn.StoreJournalOffset(learn.JournalOffset{}); err != nil {
+		t.Fatalf("rewind offset before tail: %v", err)
+	}
+	appendDeriveEntry(t, failedDateEntry("sess-b", deriveTS(5*time.Minute)))
+	appendDeriveEntry(t, correctedDatesEntry("sess-b", deriveTS(4*time.Minute)))
+	if err := learn.DeriveFlagCorrections(deriveOpener(dbPath), flagExists); err != nil {
+		t.Fatalf("grown-batch pass: %v", err)
+	}
+	rows = listCandidateRows(t, dbPath)
+	if len(rows) != 1 {
+		t.Fatalf("candidate rows = %d, want 1 after the new observation", len(rows))
+	}
+	if rows[0].Sightings != 2 {
+		t.Errorf("sightings = %d, want 2 (replayed prefix once, new correction once)", rows[0].Sightings)
+	}
+
+	if err := learn.DeriveFlagCorrections(deriveOpener(dbPath), flagExists); err != nil {
+		t.Fatalf("settled pass: %v", err)
+	}
+	rows = listCandidateRows(t, dbPath)
+	if len(rows) != 1 || rows[0].Sightings != 2 {
+		t.Fatalf("after cursor caught up rows=%+v, want 1 row with 2 sightings", rows)
+	}
+}
+
 func TestDeriveFlagCorrections_OffsetAdvancesSoSecondPassDerivesNothing(t *testing.T) {
 	withJournalHome(t)
 	dbPath := deriveDBPath(t)

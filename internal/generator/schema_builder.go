@@ -96,6 +96,7 @@ var learnStoreObjectNames = map[string]struct{}{
 	"learning_playbooks":             {},
 	"learn_candidates":               {},
 	"learn_events":                   {},
+	"learn_derive_offset":            {},
 	"learn_recall_misses":            {},
 	"idx_learn_query":                {},
 	"idx_learn_unique":               {},

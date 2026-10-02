@@ -73,6 +73,7 @@ func TestBuildSchemaRoutesReservedStoreTablesToGenericOnly(t *testing.T) {
 		{name: "generic resources table", resource: "resources"},
 		{name: "fts shadow table", resource: "resources_fts_data"},
 		{name: "lazy learn table", resource: "learn_recall_misses", learn: true},
+		{name: "lazy derive offset table", resource: "learn_derive_offset", learn: true},
 		{name: "disabled learn table remains reserved", resource: "search_learnings"},
 		{name: "framework index", resource: "idx_resources_type"},
 		{name: "stream frames table", resource: "collision_a_p_i_stream_frames", streaming: true},

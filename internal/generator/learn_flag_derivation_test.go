@@ -45,6 +45,10 @@ func TestGenerateFlagDerivation_EmitsFiles(t *testing.T) {
 		"LoadJournalOffset()",
 		"ReadJournalFrom(",
 		"StoreJournalOffset(",
+		// Sightings and the consumed cursor commit together, and the
+		// file cursor write is serialized with the read.
+		"CommitFlagCorrections(",
+		"cliutil.WithFileLock(",
 		// The documented pairing window.
 		"flagCorrectionWindow",
 		// Skipped under the same switches the journal honors.
