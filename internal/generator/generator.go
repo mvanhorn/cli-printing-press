@@ -8366,10 +8366,8 @@ func paramPresenceExpr(p spec.Param) string {
 	return fmt.Sprintf("(%s || flag%s != %s)", flagChangedExpr(p), toCamel(paramIdent(p)), zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
 }
 
-// endpointArgsExpr rejects surplus positionals so `--flag false` cannot
-// parse as `--flag=true` plus a stray arg. Too-few args stay in RunE.
-// Commands with positionals also reject a boolean word that filled a
-// missing ID, and they emit the JSON usage envelope before RunE.
+// ExactArgs would surface a missing ID as plain text before RunE can write
+// the JSON usage envelope. NoOptDefVal can still fill that slot from `--flag false`.
 func endpointArgsExpr(e spec.Endpoint) string {
 	n := len(orderedPositionalParams(e))
 	if n == 0 {
