@@ -56,6 +56,14 @@ func newMediaPromotedCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
+			// --agent, --select, and --compact run inside the formatter. Stamping
+			// first lets that wrapper hide dry_run and action under results.
+			// The outer format checks keep --csv/--plain/--quiet out of the
+			// JSON stamper even when --json is also set; the inner clause is
+			// the shared piped-output escape hatch.
+			if flags.dryRun && !flags.csv && !flags.plain && !flags.quiet && (flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !flags.csv && !flags.quiet && !flags.plain)) {
+				return printStampedDryRunOutput(cmd.OutOrStdout(), data, flags, map[string]any{"source": "live"}, "post", nil)
+			}
 			formatData := data
 			if flags.csv || flags.plain {
 				formatData = outputData

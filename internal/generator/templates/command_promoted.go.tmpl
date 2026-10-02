@@ -9,6 +9,8 @@
 {{- $deleteBodyWithoutParams := and (eq $method "DELETE") $hasJSONBody (not (endpointHasRequestParams .Endpoint))}}
 {{- $isReadVerb := or (eq $method "GET") (eq $method "HEAD") (eq $method "OPTIONS")}}
 {{- $isWriteVerb := or (eq $method "POST") (eq $method "PUT") (eq $method "PATCH")}}
+{{- /* Same gate as command_endpoint.go.tmpl $isMutationOutput. */}}
+{{- $isMutationOutput := and (not .IsReadOnly) (not (or (eq $method "GET") (eq $method "HEAD")))}}
 {{- $canWriteBack := and .HasStore $isWriteVerb (not .IsReadOnly) (not .Endpoint.UsesBinaryResponse) (not .Endpoint.UsesTextResponse)}}
 {{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk") (eq $method "GET") .IsReadOnly}}
 {{- $dataSourceStrategy := dataSourceStrategy .Resource .Endpoint}}
@@ -607,6 +609,17 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				if wrapErr != nil {
 					return wrapErr
 				}
+{{- if $isMutationOutput}}
+				// Stamp after provenance and platform wrapping so those wrappers
+				// cannot hide dry_run and action under results.
+				if flags.dryRun {
+					stamped, stampErr := stampDryRunEnvelope(wrapped, "{{lower .Endpoint.Method}}")
+					if stampErr != nil {
+						return stampErr
+					}
+					wrapped = stamped
+				}
+{{- end}}
 				if err := printOutput(cmd.OutOrStdout(), wrapped, true); err != nil {
 					return err
 				}
@@ -625,6 +638,16 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
+{{- if and $isMutationOutput (not .HasStore)}}
+			// --agent, --select, and --compact run inside the formatter. Stamping
+			// first lets that wrapper hide dry_run and action under results.
+			// The outer format checks keep --csv/--plain/--quiet out of the
+			// JSON stamper even when --json is also set; the inner clause is
+			// the shared piped-output escape hatch.
+			if flags.dryRun && !flags.csv && !flags.plain && !flags.quiet && (flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !flags.csv && !flags.quiet && !flags.plain)) {
+				return printStampedDryRunOutput(cmd.OutOrStdout(), data, flags, map[string]any{"source": "live"}, "{{lower .Endpoint.Method}}", {{$documentedFields}})
+			}
+{{- end}}
 			formatData := data
 			if flags.csv || flags.plain {
 				formatData = outputData

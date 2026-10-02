@@ -877,6 +877,7 @@ type HelperFlags struct {
 	HasRequiredRoles     bool // spec has per-endpoint requires_role gates → emit persona helpers
 	HasCreateCommands    bool // spec has POST/PUT/PATCH write endpoints → emit create retry helpers
 	HasRawRequest        bool // spec has non-JSON request bodies → emit raw file/stdin reader
+	HasPromotedMutations bool // promoted write commands stamp a dry-run envelope; omit the helper otherwise
 }
 
 // computeHelperFlags scans the spec's resources to determine which helpers are needed.
@@ -973,6 +974,26 @@ func partialFailureEmissionFlags(apiSpec *spec.APISpec, promotedCommands []Promo
 	}
 
 	return hasSupport, hasTypedErr
+}
+
+// The dry-run helpers are dead code unless command_promoted.go.tmpl calls
+// them. That call uses the same mutation check, so a mismatch either fails
+// to compile or leaves an unused func for dead-code scoring to strip.
+func promotedCommandsIncludeMutation(apiSpec *spec.APISpec, commands []PromotedCommand) bool {
+	if apiSpec == nil {
+		return false
+	}
+	shared := sharedGETRPCPaths(apiSpec.Resources)
+	for _, command := range commands {
+		if endpointIsReadCommandShared(command.Endpoint, command.EndpointName, shared) {
+			continue
+		}
+		if !isMutationMethod(command.Endpoint.Method) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func promotedCommandCanDetectPartialFailure(command PromotedCommand, hasStore bool) bool {
@@ -2889,6 +2910,7 @@ func (g *Generator) renderSingleFiles() error {
 			hFlags.HasStorePath = g.VisionSet.Store
 			hFlags.HasSyncHelpers = g.hasGeneratedSyncImplementation()
 			hFlags.HasResponseUnwrap = g.hasDataLayer() && promotedCommandsCanUnwrapResponse(g.PromotedCommands, g.Spec.Types)
+			hFlags.HasPromotedMutations = promotedCommandsIncludeMutation(g.Spec, g.PromotedCommands)
 			data = &helpersTemplateData{
 				APISpec:        g.Spec,
 				HelperFlags:    hFlags,
