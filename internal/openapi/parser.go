@@ -5630,7 +5630,8 @@ func mapBodyFieldsDepth(schema *openapi3.Schema, inferCSVArrays bool, visited ma
 // assignBodySchemaDefault copies an OpenAPI schema default onto a body
 // field. Optional defaults are server assumptions: help shows them, and
 // the request omits them until the caller sets the value. Required
-// defaults stay client-sent.
+// defaults stay client-sent once the enclosing object is included; a
+// prefilled child must not by itself put an omitted object on the wire.
 func assignBodySchemaDefault(param *spec.Param, schema *openapi3.Schema) {
 	if param == nil || schema == nil || schema.Default == nil {
 		return

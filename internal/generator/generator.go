@@ -452,6 +452,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"hasMCPNestedBodyPath":         hasMCPNestedBodyPath,
 		"hasMCPJSONOrScalarBody":       hasMCPJSONOrScalarBody,
 		"hasMCPParamDefault":           hasMCPParamDefault,
+		"hasMCPNestedRequiredDefault":  hasMCPNestedRequiredDefault,
 		"publicFlagName":               publicFlagName,
 		"publicFlagAliases":            publicFlagAliases,
 		"flagChangedExpr":              flagChangedExpr,
@@ -7228,6 +7229,10 @@ type mcpParamBinding struct {
 	DeepObjectQuery    bool
 	RequestContentType string
 	Default            string
+	// DefaultScope is the object path that must already be present before
+	// Default is applied. It keeps a required child's schema default off
+	// the wire until the caller supplies some field of that object.
+	DefaultScope []string
 }
 
 func flagChangedExpr(p spec.Param) string {
@@ -7452,15 +7457,22 @@ func appendMCPBodyBindings(bindings *[]mcpParamBinding, endpoint spec.Endpoint, 
 		}
 		return
 	}
-	collectMCPBodyBindings(bindings, flattenCollidingBodyFields(endpoint.Body), 0, "", nil, requestContentType)
+	collectMCPBodyBindings(bindings, flattenCollidingBodyFields(endpoint.Body), 0, "", nil, requestContentType, nil)
 }
 
-func collectMCPBodyBindings(bindings *[]mcpParamBinding, body []spec.Param, depth int, flagPrefix string, bodyPath []string, requestContentType string) {
+func collectMCPBodyBindings(bindings *[]mcpParamBinding, body []spec.Param, depth int, flagPrefix string, bodyPath []string, requestContentType string, optionalScope []string) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
 			if depth+1 < maxBodyFlagDepth {
 				nextPath := append(slices.Clone(bodyPath), p.BodyWireName())
-				collectMCPBodyBindings(bindings, p.Fields, depth+1, joinFlag(flagPrefix, publicFlagName(p)), nextPath, requestContentType)
+				nextScope := optionalScope
+				if !p.Required {
+					// This object is the nearest optional ancestor. Required
+					// defaults under it apply only after the caller supplies
+					// some field of this object.
+					nextScope = nextPath
+				}
+				collectMCPBodyBindings(bindings, p.Fields, depth+1, joinFlag(flagPrefix, publicFlagName(p)), nextPath, requestContentType, nextScope)
 				continue
 			}
 		}
@@ -7479,6 +7491,12 @@ func collectMCPBodyBindings(bindings *[]mcpParamBinding, body []spec.Param, dept
 		}
 		if len(bodyPath) > 0 {
 			binding.BodyPath = append(append([]string(nil), bodyPath...), p.BodyWireName())
+		}
+		if len(optionalScope) > 0 && bodyScalarRequiredDefault(p) {
+			if literal, ok := mcpJSONDefaultLiteral(p); ok {
+				binding.Default = literal
+				binding.DefaultScope = append([]string(nil), optionalScope...)
+			}
 		}
 		*bindings = append(*bindings, binding)
 	}
@@ -7582,6 +7600,48 @@ func endpointHasMCPParamDefault(endpoint spec.Endpoint, pathTemplate string) boo
 		}
 	}
 	return false
+}
+
+func hasMCPNestedRequiredDefault(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointHasMCPNestedRequiredDefault)
+}
+
+func endpointHasMCPNestedRequiredDefault(endpoint spec.Endpoint) bool {
+	if endpoint.BodyJSONFallback || bodyUsesFlatEmission(endpoint) {
+		return false
+	}
+	return bodyHasNestedRequiredDefault(flattenCollidingBodyFields(endpoint.Body), 0, false)
+}
+
+func bodyHasNestedRequiredDefault(body []spec.Param, depth int, underOptional bool) bool {
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 && depth+1 < maxBodyFlagDepth {
+			if bodyHasNestedRequiredDefault(p.Fields, depth+1, underOptional || !p.Required) {
+				return true
+			}
+			continue
+		}
+		if underOptional && bodyScalarRequiredDefault(p) {
+			if _, ok := mcpJSONDefaultLiteral(p); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// mcpJSONDefaultLiteral is the JSON text of a client-sent body default.
+// The MCP handler decodes it so a string default is not sent with extra quotes
+// and a numeric default stays a JSON number.
+func mcpJSONDefaultLiteral(p spec.Param) (string, bool) {
+	if p.Default == nil {
+		return "", false
+	}
+	raw, err := json.Marshal(p.Default)
+	if err != nil || len(raw) == 0 || string(raw) == "null" {
+		return "", false
+	}
+	return string(raw), true
 }
 
 func hasMCPParamDefault(apiSpec *spec.APISpec) bool {
@@ -7937,22 +7997,32 @@ func bodyJSONFallbackMap(endpoint spec.Endpoint, indent, bodyVar string) string 
 }
 
 func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, mapVar, identPrefix, flagPrefix string) {
+	renderBodyMapMode(b, body, depth, indent, mapVar, identPrefix, flagPrefix, false)
+}
+
+func renderBodyMapMode(b *strings.Builder, body []spec.Param, depth int, indent, mapVar, identPrefix, flagPrefix string, parentSupplied bool) {
 	for _, p := range body {
 		id := paramIdent(p)
 		ident := identPrefix + toCamel(id)
 		flag := joinFlag(flagPrefix, publicFlagName(p))
-		if p.Type == "object" && len(p.Fields) > 0 {
-			if depth+1 < maxBodyFlagDepth {
-				nestedMap := "nested" + ident
-				fmt.Fprintf(b, "%s{\n", indent)
-				fmt.Fprintf(b, "%s\t%s := map[string]any{}\n", indent, nestedMap)
-				renderBodyMap(b, p.Fields, depth+1, indent+"\t", nestedMap, ident, flag)
-				fmt.Fprintf(b, "%s\tif len(%s) > 0 {\n", indent, nestedMap)
-				fmt.Fprintf(b, "%s\t\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), nestedMap)
-				fmt.Fprintf(b, "%s\t}\n", indent)
-				fmt.Fprintf(b, "%s}\n", indent)
+		if p.Type == "object" && len(p.Fields) > 0 && depth+1 < maxBodyFlagDepth {
+			if !p.Required && optionalObjectHasRequiredDefault(p.Fields, depth+1) {
+				renderSuppliedOptionalObject(b, p, depth, indent, mapVar, identPrefix, flagPrefix)
 				continue
 			}
+			nestedMap := "nested" + ident
+			fmt.Fprintf(b, "%s{\n", indent)
+			fmt.Fprintf(b, "%s\t%s := map[string]any{}\n", indent, nestedMap)
+			renderBodyMapMode(b, p.Fields, depth+1, indent+"\t", nestedMap, ident, flag, parentSupplied && p.Required)
+			fmt.Fprintf(b, "%s\tif len(%s) > 0 {\n", indent, nestedMap)
+			fmt.Fprintf(b, "%s\t\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), nestedMap)
+			fmt.Fprintf(b, "%s\t}\n", indent)
+			fmt.Fprintf(b, "%s}\n", indent)
+			continue
+		}
+		if parentSupplied && bodyScalarRequiredDefault(p) {
+			fmt.Fprintf(b, "%s%s[%q] = body%s\n", indent, mapVar, p.BodyWireName(), ident)
+			continue
 		}
 		if isStringCSVArrayParam(p) {
 			fmt.Fprintf(b, "%sif cmd.Flags().Changed(%q) {\n", indent, flag)
@@ -8111,11 +8181,15 @@ func bodyHasRequiredJSONFields(fields []spec.Param) bool {
 	return false
 }
 
-func bodyLeafPresenceExpr(p spec.Param, ident, flag string) string {
-	changed := fmt.Sprintf("cmd.Flags().Changed(%q)", flag)
+func bodyFlagChangedExpr(p spec.Param, flag string) string {
 	if flag == publicFlagName(p) {
-		changed = flagChangedExpr(p)
+		return flagChangedExpr(p)
 	}
+	return fmt.Sprintf("cmd.Flags().Changed(%q)", flag)
+}
+
+func bodyLeafPresenceExpr(p spec.Param, ident, flag string) string {
+	changed := bodyFlagChangedExpr(p, flag)
 	if (p.Type == "boolean" || p.Type == "bool") && (!p.Required || p.Default != nil) {
 		return changed
 	}
@@ -8384,9 +8458,104 @@ func bodyFieldsChangedExpr(body []spec.Param, depth int, flagPrefix, identPrefix
 				continue
 			}
 		}
+		if bodyDefaultForcesPresence(p) {
+			// The flag variable is already the schema default. A nonzero
+			// prefill must not count as the caller supplying the object.
+			expressions = append(expressions, bodyFlagChangedExpr(p, flag))
+			continue
+		}
 		expressions = append(expressions, bodyLeafPresenceExpr(p, ident, flag))
 	}
 	return strings.Join(expressions, " || ")
+}
+
+// renderSuppliedOptionalObject emits an optional object only after the
+// caller sets some field. Required children with schema defaults are then
+// copied in, so a partial object keeps the fields the API requires and an
+// omitted object stays off the wire.
+func renderSuppliedOptionalObject(b *strings.Builder, p spec.Param, depth int, indent, mapVar, identPrefix, flagPrefix string) {
+	ident := identPrefix + toCamel(paramIdent(p))
+	flag := joinFlag(flagPrefix, publicFlagName(p))
+	nestedMap := "nested" + ident
+	activation := bodyFieldsChangedExpr(p.Fields, depth+1, flag, ident)
+	if activation == "" {
+		return
+	}
+	fmt.Fprintf(b, "%s{\n", indent)
+	fmt.Fprintf(b, "%s\tif %s {\n", indent, activation)
+	fmt.Fprintf(b, "%s\t\t%s := map[string]any{}\n", indent, nestedMap)
+	renderBodyMapMode(b, p.Fields, depth+1, indent+"\t\t", nestedMap, ident, flag, true)
+	fmt.Fprintf(b, "%s\t\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), nestedMap)
+	fmt.Fprintf(b, "%s\t}\n", indent)
+	fmt.Fprintf(b, "%s}\n", indent)
+}
+
+func optionalObjectHasRequiredDefault(fields []spec.Param, depth int) bool {
+	for _, p := range fields {
+		if p.Type == "object" && len(p.Fields) > 0 && depth+1 < maxBodyFlagDepth {
+			if p.Required && optionalObjectHasRequiredDefault(p.Fields, depth+1) {
+				return true
+			}
+			continue
+		}
+		if bodyScalarRequiredDefault(p) {
+			return true
+		}
+	}
+	return false
+}
+
+func bodyScalarRequiredDefault(p spec.Param) bool {
+	if !p.Required || !paramHasDefault(p) {
+		return false
+	}
+	switch primitiveKind(p.Type) {
+	case "string", "bool", "int", "float":
+		return true
+	default:
+		return false
+	}
+}
+
+// bodyDefaultForcesPresence reports a required schema default that the
+// cobra flag prefills to a non-zero value. The body presence check
+// `value != zero` is then true even when the caller never set the flag.
+func bodyDefaultForcesPresence(p spec.Param) bool {
+	if !bodyScalarRequiredDefault(p) {
+		return false
+	}
+	switch primitiveKind(p.Type) {
+	case "bool":
+		return false
+	case "string":
+		return strings.TrimSpace(fmt.Sprint(p.Default)) != ""
+	case "int", "float":
+		return !numericDefaultIsZero(p.Default)
+	default:
+		return false
+	}
+}
+
+func numericDefaultIsZero(v any) bool {
+	switch n := v.(type) {
+	case int:
+		return n == 0
+	case int64:
+		return n == 0
+	case float32:
+		return n == 0
+	case float64:
+		return n == 0
+	case json.Number:
+		f, err := n.Float64()
+		return err != nil || f == 0
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
+		return err != nil || f == 0
+	default:
+		f, err := strconv.ParseFloat(strings.TrimSpace(fmt.Sprint(v)), 64)
+		return err != nil || f == 0
+	}
 }
 
 func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagPrefix, identPrefix string, topLevel bool) {

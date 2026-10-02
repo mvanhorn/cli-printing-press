@@ -146,6 +146,9 @@ func TestGeneratedOpenAPIOptionalDefaultsStayOffTheWire(t *testing.T) {
 	assert.Contains(t, createSrc, `Changed("settings-mode")`)
 	assert.Contains(t, createSrc, `"settings-kind", "box"`)
 	assert.NotContains(t, createSrc, `"settings-mode", "compact"`)
+	assert.Contains(t, createSrc, `cmd.Flags().Changed("settings-kind") || (cmd.Flags().Changed("settings-mode") || bodySettingsMode != "")`)
+	assert.Contains(t, createSrc, `nestedSettings["kind"] = bodySettingsKind`)
+	assert.NotContains(t, createSrc, `bodySettingsKind != ""`)
 
 	assert.NotContains(t, tools, `Default: "milestone"`)
 	assert.NotContains(t, tools, `Default: "full"`)
@@ -159,6 +162,8 @@ func TestGeneratedOpenAPIOptionalDefaultsStayOffTheWire(t *testing.T) {
 	assert.Contains(t, tools, "(default: compact)")
 	assert.NotContains(t, tools, `Default: "compact"`)
 	assert.NotContains(t, tools, `Default: "say`)
+	assert.Contains(t, tools, `Default: "\"box\""`)
+	assert.Contains(t, tools, `DefaultScope: []string{"settings"}`)
 
 	var mu sync.Mutex
 	var got capturedRequest
@@ -247,8 +252,13 @@ func TestGeneratedOpenAPIOptionalDefaultsStayOffTheWire(t *testing.T) {
 	assert.Equal(t, "untitled", scalarString(body["name"]))
 	assert.NotContains(t, body, "resource_subtype")
 	assert.NotContains(t, body, "count")
+	assert.NotContains(t, body, "settings")
+
+	runGeneratedBinary(t, binaryPath, "items", "create", "--json", "--settings-kind", "crate")
+	kindOnly := take()
+	body = decodeObjectBody(t, kindOnly.Body)
 	settings, _ := body["settings"].(map[string]any)
-	assert.Equal(t, "box", scalarString(settings["kind"]))
+	assert.Equal(t, "crate", scalarString(settings["kind"]))
 	assert.NotContains(t, settings, "mode")
 
 	runGeneratedBinary(t, binaryPath, "items", "create", "--json", "--name", "widget", "--resource-subtype", "approval", "--count", "0", "--settings-mode", "compact")
@@ -384,10 +394,8 @@ func TestOpenAPIOptionalDefaultsStayOffMCPWire(t *testing.T) {
 	if _, ok := body["count"]; ok {
 		t.Fatalf("omitted body count = %#v", body["count"])
 	}
-	if settings, ok := body["settings"].(map[string]any); ok {
-		if _, hasMode := settings["mode"]; hasMode {
-			t.Fatalf("omitted settings.mode = %#v", settings)
-		}
+	if _, ok := body["settings"]; ok {
+		t.Fatalf("omitted settings = %#v", body["settings"])
 	}
 	call(t, create.Handler, map[string]any{"name": "widget", "resource_subtype": "approval", "count": 0, "settings-mode": "compact"})
 	body = decodeBody(t, gotBody)
@@ -403,8 +411,17 @@ func TestOpenAPIOptionalDefaultsStayOffMCPWire(t *testing.T) {
 		t.Fatalf("count = %#v", body["count"])
 	}
 	settings, ok := body["settings"].(map[string]any)
-	if !ok || settings["mode"] != "compact" {
+	if !ok || settings["mode"] != "compact" || settings["kind"] != "box" {
 		t.Fatalf("settings = %#v", body["settings"])
+	}
+	call(t, create.Handler, map[string]any{"settings-kind": "crate"})
+	body = decodeBody(t, gotBody)
+	settings, ok = body["settings"].(map[string]any)
+	if !ok || settings["kind"] != "crate" {
+		t.Fatalf("explicit kind settings = %#v", body["settings"])
+	}
+	if _, hasMode := settings["mode"]; hasMode {
+		t.Fatalf("explicit kind included mode = %#v", settings)
 	}
 }
 

@@ -1250,3 +1250,151 @@ func TestBodyRequiredChecks_DepthCap(t *testing.T) {
 		t.Errorf("children inside the boundary JSON object must not emit checks, got:\n%s", got)
 	}
 }
+
+func TestBodyMap_OptionalObjectOmitsRequiredChildDefaultUntilSupplied(t *testing.T) {
+	t.Parallel()
+	got := bodyMap([]spec.Param{{
+		Name: "settings",
+		Type: "object",
+		Fields: []spec.Param{
+			{Name: "mode", Type: "string", Default: "compact", ServerDefault: true},
+			{Name: "kind", Type: "string", Required: true, Default: "box"},
+		},
+	}}, "\t")
+	want := "\t{\n" +
+		"\t\tif (cmd.Flags().Changed(\"settings-mode\") || bodySettingsMode != \"\") || cmd.Flags().Changed(\"settings-kind\") {\n" +
+		"\t\t\tnestedSettings := map[string]any{}\n" +
+		"\t\t\tif (cmd.Flags().Changed(\"settings-mode\") || bodySettingsMode != \"\") {\n" +
+		"\t\t\t\tnestedSettings[\"mode\"] = bodySettingsMode\n" +
+		"\t\t\t}\n" +
+		"\t\t\tnestedSettings[\"kind\"] = bodySettingsKind\n" +
+		"\t\t\tbody[\"settings\"] = nestedSettings\n" +
+		"\t\t}\n" +
+		"\t}\n"
+	require.Equal(t, want, got)
+}
+
+func TestBodyMap_RequiredObjectStillSendsRequiredChildDefault(t *testing.T) {
+	t.Parallel()
+	got := bodyMap([]spec.Param{{
+		Name:     "settings",
+		Type:     "object",
+		Required: true,
+		Fields: []spec.Param{
+			{Name: "kind", Type: "string", Required: true, Default: "box"},
+		},
+	}}, "\t")
+	require.Contains(t, got, `bodySettingsKind != ""`)
+	require.Contains(t, got, `if len(nestedSettings) > 0 {`)
+	require.NotContains(t, got, `cmd.Flags().Changed("settings-kind") {`)
+}
+
+func TestBodyMap_RequiredNestedObjectDefaultFollowsOptionalAncestor(t *testing.T) {
+	t.Parallel()
+	got := bodyMap([]spec.Param{{
+		Name: "settings",
+		Type: "object",
+		Fields: []spec.Param{
+			{Name: "mode", Type: "string"},
+			{
+				Name:     "config",
+				Type:     "object",
+				Required: true,
+				Fields: []spec.Param{
+					{Name: "kind", Type: "string", Required: true, Default: "box"},
+				},
+			},
+		},
+	}}, "\t")
+	require.Contains(t, got, `cmd.Flags().Changed("settings-config-kind")`)
+	require.NotContains(t, got, `bodySettingsConfigKind != ""`)
+	require.Contains(t, got, `nestedSettingsConfig["kind"] = bodySettingsConfigKind`)
+	require.Contains(t, got, `nestedSettings["config"] = nestedSettingsConfig`)
+}
+
+func TestBodyRequiredChecks_RequiredDefaultDoesNotForceOptionalObject(t *testing.T) {
+	t.Parallel()
+	got := bodyRequiredChecks(spec.Endpoint{Body: []spec.Param{{
+		Name: "settings",
+		Type: "object",
+		Fields: []spec.Param{
+			{Name: "name", Type: "string", Required: true},
+			{Name: "kind", Type: "string", Required: true, Default: "box"},
+		},
+	}}}, "\t\t\t")
+	require.Contains(t, got, `if (cmd.Flags().Changed("settings-name") || bodySettingsName != "") || cmd.Flags().Changed("settings-kind") {`)
+	require.NotContains(t, got, `bodySettingsKind != ""`)
+	require.Contains(t, got, `bodySettingsName == ""`)
+}
+
+func TestMCPBodyBindings_RequiredChildDefaultFollowsOptionalParent(t *testing.T) {
+	t.Parallel()
+	bindings := mcpParamBindings(spec.Endpoint{Body: []spec.Param{{
+		Name: "settings",
+		Type: "object",
+		Fields: []spec.Param{
+			{Name: "mode", Type: "string", Default: "compact", ServerDefault: true},
+			{Name: "kind", Type: "string", Required: true, Default: "box"},
+			{Name: "count", Type: "integer", Required: true, Default: 0},
+		},
+	}}}, "/items")
+	byName := map[string]mcpParamBinding{}
+	for _, binding := range bindings {
+		byName[binding.PublicName] = binding
+	}
+	require.Empty(t, byName["settings-mode"].Default)
+	require.Empty(t, byName["settings-mode"].DefaultScope)
+	require.Equal(t, `"box"`, byName["settings-kind"].Default)
+	require.Equal(t, []string{"settings"}, byName["settings-kind"].DefaultScope)
+	require.Equal(t, []string{"settings", "kind"}, byName["settings-kind"].BodyPath)
+	require.Equal(t, "0", byName["settings-count"].Default)
+	require.Equal(t, []string{"settings"}, byName["settings-count"].DefaultScope)
+}
+
+func TestMCPBodyBindings_RequiredGrandchildUsesNearestOptionalAncestor(t *testing.T) {
+	t.Parallel()
+	bindings := mcpParamBindings(spec.Endpoint{Body: []spec.Param{{
+		Name: "settings",
+		Type: "object",
+		Fields: []spec.Param{
+			{
+				Name:     "config",
+				Type:     "object",
+				Required: true,
+				Fields: []spec.Param{
+					{Name: "kind", Type: "string", Required: true, Default: "box"},
+				},
+			},
+			{
+				Name: "meta",
+				Type: "object",
+				Fields: []spec.Param{
+					{Name: "tag", Type: "string", Required: true, Default: "t"},
+				},
+			},
+		},
+	}}}, "/items")
+	byName := map[string]mcpParamBinding{}
+	for _, binding := range bindings {
+		byName[binding.PublicName] = binding
+	}
+	require.Equal(t, []string{"settings"}, byName["settings-config-kind"].DefaultScope)
+	require.Equal(t, []string{"settings", "config", "kind"}, byName["settings-config-kind"].BodyPath)
+	require.Equal(t, []string{"settings", "meta"}, byName["settings-meta-tag"].DefaultScope)
+	require.Equal(t, []string{"settings", "meta", "tag"}, byName["settings-meta-tag"].BodyPath)
+}
+
+func TestMCPBodyBindings_RequiredParentDoesNotScopeChildDefault(t *testing.T) {
+	t.Parallel()
+	bindings := mcpParamBindings(spec.Endpoint{Body: []spec.Param{{
+		Name:     "settings",
+		Type:     "object",
+		Required: true,
+		Fields: []spec.Param{
+			{Name: "kind", Type: "string", Required: true, Default: "box"},
+		},
+	}}}, "/items")
+	require.Len(t, bindings, 1)
+	require.Empty(t, bindings[0].Default)
+	require.Empty(t, bindings[0].DefaultScope)
+}
