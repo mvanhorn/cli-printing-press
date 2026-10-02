@@ -46,10 +46,13 @@ func TestPromotedCommandsIncludeMutationMatchesOutputGate(t *testing.T) {
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(readOnly.Name))
 	gen := New(readOnly, outputDir)
-	gen.VisionSet = VisionTemplateSet{Export: true}
+	// MCP emits internal/mcp, which the always-generated server imports.
+	// Export-only leaves that package empty, so ./... cannot compile.
+	gen.VisionSet = VisionTemplateSet{Export: true, MCP: true}
 	require.NoError(t, gen.Generate())
 	helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
 	require.NotContains(t, helpers, "func stampDryRunEnvelope(")
+	require.NotContains(t, helpers, "func printStampedDryRunOutput(")
 	requireGeneratedCompiles(t, outputDir)
 }
 
