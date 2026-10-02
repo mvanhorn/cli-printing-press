@@ -8220,27 +8220,24 @@ func renderFlatBodyFlagReg(b *strings.Builder, p spec.Param, identPrefix, flagPr
 	}
 }
 
-// bodyRequiredChecks renders required-flag validation for body params,
-// plus unsatisfiable-enum rejection. indent is the indent prefix applied
-// to each emitted `if` line so the helper can serve both
-// command_endpoint.go.tmpl (4-tab indent inside `if !stdinBody`, 3-tab
-// indent for multipart) and command_promoted.go.tmpl (3-tab indent at
-// RunE-body level). Multipart endpoints keep flat behavior. For
-// non-multipart, top-level params use flagChangedExpr (lifts aliases);
-// nested fields use a single Changed() check on the parent-prefixed flag
-// because aliases are not propagated to children. Required fields below
-// an optional object are checked only when any flag in that object was
-// supplied, matching JSON Schema's conditional presence semantics for
-// nested required lists.
+// Disjoint-enum rejection fails only after that flag is set, so it must not
+// count as required input: a bare invocation of an optional-only command
+// would otherwise print help instead of running. The indent prefix fits the
+// same lines into command_endpoint.go.tmpl (deeper inside `if !stdinBody`,
+// shallower for multipart) and command_promoted.go.tmpl (RunE body). Nested
+// fields use a single Changed() check because aliases are not propagated to
+// children. Required fields under an optional object are checked only when
+// some flag in that object was supplied, matching JSON Schema's conditional
+// presence for nested required lists.
 func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
 	var b strings.Builder
 	writeBodyRequiredChecks(&b, endpoint, indent, true)
 	return b.String()
 }
 
-// bodyRequiredPresenceChecks is the required-input half of bodyRequiredChecks.
-// Unsatisfiable-enum rejection runs only when that flag is supplied, so it
-// must not make an otherwise optional command look like it requires input.
+// Bare-invocation help must ignore disjoint-enum rejection. The rejection
+// runs only when the flag is supplied, so an optional-only command still
+// executes with no flags.
 func bodyRequiredPresenceChecks(endpoint spec.Endpoint, indent string) string {
 	var b strings.Builder
 	writeBodyRequiredChecks(&b, endpoint, indent, false)
@@ -8467,20 +8464,19 @@ func endpointHasQueryFlags(endpoint spec.Endpoint) bool {
 	return false
 }
 
-// endpointHasRequiredInput reports whether a bare invocation of the generated
-// command (no flags, no args) would fail a required-input check before
-// reaching the request: a required non-positional flag or a required body
-// field. It gates the empty-invocation help short-circuit so read commands
-// with only optional filters still execute on a bare call instead of printing
-// help. Both halves mirror exactly when the template emits a required check:
+// A bare invocation should still run when every flag is optional. This gates
+// the empty-invocation help short-circuit so read commands with only optional
+// filters execute instead of printing help. Both halves mirror exactly when
+// the template emits a required check:
 // the flag half uses template.IsTrue to match the template's `(not .Default)`
 // gate (so a required flag carrying a non-empty default — which the template
 // lets satisfy itself — does not trigger the guard, just as it emits no
-// required-flag error), and the body half reuses bodyRequiredPresenceChecks,
-// gated on the body-bearing verbs the command template actually emits the
-// body check for (POST/PUT/PATCH/DELETE) so a GET that happens to declare a
-// required body param does not falsely trip the guard. Unsatisfiable-enum
-// checks are excluded: they run only after the flag is supplied.
+// required-flag error), and the body half omits disjoint-enum rejection.
+// That rejection runs only after its flag is supplied, so it must not turn
+// an optional-only command into one that prints help on a bare call. The
+// body check is limited to POST/PUT/PATCH/DELETE, the verbs whose command
+// template emits it, so a GET that declares a required body param does not
+// trip the guard.
 func endpointHasRequiredInput(endpoint spec.Endpoint) bool {
 	for _, p := range endpoint.Params {
 		if paramHasEnvDefault(p) {
