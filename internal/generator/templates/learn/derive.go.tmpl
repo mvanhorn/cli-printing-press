@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -159,34 +160,16 @@ func DeriveFlagCorrections(openStore func() (CandidateStore, error), flagExists 
 // deriveFlagCorrectionsUntilStable drains journal lines that land while
 // this process holds the offset lock. A peer that loses the try-lock
 // will not scan them; leaving them until the next command drops a
-// correction when that peer was the last invocation.
+// correction when that peer was the last invocation. The locked pass
+// reports whether a complete line arrived after the cursor it consumed,
+// so the segment is not loaded again on the way in and on the way out.
 func deriveFlagCorrectionsUntilStable(openStore func() (CandidateStore, error), flagExists func(name string) bool) error {
 	for i := 0; i < deriveDrainLimit; i++ {
-		offset, err := LoadJournalOffset()
+		again, err := deriveFlagCorrectionsLocked(openStore, flagExists, false)
 		if err != nil {
 			return err
 		}
-		_, tail, err := ReadJournalFrom(offset)
-		if err != nil {
-			return err
-		}
-		if err := deriveFlagCorrectionsLocked(openStore, flagExists, false); err != nil {
-			return err
-		}
-		offsetAfter, err := LoadJournalOffset()
-		if err != nil {
-			return err
-		}
-		entriesAfter, tailAfter, err := ReadJournalFrom(offsetAfter)
-		if err != nil {
-			return err
-		}
-		if len(entriesAfter) == 0 && tailAfter == offsetAfter {
-			return nil
-		}
-		// Same window as the pass that just returned: a fresh unpaired
-		// failure stays unread on purpose. Looping would spin.
-		if offsetAfter == offset && tailAfter == tail {
+		if !again {
 			return nil
 		}
 	}
@@ -208,36 +191,57 @@ func journalHasUnreadTail() (bool, error) {
 	return len(entries) > 0 || next != offset, nil
 }
 
-func deriveFlagCorrectionsLocked(openStore func() (CandidateStore, error), flagExists func(name string) bool, resumed bool) error {
+// deriveFlagCorrectionsLocked reports whether the caller should scan
+// once more. A complete line past the cursor this pass consumed means
+// an append landed while the lock was held and must be derived before
+// unlock. A fresh unpaired failure reports false when its window did
+// not grow, so the hook does not spin.
+func deriveFlagCorrectionsLocked(openStore func() (CandidateStore, error), flagExists func(name string) bool, resumed bool) (bool, error) {
 	offset, err := LoadJournalOffset()
 	if err != nil {
-		return err
+		return false, err
+	}
+	// A cursor already at the segment tail has nothing to parse.
+	// ReadJournalFrom would still load the whole segment.
+	atTail, err := journalCursorAtTail(offset)
+	if err != nil {
+		return false, err
+	}
+	if atTail {
+		return journalNewlinePast(offset)
 	}
 	entries, next, err := ReadJournalFrom(offset)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(entries) == 0 && next == offset {
-		return nil
+		// Caught up, or only a torn tail. A complete line appended
+		// after this read still has to be drained.
+		return journalNewlinePast(offset)
 	}
 	recallSeed := sessionRecallFamiliesBeforeBatch(entries, offset)
 	pairs, pending := pairFlagCorrections(entries, recallSeed, time.Now().UTC(), flagExists)
 	if pending {
-		return nil
+		// The unpaired failure stays unread on purpose. Loop only when
+		// a complete line arrived after the window just read.
+		return journalNewlinePast(next)
 	}
 	if len(pairs) == 0 {
-		return StoreJournalOffset(next)
+		if err := StoreJournalOffset(next); err != nil {
+			return false, err
+		}
+		return journalNewlinePast(next)
 	}
 	if openStore == nil {
-		return fmt.Errorf("derive flag corrections: no candidate store opener")
+		return false, fmt.Errorf("derive flag corrections: no candidate store opener")
 	}
 	items, err := flagCorrectionSightings(pairs)
 	if err != nil {
-		return err
+		return false, err
 	}
 	cs, err := openStore()
 	if err != nil {
-		return fmt.Errorf("derive flag corrections: open store: %w", err)
+		return false, fmt.Errorf("derive flag corrections: open store: %w", err)
 	}
 	result, err := cs.CommitFlagCorrections(items, journalCursor(offset), journalCursor(next))
 	closeErr := cs.Close()
@@ -245,10 +249,10 @@ func deriveFlagCorrectionsLocked(openStore func() (CandidateStore, error), flagE
 		// The cursor is not advanced: the batch replays next pass
 		// rather than losing the observation. The commit is atomic, so
 		// a failed pass leaves no partial sightings behind.
-		return fmt.Errorf("derive flag corrections: %w", err)
+		return false, fmt.Errorf("derive flag corrections: %w", err)
 	}
 	if closeErr != nil {
-		return fmt.Errorf("derive flag corrections: close store: %w", closeErr)
+		return false, fmt.Errorf("derive flag corrections: close store: %w", closeErr)
 	}
 	start := journalCursor(offset)
 	end := journalCursor(next)
@@ -257,14 +261,132 @@ func deriveFlagCorrectionsLocked(openStore func() (CandidateStore, error), flagE
 		// A second one means the file cursor did not move; another
 		// pass would spin the post-run hook.
 		if resumed {
-			return fmt.Errorf("derive flag corrections: journal cursor did not advance")
+			return false, fmt.Errorf("derive flag corrections: journal cursor did not advance")
 		}
 		if err := StoreJournalOffset(journalOffset(result.Resume)); err != nil {
-			return err
+			return false, err
 		}
 		return deriveFlagCorrectionsLocked(openStore, flagExists, true)
 	}
-	return StoreJournalOffset(next)
+	if err := StoreJournalOffset(next); err != nil {
+		return false, err
+	}
+	return journalNewlinePast(next)
+}
+
+// journalCursorAtTail reports whether reading offset would observe no
+// further bytes and leave the cursor where it is. Older segments are
+// ignored, matching ReadJournalFrom.
+func journalCursorAtTail(offset JournalOffset) (bool, error) {
+	if offset.Segment == "" {
+		return false, nil
+	}
+	dir, err := JournalDir()
+	if err != nil {
+		return false, err
+	}
+	segs, err := listJournalSegments(dir)
+	if err != nil {
+		return false, err
+	}
+	found := false
+	for _, s := range segs {
+		if s.name > offset.Segment {
+			return false, nil
+		}
+		if s.name == offset.Segment {
+			found = true
+			if s.size != offset.Byte {
+				return false, nil
+			}
+		}
+	}
+	return found, nil
+}
+
+// journalNewlinePast reports whether a complete line exists past offset.
+// The check reads only the unread suffix (and any newer segment), not
+// the segment prefix the cursor has already consumed.
+func journalNewlinePast(offset JournalOffset) (bool, error) {
+	dir, err := JournalDir()
+	if err != nil {
+		return false, err
+	}
+	segs, err := listJournalSegments(dir)
+	if err != nil {
+		return false, err
+	}
+	startName, startByte := journalScanStart(segs, offset)
+	for _, s := range segs {
+		if startName != "" && s.name < startName {
+			continue
+		}
+		from := int64(0)
+		if s.name == startName {
+			from = startByte
+		}
+		if from < 0 {
+			from = 0
+		}
+		if from > s.size {
+			from = s.size
+		}
+		if s.size <= from {
+			continue
+		}
+		ok, err := fileHasByteFrom(filepath.Join(dir, s.name), from, '\n')
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// journalScanStart is the first byte a drain check should inspect.
+// A missing offset segment keeps that name so older survivors stay
+// skipped, matching ReadJournalFrom.
+func journalScanStart(segs []journalSegment, offset JournalOffset) (string, int64) {
+	if offset.Segment == "" {
+		return "", 0
+	}
+	for _, s := range segs {
+		if s.name == offset.Segment {
+			return offset.Segment, offset.Byte
+		}
+	}
+	return offset.Segment, 0
+}
+
+func fileHasByteFrom(path string, from int64, needle byte) (bool, error) {
+	f, err := os.Open(path) // #nosec G304 -- path derived from state dir
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("journal: open %s: %w", filepath.Base(path), err)
+	}
+	defer f.Close()
+	if from > 0 {
+		if _, err := f.Seek(from, io.SeekStart); err != nil {
+			return false, fmt.Errorf("journal: seek %s: %w", filepath.Base(path), err)
+		}
+	}
+	buf := make([]byte, 4096)
+	for {
+		n, err := f.Read(buf)
+		if n > 0 && bytes.IndexByte(buf[:n], needle) >= 0 {
+			return true, nil
+		}
+		if err == io.EOF || (err == nil && n == 0) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("journal: read %s: %w", filepath.Base(path), err)
+		}
+	}
 }
 
 func journalCursor(offset JournalOffset) store.JournalCursor {

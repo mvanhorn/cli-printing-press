@@ -410,7 +410,7 @@ func TestGenerateCliutilPackage(t *testing.T) {
 		"emitted cliutil tests must cover token=<value> credential redaction")
 
 	// The generated cliutil package must compile and its tests must pass.
-	runGoCommand(t, outputDir, "mod", "tidy")
+	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "./internal/cliutil/...")
 }
 
