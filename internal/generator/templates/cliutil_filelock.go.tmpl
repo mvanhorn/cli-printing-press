@@ -44,9 +44,11 @@ func WithFileLock(path string, fn func() error) error {
 	return err
 }
 
-// TryWithFileLock runs fn only when the exclusive lock on path is free.
-// A held lock returns false and a nil error without calling fn, so a
-// post-run hook can skip instead of waiting out a peer's critical section.
+// TryWithFileLock tries once so a post-run hook can tell a busy lock
+// from a pass it still needs to run. Waiting inside this helper would
+// stall every command that exits beside a peer, including one whose
+// journal line that peer has already consumed. A false return leaves
+// the lock untouched; the caller waits only when unread lines remain.
 func TryWithFileLock(path string, fn func() error) (bool, error) {
 	if path == "" {
 		return true, fn()

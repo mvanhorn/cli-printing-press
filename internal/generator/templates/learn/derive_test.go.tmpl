@@ -554,47 +554,83 @@ func TestDeriveFlagCorrections_ReplayedBatchDoesNotDoubleCount(t *testing.T) {
 	}
 }
 
-func TestDeriveFlagCorrections_SkipsWhenDeriveLockHeld(t *testing.T) {
-	withJournalHome(t)
-	dbPath := deriveDBPath(t)
-	flagExists := flagExistsInTree(newDeriveCommandTree(false))
-	appendDeriveEntry(t, failedDateEntry("sess-a", deriveTS(10*time.Minute)))
-	appendDeriveEntry(t, correctedDatesEntry("sess-a", deriveTS(9*time.Minute)))
-
+func holdDeriveLock(t *testing.T) (release func(), held <-chan struct{}) {
+	t.Helper()
 	dir, err := learn.JournalDir()
 	if err != nil {
 		t.Fatalf("journal dir: %v", err)
 	}
-	// DeriveFlagCorrections locks the journal offset path. Holding it
-	// here is a peer that has not finished its own pass.
 	lockPath := filepath.Join(dir, "journal.offset")
-	held := make(chan struct{})
-	release := make(chan struct{})
+	heldCh := make(chan struct{})
+	releaseCh := make(chan struct{})
 	var once sync.Once
-	releaseHolder := func() { once.Do(func() { close(release) }) }
+	release = func() { once.Do(func() { close(releaseCh) }) }
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		holdErr := cliutil.WithFileLock(lockPath, func() error {
-			close(held)
-			<-release
+			close(heldCh)
+			<-releaseCh
 			return nil
 		})
 		if holdErr != nil {
 			t.Errorf("holder: %v", holdErr)
 		}
 	}()
-	defer func() {
-		releaseHolder()
+	t.Cleanup(func() {
+		release()
 		<-done
-	}()
+	})
 	select {
-	case <-held:
+	case <-heldCh:
 	case <-time.After(5 * time.Second):
 		t.Fatal("holder did not acquire the derive lock")
 	}
+	return release, heldCh
+}
 
+func TestDeriveFlagCorrections_CaughtUpPassDoesNotWait(t *testing.T) {
+	withJournalHome(t)
+	dbPath := deriveDBPath(t)
+	flagExists := flagExistsInTree(newDeriveCommandTree(false))
+	appendDeriveEntry(t, failedDateEntry("sess-a", deriveTS(10*time.Minute)))
+	appendDeriveEntry(t, correctedDatesEntry("sess-a", deriveTS(9*time.Minute)))
+	if err := learn.DeriveFlagCorrections(deriveOpener(dbPath), flagExists); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+
+	release, _ := holdDeriveLock(t)
+	defer release()
 	start := time.Now()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- learn.DeriveFlagCorrections(deriveOpener(dbPath), flagExists)
+	}()
+	select {
+	case deriveErr := <-errCh:
+		if deriveErr != nil {
+			t.Fatalf("caught-up pass: %v", deriveErr)
+		}
+		if time.Since(start) > 500*time.Millisecond {
+			t.Fatalf("caught-up pass waited %s for a lock it did not need", time.Since(start))
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("caught-up pass blocked on a peer lock")
+	}
+	rows := listCandidateRows(t, dbPath)
+	if len(rows) != 1 || rows[0].Sightings != 1 {
+		t.Fatalf("caught-up pass rows=%+v, want 1 row with 1 sighting", rows)
+	}
+}
+
+func TestDeriveFlagCorrections_ContendedAppendIsDerivedBeforeReturn(t *testing.T) {
+	withJournalHome(t)
+	dbPath := deriveDBPath(t)
+	flagExists := flagExistsInTree(newDeriveCommandTree(false))
+	release, _ := holdDeriveLock(t)
+	appendDeriveEntry(t, failedDateEntry("sess-a", deriveTS(10*time.Minute)))
+	appendDeriveEntry(t, correctedDatesEntry("sess-a", deriveTS(9*time.Minute)))
+
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- learn.DeriveFlagCorrections(deriveOpener(dbPath), flagExists)
@@ -604,24 +640,45 @@ func TestDeriveFlagCorrections_SkipsWhenDeriveLockHeld(t *testing.T) {
 		if deriveErr != nil {
 			t.Fatalf("contended pass: %v", deriveErr)
 		}
-		if time.Since(start) > 500*time.Millisecond {
-			t.Fatalf("contended pass blocked for %s", time.Since(start))
+		t.Fatal("returned while a peer held the lock and the tail was still unread")
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+	select {
+	case deriveErr := <-errCh:
+		if deriveErr != nil {
+			t.Fatalf("pass after peer release: %v", deriveErr)
 		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("contended pass blocked")
-	}
-	if rows := listCandidateRows(t, dbPath); len(rows) != 0 {
-		t.Fatalf("contended pass recorded %+v", rows)
-	}
-
-	releaseHolder()
-	<-done
-	if err := learn.DeriveFlagCorrections(deriveOpener(dbPath), flagExists); err != nil {
-		t.Fatalf("pass after release: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("contended pass did not finish after the peer released the lock")
 	}
 	rows := listCandidateRows(t, dbPath)
 	if len(rows) != 1 || rows[0].Sightings != 1 {
-		t.Fatalf("after release rows=%+v, want one row with 1 sighting", rows)
+		t.Fatalf("contended pass rows=%+v, want 1 row with 1 sighting", rows)
+	}
+}
+
+func TestDeriveFlagCorrections_DrainsLinesAppendedDuringCommit(t *testing.T) {
+	withJournalHome(t)
+	dbPath := deriveDBPath(t)
+	flagExists := flagExistsInTree(newDeriveCommandTree(false))
+	appendDeriveEntry(t, failedDateEntry("sess-a", deriveTS(10*time.Minute)))
+	appendDeriveEntry(t, correctedDatesEntry("sess-a", deriveTS(9*time.Minute)))
+
+	var once sync.Once
+	opener := func() (learn.CandidateStore, error) {
+		once.Do(func() {
+			appendDeriveEntry(t, failedDateEntry("sess-b", deriveTS(8*time.Minute)))
+			appendDeriveEntry(t, correctedDatesEntry("sess-b", deriveTS(7*time.Minute)))
+		})
+		return store.Open(dbPath)
+	}
+	if err := learn.DeriveFlagCorrections(opener, flagExists); err != nil {
+		t.Fatalf("draining pass: %v", err)
+	}
+	rows := listCandidateRows(t, dbPath)
+	if len(rows) != 1 || rows[0].Sightings != 2 {
+		t.Fatalf("draining pass rows=%+v, want 1 row with 2 sightings", rows)
 	}
 }
 

@@ -142,7 +142,9 @@ type JournalCursor struct {
 	Byte    int64
 }
 
-// Before reports whether c is strictly earlier than other.
+// Before is the replay check. An equal cursor is not before, so a batch
+// whose end is already stored is not applied again. Segment names sort
+// chronologically; the byte orders two positions only inside one segment.
 func (c JournalCursor) Before(other JournalCursor) bool {
 	if c.Segment == other.Segment {
 		return c.Byte < other.Byte
@@ -150,8 +152,9 @@ func (c JournalCursor) Before(other JournalCursor) bool {
 	return c.Segment < other.Segment
 }
 
-// FlagCorrectionSighting is one flag-correction observation applied
-// together with the journal cursor.
+// FlagCorrectionSighting travels in the same transaction as the journal
+// cursor. A bump committed before that cursor let a replay increment
+// sightings for a correction that was already stored.
 type FlagCorrectionSighting struct {
 	Class       string
 	Payload     string

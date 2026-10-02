@@ -33,6 +33,20 @@ import (
 // failure stops being "pending" (see DeriveFlagCorrections).
 const flagCorrectionWindow = 15 * time.Minute
 
+// Polls cover a peer that is already near the end of its pass. The
+// blocking acquire runs only after that, and only when complete journal
+// lines are still unread: this command may have appended the correction
+// that the peer's scan missed, and no later command is guaranteed.
+const (
+	deriveLockPolls   = 5
+	deriveLockPollGap = 20 * time.Millisecond
+	// A peer can append while this process holds the lock. Drain those
+	// lines before unlocking so the peer's failed try-lock does not
+	// orphan them. The cap keeps a tight append loop from holding the
+	// post-run hook open.
+	deriveDrainLimit = 8
+)
+
 // CandidateStore is the narrow slice of the candidate store the
 // derivation pass needs. *store.Store satisfies it; the indirection
 // keeps derivation testable against the real SQLite store without the
@@ -110,15 +124,88 @@ func DeriveFlagCorrections(openStore func() (CandidateStore, error), flagExists 
 	if err != nil {
 		return err
 	}
-	// Do not wait. This hook runs after every command, and a peer holds
-	// the lock through its journal scan and SQLite commit. Skipping
-	// leaves the file cursor where it is; a later pass retries. When
-	// the lock is free, the idempotent cursor commit still runs inside
-	// it so a slower pass cannot rewind the file cursor.
-	_, err = cliutil.TryWithFileLock(filepath.Join(dir, journalOffsetFileName), func() error {
-		return deriveFlagCorrectionsLocked(openStore, flagExists, false)
-	})
-	return err
+	// Uncontended, and any pass whose tail a peer has already consumed,
+	// returns without waiting. Waiting on every exit stalled commands
+	// that had nothing left to derive. A still-unread tail cannot take
+	// that fast path: the line may be the correction this command just
+	// appended, and skipping it would leave the pair unprocessed.
+	path := filepath.Join(dir, journalOffsetFileName)
+	for poll := 0; ; poll++ {
+		acquired, lockErr := cliutil.TryWithFileLock(path, func() error {
+			return deriveFlagCorrectionsUntilStable(openStore, flagExists)
+		})
+		if lockErr != nil {
+			return lockErr
+		}
+		if acquired {
+			return nil
+		}
+		unread, unreadErr := journalHasUnreadTail()
+		if unreadErr != nil {
+			return unreadErr
+		}
+		if !unread {
+			return nil
+		}
+		if poll == deriveLockPolls-1 {
+			return cliutil.WithFileLock(path, func() error {
+				return deriveFlagCorrectionsUntilStable(openStore, flagExists)
+			})
+		}
+		time.Sleep(deriveLockPollGap)
+	}
+}
+
+// deriveFlagCorrectionsUntilStable drains journal lines that land while
+// this process holds the offset lock. A peer that loses the try-lock
+// will not scan them; leaving them until the next command drops a
+// correction when that peer was the last invocation.
+func deriveFlagCorrectionsUntilStable(openStore func() (CandidateStore, error), flagExists func(name string) bool) error {
+	for i := 0; i < deriveDrainLimit; i++ {
+		offset, err := LoadJournalOffset()
+		if err != nil {
+			return err
+		}
+		_, tail, err := ReadJournalFrom(offset)
+		if err != nil {
+			return err
+		}
+		if err := deriveFlagCorrectionsLocked(openStore, flagExists, false); err != nil {
+			return err
+		}
+		offsetAfter, err := LoadJournalOffset()
+		if err != nil {
+			return err
+		}
+		entriesAfter, tailAfter, err := ReadJournalFrom(offsetAfter)
+		if err != nil {
+			return err
+		}
+		if len(entriesAfter) == 0 && tailAfter == offsetAfter {
+			return nil
+		}
+		// Same window as the pass that just returned: a fresh unpaired
+		// failure stays unread on purpose. Looping would spin.
+		if offsetAfter == offset && tailAfter == tail {
+			return nil
+		}
+	}
+	return nil
+}
+
+// journalHasUnreadTail is the skip predicate. Complete lines past the
+// file cursor still need a pass; a caught-up cursor means a peer
+// already consumed this command's append and waiting would only stall.
+func journalHasUnreadTail() (bool, error) {
+	offset, err := LoadJournalOffset()
+	if err != nil {
+		return false, err
+	}
+	entries, next, err := ReadJournalFrom(offset)
+	if err != nil {
+		return false, err
+	}
+	return len(entries) > 0 || next != offset, nil
 }
 
 func deriveFlagCorrectionsLocked(openStore func() (CandidateStore, error), flagExists func(name string) bool, resumed bool) error {

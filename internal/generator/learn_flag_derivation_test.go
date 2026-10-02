@@ -49,6 +49,8 @@ func TestGenerateFlagDerivation_EmitsFiles(t *testing.T) {
 		// file cursor write is serialized with the read.
 		"CommitFlagCorrections(",
 		"cliutil.TryWithFileLock(",
+		"cliutil.WithFileLock(",
+		"journalHasUnreadTail()",
 		// The documented pairing window.
 		"flagCorrectionWindow",
 		// Skipped under the same switches the journal honors.
@@ -56,7 +58,10 @@ func TestGenerateFlagDerivation_EmitsFiles(t *testing.T) {
 	} {
 		require.Contains(t, derive, want, "derive.go missing %q", want)
 	}
-	require.NotContains(t, derive, "cliutil.WithFileLock(", "post-run derivation must not take the blocking file lock")
+	tryAt := strings.Index(derive, "cliutil.TryWithFileLock(")
+	blockAt := strings.Index(derive, "cliutil.WithFileLock(")
+	require.GreaterOrEqual(t, tryAt, 0)
+	require.Greater(t, blockAt, tryAt, "blocking acquire is only the unread-tail backstop after try-lock")
 	// The derivation pass consumes the journal read-only: it must never
 	// append entries of its own (derive-on-derive noise).
 	require.NotContains(t, derive, "AppendJournalEntry(", "derivation must never write journal entries")
