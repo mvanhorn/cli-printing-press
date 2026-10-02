@@ -8496,6 +8496,28 @@ func TestRequiredFlagCommands_HelpFallbackGatedToRequiredInput(t *testing.T) {
 					},
 				},
 			},
+			"notes": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/notes"},
+					"create": {
+						Method: "POST",
+						Path:   "/notes",
+						Body: []spec.Param{
+							{Name: "tone", Type: "string", EnumUnsatisfiable: true},
+							{Name: "note", Type: "string"},
+						},
+					},
+				},
+			},
+			"ping": {
+				Endpoints: map[string]spec.Endpoint{
+					"send": {
+						Method: "POST",
+						Path:   "/ping",
+						Body:   []spec.Param{{Name: "tone", Type: "string", EnumUnsatisfiable: true}},
+					},
+				},
+			},
 		},
 	}
 
@@ -8520,6 +8542,21 @@ func TestRequiredFlagCommands_HelpFallbackGatedToRequiredInput(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(promotedBytes), guard,
 		"required-body promoted command must short-circuit to help on bare invocation")
+
+	notesBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "notes_create.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(notesBytes), guard,
+		"optional body with an unsatisfiable enum must still execute on a bare call")
+	assert.NotContains(t, string(notesBytes), `"pp:requires-input"`)
+	assert.Contains(t, string(notesBytes), "schema permits no value")
+	assert.Contains(t, string(notesBytes), `cmd.Flags().Changed("tone")`)
+
+	pingBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "promoted_ping.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(pingBytes), guard,
+		"promoted optional body with an unsatisfiable enum must still execute on a bare call")
+	assert.NotContains(t, string(pingBytes), `"pp:requires-input"`)
+	assert.Contains(t, string(pingBytes), "schema permits no value")
 }
 
 func TestEndpointFixturesEmittedFromSpec(t *testing.T) {
@@ -8619,6 +8656,8 @@ func TestEndpointHasRequiredInputMirrorsTemplateGates(t *testing.T) {
 		{"required positional only", spec.Endpoint{Method: "GET", Params: []spec.Param{{Name: "id", Required: true, Positional: true}}}, false},
 		{"required body field", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "title", Required: true}}}, true},
 		{"optional body only", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "note"}}}, false},
+		{"optional body with unsatisfiable enum", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "disjoint", Type: "string", EnumUnsatisfiable: true}}}, false},
+		{"required body beside unsatisfiable enum", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "title", Required: true}, {Name: "disjoint", Type: "string", EnumUnsatisfiable: true}}}, true},
 		{"GET with required body ignored", spec.Endpoint{Method: "GET", Body: []spec.Param{{Name: "title", Required: true}}}, false},
 	}
 	for _, tc := range cases {

@@ -292,6 +292,76 @@ func TestDispatchParamFalseSurvivesRoundTrip(t *testing.T) {
 	assert.True(t, jsonParam.DispatchParamSet)
 }
 
+func TestEnumUnsatisfiableSurvivesArchiveRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := &APISpec{
+		Name:    "nullable-enum",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    AuthConfig{Type: TierAuthTypeNone},
+		Resources: map[string]Resource{
+			"voices": {
+				Description: "Voices",
+				Endpoints: map[string]Endpoint{
+					"create": {
+						Method:      "POST",
+						Path:        "/voices",
+						Description: "Create a voice",
+						Body: []Param{
+							{Name: "disjoint", Type: "string", EnumUnsatisfiable: true},
+							{Name: "mode", Type: "string", Enum: []string{"a"}},
+							{
+								Name: "options",
+								Type: "object",
+								Fields: []Param{
+									{Name: "tone", Type: "string", EnumUnsatisfiable: true},
+									{Name: "note", Type: "string"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, format := range []string{"json", "yaml"} {
+		t.Run(format, func(t *testing.T) {
+			var data []byte
+			var err error
+			if format == "json" {
+				data, err = json.Marshal(original)
+			} else {
+				data, err = yaml.Marshal(original)
+			}
+			require.NoError(t, err)
+			encoded := string(data)
+			assert.Contains(t, encoded, "enum_unsatisfiable")
+			assert.Equal(t, 2, strings.Count(encoded, "enum_unsatisfiable"),
+				"only the disjoint fields should be archived; a false marker must stay omitted")
+
+			parsed, err := ParseBytes(data)
+			require.NoError(t, err)
+			body := map[string]Param{}
+			for _, param := range parsed.Resources["voices"].Endpoints["create"].Body {
+				body[param.Name] = param
+			}
+			assert.True(t, body["disjoint"].EnumUnsatisfiable)
+			assert.Empty(t, body["disjoint"].Enum)
+			assert.False(t, body["mode"].EnumUnsatisfiable)
+			assert.Equal(t, []string{"a"}, body["mode"].Enum)
+
+			fields := map[string]Param{}
+			for _, field := range body["options"].Fields {
+				fields[field.Name] = field
+			}
+			assert.True(t, fields["tone"].EnumUnsatisfiable)
+			assert.False(t, fields["note"].EnumUnsatisfiable)
+		})
+	}
+}
+
 func TestUnannotatedDispatchParamSurvivesRoundTrip(t *testing.T) {
 	t.Parallel()
 

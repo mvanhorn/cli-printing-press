@@ -2,6 +2,7 @@ package openapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -1558,6 +1559,514 @@ paths:
 
 	runGo(t, outputDir, "mod", "tidy")
 	runGo(t, outputDir, "build", "./...")
+}
+
+const nullableScalarBodySpec = `
+openapi: 3.1.0
+info:
+  title: Nullable Scalars
+  version: 1.0.0
+servers:
+  - url: https://api.example.test
+paths:
+  /voices:
+    get:
+      operationId: listVoices
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+    post:
+      operationId: createVoice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [must_confirm]
+              properties:
+                seed:
+                  description: Random seed
+                  format: int64
+                  maximum: 100
+                  anyOf:
+                    - type: integer
+                    - type: "null"
+                exclude_source_domain:
+                  description: Drop the source domain
+                  anyOf:
+                    - type: boolean
+                    - type: "null"
+                temperature:
+                  oneOf:
+                    - type: number
+                    - type: "null"
+                plain_count:
+                  type: integer
+                nullable_flag:
+                  type: integer
+                  nullable: true
+                typed_null_count:
+                  type: [integer, "null"]
+                lone_integer:
+                  anyOf:
+                    - type: integer
+                repeated_null:
+                  anyOf:
+                    - type: "null"
+                    - type: integer
+                    - type: "null"
+                title:
+                  type: string
+                ambiguous:
+                  anyOf:
+                    - type: integer
+                    - type: string
+                response_engine:
+                  oneOf:
+                    - type: string
+                    - type: object
+                      properties:
+                        type: {type: string}
+                payload:
+                  anyOf:
+                    - type: object
+                      properties:
+                        id: {type: string}
+                    - type: "null"
+                must_confirm:
+                  anyOf:
+                    - type: boolean
+                    - type: "null"
+                wrapped_seed:
+                  allOf:
+                    - anyOf:
+                        - type: integer
+                        - type: "null"
+                ref_seed:
+                  anyOf:
+                    - $ref: "#/components/schemas/SeedInt"
+                    - type: "null"
+                options:
+                  type: object
+                  properties:
+                    retries:
+                      anyOf:
+                        - type: integer
+                        - type: "null"
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+  /blocks:
+    post:
+      operationId: createBlock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  properties:
+                    paragraph: {type: string}
+                - type: object
+                  properties:
+                    heading: {type: string}
+      responses:
+        "200":
+          description: ok
+components:
+  schemas:
+    SeedInt:
+      type: integer
+      format: int32
+`
+
+func TestParseNullableAnyOfBodyScalarsKeepDeclaredTypes(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(nullableScalarBodySpec))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/voices")
+	require.False(t, endpoint.BodyJSONFallback)
+	byName := map[string]spec.Param{}
+	for _, param := range endpoint.Body {
+		byName[param.Name] = param
+	}
+
+	seed := byName["seed"]
+	assert.Equal(t, "int", seed.Type)
+	assert.Equal(t, "Random seed", seed.Description)
+	assert.Equal(t, "int64", seed.Format)
+	require.NotNil(t, seed.Maximum)
+	assert.Equal(t, 100.0, *seed.Maximum)
+	assert.NotEqual(t, "json_or_scalar", seed.Format)
+
+	assert.Equal(t, "bool", byName["exclude_source_domain"].Type)
+	assert.Equal(t, "float", byName["temperature"].Type)
+	assert.Equal(t, "int", byName["plain_count"].Type)
+	assert.Equal(t, "int", byName["nullable_flag"].Type)
+	assert.Equal(t, "int", byName["typed_null_count"].Type)
+	assert.Equal(t, "int", byName["lone_integer"].Type)
+	assert.Equal(t, "int", byName["repeated_null"].Type)
+	assert.Equal(t, "string", byName["title"].Type)
+	assert.Equal(t, "int", byName["wrapped_seed"].Type)
+	assert.Equal(t, "int", byName["ref_seed"].Type)
+	assert.Equal(t, "int32", byName["ref_seed"].Format)
+	assert.Equal(t, "bool", byName["must_confirm"].Type)
+	assert.True(t, byName["must_confirm"].Required)
+
+	assert.Equal(t, "string", byName["ambiguous"].Type)
+	assert.Empty(t, byName["ambiguous"].Format)
+
+	assert.Equal(t, "string", byName["response_engine"].Type)
+	assert.Equal(t, "json_or_scalar", byName["response_engine"].Format)
+	assert.Equal(t, "string", byName["payload"].Type)
+	assert.Equal(t, "json_or_scalar", byName["payload"].Format)
+
+	require.Equal(t, "object", byName["options"].Type)
+	retries := map[string]spec.Param{}
+	for _, field := range byName["options"].Fields {
+		retries[field.Name] = field
+	}
+	assert.Equal(t, "int", retries["retries"].Type)
+
+	blocks := findParsedEndpointByPath(t, parsed, "POST", "/blocks")
+	assert.True(t, blocks.BodyJSONFallback)
+	assert.Empty(t, blocks.Body)
+}
+
+func TestNullableStringUnionIntersectsWrapperEnum(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.1.0
+info:
+  title: Nullable Enum
+  version: 1.0.0
+servers:
+  - url: https://api.example.test
+paths:
+  /voices:
+    post:
+      operationId: createVoice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  enum: ["a"]
+                  anyOf:
+                    - type: string
+                      enum: ["a", "b"]
+                    - type: "null"
+                ordered:
+                  enum: ["b", "a"]
+                  anyOf:
+                    - type: string
+                      enum: ["a", "c", "b"]
+                    - type: "null"
+                tone:
+                  enum: ["soft"]
+                  oneOf:
+                    - type: string
+                      enum: ["soft", "loud"]
+                    - type: "null"
+                branch_only:
+                  anyOf:
+                    - type: string
+                      enum: ["a", "b"]
+                    - type: "null"
+                wrapper_only:
+                  enum: ["a", "c"]
+                  anyOf:
+                    - type: string
+                    - type: "null"
+                disjoint:
+                  enum: ["a"]
+                  anyOf:
+                    - type: string
+                      enum: ["b"]
+                    - type: "null"
+      responses:
+        "200":
+          description: ok
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/voices")
+	byName := map[string]spec.Param{}
+	for _, param := range endpoint.Body {
+		byName[param.Name] = param
+	}
+
+	assert.Equal(t, "string", byName["mode"].Type)
+	assert.Equal(t, []string{"a"}, byName["mode"].Enum)
+	assert.Equal(t, []string{"b", "a"}, byName["ordered"].Enum)
+	assert.Equal(t, []string{"soft"}, byName["tone"].Enum)
+	assert.Equal(t, []string{"a", "b"}, byName["branch_only"].Enum)
+	assert.Equal(t, []string{"a", "c"}, byName["wrapper_only"].Enum)
+	assert.Empty(t, byName["disjoint"].Enum)
+	assert.True(t, byName["disjoint"].EnumUnsatisfiable)
+	assert.False(t, byName["mode"].EnumUnsatisfiable)
+}
+
+func TestGenerateDisjointEnumBodyFlagRejectsValues(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("OpenAPI generated CLI compile coverage runs in the generated-test CI lane")
+	}
+
+	parsed, err := Parse([]byte(`
+openapi: 3.1.0
+info:
+  title: Nullable Enum
+  version: 1.0.0
+servers:
+  - url: https://api.example.test
+paths:
+  /voices:
+    get:
+      operationId: listVoices
+      responses:
+        "200":
+          description: ok
+    post:
+      operationId: createVoice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  enum: ["a"]
+                  anyOf:
+                    - type: string
+                      enum: ["a", "b"]
+                    - type: "null"
+                disjoint:
+                  enum: ["a"]
+                  anyOf:
+                    - type: string
+                      enum: ["b"]
+                    - type: "null"
+      responses:
+        "200":
+          description: ok
+`))
+	require.NoError(t, err)
+
+	archived, err := json.Marshal(parsed)
+	require.NoError(t, err)
+	assert.Contains(t, string(archived), `"enum_unsatisfiable":true`)
+	reloaded, err := spec.ParseBytes(archived)
+	require.NoError(t, err)
+	reloadedEndpoint := findParsedEndpointByPath(t, reloaded, "POST", "/voices")
+	var disjoint spec.Param
+	for _, param := range reloadedEndpoint.Body {
+		if param.Name == "disjoint" {
+			disjoint = param
+		}
+	}
+	require.True(t, disjoint.EnumUnsatisfiable, "merged-spec JSON archive must keep disjoint-enum rejection")
+	require.Empty(t, disjoint.Enum)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(reloaded.Name))
+	require.NoError(t, generator.New(reloaded, outputDir).Generate())
+
+	commandSrc := generatedSourceContaining(t, outputDir, "schema permits no value")
+	assert.Contains(t, commandSrc, `cmd.Flags().Changed("disjoint")`)
+	assert.Contains(t, commandSrc, "bodyDisjoint")
+	assert.NotContains(t, commandSrc, "allowedDisjoint")
+	assert.NotContains(t, commandSrc, `"pp:requires-input"`,
+		"an optional disjoint-enum flag must not mark the command as requiring input")
+	assert.NotContains(t, commandSrc, "hasChangedLocalFlags",
+		"bare invocation of an optional-only command must execute instead of printing help")
+
+	binaryPath := filepath.Join(outputDir, naming.CLI(reloaded.Name))
+	runGo(t, outputDir, "mod", "tidy")
+	runGo(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(reloaded.Name))
+
+	bareCtx, bareCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer bareCancel()
+	bare := exec.CommandContext(bareCtx, binaryPath, "voices", "create", "--json", "--timeout", "1ms")
+	bareOut, bareErr := bare.CombinedOutput()
+	require.Error(t, bareErr, "optional-only create should attempt the call: %s", bareOut)
+	assert.NotContains(t, string(bareOut), "requires input")
+	assert.NotContains(t, string(bareOut), "Usage:")
+
+	for _, value := range []string{"a", "b", "hello"} {
+		cmd := exec.Command(binaryPath, "voices", "create", "--disjoint", value, "--dry-run")
+		out, err := cmd.CombinedOutput()
+		require.Error(t, err, "disjoint %q should be rejected: %s", value, out)
+		assert.Contains(t, string(out), fmt.Sprintf("invalid value %q for --disjoint: schema permits no value", value))
+	}
+
+	okCmd := exec.Command(binaryPath, "voices", "create", "--mode", "a", "--dry-run")
+	okOut, err := okCmd.CombinedOutput()
+	require.NoError(t, err, string(okOut))
+	body := unmarshalDryRunBody(t, string(okOut))
+	assert.Equal(t, "a", jsonAny(t, body, "mode"))
+}
+
+func TestGenerateNullableAnyOfBodyScalarsMarshalDeclaredJSONTypes(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("OpenAPI generated CLI compile coverage runs in the generated-test CI lane")
+	}
+
+	parsed, err := Parse([]byte(nullableScalarBodySpec))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(parsed.Name))
+	require.NoError(t, generator.New(parsed, outputDir).Generate())
+
+	commandSrc := generatedSourceContaining(t, outputDir, `bodyMap["seed"]`)
+	assert.Contains(t, commandSrc, "var bodySeed int")
+	assert.NotContains(t, commandSrc, "var bodySeed string")
+	assert.Contains(t, commandSrc, `bodyMap["seed"] = bodySeed`)
+	assert.Contains(t, commandSrc, "var bodyExcludeSourceDomain bool")
+	assert.Contains(t, commandSrc, "var bodyTemperature float64")
+	assert.Contains(t, commandSrc, "var bodyPlainCount int")
+	assert.Contains(t, commandSrc, "var bodyAmbiguous string")
+	assert.Contains(t, commandSrc, "var bodyMustConfirm string")
+	assert.Contains(t, commandSrc, "strconv.ParseBool(bodyMustConfirm)")
+	assert.Contains(t, commandSrc, `bodyMap["options"] = nestedOptions`)
+	assert.Contains(t, commandSrc, `nestedOptions["retries"] = bodyOptionsRetries`)
+
+	mcpSrc := generatedSourceContaining(t, outputDir, `WithNumber("seed"`)
+	assert.Contains(t, mcpSrc, `WithBoolean("exclude_source_domain"`)
+	assert.Contains(t, mcpSrc, `WithNumber("temperature"`)
+	assert.NotContains(t, mcpSrc, `WithString("seed"`)
+
+	binaryPath := filepath.Join(outputDir, naming.CLI(parsed.Name))
+	runGo(t, outputDir, "mod", "tidy")
+	runGo(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(parsed.Name))
+
+	cmd := exec.Command(binaryPath, "voices", "create",
+		"--seed", "42",
+		"--exclude-source-domain=false",
+		"--temperature", "1.5",
+		"--plain-count", "7",
+		"--typed-null-count", "11",
+		"--nullable-flag", "5",
+		"--lone-integer", "6",
+		"--repeated-null", "4",
+		"--title", "hello",
+		"--ambiguous", "42",
+		"--wrapped-seed", "3",
+		"--ref-seed", "9",
+		"--options-retries", "2",
+		"--must-confirm", "true",
+		"--dry-run",
+	)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	body := unmarshalDryRunBody(t, string(out))
+
+	assertJSONNumber(t, body, "seed", 42)
+	assertJSONBool(t, body, "exclude_source_domain", false)
+	assertJSONNumber(t, body, "temperature", 1.5)
+	assertJSONNumber(t, body, "plain_count", 7)
+	assertJSONNumber(t, body, "typed_null_count", 11)
+	assertJSONNumber(t, body, "nullable_flag", 5)
+	assertJSONNumber(t, body, "lone_integer", 6)
+	assertJSONNumber(t, body, "repeated_null", 4)
+	assertJSONNumber(t, body, "wrapped_seed", 3)
+	assertJSONNumber(t, body, "ref_seed", 9)
+	assert.Equal(t, "hello", jsonAny(t, body, "title"))
+	assert.Equal(t, "42", jsonAny(t, body, "ambiguous"))
+	assert.Equal(t, true, jsonAny(t, body, "must_confirm"))
+
+	options, ok := jsonAny(t, body, "options").(map[string]any)
+	require.True(t, ok, "options: %#v", jsonAny(t, body, "options"))
+	assert.Equal(t, float64(2), options["retries"])
+
+	nullCmd := exec.Command(binaryPath, "voices", "create", "--stdin", "--dry-run")
+	nullCmd.Stdin = strings.NewReader(`{"seed":null,"exclude_source_domain":null}`)
+	nullOut, err := nullCmd.CombinedOutput()
+	require.NoError(t, err, string(nullOut))
+	nullBody := unmarshalDryRunBody(t, string(nullOut))
+	assertJSONNull(t, nullBody, "seed")
+	assertJSONNull(t, nullBody, "exclude_source_domain")
+}
+
+func generatedSourceContaining(t *testing.T, root, needle string) string {
+	t.Helper()
+	var found string
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".go") || found != "" {
+			return err
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(data), needle) {
+			found = string(data)
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, found, "no generated Go file contains %q", needle)
+	return found
+}
+
+func unmarshalDryRunBody(t *testing.T, output string) map[string]json.RawMessage {
+	t.Helper()
+	var body map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(extractDryRunBody(t, output)), &body))
+	return body
+}
+
+func jsonAny(t *testing.T, body map[string]json.RawMessage, key string) any {
+	t.Helper()
+	raw, ok := body[key]
+	require.True(t, ok, "missing %q in %s", key, body)
+	var value any
+	require.NoError(t, json.Unmarshal(raw, &value), string(raw))
+	return value
+}
+
+func assertJSONNumber(t *testing.T, body map[string]json.RawMessage, key string, want float64) {
+	t.Helper()
+	raw := body[key]
+	require.NotEmpty(t, raw, "missing %q", key)
+	assert.NotContains(t, string(raw), `"`, "%s encoded as a JSON string: %s", key, raw)
+	assert.Equal(t, want, jsonAny(t, body, key))
+}
+
+func assertJSONBool(t *testing.T, body map[string]json.RawMessage, key string, want bool) {
+	t.Helper()
+	raw := body[key]
+	require.NotEmpty(t, raw, "missing %q", key)
+	assert.NotContains(t, string(raw), `"`, "%s encoded as a JSON string: %s", key, raw)
+	assert.Equal(t, want, jsonAny(t, body, key))
+}
+
+func assertJSONNull(t *testing.T, body map[string]json.RawMessage, key string) {
+	t.Helper()
+	raw, ok := body[key]
+	require.True(t, ok, "missing %q in %s", key, body)
+	assert.Equal(t, "null", strings.TrimSpace(string(raw)))
 }
 
 const dataEnvelopeAllOfTaskSpec = `
