@@ -30,6 +30,8 @@ func TestGenerateLearnCandidates_EmitsStoreLifecycle(t *testing.T) {
 	src := string(candGo)
 	for _, want := range []string{
 		"func (s *Store) DeriveCandidate(",
+		"func (s *Store) CommitFlagCorrections(",
+		"learn_derive_offset",
 		"func (s *Store) ListCandidates(",
 		"func (s *Store) GetCandidate(",
 		"func (s *Store) ConfirmCandidate(",
@@ -159,7 +161,7 @@ func TestGenerateLearnCandidatesLifecycleRunsWithRaceDetector(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	runGoCommand(t, outputDir, "test", "./internal/store",
-		"-run", "TestDeriveCandidate|TestConfirmCandidate|TestRejectCandidate|TestExpireCandidates|TestPurgeCandidates",
+		"-run", "TestDeriveCandidate|TestCommitFlagCorrections|TestConfirmCandidate|TestRejectCandidate|TestExpireCandidates|TestPurgeCandidates",
 		"-race", "-count=1")
 	runGoCommand(t, outputDir, "test", "./internal/cli",
 		"-run", "TestLearningsCandidates|TestLearningsConfirm|TestLearningsReject|TestLearningsPurge|TestTeachPromotes",

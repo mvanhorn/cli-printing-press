@@ -12,9 +12,7 @@ import (
 // TestGenerateFlagDerivation_EmitsFiles verifies the U7 flag-correction
 // derivation templates land under internal/learn/ when the spec opts
 // into the self-learning loop, and that root.go wires exactly one
-// post-run derivation call after the journal write. Content assertions
-// here; the compile + behavior contract rides
-// TestGenerateFlagDerivationEmittedTestsRun below.
+// post-run derivation call after the journal write.
 func TestGenerateFlagDerivation_EmitsFiles(t *testing.T) {
 	t.Parallel()
 
@@ -22,7 +20,9 @@ func TestGenerateFlagDerivation_EmitsFiles(t *testing.T) {
 	apiSpec.Learn.Enabled = true
 	outputDir := filepath.Join(t.TempDir(), "flag-derive-pp-cli")
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true}
+	// The MCP entrypoint is always emitted, but its module require is
+	// gated on VisionSet.MCP. The compile check builds the whole module.
+	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
 	for _, rel := range []string{
@@ -45,6 +45,12 @@ func TestGenerateFlagDerivation_EmitsFiles(t *testing.T) {
 		"LoadJournalOffset()",
 		"ReadJournalFrom(",
 		"StoreJournalOffset(",
+		// Sightings and the consumed cursor commit together, and the
+		// file cursor write is serialized with the read.
+		"CommitFlagCorrections(",
+		"cliutil.TryWithFileLock(",
+		"cliutil.WithFileLock(",
+		"journalHasUnreadTail()",
 		// The documented pairing window.
 		"flagCorrectionWindow",
 		// Skipped under the same switches the journal honors.
@@ -52,6 +58,16 @@ func TestGenerateFlagDerivation_EmitsFiles(t *testing.T) {
 	} {
 		require.Contains(t, derive, want, "derive.go missing %q", want)
 	}
+	tryAt := strings.Index(derive, "cliutil.TryWithFileLock(")
+	blockAt := strings.Index(derive, "cliutil.WithFileLock(")
+	require.GreaterOrEqual(t, tryAt, 0)
+	require.Greater(t, blockAt, tryAt, "blocking acquire is only the unread-tail backstop after try-lock")
+	stableAt := strings.Index(derive, "func deriveFlagCorrectionsUntilStable(")
+	unreadAt := strings.Index(derive, "func journalHasUnreadTail(")
+	require.GreaterOrEqual(t, stableAt, 0)
+	require.Greater(t, unreadAt, stableAt)
+	stableFn := derive[stableAt:unreadAt]
+	require.NotContains(t, stableFn, "ReadJournalFrom(", "the drain loop must not re-read the journal around the locked pass")
 	// The derivation pass consumes the journal read-only: it must never
 	// append entries of its own (derive-on-derive noise).
 	require.NotContains(t, derive, "AppendJournalEntry(", "derivation must never write journal entries")
@@ -79,6 +95,8 @@ func TestGenerateFlagDerivation_EmitsFiles(t *testing.T) {
 	require.GreaterOrEqual(t, deriveCallAt, 0, "root.go missing deriveFlagCorrections call")
 	require.Greater(t, deriveCallAt, journalCallAt, "derivation must run after the journal write in the deferred post-ExecuteC site")
 	require.Equal(t, 1, strings.Count(root, "deriveFlagCorrections(&flags"), "exactly one derivation call site")
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // TestGenerateFlagDerivation_GatedOff verifies the derivation files and

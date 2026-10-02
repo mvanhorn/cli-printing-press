@@ -12,11 +12,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/learn"
 	"{{modulePath}}/internal/store"
 )
@@ -491,6 +493,192 @@ func TestDeriveFlagCorrections_RejectedSignatureTombstoneBlocksReplay(t *testing
 	}
 	if rows[0].Sightings != 1 {
 		t.Errorf("sightings = %d, want 1 (tombstone must not bump)", rows[0].Sightings)
+	}
+}
+
+func TestDeriveFlagCorrections_ReplayedBatchDoesNotDoubleCount(t *testing.T) {
+	withJournalHome(t)
+	dbPath := deriveDBPath(t)
+	flagExists := flagExistsInTree(newDeriveCommandTree(false))
+
+	appendDeriveEntry(t, failedDateEntry("sess-a", deriveTS(10*time.Minute)))
+	appendDeriveEntry(t, correctedDatesEntry("sess-a", deriveTS(9*time.Minute)))
+	if err := learn.DeriveFlagCorrections(deriveOpener(dbPath), flagExists); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	rows := listCandidateRows(t, dbPath)
+	if len(rows) != 1 || rows[0].Sightings != 1 {
+		t.Fatalf("after first pass rows=%+v, want one row with 1 sighting", rows)
+	}
+
+	// The file cursor is only the read position. Rewinding it is the
+	// crash window where sightings committed and the offset file did not.
+	if err := learn.StoreJournalOffset(learn.JournalOffset{}); err != nil {
+		t.Fatalf("rewind offset: %v", err)
+	}
+	if err := learn.DeriveFlagCorrections(deriveOpener(dbPath), flagExists); err != nil {
+		t.Fatalf("replay pass: %v", err)
+	}
+	rows = listCandidateRows(t, dbPath)
+	if len(rows) != 1 {
+		t.Fatalf("candidate rows = %d, want 1 after replay", len(rows))
+	}
+	if rows[0].Sightings != 1 {
+		t.Errorf("sightings = %d, want 1 after replaying the same batch", rows[0].Sightings)
+	}
+
+	// A new journal tail appended while the file cursor is still behind
+	// the stored cursor must count once, without applying the prefix again.
+	if err := learn.StoreJournalOffset(learn.JournalOffset{}); err != nil {
+		t.Fatalf("rewind offset before tail: %v", err)
+	}
+	appendDeriveEntry(t, failedDateEntry("sess-b", deriveTS(5*time.Minute)))
+	appendDeriveEntry(t, correctedDatesEntry("sess-b", deriveTS(4*time.Minute)))
+	if err := learn.DeriveFlagCorrections(deriveOpener(dbPath), flagExists); err != nil {
+		t.Fatalf("grown-batch pass: %v", err)
+	}
+	rows = listCandidateRows(t, dbPath)
+	if len(rows) != 1 {
+		t.Fatalf("candidate rows = %d, want 1 after the new observation", len(rows))
+	}
+	if rows[0].Sightings != 2 {
+		t.Errorf("sightings = %d, want 2 (replayed prefix once, new correction once)", rows[0].Sightings)
+	}
+
+	if err := learn.DeriveFlagCorrections(deriveOpener(dbPath), flagExists); err != nil {
+		t.Fatalf("settled pass: %v", err)
+	}
+	rows = listCandidateRows(t, dbPath)
+	if len(rows) != 1 || rows[0].Sightings != 2 {
+		t.Fatalf("after cursor caught up rows=%+v, want 1 row with 2 sightings", rows)
+	}
+}
+
+func holdDeriveLock(t *testing.T) (release func(), held <-chan struct{}) {
+	t.Helper()
+	dir, err := learn.JournalDir()
+	if err != nil {
+		t.Fatalf("journal dir: %v", err)
+	}
+	lockPath := filepath.Join(dir, "journal.offset")
+	heldCh := make(chan struct{})
+	releaseCh := make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(releaseCh) }) }
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		holdErr := cliutil.WithFileLock(lockPath, func() error {
+			close(heldCh)
+			<-releaseCh
+			return nil
+		})
+		if holdErr != nil {
+			t.Errorf("holder: %v", holdErr)
+		}
+	}()
+	t.Cleanup(func() {
+		release()
+		<-done
+	})
+	select {
+	case <-heldCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("holder did not acquire the derive lock")
+	}
+	return release, heldCh
+}
+
+func TestDeriveFlagCorrections_CaughtUpPassDoesNotWait(t *testing.T) {
+	withJournalHome(t)
+	dbPath := deriveDBPath(t)
+	flagExists := flagExistsInTree(newDeriveCommandTree(false))
+	appendDeriveEntry(t, failedDateEntry("sess-a", deriveTS(10*time.Minute)))
+	appendDeriveEntry(t, correctedDatesEntry("sess-a", deriveTS(9*time.Minute)))
+	if err := learn.DeriveFlagCorrections(deriveOpener(dbPath), flagExists); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+
+	release, _ := holdDeriveLock(t)
+	defer release()
+	start := time.Now()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- learn.DeriveFlagCorrections(deriveOpener(dbPath), flagExists)
+	}()
+	select {
+	case deriveErr := <-errCh:
+		if deriveErr != nil {
+			t.Fatalf("caught-up pass: %v", deriveErr)
+		}
+		if time.Since(start) > 500*time.Millisecond {
+			t.Fatalf("caught-up pass waited %s for a lock it did not need", time.Since(start))
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("caught-up pass blocked on a peer lock")
+	}
+	rows := listCandidateRows(t, dbPath)
+	if len(rows) != 1 || rows[0].Sightings != 1 {
+		t.Fatalf("caught-up pass rows=%+v, want 1 row with 1 sighting", rows)
+	}
+}
+
+func TestDeriveFlagCorrections_ContendedAppendIsDerivedBeforeReturn(t *testing.T) {
+	withJournalHome(t)
+	dbPath := deriveDBPath(t)
+	flagExists := flagExistsInTree(newDeriveCommandTree(false))
+	release, _ := holdDeriveLock(t)
+	appendDeriveEntry(t, failedDateEntry("sess-a", deriveTS(10*time.Minute)))
+	appendDeriveEntry(t, correctedDatesEntry("sess-a", deriveTS(9*time.Minute)))
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- learn.DeriveFlagCorrections(deriveOpener(dbPath), flagExists)
+	}()
+	select {
+	case deriveErr := <-errCh:
+		if deriveErr != nil {
+			t.Fatalf("contended pass: %v", deriveErr)
+		}
+		t.Fatal("returned while a peer held the lock and the tail was still unread")
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+	select {
+	case deriveErr := <-errCh:
+		if deriveErr != nil {
+			t.Fatalf("pass after peer release: %v", deriveErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("contended pass did not finish after the peer released the lock")
+	}
+	rows := listCandidateRows(t, dbPath)
+	if len(rows) != 1 || rows[0].Sightings != 1 {
+		t.Fatalf("contended pass rows=%+v, want 1 row with 1 sighting", rows)
+	}
+}
+
+func TestDeriveFlagCorrections_DrainsLinesAppendedDuringCommit(t *testing.T) {
+	withJournalHome(t)
+	dbPath := deriveDBPath(t)
+	flagExists := flagExistsInTree(newDeriveCommandTree(false))
+	appendDeriveEntry(t, failedDateEntry("sess-a", deriveTS(10*time.Minute)))
+	appendDeriveEntry(t, correctedDatesEntry("sess-a", deriveTS(9*time.Minute)))
+
+	var once sync.Once
+	opener := func() (learn.CandidateStore, error) {
+		once.Do(func() {
+			appendDeriveEntry(t, failedDateEntry("sess-b", deriveTS(8*time.Minute)))
+			appendDeriveEntry(t, correctedDatesEntry("sess-b", deriveTS(7*time.Minute)))
+		})
+		return store.Open(dbPath)
+	}
+	if err := learn.DeriveFlagCorrections(opener, flagExists); err != nil {
+		t.Fatalf("draining pass: %v", err)
+	}
+	rows := listCandidateRows(t, dbPath)
+	if len(rows) != 1 || rows[0].Sightings != 2 {
+		t.Fatalf("draining pass rows=%+v, want 1 row with 2 sightings", rows)
 	}
 }
 

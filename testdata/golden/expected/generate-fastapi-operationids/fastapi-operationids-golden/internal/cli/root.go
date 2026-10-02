@@ -670,8 +670,10 @@ var learnFamilyCommands = map[string]struct{}{
 // pass from Execute()'s single post-ExecuteC site, right after the
 // invocation's own journal entry lands. Best-effort and silent: it is
 // skipped under every switch the journal honors, and any failure is
-// swallowed — derivation may never fail, slow, or add output to the
-// command that triggered it.
+// swallowed. An uncontended pass, and a pass whose journal tail a peer
+// already consumed, returns without waiting. A line this command just
+// appended may wait out the peer still holding the offset lock so that
+// line is not left unpaired when the process exits.
 func deriveFlagCorrections(flags *rootFlags, rootCmd, executed *cobra.Command) {
 	if noLearnActive(flags) || argsDisableLearn(os.Args[1:]) || learn.JournalCaptureDisabled() {
 		return
