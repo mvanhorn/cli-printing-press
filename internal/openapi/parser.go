@@ -5287,7 +5287,16 @@ func requestBodyMediaType(content openapi3.Content) (string, *openapi3.MediaType
 }
 
 func bodyParamSchema(schema *openapi3.Schema) *openapi3.Schema {
-	if schema == nil || len(schema.AllOf) == 0 {
+	if schema == nil {
+		return nil
+	}
+	// anyOf/oneOf wrappers have no schema.Type. Without this unwrap,
+	// mapSchemaType falls back to string and the JSON body quotes numbers
+	// and booleans. allOf still merges below; its scalar members unwrap too.
+	if len(schema.AllOf) == 0 {
+		if scalar := singleScalarUnionBranch(schema); scalar != nil {
+			return scalar
+		}
 		return schema
 	}
 
@@ -5331,6 +5340,9 @@ func firstAllOfNonObjectSchema(schema *openapi3.Schema, visited map[*openapi3.Sc
 		if value == nil {
 			continue
 		}
+		if scalar := singleScalarUnionBranch(value); scalar != nil {
+			value = scalar
+		}
 		if hasDirectObjectShape(value) {
 			hasObject = true
 		} else if firstScalar == nil && (value.Items != nil || (value.Type != nil && !value.Type.Includes(openapi3.TypeObject))) {
@@ -5355,6 +5367,143 @@ func hasDirectObjectShape(schema *openapi3.Schema) bool {
 		return true
 	}
 	return len(schema.Properties) > 0
+}
+
+// singleScalarUnionBranch returns the only non-null scalar alternative of an
+// anyOf/oneOf. A second non-null branch, or an object/array alternative,
+// stays a real union so polymorphic bodies keep --body-json / json_or_scalar.
+func singleScalarUnionBranch(schema *openapi3.Schema) *openapi3.Schema {
+	return singleScalarUnionBranchVisited(schema, map[*openapi3.Schema]struct{}{})
+}
+
+func singleScalarUnionBranchVisited(schema *openapi3.Schema, visited map[*openapi3.Schema]struct{}) *openapi3.Schema {
+	if schema == nil || schemaDeclaresNonNullType(schema) {
+		return nil
+	}
+	branches := scalarUnionBranches(schema)
+	if len(branches) == 0 {
+		return nil
+	}
+	if _, seen := visited[schema]; seen {
+		return nil
+	}
+	visited[schema] = struct{}{}
+	defer delete(visited, schema)
+
+	var scalar *openapi3.Schema
+	for _, ref := range branches {
+		value := schemaRefValue(ref)
+		if value == nil {
+			return nil
+		}
+		if isNullSchema(value) {
+			continue
+		}
+		if nested := singleScalarUnionBranchVisited(value, visited); nested != nil {
+			value = nested
+		}
+		if !isNonNullScalarSchema(value) {
+			return nil
+		}
+		if scalar != nil {
+			return nil
+		}
+		scalar = value
+	}
+	if scalar == nil {
+		return nil
+	}
+	return overlayUnionScalar(schema, scalar)
+}
+
+func scalarUnionBranches(schema *openapi3.Schema) openapi3.SchemaRefs {
+	if schema == nil || (len(schema.AnyOf) > 0 && len(schema.OneOf) > 0) {
+		return nil
+	}
+	if len(schema.OneOf) > 0 {
+		return schema.OneOf
+	}
+	return schema.AnyOf
+}
+
+func schemaDeclaresNonNullType(schema *openapi3.Schema) bool {
+	if schema == nil || schema.Type == nil || schema.Type.IsEmpty() {
+		return false
+	}
+	for _, typ := range schema.Type.Slice() {
+		if typ != openapi3.TypeNull {
+			return true
+		}
+	}
+	return false
+}
+
+func isNullSchema(schema *openapi3.Schema) bool {
+	if schema == nil || schema.Type == nil || schema.Type.IsEmpty() {
+		return false
+	}
+	return !schemaDeclaresNonNullType(schema)
+}
+
+func isNonNullScalarSchema(schema *openapi3.Schema) bool {
+	if schema == nil || schema.Type == nil || schema.Type.IsEmpty() {
+		return false
+	}
+	if schema.Type.Includes(openapi3.TypeObject) || schema.Type.Includes(openapi3.TypeArray) || len(schema.Properties) > 0 || schema.Items != nil {
+		return false
+	}
+	sawScalar := false
+	for _, typ := range schema.Type.Slice() {
+		if typ == openapi3.TypeNull {
+			continue
+		}
+		if typ != openapi3.TypeBoolean && typ != openapi3.TypeInteger && typ != openapi3.TypeNumber && typ != openapi3.TypeString {
+			return false
+		}
+		sawScalar = true
+	}
+	return sawScalar
+}
+
+// overlayUnionScalar keeps constraints written beside the union. Flag
+// encoding reads format, enum, default, and numeric bounds from the schema
+// bodyParamSchema returns, which is the scalar branch.
+func overlayUnionScalar(wrapper, scalar *openapi3.Schema) *openapi3.Schema {
+	if wrapper == nil || scalar == nil || wrapper == scalar {
+		return scalar
+	}
+	out := *scalar
+	if out.Description == "" {
+		out.Description = wrapper.Description
+	}
+	if out.Format == "" {
+		out.Format = wrapper.Format
+	}
+	if out.Default == nil {
+		out.Default = wrapper.Default
+	}
+	if out.Example == nil {
+		out.Example = wrapper.Example
+	}
+	if len(out.Examples) == 0 {
+		out.Examples = wrapper.Examples
+	}
+	if len(out.Enum) == 0 {
+		out.Enum = wrapper.Enum
+	}
+	if out.Min == nil {
+		out.Min = wrapper.Min
+	}
+	if out.Max == nil {
+		out.Max = wrapper.Max
+	}
+	if !out.ExclusiveMin.IsSet() && wrapper.ExclusiveMin.IsSet() {
+		out.ExclusiveMin = wrapper.ExclusiveMin
+	}
+	if !out.ExclusiveMax.IsSet() && wrapper.ExclusiveMax.IsSet() {
+		out.ExclusiveMax = wrapper.ExclusiveMax
+	}
+	return &out
 }
 
 func mapBodyFields(schema *openapi3.Schema, inferCSVArrays bool) []spec.Param {
