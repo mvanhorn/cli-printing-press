@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -66,7 +67,7 @@ func TestGeneratedPostPreservesEmptyValuesAndHeaderParameters(t *testing.T) {
 
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "messages_create.go")
 	listSrc := readGeneratedFile(t, outputDir, "internal", "cli", "messages_list.go")
-	assert.Contains(t, listSrc, `if flagOffset != "" {`, "GET query flags must retain their existing zero-value omission")
+	assert.Contains(t, listSrc, `cmd.Flags().Changed("offset") || flagOffset != ""`, "GET query flags must omit an unset cursor and still accept an explicit value")
 	assert.Contains(t, endpointSrc, `PostWithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)`)
 	assert.Contains(t, endpointSrc, `headerOverrides["X-Request-ID"]`)
 	assert.Contains(t, endpointSrc, `cmd.Flags().Changed("mode")`)
@@ -250,17 +251,23 @@ func TestGeneratedGetEmitsRequiredAndDefaultedZeroQueryParams(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 	listSrc := readGeneratedFile(t, outputDir, "internal", "cli", "items_list.go")
 	assert.Contains(t, listSrc, `if true {`, "required and explicitly defaulted params must be emitted even when their value is zero")
-	assert.Contains(t, listSrc, `if flagOptionalOffset != 0 {`, "optional params without defaults must retain zero-value omission")
+	assert.Contains(t, listSrc, `cmd.Flags().Changed("optional-offset") || flagOptionalOffset != 0`, "optional params without defaults must omit an unset zero and keep an explicit zero")
 
 	binaryPath := filepath.Join(outputDir, "zero-query-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/zero-query-pp-cli")
 	t.Setenv("ZERO_QUERY_BASE_URL", server.URL)
 	runGeneratedBinary(t, binaryPath, "items", "list", "--required-offset", "0", "--json")
 
-	got := <-requests
+	got := takeUpstreamQuery(t, requests)
 	assert.Equal(t, []string{"0"}, got["requiredOffset"])
 	assert.Equal(t, []string{"0"}, got["defaultOffset"])
 	assert.NotContains(t, got, "optionalOffset")
+
+	runGeneratedBinary(t, binaryPath, "items", "list", "--required-offset", "0", "--optional-offset", "0", "--json")
+	explicit := takeUpstreamQuery(t, requests)
+	assert.Equal(t, []string{"0"}, explicit["requiredOffset"])
+	assert.Equal(t, []string{"0"}, explicit["defaultOffset"])
+	assert.Equal(t, []string{"0"}, explicit["optionalOffset"])
 
 	promotedSpec := minimalSpec("zero-promoted")
 	promotedSpec.Auth = spec.AuthConfig{Type: "none"}
@@ -283,8 +290,19 @@ func TestGeneratedGetEmitsRequiredAndDefaultedZeroQueryParams(t *testing.T) {
 	require.NoError(t, New(promotedSpec, promotedDir).Generate())
 	promotedSrc := readPromotedCommandFile(t, promotedDir)
 	assert.Contains(t, promotedSrc, `if true {`)
-	assert.Contains(t, promotedSrc, `if flagOptionalOffset != 0 {`)
+	assert.Contains(t, promotedSrc, `cmd.Flags().Changed("optional-offset") || flagOptionalOffset != 0`)
 	requireGeneratedCompiles(t, promotedDir)
+}
+
+func takeUpstreamQuery(t *testing.T, requests <-chan url.Values) url.Values {
+	t.Helper()
+	select {
+	case got := <-requests:
+		return got
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for upstream request")
+		return nil
+	}
 }
 
 func TestGenerateMutatingEndpointPassesQueryParams(t *testing.T) {

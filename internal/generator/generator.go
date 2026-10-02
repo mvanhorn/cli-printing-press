@@ -276,7 +276,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"zeroValForBodyParam":                 zeroValForBodyParam,
 		"paramIsHeader":                       paramIsHeader,
 		"paramPresenceExpr":                   paramPresenceExpr,
-		"readParamPresenceExpr":               readParamPresenceExpr,
+		"endpointArgsExpr":                    endpointArgsExpr,
 		"queryParamFlagNamesLiteral":          queryParamFlagNamesLiteral,
 		"endpointHasHeaderParams":             endpointHasHeaderParams,
 		"positionalArgs":                      positionalArgs,
@@ -8366,6 +8366,21 @@ func paramPresenceExpr(p spec.Param) string {
 	return fmt.Sprintf("(%s || flag%s != %s)", flagChangedExpr(p), toCamel(paramIdent(p)), zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
 }
 
+// endpointArgsExpr rejects surplus positionals so `--flag false` cannot
+// parse as `--flag=true` plus a stray arg. Too-few args stay in RunE.
+func endpointArgsExpr(e spec.Endpoint) string {
+	n := len(orderedPositionalParams(e))
+	if n == 0 {
+		return "cobra.NoArgs"
+	}
+	return fmt.Sprintf(`func(cmd *cobra.Command, args []string) error {
+	if err := cobra.MaximumNArgs(%d)(cmd, args); err != nil {
+		return usageErr(fmt.Errorf("%%s\nhint: boolean flags take a value with '=', for example --flag=false", err.Error()))
+	}
+	return nil
+}`, n)
+}
+
 func paramFlagNames(p spec.Param) []string {
 	names := []string{publicFlagName(p)}
 	return append(names, publicFlagAliases(p)...)
@@ -8389,13 +8404,6 @@ func queryParamFlagNamesLiteral(endpoint spec.Endpoint) string {
 	}
 	b.WriteByte('}')
 	return b.String()
-}
-
-func readParamPresenceExpr(p spec.Param) string {
-	if primitiveKind(p.Type) == "int" && (p.Required || paramHasDefault(p)) {
-		return "true"
-	}
-	return fmt.Sprintf("flag%s != %s", toCamel(paramIdent(p)), zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
 }
 
 func endpointHasHeaderParams(endpoint spec.Endpoint) bool {
