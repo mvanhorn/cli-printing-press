@@ -134,7 +134,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		QueryParams:    []codeOrchParamBinding{},
 		HeaderParams:   []codeOrchParamBinding{},
 		Mutating:       false,
-		keywords:       codeOrchKeywords("items", "create", "Create an item", "/items", "label mode assisted observe"),
+		keywords:       append(codeOrchKeywords("items", "create", "Create an item", "/items"), codeOrchKeywordTokens(true, "label mode assisted observe")...),
 	},
 	{
 		ID:             "items.list",
@@ -147,7 +147,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		QueryParams:    []codeOrchParamBinding{},
 		HeaderParams:   []codeOrchParamBinding{},
 		Mutating:       false,
-		keywords:       codeOrchKeywords("items", "list", "List items", "/items", ""),
+		keywords:       append(codeOrchKeywords("items", "list", "List items", "/items"), codeOrchKeywordTokens(true, "")...),
 	},
 }
 
@@ -169,6 +169,11 @@ var codeOrchStopwords = map[string]bool{
 // ranking. Defined at package level so the registry initializer can call it
 // inline above without pulling in a separate precompute step.
 func codeOrchKeywords(parts ...string) []string {
+	return codeOrchKeywordTokens(false, parts...)
+}
+
+// Request names and enum values may be short or coincide with prose stopwords.
+func codeOrchKeywordTokens(requestTerms bool, parts ...string) []string {
 	raw := strings.ToLower(strings.Join(parts, " "))
 	raw = strings.Map(func(r rune) rune {
 		switch r {
@@ -180,7 +185,7 @@ func codeOrchKeywords(parts ...string) []string {
 	out := make([]string, 0, 16)
 	seen := map[string]bool{}
 	for _, tok := range strings.Fields(raw) {
-		if len(tok) < 3 || codeOrchStopwords[tok] || seen[tok] {
+		if (!requestTerms && (len(tok) < 3 || codeOrchStopwords[tok])) || seen[tok] {
 			continue
 		}
 		seen[tok] = true
@@ -232,7 +237,7 @@ func handleCodeOrchSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcp
 	}
 	limit := codeOrchSearchLimit(args)
 
-	terms := codeOrchKeywords("", "", query, "")
+	terms := codeOrchKeywordTokens(true, query)
 	type scored struct {
 		ep    *codeOrchEndpoint
 		score int
@@ -245,7 +250,7 @@ func handleCodeOrchSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcp
 			for _, kw := range ep.keywords {
 				if kw == t {
 					score += 2
-				} else if strings.Contains(kw, t) || strings.Contains(t, kw) {
+				} else if len(t) >= 3 && len(kw) >= 3 && !codeOrchStopwords[t] && !codeOrchStopwords[kw] && (strings.Contains(kw, t) || strings.Contains(t, kw)) {
 					score++
 				}
 			}

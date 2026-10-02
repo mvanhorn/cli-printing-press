@@ -28,7 +28,7 @@ func codeOrchInputs(ep spec.Endpoint, path string, globalVars ...[]string) []cod
 			// Cursor bindings are omitted from this executor's query registry.
 			name = p.WireName()
 		}
-		if p.Positional && strings.Contains(path, "{"+p.Name+"}") {
+		if p.PathParam || (strings.Contains(path, "{"+p.Name+"}") && (p.In == "" || location == "path")) {
 			location = "path"
 			name = p.Name
 		}

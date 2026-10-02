@@ -162,7 +162,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- end}}
 		Summary: {{printf "%q" $summary}},
 		Inputs: []codeOrchInput{ {{range $inputs}}{Name: {{printf "%q" .Name}}, Location: {{printf "%q" .Location}}, Type: {{printf "%q" .Type}}, Required: {{.Required}}, Enum: []string{ {{range .Enum}}{{printf "%q" .}},{{end}} }},{{end}} },
-		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
+		Positional: []string{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "path"}}{{printf "%q" .WireName}},{{end}}{{end}} },
 		TemplateParams: []codeOrchParamBinding{ {{- range mcpGlobalTemplateBindings $endpoint $path $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}} },
 		QueryParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}{{if .QueryArray}}, QueryArray: true, QueryStyle: {{printf "%q" .QueryStyle}}, QueryExplode: {{.QueryExplode}}{{end}}{{if .DeepObjectQuery}}, DeepObjectQuery: true{{end}}},{{end}}{{end}} },
 		HeaderParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "header"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}{{if .Default}}, Default: {{printf "%q" .Default}}{{end}}},{{end}}{{end}} },
@@ -180,7 +180,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse (endpointReplaySafe $endpoint)}}
 		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}}{{if $endpoint.UsesTextResponse}}"X-Printing-Press-Text-Response": "true",{{end}}{{if $endpoint.UsesHTMLResponse}}"X-Printing-Press-HTML-Response": "true",{{end}}{{with endpointReplaySafe $endpoint}}"X-Printing-Press-Replay-Safe": {{printf "%q" .}},{{end}} },
 {{- end}}
-		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" $summary}}, {{printf "%q" $path}}, {{printf "%q" (codeOrchInputKeywords $inputs)}}),
+		keywords: append(codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" $summary}}, {{printf "%q" $path}}), codeOrchKeywordTokens(true, {{printf "%q" (codeOrchInputKeywords $inputs)}})...),
 	},
 {{- end}}
 {{- range $subName, $subResource := $resource.SubResources}}
@@ -201,7 +201,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- end}}
 		Summary: {{printf "%q" $summary}},
 		Inputs: []codeOrchInput{ {{range $inputs}}{Name: {{printf "%q" .Name}}, Location: {{printf "%q" .Location}}, Type: {{printf "%q" .Type}}, Required: {{.Required}}, Enum: []string{ {{range .Enum}}{{printf "%q" .}},{{end}} }},{{end}} },
-		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
+		Positional: []string{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "path"}}{{printf "%q" .WireName}},{{end}}{{end}} },
 		TemplateParams: []codeOrchParamBinding{ {{- range mcpGlobalTemplateBindings $endpoint $path $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}} },
 		QueryParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}{{if .QueryArray}}, QueryArray: true, QueryStyle: {{printf "%q" .QueryStyle}}, QueryExplode: {{.QueryExplode}}{{end}}{{if .DeepObjectQuery}}, DeepObjectQuery: true{{end}}},{{end}}{{end}} },
 		HeaderParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "header"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}{{if .Default}}, Default: {{printf "%q" .Default}}{{end}}},{{end}}{{end}} },
@@ -219,7 +219,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse (endpointReplaySafe $endpoint)}}
 		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}}{{if $endpoint.UsesTextResponse}}"X-Printing-Press-Text-Response": "true",{{end}}{{if $endpoint.UsesHTMLResponse}}"X-Printing-Press-HTML-Response": "true",{{end}}{{with endpointReplaySafe $endpoint}}"X-Printing-Press-Replay-Safe": {{printf "%q" .}},{{end}} },
 {{- end}}
-		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" $summary}}, {{printf "%q" $path}}, {{printf "%q" (codeOrchInputKeywords $inputs)}}),
+		keywords: append(codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" $summary}}, {{printf "%q" $path}}), codeOrchKeywordTokens(true, {{printf "%q" (codeOrchInputKeywords $inputs)}})...),
 	},
 {{- end}}
 {{- end}}
@@ -244,6 +244,11 @@ var codeOrchStopwords = map[string]bool{
 // ranking. Defined at package level so the registry initializer can call it
 // inline above without pulling in a separate precompute step.
 func codeOrchKeywords(parts ...string) []string {
+	return codeOrchKeywordTokens(false, parts...)
+}
+
+// Request names and enum values may be short or coincide with prose stopwords.
+func codeOrchKeywordTokens(requestTerms bool, parts ...string) []string {
 	raw := strings.ToLower(strings.Join(parts, " "))
 	raw = strings.Map(func(r rune) rune {
 		switch r {
@@ -255,7 +260,7 @@ func codeOrchKeywords(parts ...string) []string {
 	out := make([]string, 0, 16)
 	seen := map[string]bool{}
 	for _, tok := range strings.Fields(raw) {
-		if len(tok) < 3 || codeOrchStopwords[tok] || seen[tok] {
+		if (!requestTerms && (len(tok) < 3 || codeOrchStopwords[tok])) || seen[tok] {
 			continue
 		}
 		seen[tok] = true
@@ -321,7 +326,7 @@ func handleCodeOrchSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcp
 	}
 	limit := codeOrchSearchLimit(args)
 
-	terms := codeOrchKeywords("", "", query, "")
+	terms := codeOrchKeywordTokens(true, query)
 	type scored struct {
 		ep    *codeOrchEndpoint
 		score int
@@ -334,7 +339,7 @@ func handleCodeOrchSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcp
 			for _, kw := range ep.keywords {
 				if kw == t {
 					score += 2
-				} else if strings.Contains(kw, t) || strings.Contains(t, kw) {
+				} else if len(t) >= 3 && len(kw) >= 3 && !codeOrchStopwords[t] && !codeOrchStopwords[kw] && (strings.Contains(kw, t) || strings.Contains(t, kw)) {
 					score++
 				}
 			}
