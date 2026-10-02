@@ -1492,6 +1492,7 @@ func TestParseHappyArgsAnnotation(t *testing.T) {
 
 	assert.Equal(t, []string{"Alice", "Bob"}, got.positionals)
 	assert.Equal(t, []string{"--query", "sunset", "--limit", "10", "--dry-run", "true", "--bad", "true"}, got.flags)
+	assert.Equal(t, []string{"--dry-run", "--bad"}, got.bareBooleanFlags)
 
 	escaped := parseHappyArgsAnnotation(`<person>=vendor\;part;--query=foo\;bar`)
 	assert.Equal(t, []string{"vendor;part"}, escaped.positionals)

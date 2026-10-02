@@ -121,8 +121,9 @@ const (
 )
 
 type happyArgs struct {
-	positionals []string
-	flags       []string
+	positionals      []string
+	flags            []string
+	bareBooleanFlags []string
 }
 
 func splitHappyArgs(value string) []string {
@@ -158,6 +159,7 @@ func parseHappyArgsAnnotation(value string) happyArgs {
 			}
 			if !ok {
 				value = "true"
+				parsed.bareBooleanFlags = append(parsed.bareBooleanFlags, strings.TrimSpace(name))
 			}
 			parsed.flags = append(parsed.flags, strings.TrimSpace(name), strings.TrimSpace(value))
 			continue

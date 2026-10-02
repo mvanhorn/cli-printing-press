@@ -7094,6 +7094,33 @@ func TestRunLiveDogfoodErrorPathRealReportContribution(t *testing.T) {
 }
 
 func TestLiveDogfoodHappyArgsHonorsPPHappyArgs(t *testing.T) {
+	bareBooleanCmd := liveDogfoodCommand{
+		Path: []string{"widgets", "list"},
+		Help: `Usage:
+  cli widgets list [flags]
+`,
+		Annotations: map[string]string{happyArgsAnnotation: "--json"},
+	}
+	args, ok := liveDogfoodHappyArgs(bareBooleanCmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"widgets", "list", "--json=true"}, args,
+		"bare boolean pp:happy-args must be one argv token for NoArgs commands")
+
+	bareBooleanExampleCmd := liveDogfoodCommand{
+		Path: []string{"widgets", "list"},
+		Help: `Usage:
+  cli widgets list [flags]
+
+Examples:
+  cli widgets list --json
+`,
+		Annotations: map[string]string{happyArgsAnnotation: "--json"},
+	}
+	args, ok = liveDogfoodHappyArgs(bareBooleanExampleCmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"widgets", "list", "--json=true"}, args,
+		"bare boolean pp:happy-args must replace an existing flag without adding a positional")
+
 	// pp:happy-args supplies a real value, overriding the Example placeholder
 	// ("example-value") that strict upstream validators reject with HTTP 400.
 	flagCmd := liveDogfoodCommand{
@@ -7101,7 +7128,7 @@ func TestLiveDogfoodHappyArgsHonorsPPHappyArgs(t *testing.T) {
 		Help:        "Usage:\n  cli users get-by-ids [flags]\n\nExamples:\n  cli users get-by-ids --ids example-value\n",
 		Annotations: map[string]string{happyArgsAnnotation: "--ids=12"},
 	}
-	args, ok := liveDogfoodHappyArgs(flagCmd)
+	args, ok = liveDogfoodHappyArgs(flagCmd)
 	require.True(t, ok)
 	assert.Equal(t, []string{"users", "get-by-ids", "--ids", "12"}, args,
 		"flag-form pp:happy-args must override the Example placeholder")
