@@ -137,13 +137,22 @@ If the setup contract output contains a line starting with `[binary-below-min]`,
 - `PRESS_BINARY_INSTALLED=<installed version>`
 - `PRESS_BINARY_REQUIRED=<min-binary-version declared by this skill>`
 
-**Stop the skill immediately.** Do not proceed to research, generation, scoring, publishing, or any later phase. Tell the user:
+**Stop the skill immediately.** Do not proceed to research, generation, scoring, publishing, or any later phase. There is **no skip-and-continue**. The contract has already exited non-zero, before the `[repo-upgrade-available]` prompt, so surface the update instructions below instead of waiting for that prompt.
+
+When `PRESS_REPO_MODE=true`, preflight selected the checkout binary. Tell the user to update that checkout and rebuild the selected binary (`<repo>` is the directory containing the captured `PRINTING_PRESS_BIN`):
+
+```bash
+git -C "<repo>" pull --ff-only origin main
+(cd "<repo>" && go build -o ./cli-printing-press ./cmd/cli-printing-press)
+```
+
+After both commands succeed, tell the user to re-run `/printing-press`. If the pull is not a fast-forward, surface the failure. Do not merge, rebase, reset, stash, or switch branches. `go install` leaves this checkout binary unchanged, so the next run selects it again and stops.
+
+When `PRESS_REPO_MODE=false`, tell the user:
 
 > "cli-printing-press binary v\<installed\> is older than the minimum required v\<required\>. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest` to update."
 
-There is **no skip-and-continue**. The contract has already exited non-zero.
-
-If the marker is absent, still compare this skill's YAML frontmatter `min-binary-version` to `<PRINTING_PRESS_BIN> version --json` (the absolute path from the preamble, not bare `cli-printing-press` or legacy bare `printing-press`). That command is local. If the installed binary is older, stop the same way. Skip the fallback only when `version --json` does not parse.
+If the marker is absent, still compare this skill's YAML frontmatter `min-binary-version` to `<PRINTING_PRESS_BIN> version --json` (the absolute path from the preamble, not bare `cli-printing-press` or legacy bare `printing-press`). That command is local. If the installed binary is older, stop the same way and give the instructions for the captured `PRESS_REPO_MODE`. Skip the fallback only when `version --json` does not parse.
 
 ## 4.25. Skill-too-old-for-binary (skill drift) hard gate
 

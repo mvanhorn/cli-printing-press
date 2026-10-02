@@ -272,7 +272,14 @@ if [ -n "$PRINTING_PRESS_BIN" ]; then
     echo "[binary-below-min] cli-printing-press binary v$_bin_ver is older than the minimum required v$_min_binary_version"
     echo "PRESS_BINARY_INSTALLED=$_bin_ver"
     echo "PRESS_BINARY_REQUIRED=$_min_binary_version"
-    echo "Run: go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest"
+    if [ "$_press_repo" = "true" ]; then
+      echo "Update this checkout and rebuild the selected binary at $_scope_dir/cli-printing-press:"
+      echo "  git -C \"$_scope_dir\" pull --ff-only origin main"
+      echo "  (cd \"$_scope_dir\" && go build -o ./cli-printing-press ./cmd/cli-printing-press)"
+      echo "Then re-run /printing-press."
+    else
+      echo "Run: go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest"
+    fi
     echo ""
     return 1 2>/dev/null || exit 1
   fi
