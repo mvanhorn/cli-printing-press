@@ -14,8 +14,11 @@ import (
 func newQuotesDeleteCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
-		Use:         "delete <quote_id>",
-		Short:       "Delete quote",
+		Use:   "delete <quote_id>",
+		Short: "Delete quote",
+		Args: func(cmd *cobra.Command, args []string) error {
+			return endpointPositionalArgs(cmd, flags, args, cobra.MaximumNArgs(1))
+		},
 		Annotations: map[string]string{"pp:endpoint": "quotes.delete", "pp:method": "DELETE", "pp:path": "/api/quotes/{quote_id}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

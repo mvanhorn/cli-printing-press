@@ -16,8 +16,11 @@ func newQuotesUpdateStatusCmd(flags *rootFlags) *cobra.Command {
 	var stdinBody bool
 
 	cmd := &cobra.Command{
-		Use:         "update-status <quote_id>",
-		Short:       "Update quote status",
+		Use:   "update-status <quote_id>",
+		Short: "Update quote status",
+		Args: func(cmd *cobra.Command, args []string) error {
+			return endpointPositionalArgs(cmd, flags, args, cobra.MaximumNArgs(1))
+		},
 		Annotations: map[string]string{"pp:endpoint": "quotes.update-status", "pp:method": "POST", "pp:path": "/api/quotes/{quote_id}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

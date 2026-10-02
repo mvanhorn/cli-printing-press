@@ -53,7 +53,7 @@ func TestGeneratedNumericPathAndQueryParamsUsePlainDecimalFormatting(t *testing.
 	binaryPath := filepath.Join(outputDir, "numeric-param-format-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/numeric-param-format-pp-cli")
 
-	stdout, stderr := runGeneratedBinary(t, binaryPath, "tasks", "get", "CS-27102", "--team-id", "4653482", "--dry-run")
+	stdout, stderr := runGeneratedBinary(t, binaryPath, "tasks", "CS-27102", "--team-id", "4653482", "--dry-run")
 	output := stdout + stderr
 	require.Contains(t, output, "team_id=4653482")
 	require.NotContains(t, output, "4.653482e")

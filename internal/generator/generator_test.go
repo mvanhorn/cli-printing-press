@@ -9938,7 +9938,7 @@ type PageInfo {
 	promotedPath := filepath.Join(outputDir, "internal", "cli", "promoted_cycles.go")
 	promotedSrc, err := os.ReadFile(promotedPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(promotedSrc), `Use:         "cycles <id>"`)
+	assert.Contains(t, string(promotedSrc), `Use:   "cycles <id>"`)
 	assert.Contains(t, string(promotedSrc), "cmd.AddCommand(newCyclesListCmd(flags))")
 	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "cycles_list.go"))
 	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "cycles.go"))
@@ -22318,7 +22318,7 @@ func TestGenerateGlobalPathTemplateVarRootFlag(t *testing.T) {
 
 	accountsGetGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "accounts_get.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(accountsGetGo), `Use:         "get <account_id>"`,
+	assert.Contains(t, string(accountsGetGo), `Use:   "get <account_id>"`,
 		"sparse path params must remain per-command positionals")
 	assert.NotContains(t, string(accountsGetGo), "<tenant_id>")
 

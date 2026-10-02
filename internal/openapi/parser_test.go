@@ -1673,7 +1673,7 @@ func TestGenerateDataEnvelopeAllOfBodyFlags(t *testing.T) {
 	runGo(t, outputDir, "mod", "tidy")
 	runGo(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(parsed.Name))
 
-	helpOut, err := exec.Command(binaryPath, "tasks", "update-task", "--help").CombinedOutput()
+	helpOut, err := exec.Command(binaryPath, "tasks", "--help").CombinedOutput()
 	require.NoError(t, err, string(helpOut))
 	help := string(helpOut)
 	for _, want := range []string{
@@ -1689,7 +1689,7 @@ func TestGenerateDataEnvelopeAllOfBodyFlags(t *testing.T) {
 	}
 	assert.NotContains(t, help, "--data-data-")
 
-	cmd := exec.Command(binaryPath, "tasks", "update-task", "123", "--data-html-notes", "<body>foo</body>", "--dry-run")
+	cmd := exec.Command(binaryPath, "tasks", "123", "--data-html-notes", "<body>foo</body>", "--dry-run")
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
 	bodyJSON := extractDryRunBody(t, string(out))

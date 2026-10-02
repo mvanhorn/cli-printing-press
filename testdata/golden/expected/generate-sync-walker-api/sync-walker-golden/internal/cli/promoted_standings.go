@@ -49,7 +49,7 @@ func newStandingsPromotedCmd(flags *rootFlags) *cobra.Command {
 
 			path := "/standings"
 			params := map[string]string{}
-			if flagGameId != "" {
+			if cmd.Flags().Changed("game-id") || flagGameId != "" {
 				params["gameId"] = formatCLIParamValue(flagGameId)
 			}
 			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "auto", "standings", true, path, params, nil, "", cmd.ErrOrStderr())
