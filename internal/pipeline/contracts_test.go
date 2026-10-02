@@ -194,9 +194,18 @@ func TestPrintingPressLiveHappyPathFloorRunsBeforeVersionCheckTTL(t *testing.T) 
 		branch = branch[:end]
 	}
 	assert.Contains(t, branch, `return 1 2>/dev/null || exit 1`)
+	assert.Contains(t, branch, `git -C \"$_scope_dir\" pull --ff-only origin main`)
 	assert.NotContains(t, branch, "curl")
 	assert.NotContains(t, branch, "go list")
 	assert.Contains(t, block, "PRESS_VERCHECK_TTL=86400")
+
+	checks := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "setup-checks.md"))
+	repoAdvice := substringBetween(t, checks, "When `PRESS_REPO_MODE=true`, tell the user to update the printing-press checkout", "When `PRESS_REPO_MODE=false`")
+	assert.Contains(t, repoAdvice, "_scope_dir")
+	assert.Contains(t, repoAdvice, `git -C "<repo>" pull --ff-only origin main`)
+	assert.Contains(t, repoAdvice, `go build -o ./cli-printing-press ./cmd/cli-printing-press`)
+	assert.NotContains(t, repoAdvice, "directory containing the captured `PRINTING_PRESS_BIN`")
+	assert.Contains(t, checks, "go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest")
 }
 
 func TestSkillsEnforceCurrencyFloor(t *testing.T) {

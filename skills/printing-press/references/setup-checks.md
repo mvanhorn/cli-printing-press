@@ -139,7 +139,7 @@ If the setup contract output contains a line starting with `[binary-below-min]`,
 
 **Stop the skill immediately.** Do not proceed to research, generation, scoring, publishing, or any later phase. There is **no skip-and-continue**. The contract has already exited non-zero, before the `[repo-upgrade-available]` prompt, so surface the update instructions below instead of waiting for that prompt.
 
-When `PRESS_REPO_MODE=true`, preflight selected the checkout binary. Tell the user to update that checkout and rebuild the selected binary (`<repo>` is the directory containing the captured `PRINTING_PRESS_BIN`):
+When `PRESS_REPO_MODE=true`, tell the user to update the printing-press checkout and rebuild its local binary. `<repo>` is that checkout root: the directory the setup contract calls `_scope_dir` (the git toplevel that contains `cmd/cli-printing-press` and `go.mod`). The contract's printed `git -C` lines already expand that path. Do not use the directory that contains `PRINTING_PRESS_BIN`. When the checkout has no executable local binary, `PRINTING_PRESS_BIN` is a global install, and that directory is something like `~/go/bin`.
 
 ```bash
 git -C "<repo>" pull --ff-only origin main
