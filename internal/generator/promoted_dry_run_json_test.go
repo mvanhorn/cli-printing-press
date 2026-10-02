@@ -50,6 +50,7 @@ func TestPromotedCommandsIncludeMutationMatchesOutputGate(t *testing.T) {
 	require.NoError(t, gen.Generate())
 	helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
 	require.NotContains(t, helpers, "func stampDryRunEnvelope(")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestPromotedMutationDryRunJSONEnvelope(t *testing.T) {
