@@ -903,8 +903,10 @@ func handleContextResult(s *server.MCPServer, _ context.Context, _ mcplib.CallTo
 			{
 				"name":        "items",
 				"description": "Manage items",
-				"endpoints":   []string{"list"},
+				"endpoints":   []string{"create", "list"},
 				"syncable":    true,
+				"searchable":  true,
+				"writable":    true,
 			},
 		},
 		"query_tips": []string{

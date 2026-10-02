@@ -81,6 +81,7 @@ type codeOrchEndpoint struct {
 {{- if .HasRequiredRoles}}
 	RequiredRole cli.Persona
 {{- end}}
+	Inputs      []codeOrchInput
 	Summary     string
 	Positional  []string
 	// TemplateParams carries public-to-wire bindings for promoted global path
@@ -117,6 +118,14 @@ type codeOrchEndpoint struct {
 	keywords    []string
 }
 
+type codeOrchInput struct {
+	Name string `json:"name"`
+	Location string `json:"in"`
+	Type string `json:"type"`
+	Required bool `json:"required"`
+	Enum []string `json:"enum,omitempty"`
+}
+
 type codeOrchParamBinding struct {
 	PublicName string
 	WireName   string
@@ -140,6 +149,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- $path := effectiveEndpointPath $resource $endpoint}}
 {{- $isReadOnly := endpointIsReadCommand $endpoint $eName}}
 {{- $summary := codeOrchSummary $endpoint}}
+{{- $inputs := codeOrchInputs $endpoint $path $.GlobalPathTemplateVars}}
 	{
 		ID:      "{{$name}}.{{$eName}}",
 		Method:  "{{upper $endpoint.Method}}",
@@ -151,6 +161,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		Tier:    {{printf "%q" (effectiveTier $.APISpec $resource $endpoint)}},
 {{- end}}
 		Summary: {{printf "%q" $summary}},
+		Inputs: []codeOrchInput{ {{range $inputs}}{Name: {{printf "%q" .Name}}, Location: {{printf "%q" .Location}}, Type: {{printf "%q" .Type}}, Required: {{.Required}}, Enum: []string{ {{range .Enum}}{{printf "%q" .}},{{end}} }},{{end}} },
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
 		TemplateParams: []codeOrchParamBinding{ {{- range mcpGlobalTemplateBindings $endpoint $path $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}} },
 		QueryParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}{{if .QueryArray}}, QueryArray: true, QueryStyle: {{printf "%q" .QueryStyle}}, QueryExplode: {{.QueryExplode}}{{end}}{{if .DeepObjectQuery}}, DeepObjectQuery: true{{end}}},{{end}}{{end}} },
@@ -169,7 +180,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse (endpointReplaySafe $endpoint)}}
 		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}}{{if $endpoint.UsesTextResponse}}"X-Printing-Press-Text-Response": "true",{{end}}{{if $endpoint.UsesHTMLResponse}}"X-Printing-Press-HTML-Response": "true",{{end}}{{with endpointReplaySafe $endpoint}}"X-Printing-Press-Replay-Safe": {{printf "%q" .}},{{end}} },
 {{- end}}
-		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" $summary}}, {{printf "%q" $path}}),
+		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" $summary}}, {{printf "%q" $path}}, {{printf "%q" (codeOrchInputKeywords $inputs)}}),
 	},
 {{- end}}
 {{- range $subName, $subResource := $resource.SubResources}}
@@ -177,6 +188,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- $path := effectiveSubEndpointPath $resource $subResource $endpoint}}
 {{- $isReadOnly := endpointIsReadCommand $endpoint $eName}}
 {{- $summary := codeOrchSummary $endpoint}}
+{{- $inputs := codeOrchInputs $endpoint $path $.GlobalPathTemplateVars}}
 	{
 		ID:      "{{$name}}.{{$subName}}.{{$eName}}",
 		Method:  "{{upper $endpoint.Method}}",
@@ -188,6 +200,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		Tier:    {{printf "%q" (effectiveSubTier $.APISpec $resource $subResource $endpoint)}},
 {{- end}}
 		Summary: {{printf "%q" $summary}},
+		Inputs: []codeOrchInput{ {{range $inputs}}{Name: {{printf "%q" .Name}}, Location: {{printf "%q" .Location}}, Type: {{printf "%q" .Type}}, Required: {{.Required}}, Enum: []string{ {{range .Enum}}{{printf "%q" .}},{{end}} }},{{end}} },
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
 		TemplateParams: []codeOrchParamBinding{ {{- range mcpGlobalTemplateBindings $endpoint $path $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}} },
 		QueryParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}{{if .QueryArray}}, QueryArray: true, QueryStyle: {{printf "%q" .QueryStyle}}, QueryExplode: {{.QueryExplode}}{{end}}{{if .DeepObjectQuery}}, DeepObjectQuery: true{{end}}},{{end}}{{end}} },
@@ -206,7 +219,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse (endpointReplaySafe $endpoint)}}
 		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}}{{if $endpoint.UsesTextResponse}}"X-Printing-Press-Text-Response": "true",{{end}}{{if $endpoint.UsesHTMLResponse}}"X-Printing-Press-HTML-Response": "true",{{end}}{{with endpointReplaySafe $endpoint}}"X-Printing-Press-Replay-Safe": {{printf "%q" .}},{{end}} },
 {{- end}}
-		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" $summary}}, {{printf "%q" $path}}),
+		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" $summary}}, {{printf "%q" $path}}, {{printf "%q" (codeOrchInputKeywords $inputs)}}),
 	},
 {{- end}}
 {{- end}}
@@ -230,8 +243,8 @@ var codeOrchStopwords = map[string]bool{
 // codeOrchKeywords produces the lowercase token stream used for search
 // ranking. Defined at package level so the registry initializer can call it
 // inline above without pulling in a separate precompute step.
-func codeOrchKeywords(resource, endpoint, summary, path string) []string {
-	raw := strings.ToLower(resource + " " + endpoint + " " + summary + " " + path)
+func codeOrchKeywords(parts ...string) []string {
+	raw := strings.ToLower(strings.Join(parts, " "))
 	raw = strings.Map(func(r rune) rune {
 		switch r {
 		case '_', '-', '/', '{', '}', '.', ',', ':', ';':
@@ -257,6 +270,7 @@ func codeOrchEndpointMetadata(ep *codeOrchEndpoint) map[string]any {
 		"method":      ep.Method,
 		"path":        ep.Path,
 		"summary":     ep.Summary,
+		"params":      ep.Inputs,
 	}
 {{- if .HasTierRouting}}
 	out["tier"] = ep.Tier

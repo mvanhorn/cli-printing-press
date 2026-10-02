@@ -19,6 +19,26 @@ x-mcp:
   endpoint_tools: hidden
 paths:
   /items:
+    post:
+      tags: [items]
+      operationId: createItem
+      summary: Create an item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [assisted, observe]
+                label:
+                  type: string
+      responses:
+        "200":
+          description: OK
     get:
       tags: [items]
       operationId: listItems

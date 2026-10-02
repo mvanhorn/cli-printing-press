@@ -336,6 +336,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"oneline":                             naming.OneLine,
 		"endpointDeprecatedLong":              endpointDeprecatedLong,
 		"codeOrchSummary":                     codeOrchSummary,
+		"codeOrchInputs":                      codeOrchInputs,
+		"codeOrchInputKeywords":               codeOrchInputKeywords,
 		"composeMCPDesc":                      composeMCPDesc,
 		"composeMCPSubDesc":                   composeMCPSubDesc,
 		"mcpParamDesc":                        g.mcpParamDescription,

@@ -76,14 +76,15 @@ Diagnostic only. Exit 0 regardless of findings.`,
 // so downstream tools (ci scripts, the future emboss-audit loop) can
 // consume this without depending on go struct ordering.
 type MCPAuditFinding struct {
-	API         string `json:"api"`         // library directory basename
-	HasMCP      bool   `json:"has_mcp"`     // the CLI emits an MCP server
-	Transport   string `json:"transport"`   // "stdio", "http", "both", "unknown", "n/a"
-	ToolDesign  string `json:"tool_design"` // "endpoint-mirror", "intent", "code-orch", "n/a"
-	EndpointCt  int    `json:"endpoint_count"`
-	IntentCt    int    `json:"intent_count"`
-	IntentHints string `json:"intent_hints"` // "ok", "stale", "n/a"
-	Recommend   string `json:"recommend"`    // short, actionable suggestion
+	API          string `json:"api"`         // library directory basename
+	HasMCP       bool   `json:"has_mcp"`     // the CLI emits an MCP server
+	Transport    string `json:"transport"`   // "stdio", "http", "both", "unknown", "n/a"
+	ToolDesign   string `json:"tool_design"` // "endpoint-mirror", "intent", "code-orch", "n/a"
+	EndpointCt   int    `json:"endpoint_count"`
+	IntentCt     int    `json:"intent_count"`
+	RequestHints string `json:"request_hints"` // "ok", "stale", "n/a"
+	IntentHints  string `json:"intent_hints"`  // "ok", "stale", "n/a"
+	Recommend    string `json:"recommend"`     // short, actionable suggestion
 }
 
 // runMCPAudit walks every immediate subdirectory of libraryPath and reports
@@ -110,7 +111,7 @@ func runMCPAudit(libraryPath string) ([]MCPAuditFinding, error) {
 // heuristics over file contents rather than requiring a manifest file
 // because older printed CLIs predate the tools-manifest schema.
 func auditLibraryCLI(dir, api string) MCPAuditFinding {
-	f := MCPAuditFinding{API: api}
+	f := MCPAuditFinding{API: api, RequestHints: intentHintsNA}
 
 	var mainPath string
 	cmdDir := filepath.Join(dir, "cmd")
@@ -161,8 +162,12 @@ func auditLibraryCLI(dir, api string) MCPAuditFinding {
 		f.IntentCt = strings.Count(intentsBody, "mcplib.NewTool(")
 	}
 	codeOrch := false
-	if _, err := os.Stat(filepath.Join(dir, "internal", "mcp", "code_orch.go")); err == nil {
+	if data, err := os.ReadFile(filepath.Join(dir, "internal", "mcp", "code_orch.go")); err == nil {
 		codeOrch = true
+		f.RequestHints = intentHintsStale
+		if strings.Contains(string(data), `"params":`) && strings.Contains(string(data), "ep.Inputs") {
+			f.RequestHints = intentHintsOK
+		}
 	}
 
 	switch {
@@ -176,6 +181,9 @@ func auditLibraryCLI(dir, api string) MCPAuditFinding {
 
 	hints, recs := inspectIntentSurface(intentsBody, f.IntentCt)
 	f.IntentHints = hints
+	if f.RequestHints == intentHintsStale {
+		recs = append(recs, "reprint: code-orchestration discovery lacks request parameter hints")
+	}
 	f.Recommend = mergeRecommendations(recommendForFinding(f), recs)
 	return f
 }

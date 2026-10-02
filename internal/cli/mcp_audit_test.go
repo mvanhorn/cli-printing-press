@@ -96,7 +96,7 @@ func TestRunMCPAuditCodeOrchSurface(t *testing.T) {
 	mustWrite(t, cli, "cmd/cloudy-cli-pp-mcp/main.go",
 		"package main\nfunc main() { server.ServeStdio(s); server.NewStreamableHTTPServer(s) }\n")
 	mustWrite(t, cli, "internal/mcp/tools.go", "package mcp\n")
-	mustWrite(t, cli, "internal/mcp/code_orch.go", "package mcp\n")
+	mustWrite(t, cli, "internal/mcp/code_orch.go", "package mcp\n// metadata: \"params\": ep.Inputs\n")
 
 	findings, err := runMCPAudit(lib)
 	require.NoError(t, err)
@@ -327,4 +327,22 @@ func TestRunMCPAuditGeneratedIntentSurfaceIsCurrent(t *testing.T) {
 func TestRunMCPAuditMissingLibraryErrors(t *testing.T) {
 	_, err := runMCPAudit(filepath.Join(t.TempDir(), "does-not-exist"))
 	assert.Error(t, err, "missing library path should surface as a clear error")
+}
+
+func TestMCPAuditRequestHints(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"old", "package mcp", intentHintsStale},
+		{"current", `package mcp; var metadata = map[string]any{"params": ep.Inputs}`, intentHintsOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			mustWrite(t, root, "cmd/sample-pp-mcp/main.go", "package main")
+			mustWrite(t, root, "internal/mcp/code_orch.go", tc.body)
+			got := auditLibraryCLI(root, "sample")
+			assert.Equal(t, tc.want, got.RequestHints)
+			if tc.want == intentHintsStale {
+				assert.Contains(t, got.Recommend, "request parameter hints")
+			}
+		})
+	}
 }
