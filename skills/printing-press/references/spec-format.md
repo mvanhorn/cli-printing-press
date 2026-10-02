@@ -69,7 +69,7 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
             type: int             # string type: string | int | bool | float
             required: false       # bool whether Cobra marks the flag required
             positional: false     # bool true => consumes positional CLI arg and fills {name} in path
-            default: 100          # any default value (type should match param type)
+            default: 100          # native client flag default; sent when the flag is omitted. OpenAPI optional schema defaults are recorded as server_default and shown in help, but CLI and MCP omit them unless the caller sets the value.
             description: "Max results" # string flag description
             fields: []            # []Param nested fields for object-like params
             enum: []              # []string optional enum hints/constraints

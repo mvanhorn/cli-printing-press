@@ -138,7 +138,7 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&flagXApiVersion, "x-api-version", "2026-04-01", "Required API version header.")
 	cmd.Flags().StringVar(&flagPriority, "priority", "", "Priority (one of: low, normal, high)")
-	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Limit")
+	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Limit (default: 50)")
 	cmd.Flags().StringVar(&flagCursor, "cursor", "", "Cursor")
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Fetch all pages")
 

@@ -657,12 +657,12 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- range .Endpoint.Params}}
 {{- if not .Positional}}
 {{- $param := .}}
-	cmd.Flags().{{cobraFlagFuncForParamRequired .Name .Type .Required (hasDefault .)}}(&flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", {{defaultValForParamRequired . .Required (hasDefault .)}}, "{{oneline .Description}}{{enumDescriptionHint .Enum}}")
+	cmd.Flags().{{cobraFlagFuncForParamRequired .Name .Type .Required (hasDefault .)}}(&flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", {{defaultValForParamRequired . .Required (hasDefault .)}}, {{quotedFlagDescription (oneline .Description) (enumDescriptionHint .Enum) (serverDefaultHint .)}})
 {{- if isConstDefault .}}
 	_ = cmd.Flags().MarkHidden("{{publicFlagName .}}")
 {{- end}}
 {{- range publicFlagAliases $param}}
-	cmd.Flags().{{cobraFlagFuncForParamRequired $param.Name $param.Type $param.Required (hasDefault $param)}}(&flag{{camel (paramIdent $param)}}, "{{.}}", {{defaultValForParamRequired $param $param.Required (hasDefault $param)}}, "{{oneline $param.Description}}{{enumDescriptionHint $param.Enum}}")
+	cmd.Flags().{{cobraFlagFuncForParamRequired $param.Name $param.Type $param.Required (hasDefault $param)}}(&flag{{camel (paramIdent $param)}}, "{{.}}", {{defaultValForParamRequired $param $param.Required (hasDefault $param)}}, {{quotedFlagDescription (oneline $param.Description) (enumDescriptionHint $param.Enum) (serverDefaultHint $param)}})
 	_ = cmd.Flags().MarkHidden("{{.}}")
 {{- end}}
 {{- end}}

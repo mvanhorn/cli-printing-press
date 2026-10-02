@@ -144,7 +144,7 @@ func newTicketsPromotedCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&flagXApiVersion, "x-api-version", "2026-04-01", "Required API version header.")
-	cmd.Flags().IntVar(&bodyMaxRecords, "max-records", 500, "Max records")
+	cmd.Flags().IntVar(&bodyMaxRecords, "max-records", 0, "Max records (default: 500)")
 	cmd.Flags().StringVar(&bodyFilter, "filter", "", "Filter")
 
 	// Wire sibling endpoints and sub-resources as subcommands

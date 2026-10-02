@@ -1210,7 +1210,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if paramHasEnvDefault .}}
 	cmd.Flags().StringVar(&flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", globalScopeParamDefault("{{globalScopeEnvName .}}", {{printf "%q" (globalScopeFallbackValue .)}}), "{{oneline .Description}}{{enumDescriptionHint .Enum}} (env: {{globalScopeEnvName .}})")
 {{- else}}
-	cmd.Flags().{{cobraFlagFuncForParamRequired .Name .Type .Required (hasDefault .)}}(&flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", {{defaultValForParamRequired . .Required (hasDefault .)}}, "{{oneline .Description}}{{enumDescriptionHint .Enum}}")
+	cmd.Flags().{{cobraFlagFuncForParamRequired .Name .Type .Required (hasDefault .)}}(&flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", {{defaultValForParamRequired . .Required (hasDefault .)}}, {{quotedFlagDescription (oneline .Description) (enumDescriptionHint .Enum) (serverDefaultHint .)}})
 {{- end}}
 {{- if isConstDefault .}}
 	_ = cmd.Flags().MarkHidden("{{publicFlagName .}}")
@@ -1219,7 +1219,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if paramHasEnvDefault $param}}
 	cmd.Flags().StringVar(&flag{{camel (paramIdent $param)}}, "{{.}}", globalScopeParamDefault("{{globalScopeEnvName $param}}", {{printf "%q" (globalScopeFallbackValue $param)}}), "{{oneline $param.Description}}{{enumDescriptionHint $param.Enum}} (env: {{globalScopeEnvName $param}})")
 {{- else}}
-	cmd.Flags().{{cobraFlagFuncForParamRequired $param.Name $param.Type $param.Required (hasDefault $param)}}(&flag{{camel (paramIdent $param)}}, "{{.}}", {{defaultValForParamRequired $param $param.Required (hasDefault $param)}}, "{{oneline $param.Description}}{{enumDescriptionHint $param.Enum}}")
+	cmd.Flags().{{cobraFlagFuncForParamRequired $param.Name $param.Type $param.Required (hasDefault $param)}}(&flag{{camel (paramIdent $param)}}, "{{.}}", {{defaultValForParamRequired $param $param.Required (hasDefault $param)}}, {{quotedFlagDescription (oneline $param.Description) (enumDescriptionHint $param.Enum) (serverDefaultHint $param)}})
 {{- end}}
 	_ = cmd.Flags().MarkHidden("{{.}}")
 {{- end}}

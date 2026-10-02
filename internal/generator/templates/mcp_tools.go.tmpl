@@ -10,6 +10,7 @@
 {{- $hasMCPBindingFormat := or $hasMultipartRequest $hasFormRequest $hasMCPJSONOrScalar (hasArrayQueryParams .APISpec)}}
 {{- $hasMCPRequestContentType := or $hasMultipartRequest $hasFormRequest $hasRawRequest}}
 {{- $hasMCPParamDefault := hasMCPParamDefault .APISpec}}
+{{- $hasNestedRequiredDefault := hasMCPNestedRequiredDefault .APISpec}}
 
 package mcp
 
@@ -112,9 +113,9 @@ func RegisterTools(s *server.MCPServer) {
 {{- end}}
 		),
 {{- if $.HasTierRouting}}
-		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveEndpointPath $resource $endpoint)}}, {{printf "%q" (effectiveTier $.APISpec $resource $endpoint)}}, {{if $isReadOnly}}true{{else}}false{{end}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, {{if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse (endpointReplaySafe $endpoint)}}map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}}{{if $endpoint.UsesTextResponse}}client.TextResponseHeader: "true",{{end}}{{if $endpoint.UsesHTMLResponse}}client.HTMLResponseHeader: "true",{{end}}{{with endpointReplaySafe $endpoint}}client.ReplaySafeHeader: {{printf "%q" .}},{{end}} }{{else}}nil{{end}}, {{if $.HasRequiredRoles}}{{if $endpoint.RequiresRole}}cli.Persona{{pascal $endpoint.RequiresRole}}{{else}}cli.Persona(""){{end}}, {{end}}{{mcpPageConfig $endpoint}}, []mcpParamBinding{ {{- if $endpoint.UsesRawRequestBody}}{Location: "raw", RequestContentType: {{printf "%q" $endpoint.RequestContentType}}, RawBodyRequired: {{if $endpoint.BodyRequired}}true{{else}}false{{end}}},{{end}}{{- range mcpParamBindings $endpoint (effectiveEndpointPath $resource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .BodyPath}}, BodyPath: []string{ {{- range .BodyPath}}{{printf "%q" .}},{{end}} }{{end}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .QueryArray}}, QueryArray: true, QueryStyle: {{printf "%q" .QueryStyle}}, QueryExplode: {{.QueryExplode}}{{end}}{{if .DeepObjectQuery}}, DeepObjectQuery: true{{end}}{{if and $hasMCPRequestContentType .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}{{if .Default}}, Default: {{printf "%q" .Default}}{{end}}},{{end}}{{- range mcpGlobalTemplateBindings $endpoint (effectiveEndpointPath $resource $endpoint) $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveEndpointPath $resource $endpoint)}}, {{printf "%q" (effectiveTier $.APISpec $resource $endpoint)}}, {{if $isReadOnly}}true{{else}}false{{end}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, {{if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse (endpointReplaySafe $endpoint)}}map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}}{{if $endpoint.UsesTextResponse}}client.TextResponseHeader: "true",{{end}}{{if $endpoint.UsesHTMLResponse}}client.HTMLResponseHeader: "true",{{end}}{{with endpointReplaySafe $endpoint}}client.ReplaySafeHeader: {{printf "%q" .}},{{end}} }{{else}}nil{{end}}, {{if $.HasRequiredRoles}}{{if $endpoint.RequiresRole}}cli.Persona{{pascal $endpoint.RequiresRole}}{{else}}cli.Persona(""){{end}}, {{end}}{{mcpPageConfig $endpoint}}, []mcpParamBinding{ {{- if $endpoint.UsesRawRequestBody}}{Location: "raw", RequestContentType: {{printf "%q" $endpoint.RequestContentType}}, RawBodyRequired: {{if $endpoint.BodyRequired}}true{{else}}false{{end}}},{{end}}{{- range mcpParamBindings $endpoint (effectiveEndpointPath $resource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .BodyPath}}, BodyPath: []string{ {{- range .BodyPath}}{{printf "%q" .}},{{end}} }{{end}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .QueryArray}}, QueryArray: true, QueryStyle: {{printf "%q" .QueryStyle}}, QueryExplode: {{.QueryExplode}}{{end}}{{if .DeepObjectQuery}}, DeepObjectQuery: true{{end}}{{if and $hasMCPRequestContentType .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}{{if .Default}}, Default: {{printf "%q" .Default}}{{end}}{{if .DefaultScope}}, DefaultScope: []string{ {{- range .DefaultScope}}{{printf "%q" .}},{{end}} }{{end}}},{{end}}{{- range mcpGlobalTemplateBindings $endpoint (effectiveEndpointPath $resource $endpoint) $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 {{- else}}
-		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveEndpointPath $resource $endpoint)}}, {{if $isReadOnly}}true{{else}}false{{end}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, {{if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse (endpointReplaySafe $endpoint)}}map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}}{{if $endpoint.UsesTextResponse}}client.TextResponseHeader: "true",{{end}}{{if $endpoint.UsesHTMLResponse}}client.HTMLResponseHeader: "true",{{end}}{{with endpointReplaySafe $endpoint}}client.ReplaySafeHeader: {{printf "%q" .}},{{end}} }{{else}}nil{{end}}, {{if $.HasRequiredRoles}}{{if $endpoint.RequiresRole}}cli.Persona{{pascal $endpoint.RequiresRole}}{{else}}cli.Persona(""){{end}}, {{end}}{{mcpPageConfig $endpoint}}, []mcpParamBinding{ {{- if $endpoint.UsesRawRequestBody}}{Location: "raw", RequestContentType: {{printf "%q" $endpoint.RequestContentType}}, RawBodyRequired: {{if $endpoint.BodyRequired}}true{{else}}false{{end}}},{{end}}{{- range mcpParamBindings $endpoint (effectiveEndpointPath $resource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .BodyPath}}, BodyPath: []string{ {{- range .BodyPath}}{{printf "%q" .}},{{end}} }{{end}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .QueryArray}}, QueryArray: true, QueryStyle: {{printf "%q" .QueryStyle}}, QueryExplode: {{.QueryExplode}}{{end}}{{if .DeepObjectQuery}}, DeepObjectQuery: true{{end}}{{if and $hasMCPRequestContentType .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}{{if .Default}}, Default: {{printf "%q" .Default}}{{end}}},{{end}}{{- range mcpGlobalTemplateBindings $endpoint (effectiveEndpointPath $resource $endpoint) $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveEndpointPath $resource $endpoint)}}, {{if $isReadOnly}}true{{else}}false{{end}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, {{if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse (endpointReplaySafe $endpoint)}}map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}}{{if $endpoint.UsesTextResponse}}client.TextResponseHeader: "true",{{end}}{{if $endpoint.UsesHTMLResponse}}client.HTMLResponseHeader: "true",{{end}}{{with endpointReplaySafe $endpoint}}client.ReplaySafeHeader: {{printf "%q" .}},{{end}} }{{else}}nil{{end}}, {{if $.HasRequiredRoles}}{{if $endpoint.RequiresRole}}cli.Persona{{pascal $endpoint.RequiresRole}}{{else}}cli.Persona(""){{end}}, {{end}}{{mcpPageConfig $endpoint}}, []mcpParamBinding{ {{- if $endpoint.UsesRawRequestBody}}{Location: "raw", RequestContentType: {{printf "%q" $endpoint.RequestContentType}}, RawBodyRequired: {{if $endpoint.BodyRequired}}true{{else}}false{{end}}},{{end}}{{- range mcpParamBindings $endpoint (effectiveEndpointPath $resource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .BodyPath}}, BodyPath: []string{ {{- range .BodyPath}}{{printf "%q" .}},{{end}} }{{end}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .QueryArray}}, QueryArray: true, QueryStyle: {{printf "%q" .QueryStyle}}, QueryExplode: {{.QueryExplode}}{{end}}{{if .DeepObjectQuery}}, DeepObjectQuery: true{{end}}{{if and $hasMCPRequestContentType .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}{{if .Default}}, Default: {{printf "%q" .Default}}{{end}}{{if .DefaultScope}}, DefaultScope: []string{ {{- range .DefaultScope}}{{printf "%q" .}},{{end}} }{{end}}},{{end}}{{- range mcpGlobalTemplateBindings $endpoint (effectiveEndpointPath $resource $endpoint) $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 {{- end}}
 	)
 {{- end}}
@@ -155,9 +156,9 @@ func RegisterTools(s *server.MCPServer) {
 {{- end}}
 		),
 {{- if $.HasTierRouting}}
-		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveSubEndpointPath $resource $subResource $endpoint)}}, {{printf "%q" (effectiveSubTier $.APISpec $resource $subResource $endpoint)}}, {{if $isReadOnly}}true{{else}}false{{end}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, {{if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse (endpointReplaySafe $endpoint)}}map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}}{{if $endpoint.UsesTextResponse}}client.TextResponseHeader: "true",{{end}}{{if $endpoint.UsesHTMLResponse}}client.HTMLResponseHeader: "true",{{end}}{{with endpointReplaySafe $endpoint}}client.ReplaySafeHeader: {{printf "%q" .}},{{end}} }{{else}}nil{{end}}, {{if $.HasRequiredRoles}}{{if $endpoint.RequiresRole}}cli.Persona{{pascal $endpoint.RequiresRole}}{{else}}cli.Persona(""){{end}}, {{end}}{{mcpPageConfig $endpoint}}, []mcpParamBinding{ {{- if $endpoint.UsesRawRequestBody}}{Location: "raw", RequestContentType: {{printf "%q" $endpoint.RequestContentType}}, RawBodyRequired: {{if $endpoint.BodyRequired}}true{{else}}false{{end}}},{{end}}{{- range mcpParamBindings $endpoint (effectiveSubEndpointPath $resource $subResource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .BodyPath}}, BodyPath: []string{ {{- range .BodyPath}}{{printf "%q" .}},{{end}} }{{end}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .QueryArray}}, QueryArray: true, QueryStyle: {{printf "%q" .QueryStyle}}, QueryExplode: {{.QueryExplode}}{{end}}{{if .DeepObjectQuery}}, DeepObjectQuery: true{{end}}{{if and $hasMCPRequestContentType .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}{{if .Default}}, Default: {{printf "%q" .Default}}{{end}}},{{end}}{{- range mcpGlobalTemplateBindings $endpoint (effectiveSubEndpointPath $resource $subResource $endpoint) $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveSubEndpointPath $resource $subResource $endpoint)}}, {{printf "%q" (effectiveSubTier $.APISpec $resource $subResource $endpoint)}}, {{if $isReadOnly}}true{{else}}false{{end}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, {{if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse (endpointReplaySafe $endpoint)}}map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}}{{if $endpoint.UsesTextResponse}}client.TextResponseHeader: "true",{{end}}{{if $endpoint.UsesHTMLResponse}}client.HTMLResponseHeader: "true",{{end}}{{with endpointReplaySafe $endpoint}}client.ReplaySafeHeader: {{printf "%q" .}},{{end}} }{{else}}nil{{end}}, {{if $.HasRequiredRoles}}{{if $endpoint.RequiresRole}}cli.Persona{{pascal $endpoint.RequiresRole}}{{else}}cli.Persona(""){{end}}, {{end}}{{mcpPageConfig $endpoint}}, []mcpParamBinding{ {{- if $endpoint.UsesRawRequestBody}}{Location: "raw", RequestContentType: {{printf "%q" $endpoint.RequestContentType}}, RawBodyRequired: {{if $endpoint.BodyRequired}}true{{else}}false{{end}}},{{end}}{{- range mcpParamBindings $endpoint (effectiveSubEndpointPath $resource $subResource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .BodyPath}}, BodyPath: []string{ {{- range .BodyPath}}{{printf "%q" .}},{{end}} }{{end}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .QueryArray}}, QueryArray: true, QueryStyle: {{printf "%q" .QueryStyle}}, QueryExplode: {{.QueryExplode}}{{end}}{{if .DeepObjectQuery}}, DeepObjectQuery: true{{end}}{{if and $hasMCPRequestContentType .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}{{if .Default}}, Default: {{printf "%q" .Default}}{{end}}{{if .DefaultScope}}, DefaultScope: []string{ {{- range .DefaultScope}}{{printf "%q" .}},{{end}} }{{end}}},{{end}}{{- range mcpGlobalTemplateBindings $endpoint (effectiveSubEndpointPath $resource $subResource $endpoint) $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 {{- else}}
-		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveSubEndpointPath $resource $subResource $endpoint)}}, {{if $isReadOnly}}true{{else}}false{{end}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, {{if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse (endpointReplaySafe $endpoint)}}map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}}{{if $endpoint.UsesTextResponse}}client.TextResponseHeader: "true",{{end}}{{if $endpoint.UsesHTMLResponse}}client.HTMLResponseHeader: "true",{{end}}{{with endpointReplaySafe $endpoint}}client.ReplaySafeHeader: {{printf "%q" .}},{{end}} }{{else}}nil{{end}}, {{if $.HasRequiredRoles}}{{if $endpoint.RequiresRole}}cli.Persona{{pascal $endpoint.RequiresRole}}{{else}}cli.Persona(""){{end}}, {{end}}{{mcpPageConfig $endpoint}}, []mcpParamBinding{ {{- if $endpoint.UsesRawRequestBody}}{Location: "raw", RequestContentType: {{printf "%q" $endpoint.RequestContentType}}, RawBodyRequired: {{if $endpoint.BodyRequired}}true{{else}}false{{end}}},{{end}}{{- range mcpParamBindings $endpoint (effectiveSubEndpointPath $resource $subResource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .BodyPath}}, BodyPath: []string{ {{- range .BodyPath}}{{printf "%q" .}},{{end}} }{{end}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .QueryArray}}, QueryArray: true, QueryStyle: {{printf "%q" .QueryStyle}}, QueryExplode: {{.QueryExplode}}{{end}}{{if .DeepObjectQuery}}, DeepObjectQuery: true{{end}}{{if and $hasMCPRequestContentType .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}{{if .Default}}, Default: {{printf "%q" .Default}}{{end}}},{{end}}{{- range mcpGlobalTemplateBindings $endpoint (effectiveSubEndpointPath $resource $subResource $endpoint) $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveSubEndpointPath $resource $subResource $endpoint)}}, {{if $isReadOnly}}true{{else}}false{{end}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, {{if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse (endpointReplaySafe $endpoint)}}map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}}{{if $endpoint.UsesTextResponse}}client.TextResponseHeader: "true",{{end}}{{if $endpoint.UsesHTMLResponse}}client.HTMLResponseHeader: "true",{{end}}{{with endpointReplaySafe $endpoint}}client.ReplaySafeHeader: {{printf "%q" .}},{{end}} }{{else}}nil{{end}}, {{if $.HasRequiredRoles}}{{if $endpoint.RequiresRole}}cli.Persona{{pascal $endpoint.RequiresRole}}{{else}}cli.Persona(""){{end}}, {{end}}{{mcpPageConfig $endpoint}}, []mcpParamBinding{ {{- if $endpoint.UsesRawRequestBody}}{Location: "raw", RequestContentType: {{printf "%q" $endpoint.RequestContentType}}, RawBodyRequired: {{if $endpoint.BodyRequired}}true{{else}}false{{end}}},{{end}}{{- range mcpParamBindings $endpoint (effectiveSubEndpointPath $resource $subResource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .BodyPath}}, BodyPath: []string{ {{- range .BodyPath}}{{printf "%q" .}},{{end}} }{{end}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .QueryArray}}, QueryArray: true, QueryStyle: {{printf "%q" .QueryStyle}}, QueryExplode: {{.QueryExplode}}{{end}}{{if .DeepObjectQuery}}, DeepObjectQuery: true{{end}}{{if and $hasMCPRequestContentType .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}{{if .Default}}, Default: {{printf "%q" .Default}}{{end}}{{if .DefaultScope}}, DefaultScope: []string{ {{- range .DefaultScope}}{{printf "%q" .}},{{end}} }{{end}}},{{end}}{{- range mcpGlobalTemplateBindings $endpoint (effectiveSubEndpointPath $resource $subResource $endpoint) $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 {{- end}}
 	)
 {{- end}}
@@ -237,8 +238,11 @@ type mcpParamBinding struct {
 {{- if $hasRawRequest}}
 	RawBodyRequired bool
 {{- end}}
-{{- if $hasMCPParamDefault}}
+{{- if or $hasMCPParamDefault $hasNestedRequiredDefault}}
 	Default    string
+{{- end}}
+{{- if $hasNestedRequiredDefault}}
+	DefaultScope []string
 {{- end}}
 }
 
@@ -448,6 +452,44 @@ func setNestedBodyArg(body map[string]any, path []string, value any) {
 }
 {{- end}}
 
+{{- if $hasNestedRequiredDefault}}
+func applyMCPNestedRequiredDefaults(body map[string]any, args map[string]any, bindings []mcpParamBinding) {
+	for _, binding := range bindings {
+		if binding.Default == "" || len(binding.DefaultScope) == 0 || len(binding.BodyPath) == 0 {
+			continue
+		}
+		if _, present := args[binding.PublicName]; present {
+			continue
+		}
+		if !mcpBodyObjectPresent(body, binding.DefaultScope) {
+			continue
+		}
+		var value any
+		if err := json.Unmarshal([]byte(binding.Default), &value); err != nil || value == nil {
+			continue
+		}
+		setNestedBodyArg(body, binding.BodyPath, value)
+	}
+}
+
+func mcpBodyObjectPresent(body map[string]any, path []string) bool {
+	current := any(body)
+	for _, key := range path {
+		obj, ok := current.(map[string]any)
+		if !ok {
+			return false
+		}
+		next, ok := obj[key]
+		if !ok {
+			return false
+		}
+		current = next
+	}
+	_, ok := current.(map[string]any)
+	return ok
+}
+{{- end}}
+
 {{- if $hasMCPJSONOrScalar}}
 func coerceMCPBodyValue(binding mcpParamBinding, value any) (any, error) {
 	if binding.Format != "json_or_scalar" {
@@ -617,7 +659,13 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 {{- end}}
 			v, ok := args[binding.PublicName]
 			if !ok {
-{{- if $hasMCPParamDefault}}
+{{- if and $hasNestedRequiredDefault $hasMCPParamDefault}}
+				if binding.Default != "" && len(binding.DefaultScope) == 0 {
+					v = binding.Default
+				} else {
+					continue
+				}
+{{- else if $hasMCPParamDefault}}
 				if binding.Default != "" {
 					v = binding.Default
 				} else {
@@ -755,6 +803,9 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				params[k] = formatMCPParamValue(v)
 			}
 		}
+{{if $hasNestedRequiredDefault}}
+		applyMCPNestedRequiredDefaults(bodyArgs, args, bindings)
+{{end}}
 
 		var data json.RawMessage
 		switch method {

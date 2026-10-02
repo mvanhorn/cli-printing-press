@@ -289,7 +289,7 @@ func TestGeneratedPaidSubmitUploadRetryAndRecovery(t *testing.T) {
 		"var bodyStrict string",
 		"var flagSince float64",
 		"var flagIncludeDeleted bool",
-		`cmd.Flags().IntVar(&bodyPage, "page", 1,`,
+		`cmd.Flags().IntVar(&bodyPage, "page", 0, "Page (default: 1)")`,
 		`cmd.Flags().IntVar(&bodyCursor, "cursor", 0,`,
 		`cmd.Flags().Float64Var(&bodyMinTime, "min-time", 0.0,`,
 	} {
@@ -490,7 +490,11 @@ func TestPaid_UploadDeadlineScalesWithSize(t *testing.T) {
 	require.Equal(t, 1, server.submits(), "a failed wait must not resubmit the paid job")
 	require.GreaterOrEqual(t, server.polls(), 2, "transient poll failures must not abandon the wait; output:\n%s", out)
 
-	out, err = runGeneratedCLI(t, binaryPath, env, "billings", "--strict", "true", "--page-size", "10", "--cursor", "1700000000", "--archived", "--json")
+	out, err = runGeneratedCLI(t, binaryPath, env, "billings", "--strict", "true", "--json")
+	require.NoError(t, err, out)
+	require.NotContains(t, server.lastSearchBody(), `"page"`, "optional OpenAPI page default stays off the wire")
+
+	out, err = runGeneratedCLI(t, binaryPath, env, "billings", "--strict", "true", "--page", "1", "--page-size", "10", "--cursor", "1700000000", "--archived", "--json")
 	require.NoError(t, err, out)
 	body := server.lastSearchBody()
 	for _, want := range []string{`"page":1`, `"page_size":10`, `"cursor":1700000000`, `"archived":true`, `"strict":true`} {
