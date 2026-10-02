@@ -1684,10 +1684,10 @@ func runPrintingPressStandaloneContract(t *testing.T, binaryVersion string) (out
 	require.NoError(t, os.MkdirAll(fakeBin, 0o755))
 	require.NoError(t, os.MkdirAll(pressHome, 0o755))
 	require.NoError(t, os.WriteFile(netLogPath, nil, 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(pressHome, ".version-check"), []byte(fmt.Sprintf(
+	require.NoError(t, os.WriteFile(filepath.Join(pressHome, ".version-check"), fmt.Appendf(nil,
 		"last_check=%d\nlatest=4.32.6\nmode=standalone\nmin_supported=4.28.0\nreason=test\n",
 		time.Now().Unix(),
-	)), 0o644))
+	), 0o644))
 
 	writeExecutable(t, filepath.Join(fakeBin, "cli-printing-press"), versionJSONScript(binaryVersion, "3.0.0"))
 	writeExecutable(t, filepath.Join(fakeBin, "go"), `#!/bin/sh
