@@ -5203,12 +5203,7 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		if inferCSVArrays && isStringArraySchema(paramSchema) {
 			param.ItemType = "string"
 		}
-		if paramSchema != nil && paramSchema.Default != nil {
-			param.Default = paramSchema.Default
-			if !param.Required {
-				param.ServerDefault = true
-			}
-		}
+		assignBodySchemaDefault(&param, paramSchema)
 		setParamMaximum(&param, paramSchema)
 		// For array types, propagate item-level enum as a Fields entry
 		// so downstream consumers (profiler) can access it.
@@ -5609,7 +5604,7 @@ func mapBodyFieldsDepth(schema *openapi3.Schema, inferCSVArrays bool, visited ma
 		if description == "" {
 			description = humanizeFieldName(name)
 		}
-		fields = append(fields, spec.Param{
+		field := spec.Param{
 			Name:              name,
 			Type:              mapBodyParamType(fieldSchema, inferCSVArrays),
 			Required:          isRequired(required, name),
@@ -5618,16 +5613,32 @@ func mapBodyFieldsDepth(schema *openapi3.Schema, inferCSVArrays bool, visited ma
 			Enum:              schemaEnum(fieldSchema),
 			EnumUnsatisfiable: schemaEnumUnsatisfiable(fieldSchema),
 			Format:            schemaFormat(fieldSchema),
-		})
+		}
 		if schemaHasCompositeUnionAlternative(fieldSchema, map[*openapi3.Schema]struct{}{}) {
-			fields[len(fields)-1].Type = "string"
-			fields[len(fields)-1].Format = "json_or_scalar"
+			field.Type = "string"
+			field.Format = "json_or_scalar"
 		}
 		if inferCSVArrays && isStringArraySchema(fieldSchema) {
-			fields[len(fields)-1].ItemType = "string"
+			field.ItemType = "string"
 		}
+		assignBodySchemaDefault(&field, fieldSchema)
+		fields = append(fields, field)
 	}
 	return fields
+}
+
+// assignBodySchemaDefault copies an OpenAPI schema default onto a body
+// field. Optional defaults are server assumptions: help shows them, and
+// the request omits them until the caller sets the value. Required
+// defaults stay client-sent.
+func assignBodySchemaDefault(param *spec.Param, schema *openapi3.Schema) {
+	if param == nil || schema == nil || schema.Default == nil {
+		return
+	}
+	param.Default = schema.Default
+	if !param.Required {
+		param.ServerDefault = true
+	}
 }
 
 func collectAllOfProperties(

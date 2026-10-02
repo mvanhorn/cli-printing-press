@@ -19,6 +19,7 @@ import (
 	"text/template"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpdesc"
@@ -418,6 +419,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"enumLiteral":                  enumLiteral,
 		"enumDescriptionHint":          enumDescriptionHint,
 		"serverDefaultHint":            serverDefaultHint,
+		"quotedFlagDescription":        quotedFlagDescription,
 		"jsonStringParam":              isJSONStringParam,
 		"jsonEnumSuggestion":           jsonEnumSuggestion,
 		"bodyMap":                      bodyMap,
@@ -8248,12 +8250,12 @@ func renderBodyFlagRegs(b *strings.Builder, body []spec.Param, depth int, identP
 func renderFlatBodyFlagReg(b *strings.Builder, p spec.Param, identPrefix, flagPrefix string, topLevel bool) {
 	ident := identPrefix + toCamel(paramIdent(p))
 	flag := joinFlag(flagPrefix, publicFlagName(p))
-	desc := naming.OneLine(p.Description) + serverDefaultHint(p)
-	fmt.Fprintf(b, "\n\tcmd.Flags().%s(&body%s, \"%s\", %s, \"%s\")",
+	desc := strconv.Quote(naming.OneLine(p.Description) + serverDefaultHint(p))
+	fmt.Fprintf(b, "\n\tcmd.Flags().%s(&body%s, \"%s\", %s, %s)",
 		cobraFlagFuncForBodyParam(p), ident, flag, defaultValForBodyParam(p), desc)
 	if topLevel {
 		for _, alias := range publicFlagAliases(p) {
-			fmt.Fprintf(b, "\n\tcmd.Flags().%s(&body%s, \"%s\", %s, \"%s\")",
+			fmt.Fprintf(b, "\n\tcmd.Flags().%s(&body%s, \"%s\", %s, %s)",
 				cobraFlagFuncForBodyParam(p), ident, alias, defaultValForBodyParam(p), desc)
 			fmt.Fprintf(b, "\n\t_ = cmd.Flags().MarkHidden(\"%s\")", alias)
 		}
@@ -8938,19 +8940,51 @@ func enumLiteral(values []string) string {
 	return strings.Join(parts, ", ")
 }
 
-// serverDefaultHint documents an OpenAPI server assumption inside a Go
-// double-quoted flag description. Cobra hides a zero flag default, so the
-// value has to live in the help text. Unsafe or oversized values are skipped;
-// the tool summary still annotates them separately.
+// serverDefaultHint documents an OpenAPI server assumption. Cobra hides a
+// zero flag default, so the value has to live in the help text. The result
+// is display text: quotes and backslashes are kept, and a long value keeps
+// a prefix. Callers that embed it in a Go string literal quote the whole
+// description.
 func serverDefaultHint(p spec.Param) string {
 	if !paramOmitsServerDefault(p) || p.Default == nil {
 		return ""
 	}
-	s := strings.TrimSpace(fmt.Sprintf("%v", p.Default))
-	if s == "" || len(s) > 30 || strings.ContainsAny(s, "\"\\`\n\r") {
+	s := serverDefaultDisplay(p.Default)
+	if s == "" {
 		return ""
 	}
 	return " (default: " + s + ")"
+}
+
+const serverDefaultDisplayMax = 30
+
+func serverDefaultDisplay(v any) string {
+	s := strings.Join(strings.Fields(fmt.Sprint(v)), " ")
+	if s == "" {
+		return ""
+	}
+	if len(s) <= serverDefaultDisplayMax {
+		return s
+	}
+	return truncateAtRune(s, serverDefaultDisplayMax) + "..."
+}
+
+func truncateAtRune(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+func quotedFlagDescription(desc, enumHint, defaultHint string) string {
+	return strconv.Quote(desc + enumHint + defaultHint)
 }
 
 func enumDescriptionHint(values []string) string {

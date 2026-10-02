@@ -120,6 +120,19 @@ paths:
                 count:
                   type: integer
                   default: 5
+                settings:
+                  type: object
+                  properties:
+                    mode:
+                      type: string
+                      default: compact
+                    note:
+                      type: string
+                      default: 'say "hi"'
+                    kind:
+                      type: string
+                      default: box
+                  required: [kind]
       responses:
         "201":
           description: Created
@@ -183,6 +196,17 @@ paths:
 	assert.True(t, bodySubtype.ServerDefault)
 	bodyCount := findParam(t, create.Body, "count")
 	assert.True(t, bodyCount.ServerDefault)
+	settings := findParam(t, create.Body, "settings")
+	nestedMode := findParam(t, settings.Fields, "mode")
+	assert.True(t, nestedMode.ServerDefault)
+	assert.Equal(t, "compact", fmt.Sprint(nestedMode.Default))
+	nestedNote := findParam(t, settings.Fields, "note")
+	assert.True(t, nestedNote.ServerDefault)
+	assert.Equal(t, `say "hi"`, fmt.Sprint(nestedNote.Default))
+	nestedKind := findParam(t, settings.Fields, "kind")
+	assert.True(t, nestedKind.Required)
+	assert.False(t, nestedKind.ServerDefault, "required nested defaults stay client-sent")
+	assert.Equal(t, "box", fmt.Sprint(nestedKind.Default))
 
 	page := findParsedEndpoint(t, parsed, "/orders/{page}")
 	pageParam := findParam(t, page.Params, "page")

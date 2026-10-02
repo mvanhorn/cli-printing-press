@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -63,8 +64,27 @@ func TestParamOmitsOpenAPIServerDefaultOnly(t *testing.T) {
 	pathParam := spec.Param{Name: "page", Type: "integer", Default: 1, ServerDefault: true, PathParam: true}
 	assert.Equal(t, "1", defaultVal(pathParam))
 
-	unsafe := spec.Param{Name: "q", Type: "string", Default: `say "hi"`, ServerDefault: true}
-	assert.Equal(t, "", serverDefaultHint(unsafe))
+	quoted := spec.Param{Name: "q", Type: "string", Default: `say "hi"`, ServerDefault: true}
+	assert.Equal(t, ` (default: say "hi")`, serverDefaultHint(quoted))
+	backslash := spec.Param{Name: "path", Type: "string", Default: `a\b`, ServerDefault: true}
+	assert.Equal(t, ` (default: a\b)`, serverDefaultHint(backslash))
+	multiline := spec.Param{Name: "text", Type: "string", Default: "line1\nline2", ServerDefault: true}
+	assert.Equal(t, " (default: line1 line2)", serverDefaultHint(multiline))
+	long := spec.Param{Name: "note", Type: "string", Default: strings.Repeat("n", 40), ServerDefault: true}
+	assert.Equal(t, " (default: "+strings.Repeat("n", 30)+"...)", serverDefaultHint(long))
+	split := spec.Param{Name: "mark", Type: "string", Default: strings.Repeat("a", 29) + "é", ServerDefault: true}
+	assert.Equal(t, " (default: "+strings.Repeat("a", 29)+"...)", serverDefaultHint(split))
+
+	nested := bodyFlagRegs(spec.Endpoint{Body: []spec.Param{{
+		Name: "settings", Type: "object",
+		Fields: []spec.Param{{
+			Name: "mode", Type: "string", Description: "Mode",
+			Default: `a\b "quote"`, ServerDefault: true,
+		}},
+	}}})
+	assert.Contains(t, nested, `"settings-mode", ""`)
+	assert.Contains(t, nested, strconv.Quote(`Mode (default: a\b "quote")`))
+	assert.NotContains(t, nested, `"settings-mode", "a`)
 }
 
 func TestGeneratedOpenAPIOptionalDefaultsStayOffTheWire(t *testing.T) {
@@ -101,6 +121,11 @@ func TestGeneratedOpenAPIOptionalDefaultsStayOffTheWire(t *testing.T) {
 	assert.Contains(t, searchSrc, `"view", "summary"`)
 	assert.Contains(t, searchSrc, `"x-api-version", "2026-04-01"`)
 	assert.Contains(t, searchSrc, `"x-mode", ""`)
+	assert.Contains(t, searchSrc, `"label", ""`)
+	assert.Contains(t, searchSrc, `"note", ""`)
+	assert.Contains(t, searchSrc, `(default: say \"hi\")`)
+	assert.Contains(t, searchSrc, "(default: "+strings.Repeat("n", 30)+"...)")
+	assert.NotContains(t, searchSrc, strings.Repeat("n", 40))
 
 	assert.Contains(t, listSrc, "retainCLIQueryParams")
 	assert.Contains(t, listSrc, `"resource-subtype", ""`)
@@ -116,6 +141,11 @@ func TestGeneratedOpenAPIOptionalDefaultsStayOffTheWire(t *testing.T) {
 	assert.Regexp(t, `IntVar\(&body\w+, "count", 0,`, createSrc)
 	assert.Contains(t, createSrc, `Changed("count")`)
 	assert.Contains(t, createSrc, `Changed("resource-subtype")`)
+	assert.Contains(t, createSrc, `"settings-mode", ""`)
+	assert.Contains(t, createSrc, "(default: compact)")
+	assert.Contains(t, createSrc, `Changed("settings-mode")`)
+	assert.Contains(t, createSrc, `"settings-kind", "box"`)
+	assert.NotContains(t, createSrc, `"settings-mode", "compact"`)
 
 	assert.NotContains(t, tools, `Default: "milestone"`)
 	assert.NotContains(t, tools, `Default: "full"`)
@@ -125,6 +155,10 @@ func TestGeneratedOpenAPIOptionalDefaultsStayOffTheWire(t *testing.T) {
 	assert.Contains(t, tools, `Default: "summary"`)
 	assert.Contains(t, tools, `Default: "2026-04-01"`)
 	assert.Contains(t, tools, "(default: milestone)")
+	assert.Contains(t, tools, `(default: say \"hi\")`)
+	assert.Contains(t, tools, "(default: compact)")
+	assert.NotContains(t, tools, `Default: "compact"`)
+	assert.NotContains(t, tools, `Default: "say`)
 
 	var mu sync.Mutex
 	var got capturedRequest
@@ -152,6 +186,9 @@ func TestGeneratedOpenAPIOptionalDefaultsStayOffTheWire(t *testing.T) {
 
 	help, _ := runGeneratedBinary(t, binaryPath, "items", "search", "--help")
 	assert.Contains(t, help, "(default: milestone)")
+	assert.Contains(t, help, `(default: say "hi")`)
+	assert.Contains(t, help, "(default: "+strings.Repeat("n", 30)+"...)")
+	assert.NotContains(t, help, strings.Repeat("n", 40))
 
 	take := func() capturedRequest {
 		t.Helper()
@@ -169,6 +206,8 @@ func TestGeneratedOpenAPIOptionalDefaultsStayOffTheWire(t *testing.T) {
 	assert.Equal(t, []string{"summary"}, omitted.Query["view"])
 	assert.Equal(t, "2026-04-01", omitted.Header.Get("X-Api-Version"))
 	assert.Empty(t, omitted.Header.Get("X-Mode"))
+	assert.NotContains(t, omitted.Query, "label")
+	assert.NotContains(t, omitted.Query, "note")
 
 	runGeneratedBinary(t, binaryPath, "items", "search", "--json",
 		"--resource-subtype", "task",
@@ -176,6 +215,8 @@ func TestGeneratedOpenAPIOptionalDefaultsStayOffTheWire(t *testing.T) {
 		"--opt-count", "0",
 		"--active=false",
 		"--x-mode", "compact",
+		"--label", `say "hi"`,
+		"--note", strings.Repeat("n", 40),
 	)
 	explicit := take()
 	assert.Equal(t, []string{"task"}, explicit.Query["resource_subtype"])
@@ -185,6 +226,8 @@ func TestGeneratedOpenAPIOptionalDefaultsStayOffTheWire(t *testing.T) {
 	assert.Equal(t, []string{"summary"}, explicit.Query["view"])
 	assert.Equal(t, "compact", explicit.Header.Get("X-Mode"))
 	assert.Equal(t, "2026-04-01", explicit.Header.Get("X-Api-Version"))
+	assert.Equal(t, []string{`say "hi"`}, explicit.Query["label"])
+	assert.Equal(t, []string{strings.Repeat("n", 40)}, explicit.Query["note"])
 
 	runGeneratedBinary(t, binaryPath, "items", "list", "--json")
 	listed := take()
@@ -204,13 +247,19 @@ func TestGeneratedOpenAPIOptionalDefaultsStayOffTheWire(t *testing.T) {
 	assert.Equal(t, "untitled", scalarString(body["name"]))
 	assert.NotContains(t, body, "resource_subtype")
 	assert.NotContains(t, body, "count")
+	settings, _ := body["settings"].(map[string]any)
+	assert.Equal(t, "box", scalarString(settings["kind"]))
+	assert.NotContains(t, settings, "mode")
 
-	runGeneratedBinary(t, binaryPath, "items", "create", "--json", "--name", "widget", "--resource-subtype", "approval", "--count", "0")
+	runGeneratedBinary(t, binaryPath, "items", "create", "--json", "--name", "widget", "--resource-subtype", "approval", "--count", "0", "--settings-mode", "compact")
 	createdExplicit := take()
 	body = decodeObjectBody(t, createdExplicit.Body)
 	assert.Equal(t, "widget", scalarString(body["name"]))
 	assert.Equal(t, "approval", scalarString(body["resource_subtype"]))
 	assert.Equal(t, "0", scalarString(body["count"]))
+	settings, _ = body["settings"].(map[string]any)
+	assert.Equal(t, "compact", scalarString(settings["mode"]))
+	assert.Equal(t, "box", scalarString(settings["kind"]))
 
 	mcpRuntime := `package mcp
 
@@ -280,6 +329,9 @@ func TestOpenAPIOptionalDefaultsStayOffMCPWire(t *testing.T) {
 	if gotHeader.Get("X-Mode") != "" {
 		t.Fatalf("omitted X-Mode = %q", gotHeader.Get("X-Mode"))
 	}
+	if _, ok := gotQuery["label"]; ok || len(gotQuery["note"]) > 0 {
+		t.Fatalf("omitted label/note were sent: %v", gotQuery)
+	}
 
 	call(t, search.Handler, map[string]any{
 		"resource_subtype":  "task",
@@ -332,7 +384,12 @@ func TestOpenAPIOptionalDefaultsStayOffMCPWire(t *testing.T) {
 	if _, ok := body["count"]; ok {
 		t.Fatalf("omitted body count = %#v", body["count"])
 	}
-	call(t, create.Handler, map[string]any{"name": "widget", "resource_subtype": "approval", "count": 0})
+	if settings, ok := body["settings"].(map[string]any); ok {
+		if _, hasMode := settings["mode"]; hasMode {
+			t.Fatalf("omitted settings.mode = %#v", settings)
+		}
+	}
+	call(t, create.Handler, map[string]any{"name": "widget", "resource_subtype": "approval", "count": 0, "settings-mode": "compact"})
 	body = decodeBody(t, gotBody)
 	if body["name"] != "widget" || body["resource_subtype"] != "approval" {
 		t.Fatalf("explicit body = %#v", body)
@@ -344,6 +401,10 @@ func TestOpenAPIOptionalDefaultsStayOffMCPWire(t *testing.T) {
 		}
 	default:
 		t.Fatalf("count = %#v", body["count"])
+	}
+	settings, ok := body["settings"].(map[string]any)
+	if !ok || settings["mode"] != "compact" {
+		t.Fatalf("settings = %#v", body["settings"])
 	}
 }
 
@@ -498,6 +559,18 @@ paths:
           schema:
             type: string
             default: "2026-04-01"
+        - name: label
+          in: query
+          description: Label
+          schema:
+            type: string
+            default: 'say "hi"'
+        - name: note
+          in: query
+          description: Note
+          schema:
+            type: string
+            default: nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
       responses:
         "200":
           description: OK
@@ -566,6 +639,19 @@ paths:
                   type: integer
                   description: Count
                   default: 5
+                settings:
+                  type: object
+                  description: Settings
+                  properties:
+                    mode:
+                      type: string
+                      description: Mode
+                      default: compact
+                    kind:
+                      type: string
+                      description: Kind
+                      default: box
+                  required: [kind]
       responses:
         "201":
           description: Created
