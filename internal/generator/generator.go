@@ -976,9 +976,9 @@ func partialFailureEmissionFlags(apiSpec *spec.APISpec, promotedCommands []Promo
 	return hasSupport, hasTypedErr
 }
 
-// promotedCommandsIncludeMutation matches the $isMutationOutput gate in
-// command_promoted.go.tmpl: a promoted command that is not read-only and
-// whose verb is neither GET nor HEAD.
+// The dry-run helpers are dead code unless command_promoted.go.tmpl calls
+// them. That call uses the same mutation check, so a mismatch either fails
+// to compile or leaves an unused func for dead-code scoring to strip.
 func promotedCommandsIncludeMutation(apiSpec *spec.APISpec, commands []PromotedCommand) bool {
 	if apiSpec == nil {
 		return false

@@ -3396,9 +3396,9 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 
 {{- if .HasPromotedMutations}}
 
-// stampDryRunEnvelope lifts dry_run and action onto the top-level object.
-// Provenance and platform wrappers nest the client sentinel under results,
-// and the dry-run JSON contract reads only top-level keys.
+// Provenance and platform wrappers nest the client sentinel under results.
+// The dry-run JSON contract reads only top-level keys, so stamping has to
+// happen after those wrappers or dry_run and action never surface.
 func stampDryRunEnvelope(data json.RawMessage, action string) (json.RawMessage, error) {
 	var envelope map[string]any
 	if len(data) > 0 {
@@ -3416,6 +3416,25 @@ func stampDryRunEnvelope(data json.RawMessage, action string) (json.RawMessage, 
 		return nil, err
 	}
 	return json.RawMessage(stamped), nil
+}
+
+// --agent, --select, and --compact wrap or filter before the dry-run contract
+// can see top-level keys. Stamp after that formatting so the keys stay on the
+// envelope the contract reads.
+func printStampedDryRunOutput(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any, action string, documentedFields ...map[string]bool) error {
+	var buf bytes.Buffer
+	formatErr := printOutputWithFlagsMeta(&buf, data, flags, agentMeta, documentedFields...)
+	if formatErr != nil && buf.Len() == 0 {
+		return formatErr
+	}
+	stamped, err := stampDryRunEnvelope(bytes.TrimSpace(buf.Bytes()), action)
+	if err != nil {
+		return err
+	}
+	if err := printOutput(w, stamped, true); err != nil {
+		return err
+	}
+	return formatErr
 }
 {{- end}}
 

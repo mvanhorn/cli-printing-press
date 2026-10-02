@@ -173,30 +173,41 @@ func assertPromotedDryRunSources(t *testing.T, outputDir string, withStore bool)
 
 	helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
 	require.Contains(t, helpers, "func stampDryRunEnvelope(")
+	require.Contains(t, helpers, "func printStampedDryRunOutput(")
+	stampFn := helpers[strings.Index(helpers, "func printStampedDryRunOutput("):]
+	formatAt := strings.Index(stampFn, "printOutputWithFlagsMeta(")
+	stampAt := strings.Index(stampFn, "stampDryRunEnvelope(")
+	require.Greater(t, stampAt, formatAt, "dry-run keys must be stamped after --agent/--select/--compact formatting")
 
 	widget := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_widgets.go")
 	session := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_sessions.go")
-	for _, src := range []string{widget, session} {
-		wrapAt := strings.LastIndex(src, "wrapPlatformStructuredOutput(")
-		stampAt := strings.LastIndex(src, "stampDryRunEnvelope(")
-		require.GreaterOrEqual(t, wrapAt, 0)
-		require.Greater(t, stampAt, wrapAt, "dry-run keys must be stamped after the last wrap")
-		require.Contains(t, src, "flags.dryRun")
-	}
 	if withStore {
+		for _, src := range []string{widget, session} {
+			wrapAt := strings.LastIndex(src, "wrapPlatformStructuredOutput(")
+			cmdStampAt := strings.LastIndex(src, "stampDryRunEnvelope(")
+			require.GreaterOrEqual(t, wrapAt, 0)
+			require.Greater(t, cmdStampAt, wrapAt, "dry-run keys must be stamped after the last wrap")
+			require.Contains(t, src, "flags.dryRun")
+		}
 		require.Contains(t, widget, "wrapWithProvenance(")
 		require.Contains(t, widget, `stampDryRunEnvelope(wrapped, "post")`)
 		require.Contains(t, session, `stampDryRunEnvelope(wrapped, "delete")`)
 	} else {
 		require.NotContains(t, widget, "wrapWithProvenance(")
-		require.Contains(t, widget, `stampDryRunEnvelope(structured, "post")`)
-		require.Contains(t, session, `stampDryRunEnvelope(structured, "delete")`)
+		require.Contains(t, widget, "printStampedDryRunOutput(")
+		require.Contains(t, widget, `"post"`)
+		require.Contains(t, session, "printStampedDryRunOutput(")
+		require.Contains(t, session, `"delete"`)
+		require.NotContains(t, widget, "stampDryRunEnvelope(")
+		require.NotContains(t, session, "stampDryRunEnvelope(")
 	}
 
 	readSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_pings.go")
 	searchSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_searches.go")
 	require.NotContains(t, readSrc, "stampDryRunEnvelope(")
+	require.NotContains(t, readSrc, "printStampedDryRunOutput(")
 	require.NotContains(t, searchSrc, "stampDryRunEnvelope(")
+	require.NotContains(t, searchSrc, "printStampedDryRunOutput(")
 
 	createSrc := readGeneratedFile(t, outputDir, "internal", "cli", "items_create.go")
 	require.Contains(t, createSrc, `envelope["dry_run"] = true`)
@@ -220,6 +231,27 @@ func assertPromotedDryRunRuntime(t *testing.T, cli promotedDryRunCLI, withStore 
 
 	stdout, _ = runPromotedDryRun(t, cli, "widgets", "--name", "Ada", "--dry-run", "--json", "--select", "missing")
 	assertTopLevelDryRun(t, stdout, "post")
+
+	if !withStore {
+		stdout, _ = runPromotedDryRun(t, cli, "widgets", "--name", "Ada", "--dry-run", "--json", "--agent")
+		agentPayload := decodeJSONObject(t, stdout)
+		require.Equal(t, true, agentPayload["dry_run"], "stdout: %s", stdout)
+		require.Equal(t, "post", agentPayload["action"], "stdout: %s", stdout)
+		agentMeta, _ := agentPayload["meta"].(map[string]any)
+		require.Equal(t, "live", agentMeta["source"], "stdout: %s", stdout)
+		agentResults, ok := agentPayload["results"].(map[string]any)
+		require.True(t, ok, "agent envelope results: %s", stdout)
+		require.Equal(t, true, agentResults["dry_run"], "stdout: %s", stdout)
+
+		stdout, _ = runPromotedDryRun(t, cli, "widgets", "--name", "Ada", "--dry-run", "--json", "--agent", "--select", "dry_run")
+		assertTopLevelDryRun(t, stdout, "post")
+		selected := decodeJSONObject(t, stdout)
+		selectedMeta, _ := selected["meta"].(map[string]any)
+		require.Equal(t, "live", selectedMeta["source"], "stdout: %s", stdout)
+
+		stdout, _ = runPromotedDryRun(t, cli, "widgets", "--name", "Ada", "--dry-run", "--json", "--compact")
+		assertTopLevelDryRun(t, stdout, "post")
+	}
 
 	before = cli.hits.Load()
 	stdout, _ = runPromotedDryRun(t, cli, "sessions", "sess-1", "--dry-run", "--json")
