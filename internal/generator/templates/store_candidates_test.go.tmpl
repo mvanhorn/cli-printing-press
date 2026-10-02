@@ -241,9 +241,8 @@ func TestCommitFlagCorrections_RejectsEmptyAndUnknownClass(t *testing.T) {
 	if _, err := s.CommitFlagCorrections(nil, JournalCursor{}, end); err == nil {
 		t.Fatal("empty sightings must error")
 	}
-	_, err := s.CommitFlagCorrections([]FlagCorrectionSighting{{
-		Class: "other", Payload: `{}`, Signature: "sig-x",
-	}}, JournalCursor{}, end)
+	bad := FlagCorrectionSighting{Class: "other", Payload: `{}`, Signature: "sig-x"}
+	_, err := s.CommitFlagCorrections([]FlagCorrectionSighting{bad}, JournalCursor{}, end)
 	if err == nil {
 		t.Fatal("unknown class must error")
 	}
