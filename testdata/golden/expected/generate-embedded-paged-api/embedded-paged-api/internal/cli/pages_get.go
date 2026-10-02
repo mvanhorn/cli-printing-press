@@ -19,10 +19,7 @@ func newPagesGetCmd(flags *rootFlags) *cobra.Command {
 		Use:   "get <id>",
 		Short: "Get",
 		Args: func(cmd *cobra.Command, args []string) error {
-			if err := cobra.MaximumNArgs(1)(cmd, args); err != nil {
-				return usageErr(fmt.Errorf("%s\nhint: boolean flags take a value with '=', for example --flag=false", err.Error()))
-			}
-			return nil
+			return endpointPositionalArgs(cmd, flags, args, cobra.MaximumNArgs(1))
 		},
 		Annotations: map[string]string{"pp:endpoint": "pages.get", "pp:method": "GET", "pp:path": "/pages/{id}", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {

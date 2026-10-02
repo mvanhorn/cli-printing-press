@@ -40,12 +40,19 @@ func TestNonPaginatedGetSendsExplicitFalseAndRejectsStrayPositionals(t *testing.
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
+	helpersSrc := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
+	assert.Contains(t, helpersSrc, "func endpointPositionalArgs(")
+	assert.Contains(t, helpersSrc, `--flag=false`)
+	assert.Contains(t, helpersSrc, `"error": err.Error()`)
+	assert.Contains(t, helpersSrc, `"usage": endpointUsageLine(cmd)`)
+
 	searchSrc := readGeneratedFile(t, outputDir, "internal", "cli", "tasks_search.go")
 	assert.Contains(t, searchSrc, `cmd.Flags().Changed("completed") || flagCompleted != false`)
 	assert.Contains(t, searchSrc, `cmd.Flags().Changed("fuzzy") || flagFuzzy != false`)
 	assert.Contains(t, searchSrc, `cmd.Flags().Changed("threshold") || flagThreshold != 0`)
 	assert.Contains(t, searchSrc, "cobra.MaximumNArgs(1)")
-	assert.Contains(t, searchSrc, `--flag=false`)
+	assert.Contains(t, searchSrc, "endpointPositionalArgs(")
+	assert.NotContains(t, searchSrc, `--flag=false`)
 
 	probeSrc := readGeneratedFile(t, outputDir, "internal", "cli", "tasks_probe.go")
 	assert.Contains(t, probeSrc, `cmd.Flags().Changed("completed") || flagCompleted != false`)
@@ -120,15 +127,49 @@ func TestNonPaginatedGetSendsExplicitFalseAndRejectsStrayPositionals(t *testing.
 		assert.Equal(t, 2, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
 		assert.Contains(t, stderr, "accepts at most 1 arg(s), received 2")
 		assert.Contains(t, stderr, "--flag=false")
+		assertJSONUsageError(t, stdout, "accepts at most 1 arg(s), received 2")
 		assert.Empty(t, snapshotHits())
 	})
 
-	t.Run("stray positional is rejected", func(t *testing.T) {
+	t.Run("stray positional is rejected without boolean hint", func(t *testing.T) {
 		resetHits()
 		code, stdout, stderr := runGeneratedBinaryExitEnv(t, binaryPath, env, append(baseArgs, "tasks", "search", "ws", "extra")...)
 		assert.Equal(t, 2, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
 		assert.Contains(t, stderr, "accepts at most 1 arg(s), received 2")
+		assert.NotContains(t, stderr, "--flag=false")
+		assert.NotContains(t, stdout, "--flag=false")
+		assertJSONUsageError(t, stdout, "accepts at most 1 arg(s), received 2")
 		assert.Empty(t, snapshotHits())
+	})
+
+	t.Run("agent surplus positional is a json usage error", func(t *testing.T) {
+		resetHits()
+		code, stdout, stderr := runGeneratedBinaryExitEnv(t, binaryPath, env, "--home", home, "--agent", "tasks", "search", "ws", "extra")
+		assert.Equal(t, 2, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		assert.NotContains(t, stdout+stderr, "--flag=false")
+		assertJSONUsageError(t, stdout, "accepts at most 1 arg(s), received 2")
+		assert.Empty(t, snapshotHits())
+	})
+
+	t.Run("omitted id does not accept boolean word as the id", func(t *testing.T) {
+		resetHits()
+		code, stdout, stderr := runGeneratedBinaryExitEnv(t, binaryPath, env, append(baseArgs, "tasks", "search", "--completed", "false")...)
+		assert.Equal(t, 2, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		assert.Contains(t, stderr, "--completed")
+		assert.Contains(t, stderr, "--flag=false")
+		assert.NotContains(t, stderr, "accepts at most 1 arg(s)")
+		assertJSONUsageError(t, stdout, "boolean flag --completed")
+		assert.Empty(t, snapshotHits())
+	})
+
+	t.Run("boolean word before a bare flag is a legitimate id", func(t *testing.T) {
+		resetHits()
+		stdout, stderr, err := runGeneratedBinaryEnv(t, binaryPath, env, append(baseArgs, "tasks", "search", "false", "--completed")...)
+		require.NoError(t, err, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		got := snapshotHits()
+		require.Len(t, got, 1)
+		assert.Equal(t, "/tasks/false/search", got[0].path)
+		assert.Equal(t, []string{"true"}, got[0].query["completed"])
 	})
 
 	t.Run("boolean word is a legitimate id", func(t *testing.T) {
@@ -184,6 +225,16 @@ func TestNonPaginatedGetSendsExplicitFalseAndRejectsStrayPositionals(t *testing.
 		assert.Equal(t, 2, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
 		assert.Contains(t, stderr, "accepts at most 1 arg(s), received 2")
 		assert.Contains(t, stderr, "--flag=false")
+		assertJSONUsageError(t, stdout, "accepts at most 1 arg(s), received 2")
+		assert.Empty(t, snapshotHits())
+	})
+
+	t.Run("promoted omitted id does not accept boolean word", func(t *testing.T) {
+		resetHits()
+		code, stdout, stderr := runGeneratedBinaryExitEnv(t, binaryPath, env, append(baseArgs, "lookup", "--completed", "false")...)
+		assert.Equal(t, 2, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		assert.Contains(t, stderr, "--flag=false")
+		assertJSONUsageError(t, stdout, "boolean flag --completed")
 		assert.Empty(t, snapshotHits())
 	})
 
@@ -192,6 +243,37 @@ func TestNonPaginatedGetSendsExplicitFalseAndRejectsStrayPositionals(t *testing.
 		code, stdout, stderr := runGeneratedBinaryExitEnv(t, binaryPath, env, append(baseArgs, "tasks", "list", "--archived", "false")...)
 		assert.Equal(t, 2, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
 		assert.Empty(t, snapshotHits())
+	})
+
+	t.Run("multi positional equals form reaches the wire", func(t *testing.T) {
+		resetHits()
+		stdout, stderr, err := runGeneratedBinaryEnv(t, binaryPath, env, append(baseArgs, "tasks", "reassign", "ws", "id1", "--done=false")...)
+		require.NoError(t, err, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		got := snapshotHits()
+		require.Len(t, got, 1)
+		assert.Equal(t, http.MethodPatch, got[0].method)
+		assert.Equal(t, "/tasks/ws/reassign/id1", got[0].path)
+		assert.Equal(t, []string{"false"}, got[0].query["done"])
+	})
+
+	t.Run("multi positional missing final id does not accept boolean word", func(t *testing.T) {
+		resetHits()
+		code, stdout, stderr := runGeneratedBinaryExitEnv(t, binaryPath, env, append(baseArgs, "tasks", "reassign", "ws", "--done", "false")...)
+		assert.Equal(t, 2, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		assert.Contains(t, stderr, "--done")
+		assert.Contains(t, stderr, "--flag=false")
+		assertJSONUsageError(t, stdout, "boolean flag --done")
+		assert.Empty(t, snapshotHits())
+	})
+
+	t.Run("multi positional boolean word id stays legitimate", func(t *testing.T) {
+		resetHits()
+		stdout, stderr, err := runGeneratedBinaryEnv(t, binaryPath, env, append(baseArgs, "tasks", "reassign", "false", "id1", "--done=false")...)
+		require.NoError(t, err, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		got := snapshotHits()
+		require.Len(t, got, 1)
+		assert.Equal(t, "/tasks/false/reassign/id1", got[0].path)
+		assert.Equal(t, []string{"false"}, got[0].query["done"])
 	})
 
 	t.Run("zero positional equals form reaches the wire", func(t *testing.T) {
@@ -243,6 +325,16 @@ func explicitFalseSpec() *spec.APISpec {
 						{Name: "completed", In: "query", Type: "bool", Description: "Completed"},
 					},
 				},
+				"reassign": {
+					Method:      "PATCH",
+					Path:        "/tasks/{workspace}/reassign/{task_id}",
+					Description: "Reassign a task",
+					Params: []spec.Param{
+						{Name: "workspace", In: "path", Type: "string", Required: true, Positional: true, PathParam: true},
+						{Name: "task_id", In: "path", Type: "string", Required: true, Positional: true, PathParam: true},
+						{Name: "done", In: "query", Type: "bool", Description: "Done"},
+					},
+				},
 			},
 		},
 		"lookup": {
@@ -285,6 +377,13 @@ func runGeneratedBinaryExitEnv(t *testing.T, binaryPath string, extraEnv []strin
 	var exitErr *exec.ExitError
 	require.ErrorAs(t, err, &exitErr, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
 	return exitErr.ExitCode(), stdout, stderr
+}
+
+func assertJSONUsageError(t *testing.T, stdout, needle string) {
+	t.Helper()
+	assert.Contains(t, stdout, `"error"`)
+	assert.Contains(t, stdout, `"usage"`)
+	assert.Contains(t, stdout, needle)
 }
 
 func execGeneratedBinary(t *testing.T, binaryPath string, extraEnv []string, args ...string) (string, string, error) {

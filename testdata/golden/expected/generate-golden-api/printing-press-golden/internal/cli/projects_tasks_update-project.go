@@ -25,10 +25,7 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 		Aliases: []string{"update"},
 		Short:   "Update project task",
 		Args: func(cmd *cobra.Command, args []string) error {
-			if err := cobra.MaximumNArgs(2)(cmd, args); err != nil {
-				return usageErr(fmt.Errorf("%s\nhint: boolean flags take a value with '=', for example --flag=false", err.Error()))
-			}
-			return nil
+			return endpointPositionalArgs(cmd, flags, args, cobra.MaximumNArgs(2))
 		},
 		Annotations: map[string]string{"pp:endpoint": "tasks.update-project", "pp:method": "PATCH", "pp:path": "/projects/{projectId}/tasks/{taskId}"},
 		RunE: func(cmd *cobra.Command, args []string) error {

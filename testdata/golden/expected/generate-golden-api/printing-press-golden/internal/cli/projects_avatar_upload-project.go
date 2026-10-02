@@ -22,10 +22,7 @@ func newProjectsAvatarUploadProjectCmd(flags *rootFlags) *cobra.Command {
 		Aliases: []string{"update"},
 		Short:   "Upload project avatar",
 		Args: func(cmd *cobra.Command, args []string) error {
-			if err := cobra.MaximumNArgs(1)(cmd, args); err != nil {
-				return usageErr(fmt.Errorf("%s\nhint: boolean flags take a value with '=', for example --flag=false", err.Error()))
-			}
-			return nil
+			return endpointPositionalArgs(cmd, flags, args, cobra.MaximumNArgs(1))
 		},
 		Annotations: map[string]string{"pp:endpoint": "avatar.upload-project", "pp:method": "PUT", "pp:path": "/projects/{projectId}/avatar"},
 		RunE: func(cmd *cobra.Command, args []string) error {

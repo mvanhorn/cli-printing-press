@@ -8368,16 +8368,15 @@ func paramPresenceExpr(p spec.Param) string {
 
 // endpointArgsExpr rejects surplus positionals so `--flag false` cannot
 // parse as `--flag=true` plus a stray arg. Too-few args stay in RunE.
+// Commands with positionals also reject a boolean word that filled a
+// missing ID, and they emit the JSON usage envelope before RunE.
 func endpointArgsExpr(e spec.Endpoint) string {
 	n := len(orderedPositionalParams(e))
 	if n == 0 {
 		return "cobra.NoArgs"
 	}
 	return fmt.Sprintf(`func(cmd *cobra.Command, args []string) error {
-	if err := cobra.MaximumNArgs(%d)(cmd, args); err != nil {
-		return usageErr(fmt.Errorf("%%s\nhint: boolean flags take a value with '=', for example --flag=false", err.Error()))
-	}
-	return nil
+	return endpointPositionalArgs(cmd, flags, args, cobra.MaximumNArgs(%d))
 }`, n)
 }
 

@@ -19,10 +19,7 @@ func newUsersItemEmailUpdateCmd(flags *rootFlags) *cobra.Command {
 		Use:   "update <userId>",
 		Short: "Update a user's email",
 		Args: func(cmd *cobra.Command, args []string) error {
-			if err := cobra.MaximumNArgs(1)(cmd, args); err != nil {
-				return usageErr(fmt.Errorf("%s\nhint: boolean flags take a value with '=', for example --flag=false", err.Error()))
-			}
-			return nil
+			return endpointPositionalArgs(cmd, flags, args, cobra.MaximumNArgs(1))
 		},
 		Annotations: map[string]string{"pp:endpoint": "email.update", "pp:method": "PUT", "pp:path": "/users/{userId}/email"},
 		RunE: func(cmd *cobra.Command, args []string) error {
