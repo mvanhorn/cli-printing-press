@@ -417,6 +417,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"effectiveSubEndpointPath":     effectiveSubEndpointPath,
 		"enumLiteral":                  enumLiteral,
 		"enumDescriptionHint":          enumDescriptionHint,
+		"serverDefaultHint":            serverDefaultHint,
 		"jsonStringParam":              isJSONStringParam,
 		"jsonEnumSuggestion":           jsonEnumSuggestion,
 		"bodyMap":                      bodyMap,
@@ -6658,6 +6659,13 @@ func defaultValForParam(p spec.Param) string {
 }
 
 func defaultValForParamRequired(p spec.Param, required bool, hasDefault bool) string {
+	if paramOmitsServerDefault(p) {
+		// --limit is declared as a float in some specs and emitted as IntVar.
+		if isFlagLimitParam(p.Name) && primitiveKind(p.Type) == "float" {
+			return "0"
+		}
+		return zeroValForParamRequired(p.Name, p.Type, false, false)
+	}
 	kind := primitiveKind(p.Type)
 	if required && !hasDefault && kind == "bool" {
 		return `""`
@@ -6715,7 +6723,17 @@ func zeroValForBodyParam(p spec.Param) string {
 }
 
 func paramHasDefault(p spec.Param) bool {
+	if paramOmitsServerDefault(p) {
+		return false
+	}
 	return p.Default != nil
+}
+
+// paramOmitsServerDefault reports an OpenAPI server assumption that must not
+// ride the request when the caller left the value unset. Required, path, and
+// global-scope params still send their defaults.
+func paramOmitsServerDefault(p spec.Param) bool {
+	return p.ServerDefault && !p.Required && !p.GlobalScope && !p.PathParam && !p.Positional
 }
 
 func paramHasEnvDefault(p spec.Param) bool {
@@ -7259,10 +7277,10 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 			Location:           loc,
 			RequestContentType: requestContentType,
 		}
-		// Carry the spec default onto the MCP binding for query params so an
-		// omitted arg sends the same value the cobra flag would (#2679). Format
-		// must match the cobra default rendering for CLI/MCP wire parity; keep in
-		// sync with that path (and cf. pipeline.stringifyParamDefault).
+		// Copy a client-sent default onto the MCP binding so an omitted arg
+		// matches the cobra flag. OpenAPI optional server defaults stay off
+		// the binding: an omitted arg must stay omitted. Format must match
+		// the cobra default rendering for CLI/MCP wire parity.
 		if loc == "query" || loc == "header" {
 			// deepObject wins over the array marker: an array-typed
 			// style=deepObject param routes through the indexed-key emitter
@@ -7534,7 +7552,7 @@ func hasMCPNestedBodyPath(apiSpec *spec.APISpec) bool {
 // stringified value, so a numeric/bool zero (%v -> "0"/"false") is a real
 // default and is kept.
 func mcpParamDefaultValue(p spec.Param) (string, bool) {
-	if p.Default == nil {
+	if paramOmitsServerDefault(p) || p.Default == nil {
 		return "", false
 	}
 	// An array/object param now binds natively (WithArray/WithObject) and its
@@ -8230,7 +8248,7 @@ func renderBodyFlagRegs(b *strings.Builder, body []spec.Param, depth int, identP
 func renderFlatBodyFlagReg(b *strings.Builder, p spec.Param, identPrefix, flagPrefix string, topLevel bool) {
 	ident := identPrefix + toCamel(paramIdent(p))
 	flag := joinFlag(flagPrefix, publicFlagName(p))
-	desc := naming.OneLine(p.Description)
+	desc := naming.OneLine(p.Description) + serverDefaultHint(p)
 	fmt.Fprintf(b, "\n\tcmd.Flags().%s(&body%s, \"%s\", %s, \"%s\")",
 		cobraFlagFuncForBodyParam(p), ident, flag, defaultValForBodyParam(p), desc)
 	if topLevel {
@@ -8429,6 +8447,9 @@ func paramIsHeader(p spec.Param) bool {
 }
 
 func paramPresenceExpr(p spec.Param) string {
+	if paramOmitsServerDefault(p) {
+		return flagChangedExpr(p)
+	}
 	if primitiveKind(p.Type) == "int" && (p.Required || paramHasDefault(p)) {
 		return "true"
 	}
@@ -8917,6 +8938,21 @@ func enumLiteral(values []string) string {
 	return strings.Join(parts, ", ")
 }
 
+// serverDefaultHint documents an OpenAPI server assumption inside a Go
+// double-quoted flag description. Cobra hides a zero flag default, so the
+// value has to live in the help text. Unsafe or oversized values are skipped;
+// the tool summary still annotates them separately.
+func serverDefaultHint(p spec.Param) string {
+	if !paramOmitsServerDefault(p) || p.Default == nil {
+		return ""
+	}
+	s := strings.TrimSpace(fmt.Sprintf("%v", p.Default))
+	if s == "" || len(s) > 30 || strings.ContainsAny(s, "\"\\`\n\r") {
+		return ""
+	}
+	return " (default: " + s + ")"
+}
+
 func enumDescriptionHint(values []string) string {
 	// Appends " (one of: a, b, c)" to a flag description when the param
 	// has enum constraints. Returns empty string when the slice is empty.
@@ -8943,6 +8979,9 @@ func trimmedEnumValues(values []string) []string {
 }
 
 func defaultVal(p spec.Param) string {
+	if paramOmitsServerDefault(p) {
+		return zeroVal(p.Type)
+	}
 	if p.Default != nil {
 		if defaultShouldUseZero(p) || stringDefaultOutsideEnum(p) {
 			return zeroVal(p.Type)
@@ -9429,7 +9468,7 @@ func (g *Generator) mcpParamDescription(p spec.Param) string {
 	if g.mcpParamDescriptions == nil {
 		g.mcpParamDescriptions = mcpdesc.NewParamDescriptionCompactor(g.Spec)
 	}
-	return naming.OneLine(g.mcpParamDescriptions.Description(p))
+	return naming.OneLine(g.mcpParamDescriptions.Description(p)) + serverDefaultHint(p)
 }
 
 func exampleValue(p spec.Param) string {

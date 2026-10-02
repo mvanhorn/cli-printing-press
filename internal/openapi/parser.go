@@ -4379,6 +4379,10 @@ func classifyGlobalParams(resources map[string]spec.Resource) {
 			if _, ok := scopeParams[key]; ok {
 				param.Required = true
 				param.GlobalScope = true
+				// Scope flags are env-backed and must send their fallback
+				// without cobra Changed(). A schema default is no longer a
+				// server assumption once the flag is required.
+				param.ServerDefault = false
 			} else if isGlobalFilterCandidate(param) {
 				if _, ok := filteredParams[key]; ok {
 					droppedCounts[key]++
@@ -4423,13 +4427,11 @@ func isPathSubstitutionParam(param spec.Param) bool {
 }
 
 func isGlobalFilterCandidate(param spec.Param) bool {
-	// A param carrying an explicit default expresses deliberate must-send
-	// intent: the author wants that value on the wire, not the API's implicit
-	// server-side default. Exclude such params from the global-frequency filter
-	// so a ubiquitous-but-load-bearing flag (e.g. a supportsAllDrives-style
-	// access scope that defaults true) is not silently stripped, while plain
-	// high-frequency boilerplate (prettyPrint, quotaUser) with no default is
-	// still dropped.
+	// A defaulted param stays on the command even when it is ubiquitous.
+	// Native defaults are client-sent; an OpenAPI optional default is a
+	// server assumption the caller may still override. Dropping the flag
+	// would remove that override. High-frequency params with no default
+	// (prettyPrint, quotaUser) remain eligible to drop.
 	return isQueryParamLocation(param) && !isPathSubstitutionParam(param) && !param.Required && param.Default == nil
 }
 
@@ -4692,6 +4694,12 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) ([]spec.
 		}
 		if schema != nil && schema.Default != nil {
 			param.Default = schema.Default
+			// Path defaults fill a URL segment and are client-sent. Optional
+			// query, header, and cookie defaults are what the server assumes
+			// when the parameter is absent.
+			if !parameter.Required && parameter.In != openapi3.ParameterInPath {
+				param.ServerDefault = true
+			}
 		}
 		setParamMaximum(&param, schema)
 		if param.Positional {
@@ -5197,6 +5205,9 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		}
 		if paramSchema != nil && paramSchema.Default != nil {
 			param.Default = paramSchema.Default
+			if !param.Required {
+				param.ServerDefault = true
+			}
 		}
 		setParamMaximum(&param, paramSchema)
 		// For array types, propagate item-level enum as a Fields entry

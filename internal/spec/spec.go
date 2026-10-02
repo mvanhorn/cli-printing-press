@@ -2877,25 +2877,31 @@ func (h *HTMLExtract) EffectiveScriptSelector() string {
 }
 
 type Param struct {
-	Name         string   `yaml:"name" json:"name"`
-	In           string   `yaml:"in,omitempty" json:"in,omitempty"` // parameter location: path, query, or header
-	FlagName     string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
-	URLName      string   `yaml:"url_name,omitempty" json:"url_name,omitempty"`   // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
-	BodyName     string   `yaml:"body_name,omitempty" json:"body_name,omitempty"` // optional override for request-body field emission while keeping the public name
-	Aliases      []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
-	Type         string   `yaml:"type" json:"type"`
-	Required     bool     `yaml:"required" json:"required"`
-	Positional   bool     `yaml:"positional" json:"positional"`
-	PathParam    bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true for path params rendered as flags (e.g., pagination)
-	GlobalScope  bool     `yaml:"global_scope,omitempty" json:"global_scope,omitempty"`
-	Default      any      `yaml:"default" json:"default"`
-	Example      any      `yaml:"example,omitempty" json:"example,omitempty"`
-	Description  string   `yaml:"description" json:"description"`
-	Fields       []Param  `yaml:"fields" json:"fields"`                     // for nested objects
-	Enum         []string `yaml:"enum,omitempty" json:"enum,omitempty"`     // enum constraints for the parameter
-	Format       string   `yaml:"format,omitempty" json:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
-	QueryStyle   string   `yaml:"query_style,omitempty" json:"query_style,omitempty"`
-	QueryExplode *bool    `yaml:"query_explode,omitempty" json:"query_explode,omitempty"`
+	Name        string   `yaml:"name" json:"name"`
+	In          string   `yaml:"in,omitempty" json:"in,omitempty"` // parameter location: path, query, or header
+	FlagName    string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
+	URLName     string   `yaml:"url_name,omitempty" json:"url_name,omitempty"`   // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
+	BodyName    string   `yaml:"body_name,omitempty" json:"body_name,omitempty"` // optional override for request-body field emission while keeping the public name
+	Aliases     []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
+	Type        string   `yaml:"type" json:"type"`
+	Required    bool     `yaml:"required" json:"required"`
+	Positional  bool     `yaml:"positional" json:"positional"`
+	PathParam   bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true for path params rendered as flags (e.g., pagination)
+	GlobalScope bool     `yaml:"global_scope,omitempty" json:"global_scope,omitempty"`
+	Default     any      `yaml:"default" json:"default"`
+	// ServerDefault marks an OpenAPI schema default on an optional non-path
+	// parameter: the server assumes that value when the parameter is absent.
+	// Help text still shows it. CLI flags and MCP bindings do not send it
+	// unless the caller sets the value. Native spec defaults leave this false
+	// and are still sent.
+	ServerDefault bool     `yaml:"server_default,omitempty" json:"server_default,omitempty"`
+	Example       any      `yaml:"example,omitempty" json:"example,omitempty"`
+	Description   string   `yaml:"description" json:"description"`
+	Fields        []Param  `yaml:"fields" json:"fields"`                     // for nested objects
+	Enum          []string `yaml:"enum,omitempty" json:"enum,omitempty"`     // enum constraints for the parameter
+	Format        string   `yaml:"format,omitempty" json:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
+	QueryStyle    string   `yaml:"query_style,omitempty" json:"query_style,omitempty"`
+	QueryExplode  *bool    `yaml:"query_explode,omitempty" json:"query_explode,omitempty"`
 	// An empty Enum skips the generated allowed-value check. Persist the marker
 	// so a merged-spec JSON or YAML archive still rejects every value after reload.
 	EnumUnsatisfiable bool `yaml:"enum_unsatisfiable,omitempty" json:"enum_unsatisfiable,omitempty"`
