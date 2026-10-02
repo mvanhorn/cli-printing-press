@@ -1080,9 +1080,9 @@ type endpointTemplateData struct {
 	// skip the per-call prompt. GET RPCs without a read signal stay false
 	// so a mutation is never treated as unattended-safe.
 	IsReadOnly bool
-	// RenamedPathAliases are hidden refusing children for leaf paths that
-	// generation renamed (collection/item collision). Empty for every other
-	// endpoint.
+	// Operators still type the pre-collision leaf. The template refuses
+	// that spelling (mcp:hidden, no client call, naming the new path) so
+	// Cobra does not swallow it as a positional on the collection command.
 	RenamedPathAliases []renamedPathAlias
 	*spec.APISpec
 }
