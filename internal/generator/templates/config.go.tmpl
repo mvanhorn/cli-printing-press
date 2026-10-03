@@ -301,9 +301,8 @@ func Load(configPath string) (*Config, error) {
 {{- end}}
 {{- end}}
 {{- range .Auth.AdditionalHeaders}}
-	// Sibling-scheme per-call credential sent on every request alongside the
-	// primary auth. AuthSource intentionally not stamped: the primary auth
-	// remains the canonical surface for doctor/auth-status reporting.
+	// Do not stamp AuthSource from a sibling env var. Doctor reads that field
+	// as the primary credential and reports other schemes on their own.
 	if v := cliutil.EnvOverride("{{.EnvVar.Name}}"); v != "" {
 		cfg.{{resolveEnvVarField .EnvVar.Name}} = v
 		cfg.markEnvOverride("{{resolveEnvVarField .EnvVar.Name}}")
@@ -1080,7 +1079,19 @@ func (c *Config) CredentialConfigured() bool {
 	if c == nil {
 		return false
 	}
-{{- if or (eq .Auth.Type "composed") (eq .Auth.Type "cookie")}}
+{{- if .HasPerOperationAuth}}
+	if c.AuthHeader() != ""{{if or (eq .Auth.Type "composed") (eq .Auth.Type "cookie")}} || c.CookieCredential() != ""{{end}} {
+		return true
+	}
+{{- range .Auth.AdditionalHeaders}}
+{{- if .PerOperation}}
+	if c.{{resolveEnvVarField .EnvVar.Name}} != "" {
+		return true
+	}
+{{- end}}
+{{- end}}
+	return false
+{{- else if or (eq .Auth.Type "composed") (eq .Auth.Type "cookie")}}
 	return c.AuthHeader() != "" || c.CookieCredential() != ""
 {{- else}}
 	return c.AuthHeader() != ""

@@ -731,6 +731,38 @@ func sortedStringKeys[V any](m map[string]V) []string {
 	return keys
 }
 
+// Spec-level auth sends one credential on every operation. Generation has
+// to branch when operations name different sole schemes, or a credential
+// is attached to calls that reject it.
+func (s *APISpec) HasPerOperationAuth() bool {
+	if s == nil {
+		return false
+	}
+	var found bool
+	var walk func(resources map[string]Resource)
+	walk = func(resources map[string]Resource) {
+		if found {
+			return
+		}
+		for _, resource := range resources {
+			for _, endpoint := range resource.Endpoints {
+				if endpoint.AuthScheme != "" {
+					found = true
+					return
+				}
+			}
+			if len(resource.SubResources) > 0 {
+				walk(resource.SubResources)
+			}
+			if found {
+				return
+			}
+		}
+	}
+	walk(s.Resources)
+	return found
+}
+
 func (s *APISpec) EffectiveTier(resource Resource, endpoint Endpoint) string {
 	name, _, ok := s.EffectiveTierConfig(resource, endpoint)
 	if !ok {
@@ -1340,14 +1372,9 @@ type AuthConfig struct {
 	// Used by the authorization_code flow only; ignored for other grants.
 	RefreshTokenMechanism string `yaml:"refresh_token_mechanism,omitempty" json:"refresh_token_mechanism,omitempty"`
 
-	// AdditionalHeaders carries per-call credentials from non-winning sibling
-	// security schemes. Composed apiKey + OAuth (or apiKey + bearer) shapes
-	// declare both schemes in components.securitySchemes; selectSecurityScheme
-	// picks one as the primary (Authorization-bearer half) and the parser then
-	// scans the rest for apiKey schemes carrying x-auth-vars[*].kind: per_call,
-	// so the apiKey credential gets sent alongside the primary auth. Generator
-	// emits a Config field + os.Getenv loader per entry, then applies the
-	// credential according to In on every request.
+	// Credentials from security schemes other than the primary. An AND-group
+	// sibling has to ride with the primary credential; a per-operation
+	// credential must not, or an operation that names one scheme rejects the other.
 	AdditionalHeaders []AdditionalAuthHeader `yaml:"additional_headers,omitempty" json:"additional_headers,omitempty"`
 }
 
@@ -1355,10 +1382,14 @@ type AuthConfig struct {
 // per-call env var that supplies its value. Header stores the OpenAPI apiKey
 // scheme's name field; In distinguishes header and query placements.
 type AdditionalAuthHeader struct {
-	Header string     `yaml:"header" json:"header"`
-	In     string     `yaml:"in,omitempty" json:"in,omitempty"`
-	Scheme string     `yaml:"scheme,omitempty" json:"scheme,omitempty"`
-	EnvVar AuthEnvVar `yaml:"env_var" json:"env_var"`
+	Header string `yaml:"header" json:"header"`
+	In     string `yaml:"in,omitempty" json:"in,omitempty"`
+	Scheme string `yaml:"scheme,omitempty" json:"scheme,omitempty"`
+	// AND-group siblings leave this false and ride with the primary credential.
+	// Set when the credential has to be omitted from operations that name a
+	// different scheme.
+	PerOperation bool       `yaml:"per_operation,omitempty" json:"per_operation,omitempty"`
+	EnvVar       AuthEnvVar `yaml:"env_var" json:"env_var"`
 }
 
 const (
@@ -2558,6 +2589,10 @@ type Endpoint struct {
 	Meta                      map[string]string          `yaml:"meta,omitempty" json:"meta,omitempty"`                         // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
 	HeaderOverrides           []RequiredHeader           `yaml:"header_overrides,omitempty" json:"header_overrides,omitempty"` // per-endpoint header overrides (e.g., different api-version)
 	NoAuth                    bool                       `yaml:"no_auth,omitempty" json:"no_auth,omitempty"`                   // true when the endpoint does not require authentication
+	// Empty keeps the primary credential plus AND-group siblings. A sole
+	// scheme name selects that credential and suppresses the others, which
+	// is required when the operation rejects every other scheme.
+	AuthScheme string `yaml:"auth_scheme,omitempty" json:"auth_scheme,omitempty"`
 	// ObservedAuth lists the lowercased request header names observed on this
 	// endpoint during browser-sniff capture that match common auth surfaces
 	// (Authorization, Cookie, X-API-Key, etc.). Observation-only — header

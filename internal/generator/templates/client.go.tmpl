@@ -864,6 +864,15 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		if err := redirectDestinationRefused(req.URL, via); err != nil {
 			return err
 		}
+{{- if .HasPerOperationAuth}}
+		redirectScheme := ""
+		if !redirectLeavesOrigin(req.URL, via) {
+			redirectScheme = c.operationAuthScheme(req.Method, operationAuthRequestPath(req))
+			if redirectScheme == "" && len(via) > 0 {
+				redirectScheme = c.operationAuthScheme(via[0].Method, operationAuthRequestPath(via[0]))
+			}
+		}
+{{- end}}
 {{- if and (ne .Auth.Type "none") (ne .Auth.Type "")}}
 		// Never carry credential material across a host change or protocol
 		// downgrade. Go strips Authorization and Cookie in common cases, but
@@ -956,9 +965,83 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// are never in the set Go removes automatically, so this gate
 		// has to do the work itself.
 		if !redirectLeavesOrigin(req.URL, via){{- if eq .Auth.Type "composed"}} && c.credentialAppliesToURL(req.URL.String()){{- end}} {
+{{- if .HasPerOperationAuth}}
+			if redirectScheme == "" || redirectScheme == {{printf "%q" .Auth.Scheme}} {
+{{- end}}
 			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
 				req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", h)
 			}
+{{- if .HasPerOperationAuth}}
+			} else {
+				req.Header.Del("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}")
+			}
+{{- end}}
+		}
+{{- end}}
+{{- if and .HasPerOperationAuth .Auth.AdditionalHeaders}}
+		if !redirectLeavesOrigin(req.URL, via) {
+			// A same-origin hop can change schemes. Attach a credential only
+			// when the destination path names that scheme. Go copies custom
+			// headers onto the next request, so a path that does not name the
+			// scheme has to drop the copied value. A value already on a
+			// matching destination is the one the caller selected.
+			destinationScheme := c.operationAuthScheme(req.Method, operationAuthRequestPath(req))
+{{- range .Auth.AdditionalHeaders}}
+{{- if .PerOperation}}
+{{- if eq .In "query"}}
+			if destinationScheme == {{printf "%q" .Scheme}} {
+				q := req.URL.Query()
+				if q.Get("{{.Header}}") == "" {
+					carried := ""
+					if len(via) > 0 {
+						carried = via[len(via)-1].URL.Query().Get("{{.Header}}")
+					}
+					if carried == "" && c.Config != nil {
+						if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
+							if authHeaderLooksLikePlaceholderCredential(v) {
+								return authPlaceholderCredentialErrorWithSetup(c.Config, "export {{.EnvVar.Name}}=<your-token>")
+							}
+							carried = v
+						}
+					}
+					if carried != "" {
+						q.Set("{{.Header}}", carried)
+						req.URL.RawQuery = q.Encode()
+					}
+				}
+			} else {
+				q := req.URL.Query()
+				q.Del("{{.Header}}")
+				req.URL.RawQuery = q.Encode()
+			}
+{{- else}}
+			if destinationScheme == {{printf "%q" .Scheme}} {
+				if req.Header.Get("{{.Header}}") == "" && c.Config != nil {
+					if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
+						if authHeaderLooksLikePlaceholderCredential(v) {
+							return authPlaceholderCredentialErrorWithSetup(c.Config, "export {{.EnvVar.Name}}=<your-token>")
+						}
+						req.Header.Set("{{.Header}}", v)
+					}
+				}
+			} else {
+				req.Header.Del("{{.Header}}")
+			}
+{{- end}}
+{{- else}}
+{{- if eq .In "query"}}
+			if !(redirectScheme == "" || redirectScheme == {{printf "%q" .Scheme}}) {
+				q := req.URL.Query()
+				q.Del("{{.Header}}")
+				req.URL.RawQuery = q.Encode()
+			}
+{{- else}}
+			if !(redirectScheme == "" || redirectScheme == {{printf "%q" .Scheme}}) {
+				req.Header.Del("{{.Header}}")
+			}
+{{- end}}
+{{- end}}
+{{- end}}
 		}
 {{- end}}
 		return nil
@@ -976,9 +1059,17 @@ func (c *Client) Get(ctx context.Context, path string, params map[string]string)
 }
 
 func (c *Client) GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+{{- if .HasPerOperationAuth}}
+	if c.operationSendsPrimaryAuth(http.MethodGet, path) {
+		if err := c.validateCachedRequestAuth(ctx); err != nil {
+			return nil, err
+		}
+	}
+{{- else}}
 	if err := c.validateCachedRequestAuth(ctx); err != nil {
 		return nil, err
 	}
+{{- end}}
 	binaryResponse := c.wantsBinaryResponse(headers)
 	cacheEnabled := c.responseCacheEnabled(binaryResponse)
 	// Check cache for GET requests
@@ -1034,9 +1125,17 @@ func (c *Client) GetNoCache(ctx context.Context, path string, params map[string]
 // writes cacheable fresh responses on success. See GetNoCache for when to
 // prefer this over Get/GetWithHeaders.
 func (c *Client) GetWithHeadersNoCache(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+{{- if .HasPerOperationAuth}}
+	if c.operationSendsPrimaryAuth(http.MethodGet, path) {
+		if err := c.validateCachedRequestAuth(ctx); err != nil {
+			return nil, err
+		}
+	}
+{{- else}}
 	if err := c.validateCachedRequestAuth(ctx); err != nil {
 		return nil, err
 	}
+{{- end}}
 	binaryResponse := c.wantsBinaryResponse(headers)
 	result, _, err := c.do(ctx, "GET", path, params, nil, headers)
 	if err == nil && c.responseCacheEnabled(binaryResponse) {
@@ -1193,6 +1292,13 @@ func (c *Client) cacheKeyFor(method, path string, params map[string]string, head
 	// differ only by that header never share a row. Representation headers
 	// stay in canonicalRepresentationHeaders and are not treated as tenancy.
 	key += "|tenant=" + canonicalTenantSelectingHeaders(c.Config, headers)
+{{- if .HasPerOperationAuth}}
+	// Primary-token identity is above. Without the credential this operation
+	// actually sends, two account tokens that share a server token reuse one GET.
+	if opCred := c.operationCredentialCacheID(method, path); opCred != "" {
+		key += "|op_cred=" + opCred
+	}
+{{- end}}
 {{- if .EndpointTemplateVars}}
 	// Include resolved template-var values in the cache identity so two
 	// tenants (different SHOPIFY_SHOP) never collide on the same path, and
@@ -1987,6 +2093,209 @@ func (c *Client) bindUploadOperationDeadline(ctx context.Context, allowance time
 	return context.WithTimeout(ctx, (c.ConfiguredTimeout()+allowance)*time.Duration(maxRetries+1))
 }
 
+{{- if .HasPerOperationAuth}}
+type operationAuthRoute struct {
+	method string
+	path   string
+	scheme string
+}
+
+var operationAuthRoutes = []operationAuthRoute{
+{{- range operationAuthRoutes .APISpec}}
+	{method: {{printf "%q" .Method}}, path: {{printf "%q" .Path}}, scheme: {{printf "%q" .Scheme}}},
+{{- end}}
+}
+
+func operationAuthRequestPath(req *http.Request) string {
+	if req == nil || req.URL == nil {
+		return ""
+	}
+	if req.URL.IsAbs() {
+		return req.URL.String()
+	}
+	if req.URL.RawQuery != "" {
+		return req.URL.EscapedPath() + "?" + req.URL.RawQuery
+	}
+	return req.URL.EscapedPath()
+}
+
+func (c *Client) operationAuthScheme(method, requestPath string) string {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	reqHost, reqSegs, ok := operationAuthSplit(requestPath)
+	if !ok {
+		return ""
+	}
+	candidates := [][]string{reqSegs}
+	for _, prefix := range c.operationAuthPrefixes() {
+		_, prefixSegs, pok := operationAuthSplit(prefix)
+		if !pok || !operationAuthHasPrefix(reqSegs, prefixSegs) {
+			continue
+		}
+		candidates = append(candidates, reqSegs[len(prefixSegs):])
+	}
+	bestScore := -1
+	best := ""
+	for _, route := range operationAuthRoutes {
+		if route.method != method {
+			continue
+		}
+		routeHost, routeSegs, rok := operationAuthSplit(route.path)
+		if !rok {
+			continue
+		}
+		for _, segs := range candidates {
+			score, matched := operationAuthScore(routeHost, routeSegs, reqHost, segs)
+			if !matched || score <= bestScore {
+				continue
+			}
+			bestScore = score
+			best = route.scheme
+		}
+	}
+	return best
+}
+
+func (c *Client) operationAuthPrefixes() []string {
+	if c == nil {
+		return nil
+	}
+	var prefixes []string
+	seen := map[string]struct{}{}
+	add := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		if _, ok := seen[raw]; ok {
+			return
+		}
+		seen[raw] = struct{}{}
+		prefixes = append(prefixes, raw)
+	}
+	if c.BaseURL != "" {
+		if u, err := url.Parse(c.BaseURL); err == nil {
+			add(u.EscapedPath())
+		}
+	}
+{{- if .BasePath}}
+	add(c.BasePath)
+	if c.BaseURL != "" {
+		if u, err := url.Parse(c.BaseURL); err == nil {
+			base := strings.TrimRight(u.EscapedPath(), "/")
+			suffix := c.BasePath
+			if suffix != "" && !strings.HasPrefix(suffix, "/") {
+				suffix = "/" + suffix
+			}
+			add(base + suffix)
+		}
+	}
+{{- end}}
+	return prefixes
+}
+
+func operationAuthHasPrefix(path, prefix []string) bool {
+	if len(prefix) == 0 || len(prefix) >= len(path) {
+		return false
+	}
+	for i := range prefix {
+		if path[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func operationAuthSplit(raw string) (string, []string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil, false
+	}
+	if i := strings.IndexAny(raw, "?#"); i >= 0 {
+		raw = raw[:i]
+	}
+	host := ""
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return "", nil, false
+		}
+		host = u.Host
+		raw = u.EscapedPath()
+		if raw == "" {
+			raw = "/"
+		}
+	}
+	if len(raw) > 1 {
+		raw = strings.TrimRight(raw, "/")
+	}
+	parts := strings.Split(raw, "/")
+	segments := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		if unescaped, err := url.PathUnescape(part); err == nil {
+			part = unescaped
+		}
+		segments = append(segments, part)
+	}
+	return host, segments, true
+}
+
+func operationAuthScore(routeHost string, routeSegs []string, reqHost string, reqSegs []string) (int, bool) {
+	if routeHost != "" && reqHost != "" && !strings.EqualFold(routeHost, reqHost) {
+		return 0, false
+	}
+	if len(routeSegs) != len(reqSegs) {
+		return 0, false
+	}
+	score := 0
+	for i := range routeSegs {
+		routeSeg := routeSegs[i]
+		reqSeg := reqSegs[i]
+		if len(routeSeg) > 2 && strings.HasPrefix(routeSeg, "{") && strings.HasSuffix(routeSeg, "}") {
+			if reqSeg == "" {
+				return 0, false
+			}
+			continue
+		}
+		if routeSeg != reqSeg {
+			return 0, false
+		}
+		score++
+	}
+	return score, true
+}
+
+// A sole scheme other than the primary does not send the primary credential.
+// Unmatched paths still do: they keep spec-level auth.
+func (c *Client) operationSendsPrimaryAuth(method, requestPath string) bool {
+	scheme := c.operationAuthScheme(method, requestPath)
+	return scheme == "" || scheme == {{printf "%q" .Auth.Scheme}}
+}
+
+func (c *Client) operationCredentialCacheID(method, path string) string {
+	if c == nil || c.Config == nil {
+		return ""
+	}
+	scheme := c.operationAuthScheme(method, path)
+	if scheme == "" {
+		return ""
+	}
+{{- range .Auth.AdditionalHeaders}}
+{{- if .PerOperation}}
+	if scheme == {{printf "%q" .Scheme}} {
+		if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
+			sum := sha256.Sum256([]byte({{printf "%q" .Header}} + "\n" + v))
+			return hex.EncodeToString(sum[:8])
+		}
+	}
+{{- end}}
+{{- end}}
+	return ""
+}
+{{- end}}
+
 {{- if eq .ClientPattern "proxy-envelope"}}
 func buildClientPath(method, path string, params map[string]string) string {
 	if method == "GET" {
@@ -2187,11 +2496,35 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	// exactly what would be sent. Uses only cached credentials; a token that
 	// requires a network refresh will be re-fetched on the live request path,
 	// not during dry-run.
+{{- if .HasPerOperationAuth}}
+	// Select the scheme before resolving credentials. A credential this
+	// request will not send must not fail it.
+	opScheme := c.operationAuthScheme(method, path)
+	sendsPrimaryAuth := opScheme == "" || opScheme == {{printf "%q" .Auth.Scheme}}
+{{- end}}
 {{- if .HasTierRouting}}
+{{- if .HasPerOperationAuth}}
+	var authInfo requestAuth
+	var authHeader string
+	var err error
+	if sendsPrimaryAuth {
+		authInfo, err = c.authForRequest(ctx)
+		authHeader = authInfo.Value
+	}
+{{- else}}
 	authInfo, err := c.authForRequest(ctx)
 	authHeader := authInfo.Value
+{{- end}}
+{{- else}}
+{{- if .HasPerOperationAuth}}
+	var authHeader string
+	var err error
+	if sendsPrimaryAuth {
+		authHeader, err = c.authHeader(ctx)
+	}
 {{- else}}
 	authHeader, err := c.authHeader(ctx)
+{{- end}}
 {{- end}}
 	if err != nil {
 		return nil, 0, err
@@ -2207,7 +2540,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	// (or empty). On the live path, ensure a fresh token if none is cached.
 	// Dry-run deliberately skips this — we want previews to reflect what's
 	// cached, never trigger a network fetch.
-	if !c.DryRun && {{if .HasTierRouting}}c.requestTier == "" && {{end}}authHeader == "" && c.Session != nil {
+	if !c.DryRun && {{if .HasTierRouting}}c.requestTier == "" && {{end}}{{if .HasPerOperationAuth}}sendsPrimaryAuth && {{end}}authHeader == "" && c.Session != nil {
 		tok, terr := c.Session.EnsureToken()
 		if terr != nil {
 			return nil, 0, terr
@@ -2216,6 +2549,11 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 {{- if .HasTierRouting}}
 		authInfo.Value = tok
 {{- end}}
+	}
+{{- end}}
+{{- if .HasPerOperationAuth}}
+	if !sendsPrimaryAuth {
+		authHeader = ""
 	}
 {{- end}}
 
@@ -2282,7 +2620,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 
 		// Re-resolve session token each iteration — may have been invalidated
 		// by a previous attempt returning 401/403.
-		if {{if .HasTierRouting}}c.requestTier == "" && {{end}}authHeader == "" && c.Session != nil {
+		if {{if .HasTierRouting}}c.requestTier == "" && {{end}}{{if .HasPerOperationAuth}}sendsPrimaryAuth && {{end}}authHeader == "" && c.Session != nil {
 			tok, terr := c.Session.EnsureToken()
 			if terr != nil {
 				return nil, 0, terr
@@ -2390,6 +2728,32 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 {{- end}}
 		}
 {{- if .Auth.AdditionalHeaders}}
+{{- if .HasPerOperationAuth}}
+		// Sole-scheme operations send that scheme's credential. AND-group
+		// siblings still ride requests that do not name a sole scheme.
+		if {{if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}credentialAllowed && {{end}}c.Config != nil {
+{{- range .Auth.AdditionalHeaders}}
+{{- if .PerOperation}}
+			if opScheme == {{printf "%q" .Scheme}} {
+{{- else}}
+			if opScheme == "" || opScheme == {{printf "%q" .Scheme}} {
+{{- end}}
+				if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
+					if authHeaderLooksLikePlaceholderCredential(v) {
+						return nil, 0, authPlaceholderCredentialErrorWithSetup(c.Config, "export {{.EnvVar.Name}}=<your-token>")
+					}
+{{- if eq .In "query"}}
+					q := req.URL.Query()
+					q.Set("{{.Header}}", v)
+					req.URL.RawQuery = q.Encode()
+{{- else}}
+					req.Header.Set("{{.Header}}", v)
+{{- end}}
+				}
+			}
+{{- end}}
+		}
+{{- else}}
 		// Composed-scheme per-call credentials carried by sibling apiKey schemes.
 		// Sent independently of authHeader: the API requires both the primary
 		// auth credential and each sibling credential on every request.
@@ -2409,6 +2773,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			}
 {{- end}}
 		}
+{{- end}}
 {{- end}}
 {{- range .RequiredHeaders}}
 		req.Header.Set("{{.Name}}", "{{.Value}}")
