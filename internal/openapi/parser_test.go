@@ -9784,6 +9784,145 @@ paths:
 	assert.Empty(t, parsed.Types, "scalar anyOf list items must not register a zero-field synthetic type")
 }
 
+func TestParseSingleArrayResponseUsesIdentityFieldsToPreserveObjects(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		schemaYAML       string
+		wantResponseType string
+		wantResponsePath string
+		wantFields       []string
+	}{
+		{
+			name: "Postmark-style detail object with ID retains all fields",
+			schemaYAML: `              schema:
+                type: object
+                properties:
+                  ID: {type: string}
+                  Name: {type: string}
+                  Color: {type: string}
+                  ApiTokens:
+                    type: array
+                    items: {type: string}
+`,
+			wantResponseType: "object",
+			wantFields:       []string{"ID", "Name", "Color", "ApiTokens"},
+		},
+		{
+			name: "Gmail messages get object retains its array field",
+			schemaYAML: `              schema:
+                type: object
+                properties:
+                  id: {type: string}
+                  threadId: {type: string}
+                  labelIds:
+                    type: array
+                    items: {type: string}
+`,
+			wantResponseType: "object",
+			wantFields:       []string{"id", "threadId", "labelIds"},
+		},
+		{
+			name: "allOf-inherited ID retains its array field",
+			schemaYAML: `              schema:
+                type: object
+                allOf:
+                  - type: object
+                    properties:
+                      ID: {type: string}
+                      Name: {type: string}
+                      Color: {type: string}
+                properties:
+                  ApiTokens:
+                    type: array
+                    items: {type: string}
+`,
+			wantResponseType: "object",
+			wantFields:       []string{"ID", "Name", "Color", "ApiTokens"},
+		},
+		{
+			name: "Gmail messages list unwraps arbitrary metadata siblings",
+			schemaYAML: `              schema:
+                type: object
+                properties:
+                  messages:
+                    type: array
+                    items: {type: object}
+                  nextPageToken: {type: string}
+                  resultSizeEstimate: {type: integer}
+`,
+			wantResponseType: "array",
+			wantResponsePath: "messages",
+		},
+		{
+			name: "Google-style list unwraps arbitrary metadata siblings",
+			schemaYAML: `              schema:
+                type: object
+                properties:
+                  kind: {type: string}
+                  etag: {type: string}
+                  nextPageToken: {type: string}
+                  items:
+                    type: array
+                    items: {type: object}
+`,
+			wantResponseType: "array",
+			wantResponsePath: "items",
+		},
+		{
+			name: "next cursor list unwraps arbitrary metadata siblings",
+			schemaYAML: `              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: {type: object}
+                  next_cursor: {type: string}
+`,
+			wantResponseType: "array",
+			wantResponsePath: "items",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			parsed, err := Parse([]byte(`openapi: "3.0.3"
+info:
+  title: Single Array Response
+  version: "1.0"
+paths:
+  /things/{id}:
+    get:
+      operationId: getThing
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+` + tt.schemaYAML))
+			require.NoError(t, err)
+
+			ep := findEndpoint(t, parsed, "/things/{id}")
+			assert.Equal(t, tt.wantResponseType, ep.Response.Type)
+			assert.Equal(t, tt.wantResponsePath, ep.ResponsePath)
+			if len(tt.wantFields) > 0 {
+				fields := make([]string, 0, len(parsed.Types[ep.Response.Item].Fields))
+				for _, field := range parsed.Types[ep.Response.Item].Fields {
+					fields = append(fields, field.Name)
+				}
+				assert.ElementsMatch(t, tt.wantFields, fields)
+			}
+		})
+	}
+}
+
 // TestParseIDFieldEnvelopeUnwrapping covers list responses whose payload is an
 // object envelope wrapping a single named array (e.g. {events: [...],
 // cursor: "..."}; many list APIs use this shape with the resource name as the
@@ -9864,11 +10003,10 @@ func TestParseIDFieldEnvelopeUnwrapping(t *testing.T) {
 			wantID: "",
 		},
 		{
-			// A malformed array property (no items) sits alongside a
-			// well-formed one. singleArrayProperty must skip the malformed
-			// entry without it counting toward the "exactly one" cap, so the
-			// well-formed sibling still wins and PK detection succeeds.
-			name: "named-array envelope with one malformed sibling: well-formed array still wins",
+			// A malformed array property (no items) sits alongside a well-formed
+			// one. The predicate must skip it without counting it toward the cap,
+			// so the well-formed sibling still wins and PK detection succeeds.
+			name: "named-array envelope with malformed paging sibling: well-formed array still wins",
 			schemaYAML: `              schema:
                 type: object
                 properties:
@@ -9879,7 +10017,7 @@ func TestParseIDFieldEnvelopeUnwrapping(t *testing.T) {
                       required: [event_ticker]
                       properties:
                         event_ticker: {type: string}
-                  legacy:
+                  next_cursor:
                     type: array
                   cursor: {type: string}
 `,
