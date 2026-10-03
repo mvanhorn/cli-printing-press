@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.33.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.33.0...v4.33.1) (2026-10-03)
+
+
+### Bug Fixes
+
+* **cli:** close generator gaps from 4.32.5 reprints ([#4837](https://github.com/mvanhorn/cli-printing-press/issues/4837)) ([d0075e6](https://github.com/mvanhorn/cli-printing-press/commit/d0075e6c6e712b617e8fac20cfd8952794c39d70))
+* **cli:** do not auto-send OpenAPI optional parameter defaults ([#4884](https://github.com/mvanhorn/cli-printing-press/issues/4884)) ([f0acc67](https://github.com/mvanhorn/cli-printing-press/commit/f0acc67b3541deba8b2d3165c906536de0624dfa))
+* **cli:** honor per-operation security for split-token APIs ([#4896](https://github.com/mvanhorn/cli-printing-press/issues/4896)) ([63226c7](https://github.com/mvanhorn/cli-printing-press/commit/63226c764ad2c3921d881544d0eccccb2ce7756c))
+* **cli:** keep declared JSON types for anyOf nullable body scalars ([#4881](https://github.com/mvanhorn/cli-printing-press/issues/4881)) ([ae34afd](https://github.com/mvanhorn/cli-printing-press/commit/ae34afdfebaccbf638221024b7d2974ae3db9884))
+* **cli:** make DeriveFlagCorrections idempotent across batch replay ([#4880](https://github.com/mvanhorn/cli-printing-press/issues/4880)) ([9acddff](https://github.com/mvanhorn/cli-printing-press/commit/9acddffba5d28fcf86d9a7c25b32ae9430cfeec7))
+* **cli:** put dry_run at top level on promoted mutation JSON ([#4883](https://github.com/mvanhorn/cli-printing-press/issues/4883)) ([234c04e](https://github.com/mvanhorn/cli-printing-press/commit/234c04eec0370c17a27debc939d3873acc1f98ea))
+* **cli:** send explicit false/0 on non-paginated GET and reject boolean stray positionals ([#4882](https://github.com/mvanhorn/cli-printing-press/issues/4882)) ([46e012d](https://github.com/mvanhorn/cli-printing-press/commit/46e012d3e78d368f4754e5a5d0d41cee944ddbc2))
+* **skills:** enforce min-binary-version before the version-check TTL ([#4894](https://github.com/mvanhorn/cli-printing-press/issues/4894)) ([10cf698](https://github.com/mvanhorn/cli-printing-press/commit/10cf698acaa06f6f4dcd0ae542dda6b40978fd8c))
+
 ## [4.33.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.32.6...v4.33.0) (2026-10-01)
 
 
