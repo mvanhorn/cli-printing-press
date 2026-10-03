@@ -75,6 +75,7 @@ type codeOrchEndpoint struct {
 	Method     string
 	Path       string
 	Tier       string
+	Inputs     []codeOrchInput
 	Summary    string
 	Positional []string
 	// TemplateParams carries public-to-wire bindings for promoted global path
@@ -104,6 +105,14 @@ type codeOrchEndpoint struct {
 	keywords    []string
 }
 
+type codeOrchInput struct {
+	Name     string   `json:"name"`
+	Location string   `json:"in"`
+	Type     string   `json:"type"`
+	Required bool     `json:"required"`
+	Enum     []string `json:"enum,omitempty"`
+}
+
 type codeOrchParamBinding struct {
 	PublicName string
 	WireName   string
@@ -115,16 +124,30 @@ type codeOrchParamBinding struct {
 // via <api>_search, so hierarchy shows up as dotted IDs, not nested maps.
 var codeOrchEndpoints = []codeOrchEndpoint{
 	{
-		ID:             "items.list",
-		Method:         "GET",
+		ID:             "items.create",
+		Method:         "POST",
 		Path:           "/items",
-		Summary:        "List items",
+		Summary:        "Create an item",
+		Inputs:         []codeOrchInput{{Name: "label", Location: "body", Type: "string", Required: false, Enum: []string{}}, {Name: "mode", Location: "body", Type: "string", Required: true, Enum: []string{"assisted", "observe"}}},
 		Positional:     []string{},
 		TemplateParams: []codeOrchParamBinding{},
 		QueryParams:    []codeOrchParamBinding{},
 		HeaderParams:   []codeOrchParamBinding{},
 		Mutating:       false,
-		keywords:       codeOrchKeywords("items", "list", "List items", "/items"),
+		keywords:       append(codeOrchKeywords("items", "create", "Create an item", "/items"), codeOrchKeywordTokens(true, "label mode assisted observe")...),
+	},
+	{
+		ID:             "items.list",
+		Method:         "GET",
+		Path:           "/items",
+		Summary:        "List items",
+		Inputs:         []codeOrchInput{},
+		Positional:     []string{},
+		TemplateParams: []codeOrchParamBinding{},
+		QueryParams:    []codeOrchParamBinding{},
+		HeaderParams:   []codeOrchParamBinding{},
+		Mutating:       false,
+		keywords:       append(codeOrchKeywords("items", "list", "List items", "/items"), codeOrchKeywordTokens(true, "")...),
 	},
 }
 
@@ -145,8 +168,13 @@ var codeOrchStopwords = map[string]bool{
 // codeOrchKeywords produces the lowercase token stream used for search
 // ranking. Defined at package level so the registry initializer can call it
 // inline above without pulling in a separate precompute step.
-func codeOrchKeywords(resource, endpoint, summary, path string) []string {
-	raw := strings.ToLower(resource + " " + endpoint + " " + summary + " " + path)
+func codeOrchKeywords(parts ...string) []string {
+	return codeOrchKeywordTokens(false, parts...)
+}
+
+// Request names and enum values may be short or coincide with prose stopwords.
+func codeOrchKeywordTokens(requestTerms bool, parts ...string) []string {
+	raw := strings.ToLower(strings.Join(parts, " "))
 	raw = strings.Map(func(r rune) rune {
 		switch r {
 		case '_', '-', '/', '{', '}', '.', ',', ':', ';':
@@ -157,7 +185,7 @@ func codeOrchKeywords(resource, endpoint, summary, path string) []string {
 	out := make([]string, 0, 16)
 	seen := map[string]bool{}
 	for _, tok := range strings.Fields(raw) {
-		if len(tok) < 3 || codeOrchStopwords[tok] || seen[tok] {
+		if (!requestTerms && (len(tok) < 3 || codeOrchStopwords[tok])) || seen[tok] {
 			continue
 		}
 		seen[tok] = true
@@ -172,6 +200,7 @@ func codeOrchEndpointMetadata(ep *codeOrchEndpoint) map[string]any {
 		"method":      ep.Method,
 		"path":        ep.Path,
 		"summary":     ep.Summary,
+		"params":      ep.Inputs,
 	}
 	return out
 }
@@ -208,7 +237,7 @@ func handleCodeOrchSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcp
 	}
 	limit := codeOrchSearchLimit(args)
 
-	terms := codeOrchKeywords("", "", query, "")
+	terms := codeOrchKeywordTokens(true, query)
 	type scored struct {
 		ep    *codeOrchEndpoint
 		score int
@@ -221,7 +250,7 @@ func handleCodeOrchSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcp
 			for _, kw := range ep.keywords {
 				if kw == t {
 					score += 2
-				} else if strings.Contains(kw, t) || strings.Contains(t, kw) {
+				} else if len(t) >= 3 && len(kw) >= 3 && !codeOrchStopwords[t] && !codeOrchStopwords[kw] && (strings.Contains(kw, t) || strings.Contains(t, kw)) {
 					score++
 				}
 			}
