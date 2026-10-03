@@ -49,7 +49,7 @@ func TestGeneratedSplitTokenClientSendsOnlyOperationCredential(t *testing.T) {
 	require.Contains(t, clientSrc, `operationSendsPrimaryAuth`)
 	require.Contains(t, clientSrc, `destinationScheme := c.operationAuthScheme(req.Method, operationAuthRequestPath(req))`)
 	require.Contains(t, clientSrc, `if destinationScheme == "accountToken"`)
-	require.Contains(t, clientSrc, `else if redirectScheme != "accountToken"`)
+	require.NotContains(t, clientSrc, `else if redirectScheme != "accountToken"`)
 
 	doctorSrc := readGenerated(t, outputDir, "internal", "cli", "doctor.go")
 	require.Contains(t, doctorSrc, `report["auth_schemes"]`)
@@ -300,7 +300,7 @@ func TestRedirectKeepsCallerAccountToken(t *testing.T) {
 	}
 }
 
-func TestUnmatchedRedirectKeepsCallerAccountToken(t *testing.T) {
+func TestUnmatchedRedirectDropsAccountToken(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/servers/acct-1":
@@ -309,8 +309,8 @@ func TestUnmatchedRedirectKeepsCallerAccountToken(t *testing.T) {
 			}
 			http.Redirect(w, r, "/not-listed", http.StatusFound)
 		case "/not-listed":
-			if r.Header.Get("X-Account-Token") != "caller-account" {
-				t.Errorf("unlisted account=%q", r.Header.Get("X-Account-Token"))
+			if r.Header.Get("X-Account-Token") != "" || r.Header.Get("X-Server-Token") != "" {
+				t.Errorf("unlisted server=%q account=%q", r.Header.Get("X-Server-Token"), r.Header.Get("X-Account-Token"))
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(` + "`" + `{"ok":true}` + "`" + `))

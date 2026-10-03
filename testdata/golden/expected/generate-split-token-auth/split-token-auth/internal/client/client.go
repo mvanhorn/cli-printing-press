@@ -479,10 +479,10 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		}
 		if !redirectLeavesOrigin(req.URL, via) {
 			// A same-origin hop can change schemes. Attach a credential only
-			// when the destination path names that scheme. An unmatched path
-			// inherits the previous scheme for stripping the other credential,
-			// but must not gain a token it did not already carry. A value
-			// already on the request is the one the caller selected.
+			// when the destination path names that scheme. Go copies custom
+			// headers onto the next request, so a path that does not name the
+			// scheme has to drop the copied value. A value already on a
+			// matching destination is the one the caller selected.
 			destinationScheme := c.operationAuthScheme(req.Method, operationAuthRequestPath(req))
 			if destinationScheme == "accountToken" {
 				if req.Header.Get("X-Account-Token") == "" && c.Config != nil {
@@ -493,7 +493,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 						req.Header.Set("X-Account-Token", v)
 					}
 				}
-			} else if redirectScheme != "accountToken" {
+			} else {
 				req.Header.Del("X-Account-Token")
 			}
 		}
