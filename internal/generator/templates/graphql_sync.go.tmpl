@@ -105,6 +105,12 @@ Exit codes & warnings:
 				return err
 			}
 			c.NoCache = true
+			{{- if or .EndpointTemplateVars .GlobalPathTemplateVars}}
+			syncScope := ""
+			if c.Config != nil {
+				syncScope = syncScopeKey(c.Config.TemplateVars, nil, nil)
+			}
+{{- end}}
 
 			if dbPath == "" {
 				dbPath = defaultDBPath("{{.Name}}-pp-cli")
@@ -115,6 +121,9 @@ Exit codes & warnings:
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			defer db.Close()
+			{{- if or .EndpointTemplateVars .GlobalPathTemplateVars}}
+			db.SetSyncScope(syncScope)
+			{{- end}}
 
 			if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages") {
 				maxPages = 1
