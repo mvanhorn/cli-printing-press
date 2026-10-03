@@ -2652,7 +2652,8 @@ func overlayLiveDogfoodHappyArgs(args []string, command liveDogfoodCommand, pars
 			len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))), valueFlags)
 	}
 	if len(parsed.flags) > 0 {
-		out = overlayLiveDogfoodFlags(out, command.Path, parsed.flags, len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))), valueFlags)
+		out = overlayLiveDogfoodFlags(out, command.Path, parsed.flags, parsed.bareBooleanFlags,
+			len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))), valueFlags)
 	}
 	return out
 }
@@ -2756,11 +2757,12 @@ func overlayLiveDogfoodPositionals(args, commandPath, positionals []string, posi
 	return out
 }
 
-func overlayLiveDogfoodFlags(args, commandPath, flags []string, positionalCount int, valueFlags map[string]struct{}) []string {
+func overlayLiveDogfoodFlags(args, commandPath, flags, bareBooleanFlags []string, positionalCount int, valueFlags map[string]struct{}) []string {
 	out := append([]string{}, args...)
 	for i := 0; i+1 < len(flags); i += 2 {
 		flag := flags[i]
 		value := flags[i+1]
+		bareBoolean := slices.Contains(bareBooleanFlags, flag)
 		replaced := false
 		start := min(len(commandPath), len(out))
 		for j := start; j < len(out); j++ {
@@ -2773,7 +2775,9 @@ func overlayLiveDogfoodFlags(args, commandPath, flags []string, positionalCount 
 			if arg != flag {
 				continue
 			}
-			if isNegativeNumericArg(value) {
+			if bareBoolean {
+				out[j] = flag + "=" + value
+			} else if isNegativeNumericArg(value) {
 				separate := liveDogfoodFlagHasSeparateValueWithTypes(out, start, j, positionalCount, valueFlags)
 				out[j] = flag + "=" + value
 				if separate {
@@ -2788,7 +2792,7 @@ func overlayLiveDogfoodFlags(args, commandPath, flags []string, positionalCount 
 			break
 		}
 		if !replaced {
-			if isNegativeNumericArg(value) {
+			if bareBoolean || isNegativeNumericArg(value) {
 				out = append(out, flag+"="+value)
 			} else {
 				out = append(out, flag, value)
