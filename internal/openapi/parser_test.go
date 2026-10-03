@@ -7225,6 +7225,8 @@ paths:
 	assert.Equal(t, spec.AuthEnvVarKindPerCall, additional.EnvVar.Kind)
 	assert.True(t, additional.EnvVar.Required)
 	assert.True(t, additional.EnvVar.Sensitive)
+	assert.False(t, additional.PerOperation)
+	assert.Empty(t, endpointAuthSchemes(parsed)["GET /tenant/{tenant}/customers"])
 }
 
 // Single-scheme apiKey (no sibling OAuth) must keep its existing single-scheme
@@ -7263,6 +7265,7 @@ paths:
 
 	assert.Equal(t, "api_key", parsed.Auth.Type)
 	assert.Empty(t, parsed.Auth.AdditionalHeaders, "single-scheme path must not duplicate the primary envvar as additional")
+	assert.Empty(t, endpointAuthSchemes(parsed)["GET /items"])
 }
 
 // OR-alternative auth: two security requirement objects, each with a single
@@ -7306,6 +7309,7 @@ paths:
 	require.NoError(t, err)
 	assert.Empty(t, parsed.Auth.AdditionalHeaders,
 		"OR alternative schemes must not surface as required siblings")
+	assert.Empty(t, endpointAuthSchemes(parsed)["GET /items"])
 }
 
 // A sibling header apiKey scheme that omits the x-auth-vars extension still
@@ -7501,6 +7505,8 @@ paths:
 	assert.Equal(t, "ApiIntegrationCode", parsed.Auth.Scheme)
 	assert.Empty(t, parsed.Auth.AdditionalHeaders,
 		"operation-specific sibling sets cannot be represented as global additional headers")
+	assert.Empty(t, endpointAuthSchemes(parsed)["GET /tickets"])
+	assert.Empty(t, endpointAuthSchemes(parsed)["GET /companies"])
 }
 
 func TestOpenAPIAuthClassifiesCookieAndOAuth2ClientCredentialsEnvVars(t *testing.T) {

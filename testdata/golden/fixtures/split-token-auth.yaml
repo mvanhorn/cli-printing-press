@@ -1,0 +1,69 @@
+openapi: "3.0.3"
+info:
+  title: Split Token API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    serverToken:
+      type: apiKey
+      in: header
+      name: X-Server-Token
+    accountToken:
+      type: apiKey
+      in: header
+      name: X-Account-Token
+paths:
+  /messages:
+    get:
+      operationId: listMessages
+      security:
+        - serverToken: []
+      responses:
+        "200":
+          description: OK
+  /messages/{id}:
+    get:
+      operationId: getMessage
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      security:
+        - serverToken: []
+      responses:
+        "200":
+          description: OK
+  /servers/push:
+    get:
+      operationId: pushServer
+      security:
+        - serverToken: []
+      responses:
+        "200":
+          description: OK
+  /servers:
+    get:
+      operationId: listServers
+      security:
+        - accountToken: []
+      responses:
+        "200":
+          description: OK
+  /servers/{id}:
+    get:
+      operationId: getServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      security:
+        - accountToken: []
+      responses:
+        "200":
+          description: OK

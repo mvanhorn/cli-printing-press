@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/split-token-auth.yaml --output "$CASE_ACTUAL_DIR/split-token-auth" --force --validate=false
