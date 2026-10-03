@@ -47,6 +47,16 @@ Skills use a `references/` directory for content that is only needed during spec
 
 Keep those three equal. Preflight hard-blocks with `[skill-stale]` when the running skill is below the binary floor. Other skills under `skills/` may keep their own independent `version:` values; do not freeze `printing-press` at a constant across shape rewrites.
 
+## Frontmatter: `min-binary-version`
+
+`min-binary-version` is the other direction: this skill text requires a binary at least that new. When phase or reference text starts depending on a binary capability (annotation, flag, or command) that older releases lack, bump these together:
+
+1. `min-binary-version` in `skills/printing-press/SKILL.md` frontmatter
+2. the setup-contract `# min-binary-version:` comment in `phases/01-preflight.md`
+3. the setup-contract `_min_binary_version=` assignment in that same block
+
+Preflight hard-blocks with `[binary-below-min]` on every run, including when `.version-check` is inside the 24h TTL. The compare is local (`version --json` only) and does not fetch the currency floor. Do not raise this floor for wording-only edits. `supported-versions.txt` stays the out-of-band gate for bad-output releases; its fetch remains TTL-cached.
+
 ## Frontmatter: `context: fork` and `user-invocable`
 
 Two skill frontmatter fields shape how a skill participates in larger workflows. Both default to permissive behavior (shared context, user-invocable). Set them explicitly when the skill plays a non-default role.

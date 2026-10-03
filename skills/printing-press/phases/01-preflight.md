@@ -20,7 +20,7 @@ Artifacts are still written, but only the ones that materially help the next ste
 
 <!-- PRESS_SETUP_CONTRACT_START -->
 ```bash
-# min-binary-version: 4.0.0
+# min-binary-version: 4.33.0
 # skill-version: 3.0.0
 
 # Derive scope first — needed for local build detection
@@ -260,10 +260,29 @@ echo "PRESS_REPO_MODE=$_press_repo"
 # copies the running skill's frontmatter version so the binary can refuse a
 # stale install before later phases follow deleted commands.
 _this_skill_version=3.0.0
+# Skill text is refreshed every run. Compare this embedded floor locally,
+# before the .version-check TTL, so a fresh cache cannot keep a too-old binary.
+_min_binary_version=4.33.0
 if [ -n "$PRINTING_PRESS_BIN" ]; then
   _compat_json=$("$PRINTING_PRESS_BIN" version --json 2>/dev/null || true)
   _min_skill=$(printf '%s\n' "$_compat_json" | sed -nE 's/.*"min_skill_version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)
   _bin_ver=$(printf '%s\n' "$_compat_json" | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)
+  if [ -n "$_bin_ver" ] && PP_SEMVER_A="$_bin_ver" PP_SEMVER_B="$_min_binary_version" _semver_lt; then
+    echo ""
+    echo "[binary-below-min] cli-printing-press binary v$_bin_ver is older than the minimum required v$_min_binary_version"
+    echo "PRESS_BINARY_INSTALLED=$_bin_ver"
+    echo "PRESS_BINARY_REQUIRED=$_min_binary_version"
+    if [ "$_press_repo" = "true" ]; then
+      echo "Update this checkout and rebuild the selected binary at $_scope_dir/cli-printing-press:"
+      echo "  git -C \"$_scope_dir\" pull --ff-only origin main"
+      echo "  (cd \"$_scope_dir\" && go build -o ./cli-printing-press ./cmd/cli-printing-press)"
+      echo "Then re-run /printing-press."
+    else
+      echo "Run: go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest"
+    fi
+    echo ""
+    return 1 2>/dev/null || exit 1
+  fi
   if [ -n "$_min_skill" ] && PP_SEMVER_A="$_this_skill_version" PP_SEMVER_B="$_min_skill" _semver_lt; then
     echo ""
     echo "[skill-stale] printing-press skill v$_this_skill_version is older than binary v${_bin_ver:-unknown} expects (>= $_min_skill)"
@@ -559,11 +578,11 @@ CODEX_CONSECUTIVE_FAILURES=0
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-**MANDATORY: Read and apply [references/setup-checks.md](../references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles the contract output signals: `[setup-error]` (refuse to run, surface the install instructions), optional `[local-binary-stale]` / `[local-binary-rebuilt]` repo-mode rebuild markers, `[go-toolchain-old]` / `[low-disk]` advisories, `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), `PRESS_REPO_MODE=<true|false>` plus the targeted global open-agent-skills freshness check, the min-binary-version compatibility check (hard stop if binary is too old), `[skill-stale]` (hard stop if the running skill is older than this binary — no skip), `[upgrade-required]` (hard gate below the published currency floor — interactive upgrade-or-abort, no skip), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), `[browser-tools-missing]` (interactive `AskUserQuestion` prompt + optional install of browser-use and/or agent-browser), and the `PRINTING_PRESS_BIN=<abs-path>` marker plus optional `[binary-shadow]` warning (capture the path; use it for every subsequent generator invocation). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary, run with stale global skill text when the session is managed by open-agent-skills, hit a mid-flight install prompt if browser-sniff is later needed, or invoke the wrong binary because a stale global or the public-library installer on `PATH` shadowed the local build. Do not skip.
+**MANDATORY: Read and apply [references/setup-checks.md](../references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles the contract output signals: `[setup-error]` (refuse to run, surface the install instructions), optional `[local-binary-stale]` / `[local-binary-rebuilt]` repo-mode rebuild markers, `[go-toolchain-old]` / `[low-disk]` advisories, `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), `PRESS_REPO_MODE=<true|false>` plus the targeted global open-agent-skills freshness check, `[binary-below-min]` (hard stop when the binary is below `min-binary-version` — every run, including a fresh `.version-check` cache; no skip), `[skill-stale]` (hard stop if the running skill is older than this binary — no skip), `[upgrade-required]` (hard gate below the published currency floor — interactive upgrade-or-abort, no skip), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), `[browser-tools-missing]` (interactive `AskUserQuestion` prompt + optional install of browser-use and/or agent-browser), and the `PRINTING_PRESS_BIN=<abs-path>` marker plus optional `[binary-shadow]` warning (capture the path; use it for every subsequent generator invocation). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary, run with stale global skill text when the session is managed by open-agent-skills, hit a mid-flight install prompt if browser-sniff is later needed, or invoke the wrong binary because a stale global or the public-library installer on `PATH` shadowed the local build. Do not skip.
 
 **Absolute-path rule.** The preflight contract always emits `PRINTING_PRESS_BIN=<absolute path>` to stdout. Capture this value and substitute it (the resolved absolute path, not the literal `$PRINTING_PRESS_BIN` token) for every subsequent `cli-printing-press ...` invocation in this skill, references, and any sub-skill you delegate to. The `export PATH=...` line inside the contract only affects the single Bash tool call it runs in; later Bash tool calls open fresh shells and resolve bare `cli-printing-press` against the user's default `PATH`, where a stale globally-installed binary (`$HOME/go/bin/cli-printing-press`, Homebrew copy, etc.) will silently shadow the local build the preflight just chose. Bash code examples below are written `cli-printing-press generate ...` for readability — replace `cli-printing-press` with the captured absolute path each time you actually run one.
 
-Only after preflight completes successfully (no `[setup-error]`; no `[skill-stale]`; no `[upgrade-required]` left unresolved — the user either upgraded or the run was aborted; no global skill update that requires restart; any `[repo-upgrade-available]`, `[upgrade-available]`, or `[browser-tools-missing]` was offered to the user; `PRINTING_PRESS_BIN` is captured) should you proceed to the orientation and briefing flow in [references/run-resolution.md](../references/run-resolution.md).
+Only after preflight completes successfully (no `[setup-error]`; no `[binary-below-min]`; no `[skill-stale]`; no `[upgrade-required]` left unresolved — the user either upgraded or the run was aborted; no global skill update that requires restart; any `[repo-upgrade-available]`, `[upgrade-available]`, or `[browser-tools-missing]` was offered to the user; `PRINTING_PRESS_BIN` is captured) should you proceed to the orientation and briefing flow in [references/run-resolution.md](../references/run-resolution.md).
 
 Phase receipts begin only after `02-run-initialization` allocates a run ID and pipeline
 directory. Do not create a receipt during preflight.

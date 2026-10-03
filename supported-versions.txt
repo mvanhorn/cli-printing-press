@@ -8,7 +8,8 @@
 #
 # `min_supported` must be major.minor.patch. At runtime it is clamped to <= the
 # latest published release, so a typo above the newest version cannot brick
-# every install. Below the skill's frozen `min-binary-version` (the hard
-# compatibility floor) it has no effect — that floor always wins.
+# every install. Below the skill's `min-binary-version` (the compatibility
+# floor embedded in the skill; preflight enforces it every run without this
+# file) it has no effect — that floor always wins.
 min_supported=4.28.0
 reason=Releases below this version generate CLIs with since-fixed bugs; upgrade to regenerate cleanly.

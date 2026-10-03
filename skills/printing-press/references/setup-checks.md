@@ -1,6 +1,6 @@
 # Setup Checks
 
-Post-contract checks the skill must run after executing the bash setup contract block in [phases/01-preflight.md](../phases/01-preflight.md). These handle the contract output signals: `[setup-error]`, optional `[local-binary-stale]` / `[local-binary-rebuilt]` repo-mode rebuild markers, `[go-toolchain-old]`, `[low-disk]`, `[repo-upgrade-available]`, the always-emitted `PRINTING_PRESS_BIN=<abs-path>` and `PRESS_REPO_MODE=<true|false>` markers, the global open-agent-skills freshness check, the `min-binary-version` compatibility check, `[skill-stale]`, `[upgrade-required]`, `[upgrade-available]`, `[browser-tools-missing]`, and optional `[binary-shadow]` advisory.
+Post-contract checks the skill must run after executing the bash setup contract block in [phases/01-preflight.md](../phases/01-preflight.md). These handle the contract output signals: `[setup-error]`, optional `[local-binary-stale]` / `[local-binary-rebuilt]` repo-mode rebuild markers, `[go-toolchain-old]`, `[low-disk]`, `[repo-upgrade-available]`, the always-emitted `PRINTING_PRESS_BIN=<abs-path>` and `PRESS_REPO_MODE=<true|false>` markers, the global open-agent-skills freshness check, `[binary-below-min]`, `[skill-stale]`, `[upgrade-required]`, `[upgrade-available]`, `[browser-tools-missing]`, and optional `[binary-shadow]` advisory.
 
 Apply these in order. The preamble below runs unconditionally; each numbered section after it is conditional — do nothing if its trigger isn't present.
 
@@ -130,13 +130,29 @@ This command mutates global skill files, so never run it silently after user wor
 
 ## 4. Min-binary-version compatibility
 
-Check binary version compatibility against the skill's declared minimum. Read the `min-binary-version` field from the skill's YAML frontmatter. Run `<PRINTING_PRESS_BIN> version --json` (using the absolute path captured in the preamble — not bare `cli-printing-press` or legacy bare `printing-press`, which would resolve against the user's default `PATH` and could interrogate a stale global or the public catalog installer) and parse the version from the output. Compare it to `min-binary-version` using semver rules.
+The setup contract compares the installed binary to this skill's `min-binary-version` on every run, before the `.version-check` TTL block. It uses the local `version --json` the contract already ran. It does not read `.version-check`, run `go list`, or fetch `supported-versions.txt`. A fresh cache must not skip it. This is the compatibility floor, not the advisory `[upgrade-available]` freshness check.
 
-If the installed binary is older than the minimum, stop the skill immediately and tell the user:
+If the setup contract output contains a line starting with `[binary-below-min]`, parse:
 
-> "cli-printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest` to update."
+- `PRESS_BINARY_INSTALLED=<installed version>`
+- `PRESS_BINARY_REQUIRED=<min-binary-version declared by this skill>`
 
-Do not proceed to research, scoring, publishing, or any other workflow when the binary is below `min-binary-version`. This is the compatibility floor, not a freshness advisory.
+**Stop the skill immediately.** Do not proceed to research, generation, scoring, publishing, or any later phase. There is **no skip-and-continue**. The contract has already exited non-zero, before the `[repo-upgrade-available]` prompt, so surface the update instructions below instead of waiting for that prompt.
+
+When `PRESS_REPO_MODE=true`, tell the user to update the printing-press checkout and rebuild its local binary. `<repo>` is that checkout root: the directory the setup contract calls `_scope_dir` (the git toplevel that contains `cmd/cli-printing-press` and `go.mod`). The contract's printed `git -C` lines already expand that path. Do not use the directory that contains `PRINTING_PRESS_BIN`. When the checkout has no executable local binary, `PRINTING_PRESS_BIN` is a global install, and that directory is something like `~/go/bin`.
+
+```bash
+git -C "<repo>" pull --ff-only origin main
+(cd "<repo>" && go build -o ./cli-printing-press ./cmd/cli-printing-press)
+```
+
+After both commands succeed, tell the user to re-run `/printing-press`. If the pull is not a fast-forward, surface the failure. Do not merge, rebase, reset, stash, or switch branches. `go install` leaves this checkout binary unchanged, so the next run selects it again and stops.
+
+When `PRESS_REPO_MODE=false`, tell the user:
+
+> "cli-printing-press binary v\<installed\> is older than the minimum required v\<required\>. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest` to update."
+
+If the marker is absent, still compare this skill's YAML frontmatter `min-binary-version` to `<PRINTING_PRESS_BIN> version --json` (the absolute path from the preamble, not bare `cli-printing-press` or legacy bare `printing-press`). That command is local. If the installed binary is older, stop the same way and give the instructions for the captured `PRESS_REPO_MODE`. Skip the fallback only when `version --json` does not parse.
 
 ## 4.25. Skill-too-old-for-binary (skill drift) hard gate
 
@@ -164,7 +180,7 @@ If `<PRINTING_PRESS_BIN> version --json` printed a `warning:` about an installed
 
 ## 4.5. Required-minimum (currency floor) hard gate
 
-If the setup contract output contains a line starting with `[upgrade-required]`, the installed binary is below the **currently supported** minimum — older releases generate CLIs with known, since-fixed bugs. This is distinct from section 4: section 4 is the skill's frozen compatibility floor (the skill literally cannot run below it, and it only moves on a major version); the currency floor is a freshness *requirement* that maintainers raise out-of-band (via the published `supported-versions.txt`) as bad-output bugs get fixed, with no skill or binary release. Parse the follow-up lines:
+If the setup contract output contains a line starting with `[upgrade-required]`, the installed binary is below the **currently supported** minimum — older releases generate CLIs with known, since-fixed bugs. This is distinct from section 4: section 4 is the skill-embedded compatibility floor (it moves when skill text depends on a newer binary capability, and the setup contract enforces it every run). The currency floor is a freshness *requirement* that maintainers raise out-of-band (via the published `supported-versions.txt`) as bad-output bugs get fixed, with no skill or binary release. Parse the follow-up lines:
 
 - `PRESS_REQUIRED_MIN=<minimum supported version>`
 - `PRESS_REQUIRED_INSTALLED=<installed version>`

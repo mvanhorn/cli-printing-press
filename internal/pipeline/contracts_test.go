@@ -1,12 +1,14 @@
 package pipeline
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -104,9 +106,9 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 func TestPrintingPressSetupContractRebuildsStaleRepoLocalBinary(t *testing.T) {
 	t.Parallel()
 
-	output, goLog := runPrintingPressSetupContract(t, "4.12.0", "4.23.0")
+	output, goLog := runPrintingPressSetupContract(t, "4.32.6", "4.33.0")
 
-	assert.Contains(t, output, "[local-binary-stale] local build v4.12.0 is older than source v4.23.0")
+	assert.Contains(t, output, "[local-binary-stale] local build v4.32.6 is older than source v4.33.0")
 	assert.Contains(t, output, "[local-binary-rebuilt] rebuilt")
 	assert.Contains(t, output, "PRINTING_PRESS_BIN=")
 	assert.Contains(t, goLog, "build -o ./cli-printing-press ./cmd/cli-printing-press")
@@ -115,7 +117,7 @@ func TestPrintingPressSetupContractRebuildsStaleRepoLocalBinary(t *testing.T) {
 func TestPrintingPressSetupContractLeavesFreshRepoLocalBinaryAlone(t *testing.T) {
 	t.Parallel()
 
-	output, goLog := runPrintingPressSetupContract(t, "4.23.0", "4.23.0")
+	output, goLog := runPrintingPressSetupContract(t, "4.33.0", "4.33.0")
 
 	assert.NotContains(t, output, "[local-binary-stale]")
 	assert.NotContains(t, output, "[local-binary-rebuilt]")
@@ -126,7 +128,7 @@ func TestPrintingPressSetupContractLeavesFreshRepoLocalBinaryAlone(t *testing.T)
 func TestPrintingPressSetupContractEmitsSkillStaleWhenSkillBelowBinaryFloor(t *testing.T) {
 	t.Parallel()
 
-	output, _, err := runPrintingPressSetupContractWithSkillFloor(t, "4.32.0", "4.32.0", "9.0.0")
+	output, _, err := runPrintingPressSetupContractWithSkillFloor(t, "4.33.0", "4.33.0", "9.0.0")
 	require.Error(t, err, "skill-stale must fail the setup contract; err=%v output=%q", err, output)
 
 	assert.Contains(t, output, "[skill-stale] printing-press skill v")
@@ -139,11 +141,71 @@ func TestPrintingPressSetupContractEmitsSkillStaleWhenSkillBelowBinaryFloor(t *t
 func TestPrintingPressSetupContractOmitsSkillStaleWhenSkillMeetsBinaryFloor(t *testing.T) {
 	t.Parallel()
 
-	output, _, err := runPrintingPressSetupContractWithSkillFloor(t, "4.32.0", "4.32.0", "3.0.0")
+	output, _, err := runPrintingPressSetupContractWithSkillFloor(t, "4.33.0", "4.33.0", "3.0.0")
 	require.NoError(t, err, output)
 
 	assert.NotContains(t, output, "[skill-stale]")
+	assert.NotContains(t, output, "[binary-below-min]")
 	assert.Contains(t, output, "PRINTING_PRESS_BIN=")
+}
+
+func TestPrintingPressSetupContractStopsBelowMinBinaryDespiteFreshCache(t *testing.T) {
+	t.Parallel()
+
+	output, netLog, err := runPrintingPressStandaloneContract(t, "4.32.6")
+	require.Error(t, err, output)
+
+	assert.Contains(t, output, "[binary-below-min] cli-printing-press binary v4.32.6 is older than the minimum required v4.33.0")
+	assert.Contains(t, output, "PRESS_BINARY_INSTALLED=4.32.6")
+	assert.Contains(t, output, "PRESS_BINARY_REQUIRED=4.33.0")
+	assert.NotContains(t, output, "[upgrade-available]")
+	assert.NotContains(t, output, "[upgrade-required]")
+	assert.NotContains(t, output, "[browser-tools-missing]")
+	assert.NotContains(t, netLog, "go list")
+	assert.NotContains(t, netLog, "curl")
+}
+
+func TestPrintingPressSetupContractAllowsCurrentBinaryWithoutNetwork(t *testing.T) {
+	t.Parallel()
+
+	output, netLog, err := runPrintingPressStandaloneContract(t, "4.33.0")
+	require.NoError(t, err, output)
+
+	assert.NotContains(t, output, "[binary-below-min]")
+	assert.NotContains(t, output, "[upgrade-available]")
+	assert.NotContains(t, output, "[upgrade-required]")
+	assert.Contains(t, output, "PRINTING_PRESS_BIN=")
+	assert.NotContains(t, netLog, "go list")
+	assert.NotContains(t, netLog, "curl")
+}
+
+func TestPrintingPressLiveHappyPathFloorRunsBeforeVersionCheckTTL(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	require.Contains(t, skill, "pp:live-happy-path")
+
+	block := extractContractBlock(t, skill)
+	below := strings.Index(block, "[binary-below-min]")
+	ttl := strings.Index(block, "_should_check=true")
+	require.GreaterOrEqual(t, below, 0)
+	require.Greater(t, ttl, below, "min-binary enforcement must run before the version-check TTL gate")
+
+	branch := block[below:]
+	if end := strings.Index(branch, "\n  fi"); end > 0 {
+		branch = branch[:end]
+	}
+	assert.Contains(t, branch, `return 1 2>/dev/null || exit 1`)
+	assert.Contains(t, branch, `git -C \"$_scope_dir\" pull --ff-only origin main`)
+	assert.NotContains(t, branch, "curl")
+	assert.NotContains(t, branch, "go list")
+	assert.Contains(t, block, "PRESS_VERCHECK_TTL=86400")
+
+	checks := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "setup-checks.md"))
+	repoAdvice := substringBetween(t, checks, "When `PRESS_REPO_MODE=true`, tell the user to update the printing-press checkout", "When `PRESS_REPO_MODE=false`")
+	assert.Contains(t, repoAdvice, "_scope_dir")
+	assert.Contains(t, repoAdvice, `git -C "<repo>" pull --ff-only origin main`)
+	assert.Contains(t, repoAdvice, `go build -o ./cli-printing-press ./cmd/cli-printing-press`)
+	assert.NotContains(t, repoAdvice, "directory containing the captured `PRINTING_PRESS_BIN`")
+	assert.Contains(t, checks, "go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest")
 }
 
 func TestSkillsEnforceCurrencyFloor(t *testing.T) {
@@ -1618,6 +1680,68 @@ exit 0
 	return string(out), string(logBytes), err
 }
 
+func runPrintingPressStandaloneContract(t *testing.T, binaryVersion string) (output string, netLog string, err error) {
+	t.Helper()
+
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	fakeBin := filepath.Join(root, "bin")
+	home := filepath.Join(root, "home")
+	pressHome := filepath.Join(home, "printing-press")
+	netLogPath := filepath.Join(root, "net.log")
+	require.NoError(t, os.MkdirAll(work, 0o755))
+	require.NoError(t, os.MkdirAll(fakeBin, 0o755))
+	require.NoError(t, os.MkdirAll(pressHome, 0o755))
+	require.NoError(t, os.WriteFile(netLogPath, nil, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(pressHome, ".version-check"), fmt.Appendf(nil,
+		"last_check=%d\nlatest=4.32.6\nmode=standalone\nmin_supported=4.28.0\nreason=test\n",
+		time.Now().Unix(),
+	), 0o644))
+
+	writeExecutable(t, filepath.Join(fakeBin, "cli-printing-press"), versionJSONScript(binaryVersion, "3.0.0"))
+	writeExecutable(t, filepath.Join(fakeBin, "go"), `#!/bin/sh
+if [ "$1" = "list" ]; then
+  echo "go list $*" >> "$NET_LOG"
+  exit 1
+fi
+exit 0
+`)
+	writeExecutable(t, filepath.Join(fakeBin, "curl"), `#!/bin/sh
+echo "curl $*" >> "$NET_LOG"
+exit 1
+`)
+	writeExecutable(t, filepath.Join(fakeBin, "df"), `#!/bin/sh
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "fake 9999999 0 4194304 0% /"
+`)
+
+	gitInit := exec.Command("git", "init")
+	gitInit.Dir = work
+	gitInitOutput, err := gitInit.CombinedOutput()
+	require.NoError(t, err, string(gitInitOutput))
+
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	contract := extractContractBlock(t, skill)
+	contract = strings.ReplaceAll(contract, "```bash\n", "")
+	contract = strings.ReplaceAll(contract, "\n```", "")
+	scriptPath := filepath.Join(root, "setup-contract.sh")
+	writeExecutable(t, scriptPath, "#!/bin/sh\n"+contract)
+
+	cmd := exec.Command("/bin/sh", scriptPath)
+	cmd.Dir = work
+	cmd.Env = append(os.Environ(),
+		"ARGUMENTS=",
+		"HOME="+home,
+		"NET_LOG="+netLogPath,
+		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"PRINTING_PRESS_HOME="+pressHome,
+	)
+	out, runErr := cmd.CombinedOutput()
+	logBytes, logErr := os.ReadFile(netLogPath)
+	require.NoError(t, logErr)
+	return string(out), string(logBytes), runErr
+}
+
 func versionScript(version string) string {
 	return versionJSONScript(version, "")
 }
@@ -1722,10 +1846,10 @@ func runSkillSetupContract(t *testing.T, skill setupSkill, opts setupContractOpt
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/press\n\ngo 1.20\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "internal", "version", "version.go"), []byte(`package version
 
-var Version = "4.23.0" // x-release-please-version
+var Version = "4.33.0" // x-release-please-version
 `), 0o644))
-	writeExecutable(t, filepath.Join(repo, "cli-printing-press"), versionScript("4.23.0"))
-	writeExecutable(t, filepath.Join(fakeBin, "cli-printing-press"), versionScript("4.23.0"))
+	writeExecutable(t, filepath.Join(repo, "cli-printing-press"), versionScript("4.33.0"))
+	writeExecutable(t, filepath.Join(fakeBin, "cli-printing-press"), versionScript("4.33.0"))
 	writeExecutable(t, filepath.Join(fakeBin, "curl"), "#!/bin/sh\nexit 1\n")
 	writeExecutable(t, filepath.Join(fakeBin, "shasum"), "#!/bin/sh\ncat >/dev/null\necho \"0123456789abcdef  -\"\n")
 	writeExecutable(t, filepath.Join(fakeBin, "df"), `#!/bin/sh

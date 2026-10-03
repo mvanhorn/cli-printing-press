@@ -249,14 +249,14 @@ See [`docs/RELEASE.md`](docs/RELEASE.md) for the merge-the-release-PR flow.
 
 ## Supported-version floor
 `supported-versions.txt` (repo root) is the **currency floor** — the lowest binary version the generation skills will generate with. The `printing-press` and `printing-press-amend` preflights (and `reprint`, via its hand-off) fetch it from `main` and **hard-block** with `[upgrade-required]` (interactive upgrade-or-abort, no skip) when the installed binary is below it. To push users off a known-buggy release, bump `min_supported` — a one-line PR that takes effect within the 24h version-check cache, no binary or skill release needed.
-- `min_supported` must be `major.minor.patch`. At runtime it is clamped to `<= latest` (a value above the newest release is ignored, so a typo cannot brick installs) and is a no-op below the frozen `min-binary-version`.
-- Distinct from `min-binary-version`: that is the release-managed, skill-frontmatter compatibility floor (the hard "skill cannot run below this" baseline, tracking the major and moving only on a major bump). The currency floor is a freely-tunable freshness gate. Do not conflate them.
+- `min_supported` must be `major.minor.patch`. At runtime it is clamped to `<= latest` (a value above the newest release is ignored, so a typo cannot brick installs) and is a no-op below the skill-embedded `min-binary-version`.
+- Distinct from `min-binary-version`: that is the skill-embedded compatibility floor (`SKILL.md` frontmatter, the setup-contract `# min-binary-version:` comment, and `_min_binary_version=`). It moves when skill text depends on a newer binary capability, including a minor or patch. Preflight compares it locally on every run (`[binary-below-min]`, no `.version-check` TTL, no network). The currency floor is the out-of-band freshness gate. Do not conflate them.
 - `TestSkillsEnforceCurrencyFloor` in [`internal/pipeline/contracts_test.go`](internal/pipeline/contracts_test.go) locks the file shape and both contracts' enforce-every-run gate and clamp.
 
 ## Skill-version floor
 The binary's `MinSkillVersion` (`internal/cli/skill_compat.go`) is the oldest printing-press skill frontmatter `version:` this binary will run with — the reverse of `min-binary-version`. When skill shape changes so a stale install would follow deleted commands, bump `MinSkillVersion`, the skill `version:` field, and the setup-contract `# skill-version:` / `_this_skill_version=` values together. Preflight hard-blocks with `[skill-stale]` (reinstall via `scripts/install.sh --skills-only`, then restart the session; no skip). `version --json` also warns on stderr when a well-known install path still has an older copy. `TestPrintingPressSkillVersionMatchesBinaryFloor` and `TestSkillsEnforceCurrencyFloor` lock the contract.
 
-See [`docs/SKILLS.md`](docs/SKILLS.md) for the frontmatter bump rule.
+See [`docs/SKILLS.md`](docs/SKILLS.md) for the frontmatter bump rules (`version` / `MinSkillVersion`, and `min-binary-version` when skill text depends on a newer binary).
 
 ## Testing
 When you change code, check for a `_test.go` file in the same package. If one exists, read it; your change likely requires a test update. If tests fail after your change, investigate whether it is a bug in your code or a stale test; do not just delete the test.
