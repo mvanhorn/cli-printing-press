@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/vision"
@@ -2701,6 +2702,9 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 	idWalkFilterParam, idWalkLimitParam, idWalkPageSize := detectIDWalkParams(e)
 	sinceParam, sinceParamFormat := detectEndpointSinceParamAndFormat(e, types)
 	paginationCursorParam, paginationCursorType, paginationLimitParam, paginationPageSize := syncPaginationDefaultsFromEndpoint(e)
+	if sinceParam == paginationCursorParam {
+		sinceParam, sinceParamFormat = "", ""
+	}
 	paginationSortParam, paginationSortValue := detectEndpointSyncSort(e)
 	paginationSortField := temporalSortField(paginationSortValue)
 	nextCursorPath := ""
@@ -3557,7 +3561,10 @@ func inferPaginationParamsFromEndpoint(endpoint spec.Endpoint) (string, string) 
 	var cursorParam string
 	var limitParam string
 	for _, param := range endpoint.Params {
-		if param.PathParam || param.Positional {
+		// A date-formatted after/before is a temporal filter, not an opaque
+		// page position; treating it as the cursor would overwrite it with
+		// response cursors and hide it from incremental sync.
+		if param.PathParam || param.Positional || param.HasDateFormat() {
 			continue
 		}
 		lower := strings.ToLower(param.Name)
@@ -3696,11 +3703,17 @@ func isAscendingSortValue(value string) bool {
 }
 
 func detectEndpointSinceParamAndFormat(endpoint spec.Endpoint, types map[string]spec.TypeDef) (string, string) {
+	bestRank := 0
+	var best spec.Param
 	for _, p := range endpoint.Params {
-		name := strings.ToLower(p.Name)
-		if isEndpointSinceParamName(name) {
-			return p.Name, strings.ToLower(strings.TrimSpace(p.Format))
+		rank := endpointSinceParamRank(endpoint, p)
+		if rank > bestRank {
+			bestRank = rank
+			best = p
 		}
+	}
+	if bestRank != 0 {
+		return best.Name, strings.ToLower(strings.TrimSpace(best.Format))
 	}
 	for _, p := range endpoint.Params {
 		if strings.EqualFold(strings.TrimSpace(p.Name), "conditions") {
@@ -3778,6 +3791,43 @@ func normalizeTemporalFieldName(name string) string {
 	return b.String()
 }
 
+func endpointSinceParamRank(endpoint spec.Endpoint, param spec.Param) int {
+	paramType := strings.ToLower(strings.TrimSpace(param.Type))
+	if paramType == "boolean" || isNonLowerBoundTemporalName(param.Name) {
+		return 0
+	}
+	if (paramType == "integer" || paramType == "number") && !isEndpointSinceParamName(param.Name) {
+		return 0
+	}
+	name := strings.ToLower(strings.TrimSpace(param.Name))
+	normalized := normalizeTemporalFieldName(name)
+	if strings.Contains(normalized, "since") ||
+		strings.Contains(normalized, "updated") ||
+		strings.Contains(normalized, "modified") {
+		return 3
+	}
+	base, op, ok := strings.Cut(name, "__")
+	if ok {
+		switch op {
+		case "gt", "gte", "lt", "lte":
+			if isTemporalComparisonBase(base) {
+				return 2
+			}
+		}
+	}
+	if strings.Contains(normalized, "createdafter") {
+		return 2
+	}
+	if !isGenericTemporalStart(normalized) {
+		return 0
+	}
+	if describesModification(param.Description) ||
+		(param.HasDateFormat() && hasMatchingTemporalEndParam(endpoint.Params, normalized)) {
+		return 1
+	}
+	return 0
+}
+
 func isEndpointSinceParamName(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
 	normalized := normalizeTemporalFieldName(name)
@@ -3802,6 +3852,89 @@ func isEndpointSinceParamName(name string) bool {
 		return isTemporalComparisonBase(base)
 	default:
 		return false
+	}
+}
+
+// isNonLowerBoundTemporalName rejects names that carry a temporal word but
+// cannot take a since timestamp: upper bounds (updated_before, updatedMax,
+// updated_at__lt), actor filters (updated_by), and id cursors (since_id).
+// Sending the sync watermark to one of these inverts or empties the window.
+func isNonLowerBoundTemporalName(name string) bool {
+	for _, token := range temporalNameTokens(name) {
+		switch token {
+		case "before", "until", "till", "to", "max", "end", "lt", "lte", "upper", "by", "id":
+			return true
+		}
+	}
+	return false
+}
+
+// temporalNameTokens lets temporal-name checks compare camelCase and
+// snake_case names as the same words.
+func temporalNameTokens(name string) []string {
+	var tokens []string
+	var b strings.Builder
+	flush := func() {
+		if b.Len() > 0 {
+			tokens = append(tokens, b.String())
+			b.Reset()
+		}
+	}
+	runes := []rune(strings.TrimSpace(name))
+	for i, r := range runes {
+		switch {
+		case unicode.IsUpper(r):
+			if i > 0 && (unicode.IsLower(runes[i-1]) || unicode.IsDigit(runes[i-1])) {
+				flush()
+			}
+			b.WriteRune(unicode.ToLower(r))
+		case unicode.IsLower(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+		default:
+			flush()
+		}
+	}
+	flush()
+	return tokens
+}
+
+func describesModification(text string) bool {
+	text = strings.ToLower(text)
+	return containsAny(text, []string{
+		"updated", "modified", "modification", "last changed", "last change",
+	})
+}
+
+func isGenericTemporalStart(name string) bool {
+	return name == "after" || strings.HasPrefix(name, "from") || strings.HasSuffix(name, "from") ||
+		strings.HasPrefix(name, "start") || strings.HasSuffix(name, "start")
+}
+
+func hasMatchingTemporalEndParam(params []spec.Param, start string) bool {
+	for _, end := range matchingTemporalEndNames(start) {
+		for _, param := range params {
+			if normalizeTemporalFieldName(param.Name) == end {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func matchingTemporalEndNames(start string) []string {
+	switch {
+	case start == "after":
+		return []string{"before"}
+	case strings.HasPrefix(start, "from"):
+		return []string{"to" + strings.TrimPrefix(start, "from")}
+	case strings.HasSuffix(start, "from"):
+		return []string{strings.TrimSuffix(start, "from") + "to"}
+	case strings.HasPrefix(start, "start"):
+		return []string{"end" + strings.TrimPrefix(start, "start")}
+	case strings.HasSuffix(start, "start"):
+		return []string{strings.TrimSuffix(start, "start") + "end"}
+	default:
+		return nil
 	}
 }
 

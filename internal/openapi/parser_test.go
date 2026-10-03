@@ -14269,3 +14269,20 @@ func TestSetParamMaximumNormalizesBounds(t *testing.T) {
 		assert.Nil(t, p.ExclusiveMaximum)
 	})
 }
+
+func TestDetectPaginationSkipsDateFormattedAfter(t *testing.T) {
+	t.Parallel()
+
+	pag := detectPagination([]spec.Param{
+		{Name: "after", Format: "date"},
+		{Name: "before", Format: "date"},
+		{Name: "limit"},
+	}, nil)
+	if pag != nil {
+		assert.Empty(t, pag.CursorParam, "a date-formatted after is a range filter, not a cursor")
+	}
+
+	pag = detectPagination([]spec.Param{{Name: "after"}, {Name: "limit"}}, nil)
+	require.NotNil(t, pag)
+	assert.Equal(t, "after", pag.CursorParam, "an opaque after keeps cursor semantics")
+}

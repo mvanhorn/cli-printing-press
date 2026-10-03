@@ -7899,3 +7899,10 @@ resources:
 		assert.Equal(t, "title", ep.Body[0].Name)
 	})
 }
+
+func TestParamHasDateFormat(t *testing.T) {
+	assert.True(t, Param{Format: "date"}.HasDateFormat())
+	assert.True(t, Param{Format: " Date-Time "}.HasDateFormat())
+	assert.False(t, Param{Format: "int64"}.HasDateFormat())
+	assert.False(t, Param{}.HasDateFormat())
+}

@@ -2989,6 +2989,17 @@ type Param struct {
 // Socrata-style APIs that require the literal "$" prefix on pagination + SoQL
 // params); otherwise Name is used. The CLI flag name is independent (derived
 // from FlagName or paramIdent), so this only affects what shows up in the URL.
+// HasDateFormat reports whether the schema format marks this parameter as a
+// calendar date or timestamp, which rules it out as a page position or limit.
+func (p Param) HasDateFormat() bool {
+	switch strings.ToLower(strings.TrimSpace(p.Format)) {
+	case "date", "date-time":
+		return true
+	default:
+		return false
+	}
+}
+
 func (p Param) WireName() string {
 	if p.URLName != "" {
 		return p.URLName

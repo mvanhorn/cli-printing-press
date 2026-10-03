@@ -3064,6 +3064,160 @@ func TestProfileSyncableResourceSinceParamPropagation(t *testing.T) {
 	assert.Empty(t, byName["users"].SinceParam, "endpoints without a since-like param yield empty SinceParam — the sync template treats this as 'do not send'")
 }
 
+func TestDetectEndpointSinceParamAndFormatRanksTemporalCandidates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		params     []spec.Param
+		wantName   string
+		wantFormat string
+	}{
+		{
+			name: "paired generic range accepts date start",
+			params: []spec.Param{
+				{Name: "fromdate", Type: "string", Format: "date"},
+				{Name: "todate", Type: "string", Format: "date"},
+			},
+			wantName:   "fromdate",
+			wantFormat: "date",
+		},
+		{
+			name: "after before range accepts date start",
+			params: []spec.Param{
+				{Name: "after", Type: "string", Format: "date"},
+				{Name: "before", Type: "string", Format: "date"},
+			},
+			wantName:   "after",
+			wantFormat: "date",
+		},
+		{
+			name: "description identifies modification filter",
+			params: []spec.Param{
+				{Name: "start", Type: "string", Description: "Lower bound for last modification time."},
+			},
+			wantName: "start",
+		},
+		{
+			name: "updated candidate outranks generic start",
+			params: []spec.Param{
+				{Name: "start_date", Type: "string", Format: "date"},
+				{Name: "end_date", Type: "string", Format: "date"},
+				{Name: "updated_on", Type: "string", Format: "date-time"},
+			},
+			wantName:   "updated_on",
+			wantFormat: "date-time",
+		},
+		{
+			name: "generic date start without end is rejected",
+			params: []spec.Param{
+				{Name: "start_date", Type: "string", Format: "date"},
+			},
+		},
+		{
+			name: "generic range without date format is rejected",
+			params: []spec.Param{
+				{Name: "dateFrom", Type: "string"},
+				{Name: "dateTo", Type: "string"},
+			},
+		},
+		{
+			name: "integer updated timestamp is rejected",
+			params: []spec.Param{
+				{Name: "min_updated_ts", Type: "integer"},
+			},
+		},
+		{
+			name: "integer since retains main behavior",
+			params: []spec.Param{
+				{Name: "since", Type: "integer"},
+			},
+			wantName: "since",
+		},
+		{
+			name: "upper bounds actor filters and id cursors are rejected",
+			params: []spec.Param{
+				{Name: "updated_before", Type: "string", Format: "date-time"},
+				{Name: "updatedMax", Type: "string", Format: "date-time"},
+				{Name: "updated_at__lt", Type: "string", Format: "date-time"},
+				{Name: "updated_by", Type: "string"},
+				{Name: "lastModifiedBy", Type: "string"},
+				{Name: "since_id", Type: "integer"},
+				{Name: "include_updated", Type: "boolean"},
+			},
+		},
+		{
+			name: "lower bound wins regardless of declaration order",
+			params: []spec.Param{
+				{Name: "updated_at__lte", Type: "string", Format: "date-time"},
+				{Name: "updatedBefore", Type: "string", Format: "date-time"},
+				{Name: "updatedMin", Type: "string", Format: "date-time"},
+			},
+			wantName:   "updatedMin",
+			wantFormat: "date-time",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotName, gotFormat := detectEndpointSinceParamAndFormat(spec.Endpoint{Params: tt.params}, nil)
+			assert.Equal(t, tt.wantName, gotName)
+			assert.Equal(t, tt.wantFormat, gotFormat)
+		})
+	}
+}
+
+func TestProfileClearsSinceParamWhenItMatchesPaginationCursor(t *testing.T) {
+	t.Parallel()
+
+	s := &spec.APISpec{
+		Name: "date-ranges",
+		Resources: map[string]spec.Resource{
+			"cursor-ranged": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/cursor-ranged",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "after", Type: "string", Format: "date"},
+							{Name: "before", Type: "string", Format: "date"},
+							{Name: "limit", Type: "integer"},
+						},
+						Pagination: &spec.Pagination{Type: "cursor", CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+			"date-ranged": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/date-ranged",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "after", Type: "string", Format: "date"},
+							{Name: "before", Type: "string", Format: "date"},
+							{Name: "cursor", Type: "string"},
+							{Name: "limit", Type: "integer"},
+						},
+						Pagination: &spec.Pagination{Type: "cursor", CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := make(map[string]SyncableResource, len(profile.SyncableResources))
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+
+	assert.Empty(t, byName["cursor-ranged"].SinceParam)
+	assert.Equal(t, "after", byName["cursor-ranged"].PaginationCursorParam)
+	assert.Equal(t, "after", byName["date-ranged"].SinceParam)
+}
+
 func TestProfileODataConditionsSinceParamPropagation(t *testing.T) {
 	t.Parallel()
 
@@ -5291,4 +5445,24 @@ func TestProfileResourceLevelIDFieldAndSyncable(t *testing.T) {
 	require.Contains(t, byName, "forced")
 	assert.False(t, byName["forced"].SkipDefaultSync, "resource syncable true opts into the default set")
 	assert.False(t, byName["forced"].SkipAutoRefresh)
+}
+
+func TestInferPaginationSkipsDateFormattedRangeParams(t *testing.T) {
+	t.Parallel()
+
+	dated := spec.Endpoint{Params: []spec.Param{
+		{Name: "after", Type: "string", Format: "date"},
+		{Name: "before", Type: "string", Format: "date"},
+		{Name: "limit", Type: "integer"},
+	}}
+	cursor, limit := inferPaginationParamsFromEndpoint(dated)
+	assert.Empty(t, cursor, "a date-formatted after is a range filter, not a cursor")
+	assert.Equal(t, "limit", limit)
+	since, format := detectEndpointSinceParamAndFormat(dated, nil)
+	assert.Equal(t, "after", since)
+	assert.Equal(t, "date", format)
+
+	opaque := spec.Endpoint{Params: []spec.Param{{Name: "after", Type: "string"}}}
+	cursor, _ = inferPaginationParamsFromEndpoint(opaque)
+	assert.Equal(t, "after", cursor, "an opaque after keeps cursor semantics")
 }

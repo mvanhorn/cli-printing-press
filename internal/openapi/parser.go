@@ -8920,7 +8920,9 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	originalCase := map[string]string{}
 	paramsByLowerName := map[string]spec.Param{}
 	for _, p := range params {
-		if !isQueryParamLocation(p) || isPathSubstitutionParam(p) {
+		// Date-formatted names like after/before are range filters; they can
+		// never carry a page position, limit, or offset.
+		if !isQueryParamLocation(p) || isPathSubstitutionParam(p) || p.HasDateFormat() {
 			continue
 		}
 		lowerName := strings.ToLower(p.Name)
