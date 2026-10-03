@@ -3,6 +3,7 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -962,7 +963,7 @@ func startMockServer(spec *openAPISpec) (*httptest.Server, string) {
 
 		// Check if the path looks like a list endpoint
 		path := r.URL.Path
-		if fixture, ok := nestedDataEnvelopeForPath(spec, path); ok {
+		if fixture, ok := nestedDataEnvelopeForRequest(spec, r.Method, path); ok {
 			fmt.Fprint(w, renderNestedDataEnvelopeFixture(fixture))
 		} else if strings.HasSuffix(path, "s") || strings.Contains(path, "/search") {
 			// Return array
@@ -983,15 +984,15 @@ func startMockServer(spec *openAPISpec) (*httptest.Server, string) {
 	return server, server.URL
 }
 
-func nestedDataEnvelopeForPath(spec *openAPISpec, path string) (nestedDataEnvelopeFixture, bool) {
+func nestedDataEnvelopeForRequest(spec *openAPISpec, method, path string) (nestedDataEnvelopeFixture, bool) {
 	if spec == nil || len(spec.NestedDataEnvelopes) == 0 {
 		return nestedDataEnvelopeFixture{}, false
 	}
-	if fixture, ok := spec.NestedDataEnvelopes[path]; ok {
+	if fixture, ok := spec.NestedDataEnvelopes[nestedDataEnvelopeFixtureKey{Method: method, Path: path}]; ok {
 		return fixture, true
 	}
-	for specPath, fixture := range spec.NestedDataEnvelopes {
-		if pathMatchesSpec(path, compileSpecPathPatterns([]string{specPath})) {
+	for key, fixture := range spec.NestedDataEnvelopes {
+		if key.Method == method && pathMatchesSpec(path, compileSpecPathPatterns([]string{key.Path})) {
 			return fixture, true
 		}
 	}
@@ -1003,13 +1004,24 @@ func renderNestedDataEnvelopeFixture(fixture nestedDataEnvelopeFixture) string {
 	if arrayKey == "" {
 		arrayKey = "items"
 	}
+	items := []map[string]any{
+		{"id": 1, "name": "mock-item-1", "state": "open", "title": "Mock Item", "created_at": "2026-03-27T00:00:00Z", "updated_at": "2026-03-27T00:00:00Z"},
+		{"id": 2, "name": "mock-item-2", "state": "open", "title": "Mock Item 2", "created_at": "2026-03-27T00:00:00Z", "updated_at": "2026-03-27T00:00:00Z"},
+	}
+	if fixture.Scalars != nil {
+		body := make(map[string]any, len(fixture.Scalars)+1)
+		maps.Copy(body, fixture.Scalars)
+		body[arrayKey] = items
+		data, err := json.Marshal(body)
+		if err == nil {
+			return string(data)
+		}
+		return `{"items":[{"id":1,"name":"mock-item-1"},{"id":2,"name":"mock-item-2"}]}`
+	}
 	body := map[string]any{
 		"success": true,
 		"data": map[string]any{
-			arrayKey: []map[string]any{
-				{"id": 1, "name": "mock-item-1", "state": "open", "title": "Mock Item", "created_at": "2026-03-27T00:00:00Z", "updated_at": "2026-03-27T00:00:00Z"},
-				{"id": 2, "name": "mock-item-2", "state": "open", "title": "Mock Item 2", "created_at": "2026-03-27T00:00:00Z", "updated_at": "2026-03-27T00:00:00Z"},
-			},
+			arrayKey:     items,
 			"pagination": map[string]any{"total": 2},
 		},
 	}

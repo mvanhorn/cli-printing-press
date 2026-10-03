@@ -253,7 +253,7 @@ type openAPISpec struct {
 	Kind                   string // see apispec.KindREST / apispec.KindSynthetic
 	HTTPTransport          string
 	OAuthScopeRequirements []oauthScopeRequirement
-	NestedDataEnvelopes    map[string]nestedDataEnvelopeFixture
+	NestedDataEnvelopes    map[nestedDataEnvelopeFixtureKey]nestedDataEnvelopeFixture
 	// ParamDefaults maps a positional placeholder name (lowercase) to its
 	// spec-declared default value, when one is set. Verify mock-mode uses
 	// this as the first step in its lookup chain so spec authors can name
@@ -274,6 +274,12 @@ type openAPISpec struct {
 
 type nestedDataEnvelopeFixture struct {
 	ArrayKey string
+	Scalars  map[string]any
+}
+
+type nestedDataEnvelopeFixtureKey struct {
+	Method string
+	Path   string
 }
 
 func (s *openAPISpec) IsSynthetic() bool {

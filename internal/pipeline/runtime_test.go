@@ -503,6 +503,318 @@ components:
 	assert.Equal(t, float64(2), body.Data.Pagination["total"])
 }
 
+func TestStartMockServerServesTopLevelArrayEnvelopeFixtures(t *testing.T) {
+	tests := []struct {
+		name       string
+		properties string
+		arrayKey   string
+		scalarKey  string
+		scalar     any
+	}{
+		{
+			name: "count and items",
+			properties: `
+                  TotalCount:
+                    type: integer
+                  Items:
+                    type: array
+                    items:
+                      type: object`,
+			arrayKey:  "Items",
+			scalarKey: "TotalCount",
+			scalar:    float64(2),
+		},
+		{
+			name: "success and data",
+			properties: `
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object`,
+			arrayKey:  "data",
+			scalarKey: "success",
+			scalar:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			specPath := filepath.Join(t.TempDir(), "spec.yaml")
+			writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: Envelope API
+  version: "1.0"
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:`+tt.properties+`
+`)
+			spec, err := loadDogfoodOpenAPISpec(specPath, "")
+			require.NoError(t, err)
+			require.Contains(t, spec.NestedDataEnvelopes, nestedDataEnvelopeFixtureKey{Method: http.MethodGet, Path: "/items"})
+
+			server, baseURL := startMockServer(spec)
+			defer server.Close()
+			resp, err := http.Get(baseURL + "/items")
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+			assert.Equal(t, tt.scalar, body[tt.scalarKey])
+			items, ok := body[tt.arrayKey].([]any)
+			require.True(t, ok)
+			assert.Len(t, items, 2)
+		})
+	}
+}
+
+func TestStartMockServerKeepsBareArrayResponseForBareArraySchema(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "spec.yaml")
+	writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: Bare Array API
+  version: "1.0"
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+`)
+	spec, err := loadDogfoodOpenAPISpec(specPath, "")
+	require.NoError(t, err)
+	assert.Empty(t, spec.NestedDataEnvelopes)
+
+	server, baseURL := startMockServer(spec)
+	defer server.Close()
+	resp, err := http.Get(baseURL + "/items")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	var body []map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Len(t, body, 1)
+}
+
+func TestStartMockServerKeepsDetailStringArrayResponse(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "spec.yaml")
+	writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: Detail API
+  version: "1.0"
+paths:
+  /users/{user_id}:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                  roles:
+                    type: array
+                    items:
+                      type: string
+`)
+	spec, err := loadDogfoodOpenAPISpec(specPath, "")
+	require.NoError(t, err)
+	assert.Empty(t, spec.NestedDataEnvelopes)
+
+	server, baseURL := startMockServer(spec)
+	t.Cleanup(server.Close)
+	resp, err := http.Get(baseURL + "/users/mock-user")
+	require.NoError(t, err)
+	t.Cleanup(func() { resp.Body.Close() })
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.NotContains(t, body, "roles")
+}
+
+func TestStartMockServerUsesMethodSpecificEnvelopeFixtures(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "spec.yaml")
+	writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: Mixed Method API
+  version: "1.0"
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+    post:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  items:
+                    type: array
+                    items:
+                      type: object
+`)
+	spec, err := loadDogfoodOpenAPISpec(specPath, "")
+	require.NoError(t, err)
+	assert.NotContains(t, spec.NestedDataEnvelopes, nestedDataEnvelopeFixtureKey{Method: http.MethodGet, Path: "/items"})
+	require.Contains(t, spec.NestedDataEnvelopes, nestedDataEnvelopeFixtureKey{Method: http.MethodPost, Path: "/items"})
+
+	server, baseURL := startMockServer(spec)
+	t.Cleanup(server.Close)
+
+	getResp, err := http.Get(baseURL + "/items")
+	require.NoError(t, err)
+	t.Cleanup(func() { getResp.Body.Close() })
+	var getBody []map[string]any
+	require.NoError(t, json.NewDecoder(getResp.Body).Decode(&getBody))
+	assert.Len(t, getBody, 1)
+
+	postResp, err := http.Post(baseURL+"/items", "application/json", nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { postResp.Body.Close() })
+	var postBody map[string]any
+	require.NoError(t, json.NewDecoder(postResp.Body).Decode(&postBody))
+	assert.Equal(t, float64(2), postBody["count"])
+	assert.Len(t, postBody["items"], 2)
+}
+
+func TestStartMockServerTerminatesBooleanContinuationEnvelope(t *testing.T) {
+	body := topLevelEnvelopeMockBody(t, `
+                  object:
+                    type: string
+                  url:
+                    type: string
+                  has_more:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object`)
+
+	assert.Equal(t, "mock", body["object"])
+	assert.Equal(t, "mock", body["url"])
+	assert.Equal(t, false, body["has_more"])
+	assert.Len(t, body["data"], 2)
+}
+
+func TestStartMockServerTerminatesCursorContinuationEnvelope(t *testing.T) {
+	body := topLevelEnvelopeMockBody(t, `
+                  next_cursor:
+                    type: string
+                  items:
+                    type: array
+                    items:
+                      type: object`)
+
+	assert.Equal(t, "", body["next_cursor"])
+	assert.Len(t, body["items"], 2)
+}
+
+func TestStartMockServerRendersNumericCursorContinuationAsNull(t *testing.T) {
+	body := topLevelEnvelopeMockBody(t, `
+                  next_cursor:
+                    type: integer
+                  items:
+                    type: array
+                    items:
+                      type: object`)
+
+	assert.Nil(t, body["next_cursor"])
+	assert.Len(t, body["items"], 2)
+}
+
+func TestIsContinuationScalarKeyFoldsCase(t *testing.T) {
+	for _, key := range []string{"has_more", "hasMore", "HasMore", "has-more", "nextPage", "NextPageToken", "nextCursor", "IsTruncated", "next_url"} {
+		assert.True(t, isContinuationScalarKey(key), key)
+	}
+	for _, key := range []string{"success", "ok", "TotalCount", "total_count", "object", "url", "page"} {
+		assert.False(t, isContinuationScalarKey(key), key)
+	}
+}
+
+func TestStartMockServerTerminatesCamelCaseContinuationEnvelope(t *testing.T) {
+	body := topLevelEnvelopeMockBody(t, `
+                  TotalCount:
+                    type: integer
+                  hasMore:
+                    type: boolean
+                  nextPage:
+                    type: integer
+                  Items:
+                    type: array
+                    items:
+                      type: object`)
+
+	assert.Equal(t, float64(2), body["TotalCount"])
+	assert.Equal(t, false, body["hasMore"])
+	assert.Nil(t, body["nextPage"])
+	assert.Len(t, body["Items"], 2)
+}
+
+func topLevelEnvelopeMockBody(t *testing.T, properties string) map[string]any {
+	t.Helper()
+	specPath := filepath.Join(t.TempDir(), "spec.yaml")
+	writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: Envelope API
+  version: "1.0"
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:`+properties+`
+`)
+	spec, err := loadDogfoodOpenAPISpec(specPath, "")
+	require.NoError(t, err)
+	server, baseURL := startMockServer(spec)
+	t.Cleanup(server.Close)
+
+	resp, err := http.Get(baseURL + "/items")
+	require.NoError(t, err)
+	t.Cleanup(func() { resp.Body.Close() })
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	return body
+}
+
 func TestStartMockServerIgnoresNestedDataEnvelopeForNonJSONResponses(t *testing.T) {
 	specPath := filepath.Join(t.TempDir(), "spec.yaml")
 	writeTestFile(t, specPath, `openapi: 3.0.0
@@ -590,8 +902,10 @@ paths:
 
 	fixtures := detectNestedDataEnvelopeFixtures(spec)
 
-	require.Contains(t, fixtures, "/items")
-	assert.Equal(t, "items", fixtures["/items"].ArrayKey)
+	require.Contains(t, fixtures, nestedDataEnvelopeFixtureKey{Method: http.MethodGet, Path: "/items"})
+	require.Contains(t, fixtures, nestedDataEnvelopeFixtureKey{Method: http.MethodPatch, Path: "/items"})
+	assert.Equal(t, "items", fixtures[nestedDataEnvelopeFixtureKey{Method: http.MethodGet, Path: "/items"}].ArrayKey)
+	assert.Equal(t, "results", fixtures[nestedDataEnvelopeFixtureKey{Method: http.MethodPatch, Path: "/items"}].ArrayKey)
 }
 
 func TestRunCommandTestsWithoutHappyArgsKeepsGenericFailure(t *testing.T) {
@@ -2291,4 +2605,59 @@ func Load() *Config {
 	gotTemplate := discoverCLITemplateVarEnvs(dir)
 	assert.ElementsMatch(t, []string{"SHOPIFY_SHOP", "SHOPIFY_API_VERSION"}, gotTemplate,
 		"discoverCLITemplateVarEnvs must return the template-var env names so mock mode can inject placeholder values")
+}
+
+func TestStartMockServerForcesSuccessFlagTrue(t *testing.T) {
+	body := topLevelEnvelopeMockBody(t, `
+                  success:
+                    type: boolean
+                    default: false
+                  data:
+                    type: array
+                    items:
+                      type: object`)
+
+	assert.Equal(t, true, body["success"])
+	assert.Len(t, body["data"], 2)
+}
+
+func TestNestedDataEnvelopeDeclinesIdentityDetail(t *testing.T) {
+	detail := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":    map[string]any{"type": "integer"},
+			"name":  map[string]any{"type": "string"},
+			"roles": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+		},
+	}
+	_, ok := nestedDataEnvelopeFixtureForSchema(detail, map[string]any{})
+	assert.False(t, ok, "an object with an id is a detail response, not a list envelope")
+}
+
+func TestNestedDataEnvelopeFlattensAllOf(t *testing.T) {
+	root := map[string]any{
+		"components": map[string]any{
+			"schemas": map[string]any{
+				"Page": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"total_count": map[string]any{"type": "integer"}},
+				},
+			},
+		},
+	}
+	composed := map[string]any{
+		"allOf": []any{
+			map[string]any{"$ref": "#/components/schemas/Page"},
+			map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"items": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+				},
+			},
+		},
+	}
+	fixture, ok := nestedDataEnvelopeFixtureForSchema(composed, root)
+	require.True(t, ok)
+	assert.Equal(t, "items", fixture.ArrayKey)
+	assert.Contains(t, fixture.Scalars, "total_count")
 }
