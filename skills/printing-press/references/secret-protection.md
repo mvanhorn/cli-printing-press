@@ -3,49 +3,19 @@
 Read this file during Phase 5.5 (Archive Manuscripts) and before any publish step.
 The cardinal rules in SKILL.md apply at all times. This file has the implementation.
 
-## Exact-value scan before archiving
+## Declared credential scan at publish
 
-The skill knows the API key if the user provided one. Before archiving manuscripts,
-scan all artifacts for the exact key value. This has zero false positives — it checks
-for the specific string, not guessed patterns.
+Never copy a credential into a shell variable for an exact-value scan, and never
+run `grep` with a credential value. `cli-printing-press publish package` reads every
+sensitive auth environment variable declared by the CLI manifest directly from its
+own process environment. It scans the staged CLI source tree and its copied
+research, proofs, and discovery artifacts, reporting only file, line, and env var
+name. UUID-shaped credentials are also checked by their 8+ character segments so
+test assertions cannot retain a fragment.
 
-Use `grep -F` (fixed string) and `awk` for replacement — NOT bare `grep`/`sed` —
-because API keys often contain regex metacharacters (`+`, `/`, `.`, `=`) that would
-cause `grep` to match wrong text and `sed` to corrupt files.
-
-```bash
-# Guard: skip if key is empty or too short (< 16 chars). Short strings
-# would over-redact legitimate content. Real API keys are 20+ chars.
-if [ -n "$API_KEY_VALUE" ] && [ ${#API_KEY_VALUE} -ge 16 ]; then
-  LEAK_FOUND=false
-  for dir in "$RESEARCH_DIR" "$PROOFS_DIR" "$DISCOVERY_DIR"; do
-    if [ -d "$dir" ] && grep -rF "$API_KEY_VALUE" "$dir" 2>/dev/null; then
-      LEAK_FOUND=true
-    fi
-  done
-  if [ "$LEAK_FOUND" = true ]; then
-    echo "BLOCKING: API key value found in manuscript artifacts. Auto-redacting."
-    REDACT_TO="\$${API_KEY_ENV_VAR:-API_KEY}"
-    for dir in "$RESEARCH_DIR" "$PROOFS_DIR" "$DISCOVERY_DIR"; do
-      [ -d "$dir" ] || continue
-      find "$dir" -type f -print0 | while IFS= read -r -d '' f; do
-        if grep -qF "$API_KEY_VALUE" "$f" 2>/dev/null; then
-          # Use python for truly literal replacement — awk's gsub and perl's
-          # s/// both interpret regex metacharacters (+, ., /) in the key,
-          # which breaks on JWT tokens and base64-encoded secrets.
-          REDACT_OLD="$API_KEY_VALUE" REDACT_NEW="$REDACT_TO" python3 -c "
-import sys, os
-old, new, path = os.environ['REDACT_OLD'], os.environ['REDACT_NEW'], sys.argv[1]
-with open(path) as f: content = f.read()
-with open(path, 'w') as f: f.write(content.replace(old, new))
-" "$f"
-        fi
-      done
-    done
-    echo "Auto-redacted. Verify before proceeding."
-  fi
-fi
-```
+Keep the original credential in the user's environment. If package reports a
+finding, replace the leaked content with a placeholder such as `$<AUTH_ENV_VAR>` and
+rerun package; do not paste or echo the value while investigating.
 
 ## Strip auth from HAR captures before archiving
 
@@ -103,9 +73,9 @@ the library repo, PR descriptions, or READMEs.
 - "team ESP" is OK (team keys are structural, not PII) but "Esper Labs" is not
 
 **Before archiving manuscripts (Phase 5.6):** Scan acceptance reports and shipcheck
-proofs for organization names, email addresses, and full names. The exact-value scan
-for API keys (above) catches secrets; this step catches PII that the user's live
-workspace naturally produces.
+proofs for organization names, email addresses, and full names. The package-time
+declared credential scan catches exact credential values; this step catches PII that
+the user's live workspace naturally produces.
 
 **When persisting live-check samples:** `scorecard --live-check` and live-dogfood
 sample captures scrub `output_sample` text before it is stored in JSON/proof
@@ -124,7 +94,8 @@ This section defines a mechanical sweep that runs before publishing to catch the
 PII the agent missed. Two prior PII leaks happened despite the prose guidance — a
 mechanical defense layer is required.
 
-**Run order:** exact-value scan (above) → HAR auth strip → PII pattern scanning.
+**Run order:** HAR auth strip → PII pattern scanning → `publish package` declared
+credential scan.
 
 **File scope.** Sweep all text-readable files in the staging directory. Detect by
 content, not extension — a `.yaml` HAR variant or a `.txt` proof matters as much as

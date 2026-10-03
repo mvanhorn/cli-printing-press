@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/govulncheck"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -1824,6 +1825,172 @@ func TestPublishPackageRejectsVendorPrefixSecretsInStagedCLI(t *testing.T) {
 
 	_, statErr := os.Stat(target)
 	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
+}
+
+func TestPublishPackageRejectsSecondSensitiveAuthEnvValueInCLIAndManuscripts(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	stubPublishPackageValidation(t)
+
+	const firstEnv = "FIXTURE_FIRST_TOKEN"
+	const secondEnv = "FIXTURE_SECOND_TOKEN"
+	firstValue := "abcdef12-3456-4abc-8def-fedcba098765"
+	secondValue := "12345678-1234-4abc-8def-1234567890ab"
+	t.Setenv(firstEnv, firstValue)
+	t.Setenv(secondEnv, secondValue)
+	manifest, err := pipeline.ReadCLIManifest(cliDir)
+	require.NoError(t, err)
+	manifest.AuthEnvVars = []string{firstEnv, secondEnv}
+	manifest.AuthEnvVarSpecs = []spec.AuthEnvVar{
+		{Name: firstEnv, Sensitive: true},
+		{Name: secondEnv, Sensitive: true},
+	}
+	manifest.RunID = "20260329-100000"
+	writeTestManifest(t, cliDir, manifest)
+
+	// A full-value leak in a test fixture is the regression that motivated this
+	// gate. The manuscript fragments prove the staged scan includes research,
+	// proofs, and discovery as well as CLI source.
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "cli", "leaked_credential_test.go"), []byte("package cli\n\nconst secondCredential = \""+secondValue+"\"\n"), 0o644))
+	for _, item := range []struct {
+		path    string
+		content string
+	}{
+		{path: filepath.Join(home, "manuscripts", "test", manifest.RunID, "research", "brief.md"), content: "assertion: 12345678\n"},
+		{path: filepath.Join(home, "manuscripts", "test", manifest.RunID, "proofs", "shipcheck.md"), content: "assertion: 1234567890ab\n"},
+		{path: filepath.Join(home, "manuscripts", "test", manifest.RunID, "discovery", "traffic-analysis.json"), content: `{"assertion":"1234567890ab"}` + "\n"},
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(item.path), 0o755))
+		require.NoError(t, os.WriteFile(item.path, []byte(item.content), 0o644))
+	}
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
+
+	err = cmd.Execute()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "declared auth environment values detected in staged package")
+	require.Contains(t, err.Error(), "internal/cli/leaked_credential_test.go:3 "+secondEnv)
+	require.Contains(t, err.Error(), ".manuscripts/20260329-100000/research/brief.md:1 "+secondEnv)
+	require.Contains(t, err.Error(), ".manuscripts/20260329-100000/proofs/shipcheck.md:1 "+secondEnv)
+	require.Contains(t, err.Error(), ".manuscripts/20260329-100000/discovery/traffic-analysis.json:1 "+secondEnv)
+	require.NotContains(t, err.Error(), secondValue)
+	require.NotContains(t, err.Error(), "1234567890ab")
+
+	_, statErr := os.Stat(target)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
+}
+
+func TestPublishPackageRejectsSensitiveAdditionalAuthHeaderValue(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	stubPublishPackageValidation(t)
+
+	const bearerEnv = "FIXTURE_BEARER_TOKEN"
+	const apiKeyEnv = "FIXTURE_API_KEY"
+	bearerValue := "abcdef12-3456-4abc-8def-fedcba098765"
+	apiKeyValue := "12345678-1234-4abc-8def-1234567890ab"
+	t.Setenv(bearerEnv, bearerValue)
+	t.Setenv(apiKeyEnv, apiKeyValue)
+	manifest, err := pipeline.ReadCLIManifest(cliDir)
+	require.NoError(t, err)
+	manifest.AuthEnvVars = []string{bearerEnv}
+	manifest.AuthEnvVarSpecs = []spec.AuthEnvVar{{Name: bearerEnv, Sensitive: true}}
+	manifest.AuthAdditionalHeaders = []spec.AdditionalAuthHeader{{
+		Header: "X-API-Key",
+		EnvVar: spec.AuthEnvVar{Name: apiKeyEnv, Sensitive: true},
+	}}
+	writeTestManifest(t, cliDir, manifest)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "cli", "leaked_additional_credential_test.go"), []byte("package cli\n\nconst apiKey = \""+apiKeyValue+"\"\n"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
+
+	err = cmd.Execute()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "declared auth environment values detected in staged package")
+	require.Contains(t, err.Error(), "internal/cli/leaked_additional_credential_test.go:3 "+apiKeyEnv)
+	require.NotContains(t, err.Error(), bearerEnv)
+	require.NotContains(t, err.Error(), apiKeyValue)
+
+	_, statErr := os.Stat(target)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
+}
+
+func TestStagedPackageAuthEnvValueSecretsHonorsAdditionalHeaderSensitivity(t *testing.T) {
+	const envVar = "FIXTURE_API_KEY"
+	const value = "12345678-1234-4abc-8def-1234567890ab"
+	t.Setenv(envVar, value)
+	falseValue := false
+
+	for _, tc := range []struct {
+		name         string
+		sensitive    *bool
+		wantFindings bool
+	}{
+		{name: "recorded false", sensitive: &falseValue},
+		{name: "missing", wantFindings: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.MkdirAll(dir, 0o755))
+			writeTestManifest(t, dir, pipeline.CLIManifest{AuthAdditionalHeaders: []spec.AdditionalAuthHeader{{
+				Header: "X-API-Key",
+				EnvVar: spec.AuthEnvVar{Name: envVar, Sensitive: true},
+			}}})
+
+			data, err := os.ReadFile(filepath.Join(dir, pipeline.CLIManifestFilename))
+			require.NoError(t, err)
+			var raw map[string]any
+			require.NoError(t, json.Unmarshal(data, &raw))
+			headers := raw["auth_additional_headers"].([]any)
+			env := headers[0].(map[string]any)["env_var"].(map[string]any)
+			if tc.sensitive == nil {
+				delete(env, "sensitive")
+			} else {
+				env["sensitive"] = *tc.sensitive
+			}
+			data, err = json.Marshal(raw)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, pipeline.CLIManifestFilename), data, 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "leaked_credential.go"), []byte("const credential = \""+value+"\"\n"), 0o644))
+
+			findings, err := stagedPackageAuthEnvValueSecrets(dir)
+			require.NoError(t, err)
+			if tc.wantFindings {
+				require.Equal(t, []artifacts.AuthEnvValueSecretFinding{{Path: "leaked_credential.go", Line: 1, EnvVar: envVar}}, findings)
+			} else {
+				require.Empty(t, findings)
+			}
+		})
+	}
+}
+
+func TestPublishPackageAllowsSensitiveAuthEnvValuesAbsentFromStagedTree(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	stubPublishPackageValidation(t)
+
+	const sensitiveEnv = "FIXTURE_API_TOKEN"
+	t.Setenv(sensitiveEnv, "credential-value-not-in-package")
+	manifest, err := pipeline.ReadCLIManifest(cliDir)
+	require.NoError(t, err)
+	manifest.AuthEnvVars = []string{sensitiveEnv}
+	manifest.AuthEnvVarSpecs = []spec.AuthEnvVar{{Name: sensitiveEnv, Sensitive: true}}
+	writeTestManifest(t, cliDir, manifest)
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
+
+	_, err = runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+	assert.DirExists(t, target)
 }
 
 func TestPublishPackageRecordsAnnotatedPublicVendorPrefixSecrets(t *testing.T) {

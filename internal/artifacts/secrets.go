@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/piiplaceholders"
@@ -134,6 +135,14 @@ type VendorPrefixSecretFinding struct {
 	Fingerprint string
 }
 
+// AuthEnvValueSecretFinding reports a declared sensitive auth environment
+// value found in a package without retaining or rendering the value itself.
+type AuthEnvValueSecretFinding struct {
+	Path   string
+	Line   int
+	EnvVar string
+}
+
 type ReviewedSecretSuppression struct {
 	Path        string `json:"path"`
 	Line        int    `json:"line"`
@@ -240,6 +249,125 @@ func FindSpecDeclaredCookieSecrets(root string, cookieNames []string) ([]VendorP
 	return result.Findings, err
 }
 
+// FindAuthEnvValueSecrets scans text files below root for the supplied declared
+// auth environment values. Values shorter than eight characters are skipped to
+// avoid turning ordinary source text into a secret finding. UUID values also
+// match their eight-or-more-character hyphen-separated segments because test
+// assertions commonly retain only a UUID fragment.
+//
+// Findings contain only the relative path, line number, and environment
+// variable name; no credential value or fingerprint is returned.
+func FindAuthEnvValueSecrets(root string, envValues map[string]string) ([]AuthEnvValueSecretFinding, error) {
+	candidates := authEnvSecretCandidates(envValues)
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	var findings []AuthEnvValueSecretFinding
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		fileFindings, err := scanAuthEnvValueSecretFile(root, path, candidates)
+		if err != nil {
+			return err
+		}
+		findings = append(findings, fileFindings...)
+		return nil
+	})
+	return findings, err
+}
+
+type authEnvSecretCandidate struct {
+	envVar string
+	value  string
+}
+
+var uuidValueRE = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func authEnvSecretCandidates(envValues map[string]string) []authEnvSecretCandidate {
+	envVars := make([]string, 0, len(envValues))
+	for envVar := range envValues {
+		envVars = append(envVars, envVar)
+	}
+	sort.Strings(envVars)
+
+	var candidates []authEnvSecretCandidate
+	for _, envVar := range envVars {
+		value := envValues[envVar]
+		if len(value) < 8 {
+			continue
+		}
+		values := []string{value}
+		if uuidValueRE.MatchString(value) {
+			for segment := range strings.SplitSeq(value, "-") {
+				if len(segment) >= 8 {
+					values = append(values, segment)
+				}
+			}
+		}
+		seen := make(map[string]struct{}, len(values))
+		for _, candidate := range values {
+			if _, ok := seen[candidate]; ok {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			candidates = append(candidates, authEnvSecretCandidate{envVar: envVar, value: candidate})
+		}
+	}
+	return candidates
+}
+
+func scanAuthEnvValueSecretFile(root, path string, candidates []authEnvSecretCandidate) ([]AuthEnvValueSecretFinding, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+
+	reader := bufio.NewReaderSize(file, 8192)
+	probe, err := reader.Peek(8192)
+	if err != nil && err != io.EOF && err != bufio.ErrBufferFull {
+		return nil, err
+	}
+	if bytes.Contains(probe, []byte{0}) {
+		return nil, nil
+	}
+
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return nil, err
+	}
+	rel = filepath.ToSlash(rel)
+
+	var findings []AuthEnvValueSecretFinding
+	lineNumber := 0
+	for {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil && readErr != io.EOF {
+			return nil, readErr
+		}
+		if line == "" && readErr == io.EOF {
+			break
+		}
+		lineNumber++
+		matchedEnvVars := make(map[string]struct{})
+		for _, candidate := range candidates {
+			if _, alreadyMatched := matchedEnvVars[candidate.envVar]; !alreadyMatched && strings.Contains(line, candidate.value) {
+				matchedEnvVars[candidate.envVar] = struct{}{}
+				findings = append(findings, AuthEnvValueSecretFinding{Path: rel, Line: lineNumber, EnvVar: candidate.envVar})
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+	}
+	return findings, nil
+}
+
 func cookieSecretPatterns(cookieNames []string) []vendorPrefixSecretPattern {
 	if len(cookieNames) == 0 {
 		return nil
@@ -283,6 +411,14 @@ func FormatVendorPrefixSecretFindings(findings []VendorPrefixSecretFinding) stri
 	lines := make([]string, 0, len(findings))
 	for _, finding := range findings {
 		lines = append(lines, fmt.Sprintf("%s:%d %s", finding.Path, finding.Line, finding.Kind))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func FormatAuthEnvValueSecretFindings(findings []AuthEnvValueSecretFinding) string {
+	lines := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		lines = append(lines, fmt.Sprintf("%s:%d %s", finding.Path, finding.Line, finding.EnvVar))
 	}
 	return strings.Join(lines, "\n")
 }

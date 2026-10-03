@@ -555,6 +555,11 @@ func newPublishPackageCmd() *cobra.Command {
 				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for secret tokens: %w", err)}
 			}
+			authEnvValueFindings, err := stagedPackageAuthEnvValueSecrets(outCLIDir)
+			if err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for declared auth environment values: %w", err)}
+			}
 
 			piiResult, piiErr := artifacts.RunPIIAudit(outCLIDir)
 			if piiErr != nil {
@@ -562,7 +567,7 @@ func newPublishPackageCmd() *cobra.Command {
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for PII: %w", piiErr)}
 			}
 
-			if scanErr := formatCombinedScanError(secretResult.Findings, piiResult.Findings, piiResult.Completion); scanErr != nil {
+			if scanErr := formatCombinedScanError(secretResult.Findings, authEnvValueFindings, piiResult.Findings, piiResult.Completion); scanErr != nil {
 				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: scanErr}
 			}
@@ -1888,6 +1893,98 @@ func stagedPackageCookieNames(dir string) ([]string, error) {
 	}
 }
 
+// stagedPackageAuthEnvValueSecrets reads sensitive credential values only from
+// this process's environment, then scans the complete staged CLI tree. The
+// staging tree includes the CLI source plus copied research, proofs, and
+// discovery artifacts, so packaging catches leaks added after generation.
+func stagedPackageAuthEnvValueSecrets(dir string) ([]artifacts.AuthEnvValueSecretFinding, error) {
+	manifest, err := pipeline.ReadCLIManifest(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	values := make(map[string]string)
+	if len(manifest.AuthEnvVarSpecs) > 0 {
+		for _, envVar := range manifest.AuthEnvVarSpecs {
+			name := strings.TrimSpace(envVar.Name)
+			if !envVar.Sensitive || name == "" {
+				continue
+			}
+			if value, ok := os.LookupEnv(name); ok {
+				values[name] = value
+			}
+		}
+	} else {
+		// Legacy manifests predate per-variable sensitivity metadata. Auth env
+		// vars were credential-only in that format, so preserve their safe
+		// default rather than silently skipping the exact-value scan.
+		for _, name := range manifest.AuthEnvVars {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			if value, ok := os.LookupEnv(name); ok {
+				values[name] = value
+			}
+		}
+	}
+	headerSensitivities, err := manifestAuthAdditionalHeaderSensitivities(dir, len(manifest.AuthAdditionalHeaders))
+	if err != nil {
+		return nil, err
+	}
+	for i, header := range manifest.AuthAdditionalHeaders {
+		envVar := header.EnvVar
+		name := strings.TrimSpace(envVar.Name)
+		if !headerSensitivities[i] || name == "" {
+			continue
+		}
+		if value, ok := os.LookupEnv(name); ok {
+			values[name] = value
+		}
+	}
+
+	return artifacts.FindAuthEnvValueSecrets(dir, values)
+}
+
+func manifestAuthAdditionalHeaderSensitivities(dir string, headerCount int) ([]bool, error) {
+	// Older manifests omit this metadata, but their additional headers are
+	// request credentials just like legacy AuthEnvVars.
+	sensitivities := make([]bool, headerCount)
+	for i := range sensitivities {
+		sensitivities[i] = true
+	}
+	if headerCount == 0 {
+		return sensitivities, nil
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, pipeline.CLIManifestFilename))
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		AuthAdditionalHeaders []struct {
+			EnvVar struct {
+				Sensitive *bool `json:"sensitive"`
+			} `json:"env_var"`
+		} `json:"auth_additional_headers"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	for i, header := range raw.AuthAdditionalHeaders {
+		if i >= len(sensitivities) {
+			break
+		}
+		if header.EnvVar.Sensitive != nil {
+			sensitivities[i] = *header.EnvVar.Sensitive
+		}
+	}
+	return sensitivities, nil
+}
+
 func recordReviewedSecretSuppressions(dir string, suppressions []artifacts.ReviewedSecretSuppression) error {
 	manifestSuppressions := make([]pipeline.ReviewedSecretSuppression, 0, len(suppressions))
 	for _, suppression := range suppressions {
@@ -1903,11 +2000,13 @@ func recordReviewedSecretSuppressions(dir string, suppressions []artifacts.Revie
 }
 
 // formatCombinedScanError composes the publish-time error message from
-// both scanners. Sections appear in fixed order: vendor-prefix tokens,
-// then PII pending findings, then PII gate failures. Returns nil when
-// nothing to report so callers can branch on the error directly.
+// the publish-time scanners. Sections appear in fixed order: vendor-prefix
+// tokens, declared auth environment values, PII pending findings, then PII
+// gate failures. Returns nil when nothing to report so callers can branch on
+// the error directly.
 func formatCombinedScanError(
 	secretFindings []artifacts.VendorPrefixSecretFinding,
+	authEnvValueFindings []artifacts.AuthEnvValueSecretFinding,
 	piiFindings []artifacts.PIIFinding,
 	piiCompletion artifacts.PIICompletionStatus,
 ) error {
@@ -1917,6 +2016,11 @@ func formatCombinedScanError(
 		sections = append(sections,
 			"vendor-prefix tokens detected in staged package:\n"+
 				artifacts.FormatVendorPrefixSecretFindings(secretFindings))
+	}
+	if len(authEnvValueFindings) > 0 {
+		sections = append(sections,
+			"declared auth environment values detected in staged package:\n"+
+				artifacts.FormatAuthEnvValueSecretFindings(authEnvValueFindings))
 	}
 	if artifacts.PIIPendingCount(piiFindings) > 0 {
 		sections = append(sections,

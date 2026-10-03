@@ -223,6 +223,33 @@ func TestFindPackageSecretsDetectsCredentialNamedOpaqueValues(t *testing.T) {
 	require.Equal(t, 2, findings[1].Line)
 }
 
+func TestFindAuthEnvValueSecretsReportsOnlyPathLineAndEnvVar(t *testing.T) {
+	root := t.TempDir()
+	value := "12345678-1234-4abc-8def-1234567890ab"
+	require.NoError(t, os.WriteFile(filepath.Join(root, "leaked_credential_test.go"), []byte("package fixture\n\nconst credential = \""+value+"\"\nconst assertionFragment = \"1234567890ab\"\n"), 0o644))
+
+	findings, err := FindAuthEnvValueSecrets(root, map[string]string{"FIXTURE_SECOND_TOKEN": value})
+	require.NoError(t, err)
+	require.Len(t, findings, 2)
+	require.Equal(t, AuthEnvValueSecretFinding{Path: "leaked_credential_test.go", Line: 3, EnvVar: "FIXTURE_SECOND_TOKEN"}, findings[0])
+	require.Equal(t, AuthEnvValueSecretFinding{Path: "leaked_credential_test.go", Line: 4, EnvVar: "FIXTURE_SECOND_TOKEN"}, findings[1])
+
+	formatted := FormatAuthEnvValueSecretFindings(findings)
+	require.NotContains(t, formatted, value)
+	require.NotContains(t, formatted, "1234567890ab")
+	require.Contains(t, formatted, "leaked_credential_test.go:3 FIXTURE_SECOND_TOKEN")
+}
+
+func TestFindAuthEnvValueSecretsReportsV7UUIDFragment(t *testing.T) {
+	root := t.TempDir()
+	value := "12345678-1234-7abc-8def-1234567890ab"
+	require.NoError(t, os.WriteFile(filepath.Join(root, "leaked_credential_test.go"), []byte("const assertionFragment = \"1234567890ab\"\n"), 0o644))
+
+	findings, err := FindAuthEnvValueSecrets(root, map[string]string{"FIXTURE_V7_TOKEN": value})
+	require.NoError(t, err)
+	require.Equal(t, []AuthEnvValueSecretFinding{{Path: "leaked_credential_test.go", Line: 1, EnvVar: "FIXTURE_V7_TOKEN"}}, findings)
+}
+
 func TestFindPackageSecretsAllowsAnnotatedPublicVendorPrefixSecret(t *testing.T) {
 	root := t.TempDir()
 	publicKey := testSecret("AI", "za", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234")
