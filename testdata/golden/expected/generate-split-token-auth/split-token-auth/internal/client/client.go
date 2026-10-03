@@ -478,18 +478,22 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			}
 		}
 		if !redirectLeavesOrigin(req.URL, via) {
-			// A same-origin hop can change schemes. Headers copied from the
-			// previous request are not the destination credential.
-			if redirectScheme == "accountToken" && c.Config != nil {
-				if v := c.Config.SplitTokenAccountToken; v != "" {
-					if authHeaderLooksLikePlaceholderCredential(v) {
-						return authPlaceholderCredentialErrorWithSetup(c.Config, "export SPLIT_TOKEN_ACCOUNT_TOKEN=<your-token>")
+			// A same-origin hop can change schemes. Attach a credential only
+			// when the destination path names that scheme. An unmatched path
+			// inherits the previous scheme for stripping the other credential,
+			// but must not gain a token it did not already carry. A value
+			// already on the request is the one the caller selected.
+			destinationScheme := c.operationAuthScheme(req.Method, operationAuthRequestPath(req))
+			if destinationScheme == "accountToken" {
+				if req.Header.Get("X-Account-Token") == "" && c.Config != nil {
+					if v := c.Config.SplitTokenAccountToken; v != "" {
+						if authHeaderLooksLikePlaceholderCredential(v) {
+							return authPlaceholderCredentialErrorWithSetup(c.Config, "export SPLIT_TOKEN_ACCOUNT_TOKEN=<your-token>")
+						}
+						req.Header.Set("X-Account-Token", v)
 					}
-					req.Header.Set("X-Account-Token", v)
-				} else {
-					req.Header.Del("X-Account-Token")
 				}
-			} else {
+			} else if redirectScheme != "accountToken" {
 				req.Header.Del("X-Account-Token")
 			}
 		}

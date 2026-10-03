@@ -47,6 +47,9 @@ func TestGeneratedSplitTokenClientSendsOnlyOperationCredential(t *testing.T) {
 	require.Contains(t, clientSrc, `operationCredentialCacheID`)
 	require.Contains(t, clientSrc, `|op_cred=`)
 	require.Contains(t, clientSrc, `operationSendsPrimaryAuth`)
+	require.Contains(t, clientSrc, `destinationScheme := c.operationAuthScheme(req.Method, operationAuthRequestPath(req))`)
+	require.Contains(t, clientSrc, `if destinationScheme == "accountToken"`)
+	require.Contains(t, clientSrc, `else if redirectScheme != "accountToken"`)
 
 	doctorSrc := readGenerated(t, outputDir, "internal", "cli", "doctor.go")
 	require.Contains(t, doctorSrc, `report["auth_schemes"]`)
@@ -264,6 +267,70 @@ func TestAccountTokenIgnoresUnusedServerCredential(t *testing.T) {
 		t.Fatal("server endpoint accepted a placeholder server token")
 	}
 }
+
+func TestRedirectKeepsCallerAccountToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/servers/acct-1":
+			if r.Header.Get("X-Account-Token") != "caller-account" {
+				t.Errorf("origin account=%q", r.Header.Get("X-Account-Token"))
+			}
+			http.Redirect(w, r, "/servers/acct-1-next", http.StatusFound)
+		case "/servers/acct-1-next":
+			if r.Header.Get("X-Account-Token") != "caller-account" || r.Header.Get("X-Server-Token") != "" {
+				t.Errorf("redirect server=%q account=%q", r.Header.Get("X-Server-Token"), r.Header.Get("X-Account-Token"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(` + "`" + `{"ok":true}` + "`" + `))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		BaseURL: server.URL,
+		` + serverField + `: "server-secret",
+		` + accountField + `: "account-secret",
+	}
+	c := New(cfg, time.Second, 0)
+	c.NoCache = true
+	if _, err := c.GetWithHeaders(context.Background(), "/servers/acct-1", nil, map[string]string{"X-Account-Token": "caller-account"}); err != nil {
+		t.Fatalf("redirected get: %v", err)
+	}
+}
+
+func TestUnmatchedRedirectKeepsCallerAccountToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/servers/acct-1":
+			if r.Header.Get("X-Account-Token") != "caller-account" {
+				t.Errorf("origin account=%q", r.Header.Get("X-Account-Token"))
+			}
+			http.Redirect(w, r, "/not-listed", http.StatusFound)
+		case "/not-listed":
+			if r.Header.Get("X-Account-Token") != "caller-account" {
+				t.Errorf("unlisted account=%q", r.Header.Get("X-Account-Token"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(` + "`" + `{"ok":true}` + "`" + `))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		BaseURL: server.URL,
+		` + serverField + `: "server-secret",
+		` + accountField + `: "account-secret",
+	}
+	c := New(cfg, time.Second, 0)
+	c.NoCache = true
+	if _, err := c.GetWithHeaders(context.Background(), "/servers/acct-1", nil, map[string]string{"X-Account-Token": "caller-account"}); err != nil {
+		t.Fatalf("redirected get: %v", err)
+	}
+}
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "split_auth_test.go"), []byte(behaviorTest), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/client", "-count=1")
@@ -334,4 +401,140 @@ func TestGeneratedDoctorReportsSplitTokenSchemesSeparately(t *testing.T) {
 	require.Contains(t, envVars, "ERROR missing required: "+serverEnv)
 	_, err = runDoctorJSON(t, binaryPath, neither, "--fail-on", "error")
 	require.Error(t, err)
+}
+
+func TestRedirectDoesNotAttachQueryAccountTokenToUnmatchedPath(t *testing.T) {
+	t.Parallel()
+
+	const specYAML = `
+openapi: "3.0.3"
+info:
+  title: Query Split API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    serverToken:
+      type: apiKey
+      in: header
+      name: X-Server-Token
+    accountToken:
+      type: apiKey
+      in: query
+      name: account_token
+paths:
+  /messages:
+    get:
+      operationId: listMessages
+      security:
+        - serverToken: []
+      responses:
+        "200":
+          description: OK
+  /messages/{id}:
+    get:
+      operationId: getMessage
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      security:
+        - serverToken: []
+      responses:
+        "200":
+          description: OK
+  /servers/{id}:
+    get:
+      operationId: getServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      security:
+        - accountToken: []
+      responses:
+        "200":
+          description: OK
+`
+	apiSpec, err := openapi.Parse([]byte(specYAML))
+	require.NoError(t, err)
+	require.Equal(t, "serverToken", apiSpec.Auth.Scheme)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	prefix := naming.EnvPrefix(apiSpec.Name)
+	serverField := resolveEnvVarField(prefix + "_SERVER_TOKEN")
+	accountField := resolveEnvVarField(prefix + "_ACCOUNT_TOKEN")
+	clientSrc := readGenerated(t, outputDir, "internal", "client", "client.go")
+	require.Contains(t, clientSrc, `q.Set("account_token", carried)`)
+	require.Contains(t, clientSrc, `if destinationScheme == "accountToken"`)
+	requireGeneratedCompiles(t, outputDir)
+
+	behaviorTest := `package client
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/config"
+)
+
+func TestQueryRedirectAccountToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/servers/acct-1":
+			if r.URL.Query().Get("account_token") != "account-secret" || r.Header.Get("X-Server-Token") != "" {
+				t.Errorf("origin server=%q account=%q", r.Header.Get("X-Server-Token"), r.URL.Query().Get("account_token"))
+			}
+			http.Redirect(w, r, "/not-listed", http.StatusFound)
+		case "/not-listed":
+			if r.URL.Query().Get("account_token") != "" {
+				t.Errorf("unlisted path received account token %q", r.URL.Query().Get("account_token"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(` + "`" + `{"ok":true}` + "`" + `))
+		case "/messages/hop":
+			if r.Header.Get("X-Server-Token") != "server-secret" || r.URL.Query().Get("account_token") != "" {
+				t.Errorf("hop server=%q account=%q", r.Header.Get("X-Server-Token"), r.URL.Query().Get("account_token"))
+			}
+			http.Redirect(w, r, "/servers/landed", http.StatusFound)
+		case "/servers/landed":
+			if r.URL.Query().Get("account_token") != "account-secret" || r.Header.Get("X-Server-Token") != "" {
+				t.Errorf("landed server=%q account=%q", r.Header.Get("X-Server-Token"), r.URL.Query().Get("account_token"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(` + "`" + `{"ok":true}` + "`" + `))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		BaseURL: server.URL,
+		` + serverField + `: "server-secret",
+		` + accountField + `: "account-secret",
+	}
+	c := New(cfg, time.Second, 0)
+	c.NoCache = true
+	ctx := context.Background()
+	if _, err := c.Get(ctx, "/servers/acct-1", nil); err != nil {
+		t.Fatalf("unmatched redirect: %v", err)
+	}
+	if _, err := c.Get(ctx, "/messages/hop", nil); err != nil {
+		t.Fatalf("scheme-changing redirect: %v", err)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "query_redirect_test.go"), []byte(behaviorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/client", "-count=1", "-run", "TestQueryRedirectAccountToken")
 }

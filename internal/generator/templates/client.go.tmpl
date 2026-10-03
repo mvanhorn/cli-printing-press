@@ -980,40 +980,51 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- end}}
 {{- if and .HasPerOperationAuth .Auth.AdditionalHeaders}}
 		if !redirectLeavesOrigin(req.URL, via) {
-			// A same-origin hop can change schemes. Headers copied from the
-			// previous request are not the destination credential.
+			// A same-origin hop can change schemes. Attach a credential only
+			// when the destination path names that scheme. An unmatched path
+			// inherits the previous scheme for stripping the other credential,
+			// but must not gain a token it did not already carry. A value
+			// already on the request is the one the caller selected.
+			destinationScheme := c.operationAuthScheme(req.Method, operationAuthRequestPath(req))
 {{- range .Auth.AdditionalHeaders}}
 {{- if .PerOperation}}
 {{- if eq .In "query"}}
-			if redirectScheme == {{printf "%q" .Scheme}} && c.Config != nil {
-				if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
-					if authHeaderLooksLikePlaceholderCredential(v) {
-						return authPlaceholderCredentialErrorWithSetup(c.Config, "export {{.EnvVar.Name}}=<your-token>")
+			if destinationScheme == {{printf "%q" .Scheme}} {
+				q := req.URL.Query()
+				if q.Get("{{.Header}}") == "" {
+					carried := ""
+					if len(via) > 0 {
+						carried = via[len(via)-1].URL.Query().Get("{{.Header}}")
 					}
-					q := req.URL.Query()
-					q.Set("{{.Header}}", v)
-					req.URL.RawQuery = q.Encode()
-				} else {
-					q := req.URL.Query()
-					q.Del("{{.Header}}")
-					req.URL.RawQuery = q.Encode()
+					if carried == "" && c.Config != nil {
+						if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
+							if authHeaderLooksLikePlaceholderCredential(v) {
+								return authPlaceholderCredentialErrorWithSetup(c.Config, "export {{.EnvVar.Name}}=<your-token>")
+							}
+							carried = v
+						}
+					}
+					if carried != "" {
+						q.Set("{{.Header}}", carried)
+						req.URL.RawQuery = q.Encode()
+					}
 				}
-			} else {
+			} else if redirectScheme != {{printf "%q" .Scheme}} {
 				q := req.URL.Query()
 				q.Del("{{.Header}}")
 				req.URL.RawQuery = q.Encode()
 			}
 {{- else}}
-			if redirectScheme == {{printf "%q" .Scheme}} && c.Config != nil {
-				if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
-					if authHeaderLooksLikePlaceholderCredential(v) {
-						return authPlaceholderCredentialErrorWithSetup(c.Config, "export {{.EnvVar.Name}}=<your-token>")
+			if destinationScheme == {{printf "%q" .Scheme}} {
+				if req.Header.Get("{{.Header}}") == "" && c.Config != nil {
+					if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
+						if authHeaderLooksLikePlaceholderCredential(v) {
+							return authPlaceholderCredentialErrorWithSetup(c.Config, "export {{.EnvVar.Name}}=<your-token>")
+						}
+						req.Header.Set("{{.Header}}", v)
 					}
-					req.Header.Set("{{.Header}}", v)
-				} else {
-					req.Header.Del("{{.Header}}")
 				}
-			} else {
+			} else if redirectScheme != {{printf "%q" .Scheme}} {
 				req.Header.Del("{{.Header}}")
 			}
 {{- end}}
