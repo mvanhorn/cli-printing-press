@@ -14269,3 +14269,30 @@ func TestSetParamMaximumNormalizesBounds(t *testing.T) {
 		assert.Nil(t, p.ExclusiveMaximum)
 	})
 }
+
+func TestSetParamMinimumPreservesInclusiveBound(t *testing.T) {
+	minimum := 3.0
+	param := spec.Param{Type: "integer"}
+	setParamMinimum(&param, &openapi3.Schema{Min: &minimum})
+	require.NotNil(t, param.Minimum)
+	assert.Equal(t, 3.0, *param.Minimum)
+}
+
+func TestSetParamMinimumNormalizesExclusiveIntegerBounds(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	tru := true
+
+	t.Run("openapi 3.0 minimum plus exclusiveMinimum true", func(t *testing.T) {
+		param := spec.Param{Type: "integer"}
+		setParamMinimum(&param, &openapi3.Schema{Min: f(0), ExclusiveMin: openapi3.ExclusiveBound{Bool: &tru}})
+		require.NotNil(t, param.Minimum)
+		assert.Equal(t, 1.0, *param.Minimum)
+	})
+
+	t.Run("openapi 3.1 numeric exclusiveMinimum", func(t *testing.T) {
+		param := spec.Param{Type: "integer"}
+		setParamMinimum(&param, &openapi3.Schema{ExclusiveMin: openapi3.ExclusiveBound{Value: f(1.2)}})
+		require.NotNil(t, param.Minimum)
+		assert.Equal(t, 2.0, *param.Minimum)
+	})
+}

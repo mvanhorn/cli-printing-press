@@ -542,7 +542,7 @@ func syncResource(ctx context.Context, c interface {
 	sortValue := syncResourceSortValue(resource)
 	sortField := syncResourceSortField(resource)
 	sortEffective := false
-	if missing := unfilledRequiredSyncQueryParams(resource, userParams, syncConditionalQueryParams(resource, effectiveSince, sortValue)); len(missing) > 0 {
+	if missing := unfilledRequiredSyncQueryParams(resource, userParams, syncConditionalQueryParams(resource, pageSize, cursor, effectiveSince, sortValue)); len(missing) > 0 {
 		if !humanFriendly {
 			payload := struct {
 				Event    string   `json:"event"`
@@ -621,6 +621,9 @@ func syncResource(ctx context.Context, c interface {
 				if pageSize.cursorParam != "" {
 					params[pageSize.cursorParam] = cursor
 				}
+			} else if pageSize.cursorParam != "" && pageSize.initialCursor != "" {
+				cursor = pageSize.initialCursor
+				params[pageSize.cursorParam] = cursor
 			}
 		}
 
@@ -700,8 +703,8 @@ func syncResource(ctx context.Context, c interface {
 		// spellings (page / page_number / pageNumber / page[number]) work.
 		// A declared strategy without a request parameter cannot advance safely.
 		if pageSize.cursorParam != "" && pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
-			currentPage, _ := strconv.Atoi(cursor)
-			if currentPage < 1 {
+			currentPage, err := strconv.Atoi(cursor)
+			if err != nil {
 				currentPage = 1
 			}
 			nextCursor = strconv.Itoa(currentPage + 1)
@@ -1112,6 +1115,7 @@ func syncResource(ctx context.Context, c interface {
 type paginationDefaults struct {
 	cursorParam    string
 	cursorType     string // paginator class: "", "cursor", "page_token", "offset", "page"
+	initialCursor  string // first numeric page/offset position when the API requires it
 	nextCursorPath string
 	limitParam     string
 	limit          int
@@ -1163,6 +1167,7 @@ func determinePaginationDefaults(resource string) paginationDefaults {
 	return paginationDefaults{
 		cursorParam:    "after",
 		cursorType:     "",
+		initialCursor:  "",
 		nextCursorPath: "",
 		limitParam:     "limit",
 		limit:          100,
@@ -1218,8 +1223,15 @@ func unfilledRequiredSyncQueryParams(resource string, userParams *syncUserParams
 	return missing
 }
 
-func syncConditionalQueryParams(resource, effectiveSince, sortValue string) map[string]string {
+func syncConditionalQueryParams(resource string, pageSize paginationDefaults, cursor, effectiveSince, sortValue string) map[string]string {
 	filled := map[string]string{}
+	if pageSize.cursorParam != "" {
+		if cursor != "" {
+			filled[pageSize.cursorParam] = cursor
+		} else if pageSize.initialCursor != "" {
+			filled[pageSize.cursorParam] = pageSize.initialCursor
+		}
+	}
 	if sinceParam := syncResourceSinceParam(resource); sinceParam != "" && strings.TrimSpace(effectiveSince) != "" {
 		filled[sinceParam] = effectiveSince
 		if sortParam := syncResourceSortParam(resource); sortParam != "" && strings.TrimSpace(sortValue) != "" {
@@ -2434,6 +2446,9 @@ func syncOneParent(
 				if pageSize.cursorParam != "" {
 					params[pageSize.cursorParam] = cursor
 				}
+			} else if pageSize.cursorParam != "" && pageSize.initialCursor != "" {
+				cursor = pageSize.initialCursor
+				params[pageSize.cursorParam] = cursor
 			}
 		}
 		if depSinceTS != "" {
@@ -2506,8 +2521,8 @@ func syncOneParent(
 		// Guard on cursorType to cover every canonical spelling. A declared
 		// strategy without a request parameter cannot advance safely.
 		if pageSize.cursorParam != "" && pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
-			currentPage, _ := strconv.Atoi(cursor)
-			if currentPage < 1 {
+			currentPage, err := strconv.Atoi(cursor)
+			if err != nil {
 				currentPage = 1
 			}
 			nextCursor = strconv.Itoa(currentPage + 1)

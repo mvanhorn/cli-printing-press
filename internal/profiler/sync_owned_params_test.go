@@ -180,3 +180,28 @@ func TestSyncParamsAddsAllHistoryWithoutSpecDefault(t *testing.T) {
 	got := syncQueryParamDefaultsFromEndpoint(endpoint, syncOwnedParams{limit: "limit"})
 	assert.Equal(t, []SyncQueryParamDefault{{Name: "status", Value: "all"}}, got)
 }
+
+func TestSyncPaginationInitialCursorSeedsOnlyNumericPageStrategies(t *testing.T) {
+	t.Parallel()
+
+	minimum := 3.0
+	endpoint := spec.Endpoint{Params: []spec.Param{
+		{Name: "offset", In: "query", Type: "integer", Required: true, Default: 0},
+		{Name: "page", In: "query", Type: "integer", Required: true},
+		{Name: "starting_after", In: "query", Type: "string", Required: true},
+		{Name: "minimum_page", In: "query", Type: "integer", Required: true, Minimum: &minimum},
+	}}
+
+	assert.Equal(t, "0", syncPaginationInitialCursorFromEndpoint(endpoint, "offset", "offset"),
+		"a spec default must be the first offset")
+	assert.Equal(t, "1", syncPaginationInitialCursorFromEndpoint(endpoint, "page", "page"),
+		"a required page without a default starts at one")
+	assert.Equal(t, "3", syncPaginationInitialCursorFromEndpoint(endpoint, "minimum_page", "page"),
+		"a declared minimum wins over the generic page fallback")
+	assert.Empty(t, syncPaginationInitialCursorFromEndpoint(endpoint, "starting_after", "cursor"),
+		"token cursors must not be placed on the first request")
+
+	defaults := syncQueryParamDefaultsFromEndpoint(endpoint, syncOwnedParams{cursor: "offset", cursorType: "offset"})
+	assert.Contains(t, defaults, SyncQueryParamDefault{Name: "offset", Value: "0"},
+		"numeric pagination defaults must survive sync-owned param filtering")
+}

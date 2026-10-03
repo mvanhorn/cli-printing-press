@@ -251,7 +251,9 @@ func runAutoRefresh(ctx context.Context, flags *rootFlags, db *store.Store, reso
 				}
 			}
 		}
-		if missing := unfilledRequiredSyncQueryParams(resource, nil, syncConditionalQueryParams(resource, effectiveSince, sortValue{{if .Pagination.DateRangeParam}}, ""{{end}})); len(missing) > 0 {
+		// Auto-refresh runs latest-only, so it ignores the stored resume
+		// cursor; the first-page cursor seed still counts as filled.
+		if missing := unfilledRequiredSyncQueryParams(resource, nil, syncConditionalQueryParams(resource, determinePaginationDefaults(resource), "", effectiveSince, sortValue{{if .Pagination.DateRangeParam}}, ""{{end}})); len(missing) > 0 {
 			skippedMissing = append(skippedMissing, fmt.Sprintf("%s (%s)", resource, strings.Join(missing, ", ")))
 		}
 	}
