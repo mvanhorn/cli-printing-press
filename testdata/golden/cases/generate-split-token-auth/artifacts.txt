@@ -1,0 +1,3 @@
+split-token-auth/internal/client/client.go
+split-token-auth/internal/cli/doctor.go
+split-token-auth/internal/config/config.go

@@ -753,6 +753,9 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	result.RequiredHeaders, perEndpointHeaders = detectRequiredHeaders(doc, result.Auth)
 	applyHeaderOverrides(result, perEndpointHeaders)
 
+	// Record per-operation schemes before path-parameter defaults rewrite
+	// endpoint paths. The lookup key is the OpenAPI path.
+	applyPerOperationSecurity(doc, result)
 	applyPathParamDefaults(result)
 
 	// Synthesize Params entries for {placeholder} tokens in the path template
