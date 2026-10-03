@@ -318,12 +318,17 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			authEnvOptionalSatisfied := false
 			if os.Getenv("SPLIT_TOKEN_SERVER_TOKEN") != "" {
 				authEnvSet = append(authEnvSet, "SPLIT_TOKEN_SERVER_TOKEN")
-			} else if authConfigured {
+			} else if authConfigured && cfg != nil && cfg.AuthHeader() != "" {
 				authSource, _ := report["auth_source"].(string)
 				if authSource == "" {
 					authSource = "config"
 				}
 				authEnvInfo = append(authEnvInfo, "credentials available from "+authSource)
+			} else if cfg != nil && cfg.CredentialConfigured() {
+				// Another scheme can authenticate its own operations. Failing
+				// doctor here would treat this env var as a prerequisite for
+				// calls that never send it. auth_schemes reports the gap.
+				authEnvInfo = append(authEnvInfo, "SPLIT_TOKEN_SERVER_TOKEN reported per auth scheme")
 			} else {
 				authEnvRequiredMissing = append(authEnvRequiredMissing, "SPLIT_TOKEN_SERVER_TOKEN")
 			}

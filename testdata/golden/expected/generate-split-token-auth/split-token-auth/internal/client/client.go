@@ -478,7 +478,18 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			}
 		}
 		if !redirectLeavesOrigin(req.URL, via) {
-			if !(redirectScheme == "accountToken") {
+			// A same-origin hop can change schemes. Headers copied from the
+			// previous request are not the destination credential.
+			if redirectScheme == "accountToken" && c.Config != nil {
+				if v := c.Config.SplitTokenAccountToken; v != "" {
+					if authHeaderLooksLikePlaceholderCredential(v) {
+						return authPlaceholderCredentialErrorWithSetup(c.Config, "export SPLIT_TOKEN_ACCOUNT_TOKEN=<your-token>")
+					}
+					req.Header.Set("X-Account-Token", v)
+				} else {
+					req.Header.Del("X-Account-Token")
+				}
+			} else {
 				req.Header.Del("X-Account-Token")
 			}
 		}
@@ -497,8 +508,10 @@ func (c *Client) Get(ctx context.Context, path string, params map[string]string)
 }
 
 func (c *Client) GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
-	if err := c.validateCachedRequestAuth(ctx); err != nil {
-		return nil, err
+	if c.operationSendsPrimaryAuth(http.MethodGet, path) {
+		if err := c.validateCachedRequestAuth(ctx); err != nil {
+			return nil, err
+		}
 	}
 	binaryResponse := c.wantsBinaryResponse(headers)
 	cacheEnabled := c.responseCacheEnabled(binaryResponse)
@@ -548,8 +561,10 @@ func (c *Client) GetNoCache(ctx context.Context, path string, params map[string]
 // writes cacheable fresh responses on success. See GetNoCache for when to
 // prefer this over Get/GetWithHeaders.
 func (c *Client) GetWithHeadersNoCache(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
-	if err := c.validateCachedRequestAuth(ctx); err != nil {
-		return nil, err
+	if c.operationSendsPrimaryAuth(http.MethodGet, path) {
+		if err := c.validateCachedRequestAuth(ctx); err != nil {
+			return nil, err
+		}
 	}
 	binaryResponse := c.wantsBinaryResponse(headers)
 	result, _, err := c.do(ctx, "GET", path, params, nil, headers)
@@ -677,6 +692,11 @@ func (c *Client) cacheKeyFor(method, path string, params map[string]string, head
 	// differ only by that header never share a row. Representation headers
 	// stay in canonicalRepresentationHeaders and are not treated as tenancy.
 	key += "|tenant=" + canonicalTenantSelectingHeaders(c.Config, headers)
+	// Primary-token identity is above. Without the credential this operation
+	// actually sends, two account tokens that share a server token reuse one GET.
+	if opCred := c.operationCredentialCacheID(method, path); opCred != "" {
+		key += "|op_cred=" + opCred
+	}
 	h := sha256.Sum256([]byte(key))
 	if c.platformSession != nil {
 		return hex.EncodeToString(h[:])
@@ -1327,6 +1347,30 @@ func operationAuthScore(routeHost string, routeSegs []string, reqHost string, re
 	return score, true
 }
 
+// A sole scheme other than the primary does not send the primary credential.
+// Unmatched paths still do: they keep spec-level auth.
+func (c *Client) operationSendsPrimaryAuth(method, requestPath string) bool {
+	scheme := c.operationAuthScheme(method, requestPath)
+	return scheme == "" || scheme == "serverToken"
+}
+
+func (c *Client) operationCredentialCacheID(method, path string) string {
+	if c == nil || c.Config == nil {
+		return ""
+	}
+	scheme := c.operationAuthScheme(method, path)
+	if scheme == "" {
+		return ""
+	}
+	if scheme == "accountToken" {
+		if v := c.Config.SplitTokenAccountToken; v != "" {
+			sum := sha256.Sum256([]byte("X-Account-Token" + "\n" + v))
+			return hex.EncodeToString(sum[:8])
+		}
+	}
+	return ""
+}
+
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
@@ -1396,12 +1440,19 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	// exactly what would be sent. Uses only cached credentials; a token that
 	// requires a network refresh will be re-fetched on the live request path,
 	// not during dry-run.
-	authHeader, err := c.authHeader(ctx)
+	// Select the scheme before resolving credentials. A credential this
+	// request will not send must not fail it.
+	opScheme := c.operationAuthScheme(method, path)
+	sendsPrimaryAuth := opScheme == "" || opScheme == "serverToken"
+	var authHeader string
+	var err error
+	if sendsPrimaryAuth {
+		authHeader, err = c.authHeader(ctx)
+	}
 	if err != nil {
 		return nil, 0, err
 	}
-	opScheme := c.operationAuthScheme(method, path)
-	if opScheme != "" && opScheme != "serverToken" {
+	if !sendsPrimaryAuth {
 		authHeader = ""
 	}
 

@@ -980,17 +980,55 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- end}}
 {{- if and .HasPerOperationAuth .Auth.AdditionalHeaders}}
 		if !redirectLeavesOrigin(req.URL, via) {
+			// A same-origin hop can change schemes. Headers copied from the
+			// previous request are not the destination credential.
 {{- range .Auth.AdditionalHeaders}}
+{{- if .PerOperation}}
 {{- if eq .In "query"}}
-			if !({{if .PerOperation}}redirectScheme == {{printf "%q" .Scheme}}{{else}}redirectScheme == "" || redirectScheme == {{printf "%q" .Scheme}}{{end}}) {
+			if redirectScheme == {{printf "%q" .Scheme}} && c.Config != nil {
+				if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
+					if authHeaderLooksLikePlaceholderCredential(v) {
+						return authPlaceholderCredentialErrorWithSetup(c.Config, "export {{.EnvVar.Name}}=<your-token>")
+					}
+					q := req.URL.Query()
+					q.Set("{{.Header}}", v)
+					req.URL.RawQuery = q.Encode()
+				} else {
+					q := req.URL.Query()
+					q.Del("{{.Header}}")
+					req.URL.RawQuery = q.Encode()
+				}
+			} else {
 				q := req.URL.Query()
 				q.Del("{{.Header}}")
 				req.URL.RawQuery = q.Encode()
 			}
 {{- else}}
-			if !({{if .PerOperation}}redirectScheme == {{printf "%q" .Scheme}}{{else}}redirectScheme == "" || redirectScheme == {{printf "%q" .Scheme}}{{end}}) {
+			if redirectScheme == {{printf "%q" .Scheme}} && c.Config != nil {
+				if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
+					if authHeaderLooksLikePlaceholderCredential(v) {
+						return authPlaceholderCredentialErrorWithSetup(c.Config, "export {{.EnvVar.Name}}=<your-token>")
+					}
+					req.Header.Set("{{.Header}}", v)
+				} else {
+					req.Header.Del("{{.Header}}")
+				}
+			} else {
 				req.Header.Del("{{.Header}}")
 			}
+{{- end}}
+{{- else}}
+{{- if eq .In "query"}}
+			if !(redirectScheme == "" || redirectScheme == {{printf "%q" .Scheme}}) {
+				q := req.URL.Query()
+				q.Del("{{.Header}}")
+				req.URL.RawQuery = q.Encode()
+			}
+{{- else}}
+			if !(redirectScheme == "" || redirectScheme == {{printf "%q" .Scheme}}) {
+				req.Header.Del("{{.Header}}")
+			}
+{{- end}}
 {{- end}}
 {{- end}}
 		}
@@ -1010,9 +1048,17 @@ func (c *Client) Get(ctx context.Context, path string, params map[string]string)
 }
 
 func (c *Client) GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+{{- if .HasPerOperationAuth}}
+	if c.operationSendsPrimaryAuth(http.MethodGet, path) {
+		if err := c.validateCachedRequestAuth(ctx); err != nil {
+			return nil, err
+		}
+	}
+{{- else}}
 	if err := c.validateCachedRequestAuth(ctx); err != nil {
 		return nil, err
 	}
+{{- end}}
 	binaryResponse := c.wantsBinaryResponse(headers)
 	cacheEnabled := c.responseCacheEnabled(binaryResponse)
 	// Check cache for GET requests
@@ -1068,9 +1114,17 @@ func (c *Client) GetNoCache(ctx context.Context, path string, params map[string]
 // writes cacheable fresh responses on success. See GetNoCache for when to
 // prefer this over Get/GetWithHeaders.
 func (c *Client) GetWithHeadersNoCache(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+{{- if .HasPerOperationAuth}}
+	if c.operationSendsPrimaryAuth(http.MethodGet, path) {
+		if err := c.validateCachedRequestAuth(ctx); err != nil {
+			return nil, err
+		}
+	}
+{{- else}}
 	if err := c.validateCachedRequestAuth(ctx); err != nil {
 		return nil, err
 	}
+{{- end}}
 	binaryResponse := c.wantsBinaryResponse(headers)
 	result, _, err := c.do(ctx, "GET", path, params, nil, headers)
 	if err == nil && c.responseCacheEnabled(binaryResponse) {
@@ -1227,6 +1281,13 @@ func (c *Client) cacheKeyFor(method, path string, params map[string]string, head
 	// differ only by that header never share a row. Representation headers
 	// stay in canonicalRepresentationHeaders and are not treated as tenancy.
 	key += "|tenant=" + canonicalTenantSelectingHeaders(c.Config, headers)
+{{- if .HasPerOperationAuth}}
+	// Primary-token identity is above. Without the credential this operation
+	// actually sends, two account tokens that share a server token reuse one GET.
+	if opCred := c.operationCredentialCacheID(method, path); opCred != "" {
+		key += "|op_cred=" + opCred
+	}
+{{- end}}
 {{- if .EndpointTemplateVars}}
 	// Include resolved template-var values in the cache identity so two
 	// tenants (different SHOPIFY_SHOP) never collide on the same path, and
@@ -2194,6 +2255,34 @@ func operationAuthScore(routeHost string, routeSegs []string, reqHost string, re
 	}
 	return score, true
 }
+
+// A sole scheme other than the primary does not send the primary credential.
+// Unmatched paths still do: they keep spec-level auth.
+func (c *Client) operationSendsPrimaryAuth(method, requestPath string) bool {
+	scheme := c.operationAuthScheme(method, requestPath)
+	return scheme == "" || scheme == {{printf "%q" .Auth.Scheme}}
+}
+
+func (c *Client) operationCredentialCacheID(method, path string) string {
+	if c == nil || c.Config == nil {
+		return ""
+	}
+	scheme := c.operationAuthScheme(method, path)
+	if scheme == "" {
+		return ""
+	}
+{{- range .Auth.AdditionalHeaders}}
+{{- if .PerOperation}}
+	if scheme == {{printf "%q" .Scheme}} {
+		if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
+			sum := sha256.Sum256([]byte({{printf "%q" .Header}} + "\n" + v))
+			return hex.EncodeToString(sum[:8])
+		}
+	}
+{{- end}}
+{{- end}}
+	return ""
+}
 {{- end}}
 
 {{- if eq .ClientPattern "proxy-envelope"}}
@@ -2396,11 +2485,35 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	// exactly what would be sent. Uses only cached credentials; a token that
 	// requires a network refresh will be re-fetched on the live request path,
 	// not during dry-run.
+{{- if .HasPerOperationAuth}}
+	// Select the scheme before resolving credentials. A credential this
+	// request will not send must not fail it.
+	opScheme := c.operationAuthScheme(method, path)
+	sendsPrimaryAuth := opScheme == "" || opScheme == {{printf "%q" .Auth.Scheme}}
+{{- end}}
 {{- if .HasTierRouting}}
+{{- if .HasPerOperationAuth}}
+	var authInfo requestAuth
+	var authHeader string
+	var err error
+	if sendsPrimaryAuth {
+		authInfo, err = c.authForRequest(ctx)
+		authHeader = authInfo.Value
+	}
+{{- else}}
 	authInfo, err := c.authForRequest(ctx)
 	authHeader := authInfo.Value
+{{- end}}
+{{- else}}
+{{- if .HasPerOperationAuth}}
+	var authHeader string
+	var err error
+	if sendsPrimaryAuth {
+		authHeader, err = c.authHeader(ctx)
+	}
 {{- else}}
 	authHeader, err := c.authHeader(ctx)
+{{- end}}
 {{- end}}
 	if err != nil {
 		return nil, 0, err
@@ -2416,7 +2529,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	// (or empty). On the live path, ensure a fresh token if none is cached.
 	// Dry-run deliberately skips this — we want previews to reflect what's
 	// cached, never trigger a network fetch.
-	if !c.DryRun && {{if .HasTierRouting}}c.requestTier == "" && {{end}}authHeader == "" && c.Session != nil {
+	if !c.DryRun && {{if .HasTierRouting}}c.requestTier == "" && {{end}}{{if .HasPerOperationAuth}}sendsPrimaryAuth && {{end}}authHeader == "" && c.Session != nil {
 		tok, terr := c.Session.EnsureToken()
 		if terr != nil {
 			return nil, 0, terr
@@ -2428,8 +2541,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	}
 {{- end}}
 {{- if .HasPerOperationAuth}}
-	opScheme := c.operationAuthScheme(method, path)
-	if opScheme != "" && opScheme != {{printf "%q" .Auth.Scheme}} {
+	if !sendsPrimaryAuth {
 		authHeader = ""
 	}
 {{- end}}
@@ -2497,7 +2609,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 
 		// Re-resolve session token each iteration — may have been invalidated
 		// by a previous attempt returning 401/403.
-		if {{if .HasTierRouting}}c.requestTier == "" && {{end}}authHeader == "" && c.Session != nil {
+		if {{if .HasTierRouting}}c.requestTier == "" && {{end}}{{if .HasPerOperationAuth}}sendsPrimaryAuth && {{end}}authHeader == "" && c.Session != nil {
 			tok, terr := c.Session.EnsureToken()
 			if terr != nil {
 				return nil, 0, terr

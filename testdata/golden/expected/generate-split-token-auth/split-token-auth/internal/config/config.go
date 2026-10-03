@@ -169,9 +169,8 @@ func Load(configPath string) (*Config, error) {
 		cfg.AuthSource = "env:SPLIT_TOKEN_SERVER_TOKEN"
 		cfg.CredentialSource = "env:SPLIT_TOKEN_SERVER_TOKEN"
 	}
-	// Sibling-scheme per-call credential sent on every request alongside the
-	// primary auth. AuthSource intentionally not stamped: the primary auth
-	// remains the canonical surface for doctor/auth-status reporting.
+	// Do not stamp AuthSource from a sibling env var. Doctor reads that field
+	// as the primary credential and reports other schemes on their own.
 	if v := cliutil.EnvOverride("SPLIT_TOKEN_ACCOUNT_TOKEN"); v != "" {
 		cfg.SplitTokenAccountToken = v
 		cfg.markEnvOverride("SplitTokenAccountToken")
@@ -358,7 +357,13 @@ func (c *Config) CredentialConfigured() bool {
 	if c == nil {
 		return false
 	}
-	return c.AuthHeader() != ""
+	if c.AuthHeader() != "" {
+		return true
+	}
+	if c.SplitTokenAccountToken != "" {
+		return true
+	}
+	return false
 }
 
 func (c *Config) AgentcookieManagedByExternalStore() bool {

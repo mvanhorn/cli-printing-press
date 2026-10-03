@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -38,25 +39,36 @@ func TestGeneratedSplitTokenClientSendsOnlyOperationCredential(t *testing.T) {
 
 	clientSrc := readGenerated(t, outputDir, "internal", "client", "client.go")
 	require.Contains(t, clientSrc, `opScheme := c.operationAuthScheme(method, path)`)
+	require.Contains(t, clientSrc, `sendsPrimaryAuth := opScheme == "" || opScheme == "serverToken"`)
+	require.Contains(t, clientSrc, `if sendsPrimaryAuth {`)
 	require.Contains(t, clientSrc, `if opScheme == "accountToken"`)
-	require.Contains(t, clientSrc, `req.Header.Set("X-Account-Token", v)`)
+	require.GreaterOrEqual(t, strings.Count(clientSrc, `req.Header.Set("X-Account-Token", v)`), 2)
 	require.Contains(t, clientSrc, `req.Header.Set("X-Server-Token", authHeader)`)
+	require.Contains(t, clientSrc, `operationCredentialCacheID`)
+	require.Contains(t, clientSrc, `|op_cred=`)
+	require.Contains(t, clientSrc, `operationSendsPrimaryAuth`)
 
 	doctorSrc := readGenerated(t, outputDir, "internal", "cli", "doctor.go")
 	require.Contains(t, doctorSrc, `report["auth_schemes"]`)
 	require.Contains(t, doctorSrc, `"accountToken: configured"`)
 	require.Contains(t, doctorSrc, `"serverToken: not configured"`)
+	require.Contains(t, doctorSrc, serverEnv+` reported per auth scheme`)
 	require.NotContains(t, doctorSrc, `recordAdditionalAuthEnv("`+accountEnv+`"`)
+
+	requireGeneratedCompiles(t, outputDir)
 
 	behaviorTest := `package client
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"` + modulePath + `/internal/cliutil"
 	"` + modulePath + `/internal/config"
 )
 
@@ -127,6 +139,131 @@ func TestOperationAuthSchemeMatching(t *testing.T) {
 		t.Fatalf("unknown scheme = %q", got)
 	}
 }
+
+func TestAccountTokenCacheDoesNotCrossAccounts(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("X-Server-Token") != "" {
+			t.Errorf("account endpoint sent server token %q", r.Header.Get("X-Server-Token"))
+		}
+		account := r.Header.Get("X-Account-Token")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(` + "`" + `{"account":"` + "`" + ` + account + ` + "`" + `"}` + "`" + `))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		BaseURL: server.URL,
+		Path:    "same-config",
+		` + serverField + `: "server-secret",
+		` + accountField + `: "account-a",
+	}
+	c := New(cfg, time.Second, 0)
+	c.cacheDir = t.TempDir()
+	ctx := context.Background()
+	first, err := c.Get(ctx, "/servers", nil)
+	if err != nil {
+		t.Fatalf("first get: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls after first get = %d", calls)
+	}
+	warm, err := c.Get(ctx, "/servers", nil)
+	if err != nil {
+		t.Fatalf("warm get: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("cache was not warm, calls = %d", calls)
+	}
+	if string(warm) != string(first) {
+		t.Fatalf("warm body = %s, want %s", warm, first)
+	}
+	cfg.` + accountField + ` = "account-b"
+	second, err := c.Get(ctx, "/servers", nil)
+	if err != nil {
+		t.Fatalf("second account: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("second account reused the first account cache, calls = %d body = %s", calls, second)
+	}
+	if !strings.Contains(string(second), "account-b") {
+		t.Fatalf("second body = %s", second)
+	}
+}
+
+func TestRedirectAppliesDestinationAccountCredential(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/messages/hop":
+			if r.Header.Get("X-Server-Token") != "server-secret" || r.Header.Get("X-Account-Token") != "" {
+				t.Errorf("origin server=%q account=%q", r.Header.Get("X-Server-Token"), r.Header.Get("X-Account-Token"))
+			}
+			http.Redirect(w, r, "/servers/landed", http.StatusFound)
+		case "/servers/landed":
+			if r.Header.Get("X-Account-Token") != "account-secret" || r.Header.Get("X-Server-Token") != "" {
+				t.Errorf("redirect server=%q account=%q", r.Header.Get("X-Server-Token"), r.Header.Get("X-Account-Token"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(` + "`" + `{"ok":true}` + "`" + `))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		BaseURL: server.URL,
+		` + serverField + `: "server-secret",
+		` + accountField + `: "account-secret",
+	}
+	c := New(cfg, time.Second, 0)
+	c.NoCache = true
+	if _, err := c.Get(context.Background(), "/messages/hop", nil); err != nil {
+		t.Fatalf("redirected get: %v", err)
+	}
+}
+
+func TestAccountTokenIgnoresUnusedServerCredential(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Server-Token") != "" || r.Header.Get("X-Account-Token") != "account-secret" {
+			t.Errorf("path %s server=%q account=%q", r.URL.Path, r.Header.Get("X-Server-Token"), r.Header.Get("X-Account-Token"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(` + "`" + `{"ok":true}` + "`" + `))
+	}))
+	defer server.Close()
+
+	refused := &config.Config{
+		BaseURL: server.URL,
+		` + accountField + `: "account-secret",
+		CredentialRefusals: []cliutil.CredentialRefusal{{
+			Source:             "config",
+			Path:               "config.toml",
+			Err:                errors.New("unsafe permissions"),
+			CredentialsPresent: true,
+		}},
+	}
+	c := New(refused, time.Second, 0)
+	c.NoCache = true
+	if _, err := c.Get(context.Background(), "/servers", nil); err != nil {
+		t.Fatalf("refused server token blocked account endpoint: %v", err)
+	}
+
+	placeholder := &config.Config{
+		BaseURL: server.URL,
+		` + serverField + `: "YOUR_TOKEN_HERE",
+		` + accountField + `: "account-secret",
+	}
+	c = New(placeholder, time.Second, 0)
+	c.NoCache = true
+	if _, err := c.Get(context.Background(), "/servers", nil); err != nil {
+		t.Fatalf("placeholder server token blocked account endpoint: %v", err)
+	}
+	if _, err := c.Get(context.Background(), "/messages/abc", nil); err == nil {
+		t.Fatal("server endpoint accepted a placeholder server token")
+	}
+}
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "split_auth_test.go"), []byte(behaviorTest), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/client", "-count=1")
@@ -175,10 +312,25 @@ func TestGeneratedDoctorReportsSplitTokenSchemesSeparately(t *testing.T) {
 	require.Contains(t, human, "Auth Schemes:")
 	require.Contains(t, human, "WARN accountToken: not configured; serverToken: configured")
 
+	accountOnly := append(append([]string{}, base...), serverEnv+"=", accountEnv+"=account-secret", prefix+"_BASE_URL="+probe.URL)
+	payload, err = runDoctorJSON(t, binaryPath, accountOnly)
+	require.NoError(t, err)
+	require.Equal(t, "configured", payload["auth"])
+	schemes, _ = payload["auth_schemes"].(string)
+	require.Equal(t, "WARN accountToken: configured; serverToken: not configured", schemes)
+	envVars, _ := payload["env_vars"].(string)
+	require.NotContains(t, envVars, "ERROR")
+	require.NotContains(t, envVars, "missing required")
+	require.Contains(t, envVars, serverEnv+" reported per auth scheme")
+	_, err = runDoctorJSON(t, binaryPath, accountOnly, "--fail-on", "error")
+	require.NoError(t, err, "a missing server token must not fail --fail-on=error when the account token is configured")
+	_, err = runDoctorJSON(t, binaryPath, accountOnly, "--fail-on", "warn")
+	require.Error(t, err, "--fail-on=warn trips when the server token scheme is absent")
+
 	neither := append(append([]string{}, base...), serverEnv+"=", accountEnv+"=", prefix+"_BASE_URL="+probe.URL)
 	payload, err = runDoctorJSON(t, binaryPath, neither)
 	require.NoError(t, err)
-	envVars, _ := payload["env_vars"].(string)
+	envVars, _ = payload["env_vars"].(string)
 	require.Contains(t, envVars, "ERROR missing required: "+serverEnv)
 	_, err = runDoctorJSON(t, binaryPath, neither, "--fail-on", "error")
 	require.Error(t, err)

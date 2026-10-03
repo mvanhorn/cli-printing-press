@@ -530,12 +530,19 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- if .Required}}
 			if os.Getenv("{{.Name}}") != "" {
 				authEnvSet = append(authEnvSet, "{{.Name}}")
-			} else if authConfigured {
+			} else if authConfigured{{if $.HasPerOperationAuth}} && cfg != nil && cfg.AuthHeader() != ""{{end}} {
 				authSource, _ := report["auth_source"].(string)
 				if authSource == "" {
 					authSource = "config"
 				}
 				authEnvInfo = append(authEnvInfo, "credentials available from "+authSource)
+{{- if $.HasPerOperationAuth}}
+			} else if cfg != nil && cfg.CredentialConfigured() {
+				// Another scheme can authenticate its own operations. Failing
+				// doctor here would treat this env var as a prerequisite for
+				// calls that never send it. auth_schemes reports the gap.
+				authEnvInfo = append(authEnvInfo, "{{.Name}} reported per auth scheme")
+{{- end}}
 			} else {
 				authEnvRequiredMissing = append(authEnvRequiredMissing, "{{.Name}}")
 			}
