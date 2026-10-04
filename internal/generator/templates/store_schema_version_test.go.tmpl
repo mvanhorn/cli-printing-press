@@ -4,6 +4,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -207,8 +208,7 @@ func runHardenLockProbe() {
 		fmt.Fprintln(os.Stderr, "probe wrote under a live parent lock")
 		os.Exit(0)
 	}
-	lower := strings.ToLower(err.Error())
-	if strings.Contains(lower, "busy") || strings.Contains(lower, "locked") {
+	if sqliteBusyOrLocked(err) {
 		os.Exit(5)
 	}
 	fmt.Fprintf(os.Stderr, "probe write: %v\n", err)
@@ -233,6 +233,7 @@ func TestHardenSQLiteFilesConcurrentWritersKeepIntegrity(t *testing.T) {
 	const helpers = 8
 	const rounds = 15
 	cmds := make([]*exec.Cmd, helpers)
+	stderrs := make([]bytes.Buffer, helpers)
 	for i := 0; i < helpers; i++ {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestHardenSQLiteFilesConcurrentWritersKeepIntegrity$", "-test.count=1")
 		cmd.Env = append(os.Environ(),
@@ -241,6 +242,7 @@ func TestHardenSQLiteFilesConcurrentWritersKeepIntegrity(t *testing.T) {
 			fmt.Sprintf("PP_STORE_HARDEN_ID=%d", i),
 			fmt.Sprintf("PP_STORE_HARDEN_ROUNDS=%d", rounds),
 		)
+		cmd.Stderr = &stderrs[i]
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("start writer %d: %v", i, err)
 		}
@@ -248,7 +250,7 @@ func TestHardenSQLiteFilesConcurrentWritersKeepIntegrity(t *testing.T) {
 	}
 	for i, cmd := range cmds {
 		if err := cmd.Wait(); err != nil {
-			t.Fatalf("writer %d: %v", i, err)
+			t.Fatalf("writer %d: %v\n%s", i, err, stderrs[i].String())
 		}
 	}
 
@@ -285,6 +287,15 @@ func TestHardenSQLiteFilesConcurrentWritersKeepIntegrity(t *testing.T) {
 	}
 }
 
+// The production DSN waits 5s. A queue of writers stalled under host
+// contention outlasts that, and modernc.org/sqlite does not always apply
+// busy_timeout to BEGIN IMMEDIATE. Helpers wait longer and retry only
+// lock contention; any other Upsert error stays a store defect.
+const (
+	hardenWriterBusyTimeoutMS = 30000
+	hardenWriterBusyBudget    = 2 * time.Minute
+)
+
 func runHardenWriterHelper() {
 	dbPath := os.Getenv("PP_STORE_HARDEN_DB")
 	if dbPath == "" {
@@ -304,12 +315,122 @@ func runHardenWriterHelper() {
 		os.Exit(3)
 	}
 	defer s.Close()
+	if err := raiseHardenWriterBusyTimeout(s.DB()); err != nil {
+		fmt.Fprintf(os.Stderr, "busy_timeout: %v\n", err)
+		os.Exit(3)
+	}
+	deadline := time.Now().Add(hardenWriterBusyBudget)
 	for i := 0; i < rounds; i++ {
 		rowID := fmt.Sprintf("w%s-%d", id, i)
-		if err := s.Upsert("concurrent", rowID, json.RawMessage(fmt.Sprintf(`{"id":%q}`, rowID))); err != nil {
+		if err := upsertConcurrentUntilSettled(s, rowID, deadline); err != nil {
 			fmt.Fprintf(os.Stderr, "upsert %s: %v\n", rowID, err)
 			os.Exit(4)
 		}
+	}
+}
+
+// Open pools two connections. busy_timeout is per connection, so the helper
+// pins the pool to one before raising it. Otherwise Upsert can still use a
+// connection that kept the 5s DSN timeout.
+func raiseHardenWriterBusyTimeout(db *sql.DB) error {
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA busy_timeout = %d", hardenWriterBusyTimeoutMS)); err != nil {
+		return err
+	}
+	var got int
+	if err := db.QueryRow(`PRAGMA busy_timeout`).Scan(&got); err != nil {
+		return err
+	}
+	if got != hardenWriterBusyTimeoutMS {
+		return fmt.Errorf("busy_timeout = %d, want %d", got, hardenWriterBusyTimeoutMS)
+	}
+	return nil
+}
+
+func upsertConcurrentUntilSettled(s *Store, rowID string, deadline time.Time) error {
+	payload := json.RawMessage(fmt.Sprintf(`{"id":%q}`, rowID))
+	backoff := 5 * time.Millisecond
+	for {
+		err := s.Upsert("concurrent", rowID, payload)
+		if !sqliteBusyOrLocked(err) {
+			return err
+		}
+		if !time.Now().Before(deadline) {
+			return err
+		}
+		time.Sleep(backoff)
+		backoff = min(backoff*2, 100*time.Millisecond)
+	}
+}
+
+func sqliteBusyOrLocked(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "busy") || strings.Contains(msg, "locked")
+}
+
+func TestSQLiteBusyOrLockedClassifiesContention(t *testing.T) {
+	for _, msg := range []string{
+		"database is locked (5) (SQLITE_BUSY)",
+		"database table is locked (SQLITE_LOCKED)",
+		"SQLITE_BUSY",
+		"busy",
+	} {
+		if !sqliteBusyOrLocked(errors.New(msg)) {
+			t.Fatalf("sqliteBusyOrLocked(%q) = false, want true", msg)
+		}
+	}
+	if sqliteBusyOrLocked(nil) {
+		t.Fatal("nil error must not retry")
+	}
+	if sqliteBusyOrLocked(errors.New("no such table: resources")) {
+		t.Fatal("schema errors must not retry")
+	}
+}
+
+func TestHardenSQLiteFilesWriterHelperStderr(t *testing.T) {
+	// The re-exec'd helper inherits os.Environ. Drop a parent PP_STORE_HARDEN_DB
+	// so this case stays on the missing-path error.
+	t.Setenv("PP_STORE_HARDEN_DB", filepath.Join(t.TempDir(), "inherited.db"))
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHardenSQLiteFilesConcurrentWritersKeepIntegrity$", "-test.count=1")
+	env := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "PP_STORE_HARDEN_DB=") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	cmd.Env = append(env, "PP_STORE_HARDEN_WRITER=1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		t.Fatal("helper succeeded without PP_STORE_HARDEN_DB")
+	}
+	if !strings.Contains(stderr.String(), "PP_STORE_HARDEN_DB is required") {
+		t.Fatalf("stderr = %q, want the missing-path error", stderr.String())
+	}
+}
+
+func TestHardenSQLiteFilesWriterBusyTimeout(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	if err := raiseHardenWriterBusyTimeout(s.DB()); err != nil {
+		t.Fatalf("raise busy_timeout: %v", err)
+	}
+	var got int
+	if err := s.DB().QueryRow(`PRAGMA busy_timeout`).Scan(&got); err != nil {
+		t.Fatalf("read busy_timeout: %v", err)
+	}
+	if got != hardenWriterBusyTimeoutMS {
+		t.Fatalf("busy_timeout = %d, want %d", got, hardenWriterBusyTimeoutMS)
 	}
 }
 
