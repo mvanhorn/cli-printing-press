@@ -108,7 +108,18 @@ func TestGeneratedCacheStoreHardening(t *testing.T) {
 
 func runGeneratedStoreHardeningTests(t *testing.T, outputDir string) {
 	t.Helper()
-	runGoCommand(t, outputDir, "test", "./internal/store", "-run", "^(TestOpen(HardensSQLiteFilePermissions|WithRelativePathDoesNotChmodWorkingDirectory)|TestHardenSQLiteFiles)", "-count", "1")
+	schemaTest := readGeneratedFile(t, outputDir, "internal", "store", "schema_version_test.go")
+	require.Contains(t, schemaTest, "cmd.Stderr = &stderrs[i]",
+		"concurrent writer failures must include helper stderr, not only the exit status")
+	require.Contains(t, schemaTest, `t.Fatalf("writer %d: %v\n%s", i, err, stderrs[i].String())`,
+		"the parent must report the helper's SQLite error text")
+	require.Contains(t, schemaTest, "sqliteBusyOrLocked(err)",
+		"writers must retry SQLITE_BUSY / database locked and fail closed on other errors")
+	require.Contains(t, schemaTest, "hardenWriterBusyTimeoutMS = 30000",
+		"writer helpers must wait longer than the production 5s busy_timeout")
+	require.Contains(t, schemaTest, "os.Exit(4)",
+		"a non-busy Upsert error must still fail the helper")
+	runGoCommand(t, outputDir, "test", "./internal/store", "-run", "^(TestOpen(HardensSQLiteFilePermissions|WithRelativePathDoesNotChmodWorkingDirectory)|TestHardenSQLiteFiles|TestSQLiteBusyOrLockedClassifiesContention)", "-count", "1")
 }
 
 func requireLockSafeSQLiteHardening(t *testing.T, storeGo string) {
