@@ -4,6 +4,7 @@
 catalog/specs/*.graphql
 .cache/
 .gotmp/
+.gocache/
 .omx/
 .clawpatch/
 .claude/worktrees/
