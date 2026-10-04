@@ -391,8 +391,19 @@ func TestSQLiteBusyOrLockedClassifiesContention(t *testing.T) {
 }
 
 func TestHardenSQLiteFilesWriterHelperStderr(t *testing.T) {
+	// The re-exec'd helper inherits os.Environ. Drop a parent PP_STORE_HARDEN_DB
+	// so this case stays on the missing-path error.
+	t.Setenv("PP_STORE_HARDEN_DB", filepath.Join(t.TempDir(), "inherited.db"))
+
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHardenSQLiteFilesConcurrentWritersKeepIntegrity$", "-test.count=1")
-	cmd.Env = append(os.Environ(), "PP_STORE_HARDEN_WRITER=1")
+	env := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "PP_STORE_HARDEN_DB=") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	cmd.Env = append(env, "PP_STORE_HARDEN_WRITER=1")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	err := cmd.Run()

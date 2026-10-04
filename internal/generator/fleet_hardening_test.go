@@ -119,6 +119,10 @@ func runGeneratedStoreHardeningTests(t *testing.T, outputDir string) {
 		"writer helpers must wait longer than the production 5s busy_timeout")
 	require.Contains(t, schemaTest, "os.Exit(4)",
 		"a non-busy Upsert error must still fail the helper")
+	require.Contains(t, schemaTest, `t.Setenv("PP_STORE_HARDEN_DB"`,
+		"the missing-path test must set PP_STORE_HARDEN_DB on the parent so inheritance is visible")
+	require.Contains(t, schemaTest, `strings.HasPrefix(entry, "PP_STORE_HARDEN_DB=")`,
+		"the missing-path child must drop an inherited PP_STORE_HARDEN_DB before it re-execs the writer")
 	runGoCommand(t, outputDir, "test", "./internal/store", "-run", "^(TestOpen(HardensSQLiteFilePermissions|WithRelativePathDoesNotChmodWorkingDirectory)|TestHardenSQLiteFiles|TestSQLiteBusyOrLockedClassifiesContention)", "-count", "1")
 }
 
