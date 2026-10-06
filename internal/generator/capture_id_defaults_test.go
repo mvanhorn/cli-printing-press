@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -226,4 +227,68 @@ func TestSanitizeCapturedResourceIDsForGenerate(t *testing.T) {
 		sanitizeCapturedResourceIDsForGenerate(apiSpec)
 		assert.Nil(t, apiSpec.Resources["clients"].Endpoints["get"].Params[0].Default, source)
 	}
+}
+
+func TestGeneratedCommandKeepsAuthoredUUIDEmbeddingFixtures(t *testing.T) {
+	t.Parallel()
+
+	const (
+		realUUID    = "f2233452-c527-4139-b3c2-43b343147fa0"
+		urn         = "id:ad:" + realUUID + ":list:663258568"
+		placeholder = "550e8400-e29b-41d4-a716-446655440000"
+	)
+	apiSpec := minimalSpec("fixture-urn")
+	apiSpec.SpecSource = ""
+	apiSpec.Resources["accounts"] = spec.Resource{
+		Description: "Accounts",
+		Endpoints: map[string]spec.Endpoint{
+			"get": {
+				Method:      "GET",
+				Path:        "/accounts",
+				Description: "Get an account",
+				Params: []spec.Param{
+					{Name: "account_id", Type: "string", Required: true},
+				},
+			},
+		},
+	}
+	apiSpec.Resources["listings"] = spec.Resource{
+		Description: "Listings",
+		Endpoints: map[string]spec.Endpoint{
+			"get": {
+				Method:      "GET",
+				Path:        "/listings",
+				Description: "Get a listing",
+				Example:     "  fixture-urn-pp-cli listings get --urn=" + urn,
+				HappyArgs:   "--urn=" + urn,
+				Params: []spec.Param{
+					{Name: "urn", Type: "string", Required: true, Example: urn},
+				},
+			},
+			"list": {
+				Method:      "GET",
+				Path:        "/listings",
+				Description: "List listings",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	listingSrc := readGeneratedFile(t, outputDir, "internal", "cli", "listings_get.go")
+	assert.Contains(t, listingSrc, "fixture-urn-pp-cli listings get --urn="+urn)
+	assert.Contains(t, listingSrc, `"pp:happy-args": "--urn=`+urn+`"`)
+	assert.NotContains(t, listingSrc, placeholder)
+
+	accountSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_accounts.go")
+	assert.NotContains(t, accountSrc, realUUID)
+	assert.NotContains(t, accountSrc, "Example:")
+	assert.NotContains(t, accountSrc, "pp:happy-args")
+
+	readme := readGeneratedFile(t, outputDir, "README.md")
+	assert.Contains(t, readme, "fixture-urn-pp-cli accounts --account-id "+placeholder)
+	assert.NotContains(t, readme, realUUID)
+
+	requireGeneratedCompiles(t, outputDir)
 }

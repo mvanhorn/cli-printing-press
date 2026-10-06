@@ -50,8 +50,9 @@ func sanitizeCapturedResourceIDResource(resource spec.Resource) spec.Resource {
 func sanitizeCapturedResourceIDEndpoint(endpoint spec.Endpoint) spec.Endpoint {
 	sanitizeCapturedResourceIDParams(endpoint.Params)
 	sanitizeCapturedResourceIDParams(endpoint.Body)
-	endpoint.Example = replaceCapturedResourceIDsInText(endpoint.Example)
-	endpoint.HappyArgs = replaceCapturedResourceIDsInText(endpoint.HappyArgs)
+	// Example and HappyArgs are author fixtures. Capture sessions land in
+	// defaults and request bodies; rewriting ids inside these strings
+	// replaces public identifiers the author supplied for live probes.
 	endpoint.HappyStdin = sanitizeCapturedResourceIDJSONString(endpoint.HappyStdin)
 	return endpoint
 }
