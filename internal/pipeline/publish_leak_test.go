@@ -124,6 +124,13 @@ func TestCopyPublishableManuscriptDirOmitsWriterSamples(t *testing.T) {
 	require.NoError(t, os.MkdirAll(notesDir, 0o755))
 	fieldNotes := []byte("authored sample notes\n")
 	require.NoError(t, os.WriteFile(filepath.Join(notesDir, "notes.md"), fieldNotes, 0o644))
+	stemDir := filepath.Join(research, "api-spec-samples")
+	require.NoError(t, os.MkdirAll(stemDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stemDir, "get__config.json"), []byte(`{"raw_url":"https://api.example.com/v1/config?key=AIzaSyFAKEKEY123456","response_body":{"ok":true}}`+"\n"), 0o644))
+	authoredDir := filepath.Join(research, "notes-samples")
+	require.NoError(t, os.MkdirAll(authoredDir, 0o755))
+	authoredJSON := []byte(`{"title":"field notes","items":["one"]}` + "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(authoredDir, "summary.json"), authoredJSON, 0o644))
 
 	brief := []byte("# brief\n")
 	analysis := []byte(`{"raw_url":"https://api.example.com/v1/items?limit=1","note":"synthesis"}` + "\n")
@@ -140,9 +147,13 @@ func TestCopyPublishableManuscriptDirOmitsWriterSamples(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(dst, "research", "sniff-spec-samples"))
 	assert.NoDirExists(t, filepath.Join(dst, "research", "raw-evidence"))
 	assert.NoDirExists(t, filepath.Join(dst, "research", "asoview-sniff-samples"))
+	assert.NoDirExists(t, filepath.Join(dst, "research", "api-spec-samples"))
 	gotField, err := os.ReadFile(filepath.Join(dst, "research", "field-samples", "notes.md"))
 	require.NoError(t, err)
 	assert.Equal(t, string(fieldNotes), string(gotField))
+	gotAuthored, err := os.ReadFile(filepath.Join(dst, "research", "notes-samples", "summary.json"))
+	require.NoError(t, err)
+	assert.Equal(t, string(authoredJSON), string(gotAuthored))
 	gotBrief, err := os.ReadFile(filepath.Join(dst, "research", "brief.md"))
 	require.NoError(t, err)
 	assert.Equal(t, string(brief), string(gotBrief))
@@ -156,6 +167,7 @@ func TestCopyPublishableManuscriptDirOmitsWriterSamples(t *testing.T) {
 	assert.FileExists(t, filepath.Join(included, "research", "sniff-spec-samples", browsersniff.SamplesDirMarker))
 	assert.FileExists(t, filepath.Join(included, "research", "raw-evidence", browsersniff.SamplesDirMarker))
 	assert.FileExists(t, filepath.Join(included, "research", "asoview-sniff-samples", "get__items.json"))
+	assert.FileExists(t, filepath.Join(included, "research", "api-spec-samples", "get__config.json"))
 }
 
 func TestRedactAbsoluteHostPaths(t *testing.T) {

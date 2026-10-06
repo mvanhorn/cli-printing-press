@@ -819,24 +819,58 @@ func isRawBrowserSniffCapture(path string, info fs.FileInfo) bool {
 		return true
 	}
 	// New writes carry the marker for any --samples-output name. Older trees
-	// used a <stem>-samples directory and put sniff or browser in that name
-	// (sniff-spec-samples, browser-spec-samples). A research directory that
-	// only ends in -samples is authored notes.
+	// used *-browser-sniff-spec-samples, or <stem>-samples for any spec stem.
+	// Stem directories still hold raw_url credentials. Authored notes in a
+	// -samples directory do not.
 	if info.IsDir() && hasSniffSamplesMarker(path) {
 		return true
 	}
-	if info.IsDir() && pathHasComponent(parentPath, "research") && isHistoricalSniffSamplesDir(base) {
+	if info.IsDir() && pathHasComponent(parentPath, "research") && isHistoricalSniffSamplesDir(path, base) {
 		return true
 	}
 	return false
 }
 
-func isHistoricalSniffSamplesDir(name string) bool {
+func isHistoricalSniffSamplesDir(dir, name string) bool {
 	lower := strings.ToLower(name)
 	if !strings.HasSuffix(lower, "-samples") {
 		return false
 	}
-	return strings.Contains(lower, "sniff") || strings.Contains(lower, "browser")
+	// The pre-marker writer default. Keep it even when the JSON was already
+	// scrubbed of raw_url, so those trees do not reappear on republish.
+	if strings.HasSuffix(lower, "-browser-sniff-spec-samples") {
+		return true
+	}
+	return dirContainsRawURLSample(dir)
+}
+
+const rawURLSampleScanBytes = 64 * 1024
+
+func dirContainsRawURLSample(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		f, err := os.Open(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		buf := make([]byte, rawURLSampleScanBytes)
+		n, _ := f.Read(buf)
+		_ = f.Close()
+		if bytes.Contains(buf[:n], []byte(`"raw_url"`)) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasSniffSamplesMarker(dir string) bool {
