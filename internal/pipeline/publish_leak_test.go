@@ -120,6 +120,10 @@ func TestCopyPublishableManuscriptDirOmitsWriterSamples(t *testing.T) {
 	require.NoError(t, err)
 	require.Positive(t, n)
 	require.NoError(t, os.WriteFile(filepath.Join(historical, "get__items.json"), []byte(`{"raw_url":"https://api.example.com/v1/items","response_body":{}}`+"\n"), 0o644))
+	notesDir := filepath.Join(research, "field-samples")
+	require.NoError(t, os.MkdirAll(notesDir, 0o755))
+	fieldNotes := []byte("authored sample notes\n")
+	require.NoError(t, os.WriteFile(filepath.Join(notesDir, "notes.md"), fieldNotes, 0o644))
 
 	brief := []byte("# brief\n")
 	analysis := []byte(`{"raw_url":"https://api.example.com/v1/items?limit=1","note":"synthesis"}` + "\n")
@@ -136,6 +140,9 @@ func TestCopyPublishableManuscriptDirOmitsWriterSamples(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(dst, "research", "sniff-spec-samples"))
 	assert.NoDirExists(t, filepath.Join(dst, "research", "raw-evidence"))
 	assert.NoDirExists(t, filepath.Join(dst, "research", "asoview-sniff-samples"))
+	gotField, err := os.ReadFile(filepath.Join(dst, "research", "field-samples", "notes.md"))
+	require.NoError(t, err)
+	assert.Equal(t, string(fieldNotes), string(gotField))
 	gotBrief, err := os.ReadFile(filepath.Join(dst, "research", "brief.md"))
 	require.NoError(t, err)
 	assert.Equal(t, string(brief), string(gotBrief))
@@ -155,21 +162,50 @@ func TestRedactAbsoluteHostPaths(t *testing.T) {
 	home := "/Users/operator/printing-press/library/example"
 	linux := "/home/operator/printing-press/library/example"
 	dotfile := "/home/operator/.config/printing-press/credentials"
+	keyed := "dir=" + home
 	runstate := "/Users/operator/printing-press/.runstate/scope/runs/abc/proofs/out.json"
 	windows := `C:\\Users\\operator\\printing-press\\.runstate\\scope\\a.json`
-	in := "cli " + home + "\nlinux " + linux + "\ndot " + dotfile + "\nstate " + runstate + "\nwin " + windows + "\nurl https://example.com/home/docs\nroute /home/timeline/feed\n"
+	windowsHome := `C:\\Users\\operator\\printing-press\\library`
+	in := "cli " + home + "\nlinux " + linux + "\ndot " + dotfile + "\n" + keyed + "\nstate " + runstate + "\nwin " + windows + "\nhome " + windowsHome + "\nurl https://example.com/home/docs\nroute /home/timeline/feed\n"
 	got := redactAbsoluteHostPaths(in)
 	assert.NotContains(t, got, "/Users/operator")
 	assert.NotContains(t, got, "/home/operator")
 	assert.NotContains(t, got, `C:\\Users\\operator`)
+	assert.Contains(t, got, "dir="+artifacts.CLIDirPlaceholder+"/printing-press/library/example")
 	assert.Contains(t, got, artifacts.CLIDirPlaceholder+"/printing-press/library/example")
 	assert.Contains(t, got, artifacts.CLIDirPlaceholder+"/.config/printing-press/credentials")
 	assert.Contains(t, got, artifacts.RunStatePlaceholder+"/scope/runs/abc/proofs/out.json")
 	assert.Contains(t, got, artifacts.RunStatePlaceholder+`\\scope\\a.json`)
+	assert.Contains(t, got, artifacts.CLIDirPlaceholder+`\\printing-press\\library`)
 	assert.Contains(t, got, "https://example.com/home/docs")
 	assert.Contains(t, got, "/home/timeline/feed")
 	assert.Equal(t, got, redactAbsoluteHostPaths(got))
 	if strings.Contains(got, "/Users/") || strings.Contains(got, "/home/operator") {
 		t.Fatalf("redacted text still has a home path:\n%s", got)
 	}
+}
+
+func TestCopyPublishableManuscriptDirRedactsReadOnlyAndEscapedWindowsHome(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	require.NoError(t, os.MkdirAll(src, 0o755))
+	note := []byte("see /Users/operator/printing-press/library/example\n")
+	require.NoError(t, os.WriteFile(filepath.Join(src, "note.md"), note, 0o444))
+	windows := []byte("{\"dir\":\"C:\\\\Users\\\\operator\\\\printing-press\\\\library\"}\n")
+	require.NoError(t, os.WriteFile(filepath.Join(src, "win.json"), windows, 0o644))
+
+	dst := filepath.Join(t.TempDir(), "dst")
+	require.NoError(t, CopyPublishableManuscriptDir(src, dst))
+
+	gotNote, err := os.ReadFile(filepath.Join(dst, "note.md"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(gotNote), "/Users/operator")
+	assert.Contains(t, string(gotNote), artifacts.CLIDirPlaceholder+"/printing-press/library/example")
+	info, err := os.Stat(filepath.Join(dst, "note.md"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o444), info.Mode().Perm())
+
+	gotWin, err := os.ReadFile(filepath.Join(dst, "win.json"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(gotWin), `C:\\Users\\operator`)
+	assert.Contains(t, string(gotWin), artifacts.CLIDirPlaceholder)
 }

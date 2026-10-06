@@ -11,12 +11,11 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 )
 
-// redactAbsoluteHostPathsInTree rewrites absolute home and .runstate paths in
-// shipped manuscript text. Route-shaped paths such as /home/timeline stay:
-// a home prefix is rewritten only when the path also contains printing-press
-// or a dotfile component, which is how operator paths show up and how API
-// routes do not. Any absolute path with a .runstate component is rewritten
-// through that component to <runstate>.
+// Operator home and .runstate paths still appear in notes after live
+// transcripts are omitted. A home prefix is rewritten only when the path
+// also contains printing-press or a dotfile component, so a route such as
+// /home/timeline stays. An absolute path with a .runstate component is
+// rewritten through that component.
 func redactAbsoluteHostPathsInTree(root string) error {
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || d.Type()&os.ModeSymlink != 0 {
@@ -40,8 +39,25 @@ func redactAbsoluteHostPathsInTree(root string) error {
 		if redacted == string(data) {
 			return nil
 		}
-		return os.WriteFile(path, []byte(redacted), info.Mode().Perm())
+		return writeRedactedFile(path, []byte(redacted), info.Mode().Perm())
 	})
+}
+
+// Copy keeps the source mode. A later open of a 0444 file is not writable
+// even for the owner, so packaging would fail on the first read-only note.
+func writeRedactedFile(path string, data []byte, perm os.FileMode) error {
+	if perm&0o200 == 0 {
+		if err := os.Chmod(path, perm|0o200); err != nil {
+			return err
+		}
+	}
+	err := os.WriteFile(path, data, perm)
+	if perm&0o200 == 0 {
+		if chmodErr := os.Chmod(path, perm); chmodErr != nil && err == nil {
+			return chmodErr
+		}
+	}
+	return err
 }
 
 func shouldScanHostPaths(data []byte) bool {
@@ -51,6 +67,7 @@ func shouldScanHostPaths(data []byte) bool {
 	return bytes.Contains(data, []byte("/Users/")) ||
 		bytes.Contains(data, []byte("/home/")) ||
 		bytes.Contains(data, []byte(`\Users\`)) ||
+		bytes.Contains(data, []byte(`\\Users\\`)) ||
 		bytes.Contains(data, []byte(".runstate"))
 }
 
@@ -89,7 +106,7 @@ func absoluteHostPathLen(s string, i int) int {
 
 func isHostPathByte(b byte) bool {
 	switch b {
-	case '/', '\\', ':', '.', '_', '-', '~', '%', '+', '=', '@':
+	case '/', '\\', ':', '.', '_', '-', '~', '%', '+', '@':
 		return true
 	default:
 		return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')

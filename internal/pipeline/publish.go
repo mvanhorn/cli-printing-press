@@ -818,16 +818,25 @@ func isRawBrowserSniffCapture(path string, info fs.FileInfo) bool {
 	if info.IsDir() && pathHasComponent(parentPath, "discovery") && base == "bundles" {
 		return true
 	}
-	// The samples writer names the directory <spec-stem>-samples for any
-	// --output, and drops SamplesDirMarker into every samples directory,
-	// including a custom --samples-output path that does not end in -samples.
+	// New writes carry the marker for any --samples-output name. Older trees
+	// used a <stem>-samples directory and put sniff or browser in that name
+	// (sniff-spec-samples, browser-spec-samples). A research directory that
+	// only ends in -samples is authored notes.
 	if info.IsDir() && hasSniffSamplesMarker(path) {
 		return true
 	}
-	if info.IsDir() && pathHasComponent(parentPath, "research") && strings.HasSuffix(base, "-samples") {
+	if info.IsDir() && pathHasComponent(parentPath, "research") && isHistoricalSniffSamplesDir(base) {
 		return true
 	}
 	return false
+}
+
+func isHistoricalSniffSamplesDir(name string) bool {
+	lower := strings.ToLower(name)
+	if !strings.HasSuffix(lower, "-samples") {
+		return false
+	}
+	return strings.Contains(lower, "sniff") || strings.Contains(lower, "browser")
 }
 
 func hasSniffSamplesMarker(dir string) bool {

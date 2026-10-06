@@ -1792,9 +1792,8 @@ type SampleFile struct {
 
 const sampleBodyMaxBytes = 16 * 1024
 
-// SamplesDirMarker is the file WriteSamples leaves in every samples directory.
-// publish package drops a directory that contains it, so exclusion does not
-// depend on the --output stem.
+// Present in every samples directory so publish can exclude that directory
+// without depending on the --output stem.
 const SamplesDirMarker = ".pp-sniff-samples"
 
 // DefaultSamplesPath returns the canonical samples directory for a spec at
