@@ -266,7 +266,7 @@ func importableResources(api *spec.APISpec) []string {
 	}
 	var names []string
 	for name, resource := range api.Resources {
-		if _, ok := resourceEndpointForMethod(resource, "POST"); ok {
+		if _, ok := resourceWriteEndpoint(resource); ok {
 			names = append(names, name)
 		}
 	}
@@ -275,6 +275,31 @@ func importableResources(api *spec.APISpec) []string {
 }
 
 func resourceEndpointForMethod(resource spec.Resource, method string) (spec.Endpoint, bool) {
+	return rankedResourceEndpoint(resource, func(name string, endpoint spec.Endpoint) bool {
+		if !strings.EqualFold(endpoint.Method, method) || strings.Contains(endpoint.Path, "{") {
+			return false
+		}
+		if strings.EqualFold(method, "GET") && name != "list" && !endpoint.Syncable && endpoint.Response.Type != "array" && endpoint.Pagination == nil {
+			return false
+		}
+		return true
+	})
+}
+
+// resourceWriteEndpoint is the POST import and resourceWritePaths target.
+// A collection POST is not a write when mutation is false, the operation
+// id is a read, or the body is only a filter. Path-templated POSTs stay
+// out, matching the previous selector.
+func resourceWriteEndpoint(resource spec.Resource) (spec.Endpoint, bool) {
+	return rankedResourceEndpoint(resource, func(name string, endpoint spec.Endpoint) bool {
+		if !strings.EqualFold(endpoint.Method, "POST") || strings.Contains(endpoint.Path, "{") {
+			return false
+		}
+		return endpointIsWriteCommand(endpoint, name)
+	})
+}
+
+func rankedResourceEndpoint(resource spec.Resource, accept func(name string, endpoint spec.Endpoint) bool) (spec.Endpoint, bool) {
 	names := make([]string, 0, len(resource.Endpoints))
 	for name := range resource.Endpoints {
 		names = append(names, name)
@@ -284,13 +309,9 @@ func resourceEndpointForMethod(resource spec.Resource, method string) (spec.Endp
 	})
 	for _, name := range names {
 		endpoint := resource.Endpoints[name]
-		if !strings.EqualFold(endpoint.Method, method) || strings.Contains(endpoint.Path, "{") {
-			continue
+		if accept(name, endpoint) {
+			return endpoint, true
 		}
-		if strings.EqualFold(method, "GET") && name != "list" && !endpoint.Syncable && endpoint.Response.Type != "array" && endpoint.Pagination == nil {
-			continue
-		}
-		return endpoint, true
 	}
 	return spec.Endpoint{}, false
 }

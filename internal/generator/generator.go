@@ -6839,7 +6839,7 @@ func resourcePathPageSize(data visionRenderData, endpoint spec.Endpoint) int {
 func resourceWritePathEntries(data visionRenderData) []resourcePathEntry {
 	entries := map[string]resourcePathEntry{}
 	for name, resource := range data.Resources {
-		endpoint, ok := resourceEndpointForMethod(resource, "POST")
+		endpoint, ok := resourceWriteEndpoint(resource)
 		if !ok {
 			continue
 		}

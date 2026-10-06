@@ -613,7 +613,14 @@ func Profile(s *spec.APISpec) *APIProfile {
 				standaloneList := pathCallable && (!requiredScope || endpoint.Syncable)
 				queryKeyParams := requiredQueryParentKeyCandidates(endpoint)
 				queryDependentCandidate := len(queryKeyParams) == 1 && !endpoint.Syncable && (!strings.Contains(endpoint.Path, "{") || resolvable) && !hasUnsatisfiedDependentScopeParams(endpoint, queryKeyParams[0])
+				// A search index still counts as list-capable above so
+				// volume and search signals stay, but it is not a bulk
+				// collection the store can walk.
+				skipLiveSearch := liveSearchIndexExcludedFromSync(endpoint)
 				addStandaloneCandidate := func() {
+					if skipLiveSearch {
+						return
+					}
 					meta := metaFromEndpoint(s, resourceName, r, endpoint, s.Types, resourceNameIndex)
 					if requiredScope && !endpoint.Syncable {
 						meta.SkipDefaultSync = true
@@ -621,6 +628,9 @@ func Profile(s *spec.APISpec) *APIProfile {
 					addSyncCandidate(resourceName, endpointName, meta)
 				}
 				trackParameterized := func(queryKeys []string) {
+					if skipLiveSearch {
+						return
+					}
 					key := strings.ToUpper(endpoint.Method) + " " + endpoint.Path
 					if _, ok := parameterized[key]; ok {
 						return
@@ -641,7 +651,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 					// entity type that should sync independently. Example:
 					// GET /v1/api/networkentity?entityType=collection|workspace|api|flow
 					// → sync resources: collection, workspace, api, flow
-					if enumParam := findEntityTypeEnum(endpoint); standaloneList && enumParam != nil && len(enumParam.Enum) >= 2 {
+					if enumParam := findEntityTypeEnum(endpoint); standaloneList && enumParam != nil && len(enumParam.Enum) >= 2 && !skipLiveSearch {
 						addStandaloneCandidate()
 						for _, val := range enumParam.Enum {
 							expandedName := strings.ToLower(val)
@@ -678,7 +688,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 				} else if pathCallable && requiredScope {
 					addStandaloneCandidate()
 				}
-			} else if method == "GET" && (!strings.Contains(endpoint.Path, "{") || pathParamsAllTemplateVars(endpoint.Path, s) || endpoint.Syncable) && looksLikeCollectionEndpoint(endpointNameLower) && (endpoint.Syncable || !isActionGetEndpoint(endpoint.Path)) && !isSamplerEndpoint(endpoint) && !isScalarItemArray(endpoint.Response) {
+			} else if method == "GET" && (!strings.Contains(endpoint.Path, "{") || pathParamsAllTemplateVars(endpoint.Path, s) || endpoint.Syncable) && looksLikeCollectionEndpoint(endpointNameLower) && (endpoint.Syncable || !isActionGetEndpoint(endpoint.Path)) && !isSamplerEndpoint(endpoint) && !isScalarItemArray(endpoint.Response) && !liveSearchIndexExcludedFromSync(endpoint) {
 				// Catch-all for simple GET collection endpoints that isListEndpoint
 				// didn't recognise (e.g., response is an untyped object with no
 				// wrapper field defined in the spec's types map).
@@ -1384,6 +1394,30 @@ func isActionGetEndpoint(path string) bool {
 	}
 	last := actionSegmentBase(segments[len(segments)-1])
 	return nonListActionSegments[last]
+}
+
+// liveSearchIndexExcludedFromSync reports GET endpoints that address a
+// search index rather than a bulk collection. An unscoped index has no
+// corpus boundary, and a required param on that index is a lookup key
+// (for example urn on a recommended-items path). The shared SQL list
+// path /query is a collection read, not an index, so it stays syncable.
+// Explicit syncable: true remains the opt-in. POST collection searches
+// stay syncable; this only matches a whole path segment, so findByStatus
+// is not treated as find.
+func liveSearchIndexExcludedFromSync(endpoint spec.Endpoint) bool {
+	if endpoint.Syncable {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(endpoint.Method), "GET") {
+		return false
+	}
+	for _, segment := range staticPathSegments(endpoint.Path) {
+		switch actionSegmentBase(segment) {
+		case "search", "find", "lookup":
+			return true
+		}
+	}
+	return false
 }
 
 func trimVersionPathSegments(segments []string) []string {
