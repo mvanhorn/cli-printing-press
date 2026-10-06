@@ -81,6 +81,48 @@ func TestGeneratedSyncOmitsLiveSearchIndexes(t *testing.T) {
 				},
 			},
 		},
+		"category-items": {
+			Description: "Items under a category",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:   "GET",
+					Path:     "/categories/{categoryId}/items",
+					Response: spec.ResponseDef{Type: "array", Item: "Ad"},
+					Walker:   &spec.WalkerConfig{Parent: "categories", KeyParam: "categoryId"},
+					Params:   []spec.Param{{Name: "categoryId", Type: "string", Required: true, Positional: true}},
+				},
+			},
+		},
+		"category-search": {
+			Description: "Search under a category",
+			Endpoints: map[string]spec.Endpoint{
+				"search": {
+					Method:   "GET",
+					Path:     "/search/{categoryId}/items",
+					Response: spec.ResponseDef{Type: "array", Item: "Ad"},
+					Walker:   &spec.WalkerConfig{Parent: "categories", KeyParam: "categoryId"},
+					Params:   []spec.Param{{Name: "categoryId", Type: "string", Required: true, Positional: true}},
+					Pagination: &spec.Pagination{
+						Type:        "offset",
+						CursorParam: "start",
+						LimitParam:  "lim",
+					},
+				},
+			},
+		},
+		"kept-search": {
+			Description: "Opt-in walked search",
+			Endpoints: map[string]spec.Endpoint{
+				"search": {
+					Method:   "GET",
+					Path:     "/search/{categoryId}/kept",
+					Syncable: true,
+					Response: spec.ResponseDef{Type: "array", Item: "Ad"},
+					Walker:   &spec.WalkerConfig{Parent: "categories", KeyParam: "categoryId"},
+					Params:   []spec.Param{{Name: "categoryId", Type: "string", Required: true, Positional: true}},
+				},
+			},
+		},
 		"contacts": {
 			Description: "Contact search",
 			Endpoints: map[string]spec.Endpoint{
@@ -168,6 +210,11 @@ func TestGeneratedSyncOmitsLiveSearchIndexes(t *testing.T) {
 	assert.NotContains(t, paths, `"/search/items"`)
 	assert.NotContains(t, paths, "detail-recommended")
 	assert.NotContains(t, paths, `"/search/listings"`)
+
+	dependents := generatedFunctionBody(t, syncSrc, "func dependentResourceDefs() []dependentResourceDef")
+	assert.Contains(t, dependents, `"/categories/{categoryId}/items"`)
+	assert.NotContains(t, dependents, `"/search/{categoryId}/items"`)
+	assert.Contains(t, dependents, `"/search/{categoryId}/kept"`)
 	for _, name := range []string{`"ads"`, `"ads-items"`, `"ads-detail-recommended"`, `"listings"`} {
 		assert.NotContains(t, paths, name+":", "sync must not offer %s", name)
 	}

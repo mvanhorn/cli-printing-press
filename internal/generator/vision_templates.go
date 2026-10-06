@@ -286,10 +286,10 @@ func resourceEndpointForMethod(resource spec.Resource, method string) (spec.Endp
 	})
 }
 
-// resourceWriteEndpoint is the POST import and resourceWritePaths target.
-// A collection POST is not a write when mutation is false, the operation
-// id is a read, or the body is only a filter. Path-templated POSTs stay
-// out, matching the previous selector.
+// Import would POST JSONL at this path, so a read that happens to use
+// POST must not be selected. mutation: false, a read-shaped operation
+// id, and an all-filter body are reads. Path templates stay out: a
+// create with an id placeholder is not a bulk import target.
 func resourceWriteEndpoint(resource spec.Resource) (spec.Endpoint, bool) {
 	return rankedResourceEndpoint(resource, func(name string, endpoint spec.Endpoint) bool {
 		if !strings.EqualFold(endpoint.Method, "POST") || strings.Contains(endpoint.Path, "{") {

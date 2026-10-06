@@ -1396,14 +1396,11 @@ func isActionGetEndpoint(path string) bool {
 	return nonListActionSegments[last]
 }
 
-// liveSearchIndexExcludedFromSync reports GET endpoints that address a
-// search index rather than a bulk collection. An unscoped index has no
-// corpus boundary, and a required param on that index is a lookup key
-// (for example urn on a recommended-items path). The shared SQL list
-// path /query is a collection read, not an index, so it stays syncable.
-// Explicit syncable: true remains the opt-in. POST collection searches
-// stay syncable; this only matches a whole path segment, so findByStatus
-// is not treated as find.
+// An unscoped search index has no corpus boundary, and a required param
+// on that index is a lookup key rather than a parent scope. /query stays
+// because it is the shared SQL collection read. POST searches stay.
+// syncable: true is the opt-in. Matching is a whole segment, so
+// findByStatus is not find.
 func liveSearchIndexExcludedFromSync(endpoint spec.Endpoint) bool {
 	if endpoint.Syncable {
 		return false
@@ -2295,6 +2292,14 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 	walk = func(resourceName string, r spec.Resource) {
 		for endpointName, e := range r.Endpoints {
 			if e.Walker == nil {
+				continue
+			}
+			if optIn, _ := spec.EffectiveSyncMembership(r, e); optIn {
+				e.Syncable = true
+			}
+			// A walker names the parent to iterate. It does not turn a
+			// search index into a bulk collection.
+			if liveSearchIndexExcludedFromSync(e) {
 				continue
 			}
 			parent := strings.ToLower(strings.TrimSpace(e.Walker.Parent))

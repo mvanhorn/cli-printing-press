@@ -73,6 +73,45 @@ func TestProfileLiveSearchIndexIsNotASyncResource(t *testing.T) {
 					},
 				},
 			},
+			"category-items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/categories/{categoryId}/items",
+						Response: spec.ResponseDef{Type: "array", Item: "Ad"},
+						Walker:   &spec.WalkerConfig{Parent: "categories", KeyParam: "categoryId"},
+						Params:   []spec.Param{{Name: "categoryId", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+			"category-search": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method:   "GET",
+						Path:     "/search/{categoryId}/items",
+						Response: spec.ResponseDef{Type: "array", Item: "Ad"},
+						Walker:   &spec.WalkerConfig{Parent: "categories", KeyParam: "categoryId"},
+						Params:   []spec.Param{{Name: "categoryId", Type: "string", Required: true, Positional: true}},
+						Pagination: &spec.Pagination{
+							Type:        "offset",
+							CursorParam: "start",
+							LimitParam:  "lim",
+						},
+					},
+				},
+			},
+			"kept-search": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method:   "GET",
+						Path:     "/search/{categoryId}/kept",
+						Syncable: true,
+						Response: spec.ResponseDef{Type: "array", Item: "Ad"},
+						Walker:   &spec.WalkerConfig{Parent: "categories", KeyParam: "categoryId"},
+						Params:   []spec.Param{{Name: "categoryId", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
 			"contacts": {
 				Endpoints: map[string]spec.Endpoint{
 					"search": {
@@ -148,6 +187,9 @@ func TestProfileLiveSearchIndexIsNotASyncResource(t *testing.T) {
 	assert.False(t, byName["geo"].SkipDefaultSync)
 
 	for name, resource := range byName {
+		if resource.Path == "/search/{categoryId}/kept" {
+			continue
+		}
 		assert.NotContains(t, resource.Path, "/search/", "%s must not sync a search index", name)
 		assert.NotEqual(t, "/search", resource.Path, "%s must not sync a search index", name)
 	}
@@ -155,9 +197,16 @@ func TestProfileLiveSearchIndexIsNotASyncResource(t *testing.T) {
 	assert.NotContains(t, byName, "ads-items")
 	assert.NotContains(t, byName, "ads-detail-recommended")
 	assert.NotContains(t, byName, "listings", "a recognized id on a search index must not put that index in the default sync set")
+	var dependentPaths []string
 	for _, dep := range profile.DependentSyncResources {
-		assert.NotContains(t, dep.Path, "/search/", "%s must not sync a search index", dep.Name)
+		dependentPaths = append(dependentPaths, dep.Path)
+		if dep.Path != "/search/{categoryId}/kept" {
+			assert.NotContains(t, dep.Path, "/search/", "%s must not sync a search index", dep.Name)
+		}
 	}
+	assert.Contains(t, dependentPaths, "/categories/{categoryId}/items", "a walker on a real child collection stays a dependent sync")
+	assert.NotContains(t, dependentPaths, "/search/{categoryId}/items", "a walker does not opt a search index into dependent sync")
+	assert.Contains(t, dependentPaths, "/search/{categoryId}/kept", "syncable: true still opts a walked search index in")
 
 	require.Contains(t, byName, "contacts", "paginated POST collection search stays a sync source")
 	assert.Equal(t, "/contacts/search", byName["contacts"].Path)
