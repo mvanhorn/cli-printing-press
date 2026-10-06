@@ -178,6 +178,42 @@ func TestCopyPublishableManuscriptDirOmitsWriterSamples(t *testing.T) {
 	assert.FileExists(t, filepath.Join(included, "research", "wide-samples", "get__blob.json"))
 }
 
+func TestCopyPublishableManuscriptDirSkipsSampleScanPastSizeLimit(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	oversized := filepath.Join(src, "research", "huge-samples")
+	shippable := filepath.Join(src, "research", "near-limit-samples")
+	require.NoError(t, os.MkdirAll(oversized, 0o755))
+	require.NoError(t, os.MkdirAll(shippable, 0o755))
+
+	prefix := []byte(`{"raw_url":"https://api.example.com/v1/blob?key=SECRET","response_body_known":true}` + "\n")
+	notes := []byte("authored notes beside an oversized capture\n")
+
+	huge, err := os.Create(filepath.Join(oversized, "get__blob.json"))
+	require.NoError(t, err)
+	_, err = huge.Write(prefix)
+	require.NoError(t, err)
+	require.NoError(t, huge.Truncate(publishableManuscriptMaxCaptureBytes))
+	require.NoError(t, huge.Close())
+	require.NoError(t, os.WriteFile(filepath.Join(oversized, "notes.md"), notes, 0o644))
+
+	near, err := os.Create(filepath.Join(shippable, "get__blob.json"))
+	require.NoError(t, err)
+	_, err = near.Write(prefix)
+	require.NoError(t, err)
+	require.NoError(t, near.Truncate(publishableManuscriptMaxCaptureBytes-1))
+	require.NoError(t, near.Close())
+	require.NoError(t, os.WriteFile(filepath.Join(shippable, "notes.md"), notes, 0o644))
+
+	dst := filepath.Join(t.TempDir(), "dst")
+	require.NoError(t, CopyPublishableManuscriptDir(src, dst))
+
+	gotNotes, err := os.ReadFile(filepath.Join(dst, "research", "huge-samples", "notes.md"))
+	require.NoError(t, err)
+	assert.Equal(t, string(notes), string(gotNotes))
+	assert.NoFileExists(t, filepath.Join(dst, "research", "huge-samples", "get__blob.json"))
+	assert.NoDirExists(t, filepath.Join(dst, "research", "near-limit-samples"))
+}
+
 func TestRedactAbsoluteHostPaths(t *testing.T) {
 	home := "/Users/operator/printing-press/library/example"
 	linux := "/home/operator/printing-press/library/example"

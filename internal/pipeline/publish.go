@@ -857,6 +857,11 @@ func dirContainsRawURLSample(dir string) bool {
 		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
+		// Packaging already drops files at or above this cap, so reading
+		// them cannot change what ships.
+		if info.Size() >= publishableManuscriptMaxCaptureBytes {
+			continue
+		}
 		if fileHasSampleShape(filepath.Join(dir, entry.Name())) {
 			return true
 		}
