@@ -16,14 +16,20 @@ import (
 func TestMirroredMCPPropertyNames(t *testing.T) {
 	s := server.NewMCPServer("mirror-property-names", "test")
 	RegisterTools(s)
+	tools := s.ListTools()
+	if len(tools) == 0 {
+		t.Fatal("RegisterTools registered no tools")
+	}
 	valid := regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
-	for name, entry := range s.ListTools() {
-		if entry == nil || entry.Tool.Meta == nil || entry.Tool.Meta.AdditionalFields["pp:tenant-gate"] != "child-cli" {
-			continue
+	for name, entry := range tools {
+		if entry == nil {
+			t.Fatalf("nil tool %s", name)
 		}
+		// Do not filter on the child-cli marker. A mirror that lost it would
+		// otherwise skip the check while still shipping the illegal name.
 		for prop := range entry.Tool.InputSchema.Properties {
 			if !valid.MatchString(prop) {
-				t.Errorf("mirrored tool %s property %q does not match %s", name, prop, valid.String())
+				t.Errorf("tool %s property %q does not match %s", name, prop, valid.String())
 			}
 		}
 	}
