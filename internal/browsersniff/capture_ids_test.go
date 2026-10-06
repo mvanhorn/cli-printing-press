@@ -91,8 +91,7 @@ func TestSanitizeSpecCapturedResourceIDs_OmitsScalarIDDefaults(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, capturedCLIExample, vars["id"])
 	assert.Equal(t, "GetClient", get.Body[1].Default)
-	assert.NotContains(t, get.Example, capturedCLIID)
-	assert.Contains(t, get.Example, capturedCLIExample)
+	assert.Equal(t, "clients get --variables {\"id\":\""+capturedCLIID+"\"}", get.Example)
 }
 
 func TestSanitizeSpecCapturedResourceIDs_KeepsDispatchAndSecrets(t *testing.T) {
@@ -136,6 +135,44 @@ func TestSanitizeSpecCapturedResourceIDs_KeepsDispatchAndSecrets(t *testing.T) {
 	persisted, ok := extensions["persistedQuery"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", persisted["sha256Hash"])
+}
+
+func TestSanitizeSpecCapturedResourceIDs_KeepsAuthoredExampleAndHappyArgs(t *testing.T) {
+	t.Parallel()
+
+	const (
+		urn       = "id:ad:f2233452-c527-4139-b3c2-43b343147fa0:list:663258568"
+		example   = "  listings-pp-cli listings get --urn=" + urn
+		happyArgs = "--urn=" + urn
+		stdin     = `{"id":"` + capturedUUID + `"}`
+	)
+	apiSpec := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"listings": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Example:    example,
+						HappyArgs:  happyArgs,
+						HappyStdin: stdin,
+						Params: []spec.Param{
+							{Name: "urn", Type: "string", Example: urn},
+							{Name: "listing_id", Type: "string", Example: capturedUUID},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	SanitizeSpecCapturedResourceIDs(apiSpec)
+
+	get := apiSpec.Resources["listings"].Endpoints["get"]
+	assert.Equal(t, example, get.Example)
+	assert.Equal(t, happyArgs, get.HappyArgs)
+	assert.Equal(t, urn, get.Params[0].Example)
+	assert.Equal(t, piiplaceholders.SyntheticUUID, get.Params[1].Example)
+	assert.NotContains(t, get.HappyStdin, capturedUUID)
+	assert.Contains(t, get.HappyStdin, piiplaceholders.SyntheticUUID)
 }
 
 func TestSanitizeSpecCapturedResourceIDs_KeepsSnakeResourceNames(t *testing.T) {
