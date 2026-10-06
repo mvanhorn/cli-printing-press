@@ -8809,6 +8809,12 @@ func TestGeneratedHelpers_IdempotentNoopsRequireOptIn(t *testing.T) {
 		Name:    "testidempotent",
 		Version: "0.1.0",
 		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"TESTIDEMPOTENT_TOKEN"},
+		},
 		Resources: map[string]spec.Resource{
 			"teams": {
 				Description: "Manage teams",
@@ -8971,6 +8977,7 @@ func TestClassifyAPIErrorPreservesTypedCLIError(t *testing.T) {
 	}{
 		{"semantic envelope error", usageErr(errors.New("semantic API envelope rejected input")), &rootFlags{}, 2},
 		{"HTTP-like usage error with idempotent flags", usageErr(errors.New("HTTP 409: conflict")), &rootFlags{idempotent: true, asJSON: true}, 2},
+		{"HTTP-like auth error", authErr(errors.New("HTTP 401: unauthorized")), &rootFlags{}, 4},
 		{"HTTP-like api error with idempotent flags", apiErr(errors.New("HTTP 409: conflict")), &rootFlags{idempotent: true, asJSON: true}, 5},
 	}
 

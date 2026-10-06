@@ -240,6 +240,7 @@ func TestClassifyForbidden(t *testing.T) {
 	plains := []string{
 		"GET /items returned HTTP 403: {\"error\":\"forbidden\"}",
 		"GET /items returned HTTP 403: permission denied for this resource",
+		"GET /items returned HTTP 403: Attention required: this record needs approval.",
 	}
 	if __AUTHED__ {
 		for _, msg := range append(append([]string{}, challenges...), plains...) {
@@ -373,6 +374,7 @@ func TestTransportBlockMarkers(t *testing.T) {
 		"{\"error\":\"forbidden\"}",
 		"permission denied for this resource",
 		"HTTP 403",
+		"Attention required: this record needs approval.",
 	} {
 		if LooksLikeTransportBlock(text) {
 			t.Errorf("LooksLikeTransportBlock(%q) = true", text)

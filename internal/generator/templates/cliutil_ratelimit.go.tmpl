@@ -419,11 +419,13 @@ const transportBlockScanBytes = 64 << 10
 // transportBlockMarkers are fragments of a firewall, WAF, or bot-challenge
 // response. They are not credential failures. "cf-mitigated" is Cloudflare's
 // challenge header; the other phrases are the page text and vendor incident
-// ids those walls actually return.
+// ids those walls actually return. "attention required!" keeps the block-page
+// title punctuation so an ordinary sentence ("attention required: this record
+// needs approval") stays an API error.
 var transportBlockMarkers = []string{
 	"cf-mitigated",
 	"just a moment",
-	"attention required",
+	"attention required!",
 	"you have been blocked",
 	"incapsula incident id",
 	"errors.edgesuite.net",
