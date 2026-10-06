@@ -555,10 +555,16 @@ API response bodies and absolute host paths. `mktemp -d` creates that directory
 mode `0700`; the transcript file is mode `0600`. After the gate, delete the
 directory: on failure, print the failing commands first, then delete it; on
 success, delete it before continuing. `publish package` enforces the same
-boundary: it omits `publish-live-gate*.json`, `*-publish-live-gate.json`,
-dogfood result dumps (`dogfood-results*.json`, `*-dogfood-results.json`), and
-`pipeline/` trees, including copies already saved under proofs by an earlier
-dogfood run. It still copies `phase5-acceptance.json` and `phase5-skip.json`.
+boundary: it omits live-dogfood and live-gate JSON reports whatever the
+filename (a top-level `tests` array whose entries carry `output_sample`, or
+`dir` + `binary` + `verdict` + `tests`), plus `publish-live-gate*.json`,
+`*-publish-live-gate.json`, `dogfood-results*.json`,
+`*-dogfood-results.json`, and `pipeline/` trees, including copies already
+saved under proofs by an earlier dogfood run. It still copies
+`phase5-acceptance.json` and `phase5-skip.json`. Home paths under
+`printing-press` or a dotfile directory, and any absolute `.runstate` path,
+are rewritten to `<cli-dir>` and `<runstate>` in other shipped manuscript
+text.
 
 ```bash
 LIVE_GATE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/printing-press-publish.XXXXXX")

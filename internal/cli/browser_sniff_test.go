@@ -383,13 +383,19 @@ func TestWriteBrowserSniffOutputsWritesSamplesDirectory(t *testing.T) {
 
 	entries, err := os.ReadDir(samplesPath)
 	require.NoError(t, err)
-	assert.NotEmpty(t, entries, "samples directory should have at least one file")
+	assert.FileExists(t, filepath.Join(samplesPath, browsersniff.SamplesDirMarker))
+	sampleCount := 0
 	for _, entry := range entries {
+		if entry.Name() == browsersniff.SamplesDirMarker {
+			continue
+		}
+		sampleCount++
 		data, err := os.ReadFile(filepath.Join(samplesPath, entry.Name()))
 		require.NoError(t, err)
 		assert.Contains(t, string(data), browsersniff.RedactedSentinel, "Authorization should be redacted")
 		assert.NotContains(t, string(data), "eyJ.t.x", "raw token must not leak")
 	}
+	assert.Positive(t, sampleCount, "samples directory should have at least one sample file")
 }
 
 func TestWriteBrowserSniffOutputsRestoresSamplesDirOnSpecFailure(t *testing.T) {

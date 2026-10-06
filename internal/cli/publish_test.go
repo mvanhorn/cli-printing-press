@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/govulncheck"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -1437,9 +1438,12 @@ func TestPublishPackageOmitsLiveDogfoodTranscripts(t *testing.T) {
 		SkipReason:    "auth_required_no_credential",
 		AuthContext:   pipeline.Phase5AuthContext{Type: "none"},
 	})
+	shaped := []byte(`{"dir":"` + leak + `","binary":"` + leak + `/example-pp-cli","verdict":"PASS","tests":[{"command":"items list","output_sample":"account balance"}]}` + "\n")
 	require.NoError(t, os.WriteFile(filepath.Join(proofsDir, "publish-live-gate.json"), transcript, 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(proofsDir, "test-20260329-100000-publish-live-gate.json"), transcript, 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(proofsDir, "20260829T160251Z-dogfood-results.json"), transcript, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(proofsDir, "dogfood-live.json"), shaped, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(runDir, "research", "run-notes.md"), []byte("cli "+leak+"\nstate /Users/operator/printing-press/.runstate/scope/out.json\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(runDir, "pipeline", "state.json"), []byte(`{"binary":"`+leak+`/bin"}`+"\n"), 0o644))
 
 	target := filepath.Join(t.TempDir(), "staging")
@@ -1459,7 +1463,13 @@ func TestPublishPackageOmitsLiveDogfoodTranscripts(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(staged, "proofs", "publish-live-gate.json"))
 	assert.NoFileExists(t, filepath.Join(staged, "proofs", "test-20260329-100000-publish-live-gate.json"))
 	assert.NoFileExists(t, filepath.Join(staged, "proofs", "20260829T160251Z-dogfood-results.json"))
+	assert.NoFileExists(t, filepath.Join(staged, "proofs", "dogfood-live.json"))
 	assert.NoDirExists(t, filepath.Join(staged, "pipeline"))
+	gotNotes, err := os.ReadFile(filepath.Join(staged, "research", "run-notes.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(gotNotes), artifacts.CLIDirPlaceholder+"/printing-press/library/example")
+	assert.Contains(t, string(gotNotes), artifacts.RunStatePlaceholder+"/scope/out.json")
+	assert.NotContains(t, string(gotNotes), leak)
 
 	var leaked []string
 	walkErr := filepath.WalkDir(result.StagedDir, func(path string, d fs.DirEntry, err error) error {
