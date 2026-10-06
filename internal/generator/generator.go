@@ -3742,6 +3742,7 @@ func cobratreeWalkerTemplateFiles() map[string]string {
 	} {
 		files["cobratree/"+name+".tmpl"] = filepath.Join("internal", "mcp", "cobratree", name)
 	}
+	files["mcp_mirror_property_names_test.go.tmpl"] = filepath.Join("internal", "mcp", "mirror_property_names_test.go")
 	return files
 }
 

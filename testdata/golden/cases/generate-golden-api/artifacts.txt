@@ -32,6 +32,7 @@ printing-press-golden/internal/mcp/cobratree/shellout.go
 printing-press-golden/internal/mcp/cobratree/shellout_test.go
 printing-press-golden/internal/mcp/cobratree/cli_path.go
 printing-press-golden/internal/mcp/cobratree/names.go
+printing-press-golden/internal/mcp/mirror_property_names_test.go
 printing-press-golden/cmd/printing-press-golden-pp-mcp/main.go
 printing-press-golden/cmd/printing-press-golden-pp-mcp/http_auth_test.go
 printing-press-golden/internal/types/types.go

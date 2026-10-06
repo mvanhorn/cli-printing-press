@@ -115,6 +115,7 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/mcp/cobratree/shellout_test.go",
 		"internal/mcp/cobratree/cli_path.go",
 		"internal/mcp/cobratree/names.go",
+		"internal/mcp/mirror_property_names_test.go",
 		"internal/cliutil/testenv/testenv.go",
 		"internal/cliutil/testenv/sandbox_unix.go",
 		"internal/cliutil/testenv/sandbox_windows.go",
@@ -158,9 +159,11 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +1: root .gitignore so local binaries are ignored without hiding cmd/<name>/.
 		// +1: internal/cli/deliver_download_test.go, private download-path coverage.
 		// +1: internal/cli/export_perms_test.go when export is emitted.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 180},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 184},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 181},
+		// +1: internal/mcp/mirror_property_names_test.go, the root-command
+		// property-name grammar check for cobratree mirrors.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 181},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 185},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 182},
 	}
 
 	for _, tt := range tests {
