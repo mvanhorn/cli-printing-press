@@ -2,6 +2,7 @@ package browsersniff
 
 import (
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1418,8 +1419,7 @@ func TestWriteSamples_WritesOneFilePerEndpointGroup(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, written)
 
-	files, err := os.ReadDir(dir)
-	require.NoError(t, err)
+	files := listWrittenSamples(t, dir)
 	require.Len(t, files, 2)
 
 	var foundGET, foundPOST bool
@@ -1485,8 +1485,7 @@ func TestWriteSamplesWithOptions_PreservesSamePathAcrossHosts(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, written)
 
-	files, err := os.ReadDir(dir)
-	require.NoError(t, err)
+	files := listWrittenSamples(t, dir)
 	require.Len(t, files, 2)
 }
 
@@ -1512,8 +1511,7 @@ func TestWriteSamples_OmitsResponseBodyKnownWhenAbsent(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, written)
 
-	files, err := os.ReadDir(dir)
-	require.NoError(t, err)
+	files := listWrittenSamples(t, dir)
 	require.Len(t, files, 1)
 
 	data, err := os.ReadFile(filepath.Join(dir, files[0].Name()))
@@ -1553,8 +1551,7 @@ func TestWriteSamples_RedactsNestedAuthorizationAndKeepsURLPaths(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, written)
 
-	files, err := os.ReadDir(dir)
-	require.NoError(t, err)
+	files := listWrittenSamples(t, dir)
 	require.Len(t, files, 1)
 
 	data, err := os.ReadFile(filepath.Join(dir, files[0].Name()))
@@ -1601,8 +1598,7 @@ func TestWriteSamples_TruncatesOversizedBodies(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, written)
 
-	files, err := os.ReadDir(dir)
-	require.NoError(t, err)
+	files := listWrittenSamples(t, dir)
 	require.Len(t, files, 1)
 
 	data, err := os.ReadFile(filepath.Join(dir, files[0].Name()))
@@ -1616,6 +1612,107 @@ func TestWriteSamples_TruncatesOversizedBodies(t *testing.T) {
 	body, ok := sample.ResponseBody.(string)
 	require.True(t, ok, "truncated body falls back to raw string")
 	assert.LessOrEqual(t, len(body), sampleBodyMaxBytes)
+}
+
+func TestWriteSamples_RedactsCredentialQueryInRawURL(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	const (
+		secretKey   = "AIzaSyFAKEKEY123456"
+		secretToken = "ya29.FAKETOK"
+		secretSig   = "sig-SECRET-99"
+	)
+	credentialURL := "https://api.example.com/v1/config?callback=init&key=" + secretKey +
+		"&libraries=places&v=weekly&access_token=" + secretToken + "&signature=" + secretSig
+	cleanURL := "https://api.example.com/v1/items?limit=10&sort=name"
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 credentialURL,
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"ok":true}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 cleanURL,
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+			},
+		},
+	}
+
+	written, err := WriteSamples(capture, dir)
+	require.NoError(t, err)
+	require.Equal(t, 2, written)
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+
+	var credential, clean SampleFile
+	var sawCredential, sawClean bool
+	sampleCount := 0
+	for _, f := range entries {
+		if f.Name() == SamplesDirMarker {
+			continue
+		}
+		sampleCount++
+		data, err := os.ReadFile(filepath.Join(dir, f.Name()))
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), secretKey)
+		assert.NotContains(t, string(data), secretToken)
+		assert.NotContains(t, string(data), secretSig)
+
+		var sample SampleFile
+		require.NoError(t, json.Unmarshal(data, &sample))
+		switch sample.RawURL {
+		case cleanURL:
+			clean = sample
+			sawClean = true
+		default:
+			credential = sample
+			sawCredential = true
+		}
+	}
+	require.Equal(t, 2, sampleCount)
+	require.True(t, sawClean, "URL without listed query names should be unchanged")
+	require.True(t, sawCredential)
+	assert.Equal(t, cleanURL, clean.RawURL)
+	assert.NotContains(t, clean.Redactions, "raw_url.pattern:url-credential")
+
+	parsed, err := url.Parse(credential.RawURL)
+	require.NoError(t, err)
+	query := parsed.Query()
+	assert.Equal(t, RedactedSentinel, query.Get("key"))
+	assert.Equal(t, RedactedSentinel, query.Get("access_token"))
+	assert.Equal(t, RedactedSentinel, query.Get("signature"))
+	assert.Equal(t, "weekly", query.Get("v"))
+	assert.Equal(t, "init", query.Get("callback"))
+	assert.Contains(t, credential.Redactions, "raw_url.pattern:url-credential")
+	assert.NotContains(t, credential.RawURL, secretKey)
+	assert.NotContains(t, credential.RawURL, secretToken)
+	assert.NotContains(t, credential.RawURL, secretSig)
+}
+
+func listWrittenSamples(t *testing.T, dir string) []os.DirEntry {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	marked := false
+	samples := make([]os.DirEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Name() == SamplesDirMarker {
+			marked = true
+			continue
+		}
+		samples = append(samples, entry)
+	}
+	require.True(t, marked, "samples directory should contain %s", SamplesDirMarker)
+	return samples
 }
 
 func TestDefaultSamplesPath(t *testing.T) {
