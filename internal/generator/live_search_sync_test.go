@@ -347,14 +347,13 @@ func TestGeneratedImportKeepsCreateAndSkipsReadPost(t *testing.T) {
 
 func resourceWritePathsBlock(src string) string {
 	const startMark = "var resourceWritePaths = map[string]string{"
-	start := strings.Index(src, startMark)
-	if start < 0 {
+	_, rest, ok := strings.Cut(src, startMark)
+	if !ok {
 		return ""
 	}
-	rest := src[start+len(startMark):]
-	end := strings.Index(rest, "\n}")
-	if end < 0 {
+	block, _, ok := strings.Cut(rest, "\n}")
+	if !ok {
 		return rest
 	}
-	return rest[:end]
+	return block
 }
