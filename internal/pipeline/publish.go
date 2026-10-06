@@ -844,8 +844,6 @@ func isHistoricalSniffSamplesDir(dir, name string) bool {
 	return dirContainsRawURLSample(dir)
 }
 
-const rawURLSampleScanBytes = 64 * 1024
-
 func dirContainsRawURLSample(dir string) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -866,41 +864,63 @@ func dirContainsRawURLSample(dir string) bool {
 	return false
 }
 
-// raw_url is near the start of a sample file and response_body_known is
-// after the bodies, which can be larger than one read. A note that mentions
-// raw_url without that trailing flag is authored research.
+// Both keys are required, and response_body_known follows the bodies, so a
+// bounded head or tail read can miss it. A note that mentions raw_url without
+// that flag is authored research. A read error after raw_url is seen omits
+// the directory instead of shipping an unconfirmed sample.
 func fileHasSampleShape(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
 		return false
 	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		return false
+	defer func() { _ = f.Close() }()
+
+	rawKey := []byte(`"raw_url"`)
+	knownKey := []byte(`"response_body_known"`)
+	overlap := len(knownKey) - 1
+	buf := make([]byte, 32*1024)
+	var carry []byte
+	sawRaw := false
+	sawKnown := false
+	for {
+		n, err := f.Read(buf)
+		window := buf[:n]
+		if len(carry) > 0 {
+			joined := make([]byte, len(carry)+n)
+			copy(joined, carry)
+			copy(joined[len(carry):], buf[:n])
+			window = joined
+		}
+		if n > 0 || len(carry) > 0 {
+			if !sawRaw && bytes.Contains(window, rawKey) {
+				sawRaw = true
+			}
+			if !sawKnown && bytes.Contains(window, knownKey) {
+				sawKnown = true
+			}
+			if sawRaw && sawKnown {
+				return true
+			}
+		}
+		if err == io.EOF {
+			return false
+		}
+		if err != nil {
+			return sawRaw
+		}
+		if len(window) == 0 {
+			continue
+		}
+		if len(window) > overlap {
+			next := make([]byte, overlap)
+			copy(next, window[len(window)-overlap:])
+			carry = next
+			continue
+		}
+		next := make([]byte, len(window))
+		copy(next, window)
+		carry = next
 	}
-	head := make([]byte, rawURLSampleScanBytes)
-	n, _ := f.Read(head)
-	head = head[:n]
-	if !bytes.Contains(head, []byte(`"raw_url"`)) {
-		return false
-	}
-	if bytes.Contains(head, []byte(`"response_body_known"`)) {
-		return true
-	}
-	if int64(n) >= info.Size() {
-		return false
-	}
-	tailLen := int64(4096)
-	if info.Size() < tailLen {
-		tailLen = info.Size()
-	}
-	tail := make([]byte, tailLen)
-	read, err := f.ReadAt(tail, info.Size()-tailLen)
-	if err != nil && err != io.EOF {
-		return false
-	}
-	return bytes.Contains(tail[:read], []byte(`"response_body_known"`))
 }
 
 func hasSniffSamplesMarker(dir string) bool {

@@ -129,7 +129,9 @@ func TestCopyPublishableManuscriptDirOmitsWriterSamples(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(stemDir, "get__config.json"), []byte(`{"raw_url":"https://api.example.com/v1/config?key=AIzaSyFAKEKEY123456","response_body":{"ok":true},"response_body_known":true}`+"\n"), 0o644))
 	wideDir := filepath.Join(research, "wide-samples")
 	require.NoError(t, os.MkdirAll(wideDir, 0o755))
-	wideBody := `{"raw_url":"https://api.example.com/v1/blob?key=wide-SECRET","response_body":"` + strings.Repeat("x", 70*1024) + `","response_body_known":true}` + "\n"
+	// The flag sits past 64 KiB and more than 4 KiB before EOF, so neither a
+	// head window nor a short tail read can see it.
+	wideBody := `{"raw_url":"https://api.example.com/v1/blob?key=wide-SECRET","response_body":"` + strings.Repeat("x", 70*1024) + `","response_body_known":true,"notes":"` + strings.Repeat("y", 8*1024) + `"}` + "\n"
 	require.NoError(t, os.WriteFile(filepath.Join(wideDir, "get__blob.json"), []byte(wideBody), 0o644))
 	authoredDir := filepath.Join(research, "notes-samples")
 	require.NoError(t, os.MkdirAll(authoredDir, 0o755))

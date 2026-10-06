@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -245,12 +246,7 @@ func leadingPathSepLen(s string) int {
 }
 
 func hasPathComponent(token, name string) bool {
-	for _, part := range pathComponents(token) {
-		if part == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(pathComponents(token), name)
 }
 
 func hasDotfileComponent(token string) bool {
