@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
@@ -677,14 +679,19 @@ type PublishableManuscriptCopyOptions struct {
 // Live-dogfood transcripts and pipeline runstate are always omitted: they
 // carry API response bodies and absolute host paths, and IncludeRawCaptures
 // does not opt them back in. Phase 5 acceptance and skip markers stay.
+// Shipped text has absolute home and .runstate paths rewritten to the
+// <cli-dir> and <runstate> placeholders.
 func CopyPublishableManuscriptDir(src, dst string) error {
 	return CopyPublishableManuscriptDirWithOptions(src, dst, PublishableManuscriptCopyOptions{})
 }
 
 func CopyPublishableManuscriptDirWithOptions(src, dst string, opts PublishableManuscriptCopyOptions) error {
-	return copyDirFiltered(src, dst, func(path string, info fs.FileInfo) bool {
+	if err := copyDirFiltered(src, dst, func(path string, info fs.FileInfo) bool {
 		return shouldSkipPublishableManuscriptFile(path, info, opts)
-	})
+	}); err != nil {
+		return err
+	}
+	return redactAbsoluteHostPathsInTree(dst)
 }
 
 func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo, opts PublishableManuscriptCopyOptions) bool {
@@ -706,8 +713,9 @@ func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo, opts Pub
 	}
 	// Live transcripts and pipeline runstate carry response bodies and host
 	// paths. This check stays ahead of IncludeRawCaptures so that flag remains
-	// limited to browser-sniff evidence. Phase 5 marker filenames stay copyable.
-	if isManuscriptPipelineRunstate(path, info) || isRawLiveDogfoodTranscript(filepath.Base(path)) {
+	// limited to browser-sniff evidence. Phase 5 marker filenames stay copyable
+	// even when their JSON resembles a report.
+	if isManuscriptPipelineRunstate(path, info) || isRawLiveDogfoodTranscript(filepath.Base(path)) || isLiveDogfoodReportFile(path, info) {
 		return true
 	}
 	if opts.IncludeRawCaptures {
@@ -720,6 +728,54 @@ func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo, opts Pub
 		return true
 	}
 	return false
+}
+
+func isPublishablePhase5Marker(name string) bool {
+	return strings.EqualFold(name, Phase5AcceptanceFilename) || strings.EqualFold(name, Phase5SkipFilename)
+}
+
+// Filename globs miss reruns. The on-disk report is a top-level tests array
+// whose entries carry output_sample, or the dir/binary/verdict/tests key set.
+func isLiveDogfoodReportFile(path string, info fs.FileInfo) bool {
+	if info.IsDir() || isPublishablePhase5Marker(filepath.Base(path)) {
+		return false
+	}
+	if !strings.EqualFold(filepath.Ext(path), ".json") {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !bytes.Contains(data, []byte(`"tests"`)) {
+		return false
+	}
+	return jsonHasLiveDogfoodReportShape(data)
+}
+
+func jsonHasLiveDogfoodReportShape(data []byte) bool {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		return false
+	}
+	testsRaw, hasTests := top["tests"]
+	if !hasTests {
+		return false
+	}
+	var tests []json.RawMessage
+	if err := json.Unmarshal(testsRaw, &tests); err != nil {
+		return false
+	}
+	for _, raw := range tests {
+		var entry map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			continue
+		}
+		if _, ok := entry["output_sample"]; ok {
+			return true
+		}
+	}
+	_, hasDir := top["dir"]
+	_, hasBinary := top["binary"]
+	_, hasVerdict := top["verdict"]
+	return hasDir && hasBinary && hasVerdict
 }
 
 func isManuscriptPipelineRunstate(path string, info fs.FileInfo) bool {
@@ -762,10 +818,119 @@ func isRawBrowserSniffCapture(path string, info fs.FileInfo) bool {
 	if info.IsDir() && pathHasComponent(parentPath, "discovery") && base == "bundles" {
 		return true
 	}
-	if info.IsDir() && pathHasComponent(parentPath, "research") && strings.HasSuffix(base, "-browser-sniff-spec-samples") {
+	// New writes carry the marker for any --samples-output name. Older trees
+	// used *-browser-sniff-spec-samples, or <stem>-samples for any spec stem.
+	// Stem directories still hold raw_url credentials. Authored notes in a
+	// -samples directory do not.
+	if info.IsDir() && hasSniffSamplesMarker(path) {
+		return true
+	}
+	if info.IsDir() && pathHasComponent(parentPath, "research") && isHistoricalSniffSamplesDir(path, base) {
 		return true
 	}
 	return false
+}
+
+func isHistoricalSniffSamplesDir(dir, name string) bool {
+	lower := strings.ToLower(name)
+	if !strings.HasSuffix(lower, "-samples") {
+		return false
+	}
+	// The pre-marker writer default. Keep it even when the JSON was already
+	// scrubbed of raw_url, so those trees do not reappear on republish.
+	if strings.HasSuffix(lower, "-browser-sniff-spec-samples") {
+		return true
+	}
+	return dirContainsRawURLSample(dir)
+}
+
+func dirContainsRawURLSample(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		// Packaging already drops files at or above this cap, so reading
+		// them cannot change what ships.
+		if info.Size() >= publishableManuscriptMaxCaptureBytes {
+			continue
+		}
+		if fileHasSampleShape(filepath.Join(dir, entry.Name())) {
+			return true
+		}
+	}
+	return false
+}
+
+// Both keys are required, and response_body_known follows the bodies, so a
+// bounded head or tail read can miss it. A note that mentions raw_url without
+// that flag is authored research. A read error after raw_url is seen omits
+// the directory instead of shipping an unconfirmed sample.
+func fileHasSampleShape(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+
+	rawKey := []byte(`"raw_url"`)
+	knownKey := []byte(`"response_body_known"`)
+	overlap := len(knownKey) - 1
+	buf := make([]byte, 32*1024)
+	var carry []byte
+	sawRaw := false
+	sawKnown := false
+	for {
+		n, err := f.Read(buf)
+		window := buf[:n]
+		if len(carry) > 0 {
+			joined := make([]byte, len(carry)+n)
+			copy(joined, carry)
+			copy(joined[len(carry):], buf[:n])
+			window = joined
+		}
+		if n > 0 || len(carry) > 0 {
+			if !sawRaw && bytes.Contains(window, rawKey) {
+				sawRaw = true
+			}
+			if !sawKnown && bytes.Contains(window, knownKey) {
+				sawKnown = true
+			}
+			if sawRaw && sawKnown {
+				return true
+			}
+		}
+		if err == io.EOF {
+			return false
+		}
+		if err != nil {
+			return sawRaw
+		}
+		if len(window) == 0 {
+			continue
+		}
+		if len(window) > overlap {
+			next := make([]byte, overlap)
+			copy(next, window[len(window)-overlap:])
+			carry = next
+			continue
+		}
+		next := make([]byte, len(window))
+		copy(next, window)
+		carry = next
+	}
+}
+
+func hasSniffSamplesMarker(dir string) bool {
+	info, err := os.Lstat(filepath.Join(dir, browsersniff.SamplesDirMarker))
+	return err == nil && info.Mode().IsRegular()
 }
 
 func pathHasComponent(path, component string) bool {

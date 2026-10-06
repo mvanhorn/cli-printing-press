@@ -1792,6 +1792,10 @@ type SampleFile struct {
 
 const sampleBodyMaxBytes = 16 * 1024
 
+// Present in every samples directory so publish can exclude that directory
+// without depending on the --output stem.
+const SamplesDirMarker = ".pp-sniff-samples"
+
 // DefaultSamplesPath returns the canonical samples directory for a spec at
 // specPath: a sibling directory named <stem>-samples/. Mirrors
 // DefaultTrafficAnalysisPath's naming convention so artifacts cluster.
@@ -1827,6 +1831,10 @@ func WriteSamplesWithOptions(capture *EnrichedCapture, outputDir string, options
 		return 0, fmt.Errorf("output directory is required")
 	}
 
+	if err := writeSamplesDirMarker(outputDir); err != nil {
+		return 0, err
+	}
+
 	apiEntries, _ := specVisibleEntries(capture, options)
 	groups := deduplicateSpecEndpoints(apiEntries, options)
 
@@ -1845,6 +1853,14 @@ func WriteSamplesWithOptions(capture *EnrichedCapture, outputDir string, options
 		written++
 	}
 	return written, nil
+}
+
+func writeSamplesDirMarker(outputDir string) error {
+	path := filepath.Join(outputDir, SamplesDirMarker)
+	if err := os.WriteFile(path, []byte("browser-sniff endpoint samples\n"), 0o644); err != nil {
+		return fmt.Errorf("writing samples marker: %w", err)
+	}
+	return nil
 }
 
 // encodeSampleJSON marshals a SampleFile with HTML-escaping disabled so the
@@ -1937,6 +1953,11 @@ func buildSampleFile(group EndpointGroup) SampleFile {
 	}
 	redactions = append(redactions, reqBodyRedactions...)
 	redactions = append(redactions, respBodyRedactions...)
+	rawURL := entry.URL
+	if redactedURL, pattern := redactURLLikeScalar(entry.URL); pattern != "" {
+		rawURL = redactedURL
+		redactions = append(redactions, "raw_url.pattern:"+pattern)
+	}
 	sort.Strings(redactions)
 	if len(redactions) == 0 {
 		redactions = nil
@@ -1945,7 +1966,7 @@ func buildSampleFile(group EndpointGroup) SampleFile {
 	return SampleFile{
 		Endpoint:              fmt.Sprintf("%s %s", group.Method, group.NormalizedPath),
 		Method:                group.Method,
-		RawURL:                entry.URL,
+		RawURL:                rawURL,
 		Status:                entry.ResponseStatus,
 		RequestHeaders:        redactedReqHeaders,
 		RequestBody:           reqBody,
