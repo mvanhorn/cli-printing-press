@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -982,6 +983,228 @@ func TestPositionalVariadicNestedAngleBracketsSanitizesKey(t *testing.T) {
 	if _, ok := props["slug>"]; ok {
 		t.Fatalf("invalid schema key %q leaked into schema: %#v", "slug>", props)
 	}
+}
+
+func TestPositionalAlternationPlaceholderSanitizesKey(t *testing.T) {
+	noop := func(cmd *cobra.Command, args []string) error { return nil }
+	longA := strings.Repeat("a", 80)
+	where := &cobra.Command{Use: "where-is <ip|hostname|mac>", RunE: noop, Short: "Locate a host"}
+	add := &cobra.Command{Use: "add <A|AAAA|CNAME|TXT> <name> <value>", RunE: noop}
+	show := &cobra.Command{Use: "show <id|name> <id_name>", RunE: noop}
+	locate := &cobra.Command{Use: "locate <mac|ip>", RunE: noop}
+	blank := &cobra.Command{Use: "blank <|||> <@@@>", RunE: noop}
+	exportCmd := &cobra.Command{Use: "export <format>", RunE: noop}
+	exportCmd.Flags().String("format", "", "output format")
+	longCmd := &cobra.Command{Use: "long <" + longA + "|one> <" + longA + "|two>", RunE: noop}
+	repeat := &cobra.Command{Use: "repeat <ip|host> [<ip|host>...]", RunE: noop}
+	keep := &cobra.Command{Use: "keep <event-id>", RunE: noop}
+	note := &cobra.Command{Use: "note <args>", RunE: noop}
+	root := &cobra.Command{Use: "root"}
+	root.AddCommand(where, add, show, locate, blank, exportCmd, longCmd, repeat, keep, note)
+
+	collapsed := positionalArgsForCommand(repeat, nil)
+	if len(collapsed) != 1 || collapsed[0].InputName != "ip_host" || !collapsed[0].Variadic || collapsed[0].Display != "<ip|host>" {
+		t.Fatalf("alternation variadic = %#v, want one ip_host slot displaying <ip|host>", collapsed)
+	}
+	kept := positionalArgsForCommand(keep, nil)
+	if len(kept) != 1 || kept[0].InputName != "event-id" || kept[0].Display != "<event-id>" {
+		t.Fatalf("legal placeholder = %#v, want event-id", kept)
+	}
+	skipped := positionalArgsForCommand(&cobra.Command{Use: "save <name> [--<flag> <value> ...]"}, nil)
+	if len(skipped) != 1 || skipped[0].InputName != "name" || skipped[0].Display != "<name>" {
+		t.Fatalf("flag-hint placeholders = %#v, want only <name>", skipped)
+	}
+	noted := positionalArgsForCommand(note, blockedStructuredArgsForCommand(note))
+	if len(noted) != 1 || noted[0].InputName != "positional-args" || noted[0].Display != "<args>" {
+		t.Fatalf("reserved positional = %#v, want positional-args", noted)
+	}
+
+	bin := writeArgvHelper(t)
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, root, func() (string, error) { return bin, nil })
+	tools := s.ListTools()
+	valid := regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
+	for name, entry := range tools {
+		if entry == nil {
+			t.Fatalf("nil tool %s", name)
+		}
+		for prop := range entry.Tool.InputSchema.Properties {
+			if !valid.MatchString(prop) {
+				t.Errorf("tool %s property %q does not match %s", name, prop, valid.String())
+			}
+		}
+	}
+
+	whereTool := tools["where_is"]
+	if whereTool == nil {
+		t.Fatalf("where_is tool missing: %#v", toolNames(tools))
+	}
+	if _, ok := whereTool.Tool.InputSchema.Properties["ip|hostname|mac"]; ok {
+		t.Fatal("raw alternation placeholder leaked into the schema")
+	}
+	assertPropertyDescription(t, whereTool, "ip_hostname_mac", "<ip|hostname|mac>")
+	if !reflect.DeepEqual(whereTool.Tool.InputSchema.Required, []string{"ip_hostname_mac"}) {
+		t.Fatalf("where-is required = %#v", whereTool.Tool.InputSchema.Required)
+	}
+	got := shellOutArgv(t, whereTool.Handler, map[string]any{"ip_hostname_mac": "host.example"})
+	if !reflect.DeepEqual(got, []string{"where-is", "host.example"}) {
+		t.Fatalf("where-is argv = %#v", got)
+	}
+	rejected, err := whereTool.Handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"ip|hostname|mac": "host.example"},
+	}})
+	if err != nil {
+		t.Fatalf("where-is transport error: %v", err)
+	}
+	if rejected == nil || !rejected.IsError || !strings.Contains(toolResultText(rejected), `unknown MCP parameter "ip|hostname|mac"`) {
+		t.Fatalf("raw key error = %q", toolResultText(rejected))
+	}
+
+	addTool := tools["add"]
+	if addTool == nil {
+		t.Fatal("add tool missing")
+	}
+	assertPropertyDescription(t, addTool, "A_AAAA_CNAME_TXT", "<A|AAAA|CNAME|TXT>")
+	assertPropertyDescription(t, addTool, "name", "<name>")
+	assertPropertyDescription(t, addTool, "value", "<value>")
+	if !reflect.DeepEqual(addTool.Tool.InputSchema.Required, []string{"A_AAAA_CNAME_TXT", "name", "value"}) {
+		t.Fatalf("add required = %#v", addTool.Tool.InputSchema.Required)
+	}
+	got = shellOutArgv(t, addTool.Handler, map[string]any{
+		"value":            "1.2.3.4",
+		"name":             "example.com",
+		"A_AAAA_CNAME_TXT": "AAAA",
+	})
+	if !reflect.DeepEqual(got, []string{"add", "AAAA", "example.com", "1.2.3.4"}) {
+		t.Fatalf("add argv = %#v", got)
+	}
+
+	showTool := tools["show"]
+	if showTool == nil {
+		t.Fatal("show tool missing")
+	}
+	assertPropertyDescription(t, showTool, "id_name", "<id|name>")
+	assertPropertyDescription(t, showTool, "id_name_2", "<id_name>")
+	got = shellOutArgv(t, showTool.Handler, map[string]any{"id_name_2": "second", "id_name": "first"})
+	if !reflect.DeepEqual(got, []string{"show", "first", "second"}) {
+		t.Fatalf("show argv = %#v", got)
+	}
+
+	locateTool := tools["locate"]
+	if locateTool == nil {
+		t.Fatal("locate tool missing")
+	}
+	assertPropertyDescription(t, locateTool, "mac_ip", "<mac|ip>")
+
+	blankTool := tools["blank"]
+	if blankTool == nil {
+		t.Fatal("blank tool missing")
+	}
+	assertPropertyDescription(t, blankTool, "arg", "<|||>")
+	assertPropertyDescription(t, blankTool, "arg_2", "<@@@>")
+	got = shellOutArgv(t, blankTool.Handler, map[string]any{"arg_2": "b", "arg": "a"})
+	if !reflect.DeepEqual(got, []string{"blank", "a", "b"}) {
+		t.Fatalf("blank argv = %#v", got)
+	}
+
+	exportTool := tools["export"]
+	if exportTool == nil {
+		t.Fatal("export tool missing")
+	}
+	if _, ok := exportTool.Tool.InputSchema.Properties["format"]; !ok {
+		t.Fatal("format flag missing")
+	}
+	assertPropertyDescription(t, exportTool, "positional-format", "<format>")
+	got = shellOutArgv(t, exportTool.Handler, map[string]any{"format": "json", "positional-format": "report"})
+	if !reflect.DeepEqual(got, []string{"export", "--format=json", "report"}) {
+		t.Fatalf("export argv = %#v", got)
+	}
+
+	longTool := tools["long"]
+	if longTool == nil {
+		t.Fatal("long tool missing")
+	}
+	head64 := strings.Repeat("a", 64)
+	head62 := strings.Repeat("a", 62) + "_2"
+	assertPropertyDescription(t, longTool, head64, "|one")
+	assertPropertyDescription(t, longTool, head62, "|two")
+	got = shellOutArgv(t, longTool.Handler, map[string]any{head62: "two", head64: "one"})
+	if !reflect.DeepEqual(got, []string{"long", "one", "two"}) {
+		t.Fatalf("long argv = %#v", got)
+	}
+
+	repeatTool := tools["repeat"]
+	if repeatTool == nil {
+		t.Fatal("repeat tool missing")
+	}
+	if _, ok := repeatTool.Tool.InputSchema.Properties["ip_host"]; !ok {
+		t.Fatalf("repeat properties = %#v", repeatTool.Tool.InputSchema.Properties)
+	}
+	if _, dup := repeatTool.Tool.InputSchema.Properties["ip_host_2"]; dup {
+		t.Fatal("identical alternation placeholders did not collapse")
+	}
+	got = shellOutArgv(t, repeatTool.Handler, map[string]any{"ip_host": "a", "args": "b c"})
+	if !reflect.DeepEqual(got, []string{"repeat", "a", "b", "c"}) {
+		t.Fatalf("repeat argv = %#v", got)
+	}
+
+	keepTool := tools["keep"]
+	if keepTool == nil {
+		t.Fatal("keep tool missing")
+	}
+	assertPropertyDescription(t, keepTool, "event-id", "<event-id>")
+
+	noteTool := tools["note"]
+	if noteTool == nil {
+		t.Fatal("note tool missing")
+	}
+	if _, ok := noteTool.Tool.InputSchema.Properties["args"]; ok {
+		t.Fatal("reserved args name leaked as a positional property")
+	}
+	assertPropertyDescription(t, noteTool, "positional-args", "<args>")
+	got = shellOutArgv(t, noteTool.Handler, map[string]any{"positional-args": "hello"})
+	if !reflect.DeepEqual(got, []string{"note", "hello"}) {
+		t.Fatalf("note argv = %#v", got)
+	}
+}
+
+func assertPropertyDescription(t *testing.T, entry *server.ServerTool, name, want string) {
+	t.Helper()
+	if entry == nil {
+		t.Fatalf("missing tool for property %s", name)
+	}
+	raw, ok := entry.Tool.InputSchema.Properties[name]
+	if !ok {
+		t.Fatalf("property %q missing: %#v", name, entry.Tool.InputSchema.Properties)
+	}
+	schema, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("property %q schema = %T", name, raw)
+	}
+	desc, _ := schema["description"].(string)
+	if !strings.Contains(desc, want) {
+		t.Fatalf("property %q description %q does not contain %q", name, desc, want)
+	}
+}
+
+func shellOutArgv(t *testing.T, handler server.ToolHandlerFunc, args map[string]any) []string {
+	t.Helper()
+	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{Arguments: args}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("handler returned tool error: %s", toolResultText(result))
+	}
+	return decodeArgvResult(t, result)
+}
+
+func toolNames(tools map[string]*server.ServerTool) []string {
+	names := make([]string, 0, len(tools))
+	for name := range tools {
+		names = append(names, name)
+	}
+	return names
 }
 
 func TestPositionalArgsFromRawArgsField(t *testing.T) {

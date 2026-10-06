@@ -5,6 +5,7 @@ package cobratree
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
@@ -14,6 +15,10 @@ import (
 
 var positionalPattern = regexp.MustCompile(`(?:^|\s)(?:<[^>]+>|\[[^\]]+\])`)
 var positionalTokenPattern = regexp.MustCompile(`(?:^|\s)(<[^>]+>|\[[^\]]+\])`)
+
+// Hosts such as Claude Code drop a tool whose input schema contains a property
+// name outside this grammar, which removes the command from the MCP surface.
+var mcpPropertyNameRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
 
 type positionalArg struct {
 	InputName string
@@ -151,7 +156,11 @@ func positionalArgsForCommand(cmd *cobra.Command, blocked map[string]bool) []pos
 		}
 	})
 	var out []positionalArg
-	seenPositional := map[string]bool{}
+	// Keyed by the stripped placeholder, not the sanitized property name, so
+	// "<slug> [<slug>...]" still collapses while "<id|name>" and "<id_name>"
+	// stay distinct after both sanitize to "id_name".
+	rawPositionalIndex := map[string]int{}
+	seenInput := map[string]bool{}
 	for _, match := range positionalTokenPattern.FindAllStringSubmatch(cmd.Use, -1) {
 		if len(match) < 2 {
 			continue
@@ -165,30 +174,22 @@ func positionalArgsForCommand(cmd *cobra.Command, blocked map[string]bool) []pos
 		// Strip positional decorations outright. A nested variadic like
 		// "[<slug>...]" leaves an inner ">" that end-trimming cannot reach
 		// (the "..." shields it), which would emit an invalid schema key.
+		// Trim the variadic marker before sanitizing: "." is a legal property
+		// character, so a leftover "..." would publish a key such as "slug...".
 		name := strings.NewReplacer("<", "", ">", "", "[", "", "]", "").Replace(raw)
 		name = strings.TrimSuffix(strings.TrimSpace(name), "...")
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
-		inputName := name
-		if reservedStructuredArgs[inputName] || flagNames[inputName] {
-			inputName = "positional-" + inputName
-		}
-		// Collapse repeats of the same name (e.g. "<slug> [<slug>...]") into a
-		// single positional slot; distinct-index dedup happens downstream.
-		if seenPositional[inputName] {
+		if idx, ok := rawPositionalIndex[name]; ok {
 			if variadic {
-				for i := range out {
-					if out[i].InputName == inputName {
-						out[i].Variadic = true
-						break
-					}
-				}
+				out[idx].Variadic = true
 			}
 			continue
 		}
-		seenPositional[inputName] = true
+		inputName := positionalInputName(name, flagNames, seenInput)
+		rawPositionalIndex[name] = len(out)
 		out = append(out, positionalArg{
 			InputName: inputName,
 			Display:   raw,
@@ -197,6 +198,106 @@ func positionalArgsForCommand(cmd *cobra.Command, blocked map[string]bool) []pos
 		})
 	}
 	return out
+}
+
+func positionalInputName(raw string, flagNames, used map[string]bool) string {
+	name := sanitizeMCPPropertyName(raw)
+	if name == "" {
+		name = "arg"
+	}
+	if reservedStructuredArgs[name] || flagNames[name] {
+		name = positionalCollisionName(name)
+	}
+	return claimMCPPropertyName(name, used, flagNames)
+}
+
+func sanitizeMCPPropertyName(name string) string {
+	if mcpPropertyNameRe.MatchString(name) {
+		return name
+	}
+	var b strings.Builder
+	pendingSep := false
+	for _, r := range name {
+		if mcpPropertyRune(r) {
+			if pendingSep && b.Len() > 0 {
+				b.WriteByte('_')
+			}
+			pendingSep = false
+			b.WriteRune(r)
+			continue
+		}
+		pendingSep = true
+	}
+	out := strings.Trim(b.String(), "_")
+	if len(out) > 64 {
+		out = strings.Trim(out[:64], "_")
+	}
+	return out
+}
+
+func mcpPropertyRune(r rune) bool {
+	return r == '.' || r == '-' || r == '_' ||
+		(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+}
+
+func positionalCollisionName(name string) string {
+	const prefix = "positional-"
+	combined := prefix + name
+	if len(combined) > 64 {
+		combined = strings.TrimRight(combined[:64], "_")
+	}
+	if mcpPropertyNameRe.MatchString(combined) {
+		return combined
+	}
+	return "positional-arg"
+}
+
+func claimMCPPropertyName(base string, used, flagNames map[string]bool) string {
+	if !mcpPropertyNameRe.MatchString(base) {
+		base = "arg"
+	}
+	for n := 1; n < 1000; n++ {
+		candidate := base
+		if n > 1 {
+			candidate = fitMCPPropertyName(base, "_"+strconv.Itoa(n))
+		}
+		if candidate == "" || !mcpPropertyNameRe.MatchString(candidate) || used[candidate] || flagNames[candidate] || reservedStructuredArgs[candidate] {
+			continue
+		}
+		used[candidate] = true
+		return candidate
+	}
+	fallback := fitMCPPropertyName("arg", "_"+strconv.Itoa(len(used)+2))
+	if !mcpPropertyNameRe.MatchString(fallback) {
+		fallback = "arg"
+	}
+	used[fallback] = true
+	return fallback
+}
+
+func fitMCPPropertyName(base, suffix string) string {
+	if len(suffix) == 0 || len(suffix) > 63 {
+		return ""
+	}
+	maxHead := 64 - len(suffix)
+	head := base
+	if len(head) > maxHead {
+		head = strings.TrimRight(head[:maxHead], "_")
+	}
+	if head == "" {
+		head = "a"
+	}
+	if len(head) > maxHead {
+		head = strings.TrimRight(head[:maxHead], "_")
+	}
+	if head == "" {
+		return ""
+	}
+	candidate := head + suffix
+	if !mcpPropertyNameRe.MatchString(candidate) {
+		return ""
+	}
+	return candidate
 }
 
 func blockedStructuredArgsForCommand(cmd *cobra.Command) map[string]bool {
