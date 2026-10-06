@@ -31,6 +31,7 @@ func TestGeneratedAlternationPositionalPropertyNames(t *testing.T) {
 	show := readGeneratedFile(t, outputDir, "internal", "cli", "show.go")
 	require.Contains(t, show, `"show <id|name> <id_name>"`)
 	require.Contains(t, readGeneratedFile(t, outputDir, "internal", "mcp", "mirror_property_names_test.go"), "TestMirroredMCPPropertyNames")
+	requireGeneratedCompiles(t, outputDir)
 
 	proof := `package mcp
 
@@ -118,6 +119,7 @@ func TestGeneratedDeviceMirroredPropertyNames(t *testing.T) {
 	require.NoError(t, err)
 	outputDir := filepath.Join(t.TempDir(), "ble-temperature-sensor")
 	require.NoError(t, NewDevice(ds, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir)
 
 	mcpOut, err := runGoCommandOutput(t, outputDir, "test", "./internal/mcp", "-run", "^TestMirroredMCPPropertyNames$", "-count=1", "-v")
 	require.NoError(t, err, mcpOut)
