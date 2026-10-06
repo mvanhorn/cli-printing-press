@@ -127,6 +127,10 @@ func TestCopyPublishableManuscriptDirOmitsWriterSamples(t *testing.T) {
 	stemDir := filepath.Join(research, "api-spec-samples")
 	require.NoError(t, os.MkdirAll(stemDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(stemDir, "get__config.json"), []byte(`{"raw_url":"https://api.example.com/v1/config?key=AIzaSyFAKEKEY123456","response_body":{"ok":true},"response_body_known":true}`+"\n"), 0o644))
+	wideDir := filepath.Join(research, "wide-samples")
+	require.NoError(t, os.MkdirAll(wideDir, 0o755))
+	wideBody := `{"raw_url":"https://api.example.com/v1/blob?key=wide-SECRET","response_body":"` + strings.Repeat("x", 70*1024) + `","response_body_known":true}` + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(wideDir, "get__blob.json"), []byte(wideBody), 0o644))
 	authoredDir := filepath.Join(research, "notes-samples")
 	require.NoError(t, os.MkdirAll(authoredDir, 0o755))
 	authoredJSON := []byte(`{"title":"field notes","raw_url":"https://api.example.com/v1/items","items":["one"]}` + "\n")
@@ -148,6 +152,7 @@ func TestCopyPublishableManuscriptDirOmitsWriterSamples(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(dst, "research", "raw-evidence"))
 	assert.NoDirExists(t, filepath.Join(dst, "research", "asoview-sniff-samples"))
 	assert.NoDirExists(t, filepath.Join(dst, "research", "api-spec-samples"))
+	assert.NoDirExists(t, filepath.Join(dst, "research", "wide-samples"))
 	gotField, err := os.ReadFile(filepath.Join(dst, "research", "field-samples", "notes.md"))
 	require.NoError(t, err)
 	assert.Equal(t, string(fieldNotes), string(gotField))
@@ -168,6 +173,7 @@ func TestCopyPublishableManuscriptDirOmitsWriterSamples(t *testing.T) {
 	assert.FileExists(t, filepath.Join(included, "research", "raw-evidence", browsersniff.SamplesDirMarker))
 	assert.FileExists(t, filepath.Join(included, "research", "asoview-sniff-samples", "get__items.json"))
 	assert.FileExists(t, filepath.Join(included, "research", "api-spec-samples", "get__config.json"))
+	assert.FileExists(t, filepath.Join(included, "research", "wide-samples", "get__blob.json"))
 }
 
 func TestRedactAbsoluteHostPaths(t *testing.T) {

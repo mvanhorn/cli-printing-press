@@ -859,20 +859,48 @@ func dirContainsRawURLSample(dir string) bool {
 		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
-		f, err := os.Open(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			continue
-		}
-		buf := make([]byte, rawURLSampleScanBytes)
-		n, _ := f.Read(buf)
-		_ = f.Close()
-		// SampleFile always emits both keys. A note that mentions raw_url
-		// without the sample flag is authored research.
-		if bytes.Contains(buf[:n], []byte(`"raw_url"`)) && bytes.Contains(buf[:n], []byte(`"response_body_known"`)) {
+		if fileHasSampleShape(filepath.Join(dir, entry.Name())) {
 			return true
 		}
 	}
 	return false
+}
+
+// raw_url is near the start of a sample file and response_body_known is
+// after the bodies, which can be larger than one read. A note that mentions
+// raw_url without that trailing flag is authored research.
+func fileHasSampleShape(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	head := make([]byte, rawURLSampleScanBytes)
+	n, _ := f.Read(head)
+	head = head[:n]
+	if !bytes.Contains(head, []byte(`"raw_url"`)) {
+		return false
+	}
+	if bytes.Contains(head, []byte(`"response_body_known"`)) {
+		return true
+	}
+	if int64(n) >= info.Size() {
+		return false
+	}
+	tailLen := int64(4096)
+	if info.Size() < tailLen {
+		tailLen = info.Size()
+	}
+	tail := make([]byte, tailLen)
+	read, err := f.ReadAt(tail, info.Size()-tailLen)
+	if err != nil && err != io.EOF {
+		return false
+	}
+	return bytes.Contains(tail[:read], []byte(`"response_body_known"`))
 }
 
 func hasSniffSamplesMarker(dir string) bool {
