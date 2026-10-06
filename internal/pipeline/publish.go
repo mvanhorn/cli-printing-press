@@ -866,7 +866,9 @@ func dirContainsRawURLSample(dir string) bool {
 		buf := make([]byte, rawURLSampleScanBytes)
 		n, _ := f.Read(buf)
 		_ = f.Close()
-		if bytes.Contains(buf[:n], []byte(`"raw_url"`)) {
+		// SampleFile always emits both keys. A note that mentions raw_url
+		// without the sample flag is authored research.
+		if bytes.Contains(buf[:n], []byte(`"raw_url"`)) && bytes.Contains(buf[:n], []byte(`"response_body_known"`)) {
 			return true
 		}
 	}
