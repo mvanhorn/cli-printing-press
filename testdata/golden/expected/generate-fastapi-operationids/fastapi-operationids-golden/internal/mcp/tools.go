@@ -377,13 +377,17 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			case strings.Contains(msg, "HTTP 409"):
 				return mcpToolTextWithPlatform("already exists (no-op)", platformSession), nil
 			case strings.Contains(msg, "HTTP 401"):
-				return mcpToolError("authentication failed: " + msg +
-					"\nhint: check your API credentials." +
-					"\n      Run 'fastapi-operationids-golden-pp-cli doctor' to check auth status."), nil
+				return mcpToolError("api error: " + msg +
+					"\nhint: the service returned HTTP 401. This API is configured without credentials, so this is not a missing-token failure." +
+					"\n      Run 'fastapi-operationids-golden-pp-cli doctor' to check connectivity."), nil
 			case strings.Contains(msg, "HTTP 403"):
-				return mcpToolError("permission denied: " + msg +
+				prefix := "api error: "
+				if cliutil.LooksLikeTransportBlock(msg) {
+					prefix = "rate limited: "
+				}
+				return mcpToolError(prefix + msg +
 					"\nhint: this API is configured without credentials; the service may be blocking the request by rate limit, geography, bot protection, or endpoint policy." +
-					"\n      Run 'fastapi-operationids-golden-pp-cli doctor' to check auth status."), nil
+					"\n      Run 'fastapi-operationids-golden-pp-cli doctor' to check connectivity."), nil
 			case strings.Contains(msg, "HTTP 404"):
 				if method == "DELETE" {
 					return mcpToolTextWithPlatform("already deleted (no-op)", platformSession), nil

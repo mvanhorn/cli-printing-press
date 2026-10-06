@@ -137,46 +137,94 @@ func TestImportBatchPartialFailureReportsCommittedCount(t *testing.T) {
 	}
 }
 
-func TestImportBatchAuthFailureAbortsAfterEnvelope(t *testing.T) {
+func TestImportBatchPlainUnauthorizedAndForbiddenDoNotAbort(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			err, out, _, requests := runImportBatch(t, func(string) int { return status }, 3, true)
 			if err == nil {
-				t.Fatal("expected an auth failure")
+				t.Fatal("expected an import failure")
 			}
-			if code := ExitCode(err); code != 4 {
-				t.Fatalf("exit code = %d, want 4; err=%v", code, err)
+			if code := ExitCode(err); code != 5 {
+				t.Fatalf("exit code = %d, want 5; err=%v", code, err)
 			}
-			if requests != 1 {
-				t.Fatalf("requests = %d, want immediate abort after the first auth failure", requests)
+			if strings.Contains(err.Error(), "auth failure") {
+				t.Fatalf("no-auth status %d must not be reported as an auth failure: %v", status, err)
 			}
-			if !strings.Contains(out, ` + "`" + `"failed": 1` + "`" + `) {
-				t.Fatalf("auth failure output missing failed count: %s", out)
+			if requests != 3 {
+				t.Fatalf("requests = %d, want every record attempted", requests)
+			}
+			for _, want := range []string{` + "`" + `"failed": 3` + "`" + `, ` + "`" + `"skipped": 0` + "`" + `} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("output missing %s: %s", want, out)
+				}
 			}
 		})
 	}
 }
 
-func TestImportBatchMidstreamAuthFailurePreservesCommittedCount(t *testing.T) {
+func TestImportBatchMidstreamUnauthorizedContinues(t *testing.T) {
 	err, out, _, requests := runImportBatch(t, func(name string) int {
 		if name == "item-0" {
 			return http.StatusCreated
 		}
 		return http.StatusUnauthorized
 	}, 3, true)
-	if err == nil || ExitCode(err) != 4 {
-		t.Fatalf("expected typed auth failure, got %v", err)
+	if err == nil || ExitCode(err) != 5 {
+		t.Fatalf("expected import failure, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "1 succeeded, 1 failed, and 1 skipped") {
-		t.Fatalf("auth failure error missing committed counts: %v", err)
+	if strings.Contains(err.Error(), "auth failure") {
+		t.Fatalf("no-auth 401 must not be reported as an auth failure: %v", err)
 	}
-	if requests != 2 {
-		t.Fatalf("requests = %d, want committed record plus auth failure only", requests)
+	if requests != 3 {
+		t.Fatalf("requests = %d, want all records attempted", requests)
 	}
-	for _, want := range []string{` + "`" + `"succeeded": 1` + "`" + `, ` + "`" + `"failed": 1` + "`" + `, ` + "`" + `"skipped": 1` + "`" + `} {
+	for _, want := range []string{` + "`" + `"succeeded": 1` + "`" + `, ` + "`" + `"failed": 2` + "`" + `, ` + "`" + `"skipped": 0` + "`" + `} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %s: %s", want, out)
 		}
+	}
+}
+
+func TestImportBatchChallengeForbiddenAbortsAsRefusal(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("cf-mitigated", "challenge")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("<html><head><title>Just a moment...</title></head><body>you have been blocked</body></html>"))
+	}))
+	defer server.Close()
+	t.Setenv("IMPORTFAIL_BASE_URL", server.URL)
+
+	var input strings.Builder
+	for i := 0; i < 3; i++ {
+		fmt.Fprintf(&input, ` + "`" + `{"name":"item-%d"}` + "`" + `+"\n", i)
+	}
+	inputPath := filepath.Join(t.TempDir(), "records.jsonl")
+	if err := os.WriteFile(inputPath, []byte(input.String()), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	flags := &rootFlags{asJSON: true}
+	cmd := newImportCmd(flags)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"items", "--input", inputPath})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if code := ExitCode(err); code != 7 {
+		t.Fatalf("exit code = %d, want 7; err=%v", code, err)
+	}
+	if strings.Contains(err.Error(), "auth failure") {
+		t.Fatalf("challenge 403 must not be reported as an auth failure: %v", err)
+	}
+	if !strings.Contains(err.Error(), "refused the request") {
+		t.Fatalf("challenge 403 error = %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want immediate abort after the block", requests)
 	}
 }
 

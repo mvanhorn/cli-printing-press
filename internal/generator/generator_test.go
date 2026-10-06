@@ -8809,6 +8809,12 @@ func TestGeneratedHelpers_IdempotentNoopsRequireOptIn(t *testing.T) {
 		Name:    "testidempotent",
 		Version: "0.1.0",
 		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"TESTIDEMPOTENT_TOKEN"},
+		},
 		Resources: map[string]spec.Resource{
 			"teams": {
 				Description: "Manage teams",

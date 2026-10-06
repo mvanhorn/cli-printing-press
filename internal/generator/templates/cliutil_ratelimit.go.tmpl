@@ -410,3 +410,87 @@ func Backoff(attempt int) time.Duration {
 	}
 	return wait
 }
+
+// transportBlockScanBytes bounds the body scan. Challenge pages put the
+// marker in the title or the first screen of HTML; a multi-megabyte body
+// should not be lowercased in full just to classify a refusal.
+const transportBlockScanBytes = 64 << 10
+
+// transportBlockMarkers are fragments of a firewall, WAF, or bot-challenge
+// response. They are not credential failures. "cf-mitigated" is Cloudflare's
+// challenge header; the other phrases are the page text and vendor incident
+// ids those walls actually return. "attention required!" keeps the block-page
+// title punctuation so an ordinary sentence ("attention required: this record
+// needs approval") stays an API error.
+var transportBlockMarkers = []string{
+	"cf-mitigated",
+	"just a moment",
+	"attention required!",
+	"you have been blocked",
+	"incapsula incident id",
+	"errors.edgesuite.net",
+	"px-captcha",
+	"captcha-delivery.com",
+	"cf-browser-verification",
+	"_cf_chl_",
+	"checking your browser",
+	"ddos protection by cloudflare",
+	"verify you are human",
+	"cloudflare ray id",
+}
+
+// LooksLikeTransportBlock reports whether text carries a known challenge or
+// block marker. Callers that have no credentials use it to choose a back-off
+// exit instead of an authentication failure.
+func LooksLikeTransportBlock(text string) bool {
+	lower := strings.ToLower(text)
+	for _, marker := range transportBlockMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// AnnotateTransportBlock appends challenge or block markers that HTML
+// summarization drops, including the cf-mitigated response header, so a
+// later classifier can see them on the error string.
+func AnnotateTransportBlock(summary string, header http.Header, raw []byte) string {
+	lowerSummary := strings.ToLower(summary)
+	var extra []string
+	add := func(line string) {
+		marker := strings.ToLower(line)
+		if marker == "" || strings.Contains(lowerSummary, marker) {
+			return
+		}
+		extra = append(extra, line)
+		lowerSummary += "\n" + marker
+	}
+	if header != nil {
+		if mitigated := strings.TrimSpace(header.Get("cf-mitigated")); mitigated != "" {
+			line := "cf-mitigated"
+			if len(mitigated) <= 64 && !strings.ContainsAny(mitigated, "\r\n") {
+				line = "cf-mitigated: " + mitigated
+			}
+			add(line)
+		}
+	}
+	scan := raw
+	if len(scan) > transportBlockScanBytes {
+		scan = scan[:transportBlockScanBytes]
+	}
+	rawLower := strings.ToLower(string(scan))
+	for _, marker := range transportBlockMarkers {
+		if strings.Contains(rawLower, marker) {
+			add(marker)
+		}
+	}
+	if len(extra) == 0 {
+		return summary
+	}
+	note := strings.Join(extra, "\n")
+	if strings.TrimSpace(summary) == "" {
+		return note
+	}
+	return summary + "\n" + note
+}
