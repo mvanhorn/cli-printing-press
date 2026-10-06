@@ -372,7 +372,7 @@ Explicit flags always win over profile values; profile values win over defaults.
 | 3 | Resource not found |
 | 5 | API error (upstream issue) |
 | 6 | Partial failure |
-| 7 | Rate limited (wait and retry) |
+| 7 | Rate limited or blocked by a firewall or bot challenge (back off; do not retry immediately) |
 | 10 | Config error |
 
 ## Argument Parsing

@@ -85,9 +85,16 @@ but do not stop the import.`,
 				_, status, err := c.Post(cmd.Context(), path, body)
 				if err != nil {
 					failed++
+					// Stop the batch only when this status is actually an auth
+					// failure or a firewall/challenge refusal. A no-auth 401/403
+					// is an ordinary API error and must not abort the rest.
 					if status == 401 || status == 403 {
-						terminalErr = classifyAPIError(cmd.OutOrStdout(), err, flags)
-						continue
+						classified := classifyAPIErrorOnly(err)
+						switch ExitCode(classified) {
+						case 4, 7:
+							terminalErr = classifyAPIError(cmd.OutOrStdout(), err, flags)
+							continue
+						}
 					}
 					fmt.Fprintf(os.Stderr, "warning: failed to import record: %v\n", err)
 					continue
@@ -113,7 +120,11 @@ but do not stop the import.`,
 			}
 			if failed > 0 {
 				if terminalErr != nil {
-					return fmt.Errorf("import stopped after auth failure with %d succeeded, %d failed, and %d skipped: %w", success, failed, skipped, terminalErr)
+					reason := "auth failure"
+					if ExitCode(terminalErr) != 4 {
+						reason = "the service refused the request"
+					}
+					return fmt.Errorf("import stopped after %s with %d succeeded, %d failed, and %d skipped: %w", reason, success, failed, skipped, terminalErr)
 				}
 				return apiErr(fmt.Errorf("import completed with %d failed record(s), %d succeeded, and %d skipped", failed, success, skipped))
 			}

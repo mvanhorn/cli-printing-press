@@ -1436,11 +1436,16 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			respBody = sanitizeJSONResponse(respBody)
 		}
 
+		bodyText := truncateBody(respBody)
+		if resp.StatusCode == http.StatusForbidden {
+			bodyText = cliutil.AnnotateTransportBlock(bodyText, resp.Header, respBody)
+		}
+
 		apiErr := &APIError{
 			Method:     method,
 			Path:       c.displayURL(path, authHeader),
 			StatusCode: resp.StatusCode,
-			Body:       c.maskCredentialText(truncateBody(respBody), authHeader),
+			Body:       c.maskCredentialText(bodyText, authHeader),
 		}
 		// OAuth providers can expire tokens early, omit expires_in, or disagree
 		// with the local clock. Retry one unauthorized response after refreshing.

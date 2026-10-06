@@ -1092,7 +1092,12 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 					{{printf "%q" (printf "\n      Run '%s-pp-cli doctor' to check auth status." .Name)}}), nil
 {{- end}}
 			case strings.Contains(msg, "HTTP 401"):
-				return mcpToolError("authentication failed: " + {{if and .Auth.Type (ne .Auth.Type "none")}}cliutil.SanitizeErrorBody(msg){{else}}msg{{end}} +
+{{- if or (eq .Auth.Type "") (eq .Auth.Type "none")}}
+				return mcpToolError("api error: " + msg +
+					"\nhint: the service returned HTTP 401. This API is configured without credentials, so this is not a missing-token failure." +
+					{{printf "%q" (printf "\n      Run '%s-pp-cli doctor' to check connectivity." .Name)}}), nil
+{{- else}}
+				return mcpToolError("authentication failed: " + cliutil.SanitizeErrorBody(msg) +
 {{- if eq .Auth.Type "oauth2"}}
 					{{printf "%q" (printf "\nhint: your token may have expired. Re-run '%s-pp-cli auth login' to re-authenticate" .Name)}} +
 {{- else if eq .Auth.Type "api_key"}}
@@ -1114,12 +1119,20 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 					{{printf "%q" (printf "\n      %s" .Auth.Instructions)}} +
 {{- end}}
 					{{printf "%q" (printf "\n      Run '%s-pp-cli doctor' to check auth status." .Name)}}), nil
+{{- end}}
 			case strings.Contains(msg, "HTTP 403"):
-				return mcpToolError("permission denied: " + {{if and .Auth.Type (ne .Auth.Type "none")}}cliutil.SanitizeErrorBody(msg){{else}}msg{{end}} +
+{{- if or (eq .Auth.Type "") (eq .Auth.Type "none")}}
+				prefix := "api error: "
+				if cliutil.LooksLikeTransportBlock(msg) {
+					prefix = "rate limited: "
+				}
+				return mcpToolError(prefix + msg +
+					"\nhint: this API is configured without credentials; the service may be blocking the request by rate limit, geography, bot protection, or endpoint policy." +
+					{{printf "%q" (printf "\n      Run '%s-pp-cli doctor' to check connectivity." .Name)}}), nil
+{{- else}}
+				return mcpToolError("permission denied: " + cliutil.SanitizeErrorBody(msg) +
 {{- if eq .Auth.Type "oauth2"}}
 					{{printf "%q" (printf "\nhint: your token may lack required scopes. Re-run '%s-pp-cli auth login' to re-authorize" .Name)}} +
-{{- else if or (eq .Auth.Type "") (eq .Auth.Type "none")}}
-					"\nhint: this API is configured without credentials; the service may be blocking the request by rate limit, geography, bot protection, or endpoint policy." +
 {{- else}}
 					"\nhint: your credentials are valid but lack access to this resource. Check that they have the required permissions and match the API's expected auth scheme." +
 {{- end}}
@@ -1135,6 +1148,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 					{{printf "%q" (printf "\n      %s" .Auth.Instructions)}} +
 {{- end}}
 					{{printf "%q" (printf "\n      Run '%s-pp-cli doctor' to check auth status." .Name)}}), nil
+{{- end}}
 			case strings.Contains(msg, "HTTP 404"):
 				if method == "DELETE" {
 					return mcpToolTextWithPlatform("already deleted (no-op)", platformSession), nil

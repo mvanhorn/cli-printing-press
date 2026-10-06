@@ -235,7 +235,6 @@ func (e *cliError) Unwrap() error { return e.err }
 
 func usageErr(err error) error     { return &cliError{code: 2, err: err} }
 func notFoundErr(err error) error  { return &cliError{code: 3, err: err} }
-func authErr(err error) error      { return &cliError{code: 4, err: err} }
 func apiErr(err error) error       { return &cliError{code: 5, err: err} }
 func configErr(err error) error    { return &cliError{code: 10, err: err} }
 func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
@@ -805,30 +804,6 @@ func applyHTMLPayloadClassifier(trimmed []byte) error {
 	return classifyHTMLPayload(bytes.TrimSpace(trimmed))
 }
 
-func htmlLooksLikeAuthFailure(trimmed []byte) bool {
-	if len(trimmed) == 0 {
-		return false
-	}
-	lower := strings.ToLower(string(trimmed))
-	for _, marker := range []string{
-		"unauthorized",
-		"forbidden",
-		"session expired",
-		"not authenticated",
-		"authentication required",
-		"authentication failed",
-		"invalid api key",
-		"invalid token",
-		"invalid credential",
-		"www-authenticate",
-	} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
-}
-
 func htmlEvidenceFromTransportError(err error) []byte {
 	msg := err.Error()
 	const marker = "returned HTML instead of JSON"
@@ -842,9 +817,6 @@ func classifyHTMLTransportError(err error) error {
 	evidence := htmlEvidenceFromTransportError(err)
 	if classified := applyHTMLPayloadClassifier(evidence); classified != nil {
 		return classified
-	}
-	if htmlLooksLikeAuthFailure(evidence) {
-		return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. " + ""))
 	}
 	return apiErr(fmt.Errorf("%w\nhint: the request may have reached a web page or the wrong endpoint", err))
 }
@@ -869,11 +841,17 @@ func classifyAPIErrorOnly(err error) error {
 	case strings.Contains(msg, "HTTP 409"):
 		return apiErr(err)
 	case strings.Contains(msg, "HTTP 401"):
-		return authErr(fmt.Errorf("%w\nhint: check your API credentials."+
-			"\n      Run 'public-param-golden-pp-cli doctor' to check auth status.", err))
-	case strings.Contains(msg, "HTTP 403"):
-		return authErr(fmt.Errorf("%w\nhint: permission denied. This API is configured without credentials, so the service may be blocking the request by rate limit, geography, bot protection, or endpoint policy."+
+		return apiErr(fmt.Errorf("%w\nhint: the service returned HTTP 401. This API is configured without credentials, so this is not a missing-token failure."+
 			"\n      Run 'public-param-golden-pp-cli doctor' to check connectivity.", err))
+	case strings.Contains(msg, "HTTP 403"):
+		// No credential exists to repair. A challenge or block is a refusal
+		// (exit 7); any other 403 is an upstream API error (exit 5).
+		classified := fmt.Errorf("%w\nhint: permission denied. This API is configured without credentials, so the service may be blocking the request by rate limit, geography, bot protection, or endpoint policy."+
+			"\n      Run 'public-param-golden-pp-cli doctor' to check connectivity.", err)
+		if cliutil.LooksLikeTransportBlock(msg) {
+			return rateLimitErr(classified)
+		}
+		return apiErr(classified)
 	case strings.Contains(msg, "HTTP 404"):
 		return notFoundErr(fmt.Errorf("%w\nhint: resource not found. Run the 'list' command to see available items", err))
 	case strings.Contains(msg, "HTTP 429"):
@@ -3936,9 +3914,6 @@ func nonJSONPayloadError(data json.RawMessage) error {
 		return err
 	}
 	if len(trimmed) > 0 && trimmed[0] == '<' {
-		if htmlLooksLikeAuthFailure(trimmed) {
-			return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. " + ""))
-		}
 		return apiErr(fmt.Errorf("API returned HTML instead of JSON; the request may have reached a web page or the wrong endpoint"))
 	}
 	if len(trimmed) == 0 {

@@ -8971,7 +8971,6 @@ func TestClassifyAPIErrorPreservesTypedCLIError(t *testing.T) {
 	}{
 		{"semantic envelope error", usageErr(errors.New("semantic API envelope rejected input")), &rootFlags{}, 2},
 		{"HTTP-like usage error with idempotent flags", usageErr(errors.New("HTTP 409: conflict")), &rootFlags{idempotent: true, asJSON: true}, 2},
-		{"HTTP-like auth error", authErr(errors.New("HTTP 401: unauthorized")), &rootFlags{}, 4},
 		{"HTTP-like api error with idempotent flags", apiErr(errors.New("HTTP 409: conflict")), &rootFlags{idempotent: true, asJSON: true}, 5},
 	}
 

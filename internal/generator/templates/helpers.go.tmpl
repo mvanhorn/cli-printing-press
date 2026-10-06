@@ -428,7 +428,9 @@ func (e *cliError) Unwrap() error { return e.err }
 
 func usageErr(err error) error    { return &cliError{code: 2, err: err} }
 func notFoundErr(err error) error { return &cliError{code: 3, err: err} }
+{{- if or .HasRequiredRoles .HasAuthCommand}}
 func authErr(err error) error     { return &cliError{code: 4, err: err} }
+{{- end}}
 func apiErr(err error) error      { return &cliError{code: 5, err: err} }
 func configErr(err error) error   { return &cliError{code: 10, err: err} }
 func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
@@ -1374,6 +1376,7 @@ func applyHTMLPayloadClassifier(trimmed []byte) error {
 	return classifyHTMLPayload(bytes.TrimSpace(trimmed))
 }
 
+{{if and .Auth.Type (ne .Auth.Type "none")}}
 func htmlLooksLikeAuthFailure(trimmed []byte) bool {
 	if len(trimmed) == 0 {
 		return false
@@ -1397,6 +1400,7 @@ func htmlLooksLikeAuthFailure(trimmed []byte) bool {
 	}
 	return false
 }
+{{- end}}
 
 func htmlEvidenceFromTransportError(err error) []byte {
 	msg := err.Error()
@@ -1412,9 +1416,11 @@ func classifyHTMLTransportError(err error) error {
 	if classified := applyHTMLPayloadClassifier(evidence); classified != nil {
 		return classified
 	}
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
 	if htmlLooksLikeAuthFailure(evidence) {
 		return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. " + {{printf "%q" (authSetupHint .Auth .Name)}}))
 	}
+{{- end}}
 	return apiErr(fmt.Errorf("%w\nhint: the request may have reached a web page or the wrong endpoint", err))
 }
 
@@ -1496,6 +1502,9 @@ func classifyAPIErrorOnly(err error) error {
 			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
 {{- end}}
 			"\n      Run '{{.Name}}-pp-cli doctor' to check auth status.", err))
+{{- else if or (eq .Auth.Type "") (eq .Auth.Type "none")}}
+		return apiErr(fmt.Errorf("%w\nhint: the service returned HTTP 401. This API is configured without credentials, so this is not a missing-token failure."+
+			"\n      Run '{{.Name}}-pp-cli doctor' to check connectivity.", err))
 {{- else}}
 		return authErr(fmt.Errorf("%w\nhint: check your API credentials."+
 {{- if $authSetupHint}}
@@ -1524,8 +1533,14 @@ func classifyAPIErrorOnly(err error) error {
 {{- end}}
 			"\n      Run '{{.Name}}-pp-cli doctor' to check auth status.", err))
 {{- else if or (eq .Auth.Type "") (eq .Auth.Type "none")}}
-		return authErr(fmt.Errorf("%w\nhint: permission denied. This API is configured without credentials, so the service may be blocking the request by rate limit, geography, bot protection, or endpoint policy."+
-			"\n      Run '{{.Name}}-pp-cli doctor' to check connectivity.", err))
+		// No credential exists to repair. A challenge or block is a refusal
+		// (exit 7); any other 403 is an upstream API error (exit 5).
+		classified := fmt.Errorf("%w\nhint: permission denied. This API is configured without credentials, so the service may be blocking the request by rate limit, geography, bot protection, or endpoint policy."+
+			"\n      Run '{{.Name}}-pp-cli doctor' to check connectivity.", err)
+		if cliutil.LooksLikeTransportBlock(msg) {
+			return rateLimitErr(classified)
+		}
+		return apiErr(classified)
 {{- else}}
 		return authErr(fmt.Errorf("%w\nhint: permission denied. Your credentials are valid but lack access to this resource."+
 			"\n      Check that your credentials have the required permissions and match the API's expected auth scheme."+
@@ -4861,9 +4876,11 @@ func nonJSONPayloadError(data json.RawMessage) error {
 		return err
 	}
 	if len(trimmed) > 0 && trimmed[0] == '<' {
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
 		if htmlLooksLikeAuthFailure(trimmed) {
 			return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. " + {{printf "%q" (authSetupHint .Auth .Name)}}))
 		}
+{{- end}}
 		return apiErr(fmt.Errorf("API returned HTML instead of JSON; the request may have reached a web page or the wrong endpoint"))
 	}
 	if len(trimmed) == 0 {

@@ -694,7 +694,11 @@ If `--wait` times out or polling fails after the job was accepted, the command e
 {{- if .HasPartialFailureErr}}
 | 6 | Partial failure |
 {{- end}}
+{{- if .HasAuth}}
 | 7 | Rate limited (wait and retry) |
+{{- else}}
+| 7 | Rate limited or blocked by a firewall or bot challenge (back off; do not retry immediately) |
+{{- end}}
 {{- if .HasAsyncJobs}}
 | 8 | Async job submitted but not finished (run the printed recovery command; do not resubmit) |
 {{- end}}
