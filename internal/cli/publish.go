@@ -545,6 +545,11 @@ func newPublishPackageCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr, "warning: no manuscripts found, packaging without them")
 			}
 
+			if err := pipeline.RemoveUnshippablePackageFiles(outCLIDir); err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("removing live-check leftovers and stray executables: %w", err)}
+			}
+
 			cookieNames, err := stagedPackageCookieNames(outCLIDir)
 			if err != nil {
 				cleanupOnFailure()

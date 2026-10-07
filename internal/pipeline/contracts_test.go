@@ -995,6 +995,8 @@ func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
 	assert.Contains(t, skill, "git clean -fdq library/")
 	assert.Contains(t, skill, "git add -A library/")
 	assert.Contains(t, skill, `git add -f "library/<category>/<api-slug>/"`)
+	assert.Contains(t, skill, "publish package removes `.printing-press-live-check-*` directories and")
+	assert.Contains(t, skill, "compiled executables at any depth")
 	assert.Contains(t, skill, "UNEXPECTED_STAGED")
 	assert.Contains(t, skill, `git commit -m "feat(<api-slug>): add <api-slug>"`)
 	assert.NotContains(t, skill, `git add -f "library/<category>/<api-slug>/cmd/<api-slug>-pp-mcp/"`)

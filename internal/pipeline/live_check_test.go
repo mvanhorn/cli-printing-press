@@ -3,6 +3,7 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1014,7 +1015,7 @@ func TestSnapshotLiveCheckBinarySurvivesReplacement(t *testing.T) {
 
 	dir := t.TempDir()
 	original := writeStubBinary(t, dir, "sample-pp-cli", `echo '{"data":[{"source":"old"}]}'`)
-	snapshot, cleanup, err := snapshotLiveCheckBinary(original)
+	snapshot, cleanup, err := snapshotLiveCheckBinary(dir, original)
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
 
@@ -1032,6 +1033,211 @@ func TestSnapshotLiveCheckBinarySurvivesReplacement(t *testing.T) {
 	}, liveCheckIntegrationTimeout)
 	require.Equal(t, StatusPass, newResult.Status, "replacement should be runnable: %s", newResult.Reason)
 	require.Contains(t, newResult.OutputSample, "new")
+}
+
+func TestPathIsInsideDifferentVolume(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("cross-volume paths are Windows-only")
+	}
+	inside, err := pathIsInside(`D:\cli`, `C:\Temp\printing-press-probe`)
+	require.NoError(t, err)
+	require.False(t, inside, "a temp dir on another drive is outside the CLI tree")
+}
+
+func TestPathIsInsideFollowsDirectorySymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory symlink")
+	}
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	require.NoError(t, os.MkdirAll(filepath.Join(real, "child"), 0o755))
+	link := filepath.Join(root, "link")
+	require.NoError(t, os.Symlink(real, link))
+
+	inside, err := pathIsInside(link, filepath.Join(real, "child"))
+	require.NoError(t, err)
+	require.True(t, inside, "a path inside the symlink target is inside the CLI tree")
+
+	outside, err := pathIsInside(link, root)
+	require.NoError(t, err)
+	require.False(t, outside)
+}
+
+func TestSnapshotLiveCheckBinaryStagesBesideSymlinkTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory symlink")
+	}
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	linkParent := filepath.Join(root, "links")
+	require.NoError(t, os.MkdirAll(real, 0o755))
+	require.NoError(t, os.MkdirAll(linkParent, 0o755))
+	link := filepath.Join(linkParent, "cli")
+	require.NoError(t, os.Symlink(real, link))
+	binary := filepath.Join(real, "sample-pp-cli")
+	require.NoError(t, os.WriteFile(binary, []byte("probe-bytes"), 0o755))
+
+	probe, cleanup, err := snapshotLiveCheckBinary(link, binary)
+	require.NoError(t, err)
+	t.Cleanup(cleanup)
+
+	inside, err := pathIsInside(real, probe)
+	require.NoError(t, err)
+	require.False(t, inside, "probe %s must not live in %s", probe, real)
+	require.Equal(t, root, filepath.Dir(filepath.Dir(probe)))
+	cleanup()
+	assertNoLiveCheckStagingDirs(t, root)
+}
+
+func TestLiveCheckUnablePathRemovesStagingDirsThroughSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory symlink")
+	}
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	link := filepath.Join(root, "link")
+	require.NoError(t, os.MkdirAll(real, 0o755))
+	require.NoError(t, os.Symlink(real, link))
+	plantLiveCheckLeftover(t, filepath.Join(real, ".printing-press-live-check-111", "foo-pp-cli.exe"))
+	require.NoError(t, os.WriteFile(filepath.Join(real, "keep.txt"), []byte("keep"), 0o644))
+
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: link})
+	require.True(t, result.Unable, "missing research should be unable, got %+v", result)
+	assertNoLiveCheckStagingDirs(t, real)
+	require.FileExists(t, filepath.Join(real, "keep.txt"))
+}
+
+func TestMkdirLiveCheckProbeDirRejectsTempInsideTree(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	// The filesystem root has no parent directory to stage in, so the temp
+	// fallback runs. That fallback is inside the root and must be deleted.
+	_, err := mkdirLiveCheckProbeDir(string(filepath.Separator))
+	require.Error(t, err)
+	assertNoLiveCheckStagingDirs(t, tmp)
+}
+
+func TestSnapshotLiveCheckBinaryStaysOutsideCLIDir(t *testing.T) {
+	root := t.TempDir()
+	cliDir := filepath.Join(root, "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	binary := filepath.Join(cliDir, "sample-pp-cli.exe")
+	require.NoError(t, os.WriteFile(binary, []byte("not-a-real-binary"), 0o755))
+
+	probe, cleanup, err := snapshotLiveCheckBinary(cliDir, binary)
+	require.NoError(t, err)
+	t.Cleanup(cleanup)
+
+	inside, err := pathIsInside(cliDir, probe)
+	require.NoError(t, err)
+	require.False(t, inside, "probe %s must not live in %s", probe, cliDir)
+	require.Contains(t, filepath.Base(filepath.Dir(probe)), "printing-press-live-check-")
+	copied, err := os.ReadFile(probe)
+	require.NoError(t, err)
+	require.Equal(t, "not-a-real-binary", string(copied))
+
+	cleanup()
+	_, statErr := os.Stat(filepath.Dir(probe))
+	require.True(t, os.IsNotExist(statErr), "cleanup should remove %s", filepath.Dir(probe))
+	assertNoLiveCheckStagingDirs(t, root)
+	cleanup()
+}
+
+func TestLiveCheckUnablePathRemovesStagingDirs(t *testing.T) {
+	root := t.TempDir()
+	cliDir := filepath.Join(root, "cli")
+	plantLiveCheckLeftover(t, filepath.Join(cliDir, ".printing-press-live-check-111", "foo-pp-cli.exe"))
+	plantLiveCheckLeftover(t, filepath.Join(cliDir, "build", "stage", "bin", "printing-press-live-check-222", "foo-pp-cli.exe"))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "keep.txt"), []byte("keep"), 0o644))
+
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: cliDir})
+	require.True(t, result.Unable, "missing research should be unable, got %+v", result)
+	assertNoLiveCheckStagingDirs(t, root)
+	require.FileExists(t, filepath.Join(cliDir, "keep.txt"))
+}
+
+func TestLiveCheckLeavesNoStagingDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+
+	tests := []struct {
+		name        string
+		script      string
+		timeout     time.Duration
+		wantPassed  int
+		wantFailed  int
+		wantSnippet string
+	}{
+		{
+			name:       "pass",
+			script:     `echo '{"data":[{"ok":true}]}'`,
+			timeout:    liveCheckIntegrationTimeout,
+			wantPassed: 1,
+		},
+		{
+			name:        "probe error",
+			script:      `echo fail >&2; exit 1`,
+			timeout:     liveCheckIntegrationTimeout,
+			wantFailed:  1,
+			wantSnippet: "exit 1",
+		},
+		{
+			name:        "timeout",
+			script:      `exec sleep 30`,
+			timeout:     time.Second,
+			wantFailed:  1,
+			wantSnippet: "timed out",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, "worktree-x")
+			require.NoError(t, os.MkdirAll(dir, 0o755))
+			plantLiveCheckLeftover(t, filepath.Join(dir, ".printing-press-live-check-old", "foo-pp-cli.exe"))
+			plantLiveCheckLeftover(t, filepath.Join(dir, "nested", ".printing-press-live-check-deep", "foo-pp-cli.exe"))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("keep"), 0o644))
+			writeStubBinary(t, dir, "worktree-x-pp-cli", tt.script)
+			writeTestResearchJSON(t, dir, []NovelFeature{
+				{Name: "X", Command: "list", Example: "worktree-x-pp-cli list --json"},
+			})
+
+			result := RunLiveCheck(LiveCheckOptions{
+				CLIDir:  dir,
+				Timeout: tt.timeout,
+			})
+			require.False(t, result.Unable, "live-check should run: %s", result.Reason)
+			require.Equal(t, tt.wantPassed, result.Passed)
+			require.Equal(t, tt.wantFailed, result.Failed)
+			if tt.wantSnippet != "" {
+				require.NotEmpty(t, result.Features)
+				require.Contains(t, result.Features[0].Reason, tt.wantSnippet)
+			}
+			assertNoLiveCheckStagingDirs(t, root)
+			require.FileExists(t, filepath.Join(dir, "keep.txt"))
+		})
+	}
+}
+
+func plantLiveCheckLeftover(t *testing.T, path string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte("MZ leftover"), 0o755))
+}
+
+func assertNoLiveCheckStagingDirs(t *testing.T, root string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path != root && isLiveCheckStagingDirName(d.Name()) {
+			t.Errorf("live-check staging dir remains: %s", path)
+		}
+		return nil
+	})
+	require.NoError(t, err)
 }
 
 func TestLiveCheckBinaryCandidatesPreferBuildStageBin(t *testing.T) {
