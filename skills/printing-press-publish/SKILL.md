@@ -1043,6 +1043,10 @@ rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" \
       "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>-dogfood" \
       "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>-pp-mcp"
 
+# publish package removes `.printing-press-live-check-*` directories and
+# compiled executables at any depth from the staged tree before this copy.
+# Do not copy those paths back from <cli-dir>; a depth-1 rm does not see them.
+
 # Defense-in-depth: validate printer attribution before README and registry surfaces.
 PRINTER=$(jq -r '.printer // ""' "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press.json")
 PRINTER_NAME=$(jq -r '.printer_name // ""' "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press.json")
