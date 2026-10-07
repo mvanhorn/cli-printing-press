@@ -1200,26 +1200,15 @@ func novelHelperFn() string { return "kept" }
 	novelPath := filepath.Join(outputDir, "internal", "cli", "novel_helper.go")
 	require.NoError(t, os.WriteFile(novelPath, novelBody, 0o644))
 
-	_, err = runGenerate(specB)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "pass --yes to confirm")
-	gotNovel, readErr := os.ReadFile(novelPath)
-	require.NoError(t, readErr)
-	assert.Equal(t, string(novelBody), string(gotNovel),
-		"refusing confirmation must restore the pre-force tree")
-	gotConfig, readErr := os.ReadFile(configPath)
-	require.NoError(t, readErr)
-	if replacedBearer {
-		assert.Contains(t, string(gotConfig), `"Token "`,
-			"refusing confirmation must keep the pre-force config edit")
-	}
-
-	stderr, err := runGenerate(specB, "--yes")
+	// Generated files carry the standard marker, so a spec rename is not a
+	// markerless hand-authored delete and does not ask for --yes.
+	// TestGenerateCmdForceConfirmsMarkerlessDelete covers that prompt.
+	stderr, err := runGenerate(specB)
 	require.NoError(t, err)
 
 	// Cross-spec: literal drift NOT preserved (NovelOnly skips
 	// TEMPLATED-VALUE-DRIFT).
-	gotConfig, err = os.ReadFile(configPath)
+	gotConfig, err := os.ReadFile(configPath)
 	require.NoError(t, err)
 	if replacedBearer {
 		assert.NotContains(t, string(gotConfig), `"Token "`,
@@ -1227,7 +1216,7 @@ func novelHelperFn() string { return "kept" }
 	}
 
 	// Novel file still preserved.
-	gotNovel, err = os.ReadFile(novelPath)
+	gotNovel, err := os.ReadFile(novelPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(gotNovel), "novelHelperFn",
 		"novel hand-written file is spec-orthogonal and must survive cross-spec regen")

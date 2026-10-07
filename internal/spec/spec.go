@@ -1134,6 +1134,18 @@ func (s *APISpec) HasTextResponse() bool {
 	return false
 }
 
+func (s *APISpec) HasBinaryResponse() bool {
+	if s == nil {
+		return false
+	}
+	for _, resource := range s.Resources {
+		if resourceHasBinaryResponse(resource) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *APISpec) HasRawRequest() bool {
 	if s == nil {
 		return false
@@ -1168,6 +1180,20 @@ func resourceHasTextResponse(resource Resource) bool {
 	}
 	for _, sub := range resource.SubResources {
 		if resourceHasTextResponse(sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceHasBinaryResponse(resource Resource) bool {
+	for _, endpoint := range resource.Endpoints {
+		if endpoint.UsesBinaryResponse() {
+			return true
+		}
+	}
+	for _, sub := range resource.SubResources {
+		if resourceHasBinaryResponse(sub) {
 			return true
 		}
 	}

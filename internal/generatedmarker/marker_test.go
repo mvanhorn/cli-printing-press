@@ -3,11 +3,21 @@ package generatedmarker
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestStandardLineMatchesGoGeneratedConvention(t *testing.T) {
+	t.Parallel()
+
+	assert.Regexp(t, regexp.MustCompile(`^// Code generated .* DO NOT EDIT\.$`), StandardLine)
+	assert.Contains(t, FilePrefix(), StandardLine)
+	assert.Contains(t, FilePrefix(), LegacyLine)
+	assert.NotContains(t, StandardLine, Text)
+}
 
 func TestHasInFileScansGeneratedMarkerNearHead(t *testing.T) {
 	t.Parallel()
@@ -22,6 +32,17 @@ package cli
 `), 0o644))
 
 	assert.True(t, HasInFile(path))
+}
+
+func TestHasInFileAcceptsStandardGeneratedLine(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "generated.go")
+	require.NoError(t, os.WriteFile(path, []byte(StandardLine+"\npackage cli\n"), 0o644))
+
+	assert.True(t, HasInFile(path))
+	assert.True(t, Contains(StandardLine))
 }
 
 func TestHasInFileIgnoresHandAuthoredFile(t *testing.T) {

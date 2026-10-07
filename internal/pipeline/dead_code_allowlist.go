@@ -53,8 +53,7 @@ func isAllowedDeadHelper(name string) bool {
 		"resolvePaginatedNextCursor",
 		"resourceURLIDPathParam",
 		"responsePayloadParentAtPath",
-		"urlIDFieldName",
-		"writeNoop":
+		"urlIDFieldName":
 		return true
 	default:
 		return false

@@ -1078,7 +1078,8 @@ func isMutationMethod(method string) bool {
 type helpersTemplateData struct {
 	*spec.APISpec
 	HelperFlags
-	HasAuthCommand bool
+	HasAuthCommand   bool
+	EmitsStdinSecret bool
 }
 
 // doctorTemplateData wraps APISpec with flags for store-aware credential
@@ -2977,9 +2978,10 @@ func (g *Generator) renderSingleFiles() error {
 			hFlags.HasPromotedMutations = promotedCommandsIncludeMutation(g.Spec, g.PromotedCommands)
 			hFlags.HasNoStoreReadDryRun = !g.hasDataLayer() && specEmitsReadDryRunBranch(g.Spec, g.PromotedCommands)
 			data = &helpersTemplateData{
-				APISpec:        g.Spec,
-				HelperFlags:    hFlags,
-				HasAuthCommand: g.shouldEmitAuth(),
+				APISpec:          g.Spec,
+				HelperFlags:      hFlags,
+				HasAuthCommand:   g.shouldEmitAuth(),
+				EmitsStdinSecret: g.emitsStdinSecretReader(),
 			}
 		case "root_test.go.tmpl":
 			data = &rootTestTemplateData{
@@ -4318,21 +4320,7 @@ func (g *Generator) renderAuthFiles() error {
 	//   4. Browser-cookie / composed / persisted-query
 	//   5. Simple token-management (catch-all)
 	authPath := filepath.Join("internal", "cli", "auth.go")
-	authTmpl := "auth_simple.go.tmpl"
-	switch {
-	case g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && g.Spec.Auth.TokenURL != "":
-		authTmpl = "auth_client_credentials.go.tmpl"
-	case g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && g.Spec.Auth.DeviceAuthorizationURL != "" && g.Spec.Auth.TokenURL != "":
-		authTmpl = "auth_device_code.go.tmpl"
-	case g.Spec.Auth.AuthorizationURL != "":
-		authTmpl = "auth.go.tmpl"
-	case g.Spec.Auth.Type == "cookie" || g.Spec.Auth.Type == "composed" || g.hasTrafficAnalysisHint("graphql_persisted_query") || g.Spec.Auth.Subtype == spec.AuthSubtypeAuth0SPAInMemory:
-		// Browser-aware auth template for browser-cookie auth, a
-		// persisted-query registry, or an Auth0-SPA-in-memory bearer token
-		// (CDP runtime extraction). Query refresh flows need temporary
-		// browser capture support, not a resident browser transport.
-		authTmpl = "auth_browser.go.tmpl"
-	}
+	authTmpl := g.authTemplateName()
 	authData := &authTemplateData{
 		APISpec:                    g.Spec,
 		HasGraphQLPersistedQueries: g.hasTrafficAnalysisHint("graphql_persisted_query"),
@@ -4362,6 +4350,42 @@ func (g *Generator) renderAuthFiles() error {
 	}
 
 	return nil
+}
+
+// authTemplateName is the auth file renderAuthFiles writes. emitsStdinSecretReader
+// switches on the same name: a mismatch either calls readSecretFromStdin without
+// defining it or leaves the helper unused.
+func (g *Generator) authTemplateName() string {
+	switch {
+	case g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && g.Spec.Auth.TokenURL != "":
+		return "auth_client_credentials.go.tmpl"
+	case g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && g.Spec.Auth.DeviceAuthorizationURL != "" && g.Spec.Auth.TokenURL != "":
+		return "auth_device_code.go.tmpl"
+	case g.Spec.Auth.AuthorizationURL != "":
+		return "auth.go.tmpl"
+	case g.Spec.Auth.Type == "cookie" || g.Spec.Auth.Type == "composed" || g.hasTrafficAnalysisHint("graphql_persisted_query") || g.Spec.Auth.Subtype == spec.AuthSubtypeAuth0SPAInMemory:
+		return "auth_browser.go.tmpl"
+	default:
+		return "auth_simple.go.tmpl"
+	}
+}
+
+func (g *Generator) emitsStdinSecretReader() bool {
+	if g == nil || g.Spec == nil || !g.shouldEmitAuth() {
+		return false
+	}
+	switch g.authTemplateName() {
+	case "auth_client_credentials.go.tmpl", "auth_device_code.go.tmpl":
+		return true
+	case "auth_browser.go.tmpl":
+		// The browser template gates set-token on Auth.Type != "none".
+		// An empty type is not "none", so it still reads the secret.
+		return g.Spec.Auth.Type != "none"
+	case "auth_simple.go.tmpl":
+		return authSetTokenAvailable(g.Spec.Auth)
+	default:
+		return false
+	}
 }
 
 // shouldEmitAuth reports whether the generator should emit internal/cli/auth.go
