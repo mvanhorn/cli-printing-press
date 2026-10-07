@@ -73,6 +73,66 @@ func dryRunReadSpec(name string) *spec.APISpec {
 	return apiSpec
 }
 
+func TestSpecEmitsReadDryRunBranch(t *testing.T) {
+	t.Parallel()
+
+	reads := dryRunReadSpec("gate-reads")
+	require.True(t, specEmitsReadDryRunBranch(reads, buildPromotedCommands(reads)))
+
+	mutations := minimalSpec("gate-mutations")
+	mutations.Learn.Disabled = true
+	mutations.Resources = map[string]spec.Resource{
+		"items": {
+			Description: "Items",
+			Endpoints: map[string]spec.Endpoint{
+				"create": {
+					Method:      "POST",
+					Path:        "/items",
+					Description: "Create an item",
+					Body:        []spec.Param{{Name: "name", Type: "string"}},
+				},
+			},
+		},
+	}
+	require.False(t, specEmitsReadDryRunBranch(mutations, buildPromotedCommands(mutations)))
+	require.False(t, specEmitsReadDryRunBranch(nil, nil))
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(mutations.Name))
+	gen := New(mutations, outputDir)
+	gen.VisionSet = VisionTemplateSet{Export: true}
+	require.NoError(t, gen.Generate())
+	helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
+	assert.NotContains(t, helpers, "func printNoStoreReadDryRun(")
+	promoted := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_items.go")
+	assert.NotContains(t, promoted, "printNoStoreReadDryRun(")
+
+	// A promoted read-only DELETE still takes the read dry-run branch.
+	// Non-promoted DELETE commands do not.
+	deleted := minimalSpec("gate-delete-read")
+	deleted.Learn.Disabled = true
+	deleted.Resources = map[string]spec.Resource{
+		"cleanups": {
+			Description: "Cleanups",
+			Endpoints: map[string]spec.Endpoint{
+				"search": {
+					Method:      "DELETE",
+					Path:        "/cleanups",
+					Description: "Search cleanups",
+					Body:        []spec.Param{{Name: "query", Type: "string"}},
+				},
+			},
+		},
+	}
+	require.True(t, specEmitsReadDryRunBranch(deleted, buildPromotedCommands(deleted)))
+	deleteDir := filepath.Join(t.TempDir(), naming.CLI(deleted.Name))
+	deleteGen := New(deleted, deleteDir)
+	deleteGen.VisionSet = VisionTemplateSet{Export: true}
+	require.NoError(t, deleteGen.Generate())
+	assert.Contains(t, readGeneratedFile(t, deleteDir, "internal", "cli", "helpers.go"), "func printNoStoreReadDryRun(")
+	assert.Contains(t, readGeneratedFile(t, deleteDir, "internal", "cli", "promoted_cleanups.go"), "printNoStoreReadDryRun(")
+	assert.Contains(t, readGeneratedFile(t, deleteDir, "internal", "cli", "promoted_cleanups.go"), `"delete"`)
+}
+
 func TestGeneratedDryRunReadGuardsEndpointAndPromotedOutputs(t *testing.T) {
 	t.Parallel()
 
@@ -97,13 +157,22 @@ func TestGeneratedDryRunReadGuardsEndpointAndPromotedOutputs(t *testing.T) {
 
 	endpointSrc := readGeneratedFile(t, noStoreDir, "internal", "cli", "items_list.go")
 	assert.Contains(t, endpointSrc, "if isDryRunResponse(c.IsDryRun(), data)")
-	assert.Contains(t, endpointSrc, `map[string]any{"source": "dry-run"}`)
+	assert.Contains(t, endpointSrc, "printNoStoreReadDryRun(")
+	assert.Contains(t, endpointSrc, `"get"`)
+	assert.Contains(t, endpointSrc, `"items"`)
 	assert.Contains(t, endpointSrc, "flagAll && !flags.dryRun")
 
 	promotedSrc := readGeneratedFile(t, noStoreDir, "internal", "cli", "promoted_widgets.go")
 	assert.Contains(t, promotedSrc, "if isDryRunResponse(c.IsDryRun(), data)")
-	assert.Contains(t, promotedSrc, `map[string]any{"source": "dry-run"}`)
+	assert.Contains(t, promotedSrc, "printNoStoreReadDryRun(")
+	assert.Contains(t, promotedSrc, `"get"`)
+	assert.Contains(t, promotedSrc, `"widgets"`)
 	assert.Contains(t, promotedSrc, "flagAll && !flags.dryRun")
+
+	noStoreHelpers := readGeneratedFile(t, noStoreDir, "internal", "cli", "helpers.go")
+	assert.Contains(t, noStoreHelpers, "func printNoStoreReadDryRun(")
+	storeHelpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
+	assert.NotContains(t, storeHelpers, "func printNoStoreReadDryRun(")
 }
 
 func TestGeneratedDryRunReadPreservesProvenanceAndSkipsStore(t *testing.T) {
