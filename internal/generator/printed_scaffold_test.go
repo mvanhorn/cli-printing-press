@@ -74,6 +74,7 @@ func TestPrintedScaffoldKeepsReferencedHelpers(t *testing.T) {
 		assert.Contains(t, helpers, "func writeNoop(")
 		assert.NotContains(t, helpers, "func classifyDeleteError(")
 		assert.NotContains(t, helpers, "func handleBinaryResponseDelivery(")
+		requireGeneratedCompiles(t, outputDir)
 	})
 
 	t.Run("binary response keeps delivery helpers", func(t *testing.T) {
@@ -206,13 +207,14 @@ func TestEmittedStdinSecretHelperMatchesAuthSurface(t *testing.T) {
 				assert.Contains(t, helpers, "func readSecretFromStdin(")
 				require.True(t, authExists)
 				assert.Contains(t, readGeneratedFile(t, outputDir, "internal", "cli", "auth.go"), "readSecretFromStdin(cmd.InOrStdin())")
-				return
+			} else {
+				assert.NotContains(t, helpers, "func readSecretFromStdin(")
+				assert.NotContains(t, helpers, "maxSecretFromStdin")
+				if authExists {
+					assert.NotContains(t, readGeneratedFile(t, outputDir, "internal", "cli", "auth.go"), "readSecretFromStdin(")
+				}
 			}
-			assert.NotContains(t, helpers, "func readSecretFromStdin(")
-			assert.NotContains(t, helpers, "maxSecretFromStdin")
-			if authExists {
-				assert.NotContains(t, readGeneratedFile(t, outputDir, "internal", "cli", "auth.go"), "readSecretFromStdin(")
-			}
+			requireGeneratedCompiles(t, outputDir)
 		})
 	}
 }
