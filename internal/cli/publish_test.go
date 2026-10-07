@@ -1101,6 +1101,51 @@ func TestPublishPackageStripsBuildDir(t *testing.T) {
 	assert.ErrorIs(t, stagedErr, os.ErrNotExist, "staged dir must not include build/")
 }
 
+func TestPublishPackageExcludesLiveCheckDirsAndStrayExecutables(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	stubPublishPackageValidation(t)
+
+	plant := func(path string, data []byte, mode os.FileMode) {
+		t.Helper()
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, data, mode))
+	}
+	staleExe := filepath.Join(cliDir, ".printing-press-live-check-2895911864", "foo-pp-cli.exe")
+	nestedExe := filepath.Join(cliDir, "nested", "deep", ".printing-press-live-check-3501810456", "foo-pp-cli.exe")
+	strayExe := filepath.Join(cliDir, "nested", "stray.exe")
+	strayELF := filepath.Join(cliDir, "internal", "cli", "stray-bin")
+	helper := filepath.Join(cliDir, "scripts", "helper.sh")
+	plant(staleExe, []byte("MZ leftover"), 0o755)
+	plant(nestedExe, []byte("still here"), 0o644)
+	plant(strayExe, []byte("not a real image"), 0o644)
+	plant(strayELF, []byte{0x7f, 'E', 'L', 'F', 0x02}, 0o755)
+	plant(helper, []byte("#!/bin/sh\necho ok\n"), 0o755)
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+
+	for _, path := range []string{staleExe, nestedExe, strayExe, strayELF, helper} {
+		_, srcErr := os.Stat(path)
+		assert.NoError(t, srcErr, "package must not delete source-tree file %s", path)
+	}
+
+	assert.NoDirExists(t, filepath.Join(result.StagedDir, ".printing-press-live-check-2895911864"))
+	assert.NoDirExists(t, filepath.Join(result.StagedDir, "nested", "deep", ".printing-press-live-check-3501810456"))
+	assert.NoFileExists(t, filepath.Join(result.StagedDir, "nested", "stray.exe"))
+	assert.NoFileExists(t, filepath.Join(result.StagedDir, "internal", "cli", "stray-bin"))
+	require.FileExists(t, filepath.Join(result.StagedDir, "scripts", "helper.sh"))
+	require.FileExists(t, filepath.Join(result.StagedDir, "cmd", "test-pp-cli", "main.go"))
+}
+
 func TestPublishPackageStripsRootBinaries(t *testing.T) {
 	home := setLibraryTestEnv(t)
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
