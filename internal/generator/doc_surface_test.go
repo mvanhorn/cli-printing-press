@@ -274,8 +274,8 @@ func markdownSection(content, heading string) string {
 		}
 	}
 	rest := content[start+len(token):]
-	if rel := strings.Index(rest, "\n## "); rel >= 0 {
-		return rest[:rel]
+	if before, _, found := strings.Cut(rest, "\n## "); found {
+		return before
 	}
 	return rest
 }

@@ -589,7 +589,7 @@ func stringLiteral(expr ast.Expr) (string, bool) {
 func splitCobraUse(use string) (leaf, invocation string, ok bool) {
 	var inv []string
 	var leafSet bool
-	for _, field := range strings.Fields(use) {
+	for field := range strings.FieldsSeq(use) {
 		if strings.HasPrefix(field, "-") {
 			break
 		}
@@ -612,7 +612,7 @@ func joinDocPath(parent string, segments ...string) string {
 		parts = append(parts, strings.Fields(parent)...)
 	}
 	for _, segment := range segments {
-		for _, field := range strings.Fields(segment) {
+		for field := range strings.FieldsSeq(segment) {
 			if field == "" {
 				continue
 			}
