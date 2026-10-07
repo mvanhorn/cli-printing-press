@@ -42,6 +42,9 @@ func TestNoStoreReadDryRunMeetsLiveDogfoodContract(t *testing.T) {
 	require.Contains(t, stderr, "(dry run - no request sent)")
 	requireDryRunContractPass(t, stdout)
 	assertReadDryRunEnvelope(t, stdout, "get", "items", "/items")
+	plain := decodeDryRunContractJSON(t, stdout)
+	plainMeta, _ := plain["meta"].(map[string]any)
+	require.Equal(t, "dry-run", plainMeta["source"], "stdout: %s", stdout)
 
 	stdout, _ = runDryRunContractCLI(t, noStore, "items", "list", "--json", "--dry-run", "--agent")
 	requireDryRunContractPass(t, stdout)

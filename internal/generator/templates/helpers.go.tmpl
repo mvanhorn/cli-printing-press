@@ -3576,10 +3576,11 @@ func printNoStoreReadDryRun(w io.Writer, data json.RawMessage, flags *rootFlags,
 		"success":  false,
 		"dry_run":  true,
 	}
+	// Platform wrapping keeps sibling keys only when the object already has
+	// meta plus data or results. Without meta it nests the whole envelope,
+	// which hides dry_run and action from the dry-run JSON contract.
 	agent := flags != nil && flags.agent
-	if agent {
-		envelope["meta"] = map[string]any{"source": "dry-run"}
-	}
+	envelope["meta"] = map[string]any{"source": "dry-run"}
 	payload := bytes.TrimSpace(data)
 	if json.Valid(payload) && len(payload) > 0 {
 		if agent {
