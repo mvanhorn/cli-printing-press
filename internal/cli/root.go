@@ -3225,6 +3225,9 @@ func loadResearchSources(gen *generator.Generator, researchDir string) []pipelin
 				Stars:    s.Stars,
 			})
 		}
+		// URL-less alternatives never become Sources, but they still falsify
+		// the "no other tool" claim.
+		gen.ListedAlternatives = len(research.Alternatives) > 0
 		// Reused research.json still carries the prior run's novel_features_built.
 		// Scaffold the current planned set so a reprint can drop/add/rename.
 		for _, nf := range research.NovelFeatures {

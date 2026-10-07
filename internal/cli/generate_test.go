@@ -779,6 +779,24 @@ func TestLoadResearchSourcesReturnsExplicitEmptyManifestNovelFeatures(t *testing
 	assert.Equal(t, "planned scan", gen.NovelFeatures[0].Command)
 }
 
+func TestLoadResearchSourcesRecordsURLLessAlternatives(t *testing.T) {
+	t.Parallel()
+
+	researchDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), []byte(`{
+  "api_name": "altless",
+  "alternatives": [{"name": "other-tool"}]
+}`), 0o644))
+
+	gen := generator.New(&spec.APISpec{
+		Name: "altless",
+		Auth: spec.AuthConfig{Type: "none"},
+	}, t.TempDir())
+	loadResearchSources(gen, researchDir)
+	assert.True(t, gen.ListedAlternatives)
+	assert.Empty(t, gen.Sources)
+}
+
 func TestLoadResearchSourcesScaffoldsCurrentNovelFeaturesNotBuilt(t *testing.T) {
 	t.Parallel()
 

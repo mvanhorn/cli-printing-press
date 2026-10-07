@@ -556,7 +556,7 @@ func checkNovelFeaturesOpts(cliDir, researchDir string, overwriteCommandMirror b
 		} else if changed {
 			fmt.Fprintln(os.Stderr, "dogfood: synced .printing-press.json (novel_features) from novel_features_built")
 		}
-		if artifacts, err := syncCLITranscendenceDocs(cliDir, built, overwriteCommandMirror); err != nil {
+		if artifacts, err := syncCLITranscendenceDocs(cliDir, built, overwriteCommandMirror, len(research.Alternatives) > 0); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not sync transcendence docs: %v\n", err)
 		} else {
 			for _, artifact := range artifacts {

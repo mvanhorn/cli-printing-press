@@ -131,16 +131,16 @@ func SyncCLINarrativeDocs(dir, apiName string, narrative *ReadmeNarrative) ([]sy
 // A command_mirror_capabilities block that differs from the rendered
 // research.json shape is left unmodified unless overwrite is requested.
 func SyncCLITranscendenceDocs(dir string, features []NovelFeature) ([]syncedArtifact, error) {
-	return syncCLITranscendenceDocs(dir, features, false)
+	return syncCLITranscendenceDocs(dir, features, false, false)
 }
 
-func syncCLITranscendenceDocs(dir string, features []NovelFeature, overwriteCommandMirror bool) ([]syncedArtifact, error) {
+func syncCLITranscendenceDocs(dir string, features []NovelFeature, overwriteCommandMirror, hasListedAlternatives bool) ([]syncedArtifact, error) {
 	var synced []syncedArtifact
 	warnBeforeDroppingDocumentedFeatures(filepath.Join(dir, "README.md"), "README.md", "## Unique Features", features)
 	changed, err := syncMarkdownFeatureSection(
 		filepath.Join(dir, "README.md"),
 		"## Unique Features",
-		renderNovelFeatureDocSection("## Unique Features", features),
+		renderNovelFeatureDocSection("## Unique Features", features, hasListedAlternatives),
 		[]string{"## Usage"},
 	)
 	if err != nil {
@@ -154,7 +154,7 @@ func syncCLITranscendenceDocs(dir string, features []NovelFeature, overwriteComm
 	changed, err = syncMarkdownFeatureSection(
 		filepath.Join(dir, "SKILL.md"),
 		"## Unique Capabilities",
-		renderNovelFeatureDocSection("## Unique Capabilities", features),
+		renderNovelFeatureDocSection("## Unique Capabilities", features, hasListedAlternatives),
 		[]string{"## HTTP Transport", "## Discovery Signals", "## Command Reference", "## Auth Setup"},
 	)
 	if err != nil {
@@ -822,18 +822,28 @@ func oneLineForDocSync(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-func renderNovelFeatureDocSection(heading string, features []NovelFeature) string {
+func renderNovelFeatureDocSection(heading string, features []NovelFeature, hasListedAlternatives bool) string {
 	if len(features) == 0 {
 		return ""
 	}
 
 	var b strings.Builder
 	b.WriteString(heading)
-	b.WriteString("\n\nThese capabilities aren't available in any other tool for this API.\n")
+	b.WriteString("\n\n")
+	if !hasListedAlternatives {
+		b.WriteString(generator.NovelFeatureExclusivityClaim)
+		b.WriteString("\n")
+	}
 
 	if groups := groupNovelFeaturesForDocs(features); len(groups) > 0 {
-		for _, group := range groups {
-			b.WriteString("\n### ")
+		for i, group := range groups {
+			// The no-alternatives sentence already ends a line, so the first
+			// group needs a blank line before its heading. With the sentence
+			// omitted, the heading's own blank line is enough.
+			if i > 0 || !hasListedAlternatives {
+				b.WriteString("\n")
+			}
+			b.WriteString("### ")
 			b.WriteString(group.Name)
 			b.WriteString("\n")
 			for _, feature := range group.Features {

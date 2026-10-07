@@ -370,13 +370,15 @@ This checks your configuration{{if and (ne .Auth.Type "") (ne .Auth.Type "none")
 
 ## Unique Features
 
-These capabilities aren't available in any other tool for this API.
+{{if not .HasListedAlternatives}}{{novelExclusivityClaim}}{{end}}
 {{- $groups := groupNovelFeatures .NovelFeatures}}
 {{- if $groups}}
-{{- range $groups}}
+{{- range $i, $g := $groups}}
+{{- if or (gt $i 0) (not $.HasListedAlternatives)}}
 
-### {{.Name}}
-{{range .Features}}
+{{end -}}
+### {{$g.Name}}
+{{range $g.Features}}
 - **`{{.Command}}`** — {{.Description}}
 {{- if .WhyItMatters}}
 
@@ -492,6 +494,15 @@ Existing installs keep working because the platform-default rung matches the leg
 - **`{{$.Name}}-pp-cli {{kebab $name}} {{kebab $eName}}`** - {{$endpoint.Description}}
 {{- end}}
 {{- end}}
+{{end}}
+{{- if .AdditionalCommandGroups}}
+{{range .AdditionalCommandGroups}}
+### {{.Heading}}
+
+{{range .Commands}}
+- **`{{$.Name}}-pp-cli {{.Invocation}}`** - {{.Description}}
+{{end}}
+{{end}}
 {{end}}
 {{- if .Learn.Enabled}}
 

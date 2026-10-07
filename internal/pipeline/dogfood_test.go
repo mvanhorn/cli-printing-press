@@ -2787,7 +2787,7 @@ func context() map[string]any {
 		Command:     "fresh scan",
 		Description: "Fresh copy from research",
 		Rationale:   "Requires current research",
-	}}, true)
+	}}, true, false)
 	require.NoError(t, err)
 	assert.Contains(t, artifacts, syncedArtifact{Path: filepath.Join("internal", "mcp", "tools.go"), Detail: "command_mirror_capabilities"})
 

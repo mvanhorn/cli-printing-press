@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -233,4 +234,92 @@ var whichIndex = []whichEntry{
 	assert.Contains(t, got, `Description: "See Group: awards in WhyItMatters: docs"`)
 	assert.NotContains(t, got, `Group: "awards"`)
 	assert.NotContains(t, got, `WhyItMatters: "docs"`)
+}
+
+func TestRenderNovelFeatureDocSectionExclusivityFollowsAlternatives(t *testing.T) {
+	t.Parallel()
+
+	flat := []NovelFeature{{Name: "Health", Command: "health", Description: "Metrics"}}
+	withClaim := renderNovelFeatureDocSection("## Unique Features", flat, false)
+	assert.Contains(t, withClaim, generator.NovelFeatureExclusivityClaim+"\n- **`health`**")
+	withoutClaim := renderNovelFeatureDocSection("## Unique Features", flat, true)
+	assert.NotContains(t, withoutClaim, generator.NovelFeatureExclusivityClaim)
+	assert.Equal(t, "## Unique Features\n\n- **`health`** — Metrics", withoutClaim)
+
+	grouped := []NovelFeature{{
+		Name: "Health", Command: "health", Description: "Metrics", Group: "Local state",
+	}}
+	groupedWith := renderNovelFeatureDocSection("## Unique Capabilities", grouped, false)
+	assert.Contains(t, groupedWith, generator.NovelFeatureExclusivityClaim+"\n\n### Local state\n")
+	groupedWithout := renderNovelFeatureDocSection("## Unique Capabilities", grouped, true)
+	assert.NotContains(t, groupedWithout, generator.NovelFeatureExclusivityClaim)
+	assert.True(t, strings.HasPrefix(groupedWithout, "## Unique Capabilities\n\n### Local state\n"), groupedWithout)
+}
+
+func TestCheckNovelFeaturesOmitsExclusivityWhenAlternativesExist(t *testing.T) {
+	t.Parallel()
+
+	for _, alts := range [][]Alternative{nil, {{Name: "other-tool"}}} {
+		name := "no alternatives"
+		if len(alts) > 0 {
+			name = "url-less alternative"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cliDir := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "cli"), 0o755))
+			writeTestFile(t, filepath.Join(cliDir, "internal", "cli", "health.go"), `package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}
+`)
+			writeTestFile(t, filepath.Join(cliDir, "README.md"), strings.Join([]string{
+				"# Test",
+				"",
+				"## Unique Features",
+				"",
+				"placeholder",
+				"",
+				"## Usage",
+				"",
+			}, "\n"))
+			writeTestFile(t, filepath.Join(cliDir, "SKILL.md"), strings.Join([]string{
+				"# Test",
+				"",
+				"## Unique Capabilities",
+				"",
+				"placeholder",
+				"",
+				"## Command Reference",
+				"",
+			}, "\n"))
+
+			researchDir := t.TempDir()
+			require.NoError(t, writeResearchJSON(&ResearchResult{
+				APIName:      "test",
+				Alternatives: alts,
+				NovelFeatures: []NovelFeature{{
+					Name:        "Health",
+					Command:     "health",
+					Description: "Metrics",
+				}},
+			}, researchDir))
+
+			result := checkNovelFeatures(cliDir, researchDir)
+			assert.Equal(t, 1, result.Found)
+
+			readme, err := os.ReadFile(filepath.Join(cliDir, "README.md"))
+			require.NoError(t, err)
+			skill, err := os.ReadFile(filepath.Join(cliDir, "SKILL.md"))
+			require.NoError(t, err)
+			if len(alts) == 0 {
+				assert.Contains(t, string(readme), generator.NovelFeatureExclusivityClaim)
+				assert.Contains(t, string(skill), generator.NovelFeatureExclusivityClaim)
+				return
+			}
+			assert.NotContains(t, string(readme), generator.NovelFeatureExclusivityClaim)
+			assert.NotContains(t, string(skill), generator.NovelFeatureExclusivityClaim)
+			assert.Contains(t, string(readme), "**`health`**")
+		})
+	}
 }
