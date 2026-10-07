@@ -76,13 +76,15 @@ Do not activate this CLI for requests that require creating, updating, deleting,
 
 ## Unique Capabilities
 
-These capabilities aren't available in any other tool for this API.
+{{if not .HasListedAlternatives}}{{novelExclusivityClaim}}{{end}}
 {{- $groups := groupNovelFeatures .NovelFeatures}}
 {{- if $groups}}
-{{- range $groups}}
+{{- range $i, $g := $groups}}
+{{- if or (gt $i 0) (not $.HasListedAlternatives)}}
 
-### {{.Name}}
-{{range .Features}}
+{{end -}}
+### {{$g.Name}}
+{{range $g.Features}}
 - **`{{.Command}}`** — {{.Description}}
 {{- if .WhyItMatters}}
 
@@ -156,6 +158,15 @@ This CLI was generated with browser-observed traffic context.
 - `{{$.Name}}-pp-cli {{kebab $name}} {{kebab $eName}}` — {{oneline $endpoint.Description}}
 {{- end}}
 {{- end}}
+{{end}}
+{{- if .ReferenceCommandGroups}}
+{{range .ReferenceCommandGroups}}
+**{{.Heading}}**
+
+{{range .Commands}}
+- `{{$.Name}}-pp-cli {{.Invocation}}` — {{.Description}}
+{{end}}
+{{end}}
 {{end}}
 {{- if and .HasDataLayer .HasAutoRefresh}}
 
@@ -388,8 +399,9 @@ Agents should treat the CLI's path resolver as part of the runtime contract:
 - Use `--home <dir>` for one invocation, or set `{{envName .Name}}_HOME=<dir>` to relocate all four path kinds under one root.
 - Use per-kind env vars only when a specific kind must diverge: `{{envName .Name}}_CONFIG_DIR`, `{{envName .Name}}_DATA_DIR`, `{{envName .Name}}_STATE_DIR`, `{{envName .Name}}_CACHE_DIR`.
 - Resolution order is per-kind env var, `--home`, `{{envName .Name}}_HOME`, XDG (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`), then platform defaults.
-- `config` contains settings like `config.toml` and profiles. `data` contains `credentials.toml`, `data.db`, cookies, and auth sidecars. `state` contains persisted queries, jobs, and `teach.log`. `cache` contains regenerable HTTP/cache files.
-- Stored secrets live in `credentials.toml` under the data dir. Existing legacy `config.toml` secrets are read for compatibility and leave `config.toml` on the first auth write.
+- `config` contains settings like `config.toml` and profiles. `data` contains {{if .HasAuthCommand}}`credentials.toml`, `data.db`, cookies, and auth sidecars{{else}}durable local data such as `data.db`{{end}}. `state` contains persisted queries, jobs, and `teach.log`. `cache` contains regenerable HTTP/cache files.
+{{if .HasAuthCommand}}- Stored secrets live in `credentials.toml` under the data dir. Existing legacy `config.toml` secrets are read for compatibility and leave `config.toml` on the first auth write.
+{{end -}}
 - Run `{{.Name}}-pp-cli doctor --fail-on warn` to surface {{if .HasAuthCommand}}path and credential-location warnings{{else}}path warnings{{end}}. `agent-context` exposes a schema v4 `paths` block for agents that need the resolved dirs.
 - For MCP, pass relocation through the MCP host config. The MCP binary does not inherit CLI flags:
 
@@ -406,7 +418,7 @@ Agents should treat the CLI's path resolver as part of the runtime contract:
   }
   ```
 
-Fleet precedence: an inherited per-kind env var overrides an explicit `--home` for that kind. Use `{{envName .Name}}_HOME` or per-kind vars as durable fleet levers, and use `--home` only for a single invocation. Relocation is not reversible by unsetting env vars; move files manually before clearing `{{envName .Name}}_HOME`, or `doctor` will not find credentials left under the former root.
+Fleet precedence: an inherited per-kind env var overrides an explicit `--home` for that kind. Use `{{envName .Name}}_HOME` or per-kind vars as durable fleet levers, and use `--home` only for a single invocation. Relocation is not reversible by unsetting env vars; move files manually before clearing `{{envName .Name}}_HOME`, or `doctor` will not find {{if .HasAuthCommand}}credentials{{else}}files{{end}} left under the former root.
 {{- if .Learn.Enabled}}
 
 ## Automatic learning

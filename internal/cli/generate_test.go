@@ -101,6 +101,88 @@ func staleGeneratedCommand() {}
 	runGoCommandForCLITest(t, outputDir, "build", "./cmd/regenapp-pp-cli")
 }
 
+func TestGenerateCmdForceListsPreservedHookCommands(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	outputDir := filepath.Join(dir, "hookregen")
+	require.NoError(t, os.WriteFile(specPath, []byte(`name: hookregen
+description: Hook regen API
+version: 0.1.0
+base_url: https://api.example.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/hookregen-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`), 0o644))
+
+	runGenerate := func() {
+		t.Helper()
+		cmd := newGenerateCmd()
+		cmd.SetArgs([]string{
+			"--spec", specPath,
+			"--output", outputDir,
+			"--validate=false",
+			"--force",
+		})
+		require.NoError(t, cmd.Execute())
+	}
+
+	runGenerate()
+
+	hookPath := filepath.Join(outputDir, "internal", "cli", "notes.go")
+	require.NoError(t, os.WriteFile(hookPath, []byte(`package cli
+
+import "github.com/spf13/cobra"
+
+func init() {
+	registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+		root.AddCommand(&cobra.Command{Use: "notes", Short: "Operator notes"})
+	})
+}
+`), 0o644))
+
+	readmeBefore, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(readmeBefore), "hookregen-pp-cli notes")
+
+	runGenerate()
+
+	hookGot, err := os.ReadFile(hookPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(hookGot), `Use: "notes"`)
+
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(readme), "hookregen-pp-cli notes")
+	assert.Contains(t, string(readme), "Operator notes")
+	assert.Contains(t, skillCommandReference(string(skill)), "hookregen-pp-cli notes")
+}
+
+func skillCommandReference(skill string) string {
+	const heading = "## Command Reference\n"
+	_, rest, found := strings.Cut(skill, heading)
+	if !found {
+		return ""
+	}
+	if before, _, ok := strings.Cut(rest, "\n## "); ok {
+		return before
+	}
+	return rest
+}
+
 func TestGenerateCmdForcePreservesDocumentedHandAuthoredFiles(t *testing.T) {
 	t.Parallel()
 
@@ -777,6 +859,24 @@ func TestLoadResearchSourcesReturnsExplicitEmptyManifestNovelFeatures(t *testing
 	assert.Empty(t, got)
 	require.Len(t, gen.NovelFeatures, 1)
 	assert.Equal(t, "planned scan", gen.NovelFeatures[0].Command)
+}
+
+func TestLoadResearchSourcesRecordsURLLessAlternatives(t *testing.T) {
+	t.Parallel()
+
+	researchDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), []byte(`{
+  "api_name": "altless",
+  "alternatives": [{"name": "other-tool"}]
+}`), 0o644))
+
+	gen := generator.New(&spec.APISpec{
+		Name: "altless",
+		Auth: spec.AuthConfig{Type: "none"},
+	}, t.TempDir())
+	loadResearchSources(gen, researchDir)
+	assert.True(t, gen.ListedAlternatives)
+	assert.Empty(t, gen.Sources)
 }
 
 func TestLoadResearchSourcesScaffoldsCurrentNovelFeaturesNotBuilt(t *testing.T) {

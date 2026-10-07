@@ -130,15 +130,23 @@ type PlaybookEntry struct {
 }
 
 type Generator struct {
-	Spec               *spec.APISpec
-	OutputDir          string
+	Spec      *spec.APISpec
+	OutputDir string
+	// PreservedCLIDir is the tree generate --force moved aside before
+	// Generate. Preserved hooks are not in OutputDir yet, and the merge
+	// keeps the docs written from this scan.
+	PreservedCLIDir    string
 	VisionSet          VisionTemplateSet
 	visionCommandNames map[string]string
 	FixtureSet         *browsersniff.FixtureSet
 	TrafficAnalysis    *browsersniff.TrafficAnalysis
-	Sources            []ReadmeSource   // Ecosystem tools to credit in README
-	DiscoveryPages     []string         // Pages visited during browser-sniff discovery
-	NovelFeatures      []NovelFeature   // Transcendence features for README/SKILL
+	Sources            []ReadmeSource // Ecosystem tools to credit in README
+	DiscoveryPages     []string       // Pages visited during browser-sniff discovery
+	NovelFeatures      []NovelFeature // Transcendence features for README/SKILL
+	// ListedAlternatives is true when research listed another tool for this
+	// API, including entries with no URL. SourcesForREADME drops those, so
+	// the flag is the exclusivity signal rather than len(Sources).
+	ListedAlternatives bool
 	Narrative          *ReadmeNarrative // LLM-authored prose for README/SKILL; optional
 	// Partial regeneration must retain generated intent wiring because the
 	// narrative source used to lift recipe intents is no longer available.
@@ -687,6 +695,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		// grouping as broken. We canonicalize for bucketing but render the
 		// first-seen display form so the LLM's casing choice wins — it's
 		// usually the more legible one.
+		"novelExclusivityClaim": func() string { return NovelFeatureExclusivityClaim },
 		"groupNovelFeatures": func(features []NovelFeature) []novelFeatureGroup {
 			canonGroup := func(s string) string {
 				return strings.Join(strings.Fields(strings.ToLower(s)), " ")
@@ -1177,13 +1186,18 @@ type readmeTemplateData struct {
 	// command emission. Distinct from HasAuth: an empty auth type still emits
 	// the auth surface, and docs must follow the emitted surface, not the
 	// spec's declared type.
-	HasAuthCommand       bool
-	HasPartialFailureErr bool
-	HasAutoRefresh       bool
-	SelectExample        string
-	SyncResourcesExample string
-	FreshnessCommands    []string
-	TrafficAnalysis      *trafficAnalysisTemplateData
+	HasAuthCommand bool
+	// HasListedAlternatives suppresses the "no other tool" claim when
+	// research or Sources names another tool for this API.
+	HasListedAlternatives   bool
+	AdditionalCommandGroups []listedDocCommandGroup
+	ReferenceCommandGroups  []listedDocCommandGroup
+	HasPartialFailureErr    bool
+	HasAutoRefresh          bool
+	SelectExample           string
+	SyncResourcesExample    string
+	FreshnessCommands       []string
+	TrafficAnalysis         *trafficAnalysisTemplateData
 	// PromotedResourceNames maps a resource name to true when the generator
 	// collapsed that single-endpoint resource into a leaf command. Templates
 	// (notably skill.md.tmpl's Command Reference) use this to emit `<cli>
@@ -1244,31 +1258,34 @@ func (g *Generator) readmeData() *readmeTemplateData {
 	helperFlags := computeHelperFlags(g.Spec)
 	applyPartialFailureFlags(&helperFlags, g.Spec, g.PromotedCommands, g.PromotedEndpointNames, g.hasDataLayer())
 	return &readmeTemplateData{
-		APISpec:               g.Spec,
-		Sources:               g.Sources,
-		DiscoveryPages:        g.DiscoveryPages,
-		NovelFeatures:         g.NovelFeatures,
-		Narrative:             g.Narrative,
-		ProseName:             g.proseName(),
-		CompactDescription:    g.compactDescription(),
-		SkillDescription:      g.skillDescription(),
-		HasDataLayer:          g.hasDataLayer(),
-		HasSync:               g.hasGeneratedSyncImplementation(),
-		HasAsyncJobs:          len(g.AsyncJobs) > 0,
-		HasWriteCommands:      hasWriteCommands(g.Spec.Resources),
-		HasCreateCommands:     hasCreateCommands(g.Spec.Resources),
-		HasDelete:             helperFlags.HasDelete,
-		HasAuth:               hasAuth(g.Spec.Auth),
-		HasAuthCommand:        g.shouldEmitAuth(),
-		HasPartialFailureErr:  helperFlags.HasPartialFailureErr,
-		HasAutoRefresh:        g.hasAutoRefresh(),
-		SelectExample:         selectExampleForCommand(g.Spec),
-		SyncResourcesExample:  syncResourcesExample(syncable, dependent),
-		FreshnessCommands:     g.freshnessCommandPaths(),
-		TrafficAnalysis:       g.trafficAnalysisData(),
-		PromotedResourceNames: g.PromotedResourceNames,
-		PromotedEndpointNames: g.PromotedEndpointNames,
-		WhichIndex:            g.whichIndexEntries(),
+		APISpec:                 g.Spec,
+		Sources:                 g.Sources,
+		DiscoveryPages:          g.DiscoveryPages,
+		NovelFeatures:           g.NovelFeatures,
+		Narrative:               g.Narrative,
+		ProseName:               g.proseName(),
+		CompactDescription:      g.compactDescription(),
+		SkillDescription:        g.skillDescription(),
+		HasDataLayer:            g.hasDataLayer(),
+		HasSync:                 g.hasGeneratedSyncImplementation(),
+		HasAsyncJobs:            len(g.AsyncJobs) > 0,
+		HasWriteCommands:        hasWriteCommands(g.Spec.Resources),
+		HasCreateCommands:       hasCreateCommands(g.Spec.Resources),
+		HasDelete:               helperFlags.HasDelete,
+		HasAuth:                 hasAuth(g.Spec.Auth),
+		HasAuthCommand:          g.shouldEmitAuth(),
+		HasListedAlternatives:   g.ListedAlternatives || len(g.Sources) > 0,
+		AdditionalCommandGroups: g.additionalCommandGroups(),
+		ReferenceCommandGroups:  g.referenceCommandGroups(),
+		HasPartialFailureErr:    helperFlags.HasPartialFailureErr,
+		HasAutoRefresh:          g.hasAutoRefresh(),
+		SelectExample:           selectExampleForCommand(g.Spec),
+		SyncResourcesExample:    syncResourcesExample(syncable, dependent),
+		FreshnessCommands:       g.freshnessCommandPaths(),
+		TrafficAnalysis:         g.trafficAnalysisData(),
+		PromotedResourceNames:   g.PromotedResourceNames,
+		PromotedEndpointNames:   g.PromotedEndpointNames,
+		WhichIndex:              g.whichIndexEntries(),
 	}
 }
 

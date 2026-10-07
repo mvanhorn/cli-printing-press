@@ -206,7 +206,7 @@ func newGenerateCmd() *cobra.Command {
 					return err
 				}
 
-				generateResult, err := runGenerateProject(parsed, absOut, generateProjectOptions{validate: validateBeforeForceMerge(validate, snapshotDir), polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath})
+				generateResult, err := runGenerateProject(parsed, absOut, generateProjectOptions{validate: validateBeforeForceMerge(validate, snapshotDir), polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, preservedCLIDir: snapshotDir})
 				if err != nil {
 					return err
 				}
@@ -484,7 +484,7 @@ func newGenerateCmd() *cobra.Command {
 				return printDryRun(apiSpec, absOut, specFiles)
 			}
 
-			generateResult, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validateBeforeForceMerge(validate, snapshotDir), polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, rejectUnshippablePageContextTraffic: true})
+			generateResult, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validateBeforeForceMerge(validate, snapshotDir), polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, rejectUnshippablePageContextTraffic: true, preservedCLIDir: snapshotDir})
 			if err != nil {
 				return err
 			}
@@ -647,6 +647,7 @@ type generateProjectOptions struct {
 	trafficAnalysisPath                 string
 	specFiles                           []string
 	rejectUnshippablePageContextTraffic bool
+	preservedCLIDir                     string
 }
 
 type generateProjectResult struct {
@@ -662,6 +663,7 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 		applyResearchAuthMetadata(apiSpec, opts.researchDir)
 	}
 	gen := generator.New(apiSpec, absOut)
+	gen.PreservedCLIDir = opts.preservedCLIDir
 	novelFeatures := loadResearchSources(gen, opts.researchDir)
 	trafficAnalysis, err := loadTrafficAnalysisForGenerate(opts.trafficAnalysisPath, opts.specFiles, apiSpec.SpecSource)
 	if err != nil {
@@ -3225,6 +3227,9 @@ func loadResearchSources(gen *generator.Generator, researchDir string) []pipelin
 				Stars:    s.Stars,
 			})
 		}
+		// URL-less alternatives never become Sources, but they still falsify
+		// the "no other tool" claim.
+		gen.ListedAlternatives = len(research.Alternatives) > 0
 		// Reused research.json still carries the prior run's novel_features_built.
 		// Scaffold the current planned set so a reprint can drop/add/rename.
 		for _, nf := range research.NovelFeatures {
