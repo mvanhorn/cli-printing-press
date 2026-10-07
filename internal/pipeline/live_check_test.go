@@ -1035,6 +1035,78 @@ func TestSnapshotLiveCheckBinarySurvivesReplacement(t *testing.T) {
 	require.Contains(t, newResult.OutputSample, "new")
 }
 
+func TestPathIsInsideDifferentVolume(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("cross-volume paths are Windows-only")
+	}
+	inside, err := pathIsInside(`D:\cli`, `C:\Temp\printing-press-probe`)
+	require.NoError(t, err)
+	require.False(t, inside, "a temp dir on another drive is outside the CLI tree")
+}
+
+func TestPathIsInsideFollowsDirectorySymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory symlink")
+	}
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	require.NoError(t, os.MkdirAll(filepath.Join(real, "child"), 0o755))
+	link := filepath.Join(root, "link")
+	require.NoError(t, os.Symlink(real, link))
+
+	inside, err := pathIsInside(link, filepath.Join(real, "child"))
+	require.NoError(t, err)
+	require.True(t, inside, "a path inside the symlink target is inside the CLI tree")
+
+	outside, err := pathIsInside(link, root)
+	require.NoError(t, err)
+	require.False(t, outside)
+}
+
+func TestSnapshotLiveCheckBinaryStagesBesideSymlinkTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory symlink")
+	}
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	linkParent := filepath.Join(root, "links")
+	require.NoError(t, os.MkdirAll(real, 0o755))
+	require.NoError(t, os.MkdirAll(linkParent, 0o755))
+	link := filepath.Join(linkParent, "cli")
+	require.NoError(t, os.Symlink(real, link))
+	binary := filepath.Join(real, "sample-pp-cli")
+	require.NoError(t, os.WriteFile(binary, []byte("probe-bytes"), 0o755))
+
+	probe, cleanup, err := snapshotLiveCheckBinary(link, binary)
+	require.NoError(t, err)
+	t.Cleanup(cleanup)
+
+	inside, err := pathIsInside(real, probe)
+	require.NoError(t, err)
+	require.False(t, inside, "probe %s must not live in %s", probe, real)
+	require.Equal(t, root, filepath.Dir(filepath.Dir(probe)))
+	cleanup()
+	assertNoLiveCheckStagingDirs(t, root)
+}
+
+func TestLiveCheckUnablePathRemovesStagingDirsThroughSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory symlink")
+	}
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	link := filepath.Join(root, "link")
+	require.NoError(t, os.MkdirAll(real, 0o755))
+	require.NoError(t, os.Symlink(real, link))
+	plantLiveCheckLeftover(t, filepath.Join(real, ".printing-press-live-check-111", "foo-pp-cli.exe"))
+	require.NoError(t, os.WriteFile(filepath.Join(real, "keep.txt"), []byte("keep"), 0o644))
+
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: link})
+	require.True(t, result.Unable, "missing research should be unable, got %+v", result)
+	assertNoLiveCheckStagingDirs(t, real)
+	require.FileExists(t, filepath.Join(real, "keep.txt"))
+}
+
 func TestMkdirLiveCheckProbeDirRejectsTempInsideTree(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)

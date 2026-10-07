@@ -368,7 +368,7 @@ func isLiveCheckStagingDirName(name string) bool {
 func snapshotLiveCheckBinary(cliDir, binaryPath string) (string, func(), error) {
 	// Keep probes on an immutable copy so a later staged refresh cannot replace
 	// the executable backing an in-flight probe.
-	absCLI, err := filepath.Abs(cliDir)
+	absCLI, err := resolveLiveCheckDir(cliDir)
 	if err != nil {
 		return "", func() {}, fmt.Errorf("resolving CLI directory: %w", err)
 	}
@@ -434,12 +434,25 @@ func mkdirLiveCheckProbeDir(cliDir string) (string, error) {
 	return "", fmt.Errorf("creating probe directory: %w", errors.Join(attemptErrs...))
 }
 
+func resolveLiveCheckDir(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	// A symlinked CLI path is not the tree publish copies. Containment and
+	// the leftover sweep have to use the resolved path.
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved, nil
+	}
+	return abs, nil
+}
+
 func pathIsInside(root, path string) (bool, error) {
-	root, err := filepath.Abs(root)
+	root, err := resolveLiveCheckDir(root)
 	if err != nil {
 		return false, err
 	}
-	path, err = filepath.Abs(path)
+	path, err = resolveLiveCheckDir(path)
 	if err != nil {
 		return false, err
 	}
@@ -447,6 +460,11 @@ func pathIsInside(root, path string) (bool, error) {
 	path = filepath.Clean(path)
 	if path == root {
 		return true, nil
+	}
+	// filepath.Rel fails across Windows volumes. A temp dir on another drive
+	// is outside the CLI tree, not a containment error.
+	if !strings.EqualFold(filepath.VolumeName(root), filepath.VolumeName(path)) {
+		return false, nil
 	}
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
@@ -476,6 +494,11 @@ func removeAllRetry(path string) error {
 }
 
 func removeLiveCheckStagingDirs(root string) {
+	// WalkDir does not follow a symlink root, so a symlinked CLI directory
+	// would otherwise keep every historical probe directory.
+	if resolved, err := resolveLiveCheckDir(root); err == nil {
+		root = resolved
+	}
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d == nil || path == root {
 			return nil
