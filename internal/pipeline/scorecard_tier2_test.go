@@ -1356,7 +1356,6 @@ func paginationCursorToken() {}
 func replacePathParam() {}
 func resolvePlatformWindow() {}
 func responsePayloadParentAtPath() {}
-func writeNoop() {}
 `)
 
 		assert.Equal(t, 5, scoreDeadCode(dir))

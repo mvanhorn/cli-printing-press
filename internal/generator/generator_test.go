@@ -3375,6 +3375,9 @@ func TestGenerateNoAuthPersistedQueryOmitsSetToken(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	authGo := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+	helpersGo := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
+	assert.NotContains(t, helpersGo, "func readSecretFromStdin(",
+		"auth.type=none persisted-query refresh does not read a stdin secret")
 	assert.NotContains(t, authGo, "newAuthSetTokenCmd",
 		"auth.type=none should not emit a set-token subcommand")
 	assert.NotContains(t, authGo, "cliutil.LooksLikeJWT",
@@ -8783,6 +8786,10 @@ func TestGeneratedHelpers_ConditionalClassifyDeleteError(t *testing.T) {
 		require.NoError(t, err)
 		content := string(helpersGo)
 		assert.NotContains(t, content, "classifyDeleteError")
+		assert.NotContains(t, content, "func successfulNoop(")
+		assert.NotContains(t, content, "func writeNoop(")
+		assert.NotContains(t, content, "type noopResult struct")
+		assert.Contains(t, content, "func readSecretFromStdin(")
 		// classifyAPIError should always be present
 		assert.Contains(t, content, "classifyAPIError")
 	})
@@ -8801,6 +8808,8 @@ func TestGeneratedHelpers_ConditionalClassifyDeleteError(t *testing.T) {
 		require.NoError(t, err)
 		content := string(helpersGo)
 		assert.Contains(t, content, "classifyDeleteError")
+		assert.Contains(t, content, "func successfulNoop(")
+		assert.Contains(t, content, "func writeNoop(")
 		assert.Contains(t, content, "classifyAPIError")
 	})
 }

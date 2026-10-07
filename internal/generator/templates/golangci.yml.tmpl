@@ -1,3 +1,5 @@
+version: "2"
+
 linters:
   enable:
     - errorlint
@@ -9,8 +11,20 @@ linters:
     - noctx
     - rowserrcheck
     - sqlclosecheck
+  exclusions:
+    # strict is the Go generated-file convention. These packages are
+    # generator-owned even when a file has no marker yet.
+    generated: strict
+    paths:
+      - internal/cliutil/
+      - internal/platform/
 
 formatters:
   enable:
     - gofmt
     - goimports
+  exclusions:
+    generated: strict
+    paths:
+      - internal/cliutil/
+      - internal/platform/
