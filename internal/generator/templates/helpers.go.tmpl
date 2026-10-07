@@ -3559,6 +3559,53 @@ func printStampedDryRunOutput(w io.Writer, data json.RawMessage, flags *rootFlag
 }
 {{- end}}
 
+{{- if .HasNoStoreReadDryRun}}
+// No-store reads receive the client sentinel {"dry_run":true}, which live
+// dogfood rejects for an empty action. --agent formatting would also nest
+// that sentinel under results. Print the mutation dry-run envelope so
+// dry_run and action stay on the object the contract parses.
+func printNoStoreReadDryRun(w io.Writer, data json.RawMessage, flags *rootFlags, action, resource, path string, documentedFields ...map[string]bool) error {
+	if flags != nil && (flags.csv || flags.plain || flags.quiet) {
+		return printOutputWithFlagsMeta(w, data, flags, map[string]any{"source": "dry-run"}, documentedFields...)
+	}
+	envelope := map[string]any{
+		"action":   action,
+		"resource": resource,
+		"path":     path,
+		"status":   0,
+		"success":  false,
+		"dry_run":  true,
+	}
+	// Platform wrapping keeps sibling keys only when the object already has
+	// meta plus data or results. Without meta it nests the whole envelope,
+	// which hides dry_run and action from the dry-run JSON contract.
+	agent := flags != nil && flags.agent
+	envelope["meta"] = map[string]any{"source": "dry-run"}
+	payload := bytes.TrimSpace(data)
+	if json.Valid(payload) && len(payload) > 0 {
+		if agent {
+			envelope["results"] = json.RawMessage(payload)
+		} else {
+			envelope["data"] = json.RawMessage(payload)
+		}
+	}
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+	resultKey := "data"
+	if agent {
+		resultKey = "results"
+	}
+	structured, err := wrapPlatformStructuredOutput(raw, flags, resultKey, true)
+	if err != nil {
+		return err
+	}
+	asJSON := flags != nil && flags.asJSON
+	return printOutput(w, structured, asJSON)
+}
+{{- end}}
+
 // isDryRunResponse detects the exact sentinel returned by client.dryRun.
 func isDryRunResponse(dryRun bool, data json.RawMessage) bool {
 	if !dryRun {

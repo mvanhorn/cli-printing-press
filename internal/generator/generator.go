@@ -886,6 +886,7 @@ type HelperFlags struct {
 	HasCreateCommands    bool // spec has POST/PUT/PATCH write endpoints → emit create retry helpers
 	HasRawRequest        bool // spec has non-JSON request bodies → emit raw file/stdin reader
 	HasPromotedMutations bool // promoted write commands stamp a dry-run envelope; omit the helper otherwise
+	HasNoStoreReadDryRun bool // no-store reads print a dry-run envelope; omit the helper otherwise
 }
 
 // computeHelperFlags scans the spec's resources to determine which helpers are needed.
@@ -1000,6 +1001,44 @@ func promotedCommandsIncludeMutation(apiSpec *spec.APISpec, commands []PromotedC
 			continue
 		}
 		return true
+	}
+	return false
+}
+
+// Endpoint files skip the read dry-run branch for DELETE; promoted files
+// include it for every read, including a read-only DELETE. OPTIONS endpoints
+// are not generated. The helper is omitted unless one of those call sites exists.
+func specEmitsReadDryRunBranch(apiSpec *spec.APISpec, promoted []PromotedCommand) bool {
+	if apiSpec == nil {
+		return false
+	}
+	shared := sharedGETRPCPaths(apiSpec.Resources)
+	for _, command := range promoted {
+		if command.Endpoint.Method == "DELETE" && endpointIsReadCommandShared(command.Endpoint, command.EndpointName, shared) {
+			return true
+		}
+	}
+	var walk func(spec.Resource) bool
+	walk = func(resource spec.Resource) bool {
+		for name, endpoint := range resource.Endpoints {
+			if strings.EqualFold(strings.TrimSpace(endpoint.Method), "OPTIONS") || endpoint.Method == "DELETE" {
+				continue
+			}
+			if endpointIsReadCommandShared(endpoint, name, shared) {
+				return true
+			}
+		}
+		for _, sub := range resource.SubResources {
+			if walk(sub) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, resource := range apiSpec.Resources {
+		if walk(resource) {
+			return true
+		}
 	}
 	return false
 }
@@ -2919,6 +2958,7 @@ func (g *Generator) renderSingleFiles() error {
 			hFlags.HasSyncHelpers = g.hasGeneratedSyncImplementation()
 			hFlags.HasResponseUnwrap = g.hasDataLayer() && promotedCommandsCanUnwrapResponse(g.PromotedCommands, g.Spec.Types)
 			hFlags.HasPromotedMutations = promotedCommandsIncludeMutation(g.Spec, g.PromotedCommands)
+			hFlags.HasNoStoreReadDryRun = !g.hasDataLayer() && specEmitsReadDryRunBranch(g.Spec, g.PromotedCommands)
 			data = &helpersTemplateData{
 				APISpec:        g.Spec,
 				HelperFlags:    hFlags,
