@@ -53,6 +53,7 @@ func TestPromotedCommandsIncludeMutationMatchesOutputGate(t *testing.T) {
 	helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
 	require.NotContains(t, helpers, "func stampDryRunEnvelope(")
 	require.NotContains(t, helpers, "func printStampedDryRunOutput(")
+	require.Contains(t, helpers, "func printNoStoreReadDryRun(")
 	requireGeneratedCompiles(t, outputDir)
 }
 
@@ -178,6 +179,11 @@ func assertPromotedDryRunSources(t *testing.T, outputDir string, withStore bool)
 	helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
 	require.Contains(t, helpers, "func stampDryRunEnvelope(")
 	require.Contains(t, helpers, "func printStampedDryRunOutput(")
+	if withStore {
+		require.NotContains(t, helpers, "func printNoStoreReadDryRun(")
+	} else {
+		require.Contains(t, helpers, "func printNoStoreReadDryRun(")
+	}
 	stampFn := helpers[strings.Index(helpers, "func printStampedDryRunOutput("):]
 	formatAt := strings.Index(stampFn, "printOutputWithFlagsMeta(")
 	stampAt := strings.Index(stampFn, "stampDryRunEnvelope(")
@@ -212,10 +218,22 @@ func assertPromotedDryRunSources(t *testing.T, outputDir string, withStore bool)
 	require.NotContains(t, readSrc, "printStampedDryRunOutput(")
 	require.NotContains(t, searchSrc, "stampDryRunEnvelope(")
 	require.NotContains(t, searchSrc, "printStampedDryRunOutput(")
+	if withStore {
+		require.NotContains(t, readSrc, "printNoStoreReadDryRun(")
+		require.NotContains(t, searchSrc, "printNoStoreReadDryRun(")
+	} else {
+		require.Contains(t, readSrc, "printNoStoreReadDryRun(")
+		require.Contains(t, readSrc, `"get"`)
+		require.Contains(t, readSrc, `"pings"`)
+		require.Contains(t, searchSrc, "printNoStoreReadDryRun(")
+		require.Contains(t, searchSrc, `"post"`)
+		require.Contains(t, searchSrc, `"searches"`)
+	}
 
 	createSrc := readGeneratedFile(t, outputDir, "internal", "cli", "items_create.go")
 	require.Contains(t, createSrc, `envelope["dry_run"] = true`)
 	require.NotContains(t, createSrc, "stampDryRunEnvelope(")
+	require.NotContains(t, createSrc, "printNoStoreReadDryRun(")
 }
 
 func assertPromotedDryRunRuntime(t *testing.T, cli promotedDryRunCLI, withStore bool) {
@@ -267,20 +285,37 @@ func assertPromotedDryRunRuntime(t *testing.T, cli promotedDryRunCLI, withStore 
 
 	stdout, _ = runPromotedDryRun(t, cli, "pings", "--dry-run", "--json")
 	readPayload := decodeJSONObject(t, stdout)
-	_, hasAction := readPayload["action"]
-	require.False(t, hasAction, "promoted reads must not gain a mutation action: %s", stdout)
 	if withStore {
+		_, hasAction := readPayload["action"]
+		require.False(t, hasAction, "store-backed promoted reads must not gain an action: %s", stdout)
 		_, stamped := readPayload["dry_run"]
 		require.False(t, stamped, "store-backed promoted reads keep the nested sentinel: %s", stdout)
+	} else {
+		assertTopLevelDryRun(t, stdout, "get")
+		require.Equal(t, "pings", readPayload["resource"], "stdout: %s", stdout)
+		require.Equal(t, "/pings", readPayload["path"], "stdout: %s", stdout)
+		require.Equal(t, false, readPayload["success"], "stdout: %s", stdout)
+		require.Equal(t, float64(0), readPayload["status"], "stdout: %s", stdout)
+
+		stdout, _ = runPromotedDryRun(t, cli, "pings", "--dry-run", "--json", "--agent")
+		agentRead := decodeJSONObject(t, stdout)
+		require.Equal(t, true, agentRead["dry_run"], "stdout: %s", stdout)
+		require.Equal(t, "get", agentRead["action"], "stdout: %s", stdout)
+		agentMeta, _ := agentRead["meta"].(map[string]any)
+		require.Equal(t, "dry-run", agentMeta["source"], "stdout: %s", stdout)
 	}
 
 	stdout, _ = runPromotedDryRun(t, cli, "searches", "--query", "q", "--dry-run", "--json")
 	searchPayload := decodeJSONObject(t, stdout)
-	_, hasAction = searchPayload["action"]
-	require.False(t, hasAction, "read-only promoted POST must not stamp an action: %s", stdout)
 	if withStore {
+		_, hasAction := searchPayload["action"]
+		require.False(t, hasAction, "store-backed read-only POST must not stamp an action: %s", stdout)
 		_, stamped := searchPayload["dry_run"]
 		require.False(t, stamped, "store-backed read-only POST must not stamp dry_run: %s", stdout)
+	} else {
+		assertTopLevelDryRun(t, stdout, "post")
+		require.Equal(t, "searches", searchPayload["resource"], "stdout: %s", stdout)
+		require.Equal(t, "/searches", searchPayload["path"], "stdout: %s", stdout)
 	}
 
 	before = cli.hits.Load()

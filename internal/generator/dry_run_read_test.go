@@ -73,13 +73,77 @@ func dryRunReadSpec(name string) *spec.APISpec {
 	return apiSpec
 }
 
+func TestSpecEmitsReadDryRunBranch(t *testing.T) {
+	t.Parallel()
+
+	reads := dryRunReadSpec("gate-reads")
+	require.True(t, specEmitsReadDryRunBranch(reads, buildPromotedCommands(reads)))
+
+	mutations := minimalSpec("gate-mutations")
+	mutations.Learn.Disabled = true
+	mutations.Resources = map[string]spec.Resource{
+		"items": {
+			Description: "Items",
+			Endpoints: map[string]spec.Endpoint{
+				"create": {
+					Method:      "POST",
+					Path:        "/items",
+					Description: "Create an item",
+					Body:        []spec.Param{{Name: "name", Type: "string"}},
+				},
+			},
+		},
+	}
+	require.False(t, specEmitsReadDryRunBranch(mutations, buildPromotedCommands(mutations)))
+	require.False(t, specEmitsReadDryRunBranch(nil, nil))
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(mutations.Name))
+	gen := New(mutations, outputDir)
+	// MCP emits internal/mcp, which the always-generated server imports.
+	// Export-only leaves that package empty, so ./... cannot compile.
+	gen.VisionSet = VisionTemplateSet{Export: true, MCP: true}
+	require.NoError(t, gen.Generate())
+	helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
+	assert.NotContains(t, helpers, "func printNoStoreReadDryRun(")
+	promoted := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_items.go")
+	assert.NotContains(t, promoted, "printNoStoreReadDryRun(")
+	requireGeneratedCompiles(t, outputDir)
+
+	// A promoted read-only DELETE still takes the read dry-run branch.
+	// Non-promoted DELETE commands do not.
+	deleted := minimalSpec("gate-delete-read")
+	deleted.Learn.Disabled = true
+	deleted.Resources = map[string]spec.Resource{
+		"cleanups": {
+			Description: "Cleanups",
+			Endpoints: map[string]spec.Endpoint{
+				"search": {
+					Method:      "DELETE",
+					Path:        "/cleanups",
+					Description: "Search cleanups",
+					Body:        []spec.Param{{Name: "query", Type: "string"}},
+				},
+			},
+		},
+	}
+	require.True(t, specEmitsReadDryRunBranch(deleted, buildPromotedCommands(deleted)))
+	deleteDir := filepath.Join(t.TempDir(), naming.CLI(deleted.Name))
+	deleteGen := New(deleted, deleteDir)
+	deleteGen.VisionSet = VisionTemplateSet{Export: true, MCP: true}
+	require.NoError(t, deleteGen.Generate())
+	assert.Contains(t, readGeneratedFile(t, deleteDir, "internal", "cli", "helpers.go"), "func printNoStoreReadDryRun(")
+	assert.Contains(t, readGeneratedFile(t, deleteDir, "internal", "cli", "promoted_cleanups.go"), "printNoStoreReadDryRun(")
+	assert.Contains(t, readGeneratedFile(t, deleteDir, "internal", "cli", "promoted_cleanups.go"), `"delete"`)
+	requireGeneratedCompiles(t, deleteDir)
+}
+
 func TestGeneratedDryRunReadGuardsEndpointAndPromotedOutputs(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := dryRunReadSpec("dry-run-read-guards")
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
 	dataSourceSrc := readGeneratedFile(t, outputDir, "internal", "cli", "data_source.go")
@@ -92,18 +156,36 @@ func TestGeneratedDryRunReadGuardsEndpointAndPromotedOutputs(t *testing.T) {
 
 	noStoreDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name)+"-nostore")
 	noStoreGen := New(apiSpec, noStoreDir)
-	noStoreGen.VisionSet = VisionTemplateSet{Export: true}
+	noStoreGen.VisionSet = VisionTemplateSet{Export: true, MCP: true}
 	require.NoError(t, noStoreGen.Generate())
 
 	endpointSrc := readGeneratedFile(t, noStoreDir, "internal", "cli", "items_list.go")
 	assert.Contains(t, endpointSrc, "if isDryRunResponse(c.IsDryRun(), data)")
-	assert.Contains(t, endpointSrc, `map[string]any{"source": "dry-run"}`)
+	assert.Contains(t, endpointSrc, "printNoStoreReadDryRun(")
+	assert.Contains(t, endpointSrc, `"get"`)
+	assert.Contains(t, endpointSrc, `"items"`)
 	assert.Contains(t, endpointSrc, "flagAll && !flags.dryRun")
 
 	promotedSrc := readGeneratedFile(t, noStoreDir, "internal", "cli", "promoted_widgets.go")
 	assert.Contains(t, promotedSrc, "if isDryRunResponse(c.IsDryRun(), data)")
-	assert.Contains(t, promotedSrc, `map[string]any{"source": "dry-run"}`)
+	assert.Contains(t, promotedSrc, "printNoStoreReadDryRun(")
+	assert.Contains(t, promotedSrc, `"get"`)
+	assert.Contains(t, promotedSrc, `"widgets"`)
 	assert.Contains(t, promotedSrc, "flagAll && !flags.dryRun")
+
+	noStoreHelpers := readGeneratedFile(t, noStoreDir, "internal", "cli", "helpers.go")
+	assert.Contains(t, noStoreHelpers, "func printNoStoreReadDryRun(")
+	storeHelpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
+	assert.NotContains(t, storeHelpers, "func printNoStoreReadDryRun(")
+
+	requireGeneratedCompiles(t, outputDir)
+	requireGeneratedCompiles(t, noStoreDir)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(noStoreDir, "internal", "cli", "no_store_read_dry_run_runtime_test.go"),
+		[]byte(noStoreReadDryRunRuntimeTest(generatedModulePath(t, noStoreDir))),
+		0o644,
+	))
+	runGoCommand(t, noStoreDir, "test", "./internal/cli", "-run", "^TestPrintNoStoreReadDryRunKeepsContractFields$", "-count=1")
 }
 
 func TestGeneratedDryRunReadPreservesProvenanceAndSkipsStore(t *testing.T) {
@@ -288,4 +370,55 @@ func TestLivePayloadMatchingDryRunSentinelRemainsLive(t *testing.T) {
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
 	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(Promoted|Endpoint)DryRunReadDoesNotOpenStore|TestLiveReadsStillWriteThroughCache|TestLivePayloadMatchingDryRunSentinelRemainsLive", "-count=1")
+}
+
+func noStoreReadDryRunRuntimeTest(modulePath string) string {
+	return `package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"testing"
+
+	"` + modulePath + `/internal/platform"
+)
+
+func TestPrintNoStoreReadDryRunKeepsContractFields(t *testing.T) {
+	sentinel := json.RawMessage(` + "`" + `{"dry_run":true}` + "`" + `)
+	assertKeepsDryRunFields(t, &rootFlags{asJSON: true}, sentinel)
+	assertKeepsDryRunFields(t, &rootFlags{asJSON: true, agent: true}, sentinel)
+	assertKeepsDryRunFields(t, &rootFlags{asJSON: true, platformSession: &platform.Session{}}, sentinel)
+	assertKeepsDryRunFields(t, &rootFlags{asJSON: true, agent: true, platformSession: &platform.Session{}}, sentinel)
+}
+
+func assertKeepsDryRunFields(t *testing.T, flags *rootFlags, sentinel json.RawMessage) {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := printNoStoreReadDryRun(&buf, sentinel, flags, "get", "items", "/items"); err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatalf("parse %s: %v", buf.String(), err)
+	}
+	if payload["dry_run"] != true || payload["action"] != "get" || payload["resource"] != "items" || payload["path"] != "/items" {
+		t.Fatalf("dry-run fields not top-level: %s", buf.String())
+	}
+	meta, _ := payload["meta"].(map[string]any)
+	if meta["source"] != "dry-run" {
+		t.Fatalf("meta = %#v\n%s", meta, buf.String())
+	}
+	if flags.agent {
+		results, ok := payload["results"].(map[string]any)
+		if !ok || results["dry_run"] != true {
+			t.Fatalf("agent results: %s", buf.String())
+		}
+		return
+	}
+	data, ok := payload["data"].(map[string]any)
+	if !ok || data["dry_run"] != true {
+		t.Fatalf("data: %s", buf.String())
+	}
+}
+`
 }
