@@ -1005,10 +1005,9 @@ func promotedCommandsIncludeMutation(apiSpec *spec.APISpec, commands []PromotedC
 	return false
 }
 
-// specEmitsReadDryRunBranch reports whether a no-store print calls
-// printNoStoreReadDryRun. Endpoint files skip that branch for DELETE;
-// promoted files include it for every read, including a read-only DELETE.
-// OPTIONS endpoints are not generated.
+// Endpoint files skip the read dry-run branch for DELETE; promoted files
+// include it for every read, including a read-only DELETE. OPTIONS endpoints
+// are not generated. The helper is omitted unless one of those call sites exists.
 func specEmitsReadDryRunBranch(apiSpec *spec.APISpec, promoted []PromotedCommand) bool {
 	if apiSpec == nil {
 		return false
