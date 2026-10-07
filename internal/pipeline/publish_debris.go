@@ -79,7 +79,7 @@ func regularFileHasExecutableMagic(path string) (bool, error) {
 		}
 		return false, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var buf [4]byte
 	n, err := f.Read(buf[:])

@@ -478,7 +478,7 @@ func pathIsInside(root, path string) (bool, error) {
 
 func removeAllRetry(path string) error {
 	var err error
-	for attempt := 0; attempt < 8; attempt++ {
+	for attempt := range 8 {
 		err = os.RemoveAll(path)
 		if err == nil || os.IsNotExist(err) {
 			return nil
