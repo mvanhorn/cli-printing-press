@@ -87,7 +87,7 @@ func (g *Generator) docCommandGroups(referenceOnly bool) []listedDocCommandGroup
 		}
 		add(path, invocation, docCommandDescription(feature.Description, feature.Name, feature.Command))
 	}
-	for _, hook := range commandsFromNovelHooks(g.OutputDir) {
+	for _, hook := range g.preservedHookCommands() {
 		add(hook.path, hook.invocation, docCommandDescription(hook.description))
 	}
 	if !referenceOnly {
@@ -174,6 +174,30 @@ type hookCommand struct {
 	path        string
 	invocation  string
 	description string
+}
+
+// preservedHookCommands reads registerNovelCommand hooks from the force
+// snapshot and from OutputDir. --force generates into an empty directory
+// and merges hook files back afterward, keeping these docs.
+func (g *Generator) preservedHookCommands() []hookCommand {
+	if g == nil {
+		return nil
+	}
+	var out []hookCommand
+	seen := map[string]struct{}{}
+	for _, dir := range []string{g.PreservedCLIDir, g.OutputDir} {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		key := filepath.Clean(dir)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, commandsFromNovelHooks(dir)...)
+	}
+	return out
 }
 
 // commandsFromNovelHooks lists registerNovelCommand hooks whose parent path
@@ -269,11 +293,26 @@ type hookNode struct {
 	children   []*hookNode
 }
 
-type hookState struct {
-	paths   map[string]string
-	pending map[string]*hookNode
-	out     []hookCommand
+// hookBinding is one name's definite meaning in a block. unknown shadows an
+// outer name without inventing a path. A missing name is not the same thing:
+// lookup walks outward.
+type hookBinding struct {
+	path    string
+	pathOK  bool
+	pending *hookNode
+	unknown bool
 }
+
+type hookScope struct {
+	bindings map[string]*hookBinding
+}
+
+type hookState struct {
+	scopes []*hookScope
+	out    []hookCommand
+}
+
+type scopeSnap []map[string]*hookBinding
 
 func walkHookFunc(fn *ast.FuncLit) []hookCommand {
 	if fn == nil || fn.Type == nil || fn.Type.Params == nil || len(fn.Type.Params.List) == 0 || fn.Body == nil {
@@ -284,8 +323,11 @@ func walkHookFunc(fn *ast.FuncLit) []hookCommand {
 		return nil
 	}
 	st := &hookState{
-		paths:   map[string]string{names[0].Name: ""},
-		pending: map[string]*hookNode{},
+		scopes: []*hookScope{{
+			bindings: map[string]*hookBinding{
+				names[0].Name: {path: "", pathOK: true},
+			},
+		}},
 	}
 	walkHookBlock(fn.Body, st)
 	return st.out
@@ -295,9 +337,12 @@ func walkHookBlock(block *ast.BlockStmt, st *hookState) {
 	if block == nil {
 		return
 	}
+	// := in this block must not survive it. = still updates the outer name.
+	st.pushScope()
 	for _, stmt := range block.List {
 		walkHookStmt(stmt, st)
 	}
+	st.popScope()
 }
 
 func walkHookStmt(stmt ast.Stmt, st *hookState) {
@@ -308,16 +353,11 @@ func walkHookStmt(stmt ast.Stmt, st *hookState) {
 	case *ast.BlockStmt:
 		walkHookBlock(s, st)
 	case *ast.IfStmt:
-		walkHookStmt(s.Init, st)
-		walkHookBlock(s.Body, st)
-		walkHookStmt(s.Else, st)
+		st.walkIf(s)
 	case *ast.SwitchStmt:
-		walkHookStmt(s.Init, st)
-		walkHookBlock(s.Body, st)
-	case *ast.CaseClause:
-		for _, inner := range s.Body {
-			walkHookStmt(inner, st)
-		}
+		st.walkSwitch(s.Init, s.Body)
+	case *ast.TypeSwitchStmt:
+		st.walkSwitch(s.Init, s.Body)
 	case *ast.LabeledStmt:
 		walkHookStmt(s.Stmt, st)
 	case *ast.AssignStmt:
@@ -332,40 +372,197 @@ func walkHookStmt(stmt ast.Stmt, st *hookState) {
 	}
 }
 
+// walkIf keeps a name's path only when every branch leaves the same binding.
+// An if without else is a branch that leaves the outer binding alone, so a
+// one-sided assignment does not become the path used after the if.
+func (st *hookState) walkIf(s *ast.IfStmt) {
+	st.pushScope()
+	walkHookStmt(s.Init, st)
+	thenSnap := st.isolatedBranch(func() { walkHookBlock(s.Body, st) })
+	elseSnap := st.isolatedBranch(func() {
+		if s.Else == nil {
+			return
+		}
+		if block, ok := s.Else.(*ast.BlockStmt); ok {
+			walkHookBlock(block, st)
+			return
+		}
+		walkHookStmt(s.Else, st)
+	})
+	outer := len(st.scopes) - 1
+	st.popScope()
+	st.mergeOuter(outer, thenSnap, elseSnap)
+}
+
+func (st *hookState) walkSwitch(init ast.Stmt, body *ast.BlockStmt) {
+	st.pushScope()
+	walkHookStmt(init, st)
+	var snaps []scopeSnap
+	hasDefault := false
+	if body != nil {
+		for _, stmt := range body.List {
+			clause, ok := stmt.(*ast.CaseClause)
+			if !ok {
+				continue
+			}
+			if len(clause.List) == 0 {
+				hasDefault = true
+			}
+			snaps = append(snaps, st.isolatedBranch(func() {
+				st.pushScope()
+				for _, inner := range clause.Body {
+					walkHookStmt(inner, st)
+				}
+				st.popScope()
+			}))
+		}
+	}
+	if !hasDefault {
+		snaps = append(snaps, st.snapshot())
+	}
+	outer := len(st.scopes) - 1
+	st.popScope()
+	if len(snaps) > 0 {
+		st.mergeOuter(outer, snaps...)
+	}
+}
+
+func (st *hookState) pushScope() {
+	st.scopes = append(st.scopes, &hookScope{bindings: map[string]*hookBinding{}})
+}
+
+func (st *hookState) popScope() {
+	if len(st.scopes) == 0 {
+		return
+	}
+	st.scopes = st.scopes[:len(st.scopes)-1]
+}
+
+func (st *hookState) isolatedBranch(walk func()) scopeSnap {
+	saved := st.snapshot()
+	walk()
+	result := st.snapshot()
+	st.restore(saved)
+	return result
+}
+
+func (st *hookState) snapshot() scopeSnap {
+	snap := make(scopeSnap, len(st.scopes))
+	for i, scope := range st.scopes {
+		snap[i] = cloneBindings(scope.bindings)
+	}
+	return snap
+}
+
+func (st *hookState) restore(snap scopeSnap) {
+	if len(snap) != len(st.scopes) {
+		return
+	}
+	for i := range st.scopes {
+		st.scopes[i].bindings = cloneBindings(snap[i])
+	}
+}
+
+func (st *hookState) mergeOuter(n int, snaps ...scopeSnap) {
+	if n <= 0 || len(st.scopes) != n {
+		return
+	}
+	trimmed := make([]scopeSnap, 0, len(snaps))
+	for _, snap := range snaps {
+		if len(snap) < n {
+			return
+		}
+		trimmed = append(trimmed, snap[:n])
+	}
+	if len(trimmed) == 0 {
+		return
+	}
+	for i := range n {
+		names := map[string]struct{}{}
+		for _, snap := range trimmed {
+			for name := range snap[i] {
+				names[name] = struct{}{}
+			}
+		}
+		merged := map[string]*hookBinding{}
+		for name := range names {
+			agreed, ok := trimmed[0][i][name]
+			if !ok {
+				continue
+			}
+			for _, snap := range trimmed[1:] {
+				other, exists := snap[i][name]
+				if !exists || !sameHookBinding(agreed, other) {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				merged[name] = cloneBinding(agreed)
+			}
+		}
+		st.scopes[i].bindings = merged
+	}
+}
+
+func cloneBindings(in map[string]*hookBinding) map[string]*hookBinding {
+	out := make(map[string]*hookBinding, len(in))
+	for name, binding := range in {
+		out[name] = cloneBinding(binding)
+	}
+	return out
+}
+
+func cloneBinding(b *hookBinding) *hookBinding {
+	if b == nil {
+		return nil
+	}
+	c := *b
+	return &c
+}
+
+func sameHookBinding(a, b *hookBinding) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.pathOK == b.pathOK && a.path == b.path && a.unknown == b.unknown && a.pending == b.pending
+}
+
 func (st *hookState) handleAssign(stmt *ast.AssignStmt) {
-	if stmt == nil || len(stmt.Rhs) != 1 {
+	if stmt == nil || len(stmt.Rhs) != 1 || len(stmt.Lhs) == 0 {
+		return
+	}
+	define := stmt.Tok == token.DEFINE
+	lhs, ok := stmt.Lhs[0].(*ast.Ident)
+	if !ok || lhs.Name == "" || lhs.Name == "_" {
 		return
 	}
 	if recv, segments, ok := findCall(stmt.Rhs[0]); ok {
 		recvIdent, ok := recv.(*ast.Ident)
 		if !ok {
+			st.obscure(lhs.Name, define)
 			return
 		}
 		parentPath, known := st.resolvedPath(recvIdent.Name)
-		if !known || len(stmt.Lhs) == 0 {
+		if !known {
+			st.obscure(lhs.Name, define)
 			return
 		}
-		lhs, ok := stmt.Lhs[0].(*ast.Ident)
-		if !ok || lhs.Name == "" || lhs.Name == "_" {
-			return
-		}
-		st.paths[lhs.Name] = joinDocPath(parentPath, segments...)
-		delete(st.pending, lhs.Name)
+		st.store(lhs.Name, define, &hookBinding{path: joinDocPath(parentPath, segments...), pathOK: true})
 		return
 	}
 	if len(stmt.Lhs) != 1 {
-		return
-	}
-	lhs, ok := stmt.Lhs[0].(*ast.Ident)
-	if !ok || lhs.Name == "" || lhs.Name == "_" {
+		st.obscure(lhs.Name, define)
 		return
 	}
 	node, ok := hookNodeFromComposite(stmt.Rhs[0])
 	if !ok {
+		if _, known := st.lookup(lhs.Name); known {
+			st.obscure(lhs.Name, define)
+		}
 		return
 	}
-	delete(st.paths, lhs.Name)
-	st.pending[lhs.Name] = node
+	st.store(lhs.Name, define, &hookBinding{pending: node})
 }
 
 func (st *hookState) handleDecl(stmt *ast.DeclStmt) {
@@ -382,8 +579,7 @@ func (st *hookState) handleDecl(stmt *ast.DeclStmt) {
 		if !ok || vs.Names[0].Name == "" || vs.Names[0].Name == "_" {
 			continue
 		}
-		delete(st.paths, vs.Names[0].Name)
-		st.pending[vs.Names[0].Name] = node
+		st.store(vs.Names[0].Name, true, &hookBinding{pending: node})
 	}
 }
 
@@ -417,8 +613,8 @@ func (st *hookState) attach(parentExpr, candExpr ast.Expr) {
 		st.bindNode(ident, parentPath, node)
 		return
 	}
-	parentNode, ok := st.pending[parentIdent.Name]
-	if !ok || parentNode.boundPath != "" {
+	parentNode, ok := st.pendingNode(parentIdent.Name)
+	if !ok {
 		return
 	}
 	parentNode.children = append(parentNode.children, node)
@@ -432,8 +628,8 @@ func (st *hookState) candidateNode(expr ast.Expr) (*hookNode, string, bool) {
 	if !ok || id.Name == "" || id.Name == "_" {
 		return nil, "", false
 	}
-	node, ok := st.pending[id.Name]
-	if !ok || node.boundPath != "" {
+	node, ok := st.pendingNode(id.Name)
+	if !ok {
 		return nil, "", false
 	}
 	return node, id.Name, true
@@ -455,22 +651,64 @@ func (st *hookState) bindNode(ident, parentPath string, node *hookNode) {
 		description: node.short,
 	})
 	if ident != "" {
-		st.paths[ident] = full
-		delete(st.pending, ident)
+		st.store(ident, false, &hookBinding{path: full, pathOK: true})
 	}
 	for _, child := range node.children {
 		st.bindNode("", full, child)
 	}
 }
 
-func (st *hookState) resolvedPath(name string) (string, bool) {
-	if path, ok := st.paths[name]; ok {
-		return path, true
+func (st *hookState) lookup(name string) (*hookBinding, bool) {
+	for i := len(st.scopes) - 1; i >= 0; i-- {
+		if binding, ok := st.scopes[i].bindings[name]; ok {
+			return binding, true
+		}
 	}
-	if node, ok := st.pending[name]; ok && node.boundPath != "" {
-		return node.boundPath, true
+	return nil, false
+}
+
+func (st *hookState) store(name string, define bool, binding *hookBinding) {
+	if len(st.scopes) == 0 || name == "" || name == "_" {
+		return
+	}
+	if define {
+		st.scopes[len(st.scopes)-1].bindings[name] = binding
+		return
+	}
+	for i := len(st.scopes) - 1; i >= 0; i-- {
+		if _, ok := st.scopes[i].bindings[name]; ok {
+			st.scopes[i].bindings[name] = binding
+			return
+		}
+	}
+}
+
+// obscure drops a definite path. define shadows the outer name so the inner
+// block cannot keep using it; assign updates the existing name in place.
+func (st *hookState) obscure(name string, define bool) {
+	st.store(name, define, &hookBinding{unknown: true})
+}
+
+func (st *hookState) resolvedPath(name string) (string, bool) {
+	binding, ok := st.lookup(name)
+	if !ok || binding == nil || binding.unknown {
+		return "", false
+	}
+	if binding.pathOK {
+		return binding.path, true
+	}
+	if binding.pending != nil && binding.pending.boundPath != "" {
+		return binding.pending.boundPath, true
 	}
 	return "", false
+}
+
+func (st *hookState) pendingNode(name string) (*hookNode, bool) {
+	binding, ok := st.lookup(name)
+	if !ok || binding == nil || binding.unknown || binding.pathOK || binding.pending == nil || binding.pending.boundPath != "" {
+		return nil, false
+	}
+	return binding.pending, true
 }
 
 func hookNodeFromComposite(expr ast.Expr) (*hookNode, bool) {

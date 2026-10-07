@@ -1,6 +1,8 @@
 package generator
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,6 +124,110 @@ func registerReports(root *cobra.Command) {
 	parent.AddCommand(run)
 }
 `
+
+func TestHookCommandPathsRespectBlockScope(t *testing.T) {
+	t.Parallel()
+
+	commands := hookCommandsForTest(t, `package cli
+
+func init() {
+	registerNovelCommand(func(root *cobra.Command) {
+		parent, _, err := root.Find([]string{"items"})
+		if err != nil {
+			return
+		}
+		{
+			parent := &cobra.Command{Use: "tools", Short: "Tools"}
+			root.AddCommand(parent)
+		}
+		parent.AddCommand(&cobra.Command{Use: "extra", Short: "Extra"})
+	})
+}
+`)
+	assert.Equal(t, []string{"tools", "items extra"}, hookPaths(commands))
+}
+
+func TestHookCommandPathsStayUncertainAcrossBranches(t *testing.T) {
+	t.Parallel()
+
+	commands := hookCommandsForTest(t, `package cli
+
+func init() {
+	registerNovelCommand(func(root *cobra.Command) {
+		root.AddCommand(&cobra.Command{Use: "kept", Short: "Kept"})
+		parent, _, err := root.Find([]string{"items"})
+		if err != nil {
+			return
+		}
+		if true {
+			parent, _, err = root.Find([]string{"tools"})
+		}
+		parent.AddCommand(&cobra.Command{Use: "extra", Short: "Extra"})
+	})
+}
+`)
+	assert.Equal(t, []string{"kept"}, hookPaths(commands))
+
+	agreed := hookCommandsForTest(t, `package cli
+
+func init() {
+	registerNovelCommand(func(root *cobra.Command) {
+		parent, _, err := root.Find([]string{"items"})
+		if err != nil {
+			return
+		}
+		if true {
+			parent, _, err = root.Find([]string{"items", "sub"})
+		} else {
+			parent, _, err = root.Find([]string{"items", "sub"})
+		}
+		parent.AddCommand(&cobra.Command{Use: "extra", Short: "Extra"})
+	})
+}
+`)
+	assert.Equal(t, []string{"items sub extra"}, hookPaths(agreed))
+}
+
+func TestPreservedCLIDirSuppliesHookCommands(t *testing.T) {
+	t.Parallel()
+
+	preserved := t.TempDir()
+	cliDir := filepath.Join(preserved, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "notes.go"), []byte(`package cli
+
+func init() {
+	registerNovelCommand(func(root *cobra.Command) {
+		root.AddCommand(&cobra.Command{Use: "notes", Short: "Operator notes"})
+	})
+}
+`), 0o644))
+
+	gen := New(minimalSpec("preserved"), t.TempDir())
+	gen.PreservedCLIDir = preserved
+	var invocations []string
+	for _, group := range gen.additionalCommandGroups() {
+		for _, cmd := range group.Commands {
+			invocations = append(invocations, cmd.Invocation)
+		}
+	}
+	assert.Equal(t, []string{"notes"}, invocations)
+}
+
+func hookCommandsForTest(t *testing.T, src string) []hookCommand {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "hook.go", src, parser.SkipObjectResolution)
+	require.NoError(t, err)
+	return novelHookCommands(file)
+}
+
+func hookPaths(commands []hookCommand) []string {
+	out := make([]string, 0, len(commands))
+	for _, cmd := range commands {
+		out = append(out, cmd.path)
+	}
+	return out
+}
 
 func TestGeneratedDocsDescribeCommandSurfaceAndAuthShape(t *testing.T) {
 	t.Parallel()

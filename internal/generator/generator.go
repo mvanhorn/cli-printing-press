@@ -130,8 +130,12 @@ type PlaybookEntry struct {
 }
 
 type Generator struct {
-	Spec               *spec.APISpec
-	OutputDir          string
+	Spec      *spec.APISpec
+	OutputDir string
+	// PreservedCLIDir is the tree generate --force moved aside before
+	// Generate. Preserved hooks are not in OutputDir yet, and the merge
+	// keeps the docs written from this scan.
+	PreservedCLIDir    string
 	VisionSet          VisionTemplateSet
 	visionCommandNames map[string]string
 	FixtureSet         *browsersniff.FixtureSet
