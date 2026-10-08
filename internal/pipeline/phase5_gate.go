@@ -44,23 +44,27 @@ type Phase5AuthContext struct {
 }
 
 type Phase5GateMarker struct {
-	SchemaVersion     int                   `json:"schema_version"`
-	APIName           string                `json:"api_name,omitempty"`
-	RunID             string                `json:"run_id,omitempty"`
-	Status            string                `json:"status"`
-	Level             string                `json:"level,omitempty"`
-	MatrixSize        int                   `json:"matrix_size,omitempty"`
-	TestsPassed       int                   `json:"tests_passed,omitempty"`
-	TestsSkipped      int                   `json:"tests_skipped,omitempty"`
-	TestsUnverified   int                   `json:"tests_unverified,omitempty"`
-	TestsFailed       int                   `json:"tests_failed,omitempty"`
-	CoverageHollow    bool                  `json:"coverage_hollow,omitempty"`
-	HollowFeatures    []string              `json:"hollow_features,omitempty"`
-	AuthContext       Phase5AuthContext     `json:"auth_context,omitzero"`
-	SkipReason        string                `json:"skip_reason,omitempty"`
-	FailureSummary    *Phase5FailureSummary `json:"failure_summary,omitempty"`
-	SourceFingerprint string                `json:"source_fingerprint,omitempty"`
-	SourceFiles       map[string]string     `json:"source_files,omitempty"`
+	SchemaVersion   int      `json:"schema_version"`
+	APIName         string   `json:"api_name,omitempty"`
+	RunID           string   `json:"run_id,omitempty"`
+	Status          string   `json:"status"`
+	Level           string   `json:"level,omitempty"`
+	MatrixSize      int      `json:"matrix_size,omitempty"`
+	TestsPassed     int      `json:"tests_passed,omitempty"`
+	TestsSkipped    int      `json:"tests_skipped,omitempty"`
+	TestsUnverified int      `json:"tests_unverified,omitempty"`
+	TestsFailed     int      `json:"tests_failed,omitempty"`
+	CoverageHollow  bool     `json:"coverage_hollow,omitempty"`
+	HollowFeatures  []string `json:"hollow_features,omitempty"`
+	// ProofCoveredFeatures lists novel features counted as covered by an
+	// operator proof file in the same proofs directory instead of a live
+	// happy-path pass.
+	ProofCoveredFeatures []ProofCoveredFeature `json:"proof_covered_features,omitempty"`
+	AuthContext          Phase5AuthContext     `json:"auth_context,omitzero"`
+	SkipReason           string                `json:"skip_reason,omitempty"`
+	FailureSummary       *Phase5FailureSummary `json:"failure_summary,omitempty"`
+	SourceFingerprint    string                `json:"source_fingerprint,omitempty"`
+	SourceFiles          map[string]string     `json:"source_files,omitempty"`
 }
 
 // Phase5FailureSummary groups failed tests by category so a human reviewing
@@ -175,6 +179,12 @@ func validatePhase5MarkerFile(path string, manifest CLIManifest, skipFile bool, 
 
 	result := validatePhase5Marker(marker, manifest, skipFile, sourceDir)
 	result.MarkerPath = path
+	if result.Passed {
+		if issues := validatePhase5ProofCoverage(marker, filepath.Dir(path)); len(issues) > 0 {
+			result.Passed = false
+			result.Detail = strings.Join(issues, "; ")
+		}
+	}
 	return result, true
 }
 

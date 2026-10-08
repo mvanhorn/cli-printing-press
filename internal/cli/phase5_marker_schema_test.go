@@ -85,6 +85,20 @@ func TestPhase5Marker_WriterOutputMatchesPublishedSchema(t *testing.T) {
 		require.NoError(t, validateMarker(t, sch, marker))
 	})
 
+	t.Run("pass marker with proof-covered features", func(t *testing.T) {
+		marker := pipeline.Phase5GateMarker{
+			SchemaVersion:        1,
+			APIName:              "probe",
+			Status:               "pass",
+			Level:                "full",
+			MatrixSize:           20,
+			TestsPassed:          20,
+			ProofCoveredFeatures: []pipeline.ProofCoveredFeature{{Command: "undo", Proof: "undo-lifecycle.md"}},
+			SourceFingerprint:    "deadbeef",
+		}
+		require.NoError(t, validateMarker(t, sch, marker))
+	})
+
 	t.Run("fail marker carries failure summary", func(t *testing.T) {
 		marker := pipeline.Phase5GateMarker{
 			SchemaVersion:     1,
@@ -115,23 +129,24 @@ func TestPhase5Marker_SchemaDeclaresNoPhantomProperties(t *testing.T) {
 
 	emittable := map[string]bool{}
 	raw, err := json.Marshal(pipeline.Phase5GateMarker{
-		SchemaVersion:     1,
-		APIName:           "x",
-		RunID:             "x",
-		Status:            "pass",
-		Level:             "full",
-		MatrixSize:        1,
-		TestsPassed:       1,
-		TestsSkipped:      1,
-		TestsUnverified:   1,
-		TestsFailed:       1,
-		CoverageHollow:    true,
-		HollowFeatures:    []string{"x"},
-		SkipReason:        "x",
-		SourceFingerprint: "x",
-		SourceFiles:       map[string]string{"a": "b"},
-		AuthContext:       pipeline.Phase5AuthContext{Type: "none"},
-		FailureSummary:    &pipeline.Phase5FailureSummary{HTTP4xx: 1},
+		SchemaVersion:        1,
+		APIName:              "x",
+		RunID:                "x",
+		Status:               "pass",
+		Level:                "full",
+		MatrixSize:           1,
+		TestsPassed:          1,
+		TestsSkipped:         1,
+		TestsUnverified:      1,
+		TestsFailed:          1,
+		CoverageHollow:       true,
+		HollowFeatures:       []string{"x"},
+		ProofCoveredFeatures: []pipeline.ProofCoveredFeature{{Command: "x", Proof: "x.md"}},
+		SkipReason:           "x",
+		SourceFingerprint:    "x",
+		SourceFiles:          map[string]string{"a": "b"},
+		AuthContext:          pipeline.Phase5AuthContext{Type: "none"},
+		FailureSummary:       &pipeline.Phase5FailureSummary{HTTP4xx: 1},
 	})
 	require.NoError(t, err)
 	var m map[string]any

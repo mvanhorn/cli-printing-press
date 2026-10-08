@@ -225,6 +225,7 @@ const phase5MarkerSchemaJSON = `{
     "tests_failed": {"type": "integer", "minimum": 0},
     "coverage_hollow": {"type": "boolean"},
     "hollow_features": {"type": "array", "items": {"type": "string"}},
+    "proof_covered_features": {"type": "array", "items": {"$ref": "#/$defs/proof_covered_feature"}},
     "skip_reason": {"type": "string"},
     "auth_context": {"$ref": "#/$defs/auth_context"},
     "failure_summary": {"$ref": "#/$defs/failure_summary"},
@@ -238,6 +239,15 @@ const phase5MarkerSchemaJSON = `{
     }
   ],
   "$defs": {
+    "proof_covered_feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "proof"],
+      "properties": {
+        "command": {"type": "string", "minLength": 1},
+        "proof": {"type": "string", "minLength": 1}
+      }
+    },
     "auth_context": {
       "type": "object",
       "additionalProperties": false,

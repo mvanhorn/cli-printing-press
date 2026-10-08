@@ -64,6 +64,9 @@ The `internal/learn` templates under `internal/generator/templates/learn**` must
 ### Typed exit-code verification
 `cli-printing-press verify` treats exit `0` as success by default. For commands where a non-zero code is intentional control flow, declare it in Cobra with `Annotations: map[string]string{"pp:typed-exit-codes": "0,2"}`. The verifier reads that annotation first, then falls back to a command-level `Exit codes:` help block. Do not put the whole global failure palette in a command-level help block unless those codes should count as verify-pass for that specific command.
 
+### Proof-backed novel-feature coverage
+Use `cmd.Annotations["pp:verified-by-proof"] = "<file>.md"` only for a state-dependent novel command whose real happy path needs state a prior real write created (for example `<cmd> <batch-id>` on a batch that exists), so live dogfood can never pass it without `--dry-run`. It is not a substitute for a runnable happy path. The value is a bare `.md` or `.txt` filename (no separators, no `..`) in the same proofs directory as `--write-acceptance`. `dogfood --live` counts the feature as covered only when the file is non-empty, mentions the command path, and this run passed the command's help plus a dry-run `happy_path` or `dry_run_json` check; otherwise it stays in `hollow_features`. Accepted features are listed in `proof_covered_features` on the report and `phase5-acceptance.json`, and the phase5 gate fails when a listed proof file is missing beside the marker.
+
 ## Build, Test & Lint
 ```bash
 go build -o ./cli-printing-press ./cmd/cli-printing-press

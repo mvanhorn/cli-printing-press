@@ -58,6 +58,7 @@ func TestSchemaPhase5MarkerPrintsJSONSchema(t *testing.T) {
 		"tests_failed",
 		"coverage_hollow",
 		"hollow_features",
+		"proof_covered_features",
 		"skip_reason",
 		"source_fingerprint",
 		"source_files",

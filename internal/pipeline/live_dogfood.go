@@ -115,21 +115,24 @@ type LiveDogfoodOptions struct {
 }
 
 type LiveDogfoodReport struct {
-	Dir            string                  `json:"dir"`
-	Binary         string                  `json:"binary"`
-	Level          string                  `json:"level"`
-	Verdict        string                  `json:"verdict"`
-	MatrixSize     int                     `json:"matrix_size"`
-	Passed         int                     `json:"passed"`
-	Failed         int                     `json:"failed"`
-	Skipped        int                     `json:"skipped"`
-	Unverified     int                     `json:"unverified"`
-	PassRate       float64                 `json:"pass_rate"`
-	CoverageHollow bool                    `json:"coverage_hollow,omitempty"`
-	HollowFeatures []string                `json:"hollow_features,omitempty"`
-	Commands       []string                `json:"commands"`
-	Tests          []LiveDogfoodTestResult `json:"tests"`
-	RanAt          time.Time               `json:"ran_at"`
+	Dir            string   `json:"dir"`
+	Binary         string   `json:"binary"`
+	Level          string   `json:"level"`
+	Verdict        string   `json:"verdict"`
+	MatrixSize     int      `json:"matrix_size"`
+	Passed         int      `json:"passed"`
+	Failed         int      `json:"failed"`
+	Skipped        int      `json:"skipped"`
+	Unverified     int      `json:"unverified"`
+	PassRate       float64  `json:"pass_rate"`
+	CoverageHollow bool     `json:"coverage_hollow,omitempty"`
+	HollowFeatures []string `json:"hollow_features,omitempty"`
+	// ProofCoveredFeatures are novel features with no live happy-path pass
+	// that an operator-written proof file backs instead.
+	ProofCoveredFeatures []ProofCoveredFeature   `json:"proof_covered_features,omitempty"`
+	Commands             []string                `json:"commands"`
+	Tests                []LiveDogfoodTestResult `json:"tests"`
+	RanAt                time.Time               `json:"ran_at"`
 }
 
 type LiveDogfoodTestResult struct {
@@ -265,7 +268,10 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	}
 
 	finalizeLiveDogfoodReport(report, authType)
-	finalizeLiveDogfoodCoverage(report, opts.ResearchDir)
+	finalizeLiveDogfoodCoverage(report, opts.ResearchDir, liveDogfoodProofContext{
+		commands:  commands,
+		proofsDir: liveDogfoodAcceptanceProofsDir(opts.WriteAcceptancePath),
+	})
 	// Persist rotated credentials before the acceptance marker: a marker-write
 	// failure must not discard the sandbox that holds the replacement token.
 	syncErr := homeScope.syncBack()
@@ -3579,7 +3585,10 @@ func refreshLiveDogfoodCoverageCounts(report *LiveDogfoodReport) {
 // the checks that actually reached a happy_path pass. A feature can be
 // present in research.json and still have only help or skipped checks, which
 // must be visible instead of disappearing into the headline pass rate.
-func finalizeLiveDogfoodCoverage(report *LiveDogfoodReport, researchDir string) {
+// A feature with no live pass can still be proof-covered (see
+// liveDogfoodProofCoverage); those are listed separately, never merged into
+// passes.
+func finalizeLiveDogfoodCoverage(report *LiveDogfoodReport, researchDir string, proofs liveDogfoodProofContext) {
 	if report == nil || strings.TrimSpace(researchDir) == "" {
 		return
 	}
@@ -3616,11 +3625,19 @@ func finalizeLiveDogfoodCoverage(report *LiveDogfoodReport, researchDir string) 
 				break
 			}
 		}
-		if !featurePassed {
-			report.HollowFeatures = append(report.HollowFeatures, feature.Command)
+		if featurePassed {
+			continue
 		}
+		if covered, ok := liveDogfoodProofCoverage(feature, report.Tests, proofs); ok {
+			report.ProofCoveredFeatures = append(report.ProofCoveredFeatures, covered)
+			continue
+		}
+		report.HollowFeatures = append(report.HollowFeatures, feature.Command)
 	}
 	sort.Strings(report.HollowFeatures)
+	sort.Slice(report.ProofCoveredFeatures, func(i, j int) bool {
+		return report.ProofCoveredFeatures[i].Command < report.ProofCoveredFeatures[j].Command
+	})
 	report.CoverageHollow = len(report.HollowFeatures) > 0
 }
 
@@ -3682,20 +3699,21 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 	}
 
 	marker := Phase5GateMarker{
-		SchemaVersion:     1,
-		APIName:           apiName,
-		RunID:             runID,
-		Status:            status,
-		Level:             report.Level,
-		MatrixSize:        report.MatrixSize,
-		TestsPassed:       report.Passed,
-		TestsSkipped:      report.Skipped,
-		TestsUnverified:   report.Unverified,
-		TestsFailed:       report.Failed,
-		CoverageHollow:    report.CoverageHollow,
-		HollowFeatures:    append([]string(nil), report.HollowFeatures...),
-		SourceFingerprint: source.Digest,
-		SourceFiles:       source.Files,
+		SchemaVersion:        1,
+		APIName:              apiName,
+		RunID:                runID,
+		Status:               status,
+		Level:                report.Level,
+		MatrixSize:           report.MatrixSize,
+		TestsPassed:          report.Passed,
+		TestsSkipped:         report.Skipped,
+		TestsUnverified:      report.Unverified,
+		TestsFailed:          report.Failed,
+		CoverageHollow:       report.CoverageHollow,
+		HollowFeatures:       append([]string(nil), report.HollowFeatures...),
+		ProofCoveredFeatures: append([]ProofCoveredFeature(nil), report.ProofCoveredFeatures...),
+		SourceFingerprint:    source.Digest,
+		SourceFiles:          source.Files,
 		AuthContext: Phase5AuthContext{
 			Type:            authType,
 			APIKeyAvailable: opts.AuthEnv != "" && os.Getenv(opts.AuthEnv) != "",
@@ -3727,7 +3745,10 @@ func mirrorLiveDogfoodAcceptanceToRunstate(opts LiveDogfoodOptions, path string,
 	if sameResolvedPath(path, dest) {
 		return nil
 	}
-	return writeLiveDogfoodMarkerFile(dest, marker)
+	if err := writeLiveDogfoodMarkerFile(dest, marker); err != nil {
+		return err
+	}
+	return copyProofFiles(filepath.Dir(path), state.ProofsDir(), marker.ProofCoveredFeatures)
 }
 
 func sameResolvedPath(a, b string) bool {
