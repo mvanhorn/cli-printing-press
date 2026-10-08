@@ -81,7 +81,8 @@ func TestGeneratedClientRebasesTemplatedAbsoluteURLWhenBaseURLOverrideIsSet(t *t
 		BaseURL:     "http://{hostport}",
 		Description: "Order book on a templated second host",
 	})
-	apiSpec.EndpointTemplateVars = []string{"hostport", "proxyhost"}
+	apiSpec.EndpointTemplateVars = []string{"hostport", "addr"}
+	apiSpec.GlobalPathTemplateVars = []string{"addr"}
 
 	outputDir := generateMixedHostCLI(t, apiSpec)
 	handler := readGeneratedFile(t, outputDir, "internal", "cli", "markets_book.go")
@@ -89,6 +90,10 @@ func TestGeneratedClientRebasesTemplatedAbsoluteURLWhenBaseURLOverrideIsSet(t *t
 	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
 	assert.Contains(t, clientSrc, `buildURL("", path, endpointVars)`)
 	assert.Contains(t, clientSrc, "rebaseAbsoluteURLOntoOverride(targetURL, c.BaseURL, endpointVars)")
+	assert.Contains(t, clientSrc, `buildURL(configuredBase, "", endpointVars)`)
+	urlSrc := readGeneratedFile(t, outputDir, "internal", "client", "url.go")
+	assert.Contains(t, urlSrc, "url.PathEscape(v)", "addr must be a global path var so the override is not path-escaped")
+	assert.Contains(t, urlSrc, `"addr": true`)
 
 	runAbsoluteOverrideBehavior(t, outputDir, absoluteOverrideCase{
 		module:         naming.CLI(apiSpec.Name),
@@ -101,7 +106,7 @@ func TestGeneratedClientRebasesTemplatedAbsoluteURLWhenBaseURLOverrideIsSet(t *t
 		hostportEnv:    spec.DefaultEndpointTemplateEnvName(apiSpec.Name, "hostport"),
 		hostportValue:  secondURL.Host,
 		declaredServer: "second",
-		proxyEnv:       spec.DefaultEndpointTemplateEnvName(apiSpec.Name, "proxyhost"),
+		proxyEnv:       spec.DefaultEndpointTemplateEnvName(apiSpec.Name, "addr"),
 		proxyValue:     overrideURL.Host,
 	})
 }
@@ -281,17 +286,17 @@ func TestAbsoluteURLHonorsConfiguredBaseURL(t *testing.T) {
 	})
 
 	if proxyEnv != "" {
-		t.Run("templated override resolves before rebase", func(t *testing.T) {
+		t.Run("templated override keeps host punctuation", func(t *testing.T) {
 			t.Setenv(proxyEnv, proxyValue)
-			got := getEcho(t, "http://{proxyhost}", absolutePath, map[string]string{})
+			got := getEcho(t, "http://{addr}", absolutePath, map[string]string{})
 			expectEcho(t, got, "override", "/book", "", bookQuery)
-			rel := getEcho(t, "http://{proxyhost}", "/ticker", map[string]string{})
+			rel := getEcho(t, "http://{addr}", "/ticker", map[string]string{})
 			expectEcho(t, rel, "override", basePath+"/ticker", "", nil)
 		})
 
 		t.Run("unresolved templated override does not call the declared host", func(t *testing.T) {
 			t.Setenv(proxyEnv, "")
-			_, err := getEchoErr(t, "http://{proxyhost}", absolutePath, nil)
+			_, err := getEchoErr(t, "http://{addr}", absolutePath, nil)
 			if err == nil {
 				t.Fatal("expected unresolved template override error")
 			}

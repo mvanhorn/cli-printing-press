@@ -3899,8 +3899,9 @@ func rebaseAbsoluteURLOntoOverride(raw, configuredBase string{{if .EndpointTempl
 {{- if .EndpointTemplateVars}}
 	// Resolve after the default check. Doing it first would treat the spec's
 	// own {placeholder} base as an override and collapse every absolute host.
+	// The base is the first argument so a global path var is not percent-encoded.
 	var resolveErr error
-	configuredBase, resolveErr = buildURL("", configuredBase, endpointVars)
+	configuredBase, resolveErr = buildURL(configuredBase, "", endpointVars)
 	if resolveErr != nil {
 		return "", resolveErr
 	}
