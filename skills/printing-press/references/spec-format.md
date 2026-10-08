@@ -170,7 +170,11 @@ double-quoted string). Positional tokens may use `<label>=value` or
 or Example-derived values, and bare `--flag` tokens become boolean
 `--flag=true`. Negative numeric flag values use the safe
 `--flag=-12.3` form. Examples include `"--zip=60614"` and
-`"id=example-id;--query=example"`.
+`"id=example-id;--query=example"`. When no portable fixture can exist
+(continuation cursors, account-specific paths, resource URLs), declare the flag
+as `--flag=example-value`: live dogfood records that endpoint as
+`blocked-fixture` on any flag name instead of failing it, while a real value
+that fails still counts as a failure.
 
 **`html_extract.link_prefixes` are path-segment anchored.** In `mode: links`, a
 prefix such as `/items` keeps links whose path is exactly `/items` or starts

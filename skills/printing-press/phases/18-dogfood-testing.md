@@ -109,6 +109,14 @@ rerun live dogfood. The runner writes `phase5-acceptance.json` on every outcome
 failure), so the [Phase 5.6](20-promote-and-archive.md) gate always has a marker to read. Do not hand-edit
 `phase5-acceptance.json`; it must come from the runner.
 
+When `hollow_features` lists a mutating novel command that only previews unless
+a confirm flag is passed, annotate it `pp:preview-happy-path` (see
+[Phase 3](11-build-the-goat.md)) and rerun without `--allow-destructive`; the
+runner runs that preview for real. When a failure is an endpoint input no
+portable fixture can satisfy (a continuation cursor, an account-specific path,
+a resource URL), declare it as `--flag=example-value` in `pp:happy-args` so the
+row lands as `blocked-fixture` instead of baking real account data into the CLI.
+
 **Quick check (auto-selected test subset):**
 1. `doctor` — auth valid, API reachable.
 2. 3-5 list commands — return data, not empty.

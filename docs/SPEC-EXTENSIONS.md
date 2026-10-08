@@ -1898,6 +1898,16 @@ Rules:
 - Negative numeric flag values are emitted in `--flag=-12.3` form so Cobra
   does not parse the value as a shorthand flag cluster.
 - Empty or whitespace-only values behave the same as absence.
+- A declared flag whose value is a placeholder literal (`example-value`,
+  `your-token-here`, or the synthetic placeholder UUID) marks the operation
+  fixture-blocked on any flag name. Use `--flag=example-value` for
+  continuation cursors, account-specific paths, and resource URLs that no
+  portable fixture can satisfy. Live dogfood then records `happy_path` and
+  `json_fidelity` as skipped with `blocked-fixture: required API parameter`
+  instead of running a value the API must reject. Placeholders that come only
+  from the Cobra `Example:` stay name-gated (id, ids, `*-id`, token, key), so
+  ordinary examples still run. A real declared value that fails still counts
+  as a failure.
 
 Example:
 
@@ -1907,6 +1917,13 @@ paths:
     get:
       operationId: listReferents
       x-happy-args: "--song-id=378195"
+      responses:
+        "200": {description: ok}
+  /items/list/continue:
+    post:
+      operationId: listItemsContinue
+      # No portable cursor exists outside the operator's account.
+      x-happy-args: "--cursor=example-value"
       responses:
         "200": {description: ok}
 ```

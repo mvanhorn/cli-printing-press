@@ -881,18 +881,21 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 	if annotatedPositionals > 0 {
 		return happyArgs, false, "", ""
 	}
-	placeholders := extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))
+	placeholders, usageDepth := liveDogfoodPlaceholdersToResolve(command, happyArgs)
 	if len(placeholders) == 0 {
 		return happyArgs, false, "", ""
 	}
 
 	pathLen := len(command.Path)
 	nPlaceholders := len(placeholders)
-	if pathLen < nPlaceholders {
+	// usageDepth counts every Usage positional, including an optional tail
+	// that is not resolved, so each resolved placeholder keeps the parent
+	// path its position in Usage implies.
+	if pathLen < usageDepth {
 		// More placeholders than path segments before the verb. Unusual
 		// shape (top-level command with multiple positionals); skip.
 		return nil, true, fmt.Sprintf(
-			"command path %v has fewer segments than placeholders (%d)", command.Path, nPlaceholders), ""
+			"command path %v has fewer segments than placeholders (%d)", command.Path, usageDepth), ""
 	}
 
 	resolved := make([]string, 0, nPlaceholders)
@@ -908,7 +911,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 		}
 
 		// parent path of the verb that expects this placeholder.
-		parentPath := command.Path[:pathLen-nPlaceholders+i]
+		parentPath := command.Path[:pathLen-usageDepth+i]
 		siblingKey := strings.Join(parentPath, " ")
 		listCmd := findListCompanion(ctx.siblings[siblingKey])
 		if listCmd == nil {
@@ -919,7 +922,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 			} else if storeAvailable {
 				return nil, true, reasonRequiredParamFixture, ""
 			}
-			if liveDogfoodSyntheticPositionalValue(happyArgs, command.Path, i, nPlaceholders) {
+			if liveDogfoodSyntheticPositionalValue(happyArgs, command.Path, i, usageDepth) {
 				return nil, true, reasonRequiredParamFixture, ""
 			}
 			return nil, true, fmt.Sprintf("no list companion at depth %d for %q", i, name), ""
@@ -991,15 +994,130 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 	return substitutePositionals(happyArgs, command.Path, resolved), false, "", fixtureSource
 }
 
-func happyPathSyntheticParamFixtureSkip(command liveDogfoodCommand, happyArgs []string) string {
-	if liveDogfoodCommandMutates(command) {
+// liveDogfoodPlaceholdersToResolve returns the Usage positionals that need a
+// fixture id, plus the full Usage positional count. An optional positional
+// (`[name]`) that the happy args leave empty is dropped along with every
+// later one, so the command runs as its Example wrote it instead of
+// requiring a list-companion lookup it never asked for. Required positionals
+// (`<name>`) always resolve.
+func liveDogfoodPlaceholdersToResolve(command liveDogfoodCommand, happyArgs []string) ([]string, int) {
+	specs := extractPositionalPlaceholderSpecs(liveDogfoodUsageSuffix(command.Help))
+	if len(specs) == 0 {
+		return nil, 0
+	}
+	supplied := -1
+	names := make([]string, 0, len(specs))
+	for i, spec := range specs {
+		if spec.optional {
+			if supplied < 0 {
+				supplied = liveDogfoodSuppliedPositionalCount(happyArgs, command.Path, len(specs), liveDogfoodFlagValueNames(command.Help), liveDogfoodShorthandTypes(command.Help))
+			}
+			if i >= supplied {
+				break
+			}
+		}
+		names = append(names, spec.name)
+	}
+	return names, len(specs)
+}
+
+// liveDogfoodShorthandTypes maps each shorthand letter in help to whether it
+// takes a value (`-l, --limit int` or `-l int`) or is boolean
+// (`-v, --verbose`). Shorthands are case-sensitive, as in pflag, so `-v` and
+// `-V` stay distinct.
+func liveDogfoodShorthandTypes(help string) map[byte]bool {
+	types := make(map[byte]bool)
+	for line := range strings.SplitSeq(extractFlagsSection(help), "\n") {
+		if decl, ok := parseLiveDogfoodFlagDecl(line); ok && decl.shorthand != 0 {
+			types[decl.shorthand] = decl.takesValue
+		}
+	}
+	return types
+}
+
+// liveDogfoodShorthandClusterValue reads a single-dash cluster the way pflag
+// does and reports whether its last value-taking shorthand reads the next
+// argument as its value. known is false when no letter appears in help.
+func liveDogfoodShorthandClusterValue(cluster string, shorthands map[byte]bool) (consumesNext, known bool) {
+	for i := 0; i < len(cluster); i++ {
+		c := cluster[i]
+		if c == '=' {
+			return false, known
+		}
+		takesValue, ok := shorthands[c]
+		if !ok {
+			continue
+		}
+		known = true
+		if takesValue {
+			// The rest of the token, if any, is the value.
+			return i == len(cluster)-1, true
+		}
+	}
+	return false, known
+}
+
+// liveDogfoodSuppliedPositionalCount counts the positional values present in
+// happy args after the command path. Typed value flags consume their
+// separate value so `--limit 5` and `-l 5` are not mistaken for positionals,
+// while a boolean shorthand such as `-V` leaves the next argument alone.
+func liveDogfoodSuppliedPositionalCount(happyArgs, commandPath []string, positionalCount int, valueFlags map[string]struct{}, shorthands map[byte]bool) int {
+	start := min(len(commandPath), len(happyArgs))
+	count := 0
+	afterTerminator := false
+	for i := start; i < len(happyArgs); i++ {
+		arg := happyArgs[i]
+		if arg == "--" && !afterTerminator {
+			afterTerminator = true
+			continue
+		}
+		if !afterTerminator && isLiveDogfoodFlagToken(arg) {
+			if cluster, short := strings.CutPrefix(arg, "-"); short && !strings.HasPrefix(cluster, "-") {
+				consumesNext, known := liveDogfoodShorthandClusterValue(cluster, shorthands)
+				if known {
+					if consumesNext && i+1 < len(happyArgs) && !isLiveDogfoodFlagToken(happyArgs[i+1]) {
+						i++
+					}
+					continue
+				}
+			}
+			if !strings.Contains(arg, "=") && liveDogfoodFlagHasSeparateValueWithTypes(happyArgs, start, i, positionalCount, valueFlags) {
+				i++
+			}
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+// runsReal marks a mutating command whose happy path skips --dry-run, so a
+// placeholder would reach the API exactly as it would for a read.
+func happyPathSyntheticParamFixtureSkip(command liveDogfoodCommand, args []string, declared happyArgs, runsReal bool) string {
+	if liveDogfoodCommandMutates(command) && !runsReal {
 		return ""
 	}
-	if !happyArgsContainSyntheticFlagPlaceholder(happyArgs, command.Path) &&
-		!happyArgsContainSyntheticPositionalPlaceholder(happyArgs, command.Path) {
+	if !happyArgsContainSyntheticFlagPlaceholder(args, command.Path) &&
+		!happyArgsContainSyntheticPositionalPlaceholder(args, command.Path) &&
+		!happyArgsDeclareFixtureBlockedFlag(declared) {
 		return ""
 	}
 	return reasonRequiredParamFixture
+}
+
+// happyArgsDeclareFixtureBlockedFlag reports whether an explicit pp:happy-args
+// flag carries a placeholder literal. Example-derived placeholders only count
+// on id/token/key-shaped flags because an ordinary Example value such as
+// `--query example-value` can still pass; an author-declared placeholder is a
+// deliberate "no portable fixture exists" statement (continuation cursors,
+// account-specific paths, resource URLs), so it counts on any flag.
+func happyArgsDeclareFixtureBlockedFlag(declared happyArgs) bool {
+	for i := 0; i+1 < len(declared.flags); i += 2 {
+		if liveDogfoodSyntheticExampleValue(declared.flags[i+1]) {
+			return true
+		}
+	}
+	return false
 }
 
 func liveDogfoodSyntheticPositionalValue(happyArgs, commandPath []string, position, positionalCount int) bool {
@@ -1655,7 +1773,11 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	// the operator opts in per run with --allow-destructive. Either alone
 	// keeps the default dry-run behavior.
 	liveHappy := mutating && ctx.allowDestructive && annotationIsTrueValue(command.Annotations[liveHappyPathAnnotation])
-	if liveHappy {
+	// A preview happy path writes nothing without its confirm flag, so it
+	// runs for real without the matrix-wide --allow-destructive. The
+	// destructive-at-auth short-circuit above still applies.
+	previewHappy := mutating && !liveHappy && annotationIsTrueValue(command.Annotations[previewHappyPathAnnotation])
+	if liveHappy || previewHappy {
 		useDryRun = false
 	}
 	appendDryRunJSON := func(args []string, argsOK bool, stdin []byte, skipReason string) {
@@ -1762,7 +1884,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	resolvedArgs, resolveSkipped, resolveReason, fixtureSource := resolveCommandPositionals(command, happyArgs, len(parsedHappyArgs.positionals), ctx)
 	syntheticParamSkip := ""
 	if fixtureSkip == "" && !resolveSkipped {
-		syntheticParamSkip = happyPathSyntheticParamFixtureSkip(command, resolvedArgs)
+		syntheticParamSkip = happyPathSyntheticParamFixtureSkip(command, resolvedArgs, parsedHappyArgs, previewHappy)
 	}
 	switch {
 	case bodyFixtureSkip != "":
@@ -1785,7 +1907,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, syntheticParamSkip),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, syntheticParamSkip),
 		)
-	case mutation.unclassified && !useDryRun && !liveHappy:
+	case mutation.unclassified && !useDryRun && !liveHappy && !previewHappy:
 		results = append(results,
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonUnclassifiedNoMethod),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonUnclassifiedNoMethod),
@@ -1800,16 +1922,25 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		// preview. Stdin fixtures are curated request bodies, so they still
 		// run; missing-example / no-stdin / resolve skips above stay more
 		// specific. error_path keeps its own mutating skip after the switch.
-		if mutating && !useDryRun && !ctx.allowDestructive && !mutation.unclassified && len(stdinPayload) == 0 {
+		if mutating && !useDryRun && !ctx.allowDestructive && !previewHappy && !mutation.unclassified && len(stdinPayload) == 0 {
 			results = append(results,
 				skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonMutatingRequiresAllowDestructive),
 				skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonMutatingRequiresAllowDestructive),
 			)
 			break
 		}
+		if previewHappy {
+			if flag := liveDogfoodConfirmFlag(happyArgs, liveDogfoodShorthandTypes(command.Help)); flag != "" {
+				results = append(results,
+					failedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, happyArgs, fmt.Sprintf("%s: %s", reasonPreviewHappyConfirmFlag, flag)),
+					skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonPreviewHappyConfirmFlag),
+				)
+				break
+			}
+		}
 
 		runArgs := happyArgs
-		realOptIn := annotationIsTrueValue(command.Annotations[liveHappyPathAnnotation]) && !useDryRun
+		realOptIn := (annotationIsTrueValue(command.Annotations[liveHappyPathAnnotation]) && !useDryRun) || previewHappy
 		if useDryRun {
 			runArgs = appendDryRunArg(happyArgs)
 		} else if realOptIn {
@@ -2322,9 +2453,84 @@ const (
 	// Paid generations and local writes deliver value only as a side effect,
 	// so dry-run alone leaves them as hollow coverage forever; this lets the
 	// operator approve one real run (together with --allow-destructive).
-	liveHappyPathAnnotation   = "pp:live-happy-path"
-	liveDogfoodMaxOutputBytes = 10 << 20
+	liveHappyPathAnnotation = "pp:live-happy-path"
+	// A mutating command whose default run only previews (it writes only
+	// behind a confirm flag) declares this so its happy path runs for real,
+	// without --dry-run and without the matrix-wide --allow-destructive.
+	previewHappyPathAnnotation = "pp:preview-happy-path"
+	liveDogfoodMaxOutputBytes  = 10 << 20
 )
+
+const reasonPreviewHappyConfirmFlag = "preview happy path must not pass a confirm flag"
+
+// liveDogfoodConfirmFlags are the flags that turn a preview-by-default
+// command into a real write. A preview happy path carrying one of them
+// would write without operator approval.
+var liveDogfoodConfirmFlags = map[string]bool{
+	"yes": true, "y": true, "confirm": true, "force": true,
+	"execute": true, "apply": true, "send": true, "launch": true,
+}
+
+// liveDogfoodConfirmFlag returns the first argument that enables a confirm
+// flag, or "". An explicit false value (`--yes=false`, `-y=false`) does not
+// confirm. Single-dash tokens follow pflag shorthand clustering, so `-vy`
+// and `-yy` both enable `-y`, while `-qy` with a value-taking `-q` only sets
+// `-q` to "y".
+func liveDogfoodConfirmFlag(args []string, shorthands map[byte]bool) string {
+	for _, arg := range args {
+		if arg == "--" {
+			return ""
+		}
+		if !isLiveDogfoodFlagToken(arg) {
+			continue
+		}
+		if long, ok := strings.CutPrefix(arg, "--"); ok {
+			name, value, hasValue := strings.Cut(long, "=")
+			if liveDogfoodConfirmFlags[strings.ToLower(name)] && (!hasValue || !liveDogfoodFalseFlagValue(value)) {
+				return arg
+			}
+			continue
+		}
+		if liveDogfoodShorthandClusterConfirms(strings.TrimPrefix(arg, "-"), shorthands) {
+			return arg
+		}
+	}
+	return ""
+}
+
+// liveDogfoodShorthandClusterConfirms reads a shorthand cluster the way pflag
+// does: `-abc` sets each letter, `-ab=v` gives the value to the letter right
+// before `=`, and a value-taking letter takes the rest of the token as its
+// value. Letters missing from help are treated as boolean, which keeps
+// scanning and errs toward refusing.
+func liveDogfoodShorthandClusterConfirms(cluster string, shorthands map[byte]bool) bool {
+	for i := 0; i < len(cluster); i++ {
+		c := cluster[i]
+		if c == '=' {
+			return false
+		}
+		if !liveDogfoodConfirmFlags[strings.ToLower(string(c))] {
+			if shorthands[c] {
+				return false
+			}
+			continue
+		}
+		if i+1 < len(cluster) && cluster[i+1] == '=' && liveDogfoodFalseFlagValue(cluster[i+2:]) {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+func liveDogfoodFalseFlagValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "false", "0", "no":
+		return true
+	default:
+		return false
+	}
+}
 
 var liveDogfoodRequiredParamFixturePhrases = []string{
 	"missing parameter",
@@ -2811,23 +3017,57 @@ func isLiveDogfoodFlagToken(arg string) bool {
 func liveDogfoodFlagValueNames(help string) map[string]struct{} {
 	valueFlags := make(map[string]struct{})
 	for line := range strings.SplitSeq(extractFlagsSection(help), "\n") {
-		fields := strings.Fields(line)
-		for i, field := range fields {
-			if !strings.HasPrefix(field, "--") {
-				continue
-			}
-			nameValue := strings.TrimPrefix(strings.TrimSuffix(field, ","), "--")
-			if name, value, ok := strings.Cut(nameValue, "="); ok {
-				if isLiveDogfoodFlagValueType(value) {
-					valueFlags[strings.ToLower(name)] = struct{}{}
-				}
-			} else if i+1 < len(fields) && isLiveDogfoodFlagValueType(fields[i+1]) {
-				valueFlags[strings.ToLower(nameValue)] = struct{}{}
-			}
-			break
+		decl, ok := parseLiveDogfoodFlagDecl(line)
+		if ok && decl.long != "" && decl.takesValue {
+			valueFlags[strings.ToLower(decl.long)] = struct{}{}
 		}
 	}
 	return valueFlags
+}
+
+// liveDogfoodFlagDecl is one Cobra help flag declaration.
+type liveDogfoodFlagDecl struct {
+	shorthand  byte // 0 when the flag has no shorthand
+	long       string
+	takesValue bool
+}
+
+// parseLiveDogfoodFlagDecl reads the declaration segment of a Cobra help
+// flag line: `-v, --name type`, then two or more spaces, then the usage
+// text. Only a type token inside that segment counts, so a description
+// that starts with a word like "String" never makes a boolean flag look
+// value-taking.
+func parseLiveDogfoodFlagDecl(line string) (liveDogfoodFlagDecl, bool) {
+	segment := strings.TrimSpace(line)
+	if gap := strings.Index(segment, "  "); gap >= 0 {
+		segment = segment[:gap]
+	}
+	fields := strings.Fields(segment)
+	if len(fields) == 0 || !strings.HasPrefix(fields[0], "-") {
+		return liveDogfoodFlagDecl{}, false
+	}
+	var decl liveDogfoodFlagDecl
+	i := 0
+	if short := strings.TrimSuffix(fields[0], ","); len(short) == 2 && short[0] == '-' && short[1] != '-' {
+		decl.shorthand = short[1]
+		i = 1
+	}
+	if i < len(fields) && strings.HasPrefix(fields[i], "--") {
+		name, value, hasValue := strings.Cut(strings.TrimPrefix(strings.TrimSuffix(fields[i], ","), "--"), "=")
+		decl.long = name
+		if hasValue {
+			decl.takesValue = isLiveDogfoodFlagValueType(value)
+			return decl, true
+		}
+		i++
+	}
+	if decl.shorthand == 0 && decl.long == "" {
+		return liveDogfoodFlagDecl{}, false
+	}
+	if i < len(fields) {
+		decl.takesValue = isLiveDogfoodFlagValueType(fields[i])
+	}
+	return decl, true
 }
 
 func liveDogfoodFlagNames(help string) map[string]struct{} {

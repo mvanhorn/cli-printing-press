@@ -7121,7 +7121,7 @@ Examples:
 	args, ok = liveDogfoodHappyArgs(syntheticFlagCmd)
 	require.True(t, ok)
 	assert.Equal(t, []string{"users", "get-by-ids", "--ids", "example-value", "--format=json"}, args)
-	assert.Equal(t, reasonRequiredParamFixture, happyPathSyntheticParamFixtureSkip(syntheticFlagCmd, args),
+	assert.Equal(t, reasonRequiredParamFixture, happyPathSyntheticParamFixtureSkip(syntheticFlagCmd, args, parseHappyArgsAnnotation(syntheticFlagCmd.Annotations[happyArgsAnnotation]), false),
 		"flag-only pp:happy-args must still skip unresolved synthetic ID fixtures")
 
 	boolFlagCmd := liveDogfoodCommand{

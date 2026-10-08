@@ -56,6 +56,9 @@ Generated endpoint-mirror commands also gate mutating HTTP verbs (DELETE/POST/PU
 ### Long-running commands under live-dogfood
 Hand-written novel commands whose happy path is an expensive read/network operation (full sync loops, content crawlers, bulk archive walks) MUST curtail work when `cliutil.IsDogfoodEnv()` returns true. The `cli-printing-press dogfood --live` runner sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess under a flat 30s per-command timeout, so an uncapped happy path trips the matrix verdict to FAIL. Unlike `IsAnyHarness`, this does NOT mean "don't hit the network" — dogfood is a real-API matrix for reads; use it to bound read work (paginate once, fetch a bounded sample, honor a smaller `--limit` default), never to substitute mock data for real calls.
 
+### Preview happy path under live-dogfood
+Annotate a mutating novel command `cmd.Annotations["pp:preview-happy-path"] = "true"` only when running it without `--dry-run` and without its confirm flag performs no external write (it prints a preview). `dogfood --live` then runs its happy path for real from a scratch directory without `--allow-destructive`, and that pass clears hollow coverage. `pp:happy-args` for such a command must not carry a confirm flag (`--yes`, `-y`, `--confirm`, `--force`, `--execute`, `--apply`, `--send`, `--launch`); the runner fails the row if it does. Destructive-at-auth commands stay skipped. Commands whose happy path actually writes keep `pp:live-happy-path` plus `--allow-destructive`.
+
 ### Generator-reserved namespaces
 `internal/cliutil/`, `internal/learn/`, and `internal/mcp/cobratree/` are generator-owned packages emitted into every printed CLI. Do not hand-author code in them and do not name agent-authored helpers that collide with their exports — regen will overwrite the work. Novel-feature code goes in command packages and may import from `cliutil` or `learn`.
 
