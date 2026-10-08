@@ -2389,14 +2389,15 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 {{- else}}
 {{- if .EndpointTemplateVars}}
 {{- if .HasAbsoluteRequestPath}}
-	// Resource and endpoint BaseURL overrides, plus absolute endpoint paths,
-	// flow through as absolute paths (https:// or http://). buildURL still
-	// substitutes any {placeholder} markers, but the relative-path concat with
-	// c.BaseURL must be skipped for absolute paths.
+	// Absolute paths skip the BaseURL concat. Placeholders are resolved first;
+	// a configured base that leaves the spec default then replaces only the origin.
 	var targetURL string
 	var urlErr error
 	if isAbsoluteURL(path) {
 		targetURL, urlErr = buildURL("", path, endpointVars)
+		if urlErr == nil {
+			targetURL, urlErr = rebaseAbsoluteURLOntoOverride(targetURL, c.BaseURL, endpointVars)
+		}
 	} else {
 		targetURL, urlErr = buildURL({{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{if .BasePath}} + c.BasePath{{end}}{{end}}, path, endpointVars)
 	}
@@ -2411,12 +2412,15 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 {{- end}}
 {{- else}}
 {{- if .HasAbsoluteRequestPath}}
-	// Resource and endpoint BaseURL overrides, plus absolute endpoint paths,
-	// flow through as absolute paths (https:// or http://). Skip the
-	// c.BaseURL concat for those calls.
+	// Absolute paths skip the BaseURL concat. A configured base that leaves
+	// the spec default then replaces only the origin.
 	var targetURL string
 	if isAbsoluteURL(path) {
-		targetURL = path
+		var rebaseErr error
+		targetURL, rebaseErr = rebaseAbsoluteURLOntoOverride(path, c.BaseURL)
+		if rebaseErr != nil {
+			return nil, 0, rebaseErr
+		}
 	} else {
 		targetURL = {{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{if .BasePath}} + c.BasePath{{end}}{{end}} + path
 	}
@@ -3868,11 +3872,60 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 {{- end}}
 
 {{if .HasAbsoluteRequestPath -}}
+// specDefaultBaseURL is the compiled base. Absolute endpoints keep their
+// declared hosts until the configured base leaves this value, so restating
+// the default does not collapse a multi-host spec onto one origin.
+const specDefaultBaseURL = {{printf "%q" .BaseURL}}
+
+// baseURLOverrideEnv names the knob verify and operators use to replace BaseURL.
+const baseURLOverrideEnv = "{{envName .Name}}_BASE_URL"
+
 // isAbsoluteURL reports whether path is already a full URL. Resource or
 // endpoint BaseURL overrides and absolute endpoint paths emit full URLs into
 // path; the relative-path concat with c.BaseURL must be skipped for those calls.
 func isAbsoluteURL(path string) bool {
 	return strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://")
+}
+
+// rebaseAbsoluteURLOntoOverride moves an absolute URL onto the override
+// origin and keeps its path and query. BasePath and any path on the override
+// stay on the relative concat. A bad override errors instead of falling
+// through to the declared host.
+func rebaseAbsoluteURLOntoOverride(raw, configuredBase string{{if .EndpointTemplateVars}}, endpointVars map[string]string{{end}}) (string, error) {
+	if !isAbsoluteURL(raw) || !configuredBaseLeavesSpecDefault(configuredBase) {
+		return raw, nil
+	}
+	configuredBase = strings.TrimSpace(configuredBase)
+{{- if .EndpointTemplateVars}}
+	// Resolve after the default check. Doing it first would treat the spec's
+	// own {placeholder} base as an override and collapse every absolute host.
+	// The base is the first argument so a global path var is not percent-encoded.
+	var resolveErr error
+	configuredBase, resolveErr = buildURL(configuredBase, "", endpointVars)
+	if resolveErr != nil {
+		return "", resolveErr
+	}
+{{- end}}
+	base, err := url.Parse(configuredBase)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return "", fmt.Errorf("configured base URL must be an absolute URL with a host (%s)", baseURLOverrideEnv)
+	}
+	target, err := url.Parse(raw)
+	if err != nil || target.Scheme == "" || target.Host == "" {
+		return "", fmt.Errorf("absolute request URL cannot be retargeted to %s", baseURLOverrideEnv)
+	}
+	target.Scheme = base.Scheme
+	target.User = base.User
+	target.Host = base.Host
+	return target.String(), nil
+}
+
+func configuredBaseLeavesSpecDefault(configured string) bool {
+	return normalizeConfiguredBaseURL(configured) != normalizeConfiguredBaseURL(specDefaultBaseURL)
+}
+
+func normalizeConfiguredBaseURL(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), "/")
 }
 
 {{end -}}
