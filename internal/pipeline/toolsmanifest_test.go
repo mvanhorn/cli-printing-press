@@ -1609,3 +1609,141 @@ func TestNormalizeAuthFormat(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildManifestTool_HeaderLocationAndWireName(t *testing.T) {
+	ep := spec.Endpoint{
+		Method: "DELETE",
+		Path:   "/api/v2/widgets/{id}",
+		Params: []spec.Param{
+			{Name: "id", Type: "integer", Required: true, Positional: true, In: "path"},
+			{Name: "x-example-change-comment", Type: "string", In: "header", URLName: "not-the-header", Description: "Change comment", Required: true},
+			{Name: "X-Change(Comment)", Type: "string", In: "Header", Description: "Parenthetical header"},
+			{Name: "limit", Type: "integer", In: "query", URLName: "page_limit"},
+			// in:cookie stays "query": command templates send surviving
+			// non-header params as query flags, and OpenAPI drops cookie
+			// parameters before they reach a printed CLI.
+			{Name: "sessionid", Type: "string", In: "cookie"},
+			{Name: "calendar", Type: "string", In: "header", PathParam: true},
+		},
+	}
+
+	tool := buildManifestTool("widgets_delete", "", "", ep, func(p spec.Param) string { return p.Description })
+
+	assert.Equal(t, []ManifestParam{
+		{Name: "id", Type: "integer", Location: "path", Required: true},
+		{Name: "x-example-change-comment", Type: "string", Location: "header", Description: "Change comment", Required: true},
+		{Name: "X-Change_Comment", WireName: "X-Change(Comment)", Type: "string", Location: "header", Description: "Parenthetical header"},
+		{Name: "limit", WireName: "page_limit", Type: "integer", Location: "query"},
+		{Name: "sessionid", Type: "string", Location: "query"},
+		{Name: "calendar", Type: "string", Location: "path"},
+	}, tool.Params)
+}
+
+// TestGeneratedToolsManifestLabelsHeaderParams generates a CLI from an OpenAPI
+// spec and checks the written tools-manifest.json, not the template text.
+// The header wire name is Param.Name, including when a query URLName is set
+// on the same param, and it matches the headerOverrides key the command emits.
+func TestGeneratedToolsManifestLabelsHeaderParams(t *testing.T) {
+	const doc = `openapi: 3.0.3
+info:
+  title: Header Location API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /api/v2/widgets/{id}:
+    delete:
+      operationId: deleteWidget
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Widget ID
+          schema: {type: integer}
+        - name: x-example-change-comment
+          in: header
+          required: true
+          description: Change comment
+          schema: {type: string}
+        - name: X-Change(Comment)
+          in: header
+          description: Parenthetical header
+          schema: {type: string}
+        - name: limit
+          in: query
+          description: Page size
+          schema: {type: integer}
+        - name: sessionid
+          in: cookie
+          description: Session cookie
+          schema: {type: string}
+      responses:
+        "204":
+          description: deleted
+`
+
+	parsed, err := openapi.Parse([]byte(doc))
+	require.NoError(t, err)
+
+	foundURLNameTarget := false
+	for _, resource := range parsed.Resources {
+		for _, endpoint := range resource.Endpoints {
+			for i := range endpoint.Params {
+				if endpoint.Params[i].Name == "x-example-change-comment" {
+					endpoint.Params[i].URLName = "not-the-header"
+					foundURLNameTarget = true
+				}
+			}
+		}
+	}
+	require.True(t, foundURLNameTarget, "header param must survive OpenAPI parsing")
+
+	outputDir := filepath.Join(t.TempDir(), "header-location-pp-cli")
+	require.NoError(t, generator.New(parsed, outputDir).Generate())
+	require.NoError(t, WriteToolsManifest(outputDir, parsed))
+
+	got, err := ReadToolsManifest(outputDir)
+	require.NoError(t, err)
+	require.Len(t, got.Tools, 1)
+	assert.Equal(t, []ManifestParam{
+		{Name: "id", Type: "int", Location: "path", Description: "Widget ID", Required: true},
+		{Name: "x-example-change-comment", Type: "string", Location: "header", Description: "Change comment", Required: true},
+		{Name: "X-Change_Comment", WireName: "X-Change(Comment)", Type: "string", Location: "header", Description: "Parenthetical header"},
+		{Name: "limit", Type: "int", Location: "query", Description: "Page size"},
+	}, got.Tools[0].Params)
+
+	raw, err := os.ReadFile(filepath.Join(outputDir, ToolsManifestFilename))
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "sessionid")
+	assert.NotContains(t, string(raw), "not-the-header")
+
+	commandSrc := readGeneratedTree(t, filepath.Join(outputDir, "internal", "cli"))
+	assert.Contains(t, commandSrc, `headerOverrides["x-example-change-comment"]`)
+	assert.Contains(t, commandSrc, `headerOverrides["X-Change(Comment)"]`)
+	assert.NotContains(t, commandSrc, `headerOverrides["not-the-header"]`)
+	assert.NotContains(t, commandSrc, `params["x-example-change-comment"]`)
+	assert.NotContains(t, commandSrc, `params["X-Change(Comment)"]`)
+	assert.NotContains(t, commandSrc, "sessionid")
+
+	mcpSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcp := string(mcpSrc)
+	assert.Contains(t, mcp, `PublicName: "x-example-change-comment", WireName: "x-example-change-comment", Location: "header"`)
+	assert.Contains(t, mcp, `PublicName: "X-Change_Comment", WireName: "X-Change(Comment)", Location: "header"`)
+	assert.NotContains(t, mcp, "sessionid")
+	assert.NotContains(t, mcp, "not-the-header")
+}
+
+func readGeneratedTree(t *testing.T, dir string) string {
+	t.Helper()
+	var b strings.Builder
+	matches, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	require.NoError(t, err)
+	require.NotEmpty(t, matches)
+	for _, match := range matches {
+		data, err := os.ReadFile(match)
+		require.NoError(t, err)
+		b.Write(data)
+	}
+	return b.String()
+}

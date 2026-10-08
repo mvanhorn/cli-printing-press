@@ -158,7 +158,7 @@ The before is what OpenAPI auto-generators emit. The after is what an agent pick
 
 Don't write MCP descriptions from general API knowledge — that produces plausible but inaccurate prose. The CLI ships with the source material; ground every rewrite in it.
 
-**The spec is authoritative. `tools-manifest.json` is a derivative.** For required-vs-optional, parameter location (path / query / body), and the canonical parameter list, read `<cli-dir>/spec.json` (or `spec.yaml`) directly. The manifest's `params` field is generated from the spec; generator bugs can drop or misclassify entries. When the manifest disagrees with the spec, **the spec wins**. The manifest's `description` field is the spec's `summary` shaped for MCP — useful as orientation, not as the source of truth for parameter contracts.
+**The spec is authoritative. `tools-manifest.json` is a derivative.** For required-vs-optional, parameter location (path / query / header / body), and the canonical parameter list, read `<cli-dir>/spec.json` (or `spec.yaml`) directly. The manifest's `params` field is generated from the spec; generator bugs can drop or misclassify entries. When the manifest disagrees with the spec, **the spec wins**. The manifest's `description` field is the spec's `summary` shaped for MCP — useful as orientation, not as the source of truth for parameter contracts.
 
 **Per-tool spec walk** (do this for every finding, not a sample):
 
