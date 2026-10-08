@@ -70,6 +70,8 @@ func TestGeneratedClientRebasesTemplatedAbsoluteURLWhenBaseURLOverrideIsSet(t *t
 
 	secondURL, err := url.Parse(secondSrv.URL)
 	require.NoError(t, err)
+	overrideURL, err := url.Parse(overrideSrv.URL)
+	require.NoError(t, err)
 
 	const basePath = "/svc"
 	absolutePath := "http://{hostport}/book?region=us&view=full"
@@ -79,14 +81,14 @@ func TestGeneratedClientRebasesTemplatedAbsoluteURLWhenBaseURLOverrideIsSet(t *t
 		BaseURL:     "http://{hostport}",
 		Description: "Order book on a templated second host",
 	})
-	apiSpec.EndpointTemplateVars = []string{"hostport"}
+	apiSpec.EndpointTemplateVars = []string{"hostport", "proxyhost"}
 
 	outputDir := generateMixedHostCLI(t, apiSpec)
 	handler := readGeneratedFile(t, outputDir, "internal", "cli", "markets_book.go")
 	assert.Contains(t, handler, `path := "`+absolutePath+`"`)
 	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
 	assert.Contains(t, clientSrc, `buildURL("", path, endpointVars)`)
-	assert.Contains(t, clientSrc, "rebaseAbsoluteURLOntoOverride(targetURL, c.BaseURL)")
+	assert.Contains(t, clientSrc, "rebaseAbsoluteURLOntoOverride(targetURL, c.BaseURL, endpointVars)")
 
 	runAbsoluteOverrideBehavior(t, outputDir, absoluteOverrideCase{
 		module:         naming.CLI(apiSpec.Name),
@@ -99,6 +101,8 @@ func TestGeneratedClientRebasesTemplatedAbsoluteURLWhenBaseURLOverrideIsSet(t *t
 		hostportEnv:    spec.DefaultEndpointTemplateEnvName(apiSpec.Name, "hostport"),
 		hostportValue:  secondURL.Host,
 		declaredServer: "second",
+		proxyEnv:       spec.DefaultEndpointTemplateEnvName(apiSpec.Name, "proxyhost"),
+		proxyValue:     overrideURL.Host,
 	})
 }
 
@@ -113,6 +117,8 @@ type absoluteOverrideCase struct {
 	hostportEnv    string
 	hostportValue  string
 	declaredServer string
+	proxyEnv       string
+	proxyValue     string
 }
 
 func mixedHostSpec(name, baseURL, basePath string, book spec.Endpoint) *spec.APISpec {
@@ -171,6 +177,8 @@ func runAbsoluteOverrideBehavior(t *testing.T, outputDir string, tc absoluteOver
 	}
 	behavior := fmt.Sprintf(absoluteOverrideBehaviorTest,
 		tc.module,
+		tc.module,
+		tc.module,
 		tc.envName,
 		tc.specDefault,
 		tc.absolutePath,
@@ -180,6 +188,8 @@ func runAbsoluteOverrideBehavior(t *testing.T, outputDir string, tc absoluteOver
 		tc.hostportEnv,
 		tc.hostportValue,
 		tc.declaredServer,
+		tc.proxyEnv,
+		tc.proxyValue,
 	)
 	testPath := filepath.Join(outputDir, "internal", "client", "absolute_base_url_override_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(behavior), 0o644))
@@ -197,6 +207,8 @@ import (
 	"testing"
 	"time"
 
+	cliutil "%s/internal/cliutil"
+	testenv "%s/internal/cliutil/testenv"
 	cfgpkg "%s/internal/config"
 )
 
@@ -210,12 +222,12 @@ const (
 	hostportEnv    = %q
 	hostportValue  = %q
 	declaredServer = %q
+	proxyEnv       = %q
+	proxyValue     = %q
 )
 
 func TestAbsoluteURLHonorsConfiguredBaseURL(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	testenv.Isolate(t, cliutil.ConfigDir, cliutil.DataDir, cliutil.StateDir, cliutil.CacheDir)
 	if hostportEnv != "" {
 		t.Setenv(hostportEnv, hostportValue)
 	}
@@ -267,6 +279,27 @@ func TestAbsoluteURLHonorsConfiguredBaseURL(t *testing.T) {
 			t.Fatalf("error %%q should name %%s", err.Error(), baseURLEnv)
 		}
 	})
+
+	if proxyEnv != "" {
+		t.Run("templated override resolves before rebase", func(t *testing.T) {
+			t.Setenv(proxyEnv, proxyValue)
+			got := getEcho(t, "http://{proxyhost}", absolutePath, map[string]string{})
+			expectEcho(t, got, "override", "/book", "", bookQuery)
+			rel := getEcho(t, "http://{proxyhost}", "/ticker", map[string]string{})
+			expectEcho(t, rel, "override", basePath+"/ticker", "", nil)
+		})
+
+		t.Run("unresolved templated override does not call the declared host", func(t *testing.T) {
+			t.Setenv(proxyEnv, "")
+			_, err := getEchoErr(t, "http://{proxyhost}", absolutePath, nil)
+			if err == nil {
+				t.Fatal("expected unresolved template override error")
+			}
+			if !strings.Contains(err.Error(), proxyEnv) {
+				t.Fatalf("error %%q should name %%s", err.Error(), proxyEnv)
+			}
+		})
+	}
 }
 
 func getEcho(t *testing.T, baseURL, path string, params map[string]string) map[string]string {
