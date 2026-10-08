@@ -3046,6 +3046,85 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 	return l.w.Write(p)
 }
 
+// First parent, every 100th, and the last parent emit sync_progress, so a
+// 1,000-parent fan-out stays at 11 lines. The heartbeat covers a single slow
+// parent that would otherwise leave the NDJSON stream silent.
+const (
+	dependentSyncProgressEvery     = 100
+	dependentSyncProgressHeartbeat = 5 * time.Second
+)
+
+// Tests replace the clock and ticker to fire a silence heartbeat without sleeping.
+var (
+	dependentSyncProgressNow    = time.Now
+	dependentSyncProgressTicker = func(d time.Duration) (<-chan time.Time, func(), func()) {
+		timer := time.NewTimer(d)
+		return timer.C, func() { timer.Stop() }, func() { timer.Reset(d) }
+	}
+)
+
+// dependentProgress counts finished parents and the last lifecycle line so
+// count-based progress and the silence heartbeat share one clock.
+type dependentProgress struct {
+	done     int
+	total    int
+	lastEmit time.Time
+}
+
+func (p *dependentProgress) noteParent() (int, bool) {
+	p.done++
+	if !dependentProgressDue(p.done, p.total) {
+		return p.done, false
+	}
+	p.lastEmit = dependentSyncProgressNow()
+	return p.done, true
+}
+
+func (p *dependentProgress) heartbeat() (int, bool) {
+	now := dependentSyncProgressNow()
+	if now.Sub(p.lastEmit) < dependentSyncProgressHeartbeat {
+		return p.done, false
+	}
+	p.lastEmit = now
+	return p.done, true
+}
+
+func dependentProgressDue(done, total int) bool {
+	if done <= 0 || total <= 0 {
+		return false
+	}
+	if done == 1 || done == total {
+		return true
+	}
+	return done%dependentSyncProgressEvery == 0
+}
+
+func emitDependentSyncProgress(w io.Writer, resource string, done, total int, rate float64) {
+	if rate > 0 {
+		fmt.Fprintf(w, `{"event":"sync_progress","resource":"%s","parents_done":%d,"parents":%d,"rate_rps":%.1f}`+"\n", resource, done, total, rate)
+		return
+	}
+	fmt.Fprintf(w, `{"event":"sync_progress","resource":"%s","parents_done":%d,"parents":%d}`+"\n", resource, done, total)
+}
+
+type dependentReportWait struct {
+	rep       parentReport
+	heartbeat bool
+	closed    bool
+}
+
+func awaitDependentReport(reports <-chan parentReport, ticks <-chan time.Time) dependentReportWait {
+	select {
+	case rep, ok := <-reports:
+		if !ok {
+			return dependentReportWait{closed: true}
+		}
+		return dependentReportWait{rep: rep}
+	case <-ticks:
+		return dependentReportWait{heartbeat: true}
+	}
+}
+
 // syncDependentResource syncs a single child resource by iterating all parent IDs.
 func syncDependentResource(ctx context.Context, c interface {
 	Get(context.Context, string, map[string]string) (json.RawMessage, error)
@@ -3104,8 +3183,12 @@ func syncDependentResource(ctx context.Context, c interface {
 		}
 	}
 
+	var depProgress *dependentProgress
 	if humanFriendly {
 		fmt.Fprintf(os.Stderr, "  %s: syncing for %d %s parents\n", dep.Name, len(parentRows), dep.ParentTable)
+	} else {
+		fmt.Fprintf(syncEvents, `{"event":"sync_start","resource":"%s","parents":%d}`+"\n", dep.Name, len(parentRows))
+		depProgress = &dependentProgress{total: len(parentRows), lastEmit: dependentSyncProgressNow()}
 	}
 
 	var totalCount int
@@ -3188,6 +3271,9 @@ func syncDependentResource(ctx context.Context, c interface {
 	// counters. firstDenial / anomaly resolution is order-insensitive across
 	// workers (first drained wins) — acceptable, both are diagnostic-only and
 	// "first parent" is inherently nondeterministic under concurrency.
+	// The silence ticker shares this loop so a parent that has not reported
+	// yet still produces sync_progress. Workers write events concurrently, so
+	// those lines go through the lockedWriter installed above.
 	dryRunHit := false
 	failedParents := 0
 	integrityFailedParents := 0
@@ -3195,8 +3281,41 @@ func syncDependentResource(ctx context.Context, c interface {
 	reportedParents := 0
 	completeParents := 0
 	var firstFailure error
-	for rep := range reports {
+	var progressTicks <-chan time.Time
+	var resetProgressTicks func()
+	if depProgress != nil && len(parentRows) > 0 {
+		var stopProgressTicks func()
+		progressTicks, stopProgressTicks, resetProgressTicks = dependentSyncProgressTicker(dependentSyncProgressHeartbeat)
+		defer stopProgressTicks()
+	}
+	for {
+		ev := awaitDependentReport(reports, progressTicks)
+		if ev.closed {
+			break
+		}
+		if ev.heartbeat {
+			if depProgress != nil {
+				if done, emit := depProgress.heartbeat(); emit {
+					emitDependentSyncProgress(syncEvents, dep.Name, done, depProgress.total, c.RateLimit())
+				}
+			}
+			// NewTimer fires once. Rearm even when this tick is still inside
+			// the silence window so a slow parent keeps heartbeats coming.
+			if resetProgressTicks != nil {
+				resetProgressTicks()
+			}
+			continue
+		}
+		rep := ev.rep
 		reportedParents++
+		if depProgress != nil {
+			if done, emit := depProgress.noteParent(); emit {
+				emitDependentSyncProgress(syncEvents, dep.Name, done, depProgress.total, c.RateLimit())
+				if resetProgressTicks != nil {
+					resetProgressTicks()
+				}
+			}
+		}
 		if rep.dryRun {
 			dryRunHit = true
 			continue // keep draining so workers/goroutines don't leak
@@ -3320,6 +3439,9 @@ func syncDependentResource(ctx context.Context, c interface {
 			Warn:     fmt.Errorf("%s sync incomplete (%s); completion watermark was not advanced", dep.Name, coverageReason),
 			Duration: time.Since(started),
 		}
+	}
+	if !humanFriendly {
+		fmt.Fprintf(syncEvents, `{"event":"sync_complete","resource":"%s","total":%d,"duration_ms":%d}`+"\n", dep.Name, totalCount, time.Since(started).Milliseconds())
 	}
 	return syncResult{Resource: dep.Name, Count: totalCount, Duration: time.Since(started)}
 }
