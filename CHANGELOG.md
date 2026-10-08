@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.33.2](https://github.com/mvanhorn/cli-printing-press/compare/v4.33.1...v4.33.2) (2026-10-08)
+
+
+### Bug Fixes
+
+* **cli:** describe real commands and auth in generated docs ([#4932](https://github.com/mvanhorn/cli-printing-press/issues/4932)) ([a112e6a](https://github.com/mvanhorn/cli-printing-press/commit/a112e6af8d2b50b26227f51dc509b2460ff15d51))
+* **cli:** emit sync lifecycle events for dependent resources ([#4946](https://github.com/mvanhorn/cli-printing-press/issues/4946)) ([d0eebea](https://github.com/mvanhorn/cli-printing-press/commit/d0eebea1d8123dd2e66e73e439ceab3a2810495a))
+* **cli:** exclude generated code from printed CLI lint and drop dead helpers ([#4931](https://github.com/mvanhorn/cli-printing-press/issues/4931)) ([281c6b3](https://github.com/mvanhorn/cli-printing-press/commit/281c6b32838760688e498cd418b9c40b0311fe85))
+* **cli:** give no-store read dry-run JSON an action ([#4929](https://github.com/mvanhorn/cli-printing-press/issues/4929)) ([81c474d](https://github.com/mvanhorn/cli-printing-press/commit/81c474df8ff8175e402f4929f4197cb4e984712a))
+* **cli:** keep live-check probe binaries out of publish ([#4930](https://github.com/mvanhorn/cli-printing-press/issues/4930)) ([a4eb01c](https://github.com/mvanhorn/cli-printing-press/commit/a4eb01c2a83de124e85ccd597cc08ddf821650aa))
+* **cli:** label header params as header in tools-manifest ([#4944](https://github.com/mvanhorn/cli-printing-press/issues/4944)) ([723204d](https://github.com/mvanhorn/cli-printing-press/commit/723204dde4bd70ca01b5899c7419d079e9256644)), closes [#4942](https://github.com/mvanhorn/cli-printing-press/issues/4942)
+* **cli:** rebase absolute endpoint URLs onto an active BASE_URL override ([#4945](https://github.com/mvanhorn/cli-printing-press/issues/4945)) ([b252a8f](https://github.com/mvanhorn/cli-printing-press/commit/b252a8fe48264b8f8153f3fbb788b9f9cb01ada0))
+
 ## [4.33.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.33.0...v4.33.1) (2026-10-06)
 
 
