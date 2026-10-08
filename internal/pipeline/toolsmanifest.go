@@ -132,8 +132,8 @@ type ManifestTool struct {
 }
 
 // ManifestParam describes a tool parameter with an explicit location
-// (path, query, or body). Name is the public CLI/MCP input name; WireName is
-// set only when the upstream API key differs from that public name.
+// (path, query, header, or body). Name is the public CLI/MCP input name;
+// WireName is set only when the upstream API key differs from that public name.
 type ManifestParam struct {
 	Name        string   `json:"name"`
 	WireName    string   `json:"wire_name,omitempty"`
@@ -428,15 +428,9 @@ func buildManifestTool(name, description, descriptionSource string, ep spec.Endp
 	// description-override agents reading the manifest to understand
 	// the API contract.
 	for _, p := range ep.Params {
-		loc := "query"
-		if p.Positional || p.PathParam {
-			loc = "path"
-		}
+		loc := manifestParamLocation(p)
 		name := uniqueManifestParamName(p.PublicInputName(), publicNames)
-		wireName := p.WireName()
-		if loc == "path" {
-			wireName = p.Name
-		}
+		wireName := manifestEndpointParamWireName(p, loc)
 		tool.Params = append(tool.Params, ManifestParam{
 			Name:        name,
 			WireName:    manifestWireName(name, wireName),
@@ -476,6 +470,30 @@ func buildManifestTool(name, description, descriptionSource string, ep spec.Endp
 	}
 
 	return tool
+}
+
+// manifestParamLocation reports where the generated CLI puts this parameter
+// on the wire. Path substitution wins over a declared In so reclassified
+// path flags stay "path". Header matches headerOverrides. Anything else,
+// including in:cookie, is a query flag: OpenAPI drops cookie parameters,
+// and command templates only special-case headers.
+func manifestParamLocation(p spec.Param) string {
+	if p.Positional || p.PathParam {
+		return "path"
+	}
+	if strings.EqualFold(strings.TrimSpace(p.In), "header") {
+		return "header"
+	}
+	return "query"
+}
+
+// manifestEndpointParamWireName is the key the generated CLI sends.
+// Path placeholders and header names are Param.Name. Query keys honor URLName.
+func manifestEndpointParamWireName(p spec.Param, loc string) string {
+	if loc == "path" || loc == "header" {
+		return p.Name
+	}
+	return p.WireName()
 }
 
 type manifestBodyParam struct {
