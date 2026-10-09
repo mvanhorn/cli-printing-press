@@ -48,6 +48,7 @@ func internalSpecToDogfoodSpec(s *apispec.APISpec) *openAPISpec {
 		HTTPTransport:  s.EffectiveHTTPTransport(),
 		ParamDefaults:  collectInternalSpecParamDefaults(s),
 		IsInternalYAML: true,
+		CLIDescription: s.CLIDescription,
 	}
 }
 
