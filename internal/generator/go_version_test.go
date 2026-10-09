@@ -42,9 +42,9 @@ func TestSelectEmittedGoDirectiveIgnoresHostToolchain(t *testing.T) {
 func TestLibrarySafeGoDirectiveShape(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "1.26.6", librarySafeGoDirective)
+	assert.Equal(t, "1.26.9", librarySafeGoDirective)
 	assert.Regexp(t, `^\d+\.\d+\.\d+$`, librarySafeGoDirective)
-	assert.GreaterOrEqual(t, semver.Compare("v"+librarySafeGoDirective, "v1.26.6"), 0)
+	assert.GreaterOrEqual(t, semver.Compare("v"+librarySafeGoDirective, "v1.26.9"), 0)
 }
 
 func TestLibrarySafeGoDirectiveDoesNotExceedPressGoMod(t *testing.T) {
@@ -69,8 +69,8 @@ func TestGeneratedGoModUsesLibrarySafeFloor(t *testing.T) {
 	goMod := readGeneratedFile(t, outputDir, "go.mod")
 	assert.Contains(t, goMod, "\ngo "+librarySafeGoDirective+"\n")
 	assert.Contains(t, goMod, "\ntoolchain go"+librarySafeGoDirective+"\n")
-	assert.Contains(t, goMod, "\ngo 1.26.6\n")
-	assert.Contains(t, goMod, "\ntoolchain go1.26.6\n")
+	assert.Contains(t, goMod, "\ngo 1.26.9\n")
+	assert.Contains(t, goMod, "\ntoolchain go1.26.9\n")
 	assert.NotContains(t, goMod, "\ngo 1.26\n")
 	assert.NotContains(t, goMod, "\ngo 1.26.5\n")
 	assert.NotContains(t, goMod, "\ngo 1.26.7\n")

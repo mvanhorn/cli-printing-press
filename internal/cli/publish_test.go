@@ -747,7 +747,7 @@ func TestRunGoVulnCheckUsesPinnedDefaultCommandWithModuleToolchain(t *testing.T)
 		t.Skip("fake shell go binary is Unix-only")
 	}
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.26.6\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.26.9\n"), 0o644))
 
 	fakeBin := t.TempDir()
 	callsPath := filepath.Join(t.TempDir(), "go-calls.txt")
@@ -769,7 +769,7 @@ exit 42
 
 	calls, err := os.ReadFile(callsPath)
 	require.NoError(t, err)
-	assert.Equal(t, "args=run "+govulncheck.ToolModule+" ./...\ntoolchain=go1.26.6\n", string(calls))
+	assert.Equal(t, "args=run "+govulncheck.ToolModule+" ./...\ntoolchain=go1.26.9\n", string(calls))
 	assert.NotContains(t, string(calls), "-show")
 	assert.NotContains(t, string(calls), "verbose")
 }
@@ -2822,7 +2822,7 @@ func TestCheckModulePath(t *testing.T) {
 
 	t.Run("canonical prefix passes", func(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
-			[]byte("module github.com/mvanhorn/printing-press-library/library/ai/exa\n\ngo 1.26.6\n"), 0o644))
+			[]byte("module github.com/mvanhorn/printing-press-library/library/ai/exa\n\ngo 1.26.9\n"), 0o644))
 		res := checkModulePath(dir, "")
 		assert.True(t, res.Passed, res.Error)
 		assert.Equal(t, "module path", res.Name)
@@ -2831,7 +2831,7 @@ func TestCheckModulePath(t *testing.T) {
 	t.Run("canonical prefix passes when requested explicitly", func(t *testing.T) {
 		const canonical = "github.com/mvanhorn/printing-press-library/library/ai/exa"
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
-			[]byte("module "+canonical+"\n\ngo 1.26.6\n"), 0o644))
+			[]byte("module "+canonical+"\n\ngo 1.26.9\n"), 0o644))
 		res := checkModulePath(dir, canonical)
 		assert.True(t, res.Passed, res.Error)
 	})
@@ -2839,14 +2839,14 @@ func TestCheckModulePath(t *testing.T) {
 	t.Run("custom requested path passes when go.mod matches", func(t *testing.T) {
 		const custom = "github.com/acme/my-library/library/ai/exa"
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
-			[]byte("module "+custom+"\n\ngo 1.26.6\n"), 0o644))
+			[]byte("module "+custom+"\n\ngo 1.26.9\n"), 0o644))
 		res := checkModulePath(dir, custom)
 		assert.True(t, res.Passed, res.Error)
 	})
 
 	t.Run("declared path that differs from the requested path fails", func(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
-			[]byte("module github.com/acme/my-library/library/ai/exa\n\ngo 1.26.6\n"), 0o644))
+			[]byte("module github.com/acme/my-library/library/ai/exa\n\ngo 1.26.9\n"), 0o644))
 		res := checkModulePath(dir, "github.com/acme/my-library/library/ai/other")
 		assert.False(t, res.Passed)
 		assert.Contains(t, res.Error, "does not match the requested --module-path")
@@ -2854,7 +2854,7 @@ func TestCheckModulePath(t *testing.T) {
 
 	t.Run("bare CLI name fails", func(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
-			[]byte("module exa-pp-cli\n\ngo 1.26.6\n"), 0o644))
+			[]byte("module exa-pp-cli\n\ngo 1.26.9\n"), 0o644))
 		res := checkModulePath(dir, "")
 		assert.False(t, res.Passed)
 		assert.Contains(t, res.Error, "does not start with the canonical library prefix")
@@ -2862,7 +2862,7 @@ func TestCheckModulePath(t *testing.T) {
 
 	t.Run("bare CLI name fails even when requested explicitly", func(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
-			[]byte("module exa-pp-cli\n\ngo 1.26.6\n"), 0o644))
+			[]byte("module exa-pp-cli\n\ngo 1.26.9\n"), 0o644))
 		res := checkModulePath(dir, "exa-pp-cli")
 		assert.False(t, res.Passed)
 		assert.Contains(t, res.Error, "is a bare CLI name")
@@ -2876,7 +2876,7 @@ func TestCheckModulePath(t *testing.T) {
 
 	t.Run("no module line fails", func(t *testing.T) {
 		emptyDir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(emptyDir, "go.mod"), []byte("go 1.26.6\n"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(emptyDir, "go.mod"), []byte("go 1.26.9\n"), 0o644))
 		res := checkModulePath(emptyDir, "")
 		assert.False(t, res.Passed)
 		assert.Contains(t, res.Error, "declares no module line")
@@ -2889,7 +2889,7 @@ func TestPublishValidateModulePathCheckWired(t *testing.T) {
 	writePublishableTestCLI(t, cliDir)
 	// Force a bare module path to exercise the new check end-to-end.
 	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "go.mod"),
-		[]byte("module test-pp-cli\n\ngo 1.26.6\n"), 0o644))
+		[]byte("module test-pp-cli\n\ngo 1.26.9\n"), 0o644))
 
 	cmd := newPublishCmd()
 	cmd.SetArgs([]string{"validate", "--dir", cliDir, "--json"})

@@ -1,8 +1,8 @@
 module golden-api-cookie-auth-pp-cli
 
-go 1.26.6
+go 1.26.9
 
-toolchain go1.26.6
+toolchain go1.26.9
 
 require (
 	github.com/gorilla/websocket v1.5.3
