@@ -65,7 +65,7 @@ func TestGenerateMCPSharedBoundPackageAndConsumers(t *testing.T) {
 	require.NoError(t, err)
 	toolsCode := stripGoComments(string(toolsSrc))
 	assert.Contains(t, toolsCode, `/internal/mcp/bound"`)
-	assert.Contains(t, toolsCode, "bound.EndpointResponse(method, data)")
+	assert.Contains(t, toolsCode, "bound.EndpointPageResponse(method, data, bound.PageOptions{ReadOnly: readOnly})")
 	assert.Contains(t, toolsCode, "func mcpToolError(message string)")
 	assert.Contains(t, toolsCode, "bound.Text(message)")
 	assert.Contains(t, toolsCode, "return mcpToolError(msg), nil")
